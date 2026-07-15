@@ -10,6 +10,17 @@ import { readDashboardEnvFile } from './settings';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { getWeixinChannelStatus } from './weixin-channel-binding';
 import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
+import {
+  buildDiagnosticSummary,
+  buildProviderDiagnosticRecord,
+  type ExternalSourceDiagnosticSummary,
+  type ExternalSourceProviderDiagnostic,
+} from '../utils/external-source-diagnostics';
+import {
+  ExternalProviderOverrideStore,
+  resolveExternalProviderOverridePath,
+} from '../utils/external-provider-controls';
+import { loadExternalCursorState, resolveExternalCursorStorePath } from '../utils/session-log-source';
 
 export type DashboardReadinessStatus = 'ready' | 'warning' | 'blocked';
 export type DashboardReadinessCheckStatus = 'pass' | 'warning' | 'fail';
@@ -89,6 +100,7 @@ export interface DashboardRuntimeLearningStatus {
     supportStatus?: string;
     provider?: string;
     reader?: string;
+    readerVersion?: string;
     selectedProvider?: string;
     resourcesDiscovered: number;
     unitsProcessed: number;
@@ -108,6 +120,20 @@ export interface DashboardRuntimeLearningStatus {
     nextAction?: string;
     drainState?: string;
   }>;
+  /**
+   * Multi-provider override statuses (issue #91). Read-only diagnostics for
+   * the operator control surface.
+   */
+  providerStatuses?: Array<{
+    provider: string;
+    enabled: boolean;
+    source: string;
+    scope: string;
+    scopePath?: string;
+    admissionGate: string;
+    rebaselineRequestedAt?: string;
+  }>;
+  providerDiagnostics?: ExternalSourceDiagnosticSummary;
 }
 
 export interface DashboardReadinessOptions {
@@ -282,6 +308,7 @@ function readRuntimeLearningStatus(
           ...(typeof report.supportStatus === 'string' ? { supportStatus: report.supportStatus } : {}),
           ...(typeof report.provider === 'string' ? { provider: report.provider } : {}),
           ...(typeof report.reader === 'string' ? { reader: report.reader } : {}),
+          ...(typeof report.readerVersion === 'string' ? { readerVersion: report.readerVersion } : {}),
           ...(typeof report.selectedProvider === 'string' ? { selectedProvider: report.selectedProvider } : {}),
           resourcesDiscovered: toNonNegativeInteger(report.resourcesDiscovered),
           unitsProcessed: toNonNegativeInteger(report.unitsProcessed),
@@ -299,8 +326,86 @@ function readRuntimeLearningStatus(
         }));
     }
   }
+
+  // Multi-provider override statuses (issue #91) — read-only diagnostics.
+  try {
+    const overrideStore = new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(config),
+    });
+    const statuses = overrideStore.getAllProviderStatuses(config);
+    base.providerStatuses = statuses.map(status => ({
+      provider: status.provider,
+      enabled: status.enabled,
+      source: status.source,
+      scope: status.scope,
+      ...(status.scopePath ? { scopePath: status.scopePath } : {}),
+      admissionGate: status.admissionGate,
+      ...(status.rebaselineRequestedAt ? { rebaselineRequestedAt: status.rebaselineRequestedAt } : {}),
+    }));
+    base.providerDiagnostics = buildDiagnosticSummary(
+      statuses.map(status => buildProviderDiagnostic(status, config, base.sources)),
+    );
+  } catch {
+    // Override store is diagnostic; fail silently.
+  }
+
   return base;
 }
+
+function buildProviderDiagnostic(
+  status: NonNullable<DashboardRuntimeLearningStatus['providerStatuses']>[number],
+  config: ReturnType<typeof getDistillationHeartbeatConfig>,
+  sources: readonly NonNullable<DashboardRuntimeLearningStatus['sources']>[number][],
+): ExternalSourceProviderDiagnostic {
+  const sourceId = resolveProviderSourceId(config, status.provider);
+  const cursorState = loadExternalCursorState(resolveExternalCursorStorePath({
+    provider: status.provider,
+    sourceId,
+  }));
+  const sourceReport = sources.find(source => source.sourceId === sourceId);
+  const activation = cursorState.activation;
+  const resources = Object.values(cursorState.resources);
+  const sourceCursors = Object.values(cursorState.cursors)
+    .filter(entry => entry.sourceIdentity?.sourceId === sourceId);
+  const baselined = sourceCursors.filter(entry => entry.lastStatus === 'activated').length;
+  return buildProviderDiagnosticRecord({
+    status: {
+      provider: status.provider,
+      scope: status.scope,
+      enabled: status.enabled,
+      admissionGate: status.admissionGate === 'closed' ? 'closed' : 'open',
+    },
+    activation,
+    resourcesTotal: resources.length,
+    baselined,
+    sourceReport: sourceReport
+      ? {
+        readerVersion: sourceReport.readerVersion,
+        cursorProgress: sourceReport.cursorProgress,
+        lastSuccessfulReadAt: sourceReport.lastSuccessfulReadAt,
+        nextRetryAt: sourceReport.nextRetryAt,
+        failureClass: sourceReport.failureClass,
+        status: sourceReport.drainState === 'draining' ? 'draining' : sourceReport.status,
+        nextAction: sourceReport.nextAction,
+      }
+      : undefined,
+  });
+}
+
+function resolveProviderSourceId(
+  config: ReturnType<typeof getDistillationHeartbeatConfig>,
+  provider: string,
+): string {
+  const normalizedProvider = provider.trim().toLowerCase();
+  const legacySelectedProvider = config.externalSessionLogSelectedProvider?.trim().toLowerCase();
+  const legacySelectedSourceId = config.externalSessionLogSelectedSourceId?.trim();
+  return config.externalSessionLogEnabledProviders.length === 1
+    && legacySelectedProvider === normalizedProvider
+    && Boolean(legacySelectedSourceId)
+    ? legacySelectedSourceId!
+    : `external-${normalizedProvider}`;
+}
+
 
 function readJsonRecord(filePath: string): Record<string, unknown> | undefined {
   try {

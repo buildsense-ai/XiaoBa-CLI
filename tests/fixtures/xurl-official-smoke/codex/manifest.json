@@ -1,0 +1,5 @@
+{
+  "provider": "codex",
+  "session_id": "codex-smoke-session",
+  "notes": "Minimal sanitized Codex fixture in the official sessions/YYYY/MM/DD/*.jsonl layout."
+}

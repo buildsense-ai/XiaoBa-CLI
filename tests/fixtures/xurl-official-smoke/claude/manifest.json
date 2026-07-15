@@ -1,0 +1,5 @@
+{
+  "provider": "claude",
+  "session_id": "claude-smoke-session",
+  "notes": "Minimal sanitized Claude fixture in the official projects/<project>/<session>.jsonl layout."
+}

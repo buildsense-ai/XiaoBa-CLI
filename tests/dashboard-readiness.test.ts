@@ -9,6 +9,10 @@ import { createApiRouter } from '../src/dashboard/routes/api';
 import { ServiceInfo } from '../src/dashboard/service-manager';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
+import {
+  ExternalProviderOverrideStore,
+  resolveExternalProviderOverridePath,
+} from '../src/utils/external-provider-controls';
 
 describe('dashboard readiness and service preflight API', () => {
   let testRoot: string;
@@ -57,6 +61,9 @@ describe('dashboard readiness and service preflight API', () => {
     'WEIXIN_TOKEN',
     'XIAOBA_CONFIG_PATH',
     'XIAOBA_RUNTIME_PROFILE_PATH',
+    'XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED',
+    'XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS',
+    'XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -238,6 +245,49 @@ describe('dashboard readiness and service preflight API', () => {
       nextAction: 'retry or skip quarantined event',
       drainState: 'active',
     });
+  });
+
+  test('GET /readiness exposes read-only external provider override diagnostics', async () => {
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS = 'codex,claude';
+    const config = getDistillationHeartbeatConfig(testRoot, process.env);
+    const store = new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(config),
+      now: () => new Date('2026-01-01T00:00:00.000Z'),
+    });
+    store.disableProvider('claude');
+    store.enableProvider('pi', { scope: 'path', scopePath: '/project/x' });
+    store.rebaselineProvider('pi', true);
+
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.ok(Array.isArray(data.runtimeLearning.providerStatuses));
+    const claude = data.runtimeLearning.providerStatuses.find((entry: any) => entry.provider === 'claude');
+    const codex = data.runtimeLearning.providerStatuses.find((entry: any) => entry.provider === 'codex');
+    const pi = data.runtimeLearning.providerStatuses.find((entry: any) => entry.provider === 'pi');
+    assert.deepEqual(codex, {
+      provider: 'codex',
+      enabled: true,
+      source: 'environment',
+      scope: 'global',
+      admissionGate: 'open',
+    });
+    assert.deepEqual(claude, {
+      provider: 'claude',
+      enabled: false,
+      source: 'override',
+      scope: 'global',
+      admissionGate: 'closed',
+    });
+    assert.equal(pi.provider, 'pi');
+    assert.equal(pi.enabled, true);
+    assert.equal(pi.source, 'override');
+    assert.equal(pi.scope, 'path');
+    assert.equal(pi.scopePath, '/project/x');
+    assert.equal(pi.admissionGate, 'open');
+    assert.equal(typeof pi.rebaselineRequestedAt, 'string');
   });
 
   test('CatsCo readiness warns when account and binding are ready but connector is stopped', async () => {

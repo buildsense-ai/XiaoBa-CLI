@@ -12,8 +12,21 @@ import { RuntimeLearning } from '../src/utils/runtime-learning';
 import { SkillEvolutionRuntime } from '../src/utils/skill-evolution';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
+import {
+  ExternalProviderOverrideStore,
+  resolveExternalProviderOverridePath,
+} from '../src/utils/external-provider-controls';
+import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
 import { loadExternalCursorState } from '../src/utils/session-log-source';
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
+import {
+  FakeXurlScenario,
+  ThreadSummarySpec,
+  TimelineSpec,
+  writeFakeXurl,
+  writeScenario,
+  readInvocationLog,
+} from './helpers/xurl-rendered-fixtures';
 
 const tempRoots: string[] = [];
 afterEach(() => {
@@ -37,29 +50,20 @@ interface TestEnv {
   restore(): void;
 }
 
+const PROVIDER = 'codex';
+const SOURCE_ID = 'external-codex';
+const FP = (s: string) => `fp-${s}`;
+
 test('future-only enablement is metadata-only and internal lane remains independent', async () => {
-  const env = setupEnv({
-    provider: 'codex',
-    sourceId: 'external-codex',
-  });
+  const env = setupEnv();
   try {
     writeScenario(env.scenarioPath, {
+      version: 'xurl-test 1.0.0',
       discover: {
         pages: {
-          start: {
-            protocolVersion: 1,
-            provider: 'codex',
-            resources: [
-              resource('conversation-main', 'event://codex/main-0', 0, 'conv-1', 'branch-main', {
-                activationPosition: 1,
-                revision: 'rev-main-0',
-                contentHash: 'hash-main-0',
-              }),
-            ],
-          },
+          start: catalogPage([thread('conversation-main', 'branch-main', 1, FP('main-1'))]),
         },
       },
-      read: {},
     });
     writeInternalLog(env.internalLogPath, [
       turn(1, 'internal-session', 'Please deliver the internal result.', 'Done.'),
@@ -69,7 +73,7 @@ test('future-only enablement is metadata-only and internal lane remains independ
     const fixture = env.createRuntime();
     const result = await fixture.runtime.wake('startup');
 
-    const externalReport = result.discovery.sources.find(source => source.sourceId === 'external-codex');
+    const externalReport = result.discovery.sources.find(source => source.sourceId === SOURCE_ID);
     const internalReport = result.discovery.sources.find(source => source.sourceId === 'internal-xiaoba');
     assert.ok(externalReport);
     assert.ok(internalReport);
@@ -77,57 +81,221 @@ test('future-only enablement is metadata-only and internal lane remains independ
     assert.equal(externalReport!.unitsProcessed, 0);
     assert.ok(internalReport!.unitsProcessed >= 1);
 
-    const state = loadExternalCursorState(cursorStorePath(env.root, 'codex', 'external-codex'));
+    const state = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(state.activation?.initialDiscoveryCompleted, true);
     assert.equal(state.cursors['conversation-main']?.cursor.position, 1);
     assert.equal(Object.keys(state.processedEventIds).length, 0);
 
+    // First enablement is metadata-only: only the documented query command runs
+    // (version + catalog query). No read or head is issued and no evidence is created.
     const invocations = readInvocationLog(env.logPath);
-    assert.deepEqual(invocations.map(item => item.action), ['discover']);
+    assert.deepEqual(invocations.map(item => item.action), ['version', 'query']);
+    assert.equal(invocations[0]!.args[0], '--version');
+    assert.equal(invocations[1]!.args[0], `agents://${PROVIDER}?limit=50`);
+  } finally {
+    env.restore();
+  }
+});
+
+test('path-scoped providers query the documented agents:///... URI with the provider filter', async () => {
+  const env = setupEnv();
+  try {
+    createOverrideStore(env.root).enableProvider(PROVIDER, {
+      scope: 'path',
+      scopePath: '/workspace/smoke-project',
+    });
+    writeScenario(env.scenarioPath, {
+      version: 'xurl-test 1.0.0',
+      discover: {
+        pages: {
+          start: catalogPage([thread('conversation-main', 'branch-main', 1, FP('main-1'))]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime();
+    await fixture.runtime.wake('startup');
+
+    const invocations = readInvocationLog(env.logPath);
+    assert.deepEqual(invocations.map(item => item.action), ['version', 'query']);
+    assert.equal(invocations[1]!.args[0], 'agents:///workspace/smoke-project?providers=codex&limit=50');
+  } finally {
+    env.restore();
+  }
+});
+
+test('scope narrowing preserves out-of-scope resource state across restart', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([
+            thread('conversation-in', 'branch-in', 2, FP('in-2')),
+            thread('conversation-out', 'branch-out', 4, FP('out-4')),
+          ]),
+        },
+      },
+    });
+
+    await env.createRuntime().runtime.wake('startup');
+    const baselineState = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(baselineState.resources['conversation-out']?.resource.resourceRef, 'conversation-out');
+    assert.equal(baselineState.cursors['conversation-out']?.cursor.position, 4);
+
+    createOverrideStore(env.root).enableProvider(PROVIDER, {
+      scope: 'path',
+      scopePath: '/workspace/narrowed-project',
+    });
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread('conversation-in', 'branch-in', 2, FP('in-2'))]),
+        },
+      },
+    });
+
+    await env.createRuntime().runtime.wake('scheduled');
+    await env.createRuntime().runtime.wake('scheduled');
+
+    const afterNarrow = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(afterNarrow.resources['conversation-out']?.resource.resourceRef, 'conversation-out');
+    assert.equal(afterNarrow.resources['conversation-out']?.lifecycleStatus, 'active');
+    assert.equal(afterNarrow.cursors['conversation-out']?.cursor.position, 4);
+
+    const afterRestart = env.createRuntime();
+    await afterRestart.runtime.wake('scheduled');
+    const persisted = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(persisted.resources['conversation-out']?.resource.resourceRef, 'conversation-out');
+    assert.equal(persisted.resources['conversation-out']?.lifecycleStatus, 'active');
+    assert.equal(persisted.cursors['conversation-out']?.cursor.position, 4);
+  } finally {
+    env.restore();
+  }
+});
+
+test('scope expansion baselines newly included history without historical admission', async () => {
+  const env = setupEnv();
+  try {
+    createOverrideStore(env.root).enableProvider(PROVIDER, {
+      scope: 'path',
+      scopePath: '/workspace/narrow-path',
+    });
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread('conversation-in', 'branch-in', 2, FP('in-2'))]),
+        },
+      },
+    });
+
+    await env.createRuntime().runtime.wake('startup');
+
+    createOverrideStore(env.root).enableProvider(PROVIDER, { scope: 'global' });
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([
+            thread('conversation-in', 'branch-in', 2, FP('in-2')),
+            thread('conversation-new', 'branch-new', 4, FP('new-4')),
+          ]),
+        },
+      },
+      read: {
+        'conversation-in': readSpec(
+          timeline('conversation-in', 'branch-in', 2, FP('in-2'), [
+            entry(1, 'User', 'Existing request'),
+            entry(2, 'Assistant', 'Existing response.'),
+          ]),
+        ),
+        'conversation-new': readSpec(
+          timeline('conversation-new', 'branch-new', 4, FP('new-4'), [
+            entry(1, 'User', 'Historical request 1'),
+            entry(2, 'Assistant', 'Historical response 1.'),
+            entry(3, 'User', 'Historical request 2'),
+            entry(4, 'Assistant', 'Historical response 2.'),
+          ]),
+        ),
+      },
+    });
+
+    const expanded = env.createRuntime();
+    await expanded.runtime.wake('scheduled');
+    const afterExpand = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(afterExpand.cursors['conversation-new']?.cursor.position, 4);
+    assert.equal(Object.keys(afterExpand.processedEventIds).length, 0, 'scope expansion must not admit historical events');
+    assert.equal(Object.keys(expanded.episodeStore.load().episodes).length, 0);
+
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([
+            thread('conversation-in', 'branch-in', 2, FP('in-2')),
+            thread('conversation-new', 'branch-new', 6, FP('new-6')),
+          ]),
+        },
+      },
+      read: {
+        'conversation-in': readSpec(
+          timeline('conversation-in', 'branch-in', 2, FP('in-2'), [
+            entry(1, 'User', 'Existing request'),
+            entry(2, 'Assistant', 'Existing response.'),
+          ]),
+        ),
+        'conversation-new': readSpec(
+          timeline('conversation-new', 'branch-new', 6, FP('new-6'), [
+            entry(1, 'User', 'Historical request 1'),
+            entry(2, 'Assistant', 'Historical response 1.'),
+            entry(3, 'User', 'Historical request 2'),
+            entry(4, 'Assistant', 'Historical response 2.'),
+            entry(5, 'User', 'Please deliver the new report.'),
+            entry(6, 'Assistant', 'Done step 3.'),
+          ]),
+        ),
+      },
+    });
+
+    const admitting = env.createRuntime();
+    await admitting.runtime.wake('scheduled');
+    const afterAdmit = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(afterAdmit.cursors['conversation-new']?.cursor.position, 6);
+    assert.equal(Object.keys(afterAdmit.processedEventIds).length, 1, 'only the newly appended range should be admitted');
+    assert.equal(
+      Object.keys(afterAdmit.processedEventFingerprints).length,
+      1,
+      'scope expansion should preserve only the newly admitted stable fingerprint',
+    );
   } finally {
     env.restore();
   }
 });
 
 test('discovery pagination state survives restart and completes independently from event progress', async () => {
-  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  const env = setupEnv();
   try {
     writeScenario(env.scenarioPath, {
       discover: {
         pages: {
-          start: {
-            protocolVersion: 1,
-            provider: 'codex',
-            nextPageToken: 'page-2',
-            resources: [
-              resource('conversation-a', 'event://codex/a-0', 0, 'conv-a', 'branch-a', { activationPosition: 0 }),
-            ],
-          },
-          'page-2': {
-            protocolVersion: 1,
-            provider: 'codex',
-            resources: [
-              resource('conversation-b', 'event://codex/b-0', 0, 'conv-b', 'branch-b', { activationPosition: 0 }),
-            ],
-          },
+          start: catalogPage([thread('conversation-a', 'branch-a', 0, FP('a-0'))], 'page-2'),
+          'page-2': catalogPage([thread('conversation-b', 'branch-b', 0, FP('b-0'))]),
         },
       },
       read: {
-        'conversation-a': { byCursor: { '0': emptyStableRead('codex', 'conversation-a', 0) } },
-        'conversation-b': { byCursor: { '0': emptyStableRead('codex', 'conversation-b', 0) } },
+        'conversation-a': readSpec(timeline('conversation-a', 'branch-a', 0, FP('a-0'), [])),
+        'conversation-b': readSpec(timeline('conversation-b', 'branch-b', 0, FP('b-0'), [])),
       },
     });
 
     const first = env.createRuntime();
     await first.runtime.wake('startup');
-    const afterFirst = loadExternalCursorState(cursorStorePath(env.root, 'codex', 'external-codex'));
+    const afterFirst = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(afterFirst.discovery?.nextPageToken, 'page-2');
     assert.ok(afterFirst.resources['conversation-a']);
     assert.ok(!afterFirst.resources['conversation-b']);
 
     const second = env.createRuntime();
     await second.runtime.wake('scheduled');
-    const afterSecond = loadExternalCursorState(cursorStorePath(env.root, 'codex', 'external-codex'));
+    const afterSecond = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(afterSecond.discovery?.nextPageToken, null);
     assert.ok(afterSecond.resources['conversation-a']);
     assert.ok(afterSecond.resources['conversation-b']);
@@ -137,50 +305,32 @@ test('discovery pagination state survives restart and completes independently fr
 });
 
 test('incremental continuation preserves branch isolation and bounded same-branch continuity', async () => {
-  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  const env = setupEnv();
   try {
     writeScenario(env.scenarioPath, {
       discover: {
         pages: {
-          start: {
-            protocolVersion: 1,
-            provider: 'codex',
-            resources: [
-              resource('conversation-main', 'event://codex/main-0', 0, 'conv-1', 'branch-main', { activationPosition: 0 }),
-              resource('conversation-side', 'event://codex/side-0', 0, 'conv-1', 'branch-side', { activationPosition: 0 }),
-            ],
-          },
+          start: catalogPage([
+            thread('conversation-main', 'branch-main', 0, FP('main-0')),
+            thread('conversation-side', 'branch-side', 0, FP('side-0')),
+          ]),
         },
       },
       read: {
-        'conversation-main': {
-          byCursor: {
-            '0': stableRead('codex', 'conversation-main', [
-              protocolEvent('event://codex/main-1', 1, 'conv-1', 'branch-main', 'Main branch step 1', 'Done main step 1.', {
-                revision: 'rev-main-1',
-                contentHash: 'hash-main-1',
-                timestamp: '2026-01-01T00:01:00.000Z',
-              }),
-              protocolEvent('event://codex/main-2', 2, 'conv-1', 'branch-main', 'Main branch step 2', 'Done main step 2.', {
-                revision: 'rev-main-2',
-                contentHash: 'hash-main-2',
-                timestamp: '2026-01-01T00:02:00.000Z',
-              }),
-            ], 3),
-          },
-        },
-        'conversation-side': {
-          byCursor: {
-            '0': stableRead('codex', 'conversation-side', [
-              protocolEvent('event://codex/side-1', 1, 'conv-1', 'branch-side', 'Side branch step 1', 'Done side step 1.', {
-                revision: 'rev-side-1',
-                contentHash: 'hash-side-1',
-                timestamp: '2026-01-01T00:03:00.000Z',
-              }),
-            ], 2),
-            '2': emptyStableRead('codex', 'conversation-side', 2),
-          },
-        },
+        'conversation-main': readSpec(
+          timeline('conversation-main', 'branch-main', 4, FP('main-4'), [
+            entry(1, 'User', 'Main branch step 1'),
+            entry(2, 'Assistant', 'Done main step 1.'),
+            entry(3, 'User', 'Main branch step 2'),
+            entry(4, 'Assistant', 'Done main step 2.'),
+          ]),
+        ),
+        'conversation-side': readSpec(
+          timeline('conversation-side', 'branch-side', 2, FP('side-2'), [
+            entry(1, 'User', 'Side branch step 1'),
+            entry(2, 'Assistant', 'Done side step 1.'),
+          ]),
+        ),
       },
     });
 
@@ -189,11 +339,11 @@ test('incremental continuation preserves branch isolation and bounded same-branc
 
     const second = env.createRuntime();
     const secondWake = await second.runtime.wake('scheduled');
-    const secondExternal = secondWake.discovery.sources.find(source => source.sourceId === 'external-codex');
+    const secondExternal = secondWake.discovery.sources.find(source => source.sourceId === SOURCE_ID);
     assert.ok(secondExternal);
     assert.equal(secondExternal!.unitsProcessed, 3);
 
-    const state = loadExternalCursorState(cursorStorePath(env.root, 'codex', 'external-codex'));
+    const state = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(state.resources['conversation-main']?.continuityTail.length, 2);
     assert.equal(state.resources['conversation-side']?.continuityTail.length, 1);
     assert.equal(state.resources['conversation-main']?.resource.firstEventIdentity?.branchId, 'branch-main');
@@ -203,35 +353,23 @@ test('incremental continuation preserves branch isolation and bounded same-branc
   }
 });
 
-test('pending ranges stay unacknowledged and mutated replayed events fail closed on restart', async () => {
-  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+test('pending tail stays unacknowledged until a second stable observation admits it', async () => {
+  const env = setupEnv();
   try {
+    // First two wakes observe an incomplete tail (User with no Assistant): the
+    // reader reports pending, the cursor never advances, and nothing is admitted.
     writeScenario(env.scenarioPath, {
       discover: {
         pages: {
-          start: {
-            protocolVersion: 1,
-            provider: 'codex',
-            resources: [
-              resource('conversation-main', 'event://codex/main-0', 0, 'conv-1', 'branch-main', { activationPosition: 0 }),
-            ],
-          },
+          start: catalogPage([thread('conversation-main', 'branch-main', 0, FP('main-0'))]),
         },
       },
       read: {
-        'conversation-main': {
-          byCursor: {
-            '0': {
-              protocolVersion: 1,
-              provider: 'codex',
-              resourceRef: 'conversation-main',
-              status: 'pending',
-              exhausted: false,
-              newPosition: 1,
-              events: [],
-            },
-          },
-        },
+        'conversation-main': readSpec(
+          timeline('conversation-main', 'branch-main', 1, FP('main-pending-1'), [
+            entry(1, 'User', 'Step 1'),
+          ]),
+        ),
       },
     });
 
@@ -239,69 +377,126 @@ test('pending ranges stay unacknowledged and mutated replayed events fail closed
     await first.runtime.wake('startup');
     const pendingRuntime = env.createRuntime();
     await pendingRuntime.runtime.wake('scheduled');
-    const pendingState = loadExternalCursorState(cursorStorePath(env.root, 'codex', 'external-codex'));
+    const pendingState = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(pendingState.cursors['conversation-main']?.cursor.position, 0);
     assert.equal(Object.keys(pendingState.processedEventIds).length, 0);
+    const pendingExternal = (await pendingRuntime.runtime.wake('scheduled')).discovery.sources
+      .find(source => source.sourceId === SOURCE_ID);
+    assert.ok(pendingExternal);
+    assert.notEqual(pendingExternal!.status, 'failed');
 
+    // A later complete User-to-Assistant turn with a matching head observation is admitted.
     writeScenario(env.scenarioPath, {
       discover: {
         pages: {
-          start: {
-            protocolVersion: 1,
-            provider: 'codex',
-            resources: [
-              resource('conversation-main', 'event://codex/main-0', 0, 'conv-1', 'branch-main', { activationPosition: 0 }),
-            ],
-          },
+          start: catalogPage([thread('conversation-main', 'branch-main', 0, FP('main-0'))]),
         },
       },
       read: {
-        'conversation-main': {
-          byCursor: {
-            '0': stableRead('codex', 'conversation-main', [
-              protocolEvent('event://codex/main-1', 1, 'conv-1', 'branch-main', 'Step 1', 'Done step 1.', {
-                revision: 'rev-1',
-                contentHash: 'hash-1',
-              }),
-            ], 2),
-            '2': stableRead('codex', 'conversation-main', [
-              protocolEvent('event://codex/main-1', 1, 'conv-1', 'branch-main', 'Step 1', 'Done step 1 changed.', {
-                revision: 'rev-2',
-                contentHash: 'hash-2',
-              }),
-            ], 2, true),
-          },
-        },
+        'conversation-main': readSpec(
+          timeline('conversation-main', 'branch-main', 2, FP('main-stable-2'), [
+            entry(1, 'User', 'Step 1'),
+            entry(2, 'Assistant', 'Done step 1.'),
+          ]),
+        ),
       },
     });
 
     const admitted = env.createRuntime();
     await admitted.runtime.wake('scheduled');
-    const admittedState = loadExternalCursorState(cursorStorePath(env.root, 'codex', 'external-codex'));
+    const admittedState = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(admittedState.cursors['conversation-main']?.cursor.position, 2);
     assert.equal(Object.keys(admittedState.processedEventIds).length, 1);
+  } finally {
+    env.restore();
+  }
+});
 
-    const replay = env.createRuntime();
-    const replayResult = await replay.runtime.wake('scheduled');
-    const external = replayResult.discovery.sources.find(source => source.sourceId === 'external-codex');
+test('a mutated tail between observations stays pending without counting as a provider failure', async () => {
+  const env = setupEnv();
+  try {
+    // The primary read renders a complete turn, but the head observation reports a
+    // different fingerprint: the tail is still mutating, so the reader reports
+    // pending, the cursor stays, and the lane is not marked failed.
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread('conversation-main', 'branch-main', 0, FP('main-0'))]),
+        },
+      },
+      read: {
+        'conversation-main': readSpec(
+          timeline('conversation-main', 'branch-main', 2, FP('main-read-1'), [
+            entry(1, 'User', 'Step 1'),
+            entry(2, 'Assistant', 'Done step 1.'),
+          ]),
+          { ordinal: 2, fingerprint: FP('main-read-2') },
+        ),
+      },
+    });
+
+    const first = env.createRuntime();
+    await first.runtime.wake('startup');
+    const second = env.createRuntime();
+    const secondWake = await second.runtime.wake('scheduled');
+    const external = secondWake.discovery.sources.find(source => source.sourceId === SOURCE_ID);
     assert.ok(external);
-    assert.equal(external!.status, 'failed');
-    const replayState = loadExternalCursorState(cursorStorePath(env.root, 'codex', 'external-codex'));
-    assert.equal(replayState.cursors['conversation-main']?.cursor.position, 2);
-    assert.equal(replayState.processedEventFingerprints['external-codex::codex::event://codex/main-1::1::conv-1::branch-main'], 'rev-1::hash-1');
+    assert.notEqual(external!.status, 'failed');
+    const state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.cursors['conversation-main']?.cursor.position, 0);
+    assert.equal(Object.keys(state.processedEventIds).length, 0);
+  } finally {
+    env.restore();
+  }
+});
+
+test('restart replay is idempotent for an already-admitted stable event', async () => {
+  const env = setupEnv();
+  try {
+    const stableRead: FakeXurlScenario = {
+      discover: {
+        pages: {
+          start: catalogPage([thread('conversation-main', 'branch-main', 0, FP('main-0'))]),
+        },
+      },
+      read: {
+        'conversation-main': readSpec(
+          timeline('conversation-main', 'branch-main', 2, FP('main-stable-2'), [
+            entry(1, 'User', 'Step 1'),
+            entry(2, 'Assistant', 'Done step 1.'),
+          ]),
+        ),
+      },
+    };
+    writeScenario(env.scenarioPath, stableRead);
+
+    const first = env.createRuntime();
+    await first.runtime.wake('startup');
+    const admitting = env.createRuntime();
+    await admitting.runtime.wake('scheduled');
+    const afterAdmit = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(afterAdmit.cursors['conversation-main']?.cursor.position, 2);
+    assert.equal(Object.keys(afterAdmit.processedEventIds).length, 1);
+    const episodesAfterAdmit = Object.keys(admitting.episodeStore.load().episodes).length;
+
+    // Re-running the same wake with the same stable Timeline does not create a
+    // duplicate episode or advance the cursor past the already-admitted range.
+    const replay = env.createRuntime();
+    await replay.runtime.wake('scheduled');
+    const afterReplay = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(afterReplay.cursors['conversation-main']?.cursor.position, 2);
+    assert.equal(Object.keys(afterReplay.processedEventIds).length, 1);
+    assert.equal(Object.keys(replay.episodeStore.load().episodes).length, episodesAfterAdmit);
   } finally {
     env.restore();
   }
 });
 
 test('internal heartbeat remains healthy when the selected xurl provider fails', async () => {
-  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  const env = setupEnv();
   try {
     writeScenario(env.scenarioPath, {
-      discover: {
-        rawStdout: '# invalid protocol\n',
-      },
-      read: {},
+      discover: { rawStdout: '# not a valid rendered catalog\n' },
     });
     writeInternalLog(env.internalLogPath, [
       turn(1, 'internal-session', 'Please deliver the internal result.', 'Done.'),
@@ -310,7 +505,7 @@ test('internal heartbeat remains healthy when the selected xurl provider fails',
 
     const fixture = env.createRuntime();
     const result = await fixture.runtime.wake('startup');
-    const external = result.discovery.sources.find(source => source.sourceId === 'external-codex');
+    const external = result.discovery.sources.find(source => source.sourceId === SOURCE_ID);
     const internal = result.discovery.sources.find(source => source.sourceId === 'internal-xiaoba');
     assert.ok(external);
     assert.ok(internal);
@@ -321,7 +516,51 @@ test('internal heartbeat remains healthy when the selected xurl provider fails',
   }
 });
 
-function setupEnv(options: { provider: string; sourceId: string }): TestEnv {
+test('activation blocking is durable when the catalog exceeds the activation limit', async () => {
+  const env = setupEnv({ maxActivationCatalog: 1 });
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([
+            thread('conversation-a', 'branch-a', 0, FP('a-0')),
+            thread('conversation-b', 'branch-b', 0, FP('b-0')),
+          ]),
+        },
+      },
+    });
+    writeInternalLog(env.internalLogPath, [turn(1, 'internal-session', 'Internal work.', 'Done.')]);
+
+    const first = env.createRuntime();
+    const firstResult = await first.runtime.wake('startup');
+    const firstState = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(firstState.activation?.activationBlocked, true);
+    assert.equal(firstState.activation?.initialDiscoveryCompleted, false);
+    assert.equal(Object.keys(firstState.processedEventIds).length, 0);
+    assert.equal(Object.keys(firstState.cursors).length, 0);
+
+    // A later wake must not partially admit: the blocked flag persists.
+    const second = env.createRuntime();
+    const secondResult = await second.runtime.wake('scheduled');
+    const secondState = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(secondState.activation?.activationBlocked, true);
+    assert.equal(Object.keys(secondState.processedEventIds).length, 0);
+    const external = secondResult.discovery.sources.find(source => source.sourceId === SOURCE_ID);
+    assert.ok(external);
+    // Internal heartbeat remains independent of the blocked external provider.
+    const internal = secondResult.discovery.sources.find(source => source.sourceId === 'internal-xiaoba');
+    assert.ok(internal);
+    void firstResult;
+  } finally {
+    env.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Setup helpers
+// ---------------------------------------------------------------------------
+
+function setupEnv(options: { maxActivationCatalog?: number } = {}): TestEnv {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-xurl-continuous-'));
   tempRoots.push(root);
 
@@ -349,6 +588,7 @@ function setupEnv(options: { provider: string; sourceId: string }): TestEnv {
     XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER,
     XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID,
     XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND: process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND,
+    XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_CATALOG: process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_CATALOG,
     XURL_SCENARIO_PATH: process.env.XURL_SCENARIO_PATH,
     XURL_LOG_PATH: process.env.XURL_LOG_PATH,
   };
@@ -360,11 +600,18 @@ function setupEnv(options: { provider: string; sourceId: string }): TestEnv {
   process.env.XIAOBA_RUNTIME_ROOT = root;
   process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE = reassessmentManifestPath;
   process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
-  process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER = options.provider;
-  process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID = options.sourceId;
+  process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER = PROVIDER;
+  process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID = SOURCE_ID;
   process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND = commandPath;
+  if (options.maxActivationCatalog !== undefined) {
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_CATALOG = String(options.maxActivationCatalog);
+  } else {
+    delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_CATALOG;
+  }
 
   writeFakeXurl(commandPath);
+  process.env.XURL_SCENARIO_PATH = scenarioPath;
+  process.env.XURL_LOG_PATH = logPath;
 
   return {
     root,
@@ -443,22 +690,15 @@ function setupEnv(options: { provider: string; sourceId: string }): TestEnv {
   };
 }
 
-function writeScenario(filePath: string, scenario: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(scenario, null, 2), 'utf8');
+function cursorStorePath(root: string): string {
+  return path.join(root, 'data', PROVIDER, `${SOURCE_ID}.json`);
 }
 
-function readInvocationLog(filePath: string): Array<{ action: string; args: string[] }> {
-  if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, 'utf8')
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map(line => JSON.parse(line) as { action: string; args: string[] });
-}
-
-function cursorStorePath(root: string, provider: string, sourceId: string): string {
-  return path.join(root, 'data', provider, `${sourceId}.json`);
+function createOverrideStore(root: string): ExternalProviderOverrideStore {
+  const config = getDistillationHeartbeatConfig(root);
+  return new ExternalProviderOverrideStore({
+    stateFilePath: resolveExternalProviderOverridePath(config),
+  });
 }
 
 function writeInternalLog(filePath: string, entries: SessionTurnLogEntry[]): void {
@@ -479,133 +719,32 @@ function turn(turnNumber: number, sessionId: string, userText: string, assistant
   };
 }
 
-function resource(
-  resourceRef: string,
-  eventId: string,
-  position: number,
-  conversationId: string,
-  branchId: string,
-  options: { activationPosition?: number; revision?: string; contentHash?: string } = {},
-) {
-  return {
-    resourceRef,
-    firstEvent: {
-      eventId,
-      position,
-      conversationId,
-      branchId,
-      ...(options.revision ? { revision: options.revision } : {}),
-      contentHash: options.contentHash ?? `resource-hash-${resourceRef}-${position}`,
-    },
-    ...(typeof options.activationPosition === 'number' ? { activationPosition: options.activationPosition } : {}),
-  };
+function thread(threadId: string, branch: string, ordinal: number, fingerprint: string, revision?: string): ThreadSummarySpec {
+  return { threadId, branch, ordinal, fingerprint, ...(revision ? { revision } : {}) };
 }
 
-function protocolEvent(
-  eventId: string,
-  position: number,
-  conversationId: string,
-  branchId: string,
-  userText: string,
-  assistantText: string,
-  options: { revision?: string; contentHash?: string; timestamp?: string } = {},
-) {
-  return {
-    eventId,
-    position,
-    conversationId,
-    branchId,
-    revision: options.revision ?? `rev-${position}`,
-    contentHash: options.contentHash ?? `hash-${position}`,
-    timestamp: options.timestamp ?? '2026-01-01T00:00:00.000Z',
-    messages: [
-      { role: 'system', content: 'hidden system message' },
-      { role: 'developer', content: 'hidden developer message' },
-      { role: 'user', content: userText },
-      { role: 'assistant', content: assistantText, final: true },
-    ],
-  };
+function catalogPage(
+  threads: ThreadSummarySpec[],
+  next?: string,
+): { provider: string; next: string | null; threads: ThreadSummarySpec[] } {
+  return { provider: PROVIDER, next: next ?? null, threads };
 }
 
-function stableRead(
-  provider: string,
-  resourceRef: string,
-  events: unknown[],
-  newPosition: number,
-  ignoreCursor = false,
-) {
-  return {
-    protocolVersion: 1,
-    provider,
-    resourceRef,
-    status: 'stable',
-    exhausted: true,
-    newPosition,
-    events,
-    ignoreCursor,
-  };
+function timeline(
+  threadId: string,
+  branch: string,
+  ordinal: number,
+  fingerprint: string,
+  entries: { ordinal: number; role: 'User' | 'Assistant' | 'Context Compacted'; content: string }[],
+  revision?: string,
+): TimelineSpec {
+  return { provider: PROVIDER, threadId, branch, ordinal, fingerprint, entries, ...(revision ? { revision } : {}) };
 }
 
-function emptyStableRead(provider: string, resourceRef = 'unused', newPosition = 0) {
-  return {
-    protocolVersion: 1,
-    provider,
-    resourceRef,
-    status: 'stable',
-    exhausted: true,
-    newPosition,
-    events: [],
-  };
+function entry(ordinal: number, role: 'User' | 'Assistant' | 'Context Compacted', content: string): { ordinal: number; role: 'User' | 'Assistant' | 'Context Compacted'; content: string } {
+  return { ordinal, role, content };
 }
 
-function writeFakeXurl(filePath: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `#!/usr/bin/env node
-const fs = require('node:fs');
-const path = require('node:path');
-const args = process.argv.slice(2);
-const action = args[1];
-const scenarioPath = process.env.XURL_SCENARIO_PATH;
-const logPath = process.env.XURL_LOG_PATH;
-const scenario = JSON.parse(fs.readFileSync(scenarioPath, 'utf8'));
-fs.mkdirSync(path.dirname(logPath), { recursive: true });
-fs.appendFileSync(logPath, JSON.stringify({ action, args }) + '\\n', 'utf8');
-
-const pageTokenIndex = args.indexOf('--page-token');
-const pageToken = pageTokenIndex >= 0 ? args[pageTokenIndex + 1] : 'start';
-const resourceIndex = args.indexOf('--resource-ref');
-const resourceRef = resourceIndex >= 0 ? args[resourceIndex + 1] : undefined;
-const cursorIndex = args.indexOf('--cursor-position');
-const cursorPosition = cursorIndex >= 0 ? Number(args[cursorIndex + 1]) : -1;
-
-const discoverScenario = scenario.discover || {};
-const readMap = scenario.read || {};
-const readScenario = (resourceRef && readMap[resourceRef]) || readMap.default || {};
-const discoverResponse = discoverScenario.pages ? discoverScenario.pages[pageToken || 'start'] : discoverScenario.response;
-const selected = action === 'discover'
-  ? ({ ...discoverScenario, response: discoverResponse })
-  : (readScenario.byCursor ? readScenario.byCursor[String(cursorPosition)] || readScenario.default || {} : readScenario);
-
-const respond = () => {
-  if (selected.stderr) process.stderr.write(String(selected.stderr));
-  if (selected.rawStdout) {
-    process.stdout.write(String(selected.rawStdout));
-  } else if (selected.response || selected.protocolVersion) {
-    const response = JSON.parse(JSON.stringify(selected.response || selected));
-    const ignoreCursor = selected.ignoreCursor === true;
-    if (action === 'read' && !ignoreCursor && response && Array.isArray(response.events)) {
-      response.events = response.events.filter((event) => event.position > cursorPosition);
-      if (response.events.length === 0) response.newPosition = cursorPosition;
-    }
-    process.stdout.write(JSON.stringify(response));
-  }
-  process.exit(Number(selected.exitCode || 0));
-};
-
-if (selected.delayMs) setTimeout(respond, Number(selected.delayMs));
-else respond();
-`, 'utf8');
-  fs.chmodSync(filePath, 0o755);
-  process.env.XURL_SCENARIO_PATH = path.join(path.dirname(filePath), 'xurl-scenario.json');
-  process.env.XURL_LOG_PATH = path.join(path.dirname(filePath), 'xurl-invocations.jsonl');
+function readSpec(tl: TimelineSpec, head?: { ordinal: number; fingerprint: string }): { timeline: TimelineSpec; head?: { ordinal: number; fingerprint: string } } {
+  return { timeline: tl, ...(head ? { head } : {}) };
 }

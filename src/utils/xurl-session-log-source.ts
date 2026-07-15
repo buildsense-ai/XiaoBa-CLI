@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 import { DistillationUnit } from './distillation-unit';
 import {
@@ -18,87 +19,125 @@ import {
   ExternalSessionLogBackfillReadResult,
   ExternalSessionLogBackfillSource,
 } from './session-log-backfill';
-import { SessionToolCallLog, SessionTurnLogEntry } from './session-log-schema';
+import { SessionTurnLogEntry } from './session-log-schema';
+import { getXurlVersion } from './xurl-compatibility';
+import {
+  parseRenderedDocument as parseRenderedMarkdownDocument,
+  parseRenderedFrontmatterOnly,
+  parseRenderedTimeline as parseRenderedTimelineContract,
+  type ParsedRenderedFrontmatter,
+  type RenderedTimelineEvent,
+} from './xurl-rendered-timeline';
 
-export const XURL_PROTOCOL_VERSION = 1;
+// ---------------------------------------------------------------------------
+// Official xURL agents:// rendered-Timeline reader contract (ADR-0043).
+//
+// XiaoBa invokes the unmodified official xURL CLI through its documented
+// `agents://` URI interface and consumes the provider-neutral rendered
+// Timeline. It never invokes the private `session-log-v1` command, never
+// forks xURL, never parses provider source formats, and never retains a
+// private session-log-v1 fallback. Identity is derived from provider, thread,
+// branch/child identity, and the normalized ordinal range plus an immutable
+// content fingerprint computed over the rendered roles and content.
+// ---------------------------------------------------------------------------
+
 export const DEFAULT_XURL_TIMEOUT_MS = 10_000;
 export const DEFAULT_XURL_MAX_OUTPUT_BYTES = 256 * 1024;
+export const DEFAULT_XURL_QUERY_LIMIT = 100;
+export const DEFAULT_XURL_MAX_ACTIVATION_CATALOG = 2048;
+export const DEFAULT_XURL_MAX_ACTIVATION_OUTPUT_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_XURL_MAX_ACTIVATION_DURATION_MS = 60_000;
 
-type XurlDiscoverMode = 'explicit-backfill' | 'incremental';
+/** Marker property used to detect activation-blocked errors without an import cycle. */
+export const XURL_ACTIVATION_BLOCKED_MARKER = 'xurlActivationBlocked';
 
-type XurlMessageRole = 'system' | 'developer' | 'user' | 'assistant' | 'tool';
+type XurlCommandKind = 'version' | 'query' | 'read' | 'head';
 
-interface XurlProtocolDiscoveryResponse {
-  readonly protocolVersion: number;
-  readonly provider: string;
-  readonly nextPageToken?: string | null;
-  readonly activationWatermarkPosition?: number;
-  readonly resources: readonly XurlProtocolResource[];
-}
+type RenderedFrontmatter = ParsedRenderedFrontmatter;
 
-interface XurlProtocolReadResponse {
-  readonly protocolVersion: number;
-  readonly provider: string;
-  readonly resourceRef: string;
-  readonly status: 'stable' | 'pending';
-  readonly exhausted: boolean;
-  readonly newPosition: number;
-  readonly events: readonly XurlProtocolEvent[];
-}
-
-interface XurlProtocolResource {
-  readonly resourceRef: string;
-  readonly firstEvent: XurlProtocolEventIdentity;
-  readonly activationPosition?: number;
-}
-
-interface XurlProtocolEventIdentity {
-  readonly eventId: string;
-  readonly position: number;
-  readonly conversationId: string;
-  readonly branchId: string;
+interface RenderedThreadSummary {
+  readonly threadId: string;
+  readonly uri: string;
+  readonly branch: string;
+  readonly ordinal: number;
+  readonly fingerprint: string;
   readonly revision?: string;
-  readonly contentHash?: string;
 }
 
-interface XurlProtocolEvent extends XurlProtocolEventIdentity {
-  readonly timestamp: string;
-  readonly messages: readonly XurlProtocolMessage[];
+interface RenderedCatalog {
+  readonly provider: string;
+  readonly uri: string;
+  readonly next: string | null;
+  readonly threads: readonly RenderedThreadSummary[];
 }
 
-type XurlProtocolMessage =
-  | {
-    readonly role: 'system' | 'developer' | 'user' | 'assistant';
-    readonly content: string;
-    readonly final?: boolean;
-  }
-  | {
-    readonly role: 'tool';
-    readonly toolCallId: string;
-    readonly name: string;
-    readonly arguments?: unknown;
-    readonly result: string;
-    readonly completed: boolean;
-  };
+interface RenderedTimeline {
+  readonly provider: string;
+  readonly threadId: string;
+  readonly uri: string;
+  readonly branch: string;
+  readonly ordinal: number;
+  readonly fingerprint: string;
+  readonly revision?: string;
+  readonly queriedAt: string;
+}
+
+interface CanonicalEvent {
+  readonly startOrdinal: number;
+  readonly endOrdinal: number;
+  readonly userContent: string;
+  readonly assistantContent: string;
+  readonly contextContent: string[];
+  readonly contentHash: string;
+}
 
 export interface XurlProcessRunnerOptions {
   readonly command: string;
   readonly provider: string;
   readonly sourceId: string;
   readonly sourceLabel?: string;
+  readonly scope?: 'global' | 'path';
+  readonly scopePath?: string;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly timeoutMs?: number;
   readonly maxOutputBytes?: number;
+  /** When true the reader calls `xurl --version` once and records it for diagnostics. */
+  readonly checkVersion?: boolean;
+  /**
+   * Maximum number of threads the activation baseline may discover before the
+   * provider enters durable `activation_blocked`.
+   */
+  readonly maxActivationCatalog?: number;
+  /** Maximum total rendered output bytes consumed during one activation pass. */
+  readonly maxActivationOutputBytes?: number;
+  /** Maximum wall-clock duration for one activation pass. */
+  readonly maxActivationDurationMs?: number;
 }
 
-export interface XurlExternalSourceOptions extends XurlProcessRunnerOptions {}
+export interface XurlExternalSourceOptions extends XurlProcessRunnerOptions {
+  /**
+   * Diagnostic override that disables cursor filtering in read(), so every
+   * canonical event in the rendered Timeline is returned. Production leaves
+   * this false to preserve future-only admission. Used by operator-requested
+   * full re-scan/replay verification.
+   */
+  readonly disableCursorFilter?: boolean;
+}
 
 interface XurlNormalizedReadPage {
   readonly status: 'stable' | 'pending';
   readonly exhausted: boolean;
   readonly newPosition: number;
   readonly events: readonly XurlNormalizedEvent[];
+  readonly threadFingerprint?: string;
+  readonly threadOrdinal?: number;
+}
+
+interface ParsedTimelinePage {
+  readonly timeline: RenderedTimeline;
+  readonly events: readonly CanonicalEvent[];
+  readonly hasIncompleteTail: boolean;
 }
 
 interface XurlNormalizedEvent {
@@ -107,14 +146,39 @@ interface XurlNormalizedEvent {
   readonly byteLength: number;
 }
 
+/**
+ * Thrown when the activation baseline exceeds the configured catalog, output,
+ * or duration limits. Carries a marker property so the adapter can persist a
+ * durable `activation_blocked` state without importing this module.
+ */
+export class XurlActivationBlockedError extends Error {
+  readonly [XURL_ACTIVATION_BLOCKED_MARKER] = true;
+  constructor(message: string) {
+    super(message);
+    this.name = 'XurlActivationBlockedError';
+  }
+}
+
+function isXurlActivationBlockedError(error: unknown): boolean {
+  return error != null && typeof error === 'object'
+    && (error as Record<string, unknown>)[XURL_ACTIVATION_BLOCKED_MARKER] === true;
+}
+
 export class XurlExternalSourceReader implements ExternalSourceReader {
   readonly provider: string;
   readonly reader = 'xurl';
-  private readonly runner: XurlProcessRunner;
+  private readonly runner: XurlOfficialRunner;
+  private readonly disableCursorFilter: boolean;
 
   constructor(options: XurlExternalSourceOptions) {
     this.provider = options.provider;
-    this.runner = new XurlProcessRunner(options);
+    this.runner = new XurlOfficialRunner(options);
+    this.disableCursorFilter = options.disableCursorFilter === true;
+  }
+
+  /** xURL version recorded on first discovery (best-effort, undefined if unchecked/failed). */
+  get version(): string | undefined {
+    return this.runner.version;
   }
 
   discoverResources(cursor: SourceCursor | null): readonly SessionLogSourceResource[] {
@@ -124,32 +188,64 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
   discoverIncremental(
     request: ExternalSourceIncrementalDiscoveryRequest,
   ): ExternalSourceIncrementalDiscoveryResult {
-    const page = this.runner.discoverResources('incremental', {
-      pageToken: request.pageToken ?? null,
-      maxResources: request.maxResources,
-    });
-    const resources = page.resources.map(resource => ({
-      resourceRef: resource.resourceRef,
-      firstEventIdentity: toSourceEventIdentity(resource.firstEvent),
-    } satisfies SessionLogSourceResource));
-    const activationResources = page.resources.map((resource, index) => ({
+    const limit = normalizePositiveInteger(
+      request.maxResources ?? DEFAULT_XURL_QUERY_LIMIT,
+      DEFAULT_XURL_QUERY_LIMIT,
+      'xurl query limit',
+    );
+    const catalog = this.runner.queryCatalog(limit, request.pageToken ?? null);
+    this.runner.checkActivationLimits(catalog);
+
+    const resources: SessionLogSourceResource[] = catalog.threads.map(summary => ({
+      resourceRef: summary.threadId,
+      firstEventIdentity: {
+        eventId: canonicalEventId(this.provider, summary.threadId, summary.ordinal, summary.ordinal),
+        position: summary.ordinal,
+        conversationId: summary.threadId,
+        branchId: summary.branch,
+        ...(summary.revision ? { revision: summary.revision } : {}),
+        contentHash: summary.fingerprint,
+      },
+    }));
+    const activationResources: ExternalSourceActivationResource[] = catalog.threads.map((summary, index) => ({
       resource: resources[index]!,
-      activationPosition: typeof resource.activationPosition === 'number'
-        ? normalizeActivationPosition(resource.activationPosition)
-        : normalizeActivationPosition(resource.firstEvent.position),
-    } satisfies ExternalSourceActivationResource));
+      activationPosition: summary.ordinal,
+    }));
     return {
       resources,
       activationResources,
-      nextPageToken: page.nextPageToken ?? null,
-      ...(typeof page.activationWatermarkPosition === 'number'
-        ? { activationWatermarkPosition: normalizeActivationPosition(page.activationWatermarkPosition) }
-        : {}),
+      nextPageToken: catalog.next,
+      activationWatermarkPosition: catalog.threads.length > 0
+        ? Math.max(...catalog.threads.map(thread => thread.ordinal))
+        : 0,
     };
   }
 
   read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSourceReaderResult {
-    const page = this.runner.readPage(resource, cursor);
+    const page = this.runner.readThreadTimeline(resource, cursor, this.disableCursorFilter);
+    return {
+      events: page.events.map(({ identity, distillationUnit }) => ({
+        eventId: identity.eventId,
+        position: identity.position,
+        contentHash: identity.contentHash,
+        conversationId: identity.conversationId,
+        branchId: identity.branchId,
+        revision: identity.revision,
+        distillationUnit,
+      } satisfies ExternalSourceRawEvent)),
+      status: page.status,
+      exhausted: page.exhausted,
+      newPosition: page.newPosition,
+      byteLength: page.events.reduce((sum, event) => sum + event.byteLength, 0),
+    };
+  }
+
+  async readAsync(
+    resource: SessionLogSourceResource,
+    cursor: SourceCursor,
+    signal: AbortSignal,
+  ): Promise<ExternalSourceReaderResult> {
+    const page = await this.runner.readPageAsync(resource, cursor, this.disableCursorFilter, signal);
     return {
       events: page.events.map(({ identity, distillationUnit }) => ({
         eventId: identity.eventId,
@@ -170,7 +266,7 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
 
 export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSource {
   readonly identity: SessionLogSourceIdentity;
-  private readonly runner: XurlProcessRunner;
+  private readonly runner: XurlOfficialRunner;
 
   constructor(options: XurlExternalSourceOptions) {
     this.identity = {
@@ -180,19 +276,46 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
       provider: requireNonEmptyText('xurl provider', options.provider),
       reader: 'xurl',
     };
-    this.runner = new XurlProcessRunner(options);
+    this.runner = new XurlOfficialRunner(options);
+  }
+
+  /** xURL version recorded on first discovery (best-effort, undefined if unchecked/failed). */
+  get version(): string | undefined {
+    return this.runner.version;
   }
 
   discoverResources(): readonly SessionLogSourceResource[] {
-    const page = this.runner.discoverResources('explicit-backfill');
-    return page.resources.map(resource => ({
-      resourceRef: resource.resourceRef,
-      firstEventIdentity: toSourceEventIdentity(resource.firstEvent),
-    }));
+    const limit = DEFAULT_XURL_QUERY_LIMIT;
+    let pageToken: string | null = null;
+    const resources: SessionLogSourceResource[] = [];
+    // Explicit backfill discovers the complete in-scope catalog, paging until exhausted.
+    for (;;) {
+      const catalog = this.runner.queryCatalog(limit, pageToken);
+      this.runner.checkActivationLimits(catalog);
+      for (const summary of catalog.threads) {
+        resources.push({
+          resourceRef: summary.threadId,
+          firstEventIdentity: {
+            eventId: canonicalEventId(this.identity.provider, summary.threadId, summary.ordinal, summary.ordinal),
+            position: summary.ordinal,
+            conversationId: summary.threadId,
+            branchId: summary.branch,
+            ...(summary.revision ? { revision: summary.revision } : {}),
+            contentHash: summary.fingerprint,
+          },
+        });
+      }
+      pageToken = catalog.next;
+      if (pageToken == null) break;
+    }
+    return resources;
   }
 
   read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSessionLogBackfillReadResult {
-    const page = this.runner.readPage(resource, cursor);
+    // Explicit backfill returns every canonical event in the rendered Timeline;
+    // the backfill service filters by the requested range. No stability
+    // sampling is applied because the operator explicitly requested the range.
+    const page = this.runner.readThreadTimeline(resource, cursor, true);
     return {
       events: page.events.map(({ identity, distillationUnit, byteLength }) => ({
         identity,
@@ -210,19 +333,36 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
   }
 }
 
-class XurlProcessRunner {
+// ---------------------------------------------------------------------------
+// Official xURL process runner — invokes only documented agents:// commands.
+// ---------------------------------------------------------------------------
+
+class XurlOfficialRunner {
   private readonly command: string;
   private readonly provider: string;
-  private readonly sourceId: string;
+  private readonly scope: 'global' | 'path';
+  private readonly scopePath?: string;
   private readonly cwd?: string;
   private readonly env?: NodeJS.ProcessEnv;
   private readonly timeoutMs: number;
   private readonly maxOutputBytes: number;
+  private readonly checkVersion: boolean;
+  private readonly maxActivationCatalog: number;
+  private readonly maxActivationOutputBytes: number;
+  private readonly maxActivationDurationMs: number;
+  private versionCache: string | undefined;
+  private versionChecked = false;
+  private activationBytesAccum = 0;
+  private activationStartedAt = 0;
 
   constructor(options: XurlProcessRunnerOptions) {
     this.command = requireNonEmptyText('xurl command', options.command);
     this.provider = requireNonEmptyText('xurl provider', options.provider);
-    this.sourceId = requireNonEmptyText('xurl sourceId', options.sourceId);
+    requireNonEmptyText('xurl sourceId', options.sourceId);
+    this.scope = options.scope === 'path' ? 'path' : 'global';
+    this.scopePath = this.scope === 'path'
+      ? requireNonEmptyText('xurl scopePath', options.scopePath)
+      : undefined;
     this.cwd = options.cwd;
     this.env = options.env;
     this.timeoutMs = normalizePositiveInteger(options.timeoutMs, DEFAULT_XURL_TIMEOUT_MS, 'xurl timeoutMs');
@@ -231,50 +371,304 @@ class XurlProcessRunner {
       DEFAULT_XURL_MAX_OUTPUT_BYTES,
       'xurl maxOutputBytes',
     );
+    this.checkVersion = options.checkVersion !== false;
+    this.maxActivationCatalog = resolveActivationLimit(
+      options.maxActivationCatalog,
+      'XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_CATALOG',
+      DEFAULT_XURL_MAX_ACTIVATION_CATALOG,
+      'xurl maxActivationCatalog',
+    );
+    this.maxActivationOutputBytes = resolveActivationLimit(
+      options.maxActivationOutputBytes,
+      'XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_OUTPUT_BYTES',
+      DEFAULT_XURL_MAX_ACTIVATION_OUTPUT_BYTES,
+      'xurl maxActivationOutputBytes',
+    );
+    this.maxActivationDurationMs = resolveActivationLimit(
+      options.maxActivationDurationMs,
+      'XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_DURATION_MS',
+      DEFAULT_XURL_MAX_ACTIVATION_DURATION_MS,
+      'xurl maxActivationDurationMs',
+    );
   }
 
-  discoverResources(
-    mode: XurlDiscoverMode,
-    options: { pageToken?: string | null; maxResources?: number } = {},
-  ): XurlProtocolDiscoveryResponse {
-    const args = ['--mode', mode];
-    if (options.pageToken) {
-      args.push('--page-token', options.pageToken);
-    }
-    if (typeof options.maxResources === 'number' && Number.isFinite(options.maxResources) && options.maxResources > 0) {
-      args.push('--max-resources', String(Math.floor(options.maxResources)));
-    }
-    const response = this.invoke('discover', args);
-    return validateDiscoveryResponse(response, this.provider);
+  get version(): string | undefined {
+    return this.versionCache;
   }
 
-  readPage(resource: SessionLogSourceResource, cursor: SourceCursor): XurlNormalizedReadPage {
-    const response = this.invoke('read', [
-      '--resource-ref', requireNonEmptyText('xurl resourceRef', resource.resourceRef),
-      '--cursor-position', String(normalizeCursorPosition(cursor.position)),
-    ]);
-    const page = validateReadResponse(response, this.provider, resource.resourceRef, cursor.position);
+  checkActivationLimits(catalog: RenderedCatalog): void {
+    if (catalog.threads.length > this.maxActivationCatalog) {
+      throw new XurlActivationBlockedError(
+        `xurl activation catalog exceeded limit: ${catalog.threads.length} > ${this.maxActivationCatalog}`,
+      );
+    }
+    if (this.activationBytesAccum > this.maxActivationOutputBytes) {
+      throw new XurlActivationBlockedError(
+        `xurl activation output exceeded limit: ${this.activationBytesAccum} > ${this.maxActivationOutputBytes}`,
+      );
+    }
+    const elapsed = this.activationStartedAt === 0 ? 0 : Date.now() - this.activationStartedAt;
+    if (elapsed > this.maxActivationDurationMs) {
+      throw new XurlActivationBlockedError(
+        `xurl activation duration exceeded limit: ${elapsed} > ${this.maxActivationDurationMs}`,
+      );
+    }
+  }
+
+  private buildCatalogUri(limit: number, pageToken: string | null): string {
+    if (this.scope === 'path') {
+      const params = new URLSearchParams({
+        providers: this.provider,
+        limit: String(limit),
+      });
+      if (pageToken) params.set('cursor', pageToken);
+      return `agents://${this.scopePath}?${params.toString()}`;
+    }
+
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (pageToken) params.set('cursor', pageToken);
+    return `agents://${this.provider}?${params.toString()}`;
+  }
+
+  queryCatalog(limit: number, pageToken: string | null): RenderedCatalog {
+    this.ensureVersion();
+    if (this.activationStartedAt === 0) this.activationStartedAt = Date.now();
+    const uri = this.buildCatalogUri(limit, pageToken);
+    const stdout = this.invoke('query', [uri]);
+    this.activationBytesAccum += Buffer.byteLength(stdout, 'utf8');
+    return parseRenderedCatalog(stdout, this.provider, uri);
+  }
+
+  readThreadTimeline(
+    resource: SessionLogSourceResource,
+    cursor: SourceCursor,
+    disableCursorFilter: boolean,
+  ): XurlNormalizedReadPage {
+    const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
+    const stdout = this.invoke('read', [uri]);
+    const page = parseTimelinePage(stdout, this.provider, resource.resourceRef, uri);
+    const { timeline, events: allEvents, hasIncompleteTail } = page;
+
+    const cursorPosition = normalizeNonNegativeInteger(cursor.position + 1, 'xurl cursor position') - 1;
+    const newEvents = disableCursorFilter
+      ? allEvents
+      : allEvents.filter(event => event.endOrdinal > cursorPosition);
+
+    // Explicit operator-requested backfill (disableCursorFilter) trusts the
+    // rendered range as-is: no stability sampling, no head confirmation.
+    if (disableCursorFilter) {
+      if (newEvents.length === 0) {
+        return {
+          status: 'stable',
+          exhausted: true,
+          newPosition: timeline.ordinal,
+          events: [],
+          threadFingerprint: timeline.fingerprint,
+          threadOrdinal: timeline.ordinal,
+        };
+      }
+      const normalized = newEvents.map(event => normalizeCanonicalEvent(this.provider, resource, timeline, event));
+      return {
+        status: 'stable',
+        exhausted: timeline.ordinal === newEvents[newEvents.length - 1]!.endOrdinal,
+        newPosition: newEvents[newEvents.length - 1]!.endOrdinal,
+        events: normalized,
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    if (newEvents.length === 0) {
+      // No new complete ranges past the cursor. The tail may still be incomplete;
+      // either way there is nothing stable to admit yet.
+      return {
+        status: hasIncompleteTail ? 'pending' : 'stable',
+        exhausted: !hasIncompleteTail,
+        newPosition: timeline.ordinal,
+        events: [],
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    // A newly observed tail requires two identical bounded observations before
+    // the durable cursor may advance. The primary read is the first observation;
+    // the head (`-I`) is the second. If the head reports a different ordinal or
+    // fingerprint the tail is still mutating and stays pending without counting
+    // as a provider failure. (ADR-0043 stability sampling.)
+    if (hasIncompleteTail) {
+      return {
+        status: 'pending',
+        exhausted: false,
+        newPosition: cursorPosition,
+        events: [],
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    const head = this.headFrontmatter(resource);
+    if (
+      head.ordinal !== timeline.ordinal
+      || head.fingerprint !== timeline.fingerprint
+    ) {
+      return {
+        status: 'pending',
+        exhausted: false,
+        newPosition: cursorPosition,
+        events: [],
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    const normalized = newEvents.map(event => normalizeCanonicalEvent(this.provider, resource, timeline, event));
     return {
-      status: page.status,
-      exhausted: page.exhausted,
-      newPosition: page.newPosition,
-      events: page.events.map(event => normalizeReadEvent(this.provider, resource.resourceRef, event)),
+      status: 'stable',
+      exhausted: timeline.ordinal === newEvents[newEvents.length - 1]!.endOrdinal,
+      newPosition: newEvents[newEvents.length - 1]!.endOrdinal,
+      events: normalized,
+      threadFingerprint: timeline.fingerprint,
+      threadOrdinal: timeline.ordinal,
     };
   }
 
-  private invoke(action: 'discover' | 'read', extraArgs: readonly string[]): unknown {
-    const args = [
-      'session-log-v1',
-      action,
-      '--protocol-version',
-      String(XURL_PROTOCOL_VERSION),
-      '--provider',
-      this.provider,
-      '--source-id',
-      this.sourceId,
-      ...extraArgs,
-    ];
+  private headFrontmatter(resource: SessionLogSourceResource): {
+    readonly ordinal: number;
+    readonly fingerprint: string;
+  } {
+    const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
+    const stdout = this.invoke('head', ['-I', uri]);
+    const frontmatter = parseRenderedFrontmatterOnly(stdout, 'xurl head response');
+    const uriField = requireFrontmatterField(frontmatter, 'uri');
+    if (uriField !== uri) {
+      throw new Error(`xurl head uri mismatch: expected ${uri}`);
+    }
+    return {
+      ordinal: normalizeNonNegativeInteger(
+        Number(requireFrontmatterField(frontmatter, 'ordinal')),
+        'xurl head ordinal',
+      ),
+      fingerprint: requireNonEmptyText('xurl head fingerprint', requireFrontmatterField(frontmatter, 'fingerprint')),
+    };
+  }
 
+  private async headFrontmatterAsync(
+    resource: SessionLogSourceResource,
+    signal: AbortSignal,
+  ): Promise<{ readonly ordinal: number; readonly fingerprint: string }> {
+    const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
+    const stdout = await this.invokeAsync('head', ['-I', uri], signal);
+    const frontmatter = parseRenderedFrontmatterOnly(stdout, 'xurl head response');
+    const uriField = requireFrontmatterField(frontmatter, 'uri');
+    if (uriField !== uri) {
+      throw new Error(`xurl head uri mismatch: expected ${uri}`);
+    }
+    return {
+      ordinal: normalizeNonNegativeInteger(
+        Number(requireFrontmatterField(frontmatter, 'ordinal')),
+        'xurl head ordinal',
+      ),
+      fingerprint: requireNonEmptyText('xurl head fingerprint', requireFrontmatterField(frontmatter, 'fingerprint')),
+    };
+  }
+
+  async readPageAsync(
+    resource: SessionLogSourceResource,
+    cursor: SourceCursor,
+    disableCursorFilter: boolean,
+    signal: AbortSignal,
+  ): Promise<XurlNormalizedReadPage> {
+    const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
+    const stdout = await this.invokeAsync('read', [uri], signal);
+    const page = parseTimelinePage(stdout, this.provider, resource.resourceRef, uri);
+    const { timeline, events: allEvents, hasIncompleteTail } = page;
+
+    const cursorPosition = normalizeNonNegativeInteger(cursor.position + 1, 'xurl cursor position') - 1;
+    const newEvents = disableCursorFilter
+      ? allEvents
+      : allEvents.filter(event => event.endOrdinal > cursorPosition);
+
+    if (disableCursorFilter) {
+      if (newEvents.length === 0) {
+        return {
+          status: 'stable',
+          exhausted: true,
+          newPosition: timeline.ordinal,
+          events: [],
+          threadFingerprint: timeline.fingerprint,
+          threadOrdinal: timeline.ordinal,
+        };
+      }
+      const normalized = newEvents.map(event => normalizeCanonicalEvent(this.provider, resource, timeline, event));
+      return {
+        status: 'stable',
+        exhausted: timeline.ordinal === newEvents[newEvents.length - 1]!.endOrdinal,
+        newPosition: newEvents[newEvents.length - 1]!.endOrdinal,
+        events: normalized,
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    if (newEvents.length === 0) {
+      return {
+        status: hasIncompleteTail ? 'pending' : 'stable',
+        exhausted: !hasIncompleteTail,
+        newPosition: timeline.ordinal,
+        events: [],
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    if (hasIncompleteTail) {
+      return {
+        status: 'pending',
+        exhausted: false,
+        newPosition: cursorPosition,
+        events: [],
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    const head = await this.headFrontmatterAsync(resource, signal);
+    if (head.ordinal !== timeline.ordinal || head.fingerprint !== timeline.fingerprint) {
+      return {
+        status: 'pending',
+        exhausted: false,
+        newPosition: cursorPosition,
+        events: [],
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    const normalized = newEvents.map(event => normalizeCanonicalEvent(this.provider, resource, timeline, event));
+    return {
+      status: 'stable',
+      exhausted: timeline.ordinal === newEvents[newEvents.length - 1]!.endOrdinal,
+      newPosition: newEvents[newEvents.length - 1]!.endOrdinal,
+      events: normalized,
+      threadFingerprint: timeline.fingerprint,
+      threadOrdinal: timeline.ordinal,
+    };
+  }
+
+  private ensureVersion(): void {
+    if (!this.checkVersion || this.versionChecked) return;
+    this.versionChecked = true;
+    const diagnostic = getXurlVersion(this.command, {
+      timeoutMs: this.timeoutMs,
+      env: this.env,
+    });
+    if (diagnostic.source === 'cli' && diagnostic.rawVersion) {
+      this.versionCache = diagnostic.rawVersion;
+    }
+  }
+
+  private invoke(kind: XurlCommandKind, args: readonly string[]): string {
     try {
       const stdout = execFileSync(this.command, args, {
         cwd: this.cwd,
@@ -284,109 +678,102 @@ class XurlProcessRunner {
         maxBuffer: this.maxOutputBytes,
         stdio: ['ignore', 'pipe', 'pipe'],
       }) as string;
-      return parseJsonProtocol(stdout);
+      return stdout;
     } catch (error) {
-      throw mapXurlProcessError(action, error, this.timeoutMs, this.maxOutputBytes);
+      throw mapXurlProcessError(kind, error, this.timeoutMs, this.maxOutputBytes);
     }
+  }
+
+  private async invokeAsync(
+    kind: XurlCommandKind,
+    args: readonly string[],
+    signal: AbortSignal,
+  ): Promise<string> {
+    return await new Promise<string>((resolve, reject) => {
+      const child = execFile(
+        this.command,
+        args,
+        {
+          cwd: this.cwd,
+          env: this.env,
+          encoding: 'utf8',
+          timeout: this.timeoutMs,
+          maxBuffer: this.maxOutputBytes,
+          signal,
+        },
+        (error, stdout, stderr) => {
+          if (signal.aborted) {
+            reject(new Error(`xurl ${kind} aborted`));
+            return;
+          }
+          if (error) {
+            reject(
+              mapXurlProcessError(
+                kind,
+                {
+                  ...(error as object),
+                  stderr,
+                },
+                this.timeoutMs,
+                this.maxOutputBytes,
+              ),
+            );
+            return;
+          }
+          resolve(stdout as string);
+        },
+      );
+      child.stdin?.end();
+    });
   }
 }
 
-function normalizeReadEvent(
+// ---------------------------------------------------------------------------
+// Rendered-Timeline canonicalization and identity derivation.
+// ---------------------------------------------------------------------------
+
+function normalizeCanonicalEvent(
   provider: string,
-  resourceRef: string,
-  event: XurlProtocolEvent,
+  resource: SessionLogSourceResource,
+  timeline: RenderedTimeline,
+  event: CanonicalEvent,
 ): XurlNormalizedEvent {
-  const identity = toSourceEventIdentity(event);
+  const identity: SourceEventIdentity = {
+    eventId: canonicalEventId(provider, timeline.threadId, event.startOrdinal, event.endOrdinal),
+    position: event.endOrdinal,
+    conversationId: timeline.threadId,
+    branchId: timeline.branch,
+    contentHash: event.contentHash,
+    ...(timeline.revision ? { revision: timeline.revision } : {}),
+  };
   return {
     identity,
-    distillationUnit: buildDistillationUnit(provider, resourceRef, event),
-    byteLength: Buffer.byteLength(JSON.stringify(event), 'utf8'),
+    distillationUnit: buildDistillationUnit(provider, resource.resourceRef, timeline, event),
+    byteLength: Buffer.byteLength(event.userContent + event.assistantContent + event.contextContent.join(''), 'utf8'),
   };
+}
+
+function canonicalEventId(provider: string, threadId: string, startOrdinal: number, endOrdinal: number): string {
+  return `agents://${provider}/${threadId}#${startOrdinal}-${endOrdinal}`;
 }
 
 function buildDistillationUnit(
   provider: string,
   resourceRef: string,
-  event: XurlProtocolEvent,
+  timeline: RenderedTimeline,
+  event: CanonicalEvent,
 ): DistillationUnit {
-  const messages = event.messages;
-  if (!Array.isArray(messages) || messages.length === 0) {
-    throw new Error(`xurl protocol event ${event.eventId} is missing canonical messages`);
-  }
-
-  const visible = messages.filter(message => message.role !== 'system' && message.role !== 'developer');
-  if (visible.length === 0) {
-    throw new Error(`xurl protocol event ${event.eventId} has no canonical user/assistant payload`);
-  }
-
-  let userMessage: { content: string } | undefined;
-  let assistantMessage: { content: string } | undefined;
-  const toolCalls: SessionToolCallLog[] = [];
-
-  for (const message of visible) {
-    switch (message.role) {
-      case 'user': {
-        if (userMessage) {
-          throw new Error(`xurl protocol event ${event.eventId} has more than one user message`);
-        }
-        if (!message.content.trim()) {
-          throw new Error(`xurl protocol event ${event.eventId} has an empty user message`);
-        }
-        userMessage = message;
-        break;
-      }
-      case 'assistant': {
-        if (message.final !== true) {
-          throw new Error(`xurl protocol event ${event.eventId} has a non-final assistant message`);
-        }
-        if (assistantMessage) {
-          throw new Error(`xurl protocol event ${event.eventId} has more than one final assistant message`);
-        }
-        assistantMessage = message;
-        break;
-      }
-      case 'tool': {
-        if (message.completed !== true) {
-          throw new Error(`xurl protocol event ${event.eventId} has an incomplete tool result`);
-        }
-        toolCalls.push({
-          id: requireNonEmptyText('xurl toolCallId', message.toolCallId),
-          name: requireNonEmptyText('xurl tool name', message.name),
-          arguments: message.arguments ?? {},
-          result: String(message.result ?? ''),
-        });
-        break;
-      }
-      default:
-        throw new Error(`xurl protocol event ${event.eventId} includes an unsupported role`);
-    }
-  }
-
-  if (!userMessage || !assistantMessage) {
-    throw new Error(`xurl protocol event ${event.eventId} is missing a complete user-to-assistant turn`);
-  }
-
-  const visibleUserIndex = visible.findIndex(message => message.role === 'user');
-  const visibleAssistantIndex = visible.findIndex(message => message.role === 'assistant');
-  if (visibleUserIndex < 0 || visibleAssistantIndex < 0 || visibleUserIndex > visibleAssistantIndex) {
-    throw new Error(`xurl protocol event ${event.eventId} has an invalid message order`);
-  }
-  const toolAfterAssistant = visible.slice(visibleAssistantIndex + 1).some(message => message.role === 'tool');
-  if (toolAfterAssistant) {
-    throw new Error(`xurl protocol event ${event.eventId} places tool output after the final assistant message`);
-  }
-
-  const sessionId = `external:${provider}:${event.conversationId}:${event.branchId}`;
+  const sessionId = `external:${provider}:${timeline.threadId}:${timeline.branch}`;
   const turn: SessionTurnLogEntry = {
     entry_type: 'turn',
-    turn: event.position + 1,
-    timestamp: requireIsoTimestamp('xurl event timestamp', event.timestamp),
+    turn: event.endOrdinal,
+    timestamp: requireIsoTimestamp('xurl timeline queried_at', timeline.queriedAt),
     session_id: sessionId,
     session_type: 'external',
-    user: { text: userMessage.content.trim() },
+    user: { text: event.userContent },
     assistant: {
-      text: assistantMessage.content.trim(),
-      tool_calls: toolCalls,
+      text: event.assistantContent,
+      tool_calls: [],
     },
     tokens: {
       prompt: 0,
@@ -399,176 +786,218 @@ function buildDistillationUnit(
     newTurns: [turn],
     continuityTurns: [],
     byteRange: {
-      start: event.position,
-      end: event.position + 1,
+      start: event.startOrdinal,
+      end: event.endOrdinal,
     },
     generatedAt: turn.timestamp,
   };
 }
 
-function toSourceEventIdentity(event: XurlProtocolEventIdentity): SourceEventIdentity {
-  const eventId = requireNonEmptyText('xurl eventId', event.eventId);
-  const conversationId = requireNonEmptyText('xurl conversationId', event.conversationId);
-  const branchId = requireNonEmptyText('xurl branchId', event.branchId);
-  const revision = optionalNonEmptyText(event.revision);
-  const contentHash = optionalNonEmptyText(event.contentHash);
-  if (!revision && !contentHash) {
-    throw new Error(`xurl protocol event ${eventId} must include revision or contentHash`);
+// ---------------------------------------------------------------------------
+// Strict rendered-document parsers.
+//
+// xURL renders Markdown with a YAML-scalar frontmatter (`---` delimited) and a
+// structured body. The parser is intentionally strict: frontmatter must be
+// scalar `key: value` lines, the catalog body must list `## Thread <id>` blocks
+// with scalar metadata, and the Timeline body must contain contiguous numbered
+// `### <n> <Role>` headings using only User, Assistant, or Context Compacted.
+// Any ambiguity, mismatch, non-contiguity, overflow, timeout, or non-zero exit
+// fails closed within the source lane.
+// ---------------------------------------------------------------------------
+
+function parseRenderedCatalog(stdout: string, provider: string, requestedUri: string): RenderedCatalog {
+  const doc = parseRenderedMarkdownDocument(stdout, 'xurl catalog');
+  const uri = requireFrontmatterField(doc.frontmatter, 'uri');
+  if (uri !== requestedUri) {
+    throw new Error(`xurl catalog uri mismatch: expected ${requestedUri}`);
   }
-  return {
-    eventId,
-    position: normalizeNonNegativeInteger(event.position, 'xurl event position'),
-    conversationId,
-    branchId,
-    ...(revision ? { revision } : {}),
-    ...(contentHash ? { contentHash } : {}),
-  };
+  const catalogProvider = requireFrontmatterField(doc.frontmatter, 'provider');
+  if (catalogProvider !== provider) {
+    throw new Error(`xurl catalog provider mismatch: expected ${provider}, got ${catalogProvider}`);
+  }
+  const nextRaw = optionalFrontmatterField(doc.frontmatter, 'next');
+  const next = nextRaw && nextRaw.trim() ? nextRaw.trim() : null;
+  const threadsValue = optionalFrontmatterField(doc.frontmatter, 'threads');
+  const declaredCount = threadsValue ? normalizeNonNegativeInteger(Number(threadsValue), 'xurl catalog threads') : undefined;
+
+  const body = stripAfter(doc.body, /^## Threads\b/m, 'xurl catalog Threads section');
+  const threads: RenderedThreadSummary[] = [];
+  for (const block of splitThreadBlocks(body)) {
+    threads.push(parseThreadSummary(block, provider));
+  }
+  if (declaredCount !== undefined && declaredCount !== threads.length) {
+    throw new Error(`xurl catalog threads count mismatch: frontmatter=${declaredCount} body=${threads.length}`);
+  }
+  return { provider, uri, next, threads };
 }
 
-function validateDiscoveryResponse(response: unknown, provider: string): XurlProtocolDiscoveryResponse {
-  const candidate = asRecord(response, 'xurl discovery response');
-  assertProtocolVersion(candidate.protocolVersion);
-  assertProvider(candidate.provider, provider);
-  if (!Array.isArray(candidate.resources)) {
-    throw new Error('xurl discovery response must include a resources array');
+function parseThreadSummary(block: string, provider: string): RenderedThreadSummary {
+  const firstLine = block.split('\n', 1)[0] ?? '';
+  const match = /^## Thread (\S+)\s*$/.exec(firstLine);
+  if (!match) {
+    throw new Error(`xurl catalog has an invalid thread heading: ${truncateLine(block.split('\n')[0] ?? '', 120)}`);
   }
-  const nextPageToken = candidate.nextPageToken == null
-    ? null
-    : requireNonEmptyText('xurl discovery nextPageToken', candidate.nextPageToken);
-  const activationWatermarkPosition = candidate.activationWatermarkPosition == null
-    ? undefined
-    : normalizeNonNegativeInteger(candidate.activationWatermarkPosition, 'xurl discovery activationWatermarkPosition');
-  return {
-    protocolVersion: XURL_PROTOCOL_VERSION,
-    provider,
-    ...(nextPageToken ? { nextPageToken } : {}),
-    ...(activationWatermarkPosition !== undefined ? { activationWatermarkPosition } : {}),
-    resources: candidate.resources.map((resource, index) => {
-      const record = asRecord(resource, `xurl discovery resource ${index}`);
-      return {
-        resourceRef: requireNonEmptyText('xurl resourceRef', record.resourceRef),
-        firstEvent: asEventIdentity(record.firstEvent, `xurl discovery resource ${index} firstEvent`),
-        ...(record.activationPosition == null
-          ? {}
-          : { activationPosition: normalizeNonNegativeInteger(record.activationPosition, `xurl discovery resource ${index} activationPosition`) }),
-      };
-    }),
-  };
+  const threadId = match[1]!;
+  const fields = parseScalarLines(block.slice(match[0]!.length), 'xurl catalog thread block');
+  const uri = requireScalarField(fields, 'uri', 'xurl catalog thread uri');
+  const expectedUri = `agents://${provider}/${threadId}`;
+  if (uri !== expectedUri) {
+    throw new Error(`xurl catalog thread uri mismatch: expected ${expectedUri}, got ${uri}`);
+  }
+  const branch = requireScalarField(fields, 'branch', 'xurl catalog thread branch');
+  const ordinal = normalizeNonNegativeInteger(Number(requireScalarField(fields, 'ordinal', 'xurl catalog thread ordinal')), 'xurl catalog thread ordinal');
+  const fingerprint = requireNonEmptyText('xurl catalog thread fingerprint', requireScalarField(fields, 'fingerprint', 'xurl catalog thread fingerprint'));
+  const revision = optionalScalarField(fields, 'revision');
+  return { threadId, uri, branch, ordinal, fingerprint, ...(revision ? { revision } : {}) };
 }
 
-function validateReadResponse(
-  response: unknown,
+function parseTimelinePage(
+  stdout: string,
   provider: string,
-  resourceRef: string,
-  cursorPosition: number,
-): XurlProtocolReadResponse {
-  const candidate = asRecord(response, 'xurl read response');
-  assertProtocolVersion(candidate.protocolVersion);
-  assertProvider(candidate.provider, provider);
-  if (candidate.resourceRef !== resourceRef) {
-    throw new Error(`xurl read response resourceRef mismatch: expected ${resourceRef}`);
+  threadId: string,
+  requestedUri: string,
+): ParsedTimelinePage {
+  const parsed = parseRenderedTimelineContract(stdout, provider, threadId, {
+    allowIncompleteTail: true,
+  });
+  if (parsed.uri !== requestedUri) {
+    throw new Error(`xurl timeline uri mismatch: expected ${requestedUri}`);
   }
-  if (candidate.status !== 'stable' && candidate.status !== 'pending') {
-    throw new Error('xurl read response status must be stable or pending');
+  const branch = parsed.branch;
+  if (!branch) {
+    throw new Error('xurl timeline branch is missing');
   }
-  if (typeof candidate.exhausted !== 'boolean') {
-    throw new Error('xurl read response exhausted must be a boolean');
-  }
-  const newPosition = normalizeNonNegativeInteger(candidate.newPosition, 'xurl read response newPosition');
-  if (newPosition < cursorPosition) {
-    throw new Error('xurl read response newPosition regressed');
-  }
-  if (!Array.isArray(candidate.events)) {
-    throw new Error('xurl read response must include an events array');
-  }
-  if (candidate.status === 'pending' && candidate.events.length > 0) {
-    throw new Error('xurl read response cannot return stable events for a pending page');
-  }
-  return {
-    protocolVersion: XURL_PROTOCOL_VERSION,
+  const ordinal = normalizeNonNegativeInteger(parsed.ordinal, 'xurl timeline ordinal');
+  const fingerprint = requireNonEmptyText('xurl timeline fingerprint', parsed.fingerprint);
+  const queriedAt = requireNonEmptyText('xurl timeline queried_at', parsed.queriedAt);
+  const timeline: RenderedTimeline = {
     provider,
-    resourceRef,
-    status: candidate.status,
-    exhausted: candidate.exhausted,
-    newPosition,
-    events: candidate.events.map((event, index) => asProtocolEvent(event, `xurl read event ${index}`)),
+    threadId,
+    uri: parsed.uri,
+    branch,
+    ordinal,
+    fingerprint,
+    ...(parsed.revision ? { revision: parsed.revision } : {}),
+    queriedAt,
+  };
+  return {
+    timeline,
+    hasIncompleteTail: parsed.hasIncompleteTail,
+    events: parsed.events.map(toCanonicalEvent),
   };
 }
 
-function asProtocolEvent(candidate: unknown, label: string): XurlProtocolEvent {
-  const record = asRecord(candidate, label);
-  const messages = record.messages;
-  if (!Array.isArray(messages)) {
-    throw new Error(`${label} must include a messages array`);
+function toCanonicalEvent(event: RenderedTimelineEvent): CanonicalEvent {
+  const user = event.roles.find(role => role.role === 'User');
+  const assistant = event.roles.find(role => role.role === 'Assistant');
+  if (!user || !assistant) {
+    throw new Error(`xurl timeline event ${event.identity} is missing a User or Assistant role`);
+  }
+  const userContent = normalizeEntryContent(user.content);
+  const assistantContent = normalizeEntryContent(assistant.content);
+  if (!userContent) {
+    throw new Error(`xurl timeline entry ${user.ordinal} has an empty User message`);
+  }
+  if (!assistantContent) {
+    throw new Error(`xurl timeline entry ${assistant.ordinal} has an empty Assistant message`);
   }
   return {
-    ...asEventIdentity(record, label),
-    timestamp: requireIsoTimestamp(`${label} timestamp`, record.timestamp),
-    messages: messages.map((message, index) => asProtocolMessage(message, `${label} message ${index}`)),
+    startOrdinal: event.ordinalStart,
+    endOrdinal: event.ordinalEnd,
+    userContent,
+    assistantContent,
+    contextContent: event.roles
+      .filter(role => role.role === 'Context Compacted')
+      .map(role => normalizeEntryContent(role.content))
+      .filter(Boolean),
+    contentHash: event.contentHash,
   };
 }
 
-function asEventIdentity(candidate: unknown, label: string): XurlProtocolEventIdentity {
-  const record = asRecord(candidate, label);
-  return {
-    eventId: requireNonEmptyText(`${label} eventId`, record.eventId),
-    position: normalizeNonNegativeInteger(record.position, `${label} position`),
-    conversationId: requireNonEmptyText(`${label} conversationId`, record.conversationId),
-    branchId: requireNonEmptyText(`${label} branchId`, record.branchId),
-    ...(optionalNonEmptyText(record.revision) ? { revision: optionalNonEmptyText(record.revision)! } : {}),
-    ...(optionalNonEmptyText(record.contentHash) ? { contentHash: optionalNonEmptyText(record.contentHash)! } : {}),
-  };
+// ---------------------------------------------------------------------------
+// Frontmatter / scalar-line parsing helpers.
+// ---------------------------------------------------------------------------
+
+function requireFrontmatterField(frontmatter: RenderedFrontmatter, key: string): string {
+  const value = frontmatter.fields.get(key);
+  if (value === undefined) {
+    throw new Error(`xurl frontmatter is missing required field: ${key}`);
+  }
+  return value;
 }
 
-function asProtocolMessage(candidate: unknown, label: string): XurlProtocolMessage {
-  const record = asRecord(candidate, label);
-  const role = requireNonEmptyText(`${label} role`, record.role) as XurlMessageRole;
-  switch (role) {
-    case 'system':
-    case 'developer':
-    case 'user':
-      return {
-        role,
-        content: requireString(`${label} content`, record.content),
-      };
-    case 'assistant':
-      return {
-        role,
-        content: requireString(`${label} content`, record.content),
-        final: record.final === true,
-      };
-    case 'tool':
-      return {
-        role,
-        toolCallId: requireNonEmptyText(`${label} toolCallId`, record.toolCallId),
-        name: requireNonEmptyText(`${label} name`, record.name),
-        arguments: record.arguments,
-        result: requireString(`${label} result`, record.result),
-        completed: record.completed === true,
-      };
-    default:
-      throw new Error(`${label} has unsupported role ${String(role)}`);
-  }
+function optionalFrontmatterField(frontmatter: RenderedFrontmatter, key: string): string | undefined {
+  return frontmatter.fields.get(key);
 }
 
-function parseJsonProtocol(stdout: string): unknown {
-  const text = stdout.trim();
-  if (!text) {
-    throw new Error('xurl produced an empty response');
+function parseScalarLines(raw: string, label: string): Map<string, string> {
+  const fields = new Map<string, string>();
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    const match = /^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(line);
+    if (!match) {
+      throw new Error(`${label} has an invalid metadata line: ${truncateLine(line, 120)}`);
+    }
+    const key = match[1]!;
+    const value = match[2]!.trim();
+    if (fields.has(key)) {
+      throw new Error(`${label} has a duplicate field: ${key}`);
+    }
+    fields.set(key, value);
   }
-  try {
-    return JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new Error(`xurl output is not valid protocol-v1 JSON: ${String(error)}`);
-  }
+  return fields;
 }
 
-function mapXurlProcessError(
-  action: 'discover' | 'read',
-  error: unknown,
-  timeoutMs: number,
-  maxOutputBytes: number,
-): Error {
+function requireScalarField(fields: Map<string, string>, key: string, label: string): string {
+  const value = fields.get(key);
+  if (value === undefined) {
+    throw new Error(`${label} is missing required field: ${key}`);
+  }
+  return value;
+}
+
+function optionalScalarField(fields: Map<string, string>, key: string): string | undefined {
+  return fields.get(key);
+}
+
+function splitThreadBlocks(body: string): string[] {
+  const blocks: string[] = [];
+  const lines = body.split('\n');
+  let current: string[] | null = null;
+  for (const line of lines) {
+    if (/^## Thread \S+/.test(line)) {
+      if (current) blocks.push(current.join('\n'));
+      current = [line];
+    } else if (current) {
+      current.push(line);
+    }
+  }
+  if (current) blocks.push(current.join('\n'));
+  return blocks;
+}
+
+function stripAfter(body: string, marker: RegExp, label: string): string {
+  const match = marker.exec(body);
+  if (!match) {
+    throw new Error(`${label} is missing`);
+  }
+  return body.slice(match.index! + match[0]!.length);
+}
+
+function normalizeEntryContent(content: string): string {
+  return content.replace(/\r\n/g, '\n').trim();
+}
+
+function computeContentHash(entries: readonly { readonly role: string; readonly content: string }[]): string {
+  const payload = entries.map(entry => `${entry.role}:${entry.content}`).join('\n');
+  return createHash('sha256').update(payload, 'utf8').digest('hex');
+}
+
+// ---------------------------------------------------------------------------
+// Process error mapping (fail-closed within the source lane).
+// ---------------------------------------------------------------------------
+
+function mapXurlProcessError(kind: XurlCommandKind, error: unknown, timeoutMs: number, maxOutputBytes: number): Error {
   const candidate = error as {
     code?: string | number | null;
     status?: number | null;
@@ -578,7 +1007,7 @@ function mapXurlProcessError(
     message?: string;
   };
   if (candidate?.code === 'ENOBUFS') {
-    return new Error(`xurl ${action} output exceeded ${maxOutputBytes} bytes`);
+    return new Error(`xurl ${kind} output exceeded ${maxOutputBytes} bytes`);
   }
   if (
     candidate?.code === 'ETIMEDOUT'
@@ -586,7 +1015,7 @@ function mapXurlProcessError(
     || candidate?.signal === 'SIGKILL'
     || candidate?.killed === true
   ) {
-    return new Error(`xurl ${action} timed out after ${timeoutMs}ms`);
+    return new Error(`xurl ${kind} timed out after ${timeoutMs}ms`);
   }
   const stderr = typeof candidate?.stderr === 'string'
     ? candidate.stderr
@@ -595,49 +1024,25 @@ function mapXurlProcessError(
       : '';
   const detail = truncateLine((stderr || candidate?.message || '').trim(), 240);
   const exitStatus = candidate?.status ?? candidate?.code ?? 'unknown';
-  return new Error(`xurl ${action} exited with status ${String(exitStatus)}${detail ? `: ${detail}` : ''}`);
+  return new Error(`xurl ${kind} exited with status ${String(exitStatus)}${detail ? `: ${detail}` : ''}`);
 }
 
-function assertProtocolVersion(value: unknown): void {
-  if (value !== XURL_PROTOCOL_VERSION) {
-    throw new Error(`unsupported xurl protocol version: ${String(value)}`);
-  }
-}
+// ---------------------------------------------------------------------------
+// Shared validation helpers.
+// ---------------------------------------------------------------------------
 
-function assertProvider(actual: unknown, expected: string): void {
-  if (actual !== expected) {
-    throw new Error(`xurl provider mismatch: expected ${expected}, got ${String(actual)}`);
+function resolveActivationLimit(
+  option: number | undefined,
+  envKey: string,
+  fallback: number,
+  label: string,
+): number {
+  if (option !== undefined) return normalizePositiveInteger(option, fallback, label);
+  const envValue = process.env[envKey];
+  if (envValue !== undefined && envValue !== '') {
+    return normalizePositiveInteger(Number(envValue), fallback, label);
   }
-}
-
-function asRecord(candidate: unknown, label: string): Record<string, unknown> {
-  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return candidate as Record<string, unknown>;
-}
-
-function requireString(label: string, value: unknown): string {
-  if (typeof value !== 'string') {
-    throw new Error(`${label} must be a string`);
-  }
-  return value;
-}
-
-function requireNonEmptyText(label: string, value: unknown): string {
-  const text = requireString(label, value).trim();
-  if (!text) {
-    throw new Error(`${label} must be non-empty`);
-  }
-  if (text.includes('\u0000')) {
-    throw new Error(`${label} must not contain NUL`);
-  }
-  return text;
-}
-
-function optionalNonEmptyText(value: unknown): string | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-  return requireNonEmptyText('xurl optional text', value);
+  return fallback;
 }
 
 function normalizePositiveInteger(value: unknown, fallback: number, label: string): number {
@@ -649,35 +1054,46 @@ function normalizePositiveInteger(value: unknown, fallback: number, label: strin
 }
 
 function normalizeNonNegativeInteger(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+  const num = typeof value === 'string' ? Number(value) : value;
+  if (typeof num !== 'number' || !Number.isFinite(num) || num < 0) {
     throw new Error(`${label} must be a non-negative integer`);
   }
-  return Math.floor(value);
+  return Math.floor(num);
 }
 
-function normalizeCursorPosition(value: number): number {
-  if (!Number.isFinite(value) || value < -1) {
-    throw new Error('xurl cursor position must be >= -1');
+function requireNonEmptyText(label: string, value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a string`);
   }
-  return Math.floor(value);
-}
-
-function normalizeActivationPosition(value: number): number {
-  if (!Number.isFinite(value) || value < -1) {
-    throw new Error('xurl activation position must be >= -1');
+  const text = value.trim();
+  if (!text) {
+    throw new Error(`${label} must be non-empty`);
   }
-  return Math.floor(value);
-}
-
-function requireIsoTimestamp(label: string, value: unknown): string {
-  const text = requireNonEmptyText(label, value);
-  if (Number.isNaN(Date.parse(text))) {
-    throw new Error(`${label} must be an ISO timestamp`);
+  if (text.includes('\u0000')) {
+    throw new Error(`${label} must not contain NUL`);
   }
   return text;
+}
+
+function requireIsoTimestamp(label: string, value: string): string {
+  if (Number.isNaN(Date.parse(value))) {
+    throw new Error(`${label} must be an ISO timestamp`);
+  }
+  return value;
 }
 
 function truncateLine(value: string, maxLength: number): string {
   if (!value || value.length <= maxLength) return value;
   return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
 }
+
+// Exported for deterministic tests that need to assert identity derivation
+// without depending on xURL internals.
+export const XURL_TEST_HELPERS = {
+  canonicalEventId,
+  computeContentHash,
+  isXurlActivationBlockedError,
+  parseRenderedCatalog,
+  parseRenderedTimeline: parseRenderedTimelineContract,
+  parseFrontmatterOnly: parseRenderedFrontmatterOnly,
+};

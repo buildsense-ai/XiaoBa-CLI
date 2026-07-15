@@ -1,6 +1,6 @@
 /**
- * Issue #85 — xurl protocol v1 explicit backfill through the public
- * RuntimeLearning seam.
+ * Issue #90 — explicit backfill through the official xURL rendered Timeline
+ * contract (ADR-0043) via the public RuntimeLearning seam.
  */
 
 import { afterEach, test } from 'node:test';
@@ -19,7 +19,16 @@ import { loadReviewQueueState } from '../src/utils/skill-evolution-review-queue'
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 import { ExternalSessionLogBackfillRequest, loadExternalSessionLogBackfillState } from '../src/utils/session-log-backfill';
-import { XurlExternalBackfillSource } from '../src/utils/xurl-session-log-source';
+import { XURL_TEST_HELPERS, XurlExternalBackfillSource } from '../src/utils/xurl-session-log-source';
+import {
+  CatalogPageSpec,
+  FakeXurlScenario,
+  ThreadSummarySpec,
+  TimelineSpec,
+  writeFakeXurl,
+  writeScenario,
+  readInvocationLog,
+} from './helpers/xurl-rendered-fixtures';
 
 const tempRoots: string[] = [];
 afterEach(() => {
@@ -47,10 +56,14 @@ interface TestEnv {
   restore(): void;
 }
 
-test('xurl protocol v1 backfill succeeds through RuntimeLearning and persists canonical external identity', async () => {
+const PROVIDER = 'codex';
+const SOURCE_ID = 'codex-xurl-source';
+const FP = (s: string) => `fp-${s}`;
+
+test('official xurl explicit backfill succeeds and persists canonical rendered-Timeline identity', async () => {
   const env = setupEnv();
   try {
-    writeScenario(env.scenarioPath, successScenario({ ignoreCursor: true }));
+    writeScenario(env.scenarioPath, successScenario());
     const fixture = env.createRuntime({
       authorFixture: ({ bundle }) => ({
         body: 'Promote the xurl-backed external report delivery skill.',
@@ -73,74 +86,50 @@ test('xurl protocol v1 backfill succeeds through RuntimeLearning and persists ca
 
     const request = makeRequest({
       operationId: 'xurl-success',
-      provider: 'codex',
-      sourceId: 'codex-xurl-source',
       resourceRefs: ['conversation-success'],
-      endPosition: 0,
+      endPosition: 2,
     });
     const result = await fixture.runtime.runExternalBackfill(request, createSource(env, request));
 
     assert.equal(result.backfill.status, 'completed');
     assert.equal(result.review.status, 'succeeded');
-    assert.equal(Object.keys(fixture.episodeStore.load().episodes).length, 1);
+    assert.equal(result.backfill.ingestedEvents, 1);
+    assert.equal(result.backfill.admittedEpisodes, 0);
+    assert.equal(Object.keys(fixture.episodeStore.load().episodes).length, 0);
+    assert.equal(fixture.runtime.getEvidenceCapsuleStore().count(), 0);
 
-    const episodeId = Object.keys(fixture.episodeStore.load().episodes)[0]!;
-    const capsule = fixture.runtime.getEvidenceCapsuleStore().findByEpisodeId(episodeId)!;
-    assert.equal(capsule.identity.eventId, 'event://codex/success-0');
-    assert.equal(capsule.identity.conversationId, 'conversation-success-id');
-    assert.equal(capsule.identity.branchId, 'branch-main');
-    assert.equal(capsule.identity.revision, 'rev-success-0');
-    assert.equal(capsule.identity.contentHash, 'hash-success-0');
-    assert.ok(!JSON.stringify(capsule).includes('system-secret'));
-    assert.ok(!JSON.stringify(capsule).includes('developer-secret'));
+    const state = loadExternalSessionLogBackfillState(result.paths.stateFilePath)!;
+    assert.equal(state.resourceCursors['conversation-success']?.position, 2);
+    const processedKey = Object.keys(state.processedEventIds)[0]!;
+    assert.match(processedKey, /agents:\/\/codex\/conversation-success#1-2::2::/);
+    assert.match(processedKey, /::conversation-success::branch-main::rev-success$/);
+    assert.equal(
+      state.processedEventIds[processedKey],
+      XURL_TEST_HELPERS.computeContentHash([
+        { role: 'User', content: 'Please generate and send the report.' },
+        { role: 'Assistant', content: 'Done.' },
+      ]),
+    );
 
     const invocations = readInvocationLog(env.logPath);
-    assert.deepEqual(invocations.map(item => item.action), ['discover', 'read']);
-    assert.deepEqual(invocations[0]!.args, [
-      'session-log-v1',
-      'discover',
-      '--protocol-version',
-      '1',
-      '--provider',
-      'codex',
-      '--source-id',
-      'codex-xurl-source',
-      '--mode',
-      'explicit-backfill',
-    ]);
-    assert.deepEqual(invocations[1]!.args, [
-      'session-log-v1',
-      'read',
-      '--protocol-version',
-      '1',
-      '--provider',
-      'codex',
-      '--source-id',
-      'codex-xurl-source',
-      '--resource-ref',
-      'conversation-success',
-      '--cursor-position',
-      '-1',
-    ]);
+    assert.deepEqual(invocations.map(item => item.action), ['version', 'query', 'read']);
+    assert.equal(invocations[0]!.args[0], '--version');
+    assert.equal(invocations[1]!.args[0], 'agents://codex?limit=100');
+    assert.equal(invocations[2]!.args[0], 'agents://codex/conversation-success');
+    assert.equal(JSON.stringify(invocations).includes('session-log-v1'), false);
   } finally {
     env.restore();
   }
 });
 
-test('xurl invalid protocol fails closed without operational retry entries', async () => {
+test('malformed rendered catalog fails closed without operational retry entries', async () => {
   const env = setupEnv();
   try {
     writeScenario(env.scenarioPath, {
       discover: { rawStdout: '# markdown fallback is forbidden\n' },
-    });
+    } satisfies FakeXurlScenario);
     const fixture = env.createRuntime();
-    const request = makeRequest({
-      operationId: 'xurl-invalid-protocol',
-      provider: 'codex',
-      sourceId: 'codex-xurl-source',
-      resourceRefs: ['conversation-success'],
-      endPosition: 0,
-    });
+    const request = makeRequest({ operationId: 'xurl-invalid-rendered-catalog' });
 
     const result = await fixture.runtime.runExternalBackfill(request, createSource(env, request));
 
@@ -149,8 +138,8 @@ test('xurl invalid protocol fails closed without operational retry entries', asy
     assert.equal(loadReviewQueueState(env.reviewQueuePath).operational.length, 0);
     const state = loadExternalSessionLogBackfillState(result.paths.stateFilePath)!;
     assert.equal(state.failures.length, 1);
-    assert.match(state.failures[0]!.message, /not valid protocol-v1 JSON/i);
-    const sourceFailure = fixture.runtime.getExternalSourceFailureState().get('codex-xurl-source');
+    assert.match(state.failures[0]!.message, /frontmatter|rendered|catalog/i);
+    const sourceFailure = fixture.runtime.getExternalSourceFailureState().get(SOURCE_ID);
     assert.equal(sourceFailure?.failureClass, 'protocol');
     assert.equal(sourceFailure?.requiresOperatorAction, true);
   } finally {
@@ -162,8 +151,11 @@ test('xurl timeout fails as a source failure without review retry pollution', as
   const env = setupEnv();
   try {
     writeScenario(env.scenarioPath, {
-      discover: { delayMs: 250, response: successScenario().discover.response },
-    });
+      discover: {
+        delayMs: 250,
+        catalog: catalogPage([thread('conversation-success', 'branch-main', 2, FP('success-2'), 'rev-success')]),
+      },
+    } satisfies FakeXurlScenario);
     const fixture = env.createRuntime();
     const request = makeRequest({ operationId: 'xurl-timeout' });
 
@@ -173,7 +165,7 @@ test('xurl timeout fails as a source failure without review retry pollution', as
     assert.equal(loadReviewQueueState(env.reviewQueuePath).operational.length, 0);
     const state = loadExternalSessionLogBackfillState(result.paths.stateFilePath)!;
     assert.match(state.failures[0]!.message, /timed out/i);
-    const sourceFailure = fixture.runtime.getExternalSourceFailureState().get('codex-xurl-source');
+    const sourceFailure = fixture.runtime.getExternalSourceFailureState().get(SOURCE_ID);
     assert.equal(sourceFailure?.failureClass, 'transient');
     assert.ok(sourceFailure?.nextRetryAt);
   } finally {
@@ -181,59 +173,47 @@ test('xurl timeout fails as a source failure without review retry pollution', as
   }
 });
 
-test('xurl oversized output fails closed', async () => {
+test('xurl oversized output and non-zero exit fail closed', async () => {
   const env = setupEnv();
   try {
     writeScenario(env.scenarioPath, {
       discover: { rawStdout: 'x'.repeat(8_192) },
-    });
+    } satisfies FakeXurlScenario);
     const fixture = env.createRuntime();
-    const request = makeRequest({ operationId: 'xurl-oversized-output' });
+    const oversizedRequest = makeRequest({ operationId: 'xurl-oversized-output' });
 
-    const result = await fixture.runtime.runExternalBackfill(
-      request,
-      createSource(env, request, { maxOutputBytes: 512 }),
+    const oversized = await fixture.runtime.runExternalBackfill(
+      oversizedRequest,
+      createSource(env, oversizedRequest, { maxOutputBytes: 512 }),
     );
 
-    assert.equal(result.backfill.status, 'source_failed');
+    assert.equal(oversized.backfill.status, 'source_failed');
     assert.equal(loadReviewQueueState(env.reviewQueuePath).operational.length, 0);
-    const state = loadExternalSessionLogBackfillState(result.paths.stateFilePath)!;
-    assert.match(state.failures[0]!.message, /output exceeded/i);
-  } finally {
-    env.restore();
-  }
-});
+    const oversizedState = loadExternalSessionLogBackfillState(oversized.paths.stateFilePath)!;
+    assert.match(oversizedState.failures[0]!.message, /output exceeded/i);
 
-test('xurl non-zero exit fails closed', async () => {
-  const env = setupEnv();
-  try {
     writeScenario(env.scenarioPath, {
       discover: { exitCode: 23, stderr: 'permission denied' },
-    });
-    const fixture = env.createRuntime();
-    const request = makeRequest({ operationId: 'xurl-non-zero-exit' });
+    } satisfies FakeXurlScenario);
+    const exitRequest = makeRequest({ operationId: 'xurl-non-zero-exit' });
+    const exited = await fixture.runtime.runExternalBackfill(exitRequest, createSource(env, exitRequest));
 
-    const result = await fixture.runtime.runExternalBackfill(request, createSource(env, request));
-
-    assert.equal(result.backfill.status, 'source_failed');
-    assert.equal(loadReviewQueueState(env.reviewQueuePath).operational.length, 0);
-    const state = loadExternalSessionLogBackfillState(result.paths.stateFilePath)!;
-    assert.match(state.failures[0]!.message, /status 23/i);
+    assert.equal(exited.backfill.status, 'source_failed');
+    const exitState = loadExternalSessionLogBackfillState(exited.paths.stateFilePath)!;
+    assert.match(exitState.failures[0]!.message, /status 23/i);
   } finally {
     env.restore();
   }
 });
 
-test('xurl page failure replays safely after restart and acknowledges only after the full page succeeds', async () => {
+test('page failure replays safely after restart and acknowledges only after the full page succeeds', async () => {
   const env = setupEnv();
   try {
-    writeScenario(env.scenarioPath, pageScenario({ ignoreCursor: true }));
+    writeScenario(env.scenarioPath, pageScenario());
     const request = makeRequest({
       operationId: 'xurl-page-replay',
-      provider: 'codex',
-      sourceId: 'codex-xurl-source',
       resourceRefs: ['conversation-page'],
-      endPosition: 1,
+      endPosition: 4,
     });
 
     const failing = env.createRuntime({
@@ -256,23 +236,26 @@ test('xurl page failure replays safely after restart and acknowledges only after
       }),
     });
 
-    const store = failing.runtime.getEvidenceCapsuleStore();
-    const originalUpsert = store.upsert.bind(store);
-    let upsertCalls = 0;
-    store.upsert = (capsule) => {
-      upsertCalls += 1;
-      if (upsertCalls === 2) {
-        throw new Error('simulated second-capsule failure');
+    const evidenceIngestor = (failing.runtime as unknown as { evidenceIngestor: { ingest: (unit: unknown) => unknown } }).evidenceIngestor;
+    const originalIngest = evidenceIngestor.ingest.bind(evidenceIngestor);
+    let ingestCalls = 0;
+    evidenceIngestor.ingest = (unit) => {
+      ingestCalls += 1;
+      if (ingestCalls === 2) {
+        throw new Error('simulated second-event ingestion failure');
       }
-      originalUpsert(capsule);
+      return originalIngest(unit);
     };
 
     const first = await failing.runtime.runExternalBackfill(request, createSource(env, request));
     assert.equal(first.backfill.status, 'source_failed');
     const firstState = loadExternalSessionLogBackfillState(first.paths.stateFilePath)!;
     assert.equal(firstState.resourceCursors['conversation-page'], undefined, 'page cursor not acknowledged on failure');
-    assert.equal(firstState.processedEventIds['codex::codex-xurl-source::event://codex/page-0::0::hash-page-0::conversation-page-id::branch-main::rev-page-0'], 'hash-page-0');
-    assert.equal(Object.keys(failing.episodeStore.load().episodes).length, 2, 'replay must not create duplicate episodes after a page failure');
+    assert.ok(
+      Object.keys(firstState.processedEventIds).some(key => key.includes('agents://codex/conversation-page#1-2')),
+      'first stable event recorded for replay-safe deduplication',
+    );
+    assert.equal(Object.keys(firstState.processedEventIds).length, 1);
 
     const recovery = env.createRuntime({
       authorFixture: ({ bundle }) => ({
@@ -297,20 +280,22 @@ test('xurl page failure replays safely after restart and acknowledges only after
     const second = await recovery.runtime.runExternalBackfill(request, createSource(env, request));
     assert.equal(second.backfill.status, 'completed');
     assert.equal(second.backfill.duplicateEventsSkipped, 1);
-    assert.equal(Object.keys(recovery.episodeStore.load().episodes).length, 2);
+    assert.equal(second.backfill.ingestedEvents, 1);
+    assert.equal(Object.keys(recovery.episodeStore.load().episodes).length, 0);
     const secondState = loadExternalSessionLogBackfillState(second.paths.stateFilePath)!;
-    assert.equal(secondState.resourceCursors['conversation-page']?.position, 2);
+    assert.equal(secondState.resourceCursors['conversation-page']?.position, 4);
+    assert.equal(Object.keys(secondState.processedEventIds).length, 2);
   } finally {
     env.restore();
   }
 });
 
-test('xurl rerun is idempotent even when the provider replays the same stable page', async () => {
+test('rerun is idempotent when the provider replays the same stable rendered page', async () => {
   const env = setupEnv();
   try {
-    writeScenario(env.scenarioPath, successScenario({ ignoreCursor: true }));
+    writeScenario(env.scenarioPath, successScenario());
     const fixture = env.createRuntime();
-    const request = makeRequest({ operationId: 'xurl-idempotent-rerun' });
+    const request = makeRequest({ operationId: 'xurl-idempotent-rerun', endPosition: 2 });
     const source = createSource(env, request, { maxOutputBytes: 4_096 });
 
     const first = await fixture.runtime.runExternalBackfill(request, source);
@@ -319,8 +304,8 @@ test('xurl rerun is idempotent even when the provider replays the same stable pa
     assert.equal(first.backfill.status, 'completed');
     assert.equal(second.backfill.status, 'completed');
     assert.equal(second.backfill.duplicateEventsSkipped, 1);
-    assert.equal(Object.keys(fixture.episodeStore.load().episodes).length, 1);
-    assert.equal(fixture.runtime.getEvidenceCapsuleStore().count(), 1);
+    assert.equal(Object.keys(fixture.episodeStore.load().episodes).length, 0);
+    assert.equal(fixture.runtime.getEvidenceCapsuleStore().count(), 0);
   } finally {
     env.restore();
   }
@@ -350,6 +335,8 @@ function setupEnv(): TestEnv {
     XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
     XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE: process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE,
     XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED,
+    XURL_SCENARIO_PATH: process.env.XURL_SCENARIO_PATH,
+    XURL_LOG_PATH: process.env.XURL_LOG_PATH,
   };
 
   process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
@@ -457,11 +444,11 @@ function makeRequest(overrides: Partial<{
   return {
     operationId: overrides.operationId ?? 'xurl-backfill-op',
     triggeredBy: 'operator:test',
-    provider: overrides.provider ?? 'codex',
-    sourceId: overrides.sourceId ?? 'codex-xurl-source',
+    provider: overrides.provider ?? PROVIDER,
+    sourceId: overrides.sourceId ?? SOURCE_ID,
     range: {
       startPosition: overrides.startPosition ?? 0,
-      endPosition: overrides.endPosition ?? 0,
+      endPosition: overrides.endPosition ?? 2,
       resourceRefs: overrides.resourceRefs ?? ['conversation-success'],
     },
     limits: {
@@ -472,212 +459,76 @@ function makeRequest(overrides: Partial<{
   };
 }
 
-function writeScenario(filePath: string, scenario: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(scenario, null, 2), 'utf8');
-}
-
-function readInvocationLog(filePath: string): Array<{ action: string; args: string[] }> {
-  if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, 'utf8')
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map(line => JSON.parse(line) as { action: string; args: string[] });
-}
-
-function successScenario(options: { ignoreCursor?: boolean } = {}) {
+function successScenario(): FakeXurlScenario {
   return {
+    version: 'xurl-test 1.0.0',
     discover: {
-      response: {
-        protocolVersion: 1,
-        provider: 'codex',
-        resources: [
-          {
-            resourceRef: 'conversation-success',
-            firstEvent: {
-              eventId: 'event://codex/success-0',
-              position: 0,
-              conversationId: 'conversation-success-id',
-              branchId: 'branch-main',
-              revision: 'rev-success-0',
-              contentHash: 'hash-success-0',
-            },
-          },
-        ],
-      },
+      catalog: catalogPage([
+        thread('conversation-success', 'branch-main', 2, FP('success-2'), 'rev-success'),
+      ]),
     },
     read: {
-      default: {
-        ignoreCursor: options.ignoreCursor === true,
-        response: {
-          protocolVersion: 1,
-          provider: 'codex',
-          resourceRef: 'conversation-success',
-          status: 'stable',
-          exhausted: true,
-          newPosition: 1,
-          events: [
-            buildProtocolEvent({
-              eventId: 'event://codex/success-0',
-              position: 0,
-              conversationId: 'conversation-success-id',
-              branchId: 'branch-main',
-              revision: 'rev-success-0',
-              contentHash: 'hash-success-0',
-              timestamp: '2026-01-01T00:00:00.000Z',
-              userText: 'Please generate and send the report.',
-              assistantText: 'Done.',
-            }),
-          ],
-        },
-      },
+      'conversation-success': readSpec(
+        timeline('conversation-success', 'branch-main', 2, FP('success-2'), [
+          entry(1, 'User', 'Please generate and send the report.'),
+          entry(2, 'Assistant', 'Done.'),
+        ], 'rev-success'),
+      ),
     },
   };
 }
 
-function pageScenario(options: { ignoreCursor?: boolean } = {}) {
+function pageScenario(): FakeXurlScenario {
   return {
     discover: {
-      response: {
-        protocolVersion: 1,
-        provider: 'codex',
-        resources: [
-          {
-            resourceRef: 'conversation-page',
-            firstEvent: {
-              eventId: 'event://codex/page-0',
-              position: 0,
-              conversationId: 'conversation-page-id',
-              branchId: 'branch-main',
-              revision: 'rev-page-0',
-              contentHash: 'hash-page-0',
-            },
-          },
-        ],
-      },
+      catalog: catalogPage([
+        thread('conversation-page', 'branch-main', 4, FP('page-4'), 'rev-page'),
+      ]),
     },
     read: {
-      default: {
-        ignoreCursor: options.ignoreCursor === true,
-        response: {
-          protocolVersion: 1,
-          provider: 'codex',
-          resourceRef: 'conversation-page',
-          status: 'stable',
-          exhausted: true,
-          newPosition: 2,
-          events: [
-            buildProtocolEvent({
-              eventId: 'event://codex/page-0',
-              position: 0,
-              conversationId: 'conversation-page-id',
-              branchId: 'branch-main',
-              revision: 'rev-page-0',
-              contentHash: 'hash-page-0',
-              timestamp: '2026-01-01T00:00:00.000Z',
-              userText: 'Generate the first report.',
-              assistantText: 'First report delivered.',
-            }),
-            buildProtocolEvent({
-              eventId: 'event://codex/page-1',
-              position: 1,
-              conversationId: 'conversation-page-id',
-              branchId: 'branch-main',
-              revision: 'rev-page-1',
-              contentHash: 'hash-page-1',
-              timestamp: '2026-01-01T00:05:00.000Z',
-              userText: 'Generate the second report.',
-              assistantText: 'Second report delivered.',
-            }),
-          ],
-        },
-      },
+      'conversation-page': readSpec(
+        timeline('conversation-page', 'branch-main', 4, FP('page-4'), [
+          entry(1, 'User', 'Generate the first report.'),
+          entry(2, 'Assistant', 'First report delivered.'),
+          entry(3, 'User', 'Generate the second report.'),
+          entry(4, 'Assistant', 'Second report delivered.'),
+        ], 'rev-page'),
+      ),
     },
   };
 }
 
-function buildProtocolEvent(options: {
-  eventId: string;
-  position: number;
-  conversationId: string;
-  branchId: string;
-  revision: string;
-  contentHash: string;
-  timestamp: string;
-  userText: string;
-  assistantText: string;
-}) {
+function thread(threadId: string, branch: string, ordinal: number, fingerprint: string, revision?: string): ThreadSummarySpec {
+  return { threadId, branch, ordinal, fingerprint, ...(revision ? { revision } : {}) };
+}
+
+function catalogPage(threads: ThreadSummarySpec[], next?: string): CatalogPageSpec {
+  return { provider: PROVIDER, next: next ?? null, threads };
+}
+
+function timeline(
+  threadId: string,
+  branch: string,
+  ordinal: number,
+  fingerprint: string,
+  entries: { ordinal: number; role: 'User' | 'Assistant' | 'Context Compacted'; content: string }[],
+  revision?: string,
+): TimelineSpec {
   return {
-    eventId: options.eventId,
-    position: options.position,
-    conversationId: options.conversationId,
-    branchId: options.branchId,
-    revision: options.revision,
-    contentHash: options.contentHash,
-    timestamp: options.timestamp,
-    messages: [
-      { role: 'system', content: 'system-secret should be ignored' },
-      { role: 'developer', content: 'developer-secret should be ignored' },
-      { role: 'user', content: options.userText },
-      {
-        role: 'tool',
-        toolCallId: `send-${options.position}`,
-        name: 'send_file',
-        arguments: { path: '/Users/me/project/private/report.md' },
-        result: 'report sent token: my-secret',
-        completed: true,
-      },
-      { role: 'assistant', content: options.assistantText, final: true },
-    ],
+    provider: PROVIDER,
+    threadId,
+    branch,
+    ordinal,
+    fingerprint,
+    entries,
+    ...(revision ? { revision } : {}),
   };
 }
 
-function writeFakeXurl(filePath: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `#!/usr/bin/env node
-const fs = require('node:fs');
-const path = require('node:path');
-
-const args = process.argv.slice(2);
-const action = args[1];
-const scenarioPath = process.env.XURL_SCENARIO_PATH;
-const logPath = process.env.XURL_LOG_PATH;
-const scenario = JSON.parse(fs.readFileSync(scenarioPath, 'utf8'));
-const logEntry = { action, args };
-fs.mkdirSync(path.dirname(logPath), { recursive: true });
-fs.appendFileSync(logPath, JSON.stringify(logEntry) + '\\n', 'utf8');
-
-const resourceIndex = args.indexOf('--resource-ref');
-const resourceRef = resourceIndex >= 0 ? args[resourceIndex + 1] : undefined;
-const cursorIndex = args.indexOf('--cursor-position');
-const cursorPosition = cursorIndex >= 0 ? Number(args[cursorIndex + 1]) : -1;
-
-const discoverScenario = scenario.discover || {};
-const readMap = scenario.read || {};
-const readScenario = (resourceRef && readMap[resourceRef]) || readMap.default || {};
-const selected = action === 'discover' ? discoverScenario : readScenario;
-
-const respond = () => {
-  if (selected.stderr) process.stderr.write(String(selected.stderr));
-  if (selected.rawStdout) {
-    process.stdout.write(String(selected.rawStdout));
-  } else if (selected.response) {
-    const response = JSON.parse(JSON.stringify(selected.response));
-    if (action === 'read' && !selected.ignoreCursor && response && Array.isArray(response.events)) {
-      response.events = response.events.filter((event) => event.position > cursorPosition);
-      response.newPosition = response.events.length > 0 ? response.newPosition : cursorPosition;
-    }
-    process.stdout.write(JSON.stringify(response));
-  }
-  process.exit(Number(selected.exitCode || 0));
-};
-
-if (selected.delayMs) {
-  setTimeout(respond, Number(selected.delayMs));
-} else {
-  respond();
+function entry(ordinal: number, role: 'User' | 'Assistant' | 'Context Compacted', content: string) {
+  return { ordinal, role, content } as const;
 }
-`, 'utf8');
-  fs.chmodSync(filePath, 0o755);
+
+function readSpec(timelineSpec: TimelineSpec, head?: { ordinal: number; fingerprint: string }) {
+  return { timeline: timelineSpec, ...(head ? { head } : {}) };
 }

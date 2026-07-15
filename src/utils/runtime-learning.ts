@@ -48,7 +48,17 @@ import { SemanticReassessmentManifestStore } from './semantic-reassessment';
 import { cleanupBranchTranscripts } from './branch-transcript-retention';
 import { createReviewBudget, type ReviewBudget } from './review-budget';
 import { XurlExternalSourceReader } from './xurl-session-log-source';
+import {
+  ExternalAdmissionCoordinator,
+  type ExternalEvidencePage,
+  type ExternalAdmissionCommitResult,
+} from './external-admission-coordinator';
 import { acquireExternalSourceProviderLock } from './external-source-provider-lock';
+import {
+  ExternalProviderOverrideStore,
+  resolveExternalProviderOverridePath,
+  type ProviderStatus,
+} from './external-provider-controls';
 import {
   InternalSessionLogSourceAdapter,
   ExternalSessionLogSourceAdapter,
@@ -445,6 +455,11 @@ export interface RuntimeLearningOptions {
   externalSourceBudget?: SourceWorkBudget;
   /** Per-source budget for the internal JSONL lane. */
   internalSourceBudget?: SourceWorkBudget;
+  /**
+   * Maximum concurrent external provider reads (issue #92). Defaults to
+   * the config value (3, range 1–8). When set, overrides the config value.
+   */
+  externalSourceMaxConcurrency?: number;
   /** Injectable clock for tests. */
   clock?: () => Date;
 }
@@ -595,7 +610,17 @@ export class RuntimeLearning {
   private readonly legacyPipeline: DistillationPipeline | undefined;
   private readonly clock: () => Date;
   private readonly config: DistillationHeartbeatConfig;
-  private readonly sessionLogSources: readonly SessionLogSourceAdapter[];
+  /**
+   * Session log source adapters. The internal adapter is always first.
+   * External adapters are built from the effective enabled provider set
+   * (issue #91), resolved from environment defaults + durable overrides.
+   */
+  private sessionLogSources: readonly SessionLogSourceAdapter[];
+  /**
+   * Durable per-provider override store (issue #91). Owns the online
+   * enable/disable/reset/rebaseline operator surface.
+   */
+  private readonly providerOverrideStore: ExternalProviderOverrideStore;
   private readonly discoveryQuotas: DiscoveryWakeQuotas;
   /** Per-source work budgets; internal logs are never exempt from quotas. */
   private readonly externalSourceBudget: SourceWorkBudget;
@@ -620,6 +645,13 @@ export class RuntimeLearning {
   /** Fail-closed marker written before a corrupt provenance file is quarantined. */
   private readonly externalEpisodeProvenanceCorruptMarkerPath: string;
   private externalEpisodeProvenanceStateCorrupt = false;
+  /**
+   * The single External Admission Coordinator (issue #93) that serializes
+   * durable admission of ready pages produced by external source work lanes.
+   * Provider reads may overlap, but Episode, Capsule, provenance, and cursor
+   * acknowledgement settle through this coordinator in fair, page-sized turns.
+   */
+  private readonly externalAdmissionCoordinator: ExternalAdmissionCoordinator;
   /** Episode id -> event key for external provenance lookup. */
   private readonly externalEpisodeProvenance = new Map<string, string>();
   /** Event key -> external episode ids. */
@@ -640,6 +672,10 @@ export class RuntimeLearning {
   private shutdownDrainRequested = false;
   /** Operator pause for external reads only; internal discovery/review remains live. */
   private externalSourceDrainRequested = false;
+  /** Maximum concurrent external provider reads (issue #92). */
+  private readonly externalSourceMaxConcurrency: number;
+  /** Shared abort signal for the current external read phase. */
+  private externalReadAbortController: AbortController | null = null;
 
   constructor(options: RuntimeLearningOptions) {
     this.workingDirectory = options.workingDirectory;
@@ -651,6 +687,10 @@ export class RuntimeLearning {
     this.legacyPipeline = options.legacyPipeline;
     this.clock = options.clock ?? (() => new Date());
     this.config = getDistillationHeartbeatConfig(this.workingDirectory);
+    this.providerOverrideStore = new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(this.config),
+      now: this.clock,
+    });
     this.sessionLogSources = options.sessionLogSources ?? [
       new InternalSessionLogSourceAdapter(this.config),
       ...this.buildConfiguredExternalSources(),
@@ -671,6 +711,9 @@ export class RuntimeLearning {
     };
     this.externalSourceBudget = options.externalSourceBudget ?? DEFAULT_EXTERNAL_SOURCE_BUDGET;
     this.internalSourceBudget = options.internalSourceBudget ?? DEFAULT_INTERNAL_SOURCE_BUDGET;
+    this.externalSourceMaxConcurrency = clampConcurrency(
+      options.externalSourceMaxConcurrency ?? this.config.externalSessionLogMaxConcurrency,
+    );
     this.reviewContinuationPath = reviewContinuationPathForEpisodeStore(
       this.config.learningEpisodeStorePath,
     );
@@ -686,6 +729,14 @@ export class RuntimeLearning {
     this.loadExternalSourceSchedulingState();
     this.evidenceCapsuleStore = new EvidenceCapsuleStore(this.config.evidenceCapsulePath);
     this.loadExternalEpisodeProvenanceState();
+    this.externalAdmissionCoordinator = new ExternalAdmissionCoordinator({
+      stateFilePath: path.join(
+        path.dirname(this.config.learningEpisodeStorePath),
+        'external-admission-coordinator-state.json',
+      ),
+      commitFn: (page) => this.commitExternalEvidencePage(page),
+      clock: this.clock,
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -769,6 +820,16 @@ export class RuntimeLearning {
   /** Evidence Capsule store for external evidence inspection/testing (issue #78). */
   getEvidenceCapsuleStore(): EvidenceCapsuleStore {
     return this.evidenceCapsuleStore;
+  }
+
+  /**
+   * The single External Admission Coordinator (issue #93). All external
+   * Episode, Capsule, provenance, and cursor mutations pass through this
+   * coordinator. Tests can inspect it to verify single-writer behavior,
+   * fair round-robin order, backfill arbitration, and deadline drain.
+   */
+  getExternalAdmissionCoordinator(): ExternalAdmissionCoordinator {
+    return this.externalAdmissionCoordinator;
   }
 
   listExternalSourceQuarantines(provider: string, sourceId: string): readonly ExternalSourceQuarantineEntry[] {
@@ -860,6 +921,10 @@ export class RuntimeLearning {
    */
   requestExternalSourceDrain(): void {
     this.externalSourceDrainRequested = true;
+    // Abort any in-flight external reads so they stop promptly (issue #92).
+    if (this.externalReadAbortController) {
+      this.externalReadAbortController.abort();
+    }
   }
 
   /**
@@ -892,6 +957,78 @@ export class RuntimeLearning {
     if (!adapter?.setEnabled) return false;
     adapter.setEnabled(true);
     return true;
+  }
+
+  // -----------------------------------------------------------------------
+  // Multi-provider operator surface (issue #91)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Get the durable provider override store for testing/CLI access.
+   */
+  getProviderOverrideStore(): ExternalProviderOverrideStore {
+    return this.providerOverrideStore;
+  }
+
+  /**
+   * Enable a provider through the durable override store and lazily create
+   * its source lane if it was previously unseen. Creates a durable override
+   * that takes precedence over the environment default and survives restart.
+   */
+  enableExternalProvider(
+    provider: string,
+    scope?: { scope: 'global' | 'path'; scopePath?: string },
+  ): void {
+    this.providerOverrideStore.enableProvider(provider, scope);
+    this.reconcileProviderLanes();
+  }
+
+  /**
+   * Disable a provider through the durable override store. Pauses new
+   * admission without deleting cursor, evidence, quarantine, or audit state.
+   */
+  disableExternalProvider(provider: string): void {
+    this.providerOverrideStore.disableProvider(provider);
+    this.reconcileProviderLanes();
+  }
+
+  /**
+   * Reset a provider: remove the durable override and return to the
+   * environment startup default.
+   */
+  resetExternalProvider(provider: string): void {
+    this.providerOverrideStore.resetProvider(provider);
+    this.reconcileProviderLanes();
+  }
+
+  /**
+   * Explicit rebaseline: record an operator audit entry and mark the
+   * rebaseline request. The actual watermark advance happens at the next
+   * Runtime scheduling boundary.
+   */
+  rebaselineExternalProvider(provider: string, skipToNow: boolean): void {
+    this.providerOverrideStore.rebaselineProvider(provider, skipToNow);
+  }
+
+  /**
+   * Get observable provider statuses for all known providers (environment
+   * defaults plus durable overrides). Used by CLI and Dashboard.
+   */
+  getExternalProviderStatuses(): readonly ProviderStatus[] {
+    return this.providerOverrideStore.getAllProviderStatuses(this.config);
+  }
+
+  /**
+   * Rebuild the session log source list from the effective enabled provider
+   * set. This handles lazy lane creation when a previously unseen provider
+   * is enabled online, and removal of disabled providers from the active set.
+   */
+  private reconcileProviderLanes(): void {
+    const internal = this.sessionLogSources.filter(
+      adapter => adapter.identity.category === 'internal',
+    );
+    const external = this.buildConfiguredExternalSources();
+    this.sessionLogSources = [...internal, ...external];
   }
 
   private findExternalSourceAdapter(
@@ -976,25 +1113,48 @@ export class RuntimeLearning {
     });
   }
 
+  /**
+   * Build external source adapters from the effective enabled provider set
+   * (issue #91). Uses the durable override store to resolve which providers
+   * are enabled, then creates one adapter per provider.
+   *
+   * Until bounded concurrent scheduling is delivered (#92), this slice may
+   * process providers serially; the adapters are still constructed independently.
+   */
   private buildConfiguredExternalSources(): readonly SessionLogSourceAdapter[] {
     if (!this.config.externalSessionLogSourcesEnabled) return [];
-    const provider = this.config.externalSessionLogSelectedProvider?.trim();
-    if (!provider) return [];
-    const sourceId = this.config.externalSessionLogSelectedSourceId?.trim() || `external-${provider}`;
-    const reader = this.config.externalSessionLogXurlCommand
-      ? new XurlExternalSourceReader({
-        command: this.config.externalSessionLogXurlCommand,
-        provider,
+    const enabledProviders = this.providerOverrideStore.resolveEnabledProviders(this.config);
+    if (enabledProviders.length === 0) return [];
+    const adapters: ExternalSessionLogSourceAdapter[] = [];
+    const legacySelectedProvider = this.config.externalSessionLogSelectedProvider?.trim().toLowerCase();
+    const legacySelectedSourceId = this.config.externalSessionLogSelectedSourceId?.trim();
+    for (const provider of enabledProviders) {
+      const sourceId = enabledProviders.length === 1
+        && legacySelectedProvider
+        && legacySelectedProvider === provider
+        && legacySelectedSourceId
+        ? legacySelectedSourceId
+        : `external-${provider}`;
+      const scope = this.providerOverrideStore.getProviderScope(provider);
+      const reader = this.config.externalSessionLogXurlCommand
+        ? new XurlExternalSourceReader({
+          command: this.config.externalSessionLogXurlCommand,
+          provider,
+          sourceId,
+          scope: scope.scope,
+          scopePath: scope.scopePath,
+        })
+        : undefined;
+      adapters.push(new ExternalSessionLogSourceAdapter({
         sourceId,
-      })
-      : undefined;
-    return [new ExternalSessionLogSourceAdapter({
-      sourceId,
-      label: `${provider} Session Logs`,
-      provider,
-      reader,
-      enabled: true,
-    })];
+        label: `${provider} Session Logs`,
+        provider,
+        reader,
+        enabled: true,
+        scope,
+      }));
+    }
+    return adapters;
   }
 
   private externalSourceLockRoot(): string {
@@ -1185,45 +1345,44 @@ export class RuntimeLearning {
     try {
       let admittedEpisodes = 0;
       let contradictionSignals = 0;
-      let externalProvenanceUpdated = false;
 
     const ingest = (unit: DistillationUnit, context: ExternalSessionLogBackfillIngestContext) => {
-      const sanitizedUnit = sanitizeExternalDistillationUnit(unit, {
+      // Minimal #93 seam: explicit backfill evidence admission also flows
+      // through the single External Admission Coordinator, but the backfill
+      // service still owns its separate operation cursor/audit state. When the
+      // future bounded async reader pool (#92) lands, same-provider continuous
+      // and backfill pages can be interleaved at page boundaries by selecting
+      // lanes before calling admitPage().
+      this.externalAdmissionCoordinator.markBackfillPending(source.identity.provider);
+      const page: ExternalEvidencePage = {
+        providerId: source.identity.provider,
         sourceId: source.identity.sourceId,
-        eventIdentity: context.eventIdentity,
-      });
-      const ingestion = this.evidenceIngestor.ingest(sanitizedUnit);
-      const admissionEpisodeIds = this.resolveExternalEpisodeIds(
-        source.identity,
-        context.eventIdentity,
-        sanitizedUnit,
-        ingestion,
-      );
-
-      if (admissionEpisodeIds.length > 0) {
-        externalProvenanceUpdated ||= this.recordExternalEpisodeProvenance(
-          source.identity,
-          context.eventIdentity,
-          admissionEpisodeIds,
-        );
+        identity: source.identity,
+        resource: context.resource,
+        distillationUnits: [unit],
+        eventIdentities: [context.eventIdentity],
+        readResult: {
+          distillationUnit: unit,
+          distillationUnits: [unit],
+          advanced: true,
+          status: 'advanced',
+          newCursor: {
+            resourceRef: context.resource.resourceRef,
+            position: context.eventIdentity.position,
+            processedCount: 1,
+          },
+          eventIdentities: [context.eventIdentity],
+          accounting: { events: 1, bytes: 0, elapsedMs: 0 },
+        },
+        lane: 'backfill',
+      };
+      const commit = this.externalAdmissionCoordinator.admitPage(page, [source.identity.provider]);
+      if (!commit.acknowledged) {
+        throw commit.error ?? new Error('external backfill admission coordinator commit failed');
       }
-
-      this.queueCuratorObservation(ingestion.admittedEpisodeIds);
-      this.createCapsulesForExternalSource(
-        source.identity,
-        context.eventIdentity,
-        ingestion,
-        admissionEpisodeIds,
-      );
-      if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
-        // The backfill service persists its resource cursor after this ingest
-        // callback returns, so provenance must cross the durable boundary now.
-        this.saveExternalEpisodeProvenanceState();
-        externalProvenanceUpdated = false;
-      }
-      admittedEpisodes += ingestion.admittedEpisodeIds.length;
-      contradictionSignals += ingestion.contradictionSignalIds.length;
-      return { admittedEpisodeIds: ingestion.admittedEpisodeIds };
+      admittedEpisodes += commit.admittedEpisodes;
+      contradictionSignals += commit.contradictionSignals;
+      return { admittedEpisodeIds: commit.admittedEpisodeIds ?? [] };
     };
 
     let backfill: ExternalSessionLogBackfillRunResult | null = null;
@@ -1297,7 +1456,7 @@ export class RuntimeLearning {
       this.saveExternalSourceSchedulingState();
     }
 
-    if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
+    if (this.externalEpisodeProvenanceDirty) {
       this.saveExternalEpisodeProvenanceState();
     }
 
@@ -1399,7 +1558,7 @@ export class RuntimeLearning {
       const shouldScan = isDiscoveryWake;
 
       if (shouldScan) {
-        const discoveryResult = this.runDiscovery();
+        const discoveryResult = await this.runDiscovery();
         wake.discovery.scanned = discoveryResult.sourceReports.some(r => r.enabled);
         wake.discovery.filesScanned = discoveryResult.sourceReports.reduce((sum, r) => sum + r.resourcesDiscovered, 0);
         wake.discovery.unitsProcessed = discoveryResult.sourceReports.reduce((sum, r) => sum + r.unitsProcessed, 0);
@@ -2078,37 +2237,130 @@ export class RuntimeLearning {
    * On success the consecutive count resets to zero. Suspended sources are
    * skipped on subsequent wakes until the suspension deadline passes (AC3).
    */
-  private runDiscovery(): {
+  private async runDiscovery(): Promise<{
     sourceReports: readonly SessionLogSourceReport[];
     admittedEpisodes: number;
     contradictionSignals: number;
-  } {
+  }> {
     const sourceReports: SessionLogSourceReport[] = [];
     let totalAdmittedEpisodes = 0;
     let totalContradictionSignals = 0;
+    let externalProvenanceUpdated = false;
 
     // Wake-level caps: bound resources examined, candidates admitted, and
     // wall-clock time so discovery cannot starve the overdue settlement/review
     // stages that run after it. Remaining resources are deferred to the next
     // wake; their cursors are NOT advanced here (only successfully processed
     // resources are acknowledged below), so no cursor is falsely acknowledged.
-    const discoveryStartMs = this.clock().getTime();
-    let wakeResourcesExamined = 0;
-    let wakeAdmittedEpisodes = 0;
-    let discoveryCapped = false;
+    const shared = {
+      discoveryStartMs: this.clock().getTime(),
+      wakeResourcesExamined: 0,
+      wakeAdmittedEpisodes: 0,
+      discoveryCapped: false,
+    };
 
     // ---- AC2: Internal-first ordering ----
     const orderedSources = this.orderSourcesForDiscovery();
-    let externalProvenanceUpdated = false;
+    const internalSources = orderedSources.filter(adapter => adapter.identity.category !== 'external');
+    const externalSources = orderedSources.filter(adapter => adapter.identity.category === 'external');
 
-    for (const adapter of orderedSources) {
-      if (discoveryCapped) break;
-      const enabled = adapter.isEnabled();
-      const identity = adapter.identity;
-      const isExternal = identity.category === 'external';
+    for (const adapter of internalSources) {
+      if (shared.discoveryCapped) break;
+      const result = await this.processDiscoverySource(adapter, shared);
+      sourceReports.push(result.report);
+      totalAdmittedEpisodes += result.admittedEpisodes;
+      totalContradictionSignals += result.contradictionSignals;
+      externalProvenanceUpdated ||= result.externalProvenanceUpdated;
+    }
 
-      if (!enabled) {
-        sourceReports.push({
+    if (!shared.discoveryCapped && externalSources.length > 0) {
+      const { controller, cancelTimer } = this.createExternalDiscoveryAbortController(shared.discoveryStartMs);
+      this.externalReadAbortController = controller;
+      try {
+        const externalReports = new Array<SessionLogSourceReport>(externalSources.length);
+        let externalAdmittedEpisodes = 0;
+        let externalContradictionSignals = 0;
+        await mapWithConcurrency(
+          externalSources.map((adapter, index) => ({ adapter, index })),
+          this.externalSourceMaxConcurrency,
+          async ({ adapter, index }) => {
+            if (shared.discoveryCapped) return;
+            const result = await this.processDiscoverySource(adapter, shared, { signal: controller.signal });
+            externalReports[index] = result.report;
+            externalAdmittedEpisodes += result.admittedEpisodes;
+            externalContradictionSignals += result.contradictionSignals;
+            externalProvenanceUpdated ||= result.externalProvenanceUpdated;
+          },
+        );
+        sourceReports.push(...externalReports.filter((report): report is SessionLogSourceReport => Boolean(report)));
+        totalAdmittedEpisodes += externalAdmittedEpisodes;
+        totalContradictionSignals += externalContradictionSignals;
+      } finally {
+        this.externalReadAbortController = null;
+        if (cancelTimer) clearTimeout(cancelTimer);
+      }
+    }
+
+    // Persist external source scheduling state (backoff deadlines) for restart
+    // recovery (AC6).
+    this.saveExternalSourceSchedulingState();
+    if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
+      this.saveExternalEpisodeProvenanceState();
+    }
+
+    return {
+      sourceReports,
+      admittedEpisodes: totalAdmittedEpisodes,
+      contradictionSignals: totalContradictionSignals,
+    };
+  }
+
+  private createExternalDiscoveryAbortController(
+    discoveryStartMs: number,
+  ): { controller: AbortController; cancelTimer: NodeJS.Timeout | null } {
+    const controller = new AbortController();
+    if (this.shutdownDrainRequested || this.externalSourceDrainRequested) {
+      controller.abort();
+      return { controller, cancelTimer: null };
+    }
+    const remainingMs = Math.max(
+      0,
+      this.discoveryQuotas.maxDiscoveryMs - (this.clock().getTime() - discoveryStartMs),
+    );
+    if (remainingMs === 0) {
+      controller.abort();
+      return { controller, cancelTimer: null };
+    }
+    const cancelTimer = setTimeout(() => controller.abort(), remainingMs);
+    cancelTimer.unref?.();
+    return { controller, cancelTimer };
+  }
+
+  private async processDiscoverySource(
+    adapter: SessionLogSourceAdapter,
+    shared: {
+      discoveryStartMs: number;
+      wakeResourcesExamined: number;
+      wakeAdmittedEpisodes: number;
+      discoveryCapped: boolean;
+    },
+    options: {
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<{
+    report: SessionLogSourceReport;
+    admittedEpisodes: number;
+    contradictionSignals: number;
+    externalProvenanceUpdated: boolean;
+  }> {
+    const identity = adapter.identity;
+    const isExternal = identity.category === 'external';
+    const enabled = adapter.isEnabled();
+    const budget = isExternal ? this.externalSourceBudget : this.internalSourceBudget;
+
+    if (!enabled) {
+      return {
+        report: {
           sourceId: identity.sourceId,
           category: identity.category,
           enabled: false,
@@ -2116,14 +2368,23 @@ export class RuntimeLearning {
           unitsProcessed: 0,
           advancedResources: 0,
           status: 'active',
-          ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, this.getExternalSourceFailure(identity.provider, identity.sourceId)) : {}),
-        });
-        continue;
-      }
+          ...(isExternal
+            ? this.buildExternalSourceReportDiagnostics(
+              identity,
+              this.getExternalSourceFailure(identity.provider, identity.sourceId),
+            )
+            : {}),
+        },
+        admittedEpisodes: 0,
+        contradictionSignals: 0,
+        externalProvenanceUpdated: false,
+      };
+    }
 
-      if (isExternal && (this.shutdownDrainRequested || this.externalSourceDrainRequested)) {
-        const failureState = this.getExternalSourceFailure(identity.provider, identity.sourceId);
-        sourceReports.push({
+    if (isExternal && (this.shutdownDrainRequested || this.externalSourceDrainRequested || options.signal?.aborted)) {
+      const failureState = this.getExternalSourceFailure(identity.provider, identity.sourceId);
+      return {
+        report: {
           sourceId: identity.sourceId,
           category: identity.category,
           enabled: true,
@@ -2132,16 +2393,19 @@ export class RuntimeLearning {
           advancedResources: 0,
           status: 'drained',
           failureState,
-          ...(this.buildExternalSourceReportDiagnostics(identity, failureState)),
-        });
-        continue;
-      }
+          ...this.buildExternalSourceReportDiagnostics(identity, failureState),
+        },
+        admittedEpisodes: 0,
+        contradictionSignals: 0,
+        externalProvenanceUpdated: false,
+      };
+    }
 
-      // ---- AC3: Skip suspended/manual-action external sources ----
-      if (isExternal) {
-        const failureState = this.getExternalSourceFailure(identity.provider, identity.sourceId);
-        if (this.shouldSkipExternalSourceForFailure(failureState)) {
-          sourceReports.push({
+    if (isExternal) {
+      const failureState = this.getExternalSourceFailure(identity.provider, identity.sourceId);
+      if (this.shouldSkipExternalSourceForFailure(failureState)) {
+        return {
+          report: {
             sourceId: identity.sourceId,
             category: identity.category,
             enabled: true,
@@ -2150,28 +2414,22 @@ export class RuntimeLearning {
             advancedResources: 0,
             status: 'backoff',
             failureState,
-            ...(this.buildExternalSourceReportDiagnostics(identity, failureState)),
-          });
-          continue;
-        }
+            ...this.buildExternalSourceReportDiagnostics(identity, failureState),
+          },
+          admittedEpisodes: 0,
+          contradictionSignals: 0,
+          externalProvenanceUpdated: false,
+        };
       }
+    }
 
-      // Every lane, including the internal JSONL lane, has resource/byte/time
-      // limits. Optional external sources use a separately configurable cap.
-      const budget = isExternal ? this.externalSourceBudget : this.internalSourceBudget;
-      const sourceStartMs = this.clock().getTime();
-      let sourceResourcesExamined = 0;
-      let sourceBytesRead = 0;
-      let sourceEventsRead = 0;
-      let sourceReaderElapsedMs = 0;
-      let sourceHadFailure = false;
-      let sourceBudgetHit = false;
-      const providerLock = isExternal
-        ? this.acquireExternalProviderLock(identity.provider, 'continuous-discovery', identity.sourceId)
-        : null;
-      if (providerLock && !providerLock.acquired) {
-        const failureState = this.getExternalSourceFailure(identity.provider, identity.sourceId);
-        sourceReports.push({
+    const providerLock = isExternal
+      ? this.acquireExternalProviderLock(identity.provider, 'continuous-discovery', identity.sourceId)
+      : null;
+    if (providerLock && !providerLock.acquired) {
+      const failureState = this.getExternalSourceFailure(identity.provider, identity.sourceId);
+      return {
+        report: {
           sourceId: identity.sourceId,
           category: identity.category,
           enabled: true,
@@ -2181,111 +2439,143 @@ export class RuntimeLearning {
           status: 'locked',
           failureState,
           budget,
-          ...(this.buildExternalSourceReportDiagnostics(identity, failureState)),
+          ...this.buildExternalSourceReportDiagnostics(identity, failureState),
           ...(adapter.getSupportStatus ? { supportStatus: adapter.getSupportStatus() } : {}),
           ...(adapter.getUnsupportedReason?.() ? { unsupportedReason: adapter.getUnsupportedReason() } : {}),
-        });
-        continue;
-      }
+        },
+        admittedEpisodes: 0,
+        contradictionSignals: 0,
+        externalProvenanceUpdated: false,
+      };
+    }
 
-      try {
+    let sourceResourcesExamined = 0;
+    let sourceBytesRead = 0;
+    let sourceEventsRead = 0;
+    let sourceReaderElapsedMs = 0;
+    let sourceHadFailure = false;
+    let sourceBudgetHit = false;
+    let sourceDrained = false;
+    let unitsProcessed = 0;
+    let advancedResources = 0;
+    let totalAdmittedEpisodes = 0;
+    let totalContradictionSignals = 0;
+    let externalProvenanceUpdated = false;
+    const sourceStartMs = this.clock().getTime();
+
+    try {
       let resources: readonly SessionLogSourceResource[];
       try {
         resources = adapter.discoverResources({
           maxResources: Math.min(
             budget.maxResourcesPerWake,
-            Math.max(1, this.discoveryQuotas.maxResourcesPerWake - wakeResourcesExamined),
+            Math.max(1, this.discoveryQuotas.maxResourcesPerWake - shared.wakeResourcesExamined),
           ),
           maxElapsedMs: Math.min(
             budget.maxElapsedMsPerWake,
-            Math.max(1, this.discoveryQuotas.maxDiscoveryMs - (this.clock().getTime() - discoveryStartMs)),
+            Math.max(1, this.discoveryQuotas.maxDiscoveryMs - (this.clock().getTime() - shared.discoveryStartMs)),
           ),
         });
       } catch (error) {
-        // AC3: Discovering resources is source-local failure; keep discovery
-        // for other sources and keep OPR independent of this failure.
         sourceHadFailure = true;
         if (isExternal) this.recordExternalSourceFailure(identity, error);
         const failureState = isExternal
           ? this.getExternalSourceFailure(identity.provider, identity.sourceId)
           : undefined;
-        sourceReports.push({
-          sourceId: identity.sourceId,
-          category: identity.category,
-          enabled: true,
-          resourcesDiscovered: 0,
-          unitsProcessed: 0,
-          advancedResources: 0,
-          status: 'failed',
-          failureState,
-          budget,
-          ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, failureState) : {}),
-        });
-        continue;
+        return {
+          report: {
+            sourceId: identity.sourceId,
+            category: identity.category,
+            enabled: true,
+            resourcesDiscovered: 0,
+            unitsProcessed: 0,
+            advancedResources: 0,
+            status: 'failed',
+            failureState,
+            budget,
+            ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, failureState) : {}),
+          },
+          admittedEpisodes: 0,
+          contradictionSignals: 0,
+          externalProvenanceUpdated: false,
+        };
       }
-
-      let unitsProcessed = 0;
-      let advancedResources = 0;
 
       const readContextBase: SessionLogSourceReadContext = { orderedResources: resources };
 
       for (const resource of resources) {
-        if (discoveryCapped) break;
+        if (shared.discoveryCapped) break;
+        if (isExternal && options.signal?.aborted) {
+          sourceDrained = true;
+          break;
+        }
 
-        // ---- AC1: Per-source quota checks ----
-        {
-          if (sourceResourcesExamined >= budget.maxResourcesPerWake) {
-            sourceBudgetHit = true;
-            break;
-          }
-          if (budget.maxBytesPerWake > 0 && sourceBytesRead >= budget.maxBytesPerWake) {
-            sourceBudgetHit = true;
-            break;
-          }
-          const sourceElapsedMs = this.clock().getTime() - sourceStartMs;
-          if (sourceResourcesExamined > 0 && sourceElapsedMs >= budget.maxElapsedMsPerWake) {
-            sourceBudgetHit = true;
-            break;
-          }
+        if (sourceResourcesExamined >= budget.maxResourcesPerWake) {
+          sourceBudgetHit = true;
+          break;
+        }
+        if (budget.maxBytesPerWake > 0 && sourceBytesRead >= budget.maxBytesPerWake) {
+          sourceBudgetHit = true;
+          break;
+        }
+        const sourceElapsedMs = this.clock().getTime() - sourceStartMs;
+        if (sourceResourcesExamined > 0 && sourceElapsedMs >= budget.maxElapsedMsPerWake) {
+          sourceBudgetHit = true;
+          break;
         }
         sourceResourcesExamined++;
 
-        // ---- Wake-level cap checks ----
-        if (wakeResourcesExamined >= this.discoveryQuotas.maxResourcesPerWake) {
-          discoveryCapped = true;
+        if (shared.wakeResourcesExamined >= this.discoveryQuotas.maxResourcesPerWake) {
+          shared.discoveryCapped = true;
           break;
         }
-        if (wakeAdmittedEpisodes >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
-          discoveryCapped = true;
+        if (shared.wakeAdmittedEpisodes >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
+          shared.discoveryCapped = true;
           break;
         }
-        if (wakeResourcesExamined > 0
-          && this.clock().getTime() - discoveryStartMs > this.discoveryQuotas.maxDiscoveryMs) {
-          discoveryCapped = true;
+        if (
+          shared.wakeResourcesExamined > 0
+          && this.clock().getTime() - shared.discoveryStartMs > this.discoveryQuotas.maxDiscoveryMs
+        ) {
+          shared.discoveryCapped = true;
           break;
         }
-        wakeResourcesExamined++;
+        shared.wakeResourcesExamined++;
 
-        // ---- Read resource ----
         let readResult: SessionLogSourceReadResult;
         try {
           const elapsedMs = Math.max(0, this.clock().getTime() - sourceStartMs);
-          readResult = adapter.read(resource, {
+          const readContext: SessionLogSourceReadContext = {
             ...readContextBase,
             remainingBudget: {
               maxResourcesPerWake: Math.max(0, budget.maxResourcesPerWake - sourceResourcesExamined + 1),
               maxBytesPerWake: Math.max(0, budget.maxBytesPerWake - sourceBytesRead),
               maxElapsedMsPerWake: Math.max(0, budget.maxElapsedMsPerWake - elapsedMs),
             },
-          });
+          };
+          if (isExternal && adapter.readAsync) {
+            readResult = await adapter.readAsync(resource, readContext, options.signal ?? new AbortController().signal);
+          } else if (isExternal) {
+            readResult = await Promise.resolve().then(() => adapter.read(resource, readContext));
+          } else {
+            readResult = adapter.read(resource, readContext);
+          }
         } catch (error) {
-          // AC3: Per-source failure recording, NOT OPR
+          if (isExternal && options.signal?.aborted) {
+            sourceDrained = true;
+            break;
+          }
           adapter.markFailed(resource, error);
           sourceHadFailure = true;
           if (isExternal) {
             this.recordExternalSourceFailure(identity, error, { resourceRef: resource.resourceRef });
           }
           continue;
+        }
+
+        if (isExternal && options.signal?.aborted) {
+          sourceDrained = true;
+          break;
         }
 
         if (readResult.status === 'failed') {
@@ -2327,12 +2617,10 @@ export class RuntimeLearning {
         sourceReaderElapsedMs += readResult.accounting?.elapsedMs ?? 0;
 
         if (distillationUnits.length === 0) {
-          // No distillation unit — advance cursor if the adapter reports progress
           if (readResult.advanced || readResult.releaseResource) {
             try {
               adapter.acknowledge(resource, readResult);
               if (readResult.advanced) advancedResources++;
-              // Success resets failure count for external sources
               if (isExternal) {
                 this.resetExternalSourceFailure(identity);
               }
@@ -2343,7 +2631,7 @@ export class RuntimeLearning {
                 this.recordExternalSourceFailure(identity, error, { resourceRef: resource.resourceRef });
               }
             }
-          } else if (isExternal) {
+          } else if (isExternal && !options.signal?.aborted) {
             this.recordExternalSourceFailure(identity, new Error('pending external range remains unacknowledged'), {
               failureClass: 'pending',
               resourceRef: resource.resourceRef,
@@ -2352,10 +2640,6 @@ export class RuntimeLearning {
           continue;
         }
 
-        // A multi-event external read is one acknowledgement unit: every
-        // stable event must be admitted before the cursor can advance. A
-        // missing identity would make provenance/capsule ownership ambiguous,
-        // so fail closed and leave the whole batch resumable.
         let batchEventInProgress: SourceEventIdentity | undefined;
         try {
           const eventIdentities = readResult.eventIdentities ?? [];
@@ -2363,86 +2647,82 @@ export class RuntimeLearning {
             throw new Error('stable external batch is missing one or more event identities');
           }
 
+          // Wake-level quota check before commit.
+          if (
+            shared.wakeAdmittedEpisodes + distillationUnits.length
+            > this.discoveryQuotas.maxAdmittedEpisodesPerWake
+          ) {
+            shared.discoveryCapped = true;
+            throw new DiscoveryAdmissionQuotaReachedError();
+          }
+
           let batchAdmittedEpisodes = 0;
           let batchContradictionSignals = 0;
-          for (let index = 0; index < distillationUnits.length; index++) {
-            if (
-              wakeAdmittedEpisodes + batchAdmittedEpisodes
-              >= this.discoveryQuotas.maxAdmittedEpisodesPerWake
-            ) {
-              discoveryCapped = true;
-              throw new DiscoveryAdmissionQuotaReachedError();
-            }
-            const eventIdentity = eventIdentities[index]
-              ?? (distillationUnits.length === 1
-                ? (resource.firstEventIdentity ?? { eventId: resource.resourceRef, position: 0 })
-                : undefined);
-            if (isExternal && !eventIdentity) {
-              throw new Error('stable external batch event has no canonical identity');
-            }
-            const resolvedEventIdentity = eventIdentity ?? {
-              eventId: resource.resourceRef,
-              position: index,
+
+          if (isExternal) {
+            // Route external commits through the External Admission Coordinator
+            // (issue #93). The coordinator is the single-writer boundary:
+            // all external Episode, Capsule, provenance, and cursor mutations
+            // pass through it serially. The commit function preserves the
+            // Episode → Capsule → provenance → cursor acknowledgement order.
+            const knownExternalProviders = this.orderSourcesForDiscovery()
+              .filter((a): a is SessionLogSourceAdapter => a.identity.category === 'external' && a.isEnabled())
+              .map(a => a.identity.provider);
+            const page: ExternalEvidencePage = {
+              providerId: identity.provider,
+              sourceId: identity.sourceId,
+              identity,
+              resource,
+              distillationUnits,
+              eventIdentities,
+              readResult,
+              lane: 'continuous',
             };
-            batchEventInProgress = resolvedEventIdentity;
+            const commitResult = this.externalAdmissionCoordinator.admitPage(
+              page,
+              knownExternalProviders,
+            );
+            if (!commitResult.acknowledged) {
+              throw commitResult.error ?? new Error('external admission coordinator commit failed');
+            }
+            batchAdmittedEpisodes = commitResult.admittedEpisodes;
+            batchContradictionSignals = commitResult.contradictionSignals;
+            externalProvenanceUpdated = false; // coordinator’s commit fn saves it
+          } else {
+            // Internal sources: existing inline commit logic (unchanged).
+            for (let index = 0; index < distillationUnits.length; index++) {
+              if (
+                shared.wakeAdmittedEpisodes + batchAdmittedEpisodes
+                >= this.discoveryQuotas.maxAdmittedEpisodesPerWake
+              ) {
+                shared.discoveryCapped = true;
+                throw new DiscoveryAdmissionQuotaReachedError();
+              }
+              const eventIdentity = eventIdentities[index]
+                ?? (distillationUnits.length === 1
+                  ? (resource.firstEventIdentity ?? { eventId: resource.resourceRef, position: 0 })
+                  : undefined);
+              const resolvedEventIdentity = eventIdentity ?? {
+                eventId: resource.resourceRef,
+                position: index,
+              };
+              batchEventInProgress = resolvedEventIdentity;
 
-            // External evidence crosses the privacy boundary before it reaches
-            // EvidenceIngestor. Internal source behavior remains unchanged.
-            const ingestUnit = isExternal
-              ? sanitizeExternalDistillationUnit(distillationUnits[index]!, {
-                sourceId: identity.sourceId,
-                eventIdentity,
-              })
-              : distillationUnits[index]!;
-            const ingestionResult = this.evidenceIngestor.ingest(ingestUnit);
-            const admissionEpisodeIds = isExternal
-              ? this.resolveExternalEpisodeIds(
-                identity,
-                resolvedEventIdentity,
-                ingestUnit,
-                ingestionResult,
-              )
-              : ingestionResult.admittedEpisodeIds;
+              const ingestUnit = distillationUnits[index]!;
+              const ingestionResult = this.evidenceIngestor.ingest(ingestUnit);
 
-            if (isExternal && admissionEpisodeIds.length > 0) {
-              externalProvenanceUpdated ||= this.recordExternalEpisodeProvenance(
-                identity,
-                resolvedEventIdentity,
-                admissionEpisodeIds,
-              );
+              this.queueCuratorObservation(ingestionResult.admittedEpisodeIds);
+              batchAdmittedEpisodes += ingestionResult.admittedEpisodeIds.length;
+              batchContradictionSignals += ingestionResult.contradictionSignalIds.length;
             }
 
-            this.queueCuratorObservation(ingestionResult.admittedEpisodeIds);
-            if (isExternal) {
-              // Persist the redacted Evidence Capsule BEFORE acknowledging the
-              // external cursor. If any event fails, the fixed batch remains
-              // unacknowledged and can be replayed idempotently.
-              this.createCapsulesForExternalSource(
-                identity,
-                resolvedEventIdentity,
-                ingestionResult,
-                admissionEpisodeIds,
-              );
-            }
-            batchAdmittedEpisodes += ingestionResult.admittedEpisodeIds.length;
-            batchContradictionSignals += ingestionResult.contradictionSignalIds.length;
+            adapter.acknowledge(resource, readResult);
           }
-
-          // Provenance is part of the crash-safe external commit boundary.
-          // Persist it after episodes/capsules but before cursor acknowledgement;
-          // replay is idempotent if the process stops anywhere before this point.
-          if (isExternal && (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty)) {
-            this.saveExternalEpisodeProvenanceState();
-            externalProvenanceUpdated = false;
-          }
-
-          adapter.acknowledge(resource, readResult);
           unitsProcessed += distillationUnits.length;
           advancedResources++;
           totalAdmittedEpisodes += batchAdmittedEpisodes;
-          wakeAdmittedEpisodes += batchAdmittedEpisodes;
+          shared.wakeAdmittedEpisodes += batchAdmittedEpisodes;
           totalContradictionSignals += batchContradictionSignals;
-          // Success resets failure count for external sources
           if (isExternal) {
             this.resetExternalSourceFailure(identity);
           }
@@ -2451,7 +2731,6 @@ export class RuntimeLearning {
             sourceBudgetHit = true;
             break;
           }
-          // AC3: Per-source failure on ingestion, NOT OPR
           adapter.markFailed(resource, error);
           sourceHadFailure = true;
           if (isExternal) {
@@ -2459,7 +2738,11 @@ export class RuntimeLearning {
             const failureClass = this.classifyExternalSourceFailure(message);
             const eventIdentity = batchEventInProgress
               ?? readResult.eventIdentities?.[0];
-            if ((failureClass === 'quarantine' || failureClass === 'integrity_conflict') && eventIdentity) {
+            if (
+              (failureClass === 'quarantine' || failureClass === 'integrity_conflict')
+              && eventIdentity
+              && !(error && typeof error === 'object' && (error as Record<string, unknown>).externalAdmissionFailureRecorded === true)
+            ) {
               this.recordExternalSourceQuarantine(
                 identity,
                 resource.resourceRef,
@@ -2478,63 +2761,56 @@ export class RuntimeLearning {
         }
       }
 
-      // ---- Determine status ----
       let status: SessionLogSourceStatus = 'active';
-      if (sourceHadFailure) status = 'failed';
-      if (sourceBudgetHit) status = 'quota_reached';
+      if (sourceDrained) status = 'drained';
+      else if (sourceHadFailure) status = 'failed';
+      if (sourceBudgetHit && !sourceDrained) status = 'quota_reached';
 
       const failureState = isExternal
         ? this.getExternalSourceFailure(identity.provider, identity.sourceId)
         : undefined;
 
-      sourceReports.push({
-        sourceId: identity.sourceId,
-        category: identity.category,
-        enabled: true,
-        resourcesDiscovered: resources.length,
-        unitsProcessed,
-        advancedResources,
-        status,
-        failureState,
-        budget,
-        accounting: {
-          events: sourceEventsRead,
-          bytes: sourceBytesRead,
-          elapsedMs: Math.max(sourceReaderElapsedMs, this.clock().getTime() - sourceStartMs),
+      return {
+        report: {
+          sourceId: identity.sourceId,
+          category: identity.category,
+          enabled: true,
+          resourcesDiscovered: resources.length,
+          unitsProcessed,
+          advancedResources,
+          status,
+          failureState,
+          budget,
+          accounting: {
+            events: sourceEventsRead,
+            bytes: sourceBytesRead,
+            elapsedMs: Math.max(sourceReaderElapsedMs, this.clock().getTime() - sourceStartMs),
+          },
+          ...(adapter.getSupportStatus ? { supportStatus: adapter.getSupportStatus() } : {}),
+          ...(adapter.getUnsupportedReason?.() ? { unsupportedReason: adapter.getUnsupportedReason() } : {}),
+          ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, failureState) : {}),
         },
-        ...(adapter.getSupportStatus ? { supportStatus: adapter.getSupportStatus() } : {}),
-        ...(adapter.getUnsupportedReason?.()
-          ? { unsupportedReason: adapter.getUnsupportedReason() }
-          : {}),
-        ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, failureState) : {}),
-      });
-      } finally {
-        if (providerLock?.acquired) providerLock.release();
-      }
+        admittedEpisodes: totalAdmittedEpisodes,
+        contradictionSignals: totalContradictionSignals,
+        externalProvenanceUpdated,
+      };
+    } finally {
+      if (providerLock?.acquired) providerLock.release();
     }
-
-    // Persist external source scheduling state (backoff deadlines) for restart
-    // recovery (AC6).
-    this.saveExternalSourceSchedulingState();
-    if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
-      this.saveExternalEpisodeProvenanceState();
-    }
-
-    return {
-      sourceReports,
-      admittedEpisodes: totalAdmittedEpisodes,
-      contradictionSignals: totalContradictionSignals,
-    };
   }
 
   // -----------------------------------------------------------------------
   // Source ordering and external failure management (issue #77)
   // -----------------------------------------------------------------------
 
-  /**
+   /**
    * Order session log sources for discovery: internal sources are processed
    * BEFORE external sources. This protects due settlement/review/retry work
    * and internal discovery from optional external scanning (AC2).
+   *
+   * External sources are ordered by the External Admission Coordinator's
+   * round-robin selection (issue #93), so a stable provider ordering cannot
+   * starve later providers across wakes or restarts.
    */
   private orderSourcesForDiscovery(): readonly SessionLogSourceAdapter[] {
     const internal: SessionLogSourceAdapter[] = [];
@@ -2546,7 +2822,34 @@ export class RuntimeLearning {
         internal.push(adapter);
       }
     }
-    return [...internal, ...external];
+
+    // Use the coordinator's round-robin selection for external source ordering.
+    // Ready providers are those that are enabled and not drained.
+    const readyExternalProviderIds = external
+      .filter(adapter => adapter.isEnabled())
+      .map(adapter => adapter.identity.provider);
+    const ordered: SessionLogSourceAdapter[] = [];
+    const remaining = new Set(external);
+
+    // Serve external sources in coordinator-determined round-robin order.
+    while (remaining.size > 0) {
+      const nextProvider = this.externalAdmissionCoordinator.selectNextProvider(
+        [...remaining].filter(a => a.isEnabled()).map(a => a.identity.provider),
+      );
+      if (!nextProvider) break;
+      const nextAdapter = [...remaining].find(
+        a => a.identity.provider === nextProvider,
+      );
+      if (!nextAdapter) break;
+      ordered.push(nextAdapter);
+      remaining.delete(nextAdapter);
+    }
+    // Append any remaining external sources (e.g., disabled ones).
+    for (const adapter of remaining) {
+      ordered.push(adapter);
+    }
+
+    return [...internal, ...ordered];
   }
 
   private recordExternalSourceFailure(
@@ -2791,7 +3094,7 @@ export class RuntimeLearning {
   private buildExternalSourceReportDiagnostics(
     identity: SessionLogSourceIdentity,
     failureState: SourceFailureState | undefined,
-  ): Pick<SessionLogSourceReport, 'provider' | 'reader' | 'selectedProvider' | 'cursorProgress' | 'lastSuccessfulReadAt' | 'nextRetryAt' | 'lastError' | 'failureClass' | 'requiresOperatorAction' | 'nextAction' | 'drainState'> {
+  ): Pick<SessionLogSourceReport, 'provider' | 'reader' | 'readerVersion' | 'selectedProvider' | 'cursorProgress' | 'lastSuccessfulReadAt' | 'nextRetryAt' | 'lastError' | 'failureClass' | 'requiresOperatorAction' | 'nextAction' | 'drainState'> {
     let cursorProgress = {
       maxPosition: -1,
       activeResources: 0,
@@ -2823,6 +3126,7 @@ export class RuntimeLearning {
     } catch {
       // Fail closed; heartbeat status still surfaces the lane-level error state.
     }
+    const readerVersion = this.findExternalSourceAdapter(identity.provider, identity.sourceId)?.getReaderVersion?.();
     const nextAction = failureState?.requiresOperatorAction
       ? (failureState.failureClass === 'quarantine' || failureState.failureClass === 'integrity_conflict'
         ? 'retry_or_skip_quarantine' as const
@@ -2835,7 +3139,8 @@ export class RuntimeLearning {
     return {
       provider: identity.provider,
       reader: identity.reader,
-      selectedProvider: this.config.externalSessionLogSelectedProvider?.trim() || undefined,
+      ...(readerVersion ? { readerVersion } : {}),
+      selectedProvider: identity.provider,
       cursorProgress,
       lastSuccessfulReadAt: failureState?.lastSuccessfulReadAt ?? resourceLastSuccessfulReadAt,
       nextRetryAt: failureState?.nextRetryAt ?? undefined,
@@ -3138,6 +3443,161 @@ export class RuntimeLearning {
    * mutating, deleting, or disabling the upstream source does not affect
    * bounded review retry (issue #78).
    */
+  /**
+   * Single-writer commit for one external evidence page (issue #93).
+   *
+   * This method is called exclusively through the External Admission
+   * Coordinator’s injected commit function, ensuring that all external
+   * Episode, Capsule, provenance, and cursor mutations pass through one
+   * observable single-writer boundary. The commit preserves the established
+   * durable order:
+   *
+   *   normalize stable event
+   *   → ingest Learning Episode
+   *   → persist redacted Evidence Capsule
+   *   → persist external provenance
+   *   → acknowledge provider cursor last
+   *
+   * A crash or failure before cursor acknowledgement leaves the page
+   * replayable and idempotent — the Evidence Ingestor deduplicates by
+   * source identity and event position.
+   *
+   * Binding to the future bounded async reader pool (#92):
+   * When #92 lands, the async reader pool will produce ExternalEvidencePage
+   * objects as xURL processes complete and call
+   * `coordinator.admitPage(page)` for each ready page. This method remains
+   * the commit boundary; no changes to it are required.
+   */
+  private commitExternalEvidencePage(page: ExternalEvidencePage): ExternalAdmissionCommitResult {
+    const adapter = this.findExternalSourceAdapter(page.identity.provider, page.sourceId);
+    if (page.lane === 'continuous' && !adapter) {
+      return {
+        admittedEpisodes: 0,
+        contradictionSignals: 0,
+        acknowledged: false,
+        error: new Error(`external admission coordinator: adapter not found for ${page.identity.provider}/${page.sourceId}`),
+      };
+    }
+
+    const { identity, resource, distillationUnits, eventIdentities, readResult } = page;
+    let admittedEpisodes = 0;
+    let contradictionSignals = 0;
+    const admittedEpisodeIds: string[] = [];
+    let externalProvenanceUpdated = false;
+    let eventInProgress: SourceEventIdentity | undefined;
+
+    try {
+      // Validate event identity count matches distillation unit count
+      if (eventIdentities.length > 0 && eventIdentities.length !== distillationUnits.length) {
+        throw new Error('stable external batch is missing one or more event identities');
+      }
+
+      for (let index = 0; index < distillationUnits.length; index++) {
+        const eventIdentity = eventIdentities[index]
+          ?? (distillationUnits.length === 1
+            ? (resource.firstEventIdentity ?? { eventId: resource.resourceRef, position: 0 })
+            : undefined);
+        if (!eventIdentity) {
+          throw new Error('stable external batch event has no canonical identity');
+        }
+        eventInProgress = eventIdentity;
+
+        // External evidence crosses the privacy boundary before it reaches
+        // EvidenceIngestor. Sanitize the distillation unit.
+        const ingestUnit = sanitizeExternalDistillationUnit(distillationUnits[index]!, {
+          sourceId: identity.sourceId,
+          eventIdentity,
+        });
+        const ingestionResult = this.evidenceIngestor.ingest(ingestUnit);
+        const admissionEpisodeIds = this.resolveExternalEpisodeIds(
+          identity,
+          eventIdentity,
+          ingestUnit,
+          ingestionResult,
+        );
+
+        if (admissionEpisodeIds.length > 0) {
+          externalProvenanceUpdated ||= this.recordExternalEpisodeProvenance(
+            identity,
+            eventIdentity,
+            admissionEpisodeIds,
+          );
+        }
+
+        this.queueCuratorObservation(ingestionResult.admittedEpisodeIds);
+
+        // Persist the redacted Evidence Capsule BEFORE acknowledging the
+        // external cursor. If any event fails, the fixed batch remains
+        // unacknowledged and can be replayed idempotently.
+        this.createCapsulesForExternalSource(
+          identity,
+          eventIdentity,
+          ingestionResult,
+          admissionEpisodeIds,
+        );
+
+        admittedEpisodes += ingestionResult.admittedEpisodeIds.length;
+        contradictionSignals += ingestionResult.contradictionSignalIds.length;
+        admittedEpisodeIds.push(...admissionEpisodeIds);
+      }
+
+      // Provenance is part of the crash-safe external commit boundary.
+      // Persist it after episodes/capsules but before cursor acknowledgement;
+      // replay is idempotent if the process stops anywhere before this point.
+      if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
+        this.saveExternalEpisodeProvenanceState();
+      }
+
+      // Cursor acknowledgement is lane-specific and remains the final durable
+      // step owned by that lane.
+      if (page.lane === 'continuous') {
+        adapter!.acknowledge(resource, readResult);
+        // Success resets failure count for continuous external sources.
+        this.resetExternalSourceFailure(identity);
+      }
+
+      return {
+        admittedEpisodes,
+        contradictionSignals,
+        admittedEpisodeIds,
+        acknowledged: true,
+      };
+    } catch (error) {
+      // A failure before cursor acknowledgement leaves the page replayable.
+      // Record the failure for source health tracking.
+      const message = this.redactExternalSourceError(error);
+      const failureClass = this.classifyExternalSourceFailure(message);
+      const eventIdentity = eventInProgress ?? eventIdentities?.[0];
+      if (error && typeof error === 'object') {
+        (error as Record<string, unknown>).externalAdmissionFailureRecorded = true;
+      }
+      if ((failureClass === 'quarantine' || failureClass === 'integrity_conflict') && eventIdentity) {
+        this.recordExternalSourceQuarantine(
+          identity,
+          resource.resourceRef,
+          eventIdentity,
+          failureClass,
+          message,
+          readResult.newCursor.position,
+        );
+      }
+      if (adapter) {
+        adapter.markFailed(resource, error);
+      }
+      this.recordExternalSourceFailure(identity, error, {
+        failureClass,
+        resourceRef: resource.resourceRef,
+        eventId: eventIdentity?.eventId,
+      });
+      return {
+        admittedEpisodes,
+        contradictionSignals,
+        acknowledged: false,
+        error: error instanceof Error ? error : new Error(String(error)),
+      };
+    }
+  }
+
   private createCapsulesForExternalSource(
     identity: SessionLogSourceIdentity,
     eventIdentity: SourceEventIdentity,
@@ -3598,6 +4058,14 @@ async function mapWithConcurrency<T>(
     }
   };
   await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, run));
+}
+
+/** Clamp external provider read concurrency to the supported 1–8 range. */
+function clampConcurrency(value: number): number {
+  const n = Math.floor(value);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  if (n > 8) return 8;
+  return n;
 }
 
 function toErrorMessage(error: unknown): string {

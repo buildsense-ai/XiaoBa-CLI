@@ -1,5 +1,7 @@
 # External Session Log Distillation Through xurl
 
+> Historical tracer-bullet PRD: #84–#87 implemented the source-neutral external lane, one-provider configuration, fixed test protocol, future-only cursor state, and operational recovery. The one-selected-provider scope and private `session-log-v1` process contract are superseded by [Multi-Provider External Session Log Distillation Through Official xURL](./multi-provider-external-session-log-xurl.md), [ADR-0042](../adr/0042-external-provider-reads-use-bounded-concurrency.md), and [ADR-0043](../adr/0043-official-xurl-rendered-timeline-is-the-reader-contract.md). The remaining evidence, review, cursor, failure-isolation, and audit decisions continue to apply.
+
 ## Problem Statement
 
 XiaoBa can already distill Internal Session Log Source evidence through its local Heartbeat Log Distillation Agent. The Runtime also owns source-neutral adapters, bounded external backfill, source work lanes, Evidence Capsules, and the ordinary Learning Episode and Capability review pipeline, but the external lane still has no production reader.

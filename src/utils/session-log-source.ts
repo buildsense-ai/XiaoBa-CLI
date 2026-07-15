@@ -180,11 +180,25 @@ export interface SessionLogSourceAdapter {
   /** Explicitly reports whether this adapter has a documented stable reader. */
   getSupportStatus?(): ExternalSourceFormatStatus;
   getUnsupportedReason?(): string | undefined;
+  /** Best-effort external reader version diagnostic. */
+  getReaderVersion?(): string | undefined;
   discoverResources(context?: SessionLogSourceDiscoveryContext): readonly SessionLogSourceResource[];
   read(
     resource: SessionLogSourceResource,
     context: SessionLogSourceReadContext,
   ): SessionLogSourceReadResult;
+  /**
+   * Asynchronous, cancellable read boundary for external source lanes
+   * (issue #92). When implemented, the Runtime uses this method for
+   * bounded concurrent external reads with AbortSignal-based cancellation.
+   * Adapters that do not implement this method fall back to synchronous
+   * read() wrapped in a microtask.
+   */
+  readAsync?(
+    resource: SessionLogSourceResource,
+    context: SessionLogSourceReadContext,
+    signal: AbortSignal,
+  ): Promise<SessionLogSourceReadResult>;
   acknowledge(resource: SessionLogSourceResource, result: SessionLogSourceReadResult): void;
   markFailed(resource: SessionLogSourceResource, error: unknown): void;
   close?(): void;
@@ -616,6 +630,12 @@ export interface ExternalSourceReader {
    *          position after reading.
    */
   read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSourceReaderResult;
+  /** Optional async/cancellable read seam for bounded concurrent reads (issue #92). */
+  readAsync?(
+    resource: SessionLogSourceResource,
+    cursor: SourceCursor,
+    signal: AbortSignal,
+  ): Promise<ExternalSourceReaderResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -665,6 +685,16 @@ export interface ExternalSourceActivationState {
   readonly mode: 'future-only-resource-baseline';
   readonly watermarkPosition?: number;
   readonly initialDiscoveryCompleted: boolean;
+  /**
+   * Durable activation-blocked flag. When true the provider exceeded an
+   * activation limit (catalog size, rendered output, or duration) and the
+   * lane admits nothing until an operator narrows scope or raises the cap.
+   * Existing baseline progress is retained; the flag is resumable across
+   * restarts and never partially admits.
+   */
+  readonly activationBlocked?: boolean;
+  readonly activationBlockedReason?: string;
+  readonly activationBlockedAt?: string;
 }
 
 export interface ExternalSourceDiscoveryState {
@@ -879,6 +909,13 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
         mode: 'future-only-resource-baseline',
         ...(typeof activation.watermarkPosition === 'number' ? { watermarkPosition: Math.floor(activation.watermarkPosition) } : {}),
         initialDiscoveryCompleted: activation.initialDiscoveryCompleted === true,
+        ...(activation.activationBlocked === true ? { activationBlocked: true } : {}),
+        ...(typeof activation.activationBlockedReason === 'string' && activation.activationBlockedReason
+          ? { activationBlockedReason: activation.activationBlockedReason }
+          : {}),
+        ...(typeof activation.activationBlockedAt === 'string' && activation.activationBlockedAt
+          ? { activationBlockedAt: activation.activationBlockedAt }
+          : {}),
       }
       : null,
     discovery: discovery
@@ -1065,6 +1102,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
   readonly identity: SessionLogSourceIdentity;
   private enabled: boolean;
   private readonly reader: ExternalSourceReader | null;
+  private readonly scope: { scope: 'global' | 'path'; scopePath?: string };
   private cursorStorePath: string;
 
   constructor(
@@ -1075,6 +1113,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       reader?: ExternalSourceReader | string;
       cursorStorePath?: string;
       enabled?: boolean;
+      scope?: { scope: 'global' | 'path'; scopePath?: string };
     },
     cursorStorePath?: string,
   ) {
@@ -1088,6 +1127,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     };
     this.enabled = options.enabled ?? false;
     this.reader = readerObj ?? null;
+    this.scope = options.scope ?? { scope: 'global' };
     this.cursorStorePath = (cursorStorePath
       ?? options.cursorStorePath
       ?? resolveExternalCursorStorePath({
@@ -1120,6 +1160,13 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       : `provider ${this.identity.provider} has no documented stable reader format; explicit backfill is required`;
   }
 
+  getReaderVersion(): string | undefined {
+    const candidate = this.reader as { version?: string } | null;
+    return typeof candidate?.version === 'string' && candidate.version.trim()
+      ? candidate.version
+      : undefined;
+  }
+
   /** Set the cursor store path (called during RuntimeLearning construction). */
   setCursorStorePath(storePath: string): void {
     if (!this.cursorStorePath) {
@@ -1140,6 +1187,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       ? loadExternalCursorState(this.cursorStorePath)
       : emptyExternalCursorState();
     const withIdentity = registerExternalSourceIdentity(state, this.identity);
+
+    // A durably activation-blocked provider admits nothing until an operator
+    // narrows scope or raises the cap. The flag is resumable and never partially
+    // admits; existing baseline progress and evidence are retained.
+    if (withIdentity.activation?.activationBlocked === true) {
+      this.persistExternalState(withIdentity);
+      return [];
+    }
 
     if (!withIdentity.activation) {
       if (!hasAnyPersistedExternalProgress(withIdentity, this.identity)) {
@@ -1221,6 +1276,71 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       };
     }
 
+    return this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult);
+  }
+
+  async readAsync(
+    resource: SessionLogSourceResource,
+    _context: SessionLogSourceReadContext,
+    signal: AbortSignal,
+  ): Promise<SessionLogSourceReadResult> {
+    if (!this.enabled || !this.reader) {
+      return {
+        distillationUnit: null,
+        advanced: false,
+        status: 'disabled',
+        newCursor: {
+          resourceRef: resource.resourceRef,
+          position: 0,
+          processedCount: 0,
+        },
+      };
+    }
+
+    const state = this.cursorStorePath
+      ? loadExternalCursorState(this.cursorStorePath)
+      : emptyExternalCursorState();
+    const resourceState = state.resources[resource.resourceRef];
+    const sourceCursor = readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
+    const resourceCursor: SourceCursor = sourceCursor
+      ? { ...sourceCursor, resourceRef: resource.resourceRef }
+      : {
+          resourceRef: resource.resourceRef,
+          position: -1,
+          processedCount: 0,
+        };
+
+    let readerResult: ExternalSourceReaderResult;
+    try {
+      readerResult = this.reader.readAsync
+        ? await this.reader.readAsync(resource, resourceCursor, signal)
+        : await Promise.resolve().then(() => this.reader!.read(resource, resourceCursor));
+    } catch (error) {
+      const message = redactExternalSourceDiagnostic(error);
+      this.markFailed(resource, error);
+      return {
+        distillationUnit: null,
+        advanced: false,
+        status: 'failed',
+        newCursor: resourceCursor,
+        failure: {
+          failureClass: classifyExternalSourceFailureMessage(message),
+          message,
+          resourceRef: resource.resourceRef,
+        },
+      };
+    }
+
+    return this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult);
+  }
+
+  private materializeExternalReadResult(
+    resource: SessionLogSourceResource,
+    state: ExternalCursorState,
+    resourceState: ExternalDiscoveredResourceState | undefined,
+    resourceCursor: SourceCursor,
+    readerResult: ExternalSourceReaderResult,
+  ): SessionLogSourceReadResult {
     if (readerResult.status === 'pending' || readerResult.events.length === 0) {
       return {
         distillationUnit: null,
@@ -1230,10 +1350,6 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       };
     }
 
-    // A durable operator tombstone authorizes crossing this stable event
-    // identity even if the provider later changes its revision/hash. Apply it
-    // before mutation checks; otherwise a skipped event can never unblock the
-    // cursor after an integrity-conflict quarantine.
     const unskippedEvents = readerResult.events.filter(
       event => !isSkippedExternalEvent(state, this.identity, event),
     );
@@ -1419,10 +1535,35 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     maxResources: number,
   ): ExternalCursorState {
     const cycle = 1;
-    const discovery = this.discoverIncrementalPage(state, null, null, maxResources);
+    let discovery: ExternalSourceIncrementalDiscoveryResult;
+    try {
+      discovery = this.discoverIncrementalPage(state, null, null, maxResources);
+    } catch (error) {
+      if (isActivationBlockedError(error)) {
+        const now = new Date().toISOString();
+        return {
+          ...state,
+          activation: {
+            initializedAt: now,
+            mode: 'future-only-resource-baseline',
+            initialDiscoveryCompleted: false,
+            activationBlocked: true,
+            activationBlockedReason: redactExternalSourceDiagnostic(error),
+            activationBlockedAt: now,
+          },
+          discovery: {
+            nextPageToken: null,
+            nextResourceIndex: 0,
+            updatedAt: now,
+            cycle,
+          },
+        };
+      }
+      throw error;
+    }
     let withResources = applyExternalDiscoveryPage(state, this.identity, discovery, cycle);
     if (discovery.nextPageToken == null) {
-      withResources = finalizeExternalDiscoveryCycle(withResources, cycle);
+      withResources = finalizeExternalDiscoveryCycle(withResources, cycle, this.scope.scope === 'path');
     }
     return {
       ...withResources,
@@ -1460,7 +1601,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     );
     let refreshed = applyExternalDiscoveryPage(state, this.identity, discovery, cycle);
     if (discovery.nextPageToken == null) {
-      refreshed = finalizeExternalDiscoveryCycle(refreshed, cycle);
+      refreshed = finalizeExternalDiscoveryCycle(refreshed, cycle, this.scope.scope === 'path');
     }
     const initialDiscoveryCompleted = state.activation?.initialDiscoveryCompleted === true
       || discovery.nextPageToken == null;
@@ -1620,6 +1761,7 @@ export interface SessionLogSourceReport {
   readonly unsupportedReason?: string;
   readonly provider?: string;
   readonly reader?: string;
+  readonly readerVersion?: string;
   readonly selectedProvider?: string;
   readonly cursorProgress?: {
     readonly maxPosition: number;
@@ -1641,6 +1783,15 @@ export interface SessionLogSourceReport {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Detects an xURL activation-blocked error by its marker property without
+ * importing the reader module (avoids a circular dependency).
+ */
+function isActivationBlockedError(error: unknown): boolean {
+  return error != null && typeof error === 'object'
+    && (error as Record<string, unknown>).xurlActivationBlocked === true;
+}
+
 export function redactExternalSourceDiagnostic(error: unknown, maxLength = 240): string {
   const normalized = sanitizeProviderErrorMessageForLog(error)
     .replace(/\b[A-Za-z]:\\(?:[^\\\s]+\\)*[^\s]*/g, '<path>')
@@ -1654,8 +1805,8 @@ export function classifyExternalSourceFailureMessage(message: string): ExternalS
   const normalized = message.toLowerCase();
   if (/quarantine|external evidence limit|oversized|unsafe/.test(normalized)) return 'quarantine';
   if (/integrity|changed under the same identity|branch identity changed/.test(normalized)) return 'integrity_conflict';
-  if (/protocol|json|schema|provider mismatch|unsupported/.test(normalized)) return 'protocol';
   if (/auth|unauthori|forbidden|permission denied|access denied/.test(normalized)) return 'permission';
+  if (/protocol|json|schema|provider mismatch|unsupported|frontmatter|timeline|ordinal|rendered|heading|uri mismatch|thread mismatch|catalog/.test(normalized)) return 'protocol';
   if (/pending/.test(normalized)) return 'pending';
   return 'transient';
 }
@@ -1862,12 +2013,17 @@ function applyExternalDiscoveryPage(
 function finalizeExternalDiscoveryCycle(
   state: ExternalCursorState,
   cycle: number,
+  preserveMissingResources = false,
 ): ExternalCursorState {
   const now = new Date().toISOString();
   let changed = false;
   const nextResources: Record<string, ExternalDiscoveredResourceState> = {};
   for (const [resourceRef, resourceState] of Object.entries(state.resources)) {
     if (resourceState.lastSeenDiscoveryCycle === cycle) {
+      nextResources[resourceRef] = resourceState;
+      continue;
+    }
+    if (preserveMissingResources) {
       nextResources[resourceRef] = resourceState;
       continue;
     }

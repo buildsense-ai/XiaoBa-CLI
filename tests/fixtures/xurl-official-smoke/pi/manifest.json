@@ -1,0 +1,9 @@
+{
+  "provider": "pi",
+  "session_id": "pi-smoke-session",
+  "entry_ids": {
+    "user": "pi-smoke-user-1",
+    "assistant": "pi-smoke-assistant-1"
+  },
+  "notes": "Minimal sanitized Pi fixture in the official agent/sessions/<project>/<timestamp>_<session>.jsonl layout."
+}
