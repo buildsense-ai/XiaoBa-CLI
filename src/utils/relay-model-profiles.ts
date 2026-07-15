@@ -78,6 +78,9 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
   },
 ];
 
+/** The first-run CatsCo model when the user has not chosen one yet. */
+export const DEFAULT_CATSCO_RELAY_MODEL_ID = 'minimax-m3';
+
 function normalizeModelName(value: unknown): string {
   return String(value || '').trim().toLowerCase();
 }

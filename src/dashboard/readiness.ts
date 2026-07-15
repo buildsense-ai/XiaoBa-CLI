@@ -9,6 +9,7 @@ import { ServiceInfo, ServiceManager } from './service-manager';
 import { readDashboardEnvFile } from './settings';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { getWeixinChannelStatus } from './weixin-channel-binding';
+import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
 
 export type DashboardReadinessStatus = 'ready' | 'warning' | 'blocked';
 export type DashboardReadinessCheckStatus = 'pass' | 'warning' | 'fail';
@@ -79,15 +80,16 @@ export async function getDashboardReadiness(
   const runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
   const config = options.config ?? {};
   const env = getEffectiveCatsCoRuntimeEnv(runtimeRoot, getEffectiveDashboardEnv(runtimeRoot, options.env), config, options.catsCoOverrides);
+  const modelInputs = resolveReadinessModelInputs(runtimeRoot, env, config);
   const services = serviceManager.getAll().map(service => getServicePreflight(
     serviceManager,
     service.name,
     { runtimeRoot, env, config, catsCoOverrides: options.catsCoOverrides, now: options.now },
   ));
   const sections = [
-    buildModelSection(env, config),
+    buildModelSection(modelInputs.env, modelInputs.config),
     buildCatsCoSection(serviceManager, env, config),
-    buildRuntimeProfileSection(runtimeRoot, env, config),
+    buildRuntimeProfileSection(runtimeRoot, modelInputs.env, modelInputs.config),
     await buildSkillsSection(runtimeRoot),
   ];
 
@@ -113,14 +115,15 @@ export function getServicePreflight(
   const runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
   const config = options.config ?? {};
   const env = getEffectiveCatsCoRuntimeEnv(runtimeRoot, getEffectiveDashboardEnv(runtimeRoot, options.env), config, options.catsCoOverrides);
+  const modelInputs = resolveReadinessModelInputs(runtimeRoot, env, config);
   const service = serviceManager.getService(name);
   if (!service) {
     throw new Error(`Service "${name}" not found`);
   }
 
   const checks = [
-    ...buildModelChecks(env, config),
-    ...buildRuntimeChecks(service, runtimeRoot, env, config, serviceNameToSurface(name)),
+    ...buildModelChecks(modelInputs.env, modelInputs.config),
+    ...buildRuntimeChecks(service, runtimeRoot, modelInputs.env, modelInputs.config, serviceNameToSurface(name)),
     ...buildServiceSpecificChecks(name, env, config, runtimeRoot),
   ];
   const status = statusFromChecks(checks);
@@ -141,6 +144,22 @@ export function getServicePreflight(
     warningChecks: checks
       .filter(check => check.status !== 'pass' && check.severity === 'warning')
       .map(check => check.id),
+  };
+}
+
+function resolveReadinessModelInputs(
+  runtimeRoot: string,
+  env: NodeJS.ProcessEnv,
+  config: ChatConfig,
+): { env: NodeJS.ProcessEnv; config: ChatConfig } {
+  const active = resolveActiveBotLLMConfig({ runtimeRoot, env });
+  if (!active) return { env, config };
+
+  // A bound bot is Definition-owned. Hide stale legacy model fields from model
+  // readiness while keeping CatsCo account and connector settings available.
+  return {
+    env: {},
+    config: { ...config, ...active.config },
   };
 }
 

@@ -3,14 +3,13 @@ import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import type { ChatConfig } from '../types';
 import { PathResolver } from '../utils/path-resolver';
 import { FileBotCatalogModelRuntimeRepository, FileBotDefinitionRepository } from './repository';
-import { catalogRuntimeFromLocalProfile, readLocalModelProfile } from './service';
 
 export type BotLLMConfigSource = 'custom_definition' | 'catalog_runtime';
 
 export interface ResolvedBotLLMConfig {
   botId: string;
   source: BotLLMConfigSource;
-  config: Pick<ChatConfig, 'provider' | 'apiUrl' | 'apiKey' | 'model' | 'contextWindowTokens' | 'reasoningEffort' | 'openaiApiMode'>;
+  config: Pick<ChatConfig, 'provider' | 'apiUrl' | 'apiKey' | 'model' | 'contextWindowTokens' | 'maxTokens' | 'temperature' | 'reasoningEffort' | 'openaiApiMode' | 'modelCapabilities'>;
 }
 
 export interface ResolveBotLLMConfigOptions {
@@ -24,8 +23,11 @@ function runtimeToConfig(runtime: {
   apiKey: string;
   model: string;
   contextWindowTokens: number;
+  maxTokens?: number;
+  temperature?: number;
   reasoningEffort?: ChatConfig['reasoningEffort'];
   openaiApiMode?: ChatConfig['openaiApiMode'];
+  capabilities?: ChatConfig['modelCapabilities'];
 }): ResolvedBotLLMConfig['config'] {
   return {
     provider: runtime.provider,
@@ -33,8 +35,11 @@ function runtimeToConfig(runtime: {
     apiKey: runtime.apiKey,
     model: runtime.model,
     contextWindowTokens: runtime.contextWindowTokens,
+    ...(runtime.maxTokens ? { maxTokens: runtime.maxTokens } : {}),
+    temperature: runtime.temperature ?? 0.7,
     ...(runtime.reasoningEffort ? { reasoningEffort: runtime.reasoningEffort } : {}),
     ...(runtime.openaiApiMode ? { openaiApiMode: runtime.openaiApiMode } : {}),
+    ...(runtime.capabilities ? { modelCapabilities: runtime.capabilities } : {}),
   };
 }
 
@@ -67,6 +72,8 @@ export function resolveActiveBotLLMConfig(
         apiKey: model.apiKey,
         model: model.model,
         contextWindowTokens: model.contextWindowTokens,
+        ...(model.maxTokens ? { maxTokens: model.maxTokens } : {}),
+        temperature: model.temperature ?? 0.7,
         ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
         openaiApiMode: model.protocol === 'openai-responses' ? 'responses' : 'chat_completions',
       },
@@ -74,15 +81,7 @@ export function resolveActiveBotLLMConfig(
   }
 
   const catalogRuntime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot });
-  let runtime = catalogRuntime.read(botId);
-  if (!runtime || runtime.modelId !== definition.model.modelId) {
-    const profile = readLocalModelProfile(runtimeRoot, env);
-    const migrated = profile && catalogRuntimeFromLocalProfile(botId, definition.model.modelId, profile);
-    if (migrated) {
-      catalogRuntime.write(migrated);
-      runtime = migrated;
-    }
-  }
+  const runtime = catalogRuntime.read(botId);
   if (!runtime || runtime.modelId !== definition.model.modelId) return undefined;
   return {
     botId,

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
-import type { OpenAIApiMode, ReasoningEffort } from '../types';
+import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../types';
 import { REASONING_EFFORT_OPTIONS, normalizeReasoningEffort, reasoningEffortOrDefault } from '../utils/reasoning-effort';
 import { OPENAI_API_MODE_OPTIONS, openAIApiModeOrDefault } from '../utils/openai-api-mode';
 
@@ -70,6 +70,8 @@ export interface DashboardSettingsOptions {
   runtimeRoot?: string;
   env?: NodeJS.ProcessEnv;
   now?: Date;
+  /** The bound bot's resolved Definition config, when one is active. */
+  modelConfig?: Pick<ChatConfig, 'provider' | 'apiUrl' | 'apiKey' | 'model' | 'contextWindowTokens' | 'reasoningEffort' | 'openaiApiMode'>;
 }
 
 interface NormalizedSettingUpdate {
@@ -337,6 +339,44 @@ function buildModelStartupSnapshot(
   return { source, effective, custom, relay };
 }
 
+function modelConfigValue(
+  definition: DashboardSettingDefinition,
+  config: NonNullable<DashboardSettingsOptions['modelConfig']>,
+): string | undefined {
+  switch (definition.id) {
+    case 'model.provider': return config.provider;
+    case 'model.apiBase': return config.apiUrl;
+    case 'model.model': return config.model;
+    case 'model.contextWindowTokens': return config.contextWindowTokens ? String(config.contextWindowTokens) : undefined;
+    case 'model.reasoningEffort': return config.reasoningEffort;
+    case 'model.openaiApiMode': return config.openaiApiMode;
+    case 'model.apiKey': return config.apiKey;
+    default: return undefined;
+  }
+}
+
+function modelConfigSnapshot(
+  config: NonNullable<DashboardSettingsOptions['modelConfig']>,
+): DashboardModelStartupSnapshot {
+  const effective: DashboardModelProfileSnapshot = {
+    provider: config.provider,
+    apiBase: sanitizeUrlSettingValue(config.apiUrl ?? ''),
+    model: config.model,
+    contextWindowTokens: config.contextWindowTokens,
+    reasoningEffort: config.reasoningEffort ?? 'default',
+    openaiApiMode: config.openaiApiMode ?? 'chat_completions',
+    apiKeyPresent: Boolean(config.apiKey),
+    configured: Boolean(config.provider && config.apiUrl && config.model && config.apiKey),
+  };
+  const relay = isCatsRelayApiBase(config.apiUrl)
+    ? { ...effective, reasoningEffort: effective.reasoningEffort === 'default' ? 'high' as const : effective.reasoningEffort }
+    : { apiKeyPresent: false, configured: false };
+  const custom = isCatsRelayApiBase(config.apiUrl)
+    ? { apiKeyPresent: false, configured: false }
+    : effective;
+  return { source: isCatsRelayApiBase(config.apiUrl) ? 'relay' : 'custom', effective, custom, relay };
+}
+
 export function getDashboardSettings(
   options: DashboardSettingsOptions = {},
 ): DashboardSettingsSnapshot {
@@ -347,10 +387,14 @@ export function getDashboardSettings(
   return {
     runtimeRoot,
     generatedAt: (options.now ?? new Date()).toISOString(),
-    modelStartup: buildModelStartupSnapshot(fileEnv, env),
+    modelStartup: options.modelConfig
+      ? modelConfigSnapshot(options.modelConfig)
+      : buildModelStartupSnapshot(fileEnv, env),
     fields: DASHBOARD_SETTING_DEFINITIONS.map(definition => {
       const value = isModelSetting(definition.id)
-        ? modelSettingDisplayValue(definition, fileEnv, env)
+        ? options.modelConfig
+          ? modelConfigValue(definition, options.modelConfig)
+          : modelSettingDisplayValue(definition, fileEnv, env)
         : firstNonEmpty(fileEnv[definition.envKey], env[definition.envKey]);
       const common = {
         id: definition.id,

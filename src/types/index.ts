@@ -48,6 +48,12 @@ export interface ChatConfig {
   contextWindowTokens?: number;
   reasoningEffort?: ReasoningEffort;
   openaiApiMode?: OpenAIApiMode;
+  /** Capability facts supplied by the selected model catalog, when available. */
+  modelCapabilities?: {
+    vision?: boolean;
+    toolCalling?: boolean;
+    streaming?: boolean;
+  };
   provider?: 'openai' | 'anthropic';
   feishu?: {
     appId?: string;

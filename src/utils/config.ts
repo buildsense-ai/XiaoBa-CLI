@@ -175,9 +175,28 @@ export class ConfigManager {
     const resolved = resolveActiveBotLLMConfig({ runtimeRoot: PathResolver.getRuntimeDataRoot() });
     if (!resolved) return config;
     return {
-      ...config,
+      ...this.withoutModelConfig(config),
       ...resolved.config,
     };
+  }
+
+  /**
+   * Once a bot is bound, its Definition owns every model-affecting field.
+   * Keeping a legacy value here as a partial fallback would let one device's
+   * stale .env silently alter a different bot.
+   */
+  private static withoutModelConfig(config: ChatConfig): ChatConfig {
+    const next = { ...config };
+    delete next.apiKey;
+    delete next.apiUrl;
+    delete next.model;
+    delete next.provider;
+    delete next.temperature;
+    delete next.maxTokens;
+    delete next.contextWindowTokens;
+    delete next.reasoningEffort;
+    delete next.openaiApiMode;
+    return next;
   }
 
   private static parsePositiveIntegerEnv(...values: Array<string | undefined>): number | undefined {

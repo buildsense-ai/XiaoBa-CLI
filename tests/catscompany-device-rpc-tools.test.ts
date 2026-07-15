@@ -326,7 +326,7 @@ describe('CatsCompany Device RPC file tools', () => {
       request_id: 'rpc-shell-1',
       operation: 'execute_shell',
       tool_name: 'execute_shell',
-      payload: { args: { command: 'node -e "console.log(\'rpc-shell-ok\')"' } },
+      payload: { args: { command: `& "${process.execPath}" -e "console.log('rpc-shell-ok')"` } },
     }));
 
     assert.ok(captured.result);

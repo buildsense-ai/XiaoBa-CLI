@@ -378,7 +378,8 @@ describe('dashboard typed settings API', () => {
     assert.equal(response.status, 200, text);
     assert.equal(data.botDefinitionSync?.botId, 'runtime-root-bot');
     assert.equal(JSON.parse(fs.readFileSync(definitionPath, 'utf-8')).model.model, 'gpt-runtime-root');
-    assert.equal(runtimeEnv.CATSCO_CUSTOM_LLM_MODEL, 'gpt-runtime-root');
+    assert.equal(runtimeEnv.CATSCO_CUSTOM_LLM_MODEL, undefined);
+    assert.equal(runtimeEnv.GAUZ_LLM_MODEL, undefined);
     assert.equal(fs.existsSync(path.join(testRoot, '.env')), false);
     assert.equal(text.includes('sk-runtime-root-secret'), false);
   });
@@ -431,7 +432,7 @@ describe('dashboard typed settings API', () => {
     assert.equal(data.previousReasoningEffort, 'default');
     assert.equal(data.reasoningEffort, 'high');
     assert.equal(definition.model.reasoningEffort, 'high');
-    assert.equal(env.GAUZ_LLM_REASONING_EFFORT, 'max');
+    assert.equal(env.GAUZ_LLM_REASONING_EFFORT, undefined);
     assert.equal(data.botDefinitionSync.direction, 'local_to_simulated_cloud');
   });
 
@@ -938,7 +939,7 @@ describe('dashboard typed settings API', () => {
       assert.equal(data.ok, true);
       assert.equal(data.provider, 'anthropic');
       assert.equal(data.apiBase, 'https://relay.catsco.cc/anthropic');
-      assert.equal(data.model, 'MiniMax-M2.7');
+      assert.equal(data.model, 'MiniMax-M3');
       assert.equal(data.createdKey, true);
       assert.equal(data.key.key, undefined);
       assert.equal(data.key.api_key, undefined);
@@ -949,16 +950,16 @@ describe('dashboard typed settings API', () => {
       assert.equal(createCount, 1);
       assert.equal(parsed.GAUZ_LLM_PROVIDER, 'anthropic');
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-      assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
+      assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M3');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-secret-created-once');
-      assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '204800');
+      assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
       assert.equal(parsed.GAUZ_LLM_REASONING_EFFORT, 'high');
       assert.equal(parsed.CATSCO_MODEL_SOURCE, 'relay');
       assert.equal(parsed.CATSCO_RELAY_LLM_PROVIDER, 'anthropic');
       assert.equal(parsed.CATSCO_RELAY_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-      assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M2.7');
+      assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M3');
       assert.equal(parsed.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-secret-created-once');
-      assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '204800');
+      assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
       assert.equal(parsed.CATSCO_RELAY_LLM_REASONING_EFFORT, 'high');
       assert.equal(process.env.GAUZ_LLM_PROVIDER, 'anthropic');
 
@@ -1304,7 +1305,7 @@ describe('dashboard typed settings API', () => {
     }
   });
 
-  test('POST /cats/relay/model-config/apply keeps fallback MiniMax independent from legacy default_model', async () => {
+  test('POST /cats/relay/model-config/apply defaults a fresh setup to MiniMax M3', async () => {
     const catsApp = express();
     catsApp.use(express.json());
     catsApp.get('/api/relay/config', (_req, res) => {
@@ -1350,9 +1351,9 @@ describe('dashboard typed settings API', () => {
       const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
 
       assert.equal(response.status, 200, text);
-      assert.equal(data.model, 'MiniMax-M2.7');
-      assert.equal(data.selectedModel.id, 'minimax-m2.7');
-      assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
+      assert.equal(data.model, 'MiniMax-M3');
+      assert.equal(data.selectedModel.id, 'minimax-m3');
+      assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M3');
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }

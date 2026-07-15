@@ -31,6 +31,7 @@ import {
   writeDashboardEnvUpdates,
 } from '../settings';
 import {
+  DEFAULT_CATSCO_RELAY_MODEL_ID,
   RELAY_MODEL_PROFILES,
   findRelayModelProfile,
   relayModelProviderBaseUrl,
@@ -477,7 +478,7 @@ export function getCatsAuthState(overrides: Record<string, unknown> = {}): CatsA
   return createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).getAuthState(overrides);
 }
 
-function getModelConfigReadonly(): Pick<ChatConfig, 'apiKey' | 'apiUrl' | 'model' | 'provider' | 'reasoningEffort' | 'openaiApiMode'> {
+function getModelConfigReadonly(): Pick<ChatConfig, 'apiKey' | 'apiUrl' | 'model' | 'provider' | 'contextWindowTokens' | 'maxTokens' | 'temperature' | 'reasoningEffort' | 'openaiApiMode'> {
   const botConfig = resolveActiveBotLLMConfig({ runtimeRoot: runtimeDataRoot() });
   if (botConfig) return botConfig.config;
   const config = ConfigManager.getConfigReadonly();
@@ -496,11 +497,14 @@ function getModelConfigReadonly(): Pick<ChatConfig, 'apiKey' | 'apiUrl' | 'model
     env.GAUZ_LLM_OPENAI_API_MODE,
     config.openaiApiMode,
   ));
-
   return {
     apiKey,
     apiUrl,
     model,
+    contextWindowTokens: parsePositiveInteger(firstNonEmpty(
+      process.env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS,
+      env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS,
+    )),
     reasoningEffort,
     openaiApiMode,
     provider: provider === 'anthropic' || provider === 'openai' ? provider : config.provider,
@@ -1091,6 +1095,10 @@ function selectRelayModel(
 function preferredRelayModelRequest(requested: unknown): unknown {
   const explicit = String(requested || '').trim();
   if (explicit) return explicit;
+  const active = getModelConfigReadonly();
+  if (isCatsRelayApiBase(active.apiUrl) && String(active.model || '').trim()) {
+    return active.model;
+  }
   const fileEnv = readEnvFile();
   return firstNonEmpty(
     process.env.CATSCO_RELAY_LLM_MODEL,
@@ -1098,7 +1106,7 @@ function preferredRelayModelRequest(requested: unknown): unknown {
     isCatsRelayApiBase(firstNonEmpty(process.env.GAUZ_LLM_API_BASE, fileEnv.GAUZ_LLM_API_BASE))
       ? firstNonEmpty(process.env.GAUZ_LLM_MODEL, fileEnv.GAUZ_LLM_MODEL)
       : undefined,
-  );
+  ) || DEFAULT_CATSCO_RELAY_MODEL_ID;
 }
 
 function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
@@ -1148,16 +1156,89 @@ function writeDashboardEnvAndProcess(updates: Record<string, string | undefined>
 
 function modelProfileFromCurrentConfig(): ModelLaunchProfile {
   const config = getModelConfigReadonly();
-  const fileEnv = readEnvFile();
   return {
     provider: config.provider,
     apiBase: config.apiUrl,
     model: config.model,
     apiKey: config.apiKey,
-    contextWindowTokens: parsePositiveInteger(firstNonEmpty(process.env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, fileEnv.GAUZ_LLM_CONTEXT_WINDOW_TOKENS)),
-    reasoningEffort: normalizeReasoningEffort(firstNonEmpty(process.env.GAUZ_LLM_REASONING_EFFORT, fileEnv.GAUZ_LLM_REASONING_EFFORT, config.reasoningEffort)),
-    openaiApiMode: openAIApiModeOrDefault(firstNonEmpty(process.env.GAUZ_LLM_OPENAI_API_MODE, fileEnv.GAUZ_LLM_OPENAI_API_MODE, config.openaiApiMode)),
+    contextWindowTokens: config.contextWindowTokens,
+    reasoningEffort: config.reasoningEffort,
+    openaiApiMode: config.openaiApiMode,
   };
+}
+
+function currentBoundBotId(): string | undefined {
+  const config = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load();
+  const botId = String(config.currentBot?.uid || '').trim();
+  return botId || undefined;
+}
+
+function hasDashboardModelUpdates(body: any): boolean {
+  const settings = body?.settings;
+  return Boolean(settings && typeof settings === 'object' && !Array.isArray(settings)
+    && Object.keys(settings).some(key => key.startsWith('model.')));
+}
+
+function withoutDashboardModelUpdates(body: any): any {
+  const settings = body?.settings;
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return body;
+  return {
+    ...body,
+    settings: Object.fromEntries(Object.entries(settings).filter(([key]) => !key.startsWith('model.'))),
+  };
+}
+
+function dashboardSecretValue(raw: unknown, current: string | undefined, id: string): string {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw httpError(`${id} must be a secret update object`, 400);
+  }
+  const action = (raw as { action?: unknown }).action;
+  if (action === 'keep') return String(current || '').trim();
+  if (action === 'replace') {
+    const value = String((raw as { value?: unknown }).value || '').trim();
+    if (value) return value;
+  }
+  throw httpError(`${id} must keep or replace a non-empty value`, 400);
+}
+
+/** Writes an explicit user model edit straight to the current bot Definition. */
+function updateBoundBotModelFromDashboardSettings(body: any): Record<string, unknown> | undefined {
+  const botId = currentBoundBotId();
+  if (!botId || !hasDashboardModelUpdates(body)) return undefined;
+  const settings = body.settings as Record<string, unknown>;
+  const current = getModelConfigReadonly();
+  const text = (id: string, fallback: unknown): string => (
+    Object.prototype.hasOwnProperty.call(settings, id) ? String(settings[id] || '').trim() : String(fallback || '').trim()
+  );
+  const providerValue = text('model.provider', current.provider);
+  const provider = providerValue === 'anthropic' || providerValue === 'openai' ? providerValue : undefined;
+  const apiBase = text('model.apiBase', current.apiUrl);
+  const model = text('model.model', current.model);
+  const apiKey = Object.prototype.hasOwnProperty.call(settings, 'model.apiKey')
+    ? dashboardSecretValue(settings['model.apiKey'], current.apiKey, 'model.apiKey')
+    : String(current.apiKey || '').trim();
+  const contextText = text('model.contextWindowTokens', current.contextWindowTokens);
+  const contextWindowTokens = parsePositiveInteger(contextText);
+  const reasoningValue = text('model.reasoningEffort', current.reasoningEffort || 'default');
+  const reasoningEffort = normalizeReasoningEffort(reasoningValue);
+  const openaiApiMode = openAIApiModeOrDefault(text('model.openaiApiMode', current.openaiApiMode || 'chat_completions'));
+  if (!provider || !apiBase || !model || !apiKey || !contextWindowTokens) {
+    throw httpError('A bound bot requires provider, API base, model, API key, and context window.', 400);
+  }
+  const service = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() });
+  return toBotDefinitionSyncPayload(service.publish(botId, {
+    kind: 'custom',
+    protocol: provider === 'anthropic'
+      ? 'anthropic'
+      : openaiApiMode === 'responses' ? 'openai-responses' : 'openai-chat-completions',
+    apiBase,
+    model,
+    apiKey,
+    contextWindowTokens,
+    ...(current.maxTokens ? { maxTokens: current.maxTokens } : {}),
+    ...(current.temperature !== undefined ? { temperature: current.temperature } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  }));
 }
 
 function publishCurrentBotDefinition(): BotDefinitionSyncResult | undefined {
@@ -1194,6 +1275,20 @@ function updateCurrentCustomDefinitionReasoningEffort(
     reasoningEffort,
   });
   return toBotDefinitionSyncPayload(result);
+}
+
+function updateCurrentCatalogRuntimeReasoningEffort(
+  reasoningEffort: ReasoningEffort,
+): Record<string, unknown> | undefined {
+  const service = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() });
+  const definition = service.pullOrBootstrapCurrentBoundBot()?.definition;
+  if (!definition || definition.model.kind !== 'catalog') return undefined;
+  const runtime = service.readCatalogRuntime(definition.botId);
+  if (!runtime || runtime.modelId !== definition.model.modelId) {
+    throw httpError('The selected catalog model is not materialized on this device.', 409);
+  }
+  service.storeCatalogRuntime({ ...runtime, reasoningEffort });
+  return toBotDefinitionSyncPayload(service.publish(definition.botId, definition.model));
 }
 
 function modelProfileFromStoredEnv(
@@ -1371,12 +1466,12 @@ function writeCustomModelStartupConfig(): { profile: ModelLaunchProfile; updated
 }
 
 function currentRelayReasoningEffort(): ReasoningEffort {
-  const storedRelay = modelProfileFromStoredEnv(RELAY_MODEL_ENV_KEYS);
-  if (storedRelay.reasoningEffort) return relayReasoningEffortOrHigh(storedRelay.reasoningEffort);
   const current = modelProfileFromCurrentConfig();
   if (isCatsRelayApiBase(current.apiBase) && current.reasoningEffort) {
     return relayReasoningEffortOrHigh(current.reasoningEffort);
   }
+  const storedRelay = modelProfileFromStoredEnv(RELAY_MODEL_ENV_KEYS);
+  if (storedRelay.reasoningEffort) return relayReasoningEffortOrHigh(storedRelay.reasoningEffort);
   return 'high';
 }
 
@@ -1538,7 +1633,9 @@ async function ensureCatsRelayPlainKey(
 function findReusableLocalRelayKey(currentKey: any): string | undefined {
   const fileEnv = readEnvFile();
   const currentConfig = ConfigManager.getConfigReadonly();
+  const activeRelayConfig = isCatsRelayApiBase(currentConfig.apiUrl) ? currentConfig : undefined;
   const apiKey = firstNonEmpty(
+    activeRelayConfig?.apiKey,
     process.env.CATSCO_RELAY_LLM_API_KEY,
     fileEnv.CATSCO_RELAY_LLM_API_KEY,
     process.env.GAUZ_LLM_API_KEY,
@@ -1546,6 +1643,7 @@ function findReusableLocalRelayKey(currentKey: any): string | undefined {
     currentConfig.apiKey,
   );
   const apiBase = firstNonEmpty(
+    activeRelayConfig?.apiUrl,
     process.env.CATSCO_RELAY_LLM_API_BASE,
     fileEnv.CATSCO_RELAY_LLM_API_BASE,
     process.env.GAUZ_LLM_API_BASE,
@@ -2131,7 +2229,11 @@ export function createApiRouter(
 
   router.get('/settings', (_req, res) => {
     try {
-      res.json(getDashboardSettings({ runtimeRoot: runtimeDataRoot() }));
+      const activeBotConfig = resolveActiveBotLLMConfig({ runtimeRoot: runtimeDataRoot() });
+      res.json(getDashboardSettings({
+        runtimeRoot: runtimeDataRoot(),
+        ...(activeBotConfig ? { modelConfig: activeBotConfig.config } : {}),
+      }));
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -2141,13 +2243,21 @@ export function createApiRouter(
     try {
       const previousModel = modelProfileFromCurrentConfig();
       const previousSource = storedModelSource();
-      const result = updateDashboardSettings(req.body, { runtimeRoot: runtimeDataRoot() });
-      const changedModelSettings = result.updated.some(key => key.startsWith('GAUZ_LLM_'))
-        || result.cleared.some(key => key.startsWith('GAUZ_LLM_'));
-      if (changedModelSettings) {
+      const boundBot = currentBoundBotId();
+      const changedModelSettings = hasDashboardModelUpdates(req.body);
+      // Bound bots never write a second model source to .env. Non-model
+      // dashboard settings keep their existing machine-local behavior.
+      const botDefinitionSync = boundBot
+        ? updateBoundBotModelFromDashboardSettings(req.body)
+        : undefined;
+      const result = updateDashboardSettings(
+        boundBot ? withoutDashboardModelUpdates(req.body) : req.body,
+        { runtimeRoot: runtimeDataRoot() },
+      );
+      if (changedModelSettings && !boundBot) {
         mirrorCurrentModelAsCustomStartup(req.body, previousModel, previousSource);
       }
-      const botDefinitionSync = changedModelSettings
+      const legacyDefinitionSync = changedModelSettings && !boundBot
         ? publishCurrentBotDefinitionPayload()
         : undefined;
       const restartInfo = req.body?.restartConnector === true && changedModelSettings
@@ -2155,7 +2265,7 @@ export function createApiRouter(
         : { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
       res.json({
         ...result,
-        botDefinitionSync,
+        botDefinitionSync: botDefinitionSync ?? legacyDefinitionSync,
         connectorRestarted: restartInfo.restartRequested,
         restartError: restartInfo.restartError ? sanitizeCatsErrorMessage(restartInfo.restartError) : undefined,
       });
@@ -2180,6 +2290,31 @@ export function createApiRouter(
         return res.json({
           ok: true,
           source: 'custom',
+          reasoningEffort,
+          previousReasoningEffort,
+          updated: [],
+          cleared: [],
+          botDefinitionSync,
+          restartRequired: restartInfo.wasRunning && !restartInfo.restartRequested,
+          connectorRestarted: restartInfo.restartRequested,
+          connectorStarted: restartInfo.startRequested,
+          connectorStartBlocked: restartInfo.startBlocked,
+          restartError: restartInfo.restartError ? sanitizeCatsErrorMessage(restartInfo.restartError) : undefined,
+          startError: restartInfo.startError ? sanitizeCatsErrorMessage(restartInfo.startError) : undefined,
+        });
+      }
+      if (activeBotConfig?.source === 'catalog_runtime') {
+        const previousReasoningEffort = activeBotConfig.config.reasoningEffort ?? 'high';
+        const reasoningEffort = relayReasoningEffortOrHigh(requested ?? previousReasoningEffort);
+        const botDefinitionSync = updateCurrentCatalogRuntimeReasoningEffort(reasoningEffort);
+        const restartInfo = req.body?.restartConnector === true || req.body?.activateConnector === true
+          ? activateCatsCompanyConnector(serviceManager, {
+            startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
+          })
+          : { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
+        return res.json({
+          ok: true,
+          source: 'relay',
           reasoningEffort,
           previousReasoningEffort,
           updated: [],
@@ -2231,6 +2366,36 @@ export function createApiRouter(
 
   router.post('/model-source/custom/apply', (req, res) => {
     try {
+      const activeBotConfig = resolveActiveBotLLMConfig({ runtimeRoot: runtimeDataRoot() });
+      if (activeBotConfig) {
+        if (activeBotConfig.source !== 'custom_definition') {
+          throw httpError('Set custom model fields in Settings before selecting the custom source.', 409);
+        }
+        const activation = activateCatsCompanyConnector(serviceManager, {
+          startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
+        });
+        return res.json({
+          ok: true,
+          source: 'custom',
+          provider: activeBotConfig.config.provider,
+          apiBase: sanitizePublicUrl(activeBotConfig.config.apiUrl),
+          model: activeBotConfig.config.model,
+          contextWindowTokens: activeBotConfig.config.contextWindowTokens,
+          contextLabel: activeBotConfig.config.contextWindowTokens
+            ? formatContextWindowTokens(activeBotConfig.config.contextWindowTokens)
+            : undefined,
+          reasoningEffort: activeBotConfig.config.reasoningEffort ?? 'default',
+          openaiApiMode: activeBotConfig.config.openaiApiMode ?? 'chat_completions',
+          updated: [],
+          cleared: [],
+          restartRequired: activation.wasRunning && !activation.restartRequested,
+          connectorRestarted: activation.restartRequested,
+          connectorStarted: activation.startRequested,
+          connectorStartBlocked: activation.startBlocked,
+          restartError: activation.restartError ? sanitizeCatsErrorMessage(activation.restartError) : undefined,
+          startError: activation.startError ? sanitizeCatsErrorMessage(activation.startError) : undefined,
+        });
+      }
       const result = writeCustomModelStartupConfig();
       const botDefinitionSync = publishCurrentBotDefinitionPayload();
       const activation = activateCatsCompanyConnector(serviceManager, {
@@ -2301,6 +2466,13 @@ export function createApiRouter(
   router.put('/config', (req, res) => {
     try {
       const updates: Record<string, string> = req.body;
+      const boundBot = currentBoundBotId();
+      const requestedModelEnv = Object.keys(updates || {}).filter(key => key.startsWith('GAUZ_LLM_'));
+      if (boundBot && requestedModelEnv.length > 0) {
+        return res.status(409).json({
+          error: 'Bound bot model settings are stored in BotDefinition. Use the Settings model fields instead of /api/config.',
+        });
+      }
       const allowedKeys = new Set([
         'GAUZ_LLM_PROVIDER',
         'GAUZ_LLM_API_BASE',
@@ -3151,7 +3323,7 @@ export function createApiRouter(
       const requestedModel = req.query.modelId || req.query.model;
       const selectedModel = selectRelayModel(
         config,
-        requestedModel || currentConfig.model,
+        preferredRelayModelRequest(requestedModel),
         { strict: Boolean(requestedModel) },
       );
       const keyResponse = config?.self_service_enabled ? await fetchCatsRelayKey(state) : { key: null };
@@ -3196,7 +3368,11 @@ export function createApiRouter(
 
       const config = await fetchCatsRelayConfig(state);
       const requestedModel = req.body?.modelId || req.body?.model;
-      const selectedModel = selectRelayModel(config, requestedModel, { strict: Boolean(requestedModel) });
+      const selectedModel = selectRelayModel(
+        config,
+        preferredRelayModelRequest(requestedModel),
+        { strict: Boolean(requestedModel) },
+      );
       const reasoningEffort = relayReasoningEffortOrHigh(
         requestedReasoningEffort(req.body?.reasoningEffort) ?? currentRelayReasoningEffort(),
       );
@@ -3227,9 +3403,14 @@ export function createApiRouter(
       const apiBase = selectedModel.baseUrl;
       const provider = selectedModel.provider;
       const model = selectedModel.model;
-      const settingsResult = writeRelayModelStartupConfig(selectedModel, ensured.plainKey, { reasoningEffort });
       const definitionService = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() });
       const botId = String(createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load().currentBot?.uid || '').trim();
+      // Before a bot is bound, .env remains the temporary onboarding staging
+      // area. Once it is bound, select the catalog model directly in its
+      // Definition instead of creating a transient second source of truth.
+      const settingsResult = botId
+        ? { updated: [], cleared: [] }
+        : writeRelayModelStartupConfig(selectedModel, ensured.plainKey, { reasoningEffort });
       let botDefinitionSync: Record<string, unknown> | undefined;
       if (botId) {
         definitionService.storeCatalogRuntime({
@@ -3243,6 +3424,11 @@ export function createApiRouter(
           contextWindowTokens: selectedModel.contextWindowTokens ?? 200_000,
           reasoningEffort,
           openaiApiMode: 'chat_completions',
+          capabilities: selectedModel.capabilities ? {
+            ...(selectedModel.capabilities.vision !== undefined ? { vision: selectedModel.capabilities.vision } : {}),
+            ...(selectedModel.capabilities.tool_calling !== undefined ? { toolCalling: selectedModel.capabilities.tool_calling } : {}),
+            ...(selectedModel.capabilities.streaming !== undefined ? { streaming: selectedModel.capabilities.streaming } : {}),
+          } : undefined,
         });
         botDefinitionSync = toBotDefinitionSyncPayload(
           definitionService.publish(botId, { kind: 'catalog', modelId: selectedModel.id }),

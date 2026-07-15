@@ -31,14 +31,19 @@ const managedEnvKeys = [
   'CATSCO_CUSTOM_LLM_OPENAI_API_MODE',
   'CATSCO_RELAY_LLM_MODEL',
   'CATSCO_RELAY_LLM_API_BASE',
+  'CATSCO_RELAY_LLM_API_KEY',
+  'CATSCO_RELAY_LLM_VISION_CAPABLE',
+  'CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE',
   'GAUZ_LLM_PROVIDER',
   'GAUZ_LLM_API_BASE',
   'GAUZ_LLM_API_KEY',
   'GAUZ_LLM_MODEL',
   'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
   'GAUZ_LLM_CONTEXT_TOKENS',
+  'GAUZ_LLM_TEMPERATURE',
   'GAUZ_LLM_REASONING_EFFORT',
   'GAUZ_LLM_OPENAI_API_MODE',
+  'XIAOBA_CONFIG_PATH',
 ];
 
 describe('BotDefinition local simulation', () => {
@@ -95,7 +100,7 @@ describe('BotDefinition local simulation', () => {
     const service = createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot, env });
 
     const result = service.publishCurrentBoundBot();
-    assert.equal(result?.direction, 'local_to_simulated_cloud');
+    assert.equal(result?.direction, 'bootstrap_to_simulated_cloud');
     assert.deepStrictEqual(result?.definition.model, {
       kind: 'custom',
       protocol: 'anthropic',
@@ -245,7 +250,7 @@ describe('BotDefinition local simulation', () => {
     assert.equal(config.reasoningEffort, 'high');
   });
 
-  test('catalog runtime performs a one-time migration from legacy relay values', () => {
+  test('catalog runtime performs a one-time migration only when the legacy model matches the Definition', () => {
     bindCurrentBot();
     new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }).writeCache({
       schema: BOT_DEFINITION_SCHEMA,
@@ -256,18 +261,23 @@ describe('BotDefinition local simulation', () => {
       CATSCO_MODEL_SOURCE: 'relay',
       CATSCO_RELAY_LLM_PROVIDER: 'anthropic',
       CATSCO_RELAY_LLM_API_BASE: 'https://relay.example.test/anthropic',
-      CATSCO_RELAY_LLM_MODEL: 'gpt-5-catalog-runtime',
+      CATSCO_RELAY_LLM_MODEL: 'catalog-gpt-5',
       CATSCO_RELAY_LLM_API_KEY: 'sk-legacy-relay-material',
       CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS: '272000',
       CATSCO_RELAY_LLM_REASONING_EFFORT: 'high',
+      CATSCO_RELAY_LLM_VISION_CAPABLE: 'false',
+      CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE: 'true',
     } as NodeJS.ProcessEnv;
 
+    createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot, env }).pullOrBootstrap('bot-alpha');
     const first = resolveActiveBotLLMConfig({ runtimeRoot, env });
     assert.equal(first?.source, 'catalog_runtime');
     assert.equal(first?.config.apiKey, 'sk-legacy-relay-material');
+    assert.deepStrictEqual(first?.config.modelCapabilities, { vision: false, toolCalling: true });
     const stored = new FileBotCatalogModelRuntimeRepository({ runtimeRoot }).read('bot-alpha');
     assert.equal(stored?.modelId, 'catalog-gpt-5');
     assert.equal(stored?.apiKey, 'sk-legacy-relay-material');
+    assert.deepStrictEqual(stored?.capabilities, { vision: false, toolCalling: true });
 
     const second = resolveActiveBotLLMConfig({
       runtimeRoot,
@@ -277,5 +287,73 @@ describe('BotDefinition local simulation', () => {
       } as NodeJS.ProcessEnv,
     });
     assert.equal(second?.config.apiKey, 'sk-legacy-relay-material');
+  });
+
+  test('does not attach a stale legacy relay profile to a different catalog model', () => {
+    bindCurrentBot();
+    new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }).writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'current-catalog-model' },
+    });
+    const env = {
+      CATSCO_MODEL_SOURCE: 'relay',
+      CATSCO_RELAY_LLM_PROVIDER: 'anthropic',
+      CATSCO_RELAY_LLM_API_BASE: 'https://relay.example.test/anthropic',
+      CATSCO_RELAY_LLM_MODEL: 'stale-catalog-model',
+      CATSCO_RELAY_LLM_API_KEY: 'sk-stale-relay-material',
+    } as NodeJS.ProcessEnv;
+
+    createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot, env }).pullOrBootstrap('bot-alpha');
+
+    assert.equal(new FileBotCatalogModelRuntimeRepository({ runtimeRoot }).read('bot-alpha'), undefined);
+    assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env }), undefined);
+  });
+
+  test('captures legacy model settings once, then removes only model keys', () => {
+    bindCurrentBot();
+    const configPath = path.join(runtimeRoot, 'legacy-config.json');
+    fs.writeFileSync(path.join(runtimeRoot, '.env'), [
+      'CATSCO_USER_TOKEN=user-token-must-remain',
+      'CATSCO_MODEL_SOURCE=custom',
+      'CATSCO_CUSTOM_LLM_PROVIDER=openai',
+      'CATSCO_CUSTOM_LLM_API_BASE=https://models.example.test/v1',
+      'CATSCO_CUSTOM_LLM_MODEL=portable-model',
+      'CATSCO_CUSTOM_LLM_API_KEY=sk-portable',
+      'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS=272000',
+      'GAUZ_LLM_TEMPERATURE=0.2',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(configPath, JSON.stringify({
+      apiKey: 'stale-config-key',
+      model: 'stale-config-model',
+      catscompany: { enabled: true },
+    }));
+    const env = {
+      XIAOBA_CONFIG_PATH: configPath,
+      CATSCO_MODEL_SOURCE: 'custom',
+      CATSCO_CUSTOM_LLM_PROVIDER: 'openai',
+      CATSCO_CUSTOM_LLM_API_BASE: 'https://models.example.test/v1',
+      CATSCO_CUSTOM_LLM_MODEL: 'portable-model',
+      CATSCO_CUSTOM_LLM_API_KEY: 'sk-portable',
+      CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS: '272000',
+      GAUZ_LLM_TEMPERATURE: '0.2',
+    } as NodeJS.ProcessEnv;
+
+    const result = createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot, env })
+      .pullOrBootstrapCurrentBoundBot();
+
+    assert.equal(result?.definition.model.kind, 'custom');
+    if (result?.definition.model.kind === 'custom') {
+      assert.equal(result.definition.model.temperature, 0.2);
+    }
+    const envContents = fs.readFileSync(path.join(runtimeRoot, '.env'), 'utf-8');
+    assert.match(envContents, /CATSCO_USER_TOKEN=user-token-must-remain/);
+    assert.doesNotMatch(envContents, /CATSCO_(MODEL_SOURCE|CUSTOM_LLM_)|GAUZ_LLM_/);
+    assert.equal(env.CATSCO_CUSTOM_LLM_API_KEY, undefined);
+    const cleanedConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    assert.equal(cleanedConfig.apiKey, undefined);
+    assert.equal(cleanedConfig.model, undefined);
+    assert.deepStrictEqual(cleanedConfig.catscompany, { enabled: true });
   });
 });

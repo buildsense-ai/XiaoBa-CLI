@@ -23,6 +23,8 @@ export interface CustomBotModelDefinition {
   model: string;
   apiKey: string;
   contextWindowTokens: number;
+  maxTokens?: number;
+  temperature?: number;
   reasoningEffort?: ReasoningEffort;
 }
 
@@ -46,8 +48,15 @@ export interface LocalModelProfile {
   model?: string;
   apiKey?: string;
   contextWindowTokens?: number;
+  maxTokens?: number;
+  temperature?: number;
   reasoningEffort?: ReasoningEffort;
   openaiApiMode?: OpenAIApiMode;
+  capabilities?: {
+    vision?: boolean;
+    toolCalling?: boolean;
+    streaming?: boolean;
+  };
 }
 
 /**
@@ -65,8 +74,15 @@ export interface BotCatalogModelRuntime {
   apiKey: string;
   model: string;
   contextWindowTokens: number;
+  maxTokens?: number;
+  temperature?: number;
   reasoningEffort?: ReasoningEffort;
   openaiApiMode?: OpenAIApiMode;
+  capabilities?: {
+    vision?: boolean;
+    toolCalling?: boolean;
+    streaming?: boolean;
+  };
 }
 
 export interface BotDefinitionSyncResult {
