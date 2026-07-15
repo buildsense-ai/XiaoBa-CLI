@@ -47,6 +47,7 @@ import { bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
 import { SemanticReassessmentManifestStore } from './semantic-reassessment';
 import { cleanupBranchTranscripts } from './branch-transcript-retention';
 import { createReviewBudget, type ReviewBudget } from './review-budget';
+import { XurlExternalSourceReader } from './xurl-session-log-source';
 import {
   InternalSessionLogSourceAdapter,
   ExternalSessionLogSourceAdapter,
@@ -275,7 +276,10 @@ function normalizeDiscoveryQuota(value: number | undefined, fallback: number): n
 const EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION = 1;
 const EXTERNAL_BACKFILL_SLICE_RESOURCES = 10;
 const EXTERNAL_BACKFILL_SLICE_BYTES = 2 * 1024 * 1024;
-const EXTERNAL_BACKFILL_SLICE_MS = 250;
+// A single xurl discovery/read pair is an external process boundary. Keep the
+// cooperative slice bounded, but leave enough room for normal child-process
+// startup and one bounded page under concurrent Runtime test/load conditions.
+const EXTERNAL_BACKFILL_SLICE_MS = 5_000;
 const REVIEW_CONTINUATION_SCHEMA_VERSION = 1;
 
 interface ReviewContinuationState {
@@ -602,20 +606,9 @@ export class RuntimeLearning {
     this.legacyPipeline = options.legacyPipeline;
     this.clock = options.clock ?? (() => new Date());
     this.config = getDistillationHeartbeatConfig(this.workingDirectory);
-    // External formats are never implied. Enabling the master switch exposes
-    // explicit unsupported lanes until a documented stable provider reader is
-    // installed, so production readiness cannot mistake an inert flag for
-    // working Codex/Pi/Claude ingestion.
     this.sessionLogSources = options.sessionLogSources ?? [
       new InternalSessionLogSourceAdapter(this.config),
-      ...(this.config.externalSessionLogSourcesEnabled
-        ? ['codex', 'pi', 'claude-code'].map(provider => new ExternalSessionLogSourceAdapter({
-          sourceId: `external-${provider}`,
-          label: `${provider} Session Logs`,
-          provider,
-          enabled: true,
-        }))
-        : []),
+      ...this.buildConfiguredExternalSources(),
     ];
     this.discoveryQuotas = {
       maxResourcesPerWake: normalizeDiscoveryQuota(
@@ -705,6 +698,27 @@ export class RuntimeLearning {
   /** Evidence Capsule store for external evidence inspection/testing (issue #78). */
   getEvidenceCapsuleStore(): EvidenceCapsuleStore {
     return this.evidenceCapsuleStore;
+  }
+
+  private buildConfiguredExternalSources(): readonly SessionLogSourceAdapter[] {
+    if (!this.config.externalSessionLogSourcesEnabled) return [];
+    const provider = this.config.externalSessionLogSelectedProvider?.trim();
+    if (!provider) return [];
+    const sourceId = this.config.externalSessionLogSelectedSourceId?.trim() || `external-${provider}`;
+    const reader = this.config.externalSessionLogXurlCommand
+      ? new XurlExternalSourceReader({
+        command: this.config.externalSessionLogXurlCommand,
+        provider,
+        sourceId,
+      })
+      : undefined;
+    return [new ExternalSessionLogSourceAdapter({
+      sourceId,
+      label: `${provider} Session Logs`,
+      provider,
+      reader,
+      enabled: true,
+    })];
   }
 
   /**
@@ -2333,7 +2347,13 @@ export class RuntimeLearning {
   ): string {
     const sourceHash = normalizeSourceHash(identity);
     const contentHash = normalizeSourceEventHash(eventIdentity.contentHash);
+    const conversationPart = eventIdentity.conversationId ? `::conversation=${eventIdentity.conversationId}` : '';
+    const branchPart = eventIdentity.branchId ? `::branch=${eventIdentity.branchId}` : '';
+    const revisionPart = eventIdentity.revision ? `::revision=${eventIdentity.revision}` : '';
     return `${identity.sourceId}::${identity.provider}::${identity.reader}::${sourceHash}::${eventIdentity.eventId}#${eventIdentity.position}`
+      + conversationPart
+      + branchPart
+      + revisionPart
       + (contentHash ? `::${contentHash}` : '');
   }
 

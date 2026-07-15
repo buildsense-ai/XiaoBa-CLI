@@ -79,6 +79,9 @@ export interface EvidenceCapsuleIdentity {
   readonly eventId: string;
   readonly position: number;
   readonly contentHash: string;
+  readonly conversationId?: string;
+  readonly branchId?: string;
+  readonly revision?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +480,9 @@ export function sanitizeExternalEventIdentity(identity: SourceEventIdentity): So
     ...(identity.conversationId
       ? { conversationId: redactAndBoundExternalText(identity.conversationId, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES) }
       : {}),
+    ...(identity.branchId
+      ? { branchId: redactAndBoundExternalText(identity.branchId, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES) }
+      : {}),
     ...(identity.revision
       ? { revision: redactAndBoundExternalText(identity.revision, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES) }
       : {}),
@@ -661,6 +667,9 @@ export function buildEvidenceCapsule(options: BuildEvidenceCapsuleOptions): Evid
       eventId: safeEventIdentity.eventId,
       position: safeEventIdentity.position,
       contentHash: safeEventIdentity.contentHash ?? 'no-event-hash',
+      conversationId: safeEventIdentity.conversationId,
+      branchId: safeEventIdentity.branchId,
+      revision: safeEventIdentity.revision,
     },
     evidenceFingerprint,
     episodeId: options.episodeId,

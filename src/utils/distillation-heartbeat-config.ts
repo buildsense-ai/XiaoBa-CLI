@@ -88,6 +88,12 @@ export interface DistillationHeartbeatConfig {
   /** Path to the durable Evidence Capsule store (issue #78). */
   evidenceCapsulePath: string;
   externalSessionLogSourcesEnabled: boolean;
+  /** Optional selected provider for the continuous external xurl lane. */
+  externalSessionLogSelectedProvider?: string;
+  /** Optional source id for the continuous external xurl lane. */
+  externalSessionLogSelectedSourceId?: string;
+  /** Optional xurl command path for the continuous external xurl lane. */
+  externalSessionLogXurlCommand?: string;
 }
 
 function readEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
@@ -374,6 +380,18 @@ export function getDistillationHeartbeatConfig(
     'XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED',
     false,
   );
+  const externalSessionLogSelectedProvider = readEnv(
+    runtimeEnv,
+    'XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER',
+  );
+  const externalSessionLogSelectedSourceId = readEnv(
+    runtimeEnv,
+    'XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID',
+  );
+  const externalSessionLogXurlCommand = readEnv(
+    runtimeEnv,
+    'XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND',
+  );
 
   return {
     enabled,
@@ -413,5 +431,8 @@ export function getDistillationHeartbeatConfig(
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
     evidenceCapsulePath,
     externalSessionLogSourcesEnabled,
+    ...(externalSessionLogSelectedProvider ? { externalSessionLogSelectedProvider } : {}),
+    ...(externalSessionLogSelectedSourceId ? { externalSessionLogSelectedSourceId } : {}),
+    ...(externalSessionLogXurlCommand ? { externalSessionLogXurlCommand } : {}),
   };
 }
