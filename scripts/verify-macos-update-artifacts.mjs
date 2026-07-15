@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,18 +31,47 @@ function metadataFiles(document) {
     if (!file || typeof file.url !== 'string' || file.url.trim() === '') {
       throw new Error('every macOS update metadata file must contain a URL');
     }
-    return file.url.trim();
+
+    const url = file.url.trim();
+    let decodedUrl;
+    try {
+      decodedUrl = decodeURIComponent(url);
+    } catch {
+      throw new Error(`macOS update metadata contains an invalid URL: ${url}`);
+    }
+    if (decodedUrl !== url || path.posix.basename(url) !== url || /[\\?#]/.test(url)) {
+      throw new Error(`macOS update metadata URL must be a plain file name: ${url}`);
+    }
+
+    if (typeof file.sha512 !== 'string' || file.sha512.trim() === '') {
+      throw new Error(`macOS update metadata is missing sha512 for ${url}`);
+    }
+
+    if (!Number.isSafeInteger(file.size) || file.size <= 0) {
+      throw new Error(`macOS update metadata has an invalid size for ${url}`);
+    }
+
+    return {
+      url,
+      sha512: file.sha512.trim(),
+      size: file.size,
+    };
   });
 }
 
-function selectRequiredFiles(urls, arch) {
+function selectRequiredFiles(files, arch) {
   const selected = new Map();
   for (const extension of REQUIRED_EXTENSIONS) {
-    const match = urls.find((url) => fileExtension(url) === extension && fileMatchesArch(url, arch));
-    if (!match) {
+    const matches = files.filter((file) => (
+      fileExtension(file.url) === extension && fileMatchesArch(file.url, arch)
+    ));
+    if (matches.length === 0) {
       throw new Error(`macOS ${arch} update metadata is missing a .${extension} file`);
     }
-    selected.set(extension, match);
+    if (matches.length > 1) {
+      throw new Error(`macOS ${arch} update metadata contains multiple .${extension} files`);
+    }
+    selected.set(extension, matches[0]);
   }
   return selected;
 }
@@ -66,7 +97,11 @@ async function readMetadata(options) {
     return { text: await fs.readFile(metadata, 'utf8'), baseUrl: null };
   }
 
-  const response = await fetch(metadataUrl, { cache: 'no-store', redirect: 'follow' });
+  const response = await fetch(metadataUrl, {
+    cache: 'no-store',
+    redirect: 'follow',
+    signal: AbortSignal.timeout(60_000),
+  });
   if (!response.ok) {
     throw new Error(`metadata request failed: HTTP ${response.status} ${metadataUrl}`);
   }
@@ -76,22 +111,81 @@ async function readMetadata(options) {
 async function verifyLocalFiles(selected, artifactDir) {
   if (!artifactDir) throw new Error('--artifact-dir is required with --metadata');
 
-  for (const [extension, url] of selected) {
-    const pathname = decodeURIComponent(new URL(url, 'https://update.invalid/').pathname);
+  for (const [extension, file] of selected) {
+    const pathname = decodeURIComponent(new URL(file.url, 'https://update.invalid/').pathname);
     const artifactPath = path.join(artifactDir, path.basename(pathname));
     const stat = await fs.stat(artifactPath).catch(() => null);
-    if (!stat?.isFile() || stat.size <= 0) {
+    if (!stat?.isFile()) {
       throw new Error(`missing local .${extension} update artifact: ${artifactPath}`);
+    }
+
+    if (stat.size !== file.size) {
+      throw new Error(
+        `local .${extension} update artifact size mismatch: expected ${file.size}, got ${stat.size}`,
+      );
+    }
+
+    const digest = await sha512File(artifactPath);
+    if (digest !== file.sha512) {
+      throw new Error(`local .${extension} update artifact sha512 mismatch: ${artifactPath}`);
     }
   }
 }
 
+function sha512File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha512');
+    const stream = createReadStream(filePath);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('base64')));
+  });
+}
+
 async function verifyRemoteFiles(selected, metadataUrl) {
-  for (const [extension, relativeUrl] of selected) {
-    const artifactUrl = new URL(relativeUrl, metadataUrl).href;
-    const response = await fetch(artifactUrl, { method: 'HEAD', cache: 'no-store', redirect: 'follow' });
-    if (!response.ok) {
-      throw new Error(`published .${extension} update artifact failed: HTTP ${response.status} ${artifactUrl}`);
+  for (const [extension, file] of selected) {
+    const artifactUrl = new URL(file.url, metadataUrl).href;
+    const headResponse = await fetch(artifactUrl, {
+      method: 'HEAD',
+      cache: 'no-store',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!headResponse.ok) {
+      throw new Error(`published .${extension} update artifact failed: HTTP ${headResponse.status} ${artifactUrl}`);
+    }
+
+    const contentLength = Number(headResponse.headers.get('content-length'));
+    if (!Number.isSafeInteger(contentLength) || contentLength !== file.size) {
+      throw new Error(
+        `published .${extension} update artifact size mismatch: expected ${file.size}, got ${headResponse.headers.get('content-length') || 'missing'}`,
+      );
+    }
+
+    const response = await fetch(artifactUrl, {
+      cache: 'no-store',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(900_000),
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`published .${extension} update artifact download failed: HTTP ${response.status} ${artifactUrl}`);
+    }
+
+    const hash = createHash('sha512');
+    let streamedSize = 0;
+    for await (const chunk of response.body) {
+      const buffer = Buffer.from(chunk);
+      streamedSize += buffer.length;
+      hash.update(buffer);
+    }
+
+    if (streamedSize !== file.size) {
+      throw new Error(
+        `published .${extension} update artifact streamed size mismatch: expected ${file.size}, got ${streamedSize}`,
+      );
+    }
+    if (hash.digest('base64') !== file.sha512) {
+      throw new Error(`published .${extension} update artifact sha512 mismatch: ${artifactUrl}`);
     }
   }
 }
@@ -119,7 +213,9 @@ async function main() {
   try {
     const options = parseArgs(process.argv.slice(2));
     const selected = await verifyMacosUpdateArtifacts(options);
-    const summary = [...selected.entries()].map(([extension, url]) => `${extension}=${url}`).join(' ');
+    const summary = [...selected.entries()]
+      .map(([extension, file]) => `${extension}=${file.url}`)
+      .join(' ');
     console.log(`macOS update artifacts verified: arch=${options.arch} ${summary}`);
   } catch (error) {
     console.error(`macOS update artifact verification failed: ${error.message}`);

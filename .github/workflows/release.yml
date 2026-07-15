@@ -41,12 +41,44 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify macOS signing credentials
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.MACOS_APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.MACOS_APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.MACOS_APPLE_API_ISSUER }}
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          : "${CSC_LINK:?release-prod secret MACOS_CSC_LINK is required}"
+          : "${CSC_KEY_PASSWORD:?release-prod secret MACOS_CSC_KEY_PASSWORD is required}"
+          : "${APPLE_API_KEY_BASE64:?release-prod secret MACOS_APPLE_API_KEY_BASE64 is required}"
+          : "${APPLE_API_KEY_ID:?release-prod secret MACOS_APPLE_API_KEY_ID is required}"
+          : "${APPLE_API_ISSUER:?release-prod secret MACOS_APPLE_API_ISSUER is required}"
+          : "${MACOS_TEAM_ID:?release-prod secret MACOS_TEAM_ID is required}"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: package-lock.json
+
+      - name: Prepare App Store Connect API key
+        shell: bash
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.MACOS_APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.MACOS_APPLE_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          node -e "require('node:fs').writeFileSync(process.argv[1], Buffer.from(process.env.APPLE_API_KEY_BASE64, 'base64'))" "$api_key_path"
+          test -s "$api_key_path"
+          grep -q 'BEGIN PRIVATE KEY' "$api_key_path"
+          chmod 600 "$api_key_path"
+          echo "APPLE_API_KEY=$api_key_path" >> "$GITHUB_ENV"
 
       - name: Cache runtime downloads
         uses: actions/cache@v4
@@ -90,7 +122,33 @@ jobs:
         run: node scripts/inject-version.js
 
       - name: Build Electron app (macOS ${{ matrix.arch }})
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.MACOS_APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.MACOS_APPLE_API_ISSUER }}
         run: npm run electron:build:mac:${{ matrix.arch }}
+
+      - name: Verify Developer ID signature
+        shell: bash
+        env:
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          app_path="$(find release -type d -name 'CatsCo.app' -print -quit)"
+          if [ -z "$app_path" ]; then
+            echo "CatsCo.app was not found in release output"
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          signature="$(codesign -dv --verbose=4 "$app_path" 2>&1)"
+          printf '%s\n' "$signature"
+          grep -q '^Authority=Developer ID Application:' <<< "$signature"
+          grep -q "^TeamIdentifier=${MACOS_TEAM_ID}$" <<< "$signature"
+          xcrun stapler validate "$app_path"
+          spctl --assess --type execute --verbose=4 "$app_path"
 
       - name: Verify macOS auto-update artifacts
         run: >-
@@ -284,6 +342,13 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
+      - name: Verify CDN publishing credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${VOLC_TOS_ACCESS_KEY_ID:?VOLC_TOS_ACCESS_KEY_ID is required}"
+          : "${VOLC_TOS_SECRET_ACCESS_KEY:?VOLC_TOS_SECRET_ACCESS_KEY is required}"
+
       - name: Download macOS x64 artifacts
         uses: actions/download-artifact@v4
         with:
@@ -324,32 +389,7 @@ jobs:
             done
           done
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: CatsCo ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          files: |
-            release-mac/x64/*.dmg
-            release-mac/x64/*.dmg.blockmap
-            release-mac/x64/*.zip
-            release-mac/x64/*.zip.blockmap
-            release-mac/x64/latest-mac-x64.yml
-            release-mac/arm64/*.dmg
-            release-mac/arm64/*.dmg.blockmap
-            release-mac/arm64/*.zip
-            release-mac/arm64/*.zip.blockmap
-            release-mac/arm64/latest-mac-arm64.yml
-            release-win/*
-            release-linux/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Ensure AWS CLI is available
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
         run: |
           if ! command -v aws >/dev/null 2>&1; then
             sudo apt-get update
@@ -359,7 +399,6 @@ jobs:
           aws configure set default.s3.addressing_style virtual
 
       - name: Upload release payloads to Hong Kong source bucket
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
         run: |
           set -euo pipefail
 
@@ -411,7 +450,6 @@ jobs:
           printf '%s\n' "${replicated_keys[@]}" > replicated-keys.txt
 
       - name: Wait for Guangzhou bucket replication
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
         run: |
           set -euo pipefail
 
@@ -448,7 +486,6 @@ jobs:
           done < replicated-keys.txt
 
       - name: Expose replicated payloads in Guangzhou bucket
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
         run: |
           set -euo pipefail
 
@@ -465,9 +502,32 @@ jobs:
               >/dev/null
           done < replicated-keys.txt
 
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CatsCo ${{ github.ref_name }}
+          draft: true
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-mac/x64/*.dmg
+            release-mac/x64/*.dmg.blockmap
+            release-mac/x64/*.zip
+            release-mac/x64/*.zip.blockmap
+            release-mac/x64/latest-mac-x64.yml
+            release-mac/arm64/*.dmg
+            release-mac/arm64/*.dmg.blockmap
+            release-mac/arm64/*.zip
+            release-mac/arm64/*.zip.blockmap
+            release-mac/arm64/latest-mac-arm64.yml
+            release-win/*
+            release-linux/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
       - name: Publish latest metadata to Guangzhou bucket
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
         run: |
           set -euo pipefail
 
@@ -495,24 +555,86 @@ jobs:
           done
 
       - name: Verify published update metadata
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
         run: |
           set -euo pipefail
 
-          metadata_urls=(
-            "${XIAOBA_UPDATE_BASE_URL}/latest.yml"
-            "${XIAOBA_UPDATE_BASE_URL}/latest-linux.yml"
-            "${XIAOBA_UPDATE_BASE_URL}/macos-x64/latest-mac.yml"
-            "${XIAOBA_UPDATE_BASE_URL}/macos-arm64/latest-mac.yml"
-          )
+          ATTEMPTS=12
+          DELAY_SECONDS=5
 
-          for url in "${metadata_urls[@]}"; do
-            status="$(curl -I -L -s -o /dev/null -w "%{http_code}" "$url")"
-            if [ "$status" != "200" ]; then
-              echo "Metadata check failed for $url (HTTP $status)"
-              exit 1
-            fi
-          done
+          verify_metadata() {
+            local local_file="$1"
+            local remote_url="$2"
+            local downloaded
+            local attempt=1
+            downloaded="$(mktemp)"
+
+            while [ "$attempt" -le "$ATTEMPTS" ]; do
+              if curl --fail --silent --show-error --location \
+                --connect-timeout 15 --max-time 60 \
+                --header 'Cache-Control: no-cache' \
+                --output "$downloaded" \
+                "$remote_url" \
+                && cmp --silent "$local_file" "$downloaded"; then
+                echo "Published metadata matches: $remote_url"
+                rm -f "$downloaded"
+                return 0
+              fi
+
+              echo "Waiting for exact metadata at $remote_url ($attempt/$ATTEMPTS)..."
+              sleep "$DELAY_SECONDS"
+              attempt=$((attempt + 1))
+            done
+
+            rm -f "$downloaded"
+            echo "Published metadata does not match local release output: $remote_url"
+            return 1
+          }
+
+          verify_remote_artifact() {
+            local local_file="$1"
+            local remote_url="$2"
+            local expected_size
+            local expected_sha512
+            local headers
+            local remote_size
+            local remote_sha512
+            local attempt=1
+            expected_size="$(stat --format='%s' "$local_file")"
+            expected_sha512="$(openssl dgst -sha512 -binary "$local_file" | base64 --wrap=0)"
+
+            while [ "$attempt" -le "$ATTEMPTS" ]; do
+              if headers="$(curl --fail --silent --show-error --head --location \
+                --connect-timeout 15 --max-time 60 \
+                --header 'Cache-Control: no-cache' "$remote_url")"; then
+                remote_size="$(printf '%s\n' "$headers" \
+                  | tr -d '\r' \
+                  | awk 'tolower($1) == "content-length:" { value=$2 } END { print value }')"
+                if [ "$remote_size" = "$expected_size" ]; then
+                  if remote_sha512="$(curl --fail --silent --show-error --location \
+                    --connect-timeout 15 --max-time 900 \
+                    --header 'Cache-Control: no-cache' "$remote_url" \
+                    | openssl dgst -sha512 -binary \
+                    | base64 --wrap=0)" \
+                    && [ "$remote_sha512" = "$expected_sha512" ]; then
+                    echo "Published artifact hash matches: $remote_url ($expected_size bytes)"
+                    return 0
+                  fi
+                fi
+              fi
+
+              echo "Waiting for exact artifact at $remote_url ($attempt/$ATTEMPTS; size ${remote_size:-missing}/$expected_size)..."
+              sleep "$DELAY_SECONDS"
+              attempt=$((attempt + 1))
+            done
+
+            echo "Published artifact size or SHA-512 mismatch: $remote_url"
+            return 1
+          }
+
+          verify_metadata release-win/latest.yml "${XIAOBA_UPDATE_BASE_URL}/latest.yml"
+          verify_metadata release-linux/latest-linux.yml "${XIAOBA_UPDATE_BASE_URL}/latest-linux.yml"
+          verify_metadata release-mac/x64/latest-mac.yml "${XIAOBA_UPDATE_BASE_URL}/macos-x64/latest-mac.yml"
+          verify_metadata release-mac/arm64/latest-mac.yml "${XIAOBA_UPDATE_BASE_URL}/macos-arm64/latest-mac.yml"
 
           for arch in x64 arm64; do
             for extension in dmg zip; do
@@ -524,10 +646,12 @@ jobs:
 
               name="$(basename "${artifacts[0]}")"
               url="${XIAOBA_UPDATE_BASE_URL}/macos-$arch/$name"
-              status="$(curl -I -L -s -o /dev/null -w "%{http_code}" "$url")"
-              if [ "$status" != "200" ]; then
-                echo "Published macOS artifact check failed for $url (HTTP $status)"
-                exit 1
-              fi
+              verify_remote_artifact "${artifacts[0]}" "$url"
             done
           done
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
