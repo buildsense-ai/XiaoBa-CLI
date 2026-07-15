@@ -80,7 +80,7 @@ class FakeSessionLogSourceAdapter implements SessionLogSourceAdapter {
       sourceId: opts.sourceId,
       label: `Fake Source ${opts.sourceId}`,
       category: opts.category ?? 'internal',
-      provider: 'fake',
+      provider: `fake-${opts.sourceId}`,
       reader: 'fake',
     };
     for (let i = 0; i < opts.resourceCount; i++) {

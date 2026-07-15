@@ -424,6 +424,11 @@ export interface RuntimeLearningOptions {
   externalSourceBudget?: SourceWorkBudget;
   /** Per-source budget for the internal JSONL lane. */
   internalSourceBudget?: SourceWorkBudget;
+  /**
+   * Maximum concurrent external provider reads (issue #92). Defaults to
+   * the config value (3, range 1–8). When set, overrides the config value.
+   */
+  externalSourceMaxConcurrency?: number;
   /** Injectable clock for tests. */
   clock?: () => Date;
 }
@@ -627,6 +632,10 @@ export class RuntimeLearning {
   private shutdownDrainRequested = false;
   /** Operator pause for external reads only; internal discovery/review remains live. */
   private externalSourceDrainRequested = false;
+  /** Maximum concurrent external provider reads (issue #92). */
+  private readonly externalSourceMaxConcurrency: number;
+  /** Shared abort signal for the current external read phase. */
+  private externalReadAbortController: AbortController | null = null;
 
   constructor(options: RuntimeLearningOptions) {
     this.workingDirectory = options.workingDirectory;
@@ -662,6 +671,9 @@ export class RuntimeLearning {
     };
     this.externalSourceBudget = options.externalSourceBudget ?? DEFAULT_EXTERNAL_SOURCE_BUDGET;
     this.internalSourceBudget = options.internalSourceBudget ?? DEFAULT_INTERNAL_SOURCE_BUDGET;
+    this.externalSourceMaxConcurrency = clampConcurrency(
+      options.externalSourceMaxConcurrency ?? this.config.externalSessionLogMaxConcurrency,
+    );
     this.reviewContinuationPath = reviewContinuationPathForEpisodeStore(
       this.config.learningEpisodeStorePath,
     );
@@ -825,6 +837,10 @@ export class RuntimeLearning {
    */
   requestExternalSourceDrain(): void {
     this.externalSourceDrainRequested = true;
+    // Abort any in-flight external reads so they stop promptly (issue #92).
+    if (this.externalReadAbortController) {
+      this.externalReadAbortController.abort();
+    }
   }
 
   /**
@@ -1447,7 +1463,7 @@ export class RuntimeLearning {
       const shouldScan = isDiscoveryWake;
 
       if (shouldScan) {
-        const discoveryResult = this.runDiscovery();
+        const discoveryResult = await this.runDiscovery();
         wake.discovery.scanned = discoveryResult.sourceReports.some(r => r.enabled);
         wake.discovery.filesScanned = discoveryResult.sourceReports.reduce((sum, r) => sum + r.resourcesDiscovered, 0);
         wake.discovery.unitsProcessed = discoveryResult.sourceReports.reduce((sum, r) => sum + r.unitsProcessed, 0);
@@ -2126,37 +2142,130 @@ export class RuntimeLearning {
    * On success the consecutive count resets to zero. Suspended sources are
    * skipped on subsequent wakes until the suspension deadline passes (AC3).
    */
-  private runDiscovery(): {
+  private async runDiscovery(): Promise<{
     sourceReports: readonly SessionLogSourceReport[];
     admittedEpisodes: number;
     contradictionSignals: number;
-  } {
+  }> {
     const sourceReports: SessionLogSourceReport[] = [];
     let totalAdmittedEpisodes = 0;
     let totalContradictionSignals = 0;
+    let externalProvenanceUpdated = false;
 
     // Wake-level caps: bound resources examined, candidates admitted, and
     // wall-clock time so discovery cannot starve the overdue settlement/review
     // stages that run after it. Remaining resources are deferred to the next
     // wake; their cursors are NOT advanced here (only successfully processed
     // resources are acknowledged below), so no cursor is falsely acknowledged.
-    const discoveryStartMs = this.clock().getTime();
-    let wakeResourcesExamined = 0;
-    let wakeAdmittedEpisodes = 0;
-    let discoveryCapped = false;
+    const shared = {
+      discoveryStartMs: this.clock().getTime(),
+      wakeResourcesExamined: 0,
+      wakeAdmittedEpisodes: 0,
+      discoveryCapped: false,
+    };
 
     // ---- AC2: Internal-first ordering ----
     const orderedSources = this.orderSourcesForDiscovery();
-    let externalProvenanceUpdated = false;
+    const internalSources = orderedSources.filter(adapter => adapter.identity.category !== 'external');
+    const externalSources = orderedSources.filter(adapter => adapter.identity.category === 'external');
 
-    for (const adapter of orderedSources) {
-      if (discoveryCapped) break;
-      const enabled = adapter.isEnabled();
-      const identity = adapter.identity;
-      const isExternal = identity.category === 'external';
+    for (const adapter of internalSources) {
+      if (shared.discoveryCapped) break;
+      const result = await this.processDiscoverySource(adapter, shared);
+      sourceReports.push(result.report);
+      totalAdmittedEpisodes += result.admittedEpisodes;
+      totalContradictionSignals += result.contradictionSignals;
+      externalProvenanceUpdated ||= result.externalProvenanceUpdated;
+    }
 
-      if (!enabled) {
-        sourceReports.push({
+    if (!shared.discoveryCapped && externalSources.length > 0) {
+      const { controller, cancelTimer } = this.createExternalDiscoveryAbortController(shared.discoveryStartMs);
+      this.externalReadAbortController = controller;
+      try {
+        const externalReports = new Array<SessionLogSourceReport>(externalSources.length);
+        let externalAdmittedEpisodes = 0;
+        let externalContradictionSignals = 0;
+        await mapWithConcurrency(
+          externalSources.map((adapter, index) => ({ adapter, index })),
+          this.externalSourceMaxConcurrency,
+          async ({ adapter, index }) => {
+            if (shared.discoveryCapped) return;
+            const result = await this.processDiscoverySource(adapter, shared, { signal: controller.signal });
+            externalReports[index] = result.report;
+            externalAdmittedEpisodes += result.admittedEpisodes;
+            externalContradictionSignals += result.contradictionSignals;
+            externalProvenanceUpdated ||= result.externalProvenanceUpdated;
+          },
+        );
+        sourceReports.push(...externalReports.filter((report): report is SessionLogSourceReport => Boolean(report)));
+        totalAdmittedEpisodes += externalAdmittedEpisodes;
+        totalContradictionSignals += externalContradictionSignals;
+      } finally {
+        this.externalReadAbortController = null;
+        if (cancelTimer) clearTimeout(cancelTimer);
+      }
+    }
+
+    // Persist external source scheduling state (backoff deadlines) for restart
+    // recovery (AC6).
+    this.saveExternalSourceSchedulingState();
+    if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
+      this.saveExternalEpisodeProvenanceState();
+    }
+
+    return {
+      sourceReports,
+      admittedEpisodes: totalAdmittedEpisodes,
+      contradictionSignals: totalContradictionSignals,
+    };
+  }
+
+  private createExternalDiscoveryAbortController(
+    discoveryStartMs: number,
+  ): { controller: AbortController; cancelTimer: NodeJS.Timeout | null } {
+    const controller = new AbortController();
+    if (this.shutdownDrainRequested || this.externalSourceDrainRequested) {
+      controller.abort();
+      return { controller, cancelTimer: null };
+    }
+    const remainingMs = Math.max(
+      0,
+      this.discoveryQuotas.maxDiscoveryMs - (this.clock().getTime() - discoveryStartMs),
+    );
+    if (remainingMs === 0) {
+      controller.abort();
+      return { controller, cancelTimer: null };
+    }
+    const cancelTimer = setTimeout(() => controller.abort(), remainingMs);
+    cancelTimer.unref?.();
+    return { controller, cancelTimer };
+  }
+
+  private async processDiscoverySource(
+    adapter: SessionLogSourceAdapter,
+    shared: {
+      discoveryStartMs: number;
+      wakeResourcesExamined: number;
+      wakeAdmittedEpisodes: number;
+      discoveryCapped: boolean;
+    },
+    options: {
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<{
+    report: SessionLogSourceReport;
+    admittedEpisodes: number;
+    contradictionSignals: number;
+    externalProvenanceUpdated: boolean;
+  }> {
+    const identity = adapter.identity;
+    const isExternal = identity.category === 'external';
+    const enabled = adapter.isEnabled();
+    const budget = isExternal ? this.externalSourceBudget : this.internalSourceBudget;
+
+    if (!enabled) {
+      return {
+        report: {
           sourceId: identity.sourceId,
           category: identity.category,
           enabled: false,
@@ -2164,14 +2273,23 @@ export class RuntimeLearning {
           unitsProcessed: 0,
           advancedResources: 0,
           status: 'active',
-          ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, this.externalSourceFailureState.get(identity.sourceId)) : {}),
-        });
-        continue;
-      }
+          ...(isExternal
+            ? this.buildExternalSourceReportDiagnostics(
+              identity,
+              this.externalSourceFailureState.get(identity.sourceId),
+            )
+            : {}),
+        },
+        admittedEpisodes: 0,
+        contradictionSignals: 0,
+        externalProvenanceUpdated: false,
+      };
+    }
 
-      if (isExternal && (this.shutdownDrainRequested || this.externalSourceDrainRequested)) {
-        const failureState = this.externalSourceFailureState.get(identity.sourceId);
-        sourceReports.push({
+    if (isExternal && (this.shutdownDrainRequested || this.externalSourceDrainRequested || options.signal?.aborted)) {
+      const failureState = this.externalSourceFailureState.get(identity.sourceId);
+      return {
+        report: {
           sourceId: identity.sourceId,
           category: identity.category,
           enabled: true,
@@ -2180,16 +2298,19 @@ export class RuntimeLearning {
           advancedResources: 0,
           status: 'drained',
           failureState,
-          ...(this.buildExternalSourceReportDiagnostics(identity, failureState)),
-        });
-        continue;
-      }
+          ...this.buildExternalSourceReportDiagnostics(identity, failureState),
+        },
+        admittedEpisodes: 0,
+        contradictionSignals: 0,
+        externalProvenanceUpdated: false,
+      };
+    }
 
-      // ---- AC3: Skip suspended/manual-action external sources ----
-      if (isExternal) {
-        const failureState = this.externalSourceFailureState.get(identity.sourceId);
-        if (this.shouldSkipExternalSourceForFailure(failureState)) {
-          sourceReports.push({
+    if (isExternal) {
+      const failureState = this.externalSourceFailureState.get(identity.sourceId);
+      if (this.shouldSkipExternalSourceForFailure(failureState)) {
+        return {
+          report: {
             sourceId: identity.sourceId,
             category: identity.category,
             enabled: true,
@@ -2198,29 +2319,23 @@ export class RuntimeLearning {
             advancedResources: 0,
             status: 'backoff',
             failureState,
-            ...(this.buildExternalSourceReportDiagnostics(identity, failureState)),
-          });
-          continue;
-        }
+            ...this.buildExternalSourceReportDiagnostics(identity, failureState),
+          },
+          admittedEpisodes: 0,
+          contradictionSignals: 0,
+          externalProvenanceUpdated: false,
+        };
       }
+    }
 
-      // Every lane, including the internal JSONL lane, has resource/byte/time
-      // limits. Optional external sources use a separately configurable cap.
-      const budget = isExternal ? this.externalSourceBudget : this.internalSourceBudget;
-      const sourceStartMs = this.clock().getTime();
-      let sourceResourcesExamined = 0;
-      let sourceBytesRead = 0;
-      let sourceEventsRead = 0;
-      let sourceReaderElapsedMs = 0;
-      let sourceHadFailure = false;
-      let sourceBudgetHit = false;
-      const providerLock = isExternal
-        ? this.acquireExternalProviderLock(identity.provider, 'continuous-discovery', identity.sourceId)
-        : null;
-      if (providerLock && !providerLock.acquired) {
-        this.recordExternalSourceLockContention(identity.sourceId, identity.provider);
-        const failureState = this.externalSourceFailureState.get(identity.sourceId) ?? undefined;
-        sourceReports.push({
+    const providerLock = isExternal
+      ? this.acquireExternalProviderLock(identity.provider, 'continuous-discovery', identity.sourceId)
+      : null;
+    if (providerLock && !providerLock.acquired) {
+      this.recordExternalSourceLockContention(identity.sourceId, identity.provider);
+      const failureState = this.externalSourceFailureState.get(identity.sourceId) ?? undefined;
+      return {
+        report: {
           sourceId: identity.sourceId,
           category: identity.category,
           enabled: true,
@@ -2230,109 +2345,143 @@ export class RuntimeLearning {
           status: 'locked',
           failureState,
           budget,
-          ...(this.buildExternalSourceReportDiagnostics(identity, failureState)),
+          ...this.buildExternalSourceReportDiagnostics(identity, failureState),
           ...(adapter.getSupportStatus ? { supportStatus: adapter.getSupportStatus() } : {}),
           ...(adapter.getUnsupportedReason?.() ? { unsupportedReason: adapter.getUnsupportedReason() } : {}),
-        });
-        continue;
-      }
+        },
+        admittedEpisodes: 0,
+        contradictionSignals: 0,
+        externalProvenanceUpdated: false,
+      };
+    }
 
-      try {
+    let sourceResourcesExamined = 0;
+    let sourceBytesRead = 0;
+    let sourceEventsRead = 0;
+    let sourceReaderElapsedMs = 0;
+    let sourceHadFailure = false;
+    let sourceBudgetHit = false;
+    let sourceDrained = false;
+    let unitsProcessed = 0;
+    let advancedResources = 0;
+    let totalAdmittedEpisodes = 0;
+    let totalContradictionSignals = 0;
+    let externalProvenanceUpdated = false;
+    const sourceStartMs = this.clock().getTime();
+
+    try {
       let resources: readonly SessionLogSourceResource[];
       try {
         resources = adapter.discoverResources({
           maxResources: Math.min(
             budget.maxResourcesPerWake,
-            Math.max(1, this.discoveryQuotas.maxResourcesPerWake - wakeResourcesExamined),
+            Math.max(1, this.discoveryQuotas.maxResourcesPerWake - shared.wakeResourcesExamined),
           ),
           maxElapsedMs: Math.min(
             budget.maxElapsedMsPerWake,
-            Math.max(1, this.discoveryQuotas.maxDiscoveryMs - (this.clock().getTime() - discoveryStartMs)),
+            Math.max(1, this.discoveryQuotas.maxDiscoveryMs - (this.clock().getTime() - shared.discoveryStartMs)),
           ),
         });
       } catch (error) {
-        // AC3: Discovering resources is source-local failure; keep discovery
-        // for other sources and keep OPR independent of this failure.
         sourceHadFailure = true;
         if (isExternal) this.recordExternalSourceFailure(identity.sourceId, error);
-        const failureState = isExternal ? (this.externalSourceFailureState.get(identity.sourceId) ?? undefined) : undefined;
-        sourceReports.push({
-          sourceId: identity.sourceId,
-          category: identity.category,
-          enabled: true,
-          resourcesDiscovered: 0,
-          unitsProcessed: 0,
-          advancedResources: 0,
-          status: 'failed',
-          failureState,
-          budget,
-          ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, failureState) : {}),
-        });
-        continue;
+        const failureState = isExternal
+          ? (this.externalSourceFailureState.get(identity.sourceId) ?? undefined)
+          : undefined;
+        return {
+          report: {
+            sourceId: identity.sourceId,
+            category: identity.category,
+            enabled: true,
+            resourcesDiscovered: 0,
+            unitsProcessed: 0,
+            advancedResources: 0,
+            status: 'failed',
+            failureState,
+            budget,
+            ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, failureState) : {}),
+          },
+          admittedEpisodes: 0,
+          contradictionSignals: 0,
+          externalProvenanceUpdated: false,
+        };
       }
-
-      let unitsProcessed = 0;
-      let advancedResources = 0;
 
       const readContextBase: SessionLogSourceReadContext = { orderedResources: resources };
 
       for (const resource of resources) {
-        if (discoveryCapped) break;
+        if (shared.discoveryCapped) break;
+        if (isExternal && options.signal?.aborted) {
+          sourceDrained = true;
+          break;
+        }
 
-        // ---- AC1: Per-source quota checks ----
-        {
-          if (sourceResourcesExamined >= budget.maxResourcesPerWake) {
-            sourceBudgetHit = true;
-            break;
-          }
-          if (budget.maxBytesPerWake > 0 && sourceBytesRead >= budget.maxBytesPerWake) {
-            sourceBudgetHit = true;
-            break;
-          }
-          const sourceElapsedMs = this.clock().getTime() - sourceStartMs;
-          if (sourceResourcesExamined > 0 && sourceElapsedMs >= budget.maxElapsedMsPerWake) {
-            sourceBudgetHit = true;
-            break;
-          }
+        if (sourceResourcesExamined >= budget.maxResourcesPerWake) {
+          sourceBudgetHit = true;
+          break;
+        }
+        if (budget.maxBytesPerWake > 0 && sourceBytesRead >= budget.maxBytesPerWake) {
+          sourceBudgetHit = true;
+          break;
+        }
+        const sourceElapsedMs = this.clock().getTime() - sourceStartMs;
+        if (sourceResourcesExamined > 0 && sourceElapsedMs >= budget.maxElapsedMsPerWake) {
+          sourceBudgetHit = true;
+          break;
         }
         sourceResourcesExamined++;
 
-        // ---- Wake-level cap checks ----
-        if (wakeResourcesExamined >= this.discoveryQuotas.maxResourcesPerWake) {
-          discoveryCapped = true;
+        if (shared.wakeResourcesExamined >= this.discoveryQuotas.maxResourcesPerWake) {
+          shared.discoveryCapped = true;
           break;
         }
-        if (wakeAdmittedEpisodes >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
-          discoveryCapped = true;
+        if (shared.wakeAdmittedEpisodes >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
+          shared.discoveryCapped = true;
           break;
         }
-        if (wakeResourcesExamined > 0
-          && this.clock().getTime() - discoveryStartMs > this.discoveryQuotas.maxDiscoveryMs) {
-          discoveryCapped = true;
+        if (
+          shared.wakeResourcesExamined > 0
+          && this.clock().getTime() - shared.discoveryStartMs > this.discoveryQuotas.maxDiscoveryMs
+        ) {
+          shared.discoveryCapped = true;
           break;
         }
-        wakeResourcesExamined++;
+        shared.wakeResourcesExamined++;
 
-        // ---- Read resource ----
         let readResult: SessionLogSourceReadResult;
         try {
           const elapsedMs = Math.max(0, this.clock().getTime() - sourceStartMs);
-          readResult = adapter.read(resource, {
+          const readContext: SessionLogSourceReadContext = {
             ...readContextBase,
             remainingBudget: {
               maxResourcesPerWake: Math.max(0, budget.maxResourcesPerWake - sourceResourcesExamined + 1),
               maxBytesPerWake: Math.max(0, budget.maxBytesPerWake - sourceBytesRead),
               maxElapsedMsPerWake: Math.max(0, budget.maxElapsedMsPerWake - elapsedMs),
             },
-          });
+          };
+          if (isExternal && adapter.readAsync) {
+            readResult = await adapter.readAsync(resource, readContext, options.signal ?? new AbortController().signal);
+          } else if (isExternal) {
+            readResult = await Promise.resolve().then(() => adapter.read(resource, readContext));
+          } else {
+            readResult = adapter.read(resource, readContext);
+          }
         } catch (error) {
-          // AC3: Per-source failure recording, NOT OPR
+          if (isExternal && options.signal?.aborted) {
+            sourceDrained = true;
+            break;
+          }
           adapter.markFailed(resource, error);
           sourceHadFailure = true;
           if (isExternal) {
             this.recordExternalSourceFailure(identity.sourceId, error, { resourceRef: resource.resourceRef });
           }
           continue;
+        }
+
+        if (isExternal && options.signal?.aborted) {
+          sourceDrained = true;
+          break;
         }
 
         if (readResult.status === 'failed') {
@@ -2375,12 +2524,10 @@ export class RuntimeLearning {
         sourceReaderElapsedMs += readResult.accounting?.elapsedMs ?? 0;
 
         if (distillationUnits.length === 0) {
-          // No distillation unit — advance cursor if the adapter reports progress
           if (readResult.advanced || readResult.releaseResource) {
             try {
               adapter.acknowledge(resource, readResult);
               if (readResult.advanced) advancedResources++;
-              // Success resets failure count for external sources
               if (isExternal) {
                 this.resetExternalSourceFailure(identity.sourceId);
               }
@@ -2391,7 +2538,7 @@ export class RuntimeLearning {
                 this.recordExternalSourceFailure(identity.sourceId, error, { resourceRef: resource.resourceRef });
               }
             }
-          } else if (isExternal) {
+          } else if (isExternal && !options.signal?.aborted) {
             this.recordExternalSourceFailure(identity.sourceId, new Error('pending external range remains unacknowledged'), {
               failureClass: 'pending',
               resourceRef: resource.resourceRef,
@@ -2400,10 +2547,6 @@ export class RuntimeLearning {
           continue;
         }
 
-        // A multi-event external read is one acknowledgement unit: every
-        // stable event must be admitted before the cursor can advance. A
-        // missing identity would make provenance/capsule ownership ambiguous,
-        // so fail closed and leave the whole batch resumable.
         let batchEventInProgress: SourceEventIdentity | undefined;
         try {
           const eventIdentities = readResult.eventIdentities ?? [];
@@ -2415,10 +2558,10 @@ export class RuntimeLearning {
           let batchContradictionSignals = 0;
           for (let index = 0; index < distillationUnits.length; index++) {
             if (
-              wakeAdmittedEpisodes + batchAdmittedEpisodes
+              shared.wakeAdmittedEpisodes + batchAdmittedEpisodes
               >= this.discoveryQuotas.maxAdmittedEpisodesPerWake
             ) {
-              discoveryCapped = true;
+              shared.discoveryCapped = true;
               throw new DiscoveryAdmissionQuotaReachedError();
             }
             const eventIdentity = eventIdentities[index]
@@ -2434,8 +2577,6 @@ export class RuntimeLearning {
             };
             batchEventInProgress = resolvedEventIdentity;
 
-            // External evidence crosses the privacy boundary before it reaches
-            // EvidenceIngestor. Internal source behavior remains unchanged.
             const ingestUnit = isExternal
               ? sanitizeExternalDistillationUnit(distillationUnits[index]!, {
                 sourceId: identity.sourceId,
@@ -2462,9 +2603,6 @@ export class RuntimeLearning {
 
             this.queueCuratorObservation(ingestionResult.admittedEpisodeIds);
             if (isExternal) {
-              // Persist the redacted Evidence Capsule BEFORE acknowledging the
-              // external cursor. If any event fails, the fixed batch remains
-              // unacknowledged and can be replayed idempotently.
               this.createCapsulesForExternalSource(
                 identity,
                 resolvedEventIdentity,
@@ -2476,9 +2614,6 @@ export class RuntimeLearning {
             batchContradictionSignals += ingestionResult.contradictionSignalIds.length;
           }
 
-          // Provenance is part of the crash-safe external commit boundary.
-          // Persist it after episodes/capsules but before cursor acknowledgement;
-          // replay is idempotent if the process stops anywhere before this point.
           if (isExternal && (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty)) {
             this.saveExternalEpisodeProvenanceState();
             externalProvenanceUpdated = false;
@@ -2488,9 +2623,8 @@ export class RuntimeLearning {
           unitsProcessed += distillationUnits.length;
           advancedResources++;
           totalAdmittedEpisodes += batchAdmittedEpisodes;
-          wakeAdmittedEpisodes += batchAdmittedEpisodes;
+          shared.wakeAdmittedEpisodes += batchAdmittedEpisodes;
           totalContradictionSignals += batchContradictionSignals;
-          // Success resets failure count for external sources
           if (isExternal) {
             this.resetExternalSourceFailure(identity.sourceId);
           }
@@ -2499,7 +2633,6 @@ export class RuntimeLearning {
             sourceBudgetHit = true;
             break;
           }
-          // AC3: Per-source failure on ingestion, NOT OPR
           adapter.markFailed(resource, error);
           sourceHadFailure = true;
           if (isExternal) {
@@ -2527,53 +2660,42 @@ export class RuntimeLearning {
         }
       }
 
-      // ---- Determine status ----
       let status: SessionLogSourceStatus = 'active';
-      if (sourceHadFailure) status = 'failed';
-      if (sourceBudgetHit) status = 'quota_reached';
+      if (sourceDrained) status = 'drained';
+      else if (sourceHadFailure) status = 'failed';
+      if (sourceBudgetHit && !sourceDrained) status = 'quota_reached';
 
       const failureState = isExternal
         ? this.externalSourceFailureState.get(identity.sourceId) ?? undefined
         : undefined;
 
-      sourceReports.push({
-        sourceId: identity.sourceId,
-        category: identity.category,
-        enabled: true,
-        resourcesDiscovered: resources.length,
-        unitsProcessed,
-        advancedResources,
-        status,
-        failureState,
-        budget,
-        accounting: {
-          events: sourceEventsRead,
-          bytes: sourceBytesRead,
-          elapsedMs: Math.max(sourceReaderElapsedMs, this.clock().getTime() - sourceStartMs),
+      return {
+        report: {
+          sourceId: identity.sourceId,
+          category: identity.category,
+          enabled: true,
+          resourcesDiscovered: resources.length,
+          unitsProcessed,
+          advancedResources,
+          status,
+          failureState,
+          budget,
+          accounting: {
+            events: sourceEventsRead,
+            bytes: sourceBytesRead,
+            elapsedMs: Math.max(sourceReaderElapsedMs, this.clock().getTime() - sourceStartMs),
+          },
+          ...(adapter.getSupportStatus ? { supportStatus: adapter.getSupportStatus() } : {}),
+          ...(adapter.getUnsupportedReason?.() ? { unsupportedReason: adapter.getUnsupportedReason() } : {}),
+          ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, failureState) : {}),
         },
-        ...(adapter.getSupportStatus ? { supportStatus: adapter.getSupportStatus() } : {}),
-        ...(adapter.getUnsupportedReason?.()
-          ? { unsupportedReason: adapter.getUnsupportedReason() }
-          : {}),
-        ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, failureState) : {}),
-      });
-      } finally {
-        if (providerLock?.acquired) providerLock.release();
-      }
+        admittedEpisodes: totalAdmittedEpisodes,
+        contradictionSignals: totalContradictionSignals,
+        externalProvenanceUpdated,
+      };
+    } finally {
+      if (providerLock?.acquired) providerLock.release();
     }
-
-    // Persist external source scheduling state (backoff deadlines) for restart
-    // recovery (AC6).
-    this.saveExternalSourceSchedulingState();
-    if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
-      this.saveExternalEpisodeProvenanceState();
-    }
-
-    return {
-      sourceReports,
-      admittedEpisodes: totalAdmittedEpisodes,
-      contradictionSignals: totalContradictionSignals,
-    };
   }
 
   // -----------------------------------------------------------------------
@@ -3632,6 +3754,14 @@ async function mapWithConcurrency<T>(
     }
   };
   await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, run));
+}
+
+/** Clamp external provider read concurrency to the supported 1–8 range. */
+function clampConcurrency(value: number): number {
+  const n = Math.floor(value);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  if (n > 8) return 8;
+  return n;
 }
 
 function toErrorMessage(error: unknown): string {

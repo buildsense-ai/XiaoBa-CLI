@@ -185,6 +185,18 @@ export interface SessionLogSourceAdapter {
     resource: SessionLogSourceResource,
     context: SessionLogSourceReadContext,
   ): SessionLogSourceReadResult;
+  /**
+   * Asynchronous, cancellable read boundary for external source lanes
+   * (issue #92). When implemented, the Runtime uses this method for
+   * bounded concurrent external reads with AbortSignal-based cancellation.
+   * Adapters that do not implement this method fall back to synchronous
+   * read() wrapped in a microtask.
+   */
+  readAsync?(
+    resource: SessionLogSourceResource,
+    context: SessionLogSourceReadContext,
+    signal: AbortSignal,
+  ): Promise<SessionLogSourceReadResult>;
   acknowledge(resource: SessionLogSourceResource, result: SessionLogSourceReadResult): void;
   markFailed(resource: SessionLogSourceResource, error: unknown): void;
   close?(): void;
@@ -566,6 +578,12 @@ export interface ExternalSourceReader {
    *          position after reading.
    */
   read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSourceReaderResult;
+  /** Optional async/cancellable read seam for bounded concurrent reads (issue #92). */
+  readAsync?(
+    resource: SessionLogSourceResource,
+    cursor: SourceCursor,
+    signal: AbortSignal,
+  ): Promise<ExternalSourceReaderResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1196,6 +1214,71 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       };
     }
 
+    return this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult);
+  }
+
+  async readAsync(
+    resource: SessionLogSourceResource,
+    _context: SessionLogSourceReadContext,
+    signal: AbortSignal,
+  ): Promise<SessionLogSourceReadResult> {
+    if (!this.enabled || !this.reader) {
+      return {
+        distillationUnit: null,
+        advanced: false,
+        status: 'disabled',
+        newCursor: {
+          resourceRef: resource.resourceRef,
+          position: 0,
+          processedCount: 0,
+        },
+      };
+    }
+
+    const state = this.cursorStorePath
+      ? loadExternalCursorState(this.cursorStorePath)
+      : emptyExternalCursorState();
+    const resourceState = state.resources[resource.resourceRef];
+    const sourceCursor = readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
+    const resourceCursor: SourceCursor = sourceCursor
+      ? { ...sourceCursor, resourceRef: resource.resourceRef }
+      : {
+          resourceRef: resource.resourceRef,
+          position: -1,
+          processedCount: 0,
+        };
+
+    let readerResult: ExternalSourceReaderResult;
+    try {
+      readerResult = this.reader.readAsync
+        ? await this.reader.readAsync(resource, resourceCursor, signal)
+        : await Promise.resolve().then(() => this.reader!.read(resource, resourceCursor));
+    } catch (error) {
+      const message = redactExternalSourceDiagnostic(error);
+      this.markFailed(resource, error);
+      return {
+        distillationUnit: null,
+        advanced: false,
+        status: 'failed',
+        newCursor: resourceCursor,
+        failure: {
+          failureClass: classifyExternalSourceFailureMessage(message),
+          message,
+          resourceRef: resource.resourceRef,
+        },
+      };
+    }
+
+    return this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult);
+  }
+
+  private materializeExternalReadResult(
+    resource: SessionLogSourceResource,
+    state: ExternalCursorState,
+    resourceState: ExternalDiscoveredResourceState | undefined,
+    resourceCursor: SourceCursor,
+    readerResult: ExternalSourceReaderResult,
+  ): SessionLogSourceReadResult {
     if (readerResult.status === 'pending' || readerResult.events.length === 0) {
       return {
         distillationUnit: null,
@@ -1205,10 +1288,6 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       };
     }
 
-    // A durable operator tombstone authorizes crossing this stable event
-    // identity even if the provider later changes its revision/hash. Apply it
-    // before mutation checks; otherwise a skipped event can never unblock the
-    // cursor after an integrity-conflict quarantine.
     const unskippedEvents = readerResult.events.filter(
       event => !isSkippedExternalEvent(state, this.identity, event),
     );

@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 import { DistillationUnit } from './distillation-unit';
@@ -235,6 +235,29 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
       byteLength: page.events.reduce((sum, event) => sum + event.byteLength, 0),
     };
   }
+
+  async readAsync(
+    resource: SessionLogSourceResource,
+    cursor: SourceCursor,
+    signal: AbortSignal,
+  ): Promise<ExternalSourceReaderResult> {
+    const page = await this.runner.readPageAsync(resource, cursor, this.disableCursorFilter, signal);
+    return {
+      events: page.events.map(({ identity, distillationUnit }) => ({
+        eventId: identity.eventId,
+        position: identity.position,
+        contentHash: identity.contentHash,
+        conversationId: identity.conversationId,
+        branchId: identity.branchId,
+        revision: identity.revision,
+        distillationUnit,
+      } satisfies ExternalSourceRawEvent)),
+      status: page.status,
+      exhausted: page.exhausted,
+      newPosition: page.newPosition,
+      byteLength: page.events.reduce((sum, event) => sum + event.byteLength, 0),
+    };
+  }
 }
 
 export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSource {
@@ -313,7 +336,6 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
 class XurlOfficialRunner {
   private readonly command: string;
   private readonly provider: string;
-  private readonly sourceId: string;
   private readonly cwd?: string;
   private readonly env?: NodeJS.ProcessEnv;
   private readonly timeoutMs: number;
@@ -330,7 +352,7 @@ class XurlOfficialRunner {
   constructor(options: XurlProcessRunnerOptions) {
     this.command = requireNonEmptyText('xurl command', options.command);
     this.provider = requireNonEmptyText('xurl provider', options.provider);
-    this.sourceId = requireNonEmptyText('xurl sourceId', options.sourceId);
+    requireNonEmptyText('xurl sourceId', options.sourceId);
     this.cwd = options.cwd;
     this.env = options.env;
     this.timeoutMs = normalizePositiveInteger(options.timeoutMs, DEFAULT_XURL_TIMEOUT_MS, 'xurl timeoutMs');
@@ -509,6 +531,110 @@ class XurlOfficialRunner {
     };
   }
 
+  private async headFrontmatterAsync(
+    resource: SessionLogSourceResource,
+    signal: AbortSignal,
+  ): Promise<{ readonly ordinal: number; readonly fingerprint: string }> {
+    const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
+    const stdout = await this.invokeAsync('head', ['-I', uri], signal);
+    const frontmatter = parseFrontmatterOnly(stdout, 'xurl head response');
+    const uriField = requireFrontmatterField(frontmatter, 'uri');
+    if (uriField !== uri) {
+      throw new Error(`xurl head uri mismatch: expected ${uri}`);
+    }
+    return {
+      ordinal: normalizeNonNegativeInteger(
+        Number(requireFrontmatterField(frontmatter, 'ordinal')),
+        'xurl head ordinal',
+      ),
+      fingerprint: requireNonEmptyText('xurl head fingerprint', requireFrontmatterField(frontmatter, 'fingerprint')),
+    };
+  }
+
+  async readPageAsync(
+    resource: SessionLogSourceResource,
+    cursor: SourceCursor,
+    disableCursorFilter: boolean,
+    signal: AbortSignal,
+  ): Promise<XurlNormalizedReadPage> {
+    const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
+    const stdout = await this.invokeAsync('read', [uri], signal);
+    const timeline = parseRenderedTimeline(stdout, this.provider, resource.resourceRef, uri);
+    const allEvents = canonicalizeEvents(timeline);
+
+    const cursorPosition = normalizeNonNegativeInteger(cursor.position + 1, 'xurl cursor position') - 1;
+    const newEvents = disableCursorFilter
+      ? allEvents
+      : allEvents.filter(event => event.endOrdinal > cursorPosition);
+
+    if (disableCursorFilter) {
+      if (newEvents.length === 0) {
+        return {
+          status: 'stable',
+          exhausted: true,
+          newPosition: timeline.ordinal,
+          events: [],
+          threadFingerprint: timeline.fingerprint,
+          threadOrdinal: timeline.ordinal,
+        };
+      }
+      const normalized = newEvents.map(event => normalizeCanonicalEvent(this.provider, resource, timeline, event));
+      return {
+        status: 'stable',
+        exhausted: timeline.ordinal === newEvents[newEvents.length - 1]!.endOrdinal,
+        newPosition: newEvents[newEvents.length - 1]!.endOrdinal,
+        events: normalized,
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    if (newEvents.length === 0) {
+      const tailIncomplete = isTailIncomplete(allEvents, timeline.entries);
+      return {
+        status: tailIncomplete ? 'pending' : 'stable',
+        exhausted: !tailIncomplete,
+        newPosition: timeline.ordinal,
+        events: [],
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    if (isTailIncomplete(allEvents, timeline.entries)) {
+      return {
+        status: 'pending',
+        exhausted: false,
+        newPosition: cursorPosition,
+        events: [],
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    const head = await this.headFrontmatterAsync(resource, signal);
+    if (head.ordinal !== timeline.ordinal || head.fingerprint !== timeline.fingerprint) {
+      return {
+        status: 'pending',
+        exhausted: false,
+        newPosition: cursorPosition,
+        events: [],
+        threadFingerprint: timeline.fingerprint,
+        threadOrdinal: timeline.ordinal,
+      };
+    }
+
+    const normalized = newEvents.map(event => normalizeCanonicalEvent(this.provider, resource, timeline, event));
+    return {
+      status: 'stable',
+      exhausted: timeline.ordinal === newEvents[newEvents.length - 1]!.endOrdinal,
+      newPosition: newEvents[newEvents.length - 1]!.endOrdinal,
+      events: normalized,
+      threadFingerprint: timeline.fingerprint,
+      threadOrdinal: timeline.ordinal,
+    };
+  }
+
   private ensureVersion(): void {
     if (!this.checkVersion || this.versionChecked) return;
     this.versionChecked = true;
@@ -535,6 +661,49 @@ class XurlOfficialRunner {
     } catch (error) {
       throw mapXurlProcessError(kind, error, this.timeoutMs, this.maxOutputBytes);
     }
+  }
+
+  private async invokeAsync(
+    kind: XurlCommandKind,
+    args: readonly string[],
+    signal: AbortSignal,
+  ): Promise<string> {
+    return await new Promise<string>((resolve, reject) => {
+      const child = execFile(
+        this.command,
+        args,
+        {
+          cwd: this.cwd,
+          env: this.env,
+          encoding: 'utf8',
+          timeout: this.timeoutMs,
+          maxBuffer: this.maxOutputBytes,
+          signal,
+        },
+        (error, stdout, stderr) => {
+          if (signal.aborted) {
+            reject(new Error(`xurl ${kind} aborted`));
+            return;
+          }
+          if (error) {
+            reject(
+              mapXurlProcessError(
+                kind,
+                {
+                  ...(error as object),
+                  stderr,
+                },
+                this.timeoutMs,
+                this.maxOutputBytes,
+              ),
+            );
+            return;
+          }
+          resolve(stdout as string);
+        },
+      );
+      child.stdin?.end();
+    });
   }
 }
 
