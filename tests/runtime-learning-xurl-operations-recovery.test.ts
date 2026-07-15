@@ -29,7 +29,6 @@ import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 import {
   loadExternalCursorState,
   saveExternalCursorState,
-  finalizeExternalDiscoveryCycleForStore,
 } from '../src/utils/session-log-source';
 import { acquireExternalSourceProviderLock } from '../src/utils/external-source-provider-lock';
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
@@ -286,7 +285,7 @@ function stableScenario(
 // Tests
 // ---------------------------------------------------------------------------
 
-test('lock contention: provider-scoped lock serializes heartbeat reads across processes', async () => {
+test('lock contention: a continuous wake reports a provider lock held by another operation', async () => {
   const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
   try {
     writeScenario(env.scenarioPath, baselineScenario('codex', 'conversation-main'));
@@ -442,10 +441,56 @@ test('failure classification: malformed rendered timeline requires operator acti
   }
 });
 
-test('quarantine recovery: retry reprocesses the same event without a tombstone', async () => {
+test('lock contention never overwrites a durable operator-action failure gate', async () => {
   const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
   try {
-    const storePath = cursorStorePath(env.root, 'codex', 'external-codex');
+    writeScenario(env.scenarioPath, baselineScenario('codex', 'conversation-main'));
+
+    const owner = env.createRuntime();
+    await owner.runtime.wake('startup');
+    const follower = env.createRuntime();
+
+    writeScenario(env.scenarioPath, {
+      discover: { pages: { start: catalogPage('codex', [thread('conversation-main', 'branch-main', 0, FP('main-0'), 'rev-main-0')]) } },
+      read: {
+        'conversation-main': {
+          exitCode: 1,
+          stderr: 'Error: protocol version mismatch unsupported schema',
+        },
+      },
+    } satisfies FakeXurlScenario);
+    await owner.runtime.wake('scheduled');
+    assert.equal(owner.runtime.getExternalSourceFailureState().get('external-codex')?.requiresOperatorAction, true);
+
+    const lock = acquireExternalSourceProviderLock({
+      runtimeRoot: path.join(env.root, 'data'),
+      provider: 'codex',
+      operation: 'owner-in-progress',
+      sourceId: 'external-codex',
+    });
+    assert.ok(lock.acquired);
+    try {
+      const result = await follower.runtime.wake('scheduled');
+      assert.equal(
+        result.discovery.sources.find(source => source.sourceId === 'external-codex')?.status,
+        'locked',
+      );
+    } finally {
+      lock.release();
+    }
+
+    const restarted = env.createRuntime();
+    const recovered = restarted.runtime.getExternalSourceFailureState().get('external-codex');
+    assert.equal(recovered?.failureClass, 'protocol');
+    assert.equal(recovered?.requiresOperatorAction, true);
+  } finally {
+    env.restore();
+  }
+});
+
+test('source failure without a stable event identity never creates an event quarantine', async () => {
+  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  try {
     writeScenario(env.scenarioPath, baselineScenario('codex', 'conversation-main'));
     const fixture = env.createRuntime();
     await fixture.runtime.wake('startup');
@@ -461,33 +506,27 @@ test('quarantine recovery: retry reprocesses the same event without a tombstone'
     } satisfies FakeXurlScenario);
     await fixture.runtime.wake('scheduled');
 
-    const quarantines = fixture.runtime.listExternalSourceQuarantines('codex', 'external-codex');
-    assert.ok(quarantines.length >= 1, `quarantines: ${JSON.stringify(quarantines)}`);
-    const quarantineId = quarantines[0]!.quarantineId;
+    assert.deepEqual(
+      fixture.runtime.listExternalSourceQuarantines('codex', 'external-codex'),
+      [],
+      'command-level failure cannot name an event quarantine',
+    );
+    const sourceFailure = fixture.runtime.getExternalSourceFailureState().get('external-codex');
+    assert.equal(sourceFailure?.requiresOperatorAction, true);
+    assert.equal(sourceFailure?.eventId, undefined);
 
-    const lock = acquireExternalSourceProviderLock({
-      runtimeRoot: path.join(env.root, 'data'),
-      provider: 'codex',
-      operation: 'competing-operator',
-    });
-    assert.ok(lock.acquired);
-    assert.equal(fixture.runtime.retryExternalSourceQuarantine('codex', 'external-codex', quarantineId), false);
-    const stateWhileLocked = fixture.runtime.getExternalSourceFailureState().get('external-codex');
-    assert.equal(stateWhileLocked?.failureClass, 'quarantine');
-    assert.equal(stateWhileLocked?.requiresOperatorAction, true);
-    lock.release();
-
-    assert.equal(fixture.runtime.retryExternalSourceQuarantine('codex', 'external-codex', quarantineId), true);
-    const stateAfterRetry = loadExternalCursorState(storePath);
-    assert.ok(!stateAfterRetry.quarantinedEvents[quarantineId]);
-    assert.equal(Object.keys(stateAfterRetry.tombstones).length, 0);
+    assert.equal(
+      fixture.runtime.retryExternalSourceFailure('codex', 'external-codex'),
+      true,
+      'operator can retry the source after repairing the command/provider',
+    );
 
     writeScenario(env.scenarioPath, stableScenario('codex', 'conversation-main', 'branch-main', 'Retry task', 'Retry done.'));
     const retryWake = await fixture.runtime.wake('scheduled');
     const retryReport = retryWake.discovery.sources.find(s => s.sourceId === 'external-codex');
     assert.ok(retryReport);
-    assert.notEqual(retryReport!.status, 'backoff');
-    assert.equal(retryReport!.unitsProcessed, 1);
+    assert.notEqual(retryReport!.status, 'backoff', 'source retry clears the durable operator-action gate');
+    assert.equal(retryReport!.unitsProcessed, 1, 'the repaired source event is processed');
   } finally {
     env.restore();
   }
@@ -529,6 +568,9 @@ test('quarantine recovery: skip writes a durable tombstone before allowing the c
       updatedAt: new Date().toISOString(),
     });
 
+    const quarantines = fixture.runtime.listExternalSourceQuarantines('codex', 'external-codex');
+    assert.equal(quarantines[0]?.quarantineId, quarantineId);
+
     const skipped = fixture.runtime.skipExternalSourceQuarantine(
       'codex',
       'external-codex',
@@ -540,8 +582,9 @@ test('quarantine recovery: skip writes a durable tombstone before allowing the c
     const state = loadExternalCursorState(storePath);
     assert.ok(!state.quarantinedEvents[quarantineId]);
     const tombstone = Object.values(state.tombstones).find(entry => entry.tombstoneId === quarantineId);
-    assert.ok(tombstone);
-    assert.ok(tombstone!.reason.includes('operator skip'));
+    assert.ok(tombstone, 'durable tombstone written');
+    assert.equal(tombstone!.identity.eventId, 'agents://codex/conversation-main#1-2');
+    assert.ok(tombstone!.reason.includes('operator skip'), 'tombstone carries redacted reason');
 
     writeScenario(env.scenarioPath, {
       discover: { pages: { start: catalogPage('codex', [thread('conversation-main', 'branch-main', 2, FP('mutated-2'), 'mutated-rev')]) } },
@@ -557,8 +600,8 @@ test('quarantine recovery: skip writes a durable tombstone before allowing the c
     const skipWake = await fixture.runtime.wake('scheduled');
     const skipReport = skipWake.discovery.sources.find(s => s.sourceId === 'external-codex');
     assert.ok(skipReport);
-    assert.notEqual(skipReport!.status, 'backoff');
-    assert.equal(skipReport!.unitsProcessed, 0);
+    assert.notEqual(skipReport!.status, 'backoff', 'skip clears the durable operator-action gate');
+    assert.equal(skipReport!.unitsProcessed, 0, 'skipped identity never becomes learning evidence');
     assert.equal(loadExternalCursorState(storePath).cursors['conversation-main']?.cursor.position, 2);
   } finally {
     env.restore();
@@ -734,7 +777,7 @@ test('internal independence: missing xurl does not degrade internal heartbeat re
   }
 });
 
-test('discovery cycle finalization closes resources missing for two cycles', async () => {
+test('discovery cycle finalization: missing resources remain resumable until explicitly closed', async () => {
   const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
   try {
     const storePath = cursorStorePath(env.root, 'codex', 'external-codex');
@@ -748,15 +791,20 @@ test('discovery cycle finalization closes resources missing for two cycles', asy
 
     writeScenario(env.scenarioPath, { discover: { pages: { start: catalogPage('codex', []) } }, read: {} } satisfies FakeXurlScenario);
     await fixture.runtime.wake('scheduled');
-    finalizeExternalDiscoveryCycleForStore(storePath, 1);
 
     const stateAfterSecond = loadExternalCursorState(storePath);
     assert.notEqual(stateAfterSecond.resources['conversation-gone']?.lifecycleStatus, 'closed');
 
-    finalizeExternalDiscoveryCycleForStore(storePath, 2);
+    await fixture.runtime.wake('scheduled');
     const stateAfterThird = loadExternalCursorState(storePath);
-    assert.equal(stateAfterThird.resources['conversation-gone']?.lifecycleStatus, 'closed');
-    assert.ok(stateAfterThird.cursors['conversation-gone']);
+    assert.notEqual(
+      stateAfterThird.resources['conversation-gone']?.lifecycleStatus,
+      'closed',
+      'resource remains resumable after repeated discovery absence',
+    );
+    assert.ok((stateAfterThird.resources['conversation-gone']?.missingDiscoveryCycles ?? 0) >= 1);
+    assert.ok(stateAfterThird.resources['conversation-gone']?.missingSince);
+    assert.ok(stateAfterThird.cursors['conversation-gone'], 'cursor preserved for missing resource');
   } finally {
     env.restore();
   }
@@ -786,10 +834,32 @@ test('external failures never increment Operational Review Retry counters', asyn
 
     const state = fixture.runtime.getExternalSourceFailureState().get('external-codex');
     assert.ok(state);
-    assert.equal(state!.failureClass, 'transient');
-    assert.ok(state!.consecutiveFailures >= 1);
-    assert.ok(state!.suspendedUntil);
-    assert.equal(result.review.operationalRetries, 0);
+    assert.equal(state!.failureClass, 'transient', 'classified as transient');
+    assert.ok(state!.consecutiveFailures >= 1, 'failure count incremented');
+    assert.ok(state!.suspendedUntil, 'transient failure suspends with backoff');
+    assert.equal(result.review.operationalRetries, 0, 'external failure did not create an operational retry');
+  } finally {
+    env.restore();
+  }
+});
+
+test('completed operations leave no in-memory source failure state', async () => {
+  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  try {
+    writeScenario(env.scenarioPath, baselineScenario('codex', 'conversation-main'));
+    const fixture = env.createRuntime();
+    await fixture.runtime.wake('startup');
+
+    writeScenario(env.scenarioPath, stableScenario('codex', 'conversation-main', 'branch-main', 'Step 1', 'Done 1.'));
+    await fixture.runtime.wake('scheduled');
+
+    fixture.runtime.listExternalSourceQuarantines('codex', 'external-codex');
+    fixture.runtime.requestExternalSourceDrain();
+    fixture.runtime.resumeExternalSourceReads();
+
+    const failureState = fixture.runtime.getExternalSourceFailureState();
+    assert.ok(failureState instanceof Map, 'failure state is a plain map');
+    assert.equal(failureState.size, 0, 'no failure state from successful run');
   } finally {
     env.restore();
   }

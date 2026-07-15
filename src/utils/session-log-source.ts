@@ -208,6 +208,10 @@ export interface SessionLogSourceAdapter {
 // Internal Session Log Source Adapter
 // ---------------------------------------------------------------------------
 
+interface InternalLogDiscoveryMetadata {
+  runtimeSessionId: string;
+}
+
 export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter {
   readonly identity: SessionLogSourceIdentity = {
     sourceId: 'internal-xiaoba',
@@ -220,7 +224,7 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
   private discoveryIterator: Generator<string | undefined, void, unknown> | null = null;
   private readonly pendingDiscoveredResources = new Map<string, SessionLogSourceResource>();
   private readonly predecessorByResource = new Map<string, string>();
-  private previousDiscoveredResource: string | undefined;
+  private readonly previousResourceByRuntimeSession = new Map<string, string>();
 
   constructor(private readonly config: DistillationHeartbeatConfig) {}
 
@@ -245,9 +249,13 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     const startedAt = Date.now();
     let entriesExamined = 0;
 
+    if (this.pendingDiscoveredResources.size > 0) {
+      return [...this.pendingDiscoveredResources.values()].slice(0, maxResources);
+    }
     if (!this.discoveryIterator) {
       this.discoveryIterator = iterateJsonlDiscoveryEntries(sessionLogsRoot);
-      this.previousDiscoveredResource = undefined;
+      this.predecessorByResource.clear();
+      this.previousResourceByRuntimeSession.clear();
     }
 
     while (
@@ -259,22 +267,24 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       entriesExamined++;
       if (next.done) {
         this.discoveryIterator = null;
-        this.previousDiscoveredResource = undefined;
         break;
       }
       if (!next.value) continue;
       const filePath = next.value;
-      if (this.previousDiscoveredResource) {
-        this.predecessorByResource.set(filePath, this.previousDiscoveredResource);
-      }
-      this.previousDiscoveredResource = filePath;
-      this.pendingDiscoveredResources.set(filePath, {
+      const resource: SessionLogSourceResource = {
         resourceRef: filePath,
         firstEventIdentity: {
           eventId: filePath,
           position: 0,
         },
-      });
+      };
+      const metadata = readInternalLogDiscoveryMetadata(resource);
+      const previous = this.previousResourceByRuntimeSession.get(metadata.runtimeSessionId);
+      if (previous) {
+        this.predecessorByResource.set(resource.resourceRef, previous);
+      }
+      this.previousResourceByRuntimeSession.set(metadata.runtimeSessionId, resource.resourceRef);
+      this.pendingDiscoveredResources.set(resource.resourceRef, resource);
     }
 
     return [...this.pendingDiscoveredResources.values()].slice(0, maxResources);
@@ -291,11 +301,10 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
 
     let extracted;
     try {
-      const orderedFilePaths = context.orderedResources.map(r => r.resourceRef);
       const predecessor = this.predecessorByResource.get(filePath);
-      if (predecessor && !orderedFilePaths.includes(predecessor)) {
-        orderedFilePaths.unshift(predecessor);
-      }
+      const orderedFilePaths = predecessor
+        ? [predecessor, filePath]
+        : context.orderedResources.map(r => r.resourceRef);
       const crossFileContinuity: CrossFileContinuityOptions = { orderedFilePaths };
       const remaining = context.remainingBudget;
       extracted = extractDistillationUnit(filePath, cursor, {
@@ -382,8 +391,49 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     this.discoveryIterator = null;
     this.pendingDiscoveredResources.clear();
     this.predecessorByResource.clear();
-    this.previousDiscoveredResource = undefined;
+    this.previousResourceByRuntimeSession.clear();
   }
+}
+
+function readInternalLogDiscoveryMetadata(
+  resource: SessionLogSourceResource,
+): InternalLogDiscoveryMetadata {
+  const fallback: InternalLogDiscoveryMetadata = {
+    runtimeSessionId: `path:${path.resolve(resource.resourceRef)}`,
+  };
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(resource.resourceRef, 'r');
+    const size = Math.min(fs.fstatSync(fd).size, 64 * 1024);
+    if (size <= 0) return fallback;
+    const buffer = Buffer.allocUnsafe(size);
+    const bytesRead = fs.readSync(fd, buffer, 0, size, 0);
+    const lines = buffer.toString('utf8', 0, bytesRead).split('\n');
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (parsed.entry_type !== 'turn') continue;
+      const runtimeSessionId = String(
+        parsed.runtime_session_id ?? parsed.runtime_id ?? parsed.session_id ?? '',
+      ).trim();
+      if (!runtimeSessionId) continue;
+      return {
+        runtimeSessionId,
+      };
+    }
+  } catch {
+    return fallback;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+    }
+  }
+  return fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -1769,34 +1819,34 @@ function resolveSessionLogsRoot(logsRoot: string): string {
 }
 
 function* iterateJsonlDiscoveryEntries(root: string): Generator<string | undefined, void, unknown> {
-  const openDirectories: fs.Dir[] = [];
-  try {
-    openDirectories.push(fs.opendirSync(root));
-    while (openDirectories.length > 0) {
-      const current = openDirectories[openDirectories.length - 1]!;
-      const entry = current.readSync();
-      if (!entry) {
-        current.closeSync();
-        openDirectories.pop();
-        continue;
-      }
-      const fullPath = path.join(current.path, entry.name);
-      if (entry.isDirectory()) {
-        try {
-          openDirectories.push(fs.opendirSync(fullPath));
-        } catch {
-          // A disappearing/inaccessible directory is source-local noise. The
-          // next complete traversal can retry it.
-        }
-        yield undefined;
-        continue;
-      }
-      yield entry.isFile() && entry.name.endsWith('.jsonl') ? fullPath : undefined;
+  const entriesFor = (directory: string): fs.Dirent[] => fs
+    .readdirSync(directory, { withFileTypes: true })
+    .sort((left, right) => left.name < right.name ? -1 : (left.name > right.name ? 1 : 0));
+  const stack: Array<{ directory: string; entries: fs.Dirent[]; offset: number }> = [{
+    directory: root,
+    entries: entriesFor(root),
+    offset: 0,
+  }];
+
+  while (stack.length > 0) {
+    const current = stack[stack.length - 1]!;
+    const entry = current.entries[current.offset++];
+    if (!entry) {
+      stack.pop();
+      continue;
     }
-  } finally {
-    for (const directory of openDirectories.reverse()) {
-      try { directory.closeSync(); } catch { /* already closed */ }
+    const fullPath = path.join(current.directory, entry.name);
+    if (entry.isDirectory()) {
+      try {
+        stack.push({ directory: fullPath, entries: entriesFor(fullPath), offset: 0 });
+      } catch {
+        // A disappearing/inaccessible directory is source-local noise. The
+        // next complete traversal can retry it.
+      }
+      yield undefined;
+      continue;
     }
+    yield entry.isFile() && entry.name.endsWith('.jsonl') ? fullPath : undefined;
   }
 }
 
@@ -1978,13 +2028,14 @@ function finalizeExternalDiscoveryCycle(
       continue;
     }
     const missingDiscoveryCycles = (resourceState.missingDiscoveryCycles ?? 0) + 1;
-    const shouldClose = missingDiscoveryCycles >= 2;
     nextResources[resourceRef] = {
       ...resourceState,
-      lifecycleStatus: shouldClose ? 'closed' : (resourceState.lifecycleStatus ?? 'active'),
+      // Discovery absence is not proof of deletion or archival. Only an
+      // explicit lifecycle command/protocol signal may move a resource to
+      // `closed`; completed discovery cycles retain resumable state.
+      lifecycleStatus: resourceState.lifecycleStatus ?? 'active',
       missingDiscoveryCycles,
       missingSince: resourceState.missingSince ?? now,
-      ...(shouldClose ? { closedAt: resourceState.closedAt ?? now, closedReason: 'archived_or_deleted' as const } : {}),
       updatedAt: now,
     };
     changed = true;

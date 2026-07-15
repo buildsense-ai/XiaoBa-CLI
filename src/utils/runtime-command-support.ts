@@ -83,13 +83,6 @@ export async function startRuntimeCommandSupport(
       const skillsRoot = PathResolver.getSkillsPath();
       const outputDir = defaultDistilledOutputDir(skillsRoot);
 
-      // V3 components (null when disabled)
-      let skillEvolution: SkillEvolutionRuntime | null = null;
-      let learningEpisodeStore: LearningEpisodeStore | null = null;
-      let evidenceIngestor: EvidenceIngestor | null = null;
-      let curator: SkillUsageCurator | null = null;
-      let planner: DueWorkPlanner | null = null;
-
       // Only build V3 runtime components (RuntimeLearning + scheduler) when
       // the heartbeat master switch is on AND skill evolution is enabled.
       // When V3 is disabled, background learning is fully suppressed — no
@@ -99,108 +92,124 @@ export async function startRuntimeCommandSupport(
         && config.skillEvolutionEnabled;
 
       if (v3Enabled) {
-        // V3 Skill Evolution Runtime
-        skillEvolution = new SkillEvolutionRuntime({
-          workingDirectory,
-          branchLogRoot: config.branchLogRoot,
-          outputDir,
-          registryPath: config.skillEvolutionRegistryPath,
-          auditPath: config.skillEvolutionAuditPath,
-          journalPath: config.skillEvolutionJournalPath,
-          reviewQueuePath: config.skillEvolutionReviewQueuePath,
-          aiService: new AIService(),
-          settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-          reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
-          operationalRetryMs: config.skillEvolutionOperationalRetryMinutes * 60 * 1000,
-          operationalRetryMaxMs: config.skillEvolutionOperationalRetryMaxHours * 60 * 60 * 1000,
-          reviewAttemptDeadlineMs: config.skillEvolutionReviewAttemptDeadlineMinutes * 60 * 1000,
-          authorModel: config.skillEvolutionAuthorModel,
-          verifierModel: config.skillEvolutionVerifierModel,
-          ...options.skillEvolutionOptions,
-        });
+        const buildWritableRuntime = async (
+          ownerLock: HeartbeatSchedulerOwnerLock,
+          startImmediately: boolean,
+        ): Promise<boolean> => {
+          let builtScheduler: DistillationHeartbeatScheduler | null = null;
+          try {
+            // The owner lease fences Journal recovery performed by this
+            // constructor and every durable module built below it.
+            const skillEvolution = new SkillEvolutionRuntime({
+              workingDirectory,
+              branchLogRoot: config.branchLogRoot,
+              outputDir,
+              registryPath: config.skillEvolutionRegistryPath,
+              auditPath: config.skillEvolutionAuditPath,
+              journalPath: config.skillEvolutionJournalPath,
+              reviewQueuePath: config.skillEvolutionReviewQueuePath,
+              aiService: new AIService(),
+              settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+              reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
+              operationalRetryMs: config.skillEvolutionOperationalRetryMinutes * 60 * 1000,
+              operationalRetryMaxMs: config.skillEvolutionOperationalRetryMaxHours * 60 * 60 * 1000,
+              reviewAttemptDeadlineMs: config.skillEvolutionReviewAttemptDeadlineMinutes * 60 * 1000,
+              authorModel: config.skillEvolutionAuthorModel,
+              verifierModel: config.skillEvolutionVerifierModel,
+              ...options.skillEvolutionOptions,
+            });
 
-        // Legacy distilled skill bootstrap (V3 bootstrap reassessment)
-        try {
-          await bootstrapLegacyDistilledSkillsOnce({
-            skillEvolution,
-            generatedDistilledRoot: outputDir,
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          Logger.warning(`Legacy distilled skill bootstrap failed: ${message}`);
-        }
+            try {
+              await bootstrapLegacyDistilledSkillsOnce({
+                skillEvolution,
+                generatedDistilledRoot: outputDir,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              Logger.warning(`Legacy distilled skill bootstrap failed: ${message}`);
+            }
 
-        // Durable Learning Episode store
-        learningEpisodeStore = new LearningEpisodeStore(config.learningEpisodeStorePath);
+            const learningEpisodeStore = new LearningEpisodeStore(config.learningEpisodeStorePath);
 
-        try {
-          await bootstrapSemanticReassessmentOnce({
-            skillEvolution,
-            manifestPath: config.skillEvolutionReassessmentManifestPath,
-            learningEpisodeStore,
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          Logger.warning(`Semantic skill reassessment bootstrap failed: ${message}`);
-        }
+            try {
+              await bootstrapSemanticReassessmentOnce({
+                skillEvolution,
+                manifestPath: config.skillEvolutionReassessmentManifestPath,
+                learningEpisodeStore,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              Logger.warning(`Semantic skill reassessment bootstrap failed: ${message}`);
+            }
 
-        // Evidence Ingestor (source admission only, no review)
-        evidenceIngestor = new EvidenceIngestor({
-          episodeStore: learningEpisodeStore,
-          settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-        });
+            const evidenceIngestor = new EvidenceIngestor({
+              episodeStore: learningEpisodeStore,
+              settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+            });
+            const curator = new SkillUsageCurator({
+              ledger: new SkillUsageLedger(config.skillUsageLedgerPath),
+              statePath: config.skillEvolutionCuratorStatePath,
+              intervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+              runtime: skillEvolution,
+              now: options.clock,
+            });
+            const planner = new DueWorkPlanner({
+              learningEpisodeStorePath: config.learningEpisodeStorePath,
+              reviewQueuePath: config.skillEvolutionReviewQueuePath,
+              curatorStatePath: config.skillEvolutionCuratorStatePath,
+              curatorIntervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+              semanticReassessmentManifestPath: config.skillEvolutionReassessmentManifestPath,
+            });
+            const builtPipeline = new DistillationPipeline({
+              outputDir,
+              reviewOutcomesPath: config.reviewOutcomesPath,
+              needsReviewQueuePath: config.needsReviewQueuePath,
+              capabilityRegistryPath: config.capabilityRegistryPath,
+              workLogRoot: config.workLogRoot,
+              skillEvolution,
+              learningEpisodeStorePath: config.learningEpisodeStorePath,
+              learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+              skillUsageCurator: curator,
+            });
+            const builtRuntimeLearning = new RuntimeLearning({
+              workingDirectory,
+              evidenceIngestor,
+              learningEpisodeStore,
+              skillEvolution,
+              curator,
+              planner,
+              legacyPipeline: builtPipeline,
+              clock: options.clock,
+            });
+            builtScheduler = new DistillationHeartbeatScheduler(
+              workingDirectory,
+              builtRuntimeLearning,
+              ownerLock,
+            );
+            if (startImmediately) await builtScheduler.start();
 
-        // Skill Usage Curator
-        curator = new SkillUsageCurator({
-          ledger: new SkillUsageLedger(config.skillUsageLedgerPath),
-          statePath: config.skillEvolutionCuratorStatePath,
-          intervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
-          runtime: skillEvolution,
-          now: options.clock,
-        });
+            if (stopping) {
+              const drained = !startImmediately || await builtScheduler.stop();
+              if (drained) ownerLock.release();
+              return false;
+            }
 
-        // Due Work Planner
-        planner = new DueWorkPlanner({
-          learningEpisodeStorePath: config.learningEpisodeStorePath,
-          reviewQueuePath: config.skillEvolutionReviewQueuePath,
-          curatorStatePath: config.skillEvolutionCuratorStatePath,
-          curatorIntervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
-          semanticReassessmentManifestPath: config.skillEvolutionReassessmentManifestPath,
-        });
-
-        // Construct the legacy pipeline before acquiring the runtime-wide
-        // scheduler lock. If this constructor fails, no owner has been
-        // published and another connector can start cleanly.
-        distillationPipeline = new DistillationPipeline({
-          outputDir,
-          reviewOutcomesPath: config.reviewOutcomesPath,
-          needsReviewQueuePath: config.needsReviewQueuePath,
-          capabilityRegistryPath: config.capabilityRegistryPath,
-          workLogRoot: config.workLogRoot,
-          skillEvolution,
-          learningEpisodeStorePath: config.learningEpisodeStorePath,
-          learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-          skillUsageCurator: curator ?? undefined,
-        });
-
-        // Construct the single RuntimeLearning module. RuntimeLearning is
-        // always constructed when V3 is enabled so API-based compatibility
-        // paths have access to it; only the scheduler requires runtime-wide
-        // ownership so one Runtime has exactly one heartbeat driver across
-        // all connector processes (catscompany/feishu/weixin/chat).
-        runtimeLearning = new RuntimeLearning({
-          workingDirectory,
-          evidenceIngestor,
-          learningEpisodeStore,
-          skillEvolution,
-          curator,
-          planner,
-          legacyPipeline: distillationPipeline,
-          clock: options.clock,
-        });
+            // Publish one complete owner generation. A follower never sees or
+            // retains a partially constructed writable stack.
+            heartbeatOwnerLock = ownerLock;
+            distillationPipeline = builtPipeline;
+            runtimeLearning = builtRuntimeLearning;
+            distillationHeartbeatScheduler = builtScheduler;
+            return true;
+          } catch (error) {
+            const drained = builtScheduler ? await builtScheduler.stop() : true;
+            if (drained) ownerLock.release();
+            throw error;
+          }
+        };
 
         attemptHeartbeatOwnership = async (startImmediately: boolean): Promise<boolean> => {
-          if (stopping || distillationHeartbeatScheduler || !runtimeLearning) return false;
+          if (stopping || distillationHeartbeatScheduler || runtimeLearning || distillationPipeline) return false;
           const ownerLock = acquireHeartbeatSchedulerOwnerLock({
             runtimeRoot: workingDirectory,
             command: process.argv.join(' '),
@@ -211,63 +220,33 @@ export async function startRuntimeCommandSupport(
               ownerLock.release();
               return false;
             }
-            heartbeatOwnerLock = ownerLock;
-            distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
-              workingDirectory,
-              runtimeLearning,
-              heartbeatOwnerLock,
-            );
-            if (startImmediately) {
-              try {
-                await distillationHeartbeatScheduler.start();
-              } catch (error) {
-                distillationHeartbeatScheduler = null;
-                heartbeatOwnerLock.release();
-                heartbeatOwnerLock = null;
-                throw error;
-              }
-            }
-            return true;
+            return buildWritableRuntime(ownerLock, startImmediately);
           } else {
             Logger.info(
-              `[RuntimeCommandSupport] heartbeat scheduler already owned by pid=${ownerLock.existing.pid}; waiting for safe owner failover`,
+              `[RuntimeCommandSupport] writable Runtime already owned by pid=${ownerLock.existing.pid}; waiting for safe owner failover`,
             );
             return false;
           }
         };
 
-        // Acquire runtime-wide ownership before creating the scheduler. A
-        // follower keeps a low-frequency election poll so the Runtime cannot
-        // remain ownerless after the prior owner process exits.
-        try {
-          await attemptHeartbeatOwnership(false);
-        } catch (error) {
-          // Scheduler construction or lock acquisition failed after a lock
-          // was published. Release it before surfacing the startup failure.
-          const publishedOwnerLock = currentHeartbeatOwnerLock();
-          if (publishedOwnerLock) {
-            publishedOwnerLock.release();
-            heartbeatOwnerLock = null;
-          }
-          throw error;
-        }
+        // Ownership precedes construction, recovery, and bootstrap. A
+        // follower retains only this election function and constructs a fresh
+        // stack from disk after a later takeover.
+        await attemptHeartbeatOwnership(false);
       }
 
       // Legacy DistillationPipeline (always constructed for API-based
-      // compatibility, even when V3 is disabled). The V3 branch constructs
-      // it above so it can be passed into RuntimeLearning before ownership is
-      // acquired; when V3 is disabled, construct it here as before.
-      if (!distillationPipeline) {
+      // compatibility when V3 is disabled). A V3 follower must not construct
+      // it because the pipeline participates in the writable V3 stack.
+      if (!v3Enabled) {
         distillationPipeline = new DistillationPipeline({
           outputDir,
           reviewOutcomesPath: config.reviewOutcomesPath,
           needsReviewQueuePath: config.needsReviewQueuePath,
           capabilityRegistryPath: config.capabilityRegistryPath,
           workLogRoot: config.workLogRoot,
-          skillEvolution: skillEvolution ?? undefined,
           learningEpisodeStorePath: config.learningEpisodeStorePath,
           learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-          skillUsageCurator: curator ?? undefined,
         });
       }
 
@@ -298,6 +277,9 @@ export async function startRuntimeCommandSupport(
           publishedOwnerLock.release();
           heartbeatOwnerLock = null;
         }
+        distillationHeartbeatScheduler = null;
+        runtimeLearning = null;
+        if (v3Enabled) distillationPipeline = null;
         throw error;
       }
 
@@ -326,8 +308,8 @@ export async function startRuntimeCommandSupport(
       const support: ActiveRuntimeSupport = {
         catscoLogUploadScheduler,
         get distillationHeartbeatScheduler() { return distillationHeartbeatScheduler; },
-        runtimeLearning,
-        distillationPipeline,
+        get runtimeLearning() { return runtimeLearning; },
+        get distillationPipeline() { return distillationPipeline; },
         async stop() {
           stopping = true;
           if (heartbeatOwnerElectionTimer) {
@@ -347,6 +329,9 @@ export async function startRuntimeCommandSupport(
             heartbeatOwnerLock.release();
             heartbeatOwnerLock = null;
           }
+          distillationHeartbeatScheduler = null;
+          runtimeLearning = null;
+          if (v3Enabled) distillationPipeline = null;
         },
       };
 

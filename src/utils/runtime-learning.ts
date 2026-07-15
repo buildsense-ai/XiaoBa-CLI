@@ -286,6 +286,32 @@ export const DEFAULT_DISCOVERY_WAKE_QUOTAS: DiscoveryWakeQuotas = {
   maxDiscoveryMs: 60_000, // 60 s
 };
 
+interface ExternalSourceLaneIdentity {
+  provider: string;
+  sourceId: string;
+}
+
+function externalSourceLaneKey(identity: ExternalSourceLaneIdentity): string {
+  return JSON.stringify([identity.provider, identity.sourceId]);
+}
+
+function parseExternalSourceLaneKey(key: string): ExternalSourceLaneIdentity | null {
+  try {
+    const parsed = JSON.parse(key) as unknown;
+    if (
+      Array.isArray(parsed)
+      && parsed.length === 2
+      && typeof parsed[0] === 'string'
+      && typeof parsed[1] === 'string'
+    ) {
+      return { provider: parsed[0], sourceId: parsed[1] };
+    }
+  } catch {
+    // Legacy sourceId-only key.
+  }
+  return null;
+}
+
 class DiscoveryAdmissionQuotaReachedError extends Error {
   constructor() {
     super('wake episode admission quota reached before source acknowledgement');
@@ -600,11 +626,13 @@ export class RuntimeLearning {
   private readonly externalSourceBudget: SourceWorkBudget;
   private readonly internalSourceBudget: SourceWorkBudget;
   /**
-   * Per-source failure tracking for external source lanes. Keyed by sourceId.
+   * Per-lane failure tracking keyed by the opaque (provider, sourceId) tuple.
    * State is persisted to disk after each wake so restart recovery restores
    * lane due time, cursor, quota continuation, and backoff state.
    */
   private readonly externalSourceFailureState = new Map<string, SourceFailureState>();
+  /** Prevent read-only/follower snapshots from rewriting another writer's state. */
+  private externalSourceSchedulingStateDirty = false;
   /**
    * Path to the durable external source scheduling state file. Used for
    * restart recovery of per-source backoff/suspension state.
@@ -755,7 +783,33 @@ export class RuntimeLearning {
    * current per-source failure tracking for inspection/testing.
    */
   getExternalSourceFailureState(): ReadonlyMap<string, SourceFailureState> {
-    return new Map(this.externalSourceFailureState);
+    const entries = [...this.externalSourceFailureState.entries()]
+      .map(([key, state]) => ({ key, state, identity: parseExternalSourceLaneKey(key) }))
+      .filter((entry): entry is { key: string; state: SourceFailureState; identity: ExternalSourceLaneIdentity } => (
+        entry.identity !== null
+      ));
+    const sourceIdCounts = new Map<string, number>();
+    for (const entry of entries) {
+      sourceIdCounts.set(
+        entry.identity.sourceId,
+        (sourceIdCounts.get(entry.identity.sourceId) ?? 0) + 1,
+      );
+    }
+    const snapshot = new Map<string, SourceFailureState>();
+    for (const entry of entries) {
+      const key = sourceIdCounts.get(entry.identity.sourceId) === 1
+        ? entry.identity.sourceId
+        : entry.key;
+      snapshot.set(key, entry.state);
+    }
+    return snapshot;
+  }
+
+  getExternalSourceFailure(
+    provider: string,
+    sourceId: string,
+  ): SourceFailureState | undefined {
+    return this.externalSourceFailureState.get(externalSourceLaneKey({ provider, sourceId }));
   }
 
   /** External source work budget (issue #77). */
@@ -812,10 +866,10 @@ export class RuntimeLearning {
   /** Retry a source-level protocol/integrity failure after operator repair. */
   retryExternalSourceFailure(provider: string, sourceId: string): boolean {
     const mutation = this.runExternalSourceMutation(provider, sourceId, 'source-failure-retry', () => {
-      const current = this.externalSourceFailureState.get(sourceId);
+      const current = this.getExternalSourceFailure(provider, sourceId);
       if (!current?.requiresOperatorAction) return false;
       if (this.listExternalSourceQuarantines(provider, sourceId).length > 0) return false;
-      this.clearExternalSourceFailureGate(sourceId);
+      this.clearExternalSourceFailureGate(provider, sourceId);
       this.saveExternalSourceSchedulingState();
       return true;
     });
@@ -848,8 +902,8 @@ export class RuntimeLearning {
   }
 
   /**
-   * Advance the external discovery lifecycle: closes any resource missing for
-   * at least two cycles without waiting for the next wake (issue #87).
+   * Advance external discovery observations without inferring deletion from
+   * absence. Explicit delete/archive commands own the `closed` transition.
    */
   finalizeExternalDiscoveryCycle(provider: string, sourceId: string, cycle: number): ExternalCursorState {
     const mutation = this.runExternalSourceMutation(provider, sourceId, 'resource-finalize', () => (
@@ -1011,9 +1065,9 @@ export class RuntimeLearning {
   private reconcileExternalSourceRecovery(provider: string, sourceId: string): void {
     const remaining = this.listExternalSourceQuarantines(provider, sourceId);
     if (remaining.length > 0) {
-      const current = this.externalSourceFailureState.get(sourceId);
+      const current = this.getExternalSourceFailure(provider, sourceId);
       const first = remaining[0]!;
-      this.externalSourceFailureState.set(sourceId, {
+      this.setExternalSourceFailure(provider, sourceId, {
         consecutiveFailures: current?.consecutiveFailures ?? 1,
         lastFailedAt: current?.lastFailedAt ?? first.detectedAt,
         lastError: first.message,
@@ -1027,15 +1081,24 @@ export class RuntimeLearning {
         lastSuccessfulReadAt: current?.lastSuccessfulReadAt ?? null,
       });
     } else {
-      this.clearExternalSourceFailureGate(sourceId);
+      this.clearExternalSourceFailureGate(provider, sourceId);
     }
     this.saveExternalSourceSchedulingState();
   }
 
-  private clearExternalSourceFailureGate(sourceId: string): void {
-    const current = this.externalSourceFailureState.get(sourceId);
+  private setExternalSourceFailure(
+    provider: string,
+    sourceId: string,
+    state: SourceFailureState,
+  ): void {
+    this.externalSourceSchedulingStateDirty = true;
+    this.externalSourceFailureState.set(externalSourceLaneKey({ provider, sourceId }), state);
+  }
+
+  private clearExternalSourceFailureGate(provider: string, sourceId: string): void {
+    const current = this.getExternalSourceFailure(provider, sourceId);
     if (!current) return;
-    this.externalSourceFailureState.set(sourceId, {
+    this.setExternalSourceFailure(provider, sourceId, {
       consecutiveFailures: 0,
       lastFailedAt: null,
       lastError: null,
@@ -1276,7 +1339,6 @@ export class RuntimeLearning {
       source.identity.sourceId,
     );
     if (!providerLock.acquired) {
-      this.recordExternalSourceLockContention(source.identity.sourceId, source.identity.provider);
       throw new Error(`external source provider lock is busy for ${source.identity.provider}`);
     }
 
@@ -1378,19 +1440,19 @@ export class RuntimeLearning {
     if (backfill.status === 'source_failed') {
       const latestFailure = backfill.state.failures[backfill.state.failures.length - 1];
       const message = latestFailure?.message ?? 'external backfill source failed';
-      this.recordExternalSourceFailure(source.identity.sourceId, new Error(message), {
+      this.recordExternalSourceFailure(source.identity, new Error(message), {
         failureClass: this.classifyExternalSourceFailure(message),
         resourceRef: latestFailure?.resourceRef,
         eventId: latestFailure?.eventId,
       });
       this.saveExternalSourceSchedulingState();
     } else if (backfill.status === 'pending') {
-      this.recordExternalSourceFailure(source.identity.sourceId, new Error('pending external backfill range'), {
+      this.recordExternalSourceFailure(source.identity, new Error('pending external backfill range'), {
         failureClass: 'pending',
       });
       this.saveExternalSourceSchedulingState();
     } else if (backfill.status === 'completed') {
-      this.resetExternalSourceFailure(source.identity.sourceId);
+      this.resetExternalSourceFailure(source.identity);
       this.saveExternalSourceSchedulingState();
     }
 
@@ -2309,7 +2371,7 @@ export class RuntimeLearning {
           ...(isExternal
             ? this.buildExternalSourceReportDiagnostics(
               identity,
-              this.externalSourceFailureState.get(identity.sourceId),
+              this.getExternalSourceFailure(identity.provider, identity.sourceId),
             )
             : {}),
         },
@@ -2320,7 +2382,7 @@ export class RuntimeLearning {
     }
 
     if (isExternal && (this.shutdownDrainRequested || this.externalSourceDrainRequested || options.signal?.aborted)) {
-      const failureState = this.externalSourceFailureState.get(identity.sourceId);
+      const failureState = this.getExternalSourceFailure(identity.provider, identity.sourceId);
       return {
         report: {
           sourceId: identity.sourceId,
@@ -2340,7 +2402,7 @@ export class RuntimeLearning {
     }
 
     if (isExternal) {
-      const failureState = this.externalSourceFailureState.get(identity.sourceId);
+      const failureState = this.getExternalSourceFailure(identity.provider, identity.sourceId);
       if (this.shouldSkipExternalSourceForFailure(failureState)) {
         return {
           report: {
@@ -2365,8 +2427,7 @@ export class RuntimeLearning {
       ? this.acquireExternalProviderLock(identity.provider, 'continuous-discovery', identity.sourceId)
       : null;
     if (providerLock && !providerLock.acquired) {
-      this.recordExternalSourceLockContention(identity.sourceId, identity.provider);
-      const failureState = this.externalSourceFailureState.get(identity.sourceId) ?? undefined;
+      const failureState = this.getExternalSourceFailure(identity.provider, identity.sourceId);
       return {
         report: {
           sourceId: identity.sourceId,
@@ -2417,9 +2478,9 @@ export class RuntimeLearning {
         });
       } catch (error) {
         sourceHadFailure = true;
-        if (isExternal) this.recordExternalSourceFailure(identity.sourceId, error);
+        if (isExternal) this.recordExternalSourceFailure(identity, error);
         const failureState = isExternal
-          ? (this.externalSourceFailureState.get(identity.sourceId) ?? undefined)
+          ? this.getExternalSourceFailure(identity.provider, identity.sourceId)
           : undefined;
         return {
           report: {
@@ -2507,7 +2568,7 @@ export class RuntimeLearning {
           adapter.markFailed(resource, error);
           sourceHadFailure = true;
           if (isExternal) {
-            this.recordExternalSourceFailure(identity.sourceId, error, { resourceRef: resource.resourceRef });
+            this.recordExternalSourceFailure(identity, error, { resourceRef: resource.resourceRef });
           }
           continue;
         }
@@ -2523,8 +2584,7 @@ export class RuntimeLearning {
           sourceHadFailure = true;
           if (isExternal) {
             const failedEvent = failure?.eventIdentities?.[0]
-              ?? readResult.eventIdentities?.[0]
-              ?? resource.firstEventIdentity;
+              ?? readResult.eventIdentities?.[0];
             if (failure?.failureClass === 'quarantine' || failure?.failureClass === 'integrity_conflict') {
               if (failedEvent) {
                 this.recordExternalSourceQuarantine(
@@ -2537,7 +2597,7 @@ export class RuntimeLearning {
                 );
               }
             }
-            this.recordExternalSourceFailure(identity.sourceId, new Error(failure?.message ?? 'source read reported failed status'), {
+            this.recordExternalSourceFailure(identity, new Error(failure?.message ?? 'source read reported failed status'), {
               failureClass: failure?.failureClass,
               resourceRef: failure?.resourceRef ?? resource.resourceRef,
               eventId: failedEvent?.eventId,
@@ -2562,17 +2622,17 @@ export class RuntimeLearning {
               adapter.acknowledge(resource, readResult);
               if (readResult.advanced) advancedResources++;
               if (isExternal) {
-                this.resetExternalSourceFailure(identity.sourceId);
+                this.resetExternalSourceFailure(identity);
               }
             } catch (error) {
               adapter.markFailed(resource, error);
               sourceHadFailure = true;
               if (isExternal) {
-                this.recordExternalSourceFailure(identity.sourceId, error, { resourceRef: resource.resourceRef });
+                this.recordExternalSourceFailure(identity, error, { resourceRef: resource.resourceRef });
               }
             }
           } else if (isExternal && !options.signal?.aborted) {
-            this.recordExternalSourceFailure(identity.sourceId, new Error('pending external range remains unacknowledged'), {
+            this.recordExternalSourceFailure(identity, new Error('pending external range remains unacknowledged'), {
               failureClass: 'pending',
               resourceRef: resource.resourceRef,
             });
@@ -2664,7 +2724,7 @@ export class RuntimeLearning {
           shared.wakeAdmittedEpisodes += batchAdmittedEpisodes;
           totalContradictionSignals += batchContradictionSignals;
           if (isExternal) {
-            this.resetExternalSourceFailure(identity.sourceId);
+            this.resetExternalSourceFailure(identity);
           }
         } catch (error) {
           if (error instanceof DiscoveryAdmissionQuotaReachedError) {
@@ -2677,8 +2737,7 @@ export class RuntimeLearning {
             const message = this.redactExternalSourceError(error);
             const failureClass = this.classifyExternalSourceFailure(message);
             const eventIdentity = batchEventInProgress
-              ?? readResult.eventIdentities?.[0]
-              ?? resource.firstEventIdentity;
+              ?? readResult.eventIdentities?.[0];
             if (
               (failureClass === 'quarantine' || failureClass === 'integrity_conflict')
               && eventIdentity
@@ -2693,7 +2752,7 @@ export class RuntimeLearning {
                 readResult.newCursor.position,
               );
             }
-            this.recordExternalSourceFailure(identity.sourceId, error, {
+            this.recordExternalSourceFailure(identity, error, {
               failureClass,
               resourceRef: resource.resourceRef,
               eventId: eventIdentity?.eventId,
@@ -2708,7 +2767,7 @@ export class RuntimeLearning {
       if (sourceBudgetHit && !sourceDrained) status = 'quota_reached';
 
       const failureState = isExternal
-        ? this.externalSourceFailureState.get(identity.sourceId) ?? undefined
+        ? this.getExternalSourceFailure(identity.provider, identity.sourceId)
         : undefined;
 
       return {
@@ -2794,7 +2853,7 @@ export class RuntimeLearning {
   }
 
   private recordExternalSourceFailure(
-    sourceId: string,
+    identity: ExternalSourceLaneIdentity,
     error: unknown,
     context: {
       failureClass?: ExternalSourceFailureClass;
@@ -2802,7 +2861,7 @@ export class RuntimeLearning {
       eventId?: string;
     } = {},
   ): void {
-    const current = this.externalSourceFailureState.get(sourceId);
+    const current = this.getExternalSourceFailure(identity.provider, identity.sourceId);
     const message = this.redactExternalSourceError(error);
     const failureClass = context.failureClass ?? this.classifyExternalSourceFailure(message);
     const now = this.clock();
@@ -2849,7 +2908,7 @@ export class RuntimeLearning {
         break;
     }
 
-    this.externalSourceFailureState.set(sourceId, {
+    this.setExternalSourceFailure(identity.provider, identity.sourceId, {
       consecutiveFailures,
       lastFailedAt: nowIso,
       lastError: message,
@@ -2864,31 +2923,15 @@ export class RuntimeLearning {
     });
   }
 
-  private recordExternalSourceLockContention(sourceId: string, provider: string): void {
-    const current = this.externalSourceFailureState.get(sourceId);
-    const nowIso = this.clock().toISOString();
-    this.externalSourceFailureState.set(sourceId, {
-      consecutiveFailures: current?.consecutiveFailures ?? 0,
-      lastFailedAt: current?.lastFailedAt ?? null,
-      lastError: `provider lock busy for ${provider}`,
-      suspendedUntil: null,
-      failureClass: 'pending',
-      nextRetryAt: nowIso,
-      requiresOperatorAction: false,
-      lastAttemptedAt: nowIso,
-      lastSuccessfulReadAt: current?.lastSuccessfulReadAt ?? null,
-    });
-  }
-
-  private resetExternalSourceFailure(sourceId: string): void {
-    const current = this.externalSourceFailureState.get(sourceId);
+  private resetExternalSourceFailure(identity: ExternalSourceLaneIdentity): void {
+    const current = this.getExternalSourceFailure(identity.provider, identity.sourceId);
     // Only update if the source had prior state — a healthy source that never
     // failed should not accumulate a scheduling-state entry just from a
     // successful read. When prior state exists, clear the failure counters and
     // record the successful read timestamp for diagnostics.
     if (!current) return;
     const nowIso = this.clock().toISOString();
-    this.externalSourceFailureState.set(sourceId, {
+    this.setExternalSourceFailure(identity.provider, identity.sourceId, {
       consecutiveFailures: 0,
       lastFailedAt: null,
       lastError: null,
@@ -2925,12 +2968,16 @@ export class RuntimeLearning {
       const raw = fs.readFileSync(this.schedulingStatePath, 'utf-8');
       const parsed = JSON.parse(raw) as {
         schemaVersion?: number;
+        lanes?: Array<{
+          provider?: string;
+          sourceId?: string;
+          state?: SourceFailureState;
+        }>;
         sources?: Record<string, SourceFailureState>;
       };
-      if (!parsed.sources || typeof parsed.sources !== 'object') return;
-      for (const [sourceId, state] of Object.entries(parsed.sources)) {
-        if (typeof state.consecutiveFailures !== 'number') continue;
-        this.externalSourceFailureState.set(sourceId, {
+      const restore = (identity: ExternalSourceLaneIdentity, state: SourceFailureState): void => {
+        if (typeof state.consecutiveFailures !== 'number') return;
+        this.externalSourceFailureState.set(externalSourceLaneKey(identity), {
           consecutiveFailures: state.consecutiveFailures,
           lastFailedAt: state.lastFailedAt ?? null,
           lastError: state.lastError ?? null,
@@ -2943,6 +2990,24 @@ export class RuntimeLearning {
           lastAttemptedAt: state.lastAttemptedAt ?? null,
           lastSuccessfulReadAt: state.lastSuccessfulReadAt ?? null,
         });
+      };
+      if (parsed.schemaVersion === 3 && Array.isArray(parsed.lanes)) {
+        for (const lane of parsed.lanes) {
+          if (
+            typeof lane.provider !== 'string'
+            || typeof lane.sourceId !== 'string'
+            || !lane.state
+          ) continue;
+          restore({ provider: lane.provider, sourceId: lane.sourceId }, lane.state);
+        }
+        return;
+      }
+      if (!parsed.sources || typeof parsed.sources !== 'object') return;
+      for (const [sourceId, state] of Object.entries(parsed.sources)) {
+        for (const adapter of this.sessionLogSources) {
+          if (adapter.identity.category !== 'external' || adapter.identity.sourceId !== sourceId) continue;
+          restore(adapter.identity, state);
+        }
       }
     } catch {
       // Corrupt state file — start fresh; the source will be retried.
@@ -2950,25 +3015,33 @@ export class RuntimeLearning {
   }
 
   private saveExternalSourceSchedulingState(): void {
+    if (!this.externalSourceSchedulingStateDirty) return;
     try {
-      const sources: Record<string, SourceFailureState> = {};
-      for (const [sourceId, state] of this.externalSourceFailureState) {
+      const lanes: Array<ExternalSourceLaneIdentity & { state: SourceFailureState }> = [];
+      for (const [key, state] of this.externalSourceFailureState) {
+        const identity = parseExternalSourceLaneKey(key);
+        if (!identity) continue;
         const hasSignal = state.consecutiveFailures > 0
           || Boolean(state.suspendedUntil)
           || Boolean(state.failureClass)
           || Boolean(state.lastError)
           || Boolean(state.lastSuccessfulReadAt);
         if (hasSignal) {
-          sources[sourceId] = state;
+          lanes.push({ ...identity, state });
         }
       }
-      if (Object.keys(sources).length === 0) {
+      if (lanes.length === 0) {
         if (fs.existsSync(this.schedulingStatePath)) {
           fs.unlinkSync(this.schedulingStatePath);
         }
+        this.externalSourceSchedulingStateDirty = false;
         return;
       }
-      const payload = { schemaVersion: 2, sources };
+      lanes.sort((left, right) => (
+        (left.provider < right.provider ? -1 : (left.provider > right.provider ? 1 : 0))
+        || (left.sourceId < right.sourceId ? -1 : (left.sourceId > right.sourceId ? 1 : 0))
+      ));
+      const payload = { schemaVersion: 3, lanes };
       fs.mkdirSync(path.dirname(this.schedulingStatePath), { recursive: true });
       const tmpPath = `${this.schedulingStatePath}.${process.pid}.${Date.now()}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), {
@@ -2976,6 +3049,7 @@ export class RuntimeLearning {
         mode: 0o600,
       });
       fs.renameSync(tmpPath, this.schedulingStatePath);
+      this.externalSourceSchedulingStateDirty = false;
     } catch (error) {
       Logger.warning(
         `[RuntimeLearning] failed to persist external source scheduling state: ${(error as Error).message}`,
@@ -3479,7 +3553,7 @@ export class RuntimeLearning {
       if (page.lane === 'continuous') {
         adapter!.acknowledge(resource, readResult);
         // Success resets failure count for continuous external sources.
-        this.resetExternalSourceFailure(identity.sourceId);
+        this.resetExternalSourceFailure(identity);
       }
 
       return {
@@ -3493,7 +3567,7 @@ export class RuntimeLearning {
       // Record the failure for source health tracking.
       const message = this.redactExternalSourceError(error);
       const failureClass = this.classifyExternalSourceFailure(message);
-      const eventIdentity = eventInProgress ?? eventIdentities?.[0] ?? resource.firstEventIdentity;
+      const eventIdentity = eventInProgress ?? eventIdentities?.[0];
       if (error && typeof error === 'object') {
         (error as Record<string, unknown>).externalAdmissionFailureRecorded = true;
       }
@@ -3510,7 +3584,7 @@ export class RuntimeLearning {
       if (adapter) {
         adapter.markFailed(resource, error);
       }
-      this.recordExternalSourceFailure(identity.sourceId, error, {
+      this.recordExternalSourceFailure(identity, error, {
         failureClass,
         resourceRef: resource.resourceRef,
         eventId: eventIdentity?.eventId,

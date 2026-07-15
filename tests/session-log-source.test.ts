@@ -333,6 +333,25 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
       adapter.close();
     });
 
+    test('bounded discovery emits a deterministic first page before scanning the whole directory', () => {
+      const logsDir = path.dirname(env.logFile);
+      fs.mkdirSync(logsDir, { recursive: true });
+      for (let index = 29; index >= 0; index--) {
+        fs.writeFileSync(
+          path.join(logsDir, `page-${String(index).padStart(2, '0')}.jsonl`),
+          '',
+          'utf8',
+        );
+      }
+
+      const adapter = new InternalSessionLogSourceAdapter(getDistillationHeartbeatConfig(env.root));
+      const firstPage = adapter.discoverResources({ maxResources: 1, maxElapsedMs: 1_000 });
+
+      assert.equal(firstPage.length, 1);
+      assert.equal(path.basename(firstPage[0]!.resourceRef), 'page-00.jsonl');
+      adapter.close();
+    });
+
     test('an incomplete trailing line rotates without advancing its durable cursor', () => {
       fs.mkdirSync(path.dirname(env.logFile), { recursive: true });
       fs.writeFileSync(env.logFile, '{"entry_type":"turn"', 'utf8');
@@ -346,6 +365,39 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
       assert.equal(read.newCursor.position, 0);
       adapter.acknowledge(resource, read);
       assert.equal(read.newCursor.position, 0);
+      adapter.close();
+    });
+
+    test('cross-file continuity selects the prior file from the same Runtime session', () => {
+      const logsDir = path.dirname(env.logFile);
+      const sameSessionPrevious = path.join(logsDir, 'alpha.jsonl');
+      const unrelated = path.join(logsDir, 'beta.jsonl');
+      const sameSessionCurrent = path.join(logsDir, 'gamma.jsonl');
+      writeLog(sameSessionPrevious, [{
+        ...futureTurn(1, 'session-a', 'Build the first part.', 'First part complete.'),
+        timestamp: '2026-01-01T00:00:00.000Z',
+      }]);
+      writeLog(unrelated, [{
+        ...futureTurn(1, 'session-b', 'Unrelated task.', 'Unrelated result.'),
+        timestamp: '2026-01-01T00:01:00.000Z',
+      }]);
+      writeLog(sameSessionCurrent, [{
+        ...futureTurn(2, 'session-a', 'Continue with the second part.', 'Second part complete.'),
+        timestamp: '2026-01-01T00:02:00.000Z',
+      }]);
+
+      const adapter = new InternalSessionLogSourceAdapter(getDistillationHeartbeatConfig(env.root));
+      const resources = adapter.discoverResources({ maxResources: 10, maxElapsedMs: 1_000 });
+      const current = resources.find(resource => resource.resourceRef === sameSessionCurrent);
+      assert.ok(current);
+
+      const result = adapter.read(current, { orderedResources: resources });
+
+      assert.equal(result.status, 'advanced');
+      assert.deepEqual(
+        result.distillationUnit?.continuityTurns.map(turn => turn.user.text),
+        ['Build the first part.'],
+      );
       adapter.close();
     });
 

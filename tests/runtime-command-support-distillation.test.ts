@@ -3,6 +3,8 @@ import * as assert from 'node:assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { ChildProcess, spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import matter from 'gray-matter';
 
 import {
@@ -17,6 +19,10 @@ import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
 import { SkillParser } from '../src/skills/skill-parser';
 import { loadCurrentSkillRegistry, loadTransitionAudit } from '../src/utils/skill-evolution';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
+import { acquireHeartbeatSchedulerOwnerLock } from '../src/utils/heartbeat-scheduler-owner-lock';
+
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+const TSX_LOADER = pathToFileURL(require.resolve('tsx')).href;
 
 // ---------------------------------------------------------------------------
 // Runtime startup wiring of the full DistillationPipeline (issue #13).
@@ -244,6 +250,111 @@ function flushStartupHeartbeat(): Promise<void> {
   return new Promise(resolve => setImmediate(resolve));
 }
 
+interface RuntimeProbeEvent {
+  type: 'started' | 'takeover';
+  writer: boolean;
+  pid: number;
+}
+
+function spawnRuntimeProbe(runtimeRoot: string): ChildProcess {
+  const supportModuleUrl = pathToFileURL(
+    path.join(PROJECT_ROOT, 'src/utils/runtime-command-support.ts'),
+  ).href;
+  return spawn(
+    process.execPath,
+    [
+      '--import',
+      TSX_LOADER,
+      '--input-type=module',
+      '-e',
+      `
+        const runtimeModule = await import(${JSON.stringify(supportModuleUrl)});
+        const { startRuntimeCommandSupport, stopRuntimeCommandSupport } = runtimeModule.default ?? runtimeModule;
+        const support = await startRuntimeCommandSupport(${JSON.stringify(runtimeRoot)});
+        const emit = type => process.stdout.write('RUNTIME_PROBE ' + JSON.stringify({
+          type,
+          writer: Boolean(support.runtimeLearning && support.distillationPipeline && support.distillationHeartbeatScheduler),
+          pid: process.pid,
+        }) + '\\n');
+        emit('started');
+        let takeoverReported = false;
+        const poll = setInterval(() => {
+          if (!takeoverReported && support.runtimeLearning && support.distillationPipeline && support.distillationHeartbeatScheduler) {
+            takeoverReported = true;
+            emit('takeover');
+          }
+        }, 50);
+        let stopping = false;
+        process.on('SIGTERM', async () => {
+          if (stopping) return;
+          stopping = true;
+          clearInterval(poll);
+          await stopRuntimeCommandSupport();
+          process.exit(0);
+        });
+      `,
+    ],
+    {
+      cwd: PROJECT_ROOT,
+      env: {
+        ...process.env,
+        DISTILLATION_HEARTBEAT_ENABLED: 'true',
+        CATSCO_LOG_UPLOAD_ENABLED: 'false',
+        XIAOBA_ROLE: 'chat',
+        XIAOBA_RUNTIME_ROOT: runtimeRoot,
+        XIAOBA_SKILLS_DIR: path.join(runtimeRoot, 'skills'),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+}
+
+function waitForRuntimeProbe(
+  child: ChildProcess,
+  type: RuntimeProbeEvent['type'],
+  timeoutMs: number = 10_000,
+): Promise<RuntimeProbeEvent> {
+  return new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`timed out waiting for ${type}; stdout=${stdout}; stderr=${stderr}`));
+    }, timeoutMs);
+    const onStdout = (chunk: Buffer | string) => {
+      stdout += chunk.toString();
+      for (const line of stdout.split('\n')) {
+        if (!line.startsWith('RUNTIME_PROBE ')) continue;
+        const event = JSON.parse(line.slice('RUNTIME_PROBE '.length)) as RuntimeProbeEvent;
+        if (event.type === type) {
+          cleanup();
+          resolve(event);
+          return;
+        }
+      }
+    };
+    const onStderr = (chunk: Buffer | string) => { stderr += chunk.toString(); };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      reject(new Error(`runtime probe exited before ${type}: code=${code} signal=${signal}; stderr=${stderr}`));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.stdout?.off('data', onStdout);
+      child.stderr?.off('data', onStderr);
+      child.off('exit', onExit);
+    };
+    child.stdout?.on('data', onStdout);
+    child.stderr?.on('data', onStderr);
+    child.once('exit', onExit);
+  });
+}
+
+function waitForProcessExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise(resolve => child.once('exit', () => resolve()));
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -312,6 +423,89 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
     assert.equal(audit.length, 1, 'one durable V3 transition audit was written');
     assert.equal(audit[0]?.transition, 'create_current_skill');
     assert.ok(audit[0]?.branchTranscriptPaths.length === 2, 'Author and Verifier transcripts are linked');
+  });
+
+  test('a follower does not construct the writable V3 runtime stack', async () => {
+    const owner = acquireHeartbeatSchedulerOwnerLock({ runtimeRoot: env.root });
+    assert.equal(owner.acquired, true);
+    if (!owner.acquired) return;
+
+    try {
+      const support = await startRuntimeCommandSupport(env.root, env.runtimeSupportOptions);
+
+      assert.equal(support.runtimeLearning, null, 'a follower has no RuntimeLearning writer');
+      assert.equal(support.distillationPipeline, null, 'a follower has no V3 pipeline writer');
+      assert.equal(support.distillationHeartbeatScheduler, null, 'a follower has no heartbeat scheduler');
+      assert.equal(
+        fs.existsSync(env.generatedDistilledRoot),
+        false,
+        'a follower does not run the SkillEvolutionRuntime constructor or bootstrap',
+      );
+    } finally {
+      owner.release();
+    }
+  });
+
+  test('a follower process builds a fresh writable stack after the owner is killed', { timeout: 20_000 }, async () => {
+    const owner = spawnRuntimeProbe(env.root);
+    let follower: ChildProcess | null = null;
+    try {
+      const ownerStarted = await waitForRuntimeProbe(owner, 'started');
+      assert.equal(ownerStarted.writer, true, 'the first process owns the writable Runtime');
+
+      follower = spawnRuntimeProbe(env.root);
+      const followerStarted = await waitForRuntimeProbe(follower, 'started');
+      assert.equal(followerStarted.writer, false, 'the follower starts without a writable V3 stack');
+
+      owner.kill('SIGKILL');
+      await waitForProcessExit(owner);
+
+      const takeover = await waitForRuntimeProbe(follower, 'takeover');
+      assert.equal(takeover.pid, follower.pid, 'the follower publishes the replacement owner generation');
+      assert.equal(takeover.writer, true, 'takeover constructs a complete fresh writable stack');
+
+      follower.kill('SIGTERM');
+      await waitForProcessExit(follower);
+      follower = null;
+    } finally {
+      if (owner.exitCode === null && owner.signalCode === null) owner.kill('SIGKILL');
+      if (follower && follower.exitCode === null && follower.signalCode === null) follower.kill('SIGKILL');
+      await Promise.all([
+        waitForProcessExit(owner),
+        ...(follower ? [waitForProcessExit(follower)] : []),
+      ]);
+    }
+  });
+
+  test('shutdown retains ownership until the active Runtime Learning wake drains', async () => {
+    const originalAuthor = env.runtimeSupportOptions.skillEvolutionOptions!.authorFixture!;
+    let authorEnteredResolve!: () => void;
+    const authorEntered = new Promise<void>(resolve => { authorEnteredResolve = resolve; });
+    let releaseAuthor!: () => void;
+    const authorGate = new Promise<void>(resolve => { releaseAuthor = resolve; });
+    env.runtimeSupportOptions.skillEvolutionOptions!.authorFixture = async input => {
+      authorEnteredResolve();
+      await authorGate;
+      return originalAuthor(input);
+    };
+
+    const support = await startRuntimeCommandSupport(env.root, env.runtimeSupportOptions);
+    await support.distillationHeartbeatScheduler!.runHeartbeat('manual');
+    writeLog(env.logFile, [PROBLEM_TURN, VERIFICATION_TURN]);
+
+    const wake = support.distillationHeartbeatScheduler!.runHeartbeat('manual');
+    await authorEntered;
+    const stopping = stopRuntimeCommandSupport();
+
+    const blocked = acquireHeartbeatSchedulerOwnerLock({ runtimeRoot: env.root });
+    assert.equal(blocked.acquired, false, 'the owner lease remains held while the wake is active');
+
+    releaseAuthor();
+    await Promise.all([wake, stopping]);
+
+    const successor = acquireHeartbeatSchedulerOwnerLock({ runtimeRoot: env.root });
+    assert.equal(successor.acquired, true, 'the owner lease releases after the wake drains');
+    if (successor.acquired) successor.release();
   });
 
   // AC: Generated distilled skills are installed under the current runtime

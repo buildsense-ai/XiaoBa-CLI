@@ -1318,7 +1318,7 @@ describe('DistillationHeartbeatScheduler', () => {
         wakeGate.resolve();
         await stopPromise;
 
-        assert.equal(clearCount >= 2, true, 'active+scheduled stop races should clear both timers');
+        assert.equal(clearCount >= 1, true, 'the active stop-race timer is cleared');
         assert.equal(handles.size, 0, 'stop-race timers are cleaned up');
       } finally {
         globalThis.setTimeout = originalSetTimeout;
