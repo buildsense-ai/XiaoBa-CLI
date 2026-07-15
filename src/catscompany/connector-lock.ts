@@ -5,6 +5,7 @@ import * as path from 'node:path';
 export interface CatsCoConnectorLockRecord {
   bodyId: string;
   pid: number;
+  ownerPid?: number;
   startedAt: string;
   command?: string;
   token: string;
@@ -29,13 +30,15 @@ export function acquireCatsCoConnectorLock(options: {
   runtimeRoot: string;
   bodyId: string;
   command?: string;
+  ownerPid?: number;
 }): CatsCoConnectorLockResult {
   const lockDir = path.join(options.runtimeRoot, '.xiaoba');
   const lockPath = path.join(lockDir, 'catsco-connector.lock.json');
   fs.mkdirSync(lockDir, { recursive: true });
 
   const existing = readLock(lockPath);
-  if (existing && existing.bodyId === options.bodyId && isProcessAlive(existing.pid)) {
+  const existingOwnerExited = existing?.ownerPid !== undefined && !isProcessAlive(existing.ownerPid);
+  if (existing && existing.bodyId === options.bodyId && isProcessAlive(existing.pid) && !existingOwnerExited) {
     return {
       acquired: false,
       lockPath,
@@ -46,6 +49,7 @@ export function acquireCatsCoConnectorLock(options: {
   const record: CatsCoConnectorLockRecord = {
     bodyId: options.bodyId,
     pid: process.pid,
+    ...(isValidPid(options.ownerPid) ? { ownerPid: options.ownerPid } : {}),
     startedAt: new Date().toISOString(),
     command: options.command,
     token: crypto.randomUUID(),
@@ -74,6 +78,7 @@ function readLock(lockPath: string): CatsCoConnectorLockRecord | null {
       return {
         bodyId: parsed.bodyId,
         pid,
+        ownerPid: isValidPid(parsed.ownerPid) ? parsed.ownerPid : undefined,
         startedAt: parsed.startedAt,
         command: typeof parsed.command === 'string' ? parsed.command : undefined,
         token: parsed.token,
@@ -101,8 +106,12 @@ function releaseCatsCoConnectorLock(lockPath: string, record: CatsCoConnectorLoc
   }
 }
 
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) {
+function isValidPid(pid: unknown): pid is number {
+  return typeof pid === 'number' && Number.isInteger(pid) && pid > 0;
+}
+
+export function isProcessAlive(pid: number): boolean {
+  if (!isValidPid(pid)) {
     return false;
   }
   try {

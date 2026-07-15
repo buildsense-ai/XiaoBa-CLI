@@ -41,6 +41,32 @@ describe('CatsCo connector startup lock', () => {
     otherDevice.release();
   });
 
+  test('replaces a live connector lock whose dashboard owner has exited', () => {
+    const lockDir = path.join(tempDir, '.xiaoba');
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(lockDir, 'catsco-connector.lock.json'),
+      JSON.stringify({
+        bodyId: 'body-a',
+        pid: process.pid,
+        ownerPid: 2_147_483_647,
+        startedAt: new Date().toISOString(),
+        command: 'orphaned-dashboard-connector',
+        token: 'orphaned-token',
+      }),
+      'utf8',
+    );
+
+    const acquired = acquireCatsCoConnectorLock({
+      runtimeRoot: tempDir,
+      bodyId: 'body-a',
+      command: 'replacement',
+      ownerPid: process.pid,
+    });
+    assert.equal(acquired.acquired, true);
+    acquired.release();
+  });
+
   test('overwrites a stale lock for the same body id', () => {
     const lockDir = path.join(tempDir, '.xiaoba');
     fs.mkdirSync(lockDir, { recursive: true });
