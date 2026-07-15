@@ -25,6 +25,9 @@ export interface CatsCoAttachmentGrantInput {
   fileName: string;
   type?: LocalFileGrantFileType;
   workspaceRoot?: string;
+  attachmentId?: string;
+  receivedAt?: number;
+  attachmentSource?: 'user_upload' | 'agent_output';
 }
 
 export function createCatsCoLocalDeviceGrant(input: CatsCoDeviceGrantInput): ScopedLocalDeviceGrant | undefined {
@@ -65,11 +68,15 @@ export function createCatsCoAttachmentGrant(
   }
   if (!stats.isFile()) return undefined;
   const createdAt = Date.now();
+  const attachmentId = normalizeAttachmentId(input.attachmentId);
 
   return {
     kind: 'catscompany_attachment',
     source: 'catscompany',
-    attachmentRef: `${CATSCOMPANY_ATTACHMENT_REF_PREFIX}${randomUUID()}`,
+    attachmentRef: `${CATSCOMPANY_ATTACHMENT_REF_PREFIX}${attachmentId || randomUUID()}`,
+    ...(attachmentId && { attachmentId }),
+    ...(Number.isFinite(input.receivedAt) && { attachmentReceivedAt: input.receivedAt }),
+    ...(input.attachmentSource && { attachmentSource: input.attachmentSource }),
     filePath,
     fileName: input.fileName,
     fileType: input.type || 'unknown',
@@ -124,4 +131,10 @@ function normalizeCatsCoUserId(value: unknown): string | undefined {
   const text = safeString(value);
   if (!text) return undefined;
   return /^\d+$/.test(text) ? `usr${text}` : text;
+}
+
+function normalizeAttachmentId(value: unknown): string | undefined {
+  const text = safeString(value);
+  if (!text || !/^[a-zA-Z0-9._-]{1,80}$/.test(text)) return undefined;
+  return text;
 }

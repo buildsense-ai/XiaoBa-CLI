@@ -181,6 +181,11 @@ export interface ScopedLocalFileGrant {
   kind: LocalFileGrantKind;
   source: MessageSource;
   attachmentRef?: string;
+  /** Stable conversation image identifier, such as img_0001. */
+  attachmentId?: string;
+  /** Original arrival time; unlike createdAt this survives per-turn grant renewal. */
+  attachmentReceivedAt?: number;
+  attachmentSource?: 'user_upload' | 'agent_output';
   filePath: string;
   fileName: string;
   fileType: LocalFileGrantFileType;

@@ -12,7 +12,7 @@ export class SendFileTool implements Tool {
     description: [
       '向当前聊天会话发送一个已存在的本地文件。',
       'file_path 接受绝对路径或相对当前目录的路径。CatsCo 附件请优先使用消息中显示的本地缓存路径。',
-      'catsco_attachment:<id> 仅用于兼容当前轮旧附件引用；后续转发应使用历史消息里的本地缓存路径。',
+      'CatsCo 近期图片目录里的 catsco_attachment:<id> 可跨轮续用；目录同时提供准确本地缓存路径。',
       '只发送文件本身；如果只是回复文字，请用普通 assistant 回复或 send_text。',
     ].join('\n'),
     transcriptMode: 'outbound_file',
@@ -21,7 +21,7 @@ export class SendFileTool implements Tool {
       properties: {
         file_path: {
           type: 'string',
-          description: '要发送的本地文件路径。支持绝对路径、相对当前目录路径；CatsCo 附件优先使用消息中的本地缓存路径，catsco_attachment:<id> 仅作旧引用兼容。',
+          description: '要发送的本地文件路径。支持绝对路径、相对当前目录路径，以及当前已授权的 CatsCo catsco_attachment:<id> 图片目录引用。',
         },
         file_name: {
           type: 'string',

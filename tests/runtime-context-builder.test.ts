@@ -5,7 +5,10 @@ import * as os from 'os';
 import * as path from 'path';
 import { AgentSession } from '../src/core/agent-session';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
-import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../src/core/runtime-context-builder';
+import {
+  buildRuntimeContextMessage,
+  TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+} from '../src/core/runtime-context-builder';
 import { createDeviceGrant, createUserDevice } from '../src/core/device-grants';
 import { createExecutionScopeFromRoute, createSessionRoute } from '../src/core/session-router';
 import type { Message } from '../src/types';
@@ -146,6 +149,48 @@ describe('runtime context builder', () => {
       process.chdir(originalCwd);
       fs.rmSync(testRoot, { recursive: true, force: true });
     }
+  });
+
+  test('injects a compact authorized image catalog with stable ids and real paths', () => {
+    const filePath = 'C:\\cache\\catscompany\\original-pig.jpg';
+    const receivedAt = Date.UTC(2026, 6, 15, 3, 20, 0);
+    const imageGrant: ScopedLocalFileGrant = {
+      ...localGrant(filePath),
+      attachmentRef: 'catsco_attachment:img_0007',
+      attachmentId: 'img_0007',
+      attachmentReceivedAt: receivedAt,
+      attachmentSource: 'user_upload',
+      fileName: 'original-pig.jpg',
+      fileType: 'image',
+    };
+
+    const message = buildRuntimeContextMessage({
+      sessionKey: imageGrant.sessionKey,
+      sessionType: 'catscompany',
+      executionScope: {
+        source: 'catscompany',
+        sessionKey: imageGrant.sessionKey,
+        topicId: imageGrant.topicId,
+        topicType: imageGrant.topicType,
+        actorUserId: imageGrant.actorUserId,
+        agentId: imageGrant.agentId,
+        agentBodyId: imageGrant.agentBodyId,
+        identityTrust: 'server_canonical',
+        isTrusted: true,
+      },
+      localFileGrants: [imageGrant],
+    });
+
+    assert.ok(message);
+    const text = String(message.content);
+    assert.match(text, /近期图片目录/);
+    assert.match(text, /image_id=img_0007/);
+    assert.match(text, /attachment_ref=catsco_attachment:img_0007/);
+    assert.match(text, /source=user_upload/);
+    assert.match(text, /2026-07-15T03:20:00\.000Z/);
+    assert.ok(text.includes(JSON.stringify(filePath)));
+    assert.match(text, /不要用文字描述代替参考图/);
+    assert.match(text, /只有目录中没有目标图片/);
   });
 });
 

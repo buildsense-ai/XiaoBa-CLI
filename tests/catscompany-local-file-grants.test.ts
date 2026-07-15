@@ -46,10 +46,16 @@ describe('CatsCo local file grant creation', () => {
       fileName: 'report.md',
       type: 'file',
       workspaceRoot: root,
+      attachmentId: 'img_0007',
+      receivedAt: 1_234,
+      attachmentSource: 'user_upload',
     });
 
     assert.ok(result);
-    assert.match(result.attachmentRef || '', /^catsco_attachment:/);
+    assert.equal(result.attachmentRef, 'catsco_attachment:img_0007');
+    assert.equal(result.attachmentId, 'img_0007');
+    assert.equal(result.attachmentReceivedAt, 1_234);
+    assert.equal(result.attachmentSource, 'user_upload');
     assert.equal(result.filePath, fs.realpathSync(filePath));
     assert.equal(result.fileName, 'report.md');
     assert.equal(result.fileType, 'file');

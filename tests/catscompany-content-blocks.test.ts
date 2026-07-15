@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { CatsCompanyBot } from '../src/catscompany';
 import { extractContentBlocks } from '../src/catscompany/content-blocks';
+import { listRecentCatsCoImages } from '../src/catscompany/image-catalog';
 import { ConfigManager } from '../src/utils/config';
 import { SubAgentManager } from '../src/core/sub-agent-manager';
 
@@ -492,6 +493,78 @@ describe('CatsCo content blocks', () => {
     }
   });
 
+  test('restores recent image grants on a later text-only turn after bot restart', async () => {
+    const previousRuntimeRoot = process.env.XIAOBA_USER_DATA_DIR;
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-image-catalog-flow-'));
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
+
+    const configureBot = (bot: any) => {
+      bot.localDeviceGrant = {
+        kind: 'catscompany_body',
+        source: 'catscompany',
+        bodyId: 'body-main',
+        installationId: 'install-main',
+        deviceId: 'install-main',
+        createdAt: Date.now(),
+      };
+    };
+
+    try {
+      const first = createProcessHarness();
+      configureBot(first.bot);
+      first.bot.sender.downloadFile = async (_url: string, _fileName: string, options: any) => {
+        const localPath = options.targetPath;
+        fs.mkdirSync(path.dirname(localPath), { recursive: true });
+        fs.writeFileSync(localPath, Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
+        return localPath;
+      };
+
+      await (first.bot as any).onMessage({
+        topic: 'p2p_1_43',
+        senderId: 'usr1',
+        text: '[图片] original.png',
+        content: '[图片] original.png',
+        metadata: canonicalMetadata('usr1', 'p2p_1_43'),
+        content_blocks: [
+          { type: 'text', text: '这张是原图' },
+          { type: 'image', payload: { url: '/uploads/images/original.png', name: 'original.png', size: 68 } },
+        ],
+        isGroup: false,
+        seq: 12,
+      });
+
+      assert.equal(first.handledTurns.length, 1);
+      assert.equal(first.handledTurns[0].options.localFileGrants.length, 1);
+      assert.equal(first.handledTurns[0].options.localFileGrants[0].attachmentId, 'img_0001');
+      assert.equal(first.handledTurns[0].options.localFileGrants[0].attachmentRef, 'catsco_attachment:img_0001');
+
+      const restarted = createProcessHarness();
+      configureBot(restarted.bot);
+      await (restarted.bot as any).onMessage({
+        topic: 'p2p_1_43',
+        senderId: 'usr1',
+        text: '用上一张原图继续生成',
+        content: '用上一张原图继续生成',
+        metadata: canonicalMetadata('usr1', 'p2p_1_43'),
+        content_blocks: [{ type: 'text', text: '用上一张原图继续生成' }],
+        isGroup: false,
+        seq: 13,
+      });
+
+      assert.equal(restarted.handledTurns.length, 1);
+      const restoredGrants = restarted.handledTurns[0].options.localFileGrants;
+      assert.equal(restoredGrants.length, 1);
+      assert.equal(restoredGrants[0].attachmentId, 'img_0001');
+      assert.equal(restoredGrants[0].attachmentRef, 'catsco_attachment:img_0001');
+      assert.equal(restoredGrants[0].attachmentSource, 'user_upload');
+      assert.equal(fs.existsSync(restoredGrants[0].filePath), true);
+    } finally {
+      if (previousRuntimeRoot === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previousRuntimeRoot;
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
+  });
+
   test('does not create local file grants for legacy CatsCompany attachments', async () => {
     const originalCwd = process.cwd();
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-content-grants-'));
@@ -846,6 +919,45 @@ describe('CatsCo content blocks', () => {
       sentTyping.map(({ topic }) => topic),
       Array(sentTyping.length).fill('p2p_1_2'),
     );
+  });
+
+  test('channel registers successfully sent images as reusable agent outputs', async () => {
+    const previousRuntimeRoot = process.env.XIAOBA_USER_DATA_DIR;
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-outgoing-image-catalog-'));
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
+    const executionScope: any = {
+      source: 'catscompany',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_1_43:agent:usr43',
+      topicId: 'p2p_1_43',
+      topicType: 'p2p',
+      actorUserId: 'usr1',
+      agentId: 'usr43',
+      agentBodyId: 'body-main',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    };
+
+    try {
+      const { bot } = createProcessHarness();
+      const outputPath = path.join(testRoot, 'workspace', 'generated.png');
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      fs.writeFileSync(outputPath, Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
+      const channel = (bot as any).buildChannel('p2p_1_43', { executionScope });
+
+      await channel.sendFile('p2p_1_43', outputPath, 'generated.png');
+
+      const entries = listRecentCatsCoImages(executionScope);
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].source, 'agent_output');
+      assert.equal(entries[0].fileName, 'generated.png');
+      assert.notEqual(entries[0].filePath, outputPath);
+      assert.equal(fs.existsSync(entries[0].filePath), true);
+      assert.equal(channel.hasOutbound, true);
+    } finally {
+      if (previousRuntimeRoot === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previousRuntimeRoot;
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
   });
 
   test('channel sendFile propagates upload failures to tool execution', async () => {

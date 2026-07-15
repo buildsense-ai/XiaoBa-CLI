@@ -47,12 +47,19 @@ import {
   buildCatsCoAttachmentCachePath,
   scheduleCatsCoAttachmentCacheCleanup,
 } from './attachment-cache';
+import {
+  clearCatsCoImageCatalog,
+  importCatsCoAgentImage,
+  listRecentCatsCoImages,
+  registerCatsCoImage,
+} from './image-catalog';
 
 interface PendingAttachment {
   fileName: string;
   localPath: string;
   type: 'file' | 'image';
   receivedAt: number;
+  catalogId?: string;
   localFileGrant?: ScopedLocalFileGrant;
 }
 
@@ -951,6 +958,7 @@ export class CatsCompanyBot {
       sessionKey?: string;
       senderId?: string;
       channelSource?: string;
+      executionScope?: ParsedCatsMessage['executionScope'];
     },
   ): ChannelCallbacks & { hasOutbound: boolean } {
     let _hasOutbound = false;
@@ -970,6 +978,12 @@ export class CatsCompanyBot {
       sendFile: async (_targetTopic: string, filePath: string, fileName: string) => {
         try {
           await this.sender.sendFile(topic, filePath, fileName);
+          importCatsCoAgentImage({
+            scope: opts?.executionScope,
+            fileName,
+            filePath,
+            receivedAt: Date.now(),
+          });
           _hasOutbound = true;
         } catch (err: any) {
           Logger.warning(`文件发送失败 (sendFile): ${err.message}`);
@@ -1140,6 +1154,7 @@ export class CatsCompanyBot {
       }
       if (result.handled && command.toLowerCase() === 'clear') {
         this.pendingAttachments.delete(key);
+        clearCatsCoImageCatalog(key);
       }
       if (result.handled) return;
     }
@@ -1179,16 +1194,31 @@ export class CatsCompanyBot {
           });
           continue;
         }
+        const receivedAt = Date.now();
+        const catalogEntry = file.type === 'image'
+          ? registerCatsCoImage({
+              scope: msg.executionScope,
+              fileName: file.fileName,
+              filePath: localPath,
+              source: 'user_upload',
+              receivedAt,
+              messageSeq: msg.seq,
+            })
+          : undefined;
         attachments.push({
           fileName: file.fileName,
           localPath,
           type: file.type,
-          receivedAt: Date.now(),
+          receivedAt,
+          catalogId: catalogEntry?.id,
           localFileGrant: createCatsCoAttachmentGrant(msg.executionScope, this.localDeviceGrant, {
             localPath,
             fileName: file.fileName,
             type: file.type,
             workspaceRoot: process.cwd(),
+            attachmentId: catalogEntry?.id,
+            receivedAt: catalogEntry?.receivedAt,
+            attachmentSource: catalogEntry?.source,
           }),
         });
         scheduleCatsCoAttachmentCacheCleanup();
@@ -1209,6 +1239,8 @@ export class CatsCompanyBot {
         Logger.info(`[${key}] 追加 ${queuedAttachments.length} 个附件`);
       }
     }
+
+    localFileGrants = this.collectRecentImageGrants(msg.executionScope, localFileGrants);
 
     // 并发保护：忙时消息静默入队，空闲后自动处理
     userMessage = prefixCatsUserMessage(speakerNameFromMetadata(msg), userMessage);
@@ -1241,6 +1273,7 @@ export class CatsCompanyBot {
       sessionKey: key,
       senderId: msg.senderId,
       channelSource: msg.executionScope?.channelSource,
+      executionScope: msg.executionScope,
     });
 
     const stopTypingHeartbeat = this.startTypingHeartbeat(msg.topic);
@@ -1425,6 +1458,7 @@ export class CatsCompanyBot {
       sessionKey,
       senderId,
       channelSource: executionScope?.channelSource,
+      executionScope,
     });
 
     const suppressFinalResponse = resultObservationHandling !== 'notify'
@@ -1575,6 +1609,7 @@ export class CatsCompanyBot {
       sessionKey,
       senderId: batch.senderId,
       channelSource: batch.channelSource,
+      executionScope: batch.executionScope,
     });
     const stopTypingHeartbeat = this.startTypingHeartbeat(batch.topic);
 
@@ -2003,6 +2038,7 @@ export class CatsCompanyBot {
       sessionKey,
       senderId: msg.senderId,
       channelSource: msg.executionScope?.channelSource,
+      executionScope: msg.executionScope,
     });
 
     const suppressSubAgentFinalResponse = msg.source === 'subagent_feedback'
@@ -2210,6 +2246,29 @@ export class CatsCompanyBot {
       .filter((grant): grant is ScopedLocalFileGrant => Boolean(grant));
   }
 
+  private collectRecentImageGrants(
+    scope: ParsedCatsMessage['executionScope'],
+    current: ScopedLocalFileGrant[],
+  ): ScopedLocalFileGrant[] {
+    const recent = listRecentCatsCoImages(scope)
+      .map(entry => createCatsCoAttachmentGrant(scope, this.localDeviceGrant, {
+        localPath: entry.filePath,
+        fileName: entry.fileName,
+        type: 'image',
+        workspaceRoot: process.cwd(),
+        attachmentId: entry.id,
+        receivedAt: entry.receivedAt,
+        attachmentSource: entry.source,
+      }))
+      .filter((grant): grant is ScopedLocalFileGrant => Boolean(grant));
+
+    const deduped = new Map<string, ScopedLocalFileGrant>();
+    for (const grant of [...current, ...recent]) {
+      deduped.set(grant.attachmentId || grant.filePath, grant);
+    }
+    return [...deduped.values()];
+  }
+
   private async buildMultimodalMessage(text: string, attachments: PendingAttachment[]): Promise<import('../types').ContentBlock[]> {
     const { createImageBlock } = require('../utils/image-utils');
     const blocks: import('../types').ContentBlock[] = [];
@@ -2270,6 +2329,7 @@ export class CatsCompanyBot {
     const label = attachment.type === 'image' ? '图片' : '文件';
     return [
       `[${label}] ${attachment.fileName}`,
+      ...(attachment.catalogId ? [`图片目录 ID: ${attachment.catalogId}`] : []),
       `本地缓存路径: ${attachment.localPath}`,
       '读取方式: 如需查看该附件，调用 read_file，file_path 使用上面的本地缓存路径。',
     ].join('\n');
