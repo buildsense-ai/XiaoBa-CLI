@@ -836,7 +836,7 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
     describe('External cursor state persistence', () => {
       test('emptyExternalCursorState returns valid state', () => {
         const state = emptyExternalCursorState();
-        assert.equal(state.schemaVersion, 2);
+        assert.equal(state.schemaVersion, 3);
         assert.deepEqual(state.cursors, {});
         assert.deepEqual(state.processedEventIds, {});
         assert.deepEqual(state.processedEventFingerprints, {});
@@ -879,7 +879,7 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         saveExternalCursorState(storePath, original);
         const loaded = loadExternalCursorState(storePath);
 
-        assert.equal(loaded.schemaVersion, 2);
+        assert.equal(loaded.schemaVersion, 3);
         assert.ok(loaded.cursors['external-pi']);
         assert.equal(loaded.cursors['external-pi'].cursor.position, 5);
         assert.equal(loaded.processedEventIds['pi://conv/1/event-1'], 'hash-a');

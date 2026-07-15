@@ -48,6 +48,7 @@ import { SemanticReassessmentManifestStore } from './semantic-reassessment';
 import { cleanupBranchTranscripts } from './branch-transcript-retention';
 import { createReviewBudget, type ReviewBudget } from './review-budget';
 import { XurlExternalSourceReader } from './xurl-session-log-source';
+import { acquireExternalSourceProviderLock } from './external-source-provider-lock';
 import {
   InternalSessionLogSourceAdapter,
   ExternalSessionLogSourceAdapter,
@@ -61,6 +62,18 @@ import {
   SourceWorkBudget,
   SourceFailureState,
   SessionLogSourceStatus,
+  ExternalSourceFailureClass,
+  ExternalSourceQuarantineEntry,
+  ExternalCursorState,
+  buildExternalEventDedupKey,
+  listExternalSourceQuarantines,
+  loadExternalCursorState,
+  resolveExternalCursorStorePath,
+  retryExternalSourceQuarantine,
+  skipExternalSourceQuarantine,
+  closeExternalResource,
+  finalizeExternalDiscoveryCycleForStore,
+  saveExternalCursorState,
   DEFAULT_EXTERNAL_SOURCE_BUDGET,
   DEFAULT_INTERNAL_SOURCE_BUDGET,
 } from './session-log-source';
@@ -700,6 +713,122 @@ export class RuntimeLearning {
     return this.evidenceCapsuleStore;
   }
 
+  listExternalSourceQuarantines(provider: string, sourceId: string): readonly ExternalSourceQuarantineEntry[] {
+    return listExternalSourceQuarantines(this.externalCursorStorePath(provider, sourceId));
+  }
+
+  retryExternalSourceQuarantine(provider: string, sourceId: string, quarantineId: string): boolean {
+    return retryExternalSourceQuarantine(this.externalCursorStorePath(provider, sourceId), quarantineId);
+  }
+
+  skipExternalSourceQuarantine(
+    provider: string,
+    sourceId: string,
+    quarantineId: string,
+    reason = 'operator skip',
+  ): boolean {
+    return skipExternalSourceQuarantine(
+      this.externalCursorStorePath(provider, sourceId),
+      quarantineId,
+      reason,
+    );
+  }
+
+  /**
+   * Close an external resource locally after the operator confirms the
+   * upstream resource has been deleted. Preserves the cursor, Capsules,
+   * Episodes, Capabilities, and Transition Audits for the closed resource
+   * (issue #87).
+   */
+  deleteExternalSourceResource(provider: string, sourceId: string, resourceRef: string): boolean {
+    return closeExternalResource(
+      this.externalCursorStorePath(provider, sourceId),
+      resourceRef,
+      'deleted',
+    );
+  }
+
+  /**
+   * Close an external resource locally after the operator confirms the
+   * upstream resource has been archived. Preserves the cursor and all local
+   * evidence (issue #87).
+   */
+  archiveExternalSourceResource(provider: string, sourceId: string, resourceRef: string): boolean {
+    return closeExternalResource(
+      this.externalCursorStorePath(provider, sourceId),
+      resourceRef,
+      'archived',
+    );
+  }
+
+  /**
+   * Advance the external discovery lifecycle: closes any resource missing for
+   * at least two cycles without waiting for the next wake (issue #87).
+   */
+  finalizeExternalDiscoveryCycle(provider: string, sourceId: string, cycle: number): ExternalCursorState {
+    return finalizeExternalDiscoveryCycleForStore(
+      this.externalCursorStorePath(provider, sourceId),
+      cycle,
+    );
+  }
+
+  /**
+   * Request a graceful drain of external source reads (issue #87). Stops new
+   * external reads on the next wake but leaves unacknowledged work resumable —
+   * cursors are not advanced for resources that were examined but not
+   * acknowledged. Internal heartbeat work continues independently.
+   */
+  requestExternalSourceDrain(): void {
+    this.shutdownDrainRequested = true;
+  }
+
+  /**
+   * Resume external source reads after a drain or clear a drain request before
+   * it takes effect (issue #87).
+   */
+  resumeExternalSourceReads(): void {
+    this.shutdownDrainRequested = false;
+  }
+
+  /**
+   * Reversibly disable external ingestion without deleting source state or
+   * local evidence (issue #87). The adapter is disabled at the session-log-source
+   * layer so discovery skips it, but all durable cursor/quarantine/tombstone/
+   * capsule state is preserved for re-enablement.
+   */
+  disableExternalSource(provider: string, sourceId: string): boolean {
+    const adapter = this.findExternalSourceAdapter(provider, sourceId);
+    if (!adapter?.setEnabled) return false;
+    adapter.setEnabled(false);
+    return true;
+  }
+
+  /**
+   * Re-enable a previously disabled external source (issue #87). Restores the
+   * adapter's enabled flag; durable state was preserved during disablement.
+   */
+  enableExternalSource(provider: string, sourceId: string): boolean {
+    const adapter = this.findExternalSourceAdapter(provider, sourceId);
+    if (!adapter?.setEnabled) return false;
+    adapter.setEnabled(true);
+    return true;
+  }
+
+  private findExternalSourceAdapter(
+    provider: string,
+    sourceId: string,
+  ): SessionLogSourceAdapter | undefined {
+    return this.sessionLogSources.find(
+      adapter => adapter.identity.category === 'external'
+        && adapter.identity.provider === provider
+        && adapter.identity.sourceId === sourceId,
+    );
+  }
+
+  private externalCursorStorePath(provider: string, sourceId: string): string {
+    return resolveExternalCursorStorePath({ provider, sourceId });
+  }
+
   private buildConfiguredExternalSources(): readonly SessionLogSourceAdapter[] {
     if (!this.config.externalSessionLogSourcesEnabled) return [];
     const provider = this.config.externalSessionLogSelectedProvider?.trim();
@@ -719,6 +848,20 @@ export class RuntimeLearning {
       reader,
       enabled: true,
     })];
+  }
+
+  private externalSourceLockRoot(): string {
+    return path.dirname(this.config.learningEpisodeStorePath);
+  }
+
+  private acquireExternalProviderLock(provider: string, operation: string, sourceId?: string) {
+    return acquireExternalSourceProviderLock({
+      runtimeRoot: this.externalSourceLockRoot(),
+      provider,
+      operation,
+      sourceId,
+      now: this.clock,
+    });
   }
 
   /**
@@ -883,9 +1026,20 @@ export class RuntimeLearning {
       now: this.clock,
     });
 
-    let admittedEpisodes = 0;
-    let contradictionSignals = 0;
-    let externalProvenanceUpdated = false;
+    const providerLock = this.acquireExternalProviderLock(
+      source.identity.provider,
+      'explicit-backfill',
+      source.identity.sourceId,
+    );
+    if (!providerLock.acquired) {
+      this.recordExternalSourceLockContention(source.identity.sourceId, source.identity.provider);
+      throw new Error(`external source provider lock is busy for ${source.identity.provider}`);
+    }
+
+    try {
+      let admittedEpisodes = 0;
+      let contradictionSignals = 0;
+      let externalProvenanceUpdated = false;
 
     const ingest = (unit: DistillationUnit, context: ExternalSessionLogBackfillIngestContext) => {
       const sanitizedUnit = sanitizeExternalDistillationUnit(unit, {
@@ -1014,17 +1168,20 @@ export class RuntimeLearning {
       bytesProcessed: metrics.bytesProcessed,
     };
 
-    return {
-      paths,
-      backfill: aggregateBackfill,
-      ingestion: {
-        admittedEpisodes,
-        contradictionSignals,
-      },
-      maturation,
-      review,
-      drained,
-    };
+      return {
+        paths,
+        backfill: aggregateBackfill,
+        ingestion: {
+          admittedEpisodes,
+          contradictionSignals,
+        },
+        maturation,
+        review,
+        drained,
+      };
+    } finally {
+      if (providerLock.acquired) providerLock.release();
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -1791,28 +1948,43 @@ export class RuntimeLearning {
           unitsProcessed: 0,
           advancedResources: 0,
           status: 'active',
+          ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, this.externalSourceFailureState.get(identity.sourceId)) : {}),
         });
         continue;
       }
 
-      // ---- AC3: Skip suspended external sources ----
+      if (isExternal && this.shutdownDrainRequested) {
+        const failureState = this.externalSourceFailureState.get(identity.sourceId);
+        sourceReports.push({
+          sourceId: identity.sourceId,
+          category: identity.category,
+          enabled: true,
+          resourcesDiscovered: 0,
+          unitsProcessed: 0,
+          advancedResources: 0,
+          status: 'drained',
+          failureState,
+          ...(this.buildExternalSourceReportDiagnostics(identity, failureState)),
+        });
+        continue;
+      }
+
+      // ---- AC3: Skip suspended/manual-action external sources ----
       if (isExternal) {
         const failureState = this.externalSourceFailureState.get(identity.sourceId);
-        if (failureState && failureState.suspendedUntil) {
-          const suspendedUntilMs = Date.parse(failureState.suspendedUntil);
-          if (Number.isFinite(suspendedUntilMs) && suspendedUntilMs > this.clock().getTime()) {
-            sourceReports.push({
-              sourceId: identity.sourceId,
-              category: identity.category,
-              enabled: true,
-              resourcesDiscovered: 0,
-              unitsProcessed: 0,
-              advancedResources: 0,
-              status: 'backoff',
-              failureState,
-            });
-            continue;
-          }
+        if (this.shouldSkipExternalSourceForFailure(failureState)) {
+          sourceReports.push({
+            sourceId: identity.sourceId,
+            category: identity.category,
+            enabled: true,
+            resourcesDiscovered: 0,
+            unitsProcessed: 0,
+            advancedResources: 0,
+            status: 'backoff',
+            failureState,
+            ...(this.buildExternalSourceReportDiagnostics(identity, failureState)),
+          });
+          continue;
         }
       }
 
@@ -1826,6 +1998,28 @@ export class RuntimeLearning {
       let sourceReaderElapsedMs = 0;
       let sourceHadFailure = false;
       let sourceBudgetHit = false;
+      const providerLock = isExternal
+        ? this.acquireExternalProviderLock(identity.provider, 'continuous-discovery', identity.sourceId)
+        : null;
+      if (providerLock && !providerLock.acquired) {
+        this.recordExternalSourceLockContention(identity.sourceId, identity.provider);
+        const failureState = this.externalSourceFailureState.get(identity.sourceId) ?? undefined;
+        sourceReports.push({
+          sourceId: identity.sourceId,
+          category: identity.category,
+          enabled: true,
+          resourcesDiscovered: 0,
+          unitsProcessed: 0,
+          advancedResources: 0,
+          status: 'locked',
+          failureState,
+          budget,
+          ...(this.buildExternalSourceReportDiagnostics(identity, failureState)),
+          ...(adapter.getSupportStatus ? { supportStatus: adapter.getSupportStatus() } : {}),
+          ...(adapter.getUnsupportedReason?.() ? { unsupportedReason: adapter.getUnsupportedReason() } : {}),
+        });
+        continue;
+      }
 
       let resources: readonly SessionLogSourceResource[];
       try {
@@ -1844,6 +2038,7 @@ export class RuntimeLearning {
         // for other sources and keep OPR independent of this failure.
         sourceHadFailure = true;
         if (isExternal) this.recordExternalSourceFailure(identity.sourceId, error);
+        const failureState = isExternal ? (this.externalSourceFailureState.get(identity.sourceId) ?? undefined) : undefined;
         sourceReports.push({
           sourceId: identity.sourceId,
           category: identity.category,
@@ -1852,9 +2047,11 @@ export class RuntimeLearning {
           unitsProcessed: 0,
           advancedResources: 0,
           status: 'failed',
-          failureState: isExternal ? (this.externalSourceFailureState.get(identity.sourceId) ?? undefined) : undefined,
+          failureState,
           budget,
+          ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, failureState) : {}),
         });
+        if (providerLock?.acquired) providerLock.release();
         continue;
       }
 
@@ -1917,16 +2114,36 @@ export class RuntimeLearning {
           adapter.markFailed(resource, error);
           sourceHadFailure = true;
           if (isExternal) {
-            this.recordExternalSourceFailure(identity.sourceId, error);
+            this.recordExternalSourceFailure(identity.sourceId, error, { resourceRef: resource.resourceRef });
           }
           continue;
         }
 
         if (readResult.status === 'failed') {
-          adapter.markFailed(resource, new Error('source read reported failed status'));
+          const failure = readResult.failure;
+          adapter.markFailed(resource, new Error(failure?.message ?? 'source read reported failed status'));
           sourceHadFailure = true;
           if (isExternal) {
-            this.recordExternalSourceFailure(identity.sourceId, new Error('source read reported failed status'));
+            const failedEvent = failure?.eventIdentities?.[0]
+              ?? readResult.eventIdentities?.[0]
+              ?? resource.firstEventIdentity;
+            if (failure?.failureClass === 'quarantine' || failure?.failureClass === 'integrity_conflict') {
+              if (failedEvent) {
+                this.recordExternalSourceQuarantine(
+                  identity,
+                  resource.resourceRef,
+                  failedEvent,
+                  failure.failureClass,
+                  failure.message,
+                  readResult.newCursor.position,
+                );
+              }
+            }
+            this.recordExternalSourceFailure(identity.sourceId, new Error(failure?.message ?? 'source read reported failed status'), {
+              failureClass: failure?.failureClass,
+              resourceRef: failure?.resourceRef ?? resource.resourceRef,
+              eventId: failedEvent?.eventId,
+            });
           }
           continue;
         }
@@ -1955,9 +2172,14 @@ export class RuntimeLearning {
               adapter.markFailed(resource, error);
               sourceHadFailure = true;
               if (isExternal) {
-                this.recordExternalSourceFailure(identity.sourceId, error);
+                this.recordExternalSourceFailure(identity.sourceId, error, { resourceRef: resource.resourceRef });
               }
             }
+          } else if (isExternal) {
+            this.recordExternalSourceFailure(identity.sourceId, new Error('pending external range remains unacknowledged'), {
+              failureClass: 'pending',
+              resourceRef: resource.resourceRef,
+            });
           }
           continue;
         }
@@ -2063,7 +2285,24 @@ export class RuntimeLearning {
           adapter.markFailed(resource, error);
           sourceHadFailure = true;
           if (isExternal) {
-            this.recordExternalSourceFailure(identity.sourceId, error);
+            const message = this.redactExternalSourceError(error);
+            const failureClass = this.classifyExternalSourceFailure(message);
+            const eventIdentity = readResult.eventIdentities?.[0] ?? resource.firstEventIdentity;
+            if ((failureClass === 'quarantine' || failureClass === 'integrity_conflict') && eventIdentity) {
+              this.recordExternalSourceQuarantine(
+                identity,
+                resource.resourceRef,
+                eventIdentity,
+                failureClass,
+                message,
+                readResult.newCursor.position,
+              );
+            }
+            this.recordExternalSourceFailure(identity.sourceId, error, {
+              failureClass,
+              resourceRef: resource.resourceRef,
+              eventId: eventIdentity?.eventId,
+            });
           }
         }
       }
@@ -2096,7 +2335,9 @@ export class RuntimeLearning {
         ...(adapter.getUnsupportedReason?.()
           ? { unsupportedReason: adapter.getUnsupportedReason() }
           : {}),
+        ...(isExternal ? this.buildExternalSourceReportDiagnostics(identity, failureState) : {}),
       });
+      if (providerLock?.acquired) providerLock.release();
     }
 
     // Persist external source scheduling state (backoff deadlines) for restart
@@ -2135,66 +2376,143 @@ export class RuntimeLearning {
     return [...internal, ...external];
   }
 
-  /**
-   * Record a per-source failure with exponential backoff (AC3).
-   *
-   * Backoff schedule:
-   *   1 failure  → 30s suspension
-   *   2 failures → 5m suspension
-   *   3+ failures → 30m suspension (capped)
-   */
-  private recordExternalSourceFailure(sourceId: string, error: unknown): void {
+  private recordExternalSourceFailure(
+    sourceId: string,
+    error: unknown,
+    context: {
+      failureClass?: ExternalSourceFailureClass;
+      resourceRef?: string;
+      eventId?: string;
+    } = {},
+  ): void {
     const current = this.externalSourceFailureState.get(sourceId);
-    const consecutiveFailures = (current?.consecutiveFailures ?? 0) + 1;
+    const message = this.redactExternalSourceError(error);
+    const failureClass = context.failureClass ?? this.classifyExternalSourceFailure(message);
+    const now = this.clock();
+    const nowIso = now.toISOString();
 
-    // Exponential backoff: 30s, 5m, 30m (capped)
-    const backoffMs = Math.min(
-      30 * 60 * 1000, // 30 minute cap
-      30_000 * Math.min(consecutiveFailures, 2), // 30s, 60s(→5m floor), 90s(→30m cap)
-    );
-    // Use cleaner stages: 1→30s, 2→5m, 3+→30m
-    const suspensionMs =
-      consecutiveFailures >= 3
-        ? 30 * 60 * 1000
-        : consecutiveFailures >= 2
-          ? 5 * 60 * 1000
-          : 30_000;
+    let consecutiveFailures = current?.consecutiveFailures ?? 0;
+    let nextRetryAt: string | null = current?.nextRetryAt ?? null;
+    let suspendedUntil: string | null = current?.suspendedUntil ?? null;
+    let requiresOperatorAction = false;
 
-    const now = this.clock().toISOString();
+    switch (failureClass) {
+      case 'transient': {
+        consecutiveFailures += 1;
+        const suspensionMs = consecutiveFailures >= 3
+          ? 30 * 60 * 1000
+          : consecutiveFailures >= 2
+            ? 5 * 60 * 1000
+            : 30_000;
+        nextRetryAt = new Date(now.getTime() + suspensionMs).toISOString();
+        suspendedUntil = nextRetryAt;
+        break;
+      }
+      case 'permission': {
+        consecutiveFailures += 1;
+        nextRetryAt = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
+        suspendedUntil = nextRetryAt;
+        break;
+      }
+      case 'pending': {
+        nextRetryAt = nowIso;
+        suspendedUntil = null;
+        break;
+      }
+      case 'protocol':
+      case 'integrity_conflict':
+      case 'quarantine': {
+        consecutiveFailures += 1;
+        nextRetryAt = null;
+        suspendedUntil = null;
+        requiresOperatorAction = true;
+        break;
+      }
+      default:
+        break;
+    }
+
     this.externalSourceFailureState.set(sourceId, {
       consecutiveFailures,
-      lastFailedAt: now,
-      lastError: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
-      suspendedUntil: new Date(this.clock().getTime() + suspensionMs).toISOString(),
+      lastFailedAt: nowIso,
+      lastError: message,
+      suspendedUntil,
+      failureClass,
+      nextRetryAt,
+      requiresOperatorAction,
+      resourceRef: context.resourceRef,
+      eventId: context.eventId,
+      lastAttemptedAt: nowIso,
+      lastSuccessfulReadAt: current?.lastSuccessfulReadAt ?? null,
     });
-
-    Logger.info(
-      `[RuntimeLearning] external source ${sourceId} failure #${consecutiveFailures}; ` +
-      `suspended for ${Math.round(suspensionMs / 1000)}s`,
-    );
   }
 
-  /**
-   * Reset per-source failure count on successful processing (AC3).
-   */
+  private recordExternalSourceLockContention(sourceId: string, provider: string): void {
+    const current = this.externalSourceFailureState.get(sourceId);
+    const nowIso = this.clock().toISOString();
+    this.externalSourceFailureState.set(sourceId, {
+      consecutiveFailures: current?.consecutiveFailures ?? 0,
+      lastFailedAt: current?.lastFailedAt ?? null,
+      lastError: `provider lock busy for ${provider}`,
+      suspendedUntil: null,
+      failureClass: 'pending',
+      nextRetryAt: nowIso,
+      requiresOperatorAction: false,
+      lastAttemptedAt: nowIso,
+      lastSuccessfulReadAt: current?.lastSuccessfulReadAt ?? null,
+    });
+  }
+
   private resetExternalSourceFailure(sourceId: string): void {
     const current = this.externalSourceFailureState.get(sourceId);
-    // Only reset if the source had prior failures (avoids unnecessary writes
-    // for external sources that have never failed).
-    if (!current || current.consecutiveFailures === 0) return;
+    // Only update if the source had prior state — a healthy source that never
+    // failed should not accumulate a scheduling-state entry just from a
+    // successful read. When prior state exists, clear the failure counters and
+    // record the successful read timestamp for diagnostics.
+    if (!current) return;
+    const nowIso = this.clock().toISOString();
     this.externalSourceFailureState.set(sourceId, {
       consecutiveFailures: 0,
       lastFailedAt: null,
       lastError: null,
       suspendedUntil: null,
+      failureClass: undefined,
+      nextRetryAt: null,
+      requiresOperatorAction: false,
+      resourceRef: undefined,
+      eventId: undefined,
+      lastAttemptedAt: current.lastAttemptedAt ?? null,
+      lastSuccessfulReadAt: nowIso,
     });
   }
 
-  /**
-   * Load durable external source scheduling state for restart recovery (AC6).
-   * Restores per-source backoff/suspension deadlines so a restarted Runtime
-   * does not immediately retry a failing source.
-   */
+  private classifyExternalSourceFailure(message: string): ExternalSourceFailureClass {
+    const normalized = message.toLowerCase();
+    if (/permission denied|forbidden|unauthori|auth/.test(normalized)) return 'permission';
+    if (/protocol|json|schema|provider mismatch|unsupported/.test(normalized)) return 'protocol';
+    if (/quarantine|external evidence limit|oversized|unsafe/.test(normalized)) return 'quarantine';
+    if (/integrity|changed under the same identity|branch identity changed/.test(normalized)) return 'integrity_conflict';
+    if (/pending/.test(normalized)) return 'pending';
+    return 'transient';
+  }
+
+  private redactExternalSourceError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    return message
+      .replace(/\s+/g, ' ')
+      .replace(/\/[^\s)]+/g, '<path>')
+      .slice(0, 240)
+      .trim();
+  }
+
+  private shouldSkipExternalSourceForFailure(state: SourceFailureState | undefined): boolean {
+    if (!state) return false;
+    if (state.requiresOperatorAction) return true;
+    if (!state.suspendedUntil) return false;
+    const suspendedUntilMs = Date.parse(state.suspendedUntil);
+    return Number.isFinite(suspendedUntilMs) && suspendedUntilMs > this.clock().getTime();
+  }
+
   private loadExternalSourceSchedulingState(): void {
     try {
       if (!fs.existsSync(this.schedulingStatePath)) return;
@@ -2203,42 +2521,48 @@ export class RuntimeLearning {
         schemaVersion?: number;
         sources?: Record<string, SourceFailureState>;
       };
-      if (parsed.schemaVersion !== 1) return;
       if (!parsed.sources || typeof parsed.sources !== 'object') return;
       for (const [sourceId, state] of Object.entries(parsed.sources)) {
-        if (
-          typeof state.consecutiveFailures === 'number' &&
-          typeof state.suspendedUntil === 'string'
-        ) {
-          this.externalSourceFailureState.set(sourceId, state);
-        }
+        if (typeof state.consecutiveFailures !== 'number') continue;
+        this.externalSourceFailureState.set(sourceId, {
+          consecutiveFailures: state.consecutiveFailures,
+          lastFailedAt: state.lastFailedAt ?? null,
+          lastError: state.lastError ?? null,
+          suspendedUntil: state.suspendedUntil ?? null,
+          ...(state.failureClass ? { failureClass: state.failureClass } : {}),
+          nextRetryAt: state.nextRetryAt ?? state.suspendedUntil ?? null,
+          requiresOperatorAction: state.requiresOperatorAction === true,
+          ...(state.resourceRef ? { resourceRef: state.resourceRef } : {}),
+          ...(state.eventId ? { eventId: state.eventId } : {}),
+          lastAttemptedAt: state.lastAttemptedAt ?? null,
+          lastSuccessfulReadAt: state.lastSuccessfulReadAt ?? null,
+        });
       }
     } catch {
       // Corrupt state file — start fresh; the source will be retried.
     }
   }
 
-  /**
-   * Persist durable external source scheduling state (AC6). Writes per-source
-   * backoff/suspension deadlines so a restart restores lane scheduling without
-   * duplicate writes.
-   */
   private saveExternalSourceSchedulingState(): void {
     try {
       const sources: Record<string, SourceFailureState> = {};
       for (const [sourceId, state] of this.externalSourceFailureState) {
-        if (state.consecutiveFailures > 0 || state.suspendedUntil) {
+        const hasSignal = state.consecutiveFailures > 0
+          || Boolean(state.suspendedUntil)
+          || Boolean(state.failureClass)
+          || Boolean(state.lastError)
+          || Boolean(state.lastSuccessfulReadAt);
+        if (hasSignal) {
           sources[sourceId] = state;
         }
       }
       if (Object.keys(sources).length === 0) {
-        // No failure state to persist — clean up stale file if it exists.
         if (fs.existsSync(this.schedulingStatePath)) {
           fs.unlinkSync(this.schedulingStatePath);
         }
         return;
       }
-      const payload = { schemaVersion: 1, sources };
+      const payload = { schemaVersion: 2, sources };
       fs.mkdirSync(path.dirname(this.schedulingStatePath), { recursive: true });
       const tmpPath = `${this.schedulingStatePath}.${process.pid}.${Date.now()}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), {
@@ -2252,6 +2576,87 @@ export class RuntimeLearning {
       );
     }
   }
+
+  private loadExternalCursorStateFor(identity: SessionLogSourceIdentity): ExternalCursorState {
+    return loadExternalCursorState(this.externalCursorStorePath(identity.provider, identity.sourceId));
+  }
+
+  private recordExternalSourceQuarantine(
+    identity: SessionLogSourceIdentity,
+    resourceRef: string,
+    eventIdentity: SourceEventIdentity,
+    failureClass: Extract<ExternalSourceFailureClass, 'quarantine' | 'integrity_conflict'>,
+    message: string,
+    cursorPosition: number,
+  ): void {
+    const storePath = this.externalCursorStorePath(identity.provider, identity.sourceId);
+    const state = loadExternalCursorState(storePath);
+    const quarantineId = buildExternalEventDedupKey(identity, eventIdentity);
+    saveExternalCursorState(storePath, {
+      ...state,
+      quarantinedEvents: {
+        ...state.quarantinedEvents,
+        [quarantineId]: {
+          quarantineId,
+          resourceRef,
+          identity: eventIdentity,
+          failureClass,
+          message: this.redactExternalSourceError(message),
+          detectedAt: this.clock().toISOString(),
+          cursorPosition,
+        },
+      },
+      updatedAt: this.clock().toISOString(),
+    });
+  }
+
+  private buildExternalSourceReportDiagnostics(
+    identity: SessionLogSourceIdentity,
+    failureState: SourceFailureState | undefined,
+  ): Pick<SessionLogSourceReport, 'provider' | 'reader' | 'selectedProvider' | 'cursorProgress' | 'lastSuccessfulReadAt' | 'nextRetryAt' | 'lastError' | 'drainState'> {
+    let cursorProgress = {
+      maxPosition: -1,
+      activeResources: 0,
+      closedResources: 0,
+      quarantinedEvents: 0,
+      tombstones: 0,
+    };
+    let resourceLastSuccessfulReadAt: string | undefined;
+    try {
+      const state = this.loadExternalCursorStateFor(identity);
+      const resources = Object.values(state.resources);
+      cursorProgress = {
+        maxPosition: Object.values(state.cursors)
+          .filter(entry => entry.sourceIdentity?.sourceId === identity.sourceId)
+          .reduce((max, entry) => Math.max(max, entry.cursor.position), -1),
+        activeResources: resources.filter(resource => resource.lifecycleStatus !== 'closed').length,
+        closedResources: resources.filter(resource => resource.lifecycleStatus === 'closed').length,
+        quarantinedEvents: Object.values(state.quarantinedEvents)
+          .filter(entry => entry.resourceRef in state.resources)
+          .length,
+        tombstones: Object.keys(state.tombstones).length,
+      };
+      const resourceReadTimes = resources
+        .map(resource => resource.lastSuccessfulReadAt)
+        .filter((ts): ts is string => typeof ts === 'string')
+        .sort()
+        .reverse();
+      resourceLastSuccessfulReadAt = resourceReadTimes[0];
+    } catch {
+      // Fail closed; heartbeat status still surfaces the lane-level error state.
+    }
+    return {
+      provider: identity.provider,
+      reader: identity.reader,
+      selectedProvider: this.config.externalSessionLogSelectedProvider?.trim() || undefined,
+      cursorProgress,
+      lastSuccessfulReadAt: failureState?.lastSuccessfulReadAt ?? resourceLastSuccessfulReadAt,
+      nextRetryAt: failureState?.nextRetryAt ?? undefined,
+      lastError: failureState?.lastError ?? undefined,
+      drainState: this.shutdownDrainRequested ? 'draining' : 'idle',
+    };
+  }
+
 
   /**
    * Track that a specific external event maps to the listed episode ids.
