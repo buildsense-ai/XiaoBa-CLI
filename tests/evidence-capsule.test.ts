@@ -828,6 +828,71 @@ describe('Evidence Capsule', () => {
       assert.deepEqual(updated.promotionAuditRefs, ['transition-001', 'transition-002']);
     });
 
+    test('retain requires an audit ref and records it without deleting evidence', () => {
+      const store = new EvidenceCapsuleStore(path.join(testRoot, 'capsules.json'));
+      const capsule = makeCapsule({
+        semanticObservations: SAMPLE_SEMANTIC_OBSERVATIONS,
+      });
+      const branchTranscriptPath = path.join(testRoot, 'logs', 'branches', 'skill-author.jsonl');
+      const branchTranscript = '{"event_type":"transcript"}\n';
+      fs.mkdirSync(path.dirname(branchTranscriptPath), { recursive: true });
+      fs.writeFileSync(branchTranscriptPath, branchTranscript, 'utf8');
+      store.upsert(capsule);
+
+      assert.throws(
+        () => store.retain(capsule.capsuleId, '   '),
+        /capsule retention requires an audit reference/,
+      );
+      assert.deepEqual(store.load().capsules[capsule.capsuleId], capsule);
+
+      store.retain(capsule.capsuleId, 'transition-retain-001');
+
+      assert.deepEqual(store.load().capsules[capsule.capsuleId], {
+        ...capsule,
+        promotionAuditRefs: ['transition-retain-001'],
+      });
+      assert.equal(fs.readFileSync(branchTranscriptPath, 'utf8'), branchTranscript);
+    });
+
+    test('delete requires a linked audit ref and removes only the targeted capsule', () => {
+      const store = new EvidenceCapsuleStore(path.join(testRoot, 'capsules.json'));
+      const target = makeCapsule({
+        capsuleId: 'capsule-target',
+        episodeId: 'episode-target',
+        bundleId: 'v3:learning-episode:episode-target',
+        promotionAuditRefs: ['transition-delete-001'],
+      });
+      const survivor = makeCapsule({
+        capsuleId: 'capsule-survivor',
+        episodeId: 'episode-survivor',
+        bundleId: 'v3:learning-episode:episode-survivor',
+      });
+      const branchTranscriptPath = path.join(testRoot, 'logs', 'branches', 'skill-verifier.jsonl');
+      const branchTranscript = '{"event_type":"transcript"}\n';
+      fs.mkdirSync(path.dirname(branchTranscriptPath), { recursive: true });
+      fs.writeFileSync(branchTranscriptPath, branchTranscript, 'utf8');
+      store.upsert(target);
+      store.upsert(survivor);
+
+      assert.throws(
+        () => store.delete(target.capsuleId, ''),
+        /capsule deletion requires an audit reference/,
+      );
+      assert.throws(
+        () => store.delete(target.capsuleId, 'transition-unlinked'),
+        /capsule deletion audit reference is not linked: transition-unlinked/,
+      );
+      assert.equal(store.count(), 2);
+
+      assert.equal(store.delete(target.capsuleId, 'transition-delete-001'), true);
+
+      const state = store.load();
+      assert.equal(state.capsules[target.capsuleId], undefined);
+      assert.deepEqual(state.capsules[survivor.capsuleId], survivor);
+      assert.equal(Object.keys(state.capsules).length, 1);
+      assert.equal(fs.readFileSync(branchTranscriptPath, 'utf8'), branchTranscript);
+    });
+
     test('count returns the number of stored capsules', () => {
       const store = new EvidenceCapsuleStore(path.join(testRoot, 'capsules.json'));
       assert.equal(store.count(), 0);
