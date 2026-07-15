@@ -289,6 +289,29 @@ describe('BotDefinition local simulation', () => {
     assert.equal(second?.config.apiKey, 'sk-legacy-relay-material');
   });
 
+  test('normalizes a relay-facing legacy model name to the catalog id during migration', () => {
+    bindCurrentBot();
+    new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }).writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+    });
+    const env = {
+      CATSCO_MODEL_SOURCE: 'relay',
+      CATSCO_RELAY_LLM_PROVIDER: 'anthropic',
+      CATSCO_RELAY_LLM_API_BASE: 'https://relay.example.test/anthropic',
+      CATSCO_RELAY_LLM_MODEL: 'MiniMax-M3',
+      CATSCO_RELAY_LLM_API_KEY: 'sk-minimax-legacy-material',
+    } as NodeJS.ProcessEnv;
+
+    createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot, env }).pullOrBootstrap('bot-alpha');
+
+    const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot }).read('bot-alpha');
+    assert.equal(runtime?.modelId, 'minimax-m3');
+    assert.equal(runtime?.model, 'MiniMax-M3');
+    assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.apiKey, 'sk-minimax-legacy-material');
+  });
+
   test('does not attach a stale legacy relay profile to a different catalog model', () => {
     bindCurrentBot();
     new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }).writeCanonical({

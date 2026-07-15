@@ -93,6 +93,28 @@ export function findRelayModelProfile(model: unknown): RelayModelProfile | undef
   ));
 }
 
+/**
+ * Catalog records persist this stable ID only. The relay-facing model spelling
+ * and the UI label are always derived from the profile at their use sites.
+ */
+export function canonicalRelayModelId(value: unknown): string | undefined {
+  const profile = findRelayModelProfile(value);
+  return profile?.id;
+}
+
+/**
+ * Old installations stored either the catalog ID or the relay-facing model
+ * name. Treat known aliases as one catalog model during migration.
+ */
+export function relayModelIdsMatch(left: unknown, right: unknown): boolean {
+  const leftProfile = findRelayModelProfile(left);
+  const rightProfile = findRelayModelProfile(right);
+  if (leftProfile || rightProfile) return leftProfile?.id === rightProfile?.id;
+  const normalizedLeft = normalizeModelName(left);
+  const normalizedRight = normalizeModelName(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
 export function relayModelProviderBaseUrl(provider: RelayModelProvider): string {
   return RELAY_MODEL_BASE_URLS[provider];
 }

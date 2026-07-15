@@ -6,11 +6,8 @@ import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/
 import { ChatConfig } from '../types';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { CatsCoConnectorLock, acquireCatsCoConnectorLock, isProcessAlive } from '../catscompany/connector-lock';
-import { createBotDefinitionSyncService } from '../bot-definition/service';
 import { PathResolver } from '../utils/path-resolver';
-import { createCatsCoLocalConfigService } from '../catscompany/local-config';
-import { provisionCatsRelayCatalogRuntime } from '../catscompany/relay-model-bootstrap';
-import { DEFAULT_CATSCO_RELAY_MODEL_ID } from '../utils/relay-model-profiles';
+import { prepareBoundBotDefinition } from '../bot-definition/activation';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
 
@@ -18,7 +15,6 @@ export interface CatsCoCommandConfigResolution {
   config?: CatsCompanyConfig;
   missing: Array<'serverUrl' | 'apiKey' | 'bodyId'>;
 }
-
 export function resolveCatsCoCommandConfig(
   config: ChatConfig,
   env: NodeJS.ProcessEnv = process.env,
@@ -36,7 +32,12 @@ export function resolveCatsCoCommandConfig(
  */
 export async function catscompanyCommand(): Promise<void> {
   const runtimeRoot = PathResolver.getRuntimeDataRoot();
-  await ensureBoundBotModelDefinition(runtimeRoot);
+  const preparedBot = await prepareBoundBotDefinition({ runtimeRoot });
+  if (preparedBot?.initializedDefault) {
+    Logger.info(`CatsCo bot ${preparedBot.botId} 已自动初始化默认模型 MiniMax M3。`);
+  } else if (preparedBot?.materializedCatalogRuntime) {
+    Logger.info(`CatsCo bot ${preparedBot.botId} 已在当前设备准备 ${preparedBot.definition.model.kind === 'catalog' ? preparedBot.definition.model.modelId : '模型'} 的运行材料。`);
+  }
   const config = ConfigManager.getConfig();
   const resolved = resolveCatsCoCommandConfig(config);
 
@@ -121,48 +122,4 @@ export async function catscompanyCommand(): Promise<void> {
     lock = null;
     throw error;
   }
-}
-
-/**
- * Connector startup is also the device-switch boundary. It first pulls the
- * selected Definition and materializes its catalog runtime locally. A bot
- * with no Definition or legacy model is initialized to the product default,
- * MiniMax M3, only after its relay material is ready.
- */
-async function ensureBoundBotModelDefinition(runtimeRoot: string): Promise<void> {
-  const localConfig = createCatsCoLocalConfigService({ runtimeRoot }).load();
-  const botId = String(localConfig.currentBot?.uid || '').trim();
-  if (!botId) return;
-
-  const definitionService = createBotDefinitionSyncService({ runtimeRoot });
-  let result = definitionService.pullOrBootstrap(botId);
-  let definition = result?.definition;
-  const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
-
-  if (!definition) {
-    const runtime = await provisionCatsRelayCatalogRuntime({
-      botId,
-      modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
-      auth,
-    });
-    definitionService.storeCatalogRuntime(runtime);
-    result = definitionService.publish(botId, {
-      kind: 'catalog',
-      modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
-    });
-    definition = result.definition;
-    Logger.info(`CatsCo bot ${botId} 已自动初始化默认模型 MiniMax M3。`);
-  }
-
-  if (definition.model.kind !== 'catalog') return;
-  const runtime = definitionService.readCatalogRuntime(botId);
-  if (runtime?.modelId === definition.model.modelId) return;
-
-  const materialized = await provisionCatsRelayCatalogRuntime({
-    botId,
-    modelId: definition.model.modelId,
-    auth,
-  });
-  definitionService.storeCatalogRuntime(materialized);
-  Logger.info(`CatsCo bot ${botId} 已在当前设备准备 ${definition.model.modelId} 的运行材料。`);
 }

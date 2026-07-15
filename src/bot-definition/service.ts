@@ -6,6 +6,11 @@ import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { normalizeOpenAIApiMode } from '../utils/openai-api-mode';
 import { normalizeReasoningEffort } from '../utils/reasoning-effort';
 import {
+  canonicalRelayModelId,
+  findRelayModelProfile,
+  relayModelIdsMatch,
+} from '../utils/relay-model-profiles';
+import {
   BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
   BOT_DEFINITION_SCHEMA,
   type BotCatalogModelRuntime,
@@ -210,27 +215,65 @@ export function catalogRuntimeFromLocalProfile(
 ): BotCatalogModelRuntime | undefined {
   if (profile.source !== 'catalog') return undefined;
   if (!profile.provider || !profile.apiBase || !profile.apiKey || !profile.model) return undefined;
+  if (!profile.modelId || !relayModelIdsMatch(profile.modelId, modelId)) return undefined;
+  const catalogProfile = findRelayModelProfile(modelId);
   return {
     schema: BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
     botId,
-    modelId,
+    modelId: catalogProfile?.id ?? modelId,
     provider: profile.provider,
     apiBase: profile.apiBase,
     apiKey: profile.apiKey,
-    model: profile.model,
-    contextWindowTokens: profile.contextWindowTokens ?? CUSTOM_DEFAULT_CONTEXT_WINDOW_TOKENS,
+    model: catalogProfile?.model ?? profile.model,
+    contextWindowTokens: catalogProfile?.contextWindowTokens
+      ?? profile.contextWindowTokens
+      ?? CUSTOM_DEFAULT_CONTEXT_WINDOW_TOKENS,
     ...(profile.maxTokens ? { maxTokens: profile.maxTokens } : {}),
     ...(profile.temperature !== undefined ? { temperature: profile.temperature } : {}),
     ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
     ...(profile.openaiApiMode ? { openaiApiMode: profile.openaiApiMode } : {}),
-    ...(profile.capabilities ? { capabilities: profile.capabilities } : {}),
+    ...(catalogProfile
+      ? { capabilities: catalogProfile.capabilities }
+      : profile.capabilities ? { capabilities: profile.capabilities } : {}),
+  };
+}
+
+export function catalogRuntimeMatchesModelId(
+  runtime: Pick<BotCatalogModelRuntime, 'modelId' | 'model'>,
+  modelId: string,
+): boolean {
+  if (!relayModelIdsMatch(runtime.modelId, modelId)) return false;
+  const profile = findRelayModelProfile(modelId);
+  return !profile || relayModelIdsMatch(runtime.model, profile.id);
+}
+
+function normalizeBotModelDefinition(model: BotModelDefinition): BotModelDefinition {
+  if (model.kind !== 'catalog') return model;
+  const modelId = canonicalRelayModelId(model.modelId);
+  return modelId && modelId !== model.modelId ? { ...model, modelId } : model;
+}
+
+function normalizeBotDefinition(definition: BotDefinition): BotDefinition {
+  const model = normalizeBotModelDefinition(definition.model);
+  return model === definition.model ? definition : { ...definition, model };
+}
+
+function normalizeCatalogRuntime(runtime: BotCatalogModelRuntime): BotCatalogModelRuntime {
+  const profile = findRelayModelProfile(runtime.modelId) ?? findRelayModelProfile(runtime.model);
+  if (!profile) return runtime;
+  return {
+    ...runtime,
+    modelId: profile.id,
+    model: profile.model,
+    contextWindowTokens: profile.contextWindowTokens,
+    capabilities: profile.capabilities,
   };
 }
 
 export function botModelDefinitionFromLocalProfile(profile: LocalModelProfile): BotModelDefinition {
   if (profile.source === 'catalog') {
     if (!profile.modelId) throw new Error('catalog modelId is required');
-    return { kind: 'catalog', modelId: profile.modelId };
+    return { kind: 'catalog', modelId: canonicalRelayModelId(profile.modelId) ?? profile.modelId };
   }
   if (!profile.provider || !profile.apiBase || !profile.model || !profile.apiKey || !profile.contextWindowTokens) {
     throw new Error('custom model profile is incomplete');
@@ -277,8 +320,10 @@ export class BotDefinitionSyncService {
   }
 
   pull(botId: string): BotDefinition | undefined {
-    const definition = this.repository.readCanonical(botId);
+    const rawDefinition = this.repository.readCanonical(botId);
+    const definition = rawDefinition && normalizeBotDefinition(rawDefinition);
     if (definition) {
+      if (definition !== rawDefinition) this.repository.writeCanonical(definition);
       this.repository.writeCache(definition);
     }
     return definition;
@@ -288,11 +333,11 @@ export class BotDefinitionSyncService {
     const definition: BotDefinition = {
       schema: BOT_DEFINITION_SCHEMA,
       botId,
-      model,
+      model: normalizeBotModelDefinition(model),
     };
     this.repository.writeCanonical(definition);
     this.repository.writeCache(definition);
-    this.clearLegacyModelConfiguration();
+    this.clearLegacyModelConfigurationWhenReady(definition);
     return {
       botId,
       direction: 'local_to_simulated_cloud',
@@ -301,7 +346,7 @@ export class BotDefinitionSyncService {
   }
 
   storeCatalogRuntime(runtime: BotCatalogModelRuntime): void {
-    this.catalogRuntimeRepository.write(runtime);
+    this.catalogRuntimeRepository.write(normalizeCatalogRuntime(runtime));
   }
 
   readCatalogRuntime(botId: string): BotCatalogModelRuntime | undefined {
@@ -312,9 +357,7 @@ export class BotDefinitionSyncService {
     const existing = this.pull(botId);
     if (existing) {
       this.migrateLegacyCatalogRuntime(existing);
-      // The canonical Definition is already authoritative. Any legacy model
-      // fields left on disk can only be stale pre-Definition input.
-      this.clearLegacyModelConfiguration();
+      this.clearLegacyModelConfigurationWhenReady(existing);
       return {
         botId,
         direction: 'simulated_cloud_to_local',
@@ -325,7 +368,7 @@ export class BotDefinitionSyncService {
     if (!profile) return undefined;
     const definition = this.publish(botId, botModelDefinitionFromLocalProfile(profile)).definition;
     this.bootstrapCatalogRuntimeFromLocalProfile(definition, profile);
-    this.clearLegacyModelConfiguration();
+    this.clearLegacyModelConfigurationWhenReady(definition);
     return {
       botId,
       direction: 'bootstrap_to_simulated_cloud',
@@ -357,7 +400,7 @@ export class BotDefinitionSyncService {
   ): void {
     if (definition.model.kind !== 'catalog') return;
     const existing = this.catalogRuntimeRepository.read(definition.botId);
-    if (existing?.modelId === definition.model.modelId) return;
+    if (existing && catalogRuntimeMatchesModelId(existing, definition.model.modelId)) return;
     const profile = knownProfile;
     const runtime = profile && catalogRuntimeFromLocalProfile(
       definition.botId,
@@ -369,15 +412,28 @@ export class BotDefinitionSyncService {
 
   private migrateLegacyCatalogRuntime(definition: BotDefinition): void {
     if (definition.model.kind !== 'catalog') return;
-    if (this.catalogRuntimeRepository.read(definition.botId)?.modelId === definition.model.modelId) return;
+    const existing = this.catalogRuntimeRepository.read(definition.botId);
+    if (existing && catalogRuntimeMatchesModelId(existing, definition.model.modelId)) return;
     const profile = readLegacyLocalModelProfile(this.runtimeRoot, this.env);
     // A legacy relay key belongs to this catalog model only when both ids
     // agree. Never attach whatever happens to be in .env to a different bot.
-    if (profile?.source !== 'catalog' || profile.modelId !== definition.model.modelId) return;
+    if (profile?.source !== 'catalog' || !relayModelIdsMatch(profile.modelId, definition.model.modelId)) return;
     const runtime = catalogRuntimeFromLocalProfile(definition.botId, definition.model.modelId, profile);
     if (!runtime) return;
-    this.catalogRuntimeRepository.write(runtime);
+    this.storeCatalogRuntime(runtime);
     this.clearLegacyModelConfiguration();
+  }
+
+  /** Clears old model fields only after the selected Definition is runnable. */
+  clearLegacyModelConfigurationWhenReady(definition: BotDefinition): void {
+    if (definition.model.kind === 'custom') {
+      this.clearLegacyModelConfiguration();
+      return;
+    }
+    const runtime = this.catalogRuntimeRepository.read(definition.botId);
+    if (runtime && catalogRuntimeMatchesModelId(runtime, definition.model.modelId)) {
+      this.clearLegacyModelConfiguration();
+    }
   }
 
   /**

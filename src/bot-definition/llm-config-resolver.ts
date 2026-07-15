@@ -3,6 +3,7 @@ import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import type { ChatConfig } from '../types';
 import { PathResolver } from '../utils/path-resolver';
 import { FileBotCatalogModelRuntimeRepository, FileBotDefinitionRepository } from './repository';
+import { catalogRuntimeMatchesModelId } from './service';
 
 export type BotLLMConfigSource = 'custom_definition' | 'catalog_runtime';
 
@@ -82,7 +83,7 @@ export function resolveActiveBotLLMConfig(
 
   const catalogRuntime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot });
   const runtime = catalogRuntime.read(botId);
-  if (!runtime || runtime.modelId !== definition.model.modelId) return undefined;
+  if (!runtime || !catalogRuntimeMatchesModelId(runtime, definition.model.modelId)) return undefined;
   return {
     botId,
     source: 'catalog_runtime',

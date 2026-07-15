@@ -50,6 +50,7 @@ import {
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
 import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
 import { createBotDefinitionSyncService } from '../../bot-definition/service';
+import { prepareBoundBotDefinition } from '../../bot-definition/activation';
 import { resolveActiveBotLLMConfig } from '../../bot-definition/llm-config-resolver';
 import type { BotDefinitionSyncResult } from '../../bot-definition/types';
 import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
@@ -799,36 +800,6 @@ async function getCatsBotBodyStatus(
   }
 }
 
-function getCatsCompanyBindingPreflight(
-  serviceManager: ServiceManager,
-  state: CatsAuthState,
-  input: CatsBotBindingInput,
-): any {
-  const service = serviceManager.getService('catscompany');
-  if (!service) return undefined;
-  return getServicePreflight(serviceManager, 'catscompany', {
-    runtimeRoot: runtimeDataRoot(),
-    config: ConfigManager.getConfigReadonly(),
-    catsCoOverrides: {
-      token: state.token,
-      uid: input.userUid,
-      username: input.username || state.username,
-      displayName: input.displayName || state.displayName,
-      httpBaseUrl: state.httpBaseUrl,
-      serverUrl: state.serverUrl,
-      botUid: input.botUid,
-      apiKey: input.apiKey,
-    },
-  });
-}
-
-function assertCatsCompanyPreflightCanStart(preflight: any): void {
-  if (!preflight || preflight.status !== 'blocked') return;
-  const error = httpError('CatsCo connector preflight blocked', 400) as any;
-  error.data = { preflight };
-  throw error;
-}
-
 async function startCatsCompanyConnectorIfReady(
   serviceManager: ServiceManager,
   options: { restartIfRunning?: boolean; preflight?: any } = {},
@@ -863,7 +834,6 @@ async function commitCatsBotBindingAndStartConnector(
   serviceManager: ServiceManager,
   state: CatsAuthState,
   input: CatsBotBindingInput,
-  options: { catalogModelId?: string } = {},
 ): Promise<{
   updated: string[];
   warnings: string[];
@@ -874,29 +844,15 @@ async function commitCatsBotBindingAndStartConnector(
   botDefinitionSync?: Record<string, unknown>;
 }> {
   ensureCatsDeviceId();
-  const preflight = getCatsCompanyBindingPreflight(serviceManager, state, input);
-  assertCatsCompanyPreflightCanStart(preflight);
   const rollback = createCatsCoLocalConfigRollback();
   try {
     const warnings = await ensureCatsFriendBinding(state, input.userUid, input.botUid, input.apiKey);
     const updated = writeCatsBotBinding(state, input);
-    const definitionService = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() });
-    let definitionResult = definitionService.pullOrBootstrap(input.botUid);
-    if (
-      options.catalogModelId
-      && definitionResult?.direction === 'bootstrap_to_simulated_cloud'
-      && definitionResult.definition.model.kind === 'catalog'
-    ) {
-      const runtime = definitionService.readCatalogRuntime(input.botUid);
-      if (runtime) {
-        definitionService.storeCatalogRuntime({ ...runtime, modelId: options.catalogModelId });
-      }
-      definitionResult = definitionService.publish(input.botUid, {
-        kind: 'catalog',
-        modelId: options.catalogModelId,
-      });
-    }
-    const botDefinitionSync = toBotDefinitionSyncPayload(definitionResult);
+    const preparedBot = await prepareBoundBotDefinition({
+      runtimeRoot: runtimeDataRoot(),
+      botId: input.botUid,
+    });
+    const botDefinitionSync = toBotDefinitionSyncPayload(preparedBot?.sync);
     const {
       service,
       preflight: startPreflight,
@@ -3049,8 +3005,6 @@ export function createApiRouter(
         botUsername: bot.username || preferredUsername,
         apiKey,
         bindingSource: 'legacy-setup',
-      }, {
-        catalogModelId: String(relayModelSetup?.modelId || '').trim() || undefined,
       });
 
       res.json({
@@ -3213,8 +3167,6 @@ export function createApiRouter(
         botUsername: targetBot.username || '',
         apiKey,
         bindingSource: 'explicit-bind',
-      }, {
-        catalogModelId: String(relayModelSetup?.modelId || '').trim() || undefined,
       });
       const botName = String(targetBot.display_name || targetBot.username || 'Bot');
 
