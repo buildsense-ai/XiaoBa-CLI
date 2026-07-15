@@ -49,10 +49,23 @@ assertEqual('build.productName', packageJson.build?.productName, 'CatsCo');
 assertEqual('build.nsis.shortcutName', packageJson.build?.nsis?.shortcutName, 'CatsCo');
 assertEqual('build.dmg.title', packageJson.build?.dmg?.title, 'CatsCo');
 
+const macTargets = Array.isArray(packageJson.build?.mac?.target)
+  ? packageJson.build.mac.target.map((target) => typeof target === 'string' ? target : target?.target)
+  : [];
+for (const requiredTarget of ['dmg', 'zip']) {
+  if (!macTargets.includes(requiredTarget)) {
+    fail(`build.mac.target should include ${JSON.stringify(requiredTarget)} for macOS auto-update`);
+  }
+}
+
 assertIncludes('dashboard title', readText('dashboard/index.html'), '<title>CatsCo Dashboard</title>');
 assertIncludes('electron window title', readText('electron/main.js'), "title: 'CatsCo Dashboard'");
 assertIncludes('electron tray tooltip', readText('electron/main.js'), "tray.setToolTip('CatsCo Dashboard')");
-assertIncludes('GitHub release title', readText('.github/workflows/release.yml'), 'name: CatsCo ${{ github.ref_name }}');
+const releaseWorkflow = readText('.github/workflows/release.yml');
+assertIncludes('GitHub release title', releaseWorkflow, 'name: CatsCo ${{ github.ref_name }}');
+assertIncludes('macOS build ZIP artifact upload', releaseWorkflow, 'release/*.zip');
+assertIncludes('macOS x64 ZIP release upload', releaseWorkflow, 'release-mac/x64/*.zip');
+assertIncludes('macOS arm64 ZIP release upload', releaseWorkflow, 'release-mac/arm64/*.zip');
 assertIncludes('Windows install shortcut', readText('install.ps1'), 'CatsCo Dashboard');
 assertIncludes('Unix install launcher', readText('install.sh'), 'CatsCo Dashboard');
 assertIncludes(

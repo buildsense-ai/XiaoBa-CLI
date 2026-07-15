@@ -37,7 +37,7 @@ git push origin v0.1.2
 
 ## 产物说明
 
-- macOS：`.dmg`
+- macOS：供手动安装的 `.dmg`，以及供自动更新使用的 `.zip`（x64、arm64 各一套）
 - Windows：`.exe`
 - Linux：`.AppImage` 和 `.deb`
 
@@ -45,5 +45,7 @@ git push origin v0.1.2
 
 - 构建阶段的 `electron-builder` 已固定为 `--publish never`，不会在单个平台构建时提前发布
 - 真正的 GitHub Release 只会在最后一个 `release` job 中统一创建
+- macOS 构建后必须通过本地产物校验；发布完成后还会回读 CDN 清单并检查 DMG、ZIP 均可访问
+- CI 显示成功不应只代表 `latest-mac.yml` 返回 HTTP 200，清单内容和清单引用的实际文件也必须通过校验
 - 如果 tag 打错了，先删除远端 tag，再重新打正确的 tag
 - `scripts/release.sh` 是旧流程遗留，不作为当前标准发布入口
