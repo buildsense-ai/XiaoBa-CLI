@@ -4,6 +4,16 @@ import { SendFileTool } from '../src/tools/send-file-tool';
 import type { TargetRoute, ToolExecutionContext, UploadedFileResult } from '../src/types/tool';
 
 describe('send_file remote routing', () => {
+  test('tells the model to use target for a participant computer path', () => {
+    const definition = new SendFileTool().definition;
+    const target = definition.parameters.properties?.target as { description?: string } | undefined;
+
+    assert.match(definition.description, /必须.*target/);
+    assert.match(definition.description, /不要因为 agent 运行在另一种操作系统上就拒绝/);
+    assert.match(String(target?.description), /参与者电脑上的路径/);
+    assert.match(String(target?.description), /省略时只会在当前 agent 主机上查找文件/);
+  });
+
   test('uploads on the selected computer and sends the returned attachment metadata', async () => {
     const route: TargetRoute = {
       userId: 'usr7',
