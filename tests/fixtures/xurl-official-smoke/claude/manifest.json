@@ -1,5 +1,5 @@
 {
   "provider": "claude",
-  "session_id": "claude-smoke-session",
+  "session_id": "b90fc33d-33cb-4027-8558-119e2b56c74e",
   "notes": "Minimal sanitized Claude fixture in the official projects/<project>/<session>.jsonl layout."
 }

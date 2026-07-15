@@ -356,6 +356,19 @@ describe('V3 independent Learning Episodes', () => {
     assert.equal(result.episodes[0].deliveryTurn, 1);
     assert.equal(result.episodes[0].completionEvidence.some(evidence => evidence.kind === 'user-acceptance'), true);
   });
+
+  test('uses an accepted text-only continuity response as bounded completion evidence', () => {
+    const source = '/logs/external-text-session.jsonl';
+    const result = extractLearningEpisodes({
+      ...unit([turn(2, 'Thanks, that works perfectly.', [])], source),
+      continuityTurns: [turn(1, 'Generate and deliver the report.', [])],
+    });
+
+    assert.equal(result.episodes.length, 1);
+    assert.equal(result.episodes[0].deliveryTurn, 1);
+    assert.equal(result.episodes[0].completionEvidence.some(evidence => evidence.kind === 'assistant-response'), true);
+    assert.equal(result.episodes[0].completionEvidence.some(evidence => evidence.kind === 'user-acceptance'), true);
+  });
 });
 
 describe('V3 bounded cross-file continuity', () => {

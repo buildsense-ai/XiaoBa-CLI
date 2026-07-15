@@ -39,11 +39,11 @@ describe('official xurl smoke fixtures', () => {
       '2026',
       '02',
       '23',
-      'rollout-2026-02-23T06-55-38-codex-smoke-session.jsonl',
+      'rollout-2026-02-23T06-55-38-29bf19c3-b83e-401d-8f38-5660b7f67152.jsonl',
     );
     const before = fs.readFileSync(codexFile, 'utf8').trim().split('\n').length;
     materialized.appendStableCompletedTurn('codex');
     const after = fs.readFileSync(codexFile, 'utf8').trim().split('\n').length;
-    assert.equal(after, before + 2);
+    assert.equal(after, before + 4);
   });
 });

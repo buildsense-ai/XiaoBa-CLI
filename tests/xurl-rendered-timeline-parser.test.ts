@@ -54,6 +54,44 @@ function validTimeline(opts: {
 // ---------------------------------------------------------------------------
 
 describe('rendered Timeline parser — valid documents', () => {
+  test('parses current official xurl nested frontmatter and level-two Timeline entries', () => {
+    const thread = '29bf19c3-b83e-401d-8f38-5660b7f67152';
+    const markdown = [
+      '---',
+      `uri: 'agents://codex/${thread}'`,
+      "provider: 'codex'",
+      `session_id: '${thread}'`,
+      "thread_source: '/redacted/session.jsonl'",
+      'thread_metadata:',
+      "  - 'timestamp = 2026-02-23T06:55:38.000Z'",
+      "mode: 'subagent_index'",
+      'subagents:',
+      '  []',
+      '---',
+      '',
+      '# Thread',
+      '',
+      '## Timeline',
+      '',
+      '## 1. User',
+      '',
+      'Generate the report.',
+      '',
+      '## 2. Assistant',
+      '',
+      'Done.',
+      '',
+    ].join('\n');
+
+    const result = parseRenderedTimeline(markdown, 'codex', thread);
+    assert.equal(result.branch, thread);
+    assert.equal(result.ordinal, 2);
+    assert.equal(result.queriedAt, '2026-02-23T06:55:38.000Z');
+    assert.equal(result.hasExplicitStabilityMetadata, false);
+    assert.match(result.fingerprint ?? '', /^[a-f0-9]{64}$/);
+    assert.equal(result.events.length, 1);
+  });
+
   test('parses a minimal User→Assistant turn into one canonical event', () => {
     const markdown = validTimeline({});
     const result = parseRenderedTimeline(markdown, 'codex', 'thread-001');

@@ -54,13 +54,19 @@ The current focused recovery regression is reproducible with:
 
 Current result: 182 passed, 0 failed, 0 skipped. This command covers the scheduler, source scheduling, continuous recovery, cross-process provider locking, backfill, Evidence Capsule lifecycle, Skill Evolution, and branch-transcript retention. The acceptance checkboxes describe implemented behavior; deterministic runs do not prove compatibility with an installed official xURL executable.
 
-## Production release condition
+## Production release verification
 
-Before production release, run `tests/official-xurl-smoke.test.ts` with `XIAOBA_OFFICIAL_XURL_SMOKE=1` and `XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND` set to the candidate installed xURL executable, and record an executed pass in #94. A prerequisite skip does not satisfy this condition.
+The opt-in Canary was executed on 2026-07-15 against the installed official `xurl 0.0.27` executable. It ran rather than skipping and passed with 1 test passed, 0 failed, and 0 skipped:
+
+```bash
+XIAOBA_OFFICIAL_XURL_SMOKE=1 \
+XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND=/absolute/path/to/xurl \
+./node_modules/.bin/tsx --test tests/official-xurl-smoke.test.ts
+```
 
 This is a real-executable compatibility canary, not a live-provider or recovery E2E. It verifies discovery from synthetic Codex, Claude, and Pi roots; a future-only baseline without historical admission; overlapping external reads; serialized durable admission involving multiple providers; creation of a Learning Episode and Evidence Capsule; and drain without active read, admission, or xURL child-process handles.
 
-Provider-lock contention, explicit backfill, failure and quarantine recovery, Runtime restart replay, and exact read-concurrency limits remain deterministic regression requirements. The real-xURL canary is not evidence for provider locking or restart recovery. It is tracked separately by #94 and does not reopen #87's completed implementation scope.
+Provider-lock contention, explicit backfill, failure and quarantine recovery, Runtime restart replay, and exact read-concurrency limits remain deterministic regression requirements. The real-xURL canary is not evidence for provider locking or restart recovery. Together with the deterministic recovery suite, the executed Canary satisfies the xURL production release verification for version 0.0.27.
 
 ## Dependencies
 

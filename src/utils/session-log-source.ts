@@ -580,6 +580,8 @@ export interface ExternalSourceIncrementalDiscoveryRequest {
   readonly cursor: SourceCursor | null;
   readonly pageToken?: string | null;
   readonly maxResources?: number;
+  /** Resources already baselined in durable state; readers may avoid re-reading them during discovery. */
+  readonly knownResourceRefs?: readonly string[];
 }
 
 export interface ExternalSourceActivationResource {
@@ -1636,6 +1638,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         cursor,
         pageToken,
         maxResources,
+        knownResourceRefs: Object.keys(state.resources),
       });
     }
     const resources = this.reader?.discoverResources(cursor) ?? [];

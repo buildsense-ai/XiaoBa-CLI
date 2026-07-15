@@ -62,6 +62,8 @@ export interface RenderedTimelineParseResult {
   readonly fingerprint?: string;
   readonly revision?: string;
   readonly queriedAt?: string;
+  /** True when ordinal/fingerprint came from xURL frontmatter rather than the rendered entries. */
+  readonly hasExplicitStabilityMetadata: boolean;
   readonly hasIncompleteTail: boolean;
   readonly events: readonly RenderedTimelineEvent[];
 }
@@ -99,7 +101,7 @@ export interface ParsedRenderedDocument {
 // Parser
 // ---------------------------------------------------------------------------
 
-const TIMELINE_HEADING_RE = /^###\s+(\d+)(?:\.)?\s+(.*?)\s*$/;
+const TIMELINE_HEADING_RE = /^#{2,3}\s+(\d+)(?:\.)?\s+(.*?)\s*$/;
 const FRONTMATTER_DELIMITER = '---';
 const VALID_ROLES = new Set<RenderedTimelineRole>(['User', 'Assistant', 'Context Compacted']);
 
@@ -127,17 +129,26 @@ export function parseRenderedTimeline(
   }
 
   const entries = parseTimelineEntries(timelineSection);
-  const grouped = groupCanonicalEvents(frontmatter, entries, options);
+  const hasExplicitStabilityMetadata = frontmatter.ordinal !== undefined
+    && frontmatter.fingerprint !== undefined;
+  const effectiveFrontmatter: ParsedFrontmatter = {
+    ...frontmatter,
+    branch: frontmatter.branch ?? expectedThread,
+    ordinal: frontmatter.ordinal ?? entries[entries.length - 1]!.ordinal,
+    fingerprint: frontmatter.fingerprint ?? computeContentHash(entries),
+  };
+  const grouped = groupCanonicalEvents(effectiveFrontmatter, entries, options);
 
   return {
-    provider: frontmatter.provider,
-    thread: frontmatter.thread,
-    uri: frontmatter.uri,
-    ...(frontmatter.branch ? { branch: frontmatter.branch } : {}),
-    ...(frontmatter.ordinal !== undefined ? { ordinal: frontmatter.ordinal } : {}),
-    ...(frontmatter.fingerprint ? { fingerprint: frontmatter.fingerprint } : {}),
-    ...(frontmatter.revision ? { revision: frontmatter.revision } : {}),
-    ...(frontmatter.queriedAt ? { queriedAt: frontmatter.queriedAt } : {}),
+    provider: effectiveFrontmatter.provider,
+    thread: effectiveFrontmatter.thread,
+    uri: effectiveFrontmatter.uri,
+    branch: effectiveFrontmatter.branch,
+    ordinal: effectiveFrontmatter.ordinal,
+    fingerprint: effectiveFrontmatter.fingerprint,
+    ...(effectiveFrontmatter.revision ? { revision: effectiveFrontmatter.revision } : {}),
+    ...(effectiveFrontmatter.queriedAt ? { queriedAt: effectiveFrontmatter.queriedAt } : {}),
+    hasExplicitStabilityMetadata,
     hasIncompleteTail: grouped.hasIncompleteTail,
     events: grouped.events,
   };
@@ -181,18 +192,26 @@ export function parseRenderedFrontmatterOnly(markdown: string, label: string): P
 
 export function parseRenderedFrontmatter(raw: string, label: string): ParsedRenderedFrontmatter {
   const fields = new Map<string, string>();
+  let nestedContainer: string | null = null;
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
+    if (/^\s/.test(line)) {
+      if (!nestedContainer) {
+        throw new Error(`${label} frontmatter has an unexpected nested line: ${line.trim()}`);
+      }
+      continue;
+    }
     const match = /^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(line);
     if (!match) {
       throw new Error(`${label} frontmatter has an invalid line: ${line.trim()}`);
     }
     const key = match[1]!;
-    const value = match[2]!.trim();
+    const value = decodeFrontmatterScalar(match[2]!.trim(), label, key);
     if (fields.has(key)) {
       throw new Error(`${label} frontmatter has a duplicate field: ${key}`);
     }
     fields.set(key, value);
+    nestedContainer = value === '' ? key : null;
   }
   return { fields, raw };
 }
@@ -234,7 +253,9 @@ function parseFrontmatter(
   const ordinal = ordinalRaw && /^\d+$/.test(ordinalRaw) ? parseInt(ordinalRaw, 10) : undefined;
   const fingerprint = fm['fingerprint'] || undefined;
   const revision = fm['revision'] || undefined;
-  const queriedAt = fm['queried_at'] || undefined;
+  const queriedAt = fm['queried_at']
+    || extractThreadMetadataTimestamp(frontmatter.raw)
+    || undefined;
   return {
     uri,
     provider,
@@ -270,14 +291,37 @@ function extractSection(body: string, sectionName: string): string | undefined {
   const start = match.index + match[0].length;
   const rest = body.slice(start);
 
-  // Find the next ## heading (but not ### which is a Timeline entry)
-  const nextSectionRe = /^##\s+/m;
-  const nextMatch = nextSectionRe.exec(rest.slice(rest.indexOf('\n') + 1));
-  if (nextMatch) {
-    const sectionEnd = rest.indexOf('\n') + 1 + nextMatch.index;
-    return rest.slice(0, sectionEnd).trim();
+  const lines = rest.split('\n');
+  for (let index = 1; index < lines.length; index++) {
+    const line = lines[index]!;
+    if (/^##\s+/.test(line) && !/^##\s+\d+\.?(?:\s|$)/.test(line)) {
+      return lines.slice(0, index).join('\n').trim();
+    }
   }
   return rest.trim();
+}
+
+function decodeFrontmatterScalar(value: string, label: string, key: string): string {
+  if (value.length < 2) return value;
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      return JSON.parse(value) as string;
+    } catch {
+      throw new Error(`${label} frontmatter has an invalid quoted scalar: ${key}`);
+    }
+  }
+  return value;
+}
+
+function extractThreadMetadataTimestamp(raw: string): string | undefined {
+  for (const line of raw.split('\n')) {
+    const match = /^\s*-\s*['"]?(?:payload\.)?timestamp\s*=\s*(.+?)['"]?\s*$/.exec(line);
+    if (match?.[1]) return match[1].replace(/['"]$/, '').trim();
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -27,23 +27,24 @@ const PROVIDER_FIXTURES: readonly ProviderFixtureConfig[] = [
       '2026',
       '02',
       '23',
-      'rollout-2026-02-23T06-55-38-codex-smoke-session.jsonl',
+      'rollout-2026-02-23T06-55-38-29bf19c3-b83e-401d-8f38-5660b7f67152.jsonl',
     ),
   },
   {
     provider: 'claude',
     envVar: 'CLAUDE_CONFIG_DIR',
     fixtureRoot: path.join(OFFICIAL_XURL_SMOKE_ROOT, 'claude'),
-    threadFile: path.join('projects', 'project-smoke', 'claude-smoke-session.jsonl'),
+    threadFile: path.join('projects', 'project-smoke', 'b90fc33d-33cb-4027-8558-119e2b56c74e.jsonl'),
   },
   {
     provider: 'pi',
     envVar: 'PI_CODING_AGENT_DIR',
-    fixtureRoot: path.join(OFFICIAL_XURL_SMOKE_ROOT, 'pi', 'agent'),
+    fixtureRoot: path.join(OFFICIAL_XURL_SMOKE_ROOT, 'pi'),
     threadFile: path.join(
+      'agent',
       'sessions',
       '--Users-redacted-workspace-project--',
-      '2026-02-23T13-20-05-148Z_pi-smoke-session.jsonl',
+      '2026-02-23T13-20-05-148Z_bc6ea3d9-0e40-4942-a490-3e0aa7f125de.jsonl',
     ),
   },
 ] as const;
@@ -92,9 +93,7 @@ export function materializeOfficialXurlSmokeFixtures(destinationRoot: string): {
     appendStableCompletedTurn(provider: OfficialSmokeProvider): void {
       const fixture = PROVIDER_FIXTURES.find(candidate => candidate.provider === provider);
       if (!fixture) throw new Error(`unsupported smoke provider: ${provider}`);
-      const root = provider === 'pi'
-        ? path.join(destinationRoot, provider, 'agent')
-        : path.join(destinationRoot, provider);
+      const root = path.join(destinationRoot, provider);
       const filePath = path.join(root, fixture.threadFile);
       fs.appendFileSync(filePath, renderAppendedTurn(provider), 'utf8');
     },
@@ -123,6 +122,24 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
             content: [{ type: 'output_text', text: 'Done.' }],
           },
         }),
+        JSON.stringify({
+          timestamp: '2026-02-23T07:00:02.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Thanks, that works perfectly.' }],
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-02-23T07:00:03.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'Glad it helped.' }],
+          },
+        }),
         '',
       ].join('\n');
     case 'claude':
@@ -130,16 +147,30 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
         JSON.stringify({
           timestamp: '2026-02-23T00:00:02Z',
           type: 'user',
-          sessionId: 'claude-smoke-session',
+          sessionId: 'b90fc33d-33cb-4027-8558-119e2b56c74e',
           cwd: '/redacted/workspace/project',
           message: { role: 'user', content: 'Please generate and send the report.' },
         }),
         JSON.stringify({
           timestamp: '2026-02-23T00:00:03Z',
           type: 'assistant',
-          sessionId: 'claude-smoke-session',
+          sessionId: 'b90fc33d-33cb-4027-8558-119e2b56c74e',
           cwd: '/redacted/workspace/project',
           message: { role: 'assistant', content: 'Done.' },
+        }),
+        JSON.stringify({
+          timestamp: '2026-02-23T00:00:04Z',
+          type: 'user',
+          sessionId: 'b90fc33d-33cb-4027-8558-119e2b56c74e',
+          cwd: '/redacted/workspace/project',
+          message: { role: 'user', content: 'Thanks, that works perfectly.' },
+        }),
+        JSON.stringify({
+          timestamp: '2026-02-23T00:00:05Z',
+          type: 'assistant',
+          sessionId: 'b90fc33d-33cb-4027-8558-119e2b56c74e',
+          cwd: '/redacted/workspace/project',
+          message: { role: 'assistant', content: 'Glad it helped.' },
         }),
         '',
       ].join('\n');
@@ -147,8 +178,8 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
       return [
         JSON.stringify({
           type: 'message',
-          id: 'pi-smoke-user-2',
-          parentId: 'pi-smoke-assistant-1',
+          id: 'b1c2d3e4',
+          parentId: 'a995f57d',
           timestamp: '2026-02-23T13:21:05.162Z',
           message: {
             role: 'user',
@@ -158,8 +189,8 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
         }),
         JSON.stringify({
           type: 'message',
-          id: 'pi-smoke-assistant-2',
-          parentId: 'pi-smoke-user-2',
+          id: 'c5d6e7f8',
+          parentId: 'b1c2d3e4',
           timestamp: '2026-02-23T13:21:07.862Z',
           message: {
             role: 'assistant',
@@ -183,6 +214,46 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
             },
             stopReason: 'stop',
             timestamp: 1771852867862,
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          id: 'd9e0f1a2',
+          parentId: 'c5d6e7f8',
+          timestamp: '2026-02-23T13:21:08.862Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'Thanks, that works perfectly.' }],
+            timestamp: 1771852868862,
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          id: 'e3f4a5b6',
+          parentId: 'd9e0f1a2',
+          timestamp: '2026-02-23T13:21:09.862Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Glad it helped.', textSignature: 'msg_pi_smoke_ack_2' }],
+            api: 'openai-codex-responses',
+            provider: 'openai-codex',
+            model: 'gpt-5.3-codex',
+            usage: {
+              input: 128,
+              output: 8,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 136,
+              cost: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                total: 0,
+              },
+            },
+            stopReason: 'stop',
+            timestamp: 1771852869862,
           },
         }),
         '',

@@ -263,14 +263,19 @@ export function extractLearningEpisodes(
     if (!newTurnNumbers.has(correction.turn) || newTurnNumbers.has(delivery.turn)) continue;
     const deliverySourceFilePath = turnSourceFilePath(delivery, unit.filePath);
     const deliveryEvidence = detectCompletionEvidence(deliverySourceFilePath, delivery);
-    if (!hasDeliveryEvidence(deliveryEvidence)) continue;
     const signal = detectContradiction(deliverySourceFilePath, delivery, correction, unit.filePath);
     if (signal) {
+      if (!hasDeliveryEvidence(deliveryEvidence)) continue;
       contradictions.push(signal);
       continue;
     }
     const accepted = detectAcceptance(turnSourceFilePath(correction, unit.filePath), delivery, correction);
     if (accepted) {
+      if (!hasDeliveryEvidence(deliveryEvidence)) {
+        const assistantResponse = detectAssistantResponseEvidence(deliverySourceFilePath, delivery);
+        if (!assistantResponse) continue;
+        deliveryEvidence.push(assistantResponse);
+      }
       episodes.push({
         schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION,
         episodeId: makeEpisodeId(deliverySourceFilePath, delivery),

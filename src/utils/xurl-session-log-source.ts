@@ -62,6 +62,7 @@ interface RenderedThreadSummary {
   readonly ordinal: number;
   readonly fingerprint: string;
   readonly revision?: string;
+  readonly baselineComplete: boolean;
 }
 
 interface RenderedCatalog {
@@ -80,6 +81,7 @@ interface RenderedTimeline {
   readonly fingerprint: string;
   readonly revision?: string;
   readonly queriedAt: string;
+  readonly hasExplicitStabilityMetadata: boolean;
 }
 
 interface CanonicalEvent {
@@ -196,7 +198,15 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
     const catalog = this.runner.queryCatalog(limit, request.pageToken ?? null);
     this.runner.checkActivationLimits(catalog);
 
-    const resources: SessionLogSourceResource[] = catalog.threads.map(summary => ({
+    const knownResourceRefs = new Set(request.knownResourceRefs ?? []);
+    const summaries = catalog.threads.map(summary => (
+      summary.baselineComplete || knownResourceRefs.has(summary.threadId)
+        ? summary
+        : this.runner.inspectThreadForActivation(summary)
+    ));
+    this.runner.checkActivationLimits({ ...catalog, threads: summaries });
+
+    const resources: SessionLogSourceResource[] = summaries.map(summary => ({
       resourceRef: summary.threadId,
       firstEventIdentity: {
         eventId: canonicalEventId(this.provider, summary.threadId, summary.ordinal, summary.ordinal),
@@ -207,7 +217,7 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
         contentHash: summary.fingerprint,
       },
     }));
-    const activationResources: ExternalSourceActivationResource[] = catalog.threads.map((summary, index) => ({
+    const activationResources: ExternalSourceActivationResource[] = summaries.map((summary, index) => ({
       resource: resources[index]!,
       activationPosition: summary.ordinal,
     }));
@@ -215,8 +225,8 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
       resources,
       activationResources,
       nextPageToken: catalog.next,
-      activationWatermarkPosition: catalog.threads.length > 0
-        ? Math.max(...catalog.threads.map(thread => thread.ordinal))
+      activationWatermarkPosition: summaries.length > 0
+        ? Math.max(...summaries.map(thread => thread.ordinal))
         : 0,
     };
   }
@@ -439,6 +449,26 @@ class XurlOfficialRunner {
     return parseRenderedCatalog(stdout, this.provider, uri);
   }
 
+  inspectThreadForActivation(summary: RenderedThreadSummary): RenderedThreadSummary {
+    const stdout = this.invoke('read', [summary.uri]);
+    this.activationBytesAccum += Buffer.byteLength(stdout, 'utf8');
+    this.checkActivationLimits({
+      provider: this.provider,
+      uri: summary.uri,
+      next: null,
+      threads: [summary],
+    });
+    const page = parseTimelinePage(stdout, this.provider, summary.threadId, summary.uri);
+    return {
+      ...summary,
+      branch: page.timeline.branch,
+      ordinal: page.timeline.ordinal,
+      fingerprint: page.timeline.fingerprint,
+      ...(page.timeline.revision ? { revision: page.timeline.revision } : {}),
+      baselineComplete: true,
+    };
+  }
+
   readThreadTimeline(
     resource: SessionLogSourceResource,
     cursor: SourceCursor,
@@ -492,10 +522,9 @@ class XurlOfficialRunner {
     }
 
     // A newly observed tail requires two identical bounded observations before
-    // the durable cursor may advance. The primary read is the first observation;
-    // the head (`-I`) is the second. If the head reports a different ordinal or
-    // fingerprint the tail is still mutating and stays pending without counting
-    // as a provider failure. (ADR-0043 stability sampling.)
+    // the durable cursor may advance. Older rendered contracts expose ordinal
+    // and fingerprint through `-I`; current official xURL derives both from a
+    // second Timeline rendering. (ADR-0043 stability sampling.)
     if (hasIncompleteTail) {
       return {
         status: 'pending',
@@ -507,7 +536,9 @@ class XurlOfficialRunner {
       };
     }
 
-    const head = this.headFrontmatter(resource);
+    const head = timeline.hasExplicitStabilityMetadata
+      ? this.headFrontmatter(resource)
+      : this.confirmTimeline(resource);
     if (
       head.ordinal !== timeline.ordinal
       || head.fingerprint !== timeline.fingerprint
@@ -553,6 +584,19 @@ class XurlOfficialRunner {
     };
   }
 
+  private confirmTimeline(resource: SessionLogSourceResource): {
+    readonly ordinal: number;
+    readonly fingerprint: string;
+  } {
+    const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
+    const stdout = this.invoke('read', [uri]);
+    const page = parseTimelinePage(stdout, this.provider, resource.resourceRef, uri);
+    return {
+      ordinal: page.timeline.ordinal,
+      fingerprint: page.timeline.fingerprint,
+    };
+  }
+
   private async headFrontmatterAsync(
     resource: SessionLogSourceResource,
     signal: AbortSignal,
@@ -570,6 +614,19 @@ class XurlOfficialRunner {
         'xurl head ordinal',
       ),
       fingerprint: requireNonEmptyText('xurl head fingerprint', requireFrontmatterField(frontmatter, 'fingerprint')),
+    };
+  }
+
+  private async confirmTimelineAsync(
+    resource: SessionLogSourceResource,
+    signal: AbortSignal,
+  ): Promise<{ readonly ordinal: number; readonly fingerprint: string }> {
+    const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
+    const stdout = await this.invokeAsync('read', [uri], signal);
+    const page = parseTimelinePage(stdout, this.provider, resource.resourceRef, uri);
+    return {
+      ordinal: page.timeline.ordinal,
+      fingerprint: page.timeline.fingerprint,
     };
   }
 
@@ -633,7 +690,9 @@ class XurlOfficialRunner {
       };
     }
 
-    const head = await this.headFrontmatterAsync(resource, signal);
+    const head = timeline.hasExplicitStabilityMetadata
+      ? await this.headFrontmatterAsync(resource, signal)
+      : await this.confirmTimelineAsync(resource, signal);
     if (head.ordinal !== timeline.ordinal || head.fingerprint !== timeline.fingerprint) {
       return {
         status: 'pending',
@@ -820,11 +879,10 @@ function parseRenderedCatalog(stdout: string, provider: string, requestedUri: st
   const threadsValue = optionalFrontmatterField(doc.frontmatter, 'threads');
   const declaredCount = threadsValue ? normalizeNonNegativeInteger(Number(threadsValue), 'xurl catalog threads') : undefined;
 
-  const body = stripAfter(doc.body, /^## Threads\b/m, 'xurl catalog Threads section');
-  const threads: RenderedThreadSummary[] = [];
-  for (const block of splitThreadBlocks(body)) {
-    threads.push(parseThreadSummary(block, provider));
-  }
+  const threads = /^## Threads\b/m.test(doc.body)
+    ? splitThreadBlocks(stripAfter(doc.body, /^## Threads\b/m, 'xurl catalog Threads section'))
+      .map(block => parseThreadSummary(block, provider))
+    : parseOfficialThreadSummaries(doc.body, provider);
   if (declaredCount !== undefined && declaredCount !== threads.length) {
     throw new Error(`xurl catalog threads count mismatch: frontmatter=${declaredCount} body=${threads.length}`);
   }
@@ -848,7 +906,76 @@ function parseThreadSummary(block: string, provider: string): RenderedThreadSumm
   const ordinal = normalizeNonNegativeInteger(Number(requireScalarField(fields, 'ordinal', 'xurl catalog thread ordinal')), 'xurl catalog thread ordinal');
   const fingerprint = requireNonEmptyText('xurl catalog thread fingerprint', requireScalarField(fields, 'fingerprint', 'xurl catalog thread fingerprint'));
   const revision = optionalScalarField(fields, 'revision');
-  return { threadId, uri, branch, ordinal, fingerprint, ...(revision ? { revision } : {}) };
+  return {
+    threadId,
+    uri,
+    branch,
+    ordinal,
+    fingerprint,
+    ...(revision ? { revision } : {}),
+    baselineComplete: true,
+  };
+}
+
+function parseOfficialThreadSummaries(body: string, provider: string): RenderedThreadSummary[] {
+  const section = stripAfter(body, /^# Threads\s*$/m, 'xurl catalog Threads section');
+  const matchedRaw = /^- Matched:\s+`(\d+)`\s*$/m.exec(section)?.[1];
+  const declaredCount = matchedRaw === undefined
+    ? undefined
+    : normalizeNonNegativeInteger(Number(matchedRaw), 'xurl catalog matched threads');
+  const heading = /^##\s+(\d+)\.\s+`([^`]+)`\s*$/gm;
+  const matches = [...section.matchAll(heading)];
+  const threads = matches.map((match, index) => {
+    const expectedIndex = index + 1;
+    if (Number(match[1]) !== expectedIndex) {
+      throw new Error(`xurl catalog thread numbering is non-contiguous at ${match[1]}`);
+    }
+    const uri = requireNonEmptyText('xurl catalog thread uri', match[2]);
+    const prefix = `agents://${provider}/`;
+    if (!uri.startsWith(prefix) || uri.length === prefix.length) {
+      throw new Error(`xurl catalog thread uri does not belong to provider ${provider}: ${uri}`);
+    }
+    const threadId = uri.slice(prefix.length);
+    const blockStart = (match.index ?? 0) + match[0].length;
+    const blockEnd = matches[index + 1]?.index ?? section.length;
+    const fields = parseRenderedCatalogBulletFields(section.slice(blockStart, blockEnd));
+    const fieldProvider = fields.get('Provider');
+    const fieldThreadId = fields.get('Thread ID');
+    if (fieldProvider !== provider) {
+      throw new Error(`xurl catalog thread provider mismatch: expected ${provider}, got ${fieldProvider ?? 'missing'}`);
+    }
+    if (fieldThreadId !== threadId) {
+      throw new Error(`xurl catalog thread id mismatch: expected ${threadId}, got ${fieldThreadId ?? 'missing'}`);
+    }
+    const updatedAt = fields.get('Updated At');
+    return {
+      threadId,
+      uri,
+      branch: threadId,
+      ordinal: 0,
+      fingerprint: createHash('sha256').update(`${uri}\n${updatedAt ?? ''}`, 'utf8').digest('hex'),
+      ...(updatedAt ? { revision: updatedAt } : {}),
+      baselineComplete: false,
+    };
+  });
+  if (declaredCount !== undefined && declaredCount !== threads.length) {
+    throw new Error(`xurl catalog matched count mismatch: body=${declaredCount} parsed=${threads.length}`);
+  }
+  return threads;
+}
+
+function parseRenderedCatalogBulletFields(raw: string): Map<string, string> {
+  const fields = new Map<string, string>();
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    const match = /^- ([A-Za-z][A-Za-z ]+):\s+`([^`]*)`\s*$/.exec(line);
+    if (!match) continue;
+    if (fields.has(match[1]!)) {
+      throw new Error(`xurl catalog thread block has a duplicate field: ${match[1]}`);
+    }
+    fields.set(match[1]!, match[2]!);
+  }
+  return fields;
 }
 
 function parseTimelinePage(
@@ -879,6 +1006,7 @@ function parseTimelinePage(
     fingerprint,
     ...(parsed.revision ? { revision: parsed.revision } : {}),
     queriedAt,
+    hasExplicitStabilityMetadata: parsed.hasExplicitStabilityMetadata,
   };
   return {
     timeline,

@@ -1,0 +1,3 @@
+{"timestamp":"2026-02-23T00:00:00Z","type":"system","sessionId":"b90fc33d-33cb-4027-8558-119e2b56c74e","cwd":"/redacted/workspace/project","message":{"role":"system","content":"meta"}}
+{"timestamp":"2026-02-23T00:00:01Z","type":"user","sessionId":"b90fc33d-33cb-4027-8558-119e2b56c74e","cwd":"/redacted/workspace/project","message":{"role":"user","content":"Baseline claude request."}}
+{"timestamp":"2026-02-23T00:00:02Z","type":"assistant","sessionId":"b90fc33d-33cb-4027-8558-119e2b56c74e","cwd":"/redacted/workspace/project","message":{"role":"assistant","content":"Baseline claude response."}}
