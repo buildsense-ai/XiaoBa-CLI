@@ -346,6 +346,14 @@ describe('SkillHub user subscriptions', () => {
     assert.match(String(subscribed.ok && subscribed.content), /skillhub-user/);
   });
 
+  test('Tool tells the Agent to serialize multiple subscription mutations', () => {
+    const tool = new SkillHubTool();
+
+    assert.match(tool.definition.description, /一次只调用一个 subscribe\/unsubscribe/);
+    assert.match(tool.definition.description, /任一操作失败后停止/);
+    assert.match(tool.definition.description, /不要并行或重试/);
+  });
+
   test('Tool rejects subscription mutations from a non-owner CatsCo actor', async () => {
     let called = false;
     const tool = new SkillHubTool(
