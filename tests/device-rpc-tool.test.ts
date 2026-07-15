@@ -65,12 +65,12 @@ describe('Device RPC tool helpers', () => {
         size: 123,
         type: 'file',
       },
-    }, { toolName: 'send_file' });
+    }, { toolName: 'import_file' });
     const invalid = normalizeDeviceRpcToolResultPayload({
       ok: true,
       content: 'uploaded',
       uploadedFile: { url: '', name: 'report.xlsx', size: -1, type: 'file' },
-    }, { toolName: 'send_file' });
+    }, { toolName: 'import_file' });
 
     assert.deepEqual(valid.uploadedFile, {
       url: '/uploads/report.xlsx',

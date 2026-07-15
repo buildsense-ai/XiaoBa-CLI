@@ -154,7 +154,7 @@ export function resolveExecutionRoute(
 export async function executeRouteIfRemote(
   context: ToolExecutionContext,
   route: ExecutionRoute,
-  toolName: 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'send_file' | 'execute_shell',
+  toolName: 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'send_file' | 'import_file' | 'execute_shell',
   operation: DeviceGrantOperation,
   args: Record<string, unknown>,
 ): Promise<ToolExecutionResult | undefined> {
@@ -165,7 +165,7 @@ export async function executeRouteIfRemote(
       targetDeviceId: route.targetDeviceId,
       toolName,
       args: stripExecutionTargetArg(args),
-      timeoutMs: toolName === 'send_file' ? 300_000 : undefined,
+      timeoutMs: toolName === 'send_file' || toolName === 'import_file' ? 300_000 : undefined,
     });
     return attachRouteTargetContext(
       stripRemoteToolTargetContext(result),

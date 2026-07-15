@@ -8,6 +8,7 @@ export const DEFAULT_TOOL_NAMES = [
   'execute_shell',
   'send_text',
   'send_file',
+  'import_file',
   'spawn_subagent',
   'check_subagent',
   'wait_subagents',

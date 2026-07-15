@@ -101,7 +101,7 @@ export type ToolExecutionResult = (
 ) & {
   /** Route-aware context for the model-visible tool result. */
   targetContext?: string;
-  /** Uploaded attachment metadata returned by a remote send_file execution. */
+  /** Uploaded attachment metadata returned by a remote import_file execution. */
   uploadedFile?: UploadedFileResult;
 };
 

@@ -70,7 +70,7 @@ Target-aware tools:
 - `read_file`
 - `write_file`
 - `edit_file`
-- `send_file`
+- `import_file`
 - `execute_shell`
 
 Legacy intended route captured during this debug pass:
@@ -122,7 +122,7 @@ Implemented in this branch:
 - Remote returned `[tool_target]...[/tool_target]` blocks are stripped before the caller adds its authoritative marker.
 - `ToolManager` uses `output.targetContext` before falling back to context-based target inference.
 - `execute_shell` resolves and forwards remote routes before running local shell safety checks.
-- `send_file` resolves remote targets before local path checks. The target runtime uploads the original file and returns attachment metadata; the caller materializes the upload in its managed workspace and returns the new path.
+- `import_file` resolves its required remote target before any local path checks. The target runtime uploads the original file and returns attachment metadata; the caller materializes the upload in its managed workspace and returns the new path. `send_file` remains a chat-only local outbound tool.
 
 Verified:
 
@@ -133,7 +133,7 @@ Still open:
 
 - CatsCompany still does not carry `platform/os`, so it can still select a Linux device for `speaker_default`.
 - If the model omits `target` for “我的桌面”, current default remains `agent_self`; this is prompt/model behavior unless we add automatic target inference outside the model.
-- Old `tool-gateway.ts` still exists for local `send_file` checks and risk classification helpers. Remote `send_file` now uses `execution-router.ts`, but the old gateway is not fully deleted.
+- Old `tool-gateway.ts` still exists for local `send_file` checks and risk classification helpers. Remote `import_file` uses `execution-router.ts`, but the old gateway is not fully deleted.
 
 ## CatsCompany Device Context Diagnostics
 

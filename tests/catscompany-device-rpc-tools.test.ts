@@ -274,22 +274,22 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(captured.result.device_id, 'install-device');
   });
 
-  test('uploads the original file bytes for a thin send_file request', async () => {
+  test('uploads the original file bytes for a thin import_file request', async () => {
     const captured: { uploaded?: { path: string; type: string; bytes: Buffer } } = {};
     const bot = botWithDevice(captured);
     const tmpRoot = path.join(process.cwd(), 'tmp');
     fs.mkdirSync(tmpRoot, { recursive: true });
-    const dir = fs.mkdtempSync(path.join(tmpRoot, 'thin-rpc-send-file-'));
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'thin-rpc-import-file-'));
     const filePath = path.join(dir, 'original.bin');
     const original = Buffer.from([0, 255, 1, 2, 3, 128]);
     fs.writeFileSync(filePath, original);
     const request: CatsThinToolRpcMessage = {
       type: 'request',
-      request_id: 'thin-send-file-1',
+      request_id: 'thin-import-file-1',
       target_owner_user_id: 'usr7',
       target_device_id: 'install-device',
       device_id: 'install-device',
-      tool_name: 'send_file',
+      tool_name: 'import_file',
       payload: { args: { file_path: filePath, file_name: 'download.bin' } },
     };
 
@@ -307,19 +307,19 @@ describe('CatsCompany Device RPC file tools', () => {
     });
   });
 
-  test('accepts send_file through authorized Device RPC and returns upload metadata', async () => {
+  test('accepts import_file through authorized Device RPC and returns upload metadata', async () => {
     const captured: { result?: any; uploaded?: { path: string; type: string; bytes: Buffer } } = {};
     const bot = botWithDevice(captured);
     const tmpRoot = path.join(process.cwd(), 'tmp');
     fs.mkdirSync(tmpRoot, { recursive: true });
-    const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-send-file-'));
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-import-file-'));
     const filePath = path.join(dir, 'report.txt');
     fs.writeFileSync(filePath, 'exact file content');
 
     await bot.handleDeviceRpcRequest(request({
-      request_id: 'rpc-send-file-1',
+      request_id: 'rpc-import-file-1',
       operation: 'send_file',
-      tool_name: 'send_file',
+      tool_name: 'import_file',
       payload: { args: { file_path: filePath, file_name: 'report.txt' } },
       expires_at: Date.now() + 5 * 60_000,
     }));
