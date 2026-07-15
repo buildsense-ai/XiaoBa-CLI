@@ -88,7 +88,23 @@ export interface DistillationHeartbeatConfig {
   /** Path to the durable Evidence Capsule store (issue #78). */
   evidenceCapsulePath: string;
   externalSessionLogSourcesEnabled: boolean;
-  /** Optional selected provider for the continuous external xurl lane. */
+  /**
+   * Enabled External Provider Set: a normalized, deduplicated, order-independent
+   * set of opaque provider IDs eligible for continuous external admission.
+   * See CONTEXT.md → "Enabled External Provider Set". Issue #91.
+   */
+  externalSessionLogEnabledProviders: string[];
+  /**
+   * Bounded read concurrency for external providers (1-8, default 3).
+   * See ADR-0042. Issue #91 configures the limit; bounded scheduling
+   * is delivered separately in #92.
+   */
+  externalSessionLogMaxConcurrency: number;
+  /**
+   * Legacy selected provider for the continuous external xurl lane.
+   * Accepted as a one-item enabled-provider fallback only when
+   * {@link externalSessionLogEnabledProviders} is absent. Deprecated.
+   */
   externalSessionLogSelectedProvider?: string;
   /** Optional source id for the continuous external xurl lane. */
   externalSessionLogSelectedSourceId?: string;
@@ -138,6 +154,25 @@ function readNumberInRange(
   const parsed = Number(env[key] || defaultValue);
   if (!Number.isFinite(parsed) || parsed < min || parsed > max) return defaultValue;
   return parsed;
+}
+
+/**
+ * Parse a comma-separated enabled-provider list into a normalized,
+ * deduplicated, order-independent set of opaque provider IDs.
+ * Returns an empty array when the env value is absent or empty.
+ */
+function parseEnabledProviders(env: NodeJS.ProcessEnv, key: string): string[] {
+  const raw = env[key];
+  if (!raw || !raw.trim()) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const part of raw.split(',')) {
+    const normalized = part.trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
 }
 
 function readIntervalHours(env: NodeJS.ProcessEnv): number {
@@ -380,6 +415,18 @@ export function getDistillationHeartbeatConfig(
     'XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED',
     false,
   );
+  // Enabled External Provider Set (issue #91): normalized, deduplicated, order-independent.
+  const enabledProvidersFromEnv = parseEnabledProviders(
+    runtimeEnv,
+    'XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS',
+  );
+  const externalSessionLogMaxConcurrency = readNumberInRange(
+    runtimeEnv,
+    'XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY',
+    3,
+    1,
+    8,
+  );
   const externalSessionLogSelectedProvider = readEnv(
     runtimeEnv,
     'XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER',
@@ -392,6 +439,14 @@ export function getDistillationHeartbeatConfig(
     runtimeEnv,
     'XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND',
   );
+  // Legacy fallback: when the new enabled-provider set is absent, accept the
+  // deprecated selected-provider as a one-item list so existing configs keep working.
+  const externalSessionLogEnabledProviders =
+    enabledProvidersFromEnv.length > 0
+      ? enabledProvidersFromEnv
+      : externalSessionLogSelectedProvider
+        ? [externalSessionLogSelectedProvider.trim().toLowerCase()]
+        : [];
 
   return {
     enabled,
@@ -431,6 +486,8 @@ export function getDistillationHeartbeatConfig(
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
     evidenceCapsulePath,
     externalSessionLogSourcesEnabled,
+    externalSessionLogEnabledProviders,
+    externalSessionLogMaxConcurrency,
     ...(externalSessionLogSelectedProvider ? { externalSessionLogSelectedProvider } : {}),
     ...(externalSessionLogSelectedSourceId ? { externalSessionLogSelectedSourceId } : {}),
     ...(externalSessionLogXurlCommand ? { externalSessionLogXurlCommand } : {}),

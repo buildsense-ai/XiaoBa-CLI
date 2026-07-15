@@ -50,6 +50,11 @@ import { createReviewBudget, type ReviewBudget } from './review-budget';
 import { XurlExternalSourceReader } from './xurl-session-log-source';
 import { acquireExternalSourceProviderLock } from './external-source-provider-lock';
 import {
+  ExternalProviderOverrideStore,
+  resolveExternalProviderOverridePath,
+  type ProviderStatus,
+} from './external-provider-controls';
+import {
   InternalSessionLogSourceAdapter,
   ExternalSessionLogSourceAdapter,
   SessionLogSourceAdapter,
@@ -569,7 +574,17 @@ export class RuntimeLearning {
   private readonly legacyPipeline: DistillationPipeline | undefined;
   private readonly clock: () => Date;
   private readonly config: DistillationHeartbeatConfig;
-  private readonly sessionLogSources: readonly SessionLogSourceAdapter[];
+  /**
+   * Session log source adapters. The internal adapter is always first.
+   * External adapters are built from the effective enabled provider set
+   * (issue #91), resolved from environment defaults + durable overrides.
+   */
+  private sessionLogSources: readonly SessionLogSourceAdapter[];
+  /**
+   * Durable per-provider override store (issue #91). Owns the online
+   * enable/disable/reset/rebaseline operator surface.
+   */
+  private readonly providerOverrideStore: ExternalProviderOverrideStore;
   private readonly discoveryQuotas: DiscoveryWakeQuotas;
   /** Per-source work budgets; internal logs are never exempt from quotas. */
   private readonly externalSourceBudget: SourceWorkBudget;
@@ -623,6 +638,10 @@ export class RuntimeLearning {
     this.legacyPipeline = options.legacyPipeline;
     this.clock = options.clock ?? (() => new Date());
     this.config = getDistillationHeartbeatConfig(this.workingDirectory);
+    this.providerOverrideStore = new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(this.config),
+      now: this.clock,
+    });
     this.sessionLogSources = options.sessionLogSources ?? [
       new InternalSessionLogSourceAdapter(this.config),
       ...this.buildConfiguredExternalSources(),
@@ -840,6 +859,78 @@ export class RuntimeLearning {
     return true;
   }
 
+  // -----------------------------------------------------------------------
+  // Multi-provider operator surface (issue #91)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Get the durable provider override store for testing/CLI access.
+   */
+  getProviderOverrideStore(): ExternalProviderOverrideStore {
+    return this.providerOverrideStore;
+  }
+
+  /**
+   * Enable a provider through the durable override store and lazily create
+   * its source lane if it was previously unseen. Creates a durable override
+   * that takes precedence over the environment default and survives restart.
+   */
+  enableExternalProvider(
+    provider: string,
+    scope?: { scope: 'global' | 'path'; scopePath?: string },
+  ): void {
+    this.providerOverrideStore.enableProvider(provider, scope);
+    this.reconcileProviderLanes();
+  }
+
+  /**
+   * Disable a provider through the durable override store. Pauses new
+   * admission without deleting cursor, evidence, quarantine, or audit state.
+   */
+  disableExternalProvider(provider: string): void {
+    this.providerOverrideStore.disableProvider(provider);
+    this.reconcileProviderLanes();
+  }
+
+  /**
+   * Reset a provider: remove the durable override and return to the
+   * environment startup default.
+   */
+  resetExternalProvider(provider: string): void {
+    this.providerOverrideStore.resetProvider(provider);
+    this.reconcileProviderLanes();
+  }
+
+  /**
+   * Explicit rebaseline: record an operator audit entry and mark the
+   * rebaseline request. The actual watermark advance happens at the next
+   * Runtime scheduling boundary.
+   */
+  rebaselineExternalProvider(provider: string, skipToNow: boolean): void {
+    this.providerOverrideStore.rebaselineProvider(provider, skipToNow);
+  }
+
+  /**
+   * Get observable provider statuses for all known providers (environment
+   * defaults plus durable overrides). Used by CLI and Dashboard.
+   */
+  getExternalProviderStatuses(): readonly ProviderStatus[] {
+    return this.providerOverrideStore.getAllProviderStatuses(this.config);
+  }
+
+  /**
+   * Rebuild the session log source list from the effective enabled provider
+   * set. This handles lazy lane creation when a previously unseen provider
+   * is enabled online, and removal of disabled providers from the active set.
+   */
+  private reconcileProviderLanes(): void {
+    const internal = this.sessionLogSources.filter(
+      adapter => adapter.identity.category === 'internal',
+    );
+    const external = this.buildConfiguredExternalSources();
+    this.sessionLogSources = [...internal, ...external];
+  }
+
   private findExternalSourceAdapter(
     provider: string,
     sourceId: string,
@@ -913,25 +1004,44 @@ export class RuntimeLearning {
     });
   }
 
+  /**
+   * Build external source adapters from the effective enabled provider set
+   * (issue #91). Uses the durable override store to resolve which providers
+   * are enabled, then creates one adapter per provider.
+   *
+   * Until bounded concurrent scheduling is delivered (#92), this slice may
+   * process providers serially; the adapters are still constructed independently.
+   */
   private buildConfiguredExternalSources(): readonly SessionLogSourceAdapter[] {
     if (!this.config.externalSessionLogSourcesEnabled) return [];
-    const provider = this.config.externalSessionLogSelectedProvider?.trim();
-    if (!provider) return [];
-    const sourceId = this.config.externalSessionLogSelectedSourceId?.trim() || `external-${provider}`;
-    const reader = this.config.externalSessionLogXurlCommand
-      ? new XurlExternalSourceReader({
-        command: this.config.externalSessionLogXurlCommand,
-        provider,
+    const enabledProviders = this.providerOverrideStore.resolveEnabledProviders(this.config);
+    if (enabledProviders.length === 0) return [];
+    const adapters: ExternalSessionLogSourceAdapter[] = [];
+    const legacySelectedProvider = this.config.externalSessionLogSelectedProvider?.trim().toLowerCase();
+    const legacySelectedSourceId = this.config.externalSessionLogSelectedSourceId?.trim();
+    for (const provider of enabledProviders) {
+      const sourceId = enabledProviders.length === 1
+        && legacySelectedProvider
+        && legacySelectedProvider === provider
+        && legacySelectedSourceId
+        ? legacySelectedSourceId
+        : `external-${provider}`;
+      const reader = this.config.externalSessionLogXurlCommand
+        ? new XurlExternalSourceReader({
+          command: this.config.externalSessionLogXurlCommand,
+          provider,
+          sourceId,
+        })
+        : undefined;
+      adapters.push(new ExternalSessionLogSourceAdapter({
         sourceId,
-      })
-      : undefined;
-    return [new ExternalSessionLogSourceAdapter({
-      sourceId,
-      label: `${provider} Session Logs`,
-      provider,
-      reader,
-      enabled: true,
-    })];
+        label: `${provider} Session Logs`,
+        provider,
+        reader,
+        enabled: true,
+      }));
+    }
+    return adapters;
   }
 
   private externalSourceLockRoot(): string {
@@ -2759,7 +2869,7 @@ export class RuntimeLearning {
     return {
       provider: identity.provider,
       reader: identity.reader,
-      selectedProvider: this.config.externalSessionLogSelectedProvider?.trim() || undefined,
+      selectedProvider: identity.provider,
       cursorProgress,
       lastSuccessfulReadAt: failureState?.lastSuccessfulReadAt ?? resourceLastSuccessfulReadAt,
       nextRetryAt: failureState?.nextRetryAt ?? undefined,

@@ -85,6 +85,59 @@ function main() {
     .option('--working-directory <path>', 'Resolve runtime state from this working directory')
     .action(runtimeCommand);
 
+  const externalSource = program
+    .command('external-source')
+    .description('Manage durable external session log provider controls (issue #91)');
+
+  externalSource
+    .command('status')
+    .description('Show external source provider status')
+    .option('--json', 'Output as JSON')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'status', json: options.json, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('enable <provider>')
+    .description('Enable an external session log provider')
+    .option('--scope <scope>', 'Scope: global or path', 'global')
+    .option('--scope-path <path>', 'Project path when scope is path')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'enable', provider, scope: options.scope, scopePath: options.scopePath, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('disable <provider>')
+    .description('Disable an external session log provider (preserves state)')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'disable', provider, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('reset <provider>')
+    .description('Reset a provider to its environment default')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'reset', provider, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('rebaseline <provider>')
+    .description('Explicit rebaseline: skip unread events to now')
+    .option('--skip-to-now', 'Skip to current stable timeline without admission')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'rebaseline', provider, skipToNow: options.skipToNow, workingDirectory: options.workingDirectory });
+    });
+
   registerSkillCommand(program);
 
   program.action(() => {

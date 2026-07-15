@@ -10,6 +10,10 @@ import { readDashboardEnvFile } from './settings';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { getWeixinChannelStatus } from './weixin-channel-binding';
 import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
+import {
+  ExternalProviderOverrideStore,
+  resolveExternalProviderOverridePath,
+} from '../utils/external-provider-controls';
 
 export type DashboardReadinessStatus = 'ready' | 'warning' | 'blocked';
 export type DashboardReadinessCheckStatus = 'pass' | 'warning' | 'fail';
@@ -107,6 +111,19 @@ export interface DashboardRuntimeLearningStatus {
     requiresOperatorAction?: boolean;
     nextAction?: string;
     drainState?: string;
+  }>;
+  /**
+   * Multi-provider override statuses (issue #91). Read-only diagnostics for
+   * the operator control surface.
+   */
+  providerStatuses?: Array<{
+    provider: string;
+    enabled: boolean;
+    source: string;
+    scope: string;
+    scopePath?: string;
+    admissionGate: string;
+    rebaselineRequestedAt?: string;
   }>;
 }
 
@@ -248,6 +265,25 @@ function readRuntimeLearningStatus(
         }));
     }
   }
+
+  // Multi-provider override statuses (issue #91) — read-only diagnostics.
+  try {
+    const overrideStore = new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(config),
+    });
+    base.providerStatuses = overrideStore.getAllProviderStatuses(config).map(status => ({
+      provider: status.provider,
+      enabled: status.enabled,
+      source: status.source,
+      scope: status.scope,
+      ...(status.scopePath ? { scopePath: status.scopePath } : {}),
+      admissionGate: status.admissionGate,
+      ...(status.rebaselineRequestedAt ? { rebaselineRequestedAt: status.rebaselineRequestedAt } : {}),
+    }));
+  } catch {
+    // Override store is diagnostic; fail silently.
+  }
+
   return base;
 }
 

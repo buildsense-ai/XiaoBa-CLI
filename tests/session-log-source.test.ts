@@ -158,6 +158,8 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
     XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
     XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE: process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE,
     XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED,
+    XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS: process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS,
+    XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY: process.env.XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY,
     XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER,
     XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID,
     XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND: process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND,
@@ -173,6 +175,8 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
   process.env.XIAOBA_RUNTIME_ROOT = root;
   process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE = reassessmentManifestPath;
   delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED;
+  delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS;
+  delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY;
   delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER;
   delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID;
   delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND;
@@ -424,6 +428,56 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
       assert.equal(config.externalSessionLogSelectedProvider, 'codex');
       assert.equal(config.externalSessionLogSelectedSourceId, 'external-codex');
       assert.equal(config.externalSessionLogXurlCommand, '/tmp/fake-xurl');
+      assert.deepEqual(config.externalSessionLogEnabledProviders, ['codex']);
+    });
+
+    test('legacy selected source id is preserved on the single-provider fallback path', () => {
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER = 'codex';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID = 'custom-codex-source';
+      const runtimeLearning = createRuntimeLearning(env);
+      const external = runtimeLearning.getSessionLogSources()
+        .find(source => source.identity.category === 'external');
+      assert.ok(external);
+      assert.equal(external!.identity.provider, 'codex');
+      assert.equal(external!.identity.sourceId, 'custom-codex-source');
+    });
+
+    test('enabled provider set config is exposed through heartbeat config', () => {
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS = 'codex, claude, pi, codex';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY = '5';
+      const config = getDistillationHeartbeatConfig(env.root);
+      assert.deepEqual(config.externalSessionLogEnabledProviders, ['codex', 'claude', 'pi']);
+      assert.equal(config.externalSessionLogMaxConcurrency, 5);
+    });
+
+    test('enabled provider set constructs one external adapter per provider', () => {
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS = 'codex,claude,pi';
+      const runtimeLearning = createRuntimeLearning(env);
+      const external = runtimeLearning.getSessionLogSources()
+        .filter(source => source.identity.category === 'external');
+      assert.deepEqual(external.map(source => source.identity.provider).sort(), ['claude', 'codex', 'pi']);
+    });
+
+    test('runtime online provider enable/reset reconciles external source lanes', () => {
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS = 'codex';
+      const runtimeLearning = createRuntimeLearning(env);
+      let external = runtimeLearning.getSessionLogSources()
+        .filter(source => source.identity.category === 'external');
+      assert.deepEqual(external.map(source => source.identity.provider), ['codex']);
+
+      runtimeLearning.enableExternalProvider('claude');
+      external = runtimeLearning.getSessionLogSources()
+        .filter(source => source.identity.category === 'external');
+      assert.deepEqual(external.map(source => source.identity.provider).sort(), ['claude', 'codex']);
+
+      runtimeLearning.resetExternalProvider('claude');
+      external = runtimeLearning.getSessionLogSources()
+        .filter(source => source.identity.category === 'external');
+      assert.deepEqual(external.map(source => source.identity.provider), ['codex']);
     });
 
     test('default wake with external adapter performs no external reads', async () => {
