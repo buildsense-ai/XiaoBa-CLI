@@ -27,11 +27,13 @@ import { SkillEvolutionRuntime } from '../src/utils/skill-evolution';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 import {
+  buildExternalEventDedupKey,
   loadExternalCursorState,
   saveExternalCursorState,
 } from '../src/utils/session-log-source';
 import { acquireExternalSourceProviderLock } from '../src/utils/external-source-provider-lock';
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
+import { XURL_TEST_HELPERS } from '../src/utils/xurl-session-log-source';
 import {
   CatalogPageSpec,
   FakeXurlScenario,
@@ -608,6 +610,100 @@ test('quarantine recovery: skip writes a durable tombstone before allowing the c
   }
 });
 
+test('quarantine recovery: explicit retry reprocesses the same event before advancing its cursor', async () => {
+  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  try {
+    const storePath = cursorStorePath(env.root, 'codex', 'external-codex');
+    writeScenario(env.scenarioPath, baselineScenario('codex', 'conversation-main'));
+    const fixture = env.createRuntime();
+    await fixture.runtime.wake('startup');
+
+    const userText = 'Deliver the quarantined task.';
+    const assistantText = 'Quarantined task delivered.';
+    const eventIdentity = {
+      eventId: 'agents://codex/conversation-main#1-2',
+      position: 2,
+      conversationId: 'conversation-main',
+      branchId: 'branch-main',
+      revision: 'rev-retry-2',
+      contentHash: XURL_TEST_HELPERS.computeContentHash([
+        { role: 'User', content: userText },
+        { role: 'Assistant', content: assistantText },
+      ]),
+    };
+    const stateBeforeQuarantine = loadExternalCursorState(storePath);
+    const sourceIdentity = stateBeforeQuarantine.sourceIdentities['external-codex']!;
+    const quarantineId = buildExternalEventDedupKey(sourceIdentity, eventIdentity);
+    assert.equal(stateBeforeQuarantine.cursors['conversation-main']?.cursor.position, 0);
+
+    saveExternalCursorState(storePath, {
+      ...stateBeforeQuarantine,
+      quarantinedEvents: {
+        ...stateBeforeQuarantine.quarantinedEvents,
+        [quarantineId]: {
+          quarantineId,
+          resourceRef: 'conversation-main',
+          sourceIdentity,
+          identity: eventIdentity,
+          failureClass: 'quarantine',
+          message: 'seeded stable event quarantine for explicit retry',
+          detectedAt: new Date().toISOString(),
+          cursorPosition: 0,
+        },
+      },
+      updatedAt: new Date().toISOString(),
+    });
+    writeScenario(env.scenarioPath, stableScenario(
+      'codex',
+      'conversation-main',
+      'branch-main',
+      userText,
+      assistantText,
+      { fingerprint: FP('retry-2'), revision: eventIdentity.revision },
+    ));
+
+    const restarted = env.createRuntime();
+    assert.equal(
+      restarted.runtime.listExternalSourceQuarantines('codex', 'external-codex')[0]?.quarantineId,
+      quarantineId,
+      'the stable event quarantine survives a runtime restart',
+    );
+
+    const blockedWake = await restarted.runtime.wake('scheduled');
+    const blockedReport = blockedWake.discovery.sources.find(s => s.sourceId === 'external-codex');
+    assert.ok(blockedReport);
+    assert.equal(blockedReport!.unitsProcessed, 0, 'the quarantined event is not admitted');
+    const blockedState = loadExternalCursorState(storePath);
+    assert.equal(blockedState.cursors['conversation-main']?.cursor.position, 0, 'cursor cannot cross quarantine');
+    assert.ok(blockedState.quarantinedEvents[quarantineId], 'quarantine remains durable after an ordinary wake');
+    assert.equal(blockedState.processedEventIds[quarantineId], undefined);
+    assert.equal(Object.keys(blockedState.tombstones).length, 0);
+
+    assert.equal(
+      restarted.runtime.retryExternalSourceQuarantine('codex', 'external-codex', quarantineId),
+      true,
+    );
+    const retryReadyState = loadExternalCursorState(storePath);
+    assert.equal(retryReadyState.quarantinedEvents[quarantineId], undefined);
+    assert.equal(retryReadyState.cursors['conversation-main']?.cursor.position, 0, 'retry alone does not advance the cursor');
+    assert.equal(Object.keys(retryReadyState.tombstones).length, 0, 'retry does not convert the event into a tombstone');
+
+    const retryWake = await restarted.runtime.wake('scheduled');
+    const retryReport = retryWake.discovery.sources.find(s => s.sourceId === 'external-codex');
+    assert.ok(retryReport);
+    assert.equal(retryReport!.unitsProcessed, 1, 'the same quarantined event is reprocessed through admission');
+
+    const admittedState = loadExternalCursorState(storePath);
+    assert.equal(admittedState.processedEventIds[quarantineId], eventIdentity.contentHash);
+    assert.equal(admittedState.cursors['conversation-main']?.cursor.position, 2, 'cursor advances after successful admission');
+    assert.equal(admittedState.cursors['conversation-main']?.cursor.processedCount, 1);
+    assert.equal(Object.keys(admittedState.tombstones).length, 0, 'successful retry leaves no tombstone');
+    assert.equal(admittedState.quarantinedEvents[quarantineId], undefined);
+  } finally {
+    env.restore();
+  }
+});
+
 test('resource closure preserves cursor state and ordinary rediscovery cannot silently reopen it', async () => {
   const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
   try {
@@ -620,11 +716,32 @@ test('resource closure preserves cursor state and ordinary rediscovery cannot si
     assert.ok(stateBefore.resources['conversation-main']);
     assert.notEqual(stateBefore.resources['conversation-main']?.lifecycleStatus, 'closed');
 
+    const durableEvidencePaths = [
+      path.join(env.root, 'data', 'evidence-capsules.json'),
+      path.join(env.root, 'data', 'learning-episodes.json'),
+      path.join(env.root, 'data', 'transition-audit.jsonl'),
+    ] as const;
+    fixture.runtime.getEvidenceCapsuleStore().save({ schemaVersion: 1, capsules: {} });
+    fixture.episodeStore.save({ schemaVersion: 3, episodes: {} });
+    fs.writeFileSync(
+      durableEvidencePaths[2],
+      `${JSON.stringify({ transitionId: 'unrelated-audit', status: 'preserved' })}\n`,
+      'utf8',
+    );
+    const durableEvidenceBeforeClose = durableEvidencePaths.map(filePath => fs.readFileSync(filePath));
+
     assert.equal(fixture.runtime.deleteExternalSourceResource('codex', 'external-codex', 'conversation-main'), true);
     const stateAfter = loadExternalCursorState(storePath);
     assert.equal(stateAfter.resources['conversation-main']?.lifecycleStatus, 'closed');
     assert.ok(stateAfter.resources['conversation-main']?.closedAt);
     assert.ok(stateAfter.cursors['conversation-main']);
+    durableEvidencePaths.forEach((filePath, index) => {
+      assert.deepEqual(
+        fs.readFileSync(filePath),
+        durableEvidenceBeforeClose[index],
+        `${path.basename(filePath)} remains byte-identical across resource close`,
+      );
+    });
 
     await fixture.runtime.wake('scheduled');
     const rediscoveredState = loadExternalCursorState(storePath);
