@@ -201,6 +201,8 @@ export interface RuntimeLearningHeartbeatRecord {
   lastAdvancedFiles: number;
   /** Reasons merged into the latest wake request. */
   lastPendingWakeReasons: RuntimeLearningReason[];
+  /** Reasons durably queued by the scheduler but not yet consumed by a wake. */
+  pendingWakeReasons: RuntimeLearningReason[];
   /** Review timeout count from the latest review phase. */
   lastReviewTimeoutCount: number;
   /** Review failure count from the latest review phase. */
@@ -512,6 +514,7 @@ function emptyHeartbeatRecord(): RuntimeLearningHeartbeatRecord {
     lastUnitsProcessed: 0,
     lastAdvancedFiles: 0,
     lastPendingWakeReasons: [],
+    pendingWakeReasons: [],
     lastReviewTimeoutCount: 0,
     lastReviewFailureCount: 0,
     cumulativeReviewTimeoutCount: 0,
@@ -1181,6 +1184,18 @@ export class RuntimeLearning {
       options.reviewFailureCount ?? 0,
       false,
     );
+  }
+
+  /** Persist scheduler demand before the active wake can consume it. */
+  public markHeartbeatPending(reasons: readonly RuntimeLearningReason[]): void {
+    const record = this.loadHeartbeatRecord();
+    record.pendingWakeReasons = Array.from(new Set(reasons)).sort();
+    this.writeHeartbeatRecord(record);
+  }
+
+  /** Restart-safe scheduler input; reading it never starts or mutates a wake. */
+  public getPendingHeartbeatReasons(): RuntimeLearningReason[] {
+    return [...this.loadHeartbeatRecord().pendingWakeReasons];
   }
 
   public markHeartbeatInProgress(
@@ -2696,15 +2711,17 @@ export class RuntimeLearning {
 
   private writeHeartbeatRecord(record: RuntimeLearningHeartbeatRecord): void {
     const recordPath = this.config.heartbeatRecordPath;
+    const tmpPath = `${recordPath}.${process.pid}.${Date.now()}.tmp`;
     try {
-      fs.mkdirSync(path.dirname(recordPath), { recursive: true });
-      const tmpPath = `${recordPath}.${process.pid}.${Date.now()}.tmp`;
+      fs.mkdirSync(path.dirname(recordPath), { recursive: true, mode: 0o700 });
       fs.writeFileSync(tmpPath, JSON.stringify(record, null, 2), {
         encoding: 'utf-8',
         mode: 0o600,
       });
       fs.renameSync(tmpPath, recordPath);
+      fs.chmodSync(recordPath, 0o600);
     } catch (error: any) {
+      try { fs.rmSync(tmpPath, { force: true }); } catch { /* best effort */ }
       Logger.warning(`[RuntimeLearning] failed to record heartbeat: ${error.message}`);
     }
   }
@@ -2780,6 +2797,9 @@ function normalizeHeartbeatRecord(
     lastPendingWakeReasons: Array.isArray(record.lastPendingWakeReasons)
       ? Array.from(new Set(record.lastPendingWakeReasons.filter(value => typeof value === 'string'))) as RuntimeLearningReason[]
       : defaults.lastPendingWakeReasons,
+    pendingWakeReasons: Array.isArray(record.pendingWakeReasons)
+      ? Array.from(new Set(record.pendingWakeReasons.filter(value => typeof value === 'string'))) as RuntimeLearningReason[]
+      : defaults.pendingWakeReasons,
     lastReviewTimeoutCount: typeof record.lastReviewTimeoutCount === 'number' && Number.isFinite(record.lastReviewTimeoutCount)
       ? Math.max(0, Math.floor(record.lastReviewTimeoutCount))
       : defaults.lastReviewTimeoutCount,

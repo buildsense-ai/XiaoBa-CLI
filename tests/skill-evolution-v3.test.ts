@@ -1081,6 +1081,29 @@ describe('V3 verified semantic Current Skills', () => {
       // so revalidation keeps completion/settlement consistent with sourceEvidence roles.
       assert.equal(entry.bundle.completionEvidence.length, 1);
       assert.equal(entry.bundle.settlementEvidence.length, 1);
+      const transcriptEntries = entry.failureTranscripts.flatMap(transcriptPath => (
+        fs.readFileSync(transcriptPath, 'utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map(line => JSON.parse(line) as Record<string, unknown>)
+      ));
+      assert.ok(transcriptEntries.some(event => (
+        event.event_type === 'start'
+        && event.review_deadline_ms === 5
+        && typeof event.review_deadline_at === 'string'
+      )));
+      assert.ok(transcriptEntries.some(event => (
+        event.event_type === 'run_result'
+        && event.outcome === 'failed'
+        && event.terminal_abort_reason === 'review-timeout'
+        && event.failure_outcome === 'branch_timeout'
+      )));
+      assert.ok(transcriptEntries.some(event => (
+        event.event_type === 'failed'
+        && event.terminal_abort_reason === 'review-timeout'
+        && event.failure_outcome === 'branch_timeout'
+      )));
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();

@@ -327,6 +327,9 @@ export class DistillationHeartbeatScheduler {
 
     this.started = true;
     this.stopped = false;
+    for (const reason of this.runtimeLearning?.getPendingHeartbeatReasons?.() ?? []) {
+      this.pendingWakeReasons.add(reason);
+    }
     Logger.info('[DistillationHeartbeat] scheduler started');
 
     this.scheduledWake = (async () => {
@@ -390,7 +393,6 @@ export class DistillationHeartbeatScheduler {
       }
       if (activeWakeCompleted) {
         const drainedReason = Array.from(this.pendingWakeReasons).sort();
-        this.pendingWakeReasons.clear();
         const markHeartbeatStatus = this.runtimeLearning?.markHeartbeatStatus;
         if (typeof markHeartbeatStatus === 'function') {
           markHeartbeatStatus.call(this.runtimeLearning, 'drained', {
@@ -494,10 +496,12 @@ export class DistillationHeartbeatScheduler {
 
       if (this.activeWake) {
         this.pendingWakeReasons.add(reason);
+        this.persistPendingWakeReasons();
         return this.activeWake;
       }
 
       this.pendingWakeReasons.add(reason);
+      this.persistPendingWakeReasons();
       const wakeCycle = async (): Promise<HeartbeatRunResult> => {
         this.running = true;
         try {
@@ -506,6 +510,7 @@ export class DistillationHeartbeatScheduler {
           while (!this.stopped && this.pendingWakeReasons.size > 0) {
             const nextReasons = [...this.pendingWakeReasons];
             this.pendingWakeReasons.clear();
+            this.persistPendingWakeReasons();
             try {
               runtimeLearning.markHeartbeatInProgress?.(
                 nextReasons,
@@ -550,6 +555,12 @@ export class DistillationHeartbeatScheduler {
     } finally {
       this.running = false;
     }
+  }
+
+  private persistPendingWakeReasons(): void {
+    this.runtimeLearning?.markHeartbeatPending?.(
+      Array.from(this.pendingWakeReasons).sort(),
+    );
   }
 
   /**

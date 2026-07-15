@@ -71,6 +71,7 @@ export interface DashboardRuntimeLearningStatus {
     heartbeatAgeMs: number;
   };
   inProgress?: { startedAt: string; reasons: string[] };
+  pendingWakeReasons: string[];
   nextWakeAt?: string;
   nextWakeReason?: string;
   backlog?: {
@@ -151,6 +152,7 @@ function readRuntimeLearningStatus(
     liveness: config.enabled && config.skillEvolutionEnabled ? 'owner_missing' : 'disabled',
     cumulativeReviewTimeoutCount: 0,
     cumulativeReviewFailureCount: 0,
+    pendingWakeReasons: [],
     sources: [],
   };
   if (!base.enabled) return base;
@@ -193,6 +195,10 @@ function readRuntimeLearningStatus(
     }
   }
   if (heartbeat) {
+    if (Array.isArray(heartbeat.pendingWakeReasons)) {
+      base.pendingWakeReasons = heartbeat.pendingWakeReasons
+        .filter((value): value is string => typeof value === 'string');
+    }
     if (typeof heartbeat.nextWakeAt === 'string') base.nextWakeAt = heartbeat.nextWakeAt;
     if (typeof heartbeat.nextWakeReason === 'string') base.nextWakeReason = heartbeat.nextWakeReason;
     if (isBacklogRecord(heartbeat.backlog)) base.backlog = heartbeat.backlog;

@@ -955,6 +955,7 @@ describe('DistillationHeartbeatScheduler', () => {
       const saved = { ...process.env };
       const firstWakeDone = createDeferred<void>();
       const calls: Array<{ reasons: HeartbeatReason[]; coalesced: boolean; }> = [];
+      const durablePending: HeartbeatReason[][] = [];
       let active = 0;
       let maxActive = 0;
 
@@ -989,6 +990,10 @@ describe('DistillationHeartbeatScheduler', () => {
             }),
           }),
           getConfig: () => ({ skillEvolutionReviewAttemptDeadlineMinutes: 10 }),
+          getPendingHeartbeatReasons: () => [],
+          markHeartbeatPending: (reasons: HeartbeatReason[]) => {
+            durablePending.push([...reasons]);
+          },
         };
 
         const scheduler = new DistillationHeartbeatScheduler(root, runtime as unknown as any);
@@ -999,6 +1004,12 @@ describe('DistillationHeartbeatScheduler', () => {
         const settlementWake = scheduler.runHeartbeat('settlement-deadline');
         const curatorWake = scheduler.runHeartbeat('curator');
         const blocked = scheduler.runHeartbeat('operational-retry');
+
+        assert.deepEqual(
+          durablePending.at(-1),
+          ['curator', 'manual', 'operational-retry', 'settlement-deadline'],
+          'coalesced demand must be durable before the active wake finishes',
+        );
 
         firstWakeDone.resolve();
         const startupResult = await startup;
@@ -1019,6 +1030,114 @@ describe('DistillationHeartbeatScheduler', () => {
         assert.equal(calls[0]!.coalesced, false, 'first wake should not be flagged as coalesced');
         assert.equal(calls[1]!.coalesced, true, 'second wake should be flagged as coalesced');
         assert.equal(maxActive, 1);
+        assert.deepEqual(durablePending.at(-1), [], 'pending reasons clear only when the follow-up consumes them');
+      } finally {
+        restoreProcessEnv(saved);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    test('keeps reasons arriving during a follow-up durable for the next coalesced wake', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-runtime-coalesce-follow-up-'));
+      const saved = { ...process.env };
+      const firstWakeDone = createDeferred<void>();
+      const secondWakeDone = createDeferred<void>();
+      const secondWakeStarted = createDeferred<void>();
+      const calls: HeartbeatReason[][] = [];
+      const durablePending: HeartbeatReason[][] = [];
+
+      try {
+        process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
+        const runtime = {
+          wake: async (reason: HeartbeatReason[] | HeartbeatReason): Promise<HeartbeatRunResult> => {
+            const reasons = Array.isArray(reason) ? [...reason] : [reason];
+            calls.push(reasons.sort());
+            if (calls.length === 1) await firstWakeDone.promise;
+            if (calls.length === 2) {
+              secondWakeStarted.resolve();
+              await secondWakeDone.promise;
+            }
+            return makeHeartbeatResult(true);
+          },
+          getPlanner: () => ({
+            plan: () => ({
+              now: new Date(),
+              due: {
+                settlementDue: false,
+                operationalRetryDue: false,
+                routineCuratorDue: false,
+                expeditedCuratorDue: false,
+                semanticReassessmentDue: false,
+              },
+              nextWakeTime: null,
+              nextWakeReason: 'scheduled',
+            }),
+          }),
+          getConfig: () => ({ skillEvolutionReviewAttemptDeadlineMinutes: 10 }),
+          getPendingHeartbeatReasons: () => [],
+          markHeartbeatPending: (reasons: HeartbeatReason[]) => {
+            durablePending.push([...reasons]);
+          },
+        };
+
+        const scheduler = new DistillationHeartbeatScheduler(root, runtime as unknown as any);
+        const startup = scheduler.runHeartbeat('startup');
+        await Promise.resolve();
+        const manual = scheduler.runHeartbeat('manual');
+        firstWakeDone.resolve();
+        await secondWakeStarted.promise;
+
+        const curator = scheduler.runHeartbeat('curator');
+        assert.deepEqual(durablePending.at(-1), ['curator']);
+
+        secondWakeDone.resolve();
+        await Promise.all([startup, manual, curator]);
+
+        assert.deepEqual(calls, [['startup'], ['manual'], ['curator']]);
+        assert.deepEqual(durablePending.at(-1), []);
+      } finally {
+        restoreProcessEnv(saved);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    test('replays durable pending reasons together with startup after restart', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-runtime-pending-restart-'));
+      const saved = { ...process.env };
+      const calls: HeartbeatReason[][] = [];
+
+      try {
+        process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
+        const runtime = {
+          wake: async (reason: HeartbeatReason[] | HeartbeatReason): Promise<HeartbeatRunResult> => {
+            calls.push((Array.isArray(reason) ? [...reason] : [reason]).sort());
+            return makeHeartbeatResult(true);
+          },
+          getPlanner: () => ({
+            plan: () => ({
+              now: new Date(),
+              due: {
+                settlementDue: false,
+                operationalRetryDue: false,
+                routineCuratorDue: false,
+                expeditedCuratorDue: false,
+                semanticReassessmentDue: false,
+              },
+              nextWakeTime: null,
+              nextWakeReason: 'scheduled',
+            }),
+          }),
+          getConfig: () => ({ skillEvolutionReviewAttemptDeadlineMinutes: 10 }),
+          getPendingHeartbeatReasons: () => ['operational-retry'] as HeartbeatReason[],
+          markHeartbeatPending: () => {},
+        };
+
+        const scheduler = new DistillationHeartbeatScheduler(root, runtime as unknown as any);
+        await scheduler.start();
+        await sleep(10);
+
+        assert.deepEqual(calls, [['operational-retry', 'startup']]);
+        await scheduler.stop();
       } finally {
         restoreProcessEnv(saved);
         fs.rmSync(root, { recursive: true, force: true });

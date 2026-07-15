@@ -15,6 +15,11 @@ export interface SharedReviewTurnBudget {
   remainingTurns: number;
 }
 
+export interface BranchReviewAttemptMetadata {
+  deadlineMs: number;
+  deadlineAt: string;
+}
+
 export interface BranchSessionOptions {
   id: string;
   type: string;
@@ -26,6 +31,7 @@ export interface BranchSessionOptions {
   logEnabled?: boolean;
   transcriptContract?: BranchTranscriptContract;
   sharedReviewTurnBudget?: SharedReviewTurnBudget;
+  reviewAttempt?: BranchReviewAttemptMetadata;
 }
 
 export interface BranchRunOutcome {
@@ -61,6 +67,9 @@ export abstract class BranchSession {
   stop(reason: BranchSessionAbortReason = 'runtime-shutdown'): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.logger.write('abort_requested', {
+      terminal_abort_reason: reason,
+    });
     this.abortController.abort(reason);
   }
 
@@ -108,11 +117,42 @@ export abstract class BranchSession {
   protected abstract buildInitialMessages(): Promise<Message[]>;
   protected abstract buildTools(): Tool[];
 
+  protected logStart(payload: Record<string, unknown>): void {
+    this.logger.write('start', {
+      ...payload,
+      ...(this.options.reviewAttempt
+        ? {
+          review_deadline_ms: this.options.reviewAttempt.deadlineMs,
+          review_deadline_at: this.options.reviewAttempt.deadlineAt,
+        }
+        : {}),
+    });
+  }
+
+  protected logCompletion(): void {
+    this.logger.write('completed', {
+      outcome: 'succeeded',
+      terminal_abort_reason: null,
+      failure_outcome: null,
+    });
+  }
+
+  protected async runWithTerminalAudit<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      const result = await run();
+      this.logCompletion();
+      return result;
+    } catch (error) {
+      this.logFailure(error);
+      throw error;
+    }
+  }
+
   protected async runConversation(): Promise<BranchRunOutcome> {
     if (!this.initialized) {
       this.messages.push(...await this.buildInitialMessages());
       this.initialized = true;
-      this.logger.write('start', {
+      this.logStart({
         message_count: this.messages.length,
       });
     }
@@ -167,6 +207,9 @@ export abstract class BranchSession {
     try {
       const result = await runner.run(this.messages, callbacks);
       this.deductTurnBudget(result.turnsUsed);
+      if (!this.shouldContinue()) {
+        this.throwAbortError();
+      }
       if (result.maxTurnsReached) {
         this.logger.write('run_result', {
           response: result.response,
@@ -185,10 +228,28 @@ export abstract class BranchSession {
       });
       return { messages: this.messages, result };
     } catch (error) {
-      if (error instanceof BranchSessionAbortError) throw error;
-      if (this.isAbortError(error) || !this.shouldContinue()) {
-        this.throwAbortError();
+      if (error instanceof BranchSessionAbortError) {
+        this.logger.write('run_result', {
+          outcome: 'failed',
+          ...this.failureAuditFields(error),
+        });
+        throw error;
       }
+      if (this.isAbortError(error) || !this.shouldContinue()) {
+        const abortError = new BranchSessionAbortError(
+          this.resolveAbortReason() ?? 'runtime-shutdown',
+          'Review branch was aborted.',
+        );
+        this.logger.write('run_result', {
+          outcome: 'failed',
+          ...this.failureAuditFields(abortError),
+        });
+        throw abortError;
+      }
+      this.logger.write('run_result', {
+        outcome: 'failed',
+        ...this.failureAuditFields(error),
+      });
       throw error;
     } finally {
       this.logger.write('transcript', { messages: this.messages });
@@ -204,10 +265,29 @@ export abstract class BranchSession {
     this.logger.write('failed', {
       message: String(error?.message || error || 'unknown error'),
       name: error?.name,
+      ...this.failureAuditFields(error),
     });
     if (!this.isAbortError(error)) {
       Logger.warning(`[branch:${this.options.type}:${this.options.id}] failed: ${error?.message || error}`);
     }
+  }
+
+  private failureAuditFields(error: unknown): {
+    terminal_abort_reason: BranchSessionAbortReason | null;
+    failure_outcome: 'branch_timeout' | 'branch_failure' | 'cancelled';
+  } {
+    const terminalAbortReason = error instanceof BranchSessionAbortError
+      ? error.reason
+      : this.resolveAbortReason();
+    return {
+      terminal_abort_reason: terminalAbortReason ?? null,
+      failure_outcome: terminalAbortReason === 'review-timeout'
+        || terminalAbortReason === 'turn_budget_exhausted'
+        ? 'branch_timeout'
+        : terminalAbortReason === 'runtime-shutdown'
+          ? 'cancelled'
+          : 'branch_failure',
+    };
   }
 }
 

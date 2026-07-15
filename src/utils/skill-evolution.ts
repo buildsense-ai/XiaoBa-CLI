@@ -6,6 +6,7 @@ import {
   BranchSession,
   BranchSessionAbortError,
   BranchSessionOptions,
+  BranchReviewAttemptMetadata,
   SharedReviewTurnBudget,
 } from '../core/branch-session';
 import { Message } from '../types';
@@ -188,37 +189,39 @@ export class SkillAuthorBranchSession extends BranchSession {
   }
 
   async run(): Promise<SkillDraft> {
-    if (!this.shouldContinue()) {
-      this.throwAbortError();
-    }
-    if (this.authorOptions.fixture) {
-      this.logger.write('start', { message_count: 0, execution: 'fixture' });
-      const draft = await this.authorOptions.fixture({
-        bundle: this.authorOptions.bundle,
-        previousDraft: this.authorOptions.previousDraft,
-        verifierIssues: this.authorOptions.verifierIssues,
-        round: this.authorOptions.round,
-      });
-      this.payload = draft;
-      this.logger.write('fixture_result', { round: this.authorOptions.round, draft });
-      this.logger.write('transcript', { messages: this.messages });
-      return draft;
-    }
-
-    while (this.shouldContinue() && !this.payload) {
-      const outcome = await this.runConversation();
-      if (!this.payload) {
-        this.messages.push({
-          role: 'user',
-          content: 'This branch must finish by calling finish_skill_authoring with one draft and envelope.',
-        });
-        if (!outcome.result) break;
+    return this.runWithTerminalAudit(async () => {
+      if (!this.shouldContinue()) {
+        this.throwAbortError();
       }
-    }
-    if (!this.payload) {
-      this.throwAbortError();
-    }
-    return this.payload;
+      if (this.authorOptions.fixture) {
+        this.logStart({ message_count: 0, execution: 'fixture' });
+        const draft = await this.authorOptions.fixture({
+          bundle: this.authorOptions.bundle,
+          previousDraft: this.authorOptions.previousDraft,
+          verifierIssues: this.authorOptions.verifierIssues,
+          round: this.authorOptions.round,
+        });
+        this.payload = draft;
+        this.logger.write('fixture_result', { round: this.authorOptions.round, draft });
+        this.logger.write('transcript', { messages: this.messages });
+        return draft;
+      }
+
+      while (this.shouldContinue() && !this.payload) {
+        const outcome = await this.runConversation();
+        if (!this.payload) {
+          this.messages.push({
+            role: 'user',
+            content: 'This branch must finish by calling finish_skill_authoring with one draft and envelope.',
+          });
+          if (!outcome.result) break;
+        }
+      }
+      if (!this.payload) {
+        this.throwAbortError();
+      }
+      return this.payload;
+    });
   }
 
   protected async buildInitialMessages(): Promise<Message[]> {
@@ -271,36 +274,38 @@ export class SkillVerifierBranchSession extends BranchSession {
   }
 
   async run(): Promise<SkillVerifierResult> {
-    if (!this.shouldContinue()) {
-      this.throwAbortError();
-    }
-    if (this.verifierOptions.fixture) {
-      this.logger.write('start', { message_count: 0, execution: 'fixture' });
-      const result = await this.verifierOptions.fixture({
-        bundle: this.verifierOptions.bundle,
-        draft: this.verifierOptions.draft,
-        round: this.verifierOptions.round,
-      });
-      this.payload = normalizeVerifierResult(result);
-      this.logger.write('fixture_result', { round: this.verifierOptions.round, result: this.payload });
-      this.logger.write('transcript', { messages: this.messages });
-      return this.payload;
-    }
-
-    while (this.shouldContinue() && !this.payload) {
-      const outcome = await this.runConversation();
-      if (!this.payload) {
-        this.messages.push({
-          role: 'user',
-          content: 'This branch must finish by calling finish_skill_verification with a structured result.',
-        });
-        if (!outcome.result) break;
+    return this.runWithTerminalAudit(async () => {
+      if (!this.shouldContinue()) {
+        this.throwAbortError();
       }
-    }
-    if (!this.payload) {
-      this.throwAbortError();
-    }
-    return this.payload;
+      if (this.verifierOptions.fixture) {
+        this.logStart({ message_count: 0, execution: 'fixture' });
+        const result = await this.verifierOptions.fixture({
+          bundle: this.verifierOptions.bundle,
+          draft: this.verifierOptions.draft,
+          round: this.verifierOptions.round,
+        });
+        this.payload = normalizeVerifierResult(result);
+        this.logger.write('fixture_result', { round: this.verifierOptions.round, result: this.payload });
+        this.logger.write('transcript', { messages: this.messages });
+        return this.payload;
+      }
+
+      while (this.shouldContinue() && !this.payload) {
+        const outcome = await this.runConversation();
+        if (!this.payload) {
+          this.messages.push({
+            role: 'user',
+            content: 'This branch must finish by calling finish_skill_verification with a structured result.',
+          });
+          if (!outcome.result) break;
+        }
+      }
+      if (!this.payload) {
+        this.throwAbortError();
+      }
+      return this.payload;
+    });
   }
 
   protected async buildInitialMessages(): Promise<Message[]> {
@@ -377,6 +382,8 @@ export interface TransitionAuditEntry {
   priorRoutingName?: string | null;
   resultingRoutingName?: string | null;
   branchTranscriptPaths: string[];
+  /** SHA-256 content hashes aligned with branchTranscriptPaths. */
+  branchTranscriptHashes?: string[];
   rationale: string;
 }
 
@@ -562,6 +569,10 @@ export class SkillEvolutionRuntime {
     )];
     let cancelledByRuntimeShutdown = false;
     const attemptDeadlineMs = this.getEffectiveConfig().reviewAttemptDeadlineMs;
+    const reviewAttempt: BranchReviewAttemptMetadata = {
+      deadlineMs: attemptDeadlineMs,
+      deadlineAt: new Date(Date.now() + Math.max(1, attemptDeadlineMs)).toISOString(),
+    };
     const attemptDeadlineTimer = setTimeout(
       () => attemptController.abort('review-timeout'),
       Math.max(1, attemptDeadlineMs),
@@ -593,6 +604,7 @@ export class SkillEvolutionRuntime {
             reviewBundle,
             branchTranscriptPaths,
             attemptController.signal,
+            reviewAttempt,
           );
           if (persistQueue && result.transition === 'defer' && this.options.reviewQueuePath) {
             const queue = loadReviewQueueState(this.options.reviewQueuePath);
@@ -909,6 +921,7 @@ export class SkillEvolutionRuntime {
     frozenBundle: EvidenceBundle,
     branchTranscriptPaths: string[],
     attemptSignal?: AbortSignal,
+    reviewAttempt?: BranchReviewAttemptMetadata,
   ): Promise<SkillEvolutionResult> {
     validateEvidenceBundle(frozenBundle);
     let previousDraft: SkillDraft | undefined;
@@ -922,6 +935,7 @@ export class SkillEvolutionRuntime {
         issues,
         { remainingTurns: this.getReviewAttemptMaxTurns() },
         attemptSignal,
+        reviewAttempt,
       );
       let draft: SkillDraft;
       try {
@@ -963,6 +977,7 @@ export class SkillEvolutionRuntime {
         round,
         { remainingTurns: this.getReviewAttemptMaxTurns() },
         attemptSignal,
+        reviewAttempt,
       );
       let verification: SkillVerifierResult;
       try {
@@ -1310,6 +1325,7 @@ export class SkillEvolutionRuntime {
     verifierIssues: readonly SkillVerifierIssue[],
     sharedReviewTurnBudget: SharedReviewTurnBudget,
     attemptSignal?: AbortSignal,
+    reviewAttempt?: BranchReviewAttemptMetadata,
   ): SkillAuthorBranchSession {
     const options: SkillAuthorBranchOptions = {
       id: `skill-author-${randomUUID()}`,
@@ -1320,6 +1336,7 @@ export class SkillEvolutionRuntime {
       transcriptContract: 'required',
       signal: attemptSignal,
       sharedReviewTurnBudget,
+      reviewAttempt,
       bundle,
       round,
       previousDraft,
@@ -1335,6 +1352,7 @@ export class SkillEvolutionRuntime {
     round: number,
     sharedReviewTurnBudget: SharedReviewTurnBudget,
     attemptSignal?: AbortSignal,
+    reviewAttempt?: BranchReviewAttemptMetadata,
   ): SkillVerifierBranchSession {
     const options: SkillVerifierBranchOptions = {
       id: `skill-verifier-${randomUUID()}`,
@@ -1345,6 +1363,7 @@ export class SkillEvolutionRuntime {
       transcriptContract: 'required',
       signal: attemptSignal,
       sharedReviewTurnBudget,
+      reviewAttempt,
       bundle,
       draft,
       round,
@@ -1493,7 +1512,7 @@ function assertHealthyBranchTranscript(
   filePath: string | null,
   expectedBranchType: string | undefined,
   branchLogRoot?: string,
-): void {
+): string {
   const label = expectedBranchType ?? 'branch';
   if (!filePath) throw new Error(`${label} transcript is disabled.`);
   const resolvedPath = path.resolve(filePath);
@@ -1524,6 +1543,7 @@ function assertHealthyBranchTranscript(
   if (!Array.isArray(transcript?.messages)) {
     throw new Error(`${label} transcript has no reconstructable messages.`);
   }
+  return hashTranscriptFile(resolvedPath);
 }
 
 function assertAuditPathWritableAndReadable(auditPath: string): void {
@@ -1542,9 +1562,41 @@ function assertTransitionAuditReadable(
   const entries = loadTransitionAudit(auditPath);
   const persisted = entries.find(entry => entry.transitionId === audit.transitionId);
   if (!persisted) throw new Error(`Transition Audit entry ${audit.transitionId} is not readable.`);
-  for (const transcriptPath of persisted.branchTranscriptPaths) {
-    assertHealthyBranchTranscript(transcriptPath, undefined, branchLogRoot);
+  const hashes = persisted.branchTranscriptHashes;
+  if (hashes && hashes.length !== persisted.branchTranscriptPaths.length) {
+    throw new Error(`Transition Audit entry ${audit.transitionId} has incomplete transcript hashes.`);
   }
+  persisted.branchTranscriptPaths.forEach((transcriptPath, index) => {
+    const actualHash = assertHealthyBranchTranscript(transcriptPath, undefined, branchLogRoot);
+    if (hashes && actualHash !== hashes[index]) {
+      throw new Error(`Transition Audit entry ${audit.transitionId} has a transcript hash mismatch.`);
+    }
+  });
+}
+
+function assertBranchTranscriptEvidence(
+  transcriptPaths: readonly string[],
+  branchLogRoot?: string,
+): string[] {
+  return transcriptPaths.map(transcriptPath => (
+    assertHealthyBranchTranscript(transcriptPath, undefined, branchLogRoot)
+  ));
+}
+
+function hashTranscriptFile(filePath: string): string {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function sanitizeTransitionAudit(input: TransitionAuditEntry): TransitionAuditEntry {
+  return {
+    ...input,
+    branchTranscriptPaths: Array.isArray(input.branchTranscriptPaths)
+      ? input.branchTranscriptPaths.filter((item): item is string => typeof item === 'string')
+      : [],
+    ...(Array.isArray(input.branchTranscriptHashes)
+      ? { branchTranscriptHashes: input.branchTranscriptHashes.filter((item): item is string => typeof item === 'string') }
+      : {}),
+  };
 }
 
 function isPathInside(childPath: string, parentPath: string): boolean {
@@ -1726,7 +1778,7 @@ export function loadTransitionAudit(filePath: string): TransitionAuditEntry[] {
   return fs.readFileSync(filePath, 'utf8')
     .split(/\r?\n/)
     .filter(Boolean)
-    .map(line => JSON.parse(line) as TransitionAuditEntry);
+    .map(line => sanitizeTransitionAudit(JSON.parse(line) as TransitionAuditEntry));
 }
 
 /**
@@ -1823,7 +1875,10 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
   const targetHandle = typeof envelope.targetCapabilityHandle === 'string' ? envelope.targetCapabilityHandle : undefined;
   const sourceHandle = typeof envelope.sourceCapabilityHandle === 'string' ? envelope.sourceCapabilityHandle : undefined;
   const idempotent = findIdempotentTransition(input, registry, targetHandle, sourceHandle);
-  if (idempotent) return idempotent;
+  if (idempotent) {
+    assertTransitionAuditReadable(input.auditPath, idempotent.audit, input.branchLogRoot);
+    return idempotent;
+  }
   const registryReadSet = normalizeRegistryReadSet(input.registryReadSet ?? []);
   assertRegistryReadSetCurrent(registry, registryReadSet);
   assertTransitionTargetsWereRead(input, registryReadSet);
@@ -1838,6 +1893,10 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
   ]);
 
   validateTransitionInput(input, registry, existing, manualNames, routingName, evidenceRefs);
+  const branchTranscriptHashes = assertBranchTranscriptEvidence(
+    input.branchTranscriptPaths,
+    input.branchLogRoot,
+  );
   const target = cloneRegistry(registry);
   const operations: TransitionJournal['skillOperations'] = [];
   let resultingRecord: CurrentSkillRecord | undefined;
@@ -1995,6 +2054,7 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
     priorRoutingName: existing?.routingName ?? null,
     resultingRoutingName: resultingRecord?.routingName ?? null,
     branchTranscriptPaths: [...input.branchTranscriptPaths],
+    branchTranscriptHashes,
     rationale: input.verifier.rationale,
   };
   const journal: TransitionJournal = {
@@ -2007,6 +2067,7 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
   };
   writeJsonAtomic(input.journalPath, journal);
   recoverTransitionJournal(input);
+  assertTransitionAuditReadable(input.auditPath, audit, input.branchLogRoot);
   return { transitionId, record: resultingRecord, audit };
 }
 

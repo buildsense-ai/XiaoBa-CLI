@@ -4,6 +4,8 @@ import * as path from 'path';
 export interface BranchTranscriptAuditLink {
   involvedCapabilityHandles: readonly string[];
   branchTranscriptPaths: readonly string[];
+  /** Optional hashes retained with newer Transition Audit entries. */
+  branchTranscriptHashes?: readonly string[];
 }
 
 export interface BranchTranscriptCleanupOptions {

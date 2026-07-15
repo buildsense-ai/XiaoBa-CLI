@@ -34,6 +34,7 @@ import { SkillParser } from '../src/skills/skill-parser';
 import { SemanticReassessmentManifestStore } from '../src/utils/semantic-reassessment';
 import { emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src/utils/skill-evolution';
 import { bootstrapSemanticReassessmentOnce } from '../src/utils/distilled-skill-bootstrap';
+import { DistillationHeartbeatScheduler } from '../src/utils/distillation-heartbeat-scheduler';
 import {
   addOrUpdateOperationalFailure,
   findOperationalByBundleId,
@@ -55,6 +56,15 @@ function readOrEmpty(filePath: string): any {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
   } catch { return null; }
+}
+
+function createDeferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
 }
 
 function futureTurn(
@@ -1597,6 +1607,33 @@ describe('Issue 4 — Heartbeat single-write', () => {
     assert.ok(record.cumulativeReviewTimeoutCount >= record.lastReviewTimeoutCount);
   });
 
+  test('persists unconsumed wake reasons atomically without mutating learning state on restart inspection', () => {
+    const beforeAudit = env.runtimeLearning.getSkillEvolution().getAudit();
+    const beforeEpisodes = env.runtimeLearning.getEpisodeStore().load();
+
+    env.runtimeLearning.markHeartbeatPending([
+      'curator',
+      'operational-retry',
+      'curator',
+    ]);
+
+    const record = env.runtimeLearning.loadHeartbeatRecord();
+    assert.deepEqual(record.pendingWakeReasons, ['curator', 'operational-retry']);
+    const recordPath = env.runtimeLearning.getConfig().heartbeatRecordPath;
+    assert.equal(fs.statSync(recordPath).mode & 0o777, 0o600);
+    assert.deepEqual(
+      fs.readdirSync(path.dirname(recordPath)).filter(name => name.includes('.tmp')),
+      [],
+      'atomic heartbeat writes must not leave temporary files',
+    );
+
+    const restarted = createRestartableRuntimeLearning(env.root);
+    assert.deepEqual(restarted.getPendingHeartbeatReasons(), ['curator', 'operational-retry']);
+    assert.deepEqual(restarted.getSkillEvolution().getAudit(), beforeAudit);
+    assert.deepEqual(restarted.getEpisodeStore().load(), beforeEpisodes);
+    assert.equal(restarted.loadHeartbeatRecord().runCount, 0);
+  });
+
   test('consecutive wakes increment runCount monotonically', async () => {
     const [delivery, acceptance] = deliveryPair(-4);
     writeLog(env.logFile, [delivery, acceptance]);
@@ -1645,6 +1682,105 @@ describe('Issue 4 — Heartbeat single-write', () => {
         firstCreate.branchTranscriptPaths,
         'transcript references should be preserved across restart',
       );
+    }
+  });
+});
+
+describe('Issue #83 — controlled production acceptance', () => {
+  test('completes a healthy transcript-linked transition while a hanging peer queues timeout and a targeted wake coalesces', async () => {
+    const env = setupEnv(0);
+    const makeEpisode = (episodeId: string, intent: string): LearningEpisode => ({
+      schemaVersion: 3,
+      episodeId,
+      runtimeSessionId: 'runtime-production-acceptance',
+      sourceFilePath: `${episodeId}.jsonl`,
+      deliveryTurn: 1,
+      completionEvidence: [{
+        ref: `${episodeId}.jsonl#turn-1:delivery:send_file`,
+        sourceFilePath: `${episodeId}.jsonl`,
+        turn: 1,
+        kind: 'artifact-delivery',
+        detail: 'send_file: report sent',
+      }],
+      contradictionSignals: [],
+      semanticObservations: [{
+        kind: 'user-intent',
+        value: intent,
+        sourceRefs: [`${episodeId}.jsonl#turn-1:user-intent`],
+      }],
+      settlementDeadline: new Date(0).toISOString(),
+      status: 'eligible',
+    });
+    const hangingStarted = createDeferred<void>();
+    const releaseHanging = createDeferred<void>();
+    const originalReview = env.skillEvolution.reviewAndApply.bind(env.skillEvolution);
+    (env.skillEvolution as any).options.operationalRetryMs = 60_000;
+    env.skillEvolution.reviewAndApply = async (bundle, signal) => {
+      const sourceFilePath = (bundle.episode as { sourceUnit?: { filePath?: string } }).sourceUnit?.filePath;
+      if (sourceFilePath !== 'episode-acceptance-timeout.jsonl') {
+        return originalReview(bundle, signal);
+      }
+      hangingStarted.resolve();
+      await releaseHanging.promise;
+      const timeout = new AbortController();
+      timeout.abort('review-timeout');
+      return originalReview(bundle, timeout.signal);
+    };
+
+    try {
+      env.runtimeLearning.getEpisodeStore().save({
+        schemaVersion: 3,
+        episodes: {
+          'episode-acceptance-timeout': makeEpisode(
+            'episode-acceptance-timeout',
+            'Deliver the timeout acceptance report.',
+          ),
+          'episode-acceptance-healthy': makeEpisode(
+            'episode-acceptance-healthy',
+            'Deliver the healthy acceptance report.',
+          ),
+        },
+      });
+
+      const scheduler = new DistillationHeartbeatScheduler(env.root, env.runtimeLearning);
+      const startup = scheduler.runHeartbeat('startup');
+      await hangingStarted.promise;
+      const targeted = scheduler.runHeartbeat('settlement-deadline');
+
+      assert.deepEqual(
+        env.runtimeLearning.loadHeartbeatRecord().pendingWakeReasons,
+        ['settlement-deadline'],
+        'targeted demand must be durable while the hanging review is active',
+      );
+
+      releaseHanging.resolve();
+      await Promise.all([startup, targeted]);
+
+      const queue = loadReviewQueueState(env.reviewQueuePath);
+      assert.equal(queue.operational.length, 1);
+      assert.equal(queue.operational[0]!.failureKind, 'branch_timeout');
+      assert.equal(
+        (queue.operational[0]!.bundle.episode as { sourceUnit?: { filePath?: string } }).sourceUnit?.filePath,
+        'episode-acceptance-timeout.jsonl',
+      );
+
+      const createAudit = env.skillEvolution.getAudit().find(
+        entry => entry.transition === 'create_current_skill',
+      );
+      assert.ok(createAudit, 'healthy peer must commit one transition');
+      assert.equal(createAudit.branchTranscriptPaths.length, 2);
+      assert.ok(createAudit.branchTranscriptPaths.every(transcriptPath => fs.existsSync(transcriptPath)));
+
+      const heartbeat = env.runtimeLearning.loadHeartbeatRecord();
+      assert.equal(heartbeat.lastRunStatus, 'coalesced');
+      assert.deepEqual(heartbeat.lastPendingWakeReasons, ['settlement-deadline']);
+      assert.deepEqual(heartbeat.pendingWakeReasons, []);
+      assert.equal(heartbeat.inProgress, undefined);
+      assert.ok(heartbeat.runCount >= 2);
+    } finally {
+      env.skillEvolution.reviewAndApply = originalReview;
+      env.restore();
+      env.teardown();
     }
   });
 });
