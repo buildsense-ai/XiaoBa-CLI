@@ -420,13 +420,13 @@ export function getDistillationHeartbeatConfig(
     runtimeEnv,
     'XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS',
   );
-  const externalSessionLogMaxConcurrency = readNumberInRange(
-    runtimeEnv,
-    'XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY',
-    3,
-    1,
-    8,
+  const configuredExternalSessionLogMaxConcurrency = Number(
+    runtimeEnv.XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY ?? 3,
   );
+  const externalSessionLogMaxConcurrency = !Number.isFinite(configuredExternalSessionLogMaxConcurrency)
+    || configuredExternalSessionLogMaxConcurrency < 1
+    ? 3
+    : Math.min(8, Math.floor(configuredExternalSessionLogMaxConcurrency));
   const externalSessionLogSelectedProvider = readEnv(
     runtimeEnv,
     'XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER',

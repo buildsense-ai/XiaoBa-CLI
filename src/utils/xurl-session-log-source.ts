@@ -20,6 +20,11 @@ import {
   ExternalSessionLogBackfillSource,
 } from './session-log-backfill';
 import { SessionTurnLogEntry } from './session-log-schema';
+import { getXurlVersion } from './xurl-compatibility';
+import {
+  parseRenderedTimeline as parseRenderedTimelineContract,
+  type RenderedTimelineEvent,
+} from './xurl-rendered-timeline';
 
 // ---------------------------------------------------------------------------
 // Official xURL agents:// rendered-Timeline reader contract (ADR-0043).
@@ -45,17 +50,9 @@ export const XURL_ACTIVATION_BLOCKED_MARKER = 'xurlActivationBlocked';
 
 type XurlCommandKind = 'version' | 'query' | 'read' | 'head';
 
-type TimelineRole = 'User' | 'Assistant' | 'Context Compacted';
-
 interface RenderedFrontmatter {
   readonly fields: ReadonlyMap<string, string>;
   readonly raw: string;
-}
-
-interface RenderedThreadEntry {
-  readonly ordinal: number;
-  readonly role: TimelineRole;
-  readonly content: string;
 }
 
 interface RenderedThreadSummary {
@@ -83,7 +80,6 @@ interface RenderedTimeline {
   readonly fingerprint: string;
   readonly revision?: string;
   readonly queriedAt: string;
-  readonly entries: readonly RenderedThreadEntry[];
 }
 
 interface CanonicalEvent {
@@ -134,6 +130,12 @@ interface XurlNormalizedReadPage {
   readonly events: readonly XurlNormalizedEvent[];
   readonly threadFingerprint?: string;
   readonly threadOrdinal?: number;
+}
+
+interface ParsedTimelinePage {
+  readonly timeline: RenderedTimeline;
+  readonly events: readonly CanonicalEvent[];
+  readonly hasIncompleteTail: boolean;
 }
 
 interface XurlNormalizedEvent {
@@ -423,8 +425,8 @@ class XurlOfficialRunner {
   ): XurlNormalizedReadPage {
     const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
     const stdout = this.invoke('read', [uri]);
-    const timeline = parseRenderedTimeline(stdout, this.provider, resource.resourceRef, uri);
-    const allEvents = canonicalizeEvents(timeline);
+    const page = parseTimelinePage(stdout, this.provider, resource.resourceRef, uri);
+    const { timeline, events: allEvents, hasIncompleteTail } = page;
 
     const cursorPosition = normalizeNonNegativeInteger(cursor.position + 1, 'xurl cursor position') - 1;
     const newEvents = disableCursorFilter
@@ -458,10 +460,9 @@ class XurlOfficialRunner {
     if (newEvents.length === 0) {
       // No new complete ranges past the cursor. The tail may still be incomplete;
       // either way there is nothing stable to admit yet.
-      const tailIncomplete = isTailIncomplete(allEvents, timeline.entries);
       return {
-        status: tailIncomplete ? 'pending' : 'stable',
-        exhausted: !tailIncomplete,
+        status: hasIncompleteTail ? 'pending' : 'stable',
+        exhausted: !hasIncompleteTail,
         newPosition: timeline.ordinal,
         events: [],
         threadFingerprint: timeline.fingerprint,
@@ -474,7 +475,7 @@ class XurlOfficialRunner {
     // the head (`-I`) is the second. If the head reports a different ordinal or
     // fingerprint the tail is still mutating and stays pending without counting
     // as a provider failure. (ADR-0043 stability sampling.)
-    if (isTailIncomplete(allEvents, timeline.entries)) {
+    if (hasIncompleteTail) {
       return {
         status: 'pending',
         exhausted: false,
@@ -559,8 +560,8 @@ class XurlOfficialRunner {
   ): Promise<XurlNormalizedReadPage> {
     const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
     const stdout = await this.invokeAsync('read', [uri], signal);
-    const timeline = parseRenderedTimeline(stdout, this.provider, resource.resourceRef, uri);
-    const allEvents = canonicalizeEvents(timeline);
+    const page = parseTimelinePage(stdout, this.provider, resource.resourceRef, uri);
+    const { timeline, events: allEvents, hasIncompleteTail } = page;
 
     const cursorPosition = normalizeNonNegativeInteger(cursor.position + 1, 'xurl cursor position') - 1;
     const newEvents = disableCursorFilter
@@ -590,10 +591,9 @@ class XurlOfficialRunner {
     }
 
     if (newEvents.length === 0) {
-      const tailIncomplete = isTailIncomplete(allEvents, timeline.entries);
       return {
-        status: tailIncomplete ? 'pending' : 'stable',
-        exhausted: !tailIncomplete,
+        status: hasIncompleteTail ? 'pending' : 'stable',
+        exhausted: !hasIncompleteTail,
         newPosition: timeline.ordinal,
         events: [],
         threadFingerprint: timeline.fingerprint,
@@ -601,7 +601,7 @@ class XurlOfficialRunner {
       };
     }
 
-    if (isTailIncomplete(allEvents, timeline.entries)) {
+    if (hasIncompleteTail) {
       return {
         status: 'pending',
         exhausted: false,
@@ -638,12 +638,12 @@ class XurlOfficialRunner {
   private ensureVersion(): void {
     if (!this.checkVersion || this.versionChecked) return;
     this.versionChecked = true;
-    try {
-      const stdout = this.invoke('version', ['--version']);
-      const version = stdout.trim();
-      if (version) this.versionCache = version;
-    } catch {
-      // Version is diagnostic only; a failure never blocks discovery or admission.
+    const diagnostic = getXurlVersion(this.command, {
+      timeoutMs: this.timeoutMs,
+      env: this.env,
+    });
+    if (diagnostic.source === 'cli' && diagnostic.rawVersion) {
+      this.versionCache = diagnostic.rawVersion;
     }
   }
 
@@ -711,88 +711,6 @@ class XurlOfficialRunner {
 // Rendered-Timeline canonicalization and identity derivation.
 // ---------------------------------------------------------------------------
 
-function canonicalizeEvents(timeline: RenderedTimeline): readonly CanonicalEvent[] {
-  const events: CanonicalEvent[] = [];
-  const entries = timeline.entries;
-  let i = 0;
-  while (i < entries.length) {
-    const entry = entries[i]!;
-    if (entry.role === 'Assistant') {
-      throw new Error(`xurl timeline entry ${entry.ordinal} is an Assistant without a preceding User`);
-    }
-    if (entry.role === 'User') {
-      const next = entries[i + 1];
-      if (!next || next.role !== 'Assistant') {
-        // Incomplete tail: a User with no following Assistant. The caller treats
-        // this range as pending; it is not an error until a second observation.
-        break;
-      }
-      events.push(buildCanonicalEvent(timeline, [], entry, next));
-      i += 2;
-      continue;
-    }
-    // Context Compacted: collect a bounded run of context entries then a User+Assistant.
-    const context: RenderedThreadEntry[] = [];
-    while (i < entries.length && entries[i]!.role === 'Context Compacted') {
-      context.push(entries[i]!);
-      i += 1;
-    }
-    const user = entries[i];
-    if (!user || user.role !== 'User') {
-      if (!user) break; // trailing context with no user — incomplete tail
-      throw new Error(`xurl timeline Context Compacted at ordinal ${context[0]!.ordinal} not followed by a User`);
-    }
-    const assistant = entries[i + 1];
-    if (!assistant || assistant.role !== 'Assistant') {
-      break; // incomplete tail after context+user
-    }
-    events.push(buildCanonicalEvent(timeline, context, user, assistant));
-    i += 2;
-  }
-  return events;
-}
-
-function buildCanonicalEvent(
-  timeline: RenderedTimeline,
-  context: readonly RenderedThreadEntry[],
-  user: RenderedThreadEntry,
-  assistant: RenderedThreadEntry,
-): CanonicalEvent {
-  if (user.ordinal >= assistant.ordinal) {
-    throw new Error(`xurl timeline event ordinals out of order at ${user.ordinal}`);
-  }
-  const userContent = normalizeEntryContent(user.content);
-  const assistantContent = normalizeEntryContent(assistant.content);
-  if (!userContent) {
-    throw new Error(`xurl timeline entry ${user.ordinal} has an empty User message`);
-  }
-  if (!assistantContent) {
-    throw new Error(`xurl timeline entry ${assistant.ordinal} has an empty Assistant message`);
-  }
-  const contextContent = context.map(entry => normalizeEntryContent(entry.content)).filter(Boolean);
-  const contentHash = computeContentHash([
-    ...context.map(entry => ({ role: entry.role, content: normalizeEntryContent(entry.content) })),
-    { role: user.role, content: userContent },
-    { role: assistant.role, content: assistantContent },
-  ]);
-  return {
-    startOrdinal: (context[0] ?? user).ordinal,
-    endOrdinal: assistant.ordinal,
-    userContent,
-    assistantContent,
-    contextContent,
-    contentHash,
-  };
-}
-
-function isTailIncomplete(events: readonly CanonicalEvent[], entries: readonly RenderedThreadEntry[]): boolean {
-  if (entries.length === 0) return false;
-  const last = entries[entries.length - 1]!;
-  if (last.role === 'Assistant') return false;
-  // A trailing User or Context Compacted (without a completing Assistant) is incomplete.
-  return true;
-}
-
 function normalizeCanonicalEvent(
   provider: string,
   resource: SessionLogSourceResource,
@@ -852,11 +770,6 @@ function buildDistillationUnit(
     },
     generatedAt: turn.timestamp,
   };
-}
-
-function computeContentHash(entries: readonly { readonly role: string; readonly content: string }[]): string {
-  const payload = entries.map(entry => `${entry.role}|${entry.content}`).join('\n');
-  return createHash('sha256').update(payload, 'utf8').digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -977,92 +890,67 @@ function parseThreadSummary(block: string, provider: string): RenderedThreadSumm
   return { threadId, uri, branch, ordinal, fingerprint, ...(revision ? { revision } : {}) };
 }
 
-function parseRenderedTimeline(
+function parseTimelinePage(
   stdout: string,
   provider: string,
   threadId: string,
   requestedUri: string,
-): RenderedTimeline {
-  const doc = parseDocument(stdout, 'xurl timeline');
-  const uri = requireFrontmatterField(doc.frontmatter, 'uri');
-  if (uri !== requestedUri) {
+): ParsedTimelinePage {
+  const parsed = parseRenderedTimelineContract(stdout, provider, threadId, {
+    allowIncompleteTail: true,
+  });
+  if (parsed.uri !== requestedUri) {
     throw new Error(`xurl timeline uri mismatch: expected ${requestedUri}`);
   }
-  const timelineProvider = requireFrontmatterField(doc.frontmatter, 'provider');
-  if (timelineProvider !== provider) {
-    throw new Error(`xurl timeline provider mismatch: expected ${provider}, got ${timelineProvider}`);
+  const branch = parsed.branch;
+  if (!branch) {
+    throw new Error('xurl timeline branch is missing');
   }
-  const frontThread = requireFrontmatterField(doc.frontmatter, 'thread');
-  if (frontThread !== threadId) {
-    throw new Error(`xurl timeline thread mismatch: expected ${threadId}, got ${frontThread}`);
-  }
-  const branch = requireFrontmatterField(doc.frontmatter, 'branch');
-  const ordinal = normalizeNonNegativeInteger(Number(requireFrontmatterField(doc.frontmatter, 'ordinal')), 'xurl timeline ordinal');
-  const fingerprint = requireNonEmptyText('xurl timeline fingerprint', requireFrontmatterField(doc.frontmatter, 'fingerprint'));
-  const revision = optionalFrontmatterField(doc.frontmatter, 'revision');
-  const queriedAt = requireFrontmatterField(doc.frontmatter, 'queried_at');
-
-  const body = stripAfter(doc.body, /^## Timeline\s*$/m, 'xurl timeline Timeline section');
-  const entries = parseTimelineEntries(body);
-
-  return {
+  const ordinal = normalizeNonNegativeInteger(parsed.ordinal, 'xurl timeline ordinal');
+  const fingerprint = requireNonEmptyText('xurl timeline fingerprint', parsed.fingerprint);
+  const queriedAt = requireNonEmptyText('xurl timeline queried_at', parsed.queriedAt);
+  const timeline: RenderedTimeline = {
     provider,
     threadId,
-    uri,
+    uri: parsed.uri,
     branch,
     ordinal,
     fingerprint,
-    ...(revision ? { revision } : {}),
+    ...(parsed.revision ? { revision: parsed.revision } : {}),
     queriedAt,
-    entries,
-  } as RenderedTimeline;
+  };
+  return {
+    timeline,
+    hasIncompleteTail: parsed.hasIncompleteTail,
+    events: parsed.events.map(toCanonicalEvent),
+  };
 }
 
-function parseTimelineEntries(body: string): readonly RenderedThreadEntry[] {
-  const entries: RenderedThreadEntry[] = [];
-  const lines = body.split('\n');
-  let i = 0;
-  let expectedOrdinal = 1;
-  while (i < lines.length) {
-    const line = lines[i]!;
-    const match = /^### (\d+) (\S.*?)(?:\s*)$/.exec(line);
-    if (!match) {
-      if (line.trim() === '') { i += 1; continue; }
-      // Lines outside a numbered heading before the first heading are ignored;
-      // lines after a heading belong to that heading's content (handled below).
-      if (entries.length === 0) { i += 1; continue; }
-      // Unknown structural line after entries started — fail closed.
-      if (line.startsWith('#')) {
-        throw new Error(`xurl timeline has an unrecognized heading: ${truncateLine(line, 120)}`);
-      }
-      i += 1;
-      continue;
-    }
-    const ordinal = normalizeNonNegativeInteger(Number(match[1]!), 'xurl timeline ordinal');
-    const role = parseTimelineRole(match[2]!.trim());
-    if (ordinal !== expectedOrdinal) {
-      throw new Error(`xurl timeline ordinals are not contiguous: expected ${expectedOrdinal}, got ${ordinal}`);
-    }
-    // Collect content lines until the next `### ` heading or EOF.
-    const contentLines: string[] = [];
-    i += 1;
-    while (i < lines.length && !/^### \d+ /.test(lines[i]!)) {
-      contentLines.push(lines[i]!);
-      i += 1;
-    }
-    const content = contentLines.join('\n').replace(/\n+$/, '');
-    entries.push({ ordinal, role, content });
-    expectedOrdinal += 1;
+function toCanonicalEvent(event: RenderedTimelineEvent): CanonicalEvent {
+  const user = event.roles.find(role => role.role === 'User');
+  const assistant = event.roles.find(role => role.role === 'Assistant');
+  if (!user || !assistant) {
+    throw new Error(`xurl timeline event ${event.identity} is missing a User or Assistant role`);
   }
-  if (entries.length === 0) {
-    throw new Error('xurl timeline has no numbered Timeline entries');
+  const userContent = normalizeEntryContent(user.content);
+  const assistantContent = normalizeEntryContent(assistant.content);
+  if (!userContent) {
+    throw new Error(`xurl timeline entry ${user.ordinal} has an empty User message`);
   }
-  return entries;
-}
-
-function parseTimelineRole(value: string): TimelineRole {
-  if (value === 'User' || value === 'Assistant' || value === 'Context Compacted') return value;
-  throw new Error(`xurl timeline entry has an unsupported role: ${value}`);
+  if (!assistantContent) {
+    throw new Error(`xurl timeline entry ${assistant.ordinal} has an empty Assistant message`);
+  }
+  return {
+    startOrdinal: event.ordinalStart,
+    endOrdinal: event.ordinalEnd,
+    userContent,
+    assistantContent,
+    contextContent: event.roles
+      .filter(role => role.role === 'Context Compacted')
+      .map(role => normalizeEntryContent(role.content))
+      .filter(Boolean),
+    contentHash: event.contentHash,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,6 +1025,11 @@ function stripAfter(body: string, marker: RegExp, label: string): string {
 
 function normalizeEntryContent(content: string): string {
   return content.replace(/\r\n/g, '\n').trim();
+}
+
+function computeContentHash(entries: readonly { readonly role: string; readonly content: string }[]): string {
+  const payload = entries.map(entry => `${entry.role}:${entry.content}`).join('\n');
+  return createHash('sha256').update(payload, 'utf8').digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -1240,6 +1133,6 @@ export const XURL_TEST_HELPERS = {
   computeContentHash,
   isXurlActivationBlockedError,
   parseRenderedCatalog,
-  parseRenderedTimeline,
+  parseRenderedTimeline: parseRenderedTimelineContract,
   parseFrontmatterOnly,
 };

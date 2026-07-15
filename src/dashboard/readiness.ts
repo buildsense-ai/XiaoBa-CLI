@@ -11,9 +11,16 @@ import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { getWeixinChannelStatus } from './weixin-channel-binding';
 import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
 import {
+  buildDiagnosticSummary,
+  type ExternalSourceDiagnosticSummary,
+  type ExternalSourceProviderDiagnostic,
+  type FailureClass,
+} from '../utils/external-source-diagnostics';
+import {
   ExternalProviderOverrideStore,
   resolveExternalProviderOverridePath,
 } from '../utils/external-provider-controls';
+import { loadExternalCursorState, resolveExternalCursorStorePath } from '../utils/session-log-source';
 
 export type DashboardReadinessStatus = 'ready' | 'warning' | 'blocked';
 export type DashboardReadinessCheckStatus = 'pass' | 'warning' | 'fail';
@@ -93,6 +100,7 @@ export interface DashboardRuntimeLearningStatus {
     supportStatus?: string;
     provider?: string;
     reader?: string;
+    readerVersion?: string;
     selectedProvider?: string;
     resourcesDiscovered: number;
     unitsProcessed: number;
@@ -125,6 +133,7 @@ export interface DashboardRuntimeLearningStatus {
     admissionGate: string;
     rebaselineRequestedAt?: string;
   }>;
+  providerDiagnostics?: ExternalSourceDiagnosticSummary;
 }
 
 export interface DashboardReadinessOptions {
@@ -248,6 +257,7 @@ function readRuntimeLearningStatus(
           ...(typeof report.supportStatus === 'string' ? { supportStatus: report.supportStatus } : {}),
           ...(typeof report.provider === 'string' ? { provider: report.provider } : {}),
           ...(typeof report.reader === 'string' ? { reader: report.reader } : {}),
+          ...(typeof report.readerVersion === 'string' ? { readerVersion: report.readerVersion } : {}),
           ...(typeof report.selectedProvider === 'string' ? { selectedProvider: report.selectedProvider } : {}),
           resourcesDiscovered: toNonNegativeInteger(report.resourcesDiscovered),
           unitsProcessed: toNonNegativeInteger(report.unitsProcessed),
@@ -271,7 +281,8 @@ function readRuntimeLearningStatus(
     const overrideStore = new ExternalProviderOverrideStore({
       stateFilePath: resolveExternalProviderOverridePath(config),
     });
-    base.providerStatuses = overrideStore.getAllProviderStatuses(config).map(status => ({
+    const statuses = overrideStore.getAllProviderStatuses(config);
+    base.providerStatuses = statuses.map(status => ({
       provider: status.provider,
       enabled: status.enabled,
       source: status.source,
@@ -280,11 +291,114 @@ function readRuntimeLearningStatus(
       admissionGate: status.admissionGate,
       ...(status.rebaselineRequestedAt ? { rebaselineRequestedAt: status.rebaselineRequestedAt } : {}),
     }));
+    base.providerDiagnostics = buildDiagnosticSummary(
+      statuses.map(status => buildProviderDiagnostic(status, config, base.sources)),
+    );
   } catch {
     // Override store is diagnostic; fail silently.
   }
 
   return base;
+}
+
+function buildProviderDiagnostic(
+  status: NonNullable<DashboardRuntimeLearningStatus['providerStatuses']>[number],
+  config: ReturnType<typeof getDistillationHeartbeatConfig>,
+  sources: readonly NonNullable<DashboardRuntimeLearningStatus['sources']>[number][],
+): ExternalSourceProviderDiagnostic {
+  const sourceId = resolveProviderSourceId(config, status.provider);
+  const cursorState = loadExternalCursorState(resolveExternalCursorStorePath({
+    provider: status.provider,
+    sourceId,
+  }));
+  const sourceReport = sources.find(source => source.sourceId === sourceId);
+  const activation = cursorState.activation;
+  const resources = Object.values(cursorState.resources);
+  const sourceCursors = Object.values(cursorState.cursors)
+    .filter(entry => entry.sourceIdentity?.sourceId === sourceId);
+  const baselined = sourceCursors.filter(entry => entry.lastStatus === 'activated').length;
+  const failureClass = mapFailureClass(sourceReport?.failureClass);
+  const nextAction = resolveProviderNextAction(activation?.activationBlockedReason, sourceReport?.nextAction);
+
+  return {
+    provider: status.provider,
+    scope: status.scope,
+    admissionState: activation?.activationBlocked
+      ? 'activation_blocked'
+      : !status.enabled || status.admissionGate === 'closed'
+        ? 'paused'
+        : activation && !activation.initialDiscoveryCompleted
+          ? 'activating'
+          : 'active',
+    ...(sourceReport?.readerVersion ? { readerVersion: sourceReport.readerVersion } : {}),
+    ...(resources.length > 0 || baselined > 0
+      ? { activationProgress: { baselined, total: resources.length } }
+      : {}),
+    ...(sourceReport?.cursorProgress
+      ? {
+        cursorProgress: {
+          maxPosition: sourceReport.cursorProgress.maxPosition,
+          activeResources: sourceReport.cursorProgress.activeResources,
+          closedResources: sourceReport.cursorProgress.closedResources,
+        },
+      }
+      : {}),
+    ...(sourceReport?.lastSuccessfulReadAt ? { lastSuccessfulReadAt: sourceReport.lastSuccessfulReadAt } : {}),
+    ...(sourceReport?.nextRetryAt ? { nextRetryAt: sourceReport.nextRetryAt } : {}),
+    ...(failureClass ? { failureClass } : {}),
+    quarantined: failureClass === 'quarantine' || (sourceReport?.cursorProgress?.quarantinedEvents ?? 0) > 0,
+    locked: sourceReport?.status === 'locked',
+    drainState: sourceReport?.drainState === 'draining'
+      ? 'draining'
+      : sourceReport?.status === 'drained'
+        ? 'drained'
+        : 'idle',
+    ...(nextAction ? { nextAction } : {}),
+  };
+}
+
+function resolveProviderSourceId(
+  config: ReturnType<typeof getDistillationHeartbeatConfig>,
+  provider: string,
+): string {
+  const normalizedProvider = provider.trim().toLowerCase();
+  const legacySelectedProvider = config.externalSessionLogSelectedProvider?.trim().toLowerCase();
+  const legacySelectedSourceId = config.externalSessionLogSelectedSourceId?.trim();
+  return config.externalSessionLogEnabledProviders.length === 1
+    && legacySelectedProvider === normalizedProvider
+    && Boolean(legacySelectedSourceId)
+    ? legacySelectedSourceId!
+    : `external-${normalizedProvider}`;
+}
+
+function mapFailureClass(value: unknown): FailureClass | undefined {
+  if (value === 'protocol') return 'protocol_failure';
+  if (value === 'integrity_conflict') return 'integrity_conflict';
+  if (value === 'quarantine') return 'quarantine';
+  if (value === 'permission') return 'permission';
+  if (value === 'transient') return 'transient';
+  return undefined;
+}
+
+function resolveProviderNextAction(
+  activationBlockedReason: string | undefined,
+  actionCode: unknown,
+): string | undefined {
+  if (activationBlockedReason) {
+    return 'Narrow scope or raise the baseline cap, then resume activation.';
+  }
+  switch (actionCode) {
+    case 'retry_or_skip_quarantine':
+      return 'Retry or skip the quarantined event.';
+    case 'repair_source_then_retry':
+      return 'Repair the source or reader, then retry.';
+    case 'wait_for_retry':
+      return 'Wait for the next scheduled retry.';
+    case 'retry_next_wake':
+      return 'Retry on the next wake.';
+    default:
+      return undefined;
+  }
 }
 
 function readJsonRecord(filePath: string): Record<string, unknown> | undefined {

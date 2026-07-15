@@ -180,6 +180,8 @@ export interface SessionLogSourceAdapter {
   /** Explicitly reports whether this adapter has a documented stable reader. */
   getSupportStatus?(): ExternalSourceFormatStatus;
   getUnsupportedReason?(): string | undefined;
+  /** Best-effort external reader version diagnostic. */
+  getReaderVersion?(): string | undefined;
   discoverResources(context?: SessionLogSourceDiscoveryContext): readonly SessionLogSourceResource[];
   read(
     resource: SessionLogSourceResource,
@@ -1105,6 +1107,13 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       : `provider ${this.identity.provider} has no documented stable reader format; explicit backfill is required`;
   }
 
+  getReaderVersion(): string | undefined {
+    const candidate = this.reader as { version?: string } | null;
+    return typeof candidate?.version === 'string' && candidate.version.trim()
+      ? candidate.version
+      : undefined;
+  }
+
   /** Set the cursor store path (called during RuntimeLearning construction). */
   setCursorStorePath(storePath: string): void {
     if (!this.cursorStorePath) {
@@ -1699,6 +1708,7 @@ export interface SessionLogSourceReport {
   readonly unsupportedReason?: string;
   readonly provider?: string;
   readonly reader?: string;
+  readonly readerVersion?: string;
   readonly selectedProvider?: string;
   readonly cursorProgress?: {
     readonly maxPosition: number;

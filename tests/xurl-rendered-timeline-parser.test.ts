@@ -336,12 +336,11 @@ describe('rendered Timeline parser — empty and malformed', () => {
     );
   });
 
-  test('rejects input without Thread section', () => {
+  test('accepts input without Thread section when Timeline is present', () => {
     const md = `---\nuri: agents://codex/thread-001\nprovider: codex\nthread: thread-001\n---\n\n## Timeline\n\n### 1. User\n\nHello\n\n### 2. Assistant\n\nHi\n`;
-    assert.throws(
-      () => parseRenderedTimeline(md, 'codex', 'thread-001'),
-      /thread/i,
-    );
+    const result = parseRenderedTimeline(md, 'codex', 'thread-001');
+    assert.equal(result.events.length, 1);
+    assert.equal(result.events[0]!.ordinalEnd, 2);
   });
 
   test('rejects input without Timeline section', () => {

@@ -56,8 +56,18 @@ export interface RenderedTimelineEvent {
 export interface RenderedTimelineParseResult {
   readonly provider: string;
   readonly thread: string;
+  readonly uri: string;
   readonly branch?: string;
+  readonly ordinal?: number;
+  readonly fingerprint?: string;
+  readonly revision?: string;
+  readonly queriedAt?: string;
+  readonly hasIncompleteTail: boolean;
   readonly events: readonly RenderedTimelineEvent[];
+}
+
+export interface RenderedTimelineParseOptions {
+  readonly allowIncompleteTail?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,13 +79,17 @@ interface ParsedFrontmatter {
   readonly provider: string;
   readonly thread: string;
   readonly branch?: string;
+  readonly ordinal?: number;
+  readonly fingerprint?: string;
+  readonly revision?: string;
+  readonly queriedAt?: string;
 }
 
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
 
-const TIMELINE_HEADING_RE = /^###\s+(\d+)\.\s*(.*?)\s*$/;
+const TIMELINE_HEADING_RE = /^###\s+(\d+)(?:\.)?\s+(.*?)\s*$/;
 const FRONTMATTER_DELIMITER = '---';
 const VALID_ROLES = new Set<RenderedTimelineRole>(['User', 'Assistant', 'Context Compacted']);
 
@@ -83,6 +97,7 @@ export function parseRenderedTimeline(
   markdown: string,
   expectedProvider: string,
   expectedThread: string,
+  options: RenderedTimelineParseOptions = {},
 ): RenderedTimelineParseResult {
   if (!markdown || !markdown.trim()) {
     throw new Error('rendered Timeline input is empty');
@@ -95,23 +110,25 @@ export function parseRenderedTimeline(
 
   const frontmatter = parseFrontmatter(markdown, expectedProvider, expectedThread);
   const body = extractBodyAfterFrontmatter(markdown);
-  const threadSection = extractSection(body, 'Thread');
-  if (!threadSection) {
-    throw new Error('rendered Timeline document must contain a ## Thread section');
-  }
   const timelineSection = extractSection(body, 'Timeline');
   if (!timelineSection) {
     throw new Error('rendered Timeline document must contain a ## Timeline section');
   }
 
   const entries = parseTimelineEntries(timelineSection);
-  const events = groupCanonicalEvents(frontmatter, entries);
+  const grouped = groupCanonicalEvents(frontmatter, entries, options);
 
   return {
     provider: frontmatter.provider,
     thread: frontmatter.thread,
+    uri: frontmatter.uri,
     ...(frontmatter.branch ? { branch: frontmatter.branch } : {}),
-    events,
+    ...(frontmatter.ordinal !== undefined ? { ordinal: frontmatter.ordinal } : {}),
+    ...(frontmatter.fingerprint ? { fingerprint: frontmatter.fingerprint } : {}),
+    ...(frontmatter.revision ? { revision: frontmatter.revision } : {}),
+    ...(frontmatter.queriedAt ? { queriedAt: frontmatter.queriedAt } : {}),
+    hasIncompleteTail: grouped.hasIncompleteTail,
+    events: grouped.events,
   };
 }
 
@@ -176,7 +193,21 @@ function parseFrontmatter(
   }
 
   const branch = fm['branch'] || undefined;
-  return { uri, provider, thread, ...(branch ? { branch } : {}) };
+  const ordinalRaw = fm['ordinal'];
+  const ordinal = ordinalRaw && /^\d+$/.test(ordinalRaw) ? parseInt(ordinalRaw, 10) : undefined;
+  const fingerprint = fm['fingerprint'] || undefined;
+  const revision = fm['revision'] || undefined;
+  const queriedAt = fm['queried_at'] || undefined;
+  return {
+    uri,
+    provider,
+    thread,
+    ...(branch ? { branch } : {}),
+    ...(ordinal !== undefined ? { ordinal } : {}),
+    ...(fingerprint ? { fingerprint } : {}),
+    ...(revision ? { revision } : {}),
+    ...(queriedAt ? { queriedAt } : {}),
+  };
 }
 
 function extractUriProvider(uri: string): string | undefined {
@@ -321,7 +352,8 @@ function validateOrdinals(entries: readonly RenderedTimelineEntry[]): void {
 function groupCanonicalEvents(
   frontmatter: ParsedFrontmatter,
   entries: readonly RenderedTimelineEntry[],
-): readonly RenderedTimelineEvent[] {
+  options: RenderedTimelineParseOptions,
+): { readonly events: readonly RenderedTimelineEvent[]; readonly hasIncompleteTail: boolean } {
   const events: RenderedTimelineEvent[] = [];
   let rangeStart: number | null = null;
   let rangeEntries: RenderedTimelineEntry[] = [];
@@ -363,22 +395,27 @@ function groupCanonicalEvents(
     prevRole = entry.role;
   }
 
+  let hasIncompleteTail = false;
+
   // Flush the final range
   if (sawUserInRange && !sawAssistantInRange) {
-    throw new Error(
-      `rendered Timeline has an incomplete tail: User at ordinal ${rangeStart} has no matching Assistant`,
-    );
+    if (!options.allowIncompleteTail) {
+      throw new Error(
+        `rendered Timeline has an incomplete tail: User at ordinal ${rangeStart} has no matching Assistant`,
+      );
+    }
+    hasIncompleteTail = true;
   }
   if (sawUserInRange && sawAssistantInRange) {
     const lastOrdinal = entries[entries.length - 1]!.ordinal;
     events.push(buildEvent(frontmatter, rangeStart!, lastOrdinal, rangeEntries));
   }
 
-  if (events.length === 0) {
+  if (events.length === 0 && !hasIncompleteTail) {
     throw new Error('rendered Timeline contains no complete User→Assistant events');
   }
 
-  return events;
+  return { events, hasIncompleteTail };
 }
 
 function buildEvent(

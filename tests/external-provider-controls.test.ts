@@ -116,7 +116,7 @@ describe('config enabled provider set', () => {
 
     process.env.XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY = '99';
     const config2 = getDistillationHeartbeatConfig(env.root);
-    assert.equal(config2.externalSessionLogMaxConcurrency, 3);
+    assert.equal(config2.externalSessionLogMaxConcurrency, 8);
   });
 
   test('enabled providers defaults to empty when not set', () => {

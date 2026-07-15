@@ -2585,10 +2585,10 @@ export class RuntimeLearning {
 
           // Wake-level quota check before commit.
           if (
-            wakeAdmittedEpisodes + distillationUnits.length
+            shared.wakeAdmittedEpisodes + distillationUnits.length
             > this.discoveryQuotas.maxAdmittedEpisodesPerWake
           ) {
-            discoveryCapped = true;
+            shared.discoveryCapped = true;
             throw new DiscoveryAdmissionQuotaReachedError();
           }
 
@@ -2601,8 +2601,8 @@ export class RuntimeLearning {
             // all external Episode, Capsule, provenance, and cursor mutations
             // pass through it serially. The commit function preserves the
             // Episode → Capsule → provenance → cursor acknowledgement order.
-            const knownExternalProviders = orderedSources
-              .filter(a => a.identity.category === 'external' && a.isEnabled())
+            const knownExternalProviders = this.orderSourcesForDiscovery()
+              .filter((a): a is SessionLogSourceAdapter => a.identity.category === 'external' && a.isEnabled())
               .map(a => a.identity.provider);
             const page: ExternalEvidencePage = {
               providerId: identity.provider,
@@ -2675,7 +2675,11 @@ export class RuntimeLearning {
             const eventIdentity = batchEventInProgress
               ?? readResult.eventIdentities?.[0]
               ?? resource.firstEventIdentity;
-            if ((failureClass === 'quarantine' || failureClass === 'integrity_conflict') && eventIdentity) {
+            if (
+              (failureClass === 'quarantine' || failureClass === 'integrity_conflict')
+              && eventIdentity
+              && !(error && typeof error === 'object' && (error as Record<string, unknown>).externalAdmissionFailureRecorded === true)
+            ) {
               this.recordExternalSourceQuarantine(
                 identity,
                 resource.resourceRef,
@@ -3012,7 +3016,7 @@ export class RuntimeLearning {
   private buildExternalSourceReportDiagnostics(
     identity: SessionLogSourceIdentity,
     failureState: SourceFailureState | undefined,
-  ): Pick<SessionLogSourceReport, 'provider' | 'reader' | 'selectedProvider' | 'cursorProgress' | 'lastSuccessfulReadAt' | 'nextRetryAt' | 'lastError' | 'failureClass' | 'requiresOperatorAction' | 'nextAction' | 'drainState'> {
+  ): Pick<SessionLogSourceReport, 'provider' | 'reader' | 'readerVersion' | 'selectedProvider' | 'cursorProgress' | 'lastSuccessfulReadAt' | 'nextRetryAt' | 'lastError' | 'failureClass' | 'requiresOperatorAction' | 'nextAction' | 'drainState'> {
     let cursorProgress = {
       maxPosition: -1,
       activeResources: 0,
@@ -3044,6 +3048,7 @@ export class RuntimeLearning {
     } catch {
       // Fail closed; heartbeat status still surfaces the lane-level error state.
     }
+    const readerVersion = this.findExternalSourceAdapter(identity.provider, identity.sourceId)?.getReaderVersion?.();
     const nextAction = failureState?.requiresOperatorAction
       ? (failureState.failureClass === 'quarantine' || failureState.failureClass === 'integrity_conflict'
         ? 'retry_or_skip_quarantine' as const
@@ -3056,6 +3061,7 @@ export class RuntimeLearning {
     return {
       provider: identity.provider,
       reader: identity.reader,
+      ...(readerVersion ? { readerVersion } : {}),
       selectedProvider: identity.provider,
       cursorProgress,
       lastSuccessfulReadAt: failureState?.lastSuccessfulReadAt ?? resourceLastSuccessfulReadAt,
@@ -3400,6 +3406,7 @@ export class RuntimeLearning {
     let contradictionSignals = 0;
     const admittedEpisodeIds: string[] = [];
     let externalProvenanceUpdated = false;
+    let eventInProgress: SourceEventIdentity | undefined;
 
     try {
       // Validate event identity count matches distillation unit count
@@ -3415,6 +3422,7 @@ export class RuntimeLearning {
         if (!eventIdentity) {
           throw new Error('stable external batch event has no canonical identity');
         }
+        eventInProgress = eventIdentity;
 
         // External evidence crosses the privacy boundary before it reaches
         // EvidenceIngestor. Sanitize the distillation unit.
@@ -3481,7 +3489,10 @@ export class RuntimeLearning {
       // Record the failure for source health tracking.
       const message = this.redactExternalSourceError(error);
       const failureClass = this.classifyExternalSourceFailure(message);
-      const eventIdentity = eventIdentities?.[0] ?? resource.firstEventIdentity;
+      const eventIdentity = eventInProgress ?? eventIdentities?.[0] ?? resource.firstEventIdentity;
+      if (error && typeof error === 'object') {
+        (error as Record<string, unknown>).externalAdmissionFailureRecorded = true;
+      }
       if ((failureClass === 'quarantine' || failureClass === 'integrity_conflict') && eventIdentity) {
         this.recordExternalSourceQuarantine(
           identity,
