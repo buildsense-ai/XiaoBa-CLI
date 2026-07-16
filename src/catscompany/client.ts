@@ -97,6 +97,33 @@ export interface MessageContext {
   seq?: number;   // Cats 服务端消息序号，用于排序和补充消息合并
 }
 
+export interface CatsAgentContextMessage {
+  id: number;
+  seq_id: number;
+  topic_id: string;
+  from_uid: number;
+  content?: unknown;
+  content_blocks?: unknown[];
+  type?: string;
+  msg_type?: string;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  agent_uid: number;
+  agent_id: string;
+  context_role: 'user' | 'assistant' | 'other_agent';
+  context_eligible: boolean;
+  context_reason?: string;
+  mentions?: string[];
+}
+
+export interface CatsAgentContextPage {
+  messages: CatsAgentContextMessage[];
+  topic_id: string;
+  agent_uid: number;
+  has_more: boolean;
+  next_before_id: number;
+}
+
 export interface CatsOutgoingMessage {
   topic_id?: string;
   topic?: string;
@@ -445,6 +472,50 @@ export class CatsClient extends EventEmitter {
 
   async sendMessage(topic: string, text: string): Promise<number> {
     return this.sendStructuredMessage({ topic_id: topic, type: 'text', content: text });
+  }
+
+  async getAgentContextHistory(
+    topic: string,
+    options: { beforeId?: number; limit?: number; signal?: AbortSignal } = {},
+  ): Promise<CatsAgentContextPage> {
+    const url = new URL(`${this.httpBaseUrl()}/api/messages`);
+    url.searchParams.set('topic_id', topic);
+    url.searchParams.set('agent_context', '1');
+    url.searchParams.set('latest', '1');
+    url.searchParams.set('limit', String(options.limit || 100));
+    if (options.beforeId && options.beforeId > 0) {
+      url.searchParams.set('before_id', String(options.beforeId));
+    }
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `ApiKey ${this.config.apiKey}`,
+        'User-Agent': CATSCOMPANY_CLIENT_UA,
+      },
+      signal: options.signal ?? AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`CatsCompany agent context history failed: ${res.status}${body ? ` ${body.slice(0, 200)}` : ''}`);
+    }
+
+    const payload = await res.json() as Partial<CatsAgentContextPage>;
+    if (
+      !Array.isArray(payload.messages)
+      || typeof payload.topic_id !== 'string'
+      || typeof payload.agent_uid !== 'number'
+      || typeof payload.has_more !== 'boolean'
+      || typeof payload.next_before_id !== 'number'
+    ) {
+      throw new Error('CatsCompany server does not support safe agent context history');
+    }
+    return {
+      messages: payload.messages,
+      topic_id: payload.topic_id,
+      agent_uid: payload.agent_uid,
+      has_more: payload.has_more,
+      next_before_id: payload.next_before_id,
+    };
   }
 
   private buildPubMessage(msgId: string, payload: CatsOutgoingMessage): Record<string, unknown> {

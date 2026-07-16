@@ -304,6 +304,77 @@ describe('CatsCompany client body identity', () => {
     assert.equal(request.body.apiKey, undefined);
   });
 
+  test('loads agent context history with bot auth and a stable cursor', async () => {
+    const requestPromise = new Promise<{ url?: string; headers: Record<string, string | string[] | undefined> }>((resolve, reject) => {
+      const server = createServer((req, res) => {
+        resolve({ url: req.url, headers: req.headers });
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          messages: [{
+            seq: 41,
+            topic_id: 'grp-test',
+            content: 'hello',
+            context_role: 'user',
+            context_eligible: true,
+          }],
+          topic_id: 'grp-test',
+          agent_uid: 63,
+          has_more: true,
+          next_before_id: 41,
+        }));
+      });
+      httpServers.push(server);
+      server.listen(0, '127.0.0.1', () => {
+        void (async () => {
+          const address = server.address() as AddressInfo;
+          const client = new CatsClient({
+            serverUrl: 'ws://127.0.0.1:1/v0/channels',
+            httpBaseUrl: `http://127.0.0.1:${address.port}`,
+            apiKey: 'cc-test-key',
+            bodyId: 'body-test',
+          });
+          const page = await client.getAgentContextHistory('grp-test', { beforeId: 88, limit: 25 });
+          assert.equal(page.agent_uid, 63);
+          assert.equal(page.has_more, true);
+          assert.equal(page.next_before_id, 41);
+          assert.equal(page.messages[0]?.context_role, 'user');
+        })().catch(reject);
+      });
+    });
+
+    const request = await requestPromise;
+    const url = new URL(request.url || '/', 'http://localhost');
+    assert.equal(url.pathname, '/api/messages');
+    assert.equal(url.searchParams.get('topic_id'), 'grp-test');
+    assert.equal(url.searchParams.get('agent_context'), '1');
+    assert.equal(url.searchParams.get('latest'), '1');
+    assert.equal(url.searchParams.get('limit'), '25');
+    assert.equal(url.searchParams.get('before_id'), '88');
+    assert.equal(request.headers.authorization, 'ApiKey cc-test-key');
+  });
+
+  test('rejects message history from servers without the safe agent context contract', async () => {
+    const server = createServer((_req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ messages: [{ seq: 1, content: 'legacy history' }] }));
+    });
+    httpServers.push(server);
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: 'ws://127.0.0.1:1/v0/channels',
+      httpBaseUrl: `http://127.0.0.1:${address.port}`,
+      apiKey: 'cc-test-key',
+      bodyId: 'body-test',
+    });
+
+    await assert.rejects(
+      client.getAgentContextHistory('usr-test'),
+      /does not support safe agent context history/,
+    );
+  });
+
   test('emits device rpc requests outside the regular message stream', async () => {
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     servers.push(server);

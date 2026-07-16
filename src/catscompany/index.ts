@@ -49,6 +49,7 @@ import {
   buildCatsCoAttachmentCachePath,
   scheduleCatsCoAttachmentCacheCleanup,
 } from './attachment-cache';
+import { CatsCompanyCloudSessionRestorer } from './cloud-session-restore';
 
 interface PendingAttachment {
   fileName: string;
@@ -255,6 +256,10 @@ export function isCatsCompanyPassiveAcknowledgement(text: string): boolean {
   return new RegExp(`^(?:${ack}|${thanks}|${ack}${thanks}|${thanks}${ack})$`, 'i').test(compact);
 }
 
+function isClearCommand(text: string): boolean {
+  return /^\s*\/clear(?:\s|$)/i.test(String(text || ''));
+}
+
 function compactCatsSubAgentSummary(text: string, maxLength = 4000): string {
   const normalized = text.replace(/\s+\n/g, '\n').trim();
   if (normalized.length <= maxLength) return normalized;
@@ -280,6 +285,8 @@ export class CatsCompanyBot {
   private sender: MessageSender;
   private sessionManager: MessageSessionManager;
   private agentServices: AgentServices;
+  private cloudSessionRestorer: CatsCompanyCloudSessionRestorer;
+  private cloudSessionRestorePromises = new Map<string, Promise<void>>();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
@@ -344,6 +351,7 @@ export class CatsCompanyBot {
     this.runtime = runtime;
     this.runtimeProfile = runtime.profile;
     this.agentServices = runtime.services;
+    this.cloudSessionRestorer = new CatsCompanyCloudSessionRestorer(this.bot, this.agentServices.aiService);
     const { toolManager } = this.agentServices;
 
     Logger.info(`已注册 ${toolManager.getToolCount()} 个基础工具 (message mode)`);
@@ -1160,6 +1168,9 @@ export class CatsCompanyBot {
 
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
     const sessionRoute = msg.envelope ? createCatsCoSessionRoute(msg.envelope) : undefined;
+    if (sessionRoute && !isClearCommand(msg.text)) {
+      await this.ensureCloudSessionRestored(msg, sessionRoute);
+    }
     const session = this.sessionManager.getOrCreate(sessionRoute && sessionRoute.sessionKey === key ? sessionRoute : key);
 
     // 处理斜杠命令
@@ -1318,6 +1329,50 @@ export class CatsCompanyBot {
 
     // 处理忙时排队的消息
     await this.drainMessageQueue(key);
+  }
+
+  private async ensureCloudSessionRestored(
+    msg: ParsedCatsMessage,
+    sessionRoute: ReturnType<typeof createCatsCoSessionRoute>,
+  ): Promise<void> {
+    if (this.sessionManager.get(sessionRoute)) return;
+    if (sessionRoute.topicType !== 'p2p' && sessionRoute.topicType !== 'group') return;
+
+    const key = sessionRoute.sessionKey;
+    const existing = this.cloudSessionRestorePromises.get(key);
+    if (existing) {
+      await existing;
+      return;
+    }
+
+    const restore = this.restoreCloudSessionWithStatus(msg, sessionRoute)
+      .finally(() => this.cloudSessionRestorePromises.delete(key));
+    this.cloudSessionRestorePromises.set(key, restore);
+    await restore;
+  }
+
+  private async restoreCloudSessionWithStatus(
+    msg: ParsedCatsMessage,
+    sessionRoute: ReturnType<typeof createCatsCoSessionRoute>,
+  ): Promise<void> {
+    let statusTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      statusTimer = setTimeout(() => {
+        void this.sender.sendThinking(msg.topic, '正在恢复并整理这段对话的云端上下文...').catch((error: any) => {
+          Logger.warning(`云端会话恢复提示发送失败: ${error?.message || error}`);
+        });
+      }, 800);
+
+      await this.cloudSessionRestorer.restoreIfMissing({
+        sessionKey: sessionRoute.sessionKey,
+        topicId: sessionRoute.topicId,
+        topicType: sessionRoute.topicType === 'group' ? 'group' : 'p2p',
+        agentId: sessionRoute.agentId || this.botUid || '',
+        currentSeq: Number(msg.seq || sessionRoute.channelSeq || 0),
+      });
+    } finally {
+      if (statusTimer) clearTimeout(statusTimer);
+    }
   }
 
   /**
