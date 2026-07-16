@@ -4,6 +4,7 @@ import type { ExternalSessionLogBackfillRequest } from './session-log-backfill';
 import {
   buildExternalEventDedupKey,
   buildExternalStableEventKey,
+  completeExternalCatchUpCatalogIfReady,
   loadExternalCursorState,
   redactExternalSourceDiagnostic,
   saveExternalCursorState,
@@ -62,12 +63,13 @@ export function retryExternalSourceQuarantineWithAudit(
     quarantineId,
     createdAt,
   });
-  saveExternalCursorState(storePath, {
+  const nextState: ExternalCursorState = {
     ...state,
     quarantinedEvents,
     recoveryAudit: appendAudit(state.recoveryAudit, audit),
     updatedAt: createdAt,
-  });
+  };
+  saveExternalCursorState(storePath, nextState);
   return true;
 }
 
@@ -110,7 +112,7 @@ export function skipExternalSourceQuarantineWithAudit(
     createdAt,
     reason: safeReason,
   });
-  saveExternalCursorState(storePath, {
+  const nextState: ExternalCursorState = {
     ...state,
     quarantinedEvents,
     tombstones: {
@@ -119,7 +121,8 @@ export function skipExternalSourceQuarantineWithAudit(
     },
     recoveryAudit: appendAudit(state.recoveryAudit, audit),
     updatedAt: createdAt,
-  });
+  };
+  saveExternalCursorState(storePath, nextState);
   return true;
 }
 
@@ -166,7 +169,7 @@ export function closeExternalSourceResourceWithAudit(
     reason: `operator confirmed resource ${reason}`,
   });
 
-  saveExternalCursorState(storePath, {
+  const nextState: ExternalCursorState = {
     ...state,
     resources: {
       ...state.resources,
@@ -194,7 +197,11 @@ export function closeExternalSourceResourceWithAudit(
       : state.tombstones,
     recoveryAudit: appendAudit(state.recoveryAudit, audit),
     updatedAt: createdAt,
-  });
+  };
+  saveExternalCursorState(
+    storePath,
+    completeExternalCatchUpCatalogIfReady(nextState, () => now),
+  );
   return {
     changed: true,
     tombstones: tombstone ? [tombstone] : [],
@@ -285,14 +292,18 @@ export function abandonExternalCatchUpTargets(
   }
 
   if (!changed) return noMutation();
-  saveExternalCursorState(storePath, {
+  const nextState: ExternalCursorState = {
     ...state,
     cursors,
     catchUpResources,
     tombstones,
     recoveryAudit,
     updatedAt: createdAt,
-  });
+  };
+  saveExternalCursorState(
+    storePath,
+    completeExternalCatchUpCatalogIfReady(nextState, () => now),
+  );
   return { changed, tombstones: createdTombstones, historicalTargetIds };
 }
 

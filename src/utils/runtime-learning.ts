@@ -74,6 +74,7 @@ import {
   SourceFailureState,
   SessionLogSourceStatus,
   ExternalSourceFailureClass,
+  ExternalSourceAdmissionConfiguration,
   ExternalSourceQuarantineEntry,
   ExternalSourceRecoveryAuditEntry,
   ExternalSourceTombstoneEntry,
@@ -308,6 +309,15 @@ interface ExternalResourceLaneIdentity extends ExternalSourceLaneIdentity {
 
 function externalSourceLaneKey(identity: ExternalSourceLaneIdentity): string {
   return JSON.stringify([identity.provider, identity.sourceId]);
+}
+
+function externalAdmissionConfigurationsMatch(
+  left: ExternalSourceAdmissionConfiguration,
+  right: ExternalSourceAdmissionConfiguration,
+): boolean {
+  return left.historyMode === right.historyMode
+    && left.scope === right.scope
+    && left.scopePath === right.scopePath;
 }
 
 function parseExternalSourceLaneKey(key: string): ExternalSourceLaneIdentity | null {
@@ -957,6 +967,7 @@ export class RuntimeLearning {
       const current = this.getExternalSourceFailure(provider, sourceId);
       if (!current?.requiresOperatorAction) return false;
       if (this.listExternalSourceQuarantines(provider, sourceId).length > 0) return false;
+      this.clearExternalResourceFailures(provider, sourceId);
       this.clearExternalSourceFailureGate(provider, sourceId);
       this.saveExternalSourceSchedulingState();
       return true;
@@ -1219,6 +1230,22 @@ export class RuntimeLearning {
     );
   }
 
+  private isExternalReadConfigurationCurrent(adapter: SessionLogSourceAdapter): boolean {
+    if (!adapter.isEnabled()) return false;
+    if (!this.managesConfiguredSessionLogSources) return true;
+    const expected = adapter.getExternalAdmissionConfiguration?.();
+    if (!expected) return false;
+    const provider = adapter.identity.provider;
+    if (!this.providerOverrideStore.isProviderEnabled(provider, this.config)) return false;
+    const currentScope = this.providerOverrideStore.getProviderScope(provider);
+    const currentHistoryMode = this.providerOverrideStore.getProviderHistoryMode(provider, this.config).mode;
+    return externalAdmissionConfigurationsMatch(expected, {
+      historyMode: currentHistoryMode,
+      scope: currentScope.scope,
+      ...(currentScope.scopePath ? { scopePath: currentScope.scopePath } : {}),
+    });
+  }
+
   private externalCursorStorePath(provider: string, sourceId: string): string {
     return this.findExternalSourceAdapter(provider, sourceId)?.getCursorStorePath?.()
       ?? resolveExternalCursorStorePath({ provider, sourceId });
@@ -1241,10 +1268,19 @@ export class RuntimeLearning {
 
   private reconcileExternalSourceRecovery(provider: string, sourceId: string): void {
     const remaining = this.listExternalSourceQuarantines(provider, sourceId);
+    const remainingResourceRefs = new Set(remaining.map(entry => entry.resourceRef));
+    this.clearExternalResourceFailures(
+      provider,
+      sourceId,
+      (state, resourceRef) => (
+        state.failureClass === 'quarantine'
+        && !remainingResourceRefs.has(resourceRef)
+      ),
+    );
     if (remaining.length > 0) {
       const current = this.getExternalSourceFailure(provider, sourceId);
       const first = remaining[0]!;
-      this.setExternalSourceFailure(provider, sourceId, {
+      const state: SourceFailureState = {
         consecutiveFailures: current?.consecutiveFailures ?? 1,
         lastFailedAt: current?.lastFailedAt ?? first.detectedAt,
         lastError: first.message,
@@ -1256,9 +1292,20 @@ export class RuntimeLearning {
         eventId: first.identity.eventId,
         lastAttemptedAt: current?.lastAttemptedAt ?? first.detectedAt,
         lastSuccessfulReadAt: current?.lastSuccessfulReadAt ?? null,
-      });
+      };
+      if (first.failureClass === 'quarantine') {
+        this.setExternalResourceFailure(provider, sourceId, first.resourceRef, state);
+      }
+      this.setExternalSourceFailure(provider, sourceId, state);
     } else {
-      this.clearExternalSourceFailureGate(provider, sourceId);
+      const remainingFailures = [...this.listExternalResourceFailures(provider, sourceId)]
+        .sort((left, right) => (left.lastFailedAt ?? '').localeCompare(right.lastFailedAt ?? ''));
+      const representative = remainingFailures[remainingFailures.length - 1];
+      if (representative) {
+        this.setExternalSourceFailure(provider, sourceId, representative);
+      } else {
+        this.clearExternalSourceFailureGate(provider, sourceId);
+      }
     }
     this.saveExternalSourceSchedulingState();
   }
@@ -1305,10 +1352,16 @@ export class RuntimeLearning {
     return [...this.getExternalResourceFailureState(provider, sourceId).values()];
   }
 
-  private clearExternalResourceFailures(provider: string, sourceId: string): void {
+  private clearExternalResourceFailures(
+    provider: string,
+    sourceId: string,
+    predicate: (state: SourceFailureState, resourceRef: string) => boolean = () => true,
+  ): void {
     for (const key of this.externalResourceFailureState.keys()) {
       const identity = parseExternalResourceLaneKey(key);
       if (identity?.provider !== provider || identity.sourceId !== sourceId) continue;
+      const state = this.externalResourceFailureState.get(key);
+      if (!state || !predicate(state, identity.resourceRef)) continue;
       this.externalResourceFailureState.delete(key);
       this.externalSourceSchedulingStateDirty = true;
     }
@@ -1316,7 +1369,6 @@ export class RuntimeLearning {
 
   private clearExternalSourceFailureGate(provider: string, sourceId: string): void {
     const current = this.getExternalSourceFailure(provider, sourceId);
-    this.clearExternalResourceFailures(provider, sourceId);
     if (!current) return;
     this.setExternalSourceFailure(provider, sourceId, {
       consecutiveFailures: 0,
@@ -1597,194 +1649,194 @@ export class RuntimeLearning {
       let contradictionSignals = 0;
       let reopenedTerminalTombstoneId: string | undefined;
 
-    const ingest = (unit: DistillationUnit, context: ExternalSessionLogBackfillIngestContext) => {
-      const recoveryState = loadExternalCursorState(recoveryStorePath);
-      const blockingTombstone = findBlockingExternalSourceTombstone(
-        recoveryState,
-        source.identity,
-        context.resource.resourceRef,
-        context.eventIdentity,
-        request.reopenTombstoneId,
-      );
-      if (blockingTombstone) {
-        if (reopenedRange) {
-          reopenedTerminalTombstoneId ??= blockingTombstone.tombstoneId;
-        }
-        return {
-          admittedEpisodeIds: [],
-          tombstoneId: blockingTombstone.tombstoneId,
-        };
-      }
-      // Minimal #93 seam: explicit backfill evidence admission also flows
-      // through the single External Admission Coordinator, but the backfill
-      // service still owns its separate operation cursor/audit state. When the
-      // future bounded async reader pool (#92) lands, same-provider continuous
-      // and backfill pages can be interleaved at page boundaries by selecting
-      // lanes before calling admitPage().
-      this.externalAdmissionCoordinator.markBackfillPending(source.identity.provider);
-      const page: ExternalEvidencePage = {
-        providerId: source.identity.provider,
-        sourceId: source.identity.sourceId,
-        identity: source.identity,
-        resource: context.resource,
-        distillationUnits: [unit],
-        eventIdentities: [context.eventIdentity],
-        readResult: {
-          distillationUnit: unit,
-          distillationUnits: [unit],
-          advanced: true,
-          status: 'advanced',
-          newCursor: {
-            resourceRef: context.resource.resourceRef,
-            position: context.eventIdentity.position,
-            processedCount: 1,
-          },
-          eventIdentities: [context.eventIdentity],
-          accounting: { events: 1, bytes: 0, elapsedMs: 0 },
-        },
-        lane: 'backfill',
-        ...(reopenedRange
-          ? {
-            historicalTarget: {
-              targetId: reopenedRange.targetId,
-              provider: reopenedRange.provider,
-              sourceId: reopenedRange.sourceId,
-              resourceRef: reopenedRange.resourceRef,
-              position: reopenedRange.range.endPosition,
-              prefixDigest: reopenedRange.prefixDigest,
-            },
+      const ingest = (unit: DistillationUnit, context: ExternalSessionLogBackfillIngestContext) => {
+        const recoveryState = loadExternalCursorState(recoveryStorePath);
+        const blockingTombstone = findBlockingExternalSourceTombstone(
+          recoveryState,
+          source.identity,
+          context.resource.resourceRef,
+          context.eventIdentity,
+          request.reopenTombstoneId,
+        );
+        if (blockingTombstone) {
+          if (reopenedRange) {
+            reopenedTerminalTombstoneId ??= blockingTombstone.tombstoneId;
           }
-          : {}),
+          return {
+            admittedEpisodeIds: [],
+            tombstoneId: blockingTombstone.tombstoneId,
+          };
+        }
+        // Minimal #93 seam: explicit backfill evidence admission also flows
+        // through the single External Admission Coordinator, but the backfill
+        // service still owns its separate operation cursor/audit state. When the
+        // future bounded async reader pool (#92) lands, same-provider continuous
+        // and backfill pages can be interleaved at page boundaries by selecting
+        // lanes before calling admitPage().
+        this.externalAdmissionCoordinator.markBackfillPending(source.identity.provider);
+        const page: ExternalEvidencePage = {
+          providerId: source.identity.provider,
+          sourceId: source.identity.sourceId,
+          identity: source.identity,
+          resource: context.resource,
+          distillationUnits: [unit],
+          eventIdentities: [context.eventIdentity],
+          readResult: {
+            distillationUnit: unit,
+            distillationUnits: [unit],
+            advanced: true,
+            status: 'advanced',
+            newCursor: {
+              resourceRef: context.resource.resourceRef,
+              position: context.eventIdentity.position,
+              processedCount: 1,
+            },
+            eventIdentities: [context.eventIdentity],
+            accounting: { events: 1, bytes: 0, elapsedMs: 0 },
+          },
+          lane: 'backfill',
+          ...(reopenedRange
+            ? {
+              historicalTarget: {
+                targetId: reopenedRange.targetId,
+                provider: reopenedRange.provider,
+                sourceId: reopenedRange.sourceId,
+                resourceRef: reopenedRange.resourceRef,
+                position: reopenedRange.range.endPosition,
+                prefixDigest: reopenedRange.prefixDigest,
+              },
+            }
+            : {}),
+        };
+        const commit = this.externalAdmissionCoordinator.admitPage(page, [source.identity.provider]);
+        if (!commit.acknowledged) {
+          throw commit.error ?? new Error('external backfill admission coordinator commit failed');
+        }
+        admittedEpisodes += commit.admittedEpisodes;
+        contradictionSignals += commit.contradictionSignals;
+        return { admittedEpisodeIds: commit.admittedEpisodeIds ?? [] };
       };
-      const commit = this.externalAdmissionCoordinator.admitPage(page, [source.identity.provider]);
-      if (!commit.acknowledged) {
-        throw commit.error ?? new Error('external backfill admission coordinator commit failed');
+  
+      let backfill: ExternalSessionLogBackfillRunResult | null = null;
+      let drained = false;
+      let priorityMaturation = skippedMaturationReport();
+      let priorityReview = skippedReviewReport();
+      do {
+        // Deadline/retry work has priority between every bounded backfill slice.
+        const due = this.planner.plan(this.clock()).due;
+        const priorityReasons: RuntimeLearningReason[] = [];
+        if (due.operationalRetryDue) priorityReasons.push('operational-retry');
+        if (due.settlementDue) priorityReasons.push('settlement-deadline');
+        if (priorityReasons.length > 0) {
+          const priorityWake = await this.wakeWithStateWriter(priorityReasons, {}, writerOwner);
+          priorityMaturation = mergeMaturationReports(priorityMaturation, priorityWake.maturation);
+          priorityReview = mergeReviewReports(priorityReview, priorityWake.review);
+        }
+  
+        backfill = service.run({
+          ...request,
+          limits: {
+            maxResources: Math.min(request.limits.maxResources, EXTERNAL_BACKFILL_SLICE_RESOURCES),
+            maxBytes: Math.min(request.limits.maxBytes, EXTERNAL_BACKFILL_SLICE_BYTES),
+            maxElapsedMs: Math.min(request.limits.maxElapsedMs, EXTERNAL_BACKFILL_SLICE_MS),
+          },
+        }, source, ingest, { filterOutOfRangeEvents: true });
+  
+        if (backfill.status !== 'quota_reached') break;
+        const priorMetrics = backfill.state.metrics;
+        if (this.backfillDrainRequested) {
+          drained = true;
+          break;
+        }
+        // A single event larger than the cooperative byte slice must remain
+        // resumable, but retrying the same zero-progress slice would spin.
+        // Leave it quota-limited for the next explicit invocation.
+        if (
+          backfill.ingestedEvents === 0
+          && backfill.duplicateEventsSkipped === 0
+          && backfill.processedResources === 0
+          && priorMetrics.resourcesProcessed === 0
+        ) {
+          break;
+        }
+        await new Promise<void>(resolve => setImmediate(resolve));
+      } while (backfill.status === 'quota_reached');
+  
+      if (!backfill) {
+        throw new Error('external backfill did not produce a result');
       }
-      admittedEpisodes += commit.admittedEpisodes;
-      contradictionSignals += commit.contradictionSignals;
-      return { admittedEpisodeIds: commit.admittedEpisodeIds ?? [] };
-    };
-
-    let backfill: ExternalSessionLogBackfillRunResult | null = null;
-    let drained = false;
-    let priorityMaturation = skippedMaturationReport();
-    let priorityReview = skippedReviewReport();
-    do {
-      // Deadline/retry work has priority between every bounded backfill slice.
-      const due = this.planner.plan(this.clock()).due;
-      const priorityReasons: RuntimeLearningReason[] = [];
-      if (due.operationalRetryDue) priorityReasons.push('operational-retry');
-      if (due.settlementDue) priorityReasons.push('settlement-deadline');
-      if (priorityReasons.length > 0) {
-        const priorityWake = await this.wakeWithStateWriter(priorityReasons, {}, writerOwner);
-        priorityMaturation = mergeMaturationReports(priorityMaturation, priorityWake.maturation);
-        priorityReview = mergeReviewReports(priorityReview, priorityWake.review);
+  
+      if (reopenedRange && backfill.status === 'completed') {
+        completeExternalTombstoneReopen(
+          recoveryStorePath,
+          request.operationId,
+          this.clock(),
+          reopenedTerminalTombstoneId,
+        );
+        this.episodeStore.reconcileHistoricalTarget(reopenedRange.targetId);
       }
-
-      backfill = service.run({
-        ...request,
-        limits: {
-          maxResources: Math.min(request.limits.maxResources, EXTERNAL_BACKFILL_SLICE_RESOURCES),
-          maxBytes: Math.min(request.limits.maxBytes, EXTERNAL_BACKFILL_SLICE_BYTES),
-          maxElapsedMs: Math.min(request.limits.maxElapsedMs, EXTERNAL_BACKFILL_SLICE_MS),
-        },
-      }, source, ingest, { filterOutOfRangeEvents: true });
-
-      if (backfill.status !== 'quota_reached') break;
-      const priorMetrics = backfill.state.metrics;
-      if (this.backfillDrainRequested) {
-        drained = true;
-        break;
+  
+      // Backfill owns a separate cursor/audit, but source health is shared with
+      // continuous ingestion. Persist the same durable failure class without
+      // routing source failures into Operational Review Retry accounting.
+      if (backfill.status === 'source_failed') {
+        const latestFailure = backfill.state.failures[backfill.state.failures.length - 1];
+        const message = latestFailure?.message ?? 'external backfill source failed';
+        this.recordExternalSourceFailure(source.identity, new Error(message), {
+          failureClass: this.classifyExternalSourceFailure(message),
+          resourceRef: latestFailure?.resourceRef,
+          eventId: latestFailure?.eventId,
+        });
+        this.saveExternalSourceSchedulingState();
+      } else if (backfill.status === 'pending') {
+        this.recordExternalSourceFailure(source.identity, new Error('pending external backfill range'), {
+          failureClass: 'pending',
+        });
+        this.saveExternalSourceSchedulingState();
+      } else if (backfill.status === 'completed') {
+        this.resetExternalSourceFailure(source.identity);
+        this.saveExternalSourceSchedulingState();
       }
-      // A single event larger than the cooperative byte slice must remain
-      // resumable, but retrying the same zero-progress slice would spin.
-      // Leave it quota-limited for the next explicit invocation.
-      if (
-        backfill.ingestedEvents === 0
-        && backfill.duplicateEventsSkipped === 0
-        && backfill.processedResources === 0
-        && priorMetrics.resourcesProcessed === 0
-      ) {
-        break;
+  
+      if (this.externalEpisodeProvenanceDirty) {
+        this.saveExternalEpisodeProvenanceState();
       }
-      await new Promise<void>(resolve => setImmediate(resolve));
-    } while (backfill.status === 'quota_reached');
-
-    if (!backfill) {
-      throw new Error('external backfill did not produce a result');
-    }
-
-    if (reopenedRange && backfill.status === 'completed') {
-      completeExternalTombstoneReopen(
-        recoveryStorePath,
-        request.operationId,
-        this.clock(),
-        reopenedTerminalTombstoneId,
-      );
-      this.episodeStore.reconcileHistoricalTarget(reopenedRange.targetId);
-    }
-
-    // Backfill owns a separate cursor/audit, but source health is shared with
-    // continuous ingestion. Persist the same durable failure class without
-    // routing source failures into Operational Review Retry accounting.
-    if (backfill.status === 'source_failed') {
-      const latestFailure = backfill.state.failures[backfill.state.failures.length - 1];
-      const message = latestFailure?.message ?? 'external backfill source failed';
-      this.recordExternalSourceFailure(source.identity, new Error(message), {
-        failureClass: this.classifyExternalSourceFailure(message),
-        resourceRef: latestFailure?.resourceRef,
-        eventId: latestFailure?.eventId,
-      });
-      this.saveExternalSourceSchedulingState();
-    } else if (backfill.status === 'pending') {
-      this.recordExternalSourceFailure(source.identity, new Error('pending external backfill range'), {
-        failureClass: 'pending',
-      });
-      this.saveExternalSourceSchedulingState();
-    } else if (backfill.status === 'completed') {
-      this.resetExternalSourceFailure(source.identity);
-      this.saveExternalSourceSchedulingState();
-    }
-
-    if (this.externalEpisodeProvenanceDirty) {
-      this.saveExternalEpisodeProvenanceState();
-    }
-
-    const maturationDueWork: DueWork = {
-      settlementDue: true,
-      operationalRetryDue: false,
-      routineCuratorDue: false,
-      expeditedCuratorDue: false,
-      semanticReassessmentDue: false,
-    };
-    const reviewDueWork: DueWork = {
-      settlementDue: true,
-      operationalRetryDue: true,
-      routineCuratorDue: false,
-      expeditedCuratorDue: false,
-      semanticReassessmentDue: false,
-    };
-
-    const maturation = drained
-      ? priorityMaturation
-      : mergeMaturationReports(priorityMaturation, await this.runMaturation(maturationDueWork, false));
-    if (!drained) await this.flushCuratorObservations();
-    const review = drained
-      ? priorityReview
-      : mergeReviewReports(priorityReview, await this.runReview(reviewDueWork));
-
-    const metrics = backfill.state.metrics;
-    const aggregateBackfill: ExternalSessionLogBackfillRunResult = {
-      ...backfill,
-      processedResources: metrics.resourcesProcessed,
-      pendingResources: metrics.pendingResources,
-      failedResources: metrics.failedResources,
-      ingestedEvents: metrics.ingestedEvents,
-      duplicateEventsSkipped: metrics.duplicateEventsSkipped,
-      tombstonedEventsSkipped: metrics.tombstonedEventsSkipped,
-      admittedEpisodes: metrics.admittedEpisodes,
-      bytesProcessed: metrics.bytesProcessed,
-    };
+  
+      const maturationDueWork: DueWork = {
+        settlementDue: true,
+        operationalRetryDue: false,
+        routineCuratorDue: false,
+        expeditedCuratorDue: false,
+        semanticReassessmentDue: false,
+      };
+      const reviewDueWork: DueWork = {
+        settlementDue: true,
+        operationalRetryDue: true,
+        routineCuratorDue: false,
+        expeditedCuratorDue: false,
+        semanticReassessmentDue: false,
+      };
+  
+      const maturation = drained
+        ? priorityMaturation
+        : mergeMaturationReports(priorityMaturation, await this.runMaturation(maturationDueWork, false));
+      if (!drained) await this.flushCuratorObservations();
+      const review = drained
+        ? priorityReview
+        : mergeReviewReports(priorityReview, await this.runReview(reviewDueWork));
+  
+      const metrics = backfill.state.metrics;
+      const aggregateBackfill: ExternalSessionLogBackfillRunResult = {
+        ...backfill,
+        processedResources: metrics.resourcesProcessed,
+        pendingResources: metrics.pendingResources,
+        failedResources: metrics.failedResources,
+        ingestedEvents: metrics.ingestedEvents,
+        duplicateEventsSkipped: metrics.duplicateEventsSkipped,
+        tombstonedEventsSkipped: metrics.tombstonedEventsSkipped,
+        admittedEpisodes: metrics.admittedEpisodes,
+        bytesProcessed: metrics.bytesProcessed,
+      };
 
       return {
         paths,
@@ -2940,6 +2992,13 @@ export class RuntimeLearning {
         if (isExternal && options.signal?.aborted) {
           sourceDrained = true;
           break;
+        }
+        if (isExternal && !this.isExternalReadConfigurationCurrent(adapter)) {
+          // Mode/scope/provider changes invalidate work that is still Reading
+          // or Ready. No acknowledgement has started, so replay under the new
+          // configuration remains lossless. Once admitPage starts below, the
+          // coordinator owns an atomic Committing page and may finish it.
+          continue;
         }
 
         if (readResult.status === 'failed') {

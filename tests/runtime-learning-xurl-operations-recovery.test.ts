@@ -714,6 +714,10 @@ test('transient backoff stays resource-local while healthy resources and Interna
       failure?.resourceRef === failingRef || failure?.resourceRef === secondFailingRef,
     );
     assert.ok(failure?.nextRetryAt);
+    assert.deepEqual(
+      [...fixture.runtime.getExternalResourceFailureState('codex', 'external-codex').keys()].sort(),
+      [failingRef, secondFailingRef],
+    );
 
     const failedReadCountsBeforeRetry = new Map(
       [failingRef, secondFailingRef].map(resourceRef => [
@@ -723,7 +727,13 @@ test('transient backoff stays resource-local while healthy resources and Interna
           .length,
       ]),
     );
-    const second = await fixture.runtime.wake('scheduled');
+    const restarted = env.createRuntime();
+    assert.deepEqual(
+      [...restarted.runtime.getExternalResourceFailureState('codex', 'external-codex').keys()].sort(),
+      [failingRef, secondFailingRef],
+      'every resource-local deadline survives restart independently',
+    );
+    const second = await restarted.runtime.wake('scheduled');
     assert.notEqual(
       second.discovery.sources.find(source => source.sourceId === 'external-codex')?.status,
       'backoff',

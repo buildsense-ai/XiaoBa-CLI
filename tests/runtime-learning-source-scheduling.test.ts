@@ -683,7 +683,7 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
       assert.equal(externalWorking.acknowledged.length, 2, 'other source still processes resources');
     });
 
-    test('external source with consecutive failures enters backoff and is skipped', async () => {
+    test('external source with every resource in local backoff is skipped', async () => {
       const external = new FakeSessionLogSourceAdapter({
         sourceId: 'ext-always-fails',
         category: 'external',
@@ -713,8 +713,13 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
 
       const failureState = runtimeLearning.getExternalSourceFailureState().get('ext-always-fails');
       assert.ok(failureState, 'failure state exists');
-      assert.equal(failureState!.consecutiveFailures, 3, '3 consecutive failures from 3 resources');
+      assert.equal(failureState!.consecutiveFailures, 1, 'the source summary exposes one resource-local failure');
       assert.ok(failureState!.suspendedUntil, 'suspension deadline set');
+      assert.equal(
+        runtimeLearning.getExternalResourceFailureState('fake-ext-always-fails', 'ext-always-fails').size,
+        3,
+        'all three resource deadlines are retained independently',
+      );
 
       // Second wake (before suspension expires): source should be skipped
       const result2 = await runtimeLearning.wake('scheduled');
@@ -723,7 +728,7 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
       assert.equal(result2.discovery.advancedFiles, 0, 'no resources processed in backoff');
     });
 
-    test('successful processing resets consecutive failures', async () => {
+    test('successful sibling resources do not clear a failed resource deadline', async () => {
       const external = new FakeSessionLogSourceAdapter({
         sourceId: 'ext-recover',
         category: 'external',
@@ -749,18 +754,15 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
 
       await runtimeLearning.wake('startup');
 
-      // Some resources succeeded → consecutive failures should have been reset
+      // Healthy siblings continue, while the failed resource keeps its own
+      // retry deadline instead of being reset by unrelated success.
       const failureState = runtimeLearning.getExternalSourceFailureState().get('ext-recover');
-      if (failureState) {
-        // If there was a failure AND a success, failures should be 0 (reset)
-        // But if only the first resource failed with no subsequent success, failures = 1
-        // Since we have 5 resources and only the first fails, the other 4 succeed,
-        // so consecutiveFailures should be 0
-        assert.equal(failureState.consecutiveFailures, 0,
-          'successful resources reset consecutive failures');
-        assert.equal(failureState.suspendedUntil, null,
-          'no suspension after successful processing');
-      }
+      assert.equal(failureState?.consecutiveFailures, 1);
+      assert.ok(failureState?.suspendedUntil);
+      assert.equal(
+        runtimeLearning.getExternalResourceFailureState('fake-ext-recover', 'ext-recover').size,
+        1,
+      );
     });
   });
 
@@ -969,8 +971,16 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
       // The new instance should have restored the backoff state
       const failureState2 = runtimeLearning2.getExternalSourceFailureState().get('ext-persist-backoff');
       assert.ok(failureState2, 'backoff state restored after restart');
-      assert.equal(failureState2!.consecutiveFailures, 3, 'consecutive failures restored');
+      assert.equal(failureState2!.consecutiveFailures, 1, 'representative resource failure restored');
       assert.ok(failureState2!.suspendedUntil, 'suspension deadline restored');
+      assert.equal(
+        runtimeLearning2.getExternalResourceFailureState(
+          'fake-ext-persist-backoff',
+          'ext-persist-backoff',
+        ).size,
+        3,
+        'all resource-local backoff deadlines are restored',
+      );
 
       // A wake on the new instance should skip the source due to restored backoff
       // (unless the suspension has expired, which is unlikely since it was just created)
@@ -983,7 +993,7 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
       // What matters is it doesn't crash and the state is present.
       if (backoffReport!.status === 'backoff') {
         assert.ok(backoffReport!.failureState, 'failure state in report');
-        assert.equal(backoffReport!.failureState!.consecutiveFailures, 3);
+        assert.equal(backoffReport!.failureState!.consecutiveFailures, 1);
       }
     });
   });
