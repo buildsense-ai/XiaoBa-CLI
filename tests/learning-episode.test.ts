@@ -269,6 +269,59 @@ describe('V3 independent Learning Episodes', () => {
     }
   });
 
+  test('keeps abandoned historical contradictions terminal until an explicit reopen reconciles them', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-learning-historical-abandoned-'));
+    try {
+      const source = path.join(root, 'session.jsonl');
+      const store = new LearningEpisodeStore(path.join(root, 'episodes.json'));
+      const historicalTarget = {
+        targetId: 'target-abandoned-thread-1',
+        provider: 'fixture',
+        sourceId: 'fixture-source',
+        resourceRef: 'thread-1',
+        position: 4,
+        prefixDigest: 'a'.repeat(64),
+      };
+      const reopenedTarget = {
+        ...historicalTarget,
+        targetId: 'target-reopened-thread-1',
+        prefixDigest: 'b'.repeat(64),
+      };
+      const first = extractLearningEpisodes(unit([
+        turn(1, 'Deliver a card.', [tool('1', 'send_file', 'sent')]),
+      ], source));
+      store.applyExtraction(first, { historicalTarget });
+      const correction = extractLearningEpisodes({
+        ...unit([turn(2, 'Redo it, this is unsuitable.', [])], source),
+        continuityTurns: [turn(1, 'Deliver a card.', [tool('1', 'send_file', 'sent')])],
+      });
+      const pending = Object.values(
+        store.applyExtraction(correction, { historicalTarget }).episodes,
+      )[0]!;
+
+      assert.equal(
+        store.abandonHistoricalTarget(historicalTarget.targetId).episodes[pending.episodeId]!.status,
+        'historical-abandoned',
+      );
+      assert.equal(
+        store.settle({ now: new Date('2030-01-01T00:00:00.000Z') }).episodes[pending.episodeId]!.status,
+        'historical-abandoned',
+      );
+      assert.equal(
+        store.applyExtraction(correction, { historicalTarget }).episodes[pending.episodeId]!.status,
+        'historical-abandoned',
+        'replay cannot silently remove the abandonment gate',
+      );
+      store.reopenHistoricalTarget(historicalTarget.targetId, reopenedTarget);
+      assert.equal(
+        store.reconcileHistoricalTarget(reopenedTarget.targetId).episodes[pending.episodeId]!.status,
+        'contradicted',
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('a late contradiction revokes a previously eligible episode', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-learning-late-contradiction-'));
     try {

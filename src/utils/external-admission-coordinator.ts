@@ -65,6 +65,7 @@ import type {
   SourceEventIdentity,
 } from './session-log-source';
 import type { DistillationUnit } from './distillation-unit';
+import type { HistoricalEpisodeTargetRef } from './learning-episode';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -95,6 +96,8 @@ export interface ExternalEvidencePage {
   readonly readResult: SessionLogSourceReadResult;
   /** Which lane produced this page. */
   readonly lane: 'continuous' | 'catch-up' | 'backfill';
+  /** Fixed reopened-range gate for a deliberate tombstone backfill. */
+  readonly historicalTarget?: HistoricalEpisodeTargetRef;
 }
 
 /**

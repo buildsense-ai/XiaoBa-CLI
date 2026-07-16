@@ -33,12 +33,16 @@ import {
 } from '../src/utils/session-log-source';
 import { acquireExternalSourceProviderLock } from '../src/utils/external-source-provider-lock';
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
-import { XURL_TEST_HELPERS } from '../src/utils/xurl-session-log-source';
+import {
+  XURL_TEST_HELPERS,
+  XurlExternalBackfillSource,
+} from '../src/utils/xurl-session-log-source';
 import {
   CatalogPageSpec,
   FakeXurlScenario,
   ThreadSummarySpec,
   TimelineSpec,
+  readInvocationLog,
   writeFakeXurl,
   writeScenario,
 } from './helpers/xurl-rendered-fixtures';
@@ -534,6 +538,431 @@ test('source failure without a stable event identity never creates an event quar
   }
 });
 
+test('resource quarantine leaves another resource on the same provider operational', async () => {
+  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  try {
+    const quarantinedRef = 'conversation-quarantined';
+    const healthyRef = 'conversation-healthy';
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage('codex', [
+            thread(quarantinedRef, 'branch-main', 0, FP('quarantined-0'), 'rev-quarantined-0'),
+            thread(healthyRef, 'branch-main', 0, FP('healthy-0'), 'rev-healthy-0'),
+          ]),
+        },
+      },
+      read: {},
+    } satisfies FakeXurlScenario);
+    const fixture = env.createRuntime();
+    await fixture.runtime.wake('startup');
+
+    const storePath = cursorStorePath(env.root, 'codex', 'external-codex');
+    const baseline = loadExternalCursorState(storePath);
+    const sourceIdentity = baseline.sourceIdentities['external-codex']!;
+    const eventIdentity = {
+      eventId: `agents://codex/${quarantinedRef}#1-2`,
+      position: 2,
+      conversationId: quarantinedRef,
+      branchId: 'branch-main',
+      revision: 'rev-quarantined-2',
+      contentHash: 'quarantined-content-hash',
+    };
+    const quarantineId = buildExternalEventDedupKey(sourceIdentity, eventIdentity);
+    saveExternalCursorState(storePath, {
+      ...baseline,
+      quarantinedEvents: {
+        ...baseline.quarantinedEvents,
+        [quarantineId]: {
+          quarantineId,
+          resourceRef: quarantinedRef,
+          sourceIdentity,
+          identity: eventIdentity,
+          failureClass: 'quarantine',
+          message: 'stable event exceeds the bounded evidence limit',
+          detectedAt: new Date().toISOString(),
+          cursorPosition: 0,
+        },
+      },
+      updatedAt: new Date().toISOString(),
+    });
+
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage('codex', [
+            thread(quarantinedRef, 'branch-main', 2, FP('quarantined-2'), 'rev-quarantined-2'),
+            thread(healthyRef, 'branch-main', 2, FP('healthy-2'), 'rev-healthy-2'),
+          ]),
+        },
+      },
+      read: {
+        [quarantinedRef]: readSpec(timeline(
+          'codex',
+          quarantinedRef,
+          'branch-main',
+          2,
+          FP('quarantined-2'),
+          [
+            entry(1, 'User', 'This event remains quarantined.'),
+            entry(2, 'Assistant', 'This event must not be admitted.'),
+          ],
+          'rev-quarantined-2',
+        )),
+        [healthyRef]: readSpec(timeline(
+          'codex',
+          healthyRef,
+          'branch-main',
+          2,
+          FP('healthy-2'),
+          [
+            entry(1, 'User', 'Deliver the healthy provider-local task.'),
+            entry(2, 'Assistant', 'The healthy provider-local task is delivered and verified.'),
+          ],
+          'rev-healthy-2',
+        )),
+      },
+    } satisfies FakeXurlScenario);
+
+    const wake = await fixture.runtime.wake('scheduled');
+    const report = wake.discovery.sources.find(source => source.sourceId === 'external-codex');
+    assert.ok(report);
+    assert.notEqual(report.status, 'backoff');
+    assert.equal(report.unitsProcessed, 1);
+    const after = loadExternalCursorState(storePath);
+    assert.equal(after.cursors[quarantinedRef]?.cursor.position, 0);
+    assert.equal(after.cursors[healthyRef]?.cursor.position, 2);
+    assert.ok(after.quarantinedEvents[quarantineId]);
+  } finally {
+    env.restore();
+  }
+});
+
+test('transient backoff stays resource-local while healthy resources and Internal continue', async () => {
+  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  try {
+    const failingRef = 'conversation-failing-a';
+    const secondFailingRef = 'conversation-failing-b';
+    const healthyRef = 'conversation-healthy';
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage('codex', [
+            thread(failingRef, 'branch-main', 0, FP('failing-0'), 'rev-failing-0'),
+            thread(secondFailingRef, 'branch-main', 0, FP('failing-b-0'), 'rev-failing-b-0'),
+            thread(healthyRef, 'branch-main', 0, FP('healthy-0'), 'rev-healthy-0'),
+          ]),
+        },
+      },
+      read: {},
+    } satisfies FakeXurlScenario);
+    const fixture = env.createRuntime();
+    await fixture.runtime.wake('startup');
+
+    writeInternalLog(env.internalLogPath, [
+      turn(1, 'internal-session', 'Deliver the Internal isolation result.', 'Internal result delivered.'),
+    ]);
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage('codex', [
+            thread(failingRef, 'branch-main', 2, FP('failing-2'), 'rev-failing-2'),
+            thread(secondFailingRef, 'branch-main', 2, FP('failing-b-2'), 'rev-failing-b-2'),
+            thread(healthyRef, 'branch-main', 2, FP('healthy-2'), 'rev-healthy-2'),
+          ]),
+        },
+      },
+      read: {
+        [failingRef]: {
+          exitCode: 1,
+          stderr: 'Error: transient network timeout',
+        },
+        [secondFailingRef]: {
+          exitCode: 1,
+          stderr: 'Error: transient upstream timeout',
+        },
+        [healthyRef]: readSpec(timeline(
+          'codex',
+          healthyRef,
+          'branch-main',
+          2,
+          FP('healthy-2'),
+          [
+            entry(1, 'User', 'Deliver the healthy resource while its sibling waits.'),
+            entry(2, 'Assistant', 'The healthy resource is delivered and verified.'),
+          ],
+          'rev-healthy-2',
+        )),
+      },
+    } satisfies FakeXurlScenario);
+
+    const first = await fixture.runtime.wake('scheduled');
+    const external = first.discovery.sources.find(source => source.sourceId === 'external-codex');
+    const internal = first.discovery.sources.find(source => source.sourceId === 'internal-xiaoba');
+    assert.ok(external);
+    assert.ok(internal);
+    assert.equal(external.unitsProcessed, 1);
+    assert.equal(internal.unitsProcessed, 1);
+    assert.equal(
+      loadExternalCursorState(cursorStorePath(env.root, 'codex', 'external-codex'))
+        .cursors[healthyRef]?.cursor.position,
+      2,
+    );
+    const failure = fixture.runtime.getExternalSourceFailureState().get('external-codex');
+    assert.equal(failure?.failureClass, 'transient');
+    assert.ok(
+      failure?.resourceRef === failingRef || failure?.resourceRef === secondFailingRef,
+    );
+    assert.ok(failure?.nextRetryAt);
+
+    const failedReadCountsBeforeRetry = new Map(
+      [failingRef, secondFailingRef].map(resourceRef => [
+        resourceRef,
+        readInvocationLog(env.logPath)
+          .filter(invocation => invocation.action === 'read' && invocation.args[0]?.includes(resourceRef))
+          .length,
+      ]),
+    );
+    const second = await fixture.runtime.wake('scheduled');
+    assert.notEqual(
+      second.discovery.sources.find(source => source.sourceId === 'external-codex')?.status,
+      'backoff',
+      'one resource backoff does not pause the provider lane',
+    );
+    for (const resourceRef of [failingRef, secondFailingRef]) {
+      assert.equal(
+        readInvocationLog(env.logPath)
+          .filter(invocation => invocation.action === 'read' && invocation.args[0]?.includes(resourceRef))
+          .length,
+        failedReadCountsBeforeRetry.get(resourceRef),
+        `affected resource ${resourceRef} is not retried before its durable deadline`,
+      );
+    }
+  } finally {
+    env.restore();
+  }
+});
+
+test('protocol failure pauses the provider before later resources while Internal remains operational', async () => {
+  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  try {
+    const blockedRef = 'conversation-a-protocol';
+    const unreadRef = 'conversation-b-unread';
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage('codex', [
+            thread(blockedRef, 'branch-main', 0, FP('protocol-0'), 'rev-protocol-0'),
+            thread(unreadRef, 'branch-main', 0, FP('unread-0'), 'rev-unread-0'),
+          ]),
+        },
+      },
+      read: {},
+    } satisfies FakeXurlScenario);
+    const fixture = env.createRuntime();
+    await fixture.runtime.wake('startup');
+
+    writeInternalLog(env.internalLogPath, [
+      turn(1, 'internal-session', 'Deliver Internal work during provider repair.', 'Internal work delivered.'),
+    ]);
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage('codex', [
+            thread(blockedRef, 'branch-main', 2, FP('protocol-2'), 'rev-protocol-2'),
+            thread(unreadRef, 'branch-main', 2, FP('unread-2'), 'rev-unread-2'),
+          ]),
+        },
+      },
+      read: {
+        [blockedRef]: {
+          rawStdout: '# malformed rendered timeline\n',
+        },
+        [unreadRef]: readSpec(timeline(
+          'codex',
+          unreadRef,
+          'branch-main',
+          2,
+          FP('unread-2'),
+          [
+            entry(1, 'User', 'This event must wait for provider repair.'),
+            entry(2, 'Assistant', 'This event must not be admitted in the blocked wake.'),
+          ],
+          'rev-unread-2',
+        )),
+      },
+    } satisfies FakeXurlScenario);
+
+    const wake = await fixture.runtime.wake('scheduled');
+    const external = wake.discovery.sources.find(source => source.sourceId === 'external-codex');
+    const internal = wake.discovery.sources.find(source => source.sourceId === 'internal-xiaoba');
+    assert.ok(external);
+    assert.ok(internal);
+    assert.equal(external.unitsProcessed, 0);
+    assert.equal(external.failureClass, 'protocol');
+    assert.equal(external.requiresOperatorAction, true);
+    assert.equal(internal.unitsProcessed, 1);
+    assert.equal(
+      loadExternalCursorState(cursorStorePath(env.root, 'codex', 'external-codex'))
+        .cursors[unreadRef]?.cursor.position,
+      0,
+      'provider-level protocol pause prevents later resource admission',
+    );
+    assert.equal(
+      readInvocationLog(env.logPath)
+        .filter(invocation => invocation.action === 'read' && invocation.args[0]?.includes(unreadRef))
+        .length,
+      0,
+    );
+
+    const blockedWake = await fixture.runtime.wake('scheduled');
+    assert.equal(
+      blockedWake.discovery.sources.find(source => source.sourceId === 'external-codex')?.status,
+      'backoff',
+    );
+  } finally {
+    env.restore();
+  }
+});
+
+test('protocol repair gate follows the provider across restarted source identities', async () => {
+  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex-a' });
+  try {
+    writeScenario(env.scenarioPath, baselineScenario('codex', 'conversation-provider-gate'));
+    const firstSource = env.createRuntime();
+    await firstSource.runtime.wake('startup');
+
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage('codex', [
+            thread(
+              'conversation-provider-gate',
+              'branch-main',
+              2,
+              FP('provider-gate-2'),
+              'rev-provider-gate-2',
+            ),
+          ]),
+        },
+      },
+      read: {
+        'conversation-provider-gate': {
+          rawStdout: '# malformed rendered timeline\n',
+        },
+      },
+    } satisfies FakeXurlScenario);
+    await firstSource.runtime.wake('scheduled');
+    assert.equal(
+      firstSource.runtime.getExternalSourceFailure('codex', 'external-codex-a')?.failureClass,
+      'protocol',
+    );
+
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID = 'external-codex-b';
+    writeScenario(
+      env.scenarioPath,
+      stableScenario(
+        'codex',
+        'conversation-provider-gate',
+        'branch-main',
+        'Repair the provider protocol before reading through another source identity.',
+        'The repaired provider protocol is verified.',
+      ),
+    );
+    const restarted = env.createRuntime();
+    const readsBeforeBlockedWake = readInvocationLog(env.logPath)
+      .filter(invocation => invocation.action === 'read').length;
+
+    const blocked = await restarted.runtime.wake('scheduled');
+    const blockedReport = blocked.discovery.sources.find(
+      source => source.sourceId === 'external-codex-b',
+    );
+    assert.equal(blockedReport?.status, 'backoff');
+    assert.equal(blockedReport?.failureClass, 'protocol');
+    assert.equal(
+      readInvocationLog(env.logPath).filter(invocation => invocation.action === 'read').length,
+      readsBeforeBlockedWake,
+      'a new source identity cannot bypass its provider repair gate',
+    );
+    await assert.rejects(
+      restarted.runtime.runExternalBackfill({
+        operationId: 'issue-101-provider-gated-backfill',
+        triggeredBy: 'operator:test',
+        provider: 'codex',
+        sourceId: 'external-codex-b',
+        range: {
+          startPosition: 1,
+          endPosition: 2,
+          resourceRefs: ['conversation-provider-gate'],
+        },
+        limits: {
+          maxResources: 1,
+          maxBytes: 1024 * 1024,
+          maxElapsedMs: 60_000,
+        },
+      }, new XurlExternalBackfillSource({
+        command: env.commandPath,
+        provider: 'codex',
+        sourceId: 'external-codex-b',
+      })),
+      /provider codex is paused pending explicit protocol or integrity repair/,
+    );
+
+    assert.equal(
+      restarted.runtime.retryExternalSourceFailure('codex', 'external-codex-a'),
+      true,
+    );
+    const repaired = await restarted.runtime.wake('scheduled');
+    assert.notEqual(
+      repaired.discovery.sources.find(source => source.sourceId === 'external-codex-b')?.status,
+      'backoff',
+    );
+
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage('codex', [
+            thread(
+              'conversation-provider-gate',
+              'branch-main',
+              4,
+              FP('provider-gate-4'),
+              'rev-provider-gate-4',
+            ),
+          ]),
+        },
+      },
+      read: {
+        'conversation-provider-gate': readSpec(timeline(
+          'codex',
+          'conversation-provider-gate',
+          'branch-main',
+          4,
+          FP('provider-gate-4'),
+          [
+            entry(1, 'User', 'Repair the provider protocol before reading another source.'),
+            entry(2, 'Assistant', 'The provider protocol repair is verified.'),
+            entry(3, 'User', 'Resume provider reads after the explicit repair.'),
+            entry(4, 'Assistant', 'Provider reads resumed successfully.'),
+          ],
+          'rev-provider-gate-4',
+        )),
+      },
+    } satisfies FakeXurlScenario);
+    const progressed = await restarted.runtime.wake('scheduled');
+    assert.notEqual(
+      progressed.discovery.sources.find(source => source.sourceId === 'external-codex-b')?.status,
+      'backoff',
+    );
+    assert.ok(
+      readInvocationLog(env.logPath).filter(invocation => invocation.action === 'read').length
+        > readsBeforeBlockedWake,
+    );
+  } finally {
+    env.restore();
+  }
+});
+
 test('quarantine recovery: skip writes a durable tombstone before allowing the cursor to cross', async () => {
   const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
   try {
@@ -585,8 +1014,22 @@ test('quarantine recovery: skip writes a durable tombstone before allowing the c
     assert.ok(!state.quarantinedEvents[quarantineId]);
     const tombstone = Object.values(state.tombstones).find(entry => entry.tombstoneId === quarantineId);
     assert.ok(tombstone, 'durable tombstone written');
-    assert.equal(tombstone!.identity.eventId, 'agents://codex/conversation-main#1-2');
+    assert.equal(tombstone!.kind, 'event-skip');
+    assert.equal(
+      tombstone!.kind === 'event-skip' ? tombstone!.identity.eventId : undefined,
+      'agents://codex/conversation-main#1-2',
+    );
     assert.ok(tombstone!.reason.includes('operator skip'), 'tombstone carries redacted reason');
+    assert.deepEqual(
+      fixture.runtime.listExternalSourceRecoveryAudit('codex', 'external-codex')
+        .map(entry => entry.action),
+      ['event-skip'],
+    );
+    const restarted = env.createRuntime();
+    assert.equal(
+      restarted.runtime.listExternalSourceTombstones('codex', 'external-codex')[0]?.tombstoneId,
+      quarantineId,
+    );
 
     writeScenario(env.scenarioPath, {
       discover: { pages: { start: catalogPage('codex', [thread('conversation-main', 'branch-main', 2, FP('mutated-2'), 'mutated-rev')]) } },
@@ -599,12 +1042,39 @@ test('quarantine recovery: skip writes a durable tombstone before allowing the c
         ),
       },
     } satisfies FakeXurlScenario);
-    const skipWake = await fixture.runtime.wake('scheduled');
+    const skipWake = await restarted.runtime.wake('scheduled');
     const skipReport = skipWake.discovery.sources.find(s => s.sourceId === 'external-codex');
     assert.ok(skipReport);
     assert.notEqual(skipReport!.status, 'backoff', 'skip clears the durable operator-action gate');
     assert.equal(skipReport!.unitsProcessed, 0, 'skipped identity never becomes learning evidence');
     assert.equal(loadExternalCursorState(storePath).cursors['conversation-main']?.cursor.position, 2);
+
+    const episodeIds = Object.keys(restarted.episodeStore.load().episodes);
+    const capsuleCount = restarted.runtime.getEvidenceCapsuleStore().count();
+    const ordinary = await restarted.runtime.runExternalBackfill({
+      operationId: 'issue-101-exact-skip-backfill',
+      triggeredBy: 'operator:test',
+      provider: 'codex',
+      sourceId: 'external-codex',
+      range: {
+        startPosition: 2,
+        endPosition: 2,
+        resourceRefs: ['conversation-main'],
+      },
+      limits: {
+        maxResources: 1,
+        maxBytes: 1024 * 1024,
+        maxElapsedMs: 60_000,
+      },
+    }, new XurlExternalBackfillSource({
+      command: env.commandPath,
+      provider: 'codex',
+      sourceId: 'external-codex',
+    }));
+    assert.equal(ordinary.backfill.status, 'completed');
+    assert.equal(ordinary.backfill.tombstonedEventsSkipped, 1);
+    assert.deepEqual(Object.keys(restarted.episodeStore.load().episodes), episodeIds);
+    assert.equal(restarted.runtime.getEvidenceCapsuleStore().count(), capsuleCount);
   } finally {
     env.restore();
   }
@@ -687,6 +1157,38 @@ test('quarantine recovery: explicit retry reprocesses the same event before adva
     assert.equal(retryReadyState.quarantinedEvents[quarantineId], undefined);
     assert.equal(retryReadyState.cursors['conversation-main']?.cursor.position, 0, 'retry alone does not advance the cursor');
     assert.equal(Object.keys(retryReadyState.tombstones).length, 0, 'retry does not convert the event into a tombstone');
+    assert.deepEqual(
+      restarted.runtime.listExternalSourceRecoveryAudit('codex', 'external-codex')
+        .map(entry => entry.action),
+      ['quarantine-retry'],
+    );
+
+    saveExternalCursorState(storePath, {
+      ...retryReadyState,
+      quarantinedEvents: {
+        [quarantineId]: {
+          quarantineId,
+          resourceRef: 'conversation-main',
+          sourceIdentity,
+          identity: eventIdentity,
+          failureClass: 'quarantine',
+          message: 'same stable event entered quarantine again before admission',
+          detectedAt: new Date().toISOString(),
+          cursorPosition: 0,
+        },
+      },
+      updatedAt: new Date().toISOString(),
+    });
+    assert.equal(
+      restarted.runtime.retryExternalSourceQuarantine('codex', 'external-codex', quarantineId),
+      true,
+    );
+    assert.deepEqual(
+      restarted.runtime.listExternalSourceRecoveryAudit('codex', 'external-codex')
+        .map(entry => entry.action),
+      ['quarantine-retry', 'quarantine-retry'],
+      'each deliberate retry remains independently auditable',
+    );
 
     const retryWake = await restarted.runtime.wake('scheduled');
     const retryReport = retryWake.discovery.sources.find(s => s.sourceId === 'external-codex');
@@ -719,12 +1221,24 @@ test('resource closure preserves cursor state and ordinary rediscovery cannot si
     const durableEvidencePaths = [
       path.join(env.root, 'data', 'evidence-capsules.json'),
       path.join(env.root, 'data', 'learning-episodes.json'),
+      path.join(env.root, 'data', 'external-source-provenance.json'),
+      path.join(env.root, 'data', 'registry.json'),
       path.join(env.root, 'data', 'transition-audit.jsonl'),
     ] as const;
     fixture.runtime.getEvidenceCapsuleStore().save({ schemaVersion: 1, capsules: {} });
     fixture.episodeStore.save({ schemaVersion: 3, episodes: {} });
     fs.writeFileSync(
       durableEvidencePaths[2],
+      JSON.stringify({ schemaVersion: 1, episodeToEvent: {}, eventToEpisodes: {} }, null, 2),
+      'utf8',
+    );
+    fs.writeFileSync(
+      durableEvidencePaths[3],
+      JSON.stringify(fixture.runtime.getSkillEvolution().getRegistry(), null, 2),
+      'utf8',
+    );
+    fs.writeFileSync(
+      durableEvidencePaths[4],
       `${JSON.stringify({ transitionId: 'unrelated-audit', status: 'preserved' })}\n`,
       'utf8',
     );

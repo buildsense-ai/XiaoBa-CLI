@@ -75,14 +75,13 @@ import {
   SessionLogSourceStatus,
   ExternalSourceFailureClass,
   ExternalSourceQuarantineEntry,
+  ExternalSourceRecoveryAuditEntry,
+  ExternalSourceTombstoneEntry,
   ExternalCursorState,
   buildExternalEventDedupKey,
   listExternalSourceQuarantines,
   loadExternalCursorState,
   resolveExternalCursorStorePath,
-  retryExternalSourceQuarantine,
-  skipExternalSourceQuarantine,
-  closeExternalResource,
   finalizeExternalDiscoveryCycleForStore,
   saveExternalCursorState,
   classifyExternalSourceFailureMessage,
@@ -90,6 +89,17 @@ import {
   DEFAULT_EXTERNAL_SOURCE_BUDGET,
   DEFAULT_INTERNAL_SOURCE_BUDGET,
 } from './session-log-source';
+import {
+  abandonExternalCatchUpTargets,
+  closeExternalSourceResourceWithAudit,
+  completeExternalTombstoneReopen,
+  findBlockingExternalSourceTombstone,
+  listExternalSourceRecoveryAudit,
+  listExternalSourceTombstones,
+  prepareExternalTombstoneReopen,
+  retryExternalSourceQuarantineWithAudit,
+  skipExternalSourceQuarantineWithAudit,
+} from './external-source-recovery';
 
 // ---------------------------------------------------------------------------
 // Public API: wake context / reports (shared with the heartbeat scheduler)
@@ -292,6 +302,10 @@ interface ExternalSourceLaneIdentity {
   sourceId: string;
 }
 
+interface ExternalResourceLaneIdentity extends ExternalSourceLaneIdentity {
+  resourceRef: string;
+}
+
 function externalSourceLaneKey(identity: ExternalSourceLaneIdentity): string {
   return JSON.stringify([identity.provider, identity.sourceId]);
 }
@@ -311,6 +325,40 @@ function parseExternalSourceLaneKey(key: string): ExternalSourceLaneIdentity | n
     // Legacy sourceId-only key.
   }
   return null;
+}
+
+function externalResourceLaneKey(identity: ExternalResourceLaneIdentity): string {
+  return JSON.stringify([identity.provider, identity.sourceId, identity.resourceRef]);
+}
+
+function parseExternalResourceLaneKey(key: string): ExternalResourceLaneIdentity | null {
+  try {
+    const parsed = JSON.parse(key) as unknown;
+    if (
+      Array.isArray(parsed)
+      && parsed.length === 3
+      && typeof parsed[0] === 'string'
+      && typeof parsed[1] === 'string'
+      && typeof parsed[2] === 'string'
+    ) {
+      return { provider: parsed[0], sourceId: parsed[1], resourceRef: parsed[2] };
+    }
+  } catch {
+    // Invalid resource-lane key.
+  }
+  return null;
+}
+
+function isResourceLocalExternalFailure(state: SourceFailureState): boolean {
+  return state.failureClass === 'transient'
+    || state.failureClass === 'pending'
+    || state.failureClass === 'quarantine';
+}
+
+function isProviderBlockingExternalFailure(
+  failureClass: ExternalSourceFailureClass | undefined,
+): boolean {
+  return failureClass === 'protocol' || failureClass === 'integrity_conflict';
 }
 
 class DiscoveryAdmissionQuotaReachedError extends Error {
@@ -636,6 +684,8 @@ export class RuntimeLearning {
    * lane due time, cursor, quota continuation, and backoff state.
    */
   private readonly externalSourceFailureState = new Map<string, SourceFailureState>();
+  /** Independent transient/pending/quarantine gates for resources in one source. */
+  private readonly externalResourceFailureState = new Map<string, SourceFailureState>();
   /** Prevent read-only/follower snapshots from rewriting another writer's state. */
   private externalSourceSchedulingStateDirty = false;
   /**
@@ -818,6 +868,21 @@ export class RuntimeLearning {
     return this.externalSourceFailureState.get(externalSourceLaneKey({ provider, sourceId }));
   }
 
+  /** Durable resource-local gates for operator diagnostics and deterministic tests. */
+  getExternalResourceFailureState(
+    provider: string,
+    sourceId: string,
+  ): ReadonlyMap<string, SourceFailureState> {
+    const snapshot = new Map<string, SourceFailureState>();
+    for (const [key, state] of this.externalResourceFailureState) {
+      const identity = parseExternalResourceLaneKey(key);
+      if (identity?.provider === provider && identity.sourceId === sourceId) {
+        snapshot.set(identity.resourceRef, state);
+      }
+    }
+    return snapshot;
+  }
+
   /** External source work budget (issue #77). */
   getExternalSourceBudget(): SourceWorkBudget {
     return { ...this.externalSourceBudget };
@@ -842,9 +907,23 @@ export class RuntimeLearning {
     return listExternalSourceQuarantines(this.externalCursorStorePath(provider, sourceId));
   }
 
+  listExternalSourceTombstones(provider: string, sourceId: string): readonly ExternalSourceTombstoneEntry[] {
+    return listExternalSourceTombstones(this.externalCursorStorePath(provider, sourceId));
+  }
+
+  listExternalSourceRecoveryAudit(provider: string, sourceId: string): readonly ExternalSourceRecoveryAuditEntry[] {
+    return listExternalSourceRecoveryAudit(this.externalCursorStorePath(provider, sourceId));
+  }
+
   retryExternalSourceQuarantine(provider: string, sourceId: string, quarantineId: string): boolean {
     const mutation = this.runExternalSourceMutation(provider, sourceId, 'quarantine-retry', () => {
-      const changed = retryExternalSourceQuarantine(this.externalCursorStorePath(provider, sourceId), quarantineId);
+      const changed = retryExternalSourceQuarantineWithAudit(
+        this.externalCursorStorePath(provider, sourceId),
+        provider,
+        sourceId,
+        quarantineId,
+        this.clock(),
+      );
       if (changed) this.reconcileExternalSourceRecovery(provider, sourceId);
       return changed;
     });
@@ -858,10 +937,13 @@ export class RuntimeLearning {
     reason = 'operator skip',
   ): boolean {
     const mutation = this.runExternalSourceMutation(provider, sourceId, 'quarantine-skip', () => {
-      const changed = skipExternalSourceQuarantine(
+      const changed = skipExternalSourceQuarantineWithAudit(
         this.externalCursorStorePath(provider, sourceId),
+        provider,
+        sourceId,
         quarantineId,
         reason,
+        this.clock(),
       );
       if (changed) this.reconcileExternalSourceRecovery(provider, sourceId);
       return changed;
@@ -889,10 +971,7 @@ export class RuntimeLearning {
    * (issue #87).
    */
   deleteExternalSourceResource(provider: string, sourceId: string, resourceRef: string): boolean {
-    const mutation = this.runExternalSourceMutation(provider, sourceId, 'resource-delete', () => (
-      closeExternalResource(this.externalCursorStorePath(provider, sourceId), resourceRef, 'deleted')
-    ));
-    return mutation.acquired ? mutation.value : false;
+    return this.closeExternalSourceResource(provider, sourceId, resourceRef, 'deleted');
   }
 
   /**
@@ -901,10 +980,30 @@ export class RuntimeLearning {
    * evidence (issue #87).
    */
   archiveExternalSourceResource(provider: string, sourceId: string, resourceRef: string): boolean {
-    const mutation = this.runExternalSourceMutation(provider, sourceId, 'resource-archive', () => (
-      closeExternalResource(this.externalCursorStorePath(provider, sourceId), resourceRef, 'archived')
+    return this.closeExternalSourceResource(provider, sourceId, resourceRef, 'archived');
+  }
+
+  private closeExternalSourceResource(
+    provider: string,
+    sourceId: string,
+    resourceRef: string,
+    reason: 'deleted' | 'archived',
+  ): boolean {
+    const mutation = this.runExternalSourceMutation(provider, sourceId, `resource-${reason}`, () => (
+      closeExternalSourceResourceWithAudit(
+        this.externalCursorStorePath(provider, sourceId),
+        provider,
+        sourceId,
+        resourceRef,
+        reason,
+        this.clock(),
+      )
     ));
-    return mutation.acquired ? mutation.value : false;
+    if (!mutation.acquired || !mutation.value.changed) return false;
+    for (const targetId of mutation.value.historicalTargetIds) {
+      this.episodeStore.abandonHistoricalTarget(targetId);
+    }
+    return true;
   }
 
   /**
@@ -1025,7 +1124,61 @@ export class RuntimeLearning {
    * Runtime scheduling boundary.
    */
   rebaselineExternalProvider(provider: string, skipToNow: boolean): void {
-    this.providerOverrideStore.rebaselineProvider(provider, skipToNow);
+    if (!skipToNow) {
+      throw new Error('external provider rebaseline requires skip-to-now');
+    }
+    const normalizedProvider = provider.trim().toLowerCase();
+    const providerAdapters = this.sessionLogSources.filter(adapter => (
+      adapter.identity.category === 'external'
+      && adapter.identity.provider === normalizedProvider
+    ));
+    const unfinishedCatchUp = providerAdapters.some(adapter => {
+      const storePath = adapter.getCursorStorePath?.();
+      if (!storePath) return false;
+      const state = loadExternalCursorState(storePath);
+      return Object.values(state.catchUpResources)
+        .some(resource => (
+          resource.status !== 'complete'
+          && resource.status !== 'closed'
+          && resource.status !== 'abandoned'
+        ));
+    });
+    const historyMode = this.providerOverrideStore
+      .getProviderHistoryMode(normalizedProvider, this.config)
+      .mode;
+    if (unfinishedCatchUp && historyMode !== 'future-only') {
+      throw new Error(
+        `external provider ${normalizedProvider} must be in future-only mode before unfinished catch-up can be rebaselined`,
+      );
+    }
+    const providerLock = this.acquireExternalProviderLock(
+      normalizedProvider,
+      'rebaseline-skip-to-now',
+      providerAdapters[0]?.identity.sourceId,
+    );
+    if (!providerLock.acquired) {
+      throw new Error(`external source provider lock is busy for ${normalizedProvider}`);
+    }
+    try {
+      for (const adapter of providerAdapters) {
+        const heads = adapter.observeRecoveryHeads?.() ?? [];
+        const storePath = adapter.getCursorStorePath?.();
+        if (!storePath) continue;
+        const result = abandonExternalCatchUpTargets(
+          storePath,
+          normalizedProvider,
+          adapter.identity.sourceId,
+          heads,
+          this.clock(),
+        );
+        for (const targetId of result.historicalTargetIds) {
+          this.episodeStore.abandonHistoricalTarget(targetId);
+        }
+      }
+      this.providerOverrideStore.rebaselineProvider(normalizedProvider, skipToNow);
+    } finally {
+      providerLock.release();
+    }
   }
 
   /**
@@ -1119,8 +1272,51 @@ export class RuntimeLearning {
     this.externalSourceFailureState.set(externalSourceLaneKey({ provider, sourceId }), state);
   }
 
+  private getExternalResourceFailure(
+    provider: string,
+    sourceId: string,
+    resourceRef: string,
+  ): SourceFailureState | undefined {
+    return this.externalResourceFailureState.get(externalResourceLaneKey({
+      provider,
+      sourceId,
+      resourceRef,
+    }));
+  }
+
+  private setExternalResourceFailure(
+    provider: string,
+    sourceId: string,
+    resourceRef: string,
+    state: SourceFailureState,
+  ): void {
+    this.externalSourceSchedulingStateDirty = true;
+    this.externalResourceFailureState.set(externalResourceLaneKey({
+      provider,
+      sourceId,
+      resourceRef,
+    }), state);
+  }
+
+  private listExternalResourceFailures(
+    provider: string,
+    sourceId: string,
+  ): readonly SourceFailureState[] {
+    return [...this.getExternalResourceFailureState(provider, sourceId).values()];
+  }
+
+  private clearExternalResourceFailures(provider: string, sourceId: string): void {
+    for (const key of this.externalResourceFailureState.keys()) {
+      const identity = parseExternalResourceLaneKey(key);
+      if (identity?.provider !== provider || identity.sourceId !== sourceId) continue;
+      this.externalResourceFailureState.delete(key);
+      this.externalSourceSchedulingStateDirty = true;
+    }
+  }
+
   private clearExternalSourceFailureGate(provider: string, sourceId: string): void {
     const current = this.getExternalSourceFailure(provider, sourceId);
+    this.clearExternalResourceFailures(provider, sourceId);
     if (!current) return;
     this.setExternalSourceFailure(provider, sourceId, {
       consecutiveFailures: 0,
@@ -1353,6 +1549,11 @@ export class RuntimeLearning {
     source: ExternalSessionLogBackfillSource,
     writerOwner: symbol,
   ): Promise<RuntimeLearningBackfillResult> {
+    if (this.getProviderBlockingExternalFailure(source.identity.provider)) {
+      throw new Error(
+        `external provider ${source.identity.provider} is paused pending explicit protocol or integrity repair`,
+      );
+    }
     const paths = this.getExternalBackfillOperationPaths(request);
     const service = new ExternalSessionLogBackfillService({
       stateFilePath: paths.stateFilePath,
@@ -1370,10 +1571,50 @@ export class RuntimeLearning {
     }
 
     try {
+      const recoveryStorePath = this.externalCursorStorePath(
+        source.identity.provider,
+        source.identity.sourceId,
+      );
+      const reopenedRange = request.reopenTombstoneId
+        ? prepareExternalTombstoneReopen(
+          recoveryStorePath,
+          request,
+          request.reopenTombstoneId,
+          this.clock(),
+        )
+        : undefined;
+      if (reopenedRange?.originalTargetId) {
+        this.episodeStore.reopenHistoricalTarget(reopenedRange.originalTargetId, {
+          targetId: reopenedRange.targetId,
+          provider: reopenedRange.provider,
+          sourceId: reopenedRange.sourceId,
+          resourceRef: reopenedRange.resourceRef,
+          position: reopenedRange.range.endPosition,
+          prefixDigest: reopenedRange.prefixDigest,
+        });
+      }
       let admittedEpisodes = 0;
       let contradictionSignals = 0;
+      let reopenedTerminalTombstoneId: string | undefined;
 
     const ingest = (unit: DistillationUnit, context: ExternalSessionLogBackfillIngestContext) => {
+      const recoveryState = loadExternalCursorState(recoveryStorePath);
+      const blockingTombstone = findBlockingExternalSourceTombstone(
+        recoveryState,
+        source.identity,
+        context.resource.resourceRef,
+        context.eventIdentity,
+        request.reopenTombstoneId,
+      );
+      if (blockingTombstone) {
+        if (reopenedRange) {
+          reopenedTerminalTombstoneId ??= blockingTombstone.tombstoneId;
+        }
+        return {
+          admittedEpisodeIds: [],
+          tombstoneId: blockingTombstone.tombstoneId,
+        };
+      }
       // Minimal #93 seam: explicit backfill evidence admission also flows
       // through the single External Admission Coordinator, but the backfill
       // service still owns its separate operation cursor/audit state. When the
@@ -1402,6 +1643,18 @@ export class RuntimeLearning {
           accounting: { events: 1, bytes: 0, elapsedMs: 0 },
         },
         lane: 'backfill',
+        ...(reopenedRange
+          ? {
+            historicalTarget: {
+              targetId: reopenedRange.targetId,
+              provider: reopenedRange.provider,
+              sourceId: reopenedRange.sourceId,
+              resourceRef: reopenedRange.resourceRef,
+              position: reopenedRange.range.endPosition,
+              prefixDigest: reopenedRange.prefixDigest,
+            },
+          }
+          : {}),
       };
       const commit = this.externalAdmissionCoordinator.admitPage(page, [source.identity.provider]);
       if (!commit.acknowledged) {
@@ -1435,7 +1688,7 @@ export class RuntimeLearning {
           maxBytes: Math.min(request.limits.maxBytes, EXTERNAL_BACKFILL_SLICE_BYTES),
           maxElapsedMs: Math.min(request.limits.maxElapsedMs, EXTERNAL_BACKFILL_SLICE_MS),
         },
-      }, source, ingest);
+      }, source, ingest, { filterOutOfRangeEvents: true });
 
       if (backfill.status !== 'quota_reached') break;
       const priorMetrics = backfill.state.metrics;
@@ -1459,6 +1712,16 @@ export class RuntimeLearning {
 
     if (!backfill) {
       throw new Error('external backfill did not produce a result');
+    }
+
+    if (reopenedRange && backfill.status === 'completed') {
+      completeExternalTombstoneReopen(
+        recoveryStorePath,
+        request.operationId,
+        this.clock(),
+        reopenedTerminalTombstoneId,
+      );
+      this.episodeStore.reconcileHistoricalTarget(reopenedRange.targetId);
     }
 
     // Backfill owns a separate cursor/audit, but source health is shared with
@@ -1518,6 +1781,7 @@ export class RuntimeLearning {
       failedResources: metrics.failedResources,
       ingestedEvents: metrics.ingestedEvents,
       duplicateEventsSkipped: metrics.duplicateEventsSkipped,
+      tombstonedEventsSkipped: metrics.tombstonedEventsSkipped,
       admittedEpisodes: metrics.admittedEpisodes,
       bytesProcessed: metrics.bytesProcessed,
     };
@@ -2371,16 +2635,38 @@ export class RuntimeLearning {
 
   private reconcileCompletedHistoricalTargets(): void {
     const completedTargetIds = new Set<string>();
+    const abandonedTargetIds = new Set<string>();
     for (const adapter of this.sessionLogSources) {
       if (adapter.identity.category !== 'external') continue;
       const storePath = adapter.getCursorStorePath?.();
       if (!storePath) continue;
       const state = loadExternalCursorState(storePath);
       for (const [resourceRef, progress] of Object.entries(state.catchUpResources)) {
-        if (progress.status !== 'complete') continue;
         const target = state.catchUpTargets[resourceRef];
-        if (target && !target.empty) completedTargetIds.add(target.targetId);
+        if (!target || target.empty) continue;
+        if (progress.status === 'complete') completedTargetIds.add(target.targetId);
+        if (progress.status === 'abandoned' || progress.status === 'closed') {
+          abandonedTargetIds.add(target.targetId);
+        }
       }
+      for (const reopened of Object.values(state.reopenedRanges)) {
+        if (reopened.originalTargetId) {
+          this.episodeStore.reopenHistoricalTarget(reopened.originalTargetId, {
+            targetId: reopened.targetId,
+            provider: reopened.provider,
+            sourceId: reopened.sourceId,
+            resourceRef: reopened.resourceRef,
+            position: reopened.range.endPosition,
+            prefixDigest: reopened.prefixDigest,
+          });
+        }
+        if (reopened.status === 'complete' || reopened.status === 'terminal-excluded') {
+          completedTargetIds.add(reopened.targetId);
+        }
+      }
+    }
+    for (const targetId of abandonedTargetIds) {
+      this.episodeStore.abandonHistoricalTarget(targetId);
     }
     for (const targetId of completedTargetIds) {
       this.episodeStore.reconcileHistoricalTarget(targetId);
@@ -2453,7 +2739,8 @@ export class RuntimeLearning {
     }
 
     if (isExternal) {
-      const failureState = this.getExternalSourceFailure(identity.provider, identity.sourceId);
+      const failureState = this.getProviderBlockingExternalFailure(identity.provider)
+        ?? this.getExternalSourceFailure(identity.provider, identity.sourceId);
       if (this.shouldSkipExternalSourceForFailure(failureState)) {
         return {
           report: {
@@ -2501,6 +2788,7 @@ export class RuntimeLearning {
     }
 
     let sourceResourcesExamined = 0;
+    let sourceResourcesBackedOff = 0;
     let sourceBytesRead = 0;
     let sourceEventsRead = 0;
     let sourceReaderElapsedMs = 0;
@@ -2559,6 +2847,20 @@ export class RuntimeLearning {
         if (isExternal && options.signal?.aborted) {
           sourceDrained = true;
           break;
+        }
+        if (
+          isExternal
+          && this.shouldSkipExternalResourceForFailure(
+            this.getExternalResourceFailure(
+              identity.provider,
+              identity.sourceId,
+              resource.resourceRef,
+            ),
+            resource.resourceRef,
+          )
+        ) {
+          sourceResourcesBackedOff += 1;
+          continue;
         }
 
         if (sourceResourcesExamined >= budget.maxResourcesPerWake) {
@@ -2623,7 +2925,14 @@ export class RuntimeLearning {
           adapter.markFailed(resource, error);
           sourceHadFailure = true;
           if (isExternal) {
-            this.recordExternalSourceFailure(identity, error, { resourceRef: resource.resourceRef });
+            const failureClass = this.classifyExternalSourceFailure(
+              this.redactExternalSourceError(error),
+            );
+            this.recordExternalSourceFailure(identity, error, {
+              failureClass,
+              resourceRef: resource.resourceRef,
+            });
+            if (isProviderBlockingExternalFailure(failureClass)) break;
           }
           continue;
         }
@@ -2657,6 +2966,7 @@ export class RuntimeLearning {
               resourceRef: failure?.resourceRef ?? resource.resourceRef,
               eventId: failedEvent?.eventId,
             });
+            if (isProviderBlockingExternalFailure(failure?.failureClass)) break;
           }
           continue;
         }
@@ -2677,7 +2987,7 @@ export class RuntimeLearning {
               adapter.acknowledge(resource, readResult);
               if (readResult.advanced) advancedResources++;
               if (isExternal) {
-                this.resetExternalSourceFailure(identity);
+                this.resetExternalSourceFailure(identity, resource.resourceRef);
               }
             } catch (error) {
               adapter.markFailed(resource, error);
@@ -2779,7 +3089,7 @@ export class RuntimeLearning {
           shared.wakeAdmittedEpisodes += batchAdmittedEpisodes;
           totalContradictionSignals += batchContradictionSignals;
           if (isExternal) {
-            this.resetExternalSourceFailure(identity);
+            this.resetExternalSourceFailure(identity, resource.resourceRef);
           }
         } catch (error) {
           if (error instanceof DiscoveryAdmissionQuotaReachedError) {
@@ -2812,6 +3122,7 @@ export class RuntimeLearning {
               resourceRef: resource.resourceRef,
               eventId: eventIdentity?.eventId,
             });
+            if (isProviderBlockingExternalFailure(failureClass)) break;
           }
         }
       }
@@ -2819,6 +3130,7 @@ export class RuntimeLearning {
       let status: SessionLogSourceStatus = 'active';
       if (sourceDrained) status = 'drained';
       else if (sourceHadFailure) status = 'failed';
+      else if (resources.length > 0 && sourceResourcesBackedOff === resources.length) status = 'backoff';
       if (sourceBudgetHit && !sourceDrained) status = 'quota_reached';
 
       const failureState = isExternal
@@ -2916,9 +3228,21 @@ export class RuntimeLearning {
       eventId?: string;
     } = {},
   ): void {
-    const current = this.getExternalSourceFailure(identity.provider, identity.sourceId);
     const message = this.redactExternalSourceError(error);
     const failureClass = context.failureClass ?? this.classifyExternalSourceFailure(message);
+    const resourceLocal = context.resourceRef !== undefined
+      && (
+        failureClass === 'transient'
+        || failureClass === 'pending'
+        || failureClass === 'quarantine'
+      );
+    const current = resourceLocal
+      ? this.getExternalResourceFailure(
+        identity.provider,
+        identity.sourceId,
+        context.resourceRef!,
+      )
+      : this.getExternalSourceFailure(identity.provider, identity.sourceId);
     const now = this.clock();
     const nowIso = now.toISOString();
 
@@ -2963,7 +3287,7 @@ export class RuntimeLearning {
         break;
     }
 
-    this.setExternalSourceFailure(identity.provider, identity.sourceId, {
+    const state: SourceFailureState = {
       consecutiveFailures,
       lastFailedAt: nowIso,
       lastError: message,
@@ -2975,15 +3299,52 @@ export class RuntimeLearning {
       eventId: context.eventId,
       lastAttemptedAt: nowIso,
       lastSuccessfulReadAt: current?.lastSuccessfulReadAt ?? null,
-    });
+    };
+    if (resourceLocal) {
+      this.setExternalResourceFailure(
+        identity.provider,
+        identity.sourceId,
+        context.resourceRef!,
+        state,
+      );
+    }
+    this.setExternalSourceFailure(identity.provider, identity.sourceId, state);
   }
 
-  private resetExternalSourceFailure(identity: ExternalSourceLaneIdentity): void {
-    const current = this.getExternalSourceFailure(identity.provider, identity.sourceId);
+  private resetExternalSourceFailure(
+    identity: ExternalSourceLaneIdentity,
+    resourceRef?: string,
+  ): void {
+    let current = this.getExternalSourceFailure(identity.provider, identity.sourceId);
     // Only update if the source had prior state — a healthy source that never
     // failed should not accumulate a scheduling-state entry just from a
     // successful read. When prior state exists, clear the failure counters and
     // record the successful read timestamp for diagnostics.
+    if (resourceRef) {
+      const resourceKey = externalResourceLaneKey({ ...identity, resourceRef });
+      const resourceFailure = this.externalResourceFailureState.get(resourceKey);
+      if (resourceFailure) {
+        this.externalResourceFailureState.delete(resourceKey);
+        this.externalSourceSchedulingStateDirty = true;
+        const remaining = [...this.listExternalResourceFailures(identity.provider, identity.sourceId)]
+          .sort((left, right) => (left.lastFailedAt ?? '').localeCompare(right.lastFailedAt ?? ''));
+        const representative = remaining[remaining.length - 1];
+        if (representative) {
+          this.setExternalSourceFailure(identity.provider, identity.sourceId, {
+            ...representative,
+            lastSuccessfulReadAt: this.clock().toISOString(),
+          });
+          return;
+        }
+        current = resourceFailure;
+      } else if (
+        current?.resourceRef
+        && current.resourceRef !== resourceRef
+        && isResourceLocalExternalFailure(current)
+      ) {
+        return;
+      }
+    }
     if (!current) return;
     const nowIso = this.clock().toISOString();
     this.setExternalSourceFailure(identity.provider, identity.sourceId, {
@@ -3011,6 +3372,38 @@ export class RuntimeLearning {
 
   private shouldSkipExternalSourceForFailure(state: SourceFailureState | undefined): boolean {
     if (!state) return false;
+    // Event quarantine is resource-local: selection filters only that resource.
+    // Transient/pending reads with a resource identity use the same local
+    // scheduling rule. Protocol/integrity failures still pause the provider
+    // because normalized source identity is no longer trustworthy.
+    if (state.resourceRef && isResourceLocalExternalFailure(state)) return false;
+    if (state.requiresOperatorAction) return true;
+    if (!state.suspendedUntil) return false;
+    const suspendedUntilMs = Date.parse(state.suspendedUntil);
+    return Number.isFinite(suspendedUntilMs) && suspendedUntilMs > this.clock().getTime();
+  }
+
+  private getProviderBlockingExternalFailure(provider: string): SourceFailureState | undefined {
+    const normalizedProvider = provider.trim().toLowerCase();
+    for (const [key, state] of this.externalSourceFailureState) {
+      const identity = parseExternalSourceLaneKey(key);
+      if (
+        identity?.provider === normalizedProvider
+        && isProviderBlockingExternalFailure(state.failureClass)
+        && state.requiresOperatorAction
+      ) {
+        return state;
+      }
+    }
+    return undefined;
+  }
+
+  private shouldSkipExternalResourceForFailure(
+    state: SourceFailureState | undefined,
+    resourceRef: string,
+  ): boolean {
+    if (!state?.resourceRef || state.resourceRef !== resourceRef) return false;
+    if (!isResourceLocalExternalFailure(state)) return false;
     if (state.requiresOperatorAction) return true;
     if (!state.suspendedUntil) return false;
     const suspendedUntilMs = Date.parse(state.suspendedUntil);
@@ -3028,11 +3421,17 @@ export class RuntimeLearning {
           sourceId?: string;
           state?: SourceFailureState;
         }>;
+        resourceLanes?: Array<{
+          provider?: string;
+          sourceId?: string;
+          resourceRef?: string;
+          state?: SourceFailureState;
+        }>;
         sources?: Record<string, SourceFailureState>;
       };
-      const restore = (identity: ExternalSourceLaneIdentity, state: SourceFailureState): void => {
-        if (typeof state.consecutiveFailures !== 'number') return;
-        this.externalSourceFailureState.set(externalSourceLaneKey(identity), {
+      const normalize = (state: SourceFailureState): SourceFailureState | undefined => {
+        if (typeof state.consecutiveFailures !== 'number') return undefined;
+        return {
           consecutiveFailures: state.consecutiveFailures,
           lastFailedAt: state.lastFailedAt ?? null,
           lastError: state.lastError ?? null,
@@ -3044,7 +3443,13 @@ export class RuntimeLearning {
           ...(state.eventId ? { eventId: state.eventId } : {}),
           lastAttemptedAt: state.lastAttemptedAt ?? null,
           lastSuccessfulReadAt: state.lastSuccessfulReadAt ?? null,
-        });
+        };
+      };
+      const restore = (identity: ExternalSourceLaneIdentity, state: SourceFailureState): void => {
+        const normalized = normalize(state);
+        if (normalized) {
+          this.externalSourceFailureState.set(externalSourceLaneKey(identity), normalized);
+        }
       };
       if (parsed.schemaVersion === 3 && Array.isArray(parsed.lanes)) {
         for (const lane of parsed.lanes) {
@@ -3054,6 +3459,21 @@ export class RuntimeLearning {
             || !lane.state
           ) continue;
           restore({ provider: lane.provider, sourceId: lane.sourceId }, lane.state);
+        }
+        for (const lane of parsed.resourceLanes ?? []) {
+          if (
+            typeof lane.provider !== 'string'
+            || typeof lane.sourceId !== 'string'
+            || typeof lane.resourceRef !== 'string'
+            || !lane.state
+          ) continue;
+          const state = normalize(lane.state);
+          if (!state) continue;
+          this.externalResourceFailureState.set(externalResourceLaneKey({
+            provider: lane.provider,
+            sourceId: lane.sourceId,
+            resourceRef: lane.resourceRef,
+          }), state);
         }
         return;
       }
@@ -3085,7 +3505,12 @@ export class RuntimeLearning {
           lanes.push({ ...identity, state });
         }
       }
-      if (lanes.length === 0) {
+      const resourceLanes: Array<ExternalResourceLaneIdentity & { state: SourceFailureState }> = [];
+      for (const [key, state] of this.externalResourceFailureState) {
+        const identity = parseExternalResourceLaneKey(key);
+        if (identity) resourceLanes.push({ ...identity, state });
+      }
+      if (lanes.length === 0 && resourceLanes.length === 0) {
         if (fs.existsSync(this.schedulingStatePath)) {
           fs.unlinkSync(this.schedulingStatePath);
         }
@@ -3096,7 +3521,12 @@ export class RuntimeLearning {
         (left.provider < right.provider ? -1 : (left.provider > right.provider ? 1 : 0))
         || (left.sourceId < right.sourceId ? -1 : (left.sourceId > right.sourceId ? 1 : 0))
       ));
-      const payload = { schemaVersion: 3, lanes };
+      resourceLanes.sort((left, right) => (
+        (left.provider < right.provider ? -1 : (left.provider > right.provider ? 1 : 0))
+        || (left.sourceId < right.sourceId ? -1 : (left.sourceId > right.sourceId ? 1 : 0))
+        || (left.resourceRef < right.resourceRef ? -1 : (left.resourceRef > right.resourceRef ? 1 : 0))
+      ));
+      const payload = { schemaVersion: 3, lanes, resourceLanes };
       fs.mkdirSync(path.dirname(this.schedulingStatePath), { recursive: true });
       const tmpPath = `${this.schedulingStatePath}.${process.pid}.${Date.now()}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), {
@@ -3293,7 +3723,12 @@ export class RuntimeLearning {
 
   private isEpisodeFromExternalSource(episodeId: string): boolean {
     this.assertExternalEpisodeProvenanceHealthy();
-    return this.externalEpisodeProvenance.has(episodeId);
+    if (this.externalEpisodeProvenance.has(episodeId)) return true;
+    // A crash can persist the Episode before its Capsule/provenance writes.
+    // Sanitized external admission always uses this opaque URI namespace, so
+    // review must still fail closed until replay completes those later writes.
+    return this.episodeStore.load().episodes[episodeId]?.sourceFilePath
+      .startsWith('external://event/') === true;
   }
 
   private getExternalEpisodeProvenanceEventKey(
@@ -3571,7 +4006,9 @@ export class RuntimeLearning {
         }
         const ingestionResult = this.evidenceIngestor.ingest(
           ingestUnit,
-          catchUpTarget && catchUpTarget.position !== null
+          page.historicalTarget
+            ? { historicalTarget: page.historicalTarget }
+            : catchUpTarget && catchUpTarget.position !== null
             ? {
               historicalTarget: {
                 targetId: catchUpTarget.targetId,
@@ -3628,7 +4065,7 @@ export class RuntimeLearning {
       if (page.lane !== 'backfill') {
         adapter!.acknowledge(resource, readResult);
         // Success resets failure count for continuous and catch-up pages.
-        this.resetExternalSourceFailure(identity);
+        this.resetExternalSourceFailure(identity, resource.resourceRef);
       }
 
       return {

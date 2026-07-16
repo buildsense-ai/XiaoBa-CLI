@@ -18,7 +18,9 @@ import {
 } from '../src/utils/runtime-learning';
 import {
   ExternalSessionLogSourceAdapter,
+  buildExternalEventDedupKey,
   loadExternalCursorState,
+  saveExternalCursorState,
   type SessionLogSourceAdapter,
   type SessionLogSourceReadResult,
   type SessionLogSourceResource,
@@ -36,6 +38,7 @@ import {
   ExternalProviderOverrideStore,
   resolveExternalProviderOverridePath,
 } from '../src/utils/external-provider-controls';
+import { acquireExternalSourceProviderLock } from '../src/utils/external-source-provider-lock';
 import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
 import {
   ThreadSummarySpec,
@@ -248,6 +251,743 @@ test('a long single-thread history advances in bounded pages across ordinary wak
     const completed = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(completed.catchUpResources[THREAD_ID]?.status, 'complete');
     assert.equal(Object.keys(completed.processedEventIds).length, 5, 'each historical event is acknowledged once');
+  } finally {
+    env.restore();
+  }
+});
+
+test('rebaseline rejects unfinished catch-up until the provider is future-only', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread(THREAD_ID, 'branch-main', 4, 'fp-abandonment-4')]),
+        },
+      },
+      read: {
+        [THREAD_ID]: {
+          timeline: timeline(THREAD_ID, 'branch-main', 4, 'fp-abandonment-4', [
+            entry(1, 'User', 'How do I parse a JSONL file line by line in Node?'),
+            entry(2, 'Assistant', 'Use a readline interface and validate each parsed record.'),
+            entry(3, 'User', 'Thanks, that works perfectly!'),
+            entry(4, 'Assistant', 'Glad it helped.'),
+          ]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 1 },
+    });
+    await fixture.runtime.wake('startup');
+
+    const before = loadExternalCursorState(cursorStorePath(env.root));
+    const target = before.catchUpTargets[THREAD_ID];
+    assert.ok(target);
+    assert.equal(before.catchUpResources[THREAD_ID]?.status, 'historical-pending');
+    assert.equal(before.catchUpResources[THREAD_ID]?.historicalCursor.position, 2);
+
+    assert.throws(
+      () => fixture.runtime.rebaselineExternalProvider(PROVIDER, true),
+      /future-only/i,
+      'unfinished catch-up cannot be abandoned while catch-up remains active',
+    );
+
+    const after = loadExternalCursorState(cursorStorePath(env.root));
+    assert.deepEqual(after.catchUpTargets[THREAD_ID], target, 'the immutable target is preserved');
+    assert.equal(after.catchUpResources[THREAD_ID]?.status, 'historical-pending');
+    assert.equal(after.catchUpResources[THREAD_ID]?.historicalCursor.position, 2);
+  } finally {
+    env.restore();
+  }
+});
+
+test('rebaseline acquires the provider lock before observing recovery heads', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread(THREAD_ID, 'branch-main', 4, 'fp-locked-rebaseline-4')]),
+        },
+      },
+      read: {
+        [THREAD_ID]: {
+          timeline: timeline(THREAD_ID, 'branch-main', 4, 'fp-locked-rebaseline-4', [
+            entry(1, 'User', 'Implement the first locked recovery step.'),
+            entry(2, 'Assistant', 'The first locked recovery step is implemented.'),
+            entry(3, 'User', 'Implement the second locked recovery step.'),
+            entry(4, 'Assistant', 'The second locked recovery step is implemented.'),
+          ]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 1 },
+    });
+    await fixture.runtime.wake('startup');
+    fixture.runtime.setExternalProviderHistoryMode(PROVIDER, 'future-only');
+
+    const lock = acquireExternalSourceProviderLock({
+      runtimeRoot: path.join(env.root, 'data'),
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+      operation: 'test-rebaseline-owner',
+    });
+    assert.ok(lock.acquired);
+    const invocationCount = readInvocationLog(env.logPath).length;
+    try {
+      assert.throws(
+        () => fixture.runtime.rebaselineExternalProvider(PROVIDER, true),
+        /lock is busy/i,
+      );
+    } finally {
+      lock.release();
+    }
+
+    assert.equal(
+      readInvocationLog(env.logPath).length,
+      invocationCount,
+      'a lock loser never samples or advances a recovery head',
+    );
+    const state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.catchUpResources[THREAD_ID]?.status, 'historical-pending');
+    assert.equal(Object.keys(state.tombstones).length, 0);
+  } finally {
+    env.restore();
+  }
+});
+
+test('future-only rebaseline abandons the unread range without deleting historical evidence', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread(THREAD_ID, 'branch-main', 6, 'fp-abandonment-6')]),
+        },
+      },
+      read: {
+        [THREAD_ID]: {
+          timeline: timeline(THREAD_ID, 'branch-main', 6, 'fp-abandonment-6', [
+            entry(1, 'User', 'How do I parse a JSONL file line by line in Node?'),
+            entry(2, 'Assistant', 'Use a readline interface and validate each parsed record.'),
+            entry(3, 'User', 'Thanks, that works perfectly!'),
+            entry(4, 'Assistant', 'Glad it helped.'),
+            entry(5, 'User', 'Implement one more historical parser variant.'),
+            entry(6, 'Assistant', 'The parser variant is implemented and verified.'),
+          ]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 2 },
+    });
+    await fixture.runtime.wake('startup');
+
+    const storePath = cursorStorePath(env.root);
+    const before = loadExternalCursorState(storePath);
+    const immutableTarget = before.catchUpTargets[THREAD_ID];
+    assert.ok(immutableTarget);
+    assert.equal(before.catchUpResources[THREAD_ID]?.historicalCursor.position, 4);
+    assert.equal(before.catchUpResources[THREAD_ID]?.status, 'historical-pending');
+    const episodeIds = Object.keys(fixture.episodeStore.load().episodes);
+    assert.ok(episodeIds.length > 0);
+    assert.ok(
+      episodeIds.every(id => fixture.episodeStore.load().episodes[id]?.status === 'historical-pending'),
+    );
+    const capsuleCount = fixture.runtime.getEvidenceCapsuleStore().count();
+    const provenancePath = path.join(env.root, 'data', 'external-source-provenance.json');
+    const provenanceBefore = fs.readFileSync(provenancePath);
+
+    fixture.runtime.setExternalProviderHistoryMode(PROVIDER, 'future-only');
+    fixture.runtime.rebaselineExternalProvider(PROVIDER, true);
+
+    const after = loadExternalCursorState(storePath);
+    assert.deepEqual(after.catchUpTargets[THREAD_ID], immutableTarget, 'the #98 target remains immutable');
+    assert.equal(after.catchUpResources[THREAD_ID]?.status, 'abandoned');
+    assert.equal(after.catchUpResources[THREAD_ID]?.historicalCursor.position, 4);
+    assert.equal(after.cursors[THREAD_ID]?.cursor.position, 6, 'continuous admission baselines at the stable head');
+
+    const tombstones = fixture.runtime.listExternalSourceTombstones(PROVIDER, SOURCE_ID);
+    assert.equal(tombstones.length, 1);
+    const tombstone = tombstones[0]!;
+    assert.equal(tombstone.kind, 'range-abandonment');
+    assert.equal(tombstone.resourceRef, THREAD_ID);
+    assert.deepEqual(
+      tombstone.kind === 'range-abandonment' ? tombstone.range : undefined,
+      { startPosition: 5, endPosition: 6 },
+    );
+    assert.equal(
+      tombstone.kind === 'range-abandonment' ? tombstone.targetId : undefined,
+      immutableTarget!.targetId,
+    );
+    assert.equal(
+      after.catchUpResources[THREAD_ID]?.terminalTombstoneId,
+      tombstone.tombstoneId,
+      'completion state exposes the durable terminal exclusion for #99 integration',
+    );
+    assert.deepEqual(
+      fixture.runtime.listExternalSourceRecoveryAudit(PROVIDER, SOURCE_ID)
+        .map(entry => entry.action),
+      ['range-abandonment'],
+    );
+    assert.deepEqual(Object.keys(fixture.episodeStore.load().episodes), episodeIds);
+    assert.ok(
+      episodeIds.every(id => fixture.episodeStore.load().episodes[id]?.status === 'historical-abandoned'),
+      'abandoned evidence remains durable but permanently ineligible by default',
+    );
+    assert.equal(fixture.runtime.getEvidenceCapsuleStore().count(), capsuleCount);
+    assert.deepEqual(fs.readFileSync(provenancePath), provenanceBefore);
+
+    fixture.runtime.rebaselineExternalProvider(PROVIDER, true);
+    assert.equal(fixture.runtime.listExternalSourceTombstones(PROVIDER, SOURCE_ID).length, 1);
+    assert.equal(fixture.runtime.listExternalSourceRecoveryAudit(PROVIDER, SOURCE_ID).length, 1);
+    const restarted = env.createRuntime();
+    assert.equal(
+      loadExternalCursorState(cursorStorePath(env.root))
+        .catchUpResources[THREAD_ID]?.terminalTombstoneId,
+      tombstone.tombstoneId,
+    );
+    assert.ok(
+      Object.values(restarted.episodeStore.load().episodes)
+        .every(episode => episode.status === 'historical-abandoned'),
+    );
+    assert.deepEqual(fs.readFileSync(provenancePath), provenanceBefore);
+  } finally {
+    env.restore();
+  }
+});
+
+test('confirmed resource closure records an unread-target exclusion and retains evidence', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread(THREAD_ID, 'branch-main', 6, 'fp-close-6')]),
+        },
+      },
+      read: {
+        [THREAD_ID]: {
+          timeline: timeline(THREAD_ID, 'branch-main', 6, 'fp-close-6', [
+            entry(1, 'User', 'How do I parse a JSONL file line by line in Node?'),
+            entry(2, 'Assistant', 'Use a readline interface and validate each parsed record.'),
+            entry(3, 'User', 'Thanks, that works perfectly!'),
+            entry(4, 'Assistant', 'Glad it helped.'),
+            entry(5, 'User', 'Archive this final historical task.'),
+            entry(6, 'Assistant', 'The final historical task is archived.'),
+          ]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 2 },
+    });
+    await fixture.runtime.wake('startup');
+    const storePath = cursorStorePath(env.root);
+    const before = loadExternalCursorState(storePath);
+    const immutableTarget = before.catchUpTargets[THREAD_ID];
+    const episodeIds = Object.keys(fixture.episodeStore.load().episodes);
+    const capsuleCount = fixture.runtime.getEvidenceCapsuleStore().count();
+    assert.ok(immutableTarget);
+    assert.ok(episodeIds.length > 0);
+
+    assert.equal(
+      fixture.runtime.archiveExternalSourceResource(PROVIDER, SOURCE_ID, THREAD_ID),
+      true,
+    );
+
+    const after = loadExternalCursorState(storePath);
+    assert.deepEqual(after.catchUpTargets[THREAD_ID], immutableTarget);
+    assert.equal(after.resources[THREAD_ID]?.lifecycleStatus, 'closed');
+    assert.equal(after.catchUpResources[THREAD_ID]?.status, 'closed');
+    assert.equal(after.catchUpResources[THREAD_ID]?.historicalCursor.position, 4);
+    const tombstone = fixture.runtime.listExternalSourceTombstones(PROVIDER, SOURCE_ID)[0];
+    assert.ok(tombstone);
+    assert.equal(tombstone.kind, 'resource-closure');
+    assert.deepEqual(
+      tombstone.kind === 'resource-closure' ? tombstone.range : undefined,
+      { startPosition: 5, endPosition: 6 },
+    );
+    assert.equal(
+      after.catchUpResources[THREAD_ID]?.terminalTombstoneId,
+      tombstone.tombstoneId,
+      'completion state exposes the explicit closure tombstone',
+    );
+    assert.deepEqual(
+      fixture.runtime.listExternalSourceRecoveryAudit(PROVIDER, SOURCE_ID)
+        .map(entry => entry.action),
+      ['resource-close'],
+    );
+    assert.deepEqual(Object.keys(fixture.episodeStore.load().episodes), episodeIds);
+    assert.ok(
+      episodeIds.every(id => fixture.episodeStore.load().episodes[id]?.status === 'historical-abandoned'),
+    );
+    assert.equal(fixture.runtime.getEvidenceCapsuleStore().count(), capsuleCount);
+
+    const restarted = env.createRuntime();
+    const wake = await restarted.runtime.wake('scheduled');
+    assert.equal(wake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed, 0);
+    assert.equal(loadExternalCursorState(storePath).resources[THREAD_ID]?.lifecycleStatus, 'closed');
+
+    const ordinary = await restarted.runtime.runExternalBackfill({
+      operationId: 'issue-101-closed-resource-backfill',
+      triggeredBy: 'operator:test',
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+      range: {
+        startPosition: 5,
+        endPosition: 6,
+        resourceRefs: [THREAD_ID],
+      },
+      limits: {
+        maxResources: 1,
+        maxBytes: 1024 * 1024,
+        maxElapsedMs: 60_000,
+      },
+    }, new XurlExternalBackfillSource({
+      command: env.commandPath,
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+    }));
+    assert.equal(ordinary.backfill.status, 'completed');
+    assert.equal(ordinary.backfill.tombstonedEventsSkipped, 1);
+    assert.deepEqual(Object.keys(restarted.episodeStore.load().episodes), episodeIds);
+    assert.equal(restarted.runtime.getEvidenceCapsuleStore().count(), capsuleCount);
+  } finally {
+    env.restore();
+  }
+});
+
+test('closing an already-complete target preserves its completion state', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread(THREAD_ID, 'branch-main', 2, 'fp-complete-close-2')]),
+        },
+      },
+      read: {
+        [THREAD_ID]: {
+          timeline: timeline(THREAD_ID, 'branch-main', 2, 'fp-complete-close-2', [
+            entry(1, 'User', 'Complete this target before archival.'),
+            entry(2, 'Assistant', 'The target is complete and verified.'),
+          ]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime();
+    await fixture.runtime.wake('startup');
+    assert.equal(
+      loadExternalCursorState(cursorStorePath(env.root)).catchUpResources[THREAD_ID]?.status,
+      'complete',
+    );
+
+    assert.equal(
+      fixture.runtime.archiveExternalSourceResource(PROVIDER, SOURCE_ID, THREAD_ID),
+      true,
+    );
+    const after = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(after.resources[THREAD_ID]?.lifecycleStatus, 'closed');
+    assert.equal(after.catchUpResources[THREAD_ID]?.status, 'complete');
+    assert.equal(after.catchUpResources[THREAD_ID]?.terminalTombstoneId, undefined);
+    assert.equal(fixture.runtime.listExternalSourceTombstones(PROVIDER, SOURCE_ID).length, 0);
+  } finally {
+    env.restore();
+  }
+});
+
+test('ordinary backfill respects abandonment while a named reopen stays pending to its fixed boundary', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread(THREAD_ID, 'branch-main', 8, 'fp-reopen-8')]),
+        },
+      },
+      read: {
+        [THREAD_ID]: {
+          timeline: timeline(THREAD_ID, 'branch-main', 8, 'fp-reopen-8', [
+            entry(1, 'User', 'How do I parse a JSONL file line by line in Node?'),
+            entry(2, 'Assistant', 'Use a readline interface and validate each parsed record.'),
+            entry(3, 'User', 'Thanks, that works perfectly!'),
+            entry(4, 'Assistant', 'Glad it helped.'),
+            entry(5, 'User', 'Implement parser recovery stage one.'),
+            entry(6, 'Assistant', 'Parser recovery stage one is implemented and verified.'),
+            entry(7, 'User', 'Implement parser recovery stage two.'),
+            entry(8, 'Assistant', 'Parser recovery stage two is implemented and verified.'),
+          ]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 2 },
+    });
+    await fixture.runtime.wake('startup');
+    fixture.runtime.setExternalProviderHistoryMode(PROVIDER, 'future-only');
+    fixture.runtime.rebaselineExternalProvider(PROVIDER, true);
+
+    const tombstone = fixture.runtime.listExternalSourceTombstones(PROVIDER, SOURCE_ID)[0];
+    assert.ok(tombstone);
+    assert.equal(tombstone.kind, 'range-abandonment');
+    assert.deepEqual(
+      tombstone.kind === 'range-abandonment' ? tombstone.range : undefined,
+      { startPosition: 5, endPosition: 8 },
+    );
+    const episodeIdsBeforeBackfill = Object.keys(fixture.episodeStore.load().episodes);
+    const capsuleCountBeforeBackfill = fixture.runtime.getEvidenceCapsuleStore().count();
+    const xurlSource = new XurlExternalBackfillSource({
+      command: env.commandPath,
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+    });
+    const range = {
+      startPosition: 5,
+      endPosition: 8,
+      resourceRefs: [THREAD_ID],
+    } as const;
+
+    const ordinary = await fixture.runtime.runExternalBackfill({
+      operationId: 'issue-101-ordinary-tombstone',
+      triggeredBy: 'operator:test',
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+      range,
+      limits: {
+        maxResources: 1,
+        maxBytes: 1024 * 1024,
+        maxElapsedMs: 60_000,
+      },
+    }, xurlSource);
+    assert.equal(ordinary.backfill.status, 'completed');
+    assert.equal(ordinary.backfill.tombstonedEventsSkipped, 2);
+    assert.equal(ordinary.ingestion.admittedEpisodes, 0);
+    assert.deepEqual(Object.keys(fixture.episodeStore.load().episodes), episodeIdsBeforeBackfill);
+    assert.equal(fixture.runtime.getEvidenceCapsuleStore().count(), capsuleCountBeforeBackfill);
+
+    const boundedSource = {
+      identity: xurlSource.identity,
+      discoverResources: () => xurlSource.discoverResources(),
+      read: (...args: Parameters<typeof xurlSource.read>) => {
+        const result = xurlSource.read(...args);
+        return {
+          ...result,
+          events: result.events.map(event => ({ ...event, byteLength: 10 })),
+        };
+      },
+    };
+    const reopenRequest: ExternalSessionLogBackfillRequest = {
+      operationId: 'issue-101-named-reopen',
+      triggeredBy: 'operator:test',
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+      range,
+      reopenTombstoneId: tombstone.tombstoneId,
+      limits: {
+        maxResources: 1,
+        maxBytes: 15,
+        maxElapsedMs: 60_000,
+      },
+    };
+
+    const partial = await fixture.runtime.runExternalBackfill(reopenRequest, boundedSource);
+    assert.equal(partial.backfill.status, 'quota_reached');
+    const partialState = loadExternalCursorState(cursorStorePath(env.root));
+    const reopened = partialState.reopenedRanges[reopenRequest.operationId];
+    assert.ok(reopened);
+    assert.equal(reopened.status, 'historical-pending');
+    assert.deepEqual(reopened.range, { startPosition: 5, endPosition: 8 });
+    assert.ok(
+      Object.values(fixture.episodeStore.load().episodes)
+        .every(episode => episode.status === 'historical-pending'),
+      'deduplicated and newly admitted evidence stays behind the reopened range',
+    );
+    assert.ok(
+      fixture.runtime.listExternalSourceTombstones(PROVIDER, SOURCE_ID)
+        .some(entry => entry.tombstoneId === tombstone.tombstoneId),
+      'reopening never erases the original exclusion',
+    );
+
+    const restarted = env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 2 },
+    });
+    const completed = await restarted.runtime.runExternalBackfill({
+      ...reopenRequest,
+      limits: { ...reopenRequest.limits, maxBytes: 100 },
+    }, boundedSource);
+    assert.equal(completed.backfill.status, 'completed');
+    const completedState = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(completedState.reopenedRanges[reopenRequest.operationId]?.status, 'complete');
+    assert.equal(
+      completedState.reopenedRanges[reopenRequest.operationId]?.targetId,
+      reopened!.targetId,
+      'replay preserves the reopened fixed target identity',
+    );
+    assert.ok(
+      Object.values(restarted.episodeStore.load().episodes)
+        .every(episode => episode.status !== 'historical-pending'),
+    );
+    assert.equal(
+      restarted.runtime.listExternalSourceTombstones(PROVIDER, SOURCE_ID)
+        .filter(entry => entry.tombstoneId === tombstone.tombstoneId).length,
+      1,
+    );
+    assert.deepEqual(
+      restarted.runtime.listExternalSourceRecoveryAudit(PROVIDER, SOURCE_ID)
+        .map(entry => entry.action),
+      ['range-abandonment', 'tombstone-reopen', 'reopened-range-complete'],
+    );
+    const backfillAudit = fs.readFileSync(completed.paths.auditFilePath, 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line) as { reopenTombstoneId?: string });
+    assert.ok(backfillAudit.length > 0);
+    assert.ok(
+      backfillAudit.every(entry => entry.reopenTombstoneId === tombstone.tombstoneId),
+      'every reopened backfill audit entry names the durable exclusion exception',
+    );
+    const capsules = Object.values(restarted.runtime.getEvidenceCapsuleStore().load().capsules);
+    assert.equal(
+      capsules.length,
+      new Set(capsules.map(capsule => capsule.episodeId)).size,
+      'replay creates no duplicate Evidence Capsule',
+    );
+  } finally {
+    env.restore();
+  }
+});
+
+test('named reopen remains historical-pending when its fixed resource is absent', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread(THREAD_ID, 'branch-main', 4, 'fp-missing-reopen-4')]),
+        },
+      },
+      read: {
+        [THREAD_ID]: {
+          timeline: timeline(THREAD_ID, 'branch-main', 4, 'fp-missing-reopen-4', [
+            entry(1, 'User', 'Implement the admitted recovery stage.'),
+            entry(2, 'Assistant', 'The admitted recovery stage is implemented.'),
+            entry(3, 'User', 'Implement the unread recovery stage.'),
+            entry(4, 'Assistant', 'The unread recovery stage is implemented.'),
+          ]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 1 },
+    });
+    await fixture.runtime.wake('startup');
+    fixture.runtime.setExternalProviderHistoryMode(PROVIDER, 'future-only');
+    fixture.runtime.rebaselineExternalProvider(PROVIDER, true);
+    const tombstone = fixture.runtime.listExternalSourceTombstones(PROVIDER, SOURCE_ID)[0];
+    assert.ok(tombstone);
+    assert.equal(tombstone.kind, 'range-abandonment');
+
+    writeScenario(env.scenarioPath, {
+      discover: { pages: { start: catalogPage([]) } },
+      read: {},
+    });
+    const request: ExternalSessionLogBackfillRequest = {
+      operationId: 'issue-101-missing-named-reopen',
+      triggeredBy: 'operator:test',
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+      range: {
+        startPosition: 3,
+        endPosition: 4,
+        resourceRefs: [THREAD_ID],
+      },
+      reopenTombstoneId: tombstone.tombstoneId,
+      limits: {
+        maxResources: 1,
+        maxBytes: 1024 * 1024,
+        maxElapsedMs: 60_000,
+      },
+    };
+
+    const result = await fixture.runtime.runExternalBackfill(request, new XurlExternalBackfillSource({
+      command: env.commandPath,
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+    }));
+    assert.equal(result.backfill.status, 'pending');
+    assert.equal(result.backfill.pendingResources, 1);
+    const reopened = loadExternalCursorState(cursorStorePath(env.root))
+      .reopenedRanges[request.operationId];
+    assert.ok(reopened);
+    assert.equal(reopened.status, 'historical-pending');
+    assert.ok(
+      Object.values(fixture.episodeStore.load().episodes)
+        .every(episode => episode.status === 'historical-pending'),
+    );
+    assert.deepEqual(
+      fixture.runtime.listExternalSourceRecoveryAudit(PROVIDER, SOURCE_ID)
+        .map(entry => entry.action),
+      ['range-abandonment', 'tombstone-reopen'],
+    );
+
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread(THREAD_ID, 'branch-main', 2, 'fp-short-reopen-2')]),
+        },
+      },
+      read: {
+        [THREAD_ID]: {
+          timeline: timeline(THREAD_ID, 'branch-main', 2, 'fp-short-reopen-2', [
+            entry(1, 'User', 'Only the earlier range is currently visible.'),
+            entry(2, 'Assistant', 'The fixed reopen boundary is not visible yet.'),
+          ]),
+        },
+      },
+    });
+    const shortHead = await fixture.runtime.runExternalBackfill(request, new XurlExternalBackfillSource({
+      command: env.commandPath,
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+    }));
+    assert.equal(shortHead.backfill.status, 'pending');
+    assert.equal(
+      loadExternalCursorState(cursorStorePath(env.root))
+        .reopenedRanges[request.operationId]?.status,
+      'historical-pending',
+      'a present resource below the fixed end is still unresolved',
+    );
+  } finally {
+    env.restore();
+  }
+});
+
+test('reopened fixed range records another explicit exclusion as terminal', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread(THREAD_ID, 'branch-main', 8, 'fp-terminal-reopen-8')]),
+        },
+      },
+      read: {
+        [THREAD_ID]: {
+          timeline: timeline(THREAD_ID, 'branch-main', 8, 'fp-terminal-reopen-8', [
+            entry(1, 'User', 'Implement retained stage one.'),
+            entry(2, 'Assistant', 'Retained stage one is implemented.'),
+            entry(3, 'User', 'Implement retained stage two.'),
+            entry(4, 'Assistant', 'Retained stage two is implemented.'),
+            entry(5, 'User', 'This recovery event will be explicitly skipped.'),
+            entry(6, 'Assistant', 'This excluded event must not become evidence.'),
+            entry(7, 'User', 'Implement the final reopened stage.'),
+            entry(8, 'Assistant', 'The final reopened stage is implemented.'),
+          ]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 2 },
+    });
+    await fixture.runtime.wake('startup');
+    fixture.runtime.setExternalProviderHistoryMode(PROVIDER, 'future-only');
+    fixture.runtime.rebaselineExternalProvider(PROVIDER, true);
+    const abandonment = fixture.runtime.listExternalSourceTombstones(PROVIDER, SOURCE_ID)[0];
+    assert.ok(abandonment);
+    assert.equal(abandonment.kind, 'range-abandonment');
+
+    const storePath = cursorStorePath(env.root);
+    const beforeSkip = loadExternalCursorState(storePath);
+    const sourceIdentity = beforeSkip.sourceIdentities[SOURCE_ID]!;
+    const excludedIdentity = {
+      eventId: `agents://codex/${THREAD_ID}#5-6`,
+      position: 6,
+      conversationId: THREAD_ID,
+      branchId: 'branch-main',
+      revision: 'rev-terminal-reopen-8',
+      contentHash: 'excluded-reopened-event',
+    };
+    const quarantineId = buildExternalEventDedupKey(sourceIdentity, excludedIdentity);
+    saveExternalCursorState(storePath, {
+      ...beforeSkip,
+      quarantinedEvents: {
+        ...beforeSkip.quarantinedEvents,
+        [quarantineId]: {
+          quarantineId,
+          resourceRef: THREAD_ID,
+          sourceIdentity,
+          identity: excludedIdentity,
+          failureClass: 'quarantine',
+          message: 'operator confirmed this reopened event cannot be admitted',
+          detectedAt: new Date().toISOString(),
+          cursorPosition: 4,
+        },
+      },
+      updatedAt: new Date().toISOString(),
+    });
+    assert.equal(
+      fixture.runtime.skipExternalSourceQuarantine(
+        PROVIDER,
+        SOURCE_ID,
+        quarantineId,
+        'operator skip inside reopened range',
+      ),
+      true,
+    );
+
+    const request: ExternalSessionLogBackfillRequest = {
+      operationId: 'issue-101-reopen-terminal-exclusion',
+      triggeredBy: 'operator:test',
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+      range: {
+        startPosition: 5,
+        endPosition: 8,
+        resourceRefs: [THREAD_ID],
+      },
+      reopenTombstoneId: abandonment.tombstoneId,
+      limits: {
+        maxResources: 1,
+        maxBytes: 1024 * 1024,
+        maxElapsedMs: 60_000,
+      },
+    };
+    const result = await fixture.runtime.runExternalBackfill(request, new XurlExternalBackfillSource({
+      command: env.commandPath,
+      provider: PROVIDER,
+      sourceId: SOURCE_ID,
+    }));
+    assert.equal(result.backfill.status, 'completed');
+    assert.equal(result.backfill.tombstonedEventsSkipped, 1);
+    const reopened = loadExternalCursorState(storePath).reopenedRanges[request.operationId];
+    assert.ok(reopened);
+    assert.equal(reopened.status, 'terminal-excluded');
+    assert.equal(reopened.terminalTombstoneId, quarantineId);
+    assert.ok(
+      Object.values(fixture.episodeStore.load().episodes)
+        .every(episode => episode.status !== 'historical-pending'),
+    );
+    assert.deepEqual(
+      fixture.runtime.listExternalSourceRecoveryAudit(PROVIDER, SOURCE_ID)
+        .map(entry => entry.action),
+      [
+        'range-abandonment',
+        'event-skip',
+        'tombstone-reopen',
+        'reopened-range-terminal-exclusion',
+      ],
+    );
   } finally {
     env.restore();
   }

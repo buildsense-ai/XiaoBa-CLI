@@ -40,6 +40,8 @@ export interface ExternalSessionLogBackfillRequest {
   readonly sourceId: string;
   readonly range: ExternalSessionLogBackfillRange;
   readonly limits: ExternalSessionLogBackfillLimits;
+  /** Deliberate audited exception that reopens exactly one durable tombstone. */
+  readonly reopenTombstoneId?: string;
 }
 
 export interface ExternalSessionLogBackfillEvent {
@@ -63,6 +65,8 @@ export interface ExternalSessionLogBackfillSource {
 
 export interface ExternalSessionLogBackfillIngestResult {
   readonly admittedEpisodeIds: readonly string[];
+  /** Present when Runtime intentionally skipped this event due to a tombstone. */
+  readonly tombstoneId?: string;
 }
 
 export interface ExternalSessionLogBackfillIngestContext {
@@ -101,6 +105,7 @@ export interface ExternalSessionLogBackfillMetrics {
   readonly failedResources: number;
   readonly ingestedEvents: number;
   readonly duplicateEventsSkipped: number;
+  readonly tombstonedEventsSkipped: number;
   readonly admittedEpisodes: number;
   readonly bytesProcessed: number;
 }
@@ -112,6 +117,7 @@ export interface ExternalSessionLogBackfillState {
   readonly provider: string;
   readonly sourceId: string;
   readonly range: ExternalSessionLogBackfillRange;
+  readonly reopenTombstoneId?: string;
   readonly status: ExternalSessionLogBackfillStatus;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -128,6 +134,7 @@ export type ExternalSessionLogBackfillAuditKind =
   | 'resource_ingested'
   | 'resource_pending'
   | 'resource_duplicate'
+  | 'resource_tombstone'
   | 'resource_failed'
   | 'quota_reached'
   | 'pending'
@@ -142,6 +149,7 @@ export interface ExternalSessionLogBackfillAuditEntry {
   readonly sourceId: string;
   readonly triggeredBy: string;
   readonly range: ExternalSessionLogBackfillRange;
+  readonly reopenTombstoneId?: string;
   readonly status: ExternalSessionLogBackfillStatus;
   readonly resourceRef?: string;
   readonly eventId?: string;
@@ -157,6 +165,7 @@ export interface ExternalSessionLogBackfillRunResult {
   readonly failedResources: number;
   readonly ingestedEvents: number;
   readonly duplicateEventsSkipped: number;
+  readonly tombstonedEventsSkipped: number;
   readonly admittedEpisodes: number;
   readonly bytesProcessed: number;
   readonly state: ExternalSessionLogBackfillState;
@@ -166,6 +175,11 @@ export interface ExternalSessionLogBackfillServiceOptions {
   readonly stateFilePath: string;
   readonly auditFilePath: string;
   readonly now?: () => Date;
+}
+
+export interface ExternalSessionLogBackfillRunOptions {
+  /** Runtime xURL reads may return a complete thread; admit only the named range. */
+  readonly filterOutOfRangeEvents?: boolean;
 }
 
 export class ExternalSessionLogBackfillService {
@@ -179,6 +193,7 @@ export class ExternalSessionLogBackfillService {
     request: ExternalSessionLogBackfillRequest,
     source: ExternalSessionLogBackfillSource,
     ingest: ExternalSessionLogBackfillIngestor,
+    options: ExternalSessionLogBackfillRunOptions = {},
   ): ExternalSessionLogBackfillRunResult {
     validateBackfillRequest(request);
     validateBackfillSource(request, source);
@@ -208,6 +223,7 @@ export class ExternalSessionLogBackfillService {
       sourceId: state.sourceId,
       triggeredBy: state.triggeredBy,
       range: state.range,
+      reopenTombstoneId: state.reopenTombstoneId,
       status: state.status,
       metrics,
     });
@@ -246,6 +262,7 @@ export class ExternalSessionLogBackfillService {
         sourceId: state.sourceId,
         triggeredBy: state.triggeredBy,
         range: state.range,
+        reopenTombstoneId: state.reopenTombstoneId,
         status: state.status,
         message: toErrorMessage(error),
         metrics: state.metrics,
@@ -258,6 +275,7 @@ export class ExternalSessionLogBackfillService {
         failedResources: 1,
         ingestedEvents: 0,
         duplicateEventsSkipped: 0,
+        tombstonedEventsSkipped: 0,
         admittedEpisodes: 0,
         bytesProcessed: 0,
         state,
@@ -269,11 +287,45 @@ export class ExternalSessionLogBackfillService {
     let failedResources = 0;
     let ingestedEvents = 0;
     let duplicateEventsSkipped = 0;
+    let tombstonedEventsSkipped = 0;
     let admittedEpisodes = 0;
     let bytesProcessed = 0;
     let sawPending = false;
     let sawFailure = false;
     let quotaReached = false;
+    const matchedResourceRefs = new Set(matchedResources.map(resource => resource.resourceRef));
+    const missingRequestedResourceRefs = (request.range.resourceRefs ?? [])
+      .filter(resourceRef => !matchedResourceRefs.has(resourceRef));
+
+    if (missingRequestedResourceRefs.length > 0) {
+      sawPending = true;
+      pendingResources += missingRequestedResourceRefs.length;
+      metrics = {
+        ...state.metrics,
+        pendingResources: state.metrics.pendingResources + missingRequestedResourceRefs.length,
+      };
+      state = {
+        ...state,
+        updatedAt: this.now().toISOString(),
+        metrics,
+      };
+      saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+      for (const resourceRef of missingRequestedResourceRefs) {
+        appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+          timestamp: this.now().toISOString(),
+          kind: 'resource_pending',
+          operationId: state.operationId,
+          provider: state.provider,
+          sourceId: state.sourceId,
+          triggeredBy: state.triggeredBy,
+          range: state.range,
+          reopenTombstoneId: state.reopenTombstoneId,
+          status: state.status,
+          resourceRef,
+          metrics: state.metrics,
+        });
+      }
+    }
 
     for (const resource of matchedResources) {
       const now = this.now();
@@ -317,6 +369,7 @@ export class ExternalSessionLogBackfillService {
           sourceId: state.sourceId,
           triggeredBy: state.triggeredBy,
           range: state.range,
+          reopenTombstoneId: state.reopenTombstoneId,
           status: state.status,
           resourceRef: resource.resourceRef,
           message: toErrorMessage(error),
@@ -347,6 +400,7 @@ export class ExternalSessionLogBackfillService {
           sourceId: state.sourceId,
           triggeredBy: state.triggeredBy,
           range: state.range,
+          reopenTombstoneId: state.reopenTombstoneId,
           status: state.status,
           resourceRef: resource.resourceRef,
           metrics: state.metrics,
@@ -354,11 +408,47 @@ export class ExternalSessionLogBackfillService {
         continue;
       }
 
+      const belowReopenedBoundary = request.reopenTombstoneId !== undefined
+        && readResult.newCursor.position < request.range.endPosition;
       if (readResult.events.length === 0) {
+        if (belowReopenedBoundary) {
+          sawPending = true;
+          pendingResources += 1;
+          metrics = {
+            ...state.metrics,
+            pendingResources: state.metrics.pendingResources + 1,
+          };
+          state = {
+            ...state,
+            updatedAt: now.toISOString(),
+            resourceCursors: {
+              ...state.resourceCursors,
+              [resource.resourceRef]: readResult.newCursor,
+            },
+            metrics,
+          };
+          saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+          appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+            timestamp: now.toISOString(),
+            kind: 'resource_pending',
+            operationId: state.operationId,
+            provider: state.provider,
+            sourceId: state.sourceId,
+            triggeredBy: state.triggeredBy,
+            range: state.range,
+            reopenTombstoneId: state.reopenTombstoneId,
+            status: state.status,
+            resourceRef: resource.resourceRef,
+            metrics: state.metrics,
+          });
+        }
         continue;
       }
 
-      if (!allEventsInRange(readResult.events, request.range)) {
+      const hasOutOfRangeEvents = readResult.events.some(
+        event => !isBackfillEventInRange(event.identity, request.range),
+      );
+      if (hasOutOfRangeEvents && !options.filterOutOfRangeEvents) {
         sawFailure = true;
         failedResources += 1;
         state = recordBackfillFailure(
@@ -386,6 +476,7 @@ export class ExternalSessionLogBackfillService {
           sourceId: state.sourceId,
           triggeredBy: state.triggeredBy,
           range: state.range,
+          reopenTombstoneId: state.reopenTombstoneId,
           status: state.status,
           resourceRef: resource.resourceRef,
           message: 'resource returned events outside requested backfill range',
@@ -393,14 +484,18 @@ export class ExternalSessionLogBackfillService {
         });
         continue;
       }
+      const eventsInRange = readResult.events.filter(
+        event => isBackfillEventInRange(event.identity, request.range),
+      );
 
       let resourceFailed = false;
       let resourceDuplicates = 0;
+      let resourceTombstones = 0;
       let resourceIngested = 0;
       let resourceAdmittedEpisodes = 0;
       let resourceBytes = 0;
 
-      for (const event of readResult.events) {
+      for (const event of eventsInRange) {
         if (bytesProcessed + resourceBytes + event.byteLength > request.limits.maxBytes) {
           quotaReached = true;
           break;
@@ -448,6 +543,7 @@ export class ExternalSessionLogBackfillService {
             sourceId: state.sourceId,
             triggeredBy: state.triggeredBy,
             range: state.range,
+            reopenTombstoneId: state.reopenTombstoneId,
             status: state.status,
             resourceRef: resource.resourceRef,
             eventId: event.identity.eventId,
@@ -466,8 +562,12 @@ export class ExternalSessionLogBackfillService {
             resource,
             eventIdentity: event.identity,
           });
-          resourceIngested += 1;
-          resourceAdmittedEpisodes += ingestion.admittedEpisodeIds.length;
+          if (ingestion.tombstoneId) {
+            resourceTombstones += 1;
+          } else {
+            resourceIngested += 1;
+            resourceAdmittedEpisodes += ingestion.admittedEpisodeIds.length;
+          }
           state = markBackfillEventProcessed(state, request.provider, request.sourceId, event.identity);
         } catch (error) {
           resourceFailed = true;
@@ -492,6 +592,7 @@ export class ExternalSessionLogBackfillService {
             sourceId: state.sourceId,
             triggeredBy: state.triggeredBy,
             range: state.range,
+            reopenTombstoneId: state.reopenTombstoneId,
             status: state.status,
             resourceRef: resource.resourceRef,
             eventId: event.identity.eventId,
@@ -507,16 +608,23 @@ export class ExternalSessionLogBackfillService {
       }
 
       processedResources += 1;
+      if (belowReopenedBoundary) {
+        sawPending = true;
+        pendingResources += 1;
+      }
       ingestedEvents += resourceIngested;
       duplicateEventsSkipped += resourceDuplicates;
+      tombstonedEventsSkipped += resourceTombstones;
       admittedEpisodes += resourceAdmittedEpisodes;
       bytesProcessed += resourceBytes;
 
       const updatedMetrics = {
         ...state.metrics,
         resourcesProcessed: state.metrics.resourcesProcessed + 1,
+        pendingResources: state.metrics.pendingResources + (belowReopenedBoundary ? 1 : 0),
         ingestedEvents: state.metrics.ingestedEvents + resourceIngested,
         duplicateEventsSkipped: state.metrics.duplicateEventsSkipped + resourceDuplicates,
+        tombstonedEventsSkipped: state.metrics.tombstonedEventsSkipped + resourceTombstones,
         admittedEpisodes: state.metrics.admittedEpisodes + resourceAdmittedEpisodes,
         bytesProcessed: state.metrics.bytesProcessed + resourceBytes,
       };
@@ -533,7 +641,11 @@ export class ExternalSessionLogBackfillService {
       };
       saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
 
-      const auditKind: ExternalSessionLogBackfillAuditKind = resourceIngested > 0
+      const auditKind: ExternalSessionLogBackfillAuditKind = belowReopenedBoundary
+        ? 'resource_pending'
+        : resourceTombstones > 0
+        ? 'resource_tombstone'
+        : resourceIngested > 0
         ? 'resource_ingested'
         : 'resource_duplicate';
       appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
@@ -544,6 +656,7 @@ export class ExternalSessionLogBackfillService {
         sourceId: state.sourceId,
         triggeredBy: state.triggeredBy,
         range: state.range,
+        reopenTombstoneId: state.reopenTombstoneId,
         status: state.status,
         resourceRef: resource.resourceRef,
         eventId: readResult.events[0]?.identity.eventId,
@@ -579,6 +692,7 @@ export class ExternalSessionLogBackfillService {
       sourceId: state.sourceId,
       triggeredBy: state.triggeredBy,
       range: state.range,
+      reopenTombstoneId: state.reopenTombstoneId,
       status: state.status,
       message: finalStatus === 'source_failed'
         ? 'one or more resources failed; see state.failures'
@@ -594,6 +708,7 @@ export class ExternalSessionLogBackfillService {
       failedResources,
       ingestedEvents,
       duplicateEventsSkipped,
+      tombstonedEventsSkipped,
       admittedEpisodes,
       bytesProcessed,
       state,
@@ -621,6 +736,9 @@ export function loadExternalSessionLogBackfillState(
     completedAt: parsed.completedAt ?? null,
     resourceCursors: parsed.resourceCursors ?? {},
     processedEventIds: parsed.processedEventIds ?? {},
+    ...(typeof parsed.reopenTombstoneId === 'string'
+      ? { reopenTombstoneId: parsed.reopenTombstoneId }
+      : {}),
     failures: parsed.failures ?? [],
     metrics: {
       runsStarted: parsed.metrics?.runsStarted ?? 0,
@@ -630,6 +748,7 @@ export function loadExternalSessionLogBackfillState(
       failedResources: parsed.metrics?.failedResources ?? 0,
       ingestedEvents: parsed.metrics?.ingestedEvents ?? 0,
       duplicateEventsSkipped: parsed.metrics?.duplicateEventsSkipped ?? 0,
+      tombstonedEventsSkipped: parsed.metrics?.tombstonedEventsSkipped ?? 0,
       admittedEpisodes: parsed.metrics?.admittedEpisodes ?? 0,
       bytesProcessed: parsed.metrics?.bytesProcessed ?? 0,
     },
@@ -680,6 +799,9 @@ function createExternalSessionLogBackfillState(
     provider: request.provider,
     sourceId: request.sourceId,
     range: cloneBackfillRange(request.range),
+    ...(request.reopenTombstoneId
+      ? { reopenTombstoneId: request.reopenTombstoneId }
+      : {}),
     status: 'pending',
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
@@ -695,6 +817,7 @@ function createExternalSessionLogBackfillState(
       failedResources: 0,
       ingestedEvents: 0,
       duplicateEventsSkipped: 0,
+      tombstonedEventsSkipped: 0,
       admittedEpisodes: 0,
       bytesProcessed: 0,
     },
@@ -718,6 +841,9 @@ function assertCompatibleState(
   ) {
     throw new Error('backfill request range does not match existing operation state');
   }
+  if ((state.reopenTombstoneId ?? '') !== (request.reopenTombstoneId ?? '')) {
+    throw new Error('backfill request tombstone reopen does not match existing operation state');
+  }
   return state;
 }
 
@@ -726,6 +852,9 @@ function validateBackfillRequest(request: ExternalSessionLogBackfillRequest): vo
   if (!request.triggeredBy.trim()) throw new Error('backfill triggeredBy is required');
   if (!request.provider.trim()) throw new Error('backfill provider is required');
   if (!request.sourceId.trim()) throw new Error('backfill sourceId is required');
+  if (request.reopenTombstoneId !== undefined && !request.reopenTombstoneId.trim()) {
+    throw new Error('backfill reopenTombstoneId must not be empty');
+  }
   if (request.range.startPosition < 0) throw new Error('backfill startPosition must be >= 0');
   if (request.range.endPosition < request.range.startPosition) {
     throw new Error('backfill endPosition must be >= startPosition');
@@ -758,7 +887,7 @@ function selectBackfillResources(
   return [...resources]
     .filter((resource) => {
       if (!resource.firstEventIdentity) return false;
-      if (allowedRefs && !allowedRefs.has(resource.resourceRef)) return false;
+      if (allowedRefs) return allowedRefs.has(resource.resourceRef);
       const position = resource.firstEventIdentity.position;
       return position >= range.startPosition && position <= range.endPosition;
     })
@@ -803,13 +932,6 @@ function isExactBackfillDuplicate(
   }
 
   return legacyRecord === normalizeContentHash(identity.contentHash);
-}
-
-function allEventsInRange(
-  events: readonly ExternalSessionLogBackfillEvent[],
-  range: ExternalSessionLogBackfillRange,
-): boolean {
-  return events.every(({ identity }) => isBackfillEventInRange(identity, range));
 }
 
 function isBackfillEventInRange(identity: SourceEventIdentity, range: ExternalSessionLogBackfillRange): boolean {

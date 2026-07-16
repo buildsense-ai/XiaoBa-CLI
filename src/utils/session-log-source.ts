@@ -192,6 +192,8 @@ export interface SessionLogSourceAdapter {
   getAdmissionLane?(resource: SessionLogSourceResource): 'continuous' | 'catch-up';
   /** Immutable catch-up target linked to a historical page, when present. */
   getCatchUpTarget?(resource: SessionLogSourceResource): ExternalCatchUpTarget | undefined;
+  /** Stable current heads used only by explicit operator rebaseline recovery. */
+  observeRecoveryHeads?(): readonly { readonly resourceRef: string; readonly position: number }[];
   discoverResources(context?: SessionLogSourceDiscoveryContext): readonly SessionLogSourceResource[];
   read(
     resource: SessionLogSourceResource,
@@ -767,7 +769,9 @@ export interface ExternalCatchUpTarget {
 export type ExternalCatchUpResourceStatus =
   | 'target-pending'
   | 'historical-pending'
-  | 'complete';
+  | 'complete'
+  | 'closed'
+  | 'abandoned';
 
 /** Mutable catch-up progress kept separate from the immutable target. */
 export interface ExternalCatchUpResourceState {
@@ -775,6 +779,8 @@ export interface ExternalCatchUpResourceState {
   readonly historicalCursor: SourceCursor;
   readonly observedPosition: number;
   readonly updatedAt: string;
+  /** Terminal exclusion that closed this mutable progress record, if any. */
+  readonly terminalTombstoneId?: string;
 }
 
 export interface ExternalSourceQuarantineEntry {
@@ -788,12 +794,72 @@ export interface ExternalSourceQuarantineEntry {
   readonly cursorPosition: number;
 }
 
-export interface ExternalSourceTombstoneEntry {
+interface ExternalSourceTombstoneBase {
   readonly tombstoneId: string;
   readonly resourceRef: string;
-  readonly identity: SourceEventIdentity;
   readonly createdAt: string;
   readonly reason: string;
+}
+
+export interface ExternalSourceEventTombstoneEntry extends ExternalSourceTombstoneBase {
+  readonly kind: 'event-skip';
+  readonly identity: SourceEventIdentity;
+}
+
+export interface ExternalSourceRangeTombstoneEntry extends ExternalSourceTombstoneBase {
+  readonly kind: 'resource-closure' | 'range-abandonment';
+  readonly range: {
+    readonly startPosition: number;
+    readonly endPosition: number;
+  };
+  readonly targetId?: string;
+}
+
+export type ExternalSourceTombstoneEntry =
+  | ExternalSourceEventTombstoneEntry
+  | ExternalSourceRangeTombstoneEntry;
+
+export type ExternalSourceRecoveryAction =
+  | 'quarantine-retry'
+  | 'event-skip'
+  | 'resource-close'
+  | 'range-abandonment'
+  | 'tombstone-reopen'
+  | 'reopened-range-complete'
+  | 'reopened-range-terminal-exclusion';
+
+/** Append-only, transcript-free operator/recovery audit record. */
+export interface ExternalSourceRecoveryAuditEntry {
+  readonly auditId: string;
+  readonly action: ExternalSourceRecoveryAction;
+  readonly provider: string;
+  readonly sourceId: string;
+  readonly resourceRef: string;
+  readonly createdAt: string;
+  readonly quarantineId?: string;
+  readonly tombstoneId?: string;
+  readonly operationId?: string;
+  readonly reason?: string;
+}
+
+export interface ExternalReopenedRangeState {
+  readonly reopenId: string;
+  readonly operationId: string;
+  readonly tombstoneId: string;
+  readonly targetId: string;
+  readonly provider: string;
+  readonly sourceId: string;
+  readonly resourceRef: string;
+  readonly range: {
+    readonly startPosition: number;
+    readonly endPosition: number;
+  };
+  readonly prefixDigest: string;
+  readonly originalTargetId?: string;
+  readonly status: 'historical-pending' | 'complete' | 'terminal-excluded';
+  readonly terminalTombstoneId?: string;
+  readonly createdAt: string;
+  readonly completedAt?: string;
 }
 
 export interface ExternalCursorState {
@@ -817,6 +883,8 @@ export interface ExternalCursorState {
   readonly resources: Record<string, ExternalDiscoveredResourceState>;
   readonly quarantinedEvents: Record<string, ExternalSourceQuarantineEntry>;
   readonly tombstones: Record<string, ExternalSourceTombstoneEntry>;
+  readonly recoveryAudit: readonly ExternalSourceRecoveryAuditEntry[];
+  readonly reopenedRanges: Record<string, ExternalReopenedRangeState>;
   readonly activation: ExternalSourceActivationState | null;
   readonly discovery: ExternalSourceDiscoveryState | null;
   /** Immutable per-thread boundaries. Existing entries are never replaced. */
@@ -837,7 +905,7 @@ export interface ExternalCursorEntry {
 
 export function emptyExternalCursorState(): ExternalCursorState {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     cursors: {},
     processedEventIds: {},
     processedEventFingerprints: {},
@@ -845,6 +913,8 @@ export function emptyExternalCursorState(): ExternalCursorState {
     resources: {},
     quarantinedEvents: {},
     tombstones: {},
+    recoveryAudit: [],
+    reopenedRanges: {},
     activation: null,
     discovery: null,
     catchUpTargets: {},
@@ -921,6 +991,8 @@ function normalizeCatchUpResources(value: unknown): Record<string, ExternalCatch
       candidate.status !== 'target-pending'
       && candidate.status !== 'historical-pending'
       && candidate.status !== 'complete'
+      && candidate.status !== 'closed'
+      && candidate.status !== 'abandoned'
     ) {
       throw new Error(`external cursor state has invalid catch-up resource for ${resourceRef}`);
     }
@@ -946,9 +1018,114 @@ function normalizeCatchUpResources(value: unknown): Record<string, ExternalCatch
       },
       observedPosition: candidate.observedPosition!,
       updatedAt: candidate.updatedAt,
+      ...(typeof candidate.terminalTombstoneId === 'string'
+        ? { terminalTombstoneId: candidate.terminalTombstoneId }
+        : {}),
     };
   }
   return resources;
+}
+
+function normalizeRecoveryAudit(value: unknown): readonly ExternalSourceRecoveryAuditEntry[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error('external cursor state has invalid recovery audit');
+  }
+  return value.flatMap((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const entry = raw as Partial<ExternalSourceRecoveryAuditEntry>;
+    if (
+      typeof entry.auditId !== 'string'
+      || typeof entry.provider !== 'string'
+      || typeof entry.sourceId !== 'string'
+      || typeof entry.resourceRef !== 'string'
+      || typeof entry.createdAt !== 'string'
+      || (
+        entry.action !== 'quarantine-retry'
+        && entry.action !== 'event-skip'
+        && entry.action !== 'resource-close'
+        && entry.action !== 'range-abandonment'
+        && entry.action !== 'tombstone-reopen'
+        && entry.action !== 'reopened-range-complete'
+        && entry.action !== 'reopened-range-terminal-exclusion'
+      )
+    ) return [];
+    return [{
+      auditId: entry.auditId,
+      action: entry.action,
+      provider: entry.provider,
+      sourceId: entry.sourceId,
+      resourceRef: entry.resourceRef,
+      createdAt: entry.createdAt,
+      ...(typeof entry.quarantineId === 'string' ? { quarantineId: entry.quarantineId } : {}),
+      ...(typeof entry.tombstoneId === 'string' ? { tombstoneId: entry.tombstoneId } : {}),
+      ...(typeof entry.operationId === 'string' ? { operationId: entry.operationId } : {}),
+      ...(typeof entry.reason === 'string' ? { reason: entry.reason } : {}),
+    }];
+  });
+}
+
+function normalizeReopenedRanges(value: unknown): Record<string, ExternalReopenedRangeState> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('external cursor state has invalid reopened ranges');
+  }
+  const reopened: Record<string, ExternalReopenedRangeState> = {};
+  for (const [operationId, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error(`external cursor state has invalid reopened range for ${operationId}`);
+    }
+    const entry = raw as Partial<ExternalReopenedRangeState>;
+    const range = entry.range;
+    if (
+      entry.operationId !== operationId
+      || typeof entry.reopenId !== 'string'
+      || typeof entry.tombstoneId !== 'string'
+      || typeof entry.targetId !== 'string'
+      || typeof entry.provider !== 'string'
+      || typeof entry.sourceId !== 'string'
+      || typeof entry.resourceRef !== 'string'
+      || !range
+      || !Number.isInteger(range.startPosition)
+      || range.startPosition < 0
+      || !Number.isInteger(range.endPosition)
+      || range.endPosition < range.startPosition
+      || typeof entry.prefixDigest !== 'string'
+      || !/^[a-f0-9]{64}$/.test(entry.prefixDigest)
+      || (
+        entry.status !== 'historical-pending'
+        && entry.status !== 'complete'
+        && entry.status !== 'terminal-excluded'
+      )
+      || typeof entry.createdAt !== 'string'
+    ) {
+      throw new Error(`external cursor state has invalid reopened range for ${operationId}`);
+    }
+    reopened[operationId] = {
+      reopenId: entry.reopenId,
+      operationId,
+      tombstoneId: entry.tombstoneId,
+      targetId: entry.targetId,
+      provider: entry.provider,
+      sourceId: entry.sourceId,
+      resourceRef: entry.resourceRef,
+      range: {
+        startPosition: range.startPosition,
+        endPosition: range.endPosition,
+      },
+      prefixDigest: entry.prefixDigest,
+      ...(typeof entry.originalTargetId === 'string'
+        ? { originalTargetId: entry.originalTargetId }
+        : {}),
+      status: entry.status,
+      ...(typeof entry.terminalTombstoneId === 'string'
+        ? { terminalTombstoneId: entry.terminalTombstoneId }
+        : {}),
+      createdAt: entry.createdAt,
+      ...(typeof entry.completedAt === 'string' ? { completedAt: entry.completedAt } : {}),
+    };
+  }
+  return reopened;
 }
 
 export function loadExternalCursorState(storePath: string): ExternalCursorState {
@@ -961,7 +1138,7 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
     throw new Error(`external cursor state is corrupt: ${storePath}: ${String(error)}`);
   }
   const schemaVersion = Number(parsed.schemaVersion ?? 1);
-  if (!Number.isFinite(schemaVersion) || schemaVersion < 1 || schemaVersion > 4) {
+  if (!Number.isFinite(schemaVersion) || schemaVersion < 1 || schemaVersion > 5) {
     throw new Error(`external cursor state schema is unsupported: ${String(parsed.schemaVersion)}`);
   }
   if (!parsed.cursors || typeof parsed.cursors !== 'object'
@@ -1039,14 +1216,47 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
   const normalizedTombstones: Record<string, ExternalSourceTombstoneEntry> = {};
   for (const [tombstoneId, value] of Object.entries(tombstones)) {
     const record = value as Partial<ExternalSourceTombstoneEntry> | null;
-    if (!record || typeof record !== 'object' || !record.identity || typeof record.identity !== 'object') continue;
-    normalizedTombstones[tombstoneId] = {
+    if (!record || typeof record !== 'object') continue;
+    const base = {
       tombstoneId: typeof record.tombstoneId === 'string' ? record.tombstoneId : tombstoneId,
       resourceRef: typeof record.resourceRef === 'string' ? record.resourceRef : 'unknown-resource',
-      identity: record.identity as SourceEventIdentity,
       createdAt: typeof record.createdAt === 'string' ? record.createdAt : new Date().toISOString(),
-      reason: typeof record.reason === 'string' ? record.reason : 'operator skip',
+      reason: typeof record.reason === 'string' ? record.reason : 'operator exclusion',
     };
+    if ('identity' in record && record.identity && typeof record.identity === 'object') {
+      normalizedTombstones[tombstoneId] = {
+        ...base,
+        kind: 'event-skip',
+        identity: record.identity as SourceEventIdentity,
+      };
+      continue;
+    }
+    if (
+      (record.kind === 'resource-closure' || record.kind === 'range-abandonment')
+      && 'range' in record
+      && record.range
+      && typeof record.range === 'object'
+    ) {
+      const range = record.range as { startPosition?: unknown; endPosition?: unknown };
+      if (
+        Number.isInteger(range.startPosition)
+        && Number(range.startPosition) >= 0
+        && Number.isInteger(range.endPosition)
+        && Number(range.endPosition) >= Number(range.startPosition)
+      ) {
+        normalizedTombstones[tombstoneId] = {
+          ...base,
+          kind: record.kind,
+          range: {
+            startPosition: Number(range.startPosition),
+            endPosition: Number(range.endPosition),
+          },
+          ...('targetId' in record && typeof record.targetId === 'string'
+            ? { targetId: record.targetId }
+            : {}),
+        };
+      }
+    }
   }
   const activation = parsed.activation && typeof parsed.activation === 'object'
     ? parsed.activation as Partial<ExternalSourceActivationState>
@@ -1056,8 +1266,10 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
     : null;
   const catchUpTargets = normalizeCatchUpTargets(parsed.catchUpTargets);
   const catchUpResources = normalizeCatchUpResources(parsed.catchUpResources);
+  const recoveryAudit = normalizeRecoveryAudit(parsed.recoveryAudit);
+  const reopenedRanges = normalizeReopenedRanges(parsed.reopenedRanges);
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     cursors: parsed.cursors as Record<string, ExternalCursorEntry>,
     processedEventIds: parsed.processedEventIds as Record<string, string | null>,
     processedEventFingerprints: processedEventFingerprints as Record<string, string>,
@@ -1065,6 +1277,8 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
     resources: normalizedResources,
     quarantinedEvents: normalizedQuarantine,
     tombstones: normalizedTombstones,
+    recoveryAudit,
+    reopenedRanges,
     activation: activation
       ? {
         initializedAt: typeof activation.initializedAt === 'string' ? activation.initializedAt : new Date().toISOString(),
@@ -1104,7 +1318,7 @@ export function saveExternalCursorState(
 ): void {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   const payload = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     cursors: state.cursors,
     processedEventIds: state.processedEventIds,
     processedEventFingerprints: state.processedEventFingerprints,
@@ -1112,6 +1326,8 @@ export function saveExternalCursorState(
     resources: state.resources,
     quarantinedEvents: state.quarantinedEvents,
     tombstones: state.tombstones,
+    recoveryAudit: state.recoveryAudit,
+    reopenedRanges: state.reopenedRanges,
     activation: state.activation,
     discovery: state.discovery,
     catchUpTargets: state.catchUpTargets,
@@ -1350,6 +1566,39 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
   getCatchUpTarget(resource: SessionLogSourceResource): ExternalCatchUpTarget | undefined {
     if (!this.cursorStorePath) return undefined;
     return loadExternalCursorState(this.cursorStorePath).catchUpTargets[resource.resourceRef];
+  }
+
+  observeRecoveryHeads(): readonly { readonly resourceRef: string; readonly position: number }[] {
+    if (!this.cursorStorePath || !this.reader?.sampleHistory) return [];
+    const state = loadExternalCursorState(this.cursorStorePath);
+    const heads: Array<{ resourceRef: string; position: number }> = [];
+    for (const [resourceRef, progress] of Object.entries(state.catchUpResources)) {
+      if (
+        progress.status === 'complete'
+        || progress.status === 'closed'
+        || progress.status === 'abandoned'
+      ) continue;
+      const resource = state.resources[resourceRef]?.resource;
+      if (!resource) continue;
+      const sample = this.reader.sampleHistory(resource);
+      if (sample.status !== 'stable') {
+        throw new Error(`external recovery head is still pending for ${resourceRef}`);
+      }
+      const eventHead = sample.events.reduce(
+        (highest, event) => Math.max(highest, event.position),
+        -1,
+      );
+      heads.push({
+        resourceRef,
+        position: Math.max(
+          progress.observedPosition,
+          sample.observedPosition,
+          eventHead,
+          normalizeActivationPosition(resource.firstEventIdentity?.position),
+        ),
+      });
+    }
+    return heads;
   }
 
   /** Set the cursor store path (called during RuntimeLearning construction). */
@@ -1611,7 +1860,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
 
     const unskippedEvents = readerResult.events.filter(
-      event => !isSkippedExternalEvent(state, this.identity, event),
+      event => !isSkippedExternalEvent(state, this.identity, resource.resourceRef, event),
     );
     const conflict = unskippedEvents.find(event => hasExternalEventConflict(state, this.identity, event));
     if (conflict) {
@@ -2723,16 +2972,27 @@ function isDuplicateExternalEvent(
 function isSkippedExternalEvent(
   state: ExternalCursorState,
   sourceIdentity: SessionLogSourceIdentity,
+  resourceRef: string,
   event: ExternalSourceRawEvent,
 ): boolean {
   const identity = toEventIdentity(event);
-  return Object.prototype.hasOwnProperty.call(
-    state.tombstones,
-    buildExternalStableEventKey(sourceIdentity, identity),
-  ) || Object.prototype.hasOwnProperty.call(
-    state.tombstones,
-    buildExternalEventDedupKey(sourceIdentity, identity),
-  );
+  const stableKey = buildExternalStableEventKey(sourceIdentity, identity);
+  const dedupKey = buildExternalEventDedupKey(sourceIdentity, identity);
+  return Object.entries(state.tombstones).some(([key, tombstone]) => {
+    if (tombstone.resourceRef !== resourceRef) return false;
+    if (tombstone.kind === 'event-skip') {
+      return key === stableKey
+        || key === dedupKey
+        || (
+          tombstone.identity.eventId === identity.eventId
+          && tombstone.identity.position === identity.position
+          && (tombstone.identity.conversationId ?? '') === (identity.conversationId ?? '')
+          && (tombstone.identity.branchId ?? '') === (identity.branchId ?? '')
+        );
+    }
+    return identity.position >= tombstone.range.startPosition
+      && identity.position <= tombstone.range.endPosition;
+  });
 }
 
 function hasBlockingQuarantineForResource(
@@ -2787,6 +3047,7 @@ export function skipExternalSourceQuarantine(
       ...state.tombstones,
       [tombstoneKey]: {
         tombstoneId: quarantineId,
+        kind: 'event-skip',
         resourceRef: entry.resourceRef,
         identity: entry.identity,
         createdAt: new Date().toISOString(),

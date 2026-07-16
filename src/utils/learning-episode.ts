@@ -38,6 +38,7 @@ export const MAX_SEMANTIC_OBSERVATION_PAYLOAD_BYTES = 8192 as const;
 export type LearningEpisodeStatus =
   | 'settling'
   | 'historical-pending'
+  | 'historical-abandoned'
   | 'contradicted'
   | 'eligible';
 
@@ -627,7 +628,10 @@ export function settleLearningEpisodes(
 ): LearningEpisode[] {
   const now = (options.now ?? new Date()).getTime();
   return episodes.map(episode => {
-    if (episode.status === 'historical-pending') {
+    if (
+      episode.status === 'historical-pending'
+      || episode.status === 'historical-abandoned'
+    ) {
       return cloneEpisode(episode);
     }
     if (episode.status === 'contradicted' || episode.contradictionSignals.length > 0) {
@@ -845,7 +849,10 @@ export class LearningEpisodeStore {
       // Historical evidence may link a contradiction before its immutable
       // target is complete. Keep the episode behind that target's review gate;
       // reconciliation applies the already-durable signal idempotently.
-      if (predecessor.status !== 'historical-pending') {
+      if (
+        predecessor.status !== 'historical-pending'
+        && predecessor.status !== 'historical-abandoned'
+      ) {
         predecessor.status = 'contradicted';
       }
       predecessor.completionEvidence = uniqueEvidence([...predecessor.completionEvidence, signal.source]);
@@ -869,6 +876,42 @@ export class LearningEpisodeStore {
       episode.status = episode.contradictionSignals.length > 0
         ? 'contradicted'
         : 'eligible';
+      changed = true;
+    }
+    if (changed) this.save(state);
+    return state;
+  }
+
+  /** Permanently hold episodes whose fixed historical target was abandoned. */
+  abandonHistoricalTarget(targetId: string): LearningEpisodeStoreState {
+    const state = this.load();
+    let changed = false;
+    for (const episode of Object.values(state.episodes)) {
+      if (
+        episode.status !== 'historical-pending'
+        || episode.historicalTarget?.targetId !== targetId
+      ) continue;
+      episode.status = 'historical-abandoned';
+      changed = true;
+    }
+    if (changed) this.save(state);
+    return state;
+  }
+
+  /** Relink only abandoned/pending historical evidence to a deliberate reopened range. */
+  reopenHistoricalTarget(
+    originalTargetId: string,
+    reopenedTarget: HistoricalEpisodeTargetRef,
+  ): LearningEpisodeStoreState {
+    const state = this.load();
+    let changed = false;
+    for (const episode of Object.values(state.episodes)) {
+      if (
+        (episode.status !== 'historical-abandoned' && episode.status !== 'historical-pending')
+        || episode.historicalTarget?.targetId !== originalTargetId
+      ) continue;
+      episode.status = 'historical-pending';
+      episode.historicalTarget = reopenedTarget;
       changed = true;
     }
     if (changed) this.save(state);
@@ -912,7 +955,11 @@ function mergeEpisode(existing: LearningEpisode | undefined, incoming: LearningE
     contradictionSignals: [...new Map(signals.map(signal => [signal.signalId, signal])).values()],
     semanticObservations: mergeSemanticObservations(existing.semanticObservations, incoming.semanticObservations),
   };
-  if (merged.contradictionSignals.length > 0) {
+  if (
+    merged.contradictionSignals.length > 0
+    && merged.status !== 'historical-pending'
+    && merged.status !== 'historical-abandoned'
+  ) {
     merged.status = 'contradicted';
   }
   return merged;
