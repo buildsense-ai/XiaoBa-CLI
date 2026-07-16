@@ -98,10 +98,51 @@ test('ordinary RuntimeLearning wakes admit one stable xURL history through an im
     });
 
     const fixture = env.createRuntime();
-    await fixture.runtime.wake('startup');
-    await fixture.runtime.wake('scheduled');
-    await fixture.runtime.wake('scheduled');
-    const wake = await fixture.runtime.wake('scheduled');
+    const actionsByWake: string[][] = [];
+    const sourceStateByWake: string[] = [];
+    let priorInvocationCount = 0;
+    let wake = await fixture.runtime.wake('startup');
+    for (let wakeNumber = 0; wakeNumber < 4; wakeNumber++) {
+      if (wakeNumber > 0) wake = await fixture.runtime.wake('scheduled');
+      const invocations = readInvocationLog(env.logPath);
+      actionsByWake.push(
+        invocations.slice(priorInvocationCount).map(invocation => invocation.action),
+      );
+      priorInvocationCount = invocations.length;
+      const state = loadExternalCursorState(cursorStorePath(env.root));
+      const progress = state.catchUpResources[THREAD_ID];
+      sourceStateByWake.push(
+        progress?.status === 'target-pending'
+          ? `target-pending:${progress.pendingSample ? 'sampled' : 'unsampled'}`
+          : (progress?.status ?? state.catchUpCatalog.active?.status ?? 'idle'),
+      );
+    }
+
+    assert.deepEqual(
+      actionsByWake,
+      [
+        ['version', 'query'],
+        ['read'],
+        ['read', 'read'],
+        ['read', 'read'],
+      ],
+      'the one catch-up action remains bounded while donated continuous capacity stays timely',
+    );
+    assert.deepEqual(
+      sourceStateByWake,
+      [
+        'target-pending:unsampled',
+        'target-pending:sampled',
+        'historical-pending',
+        'complete',
+      ],
+      'each wake derives exactly one inventory, stability observation, or due page from schema-v5 source state',
+    );
+    assert.equal(
+      fs.existsSync(path.join(env.root, 'data', 'external-catch-up-scheduler-state.json')),
+      false,
+      'catch-up reuses source and admission-coordinator durability instead of a second scheduler state',
+    );
 
     const external = wake.discovery.sources.find(source => source.sourceId === SOURCE_ID);
     assert.ok(external);
@@ -159,7 +200,7 @@ test('ordinary RuntimeLearning wakes admit one stable xURL history through an im
     );
     const initialInvocations = readInvocationLog(env.logPath).map(invocation => invocation.action);
     assert.equal(initialInvocations.filter(action => action === 'query').length, 1);
-    assert.equal(initialInvocations.filter(action => action === 'read').length, 3);
+    assert.equal(initialInvocations.filter(action => action === 'read').length, 5);
 
     const immutableTarget = loadExternalCursorState(cursorStorePath(env.root)).catchUpTargets[THREAD_ID];
     writeScenario(env.scenarioPath, {

@@ -54,6 +54,10 @@ import {
   type ExternalEvidencePage,
   type ExternalAdmissionCommitResult,
 } from './external-admission-coordinator';
+import type {
+  ExternalCatchUpAction,
+  ExternalSourceWorkLane,
+} from './external-source-work';
 import { acquireExternalSourceProviderLock } from './external-source-provider-lock';
 import {
   ExternalProviderOverrideStore,
@@ -352,22 +356,6 @@ const REVIEW_WORK_CLASS_ORDER: readonly ReviewWorkClass[] = [
   'historical',
 ];
 
-type CatchUpQuantumAction = 'inventory' | 'stability' | 'page';
-
-const CATCH_UP_ACTION_ORDER: readonly CatchUpQuantumAction[] = [
-  'inventory',
-  'stability',
-  'page',
-];
-
-const CATCH_UP_SCHEDULER_SCHEMA_VERSION = 1;
-
-interface CatchUpSchedulerState {
-  schemaVersion: typeof CATCH_UP_SCHEDULER_SCHEMA_VERSION;
-  nextProvider: string | null;
-  providerActions: Record<string, CatchUpQuantumAction>;
-}
-
 interface ReviewFairnessContinuation {
   nextClass: ReviewWorkClass;
   classCursors: Partial<Record<ReviewWorkClass, string>>;
@@ -380,6 +368,86 @@ interface ReviewContinuationState {
   updatedAt: string;
   nextClass: ReviewWorkClass;
   classCursors: Partial<Record<ReviewWorkClass, string>>;
+}
+
+/**
+ * Lets provider reads overlap while admitting their ready pages in the
+ * coordinator's durable provider order. A provider with no page donates its
+ * turn when its source pass finishes.
+ */
+class ExternalAdmissionTurnArbiter {
+  private readonly providers: string[];
+  private readonly activeSourceCounts = new Map<string, number>();
+  private readonly waiters = new Map<string, Array<() => void>>();
+  private currentIndex = 0;
+  private heldProvider: string | null = null;
+
+  constructor(
+    coordinator: ExternalAdmissionCoordinator,
+    providerIds: readonly string[],
+  ) {
+    const sorted = [...new Set(providerIds)].sort();
+    const first = coordinator.selectNextProvider(sorted);
+    const firstIndex = first ? sorted.indexOf(first) : 0;
+    this.providers = firstIndex > 0
+      ? [...sorted.slice(firstIndex), ...sorted.slice(0, firstIndex)]
+      : sorted;
+  }
+
+  startSource(providerId: string): void {
+    this.activeSourceCounts.set(
+      providerId,
+      (this.activeSourceCounts.get(providerId) ?? 0) + 1,
+    );
+  }
+
+  acquire(providerId: string): Promise<void> {
+    return new Promise(resolve => {
+      const queue = this.waiters.get(providerId) ?? [];
+      queue.push(resolve);
+      this.waiters.set(providerId, queue);
+      this.dispatch();
+    });
+  }
+
+  release(providerId: string): void {
+    if (this.heldProvider !== providerId) return;
+    this.heldProvider = null;
+    this.advanceAfter(providerId);
+    this.dispatch();
+  }
+
+  finishSource(providerId: string): void {
+    const remaining = Math.max(0, (this.activeSourceCounts.get(providerId) ?? 0) - 1);
+    if (remaining > 0) this.activeSourceCounts.set(providerId, remaining);
+    else this.activeSourceCounts.delete(providerId);
+    if (!this.heldProvider) this.dispatch();
+  }
+
+  private advanceAfter(providerId: string): void {
+    if (this.providers.length === 0) return;
+    const providerIndex = this.providers.indexOf(providerId);
+    this.currentIndex = providerIndex < 0
+      ? this.currentIndex % this.providers.length
+      : (providerIndex + 1) % this.providers.length;
+  }
+
+  private dispatch(): void {
+    if (this.heldProvider || this.providers.length === 0) return;
+    for (let offset = 0; offset < this.providers.length; offset++) {
+      const index = (this.currentIndex + offset) % this.providers.length;
+      const providerId = this.providers[index]!;
+      if (!this.activeSourceCounts.has(providerId)) continue;
+      const queue = this.waiters.get(providerId);
+      const resolve = queue?.shift();
+      if (!resolve) return;
+      if (queue?.length === 0) this.waiters.delete(providerId);
+      this.currentIndex = index;
+      this.heldProvider = providerId;
+      resolve();
+      return;
+    }
+  }
 }
 
 export interface ExternalEpisodeProvenanceState {
@@ -717,9 +785,6 @@ export class RuntimeLearning {
    * restart recovery of per-source backoff/suspension state.
    */
   private readonly schedulingStatePath: string;
-  /** Durable global provider/action continuation for one catch-up quantum per wake. */
-  private readonly catchUpSchedulerStatePath: string;
-  private catchUpSchedulerState: CatchUpSchedulerState;
   /** Durable Evidence Capsule store for external evidence (issue #78). */
   private readonly evidenceCapsuleStore: EvidenceCapsuleStore;
   /** Durable provenance index tying external events to episode ids (issue #78). */
@@ -806,11 +871,6 @@ export class RuntimeLearning {
       path.dirname(this.config.learningEpisodeStorePath),
       'external-source-scheduling-state.json',
     );
-    this.catchUpSchedulerStatePath = path.join(
-      path.dirname(this.config.learningEpisodeStorePath),
-      'external-catch-up-scheduler-state.json',
-    );
-    this.catchUpSchedulerState = this.loadCatchUpSchedulerState();
     this.externalEpisodeProvenancePath = path.join(
       path.dirname(this.config.learningEpisodeStorePath),
       'external-source-provenance.json',
@@ -1170,6 +1230,16 @@ export class RuntimeLearning {
       scope: currentScope.scope,
       ...(currentScope.scopePath ? { scopePath: currentScope.scopePath } : {}),
     });
+  }
+
+  private shouldDiscardExternalReadyWork(
+    adapter: SessionLogSourceAdapter,
+    signal?: AbortSignal,
+  ): boolean {
+    return signal?.aborted === true
+      || this.shutdownDrainRequested
+      || this.externalSourceDrainRequested
+      || !this.isExternalReadConfigurationCurrent(adapter);
   }
 
   private externalCursorStorePath(provider: string, sourceId: string): string {
@@ -2496,143 +2566,154 @@ export class RuntimeLearning {
     if (!shared.discoveryCapped && externalSources.length > 0) {
       const { controller, cancelTimer } = this.createExternalDiscoveryAbortController(shared.discoveryStartMs);
       this.externalReadAbortController = controller;
-      let continuousController: AbortController | null = null;
-      let continuousCancelTimer: NodeJS.Timeout | null = null;
-      let detachContinuousAbort: (() => void) | null = null;
       try {
         const externalReports = new Array<SessionLogSourceReport>(externalSources.length);
         let externalAdmittedEpisodes = 0;
         let externalContradictionSignals = 0;
-        const catchUpSources = catchUpEligible ? externalSources.filter(adapter => (
-          adapter.getHistoryMode?.() === 'catch-up'
-          && adapter.isEnabled()
-          && !this.shouldSkipExternalSourceForFailure(
-            this.getExternalSourceFailure(adapter.identity.provider, adapter.identity.sourceId),
-          )
-        )) : [];
-        const continuousWakeResourceLimit = catchUpSources.length > 0
-          ? Math.max(0, this.discoveryQuotas.maxResourcesPerWake - 1)
-          : this.discoveryQuotas.maxResourcesPerWake;
-        const continuousWakeAdmissionLimit = catchUpSources.length > 0
-          ? Math.max(0, this.discoveryQuotas.maxAdmittedEpisodesPerWake - 1)
-          : this.discoveryQuotas.maxAdmittedEpisodesPerWake;
-        let initialContinuousSignal = controller.signal;
-        if (catchUpSources.length > 0) {
-          continuousController = new AbortController();
-          const abortContinuous = () => continuousController?.abort();
-          if (controller.signal.aborted) abortContinuous();
-          else {
-            controller.signal.addEventListener('abort', abortContinuous, { once: true });
-            detachContinuousAbort = () => controller.signal.removeEventListener('abort', abortContinuous);
-          }
-          const remainingExternalMs = Math.max(
-            0,
-            this.discoveryQuotas.maxDiscoveryMs - (this.clock().getTime() - shared.discoveryStartMs),
-          );
-          const catchUpElapsedReserve = Math.min(
-            Math.max(1, this.externalSourceBudget.maxElapsedMsPerWake),
-            Math.max(1, Math.floor(remainingExternalMs / 2)),
-          );
-          const continuousElapsedMs = Math.max(0, remainingExternalMs - catchUpElapsedReserve);
-          if (continuousElapsedMs === 0) abortContinuous();
-          else {
-            continuousCancelTimer = setTimeout(abortContinuous, continuousElapsedMs);
-            continuousCancelTimer.unref?.();
-          }
-          initialContinuousSignal = continuousController.signal;
-        }
-        const runContinuousPass = async (
-          signal: AbortSignal,
-          wakeResourceLimit: number,
-          wakeAdmissionLimit: number,
+        const mergeExternalResult = (
+          adapter: SessionLogSourceAdapter,
+          result: Awaited<ReturnType<RuntimeLearning['processDiscoverySource']>>,
         ) => {
+          const index = externalSources.indexOf(adapter);
+          externalReports[index] = externalReports[index]
+            ? mergeSessionLogSourceReports(externalReports[index]!, result.report)
+            : result.report;
+          externalAdmittedEpisodes += result.admittedEpisodes;
+          externalContradictionSignals += result.contradictionSignals;
+          externalProvenanceUpdated ||= result.externalProvenanceUpdated;
+        };
+
+        const catchUpSources = catchUpEligible ? externalSources
+          .filter(adapter => (
+            adapter.isEnabled()
+            && adapter.getExternalAdmissionConfiguration?.().historyMode === 'catch-up'
+            && !this.shouldSkipExternalSourceForFailure(
+              this.getExternalSourceFailure(adapter.identity.provider, adapter.identity.sourceId),
+            )
+          )) : [];
+        let dueCatchUpSources = catchUpSources.flatMap(adapter => {
+          const action = adapter.getNextCatchUpAction?.();
+          return action ? [{ adapter, action }] : [];
+        });
+        if (dueCatchUpSources.length === 0) {
+          dueCatchUpSources = catchUpSources.flatMap(adapter => {
+            const action = adapter.getNextCatchUpAction?.({ allowNewGeneration: true });
+            return action ? [{ adapter, action }] : [];
+          });
+        }
+
+        // Internal work is complete. Consume at most one source-derived global
+        // catch-up quantum, skipping providers that cannot currently claim it.
+        const remainingCatchUpSources = [...dueCatchUpSources];
+        const knownCatchUpProviders = [...new Set(
+          dueCatchUpSources.map(({ adapter }) => adapter.identity.provider),
+        )];
+        while (
+          !shared.discoveryCapped
+          && !controller.signal.aborted
+          && remainingCatchUpSources.length > 0
+        ) {
+          const readyProviders = [...new Set(
+            remainingCatchUpSources.map(({ adapter }) => adapter.identity.provider),
+          )];
+          const provider = this.externalAdmissionCoordinator.selectNextProvider(readyProviders);
+          if (!provider) break;
+          const providerSources = remainingCatchUpSources
+            .filter(({ adapter }) => adapter.identity.provider === provider);
+          const sourceId = this.externalAdmissionCoordinator.selectNextSource(
+            provider,
+            providerSources.map(({ adapter }) => adapter.identity.sourceId),
+          );
+          const selectedIndex = remainingCatchUpSources.findIndex(({ adapter }) => (
+            adapter.identity.provider === provider && adapter.identity.sourceId === sourceId
+          ));
+          if (selectedIndex < 0) break;
+          const [{ adapter, action }] = remainingCatchUpSources.splice(selectedIndex, 1);
+          const result = await this.processDiscoverySource(adapter!, shared, {
+            signal: controller.signal,
+            workLane: 'catch-up',
+            catchUpAction: action,
+          });
+          mergeExternalResult(adapter!, result);
+          if (result.report.status === 'locked'
+            || result.report.status === 'backoff'
+            || result.report.status === 'drained') continue;
+          this.externalAdmissionCoordinator.completeCatchUpQuantum(
+            knownCatchUpProviders,
+            adapter!.identity.provider,
+            adapter!.identity.sourceId,
+          );
+          break;
+        }
+
+        // Empty preparation turns and any capacity left after a page quantum
+        // are donated to timely continuous work. There is no second catch-up
+        // pass in this wake.
+        if (!shared.discoveryCapped && !controller.signal.aborted) {
+          const sortedProviders = [...new Set(
+            externalSources.map(adapter => adapter.identity.provider),
+          )].sort();
+          const firstProvider = this.externalAdmissionCoordinator.selectNextProvider(sortedProviders);
+          const firstProviderIndex = firstProvider ? sortedProviders.indexOf(firstProvider) : 0;
+          const providerOrder = firstProviderIndex > 0
+            ? [
+                ...sortedProviders.slice(firstProviderIndex),
+                ...sortedProviders.slice(0, firstProviderIndex),
+              ]
+            : sortedProviders;
+          const orderedContinuousSources = providerOrder.flatMap(provider => {
+            const providerSources = externalSources
+              .filter(adapter => adapter.identity.provider === provider)
+              .sort((left, right) => left.identity.sourceId.localeCompare(right.identity.sourceId, 'en'));
+            const firstSource = this.externalAdmissionCoordinator.selectNextSource(
+              provider,
+              providerSources.map(adapter => adapter.identity.sourceId),
+            );
+            const firstSourceIndex = firstSource
+              ? providerSources.findIndex(adapter => adapter.identity.sourceId === firstSource)
+              : 0;
+            return firstSourceIndex > 0
+              ? [...providerSources.slice(firstSourceIndex), ...providerSources.slice(0, firstSourceIndex)]
+              : providerSources;
+          });
+          const admissionTurns = new ExternalAdmissionTurnArbiter(
+            this.externalAdmissionCoordinator,
+            orderedContinuousSources.map(adapter => adapter.identity.provider),
+          );
           await mapWithConcurrency(
-            externalSources.map((adapter, index) => ({ adapter, index })),
+            orderedContinuousSources.map(adapter => ({ adapter })),
             this.externalSourceMaxConcurrency,
-            async ({ adapter, index }) => {
-              if (shared.discoveryCapped) return;
-              const result = await this.processDiscoverySource(adapter, shared, {
-                signal,
-                workLane: 'continuous',
-                wakeResourceLimit,
-                wakeAdmissionLimit,
-                preserveCatchUpTurn: catchUpSources.length > 0
-                  && wakeResourceLimit === continuousWakeResourceLimit
-                  && wakeAdmissionLimit === continuousWakeAdmissionLimit,
-              });
-              externalReports[index] = externalReports[index]
-                ? mergeSessionLogSourceReports(externalReports[index]!, result.report)
-                : result.report;
-              externalAdmittedEpisodes += result.admittedEpisodes;
-              externalContradictionSignals += result.contradictionSignals;
-              externalProvenanceUpdated ||= result.externalProvenanceUpdated;
+            async ({ adapter }) => {
+              admissionTurns.startSource(adapter.identity.provider);
+              try {
+                if (shared.discoveryCapped) return;
+                const result = await this.processDiscoverySource(adapter, shared, {
+                  signal: controller.signal,
+                  workLane: 'continuous',
+                  admissionTurns,
+                });
+                mergeExternalResult(adapter, result);
+              } finally {
+                admissionTurns.finishSource(adapter.identity.provider);
+              }
             },
           );
-        };
-        await runContinuousPass(
-          initialContinuousSignal,
-          continuousWakeResourceLimit,
-          continuousWakeAdmissionLimit,
-        );
-        if (continuousCancelTimer) {
-          clearTimeout(continuousCancelTimer);
-          continuousCancelTimer = null;
         }
-        detachContinuousAbort?.();
-        detachContinuousAbort = null;
-
-        let catchUpConsumedResource = false;
-        if (!shared.discoveryCapped && !controller.signal.aborted && catchUpSources.length > 0) {
-          for (const adapter of this.orderCatchUpSources(catchUpSources)) {
-            const requestedAction = this.catchUpSchedulerState.providerActions[adapter.identity.provider]
-              ?? 'inventory';
+        if (controller.signal.aborted) {
+          for (const adapter of externalSources) {
+            const index = externalSources.indexOf(adapter);
+            if (externalReports[index]) continue;
             const result = await this.processDiscoverySource(adapter, shared, {
               signal: controller.signal,
-              workLane: 'catch-up',
-              catchUpAction: requestedAction,
+              workLane: 'continuous',
             });
-            const reportIndex = externalSources.indexOf(adapter);
-            externalReports[reportIndex] = externalReports[reportIndex]
-              ? mergeSessionLogSourceReports(externalReports[reportIndex]!, result.report)
-              : result.report;
-            externalAdmittedEpisodes += result.admittedEpisodes;
-            externalContradictionSignals += result.contradictionSignals;
-            externalProvenanceUpdated ||= result.externalProvenanceUpdated;
-            catchUpConsumedResource ||= result.report.resourcesDiscovered > 0;
-
-            if (result.report.status === 'locked'
-              || result.report.status === 'backoff'
-              || result.report.status === 'drained') continue;
-            this.advanceCatchUpScheduler(
-              catchUpSources,
-              adapter,
-              adapter.getLastCatchUpAction?.() ?? requestedAction,
-              result.report.status !== 'failed'
-                && (result.report.resourcesDiscovered === 0 || result.report.advancedResources > 0),
-            );
-            break;
+            mergeExternalResult(adapter, result);
           }
-        }
-        if (
-          catchUpSources.length > 0
-          && !catchUpConsumedResource
-          && !shared.discoveryCapped
-          && !controller.signal.aborted
-          && shared.wakeResourcesExamined < this.discoveryQuotas.maxResourcesPerWake
-          && shared.wakeAdmittedEpisodes < this.discoveryQuotas.maxAdmittedEpisodesPerWake
-        ) {
-          await runContinuousPass(
-            controller.signal,
-            this.discoveryQuotas.maxResourcesPerWake,
-            this.discoveryQuotas.maxAdmittedEpisodesPerWake,
-          );
         }
         sourceReports.push(...externalReports.filter((report): report is SessionLogSourceReport => Boolean(report)));
         totalAdmittedEpisodes += externalAdmittedEpisodes;
         totalContradictionSignals += externalContradictionSignals;
       } finally {
-        detachContinuousAbort?.();
-        if (continuousCancelTimer) clearTimeout(continuousCancelTimer);
         this.externalReadAbortController = null;
         if (cancelTimer) clearTimeout(cancelTimer);
       }
@@ -2702,11 +2783,11 @@ export class RuntimeLearning {
     },
     options: {
       signal?: AbortSignal;
-      workLane?: 'continuous' | 'catch-up';
-      catchUpAction?: CatchUpQuantumAction;
+      workLane?: ExternalSourceWorkLane;
+      catchUpAction?: ExternalCatchUpAction;
       wakeResourceLimit?: number;
       wakeAdmissionLimit?: number;
-      preserveCatchUpTurn?: boolean;
+      admissionTurns?: ExternalAdmissionTurnArbiter;
     } = {},
   ): Promise<{
     report: SessionLogSourceReport;
@@ -2906,16 +2987,14 @@ export class RuntimeLearning {
 
         if (shared.wakeResourcesExamined >= wakeResourceLimit) {
           sourceBudgetHit = true;
-          if (!options.preserveCatchUpTurn
-            && wakeResourceLimit >= this.discoveryQuotas.maxResourcesPerWake) {
+          if (wakeResourceLimit >= this.discoveryQuotas.maxResourcesPerWake) {
             shared.discoveryCapped = true;
           }
           break;
         }
         if (shared.wakeAdmittedEpisodes >= wakeAdmissionLimit) {
           sourceBudgetHit = true;
-          if (!options.preserveCatchUpTurn
-            && wakeAdmissionLimit >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
+          if (wakeAdmissionLimit >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
             shared.discoveryCapped = true;
           }
           break;
@@ -3022,19 +3101,29 @@ export class RuntimeLearning {
                 const knownExternalProviders = this.orderSourcesForDiscovery()
                   .filter(candidate => candidate.identity.category === 'external' && candidate.isEnabled())
                   .map(candidate => candidate.identity.provider);
-                const commitResult = this.externalAdmissionCoordinator.admitPage({
-                  providerId: identity.provider,
-                  sourceId: identity.sourceId,
-                  identity,
-                  resource,
-                  distillationUnits: [],
-                  eventIdentities: [],
-                  readResult,
-                  lane: readResult.admissionLane
-                    ?? options.workLane
-                    ?? adapter.getAdmissionLane?.(resource)
-                    ?? 'continuous',
-                }, knownExternalProviders);
+                await options.admissionTurns?.acquire(identity.provider);
+                let commitResult: ExternalAdmissionCommitResult;
+                try {
+                  if (this.shouldDiscardExternalReadyWork(adapter, options.signal)) {
+                    sourceDrained = true;
+                    continue;
+                  }
+                  commitResult = this.externalAdmissionCoordinator.admitPage({
+                    providerId: identity.provider,
+                    sourceId: identity.sourceId,
+                    identity,
+                    resource,
+                    distillationUnits: [],
+                    eventIdentities: [],
+                    readResult,
+                    lane: readResult.admissionLane
+                      ?? options.workLane
+                      ?? adapter.getAdmissionLane?.(resource)
+                      ?? 'continuous',
+                  }, knownExternalProviders);
+                } finally {
+                  options.admissionTurns?.release(identity.provider);
+                }
                 if (!commitResult.acknowledged) {
                   throw commitResult.error ?? new Error('external admission coordinator commit failed');
                 }
@@ -3073,8 +3162,7 @@ export class RuntimeLearning {
             shared.wakeAdmittedEpisodes + distillationUnits.length
             > wakeAdmissionLimit
           ) {
-            if (!options.preserveCatchUpTurn
-              && wakeAdmissionLimit >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
+            if (wakeAdmissionLimit >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
               shared.discoveryCapped = true;
             }
             throw new DiscoveryAdmissionQuotaReachedError();
@@ -3105,10 +3193,20 @@ export class RuntimeLearning {
                 ?? adapter.getAdmissionLane?.(resource)
                 ?? 'continuous',
             };
-            const commitResult = this.externalAdmissionCoordinator.admitPage(
-              page,
-              knownExternalProviders,
-            );
+            await options.admissionTurns?.acquire(identity.provider);
+            let commitResult: ExternalAdmissionCommitResult;
+            try {
+              if (this.shouldDiscardExternalReadyWork(adapter, options.signal)) {
+                sourceDrained = true;
+                continue;
+              }
+              commitResult = this.externalAdmissionCoordinator.admitPage(
+                page,
+                knownExternalProviders,
+              );
+            } finally {
+              options.admissionTurns?.release(identity.provider);
+            }
             if (!commitResult.acknowledged) {
               throw commitResult.error ?? new Error('external admission coordinator commit failed');
             }
@@ -3122,8 +3220,7 @@ export class RuntimeLearning {
                 shared.wakeAdmittedEpisodes + batchAdmittedEpisodes
                 >= wakeAdmissionLimit
               ) {
-                if (!options.preserveCatchUpTurn
-                  && wakeAdmissionLimit >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
+                if (wakeAdmissionLimit >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
                   shared.discoveryCapped = true;
                 }
                 throw new DiscoveryAdmissionQuotaReachedError();
@@ -3395,95 +3492,6 @@ export class RuntimeLearning {
     if (!state.suspendedUntil) return false;
     const suspendedUntilMs = Date.parse(state.suspendedUntil);
     return Number.isFinite(suspendedUntilMs) && suspendedUntilMs > this.clock().getTime();
-  }
-
-  private loadCatchUpSchedulerState(): CatchUpSchedulerState {
-    const empty: CatchUpSchedulerState = {
-      schemaVersion: CATCH_UP_SCHEDULER_SCHEMA_VERSION,
-      nextProvider: null,
-      providerActions: {},
-    };
-    try {
-      const parsed = JSON.parse(fs.readFileSync(this.catchUpSchedulerStatePath, 'utf8')) as {
-        schemaVersion?: number;
-        nextProvider?: unknown;
-        providerActions?: unknown;
-      };
-      if (parsed.schemaVersion !== CATCH_UP_SCHEDULER_SCHEMA_VERSION) return empty;
-      const providerActions: Record<string, CatchUpQuantumAction> = {};
-      if (parsed.providerActions && typeof parsed.providerActions === 'object' && !Array.isArray(parsed.providerActions)) {
-        for (const [provider, action] of Object.entries(parsed.providerActions)) {
-          if (CATCH_UP_ACTION_ORDER.includes(action as CatchUpQuantumAction)) {
-            providerActions[provider] = action as CatchUpQuantumAction;
-          }
-        }
-      }
-      return {
-        schemaVersion: CATCH_UP_SCHEDULER_SCHEMA_VERSION,
-        nextProvider: typeof parsed.nextProvider === 'string' ? parsed.nextProvider : null,
-        providerActions,
-      };
-    } catch {
-      return empty;
-    }
-  }
-
-  private saveCatchUpSchedulerState(): void {
-    const tmpPath = `${this.catchUpSchedulerStatePath}.${process.pid}.${Date.now()}.tmp`;
-    try {
-      fs.mkdirSync(path.dirname(this.catchUpSchedulerStatePath), { recursive: true });
-      fs.writeFileSync(tmpPath, JSON.stringify(this.catchUpSchedulerState, null, 2), {
-        encoding: 'utf8',
-        mode: 0o600,
-      });
-      fs.renameSync(tmpPath, this.catchUpSchedulerStatePath);
-    } finally {
-      try { fs.rmSync(tmpPath, { force: true }); } catch { /* best effort */ }
-    }
-  }
-
-  private orderCatchUpSources(
-    sources: readonly SessionLogSourceAdapter[],
-  ): SessionLogSourceAdapter[] {
-    const sorted = [...sources].sort((left, right) => (
-      left.identity.provider.localeCompare(right.identity.provider, 'en')
-      || left.identity.sourceId.localeCompare(right.identity.sourceId, 'en')
-    ));
-    if (sorted.length < 2 || !this.catchUpSchedulerState.nextProvider) return sorted;
-    const marker = this.catchUpSchedulerState.nextProvider;
-    let start = sorted.findIndex(source => source.identity.provider === marker);
-    if (start < 0) {
-      start = sorted.findIndex(source => source.identity.provider.localeCompare(marker, 'en') > 0);
-    }
-    if (start < 0) start = 0;
-    return [...sorted.slice(start), ...sorted.slice(0, start)];
-  }
-
-  private advanceCatchUpScheduler(
-    allSources: readonly SessionLogSourceAdapter[],
-    served: SessionLogSourceAdapter,
-    action: CatchUpQuantumAction,
-    actionCompleted = true,
-  ): void {
-    const providers = [...new Set(allSources.map(source => source.identity.provider))].sort();
-    const servedIndex = providers.indexOf(served.identity.provider);
-    const nextProvider = providers.length === 0
-      ? null
-      : providers[(Math.max(0, servedIndex) + 1) % providers.length]!;
-    const actionIndex = CATCH_UP_ACTION_ORDER.indexOf(action);
-    this.catchUpSchedulerState = {
-      schemaVersion: CATCH_UP_SCHEDULER_SCHEMA_VERSION,
-      nextProvider,
-      providerActions: {
-        ...this.catchUpSchedulerState.providerActions,
-        [served.identity.provider]: actionCompleted
-          ? CATCH_UP_ACTION_ORDER[
-              (Math.max(0, actionIndex) + 1) % CATCH_UP_ACTION_ORDER.length
-            ]!
-          : action,
-      },
-    };
-    this.saveCatchUpSchedulerState();
   }
 
   private loadExternalSourceSchedulingState(): void {
@@ -4062,9 +4070,10 @@ export class RuntimeLearning {
 
         this.queueCuratorObservation(ingestionResult.admittedEpisodeIds);
 
-        // Persist the redacted Evidence Capsule BEFORE acknowledging the
-        // external cursor. If any event fails, the fixed batch remains
-        // unacknowledged and can be replayed idempotently.
+        // Capsule persistence is the first external-evidence boundary after
+        // Episode ingestion. Provenance must not become durable without the
+        // redacted evidence it points at; replay repairs both before cursor
+        // acknowledgement.
         this.createCapsulesForExternalSource(
           identity,
           eventIdentity,

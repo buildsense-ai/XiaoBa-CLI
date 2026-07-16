@@ -26,6 +26,7 @@ import {
   type ExternalAdmissionCommitResult,
   type ExternalAdmissionCommitFn,
   type ExternalAdmissionCoordinatorState,
+  type ExternalAdmissionLane,
 } from '../src/utils/external-admission-coordinator';
 import type {
   SessionLogSourceIdentity,
@@ -103,7 +104,7 @@ function makePage(
   provider: string,
   resourceRef: string,
   position: number,
-  lane: 'continuous' | 'catch-up' | 'backfill' = 'continuous',
+  lane: ExternalAdmissionLane = 'continuous',
 ): ExternalEvidencePage {
   return {
     providerId: provider,

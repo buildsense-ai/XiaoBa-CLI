@@ -48,6 +48,7 @@ import type {
   SessionLogSourceIdentity,
 } from '../src/utils/session-log-source';
 import type { DistillationUnit } from '../src/utils/distillation-unit';
+import type { ExternalCatchUpAction } from '../src/utils/external-source-work';
 
 // ---------------------------------------------------------------------------
 // Fake async adapter — instruments concurrency, overlap, and ordering
@@ -76,12 +77,24 @@ class AsyncFakeSourceAdapter implements SessionLogSourceAdapter {
   readStartOrder: number[] = [];
   private static globalReadCounter = 0;
   private static globalReadStarts: Array<{ sourceId: string; time: number }> = [];
+  private static globalActiveReads = 0;
+  private static globalMaxActiveReads = 0;
+  private static globalAcknowledgements: string[] = [];
   static resetGlobalReadStarts(): void {
     AsyncFakeSourceAdapter.globalReadCounter = 0;
     AsyncFakeSourceAdapter.globalReadStarts = [];
+    AsyncFakeSourceAdapter.globalActiveReads = 0;
+    AsyncFakeSourceAdapter.globalMaxActiveReads = 0;
+    AsyncFakeSourceAdapter.globalAcknowledgements = [];
   }
   static getGlobalReadStarts(): Array<{ sourceId: string; time: number }> {
     return [...AsyncFakeSourceAdapter.globalReadStarts];
+  }
+  static getGlobalMaxActiveReads(): number {
+    return AsyncFakeSourceAdapter.globalMaxActiveReads;
+  }
+  static getGlobalAcknowledgements(): string[] {
+    return [...AsyncFakeSourceAdapter.globalAcknowledgements];
   }
 
   private readonly opts: AsyncFakeSourceOptions;
@@ -160,6 +173,11 @@ class AsyncFakeSourceAdapter implements SessionLogSourceAdapter {
   ): Promise<SessionLogSourceReadResult> {
     const index = this.resources.findIndex(r => r.resourceRef === resource.resourceRef);
     this.activeReads++;
+    AsyncFakeSourceAdapter.globalActiveReads++;
+    AsyncFakeSourceAdapter.globalMaxActiveReads = Math.max(
+      AsyncFakeSourceAdapter.globalMaxActiveReads,
+      AsyncFakeSourceAdapter.globalActiveReads,
+    );
     this.maxConcurrentReads = Math.max(this.maxConcurrentReads, this.activeReads);
     const readId = AsyncFakeSourceAdapter.globalReadCounter++;
     AsyncFakeSourceAdapter.globalReadStarts.push({
@@ -212,11 +230,13 @@ class AsyncFakeSourceAdapter implements SessionLogSourceAdapter {
       };
     } finally {
       this.activeReads--;
+      AsyncFakeSourceAdapter.globalActiveReads--;
     }
   }
 
   acknowledge(resource: SessionLogSourceResource, _result: SessionLogSourceReadResult): void {
     this.acknowledged.push(resource.resourceRef);
+    AsyncFakeSourceAdapter.globalAcknowledgements.push(resource.resourceRef);
   }
 
   markFailed(resource: SessionLogSourceResource, _error: unknown): void {
@@ -240,10 +260,11 @@ class CatchUpSchedulingFakeAdapter implements SessionLogSourceAdapter {
   readonly identity: SessionLogSourceIdentity;
   continuousTurns = 0;
   catchUpTurns = 0;
-  readonly catchUpActions: string[] = [];
+  readonly catchUpActions: ExternalCatchUpAction[] = [];
   readonly acknowledged: string[] = [];
+  private readonly dueAction: ExternalCatchUpAction;
 
-  constructor(provider: string) {
+  constructor(provider: string, dueAction: ExternalCatchUpAction = 'inventory') {
     this.identity = {
       sourceId: `external-${provider}`,
       label: `Catch-up fixture ${provider}`,
@@ -251,17 +272,22 @@ class CatchUpSchedulingFakeAdapter implements SessionLogSourceAdapter {
       provider,
       reader: 'fixture',
     };
+    this.dueAction = dueAction;
   }
 
   isEnabled(): boolean { return true; }
 
-  getHistoryMode(): 'catch-up' { return 'catch-up'; }
+  getExternalAdmissionConfiguration() {
+    return { historyMode: 'catch-up' as const, scope: 'global' as const };
+  }
+
+  getNextCatchUpAction(): ExternalCatchUpAction { return this.dueAction; }
 
   discoverResources(context: SessionLogSourceDiscoveryContext = {}): readonly SessionLogSourceResource[] {
     if (context.workLane === 'catch-up') {
       this.catchUpTurns++;
-      this.catchUpActions.push(context.catchUpAction ?? 'inventory');
-      return context.catchUpAction === 'page'
+      this.catchUpActions.push(context.catchUpAction ?? this.dueAction);
+      return this.dueAction === 'page'
         ? [{ resourceRef: `${this.identity.provider}-catch-up` }]
         : [];
     }
@@ -453,16 +479,16 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
 
       assert.deepEqual(
         [alpha.continuousTurns, beta.continuousTurns],
-        [10, 10],
-        'continuous work remains eligible on every wake and receives donated empty-turn capacity',
+        [6, 6],
+        'continuous work receives the unused capacity after every preparation quantum',
       );
       assert.deepEqual(
         [alpha.catchUpTurns, beta.catchUpTurns],
         [3, 3],
         'two continuously due providers each receive three of six global quanta across restart',
       );
-      assert.deepEqual(alpha.catchUpActions, ['inventory', 'stability', 'page']);
-      assert.deepEqual(beta.catchUpActions, ['inventory', 'stability', 'page']);
+      assert.deepEqual(alpha.catchUpActions, ['inventory', 'inventory', 'inventory']);
+      assert.deepEqual(beta.catchUpActions, ['inventory', 'inventory', 'inventory']);
     } finally {
       env.restore();
       env.teardown();
@@ -497,9 +523,9 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
     }
   });
 
-  test('continuous work cannot consume the resource reserved for a due catch-up page', async () => {
+  test('one due page quantum is followed only by donated continuous capacity', async () => {
     const env = setupEnv();
-    const adapter = new CatchUpSchedulingFakeAdapter('alpha');
+    const adapter = new CatchUpSchedulingFakeAdapter('alpha', 'page');
     const createRuntime = () => new RuntimeLearning({
       workingDirectory: env.root,
       evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
@@ -509,27 +535,25 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
       planner: env.planner,
       sessionLogSources: [adapter],
       discoveryQuotas: {
-        maxResourcesPerWake: 1,
-        maxAdmittedEpisodesPerWake: 1,
+        maxResourcesPerWake: 2,
+        maxAdmittedEpisodesPerWake: 2,
       },
     });
 
     try {
-      for (let wakeNumber = 0; wakeNumber < 3; wakeNumber++) {
-        await createRuntime().wake('manual');
-      }
+      await createRuntime().wake('manual');
 
-      assert.deepEqual(adapter.catchUpActions, ['inventory', 'stability', 'page']);
+      assert.deepEqual(adapter.catchUpActions, ['page']);
       assert.deepEqual(
         adapter.acknowledged,
-        ['alpha-continuous', 'alpha-continuous', 'alpha-catch-up'],
-        'empty preparation turns donate capacity, but the ready page keeps the reserved slot',
+        ['alpha-catch-up', 'alpha-continuous'],
+        'one historical page settles first and remaining capacity is donated to continuous',
       );
       assert.equal(
         createRuntime().getExternalAdmissionCoordinator()
           .getStateForTesting().providerTurns.alpha?.lastLaneServed,
-        'catch-up',
-        'an empty historical page still acknowledges through the shared single-writer lane',
+        'continuous',
+        'the donated continuous page is the final shared-writer turn; no second catch-up page ran',
       );
     } finally {
       env.restore();
@@ -539,7 +563,7 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
 
   test('an unadmitted catch-up page keeps the same durable action across restart', async () => {
     const env = setupEnv();
-    const adapter = new CatchUpSchedulingFakeAdapter('alpha');
+    const adapter = new CatchUpSchedulingFakeAdapter('alpha', 'page');
     const createRuntime = (maxAdmittedEpisodesPerWake: number) => new RuntimeLearning({
       workingDirectory: env.root,
       evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
@@ -555,14 +579,12 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
     });
 
     try {
-      for (let wakeNumber = 0; wakeNumber < 3; wakeNumber++) {
-        await createRuntime(0).wake('manual');
-      }
-      assert.deepEqual(adapter.catchUpActions, ['inventory', 'stability', 'page']);
+      await createRuntime(0).wake('manual');
+      assert.deepEqual(adapter.catchUpActions, ['page']);
       assert.equal(adapter.acknowledged.includes('alpha-catch-up'), false);
 
       await createRuntime(1).wake('manual');
-      assert.deepEqual(adapter.catchUpActions, ['inventory', 'stability', 'page', 'page']);
+      assert.deepEqual(adapter.catchUpActions, ['page', 'page']);
       assert.equal(adapter.acknowledged.filter(ref => ref === 'alpha-catch-up').length, 1);
     } finally {
       env.restore();
@@ -745,6 +767,35 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
       assert.ok(
         sortedStarts[3]! >= sortedStarts[2]!,
         '4th provider started after at least one of the first 3',
+      );
+    });
+
+    test('overlapping reads commit in durable provider order rather than completion order', async () => {
+      AsyncFakeSourceAdapter.resetGlobalReadStarts();
+      const alpha = new AsyncFakeSourceAdapter({
+        sourceId: 'ext-alpha', category: 'external', resourceCount: 1, readDelayMs: 40,
+      });
+      const beta = new AsyncFakeSourceAdapter({
+        sourceId: 'ext-beta', category: 'external', resourceCount: 1, readDelayMs: 5,
+      });
+      const runtimeLearning = new RuntimeLearning({
+        workingDirectory: env.root,
+        evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+        learningEpisodeStore: env.episodeStore,
+        skillEvolution: env.skillEvolution,
+        curator: env.curator,
+        planner: env.planner,
+        sessionLogSources: [beta, alpha],
+        externalSourceMaxConcurrency: 2,
+      });
+
+      await runtimeLearning.wake('startup');
+
+      assert.equal(AsyncFakeSourceAdapter.getGlobalMaxActiveReads(), 2, 'provider reads actually overlap');
+      assert.deepEqual(
+        AsyncFakeSourceAdapter.getGlobalAcknowledgements(),
+        ['ext-alpha#res-0', 'ext-beta#res-0'],
+        'the coordinator turn, not read completion arrival, selects the durable writer',
       );
     });
   });
@@ -1251,6 +1302,50 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
       );
       assert.equal(wake.review.reviewFailureCount, 0, 'drain does not count as reviewer failure');
       assert.equal(wake.review.operationalRetries, 0, 'drain does not create review retry work');
+    });
+
+    test('drain discards a ready page waiting for its serialized commit turn', async () => {
+      const alpha = new AsyncFakeSourceAdapter({
+        sourceId: 'ext-alpha-drain-turn',
+        category: 'external',
+        resourceCount: 1,
+        readDelayMs: 100,
+      });
+      const beta = new AsyncFakeSourceAdapter({
+        sourceId: 'ext-beta-drain-turn',
+        category: 'external',
+        resourceCount: 1,
+        readDelayMs: 5,
+      });
+      const runtimeLearning = new RuntimeLearning({
+        workingDirectory: env.root,
+        evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+        learningEpisodeStore: env.episodeStore,
+        skillEvolution: env.skillEvolution,
+        curator: env.curator,
+        planner: env.planner,
+        sessionLogSources: [beta, alpha],
+        externalSourceMaxConcurrency: 2,
+      });
+
+      const wakePromise = runtimeLearning.wake('startup');
+      const deadline = Date.now() + 1_000;
+      while (!(alpha.activeReads === 1 && beta.activeReads === 0)) {
+        assert.ok(Date.now() < deadline, 'the fast provider becomes ready behind the slow provider');
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+
+      runtimeLearning.requestExternalSourceDrain();
+      const wake = await wakePromise;
+
+      assert.deepEqual(alpha.acknowledged, []);
+      assert.deepEqual(beta.acknowledged, [], 'ready work canceled before commit remains replayable');
+      assert.deepEqual(alpha.failedResources, []);
+      assert.deepEqual(beta.failedResources, [], 'discarding ready work is not provider failure');
+      assert.equal(
+        wake.discovery.sources.find(source => source.sourceId === beta.identity.sourceId)?.status,
+        'drained',
+      );
     });
 
     test('wake then drain leaves no leftover active reads', async () => {
