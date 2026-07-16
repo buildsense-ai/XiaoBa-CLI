@@ -31,7 +31,9 @@ import { GrepTool } from '../tools/grep-tool';
 import { WriteTool } from '../tools/write-tool';
 import { EditTool } from '../tools/edit-tool';
 import { ShellTool } from '../tools/bash-tool';
+import { uploadImportFileSource } from '../tools/import-file-tool';
 import { resolveCommonDirectoryToolArgs } from '../tools/common-directory-tool';
+import { inferCatsUploadType } from './upload';
 import {
   isRemoteDeviceRpcTool,
   normalizeDeviceRpcToolResultForTransport,
@@ -612,6 +614,9 @@ export class CatsCompanyBot {
       case 'edit_file':
         result = await new EditTool().execute(args, context);
         break;
+      case 'import_file':
+        result = await this.executeRemoteImportFileUpload(args, context);
+        break;
       case 'execute_shell':
         result = await new ShellTool().execute(args, context);
         break;
@@ -741,6 +746,9 @@ export class CatsCompanyBot {
       case 'edit_file':
         result = await new EditTool().execute(args, context);
         break;
+      case 'send_file':
+        result = await this.executeRemoteImportFileUpload(args, context);
+        break;
       case 'execute_shell':
         result = await new ShellTool().execute(args, context);
         break;
@@ -756,6 +764,22 @@ export class CatsCompanyBot {
       toolName,
       operation,
       cwd: this.resolveDeviceRpcTargetContextCwd(operation, args, context.workingDirectory),
+    });
+  }
+
+  private async executeRemoteImportFileUpload(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    return uploadImportFileSource(args, context, async (filePath, fileName) => {
+      const type = inferCatsUploadType(fileName);
+      const upload = await this.bot.uploadFile(filePath, type);
+      return {
+        url: upload.url,
+        name: fileName,
+        size: upload.size,
+        type,
+      };
     });
   }
 
@@ -852,7 +876,7 @@ export class CatsCompanyBot {
     const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
     if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
-      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, resolve_common_directory, glob, grep, write_file, edit_file, and execute_shell.' };
+      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, resolve_common_directory, glob, grep, write_file, edit_file, import_file, and execute_shell.' };
     }
 
     const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
@@ -871,6 +895,7 @@ export class CatsCompanyBot {
 
   private normalizeDeviceRpcOperation(value: unknown): DeviceGrantOperation | undefined {
     const operation = String(value || '').trim();
+    if (operation === 'import_file') return 'send_file';
     if (
       operation === 'read_file'
       || operation === 'resolve_common_directory'
@@ -878,6 +903,7 @@ export class CatsCompanyBot {
       || operation === 'grep'
       || operation === 'write_file'
       || operation === 'edit_file'
+      || operation === 'send_file'
       || operation === 'execute_shell'
     ) {
       return operation;
@@ -975,6 +1001,18 @@ export class CatsCompanyBot {
           Logger.warning(`文件发送失败 (sendFile): ${err.message}`);
           throw err;
         }
+      },
+      receiveUploadedFile: async (file) => {
+        if (!file.url.startsWith('/uploads/')) {
+          throw new Error(`远程文件上传结果不是受信任的 CatsCo 上传地址: ${file.name}`);
+        }
+        const targetPath = buildCatsCoAttachmentCachePath(opts?.sessionKey, file.name);
+        const localPath = await this.sender.downloadFile(file.url, file.name, { targetPath });
+        if (!localPath) {
+          throw new Error(`无法把上传文件保存到当前运行体: ${file.name}`);
+        }
+        scheduleCatsCoAttachmentCacheCleanup();
+        return localPath;
       },
       sendRuntimePlan: async (_targetTopic, snapshot) => {
         if (suppressStructuredProgress) {
