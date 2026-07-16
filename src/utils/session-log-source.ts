@@ -172,6 +172,12 @@ export interface SessionLogSourceDiscoveryContext {
   readonly maxElapsedMs?: number;
 }
 
+export interface ExternalSourceAdmissionConfiguration {
+  readonly historyMode: ExternalHistoryMode;
+  readonly scope: 'global' | 'path';
+  readonly scopePath?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Adapter interface
 // ---------------------------------------------------------------------------
@@ -188,6 +194,8 @@ export interface SessionLogSourceAdapter {
   getUnsupportedReason?(): string | undefined;
   /** Best-effort external reader version diagnostic. */
   getReaderVersion?(): string | undefined;
+  /** Configuration under which an external read may be admitted. */
+  getExternalAdmissionConfiguration?(): ExternalSourceAdmissionConfiguration;
   /** Admission lane for the next page from this resource. */
   getAdmissionLane?(resource: SessionLogSourceResource): 'continuous' | 'catch-up';
   /** Immutable catch-up target linked to a historical page, when present. */
@@ -670,9 +678,9 @@ export interface ExternalSourceReader {
    */
   read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSourceReaderResult;
   /**
-   * Observe the complete canonical prefix twice and return it only when both
-   * bounded observations agree. Catch-up uses this seam to establish a fixed
-   * target without introducing a provider-specific parser in Runtime.
+   * Return one bounded normalized canonical-prefix observation. The adapter
+   * persists it and requires the next observation to match before creating a
+   * fixed target, without introducing a provider-specific parser in Runtime.
    */
   sampleHistory?(resource: SessionLogSourceResource): ExternalSourceHistorySampleResult;
   sampleHistoryAsync?(
@@ -709,6 +717,8 @@ export interface ExternalSourceReaderResult {
 export interface ExternalSourceHistorySampleResult extends ExternalSourceReaderResult {
   /** Highest rendered ordinal observed, including an incomplete tail. */
   readonly observedPosition: number;
+  readonly conversationId?: string;
+  readonly branchId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -797,6 +807,15 @@ export type ExternalCatchUpResourceStatus =
   | 'historical-pending'
   | 'complete';
 
+export interface ExternalCatchUpPrefixObservation {
+  /** Highest complete canonical event position; null means an empty prefix. */
+  readonly position: number | null;
+  readonly prefixDigest: string;
+  readonly conversationId?: string;
+  readonly branchId?: string;
+  readonly observedAt: string;
+}
+
 /** Mutable catch-up progress kept separate from the immutable target. */
 export interface ExternalCatchUpResourceState {
   readonly status: ExternalCatchUpResourceStatus;
@@ -805,6 +824,7 @@ export interface ExternalCatchUpResourceState {
   /** Latest catalog generation that observed this resource in its active scope. */
   readonly observedGeneration?: number;
   readonly observedScopeFingerprint?: string;
+  readonly pendingSample?: ExternalCatchUpPrefixObservation;
   readonly updatedAt: string;
 }
 
@@ -979,6 +999,7 @@ function normalizeCatchUpResources(value: unknown): Record<string, ExternalCatch
     }
     const candidate = raw as Partial<ExternalCatchUpResourceState>;
     const cursor = candidate.historicalCursor;
+    const pendingSample = candidate.pendingSample;
     if (
       candidate.status !== 'target-pending'
       && candidate.status !== 'historical-pending'
@@ -1002,6 +1023,10 @@ function normalizeCatchUpResources(value: unknown): Record<string, ExternalCatch
           || !/^[a-f0-9]{64}$/.test(candidate.observedScopeFingerprint)))
       || ((candidate.observedGeneration === undefined)
         !== (candidate.observedScopeFingerprint === undefined))
+      || (pendingSample !== undefined && (
+        candidate.status !== 'target-pending'
+        || !isValidCatchUpPrefixObservation(pendingSample)
+      ))
       || typeof candidate.updatedAt !== 'string'
     ) {
       throw new Error(`external cursor state has invalid catch-up resource for ${resourceRef}`);
@@ -1020,10 +1045,25 @@ function normalizeCatchUpResources(value: unknown): Record<string, ExternalCatch
           observedScopeFingerprint: candidate.observedScopeFingerprint!,
         }
         : {}),
+      ...(pendingSample !== undefined ? { pendingSample } : {}),
       updatedAt: candidate.updatedAt,
     };
   }
   return resources;
+}
+
+function isValidCatchUpPrefixObservation(
+  value: unknown,
+): value is ExternalCatchUpPrefixObservation {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Partial<ExternalCatchUpPrefixObservation>;
+  return (candidate.position === null
+      || (Number.isInteger(candidate.position) && candidate.position! >= 0))
+    && typeof candidate.prefixDigest === 'string'
+    && /^[a-f0-9]{64}$/.test(candidate.prefixDigest)
+    && (candidate.conversationId === undefined || typeof candidate.conversationId === 'string')
+    && (candidate.branchId === undefined || typeof candidate.branchId === 'string')
+    && isCanonicalIsoTimestamp(candidate.observedAt);
 }
 
 function normalizeCatchUpCatalogGeneration(
@@ -1046,10 +1086,14 @@ function normalizeCatchUpCatalogGeneration(
     || !Number.isInteger(candidate.requestedLimit) || candidate.requestedLimit! < 1
     || typeof candidate.scopeFingerprint !== 'string'
     || !/^[a-f0-9]{64}$/.test(candidate.scopeFingerprint)
-    || typeof candidate.startedAt !== 'string'
+    || !isCanonicalIsoTimestamp(candidate.startedAt)
     || !Number.isInteger(candidate.observedResourceCount) || candidate.observedResourceCount! < 0
     || !Number.isInteger(candidate.lastObservationCount) || candidate.lastObservationCount! < 0
     || !Number.isInteger(candidate.observedOutputBytes) || candidate.observedOutputBytes! < 0
+    || !isOptionalCanonicalIsoTimestamp(candidate.observationCompletedAt)
+    || !isOptionalCanonicalIsoTimestamp(candidate.completedAt)
+    || !isOptionalCanonicalIsoTimestamp(candidate.blockedAt)
+    || !isOptionalCanonicalIsoTimestamp(candidate.invalidatedAt)
   ) {
     throw new Error(`external cursor state has invalid ${label} catch-up generation`);
   }
@@ -1070,6 +1114,16 @@ function normalizeCatchUpCatalogGeneration(
     ...(typeof candidate.blockedReason === 'string' ? { blockedReason: candidate.blockedReason } : {}),
     ...(typeof candidate.invalidatedAt === 'string' ? { invalidatedAt: candidate.invalidatedAt } : {}),
   };
+}
+
+function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function isOptionalCanonicalIsoTimestamp(value: unknown): value is string | undefined {
+  return value === undefined || isCanonicalIsoTimestamp(value);
 }
 
 function normalizeCatchUpCatalog(value: unknown): ExternalCatchUpCatalogState {
@@ -1477,6 +1531,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     return typeof candidate?.version === 'string' && candidate.version.trim()
       ? candidate.version
       : undefined;
+  }
+
+  getExternalAdmissionConfiguration(): ExternalSourceAdmissionConfiguration {
+    return {
+      historyMode: this.historyMode,
+      scope: this.scope.scope,
+      ...(this.scope.scopePath ? { scopePath: this.scope.scopePath } : {}),
+    };
   }
 
   getAdmissionLane(resource: SessionLogSourceResource): 'continuous' | 'catch-up' {
@@ -2059,6 +2121,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         this.persistExternalState(nextState);
         return [];
       }
+      if (!this.reader?.observeCatchUpCatalog && observation.nextPageToken != null) {
+        nextState = this.blockCatchUpCatalog(
+          nextState,
+          'catch-up catalog pagination requires an explicit expanding-limit observation contract',
+        );
+        this.persistExternalState(nextState);
+        return [];
+      }
 
       nextState = applyExternalDiscoveryPage(
         nextState,
@@ -2141,6 +2211,11 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       this.persistExternalState(nextState);
       generation = nextState.catchUpCatalog.active;
       if (!generation || generation.status === 'catch-up-blocked') return [];
+      return mergeResourceSelections(
+        this.selectContinuousCatchUpResources(nextState, generation, maxResources),
+        this.selectKnownContinuousResources(nextState, generation, maxResources),
+        maxResources,
+      );
     }
 
     const candidate = this.selectCatchUpResource(nextState, generation, maxResources);
@@ -2221,6 +2296,40 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       targetPosition ?? 0,
     );
     const prefixDigest = buildExternalCatchUpPrefixDigest(events);
+    const lastIdentity = events[events.length - 1];
+    const pendingSample: ExternalCatchUpPrefixObservation = {
+      position: targetPosition,
+      prefixDigest,
+      ...(sample.conversationId ?? lastIdentity?.conversationId ?? resource.firstEventIdentity?.conversationId
+        ? {
+          conversationId: sample.conversationId
+            ?? lastIdentity?.conversationId
+            ?? resource.firstEventIdentity?.conversationId,
+        }
+        : {}),
+      ...(sample.branchId ?? lastIdentity?.branchId ?? resource.firstEventIdentity?.branchId
+        ? {
+          branchId: sample.branchId
+            ?? lastIdentity?.branchId
+            ?? resource.firstEventIdentity?.branchId,
+        }
+        : {}),
+      observedAt: this.now().toISOString(),
+    };
+    const previousSample = nextState.catchUpResources[resource.resourceRef]?.pendingSample;
+    if (!previousSample || !catchUpPrefixObservationsMatch(previousSample, pendingSample)) {
+      nextState = this.withPendingCatchUpSample(
+        nextState,
+        resource,
+        observedPosition,
+        generation.generation,
+        scopeFingerprint,
+        pendingSample,
+      );
+      nextState = this.advanceCatchUpResourceSelection(nextState);
+      this.persistExternalState(nextState);
+      return this.selectKnownContinuousResources(nextState, generation, maxResources);
+    }
     const targetId = createHash('sha256').update(JSON.stringify([
       this.identity.provider,
       this.identity.sourceId,
@@ -2230,7 +2339,6 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       targetPosition,
       prefixDigest,
     ])).digest('hex');
-    const lastIdentity = events[events.length - 1];
     const target: ExternalCatchUpTarget = {
       targetId,
       provider: this.identity.provider,
@@ -2301,11 +2409,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     };
     nextState = completeCatchUpCatalogIfReady(nextState, this.now);
     this.persistExternalState(nextState);
-    return mergeResourceSelections(
-      target.empty ? [] : [resource],
-      this.selectKnownContinuousResources(nextState, generation, maxResources, resource.resourceRef),
-      maxResources,
-    );
+    return this.selectKnownContinuousResources(nextState, generation, maxResources, resource.resourceRef);
   }
 
   private resolveCatchUpCatalogLimits(): ExternalCatchUpCatalogLimits {
@@ -2435,9 +2539,6 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     const discovery = this.discoverIncrementalPage(state, null, null, requestedLimit);
     return {
       ...discovery,
-      // Catch-up deliberately ignores nextPageToken: official xURL does not
-      // promise a portable cursor-paginated catalog.
-      nextPageToken: null,
       returnedResourceCount: discovery.resources.length,
     };
   }
@@ -2582,6 +2683,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     observedPosition = normalizeActivationPosition(resource.firstEventIdentity?.position),
     observedGeneration?: number,
     observedScopeFingerprint?: string,
+    pendingSample?: ExternalCatchUpPrefixObservation,
   ): ExternalCursorState {
     const now = this.now().toISOString();
     const existing = state.catchUpResources[resource.resourceRef];
@@ -2605,6 +2707,9 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
                 observedScopeFingerprint: existing.observedScopeFingerprint,
               }
               : {}),
+          ...(pendingSample
+            ? { pendingSample }
+            : {}),
           updatedAt: now,
         },
       },
@@ -2643,17 +2748,15 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       }
       throw error;
     }
-    let withResources = applyExternalDiscoveryPage(
+    const withResources = applyExternalDiscoveryPageAndFinalize(
       state,
       this.identity,
       discovery,
       cycle,
       true,
       buildExternalCatchUpScopeFingerprint(this.identity.provider, this.identity.sourceId, this.scope),
+      this.scope.scope === 'path',
     );
-    if (discovery.nextPageToken == null) {
-      withResources = finalizeExternalDiscoveryCycle(withResources, cycle, this.scope.scope === 'path');
-    }
     return {
       ...withResources,
       activation: {
@@ -2688,17 +2791,15 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       discoveryState?.nextPageToken ?? null,
       maxResources,
     );
-    let refreshed = applyExternalDiscoveryPage(
+    const refreshed = applyExternalDiscoveryPageAndFinalize(
       state,
       this.identity,
       discovery,
       cycle,
       true,
       buildExternalCatchUpScopeFingerprint(this.identity.provider, this.identity.sourceId, this.scope),
+      this.scope.scope === 'path',
     );
-    if (discovery.nextPageToken == null) {
-      refreshed = finalizeExternalDiscoveryCycle(refreshed, cycle, this.scope.scope === 'path');
-    }
     const initialDiscoveryCompleted = state.activation?.initialDiscoveryCompleted === true
       || discovery.nextPageToken == null;
     return {
@@ -3095,16 +3196,24 @@ function applyExternalDiscoveryPage(
       ...(existing?.closedReason ? { closedReason: existing.closedReason } : {}),
     };
     const existingCursor = readCursorWithSourceIdentityValidation(nextState, identity, item.resource.resourceRef);
-    if (baselineNewResources && !existingCursor) {
+    const directCursor = nextState.cursors[item.resource.resourceRef];
+    if (baselineNewResources && !directCursor) {
+      const promotableLegacyCursor = existingCursor?.resourceRef === item.resource.resourceRef
+        ? existingCursor
+        : null;
       nextCursors[item.resource.resourceRef] = {
-        cursor: {
-          resourceRef: item.resource.resourceRef,
-          position: item.activationPosition,
-          processedCount: 0,
-        },
+        cursor: promotableLegacyCursor
+          ? { ...promotableLegacyCursor, resourceRef: item.resource.resourceRef }
+          : {
+            resourceRef: item.resource.resourceRef,
+            position: item.activationPosition,
+            processedCount: 0,
+          },
         sourceIdentity: identity,
         updatedAt: now,
-        lastStatus: 'activated',
+        lastStatus: promotableLegacyCursor
+          ? (nextState.cursors[identity.sourceId]?.lastStatus ?? 'activated')
+          : 'activated',
       };
     }
   }
@@ -3115,6 +3224,28 @@ function applyExternalDiscoveryPage(
     cursors: nextCursors,
     updatedAt: now,
   };
+}
+
+function applyExternalDiscoveryPageAndFinalize(
+  state: ExternalCursorState,
+  identity: SessionLogSourceIdentity,
+  discovery: ExternalSourceIncrementalDiscoveryResult,
+  cycle: number,
+  baselineNewResources: boolean,
+  scopeFingerprint: string,
+  preserveMissingResources: boolean,
+): ExternalCursorState {
+  const discovered = applyExternalDiscoveryPage(
+    state,
+    identity,
+    discovery,
+    cycle,
+    baselineNewResources,
+    scopeFingerprint,
+  );
+  return discovery.nextPageToken == null
+    ? finalizeExternalDiscoveryCycle(discovered, cycle, preserveMissingResources)
+    : discovered;
 }
 
 function finalizeExternalDiscoveryCycle(
@@ -3212,6 +3343,16 @@ function mergeResourceSelections(
 function normalizePositiveCatalogLimit(value: number | undefined, fallback: number): number {
   if (value === undefined || !Number.isFinite(value) || value <= 0) return fallback;
   return Math.max(1, Math.floor(value));
+}
+
+function catchUpPrefixObservationsMatch(
+  left: ExternalCatchUpPrefixObservation,
+  right: ExternalCatchUpPrefixObservation,
+): boolean {
+  return left.position === right.position
+    && left.prefixDigest === right.prefixDigest
+    && left.conversationId === right.conversationId
+    && left.branchId === right.branchId;
 }
 
 function completeCatchUpCatalogIfReady(

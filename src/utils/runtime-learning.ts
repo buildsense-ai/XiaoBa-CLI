@@ -74,6 +74,7 @@ import {
   SourceFailureState,
   SessionLogSourceStatus,
   ExternalSourceFailureClass,
+  ExternalSourceAdmissionConfiguration,
   ExternalSourceQuarantineEntry,
   ExternalCursorState,
   buildExternalEventDedupKey,
@@ -294,6 +295,15 @@ interface ExternalSourceLaneIdentity {
 
 function externalSourceLaneKey(identity: ExternalSourceLaneIdentity): string {
   return JSON.stringify([identity.provider, identity.sourceId]);
+}
+
+function externalAdmissionConfigurationsMatch(
+  left: ExternalSourceAdmissionConfiguration,
+  right: ExternalSourceAdmissionConfiguration,
+): boolean {
+  return left.historyMode === right.historyMode
+    && left.scope === right.scope
+    && left.scopePath === right.scopePath;
 }
 
 function parseExternalSourceLaneKey(key: string): ExternalSourceLaneIdentity | null {
@@ -1064,6 +1074,22 @@ export class RuntimeLearning {
         && adapter.identity.provider === provider
         && adapter.identity.sourceId === sourceId,
     );
+  }
+
+  private isExternalReadConfigurationCurrent(adapter: SessionLogSourceAdapter): boolean {
+    if (!adapter.isEnabled()) return false;
+    if (!this.managesConfiguredSessionLogSources) return true;
+    const expected = adapter.getExternalAdmissionConfiguration?.();
+    if (!expected) return false;
+    const provider = adapter.identity.provider;
+    if (!this.providerOverrideStore.isProviderEnabled(provider, this.config)) return false;
+    const currentScope = this.providerOverrideStore.getProviderScope(provider);
+    const currentHistoryMode = this.providerOverrideStore.getProviderHistoryMode(provider, this.config).mode;
+    return externalAdmissionConfigurationsMatch(expected, {
+      historyMode: currentHistoryMode,
+      scope: currentScope.scope,
+      ...(currentScope.scopePath ? { scopePath: currentScope.scopePath } : {}),
+    });
   }
 
   private externalCursorStorePath(provider: string, sourceId: string): string {
@@ -2631,6 +2657,13 @@ export class RuntimeLearning {
         if (isExternal && options.signal?.aborted) {
           sourceDrained = true;
           break;
+        }
+        if (isExternal && !this.isExternalReadConfigurationCurrent(adapter)) {
+          // Mode/scope/provider changes invalidate work that is still Reading
+          // or Ready. No acknowledgement has started, so replay under the new
+          // configuration remains lossless. Once admitPage starts below, the
+          // coordinator owns an atomic Committing page and may finish it.
+          continue;
         }
 
         if (readResult.status === 'failed') {
