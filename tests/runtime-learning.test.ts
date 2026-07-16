@@ -782,6 +782,33 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       return runtime;
     };
 
+    const budgetBlockedRuntime = createRuntime();
+    (budgetBlockedRuntime.getConfig() as any).skillEvolutionReviewMaxPromptTokens = 0;
+    const branchCallsBeforeBlockedWake = { ...env.branchCalls };
+
+    const blocked = await budgetBlockedRuntime.wake('manual');
+
+    assert.equal(blocked.review.reviewedEpisodes, 0);
+    assert.equal(blocked.review.reviewedQueueEntries, 0);
+    assert.deepEqual(
+      env.branchCalls,
+      branchCallsBeforeBlockedWake,
+      'budget-rejected work never starts Author or Verifier service',
+    );
+    const blockedContinuation = JSON.parse(fs.readFileSync(
+      reviewContinuationPathForEpisodeStore(env.episodeStorePath),
+      'utf8',
+    )) as {
+      nextClass?: 'retry' | 'live' | 'historical';
+      classCursors?: Partial<Record<'retry' | 'live' | 'historical', string>>;
+    };
+    assert.equal(blockedContinuation.nextClass, 'retry');
+    assert.deepEqual(
+      blockedContinuation.classCursors,
+      {},
+      'selection alone cannot consume a class or within-class continuation turn',
+    );
+
     const observedClasses = new Set<'retry' | 'live' | 'historical'>();
     const priorClassCursors: Partial<Record<'live' | 'historical', string>> = {};
     let runtime = createRuntime();

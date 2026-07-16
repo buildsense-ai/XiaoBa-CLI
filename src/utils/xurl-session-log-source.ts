@@ -380,10 +380,11 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
   }
 
   read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSessionLogBackfillReadResult {
-    // Explicit backfill returns every canonical event in the rendered Timeline;
-    // the backfill service filters by the requested range. No stability
-    // sampling is applied because the operator explicitly requested the range.
-    const page = this.runner.readThreadTimeline(resource, cursor, true);
+    // The backfill service filters the requested range, while this reader must
+    // still honor its durable operation cursor so cooperative page slices do
+    // not replay an earlier duplicate forever. No stability sampling is
+    // applied because the operator explicitly requested the range.
+    const page = this.runner.readThreadTimeline(resource, cursor, false);
     return {
       events: page.events.map(({ identity, distillationUnit, byteLength }) => ({
         identity,

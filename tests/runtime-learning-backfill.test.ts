@@ -169,12 +169,17 @@ class FixtureBackfillSource implements ExternalSessionLogBackfillSource {
 
 class ExternalContinuousFixtureAdapter implements SessionLogSourceAdapter {
   readonly identity: SessionLogSourceIdentity;
+  readonly acknowledged: string[] = [];
   private readonly resource: SessionLogSourceResource;
   private consumed = false;
 
   constructor(
     private readonly unit: DistillationUnit,
-    options: { sourceId?: string; provider?: string } = {},
+    private readonly options: {
+      sourceId?: string;
+      provider?: string;
+      onAcknowledge?: (resourceRef: string) => void;
+    } = {},
   ) {
     this.identity = {
       sourceId: options.sourceId ?? 'external-codex',
@@ -214,7 +219,10 @@ class ExternalContinuousFixtureAdapter implements SessionLogSourceAdapter {
     };
   }
 
-  acknowledge(_resource: SessionLogSourceResource, _result: SessionLogSourceReadResult): void {}
+  acknowledge(resource: SessionLogSourceResource, _result: SessionLogSourceReadResult): void {
+    this.acknowledged.push(resource.resourceRef);
+    this.options.onAcknowledge?.(resource.resourceRef);
+  }
   markFailed(_resource: SessionLogSourceResource, _error: unknown): void { this.consumed = false; }
 }
 
@@ -524,8 +532,8 @@ test('explicit backfill drains after one bounded slice and resumes durably', asy
 
     assert.equal(first.drained, true);
     assert.equal(first.backfill.status, 'quota_reached');
-    assert.equal(first.backfill.state.metrics.resourcesProcessed, 10);
-    assert.equal(first.backfill.state.metrics.ingestedEvents, 10);
+    assert.equal(first.backfill.state.metrics.resourcesProcessed, 1);
+    assert.equal(first.backfill.state.metrics.ingestedEvents, 1);
     assert.equal(first.review.status, 'skipped');
 
     const resumed = await fixture.runtime.runExternalBackfill(request, source);
@@ -603,6 +611,77 @@ test('explicit backfill and ordinary wakes share one state writer', async () => 
     assert.equal(backfillResult.backfill.status, 'completed');
     assert.equal(backfillResult.review.status, 'succeeded');
     assert.equal(wakeResult.ran, true);
+  } finally {
+    env.restore();
+  }
+});
+
+test('multi-page backfill yields to same-provider continuous work after one page turn', async () => {
+  const env = setupEnv();
+  try {
+    const sequence: string[] = [];
+    const nonCandidateUnit = (filePath: string): DistillationUnit => ({
+      filePath,
+      newTurns: [],
+      continuityTurns: [],
+      byteRange: { start: 0, end: 1 },
+      generatedAt: new Date().toISOString(),
+    });
+    const continuous = new ExternalContinuousFixtureAdapter(
+      nonCandidateUnit('external://codex/conversation/continuous-turn.jsonl'),
+      {
+        provider: 'codex',
+        sourceId: 'codex-continuous-turn',
+        onAcknowledge: () => sequence.push('continuous'),
+      },
+    );
+    const fixture = env.createRuntime({
+      settlementWindowMs: 24 * 60 * 60 * 1000,
+      sessionLogSources: [continuous],
+    });
+    const request = makeRequest({
+      operationId: 'page-turn-backfill',
+      provider: 'codex',
+      sourceId: 'codex-page-turn-backfill',
+      resourceRefs: ['backfill-0', 'backfill-1', 'backfill-2'],
+      endPosition: 2,
+      maxResources: 100,
+    });
+    const baseSource = new FixtureBackfillSource(
+      [0, 1, 2].map(position => ({
+        resourceRef: `backfill-${position}`,
+        position,
+        unit: nonCandidateUnit(`external://codex/conversation/backfill-${position}.jsonl`),
+        contentHash: `page-turn-hash-${position}`,
+      })),
+      { provider: 'codex', sourceId: 'codex-page-turn-backfill' },
+    );
+    let wake: Promise<Awaited<ReturnType<RuntimeLearning['wake']>>> | undefined;
+    const source: ExternalSessionLogBackfillSource = {
+      identity: baseSource.identity,
+      discoverResources: () => baseSource.discoverResources(),
+      read: (resource, cursor) => {
+        sequence.push(resource.resourceRef);
+        if (!wake) {
+          queueMicrotask(() => {
+            wake = fixture.runtime.wake('manual');
+          });
+        }
+        return baseSource.read(resource, cursor);
+      },
+    };
+
+    const backfill = await fixture.runtime.runExternalBackfill(request, source);
+    await wake;
+
+    assert.equal(backfill.backfill.status, 'completed');
+    assert.equal(backfill.backfill.state.metrics.ingestedEvents, 3);
+    assert.deepEqual(continuous.acknowledged, ['codex-continuous-turn://resource-0']);
+    assert.ok(
+      sequence.indexOf('backfill-0') < sequence.indexOf('continuous')
+      && sequence.indexOf('continuous') < sequence.indexOf('backfill-1'),
+      `expected one-page yield, observed ${sequence.join(' -> ')}`,
+    );
   } finally {
     env.restore();
   }

@@ -145,6 +145,11 @@ export interface ProviderTurnState {
   readonly backfillPending: boolean;
 }
 
+export interface ExternalAdmissionLaneContinuation {
+  readonly nextProvider: string | null;
+  readonly lastSources: Record<string, string>;
+}
+
 /**
  * Durable coordinator state persisted across wakes, restarts, and quota
  * exhaustion.
@@ -155,6 +160,8 @@ export interface ExternalAdmissionCoordinatorState {
   readonly nextProvider: string | null;
   /** Per-provider alternation state for backfill vs continuous. */
   readonly providerTurns: Record<string, ProviderTurnState>;
+  /** Independent durable continuation for each source-work lane. */
+  readonly laneContinuations?: Partial<Record<ExternalAdmissionLane, ExternalAdmissionLaneContinuation>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +173,7 @@ function emptyState(): ExternalAdmissionCoordinatorState {
     schemaVersion: EXTERNAL_ADMISSION_COORDINATOR_SCHEMA_VERSION,
     nextProvider: null,
     providerTurns: {},
+    laneContinuations: {},
   };
 }
 
@@ -198,10 +206,32 @@ function validateState(raw: unknown): ExternalAdmissionCoordinatorState {
       };
     }
   }
+  const laneContinuations: Partial<Record<ExternalAdmissionLane, ExternalAdmissionLaneContinuation>> = {};
+  if (candidate.laneContinuations && typeof candidate.laneContinuations === 'object'
+    && !Array.isArray(candidate.laneContinuations)) {
+    for (const lane of EXTERNAL_ADMISSION_LANES) {
+      const continuation = candidate.laneContinuations[lane];
+      if (!continuation || typeof continuation !== 'object' || Array.isArray(continuation)) continue;
+      const lastSources: Record<string, string> = {};
+      if (continuation.lastSources && typeof continuation.lastSources === 'object'
+        && !Array.isArray(continuation.lastSources)) {
+        for (const [provider, sourceId] of Object.entries(continuation.lastSources)) {
+          if (provider && typeof sourceId === 'string' && sourceId) lastSources[provider] = sourceId;
+        }
+      }
+      laneContinuations[lane] = {
+        nextProvider: typeof continuation.nextProvider === 'string'
+          ? continuation.nextProvider
+          : null,
+        lastSources,
+      };
+    }
+  }
   return {
     schemaVersion: EXTERNAL_ADMISSION_COORDINATOR_SCHEMA_VERSION,
     nextProvider,
     providerTurns,
+    laneContinuations,
   };
 }
 
@@ -259,12 +289,17 @@ export class ExternalAdmissionCoordinator {
    * ready set, the first ready provider after it (in sorted order) is
    * returned, so a slow or absent provider never blocks ready work.
    */
-  selectNextProvider(readyProviders: readonly string[]): string | null {
+  selectNextProvider(
+    readyProviders: readonly string[],
+    lane?: ExternalAdmissionLane,
+  ): string | null {
     if (readyProviders.length === 0) return null;
     const sorted = [...new Set(readyProviders)].sort();
     if (sorted.length === 1) return sorted[0]!;
 
-    const marker = this.state.nextProvider;
+    const marker = lane
+      ? (this.state.laneContinuations?.[lane]?.nextProvider ?? this.state.nextProvider)
+      : this.state.nextProvider;
     if (!marker) return sorted[0]!;
 
     // Find the marker in the sorted set; if absent, wrap to the first provider
@@ -281,10 +316,17 @@ export class ExternalAdmissionCoordinator {
   }
 
   /** Select the next ready source within one provider after its durable marker. */
-  selectNextSource(providerId: string, readySourceIds: readonly string[]): string | null {
+  selectNextSource(
+    providerId: string,
+    readySourceIds: readonly string[],
+    lane?: ExternalAdmissionLane,
+  ): string | null {
     const sorted = [...new Set(readySourceIds)].sort();
     if (sorted.length === 0) return null;
-    const marker = this.state.providerTurns[providerId]?.lastSourceServed;
+    const marker = lane
+      ? (this.state.laneContinuations?.[lane]?.lastSources[providerId]
+        ?? this.state.providerTurns[providerId]?.lastSourceServed)
+      : this.state.providerTurns[providerId]?.lastSourceServed;
     if (!marker) return sorted[0]!;
     const markerIndex = sorted.indexOf(marker);
     if (markerIndex >= 0) return sorted[(markerIndex + 1) % sorted.length]!;
@@ -300,17 +342,18 @@ export class ExternalAdmissionCoordinator {
   advanceNextProvider(
     allKnownProviders: readonly string[],
     servedProvider: string,
+    lane?: ExternalAdmissionLane,
   ): void {
     const sorted = [...new Set(allKnownProviders)].sort();
     if (sorted.length === 0) return;
     const index = sorted.indexOf(servedProvider);
     if (index < 0) {
       // Served provider is not in the known set — default to first
-      this.state = { ...this.state, nextProvider: sorted[0]! };
+      this.setNextProvider(sorted[0]!, lane);
       return;
     }
     const nextIndex = (index + 1) % sorted.length;
-    this.state = { ...this.state, nextProvider: sorted[nextIndex]! };
+    this.setNextProvider(sorted[nextIndex]!, lane);
   }
 
   /**
@@ -327,7 +370,8 @@ export class ExternalAdmissionCoordinator {
       lastLaneServed: 'catch-up',
       lastSourceServed: sourceId,
     }));
-    this.advanceNextProvider(allKnownProviders, providerId);
+    this.updateLaneSource('catch-up', providerId, sourceId);
+    this.advanceNextProvider(allKnownProviders, providerId, 'catch-up');
     this.saveState();
   }
 
@@ -629,7 +673,18 @@ export class ExternalAdmissionCoordinator {
    * marker and turn state.
    */
   getStateForTesting(): ExternalAdmissionCoordinatorState {
-    return { ...this.state, providerTurns: { ...this.state.providerTurns } };
+    return {
+      ...this.state,
+      providerTurns: { ...this.state.providerTurns },
+      laneContinuations: Object.fromEntries(
+        Object.entries(this.state.laneContinuations ?? {}).map(([lane, continuation]) => [
+          lane,
+          continuation
+            ? { ...continuation, lastSources: { ...continuation.lastSources } }
+            : continuation,
+        ]),
+      ),
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -645,8 +700,52 @@ export class ExternalAdmissionCoordinator {
       lastSourceServed: page.sourceId,
       backfillPending: page.lane === 'backfill' ? false : turn.backfillPending,
     }));
-    this.advanceNextProvider(knownProviders ?? [page.providerId], page.providerId);
+    this.updateLaneSource(page.lane, page.providerId, page.sourceId);
+    this.advanceNextProvider(knownProviders ?? [page.providerId], page.providerId, page.lane);
     this.saveState();
+  }
+
+  private setNextProvider(providerId: string, lane?: ExternalAdmissionLane): void {
+    if (!lane) {
+      this.state = { ...this.state, nextProvider: providerId };
+      return;
+    }
+    const current = this.state.laneContinuations?.[lane] ?? {
+      nextProvider: null,
+      lastSources: {},
+    };
+    this.state = {
+      ...this.state,
+      nextProvider: providerId,
+      laneContinuations: {
+        ...this.state.laneContinuations,
+        [lane]: { ...current, nextProvider: providerId },
+      },
+    };
+  }
+
+  private updateLaneSource(
+    lane: ExternalAdmissionLane,
+    providerId: string,
+    sourceId: string,
+  ): void {
+    const current = this.state.laneContinuations?.[lane] ?? {
+      nextProvider: null,
+      lastSources: {},
+    };
+    this.state = {
+      ...this.state,
+      laneContinuations: {
+        ...this.state.laneContinuations,
+        [lane]: {
+          ...current,
+          lastSources: {
+            ...current.lastSources,
+            [providerId]: sourceId,
+          },
+        },
+      },
+    };
   }
 
   private updateProviderTurn(

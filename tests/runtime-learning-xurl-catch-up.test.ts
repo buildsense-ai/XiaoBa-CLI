@@ -1440,7 +1440,11 @@ test('ordinary backfill respects abandonment while a named reopen stays pending 
         maxElapsedMs: 60_000,
       },
     }, xurlSource);
-    assert.equal(ordinary.backfill.status, 'completed');
+    assert.equal(
+      ordinary.backfill.status,
+      'completed',
+      JSON.stringify(ordinary.backfill.state.failures),
+    );
     assert.equal(ordinary.backfill.tombstonedEventsSkipped, 2);
     assert.equal(ordinary.ingestion.admittedEpisodes, 0);
     assert.deepEqual(Object.keys(fixture.episodeStore.load().episodes), episodeIdsBeforeBackfill);
@@ -1813,7 +1817,11 @@ test('reopened fixed range records another explicit exclusion as terminal', asyn
       discoveryQuotas: { maxAdmittedEpisodesPerWake: 2 },
     });
     const result = await restarted.runtime.runExternalBackfill(request, xurlSource);
-    assert.equal(result.backfill.status, 'completed');
+    assert.equal(
+      result.backfill.status,
+      'completed',
+      JSON.stringify(result.backfill.state.failures),
+    );
     const reopened = loadExternalCursorState(storePath).reopenedRanges[request.operationId];
     assert.ok(reopened);
     assert.equal(reopened.status, 'terminal-excluded');
@@ -2762,7 +2770,13 @@ async function wakeUntilState<T>(
     result = await wake();
   }
   if (predicate(loadExternalCursorState(cursorStorePath(root)))) return result;
-  throw new Error(`catch-up state did not converge after ${maxWakes} wakes`);
+  const state = loadExternalCursorState(cursorStorePath(root));
+  throw new Error(`catch-up state did not converge after ${maxWakes} wakes: ${JSON.stringify({
+    activeCatalog: state.catchUpCatalog.active,
+    catchUpResources: state.catchUpResources,
+    catchUpTargets: state.catchUpTargets,
+    cursors: state.cursors,
+  })}`);
 }
 
 async function waitForInvocationCount(

@@ -479,7 +479,7 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
 
       assert.deepEqual(
         [alpha.continuousTurns, beta.continuousTurns],
-        [6, 6],
+        [12, 12],
         'continuous work receives the unused capacity after every preparation quantum',
       );
       assert.deepEqual(
@@ -523,7 +523,7 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
     }
   });
 
-  test('one due page quantum is followed only by donated continuous capacity', async () => {
+  test('continuous receives a bounded turn before the reserved catch-up page', async () => {
     const env = setupEnv();
     const adapter = new CatchUpSchedulingFakeAdapter('alpha', 'page');
     const createRuntime = () => new RuntimeLearning({
@@ -546,14 +546,54 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
       assert.deepEqual(adapter.catchUpActions, ['page']);
       assert.deepEqual(
         adapter.acknowledged,
-        ['alpha-catch-up', 'alpha-continuous'],
-        'one historical page settles first and remaining capacity is donated to continuous',
+        ['alpha-continuous', 'alpha-catch-up'],
+        'timely continuous work settles before the one reserved historical page',
       );
       assert.equal(
         createRuntime().getExternalAdmissionCoordinator()
           .getStateForTesting().providerTurns.alpha?.lastLaneServed,
-        'continuous',
-        'the donated continuous page is the final shared-writer turn; no second catch-up page ran',
+        'catch-up',
+        'the reserved historical page is the final shared-writer turn when the wake budget is exhausted',
+      );
+    } finally {
+      env.restore();
+      env.teardown();
+    }
+  });
+
+  test('a quota-rejected catch-up action does not advance durable provider continuation', async () => {
+    const env = setupEnv();
+    const internal = new AsyncFakeSourceAdapter({
+      sourceId: 'internal-quota-owner',
+      category: 'internal',
+      resourceCount: 1,
+      syncOnly: true,
+    });
+    const catchUp = new CatchUpSchedulingFakeAdapter('alpha', 'page');
+    const runtime = new RuntimeLearning({
+      workingDirectory: env.root,
+      evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+      learningEpisodeStore: env.episodeStore,
+      skillEvolution: env.skillEvolution,
+      curator: env.curator,
+      planner: env.planner,
+      sessionLogSources: [internal, catchUp],
+      discoveryQuotas: {
+        maxResourcesPerWake: 1,
+        maxAdmittedEpisodesPerWake: 1,
+      },
+    });
+
+    try {
+      await runtime.wake('manual');
+
+      assert.deepEqual(catchUp.catchUpActions, ['page']);
+      assert.deepEqual(catchUp.acknowledged, [], 'the historical page remains replayable');
+      assert.equal(
+        runtime.getExternalAdmissionCoordinator()
+          .getStateForTesting().providerTurns.alpha,
+        undefined,
+        'selecting work without reading or admitting it cannot consume the durable quantum',
       );
     } finally {
       env.restore();
@@ -770,7 +810,7 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
       );
     });
 
-    test('overlapping reads commit in durable provider order rather than completion order', async () => {
+    test('a ready provider commits immediately instead of waiting for a slower durable marker', async () => {
       AsyncFakeSourceAdapter.resetGlobalReadStarts();
       const alpha = new AsyncFakeSourceAdapter({
         sourceId: 'ext-alpha', category: 'external', resourceCount: 1, readDelayMs: 40,
@@ -794,8 +834,8 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
       assert.equal(AsyncFakeSourceAdapter.getGlobalMaxActiveReads(), 2, 'provider reads actually overlap');
       assert.deepEqual(
         AsyncFakeSourceAdapter.getGlobalAcknowledgements(),
-        ['ext-alpha#res-0', 'ext-beta#res-0'],
-        'the coordinator turn, not read completion arrival, selects the durable writer',
+        ['ext-beta#res-0', 'ext-alpha#res-0'],
+        'the coordinator is work-conserving over ready pages and never waits for an unread page',
       );
     });
   });
@@ -1304,7 +1344,7 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
       assert.equal(wake.review.operationalRetries, 0, 'drain does not create review retry work');
     });
 
-    test('drain discards a ready page waiting for its serialized commit turn', async () => {
+    test('a fast ready provider commits without waiting behind a slow provider read', async () => {
       const alpha = new AsyncFakeSourceAdapter({
         sourceId: 'ext-alpha-drain-turn',
         category: 'external',
@@ -1330,22 +1370,14 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
 
       const wakePromise = runtimeLearning.wake('startup');
       const deadline = Date.now() + 1_000;
-      while (!(alpha.activeReads === 1 && beta.activeReads === 0)) {
-        assert.ok(Date.now() < deadline, 'the fast provider becomes ready behind the slow provider');
+      while (beta.acknowledged.length === 0) {
+        assert.ok(Date.now() < deadline, 'the fast provider should commit while the slow read remains active');
         await new Promise(resolve => setTimeout(resolve, 1));
       }
 
-      runtimeLearning.requestExternalSourceDrain();
-      const wake = await wakePromise;
-
-      assert.deepEqual(alpha.acknowledged, []);
-      assert.deepEqual(beta.acknowledged, [], 'ready work canceled before commit remains replayable');
-      assert.deepEqual(alpha.failedResources, []);
-      assert.deepEqual(beta.failedResources, [], 'discarding ready work is not provider failure');
-      assert.equal(
-        wake.discovery.sources.find(source => source.sourceId === beta.identity.sourceId)?.status,
-        'drained',
-      );
+      assert.equal(alpha.activeReads, 1, 'the slow provider is still reading when the fast page settles');
+      assert.deepEqual(beta.acknowledged, ['ext-beta-drain-turn#res-0']);
+      await wakePromise;
     });
 
     test('wake then drain leaves no leftover active reads', async () => {

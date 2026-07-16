@@ -288,6 +288,28 @@ describe('ExternalAdmissionCoordinator — durable next-provider marker', () => 
     assert.equal(raw.schemaVersion, 1);
     assert.ok(raw.nextProvider, 'nextProvider should be set after commit');
   });
+
+  test('continuous commits do not overwrite the durable catch-up provider continuation', () => {
+    const dir = makeTempDir();
+    const filePath = stateFilePath(dir);
+    const first = new ExternalAdmissionCoordinator({
+      stateFilePath: filePath,
+      commitFn: makeRecordingCommitFn([]),
+    });
+
+    first.completeCatchUpQuantum(['alpha', 'beta'], 'alpha', 'external-alpha');
+    first.admitPage(makePage('beta', 'external-beta', 1, 'continuous'), ['alpha', 'beta']);
+
+    const restarted = new ExternalAdmissionCoordinator({
+      stateFilePath: filePath,
+      commitFn: makeRecordingCommitFn([]),
+    });
+    assert.equal(
+      restarted.selectNextProvider(['alpha', 'beta'], 'catch-up'),
+      'beta',
+      'the historical lane resumes independently from later continuous turns',
+    );
+  });
 });
 
 describe('ExternalAdmissionCoordinator — single-writer serialization', () => {

@@ -2411,8 +2411,16 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     maxResources: number,
   ): readonly SessionLogSourceResource[] {
     if (maxResources <= 0) return [];
+    const scopeFingerprint = buildExternalCatchUpScopeFingerprint(
+      this.identity.provider,
+      this.identity.sourceId,
+      this.scope,
+    );
     return Object.entries(state.resources)
-      .filter(([, resource]) => resource.lifecycleStatus !== 'closed')
+      .filter(([, resource]) => (
+        resource.lifecycleStatus !== 'closed'
+        && resource.lastSeenScopeFingerprint === scopeFingerprint
+      ))
       .filter(([resourceRef]) => !hasBlockingQuarantineForResource(state, resourceRef))
       .filter(([resourceRef]) => readCursorWithSourceIdentityValidation(
         state,

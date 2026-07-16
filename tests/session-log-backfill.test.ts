@@ -248,6 +248,85 @@ test('backfill resumes from durable state across service restarts', () => {
   assert.equal(state.metrics.resourcesProcessed, 3);
 });
 
+test('one long resource resumes page-sized event quanta without replay or loss', () => {
+  const env = makeEnv();
+  const resource: SessionLogSourceResource = {
+    resourceRef: 'long-conversation',
+    firstEventIdentity: {
+      eventId: 'long-event-0',
+      position: 0,
+      contentHash: 'long-hash-0',
+    },
+  };
+  const units = [0, 1, 2].map(position => buildUnit(
+    env.root,
+    `long-${position}`,
+    `long-session-${position}`,
+  ));
+  const source: ExternalSessionLogBackfillSource = {
+    identity: {
+      sourceId: 'fixture-external-source',
+      label: 'Long fixture source',
+      category: 'external',
+      provider: 'fixture-provider',
+      reader: 'fixture-backfill',
+    },
+    discoverResources: () => [resource],
+    read: (_resource, cursor) => {
+      const remaining = [0, 1, 2]
+        .filter(position => position > cursor.position)
+        .map(position => ({
+          identity: {
+            eventId: `long-event-${position}`,
+            position,
+            contentHash: `long-hash-${position}`,
+          },
+          distillationUnit: units[position]!,
+          byteLength: 100,
+        }));
+      return {
+        events: remaining,
+        status: 'stable' as const,
+        exhausted: true,
+        newCursor: {
+          resourceRef: resource.resourceRef,
+          position: remaining.at(-1)?.identity.position ?? cursor.position,
+          processedCount: cursor.processedCount + remaining.length,
+        },
+      };
+    },
+  };
+  const request = makeRequest({
+    resourceRefs: [resource.resourceRef],
+    endPosition: 2,
+    maxEvents: 1,
+  });
+  const seen: string[] = [];
+  const run = (startIso: string) => new ExternalSessionLogBackfillService({
+    stateFilePath: env.stateFilePath,
+    auditFilePath: env.auditFilePath,
+    now: sequentialClock(startIso),
+  }).run(request, source, (_unit, context) => {
+    seen.push(context.eventIdentity.eventId);
+    return { admittedEpisodeIds: [] };
+  });
+
+  const first = run('2026-01-01T00:00:00.000Z');
+  assert.equal(first.status, 'quota_reached');
+  assert.equal(first.state.resourceCursors[resource.resourceRef]?.position, 0);
+
+  const second = run('2026-01-01T00:10:00.000Z');
+  assert.equal(second.status, 'quota_reached');
+  assert.equal(second.state.resourceCursors[resource.resourceRef]?.position, 1);
+
+  const third = run('2026-01-01T00:20:00.000Z');
+  assert.equal(third.status, 'completed');
+  assert.equal(third.state.resourceCursors[resource.resourceRef]?.position, 2);
+  assert.deepEqual(seen, ['long-event-0', 'long-event-1', 'long-event-2']);
+  assert.equal(third.state.metrics.ingestedEvents, 3);
+  assert.equal(third.state.metrics.resourcesProcessed, 1);
+});
+
 test('exact dedup skips replayed stable events for repeated bounded backfill', () => {
   const env = makeEnv();
   const item = {
@@ -443,6 +522,7 @@ function makeRequest(overrides: Partial<{
   maxResources: number;
   maxBytes: number;
   maxElapsedMs: number;
+  maxEvents: number;
 }> = {}): ExternalSessionLogBackfillRequest {
   return {
     operationId: 'backfill-op-79',
@@ -458,6 +538,7 @@ function makeRequest(overrides: Partial<{
       maxResources: overrides.maxResources ?? 10,
       maxBytes: overrides.maxBytes ?? Number.MAX_SAFE_INTEGER,
       maxElapsedMs: overrides.maxElapsedMs ?? 60_000,
+      ...(overrides.maxEvents === undefined ? {} : { maxEvents: overrides.maxEvents }),
     },
   };
 }

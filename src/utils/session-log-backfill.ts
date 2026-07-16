@@ -31,6 +31,8 @@ export interface ExternalSessionLogBackfillLimits {
   readonly maxResources: number;
   readonly maxBytes: number;
   readonly maxElapsedMs: number;
+  /** Optional cooperative event/page cap used by Runtime-owned slicing. */
+  readonly maxEvents?: number;
 }
 
 export interface ExternalSessionLogBackfillRequest {
@@ -293,6 +295,7 @@ export class ExternalSessionLogBackfillService {
     let sawPending = false;
     let sawFailure = false;
     let quotaReached = false;
+    let eventsProcessed = 0;
     const matchedResourceRefs = new Set(matchedResources.map(resource => resource.resourceRef));
     const missingRequestedResourceRefs = (request.range.resourceRefs ?? [])
       .filter(resourceRef => !matchedResourceRefs.has(resourceRef));
@@ -334,6 +337,13 @@ export class ExternalSessionLogBackfillService {
         break;
       }
       if (now.getTime() - startedAt.getTime() >= request.limits.maxElapsedMs) {
+        quotaReached = true;
+        break;
+      }
+      if (
+        request.limits.maxEvents !== undefined
+        && eventsProcessed >= request.limits.maxEvents
+      ) {
         quotaReached = true;
         break;
       }
@@ -526,8 +536,16 @@ export class ExternalSessionLogBackfillService {
       let resourceIngested = 0;
       let resourceAdmittedEpisodes = 0;
       let resourceBytes = 0;
+      let lastProcessedEvent: ExternalSessionLogBackfillEvent | undefined;
 
       for (const event of eventsInRange) {
+        if (
+          request.limits.maxEvents !== undefined
+          && eventsProcessed >= request.limits.maxEvents
+        ) {
+          quotaReached = true;
+          break;
+        }
         if (bytesProcessed + resourceBytes + event.byteLength > request.limits.maxBytes) {
           quotaReached = true;
           break;
@@ -543,6 +561,8 @@ export class ExternalSessionLogBackfillService {
 
         if (isExactBackfillDuplicate(state, request.provider, request.sourceId, event.identity)) {
           resourceDuplicates += 1;
+          eventsProcessed += 1;
+          lastProcessedEvent = event;
           continue;
         }
 
@@ -601,6 +621,8 @@ export class ExternalSessionLogBackfillService {
             resourceAdmittedEpisodes += ingestion.admittedEpisodeIds.length;
           }
           state = markBackfillEventProcessed(state, request.provider, request.sourceId, event.identity);
+          eventsProcessed += 1;
+          lastProcessedEvent = event;
         } catch (error) {
           resourceFailed = true;
           sawFailure = true;
@@ -635,12 +657,13 @@ export class ExternalSessionLogBackfillService {
         }
       }
 
-      if (quotaReached || resourceFailed) {
+      if (resourceFailed || (quotaReached && !lastProcessedEvent)) {
         break;
       }
 
-      processedResources += 1;
-      if (belowReopenedBoundary) {
+      const completedResource = !quotaReached;
+      if (completedResource) processedResources += 1;
+      if (completedResource && belowReopenedBoundary) {
         sawPending = true;
         pendingResources += 1;
       }
@@ -652,8 +675,9 @@ export class ExternalSessionLogBackfillService {
 
       const updatedMetrics = {
         ...state.metrics,
-        resourcesProcessed: state.metrics.resourcesProcessed + 1,
-        pendingResources: state.metrics.pendingResources + (belowReopenedBoundary ? 1 : 0),
+        resourcesProcessed: state.metrics.resourcesProcessed + (completedResource ? 1 : 0),
+        pendingResources: state.metrics.pendingResources
+          + (completedResource && belowReopenedBoundary ? 1 : 0),
         ingestedEvents: state.metrics.ingestedEvents + resourceIngested,
         duplicateEventsSkipped: state.metrics.duplicateEventsSkipped + resourceDuplicates,
         tombstonedEventsSkipped: state.metrics.tombstonedEventsSkipped + resourceTombstones,
@@ -667,7 +691,16 @@ export class ExternalSessionLogBackfillService {
         updatedAt: this.now().toISOString(),
         resourceCursors: {
           ...state.resourceCursors,
-          [resource.resourceRef]: readResult.newCursor,
+          [resource.resourceRef]: completedResource || !lastProcessedEvent
+            ? readResult.newCursor
+            : {
+                resourceRef: resource.resourceRef,
+                position: lastProcessedEvent.identity.position,
+                processedCount: cursor.processedCount
+                  + resourceIngested
+                  + resourceDuplicates
+                  + resourceTombstones,
+              },
         },
         metrics: updatedMetrics,
       };
@@ -694,6 +727,7 @@ export class ExternalSessionLogBackfillService {
         eventId: readResult.events[0]?.identity.eventId,
         metrics: state.metrics,
       });
+      if (quotaReached) break;
     }
 
     const finishedAt = this.now();
@@ -894,6 +928,9 @@ function validateBackfillRequest(request: ExternalSessionLogBackfillRequest): vo
   if (request.limits.maxResources <= 0) throw new Error('backfill maxResources must be > 0');
   if (request.limits.maxBytes <= 0) throw new Error('backfill maxBytes must be > 0');
   if (request.limits.maxElapsedMs <= 0) throw new Error('backfill maxElapsedMs must be > 0');
+  if (request.limits.maxEvents !== undefined && request.limits.maxEvents <= 0) {
+    throw new Error('backfill maxEvents must be > 0 when provided');
+  }
 }
 
 function validateBackfillSource(
