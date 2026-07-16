@@ -610,6 +610,23 @@ export interface ExternalSourceIncrementalDiscoveryResult {
   readonly activationWatermarkPosition?: number;
 }
 
+export interface ExternalCatchUpCatalogLimits {
+  readonly initialLimit: number;
+  readonly maxCatalogResources: number;
+  readonly maxOutputBytes: number;
+  readonly maxDurationMs: number;
+}
+
+export interface ExternalCatchUpCatalogObservationRequest {
+  readonly requestedLimit: number;
+  readonly knownResourceRefs: readonly string[];
+}
+
+export interface ExternalCatchUpCatalogObservation extends ExternalSourceIncrementalDiscoveryResult {
+  readonly returnedResourceCount: number;
+  readonly outputBytes?: number;
+}
+
 export interface ExternalSourceReader {
   readonly provider: string;
   readonly reader: string;
@@ -631,6 +648,16 @@ export interface ExternalSourceReader {
   discoverIncremental?(
     request: ExternalSourceIncrementalDiscoveryRequest,
   ): ExternalSourceIncrementalDiscoveryResult;
+
+  /**
+   * Provider-native bounded catalog observation used by catch-up. It must
+   * observe the first `requestedLimit` resources and must not invent a
+   * portable pagination cursor when the provider does not expose one.
+   */
+  observeCatchUpCatalog?(
+    request: ExternalCatchUpCatalogObservationRequest,
+  ): ExternalCatchUpCatalogObservation;
+  getCatchUpCatalogLimits?(): ExternalCatchUpCatalogLimits;
 
   /**
    * Read events from a resource starting at the given cursor position.
@@ -742,6 +769,7 @@ export interface ExternalDiscoveredResourceState {
   readonly lastSeenAt?: string;
   readonly lastSuccessfulReadAt?: string;
   readonly lastSeenDiscoveryCycle?: number;
+  readonly lastSeenScopeFingerprint?: string;
   readonly missingDiscoveryCycles?: number;
   readonly missingSince?: string | null;
   readonly closedAt?: string;
@@ -774,7 +802,38 @@ export interface ExternalCatchUpResourceState {
   readonly status: ExternalCatchUpResourceStatus;
   readonly historicalCursor: SourceCursor;
   readonly observedPosition: number;
+  /** Latest catalog generation that observed this resource in its active scope. */
+  readonly observedGeneration?: number;
+  readonly observedScopeFingerprint?: string;
   readonly updatedAt: string;
+}
+
+export type ExternalCatchUpCatalogGenerationStatus =
+  | 'inventory'
+  | 'draining'
+  | 'caught-up'
+  | 'catch-up-blocked'
+  | 'invalidated';
+
+export interface ExternalCatchUpCatalogGeneration {
+  readonly generation: number;
+  readonly status: ExternalCatchUpCatalogGenerationStatus;
+  readonly requestedLimit: number;
+  readonly scopeFingerprint: string;
+  readonly startedAt: string;
+  readonly observedResourceCount: number;
+  readonly lastObservationCount: number;
+  readonly observedOutputBytes: number;
+  readonly observationCompletedAt?: string;
+  readonly completedAt?: string;
+  readonly blockedAt?: string;
+  readonly blockedReason?: string;
+  readonly invalidatedAt?: string;
+}
+
+export interface ExternalCatchUpCatalogState {
+  readonly active: ExternalCatchUpCatalogGeneration | null;
+  readonly lastCompleted: ExternalCatchUpCatalogGeneration | null;
 }
 
 export interface ExternalSourceQuarantineEntry {
@@ -823,6 +882,8 @@ export interface ExternalCursorState {
   readonly catchUpTargets: Record<string, ExternalCatchUpTarget>;
   /** Mutable historical cursor/lifecycle state, separate from targets. */
   readonly catchUpResources: Record<string, ExternalCatchUpResourceState>;
+  /** One durable active catalog generation plus the preceding completed summary. */
+  readonly catchUpCatalog: ExternalCatchUpCatalogState;
   /** ISO timestamp of the last state save. */
   readonly updatedAt: string;
 }
@@ -837,7 +898,7 @@ export interface ExternalCursorEntry {
 
 export function emptyExternalCursorState(): ExternalCursorState {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     cursors: {},
     processedEventIds: {},
     processedEventFingerprints: {},
@@ -849,6 +910,7 @@ export function emptyExternalCursorState(): ExternalCursorState {
     discovery: null,
     catchUpTargets: {},
     catchUpResources: {},
+    catchUpCatalog: { active: null, lastCompleted: null },
     updatedAt: new Date().toISOString(),
   };
 }
@@ -933,6 +995,13 @@ function normalizeCatchUpResources(value: unknown): Record<string, ExternalCatch
       || cursor.processedCount < 0
       || !Number.isInteger(candidate.observedPosition)
       || candidate.observedPosition! < 0
+      || (candidate.observedGeneration !== undefined
+        && (!Number.isInteger(candidate.observedGeneration) || candidate.observedGeneration < 1))
+      || (candidate.observedScopeFingerprint !== undefined
+        && (typeof candidate.observedScopeFingerprint !== 'string'
+          || !/^[a-f0-9]{64}$/.test(candidate.observedScopeFingerprint)))
+      || ((candidate.observedGeneration === undefined)
+        !== (candidate.observedScopeFingerprint === undefined))
       || typeof candidate.updatedAt !== 'string'
     ) {
       throw new Error(`external cursor state has invalid catch-up resource for ${resourceRef}`);
@@ -945,10 +1014,74 @@ function normalizeCatchUpResources(value: unknown): Record<string, ExternalCatch
         processedCount: cursor.processedCount,
       },
       observedPosition: candidate.observedPosition!,
+      ...(candidate.observedGeneration !== undefined
+        ? {
+          observedGeneration: candidate.observedGeneration,
+          observedScopeFingerprint: candidate.observedScopeFingerprint!,
+        }
+        : {}),
       updatedAt: candidate.updatedAt,
     };
   }
   return resources;
+}
+
+function normalizeCatchUpCatalogGeneration(
+  value: unknown,
+  label: string,
+): ExternalCatchUpCatalogGeneration | null {
+  if (value === null || value === undefined) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`external cursor state has invalid ${label} catch-up generation`);
+  }
+  const candidate = value as Partial<ExternalCatchUpCatalogGeneration>;
+  const validStatus = candidate.status === 'inventory'
+    || candidate.status === 'draining'
+    || candidate.status === 'caught-up'
+    || candidate.status === 'catch-up-blocked'
+    || candidate.status === 'invalidated';
+  if (
+    !Number.isInteger(candidate.generation) || candidate.generation! < 1
+    || !validStatus
+    || !Number.isInteger(candidate.requestedLimit) || candidate.requestedLimit! < 1
+    || typeof candidate.scopeFingerprint !== 'string'
+    || !/^[a-f0-9]{64}$/.test(candidate.scopeFingerprint)
+    || typeof candidate.startedAt !== 'string'
+    || !Number.isInteger(candidate.observedResourceCount) || candidate.observedResourceCount! < 0
+    || !Number.isInteger(candidate.lastObservationCount) || candidate.lastObservationCount! < 0
+    || !Number.isInteger(candidate.observedOutputBytes) || candidate.observedOutputBytes! < 0
+  ) {
+    throw new Error(`external cursor state has invalid ${label} catch-up generation`);
+  }
+  return {
+    generation: candidate.generation!,
+    status: candidate.status!,
+    requestedLimit: candidate.requestedLimit!,
+    scopeFingerprint: candidate.scopeFingerprint,
+    startedAt: candidate.startedAt,
+    observedResourceCount: candidate.observedResourceCount!,
+    lastObservationCount: candidate.lastObservationCount!,
+    observedOutputBytes: candidate.observedOutputBytes!,
+    ...(typeof candidate.observationCompletedAt === 'string'
+      ? { observationCompletedAt: candidate.observationCompletedAt }
+      : {}),
+    ...(typeof candidate.completedAt === 'string' ? { completedAt: candidate.completedAt } : {}),
+    ...(typeof candidate.blockedAt === 'string' ? { blockedAt: candidate.blockedAt } : {}),
+    ...(typeof candidate.blockedReason === 'string' ? { blockedReason: candidate.blockedReason } : {}),
+    ...(typeof candidate.invalidatedAt === 'string' ? { invalidatedAt: candidate.invalidatedAt } : {}),
+  };
+}
+
+function normalizeCatchUpCatalog(value: unknown): ExternalCatchUpCatalogState {
+  if (value === undefined) return { active: null, lastCompleted: null };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('external cursor state has invalid catch-up catalog');
+  }
+  const candidate = value as Partial<ExternalCatchUpCatalogState>;
+  return {
+    active: normalizeCatchUpCatalogGeneration(candidate.active, 'active'),
+    lastCompleted: normalizeCatchUpCatalogGeneration(candidate.lastCompleted, 'completed'),
+  };
 }
 
 export function loadExternalCursorState(storePath: string): ExternalCursorState {
@@ -961,7 +1094,7 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
     throw new Error(`external cursor state is corrupt: ${storePath}: ${String(error)}`);
   }
   const schemaVersion = Number(parsed.schemaVersion ?? 1);
-  if (!Number.isFinite(schemaVersion) || schemaVersion < 1 || schemaVersion > 4) {
+  if (!Number.isFinite(schemaVersion) || schemaVersion < 1 || schemaVersion > 5) {
     throw new Error(`external cursor state schema is unsupported: ${String(parsed.schemaVersion)}`);
   }
   if (!parsed.cursors || typeof parsed.cursors !== 'object'
@@ -1002,6 +1135,10 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
       ...(typeof record.lastSuccessfulReadAt === 'string' ? { lastSuccessfulReadAt: record.lastSuccessfulReadAt } : {}),
       ...(typeof record.lastSeenDiscoveryCycle === 'number' && Number.isFinite(record.lastSeenDiscoveryCycle)
         ? { lastSeenDiscoveryCycle: Math.max(0, Math.floor(record.lastSeenDiscoveryCycle)) }
+        : {}),
+      ...(typeof record.lastSeenScopeFingerprint === 'string'
+        && /^[a-f0-9]{64}$/.test(record.lastSeenScopeFingerprint)
+        ? { lastSeenScopeFingerprint: record.lastSeenScopeFingerprint }
         : {}),
       ...(typeof record.missingDiscoveryCycles === 'number' && Number.isFinite(record.missingDiscoveryCycles)
         ? { missingDiscoveryCycles: Math.max(0, Math.floor(record.missingDiscoveryCycles)) }
@@ -1056,8 +1193,9 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
     : null;
   const catchUpTargets = normalizeCatchUpTargets(parsed.catchUpTargets);
   const catchUpResources = normalizeCatchUpResources(parsed.catchUpResources);
+  const catchUpCatalog = normalizeCatchUpCatalog(parsed.catchUpCatalog);
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     cursors: parsed.cursors as Record<string, ExternalCursorEntry>,
     processedEventIds: parsed.processedEventIds as Record<string, string | null>,
     processedEventFingerprints: processedEventFingerprints as Record<string, string>,
@@ -1094,6 +1232,7 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
       : null,
     catchUpTargets,
     catchUpResources,
+    catchUpCatalog,
     updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
   };
 }
@@ -1104,7 +1243,7 @@ export function saveExternalCursorState(
 ): void {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   const payload = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     cursors: state.cursors,
     processedEventIds: state.processedEventIds,
     processedEventFingerprints: state.processedEventFingerprints,
@@ -1116,6 +1255,7 @@ export function saveExternalCursorState(
     discovery: state.discovery,
     catchUpTargets: state.catchUpTargets,
     catchUpResources: state.catchUpResources,
+    catchUpCatalog: state.catchUpCatalog,
     updatedAt: new Date().toISOString(),
   };
   const tmpPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
@@ -1371,7 +1511,8 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     const state = this.cursorStorePath
       ? loadExternalCursorState(this.cursorStorePath)
       : emptyExternalCursorState();
-    const withIdentity = registerExternalSourceIdentity(state, this.identity);
+    let withIdentity = registerExternalSourceIdentity(state, this.identity);
+    withIdentity = this.invalidateCatchUpCatalogForScopeChange(withIdentity);
 
     // A durably activation-blocked provider admits nothing until an operator
     // narrows scope or raises the cap. The flag is resumable and never partially
@@ -1402,7 +1543,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
           nextPageToken: null,
           nextResourceIndex: 0,
           updatedAt: new Date().toISOString(),
-          cycle: 0,
+          cycle: withIdentity.discovery?.cycle ?? 0,
         },
       };
       const selection = selectExternalResourcesForWake(this.refreshDiscoveryPage(migrated, maxResources), maxResources);
@@ -1768,6 +1909,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         lifecycleStatus: existingResource?.lifecycleStatus ?? 'active',
         lastSeenAt: existingResource?.lastSeenAt ?? now,
         lastSeenDiscoveryCycle: existingResource?.lastSeenDiscoveryCycle,
+        lastSeenScopeFingerprint: existingResource?.lastSeenScopeFingerprint,
         missingDiscoveryCycles: 0,
         missingSince: null,
         lastSuccessfulReadAt: now,
@@ -1832,7 +1974,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
 
     const existingResource = state.resources[resource.resourceRef];
-    saveExternalCursorState(this.cursorStorePath, {
+    const acknowledgedState: ExternalCursorState = {
       ...state,
       cursors: updatedCursors,
       processedEventIds: updatedEventIds,
@@ -1847,6 +1989,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
           lifecycleStatus: existingResource?.lifecycleStatus ?? 'active',
           lastSeenAt: existingResource?.lastSeenAt ?? now,
           lastSeenDiscoveryCycle: existingResource?.lastSeenDiscoveryCycle,
+          lastSeenScopeFingerprint: existingResource?.lastSeenScopeFingerprint,
           missingDiscoveryCycles: 0,
           missingSince: null,
           lastSuccessfulReadAt: now,
@@ -1862,7 +2005,11 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         },
       },
       updatedAt: now,
-    });
+    };
+    saveExternalCursorState(
+      this.cursorStorePath,
+      completeCatchUpCatalogIfReady(acknowledgedState, this.now),
+    );
   }
 
   markFailed(resource: SessionLogSourceResource, error: unknown): void {
@@ -1876,24 +2023,137 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     state: ExternalCursorState,
     maxResources: number,
   ): readonly SessionLogSourceResource[] {
-    const priorGeneration = state.discovery?.cycle ?? 0;
-    const generation = Math.max(1, priorGeneration || 1);
-    const discovery = this.discoverIncrementalPage(state, null, null, Math.min(1, maxResources));
-    let nextState = applyExternalDiscoveryPage(state, this.identity, discovery, generation, false);
-    nextState = {
-      ...nextState,
-      discovery: {
-        nextPageToken: discovery.nextPageToken ?? null,
-        nextResourceIndex: 0,
-        updatedAt: this.now().toISOString(),
-        cycle: generation,
-      },
-    };
-    const resource = discovery.resources[0];
-    if (!resource) {
+    const scopeFingerprint = buildExternalCatchUpScopeFingerprint(
+      this.identity.provider,
+      this.identity.sourceId,
+      this.scope,
+    );
+    const limits = this.resolveCatchUpCatalogLimits();
+    let nextState = this.ensureCatchUpCatalogGeneration(state, scopeFingerprint, limits);
+    let generation = nextState.catchUpCatalog.active;
+    if (!generation || generation.status === 'catch-up-blocked' || generation.status === 'invalidated') {
       this.persistExternalState(nextState);
       return [];
     }
+
+    if (generation.status === 'inventory') {
+      const elapsedMs = Math.max(0, this.now().getTime() - Date.parse(generation.startedAt));
+      if (elapsedMs > limits.maxDurationMs) {
+        nextState = this.blockCatchUpCatalog(
+          nextState,
+          `catch-up catalog duration exceeded limit: ${elapsedMs} > ${limits.maxDurationMs}`,
+        );
+        this.persistExternalState(nextState);
+        return [];
+      }
+
+      // Persist generation ownership before invoking the provider so a crash
+      // resumes the same limit and generation rather than starting over.
+      this.persistExternalState(nextState);
+      let observation: ExternalCatchUpCatalogObservation;
+      try {
+        observation = this.observeCatchUpCatalog(nextState, generation.requestedLimit);
+      } catch (error) {
+        if (!isActivationBlockedError(error)) throw error;
+        nextState = this.blockCatchUpCatalog(nextState, redactExternalSourceDiagnostic(error));
+        this.persistExternalState(nextState);
+        return [];
+      }
+
+      nextState = applyExternalDiscoveryPage(
+        nextState,
+        this.identity,
+        observation,
+        generation.generation,
+        false,
+        scopeFingerprint,
+      );
+      nextState = this.recordCatchUpCatalogMembership(
+        nextState,
+        observation.resources,
+        generation.generation,
+        scopeFingerprint,
+      );
+      const now = this.now().toISOString();
+      const observedOutputBytes = generation.observedOutputBytes + Math.max(0, observation.outputBytes ?? 0);
+      const observedResourceCount = Object.values(nextState.catchUpResources)
+        .filter(resource => resource.observedGeneration === generation!.generation)
+        .length;
+      const returnedCount = Math.max(0, Math.floor(observation.returnedResourceCount));
+      let active: ExternalCatchUpCatalogGeneration = {
+        ...generation,
+        observedResourceCount,
+        lastObservationCount: returnedCount,
+        observedOutputBytes,
+      };
+      if (observedOutputBytes > limits.maxOutputBytes) {
+        nextState = {
+          ...nextState,
+          catchUpCatalog: { ...nextState.catchUpCatalog, active },
+        };
+        nextState = this.blockCatchUpCatalog(
+          nextState,
+          `catch-up catalog output exceeded limit: ${observedOutputBytes} > ${limits.maxOutputBytes}`,
+        );
+      } else if (returnedCount >= generation.requestedLimit) {
+        if (generation.requestedLimit >= limits.maxCatalogResources) {
+          nextState = {
+            ...nextState,
+            catchUpCatalog: { ...nextState.catchUpCatalog, active },
+          };
+          nextState = this.blockCatchUpCatalog(
+            nextState,
+            `catch-up catalog reached configured limit without proving exhaustion: ${limits.maxCatalogResources}`,
+          );
+        } else {
+          active = {
+            ...active,
+            requestedLimit: Math.min(
+              limits.maxCatalogResources,
+              Math.max(generation.requestedLimit + 1, generation.requestedLimit * 2),
+            ),
+          };
+          nextState = {
+            ...nextState,
+            catchUpCatalog: { ...nextState.catchUpCatalog, active },
+          };
+        }
+      } else {
+        active = {
+          ...active,
+          status: 'draining',
+          observationCompletedAt: now,
+        };
+        nextState = {
+          ...nextState,
+          catchUpCatalog: { ...nextState.catchUpCatalog, active },
+        };
+      }
+      nextState = {
+        ...nextState,
+        discovery: {
+          nextPageToken: null,
+          nextResourceIndex: nextState.discovery?.nextResourceIndex ?? 0,
+          updatedAt: now,
+          cycle: generation.generation,
+        },
+      };
+      this.persistExternalState(nextState);
+      generation = nextState.catchUpCatalog.active;
+      if (!generation || generation.status === 'catch-up-blocked') return [];
+    }
+
+    const candidate = this.selectCatchUpResource(nextState, generation, maxResources);
+    if (!candidate) {
+      nextState = completeCatchUpCatalogIfReady(nextState, this.now);
+      this.persistExternalState(nextState);
+      return mergeResourceSelections(
+        this.selectContinuousCatchUpResources(nextState, generation, maxResources),
+        this.selectKnownContinuousResources(nextState, generation, maxResources),
+        maxResources,
+      );
+    }
+    const resource = candidate.resource;
 
     const existingTarget = nextState.catchUpTargets[resource.resourceRef];
     if (existingTarget) {
@@ -1911,23 +2171,45 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
               },
               observedPosition: existingTarget.position
                 ?? normalizeActivationPosition(resource.firstEventIdentity?.position),
+              observedGeneration: generation.generation,
+              observedScopeFingerprint: scopeFingerprint,
               updatedAt: this.now().toISOString(),
             },
           },
         };
       }
       this.persistExternalState(nextState);
-      return [resource];
+      return mergeResourceSelections(
+        [resource],
+        this.selectKnownContinuousResources(nextState, generation, maxResources, resource.resourceRef),
+        maxResources,
+      );
     }
 
     if (!this.reader?.sampleHistory) {
-      this.persistExternalState(this.withPendingCatchUpSample(nextState, resource));
-      return [];
+      nextState = this.withPendingCatchUpSample(
+        nextState,
+        resource,
+        undefined,
+        generation.generation,
+        scopeFingerprint,
+      );
+      nextState = this.advanceCatchUpResourceSelection(nextState);
+      this.persistExternalState(nextState);
+      return this.selectKnownContinuousResources(nextState, generation, maxResources);
     }
     const sample = this.reader.sampleHistory(resource);
     if (sample.status !== 'stable') {
-      this.persistExternalState(this.withPendingCatchUpSample(nextState, resource, sample.observedPosition));
-      return [];
+      nextState = this.withPendingCatchUpSample(
+        nextState,
+        resource,
+        sample.observedPosition,
+        generation.generation,
+        scopeFingerprint,
+      );
+      nextState = this.advanceCatchUpResourceSelection(nextState);
+      this.persistExternalState(nextState);
+      return this.selectKnownContinuousResources(nextState, generation, maxResources);
     }
 
     const events = [...sample.events].sort((a, b) => a.position - b.position);
@@ -1939,16 +2221,11 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       targetPosition ?? 0,
     );
     const prefixDigest = buildExternalCatchUpPrefixDigest(events);
-    const scopeFingerprint = buildExternalCatchUpScopeFingerprint(
-      this.identity.provider,
-      this.identity.sourceId,
-      this.scope,
-    );
     const targetId = createHash('sha256').update(JSON.stringify([
       this.identity.provider,
       this.identity.sourceId,
       resource.resourceRef,
-      generation,
+      generation.generation,
       scopeFingerprint,
       targetPosition,
       prefixDigest,
@@ -1968,7 +2245,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       position: targetPosition,
       empty: targetPosition === null,
       prefixDigest,
-      creationGeneration: generation,
+      creationGeneration: generation.generation,
       scopeFingerprint,
       observedAt: this.now().toISOString(),
     };
@@ -1981,16 +2258,27 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         processedCount: 0,
       },
       observedPosition,
+      observedGeneration: generation.generation,
+      observedScopeFingerprint: scopeFingerprint,
       updatedAt: now,
     };
     const cursors = { ...nextState.cursors };
+    const existingCursor = readCursorWithSourceIdentityValidation(
+      nextState,
+      this.identity,
+      resource.resourceRef,
+    );
+    const continuousPosition = Math.max(
+      existingCursor?.position ?? -1,
+      target.position ?? observedPosition,
+    );
     const entry: ExternalCursorEntry = {
       cursor: {
         resourceRef: resource.resourceRef,
         // The continuous lane starts above the immutable target immediately;
         // historical progress uses its separate cursor and can be paused.
-        position: target.position ?? observedPosition,
-        processedCount: 0,
+        position: continuousPosition,
+        processedCount: existingCursor?.processedCount ?? 0,
       },
       sourceIdentity: this.identity,
       updatedAt: now,
@@ -2011,28 +2299,312 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       },
       updatedAt: now,
     };
+    nextState = completeCatchUpCatalogIfReady(nextState, this.now);
     this.persistExternalState(nextState);
-    return target.empty ? [] : [resource];
+    return mergeResourceSelections(
+      target.empty ? [] : [resource],
+      this.selectKnownContinuousResources(nextState, generation, maxResources, resource.resourceRef),
+      maxResources,
+    );
+  }
+
+  private resolveCatchUpCatalogLimits(): ExternalCatchUpCatalogLimits {
+    const configured = this.reader?.getCatchUpCatalogLimits?.();
+    const maxCatalogResources = normalizePositiveCatalogLimit(
+      configured?.maxCatalogResources,
+      2_048,
+    );
+    return {
+      initialLimit: Math.min(
+        maxCatalogResources,
+        normalizePositiveCatalogLimit(configured?.initialLimit, 100),
+      ),
+      maxCatalogResources,
+      maxOutputBytes: normalizePositiveCatalogLimit(configured?.maxOutputBytes, 4 * 1024 * 1024),
+      maxDurationMs: normalizePositiveCatalogLimit(configured?.maxDurationMs, 60_000),
+    };
+  }
+
+  private ensureCatchUpCatalogGeneration(
+    state: ExternalCursorState,
+    scopeFingerprint: string,
+    limits: ExternalCatchUpCatalogLimits,
+  ): ExternalCursorState {
+    const active = state.catchUpCatalog.active;
+    const now = this.now().toISOString();
+    if (active && active.scopeFingerprint !== scopeFingerprint && active.status !== 'invalidated') {
+      return {
+        ...state,
+        catchUpCatalog: {
+          ...state.catchUpCatalog,
+          active: {
+            ...active,
+            status: 'invalidated',
+            invalidatedAt: now,
+          },
+        },
+        updatedAt: now,
+      };
+    }
+    if (
+      active
+      && active.scopeFingerprint === scopeFingerprint
+      && active.status !== 'caught-up'
+      && active.status !== 'invalidated'
+    ) {
+      return state;
+    }
+
+    const highestGeneration = Math.max(
+      0,
+      active?.generation ?? 0,
+      state.catchUpCatalog.lastCompleted?.generation ?? 0,
+      ...Object.values(state.catchUpTargets).map(target => target.creationGeneration),
+      ...Object.values(state.catchUpResources).map(resource => resource.observedGeneration ?? 0),
+    );
+    const generation = active === null && highestGeneration > 0
+      && state.catchUpCatalog.lastCompleted === null
+      ? highestGeneration
+      : highestGeneration + 1;
+    const nextActive: ExternalCatchUpCatalogGeneration = {
+      generation: Math.max(1, generation),
+      status: 'inventory',
+      requestedLimit: limits.initialLimit,
+      scopeFingerprint,
+      startedAt: now,
+      observedResourceCount: 0,
+      lastObservationCount: 0,
+      observedOutputBytes: 0,
+    };
+    return {
+      ...state,
+      catchUpCatalog: {
+        active: nextActive,
+        lastCompleted: active?.status === 'caught-up'
+          ? active
+          : state.catchUpCatalog.lastCompleted,
+      },
+      updatedAt: now,
+    };
+  }
+
+  private invalidateCatchUpCatalogForScopeChange(state: ExternalCursorState): ExternalCursorState {
+    const active = state.catchUpCatalog.active;
+    if (!active || active.status === 'invalidated') return state;
+    const scopeFingerprint = buildExternalCatchUpScopeFingerprint(
+      this.identity.provider,
+      this.identity.sourceId,
+      this.scope,
+    );
+    if (active.scopeFingerprint === scopeFingerprint) return state;
+    const now = this.now().toISOString();
+    if (active.status === 'caught-up') {
+      return {
+        ...state,
+        catchUpCatalog: {
+          active: null,
+          lastCompleted: active,
+        },
+        updatedAt: now,
+      };
+    }
+    return {
+      ...state,
+      catchUpCatalog: {
+        ...state.catchUpCatalog,
+        active: {
+          ...active,
+          status: 'invalidated',
+          invalidatedAt: now,
+        },
+      },
+      updatedAt: now,
+    };
+  }
+
+  private observeCatchUpCatalog(
+    state: ExternalCursorState,
+    requestedLimit: number,
+  ): ExternalCatchUpCatalogObservation {
+    if (this.reader?.observeCatchUpCatalog) {
+      return this.reader.observeCatchUpCatalog({
+        requestedLimit,
+        knownResourceRefs: Object.keys(state.resources),
+      });
+    }
+    const discovery = this.discoverIncrementalPage(state, null, null, requestedLimit);
+    return {
+      ...discovery,
+      // Catch-up deliberately ignores nextPageToken: official xURL does not
+      // promise a portable cursor-paginated catalog.
+      nextPageToken: null,
+      returnedResourceCount: discovery.resources.length,
+    };
+  }
+
+  private recordCatchUpCatalogMembership(
+    state: ExternalCursorState,
+    resources: readonly SessionLogSourceResource[],
+    generation: number,
+    scopeFingerprint: string,
+  ): ExternalCursorState {
+    const now = this.now().toISOString();
+    const catchUpResources = { ...state.catchUpResources };
+    for (const resource of resources) {
+      const existing = catchUpResources[resource.resourceRef];
+      const target = state.catchUpTargets[resource.resourceRef];
+      catchUpResources[resource.resourceRef] = {
+        status: existing?.status ?? (target ? (target.empty ? 'complete' : 'historical-pending') : 'target-pending'),
+        historicalCursor: existing?.historicalCursor ?? {
+          resourceRef: resource.resourceRef,
+          position: -1,
+          processedCount: 0,
+        },
+        observedPosition: Math.max(
+          0,
+          existing?.observedPosition ?? 0,
+          normalizeActivationPosition(resource.firstEventIdentity?.position),
+        ),
+        observedGeneration: generation,
+        observedScopeFingerprint: scopeFingerprint,
+        updatedAt: now,
+      };
+    }
+    return {
+      ...state,
+      catchUpResources,
+      updatedAt: now,
+    };
+  }
+
+  private selectCatchUpResource(
+    state: ExternalCursorState,
+    generation: ExternalCatchUpCatalogGeneration,
+    maxResources: number,
+  ): ExternalDiscoveredResourceState | undefined {
+    if (maxResources <= 0) return undefined;
+    const candidates = Object.entries(state.catchUpResources)
+      .filter(([, resource]) => resource.status !== 'complete')
+      .filter(([, resource]) => (
+        resource.observedGeneration === generation.generation
+        || resource.observedScopeFingerprint === generation.scopeFingerprint
+      ))
+      .filter(([resourceRef]) => state.resources[resourceRef]?.lifecycleStatus !== 'closed')
+      .filter(([resourceRef]) => !hasBlockingQuarantineForResource(state, resourceRef))
+      .sort(([leftRef, left], [rightRef, right]) => {
+        if (left.status !== right.status) return left.status === 'target-pending' ? -1 : 1;
+        return leftRef.localeCompare(rightRef);
+      });
+    const resourceRef = candidates.length > 0
+      ? candidates[(state.discovery?.nextResourceIndex ?? 0) % candidates.length]?.[0]
+      : undefined;
+    return resourceRef ? state.resources[resourceRef] : undefined;
+  }
+
+  private advanceCatchUpResourceSelection(state: ExternalCursorState): ExternalCursorState {
+    const now = this.now().toISOString();
+    return {
+      ...state,
+      discovery: {
+        nextPageToken: null,
+        nextResourceIndex: (state.discovery?.nextResourceIndex ?? 0) + 1,
+        updatedAt: now,
+        cycle: state.catchUpCatalog.active?.generation ?? state.discovery?.cycle ?? 0,
+      },
+      updatedAt: now,
+    };
+  }
+
+  private selectContinuousCatchUpResources(
+    state: ExternalCursorState,
+    generation: ExternalCatchUpCatalogGeneration,
+    maxResources: number,
+  ): readonly SessionLogSourceResource[] {
+    if (maxResources <= 0) return [];
+    return Object.entries(state.catchUpResources)
+      .filter(([, resource]) => resource.status === 'complete')
+      .filter(([, resource]) => resource.observedGeneration === generation.generation)
+      .filter(([resourceRef]) => state.resources[resourceRef]?.lifecycleStatus !== 'closed')
+      .filter(([resourceRef]) => !hasBlockingQuarantineForResource(state, resourceRef))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .slice(0, maxResources)
+      .flatMap(([resourceRef]) => {
+        const resource = state.resources[resourceRef]?.resource;
+        return resource ? [resource] : [];
+      });
+  }
+
+  private selectKnownContinuousResources(
+    state: ExternalCursorState,
+    generation: ExternalCatchUpCatalogGeneration,
+    maxResources: number,
+    excludedResourceRef?: string,
+  ): readonly SessionLogSourceResource[] {
+    if (maxResources <= 0) return [];
+    return Object.entries(state.resources)
+      .filter(([resourceRef, resource]) => resourceRef !== excludedResourceRef
+        && resource.lifecycleStatus !== 'closed'
+        && resource.lastSeenScopeFingerprint === generation.scopeFingerprint)
+      .filter(([resourceRef]) => state.catchUpTargets[resourceRef] === undefined)
+      .filter(([resourceRef]) => state.catchUpResources[resourceRef]?.status !== 'historical-pending')
+      .filter(([resourceRef]) => state.cursors[resourceRef] !== undefined)
+      .filter(([resourceRef]) => !hasBlockingQuarantineForResource(state, resourceRef))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .slice(0, maxResources)
+      .map(([, resource]) => resource.resource);
+  }
+
+  private blockCatchUpCatalog(
+    state: ExternalCursorState,
+    reason: string,
+  ): ExternalCursorState {
+    const active = state.catchUpCatalog.active;
+    if (!active) return state;
+    const now = this.now().toISOString();
+    return {
+      ...state,
+      catchUpCatalog: {
+        ...state.catchUpCatalog,
+        active: {
+          ...active,
+          status: 'catch-up-blocked',
+          blockedAt: now,
+          blockedReason: redactExternalSourceDiagnostic(reason),
+        },
+      },
+      updatedAt: now,
+    };
   }
 
   private withPendingCatchUpSample(
     state: ExternalCursorState,
     resource: SessionLogSourceResource,
     observedPosition = normalizeActivationPosition(resource.firstEventIdentity?.position),
+    observedGeneration?: number,
+    observedScopeFingerprint?: string,
   ): ExternalCursorState {
     const now = this.now().toISOString();
+    const existing = state.catchUpResources[resource.resourceRef];
     return {
       ...state,
       catchUpResources: {
         ...state.catchUpResources,
         [resource.resourceRef]: {
           status: 'target-pending',
-          historicalCursor: {
+          historicalCursor: existing?.historicalCursor ?? {
             resourceRef: resource.resourceRef,
             position: -1,
             processedCount: 0,
           },
           observedPosition: Math.max(0, observedPosition),
+          ...(observedGeneration !== undefined && observedScopeFingerprint
+            ? { observedGeneration, observedScopeFingerprint }
+            : existing?.observedGeneration !== undefined && existing.observedScopeFingerprint
+              ? {
+                observedGeneration: existing.observedGeneration,
+                observedScopeFingerprint: existing.observedScopeFingerprint,
+              }
+              : {}),
           updatedAt: now,
         },
       },
@@ -2071,7 +2643,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       }
       throw error;
     }
-    let withResources = applyExternalDiscoveryPage(state, this.identity, discovery, cycle);
+    let withResources = applyExternalDiscoveryPage(
+      state,
+      this.identity,
+      discovery,
+      cycle,
+      true,
+      buildExternalCatchUpScopeFingerprint(this.identity.provider, this.identity.sourceId, this.scope),
+    );
     if (discovery.nextPageToken == null) {
       withResources = finalizeExternalDiscoveryCycle(withResources, cycle, this.scope.scope === 'path');
     }
@@ -2109,7 +2688,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       discoveryState?.nextPageToken ?? null,
       maxResources,
     );
-    let refreshed = applyExternalDiscoveryPage(state, this.identity, discovery, cycle);
+    let refreshed = applyExternalDiscoveryPage(
+      state,
+      this.identity,
+      discovery,
+      cycle,
+      true,
+      buildExternalCatchUpScopeFingerprint(this.identity.provider, this.identity.sourceId, this.scope),
+    );
     if (discovery.nextPageToken == null) {
       refreshed = finalizeExternalDiscoveryCycle(refreshed, cycle, this.scope.scope === 'path');
     }
@@ -2420,8 +3006,15 @@ function readCursorWithSourceIdentityValidation(
   identity: SessionLogSourceIdentity,
   resourceRef?: string,
 ): SourceCursor | null {
-  const entry = (resourceRef ? state.cursors[resourceRef] : undefined)
-    ?? state.cursors[identity.sourceId];
+  const directEntry = resourceRef ? state.cursors[resourceRef] : undefined;
+  const hasResourceScopedState = resourceRef !== undefined && (
+    Object.keys(state.resources).length > 0
+    || Object.keys(state.cursors).some(key => key !== identity.sourceId)
+  );
+  // The source-id cursor is a legacy single-resource compatibility alias. It
+  // must never baseline a newly discovered second resource at another
+  // thread's position.
+  const entry = directEntry ?? (hasResourceScopedState ? undefined : state.cursors[identity.sourceId]);
   if (!entry) return null;
 
   if (!entry.sourceIdentity) return null;
@@ -2472,6 +3065,7 @@ function applyExternalDiscoveryPage(
   discovery: ExternalSourceIncrementalDiscoveryResult,
   cycle: number,
   baselineNewResources = true,
+  scopeFingerprint?: string,
 ): ExternalCursorState {
   let nextState = registerExternalSourceIdentity(state, identity);
   const activationResources = discovery.activationResources
@@ -2493,6 +3087,7 @@ function applyExternalDiscoveryPage(
       lifecycleStatus: existing?.lifecycleStatus ?? 'active',
       lastSeenAt: now,
       lastSeenDiscoveryCycle: cycle,
+      ...(scopeFingerprint ? { lastSeenScopeFingerprint: scopeFingerprint } : {}),
       missingDiscoveryCycles: 0,
       missingSince: null,
       ...(existing?.lastSuccessfulReadAt ? { lastSuccessfulReadAt: existing.lastSuccessfulReadAt } : {}),
@@ -2564,9 +3159,14 @@ function selectExternalResourcesForWake(
   state: ExternalCursorState,
   maxResources: number,
 ): { state: ExternalCursorState; resources: readonly SessionLogSourceResource[] } {
+  const currentDiscoveryCycle = state.discovery?.cycle;
   const resourceRefs = Object.keys(state.resources)
     .sort()
     .filter(resourceRef => state.resources[resourceRef]?.lifecycleStatus !== 'closed')
+    // Scope changes preserve old resource state but only resources observed in
+    // the current scoped discovery cycle are eligible for continuous reads.
+    .filter(resourceRef => currentDiscoveryCycle === undefined
+      || state.resources[resourceRef]?.lastSeenDiscoveryCycle === currentDiscoveryCycle)
     .filter(resourceRef => !hasBlockingQuarantineForResource(state, resourceRef));
   if (resourceRefs.length === 0) return { state, resources: [] };
   const start = state.discovery?.nextResourceIndex ?? 0;
@@ -2594,6 +3194,50 @@ function selectExternalResourcesForWake(
 function normalizeActivationPosition(position: number | undefined): number {
   if (!Number.isFinite(position)) return -1;
   return Math.max(-1, Math.floor(position!));
+}
+
+function mergeResourceSelections(
+  primary: readonly SessionLogSourceResource[],
+  secondary: readonly SessionLogSourceResource[],
+  maxResources: number,
+): readonly SessionLogSourceResource[] {
+  const selected = new Map<string, SessionLogSourceResource>();
+  for (const resource of [...primary, ...secondary]) {
+    if (selected.size >= Math.max(0, maxResources)) break;
+    if (!selected.has(resource.resourceRef)) selected.set(resource.resourceRef, resource);
+  }
+  return [...selected.values()];
+}
+
+function normalizePositiveCatalogLimit(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.floor(value));
+}
+
+function completeCatchUpCatalogIfReady(
+  state: ExternalCursorState,
+  now: () => Date,
+): ExternalCursorState {
+  const active = state.catchUpCatalog.active;
+  if (!active || active.status !== 'draining' || !active.observationCompletedAt) return state;
+  const unresolved = Object.values(state.catchUpResources).some(resource => (
+    resource.observedScopeFingerprint === active.scopeFingerprint
+    && resource.status !== 'complete'
+  ));
+  if (unresolved) return state;
+  const completedAt = now().toISOString();
+  return {
+    ...state,
+    catchUpCatalog: {
+      ...state.catchUpCatalog,
+      active: {
+        ...active,
+        status: 'caught-up',
+        completedAt,
+      },
+    },
+    updatedAt: completedAt,
+  };
 }
 
 function buildExternalContinuityTail(

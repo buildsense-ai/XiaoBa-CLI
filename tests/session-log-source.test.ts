@@ -991,7 +991,7 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
     describe('External cursor state persistence', () => {
       test('emptyExternalCursorState returns valid state', () => {
         const state = emptyExternalCursorState();
-        assert.equal(state.schemaVersion, 4);
+        assert.equal(state.schemaVersion, 5);
         assert.deepEqual(state.cursors, {});
         assert.deepEqual(state.processedEventIds, {});
         assert.deepEqual(state.processedEventFingerprints, {});
@@ -999,6 +999,7 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         assert.equal(state.discovery, null);
         assert.deepEqual(state.catchUpTargets, {});
         assert.deepEqual(state.catchUpResources, {});
+        assert.deepEqual(state.catchUpCatalog, { active: null, lastCompleted: null });
         assert.ok(typeof state.updatedAt === 'string');
       });
 
@@ -1036,13 +1037,64 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         saveExternalCursorState(storePath, original);
         const loaded = loadExternalCursorState(storePath);
 
-        assert.equal(loaded.schemaVersion, 4);
+        assert.equal(loaded.schemaVersion, 5);
         assert.ok(loaded.cursors['external-pi']);
         assert.equal(loaded.cursors['external-pi'].cursor.position, 5);
         assert.equal(loaded.processedEventIds['pi://conv/1/event-1'], 'hash-a');
         assert.equal(loaded.processedEventFingerprints['pi::event-1'], 'rev-a::hash-a');
         assert.equal(loaded.activation?.watermarkPosition, 5);
         assert.equal(loaded.discovery?.nextPageToken, 'page-2');
+      });
+
+      test('schema v1-v4 states migrate without changing future-only activation or cursors', () => {
+        for (const schemaVersion of [1, 2, 3, 4]) {
+          const storePath = path.join(env.root, 'data', `schema-v${schemaVersion}.json`);
+          const identity: SessionLogSourceIdentity = {
+            sourceId: 'external-codex',
+            label: 'Codex',
+            category: 'external',
+            provider: 'codex',
+            reader: 'xurl',
+          };
+          fs.mkdirSync(path.dirname(storePath), { recursive: true });
+          fs.writeFileSync(storePath, JSON.stringify({
+            schemaVersion,
+            cursors: {
+              'external-codex': {
+                cursor: {
+                  resourceRef: 'conversation-legacy',
+                  position: 12,
+                  processedCount: 3,
+                },
+                sourceIdentity: identity,
+                updatedAt: '2026-01-01T00:00:00.000Z',
+                lastStatus: 'stable',
+              },
+            },
+            processedEventIds: {},
+            sourceIdentities: { 'external-codex': identity },
+            activation: {
+              initializedAt: '2026-01-01T00:00:00.000Z',
+              mode: 'future-only-resource-baseline',
+              initialDiscoveryCompleted: true,
+            },
+            discovery: {
+              nextPageToken: null,
+              nextResourceIndex: 0,
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              cycle: 7,
+            },
+          }), 'utf8');
+
+          const migrated = loadExternalCursorState(storePath);
+          assert.equal(migrated.schemaVersion, 5);
+          assert.equal(migrated.cursors['external-codex']?.cursor.position, 12);
+          assert.equal(migrated.activation?.initialDiscoveryCompleted, true);
+          assert.equal(migrated.discovery?.cycle, 7);
+          assert.deepEqual(migrated.catchUpTargets, {});
+          assert.deepEqual(migrated.catchUpResources, {});
+          assert.deepEqual(migrated.catchUpCatalog, { active: null, lastCompleted: null });
+        }
       });
 
       test('load from missing path returns empty state', () => {
@@ -1082,6 +1134,174 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
           () => loadExternalCursorState(storePath),
           /invalid catch-up target for thread-1/,
         );
+      });
+
+      test('catch-up catalog expands bounded observations and persists active generation membership', () => {
+        const storePath = path.join(env.root, 'data', 'catch-up-catalog.json');
+        const observedLimits: number[] = [];
+        const allResources: SessionLogSourceResource[] = ['thread-a', 'thread-b', 'thread-c'].map(
+          resourceRef => ({
+            resourceRef,
+            firstEventIdentity: {
+              eventId: `${resourceRef}:head`,
+              position: 0,
+              conversationId: resourceRef,
+              branchId: 'main',
+              contentHash: `${resourceRef}:hash`,
+            },
+          }),
+        );
+        const reader = {
+          provider: 'fixture',
+          reader: 'fixture',
+          discoverResources: () => allResources,
+          discoverIncremental: (request: { maxResources?: number }) => {
+            const limit = request.maxResources ?? 1;
+            observedLimits.push(limit);
+            return {
+              resources: allResources.slice(0, limit),
+              nextPageToken: 'must-not-be-used-for-catch-up',
+            };
+          },
+          getCatchUpCatalogLimits: () => ({
+            initialLimit: 1,
+            maxCatalogResources: 4,
+            maxOutputBytes: 1024 * 1024,
+            maxDurationMs: 60_000,
+          }),
+          sampleHistory: () => ({
+            events: [],
+            status: 'pending' as const,
+            exhausted: false,
+            newPosition: -1,
+            observedPosition: 0,
+          }),
+          read: (_resource: SessionLogSourceResource, cursor: SourceCursor) => ({
+            events: [],
+            status: 'stable' as const,
+            exhausted: true,
+            newPosition: cursor.position,
+          }),
+        } as ExternalSourceReader & {
+          getCatchUpCatalogLimits(): {
+            initialLimit: number;
+            maxCatalogResources: number;
+            maxOutputBytes: number;
+            maxDurationMs: number;
+          };
+        };
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-fixture',
+          provider: 'fixture',
+          reader,
+          enabled: true,
+          historyMode: 'catch-up',
+          cursorStorePath: storePath,
+          now: () => new Date('2026-01-01T00:00:00.000Z'),
+        });
+
+        adapter.discoverResources({ maxResources: 1 });
+        let state = loadExternalCursorState(storePath) as ReturnType<typeof loadExternalCursorState> & {
+          catchUpCatalog?: {
+            active?: {
+              generation: number;
+              status: string;
+              requestedLimit: number;
+              observationCompletedAt?: string;
+            };
+          };
+        };
+        assert.equal(state.catchUpCatalog?.active?.generation, 1);
+        assert.equal(state.catchUpCatalog?.active?.requestedLimit, 2);
+
+        adapter.discoverResources({ maxResources: 1 });
+        state = loadExternalCursorState(storePath) as typeof state;
+        assert.equal(state.catchUpCatalog?.active?.requestedLimit, 4);
+
+        adapter.discoverResources({ maxResources: 1 });
+        state = loadExternalCursorState(storePath) as typeof state;
+        assert.deepEqual(observedLimits, [1, 2, 4]);
+        assert.equal(state.catchUpCatalog?.active?.status, 'draining');
+        assert.equal(
+          state.catchUpCatalog?.active?.observationCompletedAt,
+          '2026-01-01T00:00:00.000Z',
+        );
+        assert.deepEqual(
+          Object.fromEntries(Object.entries(state.catchUpResources).map(([resourceRef, resource]) => (
+            [resourceRef, (resource as typeof resource & { observedGeneration?: number }).observedGeneration]
+          ))),
+          { 'thread-a': 1, 'thread-b': 1, 'thread-c': 1 },
+        );
+      });
+
+      test('target sampling resumes after restart without one pending resource starving the catalog', () => {
+        const storePath = path.join(env.root, 'data', 'catch-up-sampling.json');
+        const resources: SessionLogSourceResource[] = ['thread-a', 'thread-b', 'thread-c'].map(
+          resourceRef => ({
+            resourceRef,
+            firstEventIdentity: {
+              eventId: `${resourceRef}:head`,
+              position: 1,
+              conversationId: resourceRef,
+              branchId: 'main',
+              contentHash: `${resourceRef}:hash`,
+            },
+          }),
+        );
+        const reader = {
+          provider: 'fixture',
+          reader: 'fixture',
+          discoverResources: () => resources,
+          discoverIncremental: () => ({ resources, nextPageToken: null }),
+          getCatchUpCatalogLimits: () => ({
+            initialLimit: 4,
+            maxCatalogResources: 4,
+            maxOutputBytes: 1024 * 1024,
+            maxDurationMs: 60_000,
+          }),
+          sampleHistory: (resource: SessionLogSourceResource) => ({
+            events: [],
+            status: resource.resourceRef === 'thread-a' ? 'pending' as const : 'stable' as const,
+            exhausted: resource.resourceRef !== 'thread-a',
+            newPosition: -1,
+            observedPosition: 1,
+          }),
+          read: (_resource: SessionLogSourceResource, cursor: SourceCursor) => ({
+            events: [],
+            status: 'stable' as const,
+            exhausted: true,
+            newPosition: cursor.position,
+          }),
+        } as ExternalSourceReader & {
+          getCatchUpCatalogLimits(): {
+            initialLimit: number;
+            maxCatalogResources: number;
+            maxOutputBytes: number;
+            maxDurationMs: number;
+          };
+        };
+        const createAdapter = () => new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-fixture',
+          provider: 'fixture',
+          reader,
+          enabled: true,
+          historyMode: 'catch-up',
+          cursorStorePath: storePath,
+          now: () => new Date('2026-01-01T00:00:00.000Z'),
+        });
+
+        createAdapter().discoverResources({ maxResources: 1 });
+        let state = loadExternalCursorState(storePath);
+        assert.equal(state.catchUpResources['thread-a']?.status, 'target-pending');
+        assert.equal(state.catchUpTargets['thread-a'], undefined);
+
+        createAdapter().discoverResources({ maxResources: 1 });
+        createAdapter().discoverResources({ maxResources: 1 });
+        state = loadExternalCursorState(storePath);
+        assert.equal(state.catchUpTargets['thread-b']?.empty, true);
+        assert.equal(state.catchUpTargets['thread-c']?.empty, true);
+        assert.equal(state.catchUpTargets['thread-a'], undefined);
+        assert.equal(state.catchUpCatalog.active?.status, 'draining');
       });
     });
 

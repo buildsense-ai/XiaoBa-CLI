@@ -191,6 +191,525 @@ test('ordinary RuntimeLearning wake admits one stable xURL history through an im
   }
 });
 
+test('official xURL catch-up resumes an expanding-limit generation across Runtime restarts', async () => {
+  const env = setupEnv({
+    catchUpCatalogInitialLimit: 1,
+    catchUpCatalogMaxResources: 4,
+  });
+  try {
+    const resources = [
+      thread('conversation-a', 'branch-main', 1, 'fp-a-1'),
+      thread('conversation-b', 'branch-main', 1, 'fp-b-1'),
+      thread('conversation-c', 'branch-main', 1, 'fp-c-1'),
+    ];
+    writeScenario(env.scenarioPath, {
+      discover: {
+        byLimit: {
+          '1': catalogPage(resources.slice(0, 1)),
+          '2': catalogPage(resources.slice(0, 2)),
+          '4': catalogPage(resources),
+        },
+      },
+      read: Object.fromEntries(resources.map(resource => [
+        resource.threadId,
+        {
+          timeline: timeline(
+            resource.threadId,
+            resource.branch,
+            resource.ordinal,
+            resource.fingerprint,
+            [entry(1, 'User', `Incomplete request for ${resource.threadId}.`)],
+          ),
+        },
+      ])),
+    });
+
+    await env.createRuntime().runtime.wake('startup');
+    let state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.catchUpCatalog.active?.generation, 1);
+    assert.equal(state.catchUpCatalog.active?.requestedLimit, 2);
+
+    await env.createRuntime().runtime.wake('scheduled');
+    state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.catchUpCatalog.active?.generation, 1);
+    assert.equal(state.catchUpCatalog.active?.requestedLimit, 4);
+
+    await env.createRuntime().runtime.wake('scheduled');
+    state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.catchUpCatalog.active?.status, 'caught-up');
+    assert.equal(state.catchUpCatalog.active?.lastObservationCount, 3);
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(state.catchUpResources).map(([resourceRef, resource]) => (
+        [resourceRef, resource.observedGeneration]
+      ))),
+      {
+        'conversation-a': 1,
+        'conversation-b': 1,
+        'conversation-c': 1,
+      },
+    );
+    const queryUris = readInvocationLog(env.logPath)
+      .filter(invocation => invocation.action === 'query')
+      .map(invocation => invocation.args[0]);
+    assert.deepEqual(queryUris, [
+      'agents://codex?limit=1',
+      'agents://codex?limit=2',
+      'agents://codex?limit=4',
+    ]);
+    assert.ok(queryUris.every(uri => !uri.includes('cursor=')));
+  } finally {
+    env.restore();
+  }
+});
+
+test('official xURL catch-up blocks durably when the catalog cap cannot prove exhaustion', async () => {
+  const env = setupEnv({
+    catchUpCatalogInitialLimit: 1,
+    catchUpCatalogMaxResources: 2,
+  });
+  try {
+    const resources = [
+      thread('conversation-a', 'branch-main', 1, 'fp-a-1'),
+      thread('conversation-b', 'branch-main', 1, 'fp-b-1'),
+    ];
+    writeScenario(env.scenarioPath, {
+      discover: {
+        byLimit: {
+          '1': catalogPage(resources.slice(0, 1)),
+          '2': catalogPage(resources),
+        },
+      },
+      read: Object.fromEntries(resources.map(resource => [
+        resource.threadId,
+        {
+          timeline: timeline(
+            resource.threadId,
+            resource.branch,
+            1,
+            resource.fingerprint,
+            [entry(1, 'User', 'Incomplete catalog-cap fixture.')],
+          ),
+        },
+      ])),
+    });
+
+    await env.createRuntime().runtime.wake('startup');
+    await env.createRuntime().runtime.wake('scheduled');
+    const blocked = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(blocked.catchUpCatalog.active?.status, 'catch-up-blocked');
+    assert.match(blocked.catchUpCatalog.active?.blockedReason ?? '', /configured limit/);
+    assert.equal(blocked.catchUpCatalog.active?.completedAt, undefined);
+    const queriesBeforeRestart = readInvocationLog(env.logPath)
+      .filter(invocation => invocation.action === 'query').length;
+
+    await env.createRuntime().runtime.wake('scheduled');
+    const restarted = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(restarted.catchUpCatalog.active?.status, 'catch-up-blocked');
+    assert.equal(
+      readInvocationLog(env.logPath).filter(invocation => invocation.action === 'query').length,
+      queriesBeforeRestart,
+      'a blocked generation does not restart or query a truncated catalog',
+    );
+  } finally {
+    env.restore();
+  }
+});
+
+test('a later generation discovers a new resource without redefining completed targets', async () => {
+  const env = setupEnv({
+    catchUpCatalogInitialLimit: 1,
+    catchUpCatalogMaxResources: 4,
+  });
+  try {
+    const threadA = thread('conversation-a', 'main', 1, 'fp-a-1');
+    const threadB = thread('conversation-b', 'main', 1, 'fp-b-1');
+    const read = {
+      'conversation-a': {
+        timeline: timeline('conversation-a', 'main', 1, 'fp-a-1', [
+          entry(1, 'User', 'Incomplete first-generation fixture.'),
+        ]),
+      },
+      'conversation-b': {
+        timeline: timeline('conversation-b', 'main', 1, 'fp-b-1', [
+          entry(1, 'User', 'Incomplete second-generation fixture.'),
+        ]),
+      },
+    };
+    writeScenario(env.scenarioPath, {
+      discover: {
+        byLimit: {
+          '1': catalogPage([threadA]),
+          '2': catalogPage([threadA]),
+        },
+      },
+      read,
+    });
+    await env.createRuntime().runtime.wake('startup');
+    await env.createRuntime().runtime.wake('scheduled');
+    const generationOne = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(generationOne.catchUpCatalog.active?.status, 'caught-up');
+    const immutableTargetA = generationOne.catchUpTargets['conversation-a'];
+    assert.ok(immutableTargetA);
+
+    writeScenario(env.scenarioPath, {
+      discover: {
+        byLimit: {
+          '1': catalogPage([threadA]),
+          '2': catalogPage([threadA, threadB]),
+          '4': catalogPage([threadA, threadB]),
+        },
+      },
+      read,
+    });
+    await env.createRuntime().runtime.wake('scheduled');
+    let generationTwo = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(generationTwo.catchUpCatalog.lastCompleted?.generation, 1);
+    assert.equal(generationTwo.catchUpCatalog.active?.generation, 2);
+    assert.equal(generationTwo.catchUpTargets['conversation-b'], undefined);
+
+    await env.createRuntime().runtime.wake('scheduled');
+    await env.createRuntime().runtime.wake('scheduled');
+    generationTwo = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(generationTwo.catchUpCatalog.active?.generation, 2);
+    assert.equal(generationTwo.catchUpCatalog.active?.status, 'caught-up');
+    assert.deepEqual(generationTwo.catchUpTargets['conversation-a'], immutableTargetA);
+    assert.equal(generationTwo.catchUpTargets['conversation-b']?.creationGeneration, 2);
+  } finally {
+    env.restore();
+  }
+});
+
+test('a moving expanding catalog retains every resource observed by the generation', async () => {
+  const env = setupEnv({
+    catchUpCatalogInitialLimit: 1,
+    catchUpCatalogMaxResources: 4,
+  });
+  try {
+    const threadA = thread('conversation-a', 'main', 1, 'fp-a-1');
+    const threadB = thread('conversation-b', 'main', 1, 'fp-b-1');
+    const threadC = thread('conversation-c', 'main', 1, 'fp-c-1');
+    const resources = [threadA, threadB, threadC];
+    writeScenario(env.scenarioPath, {
+      discover: {
+        byLimit: {
+          '1': catalogPage([threadA]),
+          '2': catalogPage([threadB, threadC]),
+          '4': catalogPage([threadB, threadC]),
+        },
+      },
+      read: Object.fromEntries(resources.map(resource => [
+        resource.threadId,
+        {
+          timeline: timeline(resource.threadId, 'main', 1, resource.fingerprint, [
+            entry(1, 'User', `Incomplete moving-catalog fixture for ${resource.threadId}.`),
+          ]),
+        },
+      ])),
+    });
+
+    await env.createRuntime().runtime.wake('startup');
+    await env.createRuntime().runtime.wake('scheduled');
+    let state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.notEqual(state.catchUpCatalog.active?.status, 'caught-up');
+    assert.equal(state.catchUpResources['conversation-a']?.observedGeneration, 1);
+
+    await env.createRuntime().runtime.wake('scheduled');
+    state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.catchUpCatalog.active?.status, 'caught-up');
+    assert.deepEqual(Object.keys(state.catchUpTargets).sort(), [
+      'conversation-a',
+      'conversation-b',
+      'conversation-c',
+    ]);
+  } finally {
+    env.restore();
+  }
+});
+
+test('official xURL catch-up persists output and duration cap failures', async () => {
+  const outputEnv = setupEnv({ catchUpCatalogMaxOutputBytes: 1 });
+  try {
+    writeScenario(outputEnv.scenarioPath, {
+      discover: {
+        pages: { start: catalogPage([thread('conversation-output', 'main', 0, 'fp-output')]) },
+      },
+    });
+    await outputEnv.createRuntime().runtime.wake('startup');
+    const outputBlocked = loadExternalCursorState(cursorStorePath(outputEnv.root));
+    assert.equal(outputBlocked.catchUpCatalog.active?.status, 'catch-up-blocked');
+    assert.match(outputBlocked.catchUpCatalog.active?.blockedReason ?? '', /output exceeded limit/);
+  } finally {
+    outputEnv.restore();
+  }
+
+  const durationEnv = setupEnv({
+    catchUpCatalogInitialLimit: 1,
+    catchUpCatalogMaxResources: 2,
+    catchUpCatalogMaxDurationMs: 1,
+  });
+  try {
+    writeScenario(durationEnv.scenarioPath, {
+      discover: {
+        byLimit: {
+          '1': catalogPage([thread('conversation-duration', 'main', 1, 'fp-duration')]),
+        },
+      },
+      read: {
+        'conversation-duration': {
+          timeline: timeline('conversation-duration', 'main', 1, 'fp-duration', [
+            entry(1, 'User', 'Incomplete duration fixture.'),
+          ]),
+        },
+      },
+    });
+    await durationEnv.createRuntime({
+      clock: () => new Date('2026-01-01T00:00:00.000Z'),
+    }).runtime.wake('startup');
+    await durationEnv.createRuntime({
+      clock: () => new Date('2026-01-01T00:00:00.010Z'),
+    }).runtime.wake('scheduled');
+    const durationBlocked = loadExternalCursorState(cursorStorePath(durationEnv.root));
+    assert.equal(durationBlocked.catchUpCatalog.active?.status, 'catch-up-blocked');
+    assert.match(durationBlocked.catchUpCatalog.active?.blockedReason ?? '', /duration exceeded limit/);
+  } finally {
+    durationEnv.restore();
+  }
+});
+
+test('future-only scope narrowing does not read a preserved out-of-scope resource', async () => {
+  const env = setupEnv({ historyMode: 'future-only' });
+  try {
+    const threadA = thread('conversation-a', 'branch-main', 0, 'fp-a-0');
+    const threadB = thread('conversation-b', 'branch-main', 0, 'fp-b-0');
+    writeScenario(env.scenarioPath, {
+      discover: { pages: { start: catalogPage([threadA, threadB]) } },
+    });
+    const fixture = env.createRuntime();
+    await fixture.runtime.wake('startup');
+    assert.equal(loadExternalCursorState(cursorStorePath(env.root)).cursors['conversation-b']?.cursor.position, 0);
+
+    const config = getDistillationHeartbeatConfig(env.root);
+    new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(config),
+    }).enableProvider(PROVIDER, {
+      scope: 'path',
+      scopePath: '/project/a',
+    }, 'future-only');
+    writeScenario(env.scenarioPath, {
+      discover: { pages: { start: catalogPage([threadA]) } },
+      read: {
+        'conversation-a': {
+          timeline: timeline('conversation-a', 'branch-main', 1, 'fp-a-1', [
+            entry(1, 'User', 'Still working in project A.'),
+          ]),
+        },
+        'conversation-b': {
+          timeline: timeline('conversation-b', 'branch-main', 2, 'fp-b-2', [
+            entry(1, 'User', 'This completed turn is outside the narrowed scope.'),
+            entry(2, 'Assistant', 'It must remain unread while project A is selected.'),
+          ]),
+        },
+      },
+    });
+
+    const narrowedWake = await fixture.runtime.wake('scheduled');
+    assert.equal(narrowedWake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed, 0);
+    assert.equal(
+      loadExternalCursorState(cursorStorePath(env.root)).cursors['conversation-b']?.cursor.position,
+      0,
+    );
+    const readsAfterNarrowing = readInvocationLog(env.logPath)
+      .filter(invocation => invocation.action === 'read')
+      .map(invocation => invocation.args[0]);
+    assert.ok(!readsAfterNarrowing.includes('agents://codex/conversation-b'));
+  } finally {
+    env.restore();
+  }
+});
+
+test('mode and scope change invalidates the active generation while preserving paused targets', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: { start: catalogPage([thread('conversation-a', 'branch-main', 4, 'fp-a-4')]) },
+      },
+      read: {
+        'conversation-a': {
+          timeline: timeline('conversation-a', 'branch-main', 4, 'fp-a-4', [
+            entry(1, 'User', 'Implement the first scoped parser.'),
+            entry(2, 'Assistant', 'The first scoped parser is complete.'),
+            entry(3, 'User', 'Verify the first scoped parser.'),
+            entry(4, 'Assistant', 'The first scoped parser is verified.'),
+          ]),
+        },
+      },
+    });
+    const fixture = env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 1 },
+    });
+    await fixture.runtime.wake('startup');
+    const beforePause = loadExternalCursorState(cursorStorePath(env.root));
+    const targetA = beforePause.catchUpTargets['conversation-a'];
+    assert.ok(targetA);
+    assert.equal(beforePause.catchUpResources['conversation-a']?.historicalCursor.position, 2);
+
+    const config = getDistillationHeartbeatConfig(env.root);
+    const overrides = new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(config),
+    });
+    overrides.enableProvider(PROVIDER, {
+      scope: 'path',
+      scopePath: '/project/b',
+    }, 'future-only');
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: { start: catalogPage([thread('conversation-b', 'branch-main', 2, 'fp-b-2')]) },
+      },
+      read: {
+        'conversation-b': {
+          timeline: timeline('conversation-b', 'branch-main', 2, 'fp-b-2', [
+            entry(1, 'User', 'Implement the second scoped parser.'),
+            entry(2, 'Assistant', 'The second scoped parser is complete.'),
+          ]),
+        },
+      },
+    });
+
+    const pausedWake = await fixture.runtime.wake('scheduled');
+    assert.equal(pausedWake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed, 0);
+    const paused = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(paused.catchUpCatalog.active?.status, 'invalidated');
+    assert.deepEqual(paused.catchUpTargets['conversation-a'], targetA);
+    assert.equal(paused.catchUpResources['conversation-a']?.historicalCursor.position, 2);
+    assert.equal(paused.cursors['conversation-b']?.cursor.position, 2, 'future-only expansion baselines history');
+    assert.equal(paused.catchUpTargets['conversation-b'], undefined);
+
+    overrides.setProviderHistoryMode(PROVIDER, 'catch-up');
+    const resumedWake = await fixture.runtime.wake('scheduled');
+    assert.equal(resumedWake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed, 1);
+    const resumed = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(resumed.catchUpCatalog.active?.generation, 2);
+    assert.equal(resumed.catchUpResources['conversation-b']?.status, 'complete');
+    assert.deepEqual(resumed.catchUpTargets['conversation-a'], targetA);
+    assert.equal(resumed.catchUpResources['conversation-a']?.historicalCursor.position, 2);
+  } finally {
+    env.restore();
+  }
+});
+
+test('provider and global disable preserve an unfinished generation until re-enabled', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: { start: catalogPage([thread(THREAD_ID, 'branch-main', 4, 'fp-disable-4')]) },
+      },
+      read: {
+        [THREAD_ID]: {
+          timeline: timeline(THREAD_ID, 'branch-main', 4, 'fp-disable-4', [
+            entry(1, 'User', 'Implement the durable disable fixture.'),
+            entry(2, 'Assistant', 'The durable disable fixture is implemented.'),
+            entry(3, 'User', 'Verify the durable disable fixture.'),
+            entry(4, 'Assistant', 'The durable disable fixture is verified.'),
+          ]),
+        },
+      },
+    });
+    await env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 1 },
+    }).runtime.wake('startup');
+    const pending = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(pending.catchUpResources[THREAD_ID]?.historicalCursor.position, 2);
+
+    const config = getDistillationHeartbeatConfig(env.root);
+    const overrides = new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(config),
+    });
+    overrides.disableProvider(PROVIDER);
+    await env.createRuntime().runtime.wake('scheduled');
+    let paused = loadExternalCursorState(cursorStorePath(env.root));
+    assert.deepEqual(paused.catchUpCatalog, pending.catchUpCatalog);
+    assert.deepEqual(paused.catchUpTargets, pending.catchUpTargets);
+    assert.deepEqual(paused.catchUpResources, pending.catchUpResources);
+
+    overrides.enableProvider(PROVIDER, undefined, 'catch-up');
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'false';
+    await env.createRuntime().runtime.wake('scheduled');
+    paused = loadExternalCursorState(cursorStorePath(env.root));
+    assert.deepEqual(paused.catchUpCatalog, pending.catchUpCatalog);
+    assert.deepEqual(paused.catchUpTargets, pending.catchUpTargets);
+    assert.deepEqual(paused.catchUpResources, pending.catchUpResources);
+
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+    const resumedWake = await env.createRuntime().runtime.wake('scheduled');
+    assert.equal(resumedWake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed, 1);
+    const resumed = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(resumed.catchUpResources[THREAD_ID]?.status, 'complete');
+    assert.equal(resumed.catchUpResources[THREAD_ID]?.historicalCursor.position, 4);
+  } finally {
+    env.restore();
+  }
+});
+
+test('known future-only resources continue while catch-up inventory expands', async () => {
+  const env = setupEnv({
+    historyMode: 'future-only',
+    catchUpCatalogInitialLimit: 1,
+    catchUpCatalogMaxResources: 4,
+  });
+  try {
+    const baselineA = thread('conversation-a', 'main', 0, 'fp-a-0');
+    const baselineB = thread('conversation-b', 'main', 0, 'fp-b-0');
+    writeScenario(env.scenarioPath, {
+      discover: { pages: { start: catalogPage([baselineA, baselineB]) } },
+    });
+    await env.createRuntime().runtime.wake('startup');
+
+    const config = getDistillationHeartbeatConfig(env.root);
+    new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(config),
+    }).setProviderHistoryMode(PROVIDER, 'catch-up');
+    writeScenario(env.scenarioPath, {
+      discover: {
+        byLimit: {
+          '1': catalogPage([thread('conversation-a', 'main', 2, 'fp-a-2')]),
+        },
+      },
+      read: {
+        'conversation-a': {
+          timeline: timeline('conversation-a', 'main', 2, 'fp-a-2', [
+            entry(1, 'User', 'Historical work for A.'),
+            entry(2, 'Assistant', 'Historical work for A is complete.'),
+          ]),
+        },
+        'conversation-b': {
+          timeline: timeline('conversation-b', 'main', 2, 'fp-b-2', [
+            entry(1, 'User', 'Live work for known resource B.'),
+            entry(2, 'Assistant', 'Live work for known resource B is complete.'),
+          ]),
+        },
+      },
+    });
+
+    const wake = await env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 2 },
+      externalSourceBudget: {
+        maxResourcesPerWake: 2,
+        maxBytesPerWake: 1024 * 1024,
+        maxElapsedMsPerWake: 30_000,
+      },
+    }).runtime.wake('scheduled');
+    assert.equal(wake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed, 2);
+    const state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.catchUpResources['conversation-a']?.status, 'complete');
+    assert.equal(state.cursors['conversation-b']?.cursor.position, 2);
+    assert.equal(state.catchUpTargets['conversation-b'], undefined);
+  } finally {
+    env.restore();
+  }
+});
+
 test('a long single-thread history advances in bounded pages across ordinary wakes', async () => {
   const env = setupEnv();
   try {
@@ -983,7 +1502,13 @@ interface TestEnv {
   restore(): void;
 }
 
-function setupEnv(options: { historyMode?: 'future-only' | 'catch-up' | null } = {}): TestEnv {
+function setupEnv(options: {
+  historyMode?: 'future-only' | 'catch-up' | null;
+  catchUpCatalogInitialLimit?: number;
+  catchUpCatalogMaxResources?: number;
+  catchUpCatalogMaxOutputBytes?: number;
+  catchUpCatalogMaxDurationMs?: number;
+} = {}): TestEnv {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-xurl-catch-up-'));
   tempRoots.push(root);
 
@@ -1011,6 +1536,10 @@ function setupEnv(options: { historyMode?: 'future-only' | 'catch-up' | null } =
     'XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID',
     'XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND',
     'XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE',
+    'XIAOBA_EXTERNAL_SESSION_LOG_XURL_CATCH_UP_INITIAL_LIMIT',
+    'XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_CATALOG',
+    'XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_OUTPUT_BYTES',
+    'XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_DURATION_MS',
     'XURL_SCENARIO_PATH',
     'XURL_LOG_PATH',
   ] as const;
@@ -1029,6 +1558,18 @@ function setupEnv(options: { historyMode?: 'future-only' | 'catch-up' | null } =
     delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE;
   } else {
     process.env.XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE = options.historyMode ?? 'catch-up';
+  }
+  if (options.catchUpCatalogInitialLimit !== undefined) {
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_CATCH_UP_INITIAL_LIMIT = String(options.catchUpCatalogInitialLimit);
+  }
+  if (options.catchUpCatalogMaxResources !== undefined) {
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_CATALOG = String(options.catchUpCatalogMaxResources);
+  }
+  if (options.catchUpCatalogMaxOutputBytes !== undefined) {
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_OUTPUT_BYTES = String(options.catchUpCatalogMaxOutputBytes);
+  }
+  if (options.catchUpCatalogMaxDurationMs !== undefined) {
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_MAX_ACTIVATION_DURATION_MS = String(options.catchUpCatalogMaxDurationMs);
   }
   process.env.XURL_SCENARIO_PATH = scenarioPath;
   process.env.XURL_LOG_PATH = logPath;

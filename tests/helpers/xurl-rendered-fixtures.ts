@@ -59,6 +59,7 @@ export interface ThreadReadSpec {
 
 export interface DiscoverSpec {
   readonly pages?: Record<string, CatalogPageSpec>;
+  readonly byLimit?: Record<string, CatalogPageSpec>;
   readonly catalog?: CatalogPageSpec;
   readonly response?: CatalogPageSpec;
   readonly rawStdout?: string;
@@ -213,10 +214,10 @@ function parseUri(uri) {
     const providers = (params.get('providers') || '').split(',').map(v => v.trim()).filter(Boolean);
     const provider = providers[0] || null;
     if (!provider) throw new Error('fake-xurl: missing providers=... in scoped query ' + uri);
-    return { provider, cursor, threadId: null, scopePath: target };
+    return { provider, cursor, limit: Number(params.get('limit')), threadId: null, scopePath: target };
   }
 
-  return { provider: target, cursor, threadId: null, scopePath: null };
+  return { provider: target, cursor, limit: Number(params.get('limit')), threadId: null, scopePath: null };
 }
 
 function renderCatalog(spec, requestedUri) {
@@ -316,7 +317,8 @@ if (action === 'query') {
   const token = parsed.cursor || 'start';
   const discover = scenario.discover || {};
   let page = null;
-  if (discover.pages && discover.pages[token]) page = discover.pages[token];
+  if (discover.byLimit && discover.byLimit[String(parsed.limit)]) page = discover.byLimit[String(parsed.limit)];
+  else if (discover.pages && discover.pages[token]) page = discover.pages[token];
   else if (token === 'start' && (discover.catalog || discover.response)) page = discover.catalog || discover.response;
   else if (discover.pages && discover.pages.start) page = discover.pages.start;
   else if (discover.catalog || discover.response) page = discover.catalog || discover.response;

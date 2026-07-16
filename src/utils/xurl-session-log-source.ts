@@ -3,6 +3,9 @@ import { createHash } from 'node:crypto';
 
 import { DistillationUnit } from './distillation-unit';
 import {
+  ExternalCatchUpCatalogLimits,
+  ExternalCatchUpCatalogObservation,
+  ExternalCatchUpCatalogObservationRequest,
   ExternalSourceActivationResource,
   ExternalSourceIncrementalDiscoveryRequest,
   ExternalSourceIncrementalDiscoveryResult,
@@ -45,6 +48,7 @@ import {
 export const DEFAULT_XURL_TIMEOUT_MS = 10_000;
 export const DEFAULT_XURL_MAX_OUTPUT_BYTES = 256 * 1024;
 export const DEFAULT_XURL_QUERY_LIMIT = 100;
+export const DEFAULT_XURL_CATCH_UP_INITIAL_LIMIT = 100;
 export const DEFAULT_XURL_MAX_ACTIVATION_CATALOG = 2048;
 export const DEFAULT_XURL_MAX_ACTIVATION_OUTPUT_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_XURL_MAX_ACTIVATION_DURATION_MS = 60_000;
@@ -116,6 +120,8 @@ export interface XurlProcessRunnerOptions {
   readonly maxActivationOutputBytes?: number;
   /** Maximum wall-clock duration for one activation pass. */
   readonly maxActivationDurationMs?: number;
+  /** First bounded limit used by catch-up's expanding catalog observations. */
+  readonly catchUpInitialCatalogLimit?: number;
 }
 
 export interface XurlExternalSourceOptions extends XurlProcessRunnerOptions {
@@ -236,6 +242,30 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
       activationWatermarkPosition: summaries.length > 0
         ? Math.max(...summaries.map(thread => thread.ordinal))
         : 0,
+    };
+  }
+
+  getCatchUpCatalogLimits(): ExternalCatchUpCatalogLimits {
+    return this.runner.catchUpCatalogLimits;
+  }
+
+  observeCatchUpCatalog(
+    request: ExternalCatchUpCatalogObservationRequest,
+  ): ExternalCatchUpCatalogObservation {
+    const outputBytesBefore = this.runner.activationOutputBytes;
+    const discovery = this.discoverIncremental({
+      cursor: null,
+      pageToken: null,
+      maxResources: request.requestedLimit,
+      knownResourceRefs: request.knownResourceRefs,
+    });
+    return {
+      ...discovery,
+      // Official xURL catch-up is expanding-limit observation, not portable
+      // cursor pagination. Future-only discovery keeps its existing paging.
+      nextPageToken: null,
+      returnedResourceCount: discovery.resources.length,
+      outputBytes: Math.max(0, this.runner.activationOutputBytes - outputBytesBefore),
     };
   }
 
@@ -379,6 +409,7 @@ class XurlOfficialRunner {
   private readonly maxActivationCatalog: number;
   private readonly maxActivationOutputBytes: number;
   private readonly maxActivationDurationMs: number;
+  private readonly catchUpInitialCatalogLimit: number;
   private versionCache: string | undefined;
   private versionChecked = false;
   private activationBytesAccum = 0;
@@ -419,10 +450,32 @@ class XurlOfficialRunner {
       DEFAULT_XURL_MAX_ACTIVATION_DURATION_MS,
       'xurl maxActivationDurationMs',
     );
+    this.catchUpInitialCatalogLimit = Math.min(
+      this.maxActivationCatalog,
+      resolveActivationLimit(
+        options.catchUpInitialCatalogLimit,
+        'XIAOBA_EXTERNAL_SESSION_LOG_XURL_CATCH_UP_INITIAL_LIMIT',
+        DEFAULT_XURL_CATCH_UP_INITIAL_LIMIT,
+        'xurl catchUpInitialCatalogLimit',
+      ),
+    );
   }
 
   get version(): string | undefined {
     return this.versionCache;
+  }
+
+  get activationOutputBytes(): number {
+    return this.activationBytesAccum;
+  }
+
+  get catchUpCatalogLimits(): ExternalCatchUpCatalogLimits {
+    return {
+      initialLimit: this.catchUpInitialCatalogLimit,
+      maxCatalogResources: this.maxActivationCatalog,
+      maxOutputBytes: this.maxActivationOutputBytes,
+      maxDurationMs: this.maxActivationDurationMs,
+    };
   }
 
   checkActivationLimits(catalog: RenderedCatalog): void {
