@@ -20,6 +20,11 @@ type UploadImportFileSource = (
   fileName: string,
 ) => Promise<UploadedFileResult>;
 
+export type RemoteImportFileResult = ToolExecutionResult & {
+  /** Internal-only local path used when another tool continues processing the imported file. */
+  importedLocalPath?: string;
+};
+
 export class ImportFileTool implements Tool {
   definition: ToolDefinition = {
     name: 'import_file',
@@ -51,6 +56,21 @@ export class ImportFileTool implements Tool {
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    return importRemoteFileToAgentWorkspace(args, context);
+  }
+}
+
+/**
+ * Imports one original file from a participant computer into this agent runtime.
+ *
+ * `import_file` exposes this operation to the model. Other tools may reuse it when
+ * they need to continue processing a remote file locally without making the model
+ * coordinate a second tool call.
+ */
+export async function importRemoteFileToAgentWorkspace(
+  args: Record<string, unknown>,
+  context: ToolExecutionContext,
+): Promise<RemoteImportFileResult> {
     const validation = validateImportFileArgs(args, true);
     if (!validation.ok) return validation;
 
@@ -130,6 +150,7 @@ export class ImportFileTool implements Tool {
           operation: 'send_file',
           cwd: path.dirname(localPath),
         }),
+        importedLocalPath: localPath,
       };
     } catch (error: any) {
       Logger.error(`远程文件保存到当前运行体失败: ${error.message}`);
@@ -140,7 +161,6 @@ export class ImportFileTool implements Tool {
         targetContext: result.targetContext,
       };
     }
-  }
 }
 
 function rewriteUnsupportedImportFileError(

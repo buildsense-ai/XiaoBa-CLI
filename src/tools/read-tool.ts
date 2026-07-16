@@ -14,6 +14,7 @@ import { formatPathForLog } from '../utils/log-redaction';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
 import { formatCatsCoVisiblePath } from './tool-gateway';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
+import { importRemoteFileToAgentWorkspace } from './import-file-tool';
 
 export const DEFAULT_TEXT_READ_LIMIT = 200;
 export const MAX_TEXT_READ_LIMIT = 2000;
@@ -123,7 +124,8 @@ export class ReadTool implements Tool {
       '读取一个本地文件。CatsCo 附件请优先使用消息中显示的本地缓存路径。',
       '通常先用 glob 定位候选路径，或用 grep 找到包含目标内容的文件，再读取具体文件。',
       '支持文本/代码、PDF、图片和 Jupyter notebook。文本默认只读前若干行，可用 offset/limit 分页。',
-        'PDF 会先提取文本层；如果文本层为空、解析失败，或用户明显关心图片/签章/手写/版式等视觉内容，会自动把少量页面转成图片并走读图链路。',
+      'PDF 会先提取文本层；如果文本层为空、解析失败，或用户明显关心图片/签章/手写/版式等视觉内容，会自动把少量页面转成图片并走读图链路。',
+      '读取聊天参与者电脑上的图片或 PDF 时，工具会先将原文件导入 XiaoBa 本机，再由当前 agent 在本机处理。',
         'catsco_attachment:<id> 仅用于兼容当前轮旧附件引用；后续追问应使用历史消息里的本地缓存路径。',
         '图片会按当前模型能力处理：视觉模型收到图片块，非视觉模型收到 reader proxy 的文字解析结果。',
     ].join('\n'),
@@ -228,6 +230,11 @@ export class ReadTool implements Tool {
           message: route.message,
         };
       }
+
+      if (route.mode === 'remote' && this.shouldImportRemoteMedia(file_path)) {
+        return this.readImportedRemoteMedia(args, context);
+      }
+
       const remoteResult = await executeRouteIfRemote(context, route, 'read_file', 'read_file', args);
       if (remoteResult) return remoteResult;
 
@@ -936,6 +943,48 @@ export class ReadTool implements Tool {
 
   private isImageExt(ext: string): boolean {
     return ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'].includes(ext);
+  }
+
+  private shouldImportRemoteMedia(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    const ext = path.posix.extname(normalized).toLowerCase();
+    return ext === '.pdf' || this.isImageExt(ext);
+  }
+
+  private async readImportedRemoteMedia(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    const sourcePath = String(args.file_path || '').trim();
+    const importResult = await importRemoteFileToAgentWorkspace({
+      file_path: sourcePath,
+      file_name: this.remoteMediaFileName(sourcePath),
+      target: args.target,
+    }, context);
+
+    if (!importResult.ok) return importResult;
+    if (!importResult.importedLocalPath) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: '远程媒体文件已经上传，但当前 agent 未获得本地缓存路径。',
+        targetContext: importResult.targetContext,
+      };
+    }
+
+    const localArgs = {
+      ...args,
+      file_path: importResult.importedLocalPath,
+    };
+    delete (localArgs as Record<string, unknown>).target;
+    return this.execute(localArgs, context);
+  }
+
+  private remoteMediaFileName(filePath: string): string {
+    const normalized = filePath.replace(/\\/g, '/');
+    const baseName = path.posix.basename(normalized).trim();
+    if (baseName && baseName !== '.' && baseName !== '/') return baseName;
+    return 'remote-media';
   }
 
   private getLatestUserText(context: ToolExecutionContext): string {
