@@ -297,7 +297,7 @@ export class DueWorkPlanner {
         episodeIds?: unknown;
         nextAttemptAt?: unknown;
       };
-      if (parsed.schemaVersion !== 1
+      if ((parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2)
         || !Array.isArray(parsed.episodeIds)
         || parsed.episodeIds.length === 0
         || typeof parsed.nextAttemptAt !== 'string') return null;

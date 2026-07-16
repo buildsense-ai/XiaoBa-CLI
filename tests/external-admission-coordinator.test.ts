@@ -26,6 +26,7 @@ import {
   type ExternalAdmissionCommitResult,
   type ExternalAdmissionCommitFn,
   type ExternalAdmissionCoordinatorState,
+  type ExternalAdmissionLane,
 } from '../src/utils/external-admission-coordinator';
 import type {
   SessionLogSourceIdentity,
@@ -103,7 +104,7 @@ function makePage(
   provider: string,
   resourceRef: string,
   position: number,
-  lane: 'continuous' | 'backfill' = 'continuous',
+  lane: ExternalAdmissionLane = 'continuous',
 ): ExternalEvidencePage {
   return {
     providerId: provider,
@@ -386,6 +387,45 @@ describe('ExternalAdmissionCoordinator — starvation resistance', () => {
 });
 
 describe('ExternalAdmissionCoordinator — backfill arbitration', () => {
+  test('forced backfill is followed by durable rotation across every ready lane', () => {
+    const dir = makeTempDir();
+    const filePath = stateFilePath(dir);
+    const records: CommitRecord[] = [];
+    const first = new ExternalAdmissionCoordinator({
+      stateFilePath: filePath,
+      commitFn: makeRecordingCommitFn(records),
+    });
+
+    first.markBackfillPending('codex');
+    first.admitPages([
+      makePage('codex', 'thread-continuous', 1, 'continuous'),
+      makePage('codex', 'thread-catch-up', 1, 'catch-up'),
+      makePage('codex', 'thread-backfill', 1, 'backfill'),
+    ], ['codex']);
+
+    assert.deepEqual(
+      records.map(record => record.page.lane),
+      ['backfill', 'continuous', 'catch-up'],
+      'backfill keeps its next-turn guarantee, then all ready lanes rotate',
+    );
+
+    const restartedRecords: CommitRecord[] = [];
+    const restarted = new ExternalAdmissionCoordinator({
+      stateFilePath: filePath,
+      commitFn: makeRecordingCommitFn(restartedRecords),
+    });
+    restarted.admitPages([
+      makePage('codex', 'thread-catch-up-2', 2, 'catch-up'),
+      makePage('codex', 'thread-continuous-2', 2, 'continuous'),
+    ], ['codex']);
+
+    assert.deepEqual(
+      restartedRecords.map(record => record.page.lane),
+      ['continuous', 'catch-up'],
+      'the lane continuation survives coordinator restart',
+    );
+  });
+
   test('backfill receives the next provider turn after the current commit', () => {
     const dir = makeTempDir();
     const records: CommitRecord[] = [];

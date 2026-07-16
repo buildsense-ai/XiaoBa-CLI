@@ -462,6 +462,15 @@ export interface SkillEvolutionQueueReviewOptions {
   signal?: AbortSignal;
   /** Charge the actual frozen bundle before dispatching this queue entry. */
   admit?: (bundle: EvidenceBundle) => boolean;
+  /** Restrict this pass to the Runtime-selected durable queue turns. */
+  bundleIds?: readonly string[];
+  /** Clock used to decide which operational retries are due. */
+  now?: Date;
+}
+
+export interface SkillEvolutionDueQueueReviewEntry {
+  readonly bundleId: string;
+  readonly bundle: EvidenceBundle;
 }
 
 export interface TransitionJournal {
@@ -848,7 +857,7 @@ export class SkillEvolutionRuntime {
         revision: record.revision,
       })),
     );
-    const dueOperational = popDueOperationalEntries(queue, new Date());
+    const dueOperational = popDueOperationalEntries(queue, options.now ?? new Date());
     const dueDeferred = getDueDeferredEntries(
       queue,
       this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
@@ -858,10 +867,18 @@ export class SkillEvolutionRuntime {
       | { type: 'operational'; entry: SkillEvolutionOperationalReviewFailureEntry }
       | { type: 'deferred'; entry: SkillEvolutionDeferredReviewEntry };
 
-    const tasks: ReviewQueueTask[] = [
+    let tasks: ReviewQueueTask[] = [
       ...dueOperational.map(item => ({ type: 'operational' as const, entry: item })),
       ...dueDeferred.map(item => ({ type: 'deferred' as const, entry: item })),
     ];
+    if (options.bundleIds) {
+      const selectedOrder = new Map(options.bundleIds.map((bundleId, index) => [bundleId, index]));
+      tasks = tasks
+        .filter(item => selectedOrder.has(item.entry.bundleId))
+        .sort((left, right) => (
+          selectedOrder.get(left.entry.bundleId)! - selectedOrder.get(right.entry.bundleId)!
+        ));
+    }
     if (tasks.length === 0) {
       return {
         reviewed: 0,
@@ -915,6 +932,33 @@ export class SkillEvolutionRuntime {
     options: SkillEvolutionQueueReviewOptions = {},
   ): Promise<SkillEvolutionQueueReviewResult> {
     return this.reviewDueQueueEntriesInternal(options);
+  }
+
+  /** Deterministic durable retry-class snapshot used by Runtime review arbitration. */
+  listDueQueueReviewEntries(now = new Date()): readonly SkillEvolutionDueQueueReviewEntry[] {
+    const queuePath = this.options.reviewQueuePath;
+    if (!queuePath) return [];
+    const queue = loadReviewQueueState(queuePath);
+    const registry = this.getRegistry();
+    const currentReadSet = normalizeRegistryReadSet(
+      Object.values(registry.capabilities).map(record => ({
+        handle: record.handle,
+        revision: record.revision,
+      })),
+    );
+    const entries = [
+      ...popDueOperationalEntries(queue, now),
+      ...getDueDeferredEntries(
+        queue,
+        this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
+        currentReadSet,
+      ),
+    ];
+    const byBundleId = new Map<string, EvidenceBundle>();
+    for (const entry of entries) byBundleId.set(entry.bundleId, entry.bundle);
+    return [...byBundleId.entries()]
+      .sort(([left], [right]) => left.localeCompare(right, 'en'))
+      .map(([bundleId, bundle]) => ({ bundleId, bundle }));
   }
 
   private async reviewAndApplyOnce(

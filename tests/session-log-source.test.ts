@@ -1560,6 +1560,98 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         assert.equal(state.catchUpTargets['thread-a'], undefined);
         assert.equal(state.catchUpCatalog.active?.status, 'draining');
       });
+
+      test('a due stability quantum skips a ready historical page', () => {
+        const storePath = path.join(env.root, 'data', 'catch-up-action-selection.json');
+        const resources: SessionLogSourceResource[] = ['thread-a', 'thread-b'].map(
+          resourceRef => ({
+            resourceRef,
+            firstEventIdentity: {
+              eventId: `${resourceRef}:head`,
+              position: 1,
+              conversationId: resourceRef,
+              branchId: 'main',
+              contentHash: `${resourceRef}:head-hash`,
+            },
+          }),
+        );
+        const sampledResources: string[] = [];
+        const reader: ExternalSourceReader = {
+          provider: 'fixture',
+          reader: 'action-selection-fixture',
+          discoverResources: () => resources,
+          observeCatchUpCatalog: () => ({
+            resources,
+            returnedResourceCount: resources.length,
+          }),
+          getCatchUpCatalogLimits: () => ({
+            initialLimit: 3,
+            maxCatalogResources: 3,
+            maxOutputBytes: 1024 * 1024,
+            maxDurationMs: 60_000,
+          }),
+          sampleHistory: resource => {
+            sampledResources.push(resource.resourceRef);
+            return resource.resourceRef === 'thread-a'
+              ? {
+                  events: [{
+                    eventId: 'thread-a:event-1',
+                    position: 1,
+                    conversationId: 'thread-a',
+                    branchId: 'main',
+                    contentHash: 'thread-a:event-1-hash',
+                  }],
+                  status: 'stable',
+                  exhausted: true,
+                  newPosition: 1,
+                  observedPosition: 1,
+                }
+              : {
+                  events: [],
+                  status: 'pending',
+                  exhausted: false,
+                  newPosition: -1,
+                  observedPosition: 1,
+                };
+          },
+          read: (_resource, cursor) => ({
+            events: [],
+            status: 'stable',
+            exhausted: true,
+            newPosition: cursor.position,
+          }),
+        };
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-fixture',
+          provider: 'fixture',
+          reader,
+          enabled: true,
+          historyMode: 'catch-up',
+          cursorStorePath: storePath,
+          now: () => new Date('2026-01-01T00:00:00.000Z'),
+        });
+        const runAction = (catchUpAction: 'inventory' | 'stability') => adapter.discoverResources({
+          maxResources: 1,
+          workLane: 'catch-up',
+          catchUpAction,
+        });
+
+        runAction('inventory');
+        runAction('stability'); // first stable observation for thread-a
+        runAction('stability'); // pending thread-b
+        runAction('stability'); // matching thread-a observation creates its target
+        runAction('stability'); // pending thread-b advances the durable resource cursor
+
+        const before = loadExternalCursorState(storePath);
+        assert.equal(before.catchUpResources['thread-a']?.status, 'historical-pending');
+        assert.equal(before.catchUpResources['thread-b']?.status, 'target-pending');
+        assert.equal(adapter.getNextCatchUpAction(), 'stability');
+
+        const selected = runAction('stability');
+
+        assert.deepEqual(selected, [], 'a stability quantum must not offer a historical page');
+        assert.equal(sampledResources.at(-1), 'thread-b');
+      });
     });
 
     // -----------------------------------------------------------------------

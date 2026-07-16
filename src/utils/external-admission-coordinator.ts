@@ -65,12 +65,18 @@ import type {
   SourceEventIdentity,
 } from './session-log-source';
 import type { DistillationUnit } from './distillation-unit';
+import {
+  EXTERNAL_ADMISSION_LANES,
+  type ExternalAdmissionLane,
+} from './external-source-work';
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
 export const EXTERNAL_ADMISSION_COORDINATOR_SCHEMA_VERSION = 1;
+
+export type { ExternalAdmissionLane } from './external-source-work';
 
 /**
  * A bounded, replayable batch of stable source events offered by one
@@ -94,7 +100,7 @@ export interface ExternalEvidencePage {
   /** The raw read result, used for cursor acknowledgement. */
   readonly readResult: SessionLogSourceReadResult;
   /** Which lane produced this page. */
-  readonly lane: 'continuous' | 'catch-up' | 'backfill';
+  readonly lane: ExternalAdmissionLane;
 }
 
 /**
@@ -129,7 +135,9 @@ export type ExternalAdmissionCommitFn = (
  */
 export interface ProviderTurnState {
   /** Which lane was last served for this provider. */
-  readonly lastLaneServed: 'continuous' | 'backfill' | null;
+  readonly lastLaneServed: ExternalAdmissionLane | null;
+  /** Source that last consumed this provider's durable turn. */
+  readonly lastSourceServed?: string | null;
   /** Whether a backfill has requested the next turn. */
   readonly backfillPending: boolean;
 }
@@ -175,11 +183,14 @@ function validateState(raw: unknown): ExternalAdmissionCoordinatorState {
       if (!turn || typeof turn !== 'object' || Array.isArray(turn)) continue;
       const t = turn as Partial<ProviderTurnState>;
       const lastLaneServed
-        = t.lastLaneServed === 'continuous' || t.lastLaneServed === 'backfill'
+        = t.lastLaneServed === 'continuous'
+          || t.lastLaneServed === 'catch-up'
+          || t.lastLaneServed === 'backfill'
           ? t.lastLaneServed
           : null;
       providerTurns[provider] = {
         lastLaneServed,
+        lastSourceServed: typeof t.lastSourceServed === 'string' ? t.lastSourceServed : null,
         backfillPending: t.backfillPending === true,
       };
     }
@@ -266,6 +277,17 @@ export class ExternalAdmissionCoordinator {
     return sorted[markerIndex]!;
   }
 
+  /** Select the next ready source within one provider after its durable marker. */
+  selectNextSource(providerId: string, readySourceIds: readonly string[]): string | null {
+    const sorted = [...new Set(readySourceIds)].sort();
+    if (sorted.length === 0) return null;
+    const marker = this.state.providerTurns[providerId]?.lastSourceServed;
+    if (!marker) return sorted[0]!;
+    const markerIndex = sorted.indexOf(marker);
+    if (markerIndex >= 0) return sorted[(markerIndex + 1) % sorted.length]!;
+    return sorted.find(sourceId => sourceId > marker) ?? sorted[0]!;
+  }
+
   /**
    * Advance the `nextProvider` marker after serving `servedProvider`.
    * The marker moves to the next provider in sorted order after the served
@@ -288,6 +310,24 @@ export class ExternalAdmissionCoordinator {
     this.state = { ...this.state, nextProvider: sorted[nextIndex]! };
   }
 
+  /**
+   * Persist completion of a non-page catch-up quantum through the same
+   * provider/source/lane continuation used by page admission.
+   */
+  completeCatchUpQuantum(
+    allKnownProviders: readonly string[],
+    providerId: string,
+    sourceId: string,
+  ): void {
+    this.updateProviderTurn(providerId, turn => ({
+      ...turn,
+      lastLaneServed: 'catch-up',
+      lastSourceServed: sourceId,
+    }));
+    this.advanceNextProvider(allKnownProviders, providerId);
+    this.saveState();
+  }
+
   // -------------------------------------------------------------------------
   // Backfill arbitration
   // -------------------------------------------------------------------------
@@ -302,6 +342,7 @@ export class ExternalAdmissionCoordinator {
       ...turn,
       backfillPending: true,
     }));
+    this.saveState();
   }
 
   /**
@@ -313,21 +354,40 @@ export class ExternalAdmissionCoordinator {
       ...turn,
       backfillPending: false,
     }));
+    this.saveState();
   }
 
   /**
-   * Determine which lane should receive the next page turn for `providerId`.
+   * Determine which ready lane should receive the next page turn for
+   * `providerId`.
    *
    * Rules:
-   * - If backfill is pending and the last turn was NOT backfill, serve backfill.
-   * - If the last turn was backfill, serve continuous.
-   * - Otherwise (no backfill pending or first turn), serve continuous.
+   * - A pending explicit backfill receives the next turn once it is ready.
+   * - After that forced turn, every ready lane rotates after the last served
+   *   lane in deterministic continuous → catch-up → backfill order.
+   * - Empty lanes donate their turn immediately.
    */
-  selectNextLane(providerId: string): 'continuous' | 'backfill' {
+  selectNextLane(
+    providerId: string,
+    readyLanes?: readonly ExternalAdmissionLane[],
+  ): ExternalAdmissionLane | null {
     const turn = this.state.providerTurns[providerId];
-    if (!turn || !turn.backfillPending) return 'continuous';
-    if (turn.lastLaneServed === 'backfill') return 'continuous';
-    return 'backfill';
+    const ready = new Set(
+      readyLanes ?? (turn?.backfillPending ? ['continuous', 'backfill'] : ['continuous']),
+    );
+    if (ready.size === 0) return null;
+    if (turn?.backfillPending && ready.has('backfill')) return 'backfill';
+
+    const lastIndex = turn?.lastLaneServed
+      ? EXTERNAL_ADMISSION_LANES.indexOf(turn.lastLaneServed)
+      : -1;
+    for (let offset = 1; offset <= EXTERNAL_ADMISSION_LANES.length; offset++) {
+      const lane = EXTERNAL_ADMISSION_LANES[
+        (lastIndex + offset) % EXTERNAL_ADMISSION_LANES.length
+      ]!;
+      if (ready.has(lane)) return lane;
+    }
+    return null;
   }
 
   // -------------------------------------------------------------------------
@@ -394,35 +454,57 @@ export class ExternalAdmissionCoordinator {
     const results: ExternalAdmissionCommitResult[] = [];
     if (pages.length === 0) return results;
 
-    // Group pages by provider, preserving lane order within each provider
-    const pagesByProvider = new Map<string, ExternalEvidencePage[]>();
+    // Group pages by provider and lane. Provider turns remain page-sized, and
+    // each provider's durable lane continuation chooses its page for the turn.
+    const pagesByProvider = new Map<string, Map<ExternalAdmissionLane, ExternalEvidencePage[]>>();
     for (const page of pages) {
-      const list = pagesByProvider.get(page.providerId) ?? [];
+      const byLane = pagesByProvider.get(page.providerId) ?? new Map();
+      const list = byLane.get(page.lane) ?? [];
       list.push(page);
-      pagesByProvider.set(page.providerId, list);
+      byLane.set(page.lane, list);
+      pagesByProvider.set(page.providerId, byLane);
     }
 
-    const sortedProviders = [...new Set(readyProviders)].sort();
+    const sortedProviders = [...new Set([
+      ...readyProviders,
+      ...pages.map(page => page.providerId),
+    ])].sort();
     let committed = 0;
 
     // Round-robin: serve one page per provider per round
-    let hasMore = true;
-    while (hasMore && committed < this.maxPagesPerRound) {
-      hasMore = false;
-      for (const provider of sortedProviders) {
+    while (committed < this.maxPagesPerRound) {
+      const activeProviders = sortedProviders.filter(provider => {
+        const byLane = pagesByProvider.get(provider);
+        return byLane && [...byLane.values()].some(queue => queue.length > 0);
+      });
+      if (activeProviders.length === 0) break;
+      const firstProvider = this.selectNextProvider(activeProviders);
+      if (!firstProvider) break;
+      const firstIndex = activeProviders.indexOf(firstProvider);
+      const providersThisRound = [
+        ...activeProviders.slice(firstIndex),
+        ...activeProviders.slice(0, firstIndex),
+      ];
+
+      for (const provider of providersThisRound) {
         if (committed >= this.maxPagesPerRound) break;
         if (this.deadlineReached) break;
 
-        const queue = pagesByProvider.get(provider);
-        if (!queue || queue.length === 0) continue;
+        const byLane = pagesByProvider.get(provider);
+        if (!byLane) continue;
+        const readyLanes = EXTERNAL_ADMISSION_LANES.filter(
+          lane => (byLane.get(lane)?.length ?? 0) > 0,
+        );
+        const lane = this.selectNextLane(provider, readyLanes);
+        if (!lane) continue;
+        const queue = byLane.get(lane)!;
 
         const page = queue.shift()!;
         const result = this.admitPage(page, sortedProviders);
         results.push(result);
         committed++;
-
-        if (queue.length > 0) hasMore = true;
       }
+      if (this.deadlineReached) break;
     }
 
     return results;
@@ -556,9 +638,8 @@ export class ExternalAdmissionCoordinator {
     knownProviders?: readonly string[],
   ): void {
     this.updateProviderTurn(page.providerId, turn => ({
-      // #98 routes catch-up through the existing continuous/backfill turn
-      // class. Dedicated historical fairness is intentionally deferred.
-      lastLaneServed: page.lane === 'catch-up' ? 'continuous' : page.lane,
+      lastLaneServed: page.lane,
+      lastSourceServed: page.sourceId,
       backfillPending: page.lane === 'backfill' ? false : turn.backfillPending,
     }));
     this.advanceNextProvider(knownProviders ?? [page.providerId], page.providerId);
@@ -571,6 +652,7 @@ export class ExternalAdmissionCoordinator {
   ): void {
     const current: ProviderTurnState = this.state.providerTurns[providerId] ?? {
       lastLaneServed: null,
+      lastSourceServed: null,
       backfillPending: false,
     };
     const next = update(current);

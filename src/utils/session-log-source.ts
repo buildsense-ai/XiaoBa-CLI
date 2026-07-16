@@ -43,6 +43,10 @@ import {
   type ExternalHistoryMode,
 } from './distillation-heartbeat-config';
 import { Logger } from './logger';
+import type {
+  ExternalCatchUpAction,
+  ExternalSourceWorkLane,
+} from './external-source-work';
 
 // ---------------------------------------------------------------------------
 // Source identity
@@ -153,6 +157,8 @@ export interface SessionLogSourceReadResult {
   /** Whether the next admitted event still has a known continuity gap behind it. */
   readonly continuityIncomplete?: boolean;
   readonly accounting?: SourceWorkAccounting;
+  /** External lane that produced this replayable result. */
+  readonly admissionLane?: ExternalSourceWorkLane;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +167,8 @@ export interface SessionLogSourceReadResult {
 
 export interface SessionLogSourceReadContext {
   readonly orderedResources: readonly SessionLogSourceResource[];
+  /** Runtime-selected external lane; omitted for internal and legacy callers. */
+  readonly workLane?: ExternalSourceWorkLane;
   /** Remaining per-source allowance for this specific read. */
   readonly remainingBudget?: SourceWorkBudget;
   /** Remaining wake admission allowance, expressed as source events. */
@@ -170,6 +178,10 @@ export interface SessionLogSourceReadContext {
 export interface SessionLogSourceDiscoveryContext {
   readonly maxResources?: number;
   readonly maxElapsedMs?: number;
+  /** Runtime-selected external lane; omitted for internal and legacy callers. */
+  readonly workLane?: ExternalSourceWorkLane;
+  /** Source-derived action claimed for this one catch-up quantum. */
+  readonly catchUpAction?: ExternalCatchUpAction;
 }
 
 export interface ExternalSourceAdmissionConfiguration {
@@ -196,8 +208,13 @@ export interface SessionLogSourceAdapter {
   getReaderVersion?(): string | undefined;
   /** Configuration under which an external read may be admitted. */
   getExternalAdmissionConfiguration?(): ExternalSourceAdmissionConfiguration;
+  /** Next action due from the adapter's durable catch-up source state. */
+  getNextCatchUpAction?(options?: {
+    /** Start a later automatic generation only when no current provider backlog is due. */
+    allowNewGeneration?: boolean;
+  }): ExternalCatchUpAction | undefined;
   /** Admission lane for the next page from this resource. */
-  getAdmissionLane?(resource: SessionLogSourceResource): 'continuous' | 'catch-up';
+  getAdmissionLane?(resource: SessionLogSourceResource): ExternalSourceWorkLane;
   /** Immutable catch-up target linked to a historical page, when present. */
   getCatchUpTarget?(resource: SessionLogSourceResource): ExternalCatchUpTarget | undefined;
   discoverResources(context?: SessionLogSourceDiscoveryContext): readonly SessionLogSourceResource[];
@@ -1541,7 +1558,15 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     };
   }
 
-  getAdmissionLane(resource: SessionLogSourceResource): 'continuous' | 'catch-up' {
+  getNextCatchUpAction(options: { allowNewGeneration?: boolean } = {}): ExternalCatchUpAction | undefined {
+    if (!this.enabled || !this.cursorStorePath || this.historyMode !== 'catch-up') return undefined;
+    return nextCatchUpActionFromState(
+      loadExternalCursorState(this.cursorStorePath),
+      options.allowNewGeneration === true,
+    );
+  }
+
+  getAdmissionLane(resource: SessionLogSourceResource): ExternalSourceWorkLane {
     if (!this.cursorStorePath || this.historyMode !== 'catch-up') return 'continuous';
     const state = loadExternalCursorState(this.cursorStorePath);
     return state.catchUpResources[resource.resourceRef]?.status === 'historical-pending'
@@ -1585,7 +1610,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
 
     if (this.historyMode === 'catch-up') {
-      return this.discoverCatchUpResources(withIdentity, maxResources);
+      if (context.workLane === 'continuous') {
+        return this.selectContinuousResources(withIdentity, maxResources);
+      }
+      return this.discoverCatchUpResources(
+        withIdentity,
+        maxResources,
+        context.workLane === 'catch-up' ? context.catchUpAction : undefined,
+      );
     }
 
     if (!withIdentity.activation) {
@@ -1641,8 +1673,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       : emptyExternalCursorState();
     const resourceState = state.resources[resource.resourceRef];
     const catchUpResource = state.catchUpResources[resource.resourceRef];
-    const historicalRead = this.historyMode === 'catch-up'
-      && catchUpResource?.status === 'historical-pending';
+    const historicalRead = context.workLane === 'catch-up'
+      || (context.workLane === undefined
+        && this.historyMode === 'catch-up'
+        && catchUpResource?.status === 'historical-pending');
     const sourceCursor = historicalRead
       ? catchUpResource.historicalCursor
       : readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
@@ -1678,7 +1712,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       };
     }
 
-    return this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult);
+    return {
+      ...this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult),
+      admissionLane: historicalRead ? 'catch-up' : 'continuous',
+    };
   }
 
   async readAsync(
@@ -1704,8 +1741,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       : emptyExternalCursorState();
     const resourceState = state.resources[resource.resourceRef];
     const catchUpResource = state.catchUpResources[resource.resourceRef];
-    const historicalRead = this.historyMode === 'catch-up'
-      && catchUpResource?.status === 'historical-pending';
+    const historicalRead = context.workLane === 'catch-up'
+      || (context.workLane === undefined
+        && this.historyMode === 'catch-up'
+        && catchUpResource?.status === 'historical-pending');
     const sourceCursor = historicalRead
       ? catchUpResource.historicalCursor
       : readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
@@ -1747,7 +1786,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       };
     }
 
-    return this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult);
+    return {
+      ...this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult),
+      admissionLane: historicalRead ? 'catch-up' : 'continuous',
+    };
   }
 
   private limitHistoricalReadToTarget(
@@ -1932,7 +1974,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     if (!this.cursorStorePath) return;
     const state = registerExternalSourceIdentity(loadExternalCursorState(this.cursorStorePath), this.identity);
     if (
-      this.historyMode === 'catch-up'
+      (result.admissionLane === 'catch-up' || (
+        result.admissionLane === undefined
+        && this.historyMode === 'catch-up'
+      ))
       && state.catchUpResources[resource.resourceRef]?.status === 'historical-pending'
     ) {
       this.acknowledgeHistoricalPage(resource, result, state);
@@ -2081,10 +2126,35 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     );
   }
 
-  private discoverCatchUpResources(
+  private selectContinuousResources(
     state: ExternalCursorState,
     maxResources: number,
   ): readonly SessionLogSourceResource[] {
+    if (maxResources <= 0) return [];
+    return Object.entries(state.resources)
+      .filter(([, resource]) => resource.lifecycleStatus !== 'closed')
+      .filter(([resourceRef]) => !hasBlockingQuarantineForResource(state, resourceRef))
+      .filter(([resourceRef]) => readCursorWithSourceIdentityValidation(
+        state,
+        this.identity,
+        resourceRef,
+      ) !== null)
+      .sort(([left], [right]) => left.localeCompare(right, 'en'))
+      .slice(0, maxResources)
+      .map(([, resource]) => resource.resource);
+  }
+
+  private discoverCatchUpResources(
+    state: ExternalCursorState,
+    maxResources: number,
+    requestedAction?: ExternalCatchUpAction,
+  ): readonly SessionLogSourceResource[] {
+    const dueAction = nextCatchUpActionFromState(state, requestedAction === 'inventory');
+    if (requestedAction !== undefined && dueAction !== requestedAction) {
+      this.persistExternalState(state);
+      return [];
+    }
+    const dedicatedQuantum = requestedAction !== undefined;
     const scopeFingerprint = buildExternalCatchUpScopeFingerprint(
       this.identity.provider,
       this.identity.sourceId,
@@ -2208,9 +2278,11 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
           cycle: generation.generation,
         },
       };
+      nextState = completeCatchUpCatalogIfReady(nextState, this.now);
       this.persistExternalState(nextState);
       generation = nextState.catchUpCatalog.active;
       if (!generation || generation.status === 'catch-up-blocked') return [];
+      if (dedicatedQuantum) return [];
       return mergeResourceSelections(
         this.selectContinuousCatchUpResources(nextState, generation, maxResources),
         this.selectKnownContinuousResources(nextState, generation, maxResources),
@@ -2218,10 +2290,16 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       );
     }
 
-    const candidate = this.selectCatchUpResource(nextState, generation, maxResources);
+    const candidate = this.selectCatchUpResource(
+      nextState,
+      generation,
+      maxResources,
+      requestedAction,
+    );
     if (!candidate) {
       nextState = completeCatchUpCatalogIfReady(nextState, this.now);
       this.persistExternalState(nextState);
+      if (dedicatedQuantum) return [];
       return mergeResourceSelections(
         this.selectContinuousCatchUpResources(nextState, generation, maxResources),
         this.selectKnownContinuousResources(nextState, generation, maxResources),
@@ -2254,6 +2332,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         };
       }
       this.persistExternalState(nextState);
+      if (dedicatedQuantum) return [resource];
       return mergeResourceSelections(
         [resource],
         this.selectKnownContinuousResources(nextState, generation, maxResources, resource.resourceRef),
@@ -2271,6 +2350,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       );
       nextState = this.advanceCatchUpResourceSelection(nextState);
       this.persistExternalState(nextState);
+      if (dedicatedQuantum) return [];
       return this.selectKnownContinuousResources(nextState, generation, maxResources);
     }
     const sample = this.reader.sampleHistory(resource);
@@ -2284,6 +2364,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       );
       nextState = this.advanceCatchUpResourceSelection(nextState);
       this.persistExternalState(nextState);
+      if (dedicatedQuantum) return [];
       return this.selectKnownContinuousResources(nextState, generation, maxResources);
     }
 
@@ -2328,6 +2409,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       );
       nextState = this.advanceCatchUpResourceSelection(nextState);
       this.persistExternalState(nextState);
+      if (dedicatedQuantum) return [];
       return this.selectKnownContinuousResources(nextState, generation, maxResources);
     }
     const targetId = createHash('sha256').update(JSON.stringify([
@@ -2409,6 +2491,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     };
     nextState = completeCatchUpCatalogIfReady(nextState, this.now);
     this.persistExternalState(nextState);
+    if (dedicatedQuantum) return [];
     return this.selectKnownContinuousResources(nextState, generation, maxResources, resource.resourceRef);
   }
 
@@ -2582,10 +2665,15 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     state: ExternalCursorState,
     generation: ExternalCatchUpCatalogGeneration,
     maxResources: number,
+    requestedAction?: ExternalCatchUpAction,
   ): ExternalDiscoveredResourceState | undefined {
     if (maxResources <= 0) return undefined;
     const candidates = Object.entries(state.catchUpResources)
-      .filter(([, resource]) => resource.status !== 'complete')
+      .filter(([, resource]) => {
+        if (requestedAction === 'stability') return resource.status === 'target-pending';
+        if (requestedAction === 'page') return resource.status === 'historical-pending';
+        return resource.status !== 'complete';
+      })
       .filter(([, resource]) => (
         resource.observedGeneration === generation.generation
         || resource.observedScopeFingerprint === generation.scopeFingerprint
@@ -3338,6 +3426,42 @@ function mergeResourceSelections(
     if (!selected.has(resource.resourceRef)) selected.set(resource.resourceRef, resource);
   }
   return [...selected.values()];
+}
+
+function nextCatchUpActionFromState(
+  state: ExternalCursorState,
+  allowNewGeneration = false,
+): ExternalCatchUpAction | undefined {
+  const active = state.catchUpCatalog.active;
+  if (!active) {
+    return state.catchUpCatalog.lastCompleted && !allowNewGeneration ? undefined : 'inventory';
+  }
+  if (active.status === 'inventory') return 'inventory';
+  if (active.status === 'invalidated') return 'inventory';
+  if (active.status === 'caught-up' && allowNewGeneration) return 'inventory';
+  if (active.status !== 'draining') return undefined;
+
+  const isDueResource = (resourceRef: string): boolean => {
+    const resource = state.resources[resourceRef];
+    const progress = state.catchUpResources[resourceRef];
+    return resource?.lifecycleStatus !== 'closed'
+      && !hasBlockingQuarantineForResource(state, resourceRef)
+      && (progress?.observedGeneration === active.generation
+        || progress?.observedScopeFingerprint === active.scopeFingerprint);
+  };
+  const entries = Object.entries(state.catchUpResources)
+    .filter(([resourceRef]) => isDueResource(resourceRef));
+  if (entries.some(([, resource]) => resource.status === 'target-pending')) {
+    return 'stability';
+  }
+  if (entries.some(([resourceRef, resource]) => (
+    resource.status === 'historical-pending'
+    && state.catchUpTargets[resourceRef]?.position !== null
+    && state.catchUpTargets[resourceRef] !== undefined
+  ))) {
+    return 'page';
+  }
+  return undefined;
 }
 
 function normalizePositiveCatalogLimit(value: number | undefined, fallback: number): number {
