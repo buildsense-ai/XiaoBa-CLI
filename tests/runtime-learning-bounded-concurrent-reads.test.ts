@@ -42,6 +42,7 @@ import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 import type {
   SessionLogSourceAdapter,
   SessionLogSourceResource,
+  SessionLogSourceDiscoveryContext,
   SessionLogSourceReadContext,
   SessionLogSourceReadResult,
   SessionLogSourceIdentity,
@@ -223,6 +224,96 @@ class AsyncFakeSourceAdapter implements SessionLogSourceAdapter {
   }
 }
 
+class DisableableAsyncFakeSourceAdapter extends AsyncFakeSourceAdapter {
+  private enabled = true;
+
+  override isEnabled(): boolean {
+    return this.enabled;
+  }
+
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+  }
+}
+
+class CatchUpSchedulingFakeAdapter implements SessionLogSourceAdapter {
+  readonly identity: SessionLogSourceIdentity;
+  continuousTurns = 0;
+  catchUpTurns = 0;
+  readonly catchUpActions: string[] = [];
+  readonly acknowledged: string[] = [];
+
+  constructor(provider: string) {
+    this.identity = {
+      sourceId: `external-${provider}`,
+      label: `Catch-up fixture ${provider}`,
+      category: 'external',
+      provider,
+      reader: 'fixture',
+    };
+  }
+
+  isEnabled(): boolean { return true; }
+
+  getHistoryMode(): 'catch-up' { return 'catch-up'; }
+
+  discoverResources(context: SessionLogSourceDiscoveryContext = {}): readonly SessionLogSourceResource[] {
+    if (context.workLane === 'catch-up') {
+      this.catchUpTurns++;
+      this.catchUpActions.push(context.catchUpAction ?? 'inventory');
+      return context.catchUpAction === 'page'
+        ? [{ resourceRef: `${this.identity.provider}-catch-up` }]
+        : [];
+    }
+    this.continuousTurns++;
+    return [{ resourceRef: `${this.identity.provider}-continuous` }];
+  }
+
+  read(resource: SessionLogSourceResource): SessionLogSourceReadResult {
+    return {
+      distillationUnit: null,
+      advanced: true,
+      releaseResource: true,
+      status: 'exhausted',
+      newCursor: { resourceRef: resource.resourceRef, position: 0, processedCount: 0 },
+      admissionLane: resource.resourceRef.endsWith('-catch-up') ? 'catch-up' : 'continuous',
+    };
+  }
+
+  acknowledge(resource: SessionLogSourceResource): void {
+    this.acknowledged.push(resource.resourceRef);
+  }
+
+  markFailed(): void {}
+}
+
+class SlowContinuousCatchUpFakeAdapter extends CatchUpSchedulingFakeAdapter {
+  activeReads = 0;
+
+  async readAsync(
+    resource: SessionLogSourceResource,
+    context: SessionLogSourceReadContext,
+    signal: AbortSignal,
+  ): Promise<SessionLogSourceReadResult> {
+    if (context.workLane === 'catch-up') return this.read(resource);
+    this.activeReads++;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 100);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(new Error('aborted'));
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return this.read(resource);
+    } finally {
+      this.activeReads--;
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Stub EvidenceIngestor
 // ---------------------------------------------------------------------------
@@ -339,6 +430,184 @@ function setupEnv(): TestEnv {
 // ---------------------------------------------------------------------------
 
 describe('Issue #92 — Bounded concurrent external provider reads', () => {
+
+  test('one global catch-up quantum rotates providers durably while continuous lanes stay timely', async () => {
+    const env = setupEnv();
+    const alpha = new CatchUpSchedulingFakeAdapter('alpha');
+    const beta = new CatchUpSchedulingFakeAdapter('beta');
+    const createRuntime = () => new RuntimeLearning({
+      workingDirectory: env.root,
+      evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+      learningEpisodeStore: env.episodeStore,
+      skillEvolution: env.skillEvolution,
+      curator: env.curator,
+      planner: env.planner,
+      sessionLogSources: [alpha, beta],
+      externalSourceMaxConcurrency: 2,
+    });
+
+    try {
+      for (let wakeNumber = 0; wakeNumber < 6; wakeNumber++) {
+        await createRuntime().wake('manual');
+      }
+
+      assert.deepEqual(
+        [alpha.continuousTurns, beta.continuousTurns],
+        [10, 10],
+        'continuous work remains eligible on every wake and receives donated empty-turn capacity',
+      );
+      assert.deepEqual(
+        [alpha.catchUpTurns, beta.catchUpTurns],
+        [3, 3],
+        'two continuously due providers each receive three of six global quanta across restart',
+      );
+      assert.deepEqual(alpha.catchUpActions, ['inventory', 'stability', 'page']);
+      assert.deepEqual(beta.catchUpActions, ['inventory', 'stability', 'page']);
+    } finally {
+      env.restore();
+      env.teardown();
+    }
+  });
+
+  test('session-log append discovery does not consume a catch-up quantum', async () => {
+    const env = setupEnv();
+    const adapter = new CatchUpSchedulingFakeAdapter('alpha');
+    const runtime = new RuntimeLearning({
+      workingDirectory: env.root,
+      evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+      learningEpisodeStore: env.episodeStore,
+      skillEvolution: env.skillEvolution,
+      curator: env.curator,
+      planner: env.planner,
+      sessionLogSources: [adapter],
+    });
+
+    try {
+      await runtime.wake('session-log-append');
+
+      assert.ok(adapter.continuousTurns > 0, 'append discovery still serves timely continuous work');
+      assert.equal(
+        adapter.catchUpTurns,
+        0,
+        'only startup, scheduled, and manual discovery wakes reserve a historical quantum',
+      );
+    } finally {
+      env.restore();
+      env.teardown();
+    }
+  });
+
+  test('continuous work cannot consume the resource reserved for a due catch-up page', async () => {
+    const env = setupEnv();
+    const adapter = new CatchUpSchedulingFakeAdapter('alpha');
+    const createRuntime = () => new RuntimeLearning({
+      workingDirectory: env.root,
+      evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+      learningEpisodeStore: env.episodeStore,
+      skillEvolution: env.skillEvolution,
+      curator: env.curator,
+      planner: env.planner,
+      sessionLogSources: [adapter],
+      discoveryQuotas: {
+        maxResourcesPerWake: 1,
+        maxAdmittedEpisodesPerWake: 1,
+      },
+    });
+
+    try {
+      for (let wakeNumber = 0; wakeNumber < 3; wakeNumber++) {
+        await createRuntime().wake('manual');
+      }
+
+      assert.deepEqual(adapter.catchUpActions, ['inventory', 'stability', 'page']);
+      assert.deepEqual(
+        adapter.acknowledged,
+        ['alpha-continuous', 'alpha-continuous', 'alpha-catch-up'],
+        'empty preparation turns donate capacity, but the ready page keeps the reserved slot',
+      );
+      assert.equal(
+        createRuntime().getExternalAdmissionCoordinator()
+          .getStateForTesting().providerTurns.alpha?.lastLaneServed,
+        'catch-up',
+        'an empty historical page still acknowledges through the shared single-writer lane',
+      );
+    } finally {
+      env.restore();
+      env.teardown();
+    }
+  });
+
+  test('an unadmitted catch-up page keeps the same durable action across restart', async () => {
+    const env = setupEnv();
+    const adapter = new CatchUpSchedulingFakeAdapter('alpha');
+    const createRuntime = (maxAdmittedEpisodesPerWake: number) => new RuntimeLearning({
+      workingDirectory: env.root,
+      evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+      learningEpisodeStore: env.episodeStore,
+      skillEvolution: env.skillEvolution,
+      curator: env.curator,
+      planner: env.planner,
+      sessionLogSources: [adapter],
+      discoveryQuotas: {
+        maxResourcesPerWake: 1,
+        maxAdmittedEpisodesPerWake,
+      },
+    });
+
+    try {
+      for (let wakeNumber = 0; wakeNumber < 3; wakeNumber++) {
+        await createRuntime(0).wake('manual');
+      }
+      assert.deepEqual(adapter.catchUpActions, ['inventory', 'stability', 'page']);
+      assert.equal(adapter.acknowledged.includes('alpha-catch-up'), false);
+
+      await createRuntime(1).wake('manual');
+      assert.deepEqual(adapter.catchUpActions, ['inventory', 'stability', 'page', 'page']);
+      assert.equal(adapter.acknowledged.filter(ref => ref === 'alpha-catch-up').length, 1);
+    } finally {
+      env.restore();
+      env.teardown();
+    }
+  });
+
+  test('slow continuous reads donate the reserved deadline slice to catch-up without leaking work', async () => {
+    const env = setupEnv();
+    const adapter = new SlowContinuousCatchUpFakeAdapter('alpha');
+    const runtime = new RuntimeLearning({
+      workingDirectory: env.root,
+      evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+      learningEpisodeStore: env.episodeStore,
+      skillEvolution: env.skillEvolution,
+      curator: env.curator,
+      planner: env.planner,
+      sessionLogSources: [adapter],
+      discoveryQuotas: {
+        maxResourcesPerWake: 2,
+        maxAdmittedEpisodesPerWake: 2,
+        maxDiscoveryMs: 50,
+      },
+      externalSourceBudget: {
+        maxResourcesPerWake: 2,
+        maxBytesPerWake: 1024,
+        maxElapsedMsPerWake: 50,
+      },
+    });
+
+    try {
+      const wake = await runtime.wake('manual');
+
+      assert.deepEqual(adapter.catchUpActions, ['inventory']);
+      assert.equal(adapter.activeReads, 0);
+      assert.equal(
+        wake.discovery.sources.find(source => source.sourceId === adapter.identity.sourceId)?.failureState,
+        undefined,
+        'reserved-slice cancellation is not a provider failure',
+      );
+    } finally {
+      env.restore();
+      env.teardown();
+    }
+  });
 
   describe('AC1: Internal discovery completes before external reads start', () => {
     let env: TestEnv;
@@ -707,6 +976,53 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
       assert.equal(extReport!.status, 'drained', 'external source is drained');
       assert.equal(external.acknowledged.length, 0, 'no resources acknowledged');
     });
+
+    test('disabling one source cancels its in-flight page without failure accounting', async () => {
+      const external = new DisableableAsyncFakeSourceAdapter({
+        sourceId: 'ext-disable-active',
+        category: 'external',
+        resourceCount: 3,
+        readDelayMs: 100,
+      });
+      const healthyPeer = new AsyncFakeSourceAdapter({
+        sourceId: 'ext-disable-peer',
+        category: 'external',
+        resourceCount: 2,
+        readDelayMs: 10,
+      });
+      const runtimeLearning = new RuntimeLearning({
+        workingDirectory: env.root,
+        evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+        learningEpisodeStore: env.episodeStore,
+        skillEvolution: env.skillEvolution,
+        curator: env.curator,
+        planner: env.planner,
+        sessionLogSources: [external, healthyPeer],
+      });
+
+      const wakePromise = runtimeLearning.wake('startup');
+      await new Promise(resolve => setTimeout(resolve, 5));
+      assert.equal(
+        runtimeLearning.disableExternalSource(
+          external.identity.provider,
+          external.identity.sourceId,
+        ),
+        true,
+      );
+      const wake = await wakePromise;
+
+      assert.equal(external.activeReads, 0, 'disable reaps the provider read');
+      assert.deepEqual(external.acknowledged, [], 'disabled ready work remains replayable');
+      assert.deepEqual(external.failedResources, [], 'disable cancellation is not adapter failure');
+      assert.equal(healthyPeer.acknowledged.length, 2, 'an unrelated provider continues independently');
+      assert.equal(
+        wake.discovery.sources.find(source => source.sourceId === external.identity.sourceId)?.failureState,
+        undefined,
+        'disable cancellation does not enter provider failure accounting',
+      );
+      assert.equal(wake.review.reviewFailureCount, 0, 'disable does not count as reviewer failure');
+      assert.equal(wake.review.operationalRetries, 0, 'disable does not create review retry work');
+    });
   });
 
   describe('AC8: Canceled read is not counted as provider failure', () => {
@@ -901,6 +1217,40 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
 
       // After drain, no active reads should remain
       assert.equal(external.activeReads, 0, 'no active reads after drain');
+    });
+
+    test('runtime drain cancels an in-flight external page without acknowledgement or failure', async () => {
+      const external = new AsyncFakeSourceAdapter({
+        sourceId: 'ext-runtime-drain',
+        category: 'external',
+        resourceCount: 3,
+        readDelayMs: 100,
+      });
+      const runtimeLearning = new RuntimeLearning({
+        workingDirectory: env.root,
+        evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+        learningEpisodeStore: env.episodeStore,
+        skillEvolution: env.skillEvolution,
+        curator: env.curator,
+        planner: env.planner,
+        sessionLogSources: [external],
+      });
+
+      const wakePromise = runtimeLearning.wake('startup');
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await runtimeLearning.drain(1_000);
+      const wake = await wakePromise;
+
+      assert.equal(external.activeReads, 0, 'drain reaps the active read');
+      assert.deepEqual(external.acknowledged, [], 'ready work remains replayable after drain');
+      assert.deepEqual(external.failedResources, [], 'scheduler cancellation is not adapter failure');
+      assert.equal(
+        wake.discovery.sources.find(source => source.sourceId === external.identity.sourceId)?.failureState,
+        undefined,
+        'scheduler cancellation does not enter provider failure accounting',
+      );
+      assert.equal(wake.review.reviewFailureCount, 0, 'drain does not count as reviewer failure');
+      assert.equal(wake.review.operationalRetries, 0, 'drain does not create review retry work');
     });
 
     test('wake then drain leaves no leftover active reads', async () => {

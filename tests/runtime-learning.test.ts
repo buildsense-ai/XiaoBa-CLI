@@ -670,6 +670,184 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     assert.equal(resumedPlan.nextWakeReason, 'settlement-deadline');
   });
 
+  test('max-candidate-one review rotates durably across retry, live, and historical-ready work', async () => {
+    const makeEpisode = (episodeId: string, historical: boolean): LearningEpisode => ({
+      schemaVersion: 3,
+      episodeId,
+      runtimeSessionId: 'runtime-review-fairness',
+      sourceFilePath: `${episodeId}.jsonl`,
+      deliveryTurn: 1,
+      completionEvidence: [{
+        ref: `${episodeId}#1`,
+        sourceFilePath: `${episodeId}.jsonl`,
+        turn: 1,
+        kind: 'artifact-delivery',
+        detail: 'send_file: delivered',
+      }],
+      contradictionSignals: [],
+      semanticObservations: [{
+        kind: 'user-intent',
+        value: `Deliver ${episodeId}.`,
+        sourceRefs: [`${episodeId}#intent`],
+      }],
+      settlementDeadline: new Date(0).toISOString(),
+      status: 'eligible',
+      ...(historical ? {
+        historicalTarget: {
+          targetId: `target-${episodeId}`,
+          provider: 'codex',
+          sourceId: 'external-codex',
+          resourceRef: `thread-${episodeId}`,
+          position: 2,
+          prefixDigest: `digest-${episodeId}`,
+        },
+      } : {}),
+    });
+    const episodes = Object.fromEntries([
+      ...[1, 2, 3].map(index => {
+        const episode = makeEpisode(`live-${index}`, false);
+        return [episode.episodeId, episode] as const;
+      }),
+      ...[1, 2, 3].map(index => {
+        const episode = makeEpisode(`historical-${index}`, true);
+        return [episode.episodeId, episode] as const;
+      }),
+    ]);
+    env.runtimeLearning.getEpisodeStore().save({ schemaVersion: 3, episodes });
+
+    const retryCandidate = {
+      schemaVersion: 1,
+      kind: 'capability',
+      capabilityId: 'retry-fairness',
+      title: 'Retry fairness',
+      applicability: 'Review retry fairness.',
+      actionPattern: 'Retry one bounded review.',
+      boundaries: [],
+      risks: [],
+      provenance: [],
+      solvedLoop: {
+        problem: 'A review failed operationally.',
+        action: 'Retry it.',
+        verification: 'The retry receives a shared-budget turn.',
+        noCorrection: 'No correction was present.',
+      },
+      generatedAt: new Date(0).toISOString(),
+      sourceUnit: {
+        filePath: 'retry.jsonl',
+        byteRange: { start: 0, end: 1 },
+        generatedAt: new Date(0).toISOString(),
+      },
+    } as any;
+    const retryBundle = {
+      bundleId: 'retry-fairness-bundle',
+      episode: retryCandidate,
+      completionEvidence: [],
+      settlementEvidence: [],
+      boundedContinuity: [],
+      referencedSkills: [],
+      relatedCurrentSkills: [],
+    } as any;
+    const queue = loadReviewQueueState(env.reviewQueuePath);
+    addOrUpdateOperationalFailure(
+      queue,
+      retryCandidate,
+      retryBundle,
+      'branch_failure',
+      'fixture retry is due',
+      undefined,
+      1,
+      1,
+      new Date(0),
+    );
+    saveReviewQueueState(env.reviewQueuePath, queue);
+
+    const createRuntime = (): RuntimeLearning => {
+      const episodeStore = new LearningEpisodeStore(env.episodeStorePath);
+      const runtime = new RuntimeLearning({
+        workingDirectory: env.root,
+        evidenceIngestor: new EvidenceIngestor({ episodeStore, settlementWindowMs: 0 }),
+        learningEpisodeStore: episodeStore,
+        skillEvolution: env.skillEvolution,
+        curator: null,
+        planner: new DueWorkPlanner({
+          learningEpisodeStorePath: env.episodeStorePath,
+          reviewQueuePath: env.reviewQueuePath,
+          curatorStatePath: path.join(env.root, 'data', 'curator-state.json'),
+          curatorIntervalMs: 24 * 60 * 60 * 1000,
+          semanticReassessmentManifestPath: env.reassessmentManifestPath,
+        }),
+        sessionLogSources: [],
+      });
+      (runtime.getConfig() as any).skillEvolutionReviewMaxCandidates = 1;
+      return runtime;
+    };
+
+    const observedClasses = new Set<'retry' | 'live' | 'historical'>();
+    const priorClassCursors: Partial<Record<'live' | 'historical', string>> = {};
+    let runtime = createRuntime();
+    for (let wakeIndex = 0; wakeIndex < 3; wakeIndex++) {
+      const before = env.skillEvolution.getReviewedOrQueuedBundleIds();
+      const result = await runtime.wake('manual');
+      if (result.review.reviewedQueueEntries > 0) observedClasses.add('retry');
+      const continuation = JSON.parse(fs.readFileSync(
+        reviewContinuationPathForEpisodeStore(env.episodeStorePath),
+        'utf8',
+      )) as { classCursors?: Partial<Record<'live' | 'historical', string>> };
+      for (const workClass of ['live', 'historical'] as const) {
+        const cursor = continuation.classCursors?.[workClass];
+        if (result.review.reviewedEpisodes > 0 && cursor && cursor !== priorClassCursors[workClass]) {
+          observedClasses.add(workClass);
+        }
+        if (cursor) priorClassCursors[workClass] = cursor;
+      }
+      const after = env.skillEvolution.getReviewedOrQueuedBundleIds();
+      for (const bundleId of after) {
+        if (before.has(bundleId) || !bundleId.startsWith('v3:learning-episode:')) continue;
+        const episodeId = bundleId.slice('v3:learning-episode:'.length);
+        observedClasses.add(episodes[episodeId]!.historicalTarget ? 'historical' : 'live');
+      }
+      runtime = createRuntime();
+    }
+
+    assert.deepEqual(
+      [...observedClasses].sort(),
+      ['historical', 'live', 'retry'],
+      'each continuously non-empty review class receives one shared-budget turn within three wakes',
+    );
+
+    const afterFirstRound = JSON.parse(fs.readFileSync(
+      reviewContinuationPathForEpisodeStore(env.episodeStorePath),
+      'utf8',
+    )) as { classCursors?: Partial<Record<'live' | 'historical', string>> };
+    assert.equal(afterFirstRound.classCursors?.live, 'live-1');
+    assert.equal(afterFirstRound.classCursors?.historical, 'historical-1');
+
+    const newlyArrived = makeEpisode('live-0', false);
+    const stateWithNewArrival = env.runtimeLearning.getEpisodeStore().load();
+    env.runtimeLearning.getEpisodeStore().save({
+      ...stateWithNewArrival,
+      episodes: {
+        ...stateWithNewArrival.episodes,
+        [newlyArrived.episodeId]: newlyArrived,
+      },
+    });
+    let afterNewArrival: { classCursors?: Partial<Record<'live', string>> } = {};
+    for (let wakeIndex = 0; wakeIndex < 3; wakeIndex++) {
+      runtime = createRuntime();
+      await runtime.wake('manual');
+      afterNewArrival = JSON.parse(fs.readFileSync(
+        reviewContinuationPathForEpisodeStore(env.episodeStorePath),
+        'utf8',
+      )) as { classCursors?: Partial<Record<'live', string>> };
+      if (afterNewArrival.classCursors?.live !== 'live-1') break;
+    }
+    assert.equal(
+      afterNewArrival.classCursors?.live,
+      'live-2',
+      'within one class turn, a new episode before the cursor cannot restart iteration ahead of older live work',
+    );
+  });
+
   test('drain leaves an in-flight review to the scheduler shared deadline', async () => {
     const episodeId = 'episode-drain-cancel';
     env.runtimeLearning.getEpisodeStore().save({

@@ -153,6 +153,8 @@ export interface SessionLogSourceReadResult {
   /** Whether the next admitted event still has a known continuity gap behind it. */
   readonly continuityIncomplete?: boolean;
   readonly accounting?: SourceWorkAccounting;
+  /** Scheduler-selected lane that produced this replayable result. */
+  readonly admissionLane?: 'continuous' | 'catch-up';
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +163,8 @@ export interface SessionLogSourceReadResult {
 
 export interface SessionLogSourceReadContext {
   readonly orderedResources: readonly SessionLogSourceResource[];
+  /** Runtime-selected external lane; omitted for internal and legacy callers. */
+  readonly workLane?: 'continuous' | 'catch-up';
   /** Remaining per-source allowance for this specific read. */
   readonly remainingBudget?: SourceWorkBudget;
   /** Remaining wake admission allowance, expressed as source events. */
@@ -170,6 +174,10 @@ export interface SessionLogSourceReadContext {
 export interface SessionLogSourceDiscoveryContext {
   readonly maxResources?: number;
   readonly maxElapsedMs?: number;
+  /** Runtime-selected external lane; omitted for internal and legacy callers. */
+  readonly workLane?: 'continuous' | 'catch-up';
+  /** Durable preferred action for one catch-up quantum. */
+  readonly catchUpAction?: 'inventory' | 'stability' | 'page';
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +196,10 @@ export interface SessionLogSourceAdapter {
   getUnsupportedReason?(): string | undefined;
   /** Best-effort external reader version diagnostic. */
   getReaderVersion?(): string | undefined;
+  /** Durable provider history policy used by Runtime catch-up arbitration. */
+  getHistoryMode?(): ExternalHistoryMode;
+  /** Actual action consumed by the most recent catch-up quantum. */
+  getLastCatchUpAction?(): 'inventory' | 'stability' | 'page' | undefined;
   /** Admission lane for the next page from this resource. */
   getAdmissionLane?(resource: SessionLogSourceResource): 'continuous' | 'catch-up';
   /** Immutable catch-up target linked to a historical page, when present. */
@@ -1272,6 +1284,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
   private readonly historyMode: ExternalHistoryMode;
   private readonly now: () => Date;
   private cursorStorePath: string;
+  private lastCatchUpAction: 'inventory' | 'stability' | 'page' | undefined;
 
   constructor(
     options: {
@@ -1339,6 +1352,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       : undefined;
   }
 
+  getHistoryMode(): ExternalHistoryMode {
+    return this.historyMode;
+  }
+
+  getLastCatchUpAction(): 'inventory' | 'stability' | 'page' | undefined {
+    return this.lastCatchUpAction;
+  }
+
   getAdmissionLane(resource: SessionLogSourceResource): 'continuous' | 'catch-up' {
     if (!this.cursorStorePath || this.historyMode !== 'catch-up') return 'continuous';
     const state = loadExternalCursorState(this.cursorStorePath);
@@ -1382,7 +1403,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
 
     if (this.historyMode === 'catch-up') {
-      return this.discoverCatchUpResources(withIdentity, maxResources);
+      if (context.workLane === 'continuous') {
+        return this.discoverContinuousResources(withIdentity, maxResources);
+      }
+      return this.discoverCatchUpResources(withIdentity, maxResources, context.catchUpAction);
     }
 
     if (!withIdentity.activation) {
@@ -1438,8 +1462,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       : emptyExternalCursorState();
     const resourceState = state.resources[resource.resourceRef];
     const catchUpResource = state.catchUpResources[resource.resourceRef];
-    const historicalRead = this.historyMode === 'catch-up'
-      && catchUpResource?.status === 'historical-pending';
+    const historicalRead = context.workLane === 'catch-up'
+      || (context.workLane === undefined
+        && this.historyMode === 'catch-up'
+        && catchUpResource?.status === 'historical-pending');
     const sourceCursor = historicalRead
       ? catchUpResource.historicalCursor
       : readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
@@ -1472,10 +1498,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
           message,
           resourceRef: resource.resourceRef,
         },
+        admissionLane: historicalRead ? 'catch-up' : 'continuous',
       };
     }
 
-    return this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult);
+    return {
+      ...this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult),
+      admissionLane: historicalRead ? 'catch-up' : 'continuous',
+    };
   }
 
   async readAsync(
@@ -1501,8 +1531,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       : emptyExternalCursorState();
     const resourceState = state.resources[resource.resourceRef];
     const catchUpResource = state.catchUpResources[resource.resourceRef];
-    const historicalRead = this.historyMode === 'catch-up'
-      && catchUpResource?.status === 'historical-pending';
+    const historicalRead = context.workLane === 'catch-up'
+      || (context.workLane === undefined
+        && this.historyMode === 'catch-up'
+        && catchUpResource?.status === 'historical-pending');
     const sourceCursor = historicalRead
       ? catchUpResource.historicalCursor
       : readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
@@ -1541,10 +1573,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
           message,
           resourceRef: resource.resourceRef,
         },
+        admissionLane: historicalRead ? 'catch-up' : 'continuous',
       };
     }
 
-    return this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult);
+    return {
+      ...this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult),
+      admissionLane: historicalRead ? 'catch-up' : 'continuous',
+    };
   }
 
   private limitHistoricalReadToTarget(
@@ -1729,7 +1765,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     if (!this.cursorStorePath) return;
     const state = registerExternalSourceIdentity(loadExternalCursorState(this.cursorStorePath), this.identity);
     if (
-      this.historyMode === 'catch-up'
+      (result.admissionLane === 'catch-up' || (
+        result.admissionLane === undefined
+        && this.historyMode === 'catch-up'
+      ))
       && state.catchUpResources[resource.resourceRef]?.status === 'historical-pending'
     ) {
       this.acknowledgeHistoricalPage(resource, result, state);
@@ -1872,12 +1911,96 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     );
   }
 
-  private discoverCatchUpResources(
+  private discoverContinuousResources(
     state: ExternalCursorState,
     maxResources: number,
   ): readonly SessionLogSourceResource[] {
-    const priorGeneration = state.discovery?.cycle ?? 0;
-    const generation = Math.max(1, priorGeneration || 1);
+    const resourceRefs = Object.keys(state.resources)
+      .sort()
+      .filter(resourceRef => state.resources[resourceRef]?.lifecycleStatus !== 'closed')
+      .filter(resourceRef => !hasBlockingQuarantineForResource(state, resourceRef))
+      .filter(resourceRef => readCursorWithSourceIdentityValidation(
+        state,
+        this.identity,
+        resourceRef,
+      ) !== null);
+    if (resourceRefs.length === 0) {
+      this.persistExternalState(state);
+      return [];
+    }
+    const start = state.discovery?.nextResourceIndex ?? 0;
+    const count = Math.min(Math.max(0, maxResources), resourceRefs.length);
+    const selected: SessionLogSourceResource[] = [];
+    for (let offset = 0; offset < count; offset++) {
+      const resourceRef = resourceRefs[(start + offset) % resourceRefs.length]!;
+      selected.push(state.resources[resourceRef]!.resource);
+    }
+    this.persistExternalState({
+      ...state,
+      discovery: {
+        nextPageToken: state.discovery?.nextPageToken ?? null,
+        nextResourceIndex: (start + selected.length) % resourceRefs.length,
+        updatedAt: this.now().toISOString(),
+        cycle: state.discovery?.cycle ?? 0,
+      },
+    });
+    return selected;
+  }
+
+  private discoverCatchUpResources(
+    state: ExternalCursorState,
+    maxResources: number,
+    preferredAction: 'inventory' | 'stability' | 'page' = 'inventory',
+  ): readonly SessionLogSourceResource[] {
+    const pendingTargets = Object.keys(state.resources)
+      .sort()
+      .filter(resourceRef => (
+        !state.catchUpTargets[resourceRef]
+        && state.catchUpResources[resourceRef]?.status === 'target-pending'
+        && state.resources[resourceRef]?.lifecycleStatus !== 'closed'
+        && !hasBlockingQuarantineForResource(state, resourceRef)
+      ));
+    const pendingPages = Object.keys(state.catchUpResources)
+      .sort()
+      .filter(resourceRef => (
+        state.catchUpResources[resourceRef]?.status === 'historical-pending'
+        && state.catchUpTargets[resourceRef]?.empty === false
+        && state.resources[resourceRef]?.lifecycleStatus !== 'closed'
+        && !hasBlockingQuarantineForResource(state, resourceRef)
+      ));
+    const actions = ['inventory', 'stability', 'page'] as const;
+    const startIndex = Math.max(0, actions.indexOf(preferredAction));
+    const actionOrder = [0, 1, 2].map(offset => actions[(startIndex + offset) % 3]!);
+    const action = actionOrder.find(candidate => (
+      candidate === 'inventory'
+      || (candidate === 'stability' && pendingTargets.length > 0)
+      || (candidate === 'page' && pendingPages.length > 0)
+    )) ?? 'inventory';
+    this.lastCatchUpAction = action;
+
+    if (action === 'page') {
+      const resourceRef = pendingPages[0]!;
+      this.persistExternalState(state);
+      return [state.resources[resourceRef]!.resource];
+    }
+
+    const generation = Math.max(1, state.discovery?.cycle ?? 1);
+    if (action === 'stability') {
+      const resourceRef = pendingTargets[0]!;
+      const resource = state.resources[resourceRef]!.resource;
+      if (!this.reader?.sampleHistory) {
+        this.persistExternalState(this.withPendingCatchUpSample(state, resource));
+        return [];
+      }
+      const sample = this.reader.sampleHistory(resource);
+      if (sample.status !== 'stable') {
+        this.persistExternalState(this.withPendingCatchUpSample(state, resource, sample.observedPosition));
+        return [];
+      }
+      this.persistExternalState(this.createCatchUpTarget(state, resource, generation, sample));
+      return [];
+    }
+
     const discovery = this.discoverIncrementalPage(state, null, null, Math.min(1, maxResources));
     let nextState = applyExternalDiscoveryPage(state, this.identity, discovery, generation, false);
     nextState = {
@@ -1889,47 +2012,22 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         cycle: generation,
       },
     };
-    const resource = discovery.resources[0];
-    if (!resource) {
-      this.persistExternalState(nextState);
-      return [];
-    }
-
-    const existingTarget = nextState.catchUpTargets[resource.resourceRef];
-    if (existingTarget) {
-      if (!nextState.catchUpResources[resource.resourceRef]) {
-        nextState = {
-          ...nextState,
-          catchUpResources: {
-            ...nextState.catchUpResources,
-            [resource.resourceRef]: {
-              status: existingTarget.empty ? 'complete' : 'historical-pending',
-              historicalCursor: {
-                resourceRef: resource.resourceRef,
-                position: -1,
-                processedCount: 0,
-              },
-              observedPosition: existingTarget.position
-                ?? normalizeActivationPosition(resource.firstEventIdentity?.position),
-              updatedAt: this.now().toISOString(),
-            },
-          },
-        };
+    for (const resource of discovery.resources) {
+      if (!nextState.catchUpTargets[resource.resourceRef]
+        && !nextState.catchUpResources[resource.resourceRef]) {
+        nextState = this.withPendingCatchUpSample(nextState, resource);
       }
-      this.persistExternalState(nextState);
-      return [resource];
     }
+    this.persistExternalState(nextState);
+    return [];
+  }
 
-    if (!this.reader?.sampleHistory) {
-      this.persistExternalState(this.withPendingCatchUpSample(nextState, resource));
-      return [];
-    }
-    const sample = this.reader.sampleHistory(resource);
-    if (sample.status !== 'stable') {
-      this.persistExternalState(this.withPendingCatchUpSample(nextState, resource, sample.observedPosition));
-      return [];
-    }
-
+  private createCatchUpTarget(
+    state: ExternalCursorState,
+    resource: SessionLogSourceResource,
+    generation: number,
+    sample: ExternalSourceHistorySampleResult,
+  ): ExternalCursorState {
     const events = [...sample.events].sort((a, b) => a.position - b.position);
     const targetPosition = events.length > 0 ? events[events.length - 1]!.position : null;
     const observedPosition = Math.max(
@@ -1973,22 +2071,9 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       observedAt: this.now().toISOString(),
     };
     const now = this.now().toISOString();
-    const catchUpResource: ExternalCatchUpResourceState = {
-      status: target.empty ? 'complete' : 'historical-pending',
-      historicalCursor: {
-        resourceRef: resource.resourceRef,
-        position: -1,
-        processedCount: 0,
-      },
-      observedPosition,
-      updatedAt: now,
-    };
-    const cursors = { ...nextState.cursors };
     const entry: ExternalCursorEntry = {
       cursor: {
         resourceRef: resource.resourceRef,
-        // The continuous lane starts above the immutable target immediately;
-        // historical progress uses its separate cursor and can be paused.
         position: target.position ?? observedPosition,
         processedCount: 0,
       },
@@ -1996,23 +2081,32 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       updatedAt: now,
       lastStatus: 'activated',
     };
-    cursors[resource.resourceRef] = entry;
-    cursors[this.identity.sourceId] = entry;
-    nextState = {
-      ...nextState,
-      cursors,
+    return {
+      ...state,
+      cursors: {
+        ...state.cursors,
+        [resource.resourceRef]: entry,
+        [this.identity.sourceId]: entry,
+      },
       catchUpTargets: {
-        ...nextState.catchUpTargets,
+        ...state.catchUpTargets,
         [resource.resourceRef]: target,
       },
       catchUpResources: {
-        ...nextState.catchUpResources,
-        [resource.resourceRef]: catchUpResource,
+        ...state.catchUpResources,
+        [resource.resourceRef]: {
+          status: target.empty ? 'complete' : 'historical-pending',
+          historicalCursor: {
+            resourceRef: resource.resourceRef,
+            position: -1,
+            processedCount: 0,
+          },
+          observedPosition,
+          updatedAt: now,
+        },
       },
       updatedAt: now,
     };
-    this.persistExternalState(nextState);
-    return target.empty ? [] : [resource];
   }
 
   private withPendingCatchUpSample(

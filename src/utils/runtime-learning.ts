@@ -332,13 +332,44 @@ const EXTERNAL_BACKFILL_SLICE_BYTES = 2 * 1024 * 1024;
 // cooperative slice bounded, but leave enough room for normal child-process
 // startup and one bounded page under concurrent Runtime test/load conditions.
 const EXTERNAL_BACKFILL_SLICE_MS = 5_000;
-const REVIEW_CONTINUATION_SCHEMA_VERSION = 1;
+const REVIEW_CONTINUATION_SCHEMA_VERSION = 2;
+
+type ReviewWorkClass = 'retry' | 'live' | 'historical';
+
+const REVIEW_WORK_CLASS_ORDER: readonly ReviewWorkClass[] = [
+  'retry',
+  'live',
+  'historical',
+];
+
+type CatchUpQuantumAction = 'inventory' | 'stability' | 'page';
+
+const CATCH_UP_ACTION_ORDER: readonly CatchUpQuantumAction[] = [
+  'inventory',
+  'stability',
+  'page',
+];
+
+const CATCH_UP_SCHEDULER_SCHEMA_VERSION = 1;
+
+interface CatchUpSchedulerState {
+  schemaVersion: typeof CATCH_UP_SCHEDULER_SCHEMA_VERSION;
+  nextProvider: string | null;
+  providerActions: Record<string, CatchUpQuantumAction>;
+}
+
+interface ReviewFairnessContinuation {
+  nextClass: ReviewWorkClass;
+  classCursors: Partial<Record<ReviewWorkClass, string>>;
+}
 
 interface ReviewContinuationState {
   schemaVersion: typeof REVIEW_CONTINUATION_SCHEMA_VERSION;
   episodeIds: string[];
   nextAttemptAt: string;
   updatedAt: string;
+  nextClass: ReviewWorkClass;
+  classCursors: Partial<Record<ReviewWorkClass, string>>;
 }
 
 export interface ExternalEpisodeProvenanceState {
@@ -550,6 +581,39 @@ function mergeReviewReports(
   };
 }
 
+function mergeSessionLogSourceReports(
+  first: SessionLogSourceReport,
+  second: SessionLogSourceReport,
+): SessionLogSourceReport {
+  const statusPriority: Record<NonNullable<SessionLogSourceReport['status']>, number> = {
+    active: 0,
+    drained: 1,
+    quota_reached: 2,
+    locked: 3,
+    backoff: 4,
+    failed: 5,
+  };
+  const firstStatus = first.status ?? 'active';
+  const secondStatus = second.status ?? 'active';
+  const status = statusPriority[firstStatus] >= statusPriority[secondStatus]
+    ? firstStatus
+    : secondStatus;
+  return {
+    ...first,
+    ...second,
+    enabled: first.enabled || second.enabled,
+    resourcesDiscovered: first.resourcesDiscovered + second.resourcesDiscovered,
+    unitsProcessed: first.unitsProcessed + second.unitsProcessed,
+    advancedResources: first.advancedResources + second.advancedResources,
+    status,
+    accounting: {
+      events: (first.accounting?.events ?? 0) + (second.accounting?.events ?? 0),
+      bytes: (first.accounting?.bytes ?? 0) + (second.accounting?.bytes ?? 0),
+      elapsedMs: (first.accounting?.elapsedMs ?? 0) + (second.accounting?.elapsedMs ?? 0),
+    },
+  };
+}
+
 function emptyHeartbeatResult(ran: boolean): RuntimeLearningHeartbeatResult {
   return {
     unitsProcessed: 0,
@@ -643,6 +707,9 @@ export class RuntimeLearning {
    * restart recovery of per-source backoff/suspension state.
    */
   private readonly schedulingStatePath: string;
+  /** Durable global provider/action continuation for one catch-up quantum per wake. */
+  private readonly catchUpSchedulerStatePath: string;
+  private catchUpSchedulerState: CatchUpSchedulerState;
   /** Durable Evidence Capsule store for external evidence (issue #78). */
   private readonly evidenceCapsuleStore: EvidenceCapsuleStore;
   /** Durable provenance index tying external events to episode ids (issue #78). */
@@ -681,6 +748,8 @@ export class RuntimeLearning {
   private readonly externalSourceMaxConcurrency: number;
   /** Shared abort signal for the current external read phase. */
   private externalReadAbortController: AbortController | null = null;
+  /** Provider-scoped child signals let disable cancel only the affected lane. */
+  private readonly activeExternalReadAbortControllers = new Map<string, AbortController>();
 
   constructor(options: RuntimeLearningOptions) {
     this.workingDirectory = options.workingDirectory;
@@ -727,6 +796,11 @@ export class RuntimeLearning {
       path.dirname(this.config.learningEpisodeStorePath),
       'external-source-scheduling-state.json',
     );
+    this.catchUpSchedulerStatePath = path.join(
+      path.dirname(this.config.learningEpisodeStorePath),
+      'external-catch-up-scheduler-state.json',
+    );
+    this.catchUpSchedulerState = this.loadCatchUpSchedulerState();
     this.externalEpisodeProvenancePath = path.join(
       path.dirname(this.config.learningEpisodeStorePath),
       'external-source-provenance.json',
@@ -951,6 +1025,9 @@ export class RuntimeLearning {
     const adapter = this.findExternalSourceAdapter(provider, sourceId);
     if (!adapter?.setEnabled) return false;
     adapter.setEnabled(false);
+    this.activeExternalReadAbortControllers
+      .get(externalSourceLaneKey({ provider, sourceId }))
+      ?.abort();
     this.disabledExternalSourceLanes.add(externalSourceLaneKey({ provider, sourceId }));
     return true;
   }
@@ -1006,6 +1083,9 @@ export class RuntimeLearning {
    * admission without deleting cursor, evidence, quarantine, or audit state.
    */
   disableExternalProvider(provider: string): void {
+    for (const [key, controller] of this.activeExternalReadAbortControllers) {
+      if (parseExternalSourceLaneKey(key)?.provider === provider) controller.abort();
+    }
     this.providerOverrideStore.disableProvider(provider);
     this.reconcileProviderLanes();
   }
@@ -1324,6 +1404,7 @@ export class RuntimeLearning {
   async drain(timeoutMs = this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000): Promise<void> {
     this.shutdownDrainRequested = true;
     this.backfillDrainRequested = true;
+    this.externalReadAbortController?.abort();
     for (const source of this.sessionLogSources) source.close?.();
     const active = this.activeBackfill;
     if (!active) {
@@ -1590,7 +1671,9 @@ export class RuntimeLearning {
       const shouldScan = isDiscoveryWake;
 
       if (shouldScan) {
-        const discoveryResult = await this.runDiscovery();
+        const discoveryResult = await this.runDiscovery(
+          reasons.has('startup') || reasons.has('scheduled') || reasons.has('manual'),
+        );
         wake.discovery.scanned = discoveryResult.sourceReports.some(r => r.enabled);
         wake.discovery.filesScanned = discoveryResult.sourceReports.reduce((sum, r) => sum + r.resourcesDiscovered, 0);
         wake.discovery.unitsProcessed = discoveryResult.sourceReports.reduce((sum, r) => sum + r.unitsProcessed, 0);
@@ -1999,8 +2082,6 @@ export class RuntimeLearning {
     if (!reviewAttempted) return skippedReviewReport();
 
     const transitionsByKind: Partial<Record<CapabilityTransitionKind, number>> = {};
-    // One wake owns one shared wall-clock and conservative input budget. Any
-    // unadmitted eligible episode remains durable and is resumed next wake.
     const reviewBudget = createReviewBudget({
       maxCandidates: this.config.skillEvolutionReviewMaxCandidates,
       maxPromptTokens: this.config.skillEvolutionReviewMaxPromptTokens,
@@ -2008,42 +2089,125 @@ export class RuntimeLearning {
       now: () => this.clock().getTime(),
     });
     const pendingEpisodeIds = new Set<string>();
+    const fairness = this.loadReviewFairnessContinuation();
+    const classCursors = { ...fairness.classCursors };
+    let nextClass = fairness.nextClass;
 
-    // Review eligible learning episodes
+    type EpisodeReviewTask = {
+      kind: 'episode';
+      workClass: 'live' | 'historical';
+      episode: LearningEpisode;
+    };
+    type RetryReviewTask = {
+      kind: 'retry';
+      workClass: 'retry';
+      bundleId: string;
+      bundle: EvidenceBundle;
+    };
+    type ReviewTask = EpisodeReviewTask | RetryReviewTask;
+
+    const reviewedOrQueuedBundleIds = this.skillEvolution.getReviewedOrQueuedBundleIds();
+    const eligibleEpisodes = Object.values(this.episodeStore.load().episodes)
+      .filter(episode => (
+        episode.status === 'eligible'
+        && !this.hasReviewedEpisode(episode, reviewedOrQueuedBundleIds)
+      ));
+    for (const episode of eligibleEpisodes) pendingEpisodeIds.add(episode.episodeId);
+
+    const remainingByClass: Record<ReviewWorkClass, ReviewTask[]> = {
+      retry: this.skillEvolution.listDueQueueReviewEntries(this.clock()).map(entry => ({
+        kind: 'retry' as const,
+        workClass: 'retry' as const,
+        bundleId: entry.bundleId,
+        bundle: entry.bundle,
+      })),
+      live: eligibleEpisodes
+        .filter(episode => episode.historicalTarget === undefined)
+        .map(episode => ({ kind: 'episode' as const, workClass: 'live' as const, episode })),
+      historical: eligibleEpisodes
+        .filter(episode => episode.historicalTarget !== undefined)
+        .map(episode => ({ kind: 'episode' as const, workClass: 'historical' as const, episode })),
+    };
+
+    const taskId = (task: ReviewTask): string => (
+      task.kind === 'retry' ? task.bundleId : task.episode.episodeId
+    );
+    for (const workClass of REVIEW_WORK_CLASS_ORDER) {
+      remainingByClass[workClass].sort((left, right) => (
+        taskId(left).localeCompare(taskId(right), 'en')
+      ));
+    }
+
+    const selectedTasks: ReviewTask[] = [];
+    const maxCandidates = Math.max(0, Math.floor(this.config.skillEvolutionReviewMaxCandidates));
+    while (selectedTasks.length < maxCandidates) {
+      const availableClasses = new Set(
+        REVIEW_WORK_CLASS_ORDER.filter(workClass => remainingByClass[workClass].length > 0),
+      );
+      if (availableClasses.size === 0) break;
+      const startIndex = REVIEW_WORK_CLASS_ORDER.indexOf(nextClass);
+      let selectedClass: ReviewWorkClass | undefined;
+      for (let offset = 0; offset < REVIEW_WORK_CLASS_ORDER.length; offset++) {
+        const candidateClass = REVIEW_WORK_CLASS_ORDER[
+          (startIndex + offset) % REVIEW_WORK_CLASS_ORDER.length
+        ]!;
+        if (availableClasses.has(candidateClass)) {
+          selectedClass = candidateClass;
+          break;
+        }
+      }
+      if (!selectedClass) break;
+
+      const tasks = remainingByClass[selectedClass];
+      const cursor = classCursors[selectedClass];
+      const selectedIndex = cursor
+        ? tasks.findIndex(task => taskId(task).localeCompare(cursor, 'en') > 0)
+        : 0;
+      const [selected] = tasks.splice(selectedIndex < 0 ? 0 : selectedIndex, 1);
+      if (!selected) break;
+      selectedTasks.push(selected);
+      classCursors[selectedClass] = taskId(selected);
+      nextClass = REVIEW_WORK_CLASS_ORDER[
+        (REVIEW_WORK_CLASS_ORDER.indexOf(selectedClass) + 1) % REVIEW_WORK_CLASS_ORDER.length
+      ]!;
+    }
+
+    const admittedEpisodeTasks: Array<{
+      episode: LearningEpisode;
+      bundle: ReturnType<typeof buildEpisodeEvidenceBundle>;
+    }> = [];
+    const admittedRetryBundleIds: string[] = [];
+    let settlementError: unknown;
+    for (const task of selectedTasks) {
+      if (wakeSignal?.aborted || this.shutdownDrainRequested) break;
+      try {
+        const bundle = task.kind === 'retry'
+          ? task.bundle
+          : buildEpisodeEvidenceBundle(
+              task.episode,
+              buildLearningEpisodeCandidate(task.episode),
+              this.skillEvolution,
+              this.evidenceCapsuleStore,
+              this.isEpisodeFromExternalSource.bind(this),
+            );
+        if (!this.canAdmitReviewWork(reviewBudget, bundle)) continue;
+        if (task.kind === 'retry') admittedRetryBundleIds.push(task.bundleId);
+        else admittedEpisodeTasks.push({ episode: task.episode, bundle });
+      } catch (error) {
+        settlementError = settlementError ?? error;
+      }
+    }
+
     let reviewedEpisodes = 0;
     let episodeReviewFailures = 0;
     let episodeReviewTimeouts = 0;
     let episodeOperationalFailures = 0;
-    let settlementError: unknown;
 
     try {
-      const episodes = Object.values(this.episodeStore.load().episodes);
-      const reviewedOrQueuedBundleIds = this.skillEvolution.getReviewedOrQueuedBundleIds();
-      const reviewTasks: Array<{ episode: LearningEpisode; bundle: ReturnType<typeof buildEpisodeEvidenceBundle> }> = [];
-      for (const episode of episodes) {
-        if (episode.status !== 'eligible' || this.hasReviewedEpisode(episode, reviewedOrQueuedBundleIds)) continue;
-        pendingEpisodeIds.add(episode.episodeId);
-        if (reviewTasks.length >= this.config.skillEvolutionReviewMaxCandidates) continue;
-        const candidate = buildLearningEpisodeCandidate(episode);
-        const bundle = buildEpisodeEvidenceBundle(
-          episode,
-          candidate,
-          this.skillEvolution,
-          this.evidenceCapsuleStore,
-          this.isEpisodeFromExternalSource.bind(this),
-        );
-        reviewTasks.push({ episode, bundle });
-      }
       await mapWithConcurrency(
-        reviewTasks,
+        admittedEpisodeTasks,
         Math.max(1, Math.floor(this.config.skillEvolutionReviewerConcurrency)),
         async ({ episode, bundle }) => {
-          // Charge at dispatch time, not collection time. This prevents queued
-          // concurrency work from starting after the shared wall-clock limit.
-          if (!this.canAdmitReviewWork(reviewBudget, bundle)) {
-            Logger.info(`[RuntimeLearning] review budget exhausted or shutdown drain requested; episode ${episode.episodeId} remains resumable`);
-            return;
-          }
           try {
             const result = await this.skillEvolution.reviewAndApply(
               bundle,
@@ -2069,7 +2233,6 @@ export class RuntimeLearning {
       settlementError = error;
     }
 
-    // Review due queue entries (semantic defers + operational retries)
     type QueueResult = {
       reviewed: number; deferredReviewed: number; operationalReviewed: number;
       operationalRetried: number; deferredRetried: number;
@@ -2090,12 +2253,11 @@ export class RuntimeLearning {
     let reviewTimeoutCount = episodeReviewTimeouts;
     let reviewFailureCount = episodeOperationalFailures;
     try {
-      // Queue entries share the exact same candidate/token/time budget as
-      // eligible episodes. Admission is charged on each frozen queue bundle.
       if (!this.shutdownDrainRequested && !wakeSignal?.aborted) {
         queueResult = await this.skillEvolution.reviewDueQueueEntries({
           signal: wakeSignal,
-          admit: bundle => this.canAdmitReviewWork(reviewBudget, bundle),
+          bundleIds: admittedRetryBundleIds,
+          now: this.clock(),
         });
         this.reconcileReassessmentQueueOutcomes(queueResult.queueOutcomes);
       }
@@ -2138,7 +2300,7 @@ export class RuntimeLearning {
     if (hasQueueFailure) errorParts.push(`queue review failed: ${toErrorMessage(queueError)}`);
     if (settlementError) errorParts.push(`settlement error: ${toErrorMessage(settlementError)}`);
 
-    this.persistReviewContinuation(pendingEpisodeIds);
+    this.persistReviewContinuation(pendingEpisodeIds, { nextClass, classCursors });
 
     return {
       status,
@@ -2269,7 +2431,7 @@ export class RuntimeLearning {
    * On success the consecutive count resets to zero. Suspended sources are
    * skipped on subsequent wakes until the suspension deadline passes (AC3).
    */
-  private async runDiscovery(): Promise<{
+  private async runDiscovery(catchUpEligible: boolean): Promise<{
     sourceReports: readonly SessionLogSourceReport[];
     admittedEpisodes: number;
     contradictionSignals: number;
@@ -2308,26 +2470,143 @@ export class RuntimeLearning {
     if (!shared.discoveryCapped && externalSources.length > 0) {
       const { controller, cancelTimer } = this.createExternalDiscoveryAbortController(shared.discoveryStartMs);
       this.externalReadAbortController = controller;
+      let continuousController: AbortController | null = null;
+      let continuousCancelTimer: NodeJS.Timeout | null = null;
+      let detachContinuousAbort: (() => void) | null = null;
       try {
         const externalReports = new Array<SessionLogSourceReport>(externalSources.length);
         let externalAdmittedEpisodes = 0;
         let externalContradictionSignals = 0;
-        await mapWithConcurrency(
-          externalSources.map((adapter, index) => ({ adapter, index })),
-          this.externalSourceMaxConcurrency,
-          async ({ adapter, index }) => {
-            if (shared.discoveryCapped) return;
-            const result = await this.processDiscoverySource(adapter, shared, { signal: controller.signal });
-            externalReports[index] = result.report;
+        const catchUpSources = catchUpEligible ? externalSources.filter(adapter => (
+          adapter.getHistoryMode?.() === 'catch-up'
+          && adapter.isEnabled()
+          && !this.shouldSkipExternalSourceForFailure(
+            this.getExternalSourceFailure(adapter.identity.provider, adapter.identity.sourceId),
+          )
+        )) : [];
+        const continuousWakeResourceLimit = catchUpSources.length > 0
+          ? Math.max(0, this.discoveryQuotas.maxResourcesPerWake - 1)
+          : this.discoveryQuotas.maxResourcesPerWake;
+        const continuousWakeAdmissionLimit = catchUpSources.length > 0
+          ? Math.max(0, this.discoveryQuotas.maxAdmittedEpisodesPerWake - 1)
+          : this.discoveryQuotas.maxAdmittedEpisodesPerWake;
+        let initialContinuousSignal = controller.signal;
+        if (catchUpSources.length > 0) {
+          continuousController = new AbortController();
+          const abortContinuous = () => continuousController?.abort();
+          if (controller.signal.aborted) abortContinuous();
+          else {
+            controller.signal.addEventListener('abort', abortContinuous, { once: true });
+            detachContinuousAbort = () => controller.signal.removeEventListener('abort', abortContinuous);
+          }
+          const remainingExternalMs = Math.max(
+            0,
+            this.discoveryQuotas.maxDiscoveryMs - (this.clock().getTime() - shared.discoveryStartMs),
+          );
+          const catchUpElapsedReserve = Math.min(
+            Math.max(1, this.externalSourceBudget.maxElapsedMsPerWake),
+            Math.max(1, Math.floor(remainingExternalMs / 2)),
+          );
+          const continuousElapsedMs = Math.max(0, remainingExternalMs - catchUpElapsedReserve);
+          if (continuousElapsedMs === 0) abortContinuous();
+          else {
+            continuousCancelTimer = setTimeout(abortContinuous, continuousElapsedMs);
+            continuousCancelTimer.unref?.();
+          }
+          initialContinuousSignal = continuousController.signal;
+        }
+        const runContinuousPass = async (
+          signal: AbortSignal,
+          wakeResourceLimit: number,
+          wakeAdmissionLimit: number,
+        ) => {
+          await mapWithConcurrency(
+            externalSources.map((adapter, index) => ({ adapter, index })),
+            this.externalSourceMaxConcurrency,
+            async ({ adapter, index }) => {
+              if (shared.discoveryCapped) return;
+              const result = await this.processDiscoverySource(adapter, shared, {
+                signal,
+                workLane: 'continuous',
+                wakeResourceLimit,
+                wakeAdmissionLimit,
+                preserveCatchUpTurn: catchUpSources.length > 0
+                  && wakeResourceLimit === continuousWakeResourceLimit
+                  && wakeAdmissionLimit === continuousWakeAdmissionLimit,
+              });
+              externalReports[index] = externalReports[index]
+                ? mergeSessionLogSourceReports(externalReports[index]!, result.report)
+                : result.report;
+              externalAdmittedEpisodes += result.admittedEpisodes;
+              externalContradictionSignals += result.contradictionSignals;
+              externalProvenanceUpdated ||= result.externalProvenanceUpdated;
+            },
+          );
+        };
+        await runContinuousPass(
+          initialContinuousSignal,
+          continuousWakeResourceLimit,
+          continuousWakeAdmissionLimit,
+        );
+        if (continuousCancelTimer) {
+          clearTimeout(continuousCancelTimer);
+          continuousCancelTimer = null;
+        }
+        detachContinuousAbort?.();
+        detachContinuousAbort = null;
+
+        let catchUpConsumedResource = false;
+        if (!shared.discoveryCapped && !controller.signal.aborted && catchUpSources.length > 0) {
+          for (const adapter of this.orderCatchUpSources(catchUpSources)) {
+            const requestedAction = this.catchUpSchedulerState.providerActions[adapter.identity.provider]
+              ?? 'inventory';
+            const result = await this.processDiscoverySource(adapter, shared, {
+              signal: controller.signal,
+              workLane: 'catch-up',
+              catchUpAction: requestedAction,
+            });
+            const reportIndex = externalSources.indexOf(adapter);
+            externalReports[reportIndex] = externalReports[reportIndex]
+              ? mergeSessionLogSourceReports(externalReports[reportIndex]!, result.report)
+              : result.report;
             externalAdmittedEpisodes += result.admittedEpisodes;
             externalContradictionSignals += result.contradictionSignals;
             externalProvenanceUpdated ||= result.externalProvenanceUpdated;
-          },
-        );
+            catchUpConsumedResource ||= result.report.resourcesDiscovered > 0;
+
+            if (result.report.status === 'locked'
+              || result.report.status === 'backoff'
+              || result.report.status === 'drained') continue;
+            this.advanceCatchUpScheduler(
+              catchUpSources,
+              adapter,
+              adapter.getLastCatchUpAction?.() ?? requestedAction,
+              result.report.status !== 'failed'
+                && (result.report.resourcesDiscovered === 0 || result.report.advancedResources > 0),
+            );
+            break;
+          }
+        }
+        if (
+          catchUpSources.length > 0
+          && !catchUpConsumedResource
+          && !shared.discoveryCapped
+          && !controller.signal.aborted
+          && shared.wakeResourcesExamined < this.discoveryQuotas.maxResourcesPerWake
+          && shared.wakeAdmittedEpisodes < this.discoveryQuotas.maxAdmittedEpisodesPerWake
+        ) {
+          await runContinuousPass(
+            controller.signal,
+            this.discoveryQuotas.maxResourcesPerWake,
+            this.discoveryQuotas.maxAdmittedEpisodesPerWake,
+          );
+        }
         sourceReports.push(...externalReports.filter((report): report is SessionLogSourceReport => Boolean(report)));
         totalAdmittedEpisodes += externalAdmittedEpisodes;
         totalContradictionSignals += externalContradictionSignals;
       } finally {
+        detachContinuousAbort?.();
+        if (continuousCancelTimer) clearTimeout(continuousCancelTimer);
         this.externalReadAbortController = null;
         if (cancelTimer) clearTimeout(cancelTimer);
       }
@@ -2397,6 +2676,11 @@ export class RuntimeLearning {
     },
     options: {
       signal?: AbortSignal;
+      workLane?: 'continuous' | 'catch-up';
+      catchUpAction?: CatchUpQuantumAction;
+      wakeResourceLimit?: number;
+      wakeAdmissionLimit?: number;
+      preserveCatchUpTurn?: boolean;
     } = {},
   ): Promise<{
     report: SessionLogSourceReport;
@@ -2408,6 +2692,8 @@ export class RuntimeLearning {
     const isExternal = identity.category === 'external';
     const enabled = adapter.isEnabled();
     const budget = isExternal ? this.externalSourceBudget : this.internalSourceBudget;
+    const wakeResourceLimit = options.wakeResourceLimit ?? this.discoveryQuotas.maxResourcesPerWake;
+    const wakeAdmissionLimit = options.wakeAdmissionLimit ?? this.discoveryQuotas.maxAdmittedEpisodesPerWake;
 
     if (!enabled) {
       return {
@@ -2500,6 +2786,20 @@ export class RuntimeLearning {
       };
     }
 
+    const activeReadKey = isExternal ? externalSourceLaneKey(identity) : null;
+    const activeReadController = isExternal ? new AbortController() : null;
+    let detachParentAbort: (() => void) | null = null;
+    if (activeReadKey && activeReadController) {
+      const abortActiveRead = () => activeReadController.abort();
+      if (options.signal?.aborted) abortActiveRead();
+      else if (options.signal) {
+        options.signal.addEventListener('abort', abortActiveRead, { once: true });
+        detachParentAbort = () => options.signal?.removeEventListener('abort', abortActiveRead);
+      }
+      this.activeExternalReadAbortControllers.set(activeReadKey, activeReadController);
+      options = { ...options, signal: activeReadController.signal };
+    }
+
     let sourceResourcesExamined = 0;
     let sourceBytesRead = 0;
     let sourceEventsRead = 0;
@@ -2520,12 +2820,14 @@ export class RuntimeLearning {
         resources = adapter.discoverResources({
           maxResources: Math.min(
             budget.maxResourcesPerWake,
-            Math.max(1, this.discoveryQuotas.maxResourcesPerWake - shared.wakeResourcesExamined),
+            Math.max(1, wakeResourceLimit - shared.wakeResourcesExamined),
           ),
           maxElapsedMs: Math.min(
             budget.maxElapsedMsPerWake,
             Math.max(1, this.discoveryQuotas.maxDiscoveryMs - (this.clock().getTime() - shared.discoveryStartMs)),
           ),
+          workLane: options.workLane,
+          catchUpAction: options.catchUpAction,
         });
       } catch (error) {
         sourceHadFailure = true;
@@ -2576,12 +2878,20 @@ export class RuntimeLearning {
         }
         sourceResourcesExamined++;
 
-        if (shared.wakeResourcesExamined >= this.discoveryQuotas.maxResourcesPerWake) {
-          shared.discoveryCapped = true;
+        if (shared.wakeResourcesExamined >= wakeResourceLimit) {
+          sourceBudgetHit = true;
+          if (!options.preserveCatchUpTurn
+            && wakeResourceLimit >= this.discoveryQuotas.maxResourcesPerWake) {
+            shared.discoveryCapped = true;
+          }
           break;
         }
-        if (shared.wakeAdmittedEpisodes >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
-          shared.discoveryCapped = true;
+        if (shared.wakeAdmittedEpisodes >= wakeAdmissionLimit) {
+          sourceBudgetHit = true;
+          if (!options.preserveCatchUpTurn
+            && wakeAdmissionLimit >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
+            shared.discoveryCapped = true;
+          }
           break;
         }
         if (
@@ -2598,9 +2908,10 @@ export class RuntimeLearning {
           const elapsedMs = Math.max(0, this.clock().getTime() - sourceStartMs);
           const readContext: SessionLogSourceReadContext = {
             ...readContextBase,
+            workLane: options.workLane,
             remainingAdmissionEvents: Math.max(
               0,
-              this.discoveryQuotas.maxAdmittedEpisodesPerWake - shared.wakeAdmittedEpisodes,
+              wakeAdmissionLimit - shared.wakeAdmittedEpisodes,
             ),
             remainingBudget: {
               maxResourcesPerWake: Math.max(0, budget.maxResourcesPerWake - sourceResourcesExamined + 1),
@@ -2674,7 +2985,29 @@ export class RuntimeLearning {
         if (distillationUnits.length === 0) {
           if (readResult.advanced || readResult.releaseResource) {
             try {
-              adapter.acknowledge(resource, readResult);
+              if (isExternal) {
+                const knownExternalProviders = this.orderSourcesForDiscovery()
+                  .filter(candidate => candidate.identity.category === 'external' && candidate.isEnabled())
+                  .map(candidate => candidate.identity.provider);
+                const commitResult = this.externalAdmissionCoordinator.admitPage({
+                  providerId: identity.provider,
+                  sourceId: identity.sourceId,
+                  identity,
+                  resource,
+                  distillationUnits: [],
+                  eventIdentities: [],
+                  readResult,
+                  lane: readResult.admissionLane
+                    ?? options.workLane
+                    ?? adapter.getAdmissionLane?.(resource)
+                    ?? 'continuous',
+                }, knownExternalProviders);
+                if (!commitResult.acknowledged) {
+                  throw commitResult.error ?? new Error('external admission coordinator commit failed');
+                }
+              } else {
+                adapter.acknowledge(resource, readResult);
+              }
               if (readResult.advanced) advancedResources++;
               if (isExternal) {
                 this.resetExternalSourceFailure(identity);
@@ -2705,9 +3038,12 @@ export class RuntimeLearning {
           // Wake-level quota check before commit.
           if (
             shared.wakeAdmittedEpisodes + distillationUnits.length
-            > this.discoveryQuotas.maxAdmittedEpisodesPerWake
+            > wakeAdmissionLimit
           ) {
-            shared.discoveryCapped = true;
+            if (!options.preserveCatchUpTurn
+              && wakeAdmissionLimit >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
+              shared.discoveryCapped = true;
+            }
             throw new DiscoveryAdmissionQuotaReachedError();
           }
 
@@ -2731,7 +3067,10 @@ export class RuntimeLearning {
               distillationUnits,
               eventIdentities,
               readResult,
-              lane: adapter.getAdmissionLane?.(resource) ?? 'continuous',
+              lane: readResult.admissionLane
+                ?? options.workLane
+                ?? adapter.getAdmissionLane?.(resource)
+                ?? 'continuous',
             };
             const commitResult = this.externalAdmissionCoordinator.admitPage(
               page,
@@ -2748,9 +3087,12 @@ export class RuntimeLearning {
             for (let index = 0; index < distillationUnits.length; index++) {
               if (
                 shared.wakeAdmittedEpisodes + batchAdmittedEpisodes
-                >= this.discoveryQuotas.maxAdmittedEpisodesPerWake
+                >= wakeAdmissionLimit
               ) {
-                shared.discoveryCapped = true;
+                if (!options.preserveCatchUpTurn
+                  && wakeAdmissionLimit >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
+                  shared.discoveryCapped = true;
+                }
                 throw new DiscoveryAdmissionQuotaReachedError();
               }
               const eventIdentity = eventIdentities[index]
@@ -2850,6 +3192,11 @@ export class RuntimeLearning {
         externalProvenanceUpdated,
       };
     } finally {
+      detachParentAbort?.();
+      if (activeReadKey
+        && this.activeExternalReadAbortControllers.get(activeReadKey) === activeReadController) {
+        this.activeExternalReadAbortControllers.delete(activeReadKey);
+      }
       if (providerLock?.acquired) providerLock.release();
     }
   }
@@ -3015,6 +3362,95 @@ export class RuntimeLearning {
     if (!state.suspendedUntil) return false;
     const suspendedUntilMs = Date.parse(state.suspendedUntil);
     return Number.isFinite(suspendedUntilMs) && suspendedUntilMs > this.clock().getTime();
+  }
+
+  private loadCatchUpSchedulerState(): CatchUpSchedulerState {
+    const empty: CatchUpSchedulerState = {
+      schemaVersion: CATCH_UP_SCHEDULER_SCHEMA_VERSION,
+      nextProvider: null,
+      providerActions: {},
+    };
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.catchUpSchedulerStatePath, 'utf8')) as {
+        schemaVersion?: number;
+        nextProvider?: unknown;
+        providerActions?: unknown;
+      };
+      if (parsed.schemaVersion !== CATCH_UP_SCHEDULER_SCHEMA_VERSION) return empty;
+      const providerActions: Record<string, CatchUpQuantumAction> = {};
+      if (parsed.providerActions && typeof parsed.providerActions === 'object' && !Array.isArray(parsed.providerActions)) {
+        for (const [provider, action] of Object.entries(parsed.providerActions)) {
+          if (CATCH_UP_ACTION_ORDER.includes(action as CatchUpQuantumAction)) {
+            providerActions[provider] = action as CatchUpQuantumAction;
+          }
+        }
+      }
+      return {
+        schemaVersion: CATCH_UP_SCHEDULER_SCHEMA_VERSION,
+        nextProvider: typeof parsed.nextProvider === 'string' ? parsed.nextProvider : null,
+        providerActions,
+      };
+    } catch {
+      return empty;
+    }
+  }
+
+  private saveCatchUpSchedulerState(): void {
+    const tmpPath = `${this.catchUpSchedulerStatePath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      fs.mkdirSync(path.dirname(this.catchUpSchedulerStatePath), { recursive: true });
+      fs.writeFileSync(tmpPath, JSON.stringify(this.catchUpSchedulerState, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      fs.renameSync(tmpPath, this.catchUpSchedulerStatePath);
+    } finally {
+      try { fs.rmSync(tmpPath, { force: true }); } catch { /* best effort */ }
+    }
+  }
+
+  private orderCatchUpSources(
+    sources: readonly SessionLogSourceAdapter[],
+  ): SessionLogSourceAdapter[] {
+    const sorted = [...sources].sort((left, right) => (
+      left.identity.provider.localeCompare(right.identity.provider, 'en')
+      || left.identity.sourceId.localeCompare(right.identity.sourceId, 'en')
+    ));
+    if (sorted.length < 2 || !this.catchUpSchedulerState.nextProvider) return sorted;
+    const marker = this.catchUpSchedulerState.nextProvider;
+    let start = sorted.findIndex(source => source.identity.provider === marker);
+    if (start < 0) {
+      start = sorted.findIndex(source => source.identity.provider.localeCompare(marker, 'en') > 0);
+    }
+    if (start < 0) start = 0;
+    return [...sorted.slice(start), ...sorted.slice(0, start)];
+  }
+
+  private advanceCatchUpScheduler(
+    allSources: readonly SessionLogSourceAdapter[],
+    served: SessionLogSourceAdapter,
+    action: CatchUpQuantumAction,
+    actionCompleted = true,
+  ): void {
+    const providers = [...new Set(allSources.map(source => source.identity.provider))].sort();
+    const servedIndex = providers.indexOf(served.identity.provider);
+    const nextProvider = providers.length === 0
+      ? null
+      : providers[(Math.max(0, servedIndex) + 1) % providers.length]!;
+    const actionIndex = CATCH_UP_ACTION_ORDER.indexOf(action);
+    this.catchUpSchedulerState = {
+      schemaVersion: CATCH_UP_SCHEDULER_SCHEMA_VERSION,
+      nextProvider,
+      providerActions: {
+        ...this.catchUpSchedulerState.providerActions,
+        [served.identity.provider]: actionCompleted
+          ? CATCH_UP_ACTION_ORDER[
+              (Math.max(0, actionIndex) + 1) % CATCH_UP_ACTION_ORDER.length
+            ]!
+          : action,
+      },
+    };
+    this.saveCatchUpSchedulerState();
   }
 
   private loadExternalSourceSchedulingState(): void {
@@ -3759,16 +4195,34 @@ export class RuntimeLearning {
     );
   }
 
-  /** Persist only derivable continuation metadata; source episodes stay authoritative. */
-  private persistReviewContinuation(episodeIds: ReadonlySet<string>): void {
-    if (episodeIds.size === 0) {
-      try {
-        fs.rmSync(this.reviewContinuationPath, { force: true });
-      } catch (error) {
-        Logger.warning(`[RuntimeLearning] failed to clear review continuation: ${toErrorMessage(error)}`);
+  private loadReviewFairnessContinuation(): ReviewFairnessContinuation {
+    const fallback: ReviewFairnessContinuation = { nextClass: 'retry', classCursors: {} };
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.reviewContinuationPath, 'utf8')) as {
+        schemaVersion?: number;
+        nextClass?: unknown;
+        classCursors?: unknown;
+      };
+      if (parsed.schemaVersion !== REVIEW_CONTINUATION_SCHEMA_VERSION) return fallback;
+      if (!REVIEW_WORK_CLASS_ORDER.includes(parsed.nextClass as ReviewWorkClass)) return fallback;
+      const rawCursors = parsed.classCursors;
+      if (!rawCursors || typeof rawCursors !== 'object' || Array.isArray(rawCursors)) return fallback;
+      const classCursors: Partial<Record<ReviewWorkClass, string>> = {};
+      for (const workClass of REVIEW_WORK_CLASS_ORDER) {
+        const cursor = (rawCursors as Partial<Record<ReviewWorkClass, unknown>>)[workClass];
+        if (typeof cursor === 'string' && cursor) classCursors[workClass] = cursor;
       }
-      return;
+      return { nextClass: parsed.nextClass as ReviewWorkClass, classCursors };
+    } catch {
+      return fallback;
     }
+  }
+
+  /** Persist derivable backlog plus durable class and within-class continuations. */
+  private persistReviewContinuation(
+    episodeIds: ReadonlySet<string>,
+    fairness: ReviewFairnessContinuation,
+  ): void {
 
     const now = this.clock();
     const state: ReviewContinuationState = {
@@ -3776,6 +4230,8 @@ export class RuntimeLearning {
       episodeIds: [...episodeIds].sort(),
       nextAttemptAt: new Date(now.getTime() + REVIEW_CONTINUATION_DELAY_MS).toISOString(),
       updatedAt: now.toISOString(),
+      nextClass: fairness.nextClass,
+      classCursors: fairness.classCursors,
     };
     const tmp = `${this.reviewContinuationPath}.${process.pid}.${Date.now()}.tmp`;
     try {

@@ -98,7 +98,8 @@ test('ordinary RuntimeLearning wake admits one stable xURL history through an im
     });
 
     const fixture = env.createRuntime();
-    const wake = await fixture.runtime.wake('startup');
+    const wakes = await runWakes(fixture.runtime, 3);
+    const wake = wakes.at(-1)!;
 
     const external = wake.discovery.sources.find(source => source.sourceId === SOURCE_ID);
     assert.ok(external);
@@ -156,8 +157,8 @@ test('ordinary RuntimeLearning wake admits one stable xURL history through an im
     );
     assert.deepEqual(
       readInvocationLog(env.logPath).map(invocation => invocation.action),
-      ['version', 'query', 'read', 'read', 'read', 'read'],
-      'one thread uses two bounded observations for its target and replay-safe admission',
+      ['version', 'query', 'read', 'read', 'read', 'read', 'read', 'read'],
+      'inventory, stability, continuous, and historical reads remain bounded and separately observable',
     );
 
     const immutableTarget = loadExternalCursorState(cursorStorePath(env.root)).catchUpTargets[THREAD_ID];
@@ -229,18 +230,18 @@ test('a long single-thread history advances in bounded pages across ordinary wak
 
     const cursorPositions: number[] = [];
     const processedPerWake: number[] = [];
-    for (let wakeNumber = 0; wakeNumber < 3; wakeNumber++) {
+    for (let wakeNumber = 0; wakeNumber < 12; wakeNumber++) {
       const wake = await fixture.runtime.wake(wakeNumber === 0 ? 'startup' : 'scheduled');
       const external = wake.discovery.sources.find(source => source.sourceId === SOURCE_ID);
       assert.ok(external);
       assert.ok(external.unitsProcessed <= 2, 'one wake never admits more than its remaining event quota');
       assert.ok(wake.ingestion.admittedEpisodes <= 2, 'one wake never exceeds its admission quota');
       assert.ok((external.accounting?.bytes ?? 0) <= 4_096, 'one wake never exceeds its byte quota');
-      processedPerWake.push(external.unitsProcessed);
-      cursorPositions.push(
-        loadExternalCursorState(cursorStorePath(env.root))
-          .catchUpResources[THREAD_ID]?.historicalCursor.position ?? -1,
-      );
+      if (external.unitsProcessed > 0) processedPerWake.push(external.unitsProcessed);
+      const state = loadExternalCursorState(cursorStorePath(env.root));
+      const position = state.catchUpResources[THREAD_ID]?.historicalCursor.position ?? -1;
+      if (position > (cursorPositions.at(-1) ?? -1)) cursorPositions.push(position);
+      if (state.catchUpResources[THREAD_ID]?.status === 'complete') break;
     }
 
     assert.deepEqual(processedPerWake, [2, 2, 1]);
@@ -291,7 +292,7 @@ test('catch-up slices a single thread by the remaining external byte budget', as
     });
 
     const cursorPositions: number[] = [];
-    for (let wakeNumber = 0; wakeNumber < 8; wakeNumber++) {
+    for (let wakeNumber = 0; wakeNumber < 24; wakeNumber++) {
       const wake = await fixture.runtime.wake(wakeNumber === 0 ? 'startup' : 'scheduled');
       const external = wake.discovery.sources.find(source => source.sourceId === SOURCE_ID);
       assert.ok(external);
@@ -333,7 +334,7 @@ test('one running Runtime pauses and resumes catch-up from durable history-mode 
     const fixture = env.createRuntime({
       discoveryQuotas: { maxAdmittedEpisodesPerWake: 1 },
     });
-    await fixture.runtime.wake('startup');
+    await runWakes(fixture.runtime, 3);
     const afterFirstPage = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(afterFirstPage.catchUpResources[THREAD_ID]?.historicalCursor.position, 2);
     assert.equal(afterFirstPage.catchUpResources[THREAD_ID]?.status, 'historical-pending');
@@ -351,8 +352,14 @@ test('one running Runtime pauses and resumes catch-up from durable history-mode 
     assert.equal(paused.catchUpResources[THREAD_ID]?.status, 'historical-pending');
 
     overrides.setProviderHistoryMode(PROVIDER, 'catch-up');
-    const resumedWake = await fixture.runtime.wake('scheduled');
-    assert.equal(resumedWake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed, 1);
+    const resumedWakes = await runWakes(fixture.runtime, 2, 'scheduled');
+    assert.equal(
+      resumedWakes.reduce(
+        (total, wake) => total + (wake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed ?? 0),
+        0,
+      ),
+      1,
+    );
     const resumed = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(resumed.catchUpResources[THREAD_ID]?.historicalCursor.position, 4);
     assert.equal(resumed.catchUpResources[THREAD_ID]?.status, 'complete');
@@ -423,7 +430,8 @@ test('a restart after target persistence resumes admission from the fixed target
     const interrupted = env.createRuntime({
       discoveryQuotas: { maxAdmittedEpisodesPerWake: 0 },
     });
-    const firstWake = await interrupted.runtime.wake('startup');
+    const firstWakes = await runWakes(interrupted.runtime, 2);
+    const firstWake = firstWakes.at(-1)!;
     assert.equal(firstWake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed, 0);
     const targetOnly = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(targetOnly.catchUpTargets[THREAD_ID]?.position, 4);
@@ -471,7 +479,7 @@ test('a Capsule persistence failure replays without provenance or cursor acknowl
     const provenancePath = path.join(path.dirname(config.learningEpisodeStorePath), 'external-source-provenance.json');
     fs.mkdirSync(config.evidenceCapsulePath, { recursive: true });
 
-    const failedWake = await crashing.runtime.wake('startup');
+    const failedWake = (await runWakes(crashing.runtime, 3)).at(-1)!;
     assert.equal(failedWake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.status, 'failed');
     const episodeIds = Object.keys(crashing.episodeStore.load().episodes);
     assert.equal(episodeIds.length, 1, 'Episode is durable before Capsule persistence');
@@ -527,7 +535,7 @@ test('a provenance persistence crash replays the durable Episode and Capsule bef
     const provenancePath = path.join(path.dirname(config.learningEpisodeStorePath), 'external-source-provenance.json');
     fs.mkdirSync(provenancePath, { recursive: true });
 
-    await crashing.runtime.wake('startup');
+    await runWakes(crashing.runtime, 3);
     const episodeIds = Object.keys(crashing.episodeStore.load().episodes);
     assert.equal(episodeIds.length, 1);
     assert.equal(crashing.runtime.getEvidenceCapsuleStore().count(), 1);
@@ -593,7 +601,7 @@ test('a cursor acknowledgement crash replays without duplicating Episode, Capsul
       sessionLogSources: [adapter],
     });
 
-    const failedWake = await fixture.runtime.wake('startup');
+    const failedWake = (await runWakes(fixture.runtime, 3)).at(-1)!;
     assert.equal(failedWake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.status, 'failed');
     const episodeIds = Object.keys(fixture.episodeStore.load().episodes);
     assert.equal(episodeIds.length, 1);
@@ -641,7 +649,7 @@ test('an incomplete-only thread gets an empty target and its first completed tur
     });
 
     const first = env.createRuntime();
-    const firstWake = await first.runtime.wake('startup');
+    const firstWake = (await runWakes(first.runtime, 2)).at(-1)!;
     assert.equal(firstWake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed, 0);
     const afterEmpty = loadExternalCursorState(cursorStorePath(env.root));
     const emptyTarget = afterEmpty.catchUpTargets[THREAD_ID];
@@ -724,7 +732,7 @@ test('a crash after the historical Episode write replays after restart without p
         },
       },
     });
-    const crashedWake = await crashing.runtime.wake('startup');
+    const crashedWake = (await runWakes(crashing.runtime, 3)).at(-1)!;
     const crashedEpisodes = Object.values(crashing.episodeStore.load().episodes);
     assert.equal(crashedEpisodes.length, 1);
     assert.equal(crashedEpisodes[0]!.status, 'historical-pending');
@@ -798,7 +806,7 @@ test('a crash after target cursor completion reconciles historical-pending episo
         },
       },
     });
-    const crashedWake = await crashing.runtime.wake('startup');
+    const crashedWake = (await runWakes(crashing.runtime, 3)).at(-1)!;
     assert.equal(crashedWake.review.reviewedEpisodes, 0);
     assert.equal(crashing.runtime.getEvidenceCapsuleStore().count(), 1);
     assert.equal(Object.values(crashing.episodeStore.load().episodes)[0]?.status, 'historical-pending');
@@ -837,7 +845,7 @@ test('catch-up completes normally when historical evidence yields no Learning Ep
     });
 
     const fixture = env.createRuntime();
-    const wake = await fixture.runtime.wake('startup');
+    const wake = (await runWakes(fixture.runtime, 3)).at(-1)!;
     assert.equal(wake.discovery.sources.find(source => source.sourceId === SOURCE_ID)?.unitsProcessed, 1);
     assert.equal(Object.keys(fixture.episodeStore.load().episodes).length, 0);
     assert.equal(fixture.runtime.getEvidenceCapsuleStore().count(), 0);
@@ -893,7 +901,7 @@ test('catch-up deduplicates prior continuous and later explicit-backfill observa
     });
     overrides.setProviderHistoryMode(PROVIDER, 'catch-up');
     const catchUp = env.createRuntime();
-    await catchUp.runtime.wake('scheduled');
+    await runWakes(catchUp.runtime, 3, 'scheduled');
     const afterCatchUp = loadExternalCursorState(cursorStorePath(env.root));
     assert.equal(afterCatchUp.catchUpResources[THREAD_ID]?.status, 'complete');
     assert.equal(afterCatchUp.catchUpResources[THREAD_ID]?.historicalCursor.position, 4);
@@ -981,6 +989,18 @@ interface TestEnv {
     sessionLogSources?: readonly SessionLogSourceAdapter[];
   }): { runtime: RuntimeLearning; episodeStore: LearningEpisodeStore };
   restore(): void;
+}
+
+async function runWakes(
+  runtime: RuntimeLearning,
+  count: number,
+  firstReason: 'startup' | 'scheduled' = 'startup',
+) {
+  const wakes = [];
+  for (let wakeNumber = 0; wakeNumber < count; wakeNumber++) {
+    wakes.push(await runtime.wake(wakeNumber === 0 ? firstReason : 'scheduled'));
+  }
+  return wakes;
 }
 
 function setupEnv(options: { historyMode?: 'future-only' | 'catch-up' | null } = {}): TestEnv {
