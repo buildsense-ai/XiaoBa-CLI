@@ -312,6 +312,30 @@ describe('BotDefinition local simulation', () => {
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.apiKey, 'sk-minimax-legacy-material');
   });
 
+  test('normalizes an existing catalog runtime alias when it is read', () => {
+    const runtimeRepository = new FileBotCatalogModelRuntimeRepository({ runtimeRoot });
+    runtimeRepository.write({
+      schema: BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+      botId: 'bot-alpha',
+      modelId: 'MiniMax-M3',
+      provider: 'anthropic',
+      apiBase: 'https://relay.example.test/anthropic',
+      apiKey: 'sk-minimax-legacy-runtime',
+      model: 'MiniMax-M3',
+      contextWindowTokens: 200000,
+      reasoningEffort: 'high',
+    });
+
+    const runtime = createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot })
+      .readCatalogRuntime('bot-alpha');
+    const persisted = runtimeRepository.read('bot-alpha');
+
+    assert.equal(runtime?.modelId, 'minimax-m3');
+    assert.equal(runtime?.model, 'MiniMax-M3');
+    assert.equal(persisted?.modelId, 'minimax-m3');
+    assert.equal(persisted?.model, 'MiniMax-M3');
+  });
+
   test('does not attach a stale legacy relay profile to a different catalog model', () => {
     bindCurrentBot();
     new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }).writeCanonical({

@@ -350,7 +350,13 @@ export class BotDefinitionSyncService {
   }
 
   readCatalogRuntime(botId: string): BotCatalogModelRuntime | undefined {
-    return this.catalogRuntimeRepository.read(botId);
+    const runtime = this.catalogRuntimeRepository.read(botId);
+    if (!runtime) return undefined;
+    const normalized = normalizeCatalogRuntime(runtime);
+    if (JSON.stringify(normalized) !== JSON.stringify(runtime)) {
+      this.catalogRuntimeRepository.write(normalized);
+    }
+    return normalized;
   }
 
   pullOrBootstrap(botId: string): BotDefinitionSyncResult | undefined {
@@ -399,7 +405,7 @@ export class BotDefinitionSyncService {
     knownProfile?: LocalModelProfile,
   ): void {
     if (definition.model.kind !== 'catalog') return;
-    const existing = this.catalogRuntimeRepository.read(definition.botId);
+    const existing = this.readCatalogRuntime(definition.botId);
     if (existing && catalogRuntimeMatchesModelId(existing, definition.model.modelId)) return;
     const profile = knownProfile;
     const runtime = profile && catalogRuntimeFromLocalProfile(
@@ -412,7 +418,7 @@ export class BotDefinitionSyncService {
 
   private migrateLegacyCatalogRuntime(definition: BotDefinition): void {
     if (definition.model.kind !== 'catalog') return;
-    const existing = this.catalogRuntimeRepository.read(definition.botId);
+    const existing = this.readCatalogRuntime(definition.botId);
     if (existing && catalogRuntimeMatchesModelId(existing, definition.model.modelId)) return;
     const profile = readLegacyLocalModelProfile(this.runtimeRoot, this.env);
     // A legacy relay key belongs to this catalog model only when both ids
@@ -430,7 +436,7 @@ export class BotDefinitionSyncService {
       this.clearLegacyModelConfiguration();
       return;
     }
-    const runtime = this.catalogRuntimeRepository.read(definition.botId);
+    const runtime = this.readCatalogRuntime(definition.botId);
     if (runtime && catalogRuntimeMatchesModelId(runtime, definition.model.modelId)) {
       this.clearLegacyModelConfiguration();
     }

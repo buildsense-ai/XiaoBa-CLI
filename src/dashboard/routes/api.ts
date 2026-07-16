@@ -49,7 +49,7 @@ import {
 } from '../../runtime/runtime-profile-editor';
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
 import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
-import { createBotDefinitionSyncService } from '../../bot-definition/service';
+import { catalogRuntimeMatchesModelId, createBotDefinitionSyncService } from '../../bot-definition/service';
 import { prepareBoundBotDefinition } from '../../bot-definition/activation';
 import { resolveActiveBotLLMConfig } from '../../bot-definition/llm-config-resolver';
 import type { BotDefinitionSyncResult } from '../../bot-definition/types';
@@ -861,6 +861,17 @@ async function commitCatsBotBindingAndStartConnector(
     } = await startCatsCompanyConnectorIfReady(serviceManager, {
       restartIfRunning: true,
     });
+    if (startPreflight?.status === 'blocked') {
+      const error = httpError('CatsCo connector preflight blocked', 400) as Error & { data?: unknown };
+      error.data = {
+        preflight: {
+          status: startPreflight.status,
+          blockingChecks: startPreflight.blockingChecks,
+          warningChecks: startPreflight.warningChecks,
+        },
+      };
+      throw error;
+    }
     return {
       updated,
       warnings,
@@ -1240,7 +1251,7 @@ function updateCurrentCatalogRuntimeReasoningEffort(
   const definition = service.pullOrBootstrapCurrentBoundBot()?.definition;
   if (!definition || definition.model.kind !== 'catalog') return undefined;
   const runtime = service.readCatalogRuntime(definition.botId);
-  if (!runtime || runtime.modelId !== definition.model.modelId) {
+  if (!runtime || !catalogRuntimeMatchesModelId(runtime, definition.model.modelId)) {
     throw httpError('The selected catalog model is not materialized on this device.', 409);
   }
   service.storeCatalogRuntime({ ...runtime, reasoningEffort });
@@ -1689,6 +1700,19 @@ function sanitizeCatsErrorData(data: unknown): unknown {
   if (!data || typeof data !== 'object') return undefined;
   const safe: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    if (key === 'preflight' && value && typeof value === 'object') {
+      const preflight = value as Record<string, unknown>;
+      safe.preflight = {
+        ...(typeof preflight.status === 'string' ? { status: preflight.status } : {}),
+        ...(Array.isArray(preflight.blockingChecks)
+          ? { blockingChecks: preflight.blockingChecks.filter(item => typeof item === 'string') }
+          : {}),
+        ...(Array.isArray(preflight.warningChecks)
+          ? { warningChecks: preflight.warningChecks.filter(item => typeof item === 'string') }
+          : {}),
+      };
+      continue;
+    }
     const lower = key.toLowerCase();
     if (
       lower.includes('key')
