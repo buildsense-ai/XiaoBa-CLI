@@ -435,8 +435,26 @@ describe('external-source CLI command', () => {
       json: true,
       workingDirectory: env.root,
     }));
-    const status = JSON.parse(statusOutput) as { providers: Array<{ provider: string; historyMode: string }> };
+    const status = JSON.parse(statusOutput) as {
+      overallReadiness: string;
+      providers: Array<{ provider: string; historyMode: string }>;
+      providerDiagnostics: Array<{
+        provider: string;
+        admissionGate: string;
+        activationState: string;
+        historyMode: string;
+        catchUpState: string;
+        sourceHealth: string;
+      }>;
+    };
     assert.equal(status.providers.find(provider => provider.provider === 'codex')?.historyMode, 'catch-up');
+    assert.equal(status.overallReadiness, 'ready');
+    const diagnostic = status.providerDiagnostics.find(provider => provider.provider === 'codex');
+    assert.equal(diagnostic?.admissionGate, 'open');
+    assert.equal(diagnostic?.activationState, 'active');
+    assert.equal(diagnostic?.historyMode, 'catch-up');
+    assert.equal(diagnostic?.catchUpState, 'inventory');
+    assert.equal(diagnostic?.sourceHealth, 'healthy');
 
     await externalSourceCommand({
       subcommand: 'history',
@@ -449,6 +467,33 @@ describe('external-source CLI command', () => {
       stateFilePath: path.join(env.root, 'data', 'external-provider-overrides.json'),
     });
     assert.equal(restartedStore.getProviderStatus('codex', config).historyMode, 'future-only');
+  });
+
+  test('status JSON reports path scope without exposing the local absolute path', async () => {
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS = 'codex';
+    const { externalSourceCommand } = await import('../src/commands/external-source');
+    const secretPath = path.join(env.root, 'private-project');
+    await externalSourceCommand({
+      subcommand: 'enable',
+      provider: 'codex',
+      scope: 'path',
+      scopePath: secretPath,
+      workingDirectory: env.root,
+    });
+
+    const statusOutput = await captureOutput(() => externalSourceCommand({
+      subcommand: 'status',
+      json: true,
+      workingDirectory: env.root,
+    }));
+    const status = JSON.parse(statusOutput) as {
+      providers: Array<{ provider: string; scope: string; scopePath?: string }>;
+    };
+    const provider = status.providers.find(entry => entry.provider === 'codex');
+    assert.equal(provider?.scope, 'path');
+    assert.equal(provider?.scopePath, undefined);
+    assert.equal(statusOutput.includes(secretPath), false);
   });
 
   test('Commander wiring persists history mode and returns normal process exits', () => {

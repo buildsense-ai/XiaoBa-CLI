@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Implemented by issues #98-#102. The release gate retains deterministic fixtures and two opt-in installed-xURL Canaries: one for the future-only baseline and one for bounded multi-provider catch-up.
+
 XiaoBa keeps `future-only` as the default External History Mode and adds an opt-in, durable `catch-up` mode per provider. When catch-up is enabled, the existing Distillation Heartbeat automatically drains bounded historical work. Operators select a policy once; they do not select topics, construct ranges, or trigger each batch.
 
 The consistency boundary is one external thread, not an entire provider catalog. xURL exposes ordered thread timelines but no atomic provider-wide snapshot. The Runtime therefore records an immutable Catch-Up Target for each discovered in-scope thread from its stable completed-event position and cumulative prefix digest. Mutable cursor, progress, generation-membership, and lifecycle fields remain separate resource state. Historical events up to the target enter the ordinary external admission path, while later events continue through the continuous lane without extending the target.

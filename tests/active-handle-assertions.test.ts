@@ -94,6 +94,24 @@ describe('active-handle assertions — assertNoActiveHandles', () => {
     await settleHandles();
     assertNoActiveHandles();
   });
+
+  test('fails while an extra child process is active', async () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], {
+      stdio: 'ignore',
+    });
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.ok(snapshotActiveHandles().childProcessExtra > 0);
+      assert.throws(
+        () => assertNoActiveHandles(),
+        /child process/i,
+      );
+    } finally {
+      child.kill('SIGTERM');
+      await new Promise<void>(resolve => child.once('exit', () => resolve()));
+      await settleHandles();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

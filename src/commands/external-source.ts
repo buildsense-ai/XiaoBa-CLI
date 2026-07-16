@@ -14,17 +14,15 @@
  * A running Runtime observes changes at the next scheduling boundary.
  */
 
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { Logger } from '../utils/logger';
 import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
 import type { ExternalHistoryMode } from '../utils/distillation-heartbeat-config';
 import {
-  buildDiagnosticSummary,
-  buildProviderDiagnosticRecord,
+  buildExternalSourceDiagnosticSnapshot,
   formatProviderDiagnosticHuman,
-  type ExternalSourceProviderDiagnostic,
+  resolveExternalProviderSourceId,
 } from '../utils/external-source-diagnostics';
 import {
   ExternalProviderOverrideStore,
@@ -35,8 +33,6 @@ import { rebaselineExternalProviderWithRecovery } from '../utils/external-source
 import { LearningEpisodeStore } from '../utils/learning-episode';
 import {
   ExternalSessionLogSourceAdapter,
-  loadExternalCursorState,
-  resolveExternalCursorStorePath,
 } from '../utils/session-log-source';
 import { XurlExternalSourceReader } from '../utils/xurl-session-log-source';
 
@@ -121,8 +117,11 @@ function handleStatus(
   json: boolean,
 ): void {
   const statuses = store.getAllProviderStatuses(config);
-  const diagnostics = statuses.map(status => buildProviderDiagnostic(status, config));
-  const summary = buildDiagnosticSummary(diagnostics);
+  const snapshot = buildExternalSourceDiagnosticSnapshot({
+    config,
+    providerStatuses: statuses,
+  });
+  const diagnostics = snapshot.providers;
   const masterEnabled = config.externalSessionLogSourcesEnabled;
   const maxConcurrency = config.externalSessionLogMaxConcurrency;
   const legacyProvider = config.externalSessionLogSelectedProvider;
@@ -134,7 +133,8 @@ function handleStatus(
     const output = {
       masterSwitch: masterEnabled ? 'on' : 'off',
       maxConcurrency,
-      overallStatus: summary.overallStatus,
+      overallStatus: snapshot.overallStatus,
+      overallReadiness: snapshot.overallReadiness,
       ...(usingLegacyFallback ? { legacySelectedProvider: legacyProvider, deprecated: true } : {}),
       providers: statuses.map(formatStatusJson),
       providerStatuses: statuses.map(formatStatusJson),
@@ -147,7 +147,7 @@ function handleStatus(
   Logger.title('External Source Provider Status');
   Logger.info(`Master switch: ${masterEnabled ? 'on' : 'off'}`);
   Logger.info(`Max concurrency: ${maxConcurrency}`);
-  Logger.info(`Overall status: ${summary.overallStatus}`);
+  Logger.info(`Overall readiness: ${snapshot.overallReadiness}`);
   if (usingLegacyFallback) {
     Logger.warning(`Using legacy selected provider "${legacyProvider}" (deprecated) — set XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS for multi-provider support.`);
   }
@@ -221,7 +221,7 @@ function handleRebaseline(
   skipToNow: boolean,
 ): void {
   const normalizedProvider = provider.trim().toLowerCase();
-  const sourceId = resolveProviderSourceId(config, normalizedProvider);
+  const sourceId = resolveExternalProviderSourceId(config, normalizedProvider);
   const scope = store.getProviderScope(normalizedProvider);
   const historyMode = store.getProviderHistoryMode(normalizedProvider, config).mode;
   const reader = config.externalSessionLogXurlCommand
@@ -261,78 +261,10 @@ function formatStatusJson(status: ProviderStatus) {
     enabled: status.enabled,
     source: status.source,
     scope: status.scope,
-    ...(status.scopePath ? { scopePath: status.scopePath } : {}),
     admissionGate: status.admissionGate,
     historyMode: status.historyMode,
     historyModeSource: status.historyModeSource,
     ...(status.historyModeDiagnostic ? { historyModeDiagnostic: status.historyModeDiagnostic } : {}),
     ...(status.rebaselineRequestedAt ? { rebaselineRequestedAt: status.rebaselineRequestedAt } : {}),
   };
-}
-
-function buildProviderDiagnostic(
-  status: ProviderStatus,
-  config: ReturnType<typeof getDistillationHeartbeatConfig>,
-): ExternalSourceProviderDiagnostic {
-  const sourceId = resolveProviderSourceId(config, status.provider);
-  const cursorState = loadExternalCursorState(resolveExternalCursorStorePath({
-    provider: status.provider,
-    sourceId,
-  }));
-  const lastSourceReport = readLastSourceReport(config, sourceId);
-  const activation = cursorState.activation;
-  const resources = Object.values(cursorState.resources);
-  const sourceCursors = Object.values(cursorState.cursors)
-    .filter(entry => entry.sourceIdentity?.sourceId === sourceId);
-  const baselined = sourceCursors.filter(entry => entry.lastStatus === 'activated').length;
-  return buildProviderDiagnosticRecord({
-    status: {
-      provider: status.provider,
-      scope: status.scope,
-      enabled: status.enabled,
-      admissionGate: status.admissionGate,
-      historyMode: status.historyMode,
-    },
-    activation,
-    resourcesTotal: resources.length,
-    baselined,
-    sourceReport: lastSourceReport
-      ? {
-        readerVersion: lastSourceReport.readerVersion,
-        cursorProgress: lastSourceReport.cursorProgress,
-        lastSuccessfulReadAt: lastSourceReport.lastSuccessfulReadAt,
-        nextRetryAt: lastSourceReport.nextRetryAt,
-        failureClass: lastSourceReport.failureClass,
-        status: lastSourceReport.drainState === 'draining' ? 'draining' : lastSourceReport.status,
-        nextAction: lastSourceReport.nextAction,
-      }
-      : undefined,
-  });
-}
-
-function resolveProviderSourceId(
-  config: ReturnType<typeof getDistillationHeartbeatConfig>,
-  provider: string,
-): string {
-  const normalizedProvider = provider.trim().toLowerCase();
-  const legacySelectedProvider = config.externalSessionLogSelectedProvider?.trim().toLowerCase();
-  const legacySelectedSourceId = config.externalSessionLogSelectedSourceId?.trim();
-  return config.externalSessionLogEnabledProviders.length === 1
-    && legacySelectedProvider === normalizedProvider
-    && Boolean(legacySelectedSourceId)
-    ? legacySelectedSourceId!
-    : `external-${normalizedProvider}`;
-}
-
-function readLastSourceReport(
-  config: ReturnType<typeof getDistillationHeartbeatConfig>,
-  sourceId: string,
-): Record<string, any> | undefined {
-  try {
-    const raw = fs.readFileSync(config.heartbeatRecordPath, 'utf8');
-    const record = JSON.parse(raw) as { lastSourceReports?: Record<string, any>[] };
-    return record.lastSourceReports?.find(report => report?.sourceId === sourceId);
-  } catch {
-    return undefined;
-  }
 }

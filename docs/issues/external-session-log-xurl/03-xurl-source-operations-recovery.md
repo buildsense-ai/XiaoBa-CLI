@@ -56,17 +56,18 @@ Current result: 182 passed, 0 failed, 0 skipped. This command covers the schedul
 
 ## Production release verification
 
-The opt-in Canary was executed on 2026-07-15 against the installed official `xurl 0.0.27` executable. It ran rather than skipping and passed with 1 test passed, 0 failed, and 0 skipped:
+The opt-in Canaries were executed on 2026-07-16 against the installed official `xurl 0.0.27` executable. Both ran rather than skipping and passed with 2 tests passed, 0 failed, and 0 skipped:
 
 ```bash
 XIAOBA_OFFICIAL_XURL_SMOKE=1 \
+XIAOBA_OFFICIAL_XURL_CATCH_UP_SMOKE=1 \
 XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND=/absolute/path/to/xurl \
 ./node_modules/.bin/tsx --test tests/official-xurl-smoke.test.ts
 ```
 
-This is a real-executable compatibility canary, not a live-provider or recovery E2E. It verifies discovery from synthetic Codex, Claude, and Pi roots; a future-only baseline without historical admission; overlapping external reads; serialized durable admission involving multiple providers; creation of a Learning Episode and Evidence Capsule; and drain without active read, admission, or xURL child-process handles.
+These are real-executable compatibility Canaries, not live-provider or recovery E2E tests. The future-only case verifies discovery from synthetic Codex, Claude, and Pi roots, a non-admitting baseline, later continuous admission, overlapping reads, and serialized durable writes. The catch-up case starts with sanitized Codex and Claude history, drives ordinary Runtime wakes to `caught_up`, creates ordinary Learning Episodes and Evidence Capsules, and verifies overlapping provider reads with serialized admission. Both cases drain cleanly, prove provider locks are released, and reject remaining non-ambient or xURL child-process handles.
 
-Provider-lock contention, explicit backfill, failure and quarantine recovery, Runtime restart replay, and exact read-concurrency limits remain deterministic regression requirements. The real-xURL canary is not evidence for provider locking or restart recovery. Together with the deterministic recovery suite, the executed Canary satisfies the xURL production release verification for version 0.0.27.
+Provider-lock contention, explicit backfill, failure and quarantine recovery, Runtime restart replay, and exact read-concurrency limits remain deterministic regression requirements. The real-xURL Canaries are not evidence for restart recovery. Together with the deterministic recovery and Catch-Up suites, they satisfy the xURL production release verification for version 0.0.27. `future-only` remains the default; historical import requires `XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE=catch-up` or a durable provider history override.
 
 ## Dependencies
 

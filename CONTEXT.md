@@ -42,6 +42,7 @@ _Avoid_: Provider identity, cursor namespace, historical backfill range
 
 **External Provider Admission Gate**:
 A durable per-provider switch that controls whether a Source Work Lane may claim new external work. Closing the gate cancels replayable reads and lets only an admission already committing settle atomically; reopening it resumes from the preserved cursor.
+The durable value remains `open` or `closed`. Operator diagnostics may project `draining` while shutdown prevents new claims and an already-committing page settles; that projection does not create a third durable gate value.
 _Avoid_: Cursor reset, immediate process kill, source deletion
 
 **Session Log Source Adapter**:

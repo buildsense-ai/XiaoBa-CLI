@@ -3353,6 +3353,11 @@ export interface SessionLogSourceReport {
   readonly failureClass?: ExternalSourceFailureClass;
   readonly requiresOperatorAction?: boolean;
   readonly nextAction?: 'wait_for_retry' | 'retry_next_wake' | 'repair_source_then_retry' | 'retry_or_skip_quarantine';
+  readonly workState?: {
+    readonly read: 'idle' | 'reading';
+    readonly readyPages: number;
+    readonly committing: boolean;
+  };
   readonly drainState?: 'idle' | 'draining';
 }
 

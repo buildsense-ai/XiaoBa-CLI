@@ -13,6 +13,7 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 
 import {
+  buildExternalSourceDiagnosticSnapshot,
   buildProviderDiagnosticRecord,
   type ExternalSourceProviderDiagnostic,
   type ExternalSourceDiagnosticSummary,
@@ -22,28 +23,56 @@ import {
   type AdmissionState,
   type FailureClass,
 } from '../src/utils/external-source-diagnostics';
+import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
+import { emptyExternalCursorState } from '../src/utils/session-log-source';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function makeDiagnostic(overrides: Partial<ExternalSourceProviderDiagnostic> = {}): ExternalSourceProviderDiagnostic {
-  return {
+  const diagnostic: ExternalSourceProviderDiagnostic = {
     provider: 'codex',
     scope: 'global',
+    admissionGate: 'open',
+    activationState: 'active',
+    historyMode: 'future-only',
+    catchUpState: 'idle',
+    sourceHealth: 'healthy',
     admissionState: 'active',
     readerVersion: 'xurl 1.2.3',
     activationProgress: { baselined: 5, total: 5 },
     cursorProgress: { maxPosition: 10, activeResources: 2, closedResources: 3 },
+    catchUpProgress: {
+      targetsTotal: 0,
+      targetPending: 0,
+      historicalPendingTargets: 0,
+      completeTargets: 0,
+      excludedTargets: 0,
+      historicalPendingEpisodes: 0,
+      readyHistoricalEpisodes: 0,
+      eventExclusions: 0,
+      resourceExclusions: 0,
+      rangeExclusions: 0,
+      quarantineCount: 0,
+    },
     lastSuccessfulReadAt: '2025-01-01T00:00:00Z',
     nextRetryAt: undefined,
     failureClass: undefined,
     quarantined: false,
     locked: false,
+    workState: { read: 'idle', readyPages: 0, committing: false },
     drainState: 'idle',
     nextAction: undefined,
     ...overrides,
   };
+  if (overrides.admissionState && overrides.activationState === undefined) {
+    return { ...diagnostic, activationState: overrides.admissionState };
+  }
+  if (overrides.activationState && overrides.admissionState === undefined) {
+    return { ...diagnostic, admissionState: overrides.activationState };
+  }
+  return diagnostic;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +80,313 @@ function makeDiagnostic(overrides: Partial<ExternalSourceProviderDiagnostic> = {
 // ---------------------------------------------------------------------------
 
 describe('external source diagnostics — record fields', () => {
+  test('shared snapshot keeps activation, catch-up, and source health orthogonal', () => {
+    const config = getDistillationHeartbeatConfig(process.cwd(), {
+      ...process.env,
+      XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: 'true',
+      XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS: 'codex,claude',
+    });
+    const baseState = emptyExternalCursorState();
+    const state = {
+      ...baseState,
+      activation: {
+        initializedAt: '2026-07-16T00:00:00.000Z',
+        mode: 'future-only-resource-baseline' as const,
+        initialDiscoveryCompleted: true,
+      },
+      catchUpCatalog: {
+        active: {
+          generation: 4,
+          status: 'inventory' as const,
+          requestedLimit: 64,
+          scopeFingerprint: 'a'.repeat(64),
+          startedAt: '2026-07-16T00:00:00.000Z',
+          observedResourceCount: 4,
+          lastObservationCount: 4,
+          observedOutputBytes: 512,
+          observationCompletedAt: '2026-07-16T00:01:00.000Z',
+        },
+        lastCompleted: null,
+      },
+      catchUpTargets: {
+        'thread-b': {
+          targetId: 'target-b',
+          provider: 'codex',
+          sourceId: 'external-codex',
+          resourceRef: 'thread-b',
+          position: 8,
+          empty: false,
+          prefixDigest: 'b'.repeat(64),
+          creationGeneration: 4,
+          scopeFingerprint: 'a'.repeat(64),
+          observedAt: '2026-07-16T00:00:30.000Z',
+        },
+      },
+      catchUpResources: {
+        'thread-a': {
+          status: 'target-pending' as const,
+          historicalCursor: { resourceRef: 'thread-a', position: -1, processedCount: 0 },
+          observedPosition: 4,
+          observedGeneration: 4,
+          observedScopeFingerprint: 'a'.repeat(64),
+          updatedAt: '2026-07-16T00:00:30.000Z',
+        },
+        'thread-b': {
+          status: 'historical-pending' as const,
+          historicalCursor: { resourceRef: 'thread-b', position: 3, processedCount: 2 },
+          observedPosition: 8,
+          observedGeneration: 4,
+          observedScopeFingerprint: 'a'.repeat(64),
+          updatedAt: '2026-07-16T00:02:00.000Z',
+        },
+        'thread-c': {
+          status: 'complete' as const,
+          historicalCursor: { resourceRef: 'thread-c', position: 6, processedCount: 3 },
+          observedPosition: 6,
+          observedGeneration: 4,
+          observedScopeFingerprint: 'a'.repeat(64),
+          updatedAt: '2026-07-16T00:03:00.000Z',
+        },
+        'thread-d': {
+          status: 'abandoned' as const,
+          historicalCursor: { resourceRef: 'thread-d', position: 1, processedCount: 1 },
+          observedPosition: 5,
+          observedGeneration: 4,
+          observedScopeFingerprint: 'a'.repeat(64),
+          updatedAt: '2026-07-16T00:04:00.000Z',
+          terminalTombstoneId: 'range-abandonment-1',
+        },
+      },
+      quarantinedEvents: {
+        quarantine1: {
+          quarantineId: 'quarantine1',
+          resourceRef: 'thread-b',
+          identity: { eventId: 'event-4', position: 4, contentHash: 'hash-4' },
+          failureClass: 'quarantine' as const,
+          message: 'redacted',
+          detectedAt: '2026-07-16T00:02:30.000Z',
+          cursorPosition: 3,
+        },
+      },
+      tombstones: {
+        event1: {
+          tombstoneId: 'event1',
+          kind: 'event-skip' as const,
+          resourceRef: 'thread-b',
+          identity: { eventId: 'event-5', position: 5, contentHash: 'hash-5' },
+          createdAt: '2026-07-16T00:02:45.000Z',
+          reason: 'operator skip',
+        },
+        resource1: {
+          tombstoneId: 'resource1',
+          kind: 'resource-closure' as const,
+          resourceRef: 'thread-c',
+          range: { startPosition: 0, endPosition: 6 },
+          createdAt: '2026-07-16T00:03:30.000Z',
+          reason: 'source deleted',
+        },
+        'range-abandonment-1': {
+          tombstoneId: 'range-abandonment-1',
+          kind: 'range-abandonment' as const,
+          resourceRef: 'thread-d',
+          range: { startPosition: 2, endPosition: 5 },
+          createdAt: '2026-07-16T00:04:00.000Z',
+          reason: 'rebaseline',
+        },
+      },
+    };
+
+    const snapshot = buildExternalSourceDiagnosticSnapshot({
+      config,
+      providerStatuses: [{
+        provider: 'codex',
+        enabled: true,
+        source: 'environment',
+        scope: 'global',
+        admissionGate: 'open',
+        historyMode: 'catch-up',
+        historyModeSource: 'override',
+      }],
+      sourceReports: [{
+        sourceId: 'external-codex',
+        category: 'external',
+        enabled: true,
+        resourcesDiscovered: 4,
+        unitsProcessed: 1,
+        advancedResources: 1,
+        provider: 'codex',
+        reader: 'xurl',
+        readerVersion: 'xurl 0.0.27',
+        failureClass: 'quarantine',
+        requiresOperatorAction: true,
+        nextAction: 'retry_or_skip_quarantine',
+        workState: { read: 'idle', readyPages: 0, committing: false },
+      }],
+      cursorStates: { 'external-codex': state },
+      episodes: [
+        { status: 'historical-pending', historicalTarget: { provider: 'codex' } },
+        { status: 'eligible', historicalTarget: { provider: 'codex' } },
+      ],
+      generatedAt: '2026-07-16T00:05:00.000Z',
+    });
+
+    const diagnostic = snapshot.providers[0]!;
+    assert.equal(diagnostic.admissionGate, 'open');
+    assert.equal(diagnostic.activationState, 'active');
+    assert.equal(diagnostic.historyMode, 'catch-up');
+    assert.equal(diagnostic.catchUpState, 'inventory');
+    assert.equal(diagnostic.sourceHealth, 'attention_required');
+    assert.deepEqual(diagnostic.workState, { read: 'idle', readyPages: 0, committing: false });
+    assert.deepEqual(diagnostic.catchUpProgress, {
+      catalogGeneration: 4,
+      requestedLimit: 64,
+      scopeFingerprint: 'a'.repeat(64),
+      targetsTotal: 4,
+      targetPending: 1,
+      historicalPendingTargets: 1,
+      completeTargets: 1,
+      excludedTargets: 1,
+      historicalPendingEpisodes: 1,
+      readyHistoricalEpisodes: 1,
+      eventExclusions: 1,
+      resourceExclusions: 1,
+      rangeExclusions: 1,
+      quarantineCount: 1,
+      lastSuccessfulProgressAt: '2026-07-16T00:04:00.000Z',
+    });
+    assert.equal(snapshot.overallReadiness, 'ready_with_external_attention');
+    assert.equal(snapshot.generatedAt, '2026-07-16T00:05:00.000Z');
+  });
+
+  test('future-only activation and waiting source health remain independently visible', () => {
+    const diag = buildProviderDiagnosticRecord({
+      status: {
+        provider: 'claude',
+        scope: 'global',
+        enabled: true,
+        admissionGate: 'open',
+        historyMode: 'future-only',
+      },
+      activation: { initialDiscoveryCompleted: false },
+      resourcesTotal: 3,
+      baselined: 1,
+      sourceReport: {
+        failureClass: 'pending',
+        nextRetryAt: '2026-07-16T01:00:00.000Z',
+      },
+    });
+    assert.equal(diag.admissionGate, 'open');
+    assert.equal(diag.activationState, 'activating');
+    assert.equal(diag.catchUpState, 'idle');
+    assert.equal(diag.sourceHealth, 'waiting');
+    assert.equal(diag.nextRetryAt, '2026-07-16T01:00:00.000Z');
+  });
+
+  test('same-scope unresolved targets remain visible across catalog generations', () => {
+    const base = emptyExternalCursorState();
+    const scopeFingerprint = 'a'.repeat(64);
+    const snapshot = buildExternalSourceDiagnosticSnapshot({
+      config: getDistillationHeartbeatConfig(process.cwd(), {
+        ...process.env,
+        XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: 'true',
+        XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS: 'codex',
+      }),
+      providerStatuses: [{
+        provider: 'codex', enabled: true, source: 'environment', scope: 'global',
+        admissionGate: 'open', historyMode: 'catch-up', historyModeSource: 'override',
+      }],
+      cursorStates: {
+        'external-codex': {
+          ...base,
+          catchUpCatalog: {
+            active: {
+              generation: 2,
+              status: 'inventory',
+              requestedLimit: 16,
+              scopeFingerprint,
+              startedAt: '2026-07-16T00:00:00.000Z',
+              observedResourceCount: 1,
+              lastObservationCount: 1,
+              observedOutputBytes: 100,
+            },
+            lastCompleted: null,
+          },
+          catchUpResources: {
+            older: {
+              status: 'historical-pending',
+              historicalCursor: { resourceRef: 'older', position: 1, processedCount: 1 },
+              observedPosition: 4,
+              observedGeneration: 1,
+              observedScopeFingerprint: scopeFingerprint,
+              updatedAt: '2026-07-16T00:00:00.000Z',
+            },
+            current: {
+              status: 'target-pending',
+              historicalCursor: { resourceRef: 'current', position: -1, processedCount: 0 },
+              observedPosition: 2,
+              observedGeneration: 2,
+              observedScopeFingerprint: scopeFingerprint,
+              updatedAt: '2026-07-16T00:01:00.000Z',
+            },
+            oldScope: {
+              status: 'historical-pending',
+              historicalCursor: { resourceRef: 'old-scope', position: -1, processedCount: 0 },
+              observedPosition: 2,
+              observedGeneration: 1,
+              observedScopeFingerprint: 'b'.repeat(64),
+              updatedAt: '2026-07-16T00:01:00.000Z',
+            },
+          },
+        },
+      },
+    });
+
+    assert.equal(snapshot.providers[0]?.catchUpProgress.targetsTotal, 2);
+    assert.equal(snapshot.providers[0]?.catchUpProgress.historicalPendingTargets, 1);
+    assert.equal(snapshot.providers[0]?.catchUpProgress.targetPending, 1);
+  });
+
+  test('catch-up block reports its bounded-cap reason and action', () => {
+    const base = emptyExternalCursorState();
+    const snapshot = buildExternalSourceDiagnosticSnapshot({
+      config: getDistillationHeartbeatConfig(process.cwd(), {
+        ...process.env,
+        XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: 'true',
+        XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS: 'codex',
+      }),
+      providerStatuses: [{
+        provider: 'codex', enabled: true, source: 'environment', scope: 'global',
+        admissionGate: 'open', historyMode: 'catch-up', historyModeSource: 'override',
+      }],
+      cursorStates: {
+        'external-codex': {
+          ...base,
+          catchUpCatalog: {
+            active: {
+              generation: 1,
+              status: 'catch-up-blocked',
+              requestedLimit: 64,
+              scopeFingerprint: 'a'.repeat(64),
+              startedAt: '2026-07-16T00:00:00.000Z',
+              observedResourceCount: 64,
+              lastObservationCount: 64,
+              observedOutputBytes: 4096,
+              blockedAt: '2026-07-16T00:01:00.000Z',
+              blockedReason: 'configured catalog resource limit reached',
+            },
+            lastCompleted: null,
+          },
+        },
+      },
+    });
+
+    const diagnostic = snapshot.providers[0]!;
+    assert.equal(diagnostic.catchUpState, 'catch_up_blocked');
+    assert.equal(diagnostic.sourceHealth, 'blocked');
+    assert.equal(diagnostic.catchUpProgress.blockedReason, 'configured catalog resource limit reached');
+    assert.match(diagnostic.nextAction ?? '', /catalog cap/i);
+  });
+
   test('domain builder derives an activating provider from status plus activation state', () => {
     const diag = buildProviderDiagnosticRecord({
       status: {
@@ -172,6 +508,25 @@ describe('external source diagnostics — record fields', () => {
     assert.equal(diag.drainState, 'draining');
   });
 
+  test('read, ready-page, and committing state remain separate from drain', () => {
+    const diag = buildProviderDiagnosticRecord({
+      status: {
+        provider: 'codex',
+        scope: 'global',
+        enabled: true,
+        admissionGate: 'open',
+      },
+      resourcesTotal: 1,
+      baselined: 1,
+      sourceReport: {
+        workState: { read: 'reading', readyPages: 1, committing: true },
+        status: 'draining',
+      },
+    });
+    assert.deepEqual(diag.workState, { read: 'reading', readyPages: 1, committing: true });
+    assert.equal(diag.drainState, 'draining');
+  });
+
   test('a locked provider reports lock state', () => {
     const diag = makeDiagnostic({
       locked: true,
@@ -287,5 +642,10 @@ describe('external source diagnostics — summary aggregation', () => {
     ];
     const summary = buildDiagnosticSummary(diagnostics);
     assert.equal(summary.overallStatus, 'unhealthy');
+  });
+
+  test('internal failure is the only diagnostic path to not-ready', () => {
+    const summary = buildDiagnosticSummary([makeDiagnostic()], false);
+    assert.equal(summary.overallReadiness, 'not_ready');
   });
 });

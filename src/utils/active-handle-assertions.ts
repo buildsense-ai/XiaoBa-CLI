@@ -93,9 +93,10 @@ export function snapshotActiveHandles(): ActiveHandleSnapshot {
  */
 export function assertNoActiveHandles(): void {
   const snapshot = snapshotActiveHandles();
-  if (snapshot.extra > 0) {
+  if (snapshot.extra > 0 || snapshot.childProcessExtra > 0) {
     throw new Error(
       `Expected no active non-ambient handles, but found ${snapshot.extra} extra handle(s) ` +
+      `and ${snapshot.childProcessExtra} extra child process handle(s) ` +
       `(total handles: ${snapshot.total}, child processes: ${snapshot.childProcesses}, ambient child baseline: ${ambientChildProcessBaseline ?? 0}). ` +
       `This indicates a handle leak in a test or shutdown path.`,
     );

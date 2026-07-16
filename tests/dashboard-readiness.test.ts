@@ -283,9 +283,18 @@ describe('dashboard readiness and service preflight API', () => {
     });
     assert.equal(pi.provider, 'pi');
     assert.equal(pi.enabled, true);
+    const codexDiagnostic = data.runtimeLearning.providerDiagnostics.providers
+      .find((entry: any) => entry.provider === 'codex');
+    assert.equal(data.runtimeLearning.providerDiagnostics.overallReadiness, 'ready');
+    assert.equal(codexDiagnostic.admissionGate, 'open');
+    assert.equal(codexDiagnostic.activationState, 'active');
+    assert.equal(codexDiagnostic.historyMode, 'future-only');
+    assert.equal(codexDiagnostic.catchUpState, 'idle');
+    assert.equal(codexDiagnostic.sourceHealth, 'healthy');
     assert.equal(pi.source, 'override');
     assert.equal(pi.scope, 'path');
-    assert.equal(pi.scopePath, '/project/x');
+    assert.equal(pi.scopePath, undefined, 'readiness payload must not expose an absolute scope path');
+    assert.doesNotMatch(JSON.stringify(data.runtimeLearning), /\/project\/x/);
     assert.equal(pi.admissionGate, 'open');
     assert.equal(typeof pi.rebaselineRequestedAt, 'string');
   });

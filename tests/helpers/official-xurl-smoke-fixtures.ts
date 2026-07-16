@@ -75,7 +75,7 @@ export function validateOfficialXurlSmokeFixtures(): void {
 
 export function materializeOfficialXurlSmokeFixtures(destinationRoot: string): {
   readonly env: Record<string, string>;
-  appendStableCompletedTurn(provider: OfficialSmokeProvider): void;
+  appendStableCompletedTurn(provider: OfficialSmokeProvider, sequence?: number): void;
 } {
   validateOfficialXurlSmokeFixtures();
   const env: Record<string, string> = {};
@@ -90,31 +90,37 @@ export function materializeOfficialXurlSmokeFixtures(destinationRoot: string): {
 
   return {
     env,
-    appendStableCompletedTurn(provider: OfficialSmokeProvider): void {
+    appendStableCompletedTurn(provider: OfficialSmokeProvider, sequence = 1): void {
       const fixture = PROVIDER_FIXTURES.find(candidate => candidate.provider === provider);
       if (!fixture) throw new Error(`unsupported smoke provider: ${provider}`);
       const root = path.join(destinationRoot, provider);
       const filePath = path.join(root, fixture.threadFile);
-      fs.appendFileSync(filePath, renderAppendedTurn(provider), 'utf8');
+      fs.appendFileSync(filePath, renderAppendedTurn(provider, sequence), 'utf8');
     },
   };
 }
 
-function renderAppendedTurn(provider: OfficialSmokeProvider): string {
+function renderAppendedTurn(provider: OfficialSmokeProvider, sequence: number): string {
+  if (!Number.isInteger(sequence) || sequence < 1 || sequence > 5) {
+    throw new Error(`invalid smoke turn sequence: ${sequence}`);
+  }
+  const suffix = sequence === 1 ? '' : ` ${sequence}`;
+  const offset = (sequence - 1) * 10;
+  const second = (value: number) => String(value + offset).padStart(2, '0');
   switch (provider) {
     case 'codex':
       return [
         JSON.stringify({
-          timestamp: '2026-02-23T07:00:00.000Z',
+          timestamp: `2026-02-23T07:00:${second(0)}.000Z`,
           type: 'response_item',
           payload: {
             type: 'message',
             role: 'user',
-            content: [{ type: 'input_text', text: 'Please generate and send the report.' }],
+            content: [{ type: 'input_text', text: `Please generate and send the report${suffix}.` }],
           },
         }),
         JSON.stringify({
-          timestamp: '2026-02-23T07:00:01.000Z',
+          timestamp: `2026-02-23T07:00:${second(1)}.000Z`,
           type: 'response_item',
           payload: {
             type: 'message',
@@ -123,7 +129,7 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
           },
         }),
         JSON.stringify({
-          timestamp: '2026-02-23T07:00:02.000Z',
+          timestamp: `2026-02-23T07:00:${second(2)}.000Z`,
           type: 'response_item',
           payload: {
             type: 'message',
@@ -132,7 +138,7 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
           },
         }),
         JSON.stringify({
-          timestamp: '2026-02-23T07:00:03.000Z',
+          timestamp: `2026-02-23T07:00:${second(3)}.000Z`,
           type: 'response_item',
           payload: {
             type: 'message',
@@ -145,28 +151,28 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
     case 'claude':
       return [
         JSON.stringify({
-          timestamp: '2026-02-23T00:00:02Z',
+          timestamp: `2026-02-23T00:00:${second(2)}Z`,
           type: 'user',
           sessionId: 'b90fc33d-33cb-4027-8558-119e2b56c74e',
           cwd: '/redacted/workspace/project',
-          message: { role: 'user', content: 'Please generate and send the report.' },
+          message: { role: 'user', content: `Please generate and send the report${suffix}.` },
         }),
         JSON.stringify({
-          timestamp: '2026-02-23T00:00:03Z',
+          timestamp: `2026-02-23T00:00:${second(3)}Z`,
           type: 'assistant',
           sessionId: 'b90fc33d-33cb-4027-8558-119e2b56c74e',
           cwd: '/redacted/workspace/project',
           message: { role: 'assistant', content: 'Done.' },
         }),
         JSON.stringify({
-          timestamp: '2026-02-23T00:00:04Z',
+          timestamp: `2026-02-23T00:00:${second(4)}Z`,
           type: 'user',
           sessionId: 'b90fc33d-33cb-4027-8558-119e2b56c74e',
           cwd: '/redacted/workspace/project',
           message: { role: 'user', content: 'Thanks, that works perfectly.' },
         }),
         JSON.stringify({
-          timestamp: '2026-02-23T00:00:05Z',
+          timestamp: `2026-02-23T00:00:${second(5)}Z`,
           type: 'assistant',
           sessionId: 'b90fc33d-33cb-4027-8558-119e2b56c74e',
           cwd: '/redacted/workspace/project',
@@ -178,20 +184,20 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
       return [
         JSON.stringify({
           type: 'message',
-          id: 'b1c2d3e4',
+          id: `b1c2d3e4-${sequence}`,
           parentId: 'a995f57d',
-          timestamp: '2026-02-23T13:21:05.162Z',
+          timestamp: `2026-02-23T13:21:${second(5)}.162Z`,
           message: {
             role: 'user',
-            content: [{ type: 'text', text: 'Please generate and send the report.' }],
-            timestamp: 1771852865162,
+            content: [{ type: 'text', text: `Please generate and send the report${suffix}.` }],
+            timestamp: 1771852865162 + offset * 1_000,
           },
         }),
         JSON.stringify({
           type: 'message',
-          id: 'c5d6e7f8',
-          parentId: 'b1c2d3e4',
-          timestamp: '2026-02-23T13:21:07.862Z',
+          id: `c5d6e7f8-${sequence}`,
+          parentId: `b1c2d3e4-${sequence}`,
+          timestamp: `2026-02-23T13:21:${second(7)}.862Z`,
           message: {
             role: 'assistant',
             content: [{ type: 'text', text: 'Done.', textSignature: 'msg_pi_smoke_done_2' }],
@@ -213,25 +219,25 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
               },
             },
             stopReason: 'stop',
-            timestamp: 1771852867862,
+            timestamp: 1771852867862 + offset * 1_000,
           },
         }),
         JSON.stringify({
           type: 'message',
-          id: 'd9e0f1a2',
-          parentId: 'c5d6e7f8',
-          timestamp: '2026-02-23T13:21:08.862Z',
+          id: `d9e0f1a2-${sequence}`,
+          parentId: `c5d6e7f8-${sequence}`,
+          timestamp: `2026-02-23T13:21:${second(8)}.862Z`,
           message: {
             role: 'user',
             content: [{ type: 'text', text: 'Thanks, that works perfectly.' }],
-            timestamp: 1771852868862,
+            timestamp: 1771852868862 + offset * 1_000,
           },
         }),
         JSON.stringify({
           type: 'message',
-          id: 'e3f4a5b6',
-          parentId: 'd9e0f1a2',
-          timestamp: '2026-02-23T13:21:09.862Z',
+          id: `e3f4a5b6-${sequence}`,
+          parentId: `d9e0f1a2-${sequence}`,
+          timestamp: `2026-02-23T13:21:${second(9)}.862Z`,
           message: {
             role: 'assistant',
             content: [{ type: 'text', text: 'Glad it helped.', textSignature: 'msg_pi_smoke_ack_2' }],
@@ -253,7 +259,7 @@ function renderAppendedTurn(provider: OfficialSmokeProvider): string {
               },
             },
             stopReason: 'stop',
-            timestamp: 1771852869862,
+            timestamp: 1771852869862 + offset * 1_000,
           },
         }),
         '',

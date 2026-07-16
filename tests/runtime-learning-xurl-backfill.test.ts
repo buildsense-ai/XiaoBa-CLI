@@ -112,10 +112,11 @@ test('official xurl explicit backfill succeeds and persists canonical rendered-T
     );
 
     const invocations = readInvocationLog(env.logPath);
-    assert.deepEqual(invocations.map(item => item.action), ['version', 'query', 'read']);
+    assert.deepEqual(invocations.map(item => item.action), ['version', 'query', 'read', 'head']);
     assert.equal(invocations[0]!.args[0], '--version');
     assert.equal(invocations[1]!.args[0], 'agents://codex?limit=100');
     assert.equal(invocations[2]!.args[0], 'agents://codex/conversation-success');
+    assert.equal(invocations[3]!.args[0], '-I');
     assert.equal(JSON.stringify(invocations).includes('session-log-v1'), false);
   } finally {
     env.restore();
@@ -206,7 +207,7 @@ test('xurl oversized output and non-zero exit fail closed', async () => {
   }
 });
 
-test('page failure replays safely after restart and acknowledges only after the full page succeeds', async () => {
+test('a later cooperative slice failure resumes after the last committed event', async () => {
   const env = setupEnv();
   try {
     writeScenario(env.scenarioPath, pageScenario());
@@ -250,7 +251,11 @@ test('page failure replays safely after restart and acknowledges only after the 
     const first = await failing.runtime.runExternalBackfill(request, createSource(env, request));
     assert.equal(first.backfill.status, 'source_failed');
     const firstState = loadExternalSessionLogBackfillState(first.paths.stateFilePath)!;
-    assert.equal(firstState.resourceCursors['conversation-page'], undefined, 'page cursor not acknowledged on failure');
+    assert.deepEqual(
+      firstState.resourceCursors['conversation-page'],
+      { resourceRef: 'conversation-page', position: 2, processedCount: 1 },
+      'the completed cooperative slice advances before the later event fails',
+    );
     assert.ok(
       Object.keys(firstState.processedEventIds).some(key => key.includes('agents://codex/conversation-page#1-2')),
       'first stable event recorded for replay-safe deduplication',
@@ -279,8 +284,8 @@ test('page failure replays safely after restart and acknowledges only after the 
 
     const second = await recovery.runtime.runExternalBackfill(request, createSource(env, request));
     assert.equal(second.backfill.status, 'completed');
-    assert.equal(second.backfill.duplicateEventsSkipped, 1);
-    assert.equal(second.backfill.ingestedEvents, 1);
+    assert.equal(second.backfill.duplicateEventsSkipped, 0);
+    assert.equal(second.backfill.ingestedEvents, 2);
     assert.equal(Object.keys(recovery.episodeStore.load().episodes).length, 0);
     const secondState = loadExternalSessionLogBackfillState(second.paths.stateFilePath)!;
     assert.equal(secondState.resourceCursors['conversation-page']?.position, 4);
@@ -303,7 +308,7 @@ test('rerun is idempotent when the provider replays the same stable rendered pag
 
     assert.equal(first.backfill.status, 'completed');
     assert.equal(second.backfill.status, 'completed');
-    assert.equal(second.backfill.duplicateEventsSkipped, 1);
+    assert.equal(second.backfill.duplicateEventsSkipped, 0);
     assert.equal(Object.keys(fixture.episodeStore.load().episodes).length, 0);
     assert.equal(fixture.runtime.getEvidenceCapsuleStore().count(), 0);
   } finally {

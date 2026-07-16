@@ -1807,9 +1807,22 @@ describe('Issue 4 — Heartbeat single-write', () => {
     record = env.runtimeLearning.loadHeartbeatRecord();
     assert.equal(record.inProgress, undefined);
     assert.ok(Array.isArray(record.lastSourceReports));
+    assert.equal(record.externalSourceDiagnostics.schemaVersion, 1);
+    assert.equal(record.externalSourceDiagnostics.generatedAt, record.lastRunAt);
+    assert.equal(record.externalSourceDiagnostics.overallReadiness, 'ready');
     assert.ok(record.backlog.eligibleEpisodes >= 0);
     assert.ok(record.cumulativeReviewFailureCount >= record.lastReviewFailureCount);
     assert.ok(record.cumulativeReviewTimeoutCount >= record.lastReviewTimeoutCount);
+  });
+
+  test('failed heartbeat status persists not-ready diagnostics and later success recovers', () => {
+    env.runtimeLearning.markHeartbeatStatus('failed');
+    let record = env.runtimeLearning.loadHeartbeatRecord();
+    assert.equal(record.externalSourceDiagnostics.overallReadiness, 'not_ready');
+
+    env.runtimeLearning.markHeartbeatStatus('quiet');
+    record = env.runtimeLearning.loadHeartbeatRecord();
+    assert.equal(record.externalSourceDiagnostics.overallReadiness, 'ready');
   });
 
   test('persists unconsumed wake reasons atomically without mutating learning state on restart inspection', () => {

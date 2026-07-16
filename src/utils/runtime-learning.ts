@@ -68,6 +68,11 @@ import {
   type ProviderStatus,
 } from './external-provider-controls';
 import {
+  buildExternalSourceDiagnosticSnapshot,
+  isExternalSourceDiagnosticSnapshot,
+  type ExternalSourceDiagnosticSnapshot,
+} from './external-source-diagnostics';
+import {
   InternalSessionLogSourceAdapter,
   ExternalSessionLogSourceAdapter,
   SessionLogSourceAdapter,
@@ -264,6 +269,7 @@ export interface RuntimeLearningHeartbeatRecord {
   nextWakeReason?: string;
   backlog: RuntimeLearningBacklogSnapshot;
   lastSourceReports: readonly SessionLogSourceReport[];
+  externalSourceDiagnostics: ExternalSourceDiagnosticSnapshot;
 }
 
 export interface RuntimeLearningBackfillOperationPaths {
@@ -701,6 +707,18 @@ function emptyHeartbeatRecord(): RuntimeLearningHeartbeatRecord {
       lagMs: 0,
     },
     lastSourceReports: [],
+    externalSourceDiagnostics: {
+      schemaVersion: 1,
+      generatedAt: '',
+      overallStatus: 'healthy',
+      overallReadiness: 'ready',
+      providers: [],
+      activeCount: 0,
+      activatingCount: 0,
+      pausedCount: 0,
+      activationBlockedCount: 0,
+      failureCount: 0,
+    },
   };
 }
 
@@ -2109,6 +2127,12 @@ export class RuntimeLearning {
         wakeDurationMs,
         0,
         1,
+        true,
+        {
+          sources: wake.discovery.sources,
+          nextWakeTime: null,
+          nextWakeReason: 'failed',
+        },
       );
       return wake;
     } finally {
@@ -4133,7 +4157,7 @@ export class RuntimeLearning {
   private buildExternalSourceReportDiagnostics(
     identity: SessionLogSourceIdentity,
     failureState: SourceFailureState | undefined,
-  ): Pick<SessionLogSourceReport, 'provider' | 'reader' | 'readerVersion' | 'selectedProvider' | 'cursorProgress' | 'lastSuccessfulReadAt' | 'nextRetryAt' | 'lastError' | 'failureClass' | 'requiresOperatorAction' | 'nextAction' | 'drainState'> {
+  ): Pick<SessionLogSourceReport, 'provider' | 'reader' | 'readerVersion' | 'selectedProvider' | 'cursorProgress' | 'lastSuccessfulReadAt' | 'nextRetryAt' | 'lastError' | 'failureClass' | 'requiresOperatorAction' | 'nextAction' | 'workState' | 'drainState'> {
     let cursorProgress = {
       maxPosition: -1,
       activeResources: 0,
@@ -4187,6 +4211,11 @@ export class RuntimeLearning {
       failureClass: failureState?.failureClass,
       requiresOperatorAction: failureState?.requiresOperatorAction,
       nextAction,
+      workState: {
+        read: 'idle',
+        readyPages: 0,
+        committing: false,
+      },
       drainState: (this.shutdownDrainRequested || this.externalSourceDrainRequested) ? 'draining' : 'idle',
     };
   }
@@ -4867,6 +4896,13 @@ export class RuntimeLearning {
         delete record.nextWakeReason;
       }
     }
+    record.externalSourceDiagnostics = buildExternalSourceDiagnosticSnapshot({
+      config: this.config,
+      providerStatuses: this.getExternalProviderStatuses(),
+      sourceReports: diagnostics?.sources ?? record.lastSourceReports,
+      generatedAt: record.lastRunAt,
+      internalReady: runStatus !== 'failed',
+    });
     record.backlog = this.snapshotBacklog(record.nextWakeAt);
 
     this.writeHeartbeatRecord(record);
@@ -4987,6 +5023,9 @@ function normalizeHeartbeatRecord(
     lastSourceReports: Array.isArray(record.lastSourceReports)
       ? record.lastSourceReports as SessionLogSourceReport[]
       : defaults.lastSourceReports,
+    externalSourceDiagnostics: isExternalSourceDiagnosticSnapshot(record.externalSourceDiagnostics)
+      ? record.externalSourceDiagnostics
+      : defaults.externalSourceDiagnostics,
   };
 }
 

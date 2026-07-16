@@ -143,6 +143,11 @@ interface XurlNormalizedReadPage {
   readonly threadOrdinal?: number;
 }
 
+interface XurlTimelineReadPolicy {
+  readonly disableCursorFilter: boolean;
+  readonly confirmStability: boolean;
+}
+
 interface ParsedTimelinePage {
   readonly timeline: RenderedTimeline;
   readonly events: readonly CanonicalEvent[];
@@ -279,7 +284,10 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
   }
 
   read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSourceReaderResult {
-    const page = this.runner.readThreadTimeline(resource, cursor, this.disableCursorFilter);
+    const page = this.runner.readThreadTimeline(resource, cursor, {
+      disableCursorFilter: this.disableCursorFilter,
+      confirmStability: !this.disableCursorFilter,
+    });
     return {
       events: page.events.map(({ identity, distillationUnit }) => ({
         eventId: identity.eventId,
@@ -380,11 +388,14 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
   }
 
   read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSessionLogBackfillReadResult {
-    // The backfill service filters the requested range, while this reader must
-    // still honor its durable operation cursor so cooperative page slices do
-    // not replay an earlier duplicate forever. No stability sampling is
-    // applied because the operator explicitly requested the range.
-    const page = this.runner.readThreadTimeline(resource, cursor, false);
+    // The backfill service filters the requested range, while this reader still
+    // honors its durable operation cursor so cooperative page slices do not
+    // replay an earlier duplicate forever. Historical evidence remains subject
+    // to the same stable-rendering confirmation as continuous evidence.
+    const page = this.runner.readThreadTimeline(resource, cursor, {
+      disableCursorFilter: false,
+      confirmStability: true,
+    });
     return {
       events: page.events.map(({ identity, distillationUnit, byteLength }) => ({
         identity,
@@ -554,7 +565,7 @@ class XurlOfficialRunner {
   readThreadTimeline(
     resource: SessionLogSourceResource,
     cursor: SourceCursor,
-    disableCursorFilter: boolean,
+    policy: XurlTimelineReadPolicy,
   ): XurlNormalizedReadPage {
     const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
     const stdout = this.invoke('read', [uri]);
@@ -562,13 +573,11 @@ class XurlOfficialRunner {
     const { timeline, events: allEvents, hasIncompleteTail } = page;
 
     const cursorPosition = normalizeNonNegativeInteger(cursor.position + 1, 'xurl cursor position') - 1;
-    const newEvents = disableCursorFilter
+    const newEvents = policy.disableCursorFilter
       ? allEvents
       : allEvents.filter(event => event.endOrdinal > cursorPosition);
 
-    // Explicit operator-requested backfill (disableCursorFilter) trusts the
-    // rendered range as-is: no stability sampling, no head confirmation.
-    if (disableCursorFilter) {
+    if (!policy.confirmStability) {
       if (newEvents.length === 0) {
         return {
           status: 'stable',

@@ -9,7 +9,7 @@ The architectural decisions are recorded in:
 - [ADR-0042: External Provider Reads Use Bounded Concurrency](../adr/0042-external-provider-reads-use-bounded-concurrency.md)
 - [ADR-0043: Official xURL Rendered Timeline Is the External Reader Contract](../adr/0043-official-xurl-rendered-timeline-is-the-reader-contract.md)
 
-The proposed [Automatic External History Catch-Up Through Heartbeat](./automatic-external-history-catch-up.md) extension and [ADR-0044](../adr/0044-automatic-external-history-catch-up-uses-per-thread-targets.md) add an opt-in persistent history policy. They preserve this PRD's implemented future-only default, official xURL contract, bounded concurrency, and serialized admission architecture.
+The implemented [Automatic External History Catch-Up Through Heartbeat](./automatic-external-history-catch-up.md) extension and [ADR-0044](../adr/0044-automatic-external-history-catch-up-uses-per-thread-targets.md) add an opt-in persistent history policy. They preserve this PRD's implemented future-only default, official xURL contract, bounded concurrency, and serialized admission architecture.
 
 ## Problem Statement
 
@@ -185,11 +185,13 @@ XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED=true
 XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS=codex,claude,pi
 XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY=3
 XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND=xurl
+XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE=future-only
 ```
 
 - The master switch defaults to false and pauses every external lane when false.
 - The enabled-provider list is normalized, deduplicated, and order-independent.
 - The command defaults to `xurl` and may be overridden with an executable path.
+- History mode defaults to `future-only`; `catch-up` is an explicit startup default or durable per-provider override.
 - The legacy selected-provider setting is accepted as a one-item list only when the new provider list is absent, and is reported as deprecated.
 - Baseline thread/output/time caps and xURL read timeout/output caps must be bounded and explicitly configurable; production defaults must fit inside the existing discovery wake budget.
 
@@ -211,13 +213,16 @@ The first operator surface is:
 
 ```text
 xiaoba external-source status [--json]
-xiaoba external-source enable <provider> [--scope <path|global>]
+xiaoba external-source enable <provider> [--scope <path|global>] [--history <future-only|catch-up>]
+xiaoba external-source history <provider> <future-only|catch-up>
 xiaoba external-source disable <provider>
 xiaoba external-source reset <provider>
 xiaoba external-source rebaseline <provider> --skip-to-now
 ```
 
 Commands modify the same durable provider state consumed by Runtime Learning. A running Runtime observes changes at the next scheduling boundary. Dashboard readiness remains read-only but surfaces the same status.
+
+`status --json` reports the scope kind but does not expose an unsanitized local scope path. Human and machine status keep admission gate, activation, history mode, catch-up progress, source health, and work/drain state as separate fields.
 
 ## Failure and Compatibility Behavior
 

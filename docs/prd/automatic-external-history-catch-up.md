@@ -1,8 +1,10 @@
 # Automatic External History Catch-Up Through Heartbeat
 
-Status: proposed
+Status: implemented
 
 This PRD extends the implemented [Multi-Provider External Session Log Distillation Through Official xURL](./multi-provider-external-session-log-xurl.md) architecture. It preserves the official xURL reader, future-only default, provider controls, bounded concurrent reads, External Admission Coordinator, explicit backfill, Evidence Capsule, failure isolation, and ordinary Skill Evolution pipeline. [ADR-0044](../adr/0044-automatic-external-history-catch-up-uses-per-thread-targets.md) records the core consistency decision.
+
+Issues #98-#102 implement this PRD. Deterministic Runtime, source, scheduler, recovery, diagnostics, and active-handle tests remain the CI authority. On 2026-07-16, both opt-in installed-xURL Canaries passed against official `xurl 0.0.27`: future-only established a non-admitting baseline, while catch-up admitted sanitized historical evidence for two providers through ordinary Runtime wakes with overlapping reads, serialized durable admission, released provider locks, and no remaining child-process handles.
 
 ## Problem Statement
 
