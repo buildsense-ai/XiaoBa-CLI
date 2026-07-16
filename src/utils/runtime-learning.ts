@@ -91,13 +91,14 @@ import {
   DEFAULT_INTERNAL_SOURCE_BUDGET,
 } from './session-log-source';
 import {
-  abandonExternalCatchUpTargets,
   closeExternalSourceResourceWithAudit,
   completeExternalTombstoneReopen,
   findBlockingExternalSourceTombstone,
   listExternalSourceRecoveryAudit,
   listExternalSourceTombstones,
   prepareExternalTombstoneReopen,
+  rebaselineExternalProviderWithRecovery,
+  recordExternalTombstoneReopenTerminalExclusion,
   retryExternalSourceQuarantineWithAudit,
   skipExternalSourceQuarantineWithAudit,
 } from './external-source-recovery';
@@ -793,6 +794,10 @@ export class RuntimeLearning {
     );
     this.externalEpisodeProvenanceCorruptMarkerPath = `${this.externalEpisodeProvenancePath}.state-corrupt`;
     this.loadExternalSourceSchedulingState();
+    for (const adapter of this.sessionLogSources) {
+      if (adapter.identity.category !== 'external' || !adapter.getCursorStorePath?.()) continue;
+      this.reconcileExternalSourceRecovery(adapter.identity.provider, adapter.identity.sourceId);
+    }
     this.evidenceCapsuleStore = new EvidenceCapsuleStore(this.config.evidenceCapsulePath);
     this.loadExternalEpisodeProvenanceState();
     this.externalAdmissionCoordinator = new ExternalAdmissionCoordinator({
@@ -1135,61 +1140,26 @@ export class RuntimeLearning {
    * Runtime scheduling boundary.
    */
   rebaselineExternalProvider(provider: string, skipToNow: boolean): void {
-    if (!skipToNow) {
-      throw new Error('external provider rebaseline requires skip-to-now');
-    }
     const normalizedProvider = provider.trim().toLowerCase();
     const providerAdapters = this.sessionLogSources.filter(adapter => (
       adapter.identity.category === 'external'
       && adapter.identity.provider === normalizedProvider
     ));
-    const unfinishedCatchUp = providerAdapters.some(adapter => {
-      const storePath = adapter.getCursorStorePath?.();
-      if (!storePath) return false;
-      const state = loadExternalCursorState(storePath);
-      return Object.values(state.catchUpResources)
-        .some(resource => (
-          resource.status !== 'complete'
-          && resource.status !== 'closed'
-          && resource.status !== 'abandoned'
-        ));
-    });
     const historyMode = this.providerOverrideStore
       .getProviderHistoryMode(normalizedProvider, this.config)
       .mode;
-    if (unfinishedCatchUp && historyMode !== 'future-only') {
-      throw new Error(
-        `external provider ${normalizedProvider} must be in future-only mode before unfinished catch-up can be rebaselined`,
-      );
-    }
-    const providerLock = this.acquireExternalProviderLock(
-      normalizedProvider,
-      'rebaseline-skip-to-now',
-      providerAdapters[0]?.identity.sourceId,
-    );
-    if (!providerLock.acquired) {
-      throw new Error(`external source provider lock is busy for ${normalizedProvider}`);
-    }
-    try {
-      for (const adapter of providerAdapters) {
-        const heads = adapter.observeRecoveryHeads?.() ?? [];
-        const storePath = adapter.getCursorStorePath?.();
-        if (!storePath) continue;
-        const result = abandonExternalCatchUpTargets(
-          storePath,
-          normalizedProvider,
-          adapter.identity.sourceId,
-          heads,
-          this.clock(),
-        );
-        for (const targetId of result.historicalTargetIds) {
-          this.episodeStore.abandonHistoricalTarget(targetId);
-        }
-      }
-      this.providerOverrideStore.rebaselineProvider(normalizedProvider, skipToNow);
-    } finally {
-      providerLock.release();
-    }
+    rebaselineExternalProviderWithRecovery({
+      provider: normalizedProvider,
+      skipToNow,
+      historyMode,
+      sources: providerAdapters,
+      lockRoot: this.externalSourceLockRoot(),
+      episodeStore: this.episodeStore,
+      recordProviderAudit: () => {
+        this.providerOverrideStore.rebaselineProvider(normalizedProvider, skipToNow);
+      },
+      now: this.clock,
+    });
   }
 
   /**
@@ -1304,6 +1274,14 @@ export class RuntimeLearning {
       if (representative) {
         this.setExternalSourceFailure(provider, sourceId, representative);
       } else {
+        const current = this.getExternalSourceFailure(provider, sourceId);
+        const cursorBackedRecoveryGate = current?.resourceRef
+          && current.eventId
+          && (
+            current.failureClass === 'quarantine'
+            || current.failureClass === 'integrity_conflict'
+          );
+        if (!cursorBackedRecoveryGate) return;
         this.clearExternalSourceFailureGate(provider, sourceId);
       }
     }
@@ -1647,7 +1625,7 @@ export class RuntimeLearning {
       }
       let admittedEpisodes = 0;
       let contradictionSignals = 0;
-      let reopenedTerminalTombstoneId: string | undefined;
+      let reopenedTerminalTombstoneId = reopenedRange?.terminalTombstoneId;
 
       const ingest = (unit: DistillationUnit, context: ExternalSessionLogBackfillIngestContext) => {
         const recoveryState = loadExternalCursorState(recoveryStorePath);
@@ -1660,7 +1638,13 @@ export class RuntimeLearning {
         );
         if (blockingTombstone) {
           if (reopenedRange) {
-            reopenedTerminalTombstoneId ??= blockingTombstone.tombstoneId;
+            const persistedReopen = recordExternalTombstoneReopenTerminalExclusion(
+              recoveryStorePath,
+              request.operationId,
+              blockingTombstone.tombstoneId,
+              this.clock(),
+            );
+            reopenedTerminalTombstoneId = persistedReopen.terminalTombstoneId;
           }
           return {
             admittedEpisodeIds: [],
@@ -1716,7 +1700,7 @@ export class RuntimeLearning {
         contradictionSignals += commit.contradictionSignals;
         return { admittedEpisodeIds: commit.admittedEpisodeIds ?? [] };
       };
-  
+
       let backfill: ExternalSessionLogBackfillRunResult | null = null;
       let drained = false;
       let priorityMaturation = skippedMaturationReport();
@@ -1732,7 +1716,7 @@ export class RuntimeLearning {
           priorityMaturation = mergeMaturationReports(priorityMaturation, priorityWake.maturation);
           priorityReview = mergeReviewReports(priorityReview, priorityWake.review);
         }
-  
+
         backfill = service.run({
           ...request,
           limits: {
@@ -1741,7 +1725,7 @@ export class RuntimeLearning {
             maxElapsedMs: Math.min(request.limits.maxElapsedMs, EXTERNAL_BACKFILL_SLICE_MS),
           },
         }, source, ingest, { filterOutOfRangeEvents: true });
-  
+
         if (backfill.status !== 'quota_reached') break;
         const priorMetrics = backfill.state.metrics;
         if (this.backfillDrainRequested) {
@@ -1761,11 +1745,11 @@ export class RuntimeLearning {
         }
         await new Promise<void>(resolve => setImmediate(resolve));
       } while (backfill.status === 'quota_reached');
-  
+
       if (!backfill) {
         throw new Error('external backfill did not produce a result');
       }
-  
+
       if (reopenedRange && backfill.status === 'completed') {
         completeExternalTombstoneReopen(
           recoveryStorePath,
@@ -1775,7 +1759,7 @@ export class RuntimeLearning {
         );
         this.episodeStore.reconcileHistoricalTarget(reopenedRange.targetId);
       }
-  
+
       // Backfill owns a separate cursor/audit, but source health is shared with
       // continuous ingestion. Persist the same durable failure class without
       // routing source failures into Operational Review Retry accounting.
@@ -1797,11 +1781,11 @@ export class RuntimeLearning {
         this.resetExternalSourceFailure(source.identity);
         this.saveExternalSourceSchedulingState();
       }
-  
+
       if (this.externalEpisodeProvenanceDirty) {
         this.saveExternalEpisodeProvenanceState();
       }
-  
+
       const maturationDueWork: DueWork = {
         settlementDue: true,
         operationalRetryDue: false,
@@ -1816,7 +1800,7 @@ export class RuntimeLearning {
         expeditedCuratorDue: false,
         semanticReassessmentDue: false,
       };
-  
+
       const maturation = drained
         ? priorityMaturation
         : mergeMaturationReports(priorityMaturation, await this.runMaturation(maturationDueWork, false));
@@ -1824,7 +1808,7 @@ export class RuntimeLearning {
       const review = drained
         ? priorityReview
         : mergeReviewReports(priorityReview, await this.runReview(reviewDueWork));
-  
+
       const metrics = backfill.state.metrics;
       const aggregateBackfill: ExternalSessionLogBackfillRunResult = {
         ...backfill,

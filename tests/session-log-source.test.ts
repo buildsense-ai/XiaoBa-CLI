@@ -1051,6 +1051,64 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         assert.deepEqual(loaded.reopenedRanges, {});
       });
 
+      test('malformed tombstones and recovery audits fail closed behind an advanced cursor', () => {
+        const identity: SessionLogSourceIdentity = {
+          sourceId: 'external-codex',
+          label: 'Codex',
+          category: 'external',
+          provider: 'codex',
+          reader: 'xurl',
+        };
+        const base = emptyExternalCursorState();
+        base.cursors['conversation-corrupt-recovery'] = {
+          cursor: {
+            resourceRef: 'conversation-corrupt-recovery',
+            position: 8,
+            processedCount: 4,
+          },
+          sourceIdentity: identity,
+          updatedAt: '2026-07-16T02:00:00.000Z',
+          lastStatus: 'stable',
+        };
+
+        const corruptions = [
+          {
+            label: 'tombstone',
+            mutate: (state: ReturnType<typeof emptyExternalCursorState>) => ({
+              ...state,
+              tombstones: {
+                invalid: {
+                  tombstoneId: 'invalid',
+                  kind: 'range-abandonment',
+                  resourceRef: 'conversation-corrupt-recovery',
+                  range: { startPosition: 5, endPosition: 'not-a-position' },
+                  createdAt: '2026-07-16T02:00:00.000Z',
+                  reason: 'must not be dropped',
+                },
+              },
+            }),
+          },
+          {
+            label: 'recovery audit',
+            mutate: (state: ReturnType<typeof emptyExternalCursorState>) => ({
+              ...state,
+              recoveryAudit: [{ auditId: 'missing-required-recovery-fields' }],
+            }),
+          },
+        ] as const;
+
+        for (const corruption of corruptions) {
+          const storePath = path.join(env.root, 'data', `corrupt-${corruption.label}.json`);
+          fs.mkdirSync(path.dirname(storePath), { recursive: true });
+          fs.writeFileSync(storePath, JSON.stringify(corruption.mutate(base)), 'utf8');
+          assert.throws(
+            () => loadExternalCursorState(storePath),
+            /invalid (?:external source )?(?:tombstone|recovery audit)/i,
+            `${corruption.label} cannot disappear behind an advanced cursor`,
+          );
+        }
+      });
+
       test('schema v1-v4 states run a future-only public wake without replaying history', async () => {
         for (const schemaVersion of [1, 2, 3, 4]) {
           const storePath = path.join(env.root, 'data', `schema-v${schemaVersion}.json`);

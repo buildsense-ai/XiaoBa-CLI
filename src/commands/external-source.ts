@@ -15,6 +15,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 import { Logger } from '../utils/logger';
 import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
@@ -30,7 +31,14 @@ import {
   resolveExternalProviderOverridePath,
   type ProviderStatus,
 } from '../utils/external-provider-controls';
-import { loadExternalCursorState, resolveExternalCursorStorePath } from '../utils/session-log-source';
+import { rebaselineExternalProviderWithRecovery } from '../utils/external-source-recovery';
+import { LearningEpisodeStore } from '../utils/learning-episode';
+import {
+  ExternalSessionLogSourceAdapter,
+  loadExternalCursorState,
+  resolveExternalCursorStorePath,
+} from '../utils/session-log-source';
+import { XurlExternalSourceReader } from '../utils/xurl-session-log-source';
 
 export interface ExternalSourceCommandOptions {
   subcommand: 'status' | 'enable' | 'history' | 'disable' | 'reset' | 'rebaseline';
@@ -102,7 +110,7 @@ export async function externalSourceCommand(options: ExternalSourceCommandOption
         process.exitCode = 1;
         return;
       }
-      handleRebaseline(store, options.provider, options.skipToNow);
+      handleRebaseline(store, config, workingDirectory, options.provider, options.skipToNow);
       break;
   }
 }
@@ -207,11 +215,44 @@ function handleReset(store: ExternalProviderOverrideStore, provider: string): vo
 
 function handleRebaseline(
   store: ExternalProviderOverrideStore,
+  config: ReturnType<typeof getDistillationHeartbeatConfig>,
+  workingDirectory: string,
   provider: string,
   skipToNow: boolean,
 ): void {
-  store.rebaselineProvider(provider, skipToNow);
-  Logger.info(`Provider "${provider}" rebaseline recorded (skip-to-now: ${skipToNow}). Watermarks advance at next scheduling boundary.`);
+  const normalizedProvider = provider.trim().toLowerCase();
+  const sourceId = resolveProviderSourceId(config, normalizedProvider);
+  const scope = store.getProviderScope(normalizedProvider);
+  const historyMode = store.getProviderHistoryMode(normalizedProvider, config).mode;
+  const reader = config.externalSessionLogXurlCommand
+    ? new XurlExternalSourceReader({
+      command: config.externalSessionLogXurlCommand,
+      provider: normalizedProvider,
+      sourceId,
+      scope: scope.scope,
+      scopePath: scope.scopePath,
+      cwd: workingDirectory,
+    })
+    : undefined;
+  const source = new ExternalSessionLogSourceAdapter({
+    sourceId,
+    label: `${normalizedProvider} Session Logs`,
+    provider: normalizedProvider,
+    reader,
+    enabled: true,
+    scope,
+    historyMode,
+  });
+  rebaselineExternalProviderWithRecovery({
+    provider: normalizedProvider,
+    skipToNow,
+    historyMode,
+    sources: [source],
+    lockRoot: path.dirname(config.learningEpisodeStorePath),
+    episodeStore: new LearningEpisodeStore(config.learningEpisodeStorePath),
+    recordProviderAudit: () => store.rebaselineProvider(normalizedProvider, skipToNow),
+  });
+  Logger.info(`Provider "${provider}" rebaseline completed (skip-to-now: ${skipToNow}).`);
 }
 
 function formatStatusJson(status: ProviderStatus) {

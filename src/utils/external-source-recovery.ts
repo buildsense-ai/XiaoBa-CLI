@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { acquireExternalSourceProviderLock } from './external-source-provider-lock';
 import type { ExternalSessionLogBackfillRequest } from './session-log-backfill';
 import {
   buildExternalEventDedupKey,
@@ -26,6 +27,94 @@ export interface ExternalRecoveryMutationResult {
   readonly changed: boolean;
   readonly tombstones: readonly ExternalSourceTombstoneEntry[];
   readonly historicalTargetIds: readonly string[];
+}
+
+export interface ExternalRecoverySource {
+  readonly identity: {
+    readonly provider: string;
+    readonly sourceId: string;
+  };
+  getCursorStorePath?(): string | undefined;
+  observeRecoveryHeads?(): readonly ExternalRecoveryHead[];
+}
+
+export interface ExternalProviderRebaselineOptions {
+  readonly provider: string;
+  readonly skipToNow: boolean;
+  readonly historyMode: 'future-only' | 'catch-up';
+  readonly sources: readonly ExternalRecoverySource[];
+  readonly lockRoot: string;
+  readonly episodeStore: {
+    abandonHistoricalTarget(targetId: string): unknown;
+  };
+  readonly recordProviderAudit: () => void;
+  readonly now?: () => Date;
+}
+
+/**
+ * Single audited authority for abandoning unread catch-up work. Cursor recovery
+ * state commits first; episode reconciliation and the provider audit replay from
+ * that durable state when a prior attempt stopped between stores.
+ */
+export function rebaselineExternalProviderWithRecovery(
+  options: ExternalProviderRebaselineOptions,
+): void {
+  if (!options.skipToNow) {
+    throw new Error('external provider rebaseline requires skip-to-now');
+  }
+  const provider = options.provider.trim().toLowerCase();
+  const sources = options.sources.filter(source => source.identity.provider === provider);
+  const now = options.now ?? (() => new Date());
+  const providerLock = acquireExternalSourceProviderLock({
+    runtimeRoot: options.lockRoot,
+    provider,
+    operation: 'rebaseline-skip-to-now',
+    sourceId: sources[0]?.identity.sourceId,
+    now,
+  });
+  if (!providerLock.acquired) {
+    throw new Error(`external source provider lock is busy for ${provider}`);
+  }
+
+  try {
+    const unfinishedCatchUp = sources.some(source => {
+      const storePath = source.getCursorStorePath?.();
+      if (!storePath) return false;
+      return Object.values(loadExternalCursorState(storePath).catchUpResources)
+        .some(resource => (
+          resource.status !== 'complete'
+          && resource.status !== 'closed'
+          && resource.status !== 'abandoned'
+        ));
+    });
+    if (unfinishedCatchUp && options.historyMode !== 'future-only') {
+      throw new Error(
+        `external provider ${provider} must be in future-only mode before unfinished catch-up can be rebaselined`,
+      );
+    }
+
+    for (const source of sources) {
+      const storePath = source.getCursorStorePath?.();
+      if (!storePath) continue;
+      abandonExternalCatchUpTargets(
+        storePath,
+        provider,
+        source.identity.sourceId,
+        source.observeRecoveryHeads?.() ?? [],
+        now(),
+      );
+
+      const persisted = loadExternalCursorState(storePath);
+      for (const [resourceRef, progress] of Object.entries(persisted.catchUpResources)) {
+        if (progress.status !== 'abandoned') continue;
+        const targetId = persisted.catchUpTargets[resourceRef]?.targetId;
+        if (targetId) options.episodeStore.abandonHistoricalTarget(targetId);
+      }
+    }
+    options.recordProviderAudit();
+  } finally {
+    providerLock.release();
+  }
 }
 
 export function listExternalSourceTombstones(
@@ -397,20 +486,23 @@ export function completeExternalTombstoneReopen(
   if (!reopened) return undefined;
   if (reopened.status === 'complete' || reopened.status === 'terminal-excluded') return reopened;
   const completedAt = now.toISOString();
+  const durableTerminalTombstoneId = terminalTombstoneId ?? reopened.terminalTombstoneId;
   const completed: ExternalReopenedRangeState = {
     ...reopened,
-    status: terminalTombstoneId ? 'terminal-excluded' : 'complete',
-    ...(terminalTombstoneId ? { terminalTombstoneId } : {}),
+    status: durableTerminalTombstoneId ? 'terminal-excluded' : 'complete',
+    ...(durableTerminalTombstoneId
+      ? { terminalTombstoneId: durableTerminalTombstoneId }
+      : {}),
     completedAt,
   };
   const audit = recoveryAudit({
-    action: terminalTombstoneId
+    action: durableTerminalTombstoneId
       ? 'reopened-range-terminal-exclusion'
       : 'reopened-range-complete',
     provider: reopened.provider,
     sourceId: reopened.sourceId,
     resourceRef: reopened.resourceRef,
-    tombstoneId: terminalTombstoneId ?? reopened.tombstoneId,
+    tombstoneId: durableTerminalTombstoneId ?? reopened.tombstoneId,
     operationId,
     createdAt: completedAt,
   });
@@ -424,6 +516,33 @@ export function completeExternalTombstoneReopen(
     updatedAt: completedAt,
   });
   return completed;
+}
+
+export function recordExternalTombstoneReopenTerminalExclusion(
+  storePath: string,
+  operationId: string,
+  tombstoneId: string,
+  now: Date,
+): ExternalReopenedRangeState {
+  const state = loadExternalCursorState(storePath);
+  const reopened = state.reopenedRanges[operationId];
+  if (!reopened) {
+    throw new Error(`external reopened range not found: ${operationId}`);
+  }
+  if (reopened.terminalTombstoneId) return reopened;
+  const updated: ExternalReopenedRangeState = {
+    ...reopened,
+    terminalTombstoneId: tombstoneId,
+  };
+  saveExternalCursorState(storePath, {
+    ...state,
+    reopenedRanges: {
+      ...state.reopenedRanges,
+      [operationId]: updated,
+    },
+    updatedAt: now.toISOString(),
+  });
+  return updated;
 }
 
 export function findBlockingExternalSourceTombstone(

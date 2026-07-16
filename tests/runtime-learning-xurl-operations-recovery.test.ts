@@ -1216,6 +1216,100 @@ test('quarantine recovery: explicit retry reprocesses the same event before adva
   }
 });
 
+test('restart heals a stale scheduling gate after quarantine retry commits only to cursor recovery', async () => {
+  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  const dataRoot = path.join(env.root, 'data');
+  let dataRootMode: number | undefined;
+  try {
+    const storePath = cursorStorePath(env.root, 'codex', 'external-codex');
+    writeScenario(env.scenarioPath, baselineScenario('codex', 'conversation-main'));
+    const fixture = env.createRuntime();
+    await fixture.runtime.wake('startup');
+
+    const before = loadExternalCursorState(storePath);
+    const sourceIdentity = before.sourceIdentities['external-codex']!;
+    const eventIdentity = {
+      eventId: 'agents://codex/conversation-main#1-2',
+      position: 2,
+      conversationId: 'conversation-main',
+      branchId: 'branch-main',
+      revision: 'rev-retry-crash-window',
+      contentHash: 'retry-crash-window-hash',
+    };
+    const quarantineId = buildExternalEventDedupKey(sourceIdentity, eventIdentity);
+    const detectedAt = '2026-07-16T01:00:00.000Z';
+    saveExternalCursorState(storePath, {
+      ...before,
+      quarantinedEvents: {
+        [quarantineId]: {
+          quarantineId,
+          resourceRef: 'conversation-main',
+          sourceIdentity,
+          identity: eventIdentity,
+          failureClass: 'quarantine',
+          message: 'seeded retry crash window',
+          detectedAt,
+          cursorPosition: 0,
+        },
+      },
+      updatedAt: detectedAt,
+    });
+
+    const staleFailure = {
+      consecutiveFailures: 1,
+      lastFailedAt: detectedAt,
+      lastError: 'seeded retry crash window',
+      suspendedUntil: null,
+      failureClass: 'quarantine' as const,
+      nextRetryAt: null,
+      requiresOperatorAction: true,
+      resourceRef: 'conversation-main',
+      eventId: eventIdentity.eventId,
+      lastAttemptedAt: detectedAt,
+      lastSuccessfulReadAt: null,
+    };
+    fs.writeFileSync(
+      path.join(dataRoot, 'external-source-scheduling-state.json'),
+      JSON.stringify({
+        schemaVersion: 3,
+        lanes: [{ provider: 'codex', sourceId: 'external-codex', state: staleFailure }],
+        resourceLanes: [{
+          provider: 'codex',
+          sourceId: 'external-codex',
+          resourceRef: 'conversation-main',
+          state: staleFailure,
+        }],
+      }),
+      'utf8',
+    );
+
+    dataRootMode = fs.statSync(dataRoot).mode & 0o777;
+    fs.chmodSync(dataRoot, 0o500);
+    assert.equal(
+      fixture.runtime.retryExternalSourceQuarantine('codex', 'external-codex', quarantineId),
+      true,
+    );
+    fs.chmodSync(dataRoot, dataRootMode);
+    dataRootMode = undefined;
+    assert.equal(loadExternalCursorState(storePath).quarantinedEvents[quarantineId], undefined);
+
+    const restarted = env.createRuntime();
+    assert.equal(
+      restarted.runtime.getExternalResourceFailureState('codex', 'external-codex').size,
+      0,
+      'cursor recovery clears the stale resource scheduling gate on restart',
+    );
+    assert.equal(
+      restarted.runtime.getExternalSourceFailure('codex', 'external-codex')?.requiresOperatorAction,
+      false,
+      'cursor recovery clears the stale source scheduling gate on restart',
+    );
+  } finally {
+    if (dataRootMode !== undefined) fs.chmodSync(dataRoot, dataRootMode);
+    env.restore();
+  }
+});
+
 test('resource closure preserves cursor state and ordinary rediscovery cannot silently reopen it', async () => {
   const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
   try {

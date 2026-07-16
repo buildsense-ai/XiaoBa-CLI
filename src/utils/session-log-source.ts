@@ -1132,8 +1132,10 @@ function normalizeRecoveryAudit(value: unknown): readonly ExternalSourceRecovery
   if (!Array.isArray(value)) {
     throw new Error('external cursor state has invalid recovery audit');
   }
-  return value.flatMap((raw) => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  return value.map((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('external cursor state has invalid recovery audit');
+    }
     const entry = raw as Partial<ExternalSourceRecoveryAuditEntry>;
     if (
       typeof entry.auditId !== 'string'
@@ -1150,8 +1152,10 @@ function normalizeRecoveryAudit(value: unknown): readonly ExternalSourceRecovery
         && entry.action !== 'reopened-range-complete'
         && entry.action !== 'reopened-range-terminal-exclusion'
       )
-    ) return [];
-    return [{
+    ) {
+      throw new Error('external cursor state has invalid recovery audit');
+    }
+    return {
       auditId: entry.auditId,
       action: entry.action,
       provider: entry.provider,
@@ -1162,7 +1166,7 @@ function normalizeRecoveryAudit(value: unknown): readonly ExternalSourceRecovery
       ...(typeof entry.tombstoneId === 'string' ? { tombstoneId: entry.tombstoneId } : {}),
       ...(typeof entry.operationId === 'string' ? { operationId: entry.operationId } : {}),
       ...(typeof entry.reason === 'string' ? { reason: entry.reason } : {}),
-    }];
+    };
   });
 }
 
@@ -1382,9 +1386,13 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
   const quarantine = parsed.quarantinedEvents && typeof parsed.quarantinedEvents === 'object'
     ? parsed.quarantinedEvents as Record<string, unknown>
     : {};
-  const tombstones = parsed.tombstones && typeof parsed.tombstones === 'object'
-    ? parsed.tombstones as Record<string, unknown>
-    : {};
+  if (
+    parsed.tombstones !== undefined
+    && (!parsed.tombstones || typeof parsed.tombstones !== 'object' || Array.isArray(parsed.tombstones))
+  ) {
+    throw new Error('external cursor state has invalid external source tombstones');
+  }
+  const tombstones = (parsed.tombstones ?? {}) as Record<string, unknown>;
   const normalizedQuarantine: Record<string, ExternalSourceQuarantineEntry> = {};
   for (const [quarantineId, value] of Object.entries(quarantine)) {
     const record = value as Partial<ExternalSourceQuarantineEntry> | null;
@@ -1407,14 +1415,35 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
   const normalizedTombstones: Record<string, ExternalSourceTombstoneEntry> = {};
   for (const [tombstoneId, value] of Object.entries(tombstones)) {
     const record = value as Partial<ExternalSourceTombstoneEntry> | null;
-    if (!record || typeof record !== 'object') continue;
+    if (
+      !record
+      || typeof record !== 'object'
+      || typeof record.tombstoneId !== 'string'
+      || record.tombstoneId.length === 0
+      || typeof record.resourceRef !== 'string'
+      || record.resourceRef.length === 0
+      || typeof record.createdAt !== 'string'
+      || typeof record.reason !== 'string'
+    ) {
+      throw new Error(`external cursor state has invalid external source tombstone for ${tombstoneId}`);
+    }
     const base = {
-      tombstoneId: typeof record.tombstoneId === 'string' ? record.tombstoneId : tombstoneId,
-      resourceRef: typeof record.resourceRef === 'string' ? record.resourceRef : 'unknown-resource',
-      createdAt: typeof record.createdAt === 'string' ? record.createdAt : new Date().toISOString(),
-      reason: typeof record.reason === 'string' ? record.reason : 'operator exclusion',
+      tombstoneId: record.tombstoneId,
+      resourceRef: record.resourceRef,
+      createdAt: record.createdAt,
+      reason: record.reason,
     };
     if ('identity' in record && record.identity && typeof record.identity === 'object') {
+      const identity = record.identity as Partial<SourceEventIdentity>;
+      if (
+        record.kind !== 'event-skip'
+        || typeof identity.eventId !== 'string'
+        || identity.eventId.length === 0
+        || !Number.isInteger(identity.position)
+        || identity.position! < 0
+      ) {
+        throw new Error(`external cursor state has invalid external source tombstone for ${tombstoneId}`);
+      }
       normalizedTombstones[tombstoneId] = {
         ...base,
         kind: 'event-skip',
@@ -1446,8 +1475,10 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
             ? { targetId: record.targetId }
             : {}),
         };
+        continue;
       }
     }
+    throw new Error(`external cursor state has invalid external source tombstone for ${tombstoneId}`);
   }
   const activation = parsed.activation && typeof parsed.activation === 'object'
     ? parsed.activation as Partial<ExternalSourceActivationState>
@@ -3811,90 +3842,6 @@ export function listExternalSourceQuarantines(
 ): readonly ExternalSourceQuarantineEntry[] {
   return Object.values(loadExternalCursorState(storePath).quarantinedEvents)
     .sort((left, right) => left.detectedAt.localeCompare(right.detectedAt));
-}
-
-export function retryExternalSourceQuarantine(
-  storePath: string,
-  quarantineId: string,
-): boolean {
-  const state = loadExternalCursorState(storePath);
-  if (!state.quarantinedEvents[quarantineId]) return false;
-  const nextQuarantine = { ...state.quarantinedEvents };
-  delete nextQuarantine[quarantineId];
-  saveExternalCursorState(storePath, {
-    ...state,
-    quarantinedEvents: nextQuarantine,
-    updatedAt: new Date().toISOString(),
-  });
-  return true;
-}
-
-export function skipExternalSourceQuarantine(
-  storePath: string,
-  quarantineId: string,
-  reason: string,
-): boolean {
-  const state = loadExternalCursorState(storePath);
-  const entry = state.quarantinedEvents[quarantineId];
-  if (!entry) return false;
-  const sourceIdentity = entry.sourceIdentity ?? Object.values(state.sourceIdentities).find(identity => (
-    quarantineId.startsWith(`${identity.sourceId}::${identity.provider}::`)
-  ));
-  if (!sourceIdentity) return false;
-  const nextQuarantine = { ...state.quarantinedEvents };
-  delete nextQuarantine[quarantineId];
-  const tombstoneKey = buildExternalStableEventKey(sourceIdentity, entry.identity);
-  saveExternalCursorState(storePath, {
-    ...state,
-    quarantinedEvents: nextQuarantine,
-    tombstones: {
-      ...state.tombstones,
-      [tombstoneKey]: {
-        tombstoneId: quarantineId,
-        kind: 'event-skip',
-        resourceRef: entry.resourceRef,
-        identity: entry.identity,
-        createdAt: new Date().toISOString(),
-        reason: redactExternalSourceDiagnostic(reason || 'operator skip'),
-      },
-    },
-    updatedAt: new Date().toISOString(),
-  });
-  return true;
-}
-
-/**
- * Close an external resource locally after the operator confirms the upstream
- * resource has been deleted or archived. Closing preserves the resource's
- * cursor, Capsules, Episodes, Capabilities, and Transition Audits — it only
- * marks the resource so it is no longer selected for future reads (issue #87).
- */
-export function closeExternalResource(
-  storePath: string,
-  resourceRef: string,
-  reason: 'deleted' | 'archived' | 'operator',
-): boolean {
-  const state = loadExternalCursorState(storePath);
-  const resource = state.resources[resourceRef];
-  if (!resource) return false;
-  if (resource.lifecycleStatus === 'closed') return false;
-  const now = new Date().toISOString();
-  const nextResources = {
-    ...state.resources,
-    [resourceRef]: {
-      ...resource,
-      lifecycleStatus: 'closed' as const,
-      closedAt: resource.closedAt ?? now,
-      closedReason: 'archived_or_deleted' as const,
-      updatedAt: now,
-    },
-  };
-  saveExternalCursorState(storePath, {
-    ...state,
-    resources: nextResources,
-    updatedAt: now,
-  });
-  return true;
 }
 
 /**

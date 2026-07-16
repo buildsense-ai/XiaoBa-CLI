@@ -411,7 +411,7 @@ export class ExternalSessionLogBackfillService {
       const belowReopenedBoundary = request.reopenTombstoneId !== undefined
         && readResult.newCursor.position < request.range.endPosition;
       if (readResult.events.length === 0) {
-        if (belowReopenedBoundary) {
+        if (request.reopenTombstoneId !== undefined) {
           sawPending = true;
           pendingResources += 1;
           metrics = {
@@ -421,10 +421,14 @@ export class ExternalSessionLogBackfillService {
           state = {
             ...state,
             updatedAt: now.toISOString(),
-            resourceCursors: {
-              ...state.resourceCursors,
-              [resource.resourceRef]: readResult.newCursor,
-            },
+            ...(belowReopenedBoundary
+              ? {
+                resourceCursors: {
+                  ...state.resourceCursors,
+                  [resource.resourceRef]: readResult.newCursor,
+                },
+              }
+              : {}),
             metrics,
           };
           saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
@@ -487,6 +491,34 @@ export class ExternalSessionLogBackfillService {
       const eventsInRange = readResult.events.filter(
         event => isBackfillEventInRange(event.identity, request.range),
       );
+      if (request.reopenTombstoneId !== undefined && eventsInRange.length === 0) {
+        sawPending = true;
+        pendingResources += 1;
+        metrics = {
+          ...state.metrics,
+          pendingResources: state.metrics.pendingResources + 1,
+        };
+        state = {
+          ...state,
+          updatedAt: now.toISOString(),
+          metrics,
+        };
+        saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+        appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+          timestamp: now.toISOString(),
+          kind: 'resource_pending',
+          operationId: state.operationId,
+          provider: state.provider,
+          sourceId: state.sourceId,
+          triggeredBy: state.triggeredBy,
+          range: state.range,
+          reopenTombstoneId: state.reopenTombstoneId,
+          status: state.status,
+          resourceRef: resource.resourceRef,
+          metrics: state.metrics,
+        });
+        continue;
+      }
 
       let resourceFailed = false;
       let resourceDuplicates = 0;

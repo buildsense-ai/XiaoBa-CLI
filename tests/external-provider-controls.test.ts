@@ -30,6 +30,12 @@ import {
   type ProviderStatus,
   type ExternalProviderOverrideState,
 } from '../src/utils/external-provider-controls';
+import {
+  emptyExternalCursorState,
+  loadExternalCursorState,
+  resolveExternalCursorStorePath,
+  saveExternalCursorState,
+} from '../src/utils/session-log-source';
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const TSX_LOADER = pathToFileURL(require.resolve('tsx')).href;
@@ -60,6 +66,7 @@ function setupEnv(extraEnv?: Record<string, string | undefined>): TestEnv {
     XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER,
     XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID,
     XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND: process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND,
+    XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE: process.env.XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE,
     XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
     DISTILLATION_HEARTBEAT_ENABLED: process.env.DISTILLATION_HEARTBEAT_ENABLED,
     DISTILLATION_HEARTBEAT_LOG_ROOT: process.env.DISTILLATION_HEARTBEAT_LOG_ROOT,
@@ -535,9 +542,41 @@ describe('external-source CLI command', () => {
     assert.ok(store.resolveEnabledProviders(config).includes('claude'));
   });
 
-  test('rebaseline --skip-to-now records an audit entry', async () => {
+  test('rebaseline --skip-to-now runs the durable recovery lifecycle', async () => {
     process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
     process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS = 'codex';
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE = 'future-only';
+    const sourceId = 'external-codex';
+    const resourceRef = 'thread-cli-rebaseline';
+    const cursorPath = resolveExternalCursorStorePath({ provider: 'codex', sourceId });
+    const cursorState = emptyExternalCursorState();
+    cursorState.sourceIdentities[sourceId] = {
+      sourceId,
+      label: 'Codex Session Logs',
+      category: 'external',
+      provider: 'codex',
+      reader: 'external',
+    };
+    cursorState.catchUpTargets[resourceRef] = {
+      targetId: 'target-cli-rebaseline',
+      provider: 'codex',
+      sourceId,
+      resourceRef,
+      position: 4,
+      empty: false,
+      prefixDigest: 'a'.repeat(64),
+      creationGeneration: 1,
+      scopeFingerprint: 'b'.repeat(64),
+      observedAt: '2026-07-16T00:00:00.000Z',
+    };
+    cursorState.catchUpResources[resourceRef] = {
+      status: 'historical-pending',
+      historicalCursor: { resourceRef, position: 2, processedCount: 1 },
+      observedPosition: 4,
+      updatedAt: '2026-07-16T00:00:00.000Z',
+    };
+    saveExternalCursorState(cursorPath, cursorState);
+
     const { externalSourceCommand } = await import('../src/commands/external-source');
     await externalSourceCommand({
       subcommand: 'rebaseline',
@@ -551,6 +590,17 @@ describe('external-source CLI command', () => {
     const state = store.load();
     assert.equal(state.rebaselineAudit.length, 1);
     assert.equal(state.rebaselineAudit[0].provider, 'codex');
+
+    const recovered = loadExternalCursorState(cursorPath);
+    assert.equal(recovered.catchUpResources[resourceRef]?.status, 'abandoned');
+    assert.equal(recovered.cursors[resourceRef]?.cursor.position, 4);
+    const tombstones = Object.values(recovered.tombstones);
+    assert.equal(tombstones.length, 1);
+    assert.equal(tombstones[0]?.kind, 'range-abandonment');
+    assert.deepEqual(
+      tombstones[0]?.kind === 'range-abandonment' ? tombstones[0].range : undefined,
+      { startPosition: 3, endPosition: 4 },
+    );
   });
 
   test('status human output contains provider names', async () => {

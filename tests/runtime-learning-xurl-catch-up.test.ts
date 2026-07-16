@@ -1598,6 +1598,47 @@ test('named reopen remains historical-pending when its fixed resource is absent'
       'historical-pending',
       'a present resource below the fixed end is still unresolved',
     );
+
+    const emptyAtBoundary = await fixture.runtime.runExternalBackfill(request, {
+      identity: {
+        sourceId: SOURCE_ID,
+        label: 'Codex empty reopened range fixture',
+        category: 'external',
+        provider: PROVIDER,
+        reader: 'fixture',
+      },
+      discoverResources: () => [{
+        resourceRef: THREAD_ID,
+        firstEventIdentity: {
+          eventId: `agents://codex/${THREAD_ID}#3-4`,
+          position: 4,
+          conversationId: THREAD_ID,
+          branchId: 'branch-main',
+          contentHash: 'empty-boundary-head',
+        },
+      }],
+      read: () => ({
+        status: 'stable',
+        events: [],
+        newCursor: {
+          resourceRef: THREAD_ID,
+          position: 4,
+          processedCount: 0,
+        },
+      }),
+    });
+    assert.equal(emptyAtBoundary.backfill.status, 'pending');
+    assert.equal(
+      loadExternalCursorState(cursorStorePath(env.root))
+        .reopenedRanges[request.operationId]?.status,
+      'historical-pending',
+      'an empty read cannot prove a reopened fixed range complete',
+    );
+    assert.ok(
+      Object.values(fixture.episodeStore.load().episodes)
+        .every(episode => episode.status === 'historical-pending'),
+      'empty requested evidence cannot release reopened episodes',
+    );
   } finally {
     env.restore();
   }
@@ -1694,23 +1735,54 @@ test('reopened fixed range records another explicit exclusion as terminal', asyn
         maxElapsedMs: 60_000,
       },
     };
-    const result = await fixture.runtime.runExternalBackfill(request, new XurlExternalBackfillSource({
+    const xurlSource = new XurlExternalBackfillSource({
       command: env.commandPath,
       provider: PROVIDER,
       sourceId: SOURCE_ID,
-    }));
+    });
+    const firstPageSource = {
+      identity: xurlSource.identity,
+      discoverResources: () => xurlSource.discoverResources(),
+      read: (...args: Parameters<typeof xurlSource.read>) => {
+        const page = xurlSource.read(...args);
+        return {
+          ...page,
+          events: page.events.filter(event => event.identity.position === 6),
+          newCursor: {
+            resourceRef: THREAD_ID,
+            position: 6,
+            processedCount: 1,
+          },
+        };
+      },
+    };
+    const firstPage = await fixture.runtime.runExternalBackfill(request, firstPageSource);
+    assert.equal(firstPage.backfill.status, 'pending');
+    assert.equal(firstPage.backfill.tombstonedEventsSkipped, 1);
+    const pendingReopen = loadExternalCursorState(storePath).reopenedRanges[request.operationId];
+    assert.ok(pendingReopen);
+    assert.equal(pendingReopen.status, 'historical-pending');
+    assert.equal(
+      pendingReopen.terminalTombstoneId,
+      quarantineId,
+      'terminal identity is durable before the reopened cursor yields',
+    );
+
+    const restarted = env.createRuntime({
+      discoveryQuotas: { maxAdmittedEpisodesPerWake: 2 },
+    });
+    const result = await restarted.runtime.runExternalBackfill(request, xurlSource);
     assert.equal(result.backfill.status, 'completed');
-    assert.equal(result.backfill.tombstonedEventsSkipped, 1);
     const reopened = loadExternalCursorState(storePath).reopenedRanges[request.operationId];
     assert.ok(reopened);
     assert.equal(reopened.status, 'terminal-excluded');
     assert.equal(reopened.terminalTombstoneId, quarantineId);
     assert.ok(
-      Object.values(fixture.episodeStore.load().episodes)
+      Object.values(restarted.episodeStore.load().episodes)
         .every(episode => episode.status !== 'historical-pending'),
     );
     assert.deepEqual(
-      fixture.runtime.listExternalSourceRecoveryAudit(PROVIDER, SOURCE_ID)
+      restarted.runtime.listExternalSourceRecoveryAudit(PROVIDER, SOURCE_ID)
         .map(entry => entry.action),
       [
         'range-abandonment',
