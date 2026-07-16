@@ -3,6 +3,9 @@ import { createHash } from 'node:crypto';
 
 import { DistillationUnit } from './distillation-unit';
 import {
+  ExternalCatchUpCatalogLimits,
+  ExternalCatchUpCatalogObservation,
+  ExternalCatchUpCatalogObservationRequest,
   ExternalSourceActivationResource,
   ExternalSourceIncrementalDiscoveryRequest,
   ExternalSourceIncrementalDiscoveryResult,
@@ -45,6 +48,7 @@ import {
 export const DEFAULT_XURL_TIMEOUT_MS = 10_000;
 export const DEFAULT_XURL_MAX_OUTPUT_BYTES = 256 * 1024;
 export const DEFAULT_XURL_QUERY_LIMIT = 100;
+export const DEFAULT_XURL_CATCH_UP_INITIAL_LIMIT = 100;
 export const DEFAULT_XURL_MAX_ACTIVATION_CATALOG = 2048;
 export const DEFAULT_XURL_MAX_ACTIVATION_OUTPUT_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_XURL_MAX_ACTIVATION_DURATION_MS = 60_000;
@@ -116,6 +120,8 @@ export interface XurlProcessRunnerOptions {
   readonly maxActivationOutputBytes?: number;
   /** Maximum wall-clock duration for one activation pass. */
   readonly maxActivationDurationMs?: number;
+  /** First bounded limit used by catch-up's expanding catalog observations. */
+  readonly catchUpInitialCatalogLimit?: number;
 }
 
 export interface XurlExternalSourceOptions extends XurlProcessRunnerOptions {
@@ -154,6 +160,8 @@ interface XurlHistorySamplePage {
   readonly events: readonly XurlNormalizedEvent[];
   readonly newPosition: number;
   readonly observedPosition: number;
+  readonly conversationId: string;
+  readonly branchId: string;
 }
 
 /**
@@ -236,6 +244,37 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
       activationWatermarkPosition: summaries.length > 0
         ? Math.max(...summaries.map(thread => thread.ordinal))
         : 0,
+    };
+  }
+
+  getCatchUpCatalogLimits(): ExternalCatchUpCatalogLimits {
+    return this.runner.catchUpCatalogLimits;
+  }
+
+  observeCatchUpCatalog(
+    request: ExternalCatchUpCatalogObservationRequest,
+  ): ExternalCatchUpCatalogObservation {
+    const outputBytesBefore = this.runner.activationOutputBytes;
+    const catalog = this.runner.queryCatalog(request.requestedLimit, null);
+    this.runner.checkActivationLimits(catalog);
+    const resources: SessionLogSourceResource[] = catalog.threads.map(summary => ({
+      resourceRef: summary.threadId,
+      firstEventIdentity: {
+        eventId: canonicalEventId(this.provider, summary.threadId, summary.ordinal, summary.ordinal),
+        position: summary.ordinal,
+        conversationId: summary.threadId,
+        branchId: summary.branch,
+        ...(summary.revision ? { revision: summary.revision } : {}),
+        contentHash: summary.fingerprint,
+      },
+    }));
+    return {
+      resources,
+      // Official xURL catch-up is expanding-limit observation, not portable
+      // cursor pagination. Future-only discovery keeps its existing paging.
+      nextPageToken: null,
+      returnedResourceCount: resources.length,
+      outputBytes: Math.max(0, this.runner.activationOutputBytes - outputBytesBefore),
     };
   }
 
@@ -379,6 +418,7 @@ class XurlOfficialRunner {
   private readonly maxActivationCatalog: number;
   private readonly maxActivationOutputBytes: number;
   private readonly maxActivationDurationMs: number;
+  private readonly catchUpInitialCatalogLimit: number;
   private versionCache: string | undefined;
   private versionChecked = false;
   private activationBytesAccum = 0;
@@ -419,10 +459,32 @@ class XurlOfficialRunner {
       DEFAULT_XURL_MAX_ACTIVATION_DURATION_MS,
       'xurl maxActivationDurationMs',
     );
+    this.catchUpInitialCatalogLimit = Math.min(
+      this.maxActivationCatalog,
+      resolveActivationLimit(
+        options.catchUpInitialCatalogLimit,
+        'XIAOBA_EXTERNAL_SESSION_LOG_XURL_CATCH_UP_INITIAL_LIMIT',
+        DEFAULT_XURL_CATCH_UP_INITIAL_LIMIT,
+        'xurl catchUpInitialCatalogLimit',
+      ),
+    );
   }
 
   get version(): string | undefined {
     return this.versionCache;
+  }
+
+  get activationOutputBytes(): number {
+    return this.activationBytesAccum;
+  }
+
+  get catchUpCatalogLimits(): ExternalCatchUpCatalogLimits {
+    return {
+      initialLimit: this.catchUpInitialCatalogLimit,
+      maxCatalogResources: this.maxActivationCatalog,
+      maxOutputBytes: this.maxActivationOutputBytes,
+      maxDurationMs: this.maxActivationDurationMs,
+    };
   }
 
   checkActivationLimits(catalog: RenderedCatalog): void {
@@ -585,9 +647,13 @@ class XurlOfficialRunner {
 
   sampleHistoryTimeline(resource: SessionLogSourceResource): XurlHistorySamplePage {
     const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
-    const first = parseTimelinePage(this.invoke('read', [uri]), this.provider, resource.resourceRef, uri);
-    const second = parseTimelinePage(this.invoke('read', [uri]), this.provider, resource.resourceRef, uri);
-    return buildXurlHistorySample(this.provider, resource, first, second);
+    const observation = parseTimelinePage(
+      this.invoke('read', [uri]),
+      this.provider,
+      resource.resourceRef,
+      uri,
+    );
+    return buildXurlHistorySample(this.provider, resource, observation);
   }
 
   async sampleHistoryTimelineAsync(
@@ -595,19 +661,13 @@ class XurlOfficialRunner {
     signal: AbortSignal,
   ): Promise<XurlHistorySamplePage> {
     const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
-    const first = parseTimelinePage(
+    const observation = parseTimelinePage(
       await this.invokeAsync('read', [uri], signal),
       this.provider,
       resource.resourceRef,
       uri,
     );
-    const second = parseTimelinePage(
-      await this.invokeAsync('read', [uri], signal),
-      this.provider,
-      resource.resourceRef,
-      uri,
-    );
-    return buildXurlHistorySample(this.provider, resource, first, second);
+    return buildXurlHistorySample(this.provider, resource, observation);
   }
 
   private headFrontmatter(resource: SessionLogSourceResource): {
@@ -840,28 +900,18 @@ class XurlOfficialRunner {
 function buildXurlHistorySample(
   provider: string,
   resource: SessionLogSourceResource,
-  first: ParsedTimelinePage,
-  second: ParsedTimelinePage,
+  observation: ParsedTimelinePage,
 ): XurlHistorySamplePage {
-  const firstPrefix = JSON.stringify([
-    first.timeline.threadId,
-    first.timeline.branch,
-    first.events.map(event => [event.startOrdinal, event.endOrdinal, event.contentHash]),
-  ]);
-  const secondPrefix = JSON.stringify([
-    second.timeline.threadId,
-    second.timeline.branch,
-    second.events.map(event => [event.startOrdinal, event.endOrdinal, event.contentHash]),
-  ]);
-  const stable = firstPrefix === secondPrefix;
-  const events = stable
-    ? second.events.map(event => normalizeCanonicalEvent(provider, resource, second.timeline, event))
-    : [];
+  const events = observation.events.map(event => (
+    normalizeCanonicalEvent(provider, resource, observation.timeline, event)
+  ));
   return {
-    status: stable ? 'stable' : 'pending',
+    status: 'stable',
     events,
     newPosition: events.length > 0 ? events[events.length - 1]!.identity.position : -1,
-    observedPosition: Math.max(first.timeline.ordinal, second.timeline.ordinal),
+    observedPosition: observation.timeline.ordinal,
+    conversationId: observation.timeline.threadId,
+    branchId: observation.timeline.branch,
   };
 }
 
@@ -880,6 +930,8 @@ function toExternalHistorySample(page: XurlHistorySamplePage): ExternalSourceHis
     exhausted: page.status === 'stable',
     newPosition: page.newPosition,
     observedPosition: page.observedPosition,
+    conversationId: page.conversationId,
+    branchId: page.branchId,
     byteLength: page.events.reduce((sum, event) => sum + event.byteLength, 0),
   };
 }
