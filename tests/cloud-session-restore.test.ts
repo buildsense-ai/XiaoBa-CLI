@@ -200,7 +200,7 @@ test('the latest clear command cuts off older cloud history on every device', as
     page([
       contextMessage({ id: 1, seq_id: 1, content: 'old question' }),
       contextMessage({ id: 2, seq_id: 2, from_uid: 42, content: 'old answer', context_role: 'assistant' }),
-      contextMessage({ id: 3, seq_id: 3, content: '/clear' }),
+      contextMessage({ id: 3, seq_id: 3, content: JSON.stringify('/clear') }),
     ], { has_more: true, next_before_id: 1 }),
   ]);
   const restorer = new CatsCompanyCloudSessionRestorer(client, fakeAIService, store);
@@ -218,6 +218,91 @@ test('the latest clear command cuts off older cloud history on every device', as
   assert.deepEqual(store.sessions.get('cleared-session')?.map(message => message.content), [
     'new question',
     'new answer',
+  ]);
+});
+
+test('an ordinary group member saying /clear does not truncate group history', async () => {
+  const store = new MemorySessionStore();
+  const client = new FakeHistoryClient([
+    page([
+      contextMessage({ id: 1, seq_id: 1, topic_id: 'grp_80', content: 'old discussion' }),
+      contextMessage({ id: 2, seq_id: 2, topic_id: 'grp_80', content: '/clear' }),
+      contextMessage({ id: 3, seq_id: 3, topic_id: 'grp_80', content: 'new discussion' }),
+    ], { topic_id: 'grp_80' }),
+  ]);
+  const restorer = new CatsCompanyCloudSessionRestorer(client, fakeAIService, store);
+
+  const result = await restorer.restoreIfMissing({
+    sessionKey: 'ordinary-clear-group',
+    topicId: 'grp_80',
+    topicType: 'group',
+    agentId: 'usr42',
+    currentSeq: 4,
+  });
+
+  assert.equal(result.status, 'restored');
+  assert.deepEqual(store.sessions.get('ordinary-clear-group')?.map(message => message.content), [
+    '[群聊成员 usr7]\nold discussion',
+    '[群聊成员 usr7]\n/clear',
+    '[群聊成员 usr7]\nnew discussion',
+  ]);
+});
+
+test('a group clear targeting the agent truncates older group history', async () => {
+  const store = new MemorySessionStore();
+  const client = new FakeHistoryClient([
+    page([
+      contextMessage({ id: 3, seq_id: 3, topic_id: 'grp_80', content: 'new discussion' }),
+      contextMessage({
+        id: 2,
+        seq_id: 2,
+        topic_id: 'grp_80',
+        content: '/clear --all',
+        context_reason: 'group_message_targets_agent',
+      }),
+      contextMessage({ id: 1, seq_id: 1, topic_id: 'grp_80', content: 'old discussion' }),
+    ], { topic_id: 'grp_80' }),
+  ]);
+  const restorer = new CatsCompanyCloudSessionRestorer(client, fakeAIService, store);
+
+  const result = await restorer.restoreIfMissing({
+    sessionKey: 'targeted-clear-group',
+    topicId: 'grp_80',
+    topicType: 'group',
+    agentId: 'usr42',
+    currentSeq: 4,
+  });
+
+  assert.equal(result.status, 'restored');
+  assert.deepEqual(store.sessions.get('targeted-clear-group')?.map(message => message.content), [
+    '[群聊成员 usr7]\nnew discussion',
+  ]);
+});
+
+test('cloud restore sorts a descending history page before rebuilding turns', async () => {
+  const store = new MemorySessionStore();
+  const client = new FakeHistoryClient([
+    page([
+      contextMessage({ id: 3, seq_id: 3, content: 'second question' }),
+      contextMessage({ id: 2, seq_id: 2, from_uid: 42, content: 'first answer', context_role: 'assistant' }),
+      contextMessage({ id: 1, seq_id: 1, content: 'first question' }),
+    ]),
+  ]);
+  const restorer = new CatsCompanyCloudSessionRestorer(client, fakeAIService, store);
+
+  const result = await restorer.restoreIfMissing({
+    sessionKey: 'descending-page',
+    topicId: 'p2p_7_42',
+    topicType: 'p2p',
+    agentId: 'usr42',
+    currentSeq: 4,
+  });
+
+  assert.equal(result.status, 'restored');
+  assert.deepEqual(store.sessions.get('descending-page')?.map(message => message.content), [
+    'first question',
+    'first answer',
+    'second question',
   ]);
 });
 
@@ -330,5 +415,39 @@ test('history failure leaves the local session untouched for a later retry', asy
 
   assert.equal(result.status, 'failed');
   assert.equal(store.hasSession('missing-session'), false);
+  assert.equal(store.saveCalls, 0);
+});
+
+test('an aborted cloud restore cannot recreate a session after clear', async () => {
+  const store = new MemorySessionStore();
+  let releaseHistory!: () => void;
+  let historyStarted!: () => void;
+  const historyStartedPromise = new Promise<void>(resolve => { historyStarted = resolve; });
+  const historyGate = new Promise<void>(resolve => { releaseHistory = resolve; });
+  const client = {
+    async getAgentContextHistory() {
+      historyStarted();
+      await historyGate;
+      return page([contextMessage({ content: 'old cloud history' })]);
+    },
+  };
+  const controller = new AbortController();
+  const restorer = new CatsCompanyCloudSessionRestorer(client, fakeAIService, store);
+
+  const restoring = restorer.restoreIfMissing({
+    sessionKey: 'cleared-during-restore',
+    topicId: 'p2p_7_42',
+    topicType: 'p2p',
+    agentId: 'usr42',
+    currentSeq: 2,
+    signal: controller.signal,
+  });
+  await historyStartedPromise;
+  controller.abort();
+  releaseHistory();
+
+  const result = await restoring;
+  assert.equal(result.status, 'failed');
+  assert.equal(store.hasSession('cleared-during-restore'), false);
   assert.equal(store.saveCalls, 0);
 });

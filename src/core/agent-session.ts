@@ -502,15 +502,21 @@ export class AgentSession {
         Logger.warning(`[会话 ${this.key}] Prompt 热加载失败，继续使用上一版: ${error?.message || error}`);
       }
 
-      this.messages = stripAssistantArtifactsFromMessages(this.messages);
-      this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
-        sessionKey: this.key,
-        reason: '处理前',
-        signal: this.activeAbortController.signal,
-        onStatus: this.createContextCompactionNotifier(callbacks),
-      });
-
       try {
+        const messagesBeforeCompaction = stripAssistantArtifactsFromMessages(this.messages);
+        const compactedMessages = await this.contextWindowManager.compactIfNeeded(messagesBeforeCompaction, {
+          sessionKey: this.key,
+          reason: '处理前',
+          signal: this.activeAbortController.signal,
+          onStatus: this.createContextCompactionNotifier(callbacks),
+        });
+        if (this.interruptRequested || this.activeAbortController.signal.aborted) {
+          Logger.info(`[会话 ${this.key}] 当前请求已取消，忽略压缩在中断后的返回`);
+          this.lifecycleManager.saveContext(this.messages);
+          return { text: '已停止当前请求。', visibleToUser: true };
+        }
+        this.messages = compactedMessages;
+
         await this.init({
           callbacks,
           signal: this.activeAbortController.signal,
@@ -536,6 +542,12 @@ export class AgentSession {
           abortSignal: this.activeAbortController.signal,
           shouldContinue: () => !this.interruptRequested,
         });
+        if (this.interruptRequested || this.activeAbortController.signal.aborted) {
+          Logger.info(`[会话 ${this.key}] 当前请求已取消，忽略模型在中断后的返回`);
+          this.messages = this.turnContextBuilder.removeTransientMessages(this.messages);
+          this.lifecycleManager.saveContext(this.messages);
+          return { text: '已停止当前请求。', visibleToUser: true };
+        }
         this.messages = result.messages;
         this.lifecycleManager.saveContext(this.messages);
         return result;
@@ -618,6 +630,7 @@ export class AgentSession {
 
       // /clear
       if (commandName === 'clear') {
+        this.requestInterrupt();
         if (args.includes('--all')) {
           this.clear();
           return { handled: true, reply: '历史已清空，文件已删除' };

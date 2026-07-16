@@ -65,11 +65,13 @@ export class CatsCompanyCloudSessionRestorer {
 
     try {
       const fetched = await this.fetchHistory(request);
+      request.signal?.throwIfAborted();
       if (fetched.messages.length === 0) {
         return this.result('empty', { fetchedMessages: fetched.fetchedMessages });
       }
 
       const prepared = await this.prepareForPersistence(fetched.messages, request.signal);
+      request.signal?.throwIfAborted();
       if (this.hasLocalSession(request.sessionKey)) {
         return this.result('local_present', { fetchedMessages: fetched.fetchedMessages });
       }
@@ -104,7 +106,8 @@ export class CatsCompanyCloudSessionRestorer {
   }> {
     let beforeId = request.currentSeq;
     let fetchedMessages = 0;
-    let messages: Message[] = [];
+    let rawMessages: CatsAgentContextMessage[] = [];
+    const seenMessageIds = new Set<number>();
 
     for (let pageIndex = 0; pageIndex < CLOUD_RESTORE_MAX_PAGES; pageIndex++) {
       const page = await this.client.getAgentContextHistory(request.topicId, {
@@ -115,25 +118,40 @@ export class CatsCompanyCloudSessionRestorer {
       this.assertPageScope(page, request);
       fetchedMessages += page.messages.length;
 
-      const clearBoundaryIndex = findLastClearBoundaryIndex(page.messages, request);
-      const pageMessages = normalizeAgentContextMessages(
-        clearBoundaryIndex >= 0 ? page.messages.slice(clearBoundaryIndex + 1) : page.messages,
+      const orderedPage = [...page.messages]
+        .sort((left, right) => agentContextMessageSeq(left) - agentContextMessageSeq(right))
+        .filter(message => {
+          const id = Number(message.id || message.seq_id || 0);
+          if (id <= 0 || seenMessageIds.has(id)) return false;
+          seenMessageIds.add(id);
+          return true;
+        });
+      const clearBoundaryIndex = findLastClearBoundaryIndex(orderedPage, request);
+      const pageMessages = clearBoundaryIndex >= 0
+        ? orderedPage.slice(clearBoundaryIndex + 1)
+        : orderedPage;
+      rawMessages = [...pageMessages, ...rawMessages];
+      const normalizedMessages = coalesceAssistantSegments(normalizeAgentContextMessages(
+        [...rawMessages].sort((left, right) => agentContextMessageSeq(left) - agentContextMessageSeq(right)),
         request,
-      );
-      messages = coalesceAssistantSegments([...pageMessages, ...messages]);
+      ));
 
       if (
         clearBoundaryIndex >= 0
         || !page.has_more
         || page.next_before_id <= 0
         || page.next_before_id >= beforeId
-        || estimateMessagesTokens(messages) >= CLOUD_RESTORE_FETCH_TOKEN_BUDGET
+        || estimateMessagesTokens(normalizedMessages) >= CLOUD_RESTORE_FETCH_TOKEN_BUDGET
       ) {
         break;
       }
       beforeId = page.next_before_id;
     }
 
+    const messages = coalesceAssistantSegments(normalizeAgentContextMessages(
+      [...rawMessages].sort((left, right) => agentContextMessageSeq(left) - agentContextMessageSeq(right)),
+      request,
+    ));
     return { messages, fetchedMessages };
   }
 
@@ -240,14 +258,18 @@ export function normalizeAgentContextMessages(
 
 function findLastClearBoundaryIndex(
   messages: CatsAgentContextMessage[],
-  request: Pick<CloudSessionRestoreRequest, 'agentId'>,
+  request: Pick<CloudSessionRestoreRequest, 'agentId' | 'topicType'>,
 ): number {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
+    const clearReasonMatches = request.topicType === 'group'
+      ? message.context_reason === 'group_message_targets_agent'
+      : message.context_reason === undefined || message.context_reason === 'participant_message';
     if (
       message.context_eligible === true
       && message.context_role === 'user'
       && normalizeUID(message.agent_id || message.agent_uid) === normalizeUID(request.agentId)
+      && clearReasonMatches
       && /^\/clear(?:\s|$)/i.test(cloudMessageText(message))
     ) {
       return index;
@@ -256,8 +278,20 @@ function findLastClearBoundaryIndex(
   return -1;
 }
 
+function agentContextMessageSeq(message: CatsAgentContextMessage): number {
+  return Number(message.seq_id || message.id || 0);
+}
+
 function cloudMessageText(message: CatsAgentContextMessage): string {
-  if (typeof message.content === 'string' && message.content.trim()) return message.content.trim();
+  if (typeof message.content === 'string' && message.content.trim()) {
+    const text = message.content.trim();
+    try {
+      const parsed = JSON.parse(text);
+      return typeof parsed === 'string' ? parsed.trim() : text;
+    } catch {
+      return text;
+    }
+  }
   if (!message.content || typeof message.content !== 'object') {
     return cloudContentBlocksText(message.content_blocks);
   }

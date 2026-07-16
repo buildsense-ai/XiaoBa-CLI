@@ -22,19 +22,29 @@ export function selectNativeFeishuGroupContext(
   history: CatsAgentContextMessage[],
   afterSeq = 0,
 ): string[] {
-  const ordered = [...history].sort((a, b) => messageSeq(a) - messageSeq(b));
+  const ordered = [...history].sort((a, b) => agentContextMessageSeq(a) - agentContextMessageSeq(b));
+  const clearBoundarySeq = ordered.reduce((latest, message) => (
+    isNativeFeishuClearBoundary(message) ? Math.max(latest, agentContextMessageSeq(message)) : latest
+  ), 0);
+  const effectiveAfterSeq = Math.max(afterSeq, clearBoundarySeq);
   return ordered
-    .filter(message => messageSeq(message) > afterSeq)
+    .filter(message => agentContextMessageSeq(message) > effectiveAfterSeq)
     .filter(message => isEligibleParticipantMessage(message))
     .map(formatParticipantMessage)
     .filter((message): message is string => Boolean(message));
 }
 
 function isEligibleParticipantMessage(message: CatsAgentContextMessage): boolean {
-  const metadata = asRecord(message.metadata);
   return message.context_eligible === true
     && message.context_role === 'user'
-    && !booleanField(metadata, 'channel_native_group_triggered');
+    && message.context_reason === 'participant_message';
+}
+
+export function isNativeFeishuClearBoundary(message: CatsAgentContextMessage): boolean {
+  return message.context_eligible === true
+    && message.context_role === 'user'
+    && message.context_reason === 'group_message_targets_agent'
+    && /^\/clear(?:\s|$)/i.test(extractMessageText(message));
 }
 
 function formatParticipantMessage(message: CatsAgentContextMessage): string {
@@ -75,7 +85,7 @@ function extractMessageText(message: CatsAgentContextMessage): string {
   return '';
 }
 
-function messageSeq(message: CatsAgentContextMessage): number {
+export function agentContextMessageSeq(message: CatsAgentContextMessage): number {
   return Number(message.seq_id || message.id || 0);
 }
 
