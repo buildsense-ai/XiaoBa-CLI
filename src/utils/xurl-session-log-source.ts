@@ -259,6 +259,7 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
   observeCatchUpCatalog(
     request: ExternalCatchUpCatalogObservationRequest,
   ): ExternalCatchUpCatalogObservation {
+    this.runner.beginCatchUpCatalogObservation();
     const outputBytesBefore = this.runner.activationOutputBytes;
     const catalog = this.runner.queryCatalog(request.requestedLimit, null);
     this.runner.checkActivationLimits(catalog);
@@ -497,6 +498,11 @@ class XurlOfficialRunner {
       maxOutputBytes: this.maxActivationOutputBytes,
       maxDurationMs: this.maxActivationDurationMs,
     };
+  }
+
+  beginCatchUpCatalogObservation(): void {
+    this.activationBytesAccum = 0;
+    this.activationStartedAt = Date.now();
   }
 
   checkActivationLimits(catalog: RenderedCatalog): void {

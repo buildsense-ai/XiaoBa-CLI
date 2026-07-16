@@ -841,6 +841,9 @@ export interface ExternalCatchUpPrefixObservation {
 export interface ExternalCatchUpResourceState {
   readonly status: ExternalCatchUpResourceStatus;
   readonly historicalCursor: SourceCursor;
+  /** Continuity admitted by the historical lane only; never includes events above the fixed target. */
+  readonly historicalContinuityTail?: readonly DistillationTurn[];
+  readonly historicalContinuityIncomplete?: boolean;
   readonly observedPosition: number;
   /** Latest catalog generation that observed this resource in its active scope. */
   readonly observedGeneration?: number;
@@ -867,6 +870,8 @@ export interface ExternalCatchUpCatalogGeneration {
   readonly observedResourceCount: number;
   readonly lastObservationCount: number;
   readonly observedOutputBytes: number;
+  /** Cumulative provider execution time for observations in this generation. */
+  readonly observedDurationMs?: number;
   readonly observationCompletedAt?: string;
   readonly completedAt?: string;
   readonly blockedAt?: string;
@@ -1127,6 +1132,10 @@ function normalizeCatchUpResources(value: unknown): Record<string, ExternalCatch
         position: cursor.position,
         processedCount: cursor.processedCount,
       },
+      historicalContinuityTail: Array.isArray(candidate.historicalContinuityTail)
+        ? candidate.historicalContinuityTail as DistillationTurn[]
+        : [],
+      historicalContinuityIncomplete: candidate.historicalContinuityIncomplete === true,
       observedPosition: candidate.observedPosition!,
       ...(candidate.observedGeneration !== undefined
         ? {
@@ -1288,6 +1297,8 @@ function normalizeCatchUpCatalogGeneration(
     || !Number.isInteger(candidate.observedResourceCount) || candidate.observedResourceCount! < 0
     || !Number.isInteger(candidate.lastObservationCount) || candidate.lastObservationCount! < 0
     || !Number.isInteger(candidate.observedOutputBytes) || candidate.observedOutputBytes! < 0
+    || (candidate.observedDurationMs !== undefined
+      && (!Number.isInteger(candidate.observedDurationMs) || candidate.observedDurationMs < 0))
     || !isOptionalCanonicalIsoTimestamp(candidate.observationCompletedAt)
     || !isOptionalCanonicalIsoTimestamp(candidate.completedAt)
     || !isOptionalCanonicalIsoTimestamp(candidate.blockedAt)
@@ -1304,6 +1315,9 @@ function normalizeCatchUpCatalogGeneration(
     observedResourceCount: candidate.observedResourceCount!,
     lastObservationCount: candidate.lastObservationCount!,
     observedOutputBytes: candidate.observedOutputBytes!,
+    ...(Number.isInteger(candidate.observedDurationMs) && candidate.observedDurationMs! >= 0
+      ? { observedDurationMs: candidate.observedDurationMs }
+      : {}),
     ...(typeof candidate.observationCompletedAt === 'string'
       ? { observationCompletedAt: candidate.observationCompletedAt }
       : {}),
@@ -1993,7 +2007,15 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
 
     return {
-      ...this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult),
+      ...this.materializeExternalReadResult(
+        resource,
+        state,
+        resourceState,
+        catchUpResource,
+        historicalRead,
+        resourceCursor,
+        readerResult,
+      ),
       admissionLane: historicalRead ? 'catch-up' : 'continuous',
     };
   }
@@ -2067,7 +2089,15 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
 
     return {
-      ...this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult),
+      ...this.materializeExternalReadResult(
+        resource,
+        state,
+        resourceState,
+        catchUpResource,
+        historicalRead,
+        resourceCursor,
+        readerResult,
+      ),
       admissionLane: historicalRead ? 'catch-up' : 'continuous',
     };
   }
@@ -2123,6 +2153,8 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     resource: SessionLogSourceResource,
     state: ExternalCursorState,
     resourceState: ExternalDiscoveredResourceState | undefined,
+    catchUpResource: ExternalCatchUpResourceState | undefined,
+    historicalRead: boolean,
     resourceCursor: SourceCursor,
     readerResult: ExternalSourceReaderResult,
   ): SessionLogSourceReadResult {
@@ -2197,8 +2229,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         status: 'advanced',
         eventIdentities: readerResult.events.map(toEventIdentity),
         newCursor,
-        continuityTail: resourceState?.continuityTail,
-        continuityIncomplete: resourceState?.continuityIncomplete,
+        // Keep lane-local tails: historical empty pages must not surface the
+        // continuous continuity chain, and vice versa.
+        continuityTail: historicalRead
+          ? catchUpResource?.historicalContinuityTail
+          : resourceState?.continuityTail,
+        continuityIncomplete: historicalRead
+          ? catchUpResource?.historicalContinuityIncomplete
+          : resourceState?.continuityIncomplete,
         accounting,
       };
     }
@@ -2226,7 +2264,11 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       processedCount: resourceCursor.processedCount + nonDuplicateEvents.length,
     };
 
-    let continuityTail = [...(resourceState?.continuityTail ?? [])];
+    let continuityTail = [
+      ...(historicalRead
+        ? catchUpResource?.historicalContinuityTail
+        : resourceState?.continuityTail) ?? [],
+    ];
     const distillationUnits = nonDuplicateEvents.map(event => {
       const unit = (event as ExternalSourceRawEvent & { distillationUnit: DistillationUnit }).distillationUnit;
       const withContinuity: DistillationUnit = {
@@ -2370,8 +2412,8 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         ...state.resources,
         [resource.resourceRef]: {
           resource,
-          continuityTail: result.continuityTail ?? existingResource?.continuityTail ?? [],
-          continuityIncomplete: result.continuityIncomplete ?? false,
+          continuityTail: existingResource?.continuityTail ?? [],
+          continuityIncomplete: existingResource?.continuityIncomplete ?? false,
           updatedAt: now,
           lifecycleStatus: existingResource?.lifecycleStatus ?? 'active',
           lastSeenAt: existingResource?.lastSeenAt ?? now,
@@ -2388,6 +2430,12 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
           ...progress,
           status: complete ? 'complete' : 'historical-pending',
           historicalCursor: result.newCursor,
+          historicalContinuityTail: result.continuityTail
+            ?? progress.historicalContinuityTail
+            ?? [],
+          historicalContinuityIncomplete: result.continuityIncomplete
+            ?? progress.historicalContinuityIncomplete
+            ?? false,
           updatedAt: now,
         },
       },
@@ -2457,20 +2505,11 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
 
     if (generation.status === 'inventory') {
-      const elapsedMs = Math.max(0, this.now().getTime() - Date.parse(generation.startedAt));
-      if (elapsedMs > limits.maxDurationMs) {
-        nextState = this.blockCatchUpCatalog(
-          nextState,
-          `catch-up catalog duration exceeded limit: ${elapsedMs} > ${limits.maxDurationMs}`,
-        );
-        this.persistExternalState(nextState);
-        return [];
-      }
-
       // Persist generation ownership before invoking the provider so a crash
       // resumes the same limit and generation rather than starting over.
       this.persistExternalState(nextState);
       let observation: ExternalCatchUpCatalogObservation;
+      const observationStartedAt = process.hrtime.bigint();
       try {
         observation = this.observeCatchUpCatalog(nextState, generation.requestedLimit);
       } catch (error) {
@@ -2479,6 +2518,9 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         this.persistExternalState(nextState);
         return [];
       }
+      const observationDurationMs = Math.ceil(
+        Number(process.hrtime.bigint() - observationStartedAt) / 1_000_000,
+      );
       if (!this.reader?.observeCatchUpCatalog && observation.nextPageToken != null) {
         nextState = this.blockCatchUpCatalog(
           nextState,
@@ -2504,6 +2546,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       );
       const now = this.now().toISOString();
       const observedOutputBytes = generation.observedOutputBytes + Math.max(0, observation.outputBytes ?? 0);
+      const observedDurationMs = (generation.observedDurationMs ?? 0) + observationDurationMs;
       const observedResourceCount = Object.values(nextState.catchUpResources)
         .filter(resource => resource.observedGeneration === generation!.generation)
         .length;
@@ -2513,6 +2556,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         observedResourceCount,
         lastObservationCount: returnedCount,
         observedOutputBytes,
+        observedDurationMs,
       };
       if (observedOutputBytes > limits.maxOutputBytes) {
         nextState = {
@@ -2522,6 +2566,15 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         nextState = this.blockCatchUpCatalog(
           nextState,
           `catch-up catalog output exceeded limit: ${observedOutputBytes} > ${limits.maxOutputBytes}`,
+        );
+      } else if (observedDurationMs > limits.maxDurationMs) {
+        nextState = {
+          ...nextState,
+          catchUpCatalog: { ...nextState.catchUpCatalog, active },
+        };
+        nextState = this.blockCatchUpCatalog(
+          nextState,
+          `catch-up catalog duration exceeded limit: ${observedDurationMs} > ${limits.maxDurationMs}`,
         );
       } else if (returnedCount >= generation.requestedLimit) {
         if (generation.requestedLimit >= limits.maxCatalogResources) {
@@ -2850,6 +2903,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       observedResourceCount: 0,
       lastObservationCount: 0,
       observedOutputBytes: 0,
+      observedDurationMs: 0,
     };
     return {
       ...state,

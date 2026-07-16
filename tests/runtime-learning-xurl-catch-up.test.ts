@@ -542,7 +542,7 @@ test('a moving expanding catalog retains every resource observed by the generati
   }
 });
 
-test('official xURL catch-up persists output and duration cap failures', async () => {
+test('official xURL catch-up persists output cap failures without charging sleep between wakes', async () => {
   const outputEnv = setupEnv({ catchUpCatalogMaxOutputBytes: 1 });
   try {
     writeScenario(outputEnv.scenarioPath, {
@@ -561,13 +561,14 @@ test('official xURL catch-up persists output and duration cap failures', async (
   const durationEnv = setupEnv({
     catchUpCatalogInitialLimit: 1,
     catchUpCatalogMaxResources: 2,
-    catchUpCatalogMaxDurationMs: 1,
+    catchUpCatalogMaxDurationMs: 60_000,
   });
   try {
     writeScenario(durationEnv.scenarioPath, {
       discover: {
         byLimit: {
           '1': catalogPage([thread('conversation-duration', 'main', 1, 'fp-duration')]),
+          '2': catalogPage([thread('conversation-duration', 'main', 1, 'fp-duration')]),
         },
       },
       read: {
@@ -582,13 +583,53 @@ test('official xURL catch-up persists output and duration cap failures', async (
       clock: () => new Date('2026-01-01T00:00:00.000Z'),
     }).runtime.wake('startup');
     await durationEnv.createRuntime({
-      clock: () => new Date('2026-01-01T00:00:00.010Z'),
+      clock: () => new Date('2026-01-01T06:00:00.000Z'),
     }).runtime.wake('scheduled');
-    const durationBlocked = loadExternalCursorState(cursorStorePath(durationEnv.root));
-    assert.equal(durationBlocked.catchUpCatalog.active?.status, 'catch-up-blocked');
-    assert.match(durationBlocked.catchUpCatalog.active?.blockedReason ?? '', /duration exceeded limit/);
+    const afterLaterWake = loadExternalCursorState(cursorStorePath(durationEnv.root));
+    assert.equal(afterLaterWake.catchUpCatalog.active?.generation, 1);
+    assert.equal(afterLaterWake.catchUpCatalog.active?.status, 'draining');
+    assert.equal(afterLaterWake.catchUpCatalog.active?.blockedReason, undefined);
   } finally {
     durationEnv.restore();
+  }
+});
+
+test('official xURL catch-up resets observation accounting between catalog generations', async () => {
+  const emptyCatalog = [
+    '---',
+    'uri: agents://codex?limit=1',
+    'provider: codex',
+    'version: xurl-test 1.0.0',
+    'queried_at: 2026-01-01T00:00:00.000Z',
+    'next:',
+    '---',
+    '',
+    '# Threads',
+    '- Matched: `0`',
+    '',
+  ].join('\n');
+  const env = setupEnv({
+    catchUpCatalogInitialLimit: 1,
+    catchUpCatalogMaxResources: 2,
+    catchUpCatalogMaxOutputBytes: Buffer.byteLength(emptyCatalog, 'utf8'),
+  });
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: { rawStdout: emptyCatalog },
+    });
+
+    await env.createRuntime().runtime.wake('startup');
+    let state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.catchUpCatalog.active?.generation, 1);
+    assert.equal(state.catchUpCatalog.active?.status, 'caught-up');
+
+    await env.createRuntime().runtime.wake('scheduled');
+    state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.catchUpCatalog.active?.generation, 2);
+    assert.equal(state.catchUpCatalog.active?.status, 'caught-up');
+    assert.equal(state.catchUpCatalog.active?.blockedReason, undefined);
+  } finally {
+    env.restore();
   }
 });
 

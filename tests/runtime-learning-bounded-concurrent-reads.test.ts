@@ -313,6 +313,14 @@ class CatchUpSchedulingFakeAdapter implements SessionLogSourceAdapter {
   markFailed(): void {}
 }
 
+class NewGenerationOnlyCatchUpFakeAdapter extends CatchUpSchedulingFakeAdapter {
+  override getNextCatchUpAction(
+    options: { allowNewGeneration?: boolean } = {},
+  ): ExternalCatchUpAction | undefined {
+    return options.allowNewGeneration ? 'inventory' : undefined;
+  }
+}
+
 class SlowContinuousCatchUpFakeAdapter extends CatchUpSchedulingFakeAdapter {
   activeReads = 0;
 
@@ -489,6 +497,37 @@ describe('Issue #92 — Bounded concurrent external provider reads', () => {
       );
       assert.deepEqual(alpha.catchUpActions, ['inventory', 'inventory', 'inventory']);
       assert.deepEqual(beta.catchUpActions, ['inventory', 'inventory', 'inventory']);
+    } finally {
+      env.restore();
+      env.teardown();
+    }
+  });
+
+  test('a provider backlog does not prevent another provider from starting a later catalog generation', async () => {
+    const env = setupEnv();
+    const alpha = new CatchUpSchedulingFakeAdapter('alpha', 'page');
+    const beta = new NewGenerationOnlyCatchUpFakeAdapter('beta');
+    const createRuntime = () => new RuntimeLearning({
+      workingDirectory: env.root,
+      evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+      learningEpisodeStore: env.episodeStore,
+      skillEvolution: env.skillEvolution,
+      curator: env.curator,
+      planner: env.planner,
+      sessionLogSources: [alpha, beta],
+      externalSourceMaxConcurrency: 2,
+    });
+
+    try {
+      await createRuntime().wake('manual');
+      await createRuntime().wake('manual');
+
+      assert.deepEqual(alpha.catchUpActions, ['page']);
+      assert.deepEqual(
+        beta.catchUpActions,
+        ['inventory'],
+        'generation eligibility is evaluated per provider while the global quantum still rotates once per wake',
+      );
     } finally {
       env.restore();
       env.teardown();

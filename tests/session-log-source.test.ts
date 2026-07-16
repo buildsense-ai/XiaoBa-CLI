@@ -39,6 +39,7 @@ import {
   ExternalSourceReader,
   ExternalSourceReaderResult,
   ExternalSourceRawEvent,
+  buildExternalCatchUpPrefixDigest,
   FixtureExternalSourceReader,
   SessionLogSourceAdapter,
   SessionLogSourceIdentity,
@@ -1801,6 +1802,128 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
     // -----------------------------------------------------------------------
 
     describe('ExternalSessionLogSourceAdapter with reader', () => {
+      test('continuous and historical lanes keep independent chronological continuity tails', () => {
+        const resource: SessionLogSourceResource = { resourceRef: 'conversation-lane-order' };
+        const historicalUnit = buildDistillationUnitFromFile(
+          [futureTurn(1, 'lane-order', 'Historical request.', 'Historical response.')],
+          path.join(env.root, 'fixture', 'historical.jsonl'),
+        );
+        const futureUnit = buildDistillationUnitFromFile(
+          [futureTurn(2, 'lane-order', 'Future request.', 'Future response.')],
+          path.join(env.root, 'fixture', 'future.jsonl'),
+        );
+        const laterFutureUnit = buildDistillationUnitFromFile(
+          [futureTurn(3, 'lane-order', 'Later future request.', 'Later future response.')],
+          path.join(env.root, 'fixture', 'later-future.jsonl'),
+        );
+        const historicalEvent: ExternalSourceRawEvent = {
+          eventId: 'historical-event',
+          position: 2,
+          contentHash: 'historical-hash',
+          distillationUnit: historicalUnit,
+        };
+        let continuousEvent: ExternalSourceRawEvent = {
+          eventId: 'future-event',
+          position: 4,
+          contentHash: 'future-hash',
+          distillationUnit: futureUnit,
+        };
+        const reader: ExternalSourceReader = {
+          provider: 'fixture',
+          reader: 'lane-order-reader',
+          discoverResources: () => [resource],
+          read: () => ({
+            events: [continuousEvent],
+            status: 'stable',
+            exhausted: true,
+            newPosition: continuousEvent.position,
+          }),
+          sampleHistory: () => ({
+            events: [historicalEvent],
+            status: 'stable',
+            exhausted: true,
+            newPosition: historicalEvent.position,
+            observedPosition: historicalEvent.position,
+          }),
+        };
+        const storePath = path.join(env.root, 'data', 'lane-order-cursor.json');
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-lane-order',
+          provider: 'fixture',
+          reader,
+          enabled: true,
+          historyMode: 'catch-up',
+        }, storePath);
+        const state = emptyExternalCursorState();
+        state.sourceIdentities[adapter.identity.sourceId] = adapter.identity;
+        state.resources[resource.resourceRef] = {
+          resource,
+          continuityTail: [],
+          continuityIncomplete: false,
+          updatedAt: new Date().toISOString(),
+        };
+        state.cursors[resource.resourceRef] = {
+          cursor: { resourceRef: resource.resourceRef, position: 2, processedCount: 0 },
+          sourceIdentity: adapter.identity,
+          updatedAt: new Date().toISOString(),
+        };
+        state.catchUpTargets[resource.resourceRef] = {
+          targetId: 'target-lane-order',
+          provider: 'fixture',
+          sourceId: adapter.identity.sourceId,
+          resourceRef: resource.resourceRef,
+          position: 2,
+          empty: false,
+          prefixDigest: buildExternalCatchUpPrefixDigest([historicalEvent]),
+          creationGeneration: 1,
+          scopeFingerprint: 'a'.repeat(64),
+          observedAt: new Date().toISOString(),
+        };
+        state.catchUpResources[resource.resourceRef] = {
+          status: 'historical-pending',
+          historicalCursor: { resourceRef: resource.resourceRef, position: -1, processedCount: 0 },
+          observedPosition: 2,
+          observedGeneration: 1,
+          observedScopeFingerprint: 'a'.repeat(64),
+          updatedAt: new Date().toISOString(),
+        };
+        saveExternalCursorState(storePath, state);
+
+        const continuous = adapter.read(resource, {
+          orderedResources: [resource],
+          workLane: 'continuous',
+        });
+        assert.deepEqual(continuous.distillationUnit?.continuityTurns, []);
+        adapter.acknowledge(resource, continuous);
+
+        const historical = adapter.read(resource, {
+          orderedResources: [resource],
+          workLane: 'catch-up',
+        });
+        assert.deepEqual(
+          historical.distillationUnit?.continuityTurns,
+          [],
+          'history must not receive a future event as prior continuity',
+        );
+        adapter.acknowledge(resource, historical);
+
+        continuousEvent = {
+          eventId: 'later-future-event',
+          position: 6,
+          contentHash: 'later-future-hash',
+          distillationUnit: laterFutureUnit,
+        };
+        const laterContinuous = adapter.read(resource, {
+          orderedResources: [resource],
+          workLane: 'continuous',
+        });
+        assert.deepEqual(
+          laterContinuous.distillationUnit?.continuityTurns.map(turn => turn.user.text),
+          ['Future request.'],
+          'historical acknowledgement must not overwrite the continuous tail',
+        );
+      });
+
       test('multi-event stable batches expose every unit and acknowledge every identity', () => {
         const fixtureFile1 = path.join(env.root, 'fixture', 'chat', 'batch-1.jsonl');
         const fixtureFile2 = path.join(env.root, 'fixture', 'chat', 'batch-2.jsonl');

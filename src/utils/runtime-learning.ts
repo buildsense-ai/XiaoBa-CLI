@@ -2507,11 +2507,16 @@ export class RuntimeLearning {
       ));
     }
 
-    const selectedTasks: ReviewTask[] = [];
     const selectionClassCursors = { ...classCursors };
     let selectionNextClass = nextClass;
     const maxCandidates = Math.max(0, Math.floor(this.config.skillEvolutionReviewMaxCandidates));
-    while (selectedTasks.length < maxCandidates) {
+    const admittedEpisodeTasks: Array<{
+      episode: LearningEpisode;
+      bundle: ReturnType<typeof buildEpisodeEvidenceBundle>;
+    }> = [];
+    const admittedRetryBundleIds: string[] = [];
+    let settlementError: unknown;
+    while (reviewBudget.candidates < maxCandidates) {
       const availableClasses = new Set(
         REVIEW_WORK_CLASS_ORDER.filter(workClass => remainingByClass[workClass].length > 0),
       );
@@ -2536,38 +2541,28 @@ export class RuntimeLearning {
         : 0;
       const [selected] = tasks.splice(selectedIndex < 0 ? 0 : selectedIndex, 1);
       if (!selected) break;
-      selectedTasks.push(selected);
       selectionClassCursors[selectedClass] = taskId(selected);
       selectionNextClass = REVIEW_WORK_CLASS_ORDER[
         (REVIEW_WORK_CLASS_ORDER.indexOf(selectedClass) + 1) % REVIEW_WORK_CLASS_ORDER.length
       ]!;
-    }
-
-    const admittedEpisodeTasks: Array<{
-      episode: LearningEpisode;
-      bundle: ReturnType<typeof buildEpisodeEvidenceBundle>;
-    }> = [];
-    const admittedRetryBundleIds: string[] = [];
-    let settlementError: unknown;
-    for (const task of selectedTasks) {
       if (wakeSignal?.aborted || this.shutdownDrainRequested) break;
       try {
-        const bundle = task.kind === 'retry'
-          ? task.bundle
+        const bundle = selected.kind === 'retry'
+          ? selected.bundle
           : buildEpisodeEvidenceBundle(
-              task.episode,
-              buildLearningEpisodeCandidate(task.episode),
+              selected.episode,
+              buildLearningEpisodeCandidate(selected.episode),
               this.skillEvolution,
               this.evidenceCapsuleStore,
               this.isEpisodeFromExternalSource.bind(this),
             );
         if (!this.canAdmitReviewWork(reviewBudget, bundle)) continue;
-        classCursors[task.workClass] = taskId(task);
+        classCursors[selected.workClass] = taskId(selected);
         nextClass = REVIEW_WORK_CLASS_ORDER[
-          (REVIEW_WORK_CLASS_ORDER.indexOf(task.workClass) + 1) % REVIEW_WORK_CLASS_ORDER.length
+          (REVIEW_WORK_CLASS_ORDER.indexOf(selected.workClass) + 1) % REVIEW_WORK_CLASS_ORDER.length
         ]!;
-        if (task.kind === 'retry') admittedRetryBundleIds.push(task.bundleId);
-        else admittedEpisodeTasks.push({ episode: task.episode, bundle });
+        if (selected.kind === 'retry') admittedRetryBundleIds.push(selected.bundleId);
+        else admittedEpisodeTasks.push({ episode: selected.episode, bundle });
       } catch (error) {
         settlementError = settlementError ?? error;
       }
@@ -2873,16 +2868,19 @@ export class RuntimeLearning {
               this.getExternalSourceFailure(adapter.identity.provider, adapter.identity.sourceId),
             )
           )) : [];
-        let dueCatchUpSources = catchUpSources.flatMap(adapter => {
+        const dueCatchUpSources = catchUpSources.flatMap(adapter => {
           const action = adapter.getNextCatchUpAction?.();
           return action ? [{ adapter, action }] : [];
         });
-        if (dueCatchUpSources.length === 0) {
-          dueCatchUpSources = catchUpSources.flatMap(adapter => {
+        const providersWithDueCatchUp = new Set(
+          dueCatchUpSources.map(({ adapter }) => adapter.identity.provider),
+        );
+        dueCatchUpSources.push(...catchUpSources
+          .filter(adapter => !providersWithDueCatchUp.has(adapter.identity.provider))
+          .flatMap(adapter => {
             const action = adapter.getNextCatchUpAction?.({ allowNewGeneration: true });
             return action ? [{ adapter, action }] : [];
-          });
-        }
+          }));
 
         // Preserve the catch-up continuation observed at the start of the
         // external phase. The initial continuous pass may complete a full

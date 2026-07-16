@@ -670,6 +670,103 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     assert.equal(resumedPlan.nextWakeReason, 'settlement-deadline');
   });
 
+  test('prompt-budget rejection remains work-conserving across review classes', async () => {
+    const liveEpisode: LearningEpisode = {
+      schemaVersion: 3,
+      episodeId: 'live-budget-admissible',
+      runtimeSessionId: 'runtime-budget-admission',
+      sourceFilePath: 'live-budget-admissible.jsonl',
+      deliveryTurn: 1,
+      completionEvidence: [{
+        ref: 'live-budget-admissible#1',
+        sourceFilePath: 'live-budget-admissible.jsonl',
+        turn: 1,
+        kind: 'artifact-delivery',
+        detail: 'send_file: delivered',
+      }],
+      contradictionSignals: [],
+      semanticObservations: [{
+        kind: 'user-intent',
+        value: 'Deliver the small admissible review task.',
+        sourceRefs: ['live-budget-admissible#intent'],
+      }],
+      settlementDeadline: new Date(0).toISOString(),
+      status: 'eligible',
+    };
+    env.runtimeLearning.getEpisodeStore().save({
+      schemaVersion: 3,
+      episodes: { [liveEpisode.episodeId]: liveEpisode },
+    });
+
+    const oversizedRetryCandidate = {
+      schemaVersion: 1,
+      kind: 'capability',
+      capabilityId: 'oversized-retry',
+      title: 'Oversized retry',
+      applicability: 'Exercise prompt-budget admission.',
+      actionPattern: 'x'.repeat(10_000),
+      boundaries: [],
+      risks: [],
+      provenance: [],
+      solvedLoop: {
+        problem: 'A large retry is due.',
+        action: 'Retry it when budget permits.',
+        verification: 'Smaller work remains runnable.',
+        noCorrection: 'No correction was present.',
+      },
+      generatedAt: new Date(0).toISOString(),
+      sourceUnit: {
+        filePath: 'oversized-retry.jsonl',
+        byteRange: { start: 0, end: 1 },
+        generatedAt: new Date(0).toISOString(),
+      },
+    } as any;
+    const oversizedRetryBundle = {
+      bundleId: 'oversized-retry-bundle',
+      episode: oversizedRetryCandidate,
+      completionEvidence: [],
+      settlementEvidence: [],
+      boundedContinuity: [],
+      referencedSkills: [],
+      relatedCurrentSkills: [],
+    } as any;
+    const queue = loadReviewQueueState(env.reviewQueuePath);
+    addOrUpdateOperationalFailure(
+      queue,
+      oversizedRetryCandidate,
+      oversizedRetryBundle,
+      'branch_failure',
+      'oversized retry is due',
+      undefined,
+      1,
+      1,
+      new Date(0),
+    );
+    saveReviewQueueState(env.reviewQueuePath, queue);
+
+    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxCandidates = 1;
+    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxPromptTokens = 100_000;
+
+    const result = await env.runtimeLearning.wake('manual');
+
+    assert.equal(result.review.reviewedQueueEntries, 0);
+    assert.equal(
+      result.review.reviewedEpisodes,
+      1,
+      'an oversized retry cannot consume the candidate slot needed by an admissible live task',
+    );
+    const continuation = JSON.parse(fs.readFileSync(
+      reviewContinuationPathForEpisodeStore(env.episodeStorePath),
+      'utf8',
+    )) as {
+      nextClass?: 'retry' | 'live' | 'historical';
+      classCursors?: Partial<Record<'retry' | 'live' | 'historical', string>>;
+    };
+    assert.equal(continuation.classCursors?.retry, undefined);
+    assert.equal(continuation.classCursors?.live, liveEpisode.episodeId);
+    assert.equal(continuation.nextClass, 'historical');
+  });
+
   test('max-candidate-one review rotates durably across retry, live, and historical-ready work', async () => {
     const makeEpisode = (episodeId: string, historical: boolean): LearningEpisode => ({
       schemaVersion: 3,
