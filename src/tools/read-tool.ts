@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as readline from 'readline';
 import { execFileSync } from 'child_process';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import { ContentBlock } from '../types';
 import { isReadPathAllowed } from '../utils/safety';
 import { createImageBlock } from '../utils/image-utils';
 import { ConfigManager } from '../utils/config';
@@ -101,7 +102,6 @@ interface PdfCanvasAndContext {
 }
 
 interface ReadImageOptions {
-  forceReaderProxy?: boolean;
   metadataType?: string;
   proxyIntro?: string;
 }
@@ -770,20 +770,22 @@ export class ReadTool implements Tool {
     selection: PdfPageSelection,
     prompt?: string,
     options?: PdfRenderedImageReadOptions,
-  ): Promise<string> {
+  ): Promise<string | ContentBlock[]> {
     const pages = this.getPdfRenderedImagePages(selection, options?.totalPages);
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-pdf-pages-'));
 
     try {
       const renderedPages = await this.renderPdfPagesToImages(absolutePath, pages, tempDir);
       const isSupplement = options?.reason === 'visual_supplement';
+      const visionCapable = isPrimaryModelVisionCapable(ConfigManager.getConfigReadonly());
       const parts = [
         isSupplement
           ? 'PDF 文本层已提取；由于用户任务可能涉及图片、签名、印章、手写、版式或表格，已额外转成页面图片补充读取。'
           : 'PDF 文本层未提取到内容，已自动转成页面图片继续读取。',
         `${isSupplement ? '视觉补充页码' : '转图片页码'}: ${renderedPages.map(page => page.pageNumber).join(', ')}`,
-        `读取方式: ${renderedPages[0]?.renderer === 'pdftoppm' ? '系统 pdftoppm 渲染 + Cats reader proxy 读图' : '内置 PDF.js 渲染 + Cats reader proxy 读图'}`,
+        `读取方式: ${renderedPages[0]?.renderer === 'pdftoppm' ? '系统 pdftoppm 渲染' : '内置 PDF.js 渲染'} + ${visionCapable ? '当前主模型读图' : 'Cats reader proxy 读图'}`,
       ];
+      const imageBlocks: ContentBlock[] = [];
 
       if (pages.length > renderedPages.length) {
         const renderedSet = new Set(renderedPages.map(page => page.pageNumber));
@@ -814,14 +816,25 @@ export class ReadTool implements Tool {
           context,
           pagePrompt,
           {
-            forceReaderProxy: true,
             metadataType: 'PDF 页面图片',
             proxyIntro: isSupplement
               ? '视觉补充结果（PDF 文本层可能漏掉图片、签章、手写或版式信息）：'
               : '读图结果（PDF 文本层不可用，已转为页面图片解析）：',
           },
         );
-        parts.push('', `--- 第 ${page.pageNumber} 页 ---`, String(analysis));
+        if (this.isDirectImageReadResult(analysis)) {
+          imageBlocks.push(
+            { type: 'text', text: `--- 第 ${page.pageNumber} 页（PDF 页面图片）---` },
+            analysis.imageBlock,
+          );
+        } else {
+          parts.push('', `--- 第 ${page.pageNumber} 页 ---`, String(analysis));
+        }
+      }
+
+      if (imageBlocks.length > 0) {
+        parts.push('', '以下附有上述 PDF 页面图片，按页码顺序查看。');
+        return [{ type: 'text', text: parts.join('\n') }, ...imageBlocks];
       }
 
       return parts.join('\n');
@@ -847,7 +860,7 @@ export class ReadTool implements Tool {
     context: ToolExecutionContext,
     pages?: string,
     prompt?: string,
-  ): Promise<string> {
+  ): Promise<string | ContentBlock[]> {
     const stats = fs.statSync(absolutePath);
     const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
     const selection = this.parsePdfPages(pages);
@@ -889,13 +902,14 @@ export class ReadTool implements Tool {
       }
 
       if (!rawText) {
-        lines.push(
-          '',
-          await this.readPdfViaRenderedImages(absolutePath, filePath, visiblePath, context, selection, prompt, {
-            reason: 'missing_text',
-            totalPages: parsed.numpages,
-          }),
-        );
+        const visualContent = await this.readPdfViaRenderedImages(absolutePath, filePath, visiblePath, context, selection, prompt, {
+          reason: 'missing_text',
+          totalPages: parsed.numpages,
+        });
+        if (Array.isArray(visualContent)) {
+          return [{ type: 'text', text: lines.join('\n') }, ...visualContent];
+        }
+        lines.push('', visualContent);
         return lines.join('\n');
       }
 
@@ -915,34 +929,43 @@ export class ReadTool implements Tool {
       }
 
       if (this.shouldSupplementPdfVisualRead(context, prompt)) {
-        lines.push(
-          '',
-          await this.readPdfViaRenderedImages(absolutePath, filePath, visiblePath, context, selection, prompt, {
-            reason: 'visual_supplement',
-            totalPages: parsed.numpages,
-          }),
-        );
+        const visualContent = await this.readPdfViaRenderedImages(absolutePath, filePath, visiblePath, context, selection, prompt, {
+          reason: 'visual_supplement',
+          totalPages: parsed.numpages,
+        });
+        if (Array.isArray(visualContent)) {
+          return [{ type: 'text', text: lines.join('\n') }, ...visualContent];
+        }
+        lines.push('', visualContent);
       }
 
       return lines.join('\n');
     } catch (error: any) {
       const rawMessage = String(error?.message || error || 'unknown error').trim();
       const message = rawMessage.length > 500 ? `${rawMessage.slice(0, 500)}...` : rawMessage;
-      lines.push(
-        '',
-        'PDF 解析失败，read_file 未能提取正文。',
-        `原因: ${message}`,
-        '',
-        await this.readPdfViaRenderedImages(absolutePath, filePath, visiblePath, context, selection, prompt, {
-          reason: 'parse_failed',
-        }),
-      );
+      lines.push('', 'PDF 解析失败，read_file 未能提取正文。', `原因: ${message}`);
+      const visualContent = await this.readPdfViaRenderedImages(absolutePath, filePath, visiblePath, context, selection, prompt, {
+        reason: 'parse_failed',
+      });
+      if (Array.isArray(visualContent)) {
+        return [{ type: 'text', text: lines.join('\n') }, ...visualContent];
+      }
+      lines.push('', visualContent);
       return lines.join('\n');
     }
   }
 
   private isImageExt(ext: string): boolean {
     return ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'].includes(ext);
+  }
+
+  private isDirectImageReadResult(content: unknown): content is { _imageForNewMessage: true; imageBlock: ContentBlock } {
+    return Boolean(
+      content
+      && typeof content === 'object'
+      && (content as any)._imageForNewMessage === true
+      && (content as any).imageBlock?.type === 'image',
+    );
   }
 
   private shouldImportRemoteMedia(filePath: string): boolean {
@@ -1089,10 +1112,9 @@ export class ReadTool implements Tool {
     const config = ConfigManager.getConfigReadonly();
     const imagePrompt = this.getImageReadPrompt(context, prompt);
     const visionCapable = isPrimaryModelVisionCapable(config);
-    const forceReaderProxy = Boolean(options?.forceReaderProxy);
     const modelName = config.model || 'unknown';
 
-    if (visionCapable && !forceReaderProxy) {
+    if (visionCapable) {
       const imageBlock = await createImageBlock(absolutePath);
       const logFile = formatPathForLog(absolutePath || filePath);
       if (imageBlock) {
@@ -1118,7 +1140,7 @@ export class ReadTool implements Tool {
       return [
         this.formatImageMetadata(absolutePath, filePath, visiblePath, options?.metadataType),
         '',
-        options?.proxyIntro || (visionCapable && !forceReaderProxy
+        options?.proxyIntro || (visionCapable
           ? '主模型图片块生成失败，已自动改用 Cats reader proxy 解析：'
           : '读图结果（由 Cats reader proxy 解析，已作为 read_file 结果返回给当前非多模态主模型）：'),
         proxyResult.analysis,
@@ -1128,7 +1150,7 @@ export class ReadTool implements Tool {
     return [
       this.formatImageMetadata(absolutePath, filePath, visiblePath, options?.metadataType),
       '',
-      this.formatReaderProxyFailure(proxyResult, visionCapable && !forceReaderProxy),
+      this.formatReaderProxyFailure(proxyResult, visionCapable),
     ].join('\n');
   }
 
