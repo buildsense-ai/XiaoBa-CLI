@@ -42,6 +42,55 @@ describe('import_file remote routing', () => {
     assert.equal(rpcCalls, 0);
   });
 
+  test('explains how to recover when the target computer is too old for import_file', async () => {
+    const route: TargetRoute = {
+      userId: 'usr7',
+      userName: 'Lin',
+      ownerUserId: 'usr7',
+      deviceId: 'lin-laptop',
+      label: 'Lin laptop',
+      os: 'windows',
+      status: 'ready',
+    };
+    const context: ToolExecutionContext = {
+      workingDirectory: process.cwd(),
+      conversationHistory: [],
+      surface: 'catscompany',
+      targetRoutes: {
+        routes: [route],
+        byName: new Map([['lin', [route]]]),
+        byUserId: new Map([['usr7', [route]]]),
+      },
+      thinToolRpc: {
+        executeTool: async () => ({
+          ok: false,
+          errorCode: 'TOOL_EXECUTION_ERROR',
+          message: 'Thin tool RPC target runtime does not have tool: import_file',
+        }),
+      },
+      channel: {
+        chatId: 'p2p_7_43',
+        reply: async () => {},
+        sendFile: async () => {},
+        receiveUploadedFile: async () => {
+          throw new Error('an unsupported target must not start a download');
+        },
+      },
+    };
+
+    const result = await new ImportFileTool().execute({
+      file_path: 'C:\\Users\\Lin\\Desktop\\报价单.xlsx',
+      file_name: '报价单.xlsx',
+      target: 'Lin',
+    }, context);
+
+    assert.equal(result.ok, false);
+    assert.match(result.ok ? '' : result.message, /Lin laptop/);
+    assert.match(result.ok ? '' : result.message, /版本过旧/);
+    assert.match(result.ok ? '' : result.message, /升级或重启电脑端 XiaoBa/);
+    assert.doesNotMatch(result.ok ? '' : result.message, /does not have tool/);
+  });
+
   test('uploads on the selected computer and saves the original file in the agent workspace', async (t) => {
     const route: TargetRoute = {
       userId: 'usr7',

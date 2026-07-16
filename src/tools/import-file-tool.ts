@@ -85,7 +85,7 @@ export class ImportFileTool implements Tool {
         message: '远程设备文件上传未返回结果。',
       };
     }
-    if (!result.ok) return result;
+    if (!result.ok) return rewriteUnsupportedImportFileError(result, route.label);
     if (!result.uploadedFile) {
       return {
         ok: false,
@@ -141,6 +141,21 @@ export class ImportFileTool implements Tool {
       };
     }
   }
+}
+
+function rewriteUnsupportedImportFileError(
+  result: Extract<ToolExecutionResult, { ok: false }>,
+  targetLabel: string,
+): ToolExecutionResult {
+  const unsupported = result.errorCode === 'TOOL_NOT_FOUND'
+    || /does not have tool:\s*import_file/i.test(result.message);
+  if (!unsupported) return result;
+
+  return {
+    ...result,
+    message: `目标用户电脑（${targetLabel}）上的 XiaoBa 版本过旧，不支持 import_file。请让该用户升级或重启电脑端 XiaoBa 后再重试。`,
+    retryable: false,
+  };
 }
 
 /** Runs only inside the already-selected target runtime. */
