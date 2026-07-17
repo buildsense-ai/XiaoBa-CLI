@@ -2481,7 +2481,7 @@ export class RuntimeLearning {
     try {
       const engine = this.skillEvolution.getEvidenceReviewEngine();
       await advanceJobsFairly(engine, `wake-fair:${this.clock().getTime()}`, {
-        maxClaims: Math.max(1, Math.floor(this.config.skillEvolutionReviewMaxCandidates)),
+        maxClaims: Math.max(0, Math.floor(this.config.skillEvolutionReviewMaxCandidates)),
         maxClaimsPerJob: 1,
         signal: wakeSignal,
         now: this.clock(),
