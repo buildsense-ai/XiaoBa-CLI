@@ -162,6 +162,7 @@ export class AgentSession {
   /** 外部请求中断当前 run（例如用户在 busy 时发送"停止"） */
   private interruptRequested = false;
   private activeAbortController: AbortController | null = null;
+  private lifecycleGeneration = 0;
   lastActiveAt: number = Date.now();
   private sessionTurnLogger: SessionTurnLogger;
   private turnLogRecorder: TurnLogRecorder;
@@ -320,7 +321,13 @@ export class AgentSession {
   /** 构建系统提示词（幂等初始化；已初始化会话在下一轮开始前可热加载） */
   async init(options: InitSessionOptions = {}): Promise<void> {
     if (this.initialized) return;
+    const lifecycleGeneration = this.lifecycleGeneration;
+    const initSignal = options.signal ?? this.activeAbortController?.signal;
     const { systemPrompt, promptTrace } = await this.buildCurrentSystemPrompt();
+    if (initSignal?.aborted || this.interruptRequested || lifecycleGeneration !== this.lifecycleGeneration) {
+      Logger.info(`[会话 ${this.key}] 初始化期间会话已重置，忽略旧初始化结果`);
+      return;
+    }
     this.applyPromptTrace(promptTrace, 'init');
     this.initialized = true;
     const initialSystemMessages: Message[] = [];
@@ -347,13 +354,19 @@ export class AgentSession {
       const usage = this.contextWindowManager.getUsageInfo(this.messages);
       Logger.info(`[${this.key}] 恢复后上下文: ${usage.usedTokens}/${usage.maxTokens} tokens (${usage.usagePercent}%)`);
 
-      this.messages = stripAssistantArtifactsFromMessages(this.messages);
-      this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
+      const compactionSignal = initSignal;
+      const messagesBeforeRestoreCompaction = stripAssistantArtifactsFromMessages(this.messages);
+      const compactedMessages = await this.contextWindowManager.compactIfNeeded(messagesBeforeRestoreCompaction, {
         sessionKey: this.key,
         reason: '恢复后',
-        signal: options.signal ?? this.activeAbortController?.signal,
+        signal: compactionSignal,
         onStatus: this.createContextCompactionNotifier(options.callbacks),
       });
+      if (compactionSignal?.aborted || this.interruptRequested) {
+        Logger.info(`[会话 ${this.key}] 当前请求已取消，忽略恢复压缩在中断后的返回`);
+        return;
+      }
+      this.messages = compactedMessages;
     }
 
     if (injectedContext.length > 0) {
@@ -370,6 +383,14 @@ export class AgentSession {
     this.messages.push({ role: 'user', content: text, __injected: true });
     this.lastActiveAt = Date.now();
     this.enforceInjectedContextLimit();
+  }
+
+  getRemoteContextCursor(source: string): number {
+    return this.lifecycleManager.loadRemoteContextCursor(source);
+  }
+
+  saveRemoteContextCursor(source: string, cursor: number): void {
+    this.lifecycleManager.saveRemoteContextCursor(source, cursor);
   }
 
   /**
@@ -477,6 +498,7 @@ export class AgentSession {
       if (this.busy) {
         return { text: BUSY_MESSAGE, visibleToUser: true };
       }
+      const lifecycleGeneration = this.lifecycleGeneration;
 
       const runtimeFeedback = this.consumeRuntimeFeedback(runtimeFeedbackInputs);
 
@@ -489,24 +511,35 @@ export class AgentSession {
       this.lastActiveAt = Date.now();
 
       try {
-        await this.refreshSystemPromptIfNeeded();
+        await this.refreshSystemPromptIfNeeded(lifecycleGeneration, this.activeAbortController.signal);
       } catch (error: any) {
         Logger.warning(`[会话 ${this.key}] Prompt 热加载失败，继续使用上一版: ${error?.message || error}`);
       }
 
-      this.messages = stripAssistantArtifactsFromMessages(this.messages);
-      this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
-        sessionKey: this.key,
-        reason: '处理前',
-        signal: this.activeAbortController.signal,
-        onStatus: this.createContextCompactionNotifier(callbacks),
-      });
-
       try {
+        const messagesBeforeCompaction = stripAssistantArtifactsFromMessages(this.messages);
+        const compactedMessages = await this.contextWindowManager.compactIfNeeded(messagesBeforeCompaction, {
+          sessionKey: this.key,
+          reason: '处理前',
+          signal: this.activeAbortController.signal,
+          onStatus: this.createContextCompactionNotifier(callbacks),
+        });
+        if (this.interruptRequested || this.activeAbortController.signal.aborted) {
+          Logger.info(`[会话 ${this.key}] 当前请求已取消，忽略压缩在中断后的返回`);
+          this.saveInterruptedContextIfCurrent(lifecycleGeneration);
+          return { text: '已停止当前请求。', visibleToUser: true };
+        }
+        this.messages = compactedMessages;
+
         await this.init({
           callbacks,
           signal: this.activeAbortController.signal,
         });
+        if (this.interruptRequested || this.activeAbortController.signal.aborted) {
+          Logger.info(`[会话 ${this.key}] 当前请求已取消，不再启动模型回合`);
+          this.saveInterruptedContextIfCurrent(lifecycleGeneration);
+          return { text: '已停止当前请求。', visibleToUser: true };
+        }
         const result = await this.turnController.run({
           input: text,
           messages: this.messages,
@@ -528,6 +561,12 @@ export class AgentSession {
           abortSignal: this.activeAbortController.signal,
           shouldContinue: () => !this.interruptRequested,
         });
+        if (this.interruptRequested || this.activeAbortController.signal.aborted) {
+          Logger.info(`[会话 ${this.key}] 当前请求已取消，忽略模型在中断后的返回`);
+          this.messages = this.turnContextBuilder.removeTransientMessages(this.messages);
+          this.saveInterruptedContextIfCurrent(lifecycleGeneration);
+          return { text: '已停止当前请求。', visibleToUser: true };
+        }
         this.messages = result.messages;
         this.lifecycleManager.saveContext(this.messages);
         return result;
@@ -535,7 +574,7 @@ export class AgentSession {
         if (this.isAbortError(err) || this.interruptRequested || this.activeAbortController.signal.aborted) {
           Logger.info(`[会话 ${this.key}] 当前请求已取消`);
           this.messages = this.turnContextBuilder.removeTransientMessages(this.messages);
-          this.lifecycleManager.saveContext(this.messages);
+          this.saveInterruptedContextIfCurrent(lifecycleGeneration);
           return { text: '已停止当前请求。', visibleToUser: true };
         }
 
@@ -610,6 +649,7 @@ export class AgentSession {
 
       // /clear
       if (commandName === 'clear') {
+        this.requestInterrupt();
         if (args.includes('--all')) {
           this.clear();
           return { handled: true, reply: '历史已清空，文件已删除' };
@@ -646,6 +686,7 @@ export class AgentSession {
 
   /** 重置会话状态（仅清内存，保留历史文件） */
   reset(): void {
+    this.lifecycleGeneration++;
     this.planRuntime.clear();
     this.stopSubAgents('父会话 reset');
     this.messages = [];
@@ -659,6 +700,7 @@ export class AgentSession {
 
   /** 清空历史（同时删除文件） */
   clear(): void {
+    this.lifecycleGeneration++;
     this.planRuntime.clear();
     this.stopSubAgents('父会话 clear');
     this.messages = [];
@@ -719,6 +761,11 @@ export class AgentSession {
     this.activeAbortController?.abort();
   }
 
+  private saveInterruptedContextIfCurrent(lifecycleGeneration: number): void {
+    if (lifecycleGeneration !== this.lifecycleGeneration) return;
+    this.lifecycleManager.saveContext(this.messages);
+  }
+
   /** 从 DB 恢复消息（进程重启后调用） */
   restoreFromStore(): boolean {
     return this.withLogContext(() => {
@@ -742,10 +789,17 @@ export class AgentSession {
     return { systemPrompt, promptTrace };
   }
 
-  private async refreshSystemPromptIfNeeded(): Promise<void> {
+  private async refreshSystemPromptIfNeeded(
+    lifecycleGeneration: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (!this.initialized || !this.promptTrace) return;
 
     const { systemPrompt, promptTrace } = await this.buildCurrentSystemPrompt();
+    if (signal?.aborted || this.interruptRequested || lifecycleGeneration !== this.lifecycleGeneration) {
+      Logger.info(`[会话 ${this.key}] Prompt 热加载期间会话已重置，忽略旧热加载结果`);
+      return;
+    }
     const changed = this.diffPromptTrace(promptTrace);
     if (!changed.any) return;
 
