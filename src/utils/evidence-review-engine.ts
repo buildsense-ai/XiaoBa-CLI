@@ -329,13 +329,20 @@ export class EvidenceReviewEngine {
     signal?: AbortSignal,
     options?: {
       allowedKinds?: ReadonlySet<ReviewQuantumRecord['kind']> | readonly ReviewQuantumRecord['kind'][];
+      /** Execute only the quantum selected by an external scheduler. */
+      quantumId?: string;
+      /** Per-call execution bound; defaults to the engine-wide setting. */
+      maxQuanta?: number;
     },
   ): Promise<AdvanceJobResult> {
     const nowFn = this.options.now ?? (() => new Date());
     const leaseMs = this.options.leaseMs ?? DEFAULT_LEASE_MS;
     const retryBaseMs = this.options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS;
     const retryMaxMs = this.options.retryMaxMs ?? DEFAULT_RETRY_MAX_MS;
-    const maxQuanta = Math.max(1, this.options.maxQuantaPerAdvance ?? 64);
+    const maxQuanta = Math.max(
+      1,
+      options?.maxQuanta ?? this.options.maxQuantaPerAdvance ?? 64,
+    );
     const allowedKinds = options?.allowedKinds
       ? new Set(options.allowedKinds)
       : undefined;
@@ -364,7 +371,8 @@ export class EvidenceReviewEngine {
       this.saveStore(state);
 
       const runnable = listRunnableQuanta(job, now).filter(q => (
-        !allowedKinds || allowedKinds.has(q.kind)
+        (!allowedKinds || allowedKinds.has(q.kind))
+        && (!options?.quantumId || q.quantumId === options.quantumId)
       ));
       if (runnable.length === 0) {
         job.disposition = deriveJobDisposition(job);
@@ -904,20 +912,15 @@ export async function advanceJobsFairly(
   engine.saveStore(state);
 
   const touched = new Set<string>();
-  // Group claims by job and advance each job with maxQuanta equal to its claim count.
-  const perJob = new Map<string, number>();
   for (const claim of plan.claims) {
-    perJob.set(claim.jobId, (perJob.get(claim.jobId) ?? 0) + 1);
     touched.add(claim.jobId);
-  }
-  for (const [jobId, count] of perJob) {
     if (options.signal?.aborted) break;
-    // Temporarily bound by looping maxClaims times with allowed coverage+promotion kinds.
-    for (let i = 0; i < count; i++) {
-      if (options.signal?.aborted) break;
-      const advanced = await engine.advanceJob(jobId, `${wakeId}:${jobId}:${i}`, options.signal);
-      if (advanced.executedQuantumIds.length === 0) break;
-    }
+    await engine.advanceJob(
+      claim.jobId,
+      `${wakeId}:${claim.jobId}:${claim.quantumId}`,
+      options.signal,
+      { quantumId: claim.quantumId, maxQuanta: 1 },
+    );
   }
   return { claims: plan.claims.length, jobIds: [...touched] };
 }

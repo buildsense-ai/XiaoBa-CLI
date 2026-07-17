@@ -28,6 +28,7 @@ import {
   EVIDENCE_REVIEW_MIGRATION_MARKER,
   materializeLegacyReviewRecordsAsJobs,
 } from '../src/utils/evidence-review-compatibility';
+import { planFairQuantumClaims } from '../src/utils/evidence-review-scheduler';
 import {
   emptyReviewQueueState,
   saveReviewQueueState,
@@ -287,6 +288,8 @@ describe('Evidence Review production migration (#104/#110)', () => {
     assert.equal(pbbJob.domain?.maxPromptTokens, 8_000);
 
     // Idempotent re-run: no duplicate jobs, no extra materialization.
+    // Operational ownership already transferred out of the legacy queue, so the
+    // re-scan only sees the still-present prompt-budget-blocked source.
     const second = materializeLegacyReviewRecordsAsJobs({
       reviewQueuePath: env.reviewQueuePath,
       jobStorePath: env.jobStorePath,
@@ -294,15 +297,55 @@ describe('Evidence Review production migration (#104/#110)', () => {
       now: FIXED_NOW,
     });
     assert.equal(second.materialized, 0);
-    assert.equal(second.alreadyPresent, 2);
+    assert.equal(second.alreadyPresent, 1);
     const after = loadEvidenceReviewJobStore(env.jobStorePath);
     assert.equal(Object.keys(after.jobs).length, 2);
 
-    // Legacy queue ownership remains (no second ownership rewrite).
+    // Successful migration transfers ownership to the Evidence Review Job.
     const queueRaw = JSON.parse(fs.readFileSync(env.reviewQueuePath, 'utf8')) as {
       operational: unknown[];
     };
-    assert.equal(queueRaw.operational.length, 1);
+    assert.equal(queueRaw.operational.length, 0);
+  });
+
+  test('migrated operational retry is not runnable before its preserved deadline', () => {
+    const op = operationalEntry();
+    writeLegacyQueue(env, [op]);
+
+    materializeLegacyReviewRecordsAsJobs({
+      reviewQueuePath: env.reviewQueuePath,
+      jobStorePath: env.jobStorePath,
+      now: FIXED_NOW,
+    });
+
+    const store = loadEvidenceReviewJobStore(env.jobStorePath);
+    const beforeDue = planFairQuantumClaims(store, {
+      maxClaims: 1,
+      maxClaimsPerJob: 1,
+      now: FIXED_NOW,
+    });
+    assert.equal(beforeDue.claims.length, 0);
+
+    const afterDue = planFairQuantumClaims(store, {
+      maxClaims: 1,
+      maxClaimsPerJob: 1,
+      now: new Date('2026-07-17T07:00:00.000Z'),
+    });
+    assert.equal(afterDue.claims.length, 1);
+    assert.equal(afterDue.claims[0]!.jobId, 'job:migrated:op:op_entry_prod_1');
+  });
+
+  test('migrated operational retry cannot also execute through the legacy queue', async () => {
+    const op = operationalEntry({ nextRetryAt: '2026-07-17T05:00:00.000Z' });
+    writeLegacyQueue(env, [op]);
+
+    const migrated = env.skillEvolution.ensureLegacyReviewRecordsMigrated(FIXED_NOW);
+    assert.equal(migrated.materialized, 1);
+    assert.equal(loadEvidenceReviewJobStore(env.jobStorePath).jobs[migrated.jobIds[0]!] !== undefined, true);
+
+    const legacyResult = await env.skillEvolution.reviewDueQueueEntries({ now: FIXED_NOW });
+    assert.equal(legacyResult.reviewed, 0);
+    assert.equal(legacyResult.operationalRetried, 0);
   });
 
   test('public SkillEvolution + RuntimeLearning.wake path materializes legacy records once', async () => {
@@ -320,9 +363,10 @@ describe('Evidence Review production migration (#104/#110)', () => {
     assert.ok(fs.existsSync(env.jobStorePath));
 
     // Second call is idempotent in-process and across restart-style re-scan.
+    // Operational entry was transferred out; only the PBB source remains to re-match.
     const again = env.skillEvolution.ensureLegacyReviewRecordsMigrated(FIXED_NOW);
     assert.equal(again.materialized, 0);
-    assert.equal(again.alreadyPresent, 2);
+    assert.equal(again.alreadyPresent, 1);
 
     // Public wake re-enters the same seam without duplicating jobs.
     await env.runtimeLearning.wake('manual');

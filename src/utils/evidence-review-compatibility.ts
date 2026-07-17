@@ -30,6 +30,7 @@ import {
 } from './evidence-review-job-store';
 import {
   loadReviewQueueState,
+  saveReviewQueueState,
 } from './skill-evolution-review-queue';
 
 // ---------------------------------------------------------------------------
@@ -872,9 +873,9 @@ function defaultPromptBudgetBlockedPath(reviewQueuePath: string): string {
  * records and ensure each valid record owns exactly one Evidence Review Job.
  *
  * Idempotent across restarts. Corrupt source files are quarantined; corrupt
- * individual records are skipped without inventing empty evidence. Does not
- * remove legacy queue ownership — reviewDueQueueEntries still drains OPR —
- * and does not create a second scheduler/heartbeat.
+ * individual records are skipped without inventing empty evidence. Successfully
+ * materialized operational records transfer ownership to the job store so the
+ * legacy queue cannot execute the same review in the same wake.
  */
 export function materializeLegacyReviewRecordsAsJobs(
   options: EvidenceReviewMigrationMaterializeOptions,
@@ -912,12 +913,16 @@ export function materializeLegacyReviewRecordsAsJobs(
   let alreadyPresent = 0;
   const jobIds: string[] = [];
   let dirty = false;
+  const transferredOperationalEntryIds = new Set<string>();
 
   for (const seed of seeds) {
     const existing = findExistingMigratedJob(state, seed);
     if (existing) {
       alreadyPresent += 1;
       jobIds.push(existing.jobId);
+      if (seed.sourceKind === 'operational_retry') {
+        transferredOperationalEntryIds.add(seed.sourceEntryId);
+      }
       continue;
     }
     // Avoid dual ownership when an active job already covers the same bundle
@@ -927,6 +932,11 @@ export function materializeLegacyReviewRecordsAsJobs(
     if (activeForBundle) {
       alreadyPresent += 1;
       jobIds.push(activeForBundle.jobId);
+      // Bundle already owned by an active/deferred job — release legacy entry
+      // so the same wake cannot also drain it via linear review.
+      if (seed.sourceKind === 'operational_retry') {
+        transferredOperationalEntryIds.add(seed.sourceEntryId);
+      }
       continue;
     }
 
@@ -943,14 +953,26 @@ export function materializeLegacyReviewRecordsAsJobs(
     dirty = true;
     materialized += 1;
     jobIds.push(job.jobId);
+    if (seed.sourceKind === 'operational_retry') {
+      transferredOperationalEntryIds.add(seed.sourceEntryId);
+    }
   }
 
   if (dirty) {
     saveEvidenceReviewJobStore(jobStorePath, state);
   }
 
-  // Never rewrite operational/deferred ownership here — legacy queue remains
-  // owned by reviewDueQueueEntries until those paths drain naturally.
+  // Persist the new owner before releasing the old one. Re-running after a
+  // crash is idempotent: an existing migrated job transfers ownership too.
+  if (transferredOperationalEntryIds.size > 0) {
+    const retained = queue.operational.filter(entry => (
+      !transferredOperationalEntryIds.has(entry.entryId)
+    ));
+    if (retained.length !== queue.operational.length) {
+      queue.operational = retained;
+      saveReviewQueueState(options.reviewQueuePath, queue);
+    }
+  }
 
   return {
     scanned: operationalRaw.length + pbbFile.records.length,
@@ -962,4 +984,3 @@ export function materializeLegacyReviewRecordsAsJobs(
     skippedReasons,
   };
 }
-

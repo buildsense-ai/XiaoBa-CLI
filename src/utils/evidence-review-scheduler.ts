@@ -145,6 +145,8 @@ function runnableJobsByClass(
   };
   for (const job of jobs) {
     if (job.disposition !== 'active') continue;
+    const notBefore = job.nextDueAt ? Date.parse(job.nextDueAt) : Number.NaN;
+    if (Number.isFinite(notBefore) && notBefore > now.getTime()) continue;
     const hasRunnable = Object.values(job.quanta).some(q => isQuantumRunnable(job as any, q, now));
     if (!hasRunnable) continue;
     out[job.workClass].push(job);

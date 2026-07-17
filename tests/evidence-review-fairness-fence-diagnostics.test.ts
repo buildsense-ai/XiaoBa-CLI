@@ -21,6 +21,10 @@ import {
   planFairQuantumClaims,
 } from '../src/utils/evidence-review-scheduler';
 import {
+  EvidenceReviewEngine,
+  advanceJobsFairly,
+} from '../src/utils/evidence-review-engine';
+import {
   compareReviewBasis,
   createSuccessorReviewJob,
   markJobSuperseded,
@@ -124,6 +128,47 @@ function markLeased(job: EvidenceReviewJob, quantumId: string, expiresAt: string
 }
 
 describe('Fair Review Quantum Rotation (#108)', () => {
+  test('fair execution runs only the single quantum selected for this wake', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-evidence-review-fair-exec-'));
+    const jobStorePath = path.join(root, 'evidence-review-jobs.json');
+    let readerCalls = 0;
+    const engine = new EvidenceReviewEngine({
+      jobStorePath,
+      workingDirectory: root,
+      maxQuantaPerAdvance: 64,
+      runReaderLane: async () => {
+        readerCalls += 1;
+        throw new Error('reader call counted');
+      },
+      runSkillAuthor: async () => { throw new Error('author must not run'); },
+      runSkillVerifier: async () => { throw new Error('verifier must not run'); },
+      commitTransition: async () => { throw new Error('commit must not run'); },
+    });
+    try {
+      const bundle = validBundle('bounded-fair-execution', 'large'.repeat(100));
+      engine.createJob({
+        bundle,
+        candidate: candidateFrom(bundle),
+        workClass: 'live_learning',
+        sharding: {
+          preferSingleShardWhenFits: false,
+          softLimitBytes: 40,
+          hardLimitBytes: 80,
+        },
+      });
+
+      const advanced = await advanceJobsFairly(engine, 'wake-bounded', {
+        maxClaims: 1,
+        maxClaimsPerJob: 1,
+      });
+
+      assert.equal(advanced.claims, 1);
+      assert.equal(readerCalls, 1, 'one fair claim must execute exactly one quantum');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('rotates durably across work classes without permanent priority', () => {
     const state = emptyEvidenceReviewJobStoreState();
     for (const workClass of WORK_CLASS_ORDER) {
