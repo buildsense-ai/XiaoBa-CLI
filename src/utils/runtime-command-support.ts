@@ -55,6 +55,33 @@ export function getActiveRuntimeLearning(): RuntimeLearning | null {
   return activeSupport?.runtimeLearning ?? null;
 }
 
+export interface ExternalHistoryRuntimeActivation {
+  appliedImmediately: boolean;
+  wakeScheduled: boolean;
+}
+
+/** Hot-apply persisted external-source settings on the current Runtime owner. */
+export function activateExternalHistoryRuntimeConfiguration(
+  workingDirectory: string = process.cwd(),
+): ExternalHistoryRuntimeActivation {
+  const runtimeLearning = activeSupport?.runtimeLearning;
+  const scheduler = activeSupport?.distillationHeartbeatScheduler;
+  if (
+    !runtimeLearning
+    || !scheduler
+    || !runtimeLearning.reloadExternalHistoryConfiguration(workingDirectory)
+  ) {
+    return { appliedImmediately: false, wakeScheduled: false };
+  }
+
+  void scheduler.runHeartbeat('manual').catch(error => {
+    Logger.warning(
+      `[RuntimeCommandSupport] external history activation wake failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
+  return { appliedImmediately: true, wakeScheduled: true };
+}
+
 let activeSupport: ActiveRuntimeSupport | null = null;
 let startPromise: Promise<ActiveRuntimeSupport> | null = null;
 

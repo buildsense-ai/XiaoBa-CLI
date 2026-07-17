@@ -34,12 +34,15 @@ import {
   MAX_EVIDENCE_CAPSULE_OBSERVATIONS,
   MAX_EVIDENCE_CAPSULE_OBSERVATION_PAYLOAD_BYTES,
   MAX_EVIDENCE_CAPSULE_PAYLOAD_BYTES,
+  MAX_EXTERNAL_TURN_TEXT_BYTES,
+  sanitizeExternalDistillationUnit,
 } from '../src/utils/evidence-capsule';
 import {
   BoundedSourceEvidence,
   EvidenceBundle,
   SkillEvolutionRuntime,
 } from '../src/utils/skill-evolution';
+import { readShardStructurally } from '../src/utils/evidence-review-engine';
 import {
   ExternalSessionLogSourceAdapter,
   SessionLogSourceAdapter,
@@ -88,6 +91,17 @@ const SAMPLE_SOURCE_IDENTITY: SessionLogSourceIdentity = {
   provider: 'claude-code',
   reader: 'xurl',
 };
+
+const structuralReaderFixture: NonNullable<
+  ConstructorParameters<typeof SkillEvolutionRuntime>[0]['readerFixture']
+> = ({ lane, shard }) => ({
+  findingSet: readShardStructurally(
+    shard.shardId,
+    shard.contentHash,
+    shard.content,
+    lane,
+  ),
+});
 
 const SAMPLE_SEMANTIC_OBSERVATIONS: readonly SemanticObservation[] = [
   {
@@ -326,6 +340,7 @@ function setupWakeEnv(options: {
     operationalRetryMs: options.operationalRetryMs ?? 0,
     operationalRetryMaxMs: 60_000,
     logEnabled: false,
+    readerFixture: structuralReaderFixture,
     authorFixture: options.authorFixture,
     verifierFixture: options.verifierFixture,
   });
@@ -523,6 +538,33 @@ describe('Evidence Capsule', () => {
   // ---- Capsule creation ----
 
   describe('buildEvidenceCapsule', () => {
+    test('accepts ordinary external turn text through the configured bound and rejects larger turns', () => {
+      const unit = (assistantBytes: number) => ({
+        filePath: 'external-source.jsonl',
+        newTurns: [{
+          turn: 1,
+          timestamp: new Date(0).toISOString(),
+          session_id: 'external-session',
+          session_type: 'chat',
+          user: { text: 'Continue.' },
+          assistant: { text: 'x'.repeat(assistantBytes), tool_calls: [] },
+          tokens: { prompt: 1, completion: 1 },
+        }],
+        continuityTurns: [],
+        byteRange: { start: 0, end: assistantBytes },
+        generatedAt: new Date(0).toISOString(),
+      } as any);
+
+      assert.doesNotThrow(() => sanitizeExternalDistillationUnit(unit(MAX_EXTERNAL_TURN_TEXT_BYTES), {
+        sourceId: 'external-pi',
+        eventIdentity: { eventId: 'event-81', position: 81 },
+      }));
+      assert.throws(() => sanitizeExternalDistillationUnit(unit(MAX_EXTERNAL_TURN_TEXT_BYTES + 1), {
+        sourceId: 'external-pi',
+        eventIdentity: { eventId: 'event-oversized', position: 82 },
+      }), new RegExp(`external assistant text exceeds the ${MAX_EXTERNAL_TURN_TEXT_BYTES}-byte external evidence limit`));
+    });
+
     test('creates a capsule with provenance and identity', () => {
       const capsule = buildEvidenceCapsule({
         sourceIdentity: SAMPLE_EXTERNAL_IDENTITY,

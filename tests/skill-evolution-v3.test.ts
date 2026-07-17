@@ -11,6 +11,7 @@ import type { DistilledKnowledgeCandidate } from '../src/utils/capability-distil
 import {
   computeCurrentSkillRegistryHash,
   EvidenceBundle,
+  isLifecycleOrGenericRoutingName,
   loadCurrentSkillRegistry,
   saveCurrentSkillRegistry,
   loadTransitionAudit,
@@ -228,6 +229,13 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
 }
 
 describe('V3 verified semantic Current Skills', () => {
+  test('rejects lifecycle-bound or generic routing names before create', () => {
+    assert.equal(isLifecycleOrGenericRoutingName('settled-artifact-delivery-workflow'), true);
+    assert.equal(isLifecycleOrGenericRoutingName('artifact-delivery'), true);
+    assert.equal(isLifecycleOrGenericRoutingName('create-chat-sticker-svg'), false);
+    assert.equal(isLifecycleOrGenericRoutingName('verified-final-report-delivery'), false);
+  });
+
   test('migrates a v1 generated-skill Registry to route-aware schema v2 without losing capabilities', () => {
     const env = setup();
     try {

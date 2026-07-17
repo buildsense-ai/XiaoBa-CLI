@@ -743,7 +743,7 @@ export class RuntimeLearning {
   private readonly planner: DueWorkPlanner;
   private readonly legacyPipeline: DistillationPipeline | undefined;
   private readonly clock: () => Date;
-  private readonly config: DistillationHeartbeatConfig;
+  private config: DistillationHeartbeatConfig;
   /**
    * Session log source adapters. The internal adapter is always first.
    * External adapters are built from the effective enabled provider set
@@ -928,6 +928,40 @@ export class RuntimeLearning {
   }
 
   /**
+   * Apply external-source settings written by a connected control surface
+   * without rebuilding the writable Runtime owner. Only external settings are
+   * refreshed; paths and the rest of the heartbeat generation stay immutable.
+   */
+  reloadExternalHistoryConfiguration(expectedWorkingDirectory = this.workingDirectory): boolean {
+    if (
+      !this.managesConfiguredSessionLogSources
+      || path.resolve(expectedWorkingDirectory) !== path.resolve(this.workingDirectory)
+    ) return false;
+
+    const latest = getDistillationHeartbeatConfig(this.workingDirectory);
+    this.config = {
+      ...this.config,
+      externalSessionLogSourcesEnabled: latest.externalSessionLogSourcesEnabled,
+      externalSessionLogEnabledProviders: latest.externalSessionLogEnabledProviders,
+      externalSessionLogSelectedProvider: latest.externalSessionLogSelectedProvider,
+      externalSessionLogSelectedSourceId: latest.externalSessionLogSelectedSourceId,
+      externalSessionLogXurlCommand: latest.externalSessionLogXurlCommand,
+      externalSessionLogHistoryMode: latest.externalSessionLogHistoryMode,
+      externalSessionLogHistoryModeDiagnostic: latest.externalSessionLogHistoryModeDiagnostic,
+    };
+
+    const enabledProviders = new Set(
+      this.providerOverrideStore.resolveEnabledProviders(this.config),
+    );
+    for (const [key, controller] of this.activeExternalReadAbortControllers) {
+      const identity = parseExternalSourceLaneKey(key);
+      if (identity && !enabledProviders.has(identity.provider)) controller.abort();
+    }
+    this.reconcileProviderLanes();
+    return true;
+  }
+
+  /**
    * External source failure state (issue #77). Returns a snapshot of the
    * current per-source failure tracking for inspection/testing.
    */
@@ -1021,6 +1055,44 @@ export class RuntimeLearning {
       return changed;
     });
     return mutation.acquired ? mutation.value : false;
+  }
+
+  /** Retry all durable safety gates for one provider without skipping evidence. */
+  retryExternalProviderRecovery(provider: string): {
+    quarantinesRetried: number;
+    sourceFailuresRetried: number;
+  } {
+    const normalizedProvider = provider.trim().toLowerCase();
+    const sourceIds = new Set(
+      this.sessionLogSources
+        .filter(source => (
+          source.identity.category === 'external'
+          && source.identity.provider === normalizedProvider
+        ))
+        .map(source => source.identity.sourceId),
+    );
+    for (const key of this.externalSourceFailureState.keys()) {
+      const identity = parseExternalSourceLaneKey(key);
+      if (identity?.provider === normalizedProvider) sourceIds.add(identity.sourceId);
+    }
+    if (sourceIds.size === 0) sourceIds.add(`external-${normalizedProvider}`);
+
+    let quarantinesRetried = 0;
+    let sourceFailuresRetried = 0;
+    for (const sourceId of sourceIds) {
+      const quarantines = this.listExternalSourceQuarantines(normalizedProvider, sourceId);
+      for (const quarantine of quarantines) {
+        if (this.retryExternalSourceQuarantine(
+          normalizedProvider,
+          sourceId,
+          quarantine.quarantineId,
+        )) quarantinesRetried++;
+      }
+      if (this.retryExternalSourceFailure(normalizedProvider, sourceId)) {
+        sourceFailuresRetried++;
+      }
+    }
+    return { quarantinesRetried, sourceFailuresRetried };
   }
 
   skipExternalSourceQuarantine(
@@ -2621,7 +2693,7 @@ export class RuntimeLearning {
               this.evidenceCapsuleStore,
               this.isEpisodeFromExternalSource.bind(this),
             );
-        if (!this.canAdmitReviewWork(reviewBudget, bundle)) continue;
+        if (!this.canAdmitReviewWork(reviewBudget)) continue;
         classCursors[selected.workClass] = taskId(selected);
         nextClass = REVIEW_WORK_CLASS_ORDER[
           (REVIEW_WORK_CLASS_ORDER.indexOf(selected.workClass) + 1) % REVIEW_WORK_CLASS_ORDER.length
@@ -2778,9 +2850,9 @@ export class RuntimeLearning {
     };
   }
 
-  private canAdmitReviewWork(reviewBudget: ReviewBudget, bundle: EvidenceBundle): boolean {
+  private canAdmitReviewWork(reviewBudget: ReviewBudget): boolean {
     if (this.shutdownDrainRequested) return false;
-    return reviewBudget.admit(bundle);
+    return reviewBudget.admit();
   }
 
   /**

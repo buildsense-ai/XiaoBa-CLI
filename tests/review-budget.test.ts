@@ -26,9 +26,24 @@ describe('review budget', () => {
       deadlineMs: 10,
       now: () => now,
     });
-    assert.equal(budget.admit({ episode: 1 }), true);
+    assert.equal(budget.admit(), true);
     now = 10;
-    assert.equal(budget.admit({ episode: 2 }), false);
+    assert.equal(budget.admit(), false);
+    assert.equal(budget.candidates, 1);
+  });
+
+  test('ignores obsolete maxPromptTokens for a former ~19KB false rejection', () => {
+    const payload = { evidence: 'y'.repeat(19_000) };
+    const serializedBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+    assert.ok(serializedBytes * 16 > 200_000, 'fixture exceeds the removed estimator');
+
+    const budget = createReviewBudget({
+      maxCandidates: 1,
+      maxPromptTokens: 0,
+      deadlineMs: 1_000,
+      now: () => 0,
+    });
+    assert.equal(budget.admit(), true);
     assert.equal(budget.candidates, 1);
   });
 

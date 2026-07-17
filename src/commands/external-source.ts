@@ -82,6 +82,8 @@ export interface ExternalSourceCommandOptions {
   maxEvents?: number;
   maxBytes?: number;
   maxElapsedMs?: number;
+  /** Control-surface command fallback; CLI callers still require configuration. */
+  xurlCommand?: string;
   /** Injectable clock for deterministic tests. */
   now?: () => Date;
   /** Existing owner Runtime used by the connected-device control surface. */
@@ -171,6 +173,7 @@ export async function runExternalHistoryBackfillControl(options: {
     scope: 'global',
     workingDirectory: options.workingDirectory,
     runtimeLearning: options.runtimeLearning,
+    xurlCommand: 'xurl',
     ...(options.runtimeLearning ? {
       maxResources: 10,
       maxEvents: 200,
@@ -412,7 +415,8 @@ async function handleBackfill(
   const limits = resolveBackfillLimits(options);
   const scope = resolveBackfillScope(store, provider, options.scope, options.scopePath, workingDirectory);
   const sourceId = resolveExternalProviderSourceId(config, provider);
-  const xurlCommand = config.externalSessionLogXurlCommand?.trim();
+  const xurlCommand = options.xurlCommand?.trim()
+    || config.externalSessionLogXurlCommand?.trim();
   if (!xurlCommand) {
     throw new Error('xurl command is missing; set XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND');
   }

@@ -90,6 +90,7 @@ function setupEnv(options: { provider: string; sourceId: string }): TestEnv {
     XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
     XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE: process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE,
     XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED,
+    XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS: process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS,
     XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER,
     XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID,
     XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND: process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND,
@@ -104,6 +105,7 @@ function setupEnv(options: { provider: string; sourceId: string }): TestEnv {
   process.env.XIAOBA_RUNTIME_ROOT = root;
   process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE = reassessmentManifestPath;
   process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+  process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS = options.provider;
   process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER = options.provider;
   process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID = options.sourceId;
   process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND = commandPath;
@@ -918,10 +920,10 @@ test('protocol repair gate follows the provider across restarted source identiti
       /provider codex is paused pending explicit protocol or integrity repair/,
     );
 
-    assert.equal(
-      restarted.runtime.retryExternalSourceFailure('codex', 'external-codex-a'),
-      true,
-    );
+    assert.deepEqual(restarted.runtime.retryExternalProviderRecovery('codex'), {
+      quarantinesRetried: 0,
+      sourceFailuresRetried: 1,
+    });
     const repaired = await restarted.runtime.wake('scheduled');
     assert.notEqual(
       repaired.discovery.sources.find(source => source.sourceId === 'external-codex-b')?.status,

@@ -139,6 +139,27 @@ describe('external-source backfill CLI', () => {
     assert.equal(stdout, '');
   });
 
+  test('webapp preview uses the local xurl from PATH when no command is configured', async () => {
+    const { runExternalHistoryBackfillControl } = await import('../src/commands/external-source');
+    const localXurl = path.join(env.root, 'xurl');
+    fs.symlinkSync(env.commandPath, localXurl);
+    const savedPath = process.env.PATH;
+    delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND;
+    process.env.PATH = `${env.root}${path.delimiter}${savedPath ?? ''}`;
+
+    try {
+      const preview = await runExternalHistoryBackfillControl({
+        provider: 'codex',
+        updatedSince: '2026-07-15T00:00:00.000Z',
+        workingDirectory: env.root,
+      });
+      assert.equal(preview.mode, 'dry-run');
+      assert.equal(preview.selectedCount, 1);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+
   test('dry-run is the default and reports selection metadata without transcript text', async () => {
     const { externalSourceCommand } = await import('../src/commands/external-source');
     const secretPath = path.join(env.root, 'private-project');

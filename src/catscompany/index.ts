@@ -48,7 +48,10 @@ import {
   getExternalHistoryControlStatus,
   runExternalHistoryBackfillControl,
 } from '../commands/external-source';
-import { getActiveRuntimeLearning } from '../utils/runtime-command-support';
+import {
+  activateExternalHistoryRuntimeConfiguration,
+  getActiveRuntimeLearning,
+} from '../utils/runtime-command-support';
 import {
   buildCatsCoAttachmentCachePath,
   scheduleCatsCoAttachmentCacheCleanup,
@@ -754,7 +757,13 @@ export class CatsCompanyBot {
       const providers = Array.isArray(payload.providers)
         ? payload.providers.map(provider => String(provider))
         : [];
-      response = { ...configureExternalHistoryProviders(providers, workingDirectory) };
+      const configured = configureExternalHistoryProviders(providers, workingDirectory);
+      const activation = activateExternalHistoryRuntimeConfiguration(workingDirectory);
+      response = {
+        ...configured,
+        ...activation,
+        restartRequired: !activation.appliedImmediately,
+      };
     } else {
       const provider = String(payload.provider || '').trim().toLowerCase();
       const updatedSince = String(payload.updatedSince || '').trim();
@@ -774,14 +783,23 @@ export class CatsCompanyBot {
           retryable: true,
         };
       }
-      response = await runExternalHistoryBackfillControl({
-        provider,
-        updatedSince,
-        execute,
-        operationId: typeof payload.operationId === 'string' ? payload.operationId : undefined,
-        workingDirectory,
-        runtimeLearning: runtimeLearning ?? undefined,
-      });
+      const recovery = execute
+        ? runtimeLearning!.retryExternalProviderRecovery(provider)
+        : undefined;
+      response = {
+        ...await runExternalHistoryBackfillControl({
+          provider,
+          updatedSince,
+          execute,
+          operationId: typeof payload.operationId === 'string' ? payload.operationId : undefined,
+          workingDirectory,
+          runtimeLearning: runtimeLearning ?? undefined,
+        }),
+        ...(recovery && (
+          recovery.quarantinesRetried > 0
+          || recovery.sourceFailuresRetried > 0
+        ) ? { recovery } : {}),
+      };
     }
 
     return { ok: true, content: JSON.stringify(response) };

@@ -219,17 +219,27 @@ function setupEnv(
     XIAOBA_SKILLS_DIR: process.env.XIAOBA_SKILLS_DIR,
     XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
     XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE: process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE,
+    XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED,
+    XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS: process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS,
+    XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER,
+    XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID,
+    XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND: process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND,
   };
 
   process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
   process.env.DISTILLATION_HEARTBEAT_INTERVAL_HOURS = '6';
-  process.env.DISTILLATION_HEARTBEAT_LOG_ROOT = 'logs';
+  process.env.DISTILLATION_HEARTBEAT_LOG_ROOT = path.join(root, 'logs');
   process.env.DISTILLATION_HEARTBEAT_STATE_FILE = stateFile;
   process.env.DISTILLATION_HEARTBEAT_RECORD_FILE = heartbeatRecordFile;
   delete process.env.XIAOBA_ROLE;
   process.env.XIAOBA_SKILLS_DIR = skillsRoot;
   process.env.XIAOBA_RUNTIME_ROOT = root;
   process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE = reassessmentManifestPath;
+  process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'false';
+  delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS;
+  delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER;
+  delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID;
+  delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND;
 
   const skillEvolution = new SkillEvolutionRuntime({
     workingDirectory: root,
@@ -442,6 +452,60 @@ describe('RuntimeLearning — AC1: Ingestion', () => {
     assert.equal(result.discovery.filesScanned, 1);
     assert.ok(result.ingestion.admittedEpisodes >= 1);
     assert.equal(result.reassessment.status, 'skipped');
+  });
+});
+
+describe('RuntimeLearning — external history hot reload', () => {
+  test('creates configured provider lanes without rebuilding the Runtime owner', () => {
+    const keys = [
+      'XIAOBA_RUNTIME_ROOT',
+      'XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED',
+      'XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS',
+      'XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND',
+      'XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE',
+    ] as const;
+    const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-hot-external-'));
+
+    try {
+      process.env.XIAOBA_RUNTIME_ROOT = root;
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'false';
+      delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS;
+      delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND;
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE = 'future-only';
+
+      const runtime = createRestartableRuntimeLearning(root);
+      runtime.enableExternalProvider('codex', { scope: 'global' }, 'future-only');
+      runtime.enableExternalProvider('pi', { scope: 'global' }, 'future-only');
+      assert.deepEqual(
+        runtime.getSessionLogSources().filter(source => source.identity.category === 'external'),
+        [],
+      );
+
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS = 'codex,pi';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND = 'xurl';
+
+      assert.equal(
+        runtime.reloadExternalHistoryConfiguration(path.join(root, 'other-runtime')),
+        false,
+      );
+      assert.equal(runtime.reloadExternalHistoryConfiguration(), true);
+      assert.deepEqual(
+        runtime.getSessionLogSources()
+          .filter(source => source.identity.category === 'external')
+          .map(source => source.identity.provider)
+          .sort(),
+        ['codex', 'pi'],
+      );
+    } finally {
+      for (const key of keys) {
+        const value = saved[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

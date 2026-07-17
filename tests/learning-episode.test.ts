@@ -19,6 +19,14 @@ import { distillCapabilityCandidates } from '../src/utils/capability-distiller';
 import { SessionToolCallLog, SessionTurnLogEntry } from '../src/utils/session-log-schema';
 import { DistillationPipeline } from '../src/utils/distillation-pipeline';
 import { SkillEvolutionRuntime } from '../src/utils/skill-evolution';
+import { readShardStructurally } from '../src/utils/evidence-review-engine';
+
+/** Explicit dual-lane reader fixture — production Readers require AIService. */
+function structuralReaderFixture({ shard, lane }: { shard: { shardId: string; contentHash: string; content: string }; lane: 'author' | 'verifier' }) {
+  return {
+    findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane),
+  };
+}
 
 function tool(id: string, name: string, result: string): SessionToolCallLog {
   return { id, name, arguments: {}, result };
@@ -190,6 +198,65 @@ describe('V3 independent Learning Episodes', () => {
       turn(1, 'Ship the weekly report.', []),
     ], '/logs/internal-text-only.jsonl'));
     assert.equal(result.episodes.length, 0);
+  });
+
+  test('folds create → verify → accept into one delivery attempt for the same task', () => {
+    const result = extractLearningEpisodes(unit([
+      turn(1, 'Create chat sticker sticker-meow-ok.svg with write_file.', [
+        tool('1', 'write_file', '✓ 成功创建文件: sticker-meow-ok.svg'),
+      ]),
+      turn(2, 'Open sticker-meow-ok.svg and verify it is a complete 512 SVG with Meow OK.', []),
+      turn(3, 'Thanks, works perfectly.', []),
+    ], '/logs/sticker-session.jsonl'));
+
+    assert.equal(result.episodes.length, 1, 'verification must not mint a second episode');
+    const episode = result.episodes[0]!;
+    assert.equal(episode.deliveryTurn, 1);
+    assert.ok(episode.completionEvidence.some(item => item.kind === 'artifact-delivery'));
+    assert.ok(
+      episode.completionEvidence.some(item => item.kind === 'assistant-response'),
+      'verification reply folds into the open delivery',
+    );
+    assert.ok(
+      episode.completionEvidence.some(item => item.kind === 'user-acceptance'),
+      'acceptance belongs to the create delivery, not a verify-only episode',
+    );
+    assert.ok(episode.semanticObservations.some(item => item.kind === 'user-intent' && /sticker/i.test(item.value)));
+    assert.ok(episode.semanticObservations.some(item => item.kind === 'verification'));
+  });
+
+  test('keeps a second artifact delivery independent from the open predecessor', () => {
+    const result = extractLearningEpisodes(unit([
+      turn(1, 'Create the first sticker.', [tool('1', 'write_file', 'created a.svg')]),
+      turn(2, 'Thanks, works perfectly.', []),
+      turn(3, 'Create a second sticker now.', [tool('3', 'write_file', 'created b.svg')]),
+      turn(4, 'Perfect, verified.', []),
+    ], '/logs/two-stickers.jsonl'));
+
+    assert.equal(result.episodes.length, 2);
+    assert.equal(result.episodes[0]!.deliveryTurn, 1);
+    assert.equal(result.episodes[1]!.deliveryTurn, 3);
+    assert.ok(result.episodes[0]!.completionEvidence.some(item => item.kind === 'user-acceptance'));
+    assert.ok(result.episodes[1]!.completionEvidence.some(item => item.kind === 'user-acceptance'));
+    assert.equal(result.episodes[1]!.predecessorEpisodeId, result.episodes[0]!.episodeId);
+  });
+
+  test('candidate builder prefers user-intent over lifecycle/generic delivery titles', () => {
+    const result = extractLearningEpisodes(unit([
+      turn(1, '请用 write_file 创建聊天贴纸 sticker-meow-ok.svg（512 SVG、橙色小猫、Meow OK）。', [
+        tool('1', 'write_file', '✓ 成功创建文件: sticker-meow-ok.svg'),
+      ]),
+      turn(2, 'Open sticker-meow-ok.svg and verify the design.', []),
+      turn(3, 'Thanks, works perfectly.', []),
+    ], '/logs/sticker-candidate.jsonl'));
+
+    assert.equal(result.episodes.length, 1);
+    const candidate = buildLearningEpisodeCandidate(result.episodes[0]!);
+    assert.match(candidate.title, /sticker|Meow OK|write_file/i);
+    assert.doesNotMatch(candidate.title, /settled artifact delivery workflow/i);
+    assert.doesNotMatch(candidate.actionPattern, /settled artifact workflow/i);
+    assert.doesNotMatch(candidate.solvedLoop.problem, /Learning Episode/i);
+    assert.match(candidate.actionPattern, /write_file/i);
   });
 
   test('admits a complete external User→Assistant final as candidate episode evidence', () => {
@@ -719,6 +786,7 @@ describe('V3 flashcard Composition Capability regression', () => {
         wordCardMakerVersion: 'manual-v1',
         wordCardMakerPath: manualSkill,
         logEnabled: true,
+        readerFixture: structuralReaderFixture,
       });
 
       assert.equal(result.evolution.verified, true);
@@ -784,6 +852,7 @@ describe('V3 flashcard Composition Capability regression', () => {
         registryPath: path.join(root, 'data', 'current-skills.json'),
         auditPath: path.join(root, 'data', 'transition-audit.jsonl'),
         journalPath: path.join(root, 'data', 'transition-journal.json'),
+        readerFixture: structuralReaderFixture,
         authorFixture: ({ bundle }) => ({
           body: 'Compose word-card-maker with opencli image selection, validation, and delivery.',
           envelope: {
@@ -858,6 +927,7 @@ describe('V3 flashcard Composition Capability regression', () => {
         registryPath: path.join(root, 'data', 'current-skills.json'),
         auditPath: path.join(root, 'data', 'transition-audit.jsonl'),
         journalPath: path.join(root, 'data', 'transition-journal.json'),
+        readerFixture: structuralReaderFixture,
         authorFixture: ({ bundle }) => {
           authorCalls++;
           const candidate = bundle.episode as { actionPattern: string };
@@ -1080,6 +1150,7 @@ describe('V3 flashcard Composition Capability regression', () => {
           registryPath: path.join(root, 'data', 'current-skills.json'),
           auditPath: path.join(root, 'data', 'transition-audit.jsonl'),
           journalPath: path.join(root, 'data', 'transition-journal.json'),
+          readerFixture: structuralReaderFixture,
           authorFixture: () => ({
             body: 'Deliver a report when requested and wait for user verification.',
             envelope: {

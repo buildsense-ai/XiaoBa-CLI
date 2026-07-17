@@ -142,8 +142,8 @@ A chunk of one session log file made from newly appended turns plus continuity c
 _Avoid_: Daily batch, global log batch
 
 **Learning Episode**:
-A prefilter-selected completed task attempt that may be worth capability review. Each completed delivery attempt is independent; corrections and retries become separate attempts connected only through bounded source context. An episode is selected by observable delivery, composition, recovery, or complexity signals, but it makes no claim that a reusable capability exists. A catch-up episode may remain historical-pending until its source thread reaches its fixed target.
-_Avoid_: Promoted capability, solved loop, every assistant reply, multi-attempt task graph
+A prefilter-selected completed task attempt that may be worth capability review. Each completed delivery attempt is independent from true redeliveries, corrections, and retries, which become separate attempts connected only through bounded source context. Verification or acceptance that does not deliver a new artifact folds into the open delivery attempt in the same runtime session, so create→check→accept remains one episode. An episode is selected by observable delivery, composition, recovery, or complexity signals, but it makes no claim that a reusable capability exists. A catch-up episode may remain historical-pending until its source thread reaches its fixed target.
+_Avoid_: Promoted capability, solved loop, every assistant reply, multi-attempt task, verification-only competing episode graph
 
 **Capability**:
 A reusable problem-handling pattern distilled from one or more completed tasks, including the situation where it applies and the action pattern that helped.
@@ -174,20 +174,20 @@ The part of a distilled skill that tells an agent how much to trust the pattern,
 _Avoid_: Full log dump, citation list
 
 **Capability Candidate**:
-A pre-promotion proposal produced by log distillation, consisting of evidence and a possible Skill Draft but no Capability Handle. A Branch Promotion Reviewer decides whether it belongs to an existing Capability or represents a new one.
-_Avoid_: Accepted skill, final memory, preassigned capability identity
+A pre-promotion proposal produced by log distillation, consisting of evidence, durable Semantic Observations, and a possible Skill Draft but no Capability Handle. Its summary text is a Candidate Evidence Summary derived from task evidence, not a Public Semantic Name. A Branch Promotion Reviewer decides whether it belongs to an existing Capability or represents a new one.
+_Avoid_: Accepted skill, final memory, preassigned capability identity, Runtime-assigned routing name
 
 **Distilled Knowledge Candidate**:
-A durable knowledge candidate produced from logs by a runtime-scoped background agent. The first supported kind is capability, but the concept intentionally leaves room for facts, preferences, decisions, workflows, and anti-patterns later.
-_Avoid_: Skill, memory, daily summary
+A durable knowledge candidate produced from logs by a runtime-scoped background agent. The first supported kind is capability, but the concept intentionally leaves room for facts, preferences, decisions, workflows, and anti-patterns later. When derived from a Learning Episode, its title and action summary must describe the user-facing task evidenced by Semantic Observations rather than process state such as settled, episode, or candidate.
+_Avoid_: Skill, memory, daily summary, settled artifact delivery workflow
 
 **Skill Draft**:
 A single Markdown guidance body authored from distilled knowledge but not yet installed as an active runtime skill. It contains the agent-facing procedure and must not carry runtime-owned identity or audit frontmatter.
 _Avoid_: Installed skill, final skill, duplicate structured guidance model
 
 **Skill Authoring Envelope**:
-The minimal structured result returned with a Skill Draft: a promotion decision, Referenced Skills, evidence refs, and an optional target capability. It is the machine-verifiable control plane; the draft body remains the sole source of agent-facing guidance.
-_Avoid_: Second skill representation, arbitrary runtime metadata, direct filesystem write
+The minimal structured result returned with a Skill Draft: a promotion decision, Skill Routing Name when creating or migrating, description, Referenced Skills, evidence refs, and optional source or target capability handles. It is the machine-verifiable control plane; the draft body remains the sole source of agent-facing guidance. For create or migrate, the routing name must be a Semantic Skill Name.
+_Avoid_: Second skill representation, arbitrary runtime metadata, direct filesystem write, lifecycle-bound routing name
 
 **Promotion Packet**:
 The complete review bundle used to decide whether a skill draft should become an installed skill, including the draft content, provenance, solved-loop evidence, risks, and a recommendation.
@@ -202,8 +202,8 @@ A constrained runtime review workflow comprising a Skill Author Branch and an in
 _Avoid_: Unbounded autonomous agent, direct file writer, global memory search, self-approval
 
 **Skill Author Branch**:
-A constrained branch that turns bounded evidence into one Markdown Skill Draft and its Skill Authoring Envelope. It can propose guidance but cannot certify, install, or mutate it.
-_Avoid_: Verifier, direct file writer, policy authority
+A constrained branch that turns bounded evidence into one Markdown Skill Draft and its Skill Authoring Envelope. It proposes a Semantic Skill Name from Durable Semantic Observations and Candidate Evidence Summary hints, preferring user-intent and artifact-operation evidence over process jargon or tool names alone. It can propose guidance but cannot certify, install, or mutate it.
+_Avoid_: Verifier, direct file writer, policy authority, Runtime-assigned name, settled/episode/candidate route
 
 **Skill Verifier Branch**:
 An independent constrained branch that tests a Skill Draft against its cited evidence and Referenced Skills. It checks task necessity, evidence support, privilege expansion, and source-instruction contamination before the runtime may commit a transition.
@@ -334,15 +334,15 @@ The sole active `SKILL.md` selected by the Capability Registry as the executable
 _Avoid_: Overwriting the only historical copy, latest-file heuristic, merged skill with no revision boundary
 
 **Skill Routing Name**:
-The stable, semantic, user-visible skill name used by existing skill discovery to route a Capability. It is proposed by the Skill Author, validated by the runtime, cannot collide with a manually managed skill, and is not the Capability Handle.
-_Avoid_: Opaque handle, source hash, silent rename, manual-skill override
+The stable, semantic, user-visible skill name used by existing skill discovery to route a Capability. It is proposed by the Skill Author, validated by the runtime, cannot collide with a manually managed skill, and is not the Capability Handle. Create and migrate names must pass the Naming Safety Gate and must not be lifecycle-bound or generic process labels.
+_Avoid_: Opaque handle, source hash, silent rename, manual-skill override, settled-artifact-delivery-workflow
 
 **Semantic Skill Name**:
-A lifecycle-neutral name that describes the reusable user capability supported by bounded evidence. It names the task outcome or decision pattern rather than the Runtime state, source episode, or implementation tool that happened to produce it.
-_Avoid_: Settled artifact delivery, eligible episode, OpenCLI command name
+A lifecycle-neutral name that describes the reusable user capability supported by bounded evidence. It names the task outcome or decision pattern rather than the Runtime state, source episode, delivery mechanics, or implementation tool that happened to produce it. Examples of good form: `create-chat-sticker-svg`, `verified-final-report-delivery`.
+_Avoid_: Settled artifact delivery, eligible episode, OpenCLI command name, artifact-delivery, generic-workflow
 
 **Skill Naming Authority**:
-The Skill Author proposes a Semantic Skill Name from the fixed Evidence Bundle, the Skill Verifier checks that the name is supported and appropriately bounded, and Runtime only enforces structure, uniqueness, and safety constraints.
+The Skill Author proposes a Semantic Skill Name from the fixed Evidence Bundle, preferring Durable Semantic Observations over generic Candidate Evidence Summary titles; the Skill Verifier checks that the name is supported and appropriately bounded; Runtime only enforces structure, uniqueness, and safety constraints and never invents a replacement name.
 _Avoid_: Runtime-assigned semantic name, verifier-invented capability, evidence-free rename
 
 **Semantic Observation**:
@@ -362,15 +362,15 @@ The Skill Author's bounded judgment about which supplied Semantic Observations b
 _Avoid_: Runtime preclassification, free-form memory search, evidence fishing
 
 **Naming Deferral**:
-A review outcome used when the fixed Evidence Bundle does not support a precise, lifecycle-neutral Skill Routing Name after the bounded Author–Verifier loop. The candidate remains durable for a later evidence-gated retry instead of receiving a generic Runtime-assigned name.
+A review outcome used when the fixed Evidence Bundle does not support a precise, lifecycle-neutral Skill Routing Name after the bounded Author–Verifier loop, including after one same-attempt revise for an obviously lifecycle-bound or generic name. The candidate remains durable for a later evidence-gated retry instead of receiving a generic Runtime-assigned name.
 _Avoid_: Generic fallback name, silent acceptance, discarded candidate
 
 **Public Semantic Naming**:
-The user-visible naming surface of a Capability: its title, Skill Routing Name, description, and generated Skill heading. It is distinct from durable internal identities, lifecycle statuses, source refs, and Transition Audit fields.
-_Avoid_: Renaming the Capability Handle, changing episode identity, audit metadata as prose
+The user-visible naming surface of a Capability: its title, Skill Routing Name, description, and generated Skill heading. It is distinct from durable internal identities, lifecycle statuses, source refs, Candidate Evidence Summary text, and Transition Audit fields.
+_Avoid_: Renaming the Capability Handle, changing episode identity, audit metadata as prose, promoting candidate summary text unchanged
 
 **Naming Safety Gate**:
-The Runtime boundary that rejects malformed, colliding, or obviously lifecycle-bound Skill Routing Names without selecting a semantic replacement. Semantic adequacy remains a Verifier judgment.
+The Runtime boundary that rejects malformed, colliding, or obviously lifecycle-bound Skill Routing Names without selecting a semantic replacement. A pure lifecycle-or-generic naming miss may be returned to the Skill Author for one same-attempt revise; repeated failure becomes Naming Deferral. Semantic adequacy beyond the hard gate remains a Verifier judgment.
 _Avoid_: Runtime naming oracle, automatic generic fallback, silent correction
 
 **Durable Semantic Observation**:
@@ -386,8 +386,8 @@ The length-limited factual text attached to a Semantic Observation so an Author 
 _Avoid_: Full tool output, unrestricted transcript, executable instruction payload
 
 **Candidate Evidence Summary**:
-The backward-compatible title, applicability, and action summary carried on a Capability Candidate for review context. It is not a Public Semantic Name and cannot override the Author's observation-based naming decision.
-_Avoid_: Runtime-assigned title, routing authority, final Skill heading
+The backward-compatible title, applicability, and action summary carried on a Capability Candidate for review context. It is derived from Durable Semantic Observations and completion evidence so it describes the user-facing task rather than process state. It is not a Public Semantic Name, cannot override the Author's observation-based naming decision, and must not induce lifecycle-bound routes such as settled/episode/candidate or empty labels such as artifact-delivery.
+_Avoid_: Runtime-assigned title, routing authority, final Skill heading, settled artifact delivery workflow
 
 **Retired Skill Route**:
 A former Skill Routing Name removed from active discovery after a successful Skill Name Migration. Its Capability provenance and Transition Audit remain addressable, and a non-public Durable Route Redirect may resolve historical references or explicit legacy calls to the canonical current route; it is not listed as a separate Current Skill.

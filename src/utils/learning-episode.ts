@@ -20,6 +20,7 @@ import {
   ReferencedSkillSnapshot,
   SkillAuthorFixture,
   SkillDraft,
+  SkillEvolutionOptions,
   SkillEvolutionResult,
   SkillEvolutionRuntime,
   SkillEvidenceRef,
@@ -28,7 +29,11 @@ import {
 import { SkillParser } from '../skills/skill-parser';
 import { PathResolver } from './path-resolver';
 
-/** A completed delivery attempt is the unit of learning, not a whole task. */
+/**
+ * A completed delivery attempt is the unit of learning, not a whole chat
+ * session. Verification and acceptance that do not deliver a new artifact
+ * fold into the open delivery attempt in the same runtime session.
+ */
 export const LEARNING_EPISODE_SCHEMA_VERSION = 3 as const;
 
 export const MAX_SEMANTIC_OBSERVATIONS = 12 as const;
@@ -126,10 +131,12 @@ export interface LearningEpisodeExtractionResult {
  * Build the V3 candidate admitted by a settled Learning Episode.
  *
  * This is intentionally independent from the V1 explicit-acceptance
- * distiller. Completion evidence is the source of the candidate's action
- * pattern; settlement only establishes that the episode survived its
- * contradiction window. The Author/Verifier branches remain responsible for
- * deciding whether that pattern deserves a reusable Current Skill.
+ * distiller. Completion evidence and durable semantic observations supply
+ * bounded factual hints; settlement only establishes that the episode
+ * survived its contradiction window. The Author/Verifier branches remain
+ * responsible for naming and deciding whether that pattern deserves a
+ * reusable Current Skill. Candidate text must not push lifecycle/generic
+ * routing names such as "settled" or "artifact-delivery".
  */
 export function buildLearningEpisodeCandidate(
   episode: LearningEpisode,
@@ -141,9 +148,7 @@ export function buildLearningEpisodeCandidate(
     .map(item => item.detail || item.kind)
     .join('; ')
     .slice(0, 280);
-  const actionPattern = toolNames.length > 0
-    ? `Use the settled artifact workflow with ${toolNames.join(', ')}: ${evidenceSummary}`
-    : `Reuse the settled artifact workflow: ${evidenceSummary}`;
+  const task = deriveCandidateTaskSummary(episode, toolNames, evidenceSummary);
   const sourceByteRange = sourceUnit?.byteRange ?? episode.unitByteRange ?? { start: 0, end: 0 };
   const generatedAt = sourceUnit?.generatedAt ?? episode.unitGeneratedAt ?? episode.settlementDeadline;
 
@@ -151,21 +156,22 @@ export function buildLearningEpisodeCandidate(
     schemaVersion: 1,
     kind: 'capability',
     capabilityId: `episode-capability-${episode.episodeId.slice('episode-'.length)}`,
-    title: 'Capability: Settled artifact delivery workflow',
-    applicability: 'Applies when a similar task requires an artifact to be delivered and verified.',
-    actionPattern,
+    title: task.title,
+    applicability: task.applicability,
+    actionPattern: task.actionPattern,
     boundaries: [
-      'Only apply when the new task matches the settled artifact workflow.',
-      'Do not reuse a workflow while the user is correcting or iterating on the delivery.',
+      'Only apply when a new task matches the same user-facing capability evidenced here.',
+      'Do not reuse the pattern while the user is correcting or iterating on the delivery.',
     ],
     risks: [
-      'This candidate is derived from one settled Learning Episode and may not generalize.',
+      'This candidate is derived from one completed delivery attempt and may not generalize.',
       'The Author and Verifier must keep the resulting skill bounded by the supplied evidence.',
+      'Do not copy lifecycle words such as settled/episode/candidate into the public routing name.',
     ],
     solvedLoop: {
-      problem: 'Complete the artifact delivery recorded by the Learning Episode.',
-      action: actionPattern,
-      verification: `The episode settled at ${episode.settlementDeadline} without contradiction.`,
+      problem: task.problem,
+      action: task.actionPattern,
+      verification: task.verification,
       noCorrection: 'No contradiction signal was present when the settlement deadline elapsed.',
     },
     provenance: completionEvidence.map((item, index) => ({
@@ -183,6 +189,100 @@ export function buildLearningEpisodeCandidate(
   };
 }
 
+/**
+ * Derive a concrete, lifecycle-neutral candidate summary from durable
+ * semantic observations. This is only a hint for Author/Verifier; Runtime
+ * never assigns the final routing name here.
+ */
+function deriveCandidateTaskSummary(
+  episode: LearningEpisode,
+  toolNames: readonly string[],
+  evidenceSummary: string,
+): {
+  title: string;
+  applicability: string;
+  actionPattern: string;
+  problem: string;
+  verification: string;
+} {
+  const observations = episode.semanticObservations ?? [];
+  const userIntent = firstObservationValue(observations, 'user-intent');
+  const artifactOperation = firstObservationValue(observations, 'artifact-operation');
+  const workflowTool = firstObservationValue(observations, 'workflow-tool');
+  const verificationObservation = firstObservationValue(observations, 'verification');
+  const intentSnippet = compactTaskSnippet(userIntent);
+  const means = uniqueStrings([
+    ...toolNames,
+    ...(artifactOperation ? [artifactOperation.split(/\s+/, 1)[0]!] : []),
+    ...(workflowTool ? [workflowTool] : []),
+  ]).slice(0, 4);
+
+  const title = intentSnippet
+    ? `Capability: ${intentSnippet}`
+    : means.length > 0
+      ? `Capability: Deliver task artifact with ${means.join(', ')}`
+      : 'Capability: Deliver verified task artifact';
+
+  const applicability = intentSnippet
+    ? `Applies when a similar task needs: ${intentSnippet}`
+    : 'Applies when a similar task needs a verified artifact delivery.';
+
+  const actionPattern = means.length > 0
+    ? `Complete the user task${intentSnippet ? ` (${intentSnippet})` : ''} using ${means.join(', ')}: ${evidenceSummary}`
+    : `Complete the user task${intentSnippet ? ` (${intentSnippet})` : ''}: ${evidenceSummary}`;
+
+  const problem = intentSnippet
+    || (means.length > 0 ? `Deliver the requested artifact with ${means.join(', ')}.` : 'Deliver the requested artifact.');
+
+  const verification = verificationObservation
+    ? `User or validation signal: ${compactTaskSnippet(verificationObservation, 120)}. Episode settled at ${episode.settlementDeadline} without contradiction.`
+    : `The episode settled at ${episode.settlementDeadline} without contradiction.`;
+
+  return {
+    title: sanitizeCandidateNarrative(title),
+    applicability: sanitizeCandidateNarrative(applicability),
+    actionPattern: sanitizeCandidateNarrative(actionPattern),
+    problem: sanitizeCandidateNarrative(problem),
+    verification: sanitizeCandidateNarrative(verification),
+  };
+}
+
+function firstObservationValue(
+  observations: readonly SemanticObservation[],
+  kind: SemanticObservation['kind'],
+): string | undefined {
+  const value = observations.find(item => item.kind === kind)?.value?.trim();
+  return value || undefined;
+}
+
+function compactTaskSnippet(value: string | undefined, maxChars = 96): string | undefined {
+  if (!value) return undefined;
+  const normalized = value
+    .replace(/\s+/g, ' ')
+    .replace(/^Capability:\s*/i, '')
+    .trim();
+  if (!normalized) return undefined;
+  if (normalized.length <= maxChars) return normalized;
+  const slice = normalized.slice(0, maxChars);
+  const boundary = Math.max(slice.lastIndexOf('，'), slice.lastIndexOf('。'), slice.lastIndexOf(','), slice.lastIndexOf(';'), slice.lastIndexOf(' '));
+  const compact = (boundary >= Math.floor(maxChars * 0.6) ? slice.slice(0, boundary) : slice).trim();
+  return compact || slice.trim();
+}
+
+/** Strip lifecycle/process words that push Author toward banned routing names. */
+function sanitizeCandidateNarrative(value: string): string {
+  return value
+    .replace(/\bsettled artifact workflow\b/gi, 'verified task delivery')
+    .replace(/\bsettled artifact\b/gi, 'verified artifact')
+    .replace(/\bsettled\b/gi, 'completed')
+    .replace(/\bsettling\b/gi, 'pending')
+    .replace(/\bLearning Episode\b/gi, 'completed delivery attempt')
+    .replace(/\bepisode\b/gi, 'delivery attempt')
+    .replace(/\bcandidate\b/gi, 'proposal')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // Match delivery verbs at the tool-name boundary. A bare `file` substring is
 // too broad: inspection tools such as `read_file` must not create episodes.
 const DELIVERY_TOOL = /^(?:send|deliver|write|create|generate|export|upload|publish|attach|artifact)(?:_|$)/i;
@@ -195,11 +295,16 @@ const CONTRADICTION = /(?:^|\W)(?:redo|try again|unsuitable|not suitable|wrong|i
 const CONTINUATION = /(?:^|\W)(?:continue|resume|redo|try again|接着做|继续|重做)(?:$|\W)/i;
 
 /**
- * Extract independent delivery attempts from one Distillation Unit.
+ * Extract delivery attempts from one Distillation Unit.
  *
- * The extraction intentionally accepts high-recall evidence. Settlement is
- * the later, durable decision point; a direct correction is attached to the
- * preceding episode and makes that episode ineligible for promotion.
+ * Corrections and true redeliveries stay independent. Verification or
+ * acceptance that does not deliver a new artifact folds into the open
+ * predecessor delivery in the same runtime session, so create→check→accept
+ * remains one learning unit rather than two competing capabilities.
+ *
+ * Settlement is still the later durable decision point; a direct correction
+ * attaches to the preceding episode and makes that episode ineligible for
+ * promotion.
  */
 export function extractLearningEpisodes(
   unit: DistillationUnit,
@@ -256,6 +361,34 @@ export function extractLearningEpisodes(
       && candidate.deliveryTurn < deliveryTurn.turn,
     );
     const semanticObservations = extractSemanticObservations(turns, index, evidence, signal, unit.filePath);
+
+    // create → verify/report → accept is one human task. If this turn did not
+    // deliver a new artifact and the open predecessor still can settle, fold
+    // verification/acceptance evidence into that predecessor instead of
+    // minting a competing episode that steals the acceptance signal.
+    if (
+      predecessor
+      && predecessor.status !== 'contradicted'
+      && shouldFoldIntoOpenDelivery(evidence, predecessor)
+    ) {
+      predecessor.completionEvidence = uniqueEvidence([
+        ...predecessor.completionEvidence,
+        ...evidence,
+      ]);
+      predecessor.semanticObservations = boundSemanticObservations([
+        ...predecessor.semanticObservations,
+        ...semanticObservations,
+      ]);
+      if (signal) {
+        predecessor.contradictionSignals = uniqueContradictionSignals([
+          ...predecessor.contradictionSignals,
+          signal,
+        ]);
+        predecessor.status = 'contradicted';
+      }
+      continue;
+    }
+
     const episode: LearningEpisode = {
       schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION,
       episodeId,
@@ -509,6 +642,36 @@ function hasDeliveryEvidence(evidence: readonly EpisodeEvidenceRef[]): boolean {
     || item.kind === 'verified-tool-result'
     || item.kind === 'assistant-response',
   );
+}
+
+function hasArtifactDeliveryEvidence(evidence: readonly EpisodeEvidenceRef[]): boolean {
+  return evidence.some(item => item.kind === 'artifact-delivery');
+}
+
+/**
+ * Fold verification/acceptance into the open delivery when this turn did not
+ * create or redeliver an artifact. A new artifact-delivery always starts its
+ * own attempt (retry, second product, or corrected delivery).
+ */
+function shouldFoldIntoOpenDelivery(
+  evidence: readonly EpisodeEvidenceRef[],
+  predecessor: LearningEpisode,
+): boolean {
+  if (hasArtifactDeliveryEvidence(evidence)) return false;
+  if (!hasArtifactDeliveryEvidence(predecessor.completionEvidence)) return false;
+  return evidence.some(item =>
+    item.kind === 'assistant-response'
+    || item.kind === 'artifact-validation'
+    || item.kind === 'user-acceptance'
+    || item.kind === 'contradiction'
+    || item.kind === 'verified-tool-result',
+  );
+}
+
+function uniqueContradictionSignals(
+  signals: readonly ContradictionSignal[],
+): ContradictionSignal[] {
+  return [...new Map(signals.map(signal => [signal.signalId, signal])).values()];
 }
 
 /**
@@ -1118,6 +1281,8 @@ export interface FlashcardCompositionOptions {
   logEnabled?: boolean;
   authorFixture?: SkillAuthorFixture;
   verifierFixture?: SkillVerifierFixture;
+  /** Tests only — production model-backed Readers require AIService. */
+  readerFixture?: SkillEvolutionOptions['readerFixture'];
 }
 
 export interface FlashcardCompositionResult {
@@ -1163,6 +1328,7 @@ export async function promoteFlashcardComposition(
     logEnabled: options.logEnabled,
     authorFixture: options.authorFixture ?? flashcardAuthor,
     verifierFixture: options.verifierFixture ?? flashcardVerifier,
+    readerFixture: options.readerFixture,
   });
   const evolution = await runtime.reviewAndApply(bundle);
   const manualSkillHashAfter = options.wordCardMakerPath ? hashFile(options.wordCardMakerPath) : undefined;
