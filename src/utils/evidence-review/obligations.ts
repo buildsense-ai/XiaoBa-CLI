@@ -81,13 +81,28 @@ export function buildReviewObligations(
   for (const entry of difference.entries) {
     const related = [entry.leftFindingId, entry.rightFindingId]
       .filter((id): id is string => typeof id === 'string');
+    const requiredShardIds = new Set<string>();
+    if (entry.shardId) requiredShardIds.add(entry.shardId);
+    for (const findingId of related) {
+      const finding = [...author.findings, ...verifier.findings]
+        .find(item => item.findingId === findingId);
+      if (!finding) continue;
+      for (const shardId of findingShardIds(finding, dossiers)) {
+        requiredShardIds.add(shardId);
+      }
+    }
+    if (requiredShardIds.size === 0) {
+      for (const shardId of [...author.coveredShardIds, ...verifier.coveredShardIds]) {
+        requiredShardIds.add(shardId);
+      }
+    }
     const detailHash = sha256Hex(entry.detail).slice(0, 12);
     obligations.push({
       obligationId: `obl:diff:${entry.kind}:${detailHash}`,
       kind: 'difference',
       summary: entry.detail,
       relatedFindingIds: related,
-      requiredShardIds: entry.shardId ? [entry.shardId] : [],
+      requiredShardIds: [...requiredShardIds].sort((a, b) => a.localeCompare(b, 'en')),
     });
   }
 

@@ -16,6 +16,7 @@ import {
   loadTransitionAudit,
 } from '../src/utils/skill-evolution';
 import { readShardStructurally } from '../src/utils/evidence-review-engine';
+import { acceptReviewObligations } from './evidence-review-test-fixtures';
 
 const roots: string[] = [];
 
@@ -63,11 +64,12 @@ function makeEvolutionOptions(root: string, branchLogRoot: string): SkillEvoluti
         evidenceRefs: ['session.jsonl#1', 'session.jsonl#2'],
       },
     }),
-    verifierFixture: () => ({
+    verifierFixture: ({ bundle }) => ({
       decision: 'accept',
       transition: 'create_current_skill',
       issues: [],
       rationale: 'The bounded workflow is supported by the fixed evidence.',
+      obligationDispositions: acceptReviewObligations(bundle),
     }),
   };
 }

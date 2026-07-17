@@ -27,6 +27,7 @@ import {
 import { shardEvidenceBundle } from '../src/utils/evidence-sharding';
 import { createEvidenceReviewJob } from '../src/utils/evidence-review-graph';
 import { readShardStructurally } from '../src/utils/evidence-review-engine';
+import { acceptReviewObligations } from './evidence-review-test-fixtures';
 
 interface TestEnv {
   root: string;
@@ -112,6 +113,7 @@ function setupEnv(): TestEnv {
         issues: [],
         rationale: 'Dual-lane coverage and obligations support the draft.',
         registryReadSet: [],
+        obligationDispositions: acceptReviewObligations(bundle),
       };
     },
   });

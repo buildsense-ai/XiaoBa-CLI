@@ -25,6 +25,7 @@ import {
   buildEvidenceReviewDiagnostics,
 } from '../src/utils/evidence-review-job-store';
 import { shardEvidenceBundle } from '../src/utils/evidence-review';
+import { acceptReviewObligations } from './evidence-review-test-fixtures';
 
 interface TestEnv {
   root: string;
@@ -102,6 +103,7 @@ function setupEnv(): TestEnv {
         issues: [],
         rationale: 'All shards covered; obligations dispositioned.',
         registryReadSet: [],
+        obligationDispositions: acceptReviewObligations(bundle),
       };
     },
   });

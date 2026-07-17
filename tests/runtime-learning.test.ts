@@ -2192,8 +2192,13 @@ describe('Issue #83 — controlled production acceptance', () => {
         entry => entry.transition === 'create_current_skill',
       );
       assert.ok(createAudit, 'healthy peer must commit one transition');
-      assert.equal(createAudit.branchTranscriptPaths.length, 2);
+      // Author/Verifier promotion transcripts plus retained dual-lane reader artifacts.
+      assert.equal(createAudit.branchTranscriptPaths.length, 4);
       assert.ok(createAudit.branchTranscriptPaths.every(transcriptPath => fs.existsSync(transcriptPath)));
+      assert.equal(
+        createAudit.branchTranscriptPaths.filter(p => p.includes(`${path.sep}reader-transcripts${path.sep}`)).length,
+        2,
+      );
 
       const heartbeat = env.runtimeLearning.loadHeartbeatRecord();
       assert.equal(heartbeat.lastRunStatus, 'coalesced');

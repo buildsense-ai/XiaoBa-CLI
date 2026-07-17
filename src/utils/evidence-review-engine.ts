@@ -298,7 +298,8 @@ export class EvidenceReviewEngine {
     registryReadSet?: Parameters<typeof createEvidenceReviewJob>[0]['registryReadSet'];
     sharding?: Parameters<typeof createEvidenceReviewJob>[0]['sharding'];
   }): EvidenceReviewJob {
-    const job = createEvidenceReviewJob({
+    const state = this.loadStore();
+    const provisional = createEvidenceReviewJob({
       bundle: input.bundle,
       candidate: input.candidate,
       workClass: input.workClass,
@@ -306,7 +307,23 @@ export class EvidenceReviewEngine {
       now: this.options.now?.() ?? new Date(),
       sharding: input.sharding,
     });
-    const state = this.loadStore();
+    // Deterministic job ids collide across sequential reviews of the same bundle.
+    // Never overwrite a terminal job: mint a unique id so reader transcript paths
+    // and quanta remain owned by a single commit audit.
+    let job = provisional;
+    const prior = state.jobs[provisional.jobId];
+    if (prior && prior.disposition !== 'active') {
+      const uniqueSuffix = crypto.randomBytes(4).toString('hex');
+      job = createEvidenceReviewJob({
+        bundle: input.bundle,
+        candidate: input.candidate,
+        workClass: input.workClass,
+        registryReadSet: input.registryReadSet,
+        now: this.options.now?.() ?? new Date(),
+        sharding: input.sharding,
+        jobId: `${provisional.jobId}:${uniqueSuffix}`,
+      });
+    }
     upsertEvidenceReviewJob(state, job);
     this.saveStore(state);
     return job;
@@ -596,6 +613,10 @@ export class EvidenceReviewEngine {
       jobDir,
       `${sanitizeFilePart(quantum.quantumId)}-${lane}.jsonl`,
     );
+    // Deterministic job/quantum ids are reused across completed-job recreations.
+    // Always rewrite the reader artifact for this quantum so prior-run appends
+    // cannot invalidate Transition Audit transcript hashes.
+    fs.writeFileSync(filePath, '', { encoding: 'utf8', mode: 0o600 });
     const write = (eventType: string, payload: Record<string, unknown>): void => {
       const entry = {
         entry_type: 'reader',
@@ -790,39 +811,27 @@ export class EvidenceReviewEngine {
     }
     const obligations = job.obligations ?? [];
     const dispositions = verifierPayload.dispositions ?? [];
-    if (!allObligationsResolvedForCommit(
-      obligations,
-      dispositions,
-      Object.values(job.shards),
-    )) {
-      const validation = validateObligationDispositions(
-        obligations,
-        dispositions,
-        Object.values(job.shards),
+    const shards = Object.values(job.shards);
+    const validation = validateObligationDispositions(obligations, dispositions, shards);
+    if (!validation.ok) {
+      throw new Error(
+        `invalid_completion_schema: commit blocked by invalid obligation dispositions: ${validation.errors.join('; ')}`,
       );
-      if (!validation.ok) {
-        throw new Error(
-          `invalid_completion_schema: commit blocked by invalid obligation dispositions: ${validation.errors.join('; ')}`,
-        );
-      }
-      const skillResult: SkillEvolutionResult = {
-        transition: 'defer',
-        verified: false,
-        rounds: 1,
-        draft,
-        verifier: verifierPayload.verifier,
-        queued: 'deferred',
-      };
-      return {
-        result: skillResult,
-        transcriptPaths: uniqueTranscriptPaths(job),
-        jobPatch: {
-          disposition: 'deferred',
-          draft,
-          verifierResult: verifierPayload.verifier,
-          obligationDispositions: dispositions,
-        },
-        skillResult,
+    }
+
+    // Accept remains fail-closed on unresolved obligations. Non-accept outcomes
+    // (semantic defer/reject) still go through commitTransition so audit/queue
+    // side effects stay intact; only missing/invalid dispositions schema-fail.
+    let verifierForCommit = verifierPayload.verifier;
+    if (
+      verifierForCommit.decision === 'accept'
+      && !allObligationsResolvedForCommit(obligations, dispositions, shards)
+    ) {
+      verifierForCommit = {
+        ...verifierForCommit,
+        decision: 'defer',
+        rationale: verifierForCommit.rationale?.trim()
+          || 'Unresolved review obligations remain; deferring Capability Transition commit.',
       };
     }
 
@@ -830,7 +839,7 @@ export class EvidenceReviewEngine {
     const skillResult = await this.options.commitTransition({
       bundle: job.bundle,
       draft,
-      verifier: verifierPayload.verifier,
+      verifier: verifierForCommit,
       job,
       branchTranscriptPaths,
     });

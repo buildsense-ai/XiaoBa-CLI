@@ -30,6 +30,7 @@ import {
   parseAndValidateReaderCompletion,
   runModelBackedReaderLane,
 } from '../src/utils/evidence-review-reader-branch';
+import { acceptReviewObligations } from './evidence-review-test-fixtures';
 import type { ReaderLaneInput } from '../src/utils/evidence-review-engine';
 import { EvidenceReviewEngine } from '../src/utils/evidence-review-engine';
 
@@ -202,12 +203,13 @@ function setupRuntime(ai: InjectedReaderAIService): {
         rationale: 'Readers and promotion complete.',
       },
     }),
-    verifierFixture: (): SkillVerifierResult => ({
+    verifierFixture: ({ bundle }): SkillVerifierResult => ({
       decision: 'accept',
       transition: 'create_current_skill',
       issues: [],
       rationale: 'Accept after model-backed readers.',
       registryReadSet: [],
+      obligationDispositions: acceptReviewObligations(bundle),
     }),
   });
 

@@ -52,6 +52,7 @@ import type {
   ReviewWorkClass,
   EvidenceReviewJob,
 } from './evidence-review-types';
+import { buildExplicitObligationDispositions } from './evidence-review';
 import {
   createSuccessorReviewJob,
   decideReviewCommitFence,
@@ -1092,7 +1093,15 @@ export class SkillEvolutionRuntime {
         issues: draftIssues,
         rationale: `Runtime ${danger ? 'rejected' : 'deferred'} the author envelope before persistence: ${draftIssues.map(i => i.message).join(' ')}`,
       };
-      return { verifier: forced, dispositions: [], transcriptPaths: [] };
+      // Non-accept runtime gates still need explicit cited dispositions so the
+      // engine can complete as semantic defer/reject instead of schema failure.
+      const dispositions = buildExplicitObligationDispositions(
+        input.obligations,
+        Object.values(input.job.shards),
+        danger ? 'rejected' : 'deferred',
+        forced.rationale,
+      );
+      return { verifier: forced, dispositions, transcriptPaths: [] };
     }
 
     const attemptDeadlineMs = this.getEffectiveConfig().reviewAttemptDeadlineMs;
@@ -1120,7 +1129,12 @@ export class SkillEvolutionRuntime {
     if (verifier.transcriptPath) {
       assertHealthyBranchTranscript(verifier.transcriptPath, 'skill-verifier', this.options.branchLogRoot);
     }
-    const dispositions = verification.obligationDispositions ?? [];
+    const dispositions = resolveVerifierObligationDispositions({
+      verification,
+      obligations: input.obligations,
+      job: input.job,
+      allowFixtureAcceptSynthesis: !!this.options.verifierFixture,
+    });
     return { verifier: verification, dispositions, transcriptPaths };
   }
 
@@ -1306,6 +1320,10 @@ export class SkillEvolutionRuntime {
           : candidate.name === frozen.name
       ));
       if (!live) {
+        // A snapshot without a live capability locator is part of the fixed
+        // Evidence Bundle itself. Absence from the local discovery scan is not
+        // evidence that the declared dependency was deleted.
+        if (!frozen.capabilityHandle) return frozen;
         return {
           ...frozen,
           contentFingerprint: '<missing>',
@@ -2912,6 +2930,14 @@ function findIdempotentTransition(
   targetHandle: string | undefined,
   sourceHandle: string | undefined,
 ): AppliedTransition | undefined {
+  // Non-mutating outcomes are not crash-recovery targets: the same bundle may
+  // emit multiple distinct defer/reject audits (different drafts/rationale).
+  // Treating them as idempotent would short-circuit later rejects and re-check
+  // older transcript paths that later jobs may legitimately supersede.
+  if (input.transition === 'reject_candidate' || input.transition === 'defer') {
+    return undefined;
+  }
+
   const prior = loadTransitionAudit(input.auditPath)
     .filter(entry => entry.bundleId === input.bundle.bundleId)
     .slice()
@@ -3862,7 +3888,7 @@ class FinishSkillVerificationTool implements Tool {
           },
         },
       },
-      required: ['decision', 'issues', 'rationale', 'obligationDispositions'],
+      required: ['decision', 'issues', 'rationale'],
     },
   };
 
@@ -4057,6 +4083,45 @@ function attachVerifierReviewContext(
         reviewObligations: context.obligations,
       };
   return freezeClone({ ...bundle, episode });
+}
+
+/**
+ * Resolve obligation dispositions for the skill_verifier quantum.
+ *
+ * - Explicit verifier-provided dispositions always win.
+ * - Non-accept outcomes may synthesize cited deferred/rejected dispositions so
+ *   semantic defer/reject is not collapsed into invalid_completion_schema.
+ * - Accept remains fail-closed in production: only explicit test fixtures may
+ *   synthesize accepted dispositions. Live model accepts must cite every
+ *   obligation themselves.
+ */
+function resolveVerifierObligationDispositions(input: {
+  verification: SkillVerifierResult;
+  obligations: readonly ReviewObligation[];
+  job: EvidenceReviewJob;
+  allowFixtureAcceptSynthesis: boolean;
+}): ObligationDisposition[] {
+  if (input.verification.obligationDispositions !== undefined) {
+    return input.verification.obligationDispositions;
+  }
+  const shards = Object.values(input.job.shards);
+  if (input.verification.decision === 'accept') {
+    if (!input.allowFixtureAcceptSynthesis) return [];
+    return buildExplicitObligationDispositions(
+      input.obligations,
+      shards,
+      'accepted',
+      input.verification.rationale || 'Explicit verifier fixture accepted the cited obligation.',
+    );
+  }
+  const decision: ObligationDisposition['decision'] =
+    input.verification.decision === 'defer' ? 'deferred' : 'rejected';
+  return buildExplicitObligationDispositions(
+    input.obligations,
+    shards,
+    decision,
+    input.verification.rationale || `Explicit ${decision} disposition for non-accept verifier outcome.`,
+  );
 }
 
 function inferReviewWorkClass(bundle: EvidenceBundle): ReviewWorkClass {

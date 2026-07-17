@@ -35,6 +35,7 @@ import {
   EvidenceReviewEngine,
   readShardStructurally,
 } from '../src/utils/evidence-review-engine';
+import { acceptReviewObligations } from './evidence-review-test-fixtures';
 import { reclaimExpiredLeases, recoverJobAfterRestart } from '../src/utils/evidence-review-graph-core';
 import type { ShardFindingSet } from '../src/utils/evidence-review-types';
 
@@ -107,7 +108,7 @@ function setupEnv(options?: {
         },
       };
     },
-    verifierFixture: ({ draft }): SkillVerifierResult => {
+    verifierFixture: ({ bundle, draft }): SkillVerifierResult => {
       branchCalls.verifier += 1;
       assert.equal(draft.envelope.routingName, 'authoritative-quanta-delivery');
       return {
@@ -116,6 +117,7 @@ function setupEnv(options?: {
         issues: [],
         rationale: 'Accept after authoritative quanta.',
         registryReadSet: [],
+        obligationDispositions: acceptReviewObligations(bundle),
       };
     },
   });

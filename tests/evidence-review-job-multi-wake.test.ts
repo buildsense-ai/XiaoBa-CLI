@@ -21,6 +21,7 @@ import {
 } from '../src/utils/evidence-review-job-store';
 import { EvidenceReviewEngine, readShardStructurally } from '../src/utils/evidence-review-engine';
 import { reclaimExpiredLeases, recoverJobAfterRestart } from '../src/utils/evidence-review-graph-core';
+import { acceptReviewObligations } from './evidence-review-test-fixtures';
 
 function fixtureBundle(): EvidenceBundle {
   return {
@@ -110,12 +111,13 @@ describe('Evidence Review Job — multi-wake resume (#107)', () => {
           rationale: 'Coverage complete.',
         },
       }),
-      verifierFixture: (): SkillVerifierResult => ({
+      verifierFixture: ({ bundle }): SkillVerifierResult => ({
         decision: 'accept',
         transition: 'create_current_skill',
         issues: [],
         rationale: 'Accept after multi-wake coverage.',
         registryReadSet: [],
+        obligationDispositions: acceptReviewObligations(bundle),
       }),
     });
   });

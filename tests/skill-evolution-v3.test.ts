@@ -31,6 +31,7 @@ import {
   saveReviewQueueState,
 } from '../src/utils/skill-evolution-review-queue';
 import { buildV3EvidenceBundle as buildPipelineV3EvidenceBundle } from '../src/utils/distillation-pipeline';
+import { acceptReviewObligations } from './evidence-review-test-fixtures';
 
 interface ReviewAttemptStep {
   delayMs?: number;
@@ -883,6 +884,28 @@ describe('V3 verified semantic Current Skills', () => {
                 issues: [],
                 rationale: 'Verified within the verifier branch turn budget.',
                 registryReadSet: [],
+                // Live model path: dispositions must be explicit and cite spans.
+                obligationDispositions: acceptReviewObligations({
+                  ...fixtureBundle(),
+                  episode: {
+                    reviewObligations: [
+                      {
+                        obligationId: 'obl:diff:missing_citation:6da737e780da',
+                        kind: 'difference',
+                        summary: 'Author finding not corroborated by Verifier',
+                        relatedFindingIds: [],
+                        requiredShardIds: ['shard:bundle_remainder:35e08ba239a6471c:0'],
+                      },
+                      {
+                        obligationId: 'obl:diff:missing_citation:b1911beb6616',
+                        kind: 'difference',
+                        summary: 'Verifier finding not present in Author dossier',
+                        relatedFindingIds: [],
+                        requiredShardIds: ['shard:bundle_remainder:35e08ba239a6471c:0'],
+                      },
+                    ],
+                  },
+                } as any),
               },
             },
           },
@@ -1027,8 +1050,13 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(result.queued, 'operational');
       const entry = findOperationalByBundleId(loadReviewQueueState(reviewQueuePath), 'episode-flashcard-1');
       assert.ok(entry);
-      assert.equal(entry.failureTranscripts.length, 2);
+      // Author + Verifier promotion transcripts plus dual-lane reader artifacts.
+      assert.equal(entry.failureTranscripts.length, 4);
       assert.ok(entry.failureTranscripts.every(transcript => fs.existsSync(transcript)));
+      assert.equal(
+        entry.failureTranscripts.filter(p => p.includes(`${path.sep}reader-transcripts${path.sep}`)).length,
+        2,
+      );
     } finally {
       env.cleanup();
     }
@@ -1367,9 +1395,13 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(retried!.attempts, 2);
       assert.equal(retried!.failureKind, 'branch_timeout');
       assert.match(retried!.failureMessage, /retry attempt/);
-      assert.equal(retried!.failureTranscripts.length, 4);
-      assert.equal(new Set(retried!.failureTranscripts).size, 4);
+      // Two attempts each retain Author/Verifier promotion + dual-lane reader artifacts.
+      assert.equal(retried!.failureTranscripts.length, 6);
+      assert.equal(new Set(retried!.failureTranscripts).size, 6);
       assert.ok(retried!.failureTranscripts.every(transcript => fs.existsSync(transcript)));
+      assert.ok(
+        retried!.failureTranscripts.filter(p => p.includes(`${path.sep}reader-transcripts${path.sep}`)).length >= 2,
+      );
     } finally {
       env.cleanup();
     }
@@ -1602,8 +1634,14 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(audit.length, 1);
       assert.equal(audit[0]!.transition, 'create_current_skill');
       assert.deepEqual(audit[0]!.evidenceRefs, ['session.jsonl#12', 'session.jsonl#13']);
-      assert.equal(audit[0]!.branchTranscriptPaths.length, 2);
+      // Promotion Author/Verifier transcripts plus retained dual-lane reader artifacts.
+      assert.equal(audit[0]!.branchTranscriptPaths.length, 4);
       assert.ok(audit[0]!.branchTranscriptPaths.every(filePath => fs.existsSync(filePath)));
+      assert.equal(
+        audit[0]!.branchTranscriptPaths.filter(p => p.includes(`${path.sep}reader-transcripts${path.sep}`)).length,
+        2,
+      );
+      assert.equal(audit[0]!.branchTranscriptHashes?.length, audit[0]!.branchTranscriptPaths.length);
     } finally {
       env.cleanup();
     }
