@@ -760,7 +760,7 @@ export class SkillEvolutionRuntime {
       return this.supersedeStaleReviewJob(
         engine,
         job,
-        frozen,
+        preFence.liveBundle,
         candidate,
         preFence.decision.reason,
         preFence.liveRegistryReadSet,
@@ -938,14 +938,13 @@ export class SkillEvolutionRuntime {
     );
   }
 
-  /** Author/Verifier branch transcripts only — reader artifacts stay on quanta. */
+  /** All branch transcripts, including independent reader lanes, follow the commit audit. */
   private collectPromotionTranscriptPaths(
     job: EvidenceReviewJob,
     lastError?: { transcriptPaths?: string[] },
   ): string[] {
     const paths: string[] = [];
     for (const quantum of Object.values(job.quanta)) {
-      if (quantum.kind !== 'skill_author' && quantum.kind !== 'skill_verifier') continue;
       for (const p of quantum.transcriptPaths ?? []) {
         if (p && !paths.includes(p)) paths.push(p);
       }
@@ -963,6 +962,7 @@ export class SkillEvolutionRuntime {
   ): {
     decision: ReturnType<typeof decideReviewCommitFence>;
     liveRegistryReadSet: CapabilityReadSetEntry[];
+    liveBundle: EvidenceBundle;
   } {
     const live = this.buildLiveDeclaredDependencySnapshot(job.basis, bundle);
     return {
@@ -972,6 +972,7 @@ export class SkillEvolutionRuntime {
         commitAlreadyApplied,
       }),
       liveRegistryReadSet: live.liveRegistryReadSet,
+      liveBundle: live.liveWorld.bundle,
     };
   }
 
@@ -1143,7 +1144,7 @@ export class SkillEvolutionRuntime {
       return this.supersedeStaleReviewJob(
         engine,
         input.job,
-        input.bundle,
+        earlyFence.liveBundle,
         candidate,
         earlyFence.decision.reason,
         earlyFence.liveRegistryReadSet,
@@ -1160,7 +1161,7 @@ export class SkillEvolutionRuntime {
         return this.supersedeStaleReviewJob(
           engine,
           liveJob,
-          input.bundle,
+          fence.liveBundle,
           candidate,
           fence.decision.reason,
           fence.liveRegistryReadSet,
@@ -1210,75 +1211,42 @@ export class SkillEvolutionRuntime {
       );
     }
 
-    // Optimistic commit retries for stale Capability read set (legacy parity):
-    // refresh Registry context and re-run Author + Verifier before re-applying.
-    let commitBundle = reviewBundle;
-    let draft = input.draft;
-    let verifier = input.verifier;
-    const branchTranscriptPaths = [...input.branchTranscriptPaths];
-    for (let retry = 0; retry <= MAX_OPTIMISTIC_COMMIT_RETRIES; retry++) {
-      try {
-        const result = await this.applyReviewedTransition(
-          commitBundle,
-          draft,
-          verifier,
-          retry + 1,
-          branchTranscriptPaths,
-          beforeAcceptedCommit,
+    // Registry conflicts during applyCapabilityTransition are stale Review Basis
+    // events: supersede the durable job and freeze a successor on the live vector.
+    // Never re-run Author/Verifier against the same job under a mutated basis.
+    try {
+      const result = await this.applyReviewedTransition(
+        reviewBundle,
+        input.draft,
+        input.verifier,
+        1,
+        [...input.branchTranscriptPaths],
+        beforeAcceptedCommit,
+      );
+      if (result.transitionId || result.audit) {
+        this.schedulePostCommitReassessmentIfNeeded(
+          engine,
+          input.job.jobId,
+          input.bundle,
+          candidate,
+          result,
         );
-        if (result.transitionId || result.audit) {
-          this.schedulePostCommitReassessmentIfNeeded(
-            engine,
-            input.job.jobId,
-            input.bundle,
-            candidate,
-            result,
-          );
-        }
-        return result;
-      } catch (error) {
-        if (error instanceof ReviewCommitConflictError) {
-          if (retry >= MAX_OPTIMISTIC_COMMIT_RETRIES) throw error;
-          commitBundle = freezeClone(this.refreshRegistryContext(commitBundle));
-          // Re-run Author / Verifier against the refreshed fixed-bundle context.
-          const authorOutcome = await this.runSkillAuthorQuantum({
-            bundle: commitBundle,
-            authorDossier: input.job.authorDossier ?? {
-              lane: 'author',
-              manifestHash: input.job.manifest.manifestHash,
-              coveredShardIds: [],
-              findings: [],
-              findingSets: [],
-              complete: false,
-            },
-            job: input.job,
-          });
-          draft = authorOutcome.draft;
-          for (const p of authorOutcome.transcriptPaths) {
-            if (p && !branchTranscriptPaths.includes(p)) branchTranscriptPaths.push(p);
-          }
-          const verifierOutcome = await this.runSkillVerifierQuantum({
-            bundle: commitBundle,
-            draft,
-            authorDossier: input.job.authorDossier!,
-            verifierDossier: input.job.verifierDossier!,
-            differenceIndex: input.job.differenceIndex ?? {
-              manifestHash: input.job.manifest.manifestHash,
-              entries: [],
-            },
-            obligations: input.job.obligations ?? [],
-            job: input.job,
-          });
-          verifier = verifierOutcome.verifier;
-          for (const p of verifierOutcome.transcriptPaths) {
-            if (p && !branchTranscriptPaths.includes(p)) branchTranscriptPaths.push(p);
-          }
-          continue;
-        }
-        throw error;
       }
+      return result;
+    } catch (error) {
+      if (error instanceof ReviewCommitConflictError) {
+        const live = this.buildLiveDeclaredDependencySnapshot(input.job.basis, input.bundle);
+        return this.supersedeStaleReviewJob(
+          engine,
+          engine.loadStore().jobs[input.job.jobId] ?? input.job,
+          live.liveWorld.bundle,
+          candidate,
+          error.message,
+          live.liveRegistryReadSet,
+        );
+      }
+      throw error;
     }
-    throw new Error('Skill Evolution exceeded optimistic commit retries.');
   }
 
   /**
@@ -1296,6 +1264,7 @@ export class SkillEvolutionRuntime {
     liveWorld: import('./evidence-review-commit-fence').SkillEvolutionLiveWorld;
   } {
     const registry = this.getRegistry();
+    const liveBundle = this.refreshDeclaredEvidenceBundle(bundle);
     const liveRegistryReadSet = resolveLiveDeclaredRegistryReadSet(
       basis.registryReadSet,
       handle => registry.capabilities[handle],
@@ -1308,7 +1277,7 @@ export class SkillEvolutionRuntime {
     return {
       liveRegistryReadSet,
       liveWorld: {
-        bundle,
+        bundle: liveBundle,
         registryReadSet: liveRegistryReadSet,
         reviewPolicyVersion: EVIDENCE_REVIEW_POLICY_VERSION,
         promptVersion: EVIDENCE_REVIEW_PROMPT_VERSION,
@@ -1321,6 +1290,43 @@ export class SkillEvolutionRuntime {
           : {}),
       },
     };
+  }
+
+  /**
+   * Re-resolve declared Referenced Skills / related capabilities from live sources.
+   * Missing dependencies keep a sentinel fingerprint so the Review Commit Fence can
+   * classify staleness without aborting the fence decision itself.
+   */
+  private refreshDeclaredEvidenceBundle(bundle: EvidenceBundle): EvidenceBundle {
+    const available = this.getReferencedSkillSnapshots();
+    const referencedSkills = bundle.referencedSkills.map(frozen => {
+      const live = available.find(candidate => (
+        frozen.capabilityHandle
+          ? candidate.capabilityHandle === frozen.capabilityHandle
+          : candidate.name === frozen.name
+      ));
+      if (!live) {
+        return {
+          ...frozen,
+          contentFingerprint: '<missing>',
+          version: frozen.version ?? '<missing>',
+        };
+      }
+      return live;
+    });
+    const registry = this.getRegistry();
+    const relatedCurrentSkills = bundle.relatedCurrentSkills.map(frozen => {
+      const live = registry.capabilities[frozen.handle];
+      if (!live) return { ...frozen, revision: -1, guidanceHash: '<missing>' };
+      return {
+        handle: live.handle,
+        revision: live.revision,
+        routingName: live.routingName,
+        description: live.description,
+        guidanceHash: live.guidanceHash,
+      };
+    });
+    return freezeClone({ ...bundle, referencedSkills, relatedCurrentSkills });
   }
 
   /**
@@ -2454,7 +2460,12 @@ export class SkillEvolutionRuntime {
         this.releaseCreateRoutingName(routingName);
       }
     }
-    assertTransitionAuditReadable(this.options.auditPath, applied.audit, this.options.branchLogRoot);
+    assertTransitionAuditReadable(
+      this.options.auditPath,
+      applied.audit,
+      this.options.branchLogRoot,
+      this.options.workingDirectory,
+    );
     return {
       transition,
       transitionId: applied.transitionId,
@@ -2494,17 +2505,33 @@ export class SkillEvolutionRuntime {
   }
 }
 
+function readerTranscriptRoot(workingDirectory?: string): string | undefined {
+  if (!workingDirectory?.trim()) return undefined;
+  return path.resolve(workingDirectory, 'data', 'reader-transcripts');
+}
+
+function resolveTranscriptAllowedRoots(
+  branchLogRoot?: string,
+  workingDirectory?: string,
+): string[] {
+  const roots = [path.resolve(branchLogRoot ?? PathResolver.getLogsPath('branches'))];
+  const readerRoot = readerTranscriptRoot(workingDirectory);
+  if (readerRoot) roots.push(readerRoot);
+  return roots;
+}
+
 function assertHealthyBranchTranscript(
   filePath: string | null,
   expectedBranchType: string | undefined,
   branchLogRoot?: string,
+  workingDirectory?: string,
 ): string {
   const label = expectedBranchType ?? 'branch';
   if (!filePath) throw new Error(`${label} transcript is disabled.`);
   const resolvedPath = path.resolve(filePath);
-  const resolvedRoot = path.resolve(branchLogRoot ?? PathResolver.getLogsPath('branches'));
-  if (!isPathInside(resolvedPath, resolvedRoot)) {
-    throw new Error(`${label} transcript is outside the runtime branch log root.`);
+  const allowedRoots = resolveTranscriptAllowedRoots(branchLogRoot, workingDirectory);
+  if (!allowedRoots.some(root => isPathInside(resolvedPath, root))) {
+    throw new Error(`${label} transcript is outside the runtime transcript roots.`);
   }
   if (!fs.existsSync(resolvedPath)) {
     throw new Error(`${label} transcript is missing.`);
@@ -2514,15 +2541,30 @@ function assertHealthyBranchTranscript(
     .split(/\r?\n/)
     .filter(Boolean)
     .map(line => JSON.parse(line) as Record<string, unknown>);
+  if (entries.length === 0) {
+    throw new Error(`${label} transcript is empty.`);
+  }
   const eventTypes = new Set(entries.map(entry => entry.event_type));
+  const actualEntryType = String(entries[0]?.entry_type ?? '');
   const actualBranchType = expectedBranchType ?? String(entries[0]?.branch_type ?? '');
-  if (!entries.every(entry => entry.entry_type === 'branch' && entry.branch_type === actualBranchType)) {
-    throw new Error(`${label} transcript contains an invalid branch entry.`);
+  // Author/Verifier promotion transcripts use entry_type=branch; independent
+  // Evidence Reader lanes use entry_type=reader under data/reader-transcripts.
+  if (actualEntryType !== 'branch' && actualEntryType !== 'reader') {
+    throw new Error(`${label} transcript has unsupported entry_type ${actualEntryType || '<missing>'}.`);
+  }
+  if (expectedBranchType && actualBranchType !== expectedBranchType) {
+    throw new Error(`${label} transcript branch_type mismatch.`);
+  }
+  if (!entries.every(entry => (
+    entry.entry_type === actualEntryType
+    && entry.branch_type === actualBranchType
+  ))) {
+    throw new Error(`${label} transcript contains an invalid ${actualEntryType} entry.`);
   }
   if (!eventTypes.has('start') || !eventTypes.has('transcript')) {
     throw new Error(`${label} transcript is missing minimum reconstruction events.`);
   }
-  if (!eventTypes.has('run_result') && !eventTypes.has('fixture_result')) {
+  if (!eventTypes.has('run_result') && !eventTypes.has('fixture_result') && !eventTypes.has('completed')) {
     throw new Error(`${label} transcript is missing a completion event.`);
   }
   const transcript = entries.find(entry => entry.event_type === 'transcript');
@@ -2544,6 +2586,7 @@ function assertTransitionAuditReadable(
   auditPath: string,
   audit: TransitionAuditEntry,
   branchLogRoot?: string,
+  workingDirectory?: string,
 ): void {
   const entries = loadTransitionAudit(auditPath);
   const persisted = entries.find(entry => entry.transitionId === audit.transitionId);
@@ -2553,7 +2596,12 @@ function assertTransitionAuditReadable(
     throw new Error(`Transition Audit entry ${audit.transitionId} has incomplete transcript hashes.`);
   }
   persisted.branchTranscriptPaths.forEach((transcriptPath, index) => {
-    const actualHash = assertHealthyBranchTranscript(transcriptPath, undefined, branchLogRoot);
+    const actualHash = assertHealthyBranchTranscript(
+      transcriptPath,
+      undefined,
+      branchLogRoot,
+      workingDirectory,
+    );
     if (hashes && actualHash !== hashes[index]) {
       throw new Error(`Transition Audit entry ${audit.transitionId} has a transcript hash mismatch.`);
     }
@@ -2563,9 +2611,10 @@ function assertTransitionAuditReadable(
 function assertBranchTranscriptEvidence(
   transcriptPaths: readonly string[],
   branchLogRoot?: string,
+  workingDirectory?: string,
 ): string[] {
   return transcriptPaths.map(transcriptPath => (
-    assertHealthyBranchTranscript(transcriptPath, undefined, branchLogRoot)
+    assertHealthyBranchTranscript(transcriptPath, undefined, branchLogRoot, workingDirectory)
   ));
 }
 
@@ -2625,6 +2674,11 @@ export interface ApplyTransitionInput extends SkillEvolutionPaths {
   promptVersion: string;
   manualSkillNames?: readonly string[];
   registryReadSet?: readonly CapabilityReadSetEntry[];
+  /**
+   * Working directory used to authorize independent reader transcript roots
+   * (`data/reader-transcripts`) during commit audit validation.
+   */
+  workingDirectory?: string;
 }
 
 export interface RestoreCapabilityRevisionInput extends SkillEvolutionPaths {
@@ -2941,7 +2995,12 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
   const sourceHandle = typeof envelope.sourceCapabilityHandle === 'string' ? envelope.sourceCapabilityHandle : undefined;
   const idempotent = findIdempotentTransition(input, registry, targetHandle, sourceHandle);
   if (idempotent) {
-    assertTransitionAuditReadable(input.auditPath, idempotent.audit, input.branchLogRoot);
+    assertTransitionAuditReadable(
+      input.auditPath,
+      idempotent.audit,
+      input.branchLogRoot,
+      input.workingDirectory,
+    );
     return idempotent;
   }
   const registryReadSet = normalizeRegistryReadSet(input.registryReadSet ?? []);
@@ -2961,6 +3020,7 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
   const branchTranscriptHashes = assertBranchTranscriptEvidence(
     input.branchTranscriptPaths,
     input.branchLogRoot,
+    input.workingDirectory,
   );
   const target = cloneRegistry(registry);
   const operations: TransitionJournal['skillOperations'] = [];
@@ -3132,7 +3192,12 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
   };
   writeJsonAtomic(input.journalPath, journal);
   recoverTransitionJournal(input);
-  assertTransitionAuditReadable(input.auditPath, audit, input.branchLogRoot);
+  assertTransitionAuditReadable(
+    input.auditPath,
+    audit,
+    input.branchLogRoot,
+    input.workingDirectory,
+  );
   return { transitionId, record: resultingRecord, audit };
 }
 

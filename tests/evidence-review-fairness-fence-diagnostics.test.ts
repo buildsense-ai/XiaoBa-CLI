@@ -608,3 +608,61 @@ describe('Evidence Review diagnostics (#110)', () => {
     }
   });
 });
+
+describe('shouldStopClaiming drain gate (#lifecycle-fence)', () => {
+  test('advanceJobsFairly stops new leases when shouldStopClaiming arms', async () => {
+    const { EvidenceReviewEngine, advanceJobsFairly, readShardStructurally } = await import(
+      '../src/utils/evidence-review-engine'
+    );
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-stop-claim-'));
+    try {
+      const storePath = path.join(root, 'jobs.json');
+      let claims = 0;
+      let stop = false;
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: storePath,
+        workingDirectory: root,
+        maxQuantaPerAdvance: 1,
+        runReaderLane: async ({ shard, lane }) => {
+          claims += 1;
+          // Arm the drain gate after the first claim so later fair claims stop.
+          if (claims >= 1) stop = true;
+          return {
+            findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane),
+          };
+        },
+        runSkillAuthor: async () => {
+          throw new Error('skill_author should not run under drain gate test');
+        },
+        runSkillVerifier: async () => {
+          throw new Error('skill_verifier should not run under drain gate test');
+        },
+        commitTransition: async () => {
+          throw new Error('commit should not run under drain gate test');
+        },
+      });
+
+      const bundles = [validBundle('stop-a'), validBundle('stop-b'), validBundle('stop-c')];
+      for (const bundle of bundles) {
+        engine.createJob({
+          bundle,
+          candidate: candidateFrom(bundle),
+          workClass: 'live_learning',
+        });
+      }
+
+      const fair = await advanceJobsFairly(engine, 'wake-stop-claim', {
+        maxClaims: 10,
+        maxClaimsPerJob: 1,
+        shouldStopClaiming: () => stop,
+      });
+      // First job may execute one quantum before the gate arms; later jobs stop.
+      assert.ok(fair.claims >= 1, 'at least the first planned claim executes');
+      assert.ok(fair.claims < 10, `stop gate must bound executed claims, got ${fair.claims}`);
+      assert.ok(claims >= 1 && claims < 10, `reader claims after stop gate: ${claims}`);
+      assert.ok(fair.jobIds.length <= 2, `stop gate bounds job fan-out: ${fair.jobIds.join(',')}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

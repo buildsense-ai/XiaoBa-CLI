@@ -2327,4 +2327,182 @@ describe('V3 verified semantic Current Skills', () => {
       env.cleanup();
     }
   });
+
+  test('stale Registry conflict during commit supersedes the same job without re-review (#109)', async () => {
+    const env = setup();
+    try {
+      env.options.reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.branchLogRoot = path.join(env.root, 'logs', 'branches');
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const created = await runtime.reviewAndApply(fixtureBundle());
+      const initial = created.record!;
+      assert.ok(initial);
+
+      let authorCalls = 0;
+      let verifierCalls = 0;
+      env.options.authorFixture = ({ bundle }) => {
+        authorCalls += 1;
+        const target = bundle.relatedCurrentSkills[0]!;
+        return {
+          body: 'Replace guidance under a fixed declared read set.',
+          envelope: {
+            decision: 'replace_current_skill',
+            targetCapabilityHandle: target.handle,
+            routingName: target.routingName,
+            description: target.description,
+            evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+          },
+        };
+      };
+      env.options.verifierFixture = ({ draft }) => {
+        verifierCalls += 1;
+        return {
+          decision: 'accept' as const,
+          transition: draft.envelope.decision,
+          issues: [],
+          rationale: 'Accept under the frozen declared basis.',
+        };
+      };
+
+      const frozenContext = {
+        handle: initial.handle,
+        revision: initial.revision,
+        routingName: initial.routingName,
+        description: initial.description,
+        guidanceHash: initial.guidanceHash,
+      };
+
+      // Two concurrent replaces freeze the same basis. Exactly one commits; the
+      // loser hits Registry conflict / stale fence and must supersede — never
+      // re-run Author/Verifier on the same durable job.
+      const [first, second] = await Promise.all([
+        runtime.reviewAndApply({
+          ...fixtureBundle(),
+          bundleId: 'replace-conflict-a',
+          relatedCurrentSkills: [frozenContext],
+        }),
+        runtime.reviewAndApply({
+          ...fixtureBundle(),
+          bundleId: 'replace-conflict-b',
+          relatedCurrentSkills: [frozenContext],
+        }),
+      ]);
+
+      const outcomes = [first, second];
+      const committed = outcomes.filter(r => r.transition === 'replace_current_skill' && r.transitionId);
+      const superseded = outcomes.filter(r =>
+        r.transitionId === undefined
+        && (r.queued === 'operational' || r.transition === 'defer' || r.verified === false),
+      );
+      assert.equal(committed.length, 1, 'exactly one concurrent replace may commit');
+      assert.equal(superseded.length, 1, 'loser must supersede without journal write');
+      // Each attempt runs Author/Verifier once; supersession must not re-review.
+      assert.equal(authorCalls, 2, 'Author runs once per job, never re-run after conflict');
+      assert.equal(verifierCalls, 2, 'Verifier runs once per job, never re-run after conflict');
+
+      const { loadEvidenceReviewJobStore, evidenceReviewJobStorePathForReviewQueue } = await import(
+        '../src/utils/evidence-review-job-store'
+      );
+      const store = loadEvidenceReviewJobStore(
+        evidenceReviewJobStorePathForReviewQueue(env.options.reviewQueuePath!),
+      );
+      const jobs = Object.values(store.jobs);
+      const supersededJob = jobs.find(j => j.disposition === 'superseded');
+      const successor = jobs.find(j => j.parentJobId && j.disposition === 'active');
+      assert.ok(supersededJob, 'stale job must be marked superseded');
+      assert.ok(successor, 'successor job freezes the live basis');
+      assert.equal(successor!.parentJobId, supersededJob!.jobId);
+      assert.notEqual(
+        successor!.basis.registryReadSet.find(e => e.handle === initial.handle)?.revision,
+        supersededJob!.basis.registryReadSet.find(e => e.handle === initial.handle)?.revision,
+        'successor freezes live revision, not the stale vector',
+      );
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('commit audit validates and retains independent reader transcripts', async () => {
+    const env = setup();
+    try {
+      env.options.reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.branchLogRoot = path.join(env.root, 'logs', 'branches');
+      // Force engine-persisted reader transcripts under data/reader-transcripts
+      // (fixture without transcriptPath) so commit audit must accept entry_type=reader.
+      env.options.readerFixture = ({ shard, lane }) => ({
+        findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane),
+      });
+
+      const result = await new SkillEvolutionRuntime(env.options).reviewAndApply(fixtureBundle());
+      assert.equal(result.verified, true);
+      assert.ok(result.transitionId);
+
+      const audit = loadTransitionAudit(env.options.auditPath)[0]!;
+      assert.ok(audit.branchTranscriptPaths.length >= 2);
+      assert.equal(audit.branchTranscriptHashes?.length, audit.branchTranscriptPaths.length);
+
+      const readerPaths = audit.branchTranscriptPaths.filter(p =>
+        p.includes(`${path.sep}reader-transcripts${path.sep}`) || p.includes('/reader-transcripts/'),
+      );
+      // Reader paths are collected into the commit audit (may be 0 if fixtures
+      // supplied no quanta path — engine path always writes them).
+      const { loadEvidenceReviewJobStore, evidenceReviewJobStorePathForReviewQueue } = await import(
+        '../src/utils/evidence-review-job-store'
+      );
+      const store = loadEvidenceReviewJobStore(
+        evidenceReviewJobStorePathForReviewQueue(env.options.reviewQueuePath!),
+      );
+      const job = Object.values(store.jobs).find(j => j.transitionId === result.transitionId);
+      assert.ok(job, 'completed job linked to transition');
+      const readerQuanta = Object.values(job!.quanta).filter(
+        q => q.kind === 'author_reader' || q.kind === 'verifier_reader',
+      );
+      assert.ok(readerQuanta.length >= 2);
+      for (const q of readerQuanta) {
+        assert.ok(q.transcriptPaths.length >= 1, `${q.quantumId} missing transcript`);
+        for (const tp of q.transcriptPaths) {
+          assert.ok(fs.existsSync(tp), `reader transcript missing: ${tp}`);
+          assert.ok(
+            audit.branchTranscriptPaths.includes(tp),
+            `commit audit must retain reader transcript ${tp}`,
+          );
+          const entries = fs.readFileSync(tp, 'utf8')
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map(line => JSON.parse(line) as Record<string, unknown>);
+          assert.ok(entries.every(e => e.entry_type === 'reader' || e.entry_type === 'branch'));
+          assert.ok(entries.some(e => e.event_type === 'start'));
+          assert.ok(entries.some(e => e.event_type === 'transcript'));
+          const idx = audit.branchTranscriptPaths.indexOf(tp);
+          assert.equal(
+            audit.branchTranscriptHashes?.[idx],
+            crypto.createHash('sha256').update(fs.readFileSync(tp)).digest('hex'),
+          );
+        }
+      }
+      assert.ok(readerPaths.length >= 2 || readerQuanta.every(q =>
+        q.transcriptPaths.every(tp => audit.branchTranscriptPaths.includes(tp)),
+      ));
+
+      // Retention keeps audit-linked reader transcripts for active capabilities.
+      const { cleanupBranchTranscripts } = await import('../src/utils/branch-transcript-retention');
+      const readerRoot = path.join(env.root, 'data', 'reader-transcripts');
+      const cleanup = cleanupBranchTranscripts({
+        branchLogRoot: env.options.branchLogRoot!,
+        additionalTranscriptRoots: [readerRoot],
+        auditEntries: [audit],
+        activeCapabilityHandles: new Set(audit.involvedCapabilityHandles),
+        now: new Date('2026-07-17T00:00:00.000Z'),
+        retentionDays: 1,
+      });
+      for (const q of readerQuanta) {
+        for (const tp of q.transcriptPaths) {
+          assert.equal(fs.existsSync(tp), true, `active audit-linked reader retained: ${tp}`);
+          assert.ok(cleanup.retainedPaths.includes(path.resolve(tp)));
+        }
+      }
+    } finally {
+      env.cleanup();
+    }
+  });
 });

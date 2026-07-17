@@ -10,6 +10,11 @@ export interface BranchTranscriptAuditLink {
 
 export interface BranchTranscriptCleanupOptions {
   branchLogRoot: string;
+  /**
+   * Optional additional roots (e.g. data/reader-transcripts) whose audit-linked
+   * JSONL artifacts are retained with the same active-capability policy.
+   */
+  additionalTranscriptRoots?: readonly string[];
   auditEntries: readonly BranchTranscriptAuditLink[];
   activeCapabilityHandles: ReadonlySet<string>;
   now?: Date;
@@ -39,38 +44,53 @@ const PROTECTED_DIRECTORY_NAMES = new Set([
 export function cleanupBranchTranscripts(
   options: BranchTranscriptCleanupOptions,
 ): BranchTranscriptCleanupResult {
-  const root = path.resolve(options.branchLogRoot);
+  const roots = uniqueResolvedRoots([
+    options.branchLogRoot,
+    ...(options.additionalTranscriptRoots ?? []),
+  ]);
   const result: BranchTranscriptCleanupResult = { removedPaths: [], retainedPaths: [] };
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return result;
+  if (roots.length === 0) return result;
 
   const protectedPaths = new Set<string>();
   for (const entry of options.auditEntries) {
     if (!entry.involvedCapabilityHandles.some(handle => options.activeCapabilityHandles.has(handle))) continue;
     for (const transcriptPath of entry.branchTranscriptPaths) {
       const resolved = path.resolve(transcriptPath);
-      if (isPathInside(resolved, root)) protectedPaths.add(resolved);
+      if (roots.some(root => isPathInside(resolved, root))) protectedPaths.add(resolved);
     }
   }
 
   const retentionDays = Math.max(1, options.retentionDays ?? DEFAULT_RETENTION_DAYS);
   const cutoff = (options.now ?? new Date()).getTime() - retentionDays * 24 * 60 * 60 * 1000;
-  for (const filePath of collectJsonlFiles(root)) {
-    if (protectedPaths.has(filePath)) {
-      result.retainedPaths.push(filePath);
-      continue;
+  for (const root of roots) {
+    if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) continue;
+    for (const filePath of collectJsonlFiles(root)) {
+      if (protectedPaths.has(filePath)) {
+        if (!result.retainedPaths.includes(filePath)) result.retainedPaths.push(filePath);
+        continue;
+      }
+      try {
+        if (fs.statSync(filePath).mtimeMs >= cutoff) continue;
+        fs.unlinkSync(filePath);
+        result.removedPaths.push(filePath);
+      } catch {
+        // Cleanup is best-effort. A concurrent writer or permission change must
+        // not affect the runtime learning wake.
+      }
     }
-    try {
-      if (fs.statSync(filePath).mtimeMs >= cutoff) continue;
-      fs.unlinkSync(filePath);
-      result.removedPaths.push(filePath);
-    } catch {
-      // Cleanup is best-effort. A concurrent writer or permission change must
-      // not affect the runtime learning wake.
-    }
+    removeEmptyDirectories(root);
   }
-
-  removeEmptyDirectories(root);
   return result;
+}
+
+function uniqueResolvedRoots(candidates: readonly string[]): string[] {
+  const roots: string[] = [];
+  for (const candidate of candidates) {
+    if (!candidate?.trim()) continue;
+    const resolved = path.resolve(candidate);
+    if (!roots.includes(resolved)) roots.push(resolved);
+  }
+  return roots;
 }
 
 function collectJsonlFiles(dir: string): string[] {

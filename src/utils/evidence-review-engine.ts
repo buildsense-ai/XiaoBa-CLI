@@ -334,6 +334,8 @@ export class EvidenceReviewEngine {
       quantumId?: string;
       /** Per-call execution bound; defaults to the engine-wide setting. */
       maxQuanta?: number;
+      /** Shutdown/drain gate checked before every new lease claim. */
+      shouldStopClaiming?: () => boolean;
     },
   ): Promise<AdvanceJobResult> {
     const nowFn = this.options.now ?? (() => new Date());
@@ -352,7 +354,7 @@ export class EvidenceReviewEngine {
     let lastError: AdvanceJobResult['lastError'];
 
     for (let i = 0; i < maxQuanta; i++) {
-      if (signal?.aborted) break;
+      if (signal?.aborted || options?.shouldStopClaiming?.()) break;
       const now = nowFn();
       const state = this.loadStore();
       let job = state.jobs[jobId];
@@ -883,7 +885,6 @@ export class EvidenceReviewEngine {
 function uniqueTranscriptPaths(job: EvidenceReviewJob): string[] {
   const paths: string[] = [];
   for (const quantum of Object.values(job.quanta)) {
-    if (quantum.kind !== 'skill_author' && quantum.kind !== 'skill_verifier') continue;
     for (const p of quantum.transcriptPaths ?? []) {
       if (p && !paths.includes(p)) paths.push(p);
     }
@@ -948,6 +949,7 @@ export async function advanceJobsFairly(
     maxClaimsPerJob?: number;
     signal?: AbortSignal;
     now?: Date;
+    shouldStopClaiming?: () => boolean;
   },
 ): Promise<{ claims: number; jobIds: string[] }> {
   const state = engine.loadStore();
@@ -960,15 +962,22 @@ export async function advanceJobsFairly(
   engine.saveStore(state);
 
   const touched = new Set<string>();
+  let executedClaims = 0;
   for (const claim of plan.claims) {
-    touched.add(claim.jobId);
-    if (options.signal?.aborted) break;
-    await engine.advanceJob(
+    if (options.signal?.aborted || options.shouldStopClaiming?.()) break;
+    const advanced = await engine.advanceJob(
       claim.jobId,
       `${wakeId}:${claim.jobId}:${claim.quantumId}`,
       options.signal,
-      { quantumId: claim.quantumId, maxQuanta: 1 },
+      {
+        quantumId: claim.quantumId,
+        maxQuanta: 1,
+        shouldStopClaiming: options.shouldStopClaiming,
+      },
     );
+    if (advanced.executedQuantumIds.length === 0) continue;
+    executedClaims += advanced.executedQuantumIds.length;
+    touched.add(claim.jobId);
   }
-  return { claims: plan.claims.length, jobIds: [...touched] };
+  return { claims: executedClaims, jobIds: [...touched] };
 }

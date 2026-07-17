@@ -801,6 +801,8 @@ export class RuntimeLearning {
 
   private readonly pendingCuratorObservationEpisodeIds = new Set<string>();
   private readonly activeWakeAbortControllers = new Set<AbortController>();
+  /** Public wake results tracked separately so shutdown drain can await durable settlement. */
+  private readonly activeWakeResults = new Set<Promise<RuntimeLearningHeartbeatResult>>();
   private readonly reviewContinuationPath: string;
   private stateWriterOwner: symbol | null = null;
   private stateWriterDepth = 0;
@@ -1645,7 +1647,8 @@ export class RuntimeLearning {
     this.externalReadAbortController?.abort();
     for (const source of this.sessionLogSources) source.close?.();
     const active = this.activeBackfill;
-    if (!active) {
+    const activeWakes = [...this.activeWakeResults];
+    if (!active && activeWakes.length === 0) {
       this.backfillDrainRequested = false;
       if (this.activeWakeAbortControllers.size === 0) {
         this.shutdownDrainRequested = false;
@@ -1653,8 +1656,12 @@ export class RuntimeLearning {
       return;
     }
     let timer: NodeJS.Timeout | null = null;
+    const settling = Promise.allSettled([
+      ...(active ? [active] : []),
+      ...activeWakes,
+    ]).then(() => undefined);
     await Promise.race([
-      active.then(() => undefined, () => undefined).finally(() => {
+      settling.finally(() => {
         if (timer) clearTimeout(timer);
         timer = null;
       }),
@@ -2013,7 +2020,13 @@ export class RuntimeLearning {
     reason: RuntimeLearningReason | readonly RuntimeLearningReason[],
     wakeOptions: { coalesced?: boolean } = {},
   ): Promise<RuntimeLearningHeartbeatResult> {
-    return this.wakeWithStateWriter(reason, wakeOptions);
+    const operation = this.wakeWithStateWriter(reason, wakeOptions);
+    this.activeWakeResults.add(operation);
+    try {
+      return await operation;
+    } finally {
+      this.activeWakeResults.delete(operation);
+    }
   }
 
   private async wakeWithStateWriter(
@@ -2316,6 +2329,11 @@ export class RuntimeLearning {
       const registry = this.skillEvolution.getRegistry();
       cleanupBranchTranscripts({
         branchLogRoot: this.config.branchLogRoot,
+        // Independent reader lanes live under data/reader-transcripts and are
+        // retained when linked from Transition Audit for active capabilities.
+        additionalTranscriptRoots: [
+          path.join(this.workingDirectory, 'data', 'reader-transcripts'),
+        ],
         auditEntries: this.skillEvolution.getAudit(),
         activeCapabilityHandles: new Set(Object.keys(registry.capabilities)),
         now: this.clock(),
@@ -2480,11 +2498,12 @@ export class RuntimeLearning {
     // episode/queue candidates (#108). Completes already-admitted coverage first.
     try {
       const engine = this.skillEvolution.getEvidenceReviewEngine();
-      await advanceJobsFairly(engine, `wake-fair:${this.clock().getTime()}`, {
+      if (!this.shutdownDrainRequested) await advanceJobsFairly(engine, `wake-fair:${this.clock().getTime()}`, {
         maxClaims: Math.max(0, Math.floor(this.config.skillEvolutionReviewMaxCandidates)),
         maxClaimsPerJob: 1,
         signal: wakeSignal,
         now: this.clock(),
+        shouldStopClaiming: () => this.shutdownDrainRequested,
       });
     } catch {
       // Job store optional during early construction / V3-disabled paths.

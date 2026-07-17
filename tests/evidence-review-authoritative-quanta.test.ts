@@ -11,6 +11,7 @@
 
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -255,8 +256,14 @@ describe('Authoritative Review Quanta', () => {
     assert.ok(quanta.some(q => q.kind === 'skill_verifier' && q.state === 'succeeded'));
     assert.ok(quanta.some(q => q.kind === 'commit' && q.state === 'succeeded'));
 
-    // Reader transcripts are auditable artifacts.
+    // Reader transcripts are auditable artifacts retained on the commit audit.
     const readers = quanta.filter(q => q.kind === 'author_reader' || q.kind === 'verifier_reader');
+    const auditLines = fs.readFileSync(env.auditPath, 'utf8').trim().split('\n').filter(Boolean);
+    assert.equal(auditLines.length, 1);
+    const audit = JSON.parse(auditLines[0]!) as {
+      branchTranscriptPaths: string[];
+      branchTranscriptHashes?: string[];
+    };
     for (const reader of readers) {
       assert.ok(reader.transcriptPaths.length >= 1, `${reader.quantumId} missing transcript`);
       for (const tp of reader.transcriptPaths) {
@@ -264,6 +271,17 @@ describe('Authoritative Review Quanta', () => {
         const body = fs.readFileSync(tp, 'utf8');
         assert.ok(body.includes('"event_type":"start"') || body.includes('"event_type": "start"'));
         assert.ok(body.includes('transcript') || body.includes('fixture_result'));
+        assert.ok(
+          audit.branchTranscriptPaths.includes(tp),
+          `commit audit retains reader transcript ${tp}`,
+        );
+        const idx = audit.branchTranscriptPaths.indexOf(tp);
+        if (audit.branchTranscriptHashes?.[idx]) {
+          assert.equal(
+            audit.branchTranscriptHashes[idx],
+            crypto.createHash('sha256').update(body).digest('hex'),
+          );
+        }
       }
     }
 

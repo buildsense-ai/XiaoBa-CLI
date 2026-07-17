@@ -1205,6 +1205,81 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       env.skillEvolution.reviewAndApply = originalReview;
     }
   });
+
+  test('drain awaits active wake settlement and stops new fair-review leases', async () => {
+    const episodeId = 'episode-drain-fair-lease-stop';
+    env.runtimeLearning.getEpisodeStore().save({
+      schemaVersion: 3,
+      episodes: {
+        [episodeId]: {
+          schemaVersion: 3,
+          episodeId,
+          runtimeSessionId: 'runtime-drain-fair-lease',
+          sourceFilePath: `${episodeId}.jsonl`,
+          deliveryTurn: 1,
+          completionEvidence: [{
+            ref: `${episodeId}#1`,
+            sourceFilePath: `${episodeId}.jsonl`,
+            turn: 1,
+            kind: 'artifact-delivery',
+            detail: 'send_file: delivered',
+          }],
+          contradictionSignals: [],
+          semanticObservations: [{
+            kind: 'user-intent',
+            value: 'Drain must stop new quantum leases after shutdown begins.',
+            sourceRefs: [`${episodeId}#intent`],
+          }],
+          settlementDeadline: new Date(0).toISOString(),
+          status: 'eligible',
+        },
+      },
+    });
+
+    let reviewStarted!: () => void;
+    const reviewStartedPromise = new Promise<void>(resolve => { reviewStarted = resolve; });
+    let releaseReview!: () => void;
+    const reviewGate = new Promise<void>(resolve => { releaseReview = resolve; });
+    const originalReview = env.skillEvolution.reviewAndApply.bind(env.skillEvolution);
+    env.skillEvolution.reviewAndApply = async (...args: any[]) => {
+      reviewStarted();
+      await reviewGate;
+      return originalReview(...args);
+    };
+
+    try {
+      const wake = env.runtimeLearning.wake('startup');
+      await reviewStartedPromise;
+
+      // Drain must observe the active wake promise (activeWakeResults) and wait
+      // boundedly while the wake finishes durable settlement.
+      const drainStarted = Date.now();
+      const drainPromise = env.runtimeLearning.drain(500);
+      // Give drain a tick to set shutdownDrainRequested before release.
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(
+        (env.runtimeLearning as any).shutdownDrainRequested,
+        true,
+        'drain arms the stop-new-leases gate',
+      );
+      releaseReview();
+      await drainPromise;
+      const result = await wake;
+      assert.ok(Date.now() - drainStarted < 2_000, 'drain returns after wake settlement within bound');
+      assert.equal(
+        (env.runtimeLearning as any).activeWakeResults?.size ?? 0,
+        0,
+        'active wake tracking cleared after settlement',
+      );
+      // Wake may complete review that already started; new fair leases are gated.
+      assert.ok(
+        result.review.status === 'succeeded' || result.review.status === 'partial',
+        `wake settled under drain: ${result.review.status}`,
+      );
+    } finally {
+      env.skillEvolution.reviewAndApply = originalReview;
+    }
+  });
 });
 
 describe('Issue 70 — Wake reason union and mask-free due-work', () => {

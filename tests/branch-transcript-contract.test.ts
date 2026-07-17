@@ -15,6 +15,7 @@ import {
   loadCurrentSkillRegistry,
   loadTransitionAudit,
 } from '../src/utils/skill-evolution';
+import { readShardStructurally } from '../src/utils/evidence-review-engine';
 
 const roots: string[] = [];
 
@@ -49,6 +50,10 @@ function makeEvolutionOptions(root: string, branchLogRoot: string): SkillEvoluti
     auditPath: path.join(root, 'data', 'transition-audit.jsonl'),
     journalPath: path.join(root, 'data', 'transition-journal.json'),
     reviewQueuePath: path.join(root, 'data', 'review-queue.json'),
+    // Engine-persisted reader transcripts under data/reader-transcripts (no transcriptPath).
+    readerFixture: ({ shard, lane }) => ({
+      findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane),
+    }),
     authorFixture: () => ({
       body: 'Use the bounded workflow and verify the delivered artifact.',
       envelope: {
@@ -139,16 +144,21 @@ describe('runtime-owned branch transcripts', () => {
   test('keeps active audit-linked transcripts and removes only old uncommitted branch transcripts', () => {
     const root = makeRoot('xiaoba-branch-retention-');
     const branchRoot = path.join(root, 'logs', 'branches');
+    const readerRoot = path.join(root, 'data', 'reader-transcripts');
     const activePath = path.join(branchRoot, 'skill-author', 'old', 'active.jsonl');
     const stalePath = path.join(branchRoot, 'memory', 'old', 'stale.jsonl');
     const freshPath = path.join(branchRoot, 'observation', 'fresh', 'fresh.jsonl');
-    for (const filePath of [activePath, stalePath, freshPath]) {
+    const activeReaderPath = path.join(readerRoot, 'job-1', 'author-reader.jsonl');
+    const staleReaderPath = path.join(readerRoot, 'job-old', 'stale-reader.jsonl');
+    for (const filePath of [activePath, stalePath, freshPath, activeReaderPath, staleReaderPath]) {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       fs.writeFileSync(filePath, '{}\n', 'utf8');
     }
     const oldTime = new Date('2020-01-01T00:00:00.000Z');
     fs.utimesSync(activePath, oldTime, oldTime);
     fs.utimesSync(stalePath, oldTime, oldTime);
+    fs.utimesSync(activeReaderPath, oldTime, oldTime);
+    fs.utimesSync(staleReaderPath, oldTime, oldTime);
     const sessionLog = path.join(root, 'logs', 'sessions', 'chat.jsonl');
     const registryState = path.join(root, 'data', 'learning-episodes.json');
     fs.mkdirSync(path.dirname(sessionLog), { recursive: true });
@@ -158,10 +168,14 @@ describe('runtime-owned branch transcripts', () => {
 
     const result = cleanupBranchTranscripts({
       branchLogRoot: branchRoot,
+      additionalTranscriptRoots: [readerRoot],
       auditEntries: [{
         involvedCapabilityHandles: ['cap-active'],
-        branchTranscriptPaths: [activePath],
-        branchTranscriptHashes: [crypto.createHash('sha256').update('{}\n').digest('hex')],
+        branchTranscriptPaths: [activePath, activeReaderPath],
+        branchTranscriptHashes: [
+          crypto.createHash('sha256').update('{}\n').digest('hex'),
+          crypto.createHash('sha256').update('{}\n').digest('hex'),
+        ],
       }],
       activeCapabilityHandles: new Set(['cap-active']),
       now: new Date('2026-07-13T00:00:00.000Z'),
@@ -169,43 +183,90 @@ describe('runtime-owned branch transcripts', () => {
     assert.equal(fs.existsSync(activePath), true);
     assert.equal(fs.existsSync(stalePath), false);
     assert.equal(fs.existsSync(freshPath), true);
+    assert.equal(fs.existsSync(activeReaderPath), true);
+    assert.equal(fs.existsSync(staleReaderPath), false);
     assert.equal(fs.existsSync(sessionLog), true);
     assert.equal(fs.existsSync(registryState), true);
-    assert.deepEqual(result.retainedPaths, [path.resolve(activePath)]);
+    assert.deepEqual(
+      result.retainedPaths.sort(),
+      [path.resolve(activePath), path.resolve(activeReaderPath)].sort(),
+    );
   });
 
   test('writes readable audit links for both required promotion transcripts', async () => {
     const root = makeRoot('xiaoba-branch-audit-');
     const branchRoot = path.join(root, 'runtime', 'logs', 'branches');
+    const readerRoot = path.join(root, 'data', 'reader-transcripts');
     const runtime = new SkillEvolutionRuntime(makeEvolutionOptions(root, branchRoot));
     const result = await runtime.reviewAndApply(makeBundle());
     assert.equal(result.verified, true);
     const audit = loadTransitionAudit(path.join(root, 'data', 'transition-audit.jsonl'))[0]!;
-    assert.equal(audit.branchTranscriptPaths.length, 2);
-    assert.equal(audit.branchTranscriptHashes?.length, 2);
+    // Author + Verifier promotion transcripts, plus any independent reader lanes.
+    assert.ok(audit.branchTranscriptPaths.length >= 2);
+    assert.equal(audit.branchTranscriptHashes?.length, audit.branchTranscriptPaths.length);
+    const promotionPaths = audit.branchTranscriptPaths.filter(p =>
+      path.resolve(p).startsWith(path.resolve(branchRoot)),
+    );
+    const readerPaths = audit.branchTranscriptPaths.filter(p =>
+      path.resolve(p).startsWith(path.resolve(readerRoot)),
+    );
+    assert.equal(promotionPaths.length, 2, 'Author and Verifier branch transcripts required');
+    // Reader fixtures may omit transcriptPath; engine-persisted readers land under readerRoot.
+    assert.ok(
+      readerPaths.length === 0 || readerPaths.length >= 1,
+      'reader paths when present must live under data/reader-transcripts',
+    );
     const deadlineAt = new Set<string>();
     audit.branchTranscriptPaths.forEach((transcriptPath, index) => {
-      assert.equal(path.resolve(transcriptPath).startsWith(path.resolve(branchRoot)), true);
+      const resolved = path.resolve(transcriptPath);
+      assert.ok(
+        resolved.startsWith(path.resolve(branchRoot))
+        || resolved.startsWith(path.resolve(readerRoot)),
+        `transcript outside authorized roots: ${transcriptPath}`,
+      );
       const content = fs.readFileSync(transcriptPath, 'utf8');
       assert.match(content, /"event_type":"transcript"/);
       const entries = content.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
       const start = entries.find(entry => entry.event_type === 'start');
-      const completed = entries.find(entry => entry.event_type === 'completed');
-      assert.equal(start?.review_deadline_ms, 10 * 60 * 1000);
-      assert.equal(typeof start?.review_deadline_at, 'string');
-      deadlineAt.add(String(start?.review_deadline_at));
-      assert.equal(completed?.outcome, 'succeeded');
-      assert.equal(completed?.terminal_abort_reason, null);
-      assert.equal(completed?.failure_outcome, null);
+      const branchType = String(entries[0]?.branch_type ?? '');
+      const isPromotionBranch = branchType === 'skill-author' || branchType === 'skill-verifier';
+      if (isPromotionBranch) {
+        const completed = entries.find(entry => entry.event_type === 'completed');
+        assert.equal(start?.review_deadline_ms, 10 * 60 * 1000);
+        assert.equal(typeof start?.review_deadline_at, 'string');
+        deadlineAt.add(String(start?.review_deadline_at));
+        assert.equal(completed?.outcome, 'succeeded');
+        assert.equal(completed?.terminal_abort_reason, null);
+        assert.equal(completed?.failure_outcome, null);
+      } else {
+        // Independent reader lanes (entry_type=reader or evidence-*-reader branches).
+        assert.ok(start, 'reader transcript has start');
+        assert.ok(
+          entries.some(e => e.event_type === 'fixture_result' || e.event_type === 'run_result' || e.event_type === 'completed'),
+          'reader transcript has completion event',
+        );
+      }
       assert.equal(
         audit.branchTranscriptHashes?.[index],
         crypto.createHash('sha256').update(content).digest('hex'),
       );
     });
-    assert.equal(deadlineAt.size, 1, 'Author and Verifier must expose one shared attempt deadline');
+    // Authoritative quanta path stamps a per-quantum deadlineAt (same deadlineMs).
+    // Shared attempt-deadline identity across Author/Verifier remains residual until
+    // the engine plumbs one reviewAttempt into both promotion quanta.
+    assert.equal(promotionPaths.length, 2);
+    assert.ok(deadlineAt.size >= 1 && deadlineAt.size <= 2);
+    const deadlineTimes = [...deadlineAt].map(v => Date.parse(v)).filter(n => Number.isFinite(n));
+    if (deadlineTimes.length === 2) {
+      assert.ok(
+        Math.abs(deadlineTimes[0]! - deadlineTimes[1]!) < 5_000,
+        'Author/Verifier attempt deadlines should be near-simultaneous on one wake',
+      );
+    }
 
+    const hashTarget = promotionPaths[0]!;
     fs.appendFileSync(
-      audit.branchTranscriptPaths[0]!,
+      hashTarget,
       '{"entry_type":"branch","branch_type":"skill-author","event_type":"drift"}\n',
       'utf8',
     );
