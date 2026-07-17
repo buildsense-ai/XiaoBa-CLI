@@ -532,8 +532,23 @@ function detectAssistantResponseEvidence(
     sourceFilePath: filePath,
     turn: turn.turn,
     kind: 'assistant-response',
-    detail: text.slice(0, 1000),
+    detail: boundedAssistantResponseDetail(text),
   };
+}
+
+const MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES = 1000;
+
+function boundedAssistantResponseDetail(text: string): string {
+  const totalBytes = Buffer.byteLength(text, 'utf8');
+  if (totalBytes <= MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES) return text;
+
+  let end = Math.min(text.length, MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES);
+  while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES) {
+    end -= 1;
+  }
+  const prefix = text.slice(0, end);
+  const omittedBytes = totalBytes - Buffer.byteLength(prefix, 'utf8');
+  return `${prefix}\n[${omittedBytes} bytes omitted from bounded assistant-response evidence]`;
 }
 
 function detectContradiction(

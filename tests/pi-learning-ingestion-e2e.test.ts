@@ -444,6 +444,11 @@ test('ordinary Pi final between 8KiB and 16KiB admits through capsule path', asy
     assert.ok(capsule, '12KiB final must form a durable capsule');
     assert.equal(capsule!.provenance.provider, 'pi');
     assert.equal(capsule!.provenance.category, 'external');
+    assert.match(
+      capsule!.completionEvidence[0]!.content,
+      /bytes omitted from bounded assistant-response evidence/,
+      'bounded evidence projection must disclose omitted source bytes',
+    );
   } finally {
     fixture.restore();
   }
