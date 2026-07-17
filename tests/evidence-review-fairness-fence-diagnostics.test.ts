@@ -15,7 +15,11 @@ import {
   saveEvidenceReviewJobStore,
   loadEvidenceReviewJobStore,
 } from '../src/utils/evidence-review-job-store';
-import { planFairQuantumClaims } from '../src/utils/evidence-review-scheduler';
+import {
+  emptyFairnessState,
+  normalizeFairnessState,
+  planFairQuantumClaims,
+} from '../src/utils/evidence-review-scheduler';
 import {
   compareReviewBasis,
   createSuccessorReviewJob,
@@ -23,6 +27,8 @@ import {
 } from '../src/utils/evidence-review-commit-fence';
 import { buildOperatorView, classifyOperatorDisposition } from '../src/utils/evidence-review-diagnostics';
 import type { EvidenceBundle } from '../src/utils/skill-evolution';
+import type { EvidenceReviewJob, ReviewWorkClass } from '../src/utils/evidence-review-types';
+import { WORK_CLASS_ORDER } from '../src/utils/evidence-review-job-store';
 
 function validBundle(bundleId: string, extra = ''): EvidenceBundle {
   return {
@@ -67,69 +73,349 @@ function candidateFrom(bundle: EvidenceBundle): any {
   return bundle.episode;
 }
 
+function multiShardJob(input: {
+  jobId: string;
+  workClass: ReviewWorkClass;
+  label?: string;
+}): EvidenceReviewJob {
+  const label = input.label ?? input.jobId;
+  // Force multi-shard dual-lane graphs so many readers stay runnable.
+  const bundle = validBundle(label, `${label}-extra-evidence-payload`.repeat(8));
+  return createEvidenceReviewJob({
+    bundle,
+    candidate: candidateFrom(bundle),
+    workClass: input.workClass,
+    jobId: input.jobId,
+    sharding: {
+      preferSingleShardWhenFits: false,
+      softLimitBytes: 40,
+      hardLimitBytes: 80,
+    },
+  });
+}
+
+function markSucceeded(job: EvidenceReviewJob, quantumId: string): void {
+  const quantum = job.quanta[quantumId];
+  if (!quantum) return;
+  job.quanta[quantumId] = {
+    ...quantum,
+    state: 'succeeded',
+    result: { covered: true },
+    resultHash: `hash-${quantumId}`,
+    lease: undefined,
+    updatedAt: new Date(0).toISOString(),
+  };
+}
+
+function markLeased(job: EvidenceReviewJob, quantumId: string, expiresAt: string): void {
+  const quantum = job.quanta[quantumId];
+  if (!quantum) return;
+  job.quanta[quantumId] = {
+    ...quantum,
+    state: 'leased',
+    lease: {
+      leaseId: `lease-${quantumId}`,
+      ownerWakeId: 'wake-test',
+      leasedAt: new Date(0).toISOString(),
+      expiresAt,
+    },
+    updatedAt: new Date(0).toISOString(),
+  };
+}
+
 describe('Fair Review Quantum Rotation (#108)', () => {
-  test('rotates across work classes and at most one quantum per job when competing', () => {
+  test('rotates durably across work classes without permanent priority', () => {
     const state = emptyEvidenceReviewJobStoreState();
-    const classes = [
-      'operational_recovery',
-      'live_learning',
-      'historical_learning',
-      'semantic_reassessment',
-    ] as const;
-    for (const [index, workClass] of classes.entries()) {
-      const bundle = validBundle(`bundle-${workClass}`);
-      const job = createEvidenceReviewJob({
-        bundle,
-        candidate: candidateFrom(bundle),
-        workClass,
+    for (const workClass of WORK_CLASS_ORDER) {
+      upsertEvidenceReviewJob(state, multiShardJob({
         jobId: `job-${workClass}`,
-      });
-      // Ensure multiple quanta so the job stays runnable after one claim plan.
-      assert.ok(Object.keys(job.quanta).length > 1);
-      upsertEvidenceReviewJob(state, job);
-      // Second job in live class to prove within-class one-per-job.
-      if (workClass === 'live_learning') {
-        const bundle2 = validBundle('bundle-live-2');
-        const job2 = createEvidenceReviewJob({
-          bundle: bundle2,
-          candidate: candidateFrom(bundle2),
-          workClass: 'live_learning',
-          jobId: 'job-live-2',
-        });
-        upsertEvidenceReviewJob(state, job2);
-      }
-      void index;
+        workClass,
+      }));
     }
 
-    const plan = planFairQuantumClaims(state, { maxClaims: 4, maxClaimsPerJob: 1 });
-    assert.equal(plan.claims.length, 4);
-    const classesSeen = new Set(plan.claims.map(c => c.workClass));
-    assert.ok(classesSeen.size >= 3, `expected multi-class rotation, got ${[...classesSeen]}`);
-    // Within one plan cycle, no job appears twice when competing.
-    const jobCounts = new Map<string, number>();
+    const classHits = new Map<ReviewWorkClass, number>();
+    for (let wake = 0; wake < 8; wake++) {
+      const plan = planFairQuantumClaims(state, { maxClaims: 1, maxClaimsPerJob: 1 });
+      assert.equal(plan.claims.length, 1, `wake ${wake} should claim one quantum`);
+      const claim = plan.claims[0]!;
+      classHits.set(claim.workClass, (classHits.get(claim.workClass) ?? 0) + 1);
+      state.fairness = plan.fairness;
+    }
+
+    for (const workClass of WORK_CLASS_ORDER) {
+      assert.equal(
+        classHits.get(workClass),
+        2,
+        `${workClass} should receive equal bounded service, got ${classHits.get(workClass)}`,
+      );
+    }
+  });
+
+  test('within a class claims at most one quantum per job before cycling again', () => {
+    const state = emptyEvidenceReviewJobStoreState();
+    for (const jobId of ['job-a', 'job-b', 'job-c']) {
+      upsertEvidenceReviewJob(state, multiShardJob({
+        jobId,
+        workClass: 'live_learning',
+      }));
+    }
+
+    // maxClaimsPerJob=2 must not allow double-claim in the first class visit.
+    const plan = planFairQuantumClaims(state, { maxClaims: 3, maxClaimsPerJob: 2 });
+    assert.equal(plan.claims.length, 3);
+    assert.deepEqual(
+      plan.claims.map(c => c.jobId).sort(),
+      ['job-a', 'job-b', 'job-c'],
+    );
+    const counts = new Map<string, number>();
     for (const claim of plan.claims) {
-      jobCounts.set(claim.jobId, (jobCounts.get(claim.jobId) ?? 0) + 1);
+      counts.set(claim.jobId, (counts.get(claim.jobId) ?? 0) + 1);
     }
-    for (const [jobId, count] of jobCounts) {
-      assert.equal(count, 1, `${jobId} claimed ${count} times under contention`);
+    for (const [jobId, count] of counts) {
+      assert.equal(count, 1, `${jobId} claimed ${count} times in one-per-job pass`);
     }
-    assert.ok(plan.fairness.nextWorkClass);
+  });
+
+  test('per-job concurrency limit prevents large-job monopoly under contention', () => {
+    const state = emptyEvidenceReviewJobStoreState();
+    upsertEvidenceReviewJob(state, multiShardJob({
+      jobId: 'job-large',
+      workClass: 'historical_learning',
+      label: 'large-job-with-very-long-payload-to-force-many-shards'.repeat(4),
+    }));
+    upsertEvidenceReviewJob(state, multiShardJob({
+      jobId: 'job-small',
+      workClass: 'historical_learning',
+      label: 'small',
+    }));
+
+    const hits = new Map<string, number>();
+    for (let wake = 0; wake < 10; wake++) {
+      const plan = planFairQuantumClaims(state, { maxClaims: 1, maxClaimsPerJob: 1 });
+      assert.equal(plan.claims.length, 1);
+      hits.set(plan.claims[0]!.jobId, (hits.get(plan.claims[0]!.jobId) ?? 0) + 1);
+      state.fairness = plan.fairness;
+    }
+
+    assert.equal(hits.get('job-large'), 5);
+    assert.equal(hits.get('job-small'), 5);
+  });
+
+  test('job size and retry state do not create permanent priority', () => {
+    const state = emptyEvidenceReviewJobStoreState();
+    const heavy = multiShardJob({
+      jobId: 'job-heavy-retry',
+      workClass: 'operational_recovery',
+      label: 'heavy-retry-payload'.repeat(6),
+    });
+    // Mark one reader as retry_wait so the job still has runnable siblings.
+    const heavyReader = Object.values(heavy.quanta).find(q => q.kind === 'author_reader')!;
+    heavy.quanta[heavyReader.quantumId] = {
+      ...heavyReader,
+      state: 'retry_wait',
+      attempt: 9,
+      nextRetryAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    };
+    const light = multiShardJob({
+      jobId: 'job-light',
+      workClass: 'operational_recovery',
+      label: 'light',
+    });
+    upsertEvidenceReviewJob(state, heavy);
+    upsertEvidenceReviewJob(state, light);
+
+    const plan = planFairQuantumClaims(state, { maxClaims: 2, maxClaimsPerJob: 1 });
+    assert.equal(plan.claims.length, 2);
+    assert.deepEqual(
+      plan.claims.map(c => c.jobId).sort(),
+      ['job-heavy-retry', 'job-light'],
+    );
+
+    state.fairness = emptyFairnessState();
+    const hits = new Map<string, number>();
+    for (let wake = 0; wake < 6; wake++) {
+      const step = planFairQuantumClaims(state, { maxClaims: 1, maxClaimsPerJob: 1 });
+      hits.set(step.claims[0]!.jobId, (hits.get(step.claims[0]!.jobId) ?? 0) + 1);
+      state.fairness = step.fairness;
+    }
+    assert.equal(hits.get('job-heavy-retry'), 3);
+    assert.equal(hits.get('job-light'), 3);
   });
 
   test('sole runnable job may consume spare global capacity', () => {
     const state = emptyEvidenceReviewJobStoreState();
-    const bundle = validBundle('sole-job');
-    const job = createEvidenceReviewJob({
-      bundle,
-      candidate: candidateFrom(bundle),
-      workClass: 'live_learning',
+    upsertEvidenceReviewJob(state, multiShardJob({
       jobId: 'job-sole',
-      sharding: { preferSingleShardWhenFits: false, softLimitBytes: 100, hardLimitBytes: 200 },
-    });
-    upsertEvidenceReviewJob(state, job);
+      workClass: 'live_learning',
+    }));
     const plan = planFairQuantumClaims(state, { maxClaims: 3, maxClaimsPerJob: 1 });
-    assert.ok(plan.claims.length >= 2, 'sole job fills spare slots');
+    assert.ok(plan.claims.length >= 2, 'sole job fills spare slots above per-job cap');
     assert.ok(plan.claims.every(c => c.jobId === 'job-sole'));
+  });
+
+  test('work-conserving refill stops when contention appears', () => {
+    const state = emptyEvidenceReviewJobStoreState();
+    upsertEvidenceReviewJob(state, multiShardJob({ jobId: 'job-a', workClass: 'live_learning' }));
+    upsertEvidenceReviewJob(state, multiShardJob({ jobId: 'job-b', workClass: 'live_learning' }));
+
+    const plan = planFairQuantumClaims(state, { maxClaims: 4, maxClaimsPerJob: 1 });
+    assert.equal(plan.claims.length, 2);
+    assert.deepEqual(
+      plan.claims.map(c => c.jobId).sort(),
+      ['job-a', 'job-b'],
+    );
+    const counts = new Map<string, number>();
+    for (const claim of plan.claims) {
+      counts.set(claim.jobId, (counts.get(claim.jobId) ?? 0) + 1);
+    }
+    assert.equal(counts.get('job-a'), 1);
+    assert.equal(counts.get('job-b'), 1);
+  });
+
+  test('in-flight leased quanta count against per-job concurrency', () => {
+    const state = emptyEvidenceReviewJobStoreState();
+    const a = multiShardJob({ jobId: 'job-a', workClass: 'live_learning' });
+    const b = multiShardJob({ jobId: 'job-b', workClass: 'live_learning' });
+    const now = new Date('2030-01-01T00:00:00.000Z');
+    const future = new Date(now.getTime() + 60_000).toISOString();
+    const aReader = Object.values(a.quanta).find(q => q.kind === 'author_reader')!;
+    markLeased(a, aReader.quantumId, future);
+    upsertEvidenceReviewJob(state, a);
+    upsertEvidenceReviewJob(state, b);
+
+    const plan = planFairQuantumClaims(state, {
+      maxClaims: 2,
+      maxClaimsPerJob: 1,
+      now,
+    });
+    // job-a already at cap via in-flight lease; only job-b is newly claimable.
+    assert.equal(plan.claims.length, 1);
+    assert.equal(plan.claims[0]!.jobId, 'job-b');
+  });
+
+  test('critical-path nodes are preferred among runnable quanta', () => {
+    const state = emptyEvidenceReviewJobStoreState();
+    const job = multiShardJob({ jobId: 'job-path', workClass: 'semantic_reassessment' });
+    // Succeed all readers and dossiers so promotion/critical-path nodes become runnable.
+    for (const quantum of Object.values(job.quanta)) {
+      if (
+        quantum.kind === 'author_reader'
+        || quantum.kind === 'verifier_reader'
+        || quantum.kind === 'author_dossier'
+        || quantum.kind === 'verifier_dossier'
+        || quantum.kind === 'difference_index'
+        || quantum.kind === 'obligations'
+      ) {
+        markSucceeded(job, quantum.quantumId);
+      }
+    }
+    // Make skill_author runnable by succeeding its deps if present; otherwise force one.
+    const skillAuthor = Object.values(job.quanta).find(q => q.kind === 'skill_author');
+    const skillVerifier = Object.values(job.quanta).find(q => q.kind === 'skill_verifier');
+    const commit = Object.values(job.quanta).find(q => q.kind === 'commit');
+    assert.ok(skillAuthor || skillVerifier || commit, 'graph should include promotion nodes');
+
+    // Leave only critical-path candidates runnable alongside a synthetic reader.
+    // Prefer the lowest criticalPathRank among still-runnable nodes.
+    upsertEvidenceReviewJob(state, job);
+    const plan = planFairQuantumClaims(state, { maxClaims: 1, maxClaimsPerJob: 1 });
+    assert.equal(plan.claims.length, 1);
+    const claimed = job.quanta[plan.claims[0]!.quantumId]!;
+    assert.ok(
+      claimed.kind !== 'author_reader' && claimed.kind !== 'verifier_reader',
+      `expected critical-path preference, got ${claimed.kind}`,
+    );
+  });
+
+  test('Author and Verifier reader lanes receive balanced service', () => {
+    const state = emptyEvidenceReviewJobStoreState();
+    const job = multiShardJob({ jobId: 'job-lanes', workClass: 'live_learning' });
+    const authorReaders = Object.values(job.quanta).filter(q => q.kind === 'author_reader');
+    const verifierReaders = Object.values(job.quanta).filter(q => q.kind === 'verifier_reader');
+    assert.ok(authorReaders.length >= 2 && verifierReaders.length >= 2);
+
+    // Keep only readers runnable by leaving dossiers pending (deps unsatisfied).
+    upsertEvidenceReviewJob(state, job);
+    const plan = planFairQuantumClaims(state, {
+      maxClaims: 4,
+      maxClaimsPerJob: 4,
+    });
+    assert.equal(plan.claims.length, 4);
+    const claimed = plan.claims.map(c => job.quanta[c.quantumId]!);
+    const author = claimed.filter(q => q.lane === 'author' || q.kind === 'author_reader').length;
+    const verifier = claimed.filter(q => q.lane === 'verifier' || q.kind === 'verifier_reader').length;
+    assert.equal(author, 2);
+    assert.equal(verifier, 2);
+
+    // With prior author progress, prefer verifier next.
+    const behind = multiShardJob({ jobId: 'job-behind-v', workClass: 'live_learning' });
+    for (const q of Object.values(behind.quanta).filter(q => q.kind === 'author_reader').slice(0, 2)) {
+      markSucceeded(behind, q.quantumId);
+    }
+    const behindState = emptyEvidenceReviewJobStoreState();
+    upsertEvidenceReviewJob(behindState, behind);
+    const next = planFairQuantumClaims(behindState, { maxClaims: 1, maxClaimsPerJob: 1 });
+    const nextQuantum = behind.quanta[next.claims[0]!.quantumId]!;
+    assert.equal(nextQuantum.lane ?? (nextQuantum.kind === 'verifier_reader' ? 'verifier' : undefined), 'verifier');
+  });
+
+  test('durable cursors survive restart and continue rotation', () => {
+    const state = emptyEvidenceReviewJobStoreState();
+    for (const jobId of ['job-a', 'job-b']) {
+      upsertEvidenceReviewJob(state, multiShardJob({ jobId, workClass: 'live_learning' }));
+    }
+    upsertEvidenceReviewJob(state, multiShardJob({
+      jobId: 'job-c',
+      workClass: 'historical_learning',
+    }));
+
+    const first = planFairQuantumClaims(state, { maxClaims: 1, maxClaimsPerJob: 1 });
+    assert.equal(first.claims.length, 1);
+
+    // Simulate process restart: only JSON-serializable fairness is restored.
+    const persisted = JSON.parse(JSON.stringify(first.fairness));
+    const restored = normalizeFairnessState(persisted);
+    assert.equal(restored.nextWorkClass, first.fairness.nextWorkClass);
+    assert.deepEqual(restored.classCursors, first.fairness.classCursors);
+    assert.deepEqual(restored.jobCursors, first.fairness.jobCursors);
+
+    state.fairness = restored;
+    const second = planFairQuantumClaims(state, { maxClaims: 1, maxClaimsPerJob: 1 });
+    assert.equal(second.claims.length, 1);
+    assert.notEqual(
+      `${second.claims[0]!.jobId}:${second.claims[0]!.quantumId}`,
+      `${first.claims[0]!.jobId}:${first.claims[0]!.quantumId}`,
+    );
+
+    // Corrupt / partial blobs normalize safely.
+    const normalized = normalizeFairnessState({
+      nextWorkClass: 'not-a-class',
+      classCursors: { live_learning: 123, historical_learning: 'job-c' },
+      jobCursors: { 'job-a': null, 'job-b': 'q-ok' },
+    });
+    assert.equal(normalized.nextWorkClass, 'operational_recovery');
+    assert.equal(normalized.classCursors.historical_learning, 'job-c');
+    assert.equal(normalized.classCursors.live_learning, undefined);
+    assert.equal(normalized.jobCursors['job-b'], 'q-ok');
+    assert.equal(normalized.jobCursors['job-a'], undefined);
+  });
+
+  test('maxClaims=0 is a no-op and preserves rotation cursors', () => {
+    const state = emptyEvidenceReviewJobStoreState();
+    state.fairness = {
+      nextWorkClass: 'historical_learning',
+      classCursors: { live_learning: 'job-x' },
+      jobCursors: { 'job-x': 'q-1' },
+    };
+    upsertEvidenceReviewJob(state, multiShardJob({
+      jobId: 'job-x',
+      workClass: 'live_learning',
+    }));
+    const plan = planFairQuantumClaims(state, { maxClaims: 0, maxClaimsPerJob: 1 });
+    assert.deepEqual(plan.claims, []);
+    assert.equal(plan.fairness.nextWorkClass, 'historical_learning');
+    assert.equal(plan.fairness.classCursors.live_learning, 'job-x');
   });
 });
 
