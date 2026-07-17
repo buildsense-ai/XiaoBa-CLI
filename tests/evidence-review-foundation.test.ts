@@ -16,10 +16,12 @@ import {
   assertShardContentImmutable,
   buildDossierDifferenceIndex,
   buildEvidenceDossier,
+  buildExplicitObligationDispositions,
   buildReviewObligations,
   coverageSatisfiesLane,
   hashEvidenceBundle,
   hashEvidenceContent,
+  isValidSpan,
   recursivelySplitContent,
   shardEvidenceBundle,
   splitByStableBytes,
@@ -344,6 +346,55 @@ describe('evidence-review foundation (#106)', () => {
         { expectedLane: 'author' },
       );
       assert.ok(laneMismatch.errors.some(e => e.code === 'lane_mismatch'));
+    });
+
+    test('rejects zero-length spans and empty-coverage mismatches', () => {
+      const { manifest, shards } = shardEvidenceBundle(makeBundle(), {
+        softLimitBytes: 1_000_000,
+      });
+      const shard = shards[0]!;
+      assert.ok(shard.byteLength > 0);
+
+      const zeroLength: ShardFindingSet = {
+        ...coveredFindingSet(shard, 'author'),
+        findings: [{
+          findingId: 'zero-span',
+          classification: 'fact',
+          summary: 'empty span',
+          spans: [{ start: 0, end: 0 }],
+        }],
+      };
+      const zeroResult = validateShardFindingSet(zeroLength, shard, manifest);
+      assert.equal(zeroResult.ok, false);
+      assert.ok(zeroResult.errors.some(e => e.code === 'invalid_span'));
+
+      const emptyCoverageOnContent: ShardFindingSet = {
+        shardId: shard.shardId,
+        contentHash: shard.contentHash,
+        lane: 'author',
+        coverage: 'empty',
+        findings: [],
+      };
+      const emptyOnContent = validateShardFindingSet(emptyCoverageOnContent, shard, manifest);
+      assert.equal(emptyOnContent.ok, false);
+      assert.ok(emptyOnContent.errors.some(e => e.code === 'invalid_coverage'));
+
+      const emptyShard: EvidenceShard = {
+        ...shard,
+        content: '',
+        byteLength: 0,
+        contentHash: hashEvidenceContent(''),
+      };
+      const coveredEmpty: ShardFindingSet = {
+        shardId: emptyShard.shardId,
+        contentHash: emptyShard.contentHash,
+        lane: 'author',
+        coverage: 'covered',
+        findings: [],
+      };
+      const coveredEmptyResult = validateShardFindingSet(coveredEmpty, emptyShard, manifest);
+      assert.equal(coveredEmptyResult.ok, false);
+      assert.ok(coveredEmptyResult.errors.some(e => e.code === 'invalid_coverage'));
     });
 
     test('rejects free-form-only covered results and mutated content hashes', () => {
@@ -783,6 +834,90 @@ describe('evidence-review foundation (#106)', () => {
         allObligationsResolvedForCommit(obligations, deferredDispositions, shards),
         false,
       );
+
+      // Zero-length spans (start === end) are never valid citations.
+      const zeroLength = validateObligationDispositions(
+        obligations,
+        [
+          {
+            obligationId: 'obl:1',
+            decision: 'accepted',
+            rationale: 'ok',
+            citedSpans: [{
+              shardId: shards[0]!.shardId,
+              span: { start: 0, end: 0 },
+            }],
+          },
+          {
+            obligationId: 'obl:2',
+            decision: 'accepted',
+            rationale: 'ok',
+            citedSpans: [{
+              shardId: shards[0]!.shardId,
+              span: { start: 2, end: 2 },
+            }],
+          },
+        ],
+        shards,
+      );
+      assert.equal(zeroLength.ok, false);
+      assert.ok(zeroLength.errors.some(e => /out-of-bounds span|must cite/.test(e)));
+      assert.equal(isValidSpan({ start: 0, end: 0 }, shards[0]!.byteLength), false);
+      assert.equal(isValidSpan({ start: 1, end: 1 }, shards[0]!.byteLength), false);
+
+      // Duplicate disposition entries are rejected; every obligation still needs one explicit disposition.
+      const duplicate = validateObligationDispositions(
+        obligations,
+        [
+          {
+            obligationId: 'obl:1',
+            decision: 'accepted',
+            rationale: 'first',
+            citedSpans: [{
+              shardId: shards[0]!.shardId,
+              span: { start: 0, end: Math.min(2, shards[0]!.byteLength) },
+            }],
+          },
+          {
+            obligationId: 'obl:1',
+            decision: 'rejected',
+            rationale: 'duplicate',
+            citedSpans: [{
+              shardId: shards[0]!.shardId,
+              span: { start: 0, end: Math.min(2, shards[0]!.byteLength) },
+            }],
+          },
+          {
+            obligationId: 'obl:2',
+            decision: 'accepted',
+            rationale: 'ok',
+            citedSpans: [{
+              shardId: shards[0]!.shardId,
+              span: { start: 0, end: Math.min(2, shards[0]!.byteLength) },
+            }],
+          },
+        ],
+        shards,
+      );
+      assert.equal(duplicate.ok, false);
+      assert.ok(duplicate.errors.some(e => /Duplicate obligation dispositions/.test(e)));
+
+      // Explicit builder produces non-empty original spans; never start===end fabrications.
+      const explicit = buildExplicitObligationDispositions(
+        obligations,
+        shards,
+        'accepted',
+        'explicit disposition without silent defaults',
+      );
+      assert.equal(explicit.length, obligations.length);
+      for (const d of explicit) {
+        assert.ok(d.citedSpans.length > 0);
+        for (const cited of d.citedSpans) {
+          assert.ok(cited.span.end > cited.span.start);
+        }
+      }
+      assert.equal(validateObligationDispositions(obligations, explicit, shards).ok, true);
+      assert.equal(allObligationsResolvedForCommit(obligations, explicit, shards), true);
     });
   });
 

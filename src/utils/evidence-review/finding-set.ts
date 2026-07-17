@@ -55,7 +55,7 @@ export function isValidSpan(span: EvidenceShardSpan, contentByteLength: number):
     && Number.isInteger(span.start)
     && Number.isInteger(span.end)
     && span.start >= 0
-    && span.end >= span.start
+    && span.end > span.start
     && span.end <= contentByteLength
   );
 }
@@ -154,6 +154,20 @@ export function validateShardFindingSet(
   }
 
   const contentLen = Buffer.byteLength(shard.content, 'utf8');
+  if (contentLen === 0 && (set.coverage !== 'empty' || set.findings.length > 0)) {
+    errors.push(err(
+      'invalid_coverage',
+      `Empty shard ${shard.shardId} must use empty coverage without findings`,
+      { shardId: set.shardId },
+    ));
+  }
+  if (contentLen > 0 && set.coverage === 'empty') {
+    errors.push(err(
+      'invalid_coverage',
+      `Non-empty shard ${shard.shardId} cannot use empty coverage`,
+      { shardId: set.shardId },
+    ));
+  }
   for (const finding of set.findings) {
     errors.push(...validateFinding(finding, contentLen, set.shardId));
   }

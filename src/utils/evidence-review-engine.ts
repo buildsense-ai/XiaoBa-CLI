@@ -54,6 +54,7 @@ import {
   buildReviewObligations,
   verifyShardContent,
   validateShardFindingSet,
+  validateObligationDispositions,
   allObligationsResolvedForCommit,
 } from './evidence-review';
 import { planFairQuantumClaims } from './evidence-review-scheduler';
@@ -746,6 +747,16 @@ export class EvidenceReviewEngine {
       throw new Error('invalid_completion_schema: skill_verifier returned no verifier result');
     }
     const dispositions = outcome.dispositions ?? [];
+    const validation = validateObligationDispositions(
+      job.obligations,
+      dispositions,
+      Object.values(job.shards),
+    );
+    if (!validation.ok) {
+      throw new Error(
+        `invalid_completion_schema: skill_verifier obligation dispositions invalid: ${validation.errors.join('; ')}`,
+      );
+    }
     return {
       result: { verifier: outcome.verifier, dispositions },
       transcriptPaths: outcome.transcriptPaths ?? [],
@@ -774,6 +785,43 @@ export class EvidenceReviewEngine {
       }>(job, 'skill_verifier');
     if (!draft || !verifierPayload?.verifier) {
       throw new Error('commit requires skill_author draft and skill_verifier result');
+    }
+    const obligations = job.obligations ?? [];
+    const dispositions = verifierPayload.dispositions ?? [];
+    if (!allObligationsResolvedForCommit(
+      obligations,
+      dispositions,
+      Object.values(job.shards),
+    )) {
+      const validation = validateObligationDispositions(
+        obligations,
+        dispositions,
+        Object.values(job.shards),
+      );
+      if (!validation.ok) {
+        throw new Error(
+          `invalid_completion_schema: commit blocked by invalid obligation dispositions: ${validation.errors.join('; ')}`,
+        );
+      }
+      const skillResult: SkillEvolutionResult = {
+        transition: 'defer',
+        verified: false,
+        rounds: 1,
+        draft,
+        verifier: verifierPayload.verifier,
+        queued: 'deferred',
+      };
+      return {
+        result: skillResult,
+        transcriptPaths: uniqueTranscriptPaths(job),
+        jobPatch: {
+          disposition: 'deferred',
+          draft,
+          verifierResult: verifierPayload.verifier,
+          obligationDispositions: dispositions,
+        },
+        skillResult,
+      };
     }
 
     const branchTranscriptPaths = uniqueTranscriptPaths(job);

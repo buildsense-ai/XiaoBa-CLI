@@ -119,6 +119,10 @@ export function validateObligationDispositions(
   const shardById = new Map(shards.map(s => [s.shardId, s]));
   const unresolved: string[] = [];
 
+  if (byId.size !== dispositions.length) {
+    errors.push('Duplicate obligation dispositions are not allowed');
+  }
+
   for (const obligation of obligations) {
     const disposition = byId.get(obligation.obligationId);
     if (!disposition) {
@@ -133,13 +137,9 @@ export function validateObligationDispositions(
       errors.push(`Disposition for ${obligation.obligationId} requires rationale`);
     }
     if (!Array.isArray(disposition.citedSpans) || disposition.citedSpans.length === 0) {
-      // Deferred may still cite empty when evidence is truly unavailable, but
-      // accepted/mitigated/rejected must cite original spans.
-      if (disposition.decision !== 'deferred') {
-        errors.push(
-          `Disposition for ${obligation.obligationId} must cite original shard spans`,
-        );
-      }
+      errors.push(
+        `Disposition for ${obligation.obligationId} must cite original shard spans`,
+      );
       continue;
     }
     for (const cited of disposition.citedSpans) {
@@ -178,7 +178,7 @@ function isInBounds(span: EvidenceShardSpan, contentByteLength: number): boolean
     Number.isInteger(span.start)
     && Number.isInteger(span.end)
     && span.start >= 0
-    && span.end >= span.start
+    && span.end > span.start
     && span.end <= contentByteLength
   );
 }
@@ -195,4 +195,153 @@ export function allObligationsResolvedForCommit(
   const validation = validateObligationDispositions(obligations, dispositions, shards);
   if (!validation.ok) return false;
   return dispositions.every(d => d.decision !== 'deferred');
+}
+
+/**
+ * Build explicit dispositions that cite real non-empty original shard spans.
+ * Callers must choose the decision; this never invents silent acceptance.
+ * Used by runtime draft-gate outcomes and test fixtures that already decided.
+ */
+export function buildExplicitObligationDispositions(
+  obligations: readonly ReviewObligation[],
+  shards: readonly EvidenceShard[],
+  decision: ObligationDisposition['decision'],
+  rationale: string,
+): ObligationDisposition[] {
+  if (obligations.length === 0) return [];
+  const shardById = new Map(shards.map(s => [s.shardId, s]));
+  const fallback = firstNonEmptyShardSpan(shards);
+  if (!fallback) {
+    throw new Error(
+      'Cannot build obligation dispositions: no non-empty shard available for cited spans',
+    );
+  }
+  const text = rationale.trim() || `Explicit ${decision} disposition`;
+  return obligations.map(obligation => {
+    const preferred = obligation.requiredShardIds
+      .map(id => shardById.get(id))
+      .find((shard): shard is EvidenceShard => !!shard && shard.byteLength > 0);
+    const cited = preferred
+      ? { shardId: preferred.shardId, span: nonEmptyPrefixSpan(preferred.byteLength) }
+      : fallback;
+    return {
+      obligationId: obligation.obligationId,
+      decision,
+      rationale: text,
+      citedSpans: [cited],
+    };
+  });
+}
+
+/**
+ * Derive explicit dispositions from verifier review context attached to the
+ * Evidence Bundle episode (dossiers + obligations). Prefers original finding
+ * spans when present; never invents zero-length spans.
+ */
+export function buildExplicitDispositionsFromReviewContext(
+  context: {
+    readonly reviewObligations?: readonly ReviewObligation[];
+    readonly authorEvidenceDossier?: EvidenceDossier;
+    readonly verifierEvidenceDossier?: EvidenceDossier;
+  },
+  decision: ObligationDisposition['decision'],
+  rationale: string,
+): ObligationDisposition[] {
+  const obligations = context.reviewObligations ?? [];
+  if (obligations.length === 0) return [];
+  const fallback = firstFindingSpanFromDossiers([
+    context.authorEvidenceDossier,
+    context.verifierEvidenceDossier,
+  ]);
+  if (!fallback) {
+    throw new Error(
+      'Cannot build obligation dispositions from review context without non-empty cited spans',
+    );
+  }
+  const text = rationale.trim() || `Explicit ${decision} disposition`;
+  return obligations.map(obligation => {
+    const preferred = firstFindingSpanForObligation(
+      obligation,
+      [context.authorEvidenceDossier, context.verifierEvidenceDossier],
+    );
+    return {
+      obligationId: obligation.obligationId,
+      decision,
+      rationale: text,
+      citedSpans: [preferred ?? fallback],
+    };
+  });
+}
+
+function nonEmptyPrefixSpan(byteLength: number): EvidenceShardSpan {
+  if (byteLength <= 0) {
+    throw new Error('non-empty span requires byteLength > 0');
+  }
+  return { start: 0, end: Math.min(byteLength, Math.max(1, Math.min(4, byteLength))) };
+}
+
+function firstNonEmptyShardSpan(
+  shards: readonly EvidenceShard[],
+): { shardId: string; span: EvidenceShardSpan } | undefined {
+  for (const shard of shards) {
+    if (shard.byteLength > 0) {
+      return { shardId: shard.shardId, span: nonEmptyPrefixSpan(shard.byteLength) };
+    }
+  }
+  return undefined;
+}
+
+function firstFindingSpanFromDossiers(
+  dossiers: readonly (EvidenceDossier | undefined)[],
+): { shardId: string; span: EvidenceShardSpan } | undefined {
+  for (const dossier of dossiers) {
+    if (!dossier) continue;
+    for (const set of dossier.findingSets) {
+      for (const finding of set.findings) {
+        for (const span of finding.spans) {
+          if (span.end > span.start) {
+            return { shardId: set.shardId, span: { start: span.start, end: span.end } };
+          }
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function firstFindingSpanForObligation(
+  obligation: ReviewObligation,
+  dossiers: readonly (EvidenceDossier | undefined)[],
+): { shardId: string; span: EvidenceShardSpan } | undefined {
+  const required = new Set(obligation.requiredShardIds);
+  const related = new Set(obligation.relatedFindingIds);
+  for (const dossier of dossiers) {
+    if (!dossier) continue;
+    for (const set of dossier.findingSets) {
+      if (required.size > 0 && !required.has(set.shardId)) continue;
+      for (const finding of set.findings) {
+        if (related.size > 0 && !related.has(finding.findingId)) continue;
+        for (const span of finding.spans) {
+          if (span.end > span.start) {
+            return { shardId: set.shardId, span: { start: span.start, end: span.end } };
+          }
+        }
+      }
+    }
+  }
+  // Fall back to any non-empty span on a required shard.
+  for (const dossier of dossiers) {
+    if (!dossier) continue;
+    for (const set of dossier.findingSets) {
+      if (required.size > 0 && !required.has(set.shardId)) continue;
+      for (const finding of set.findings) {
+        for (const span of finding.spans) {
+          if (span.end > span.start) {
+            return { shardId: set.shardId, span: { start: span.start, end: span.end } };
+          }
+        }
+      }
+    }
+  }
+  return undefined;
 }

@@ -68,6 +68,8 @@ export { buildDossierDifferenceIndex } from './difference-index';
 export {
   OBLIGATION_FINDING_CLASSES,
   allObligationsResolvedForCommit,
+  buildExplicitDispositionsFromReviewContext,
+  buildExplicitObligationDispositions,
   buildReviewObligations,
   validateObligationDispositions,
 } from './obligations';
