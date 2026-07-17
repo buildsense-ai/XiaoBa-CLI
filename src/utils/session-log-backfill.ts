@@ -356,7 +356,6 @@ export class ExternalSessionLogBackfillService {
     }
 
     let processedResources = 0;
-    let skippedResources = 0;
     let ingestedEvents = 0;
     let duplicateEventsSkipped = 0;
     let tombstonedEventsSkipped = 0;
@@ -374,13 +373,13 @@ export class ExternalSessionLogBackfillService {
       const unique = recountUniqueResourceStates(state.resourceStates);
       const completed = unique.processedResources;
       const failed = unique.failedResources;
-      const remaining = Math.max(0, catalogTotal - completed - failed - skippedResources);
+      const remaining = Math.max(0, catalogTotal - completed - failed);
       const progress: ExternalHistoryProgressUpdate = {
         processed: completed,
         total: catalogTotal,
         completed,
         failed,
-        skipped: skippedResources,
+        skipped: 0,
         remaining,
         provider: request.provider,
         phase,
@@ -446,12 +445,10 @@ export class ExternalSessionLogBackfillService {
         break;
       }
 
-      // Completed resources must not re-import. Count them as skipped for
-      // terminal progress semantics without inventing new skip policies.
-      if (state.resourceStates[resource.resourceRef]?.status === 'processed') {
-        skippedResources += 1;
-        continue;
-      }
+      // Completed resources must not re-import. Re-read for event-level
+      // dedup, but do not count them as new processed resources (no false
+      // progress). Do not invent skip behavior just for this fix.
+      const alreadyProcessed = state.resourceStates[resource.resourceRef]?.status === 'processed';
 
       const cursor = state.resourceCursors[resource.resourceRef] ?? {
         resourceRef: resource.resourceRef,
@@ -727,7 +724,7 @@ export class ExternalSessionLogBackfillService {
       }
 
       const completedResource = !quotaReached;
-      if (completedResource) processedResources += 1;
+      if (completedResource && !alreadyProcessed) processedResources += 1;
       if (completedResource && belowReopenedBoundary) {
         sawPending = true;
       }

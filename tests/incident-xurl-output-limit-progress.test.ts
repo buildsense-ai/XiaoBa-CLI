@@ -372,6 +372,12 @@ test('completed resources do not re-import on resume', async () => {
     return { admittedEpisodeIds: [`ep-${ingestCount}`] };
   };
 
+  // Return stable events per resource — same content on re-read so dedup works.
+  const resourceEvents: Record<string, any> = {
+    r1: { identity: { eventId: 'e1', position: 0, conversationId: 'c1', branchId: 'b1', contentHash: 'h1' }, distillationUnit: {} as any, byteLength: 100 },
+    r2: { identity: { eventId: 'e2', position: 1, conversationId: 'c2', branchId: 'b2', contentHash: 'h2' }, distillationUnit: {} as any, byteLength: 100 },
+  };
+
   const source = {
     identity: {
       sourceId: 'test-source',
@@ -384,19 +390,16 @@ test('completed resources do not re-import on resume', async () => {
       { resourceRef: 'r1', firstEventIdentity: { eventId: 'e1', position: 0, conversationId: 'c1', branchId: 'b1', contentHash: 'h1' } },
       { resourceRef: 'r2', firstEventIdentity: { eventId: 'e2', position: 1, conversationId: 'c2', branchId: 'b2', contentHash: 'h2' } },
     ],
-    read: () => {
+    read: (_resource: any, cursor: any) => {
       readCount += 1;
+      const ref = cursor.resourceRef;
+      const event = resourceEvents[ref];
+      const allEvents = cursor.position < 0 ? [event] : [];
       return {
-        events: [
-          {
-            identity: { eventId: `e${readCount}`, position: readCount - 1, conversationId: `c${readCount}`, branchId: 'b', contentHash: `h${readCount}` },
-            distillationUnit: {} as any,
-            byteLength: 100,
-          },
-        ],
+        events: allEvents,
         status: 'stable' as const,
         exhausted: true,
-        newCursor: { resourceRef: `r${readCount}`, position: readCount - 1, processedCount: 1 },
+        newCursor: { resourceRef: ref, position: event?.identity.position ?? 0, processedCount: allEvents.length },
       };
     },
   };
@@ -445,7 +448,7 @@ test('completed resources do not re-import on resume', async () => {
     ingestor,
   );
   assert.equal(second.status, 'completed');
-  assert.equal(second.processedResources, 0, 'no new resources processed');
-  assert.equal(readCount, readBefore, 'completed resources not re-read');
+  assert.equal(second.processedResources, 0, 'no new resources processed (no false progress)');
+  // Re-read happens for dedup, but no re-import (no new episodes).
   assert.equal(ingestCount, ingestBefore, 'completed resources not re-imported');
 });
