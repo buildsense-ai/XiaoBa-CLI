@@ -1,0 +1,7 @@
+allowBuilds:
+  deasync: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  protobufjs: true
+  sharp: true
