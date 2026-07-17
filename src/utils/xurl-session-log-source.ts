@@ -341,6 +341,15 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
   }
 }
 
+export interface XurlExternalBackfillCatalogSelection {
+  readonly selected: readonly SessionLogSourceResource[];
+  readonly discoveredCount: number;
+  readonly excludedMissingUpdatedAt: number;
+  readonly excludedInvalidUpdatedAt: number;
+  readonly excludedBeforeCutoff: number;
+  readonly cutoff: string;
+}
+
 export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSource {
   readonly identity: SessionLogSourceIdentity;
   private readonly runner: XurlOfficialRunner;
@@ -386,6 +395,51 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
       if (pageToken == null) break;
     }
     return resources;
+  }
+
+  /**
+   * Structured catalog selection for explicit operator backfill.
+   * Uses firstEventIdentity.revision as the official catalog Updated At field.
+   * Missing or non-ISO timestamps fail closed (exclude + count).
+   */
+  selectCatalogResourcesByUpdatedSince(cutoff: Date): XurlExternalBackfillCatalogSelection {
+    if (!(cutoff instanceof Date) || Number.isNaN(cutoff.getTime())) {
+      throw new Error('backfill catalog cutoff must be a valid Date');
+    }
+    const cutoffMs = cutoff.getTime();
+    const resources = this.discoverResources();
+    const selected: SessionLogSourceResource[] = [];
+    let excludedMissingUpdatedAt = 0;
+    let excludedInvalidUpdatedAt = 0;
+    let excludedBeforeCutoff = 0;
+
+    for (const resource of resources) {
+      const updatedAt = resource.firstEventIdentity?.revision?.trim();
+      if (!updatedAt) {
+        excludedMissingUpdatedAt += 1;
+        continue;
+      }
+      const parsedMs = Date.parse(updatedAt);
+      if (Number.isNaN(parsedMs) || !isCanonicalIsoTimestamp(updatedAt)) {
+        excludedInvalidUpdatedAt += 1;
+        continue;
+      }
+      if (parsedMs < cutoffMs) {
+        excludedBeforeCutoff += 1;
+        continue;
+      }
+      selected.push(resource);
+    }
+
+    selected.sort((left, right) => left.resourceRef.localeCompare(right.resourceRef));
+    return {
+      selected,
+      discoveredCount: resources.length,
+      excludedMissingUpdatedAt,
+      excludedInvalidUpdatedAt,
+      excludedBeforeCutoff,
+      cutoff: cutoff.toISOString(),
+    };
   }
 
   read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSessionLogBackfillReadResult {
@@ -1369,6 +1423,14 @@ function requireIsoTimestamp(label: string, value: string): string {
     throw new Error(`${label} must be an ISO timestamp`);
   }
   return value;
+}
+
+/** Accept only canonical ISO-8601 timestamps with a timezone designator. */
+function isCanonicalIsoTimestamp(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(value));
 }
 
 function truncateLine(value: string, maxLength: number): string {

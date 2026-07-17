@@ -1,5 +1,5 @@
 /**
- * External Source CLI command surface (issue #91).
+ * External Source CLI command surface (issue #91 + explicit backfill).
  *
  * Operator commands for durable multi-provider admission controls:
  *
@@ -9,16 +9,19 @@
  *   xiaoba external-source disable <provider>
  *   xiaoba external-source reset <provider>
  *   xiaoba external-source rebaseline <provider> --skip-to-now
+ *   xiaoba external-source backfill <provider> --updated-since <duration-or-ISO> [--execute]
  *
  * Commands modify the same durable provider state consumed by Runtime Learning.
  * A running Runtime observes changes at the next scheduling boundary.
  */
 
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { Logger } from '../utils/logger';
 import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
-import type { ExternalHistoryMode } from '../utils/distillation-heartbeat-config';
+import type { DistillationHeartbeatConfig, ExternalHistoryMode } from '../utils/distillation-heartbeat-config';
 import {
   buildExternalSourceDiagnosticSnapshot,
   formatProviderDiagnosticHuman,
@@ -34,10 +37,33 @@ import { LearningEpisodeStore } from '../utils/learning-episode';
 import {
   ExternalSessionLogSourceAdapter,
 } from '../utils/session-log-source';
-import { XurlExternalSourceReader } from '../utils/xurl-session-log-source';
+import {
+  XurlExternalBackfillSource,
+  XurlExternalSourceReader,
+  type XurlExternalBackfillCatalogSelection,
+} from '../utils/xurl-session-log-source';
+import { acquireHeartbeatSchedulerOwnerLock } from '../utils/heartbeat-scheduler-owner-lock';
+import { EvidenceIngestor } from '../utils/evidence-ingestor';
+import { DueWorkPlanner } from '../utils/due-work-planner';
+import { defaultDistilledOutputDir } from '../utils/distillation-pipeline';
+import { PathResolver } from '../utils/path-resolver';
+import { RuntimeLearning } from '../utils/runtime-learning';
+import { SkillEvolutionRuntime } from '../utils/skill-evolution';
+import { SkillUsageCurator } from '../utils/skill-usage-curator';
+import { SkillUsageLedger } from '../utils/skill-usage-ledger';
+import {
+  loadExternalSessionLogBackfillState,
+  type ExternalSessionLogBackfillRequest,
+} from '../utils/session-log-backfill';
+
+/** Conservative defaults for one explicit backfill operation. */
+export const DEFAULT_BACKFILL_MAX_RESOURCES = 50;
+export const DEFAULT_BACKFILL_MAX_EVENTS = 500;
+export const DEFAULT_BACKFILL_MAX_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_BACKFILL_MAX_ELAPSED_MS = 5 * 60 * 1000;
 
 export interface ExternalSourceCommandOptions {
-  subcommand: 'status' | 'enable' | 'history' | 'disable' | 'reset' | 'rebaseline';
+  subcommand: 'status' | 'enable' | 'history' | 'disable' | 'reset' | 'rebaseline' | 'backfill';
   provider?: string;
   json?: boolean;
   scope?: string;
@@ -45,6 +71,18 @@ export interface ExternalSourceCommandOptions {
   history?: string;
   skipToNow?: boolean;
   workingDirectory?: string;
+  /** Explicit backfill: duration like 7d or ISO cutoff timestamp. */
+  updatedSince?: string;
+  /** Explicit backfill: run admission. Default is dry-run. */
+  execute?: boolean;
+  /** Explicit backfill: reusable operation id for resume. */
+  operationId?: string;
+  maxResources?: number;
+  maxEvents?: number;
+  maxBytes?: number;
+  maxElapsedMs?: number;
+  /** Injectable clock for deterministic tests. */
+  now?: () => Date;
 }
 
 export async function externalSourceCommand(options: ExternalSourceCommandOptions): Promise<void> {
@@ -107,6 +145,15 @@ export async function externalSourceCommand(options: ExternalSourceCommandOption
         return;
       }
       handleRebaseline(store, config, workingDirectory, options.provider, options.skipToNow);
+      break;
+    case 'backfill':
+      if (!options.provider) {
+        throw new Error('backfill requires a provider argument');
+      }
+      if (!options.updatedSince?.trim()) {
+        throw new Error('backfill requires --updated-since <duration-or-ISO>');
+      }
+      await handleBackfill(store, config, workingDirectory, options);
       break;
   }
 }
@@ -253,6 +300,418 @@ function handleRebaseline(
     recordProviderAudit: () => store.rebaselineProvider(normalizedProvider, skipToNow),
   });
   Logger.info(`Provider "${provider}" rebaseline completed (skip-to-now: ${skipToNow}).`);
+}
+
+async function handleBackfill(
+  store: ExternalProviderOverrideStore,
+  config: DistillationHeartbeatConfig,
+  workingDirectory: string,
+  options: ExternalSourceCommandOptions,
+): Promise<void> {
+  const now = options.now?.() ?? new Date();
+  const provider = requireNonEmpty('provider', options.provider).trim().toLowerCase();
+  const cutoff = parseUpdatedSince(requireNonEmpty('updated-since', options.updatedSince), now);
+  const limits = resolveBackfillLimits(options);
+  const scope = resolveBackfillScope(store, provider, options.scope, options.scopePath, workingDirectory);
+  const sourceId = resolveExternalProviderSourceId(config, provider);
+  const xurlCommand = config.externalSessionLogXurlCommand?.trim();
+  if (!xurlCommand) {
+    throw new Error('xurl command is missing; set XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND');
+  }
+
+  const source = new XurlExternalBackfillSource({
+    command: xurlCommand,
+    provider,
+    sourceId,
+    sourceLabel: `${provider} Session Logs`,
+    scope: scope.scope,
+    scopePath: scope.scopePath,
+    cwd: workingDirectory,
+  });
+
+  const selection = source.selectCatalogResourcesByUpdatedSince(cutoff);
+  const resolvedOperation = resolveBackfillOperation({
+    config,
+    provider,
+    sourceId,
+    cutoff,
+    selection,
+    requestedOperationId: options.operationId,
+    scope,
+  });
+
+  const reportBase = {
+    mode: options.execute ? 'execute' as const : 'dry-run' as const,
+    provider,
+    sourceId,
+    cutoff: selection.cutoff,
+    selectedCount: resolvedOperation.resourceRefs.length,
+    discoveredCount: selection.discoveredCount,
+    excludedMissingUpdatedAt: selection.excludedMissingUpdatedAt,
+    excludedInvalidUpdatedAt: selection.excludedInvalidUpdatedAt,
+    excludedBeforeCutoff: selection.excludedBeforeCutoff,
+    operationId: resolvedOperation.operationId,
+    scope: scope.scope,
+    limits,
+    range: {
+      startPosition: 0,
+      endPosition: Number.MAX_SAFE_INTEGER,
+      resourceCount: resolvedOperation.resourceRefs.length,
+    },
+    resumable: true,
+    quotaReached: false,
+  };
+
+  if (!options.execute) {
+    writeBackfillReport(reportBase, options.json ?? false, {
+      note: 'Dry-run only. Pass --execute to admit the selected complete stable history.',
+    });
+    return;
+  }
+
+  if (resolvedOperation.resourceRefs.length === 0) {
+    writeBackfillReport({
+      ...reportBase,
+      status: 'completed',
+      processedResources: 0,
+      ingestedEvents: 0,
+      resumable: false,
+      quotaReached: false,
+    }, options.json ?? false, {
+      note: 'No selected resources; nothing to execute.',
+    });
+    return;
+  }
+
+  const ownerLock = acquireHeartbeatSchedulerOwnerLock({
+    runtimeRoot: workingDirectory,
+    command: process.argv.join(' '),
+    env: process.env,
+  });
+  if (!ownerLock.acquired) {
+    throw new Error(
+      `writable Runtime already owned by pid=${ownerLock.existing.pid}; refuse to race a running Dashboard owner`,
+    );
+  }
+
+  try {
+    const request: ExternalSessionLogBackfillRequest = {
+      operationId: resolvedOperation.operationId,
+      triggeredBy: 'operator:external-source-backfill',
+      provider,
+      sourceId,
+      range: {
+        startPosition: 0,
+        endPosition: Number.MAX_SAFE_INTEGER,
+        resourceRefs: resolvedOperation.resourceRefs,
+      },
+      limits: {
+        maxResources: limits.maxResources,
+        maxBytes: limits.maxBytes,
+        maxElapsedMs: limits.maxElapsedMs,
+        maxEvents: limits.maxEvents,
+      },
+    };
+
+    const runtime = buildBackfillRuntimeLearning(workingDirectory, config, options.now);
+    const result = await runtime.runExternalBackfill(request, source);
+    const status = result.backfill.status;
+    const quotaReached = status === 'quota_reached';
+    const resumable = status === 'quota_reached' || status === 'pending' || status === 'running' || status === 'source_failed';
+
+    writeBackfillReport({
+      ...reportBase,
+      status,
+      processedResources: result.backfill.processedResources,
+      pendingResources: result.backfill.pendingResources,
+      failedResources: result.backfill.failedResources,
+      ingestedEvents: result.backfill.ingestedEvents,
+      duplicateEventsSkipped: result.backfill.duplicateEventsSkipped,
+      admittedEpisodes: result.backfill.admittedEpisodes,
+      bytesProcessed: result.backfill.bytesProcessed,
+      resumable,
+      quotaReached,
+    }, options.json ?? false, {
+      note: quotaReached
+        ? 'Quota reached; re-run with the same --operation-id to resume the exact selected resource set.'
+        : status === 'completed'
+          ? 'Backfill completed for the selected resource set.'
+          : `Backfill finished with status ${status}.`,
+    });
+
+    if (status === 'source_failed') {
+      process.exitCode = 1;
+    }
+  } finally {
+    ownerLock.release();
+  }
+}
+
+function buildBackfillRuntimeLearning(
+  workingDirectory: string,
+  config: DistillationHeartbeatConfig,
+  clock?: () => Date,
+): RuntimeLearning {
+  const skillsRoot = PathResolver.getSkillsPath();
+  const outputDir = defaultDistilledOutputDir(skillsRoot);
+  const skillEvolution = new SkillEvolutionRuntime({
+    workingDirectory,
+    branchLogRoot: config.branchLogRoot,
+    outputDir,
+    registryPath: config.skillEvolutionRegistryPath,
+    auditPath: config.skillEvolutionAuditPath,
+    journalPath: config.skillEvolutionJournalPath,
+    reviewQueuePath: config.skillEvolutionReviewQueuePath,
+    settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+    reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
+    operationalRetryMs: config.skillEvolutionOperationalRetryMinutes * 60 * 1000,
+    operationalRetryMaxMs: config.skillEvolutionOperationalRetryMaxHours * 60 * 60 * 1000,
+    reviewAttemptDeadlineMs: config.skillEvolutionReviewAttemptDeadlineMinutes * 60 * 1000,
+    authorModel: config.skillEvolutionAuthorModel,
+    verifierModel: config.skillEvolutionVerifierModel,
+    logEnabled: false,
+  });
+  const learningEpisodeStore = new LearningEpisodeStore(config.learningEpisodeStorePath);
+  const evidenceIngestor = new EvidenceIngestor({
+    episodeStore: learningEpisodeStore,
+    settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+  });
+  const curator = new SkillUsageCurator({
+    ledger: new SkillUsageLedger(config.skillUsageLedgerPath),
+    statePath: config.skillEvolutionCuratorStatePath,
+    intervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+    runtime: skillEvolution,
+    now: clock,
+  });
+  const planner = new DueWorkPlanner({
+    learningEpisodeStorePath: config.learningEpisodeStorePath,
+    reviewQueuePath: config.skillEvolutionReviewQueuePath,
+    curatorStatePath: config.skillEvolutionCuratorStatePath,
+    curatorIntervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+    semanticReassessmentManifestPath: config.skillEvolutionReassessmentManifestPath,
+  });
+  return new RuntimeLearning({
+    workingDirectory,
+    evidenceIngestor,
+    learningEpisodeStore,
+    skillEvolution,
+    curator,
+    planner,
+    // Explicit backfill supplies its own XurlExternalBackfillSource; avoid
+    // constructing continuous external adapters for this one-shot owner.
+    sessionLogSources: [],
+    clock,
+  });
+}
+
+function resolveBackfillLimits(options: ExternalSourceCommandOptions): {
+  maxResources: number;
+  maxEvents: number;
+  maxBytes: number;
+  maxElapsedMs: number;
+} {
+  return {
+    maxResources: normalizePositiveLimit(options.maxResources, DEFAULT_BACKFILL_MAX_RESOURCES, 'max-resources'),
+    maxEvents: normalizePositiveLimit(options.maxEvents, DEFAULT_BACKFILL_MAX_EVENTS, 'max-events'),
+    maxBytes: normalizePositiveLimit(options.maxBytes, DEFAULT_BACKFILL_MAX_BYTES, 'max-bytes'),
+    maxElapsedMs: normalizePositiveLimit(options.maxElapsedMs, DEFAULT_BACKFILL_MAX_ELAPSED_MS, 'max-elapsed'),
+  };
+}
+
+function resolveBackfillScope(
+  store: ExternalProviderOverrideStore,
+  provider: string,
+  scopeOption: string | undefined,
+  scopePathOption: string | undefined,
+  workingDirectory: string,
+): { scope: 'global' | 'path'; scopePath?: string } {
+  if (scopeOption === 'path') {
+    return {
+      scope: 'path',
+      scopePath: scopePathOption?.trim() || workingDirectory,
+    };
+  }
+  if (scopeOption === 'global' || scopeOption === undefined) {
+    if (scopeOption === undefined) {
+      const stored = store.getProviderScope(provider);
+      if (stored.scope === 'path') {
+        return { scope: 'path', scopePath: stored.scopePath };
+      }
+    }
+    return { scope: 'global' };
+  }
+  throw new Error('scope must be "global" or "path"');
+}
+
+function resolveBackfillOperation(args: {
+  config: DistillationHeartbeatConfig;
+  provider: string;
+  sourceId: string;
+  cutoff: Date;
+  selection: XurlExternalBackfillCatalogSelection;
+  requestedOperationId?: string;
+  scope: { scope: 'global' | 'path'; scopePath?: string };
+}): { operationId: string; resourceRefs: string[] } {
+  const selectedRefs = args.selection.selected.map(resource => resource.resourceRef).sort();
+  const operationId = args.requestedOperationId?.trim()
+    || buildDeterministicOperationId({
+      provider: args.provider,
+      sourceId: args.sourceId,
+      cutoff: args.cutoff.toISOString(),
+      scope: args.scope.scope,
+      // Scope path participates in identity but is never printed.
+      scopePathFingerprint: args.scope.scopePath
+        ? createHash('sha256').update(args.scope.scopePath, 'utf8').digest('hex').slice(0, 12)
+        : 'global',
+      resourceRefs: selectedRefs,
+    });
+
+  const paths = getExternalBackfillOperationPaths(args.config, args.provider, args.sourceId, operationId);
+  const existing = fs.existsSync(paths.stateFilePath)
+    ? loadExternalSessionLogBackfillState(paths.stateFilePath)
+    : null;
+  if (existing) {
+    if (existing.provider !== args.provider || existing.sourceId !== args.sourceId) {
+      throw new Error('existing backfill operation does not match provider/source');
+    }
+    const preserved = existing.range.resourceRefs ? [...existing.range.resourceRefs].sort() : selectedRefs;
+    return { operationId, resourceRefs: preserved };
+  }
+  return { operationId, resourceRefs: selectedRefs };
+}
+
+function getExternalBackfillOperationPaths(
+  config: DistillationHeartbeatConfig,
+  provider: string,
+  sourceId: string,
+  operationId: string,
+): { stateFilePath: string; auditFilePath: string } {
+  const backfillRoot = path.join(
+    path.dirname(config.learningEpisodeStorePath),
+    'external-session-log-backfills',
+    toStablePathComponent(provider),
+    toStablePathComponent(sourceId),
+  );
+  const operationStem = toStablePathComponent(operationId);
+  return {
+    stateFilePath: path.join(backfillRoot, `${operationStem}.state.json`),
+    auditFilePath: path.join(backfillRoot, `${operationStem}.audit.jsonl`),
+  };
+}
+
+function buildDeterministicOperationId(parts: {
+  provider: string;
+  sourceId: string;
+  cutoff: string;
+  scope: string;
+  scopePathFingerprint: string;
+  resourceRefs: readonly string[];
+}): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify(parts), 'utf8')
+    .digest('hex')
+    .slice(0, 16);
+  return `backfill-${parts.provider}-${digest}`;
+}
+
+function writeBackfillReport(
+  report: Record<string, unknown>,
+  json: boolean,
+  extra: { note: string },
+): void {
+  // Never include transcript text, resourceRefs, or unsanitized scope paths.
+  const safe: Record<string, unknown> = {
+    ...report,
+    note: extra.note,
+  };
+  if (json) {
+    process.stdout.write(`${JSON.stringify(safe, null, 2)}\n`);
+    return;
+  }
+  Logger.title('External Source Backfill');
+  Logger.info(`Mode: ${String(safe.mode)}`);
+  Logger.info(`Provider: ${String(safe.provider)}`);
+  Logger.info(`Cutoff: ${String(safe.cutoff)}`);
+  Logger.info(`Selected: ${String(safe.selectedCount)} (discovered ${String(safe.discoveredCount)})`);
+  Logger.info(
+    `Excluded: missing=${String(safe.excludedMissingUpdatedAt)} invalid=${String(safe.excludedInvalidUpdatedAt)} beforeCutoff=${String(safe.excludedBeforeCutoff)}`,
+  );
+  Logger.info(`Operation ID: ${String(safe.operationId)}`);
+  Logger.info(`Scope: ${String(safe.scope)}`);
+  const limits = safe.limits as {
+    maxResources: number;
+    maxEvents: number;
+    maxBytes: number;
+    maxElapsedMs: number;
+  };
+  Logger.info(
+    `Limits: resources=${limits.maxResources} events=${limits.maxEvents} bytes=${limits.maxBytes} elapsedMs=${limits.maxElapsedMs}`,
+  );
+  if (safe.status !== undefined) {
+    Logger.info(`Status: ${String(safe.status)}`);
+    Logger.info(`Resumable: ${String(safe.resumable)} quotaReached: ${String(safe.quotaReached)}`);
+  }
+  Logger.info(extra.note);
+}
+
+/**
+ * Parse `--updated-since` as either a relative duration (`7d`, `12h`, `30m`, `45s`)
+ * or a canonical ISO-8601 timestamp. Future cutoffs are rejected.
+ */
+export function parseUpdatedSince(value: string, now: Date): Date {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error('updated-since is required');
+  }
+
+  const durationMatch = /^(\d+)([dhms])$/i.exec(trimmed);
+  if (durationMatch) {
+    const amount = Number(durationMatch[1]);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error('updated-since duration must be a positive integer with unit d/h/m/s');
+    }
+    const unit = durationMatch[2]!.toLowerCase();
+    const unitMs =
+      unit === 'd' ? 86_400_000
+        : unit === 'h' ? 3_600_000
+          : unit === 'm' ? 60_000
+            : 1_000;
+    return new Date(now.getTime() - amount * unitMs);
+  }
+
+  if (!isCanonicalIsoTimestamp(trimmed) || Number.isNaN(Date.parse(trimmed))) {
+    throw new Error('updated-since must be a duration like 7d or a canonical ISO timestamp');
+  }
+  const parsed = new Date(trimmed);
+  if (parsed.getTime() > now.getTime()) {
+    throw new Error('updated-since must not be in the future');
+  }
+  return parsed;
+}
+
+function isCanonicalIsoTimestamp(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(value));
+}
+
+function normalizePositiveLimit(value: number | undefined, fallback: number, label: string): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be a positive number`);
+  }
+  return Math.floor(value);
+}
+
+function requireNonEmpty(label: string, value: string | undefined): string {
+  const text = value?.trim();
+  if (!text) throw new Error(`${label} is required`);
+  return text;
+}
+
+function toStablePathComponent(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'op';
 }
 
 function formatStatusJson(status: ProviderStatus) {

@@ -148,6 +148,46 @@ function main() {
       await externalSourceCommand({ subcommand: 'rebaseline', provider, skipToNow: options.skipToNow, workingDirectory: options.workingDirectory });
     });
 
+  externalSource
+    .command('backfill <provider>')
+    .description('Explicit bounded backfill of threads updated since a cutoff (dry-run by default)')
+    .requiredOption('--updated-since <duration-or-ISO>', 'Relative duration (7d) or canonical ISO cutoff')
+    .option('--execute', 'Run admission through RuntimeLearning (default: dry-run)')
+    .option('--operation-id <id>', 'Reusable operation id for quota-limited resume')
+    .option('--scope <scope>', 'Scope: global or path')
+    .option('--scope-path <path>', 'Project path when scope is path')
+    .option('--max-resources <n>', 'Maximum resources to process', (value) => Number(value))
+    .option('--max-events <n>', 'Maximum events to process', (value) => Number(value))
+    .option('--max-bytes <n>', 'Maximum bytes to process', (value) => Number(value))
+    .option('--max-elapsed <ms>', 'Maximum elapsed milliseconds', (value) => Number(value))
+    .option('--json', 'Output as JSON')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      try {
+        await externalSourceCommand({
+          subcommand: 'backfill',
+          provider,
+          updatedSince: options.updatedSince,
+          execute: options.execute === true,
+          operationId: options.operationId,
+          scope: options.scope,
+          scopePath: options.scopePath,
+          maxResources: options.maxResources,
+          maxEvents: options.maxEvents,
+          maxBytes: options.maxBytes,
+          maxElapsedMs: options.maxElapsed,
+          json: options.json,
+          workingDirectory: options.workingDirectory,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const { Logger } = await import('./utils/logger');
+        Logger.error(message);
+        process.exitCode = 1;
+      }
+    });
+
   registerSkillCommand(program);
 
   program.action(() => {
