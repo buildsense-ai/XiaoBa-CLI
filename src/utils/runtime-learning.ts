@@ -2465,6 +2465,17 @@ export class RuntimeLearning {
 
     const transitionsByKind: Partial<Record<CapabilityTransitionKind, number>> = {};
 
+    // #104/#110 production compatibility: materialize legacy Operational Review
+    // Retry + prompt-budget-blocked records as Evidence Review Jobs before fair
+    // rotation so they become normally schedulable without a second scheduler.
+    try {
+      await this.skillEvolution.ensureLegacyReviewRecordsMigratedOnce(this.clock());
+    } catch (error) {
+      Logger.warning(
+        `[RuntimeLearning] legacy review migration skipped: ${toErrorMessage(error)}`,
+      );
+    }
+
     // Fair Review Quantum Rotation across durable jobs before admitting new
     // episode/queue candidates (#108). Completes already-admitted coverage first.
     try {

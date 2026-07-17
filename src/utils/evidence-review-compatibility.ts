@@ -5,15 +5,32 @@
  * into durable Evidence Review Job projection seeds without dropping evidence,
  * attempts, backoff, provenance, or transcripts.
  *
- * Pure + dependency-light: no RuntimeLearning, scheduler, or dashboard wiring.
- * Integrators later materialize full graph jobs via #105–#109 createEvidenceReviewJob
- * using the preserved evidence + candidate snapshots carried in MigrationSeed.
+ * Pure conversion helpers stay dependency-light. Production materialization uses
+ * the existing Evidence Review Job store / createEvidenceReviewJob seam only —
+ * no second scheduler or queue ownership loop.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import type {
   EvidenceReviewProjectionInput,
   ProjectionQuantum,
 } from './evidence-review-diagnostics';
+import type { DistilledKnowledgeCandidate } from './capability-distiller';
+import type { EvidenceBundle } from './skill-evolution';
+import type { EvidenceReviewJob, EvidenceReviewJobStoreState } from './evidence-review-types';
+import { createEvidenceReviewJob } from './evidence-review-graph';
+import {
+  getEvidenceReviewJob,
+  listJobsByBundleId,
+  loadEvidenceReviewJobStore,
+  saveEvidenceReviewJobStore,
+  upsertEvidenceReviewJob,
+  evidenceReviewJobStorePathForReviewQueue,
+} from './evidence-review-job-store';
+import {
+  loadReviewQueueState,
+} from './skill-evolution-review-queue';
 
 // ---------------------------------------------------------------------------
 // Legacy record shapes (structural — match skill-evolution-review-queue + #104)
@@ -604,3 +621,345 @@ export function assertMigrationPreserved(
 
   return { preserved: violations.length === 0, violations };
 }
+
+// ---------------------------------------------------------------------------
+// Production materialization — durable jobs via existing store / create seam
+// ---------------------------------------------------------------------------
+
+export const EVIDENCE_REVIEW_MIGRATION_MARKER = 'evidence-review-compatibility-v1' as const;
+
+export interface EvidenceReviewMigrationMaterializeOptions {
+  readonly reviewQueuePath: string;
+  /** Defaults to sibling evidence-review-jobs.json of the review queue. */
+  readonly jobStorePath?: string;
+  /** Optional path for historical prompt-budget-blocked records. */
+  readonly promptBudgetBlockedPath?: string;
+  readonly now?: Date;
+}
+
+export interface EvidenceReviewMigrationMaterializeResult {
+  readonly scanned: number;
+  readonly materialized: number;
+  readonly alreadyPresent: number;
+  readonly skipped: number;
+  readonly quarantined: number;
+  readonly jobIds: readonly string[];
+  readonly skippedReasons: readonly MigrationSkip[];
+}
+
+interface MigrationDomainMeta {
+  readonly migrationMarker: typeof EVIDENCE_REVIEW_MIGRATION_MARKER;
+  readonly sourceKind: MigrationSourceKind;
+  readonly sourceEntryId: string;
+  readonly migratedAt: string;
+  readonly attempts: number;
+  readonly currentDelayMs: number;
+  readonly nextRetryAt?: string;
+  readonly messages: readonly string[];
+  readonly transcriptPaths: readonly string[];
+  readonly failureKind?: LegacyOperationalFailureKind;
+  readonly estimatedPromptTokens?: number;
+  readonly maxPromptTokens?: number;
+  readonly evidenceFingerprint?: string;
+  readonly reviewerVersion?: string;
+  readonly provenance?: readonly unknown[];
+}
+
+function isUsableEvidenceBundle(value: unknown): value is EvidenceBundle {
+  if (!isRecord(value)) return false;
+  if (typeof value.bundleId !== 'string' || value.bundleId.length === 0) return false;
+  if (!Array.isArray(value.completionEvidence)) return false;
+  if (!Array.isArray(value.settlementEvidence)) return false;
+  return true;
+}
+
+function isUsableCandidate(value: unknown): value is DistilledKnowledgeCandidate {
+  if (!isRecord(value)) return false;
+  if (value.kind !== 'capability') return false;
+  if (typeof value.capabilityId !== 'string' || value.capabilityId.length === 0) return false;
+  return true;
+}
+
+function fallbackCandidateFromSeed(seed: EvidenceReviewMigrationSeed): DistilledKnowledgeCandidate {
+  const nowIso = seed.migratedAt;
+  return {
+    schemaVersion: 1,
+    kind: 'capability',
+    capabilityId: seed.candidateCapabilityId || `migrated-${seed.bundleId}`,
+    title: `Migrated review for ${seed.bundleId}`,
+    applicability: `Compatibility migration (${seed.sourceKind}).`,
+    actionPattern: seed.messages[0] ?? 'Recovered from legacy review queue.',
+    boundaries: ['Migrated from legacy review queue; semantic boundaries unknown.'],
+    risks: ['Placeholder candidate synthesized during compatibility migration.'],
+    solvedLoop: {
+      problem: seed.messages[0] ?? seed.bundleId,
+      action: 'Resume as Evidence Review Job',
+      verification: 'Pending dual-lane coverage',
+      noCorrection: 'No correction signal preserved on legacy record.',
+    },
+    provenance: [{
+      filePath: 'legacy-migration',
+      turn: 0,
+      role: 'problem-action',
+      unitByteRange: { start: 0, end: 1 },
+    }],
+    generatedAt: nowIso,
+    sourceUnit: {
+      filePath: 'legacy-migration',
+      byteRange: { start: 0, end: 1 },
+      generatedAt: nowIso,
+    },
+  };
+}
+
+function migrationMetaFromSeed(seed: EvidenceReviewMigrationSeed): MigrationDomainMeta {
+  return {
+    migrationMarker: EVIDENCE_REVIEW_MIGRATION_MARKER,
+    sourceKind: seed.sourceKind,
+    sourceEntryId: seed.sourceEntryId,
+    migratedAt: seed.migratedAt,
+    attempts: seed.attempts,
+    currentDelayMs: seed.currentDelayMs,
+    ...(seed.nextRetryAt ? { nextRetryAt: seed.nextRetryAt } : {}),
+    messages: [...seed.messages],
+    transcriptPaths: [...seed.transcriptPaths],
+    ...(seed.failureKind !== undefined ? { failureKind: seed.failureKind } : {}),
+    ...(seed.estimatedPromptTokens !== undefined
+      ? { estimatedPromptTokens: seed.estimatedPromptTokens }
+      : {}),
+    ...(seed.maxPromptTokens !== undefined ? { maxPromptTokens: seed.maxPromptTokens } : {}),
+    ...(seed.evidenceFingerprint ? { evidenceFingerprint: seed.evidenceFingerprint } : {}),
+    ...(seed.reviewerVersion ? { reviewerVersion: seed.reviewerVersion } : {}),
+    ...(seed.provenance ? { provenance: seed.provenance } : {}),
+  };
+}
+
+function jobHasMigrationSource(
+  job: EvidenceReviewJob,
+  sourceKind: MigrationSourceKind,
+  sourceEntryId: string,
+): boolean {
+  const expectedJobId = sourceKind === 'operational_retry'
+    ? `job:migrated:op:${sourceEntryId}`
+    : `job:migrated:pbb:${sourceEntryId}`;
+  if (job.jobId === expectedJobId) return true;
+  const domain = job.domain;
+  if (!isRecord(domain)) return false;
+  return domain.migrationMarker === EVIDENCE_REVIEW_MIGRATION_MARKER
+    && domain.sourceKind === sourceKind
+    && domain.sourceEntryId === sourceEntryId;
+}
+
+function findExistingMigratedJob(
+  state: EvidenceReviewJobStoreState,
+  seed: EvidenceReviewMigrationSeed,
+): EvidenceReviewJob | undefined {
+  const byId = getEvidenceReviewJob(state, seed.proposedJobId);
+  if (byId) return byId;
+  return listJobsByBundleId(state, seed.bundleId).find(job => (
+    jobHasMigrationSource(job, seed.sourceKind, seed.sourceEntryId)
+  ));
+}
+
+/**
+ * Apply preserved migration metadata onto a graph job without inventing a
+ * second ownership path. Operational retries become pending coverage with
+ * job-level nextDueAt so the existing fairness wake can schedule them.
+ */
+export function materializeMigrationSeedAsJob(
+  seed: EvidenceReviewMigrationSeed,
+  options: { readonly now?: Date } = {},
+): EvidenceReviewJob | undefined {
+  if (!isUsableEvidenceBundle(seed.bundle)) return undefined;
+  const candidate = isUsableCandidate(seed.candidate)
+    ? seed.candidate
+    : fallbackCandidateFromSeed(seed);
+  const now = options.now ?? new Date();
+  const job = createEvidenceReviewJob({
+    bundle: seed.bundle,
+    candidate,
+    workClass: seed.workClass,
+    now,
+    jobId: seed.proposedJobId,
+  });
+
+  const meta = migrationMetaFromSeed(seed);
+  job.domain = {
+    ...(job.domain ?? {}),
+    ...meta,
+  };
+
+  // Preserve attempt/backoff/transcripts on the earliest author reader quantum
+  // when the source was an operational retry. Keep quantum state pending so
+  // job.nextDueAt gates schedulability without inventing a synthetic quantum kind.
+  if (seed.sourceKind === 'operational_retry') {
+    const authorReader = Object.values(job.quanta)
+      .filter(q => q.kind === 'author_reader')
+      .sort((a, b) => a.quantumId.localeCompare(b.quantumId, 'en'))[0];
+    if (authorReader) {
+      job.quanta[authorReader.quantumId] = {
+        ...authorReader,
+        attempts: seed.attempts,
+        currentDelayMs: seed.currentDelayMs,
+        failureMessage: seed.messages[0],
+        transcriptPaths: uniqueStrings([
+          ...authorReader.transcriptPaths,
+          ...seed.transcriptPaths,
+        ]),
+        updatedAt: seed.updatedAt,
+      };
+    }
+    job.nextDueAt = seed.nextRetryAt;
+  } else if (seed.transcriptPaths.length > 0) {
+    const authorReader = Object.values(job.quanta)
+      .filter(q => q.kind === 'author_reader')
+      .sort((a, b) => a.quantumId.localeCompare(b.quantumId, 'en'))[0];
+    if (authorReader) {
+      job.quanta[authorReader.quantumId] = {
+        ...authorReader,
+        attempts: seed.attempts,
+        transcriptPaths: uniqueStrings([
+          ...authorReader.transcriptPaths,
+          ...seed.transcriptPaths,
+        ]),
+        failureMessage: seed.messages[0],
+        updatedAt: seed.updatedAt,
+      };
+    }
+    job.nextDueAt = undefined;
+  }
+
+  job.createdAt = seed.createdAt;
+  job.updatedAt = seed.updatedAt;
+  return job;
+}
+
+function readJsonArrayFile(filePath: string): { records: unknown[]; quarantined: boolean } {
+  if (!fs.existsSync(filePath)) return { records: [], quarantined: false };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
+    if (Array.isArray(parsed)) return { records: parsed, quarantined: false };
+    if (isRecord(parsed) && Array.isArray(parsed.entries)) {
+      return { records: parsed.entries, quarantined: false };
+    }
+    if (isRecord(parsed) && Array.isArray(parsed.blocked)) {
+      return { records: parsed.blocked, quarantined: false };
+    }
+    quarantineLegacyFile(filePath, 'invalid-shape');
+    return { records: [], quarantined: true };
+  } catch {
+    quarantineLegacyFile(filePath, 'corrupt');
+    return { records: [], quarantined: true };
+  }
+}
+
+function quarantineLegacyFile(filePath: string, reason: string): void {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.renameSync(filePath, `${filePath}.corrupt.${reason}.${stamp}`);
+  } catch {
+    // best effort
+  }
+}
+
+function defaultPromptBudgetBlockedPath(reviewQueuePath: string): string {
+  return path.join(path.dirname(reviewQueuePath), 'prompt-budget-blocked.json');
+}
+
+/**
+ * Production seam: scan legacy Operational Review Retry + prompt-budget-blocked
+ * records and ensure each valid record owns exactly one Evidence Review Job.
+ *
+ * Idempotent across restarts. Corrupt source files are quarantined; corrupt
+ * individual records are skipped without inventing empty evidence. Does not
+ * remove legacy queue ownership — reviewDueQueueEntries still drains OPR —
+ * and does not create a second scheduler/heartbeat.
+ */
+export function materializeLegacyReviewRecordsAsJobs(
+  options: EvidenceReviewMigrationMaterializeOptions,
+): EvidenceReviewMigrationMaterializeResult {
+  const now = options.now ?? new Date();
+  const jobStorePath = options.jobStorePath
+    ?? evidenceReviewJobStorePathForReviewQueue(options.reviewQueuePath);
+  const pbbPath = options.promptBudgetBlockedPath
+    ?? defaultPromptBudgetBlockedPath(options.reviewQueuePath);
+
+  const queue = loadReviewQueueState(options.reviewQueuePath);
+  // Fail closed on corrupt queue: loadReviewQueueState already quarantined
+  // the file and returned empty+stateCorrupt. Do not invent jobs.
+  const operationalRaw = queue.stateCorrupt ? [] : queue.operational;
+  const pbbFile = readJsonArrayFile(pbbPath);
+
+  const operationalMigration = migrateOperationalQueueEntries(operationalRaw, { now });
+  const pbbMigration = migrateLegacyReviewRecords(
+    pbbFile.records.map(entry => (
+      isRecord(entry) ? { ...entry, legacyKind: 'prompt_budget_blocked' } : entry
+    )),
+    { now },
+  );
+
+  const seeds = [...operationalMigration.seeds, ...pbbMigration.seeds];
+  const skippedReasons = [
+    ...operationalMigration.skipped,
+    ...pbbMigration.skipped,
+  ];
+
+  const state = loadEvidenceReviewJobStore(jobStorePath);
+  // Fail closed: corrupt job store was quarantined; start from empty but still
+  // materialize so work is not permanently lost. Existing empty state is fine.
+  let materialized = 0;
+  let alreadyPresent = 0;
+  const jobIds: string[] = [];
+  let dirty = false;
+
+  for (const seed of seeds) {
+    const existing = findExistingMigratedJob(state, seed);
+    if (existing) {
+      alreadyPresent += 1;
+      jobIds.push(existing.jobId);
+      continue;
+    }
+    // Avoid dual ownership when an active job already covers the same bundle
+    // (e.g. created by a concurrent wake via ensureJob).
+    const activeForBundle = listJobsByBundleId(state, seed.bundleId)
+      .find(job => job.disposition === 'active' || job.disposition === 'deferred');
+    if (activeForBundle) {
+      alreadyPresent += 1;
+      jobIds.push(activeForBundle.jobId);
+      continue;
+    }
+
+    const job = materializeMigrationSeedAsJob(seed, { now });
+    if (!job) {
+      skippedReasons.push({
+        sourceKind: seed.sourceKind,
+        sourceEntryId: seed.sourceEntryId,
+        reason: 'bundle or candidate not materializable as Evidence Review Job',
+      });
+      continue;
+    }
+    upsertEvidenceReviewJob(state, job);
+    dirty = true;
+    materialized += 1;
+    jobIds.push(job.jobId);
+  }
+
+  if (dirty) {
+    saveEvidenceReviewJobStore(jobStorePath, state);
+  }
+
+  // Never rewrite operational/deferred ownership here — legacy queue remains
+  // owned by reviewDueQueueEntries until those paths drain naturally.
+
+  return {
+    scanned: operationalRaw.length + pbbFile.records.length,
+    materialized,
+    alreadyPresent,
+    skipped: skippedReasons.length,
+    quarantined: (queue.stateCorrupt ? 1 : 0) + (pbbFile.quarantined ? 1 : 0),
+    jobIds,
+    skippedReasons,
+  };
+}
+
