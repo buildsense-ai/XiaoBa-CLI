@@ -48,6 +48,7 @@ import { bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
 import { SemanticReassessmentManifestStore } from './semantic-reassessment';
 import { cleanupBranchTranscripts } from './branch-transcript-retention';
 import { createReviewBudget, type ReviewBudget } from './review-budget';
+import { advanceJobsFairly } from './evidence-review-engine';
 import { XurlExternalSourceReader } from './xurl-session-log-source';
 import {
   ExternalAdmissionCoordinator,
@@ -2463,6 +2464,21 @@ export class RuntimeLearning {
     if (!reviewAttempted) return skippedReviewReport();
 
     const transitionsByKind: Partial<Record<CapabilityTransitionKind, number>> = {};
+
+    // Fair Review Quantum Rotation across durable jobs before admitting new
+    // episode/queue candidates (#108). Completes already-admitted coverage first.
+    try {
+      const engine = this.skillEvolution.getEvidenceReviewEngine();
+      await advanceJobsFairly(engine, `wake-fair:${this.clock().getTime()}`, {
+        maxClaims: Math.max(1, Math.floor(this.config.skillEvolutionReviewMaxCandidates)),
+        maxClaimsPerJob: 1,
+        signal: wakeSignal,
+        now: this.clock(),
+      });
+    } catch {
+      // Job store optional during early construction / V3-disabled paths.
+    }
+
     const reviewBudget = createReviewBudget({
       maxCandidates: this.config.skillEvolutionReviewMaxCandidates,
       // skillEvolutionReviewMaxPromptTokens is compatibility-read only; estimated

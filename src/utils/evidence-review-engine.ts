@@ -49,6 +49,7 @@ import {
   validateShardFindingSet,
   allObligationsResolvedForCommit,
 } from './evidence-review';
+import { planFairQuantumClaims } from './evidence-review-scheduler';
 
 const DEFAULT_LEASE_MS = 5 * 60_000;
 const DEFAULT_RETRY_BASE_MS = 1_000;
@@ -532,3 +533,45 @@ export function resolveEvidenceReviewJobStorePath(
 }
 
 export { allObligationsResolvedForCommit };
+
+/**
+ * Fair multi-job advance for one wake (#108).
+ * Claims a bounded set of quanta across jobs using Fair Review Quantum Rotation.
+ */
+export async function advanceJobsFairly(
+  engine: EvidenceReviewEngine,
+  wakeId: string,
+  options: {
+    maxClaims: number;
+    maxClaimsPerJob?: number;
+    signal?: AbortSignal;
+    now?: Date;
+  },
+): Promise<{ claims: number; jobIds: string[] }> {
+  const state = engine.loadStore();
+  const plan = planFairQuantumClaims(state, {
+    maxClaims: options.maxClaims,
+    maxClaimsPerJob: options.maxClaimsPerJob ?? 1,
+    now: options.now,
+  });
+  state.fairness = plan.fairness;
+  engine.saveStore(state);
+
+  const touched = new Set<string>();
+  // Group claims by job and advance each job with maxQuanta equal to its claim count.
+  const perJob = new Map<string, number>();
+  for (const claim of plan.claims) {
+    perJob.set(claim.jobId, (perJob.get(claim.jobId) ?? 0) + 1);
+    touched.add(claim.jobId);
+  }
+  for (const [jobId, count] of perJob) {
+    if (options.signal?.aborted) break;
+    // Temporarily bound by looping maxClaims times with allowed coverage+promotion kinds.
+    for (let i = 0; i < count; i++) {
+      if (options.signal?.aborted) break;
+      const advanced = await engine.advanceJob(jobId, `${wakeId}:${jobId}:${i}`, options.signal);
+      if (advanced.executedQuantumIds.length === 0) break;
+    }
+  }
+  return { claims: plan.claims.length, jobIds: [...touched] };
+}
