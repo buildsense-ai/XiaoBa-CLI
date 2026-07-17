@@ -353,6 +353,7 @@ export interface XurlExternalBackfillCatalogSelection {
 export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSource {
   readonly identity: SessionLogSourceIdentity;
   private readonly runner: XurlOfficialRunner;
+  private explicitResources: readonly SessionLogSourceResource[] | null = null;
 
   constructor(options: XurlExternalSourceOptions) {
     this.identity = {
@@ -362,7 +363,15 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
       provider: requireNonEmptyText('xurl provider', options.provider),
       reader: 'xurl',
     };
-    this.runner = new XurlOfficialRunner(options);
+    this.runner = new XurlOfficialRunner({
+      ...options,
+      // Explicit backfill may need an expanded catalog response. Keep it
+      // bounded by the existing activation-output budget rather than the
+      // smaller continuous-read buffer.
+      maxOutputBytes: options.maxOutputBytes
+        ?? options.maxActivationOutputBytes
+        ?? DEFAULT_XURL_MAX_ACTIVATION_OUTPUT_BYTES,
+    });
   }
 
   /** xURL version recorded on first discovery (best-effort, undefined if unchecked/failed). */
@@ -371,43 +380,133 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
   }
 
   discoverResources(): readonly SessionLogSourceResource[] {
-    const limit = DEFAULT_XURL_QUERY_LIMIT;
-    let pageToken: string | null = null;
-    const resources: SessionLogSourceResource[] = [];
-    // Explicit backfill discovers the complete in-scope catalog, paging until exhausted.
+    if (this.explicitResources !== null) return this.explicitResources;
+    const limits = this.runner.catchUpCatalogLimits;
+    let requestedLimit = limits.initialLimit;
+    this.runner.beginCatchUpCatalogObservation();
+
+    // Official xURL 0.0.27 does not expose a cursor. Prove completeness by
+    // expanding the requested prefix until the result is shorter than it.
     for (;;) {
-      const catalog = this.runner.queryCatalog(limit, pageToken);
+      const catalog = this.runner.queryCatalog(requestedLimit, null);
       this.runner.checkActivationLimits(catalog);
-      for (const summary of catalog.threads) {
-        resources.push({
-          resourceRef: summary.threadId,
-          firstEventIdentity: {
-            eventId: canonicalEventId(this.identity.provider, summary.threadId, summary.ordinal, summary.ordinal),
-            position: summary.ordinal,
-            conversationId: summary.threadId,
-            branchId: summary.branch,
-            ...(summary.revision ? { revision: summary.revision } : {}),
-            contentHash: summary.fingerprint,
-          },
-        });
+      if (catalog.next !== null) {
+        return this.discoverPaginatedResources(catalog, requestedLimit, limits.maxCatalogResources);
       }
-      pageToken = catalog.next;
-      if (pageToken == null) break;
+      if (catalog.threads.length < requestedLimit) {
+        return catalog.threads.map(summary => this.toResource(summary));
+      }
+      if (requestedLimit >= limits.maxCatalogResources) {
+        throw new XurlActivationBlockedError(
+          `xurl backfill catalog reached cap without proving completeness: ${requestedLimit}`,
+        );
+      }
+      requestedLimit = Math.min(requestedLimit * 2, limits.maxCatalogResources);
     }
-    return resources;
+  }
+
+  /** Restrict execution to the operator-approved resource set. */
+  restrictToResourceRefs(resourceRefs: readonly string[]): void {
+    this.explicitResources = [...new Set(resourceRefs.map(resourceRef => (
+      requireNonEmptyText('xurl backfill resourceRef', resourceRef)
+    )))].sort().map(resourceRef => ({
+      resourceRef,
+      firstEventIdentity: {
+        eventId: canonicalEventId(this.identity.provider, resourceRef, 0, 0),
+        position: 0,
+        conversationId: resourceRef,
+        branchId: resourceRef,
+        contentHash: '0'.repeat(64),
+      },
+    }));
+  }
+
+  private discoverPaginatedResources(
+    firstPage: RenderedCatalog,
+    limit: number,
+    maxCatalogResources: number,
+  ): readonly SessionLogSourceResource[] {
+    const resources: SessionLogSourceResource[] = [];
+    let catalog = firstPage;
+    for (;;) {
+      resources.push(...catalog.threads.map(summary => this.toResource(summary)));
+      if (resources.length > maxCatalogResources) {
+        throw new XurlActivationBlockedError(
+          `xurl backfill catalog exceeded cap: ${resources.length} > ${maxCatalogResources}`,
+        );
+      }
+      if (catalog.next === null) return resources;
+      catalog = this.runner.queryCatalog(limit, catalog.next);
+      this.runner.checkActivationLimits(catalog);
+    }
+  }
+
+  private toResource(summary: RenderedThreadSummary): SessionLogSourceResource {
+    return {
+      resourceRef: summary.threadId,
+      firstEventIdentity: {
+        eventId: canonicalEventId(this.identity.provider, summary.threadId, summary.ordinal, summary.ordinal),
+        position: summary.ordinal,
+        conversationId: summary.threadId,
+        branchId: summary.branch,
+        ...(summary.revision ? { revision: summary.revision } : {}),
+        contentHash: summary.fingerprint,
+      },
+    };
   }
 
   /**
    * Structured catalog selection for explicit operator backfill.
    * Uses firstEventIdentity.revision as the official catalog Updated At field.
-   * Missing or non-ISO timestamps fail closed (exclude + count).
+   * xURL 0.0.27 emits Unix seconds; rendered fixtures may use canonical ISO.
+   * Missing or unsupported timestamps fail closed (exclude + count).
    */
   selectCatalogResourcesByUpdatedSince(cutoff: Date): XurlExternalBackfillCatalogSelection {
     if (!(cutoff instanceof Date) || Number.isNaN(cutoff.getTime())) {
       throw new Error('backfill catalog cutoff must be a valid Date');
     }
     const cutoffMs = cutoff.getTime();
-    const resources = this.discoverResources();
+    const limits = this.runner.catchUpCatalogLimits;
+    let requestedLimit = limits.initialLimit;
+    this.runner.beginCatchUpCatalogObservation();
+
+    for (;;) {
+      const catalog = this.runner.queryCatalog(requestedLimit, null);
+      this.runner.checkActivationLimits(catalog);
+      if (catalog.next !== null) {
+        return this.selectResourcesByUpdatedSince(
+          this.discoverPaginatedResources(catalog, requestedLimit, limits.maxCatalogResources),
+          cutoff,
+        );
+      }
+      const resources = catalog.threads.map(summary => this.toResource(summary));
+      const updatedTimes = resources.map(resource => (
+        parseCatalogUpdatedAtMs(resource.firstEventIdentity?.revision?.trim() ?? '')
+      ));
+      const timestampsAreDescending = updatedTimes.every((value, index) => (
+        value !== null && (index === 0 || value <= updatedTimes[index - 1]!)
+      ));
+      const crossesCutoff = timestampsAreDescending
+        && updatedTimes.length > 0
+        && updatedTimes[updatedTimes.length - 1]! < cutoffMs;
+
+      if (resources.length < requestedLimit || crossesCutoff) {
+        return this.selectResourcesByUpdatedSince(resources, cutoff);
+      }
+      if (requestedLimit >= limits.maxCatalogResources) {
+        throw new XurlActivationBlockedError(
+          `xurl backfill catalog reached cap without covering cutoff: ${requestedLimit}`,
+        );
+      }
+      requestedLimit = Math.min(requestedLimit * 2, limits.maxCatalogResources);
+    }
+  }
+
+  private selectResourcesByUpdatedSince(
+    resources: readonly SessionLogSourceResource[],
+    cutoff: Date,
+  ): XurlExternalBackfillCatalogSelection {
+    const cutoffMs = cutoff.getTime();
     const selected: SessionLogSourceResource[] = [];
     let excludedMissingUpdatedAt = 0;
     let excludedInvalidUpdatedAt = 0;
@@ -419,8 +518,8 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
         excludedMissingUpdatedAt += 1;
         continue;
       }
-      const parsedMs = Date.parse(updatedAt);
-      if (Number.isNaN(parsedMs) || !isCanonicalIsoTimestamp(updatedAt)) {
+      const parsedMs = parseCatalogUpdatedAtMs(updatedAt);
+      if (parsedMs === null) {
         excludedInvalidUpdatedAt += 1;
         continue;
       }
@@ -1431,6 +1530,15 @@ function isCanonicalIsoTimestamp(value: string): boolean {
     return false;
   }
   return !Number.isNaN(Date.parse(value));
+}
+
+function parseCatalogUpdatedAtMs(value: string): number | null {
+  if (isCanonicalIsoTimestamp(value)) return Date.parse(value);
+  if (!/^\d{10}$/.test(value)) return null;
+  const milliseconds = Number(value) * 1_000;
+  return Number.isSafeInteger(milliseconds) && !Number.isNaN(new Date(milliseconds).getTime())
+    ? milliseconds
+    : null;
 }
 
 function truncateLine(value: string, maxLength: number): string {

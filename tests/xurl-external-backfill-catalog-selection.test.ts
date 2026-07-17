@@ -94,6 +94,68 @@ test('selectCatalogResourcesByUpdatedSince reads official Updated At into firstE
   assert.equal(selection.excludedBeforeCutoff, 1);
 });
 
+test('accepts official Unix-second Updated At values and expands the catalog until complete', () => {
+  const env = setupEnv();
+  const firstHundred = Array.from({ length: 100 }, (_, index) => (
+    thread(`thread-${String(index).padStart(3, '0')}`, '1784240000')
+  ));
+  writeScenario(env.scenarioPath, {
+    discover: {
+      byLimit: {
+        '100': catalogScenario({ threads: firstHundred }).discover!.catalog!,
+        '200': catalogScenario({
+          threads: [
+            ...firstHundred,
+            thread('thread-100', '1784240000'),
+            thread('old-boundary', '1750000000'),
+          ],
+        }).discover!.catalog!,
+      },
+    },
+  });
+
+  const source = createSource(env);
+  const selection = source.selectCatalogResourcesByUpdatedSince(new Date('2026-07-10T00:00:00.000Z'));
+
+  assert.equal(selection.discoveredCount, 102);
+  assert.equal(selection.selected.length, 101);
+  assert.equal(selection.selected.some(resource => resource.resourceRef === 'thread-100'), true);
+  assert.equal(selection.excludedBeforeCutoff, 1);
+  assert.equal(selection.excludedInvalidUpdatedAt, 0);
+});
+
+test('fails closed when an expanding catalog reaches its cap without proving completeness', () => {
+  const env = setupEnv();
+  const threads = Array.from({ length: 200 }, (_, index) => (
+    thread(`thread-${String(index).padStart(3, '0')}`, '1784240000')
+  ));
+  writeScenario(env.scenarioPath, {
+    discover: {
+      byLimit: {
+        '100': catalogScenario({ threads: threads.slice(0, 100) }).discover!.catalog!,
+        '200': catalogScenario({ threads }).discover!.catalog!,
+      },
+    },
+  });
+
+  const source = new XurlExternalBackfillSource({
+    command: env.commandPath,
+    provider: PROVIDER,
+    sourceId: SOURCE_ID,
+    env: {
+      ...process.env,
+      XURL_SCENARIO_PATH: env.scenarioPath,
+      XURL_LOG_PATH: env.logPath,
+    },
+    maxActivationCatalog: 200,
+  });
+
+  assert.throws(
+    () => source.selectCatalogResourcesByUpdatedSince(new Date('2026-07-10T00:00:00.000Z')),
+    /cap without covering cutoff/i,
+  );
+});
+
 function setupEnv(): {
   readonly root: string;
   readonly commandPath: string;

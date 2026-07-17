@@ -383,6 +383,8 @@ async function handleBackfill(
     return;
   }
 
+  source.restrictToResourceRefs(resolvedOperation.resourceRefs);
+
   const ownerLock = acquireHeartbeatSchedulerOwnerLock({
     runtimeRoot: workingDirectory,
     command: process.argv.join(' '),
