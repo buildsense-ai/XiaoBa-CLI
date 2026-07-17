@@ -32,9 +32,11 @@ import {
   createSuccessorReviewJob,
   decideReviewCommitFence,
   markJobSuperseded,
+  MISSING_DECLARED_REGISTRY_REVISION,
   planSuccessorReviewJob,
   quantumIdentityEquals,
   resolveFenceRace,
+  resolveLiveDeclaredRegistryReadSet,
   reuseValidSucceededQuanta,
   validateReviewBasis,
   type LiveReviewWorld,
@@ -848,5 +850,187 @@ describe('Skill Evolution fence API compatibility (#109)', () => {
       evidenceBundleHash: 'tampered',
     });
     assert.equal(tampered.ok, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Missing/deleted declared handles + successor freezes live vector
+// ---------------------------------------------------------------------------
+
+describe('Declared Registry handle deletion is stale (#109)', () => {
+  test('resolveLiveDeclaredRegistryReadSet never falls back to frozen revision', () => {
+    const declared = [
+      { handle: 'cap_target', revision: 3 },
+      { handle: 'cap_dep', revision: 1 },
+    ];
+    const live = resolveLiveDeclaredRegistryReadSet(declared, {
+      cap_target: { handle: 'cap_target', revision: 3 },
+      // cap_dep deleted/missing
+    });
+    assert.deepEqual(live, [
+      { handle: 'cap_target', revision: 3 },
+      { handle: 'cap_dep', revision: MISSING_DECLARED_REGISTRY_REVISION },
+    ]);
+    assert.notEqual(live[1]!.revision, declared[1]!.revision);
+  });
+
+  test('missing/deleted declared handle compares stale (never match via frozen fallback)', () => {
+    const basis = makeBasis({
+      registryReadSet: ['cap_target@3', 'cap_dep@1'],
+    });
+    // Live world fingerprints the missing handle with the sentinel revision.
+    const live = fixedWorld({
+      registryReadSet: [`cap_target@3`, `cap_dep@${MISSING_DECLARED_REGISTRY_REVISION}`],
+    });
+    const comparison = compareReviewBasis(basis, live);
+    assert.equal(comparison.status, 'stale');
+    if (comparison.status === 'stale') {
+      assert.ok(
+        comparison.changed.includes('registry')
+        || comparison.changed.includes('registry_read_set'),
+      );
+    }
+
+    const decision = decideReviewCommitFence({ basis, live });
+    assert.equal(decision.kind, 'stale_before_fence');
+    assert.equal(decision.mayCommit, false);
+    assert.equal(decision.shouldCreateSuccessor, true);
+  });
+
+  test('unrelated Registry deletion outside declared read set is ignored', () => {
+    const basis = makeBasis({ registryReadSet: ['cap_target@3'] });
+    const live = fixedWorld({
+      registryReadSet: ['cap_target@3'],
+      unrelatedRegistryFingerprints: ['cap_noise@0'],
+    });
+    const decision = decideReviewCommitFence({ basis, live });
+    assert.equal(decision.kind, 'unrelated_change');
+    assert.equal(decision.mayCommit, true);
+  });
+});
+
+describe('Successor freezes live declared dependency vector (#109)', () => {
+  test('createSuccessorReviewJob freezes the live registry read set, not the stale one', () => {
+    const bundle = validBundle('fence-live-successor');
+    const prior = createEvidenceReviewJob({
+      bundle,
+      candidate: candidateFrom(bundle),
+      workClass: 'live_learning',
+      registryReadSet: [{ handle: 'cap_a', revision: 1 }],
+      jobId: 'job-stale-vector',
+    });
+    assert.deepEqual(prior.basis.registryReadSet, [{ handle: 'cap_a', revision: 1 }]);
+
+    const liveRegistryReadSet = [{ handle: 'cap_a', revision: 4 }];
+    const successor = createSuccessorReviewJob({
+      staleJob: prior,
+      liveBundle: bundle,
+      candidate: candidateFrom(bundle),
+      registryReadSet: liveRegistryReadSet,
+    });
+
+    assert.deepEqual(successor.basis.registryReadSet, [{ handle: 'cap_a', revision: 4 }]);
+    assert.notDeepEqual(successor.basis.registryReadSet, prior.basis.registryReadSet);
+    assert.ok(
+      successor.basis.registryReadSetFingerprints.includes('cap_a@4'),
+      'live fingerprint must be frozen on the successor basis',
+    );
+  });
+
+  test('job creation freezes referenced skills, target, policy, prompt, and declared registry', () => {
+    const bundle: EvidenceBundle = {
+      ...validBundle('fence-declared-all'),
+      referencedSkills: [
+        { name: 'alpha', contentFingerprint: 'a1' },
+        { name: 'beta', contentFingerprint: 'b1' },
+      ],
+      relatedCurrentSkills: [
+        {
+          handle: 'cap_target',
+          revision: 7,
+          routingName: 'target-route',
+          description: 'target',
+          guidanceHash: 'g1',
+        },
+      ],
+    };
+    const job = createEvidenceReviewJob({
+      bundle,
+      candidate: candidateFrom(bundle),
+      workClass: 'live_learning',
+      registryReadSet: [
+        { handle: 'cap_target', revision: 7 },
+        { handle: 'cap_dep', revision: 2 },
+      ],
+    });
+
+    assert.equal(job.basis.targetCapabilityHandle, 'cap_target');
+    assert.equal(job.basis.targetCapabilityRevision, 7);
+    assert.equal(job.basis.reviewPolicyVersion, EVIDENCE_REVIEW_POLICY_VERSION);
+    assert.equal(job.basis.promptVersion, EVIDENCE_REVIEW_PROMPT_VERSION);
+    assert.equal(job.basis.referencedSkillHashes.length, 2);
+    assert.deepEqual(
+      job.basis.registryReadSet.map(e => `${e.handle}@${e.revision}`).sort(),
+      ['cap_dep@2', 'cap_target@7'],
+    );
+
+    // Live comparison with all declared fields equal is a match.
+    const match = compareReviewBasis(job.basis, {
+      bundle,
+      registryReadSet: job.basis.registryReadSet,
+      reviewPolicyVersion: job.basis.reviewPolicyVersion,
+      promptVersion: job.basis.promptVersion,
+    });
+    assert.equal(match.status, 'match');
+
+    // Referenced-skill content change is stale.
+    const skillChanged: EvidenceBundle = {
+      ...bundle,
+      referencedSkills: [
+        { name: 'alpha', contentFingerprint: 'a1-CHANGED' },
+        { name: 'beta', contentFingerprint: 'b1' },
+      ],
+    };
+    const skillStale = compareReviewBasis(job.basis, {
+      bundle: skillChanged,
+      registryReadSet: job.basis.registryReadSet,
+    });
+    assert.equal(skillStale.status, 'stale');
+    if (skillStale.status === 'stale') {
+      assert.ok(skillStale.changed.includes('referenced_skills'));
+    }
+  });
+});
+
+describe('Before-commit race: stale blocks journal write (#109)', () => {
+  test('stale_before_fence decision forbids commit (mayCommit=false)', () => {
+    const basis = makeBasis();
+    const live = fixedWorld({
+      registryReadSet: ['cap_target@99', 'cap_dep@1'],
+    });
+    const before = resolveFenceRace({ basis, live, changeOrdering: 'before' });
+    assert.equal(before.kind, 'stale_before_fence');
+    assert.equal(before.mayCommit, false);
+    assert.equal(before.shouldCreateSuccessor, true);
+
+    // Explicit contract used by Skill Evolution precommit hook: only match/
+    // unrelated_change may proceed to applyCapabilityTransition.
+    assert.equal(
+      before.mayCommit && before.kind !== 'stale_before_fence',
+      false,
+    );
+  });
+
+  test('post_commit_reassessment schedules ordinary reassessment without superseding', () => {
+    const basis = makeBasis();
+    const live = fixedWorld({
+      evidenceBundleHash: 'evidence:after',
+      manifestHash: 'manifest:after',
+    });
+    const after = resolveFenceRace({ basis, live, changeOrdering: 'after' });
+    assert.equal(after.kind, 'post_commit_reassessment');
+    assert.equal(after.shouldScheduleReassessment, true);
+    assert.equal(after.shouldCreateSuccessor, false);
+    assert.equal(after.mayCommit, false);
   });
 });

@@ -290,12 +290,14 @@ export class EvidenceReviewEngine {
     bundle: EvidenceBundle;
     candidate: DistilledKnowledgeCandidate;
     workClass: ReviewWorkClass;
+    registryReadSet?: Parameters<typeof createEvidenceReviewJob>[0]['registryReadSet'];
     sharding?: Parameters<typeof createEvidenceReviewJob>[0]['sharding'];
   }): EvidenceReviewJob {
     const job = createEvidenceReviewJob({
       bundle: input.bundle,
       candidate: input.candidate,
       workClass: input.workClass,
+      registryReadSet: input.registryReadSet,
       now: this.options.now?.() ?? new Date(),
       sharding: input.sharding,
     });
@@ -309,6 +311,7 @@ export class EvidenceReviewEngine {
     bundle: EvidenceBundle;
     candidate: DistilledKnowledgeCandidate;
     workClass: ReviewWorkClass;
+    registryReadSet?: Parameters<typeof createEvidenceReviewJob>[0]['registryReadSet'];
     sharding?: Parameters<typeof createEvidenceReviewJob>[0]['sharding'];
   }): EvidenceReviewJob {
     const existing = this.findActiveJobForBundle(input.bundle.bundleId);

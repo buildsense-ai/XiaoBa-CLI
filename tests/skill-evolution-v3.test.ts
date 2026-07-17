@@ -642,9 +642,10 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
-  test('refreshes and re-reviews a candidate whose Capability read set becomes stale', async () => {
+  test('Review Commit Fence supersedes a concurrent replace whose declared read set became stale (#109)', async () => {
     const env = setup();
     try {
+      env.options.reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
       const runtime = new SkillEvolutionRuntime(env.options);
       const created = await runtime.reviewAndApply(fixtureBundle());
       const initial = created.record!;
@@ -674,10 +675,10 @@ describe('V3 verified semantic Current Skills', () => {
           decision: 'accept',
           transition: draft.envelope.decision,
           // An untrusted verifier may under-declare what it observed. Runtime
-          // must retain the full fixed-bundle read set for stale detection.
+          // retains the full fixed-bundle read set for fence comparison.
           registryReadSet: [],
           issues: [],
-          rationale: 'The replacement is supported by the refreshed Registry context.',
+          rationale: 'The replacement is supported by the fixed Evidence Bundle.',
         };
       };
       const currentContext = {
@@ -687,27 +688,34 @@ describe('V3 verified semantic Current Skills', () => {
         description: initial.description,
         guidanceHash: initial.guidanceHash,
       };
+      // Two concurrent public wakes freeze the same declared revision. Exactly one
+      // may commit; the loser is stale-before-fence and must not write journal/audit.
       const [first, second] = await Promise.all([
         runtime.reviewAndApply({ ...fixtureBundle(), bundleId: 'replace-a', relatedCurrentSkills: [currentContext] }),
         runtime.reviewAndApply({ ...fixtureBundle(), bundleId: 'replace-b', relatedCurrentSkills: [currentContext] }),
       ]);
 
-      assert.equal(first.transition, 'replace_current_skill');
-      assert.equal(second.transition, 'replace_current_skill');
-      assert.ok(observedReadSets.filter(revision => revision === initial.revision).length >= 2);
-      assert.ok(observedReadSets.includes(initial.revision + 1), 'the stale candidate must review against the refreshed revision');
+      const outcomes = [first, second];
+      const committed = outcomes.filter(r => r.transition === 'replace_current_skill' && r.transitionId);
+      const superseded = outcomes.filter(r =>
+        r.transitionId === undefined
+        && (r.queued === 'operational' || r.transition === 'defer' || r.verified === false),
+      );
+      assert.equal(committed.length, 1, 'exactly one concurrent replace may commit');
+      assert.equal(superseded.length, 1, 'the loser must supersede without journal write');
+      assert.ok(observedReadSets.filter(revision => revision === initial.revision).length >= 1);
+
       const registry = loadCurrentSkillRegistry(env.options.registryPath);
       assert.deepEqual(Object.keys(registry.capabilities), [initial.handle]);
-      assert.equal(registry.capabilities[initial.handle]!.revision, initial.revision + 2);
+      // One successful replace advances revision by exactly one from the frozen basis.
+      assert.equal(registry.capabilities[initial.handle]!.revision, initial.revision + 1);
       const audit = loadTransitionAudit(env.options.auditPath);
-      assert.equal(audit.length, 3, 'stale attempts must not append a Transition Audit');
+      assert.equal(audit.length, 2, 'stale supersession must not append a Transition Audit');
       assert.deepEqual(audit.map(entry => entry.transition), [
         'create_current_skill',
         'replace_current_skill',
-        'replace_current_skill',
       ]);
-      assert.equal(audit.filter(entry => entry.transition === 'replace_current_skill').filter(entry => entry.registryReadSet[0]!.revision === initial.revision).length, 1);
-      assert.equal(audit.filter(entry => entry.transition === 'replace_current_skill').filter(entry => entry.registryReadSet[0]!.revision === initial.revision + 1).length, 1);
+      assert.equal(fs.existsSync(env.options.journalPath), false);
     } finally {
       env.cleanup();
     }
@@ -2091,6 +2099,225 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities[first.handle]!.guidanceHash, first.guidanceHash);
       assert.equal(fs.readFileSync(path.join(path.dirname(first.skillFilePath), 'history', replacement.audit.resultingGuidanceHash!, 'SKILL.md'), 'utf8'), replacementContent);
       assert.equal(loadTransitionAudit(env.options.auditPath).filter(entry => entry.transition === 'restore_capability_revision').length, 1);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('beforeAcceptedCommit precommit hook aborts before journal write (#109)', async () => {
+    const env = setup();
+    try {
+      let fenceInvoked = false;
+      let journalExistedAtFence = false;
+      // Force the linear Author/Verifier path (no Evidence Review Job engine) so
+      // the options-level precommit hook is the sole fence under test.
+      const linearOptions: SkillEvolutionOptions = {
+        ...env.options,
+        workingDirectory: undefined as unknown as string,
+        reviewQueuePath: undefined,
+        beforeAcceptedCommit: () => {
+          fenceInvoked = true;
+          journalExistedAtFence = fs.existsSync(env.options.journalPath);
+          return {
+            transition: 'defer',
+            verified: false,
+            rounds: 1,
+            queued: 'operational',
+          };
+        },
+      };
+      // Bypass Evidence Review Job path by clearing workingDirectory after construct.
+      const runtime = new SkillEvolutionRuntime({
+        ...env.options,
+        beforeAcceptedCommit: linearOptions.beforeAcceptedCommit,
+      });
+      // Direct linear path for the precommit seam unit test.
+      const result = await (runtime as any).reviewAndApplyWithRetries(
+        fixtureBundle(),
+        [],
+        false,
+        undefined,
+        linearOptions.beforeAcceptedCommit,
+      );
+      assert.equal(fenceInvoked, true, 'precommit fence must run for accepted transitions');
+      assert.equal(journalExistedAtFence, false, 'fence must run before journal write');
+      assert.equal(result.result.transition, 'defer');
+      assert.equal(result.result.verified, false);
+      assert.equal(result.result.transitionId, undefined);
+      assert.equal(fs.existsSync(env.options.journalPath), false);
+      assert.equal(loadTransitionAudit(env.options.auditPath).length, 0);
+      assert.equal(
+        Object.keys(loadCurrentSkillRegistry(env.options.registryPath).capabilities).length,
+        0,
+      );
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('public wake: deleted declared Registry handle is stale and blocks journal (#109)', async () => {
+    const env = setup();
+    try {
+      env.options.reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      const createRuntime = new SkillEvolutionRuntime(env.options);
+      const created = await createRuntime.reviewAndApply(fixtureBundle());
+      const initial = created.record!;
+      assert.ok(initial);
+
+      env.options.authorFixture = ({ bundle }) => {
+        const target = bundle.relatedCurrentSkills[0]!;
+        return {
+          body: 'Replace guidance while the declared Registry handle remains valid.',
+          envelope: {
+            decision: 'replace_current_skill',
+            targetCapabilityHandle: target.handle,
+            routingName: target.routingName,
+            description: target.description,
+            evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+          },
+        };
+      };
+      env.options.verifierFixture = ({ draft }) => ({
+        decision: 'accept' as const,
+        transition: draft.envelope.decision,
+        issues: [],
+        rationale: 'Would accept if the declared Registry handle still existed.',
+      });
+
+      const replaceBundle = {
+        ...fixtureBundle(),
+        bundleId: 'replace-after-delete',
+        relatedCurrentSkills: [{
+          handle: initial.handle,
+          revision: initial.revision,
+          routingName: initial.routingName,
+          description: initial.description,
+          guidanceHash: initial.guidanceHash,
+        }],
+      };
+
+      // Delete the capability from the live Registry so the declared read set is stale.
+      const registry = loadCurrentSkillRegistry(env.options.registryPath);
+      delete registry.capabilities[initial.handle];
+      saveCurrentSkillRegistry(env.options.registryPath, registry);
+
+      const auditsBefore = loadTransitionAudit(env.options.auditPath).length;
+      const result = await new SkillEvolutionRuntime(env.options).reviewAndApply(replaceBundle);
+
+      // Stale-before-fence supersedes → operational defer, no new audit/journal.
+      assert.equal(result.verified, false);
+      assert.ok(
+        result.queued === 'operational' || result.transition === 'defer',
+        `expected operational supersession, got ${JSON.stringify({
+          transition: result.transition,
+          queued: result.queued,
+          transitionId: result.transitionId,
+        })}`,
+      );
+      assert.equal(result.transitionId, undefined);
+      assert.equal(fs.existsSync(env.options.journalPath), false);
+      assert.equal(
+        loadTransitionAudit(env.options.auditPath).length,
+        auditsBefore,
+        'deleted declared handle must not append Transition Audit',
+      );
+
+      // Successor job freezes the live (missing) declared vector, not the stale one.
+      const { loadEvidenceReviewJobStore, evidenceReviewJobStorePathForReviewQueue } = await import(
+        '../src/utils/evidence-review-job-store'
+      );
+      const store = loadEvidenceReviewJobStore(
+        evidenceReviewJobStorePathForReviewQueue(env.options.reviewQueuePath!),
+      );
+      const jobs = Object.values(store.jobs);
+      const superseded = jobs.find(j => j.disposition === 'superseded');
+      const successor = jobs.find(j => j.disposition === 'active' && j.parentJobId);
+      assert.ok(superseded, 'stale job must be superseded');
+      assert.ok(successor, 'successor job must be created');
+      assert.equal(successor!.parentJobId, superseded!.jobId);
+      // Live freeze: missing handle fingerprints as revision 0, not the frozen revision.
+      const liveEntry = successor!.basis.registryReadSet.find(e => e.handle === initial.handle);
+      assert.ok(liveEntry, 'successor must still declare the handle');
+      assert.equal(liveEntry!.revision, 0, 'missing/deleted handle freezes as sentinel revision 0');
+      assert.notEqual(
+        liveEntry!.revision,
+        superseded!.basis.registryReadSet.find(e => e.handle === initial.handle)?.revision,
+      );
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('public wake: relevant pre-fence Registry advance blocks journal write (#109)', async () => {
+    const env = setup();
+    try {
+      env.options.reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      const created = await new SkillEvolutionRuntime(env.options).reviewAndApply(fixtureBundle());
+      const initial = created.record!;
+      assert.ok(initial);
+
+      env.options.authorFixture = ({ bundle }) => {
+        const target = bundle.relatedCurrentSkills[0]!;
+        return {
+          body: 'Replace guidance under a frozen declared read set.',
+          envelope: {
+            decision: 'replace_current_skill',
+            targetCapabilityHandle: target.handle,
+            routingName: target.routingName,
+            description: target.description,
+            evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+          },
+        };
+      };
+      env.options.verifierFixture = ({ draft }) => ({
+        decision: 'accept' as const,
+        transition: draft.envelope.decision,
+        issues: [],
+        rationale: 'Accept under the frozen basis.',
+      });
+
+      // Bump revision in Registry so declared basis is stale before commit.
+      // Do this before the replace wake so early fence + precommit both see it.
+      const registry = loadCurrentSkillRegistry(env.options.registryPath);
+      const current = registry.capabilities[initial.handle]!;
+      registry.capabilities[initial.handle] = {
+        ...current,
+        revision: current.revision + 1,
+        updatedAt: new Date().toISOString(),
+      };
+      registry.catalogRevision += 1;
+      saveCurrentSkillRegistry(env.options.registryPath, registry);
+
+      const replaceBundle = {
+        ...fixtureBundle(),
+        bundleId: 'replace-race-before-fence',
+        relatedCurrentSkills: [{
+          handle: initial.handle,
+          revision: initial.revision, // frozen declared revision (stale vs live)
+          routingName: initial.routingName,
+          description: initial.description,
+          guidanceHash: initial.guidanceHash,
+        }],
+      };
+
+      const auditsBefore = loadTransitionAudit(env.options.auditPath).length;
+      const result = await new SkillEvolutionRuntime(env.options).reviewAndApply(replaceBundle);
+
+      assert.equal(result.verified, false);
+      assert.equal(result.transitionId, undefined);
+      assert.equal(fs.existsSync(env.options.journalPath), false);
+      assert.equal(
+        loadTransitionAudit(env.options.auditPath).length,
+        auditsBefore,
+        'stale-before-fence must not write Transition Audit',
+      );
+      assert.ok(
+        result.queued === 'operational' || result.transition === 'defer',
+        `expected operational supersession, got ${JSON.stringify({
+          transition: result.transition,
+          queued: result.queued,
+        })}`,
+      );
     } finally {
       env.cleanup();
     }

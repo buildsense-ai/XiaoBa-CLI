@@ -68,6 +68,9 @@ export function buildReviewBasis(input: {
   registryReadSet?: readonly CapabilityReadSetEntry[];
   reviewPolicyVersion?: string;
   promptVersion?: string;
+  /** Optional live target override (defaults to first relatedCurrentSkill). */
+  targetCapabilityHandle?: string;
+  targetCapabilityRevision?: number;
 }): ReviewBasis {
   const registryReadSet = [...(input.registryReadSet ?? [])]
     .map(entry => ({ handle: entry.handle, revision: entry.revision }))
@@ -79,9 +82,11 @@ export function buildReviewBasis(input: {
   const evidenceBundleHash = hashEvidenceBundle(input.bundle);
   const reviewPolicyVersion = input.reviewPolicyVersion ?? EVIDENCE_REVIEW_POLICY_VERSION;
   const promptVersion = input.promptVersion ?? EVIDENCE_REVIEW_PROMPT_VERSION;
-  const target = input.bundle.relatedCurrentSkills?.[0] as
+  const bundleTarget = input.bundle.relatedCurrentSkills?.[0] as
     | { handle?: string; revision?: number }
     | undefined;
+  const targetHandle = input.targetCapabilityHandle ?? bundleTarget?.handle;
+  const targetRevision = input.targetCapabilityRevision ?? bundleTarget?.revision;
 
   const graphBasis = buildGraphReviewBasis({
     manifestHash: input.manifestHash,
@@ -90,8 +95,8 @@ export function buildReviewBasis(input: {
     referencedSkillHashes,
     reviewPolicyVersion,
     promptVersion,
-    ...(typeof target?.handle === 'string' ? { targetCapabilityHandle: target.handle } : {}),
-    ...(typeof target?.revision === 'number' ? { targetCapabilityRevision: target.revision } : {}),
+    ...(typeof targetHandle === 'string' ? { targetCapabilityHandle: targetHandle } : {}),
+    ...(typeof targetRevision === 'number' ? { targetCapabilityRevision: targetRevision } : {}),
   });
 
   return {
@@ -117,6 +122,8 @@ export interface CreateEvidenceReviewJobInput {
   candidate: DistilledKnowledgeCandidate;
   workClass: ReviewWorkClass;
   registryReadSet?: readonly CapabilityReadSetEntry[];
+  reviewPolicyVersion?: string;
+  promptVersion?: string;
   parentJobId?: string;
   now?: Date;
   sharding?: ShardingOptions;
@@ -126,6 +133,9 @@ export interface CreateEvidenceReviewJobInput {
 /**
  * Create a durable dual-lane job for a frozen Evidence Bundle.
  * Topology comes from pure graph-core; shards from the #106 package.
+ * Freezes every declared relevant dependency available from the bundle:
+ * Registry read set, referenced-skill hashes, target capability state, and
+ * policy/prompt versions.
  */
 export function createEvidenceReviewJob(input: CreateEvidenceReviewJobInput): EvidenceReviewJob {
   const now = input.now ?? new Date();
@@ -135,6 +145,8 @@ export function createEvidenceReviewJob(input: CreateEvidenceReviewJobInput): Ev
     bundle: input.bundle,
     manifestHash: manifest.manifestHash,
     registryReadSet: input.registryReadSet,
+    reviewPolicyVersion: input.reviewPolicyVersion,
+    promptVersion: input.promptVersion,
   });
   const jobId = input.jobId
     ?? `job:${basis.basisHash.slice(0, 20)}:${input.bundle.bundleId.slice(0, 24)}`;

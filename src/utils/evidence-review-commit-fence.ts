@@ -65,6 +65,13 @@ export type ReviewBasisField =
   | 'prompt'
   | 'target';
 
+/**
+ * Sentinel revision for a declared Registry handle that is missing/deleted in
+ * the live world. Must never fall back to the frozen Review Basis revision —
+ * missing is always a relevant change.
+ */
+export const MISSING_DECLARED_REGISTRY_REVISION = 0;
+
 export type FenceDecisionKind =
   | 'match'
   | 'stale_before_fence'
@@ -104,6 +111,35 @@ export interface SkillEvolutionLiveWorld {
   promptVersion?: string;
   /** Optional override; defaults to re-derived from the job basis / live recompute. */
   manifestHash?: string;
+  /** Optional live target override when Registry advanced independently of the frozen bundle. */
+  targetCapabilityHandle?: string;
+  targetCapabilityRevision?: number;
+}
+
+/**
+ * Resolve the live declared Registry read set for fence comparison.
+ * Missing/deleted handles fingerprint as {@link MISSING_DECLARED_REGISTRY_REVISION}
+ * and never fall back to the frozen Review Basis entry.
+ */
+export function resolveLiveDeclaredRegistryReadSet(
+  declared: readonly CapabilityReadSetEntry[],
+  liveLookup:
+    | Readonly<Record<string, { handle: string; revision: number } | undefined>>
+    | ((handle: string) => { handle: string; revision: number } | undefined),
+): CapabilityReadSetEntry[] {
+  const lookup = typeof liveLookup === 'function'
+    ? liveLookup
+    : (handle: string) => liveLookup[handle];
+  return declared.map(entry => {
+    const live = lookup(entry.handle);
+    if (live && typeof live.revision === 'number') {
+      return { handle: live.handle, revision: live.revision };
+    }
+    return {
+      handle: entry.handle,
+      revision: MISSING_DECLARED_REGISTRY_REVISION,
+    };
+  });
 }
 
 export type LiveReviewInput = LiveReviewWorld | SkillEvolutionLiveWorld;
@@ -386,6 +422,10 @@ function resolveLiveWorld(
   live: LiveReviewInput,
 ): LiveReviewWorld {
   if (isBundleLive(live)) {
+    // Never silently substitute the frozen read set for a missing live set when
+    // the caller omitted it — fall back only means "no declared handles".
+    // Callers that need live Registry state must pass registryReadSet explicitly
+    // (typically via resolveLiveDeclaredRegistryReadSet).
     const registryReadSet = live.registryReadSet ?? basis.registryReadSet;
     const rebuilt = buildReviewBasis({
       bundle: live.bundle,
@@ -400,6 +440,12 @@ function resolveLiveWorld(
       reviewPolicyVersion: live.reviewPolicyVersion ?? basis.reviewPolicyVersion,
       promptVersion: live.promptVersion ?? basis.promptVersion,
     });
+    // Target may be overridden from live Registry when the frozen bundle still
+    // carries a stale relatedCurrentSkills projection.
+    const targetCapabilityHandle = live.targetCapabilityHandle
+      ?? rebuilt.targetCapabilityHandle;
+    const targetCapabilityRevision = live.targetCapabilityRevision
+      ?? rebuilt.targetCapabilityRevision;
     return {
       evidenceBundleHash: rebuilt.evidenceBundleHash,
       manifestHash: rebuilt.manifestHash,
@@ -407,8 +453,8 @@ function resolveLiveWorld(
       referencedSkillHashes: rebuilt.referencedSkillHashes,
       reviewPolicyVersion: rebuilt.reviewPolicyVersion,
       promptVersion: rebuilt.promptVersion,
-      targetCapabilityHandle: rebuilt.targetCapabilityHandle,
-      targetCapabilityRevision: rebuilt.targetCapabilityRevision,
+      targetCapabilityHandle,
+      targetCapabilityRevision,
     };
   }
   return live;

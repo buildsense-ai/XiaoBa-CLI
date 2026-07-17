@@ -53,10 +53,15 @@ import type {
   EvidenceReviewJob,
 } from './evidence-review-types';
 import {
-  compareReviewBasis,
   createSuccessorReviewJob,
+  decideReviewCommitFence,
   markJobSuperseded,
+  resolveLiveDeclaredRegistryReadSet,
 } from './evidence-review-commit-fence';
+import {
+  EVIDENCE_REVIEW_POLICY_VERSION,
+  EVIDENCE_REVIEW_PROMPT_VERSION,
+} from './evidence-review-types';
 import { upsertEvidenceReviewJob } from './evidence-review-job-store';
 
 /**
@@ -421,6 +426,21 @@ export interface SkillEvolutionPaths {
   reviewQueuePath?: string;
 }
 
+/**
+ * Optional Review Commit Fence precommit hook (#109).
+ * Invoked inside the commit boundary immediately before applyCapabilityTransition
+ * / journal / audit write. Returning a SkillEvolutionResult aborts the commit
+ * without writing the journal.
+ */
+export type BeforeAcceptedCommitHook = (input: {
+  bundle: EvidenceBundle;
+  draft: SkillDraft;
+  verifier: SkillVerifierResult;
+  transition: CapabilityTransitionKind;
+  round: number;
+  branchTranscriptPaths: readonly string[];
+}) => SkillEvolutionResult | undefined | Promise<SkillEvolutionResult | undefined>;
+
 export interface SkillEvolutionOptions extends SkillEvolutionPaths {
   workingDirectory: string;
   aiService?: AIService;
@@ -446,6 +466,12 @@ export interface SkillEvolutionOptions extends SkillEvolutionPaths {
   readerFixture?: (input: ReaderLaneInput) => ReaderLaneResult | Promise<ReaderLaneResult>;
   authorFactory?: (options: SkillAuthorBranchOptions) => SkillAuthorBranchSession;
   verifierFactory?: (options: SkillVerifierBranchOptions) => SkillVerifierBranchSession;
+  /**
+   * Optional precommit hook invoked immediately before applyCapabilityTransition
+   * for accepted transitions. Legacy callers omit this; Evidence Review Jobs supply
+   * a Review Commit Fence that blocks journal write on stale declared dependencies.
+   */
+  beforeAcceptedCommit?: BeforeAcceptedCommitHook;
 }
 
 export interface SkillEvolutionEffectiveConfig {
@@ -706,13 +732,32 @@ export class SkillEvolutionRuntime {
     const engine = this.getEvidenceReviewEngine();
     const candidate = this.extractCandidateFromBundle(frozen);
     const workClass = inferReviewWorkClass(frozen);
-    const job = engine.ensureJob({ bundle: frozen, candidate, workClass });
+    // Freeze every declared relevant dependency available from the bundle
+    // (relatedCurrentSkills) into the Review Basis. Unrelated Registry handles
+    // never enter the declared read set.
+    const declaredRegistryReadSet = declaredRelevantRegistryReadSetFromBundle(frozen);
+    const job = engine.ensureJob({
+      bundle: frozen,
+      candidate,
+      workClass,
+      registryReadSet: declaredRegistryReadSet,
+    });
     const wakeId = `wake:${randomUUID().replace(/-/g, '').slice(0, 12)}`;
 
     // Pre-promotion Review Commit Fence: stale basis → successor, no promotion.
-    const preFence = this.compareLiveReviewBasis(job, frozen);
-    if (preFence.status === 'stale') {
-      return this.supersedeStaleReviewJob(engine, job, frozen, candidate, preFence.reason);
+    const preFence = this.decideLiveReviewFence(job, frozen);
+    if (
+      preFence.decision.kind === 'stale_before_fence'
+      || preFence.decision.kind === 'corrupted_basis'
+    ) {
+      return this.supersedeStaleReviewJob(
+        engine,
+        job,
+        frozen,
+        candidate,
+        preFence.decision.reason,
+        preFence.liveRegistryReadSet,
+      );
     }
 
     // Preserve Branch Transcript Contract deadlines/abort across quanta.
@@ -904,32 +949,23 @@ export class SkillEvolutionRuntime {
     return paths;
   }
 
-  private compareLiveReviewBasis(
+  private decideLiveReviewFence(
     job: EvidenceReviewJob,
     bundle: EvidenceBundle,
-  ): ReturnType<typeof compareReviewBasis> {
-    const liveRegistryReadSet = job.basis.registryReadSet.map(entry => {
-      const live = this.getRegistry().capabilities[entry.handle];
-      return live
-        ? { handle: live.handle, revision: live.revision }
-        : entry;
-    });
-    return compareReviewBasis(job.basis, {
-      bundle,
-      registryReadSet: liveRegistryReadSet,
-      reviewPolicyVersion: job.basis.reviewPolicyVersion,
-      promptVersion: job.basis.promptVersion,
-    });
-  }
-
-  private collectJobTranscriptPaths(job: EvidenceReviewJob): string[] {
-    const paths: string[] = [];
-    for (const quantum of Object.values(job.quanta)) {
-      for (const p of quantum.transcriptPaths ?? []) {
-        if (p && !paths.includes(p)) paths.push(p);
-      }
-    }
-    return paths;
+    commitAlreadyApplied = false,
+  ): {
+    decision: ReturnType<typeof decideReviewCommitFence>;
+    liveRegistryReadSet: CapabilityReadSetEntry[];
+  } {
+    const live = this.buildLiveDeclaredDependencySnapshot(job.basis, bundle);
+    return {
+      decision: decideReviewCommitFence({
+        basis: job.basis,
+        live: live.liveWorld,
+        commitAlreadyApplied,
+      }),
+      liveRegistryReadSet: live.liveRegistryReadSet,
+    };
   }
 
   private async runReaderLaneCallback(input: ReaderLaneInput): Promise<ReaderLaneResult> {
@@ -1078,19 +1114,44 @@ export class SkillEvolutionRuntime {
     job: EvidenceReviewJob;
     branchTranscriptPaths: string[];
   }): Promise<SkillEvolutionResult> {
-    // Fence immediately before treating accept as committed history.
-    const fence = this.compareLiveReviewBasis(input.job, input.bundle);
-    if (fence.status === 'stale') {
-      const engine = this.getEvidenceReviewEngine();
-      const candidate = this.extractCandidateFromBundle(input.bundle);
+    const engine = this.getEvidenceReviewEngine();
+    const candidate = this.extractCandidateFromBundle(input.bundle);
+
+    // Early fence avoids spending commit work on an already-stale basis. The
+    // authoritative check is repeated by beforeAcceptedCommit below.
+    const earlyFence = this.decideLiveReviewFence(input.job, input.bundle);
+    if (
+      earlyFence.decision.kind === 'stale_before_fence'
+      || earlyFence.decision.kind === 'corrupted_basis'
+    ) {
       return this.supersedeStaleReviewJob(
         engine,
         input.job,
         input.bundle,
         candidate,
-        fence.reason,
+        earlyFence.decision.reason,
+        earlyFence.liveRegistryReadSet,
       );
     }
+
+    const beforeAcceptedCommit: BeforeAcceptedCommitHook = () => {
+      const liveJob = engine.loadStore().jobs[input.job.jobId] ?? input.job;
+      const fence = this.decideLiveReviewFence(liveJob, input.bundle);
+      if (
+        fence.decision.kind === 'stale_before_fence'
+        || fence.decision.kind === 'corrupted_basis'
+      ) {
+        return this.supersedeStaleReviewJob(
+          engine,
+          liveJob,
+          input.bundle,
+          candidate,
+          fence.decision.reason,
+          fence.liveRegistryReadSet,
+        );
+      }
+      return undefined;
+    };
 
     const reviewBundle = input.job.authorDossier && input.job.verifierDossier
       ? attachVerifierReviewContext(input.bundle, {
@@ -1141,13 +1202,24 @@ export class SkillEvolutionRuntime {
     const branchTranscriptPaths = [...input.branchTranscriptPaths];
     for (let retry = 0; retry <= MAX_OPTIMISTIC_COMMIT_RETRIES; retry++) {
       try {
-        return this.applyReviewedTransition(
+        const result = await this.applyReviewedTransition(
           commitBundle,
           draft,
           verifier,
           retry + 1,
           branchTranscriptPaths,
+          beforeAcceptedCommit,
         );
+        if (result.transitionId || result.audit) {
+          this.schedulePostCommitReassessmentIfNeeded(
+            engine,
+            input.job.jobId,
+            input.bundle,
+            candidate,
+            result,
+          );
+        }
+        return result;
       } catch (error) {
         if (error instanceof ReviewCommitConflictError) {
           if (retry >= MAX_OPTIMISTIC_COMMIT_RETRIES) throw error;
@@ -1193,18 +1265,145 @@ export class SkillEvolutionRuntime {
     throw new Error('Skill Evolution exceeded optimistic commit retries.');
   }
 
+  /**
+   * Build the live declared dependency vector for Review Commit Fence comparison.
+   * Includes every declared relevant dependency available from the bundle/Registry:
+   * declared Registry read set (missing/deleted → sentinel revision), referenced-skill
+   * hashes (via live bundle), target capability state, and live policy/prompt versions.
+   * Unrelated Registry handles remain ignored.
+   */
+  private buildLiveDeclaredDependencySnapshot(
+    basis: import('./evidence-review-types').ReviewBasis,
+    bundle: EvidenceBundle,
+  ): {
+    liveRegistryReadSet: CapabilityReadSetEntry[];
+    liveWorld: import('./evidence-review-commit-fence').SkillEvolutionLiveWorld;
+  } {
+    const registry = this.getRegistry();
+    const liveRegistryReadSet = resolveLiveDeclaredRegistryReadSet(
+      basis.registryReadSet,
+      handle => registry.capabilities[handle],
+    );
+    const targetHandle = basis.targetCapabilityHandle;
+    const liveTarget = targetHandle ? registry.capabilities[targetHandle] : undefined;
+    // Policy/prompt live versions are the Evidence Review versions (same source
+    // buildReviewBasis uses). Skill Evolution reviewerVersion is a separate
+    // Author/Verifier control-plane version and must not pollute the fence vector.
+    return {
+      liveRegistryReadSet,
+      liveWorld: {
+        bundle,
+        registryReadSet: liveRegistryReadSet,
+        reviewPolicyVersion: EVIDENCE_REVIEW_POLICY_VERSION,
+        promptVersion: EVIDENCE_REVIEW_PROMPT_VERSION,
+        ...(targetHandle
+          ? {
+              targetCapabilityHandle: targetHandle,
+              // Missing/deleted target is undefined → differs from frozen revision.
+              targetCapabilityRevision: liveTarget?.revision,
+            }
+          : {}),
+      },
+    };
+  }
+
+  /**
+   * After a completed atomic commit, if the live declared world has already
+   * drifted relative to the *post-commit expected* basis (own write folded in),
+   * schedule ordinary reassessment rather than silently ignoring the change.
+   */
+  private schedulePostCommitReassessmentIfNeeded(
+    engine: EvidenceReviewEngine,
+    jobId: string,
+    liveBundle: EvidenceBundle,
+    candidate: DistilledKnowledgeCandidate,
+    commitResult: SkillEvolutionResult,
+  ): void {
+    const state = engine.loadStore();
+    const completed = state.jobs[jobId];
+    if (!completed) return;
+
+    // Fold our own transition write into the expected post-commit basis so the
+    // commit itself is not misclassified as external post-fence drift.
+    const postCommitBasis = this.foldCommittedWriteIntoBasis(completed.basis, commitResult);
+    const liveSnap = this.buildLiveDeclaredDependencySnapshot(postCommitBasis, liveBundle);
+    const fence = decideReviewCommitFence({
+      basis: postCommitBasis,
+      live: liveSnap.liveWorld,
+      commitAlreadyApplied: true,
+    });
+    if (!fence.shouldScheduleReassessment) return;
+
+    // Prefer engine create path so reassessment freezes the live declared vector.
+    const reassessment = createSuccessorReviewJob({
+      staleJob: {
+        ...completed,
+        workClass: 'semantic_reassessment',
+      },
+      liveBundle,
+      candidate,
+      registryReadSet: liveSnap.liveRegistryReadSet,
+    });
+    reassessment.workClass = 'semantic_reassessment';
+    reassessment.parentJobId = completed.jobId;
+    upsertEvidenceReviewJob(state, reassessment);
+    // Annotate completed job with successor link for audit without superseding
+    // the already-committed disposition.
+    if (!completed.successorJobId) {
+      completed.successorJobId = reassessment.jobId;
+      completed.updatedAt = new Date().toISOString();
+      state.jobs[completed.jobId] = completed;
+    }
+    engine.saveStore(state);
+  }
+
+  /** Apply the just-committed Registry write onto a Review Basis for post-fence checks. */
+  private foldCommittedWriteIntoBasis(
+    basis: import('./evidence-review-types').ReviewBasis,
+    commitResult: SkillEvolutionResult,
+  ): import('./evidence-review-types').ReviewBasis {
+    const record = commitResult.record;
+    if (!record) return basis;
+    const registryReadSet = basis.registryReadSet.map(entry =>
+      entry.handle === record.handle
+        ? { handle: record.handle, revision: record.revision }
+        : entry,
+    );
+    // Create may introduce a brand-new handle not present on the pre-commit basis;
+    // post-commit expected basis only rewrites handles already declared.
+    const fingerprints = registryReadSet
+      .map(entry => `${entry.handle}@${entry.revision}`)
+      .sort((a, b) => a.localeCompare(b, 'en'));
+    return {
+      ...basis,
+      registryReadSet,
+      registryReadSetFingerprints: fingerprints,
+      ...(basis.targetCapabilityHandle === record.handle
+        ? { targetCapabilityRevision: record.revision }
+        : {}),
+    };
+  }
+
   private supersedeStaleReviewJob(
     engine: EvidenceReviewEngine,
     staleJob: EvidenceReviewJob,
     liveBundle: EvidenceBundle,
     candidate: DistilledKnowledgeCandidate,
     reason: string,
+    liveRegistryReadSet?: readonly CapabilityReadSetEntry[],
   ): SkillEvolutionResult {
+    // Successors freeze the *current live* declared dependency vector, never the
+    // stale job's frozen read set alone.
+    const resolvedLiveReadSet = liveRegistryReadSet
+      ?? resolveLiveDeclaredRegistryReadSet(
+        staleJob.basis.registryReadSet,
+        handle => this.getRegistry().capabilities[handle],
+      );
     const successor = createSuccessorReviewJob({
       staleJob,
       liveBundle,
       candidate,
-      registryReadSet: staleJob.basis.registryReadSet,
+      registryReadSet: resolvedLiveReadSet,
     });
     const superseded = markJobSuperseded(staleJob, successor.jobId);
     superseded.terminalReason = reason;
@@ -1213,6 +1412,7 @@ export class SkillEvolutionRuntime {
     upsertEvidenceReviewJob(state, successor);
     engine.saveStore(state);
     // Stale basis is not semantic rejection — queue operational follow-up for successor.
+    // Do not also enqueue semantic defer for the same supersession.
     if (this.options.reviewQueuePath) {
       return this.enqueueOperationalFailureAndReturnResult(
         liveBundle,
@@ -1238,6 +1438,7 @@ export class SkillEvolutionRuntime {
     sharedBranchTranscriptPaths?: string[],
     persistQueue = true,
     reviewSignal?: AbortSignal,
+    beforeAcceptedCommit?: BeforeAcceptedCommitHook,
   ): Promise<{ result: SkillEvolutionResult; branchTranscriptPaths: string[]; bundle: EvidenceBundle }> {
     const branchTranscriptPaths = sharedBranchTranscriptPaths ?? [];
     let reviewBundle = freezeClone(bundle);
@@ -1277,6 +1478,10 @@ export class SkillEvolutionRuntime {
       externalSignal.addEventListener('abort', onAbort, { once: true });
       removeExternalAbortListeners.push(() => externalSignal.removeEventListener('abort', onAbort));
     }
+    // Prefer the explicit precommit hook (Evidence Review Job fence) over any
+    // options-level hook so legacy callers remain optional and job-owned fences
+    // always win inside the commit boundary.
+    const commitFence = beforeAcceptedCommit ?? this.options.beforeAcceptedCommit;
     try {
       for (let retry = 0; retry <= MAX_OPTIMISTIC_COMMIT_RETRIES; retry++) {
         try {
@@ -1285,8 +1490,16 @@ export class SkillEvolutionRuntime {
             branchTranscriptPaths,
             attemptController.signal,
             reviewAttempt,
+            commitFence,
           );
-          if (persistQueue && result.transition === 'defer' && this.options.reviewQueuePath) {
+          // Fence supersession already queues operational follow-up. Do not also
+          // enqueue semantic defer for the same aborted commit.
+          if (
+            persistQueue
+            && result.transition === 'defer'
+            && result.queued !== 'operational'
+            && this.options.reviewQueuePath
+          ) {
             const queue = loadReviewQueueState(this.options.reviewQueuePath);
             const candidate = this.extractCandidateFromBundle(reviewBundle);
             const relevantReadSet = result.verifier
@@ -1637,6 +1850,7 @@ export class SkillEvolutionRuntime {
     branchTranscriptPaths: string[],
     attemptSignal?: AbortSignal,
     reviewAttempt?: BranchReviewAttemptMetadata,
+    beforeAcceptedCommit?: BeforeAcceptedCommitHook,
   ): Promise<SkillEvolutionResult> {
     validateEvidenceBundle(frozenBundle);
     let previousDraft: SkillDraft | undefined;
@@ -1683,7 +1897,14 @@ export class SkillEvolutionRuntime {
           issues: draftIssues,
           rationale: `Runtime ${draftIssues.some(issue => issue.severity === 'danger') ? 'rejected' : 'deferred'} the author envelope before persistence: ${draftIssues.map(issue => issue.message).join(' ')}`,
         };
-        return this.applyReviewedTransition(frozenBundle, draft, result, round, branchTranscriptPaths);
+        return this.applyReviewedTransition(
+          frozenBundle,
+          draft,
+          result,
+          round,
+          branchTranscriptPaths,
+          beforeAcceptedCommit,
+        );
       }
 
       const verifier = this.createVerifierBranch(
@@ -1717,9 +1938,17 @@ export class SkillEvolutionRuntime {
           { ...verification, decision: dangerous ? 'reject' : 'defer' },
           round,
           branchTranscriptPaths,
+          beforeAcceptedCommit,
         );
       }
-      return this.applyReviewedTransition(frozenBundle, draft, verification, round, branchTranscriptPaths);
+      return this.applyReviewedTransition(
+        frozenBundle,
+        draft,
+        verification,
+        round,
+        branchTranscriptPaths,
+        beforeAcceptedCommit,
+      );
     }
 
     throw new Error('Skill Evolution exhausted its bounded author-verifier loop.');
@@ -2093,13 +2322,14 @@ export class SkillEvolutionRuntime {
     return new AIService({ ...service.getConfig(), model: model.trim() });
   }
 
-  private applyReviewedTransition(
+  private async applyReviewedTransition(
     bundle: EvidenceBundle,
     draft: SkillDraft,
     verifier: SkillVerifierResult,
     round: number,
     branchTranscriptPaths: string[],
-  ): SkillEvolutionResult {
+    beforeAcceptedCommit?: BeforeAcceptedCommitHook,
+  ): Promise<SkillEvolutionResult> {
     if (
       verifier.decision === 'accept'
       && verifier.transition
@@ -2141,6 +2371,27 @@ export class SkillEvolutionRuntime {
     }
     assertAuditPathWritableAndReadable(this.options.auditPath);
     try {
+      // Review Commit Fence: run inside the commit boundary immediately before
+      // applyCapabilityTransition / journal / audit write, after the verifier
+      // transition is known accepted. Returning a result aborts without journal.
+      if (
+        verifier.decision === 'accept'
+        && transition !== 'defer'
+        && transition !== 'reject_candidate'
+        && beforeAcceptedCommit
+      ) {
+        const fenceAbort = await beforeAcceptedCommit({
+          bundle,
+          draft,
+          verifier,
+          transition,
+          round,
+          branchTranscriptPaths,
+        });
+        if (fenceAbort) {
+          return fenceAbort;
+        }
+      }
       applied = applyCapabilityTransition({
         ...this.options,
         reviewerVersion: this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
@@ -3292,6 +3543,22 @@ function validateRegistryState(input: Record<string, any>): void {
       throw new CurrentSkillRegistryValidationError(`redirect for "${retiredRoute}" forms a redirect cycle or chain`);
     }
   }
+}
+
+/**
+ * Declared relevant Registry dependencies available from the frozen Evidence
+ * Bundle. Job creation freezes this vector into the Review Basis. Unrelated
+ * Registry handles that are not on the bundle never appear here.
+ */
+function declaredRelevantRegistryReadSetFromBundle(
+  bundle: EvidenceBundle,
+): CapabilityReadSetEntry[] {
+  return normalizeRegistryReadSet(
+    (bundle.relatedCurrentSkills ?? []).map(skill => ({
+      handle: skill.handle,
+      revision: skill.revision,
+    })),
+  );
 }
 
 function declaredRegistryReadSet(
