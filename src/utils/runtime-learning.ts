@@ -2496,15 +2496,21 @@ export class RuntimeLearning {
 
     // Fair Review Quantum Rotation across durable jobs before admitting new
     // episode/queue candidates (#108). Completes already-admitted coverage first.
+    // Capture fair-advance outcomes so migrated operational retries that finish
+    // under job ownership still feed wake metrics and reassessment reconciliation.
+    let fairJobIds: string[] = [];
     try {
       const engine = this.skillEvolution.getEvidenceReviewEngine();
-      if (!this.shutdownDrainRequested) await advanceJobsFairly(engine, `wake-fair:${this.clock().getTime()}`, {
-        maxClaims: Math.max(0, Math.floor(this.config.skillEvolutionReviewMaxCandidates)),
-        maxClaimsPerJob: 1,
-        signal: wakeSignal,
-        now: this.clock(),
-        shouldStopClaiming: () => this.shutdownDrainRequested,
-      });
+      if (!this.shutdownDrainRequested) {
+        const fair = await advanceJobsFairly(engine, `wake-fair:${this.clock().getTime()}`, {
+          maxClaims: Math.max(0, Math.floor(this.config.skillEvolutionReviewMaxCandidates)),
+          maxClaimsPerJob: 1,
+          signal: wakeSignal,
+          now: this.clock(),
+          shouldStopClaiming: () => this.shutdownDrainRequested,
+        });
+        fairJobIds = fair.jobIds;
+      }
     } catch {
       // Job store optional during early construction / V3-disabled paths.
     }
@@ -2683,11 +2689,37 @@ export class RuntimeLearning {
     let reviewFailureCount = episodeOperationalFailures;
     try {
       if (!this.shutdownDrainRequested && !wakeSignal?.aborted) {
+        // Skip retry bundles already terminalized by fair job advance so dual
+        // ownership cannot re-run the same operational recovery in one wake.
+        const fairOutcomes = this.skillEvolution.collectMigratedJobReviewOutcomes(fairJobIds);
+        const fairTerminalBundleIds = new Set(Object.keys(fairOutcomes.queueOutcomes ?? {}));
+        const remainingRetryBundleIds = admittedRetryBundleIds.filter(
+          bundleId => !fairTerminalBundleIds.has(bundleId),
+        );
         queueResult = await this.skillEvolution.reviewDueQueueEntries({
           signal: wakeSignal,
-          bundleIds: admittedRetryBundleIds,
+          bundleIds: remainingRetryBundleIds,
           now: this.clock(),
         });
+        // Merge fair-advance terminal outcomes after linear review so metrics
+        // and reassessment manifests see both ownership paths.
+        queueResult = {
+          reviewed: queueResult.reviewed + fairOutcomes.reviewed,
+          deferredReviewed: queueResult.deferredReviewed,
+          operationalReviewed: queueResult.operationalReviewed + fairOutcomes.operationalReviewed,
+          operationalRetried: queueResult.operationalRetried + fairOutcomes.operationalRetried,
+          deferredRetried: queueResult.deferredRetried,
+          transitionsByKind: { ...queueResult.transitionsByKind },
+          queueOutcomes: {
+            ...(fairOutcomes.queueOutcomes ?? {}),
+            ...(queueResult.queueOutcomes ?? {}),
+          },
+        };
+        for (const [transition, count] of Object.entries(fairOutcomes.transitionsByKind)) {
+          if (!count) continue;
+          const key = transition as string;
+          queueResult.transitionsByKind[key] = (queueResult.transitionsByKind[key] ?? 0) + count;
+        }
         this.reconcileReassessmentQueueOutcomes(queueResult.queueOutcomes);
       }
     } catch (error) {

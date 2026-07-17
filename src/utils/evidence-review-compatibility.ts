@@ -763,6 +763,39 @@ function findExistingMigratedJob(
 }
 
 /**
+ * When an operational retry is transferred onto an already-active job for the
+ * same bundle (ensureJob path), reclassify that job as operational_recovery and
+ * preserve nextDueAt / migration domain metadata. Without this, materialization
+ * releases the legacy queue entry and the Runtime retry class loses the work.
+ */
+function adoptOperationalRetryOntoJob(
+  job: EvidenceReviewJob,
+  seed: EvidenceReviewMigrationSeed,
+  now: Date,
+): EvidenceReviewJob {
+  if (seed.sourceKind !== 'operational_retry') return job;
+  const meta = migrationMetaFromSeed(seed);
+  const nextDueAt = seed.nextRetryAt;
+  const needsWorkClass = job.workClass !== 'operational_recovery';
+  const needsDue = nextDueAt !== undefined && job.nextDueAt !== nextDueAt;
+  const domain = isRecord(job.domain) ? job.domain : {};
+  const needsMeta = domain.migrationMarker !== EVIDENCE_REVIEW_MIGRATION_MARKER
+    || domain.sourceKind !== seed.sourceKind
+    || domain.sourceEntryId !== seed.sourceEntryId;
+  if (!needsWorkClass && !needsDue && !needsMeta) return job;
+  return {
+    ...job,
+    workClass: 'operational_recovery',
+    nextDueAt,
+    domain: {
+      ...domain,
+      ...meta,
+    },
+    updatedAt: now.toISOString(),
+  };
+}
+
+/**
  * Apply preserved migration metadata onto a graph job without inventing a
  * second ownership path. Operational retries become pending coverage with
  * job-level nextDueAt so the existing fairness wake can schedule them.
@@ -920,7 +953,14 @@ export function materializeLegacyReviewRecordsAsJobs(
     if (existing) {
       alreadyPresent += 1;
       jobIds.push(existing.jobId);
+      // Re-attach operational retry ownership metadata so due-work planning and
+      // Runtime retry admission still see the preserved deadline after transfer.
       if (seed.sourceKind === 'operational_retry') {
+        const adopted = adoptOperationalRetryOntoJob(existing, seed, now);
+        if (adopted !== existing) {
+          upsertEvidenceReviewJob(state, adopted);
+          dirty = true;
+        }
         transferredOperationalEntryIds.add(seed.sourceEntryId);
       }
       continue;
@@ -932,9 +972,15 @@ export function materializeLegacyReviewRecordsAsJobs(
     if (activeForBundle) {
       alreadyPresent += 1;
       jobIds.push(activeForBundle.jobId);
-      // Bundle already owned by an active/deferred job — release legacy entry
-      // so the same wake cannot also drain it via linear review.
+      // Bundle already owned by an active/deferred job — transfer operational
+      // retry ownership onto that job (workClass + nextDueAt) and release the
+      // legacy entry so the same wake cannot also drain it via linear review.
       if (seed.sourceKind === 'operational_retry') {
+        const adopted = adoptOperationalRetryOntoJob(activeForBundle, seed, now);
+        if (adopted !== activeForBundle) {
+          upsertEvidenceReviewJob(state, adopted);
+          dirty = true;
+        }
         transferredOperationalEntryIds.add(seed.sourceEntryId);
       }
       continue;

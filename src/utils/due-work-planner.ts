@@ -20,6 +20,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { LEARNING_EPISODE_SCHEMA_VERSION } from './learning-episode';
+import { evidenceReviewJobStorePathForReviewQueue } from './evidence-review-job-store';
 
 /**
  * Suggested minimum delay applied to a due-work wake so an overdue deadline
@@ -313,29 +314,62 @@ export class DueWorkPlanner {
     //   { schemaVersion: 1, operational: SkillEvolutionOperationalReviewFailureEntry[], ... }
     // Entry fields relevant to planning:
     //   nextRetryAt: string (ISO timestamp)
+    // After #104/#110 transfer, active operational_recovery jobs in the Evidence
+    // Review Job store also carry nextDueAt and must keep the wake path live.
+    let earliest: number | null = null;
     try {
-      if (!fs.existsSync(this.sources.reviewQueuePath)) return null;
-      const raw = fs.readFileSync(this.sources.reviewQueuePath, 'utf8');
-      const parsed = JSON.parse(raw) as {
-        operational?: Array<{ nextRetryAt?: string }>;
-      };
-      const retrySchemaVersion = (parsed as { schemaVersion?: unknown }).schemaVersion;
-      if (retrySchemaVersion !== undefined && retrySchemaVersion !== 1) return null;
-      if (!Array.isArray(parsed.operational)) return null;
-
-      let earliest: number | null = null;
-      for (const entry of parsed.operational) {
-        if (typeof entry.nextRetryAt !== 'string') continue;
-        const ms = Date.parse(entry.nextRetryAt);
-        if (!Number.isFinite(ms)) continue;
-        if (earliest === null || ms < earliest) {
-          earliest = ms;
+      if (fs.existsSync(this.sources.reviewQueuePath)) {
+        const raw = fs.readFileSync(this.sources.reviewQueuePath, 'utf8');
+        const parsed = JSON.parse(raw) as {
+          operational?: Array<{ nextRetryAt?: string }>;
+        };
+        const retrySchemaVersion = (parsed as { schemaVersion?: unknown }).schemaVersion;
+        if (retrySchemaVersion === undefined || retrySchemaVersion === 1) {
+          if (Array.isArray(parsed.operational)) {
+            for (const entry of parsed.operational) {
+              if (typeof entry.nextRetryAt !== 'string') continue;
+              const ms = Date.parse(entry.nextRetryAt);
+              if (!Number.isFinite(ms)) continue;
+              if (earliest === null || ms < earliest) earliest = ms;
+            }
+          }
         }
       }
-      return earliest;
     } catch {
-      return null;
+      // corrupt queue is non-fatal; still check migrated jobs below
     }
+
+    try {
+      const jobStorePath = evidenceReviewJobStorePathForReviewQueue(this.sources.reviewQueuePath);
+      if (fs.existsSync(jobStorePath)) {
+        const raw = fs.readFileSync(jobStorePath, 'utf8');
+        const parsed = JSON.parse(raw) as {
+          jobs?: Record<string, {
+            disposition?: string;
+            workClass?: string;
+            nextDueAt?: string;
+          }>;
+        };
+        if (parsed.jobs && typeof parsed.jobs === 'object') {
+          for (const job of Object.values(parsed.jobs)) {
+            if (job.disposition !== 'active') continue;
+            if (job.workClass !== 'operational_recovery') continue;
+            // Due immediately when nextDueAt is absent (ready coverage).
+            if (typeof job.nextDueAt !== 'string' || !job.nextDueAt) {
+              earliest = earliest === null ? 0 : Math.min(earliest, 0);
+              continue;
+            }
+            const ms = Date.parse(job.nextDueAt);
+            if (!Number.isFinite(ms)) continue;
+            if (earliest === null || ms < earliest) earliest = ms;
+          }
+        }
+      }
+    } catch {
+      // Job store optional / corrupt — ignore.
+    }
+
+    return earliest;
   }
 
   private readNextRoutineCuratorDeadline(): number | null {

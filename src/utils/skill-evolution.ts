@@ -1764,62 +1764,7 @@ export class SkillEvolutionRuntime {
     options: SkillEvolutionQueueReviewOptions = {},
   ): Promise<SkillEvolutionQueueReviewResult> {
     const queuePath = this.options.reviewQueuePath;
-    if (!queuePath) {
-      return {
-        reviewed: 0,
-        deferredReviewed: 0,
-        operationalReviewed: 0,
-        operationalRetried: 0,
-        deferredRetried: 0,
-        transitionsByKind: {},
-        queueOutcomes: {},
-      };
-    }
-
-    const queue = loadReviewQueueState(queuePath);
-    const registry = this.getRegistry();
-    const currentReadSet = normalizeRegistryReadSet(
-      Object.values(registry.capabilities).map(record => ({
-        handle: record.handle,
-        revision: record.revision,
-      })),
-    );
-    const dueOperational = popDueOperationalEntries(queue, options.now ?? new Date());
-    const dueDeferred = getDueDeferredEntries(
-      queue,
-      this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
-      currentReadSet,
-    );
-    type ReviewQueueTask =
-      | { type: 'operational'; entry: SkillEvolutionOperationalReviewFailureEntry }
-      | { type: 'deferred'; entry: SkillEvolutionDeferredReviewEntry };
-
-    let tasks: ReviewQueueTask[] = [
-      ...dueOperational.map(item => ({ type: 'operational' as const, entry: item })),
-      ...dueDeferred.map(item => ({ type: 'deferred' as const, entry: item })),
-    ];
-    if (options.bundleIds) {
-      const selectedOrder = new Map(options.bundleIds.map((bundleId, index) => [bundleId, index]));
-      tasks = tasks
-        .filter(item => selectedOrder.has(item.entry.bundleId))
-        .sort((left, right) => (
-          selectedOrder.get(left.entry.bundleId)! - selectedOrder.get(right.entry.bundleId)!
-        ));
-    }
-    if (tasks.length === 0) {
-      return {
-        reviewed: 0,
-        deferredReviewed: 0,
-        operationalReviewed: 0,
-        operationalRetried: 0,
-        deferredRetried: 0,
-        transitionsByKind: {},
-        queueOutcomes: {},
-      };
-    }
-
-    const config = this.getEffectiveConfig();
-    const result: SkillEvolutionQueueReviewResult = {
+    const emptyResult = (): SkillEvolutionQueueReviewResult => ({
       reviewed: 0,
       deferredReviewed: 0,
       operationalReviewed: 0,
@@ -1827,10 +1772,99 @@ export class SkillEvolutionRuntime {
       deferredRetried: 0,
       transitionsByKind: {},
       queueOutcomes: {},
-    };
+    });
 
-    await mapWithConcurrency(tasks, config.reviewerConcurrency, async item => {
+    type ReviewQueueTask =
+      | { type: 'operational'; entry: SkillEvolutionOperationalReviewFailureEntry }
+      | { type: 'deferred'; entry: SkillEvolutionDeferredReviewEntry }
+      | { type: 'migrated_job'; bundleId: string; bundle: EvidenceBundle; jobId: string };
+
+    const tasks: ReviewQueueTask[] = [];
+    let queue: SkillEvolutionReviewQueueState | undefined;
+
+    if (queuePath) {
+      queue = loadReviewQueueState(queuePath);
+      const registry = this.getRegistry();
+      const currentReadSet = normalizeRegistryReadSet(
+        Object.values(registry.capabilities).map(record => ({
+          handle: record.handle,
+          revision: record.revision,
+        })),
+      );
+      const dueOperational = popDueOperationalEntries(queue, options.now ?? new Date());
+      const dueDeferred = getDueDeferredEntries(
+        queue,
+        this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
+        currentReadSet,
+      );
+      tasks.push(
+        ...dueOperational.map(item => ({ type: 'operational' as const, entry: item })),
+        ...dueDeferred.map(item => ({ type: 'deferred' as const, entry: item })),
+      );
+    }
+
+    // Migrated operational recovery jobs own their retry after #104/#110 transfer.
+    // Only execute them when Runtime (or another caller) explicitly admits the
+    // bundle via bundleIds — unrestricted legacy scans must not re-run work that
+    // already transferred out of the linear queue.
+    const selectedBundleIds = options.bundleIds
+      ? new Set(options.bundleIds)
+      : undefined;
+    const legacyBundleIds = new Set(
+      tasks.map(task => (
+        task.type === 'migrated_job' ? task.bundleId : task.entry.bundleId
+      )),
+    );
+    if (selectedBundleIds && selectedBundleIds.size > 0) {
+      try {
+        const now = options.now ?? new Date();
+        const jobs = this.getEvidenceReviewEngine().loadStore().jobs;
+        for (const job of Object.values(jobs)) {
+          if (job.disposition !== 'active') continue;
+          if (job.workClass !== 'operational_recovery') continue;
+          if (!selectedBundleIds.has(job.bundle.bundleId)) continue;
+          if (legacyBundleIds.has(job.bundle.bundleId)) continue;
+          const notBefore = job.nextDueAt ? Date.parse(job.nextDueAt) : Number.NaN;
+          if (Number.isFinite(notBefore) && notBefore > now.getTime()) continue;
+          tasks.push({
+            type: 'migrated_job',
+            bundleId: job.bundle.bundleId,
+            bundle: job.bundle,
+            jobId: job.jobId,
+          });
+          legacyBundleIds.add(job.bundle.bundleId);
+        }
+      } catch {
+        // Job store optional.
+      }
+    }
+
+    let orderedTasks = tasks;
+    if (options.bundleIds) {
+      const selectedOrder = new Map(options.bundleIds.map((bundleId, index) => [bundleId, index]));
+      orderedTasks = tasks
+        .filter(item => selectedOrder.has(
+          item.type === 'migrated_job' ? item.bundleId : item.entry.bundleId,
+        ))
+        .sort((left, right) => {
+          const leftId = left.type === 'migrated_job' ? left.bundleId : left.entry.bundleId;
+          const rightId = right.type === 'migrated_job' ? right.bundleId : right.entry.bundleId;
+          return selectedOrder.get(leftId)! - selectedOrder.get(rightId)!;
+        });
+    }
+    if (orderedTasks.length === 0) return emptyResult();
+
+    const config = this.getEffectiveConfig();
+    const result = emptyResult();
+
+    await mapWithConcurrency(orderedTasks, config.reviewerConcurrency, async item => {
       if (options.signal?.aborted) return;
+      if (item.type === 'migrated_job') {
+        if (options.admit && !options.admit(item.bundle)) return;
+        await this.reviewDueMigratedOperationalJob(item, result, options.signal);
+        return;
+      }
+      if (!queue) return;
       if (options.admit && !options.admit(item.entry.bundle)) return;
       if (item.type === 'deferred') {
         await this.reviewDueDeferredEntry(
@@ -1851,8 +1885,61 @@ export class SkillEvolutionRuntime {
       );
     });
 
-    saveReviewQueueState(queuePath, queue);
+    if (queuePath && queue) saveReviewQueueState(queuePath, queue);
     return result;
+  }
+
+  private async reviewDueMigratedOperationalJob(
+    task: { bundleId: string; bundle: EvidenceBundle; jobId: string },
+    result: SkillEvolutionQueueReviewResult,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      const reviewed = await this.reviewAndApply(task.bundle, signal);
+      if (reviewed.queued === 'operational') {
+        result.operationalRetried++;
+        const queued = this.getQueuedReviewState(task.bundleId);
+        // Prefer the durable job nextDueAt when ownership stayed on the job store.
+        let nextRetryAt = queued?.nextRetryAt;
+        if (!nextRetryAt) {
+          try {
+            const job = this.getEvidenceReviewEngine().loadStore().jobs[task.jobId]
+              ?? this.getEvidenceReviewEngine().findActiveJobForBundle(task.bundleId);
+            nextRetryAt = job?.nextDueAt;
+          } catch {
+            // ignore
+          }
+        }
+        result.queueOutcomes![task.bundleId] = {
+          status: 'operational',
+          nextRetryAt,
+          reason: queued?.reason ?? 'Operational review remains queued after re-review.',
+          failureKind: queued?.failureKind ?? 'branch_failure',
+        };
+      } else if (reviewed.transition === 'defer' || reviewed.queued === 'deferred') {
+        result.queueOutcomes![task.bundleId] = {
+          status: 'deferred',
+          reason: reviewed.verifier?.rationale ?? 'Verifier deferred for later review.',
+        };
+      } else {
+        result.operationalReviewed++;
+        result.queueOutcomes![task.bundleId] = { status: 'succeeded' };
+      }
+      incrementTransitionCount(result.transitionsByKind, reviewed.transition);
+      result.reviewed++;
+    } catch (error) {
+      if (signal?.aborted && this.resolveAbortReason(signal.reason) === 'runtime-shutdown') return;
+      const operationalError = this.extractOperationalFailure(error);
+      if (!operationalError) throw error;
+      result.queueOutcomes![task.bundleId] = {
+        status: 'operational',
+        reason: operationalError.message,
+        failureKind: operationalError.kind,
+      };
+      result.reviewed++;
+      result.operationalReviewed++;
+      result.operationalRetried++;
+    }
   }
 
   async reviewDueQueueEntries(
@@ -1864,28 +1951,109 @@ export class SkillEvolutionRuntime {
   /** Deterministic durable retry-class snapshot used by Runtime review arbitration. */
   listDueQueueReviewEntries(now = new Date()): readonly SkillEvolutionDueQueueReviewEntry[] {
     const queuePath = this.options.reviewQueuePath;
-    if (!queuePath) return [];
-    const queue = loadReviewQueueState(queuePath);
-    const registry = this.getRegistry();
-    const currentReadSet = normalizeRegistryReadSet(
-      Object.values(registry.capabilities).map(record => ({
-        handle: record.handle,
-        revision: record.revision,
-      })),
-    );
-    const entries = [
-      ...popDueOperationalEntries(queue, now),
-      ...getDueDeferredEntries(
-        queue,
-        this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
-        currentReadSet,
-      ),
-    ];
     const byBundleId = new Map<string, EvidenceBundle>();
-    for (const entry of entries) byBundleId.set(entry.bundleId, entry.bundle);
+    if (queuePath) {
+      const queue = loadReviewQueueState(queuePath);
+      const registry = this.getRegistry();
+      const currentReadSet = normalizeRegistryReadSet(
+        Object.values(registry.capabilities).map(record => ({
+          handle: record.handle,
+          revision: record.revision,
+        })),
+      );
+      const entries = [
+        ...popDueOperationalEntries(queue, now),
+        ...getDueDeferredEntries(
+          queue,
+          this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
+          currentReadSet,
+        ),
+      ];
+      for (const entry of entries) byBundleId.set(entry.bundleId, entry.bundle);
+    }
+
+    // Compatibility migration (#104/#110) transfers operational retries into the
+    // Evidence Review Job store and releases the legacy queue entry. Those jobs
+    // remain due under the Runtime retry class until a terminal disposition.
+    try {
+      const jobs = this.getEvidenceReviewEngine().loadStore().jobs;
+      for (const job of Object.values(jobs)) {
+        if (job.disposition !== 'active') continue;
+        if (job.workClass !== 'operational_recovery') continue;
+        if (byBundleId.has(job.bundle.bundleId)) continue;
+        const notBefore = job.nextDueAt ? Date.parse(job.nextDueAt) : Number.NaN;
+        if (Number.isFinite(notBefore) && notBefore > now.getTime()) continue;
+        byBundleId.set(job.bundle.bundleId, job.bundle);
+      }
+    } catch {
+      // Job store optional during early construction / V3-disabled paths.
+    }
+
     return [...byBundleId.entries()]
       .sort(([left], [right]) => left.localeCompare(right, 'en'))
       .map(([bundleId, bundle]) => ({ bundleId, bundle }));
+  }
+
+  /**
+   * Fold terminal dispositions from fair job advance into the shared queue
+   * outcome contract so reassessment manifests and wake metrics converge when
+   * ownership lives only in the Evidence Review Job store.
+   */
+  collectMigratedJobReviewOutcomes(
+    jobIds: readonly string[],
+  ): Pick<
+    SkillEvolutionQueueReviewResult,
+    'reviewed' | 'operationalReviewed' | 'operationalRetried' | 'queueOutcomes' | 'transitionsByKind'
+  > {
+    const empty = {
+      reviewed: 0,
+      operationalReviewed: 0,
+      operationalRetried: 0,
+      transitionsByKind: {} as Partial<Record<CapabilityTransitionKind, number>>,
+      queueOutcomes: {} as NonNullable<SkillEvolutionQueueReviewResult['queueOutcomes']>,
+    };
+    if (jobIds.length === 0) return empty;
+    try {
+      const jobs = this.getEvidenceReviewEngine().loadStore().jobs;
+      for (const jobId of jobIds) {
+        const job = jobs[jobId];
+        if (!job || job.workClass !== 'operational_recovery') continue;
+        const bundleId = job.bundle.bundleId;
+        if (job.disposition === 'completed') {
+          empty.reviewed += 1;
+          empty.operationalReviewed += 1;
+          empty.queueOutcomes[bundleId] = { status: 'succeeded' };
+          if (job.verifierResult?.transition) {
+            incrementTransitionCount(empty.transitionsByKind, job.verifierResult.transition);
+          } else if (job.draft?.envelope.decision) {
+            incrementTransitionCount(empty.transitionsByKind, job.draft.envelope.decision);
+          }
+        } else if (job.disposition === 'deferred') {
+          empty.reviewed += 1;
+          empty.queueOutcomes[bundleId] = {
+            status: 'deferred',
+            reason: job.verifierResult?.rationale ?? job.terminalReason,
+          };
+          incrementTransitionCount(empty.transitionsByKind, 'defer');
+        } else if (job.disposition === 'terminal_failed' || job.disposition === 'active') {
+          // Active means fair advance only partially progressed; linear dual-path
+          // reviewDueQueueEntries may still complete it. Only surface terminal_failed.
+          if (job.disposition !== 'terminal_failed') continue;
+          empty.reviewed += 1;
+          empty.operationalReviewed += 1;
+          empty.operationalRetried += 1;
+          empty.queueOutcomes[bundleId] = {
+            status: 'operational',
+            nextRetryAt: job.nextDueAt,
+            reason: job.terminalReason ?? 'Evidence Review Job terminal failure',
+            failureKind: 'branch_failure',
+          };
+        }
+      }
+    } catch {
+      // Job store optional.
+    }
+    return empty;
   }
 
   private async reviewAndApplyOnce(
