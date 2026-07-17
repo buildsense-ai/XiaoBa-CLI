@@ -1,5 +1,6 @@
 /**
- * Durable store for Evidence Review Jobs and fairness cursors.
+ * Durable store for engine-facing Evidence Review Jobs.
+ * Reuses pure graph-store patterns (#107) with engine job payloads.
  */
 
 import * as fs from 'fs';
@@ -13,13 +14,13 @@ import {
   type ReviewQuantumRecord,
   type ReviewWorkClass,
 } from './evidence-review-types';
-
-const WORK_CLASS_ORDER: readonly ReviewWorkClass[] = [
-  'operational_recovery',
-  'live_learning',
-  'historical_learning',
-  'semantic_reassessment',
-];
+import {
+  criticalPathRank,
+  deriveJobDisposition as deriveGraphDisposition,
+  isQuantumRunnable as isGraphQuantumRunnable,
+  listRunnableQuanta as listGraphRunnableQuanta,
+} from './evidence-review-graph-core';
+import { WORK_CLASS_ORDER } from './evidence-review-graph-store';
 
 function emptyState(): EvidenceReviewJobStoreState {
   return {
@@ -41,8 +42,7 @@ function quarantine(filePath: string, reason: string): void {
   try {
     if (!fs.existsSync(filePath)) return;
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const dest = `${filePath}.corrupt.${reason}.${stamp}`;
-    fs.renameSync(filePath, dest);
+    fs.renameSync(filePath, `${filePath}.corrupt.${reason}.${stamp}`);
   } catch {
     // best effort
   }
@@ -162,68 +162,26 @@ export function isQuantumRunnable(
   quantum: ReviewQuantumRecord,
   now: Date,
 ): boolean {
-  if (job.disposition !== 'active') return false;
-  if (quantum.state === 'succeeded' || quantum.state === 'terminal_failed') return false;
-  if (quantum.state === 'leased') {
-    if (!quantum.lease) return true;
-    return new Date(quantum.lease.expiresAt).getTime() <= now.getTime();
-  }
-  if (quantum.state === 'retry_wait') {
-    if (!quantum.nextRetryAt) return true;
-    return new Date(quantum.nextRetryAt).getTime() <= now.getTime();
-  }
-  // pending: dependencies must succeed
-  return quantum.dependencyQuantumIds.every(depId => {
-    const dep = job.quanta[depId];
-    return dep?.state === 'succeeded';
-  });
+  return isGraphQuantumRunnable(job as any, quantum, now);
 }
 
 export function listRunnableQuanta(
   job: EvidenceReviewJob,
   now: Date,
 ): ReviewQuantumRecord[] {
-  return Object.values(job.quanta)
-    .filter(quantum => isQuantumRunnable(job, quantum, now))
-    .sort((a, b) => criticalPathRank(a) - criticalPathRank(b)
-      || a.quantumId.localeCompare(b.quantumId, 'en'));
+  return listGraphRunnableQuanta(job as any, now);
 }
 
-/** Lower rank = higher critical-path priority. */
-export function criticalPathRank(quantum: ReviewQuantumRecord): number {
-  switch (quantum.kind) {
-    case 'commit': return 0;
-    case 'skill_verifier': return 1;
-    case 'skill_author': return 2;
-    case 'obligations': return 3;
-    case 'difference_index': return 4;
-    case 'author_dossier':
-    case 'verifier_dossier': return 5;
-    case 'author_reader':
-    case 'verifier_reader': return 6;
-    default: return 100;
-  }
-}
+export { criticalPathRank };
 
 export function deriveJobDisposition(job: EvidenceReviewJob): EvidenceReviewJobDisposition {
-  if (
-    job.disposition === 'completed'
-    || job.disposition === 'superseded'
-    || job.disposition === 'terminal_failed'
-    || job.disposition === 'deferred'
-  ) {
-    return job.disposition;
-  }
-  const quanta = Object.values(job.quanta);
-  if (quanta.some(q => q.state === 'terminal_failed' && q.kind === 'commit')) {
-    return 'terminal_failed';
-  }
-  const commit = quanta.find(q => q.kind === 'commit');
-  if (commit?.state === 'succeeded') return 'completed';
-  return 'active';
+  return deriveGraphDisposition(job as any);
 }
 
-export function buildEvidenceReviewDiagnostics(job: EvidenceReviewJob, now = new Date()): EvidenceReviewDiagnostics {
+export function buildEvidenceReviewDiagnostics(
+  job: EvidenceReviewJob,
+  now = new Date(),
+): EvidenceReviewDiagnostics {
   const quanta = Object.values(job.quanta);
   const authorReaders = quanta.filter(q => q.kind === 'author_reader');
   const verifierReaders = quanta.filter(q => q.kind === 'verifier_reader');

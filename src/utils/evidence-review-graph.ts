@@ -1,8 +1,10 @@
 /**
- * Evidence Review Dependency Graph construction and content-identified Quantum IDs.
+ * Engine-facing Evidence Review graph helpers.
+ *
+ * Composes pure graph-core APIs (#107) with #106 sharding and the Skill Evolution
+ * Evidence Bundle shape used by Runtime Learning.
  */
 
-import * as crypto from 'crypto';
 import type { EvidenceBundle, CapabilityReadSetEntry } from './skill-evolution';
 import type { DistilledKnowledgeCandidate } from './capability-distiller';
 import {
@@ -10,45 +12,54 @@ import {
   EVIDENCE_REVIEW_POLICY_VERSION,
   EVIDENCE_REVIEW_PROMPT_VERSION,
   type EvidenceReviewJob,
-  type EvidenceShard,
   type ReviewBasis,
-  type ReviewQuantumKind,
   type ReviewQuantumRecord,
   type ReviewWorkClass,
 } from './evidence-review-types';
-import { hashEvidenceBundle, shardEvidenceBundle, type ShardingOptions } from './evidence-sharding';
+import {
+  buildDualLaneCoverageQuanta,
+  buildReviewBasis as buildGraphReviewBasis,
+  createEvidenceReviewJob as createGraphJob,
+  createReviewQuantum,
+  makeQuantumId,
+  quantumInputHash,
+  reuseSucceededQuanta as reuseSucceededQuantaCore,
+  sha256Hex,
+  stableStringify,
+} from './evidence-review-graph-core';
+import {
+  hashEvidenceBundle,
+  shardEvidenceBundle,
+  type ShardingOptions,
+} from './evidence-review';
 
-function sha256(text: string): string {
-  return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
-}
+export {
+  makeQuantumId,
+  quantumInputHash,
+  sha256Hex,
+  stableStringify,
+  createReviewQuantum,
+  buildDualLaneCoverageQuanta,
+  claimQuantum,
+  completeQuantum,
+  failQuantum,
+  reclaimExpiredLeases,
+  recoverJobAfterRestart,
+  isQuantumRunnable,
+  listRunnableQuanta,
+  criticalPathRank,
+  deriveJobDisposition,
+  deriveJobProgress,
+  computeJobNextDueAt,
+  dependenciesSatisfied,
+} from './evidence-review-graph-core';
 
-function stableStringify(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
-}
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(record).sort((a, b) => a.localeCompare(b, 'en'))) {
-      out[key] = canonicalize(record[key]);
-    }
-    return out;
-  }
-  return value;
-}
-
-export function makeQuantumId(
-  jobId: string,
-  kind: ReviewQuantumKind,
-  inputHash: string,
-): string {
-  return `q:${jobId}:${kind}:${inputHash.slice(0, 16)}`;
-}
-
-export function quantumInputHash(parts: Record<string, unknown>): string {
-  return sha256(stableStringify(parts));
+export function fingerprintRegistryReadSet(
+  entries: readonly CapabilityReadSetEntry[] = [],
+): string[] {
+  return [...entries]
+    .map(entry => `${entry.handle}@${entry.revision}`)
+    .sort((a, b) => a.localeCompare(b, 'en'));
 }
 
 export function buildReviewBasis(input: {
@@ -58,59 +69,46 @@ export function buildReviewBasis(input: {
   reviewPolicyVersion?: string;
   promptVersion?: string;
 }): ReviewBasis {
-  const referencedSkillHashes = (input.bundle.referencedSkills ?? []).map(skill => (
-    sha256(stableStringify(skill))
-  )).sort((a, b) => a.localeCompare(b, 'en'));
   const registryReadSet = [...(input.registryReadSet ?? [])]
     .map(entry => ({ handle: entry.handle, revision: entry.revision }))
     .sort((a, b) => a.handle.localeCompare(b.handle, 'en'));
+  const registryReadSetFingerprints = fingerprintRegistryReadSet(registryReadSet);
+  const referencedSkillHashes = (input.bundle.referencedSkills ?? [])
+    .map(skill => sha256Hex(stableStringify(skill)))
+    .sort((a, b) => a.localeCompare(b, 'en'));
   const evidenceBundleHash = hashEvidenceBundle(input.bundle);
   const reviewPolicyVersion = input.reviewPolicyVersion ?? EVIDENCE_REVIEW_POLICY_VERSION;
   const promptVersion = input.promptVersion ?? EVIDENCE_REVIEW_PROMPT_VERSION;
   const target = input.bundle.relatedCurrentSkills?.[0] as
     | { handle?: string; revision?: number }
     | undefined;
-  const basis: Omit<ReviewBasis, 'basisHash'> = {
+
+  const graphBasis = buildGraphReviewBasis({
     manifestHash: input.manifestHash,
     evidenceBundleHash,
-    registryReadSet,
+    registryReadSet: registryReadSetFingerprints,
     referencedSkillHashes,
     reviewPolicyVersion,
     promptVersion,
     ...(typeof target?.handle === 'string' ? { targetCapabilityHandle: target.handle } : {}),
     ...(typeof target?.revision === 'number' ? { targetCapabilityRevision: target.revision } : {}),
-  };
-  return {
-    ...basis,
-    basisHash: sha256(stableStringify(basis)),
-  };
-}
-
-function makeQuantum(
-  jobId: string,
-  kind: ReviewQuantumKind,
-  inputParts: Record<string, unknown>,
-  dependencyQuantumIds: readonly string[],
-  extras: Partial<Pick<ReviewQuantumRecord, 'shardId' | 'lane'>> = {},
-  nowIso: string,
-): ReviewQuantumRecord {
-  const inputHash = quantumInputHash({
-    kind,
-    promptVersion: EVIDENCE_REVIEW_PROMPT_VERSION,
-    policyVersion: EVIDENCE_REVIEW_POLICY_VERSION,
-    ...inputParts,
   });
+
   return {
-    quantumId: makeQuantumId(jobId, kind, inputHash),
-    kind,
-    inputHash,
-    dependencyQuantumIds: [...dependencyQuantumIds],
-    ...extras,
-    state: 'pending',
-    attempts: 0,
-    currentDelayMs: 0,
-    transcriptPaths: [],
-    updatedAt: nowIso,
+    basisHash: graphBasis.basisHash,
+    manifestHash: graphBasis.manifestHash,
+    evidenceBundleHash: graphBasis.evidenceBundleHash,
+    registryReadSet,
+    registryReadSetFingerprints: graphBasis.registryReadSet,
+    referencedSkillHashes: graphBasis.referencedSkillHashes,
+    reviewPolicyVersion: graphBasis.reviewPolicyVersion,
+    promptVersion: graphBasis.promptVersion,
+    ...(graphBasis.targetCapabilityHandle
+      ? { targetCapabilityHandle: graphBasis.targetCapabilityHandle }
+      : {}),
+    ...(typeof graphBasis.targetCapabilityRevision === 'number'
+      ? { targetCapabilityRevision: graphBasis.targetCapabilityRevision }
+      : {}),
   };
 }
 
@@ -125,6 +123,10 @@ export interface CreateEvidenceReviewJobInput {
   jobId?: string;
 }
 
+/**
+ * Create a durable dual-lane job for a frozen Evidence Bundle.
+ * Topology comes from pure graph-core; shards from the #106 package.
+ */
 export function createEvidenceReviewJob(input: CreateEvidenceReviewJobInput): EvidenceReviewJob {
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
@@ -134,117 +136,52 @@ export function createEvidenceReviewJob(input: CreateEvidenceReviewJobInput): Ev
     manifestHash: manifest.manifestHash,
     registryReadSet: input.registryReadSet,
   });
-  const jobId = input.jobId ?? `job:${basis.basisHash.slice(0, 20)}:${input.bundle.bundleId.slice(0, 24)}`;
+  const jobId = input.jobId
+    ?? `job:${basis.basisHash.slice(0, 20)}:${input.bundle.bundleId.slice(0, 24)}`;
 
-  const quanta: Record<string, ReviewQuantumRecord> = {};
-  const authorReaderIds: string[] = [];
-  const verifierReaderIds: string[] = [];
-
-  for (const shard of shards) {
-    const author = makeQuantum(
-      jobId,
-      'author_reader',
-      { lane: 'author', shardId: shard.shardId, contentHash: shard.contentHash },
-      [],
-      { shardId: shard.shardId, lane: 'author' },
-      nowIso,
-    );
-    const verifier = makeQuantum(
-      jobId,
-      'verifier_reader',
-      { lane: 'verifier', shardId: shard.shardId, contentHash: shard.contentHash },
-      [],
-      { shardId: shard.shardId, lane: 'verifier' },
-      nowIso,
-    );
-    quanta[author.quantumId] = author;
-    quanta[verifier.quantumId] = verifier;
-    authorReaderIds.push(author.quantumId);
-    verifierReaderIds.push(verifier.quantumId);
-  }
-
-  const authorDossier = makeQuantum(
+  const quantaList = buildDualLaneCoverageQuanta({
     jobId,
-    'author_dossier',
-    { lane: 'author', manifestHash: manifest.manifestHash, readers: authorReaderIds },
-    authorReaderIds,
-    { lane: 'author' },
-    nowIso,
-  );
-  const verifierDossier = makeQuantum(
-    jobId,
-    'verifier_dossier',
-    { lane: 'verifier', manifestHash: manifest.manifestHash, readers: verifierReaderIds },
-    verifierReaderIds,
-    { lane: 'verifier' },
-    nowIso,
-  );
-  quanta[authorDossier.quantumId] = authorDossier;
-  quanta[verifierDossier.quantumId] = verifierDossier;
+    shards: shards.map(s => ({ shardId: s.shardId, contentHash: s.contentHash })),
+    basisHash: basis.basisHash,
+    now,
+  });
 
-  const difference = makeQuantum(
+  // Attach manifest-scoped input hashes for dossier/diff/obligation/author nodes
+  // already produced by buildDualLaneCoverageQuanta; graph-core template is enough.
+  const graphJob = createGraphJob({
     jobId,
-    'difference_index',
-    { manifestHash: manifest.manifestHash, dossiers: [authorDossier.quantumId, verifierDossier.quantumId] },
-    [authorDossier.quantumId, verifierDossier.quantumId],
-    {},
-    nowIso,
-  );
-  quanta[difference.quantumId] = difference;
-
-  const obligations = makeQuantum(
-    jobId,
-    'obligations',
-    { manifestHash: manifest.manifestHash, difference: difference.quantumId },
-    [difference.quantumId],
-    {},
-    nowIso,
-  );
-  quanta[obligations.quantumId] = obligations;
-
-  const skillAuthor = makeQuantum(
-    jobId,
-    'skill_author',
-    { manifestHash: manifest.manifestHash, authorDossier: authorDossier.quantumId },
-    [authorDossier.quantumId, obligations.quantumId],
-    {},
-    nowIso,
-  );
-  quanta[skillAuthor.quantumId] = skillAuthor;
-
-  const skillVerifier = makeQuantum(
-    jobId,
-    'skill_verifier',
-    {
-      manifestHash: manifest.manifestHash,
-      author: skillAuthor.quantumId,
-      dossiers: [authorDossier.quantumId, verifierDossier.quantumId],
-      difference: difference.quantumId,
-      obligations: obligations.quantumId,
+    workClass: input.workClass,
+    basis: {
+      basisHash: basis.basisHash,
+      manifestHash: basis.manifestHash,
+      evidenceBundleHash: basis.evidenceBundleHash,
+      registryReadSet: basis.registryReadSetFingerprints,
+      referencedSkillHashes: basis.referencedSkillHashes,
+      reviewPolicyVersion: basis.reviewPolicyVersion,
+      promptVersion: basis.promptVersion,
+      ...(basis.targetCapabilityHandle
+        ? { targetCapabilityHandle: basis.targetCapabilityHandle }
+        : {}),
+      ...(typeof basis.targetCapabilityRevision === 'number'
+        ? { targetCapabilityRevision: basis.targetCapabilityRevision }
+        : {}),
     },
-    [skillAuthor.quantumId, verifierDossier.quantumId, difference.quantumId, obligations.quantumId],
-    {},
-    nowIso,
-  );
-  quanta[skillVerifier.quantumId] = skillVerifier;
+    quanta: quantaList,
+    domain: {
+      bundleId: input.bundle.bundleId,
+      manifestId: manifest.manifestId,
+    },
+    parentJobId: input.parentJobId,
+    now,
+  });
 
-  const commit = makeQuantum(
-    jobId,
-    'commit',
-    { basisHash: basis.basisHash, skillVerifier: skillVerifier.quantumId },
-    [skillVerifier.quantumId],
-    {},
-    nowIso,
-  );
-  quanta[commit.quantumId] = commit;
-
-  const shardMap: Record<string, EvidenceShard> = {};
+  const shardMap: Record<string, (typeof shards)[number]> = {};
   for (const shard of shards) shardMap[shard.shardId] = shard;
 
   return {
     schemaVersion: EVIDENCE_REVIEW_JOB_SCHEMA_VERSION,
-    jobId,
-    workClass: input.workClass,
+    jobId: graphJob.jobId,
+    workClass: graphJob.workClass,
     disposition: 'active',
     createdAt: nowIso,
     updatedAt: nowIso,
@@ -256,8 +193,9 @@ export function createEvidenceReviewJob(input: CreateEvidenceReviewJobInput): Ev
     },
     shards: shardMap,
     basis,
-    quanta,
+    quanta: graphJob.quanta,
     parentJobId: input.parentJobId,
+    domain: graphJob.domain,
   };
 }
 
@@ -265,46 +203,46 @@ export function reuseSucceededQuanta(
   successor: EvidenceReviewJob,
   prior: EvidenceReviewJob,
 ): EvidenceReviewJob {
-  const next: EvidenceReviewJob = {
-    ...successor,
-    quanta: { ...successor.quanta },
-    updatedAt: new Date().toISOString(),
+  const graphSuccessor = {
+    schemaVersion: successor.schemaVersion,
+    jobId: successor.jobId,
+    workClass: successor.workClass,
+    disposition: successor.disposition,
+    createdAt: successor.createdAt,
+    updatedAt: successor.updatedAt,
+    basis: {
+      basisHash: successor.basis.basisHash,
+      manifestHash: successor.basis.manifestHash,
+      evidenceBundleHash: successor.basis.evidenceBundleHash,
+      registryReadSet: successor.basis.registryReadSetFingerprints,
+      referencedSkillHashes: successor.basis.referencedSkillHashes,
+      reviewPolicyVersion: successor.basis.reviewPolicyVersion,
+      promptVersion: successor.basis.promptVersion,
+    },
+    quanta: successor.quanta,
   };
-  for (const [quantumId, quantum] of Object.entries(prior.quanta)) {
-    if (quantum.state !== 'succeeded') continue;
-    const candidate = next.quanta[quantumId];
-    if (!candidate) continue;
-    if (candidate.kind !== quantum.kind) continue;
-    if (candidate.inputHash !== quantum.inputHash) continue;
-    next.quanta[quantumId] = {
-      ...candidate,
-      state: 'succeeded',
-      result: quantum.result,
-      resultHash: quantum.resultHash,
-      transcriptPaths: [...quantum.transcriptPaths],
-      updatedAt: quantum.updatedAt,
-      attempts: quantum.attempts,
-    };
-  }
-  // Also match by kind+inputHash when quantum ids differ across job ids.
-  const priorByInput = new Map(
-    Object.values(prior.quanta)
-      .filter(q => q.state === 'succeeded')
-      .map(q => [`${q.kind}:${q.inputHash}`, q] as const),
-  );
-  for (const [quantumId, quantum] of Object.entries(next.quanta)) {
-    if (quantum.state === 'succeeded') continue;
-    const match = priorByInput.get(`${quantum.kind}:${quantum.inputHash}`);
-    if (!match) continue;
-    next.quanta[quantumId] = {
-      ...quantum,
-      state: 'succeeded',
-      result: match.result,
-      resultHash: match.resultHash,
-      transcriptPaths: [...match.transcriptPaths],
-      updatedAt: match.updatedAt,
-      attempts: match.attempts,
-    };
-  }
-  return next;
+  const graphPrior = {
+    schemaVersion: prior.schemaVersion,
+    jobId: prior.jobId,
+    workClass: prior.workClass,
+    disposition: prior.disposition,
+    createdAt: prior.createdAt,
+    updatedAt: prior.updatedAt,
+    basis: {
+      basisHash: prior.basis.basisHash,
+      manifestHash: prior.basis.manifestHash,
+      evidenceBundleHash: prior.basis.evidenceBundleHash,
+      registryReadSet: prior.basis.registryReadSetFingerprints,
+      referencedSkillHashes: prior.basis.referencedSkillHashes,
+      reviewPolicyVersion: prior.basis.reviewPolicyVersion,
+      promptVersion: prior.basis.promptVersion,
+    },
+    quanta: prior.quanta,
+  };
+  const merged = reuseSucceededQuantaCore(graphSuccessor as any, graphPrior as any);
+  return {
+    ...successor,
+    quanta: merged.quanta as Record<string, ReviewQuantumRecord>,
+    updatedAt: merged.updatedAt,
+  };
 }
