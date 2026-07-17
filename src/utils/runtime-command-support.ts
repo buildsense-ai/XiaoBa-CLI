@@ -51,6 +51,10 @@ interface ActiveRuntimeSupport {
   stop(): Promise<void>;
 }
 
+export function getActiveRuntimeLearning(): RuntimeLearning | null {
+  return activeSupport?.runtimeLearning ?? null;
+}
+
 let activeSupport: ActiveRuntimeSupport | null = null;
 let startPromise: Promise<ActiveRuntimeSupport> | null = null;
 

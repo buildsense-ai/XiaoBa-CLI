@@ -44,6 +44,12 @@ import {
 import { formatPathForLog } from '../utils/log-redaction';
 import { resolveCatsDeviceModelStatus } from './model-status';
 import {
+  configureExternalHistoryProviders,
+  getExternalHistoryControlStatus,
+  runExternalHistoryBackfillControl,
+} from '../commands/external-source';
+import { getActiveRuntimeLearning } from '../utils/runtime-command-support';
+import {
   buildCatsCoAttachmentCachePath,
   scheduleCatsCoAttachmentCacheCleanup,
 } from './attachment-cache';
@@ -126,6 +132,7 @@ export const CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[
   'edit_file',
   'send_file',
   'execute_shell',
+  'external_history',
 ];
 
 function currentRuntimeOS(): 'windows' | 'macos' | 'linux' | 'unknown' {
@@ -662,11 +669,16 @@ export class CatsCompanyBot {
     const requestID = request.request_id;
     if (!requestID) return;
 
-    const validationError = this.validateDeviceRpcToolRequest(request);
+    const externalHistoryRequest = request.operation === 'external_history';
+    const validationError = externalHistoryRequest
+      ? this.validateExternalHistoryRequest(request)
+      : this.validateDeviceRpcToolRequest(request);
     let result: ToolExecutionResult | undefined;
     if (!validationError) {
       try {
-        result = await this.executeLocalDeviceRpcTool(request);
+        result = externalHistoryRequest
+          ? await this.executeExternalHistoryControl(request)
+          : await this.executeLocalDeviceRpcTool(request);
       } catch (error: any) {
         result = {
           ok: false,
@@ -706,6 +718,73 @@ export class CatsCompanyBot {
     } catch (err: any) {
       Logger.warning(`[CatsCompany] Device RPC result 发送失败: request=${requestID}, error=${err?.message || err}`);
     }
+  }
+
+  private validateExternalHistoryRequest(request: CatsDeviceRpcMessage): { code: string; message: string } | undefined {
+    const targetError = this.validateDeviceRpcTarget(request);
+    if (targetError) return targetError;
+    if (!String(request.device_id || '').trim()) {
+      return { code: 'invalid_request', message: 'External history request missing device_id.' };
+    }
+    if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
+      return { code: 'request_expired', message: 'External history request has expired.' };
+    }
+    const payload = request.payload;
+    const action = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? String((payload as Record<string, unknown>).action || '').trim()
+      : '';
+    if (!['status', 'configure', 'preview', 'execute'].includes(action)) {
+      return { code: 'unsupported_operation', message: 'Unsupported external history action.' };
+    }
+    return undefined;
+  }
+
+  private async executeExternalHistoryControl(request: CatsDeviceRpcMessage): Promise<ToolExecutionResult> {
+    const payload = request.payload as Record<string, unknown>;
+    const action = String(payload.action || '').trim();
+    const workingDirectory = this.runtimeProfile?.workingDirectory || this.runtime?.profile?.workingDirectory || process.cwd();
+    let response: Record<string, unknown>;
+
+    if (action === 'status') {
+      response = {
+        ...getExternalHistoryControlStatus(workingDirectory),
+        runtimeOwnerReady: Boolean(getActiveRuntimeLearning()),
+      };
+    } else if (action === 'configure') {
+      const providers = Array.isArray(payload.providers)
+        ? payload.providers.map(provider => String(provider))
+        : [];
+      response = { ...configureExternalHistoryProviders(providers, workingDirectory) };
+    } else {
+      const provider = String(payload.provider || '').trim().toLowerCase();
+      const updatedSince = String(payload.updatedSince || '').trim();
+      if (provider !== 'codex' && provider !== 'pi') {
+        return { ok: false, errorCode: 'INVALID_ARGUMENT', message: 'Provider must be codex or pi.' };
+      }
+      if (!updatedSince) {
+        return { ok: false, errorCode: 'INVALID_ARGUMENT', message: 'History range is required.' };
+      }
+      const execute = action === 'execute';
+      const runtimeLearning = execute ? getActiveRuntimeLearning() : undefined;
+      if (execute && !runtimeLearning) {
+        return {
+          ok: false,
+          errorCode: 'RUNTIME_NOT_READY',
+          message: 'The local Runtime owner is not ready. Restart the local assistant and try again.',
+          retryable: true,
+        };
+      }
+      response = await runExternalHistoryBackfillControl({
+        provider,
+        updatedSince,
+        execute,
+        operationId: typeof payload.operationId === 'string' ? payload.operationId : undefined,
+        workingDirectory,
+        runtimeLearning: runtimeLearning ?? undefined,
+      });
+    }
+
+    return { ok: true, content: JSON.stringify(response) };
   }
 
   private async executeLocalDeviceRpcTool(request: CatsDeviceRpcMessage): Promise<ToolExecutionResult> {

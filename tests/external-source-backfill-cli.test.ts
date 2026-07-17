@@ -97,6 +97,48 @@ describe('external-source backfill CLI', () => {
   });
   afterEach(() => env.restore());
 
+  test('webapp control persists provider selection and keeps routine history future-only', async () => {
+    const {
+      configureExternalHistoryProviders,
+      getExternalHistoryControlStatus,
+      runExternalHistoryBackfillControl,
+    } = await import('../src/commands/external-source');
+
+    const configured = configureExternalHistoryProviders(['pi', 'codex'], env.root);
+    assert.equal(configured.restartRequired, true);
+    assert.deepEqual(
+      configured.providers.filter(item => item.enabled).map(item => item.provider).sort(),
+      ['codex', 'pi'],
+    );
+    assert.equal(configured.providers.every(item => item.historyMode === 'future-only'), true);
+    assert.match(fs.readFileSync(path.join(env.root, '.env'), 'utf8'), /XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS="codex,pi"/);
+
+    const status = getExternalHistoryControlStatus(env.root);
+    assert.equal(status.heartbeatEnabled, true);
+    assert.equal(status.sourcesEnabled, true);
+    assert.equal(status.xurlConfigured, true);
+
+    let stdout = '';
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString();
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      const preview = await runExternalHistoryBackfillControl({
+        provider: 'codex',
+        updatedSince: '7d',
+        workingDirectory: env.root,
+      });
+      assert.equal(preview.mode, 'dry-run');
+      assert.equal(preview.provider, 'codex');
+      assert.equal(typeof preview.operationId, 'string');
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    assert.equal(stdout, '');
+  });
+
   test('dry-run is the default and reports selection metadata without transcript text', async () => {
     const { externalSourceCommand } = await import('../src/commands/external-source');
     const secretPath = path.join(env.root, 'private-project');

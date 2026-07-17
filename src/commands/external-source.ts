@@ -55,6 +55,7 @@ import {
   loadExternalSessionLogBackfillState,
   type ExternalSessionLogBackfillRequest,
 } from '../utils/session-log-backfill';
+import { writeDashboardEnvUpdates } from '../dashboard/settings';
 
 /** Conservative defaults for one explicit backfill operation. */
 export const DEFAULT_BACKFILL_MAX_RESOURCES = 50;
@@ -83,6 +84,103 @@ export interface ExternalSourceCommandOptions {
   maxElapsedMs?: number;
   /** Injectable clock for deterministic tests. */
   now?: () => Date;
+  /** Existing owner Runtime used by the connected-device control surface. */
+  runtimeLearning?: RuntimeLearning;
+  /** Structured report sink used by non-CLI control surfaces. */
+  report?: (value: Record<string, unknown>) => void;
+}
+
+export interface ExternalHistoryControlStatus {
+  heartbeatEnabled: boolean;
+  sourcesEnabled: boolean;
+  xurlConfigured: boolean;
+  providers: Array<{
+    provider: 'codex' | 'pi';
+    enabled: boolean;
+    historyMode: ExternalHistoryMode;
+  }>;
+}
+
+export function getExternalHistoryControlStatus(
+  workingDirectory: string = process.cwd(),
+): ExternalHistoryControlStatus {
+  const config = getDistillationHeartbeatConfig(workingDirectory);
+  const store = new ExternalProviderOverrideStore({
+    stateFilePath: resolveExternalProviderOverridePath(config),
+  });
+  return {
+    heartbeatEnabled: config.enabled,
+    sourcesEnabled: config.externalSessionLogSourcesEnabled,
+    xurlConfigured: Boolean(config.externalSessionLogXurlCommand?.trim()),
+    providers: (['codex', 'pi'] as const).map(provider => {
+      const status = store.getProviderStatus(provider, config);
+      return {
+        provider,
+        enabled: status.enabled,
+        historyMode: status.historyMode,
+      };
+    }),
+  };
+}
+
+export function configureExternalHistoryProviders(
+  providers: readonly string[],
+  workingDirectory: string = process.cwd(),
+): ExternalHistoryControlStatus & { restartRequired: true } {
+  const selected = new Set(providers.map(provider => provider.trim().toLowerCase()));
+  if (selected.size === 0 || [...selected].some(provider => provider !== 'codex' && provider !== 'pi')) {
+    throw new Error('select at least one supported provider: codex or pi');
+  }
+  const current = getDistillationHeartbeatConfig(workingDirectory);
+  const envUpdates = {
+    DISTILLATION_HEARTBEAT_ENABLED: 'true',
+    XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: 'true',
+    XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS: [...selected].sort().join(','),
+    XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND: current.externalSessionLogXurlCommand?.trim() || 'xurl',
+    XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE: 'future-only',
+  };
+  writeDashboardEnvUpdates(workingDirectory, envUpdates);
+  for (const [key, value] of Object.entries(envUpdates)) process.env[key] = value;
+
+  const config = getDistillationHeartbeatConfig(workingDirectory);
+  const store = new ExternalProviderOverrideStore({
+    stateFilePath: resolveExternalProviderOverridePath(config),
+  });
+  for (const provider of ['codex', 'pi'] as const) {
+    if (selected.has(provider)) store.enableProvider(provider, { scope: 'global' }, 'future-only');
+    else store.disableProvider(provider);
+  }
+  return { ...getExternalHistoryControlStatus(workingDirectory), restartRequired: true };
+}
+
+export async function runExternalHistoryBackfillControl(options: {
+  provider: string;
+  updatedSince: string;
+  execute?: boolean;
+  operationId?: string;
+  workingDirectory?: string;
+  runtimeLearning?: RuntimeLearning;
+}): Promise<Record<string, unknown>> {
+  let report: Record<string, unknown> | undefined;
+  await externalSourceCommand({
+    subcommand: 'backfill',
+    provider: options.provider,
+    updatedSince: options.updatedSince,
+    execute: options.execute,
+    operationId: options.operationId,
+    scope: 'global',
+    workingDirectory: options.workingDirectory,
+    runtimeLearning: options.runtimeLearning,
+    ...(options.runtimeLearning ? {
+      maxResources: 10,
+      maxEvents: 200,
+      maxBytes: 2 * 1024 * 1024,
+      maxElapsedMs: 45_000,
+    } : {}),
+    report: value => { report = value; },
+  });
+  if (!report) throw new Error('external history control did not produce a report');
+  return report;
 }
 
 export async function externalSourceCommand(options: ExternalSourceCommandOptions): Promise<void> {
@@ -363,21 +461,21 @@ async function handleBackfill(
   };
 
   if (!options.execute) {
-    writeBackfillReport(reportBase, options.json ?? false, {
+    emitBackfillReport(options, reportBase, {
       note: 'Dry-run only. Pass --execute to admit the selected complete stable history.',
     });
     return;
   }
 
   if (resolvedOperation.resourceRefs.length === 0) {
-    writeBackfillReport({
+    emitBackfillReport(options, {
       ...reportBase,
       status: 'completed',
       processedResources: 0,
       ingestedEvents: 0,
       resumable: false,
       quotaReached: false,
-    }, options.json ?? false, {
+    }, {
       note: 'No selected resources; nothing to execute.',
     });
     return;
@@ -385,21 +483,12 @@ async function handleBackfill(
 
   source.restrictToResourceRefs(resolvedOperation.resourceRefs);
 
-  const ownerLock = acquireHeartbeatSchedulerOwnerLock({
-    runtimeRoot: workingDirectory,
-    command: process.argv.join(' '),
-    env: process.env,
-  });
-  if (!ownerLock.acquired) {
-    throw new Error(
-      `writable Runtime already owned by pid=${ownerLock.existing.pid}; refuse to race a running Dashboard owner`,
-    );
-  }
-
-  try {
+  const runBackfill = async (runtime: RuntimeLearning): Promise<void> => {
     const request: ExternalSessionLogBackfillRequest = {
       operationId: resolvedOperation.operationId,
-      triggeredBy: 'operator:external-source-backfill',
+      triggeredBy: options.runtimeLearning
+        ? 'operator:webapp-external-history'
+        : 'operator:external-source-backfill',
       provider,
       sourceId,
       range: {
@@ -415,13 +504,12 @@ async function handleBackfill(
       },
     };
 
-    const runtime = buildBackfillRuntimeLearning(workingDirectory, config, options.now);
     const result = await runtime.runExternalBackfill(request, source);
     const status = result.backfill.status;
     const quotaReached = status === 'quota_reached';
     const resumable = status === 'quota_reached' || status === 'pending' || status === 'running' || status === 'source_failed';
 
-    writeBackfillReport({
+    emitBackfillReport(options, {
       ...reportBase,
       status,
       processedResources: result.backfill.processedResources,
@@ -433,20 +521,51 @@ async function handleBackfill(
       bytesProcessed: result.backfill.bytesProcessed,
       resumable,
       quotaReached,
-    }, options.json ?? false, {
+    }, {
       note: quotaReached
-        ? 'Quota reached; re-run with the same --operation-id to resume the exact selected resource set.'
+        ? 'Quota reached; resume the same operation to continue.'
         : status === 'completed'
           ? 'Backfill completed for the selected resource set.'
           : `Backfill finished with status ${status}.`,
     });
 
-    if (status === 'source_failed') {
-      process.exitCode = 1;
-    }
+    if (status === 'source_failed' && !options.report) process.exitCode = 1;
+  };
+
+  if (options.runtimeLearning) {
+    await runBackfill(options.runtimeLearning);
+    return;
+  }
+
+  const ownerLock = acquireHeartbeatSchedulerOwnerLock({
+    runtimeRoot: workingDirectory,
+    command: process.argv.join(' '),
+    env: process.env,
+  });
+  if (!ownerLock.acquired) {
+    throw new Error(
+      `writable Runtime already owned by pid=${ownerLock.existing.pid}; refuse to race a running Dashboard owner`,
+    );
+  }
+
+  try {
+    const runtime = buildBackfillRuntimeLearning(workingDirectory, config, options.now);
+    await runBackfill(runtime);
   } finally {
     ownerLock.release();
   }
+}
+
+function emitBackfillReport(
+  options: ExternalSourceCommandOptions,
+  report: Record<string, unknown>,
+  extra: { note: string },
+): void {
+  if (options.report) {
+    options.report({ ...report, note: extra.note });
+    return;
+  }
+  writeBackfillReport(report, options.json ?? false, extra);
 }
 
 function buildBackfillRuntimeLearning(
