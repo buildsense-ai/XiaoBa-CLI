@@ -670,7 +670,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     assert.equal(resumedPlan.nextWakeReason, 'settlement-deadline');
   });
 
-  test('prompt-budget rejection remains work-conserving across review classes', async () => {
+  test('candidate capacity remains work-conserving across review classes without prompt-size rejection', async () => {
     const liveEpisode: LearningEpisode = {
       schemaVersion: 3,
       episodeId: 'live-budget-admissible',
@@ -698,45 +698,51 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       episodes: { [liveEpisode.episodeId]: liveEpisode },
     });
 
-    const oversizedRetryCandidate = {
+    // ~19KB actionPattern would have failed the old bytes*16 estimator against a
+    // 100K or default 200K wake budget. Review Admission must still schedule it.
+    const largeRetryCandidate = {
       schemaVersion: 1,
       kind: 'capability',
-      capabilityId: 'oversized-retry',
-      title: 'Oversized retry',
-      applicability: 'Exercise prompt-budget admission.',
-      actionPattern: 'x'.repeat(10_000),
+      capabilityId: 'large-retry',
+      title: 'Large retry',
+      applicability: 'Exercise candidate-capacity admission without prompt-size gating.',
+      actionPattern: 'x'.repeat(19_000),
       boundaries: [],
       risks: [],
       provenance: [],
       solvedLoop: {
         problem: 'A large retry is due.',
-        action: 'Retry it when budget permits.',
-        verification: 'Smaller work remains runnable.',
+        action: 'Retry it under scheduler capacity.',
+        verification: 'Semantic review starts regardless of estimated size.',
         noCorrection: 'No correction was present.',
       },
       generatedAt: new Date(0).toISOString(),
       sourceUnit: {
-        filePath: 'oversized-retry.jsonl',
+        filePath: 'large-retry.jsonl',
         byteRange: { start: 0, end: 1 },
         generatedAt: new Date(0).toISOString(),
       },
     } as any;
-    const oversizedRetryBundle = {
-      bundleId: 'oversized-retry-bundle',
-      episode: oversizedRetryCandidate,
+    const largeRetryBundle = {
+      bundleId: 'large-retry-bundle',
+      episode: largeRetryCandidate,
       completionEvidence: [],
       settlementEvidence: [],
       boundedContinuity: [],
       referencedSkills: [],
       relatedCurrentSkills: [],
     } as any;
+    const serializedBytes = Buffer.byteLength(JSON.stringify(largeRetryBundle), 'utf8');
+    assert.ok(serializedBytes >= 19_000);
+    assert.ok(serializedBytes * 16 > 200_000, 'fixture must exceed the old estimator');
+
     const queue = loadReviewQueueState(env.reviewQueuePath);
     addOrUpdateOperationalFailure(
       queue,
-      oversizedRetryCandidate,
-      oversizedRetryBundle,
+      largeRetryCandidate,
+      largeRetryBundle,
       'branch_failure',
-      'oversized retry is due',
+      'large retry is due',
       undefined,
       1,
       1,
@@ -745,15 +751,20 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     saveReviewQueueState(env.reviewQueuePath, queue);
 
     (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxCandidates = 1;
-    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxPromptTokens = 100_000;
+    // Obsolete config remains readable but must not gate admission.
+    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxPromptTokens = 0;
 
     const result = await env.runtimeLearning.wake('manual');
 
-    assert.equal(result.review.reviewedQueueEntries, 0);
+    assert.equal(
+      result.review.reviewedQueueEntries,
+      1,
+      'a ~19KB operational retry reaches semantic review under candidate capacity',
+    );
     assert.equal(
       result.review.reviewedEpisodes,
-      1,
-      'an oversized retry cannot consume the candidate slot needed by an admissible live task',
+      0,
+      'maxCandidates=1 still bounds the wake after admitting the large retry',
     );
     const continuation = JSON.parse(fs.readFileSync(
       reviewContinuationPathForEpisodeStore(env.episodeStorePath),
@@ -762,9 +773,9 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       nextClass?: 'retry' | 'live' | 'historical';
       classCursors?: Partial<Record<'retry' | 'live' | 'historical', string>>;
     };
-    assert.equal(continuation.classCursors?.retry, undefined);
-    assert.equal(continuation.classCursors?.live, liveEpisode.episodeId);
-    assert.equal(continuation.nextClass, 'historical');
+    assert.equal(continuation.classCursors?.retry, largeRetryBundle.bundleId);
+    assert.equal(continuation.classCursors?.live, undefined);
+    assert.equal(continuation.nextClass, 'live');
   });
 
   test('max-candidate-one review rotates durably across retry, live, and historical-ready work', async () => {
@@ -879,18 +890,21 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       return runtime;
     };
 
-    const budgetBlockedRuntime = createRuntime();
-    (budgetBlockedRuntime.getConfig() as any).skillEvolutionReviewMaxPromptTokens = 0;
+    // Candidate capacity of zero is a pure scheduling bound: no work is claimed
+    // and fairness cursors must not advance. Prompt-size is not an admission gate.
+    const capacityBlockedRuntime = createRuntime();
+    (capacityBlockedRuntime.getConfig() as any).skillEvolutionReviewMaxCandidates = 0;
+    (capacityBlockedRuntime.getConfig() as any).skillEvolutionReviewMaxPromptTokens = 0;
     const branchCallsBeforeBlockedWake = { ...env.branchCalls };
 
-    const blocked = await budgetBlockedRuntime.wake('manual');
+    const blocked = await capacityBlockedRuntime.wake('manual');
 
     assert.equal(blocked.review.reviewedEpisodes, 0);
     assert.equal(blocked.review.reviewedQueueEntries, 0);
     assert.deepEqual(
       env.branchCalls,
       branchCallsBeforeBlockedWake,
-      'budget-rejected work never starts Author or Verifier service',
+      'zero candidate capacity never starts Author or Verifier service',
     );
     const blockedContinuation = JSON.parse(fs.readFileSync(
       reviewContinuationPathForEpisodeStore(env.episodeStorePath),

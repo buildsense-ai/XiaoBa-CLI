@@ -2465,7 +2465,8 @@ export class RuntimeLearning {
     const transitionsByKind: Partial<Record<CapabilityTransitionKind, number>> = {};
     const reviewBudget = createReviewBudget({
       maxCandidates: this.config.skillEvolutionReviewMaxCandidates,
-      maxPromptTokens: this.config.skillEvolutionReviewMaxPromptTokens,
+      // skillEvolutionReviewMaxPromptTokens is compatibility-read only; estimated
+      // prompt size never gates Review Admission (ADR 0045 / Evidence Review Jobs).
       deadlineMs: this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000,
       now: () => this.clock().getTime(),
     });

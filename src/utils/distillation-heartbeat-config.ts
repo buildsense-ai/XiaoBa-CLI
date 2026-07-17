@@ -76,7 +76,10 @@ export interface DistillationHeartbeatConfig {
   skillEvolutionReviewAttemptDeadlineMinutes: number;
   /** Maximum review candidates admitted by one wake (eligible + due queue). */
   skillEvolutionReviewMaxCandidates: number;
-  /** Conservative serialized-prompt token budget for one review wake. */
+  /**
+   * @deprecated Estimated prompt size is not a Review Admission signal.
+   * Still read for compatibility with older env configs; ignored by wake admission.
+   */
   skillEvolutionReviewMaxPromptTokens: number;
   /** Optional Author model override. */
   skillEvolutionAuthorModel?: string;
