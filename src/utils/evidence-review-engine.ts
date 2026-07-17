@@ -85,8 +85,11 @@ export interface EvidenceReviewEngineOptions {
   maxQuantaPerAdvance?: number;
   /**
    * Production / SkillEvolution seam: independent Author or Verifier reader
-   * execution over one immutable shard. Tests may inject deterministic fixtures.
-   * When omitted, the engine uses a lane-scoped structural fallback (no model).
+   * execution over one immutable shard. SkillEvolution wires a model-backed
+   * reader here; tests inject deterministic fixtures via SkillEvolution.readerFixture
+   * or a direct runReaderLane callback. When omitted, the engine uses a
+   * lane-scoped structural fallback for low-level engine tests only — never as
+   * silent production semantic certification.
    */
   runReaderLane?: (input: ReaderLaneInput) => Promise<ReaderLaneResult>;
   runSkillAuthor: (input: {
@@ -146,7 +149,8 @@ function asMutableGraphJob(job: EvidenceReviewJob): any {
 }
 
 /**
- * Lane-scoped structural reader used when no model/fixture callback is wired.
+ * Lane-scoped structural reader for explicit test fixtures and engine unit tests.
+ * Not the production SkillEvolution default (that path is model-backed).
  * Author and Verifier use independent finding identity and different pattern
  * emphasis; neither certifies coverage via a shared first-64-byte span.
  */

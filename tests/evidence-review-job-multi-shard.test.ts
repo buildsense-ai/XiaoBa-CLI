@@ -18,6 +18,7 @@ import {
   type SkillVerifierResult,
 } from '../src/utils/skill-evolution';
 import { defaultDistilledOutputDir } from '../src/utils/distillation-pipeline';
+import { readShardStructurally } from '../src/utils/evidence-review-engine';
 import {
   loadEvidenceReviewJobStore,
   evidenceReviewJobStorePathForReviewQueue,
@@ -60,6 +61,10 @@ function setupEnv(): TestEnv {
     operationalRetryMs: 1,
     operationalRetryMaxMs: 60_000,
     logEnabled: false,
+    // Explicit test fixture — production default is model-backed.
+    readerFixture: ({ shard, lane }) => ({
+      findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane),
+    }),
     authorFixture: ({ bundle }): SkillDraft => {
       branchCalls.author += 1;
       const episode = bundle.episode as { authorEvidenceDossier?: { complete?: boolean; coveredShardIds?: string[] } };

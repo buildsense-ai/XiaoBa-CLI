@@ -23,6 +23,7 @@ import {
   TransitionAuditEntry,
   TransitionJournal,
 } from '../src/utils/skill-evolution';
+import { readShardStructurally } from '../src/utils/evidence-review-engine';
 import {
   findOperationalByBundleId,
   addOrUpdateOperationalFailure,
@@ -188,6 +189,10 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
     journalPath: path.join(root, 'data', 'transition-journal.json'),
     manualSkillNames: ['manual-skill'],
     logEnabled: true,
+    // Explicit test fixture — production default is model-backed.
+    readerFixture: ({ shard, lane }) => ({
+      findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane),
+    }),
     authorFixture: ({ round }) => ({
       body: round === 1
         ? 'Use the referenced card maker, validate the generated artifact, and deliver it.'

@@ -35,11 +35,11 @@ import { DistilledKnowledgeCandidate } from './capability-distiller';
 import type { SemanticObservation } from './learning-episode';
 import {
   EvidenceReviewEngine,
-  readShardStructurally,
   resolveEvidenceReviewJobStorePath,
   type ReaderLaneInput,
   type ReaderLaneResult,
 } from './evidence-review-engine';
+import { runModelBackedReaderLane } from './evidence-review-reader-branch';
 import {
   materializeLegacyReviewRecordsAsJobs,
   type EvidenceReviewMigrationMaterializeResult,
@@ -454,14 +454,17 @@ export interface SkillEvolutionOptions extends SkillEvolutionPaths {
   operationalRetryMaxMs?: number;
   authorModel?: string;
   verifierModel?: string;
+  /** Optional model override for dual-lane Evidence Readers (falls back to author/verifier model). */
+  readerModel?: string;
   reviewerVersion?: string;
   promptVersion?: string;
   logEnabled?: boolean;
   authorFixture?: SkillAuthorFixture;
   verifierFixture?: SkillVerifierFixture;
   /**
-   * Optional deterministic dual-lane reader fixture for tests.
-   * Production always has a runReaderLane seam (structural or model-backed).
+   * Explicit deterministic dual-lane reader fixture for tests only.
+   * Never used as silent production semantic certification — production uses
+   * the model-backed reader branch via AIService.
    */
   readerFixture?: (input: ReaderLaneInput) => ReaderLaneResult | Promise<ReaderLaneResult>;
   authorFactory?: (options: SkillAuthorBranchOptions) => SkillAuthorBranchSession;
@@ -482,6 +485,7 @@ export interface SkillEvolutionEffectiveConfig {
   reviewAttemptDeadlineMs: number;
   authorModel?: string;
   verifierModel?: string;
+  readerModel?: string;
 }
 
 export interface SkillEvolutionResult {
@@ -969,18 +973,28 @@ export class SkillEvolutionRuntime {
   }
 
   private async runReaderLaneCallback(input: ReaderLaneInput): Promise<ReaderLaneResult> {
+    // Explicit test fixture only — never silent production semantic certification.
     if (this.options.readerFixture) {
       return this.options.readerFixture(input);
     }
-    // Production structural seam: independent lane-scoped execution. A future
-    // model-backed reader plugs into this same callback without a second scheduler.
-    const findingSet = readShardStructurally(
-      input.shard.shardId,
-      input.shard.contentHash,
-      input.shard.content,
-      input.lane,
-    );
-    return { findingSet };
+    // Production default: lane-isolated model-backed reader via AIService/branch
+    // transcript infrastructure. No second scheduler — runs under the claimed quantum.
+    const laneModel = this.options.readerModel
+      ?? (input.lane === 'author' ? this.options.authorModel : this.options.verifierModel);
+    try {
+      return await runModelBackedReaderLane(input, {
+        aiService: this.createBranchAIService(laneModel),
+        workingDirectory: this.options.workingDirectory,
+        branchLogRoot: this.options.branchLogRoot,
+        model: laneModel,
+        signal: input.signal ?? this.options.reviewAttemptSignal,
+        promptVersion: this.options.promptVersion ?? EVIDENCE_REVIEW_PROMPT_VERSION,
+        policyVersion: EVIDENCE_REVIEW_POLICY_VERSION,
+      });
+    } catch (error) {
+      const paths = extractErrorTranscriptPaths(error);
+      throw this.buildOperationalReviewError(error, paths);
+    }
   }
 
   private async runSkillAuthorQuantum(input: {
@@ -1563,7 +1577,10 @@ export class SkillEvolutionRuntime {
   }
 
   private buildOperationalReviewError(error: unknown, branchTranscriptPaths: string[]): OperationalReviewError {
-    const transcriptPaths = uniqueStrings(branchTranscriptPaths);
+    const transcriptPaths = uniqueStrings([
+      ...branchTranscriptPaths,
+      ...extractErrorTranscriptPaths(error),
+    ]);
     if (error instanceof OperationalReviewError) {
       return new OperationalReviewError(
         error.kind,
@@ -2241,6 +2258,7 @@ export class SkillEvolutionRuntime {
       reviewAttemptDeadlineMs: this.options.reviewAttemptDeadlineMs ?? DEFAULT_REVIEW_ATTEMPT_DEADLINE_MS,
       ...(this.options.authorModel && { authorModel: this.options.authorModel }),
       ...(this.options.verifierModel && { verifierModel: this.options.verifierModel }),
+      ...(this.options.readerModel && { readerModel: this.options.readerModel }),
     };
   }
 
@@ -3756,6 +3774,13 @@ function requireAIService(service: AIService | undefined): AIService {
   // Fixture branches never call the service. A placeholder is safe for that
   // path and keeps branch construction uniform; real branches fail clearly.
   return service ?? ({ chat: async () => { throw new Error('Skill Evolution requires an AIService when no fixture branch is configured.'); }, chatStream: async () => { throw new Error('Skill Evolution requires an AIService when no fixture branch is configured.'); } } as unknown as AIService);
+}
+
+function extractErrorTranscriptPaths(error: unknown): string[] {
+  if (!error || typeof error !== 'object') return [];
+  const paths = (error as { transcriptPaths?: unknown }).transcriptPaths;
+  if (!Array.isArray(paths)) return [];
+  return paths.filter((p): p is string => typeof p === 'string' && p.length > 0);
 }
 
 function opaqueCapabilityHandle(): string {

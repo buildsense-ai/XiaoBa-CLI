@@ -19,7 +19,7 @@ import {
   loadEvidenceReviewJobStore,
   evidenceReviewJobStorePathForReviewQueue,
 } from '../src/utils/evidence-review-job-store';
-import { EvidenceReviewEngine } from '../src/utils/evidence-review-engine';
+import { EvidenceReviewEngine, readShardStructurally } from '../src/utils/evidence-review-engine';
 import { reclaimExpiredLeases, recoverJobAfterRestart } from '../src/utils/evidence-review-graph-core';
 
 function fixtureBundle(): EvidenceBundle {
@@ -95,6 +95,10 @@ describe('Evidence Review Job — multi-wake resume (#107)', () => {
       operationalRetryMs: 1,
       operationalRetryMaxMs: 1_000,
       logEnabled: false,
+      // Explicit test fixture — production default is model-backed.
+      readerFixture: ({ shard, lane }) => ({
+        findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane),
+      }),
       authorFixture: (): SkillDraft => ({
         body: '# Wake Resume\n\nResume safely.',
         envelope: {

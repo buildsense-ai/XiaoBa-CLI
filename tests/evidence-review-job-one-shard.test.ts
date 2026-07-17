@@ -26,6 +26,7 @@ import {
 } from '../src/utils/evidence-review-job-store';
 import { shardEvidenceBundle } from '../src/utils/evidence-sharding';
 import { createEvidenceReviewJob } from '../src/utils/evidence-review-graph';
+import { readShardStructurally } from '../src/utils/evidence-review-engine';
 
 interface TestEnv {
   root: string;
@@ -64,6 +65,10 @@ function setupEnv(): TestEnv {
     operationalRetryMs: 1,
     operationalRetryMaxMs: 60_000,
     logEnabled: false,
+    // Explicit test fixture — production default is model-backed.
+    readerFixture: ({ shard, lane }) => ({
+      findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane),
+    }),
     authorFixture: ({ bundle }): SkillDraft => {
       branchCalls.author += 1;
       const episode = bundle.episode as { authorEvidenceDossier?: unknown };
