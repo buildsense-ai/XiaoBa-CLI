@@ -1213,6 +1213,73 @@ describe('CatsCo content blocks', () => {
     assert.deepStrictEqual(replies, []);
   });
 
+  test('keeps a completion batch when both model回流 and fallback delivery fail', async () => {
+    const { bot, session } = createProcessHarness();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_38_110:agent:usr43';
+    session.handleRuntimeObservation = async () => {
+      throw new Error('model observation failed');
+    };
+    bot.sender.reply = async () => {
+      throw new Error('fallback delivery failed');
+    };
+
+    await (bot as any).handleSubAgentFeedback(
+      sessionKey,
+      'p2p_38_110',
+      'usr38',
+      '[子agent1 已完成]\n任务：审查\n结果摘要：审查完成',
+    );
+    await (bot as any).flushSubAgentCompletionBatch(sessionKey, true);
+
+    const retained = bot.subAgentCompletionBatches.get(sessionKey);
+    assert.ok(retained);
+    assert.equal(retained.items.size, 1);
+    if (retained.timer) clearTimeout(retained.timer);
+    bot.subAgentCompletionBatches.delete(sessionKey);
+  });
+
+  test('drops an in-flight completion batch result when clear advances its generation', async () => {
+    const { bot, session, replies } = createProcessHarness();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_38_110:agent:usr43';
+    session.handleRuntimeObservation = async () => {
+      bot.bumpSessionClearGeneration(sessionKey);
+      return { visibleToUser: true, text: '不应在 clear 后出现的旧结果' };
+    };
+
+    await bot.handleSubAgentFeedback(
+      sessionKey,
+      'p2p_38_110',
+      'usr38',
+      '[子agent1 已完成]\n任务：审查\n结果摘要：旧结果',
+    );
+    await bot.flushSubAgentCompletionBatch(sessionKey, true);
+
+    assert.deepStrictEqual(replies, []);
+    assert.equal(bot.subAgentCompletionBatches.has(sessionKey), false);
+    assert.equal(bot.sessionExecutionReservations.has(sessionKey), false);
+  });
+
+  test('completion batch setup failures still release the session reservation', async () => {
+    const { bot, replies } = createProcessHarness();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_38_110:agent:usr43';
+
+    await bot.handleSubAgentFeedback(
+      sessionKey,
+      'p2p_38_110',
+      'usr38',
+      '[子agent1 已完成]\n任务：审查\n结果摘要：需要兜底的结果',
+    );
+    bot.registerSubAgentPlatformCallbacks = () => {
+      throw new Error('callback setup failed');
+    };
+    await bot.flushSubAgentCompletionBatch(sessionKey, true);
+
+    assert.equal(bot.sessionExecutionReservations.has(sessionKey), false);
+    assert.equal(replies.length, 1);
+    assert.match(replies[0].text, /后台子任务已回传/);
+    assert.match(replies[0].text, /审查（已完成）/);
+  });
+
   test('consumed subagent completion feedback is dropped before runtime observation', async () => {
     const { bot, runtimeObservations, replies, sentTyping } = createProcessHarness();
     const manager = SubAgentManager.getInstance();

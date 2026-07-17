@@ -84,6 +84,7 @@ describe('dashboard runtime config snapshot', () => {
     const enabledTools = snapshot.tools.enabled.map(tool => tool.name);
     assert.ok(enabledTools.includes('send_text'));
     assert.ok(enabledTools.includes('send_file'));
+    assert.ok(enabledTools.includes('import_file'));
     assert.equal(enabledTools.includes('reply'), false);
     assert.equal(
       snapshot.tools.enabled.find(tool => tool.name === 'send_text')?.transcriptMode,
@@ -92,6 +93,10 @@ describe('dashboard runtime config snapshot', () => {
     assert.equal(
       snapshot.tools.enabled.find(tool => tool.name === 'send_file')?.transcriptMode,
       'outbound_file',
+    );
+    assert.equal(
+      snapshot.tools.enabled.find(tool => tool.name === 'import_file')?.transcriptMode,
+      'default',
     );
     assert.deepStrictEqual(snapshot.skills.items.map(skill => skill.name), ['snapshot-demo']);
   });

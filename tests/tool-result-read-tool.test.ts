@@ -380,7 +380,7 @@ describe('ReadTool - ToolExecutionResult', () => {
     );
   });
 
-  test('无文本层 PDF 会转图片并通过 reader proxy 读取', async () => {
+  test('无文本层 PDF 会在非视觉模型下转图片并通过 reader proxy 读取', async () => {
     const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
     const previousReaderUrl = process.env.CATSCOMPANY_READER_API_URL;
     const previousApiKey = process.env.CATSCOMPANY_API_KEY;
@@ -449,6 +449,48 @@ describe('ReadTool - ToolExecutionResult', () => {
       }
       if (previousConfigPath === undefined) delete process.env.XIAOBA_CONFIG_PATH;
       else process.env.XIAOBA_CONFIG_PATH = previousConfigPath;
+      if (previousReaderUrl === undefined) delete process.env.CATSCOMPANY_READER_API_URL;
+      else process.env.CATSCOMPANY_READER_API_URL = previousReaderUrl;
+      if (previousApiKey === undefined) delete process.env.CATSCOMPANY_API_KEY;
+      else process.env.CATSCOMPANY_API_KEY = previousApiKey;
+    }
+  });
+
+  test('无文本层 PDF 会在视觉模型下直接附带渲染页，不调用 reader proxy', async () => {
+    const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
+    const previousProvider = process.env.GAUZ_LLM_PROVIDER;
+    const previousApiBase = process.env.GAUZ_LLM_API_BASE;
+    const previousModel = process.env.GAUZ_LLM_MODEL;
+    const previousReaderUrl = process.env.CATSCOMPANY_READER_API_URL;
+    const previousApiKey = process.env.CATSCOMPANY_API_KEY;
+
+    try {
+      process.env.XIAOBA_CONFIG_PATH = path.join(testRoot, 'missing-config.json');
+      process.env.GAUZ_LLM_PROVIDER = 'anthropic';
+      process.env.GAUZ_LLM_API_BASE = 'https://relay.catsco.cc/anthropic';
+      process.env.GAUZ_LLM_MODEL = 'MiniMax-M3';
+      delete process.env.CATSCOMPANY_READER_API_URL;
+      delete process.env.CATSCOMPANY_API_KEY;
+
+      const filePath = path.join(testRoot, 'scan-like-vision.pdf');
+      writeInlineImagePdf(filePath);
+      const result = await tool.execute({ file_path: filePath }, context);
+
+      assert.strictEqual(result.ok, true);
+      assert.ok(Array.isArray(result.content));
+      const content = result.content as Array<{ type: string; text?: string; source?: { type: string; media_type: string; data: string } }>;
+      assert.ok(content.some(block => block.type === 'text' && block.text?.includes('PDF 文本层未提取到内容')));
+      assert.ok(content.some(block => block.type === 'image' && block.source?.type === 'base64' && block.source.data.length > 0));
+      assert.ok(!content.some(block => block.type === 'text' && block.text?.includes('reader proxy')));
+    } finally {
+      if (previousConfigPath === undefined) delete process.env.XIAOBA_CONFIG_PATH;
+      else process.env.XIAOBA_CONFIG_PATH = previousConfigPath;
+      if (previousProvider === undefined) delete process.env.GAUZ_LLM_PROVIDER;
+      else process.env.GAUZ_LLM_PROVIDER = previousProvider;
+      if (previousApiBase === undefined) delete process.env.GAUZ_LLM_API_BASE;
+      else process.env.GAUZ_LLM_API_BASE = previousApiBase;
+      if (previousModel === undefined) delete process.env.GAUZ_LLM_MODEL;
+      else process.env.GAUZ_LLM_MODEL = previousModel;
       if (previousReaderUrl === undefined) delete process.env.CATSCOMPANY_READER_API_URL;
       else process.env.CATSCOMPANY_READER_API_URL = previousReaderUrl;
       if (previousApiKey === undefined) delete process.env.CATSCOMPANY_API_KEY;

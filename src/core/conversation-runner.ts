@@ -1783,16 +1783,11 @@ export class ConversationRunner {
   }
 
   private resolvePromptBudget(maxContextTokens?: number): number {
-    const envBudget = Number(process.env.GAUZ_LLM_MAX_PROMPT_TOKENS);
-    if (Number.isFinite(envBudget) && envBudget > 0) {
-      return envBudget;
-    }
-
     if (maxContextTokens && maxContextTokens > 0) {
       return maxContextTokens;
     }
 
-    return resolveModelPromptBudgetTokens(this.resolveModelConfig(), process.env);
+    return resolveModelPromptBudgetTokens(this.resolveModelConfig());
   }
 
   private resolveModelConfig(): Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'maxTokens' | 'contextWindowTokens'> {
@@ -1803,15 +1798,7 @@ export class ConversationRunner {
       return serviceConfig;
     }
 
-    return {
-      provider: process.env.GAUZ_LLM_PROVIDER === 'anthropic' || process.env.GAUZ_LLM_PROVIDER === 'openai'
-        ? process.env.GAUZ_LLM_PROVIDER
-        : undefined,
-      apiUrl: process.env.GAUZ_LLM_API_BASE,
-      model: process.env.GAUZ_LLM_MODEL,
-      maxTokens: Number(process.env.GAUZ_LLM_MAX_OUTPUT_TOKENS || process.env.GAUZ_LLM_MAX_TOKENS) || undefined,
-      contextWindowTokens: Number(process.env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS || process.env.GAUZ_LLM_CONTEXT_TOKENS) || undefined,
-    };
+    return {};
   }
 
   private isPromptTooLongError(error: any): boolean {

@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { normalizeUpdateError } = require('./update-errors');
 
 const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
 const DEEP_LINK_PROTOCOL = 'catsco';
@@ -330,29 +331,9 @@ function setUpdateState(patch) {
   });
 }
 
-function normalizeUpdateError(error, fallbackReason = 'UPDATE_ERROR') {
-  const message = String(error?.message || error || 'Unknown update error').trim();
-  let reason = fallbackReason;
-
-  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(message)) {
-    reason = 'DNS_LOOKUP_FAILED';
-  } else if (/ETIMEDOUT|timeout/i.test(message)) {
-    reason = 'NETWORK_TIMEOUT';
-  } else if (/ECONNREFUSED|ECONNRESET|socket hang up/i.test(message)) {
-    reason = 'NETWORK_CONNECTION_FAILED';
-  } else if (/401|403|unauthorized|forbidden/i.test(message)) {
-    reason = 'ACCESS_DENIED';
-  } else if (/404|not\s*found/i.test(message)) {
-    reason = 'RELEASE_NOT_FOUND';
-  } else if (/sha|checksum|signature|integrity/i.test(message)) {
-    reason = 'PACKAGE_VALIDATION_FAILED';
-  }
-
-  return { reason, message };
-}
-
 function markUpdateError(error, fallbackReason = 'UPDATE_ERROR') {
   const normalized = normalizeUpdateError(error, fallbackReason);
+  console.error(`[auto-update] ${normalized.reason}:`, error);
   setUpdateState({
     stage: 'error',
     message: 'Update failed: ' + normalized.reason,

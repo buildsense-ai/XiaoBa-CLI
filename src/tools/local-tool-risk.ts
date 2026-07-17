@@ -102,6 +102,14 @@ export function classifyLocalToolRisk(
   args: unknown,
   context: ToolExecutionContext,
 ): LocalToolRiskDecision {
+  if (toolName === 'skillhub') {
+    return {
+      requiresConfirmation: false,
+      risk: 'low',
+      reason: 'SkillHub 工具只允许受约束的目录浏览和当前 Agent 订阅操作，不使用二次确认。',
+    };
+  }
+
   if (context.surface === 'catscompany') {
     return { requiresConfirmation: false, risk: 'low', reason: 'CatsCo lightweight execution routes do not require local confirmation.' };
   }

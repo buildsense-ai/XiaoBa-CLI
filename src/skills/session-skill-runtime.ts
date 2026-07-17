@@ -1,7 +1,6 @@
 import { Message } from '../types';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import { SkillManager } from './skill-manager';
-import type { Skill } from '../types/skill';
 
 export const TRANSIENT_SKILLS_LIST_PREFIX = '[transient_skills_list]';
 export type SkillReloadHandler = () => Promise<void>;
@@ -9,10 +8,6 @@ export type SkillReloadHandler = () => Promise<void>;
 export interface SkillCommandResult {
   handled: boolean;
   reply?: string;
-}
-
-export interface BuildSkillsListMessageOptions {
-  skillNames?: string[];
 }
 
 export class SessionSkillRuntime {
@@ -30,15 +25,8 @@ export class SessionSkillRuntime {
     await this.reloadHandler();
   }
 
-  buildSkillsListMessage(options: BuildSkillsListMessageOptions = {}): Message | undefined {
-    const allowedNames = options.skillNames && options.skillNames.length > 0
-      ? new Set(options.skillNames)
-      : undefined;
-    const skills = this.skillManager
-      .getUserInvocableSkills()
-      .filter(skill => !allowedNames
-        || allowedNames.has(skill.metadata.name)
-        || isGeneratedDistilledSkill(skill));
+  buildSkillsListMessage(): Message | undefined {
+    const skills = this.skillManager.getUserInvocableSkills();
     if (skills.length === 0) return undefined;
 
     const skillList = skills
@@ -64,8 +52,4 @@ export class SessionSkillRuntime {
 
     return { handled: true, reply: '可用的 Skills（请通过 skill 工具调用）：\n\n' + lines.join('\n\n') };
   }
-}
-
-function isGeneratedDistilledSkill(skill: Skill): boolean {
-  return skill.filePath.split(/[\\/]+/).includes('generated-distilled');
 }

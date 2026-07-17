@@ -8,6 +8,8 @@ import express from 'express';
 import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
+import { FileBotCatalogModelRuntimeRepository, FileBotDefinitionRepository } from '../src/bot-definition/repository';
+import { BOT_CATALOG_MODEL_RUNTIME_SCHEMA, BOT_DEFINITION_SCHEMA } from '../src/bot-definition/types';
 
 describe('dashboard CatsCo account status', () => {
   let testRoot: string;
@@ -455,6 +457,7 @@ describe('dashboard CatsCo account status', () => {
     const text = await response.text();
     const data = JSON.parse(text) as any;
     const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+    const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('188');
 
     assert.equal(response.status, 200, text);
     assert.equal(data.ok, true);
@@ -464,17 +467,12 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.relayModelSetup.reasoningEffort, 'high');
     assert.equal(data.relayModelSetup.createdKey, true);
     assert.equal(text.includes('sk-bf-fresh-secret'), false);
-    assert.equal(env.GAUZ_LLM_PROVIDER, 'anthropic');
-    assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-    assert.equal(env.GAUZ_LLM_MODEL, 'MiniMax-M3');
-    assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-fresh-secret');
-    assert.equal(env.GAUZ_LLM_REASONING_EFFORT, 'high');
-    assert.equal(env.CATSCO_MODEL_SOURCE, 'relay');
-    assert.equal(env.CATSCO_RELAY_LLM_PROVIDER, 'anthropic');
-    assert.equal(env.CATSCO_RELAY_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-    assert.equal(env.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M3');
-    assert.equal(env.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-fresh-secret');
-    assert.equal(env.CATSCO_RELAY_LLM_REASONING_EFFORT, 'high');
+    assert.equal(runtime?.modelId, 'minimax-m3');
+    assert.equal(runtime?.provider, 'anthropic');
+    assert.equal(runtime?.apiBase, 'https://relay.catsco.cc/anthropic');
+    assert.equal(runtime?.model, 'MiniMax-M3');
+    assert.equal(runtime?.apiKey, 'sk-bf-fresh-secret');
+    assert.equal(runtime?.reasoningEffort, 'high');
     assert.equal(env.CATSCO_BOT_UID, '188');
     assert.equal(env.CATSCO_API_KEY, 'cats-agent-key');
     assert.equal(startCalled, 1);
@@ -661,6 +659,135 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(createBotCalls, 0);
   });
 
+  test('POST /cats/bind-bot restores the active binding when target preflight is blocked', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: 'xiaoba-command-that-does-not-exist',
+      args: [],
+      status: 'running',
+    };
+    let restartCalled = 0;
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'catscompany' ? service : undefined),
+      restart: () => {
+        restartCalled += 1;
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(dashboardApp);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 88, username: 'fresh', display_name: 'Fresh User' });
+      }
+      if (req.path === '/api/bots' && req.method === 'GET') {
+        return res.json({
+          bots: [{ uid: 199, username: 'target-agent', display_name: 'Target Agent', api_key: 'target-agent-key' }],
+        });
+      }
+      if (req.path === '/api/friends/request' || req.path === '/api/friends/accept') {
+        return res.json({ ok: true });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+
+    const localConfig = createCatsCoLocalConfigService({ runtimeRoot: testRoot });
+    localConfig.save({
+      version: 1,
+      endpoints: { httpBaseUrl: catsBaseUrl, serverUrl: 'wss://app.catsco.cc/v0/channels' },
+      account: { token: 'user-token', uid: '88', username: 'fresh', displayName: 'Fresh User' },
+      currentBot: { uid: '188', name: 'Active Agent', apiKey: 'active-agent-key' },
+      device: { deviceId: 'device-1', bodyId: 'body-1', installationId: 'install-1' },
+    });
+
+    const definitions = new FileBotDefinitionRepository({ runtimeRoot: testRoot });
+    const targetDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '199',
+      model: { kind: 'catalog' as const, modelId: 'minimax-m3' },
+    };
+    definitions.writeCanonical(targetDefinition);
+    definitions.writeCache(targetDefinition);
+    new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).write({
+      schema: BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+      botId: '199',
+      modelId: 'minimax-m3',
+      provider: 'anthropic',
+      apiBase: 'https://relay.example.test/anthropic',
+      apiKey: 'sk-target-runtime',
+      model: 'MiniMax-M3',
+      contextWindowTokens: 200000,
+      reasoningEffort: 'high',
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/bind-bot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ botUid: '199', setupRelayModel: false }),
+    });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 400);
+    assert.equal(data.error, 'CatsCo connector preflight blocked');
+    assert.equal(data.data?.preflight?.status, 'blocked');
+    assert.equal(data.data?.preflight?.blockingChecks.includes('runtime.command'), true);
+    assert.equal(localConfig.load().currentBot?.uid, '188');
+    assert.equal(restartCalled, 0);
+  });
+
+  test('PUT /model/reasoning-effort accepts and normalizes a legacy catalog runtime alias', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      currentBot: { uid: '188', name: 'Catalog Agent', apiKey: 'catalog-agent-key' },
+      device: { deviceId: 'device-1', bodyId: 'body-1', installationId: 'install-1' },
+    });
+    const definitions = new FileBotDefinitionRepository({ runtimeRoot: testRoot });
+    const definition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '188',
+      model: { kind: 'catalog' as const, modelId: 'minimax-m3' },
+    };
+    definitions.writeCanonical(definition);
+    definitions.writeCache(definition);
+    const runtimeRepository = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot });
+    runtimeRepository.write({
+      schema: BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+      botId: '188',
+      modelId: 'MiniMax-M3',
+      provider: 'anthropic',
+      apiBase: 'https://relay.example.test/anthropic',
+      apiKey: 'sk-legacy-runtime',
+      model: 'MiniMax-M3',
+      contextWindowTokens: 200000,
+      reasoningEffort: 'high',
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/model/reasoning-effort`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reasoningEffort: 'max' }),
+    });
+    const data = await response.json() as any;
+    const runtime = runtimeRepository.read('188');
+
+    assert.equal(response.status, 200, JSON.stringify(data));
+    assert.equal(data.source, 'relay');
+    assert.equal(data.reasoningEffort, 'max');
+    assert.equal(runtime?.modelId, 'minimax-m3');
+    assert.equal(runtime?.model, 'MiniMax-M3');
+    assert.equal(runtime?.reasoningEffort, 'max');
+  });
+
   test('POST /cats/bind-bot writes relay model config before starting an existing bot binding', async () => {
     if (dashboardServer) {
       await close(dashboardServer);
@@ -771,6 +898,7 @@ describe('dashboard CatsCo account status', () => {
     const text = await response.text();
     const data = JSON.parse(text) as any;
     const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+    const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('188');
 
     assert.equal(response.status, 200, text);
     assert.equal(data.ok, true);
@@ -780,13 +908,12 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.relayModelSetup.createdKey, true);
     assert.equal(text.includes('sk-bf-existing-bot-secret'), false);
     assert.equal(relayKeyCreated, 1);
-    assert.equal(env.GAUZ_LLM_PROVIDER, 'anthropic');
-    assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-    assert.equal(env.GAUZ_LLM_MODEL, 'MiniMax-M3');
-    assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-existing-bot-secret');
-    assert.equal(env.GAUZ_LLM_REASONING_EFFORT, 'high');
-    assert.equal(env.CATSCO_MODEL_SOURCE, 'relay');
-    assert.equal(env.CATSCO_RELAY_LLM_REASONING_EFFORT, 'high');
+    assert.equal(runtime?.modelId, 'minimax-m3');
+    assert.equal(runtime?.provider, 'anthropic');
+    assert.equal(runtime?.apiBase, 'https://relay.catsco.cc/anthropic');
+    assert.equal(runtime?.model, 'MiniMax-M3');
+    assert.equal(runtime?.apiKey, 'sk-bf-existing-bot-secret');
+    assert.equal(runtime?.reasoningEffort, 'high');
     assert.equal(env.CATSCO_BOT_UID, '188');
     assert.equal(env.CATSCO_API_KEY, 'cats-agent-key');
     assert.equal(startCalled, 1);

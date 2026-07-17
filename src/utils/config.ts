@@ -5,6 +5,8 @@ import * as dotenv from 'dotenv';
 import { ChatConfig } from '../types';
 import { normalizeReasoningEffort } from './reasoning-effort';
 import { normalizeOpenAIApiMode } from './openai-api-mode';
+import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
+import { PathResolver } from './path-resolver';
 
 // 加载环境变量（静默模式）
 dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || '.env', quiet: true });
@@ -64,17 +66,17 @@ export class ConfigManager {
 
   static getConfig(): ChatConfig {
     this.ensureConfigDir();
-    return this.mergeConfig(
+    return this.applyActiveBotDefinition(this.mergeConfig(
       this.mergeConfig(this.getDefaultConfig(), this.loadUserConfigFile()),
       this.getExplicitModelEnvConfig(),
-    );
+    ));
   }
 
   static getConfigReadonly(): ChatConfig {
-    return this.mergeConfig(
+    return this.applyActiveBotDefinition(this.mergeConfig(
       this.mergeConfig(this.getDefaultConfig(), this.loadUserConfigFile()),
       this.getExplicitModelEnvConfig(),
-    );
+    ));
   }
 
   static saveConfig(config: ChatConfig): void {
@@ -162,6 +164,39 @@ export class ConfigManager {
     }
 
     return override;
+  }
+
+  /**
+   * A bound bot resolves its model entirely from the local BotDefinition
+   * cache and (for catalog models) device-local relay material. Legacy .env
+   * remains only as a one-time migration source when that material is absent.
+   */
+  private static applyActiveBotDefinition(config: ChatConfig): ChatConfig {
+    const resolved = resolveActiveBotLLMConfig({ runtimeRoot: PathResolver.getRuntimeDataRoot() });
+    if (!resolved) return config;
+    return {
+      ...this.withoutModelConfig(config),
+      ...resolved.config,
+    };
+  }
+
+  /**
+   * Once a bot is bound, its Definition owns every model-affecting field.
+   * Keeping a legacy value here as a partial fallback would let one device's
+   * stale .env silently alter a different bot.
+   */
+  private static withoutModelConfig(config: ChatConfig): ChatConfig {
+    const next = { ...config };
+    delete next.apiKey;
+    delete next.apiUrl;
+    delete next.model;
+    delete next.provider;
+    delete next.temperature;
+    delete next.maxTokens;
+    delete next.contextWindowTokens;
+    delete next.reasoningEffort;
+    delete next.openaiApiMode;
+    return next;
   }
 
   private static parsePositiveIntegerEnv(...values: Array<string | undefined>): number | undefined {

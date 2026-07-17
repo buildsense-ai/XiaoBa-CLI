@@ -48,15 +48,23 @@ export interface SkillHubInstallResult {
     name: string;
     version: string;
     path: string;
+    installName: string;
+    action: 'installed' | 'updated' | 'unchanged';
   };
   signingKeyId: string;
   rootKeyId: string;
 }
 
+export type SkillHubSubscriptionScope =
+  | { kind: 'user'; userId: string }
+  | { kind: 'runtime' };
+
 export interface SkillHubPackageInstallMarker {
   source: 'skillhub';
+  userId?: string;
   skillId: string;
   name: string;
+  installName: string;
   version: string;
   packageChecksumSha256: string;
   signature: VerifierRegistryEntry['signature'];
@@ -66,5 +74,21 @@ export interface SkillHubPackageInstallMarker {
 
 export type SkillHubRegistryEntry = VerifierRegistryEntry & {
   contentHash?: string;
+  description?: string;
+  categories?: string[];
+  tags?: string[];
+  permissions?: Record<string, unknown>;
+  runtime?: Record<string, unknown>;
+  riskLevel?: string;
 };
+
+export interface UserSkillSubscription {
+  skillId: string;
+  name: string;
+  installName: string;
+  versionPolicy: 'latest';
+  resolvedVersion: string;
+  subscribedAt: string;
+  updatedAt: string;
+}
 export type { SkillHubTrustResponse };

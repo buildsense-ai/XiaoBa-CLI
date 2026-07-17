@@ -78,6 +78,9 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
   },
 ];
 
+/** The first-run CatsCo model when the user has not chosen one yet. */
+export const DEFAULT_CATSCO_RELAY_MODEL_ID = 'minimax-m3';
+
 function normalizeModelName(value: unknown): string {
   return String(value || '').trim().toLowerCase();
 }
@@ -88,6 +91,28 @@ export function findRelayModelProfile(model: unknown): RelayModelProfile | undef
   return RELAY_MODEL_PROFILES.find(profile => (
     normalizeModelName(profile.model) === normalized || normalizeModelName(profile.id) === normalized
   ));
+}
+
+/**
+ * Catalog records persist this stable ID only. The relay-facing model spelling
+ * and the UI label are always derived from the profile at their use sites.
+ */
+export function canonicalRelayModelId(value: unknown): string | undefined {
+  const profile = findRelayModelProfile(value);
+  return profile?.id;
+}
+
+/**
+ * Old installations stored either the catalog ID or the relay-facing model
+ * name. Treat known aliases as one catalog model during migration.
+ */
+export function relayModelIdsMatch(left: unknown, right: unknown): boolean {
+  const leftProfile = findRelayModelProfile(left);
+  const rightProfile = findRelayModelProfile(right);
+  if (leftProfile || rightProfile) return leftProfile?.id === rightProfile?.id;
+  const normalizedLeft = normalizeModelName(left);
+  const normalizedRight = normalizeModelName(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 }
 
 export function relayModelProviderBaseUrl(provider: RelayModelProvider): string {

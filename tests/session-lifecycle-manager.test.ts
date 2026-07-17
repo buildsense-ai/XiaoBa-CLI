@@ -107,6 +107,28 @@ describe('AgentSession lifecycle', () => {
     assert.equal(SessionStore.getInstance().loadRuntimeState('user:lifecycle-cwd').currentDirectory, defaultDir);
   });
 
+  test('remote context cursor survives restart without overwriting current directory', async () => {
+    const { AgentSession } = loadSessionModules();
+    const defaultDir = fs.mkdtempSync(path.join(testRoot, 'cursor-default-'));
+    const nestedDir = path.join(defaultDir, 'nested');
+    fs.mkdirSync(nestedDir);
+    const services = buildMockServices({
+      toolManager: {
+        getWorkspaceRoot() { return defaultDir; },
+        getToolDefinitions() { return []; },
+        executeTool() { throw new Error('not expected'); },
+      },
+    });
+
+    const session = new AgentSession('cc_group:cursor-test', services, 'catscompany');
+    (session as any).updateCurrentDirectory(nestedDir);
+    session.saveRemoteContextCursor('catscompany.agent_context', 88);
+
+    const restored = new AgentSession('cc_group:cursor-test', services, 'catscompany');
+    assert.equal(restored.getRemoteContextCursor('catscompany.agent_context'), 88);
+    assert.equal((restored as any).currentDirectory, nestedDir);
+  });
+
   test('current directory inside Electron userData is preserved when explicitly persisted', async () => {
     const { AgentSession, SessionStore } = loadSessionModules();
     const originalUserDataDir = process.env.XIAOBA_USER_DATA_DIR;

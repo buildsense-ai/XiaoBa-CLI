@@ -33,11 +33,13 @@ git push origin v0.1.2
 2. 运行 `node scripts/inject-version.js`
 3. 构建三端 Electron 安装包
 4. 上传各平台产物为 workflow artifacts
-5. 最后统一创建一个 GitHub Release，并挂载三端安装包
+5. 上传并确认 CDN 不可变产物
+6. 创建 draft GitHub Release，并挂载三端安装包
+7. 最后发布更新元数据，核对 CDN 内容后再公开 GitHub Release
 
 ## 产物说明
 
-- macOS：`.dmg`
+- macOS：供手动安装的 `.dmg`，以及供自动更新使用的 `.zip`（x64、arm64 各一套）
 - Windows：`.exe`
 - Linux：`.AppImage` 和 `.deb`
 
@@ -45,5 +47,9 @@ git push origin v0.1.2
 
 - 构建阶段的 `electron-builder` 已固定为 `--publish never`，不会在单个平台构建时提前发布
 - 真正的 GitHub Release 只会在最后一个 `release` job 中统一创建
+- `release-prod` 必须配置两项 TOS 凭据；缺失时发布会硬失败
+- macOS 构建后必须验证清单、DMG、ZIP 的大小和 SHA-512；当前沿用未签名分发和用户手动确认安装的方式
+- 发布完成后会逐字节比对 CDN 元数据，并流式核对远端 DMG、ZIP 的 SHA-512；HTTP 200 本身不算发布成功
+- GitHub Release 在远端验证完成前保持 draft，避免留下“Release 已公开但自动更新未完成”的半发布状态
 - 如果 tag 打错了，先删除远端 tag，再重新打正确的 tag
 - `scripts/release.sh` 是旧流程遗留，不作为当前标准发布入口

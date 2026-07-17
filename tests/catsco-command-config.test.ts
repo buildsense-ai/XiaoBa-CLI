@@ -10,6 +10,7 @@ import { createCatsCoLocalConfigService } from '../src/catscompany/local-config'
 describe('CatsCo command config resolution', () => {
   let tempDir: string;
   let originalCwd: string;
+  let originalRuntimeRoot: string | undefined;
 
   const baseConfig: ChatConfig = {
     catscompany: {
@@ -22,12 +23,18 @@ describe('CatsCo command config resolution', () => {
 
   beforeEach(() => {
     originalCwd = process.cwd();
+    originalRuntimeRoot = process.env.XIAOBA_RUNTIME_ROOT;
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-command-config-'));
     process.chdir(tempDir);
   });
 
   afterEach(() => {
     process.chdir(originalCwd);
+    if (originalRuntimeRoot === undefined) {
+      delete process.env.XIAOBA_RUNTIME_ROOT;
+    } else {
+      process.env.XIAOBA_RUNTIME_ROOT = originalRuntimeRoot;
+    }
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -83,8 +90,25 @@ describe('CatsCo command config resolution', () => {
     assert.equal(resolved.config, undefined);
   });
 
-  function saveConfirmedBinding(): void {
-    createCatsCoLocalConfigService({ runtimeRoot: tempDir }).save({
+  test('uses the explicit runtime data root for CatsCo binding and model resolution', () => {
+    const runtimeRoot = path.join(tempDir, 'runtime-data');
+    process.env.XIAOBA_RUNTIME_ROOT = runtimeRoot;
+    saveConfirmedBinding(runtimeRoot);
+
+    const resolved = resolveCatsCoCommandConfig({}, {
+      CATSCO_USER_TOKEN: 'env-token',
+      CATSCO_USER_UID: 'user-1',
+      CATSCO_SERVER_URL: 'wss://catsco.example/v0/channels',
+      CATSCO_API_KEY: 'catsco-key',
+    });
+
+    assert.deepEqual(resolved.missing, []);
+    assert.equal(resolved.config?.apiKey, 'local-bot-key');
+    assert.equal(resolved.config?.bodyId, 'body-local');
+  });
+
+  function saveConfirmedBinding(runtimeRoot = tempDir): void {
+    createCatsCoLocalConfigService({ runtimeRoot }).save({
       version: 1,
       endpoints: {
         httpBaseUrl: 'https://local.example',

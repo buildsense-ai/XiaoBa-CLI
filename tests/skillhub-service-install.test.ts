@@ -61,7 +61,12 @@ describe('SkillHub connected install service', () => {
     assert.equal(fs.existsSync(path.join(install.skill.path, 'skill.json')), false);
     assert.equal(fs.existsSync(path.join(install.skill.path, 'REVIEW.json')), false);
     assert.equal(fs.existsSync(path.join(install.skill.path, 'SBOM.json')), false);
-    assert.equal(fs.existsSync(path.join(install.skill.path, '.xiaoba-skillhub-install.json')), false);
+    const markerPath = path.join(install.skill.path, '.xiaoba-skillhub-install.json');
+    assert.equal(fs.existsSync(markerPath), true);
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    assert.equal(marker.source, 'skillhub');
+    assert.equal(marker.skillId, fixture.entry.skillId);
+    assert.equal(marker.version, fixture.entry.latestVersion);
   });
 
   test('does not write files when package checksum verification fails', async () => {

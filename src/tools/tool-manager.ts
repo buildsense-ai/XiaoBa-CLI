@@ -9,6 +9,7 @@ import { GrepTool } from './grep-tool';
 import { CommonDirectoryTool } from './common-directory-tool';
 import { SkillTool } from './skill-tool';
 import { SendFileTool } from './send-file-tool';
+import { ImportFileTool } from './import-file-tool';
 import { SendTextTool } from './send-text-tool';
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
@@ -18,6 +19,7 @@ import { ResumeSubagentTool } from './resume-subagent-tool';
 import { UpdatePlanTool } from './update-plan-tool';
 import { RecordDecisionTool } from './record-decision-tool';
 import { ShareSkillHubSkillTool } from './share-skillhub-skill-tool';
+import { SkillHubTool } from './skillhub-tool';
 import { AskParentTool } from './ask-parent-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
@@ -91,6 +93,7 @@ export class ToolManager implements ToolExecutor {
       new ShellTool(),
       new SendTextTool(),
       new SendFileTool(),
+      new ImportFileTool(),
       new SpawnSubagentTool(),
       new CheckSubagentTool(),
       new WaitSubagentsTool(),
@@ -99,6 +102,7 @@ export class ToolManager implements ToolExecutor {
       new UpdatePlanTool(),
       new RecordDecisionTool(),
       new ShareSkillHubSkillTool(),
+      new SkillHubTool(),
       new SkillTool(new SkillUsageLedger(getDistillationHeartbeatConfig(this.workingDirectory).skillUsageLedgerPath)),
     ];
 

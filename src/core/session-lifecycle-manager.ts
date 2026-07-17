@@ -94,7 +94,27 @@ export class SessionLifecycleManager {
   }
 
   saveCurrentDirectory(currentDirectory: string): void {
-    this.sessionStore.saveRuntimeState(this.options.sessionKey, { currentDirectory });
+    this.sessionStore.saveRuntimeState(this.options.sessionKey, {
+      ...this.sessionStore.loadRuntimeState(this.options.sessionKey),
+      currentDirectory,
+    });
+  }
+
+  loadRemoteContextCursor(source: string): number {
+    const cursor = Number(this.sessionStore.loadRuntimeState(this.options.sessionKey).remoteContextCursors?.[source]);
+    return Number.isFinite(cursor) && cursor > 0 ? cursor : 0;
+  }
+
+  saveRemoteContextCursor(source: string, cursor: number): void {
+    if (!source || !Number.isFinite(cursor) || cursor <= 0) return;
+    const state = this.sessionStore.loadRuntimeState(this.options.sessionKey);
+    this.sessionStore.saveRuntimeState(this.options.sessionKey, {
+      ...state,
+      remoteContextCursors: {
+        ...(state.remoteContextCursors || {}),
+        [source]: cursor,
+      },
+    });
   }
 
   persistAndClear(messages: Message[]): PersistAndClearResult {

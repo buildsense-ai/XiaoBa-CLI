@@ -143,6 +143,26 @@ describe('dashboard service manager', () => {
     assert.equal((service?.lastError || '').includes('sk-live-secret1234567890'), false);
   });
 
+  test('passes the dashboard owner pid to the CatsCo connector process', async () => {
+    const manager = new ServiceManager(process.cwd());
+    const serviceRecord = (manager as any).services.get('catscompany');
+    serviceRecord.info.command = process.execPath;
+    serviceRecord.info.args = [
+      '-e',
+      "console.log('owner=' + process.env.CATSCO_CONNECTOR_OWNER_PID);",
+    ];
+
+    const stopped = new Promise<void>(resolve => {
+      manager.once('service-stopped', () => resolve());
+    });
+
+    manager.start('catscompany');
+    await stopped;
+
+    assert.ok(manager.getLogs('catscompany').includes(`owner=${process.pid}`));
+    assert.equal(manager.getService('catscompany')?.status, 'stopped');
+  });
+
   test('treats dashboard-requested service stop as stopped even when the child exits non-zero', async () => {
     const manager = new ServiceManager(process.cwd());
     const serviceRecord = (manager as any).services.get('weixin');

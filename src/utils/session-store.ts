@@ -125,6 +125,7 @@ function serializeMessages(messages: Message[]): string {
 
 export interface SessionRuntimeState {
   currentDirectory?: string;
+  remoteContextCursors?: Record<string, number>;
   updatedAt?: string;
 }
 

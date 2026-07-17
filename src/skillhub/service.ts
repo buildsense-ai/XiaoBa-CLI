@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { SkillParser } from '../skills/skill-parser';
 import type { Skill } from '../types/skill';
 import { PathResolver } from '../utils/path-resolver';
@@ -7,7 +8,12 @@ import { SkillHubClient } from './client';
 import {
   writeSkillHubLocalMetadata,
 } from './local-skill-metadata';
-import { installVerifiedSkillHubPackage } from './package-installer';
+import {
+  claimSkillHubPackageOwnership,
+  installVerifiedSkillHubPackage,
+  uninstallSkillHubPackage,
+} from './package-installer';
+import { listInstalledSkillHubSkills } from './install-marker';
 import { verifySkillHubPackage } from './package-verifier';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from './trusted-keys';
 import type {
@@ -16,6 +22,8 @@ import type {
   SkillHubPackageInstallMarker,
   SkillHubRegistryEntry,
   SkillHubSearchResponse,
+  SkillHubSubscriptionScope,
+  SkillHubUser,
 } from './types';
 
 export class SkillHubService {
@@ -69,6 +77,42 @@ export class SkillHubService {
     });
   }
 
+  async requireAuthenticatedUser(): Promise<SkillHubUser> {
+    let auth = await this.client.status();
+    if (!auth.authenticated || !String(auth.user?.id || '').trim()) {
+      const cats = createCatsCoLocalConfigService({
+        runtimeRoot: PathResolver.getRuntimeDataRoot(),
+      }).getAuthState();
+      if (!cats.token) throw skillHubLoginRequired();
+      auth = await this.loginWithCatsCo({
+        token: cats.token,
+        baseUrl: cats.httpBaseUrl,
+        user: {
+          uid: cats.uid,
+          username: cats.username,
+          displayName: cats.displayName,
+        },
+      });
+    }
+    const user = auth.user;
+    const userId = String(user?.id || '').trim();
+    if (!auth.authenticated || !user || !userId) {
+      throw skillHubLoginRequired();
+    }
+    return { ...user, id: userId };
+  }
+
+  async resolveSubscriptionScope(): Promise<SkillHubSubscriptionScope> {
+    const cats = createCatsCoLocalConfigService({
+      runtimeRoot: PathResolver.getRuntimeDataRoot(),
+    }).getAuthState();
+    if (!String(cats.token || '').trim() && String(cats.apiKey || '').trim()) {
+      return { kind: 'runtime' };
+    }
+    const user = await this.requireAuthenticatedUser();
+    return { kind: 'user', userId: user.id };
+  }
+
   logout(): Promise<{ ok: true }> {
     return this.client.logout();
   }
@@ -87,7 +131,11 @@ export class SkillHubService {
     return this.client.getSkill(skillId);
   }
 
-  async install(skillId: string, version?: string): Promise<SkillHubInstallResult> {
+  async install(
+    skillId: string,
+    version?: string,
+    options: { userId?: string; allowUpdate?: boolean } = {},
+  ): Promise<SkillHubInstallResult> {
     const registryEntry = await this.resolveRegistryEntry(skillId, version);
     const [trust, packageBytes] = await Promise.all([
       this.client.getTrust(),
@@ -101,6 +149,8 @@ export class SkillHubService {
     const installed = installVerifiedSkillHubPackage({
       verification,
       registryEntry,
+      userId: options.userId,
+      allowUpdate: options.allowUpdate,
     });
     return {
       ok: true,
@@ -108,6 +158,14 @@ export class SkillHubService {
       signingKeyId: verification.signingKey.keyId,
       rootKeyId: verification.root.keyId,
     };
+  }
+
+  uninstall(input: { userId?: string; skillId: string; installName: string }): { removed: boolean; path: string } {
+    return uninstallSkillHubPackage(input);
+  }
+
+  claimInstalledSkillOwnership(input: { userId: string; skillId: string; installName: string }): boolean {
+    return claimSkillHubPackageOwnership(input);
   }
 
   developerDashboard(): Promise<any> {
@@ -467,6 +525,9 @@ function skillHubMetadataFromShareResponse(response: any): { author: string; ver
   return undefined;
 }
 
-function listInstalledSkillHubSkills(): SkillHubPackageInstallMarker[] {
-  return [];
+function skillHubLoginRequired(): Error {
+  const error: any = new Error('请先登录 CatsCo 并连接 SkillHub。');
+  error.status = 401;
+  error.code = 'skillhub.login_required';
+  return error;
 }

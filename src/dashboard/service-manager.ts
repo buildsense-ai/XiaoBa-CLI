@@ -281,6 +281,7 @@ export class ServiceManager extends EventEmitter {
       envVars = {
         ...envVars,
         ...catsCoRuntime.envOverlay,
+        CATSCO_CONNECTOR_OWNER_PID: String(process.pid),
       };
     }
 

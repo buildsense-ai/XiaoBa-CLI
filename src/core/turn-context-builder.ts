@@ -71,9 +71,7 @@ export class TurnContextBuilder {
     const transientPolicy = resolveTurnContextTransientPolicy(contextMessages);
     if (transientPolicy.injectSkillsList) {
       await params.skillRuntime.reloadSkills();
-      const skillsListMsg = params.skillRuntime.buildSkillsListMessage({
-        skillNames: transientPolicy.skillNames,
-      });
+      const skillsListMsg = params.skillRuntime.buildSkillsListMessage();
       if (skillsListMsg) {
         this.insertBeforeLastUser(contextMessages, skillsListMsg);
       }

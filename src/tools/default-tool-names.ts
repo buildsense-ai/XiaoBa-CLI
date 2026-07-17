@@ -8,6 +8,7 @@ export const DEFAULT_TOOL_NAMES = [
   'execute_shell',
   'send_text',
   'send_file',
+  'import_file',
   'spawn_subagent',
   'check_subagent',
   'wait_subagents',
@@ -16,6 +17,7 @@ export const DEFAULT_TOOL_NAMES = [
   'update_plan',
   'record_decision',
   'share_skillhub_skill',
+  'skillhub',
   'skill',
 ] as const;
 

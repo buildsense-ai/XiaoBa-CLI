@@ -1,6 +1,9 @@
 import inquirer from 'inquirer';
 import { Logger } from '../utils/logger';
 import { ConfigManager } from '../utils/config';
+import { createCatsCoLocalConfigService } from '../catscompany/local-config';
+import { createBotDefinitionSyncService } from '../bot-definition/service';
+import { PathResolver } from '../utils/path-resolver';
 import { styles } from '../theme/colors';
 
 export async function configCommand(): Promise<void> {
@@ -46,6 +49,25 @@ export async function configCommand(): Promise<void> {
     temperature: answers.temperature,
   };
 
-  ConfigManager.saveConfig(finalConfig);
+  const runtimeRoot = PathResolver.getRuntimeDataRoot();
+  const botId = String(createCatsCoLocalConfigService({ runtimeRoot }).load().currentBot?.uid || '').trim();
+  if (botId) {
+    const provider = currentConfig.provider === 'anthropic' ? 'anthropic' : 'openai';
+    createBotDefinitionSyncService({ runtimeRoot }).publish(botId, {
+      kind: 'custom',
+      protocol: provider === 'anthropic'
+        ? 'anthropic'
+        : currentConfig.openaiApiMode === 'responses' ? 'openai-responses' : 'openai-chat-completions',
+      apiBase: finalConfig.apiUrl,
+      model: finalConfig.model,
+      apiKey: finalConfig.apiKey,
+      contextWindowTokens: currentConfig.contextWindowTokens ?? 200_000,
+      ...(currentConfig.maxTokens ? { maxTokens: currentConfig.maxTokens } : {}),
+      ...(typeof finalConfig.temperature === 'number' ? { temperature: finalConfig.temperature } : {}),
+      ...(currentConfig.reasoningEffort ? { reasoningEffort: currentConfig.reasoningEffort } : {}),
+    });
+  } else {
+    ConfigManager.saveConfig(finalConfig);
+  }
   Logger.success('配置已保存！');
 }

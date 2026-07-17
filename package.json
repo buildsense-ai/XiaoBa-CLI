@@ -1,6 +1,6 @@
 {
   "name": "xiaoba-cli",
-  "version": "1.4.2",
+  "version": "1.4.4",
   "description": "CatsCo - local agent runtime and dashboard",
   "main": "electron/main.js",
   "bin": {
@@ -85,6 +85,7 @@
     "electron": "^33.4.11",
     "electron-builder": "^26.8.1",
     "electron-packager": "^17.1.2",
+    "js-yaml": "^4.1.0",
     "playwright": "^1.58.2",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
@@ -153,7 +154,8 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
       "icon": "build-resources/icons/icon.icns",
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}"

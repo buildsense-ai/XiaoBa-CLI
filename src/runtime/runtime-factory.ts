@@ -2,6 +2,7 @@ import { AgentServices, AgentSession, SystemPromptProvider } from '../core/agent
 import { SkillManager } from '../skills/skill-manager';
 import { ToolManager } from '../tools/tool-manager';
 import { AIService } from '../utils/ai-service';
+import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
 import { Logger } from '../utils/logger';
 import { PromptManager } from '../utils/prompt-manager';
 import { PromptComposer } from './prompt-composer';
@@ -63,8 +64,13 @@ export class RuntimeFactory {
   static createServicesSync(profile: RuntimeProfile): AgentServices {
     assertValidRuntimeProfile(profile);
 
+    // A per-surface runtime profile may still carry old model fields. Once a
+    // CatsCo bot is bound, let ConfigManager resolve its Definition instead of
+    // allowing that profile to override the bot identity.
+    const modelOverride = resolveActiveBotLLMConfig() ? {} : profile.model;
+
     return {
-      aiService: new AIService(profile.model),
+      aiService: new AIService(modelOverride),
       toolManager: new ToolManager(profile.workingDirectory, {}, {
         enabledToolNames: profile.tools.enabled,
       }),

@@ -15,13 +15,11 @@ export interface TransientTurnIntent {
   skillRelevant: boolean;
   complexWork: boolean;
   plainChat: boolean;
-  skillNames?: string[];
 }
 
 export interface TurnContextTransientPolicy {
   intent: TransientTurnIntent;
   injectSkillsList: boolean;
-  skillNames?: string[];
 }
 
 export interface ProviderTransientPolicy {
@@ -92,12 +90,14 @@ const CONCEPTUAL_SIGNAL =
 
 export function resolveTurnContextTransientPolicy(messages: Message[]): TurnContextTransientPolicy {
   const intent = analyzeTransientIntent(messages);
-  const injectSkillsList = intent.skillRelevant;
+  // Every real user turn gets the complete list of user-invocable skills.
+  // Skill descriptions cannot participate in model routing unless the model
+  // can see them, so do not pre-filter the list with hard-coded intent rules.
+  const injectSkillsList = Boolean(intent.latestUserText);
 
   return {
     intent,
     injectSkillsList,
-    ...(intent.skillNames ? { skillNames: intent.skillNames } : {}),
   };
 }
 
@@ -177,15 +177,6 @@ export function analyzeTransientIntent(messages: Message[]): TransientTurnIntent
     || hasBrowserSignal
     || recentToolContext
   );
-  const skillNames = selectSkillNames({
-    hasWorkspaceSignal,
-    hasOfficeSignal,
-    hasBrowserSignal,
-    hasMemorySignal,
-    hasSelfEvolutionSignal,
-    hasSkillSignal,
-    actionable,
-  });
   const skillRelevant = hasSkillSignal
     || hasBrowserSignal
     || hasMemorySignal
@@ -215,7 +206,6 @@ export function analyzeTransientIntent(messages: Message[]): TransientTurnIntent
     skillRelevant,
     complexWork,
     plainChat: kind === 'plain-chat',
-    ...(skillNames.length > 0 ? { skillNames } : {}),
   };
 }
 
@@ -239,31 +229,6 @@ function resolveIntentKind(options: {
   }
   if (options.workspaceRelevant || options.actionable) return 'workspace';
   return 'plain-chat';
-}
-
-function selectSkillNames(options: {
-  hasWorkspaceSignal: boolean;
-  hasOfficeSignal: boolean;
-  hasBrowserSignal: boolean;
-  hasMemorySignal: boolean;
-  hasSelfEvolutionSignal: boolean;
-  hasSkillSignal: boolean;
-  actionable: boolean;
-}): string[] {
-  if (options.hasSkillSignal && !options.hasBrowserSignal && !options.hasMemorySignal && !options.hasSelfEvolutionSignal) {
-    return [];
-  }
-
-  const names = new Set<string>();
-  if (options.hasWorkspaceSignal && options.actionable) names.add('coding-context');
-  if (
-    options.actionable
-    && options.hasOfficeSignal
-  ) names.add('officecli');
-  if (options.hasBrowserSignal) names.add('agent-browser');
-  if (options.hasMemorySignal) names.add('memory-search');
-  if (options.hasSelfEvolutionSignal) names.add('self-evolution');
-  return [...names];
 }
 
 function findLatestRealUserText(messages: Message[]): string {
