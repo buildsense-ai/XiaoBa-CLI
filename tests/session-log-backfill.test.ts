@@ -327,6 +327,84 @@ test('one long resource resumes page-sized event quanta without replay or loss',
   assert.equal(third.state.metrics.resourcesProcessed, 1);
 });
 
+test('blocked_zero_progress is resumable after bounds correction', () => {
+  const env = makeEnv();
+  const resourceRef = 'oversized-conversation';
+  const unit = buildUnit(env.root, 'blocked-zero', 'blocked-session');
+  const source: ExternalSessionLogBackfillSource = {
+    identity: {
+      sourceId: 'fixture-external-source',
+      label: 'Blocked fixture source',
+      category: 'external',
+      provider: 'fixture-provider',
+      reader: 'fixture-backfill',
+    },
+    discoverResources: () => [{
+      resourceRef,
+      firstEventIdentity: {
+        eventId: 'blocked-event-0',
+        position: 0,
+        contentHash: 'blocked-hash-0',
+      },
+    }],
+    read: (_resource, cursor) => ({
+      events: [{
+        identity: {
+          eventId: 'blocked-event-0',
+          position: 0,
+          contentHash: 'blocked-hash-0',
+        },
+        distillationUnit: unit,
+        // Larger than the first two runs' maxBytes so the page cannot progress.
+        byteLength: 1_000,
+      }],
+      status: 'stable' as const,
+      exhausted: true,
+      newCursor: {
+        resourceRef,
+        position: 0,
+        processedCount: cursor.processedCount + 1,
+      },
+    }),
+  };
+
+  const tightRequest = makeRequest({
+    resourceRefs: [resourceRef],
+    endPosition: 0,
+    maxBytes: 100,
+  });
+
+  const service = new ExternalSessionLogBackfillService({
+    stateFilePath: env.stateFilePath,
+    auditFilePath: env.auditFilePath,
+    now: sequentialClock(),
+  });
+
+  const first = service.run(tightRequest, source, unitToEpisodeIngestor(env.evidenceIngestor));
+  assert.equal(first.status, 'quota_reached');
+  assert.equal(first.ingestedEvents, 0);
+  assert.equal(first.state.metrics.zeroProgressRuns, 1);
+
+  const second = service.run(tightRequest, source, unitToEpisodeIngestor(env.evidenceIngestor));
+  assert.equal(second.status, 'blocked_zero_progress');
+  assert.equal(second.ingestedEvents, 0);
+  assert.equal(second.state.metrics.zeroProgressRuns, 2);
+
+  // Old permanent latch would return blocked immediately. After bounds
+  // correction the same operation must reopen and progress.
+  const raisedRequest = makeRequest({
+    resourceRefs: [resourceRef],
+    endPosition: 0,
+    maxBytes: 10_000,
+  });
+  const third = service.run(raisedRequest, source, unitToEpisodeIngestor(env.evidenceIngestor));
+  assert.equal(third.status, 'completed');
+  assert.equal(third.ingestedEvents, 1);
+  assert.ok(third.admittedEpisodes >= 1);
+  assert.equal(third.state.metrics.zeroProgressRuns, 0);
+  assert.equal(third.state.resourceStates[resourceRef]?.status, 'processed');
+});
+
 test('exact dedup skips replayed stable events for repeated bounded backfill', () => {
   const env = makeEnv();
   const item = {

@@ -239,6 +239,15 @@ export function extractLearningEpisodes(
         if (assistantResponse) evidence.push(assistantResponse);
       }
       evidence.push(accepted);
+    } else if (!hasDeliveryEvidence(evidence) && isExternalCompleteFinalDelivery(deliveryTurn)) {
+      // External Session Log Sources (xURL/Pi) materialize a complete
+      // User→final-Assistant event with empty tool_calls. Treat the final
+      // assistant text as candidate episode evidence only for external
+      // session metadata. Internal chat still requires tool delivery or a
+      // following acceptance; settlement/prefilter/Author/Verifier gates
+      // remain unchanged and external evidence never gets promotion authority.
+      const assistantResponse = detectAssistantResponseEvidence(deliverySourceFilePath, deliveryTurn);
+      if (assistantResponse) evidence.push(assistantResponse);
     }
     if (!hasDeliveryEvidence(evidence)) continue;
 
@@ -502,6 +511,16 @@ function hasDeliveryEvidence(evidence: readonly EpisodeEvidenceRef[]): boolean {
   );
 }
 
+/**
+ * External Session Log turns are tagged `session_type: 'external'` by the
+ * source adapter (not by URI guessing). A complete external final is a turn
+ * with non-empty assistant text; tool_calls may be empty for Pi/xURL finals.
+ */
+function isExternalCompleteFinalDelivery(turn: CompletedTurn): boolean {
+  if (String(turn.session_type ?? '').trim().toLowerCase() !== 'external') return false;
+  return turn.assistant.text.trim().length > 0;
+}
+
 function detectAssistantResponseEvidence(
   filePath: string,
   turn: CompletedTurn,
@@ -513,8 +532,23 @@ function detectAssistantResponseEvidence(
     sourceFilePath: filePath,
     turn: turn.turn,
     kind: 'assistant-response',
-    detail: text.slice(0, 1000),
+    detail: boundedAssistantResponseDetail(text),
   };
+}
+
+const MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES = 1000;
+
+function boundedAssistantResponseDetail(text: string): string {
+  const totalBytes = Buffer.byteLength(text, 'utf8');
+  if (totalBytes <= MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES) return text;
+
+  let end = Math.min(text.length, MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES);
+  while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES) {
+    end -= 1;
+  }
+  const prefix = text.slice(0, end);
+  const omittedBytes = totalBytes - Buffer.byteLength(prefix, 'utf8');
+  return `${prefix}\n[${omittedBytes} bytes omitted from bounded assistant-response evidence]`;
 }
 
 function detectContradiction(

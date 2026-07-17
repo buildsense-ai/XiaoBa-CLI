@@ -1330,18 +1330,24 @@ function parseTimelinePage(
 }
 
 function toCanonicalEvent(event: RenderedTimelineEvent): CanonicalEvent {
-  const user = event.roles.find(role => role.role === 'User');
-  const assistant = event.roles.find(role => role.role === 'Assistant');
-  if (!user || !assistant) {
+  const userRoles = event.roles.filter(role => role.role === 'User');
+  const assistantRoles = event.roles.filter(role => role.role === 'Assistant');
+  if (userRoles.length === 0 || assistantRoles.length === 0) {
     throw new Error(`xurl timeline event ${event.identity} is missing a User or Assistant role`);
   }
-  const userContent = normalizeEntryContent(user.content);
-  const assistantContent = normalizeEntryContent(assistant.content);
+  // Preserve every User/Assistant body in the ordinal range. Consecutive same-role
+  // entries are joined deterministically rather than dropped.
+  const userContent = normalizeEntryContent(
+    userRoles.map(role => role.content).join('\n\n'),
+  );
+  const assistantContent = normalizeEntryContent(
+    assistantRoles.map(role => role.content).join('\n\n'),
+  );
   if (!userContent) {
-    throw new Error(`xurl timeline entry ${user.ordinal} has an empty User message`);
+    throw new Error(`xurl timeline entry ${userRoles[0]!.ordinal} has an empty User message`);
   }
   if (!assistantContent) {
-    throw new Error(`xurl timeline entry ${assistant.ordinal} has an empty Assistant message`);
+    throw new Error(`xurl timeline entry ${assistantRoles[0]!.ordinal} has an empty Assistant message`);
   }
   return {
     startOrdinal: event.ordinalStart,

@@ -61,7 +61,10 @@ describe('xurl release-gate fixtures — rendered Timeline', () => {
 
   test('malformed role fixture fails closed', () => {
     const markdown = readFixture(TIMELINE_ROOT, 'adversarial-malformed-role.md');
-    assert.throws(() => parseRenderedTimeline(markdown, 'codex', 'thread-001'), /unsupported role/i);
+    assert.throws(
+      () => parseRenderedTimeline(markdown, 'codex', 'thread-001'),
+      /unsupported role|forbidden prompt-control role/i,
+    );
   });
 
   test('heading-shaped content fixture documents residual ambiguity via failure', () => {

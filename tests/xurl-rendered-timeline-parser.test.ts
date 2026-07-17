@@ -22,6 +22,8 @@ import * as assert from 'node:assert/strict';
 import {
   parseRenderedTimeline,
   MAX_RENDERED_TIMELINE_BYTES,
+  EXCLUDED_RENDERED_TIMELINE_ROLES,
+  isExcludedRenderedTimelineRole,
   type RenderedTimelineEvent,
   type RenderedTimelineParseResult,
 } from '../src/utils/xurl-rendered-timeline';
@@ -303,7 +305,7 @@ describe('rendered Timeline parser — incomplete tail', () => {
     );
   });
 
-  test('rejects two consecutive User entries without an Assistant between them', () => {
+  test('joins consecutive User entries into one complete event before the Assistant response', () => {
     const md = validTimeline({
       entries: [
         { role: 'User', content: 'First' },
@@ -311,9 +313,61 @@ describe('rendered Timeline parser — incomplete tail', () => {
         { role: 'Assistant', content: 'Response' },
       ],
     });
+    const result = parseRenderedTimeline(md, 'codex', 'thread-001');
+    assert.equal(result.events.length, 1);
+    assert.equal(result.events[0]!.ordinalStart, 1);
+    assert.equal(result.events[0]!.ordinalEnd, 3);
+    assert.deepEqual(
+      result.events[0]!.roles.map(role => role.role),
+      ['User', 'User', 'Assistant'],
+    );
+    assert.equal(result.events[0]!.roles[0]!.content, 'First');
+    assert.equal(result.events[0]!.roles[1]!.content, 'Second');
+  });
+
+  test('excludes Runtime 启动层 metadata without mapping it to User or Assistant', () => {
+    const md = validTimeline({
+      entries: [
+        { role: 'Runtime 启动层', content: 'boot diagnostics only' },
+        { role: 'User', content: 'Ship the report' },
+        { role: 'Assistant', content: 'Done.' },
+      ],
+    });
+    const result = parseRenderedTimeline(md, 'codex', 'thread-001');
+    assert.equal(result.events.length, 1);
+    assert.deepEqual(
+      result.events[0]!.roles.map(role => role.role),
+      ['User', 'Assistant'],
+    );
+    assert.ok(!result.events[0]!.roles.some(role => /Runtime/i.test(role.role)));
+    assert.ok(!result.events[0]!.roles.some(role => role.content.includes('boot diagnostics')));
+  });
+
+  test('fails closed on unknown non-conversation roles', () => {
+    const md = validTimeline({
+      entries: [
+        { role: 'Narrator', content: 'mystery' },
+        { role: 'User', content: 'Hello' },
+        { role: 'Assistant', content: 'Hi' },
+      ],
+    });
     assert.throws(
       () => parseRenderedTimeline(md, 'codex', 'thread-001'),
-      /consecutive|User.*User|invalid/i,
+      /unsupported role: Narrator/i,
+    );
+  });
+
+  test('never admits system or developer roles as evidence', () => {
+    const md = validTimeline({
+      entries: [
+        { role: 'System', content: 'You are a helpful assistant' },
+        { role: 'User', content: 'Hello' },
+        { role: 'Assistant', content: 'Hi' },
+      ],
+    });
+    assert.throws(
+      () => parseRenderedTimeline(md, 'codex', 'thread-001'),
+      /forbidden prompt-control role: System/i,
     );
   });
 });
@@ -374,6 +428,16 @@ describe('rendered Timeline parser — oversized output', () => {
 // ---------------------------------------------------------------------------
 // Empty / malformed
 // ---------------------------------------------------------------------------
+
+describe('rendered Timeline role classification policy', () => {
+  test('excluded roles are non-mutable from callers', () => {
+    assert.ok(isExcludedRenderedTimelineRole('Runtime 启动层'));
+    assert.throws(() => {
+      (EXCLUDED_RENDERED_TIMELINE_ROLES as string[]).push('User');
+    }, TypeError);
+    assert.equal(isExcludedRenderedTimelineRole('User'), false);
+  });
+});
 
 describe('rendered Timeline parser — empty and malformed', () => {
   test('rejects empty input', () => {

@@ -185,6 +185,38 @@ describe('V3 independent Learning Episodes', () => {
     assert.ok(result.episodes[0].completionEvidence.some(item => item.kind === 'user-acceptance'));
   });
 
+  test('does not admit internal text-only finals without acceptance or tool delivery', () => {
+    const result = extractLearningEpisodes(unit([
+      turn(1, 'Ship the weekly report.', []),
+    ], '/logs/internal-text-only.jsonl'));
+    assert.equal(result.episodes.length, 0);
+  });
+
+  test('admits a complete external User→Assistant final as candidate episode evidence', () => {
+    const externalTurn: SessionTurnLogEntry = {
+      entry_type: 'turn',
+      turn: 4,
+      timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, 4)).toISOString(),
+      session_id: 'external:pi:thread-1:thread-1',
+      session_type: 'external',
+      user: { text: 'Ship the weekly report.\n\nInclude the chart attachment.' },
+      assistant: { text: 'Report delivered with chart.', tool_calls: [] },
+      tokens: { prompt: 0, completion: 0 },
+    };
+    const result = extractLearningEpisodes(unit([externalTurn], 'xurl://pi/thread-1'));
+    assert.equal(result.episodes.length, 1);
+    assert.equal(result.episodes[0]!.status, 'settling');
+    assert.ok(
+      result.episodes[0]!.completionEvidence.some(item => item.kind === 'assistant-response'),
+      'external final assistant text is candidate evidence',
+    );
+    assert.equal(
+      result.episodes[0]!.completionEvidence.some(item => item.kind === 'user-acceptance'),
+      false,
+      'no fabricated acceptance is required for external finals',
+    );
+  });
+
   test('persists and settles episodes independently', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-learning-episodes-'));
     try {
