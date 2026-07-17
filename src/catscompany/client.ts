@@ -39,11 +39,24 @@ export interface CatsDeviceRegistration {
 export interface CatsDeviceRpcError {
   code: string;
   message: string;
+  /** Stable structured details for typed errors (e.g. oversized record). */
+  details?: Record<string, unknown>;
+}
+
+export interface CatsDeviceRpcProgress {
+  processed: number;
+  total: number | null;
+  completed?: number;
+  failed?: number;
+  skipped?: number;
+  remaining?: number | null;
+  provider?: string;
+  phase?: string;
 }
 
 export interface CatsDeviceRpcMessage {
   id?: string;
-  type: 'request' | 'result';
+  type: 'request' | 'progress' | 'result';
   request_id: string;
   grant_id?: string;
   session_key?: string;
@@ -61,6 +74,7 @@ export interface CatsDeviceRpcMessage {
   operation?: string;
   tool_name?: string;
   payload?: Record<string, unknown>;
+  progress?: CatsDeviceRpcProgress;
   result?: unknown;
   error?: CatsDeviceRpcError;
   created_at?: number;
@@ -415,6 +429,10 @@ export class CatsClient extends EventEmitter {
       this.emit('device_rpc_result', message);
       return;
     }
+    if (message.type === 'progress') {
+      this.emit('device_rpc_progress', message);
+      return;
+    }
     this.emit('device_rpc_request', message);
   }
 
@@ -633,6 +651,25 @@ export class CatsClient extends EventEmitter {
       },
     }, {
       timeoutMessage: 'WebSocket 已发送 Device RPC 结果，但 10 秒内没有收到 CatsCompany 服务器确认',
+    });
+  }
+
+  /** Report precise durable progress for a pending device_rpc request. */
+  async sendDeviceRpcProgress(progress: Omit<CatsDeviceRpcMessage, 'id' | 'type'>): Promise<void> {
+    const requestID = String(progress.request_id || '').trim();
+    if (!requestID) {
+      throw new Error('Device RPC progress request_id is required');
+    }
+    const msgId = `${++this.msgId}`;
+    await this.sendEnvelopeWithAck(msgId, {
+      device_rpc: {
+        ...progress,
+        id: msgId,
+        type: 'progress',
+        request_id: requestID,
+      },
+    }, {
+      timeoutMessage: 'WebSocket 已发送 Device RPC 进度，但 10 秒内没有收到 CatsCompany 服务器确认',
     });
   }
 
@@ -1054,7 +1091,7 @@ function normalizeDeviceRpcMessage(raw: any): CatsDeviceRpcMessage | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const type = String(raw.type || '').trim();
   const requestID = String(raw.request_id || '').trim();
-  if ((type !== 'request' && type !== 'result') || !requestID) return undefined;
+  if ((type !== 'request' && type !== 'progress' && type !== 'result') || !requestID) return undefined;
   const message: CatsDeviceRpcMessage = {
     ...raw,
     type,

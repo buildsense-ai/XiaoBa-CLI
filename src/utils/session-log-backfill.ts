@@ -207,9 +207,37 @@ export interface ExternalSessionLogBackfillServiceOptions {
   readonly now?: () => Date;
 }
 
+export type ExternalHistoryProgressPhase =
+  | 'discovering'
+  | 'importing'
+  | 'complete'
+  | 'failed';
+
+/**
+ * Exact durable progress for external history import.
+ * `processed` counts only resources whose full durable acknowledgement completed
+ * (read + sanitize + Episode/Capsule + provenance + cursor ack + persisted state).
+ * `total` is null while the selected catalog is still being discovered.
+ */
+export interface ExternalHistoryProgressUpdate {
+  readonly processed: number;
+  readonly total: number | null;
+  readonly completed?: number;
+  readonly failed?: number;
+  readonly skipped?: number;
+  readonly remaining?: number | null;
+  readonly provider?: string;
+  readonly phase: ExternalHistoryProgressPhase;
+}
+
 export interface ExternalSessionLogBackfillRunOptions {
   /** Runtime xURL reads may return a complete thread; admit only the named range. */
   readonly filterOutOfRangeEvents?: boolean;
+  /**
+   * Called only after durable processed-resource state is written.
+   * Never fire on bare read success.
+   */
+  readonly onProgress?: (progress: ExternalHistoryProgressUpdate) => void | Promise<void>;
 }
 
 export class ExternalSessionLogBackfillService {
@@ -328,6 +356,7 @@ export class ExternalSessionLogBackfillService {
     }
 
     let processedResources = 0;
+    let skippedResources = 0;
     let ingestedEvents = 0;
     let duplicateEventsSkipped = 0;
     let tombstonedEventsSkipped = 0;
@@ -337,6 +366,34 @@ export class ExternalSessionLogBackfillService {
     let sawFailure = false;
     let quotaReached = false;
     let eventsProcessed = 0;
+    const catalogTotal = matchedResources.length;
+    const emitProgress = (
+      phase: ExternalHistoryProgressPhase,
+      overrides: Partial<ExternalHistoryProgressUpdate> = {},
+    ): void => {
+      const unique = recountUniqueResourceStates(state.resourceStates);
+      const completed = unique.processedResources;
+      const failed = unique.failedResources;
+      const remaining = Math.max(0, catalogTotal - completed - failed - skippedResources);
+      const progress: ExternalHistoryProgressUpdate = {
+        processed: completed,
+        total: catalogTotal,
+        completed,
+        failed,
+        skipped: skippedResources,
+        remaining,
+        provider: request.provider,
+        phase,
+        ...overrides,
+      };
+      try {
+        void options.onProgress?.(progress);
+      } catch {
+        // Progress is best-effort; never fail the durable import on reporter errors.
+      }
+    };
+    // Catalog is selected and stable after discovery — determinate exact totals.
+    emitProgress('importing');
     const matchedResourceRefs = new Set(matchedResources.map(resource => resource.resourceRef));
     const missingRequestedResourceRefs = (request.range.resourceRefs ?? [])
       .filter(resourceRef => !matchedResourceRefs.has(resourceRef));
@@ -387,6 +444,13 @@ export class ExternalSessionLogBackfillService {
       ) {
         quotaReached = true;
         break;
+      }
+
+      // Completed resources must not re-import. Count them as skipped for
+      // terminal progress semantics without inventing new skip policies.
+      if (state.resourceStates[resource.resourceRef]?.status === 'processed') {
+        skippedResources += 1;
+        continue;
       }
 
       const cursor = state.resourceCursors[resource.resourceRef] ?? {
@@ -713,6 +777,11 @@ export class ExternalSessionLogBackfillService {
       }
       metrics = state.metrics;
       saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+      // Emit progress only after the durable processed-resource state write.
+      // Never fire on bare read success.
+      if (completedResource && !belowReopenedBoundary) {
+        emitProgress('importing');
+      }
 
       const auditKind: ExternalSessionLogBackfillAuditKind = belowReopenedBoundary
         ? 'resource_pending'
@@ -768,6 +837,12 @@ export class ExternalSessionLogBackfillService {
       metrics,
     };
     saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+    // Terminal progress: expose completed/failed/skipped/remaining/total so
+    // terminal semantics are unambiguous. Do not invent skip behavior.
+    emitProgress(
+      finalStatus === 'completed' ? 'complete' : 'failed',
+      { remaining: 0 },
+    );
 
     appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
       timestamp: finishedAt.toISOString(),

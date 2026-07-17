@@ -20,6 +20,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { Logger } from '../utils/logger';
+import { AIService } from '../utils/ai-service';
 import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
 import type { DistillationHeartbeatConfig, ExternalHistoryMode } from '../utils/distillation-heartbeat-config';
 import {
@@ -54,6 +55,9 @@ import { SkillUsageLedger } from '../utils/skill-usage-ledger';
 import {
   loadExternalSessionLogBackfillState,
   type ExternalSessionLogBackfillRequest,
+  type ExternalSessionLogBackfillState,
+  type ExternalSessionLogBackfillStatus,
+  type ExternalHistoryProgressUpdate,
 } from '../utils/session-log-backfill';
 import { writeDashboardEnvUpdates } from '../dashboard/settings';
 
@@ -90,6 +94,8 @@ export interface ExternalSourceCommandOptions {
   runtimeLearning?: RuntimeLearning;
   /** Structured report sink used by non-CLI control surfaces. */
   report?: (value: Record<string, unknown>) => void;
+  /** Durable progress callback for connected-device control surface. */
+  onProgress?: (progress: ExternalHistoryProgressUpdate) => void | Promise<void>;
 }
 
 export interface ExternalHistoryControlStatus {
@@ -101,6 +107,21 @@ export interface ExternalHistoryControlStatus {
     enabled: boolean;
     historyMode: ExternalHistoryMode;
   }>;
+  imports: ExternalHistoryImportStatus[];
+}
+
+export interface ExternalHistoryImportStatus {
+  provider: 'codex' | 'pi';
+  operationId: string;
+  status: ExternalSessionLogBackfillStatus;
+  selectedCount: number;
+  processedResources: number;
+  pendingResources: number;
+  failedResources: number;
+  resumable: boolean;
+  quotaReached: boolean;
+  updatedAt: string;
+  completedAt: string | null;
 }
 
 export function getExternalHistoryControlStatus(
@@ -110,6 +131,7 @@ export function getExternalHistoryControlStatus(
   const store = new ExternalProviderOverrideStore({
     stateFilePath: resolveExternalProviderOverridePath(config),
   });
+  const imports = getExternalHistoryImportStatuses(config);
   return {
     heartbeatEnabled: config.enabled,
     sourcesEnabled: config.externalSessionLogSourcesEnabled,
@@ -122,6 +144,7 @@ export function getExternalHistoryControlStatus(
         historyMode: status.historyMode,
       };
     }),
+    imports,
   };
 }
 
@@ -160,9 +183,32 @@ export async function runExternalHistoryBackfillControl(options: {
   updatedSince: string;
   execute?: boolean;
   operationId?: string;
+  preferExistingOperation?: boolean;
   workingDirectory?: string;
   runtimeLearning?: RuntimeLearning;
+  onProgress?: (progress: ExternalHistoryProgressUpdate) => void | Promise<void>;
 }): Promise<Record<string, unknown>> {
+  if (options.preferExistingOperation && !options.execute && !options.operationId) {
+    const normalizedProvider = options.provider.trim().toLowerCase();
+    const existing = getExternalHistoryControlStatus(options.workingDirectory).imports
+      .find(item => item.provider === normalizedProvider && item.resumable);
+    if (existing) {
+      return {
+        mode: 'resume',
+        provider: existing.provider,
+        cutoff: options.updatedSince,
+        operationId: existing.operationId,
+        selectedCount: existing.selectedCount,
+        processedResources: existing.processedResources,
+        pendingResources: existing.pendingResources,
+        failedResources: existing.failedResources,
+        status: existing.status,
+        resumable: true,
+        quotaReached: existing.quotaReached,
+        existingOperation: true,
+      };
+    }
+  }
   let report: Record<string, unknown> | undefined;
   await externalSourceCommand({
     subcommand: 'backfill',
@@ -180,6 +226,7 @@ export async function runExternalHistoryBackfillControl(options: {
       maxBytes: 2 * 1024 * 1024,
       maxElapsedMs: 45_000,
     } : {}),
+    onProgress: options.onProgress,
     report: value => { report = value; },
   });
   if (!report) throw new Error('external history control did not produce a report');
@@ -508,7 +555,9 @@ async function handleBackfill(
       },
     };
 
-    const result = await runtime.runExternalBackfill(request, source);
+    const result = await runtime.runExternalBackfill(request, source, {
+      onProgress: options.onProgress,
+    });
     const status = result.backfill.status;
     const quotaReached = status === 'quota_reached';
     const resumable = status === 'quota_reached'
@@ -593,6 +642,10 @@ function buildBackfillRuntimeLearning(
     auditPath: config.skillEvolutionAuditPath,
     journalPath: config.skillEvolutionJournalPath,
     reviewQueuePath: config.skillEvolutionReviewQueuePath,
+    // Backfill must review admitted episodes with the same Author/Verifier
+    // model path as production wakes. Without AIService, evidence readers
+    // fail closed and review jobs stall in operational retry.
+    aiService: new AIService(),
     settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
     reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
     operationalRetryMs: config.skillEvolutionOperationalRetryMinutes * 60 * 1000,
@@ -718,8 +771,7 @@ function getExternalBackfillOperationPaths(
   operationId: string,
 ): { stateFilePath: string; auditFilePath: string } {
   const backfillRoot = path.join(
-    path.dirname(config.learningEpisodeStorePath),
-    'external-session-log-backfills',
+    getExternalBackfillRoot(config),
     toStablePathComponent(provider),
     toStablePathComponent(sourceId),
   );
@@ -728,6 +780,76 @@ function getExternalBackfillOperationPaths(
     stateFilePath: path.join(backfillRoot, `${operationStem}.state.json`),
     auditFilePath: path.join(backfillRoot, `${operationStem}.audit.jsonl`),
   };
+}
+
+function getExternalHistoryImportStatuses(
+  config: DistillationHeartbeatConfig,
+): ExternalHistoryImportStatus[] {
+  const states = loadExternalHistoryStates(config);
+  return (['codex', 'pi'] as const).flatMap(provider => {
+    const providerStates = states
+      .filter(state => state.provider === provider)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const latest = providerStates[0];
+    if (!latest) return [];
+
+    const selectedRefs = latest.range.resourceRefs ?? [];
+    const processedRefs = new Set<string>();
+    for (const state of providerStates) {
+      for (const [resourceRef, resourceState] of Object.entries(state.resourceStates)) {
+        if (resourceState.status === 'processed') processedRefs.add(resourceRef);
+      }
+    }
+    const selectedCount = selectedRefs.length || latest.metrics.resourcesDiscovered;
+    const processedResources = selectedRefs.length > 0
+      ? selectedRefs.filter(resourceRef => processedRefs.has(resourceRef)).length
+      : Math.min(selectedCount, latest.metrics.resourcesProcessed);
+
+    return [{
+      provider,
+      operationId: latest.operationId,
+      status: latest.status,
+      selectedCount,
+      processedResources,
+      pendingResources: Math.max(0, selectedCount - processedResources),
+      failedResources: latest.metrics.failedResources,
+      resumable: latest.status !== 'completed',
+      quotaReached: latest.status === 'quota_reached',
+      updatedAt: latest.updatedAt,
+      completedAt: latest.completedAt,
+    }];
+  });
+}
+
+function loadExternalHistoryStates(
+  config: DistillationHeartbeatConfig,
+): ExternalSessionLogBackfillState[] {
+  const root = getExternalBackfillRoot(config);
+  if (!fs.existsSync(root)) return [];
+
+  const states: ExternalSessionLogBackfillState[] = [];
+  for (const providerEntry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!providerEntry.isDirectory()) continue;
+    const providerRoot = path.join(root, providerEntry.name);
+    for (const sourceEntry of fs.readdirSync(providerRoot, { withFileTypes: true })) {
+      if (!sourceEntry.isDirectory()) continue;
+      const sourceRoot = path.join(providerRoot, sourceEntry.name);
+      for (const stateEntry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
+        if (!stateEntry.isFile() || !stateEntry.name.endsWith('.state.json')) continue;
+        try {
+          const state = loadExternalSessionLogBackfillState(path.join(sourceRoot, stateEntry.name));
+          if (state) states.push(state);
+        } catch (error) {
+          Logger.warning(`Skipping unreadable external history state: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+  }
+  return states;
+}
+
+function getExternalBackfillRoot(config: DistillationHeartbeatConfig): string {
+  return path.join(path.dirname(config.learningEpisodeStorePath), 'external-session-log-backfills');
 }
 
 function buildDeterministicOperationId(parts: {

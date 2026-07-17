@@ -97,7 +97,7 @@ export interface UploadedFileResult {
 
 export type ToolExecutionResult = (
   | { ok: true; content: string | import('./index').ContentBlock[] }
-  | { ok: false; errorCode: string; message: string; retryable?: boolean }
+  | { ok: false; errorCode: string; message: string; retryable?: boolean; details?: Record<string, unknown> }
 ) & {
   /** Route-aware context for the model-visible tool result. */
   targetContext?: string;

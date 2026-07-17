@@ -46,7 +46,14 @@ import {
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_XURL_TIMEOUT_MS = 10_000;
+/** Hard maxBuffer for query/head (and other non-read) xurl stdout capture. */
 export const DEFAULT_XURL_MAX_OUTPUT_BYTES = 256 * 1024;
+/**
+ * Independent hard maxBuffer for xurl `read` stdout capture.
+ * Emergency bounded-buffer mitigation for real Pi threads that exceed the
+ * historical 256 KiB query/head limit; not arbitrary-length thread support.
+ */
+export const DEFAULT_XURL_MAX_READ_OUTPUT_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_XURL_QUERY_LIMIT = 100;
 export const DEFAULT_XURL_CATCH_UP_INITIAL_LIMIT = 100;
 export const DEFAULT_XURL_MAX_ACTIVATION_CATALOG = 2048;
@@ -55,8 +62,10 @@ export const DEFAULT_XURL_MAX_ACTIVATION_DURATION_MS = 60_000;
 
 /** Marker property used to detect activation-blocked errors without an import cycle. */
 export const XURL_ACTIVATION_BLOCKED_MARKER = 'xurlActivationBlocked';
+/** Stable structured code for per-command stdout maxBuffer overflow. */
+export const XURL_OUTPUT_LIMIT_CODE = 'xurl_output_limit' as const;
 
-type XurlCommandKind = 'version' | 'query' | 'read' | 'head';
+export type XurlCommandKind = 'version' | 'query' | 'read' | 'head';
 
 type RenderedFrontmatter = ParsedRenderedFrontmatter;
 
@@ -108,7 +117,10 @@ export interface XurlProcessRunnerOptions {
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly timeoutMs?: number;
+  /** Hard maxBuffer for query/head (and version). Defaults to 256 KiB. */
   readonly maxOutputBytes?: number;
+  /** Independent hard maxBuffer for read. Defaults to 4 MiB. */
+  readonly maxReadOutputBytes?: number;
   /** When true the reader calls `xurl --version` once and records it for diagnostics. */
   readonly checkVersion?: boolean;
   /**
@@ -180,6 +192,30 @@ export class XurlActivationBlockedError extends Error {
     super(message);
     this.name = 'XurlActivationBlockedError';
   }
+}
+
+/**
+ * Structured overflow for xurl stdout maxBuffer hard limits.
+ * Mapped from Node process codes only (never English-message parsing).
+ */
+export class XurlOutputLimitError extends Error {
+  readonly code = XURL_OUTPUT_LIMIT_CODE;
+  readonly commandKind: XurlCommandKind;
+  readonly limitBytes: number;
+
+  constructor(commandKind: XurlCommandKind, limitBytes: number) {
+    super(`xurl ${commandKind} output exceeded ${limitBytes} bytes`);
+    this.name = 'XurlOutputLimitError';
+    this.commandKind = commandKind;
+    this.limitBytes = limitBytes;
+  }
+}
+
+export function isXurlOutputLimitError(error: unknown): error is XurlOutputLimitError {
+  if (error instanceof XurlOutputLimitError) return true;
+  if (error == null || typeof error !== 'object') return false;
+  const candidate = error as { code?: unknown; name?: unknown };
+  return candidate.code === XURL_OUTPUT_LIMIT_CODE || candidate.name === 'XurlOutputLimitError';
 }
 
 function isXurlActivationBlockedError(error: unknown): boolean {
@@ -365,12 +401,12 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
     };
     this.runner = new XurlOfficialRunner({
       ...options,
-      // Explicit backfill may need an expanded catalog response. Keep it
-      // bounded by the existing activation-output budget rather than the
-      // smaller continuous-read buffer.
-      maxOutputBytes: options.maxOutputBytes
-        ?? options.maxActivationOutputBytes
-        ?? DEFAULT_XURL_MAX_ACTIVATION_OUTPUT_BYTES,
+      // query/head keep the 256 KiB hard limit. read uses the independent
+      // 4 MiB emergency bound (or an explicit maxReadOutputBytes override).
+      // Cumulative activation/catalog accounting remains a separate bound.
+      maxOutputBytes: options.maxOutputBytes ?? DEFAULT_XURL_MAX_OUTPUT_BYTES,
+      maxReadOutputBytes: options.maxReadOutputBytes
+        ?? DEFAULT_XURL_MAX_READ_OUTPUT_BYTES,
     });
   }
 
@@ -579,7 +615,10 @@ class XurlOfficialRunner {
   private readonly cwd?: string;
   private readonly env?: NodeJS.ProcessEnv;
   private readonly timeoutMs: number;
+  /** Default hard limit for query/head (and version) stdout capture. */
   private readonly maxOutputBytes: number;
+  /** Independent hard limit for read stdout capture. */
+  private readonly maxReadOutputBytes: number;
   private readonly checkVersion: boolean;
   private readonly maxActivationCatalog: number;
   private readonly maxActivationOutputBytes: number;
@@ -605,6 +644,14 @@ class XurlOfficialRunner {
       options.maxOutputBytes,
       DEFAULT_XURL_MAX_OUTPUT_BYTES,
       'xurl maxOutputBytes',
+    );
+    // Read hard limit is independent of query/head. Explicit maxOutputBytes only
+    // overrides query/head; read stays at its own emergency 4 MiB bound unless
+    // callers set maxReadOutputBytes (tests / explicit operators).
+    this.maxReadOutputBytes = normalizePositiveInteger(
+      options.maxReadOutputBytes,
+      DEFAULT_XURL_MAX_READ_OUTPUT_BYTES,
+      'xurl maxReadOutputBytes',
     );
     this.checkVersion = options.checkVersion !== false;
     this.maxActivationCatalog = resolveActivationLimit(
@@ -1002,19 +1049,24 @@ class XurlOfficialRunner {
     }
   }
 
+  private maxBufferForKind(kind: XurlCommandKind): number {
+    return kind === 'read' ? this.maxReadOutputBytes : this.maxOutputBytes;
+  }
+
   private invoke(kind: XurlCommandKind, args: readonly string[]): string {
+    const maxBuffer = this.maxBufferForKind(kind);
     try {
       const stdout = execFileSync(this.command, args, {
         cwd: this.cwd,
         env: this.env,
         encoding: 'utf8',
         timeout: this.timeoutMs,
-        maxBuffer: this.maxOutputBytes,
+        maxBuffer,
         stdio: ['ignore', 'pipe', 'pipe'],
       }) as string;
       return stdout;
     } catch (error) {
-      throw mapXurlProcessError(kind, error, this.timeoutMs, this.maxOutputBytes);
+      throw mapXurlProcessError(kind, error, this.timeoutMs, maxBuffer);
     }
   }
 
@@ -1023,6 +1075,7 @@ class XurlOfficialRunner {
     args: readonly string[],
     signal: AbortSignal,
   ): Promise<string> {
+    const maxBuffer = this.maxBufferForKind(kind);
     return await new Promise<string>((resolve, reject) => {
       const child = execFile(
         this.command,
@@ -1032,7 +1085,7 @@ class XurlOfficialRunner {
           env: this.env,
           encoding: 'utf8',
           timeout: this.timeoutMs,
-          maxBuffer: this.maxOutputBytes,
+          maxBuffer,
           signal,
         },
         (error, stdout, stderr) => {
@@ -1049,7 +1102,7 @@ class XurlOfficialRunner {
                   stderr,
                 },
                 this.timeoutMs,
-                this.maxOutputBytes,
+                maxBuffer,
               ),
             );
             return;
@@ -1454,8 +1507,12 @@ function mapXurlProcessError(kind: XurlCommandKind, error: unknown, timeoutMs: n
     stderr?: string | Buffer;
     message?: string;
   };
-  if (candidate?.code === 'ENOBUFS') {
-    return new Error(`xurl ${kind} output exceeded ${maxOutputBytes} bytes`);
+  // Map overflow by structural process codes only — never English message text.
+  if (
+    candidate?.code === 'ENOBUFS'
+    || candidate?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+  ) {
+    return new XurlOutputLimitError(kind, maxOutputBytes);
   }
   if (
     candidate?.code === 'ETIMEDOUT'
@@ -1558,6 +1615,8 @@ export const XURL_TEST_HELPERS = {
   canonicalEventId,
   computeContentHash,
   isXurlActivationBlockedError,
+  isXurlOutputLimitError,
+  mapXurlProcessError,
   parseRenderedCatalog,
   parseRenderedTimeline: parseRenderedTimelineContract,
   parseFrontmatterOnly: parseRenderedFrontmatterOnly,

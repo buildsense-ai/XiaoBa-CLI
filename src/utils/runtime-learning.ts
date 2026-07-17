@@ -1694,13 +1694,14 @@ export class RuntimeLearning {
   async runExternalBackfill(
     request: ExternalSessionLogBackfillRequest,
     source: ExternalSessionLogBackfillSource,
+    options: { onProgress?: (progress: ExternalHistoryProgressUpdate) => void | Promise<void> } = {},
   ): Promise<RuntimeLearningBackfillResult> {
     if (this.activeBackfill) {
       throw new Error('another external backfill operation is already active');
     }
     const writerOwner = Symbol('runtime-learning-external-backfill');
     const operation = Promise.resolve().then(
-      () => this.withStateWriter(writerOwner, () => this.executeExternalBackfill(request, source, writerOwner)),
+      () => this.withStateWriter(writerOwner, () => this.executeExternalBackfill(request, source, writerOwner, options)),
     );
     this.activeBackfill = operation;
     try {
@@ -1755,6 +1756,7 @@ export class RuntimeLearning {
     request: ExternalSessionLogBackfillRequest,
     source: ExternalSessionLogBackfillSource,
     writerOwner: symbol,
+    options: { onProgress?: (progress: ExternalHistoryProgressUpdate) => void | Promise<void> } = {},
   ): Promise<RuntimeLearningBackfillResult> {
     if (this.getProviderBlockingExternalFailure(source.identity.provider)) {
       throw new Error(
@@ -1955,7 +1957,7 @@ export class RuntimeLearning {
             maxElapsedMs: Math.max(1, Math.min(remainingElapsedMs, EXTERNAL_BACKFILL_SLICE_MS)),
             maxEvents: Math.max(1, Math.min(remainingEvents, 1)),
           },
-        }, source, ingest, { filterOutOfRangeEvents: true });
+        }, source, ingest, { filterOutOfRangeEvents: true, onProgress: options.onProgress });
 
         if (backfill.status !== 'quota_reached') break;
         if (this.backfillDrainRequested) {
@@ -5331,6 +5333,7 @@ import {
   ExternalSessionLogBackfillService,
   ExternalSessionLogBackfillSource,
   ExternalSessionLogBackfillState,
+  ExternalHistoryProgressUpdate,
   loadExternalSessionLogBackfillState,
 } from './session-log-backfill';
 import { DistilledKnowledgeCandidate } from './capability-distiller';
