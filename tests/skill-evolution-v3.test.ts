@@ -15,6 +15,7 @@ import {
   loadCurrentSkillRegistry,
   saveCurrentSkillRegistry,
   loadTransitionAudit,
+  normalizeVerifierResult,
   recoverTransitionJournal,
   applyCapabilityTransition,
   restoreCapabilityRevision,
@@ -234,6 +235,77 @@ describe('V3 verified semantic Current Skills', () => {
     assert.equal(isLifecycleOrGenericRoutingName('artifact-delivery'), true);
     assert.equal(isLifecycleOrGenericRoutingName('create-chat-sticker-svg'), false);
     assert.equal(isLifecycleOrGenericRoutingName('verified-final-report-delivery'), false);
+  });
+
+  test('normalizes decision-like verifier transition fill-ins instead of hard-failing', () => {
+    const cleared = normalizeVerifierResult({
+      decision: 'accept',
+      transition: 'accept',
+      issues: [],
+      rationale: 'Looks good.',
+      registryReadSet: [],
+      obligationDispositions: [],
+    });
+    assert.equal(cleared.decision, 'accept');
+    assert.equal(cleared.transition, undefined);
+
+    const acceptedAlias = normalizeVerifierResult({
+      decision: 'accept',
+      transition: 'accepted',
+      issues: [],
+      rationale: 'Looks good.',
+    });
+    assert.equal(acceptedAlias.transition, undefined);
+
+    const kept = normalizeVerifierResult({
+      decision: 'accept',
+      transition: 'create_current_skill',
+      issues: [],
+      rationale: 'Create is correct.',
+    });
+    assert.equal(kept.transition, 'create_current_skill');
+
+    assert.throws(
+      () => normalizeVerifierResult({
+        decision: 'accept',
+        transition: 'not-a-transition',
+        issues: [],
+        rationale: 'Bad transition.',
+      }),
+      /Verifier transition is invalid/,
+    );
+  });
+
+  test('normalizes obligation disposition decision aliases to past-tense contract values', () => {
+    const normalized = normalizeVerifierResult({
+      decision: 'accept',
+      issues: [],
+      rationale: 'Obligations reviewed.',
+      obligationDispositions: [
+        {
+          obligationId: 'obl:1',
+          decision: 'accept',
+          rationale: 'Supported by evidence.',
+          citedSpans: [{ shardId: 'shard:a', span: { start: 0, end: 4 } }],
+        },
+        {
+          obligationId: 'obl:2',
+          decision: 'defer',
+          rationale: 'Needs more evidence.',
+          citedSpans: [{ shardId: 'shard:a', span: { start: 0, end: 4 } }],
+        },
+        {
+          obligationId: 'obl:3',
+          decision: 'reject',
+          rationale: 'Contradicted.',
+          citedSpans: [{ shardId: 'shard:a', span: { start: 0, end: 4 } }],
+        },
+      ],
+    });
+    assert.deepEqual(
+      (normalized.obligationDispositions ?? []).map(item => item.decision),
+      ['accepted', 'deferred', 'rejected'],
+    );
   });
 
   test('migrates a v1 generated-skill Registry to route-aware schema v2 without losing capabilities', () => {
