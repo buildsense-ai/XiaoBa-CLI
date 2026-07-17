@@ -1778,6 +1778,19 @@ export class CurrentSkillRegistryValidationError extends Error {
   }
 }
 
+export class ActiveGeneratedSkillInvariantError extends Error {
+  constructor(
+    public readonly handle: string,
+    public readonly skillFilePath: string,
+    public readonly reason: string,
+  ) {
+    super(
+      `Active generated skill invariant violated for ${handle}: ${reason} (path=${skillFilePath})`,
+    );
+    this.name = 'ActiveGeneratedSkillInvariantError';
+  }
+}
+
 export function loadCurrentSkillRegistry(filePath: string): CurrentSkillRegistryState {
   if (!fs.existsSync(filePath)) return emptyCurrentSkillRegistryState();
   let parsed: (Omit<Partial<CurrentSkillRegistryState>, 'schemaVersion'> & { schemaVersion?: unknown });
@@ -1807,6 +1820,72 @@ export function loadCurrentSkillRegistry(filePath: string): CurrentSkillRegistry
     }
   }
   return migrated;
+}
+
+/**
+ * Enforce: every active registry entry points at a present, parseable SKILL.md
+ * whose content hash matches guidanceHash. Recovery is allowed only from the
+ * authoritative immutable history snapshot for that hash — never by inventing
+ * guidance from registry metadata alone.
+ */
+export function reconcileActiveGeneratedSkillArtifacts(
+  state: CurrentSkillRegistryState,
+): { state: CurrentSkillRegistryState; repaired: boolean } {
+  let repaired = false;
+  const capabilities: Record<string, CurrentSkillRecord> = { ...state.capabilities };
+  for (const [handle, record] of Object.entries(capabilities)) {
+    const skillPath = record.skillFilePath;
+    if (!skillPath?.trim()) {
+      throw new ActiveGeneratedSkillInvariantError(handle, String(skillPath), 'skillFilePath is empty');
+    }
+    if (!fs.existsSync(skillPath)) {
+      const archivePath = path.join(path.dirname(skillPath), 'history', record.guidanceHash, 'SKILL.md');
+      if (!fs.existsSync(archivePath)) {
+        throw new ActiveGeneratedSkillInvariantError(
+          handle,
+          skillPath,
+          `SKILL.md is missing and no authoritative history snapshot exists for guidanceHash=${record.guidanceHash}`,
+        );
+      }
+      const archiveContent = fs.readFileSync(archivePath, 'utf8');
+      if (sha256(archiveContent) !== record.guidanceHash) {
+        throw new ActiveGeneratedSkillInvariantError(
+          handle,
+          archivePath,
+          'history snapshot hash does not match registry guidanceHash',
+        );
+      }
+      // Safe recovery: restore the exact authoritative content only.
+      writeFileAtomic(skillPath, archiveContent);
+      repaired = true;
+    }
+    let parsedName: string;
+    try {
+      parsedName = SkillParser.parse(skillPath).metadata.name;
+    } catch (error) {
+      throw new ActiveGeneratedSkillInvariantError(
+        handle,
+        skillPath,
+        `SKILL.md is not parseable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (parsedName !== record.routingName) {
+      throw new ActiveGeneratedSkillInvariantError(
+        handle,
+        skillPath,
+        `SKILL.md route "${parsedName}" does not match registry routingName "${record.routingName}"`,
+      );
+    }
+    const contentHash = hashFile(skillPath);
+    if (!contentHash || contentHash !== record.guidanceHash) {
+      throw new ActiveGeneratedSkillInvariantError(
+        handle,
+        skillPath,
+        `SKILL.md hash ${contentHash ?? 'missing'} does not match registry guidanceHash ${record.guidanceHash}`,
+      );
+    }
+  }
+  return { state: { ...state, capabilities }, repaired };
 }
 
 export function saveCurrentSkillRegistry(filePath: string, state: CurrentSkillRegistryState): void {

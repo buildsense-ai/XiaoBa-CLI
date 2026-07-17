@@ -1,9 +1,15 @@
 import { Skill } from '../types/skill';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PathResolver } from '../utils/path-resolver';
 import { SkillParser } from './skill-parser';
 import { Logger } from '../utils/logger';
-import { loadCurrentSkillRegistry, CurrentSkillRegistryState } from '../utils/skill-evolution';
+import {
+  loadCurrentSkillRegistry,
+  reconcileActiveGeneratedSkillArtifacts,
+  saveCurrentSkillRegistry,
+  CurrentSkillRegistryState,
+} from '../utils/skill-evolution';
 
 export interface SkillResolution {
   skill: Skill;
@@ -96,10 +102,23 @@ export class SkillManager {
     const resolved = this.skills.get(record.routingName);
     if (!resolved) {
       try {
+        if (!fs.existsSync(record.skillFilePath)) {
+          throw new Error(
+            `active generated skill artifact is missing for ${handle}: ${record.skillFilePath}`,
+          );
+        }
         const loaded = SkillParser.parse(record.skillFilePath);
+        if (loaded.metadata.name !== record.routingName) {
+          throw new Error(
+            `active generated skill route mismatch for ${handle}: file=${loaded.metadata.name} registry=${record.routingName}`,
+          );
+        }
         this.skills.set(loaded.metadata.name, loaded);
-      } catch {
-        throw new StaleSkillRedirectError(requestedName, handle);
+      } catch (error: any) {
+        // Fail closed: do not silently drop an active registry route.
+        throw new Error(
+          `Active generated skill is unusable for redirect ${requestedName} → ${handle}: ${error.message}`,
+        );
       }
     }
     const skill = this.skills.get(record.routingName);
@@ -135,7 +154,7 @@ export class SkillManager {
 
   private refreshRegistrySnapshot(): void {
     try {
-      this.registry = loadCurrentSkillRegistry(PathResolver.getSkillEvolutionRegistryPath());
+      this.registry = this.loadAndEnforceActiveSkillInvariants();
       this.catalogRevision = this.registry.catalogRevision;
       this.registryLoadFailed = false;
     } catch (error: any) {
@@ -145,10 +164,26 @@ export class SkillManager {
     }
   }
 
+  private loadAndEnforceActiveSkillInvariants(): CurrentSkillRegistryState {
+    const registryPath = PathResolver.getSkillEvolutionRegistryPath();
+    const loaded = loadCurrentSkillRegistry(registryPath);
+    // Fail closed / restore from authoritative history only. Never invent guidance.
+    const reconciled = reconcileActiveGeneratedSkillArtifacts(loaded);
+    if (reconciled.repaired) {
+      try {
+        // Persist restored paths only after successful artifact recovery.
+        saveCurrentSkillRegistry(registryPath, reconciled.state);
+      } catch (error: any) {
+        Logger.warning(`Failed to persist repaired generated skill Registry: ${error.message}`);
+      }
+    }
+    return reconciled.state;
+  }
+
   private async refreshCatalogIfChanged(): Promise<void> {
     let latest: CurrentSkillRegistryState;
     try {
-      latest = loadCurrentSkillRegistry(PathResolver.getSkillEvolutionRegistryPath());
+      latest = this.loadAndEnforceActiveSkillInvariants();
     } catch (error: any) {
       Logger.warning(`Failed to refresh generated skill Registry: ${error.message}`);
       this.registry = undefined;
@@ -176,7 +211,7 @@ export class SkillManager {
   private refreshCatalogSynchronously(): void {
     let latest: CurrentSkillRegistryState;
     try {
-      latest = loadCurrentSkillRegistry(PathResolver.getSkillEvolutionRegistryPath());
+      latest = this.loadAndEnforceActiveSkillInvariants();
     } catch (error: any) {
       Logger.warning(`Failed to refresh generated skill Registry: ${error.message}`);
       this.registry = undefined;
@@ -198,17 +233,26 @@ export class SkillManager {
     for (const record of Object.values(latest.capabilities)) {
       if (!isGeneratedSkillPath(record.skillFilePath)) continue;
       try {
+        if (!fs.existsSync(record.skillFilePath)) {
+          throw new Error(`SKILL.md missing at ${record.skillFilePath}`);
+        }
         const skill = SkillParser.parse(record.skillFilePath);
         // A stale or manually edited generated file must not reintroduce an
         // old public route. Only the route named by the current Registry is
         // admitted synchronously.
         if (skill.metadata.name !== record.routingName) {
-          Logger.warning(`Generated skill route does not match Registry: ${record.skillFilePath}`);
-          continue;
+          throw new Error(
+            `Generated skill route does not match Registry: file=${skill.metadata.name} registry=${record.routingName}`,
+          );
         }
         this.skills.set(skill.metadata.name, skill);
       } catch (error: any) {
-        Logger.warning(`Failed to load active generated skill from ${record.skillFilePath}: ${error.message}`);
+        // Fail closed with an actionable diagnostic. Do not silently omit an
+        // active Registry capability from discovery.
+        Logger.error(
+          `Active generated skill invariant failed for ${record.handle}: ${error.message}`,
+        );
+        throw error;
       }
     }
   }

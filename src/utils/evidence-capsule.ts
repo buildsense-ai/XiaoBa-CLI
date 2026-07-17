@@ -52,7 +52,13 @@ export const MAX_EVIDENCE_CAPSULE_OBSERVATIONS = 32;
 export const MAX_EVIDENCE_CAPSULE_OBSERVATION_PAYLOAD_BYTES = 16 * 1024;
 
 const MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES = 2 * 1024;
-const MAX_EXTERNAL_TURN_TEXT_BYTES = 4 * 1024;
+/**
+ * Fail-closed bound for one external user/assistant text field after redaction.
+ * Sized for ordinary Pi/Codex final responses while remaining far below the
+ * capsule payload ceiling. Oversize still rejects (no silent truncation of
+ * the admission path); operator retry recovers after a policy change.
+ */
+export const MAX_EXTERNAL_TURN_TEXT_BYTES = 16 * 1024;
 const MAX_EXTERNAL_TOOL_ARGUMENT_BYTES = 3 * 1024;
 const MAX_EXTERNAL_TOOL_RESULT_BYTES = 4 * 1024;
 const MAX_EXTERNAL_TOOL_COUNT = 64;

@@ -28,6 +28,23 @@ export const MAX_RENDERED_TIMELINE_BYTES = 512 * 1024;
 
 export type RenderedTimelineRole = 'User' | 'Assistant' | 'Context Compacted';
 
+/**
+ * Non-conversation display roles that xURL may render for runtime chrome.
+ * These are excluded from learning evidence and never mapped to User/Assistant.
+ */
+export const EXCLUDED_RENDERED_TIMELINE_ROLES = new Set<string>([
+  'Runtime 启动层',
+  'Runtime Startup',
+  'Runtime startup',
+]);
+
+/**
+ * Prompt-control roles that must never become learning evidence.
+ * Matching is case-insensitive against the rendered role label.
+ */
+const FORBIDDEN_RENDERED_TIMELINE_ROLE_RE =
+  /^(system|developer|tool(\s+system)?|prompt(\s+control)?|instructions?)$/i;
+
 export interface RenderedTimelineEntry {
   readonly ordinal: number;
   readonly role: RenderedTimelineRole;
@@ -103,7 +120,8 @@ export interface ParsedRenderedDocument {
 
 const TIMELINE_HEADING_RE = /^#{2,3}\s+(\d+)(?:\.)?\s+(.*?)\s*$/;
 const FRONTMATTER_DELIMITER = '---';
-const VALID_ROLES = new Set<RenderedTimelineRole>(['User', 'Assistant', 'Context Compacted']);
+const CONVERSATION_ROLES = new Set<RenderedTimelineRole>(['User', 'Assistant', 'Context Compacted']);
+const USER_ASSISTANT_JOIN = '\n\n';
 
 export function parseRenderedTimeline(
   markdown: string,
@@ -328,11 +346,30 @@ function extractThreadMetadataTimestamp(raw: string): string | undefined {
 // Timeline entry parsing
 // ---------------------------------------------------------------------------
 
+interface RawTimelineEntry {
+  readonly ordinal: number;
+  readonly roleText: string;
+  readonly content: string;
+}
+
+function classifyRenderedTimelineRole(roleText: string, ordinal: number): 'conversation' | 'excluded' {
+  if (CONVERSATION_ROLES.has(roleText as RenderedTimelineRole)) return 'conversation';
+  if (EXCLUDED_RENDERED_TIMELINE_ROLES.has(roleText)) return 'excluded';
+  if (FORBIDDEN_RENDERED_TIMELINE_ROLE_RE.test(roleText)) {
+    throw new Error(
+      `rendered Timeline entry ${ordinal} has forbidden prompt-control role: ${roleText}`,
+    );
+  }
+  throw new Error(
+    `rendered Timeline entry ${ordinal} has unsupported role: ${roleText}`,
+  );
+}
+
 function parseTimelineEntries(timelineBody: string): readonly RenderedTimelineEntry[] {
   const lines = timelineBody.split('\n');
-  const entries: RenderedTimelineEntry[] = [];
+  const rawEntries: RawTimelineEntry[] = [];
   let currentOrdinal: number | null = null;
-  let currentRole: RenderedTimelineRole | null = null;
+  let currentRoleText: string | null = null;
   let contentLines: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
@@ -341,10 +378,10 @@ function parseTimelineEntries(timelineBody: string): readonly RenderedTimelineEn
 
     if (headingMatch) {
       // Flush previous entry
-      if (currentOrdinal !== null && currentRole !== null) {
-        entries.push({
+      if (currentOrdinal !== null && currentRoleText !== null) {
+        rawEntries.push({
           ordinal: currentOrdinal,
-          role: currentRole,
+          roleText: currentRoleText,
           content: contentLines.join('\n').trim(),
         });
       }
@@ -357,14 +394,9 @@ function parseTimelineEntries(timelineBody: string): readonly RenderedTimelineEn
           `rendered Timeline entry ${ordinal} has an empty role`,
         );
       }
-      if (!VALID_ROLES.has(roleText as RenderedTimelineRole)) {
-        throw new Error(
-          `rendered Timeline entry ${ordinal} has unsupported role: ${roleText}`,
-        );
-      }
 
       currentOrdinal = ordinal;
-      currentRole = roleText as RenderedTimelineRole;
+      currentRoleText = roleText;
       contentLines = [];
     } else {
       if (currentOrdinal !== null) {
@@ -374,23 +406,39 @@ function parseTimelineEntries(timelineBody: string): readonly RenderedTimelineEn
   }
 
   // Flush final entry
-  if (currentOrdinal !== null && currentRole !== null) {
-    entries.push({
+  if (currentOrdinal !== null && currentRoleText !== null) {
+    rawEntries.push({
       ordinal: currentOrdinal,
-      role: currentRole,
+      roleText: currentRoleText,
       content: contentLines.join('\n').trim(),
     });
   }
 
-  if (entries.length === 0) {
+  if (rawEntries.length === 0) {
     throw new Error('rendered Timeline contains no numbered entries');
   }
 
-  validateOrdinals(entries);
+  validateOrdinals(rawEntries);
+
+  const entries: RenderedTimelineEntry[] = [];
+  for (const raw of rawEntries) {
+    const classification = classifyRenderedTimelineRole(raw.roleText, raw.ordinal);
+    if (classification === 'excluded') continue;
+    entries.push({
+      ordinal: raw.ordinal,
+      role: raw.roleText as RenderedTimelineRole,
+      content: raw.content,
+    });
+  }
+
+  if (entries.length === 0) {
+    throw new Error('rendered Timeline contains no conversation entries after excluding runtime metadata');
+  }
+
   return entries;
 }
 
-function validateOrdinals(entries: readonly RenderedTimelineEntry[]): void {
+function validateOrdinals(entries: readonly { readonly ordinal: number }[]): void {
   const seen = new Set<number>();
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i]!;
@@ -427,29 +475,25 @@ function groupCanonicalEvents(
   let rangeEntries: RenderedTimelineEntry[] = [];
   let sawUserInRange = false;
   let sawAssistantInRange = false;
-  let prevRole: RenderedTimelineRole | null = null;
 
   for (const entry of entries) {
     if (entry.role === 'User') {
-      if (sawUserInRange && !sawAssistantInRange) {
-        throw new Error(
-          `rendered Timeline has consecutive User entries at ordinal ${entry.ordinal} without an intervening Assistant`,
-        );
-      }
-      // Start a new range, preserving Context Compacted entries that
-      // preceded this User.
+      // A User after a complete User→Assistant pair starts a new event.
+      // Consecutive Users before any Assistant stay in the same range so
+      // every user message is preserved (joined deterministically later).
       if (sawUserInRange && sawAssistantInRange) {
-        // Commit the previous complete range
         events.push(buildEvent(frontmatter, rangeStart!, entry.ordinal - 1, rangeEntries));
         rangeEntries = [];
         sawAssistantInRange = false;
+        rangeStart = entry.ordinal;
+      } else if (!sawUserInRange) {
+        rangeStart = entry.ordinal;
       }
-      rangeStart = entry.ordinal;
       rangeEntries.push(entry);
       sawUserInRange = true;
-      sawAssistantInRange = false;
     } else if (entry.role === 'Context Compacted') {
-      // Context Compacted entries attach to the current or upcoming range
+      // Context Compacted entries attach to the current or upcoming range.
+      // They never split a multi-User or multi-Assistant span.
       rangeEntries.push(entry);
     } else if (entry.role === 'Assistant') {
       if (!sawUserInRange) {
@@ -460,7 +504,6 @@ function groupCanonicalEvents(
       rangeEntries.push(entry);
       sawAssistantInRange = true;
     }
-    prevRole = entry.role;
   }
 
   let hasIncompleteTail = false;
@@ -475,7 +518,7 @@ function groupCanonicalEvents(
     hasIncompleteTail = true;
   }
   if (sawUserInRange && sawAssistantInRange) {
-    const lastOrdinal = entries[entries.length - 1]!.ordinal;
+    const lastOrdinal = rangeEntries[rangeEntries.length - 1]!.ordinal;
     events.push(buildEvent(frontmatter, rangeStart!, lastOrdinal, rangeEntries));
   }
 
@@ -484,6 +527,21 @@ function groupCanonicalEvents(
   }
 
   return { events, hasIncompleteTail };
+}
+
+/**
+ * Collapse consecutive same-role conversation entries while preserving every
+ * message body. Used by the xURL adapter when materializing DistillationUnits.
+ */
+export function joinRenderedTimelineContents(
+  entries: readonly RenderedTimelineEntry[],
+  role: RenderedTimelineRole,
+): string {
+  return entries
+    .filter(entry => entry.role === role)
+    .map(entry => entry.content.trim())
+    .filter(Boolean)
+    .join(USER_ASSISTANT_JOIN);
 }
 
 function buildEvent(
