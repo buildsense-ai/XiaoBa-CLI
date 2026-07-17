@@ -1921,6 +1921,18 @@ export class RuntimeLearning {
           failureClass: 'pending',
         });
         this.saveExternalSourceSchedulingState();
+      } else if (backfill.status === 'blocked_zero_progress') {
+        // Operator-actionable and resumable: record so diagnostics surface it,
+        // then allow a later explicit retry after bounds/policy correction.
+        const latestFailure = backfill.state.failures[backfill.state.failures.length - 1];
+        const message = latestFailure?.message
+          ?? 'external backfill blocked with zero progress; inspect failures or raise bounds, then retry';
+        this.recordExternalSourceFailure(source.identity, new Error(message), {
+          failureClass: this.classifyExternalSourceFailure(message),
+          resourceRef: latestFailure?.resourceRef,
+          eventId: latestFailure?.eventId,
+        });
+        this.saveExternalSourceSchedulingState();
       } else if (backfill.status === 'completed') {
         this.resetExternalSourceFailure(source.identity);
         this.saveExternalSourceSchedulingState();

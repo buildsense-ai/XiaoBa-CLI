@@ -455,15 +455,34 @@ function thread(threadId: string, revision?: string) {
 
 async function captureOutput(fn: () => Promise<void>): Promise<string> {
   const originalWrite = process.stdout.write.bind(process.stdout);
+  const originalLog = console.log;
+  const originalInfo = console.info;
+  const originalWarn = console.warn;
   const chunks: string[] = [];
   process.stdout.write = ((chunk: string | Uint8Array) => {
     chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
     return true;
   }) as typeof process.stdout.write;
+  // Review-path branch logs use console during execute; keep capture JSON-clean.
+  console.log = (...args: unknown[]) => {
+    chunks.push(args.map(String).join(' ') + '\n');
+  };
+  console.info = (...args: unknown[]) => {
+    chunks.push(args.map(String).join(' ') + '\n');
+  };
+  console.warn = () => undefined;
   try {
     await fn();
   } finally {
     process.stdout.write = originalWrite;
+    console.log = originalLog;
+    console.info = originalInfo;
+    console.warn = originalWarn;
   }
-  return chunks.join('');
+  const joined = chunks.join('');
+  // Prefer the outermost JSON object when review logs interleave with the report.
+  const start = joined.indexOf('{');
+  const end = joined.lastIndexOf('}');
+  if (start >= 0 && end > start) return joined.slice(start, end + 1);
+  return joined;
 }

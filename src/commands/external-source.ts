@@ -507,7 +507,11 @@ async function handleBackfill(
     const result = await runtime.runExternalBackfill(request, source);
     const status = result.backfill.status;
     const quotaReached = status === 'quota_reached';
-    const resumable = status === 'quota_reached' || status === 'pending' || status === 'running' || status === 'source_failed';
+    const resumable = status === 'quota_reached'
+      || status === 'pending'
+      || status === 'running'
+      || status === 'source_failed'
+      || status === 'blocked_zero_progress';
 
     emitBackfillReport(options, {
       ...reportBase,
@@ -524,6 +528,8 @@ async function handleBackfill(
     }, {
       note: quotaReached
         ? 'Quota reached; resume the same operation to continue.'
+        : status === 'blocked_zero_progress'
+          ? 'Blocked with zero progress (operator-actionable, resumable). Inspect failures/quarantine or raise bounds, then retry the same operation.'
         : status === 'completed'
           ? 'Backfill completed for the selected resource set.'
           : `Backfill finished with status ${status}.`,

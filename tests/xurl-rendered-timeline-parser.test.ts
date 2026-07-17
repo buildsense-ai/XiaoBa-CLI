@@ -22,6 +22,8 @@ import * as assert from 'node:assert/strict';
 import {
   parseRenderedTimeline,
   MAX_RENDERED_TIMELINE_BYTES,
+  EXCLUDED_RENDERED_TIMELINE_ROLES,
+  isExcludedRenderedTimelineRole,
   type RenderedTimelineEvent,
   type RenderedTimelineParseResult,
 } from '../src/utils/xurl-rendered-timeline';
@@ -426,6 +428,16 @@ describe('rendered Timeline parser — oversized output', () => {
 // ---------------------------------------------------------------------------
 // Empty / malformed
 // ---------------------------------------------------------------------------
+
+describe('rendered Timeline role classification policy', () => {
+  test('excluded roles are non-mutable from callers', () => {
+    assert.ok(isExcludedRenderedTimelineRole('Runtime 启动层'));
+    assert.throws(() => {
+      (EXCLUDED_RENDERED_TIMELINE_ROLES as string[]).push('User');
+    }, TypeError);
+    assert.equal(isExcludedRenderedTimelineRole('User'), false);
+  });
+});
 
 describe('rendered Timeline parser — empty and malformed', () => {
   test('rejects empty input', () => {

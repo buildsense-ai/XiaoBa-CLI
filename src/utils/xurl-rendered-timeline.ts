@@ -31,12 +31,22 @@ export type RenderedTimelineRole = 'User' | 'Assistant' | 'Context Compacted';
 /**
  * Non-conversation display roles that xURL may render for runtime chrome.
  * These are excluded from learning evidence and never mapped to User/Assistant.
+ * Exported as a frozen list so callers cannot mutate classification policy.
  */
-export const EXCLUDED_RENDERED_TIMELINE_ROLES = new Set<string>([
+export const EXCLUDED_RENDERED_TIMELINE_ROLES: readonly string[] = Object.freeze([
   'Runtime 启动层',
   'Runtime Startup',
   'Runtime startup',
 ]);
+
+const EXCLUDED_RENDERED_TIMELINE_ROLE_SET: ReadonlySet<string> = new Set(
+  EXCLUDED_RENDERED_TIMELINE_ROLES,
+);
+
+/** True when the rendered role is runtime chrome and must not enter learning. */
+export function isExcludedRenderedTimelineRole(roleText: string): boolean {
+  return EXCLUDED_RENDERED_TIMELINE_ROLE_SET.has(roleText);
+}
 
 /**
  * Prompt-control roles that must never become learning evidence.
@@ -354,7 +364,7 @@ interface RawTimelineEntry {
 
 function classifyRenderedTimelineRole(roleText: string, ordinal: number): 'conversation' | 'excluded' {
   if (CONVERSATION_ROLES.has(roleText as RenderedTimelineRole)) return 'conversation';
-  if (EXCLUDED_RENDERED_TIMELINE_ROLES.has(roleText)) return 'excluded';
+  if (isExcludedRenderedTimelineRole(roleText)) return 'excluded';
   if (FORBIDDEN_RENDERED_TIMELINE_ROLE_RE.test(roleText)) {
     throw new Error(
       `rendered Timeline entry ${ordinal} has forbidden prompt-control role: ${roleText}`,

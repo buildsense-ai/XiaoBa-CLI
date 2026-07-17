@@ -46,7 +46,12 @@ export const EVIDENCE_CAPSULE_SCHEMA_VERSION = 1 as const;
 
 /** Hard bounds for external evidence before it becomes durable or model-facing. */
 export const MAX_EVIDENCE_CAPSULE_ENTRIES = 64;
-export const MAX_EVIDENCE_CAPSULE_ENTRY_CONTENT_BYTES = 8 * 1024;
+/**
+ * Per-entry content bound. Kept coherent with MAX_EXTERNAL_TURN_TEXT_BYTES so
+ * an ordinary external final that passes turn admission can also form a
+ * durable capsule entry. Oversize above this bound remains fail-closed.
+ */
+export const MAX_EVIDENCE_CAPSULE_ENTRY_CONTENT_BYTES = 16 * 1024;
 export const MAX_EVIDENCE_CAPSULE_PAYLOAD_BYTES = 128 * 1024;
 export const MAX_EVIDENCE_CAPSULE_OBSERVATIONS = 32;
 export const MAX_EVIDENCE_CAPSULE_OBSERVATION_PAYLOAD_BYTES = 16 * 1024;
@@ -55,8 +60,9 @@ const MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES = 2 * 1024;
 /**
  * Fail-closed bound for one external user/assistant text field after redaction.
  * Sized for ordinary Pi/Codex final responses while remaining far below the
- * capsule payload ceiling. Oversize still rejects (no silent truncation of
- * the admission path); operator retry recovers after a policy change.
+ * capsule payload ceiling. Coherent with MAX_EVIDENCE_CAPSULE_ENTRY_CONTENT_BYTES.
+ * Oversize still rejects (no silent truncation of the admission path);
+ * operator retry recovers after a policy change.
  */
 export const MAX_EXTERNAL_TURN_TEXT_BYTES = 16 * 1024;
 const MAX_EXTERNAL_TOOL_ARGUMENT_BYTES = 3 * 1024;

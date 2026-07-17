@@ -687,6 +687,71 @@ test('multi-page backfill yields to same-provider continuous work after one page
   }
 });
 
+test('RuntimeLearning records blocked_zero_progress as operator-actionable and allows retry after bounds correction', async () => {
+  const env = setupEnv();
+  try {
+    const resourceRef = 'conversation-blocked';
+    const unit = buildExternalUnit(env.root, 'external://codex/conversation/blocked.jsonl');
+    const source = new FixtureBackfillSource([{
+      resourceRef,
+      position: 0,
+      unit,
+      contentHash: 'blocked-hash-0',
+      ignoreCursor: true,
+    }], {
+      provider: 'codex',
+      sourceId: 'codex-blocked-source',
+    });
+    // Override byteLength via a thin wrapper so the first runs hit zero-progress quota.
+    const oversizedSource: ExternalSessionLogBackfillSource = {
+      identity: source.identity,
+      discoverResources: () => source.discoverResources(),
+      read: (resource, cursor) => {
+        const result = source.read(resource, cursor);
+        return {
+          ...result,
+          events: result.events.map(event => ({
+            ...event,
+            byteLength: 5_000,
+          })),
+        };
+      },
+    };
+
+    const tightRequest = makeRequest({
+      operationId: 'blocked-zero-progress-op',
+      provider: 'codex',
+      sourceId: 'codex-blocked-source',
+      resourceRefs: [resourceRef],
+      endPosition: 0,
+      maxBytes: 100,
+    });
+
+    const fixture = env.createRuntime();
+    const first = await fixture.runtime.runExternalBackfill(tightRequest, oversizedSource);
+    assert.equal(first.backfill.status, 'quota_reached');
+
+    const second = await fixture.runtime.runExternalBackfill(tightRequest, oversizedSource);
+    assert.equal(second.backfill.status, 'blocked_zero_progress');
+
+    // After policy/bounds correction the same operation must reopen and complete.
+    const raisedRequest = makeRequest({
+      operationId: 'blocked-zero-progress-op',
+      provider: 'codex',
+      sourceId: 'codex-blocked-source',
+      resourceRefs: [resourceRef],
+      endPosition: 0,
+      maxBytes: 100_000,
+    });
+    const third = await fixture.runtime.runExternalBackfill(raisedRequest, oversizedSource);
+    assert.equal(third.backfill.status, 'completed');
+    assert.ok(third.backfill.admittedEpisodes >= 1);
+    assert.ok(Object.keys(fixture.episodeStore.load().episodes).length >= 1);
+  } finally {
+    env.restore();
+  }
+});
+
 test('explicit backfill retries through the shared queue and remains idempotent on rerun', async () => {
   const env = setupEnv();
   try {

@@ -239,6 +239,15 @@ export function extractLearningEpisodes(
         if (assistantResponse) evidence.push(assistantResponse);
       }
       evidence.push(accepted);
+    } else if (!hasDeliveryEvidence(evidence) && isExternalCompleteFinalDelivery(deliveryTurn)) {
+      // External Session Log Sources (xURL/Pi) materialize a complete
+      // User→final-Assistant event with empty tool_calls. Treat the final
+      // assistant text as candidate episode evidence only for external
+      // session metadata. Internal chat still requires tool delivery or a
+      // following acceptance; settlement/prefilter/Author/Verifier gates
+      // remain unchanged and external evidence never gets promotion authority.
+      const assistantResponse = detectAssistantResponseEvidence(deliverySourceFilePath, deliveryTurn);
+      if (assistantResponse) evidence.push(assistantResponse);
     }
     if (!hasDeliveryEvidence(evidence)) continue;
 
@@ -500,6 +509,16 @@ function hasDeliveryEvidence(evidence: readonly EpisodeEvidenceRef[]): boolean {
     || item.kind === 'verified-tool-result'
     || item.kind === 'assistant-response',
   );
+}
+
+/**
+ * External Session Log turns are tagged `session_type: 'external'` by the
+ * source adapter (not by URI guessing). A complete external final is a turn
+ * with non-empty assistant text; tool_calls may be empty for Pi/xURL finals.
+ */
+function isExternalCompleteFinalDelivery(turn: CompletedTurn): boolean {
+  if (String(turn.session_type ?? '').trim().toLowerCase() !== 'external') return false;
+  return turn.assistant.text.trim().length > 0;
 }
 
 function detectAssistantResponseEvidence(

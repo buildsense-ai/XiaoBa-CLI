@@ -232,19 +232,18 @@ export class ExternalSessionLogBackfillService {
     let state = loadExternalSessionLogBackfillState(this.options.stateFilePath)
       ?? createExternalSessionLogBackfillState(request, startedAt);
     state = assertCompatibleState(state, request);
+    // blocked_zero_progress is operator-actionable and resumable. A later
+    // invocation after policy/limit correction must be able to progress; do
+    // not permanently latch the operation closed. Clear the consecutive
+    // zero-progress counter so this retry can re-evaluate under current bounds.
     if (state.status === 'blocked_zero_progress') {
-      return {
-        status: 'blocked_zero_progress',
-        discoveredResources: state.metrics.resourcesDiscovered,
-        processedResources: 0,
-        pendingResources: state.metrics.pendingResources,
-        failedResources: state.metrics.failedResources,
-        ingestedEvents: 0,
-        duplicateEventsSkipped: 0,
-        tombstonedEventsSkipped: 0,
-        admittedEpisodes: 0,
-        bytesProcessed: 0,
-        state,
+      state = {
+        ...state,
+        status: 'running',
+        metrics: {
+          ...state.metrics,
+          zeroProgressRuns: 0,
+        },
       };
     }
     const progressBefore = snapshotProgressFingerprint(state);
@@ -789,7 +788,7 @@ export class ExternalSessionLogBackfillService {
       message: finalStatus === 'source_failed'
         ? 'one or more resources failed; see state.failures'
         : finalStatus === 'blocked_zero_progress'
-          ? 'backfill made no progress across consecutive quota runs; inspect failures or raise bounds'
+          ? 'backfill made no progress across consecutive quota runs; inspect failures or raise bounds, then retry the same operation (resumable)'
         : undefined,
       metrics,
     });
