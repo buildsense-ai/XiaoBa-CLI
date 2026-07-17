@@ -8,7 +8,11 @@ import { EvidenceIngestor } from '../src/utils/evidence-ingestor';
 import { LearningEpisodeStore } from '../src/utils/learning-episode';
 import { DueWorkPlanner } from '../src/utils/due-work-planner';
 import { defaultDistilledOutputDir } from '../src/utils/distillation-pipeline';
-import { RuntimeLearning } from '../src/utils/runtime-learning';
+import { DistillationHeartbeatScheduler } from '../src/utils/distillation-heartbeat-scheduler';
+import {
+  RuntimeLearning,
+  type DiscoveryWakeQuotas,
+} from '../src/utils/runtime-learning';
 import { SkillEvolutionRuntime } from '../src/utils/skill-evolution';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
@@ -17,7 +21,10 @@ import {
   resolveExternalProviderOverridePath,
 } from '../src/utils/external-provider-controls';
 import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
-import { loadExternalCursorState } from '../src/utils/session-log-source';
+import {
+  loadExternalCursorState,
+  type SourceWorkBudget,
+} from '../src/utils/session-log-source';
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
 import {
   FakeXurlScenario,
@@ -40,13 +47,18 @@ interface RuntimeFixture {
   readonly episodeStore: LearningEpisodeStore;
 }
 
+interface RuntimeCreateOptions {
+  readonly externalSourceBudget?: SourceWorkBudget;
+  readonly discoveryQuotas?: Partial<DiscoveryWakeQuotas>;
+}
+
 interface TestEnv {
   readonly root: string;
   readonly scenarioPath: string;
   readonly logPath: string;
   readonly commandPath: string;
   readonly internalLogPath: string;
-  createRuntime(): RuntimeFixture;
+  createRuntime(options?: RuntimeCreateOptions): RuntimeFixture;
   restore(): void;
 }
 
@@ -556,6 +568,252 @@ test('activation blocking is durable when the catalog exceeds the activation lim
   }
 });
 
+test('bounded external baseline auto-continues through coalesced wakes until 100 sessions are baselined', async () => {
+  const env = setupEnv();
+  try {
+    const totalSessions = 100;
+    const perWakeLimit = 20;
+    const pages: Record<string, ReturnType<typeof catalogPage>> = {};
+    for (let pageIndex = 0; pageIndex < totalSessions / perWakeLimit; pageIndex++) {
+      const start = pageIndex * perWakeLimit;
+      const threads = Array.from({ length: perWakeLimit }, (_, offset) => {
+        const index = start + offset;
+        return thread(`conversation-${index}`, `branch-${index}`, 0, FP(`c-${index}`));
+      });
+      const pageKey = pageIndex === 0 ? 'start' : `page-${pageIndex + 1}`;
+      const next = pageIndex === (totalSessions / perWakeLimit) - 1
+        ? null
+        : `page-${pageIndex + 2}`;
+      pages[pageKey] = catalogPage(threads, next ?? undefined);
+    }
+
+    writeScenario(env.scenarioPath, {
+      discover: { pages },
+      read: Object.fromEntries(
+        Array.from({ length: totalSessions }, (_, index) => [
+          `conversation-${index}`,
+          readSpec(timeline(`conversation-${index}`, `branch-${index}`, 0, FP(`c-${index}`), [])),
+        ]),
+      ),
+    });
+
+    const fixture = env.createRuntime({
+      externalSourceBudget: {
+        maxResourcesPerWake: perWakeLimit,
+        maxBytesPerWake: 10_000_000,
+        maxElapsedMsPerWake: 60_000,
+      },
+      discoveryQuotas: {
+        maxResourcesPerWake: perWakeLimit,
+        maxAdmittedEpisodesPerWake: 1000,
+        maxDiscoveryMs: 120_000,
+      },
+    });
+
+    // One public scheduler entrypoint; coalesced follow-ups must drain the rest.
+    const scheduler = new DistillationHeartbeatScheduler(env.root, fixture.runtime);
+    await scheduler.runHeartbeat('startup');
+
+    const state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.activation?.initialDiscoveryCompleted, true);
+    assert.equal(state.discovery?.nextPageToken, null);
+    assert.equal(Object.keys(state.resources).length, totalSessions);
+    assert.equal(Object.keys(state.cursors).length, totalSessions);
+    assert.equal(Object.keys(state.processedEventIds).length, 0, 'future-only baseline admits no events');
+    assert.deepEqual(
+      fixture.runtime.getPendingHeartbeatReasons(),
+      [],
+      'continuation demand clears once the catalog is fully baselined',
+    );
+
+    // No duplicate baseline acknowledgements: each resource cursor is set once.
+    for (let index = 0; index < totalSessions; index++) {
+      const resourceRef = `conversation-${index}`;
+      assert.equal(state.cursors[resourceRef]?.cursor.position, 0);
+      assert.equal(state.cursors[resourceRef]?.cursor.processedCount, 0);
+    }
+
+    // Catalog pagination must have advanced across all pages (one query per page
+    // after the initial version probe).
+    const invocations = readInvocationLog(env.logPath);
+    const queryCount = invocations.filter(item => item.action === 'query').length;
+    assert.equal(queryCount, totalSessions / perWakeLimit);
+  } finally {
+    env.restore();
+  }
+});
+
+test('post-baseline continuous discovery auto-continues through coalesced wakes until 100 new sessions are baselined', async () => {
+  const env = setupEnv();
+  try {
+    const totalSessions = 100;
+    const perWakeLimit = 20;
+    const pageCount = totalSessions / perWakeLimit;
+
+    // Phase 1: complete future-only baseline against an empty catalog.
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime({
+      externalSourceBudget: {
+        maxResourcesPerWake: perWakeLimit,
+        maxBytesPerWake: 10_000_000,
+        maxElapsedMsPerWake: 60_000,
+      },
+      discoveryQuotas: {
+        maxResourcesPerWake: perWakeLimit,
+        maxAdmittedEpisodesPerWake: 1000,
+        maxDiscoveryMs: 120_000,
+      },
+    });
+    const scheduler = new DistillationHeartbeatScheduler(env.root, fixture.runtime);
+    await scheduler.runHeartbeat('startup');
+
+    const baselined = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(baselined.activation?.initialDiscoveryCompleted, true);
+    assert.equal(baselined.discovery?.nextPageToken, null);
+    assert.equal(Object.keys(baselined.resources).length, 0);
+    assert.deepEqual(fixture.runtime.getPendingHeartbeatReasons(), []);
+
+    // Phase 2: 100 newly eligible sessions arrive across 5 catalog pages.
+    // Future-only activation baselines each new resource at its head without
+    // historical admission; the regression is that one public scheduled wake
+    // coalesces external-continuation until every page is drained.
+    const pages: Record<string, ReturnType<typeof catalogPage>> = {};
+    const reads: Record<string, ReturnType<typeof readSpec>> = {};
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+      const start = pageIndex * perWakeLimit;
+      const threads = Array.from({ length: perWakeLimit }, (_, offset) => {
+        const index = start + offset;
+        return thread(`conversation-new-${index}`, `branch-new-${index}`, 2, FP(`new-${index}-2`));
+      });
+      const pageKey = pageIndex === 0 ? 'start' : `page-${pageIndex + 1}`;
+      const next = pageIndex === pageCount - 1 ? null : `page-${pageIndex + 2}`;
+      pages[pageKey] = catalogPage(threads, next ?? undefined);
+      for (let offset = 0; offset < perWakeLimit; offset++) {
+        const index = start + offset;
+        reads[`conversation-new-${index}`] = readSpec(
+          timeline(`conversation-new-${index}`, `branch-new-${index}`, 2, FP(`new-${index}-2`), [
+            entry(1, 'User', `New request ${index}`),
+            entry(2, 'Assistant', `New response ${index}.`),
+          ]),
+        );
+      }
+    }
+    writeScenario(env.scenarioPath, {
+      discover: { pages },
+      read: reads,
+    });
+
+    const queriesBefore = readInvocationLog(env.logPath)
+      .filter(item => item.action === 'query').length;
+
+    // One public scheduled entrypoint; coalesced follow-ups must drain the rest.
+    await scheduler.runHeartbeat('scheduled');
+
+    const state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(state.activation?.initialDiscoveryCompleted, true);
+    assert.equal(state.discovery?.nextPageToken, null, 'continuous page cycle must finish');
+    assert.equal(Object.keys(state.resources).length, totalSessions);
+    assert.equal(Object.keys(state.cursors).length, totalSessions);
+    assert.deepEqual(
+      fixture.runtime.getPendingHeartbeatReasons(),
+      [],
+      'continuation demand clears once the continuous page cycle finishes',
+    );
+
+    // Every newly eligible resource reaches an explicit baselined/processed state
+    // exactly once (future-only activation cursor, no duplicate re-baseline).
+    for (let index = 0; index < totalSessions; index++) {
+      const resourceRef = `conversation-new-${index}`;
+      assert.ok(state.resources[resourceRef], `resource ${resourceRef} must be discovered`);
+      assert.equal(state.cursors[resourceRef]?.cursor.position, 2);
+      assert.equal(state.cursors[resourceRef]?.cursor.processedCount, 0);
+      assert.equal(state.cursors[resourceRef]?.lastStatus, 'activated');
+    }
+
+    // Future-only activation of brand-new resources does not admit historical
+    // content; assert the domain episode/admission counts separately.
+    assert.equal(
+      Object.keys(state.processedEventIds).length,
+      0,
+      'new-session activation is future-only and admits no historical events',
+    );
+    assert.equal(
+      Object.keys(fixture.episodeStore.load().episodes).length,
+      0,
+      'no episodes expected for future-only new-session baseline',
+    );
+
+    const queriesAfter = readInvocationLog(env.logPath)
+      .filter(item => item.action === 'query').length;
+    assert.equal(
+      queriesAfter - queriesBefore,
+      pageCount,
+      'one catalog query per page of the continuous cycle',
+    );
+
+    // Heartbeat must have coalesced multiple external-continuation wakes rather
+    // than stopping after the first page of 20.
+    const heartbeat = fixture.runtime.loadHeartbeatRecord();
+    assert.ok(
+      heartbeat.runCount >= pageCount,
+      `expected at least ${pageCount} coalesced wakes, got ${heartbeat.runCount}`,
+    );
+  } finally {
+    env.restore();
+  }
+});
+
+test('provider failure/backoff does not self-spin external-continuation wakes', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread('conversation-a', 'branch-a', 0, FP('a-0'))], 'page-2'),
+        },
+        exitCode: 1,
+        stderr: 'provider unavailable',
+        rawStdout: '',
+      },
+    });
+
+    const fixture = env.createRuntime({
+      externalSourceBudget: {
+        maxResourcesPerWake: 20,
+        maxBytesPerWake: 1_000_000,
+        maxElapsedMsPerWake: 30_000,
+      },
+      discoveryQuotas: {
+        maxResourcesPerWake: 20,
+        maxAdmittedEpisodesPerWake: 100,
+        maxDiscoveryMs: 30_000,
+      },
+    });
+    const scheduler = new DistillationHeartbeatScheduler(env.root, fixture.runtime);
+    await scheduler.runHeartbeat('startup');
+
+    assert.deepEqual(
+      fixture.runtime.getPendingHeartbeatReasons(),
+      [],
+      'failed discovery must not queue external-continuation',
+    );
+    const state = loadExternalCursorState(cursorStorePath(env.root));
+    assert.notEqual(state.activation?.initialDiscoveryCompleted, true);
+    // A single failed startup wake only — no coalesced follow-up self-spin.
+    const heartbeat = fixture.runtime.loadHeartbeatRecord();
+    assert.equal(heartbeat.runCount, 1);
+  } finally {
+    env.restore();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Setup helpers
 // ---------------------------------------------------------------------------
@@ -621,7 +879,7 @@ function setupEnv(options: { maxActivationCatalog?: number } = {}): TestEnv {
     logPath,
     commandPath,
     internalLogPath,
-    createRuntime() {
+    createRuntime(options: RuntimeCreateOptions = {}) {
       const skillEvolution = new SkillEvolutionRuntime({
         workingDirectory: root,
         outputDir,
@@ -679,6 +937,12 @@ function setupEnv(options: { maxActivationCatalog?: number } = {}): TestEnv {
           skillEvolution,
           curator,
           planner,
+          ...(options.externalSourceBudget
+            ? { externalSourceBudget: options.externalSourceBudget }
+            : {}),
+          ...(options.discoveryQuotas
+            ? { discoveryQuotas: options.discoveryQuotas }
+            : {}),
         }),
         episodeStore,
       };

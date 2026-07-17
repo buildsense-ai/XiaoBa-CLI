@@ -128,7 +128,12 @@ export type RuntimeLearningReason =
   | 'operational-retry'
   | 'curator'
   | 'semantic-reassessment'
-  | 'manual';
+  | 'manual'
+  /**
+   * Coalesced follow-up when external discovery stopped only because a bounded
+   * wake slice reached quota / page boundary while durable continuation remains.
+   */
+  | 'external-continuation';
 
 export type RuntimeLearningStageStatus = 'succeeded' | 'failed' | 'skipped';
 
@@ -2212,6 +2217,11 @@ export class RuntimeLearning {
         },
       );
 
+      // Bounded external discovery may leave a durable incomplete page cycle
+      // (discovery.nextPageToken). Request a coalesced discovery follow-up so
+      // large catalogs do not appear stuck until the next scheduled interval.
+      this.requestExternalContinuationWakeIfNeeded(wake.discovery.sources);
+
       return wake;
     } catch (error: any) {
       Logger.warning(`[RuntimeLearning] wake cycle failed (${this.formatReasons(this.normalizeReasons(reason))}): ${error.message}`);
@@ -2232,6 +2242,9 @@ export class RuntimeLearning {
           nextWakeReason: 'failed',
         },
       );
+      // Fail-closed: still re-enter only when durable continuation remains and
+      // the source is not in backoff/blocked failure (checked inside helper).
+      this.requestExternalContinuationWakeIfNeeded(wake.discovery.sources);
       return wake;
     } finally {
       this.activeWakeAbortControllers.delete(wakeAbortController);
@@ -2355,7 +2368,78 @@ export class RuntimeLearning {
       || reasons.has('scheduled')
       || reasons.has('session-log-append')
       || reasons.has('manual')
+      || reasons.has('external-continuation')
     );
+  }
+
+  /**
+   * When a bounded external discovery slice stops with a durable incomplete
+   * catalog page cycle (`discovery.nextPageToken != null`), merge an
+   * `external-continuation` discovery reason into the durable pending-wake set
+   * so the existing coalesced scheduler loop can drain the rest without a
+   * second scheduler or manual re-wake. Covers both unfinished future-only
+   * baseline and post-baseline continuous discovery. Never starts a new
+   * catalog cycle from the continuation reason alone, and never hot-loops
+   * failure/backoff/blocked/drained/locked lanes.
+   */
+  private requestExternalContinuationWakeIfNeeded(
+    sourceReports: readonly SessionLogSourceReport[],
+  ): void {
+    if (!this.hasRemainingExternalDiscoveryWork(sourceReports)) return;
+    const existing = this.getPendingHeartbeatReasons();
+    if (existing.includes('external-continuation')) return;
+    this.markHeartbeatPending([...existing, 'external-continuation']);
+  }
+
+  private hasRemainingExternalDiscoveryWork(
+    sourceReports: readonly SessionLogSourceReport[],
+  ): boolean {
+    // Fail-closed for suspended / non-runnable lanes. A per-resource read
+    // failure (`status: failed`) must NOT block durable incomplete page-cycle
+    // continuation — catalog paging still has to finish. Backoff/drained/
+    // locked/activation-blocked do not self-spin.
+    const reportBySourceId = new Map(
+      sourceReports
+        .filter(report => report.category === 'external' && report.enabled)
+        .map(report => [report.sourceId, report] as const),
+    );
+
+    for (const adapter of this.sessionLogSources) {
+      if (adapter.identity.category !== 'external' || !adapter.isEnabled()) continue;
+
+      const report = reportBySourceId.get(adapter.identity.sourceId);
+      if (
+        report?.status === 'backoff'
+        || report?.status === 'drained'
+        || report?.status === 'locked'
+      ) {
+        continue;
+      }
+
+      const failureState = this.getProviderBlockingExternalFailure(adapter.identity.provider)
+        ?? this.getExternalSourceFailure(adapter.identity.provider, adapter.identity.sourceId);
+      if (this.shouldSkipExternalSourceForFailure(failureState)) continue;
+
+      const storePath = adapter.getCursorStorePath?.();
+      if (!storePath) continue;
+      let state: ExternalCursorState;
+      try {
+        state = loadExternalCursorState(storePath);
+      } catch {
+        continue;
+      }
+      // Activation blocked is operator-gated; do not hot-loop.
+      if (state.activation?.activationBlocked === true) continue;
+
+      // Finite incomplete page cycle only. When nextPageToken is null the current
+      // catalog cycle is finished (baseline complete or continuous cycle drained).
+      // Do not auto-start a fresh cycle from the continuation reason alone — that
+      // waits for ordinary scheduled / session-log cadence.
+      if (state.discovery?.nextPageToken != null) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private resolveWakeDueWork(

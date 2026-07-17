@@ -1939,6 +1939,17 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       return selection.resources;
     }
 
+    // Incomplete future-only baseline stays metadata-only across every page of
+    // the initial catalog. Returning selected resources mid-import would start
+    // continuous reads before the activation boundary is complete and can turn
+    // per-resource read noise into provider-blocking failure that freezes the
+    // remaining catalog pages.
+    if (withIdentity.activation.initialDiscoveryCompleted !== true) {
+      const baselining = this.refreshDiscoveryPage(withIdentity, maxResources);
+      this.persistExternalState(baselining);
+      return [];
+    }
+
     const discovered = this.refreshDiscoveryPage(withIdentity, maxResources);
     const selection = selectExternalResourcesForWake(discovered, maxResources);
     this.persistExternalState(selection.state);

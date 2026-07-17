@@ -524,6 +524,16 @@ export class DistillationHeartbeatScheduler {
               );
               lastResult = await runtimeLearning.wake(nextReasons, { coalesced: isCoalescedWake });
               isCoalescedWake = true;
+              // RuntimeLearning may durably queue external-continuation during the
+              // wake. Re-seed only that discovery follow-up into the in-memory
+              // coalescing set. Other reasons still arrive via runHeartbeat while
+              // a wake is active; re-importing every durable pending value would
+              // re-fire already-consumed restart leftovers and busy-loop.
+              for (const pending of runtimeLearning.getPendingHeartbeatReasons?.() ?? []) {
+                if (pending === 'external-continuation') {
+                  this.pendingWakeReasons.add(pending);
+                }
+              }
             } catch (error: any) {
               Logger.warning(`[DistillationHeartbeat] runtime wake failed: ${error.message}`);
               return emptyWakeResult(false);
