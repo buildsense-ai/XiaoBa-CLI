@@ -1694,7 +1694,7 @@ export class RuntimeLearning {
   async runExternalBackfill(
     request: ExternalSessionLogBackfillRequest,
     source: ExternalSessionLogBackfillSource,
-    options: { onProgress?: (progress: ExternalHistoryProgressUpdate) => void | Promise<void> } = {},
+    options: { onProgress?: (progress: ExternalHistoryProgressUpdate) => void } = {},
   ): Promise<RuntimeLearningBackfillResult> {
     if (this.activeBackfill) {
       throw new Error('another external backfill operation is already active');
@@ -1756,7 +1756,7 @@ export class RuntimeLearning {
     request: ExternalSessionLogBackfillRequest,
     source: ExternalSessionLogBackfillSource,
     writerOwner: symbol,
-    options: { onProgress?: (progress: ExternalHistoryProgressUpdate) => void | Promise<void> } = {},
+    options: { onProgress?: (progress: ExternalHistoryProgressUpdate) => void } = {},
   ): Promise<RuntimeLearningBackfillResult> {
     if (this.getProviderBlockingExternalFailure(source.identity.provider)) {
       throw new Error(

@@ -104,6 +104,10 @@ export interface ExternalSessionLogBackfillFailure {
   readonly eventId?: string;
   readonly message: string;
   readonly at: string;
+  /** Stable structured failure code (e.g. xurl_output_limit) when the underlying error carries one. */
+  readonly code?: string;
+  /** Structured failure details preserved from the underlying error (never parsed from messages). */
+  readonly details?: Readonly<Record<string, unknown>>;
 }
 
 export interface ExternalSessionLogBackfillResourceState {
@@ -111,6 +115,8 @@ export interface ExternalSessionLogBackfillResourceState {
   readonly updatedAt: string;
   readonly message?: string;
   readonly eventId?: string;
+  /** Stable structured failure code when this resource failed with a structured error. */
+  readonly failureCode?: string;
 }
 
 export interface ExternalSessionLogBackfillMetrics {
@@ -198,6 +204,10 @@ export interface ExternalSessionLogBackfillRunResult {
   readonly tombstonedEventsSkipped: number;
   readonly admittedEpisodes: number;
   readonly bytesProcessed: number;
+  /** Stable structured failure code when status is source_failed (e.g. xurl_output_limit). */
+  readonly failureCode?: string;
+  /** Structured failure details when status is source_failed. */
+  readonly failureDetails?: Readonly<Record<string, unknown>>;
   readonly state: ExternalSessionLogBackfillState;
 }
 
@@ -234,10 +244,10 @@ export interface ExternalSessionLogBackfillRunOptions {
   /** Runtime xURL reads may return a complete thread; admit only the named range. */
   readonly filterOutOfRangeEvents?: boolean;
   /**
-   * Called only after durable processed-resource state is written.
-   * Never fire on bare read success.
+   * Reports snapshots only after the corresponding running, catalog, or
+   * processed-resource state is durable. A bare read success never advances it.
    */
-  readonly onProgress?: (progress: ExternalHistoryProgressUpdate) => void | Promise<void>;
+  readonly onProgress?: (progress: ExternalHistoryProgressUpdate) => void;
 }
 
 export class ExternalSessionLogBackfillService {
@@ -301,6 +311,43 @@ export class ExternalSessionLogBackfillService {
       metrics,
     });
 
+    // Operation total: explicit requested resourceRefs count when provided,
+    // otherwise the stable matched catalog count discovered below. null while
+    // the catalog is still being discovered (indeterminate).
+    const explicitTotal = request.range.resourceRefs && request.range.resourceRefs.length > 0
+      ? request.range.resourceRefs.length
+      : null;
+    let determinateTotal: number | null = null;
+    const emitProgress = (
+      phase: ExternalHistoryProgressPhase,
+      overrides: Partial<ExternalHistoryProgressUpdate> = {},
+    ): void => {
+      const unique = recountUniqueResourceStates(state.resourceStates);
+      const completed = unique.processedResources;
+      const failed = unique.failedResources;
+      const total = overrides.total !== undefined ? overrides.total : determinateTotal;
+      const remaining = total !== null ? Math.max(0, total - completed - failed) : null;
+      const progress: ExternalHistoryProgressUpdate = {
+        processed: completed,
+        total,
+        completed,
+        failed,
+        skipped: 0,
+        remaining,
+        provider: request.provider,
+        phase,
+        ...overrides,
+      };
+      try {
+        options.onProgress?.(progress);
+      } catch {
+        // Progress reporter failures are nonfatal; never fail the durable import.
+      }
+    };
+    // Emit discovering with total=null after the durable running state exists
+    // and before catalog discovery. The catalog is indeterminate until matched.
+    emitProgress('discovering', { total: null });
+
     let matchedResources: SessionLogSourceResource[];
     try {
       matchedResources = selectBackfillResources(source.discoverResources(), request.range);
@@ -340,6 +387,10 @@ export class ExternalSessionLogBackfillService {
         message: toErrorMessage(error),
         metrics: state.metrics,
       });
+      // Discovery failed: catalog is indeterminate unless explicit refs were requested.
+      determinateTotal = explicitTotal;
+      emitProgress('failed', { total: explicitTotal });
+      const structured = extractStructuredFailure(error);
       return {
         status: 'source_failed',
         discoveredResources: 0,
@@ -351,6 +402,7 @@ export class ExternalSessionLogBackfillService {
         tombstonedEventsSkipped: 0,
         admittedEpisodes: 0,
         bytesProcessed: 0,
+        ...(structured ? { failureCode: structured.code, failureDetails: structured.details } : {}),
         state,
       };
     }
@@ -365,33 +417,11 @@ export class ExternalSessionLogBackfillService {
     let sawFailure = false;
     let quotaReached = false;
     let eventsProcessed = 0;
-    const catalogTotal = matchedResources.length;
-    const emitProgress = (
-      phase: ExternalHistoryProgressPhase,
-      overrides: Partial<ExternalHistoryProgressUpdate> = {},
-    ): void => {
-      const unique = recountUniqueResourceStates(state.resourceStates);
-      const completed = unique.processedResources;
-      const failed = unique.failedResources;
-      const remaining = Math.max(0, catalogTotal - completed - failed);
-      const progress: ExternalHistoryProgressUpdate = {
-        processed: completed,
-        total: catalogTotal,
-        completed,
-        failed,
-        skipped: 0,
-        remaining,
-        provider: request.provider,
-        phase,
-        ...overrides,
-      };
-      try {
-        void options.onProgress?.(progress);
-      } catch {
-        // Progress is best-effort; never fail the durable import on reporter errors.
-      }
-    };
-    // Catalog is selected and stable after discovery — determinate exact totals.
+    // After durable catalog selection, the operation total is determinate:
+    // explicit requested resourceRefs count when provided, otherwise the
+    // stable matched catalog count. Do not fake page size as total.
+    determinateTotal = explicitTotal !== null ? explicitTotal : matchedResources.length;
+    // Catalog is selected and durably recorded — emit determinate importing.
     emitProgress('importing');
     const matchedResourceRefs = new Set(matchedResources.map(resource => resource.resourceRef));
     const missingRequestedResourceRefs = (request.range.resourceRefs ?? [])
@@ -834,12 +864,18 @@ export class ExternalSessionLogBackfillService {
       metrics,
     };
     saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
-    // Terminal progress: expose completed/failed/skipped/remaining/total so
-    // terminal semantics are unambiguous. Do not invent skip behavior.
-    emitProgress(
-      finalStatus === 'completed' ? 'complete' : 'failed',
-      { remaining: 0 },
-    );
+    // Terminal progress semantics: complete only when actually completed;
+    // quota/pending remain resumable/paused (importing phase) with true
+    // remaining; source_failed/blocked remain failed with true remaining.
+    // processed/failed/remaining reconcile with the determinate total.
+    if (finalStatus === 'completed') {
+      emitProgress('complete');
+    } else if (finalStatus === 'quota_reached' || finalStatus === 'pending') {
+      emitProgress('importing');
+    } else {
+      // source_failed or blocked_zero_progress
+      emitProgress('failed');
+    }
 
     appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
       timestamp: finishedAt.toISOString(),
@@ -865,6 +901,12 @@ export class ExternalSessionLogBackfillService {
       metrics,
     });
 
+    // Preserve stable structured failure code/details in the run result so
+    // the control layer can map source_failed to the correct Device RPC error
+    // without parsing English messages.
+    const terminalStructured = finalStatus === 'source_failed' || finalStatus === 'blocked_zero_progress'
+      ? extractLatestStructuredFailure(state.failures)
+      : undefined;
     return {
       status: finalStatus,
       discoveredResources: matchedResources.length,
@@ -876,6 +918,7 @@ export class ExternalSessionLogBackfillService {
       tombstonedEventsSkipped,
       admittedEpisodes,
       bytesProcessed,
+      ...(terminalStructured ? { failureCode: terminalStructured.code, failureDetails: terminalStructured.details } : {}),
       state,
     };
   }
@@ -1127,6 +1170,7 @@ function recordBackfillFailure(
   now: Date,
 ): ExternalSessionLogBackfillState {
   const message = toErrorMessage(error);
+  const structured = extractStructuredFailure(error);
   const withFailure: ExternalSessionLogBackfillState = {
     ...state,
     updatedAt: now.toISOString(),
@@ -1137,6 +1181,7 @@ function recordBackfillFailure(
         eventId,
         message,
         at: now.toISOString(),
+        ...(structured ? { code: structured.code, ...(structured.details ? { details: structured.details } : {}) } : {}),
       },
     ],
   };
@@ -1145,6 +1190,7 @@ function recordBackfillFailure(
     message,
     eventId,
     countAttempt: true,
+    ...(structured ? { failureCode: structured.code } : {}),
   });
 }
 
@@ -1189,6 +1235,7 @@ function setBackfillResourceState(
     message?: string;
     eventId?: string;
     countAttempt?: boolean;
+    failureCode?: string;
   } = {},
 ): ExternalSessionLogBackfillState {
   const previous = state.resourceStates[resourceRef];
@@ -1199,6 +1246,7 @@ function setBackfillResourceState(
       updatedAt: now.toISOString(),
       ...(options.message ? { message: options.message } : {}),
       ...(options.eventId ? { eventId: options.eventId } : {}),
+      ...(options.failureCode ? { failureCode: options.failureCode } : {}),
     },
   };
   const unique = recountUniqueResourceStates(nextStates);
@@ -1261,4 +1309,44 @@ function normalizeContentHash(contentHash: string | undefined): string | null {
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/**
+ * Extract a stable structured failure code/details from an error without
+ * parsing English messages. Preserves known structured fields (code,
+ * commandKind, limitBytes) when the error carries them. Returns undefined for
+ * generic errors so the control layer can distinguish output-limit failures
+ * from generic source failures.
+ */
+function extractStructuredFailure(
+  error: unknown,
+): { code: string; details?: Readonly<Record<string, unknown>> } | undefined {
+  if (error == null || typeof error !== 'object') return undefined;
+  const candidate = error as {
+    code?: unknown;
+    commandKind?: unknown;
+    limitBytes?: unknown;
+  };
+  if (typeof candidate.code !== 'string' || !candidate.code.trim()) return undefined;
+  const details: Record<string, unknown> = {};
+  if (typeof candidate.commandKind === 'string') details.commandKind = candidate.commandKind;
+  if (typeof candidate.limitBytes === 'number' && Number.isFinite(candidate.limitBytes)) {
+    details.limitBytes = candidate.limitBytes;
+  }
+  return { code: candidate.code, ...(Object.keys(details).length > 0 ? { details } : {}) };
+}
+
+/**
+ * Extract the latest structured failure code/details from the durable
+ * failures list so the run result can surface it to the control layer.
+ */
+function extractLatestStructuredFailure(
+  failures: readonly ExternalSessionLogBackfillFailure[],
+): { code: string; details?: Readonly<Record<string, unknown>> } | undefined {
+  const failure = failures[failures.length - 1];
+  if (!failure?.code) return undefined;
+  return {
+    code: failure.code,
+    ...(failure.details ? { details: failure.details } : {}),
+  };
 }

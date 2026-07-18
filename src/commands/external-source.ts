@@ -95,7 +95,7 @@ export interface ExternalSourceCommandOptions {
   /** Structured report sink used by non-CLI control surfaces. */
   report?: (value: Record<string, unknown>) => void;
   /** Durable progress callback for connected-device control surface. */
-  onProgress?: (progress: ExternalHistoryProgressUpdate) => void | Promise<void>;
+  onProgress?: (progress: ExternalHistoryProgressUpdate) => void;
 }
 
 export interface ExternalHistoryControlStatus {
@@ -178,6 +178,60 @@ export function configureExternalHistoryProviders(
   return { ...getExternalHistoryControlStatus(workingDirectory), restartRequired: true };
 }
 
+/**
+ * Map a durable external backfill report to a stable Device RPC error when the
+ * operation ended in source_failed or blocked_zero_progress. Structured failure
+ * codes (never English messages) drive the mapping so the Web receives a
+ * stable external_history_record_too_large for output-limit failures and a
+ * stable external_history_source_failed for generic source failures. Returns
+ * undefined when the report is not a failure (caller returns it as success).
+ */
+export function mapExternalBackfillReportToDeviceRpcError(
+  report: Record<string, unknown>,
+  provider: string,
+): {
+  ok: false;
+  errorCode: string;
+  message: string;
+  retryable: boolean;
+  details: Record<string, unknown>;
+} | undefined {
+  const status = String(report.status || '').trim();
+  if (status !== 'source_failed' && status !== 'blocked_zero_progress') return undefined;
+  const failureCode = String(report.failureCode || '').trim();
+  if (failureCode === 'xurl_output_limit') {
+    const details = (report.failureDetails as Record<string, unknown> | undefined) ?? {};
+    const limitBytes = Number(details.limitBytes);
+    const commandKind = typeof details.commandKind === 'string' ? details.commandKind : 'read';
+    const safeLimitBytes = Number.isFinite(limitBytes) && limitBytes > 0 ? limitBytes : 0;
+    const limitLabel = safeLimitBytes
+      ? `（${Math.round(safeLimitBytes / 1024 / 1024 * 10) / 10} MiB）`
+      : '';
+    return {
+      ok: false,
+      errorCode: 'external_history_record_too_large',
+      message: `历史记录超过安全限制${limitLabel}，该条记录目前无法导入；已完成的历史进度已保留。`,
+      retryable: false,
+      details: {
+        provider,
+        limitBytes: safeLimitBytes,
+        commandKind,
+        // The specific oversized record cannot be retried; it will fail again
+        // until ranged read/software support exists. Durable prior progress is
+        // preserved for other records.
+        resumable: false,
+      },
+    };
+  }
+  return {
+    ok: false,
+    errorCode: 'external_history_source_failed',
+    message: '外部历史来源执行失败，请检查来源状态后重试。',
+    retryable: true,
+    details: { provider, status },
+  };
+}
+
 export async function runExternalHistoryBackfillControl(options: {
   provider: string;
   updatedSince: string;
@@ -186,7 +240,7 @@ export async function runExternalHistoryBackfillControl(options: {
   preferExistingOperation?: boolean;
   workingDirectory?: string;
   runtimeLearning?: RuntimeLearning;
-  onProgress?: (progress: ExternalHistoryProgressUpdate) => void | Promise<void>;
+  onProgress?: (progress: ExternalHistoryProgressUpdate) => void;
 }): Promise<Record<string, unknown>> {
   if (options.preferExistingOperation && !options.execute && !options.operationId) {
     const normalizedProvider = options.provider.trim().toLowerCase();
@@ -578,6 +632,8 @@ async function handleBackfill(
       bytesProcessed: result.backfill.bytesProcessed,
       resumable,
       quotaReached,
+      ...(result.backfill.failureCode ? { failureCode: result.backfill.failureCode } : {}),
+      ...(result.backfill.failureDetails ? { failureDetails: result.backfill.failureDetails } : {}),
     }, {
       note: quotaReached
         ? 'Quota reached; resume the same operation to continue.'

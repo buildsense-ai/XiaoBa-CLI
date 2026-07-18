@@ -54,13 +54,13 @@ import { resolveCatsDeviceModelStatus } from './model-status';
 import {
   configureExternalHistoryProviders,
   getExternalHistoryControlStatus,
+  mapExternalBackfillReportToDeviceRpcError,
   runExternalHistoryBackfillControl,
 } from '../commands/external-source';
 import {
   activateExternalHistoryRuntimeConfiguration,
   getActiveRuntimeLearning,
 } from '../utils/runtime-command-support';
-import { isXurlOutputLimitError } from '../utils/xurl-session-log-source';
 import type { ExternalHistoryProgressUpdate } from '../utils/session-log-backfill';
 import {
   buildCatsCoAttachmentCachePath,
@@ -872,39 +872,42 @@ export class CatsCompanyBot {
         ? runtimeLearning!.retryExternalProviderRecovery(provider)
         : undefined;
       const requestID = request.request_id;
-      const sendProgress = async (progress: ExternalHistoryProgressUpdate): Promise<void> => {
+      let progressSendTail = Promise.resolve();
+      const sendProgress = (progress: ExternalHistoryProgressUpdate): void => {
         if (!requestID || !this.bot) return;
-        try {
-          await this.bot.sendDeviceRpcProgress({
-            request_id: requestID,
-            grant_id: request.grant_id,
-            session_key: request.session_key,
-            topic_id: request.topic_id,
-            topic_type: request.topic_type,
-            actor_user_id: request.actor_user_id,
-            owner_user_id: request.owner_user_id,
-            identity_source: request.identity_source,
-            agent_id: request.agent_id,
-            agent_body_id: request.agent_body_id,
-            device_id: this.localDeviceGrant?.deviceId || request.device_id,
-            device_body_id: this.localDeviceGrant?.bodyId || request.device_body_id,
-            device_installation_id: this.localDeviceGrant?.installationId || request.device_installation_id,
-            operation: request.operation,
-            tool_name: request.tool_name,
-            progress: {
-              processed: progress.processed,
-              total: progress.total,
-              completed: progress.completed,
-              failed: progress.failed,
-              skipped: progress.skipped,
-              remaining: progress.remaining,
-              provider: progress.provider || provider,
-              phase: progress.phase,
-            },
-          });
-        } catch (err: any) {
-          Logger.warning(`[CatsCompany] Device RPC progress 发送失败: request=${requestID}, error=${err?.message || err}`);
-        }
+        progressSendTail = progressSendTail.then(async () => {
+          try {
+            await this.bot.sendDeviceRpcProgress({
+              request_id: requestID,
+              grant_id: request.grant_id,
+              session_key: request.session_key,
+              topic_id: request.topic_id,
+              topic_type: request.topic_type,
+              actor_user_id: request.actor_user_id,
+              owner_user_id: request.owner_user_id,
+              identity_source: request.identity_source,
+              agent_id: request.agent_id,
+              agent_body_id: request.agent_body_id,
+              device_id: this.localDeviceGrant?.deviceId || request.device_id,
+              device_body_id: this.localDeviceGrant?.bodyId || request.device_body_id,
+              device_installation_id: this.localDeviceGrant?.installationId || request.device_installation_id,
+              operation: request.operation,
+              tool_name: request.tool_name,
+              progress: {
+                processed: progress.processed,
+                total: progress.total,
+                completed: progress.completed,
+                failed: progress.failed,
+                skipped: progress.skipped,
+                remaining: progress.remaining,
+                provider: progress.provider || provider,
+                phase: progress.phase,
+              },
+            });
+          } catch (err: any) {
+            Logger.warning(`[CatsCompany] Device RPC progress 发送失败: request=${requestID}, error=${err?.message || err}`);
+          }
+        });
       };
       try {
         response = {
@@ -923,24 +926,25 @@ export class CatsCompanyBot {
             || recovery.sourceFailuresRetried > 0
           ) ? { recovery } : {}),
         };
-      } catch (error: any) {
-        // Structured oversized-record error: propagate stable Device RPC code
-        // with provider, limitBytes, and resumable — never as a 55s timeout.
-        if (isXurlOutputLimitError(error)) {
-          return {
-            ok: false,
-            errorCode: 'external_history_record_too_large',
-            message: `历史记录超过安全限制 (${error.commandKind} ${error.limitBytes} bytes)，已保留当前进度，可以继续导入剩余历史。`,
-            retryable: true,
-            details: {
-              provider,
-              limitBytes: error.limitBytes,
-              commandKind: error.commandKind,
-              resumable: true,
-            },
-          };
+      } finally {
+        // Keep the backfill service synchronous for existing callers while
+        // guaranteeing ordered progress delivery before the terminal result.
+        await progressSendTail;
+      }
+
+      // Map durable source_failed/blocked_zero_progress reports to stable Device
+      // RPC errors so the Web receives a structured error (not a silent quota
+      // pause). Output-limit failures map to external_history_record_too_large;
+      // generic source failures map to external_history_source_failed. Structured
+      // failure codes drive the mapping, never English messages.
+      if (response && typeof response === 'object') {
+        const deviceError = mapExternalBackfillReportToDeviceRpcError(
+          response as Record<string, unknown>,
+          provider,
+        );
+        if (deviceError) {
+          return deviceError;
         }
-        throw error;
       }
     }
 
