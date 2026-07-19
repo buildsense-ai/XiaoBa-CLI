@@ -34,13 +34,12 @@ const MAX_LOG_LINES = 500;
 const MAX_LAST_ERROR_LENGTH = 500;
 
 /**
- * Default graceful-drain deadline (ms) before force-killing a connector
- * process. Reads `XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES`
- * (same configured deadline the heartbeat scheduler uses) so an active
- * wake can drain within the agreed Review Deadline instead of being
- * SIGKILLed immediately. See ADR 0041.
+ * App/runtime shutdown allows an active wake to drain within the configured
+ * Review Deadline. Interactive Dashboard stop/restart requests use a separate,
+ * short fallback so an unresponsive connector does not block the UI.
  */
 const DEFAULT_GRACEFUL_DRAIN_MS = 10 * 60 * 1000;
+const DEFAULT_SERVICE_STOP_FORCE_KILL_MS = 5_000;
 const FORCE_KILL_PERSIST_GRACE_MS = 250;
 
 function resolveGracefulDrainMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -54,8 +53,19 @@ function resolveGracefulDrainMs(env: NodeJS.ProcessEnv = process.env): number {
   return DEFAULT_GRACEFUL_DRAIN_MS;
 }
 
-function resolveForceKillMs(env: NodeJS.ProcessEnv = process.env): number {
+function resolveDrainForceKillMs(env: NodeJS.ProcessEnv = process.env): number {
   return resolveGracefulDrainMs(env) + FORCE_KILL_PERSIST_GRACE_MS;
+}
+
+function resolveServiceStopForceKillMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.XIAOBA_SERVICE_STOP_FORCE_KILL_MS;
+  if (raw !== undefined && raw !== '') {
+    const milliseconds = Number(raw);
+    if (Number.isFinite(milliseconds) && milliseconds > 0) {
+      return Math.round(milliseconds);
+    }
+  }
+  return DEFAULT_SERVICE_STOP_FORCE_KILL_MS;
 }
 
 function stripAnsi(value: string): string {
@@ -94,14 +104,14 @@ function readEnvFile(root: string): Record<string, string> {
 export class ServiceManager extends EventEmitter {
   private services: Map<string, ManagedService> = new Map();
   private projectRoot: string;
-  private readonly gracefulDrainMs: number;
-  private readonly forceKillMs: number;
+  private readonly serviceStopForceKillMs: number;
+  private readonly drainForceKillMs: number;
 
   constructor(projectRoot: string) {
     super();
     this.projectRoot = projectRoot;
-    this.gracefulDrainMs = resolveGracefulDrainMs();
-    this.forceKillMs = resolveForceKillMs();
+    this.serviceStopForceKillMs = resolveServiceStopForceKillMs();
+    this.drainForceKillMs = resolveDrainForceKillMs();
     this.registerBuiltinServices();
   }
 
@@ -413,6 +423,15 @@ export class ServiceManager extends EventEmitter {
     }
   }
 
+  private scheduleInteractiveForceKill(svc: ManagedService): void {
+    if (svc.forceKillTimer) clearTimeout(svc.forceKillTimer);
+    svc.forceKillTimer = setTimeout(() => {
+      svc.forceKillTimer = undefined;
+      if (svc.process) this.killProcess(svc.process, true);
+    }, this.serviceStopForceKillMs);
+    svc.forceKillTimer.unref?.();
+  }
+
   stop(name: string): ServiceInfo {
     const svc = this.services.get(name);
     if (!svc) throw new Error(`Service "${name}" not found`);
@@ -423,16 +442,10 @@ export class ServiceManager extends EventEmitter {
     svc.expectedExit = 'stop';
     this.killProcess(svc.process);
 
-    // Let an active wake drain within the configured Review Deadline before
-    // force-killing. ChildProcess.killed means "signal was sent", not
-    // "process exited", so the exit handler clears svc.process and is the
-    // authoritative completion signal. See ADR 0041.
-    const forceKillMs = this.forceKillMs;
-    svc.forceKillTimer = setTimeout(() => {
-      svc.forceKillTimer = undefined;
-      if (svc.process) this.killProcess(svc.process, true);
-    }, forceKillMs);
-    svc.forceKillTimer.unref?.();
+    // Interactive stop must stay responsive even if the connector cannot
+    // cooperate. ChildProcess.killed only means a signal was sent; the exit
+    // handler clears svc.process and remains the completion authority.
+    this.scheduleInteractiveForceKill(svc);
 
     return this.getService(name)!;
   }
@@ -460,6 +473,7 @@ export class ServiceManager extends EventEmitter {
       });
       svc.expectedExit = 'restart';
       this.killProcess(svc.process);
+      this.scheduleInteractiveForceKill(svc);
       return this.getService(name)!;
     }
 
@@ -467,26 +481,19 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * Stop all running services. On non-Windows, sends SIGTERM first so an
-   * active heartbeat wake can drain within the configured Review Deadline,
-   * then force-kills after the deadline. Windows requests cooperative shutdown
-   * first and uses taskkill /F only at the deadline.
+   * Stop all running services with the short interactive fallback. Windows
+   * requests cooperative shutdown first and uses taskkill /F only if the
+   * connector does not exit promptly.
    *
    * This is a fire-and-forget sync method for API compatibility. For
    * graceful shutdown that awaits child exit, use {@link drainAll}.
    */
   stopAll() {
-    const forceKillMs = this.forceKillMs;
-    for (const [name, svc] of this.services) {
+    for (const svc of this.services.values()) {
       if (svc.info.status === 'running' && svc.process) {
         svc.expectedExit = 'stop';
         this.killProcess(svc.process);
-        svc.forceKillTimer = setTimeout(() => {
-          // Check svc.process truthiness, not ChildProcess.killed.
-          svc.forceKillTimer = undefined;
-          if (svc.process) this.killProcess(svc.process, true);
-        }, forceKillMs);
-        svc.forceKillTimer.unref?.();
+        this.scheduleInteractiveForceKill(svc);
       }
     }
   }
@@ -498,7 +505,7 @@ export class ServiceManager extends EventEmitter {
    * running child has exited (or been killed). See ADR 0041.
    */
   async drainAll(): Promise<void> {
-    const forceKillMs = this.forceKillMs;
+    const forceKillMs = this.drainForceKillMs;
     const running = Array.from(this.services.entries())
       .filter(([, svc]) => svc.info.status === 'running' && svc.process)
       .map(([name, svc]) => ({ name, svc }));

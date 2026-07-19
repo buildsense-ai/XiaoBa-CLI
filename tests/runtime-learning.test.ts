@@ -2108,7 +2108,11 @@ describe('Issue 4 — Heartbeat single-write', () => {
     const record = env.runtimeLearning.loadHeartbeatRecord();
     assert.deepEqual(record.pendingWakeReasons, ['curator', 'operational-retry']);
     const recordPath = env.runtimeLearning.getConfig().heartbeatRecordPath;
-    assert.equal(fs.statSync(recordPath).mode & 0o777, 0o600);
+    assert.equal(fs.existsSync(recordPath), true);
+    assert.doesNotThrow(() => JSON.parse(fs.readFileSync(recordPath, 'utf8')));
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(recordPath).mode & 0o777, 0o600);
+    }
     assert.deepEqual(
       fs.readdirSync(path.dirname(recordPath)).filter(name => name.includes('.tmp')),
       [],
