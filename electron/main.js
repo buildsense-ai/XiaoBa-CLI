@@ -499,7 +499,7 @@ async function startServer() {
   // 闂備礁鎲＄粙鎴︽晝閵娾晜鍎?dashboard server app 闂備焦鐪归崝宀€鈧凹鍓熼幃鍧楀礋椤栨稈鎸冮梺鍛婁緱閸撴稓绮旂€靛摜纾介柛鎰劤濞呮瑧绱掓潏銊у磼sar 闂備礁鎲￠崝鏇㈠箯閹寸姵顫?
   process.env.XIAOBA_APP_ROOT = appRoot;
   process.env.XIAOBA_IS_PACKAGED = app.isPackaged ? '1' : '0';
-  process.env.XIAOBA_RUNTIME_ROOT = getRuntimeRoot();
+  process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR = getRuntimeRoot();
   if (!String(process.env.XIAOBA_PROMPT_OVERRIDES_DIR || '').trim()) {
     process.env.XIAOBA_PROMPT_OVERRIDES_DIR = path.join(userDataPath, 'prompt-overrides');
   }
@@ -517,7 +517,7 @@ async function startServer() {
   const runtimeEnvironment = resolveRuntimeEnvironment({
     env: process.env,
     appRoot,
-    runtimeRoot: process.env.XIAOBA_RUNTIME_ROOT,
+    bundledExecutablesDir: process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
     isPackaged: app.isPackaged,
   });
   if (runtimeEnvironment.binaries.node.executable) {

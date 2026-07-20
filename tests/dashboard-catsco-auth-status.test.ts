@@ -221,6 +221,51 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.topicId, 'p2p_42_110');
   });
 
+  test('GET /cats/status does not report conflict for an inactive historical body', async () => {
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 42, username: 'webuser', display_name: 'Web User' });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({ body_id: 'body-from-old-installation', active: false });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    saveConfirmedLocalBinding('body-local');
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.bodyStatus.state, 'offline');
+    assert.equal(data.bodyStatus.active, false);
+    assert.equal(data.bodyStatus.platformBodyId, 'body-from-old-installation');
+    assert.equal(data.bodyStatus.conflictReason, undefined);
+    assert.equal(data.chatReady, true);
+  });
+
+  test('GET /cats/status keeps a real active-body conflict blocking', async () => {
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 42, username: 'webuser', display_name: 'Web User' });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({ body_id: 'body-from-other-installation', active: true });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    saveConfirmedLocalBinding('body-local');
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.bodyStatus.state, 'conflict');
+    assert.equal(data.bodyStatus.active, true);
+    assert.equal(data.bodyStatus.conflictReason, 'active_lease_owned_by_other_body');
+    assert.equal(data.chatReady, false);
+  });
+
   test('POST /cats/auth/login writes both CatsCo and CatsCompany env aliases', async () => {
     await startCatsServer((req, res) => {
       if (req.path === '/api/auth/login') {
@@ -1127,6 +1172,35 @@ describe('dashboard CatsCo account status', () => {
     app.use(handler);
     catsServer = await listen(app);
     catsBaseUrl = serverBaseUrl(catsServer);
+  }
+
+  function saveConfirmedLocalBinding(bodyId: string): void {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '42',
+        username: 'webuser',
+        displayName: 'Web User',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'CatsCo',
+        username: 'catsco_42',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '42',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: `device-for-${bodyId}`,
+        bodyId,
+        installationId: `installation-for-${bodyId}`,
+      },
+    });
   }
 
   function writeEnv(lines: string[]): void {

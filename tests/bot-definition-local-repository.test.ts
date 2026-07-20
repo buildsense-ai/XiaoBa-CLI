@@ -20,6 +20,7 @@ import {
 
 const managedEnvKeys = [
   'XIAOBA_USER_DATA_DIR',
+  'XIAOBA_BUNDLED_EXECUTABLES_DIR',
   'XIAOBA_BOT_DEFINITION_SIMULATED_CLOUD_DIR',
   'CATSCO_MODEL_SOURCE',
   'CATSCO_CUSTOM_LLM_PROVIDER',
@@ -199,6 +200,7 @@ describe('BotDefinition local simulation', () => {
     };
     repository.writeCache(definition);
     process.env.XIAOBA_USER_DATA_DIR = runtimeRoot;
+    process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR = path.join(simulatedCloudRoot, 'bundled-executables');
     process.env.GAUZ_LLM_PROVIDER = 'anthropic';
     process.env.GAUZ_LLM_API_BASE = 'https://stale.example.test/v1';
     process.env.GAUZ_LLM_MODEL = 'stale-model';

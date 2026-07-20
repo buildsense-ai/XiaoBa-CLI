@@ -11,6 +11,8 @@ describe('CatsCo command config resolution', () => {
   let tempDir: string;
   let originalCwd: string;
   let originalRuntimeRoot: string | undefined;
+  let originalUserDataDir: string | undefined;
+  let originalBundledExecutablesDir: string | undefined;
 
   const baseConfig: ChatConfig = {
     catscompany: {
@@ -24,6 +26,11 @@ describe('CatsCo command config resolution', () => {
   beforeEach(() => {
     originalCwd = process.cwd();
     originalRuntimeRoot = process.env.XIAOBA_RUNTIME_ROOT;
+    originalUserDataDir = process.env.XIAOBA_USER_DATA_DIR;
+    originalBundledExecutablesDir = process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR;
+    delete process.env.XIAOBA_RUNTIME_ROOT;
+    delete process.env.XIAOBA_USER_DATA_DIR;
+    delete process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR;
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-command-config-'));
     process.chdir(tempDir);
   });
@@ -35,6 +42,10 @@ describe('CatsCo command config resolution', () => {
     } else {
       process.env.XIAOBA_RUNTIME_ROOT = originalRuntimeRoot;
     }
+    if (originalUserDataDir === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+    else process.env.XIAOBA_USER_DATA_DIR = originalUserDataDir;
+    if (originalBundledExecutablesDir === undefined) delete process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR;
+    else process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR = originalBundledExecutablesDir;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -105,6 +116,28 @@ describe('CatsCo command config resolution', () => {
     assert.deepEqual(resolved.missing, []);
     assert.equal(resolved.config?.apiKey, 'local-bot-key');
     assert.equal(resolved.config?.bodyId, 'body-local');
+  });
+
+  test('keeps first-class user data separate from bundled executables', () => {
+    const runtimeDataRoot = path.join(tempDir, 'runtime-data');
+    const bundledExecutablesDir = path.join(tempDir, 'bundled-executables');
+    process.env.XIAOBA_USER_DATA_DIR = runtimeDataRoot;
+    process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR = bundledExecutablesDir;
+    saveConfirmedBinding(runtimeDataRoot);
+
+    const resolved = resolveCatsCoCommandConfig({}, {
+      CATSCO_USER_TOKEN: 'env-token',
+      CATSCO_USER_UID: 'user-1',
+      CATSCO_SERVER_URL: 'wss://catsco.example/v0/channels',
+      CATSCO_API_KEY: 'catsco-key',
+      XIAOBA_USER_DATA_DIR: runtimeDataRoot,
+      XIAOBA_BUNDLED_EXECUTABLES_DIR: bundledExecutablesDir,
+    });
+
+    assert.deepEqual(resolved.missing, []);
+    assert.equal(resolved.config?.apiKey, 'local-bot-key');
+    assert.equal(resolved.config?.bodyId, 'body-local');
+    assert.equal(fs.existsSync(path.join(bundledExecutablesDir, '.xiaoba', 'catsco.json')), false);
   });
 
   function saveConfirmedBinding(runtimeRoot = tempDir): void {

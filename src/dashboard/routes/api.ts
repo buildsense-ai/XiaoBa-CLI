@@ -768,12 +768,17 @@ async function getCatsBotBodyStatus(
     );
     const platformBodyId = String(data?.body_id || data?.bodyId || '').trim();
     const active = Boolean(data?.active);
-    const bodyMismatch = platformBodyId && platformBodyId !== normalizedLocalBodyId;
+    // A stale platform body id is historical metadata when active=false. It is
+    // a conflict only when another body currently owns the active lease.
+    const activeLeaseOwnedByOtherBody = Boolean(
+      active && platformBodyId && platformBodyId !== normalizedLocalBodyId,
+    );
     return {
-      state: bodyMismatch ? 'conflict' : active ? 'online' : 'offline',
+      state: activeLeaseOwnedByOtherBody ? 'conflict' : active ? 'online' : 'offline',
       active,
       localBodyId: normalizedLocalBodyId,
       platformBodyId: platformBodyId || undefined,
+      conflictReason: activeLeaseOwnedByOtherBody ? 'active_lease_owned_by_other_body' : undefined,
       connectedAt: typeof data?.connected_at === 'string' ? data.connected_at : undefined,
       checkedAt: new Date().toISOString(),
     };

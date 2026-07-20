@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as dotenv from 'dotenv';
 import { EventEmitter } from 'events';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
+import { PathResolver } from '../utils/path-resolver';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { weixinBindingEnvOverlay } from './weixin-channel-binding';
 import { RUNTIME_SHUTDOWN_MESSAGE_TYPE } from '../utils/runtime-shutdown-message';
@@ -180,7 +181,7 @@ export class ServiceManager extends EventEmitter {
     const runtimeEnvironment = resolveRuntimeEnvironment({
       env: process.env,
       appRoot,
-      runtimeRoot: process.env.XIAOBA_RUNTIME_ROOT,
+      bundledExecutablesDir: process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
       isPackaged: packaged,
       probeVersion: false,
     });
@@ -266,16 +267,18 @@ export class ServiceManager extends EventEmitter {
     if (!svc) throw new Error(`Service "${name}" not found`);
     if (svc.info.status === 'running') return this.getService(name)!;
 
-    // cwd 统一用 process.cwd()，Electron 主进程已 chdir 到 userData 目录
-    // 这样子进程创建的 skill 文件和 Dashboard 读取的在同一个目录
+    // cwd remains the user's working directory. Runtime data is an explicit
+    // process contract and must not be inferred again by the child.
     const spawnCwd = process.cwd();
+    const runtimeDataRoot = PathResolver.getRuntimeDataRoot();
 
     // 每次启动时实时读取 .env。开发根目录提供默认值，runtime root 是运行态权威配置。
     let envVars = { ...process.env };
-    const envRoots = Array.from(new Set([this.projectRoot, spawnCwd]));
+    const envRoots = Array.from(new Set([this.projectRoot, spawnCwd, runtimeDataRoot]));
     for (const root of envRoots) {
       envVars = { ...envVars, ...readEnvFile(root) };
     }
+    envVars.XIAOBA_USER_DATA_DIR = runtimeDataRoot;
 
     // 打包版：确保子进程能找到 node_modules
     if (this.isPackaged() && process.env.XIAOBA_NODE_MODULES) {
@@ -284,7 +287,7 @@ export class ServiceManager extends EventEmitter {
 
     if (name === 'catscompany') {
       const catsCoRuntime = resolveCatsCoRuntimeConfig({
-        runtimeRoot: spawnCwd,
+        runtimeRoot: runtimeDataRoot,
         env: envVars,
         migrateLegacyEnvBinding: true,
       });
@@ -297,21 +300,21 @@ export class ServiceManager extends EventEmitter {
 
     if (name === 'weixin') {
       const catsCoRuntime = resolveCatsCoRuntimeConfig({
-        runtimeRoot: spawnCwd,
+        runtimeRoot: runtimeDataRoot,
         env: envVars,
         migrateLegacyEnvBinding: true,
       });
       envVars = {
         ...envVars,
         ...catsCoRuntime.envOverlay,
-        ...weixinBindingEnvOverlay({ runtimeRoot: spawnCwd, env: envVars }),
+        ...weixinBindingEnvOverlay({ runtimeRoot: runtimeDataRoot, env: envVars }),
       };
     }
 
     const runtimeEnvironment = resolveRuntimeEnvironment({
       env: envVars,
       appRoot: this.getAppRoot(),
-      runtimeRoot: envVars.XIAOBA_RUNTIME_ROOT,
+      bundledExecutablesDir: envVars.XIAOBA_BUNDLED_EXECUTABLES_DIR,
       isPackaged: this.isPackaged(),
       probeVersion: false,
     });

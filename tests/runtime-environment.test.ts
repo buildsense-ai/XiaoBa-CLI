@@ -42,6 +42,33 @@ describe('resolveRuntimeEnvironment', () => {
 
     assert.strictEqual(runtimeEnvironment.binaries.node.executable, nodeBinaryPath);
     assert.strictEqual(runtimeEnvironment.binaries.node.source, 'bundled');
+    assert.strictEqual(runtimeEnvironment.bundledExecutablesDir, testRoot);
+    assert.strictEqual(runtimeEnvironment.env.XIAOBA_BUNDLED_EXECUTABLES_DIR, testRoot);
+    assert.strictEqual(runtimeEnvironment.env.XIAOBA_RUNTIME_ROOT, undefined);
+  });
+
+  test('does not reinterpret the legacy runtime data root as the bundled executables directory', () => {
+    const runtimeDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-data-'));
+    try {
+      const runtimeEnvironment = resolveRuntimeEnvironment({
+        env: {
+          PATH: '',
+          XIAOBA_RUNTIME_ROOT: runtimeDataRoot,
+        },
+        includeSystemFallback: false,
+        probeVersion: false,
+        shimDirectory: shimRoot,
+      });
+
+      assert.notStrictEqual(runtimeEnvironment.bundledExecutablesDir, runtimeDataRoot);
+      assert.strictEqual(runtimeEnvironment.env.XIAOBA_RUNTIME_ROOT, runtimeDataRoot);
+      assert.strictEqual(
+        runtimeEnvironment.env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
+        runtimeEnvironment.bundledExecutablesDir,
+      );
+    } finally {
+      fs.rmSync(runtimeDataRoot, { recursive: true, force: true });
+    }
   });
 
   test('does not duplicate bundled node directory in PATH', () => {

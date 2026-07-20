@@ -44,10 +44,10 @@ export async function runtimeCommand(options: RuntimeCommandOptions = {}): Promi
 
   Logger.title('Runtime Diagnostics');
 
-  if (runtimeEnvironment.runtimeRoot) {
-    Logger.info(`Runtime root: ${runtimeEnvironment.runtimeRoot}`);
+  if (runtimeEnvironment.bundledExecutablesDir) {
+    Logger.info(`Bundled executables: ${runtimeEnvironment.bundledExecutablesDir}`);
   } else {
-    Logger.warning('Runtime root: not detected');
+    Logger.warning('Bundled executables: not detected');
   }
 
   if (runtimeEnvironment.shimDirectory) {

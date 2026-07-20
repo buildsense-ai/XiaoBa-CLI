@@ -35,6 +35,7 @@ describe('dashboard service manager', () => {
       'XIAOBA_APP_ROOT',
       'XIAOBA_IS_PACKAGED',
       'XIAOBA_NODE_EXECUTABLE',
+      'XIAOBA_BUNDLED_EXECUTABLES_DIR',
       'XIAOBA_RUNTIME_ROOT',
       'npm_node_execpath',
     ];
@@ -43,6 +44,7 @@ describe('dashboard service manager', () => {
     process.env.XIAOBA_APP_ROOT = process.cwd();
     process.env.XIAOBA_IS_PACKAGED = '0';
     delete process.env.XIAOBA_RUNTIME_ROOT;
+    delete process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR;
     process.env.npm_node_execpath = process.execPath;
 
     try {
@@ -68,6 +70,7 @@ describe('dashboard service manager', () => {
       'XIAOBA_APP_ROOT',
       'XIAOBA_IS_PACKAGED',
       'XIAOBA_NODE_EXECUTABLE',
+      'XIAOBA_BUNDLED_EXECUTABLES_DIR',
       'XIAOBA_RUNTIME_ROOT',
       'npm_node_execpath',
     ];
@@ -82,6 +85,7 @@ describe('dashboard service manager', () => {
     process.env.XIAOBA_APP_ROOT = appRoot;
     process.env.XIAOBA_IS_PACKAGED = '1';
     delete process.env.XIAOBA_RUNTIME_ROOT;
+    delete process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR;
     process.env.npm_node_execpath = process.execPath;
 
     try {
@@ -107,6 +111,7 @@ describe('dashboard service manager', () => {
       'XIAOBA_APP_ROOT',
       'XIAOBA_IS_PACKAGED',
       'XIAOBA_NODE_EXECUTABLE',
+      'XIAOBA_BUNDLED_EXECUTABLES_DIR',
       'XIAOBA_RUNTIME_ROOT',
       'npm_node_execpath',
     ];
@@ -122,6 +127,7 @@ describe('dashboard service manager', () => {
     process.env.XIAOBA_NODE_EXECUTABLE = realNode;
     process.env.npm_node_execpath = path.join(runtimeRoot, process.platform === 'win32' ? 'node.cmd' : 'node-shim');
     delete process.env.XIAOBA_RUNTIME_ROOT;
+    delete process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR;
 
     try {
       const manager = new ServiceManager(process.cwd());
@@ -185,6 +191,47 @@ describe('dashboard service manager', () => {
 
     assert.ok(manager.getLogs('catscompany').includes(`owner=${process.pid}`));
     assert.equal(manager.getService('catscompany')?.status, 'stopped');
+  });
+
+  test('passes separate runtime data and bundled executable directories to the child', async () => {
+    const keys = ['XIAOBA_USER_DATA_DIR', 'XIAOBA_BUNDLED_EXECUTABLES_DIR', 'XIAOBA_RUNTIME_ROOT'];
+    const previous = new Map(keys.map(key => [key, process.env[key]]));
+    const runtimeDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-service-data-'));
+    const bundledExecutablesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-service-executables-'));
+
+    process.env.XIAOBA_USER_DATA_DIR = runtimeDataRoot;
+    process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR = bundledExecutablesDir;
+    delete process.env.XIAOBA_RUNTIME_ROOT;
+
+    try {
+      const manager = new ServiceManager(process.cwd());
+      const serviceRecord = (manager as any).services.get('catscompany');
+      serviceRecord.info.command = process.execPath;
+      serviceRecord.info.args = [
+        '-e',
+        "console.log(JSON.stringify({ data: process.env.XIAOBA_USER_DATA_DIR, executables: process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR, legacy: process.env.XIAOBA_RUNTIME_ROOT || null }));",
+      ];
+
+      const stopped = new Promise<void>(resolve => {
+        manager.once('service-stopped', () => resolve());
+      });
+
+      manager.start('catscompany');
+      await stopped;
+
+      const payload = JSON.parse(manager.getLogs('catscompany').find(line => line.startsWith('{')) || '{}');
+      assert.equal(payload.data, runtimeDataRoot);
+      assert.equal(payload.executables, bundledExecutablesDir);
+      assert.equal(payload.legacy, null);
+    } finally {
+      for (const key of keys) {
+        const value = previous.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(runtimeDataRoot, { recursive: true, force: true });
+      fs.rmSync(bundledExecutablesDir, { recursive: true, force: true });
+    }
   });
 
   test('treats dashboard-requested service stop as stopped even when the child exits non-zero', async () => {

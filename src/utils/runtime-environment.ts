@@ -19,6 +19,8 @@ export interface RuntimeBinary {
 export interface RuntimeEnvironmentOptions {
   env?: NodeJS.ProcessEnv;
   appRoot?: string;
+  bundledExecutablesDir?: string;
+  /** @deprecated Use bundledExecutablesDir. Kept for internal call-site compatibility. */
   runtimeRoot?: string;
   /** When true, the runtime is a packaged production build. Automatic xurl
    *  discovery is bundled-only; an explicit command override is preserved
@@ -34,6 +36,8 @@ export interface RuntimeEnvironment {
   binaries: Record<RuntimeBinaryName, RuntimeBinary>;
   pathKey: string;
   prependedPaths: string[];
+  bundledExecutablesDir?: string;
+  /** @deprecated Use bundledExecutablesDir. */
   runtimeRoot?: string;
   shimDirectory?: string;
 }
@@ -76,7 +80,7 @@ const SHIM_COMMAND_NAMES: Record<RuntimeBinaryName, string[]> = {
 export function resolveRuntimeEnvironment(options: RuntimeEnvironmentOptions = {}): RuntimeEnvironment {
   const env: NodeJS.ProcessEnv = { ...(options.env || process.env) };
   const pathKey = getPathKey(env);
-  const runtimeRoot = resolveRuntimeRoot(env, options);
+  const bundledExecutablesDir = resolveBundledExecutablesDir(env, options);
   const includeSystemFallback = options.includeSystemFallback !== false;
   const probeVersion = options.probeVersion !== false;
   const isPackaged = options.isPackaged === true;
@@ -92,10 +96,10 @@ export function resolveRuntimeEnvironment(options: RuntimeEnvironmentOptions = {
   const xurlIncludeSystemFallback = isPackaged ? false : includeSystemFallback;
 
   const binaries: Record<RuntimeBinaryName, RuntimeBinary> = {
-    node: resolveBinary('node', env, runtimeRoot, includeSystemFallback, probeVersion),
-    python: resolveBinary('python', env, runtimeRoot, includeSystemFallback, probeVersion),
-    git: resolveBinary('git', env, runtimeRoot, includeSystemFallback, probeVersion),
-    xurl: resolveBinary('xurl', env, runtimeRoot, xurlIncludeSystemFallback, probeVersion),
+    node: resolveBinary('node', env, bundledExecutablesDir, includeSystemFallback, probeVersion),
+    python: resolveBinary('python', env, bundledExecutablesDir, includeSystemFallback, probeVersion),
+    git: resolveBinary('git', env, bundledExecutablesDir, includeSystemFallback, probeVersion),
+    xurl: resolveBinary('xurl', env, bundledExecutablesDir, xurlIncludeSystemFallback, probeVersion),
   };
 
   if (!env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND?.trim() && binaries.xurl.executable) {
@@ -123,8 +127,10 @@ export function resolveRuntimeEnvironment(options: RuntimeEnvironmentOptions = {
     setPathValue(env, pathKey, nextPath.join(path.delimiter));
   }
 
-  if (runtimeRoot) {
-    env.XIAOBA_RUNTIME_ROOT = runtimeRoot;
+  if (bundledExecutablesDir) {
+    // Bundled executable discovery must never overwrite XIAOBA_RUNTIME_ROOT. That legacy
+    // variable is still accepted by PathResolver as a runtime *data* root.
+    env.XIAOBA_BUNDLED_EXECUTABLES_DIR = bundledExecutablesDir;
   }
 
   if (shimDirectory) {
@@ -136,7 +142,8 @@ export function resolveRuntimeEnvironment(options: RuntimeEnvironmentOptions = {
     binaries,
     pathKey,
     prependedPaths,
-    runtimeRoot,
+    bundledExecutablesDir,
+    runtimeRoot: bundledExecutablesDir,
     shimDirectory,
   };
 }
@@ -153,12 +160,12 @@ export function formatRuntimeSummary(binary: RuntimeBinary): string {
 function resolveBinary(
   name: RuntimeBinaryName,
   env: NodeJS.ProcessEnv,
-  runtimeRoot: string | undefined,
+  bundledExecutablesDir: string | undefined,
   includeSystemFallback: boolean,
   probeVersion: boolean,
 ): RuntimeBinary {
   const diagnostics: string[] = [];
-  const searchRoots = collectSearchRoots(runtimeRoot);
+  const searchRoots = collectSearchRoots(bundledExecutablesDir);
 
   for (const root of searchRoots) {
     for (const relativePath of BUNDLED_RELATIVE_PATHS[name]) {
@@ -210,11 +217,12 @@ function finalizeBinary(
   };
 }
 
-function resolveRuntimeRoot(env: NodeJS.ProcessEnv, options: RuntimeEnvironmentOptions): string | undefined {
+function resolveBundledExecutablesDir(env: NodeJS.ProcessEnv, options: RuntimeEnvironmentOptions): string | undefined {
   const candidates = orderedUnique(
     [
+      options.bundledExecutablesDir,
       options.runtimeRoot,
-      env.XIAOBA_RUNTIME_ROOT,
+      env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
       options.appRoot ? path.join(options.appRoot, 'build-resources', 'runtime') : undefined,
       DEFAULT_DEV_RUNTIME_ROOT,
     ].filter((value): value is string => Boolean(value)),
@@ -229,9 +237,9 @@ function resolveRuntimeRoot(env: NodeJS.ProcessEnv, options: RuntimeEnvironmentO
   return candidates[0];
 }
 
-function collectSearchRoots(runtimeRoot: string | undefined): string[] {
-  if (runtimeRoot) {
-    return [runtimeRoot];
+function collectSearchRoots(bundledExecutablesDir: string | undefined): string[] {
+  if (bundledExecutablesDir) {
+    return [bundledExecutablesDir];
   }
 
   return orderedUnique([DEFAULT_DEV_RUNTIME_ROOT, LEGACY_DEV_RUNTIME_ROOT]);
