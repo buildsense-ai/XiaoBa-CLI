@@ -389,6 +389,52 @@ describe('rendered Timeline parser — heading-shaped content', () => {
     assert.equal(result.events[0]!.roles[0]!.content, 'Here is my plan:\n\n# Implementation Notes\n\nDo the thing.');
   });
 
+  test('assistant numbered markdown sections with non-role labels stay inside content', () => {
+    const md = validTimeline({
+      entries: [
+        { role: 'User', content: 'What should I do?' },
+        {
+          role: 'Assistant',
+          content: [
+            'Start here.',
+            '',
+            '## 0. Pick a migration strategy',
+            '',
+            'Rebuild the environment from package managers.',
+            '',
+            '## 14. Verification checklist',
+            '',
+            'Run the smoke tests.',
+            '',
+            '## Recommended order',
+            '',
+            'Install runtimes before cloning projects.',
+          ].join('\n'),
+        },
+        { role: 'User', content: 'Please package it for me.' },
+        { role: 'Assistant', content: 'Done.' },
+      ],
+    });
+    const result = parseRenderedTimeline(md, 'codex', 'thread-001');
+    assert.equal(result.events.length, 2);
+    assert.equal(result.events[0]!.roles[1]!.content, [
+      'Start here.',
+      '',
+      '## 0. Pick a migration strategy',
+      '',
+      'Rebuild the environment from package managers.',
+      '',
+      '## 14. Verification checklist',
+      '',
+      'Run the smoke tests.',
+      '',
+      '## Recommended order',
+      '',
+      'Install runtimes before cloning projects.',
+    ].join('\n'));
+    assert.equal(result.events[1]!.roles[0]!.content, 'Please package it for me.');
+  });
+
   test('content containing Timeline-shaped heading at tail is documented as residual ambiguity', () => {
     // A heading-shaped line like "### 3. User" at the tail of a message
     // cannot be reliably distinguished from a real Timeline entry without a

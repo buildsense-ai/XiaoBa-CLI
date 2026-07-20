@@ -319,6 +319,14 @@ function extractSection(body: string, sectionName: string): string | undefined {
   const start = match.index + match[0].length;
   const rest = body.slice(start);
 
+  // xURL renders the Timeline as the terminal body section and message content
+  // may legitimately contain arbitrary Markdown headings (including ## ...).
+  // Treat the Timeline as extending to EOF rather than truncating on nested
+  // headings inside assistant/user content.
+  if (sectionName === 'Timeline') {
+    return rest.trim();
+  }
+
   const lines = rest.split('\n');
   for (let index = 1; index < lines.length; index++) {
     const line = lines[index]!;
@@ -375,6 +383,12 @@ function classifyRenderedTimelineRole(roleText: string, ordinal: number): 'conve
   );
 }
 
+function isRecognizedRenderedTimelineRoleHeading(roleText: string): boolean {
+  return CONVERSATION_ROLES.has(roleText as RenderedTimelineRole)
+    || isExcludedRenderedTimelineRole(roleText)
+    || FORBIDDEN_RENDERED_TIMELINE_ROLE_RE.test(roleText);
+}
+
 function parseTimelineEntries(timelineBody: string): readonly RenderedTimelineEntry[] {
   const lines = timelineBody.split('\n');
   const rawEntries: RawTimelineEntry[] = [];
@@ -387,6 +401,15 @@ function parseTimelineEntries(timelineBody: string): readonly RenderedTimelineEn
     const headingMatch = TIMELINE_HEADING_RE.exec(line);
 
     if (headingMatch) {
+      const ordinal = parseInt(headingMatch[1]!, 10);
+      const roleText = headingMatch[2]!.trim();
+      const startsNewEntry = currentOrdinal === null
+        || isRecognizedRenderedTimelineRoleHeading(roleText);
+      if (!startsNewEntry) {
+        if (currentOrdinal !== null) contentLines.push(line);
+        continue;
+      }
+
       // Flush previous entry
       if (currentOrdinal !== null && currentRoleText !== null) {
         rawEntries.push({
@@ -395,9 +418,6 @@ function parseTimelineEntries(timelineBody: string): readonly RenderedTimelineEn
           content: contentLines.join('\n').trim(),
         });
       }
-
-      const ordinal = parseInt(headingMatch[1]!, 10);
-      const roleText = headingMatch[2]!.trim();
 
       if (!roleText) {
         throw new Error(
