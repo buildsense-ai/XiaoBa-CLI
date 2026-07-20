@@ -6,11 +6,12 @@ import {
   createBotDefinitionSyncService,
   type BotDefinitionSyncServiceOptions,
 } from './service';
-import type { BotDefinition, BotDefinitionSyncResult } from './types';
+import type { BotCatalogModelRuntime, BotDefinition, BotDefinitionSyncResult } from './types';
 
 export interface PrepareBoundBotDefinitionOptions extends BotDefinitionSyncServiceOptions {
   runtimeRoot: string;
   botId?: string;
+  selectedCatalogRuntime?: BotCatalogModelRuntime;
   auth?: CatsCoAuthSnapshot;
   fetchImpl?: typeof fetch;
 }
@@ -35,11 +36,27 @@ export async function prepareBoundBotDefinition(
   if (!botId) return undefined;
 
   const definitionService = createBotDefinitionSyncService(options);
-  let sync = definitionService.pullOrBootstrap(botId);
+  const selectedCatalogRuntime = options.selectedCatalogRuntime;
+  if (selectedCatalogRuntime && selectedCatalogRuntime.botId !== botId) {
+    throw new Error('Selected catalog runtime does not belong to the bound bot.');
+  }
+  let sync = selectedCatalogRuntime
+    ? undefined
+    : definitionService.pullOrBootstrap(botId);
   let definition = sync?.definition;
   const auth = options.auth ?? createCatsCoLocalConfigService({ runtimeRoot: options.runtimeRoot }).getAuthState();
   let initializedDefault = false;
   let materializedCatalogRuntime = false;
+
+  if (selectedCatalogRuntime) {
+    definitionService.storeCatalogRuntime(selectedCatalogRuntime);
+    sync = definitionService.publish(botId, {
+      kind: 'catalog',
+      modelId: selectedCatalogRuntime.modelId,
+    });
+    definition = sync.definition;
+    materializedCatalogRuntime = true;
+  }
 
   if (!definition) {
     const runtime = await provisionCatsRelayCatalogRuntime({
