@@ -51,6 +51,7 @@ import {
 } from '../tools/tool-target-context';
 import { formatPathForLog } from '../utils/log-redaction';
 import { resolveCatsDeviceModelStatus } from './model-status';
+import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
 import {
   buildCatsCoAttachmentCachePath,
   scheduleCatsCoAttachmentCacheCleanup,
@@ -496,7 +497,13 @@ export class CatsCompanyBot {
     const config = typeof getConfig === 'function'
       ? getConfig.call(this.agentServices.aiService)
       : undefined;
-    return resolveCatsDeviceModelStatus({ config });
+    const activeBotConfig = resolveActiveBotLLMConfig();
+    const source = activeBotConfig?.source === 'custom_definition'
+      ? 'custom' as const
+      : activeBotConfig?.source === 'catalog_runtime'
+        ? 'relay' as const
+        : undefined;
+    return resolveCatsDeviceModelStatus({ config, source });
   }
 
   private startDeviceRegistrationRefresh(): void {

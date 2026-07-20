@@ -8,6 +8,7 @@ export interface CatsDeviceModelStatus {
 
 interface ModelStatusOptions {
   env?: NodeJS.ProcessEnv;
+  source?: 'relay' | 'custom';
   config?: {
     provider?: string;
     apiUrl?: string;
@@ -41,6 +42,17 @@ export function resolveCatsDeviceModelStatus(options: ModelStatusOptions = {}): 
   const apiKey = firstNonEmpty(config.apiKey, env.GAUZ_LLM_API_KEY);
   const model = firstNonEmpty(config.model, env.GAUZ_LLM_MODEL);
   const now = options.now || Date.now;
+
+  if (options.source === 'relay') {
+    if (!model) return undefined;
+    return { source: 'relay', model, updated_at: now() };
+  }
+
+  if (options.source === 'custom') {
+    const hasCustomSignal = Boolean(model || apiBase || apiKey);
+    if (!hasCustomSignal) return undefined;
+    return { source: 'custom', model: model || '鑷畾涔夋ā鍨?', updated_at: now() };
+  }
 
   if (isCatsRelayApiBase(apiBase)) {
     if (!model) return undefined;

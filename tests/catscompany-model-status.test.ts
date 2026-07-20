@@ -54,6 +54,25 @@ test('uses effective runtime config before stale env values', () => {
   });
 });
 
+test('explicit custom Definition source wins over a relay gateway URL', () => {
+  const status = resolveCatsDeviceModelStatus({
+    source: 'custom',
+    env: {} as NodeJS.ProcessEnv,
+    config: {
+      apiUrl: 'https://relay.catsco.cc/v1',
+      apiKey: 'sk-custom-secret',
+      model: 'gpt-5.6-sol',
+    },
+    now: () => 1782790000008,
+  });
+
+  assert.deepEqual(status, {
+    source: 'custom',
+    model: 'gpt-5.6-sol',
+    updated_at: 1782790000008,
+  });
+});
+
 test('does not let stale relay source override a custom endpoint', () => {
   const status = resolveCatsDeviceModelStatus({
     env: {

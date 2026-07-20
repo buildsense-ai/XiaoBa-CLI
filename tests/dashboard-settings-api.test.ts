@@ -393,8 +393,46 @@ describe('dashboard typed settings API', () => {
     assert.equal(data.botDefinitionSync.direction, 'local_to_simulated_cloud');
     assert.equal(data.botDefinitionSync.model.kind, 'custom');
     assert.equal(data.botDefinitionSync.model.model, 'gpt-portable');
+    assert.equal(data.connectorRestarted, false);
+    assert.equal(data.connectorStarted, false);
     assert.equal(text.includes('sk-portable-secret'), false);
     assert.equal(definition.model.apiKey, 'sk-portable-secret');
+  });
+
+  test('GET /settings keeps a bound custom Definition custom on the CatsCo relay host', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      currentBot: {
+        uid: 'custom-relay-host-bot',
+        apiKey: 'catsco-bot-api-key',
+        boundByUserUid: 'user-definition-test',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-definition-test',
+        bodyId: 'body-definition-test',
+        installationId: 'install-definition-test',
+      },
+    });
+    createBotDefinitionSyncService({ runtimeRoot: testRoot }).publish('custom-relay-host-bot', {
+      kind: 'custom',
+      protocol: 'openai-responses',
+      apiBase: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-sol',
+      apiKey: 'sk-custom-relay-host-secret',
+      contextWindowTokens: 256_000,
+    });
+
+    const response = await fetch(`${baseUrl}/api/settings`);
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.modelStartup.source, 'custom');
+    assert.equal(data.modelStartup.custom.configured, true);
+    assert.equal(data.modelStartup.custom.model, 'gpt-5.6-sol');
+    assert.equal(data.modelStartup.relay.configured, false);
+    assert.equal(text.includes('sk-custom-relay-host-secret'), false);
   });
 
   test('PUT /settings uses the explicit runtime data root for bound bot state and Definition storage', async () => {

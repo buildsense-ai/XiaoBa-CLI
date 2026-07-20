@@ -2297,14 +2297,22 @@ export function createApiRouter(
       const legacyDefinitionSync = changedModelSettings && !boundBot
         ? publishCurrentBotDefinitionPayload()
         : undefined;
-      const restartInfo = req.body?.restartConnector === true && changedModelSettings
-        ? activateCatsCompanyConnector(serviceManager)
+      const activateConnector = req.body?.activateConnector === true;
+      const restartConnector = req.body?.restartConnector === true;
+      const restartInfo = changedModelSettings
+        && (restartConnector || activateConnector)
+        ? activateCatsCompanyConnector(serviceManager, {
+          startIfStopped: activateConnector,
+        })
         : { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
       res.json({
         ...result,
         botDefinitionSync: botDefinitionSync ?? legacyDefinitionSync,
         connectorRestarted: restartInfo.restartRequested,
+        connectorStarted: restartInfo.startRequested,
+        connectorStartBlocked: restartInfo.startBlocked,
         restartError: restartInfo.restartError ? sanitizeCatsErrorMessage(restartInfo.restartError) : undefined,
+        startError: restartInfo.startError ? sanitizeCatsErrorMessage(restartInfo.startError) : undefined,
       });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -2978,6 +2986,45 @@ export function createApiRouter(
     } catch (e: any) {
       const payload = catsErrorResponse(e);
       res.status(payload.status).json(payload.body);
+    }
+  });
+
+  router.post('/cats/connector/start', async (_req, res) => {
+    try {
+      const botId = currentBoundBotId();
+      if (!botId) {
+        return res.status(409).json({ error: 'No CatsCo bot is bound on this device' });
+      }
+      const preparedBot = await prepareBoundBotDefinition({
+        runtimeRoot: runtimeDataRoot(),
+        botId,
+      });
+      const result = await startCatsCompanyConnectorIfReady(serviceManager);
+      if (!result.service) {
+        return res.status(409).json({ error: 'CatsCompany connector service is unavailable' });
+      }
+      if (result.preflight?.status === 'blocked') {
+        return res.status(400).json({
+          error: 'CatsCo connector preflight blocked',
+          preflight: {
+            status: result.preflight.status,
+            blockingChecks: result.preflight.blockingChecks,
+            warningChecks: result.preflight.warningChecks,
+          },
+        });
+      }
+      return res.json({
+        ok: true,
+        botUid: botId,
+        service: result.service,
+        preflight: result.preflight,
+        connectorStarted: result.connectorStarted,
+        connectorAlreadyRunning: result.service.status === 'running' && !result.connectorStarted,
+        botDefinitionSync: toBotDefinitionSyncPayload(preparedBot?.sync),
+      });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      return res.status(payload.status).json(payload.body);
     }
   });
 
