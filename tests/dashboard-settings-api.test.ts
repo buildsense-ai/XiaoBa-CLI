@@ -65,6 +65,7 @@ describe('dashboard typed settings API', () => {
     'CATSCOMPANY_BODY_ID',
     'CATSCOMPANY_INSTALLATION_ID',
     'XIAOBA_USER_DATA_DIR',
+    'XIAOBA_CONFIG_PATH',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -212,6 +213,31 @@ describe('dashboard typed settings API', () => {
     assert.deepStrictEqual(openaiApiMode.options, ['chat_completions', 'responses']);
     assert.equal(data.modelStartup.effective.openaiApiMode, 'responses');
     assert.equal(data.modelStartup.custom.openaiApiMode, 'responses');
+  });
+
+  test('GET /settings reports the effective ConfigManager custom model when legacy env is empty', async () => {
+    const configPath = path.join(testRoot, 'runtime-config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      provider: 'openai',
+      apiUrl: 'https://model.example.test/v1',
+      apiKey: 'sk-effective-custom-secret',
+      model: 'gpt-5.6-sol',
+      contextWindowTokens: 256_000,
+      openaiApiMode: 'responses',
+    }));
+    process.env.XIAOBA_CONFIG_PATH = configPath;
+
+    const response = await fetch(`${baseUrl}/api/settings`);
+    const text = await response.text();
+    const settings = JSON.parse(text) as any;
+
+    assert.equal(response.status, 200, text);
+    assert.equal(settings.modelStartup.source, 'custom');
+    assert.equal(settings.modelStartup.effective.configured, true);
+    assert.equal(settings.modelStartup.effective.model, 'gpt-5.6-sol');
+    assert.equal(settings.modelStartup.custom.configured, true);
+    assert.equal(settings.modelStartup.custom.model, 'gpt-5.6-sol');
+    assert.equal(text.includes('sk-effective-custom-secret'), false);
   });
 
   test('GET /settings carries legacy relay reasoning effort into startup snapshot', async () => {
