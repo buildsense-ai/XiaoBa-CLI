@@ -237,5 +237,11 @@ function isPathInsideRoot(filePath: string, root: string): boolean {
 
 function normalizeForCompare(filePath: string): string {
   const resolved = path.resolve(filePath);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  let canonical = resolved;
+  try {
+    canonical = fs.realpathSync(resolved);
+  } catch {
+    // A not-yet-created path still has a useful lexical representation.
+  }
+  return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
 }

@@ -1,7 +1,7 @@
 /**
  * read-tool 测试：验证 ToolExecutionResult 结构
  */
-import { describe, test, beforeEach } from 'node:test';
+import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import * as path from 'path';
 import * as os from 'os';
@@ -113,11 +113,22 @@ describe('ReadTool - ToolExecutionResult', () => {
   let tool: ReadTool;
   let testRoot: string;
   let context: ToolExecutionContext;
+  let previousUserDataDir: string | undefined;
 
   beforeEach(() => {
+    previousUserDataDir = process.env.XIAOBA_USER_DATA_DIR;
     tool = new ReadTool();
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'read-tool-test-'));
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
     context = { workingDirectory: testRoot, conversationHistory: [] };
+  });
+
+  afterEach(() => {
+    if (previousUserDataDir === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+    else process.env.XIAOBA_USER_DATA_DIR = previousUserDataDir;
+    if (testRoot && fs.existsSync(testRoot)) {
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
   });
 
   test('成功读取文本文件返回 ok=true', async () => {
