@@ -147,6 +147,44 @@ describe('dashboard typed settings API', () => {
     assert.equal(text.includes('abc'), false);
   });
 
+  test('GET /settings preserves a bound custom model served through the relay gateway', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      currentBot: {
+        uid: 'custom-relay-gateway-bot',
+        apiKey: 'catsco-bot-api-key',
+        boundByUserUid: 'user-custom-relay-gateway',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-custom-relay-gateway',
+        bodyId: 'body-custom-relay-gateway',
+        installationId: 'install-custom-relay-gateway',
+      },
+    });
+    createBotDefinitionSyncService({ runtimeRoot: testRoot }).publish('custom-relay-gateway-bot', {
+      kind: 'custom',
+      protocol: 'openai-responses',
+      apiBase: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-sol',
+      apiKey: 'sk-custom-relay-gateway',
+      contextWindowTokens: 256_000,
+      reasoningEffort: 'default',
+    });
+
+    const response = await fetch(`${baseUrl}/api/settings`);
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.modelStartup.source, 'custom');
+    assert.equal(data.modelStartup.effective.model, 'gpt-5.6-sol');
+    assert.equal(data.modelStartup.custom.configured, true);
+    assert.equal(data.modelStartup.custom.model, 'gpt-5.6-sol');
+    assert.equal(data.modelStartup.relay.configured, false);
+    assert.equal(text.includes('sk-custom-relay-gateway'), false);
+  });
+
   test('PUT /cats/config/preferences persists close button behavior', async () => {
     const initialResponse = await fetch(`${baseUrl}/api/cats/config`);
     const initial = await initialResponse.json() as any;

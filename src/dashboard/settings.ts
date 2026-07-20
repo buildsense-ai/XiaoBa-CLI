@@ -72,6 +72,8 @@ export interface DashboardSettingsOptions {
   now?: Date;
   /** The bound bot's resolved Definition config, when one is active. */
   modelConfig?: Pick<ChatConfig, 'provider' | 'apiUrl' | 'apiKey' | 'model' | 'contextWindowTokens' | 'reasoningEffort' | 'openaiApiMode'>;
+  /** Whether the bound bot config came from a custom Definition or catalog runtime. */
+  modelConfigSource?: DashboardModelStartupSnapshot['source'];
   /** The Runtime's effective model when legacy env is not its source of truth. */
   effectiveModelConfig?: Pick<ChatConfig, 'provider' | 'apiUrl' | 'apiKey' | 'model' | 'contextWindowTokens' | 'reasoningEffort' | 'openaiApiMode'>;
 }
@@ -382,15 +384,16 @@ function modelProfileSnapshot(
 
 function modelConfigSnapshot(
   config: NonNullable<DashboardSettingsOptions['modelConfig']>,
+  source: NonNullable<DashboardSettingsOptions['modelConfigSource']>,
 ): DashboardModelStartupSnapshot {
   const effective = modelProfileSnapshot(config);
-  const relay = isCatsRelayApiBase(config.apiUrl)
+  const relay = source === 'relay'
     ? { ...effective, reasoningEffort: effective.reasoningEffort === 'default' ? 'high' as const : effective.reasoningEffort }
     : { apiKeyPresent: false, configured: false };
-  const custom = isCatsRelayApiBase(config.apiUrl)
+  const custom = source === 'relay'
     ? { apiKeyPresent: false, configured: false }
     : effective;
-  return { source: isCatsRelayApiBase(config.apiUrl) ? 'relay' : 'custom', effective, custom, relay };
+  return { source, effective, custom, relay };
 }
 
 export function getDashboardSettings(
@@ -404,7 +407,10 @@ export function getDashboardSettings(
     runtimeRoot,
     generatedAt: (options.now ?? new Date()).toISOString(),
     modelStartup: options.modelConfig
-      ? modelConfigSnapshot(options.modelConfig)
+      ? modelConfigSnapshot(
+        options.modelConfig,
+        options.modelConfigSource ?? (isCatsRelayApiBase(options.modelConfig.apiUrl) ? 'relay' : 'custom'),
+      )
       : buildModelStartupSnapshot(fileEnv, env, options.effectiveModelConfig),
     fields: DASHBOARD_SETTING_DEFINITIONS.map(definition => {
       const value = isModelSetting(definition.id)

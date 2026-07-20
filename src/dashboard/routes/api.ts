@@ -2265,7 +2265,10 @@ export function createApiRouter(
       res.json(getDashboardSettings({
         runtimeRoot: runtimeDataRoot(),
         ...(activeBotConfig
-          ? { modelConfig: activeBotConfig.config }
+          ? {
+            modelConfig: activeBotConfig.config,
+            modelConfigSource: activeBotConfig.source === 'custom_definition' ? 'custom' as const : 'relay' as const,
+          }
           : { effectiveModelConfig: getModelConfigReadonly() }),
       }));
     } catch (e: any) {
