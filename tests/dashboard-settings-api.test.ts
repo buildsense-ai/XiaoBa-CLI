@@ -384,6 +384,39 @@ describe('dashboard typed settings API', () => {
     assert.equal(text.includes('sk-runtime-root-secret'), false);
   });
 
+  test('GET /settings preserves a bound custom Definition that uses the CatsCo relay URL', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      currentBot: {
+        uid: 'bound-custom-relay-url',
+        apiKey: 'catsco-bot-api-key',
+        boundByUserUid: 'user-definition-test',
+        bindingSource: 'test',
+      },
+    });
+    createBotDefinitionSyncService({ runtimeRoot: testRoot }).publish('bound-custom-relay-url', {
+      kind: 'custom',
+      protocol: 'openai-responses',
+      apiBase: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-terra',
+      apiKey: 'sk-custom-relay-secret',
+      contextWindowTokens: 256_000,
+      reasoningEffort: 'default',
+    });
+
+    const response = await fetch(`${baseUrl}/api/settings`);
+    const text = await response.text();
+    const settings = JSON.parse(text) as any;
+
+    assert.equal(response.status, 200, text);
+    assert.equal(settings.modelStartup.source, 'custom');
+    assert.equal(settings.modelStartup.custom.configured, true);
+    assert.equal(settings.modelStartup.custom.model, 'gpt-5.6-terra');
+    assert.equal(settings.modelStartup.custom.apiBase, 'https://relay.catsco.cc/v1');
+    assert.equal(settings.modelStartup.relay.configured, false);
+    assert.equal(text.includes('sk-custom-relay-secret'), false);
+  });
+
   test('PUT /model/reasoning-effort updates a bound custom Definition without changing legacy env', async () => {
     createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
       version: 1,

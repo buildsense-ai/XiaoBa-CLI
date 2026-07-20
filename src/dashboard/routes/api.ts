@@ -2212,7 +2212,10 @@ export function createApiRouter(
       const activeBotConfig = resolveActiveBotLLMConfig({ runtimeRoot: runtimeDataRoot() });
       res.json(getDashboardSettings({
         runtimeRoot: runtimeDataRoot(),
-        ...(activeBotConfig ? { modelConfig: activeBotConfig.config } : {}),
+        ...(activeBotConfig ? {
+          modelConfig: activeBotConfig.config,
+          modelConfigSource: activeBotConfig.source === 'custom_definition' ? 'custom' : 'relay',
+        } : {}),
       }));
     } catch (e: any) {
       res.status(500).json({ error: e.message });
