@@ -11,6 +11,8 @@ import * as dotenv from 'dotenv';
 import { PathResolver } from '../../utils/path-resolver';
 import { APP_VERSION } from '../../version';
 import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../../types';
+import type { ToolDefinition } from '../../types/tool';
+import { AIService } from '../../utils/ai-service';
 import { createRuntimeConfigSnapshot } from '../../runtime/runtime-config-snapshot';
 import {
   CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -65,7 +67,6 @@ import {
 } from '../../skillhub/local-skill-metadata';
 import {
   deletePromptOverride,
-  getPromptBranchAgentsState,
   getPromptEditorFile,
   getPromptEditorState,
   writePromptOverride,
@@ -74,6 +75,12 @@ import {
   BRANCH_AGENTS_ENABLED_ENV,
   serializeBranchAgentsEnabled,
 } from '../../core/branch-agent-settings';
+import {
+  loadBranchAgentConfig,
+  saveBranchAgentConfig,
+  type BranchAgentConfig,
+  type BranchModelRuntime,
+} from '../../core/branch-agent-config';
 import { normalizeReasoningEffort, reasoningEffortOrDefault } from '../../utils/reasoning-effort';
 import { normalizeOpenAIApiMode, openAIApiModeOrDefault } from '../../utils/openai-api-mode';
 import {
@@ -1121,6 +1128,127 @@ function writeDashboardEnvAndProcess(updates: Record<string, string | undefined>
   return result;
 }
 
+function memoryBranchDashboardPayload(config: BranchAgentConfig, serviceManager?: ServiceManager): Record<string, unknown> {
+  const memory = config.branches.memorySearch;
+  const active = memory.model.kind === 'inherit' ? modelProfileFromCurrentConfig() : memory.model;
+  const custom = memory.customDraft ?? (memory.model.kind === 'custom' ? memory.model : undefined);
+  const service = serviceManager?.getService('catscompany');
+  return {
+    id: 'memorySearch',
+    name: 'Memory Search',
+    description: '后台检索相关历史，并把内部观察结果交给主 Agent。',
+    enabled: memory.enabled,
+    modelSource: memory.model.kind,
+    selectedCatalogModelId: memory.model.kind === 'catalog' ? memory.model.modelId : undefined,
+    effective: {
+      provider: active.provider,
+      apiBase: sanitizePublicUrl(active.apiBase),
+      model: active.model,
+      contextWindowTokens: active.contextWindowTokens,
+      reasoningEffort: active.reasoningEffort,
+      openaiApiMode: active.openaiApiMode,
+      apiKeyPresent: Boolean(active.apiKey),
+      capabilities: memory.model.kind === 'inherit' ? undefined : memory.model.capabilities,
+    },
+    custom: custom ? {
+      provider: custom.provider,
+      apiBase: sanitizePublicUrl(custom.apiBase),
+      model: custom.model,
+      contextWindowTokens: custom.contextWindowTokens,
+      reasoningEffort: custom.reasoningEffort,
+      openaiApiMode: custom.openaiApiMode,
+      apiKeyPresent: Boolean(custom.apiKey),
+      capabilities: custom.capabilities,
+    } : {
+      provider: 'openai',
+      apiBase: '',
+      model: '',
+      contextWindowTokens: CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
+      reasoningEffort: 'default',
+      openaiApiMode: 'chat_completions',
+      apiKeyPresent: false,
+      capabilities: { toolCalling: true },
+    },
+    service: service ? {
+      status: service.status,
+      pid: service.pid,
+      lastError: service.lastError,
+    } : undefined,
+    updatedAt: config.updatedAt,
+  };
+}
+
+function validateBranchCustomModel(input: any, current?: BranchModelRuntime): BranchModelRuntime | { clear: true } {
+  const secret = input?.apiKey;
+  const action = String(secret?.action || 'keep').trim();
+  if (action === 'clear') return { clear: true };
+  const provider = String(input?.provider || '').trim().toLowerCase();
+  if (provider !== 'anthropic' && provider !== 'openai') {
+    throw httpError('provider must be anthropic or openai', 400);
+  }
+  const apiBase = validateBranchModelUrl(input?.apiBase);
+  const model = strictBranchString(input?.model, 'model');
+  const contextWindowTokens = parsePositiveInteger(input?.contextWindowTokens);
+  if (!contextWindowTokens) throw httpError('contextWindowTokens must be a positive integer', 400);
+  const reasoningEffort = requestedReasoningEffort(input?.reasoningEffort) ?? 'default';
+  const openaiApiMode = normalizeOpenAIApiMode(input?.openaiApiMode) ?? 'chat_completions';
+  const apiKey = action === 'replace'
+    ? strictBranchString(secret?.value, 'apiKey')
+    : current?.apiKey;
+  if (!apiKey) throw httpError('apiKey must be replaced before saving this custom model', 400);
+  return {
+    kind: 'custom',
+    provider,
+    apiBase,
+    apiKey,
+    model,
+    contextWindowTokens,
+    reasoningEffort,
+    openaiApiMode,
+    capabilities: { toolCalling: true },
+  };
+}
+
+function validateBranchModelUrl(value: unknown): string {
+  const text = strictBranchString(value, 'apiBase').replace(/\/+$/, '');
+  let parsed: URL;
+  try { parsed = new URL(text); } catch { throw httpError('apiBase must be a valid URL', 400); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw httpError('apiBase must use http or https', 400);
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw httpError('apiBase must not include credentials, query, or fragment', 400);
+  }
+  return text;
+}
+
+function strictBranchString(value: unknown, id: string): string {
+  if (typeof value !== 'string') throw httpError(`${id} must be a string`, 400);
+  const text = value.trim();
+  if (!text) throw httpError(`${id} is required`, 400);
+  if (/[\u0000-\u001f\u007f]/.test(text)) {
+    throw httpError(`${id} must not contain control characters`, 400);
+  }
+  return text;
+}
+
+function saveMemoryBranchConfig(
+  mutate: (memory: BranchAgentConfig['branches']['memorySearch']) => void,
+): BranchAgentConfig {
+  const config = loadBranchAgentConfig({ runtimeRoot: runtimeDataRoot() });
+  mutate(config.branches.memorySearch);
+  return saveBranchAgentConfig(config, { runtimeRoot: runtimeDataRoot() });
+}
+
+function branchRestartPayload(serviceManager: ServiceManager): Record<string, unknown> {
+  const restart = activateCatsCompanyConnector(serviceManager);
+  return {
+    restartRequested: restart.restartRequested,
+    restartRequired: restart.wasRunning && !restart.restartRequested,
+    restartError: restart.restartError ? sanitizeCatsErrorMessage(restart.restartError) : undefined,
+  };
+}
+
 function modelProfileFromCurrentConfig(): ModelLaunchProfile {
   const config = getModelConfigReadonly();
   return {
@@ -1545,7 +1673,10 @@ async function revealCatsRelayKey(state: CatsAuthState): Promise<any> {
 
 async function ensureCatsRelayPlainKey(
   state: CatsAuthState,
-  options: { rotateExisting?: boolean } = {},
+  options: {
+    rotateExisting?: boolean;
+    localPlainKeyCandidates?: Array<{ apiKey?: string; apiBase?: string }>;
+  } = {},
 ): Promise<{ response: any; plainKey: string; created: boolean; rotated: boolean; revealed: boolean }> {
   const current = await fetchCatsRelayKey(state);
   const currentKey = current?.key;
@@ -1556,7 +1687,9 @@ async function ensureCatsRelayPlainKey(
     return { response: current, plainKey: currentPlainKey, created: false, rotated: false, revealed: false };
   }
 
-  const reusableLocalKey = active ? findReusableLocalRelayKey(currentKey) : undefined;
+  const reusableLocalKey = active
+    ? findReusableLocalRelayKey(currentKey, options.localPlainKeyCandidates)
+    : undefined;
   if (reusableLocalKey) {
     return { response: current, plainKey: reusableLocalKey, created: false, rotated: false, revealed: false };
   }
@@ -1597,39 +1730,40 @@ async function ensureCatsRelayPlainKey(
   };
 }
 
-function findReusableLocalRelayKey(currentKey: any): string | undefined {
+function findReusableLocalRelayKey(
+  currentKey: any,
+  localCandidates: Array<{ apiKey?: string; apiBase?: string }> = [],
+): string | undefined {
   const fileEnv = readEnvFile();
   const currentConfig = ConfigManager.getConfigReadonly();
   const activeRelayConfig = isCatsRelayApiBase(currentConfig.apiUrl) ? currentConfig : undefined;
-  const apiKey = firstNonEmpty(
-    activeRelayConfig?.apiKey,
-    process.env.CATSCO_RELAY_LLM_API_KEY,
-    fileEnv.CATSCO_RELAY_LLM_API_KEY,
-    process.env.GAUZ_LLM_API_KEY,
-    fileEnv.GAUZ_LLM_API_KEY,
-    currentConfig.apiKey,
-  );
-  const apiBase = firstNonEmpty(
-    activeRelayConfig?.apiUrl,
-    process.env.CATSCO_RELAY_LLM_API_BASE,
-    fileEnv.CATSCO_RELAY_LLM_API_BASE,
-    process.env.GAUZ_LLM_API_BASE,
-    fileEnv.GAUZ_LLM_API_BASE,
-    currentConfig.apiUrl,
-  );
-  if (!apiKey || !isCatsRelayApiBase(apiBase)) {
-    return undefined;
-  }
-  if (!isLocalRelayPlainKeyCandidate(apiKey)) {
-    return undefined;
-  }
-
   const prefix = String(currentKey?.prefix || '').trim();
-  if (!isReusableRelayKeyPrefix(prefix) || !matchesRelayKeyPrefix(apiKey, prefix)) {
-    return undefined;
-  }
-
-  return apiKey;
+  if (!isReusableRelayKeyPrefix(prefix)) return undefined;
+  const candidates = [
+    ...localCandidates,
+    {
+      apiKey: firstNonEmpty(
+        activeRelayConfig?.apiKey,
+        process.env.CATSCO_RELAY_LLM_API_KEY,
+        fileEnv.CATSCO_RELAY_LLM_API_KEY,
+        process.env.GAUZ_LLM_API_KEY,
+        fileEnv.GAUZ_LLM_API_KEY,
+        currentConfig.apiKey,
+      ),
+      apiBase: firstNonEmpty(
+        activeRelayConfig?.apiUrl,
+        process.env.CATSCO_RELAY_LLM_API_BASE,
+        fileEnv.CATSCO_RELAY_LLM_API_BASE,
+        process.env.GAUZ_LLM_API_BASE,
+        fileEnv.GAUZ_LLM_API_BASE,
+        currentConfig.apiUrl,
+      ),
+    },
+  ];
+  return candidates
+    .filter(candidate => candidate.apiKey && isCatsRelayApiBase(candidate.apiBase))
+    .map(candidate => String(candidate.apiKey))
+    .find(apiKey => isLocalRelayPlainKeyCandidate(apiKey) && matchesRelayKeyPrefix(apiKey, prefix));
 }
 
 function isReusableRelayKeyPrefix(prefix: string): boolean {
@@ -1926,9 +2060,12 @@ export function createApiRouter(
     }
   });
 
+  // Compatibility alias for older Dashboard builds. The Branch page uses the
+  // dedicated /branch-agents/memory endpoints below.
   router.get('/prompts/branch-agents', (_req, res) => {
     try {
-      res.json(getPromptBranchAgentsState());
+      const config = loadBranchAgentConfig({ runtimeRoot: runtimeDataRoot() });
+      res.json({ enabled: config.branches.memorySearch.enabled });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || String(e) });
     }
@@ -1939,19 +2076,209 @@ export function createApiRouter(
       if (typeof req.body?.enabled !== 'boolean') {
         return res.status(400).json({ error: 'enabled must be a boolean' });
       }
-      const value = serializeBranchAgentsEnabled(req.body.enabled);
-      const result = writeDashboardEnvUpdates(runtimeDataRoot(), {
-        [BRANCH_AGENTS_ENABLED_ENV]: value,
-      });
-      process.env[BRANCH_AGENTS_ENABLED_ENV] = value;
+      const config = saveMemoryBranchConfig(memory => { memory.enabled = req.body.enabled; });
+      const value = serializeBranchAgentsEnabled(config.branches.memorySearch.enabled);
+      const result = writeDashboardEnvAndProcess({ [BRANCH_AGENTS_ENABLED_ENV]: value });
       res.json({
         ok: true,
-        ...getPromptBranchAgentsState(),
+        enabled: config.branches.memorySearch.enabled,
         updated: result.updated,
         cleared: result.cleared,
       });
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/branch-agents/memory', (_req, res) => {
+    try {
+      const config = loadBranchAgentConfig({ runtimeRoot: runtimeDataRoot() });
+      res.json({ ok: true, ...memoryBranchDashboardPayload(config, serviceManager) });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/branch-agents/memory/models', async (_req, res) => {
+    try {
+      const state = getCatsAuthState();
+      let relayConfig: any;
+      if (state.token) {
+        try { relayConfig = await fetchCatsRelayConfig(state); } catch { relayConfig = undefined; }
+      }
+      res.json({
+        ok: true,
+        authRequired: !state.token,
+        models: relayModelCatalog(relayConfig)
+          .filter(model => model.capabilities?.tool_calling !== false)
+          .map(relayModelPayload),
+      });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      res.status(payload.status).json(payload.body);
+    }
+  });
+
+  router.put('/branch-agents/memory/enabled', (req, res) => {
+    try {
+      if (typeof req.body?.enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled must be a boolean' });
+      }
+      const config = saveMemoryBranchConfig(memory => { memory.enabled = req.body.enabled; });
+      const value = serializeBranchAgentsEnabled(config.branches.memorySearch.enabled);
+      writeDashboardEnvAndProcess({ [BRANCH_AGENTS_ENABLED_ENV]: value });
+      res.json({
+        ok: true,
+        ...memoryBranchDashboardPayload(config, serviceManager),
+        ...branchRestartPayload(serviceManager),
+      });
+    } catch (e: any) {
+      res.status(e?.status || 400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.put('/branch-agents/memory/model/custom', (req, res) => {
+    try {
+      const currentConfig = loadBranchAgentConfig({ runtimeRoot: runtimeDataRoot() });
+      const currentMemory = currentConfig.branches.memorySearch;
+      const currentCustom = currentMemory.customDraft
+        ?? (currentMemory.model.kind === 'custom' ? currentMemory.model : undefined);
+      const next = validateBranchCustomModel(req.body, currentCustom);
+      const config = saveMemoryBranchConfig(memory => {
+        if ('clear' in next) {
+          delete memory.customDraft;
+          memory.model = { kind: 'inherit' };
+          return;
+        }
+        memory.customDraft = next;
+        memory.model = next;
+      });
+      res.json({
+        ok: true,
+        ...memoryBranchDashboardPayload(config, serviceManager),
+        ...branchRestartPayload(serviceManager),
+      });
+    } catch (e: any) {
+      res.status(e?.status || 400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.post('/branch-agents/memory/model/catalog/apply', async (req, res) => {
+    try {
+      const state = getCatsAuthState();
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+      const relayConfig = await fetchCatsRelayConfig(state);
+      const selected = selectRelayModel(relayConfig, req.body?.modelId || req.body?.model, { strict: true });
+      if (selected.capabilities?.tool_calling === false) {
+        return res.status(400).json({ error: 'Memory Search Branch requires tool calling support' });
+      }
+      if (relayConfig?.self_service_enabled === false) {
+        return res.status(503).json({ error: 'CatsCo relay self-service key is unavailable' });
+      }
+      const storedMemory = loadBranchAgentConfig({ runtimeRoot: runtimeDataRoot() }).branches.memorySearch;
+      const localPlainKeyCandidates = [
+        storedMemory.model.kind !== 'inherit' ? storedMemory.model : undefined,
+        storedMemory.customDraft,
+      ].filter((candidate): candidate is BranchModelRuntime => Boolean(candidate))
+        .map(candidate => ({ apiKey: candidate.apiKey, apiBase: candidate.apiBase }));
+      let ensured;
+      try {
+        ensured = await ensureCatsRelayPlainKey(state, {
+          rotateExisting: req.body?.rotateExisting === true,
+          localPlainKeyCandidates,
+        });
+      } catch (error: any) {
+        if (error?.status === 409) {
+          return res.status(409).json({
+            error: sanitizeCatsErrorMessage(error.message),
+            action: 'rotate_required',
+            selectedModel: relayModelPayload(selected),
+          });
+        }
+        throw error;
+      }
+      const reasoningEffort = relayReasoningEffortOrHigh(requestedReasoningEffort(req.body?.reasoningEffort));
+      const model: BranchModelRuntime = {
+        kind: 'catalog',
+        modelId: selected.id,
+        provider: selected.provider,
+        apiBase: selected.baseUrl,
+        apiKey: ensured.plainKey,
+        model: selected.model,
+        contextWindowTokens: selected.contextWindowTokens ?? 200_000,
+        reasoningEffort,
+        openaiApiMode: 'chat_completions',
+        capabilities: {
+          toolCalling: true,
+          ...(selected.capabilities?.vision !== undefined ? { vision: selected.capabilities.vision } : {}),
+          ...(selected.capabilities?.streaming !== undefined ? { streaming: selected.capabilities.streaming } : {}),
+        },
+      };
+      const config = saveMemoryBranchConfig(memory => { memory.model = model; });
+      res.json({
+        ok: true,
+        ...memoryBranchDashboardPayload(config, serviceManager),
+        selectedModel: relayModelPayload(selected),
+        createdKey: ensured.created,
+        rotatedKey: ensured.rotated,
+        ...branchRestartPayload(serviceManager),
+      });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      res.status(payload.status).json(payload.body);
+    }
+  });
+
+  router.post('/branch-agents/memory/model/test', async (req, res) => {
+    try {
+      const stored = loadBranchAgentConfig({ runtimeRoot: runtimeDataRoot() }).branches.memorySearch;
+      const currentCustom = stored.customDraft ?? (stored.model.kind === 'custom' ? stored.model : undefined);
+      const candidate = req.body?.useSaved === true
+        ? stored.model
+        : validateBranchCustomModel(req.body, currentCustom);
+      if ('clear' in candidate || candidate.kind === 'inherit') {
+        return res.status(400).json({ error: 'Choose or enter a dedicated model before testing' });
+      }
+      const aiService = new AIService({
+        provider: candidate.provider,
+        apiUrl: candidate.apiBase,
+        apiKey: candidate.apiKey,
+        model: candidate.model,
+        contextWindowTokens: candidate.contextWindowTokens,
+        reasoningEffort: candidate.reasoningEffort,
+        openaiApiMode: candidate.openaiApiMode,
+        maxTokens: 256,
+        temperature: 0,
+        modelCapabilities: { toolCalling: true },
+      });
+      const probe: ToolDefinition = {
+        name: 'branch_model_probe',
+        description: 'Report that the Branch model tool-calling probe succeeded.',
+        parameters: {
+          type: 'object',
+          properties: { status: { type: 'string', enum: ['ok'] } },
+          required: ['status'],
+        },
+      };
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30_000);
+      let response;
+      try {
+        response = await aiService.chat([{
+          role: 'user',
+          content: 'Call branch_model_probe with status "ok". Do not answer with plain text.',
+        }], [probe], { signal: controller.signal });
+      } finally {
+        clearTimeout(timeout);
+      }
+      const passed = Boolean(response.toolCalls?.some(call => call.function.name === probe.name));
+      res.status(passed ? 200 : 422).json({
+        ok: passed,
+        toolCalling: passed,
+        error: passed ? undefined : 'Model responded but did not call the required probe tool',
+      });
+    } catch (e: any) {
+      res.status(e?.status || 400).json({ error: sanitizeCatsErrorMessage(e?.message || String(e)) });
     }
   });
 

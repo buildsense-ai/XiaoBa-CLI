@@ -3,6 +3,7 @@ import { SkillManager } from '../skills/skill-manager';
 import { ToolManager } from '../tools/tool-manager';
 import { AIService } from '../utils/ai-service';
 import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
+import { loadBranchAgentConfig, resolveMemoryBranchModelOverride } from '../core/branch-agent-config';
 import { Logger } from '../utils/logger';
 import { PromptManager } from '../utils/prompt-manager';
 import { PromptComposer } from './prompt-composer';
@@ -69,8 +70,18 @@ export class RuntimeFactory {
     // allowing that profile to override the bot identity.
     const modelOverride = resolveActiveBotLLMConfig() ? {} : profile.model;
 
+    const aiService = new AIService(modelOverride);
+    const branchConfig = loadBranchAgentConfig();
+    const memoryBranchOverride = resolveMemoryBranchModelOverride(branchConfig);
+    const memoryBranchModelSource = branchConfig.branches.memorySearch.model.kind;
+
     return {
-      aiService: new AIService(modelOverride),
+      aiService,
+      memoryBranch: {
+        enabled: branchConfig.branches.memorySearch.enabled,
+        modelSource: memoryBranchModelSource,
+        aiService: memoryBranchOverride ? new AIService(memoryBranchOverride) : aiService,
+      },
       toolManager: new ToolManager(profile.workingDirectory, {}, {
         enabledToolNames: profile.tools.enabled,
       }),

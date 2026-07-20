@@ -7,6 +7,30 @@ import vm from 'node:vm';
 const dashboardHtml = readFileSync(join(process.cwd(), 'dashboard/index.html'), 'utf-8');
 const servicesPageHtml = dashboardHtml.match(/<div class="page" id="page-services">[\s\S]*?<div class="page" id="page-companion">/)?.[0] || '';
 
+test('Branch page follows the approved per-branch model layout', () => {
+  const branchPageHtml = dashboardHtml.match(/<div class="page" id="page-branches">[\s\S]*?<div class="page" id="page-prompts">/)?.[0] || '';
+  assert.match(dashboardHtml, /data-page="branches"/);
+  assert.match(dashboardHtml, /<span>Branch<\/span>/);
+  assert.match(branchPageHtml, /Memory Search/);
+  assert.match(branchPageHtml, /id="branch-workbench"/);
+  assert.match(dashboardHtml, /branch-model-grid/);
+  assert.match(dashboardHtml, /renderBranchCustomCard\(custom,customActive\)/);
+  assert.match(dashboardHtml, /renderBranchCatalogCard/);
+  assert.match(dashboardHtml, /data-model-id/);
+  assert.match(dashboardHtml, /decodeURIComponent\(this\.dataset\.modelId\)/);
+  assert.doesNotMatch(dashboardHtml, /onclick="applyBranchCatalogModel\('\+escapeHtml\(model\.id\)/);
+  assert.match(dashboardHtml, /branch-custom-panel/);
+  assert.match(dashboardHtml, /let branchCustomDraft = null/);
+  assert.match(dashboardHtml, /function updateBranchCustomDraft\(\)/);
+  assert.match(dashboardHtml, /if\(path\.endsWith\('\/enabled'\)\)renderBranchPage\(\)/);
+  assert.doesNotMatch(dashboardHtml, /function toggleBranchCustomPanel\(\)\{branchCustomOpen=!branchCustomOpen;renderBranchPage\(\);\}/);
+  assert.doesNotMatch(dashboardHtml, /function renderPromptBranchAgentControls/);
+  assert.match(dashboardHtml, /测试 Tool Calling/);
+  assert.match(dashboardHtml, /\/api\/branch-agents\/memory\/model\/custom/);
+  assert.match(dashboardHtml, /\/api\/branch-agents\/memory\/model\/catalog\/apply/);
+  assert.doesNotMatch(branchPageHtml, /Memory Branch/);
+});
+
 test('Agent Hub keeps connector controls and third-party model config without duplicate runtime panels', () => {
   assert.match(servicesPageHtml, /Agent Hub/);
   assert.match(servicesPageHtml, /运行、连接与设置/);

@@ -996,6 +996,71 @@
       gap: 14px;
     }
 
+    .branch-workbench { display: grid; gap: 18px; }
+    .branch-card {
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--surface);
+      padding: 22px;
+      box-shadow: var(--shadow-sm);
+    }
+    .branch-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--border);
+    }
+    .branch-card-title { color: var(--text); font-size: 24px; font-weight: 900; line-height: 1.2; }
+    .branch-card-copy { color: var(--text2); font-size: 13px; line-height: 1.6; margin-top: 7px; }
+    .branch-switch { display: inline-flex; align-items: center; gap: 10px; color: var(--text2); font-weight: 800; }
+    .branch-switch input { position: absolute; opacity: 0; pointer-events: none; }
+    .branch-switch-track {
+      position: relative; display: inline-block; flex: 0 0 48px; width: 48px; height: 28px; border-radius: 999px;
+      background: #cbd5e1; transition: .2s ease; cursor: pointer;
+    }
+    .branch-switch-track::after {
+      content: ''; position: absolute; width: 22px; height: 22px; left: 3px; top: 3px;
+      border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(15,23,42,.2); transition: .2s ease;
+    }
+    .branch-switch input:checked + .branch-switch-track { background: var(--accent); }
+    .branch-switch input:checked + .branch-switch-track::after { transform: translateX(20px); }
+    .branch-switch input:focus-visible + .branch-switch-track { outline: 3px solid rgba(59,130,246,.3); outline-offset: 3px; }
+    .branch-model-label { margin: 18px 0 10px; color: var(--text2); font-size: 12px; font-weight: 900; letter-spacing: .04em; }
+    .branch-model-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .branch-model-card {
+      position: relative; min-height: 126px; padding: 16px; border: 1px solid var(--border);
+      border-radius: 14px; background: var(--surface-muted); text-align: left; color: var(--text);
+      font: inherit; cursor: pointer; transition: border-color .18s ease, background .18s ease, transform .18s ease;
+    }
+    .branch-model-card:hover { transform: translateY(-1px); border-color: rgba(59,130,246,.45); }
+    .branch-model-card.active { border: 2px solid var(--accent); background: rgba(59,130,246,.06); padding: 15px; }
+    .branch-model-card.custom { background: rgba(34,197,94,.06); }
+    .branch-model-card.custom.active { border-color: #22c55e; }
+    .branch-model-name { font-size: 15px; font-weight: 900; line-height: 1.3; }
+    .branch-model-id { margin-top: 7px; color: var(--text2); font-size: 12px; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+    .branch-model-meta { margin-top: 12px; color: var(--text2); font-size: 11px; font-weight: 700; line-height: 1.45; }
+    .branch-selected-dot { position: absolute; right: 12px; top: 12px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+    .branch-custom-panel {
+      margin-top: 14px; border: 1px solid rgba(34,197,94,.28); border-radius: 16px;
+      background: rgba(34,197,94,.045); padding: 18px;
+    }
+    .branch-custom-panel[hidden] { display: none; }
+    .branch-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+    .branch-form-field { display: grid; gap: 7px; min-width: 0; }
+    .branch-form-field.wide { grid-column: 1 / -1; }
+    .branch-form-field label { color: var(--text2); font-size: 12px; font-weight: 800; }
+    .branch-form-field input, .branch-form-field select { width: 100%; }
+    .branch-form-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+    .branch-status-note { color: var(--text2); font-size: 12px; font-weight: 700; }
+    @media (max-width: 1180px) { .branch-model-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 720px) {
+      .branch-card-head, .branch-form-actions { align-items: stretch; flex-direction: column; }
+      .branch-model-grid, .branch-form-grid { grid-template-columns: 1fr; }
+      .branch-form-field.wide { grid-column: auto; }
+    }
+
     .model-source-grid {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -5232,6 +5297,9 @@
       <a class="nav-item" onclick="switchPage('services')" data-page="services">
         <span class="nav-icon">&gt;</span> <span>智能体中心</span>
       </a>
+      <a class="nav-item" onclick="switchPage('branches')" data-page="branches">
+        <span class="nav-icon">↳</span> <span>Branch</span>
+      </a>
       <a class="nav-item" onclick="switchPage('store')" data-page="store">
         <span class="nav-icon">+</span> <span>Skills</span>
       </a>
@@ -5447,6 +5515,23 @@
             <div class="settings-meta" style="margin-bottom:14px">管理你发布到 SkillHub 的 Skill 和版本。下架会隐藏公开安装；删除会移除服务器版本和包文件。</div>
             <div class="portal-list" id="skillhub-package-versions-list"><div class="loading">暂无发布版本</div></div>
           </div>
+      </div>
+
+      <!-- Page: Branches -->
+      <div class="page" id="page-branches">
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">Branch Runtime</div>
+            <div class="section-title" style="margin-bottom:0">Branch</div>
+            <div class="settings-meta">为每个后台 Branch 单独选择模型。配置保存在当前设备，保存后自动重启 CatsCo Agent，Dashboard 不会重启。</div>
+          </div>
+          <div class="settings-actions">
+            <button class="btn" id="branch-refresh-btn" onclick="refreshBranchPage()">刷新状态</button>
+            <button class="btn btn-primary" id="branch-restart-btn" onclick="svcAction('catscompany','restart')">重启 CatsCo Agent</button>
+          </div>
+        </div>
+        <div class="runtime-note">当前只管理 Memory Search Branch；主 Agent 与通过 <code>spawn_subagent</code> 派出的 explorer、reviewer、worker、tester 不受这里影响。</div>
+        <div class="branch-workbench" id="branch-workbench"><div class="loading">正在加载 Branch 配置...</div></div>
       </div>
 
       <!-- Page: Prompts -->
@@ -5802,7 +5887,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'Agent Hub', store:'SkillHub', prompts:'Prompt Lab', companion:'Companion Hub', chat:'CatsCo' };
+    const pageTitles = { services:'Agent Hub', branches:'Branch Runtime', store:'SkillHub', prompts:'Prompt Lab', companion:'Companion Hub', chat:'CatsCo' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -5898,6 +5983,14 @@
     let skillHubRegistryCache = [];
     let localSkillsCache = [];
     let promptEditorState = null;
+    let branchPageState = null;
+    let branchModels = [];
+    let branchCustomOpen = false;
+    let branchCustomDraft = null;
+    let branchMutationInFlight = false;
+    let branchModelTestInFlight = false;
+    let branchRefreshSeq = 0;
+    let branchRefreshTimer = null;
     let promptEditorFile = null;
     let promptEditorSelectedPath = 'system-prompt.md';
     let promptEditorDirty = false;
@@ -6697,10 +6790,245 @@
         fetchSkillHubDeveloper();
       } else if (name === 'prompts') {
         refreshPromptWorkbench();
+      } else if (name === 'branches') {
+        refreshBranchPage();
       } else if (name === 'services') {
         fetchStatus();
         refreshSettingsPage();
       }
+    }
+
+    async function refreshBranchPage(){
+      if(branchMutationInFlight||branchModelTestInFlight)return;
+      const requestSeq=++branchRefreshSeq;
+      const root=document.getElementById('branch-workbench');
+      if(root && !branchPageState)root.innerHTML='<div class="loading">正在加载 Branch 配置...</div>';
+      try{
+        const results=await Promise.all([
+          parseSimpleResponse(await fetch(API+'/api/branch-agents/memory')),
+          parseSimpleResponse(await fetch(API+'/api/branch-agents/memory/models'))
+        ]);
+        if(requestSeq!==branchRefreshSeq)return;
+        branchPageState=results[0];
+        branchModels=results[1].models||[];
+        renderBranchPage();
+      }catch(e){
+        if(requestSeq!==branchRefreshSeq)return;
+        if(root)root.innerHTML='<div class="runtime-note danger">Branch 配置加载失败：'+escapeHtml(formatDashboardApiError(e,'/api/branch-agents/memory'))+'</div>';
+      }
+    }
+
+    function renderBranchPage(){
+      const root=document.getElementById('branch-workbench');
+      if(!root||!branchPageState)return;
+      const enabled=branchPageState.enabled!==false;
+      const source=branchPageState.modelSource||'inherit';
+      const custom=branchPageState.custom||{};
+      const effective=branchPageState.effective||{};
+      const selectedId=branchPageState.selectedCatalogModelId||'';
+      const customActive=source==='custom';
+      const modelCards=[renderBranchCustomCard(custom,customActive)].concat((branchModels||[]).map(model=>renderBranchCatalogCard(model,source==='catalog'&&selectedId===model.id))).join('');
+      const service=branchPageState.service||{};
+      const serviceText=service.status==='running'?'CatsCo Agent 正在运行'+(service.pid?' · PID '+service.pid:''):'CatsCo Agent 当前未运行，下次启动时生效';
+      const inheritNote=source==='inherit'?'<div class="runtime-note" style="margin-top:14px">兼容状态：当前跟随主 Agent 模型；选择上方任一模型后，将使用独立的 Branch 模型配置。</div>':'';
+      root.innerHTML='<section class="branch-card">'+
+        '<div class="branch-card-head"><div><div class="branch-card-title">Memory Search</div><div class="branch-card-copy">检索相关历史并把内部观察结果交给主 Agent。当前模型：'+escapeHtml(effective.model||'跟随主模型')+'</div></div>'+
+        '<label class="branch-switch"><span>'+(enabled?'已开启':'已关闭')+'</span><input id="memory-branch-enabled" type="checkbox" '+(enabled?'checked':'')+' onchange="setMemoryBranchEnabled(this.checked)" '+(branchMutationInFlight?'disabled':'')+'><span class="branch-switch-track"></span></label></div>'+
+        '<div class="branch-model-label">选择模型</div><div class="branch-model-grid">'+modelCards+'</div>'+
+        renderBranchCustomPanel(custom,customActive)+
+        inheritNote+
+        '<div class="branch-form-actions"><span class="branch-status-note" id="branch-page-status">'+escapeHtml(serviceText)+'</span></div>'+
+      '</section>';
+    }
+
+    function renderBranchCustomCard(custom,active){
+      const configured=custom.apiKeyPresent&&custom.model;
+      return '<button class="branch-model-card custom '+(active?'active':'')+'" type="button" onclick="toggleBranchCustomPanel()" '+(branchMutationInFlight?'disabled':'')+'>'+
+        (active?'<span class="branch-selected-dot"></span>':'')+'<div class="branch-model-name">自定义模型</div>'+
+        '<div class="branch-model-id">'+escapeHtml(configured?custom.model:'OpenAI / Anthropic compatible')+'</div>'+
+        '<div class="branch-model-meta">'+(configured?'已配置访问凭证 · 点击展开':'点击展开并配置独立模型')+'</div></button>';
+    }
+
+    function renderBranchCatalogCard(model,active){
+      const context=formatModelContextLabel(model.context_window_tokens,model.context_label);
+      const sdk=model.sdk_label||model.protocol||model.provider||'';
+      const encodedId=encodeURIComponent(String(model.id||''));
+      return '<button class="branch-model-card '+(active?'active':'')+'" type="button" data-model-id="'+escapeHtml(encodedId)+'" onclick="applyBranchCatalogModel(decodeURIComponent(this.dataset.modelId))" '+(branchMutationInFlight?'disabled':'')+'>'+
+        (active?'<span class="branch-selected-dot"></span>':'')+'<div class="branch-model-name">'+escapeHtml(model.label||model.model)+'</div>'+
+        '<div class="branch-model-id">'+escapeHtml(model.model||model.id)+'</div>'+
+        '<div class="branch-model-meta">'+escapeHtml([context,sdk].filter(Boolean).join(' · '))+'</div></button>';
+    }
+
+    function renderBranchCustomPanel(custom,active){
+      const open=branchCustomOpen;
+      const draft=branchCustomDraft||{};
+      const provider=draft.provider??custom.provider??'openai';
+      const apiBase=draft.apiBase??custom.apiBase??'';
+      const model=draft.model??custom.model??'';
+      const context=String(draft.contextWindowTokens??custom.contextWindowTokens??256000);
+      const reasoning=draft.reasoningEffort??custom.reasoningEffort??'default';
+      const apiMode=draft.openaiApiMode??custom.openaiApiMode??'chat_completions';
+      const apiKeyValue=draft.apiKeyValue??'';
+      const clearKey=draft.clearKey===true;
+      return '<div class="branch-custom-panel" '+(open?'':'hidden')+' oninput="updateBranchCustomDraft()" onchange="updateBranchCustomDraft()"><div class="model-source-head"><div><div class="model-source-title">自定义模型</div><div class="model-source-copy">只用于 Memory Search Branch；保存前可以执行真实 Tool Calling 测试。</div></div><span class="tag green">'+(custom.apiKeyPresent?'已配置凭证':'需要凭证')+'</span></div>'+
+        '<div class="branch-form-grid">'+
+          '<div class="branch-form-field"><label>兼容类型</label><select id="branch-custom-provider"><option value="openai" '+(provider==='openai'?'selected':'')+'>OpenAI-compatible</option><option value="anthropic" '+(provider==='anthropic'?'selected':'')+'>Anthropic-compatible</option></select></div>'+
+          '<div class="branch-form-field"><label>模型名称</label><input id="branch-custom-model" value="'+escapeHtml(model)+'" placeholder="gpt-5.6-terra"></div>'+
+          '<div class="branch-form-field wide"><label>模型地址</label><input id="branch-custom-api-base" value="'+escapeHtml(apiBase)+'" placeholder="https://api.example.com/v1"></div>'+
+          '<div class="branch-form-field"><label>上下文窗口</label><select id="branch-custom-context">'+CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS.map(option=>'<option value="'+option.value+'" '+(context===option.value?'selected':'')+'>'+escapeHtml(option.label+' · '+option.hint)+'</option>').join('')+'</select></div>'+
+          '<div class="branch-form-field"><label>推理强度</label><select id="branch-custom-reasoning">'+REASONING_EFFORT_OPTIONS.map(option=>'<option value="'+option.value+'" '+(reasoning===option.value?'selected':'')+'>'+escapeHtml(option.label)+'</option>').join('')+'</select></div>'+
+          '<div class="branch-form-field"><label>OpenAI API 模式</label><select id="branch-custom-api-mode">'+OPENAI_API_MODE_OPTIONS.map(option=>'<option value="'+option.value+'" '+(apiMode===option.value?'selected':'')+'>'+escapeHtml(option.label)+'</option>').join('')+'</select></div>'+
+          '<div class="branch-form-field"><label>访问凭证</label><input id="branch-custom-api-key" type="password" value="'+escapeHtml(apiKeyValue)+'" placeholder="'+(custom.apiKeyPresent?'留空表示保留现有凭证':'请输入 API Key')+'"></div>'+
+        '</div><label class="branch-status-note" style="display:flex;align-items:center;gap:8px;margin-top:12px"><input id="branch-custom-clear-key" type="checkbox" '+(clearKey?'checked':'')+'> 清除已保存的访问凭证，并恢复跟随主模型</label>'+
+        '<div class="branch-form-actions"><button class="btn" onclick="testBranchCustomModel()" '+(branchMutationInFlight?'disabled':'')+'>测试 Tool Calling</button><button class="btn btn-primary" onclick="saveBranchCustomModel()" '+(branchMutationInFlight?'disabled':'')+'>保存自定义模型</button><span class="branch-status-note" id="branch-custom-status"></span></div></div>';
+    }
+
+    function toggleBranchCustomPanel(){
+      branchCustomOpen=!branchCustomOpen;
+      const panel=document.querySelector('#branch-workbench .branch-custom-panel');
+      if(panel)panel.hidden=!branchCustomOpen;
+    }
+
+    function updateBranchCustomDraft(){
+      const provider=document.getElementById('branch-custom-provider');
+      if(!provider)return;
+      branchCustomDraft={
+        provider:provider.value||'openai',
+        apiBase:document.getElementById('branch-custom-api-base')?.value||'',
+        model:document.getElementById('branch-custom-model')?.value||'',
+        contextWindowTokens:Number(document.getElementById('branch-custom-context')?.value||0),
+        reasoningEffort:document.getElementById('branch-custom-reasoning')?.value||'default',
+        openaiApiMode:document.getElementById('branch-custom-api-mode')?.value||'chat_completions',
+        apiKeyValue:document.getElementById('branch-custom-api-key')?.value||'',
+        clearKey:document.getElementById('branch-custom-clear-key')?.checked===true
+      };
+      clearScheduledBranchRefresh();
+    }
+
+    function branchCustomPayload(){
+      updateBranchCustomDraft();
+      const draft=branchCustomDraft||{};
+      const key=draft.apiKeyValue||'';
+      const clear=draft.clearKey===true;
+      return {
+        provider:draft.provider||'openai',
+        apiBase:draft.apiBase||'',
+        model:draft.model||'',
+        contextWindowTokens:Number(draft.contextWindowTokens||0),
+        reasoningEffort:draft.reasoningEffort||'default',
+        openaiApiMode:draft.openaiApiMode||'chat_completions',
+        apiKey:clear?{action:'clear'}:(key?{action:'replace',value:key}:{action:'keep'})
+      };
+    }
+
+    async function setMemoryBranchEnabled(enabled){
+      if(!confirm((enabled?'开启':'关闭')+' Memory Search Branch？CatsCo Agent 正在运行时会自动重启，当前回复可能中断。')){
+        const checkbox=document.getElementById('memory-branch-enabled');
+        if(checkbox)checkbox.checked=branchPageState?.enabled!==false;
+        return;
+      }
+      await mutateBranchPage('/api/branch-agents/memory/enabled','PUT',{enabled:Boolean(enabled)},'Branch 状态已保存');
+    }
+
+    async function applyBranchCatalogModel(modelId){
+      if(branchMutationInFlight||branchModelTestInFlight)return;
+      const model=(branchModels||[]).find(item=>item.id===modelId);
+      if(!model)return;
+      if(!confirm('切换 Memory Search 到 '+(model.label||model.model)+'？CatsCo Agent 正在运行时会自动重启。'))return;
+      try{
+        setBranchMutationBusy(true);
+        const data=await parseCatsResponse(await fetch(API+'/api/branch-agents/memory/model/catalog/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({modelId})}));
+        branchPageState=data;
+        branchCustomOpen=false;
+        setBranchMutationBusy(false);
+        renderBranchPage();
+        const status=document.getElementById('branch-page-status');
+        if(status)status.textContent=branchMutationResultText(data,'模型已切换');
+        if(data.restartRequested)scheduleBranchRefresh();
+      }catch(e){
+        setBranchMutationBusy(false);
+        if(e.action==='rotate_required'&&confirm('已有 CatsCo Relay Key 无法读取明文。是否轮换 Key 并继续？旧 Key 将失效。')){
+          await applyBranchCatalogModelWithRotation(modelId);
+          return;
+        }
+        const status=document.getElementById('branch-page-status');
+        if(status)status.textContent='切换失败：'+formatDashboardApiError(e,'/api/branch-agents/memory/model/catalog/apply');
+      }
+    }
+
+    async function applyBranchCatalogModelWithRotation(modelId){
+      await mutateBranchPage('/api/branch-agents/memory/model/catalog/apply','POST',{modelId,rotateExisting:true},'模型已切换');
+    }
+
+    async function saveBranchCustomModel(){
+      await mutateBranchPage('/api/branch-agents/memory/model/custom','PUT',branchCustomPayload(),'自定义模型已保存','branch-custom-status');
+    }
+
+    async function testBranchCustomModel(){
+      if(branchModelTestInFlight||branchMutationInFlight)return;
+      const status=document.getElementById('branch-custom-status');
+      try{
+        branchModelTestInFlight=true;
+        branchRefreshSeq+=1;
+        clearScheduledBranchRefresh();
+        setBranchControlsDisabled(true);
+        if(status)status.textContent='正在测试模型与 Tool Calling...';
+        const data=await parseSimpleResponse(await fetch(API+'/api/branch-agents/memory/model/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(branchCustomPayload())}));
+        if(status)status.textContent=data.toolCalling?'测试通过：支持 Tool Calling':'测试失败';
+      }catch(e){if(status)status.textContent='测试失败：'+formatDashboardApiError(e,'/api/branch-agents/memory/model/test');}
+      finally{branchModelTestInFlight=false;setBranchControlsDisabled(branchMutationInFlight);}
+    }
+
+    async function mutateBranchPage(path,method,body,successText,statusId='branch-page-status'){
+      if(branchMutationInFlight||branchModelTestInFlight)return;
+      const status=document.getElementById(statusId)||document.getElementById('branch-page-status');
+      try{
+        setBranchMutationBusy(true);
+        if(status)status.textContent='正在保存...';
+        const data=await parseSimpleResponse(await fetch(API+path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+        branchPageState=data;
+        if(path.includes('/model/custom')){
+          branchCustomDraft=null;
+          if(body?.apiKey?.action==='clear')branchCustomOpen=false;
+        }
+        if(path.includes('/model/catalog/'))branchCustomOpen=false;
+        setBranchMutationBusy(false);
+        renderBranchPage();
+        const next=document.getElementById(statusId)||document.getElementById('branch-page-status');
+        if(next)next.textContent=branchMutationResultText(data,successText);
+        if(data.restartRequested)scheduleBranchRefresh();
+      }catch(e){
+        setBranchMutationBusy(false);
+        if(path.endsWith('/enabled'))renderBranchPage();
+        const next=document.getElementById(statusId)||document.getElementById('branch-page-status');
+        if(next)next.textContent='保存失败：'+formatDashboardApiError(e,path);
+      }
+    }
+
+    function setBranchMutationBusy(busy){
+      branchMutationInFlight=Boolean(busy);
+      if(branchMutationInFlight){branchRefreshSeq+=1;clearScheduledBranchRefresh();}
+      setBranchControlsDisabled(branchMutationInFlight||branchModelTestInFlight);
+    }
+
+    function setBranchControlsDisabled(disabled){
+      document.querySelectorAll('#branch-workbench button,#branch-workbench input,#branch-workbench select,#branch-refresh-btn,#branch-restart-btn').forEach(control=>{control.disabled=Boolean(disabled);});
+    }
+
+    function branchMutationResultText(data,successText){
+      if(data.restartError)return successText+'，但自动重启失败：'+data.restartError+'。请手动重启 CatsCo Agent。';
+      if(data.restartRequired)return successText+'，但需要手动重启 CatsCo Agent 才能生效。';
+      if(data.restartRequested)return successText+'，已请求重启 CatsCo Agent。';
+      return successText+'，下次启动 CatsCo Agent 时生效。';
+    }
+
+    function scheduleBranchRefresh(){
+      clearScheduledBranchRefresh();
+      branchRefreshTimer=setTimeout(()=>{branchRefreshTimer=null;refreshBranchPage();},1400);
+    }
+
+    function clearScheduledBranchRefresh(){
+      if(branchRefreshTimer){clearTimeout(branchRefreshTimer);branchRefreshTimer=null;}
     }
 
     async function refreshPromptWorkbench(selectPath, options={}){
@@ -6775,7 +7103,6 @@
           promptTraceCard('Version', trace.prompt_version||'local', trace.source||'-')+
           promptTraceCard('Overrides', promptEditorState.writable?'可写':'未配置', promptEditorState.overrides_dir||'-')+
         '</div>'+
-        renderPromptBranchAgentControls()+
         '<div class="runtime-note">保存只写入本地覆盖目录，不改安装包内置 prompts。主会话会在下一条用户消息开始前检查 prompt hash 并热加载；正在执行中的请求不会中途切换。建议让 Companion/旁路 agent 使用 catsco-prompt-editor skill 提议和确认改动，主 agent 继续专注当前工作。</div>'+
         '<div class="prompt-editor-layout">'+
           '<div class="prompt-file-list">'+(listHtml||'<div class="loading">没有可编辑的 prompt 文件</div>')+'</div>'+
@@ -6916,36 +7243,6 @@
           '</div>'+
         '</div>'+
       '</div>';
-    }
-
-    function renderPromptBranchAgentControls(){
-      const state=promptEditorState?.branch_agents||{};
-      const enabled=state.enabled!==false;
-      const badge=enabled?'<span class="tag green">enabled</span>':'<span class="tag warm">disabled</span>';
-      const buttonLabel=enabled?'关闭 Branch Agent':'启用 Branch Agent';
-      const nextValue=enabled?'false':'true';
-      return '<div class="runtime-note" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'+
-        '<div><strong>Branch Agent</strong> '+badge+
-        '<div class="settings-meta" style="margin-top:6px">控制所有后台 branch agent。关闭后不会启动 memory/web 等并行 branch，也不会消费上一轮 carryover；当前正在运行的 turn 不会被打断。</div>'+
-        '<div class="settings-meta" id="prompt-branch-agent-status" style="margin-top:4px">'+escapeHtml(state.env_key||'XIAOBA_BRANCH_AGENTS_ENABLED')+'</div></div>'+
-        '<button class="btn '+(enabled?'':'btn-primary')+'" onclick="setBranchAgentsEnabled('+nextValue+')">'+buttonLabel+'</button>'+
-      '</div>';
-    }
-
-    async function setBranchAgentsEnabled(enabled){
-      const status=document.getElementById('prompt-branch-agent-status');
-      try{
-        if(status)status.textContent='正在保存...';
-        const data=await parseSimpleResponse(await fetch(API+'/api/prompts/branch-agents',{
-          method:'PUT',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({enabled:Boolean(enabled)})
-        }));
-        promptEditorState={...(promptEditorState||{}),branch_agents:data};
-        renderPromptWorkbench({preserveFileListScroll:true,preserveEditorScroll:true});
-      }catch(e){
-        if(status)status.textContent='保存失败：'+(e.message||String(e));
-      }
     }
 
     function markPromptEditorDirty(){
