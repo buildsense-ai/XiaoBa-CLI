@@ -335,8 +335,8 @@ export class BotDefinitionSyncService {
       botId,
       model: normalizeBotModelDefinition(model),
     };
-    this.repository.writeCanonical(definition);
     this.repository.writeCache(definition);
+    this.repository.writeCanonical(definition);
     this.clearLegacyModelConfigurationWhenReady(definition);
     return {
       botId,

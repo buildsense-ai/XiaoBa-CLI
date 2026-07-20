@@ -8869,7 +8869,7 @@
               <button class="btn btn-primary" onclick="saveCustomModelSettings()">保存自定义模型</button>
               <span class="config-saved" id="model-source-saved">已保存</span>
             </div>
-            <div id="model-source-status" style="color:var(--text2);font-size:13px">凭证仅保存到本地 .env；自定义模型上下文会写入本地配置，新 session 或下一次启动 connector 后生效。</div>
+            <div id="model-source-status" style="color:var(--text2);font-size:13px">自定义模型会保存到当前 bot 的本地 Definition 缓存，并立即重启或启动 connector 生效。</div>
           </div>
         </details>
       </div>`;
@@ -9306,6 +9306,7 @@
 
     async function saveCustomModelSettings(options){
       const auto=Boolean(options&&options.auto);
+      if(!auto)clearTimeout(customModelAutoSaveTimer);
       let built;
       try{
         built=buildCustomModelSettingsPayload();
@@ -9323,31 +9324,41 @@
       }
       const signature=customModelPayloadSignature(payload);
       if(auto && signature===customModelAutoSaveLastSignature && secretUpdate.action==='keep'){
-        setModelSourceStatus('已保存。新 session 或下一次启动 connector 后生效。','success');
+        setModelSourceStatus('已保存并已提交启用。','success');
         return;
       }
-      if(auto && customModelAutoSaveInFlight){
+      if(customModelAutoSaveInFlight){
         customModelAutoSaveQueued=true;
+        if(!auto)setModelSourceStatus('正在完成上一项模型配置，随后会启用当前配置...','muted');
         return;
       }
       const sensitive=secretUpdate.action!=='keep';
       const message=sensitive
-        ? '保存并启用自定义模型？访问凭证会写入本地 .env，仅用于本机 runtime。若 CatsCo agent 正在运行，会请求重启以使用新配置。'
+        ? '保存并启用自定义模型？访问凭证会写入当前 bot 的本地 Definition 缓存。若 CatsCo agent 正在运行，会请求重启以使用新配置。'
         : '保存并启用自定义模型？若 CatsCo agent 正在运行，会请求重启以使用新配置。';
       if(!auto && !confirm(message))return;
       try{
         customModelAutoSaveInFlight=true;
         setModelSourceStatus(auto?'自动保存中...':'保存中...','muted');
-        const requestPayload={...payload,restartConnector:!auto};
+        const requestPayload={...payload,activateConnector:true};
         const r=await fetch(API+'/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestPayload)});
         const d=await r.json();
         if(!r.ok||d.error)throw new Error(d.error||'保存失败');
         customModelAutoSaveLastSignature=signature;
         updateReasoningEffortSnapshots(payload.settings['model.reasoningEffort']||'default','custom');
-        const appliedMessage=!auto&&d.connectorRestarted
-          ? '已保存，并已请求重启 CatsCo agent 使用新配置。'
-          : (auto?'已自动保存自定义配置。':'已保存自定义配置。')+'配置完整时会切换为自定义启动。';
-        setModelSourceStatus(appliedMessage,'success');
+        const activationError=d.connectorStartBlocked
+          ? '模型配置已保存，但 connector 启动检查未通过。请查看 CatsCo 连接检查项。'
+          : d.restartError||d.startError
+            ? '模型配置已保存，但 connector 激活失败：'+(d.restartError||d.startError)
+            : '';
+        const appliedMessage=activationError||(
+          d.connectorRestarted
+            ? '已保存自定义模型，并已请求重启 CatsCo agent 使用新配置。'
+            : d.connectorStarted
+              ? '已保存自定义模型，并已启动 CatsCo agent 使用新配置。'
+              : '已保存自定义模型。connector 状态未改变。'
+        );
+        setModelSourceStatus(appliedMessage,activationError?'error':'success');
         const secretInput=document.getElementById('model-secret-setting');
         const clearInput=document.getElementById('model-secret-clear-setting');
         if(secretInput && secretUpdate.action==='replace'){
@@ -9360,7 +9371,7 @@
         if(!auto){
           setModelSourceStatus('已保存，正在刷新启动状态...','muted');
           await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchReadiness(),fetchCatsStatus()]);
-          setModelSourceStatus(d.connectorRestarted?'已保存，并已请求重启 CatsCo agent 使用自定义模型。':'已保存自定义配置。配置完整时会切换为自定义启动。','success');
+          setModelSourceStatus(appliedMessage,activationError?'error':'success');
         }
       }catch(e){
         setModelSourceStatus('保存失败：'+formatDashboardApiError(e,'/api/settings'),'error');
@@ -9898,9 +9909,13 @@
       setCatsAction(message);
       setTimeout(async()=>{
         try{
-          await setupCatsBot({forceLegacySetup:true, automatic:true});
+          if(reason==='binding'){
+            await setupCatsBot({forceLegacySetup:true, automatic:true});
+          }else{
+            await startCurrentCatsConnector({automatic:true});
+          }
         }catch(e){
-          setCatsAction('自动启动失败：'+formatDashboardApiError(e,'/api/cats/setup'), true);
+          setCatsAction('自动启动失败：'+formatDashboardApiError(e,reason==='binding'?'/api/cats/setup':'/api/cats/connector/start'), true);
         }finally{
           setCatsAutoStartBusy(false);
         }
@@ -10222,7 +10237,36 @@
         setCatsAction('CatsCompany connector 已在运行。');
         return;
       }
-      return bindCatsBot(catsState.botUid, catsState.botName || catsState.bot?.name || catsState.botUid, document.getElementById('cats-setup-btn'), { confirm: false });
+      return startCurrentCatsConnector();
+    }
+
+    async function startCurrentCatsConnector(options={}) {
+      if(catsSetupInFlight){
+        setCatsAction('正在配置 CatsCo 连接，请稍候...');
+        return;
+      }
+      if(relayModelApplyInFlight){
+        setCatsAction('模型切换正在进行，请稍候...');
+        return;
+      }
+      setCatsSetupBusy(true);
+      setCatsStatusMutationBusy(true);
+      invalidateCatsStatusRequests();
+      setCatsAction('正在按当前 agent 配置启动 CatsCompany connector...');
+      try{
+        const data=await parseCatsResponse(await fetch(API+'/api/cats/connector/start',{method:'POST'}));
+        const stage=await refreshCatsChatAfterMutation({focusInput:options.automatic!==true});
+        if(stage.key==='ready'){
+          setCatsAction(data.connectorStarted?'CatsCompany connector 已启动。':'CatsCompany connector 已在运行。');
+          if(options.automatic!==true)pulsePetState('success','已连接',1800);
+        }else{
+          setCatsAction(stage.copy||'connector 已启动，请按当前检查项继续。',stage.status==='blocked');
+        }
+        return data;
+      }finally{
+        setCatsStatusMutationBusy(false);
+        setCatsSetupBusy(false);
+      }
     }
 
     async function sendCatsCode(){

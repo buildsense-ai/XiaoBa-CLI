@@ -171,7 +171,10 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /function maybeAutoStartCats\(stage\)/);
   assert.match(dashboardHtml, /function catsAutoStartReason\(stage\)/);
   assert.match(dashboardHtml, /function catsAutoStartReadinessSafe\(reason\)/);
+  assert.match(dashboardHtml, /if\(reason==='binding'\)\{/);
   assert.match(dashboardHtml, /setupCatsBot\(\{forceLegacySetup:true, automatic:true\}\)/);
+  assert.match(dashboardHtml, /startCurrentCatsConnector\(\{automatic:true\}\)/);
+  assert.match(dashboardHtml, /\/api\/cats\/connector\/start/);
   assert.match(dashboardHtml, /maybeAutoStartCats\(stage\)/);
   assert.match(dashboardHtml, /function focusCatsMessageInputSoon\(\)/);
   assert.match(dashboardHtml, /function invalidateRelayModelConfigRequests\(\)/);
@@ -270,7 +273,9 @@ test('custom model save refreshes simplified state before Chat remains locked', 
     dashboardHtml,
     /fetchDashboardSettings\(\),fetchStatus\(\),fetchRuntimeConfig\(\),fetchReadiness\(\),fetchCatsStatus\(\)/,
   );
-  assert.match(dashboardHtml, /已保存。新 session 或下一次启动 connector 后生效。/);
+  assert.match(dashboardHtml, /const requestPayload=\{\.\.\.payload,activateConnector:true\}/);
+  assert.match(dashboardHtml, /已保存并已提交启用。/);
+  assert.doesNotMatch(dashboardHtml, /restartConnector:!auto/);
 });
 
 test('CatsCo Chat setup refreshes readiness before unlocking the composer', () => {
@@ -292,6 +297,16 @@ test('CatsCo Chat setup refreshes readiness before unlocking the composer', () =
   assert.match(setupBlock, /setCatsSetupBusy\(false\)/);
   assert.match(setupBlock, /const stage=await refreshCatsChatAfterMutation\(\{focusInput:true\}\)/);
   assert.match(setupBlock, /await loadCatsMessages\(true, \{reset:true, forceBottom:true\}\)/);
+});
+
+test('bound CatsCo connector recovery does not re-enter legacy setup or rebind the bot', () => {
+  const handler = dashboardHtml.match(
+    /async function handleCatsSetupAction\(\) \{[\s\S]*?async function sendCatsCode/,
+  )?.[0] || '';
+  assert.match(handler, /return startCurrentCatsConnector\(\)/);
+  assert.match(handler, /fetch\(API\+'\/api\/cats\/connector\/start',\{method:'POST'\}\)/);
+  assert.doesNotMatch(handler, /return bindCatsBot\(catsState\.botUid/);
+  assert.doesNotMatch(handler, /fetch\(API\+'\/api\/cats\/setup'/);
 });
 
 test('CatsCo bot binding carries selected relay model setup', () => {

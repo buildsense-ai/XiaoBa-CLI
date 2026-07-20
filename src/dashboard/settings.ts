@@ -72,6 +72,8 @@ export interface DashboardSettingsOptions {
   now?: Date;
   /** The bound bot's resolved Definition config, when one is active. */
   modelConfig?: Pick<ChatConfig, 'provider' | 'apiUrl' | 'apiKey' | 'model' | 'contextWindowTokens' | 'reasoningEffort' | 'openaiApiMode'>;
+  /** Explicit source from the bound bot Definition. URL inference is legacy fallback only. */
+  modelConfigSource?: 'custom_definition' | 'catalog_runtime';
 }
 
 interface NormalizedSettingUpdate {
@@ -357,6 +359,7 @@ function modelConfigValue(
 
 function modelConfigSnapshot(
   config: NonNullable<DashboardSettingsOptions['modelConfig']>,
+  source?: DashboardSettingsOptions['modelConfigSource'],
 ): DashboardModelStartupSnapshot {
   const effective: DashboardModelProfileSnapshot = {
     provider: config.provider,
@@ -368,13 +371,16 @@ function modelConfigSnapshot(
     apiKeyPresent: Boolean(config.apiKey),
     configured: Boolean(config.provider && config.apiUrl && config.model && config.apiKey),
   };
-  const relay = isCatsRelayApiBase(config.apiUrl)
+  const isRelay = source
+    ? source === 'catalog_runtime'
+    : isCatsRelayApiBase(config.apiUrl);
+  const relay = isRelay
     ? { ...effective, reasoningEffort: effective.reasoningEffort === 'default' ? 'high' as const : effective.reasoningEffort }
     : { apiKeyPresent: false, configured: false };
-  const custom = isCatsRelayApiBase(config.apiUrl)
+  const custom = isRelay
     ? { apiKeyPresent: false, configured: false }
     : effective;
-  return { source: isCatsRelayApiBase(config.apiUrl) ? 'relay' : 'custom', effective, custom, relay };
+  return { source: isRelay ? 'relay' : 'custom', effective, custom, relay };
 }
 
 export function getDashboardSettings(
@@ -388,7 +394,7 @@ export function getDashboardSettings(
     runtimeRoot,
     generatedAt: (options.now ?? new Date()).toISOString(),
     modelStartup: options.modelConfig
-      ? modelConfigSnapshot(options.modelConfig)
+      ? modelConfigSnapshot(options.modelConfig, options.modelConfigSource)
       : buildModelStartupSnapshot(fileEnv, env),
     fields: DASHBOARD_SETTING_DEFINITIONS.map(definition => {
       const value = isModelSetting(definition.id)
