@@ -73,6 +73,24 @@ test('explicit custom Definition source wins over a relay gateway URL', () => {
   });
 });
 
+test('explicit custom Definition source uses a readable fallback label', () => {
+  const status = resolveCatsDeviceModelStatus({
+    source: 'custom',
+    env: {} as NodeJS.ProcessEnv,
+    config: {
+      apiUrl: 'https://example.com/v1',
+      apiKey: 'sk-custom-secret',
+    },
+    now: () => 1782790000009,
+  });
+
+  assert.deepEqual(status, {
+    source: 'custom',
+    model: '自定义模型',
+    updated_at: 1782790000009,
+  });
+});
+
 test('does not let stale relay source override a custom endpoint', () => {
   const status = resolveCatsDeviceModelStatus({
     env: {

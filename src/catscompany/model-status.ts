@@ -51,7 +51,7 @@ export function resolveCatsDeviceModelStatus(options: ModelStatusOptions = {}): 
   if (options.source === 'custom') {
     const hasCustomSignal = Boolean(model || apiBase || apiKey);
     if (!hasCustomSignal) return undefined;
-    return { source: 'custom', model: model || '鑷畾涔夋ā鍨?', updated_at: now() };
+    return { source: 'custom', model: model || '自定义模型', updated_at: now() };
   }
 
   if (isCatsRelayApiBase(apiBase)) {
