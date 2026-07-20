@@ -52,7 +52,11 @@ import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
 import { catalogRuntimeMatchesModelId, createBotDefinitionSyncService } from '../../bot-definition/service';
 import { prepareBoundBotDefinition } from '../../bot-definition/activation';
 import { resolveActiveBotLLMConfig } from '../../bot-definition/llm-config-resolver';
-import type { BotDefinitionSyncResult } from '../../bot-definition/types';
+import {
+  BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+  type BotCatalogModelRuntime,
+  type BotDefinitionSyncResult,
+} from '../../bot-definition/types';
 import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { registerSkillHubRoutes } from './skillhub';
@@ -127,6 +131,12 @@ interface CatsBotBindingInput {
   botUsername?: string;
   apiKey: string;
   bindingSource?: string;
+  selectedCatalogRuntime?: BotCatalogModelRuntime;
+}
+
+interface CatsRelayModelSetupResult {
+  response: Record<string, unknown>;
+  selectedCatalogRuntime?: BotCatalogModelRuntime;
 }
 
 interface CatsRequestOptions {
@@ -856,6 +866,7 @@ async function commitCatsBotBindingAndStartConnector(
     const preparedBot = await prepareBoundBotDefinition({
       runtimeRoot: runtimeDataRoot(),
       botId: input.botUid,
+      selectedCatalogRuntime: input.selectedCatalogRuntime,
     });
     const botDefinitionSync = toBotDefinitionSyncPayload(preparedBot?.sync);
     const {
@@ -1499,6 +1510,31 @@ function writeRelayModelStartupConfig(
   };
 }
 
+function selectedRelayCatalogRuntime(
+  botId: string,
+  model: RelayModelConfig,
+  apiKey: string,
+  reasoningEffort: ReasoningEffort,
+): BotCatalogModelRuntime {
+  return {
+    schema: BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+    botId,
+    modelId: model.id,
+    provider: model.provider,
+    apiBase: model.baseUrl,
+    apiKey,
+    model: model.model,
+    contextWindowTokens: model.contextWindowTokens ?? resolveKnownModelContextWindowTokens(model.model) ?? 200_000,
+    reasoningEffort,
+    openaiApiMode: 'chat_completions',
+    capabilities: model.capabilities ? {
+      ...(model.capabilities.vision !== undefined ? { vision: model.capabilities.vision } : {}),
+      ...(model.capabilities.tool_calling !== undefined ? { toolCalling: model.capabilities.tool_calling } : {}),
+      ...(model.capabilities.streaming !== undefined ? { streaming: model.capabilities.streaming } : {}),
+    } : undefined,
+  };
+}
+
 function sanitizeRelayKeyInfo(key: any): any {
   if (!key || typeof key !== 'object') return key || null;
   const safe: Record<string, unknown> = {};
@@ -1662,15 +1698,18 @@ function matchesRelayKeyPrefix(apiKey: string, prefix: string): boolean {
 
 async function setupCatsRelayModelForDesktop(
   state: CatsAuthState,
+  botId: string,
   requestedModel: unknown,
   options: { rotateExisting?: boolean; reasoningEffort?: ReasoningEffort } = {},
-): Promise<Record<string, unknown>> {
+): Promise<CatsRelayModelSetupResult> {
   const config = await fetchCatsRelayConfig(state);
   if (config?.self_service_enabled === false) {
     return {
-      ok: false,
-      skipped: true,
-      reason: 'CatsCo 中转自助 Key 尚未启用',
+      response: {
+        ok: false,
+        skipped: true,
+        reason: 'CatsCo 中转自助 Key 尚未启用',
+      },
     };
   }
 
@@ -1685,19 +1724,27 @@ async function setupCatsRelayModelForDesktop(
   });
 
   return {
-    ok: true,
-    protocol: normalizeRelayModelProtocol(selectedModel.provider),
-    provider: selectedModel.provider,
-    apiBase: selectedModel.baseUrl,
-    model: selectedModel.model,
-    modelId: selectedModel.id,
-    reasoningEffort,
-    selectedModel: relayModelPayload(selectedModel),
-    updated: settingsResult.updated,
-    key: sanitizeRelayKeyInfo(ensured.response?.key),
-    createdKey: ensured.created,
-    rotatedKey: ensured.rotated,
-    revealedKey: ensured.revealed,
+    response: {
+      ok: true,
+      protocol: normalizeRelayModelProtocol(selectedModel.provider),
+      provider: selectedModel.provider,
+      apiBase: selectedModel.baseUrl,
+      model: selectedModel.model,
+      modelId: selectedModel.id,
+      reasoningEffort,
+      selectedModel: relayModelPayload(selectedModel),
+      updated: settingsResult.updated,
+      key: sanitizeRelayKeyInfo(ensured.response?.key),
+      createdKey: ensured.created,
+      rotatedKey: ensured.rotated,
+      revealedKey: ensured.revealed,
+    },
+    selectedCatalogRuntime: selectedRelayCatalogRuntime(
+      botId,
+      selectedModel,
+      ensured.plainKey,
+      reasoningEffort,
+    ),
   };
 }
 
@@ -2986,16 +3033,20 @@ export function createApiRouter(
         displayName: me.display_name || me.username || state.displayName || '',
       };
       let relayModelSetup: Record<string, unknown> | undefined;
+      let selectedCatalogRuntime: BotCatalogModelRuntime | undefined;
       if (req.body?.setupRelayModel !== false) {
         try {
-          relayModelSetup = await setupCatsRelayModelForDesktop(
+          const setup = await setupCatsRelayModelForDesktop(
             relayState,
+            botUid,
             req.body?.relayModelId || req.body?.modelId || req.body?.model,
             {
               rotateExisting: req.body?.rotateRelayKey === true || req.body?.rotateExisting === true,
               reasoningEffort: requestedReasoningEffort(req.body?.reasoningEffort),
             },
           );
+          relayModelSetup = setup.response;
+          selectedCatalogRuntime = setup.selectedCatalogRuntime;
         } catch (relayError: any) {
           const message = sanitizeCatsErrorMessage(relayError?.message || relayError);
           const status = relayError?.status || 500;
@@ -3034,6 +3085,7 @@ export function createApiRouter(
         botUsername: bot.username || preferredUsername,
         apiKey,
         bindingSource: 'legacy-setup',
+        selectedCatalogRuntime,
       });
 
       res.json({
@@ -3149,16 +3201,20 @@ export function createApiRouter(
         displayName: me.display_name || me.username || state.displayName || '',
       };
       let relayModelSetup: Record<string, unknown> | undefined;
+      let selectedCatalogRuntime: BotCatalogModelRuntime | undefined;
       if (req.body?.setupRelayModel !== false) {
         try {
-          relayModelSetup = await setupCatsRelayModelForDesktop(
+          const setup = await setupCatsRelayModelForDesktop(
             relayState,
+            botUid,
             req.body?.relayModelId || req.body?.modelId || req.body?.model,
             {
               rotateExisting: req.body?.rotateRelayKey === true || req.body?.rotateExisting === true,
               reasoningEffort: requestedReasoningEffort(req.body?.reasoningEffort),
             },
           );
+          relayModelSetup = setup.response;
+          selectedCatalogRuntime = setup.selectedCatalogRuntime;
         } catch (relayError: any) {
           const message = sanitizeCatsErrorMessage(relayError?.message || relayError);
           const status = relayError?.status || 500;
@@ -3196,6 +3252,7 @@ export function createApiRouter(
         botUsername: targetBot.username || '',
         apiKey,
         bindingSource: 'explicit-bind',
+        selectedCatalogRuntime,
       });
       const botName = String(targetBot.display_name || targetBot.username || 'Bot');
 
@@ -3394,23 +3451,9 @@ export function createApiRouter(
         : writeRelayModelStartupConfig(selectedModel, ensured.plainKey, { reasoningEffort });
       let botDefinitionSync: Record<string, unknown> | undefined;
       if (botId) {
-        definitionService.storeCatalogRuntime({
-          schema: 'xiaoba.bot-catalog-model-runtime.v1',
-          botId,
-          modelId: selectedModel.id,
-          provider: selectedModel.provider,
-          apiBase: selectedModel.baseUrl,
-          apiKey: ensured.plainKey,
-          model: selectedModel.model,
-          contextWindowTokens: selectedModel.contextWindowTokens ?? 200_000,
-          reasoningEffort,
-          openaiApiMode: 'chat_completions',
-          capabilities: selectedModel.capabilities ? {
-            ...(selectedModel.capabilities.vision !== undefined ? { vision: selectedModel.capabilities.vision } : {}),
-            ...(selectedModel.capabilities.tool_calling !== undefined ? { toolCalling: selectedModel.capabilities.tool_calling } : {}),
-            ...(selectedModel.capabilities.streaming !== undefined ? { streaming: selectedModel.capabilities.streaming } : {}),
-          } : undefined,
-        });
+        definitionService.storeCatalogRuntime(
+          selectedRelayCatalogRuntime(botId, selectedModel, ensured.plainKey, reasoningEffort),
+        );
         botDefinitionSync = toBotDefinitionSyncPayload(
           definitionService.publish(botId, { kind: 'catalog', modelId: selectedModel.id }),
         );
