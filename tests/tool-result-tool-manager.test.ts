@@ -1,7 +1,7 @@
 /**
  * tool-manager 核心测试：验证 ToolExecutionResult 结构统一处理
  */
-import { describe, test, beforeEach, mock } from 'node:test';
+import { afterEach, beforeEach, describe, test, mock } from 'node:test';
 import * as assert from 'node:assert';
 import * as path from 'path';
 import * as os from 'os';
@@ -15,10 +15,21 @@ const ONE_PIXEL_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0
 describe('ToolManager - ToolExecutionResult 统一处理', () => {
   let manager: ToolManager;
   let testRoot: string;
+  let previousUserDataDir: string | undefined;
 
   beforeEach(() => {
+    previousUserDataDir = process.env.XIAOBA_USER_DATA_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-result-'));
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
     manager = new ToolManager(testRoot);
+  });
+
+  afterEach(() => {
+    if (previousUserDataDir === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+    else process.env.XIAOBA_USER_DATA_DIR = previousUserDataDir;
+    if (testRoot && fs.existsSync(testRoot)) {
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
   });
 
   // ─── 成功路径 ───────────────────────────────────────────────

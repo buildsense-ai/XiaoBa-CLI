@@ -179,6 +179,7 @@ export class ShellTool implements Tool {
       const cwdAfter = this.updateCurrentDirectory(
         this.readDirectoryProbe(wrapped) || parsedStdout.directory || parsedStderr.directory,
         context,
+        cwdBefore,
       ) || cwdBefore;
 
       const stdoutOutput = parsedStdout.output || '';
@@ -227,6 +228,7 @@ export class ShellTool implements Tool {
       const cwdAfter = this.updateCurrentDirectory(
         this.readDirectoryProbe(wrapped) || parsedStdout.directory || parsedStderr.directory,
         context,
+        cwdBefore,
       ) || cwdBefore;
       const aborted = context.abortSignal?.aborted || /aborted|abort/i.test(String(error.message || ''));
       const timedOut = !aborted && isShellCommandTimeoutError(error);
@@ -772,15 +774,37 @@ export class ShellTool implements Tool {
     return this.stripAnyDirectoryProbe(String(error?.message || error || 'Command failed'));
   }
 
-  private updateCurrentDirectory(directory: string | undefined, context: ToolExecutionContext): string | undefined {
+  private updateCurrentDirectory(
+    directory: string | undefined,
+    context: ToolExecutionContext,
+    preferredDirectory?: string,
+  ): string | undefined {
     if (!directory) return undefined;
     const resolved = path.resolve(directory);
     try {
       if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return undefined;
-      context.updateCurrentDirectory?.(resolved);
-      return resolved;
+      // macOS commonly reports /private/var from $PWD for a command that was
+      // launched through the equivalent /var path. Keep the caller's spelling
+      // when the command did not actually change directories.
+      const stableDirectory = preferredDirectory && this.isSameDirectory(resolved, preferredDirectory)
+        ? path.resolve(preferredDirectory)
+        : resolved;
+      context.updateCurrentDirectory?.(stableDirectory);
+      return stableDirectory;
     } catch {
       return undefined;
+    }
+  }
+
+  private isSameDirectory(left: string, right: string): boolean {
+    try {
+      const leftReal = fs.realpathSync(path.resolve(left));
+      const rightReal = fs.realpathSync(path.resolve(right));
+      return process.platform === 'win32'
+        ? leftReal.toLowerCase() === rightReal.toLowerCase()
+        : leftReal === rightReal;
+    } catch {
+      return false;
     }
   }
 }
