@@ -9,6 +9,7 @@ import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 import { FileBotCatalogModelRuntimeRepository, FileBotDefinitionRepository } from '../src/bot-definition/repository';
+import { resolveActiveBotLLMConfig } from '../src/bot-definition/llm-config-resolver';
 import { BOT_CATALOG_MODEL_RUNTIME_SCHEMA, BOT_DEFINITION_SCHEMA } from '../src/bot-definition/types';
 
 describe('dashboard CatsCo account status', () => {
@@ -929,6 +930,12 @@ describe('dashboard CatsCo account status', () => {
       'CATSCO_USER_NAME=fresh',
       'CATSCO_USER_DISPLAY_NAME=Fresh User',
     ]);
+    const definitionRepository = new FileBotDefinitionRepository({ runtimeRoot: testRoot });
+    definitionRepository.writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '188',
+      model: { kind: 'catalog', modelId: 'minimax-m2.7' },
+    });
 
     const response = await fetch(`${dashboardBaseUrl}/api/cats/bind-bot`, {
       method: 'POST',
@@ -944,6 +951,8 @@ describe('dashboard CatsCo account status', () => {
     const data = JSON.parse(text) as any;
     const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
     const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('188');
+    const definition = definitionRepository.readCanonical('188');
+    const resolved = resolveActiveBotLLMConfig({ runtimeRoot: testRoot });
 
     assert.equal(response.status, 200, text);
     assert.equal(data.ok, true);
@@ -952,13 +961,15 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.relayModelSetup.reasoningEffort, 'high');
     assert.equal(data.relayModelSetup.createdKey, true);
     assert.equal(text.includes('sk-bf-existing-bot-secret'), false);
-    assert.equal(relayKeyCreated, 1);
     assert.equal(runtime?.modelId, 'minimax-m3');
     assert.equal(runtime?.provider, 'anthropic');
     assert.equal(runtime?.apiBase, 'https://relay.catsco.cc/anthropic');
     assert.equal(runtime?.model, 'MiniMax-M3');
     assert.equal(runtime?.apiKey, 'sk-bf-existing-bot-secret');
     assert.equal(runtime?.reasoningEffort, 'high');
+    assert.deepStrictEqual(definition?.model, { kind: 'catalog', modelId: 'minimax-m3' });
+    assert.equal(resolved?.config.model, 'MiniMax-M3');
+    assert.equal(relayKeyCreated, 1);
     assert.equal(env.CATSCO_BOT_UID, '188');
     assert.equal(env.CATSCO_API_KEY, 'cats-agent-key');
     assert.equal(startCalled, 1);
@@ -1013,16 +1024,27 @@ describe('dashboard CatsCo account status', () => {
         return res.json({
           base_url: 'https://relay.catsco.cc',
           self_service_enabled: true,
-          models: [{
-            id: 'minimax-m2.7',
-            label: 'MiniMax M2.7',
-            model: 'MiniMax-M2.7',
-            provider: 'anthropic',
-            protocol: 'Anthropic-compatible',
-            base_url: 'https://relay.catsco.cc/anthropic',
-            enabled: true,
-            default: true,
-          }],
+          models: [
+            {
+              id: 'minimax-m2.7',
+              label: 'MiniMax M2.7',
+              model: 'MiniMax-M2.7',
+              provider: 'anthropic',
+              protocol: 'Anthropic-compatible',
+              base_url: 'https://relay.catsco.cc/anthropic',
+              enabled: true,
+              default: true,
+            },
+            {
+              id: 'minimax-m3',
+              label: 'MiniMax M3',
+              model: 'MiniMax-M3',
+              provider: 'anthropic',
+              protocol: 'Anthropic-compatible',
+              base_url: 'https://relay.catsco.cc/anthropic',
+              enabled: true,
+            },
+          ],
         });
       }
       if (req.path === '/api/relay/key' && req.method === 'GET') {
@@ -1040,6 +1062,12 @@ describe('dashboard CatsCo account status', () => {
       'CATSCO_USER_UID=88',
       'CATSCO_USER_NAME=fresh',
     ]);
+    const definitionRepository = new FileBotDefinitionRepository({ runtimeRoot: testRoot });
+    definitionRepository.writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '188',
+      model: { kind: 'catalog', modelId: 'minimax-m2.7' },
+    });
 
     const response = await fetch(`${dashboardBaseUrl}/api/cats/setup`, {
       method: 'POST',
@@ -1047,12 +1075,20 @@ describe('dashboard CatsCo account status', () => {
       body: JSON.stringify({
         httpBaseUrl: catsBaseUrl,
         serverUrl: 'wss://app.catsco.cc/v0/channels',
+        relayModelId: 'minimax-m3',
       }),
     });
     const text = await response.text();
     const data = JSON.parse(text) as any;
+    const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('188');
+    const definition = definitionRepository.readCanonical('188');
+    const resolved = resolveActiveBotLLMConfig({ runtimeRoot: testRoot });
 
     assert.equal(response.status, 200, text);
+    assert.equal(data.relayModelSetup.modelId, 'minimax-m3');
+    assert.equal(runtime?.modelId, 'minimax-m3');
+    assert.deepStrictEqual(definition?.model, { kind: 'catalog', modelId: 'minimax-m3' });
+    assert.equal(resolved?.config.model, 'MiniMax-M3');
     assert.equal(data.connectorRestarted, true);
     assert.equal(data.connectorStarted, false);
     assert.equal(restartCalled, 1);

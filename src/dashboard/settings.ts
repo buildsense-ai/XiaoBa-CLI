@@ -72,6 +72,10 @@ export interface DashboardSettingsOptions {
   now?: Date;
   /** The bound bot's resolved Definition config, when one is active. */
   modelConfig?: Pick<ChatConfig, 'provider' | 'apiUrl' | 'apiKey' | 'model' | 'contextWindowTokens' | 'reasoningEffort' | 'openaiApiMode'>;
+  /** Whether the bound bot config came from a custom Definition or catalog runtime. */
+  modelConfigSource?: DashboardModelStartupSnapshot['source'];
+  /** The Runtime's effective model when legacy env is not its source of truth. */
+  effectiveModelConfig?: Pick<ChatConfig, 'provider' | 'apiUrl' | 'apiKey' | 'model' | 'contextWindowTokens' | 'reasoningEffort' | 'openaiApiMode'>;
 }
 
 interface NormalizedSettingUpdate {
@@ -305,9 +309,17 @@ function readCustomModelProfile(
 function buildModelStartupSnapshot(
   fileEnv: Record<string, string>,
   env: NodeJS.ProcessEnv,
+  effectiveModelConfig?: NonNullable<DashboardSettingsOptions['effectiveModelConfig']>,
 ): DashboardModelStartupSnapshot {
-  const effective = readModelProfile(EFFECTIVE_MODEL_ENV_KEYS, fileEnv, env);
-  const custom = readCustomModelProfile(fileEnv, env);
+  const storedEffective = readModelProfile(EFFECTIVE_MODEL_ENV_KEYS, fileEnv, env);
+  const runtimeEffective = effectiveModelConfig && modelProfileSnapshot(effectiveModelConfig);
+  const effective = storedEffective.configured ? storedEffective : runtimeEffective ?? storedEffective;
+  const storedCustom = readCustomModelProfile(fileEnv, env);
+  const custom = storedCustom.configured
+    ? storedCustom
+    : effective.configured && !isCatsRelayApiBase(effective.apiBase)
+      ? effective
+      : storedCustom;
   const storedRelay = readModelProfile(RELAY_MODEL_ENV_KEYS, fileEnv, env);
   const requestedSource = firstNonEmpty(fileEnv[MODEL_SOURCE_ENV_KEY], env[MODEL_SOURCE_ENV_KEY]);
   const effectiveIsRelay = isCatsRelayApiBase(effective.apiBase);
@@ -355,10 +367,10 @@ function modelConfigValue(
   }
 }
 
-function modelConfigSnapshot(
+function modelProfileSnapshot(
   config: NonNullable<DashboardSettingsOptions['modelConfig']>,
-): DashboardModelStartupSnapshot {
-  const effective: DashboardModelProfileSnapshot = {
+): DashboardModelProfileSnapshot {
+  return {
     provider: config.provider,
     apiBase: sanitizeUrlSettingValue(config.apiUrl ?? ''),
     model: config.model,
@@ -368,13 +380,20 @@ function modelConfigSnapshot(
     apiKeyPresent: Boolean(config.apiKey),
     configured: Boolean(config.provider && config.apiUrl && config.model && config.apiKey),
   };
-  const relay = isCatsRelayApiBase(config.apiUrl)
+}
+
+function modelConfigSnapshot(
+  config: NonNullable<DashboardSettingsOptions['modelConfig']>,
+  source: NonNullable<DashboardSettingsOptions['modelConfigSource']>,
+): DashboardModelStartupSnapshot {
+  const effective = modelProfileSnapshot(config);
+  const relay = source === 'relay'
     ? { ...effective, reasoningEffort: effective.reasoningEffort === 'default' ? 'high' as const : effective.reasoningEffort }
     : { apiKeyPresent: false, configured: false };
-  const custom = isCatsRelayApiBase(config.apiUrl)
+  const custom = source === 'relay'
     ? { apiKeyPresent: false, configured: false }
     : effective;
-  return { source: isCatsRelayApiBase(config.apiUrl) ? 'relay' : 'custom', effective, custom, relay };
+  return { source, effective, custom, relay };
 }
 
 export function getDashboardSettings(
@@ -388,8 +407,11 @@ export function getDashboardSettings(
     runtimeRoot,
     generatedAt: (options.now ?? new Date()).toISOString(),
     modelStartup: options.modelConfig
-      ? modelConfigSnapshot(options.modelConfig)
-      : buildModelStartupSnapshot(fileEnv, env),
+      ? modelConfigSnapshot(
+        options.modelConfig,
+        options.modelConfigSource ?? (isCatsRelayApiBase(options.modelConfig.apiUrl) ? 'relay' : 'custom'),
+      )
+      : buildModelStartupSnapshot(fileEnv, env, options.effectiveModelConfig),
     fields: DASHBOARD_SETTING_DEFINITIONS.map(definition => {
       const value = isModelSetting(definition.id)
         ? options.modelConfig

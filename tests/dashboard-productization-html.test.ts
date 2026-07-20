@@ -138,6 +138,16 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /let pendingStartupSource = ''/);
   assert.match(dashboardHtml, /let pendingRelayReasoningEffort = ''/);
   assert.match(dashboardHtml, /function relayModelIdForSetup\(\)/);
+  assert.match(
+    dashboardHtml,
+    /id:'minimax-m3'[^\n]*default:true/,
+    'Dashboard fallback catalog must select the product default MiniMax M3 before the authenticated catalog loads',
+  );
+  assert.doesNotMatch(
+    dashboardHtml,
+    /id:'minimax-m2\.7'[^\n]*default:true/,
+    'The legacy first catalog entry must not silently become the Dashboard default',
+  );
   assert.match(dashboardHtml, /function relayReasoningEffortForSetup\(\)/);
   assert.match(dashboardHtml, /登录后会自动接入/);
   assert.match(dashboardHtml, /function buildCatsChatStage\(\)/);
