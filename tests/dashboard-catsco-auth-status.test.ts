@@ -135,6 +135,231 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.topicId, '');
   });
 
+  test('PUT /settings immediately restarts a running connector after a bound custom model update', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      currentBot: {
+        uid: '117',
+        name: 'Friday',
+        apiKey: 'cats-agent-key',
+        boundByUserUid: '116',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-model-switch',
+        bodyId: 'body-model-switch',
+        installationId: 'install-model-switch',
+      },
+    });
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'running',
+    };
+    let restartCalled = 0;
+    const app = express();
+    app.use(express.json());
+    app.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'catscompany' ? service : undefined),
+      restart: (name: string) => {
+        assert.equal(name, 'catscompany');
+        restartCalled += 1;
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(app);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    const response = await fetch(`${dashboardBaseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        activateConnector: true,
+        settings: {
+          'model.provider': 'openai',
+          'model.openaiApiMode': 'responses',
+          'model.apiBase': 'https://relay.catsco.cc/v1',
+          'model.model': 'gpt-5.6-sol',
+          'model.contextWindowTokens': '256000',
+          'model.apiKey': { action: 'replace', value: 'sk-custom-model-secret' },
+        },
+      }),
+    });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+    const definition = new FileBotDefinitionRepository({ runtimeRoot: testRoot }).readCache('117');
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.connectorRestarted, true);
+    assert.equal(data.connectorStarted, false);
+    assert.equal(data.connectorStartBlocked, false);
+    assert.equal(restartCalled, 1);
+    assert.equal(definition?.model.kind, 'custom');
+    assert.equal(definition?.model.model, 'gpt-5.6-sol');
+    assert.equal(text.includes('sk-custom-model-secret'), false);
+  });
+
+  test('PUT /settings does not restart a connector for background auto-save', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      currentBot: {
+        uid: '118',
+        name: 'Saturday',
+        apiKey: 'cats-agent-key',
+        boundByUserUid: '116',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-auto-save',
+        bodyId: 'body-auto-save',
+        installationId: 'install-auto-save',
+      },
+    });
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'running',
+    };
+    let restartCalled = 0;
+    const app = express();
+    app.use(express.json());
+    app.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'catscompany' ? service : undefined),
+      restart: () => {
+        restartCalled += 1;
+        return service;
+      },
+    } as any));
+    const localServer = await listen(app);
+
+    try {
+      const response = await fetch(`${serverBaseUrl(localServer)}/api/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activateConnector: false,
+          settings: {
+            'model.provider': 'openai',
+            'model.openaiApiMode': 'responses',
+            'model.apiBase': 'https://relay.catsco.cc/v1',
+            'model.model': 'gpt-5.6-sol-preview',
+            'model.contextWindowTokens': '256000',
+            'model.apiKey': { action: 'replace', value: 'sk-custom-model-secret' },
+          },
+        }),
+      });
+      const data = await response.json() as any;
+
+      assert.equal(response.status, 200);
+      assert.equal(data.connectorRestarted, false);
+      assert.equal(data.connectorStarted, false);
+      assert.equal(restartCalled, 0);
+    } finally {
+      await close(localServer);
+    }
+  });
+
+  test('POST /cats/connector/start requires an existing bot binding', async () => {
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/connector/start`, {
+      method: 'POST',
+    });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 409);
+    assert.match(data.error, /No CatsCo bot is bound/);
+  });
+
+  test('POST /cats/connector/start starts the bound Definition without legacy model setup', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'user-token',
+        uid: '38',
+      },
+      currentBot: {
+        uid: '320',
+        name: 'Friday',
+        apiKey: 'cats_svc_test',
+        boundByUserUid: '38',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-connector-start',
+        bodyId: 'body-connector-start',
+        installationId: 'install-connector-start',
+      },
+    });
+    new FileBotDefinitionRepository({ runtimeRoot: testRoot }).writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '320',
+      model: {
+        kind: 'custom',
+        protocol: 'openai-responses',
+        apiBase: 'https://relay.catsco.cc/v1',
+        model: 'gpt-5.6-sol',
+        apiKey: 'sk-custom-secret',
+        contextWindowTokens: 256_000,
+      },
+    });
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCompany',
+      status: 'stopped',
+      command: process.execPath,
+    };
+    let startCalled = 0;
+    const app = express();
+    app.use(express.json());
+    app.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => name === 'catscompany' ? service : undefined,
+      start: (name: string) => {
+        assert.equal(name, 'catscompany');
+        startCalled += 1;
+        service.status = 'running';
+        return service;
+      },
+    } as any));
+    const localServer = await listen(app);
+
+    try {
+      const response = await fetch(`${serverBaseUrl(localServer)}/api/cats/connector/start`, {
+        method: 'POST',
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      const definition = new FileBotDefinitionRepository({ runtimeRoot: testRoot }).readCanonical('320');
+
+      assert.equal(response.status, 200, text);
+      assert.equal(data.ok, true);
+      assert.equal(data.connectorStarted, true);
+      assert.equal(startCalled, 1);
+      assert.equal(definition?.model.kind, 'custom');
+      assert.equal(definition?.model.kind === 'custom' ? definition.model.model : '', 'gpt-5.6-sol');
+      assert.equal(fs.existsSync(path.join(testRoot, '.env')), false);
+    } finally {
+      await close(localServer);
+    }
+  });
+
   test('GET /cats/status validates the shared CatsCompany account token', async () => {
     await startCatsServer((req, res) => {
       assert.equal(req.header('authorization'), 'Bearer valid-user-token');
