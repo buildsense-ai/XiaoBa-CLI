@@ -2,6 +2,7 @@ import type { OpenAIApiMode, ReasoningEffort } from '../types';
 
 export const BOT_DEFINITION_SCHEMA = 'xiaoba.bot-definition.v1';
 export const BOT_CATALOG_MODEL_RUNTIME_SCHEMA = 'xiaoba.bot-catalog-model-runtime.v1';
+export const BOT_CUSTOM_MODEL_PROFILE_SCHEMA = 'xiaoba.bot-custom-model-profile.v1';
 
 /**
  * A catalog model is identified by the CatsCo model catalog. Its endpoint and
@@ -83,6 +84,17 @@ export interface BotCatalogModelRuntime {
     toolCalling?: boolean;
     streaming?: boolean;
   };
+}
+
+/**
+ * Device-local alternate custom profile for a bot. The active BotDefinition
+ * still selects exactly one source, while this record lets a user switch to a
+ * catalog model and later return to the previous custom configuration.
+ */
+export interface BotCustomModelProfile {
+  schema: typeof BOT_CUSTOM_MODEL_PROFILE_SCHEMA;
+  botId: string;
+  model: CustomBotModelDefinition;
 }
 
 export interface BotDefinitionSyncResult {

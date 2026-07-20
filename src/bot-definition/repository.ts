@@ -1,7 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { PathResolver } from '../utils/path-resolver';
-import { BOT_CATALOG_MODEL_RUNTIME_SCHEMA, type BotCatalogModelRuntime, type BotDefinition } from './types';
+import {
+  BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+  BOT_CUSTOM_MODEL_PROFILE_SCHEMA,
+  type BotCatalogModelRuntime,
+  type BotCustomModelProfile,
+  type BotDefinition,
+  type CustomBotModelDefinition,
+} from './types';
 
 export interface BotDefinitionRepository {
   readCanonical(botId: string): BotDefinition | undefined;
@@ -18,6 +25,11 @@ export interface BotDefinitionRepository {
 export interface BotCatalogModelRuntimeRepository {
   read(botId: string): BotCatalogModelRuntime | undefined;
   write(runtime: BotCatalogModelRuntime): void;
+}
+
+export interface BotCustomModelProfileRepository {
+  read(botId: string): BotCustomModelProfile | undefined;
+  write(profile: BotCustomModelProfile): void;
 }
 
 export interface FileBotDefinitionRepositoryOptions {
@@ -44,13 +56,19 @@ function isValidDefinition(definition: unknown, expectedBotId: string): definiti
     return Boolean(String(value.model.modelId || '').trim());
   }
   if (value.model.kind !== 'custom') return false;
+  return isValidCustomModel(value.model);
+}
+
+function isValidCustomModel(model: unknown): model is CustomBotModelDefinition {
+  const value = model as CustomBotModelDefinition | undefined;
   return (
-    ['anthropic', 'openai-chat-completions', 'openai-responses'].includes(value.model.protocol)
-    && Boolean(String(value.model.apiBase || '').trim())
-    && Boolean(String(value.model.model || '').trim())
-    && Boolean(String(value.model.apiKey || '').trim())
-    && Number.isFinite(value.model.contextWindowTokens)
-    && value.model.contextWindowTokens > 0
+    value?.kind === 'custom'
+    && ['anthropic', 'openai-chat-completions', 'openai-responses'].includes(value.protocol)
+    && Boolean(String(value.apiBase || '').trim())
+    && Boolean(String(value.model || '').trim())
+    && Boolean(String(value.apiKey || '').trim())
+    && Number.isFinite(value.contextWindowTokens)
+    && value.contextWindowTokens > 0
   );
 }
 
@@ -67,6 +85,16 @@ function isValidCatalogRuntime(runtime: unknown, expectedBotId: string): runtime
       && String(value.model || '').trim()
       && Number.isFinite(value.contextWindowTokens)
       && value.contextWindowTokens > 0,
+  );
+}
+
+function isValidCustomModelProfile(profile: unknown, expectedBotId: string): profile is BotCustomModelProfile {
+  const value = profile as BotCustomModelProfile | undefined;
+  return Boolean(
+    value
+      && value.schema === BOT_CUSTOM_MODEL_PROFILE_SCHEMA
+      && value.botId === expectedBotId
+      && isValidCustomModel(value.model),
   );
 }
 
@@ -106,6 +134,24 @@ function writeCatalogRuntime(filePath: string, runtime: BotCatalogModelRuntime):
   fs.mkdirSync(directory, { recursive: true });
   const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(runtime, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
+  fs.renameSync(temporary, filePath);
+  if (process.platform !== 'win32') {
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch {
+      // Existing installs must remain usable on filesystems without POSIX modes.
+    }
+  }
+}
+
+function writeCustomModelProfile(filePath: string, profile: BotCustomModelProfile): void {
+  if (!isValidCustomModelProfile(profile, profile.botId)) {
+    throw new Error('Bot custom model profile is invalid');
+  }
+  const directory = path.dirname(filePath);
+  fs.mkdirSync(directory, { recursive: true });
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(profile, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
   fs.renameSync(temporary, filePath);
   if (process.platform !== 'win32') {
     try {
@@ -201,6 +247,40 @@ export class FileBotCatalogModelRuntimeRepository implements BotCatalogModelRunt
   }
 
   private runtimePath(botId: string): string {
+    return path.join(this.root, 'bots', `${botId}.json`);
+  }
+}
+
+export class FileBotCustomModelProfileRepository implements BotCustomModelProfileRepository {
+  private readonly root: string;
+
+  constructor(options: FileBotDefinitionRepositoryOptions = {}) {
+    const runtimeRoot = path.resolve(options.runtimeRoot ?? PathResolver.getRuntimeDataRoot());
+    this.root = path.resolve(path.join(runtimeRoot, 'data', 'bot-custom-model-profile'));
+  }
+
+  read(botId: string): BotCustomModelProfile | undefined {
+    const normalized = normalizeBotId(botId);
+    const filePath = this.profilePath(normalized);
+    if (!fs.existsSync(filePath)) return undefined;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as BotCustomModelProfile;
+      return isValidCustomModelProfile(parsed, normalized) ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  write(profile: BotCustomModelProfile): void {
+    const botId = normalizeBotId(profile.botId);
+    writeCustomModelProfile(this.profilePath(botId), { ...profile, botId });
+  }
+
+  getPath(botId: string): string {
+    return this.profilePath(normalizeBotId(botId));
+  }
+
+  private profilePath(botId: string): string {
     return path.join(this.root, 'bots', `${botId}.json`);
   }
 }

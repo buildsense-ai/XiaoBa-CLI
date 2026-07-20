@@ -9340,7 +9340,7 @@
       try{
         customModelAutoSaveInFlight=true;
         setModelSourceStatus(auto?'自动保存中...':'保存中...','muted');
-        const requestPayload={...payload,activateConnector:!auto};
+        const requestPayload={...payload,modelProfileSource:'custom',activateConnector:!auto};
         const r=await fetch(API+'/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestPayload)});
         const d=await r.json();
         if(!r.ok||d.error)throw new Error(d.error||'保存失败');
@@ -9351,14 +9351,17 @@
           : d.restartError||d.startError
             ? '模型配置已保存，但 connector 激活失败：'+(d.restartError||d.startError)
             : '';
-        const appliedMessage=activationError||(
+        const appliedMessage=auto
+          ? '已自动保存，等待启用。'
+          : activationError||(
           d.connectorRestarted
             ? '已保存自定义模型，并已请求重启 CatsCo agent 使用新配置。'
             : d.connectorStarted
               ? '已保存自定义模型，并已启动 CatsCo agent 使用新配置。'
               : '已保存自定义模型。connector 状态未改变。'
-        );
-        setModelSourceStatus(appliedMessage,activationError?'error':'success');
+          );
+        if(auto)await fetchDashboardSettings();
+        setModelSourceStatus(appliedMessage,!auto&&activationError?'error':'success');
         const secretInput=document.getElementById('model-secret-setting');
         const clearInput=document.getElementById('model-secret-clear-setting');
         if(secretInput && secretUpdate.action==='replace'){

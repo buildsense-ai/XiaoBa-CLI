@@ -12,17 +12,21 @@ import {
 } from '../utils/relay-model-profiles';
 import {
   BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+  BOT_CUSTOM_MODEL_PROFILE_SCHEMA,
   BOT_DEFINITION_SCHEMA,
   type BotCatalogModelRuntime,
   type BotDefinition,
   type BotDefinitionSyncResult,
   type BotModelDefinition,
+  type CustomBotModelDefinition,
   type LocalModelProfile,
 } from './types';
 import {
   FileBotCatalogModelRuntimeRepository,
+  FileBotCustomModelProfileRepository,
   FileBotDefinitionRepository,
   type BotCatalogModelRuntimeRepository,
+  type BotCustomModelProfileRepository,
   type BotDefinitionRepository,
   type FileBotDefinitionRepositoryOptions,
 } from './repository';
@@ -298,6 +302,7 @@ export function botModelDefinitionFromLocalProfile(profile: LocalModelProfile): 
 export interface BotDefinitionSyncServiceOptions extends FileBotDefinitionRepositoryOptions {
   repository?: BotDefinitionRepository;
   catalogRuntimeRepository?: BotCatalogModelRuntimeRepository;
+  customModelProfileRepository?: BotCustomModelProfileRepository;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -310,6 +315,7 @@ export class BotDefinitionSyncService {
   private readonly env: NodeJS.ProcessEnv;
   private readonly repository: BotDefinitionRepository;
   private readonly catalogRuntimeRepository: BotCatalogModelRuntimeRepository;
+  private readonly customModelProfileRepository: BotCustomModelProfileRepository;
 
   constructor(options: BotDefinitionSyncServiceOptions = {}) {
     this.runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
@@ -317,23 +323,40 @@ export class BotDefinitionSyncService {
     this.repository = options.repository ?? new FileBotDefinitionRepository(options);
     this.catalogRuntimeRepository = options.catalogRuntimeRepository
       ?? new FileBotCatalogModelRuntimeRepository({ runtimeRoot: this.runtimeRoot });
+    this.customModelProfileRepository = options.customModelProfileRepository
+      ?? new FileBotCustomModelProfileRepository({ runtimeRoot: this.runtimeRoot });
   }
 
   pull(botId: string): BotDefinition | undefined {
+    const previousCache = this.repository.readCache(botId);
     const rawDefinition = this.repository.readCanonical(botId);
     const definition = rawDefinition && normalizeBotDefinition(rawDefinition);
     if (definition) {
+      if (previousCache?.model.kind === 'custom') {
+        this.storeCustomModelProfile(botId, previousCache.model);
+      }
       if (definition !== rawDefinition) this.repository.writeCanonical(definition);
       this.repository.writeCache(definition);
+      if (definition.model.kind === 'custom') {
+        this.storeCustomModelProfile(definition.botId, definition.model);
+      }
     }
     return definition;
   }
 
   publish(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
+    const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
+    if (previous?.model.kind === 'custom') {
+      this.storeCustomModelProfile(botId, previous.model);
+    }
+    const normalizedModel = normalizeBotModelDefinition(model);
+    if (normalizedModel.kind === 'custom') {
+      this.storeCustomModelProfile(botId, normalizedModel);
+    }
     const definition: BotDefinition = {
       schema: BOT_DEFINITION_SCHEMA,
       botId,
-      model: normalizeBotModelDefinition(model),
+      model: normalizedModel,
     };
     this.repository.writeCanonical(definition);
     this.repository.writeCache(definition);
@@ -355,6 +378,27 @@ export class BotDefinitionSyncService {
     const normalized = normalizeCatalogRuntime(runtime);
     if (JSON.stringify(normalized) !== JSON.stringify(runtime)) {
       this.catalogRuntimeRepository.write(normalized);
+    }
+    return normalized;
+  }
+
+  storeCustomModelProfile(botId: string, model: CustomBotModelDefinition): void {
+    const normalized = normalizeBotModelDefinition(model);
+    if (normalized.kind !== 'custom') throw new Error('Custom model profile must use a custom model definition');
+    this.customModelProfileRepository.write({
+      schema: BOT_CUSTOM_MODEL_PROFILE_SCHEMA,
+      botId,
+      model: normalized,
+    });
+  }
+
+  readCustomModelProfile(botId: string): CustomBotModelDefinition | undefined {
+    const profile = this.customModelProfileRepository.read(botId);
+    if (!profile) return undefined;
+    const normalized = normalizeBotModelDefinition(profile.model);
+    if (normalized.kind !== 'custom') return undefined;
+    if (JSON.stringify(normalized) !== JSON.stringify(profile.model)) {
+      this.storeCustomModelProfile(botId, normalized);
     }
     return normalized;
   }

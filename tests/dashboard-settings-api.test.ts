@@ -8,7 +8,7 @@ import express from 'express';
 import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
-import { FileBotCatalogModelRuntimeRepository } from '../src/bot-definition/repository';
+import { FileBotCatalogModelRuntimeRepository, FileBotDefinitionRepository } from '../src/bot-definition/repository';
 import { createBotDefinitionSyncService } from '../src/bot-definition/service';
 
 describe('dashboard typed settings API', () => {
@@ -433,6 +433,111 @@ describe('dashboard typed settings API', () => {
     assert.equal(data.modelStartup.custom.model, 'gpt-5.6-sol');
     assert.equal(data.modelStartup.relay.configured, false);
     assert.equal(text.includes('sk-custom-relay-host-secret'), false);
+  });
+
+  test('bound bot keeps its custom profile while relay is active and background saves do not replace the active source', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      currentBot: {
+        uid: 'profile-isolation-bot',
+        apiKey: 'catsco-bot-api-key',
+        boundByUserUid: 'profile-isolation-user',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-profile-isolation',
+        bodyId: 'body-profile-isolation',
+        installationId: 'install-profile-isolation',
+      },
+    });
+    const definitions = createBotDefinitionSyncService({ runtimeRoot: testRoot });
+    definitions.publish('profile-isolation-bot', {
+      kind: 'custom',
+      protocol: 'openai-responses',
+      apiBase: 'https://custom.example.test/v1',
+      model: 'gpt-custom-original',
+      apiKey: 'sk-custom-original',
+      contextWindowTokens: 256_000,
+      reasoningEffort: 'max',
+    });
+    definitions.storeCatalogRuntime({
+      schema: 'xiaoba.bot-catalog-model-runtime.v1',
+      botId: 'profile-isolation-bot',
+      modelId: 'minimax-m3',
+      provider: 'anthropic',
+      apiBase: 'https://relay.catsco.cc/anthropic',
+      apiKey: 'sk-relay-only',
+      model: 'MiniMax-M3',
+      contextWindowTokens: 1_000_000,
+      reasoningEffort: 'high',
+    });
+    definitions.publish('profile-isolation-bot', { kind: 'catalog', modelId: 'minimax-m3' });
+
+    const relaySettingsResponse = await fetch(`${baseUrl}/api/settings`);
+    const relaySettingsText = await relaySettingsResponse.text();
+    const relaySettings = JSON.parse(relaySettingsText) as any;
+    const relayModelField = relaySettings.fields.find((field: any) => field.id === 'model.model');
+
+    assert.equal(relaySettingsResponse.status, 200, relaySettingsText);
+    assert.equal(relaySettings.modelStartup.source, 'relay');
+    assert.equal(relaySettings.modelStartup.effective.model, 'MiniMax-M3');
+    assert.equal(relaySettings.modelStartup.custom.configured, true);
+    assert.equal(relaySettings.modelStartup.custom.model, 'gpt-custom-original');
+    assert.equal(relayModelField.value, 'gpt-custom-original');
+    assert.equal(relaySettingsText.includes('sk-custom-original'), false);
+    assert.equal(relaySettingsText.includes('sk-relay-only'), false);
+
+    const autoSaveResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        activateConnector: false,
+        modelProfileSource: 'custom',
+        settings: {
+          'model.provider': 'openai',
+          'model.openaiApiMode': 'responses',
+          'model.apiBase': 'https://custom.example.test/v1',
+          'model.model': 'gpt-custom-draft',
+          'model.contextWindowTokens': '512000',
+          'model.reasoningEffort': 'high',
+          'model.apiKey': { action: 'keep' },
+        },
+      }),
+    });
+    const autoSaveText = await autoSaveResponse.text();
+    const activeAfterAutoSave = new FileBotDefinitionRepository({ runtimeRoot: testRoot }).readCache('profile-isolation-bot');
+
+    assert.equal(autoSaveResponse.status, 200, autoSaveText);
+    assert.equal(activeAfterAutoSave?.model.kind, 'catalog');
+    if (activeAfterAutoSave?.model.kind === 'catalog') {
+      assert.equal(activeAfterAutoSave.model.modelId, 'minimax-m3');
+    }
+
+    const savedSettingsResponse = await fetch(`${baseUrl}/api/settings`);
+    const savedSettingsText = await savedSettingsResponse.text();
+    const savedSettings = JSON.parse(savedSettingsText) as any;
+    assert.equal(savedSettings.modelStartup.source, 'relay');
+    assert.equal(savedSettings.modelStartup.effective.model, 'MiniMax-M3');
+    assert.equal(savedSettings.modelStartup.custom.model, 'gpt-custom-draft');
+    assert.equal(savedSettings.modelStartup.custom.contextWindowTokens, 512_000);
+
+    const applyResponse = await fetch(`${baseUrl}/api/model-source/custom/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activateConnector: false }),
+    });
+    const applyText = await applyResponse.text();
+    const activeAfterApply = new FileBotDefinitionRepository({ runtimeRoot: testRoot }).readCache('profile-isolation-bot');
+
+    assert.equal(applyResponse.status, 200, applyText);
+    assert.equal(activeAfterApply?.model.kind, 'custom');
+    if (activeAfterApply?.model.kind === 'custom') {
+      assert.equal(activeAfterApply.model.model, 'gpt-custom-draft');
+      assert.equal(activeAfterApply.model.apiKey, 'sk-custom-original');
+      assert.notEqual(activeAfterApply.model.apiKey, 'sk-relay-only');
+    }
+    assert.equal(applyText.includes('sk-custom-original'), false);
+    assert.equal(applyText.includes('sk-relay-only'), false);
   });
 
   test('PUT /settings uses the explicit runtime data root for bound bot state and Definition storage', async () => {

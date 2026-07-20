@@ -4,6 +4,7 @@ import type { ChatConfig } from '../types';
 import { PathResolver } from '../utils/path-resolver';
 import { FileBotCatalogModelRuntimeRepository, FileBotDefinitionRepository } from './repository';
 import { catalogRuntimeMatchesModelId } from './service';
+import type { CustomBotModelDefinition } from './types';
 
 export type BotLLMConfigSource = 'custom_definition' | 'catalog_runtime';
 
@@ -18,7 +19,7 @@ export interface ResolveBotLLMConfigOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-function runtimeToConfig(runtime: {
+export function modelRuntimeToConfig(runtime: {
   provider: 'anthropic' | 'openai';
   apiBase: string;
   apiKey: string;
@@ -44,6 +45,22 @@ function runtimeToConfig(runtime: {
   };
 }
 
+export function customModelDefinitionToConfig(
+  model: CustomBotModelDefinition,
+): ResolvedBotLLMConfig['config'] {
+  return modelRuntimeToConfig({
+    provider: model.protocol === 'anthropic' ? 'anthropic' : 'openai',
+    apiBase: model.apiBase,
+    apiKey: model.apiKey,
+    model: model.model,
+    contextWindowTokens: model.contextWindowTokens,
+    ...(model.maxTokens ? { maxTokens: model.maxTokens } : {}),
+    ...(model.temperature !== undefined ? { temperature: model.temperature } : {}),
+    ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
+    openaiApiMode: model.protocol === 'openai-responses' ? 'responses' : 'chat_completions',
+  });
+}
+
 /**
  * Resolves the effective model for a bound bot without consulting legacy .env
  * as the decision source. Legacy values are used once only to migrate missing
@@ -63,21 +80,10 @@ export function resolveActiveBotLLMConfig(
   if (!definition) return undefined;
 
   if (definition.model.kind === 'custom') {
-    const model = definition.model;
     return {
       botId,
       source: 'custom_definition',
-      config: {
-        provider: model.protocol === 'anthropic' ? 'anthropic' : 'openai',
-        apiUrl: model.apiBase,
-        apiKey: model.apiKey,
-        model: model.model,
-        contextWindowTokens: model.contextWindowTokens,
-        ...(model.maxTokens ? { maxTokens: model.maxTokens } : {}),
-        temperature: model.temperature ?? 0.7,
-        ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
-        openaiApiMode: model.protocol === 'openai-responses' ? 'responses' : 'chat_completions',
-      },
+      config: customModelDefinitionToConfig(definition.model),
     };
   }
 
@@ -87,6 +93,6 @@ export function resolveActiveBotLLMConfig(
   return {
     botId,
     source: 'catalog_runtime',
-    config: runtimeToConfig(runtime),
+    config: modelRuntimeToConfig(runtime),
   };
 }

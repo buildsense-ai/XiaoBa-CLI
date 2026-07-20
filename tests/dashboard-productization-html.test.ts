@@ -283,8 +283,12 @@ test('custom model save refreshes simplified state before Chat remains locked', 
     dashboardHtml,
     /fetchDashboardSettings\(\),fetchStatus\(\),fetchRuntimeConfig\(\),fetchReadiness\(\),fetchCatsStatus\(\)/,
   );
-  assert.match(dashboardHtml, /const requestPayload=\{\.\.\.payload,activateConnector:!auto\}/);
+  assert.match(
+    dashboardHtml,
+    /const requestPayload=\{\.\.\.payload,modelProfileSource:'custom',activateConnector:!auto\}/,
+  );
   assert.match(dashboardHtml, /已自动保存，等待启用。/);
+  assert.match(dashboardHtml, /if\(auto\)await fetchDashboardSettings\(\)/);
   assert.doesNotMatch(dashboardHtml, /restartConnector:!auto/);
 });
 
