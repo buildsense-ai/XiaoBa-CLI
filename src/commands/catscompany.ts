@@ -12,6 +12,7 @@ import { createCatsCoLocalConfigService, type CatsCoAuthSnapshot } from '../cats
 import {
   acknowledgeCloudBotModelSelection,
   pullCloudBotModelSelection,
+  redactCloudBotModelError,
   type CloudBotModelSelection,
 } from '../bot-definition/cloud-client';
 import { CloudBotModelRuntimeReloadController } from '../bot-definition/runtime-reload';
@@ -322,8 +323,9 @@ async function applyCloudModelRuntimeSelection(
       await fallbackBot.destroy().catch(() => undefined);
       Logger.error(`CatsCo 模型切换回滚后 connector 恢复失败: ${errorMessage(fallbackError)}`);
     }
-    await acknowledgeCloudModelApply(options, errorMessage(error));
-    throw error;
+    const safeMessage = redactCloudBotModelError(error, options.selection);
+    await acknowledgeCloudModelApply(options, safeMessage);
+    throw new Error(safeMessage);
   }
 
   await acknowledgeCloudModelApply(options);
@@ -360,6 +362,7 @@ function cloudSelectionsMatch(
   expected: CloudBotModelSelection,
 ): boolean {
   return current?.revision === expected.revision
+    && (current.kind || 'catalog') === (expected.kind || 'catalog')
     && current.modelId === expected.modelId
     && (current.reasoningEffort || '') === (expected.reasoningEffort || '');
 }

@@ -11,6 +11,7 @@ import type { BotCatalogModelRuntime, BotDefinition, BotDefinitionSyncResult } f
 import {
   acknowledgeCloudBotModelSelection,
   pullCloudBotModelSelection,
+  redactCloudBotModelError,
   type CloudBotModelSelection,
 } from './cloud-client';
 
@@ -60,6 +61,7 @@ export async function prepareBoundBotDefinition(
   let materializedCatalogRuntime = false;
   let cloudSelection = options.cloudSelection;
   let cloudApplyError: string | undefined;
+  let cloudSelectionApplied = false;
   const shouldAcknowledgeCloudSelection = options.acknowledgeCloudSelection !== false;
 
   if (!cloudSelection) {
@@ -76,33 +78,42 @@ export async function prepareBoundBotDefinition(
 
   if (cloudSelection) {
     try {
-      const cloudModel = {
-        kind: 'catalog' as const,
-        modelId: cloudSelection.modelId,
-        ...(cloudSelection.reasoningEffort ? { reasoningEffort: cloudSelection.reasoningEffort } : {}),
-      };
-      const runtime = definitionService.readCatalogRuntime(botId);
-      if (!runtime || !catalogRuntimeMatchesModelId(runtime, cloudSelection.modelId)) {
-        const materialized = await provisionCatsRelayCatalogRuntime({
-          botId,
+      if (cloudSelection.kind === 'custom') {
+        if (!cloudSelection.customModel) {
+          throw new Error('CatsCo cloud custom model configuration is missing.');
+        }
+        definitionService.storeCustomModelProfile(botId, cloudSelection.customModel);
+        sync = definitionService.acceptCloud(botId, cloudSelection.customModel);
+      } else {
+        const cloudModel = {
+          kind: 'catalog' as const,
           modelId: cloudSelection.modelId,
-          reasoningEffort: cloudSelection.reasoningEffort,
-          auth,
-          fetchImpl: options.fetchImpl,
-        });
-        definitionService.storeCatalogRuntime(materialized);
-        materializedCatalogRuntime = true;
-      } else if (
-        cloudSelection.reasoningEffort
-        && runtime.reasoningEffort !== cloudSelection.reasoningEffort
-      ) {
-        definitionService.storeCatalogRuntime({
-          ...runtime,
-          reasoningEffort: cloudSelection.reasoningEffort,
-        });
+          ...(cloudSelection.reasoningEffort ? { reasoningEffort: cloudSelection.reasoningEffort } : {}),
+        };
+        const runtime = definitionService.readCatalogRuntime(botId);
+        if (!runtime || !catalogRuntimeMatchesModelId(runtime, cloudSelection.modelId)) {
+          const materialized = await provisionCatsRelayCatalogRuntime({
+            botId,
+            modelId: cloudSelection.modelId,
+            reasoningEffort: cloudSelection.reasoningEffort,
+            auth,
+            fetchImpl: options.fetchImpl,
+          });
+          definitionService.storeCatalogRuntime(materialized);
+          materializedCatalogRuntime = true;
+        } else if (
+          cloudSelection.reasoningEffort
+          && runtime.reasoningEffort !== cloudSelection.reasoningEffort
+        ) {
+          definitionService.storeCatalogRuntime({
+            ...runtime,
+            reasoningEffort: cloudSelection.reasoningEffort,
+          });
+        }
+        sync = definitionService.acceptCloud(botId, cloudModel);
       }
-      sync = definitionService.acceptCloud(botId, cloudModel);
       definition = sync.definition;
+      cloudSelectionApplied = true;
       if (shouldAcknowledgeCloudSelection) {
         try {
           await acknowledgeCloudBotModelSelection({
@@ -115,7 +126,7 @@ export async function prepareBoundBotDefinition(
         }
       }
     } catch (error) {
-      const message = errorMessage(error);
+      const message = redactCloudBotModelError(error, cloudSelection);
       cloudApplyError = message;
       Logger.warning(`CatsCo 云端模型 ${cloudSelection.modelId} 应用失败，保留上一份本地配置: ${message}`);
       if (shouldAcknowledgeCloudSelection) {
@@ -132,7 +143,7 @@ export async function prepareBoundBotDefinition(
     }
   }
 
-  if (selectedCatalogRuntime) {
+  if (selectedCatalogRuntime && !cloudSelectionApplied) {
     definitionService.storeCatalogRuntime(selectedCatalogRuntime);
     sync = definitionService.publish(botId, {
       kind: 'catalog',

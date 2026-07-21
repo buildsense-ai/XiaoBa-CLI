@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { prepareBoundBotDefinition } from '../src/bot-definition/activation';
+import { redactCloudBotModelError } from '../src/bot-definition/cloud-client';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 import { FileBotCatalogModelRuntimeRepository, FileBotDefinitionRepository } from '../src/bot-definition/repository';
 import { resolveActiveBotLLMConfig } from '../src/bot-definition/llm-config-resolver';
@@ -309,6 +310,146 @@ describe('BotDefinition activation', () => {
     assert.equal(failureAck.revision, 4);
     assert.equal(failureAck.model_id, 'unknown-model');
     assert.match(failureAck.error, /Unknown CatsCo relay model/);
+  });
+
+  test('redacts a cloud custom model API key from runtime errors', () => {
+    const selection = {
+      kind: 'custom' as const,
+      modelId: 'private-model',
+      revision: 3,
+      customModel: {
+        kind: 'custom' as const,
+        protocol: 'openai-responses' as const,
+        apiBase: 'https://models.example.test/v1',
+        model: 'private-model',
+        apiKey: 'sk-secret-value',
+        contextWindowTokens: 128000,
+      },
+    };
+    assert.equal(
+      redactCloudBotModelError(new Error('request failed for sk-secret-value'), selection),
+      'request failed for [REDACTED]',
+    );
+  });
+
+  test('applies an encrypted-at-server custom model without requesting relay runtime material', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cloud-custom-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cloud-custom-canonical-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'user-token', uid: '7' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+
+    const requests: Array<{ path: string; body?: any }> = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      requests.push({ path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.pathname === '/api/bot/model-config') {
+        return Response.json({
+          uid: 43,
+          configured: true,
+          desired: {
+            kind: 'custom',
+            model_id: 'private-reasoner',
+            reasoning_effort: 'high',
+            revision: 9,
+            custom: {
+              protocol: 'openai-responses',
+              api_base: 'https://models.example.test/v1/',
+              model: 'private-reasoner',
+              api_key: 'sk-runtime-only-secret',
+              context_window_tokens: 256000,
+              max_tokens: 8192,
+              temperature: 0.4,
+              reasoning_effort: 'high',
+            },
+          },
+        });
+      }
+      if (url.pathname === '/api/bot/model-config/ack') {
+        return Response.json({ status: 'applied' });
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 });
+    }) as typeof fetch;
+
+    const prepared = await prepareBoundBotDefinition({ runtimeRoot, simulatedCloudRoot, env, fetchImpl });
+    const resolved = resolveActiveBotLLMConfig({ runtimeRoot, env });
+
+    assert.equal(prepared?.cloudRevision, 9);
+    assert.deepStrictEqual(prepared?.definition.model, {
+      kind: 'custom',
+      protocol: 'openai-responses',
+      apiBase: 'https://models.example.test/v1',
+      model: 'private-reasoner',
+      apiKey: 'sk-runtime-only-secret',
+      contextWindowTokens: 256000,
+      maxTokens: 8192,
+      temperature: 0.4,
+      reasoningEffort: 'high',
+    });
+    assert.equal(resolved?.source, 'custom_definition');
+    assert.equal(resolved?.config.openaiApiMode, 'responses');
+    assert.equal(resolved?.config.apiKey, 'sk-runtime-only-secret');
+    assert.equal(requests.some(item => item.path === '/api/relay/config' || item.path === '/api/relay/key'), false);
+    assert.deepStrictEqual(requests.find(item => item.path === '/api/bot/model-config/ack')?.body, {
+      revision: 9,
+      kind: 'custom',
+      model_id: 'private-reasoner',
+      reasoning_effort: 'high',
+    });
+  });
+
+  test('rejects an incomplete cloud custom model and preserves the previous local definition', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-invalid-cloud-custom-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-invalid-cloud-custom-canonical-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    const previous = { kind: 'catalog' as const, modelId: 'minimax-m3' };
+    new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }).writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: previous,
+    });
+    new FileBotCatalogModelRuntimeRepository({ runtimeRoot }).write({
+      schema: 'xiaoba.bot-catalog-model-runtime.v1',
+      botId: '43',
+      modelId: 'minimax-m3',
+      provider: 'anthropic',
+      apiBase: 'https://relay.example.test/anthropic',
+      apiKey: 'sk-existing',
+      model: 'MiniMax-M3',
+      contextWindowTokens: 1_000_000,
+    });
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/bot/model-config') {
+        return Response.json({
+          uid: 43,
+          configured: true,
+          desired: {
+            kind: 'custom', model_id: 'private-model', revision: 10,
+            custom: {
+              protocol: 'openai-responses', api_base: 'https://models.example.test/v1',
+              model: 'private-model', api_key: '', context_window_tokens: 128000,
+            },
+          },
+        });
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 });
+    }) as typeof fetch;
+
+    const prepared = await prepareBoundBotDefinition({ runtimeRoot, simulatedCloudRoot, env, fetchImpl });
+    assert.deepStrictEqual(prepared?.definition.model, previous);
+    assert.equal(prepared?.cloudRevision, undefined);
   });
 
   test('does not replace an existing local custom model until the owner enables cloud management', async () => {
