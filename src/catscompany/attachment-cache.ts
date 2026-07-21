@@ -241,7 +241,7 @@ function normalizeForCompare(filePath: string): string {
   try {
     canonical = fs.realpathSync(resolved);
   } catch {
-    // A not-yet-created path still has a useful lexical representation.
+    // Missing paths still need a stable lexical comparison.
   }
   return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
 }
