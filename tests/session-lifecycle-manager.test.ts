@@ -836,6 +836,82 @@ describe('AgentSession lifecycle', () => {
     assert.doesNotMatch(result.text, /API错误|状态码|503/);
   });
 
+  test('transient provider failure clears replay state so the next turn can continue without restart', async () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const providerInputs: any[][] = [];
+    let aiCalls = 0;
+    const session = new AgentSession('catscompany:lifecycle-replay-recovery', buildMockServices({
+      aiService: {
+        getConfig() {
+          return { model: 'gpt-5.6-sol', openaiApiMode: 'responses' };
+        },
+        async chatStream(messages: any[]) {
+          providerInputs.push(messages.map(message => JSON.parse(JSON.stringify(message))));
+          aiCalls++;
+          if (aiCalls === 1) {
+            throw new Error('API错误 (502): upstream temporarily unavailable');
+          }
+          return { content: '已从原上下文继续', toolCalls: [] };
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+    (session as any).messages.push(
+      { role: 'user', content: '先检查项目文件' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_existing',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"file_path":"notes.md"}' },
+        }],
+        providerContent: [
+          { type: 'reasoning', encrypted_content: 'stale replay payload' },
+          {
+            type: 'function_call',
+            call_id: 'call_existing',
+            name: 'read_file',
+            arguments: '{"file_path":"notes.md"}',
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        name: 'read_file',
+        tool_call_id: 'call_existing',
+        content: '项目文件内容仍需保留',
+      },
+      { role: 'assistant', content: '文件已检查，下一步准备修改。' },
+    );
+    session.injectContext('当前设备授权仍有效');
+
+    const failed = await session.handleMessage('继续修改');
+
+    assert.equal(failed.taskOutcome, 'failed');
+    assert.match(failed.text, /服务临时异常/);
+    assert.match(failed.text, /会话回放状态已自动修复.*继续/);
+    const recoveredMessages = (session as any).messages as any[];
+    assert.equal(recoveredMessages.some(message => Array.isArray(message.providerContent)), false);
+    assert.equal(recoveredMessages.some(message => message.content === '项目文件内容仍需保留'), true);
+    assert.equal(recoveredMessages.some(message => message.content === '文件已检查，下一步准备修改。'), true);
+    assert.equal(recoveredMessages.some(message => message.content === '当前设备授权仍有效'), true);
+
+    const continued = await session.handleMessage('从刚才的位置继续');
+
+    assert.equal(continued.text, '已从原上下文继续');
+    assert.equal(continued.taskOutcome, 'completed');
+    assert.equal(aiCalls, 2);
+    assert.equal(providerInputs[1].some(message => Array.isArray(message.providerContent)), false);
+    assert.equal(providerInputs[1].some(message => message.content === '项目文件内容仍需保留'), true);
+    assert.equal(providerInputs[1].some(message => message.content === '文件已检查，下一步准备修改。'), true);
+
+    const persisted = SessionStore.getInstance().loadContext('catscompany:lifecycle-replay-recovery');
+    assert.equal(persisted.some(message => Array.isArray(message.providerContent)), false);
+    assert.equal(persisted.some(message => message.content === '项目文件内容仍需保留'), true);
+    assert.equal(persisted.some(message => message.content === '已从原上下文继续'), true);
+  });
+
   test('cleanup persists without invoking hidden AI wakeup checks', async () => {
     const { AgentSession, SessionStore } = loadSessionModules();
     let aiCalls = 0;

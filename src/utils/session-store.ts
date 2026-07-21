@@ -56,12 +56,22 @@ function summarizeHiddenReplayToolResult(message: Message): string {
   return `[历史工具结果已省略；${toolName} 已完成。]`;
 }
 
-function sanitizeForPersistence(messages: Message[]): Message[] {
+interface SanitizeSessionMessagesOptions {
+  preserveTransientMessages?: boolean;
+}
+
+function sanitizeSessionMessages(
+  messages: Message[],
+  options: SanitizeSessionMessagesOptions = {},
+): Message[] {
   const hiddenReplayToolCallIds = new Set<string>();
   const durable: Message[] = [];
 
   for (const message of messages) {
     if ((message as any).__injected || message.role === 'system') {
+      if (options.preserveTransientMessages) {
+        durable.push({ ...message, providerContent: undefined });
+      }
       continue;
     }
 
@@ -117,6 +127,19 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
   }
 
   return durable;
+}
+
+function sanitizeForPersistence(messages: Message[]): Message[] {
+  return sanitizeSessionMessages(messages);
+}
+
+/**
+ * Drops provider-specific replay state after an exhausted transient failure.
+ * Visible conversation content and the current system/injected context remain
+ * available so the next turn can continue without restarting the process.
+ */
+export function sanitizeForProviderReplayRecovery(messages: Message[]): Message[] {
+  return sanitizeSessionMessages(messages, { preserveTransientMessages: true });
 }
 
 function serializeMessages(messages: Message[]): string {

@@ -27,6 +27,7 @@ import {
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { SessionTurnLogger } from '../utils/session-turn-logger';
+import { sanitizeForProviderReplayRecovery } from '../utils/session-store';
 import { Metrics } from '../utils/metrics';
 import { ContextWindowManager, type ContextCompactionStatusEvent } from './context-window-manager';
 import {
@@ -602,6 +603,9 @@ export class AgentSession {
         const isModelTimeoutError = this.isModelTimeoutError(err);
         const isTransientProviderError = this.isTransientProviderError(err);
         const relayBudgetErrorReply = this.formatRelayBudgetErrorReply(err);
+        const providerReplayMessages = this.messages.filter(message => (
+          Array.isArray(message.providerContent) && message.providerContent.length > 0
+        )).length;
 
         let errorReply = ERROR_MESSAGE;
         if (isImageSafetyError) {
@@ -614,6 +618,9 @@ export class AgentSession {
           errorReply = MODEL_TIMEOUT_MESSAGE;
         } else if (isTransientProviderError) {
           errorReply = this.formatTransientProviderErrorReply();
+          if (providerReplayMessages > 0) {
+            errorReply += '\n\n会话回放状态已自动修复，直接回复“继续”即可从原上下文接上。';
+          }
         }
 
         // 添加错误回复到上下文，保持对话连贯性
@@ -627,6 +634,16 @@ export class AgentSession {
           __internalErrorArtifact: true,
         });
         this.messages = stripAssistantArtifactsFromMessages(this.turnContextBuilder.removeTransientMessages(this.messages));
+        if (
+          providerReplayMessages > 0
+          && (isTransientProviderError || isModelTimeoutError)
+        ) {
+          this.messages = sanitizeForProviderReplayRecovery(this.messages);
+          Logger.warning(
+            `[会话 ${this.key}] 模型临时故障后已清理 ${providerReplayMessages} 条 provider replay 状态，`
+            + '保留可见上下文供下一轮继续',
+          );
+        }
         this.lifecycleManager.saveContext(this.messages);
 
         return { text: errorReply, visibleToUser: true, taskOutcome: 'failed' };
