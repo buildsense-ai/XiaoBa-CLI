@@ -20,8 +20,6 @@
  *   next page turn after the active commit, then alternates with continuous
  *   pages while both remain ready. Different providers may overlap
  *   independently.
- * - **Deadline drain**: when a deadline arrives, no Ready page starts
- *   committing; only the single page already Committing may settle.
  * - **Crash replay**: a crash or failure before cursor acknowledgement leaves
  *   the page replayable and idempotent — the commit function handles
  *   deduplication.
@@ -246,8 +244,6 @@ export interface ExternalAdmissionCoordinatorOptions {
   readonly commitFn: ExternalAdmissionCommitFn;
   /** Optional clock for timestamps (tests inject deterministic clocks). */
   readonly clock?: () => Date;
-  /** Optional max pages per round (quota enforcement). */
-  readonly maxPagesPerRound?: number;
 }
 
 /**
@@ -261,19 +257,13 @@ export class ExternalAdmissionCoordinator {
   private readonly stateFilePath: string;
   private readonly commitFn: ExternalAdmissionCommitFn;
   private readonly clock: () => Date;
-  private readonly maxPagesPerRound: number;
 
   private state: ExternalAdmissionCoordinatorState;
-  /** The single page currently Committing (for deadline drain). */
-  private committingPage: ExternalEvidencePage | null = null;
-  /** When true, no new Ready page may start committing. */
-  private deadlineReached = false;
 
   constructor(options: ExternalAdmissionCoordinatorOptions) {
     this.stateFilePath = options.stateFilePath;
     this.commitFn = options.commitFn;
     this.clock = options.clock ?? (() => new Date());
-    this.maxPagesPerRound = options.maxPagesPerRound ?? Infinity;
     this.state = this.loadState();
   }
 
@@ -393,18 +383,6 @@ export class ExternalAdmissionCoordinator {
   }
 
   /**
-   * Clear the backfill-pending flag after the backfill has been served or
-   * canceled.
-   */
-  clearBackfillPending(providerId: string): void {
-    this.updateProviderTurn(providerId, turn => ({
-      ...turn,
-      backfillPending: false,
-    }));
-    this.saveState();
-  }
-
-  /**
    * Determine which ready lane should receive the next page turn for
    * `providerId`.
    *
@@ -448,9 +426,6 @@ export class ExternalAdmissionCoordinator {
    * After a successful commit, the round-robin marker advances and the
    * per-provider alternation state is updated. State is persisted to disk.
    *
-   * If the deadline has been reached, the page is rejected without
-   * committing (deadline drain semantics).
-   *
    * @param page The ready page to commit.
    * @param knownProviders The full set of known providers for round-robin
    *   marker advancement. When omitted, only the page's own provider is
@@ -461,35 +436,19 @@ export class ExternalAdmissionCoordinator {
     page: ExternalEvidencePage,
     knownProviders?: readonly string[],
   ): ExternalAdmissionCommitResult {
-    if (this.deadlineReached && !this.committingPage) {
-      return {
-        admittedEpisodes: 0,
-        contradictionSignals: 0,
-        acknowledged: false,
-        error: new Error('admission deadline reached; no new page may start committing'),
-      };
+    const result = this.commitFn(page);
+
+    if (result.acknowledged) {
+      this.finalizeAcknowledgedPage(page, knownProviders);
     }
 
-    // Mark the page as Committing for deadline drain support
-    this.committingPage = page;
-    try {
-      const result = this.commitFn(page);
-
-      if (result.acknowledged) {
-        this.finalizeAcknowledgedPage(page, knownProviders);
-      }
-
-      return result;
-    } finally {
-      this.committingPage = null;
-    }
+    return result;
   }
 
   /**
-   * Commit multiple ready pages in round-robin order, respecting the
-   * maxPagesPerRound quota. Pages are grouped by provider and served one
-   * per provider per round, cycling through ready providers until the quota
-   * is hit or all pages are committed.
+   * Commit multiple ready pages in round-robin order. Pages are grouped
+   * by provider and served one per provider per round, cycling through
+   * ready providers until all pages are committed.
    *
    * This is the batch admission path used by `runDiscovery` when multiple
    * providers have ready pages.
@@ -516,10 +475,9 @@ export class ExternalAdmissionCoordinator {
       ...readyProviders,
       ...pages.map(page => page.providerId),
     ])].sort();
-    let committed = 0;
 
     // Round-robin: serve one page per provider per round
-    while (committed < this.maxPagesPerRound) {
+    for (;;) {
       const activeProviders = sortedProviders.filter(provider => {
         const byLane = pagesByProvider.get(provider);
         return byLane && [...byLane.values()].some(queue => queue.length > 0);
@@ -534,9 +492,6 @@ export class ExternalAdmissionCoordinator {
       ];
 
       for (const provider of providersThisRound) {
-        if (committed >= this.maxPagesPerRound) break;
-        if (this.deadlineReached) break;
-
         const byLane = pagesByProvider.get(provider);
         if (!byLane) continue;
         const readyLanes = EXTERNAL_ADMISSION_LANES.filter(
@@ -549,69 +504,10 @@ export class ExternalAdmissionCoordinator {
         const page = queue.shift()!;
         const result = this.admitPage(page, sortedProviders);
         results.push(result);
-        committed++;
       }
-      if (this.deadlineReached) break;
     }
 
     return results;
-  }
-
-  // -------------------------------------------------------------------------
-  // Deadline drain
-  // -------------------------------------------------------------------------
-
-  /**
-   * Mark that the global deadline has been reached. No new Ready page may
-   * start committing after this call. Only the single page already
-   * Committing (if any) may settle.
-   */
-  setDeadlineReached(): void {
-    this.deadlineReached = true;
-  }
-
-  /**
-   * Clear the deadline flag (used after a drain completes or for testing).
-   */
-  clearDeadlineReached(): void {
-    this.deadlineReached = false;
-  }
-
-  /**
-   * Mark a page as currently Committing. This is used to track the in-progress
-   * commit for deadline drain semantics.
-   */
-  markCommitting(page: ExternalEvidencePage): void {
-    this.committingPage = page;
-  }
-
-  /**
-   * Settle the currently Committing page by running it through the commit
-   * function. This is allowed even after the deadline is reached, because
-   * only the single in-progress commit may drain.
-   *
-   * @param knownProviders The full set of known providers for round-robin
-   *   marker advancement.
-   */
-  settleCommitting(knownProviders?: readonly string[]): ExternalAdmissionCommitResult {
-    const page = this.committingPage;
-    if (!page) {
-      return {
-        admittedEpisodes: 0,
-        contradictionSignals: 0,
-        acknowledged: false,
-        error: new Error('no page is currently committing'),
-      };
-    }
-    try {
-      const result = this.commitFn(page);
-      if (result.acknowledged) {
-        this.finalizeAcknowledgedPage(page, knownProviders);
-      }
-      return result;
-    } finally {
-      this.committingPage = null;
-    }
   }
 
   // -------------------------------------------------------------------------
@@ -654,37 +550,6 @@ export class ExternalAdmissionCoordinator {
       // Corrupt state file — fail closed with empty state
       return emptyState();
     }
-  }
-
-  // -------------------------------------------------------------------------
-  // Test accessors (public seam for deterministic tests)
-  // -------------------------------------------------------------------------
-
-  /**
-   * Replace the coordinator's in-memory state. Used only by tests to set up
-   * specific round-robin or alternation scenarios.
-   */
-  setStateForTesting(state: ExternalAdmissionCoordinatorState): void {
-    this.state = validateState(state);
-  }
-
-  /**
-   * Read the current in-memory state. Used by tests to verify durable
-   * marker and turn state.
-   */
-  getStateForTesting(): ExternalAdmissionCoordinatorState {
-    return {
-      ...this.state,
-      providerTurns: { ...this.state.providerTurns },
-      laneContinuations: Object.fromEntries(
-        Object.entries(this.state.laneContinuations ?? {}).map(([lane, continuation]) => [
-          lane,
-          continuation
-            ? { ...continuation, lastSources: { ...continuation.lastSources } }
-            : continuation,
-        ]),
-      ),
-    };
   }
 
   // -------------------------------------------------------------------------
