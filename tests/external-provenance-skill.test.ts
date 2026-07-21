@@ -206,6 +206,53 @@ describe('External provenance — distiller path', () => {
 // ---------------------------------------------------------------------------
 
 describe('External provenance — learning episode path', () => {
+  test('does not admit external progress narration as a completed delivery', () => {
+    const unit = makeExternalDistillationUnit();
+    unit.newTurns = [{
+      ...unit.newTurns[0]!,
+      user: { text: 'Fix the scheduler regression.' },
+      assistant: {
+        text: 'Exploring the codebase now. Let me add the test next.',
+        tool_calls: [],
+      },
+    }];
+
+    assert.equal(extractLearningEpisodes(unit).episodes.length, 0);
+  });
+
+  test('does not mint a capability from a context-free external continuation', () => {
+    const unit = makeExternalDistillationUnit();
+    unit.newTurns = [{
+      ...unit.newTurns[0]!,
+      user: { text: 'yes, go on continue' },
+      assistant: {
+        text: 'Implementation completed. All 52 tests passed.',
+        tool_calls: [],
+      },
+    }];
+
+    assert.equal(extractLearningEpisodes(unit).episodes.length, 0);
+  });
+
+  test('preserves the terminal outcome when bounding long external evidence', () => {
+    const unit = makeExternalDistillationUnit();
+    unit.newTurns = [{
+      ...unit.newTurns[0]!,
+      user: { text: 'Fix the scheduler regression.' },
+      assistant: {
+        text: `${'Investigating the scheduler. '.repeat(100)}\nFixed the wake gate. All 52 tests passed.`,
+        tool_calls: [],
+      },
+    }];
+
+    const episode = extractLearningEpisodes(unit).episodes[0];
+    assert.ok(episode);
+    const response = episode.completionEvidence.find(item => item.kind === 'assistant-response');
+    assert.match(response?.detail ?? '', /omitted from middle/);
+    assert.match(response?.detail ?? '', /All 52 tests passed\./);
+    assert.ok(Buffer.byteLength(response?.detail ?? '', 'utf8') <= 1_100);
+  });
+
   test('extractLearningEpisodes carries externalEventProvenance on episodes', () => {
     const unit = makeExternalDistillationUnit();
     const result = extractLearningEpisodes(unit);

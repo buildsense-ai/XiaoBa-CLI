@@ -11,10 +11,11 @@ import {
 } from '../src/utils/evidence-review-graph-types';
 
 /**
- * Progressive Trust: bumping the review-policy version must make any Review
- * Basis frozen under the previous policy stale, so active jobs cannot commit
- * under the old policy. The existing commit-fence `stale_before_fence` /
- * successor mechanism handles this; immutable audit history is not rewritten.
+ * Progressive Trust: bumping the review-policy or prompt/topology version
+ * must make any Review Basis frozen under the previous version stale, so
+ * active jobs cannot commit under the old graph semantics. The existing
+ * commit-fence `stale_before_fence` / successor mechanism handles this;
+ * immutable audit history is not rewritten.
  *
  * These tests verify the version bump at the public commit-fence seam:
  *   - A basis frozen under the previous policy version is stale against the
@@ -22,9 +23,13 @@ import {
  *   - A basis frozen under the current policy version still matches a live
  *     world on the same version (no false staleness).
  *   - A stale-policy basis is blocked from committing and requests a successor.
+ *   - A basis frozen under the previous prompt/topology version is stale on
+ *     `prompt`, blocking commits from old active jobs under the new revision
+ *     loop graph topology.
  */
 
-const PREVIOUS_POLICY_VERSION = 'evidence-review-policy-v2';
+const PREVIOUS_POLICY_VERSION = 'evidence-review-policy-v3';
+const PREVIOUS_PROMPT_VERSION = 'evidence-review-job-v1';
 
 function liveWorld(version: string) {
   return {
@@ -76,5 +81,41 @@ describe('review-policy version staleness (progressive trust)', () => {
   test('the current policy version constant has been bumped away from v2', () => {
     // Guard against an accidental rollback of the version bump.
     assert.notEqual(EVIDENCE_REVIEW_POLICY_VERSION, PREVIOUS_POLICY_VERSION);
+  });
+
+  test('a basis frozen under the previous prompt version is stale on prompt', () => {
+    const frozenBasis = buildLiveReviewBasis({
+      ...liveWorld(EVIDENCE_REVIEW_POLICY_VERSION),
+      promptVersion: PREVIOUS_PROMPT_VERSION,
+    });
+    const comparison = compareReviewBasis(frozenBasis, liveWorld(EVIDENCE_REVIEW_POLICY_VERSION));
+
+    assert.equal(comparison.status, 'stale');
+    if (comparison.status === 'stale') {
+      assert.ok(
+        comparison.changed.includes('prompt'),
+        `expected 'prompt' in changed set, got ${JSON.stringify(comparison.changed)}`,
+      );
+    }
+  });
+
+  test('a stale-prompt basis is blocked from committing and requires a successor', () => {
+    const frozenBasis = buildLiveReviewBasis({
+      ...liveWorld(EVIDENCE_REVIEW_POLICY_VERSION),
+      promptVersion: PREVIOUS_PROMPT_VERSION,
+    });
+    const decision = decideReviewCommitFence({
+      basis: frozenBasis,
+      live: liveWorld(EVIDENCE_REVIEW_POLICY_VERSION),
+    });
+
+    assert.equal(decision.mayCommit, false);
+    assert.equal(decision.kind, 'stale_before_fence');
+    assert.equal(decision.shouldCreateSuccessor, true);
+  });
+
+  test('the current prompt version constant has been bumped to v2', () => {
+    // Guard against accidental rollback of the prompt/topology version bump.
+    assert.notEqual(EVIDENCE_REVIEW_PROMPT_VERSION, PREVIOUS_PROMPT_VERSION);
   });
 });

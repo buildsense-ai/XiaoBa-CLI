@@ -73,6 +73,7 @@ import {
   SkillEvolutionRuntime,
 } from './skill-evolution';
 import {
+  buildEpisodeSettlementEvidence,
   buildRuntimeOwnedReferencedSkillProvenance,
   selectRuntimeOwnedReferencedSkills,
 } from './episode-evidence-bundle';
@@ -1109,10 +1110,11 @@ export function buildLearningEpisodeEvidenceBundle(
       sourceFilePath: evidence.sourceFilePath,
       turn: evidence.turn,
     }));
+  const settlementEntry = buildEpisodeSettlementEvidence(episode);
   const settlementEvidence = [{
-    ref: `${episode.sourceFilePath}#episode-${episode.episodeId}:settled-${episode.settlementDeadline}`,
-    sourceFilePath: episode.sourceFilePath,
-    turn: episode.deliveryTurn,
+    ref: settlementEntry.ref,
+    sourceFilePath: settlementEntry.sourceFilePath,
+    turn: settlementEntry.turn,
   }];
   const referencedSkills = selectRuntimeOwnedReferencedSkills(
     skillLoadFacts,

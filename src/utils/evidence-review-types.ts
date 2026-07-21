@@ -54,6 +54,7 @@ import type {
   EvidenceBundle,
   SkillDraft,
   SkillVerifierResult,
+  SkillVerifierIssue,
 } from './skill-evolution';
 import type { DistilledKnowledgeCandidate } from './capability-distiller';
 
@@ -95,6 +96,21 @@ export interface EvidenceReviewJob {
   obligationDispositions?: readonly ObligationDisposition[];
   draft?: SkillDraft;
   verifierResult?: SkillVerifierResult;
+  /**
+   * Current revision round (1 or 2). When 2, the graph has been expanded
+   * with round-2 Author/Verifier quanta after a round-1 revise decision.
+   * Round-2 Author receives previousDraft and verifierIssues from round 1.
+   */
+  revisionRound?: 1 | 2;
+  /**
+   * Round-1 draft preserved for round-2 Author input. Set when the graph
+   * expands after round-1 revise.
+   */
+  previousDraft?: SkillDraft;
+  /**
+   * Round-1 verifier issues preserved for round-2 Author input.
+   */
+  round1VerifierIssues?: readonly SkillVerifierIssue[];
   transitionId?: string;
   successorJobId?: string;
   supersededByJobId?: string;

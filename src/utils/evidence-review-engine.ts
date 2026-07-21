@@ -16,6 +16,7 @@ import type {
   EvidenceBundle,
   SkillDraft,
   SkillVerifierResult,
+  SkillVerifierIssue,
   SkillEvolutionResult,
   SkillEvolutionOptions,
 } from './skill-evolution';
@@ -23,6 +24,7 @@ import type { DistilledKnowledgeCandidate } from './capability-distiller';
 import {
   type EvidenceDossier,
   type EvidenceReviewJob,
+  type EvidenceReviewJobStoreState,
   type DossierDifferenceIndex,
   type ObligationDisposition,
   type ReviewObligation,
@@ -47,6 +49,8 @@ import {
   completeQuantum as completeQuantumCore,
   failQuantum as failQuantumCore,
   reclaimExpiredLeases,
+  createReviewQuantum,
+  stableStringify,
 } from './evidence-review-graph-core';
 import {
   buildDossierDifferenceIndex,
@@ -97,6 +101,12 @@ export interface EvidenceReviewEngineOptions {
     bundle: EvidenceBundle;
     authorDossier: EvidenceDossier;
     job: EvidenceReviewJob;
+    /** Round 1 for initial draft, 2 for revision after round-1 revise. */
+    round: number;
+    /** Previous draft from round 1, present only when round = 2. */
+    previousDraft?: SkillDraft;
+    /** Verifier issues from round 1, present only when round = 2. */
+    verifierIssues?: readonly SkillVerifierIssue[];
     signal?: AbortSignal;
   }) => Promise<{ draft: SkillDraft; transcriptPaths: string[] }>;
   runSkillVerifier: (input: {
@@ -107,6 +117,8 @@ export interface EvidenceReviewEngineOptions {
     differenceIndex: DossierDifferenceIndex;
     obligations: readonly ReviewObligation[];
     job: EvidenceReviewJob;
+    /** Round 1 for initial verification, 2 for revision verification. */
+    round: number;
     signal?: AbortSignal;
   }) => Promise<{
     verifier: SkillVerifierResult;
@@ -119,6 +131,8 @@ export interface EvidenceReviewEngineOptions {
     verifier: SkillVerifierResult;
     job: EvidenceReviewJob;
     branchTranscriptPaths: string[];
+    /** Final review round (1 or 2). */
+    round: number;
   }) => Promise<SkillEvolutionResult>;
 }
 
@@ -387,6 +401,14 @@ export class EvidenceReviewEngine {
 
       // Reclaim expired leases via pure graph helper (mutates quanta in place).
       reclaimExpiredLeases(asMutableGraphJob(job), now);
+
+      // FAIL-CLOSED RECONCILIATION: if a crash interrupted the atomic
+      // verifier-completion-plus-expansion write, the persisted state may
+      // have a succeeded round-1 verifier with 'revise' but no round-2
+      // nodes and a still-runnable old commit. Expand the graph here so
+      // the old commit can never claim round 1 before any runnable selection.
+      this.reconcileRevisionRound(state, job, now);
+
       upsertEvidenceReviewJob(state, job);
       this.saveStore(state);
 
@@ -451,9 +473,22 @@ export class EvidenceReviewEngine {
         ) {
           live.disposition = 'deferred';
         }
+        // Bounded revision loop: after round-1 skill_verifier completes with
+        // 'revise', expand the graph with round-2 Author/Verifier/commit quanta.
+        // Successful readers/dossiers/obligations/round-1 are never replayed.
+        //
+        // ATOMICITY: the verifier completion and the deterministic revision
+        // graph expansion must be one durable mutation. Deferring the save
+        // until after expansion prevents a crash between two writes from
+        // leaving a persisted round-1 revise next to a still-runnable old
+        // commit, which would let the old commit execute on restart.
+        if (selected.kind === 'skill_verifier' && !result) {
+          this.maybeExpandRevisionRound(after, live, selected.quantumId, nowFn());
+        }
         upsertEvidenceReviewJob(after, live);
         this.saveStore(after);
         executedQuantumIds.push(selected.quantumId);
+
         if (selected.kind === 'commit' && result) {
           return {
             job: live,
@@ -725,10 +760,14 @@ export class EvidenceReviewEngine {
     if (!job.authorDossier) {
       throw new Error('skill_author requires author dossier');
     }
+    const round = job.revisionRound ?? 1;
     const outcome = await this.options.runSkillAuthor({
       bundle: job.bundle,
       authorDossier: job.authorDossier,
       job,
+      round,
+      ...(round === 2 && job.previousDraft ? { previousDraft: job.previousDraft } : {}),
+      ...(round === 2 && job.round1VerifierIssues ? { verifierIssues: job.round1VerifierIssues } : {}),
       signal,
     });
     if (!outcome?.draft) {
@@ -756,6 +795,7 @@ export class EvidenceReviewEngine {
     if (!draft) {
       throw new Error('skill_verifier requires skill_author draft');
     }
+    const round = job.revisionRound ?? 1;
     const outcome = await this.options.runSkillVerifier({
       bundle: job.bundle,
       draft,
@@ -764,6 +804,7 @@ export class EvidenceReviewEngine {
       differenceIndex: job.differenceIndex,
       obligations: job.obligations,
       job,
+      round,
       signal,
     });
     if (!outcome?.verifier) {
@@ -835,6 +876,21 @@ export class EvidenceReviewEngine {
       };
     }
 
+    // Exhausted revision loop: if the final-round verifier still returns
+    // 'revise' after both rounds, preserve legacy semantics - danger issue
+    // -> reject; otherwise -> defer. This prevents weakening the Verifier or
+    // forcing revise to accept.
+    const round = job.revisionRound ?? 1;
+    if (verifierForCommit.decision === 'revise') {
+      const dangerous = verifierForCommit.issues.some(issue => issue.severity === 'danger');
+      verifierForCommit = {
+        ...verifierForCommit,
+        decision: dangerous ? 'reject' : 'defer',
+        rationale: verifierForCommit.rationale?.trim()
+          || `Revision loop exhausted after round ${round}; ${dangerous ? 'danger issue -> reject' : 'non-danger revise -> defer'}.`,
+      };
+    }
+
     const branchTranscriptPaths = uniqueTranscriptPaths(job);
     const skillResult = await this.options.commitTransition({
       bundle: job.bundle,
@@ -842,6 +898,7 @@ export class EvidenceReviewEngine {
       verifier: verifierForCommit,
       job,
       branchTranscriptPaths,
+      round,
     });
 
     // commitTransition may have superseded the job (stale Review Basis).
@@ -866,7 +923,10 @@ export class EvidenceReviewEngine {
 
     const jobPatch: Partial<EvidenceReviewJob> = {
       draft,
-      verifierResult: verifierPayload.verifier,
+      // Persist the NORMALIZED final verifier so reload/reconstruction returns
+      // reject_candidate + verified=false for danger, and defer + verified=false
+      // for ordinary revise exhaustion — not the original 'revise' decision.
+      verifierResult: verifierForCommit,
       obligationDispositions: verifierPayload.dispositions ?? job.obligationDispositions,
       transitionId: skillResult.transitionId ?? skillResult.audit?.transitionId,
     };
@@ -888,6 +948,184 @@ export class EvidenceReviewEngine {
   ): T | undefined {
     const quantum = Object.values(job.quanta).find(q => q.kind === kind && q.state === 'succeeded');
     return quantum?.result as T | undefined;
+  }
+
+  /**
+   * Fail-closed reconciliation for the atomicity seam between round-1
+   * verifier completion and revision graph expansion.
+   *
+   * If a crash interrupted the single durable write that completes the
+   * round-1 verifier and expands the graph, the persisted state may contain:
+   * - a succeeded round-1 skill_verifier with decision 'revise'
+   * - revisionRound !== 2 (expansion never persisted)
+   * - a still-runnable old commit quantum depending on that verifier
+   * - no round-2 skill_author / skill_verifier nodes
+   *
+   * This method detects that seam and expands the graph before any runnable
+   * selection so the old commit can never execute and commit round 1.
+   *
+   * Idempotent: if the graph is already expanded (revisionRound === 2 or no
+   * succeeded round-1 verifier with 'revise'), this is a no-op.
+   */
+  private reconcileRevisionRound(
+    state: EvidenceReviewJobStoreState,
+    job: EvidenceReviewJob,
+    now: Date,
+  ): void {
+    if (job.revisionRound === 2) return;
+    if (job.disposition !== 'active') return;
+
+    // Find a succeeded round-1 skill_verifier with 'revise'.
+    const round1Verifier = Object.values(job.quanta).find(
+      q => q.kind === 'skill_verifier' && q.state === 'succeeded',
+    );
+    if (!round1Verifier) return;
+
+    const verifierPayload = round1Verifier.result as
+      | { verifier: SkillVerifierResult; dispositions: readonly ObligationDisposition[] }
+      | undefined;
+    if (!verifierPayload?.verifier || verifierPayload.verifier.decision !== 'revise') {
+      return;
+    }
+
+    // If round-2 nodes already exist, the expansion was persisted — no-op.
+    // The maybeExpandRevisionRound guard on revisionRound === 2 handles this,
+    // but we also check for multiple skill_author quanta as a structural guard.
+    const skillAuthorCount = Object.values(job.quanta)
+      .filter(q => q.kind === 'skill_author').length;
+    if (skillAuthorCount > 1) return;
+
+    // Seam detected: expand the graph so the old commit is removed.
+    this.maybeExpandRevisionRound(state, job, round1Verifier.quantumId, now);
+  }
+
+  /**
+   * Expand the graph with round-2 Author/Verifier/commit quanta after round-1
+   * skill_verifier returns 'revise'. This is a deterministic, content-identified
+   * graph expansion within the same job:
+   *
+   * - Round-2 skill_author identity includes round=2, previousDraftHash, and
+   *   verifierIssuesHash so it is distinct from round-1.
+   * - Round-2 skill_verifier depends on round-2 skill_author + the same
+   *   dossiers/diff/obligations as round-1.
+   * - The old commit quantum (which depended on round-1 verifier) is removed.
+   * - A new commit quantum depends on round-2 skill_verifier.
+   * - job.previousDraft and job.round1VerifierIssues are set so round-2
+   *   executeSkillAuthor can pass them to the runSkillAuthor callback.
+   *
+   * Idempotent: if job.revisionRound === 2 or the verifier decision is not
+   * 'revise', no expansion occurs. Successful round-1 quanta are never replayed.
+   *
+   * Returns true if the graph was expanded (or was already expanded).
+   */
+  private maybeExpandRevisionRound(
+    state: EvidenceReviewJobStoreState,
+    job: EvidenceReviewJob,
+    round1VerifierQuantumId: string,
+    now: Date,
+  ): boolean {
+    // Already expanded — idempotence for crash/restart at this seam.
+    if (job.revisionRound === 2) return false;
+
+    const round1Verifier = job.quanta[round1VerifierQuantumId];
+    if (!round1Verifier || round1Verifier.state !== 'succeeded') return false;
+
+    const verifierPayload = round1Verifier.result as
+      | { verifier: SkillVerifierResult; dispositions: readonly ObligationDisposition[] }
+      | undefined;
+    if (!verifierPayload?.verifier || verifierPayload.verifier.decision !== 'revise') {
+      return false;
+    }
+
+    // Retrieve round-1 draft from the succeeded skill_author quantum.
+    const round1Author = Object.values(job.quanta).find(
+      q => q.kind === 'skill_author' && q.state === 'succeeded',
+    );
+    if (!round1Author) return false;
+    const previousDraft = round1Author.result as SkillDraft | undefined;
+    if (!previousDraft) return false;
+
+    const verifierIssues = verifierPayload.verifier.issues;
+
+    // Find the existing dependency quanta to wire round-2 nodes.
+    const authorDossier = Object.values(job.quanta).find(
+      q => q.kind === 'author_dossier' && q.state === 'succeeded',
+    );
+    const verifierDossier = Object.values(job.quanta).find(
+      q => q.kind === 'verifier_dossier' && q.state === 'succeeded',
+    );
+    const differenceIndex = Object.values(job.quanta).find(
+      q => q.kind === 'difference_index' && q.state === 'succeeded',
+    );
+    const obligations = Object.values(job.quanta).find(
+      q => q.kind === 'obligations' && q.state === 'succeeded',
+    );
+    if (!authorDossier || !verifierDossier || !differenceIndex || !obligations) {
+      return false;
+    }
+
+    // Find and remove the old commit quantum (it depended on round-1 verifier).
+    const oldCommit = Object.values(job.quanta).find(q => q.kind === 'commit');
+    if (oldCommit) {
+      delete job.quanta[oldCommit.quantumId];
+    }
+
+    // Create round-2 skill_author quantum.
+    // Identity includes round=2, previousDraftHash, and verifierIssuesHash
+    // so it is distinct from the round-1 skill_author.
+    const previousDraftHash = sha256(stableStringify(previousDraft));
+    const verifierIssuesHash = sha256(stableStringify(verifierIssues));
+    const skillAuthorR2 = createReviewQuantum(job.jobId, {
+      kind: 'skill_author',
+      inputs: {
+        authorDossier: authorDossier.quantumId,
+        round: 2,
+        previousDraftHash,
+        verifierIssuesHash,
+      },
+      dependencyQuantumIds: [authorDossier.quantumId, obligations.quantumId],
+    }, now);
+    job.quanta[skillAuthorR2.quantumId] = skillAuthorR2;
+
+    // Create round-2 skill_verifier quantum.
+    const skillVerifierR2 = createReviewQuantum(job.jobId, {
+      kind: 'skill_verifier',
+      inputs: {
+        author: skillAuthorR2.quantumId,
+        dossiers: [authorDossier.quantumId, verifierDossier.quantumId],
+        difference: differenceIndex.quantumId,
+        obligations: obligations.quantumId,
+        round: 2,
+      },
+      dependencyQuantumIds: [
+        skillAuthorR2.quantumId,
+        verifierDossier.quantumId,
+        differenceIndex.quantumId,
+        obligations.quantumId,
+      ],
+    }, now);
+    job.quanta[skillVerifierR2.quantumId] = skillVerifierR2;
+
+    // Create new commit quantum depending on round-2 verifier.
+    const newCommit = createReviewQuantum(job.jobId, {
+      kind: 'commit',
+      inputs: {
+        basisHash: job.basis.basisHash,
+        skillVerifier: skillVerifierR2.quantumId,
+        round: 2,
+      },
+      dependencyQuantumIds: [skillVerifierR2.quantumId],
+    }, now);
+    job.quanta[newCommit.quantumId] = newCommit;
+
+    // Preserve round-1 results for round-2 Author input.
+    job.previousDraft = previousDraft;
+    job.round1VerifierIssues = verifierIssues;
+    job.revisionRound = 2;
+    job.updatedAt = now.toISOString();
+
+    upsertEvidenceReviewJob(state, job);
+    return true;
   }
 }
 

@@ -213,6 +213,44 @@ export class EvidenceCapsuleStore {
   }
 
   /**
+   * Refresh the settlement evidence of a persisted capsule after Learning
+   * Episode maturation. Settlement evidence is runtime-owned maturation
+   * metadata, not external content; the durable capsule is pinned at admission
+   * while the episode is still settling, so it must be re-derived from the
+   * authoritative matured status before review enqueues from the capsule.
+   *
+   * The settlement ref is lifecycle-neutral and stable across maturation, so
+   * only the content (and the recomputed evidenceFingerprint) changes. The
+   * completion evidence — pinned external content — is never touched here.
+   */
+  refreshSettlementEvidence(
+    bundleId: string,
+    settlementEvidence: readonly {
+      ref: string;
+      content: string;
+      sourceFilePath?: string;
+      turn?: number;
+    }[],
+  ): boolean {
+    const state = this.load();
+    const capsule = Object.values(state.capsules).find(c => c.bundleId === bundleId);
+    if (!capsule) return false;
+    const redactedSettlement = settlementEvidence.map(entry => redactCapsuleEvidenceEntry({
+      ...entry,
+      role: 'verification' as const,
+    }));
+    const updated = {
+      ...capsule,
+      settlementEvidence: redactedSettlement,
+      evidenceFingerprint: computeCapsuleFingerprint(capsule.completionEvidence, redactedSettlement),
+    } as EvidenceCapsule;
+    assertEvidenceCapsuleWithinBounds(updated);
+    state.capsules[capsule.capsuleId] = updated;
+    this.save(state);
+    return true;
+  }
+
+  /**
    * Delete only with an audit reference. Retention/deletion is deliberately
    * explicit so an operator cannot erase evidence without a traceable link.
    */
@@ -639,31 +677,11 @@ export function buildEvidenceCapsule(options: BuildEvidenceCapsuleOptions): Evid
   const capsuleId = `capsule-${hash([options.bundleId, now.toISOString()].join('|')).slice(0, 20)}`;
 
   // Redact each evidence entry's content before durable persistence
-  const redactedCompletion = options.completionEvidence.map(e => ({
-    ref: redactSourceReference(e.ref),
-    content: redactExternalEvidenceContent(e.content),
-    role: e.role as 'problem-action' | 'verification',
-    sourceFilePath: e.sourceFilePath ? redactSourceReference(e.sourceFilePath) : undefined,
-    turn: e.turn,
-    byteRange: e.byteRange,
-  })) satisfies EvidenceCapsuleEvidence[];
-
-  const redactedSettlement = options.settlementEvidence.map(e => ({
-    ref: redactSourceReference(e.ref),
-    content: redactExternalEvidenceContent(e.content),
-    role: e.role as 'problem-action' | 'verification',
-    sourceFilePath: e.sourceFilePath ? redactSourceReference(e.sourceFilePath) : undefined,
-    turn: e.turn,
-    byteRange: e.byteRange,
-  })) satisfies EvidenceCapsuleEvidence[];
+  const redactedCompletion = options.completionEvidence.map(redactCapsuleEvidenceEntry) satisfies EvidenceCapsuleEvidence[];
+  const redactedSettlement = options.settlementEvidence.map(redactCapsuleEvidenceEntry) satisfies EvidenceCapsuleEvidence[];
 
   // Compute hash from the redacted evidence content (stable across restarts)
-  const evidenceFingerprint = sha256(
-    JSON.stringify({
-      completion: redactedCompletion.map(e => ({ ref: e.ref, content: e.content, role: e.role })),
-      settlement: redactedSettlement.map(e => ({ ref: e.ref, content: e.content, role: e.role })),
-    }),
-  );
+  const evidenceFingerprint = computeCapsuleFingerprint(redactedCompletion, redactedSettlement);
 
   const safeSourceIdentity = sanitizeExternalSourceIdentity(options.sourceIdentity);
   const safeEventIdentity = sanitizeExternalEventIdentity(options.eventIdentity);
@@ -766,14 +784,29 @@ export function reconstructBundleFromCapsule(
   // Build a fallback DistilledKnowledgeCandidate from capsule metadata.
   // This satisfies the EvidenceBundle.episode contract without requiring the
   // original episode's full candidate object.
+  //
+  // The solved-loop is reconstructed from the capsule's bounded, redacted
+  // completion evidence and durable semantic observations (Progressive
+  // Trust). A bounded successful external completion must not be downgraded
+  // to bare admission metadata ("external event was admitted" / "redacted and
+  // pinned"): the trigger / action / result that Author/Verifier need to
+  // evaluate a narrow Capability update must survive reconstruction. This
+  // stays provider-neutral and bounded/redacted; private ~/.codex or ~/.pi
+  // log formats are never parsed — only the official rendered Timeline snapshot
+  // already pinned in the capsule is used. When the capsule carries no
+  // recognizable completion content, the honest admission-metadata fallback
+  // remains (we never manufacture success).
   const capabilityId = `capsule-${capsule.episodeId.replace(/^episode-/, '')}`;
+  const completionContent = capsule.completionEvidence.map(e => e.content).filter(c => c.trim().length > 0);
+  const actionPatternFromContent = completionContent.join(' ').slice(0, 280) || 'External event evidence';
+  const solvedLoop = reconstructExternalSolvedLoop(capsule, completionContent);
   const candidate: DistilledKnowledgeCandidate = {
     schemaVersion: 1,
     kind: 'capability',
     capabilityId,
     title: `External evidence: ${capsule.provenance.provider} (${capsule.provenance.sourceId})`,
     applicability: `External evidence from ${capsule.provenance.provider} admitted at ${capsule.redactedAt}.`,
-    actionPattern: capsule.completionEvidence.map(e => e.content).join('; ').slice(0, 280) || 'External event evidence',
+    actionPattern: actionPatternFromContent,
     boundaries: [
       'External evidence requires Author/Verifier evaluation.',
       'Evidence is redacted and may omit sensitive context.',
@@ -782,12 +815,7 @@ export function reconstructBundleFromCapsule(
       'Evidence originates from an external source and is redacted.',
       'The upstream source may have changed since the capsule was created.',
     ],
-    solvedLoop: {
-      problem: `Admitted external event ${capsule.identity.eventId}`,
-      action: 'The external event was admitted as a Learning Episode.',
-      verification: `Redacted and pinned at ${capsule.redactedAt}.`,
-      noCorrection: 'No contradiction signal was present at admission.',
-    },
+    solvedLoop,
     provenance: capsule.completionEvidence.map((e, index) => ({
       filePath: e.sourceFilePath ?? capsule.provenance.sourceId,
       turn: e.turn ?? 0,
@@ -842,12 +870,121 @@ function hash(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
+/** Bound a reconstructed solved-loop field so the candidate stays bounded. */
+const MAX_EXTERNAL_SOLVED_LOOP_FIELD_CHARS = 360 as const;
+
+function boundedField(value: string | undefined, fallback: string): string {
+  if (!value) return fallback;
+  const trimmed = value.replace(/\s+/g, ' ').trim();
+  if (!trimmed) return fallback;
+  if (trimmed.length <= MAX_EXTERNAL_SOLVED_LOOP_FIELD_CHARS) return trimmed;
+  return trimmed.slice(0, MAX_EXTERNAL_SOLVED_LOOP_FIELD_CHARS).trimEnd();
+}
+
+function firstObservationValue(
+  observations: readonly SemanticObservation[],
+  kind: SemanticObservation['kind'],
+): string | undefined {
+  const value = observations.find(item => item.kind === kind)?.value?.trim();
+  return value || undefined;
+}
+
+/**
+ * Reconstruct a bounded, redacted external solved-loop from the capsule.
+ *
+ * Uses only capsule-pinned, already-redacted content and durable semantic
+ * observations — never private upstream log formats. Falls back to honest
+ * admission metadata when there is no recognizable completion content, so a
+ * bounded successful outcome is preserved without ever manufacturing success.
+ */
+function reconstructExternalSolvedLoop(
+  capsule: EvidenceCapsule,
+  completionContent: readonly string[],
+): {
+  problem: string;
+  action: string;
+  verification: string;
+  noCorrection: string;
+} {
+  const observations = capsule.semanticObservations ?? [];
+  const userIntent = firstObservationValue(observations, 'user-intent');
+  const hasCompletion = completionContent.length > 0;
+  const admissionFallback = `Admitted external event ${capsule.identity.eventId}`;
+
+  const problem = boundedField(
+    userIntent ?? (hasCompletion ? completionContent[0]! : undefined),
+    admissionFallback,
+  );
+
+  const action = hasCompletion
+    ? boundedField(completionContent.join(' '), 'The external event was admitted as a Learning Episode.')
+    : 'The external event was admitted as a Learning Episode.';
+
+  // Solved-loop verification must come from pinned completionEvidence with
+  // role='verification' — actual artifact outcome content, not lifecycle
+  // metadata. Settlement content only proves maturation (episode closed);
+  // it must never masquerade as the recognizable artifact result that
+  // Progressive Trust's isSettledLowRiskExternalAtom requires.
+  // If no completion verification evidence exists, fall back to redacted
+  // admission metadata — Progressive Trust will then correctly reject the
+  // atom because the result is not recognizable.
+  const completionVerificationContent = capsule.completionEvidence
+    .filter(e => e.role === 'verification' && e.content.trim().length > 0)
+    .map(e => e.content)
+    .join(' ');
+  const verification = boundedField(
+    completionVerificationContent || undefined,
+    `Redacted and pinned at ${capsule.redactedAt}.`,
+  );
+
+  return {
+    problem,
+    action,
+    verification,
+    noCorrection: 'No contradiction signal was present at admission.',
+  };
+}
+
 function sha256(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
 function redactSourceReference(value: string): string {
   return truncateUtf8(redactExternalEvidenceContent(value), MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES);
+}
+
+/** Redact one pre-persistence evidence entry into its durable capsule form. */
+function redactCapsuleEvidenceEntry(
+  entry: {
+    ref: string;
+    content: string;
+    role: 'problem-action' | 'verification';
+    sourceFilePath?: string;
+    turn?: number;
+    byteRange?: { start: number; end: number };
+  },
+): EvidenceCapsuleEvidence {
+  return {
+    ref: redactSourceReference(entry.ref),
+    content: redactExternalEvidenceContent(entry.content),
+    role: entry.role,
+    sourceFilePath: entry.sourceFilePath ? redactSourceReference(entry.sourceFilePath) : undefined,
+    turn: entry.turn,
+    byteRange: entry.byteRange,
+  };
+}
+
+/** Stable fingerprint over redacted completion + settlement evidence. */
+function computeCapsuleFingerprint(
+  completion: readonly EvidenceCapsuleEvidence[],
+  settlement: readonly EvidenceCapsuleEvidence[],
+): string {
+  return sha256(
+    JSON.stringify({
+      completion: completion.map(e => ({ ref: e.ref, content: e.content, role: e.role })),
+      settlement: settlement.map(e => ({ ref: e.ref, content: e.content, role: e.role })),
+    }),
+  );
 }
 
 function redactSemanticObservation(observation: SemanticObservation): SemanticObservation {

@@ -701,7 +701,87 @@ function uniqueContradictionSignals(
  */
 function isExternalCompleteFinalDelivery(turn: CompletedTurn): boolean {
   if (String(turn.session_type ?? '').trim().toLowerCase() !== 'external') return false;
-  return turn.assistant.text.trim().length > 0;
+  const assistantText = turn.assistant.text.trim();
+  if (!assistantText) return false;
+
+  // External timelines (notably Pi/xURL) may coalesce many progress updates
+  // into one assistant turn.  Non-empty text only proves that the agent spoke;
+  // it does not prove that the requested work reached a reusable outcome.
+  // Require an outcome near the tail, where Pi writes its final hand-off, and
+  // reject context-free continuation prompts that cannot name a capability.
+  const userText = turn.user.text.replace(/\s+/g, ' ').trim();
+  if (isContextFreeContinuation(userText)) return false;
+
+  const tail = utf8Tail(assistantText, 2_000);
+  // Order-sensitive terminal-outcome polarity: the LAST decisive outcome
+  // determines whether the external tail is a successful final or a retry.
+  // A corrected success (earlier failure → later success) admits; a final
+  // blocker after an implementation (earlier positive → later negative)
+  // rejects. Never manufacture success from an earlier positive word when
+  // the terminal outcome is negative.
+  return lastPositiveOutcomeAfterLastNegative(tail);
+}
+
+const EXTERNAL_TERMINAL_OUTCOME = /(?:\b(?:completed?|done|fixed|implemented|updated|created|removed|restored|verified|validated|delivered|committed|shipped)\b|\btests?\b[^\n]{0,80}\bpass(?:ed|ing)?\b|\ball\s+\d+[^\n]{0,40}\bpass(?:ed|ing)?\b|\bcommit\s+[0-9a-f]{7,40}\b|(?:已|已经)(?:完成|修复|修改|更新|删除|恢复|创建|实现|验证|提交|交付)|(?:改好|删掉|恢复完成|测试通过|验证通过))/iu;
+
+/**
+ * Explicit non-success / negative-review or terminal-blocker markers.
+ * Kept narrow so genuine success (e.g. "nothing failed", "all checks passed")
+ * is never vetoed: bare words like "failed" or "fix" are NOT matched — only
+ * explicit negative outcomes, directive-to-fix, or terminal blocking issues.
+ */
+const EXTERNAL_NON_SUCCESS_TAIL = /\bnot\s+(?:ok(?:ay)?|verified|validated|done|completed|fixed|implemented|delivered|shipped|ready|correct|valid|pass(?:ed|ing)?)\b|\b(?:did|do|does|don'?t|doesn'?t|didn'?t|won'?t|cannot|can'?t|failed\s+to|did\s+not)\s+(?:not\s+)?(?:pass|verify|validated?|complete|deliver|ship)\b|\b(?:tests?|checks?)\s+(?:fail|fails|failed|are\s+failing|still\s+fail)\b|\bstill\s+(?:failing|broken|present|not\s+(?:passing|ok|verified))\b|\bfix\s+(?:the(?:se)?|this)\s+(?:issues?|problems?|bugs?|failures?)\b|\bis\s+not\s+(?:ok(?:ay)?|ready|correct|valid|verified)\b|\bblock(?:er|ing)(?:\s+issue)?\b|\bunsafe\b|\bneeds?\s+(?:further|more)\s+(?:work|review|changes?|fix)\b|(?:未|没有)(?:完成|修复|通过|验证|交付|实现)|(?:测试|验证)(?:未|没有)通过/iu;
+
+/**
+ * Order-sensitive terminal-outcome polarity: the LAST decisive outcome
+ * marker in the tail determines the result.
+ *
+ * Positive matches are judged by their END position (where the success claim
+ * is), negative matches by their START position (where the failure is). This
+ * prevents "tests failed ... tests pass" spans from collapsing to the same
+ * start index.
+ */
+function lastPositiveOutcomeAfterLastNegative(tail: string): boolean {
+  return lastMatchEndPosition(EXTERNAL_TERMINAL_OUTCOME, tail)
+    > lastMatchPosition(EXTERNAL_NON_SUCCESS_TAIL, tail);
+}
+
+function lastMatchPosition(re: RegExp, text: string): number {
+  let pos = -1;
+  let match: RegExpExecArray | null;
+  const globalRe = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+  while ((match = globalRe.exec(text)) !== null) {
+    pos = match.index;
+  }
+  return pos;
+}
+
+function lastMatchEndPosition(re: RegExp, text: string): number {
+  let pos = -1;
+  let match: RegExpExecArray | null;
+  const globalRe = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+  while ((match = globalRe.exec(text)) !== null) {
+    pos = match.index + match[0].length;
+  }
+  return pos;
+}
+
+function isContextFreeContinuation(value: string): boolean {
+  return /^(?:(?:yes[,，]?\s*)?(?:(?:go on|continue|resume)(?:[,，]?\s*(?:go on|continue|resume))*?)|继续(?:\s*继续)*|接着(?:做)?)[.!。！\s]*$/iu.test(value);
+}
+
+function utf8Prefix(value: string, maxBytes: number): string {
+  let end = Math.min(value.length, maxBytes);
+  while (end > 0 && Buffer.byteLength(value.slice(0, end), 'utf8') > maxBytes) end -= 1;
+  return value.slice(0, end).trimEnd();
+}
+
+function utf8Tail(value: string, maxBytes: number): string {
+  let start = Math.max(0, value.length - maxBytes);
+  while (start < value.length && Buffer.byteLength(value.slice(start), 'utf8') > maxBytes) {
+    start += 1;
+  }
+  return value.slice(start).trimStart();
 }
 
 function detectAssistantResponseEvidence(
@@ -719,19 +799,24 @@ function detectAssistantResponseEvidence(
   };
 }
 
-const MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES = 1000;
+const MAX_ASSISTANT_RESPONSE_EVIDENCE_BYTES = 1000;
 
 function boundedAssistantResponseDetail(text: string): string {
   const totalBytes = Buffer.byteLength(text, 'utf8');
-  if (totalBytes <= MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES) return text;
+  if (totalBytes <= MAX_ASSISTANT_RESPONSE_EVIDENCE_BYTES) return text;
 
-  let end = Math.min(text.length, MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES);
-  while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > MAX_ASSISTANT_RESPONSE_EVIDENCE_PREFIX_BYTES) {
-    end -= 1;
-  }
-  const prefix = text.slice(0, end);
-  const omittedBytes = totalBytes - Buffer.byteLength(prefix, 'utf8');
-  return `${prefix}\n[${omittedBytes} bytes omitted from bounded assistant-response evidence]`;
+  // A skill review needs both the initial action and the terminal outcome.
+  // Prefix-only truncation systematically discarded the most valuable part of
+  // long Pi turns, so preserve a balanced head/tail evidence window.
+  const markerReserve = 96;
+  const contentBudget = MAX_ASSISTANT_RESPONSE_EVIDENCE_BYTES - markerReserve;
+  const headBudget = Math.floor(contentBudget / 2);
+  const tailBudget = contentBudget - headBudget;
+  const head = utf8Prefix(text, headBudget);
+  const tail = utf8Tail(text, tailBudget);
+  const keptBytes = Buffer.byteLength(head, 'utf8') + Buffer.byteLength(tail, 'utf8');
+  const omittedBytes = Math.max(0, totalBytes - keptBytes);
+  return `${head}\n[${omittedBytes} bytes omitted from middle of bounded assistant-response evidence]\n${tail}`;
 }
 
 function detectContradiction(

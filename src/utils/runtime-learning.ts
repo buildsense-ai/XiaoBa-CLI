@@ -50,6 +50,7 @@ import { SemanticReassessmentManifestStore } from './semantic-reassessment';
 import { cleanupBranchTranscripts } from './branch-transcript-retention';
 import { createReviewBudget, type ReviewBudget } from './review-budget';
 import { advanceJobsFairly } from './evidence-review-engine';
+import { listRunnableQuanta } from './evidence-review-job-store';
 import { XurlExternalSourceReader } from './xurl-session-log-source';
 import { buildXurlSubprocessEnv } from './xurl-subprocess-env';
 import {
@@ -129,6 +130,7 @@ import {
 import {
   EvidenceCapsuleStore,
   buildEvidenceCapsule,
+  redactExternalEvidenceContent,
   sanitizeExternalDistillationUnit,
 } from './evidence-capsule';
 import {
@@ -142,7 +144,7 @@ import {
   ExternalHistoryProgressUpdate,
   loadExternalSessionLogBackfillState,
 } from './session-log-backfill';
-import { buildEpisodeEvidenceBundle } from './episode-evidence-bundle';
+import { buildEpisodeEvidenceBundle, buildEpisodeSettlementEvidence } from './episode-evidence-bundle';
 import {
   ExternalEpisodeProvenanceStore,
   type ExternalEpisodeProvenanceState,
@@ -472,6 +474,7 @@ interface ReviewFairnessContinuation {
 interface ReviewContinuationState {
   schemaVersion: typeof REVIEW_CONTINUATION_SCHEMA_VERSION;
   episodeIds: string[];
+  reviewJobIds: string[];
   nextAttemptAt: string;
   updatedAt: string;
   nextClass: ReviewWorkClass;
@@ -1941,6 +1944,14 @@ export class RuntimeLearning {
           reopenedTerminalTombstoneId,
         );
         this.episodeStore.reconcileHistoricalTarget(reopenedRange.targetId);
+        // Refresh durable external capsules for the reopened range's episodes so
+        // a pinned admission capsule reflects the authoritative matured status
+        // before review enqueues.
+        this.refreshExternalCapsuleSettlementEvidence(
+          Object.values(this.episodeStore.load().episodes).filter(
+            episode => episode.historicalTarget?.targetId === reopenedRange.targetId,
+          ),
+        );
       }
 
       // Backfill owns a separate cursor/audit, but source health is shared with
@@ -2089,9 +2100,13 @@ export class RuntimeLearning {
       const shouldScan = isDiscoveryWake;
 
       if (shouldScan) {
-        const discoveryResult = await this.runDiscovery(
-          reasons.has('startup') || reasons.has('scheduled') || reasons.has('manual'),
-        );
+        const allowNewCatchUpGeneration = reasons.has('startup')
+          || reasons.has('scheduled')
+          || reasons.has('manual');
+        const discoveryResult = await this.runDiscovery({
+          processCatchUp: allowNewCatchUpGeneration || reasons.has('external-continuation'),
+          allowNewCatchUpGeneration,
+        });
         wake.discovery.scanned = discoveryResult.sourceReports.some(r => r.enabled);
         wake.discovery.filesScanned = discoveryResult.sourceReports.reduce((sum, r) => sum + r.resourcesDiscovered, 0);
         wake.discovery.unitsProcessed = discoveryResult.sourceReports.reduce((sum, r) => sum + r.unitsProcessed, 0);
@@ -2383,10 +2398,18 @@ export class RuntimeLearning {
       // Activation blocked is operator-gated; do not hot-loop.
       if (state.activation?.activationBlocked === true) continue;
 
-      // Finite incomplete page cycle only. When nextPageToken is null the current
-      // catalog cycle is finished (baseline complete or continuous cycle drained).
-      // Do not auto-start a fresh cycle from the continuation reason alone — that
-      // waits for ordinary scheduled / session-log cadence.
+      // Catch-up uses an expanding catalog plus stability/page quanta rather
+      // than discovery.nextPageToken. Continue only the active generation;
+      // the default allowNewGeneration=false prevents a completed catch-up
+      // from starting a fresh historical scan on its own.
+      if (adapter.getNextCatchUpAction?.() !== undefined) {
+        return true;
+      }
+
+      // Future-only discovery uses a finite incomplete page cycle. When
+      // nextPageToken is null that catalog cycle is finished. Do not auto-start
+      // a fresh cycle from the continuation reason alone — that waits for
+      // ordinary scheduled / session-log cadence.
       if (state.discovery?.nextPageToken != null) {
         return true;
       }
@@ -2549,17 +2572,18 @@ export class RuntimeLearning {
       const settledState = this.episodeStore.settle({ now: this.clock() });
       const episodes = Object.values(settledState.episodes);
 
-      const maturedEpisodeIds = episodes
-        .filter(e => preSettleStatuses.get(e.episodeId) === 'settling' && e.status !== 'settling')
-        .map(e => e.episodeId);
+      const maturedEpisodes = episodes.filter(
+        e => preSettleStatuses.get(e.episodeId) === 'settling' && e.status !== 'settling',
+      );
+      const maturedEpisodeIds = maturedEpisodes.map(e => e.episodeId);
 
-      const becameEligible = episodes.filter(
-        e => preSettleStatuses.get(e.episodeId) === 'settling' && e.status === 'eligible',
-      ).length;
+      // Refresh durable external capsules for matured episodes so a pinned
+      // admission capsule (recorded while the episode was still settling) is
+      // updated to the authoritative matured status before review enqueues.
+      this.refreshExternalCapsuleSettlementEvidence(maturedEpisodes);
 
-      const becameContradicted = episodes.filter(
-        e => preSettleStatuses.get(e.episodeId) === 'settling' && e.status === 'contradicted',
-      ).length;
+      const becameEligible = maturedEpisodes.filter(e => e.status === 'eligible').length;
+      const becameContradicted = maturedEpisodes.filter(e => e.status === 'contradicted').length;
 
       return {
         status: 'succeeded',
@@ -2602,6 +2626,20 @@ export class RuntimeLearning {
       );
     }
 
+    // Restart-safe settlement reconciliation: a capsule persisted before the
+    // settlement-consistency fix may carry contradictory settlement evidence
+    // while its LearningEpisode is durably matured. Reconcile capsules from the
+    // authoritative status and supersede any active job whose frozen basis still
+    // carries the old contradiction — before fair advance so only clean
+    // successors can advance.
+    try {
+      this.reconcileSettlementConsistency();
+    } catch (error) {
+      Logger.warning(
+        `[RuntimeLearning] settlement reconciliation skipped: ${toErrorMessage(error)}`,
+      );
+    }
+
     // Fair Review Quantum Rotation across durable jobs before admitting new
     // episode/queue candidates (#108). Completes already-admitted coverage first.
     // Capture fair-advance outcomes so migrated operational retries that finish
@@ -2612,7 +2650,11 @@ export class RuntimeLearning {
       if (!this.shutdownDrainRequested) {
         this.skillEvolution.fenceStaleActiveJobsBeforeFairAdvance(this.clock());
         const fair = await advanceJobsFairly(engine, `wake-fair:${this.clock().getTime()}`, {
-          maxClaims: Math.max(0, Math.floor(this.config.skillEvolutionReviewMaxCandidates)),
+          // One provider-backed Quantum per wake is deliberate backpressure.
+          // The next durable wake continues immediately when work remains, but
+          // a shared provider outage cannot multiply into N synchronous calls
+          // that monopolize source ingestion for an entire heartbeat cycle.
+          maxClaims: 1,
           maxClaimsPerJob: 1,
           signal: wakeSignal,
           now: this.clock(),
@@ -2748,16 +2790,36 @@ export class RuntimeLearning {
     let episodeReviewTimeouts = 0;
     let episodeOperationalFailures = 0;
 
+    const externalEpisodeTasks = admittedEpisodeTasks.filter(({ episode }) =>
+      this.isEpisodeFromExternalSource(episode.episodeId));
+    const localEpisodeTasks = admittedEpisodeTasks.filter(({ episode }) =>
+      !this.isEpisodeFromExternalSource(episode.episodeId));
+
+    // External/Pi learning is maintenance work with an unreliable provider in
+    // its path. Admit it durably and let fair background wakes advance it;
+    // never hold external ingestion open while waiting for model review.
+    for (const { episode, bundle } of externalEpisodeTasks) {
+      try {
+        this.skillEvolution.enqueueReview(bundle);
+        // Admission is complete. The durable job, not this heartbeat, now owns
+        // the episode until a fair background wake reaches a disposition.
+        pendingEpisodeIds.delete(episode.episodeId);
+      } catch (error) {
+        episodeReviewFailures++;
+        settlementError = settlementError ?? error;
+        Logger.warning(`[RuntimeLearning] review admission failed for ${episode.episodeId}: ${toErrorMessage(error)}`);
+      }
+    }
+
+    // Preserve the established one-wake behavior for local delivery episodes,
+    // whose callers and tests rely on an immediate transition result.
     try {
       await mapWithConcurrency(
-        admittedEpisodeTasks,
+        localEpisodeTasks,
         Math.max(1, Math.floor(this.config.skillEvolutionReviewerConcurrency)),
         async ({ episode, bundle }) => {
           try {
-            const result = await this.skillEvolution.reviewAndApply(
-              bundle,
-              wakeSignal,
-            );
+            const result = await this.skillEvolution.reviewAndApply(bundle, wakeSignal);
             if (result.queued === 'operational') {
               const queued = this.skillEvolution.getQueuedReviewState(bundle.bundleId);
               if (queued?.failureKind === 'branch_timeout') episodeReviewTimeouts++;
@@ -2768,14 +2830,13 @@ export class RuntimeLearning {
             reviewedEpisodes++;
             pendingEpisodeIds.delete(episode.episodeId);
           } catch (error: any) {
-            // The candidate remains durable and is retried independently.
             episodeReviewFailures++;
             Logger.warning(`[RuntimeLearning] review failed for ${episode.episodeId}: ${error.message}`);
           }
         },
       );
     } catch (error) {
-      settlementError = error;
+      settlementError = settlementError ?? error;
     }
 
     type QueueResult = {
@@ -2871,7 +2932,11 @@ export class RuntimeLearning {
     if (hasQueueFailure) errorParts.push(`queue review failed: ${toErrorMessage(queueError)}`);
     if (settlementError) errorParts.push(`settlement error: ${toErrorMessage(settlementError)}`);
 
-    this.persistReviewContinuation(pendingEpisodeIds, { nextClass, classCursors });
+    this.persistReviewContinuation(
+      pendingEpisodeIds,
+      { nextClass, classCursors },
+      new Set(this.listRunnableReviewJobIds()),
+    );
 
     return {
       status,
@@ -3002,7 +3067,10 @@ export class RuntimeLearning {
    * On success the consecutive count resets to zero. Suspended sources are
    * skipped on subsequent wakes until the suspension deadline passes (AC3).
    */
-  private async runDiscovery(catchUpEligible: boolean): Promise<{
+  private async runDiscovery(catchUpPolicy: {
+    processCatchUp: boolean;
+    allowNewCatchUpGeneration: boolean;
+  }): Promise<{
     sourceReports: readonly SessionLogSourceReport[];
     admittedEpisodes: number;
     contradictionSignals: number;
@@ -3058,7 +3126,7 @@ export class RuntimeLearning {
           externalContradictionSignals += result.contradictionSignals;
         };
 
-        const catchUpSources = catchUpEligible ? externalSources
+        const catchUpSources = catchUpPolicy.processCatchUp ? externalSources
           .filter(adapter => (
             adapter.isEnabled()
             && adapter.getExternalAdmissionConfiguration?.().historyMode === 'catch-up'
@@ -3073,12 +3141,14 @@ export class RuntimeLearning {
         const providersWithDueCatchUp = new Set(
           dueCatchUpSources.map(({ adapter }) => adapter.identity.provider),
         );
-        dueCatchUpSources.push(...catchUpSources
-          .filter(adapter => !providersWithDueCatchUp.has(adapter.identity.provider))
-          .flatMap(adapter => {
-            const action = adapter.getNextCatchUpAction?.({ allowNewGeneration: true });
-            return action ? [{ adapter, action }] : [];
-          }));
+        if (catchUpPolicy.allowNewCatchUpGeneration) {
+          dueCatchUpSources.push(...catchUpSources
+            .filter(adapter => !providersWithDueCatchUp.has(adapter.identity.provider))
+            .flatMap(adapter => {
+              const action = adapter.getNextCatchUpAction?.({ allowNewGeneration: true });
+              return action ? [{ adapter, action }] : [];
+            }));
+        }
 
         // Preserve the catch-up continuation observed at the start of the
         // external phase. The initial continuous pass may complete a full
@@ -3354,6 +3424,18 @@ export class RuntimeLearning {
     for (const targetId of completedTargetIds) {
       this.episodeStore.reconcileHistoricalTarget(targetId);
     }
+
+    // Refresh durable external capsules for historical episodes whose fixed
+    // immutable target just completed or was abandoned, so their pinned
+    // admission capsule (recorded while the episode was still
+    // historical-pending) reflects the authoritative matured status before
+    // review enqueues.
+    const maturedHistoricalEpisodes = Object.values(this.episodeStore.load().episodes).filter(
+      episode => episode.historicalTarget !== undefined
+        && (completedTargetIds.has(episode.historicalTarget.targetId)
+          || abandonedTargetIds.has(episode.historicalTarget.targetId)),
+    );
+    this.refreshExternalCapsuleSettlementEvidence(maturedHistoricalEpisodes);
   }
 
   private async processDiscoverySource(
@@ -4754,7 +4836,11 @@ export class RuntimeLearning {
           turn: e.turn,
         }));
 
-      // Generate settlement evidence content from episode metadata.
+      // Generate settlement evidence content from episode metadata. The
+      // episode is still settling (or historical-pending) at this admission
+      // boundary, so the evidence must honestly record the non-settled state.
+      // Maturation refreshes this entry to the authoritative matured status.
+      const settlementEntry = buildEpisodeSettlementEvidence(episode);
       const settlementEvidence: {
         ref: string;
         content: string;
@@ -4762,11 +4848,11 @@ export class RuntimeLearning {
         sourceFilePath?: string;
         turn?: number;
       }[] = [{
-        ref: `${episode.sourceFilePath}#episode-${episodeId}:settled-${episode.settlementDeadline}`,
-        content: `Episode ${episodeId} settled at ${episode.settlementDeadline} (status: ${episode.status})`,
+        ref: settlementEntry.ref,
+        content: settlementEntry.content,
         role: 'verification' as const,
-        sourceFilePath: episode.sourceFilePath,
-        turn: episode.deliveryTurn,
+        sourceFilePath: settlementEntry.sourceFilePath,
+        turn: settlementEntry.turn,
       }];
 
       const capsule = buildEvidenceCapsule({
@@ -4780,6 +4866,220 @@ export class RuntimeLearning {
         now: this.clock(),
       });
       this.evidenceCapsuleStore.upsert(capsule);
+    }
+  }
+
+  /**
+   * Re-derive the durable settlement evidence for external-origin episodes
+   * after a maturation transition, so a pinned admission capsule (recorded
+   * while the episode was still settling) is updated to the authoritative
+   * matured status before review enqueues from it.
+   *
+   * Only external episodes with a persisted capsule are touched; the
+   * lifecycle-neutral settlement ref is stable across the update, so only the
+   * honest status-derived content (and the recomputed fingerprint) changes.
+   * Best-effort: a refresh failure is logged and never blocks maturation or
+   * review, because review itself still fail-closes when a capsule is missing
+   * or internally inconsistent.
+   */
+  private refreshExternalCapsuleSettlementEvidence(
+    episodes: readonly LearningEpisode[],
+  ): void {
+    for (const episode of episodes) {
+      if (!this.isEpisodeFromExternalSource(episode.episodeId)) continue;
+      const bundleId = `v3:learning-episode:${episode.episodeId}`;
+      if (!this.evidenceCapsuleStore.findByBundleId(bundleId)) continue;
+      try {
+        const settlement = buildEpisodeSettlementEvidence(episode);
+        this.evidenceCapsuleStore.refreshSettlementEvidence(bundleId, [settlement]);
+      } catch (error) {
+        Logger.warning(
+          `[RuntimeLearning] capsule settlement refresh failed for ${episode.episodeId}: ${toErrorMessage(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Restart-safe reconciliation of durable settlement evidence for external
+   * Learning Episodes, plus supersession of any active Evidence Review Job
+   * whose frozen Review Basis still carries the pre-fix contradictory
+   * settlement evidence.
+   *
+   * A capsule persisted before the settlement-consistency fix may carry
+   * `settled ... (status: settling)` content (and a `:settled-` ref) while its
+   * LearningEpisode is durably `eligible`. On restart, runMaturation sees the
+   * pre-status as already matured, so the transition-based refresh above never
+   * fires for that capsule. Worse, an already-created active Evidence Review Job
+   * owns a frozen bundle copied from that old capsule; refreshing only the
+   * capsule cannot silently mutate the immutable Review Basis.
+   *
+   * This reconciliation runs before review enqueue/fair advancement and:
+   *   1. Re-derives each external capsule's settlement evidence from the
+   *      authoritative LearningEpisode status (idempotent; no-op when already
+   *      consistent). Settlement evidence is runtime-owned maturation metadata,
+   *      not external content, so this never weakens the Verifier or fabricates
+   *      settlement — it reconciles the capsule to what the authoritative
+   *      status already says.
+   *   2. For active Evidence Review Jobs whose frozen bundle still carries the
+   *      old settlement evidence, supersedes the job with a clean successor
+   *      built from the current authoritative/reconstructed capsule — the
+   *      immutable frozen basis is never mutated in place; the existing audited
+   *      successor mechanism is reused so only the successor can advance.
+   *
+   * Restart-safety across the refresh/supersede boundary: step 2 is NOT gated
+   * on step 1 having mutated a capsule in THIS wake. A prior wake may have
+   * refreshed the capsule and then crashed before superseding the stale active
+   * job; on restart the capsule already matches the authoritative status, so
+   * step 1 is an idempotent no-op, yet the active job's frozen basis still
+   * carries the pre-fix contradictory settlement evidence. Step 2 therefore
+   * compares every active external learning-episode job against the current
+   * authoritative reconstruction regardless of whether step 1 modified a
+   * capsule this wake, so the crash-window stale job is still superseded.
+   *
+   * This is a narrow structural-corruption detector, not a policy/version
+   * marker bump: only actually-corrupted legacy state is superseded, so
+   * healthy in-flight reviews are not disturbed (minimal blast radius). It is
+   * bounded to active jobs for external learning-episode bundles and performs
+   * no model calls — only pure bundle reconstruction and structural
+   * comparison.
+   *
+   * Fail-closed: a reconciliation/refresh/supersession failure is logged and
+   * never blocks review, because review itself still fail-closes when a
+   * capsule is missing or internally inconsistent.
+   */
+  private reconcileSettlementConsistency(): void {
+    const episodes = Object.values(this.episodeStore.load().episodes);
+    const episodeById = new Map(episodes.map(e => [e.episodeId, e] as const));
+
+    // 1. Reconcile capsules from the authoritative episode status. This step is
+    //    intentionally independent of step 2: a capsule refreshed here OR in a
+    //    prior (possibly crashed) wake must both lead to stale-job supersession.
+    for (const episode of episodes) {
+      if (!this.isEpisodeFromExternalSource(episode.episodeId)) continue;
+      const bundleId = `v3:learning-episode:${episode.episodeId}`;
+      const capsule = this.evidenceCapsuleStore.findByBundleId(bundleId);
+      if (!capsule) continue;
+      try {
+        const expected = buildEpisodeSettlementEvidence(episode);
+        const current = capsule.settlementEvidence[0];
+        // Idempotent: skip when the redacted authoritative content already
+        // matches the durable capsule content and the ref is already
+        // lifecycle-neutral.
+        const expectedContent = redactExternalEvidenceContent(expected.content);
+        if (
+          current
+          && current.ref === expected.ref
+          && current.content === expectedContent
+        ) {
+          continue;
+        }
+        this.evidenceCapsuleStore.refreshSettlementEvidence(bundleId, [expected]);
+      } catch (error) {
+        Logger.warning(
+          `[RuntimeLearning] settlement reconciliation failed for ${episode.episodeId}: ${toErrorMessage(error)}`,
+        );
+      }
+    }
+
+    // 2. Supersede active OR durably-deferred jobs whose frozen bundle still
+    //    carries stale settlement evidence. This step is NOT gated on step 1
+    //    having mutated a capsule in this wake: a prior wake may have refreshed
+    //    the capsule and crashed before superseding the stale job, leaving the
+    //    capsule already consistent with the authoritative status while the
+    //    job's frozen basis still carries the old contradictory evidence. Every
+    //    active external learning-episode job is therefore compared against the
+    //    current authoritative reconstruction regardless of capsule mutation
+    //    this wake.
+    //
+    //    The scan also covers the specific stale `deferred` terminal state: a
+    //    job that reached durable `disposition: deferred` because the Verifier
+    //    semantically deferred on the fabricated `settled ... (status:
+    //    settling)` contradiction can remain permanently stuck even after the
+    //    capsule is repaired — `getReviewedOrQueuedBundleIds()` treats deferred
+    //    jobs as bundle owners (so the episode is never re-admitted for review)
+    //    and fair scheduling only executes active jobs. The same structural
+    //    comparison decides staleness, and the same audited supersede/successor
+    //    path recovers the job; the immutable frozen basis is never mutated in
+    //    place. A legitimate deferral whose frozen settlement evidence already
+    //    equals the authoritative capsule is skipped by the structural-equality
+    //    check below and is never reopened.
+    const engine = this.skillEvolution.getEvidenceReviewEngine();
+    let recoverableJobs: import('./evidence-review-types').EvidenceReviewJob[];
+    try {
+      recoverableJobs = Object.values(engine.loadStore().jobs).filter(
+        job => (job.disposition === 'active' || job.disposition === 'deferred')
+          && job.bundle.bundleId.startsWith('v3:learning-episode:'),
+      );
+    } catch {
+      // Job store optional during early construction / V3-disabled paths.
+      return;
+    }
+    for (const job of recoverableJobs) {
+      const episodeId = job.bundle.bundleId.replace(/^v3:learning-episode:/, '');
+      const episode = episodeById.get(episodeId);
+      if (!episode || !this.isEpisodeFromExternalSource(episode.episodeId)) continue;
+      const freshBundle = buildEpisodeEvidenceBundle(
+        episode,
+        buildLearningEpisodeCandidate(episode),
+        this.skillEvolution,
+        this.evidenceCapsuleStore,
+        this.isEpisodeFromExternalSource.bind(this),
+        this.listSkillLoadFactsForEpisode(episode),
+      );
+      // Detect whether the frozen bundle's settlement evidence is stale
+      // relative to the current authoritative/reconstructed capsule. The
+      // fresh bundle is reconstructed from the capsule (reconciled either in
+      // this wake or a prior one), so structural inequality of the settlement
+      // evidence means the job is carrying the old contradictory basis.
+      //
+      // Structural equality is over BOTH the settlement ref AND the settlement
+      // source content. The ref is the lifecycle-neutral, stable settlement
+      // identifier (`...:settlement-<deadline>`); the pre-fix corruption used a
+      // `...:settled-<deadline>` ref, so a ref mismatch alone is a reliable
+      // corruption signal. The content carries the status-derived assertion;
+      // a status mismatch (e.g. `status: settling` vs `status: eligible`) is
+      // the material settlement contradiction the Verifier defers on. Either
+      // divergence makes the frozen basis stale, so the job is skipped only
+      // when BOTH the ref and the content match the authoritative
+      // reconstruction. Comparing content alone would miss a stale ref that
+      // happened to share content; comparing ref alone would miss a
+      // legitimately-refrozen status change under the stable ref. Together
+      // they are the minimal structural equality that covers the pre-fix
+      // `:settled-` ref corruption AND the post-fix legitimate maturation
+      // refresh under the stable `:settlement-` ref, without weakening the
+      // Verifier or bumping any global policy.
+      const frozenRef = job.bundle.settlementEvidence[0]?.ref;
+      const freshRef = freshBundle.settlementEvidence[0]?.ref;
+      const frozenSettlement = job.bundle.sourceEvidence?.find(
+        s => s.ref === frozenRef,
+      );
+      const freshSettlement = freshBundle.sourceEvidence?.find(
+        s => s.ref === freshRef,
+      );
+      if (!frozenSettlement || !freshSettlement) continue;
+      if (frozenRef === freshRef && frozenSettlement.content === freshSettlement.content) {
+        continue;
+      }
+      try {
+        if (job.disposition === 'deferred') {
+          this.skillEvolution.supersedeStaleDeferredJobWithFreshBundle(
+            job.bundle.bundleId,
+            freshBundle,
+            'settlement evidence reconciled from authoritative episode status (restart-safe)',
+          );
+        } else {
+          this.skillEvolution.supersedeActiveJobWithFreshBundle(
+            job.bundle.bundleId,
+            freshBundle,
+            'settlement evidence reconciled from authoritative episode status (restart-safe)',
+          );
+        }
+      } catch (error) {
+        Logger.warning(
+          `[RuntimeLearning] stale job supersession failed for ${job.bundle.bundleId}: ${toErrorMessage(error)}`,
+        );
+      }
     }
   }
 
@@ -4833,12 +5133,14 @@ export class RuntimeLearning {
   private persistReviewContinuation(
     episodeIds: ReadonlySet<string>,
     fairness: ReviewFairnessContinuation,
+    reviewJobIds: ReadonlySet<string> = new Set(),
   ): void {
 
     const now = this.clock();
     const state: ReviewContinuationState = {
       schemaVersion: REVIEW_CONTINUATION_SCHEMA_VERSION,
       episodeIds: [...episodeIds].sort(),
+      reviewJobIds: [...reviewJobIds].sort(),
       nextAttemptAt: new Date(now.getTime() + REVIEW_CONTINUATION_DELAY_MS).toISOString(),
       updatedAt: now.toISOString(),
       nextClass: fairness.nextClass,
@@ -4852,6 +5154,21 @@ export class RuntimeLearning {
     } catch (error) {
       try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
       Logger.warning(`[RuntimeLearning] failed to persist review continuation: ${toErrorMessage(error)}`);
+    }
+  }
+
+  /** Keep the heartbeat live while admitted review jobs have runnable quanta. */
+  private listRunnableReviewJobIds(): string[] {
+    try {
+      const now = this.clock();
+      const jobs = this.skillEvolution.getEvidenceReviewEngine().loadStore().jobs;
+      return Object.values(jobs)
+        .filter(job => job.disposition === 'active' && listRunnableQuanta(job, now).length > 0)
+        .map(job => job.jobId)
+        .sort((left, right) => left.localeCompare(right, 'en'));
+    } catch {
+      // The job store is optional during early construction / V3-disabled paths.
+      return [];
     }
   }
 
@@ -4964,10 +5281,15 @@ export class RuntimeLearning {
     try {
       const continuation = JSON.parse(fs.readFileSync(this.reviewContinuationPath, 'utf8')) as {
         episodeIds?: unknown;
+        reviewJobIds?: unknown;
       };
-      reviewContinuationEpisodes = Array.isArray(continuation.episodeIds)
+      const episodeCount = Array.isArray(continuation.episodeIds)
         ? continuation.episodeIds.length
         : 0;
+      const reviewJobCount = Array.isArray(continuation.reviewJobIds)
+        ? continuation.reviewJobIds.length
+        : 0;
+      reviewContinuationEpisodes = episodeCount + reviewJobCount;
     } catch { /* missing continuation means zero */ }
     try {
       const queue = JSON.parse(fs.readFileSync(this.config.skillEvolutionReviewQueuePath, 'utf8')) as {

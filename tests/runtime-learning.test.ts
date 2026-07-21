@@ -56,6 +56,11 @@ import {
   loadEvidenceReviewJobStore,
   saveEvidenceReviewJobStore,
 } from '../src/utils/evidence-review-graph-store';
+import {
+  ExternalSessionLogSourceAdapter,
+  type ExternalSourceReader,
+  type SessionLogSourceResource,
+} from '../src/utils/session-log-source';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -854,6 +859,29 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       nextAttemptAt: string;
     };
     assert.equal(continuation.episodeIds.length, 1);
+
+    const resumedPlan = env.runtimeLearning.getPlanner().plan(
+      new Date(Date.parse(continuation.nextAttemptAt) + 1),
+    );
+    assert.equal(resumedPlan.due.settlementDue, true);
+    assert.equal(resumedPlan.nextWakeReason, 'settlement-deadline');
+  });
+
+  test('runnable review jobs keep the restart-safe continuation scheduled', () => {
+    const continuationPath = reviewContinuationPathForEpisodeStore(env.episodeStorePath);
+    (env.runtimeLearning as any).persistReviewContinuation(
+      new Set(),
+      { nextClass: 'retry', classCursors: {} },
+      new Set(['job:runnable-review']),
+    );
+    const continuation = JSON.parse(fs.readFileSync(continuationPath, 'utf8')) as {
+      episodeIds: string[];
+      reviewJobIds: string[];
+      nextAttemptAt: string;
+    };
+
+    assert.deepEqual(continuation.episodeIds, []);
+    assert.deepEqual(continuation.reviewJobIds, ['job:runnable-review']);
 
     const resumedPlan = env.runtimeLearning.getPlanner().plan(
       new Date(Date.parse(continuation.nextAttemptAt) + 1),
@@ -1763,6 +1791,102 @@ describe('RuntimeLearning — semantic reassessment wake', () => {
     assert.equal(reconciled.status, 'succeeded');
     assert.equal(reconciled.nextRetryAt, undefined);
     assert.equal(readOrEmpty(env.reviewQueuePath)?.operational?.length, 0);
+  });
+});
+
+describe('RuntimeLearning — external catch-up continuation', () => {
+  let env: TestEnv;
+
+  beforeEach(() => { env = setupEnv(FUTURE_WINDOW_MS); });
+  afterEach(() => { env.restore(); env.teardown(); });
+
+  test('queues a discovery continuation while catch-up stability work remains', async () => {
+    let historySampleCalls = 0;
+    const resource: SessionLogSourceResource = {
+      resourceRef: 'thread-catch-up-1',
+      firstEventIdentity: {
+        eventId: 'codex://thread-catch-up-1#1',
+        position: 2,
+        conversationId: 'thread-catch-up-1',
+        branchId: 'thread-catch-up-1',
+        contentHash: 'catalog-fingerprint-1',
+      },
+    };
+    const reader: ExternalSourceReader = {
+      provider: 'codex',
+      reader: 'fixture-catch-up',
+      discoverResources: () => [resource],
+      observeCatchUpCatalog: () => ({
+        resources: [resource],
+        nextPageToken: null,
+        returnedResourceCount: 1,
+        outputBytes: 128,
+      }),
+      getCatchUpCatalogLimits: () => ({
+        initialLimit: 100,
+        maxCatalogResources: 2048,
+        maxOutputBytes: 4 * 1024 * 1024,
+        maxDurationMs: 60_000,
+      }),
+      sampleHistory: () => {
+        historySampleCalls += 1;
+        return {
+          events: [{
+            eventId: 'codex://thread-catch-up-1#2',
+            position: 2,
+            contentHash: 'stable-history-prefix-1',
+            conversationId: 'thread-catch-up-1',
+            branchId: 'thread-catch-up-1',
+          }],
+          status: 'stable',
+          exhausted: true,
+          newPosition: 2,
+          observedPosition: 2,
+          conversationId: 'thread-catch-up-1',
+          branchId: 'thread-catch-up-1',
+        };
+      },
+      read: (_resource, cursor) => ({
+        events: [],
+        status: 'stable',
+        exhausted: true,
+        newPosition: cursor.position,
+      }),
+    };
+    const adapter = new ExternalSessionLogSourceAdapter({
+      sourceId: 'external-codex-catch-up-test',
+      provider: 'codex',
+      reader,
+      enabled: true,
+      historyMode: 'catch-up',
+      scope: { scope: 'path', scopePath: env.root },
+      cursorStorePath: path.join(env.root, 'data', 'external-codex-cursor.json'),
+    });
+    const episodeStore = new LearningEpisodeStore(env.episodeStorePath);
+    const runtime = new RuntimeLearning({
+      workingDirectory: env.root,
+      evidenceIngestor: new EvidenceIngestor({ episodeStore, settlementWindowMs: FUTURE_WINDOW_MS }),
+      learningEpisodeStore: episodeStore,
+      skillEvolution: env.skillEvolution,
+      curator: null,
+      planner: new DueWorkPlanner({
+        learningEpisodeStorePath: env.episodeStorePath,
+        reviewQueuePath: env.reviewQueuePath,
+        curatorStatePath: path.join(env.root, 'data', 'curator-state.json'),
+        curatorIntervalMs: 24 * 60 * 60 * 1000,
+        semanticReassessmentManifestPath: env.reassessmentManifestPath,
+      }),
+      sessionLogSources: [adapter],
+    });
+
+    await runtime.wake('startup');
+
+    assert.equal(adapter.getNextCatchUpAction(), 'stability');
+    assert.deepEqual(runtime.getPendingHeartbeatReasons(), ['external-continuation']);
+
+    await runtime.wake('external-continuation');
+
+    assert.equal(historySampleCalls, 1, 'continuation must execute the pending stability quantum');
   });
 });
 

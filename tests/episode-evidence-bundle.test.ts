@@ -115,7 +115,7 @@ describe('episode-evidence-bundle (extracted responsibility)', () => {
     const [settlement] = bundle.settlementEvidence;
     assert.equal(settlement.sourceFilePath, episode.sourceFilePath);
     assert.equal(settlement.turn, episode.deliveryTurn);
-    assert.match(settlement.ref, /settled-2026-01-01T00:00:00\.000Z/);
+    assert.match(settlement.ref, /settlement-2026-01-01T00:00:00\.000Z/);
   });
 
   test('relatedCurrentSkills are derived from the live registry capabilities', () => {

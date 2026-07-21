@@ -1,7 +1,7 @@
 /**
  * Model-backed dual-lane Evidence Reader.
  *
- * Production default for SkillEvolution.runReaderLane: one bounded AIService.chat
+ * Production default for SkillEvolution.runReaderLane: one bounded AIService.chatStream
  * per (lane, immutable shard) with fixed schema/policy context. Author and
  * Verifier lanes use separate branch identity/context and never share
  * natural-language findings. Results are schema-validated ShardFindingSets with
@@ -126,7 +126,10 @@ export async function runModelBackedReaderLane(
 
   let rawContent = '';
   try {
-    const response = await options.aiService.chat(messages, undefined, {
+    // Responses-compatible relays may stream visible output but omit the final
+    // message from their terminal response. AIService.chatStream aggregates the
+    // deltas and preserves that output; the non-streaming path cannot recover it.
+    const response = await options.aiService.chatStream(messages, undefined, undefined, {
       signal: signal ?? options.signal,
     });
     rawContent = extractChatText(response?.content);

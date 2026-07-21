@@ -10,8 +10,23 @@
 export const EVIDENCE_REVIEW_JOB_SCHEMA_VERSION = 1 as const;
 
 /** Default prompt / policy version stamps included in Quantum identity. */
-export const EVIDENCE_REVIEW_PROMPT_VERSION = 'evidence-review-job-v1' as const;
-export const EVIDENCE_REVIEW_POLICY_VERSION = 'evidence-review-policy-v3' as const;
+export const EVIDENCE_REVIEW_PROMPT_VERSION = 'evidence-review-job-v2' as const;
+/**
+ * Policy v4 (Progressive Trust external-evidence false-negative fix):
+ *   - Structural Difference Index corroboration now keys on classification +
+ *     overlapping shard span instead of exact natural-language summary, so
+ *     cross-lane paraphrases over the same cited evidence no longer inflate
+ *     missing_citation obligations.
+ *   - Evidence Capsule reconstruction preserves a bounded, redacted external
+ *     solved-loop (trigger/action/result) instead of bare admission metadata.
+ *   - External terminal-outcome polarity: a negative review tail is not
+ *     manufactured as a successful final.
+ *   - Enforceable Progressive Trust defer seam: a settled low-risk narrow
+ *     external atom cannot be deferred solely for sample scarcity.
+ *   - Duplicate `create_current_skill` detection against relatedCurrentSkills.
+ * Active jobs frozen under v3 must supersede to a successor on the v4 policy.
+ */
+export const EVIDENCE_REVIEW_POLICY_VERSION = 'evidence-review-policy-v4' as const;
 
 /**
  * Common durable Quantum kinds for dual-lane coverage and final commit.

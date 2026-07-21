@@ -85,7 +85,7 @@ test('AIService retries transient stream errors before any text is emitted', asy
   assert.deepStrictEqual(errors, []);
   assert.deepStrictEqual(retries, [[1, 14]]);
   assert.equal(retryInfos[0].status, 503);
-  assert.equal(retryInfos[0].maxElapsedMs, 5 * 60 * 1000);
+  assert.equal(retryInfos[0].maxElapsedMs, 10 * 60 * 1000);
   assert.deepStrictEqual(chunks, ['ok']);
 });
 

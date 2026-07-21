@@ -1252,7 +1252,7 @@ function parseRenderedCatalog(stdout: string, provider: string, requestedUri: st
   if (uri !== requestedUri) {
     throw new Error(`xurl catalog uri mismatch: expected ${requestedUri}`);
   }
-  const catalogProvider = requireFrontmatterField(doc.frontmatter, 'provider');
+  const catalogProvider = resolveRenderedCatalogProvider(doc.frontmatter);
   if (catalogProvider !== provider) {
     throw new Error(`xurl catalog provider mismatch: expected ${provider}, got ${catalogProvider}`);
   }
@@ -1444,6 +1444,63 @@ function requireFrontmatterField(frontmatter: RenderedFrontmatter, key: string):
 
 function optionalFrontmatterField(frontmatter: RenderedFrontmatter, key: string): string | undefined {
   return frontmatter.fields.get(key);
+}
+
+/**
+ * Global xurl catalogs declare a scalar `provider`, while path-scoped catalogs
+ * declare a nested `providers` list. XiaoBa issues path queries for exactly one
+ * provider, so accept only a singleton list and keep the trust boundary closed.
+ */
+function resolveRenderedCatalogProvider(frontmatter: RenderedFrontmatter): string {
+  const scalarProvider = optionalFrontmatterField(frontmatter, 'provider');
+  if (scalarProvider !== undefined) return scalarProvider;
+
+  const providers = parseFrontmatterStringList(frontmatter, 'providers');
+  if (providers === undefined) {
+    throw new Error('xurl frontmatter is missing required field: provider or providers');
+  }
+  if (providers.length !== 1) {
+    throw new Error(`xurl catalog providers must contain exactly one provider, got ${providers.length}`);
+  }
+  return providers[0]!;
+}
+
+function parseFrontmatterStringList(
+  frontmatter: RenderedFrontmatter,
+  key: string,
+): string[] | undefined {
+  const lines = frontmatter.raw.split('\n');
+  const headerIndex = lines.findIndex(line => new RegExp(`^${key}:\\s*$`).test(line));
+  if (headerIndex === -1) return undefined;
+
+  const values: string[] = [];
+  for (let index = headerIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (!line.trim()) continue;
+    if (!/^\s/.test(line)) break;
+    const match = /^\s+-\s+(.+?)\s*$/.exec(line);
+    if (!match) {
+      throw new Error(`xurl frontmatter field ${key} has an invalid list item`);
+    }
+    values.push(decodeFrontmatterListScalar(match[1]!, key));
+  }
+  return values;
+}
+
+function decodeFrontmatterListScalar(raw: string, key: string): string {
+  if (/^'(?:[^']|'')*'$/.test(raw)) {
+    return raw.slice(1, -1).replace(/''/g, "'");
+  }
+  if (raw.startsWith('"') && raw.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === 'string') return parsed;
+    } catch {
+      // Fall through to the stable fail-closed error below.
+    }
+  }
+  if (/^[A-Za-z0-9._-]+$/.test(raw)) return raw;
+  throw new Error(`xurl frontmatter field ${key} has an invalid string item`);
 }
 
 function parseScalarLines(raw: string, label: string): Map<string, string> {

@@ -16,7 +16,7 @@ import { resolveModelContextWindow } from './model-context-window';
 const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504, 520, 524, 529]);
 const BASE_DELAY_MS = 1000;
 const MAX_DELAY_MS = 30000;
-const DEFAULT_MAX_RETRY_DURATION_MS = 5 * 60 * 1000;
+const DEFAULT_MAX_RETRY_DURATION_MS = 10 * 60 * 1000;
 const DEFAULT_MAX_RETRIES = 14;
 const MAX_CONFIGURABLE_RETRY_DURATION_MS = 10 * 60 * 1000;
 const MAX_CONFIGURABLE_RETRIES = 30;

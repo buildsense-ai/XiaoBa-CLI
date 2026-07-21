@@ -27,7 +27,7 @@ export class AnthropicProvider implements AIProvider {
     this.client = new Anthropic({
       apiKey: config.apiKey!,
       baseURL: this.normalizeBaseURL(this.apiUrl),
-      timeout: 10 * 60 * 1000, // 10 分钟，Opus 长输出需要足够时间
+      timeout: config.requestTimeoutMs ?? 10 * 60 * 1000,
       defaultHeaders: {
         'User-Agent': 'CatsCo',
         'x-stainless-lang': undefined as any,

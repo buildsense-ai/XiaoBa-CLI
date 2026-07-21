@@ -54,6 +54,8 @@ import type {
   EvidenceReviewJob,
 } from './evidence-review-types';
 import { buildExplicitObligationDispositions } from './evidence-review';
+import { enforceProgressiveTrustDefer } from './progressive-trust-policy';
+import { detectDuplicateCapabilityCreation } from './capability-update-guidance';
 import {
   createSuccessorReviewJob,
   decideReviewCommitFence,
@@ -554,6 +556,26 @@ function incrementTransitionCount(
   counts[transition] = (counts[transition] ?? 0) + 1;
 }
 
+/**
+ * Read the succeeded commit quantum's persisted SkillEvolutionResult from a
+ * terminal Evidence Review Job. This is the authoritative outcome after a
+ * durable commit: a crash/re-entry that lost advanceJob's in-memory result
+ * must reconstruct from it rather than from the draft intent or disposition.
+ *
+ * Returns undefined for legacy terminal jobs lacking a persisted commit
+ * quantum result (callers fall back to a decision-aware reconstruction).
+ */
+function readSucceededCommitQuantumResult(
+  job: EvidenceReviewJob,
+): SkillEvolutionResult | undefined {
+  const commitQuantum = Object.values(job.quanta).find(
+    q => q.kind === 'commit' && q.state === 'succeeded',
+  );
+  const result = commitQuantum?.result as SkillEvolutionResult | undefined;
+  if (!result || typeof result.transition !== 'string') return undefined;
+  return result;
+}
+
 export class SkillEvolutionRuntime {
   private readonly options: SkillEvolutionOptions;
   private readonly inFlightCreateRoutingNames = new Set<string>();
@@ -638,6 +660,25 @@ export class SkillEvolutionRuntime {
     }
     const { result } = await this.reviewAndApplyWithRetries(bundle, undefined, true, signal);
     return result;
+  }
+
+  /**
+   * Durably admit review work without waiting for any model call.
+   *
+   * Learning is background maintenance: ingestion must be able to finish even
+   * when the review provider is slow or unavailable.  Fair review wakes own
+   * subsequent Quantum execution and resume this job from durable state.
+   */
+  enqueueReview(bundle: EvidenceBundle): EvidenceReviewJob {
+    const frozen = freezeClone(bundle);
+    validateEvidenceBundle(frozen);
+    const engine = this.getEvidenceReviewEngine();
+    return engine.ensureJob({
+      bundle: frozen,
+      candidate: this.extractCandidateFromBundle(frozen),
+      workClass: inferReviewWorkClass(frozen),
+      registryReadSet: declaredRelevantRegistryReadSetFromBundle(frozen),
+    });
   }
 
   /** Usage reassessment reuses Author/Verifier without candidate retry state. */
@@ -810,14 +851,49 @@ export class SkillEvolutionRuntime {
       }
 
       if (live.disposition === 'completed' || live.disposition === 'deferred') {
-        if (live.draft && live.verifierResult) {
+        // Authoritative source: the succeeded commit quantum's persisted
+        // SkillEvolutionResult. A crash/re-entry after durable commit must
+        // reconstruct from this, never from the draft intent or disposition.
+        const persistedCommitResult = readSucceededCommitQuantumResult(live);
+        if (persistedCommitResult) {
           const reconstructed: SkillEvolutionResult = {
-            transition: live.disposition === 'deferred'
+            transition: persistedCommitResult.transition,
+            transitionId: persistedCommitResult.transitionId ?? live.transitionId,
+            verified: persistedCommitResult.verified,
+            rounds: persistedCommitResult.rounds > 0 ? persistedCommitResult.rounds : (live.revisionRound ?? 1),
+            draft: persistedCommitResult.draft ?? live.draft,
+            verifier: persistedCommitResult.verifier ?? live.verifierResult,
+            ...(persistedCommitResult.record ? { record: persistedCommitResult.record } : {}),
+            ...(persistedCommitResult.audit ? { audit: persistedCommitResult.audit } : {}),
+            ...(persistedCommitResult.queued ? { queued: persistedCommitResult.queued } : {}),
+            ...(persistedCommitResult.queueEntryId ? { queueEntryId: persistedCommitResult.queueEntryId } : {}),
+          };
+          if (
+            this.options.reviewQueuePath
+            && reconstructed.transition === 'defer'
+            && !reconstructed.queued
+          ) {
+            return this.enqueueDeferredResult(frozen, reconstructed);
+          }
+          return reconstructed;
+        }
+
+        // Backward-compat fallback for legacy terminal jobs without a persisted
+        // commit quantum result. Decision-aware, never infers verified solely
+        // from disposition completed.
+        if (live.draft && live.verifierResult) {
+          const decision = live.verifierResult.decision;
+          const reconstructedTransition: CapabilityTransitionKind =
+            live.disposition === 'deferred' || decision === 'defer'
               ? 'defer'
-              : (live.verifierResult.transition ?? live.draft.envelope.decision),
+              : decision === 'accept'
+                ? (live.verifierResult.transition ?? live.draft.envelope.decision)
+                : 'reject_candidate';
+          const reconstructed: SkillEvolutionResult = {
+            transition: reconstructedTransition,
             transitionId: live.transitionId,
-            verified: live.disposition === 'completed',
-            rounds: 1,
+            verified: decision === 'accept' && live.disposition === 'completed' && reconstructedTransition !== 'reject_candidate',
+            rounds: live.revisionRound ?? 1,
             draft: live.draft,
             verifier: live.verifierResult,
             ...(live.disposition === 'deferred' ? { queued: 'deferred' as const } : {}),
@@ -1000,6 +1076,9 @@ export class SkillEvolutionRuntime {
     bundle: EvidenceBundle;
     authorDossier: EvidenceDossier;
     job: EvidenceReviewJob;
+    round: number;
+    previousDraft?: SkillDraft;
+    verifierIssues?: readonly SkillVerifierIssue[];
     signal?: AbortSignal;
   }): Promise<{ draft: SkillDraft; transcriptPaths: string[] }> {
     const reviewBundle = attachAuthorDossierContext(input.bundle, input.authorDossier);
@@ -1010,9 +1089,9 @@ export class SkillEvolutionRuntime {
     };
     const author = this.createAuthorBranch(
       reviewBundle,
-      1,
-      undefined,
-      [],
+      input.round,
+      input.previousDraft,
+      input.verifierIssues ?? [],
       { remainingTurns: this.getReviewAttemptMaxTurns() },
       input.signal,
       reviewAttempt,
@@ -1032,10 +1111,14 @@ export class SkillEvolutionRuntime {
     // Retryable schema issues enqueue operationally only when a durable queue exists
     // (legacy parity). Semantic/policy issues remain on the draft for commit-time gate.
     const draftIssues = validateDraft(draft, reviewBundle, this.getManualSkillNames());
+    const hasDuplicateCapabilityIssue = draftIssues.some(
+      issue => issue.code === 'duplicate-capability-creation',
+    );
     if (
       draftIssues.length > 0
       && draftIssues.every(isRetryableAuthorDraftIssue)
       && this.options.reviewQueuePath
+      && !hasDuplicateCapabilityIssue
     ) {
       throw new OperationalReviewError(
         'invalid_completion_schema',
@@ -1054,6 +1137,7 @@ export class SkillEvolutionRuntime {
     differenceIndex: DossierDifferenceIndex;
     obligations: readonly ReviewObligation[];
     job: EvidenceReviewJob;
+    round: number;
     signal?: AbortSignal;
   }): Promise<{
     verifier: SkillVerifierResult;
@@ -1071,9 +1155,11 @@ export class SkillEvolutionRuntime {
     // Retryable schema issues with a queue already threw from skill_author.
     const draftIssues = validateDraft(input.draft, reviewBundle, this.getManualSkillNames());
     if (draftIssues.length > 0) {
+      const isDuplicate = draftIssues.some(i => i.code === 'duplicate-capability-creation');
       if (
         draftIssues.every(isRetryableAuthorDraftIssue)
         && this.options.reviewQueuePath
+        && !isDuplicate
       ) {
         throw new OperationalReviewError(
           'invalid_completion_schema',
@@ -1081,18 +1167,27 @@ export class SkillEvolutionRuntime {
           [],
         );
       }
-      const danger = draftIssues.some(issue => issue.severity === 'danger');
+      // Progressive Trust duplicate avoidance: a duplicate create_current_skill
+      // draft whose routingName matches an existing capability in the bundle's
+      // relatedCurrentSkills gets a bounded revision chance (round 2) when
+      // expandable, so the Author can correct to append_evidence or
+      // replace_current_skill. Only defer when revision is exhausted.
+      const canRevise = input.round < MAX_AUTHOR_VERIFIER_ROUNDS;
+      const decision = isDuplicate && canRevise ? 'revise' :
+        draftIssues.some(issue => issue.severity === 'danger') ? 'reject' : 'defer';
       const forced: SkillVerifierResult = {
-        decision: danger ? 'reject' : 'defer',
+        decision,
         issues: draftIssues,
-        rationale: `Runtime ${danger ? 'rejected' : 'deferred'} the author envelope before persistence: ${draftIssues.map(i => i.message).join(' ')}`,
+        rationale: `Runtime ${decision === 'revise' ? 'revision requested' : decision === 'reject' ? 'rejected' : 'deferred'} the author envelope before persistence: ${draftIssues.map(i => i.message).join(' ')}`,
       };
       // Non-accept runtime gates still need explicit cited dispositions so the
-      // engine can complete as semantic defer/reject instead of schema failure.
+      // engine can complete as semantic defer/reject/revise instead of schema failure.
+      const dispositionDecision: ObligationDisposition['decision'] =
+        decision === 'revise' ? 'deferred' : decision === 'reject' ? 'rejected' : 'deferred';
       const dispositions = buildExplicitObligationDispositions(
         input.obligations,
         Object.values(input.job.shards),
-        danger ? 'rejected' : 'deferred',
+        dispositionDecision,
         forced.rationale,
       );
       return { verifier: forced, dispositions, transcriptPaths: [] };
@@ -1106,7 +1201,7 @@ export class SkillEvolutionRuntime {
     const verifier = this.createVerifierBranch(
       reviewBundle,
       input.draft,
-      1,
+      input.round,
       { remainingTurns: this.getReviewAttemptMaxTurns() },
       input.signal,
       reviewAttempt,
@@ -1123,6 +1218,26 @@ export class SkillEvolutionRuntime {
     if (verifier.transcriptPath) {
       assertHealthyBranchTranscript(verifier.transcriptPath, 'skill-verifier', this.options.branchLogRoot);
     }
+    // Progressive Trust enforceable defer seam: a settled, low-risk, narrow
+    // external atom must not be deferred solely for sample scarcity. The
+    // runtime inspects a Verifier `defer` and, when the only cited reason is
+    // sample scarcity over a settled low-risk atom with a recognizable
+    // trigger/action/result, converts it to `revise` (expandable round) or, at
+    // the final round with a valid draft and no open high-risk obligation /
+    // structural difference, to `accept`. Genuine defer reasons are preserved.
+    // Never blindly forces acceptance.
+    const progressiveDraftIssues = validateDraft(input.draft, reviewBundle, this.getManualSkillNames());
+    const enforced = enforceProgressiveTrustDefer({
+      verification,
+      bundle: reviewBundle,
+      obligations: input.obligations,
+      differenceIndex: input.differenceIndex,
+      round: input.round,
+      maxRounds: MAX_AUTHOR_VERIFIER_ROUNDS,
+      draftValid: progressiveDraftIssues.length === 0,
+      shards: Object.values(input.job.shards),
+    });
+    verification = enforced.verification;
     const dispositions = resolveVerifierObligationDispositions({
       verification,
       obligations: input.obligations,
@@ -1138,6 +1253,7 @@ export class SkillEvolutionRuntime {
     verifier: SkillVerifierResult;
     job: EvidenceReviewJob;
     branchTranscriptPaths: string[];
+    round: number;
   }): Promise<SkillEvolutionResult> {
     const engine = this.getEvidenceReviewEngine();
     const candidate = this.extractCandidateFromBundle(input.bundle);
@@ -1214,7 +1330,7 @@ export class SkillEvolutionRuntime {
         reviewBundle,
         input.draft,
         forced,
-        1,
+        input.round,
         [...input.branchTranscriptPaths],
       );
     }
@@ -1227,7 +1343,7 @@ export class SkillEvolutionRuntime {
         reviewBundle,
         input.draft,
         input.verifier,
-        1,
+        input.round,
         [...input.branchTranscriptPaths],
         beforeAcceptedCommit,
       );
@@ -1566,6 +1682,86 @@ export class SkillEvolutionRuntime {
     }
 
     return { supersededJobIds, successorJobIds };
+  }
+
+  /**
+   * Supersede an active Evidence Review Job whose immutable frozen Review Basis
+   * still carries stale settlement evidence, using the existing audited
+   * successor mechanism.
+   *
+   * The frozen basis is never mutated in place: the stale job is marked
+   * `superseded`, a normalized successor is created from the fresh bundle
+   * (built from the now-reconciled capsule), and an operational follow-up is
+   * enqueued so fair advancement reaches only the clean successor. This is the
+   * same audited path `fenceStaleActiveJobsBeforeFairAdvance` uses for stale
+   * declared-dependency bases.
+   *
+   * Returns the superseded + successor job ids, or `undefined` when no active
+   * job exists for the bundle (already terminal or not yet enqueued).
+   */
+  supersedeActiveJobWithFreshBundle(
+    bundleId: string,
+    freshBundle: EvidenceBundle,
+    reason: string,
+  ): { supersededJobId: string; successorJobId: string } | undefined {
+    const engine = this.getEvidenceReviewEngine();
+    const staleJob = engine.findActiveJobForBundle(bundleId);
+    if (!staleJob) return undefined;
+    const candidate = this.extractCandidateFromBundle(freshBundle);
+    this.supersedeStaleReviewJob(
+      engine,
+      staleJob,
+      freshBundle,
+      candidate,
+      reason,
+    );
+    const successorJobId = engine.loadStore().jobs[staleJob.jobId]?.successorJobId;
+    return successorJobId
+      ? { supersededJobId: staleJob.jobId, successorJobId }
+      : undefined;
+  }
+
+  /**
+   * Supersede a durably `deferred` Evidence Review Job whose immutable frozen
+   * Review Basis still carries stale settlement evidence, using the same audited
+   * successor mechanism as `supersedeActiveJobWithFreshBundle`.
+   *
+   * A job that reached the durable `disposition: deferred` terminal state
+   * because the Verifier semantically deferred on the fabricated
+   * `settled ... (status: settling)` contradiction can remain permanently
+   * stuck even after the capsule is repaired: `getReviewedOrQueuedBundleIds()`
+   * treats deferred jobs as bundle owners (so the episode is never re-admitted
+   * for review), and fair scheduling only executes active jobs. Recovery
+   * therefore must extend to the stale `deferred` terminal state using the same
+   * immutable supersede/successor path — the frozen basis is never mutated in
+   * place; the stale job is marked `superseded` and a normalized successor is
+   * created from the fresh bundle.
+   *
+   * Returns the superseded + successor job ids, or `undefined` when no deferred
+   * job exists for the bundle (already recovered or not yet enqueued).
+   */
+  supersedeStaleDeferredJobWithFreshBundle(
+    bundleId: string,
+    freshBundle: EvidenceBundle,
+    reason: string,
+  ): { supersededJobId: string; successorJobId: string } | undefined {
+    const engine = this.getEvidenceReviewEngine();
+    const staleJob = Object.values(engine.loadStore().jobs)
+      .filter(job => job.bundle.bundleId === bundleId && job.disposition === 'deferred')
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt, 'en'))[0];
+    if (!staleJob) return undefined;
+    const candidate = this.extractCandidateFromBundle(freshBundle);
+    this.supersedeStaleReviewJob(
+      engine,
+      staleJob,
+      freshBundle,
+      candidate,
+      reason,
+    );
+    const successorJobId = engine.loadStore().jobs[staleJob.jobId]?.successorJobId;
+    return successorJobId
+      ? { supersededJobId: staleJob.jobId, successorJobId }
+      : undefined;
   }
 
   private async reviewAndApplyWithRetries(
@@ -3764,6 +3960,14 @@ function validateDraft(draft: SkillDraft, bundle: EvidenceBundle, manualSkillNam
   if (envelope?.decision === 'create_current_skill' && (!envelope.routingName || typeof envelope.routingName !== 'string' || !envelope.description || typeof envelope.description !== 'string')) {
     issues.push(issue('creation-metadata', 'Current Skill creation requires a routing name and description.', 'danger'));
   }
+  // Progressive Trust duplicate avoidance: a create_current_skill draft whose
+  // routingName matches an existing capability in the bundle's recall context
+  // (relatedCurrentSkills) must guide the Author to append_evidence /
+  // replace_current_skill instead of creating a duplicate. Bounded validation
+  // gate — never invents a name, never silently overrides a genuinely different
+  // Author proposal. Retryable so the Author gets one bounded revision chance.
+  const duplicate = detectDuplicateCapabilityCreation(draft, bundle);
+  if (duplicate) issues.push(duplicate);
   return issues;
 }
 
@@ -3778,6 +3982,7 @@ const RETRYABLE_AUTHOR_DRAFT_ISSUES = new Set([
   'evidence-refs-shape',
   'missing-evidence',
   'replace-route-mismatch',
+  'duplicate-capability-creation',
 ]);
 
 function isRetryableAuthorDraftIssue(issue: SkillVerifierIssue): boolean {

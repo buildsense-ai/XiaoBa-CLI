@@ -48,6 +48,8 @@ export interface ChatConfig {
   contextWindowTokens?: number;
   reasoningEffort?: ReasoningEffort;
   openaiApiMode?: OpenAIApiMode;
+  /** End-to-end client wait for one provider request. Defaults to ten minutes. */
+  requestTimeoutMs?: number;
   /** Capability facts supplied by the selected model catalog, when available. */
   modelCapabilities?: {
     vision?: boolean;

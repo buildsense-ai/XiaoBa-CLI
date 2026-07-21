@@ -286,7 +286,7 @@ export class DueWorkPlanner {
     }
   }
 
-  /** Budget-exhausted eligible episodes persist a short targeted continuation. */
+  /** Budget-exhausted episodes and runnable review jobs persist a short continuation. */
   private readReviewContinuationDeadline(): number | null {
     try {
       const continuationPath = reviewContinuationPathForEpisodeStore(
@@ -296,12 +296,16 @@ export class DueWorkPlanner {
       const parsed = JSON.parse(fs.readFileSync(continuationPath, 'utf8')) as {
         schemaVersion?: number;
         episodeIds?: unknown;
+        reviewJobIds?: unknown;
         nextAttemptAt?: unknown;
       };
       if ((parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2)
         || !Array.isArray(parsed.episodeIds)
-        || parsed.episodeIds.length === 0
         || typeof parsed.nextAttemptAt !== 'string') return null;
+      const hasEpisodeWork = parsed.episodeIds.length > 0;
+      const hasReviewJobWork = Array.isArray(parsed.reviewJobIds)
+        && parsed.reviewJobIds.length > 0;
+      if (!hasEpisodeWork && !hasReviewJobWork) return null;
       const deadline = Date.parse(parsed.nextAttemptAt);
       return Number.isFinite(deadline) ? deadline : null;
     } catch {

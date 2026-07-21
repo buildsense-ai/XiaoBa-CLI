@@ -14,7 +14,7 @@
  * the bottom of `runtime-learning.ts`.
  */
 
-import type { LearningEpisode } from './learning-episode';
+import type { LearningEpisode, LearningEpisodeStatus } from './learning-episode';
 import type { DistilledKnowledgeCandidate } from './capability-distiller';
 import type { SkillEvolutionRuntime } from './skill-evolution';
 import type {
@@ -39,6 +39,59 @@ export type {
   RelatedCurrentSkill,
   SkillEvidenceRef,
 };
+
+/** A settlement-evidence entry before durable redaction. */
+export interface EpisodeSettlementEvidence {
+  readonly ref: string;
+  readonly content: string;
+  readonly sourceFilePath: string;
+  readonly turn: number;
+}
+
+/**
+ * Build honest settlement evidence for a Learning Episode.
+ *
+ * Settlement evidence is runtime-owned maturation metadata, not external
+ * source content. It must never label a non-settled episode as settled, and the
+ * ref and content must agree on whether the episode has settled.
+ *
+ * The ref is a lifecycle-neutral, stable identifier — it never claims
+ * `settled` or `settling` — so it stays valid across maturation updates. The
+ * content carries the honest, status-derived assertion: only a matured
+ * episode (`eligible` or `contradicted`) is labeled `settled at <deadline>`;
+ * every other status (`settling`, `historical-pending`, `historical-abandoned`)
+ * is recorded honestly as `not settled`.
+ *
+ * At admission an episode is still `settling` (or `historical-pending`), so the
+ * durable capsule records the non-settled state truthfully. After maturation
+ * the caller re-derives this evidence from the authoritative matured status so
+ * the durable capsule and the reconstructed review bundle never expose a
+ * `settled` label alongside a `settling` (or other non-settled) status — the
+ * material settlement contradiction that previously caused the Verifier to
+ * defer fail-closed.
+ */
+export function buildEpisodeSettlementEvidence(
+  episode: Pick<
+    LearningEpisode,
+    'episodeId' | 'sourceFilePath' | 'settlementDeadline' | 'deliveryTurn' | 'status'
+  >,
+): EpisodeSettlementEvidence {
+  const ref = `${episode.sourceFilePath}#episode-${episode.episodeId}:settlement-${episode.settlementDeadline}`;
+  const settled = isSettledStatus(episode.status);
+  const content = settled
+    ? `Episode ${episode.episodeId} settled at ${episode.settlementDeadline} (status: ${episode.status})`
+    : `Episode ${episode.episodeId} not settled; status: ${episode.status} (settlement deadline: ${episode.settlementDeadline})`;
+  return {
+    ref,
+    content,
+    sourceFilePath: episode.sourceFilePath,
+    turn: episode.deliveryTurn,
+  };
+}
+
+function isSettledStatus(status: LearningEpisodeStatus): boolean {
+  return status === 'eligible' || status === 'contradicted';
+}
 
 /**
  * Select referenced-skill snapshots proven by runtime-owned
@@ -175,10 +228,11 @@ export function buildEpisodeEvidenceBundle(
       sourceFilePath: evidence.sourceFilePath,
       turn: evidence.turn,
     }));
+  const settlementEntry = buildEpisodeSettlementEvidence(episode);
   const settlementEvidence: readonly SkillEvidenceRef[] = [{
-    ref: `${episode.sourceFilePath}#episode-${episode.episodeId}:settled-${episode.settlementDeadline}`,
-    sourceFilePath: episode.sourceFilePath,
-    turn: episode.deliveryTurn,
+    ref: settlementEntry.ref,
+    sourceFilePath: settlementEntry.sourceFilePath,
+    turn: settlementEntry.turn,
   }];
   const registry = skillEvolution.getRegistry();
   const relatedCurrentSkills: readonly RelatedCurrentSkill[] = Object.values(registry.capabilities).map(

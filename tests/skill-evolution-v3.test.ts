@@ -965,26 +965,13 @@ describe('V3 verified semantic Current Skills', () => {
                 rationale: 'Verified within the verifier branch turn budget.',
                 registryReadSet: [],
                 // Live model path: dispositions must be explicit and cite spans.
+                // After the Difference Index paraphrase-corroboration fix, the
+                // Author and Verifier `fact` findings over the same shard span
+                // corroborate structurally, so no `missing_citation` obligations
+                // are raised and the verifier returns an empty disposition set.
                 obligationDispositions: acceptReviewObligations({
                   ...fixtureBundle(),
-                  episode: {
-                    reviewObligations: [
-                      {
-                        obligationId: 'obl:diff:missing_citation:6da737e780da',
-                        kind: 'difference',
-                        summary: 'Author finding not corroborated by Verifier',
-                        relatedFindingIds: [],
-                        requiredShardIds: ['shard:bundle_remainder:35e08ba239a6471c:0'],
-                      },
-                      {
-                        obligationId: 'obl:diff:missing_citation:b1911beb6616',
-                        kind: 'difference',
-                        summary: 'Verifier finding not present in Author dossier',
-                        relatedFindingIds: [],
-                        requiredShardIds: ['shard:bundle_remainder:35e08ba239a6471c:0'],
-                      },
-                    ],
-                  },
+                  episode: { reviewObligations: [] },
                 } as any),
               },
             },
@@ -2627,6 +2614,161 @@ describe('V3 verified semantic Current Skills', () => {
           assert.ok(cleanup.retainedPaths.includes(path.resolve(tp)));
         }
       }
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('revision loop + stale commit-fence: Registry mutation between round 2 and commit supersedes the old job and creates a successor', async () => {
+    const env = setup();
+    try {
+      env.options.reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.branchLogRoot = path.join(env.root, 'logs', 'branches');
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const created = await runtime.reviewAndApply(fixtureBundle());
+      const initial = created.record!;
+      assert.ok(initial);
+
+      let authorCalls = 0;
+      let verifierCalls = 0;
+      let registryMutated = false;
+      env.options.authorFixture = ({ bundle }) => {
+        authorCalls += 1;
+        const target = bundle.relatedCurrentSkills[0]!;
+        return {
+          body: 'Replace guidance under a fixed declared read set, revised after verifier feedback.',
+          envelope: {
+            decision: 'replace_current_skill',
+            targetCapabilityHandle: target.handle,
+            routingName: target.routingName,
+            description: target.description,
+            evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+          },
+        };
+      };
+      env.options.verifierFixture = ({ draft, round }) => {
+        verifierCalls += 1;
+        if (round === 1) {
+          // Round 1: request revision (too broad). This triggers round-2 expansion.
+          return {
+            decision: 'revise' as const,
+            issues: [{ code: 'too-broad', message: 'Draft is too broad for the evidence.', severity: 'warning' as const }],
+            rationale: 'Draft needs revision to narrow applicability.',
+          };
+        }
+        // Round 2: mutate the live Registry so the declared basis becomes stale
+        // BEFORE the commit quantum runs the Review Commit Fence. This is the
+        // exact inter-round-2-and-commit seam the test must cover.
+        if (!registryMutated) {
+          const registry = loadCurrentSkillRegistry(env.options.registryPath);
+          const current = registry.capabilities[initial.handle]!;
+          registry.capabilities[initial.handle] = {
+            ...current,
+            revision: current.revision + 1,
+            updatedAt: new Date().toISOString(),
+          };
+          registry.catalogRevision += 1;
+          saveCurrentSkillRegistry(env.options.registryPath, registry);
+          registryMutated = true;
+        }
+        return {
+          decision: 'accept' as const,
+          transition: draft.envelope.decision,
+          issues: [],
+          rationale: 'The revised replacement is supported by the fixed Evidence Bundle.',
+        };
+      };
+
+      const frozenContext = {
+        handle: initial.handle,
+        revision: initial.revision,
+        routingName: initial.routingName,
+        description: initial.description,
+        guidanceHash: initial.guidanceHash,
+      };
+      const replaceBundle = {
+        ...fixtureBundle(),
+        bundleId: 'replace-revision-loop-stale-fence',
+        relatedCurrentSkills: [frozenContext],
+      };
+
+      const auditsBefore = loadTransitionAudit(env.options.auditPath).length;
+      const result = await runtime.reviewAndApply(replaceBundle);
+
+      // The old job must NOT commit — stale-before-fence supersedes it.
+      assert.equal(result.verified, false, 'stale-fence must not verify');
+      assert.equal(result.transitionId, undefined, 'stale-fence must not write a transition id');
+      assert.equal(fs.existsSync(env.options.journalPath), false, 'stale-fence must not write journal');
+      assert.equal(
+        loadTransitionAudit(env.options.auditPath).length,
+        auditsBefore,
+        'stale-fence supersession must not append Transition Audit',
+      );
+      assert.ok(
+        result.queued === 'operational' || result.transition === 'defer',
+        `expected operational supersession, got ${JSON.stringify({
+          transition: result.transition,
+          queued: result.queued,
+        })}`,
+      );
+
+      // The revision loop ran both rounds before the fence fired.
+      assert.equal(authorCalls, 2, 'Author ran round 1 + round 2');
+      assert.equal(verifierCalls, 2, 'Verifier ran round 1 + round 2');
+
+      // The old job is superseded; exactly one successor is created on the live
+      // basis and reuses only identity-valid quanta.
+      const { loadEvidenceReviewJobStore, evidenceReviewJobStorePathForReviewQueue } = await import(
+        '../src/utils/evidence-review-job-store'
+      );
+      const store = loadEvidenceReviewJobStore(
+        evidenceReviewJobStorePathForReviewQueue(env.options.reviewQueuePath!),
+      );
+      const jobs = Object.values(store.jobs);
+      const supersededJob = jobs.find(j =>
+        j.disposition === 'superseded' && j.bundle.bundleId === 'replace-revision-loop-stale-fence',
+      );
+      assert.ok(supersededJob, 'old revision-loop job must be superseded');
+      const successors = jobs.filter(j => j.parentJobId === supersededJob!.jobId);
+      assert.equal(successors.length, 1, 'exactly one successor created');
+      const successor = successors[0]!;
+      assert.equal(successor.disposition, 'active', 'successor is active on the live basis');
+      // The successor freezes the live (bumped) revision, not the stale vector.
+      assert.notEqual(
+        successor.basis.registryReadSet.find(e => e.handle === initial.handle)?.revision,
+        supersededJob!.basis.registryReadSet.find(e => e.handle === initial.handle)?.revision,
+        'successor freezes live revision, not the stale frozen vector',
+      );
+      assert.equal(
+        successor.basis.registryReadSet.find(e => e.handle === initial.handle)?.revision,
+        initial.revision + 1,
+        'successor freezes the bumped live revision',
+      );
+
+      // Reuses only identity-valid quanta: any succeeded quantum in the
+      // successor must have exact kind+inputHash identity with a succeeded
+      // quantum in the stale job. Stale skill_author/skill_verifier results
+      // (whose inputs depended on the stale basis) must NOT be carried over.
+      const priorSucceeded = new Map(
+        Object.values(supersededJob!.quanta)
+          .filter(q => q.state === 'succeeded')
+          .map(q => [`${q.kind}:${q.inputHash}`, q] as const),
+      );
+      for (const q of Object.values(successor.quanta)) {
+        if (q.state !== 'succeeded') continue;
+        const prior = priorSucceeded.get(`${q.kind}:${q.inputHash}`);
+        assert.ok(prior, `successor succeeded quantum ${q.quantumId} (${q.kind}) has no identity-valid prior`);
+      }
+      const staleAuthorResults = Object.values(successor.quanta).filter(
+        q => q.kind === 'skill_author' && q.state === 'succeeded',
+      );
+      assert.equal(staleAuthorResults.length, 0,
+        'successor must not carry stale skill_author results from the old job');
+      const staleVerifierResults = Object.values(successor.quanta).filter(
+        q => q.kind === 'skill_verifier' && q.state === 'succeeded',
+      );
+      assert.equal(staleVerifierResults.length, 0,
+        'successor must not carry stale skill_verifier results from the old job');
     } finally {
       env.cleanup();
     }
