@@ -9047,9 +9047,16 @@
       const catsConnected=isCatsLoggedIn();
       const models=relayModelCatalog();
       const source=activeStartupSource();
-      const relayActiveId=source==='relay'?selectedRelayModelId():'';
+      const cloudModel=catsState.cloudModelOverride||null;
+      const cloudOverrideActive=Boolean(cloudModel && cloudModel.kind!=='local');
+      const cloudModelLabel=String(cloudModel?.model||cloudModel?.modelId||'云端模型');
+      const cloudReasoning=String(cloudModel?.reasoningEffort||'');
+      const cloudNotice=cloudOverrideActive
+        ? '<div class="runtime-note success" style="margin:8px 0 10px">云端当前覆盖：<strong>'+escapeHtml(cloudModelLabel)+'</strong>'+(cloudReasoning?' · 推理 '+escapeHtml(cloudReasoning):'')+'。下面保留设备本地配置，切回“设备本地配置”后重新生效。</div>'
+        : '';
+      const relayActiveId=!cloudOverrideActive && source==='relay'?selectedRelayModelId():'';
       const selectedRelayId=selectedRelayModelId();
-      const activeModel=source==='relay'
+      const activeModel=!cloudOverrideActive && source==='relay'
         ? (models.find(model=>String(model.id||model.model||'')===selectedRelayId)||null)
         : null;
       const service=catsState.service||{};
@@ -9061,15 +9068,15 @@
           : catsConnected?'先选模型，再检查启动。':'先选模型，登录后自动接入。';
       if(!models.length){
         panel.innerHTML='<div class="chat-relay-model-head"><div><div class="chat-relay-model-title">启动模型</div><div class="chat-muted">'+escapeHtml(activationCopy)+'</div></div>'
-          +(source==='custom'?'<span class="tag green">自定义</span>':'<span class="tag warm">可选择</span>')
-          +'</div><div class="relay-model-list">'+customModelChoiceHtml(source==='custom','chat')+'</div>'
+          +(cloudOverrideActive?'<span class="tag green">云端 · '+escapeHtml(cloudModelLabel)+'</span>':source==='custom'?'<span class="tag green">自定义</span>':'<span class="tag warm">可选择</span>')
+          +'</div>'+cloudNotice+'<div class="relay-model-list">'+customModelChoiceHtml(!cloudOverrideActive && source==='custom','chat')+'</div>'
           +'<div class="runtime-note warning" style="margin-top:8px">CatsCo 中转暂未提供可用模型。</div>';
         return;
       }
       panel.innerHTML='<div class="chat-relay-model-head"><div><div class="chat-relay-model-title">启动模型</div><div class="chat-muted">'+escapeHtml(activationCopy)+'</div></div>'
-        +(source==='custom'?'<span class="tag green">自定义</span>':activeModel?'<span class="tag green">'+escapeHtml(activeModel.model||activeModel.label||'已选择')+'</span>':'<span class="tag warm">可选择</span>')
-        +'</div><div class="relay-model-list">'
-        +customModelChoiceHtml(source==='custom','chat')
+        +(cloudOverrideActive?'<span class="tag green">云端 · '+escapeHtml(cloudModelLabel)+'</span>':source==='custom'?'<span class="tag green">自定义</span>':activeModel?'<span class="tag green">'+escapeHtml(activeModel.model||activeModel.label||'已选择')+'</span>':'<span class="tag warm">可选择</span>')
+        +'</div>'+cloudNotice+'<div class="relay-model-list">'
+        +customModelChoiceHtml(!cloudOverrideActive && source==='custom','chat')
         +models.map(model=>relayModelChoiceHtml(model, relayActiveId, catsConnected, 'chat')).join('')
         +'</div>';
     }

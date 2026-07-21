@@ -9,6 +9,7 @@ import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 import { FileBotCatalogModelRuntimeRepository, FileBotDefinitionRepository } from '../src/bot-definition/repository';
+import { createBotDefinitionSyncService } from '../src/bot-definition/service';
 import { resolveActiveBotLLMConfig } from '../src/bot-definition/llm-config-resolver';
 import { BOT_CATALOG_MODEL_RUNTIME_SCHEMA, BOT_DEFINITION_SCHEMA } from '../src/bot-definition/types';
 
@@ -432,6 +433,11 @@ describe('dashboard CatsCo account status', () => {
         installationId: 'body-local',
       },
     });
+    createBotDefinitionSyncService({ runtimeRoot: testRoot }).acceptCloud('110', {
+      kind: 'catalog',
+      modelId: 'gpt-5.6-sol',
+      reasoningEffort: 'high',
+    });
 
     const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
     const data = await response.json() as any;
@@ -444,6 +450,12 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.unconfirmedBotBinding, false);
     assert.equal(data.botUid, '110');
     assert.equal(data.bodyStatus.state, 'online');
+    assert.deepStrictEqual(data.cloudModelOverride, {
+      kind: 'catalog',
+      modelId: 'gpt-5.6-sol',
+      model: 'gpt-5.6-sol',
+      reasoningEffort: 'high',
+    });
     assert.equal(data.topicId, 'p2p_42_110');
   });
 

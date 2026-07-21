@@ -189,6 +189,8 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /if\(!connected\)\{\s*list\.classList\.remove\('compact'\);\s*list\.innerHTML='';\s*return;\s*\}/);
   assert.match(dashboardHtml, /diagnostics\.style\.display=connected\?'block':'none'/);
   assert.match(dashboardHtml, /function renderCatsRelayModelPanel\(\)/);
+  assert.match(dashboardHtml, /云端当前覆盖/);
+  assert.match(dashboardHtml, /cloudModelOverride/);
   assert.match(dashboardHtml, /function runCatsNextAction\(\)/);
   assert.match(dashboardHtml, /先完成模型来源/);
   assert.match(dashboardHtml, /启动模型/);
