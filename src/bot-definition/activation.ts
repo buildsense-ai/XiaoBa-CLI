@@ -52,9 +52,7 @@ export async function prepareBoundBotDefinition(
   if (selectedCatalogRuntime && selectedCatalogRuntime.botId !== botId) {
     throw new Error('Selected catalog runtime does not belong to the bound bot.');
   }
-  let sync = selectedCatalogRuntime
-    ? undefined
-    : definitionService.pullOrBootstrap(botId);
+  let sync = definitionService.pullOrBootstrap(botId);
   let localDefinition = sync?.definition;
   const previousCloudDefinition = definitionService.readCloudModelOverride(botId);
   const previousCloudRuntime = definitionService.readCloudCatalogRuntime(botId);
@@ -65,6 +63,7 @@ export async function prepareBoundBotDefinition(
   let cloudSelection = options.cloudSelection;
   let cloudApplyError: string | undefined;
   let cloudSelectionApplied = false;
+  let selectedCatalogRuntimeApplied = false;
   const shouldAcknowledgeCloudSelection = options.acknowledgeCloudSelection !== false;
 
   if (!cloudSelection) {
@@ -82,6 +81,45 @@ export async function prepareBoundBotDefinition(
   if (cloudSelection) {
     try {
       if (cloudSelection.kind === 'local') {
+        if (selectedCatalogRuntime) {
+          definitionService.storeCatalogRuntime(selectedCatalogRuntime);
+          sync = definitionService.publish(botId, {
+            kind: 'catalog',
+            modelId: selectedCatalogRuntime.modelId,
+          });
+          localDefinition = sync.definition;
+          materializedCatalogRuntime = true;
+          selectedCatalogRuntimeApplied = true;
+        }
+        if (!localDefinition) {
+          const runtime = await provisionCatsRelayCatalogRuntime({
+            botId,
+            modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
+            auth,
+            fetchImpl: options.fetchImpl,
+          });
+          definitionService.storeCatalogRuntime(runtime);
+          sync = definitionService.publish(botId, {
+            kind: 'catalog',
+            modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
+          });
+          localDefinition = sync.definition;
+          initializedDefault = true;
+          materializedCatalogRuntime = true;
+        }
+        if (localDefinition.model.kind === 'catalog') {
+          const runtime = definitionService.readCatalogRuntime(botId);
+          if (!runtime || !catalogRuntimeMatchesModelId(runtime, localDefinition.model.modelId)) {
+            const materialized = await provisionCatsRelayCatalogRuntime({
+              botId,
+              modelId: localDefinition.model.modelId,
+              auth,
+              fetchImpl: options.fetchImpl,
+            });
+            definitionService.storeCatalogRuntime(materialized);
+            materializedCatalogRuntime = true;
+          }
+        }
         definitionService.clearCloudModelOverride(botId);
         definition = localDefinition;
       } else if (cloudSelection.kind === 'custom') {
@@ -163,7 +201,11 @@ export async function prepareBoundBotDefinition(
     }
   }
 
-  if (selectedCatalogRuntime && (!cloudSelectionApplied || cloudSelection?.kind === 'local')) {
+  if (
+    selectedCatalogRuntime
+    && !selectedCatalogRuntimeApplied
+    && (!cloudSelectionApplied || cloudSelection?.kind === 'local')
+  ) {
     definitionService.storeCatalogRuntime(selectedCatalogRuntime);
     sync = definitionService.publish(botId, {
       kind: 'catalog',

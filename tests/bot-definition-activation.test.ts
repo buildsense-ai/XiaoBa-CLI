@@ -645,4 +645,50 @@ describe('BotDefinition activation', () => {
     assert.equal(restored?.config.apiKey, 'sk-local-relay');
     assert.equal(localRuntimes.read('43')?.apiKey, 'sk-local-relay');
   });
+
+  test('keeps the cloud override when returning to a local catalog model cannot prepare its runtime', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cloud-local-rollback-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cloud-local-rollback-canonical-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'user-token', uid: '7' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }).writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+    });
+    const cloudModel = {
+      kind: 'custom' as const,
+      protocol: 'openai-responses' as const,
+      apiBase: 'https://cloud.example.test/v1',
+      model: 'cloud-model',
+      apiKey: 'sk-cloud-model',
+      contextWindowTokens: 256_000,
+    };
+    new FileBotCloudModelOverrideRepository({ runtimeRoot }).write({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: cloudModel,
+    });
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      simulatedCloudRoot,
+      env,
+      fetchImpl: (async () => Response.json({ error: 'relay temporarily unavailable' }, { status: 503 })) as typeof fetch,
+      cloudSelection: { kind: 'local', modelId: 'local', revision: 22 },
+      acknowledgeCloudSelection: false,
+    });
+
+    assert.match(prepared?.cloudApplyError || '', /relay temporarily unavailable/);
+    assert.equal(prepared?.cloudRevision, undefined);
+    assert.deepStrictEqual(new FileBotCloudModelOverrideRepository({ runtimeRoot }).read('43')?.model, cloudModel);
+    assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'cloud-model');
+    assert.equal(new FileBotCatalogModelRuntimeRepository({ runtimeRoot }).read('43'), undefined);
+  });
 });

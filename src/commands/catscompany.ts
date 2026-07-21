@@ -268,13 +268,21 @@ async function applyCloudModelRuntimeSelection(
     if (previousCloudRuntime) definitionService.storeCloudCatalogRuntime(previousCloudRuntime);
   };
 
-  const prepared = await prepareBoundBotDefinition({
-    runtimeRoot: options.runtimeRoot,
-    botId,
-    auth: options.auth,
-    cloudSelection: options.selection,
-    acknowledgeCloudSelection: false,
-  });
+  let prepared: Awaited<ReturnType<typeof prepareBoundBotDefinition>>;
+  try {
+    prepared = await prepareBoundBotDefinition({
+      runtimeRoot: options.runtimeRoot,
+      botId,
+      auth: options.auth,
+      cloudSelection: options.selection,
+      acknowledgeCloudSelection: false,
+    });
+  } catch (error) {
+    restorePreviousModelFiles();
+    const message = redactCloudBotModelError(error, options.selection);
+    await acknowledgeCloudModelApply(options, message);
+    throw new Error(message);
+  }
   if (!prepared || prepared.cloudRevision !== options.selection.revision || prepared.cloudApplyError) {
     const message = prepared?.cloudApplyError || '云端模型运行材料未能完成准备。';
     restorePreviousModelFiles();
@@ -311,6 +319,7 @@ async function applyCloudModelRuntimeSelection(
     await previousBot.destroy();
     nextBot = new CatsCompanyBot(options.connectorConfig);
     await nextBot.start();
+    await nextBot.waitUntilReady();
     options.replaceBot(nextBot);
   } catch (error) {
     if (nextBot) {
@@ -319,16 +328,13 @@ async function applyCloudModelRuntimeSelection(
       });
     }
     restorePreviousModelFiles();
-    const fallbackBot = new CatsCompanyBot(options.connectorConfig);
-    try {
-      await fallbackBot.start();
-      options.replaceBot(fallbackBot);
-    } catch (fallbackError) {
-      await fallbackBot.destroy().catch(() => undefined);
-      Logger.error(`CatsCo 模型切换回滚后 connector 恢复失败: ${errorMessage(fallbackError)}`);
-    }
     const safeMessage = redactCloudBotModelError(error, options.selection);
     await acknowledgeCloudModelApply(options, safeMessage);
+    await recoverCloudModelFallbackConnector({
+      canApply: options.canApply,
+      createBot: () => new CatsCompanyBot(options.connectorConfig),
+      replaceBot: options.replaceBot,
+    });
     throw new Error(safeMessage);
   }
 
@@ -339,6 +345,44 @@ async function applyCloudModelRuntimeSelection(
       + `，revision=${options.selection.revision}。`,
   );
   return 'applied';
+}
+
+interface RecoverCloudModelFallbackConnectorOptions {
+  canApply(): boolean;
+  createBot(): CatsCompanyBot;
+  replaceBot(bot: CatsCompanyBot): void;
+  retryDelayMs?: number;
+}
+
+export async function recoverCloudModelFallbackConnector(
+  options: RecoverCloudModelFallbackConnectorOptions,
+): Promise<void> {
+  let attempt = 0;
+  while (options.canApply()) {
+    attempt += 1;
+    let fallbackBot: CatsCompanyBot | undefined;
+    try {
+      fallbackBot = options.createBot();
+      await fallbackBot.start();
+      options.replaceBot(fallbackBot);
+      try {
+        await fallbackBot.waitUntilReady();
+      } catch (error) {
+        Logger.error(`CatsCo 模型切换回滚后握手仍未恢复，connector 将继续自动重连: ${errorMessage(error)}`);
+      }
+      return;
+    } catch (error) {
+      if (fallbackBot) await fallbackBot.destroy().catch(() => undefined);
+      Logger.error(`CatsCo 模型切换回滚后 connector 第 ${attempt} 次启动失败，将自动重试: ${errorMessage(error)}`);
+      if (!options.canApply()) break;
+      await delay(options.retryDelayMs ?? Math.min(30_000, attempt * 5_000));
+    }
+  }
+  throw new Error('CatsCo connector fallback recovery was cancelled.');
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
 }
 
 async function acknowledgeCloudModelApply(

@@ -379,6 +379,7 @@ export class CatsCompanyBot {
   private subAgentCompletionBatches = new Map<string, BackgroundSubAgentCompletionBatch>();
   /** Bot 自身的 uid，用于过滤自己发出的消息 */
   private botUid: string | null = null;
+  private connectorReady = false;
   private runtime: AdapterRuntimeBundle;
   private runtimeProfile: AdapterRuntimeBundle['profile'];
   private localDeviceGrant?: ScopedLocalDeviceGrant;
@@ -459,6 +460,7 @@ export class CatsCompanyBot {
 
     // 注册事件
     this.bot.on('ready', (info: { uid: string; name: string }) => {
+      this.connectorReady = true;
       this.botUid = String(info.uid || '').trim() || this.botUid;
       const botName = info.name.trim() || '(未设置)';
       this.runtimeProfile.displayName = botName;
@@ -489,6 +491,21 @@ export class CatsCompanyBot {
 
     this.bot.connect();
     Logger.success('CatsCo agent 已启动，等待消息...');
+  }
+
+  async waitUntilReady(timeoutMs = 30_000): Promise<void> {
+    if (this.connectorReady) return;
+    await new Promise<void>((resolve, reject) => {
+      const onReady = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        this.bot.off('ready', onReady);
+        reject(new Error(`CatsCo connector handshake timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.bot.once('ready', onReady);
+    });
   }
 
   /** Runtime model reloads must not interrupt a turn, queued message, restore, or child result. */
@@ -2795,6 +2812,7 @@ export class CatsCompanyBot {
    * 停止机器人
    */
   async destroy(): Promise<void> {
+    this.connectorReady = false;
     this.stopDeviceRegistrationRefresh();
     this.bot.disconnect();
     await this.sessionManager.destroy();
