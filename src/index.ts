@@ -80,9 +80,6 @@ function main() {
   program
     .command('runtime')
     .description('Show the resolved node, python, git, and xurl runtimes')
-    .option('--retry-needs-review <entry-id>', 'Mark a Needs Review Queue entry eligible for retry')
-    .option('--reason <text>', 'Record why an explicit retry was requested')
-    .option('--working-directory <path>', 'Resolve runtime state from this working directory')
     .action(runtimeCommand);
 
   const externalSource = program

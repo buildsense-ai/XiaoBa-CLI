@@ -307,16 +307,3 @@ export function validateLaneCoverage(
   };
 }
 
-/** Throw on the first validation error (strict integrator helper). */
-export function assertValidShardFindingSet(
-  set: ShardFindingSet,
-  shard: EvidenceShard,
-  manifest: EvidenceBundleManifest,
-  options: { expectedLane?: EvidenceReviewLane } = {},
-): void {
-  const result = validateShardFindingSet(set, shard, manifest, options);
-  if (!result.ok) {
-    const first = result.errors[0]!;
-    throw new Error(`${first.code}: ${first.message}`);
-  }
-}

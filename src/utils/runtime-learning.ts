@@ -10,9 +10,6 @@
  *
  * The scheduler is NOT a generic workflow/DAG framework. RuntimeLearning owns
  * the full coordination; the heartbeat is just the timer.
- *
- * Legacy DistillationPipeline behavior is reachable only through the explicit
- * `legacyPipeline` constructor option. No RuntimeLearning wake depends on it.
  */
 
 import * as fs from 'fs';
@@ -25,7 +22,6 @@ import {
   REVIEW_CONTINUATION_DELAY_MS,
   reviewContinuationPathForEpisodeStore,
 } from './due-work-planner';
-import { DistillationPipeline } from './distillation-pipeline';
 import {
   CrossFileContinuityOptions,
   DistillationUnit,
@@ -495,12 +491,6 @@ export interface RuntimeLearningOptions {
   /** Due Work Planner (deadline-aware scheduling). */
   planner: DueWorkPlanner;
   /**
-   * Legacy DistillationPipeline for compatibility. When set, the pipeline's
-   * processUnit and admitEvidence methods remain callable through a
-   * RuntimeLearning accessor. No RuntimeLearning wake depends on it.
-   */
-  legacyPipeline?: DistillationPipeline;
-  /**
    * Session Log Source adapters for source-neutral discovery. When omitted,
    * the RuntimeLearning module constructs a single Internal Session Log Source
    * adapter (the default production path). Tests may inject a fixture adapter
@@ -728,7 +718,6 @@ export class RuntimeLearning {
   private readonly skillEvolution: SkillEvolutionRuntime;
   private readonly curator: SkillUsageCurator | null;
   private readonly planner: DueWorkPlanner;
-  private readonly legacyPipeline: DistillationPipeline | undefined;
   private readonly clock: () => Date;
   private config: DistillationHeartbeatConfig;
   /**
@@ -806,7 +795,6 @@ export class RuntimeLearning {
     this.skillEvolution = options.skillEvolution;
     this.curator = options.curator;
     this.planner = options.planner;
-    this.legacyPipeline = options.legacyPipeline;
     this.clock = options.clock ?? (() => new Date());
     this.config = getDistillationHeartbeatConfig(this.workingDirectory);
     this.providerOverrideStore = new ExternalProviderOverrideStore({
@@ -867,15 +855,6 @@ export class RuntimeLearning {
       commitFn: (page) => this.commitExternalEvidencePage(page),
       clock: this.clock,
     });
-  }
-
-  // -----------------------------------------------------------------------
-  // Public accessors for legacy compatibility
-  // -----------------------------------------------------------------------
-
-  /** Access the legacy pipeline for compatibility tests only. */
-  getLegacyPipeline(): DistillationPipeline | undefined {
-    return this.legacyPipeline;
   }
 
   /** Access the SkillEvolutionRuntime for registry/audit inspection. */
@@ -2614,17 +2593,6 @@ export class RuntimeLearning {
     if (!reviewAttempted) return skippedReviewReport();
 
     const transitionsByKind: Partial<Record<CapabilityTransitionKind, number>> = {};
-
-    // #104/#110 production compatibility: materialize legacy Operational Review
-    // Retry + prompt-budget-blocked records as Evidence Review Jobs before fair
-    // rotation so they become normally schedulable without a second scheduler.
-    try {
-      await this.skillEvolution.ensureLegacyReviewRecordsMigratedOnce(this.clock());
-    } catch (error) {
-      Logger.warning(
-        `[RuntimeLearning] legacy review migration skipped: ${toErrorMessage(error)}`,
-      );
-    }
 
     // Restart-safe settlement reconciliation: a capsule persisted before the
     // settlement-consistency fix may carry contradictory settlement evidence

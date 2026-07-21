@@ -32,7 +32,7 @@ import {
 } from '../src/utils/skill-evolution';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
-import { DistillationPipeline, defaultDistilledOutputDir } from '../src/utils/distillation-pipeline';
+import { defaultDistilledOutputDir } from '../src/utils/path-resolver';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../src/utils/runtime-command-support';
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
 import { SkillParser } from '../src/skills/skill-parser';
@@ -55,7 +55,7 @@ import { createEvidenceReviewJob } from '../src/utils/evidence-review-graph';
 import {
   loadEvidenceReviewJobStore,
   saveEvidenceReviewJobStore,
-} from '../src/utils/evidence-review-graph-store';
+} from '../src/utils/evidence-review-job-store';
 import {
   ExternalSessionLogSourceAdapter,
   type ExternalSourceReader,
@@ -266,7 +266,6 @@ function createRestartableRuntimeLearning(root: string, settlementWindowMs = 0):
     skillEvolution,
     curator,
     planner,
-    legacyPipeline: undefined,
   });
 }
 
@@ -288,7 +287,6 @@ interface TestEnv {
   journalPath: string;
   reassessmentManifestPath: string;
   outputDir: string;
-  pipeline: DistillationPipeline;
   runtimeLearning: RuntimeLearning;
   skillEvolution: SkillEvolutionRuntime;
   skillEvolutionOptions: SkillEvolutionOptions;
@@ -418,15 +416,6 @@ function setupEnv(
     settlementWindowMs,
   });
 
-  const pipeline = new DistillationPipeline({
-    outputDir,
-    reviewOutcomesPath: path.join(root, 'data', 'review-outcomes.json'),
-    learningEpisodeStorePath: episodeStorePath,
-    learningEpisodeSettlementWindowMs: settlementWindowMs,
-    skillEvolution,
-    skillUsageCurator: curator,
-  });
-
   const runtimeLearning = new RuntimeLearning({
     workingDirectory: root,
     evidenceIngestor,
@@ -434,7 +423,6 @@ function setupEnv(
     skillEvolution,
     curator,
     planner,
-    legacyPipeline: pipeline,
   });
 
   return {
@@ -448,7 +436,6 @@ function setupEnv(
     journalPath,
     reassessmentManifestPath,
     outputDir,
-    pipeline,
     runtimeLearning,
     skillEvolution,
     skillEvolutionOptions,
@@ -2013,9 +2000,6 @@ describe('Issue 1 — V3-disabled compatibility', () => {
       'expected runtimeLearning to be null when V3 disabled');
     assert.equal(support.distillationHeartbeatScheduler, null,
       'expected distillationHeartbeatScheduler to be null when V3 disabled');
-    // Legacy DistillationPipeline is still available for API-based compatibility
-    assert.ok(support.distillationPipeline instanceof DistillationPipeline,
-      'expected DistillationPipeline to be constructed for compatibility');
   });
 });
 
@@ -2736,14 +2720,6 @@ describe('RuntimeLearning — Provenance (AC4 follow-up)', () => {
       curatorIntervalMs: 24 * 60 * 60 * 1000,
     });
     const evidenceIngestor = new EvidenceIngestor({ episodeStore, settlementWindowMs: 0 });
-    const pipeline = new DistillationPipeline({
-      outputDir,
-      reviewOutcomesPath: path.join(root, 'data', 'review-outcomes.json'),
-      learningEpisodeStorePath: episodeStorePath,
-      learningEpisodeSettlementWindowMs: 0,
-      skillEvolution,
-      skillUsageCurator: curator,
-    });
     const runtimeLearning = new RuntimeLearning({
       workingDirectory: root,
       evidenceIngestor,
@@ -2751,7 +2727,6 @@ describe('RuntimeLearning — Provenance (AC4 follow-up)', () => {
       skillEvolution,
       curator,
       planner,
-      legacyPipeline: pipeline,
     });
 
     // Write session log with known deliver + acceptance

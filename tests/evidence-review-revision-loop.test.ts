@@ -474,7 +474,7 @@ describe('Evidence Review revision loop (durable graph)', () => {
       // Recover job after restart and reset terminal_failed to pending
       const state2 = engine2.loadStore();
       const job2 = state2.jobs[job.jobId]!;
-      recoverJobAfterRestart(job2 as any, new Date());
+      recoverJobAfterRestart(job2, new Date());
 
       // Reset the terminal_failed round-2 author to pending (simulating operator recovery)
       for (const q of Object.values(job2.quanta)) {

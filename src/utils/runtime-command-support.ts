@@ -13,8 +13,8 @@ import {
   HeartbeatSchedulerOwnerLock,
 } from './heartbeat-scheduler-owner-lock';
 import { DistillationHeartbeatScheduler } from './distillation-heartbeat-scheduler';
-import { DistillationPipeline, defaultDistilledOutputDir } from './distillation-pipeline';
-import { bootstrapLegacyDistilledSkillsOnce, bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
+import { defaultDistilledOutputDir } from './path-resolver';
+import { bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
 import { LearningEpisodeStore } from './learning-episode';
 import { EvidenceIngestor } from './evidence-ingestor';
@@ -46,8 +46,6 @@ interface ActiveRuntimeSupport {
    * runtime uses RuntimeLearning rather than legacy wiring.
    */
   runtimeLearning: RuntimeLearning | null;
-  /** Legacy DistillationPipeline accessor (compatibility). */
-  distillationPipeline: DistillationPipeline | null;
   stop(): Promise<void>;
 }
 
@@ -101,7 +99,6 @@ export async function startRuntimeCommandSupport(
 
       let distillationHeartbeatScheduler: DistillationHeartbeatScheduler | null = null;
       let runtimeLearning: RuntimeLearning | null = null;
-      let distillationPipeline: DistillationPipeline | null = null;
       let heartbeatOwnerLock: HeartbeatSchedulerOwnerLock | null = null;
       let heartbeatOwnerElectionTimer: NodeJS.Timeout | null = null;
       let heartbeatOwnerElectionInFlight: Promise<boolean> | null = null;
@@ -117,8 +114,7 @@ export async function startRuntimeCommandSupport(
       // Only build V3 runtime components (RuntimeLearning + scheduler) when
       // the heartbeat master switch is on AND skill evolution is enabled.
       // When V3 is disabled, background learning is fully suppressed — no
-      // RuntimeLearning or heartbeat scheduler is constructed. The legacy
-      // DistillationPipeline is still constructed for API-based compatibility.
+      // RuntimeLearning or heartbeat scheduler is constructed.
       const v3Enabled = DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(workingDirectory)
         && config.skillEvolutionEnabled;
 
@@ -149,16 +145,6 @@ export async function startRuntimeCommandSupport(
               verifierModel: config.skillEvolutionVerifierModel,
               ...options.skillEvolutionOptions,
             });
-
-            try {
-              await bootstrapLegacyDistilledSkillsOnce({
-                skillEvolution,
-                generatedDistilledRoot: outputDir,
-              });
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              Logger.warning(`Legacy distilled skill bootstrap failed: ${message}`);
-            }
 
             const learningEpisodeStore = new LearningEpisodeStore(config.learningEpisodeStorePath);
 
@@ -191,17 +177,6 @@ export async function startRuntimeCommandSupport(
               curatorIntervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
               semanticReassessmentManifestPath: config.skillEvolutionReassessmentManifestPath,
             });
-            const builtPipeline = new DistillationPipeline({
-              outputDir,
-              reviewOutcomesPath: config.reviewOutcomesPath,
-              needsReviewQueuePath: config.needsReviewQueuePath,
-              capabilityRegistryPath: config.capabilityRegistryPath,
-              workLogRoot: config.workLogRoot,
-              skillEvolution,
-              learningEpisodeStorePath: config.learningEpisodeStorePath,
-              learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-              skillUsageCurator: curator,
-            });
             const builtRuntimeLearning = new RuntimeLearning({
               workingDirectory,
               evidenceIngestor,
@@ -209,7 +184,6 @@ export async function startRuntimeCommandSupport(
               skillEvolution,
               curator,
               planner,
-              legacyPipeline: builtPipeline,
               clock: options.clock,
             });
             builtScheduler = new DistillationHeartbeatScheduler(
@@ -228,7 +202,6 @@ export async function startRuntimeCommandSupport(
             // Publish one complete owner generation. A follower never sees or
             // retains a partially constructed writable stack.
             heartbeatOwnerLock = ownerLock;
-            distillationPipeline = builtPipeline;
             runtimeLearning = builtRuntimeLearning;
             distillationHeartbeatScheduler = builtScheduler;
             return true;
@@ -240,7 +213,7 @@ export async function startRuntimeCommandSupport(
         };
 
         attemptHeartbeatOwnership = async (startImmediately: boolean): Promise<boolean> => {
-          if (stopping || distillationHeartbeatScheduler || runtimeLearning || distillationPipeline) return false;
+          if (stopping || distillationHeartbeatScheduler || runtimeLearning) return false;
           const ownerLock = acquireHeartbeatSchedulerOwnerLock({
             runtimeRoot: workingDirectory,
             command: process.argv.join(' '),
@@ -264,21 +237,6 @@ export async function startRuntimeCommandSupport(
         // follower retains only this election function and constructs a fresh
         // stack from disk after a later takeover.
         await attemptHeartbeatOwnership(false);
-      }
-
-      // Legacy DistillationPipeline (always constructed for API-based
-      // compatibility when V3 is disabled). A V3 follower must not construct
-      // it because the pipeline participates in the writable V3 stack.
-      if (!v3Enabled) {
-        distillationPipeline = new DistillationPipeline({
-          outputDir,
-          reviewOutcomesPath: config.reviewOutcomesPath,
-          needsReviewQueuePath: config.needsReviewQueuePath,
-          capabilityRegistryPath: config.capabilityRegistryPath,
-          workLogRoot: config.workLogRoot,
-          learningEpisodeStorePath: config.learningEpisodeStorePath,
-          learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-        });
       }
 
       try {
@@ -310,7 +268,6 @@ export async function startRuntimeCommandSupport(
         }
         distillationHeartbeatScheduler = null;
         runtimeLearning = null;
-        if (v3Enabled) distillationPipeline = null;
         throw error;
       }
 
@@ -340,7 +297,6 @@ export async function startRuntimeCommandSupport(
         catscoLogUploadScheduler,
         get distillationHeartbeatScheduler() { return distillationHeartbeatScheduler; },
         get runtimeLearning() { return runtimeLearning; },
-        get distillationPipeline() { return distillationPipeline; },
         async stop() {
           stopping = true;
           if (heartbeatOwnerElectionTimer) {
@@ -362,7 +318,6 @@ export async function startRuntimeCommandSupport(
           }
           distillationHeartbeatScheduler = null;
           runtimeLearning = null;
-          if (v3Enabled) distillationPipeline = null;
         },
       };
 

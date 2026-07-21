@@ -13,15 +13,27 @@ import {
   EVIDENCE_REVIEW_JOB_SCHEMA_VERSION,
   EVIDENCE_REVIEW_POLICY_VERSION,
   EVIDENCE_REVIEW_PROMPT_VERSION,
-  type EvidenceReviewJob,
   type EvidenceReviewJobDisposition,
-  type EvidenceReviewJobProgress,
+  type GraphEvidenceReviewJob,
+  type GraphReviewBasis,
   type QuantumLease,
-  type ReviewBasis,
   type ReviewQuantumKind,
   type ReviewQuantumRecord,
   type ReviewWorkClass,
-} from './evidence-review-graph-types';
+} from './evidence-review-types';
+
+/**
+ * Minimal structural view of a job for graph-core read/mutate functions.
+ * The engine EvidenceReviewJob structurally satisfies this interface,
+ * eliminating `as any` bridges.
+ */
+export interface GraphJobView {
+  disposition: EvidenceReviewJobDisposition;
+  quanta: Record<string, ReviewQuantumRecord>;
+  updatedAt: string;
+  nextDueAt?: string;
+  terminalReason?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Canonical hashing / identity
@@ -125,7 +137,7 @@ export interface ReviewBasisInput {
  * Build an immutable Review Basis version vector.
  * Fence comparison is intentionally not implemented here (#109).
  */
-export function buildReviewBasis(input: ReviewBasisInput): ReviewBasis {
+export function buildReviewBasis(input: ReviewBasisInput): GraphReviewBasis {
   const registryReadSet = [...(input.registryReadSet ?? [])]
     .map(entry => String(entry))
     .sort((a, b) => a.localeCompare(b, 'en'));
@@ -134,7 +146,7 @@ export function buildReviewBasis(input: ReviewBasisInput): ReviewBasis {
     .sort((a, b) => a.localeCompare(b, 'en'));
   const reviewPolicyVersion = input.reviewPolicyVersion ?? EVIDENCE_REVIEW_POLICY_VERSION;
   const promptVersion = input.promptVersion ?? EVIDENCE_REVIEW_PROMPT_VERSION;
-  const basisBody: Omit<ReviewBasis, 'basisHash'> = {
+  const basisBody: Omit<GraphReviewBasis, 'basisHash'> = {
     manifestHash: input.manifestHash,
     evidenceBundleHash: input.evidenceBundleHash,
     registryReadSet,
@@ -161,7 +173,7 @@ export function buildReviewBasis(input: ReviewBasisInput): ReviewBasis {
 export interface CreateEvidenceReviewJobInput {
   jobId: string;
   workClass: ReviewWorkClass;
-  basis: ReviewBasis;
+  basis: GraphReviewBasis;
   quanta: readonly ReviewQuantumRecord[];
   domain?: Record<string, unknown>;
   parentJobId?: string;
@@ -172,7 +184,7 @@ export interface CreateEvidenceReviewJobInput {
  * Create a durable job from an already-declared Quantum graph.
  * Callers own domain sharding and graph topology construction.
  */
-export function createEvidenceReviewJob(input: CreateEvidenceReviewJobInput): EvidenceReviewJob {
+export function createEvidenceReviewJob(input: CreateEvidenceReviewJobInput): GraphEvidenceReviewJob {
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
   const quanta: Record<string, ReviewQuantumRecord> = {};
@@ -333,7 +345,7 @@ function validateGraphOrThrow(quanta: Record<string, ReviewQuantumRecord>): void
 
 /** True when every declared dependency has succeeded. */
 export function dependenciesSatisfied(
-  job: EvidenceReviewJob,
+  job: GraphJobView,
   quantum: ReviewQuantumRecord,
 ): boolean {
   return quantum.dependencyQuantumIds.every(depId => {
@@ -348,7 +360,7 @@ export function dependenciesSatisfied(
  * Successful results are never re-run.
  */
 export function isQuantumRunnable(
-  job: EvidenceReviewJob,
+  job: GraphJobView,
   quantum: ReviewQuantumRecord,
   now: Date,
 ): boolean {
@@ -386,7 +398,7 @@ export function criticalPathRank(quantum: ReviewQuantumRecord): number {
 }
 
 export function listRunnableQuanta(
-  job: EvidenceReviewJob,
+  job: GraphJobView,
   now: Date,
 ): ReviewQuantumRecord[] {
   return Object.values(job.quanta)
@@ -399,7 +411,7 @@ export function listRunnableQuanta(
  * Derive disposition from quanta unless an explicit terminal/deferred outcome
  * is already recorded. Linear phase flags are never consulted.
  */
-export function deriveJobDisposition(job: EvidenceReviewJob): EvidenceReviewJobDisposition {
+export function deriveJobDisposition(job: GraphJobView): EvidenceReviewJobDisposition {
   if (
     job.disposition === 'completed'
     || job.disposition === 'superseded'
@@ -419,35 +431,6 @@ export function deriveJobDisposition(job: EvidenceReviewJob): EvidenceReviewJobD
   const commit = quanta.find(q => q.kind === 'commit');
   if (commit?.state === 'succeeded') return 'completed';
   return 'active';
-}
-
-export function deriveJobProgress(job: EvidenceReviewJob, now: Date = new Date()): EvidenceReviewJobProgress {
-  const quanta = Object.values(job.quanta);
-  const counts = {
-    pendingQuanta: 0,
-    leasedQuanta: 0,
-    succeededQuanta: 0,
-    retryWaitQuanta: 0,
-    terminalFailedQuanta: 0,
-  };
-  for (const quantum of quanta) {
-    switch (quantum.state) {
-      case 'pending': counts.pendingQuanta += 1; break;
-      case 'leased': counts.leasedQuanta += 1; break;
-      case 'succeeded': counts.succeededQuanta += 1; break;
-      case 'retry_wait': counts.retryWaitQuanta += 1; break;
-      case 'terminal_failed': counts.terminalFailedQuanta += 1; break;
-      default: break;
-    }
-  }
-  return {
-    jobId: job.jobId,
-    disposition: deriveJobDisposition(job),
-    totalQuanta: quanta.length,
-    ...counts,
-    runnableQuanta: listRunnableQuanta(job, now).length,
-    nextDueAt: job.nextDueAt,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +457,7 @@ export type ClaimQuantumResult =
  * Idempotent success: already-succeeded nodes are never re-leased.
  */
 export function claimQuantum(
-  job: EvidenceReviewJob,
+  job: GraphJobView,
   quantumId: string,
   options: ClaimQuantumOptions,
 ): ClaimQuantumResult {
@@ -525,7 +508,7 @@ export interface CompleteQuantumOptions {
  * A second completion for the same identity is a no-op success.
  */
 export function completeQuantum(
-  job: EvidenceReviewJob,
+  job: GraphJobView,
   quantumId: string,
   options: CompleteQuantumOptions,
 ): CompleteQuantumResult {
@@ -602,7 +585,7 @@ export type FailQuantumResult =
  * bounded exponential backoff; other nodes are untouched.
  */
 export function failQuantum(
-  job: EvidenceReviewJob,
+  job: GraphJobView,
   quantumId: string,
   options: FailQuantumOptions,
 ): FailQuantumResult {
@@ -668,7 +651,7 @@ export function failQuantum(
  * results or unexpired ownership.
  */
 export function reclaimExpiredLeases(
-  job: EvidenceReviewJob,
+  job: GraphJobView,
   now: Date = new Date(),
 ): ReviewQuantumRecord[] {
   if (job.disposition !== 'active') return [];
@@ -703,9 +686,9 @@ export function reclaimExpiredLeases(
  * disposition / nextDueAt from durable node state.
  */
 export function recoverJobAfterRestart(
-  job: EvidenceReviewJob,
+  job: GraphJobView,
   now: Date = new Date(),
-): EvidenceReviewJob {
+): GraphJobView {
   reclaimExpiredLeases(job, now);
   job.disposition = deriveJobDisposition(job);
   job.nextDueAt = computeJobNextDueAt(job);
@@ -714,7 +697,7 @@ export function recoverJobAfterRestart(
 }
 
 /** Earliest retry deadline among retry_wait / expired-lease nodes. */
-export function computeJobNextDueAt(job: EvidenceReviewJob): string | undefined {
+export function computeJobNextDueAt(job: GraphJobView): string | undefined {
   if (job.disposition !== 'active') return undefined;
   let earliest: number | undefined;
   for (const quantum of Object.values(job.quanta)) {
@@ -737,11 +720,11 @@ export function computeJobNextDueAt(job: EvidenceReviewJob): string | undefined 
  * Extension point for Successor Review Jobs (#109); no fence semantics here.
  */
 export function reuseSucceededQuanta(
-  successor: EvidenceReviewJob,
-  prior: EvidenceReviewJob,
-): EvidenceReviewJob {
+  successor: GraphJobView,
+  prior: GraphJobView,
+): GraphJobView {
   const nowIso = new Date().toISOString();
-  const next: EvidenceReviewJob = {
+  const next: GraphJobView = {
     ...successor,
     quanta: { ...successor.quanta },
     updatedAt: nowIso,

@@ -1,24 +1,19 @@
 /**
- * Integration types for Evidence Review Jobs.
+ * Canonical Evidence Review Job types — durable job/basis/type definitions
+ * (ADR 0045 / #107).
  *
- * Re-exports pure graph types (#107) and domain payload types (#106), then
- * adds the engine-facing job shape that embeds bundle/shard/dossier state.
+ * This module is the single canonical owner of:
+ * - Schema/policy/prompt version constants
+ * - Shared quantum kinds, states, dispositions, work classes
+ * - Pure graph ReviewBasis (opaque string fingerprints) and GraphEvidenceReviewJob
+ * - Engine-facing ReviewBasis (structured Registry read set) and EvidenceReviewJob
+ *
+ * An Evidence Review Job is a durable dependency graph of content-identified
+ * Review Quanta. Job progress is derived from node results rather than a
+ * mutable linear phase.
  */
 
-export {
-  EVIDENCE_REVIEW_JOB_SCHEMA_VERSION,
-  EVIDENCE_REVIEW_PROMPT_VERSION,
-  EVIDENCE_REVIEW_POLICY_VERSION,
-  type ReviewQuantumKind,
-  type ReviewQuantumState,
-  type EvidenceReviewJobDisposition,
-  type ReviewWorkClass,
-  type QuantumLease,
-  type ReviewQuantumRecord,
-  type EvidenceReviewJobProgress,
-} from './evidence-review-graph-types';
-
-export type {
+import type {
   EvidenceShardDomainKind,
   EvidenceShardCoverageDisposition,
   EvidenceShardSpan,
@@ -33,22 +28,6 @@ export type {
   ReviewObligation,
   ObligationDisposition,
 } from './evidence-review';
-
-import type {
-  EvidenceReviewJob as GraphJob,
-  ReviewBasis as GraphReviewBasis,
-  ReviewQuantumRecord,
-  EvidenceReviewJobDisposition,
-  ReviewWorkClass,
-} from './evidence-review-graph-types';
-import type {
-  EvidenceBundleManifest,
-  EvidenceShard,
-  EvidenceDossier,
-  DossierDifferenceIndex,
-  ReviewObligation,
-  ObligationDisposition,
-} from './evidence-review';
 import type {
   CapabilityReadSetEntry,
   EvidenceBundle,
@@ -57,6 +36,165 @@ import type {
   SkillVerifierIssue,
 } from './skill-evolution';
 import type { DistilledKnowledgeCandidate } from './capability-distiller';
+
+// ---------------------------------------------------------------------------
+// Version constants
+// ---------------------------------------------------------------------------
+
+export const EVIDENCE_REVIEW_JOB_SCHEMA_VERSION = 1 as const;
+
+/** Default prompt / policy version stamps included in Quantum identity. */
+export const EVIDENCE_REVIEW_PROMPT_VERSION = 'evidence-review-job-v2' as const;
+/**
+ * Policy v4 (Progressive Trust external-evidence false-negative fix):
+ *   - Structural Difference Index corroboration now keys on classification +
+ *     overlapping shard span instead of exact natural-language summary, so
+ *     cross-lane paraphrases over the same cited evidence no longer inflate
+ *     missing_citation obligations.
+ *   - Evidence Capsule reconstruction preserves a bounded, redacted external
+ *     solved-loop (trigger/action/result) instead of bare admission metadata.
+ *   - External terminal-outcome polarity: a negative review tail is not
+ *     manufactured as a successful final.
+ *   - Enforceable Progressive Trust defer seam: a settled low-risk narrow
+ *     external atom cannot be deferred solely for sample scarcity.
+ *   - Duplicate `create_current_skill` detection against relatedCurrentSkills.
+ * Active jobs frozen under v3 must supersede to a successor on the v4 policy.
+ */
+export const EVIDENCE_REVIEW_POLICY_VERSION = 'evidence-review-policy-v4' as const;
+
+// ---------------------------------------------------------------------------
+// Shared quantum / job types
+// ---------------------------------------------------------------------------
+
+/**
+ * Common durable Quantum kinds for dual-lane coverage and final commit.
+ * Additional kinds may be added without changing identity hashing rules.
+ */
+export type ReviewQuantumKind =
+  | 'author_reader'
+  | 'verifier_reader'
+  | 'author_dossier'
+  | 'verifier_dossier'
+  | 'difference_index'
+  | 'obligations'
+  | 'skill_author'
+  | 'skill_verifier'
+  | 'commit';
+
+/**
+ * Common durable node states for a Review Quantum.
+ * Progress and eligibility are derived from these states plus leases/deadlines.
+ */
+export type ReviewQuantumState =
+  | 'pending'
+  | 'leased'
+  | 'succeeded'
+  | 'retry_wait'
+  | 'terminal_failed';
+
+/**
+ * Explicit job outcomes. Intermediate progress is always derived from quanta.
+ * `superseded` is an extension point for Review Commit Fence successors (#109).
+ */
+export type EvidenceReviewJobDisposition =
+  | 'active'
+  | 'deferred'
+  | 'completed'
+  | 'superseded'
+  | 'terminal_failed';
+
+export type ReviewWorkClass =
+  | 'operational_recovery'
+  | 'live_learning'
+  | 'historical_learning'
+  | 'semantic_reassessment';
+
+/** Time-bounded ownership claim on one schedulable Review Quantum. */
+export interface QuantumLease {
+  readonly leaseId: string;
+  readonly ownerWakeId: string;
+  readonly leasedAt: string;
+  readonly expiresAt: string;
+}
+
+/**
+ * One content-identified, independently resumable graph node.
+ *
+ * Identity is derived from kind + inputHash (itself covering input content
+ * hashes, prompt version, and reviewer/policy version). Declared dependencies
+ * must succeed before the node becomes schedulable.
+ */
+export interface ReviewQuantumRecord {
+  readonly quantumId: string;
+  readonly kind: ReviewQuantumKind;
+  /** Content hash over kind-specific inputs and version stamps. */
+  readonly inputHash: string;
+  readonly dependencyQuantumIds: readonly string[];
+  /** Optional domain payload identifiers (opaque to the graph foundation). */
+  readonly shardId?: string;
+  readonly lane?: 'author' | 'verifier';
+  state: ReviewQuantumState;
+  attempts: number;
+  currentDelayMs: number;
+  nextRetryAt?: string;
+  lease?: QuantumLease;
+  resultHash?: string;
+  result?: unknown;
+  failureMessage?: string;
+  transcriptPaths: string[];
+  updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Pure graph ReviewBasis (opaque string fingerprints for hash computation)
+// ---------------------------------------------------------------------------
+
+/**
+ * Immutable Review Basis version vector (identity only).
+ * Atomic fence comparison and successor reuse are owned by #109.
+ * Uses opaque string fingerprints for the Registry read set.
+ */
+export interface GraphReviewBasis {
+  readonly basisHash: string;
+  readonly manifestHash: string;
+  readonly evidenceBundleHash: string;
+  /** Opaque ordered Registry read-set fingerprint entries (handle@revision). */
+  readonly registryReadSet: readonly string[];
+  readonly referencedSkillHashes: readonly string[];
+  readonly reviewPolicyVersion: string;
+  readonly promptVersion: string;
+  readonly targetCapabilityHandle?: string;
+  readonly targetCapabilityRevision?: number;
+}
+
+/**
+ * Pure graph Evidence Review Job with opaque domain payload.
+ * Used by graph-core's createEvidenceReviewJob; the engine wrapper adds
+ * structured domain fields (candidate, bundle, manifest, shards, etc.).
+ */
+export interface GraphEvidenceReviewJob {
+  schemaVersion: typeof EVIDENCE_REVIEW_JOB_SCHEMA_VERSION;
+  jobId: string;
+  workClass: ReviewWorkClass;
+  disposition: EvidenceReviewJobDisposition;
+  createdAt: string;
+  updatedAt: string;
+  /** Immutable Review Basis version vector (fence comparison is #109). */
+  basis: GraphReviewBasis;
+  quanta: Record<string, ReviewQuantumRecord>;
+  /** Opaque domain payload (Evidence Bundle snapshot, candidate, shards…). */
+  domain?: Record<string, unknown>;
+  successorJobId?: string;
+  supersededByJobId?: string;
+  parentJobId?: string;
+  terminalReason?: string;
+  nextDueAt?: string;
+  transitionId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Engine-facing ReviewBasis (structured Registry read set)
+// ---------------------------------------------------------------------------
 
 /**
  * Engine Review Basis — stores structured Registry read set entries while the
@@ -75,9 +213,13 @@ export interface ReviewBasis {
   readonly targetCapabilityRevision?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Engine-facing durable job with domain payloads for Skill Evolution
+// ---------------------------------------------------------------------------
+
 /** Engine-facing durable job with domain payloads for Skill Evolution. */
 export interface EvidenceReviewJob {
-  schemaVersion: GraphJob['schemaVersion'];
+  schemaVersion: typeof EVIDENCE_REVIEW_JOB_SCHEMA_VERSION;
   jobId: string;
   workClass: ReviewWorkClass;
   disposition: EvidenceReviewJobDisposition;
@@ -122,36 +264,30 @@ export interface EvidenceReviewJob {
 }
 
 export interface EvidenceReviewJobStoreState {
-  schemaVersion: GraphJob['schemaVersion'];
+  schemaVersion: typeof EVIDENCE_REVIEW_JOB_SCHEMA_VERSION;
   jobs: Record<string, EvidenceReviewJob>;
   fairness: {
     nextWorkClass: ReviewWorkClass;
     classCursors: Partial<Record<ReviewWorkClass, string>>;
     jobCursors: Partial<Record<string, string>>;
   };
+  /** Set when a corrupt state file was quarantined on load (fail-closed). */
   stateCorrupt?: boolean;
 }
 
-export interface EvidenceReviewDiagnostics {
-  jobId: string;
-  disposition: EvidenceReviewJobDisposition;
-  workClass: ReviewWorkClass;
-  basisHash: string;
-  manifestHash: string;
-  shardCount: number;
-  authorCoveredShards: number;
-  verifierCoveredShards: number;
-  runnableQuanta: number;
-  leasedQuanta: number;
-  retryingQuanta: number;
-  failedQuanta: number;
-  succeededQuanta: number;
-  obligationCount: number;
-  unresolvedObligations: number;
-  nextDueAt?: string;
-  successorJobId?: string;
-  transitionId?: string;
-  terminalReason?: string;
-}
-
-export type { GraphReviewBasis };
+// Re-export evidence-review domain types for convenience
+export type {
+  EvidenceShardDomainKind,
+  EvidenceShardCoverageDisposition,
+  EvidenceShardSpan,
+  EvidenceShard,
+  EvidenceBundleManifest,
+  EvidenceDossier,
+  ShardFindingSet,
+  TypedFinding,
+  ReviewFindingClass,
+  DossierDifferenceIndex,
+  DossierDifferenceEntry,
+  ReviewObligation,
+  ObligationDisposition,
+};

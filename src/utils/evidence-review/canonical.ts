@@ -37,6 +37,3 @@ export function hashEvidenceContent(content: string): string {
   return sha256Hex(content);
 }
 
-export function hashCanonicalValue(value: unknown): string {
-  return sha256Hex(stableStringify(value));
-}

@@ -28,7 +28,6 @@
 
 export {
   canonicalize,
-  hashCanonicalValue,
   hashEvidenceContent,
   sha256Hex,
   stableStringify,
@@ -37,8 +36,6 @@ export {
 export {
   DEFAULT_SHARD_HARD_LIMIT_BYTES,
   DEFAULT_SHARD_SOFT_LIMIT_BYTES,
-  assertManifestShardsConsistent,
-  assertShardContentImmutable,
   hashEvidenceBundle,
   makeShardId,
   recursivelySplitContent,
@@ -49,7 +46,6 @@ export {
 export type { ShardEvidenceBundleResult, ShardingOptions } from './sharding';
 
 export {
-  assertValidShardFindingSet,
   coverageSatisfiesLane,
   isValidSpan,
   validateLaneCoverage,
@@ -68,7 +64,6 @@ export { buildDossierDifferenceIndex } from './difference-index';
 export {
   OBLIGATION_FINDING_CLASSES,
   allObligationsResolvedForCommit,
-  buildExplicitDispositionsFromReviewContext,
   buildExplicitObligationDispositions,
   buildReviewObligations,
   validateObligationDispositions,

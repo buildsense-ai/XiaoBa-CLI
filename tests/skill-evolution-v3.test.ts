@@ -6,7 +6,6 @@ import * as os from 'os';
 import * as path from 'path';
 import { Message, ToolDefinition } from '../src/types';
 import { SkillManager } from '../src/skills/skill-manager';
-import { DistillationPipeline } from '../src/utils/distillation-pipeline';
 import type { DistilledKnowledgeCandidate } from '../src/utils/capability-distiller';
 import {
   computeCurrentSkillRegistryHash,
@@ -32,7 +31,6 @@ import {
   loadReviewQueueState,
   saveReviewQueueState,
 } from '../src/utils/skill-evolution-review-queue';
-import { buildV3EvidenceBundle as buildPipelineV3EvidenceBundle } from '../src/utils/distillation-pipeline';
 import { acceptReviewObligations } from './evidence-review-test-fixtures';
 
 interface ReviewAttemptStep {
@@ -605,129 +603,6 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
-  test('the existing DistillationPipeline async seam can drive V3 end to end', async () => {
-    const env = setup();
-    try {
-      const runtime = new SkillEvolutionRuntime(env.options);
-      const candidate = {
-        schemaVersion: 1 as const,
-        kind: 'capability' as const,
-        capabilityId: 'candidate-flashcard',
-        title: 'Flashcard artifact',
-        applicability: 'When the user needs a flashcard artifact.',
-        actionPattern: 'Use the referenced card maker and validate the result.',
-        boundaries: ['Stay within the cited workflow.'],
-        risks: ['Evidence is bounded.'],
-        solvedLoop: { problem: 'flashcard', action: 'made one', verification: 'delivered', noCorrection: 'none' },
-        provenance: [
-          { filePath: 'session.jsonl', turn: 12, role: 'problem-action' as const, unitByteRange: { start: 0, end: 10 } },
-          { filePath: 'session.jsonl', turn: 13, role: 'verification' as const, unitByteRange: { start: 11, end: 20 } },
-        ],
-        generatedAt: '2026-07-10T00:00:00.000Z',
-        sourceUnit: { filePath: 'session.jsonl', byteRange: { start: 0, end: 20 }, generatedAt: '2026-07-10T00:00:00.000Z' },
-      };
-      const pipeline = new DistillationPipeline({
-        outputDir: env.options.outputDir,
-        reviewOutcomesPath: path.join(env.root, 'data', 'legacy-outcomes.json'),
-        distiller: () => [candidate],
-        skillEvolution: runtime,
-        v3EvidenceBundleBuilder: () => fixtureBundle(),
-      });
-      const result = await pipeline.processUnitAsync({
-        filePath: 'session.jsonl',
-        newTurns: [],
-        continuityTurns: [],
-        byteRange: { start: 0, end: 20 },
-        generatedAt: '2026-07-10T00:00:00.000Z',
-      });
-      assert.ok('evolutions' in result);
-      assert.equal(result.evolutions[0]!.verified, true);
-      assert.equal(loadTransitionAudit(env.options.auditPath).length, 1);
-    } finally {
-      env.cleanup();
-    }
-  });
-
-  test('uses the configured reviewer pool for independent candidates without losing Registry entries', async () => {
-    const env = setup();
-    let activeReviews = 0;
-    let maximumActiveReviews = 0;
-    const enterReview = () => {
-      activeReviews += 1;
-      maximumActiveReviews = Math.max(maximumActiveReviews, activeReviews);
-    };
-    const leaveReview = () => {
-      activeReviews -= 1;
-    };
-    try {
-      env.options.reviewerConcurrency = 2;
-      env.options.authorFixture = async ({ bundle }) => {
-        enterReview();
-        await new Promise(resolve => setTimeout(resolve, 10));
-        leaveReview();
-        const candidate = bundle.episode as DistilledKnowledgeCandidate;
-        const suffix = candidate.capabilityId.replace('candidate-', '');
-        return {
-          body: `Use the bounded ${suffix} workflow and validate the result.`,
-          envelope: {
-            decision: 'create_current_skill',
-            routingName: `${suffix}-workflow`,
-            description: `A bounded ${suffix} workflow.`,
-            evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
-          },
-        };
-      };
-      env.options.verifierFixture = async ({ draft }) => {
-        enterReview();
-        await new Promise(resolve => setTimeout(resolve, 10));
-        leaveReview();
-        return {
-          decision: 'accept',
-          transition: draft.envelope.decision,
-          issues: [],
-          rationale: 'Both independent candidate reviews are bounded and supported.',
-        };
-      };
-      const candidates = ['candidate-alpha', 'candidate-beta'].map(capabilityId => ({
-        ...fixtureCandidate(),
-        capabilityId,
-        title: capabilityId,
-      }));
-      const pipeline = new DistillationPipeline({
-        outputDir: env.options.outputDir,
-        reviewOutcomesPath: path.join(env.root, 'data', 'legacy-outcomes.json'),
-        distiller: () => candidates,
-        skillEvolution: new SkillEvolutionRuntime(env.options),
-        v3EvidenceBundleBuilder: (_, candidate) => ({
-          ...fixtureBundle(),
-          bundleId: `episode-${candidate.capabilityId}`,
-          episode: candidate,
-        }),
-      });
-
-      const result = await pipeline.processUnitAsync({
-        filePath: 'session.jsonl',
-        newTurns: [],
-        continuityTurns: [],
-        byteRange: { start: 0, end: 20 },
-        generatedAt: '2026-07-10T00:00:00.000Z',
-      });
-
-      assert.ok('evolutions' in result);
-      assert.equal(result.evolutions.length, 2);
-      assert.ok(maximumActiveReviews >= 2, 'configured reviewer concurrency must be observable');
-      const registry = loadCurrentSkillRegistry(env.options.registryPath);
-      assert.equal(Object.keys(registry.capabilities).length, 2, 'concurrent creates must not lose a Registry entry');
-      assert.deepEqual(
-        Object.values(registry.capabilities).map(record => record.routingName).sort(),
-        ['alpha-workflow', 'beta-workflow'],
-      );
-      assert.equal(loadTransitionAudit(env.options.auditPath).length, 2);
-    } finally {
-      env.cleanup();
-    }
-  });
-
   test('Review Commit Fence supersedes a concurrent replace whose declared read set became stale (#109)', async () => {
     const env = setup();
     try {
@@ -802,70 +677,6 @@ describe('V3 verified semantic Current Skills', () => {
         'replace_current_skill',
       ]);
       assert.equal(fs.existsSync(env.options.journalPath), false);
-    } finally {
-      env.cleanup();
-    }
-  });
-
-  test('prefilters a concurrent create collision at commit without duplicate routing names', async () => {
-    const env = setup();
-    try {
-      env.options.reviewerConcurrency = 2;
-      env.options.authorFixture = async () => {
-        await new Promise(resolve => setTimeout(resolve, 10));
-        return {
-          body: 'Use the one bounded shared workflow and validate its result.',
-          envelope: {
-            decision: 'create_current_skill',
-            routingName: 'shared-workflow',
-            description: 'A shared workflow that must be installed once.',
-            evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
-          },
-        };
-      };
-      env.options.verifierFixture = async ({ draft }) => {
-        await new Promise(resolve => setTimeout(resolve, 10));
-        return {
-          decision: 'accept',
-          transition: draft.envelope.decision,
-          issues: [],
-          rationale: 'The candidate is valid until the commit-time collision prefilter.',
-        };
-      };
-      const candidates = ['candidate-one', 'candidate-two'].map(capabilityId => ({
-        ...fixtureCandidate(),
-        capabilityId,
-        title: capabilityId,
-      }));
-      const pipeline = new DistillationPipeline({
-        outputDir: env.options.outputDir,
-        reviewOutcomesPath: path.join(env.root, 'data', 'legacy-outcomes.json'),
-        distiller: () => candidates,
-        skillEvolution: new SkillEvolutionRuntime(env.options),
-        v3EvidenceBundleBuilder: (_, candidate) => ({
-          ...fixtureBundle(),
-          bundleId: `episode-${candidate.capabilityId}`,
-          episode: candidate,
-        }),
-      });
-
-      const result = await pipeline.processUnitAsync({
-        filePath: 'session.jsonl',
-        newTurns: [],
-        continuityTurns: [],
-        byteRange: { start: 0, end: 20 },
-        generatedAt: '2026-07-10T00:00:00.000Z',
-      });
-
-      assert.ok('evolutions' in result);
-      assert.deepEqual(result.evolutions.map(evolution => evolution.transition).sort(), ['create_current_skill', 'reject_candidate']);
-      const registry = loadCurrentSkillRegistry(env.options.registryPath);
-      assert.equal(Object.keys(registry.capabilities).length, 1);
-      assert.deepEqual(Object.values(registry.capabilities).map(record => record.routingName), ['shared-workflow']);
-      assert.deepEqual(loadTransitionAudit(env.options.auditPath).map(entry => entry.transition), [
-        'create_current_skill',
-      ]);
-      assert.deepEqual(fs.readdirSync(env.options.outputDir).filter(name => name.startsWith('cap_')).length, 1);
     } finally {
       env.cleanup();
     }
@@ -1538,61 +1349,6 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
-  test('the default Evidence Bundle carries real source evidence without leaking the manual Skill catalog', async () => {
-    const env = setup();
-    try {
-      const manualPath = path.join(env.root, 'skills', 'word-card-maker', 'SKILL.md');
-      fs.mkdirSync(path.dirname(manualPath), { recursive: true });
-      fs.writeFileSync(manualPath, [
-        '---',
-        'name: word-card-maker',
-        'description: Make study cards.',
-        'user-invocable: true',
-        '---',
-        '',
-        'Use the card maker to create a study card.',
-        '',
-      ].join('\n'));
-      const runtime = new SkillEvolutionRuntime({ ...env.options, manualSkillNames: [] });
-      assert.deepEqual(runtime.getEffectiveConfig(), {
-        settlementWindowMs: 3 * 60 * 60 * 1000,
-        reviewerConcurrency: 3,
-        operationalRetryMs: 5 * 60 * 1000,
-        operationalRetryMaxMs: 6 * 60 * 60 * 1000,
-        reviewAttemptDeadlineMs: 10 * 60 * 1000,
-      });
-      const bundle = buildPipelineV3EvidenceBundle(
-        {
-          filePath: 'session.jsonl',
-          newTurns: [{ turn: 12, user: { text: 'make a card' }, assistant: { text: 'made it', tool_calls: [] } }, { turn: 13, user: { text: 'thanks' }, assistant: { text: 'done', tool_calls: [] } }] as any,
-          continuityTurns: [],
-          byteRange: { start: 0, end: 20 },
-          generatedAt: '2026-07-10T00:00:00.000Z',
-        },
-        fixtureCandidate(),
-        runtime,
-      );
-
-      assert.equal(bundle.completionEvidence[0]!.ref, 'session.jsonl#12:problem-action:0-10');
-      assert.equal(bundle.settlementEvidence[0]!.ref, 'session.jsonl#13:verification:11-20');
-      assert.equal(bundle.sourceEvidence?.length, 2);
-      assert.match(bundle.sourceEvidence?.[0]!.content ?? '', /make a card/);
-      // Progressive Trust: a Distillation Unit carries no `referenced-skill`
-      // semantic observation, so generic V3 bundle construction must not copy
-      // the manual `word-card-maker` snapshot into referencedSkills. The manual
-      // skill remains discoverable via runtime.getReferencedSkillSnapshots() and
-      // the manual-name collision check; it is simply not an evidenced
-      // dependency of this episode.
-      assert.deepEqual(bundle.referencedSkills, []);
-      assert.ok(
-        runtime.getReferencedSkillSnapshots().some(s => s.name === 'word-card-maker'),
-        'manual skill remains in the runtime catalog, just not in this bundle',
-      );
-    } finally {
-      env.cleanup();
-    }
-  });
-
   test('production promotion derives manual names and rejects a runtime collision', async () => {
     const env = setup();
     try {
@@ -1616,26 +1372,6 @@ describe('V3 verified semantic Current Skills', () => {
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
       assert.deepEqual(fs.readdirSync(env.options.outputDir), []);
       assert.equal(loadTransitionAudit(env.options.auditPath)[0]!.transition, 'reject_candidate');
-    } finally {
-      env.cleanup();
-    }
-  });
-
-  test('default bundle does not synthesize evidence when provenance is absent from the unit', async () => {
-    const env = setup();
-    try {
-      const runtime = new SkillEvolutionRuntime(env.options);
-      const bundle = buildPipelineV3EvidenceBundle({
-        filePath: 'session.jsonl',
-        newTurns: [],
-        continuityTurns: [],
-        byteRange: { start: 0, end: 20 },
-        generatedAt: '2026-07-10T00:00:00.000Z',
-      }, fixtureCandidate(), runtime);
-      assert.deepEqual(bundle.completionEvidence, []);
-      assert.deepEqual(bundle.settlementEvidence, []);
-      await assert.rejects(() => runtime.reviewAndApply(bundle), /missing completion evidence/);
-      assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();
     }

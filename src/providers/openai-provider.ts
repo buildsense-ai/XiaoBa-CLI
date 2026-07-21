@@ -28,8 +28,6 @@ export class OpenAIProvider implements AIProvider {
   private maxTokens: number;
   private reasoningEffort: ChatConfig['reasoningEffort'];
   private openaiApiMode: ChatConfig['openaiApiMode'];
-  private requestTimeoutMs: number;
-
   constructor(config: ChatConfig) {
     this.apiUrl = config.apiUrl!;
     this.chatCompletionsUrl = normalizeOpenAIChatCompletionsUrl(this.apiUrl);
@@ -40,7 +38,6 @@ export class OpenAIProvider implements AIProvider {
     this.maxTokens = resolveMaxTokens(config);
     this.reasoningEffort = config.reasoningEffort;
     this.openaiApiMode = openAIApiModeOrDefault(config.openaiApiMode);
-    this.requestTimeoutMs = config.requestTimeoutMs ?? 10 * 60 * 1000;
   }
 
   /**
@@ -179,7 +176,6 @@ export class OpenAIProvider implements AIProvider {
     const response = await axios.post(this.chatCompletionsUrl, body, {
       headers: this.headers,
       signal: options?.signal,
-      timeout: this.requestTimeoutMs,
     });
     const choice = response.data.choices[0];
     const message = choice.message;
@@ -230,7 +226,6 @@ export class OpenAIProvider implements AIProvider {
       headers: this.headers,
       responseType: 'stream',
       signal: options?.signal,
-      timeout: this.requestTimeoutMs,
     });
 
     return new Promise<ChatResponse>((resolve, reject) => {
@@ -603,7 +598,6 @@ export class OpenAIProvider implements AIProvider {
     const response = await axios.post(this.responsesUrl, body, {
       headers: this.headers,
       signal: options?.signal,
-      timeout: this.requestTimeoutMs,
     });
     ContextDebugLogger.dumpSdkBoundary('after', undefined, { response: response.data });
     const failure = this.responsesFailureError(response.data);
@@ -626,7 +620,6 @@ export class OpenAIProvider implements AIProvider {
       headers: this.headers,
       responseType: 'stream',
       signal: options?.signal,
-      timeout: this.requestTimeoutMs,
     });
 
     return new Promise<ChatResponse>((resolve, reject) => {

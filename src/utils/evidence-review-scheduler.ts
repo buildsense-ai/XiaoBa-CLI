@@ -147,7 +147,7 @@ function runnableJobsByClass(
     if (job.disposition !== 'active') continue;
     const notBefore = job.nextDueAt ? Date.parse(job.nextDueAt) : Number.NaN;
     if (Number.isFinite(notBefore) && notBefore > now.getTime()) continue;
-    const hasRunnable = Object.values(job.quanta).some(q => isQuantumRunnable(job as any, q, now));
+    const hasRunnable = Object.values(job.quanta).some(q => isQuantumRunnable(job, q, now));
     if (!hasRunnable) continue;
     out[job.workClass].push(job);
   }
@@ -164,7 +164,7 @@ function listRunnableForJob(
   excludeQuantumIds: ReadonlySet<string>,
 ): ReviewQuantumRecord[] {
   return Object.values(job.quanta)
-    .filter(q => isQuantumRunnable(job as any, q, now) && !excludeQuantumIds.has(q.quantumId))
+    .filter(q => isQuantumRunnable(job, q, now) && !excludeQuantumIds.has(q.quantumId))
     .sort((a, b) => criticalPathRank(a) - criticalPathRank(b)
       || a.quantumId.localeCompare(b.quantumId, 'en'));
 }

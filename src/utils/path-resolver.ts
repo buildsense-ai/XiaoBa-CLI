@@ -1,6 +1,14 @@
 import * as path from 'path';
 import * as fs from 'fs';
 
+/** Default sub-directory under the skills root for generated distilled skills. */
+export const GENERATED_DISTILLED_DIR_NAME = 'generated-distilled';
+
+/** Resolve the default generated-distilled output directory under a skills root. */
+export function defaultDistilledOutputDir(skillsRoot: string): string {
+  return path.join(skillsRoot, GENERATED_DISTILLED_DIR_NAME);
+}
+
 export class PathResolver {
   static getRuntimeDataRoot(
     env: NodeJS.ProcessEnv = process.env,

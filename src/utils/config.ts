@@ -104,8 +104,6 @@ export class ConfigManager {
       temperature: 0.7,
       provider,
       openaiApiMode: normalizeOpenAIApiMode(process.env.GAUZ_LLM_OPENAI_API_MODE) ?? 'chat_completions',
-      requestTimeoutMs: this.parsePositiveIntegerEnv(process.env.GAUZ_LLM_REQUEST_TIMEOUT_MS)
-        ?? 10 * 60 * 1000,
       feishu: {
         appId: process.env.FEISHU_APP_ID,
         appSecret: process.env.FEISHU_APP_SECRET,
@@ -139,7 +137,6 @@ export class ConfigManager {
     );
     const reasoningEffort = normalizeReasoningEffort(process.env.GAUZ_LLM_REASONING_EFFORT);
     const openaiApiMode = normalizeOpenAIApiMode(process.env.GAUZ_LLM_OPENAI_API_MODE);
-    const requestTimeoutMs = this.parsePositiveIntegerEnv(process.env.GAUZ_LLM_REQUEST_TIMEOUT_MS);
 
     if (provider === 'openai' || provider === 'anthropic') {
       override.provider = provider;
@@ -164,9 +161,6 @@ export class ConfigManager {
     }
     if (openaiApiMode !== undefined) {
       override.openaiApiMode = openaiApiMode;
-    }
-    if (requestTimeoutMs !== undefined) {
-      override.requestTimeoutMs = requestTimeoutMs;
     }
 
     return override;

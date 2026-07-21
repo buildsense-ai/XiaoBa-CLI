@@ -17,7 +17,7 @@ import {
 } from '../src/utils/skill-evolution-review-queue';
 import { readShardStructurally, resolveEvidenceReviewJobStorePath } from '../src/utils/evidence-review-engine';
 import { createEvidenceReviewJob } from '../src/utils/evidence-review-graph';
-import { loadEvidenceReviewJobStore, saveEvidenceReviewJobStore } from '../src/utils/evidence-review-graph-store';
+import { loadEvidenceReviewJobStore, saveEvidenceReviewJobStore } from '../src/utils/evidence-review-job-store';
 
 function fixtureCandidate(id: string): DistilledKnowledgeCandidate {
   return {

@@ -156,12 +156,9 @@ function sha256(text: string): string {
 }
 
 /**
- * Pure graph helpers mutate job.quanta in place. We pass the engine job
- * directly (structurally compatible for quanta/disposition/updatedAt).
+ * Pure graph helpers mutate job.quanta in place. The engine job
+ * structurally satisfies GraphJobView, so we pass it directly.
  */
-function asMutableGraphJob(job: EvidenceReviewJob): any {
-  return job;
-}
 
 /**
  * Lane-scoped structural reader for explicit test fixtures and engine unit tests.
@@ -248,33 +245,6 @@ export function readShardStructurally(
     coverage: content.trim().length === 0 ? 'empty' : 'covered',
     findings,
   };
-}
-
-// Re-export package builders for tests / integrators that used prior names.
-export function buildDossierFromFindingSets(
-  lane: 'author' | 'verifier',
-  manifestHash: string,
-  sets: readonly ShardFindingSet[],
-  complete = true,
-): EvidenceDossier {
-  return {
-    lane,
-    manifestHash,
-    coveredShardIds: sets
-      .filter(s => s.coverage === 'covered' || s.coverage === 'empty')
-      .map(s => s.shardId)
-      .sort((a, b) => a.localeCompare(b, 'en')),
-    findings: sets.flatMap(s => s.findings),
-    findingSets: sets,
-    complete,
-  };
-}
-
-export function buildDifferenceIndex(
-  author: EvidenceDossier,
-  verifier: EvidenceDossier,
-): DossierDifferenceIndex {
-  return buildDossierDifferenceIndex(author, verifier);
 }
 
 export { buildReviewObligations };
@@ -400,7 +370,7 @@ export class EvidenceReviewEngine {
       }
 
       // Reclaim expired leases via pure graph helper (mutates quanta in place).
-      reclaimExpiredLeases(asMutableGraphJob(job), now);
+      reclaimExpiredLeases(job, now);
 
       // FAIL-CLOSED RECONCILIATION: if a crash interrupted the atomic
       // verifier-completion-plus-expansion write, the persisted state may
@@ -427,7 +397,7 @@ export class EvidenceReviewEngine {
       const selected = selectNextQuantum(job, runnable);
       if (!selected) break;
 
-      const claim = claimQuantumCore(asMutableGraphJob(job), selected.quantumId, {
+      const claim = claimQuantumCore(job, selected.quantumId, {
         ownerWakeId: wakeId,
         now,
         leaseMs,
@@ -440,7 +410,7 @@ export class EvidenceReviewEngine {
         const execution = await this.executeQuantum(job, job.quanta[selected.quantumId]!, signal);
         const after = this.loadStore();
         const live = after.jobs[jobId]!;
-        const completed = completeQuantumCore(asMutableGraphJob(live), selected.quantumId, {
+        const completed = completeQuantumCore(live, selected.quantumId, {
           result: execution.result,
           now: nowFn(),
           // graph-core accepts a single transcriptPath; fold multiples into result metadata
@@ -513,7 +483,7 @@ export class EvidenceReviewEngine {
         const terminal = /terminal|integrity|manifest/i.test(message);
         const after = this.loadStore();
         const live = after.jobs[jobId]!;
-        const failed = failQuantumCore(asMutableGraphJob(live), selected.quantumId, {
+        const failed = failQuantumCore(live, selected.quantumId, {
           message,
           now: nowFn(),
           retryBaseMs,

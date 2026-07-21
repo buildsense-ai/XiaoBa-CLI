@@ -47,7 +47,7 @@ import { buildXurlSubprocessEnv } from '../utils/xurl-subprocess-env';
 import { acquireHeartbeatSchedulerOwnerLock } from '../utils/heartbeat-scheduler-owner-lock';
 import { EvidenceIngestor } from '../utils/evidence-ingestor';
 import { DueWorkPlanner } from '../utils/due-work-planner';
-import { defaultDistilledOutputDir } from '../utils/distillation-pipeline';
+import { defaultDistilledOutputDir } from '../utils/path-resolver';
 import { PathResolver } from '../utils/path-resolver';
 import { RuntimeLearning } from '../utils/runtime-learning';
 import { SkillEvolutionRuntime } from '../utils/skill-evolution';

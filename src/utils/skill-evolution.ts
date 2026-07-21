@@ -41,10 +41,6 @@ import {
   type ReaderLaneResult,
 } from './evidence-review-engine';
 import { runModelBackedReaderLane } from './evidence-review-reader-branch';
-import {
-  materializeLegacyReviewRecordsAsJobs,
-  type EvidenceReviewMigrationMaterializeResult,
-} from './evidence-review-compatibility';
 import type {
   EvidenceDossier,
   DossierDifferenceIndex,
@@ -54,7 +50,6 @@ import type {
   EvidenceReviewJob,
 } from './evidence-review-types';
 import { buildExplicitObligationDispositions } from './evidence-review';
-import { enforceProgressiveTrustDefer } from './progressive-trust-policy';
 import { detectDuplicateCapabilityCreation } from './capability-update-guidance';
 import {
   createSuccessorReviewJob,
@@ -580,8 +575,6 @@ export class SkillEvolutionRuntime {
   private readonly options: SkillEvolutionOptions;
   private readonly inFlightCreateRoutingNames = new Set<string>();
   private evidenceReviewEngine: EvidenceReviewEngine | undefined;
-  /** In-process gate so concurrent wake callers share one materialization pass. */
-  private legacyReviewMigrationInFlight: Promise<EvidenceReviewMigrationMaterializeResult> | undefined;
 
   constructor(options: SkillEvolutionOptions) {
     this.options = options;
@@ -597,58 +590,7 @@ export class SkillEvolutionRuntime {
     return this.evidenceReviewEngine;
   }
 
-  /**
-   * Production compatibility seam (#104/#110): ensure legacy Operational Review
-   * Retry and prompt-budget-blocked records are durable Evidence Review Jobs
-   * before due-review / fair-advance work runs. Idempotent across restarts;
-   * fail-closed on corrupt sources; does not create a second scheduler.
-   */
-  ensureLegacyReviewRecordsMigrated(
-    now: Date = new Date(),
-  ): EvidenceReviewMigrationMaterializeResult {
-    const empty: EvidenceReviewMigrationMaterializeResult = {
-      scanned: 0,
-      materialized: 0,
-      alreadyPresent: 0,
-      skipped: 0,
-      quarantined: 0,
-      jobIds: [],
-      skippedReasons: [],
-    };
-    const reviewQueuePath = this.options.reviewQueuePath;
-    if (!reviewQueuePath && !this.options.workingDirectory) return empty;
 
-    // Force engine construction so job store path resolves consistently with
-    // subsequent fair-advance / ensureJob calls in the same wake.
-    const engine = this.getEvidenceReviewEngine();
-    return materializeLegacyReviewRecordsAsJobs({
-      reviewQueuePath: reviewQueuePath
-        ?? path.join(this.options.workingDirectory, 'data', 'skill-evolution-review-queue.json'),
-      jobStorePath: engine.jobStorePath,
-      now,
-    });
-  }
-
-  /**
-   * Async wrapper that serializes concurrent callers without a second loop.
-   * Safe to call at the start of every wake; filesystem materialization is
-   * idempotent so re-entry after restart re-scans without duplicating jobs.
-   */
-  async ensureLegacyReviewRecordsMigratedOnce(
-    now: Date = new Date(),
-  ): Promise<EvidenceReviewMigrationMaterializeResult> {
-    if (this.legacyReviewMigrationInFlight) {
-      return this.legacyReviewMigrationInFlight;
-    }
-    this.legacyReviewMigrationInFlight = Promise.resolve().then(() => {
-      try {
-        return this.ensureLegacyReviewRecordsMigrated(now);
-      } finally {
-        this.legacyReviewMigrationInFlight = undefined;
-      }
-    });
-    return this.legacyReviewMigrationInFlight;
-  }
 
   async reviewAndApply(bundle: EvidenceBundle, signal?: AbortSignal): Promise<SkillEvolutionResult> {
     // Durable Evidence Review Jobs are the primary promotion path (ADR 0045).
@@ -1218,26 +1160,6 @@ export class SkillEvolutionRuntime {
     if (verifier.transcriptPath) {
       assertHealthyBranchTranscript(verifier.transcriptPath, 'skill-verifier', this.options.branchLogRoot);
     }
-    // Progressive Trust enforceable defer seam: a settled, low-risk, narrow
-    // external atom must not be deferred solely for sample scarcity. The
-    // runtime inspects a Verifier `defer` and, when the only cited reason is
-    // sample scarcity over a settled low-risk atom with a recognizable
-    // trigger/action/result, converts it to `revise` (expandable round) or, at
-    // the final round with a valid draft and no open high-risk obligation /
-    // structural difference, to `accept`. Genuine defer reasons are preserved.
-    // Never blindly forces acceptance.
-    const progressiveDraftIssues = validateDraft(input.draft, reviewBundle, this.getManualSkillNames());
-    const enforced = enforceProgressiveTrustDefer({
-      verification,
-      bundle: reviewBundle,
-      obligations: input.obligations,
-      differenceIndex: input.differenceIndex,
-      round: input.round,
-      maxRounds: MAX_AUTHOR_VERIFIER_ROUNDS,
-      draftValid: progressiveDraftIssues.length === 0,
-      shards: Object.values(input.job.shards),
-    });
-    verification = enforced.verification;
     const dispositions = resolveVerifierObligationDispositions({
       verification,
       obligations: input.obligations,

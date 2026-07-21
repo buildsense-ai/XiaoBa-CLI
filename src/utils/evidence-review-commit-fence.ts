@@ -10,7 +10,7 @@
  *   createSuccessorReviewJob({ staleJob, liveBundle, candidate, ... })
  *   markJobSuperseded(staleJob, successorJobId)
  *
- * Ordering outcomes (decideReviewCommitFence / resolveFenceRace):
+ * Ordering outcomes (`decideReviewCommitFence`):
  * - match — every declared dependency still equals the live world → commit may proceed
  * - stale_before_fence — relevant change ordered before the fence → Successor Job
  * - unrelated_change — Registry churn outside the declared read set → ignore
@@ -26,22 +26,13 @@ import type { EvidenceReviewJob, ReviewBasis } from './evidence-review-types';
 import {
   EVIDENCE_REVIEW_POLICY_VERSION,
   EVIDENCE_REVIEW_PROMPT_VERSION,
-  type ReviewQuantumKind,
-  type ReviewQuantumRecord,
-  type ReviewWorkClass,
 } from './evidence-review-types';
 import {
   buildReviewBasis,
   createEvidenceReviewJob,
-  createReviewQuantum,
   fingerprintRegistryReadSet,
-  makeQuantumId,
-  quantumInputHash,
   reuseSucceededQuanta,
-  sha256Hex,
-  stableStringify,
 } from './evidence-review-graph';
-import { hashEvidenceBundle } from './evidence-review';
 import type { DistilledKnowledgeCandidate } from './capability-distiller';
 import {
   buildReviewBasis as buildGraphReviewBasis,
@@ -184,18 +175,6 @@ export interface FenceDecision {
    */
   shouldScheduleReassessment: boolean;
   reason: string;
-}
-
-export interface SuccessorReviewPlan {
-  successor: EvidenceReviewJob;
-  superseded: EvidenceReviewJob;
-  reusedQuantumIds: readonly string[];
-  skippedQuantumIds: readonly string[];
-  auditLink: {
-    parentJobId: string;
-    successorJobId: string;
-    supersededDisposition: 'superseded';
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -655,118 +634,6 @@ export function decideReviewCommitFence(input: {
   };
 }
 
-/**
- * Race-model helper: apply a fence decision for two competing orderings of
- * the same relevant change relative to the atomic commit point.
- *
- * Prevents blind last-writer-wins by requiring an explicit ordering flag.
- */
-export function resolveFenceRace(input: {
-  basis: unknown;
-  live: LiveReviewInput;
-  /**
-   * Ordering of the relevant live change relative to the fence:
-   * - 'before' → stale_before_fence (or match/unrelated if not relevant)
-   * - 'after'  → post_commit_reassessment when the change is relevant
-   */
-  changeOrdering: 'before' | 'after';
-}): FenceDecision {
-  return decideReviewCommitFence({
-    basis: input.basis,
-    live: input.live,
-    commitAlreadyApplied: input.changeOrdering === 'after',
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Content-identified Quantum identity equality
-// ---------------------------------------------------------------------------
-
-/**
- * Complete identity equality required for Quantum reuse across Successor Jobs.
- * Requires kind, inputHash (inputs + prompt version + policy version), and the
- * optional domain payload identifiers that affect the authoritative result.
- */
-export function quantumIdentityEquals(
-  a: Pick<ReviewQuantumRecord, 'kind' | 'inputHash' | 'shardId' | 'lane'>,
-  b: Pick<ReviewQuantumRecord, 'kind' | 'inputHash' | 'shardId' | 'lane'>,
-): boolean {
-  return (
-    a.kind === b.kind
-    && a.inputHash === b.inputHash
-    && (a.shardId ?? undefined) === (b.shardId ?? undefined)
-    && (a.lane ?? undefined) === (b.lane ?? undefined)
-  );
-}
-
-/**
- * Recompute a Quantum input hash the same way `createReviewQuantum` does, so
- * callers can prove that prompt/policy version changes break identity.
- */
-export function computeQuantumIdentity(input: {
-  kind: ReviewQuantumKind;
-  inputs: Record<string, unknown>;
-  promptVersion?: string;
-  policyVersion?: string;
-}): { inputHash: string; quantumIdSuffix: string } {
-  const promptVersion = input.promptVersion ?? EVIDENCE_REVIEW_PROMPT_VERSION;
-  const policyVersion = input.policyVersion ?? EVIDENCE_REVIEW_POLICY_VERSION;
-  const inputHash = quantumInputHash({
-    kind: input.kind,
-    promptVersion,
-    policyVersion,
-    ...input.inputs,
-  });
-  return {
-    inputHash,
-    quantumIdSuffix: inputHash.slice(0, 16),
-  };
-}
-
-/**
- * Reuse only succeeded quanta whose complete content identity still matches.
- * Thin wrapper around the graph helper that also reports which nodes were
- * reused vs skipped — used by Successor Review Job planning.
- */
-export function reuseValidSucceededQuanta(
-  successor: EvidenceReviewJob,
-  prior: EvidenceReviewJob,
-): {
-  job: EvidenceReviewJob;
-  reusedQuantumIds: string[];
-  skippedQuantumIds: string[];
-} {
-  const priorSucceeded = Object.values(prior.quanta).filter(q => q.state === 'succeeded');
-  const priorByIdentity = new Map(
-    priorSucceeded.map(q => [`${q.kind}:${q.inputHash}`, q] as const),
-  );
-
-  const reused = reuseSucceededQuanta(successor, prior);
-  const reusedQuantumIds: string[] = [];
-  const skippedQuantumIds: string[] = [];
-
-  for (const quantum of Object.values(reused.quanta)) {
-    const match = priorByIdentity.get(`${quantum.kind}:${quantum.inputHash}`);
-    if (match && quantumIdentityEquals(quantum, match) && quantum.state === 'succeeded') {
-      reusedQuantumIds.push(quantum.quantumId);
-    } else if (quantum.state !== 'succeeded') {
-      // Candidate for reuse only if prior had a success with same kind+shard
-      // but different identity — record as skipped.
-      const priorSameDomain = priorSucceeded.find(
-        q =>
-          q.kind === quantum.kind
-          && (q.shardId ?? undefined) === (quantum.shardId ?? undefined)
-          && (q.lane ?? undefined) === (quantum.lane ?? undefined),
-      );
-      if (priorSameDomain && !quantumIdentityEquals(quantum, priorSameDomain)) {
-        skippedQuantumIds.push(quantum.quantumId);
-      }
-    }
-  }
-
-  return { job: reused, reusedQuantumIds, skippedQuantumIds };
-}
-
 // ---------------------------------------------------------------------------
 // Successor Review Job planning
 // ---------------------------------------------------------------------------
@@ -805,223 +672,7 @@ export function createSuccessorReviewJob(input: {
     parentJobId: input.staleJob.jobId,
     now: input.now,
   });
-  const { job: reused } = reuseValidSucceededQuanta(successor, input.staleJob);
+  const reused = reuseSucceededQuanta(successor, input.staleJob);
   reused.parentJobId = input.staleJob.jobId;
   return reused;
 }
-
-/**
- * Plan a Successor Review Job after a stale-before-fence decision.
- *
- * Safe successor planning on the engine job shape:
- * - Prefer full engine create when liveBundle + candidate are supplied
- * - Otherwise rematerialize dual-lane coverage from domainShards / prior quanta
- * - Links successor.parentJobId ↔ superseded.successorJobId for audit
- * - Reuses only quanta with complete content identity equality
- */
-export function planSuccessorReviewJob(input: {
-  staleJob: EvidenceReviewJob;
-  live?: LiveReviewWorld;
-  liveBundle?: EvidenceBundle;
-  candidate?: DistilledKnowledgeCandidate;
-  registryReadSet?: readonly CapabilityReadSetEntry[];
-  /**
-   * Successor Quantum topology shards. When omitted with no liveBundle, the
-   * successor rematerializes prior quanta (identity-preserving when only
-   * non-quantum basis fields changed, e.g. target revision).
-   */
-  domainShards?: readonly { shardId: string; contentHash: string }[];
-  workClass?: ReviewWorkClass;
-  successorJobId?: string;
-  domain?: Record<string, unknown>;
-  now?: Date;
-}): SuccessorReviewPlan {
-  const now = input.now ?? new Date();
-  const staleJob = input.staleJob;
-
-  let successor: EvidenceReviewJob;
-
-  if (input.liveBundle && input.candidate) {
-    successor = createEvidenceReviewJob({
-      bundle: input.liveBundle,
-      candidate: input.candidate,
-      workClass: input.workClass ?? staleJob.workClass,
-      registryReadSet: input.registryReadSet ?? staleJob.basis.registryReadSet,
-      parentJobId: staleJob.jobId,
-      now,
-      jobId: input.successorJobId,
-    });
-  } else {
-    const liveWorld: LiveReviewWorld = input.live ?? {
-      evidenceBundleHash: staleJob.basis.evidenceBundleHash,
-      manifestHash: staleJob.basis.manifestHash,
-      registryReadSet: staleJob.basis.registryReadSetFingerprints,
-      referencedSkillHashes: staleJob.basis.referencedSkillHashes,
-      reviewPolicyVersion: staleJob.basis.reviewPolicyVersion,
-      promptVersion: staleJob.basis.promptVersion,
-      targetCapabilityHandle: staleJob.basis.targetCapabilityHandle,
-      targetCapabilityRevision: staleJob.basis.targetCapabilityRevision,
-    };
-    const liveBasis = buildLiveReviewBasis(liveWorld);
-    const successorJobId =
-      input.successorJobId
-      ?? `job:successor:${staleJob.jobId}:${liveBasis.basisHash.slice(0, 12)}`;
-
-    let quanta: ReviewQuantumRecord[];
-    if (input.domainShards && input.domainShards.length > 0) {
-      quanta = [];
-      const authorIds: string[] = [];
-      const verifierIds: string[] = [];
-      for (const shard of input.domainShards) {
-        const author = createReviewQuantum(successorJobId, {
-          kind: 'author_reader',
-          inputs: {
-            lane: 'author',
-            shardId: shard.shardId,
-            contentHash: shard.contentHash,
-          },
-          shardId: shard.shardId,
-          lane: 'author',
-          promptVersion: liveWorld.promptVersion,
-          policyVersion: liveWorld.reviewPolicyVersion,
-        }, now);
-        const verifier = createReviewQuantum(successorJobId, {
-          kind: 'verifier_reader',
-          inputs: {
-            lane: 'verifier',
-            shardId: shard.shardId,
-            contentHash: shard.contentHash,
-          },
-          shardId: shard.shardId,
-          lane: 'verifier',
-          promptVersion: liveWorld.promptVersion,
-          policyVersion: liveWorld.reviewPolicyVersion,
-        }, now);
-        quanta.push(author, verifier);
-        authorIds.push(author.quantumId);
-        verifierIds.push(verifier.quantumId);
-      }
-      const authorDossier = createReviewQuantum(successorJobId, {
-        kind: 'author_dossier',
-        inputs: {
-          lane: 'author',
-          readers: authorIds,
-          basisHash: liveBasis.basisHash,
-        },
-        dependencyQuantumIds: authorIds,
-        lane: 'author',
-        promptVersion: liveWorld.promptVersion,
-        policyVersion: liveWorld.reviewPolicyVersion,
-      }, now);
-      const verifierDossier = createReviewQuantum(successorJobId, {
-        kind: 'verifier_dossier',
-        inputs: {
-          lane: 'verifier',
-          readers: verifierIds,
-          basisHash: liveBasis.basisHash,
-        },
-        dependencyQuantumIds: verifierIds,
-        lane: 'verifier',
-        promptVersion: liveWorld.promptVersion,
-        policyVersion: liveWorld.reviewPolicyVersion,
-      }, now);
-      quanta.push(authorDossier, verifierDossier);
-    } else {
-      // Identity-preserving rematerialization when only non-quantum basis
-      // fields changed (e.g. target revision with same evidence).
-      const priorList = Object.values(staleJob.quanta);
-      quanta = priorList.map(prior => {
-        const rematerialized: ReviewQuantumRecord = {
-          quantumId: makeQuantumId(successorJobId, prior.kind, prior.inputHash),
-          kind: prior.kind,
-          inputHash: prior.inputHash,
-          dependencyQuantumIds: [],
-          ...(prior.shardId !== undefined ? { shardId: prior.shardId } : {}),
-          ...(prior.lane !== undefined ? { lane: prior.lane } : {}),
-          state: 'pending',
-          attempts: 0,
-          currentDelayMs: 0,
-          transcriptPaths: [],
-          updatedAt: now.toISOString(),
-        };
-        return rematerialized;
-      });
-      const idMap = new Map<string, string>();
-      for (let i = 0; i < priorList.length; i += 1) {
-        idMap.set(priorList[i]!.quantumId, quanta[i]!.quantumId);
-      }
-      quanta = quanta.map((q, i) => ({
-        ...q,
-        dependencyQuantumIds: priorList[i]!.dependencyQuantumIds
-          .map(dep => idMap.get(dep))
-          .filter((id): id is string => typeof id === 'string'),
-      }));
-    }
-
-    // Engine job shell: reuse prior domain payloads with the new live basis.
-    // Quanta are engine-compatible ReviewQuantumRecord maps.
-    const quantaMap: Record<string, ReviewQuantumRecord> = {};
-    for (const q of quanta) quantaMap[q.quantumId] = q;
-
-    successor = {
-      ...staleJob,
-      jobId: successorJobId,
-      workClass: input.workClass ?? staleJob.workClass,
-      disposition: 'active',
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      basis: liveBasis,
-      quanta: quantaMap,
-      parentJobId: staleJob.jobId,
-      successorJobId: undefined,
-      supersededByJobId: undefined,
-      terminalReason: undefined,
-      transitionId: undefined,
-      draft: undefined,
-      verifierResult: undefined,
-      authorDossier: undefined,
-      verifierDossier: undefined,
-      differenceIndex: undefined,
-      obligations: undefined,
-      obligationDispositions: undefined,
-      domain: input.domain ?? staleJob.domain,
-      nextDueAt: undefined,
-    };
-  }
-
-  if (input.successorJobId && successor.jobId !== input.successorJobId) {
-    // createEvidenceReviewJob may mint its own id when not provided; when the
-    // caller forced one via the engine path it is already applied above.
-  }
-
-  const { job: reused, reusedQuantumIds, skippedQuantumIds } = reuseValidSucceededQuanta(
-    successor,
-    staleJob,
-  );
-  reused.parentJobId = staleJob.jobId;
-
-  const superseded = markJobSuperseded(staleJob, reused.jobId, now);
-
-  return {
-    successor: reused,
-    superseded,
-    reusedQuantumIds,
-    skippedQuantumIds,
-    auditLink: {
-      parentJobId: staleJob.jobId,
-      successorJobId: reused.jobId,
-      supersededDisposition: 'superseded',
-    },
-  };
-}
-
-export {
-  buildReviewBasis,
-  createReviewQuantum,
-  quantumInputHash,
-  makeQuantumId,
-  reuseSucceededQuanta,
-  hashEvidenceBundle,
-  sha256Hex,
-  stableStringify,
-};

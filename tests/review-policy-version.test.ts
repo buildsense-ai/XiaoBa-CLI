@@ -8,7 +8,7 @@ import {
 import {
   EVIDENCE_REVIEW_POLICY_VERSION,
   EVIDENCE_REVIEW_PROMPT_VERSION,
-} from '../src/utils/evidence-review-graph-types';
+} from '../src/utils/evidence-review-types';
 
 /**
  * Progressive Trust: bumping the review-policy or prompt/topology version

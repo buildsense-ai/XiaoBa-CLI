@@ -7,7 +7,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   EVIDENCE_REVIEW_JOB_SCHEMA_VERSION,
-  type EvidenceReviewDiagnostics,
   type EvidenceReviewJob,
   type EvidenceReviewJobDisposition,
   type EvidenceReviewJobStoreState,
@@ -15,12 +14,16 @@ import {
   type ReviewWorkClass,
 } from './evidence-review-types';
 import {
-  criticalPathRank,
   deriveJobDisposition as deriveGraphDisposition,
-  isQuantumRunnable as isGraphQuantumRunnable,
   listRunnableQuanta as listGraphRunnableQuanta,
 } from './evidence-review-graph-core';
-import { WORK_CLASS_ORDER } from './evidence-review-graph-store';
+
+const WORK_CLASS_ORDER: readonly ReviewWorkClass[] = [
+  'operational_recovery',
+  'live_learning',
+  'historical_learning',
+  'semantic_reassessment',
+];
 
 function emptyState(): EvidenceReviewJobStoreState {
   return {
@@ -32,10 +35,6 @@ function emptyState(): EvidenceReviewJobStoreState {
       jobCursors: {},
     },
   };
-}
-
-export function emptyEvidenceReviewJobStoreState(): EvidenceReviewJobStoreState {
-  return emptyState();
 }
 
 function quarantine(filePath: string, reason: string): void {
@@ -129,87 +128,15 @@ export function upsertEvidenceReviewJob(
   state.jobs[job.jobId] = job;
 }
 
-export function getEvidenceReviewJob(
-  state: EvidenceReviewJobStoreState,
-  jobId: string,
-): EvidenceReviewJob | undefined {
-  return state.jobs[jobId];
-}
-
-export function listActiveEvidenceReviewJobs(
-  state: EvidenceReviewJobStoreState,
-): EvidenceReviewJob[] {
-  return Object.values(state.jobs)
-    .filter(job => job.disposition === 'active' || job.disposition === 'deferred')
-    .sort((a, b) => a.jobId.localeCompare(b.jobId, 'en'));
-}
-
-export function listJobsByBundleId(
-  state: EvidenceReviewJobStoreState,
-  bundleId: string,
-): EvidenceReviewJob[] {
-  return Object.values(state.jobs)
-    .filter(job => job.bundle.bundleId === bundleId)
-    .sort((a, b) => a.jobId.localeCompare(b.jobId, 'en'));
-}
-
-export function quantumSucceeded(quantum: ReviewQuantumRecord): boolean {
-  return quantum.state === 'succeeded';
-}
-
-export function isQuantumRunnable(
-  job: EvidenceReviewJob,
-  quantum: ReviewQuantumRecord,
-  now: Date,
-): boolean {
-  return isGraphQuantumRunnable(job as any, quantum, now);
-}
-
 export function listRunnableQuanta(
   job: EvidenceReviewJob,
   now: Date,
 ): ReviewQuantumRecord[] {
-  return listGraphRunnableQuanta(job as any, now);
+  return listGraphRunnableQuanta(job, now);
 }
-
-export { criticalPathRank };
 
 export function deriveJobDisposition(job: EvidenceReviewJob): EvidenceReviewJobDisposition {
-  return deriveGraphDisposition(job as any);
-}
-
-export function buildEvidenceReviewDiagnostics(
-  job: EvidenceReviewJob,
-  now = new Date(),
-): EvidenceReviewDiagnostics {
-  const quanta = Object.values(job.quanta);
-  const authorReaders = quanta.filter(q => q.kind === 'author_reader');
-  const verifierReaders = quanta.filter(q => q.kind === 'verifier_reader');
-  const runnable = listRunnableQuanta(job, now);
-  const unresolved = (job.obligations ?? []).filter(obligation => (
-    !(job.obligationDispositions ?? []).some(d => d.obligationId === obligation.obligationId)
-  )).length;
-  return {
-    jobId: job.jobId,
-    disposition: job.disposition,
-    workClass: job.workClass,
-    basisHash: job.basis.basisHash,
-    manifestHash: job.manifest.manifestHash,
-    shardCount: job.manifest.shardIds.length,
-    authorCoveredShards: authorReaders.filter(q => q.state === 'succeeded').length,
-    verifierCoveredShards: verifierReaders.filter(q => q.state === 'succeeded').length,
-    runnableQuanta: runnable.length,
-    leasedQuanta: quanta.filter(q => q.state === 'leased').length,
-    retryingQuanta: quanta.filter(q => q.state === 'retry_wait').length,
-    failedQuanta: quanta.filter(q => q.state === 'terminal_failed').length,
-    succeededQuanta: quanta.filter(q => q.state === 'succeeded').length,
-    obligationCount: job.obligations?.length ?? 0,
-    unresolvedObligations: unresolved,
-    nextDueAt: job.nextDueAt,
-    successorJobId: job.successorJobId,
-    transitionId: job.transitionId,
-    terminalReason: job.terminalReason,
-  };
+  return deriveGraphDisposition(job);
 }
 
 export function evidenceReviewJobStorePathForReviewQueue(reviewQueuePath: string): string {

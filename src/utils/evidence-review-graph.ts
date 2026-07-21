@@ -13,16 +13,12 @@ import {
   EVIDENCE_REVIEW_PROMPT_VERSION,
   type EvidenceReviewJob,
   type ReviewBasis,
-  type ReviewQuantumRecord,
   type ReviewWorkClass,
 } from './evidence-review-types';
 import {
   buildDualLaneCoverageQuanta,
   buildReviewBasis as buildGraphReviewBasis,
   createEvidenceReviewJob as createGraphJob,
-  createReviewQuantum,
-  makeQuantumId,
-  quantumInputHash,
   reuseSucceededQuanta as reuseSucceededQuantaCore,
   sha256Hex,
   stableStringify,
@@ -32,27 +28,6 @@ import {
   shardEvidenceBundle,
   type ShardingOptions,
 } from './evidence-review';
-
-export {
-  makeQuantumId,
-  quantumInputHash,
-  sha256Hex,
-  stableStringify,
-  createReviewQuantum,
-  buildDualLaneCoverageQuanta,
-  claimQuantum,
-  completeQuantum,
-  failQuantum,
-  reclaimExpiredLeases,
-  recoverJobAfterRestart,
-  isQuantumRunnable,
-  listRunnableQuanta,
-  criticalPathRank,
-  deriveJobDisposition,
-  deriveJobProgress,
-  computeJobNextDueAt,
-  dependenciesSatisfied,
-} from './evidence-review-graph-core';
 
 export function fingerprintRegistryReadSet(
   entries: readonly CapabilityReadSetEntry[] = [],
@@ -215,46 +190,10 @@ export function reuseSucceededQuanta(
   successor: EvidenceReviewJob,
   prior: EvidenceReviewJob,
 ): EvidenceReviewJob {
-  const graphSuccessor = {
-    schemaVersion: successor.schemaVersion,
-    jobId: successor.jobId,
-    workClass: successor.workClass,
-    disposition: successor.disposition,
-    createdAt: successor.createdAt,
-    updatedAt: successor.updatedAt,
-    basis: {
-      basisHash: successor.basis.basisHash,
-      manifestHash: successor.basis.manifestHash,
-      evidenceBundleHash: successor.basis.evidenceBundleHash,
-      registryReadSet: successor.basis.registryReadSetFingerprints,
-      referencedSkillHashes: successor.basis.referencedSkillHashes,
-      reviewPolicyVersion: successor.basis.reviewPolicyVersion,
-      promptVersion: successor.basis.promptVersion,
-    },
-    quanta: successor.quanta,
-  };
-  const graphPrior = {
-    schemaVersion: prior.schemaVersion,
-    jobId: prior.jobId,
-    workClass: prior.workClass,
-    disposition: prior.disposition,
-    createdAt: prior.createdAt,
-    updatedAt: prior.updatedAt,
-    basis: {
-      basisHash: prior.basis.basisHash,
-      manifestHash: prior.basis.manifestHash,
-      evidenceBundleHash: prior.basis.evidenceBundleHash,
-      registryReadSet: prior.basis.registryReadSetFingerprints,
-      referencedSkillHashes: prior.basis.referencedSkillHashes,
-      reviewPolicyVersion: prior.basis.reviewPolicyVersion,
-      promptVersion: prior.basis.promptVersion,
-    },
-    quanta: prior.quanta,
-  };
-  const merged = reuseSucceededQuantaCore(graphSuccessor as any, graphPrior as any);
+  const merged = reuseSucceededQuantaCore(successor, prior);
   return {
     ...successor,
-    quanta: merged.quanta as Record<string, ReviewQuantumRecord>,
+    quanta: merged.quanta,
     updatedAt: merged.updatedAt,
   };
 }

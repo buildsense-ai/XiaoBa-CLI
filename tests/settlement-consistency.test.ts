@@ -53,9 +53,9 @@ import {
 import { RuntimeLearning } from '../src/utils/runtime-learning';
 import { EvidenceIngestor } from '../src/utils/evidence-ingestor';
 import { DueWorkPlanner, reviewContinuationPathForEpisodeStore } from '../src/utils/due-work-planner';
+import { defaultDistilledOutputDir } from '../src/utils/path-resolver';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
-import { DistillationPipeline, defaultDistilledOutputDir } from '../src/utils/distillation-pipeline';
 import { readShardStructurally } from '../src/utils/evidence-review-engine';
 import type { DistilledKnowledgeCandidate } from '../src/utils/capability-distiller';
 import type { SourceEventIdentity, SessionLogSourceIdentity } from '../src/utils/session-log-source';
@@ -561,7 +561,6 @@ function createReconcileRuntimeLearning(root: string): RuntimeLearning {
     skillEvolution,
     curator,
     planner,
-    legacyPipeline: undefined,
   });
 }
 

@@ -3,7 +3,6 @@ import * as assert from 'node:assert/strict';
 
 import {
   detectDuplicateCapabilityCreation,
-  resolveCapabilityUpdateGuidance,
 } from '../src/utils/capability-update-guidance';
 import type {
   EvidenceBundle,
@@ -100,35 +99,4 @@ describe('Capability update guidance — duplicate detection (RC #6b)', () => {
     assert.equal(issue, null, 'append_evidence is the bounded update path and must not be flagged');
   });
 
-  test('resolveCapabilityUpdateGuidance returns append_evidence guidance for a matching existing capability', () => {
-    const bundle = bundleWith([
-      related('cap_11af8d6aa4ea448594d705e231455b5e', 'transfer-mac-developer-environment', 'Transfer a Mac developer environment.'),
-    ]);
-    const guidance = resolveCapabilityUpdateGuidance({
-      proposedRoutingName: 'transfer-mac-developer-environment',
-      proposedEvidenceRefs: ['xurl://openai/thread-vscode-exclusion#5:problem-action'],
-      relatedCurrentSkills: bundle.relatedCurrentSkills,
-    });
-
-    assert.ok(guidance, 'guidance must be provided for a matching existing capability');
-    assert.equal(guidance!.existingHandle, 'cap_11af8d6aa4ea448594d705e231455b5e');
-    assert.ok(
-      guidance!.recommendedTransition === 'append_evidence' || guidance!.recommendedTransition === 'replace_current_skill',
-      `recommended transition must be append/replace, got ${guidance!.recommendedTransition}`,
-    );
-    assert.ok(guidance!.rationale.length > 0);
-  });
-
-  test('resolveCapabilityUpdateGuidance returns null when no existing capability matches', () => {
-    const bundle = bundleWith([
-      related('cap_11af8d6aa4ea448594d705e231455b5e', 'transfer-mac-developer-environment'),
-    ]);
-    const guidance = resolveCapabilityUpdateGuidance({
-      proposedRoutingName: 'mac-dev-env-vscode-exclusion',
-      proposedEvidenceRefs: ['xurl://openai/thread-vscode-exclusion#5:problem-action'],
-      relatedCurrentSkills: bundle.relatedCurrentSkills,
-    });
-
-    assert.equal(guidance, null, 'no guidance when the routingName is genuinely different');
-  });
 });
