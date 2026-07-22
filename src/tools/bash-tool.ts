@@ -12,6 +12,17 @@ import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription
 
 const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
+// agent-browser >= 0.24.1 reliably honors this daemon setting. Older cached
+// versions still receive it, but their cleanup behavior remains best effort.
+export const DEFAULT_AGENT_BROWSER_IDLE_TIMEOUT_MS = '300000';
+
+export function applyShellRuntimeDefaults(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const nextEnv = { ...env };
+  if (!String(nextEnv.AGENT_BROWSER_IDLE_TIMEOUT_MS || '').trim()) {
+    nextEnv.AGENT_BROWSER_IDLE_TIMEOUT_MS = DEFAULT_AGENT_BROWSER_IDLE_TIMEOUT_MS;
+  }
+  return nextEnv;
+}
 
 interface WrappedCommand {
   command: string;
@@ -67,6 +78,7 @@ export class ShellTool implements Tool {
       'Windows 目标上 command 会作为 PowerShell 脚本执行，可直接写多行 PowerShell，无需再套一层 powershell -Command。',
       '命令从当前目录启动；每次调用都是新的 shell 进程，只有最终当前目录会保留到后续工具调用。',
       '环境变量、alias、函数和已激活虚拟环境不会自动跨调用保留；需要时在同一条 command 中显式设置。',
+      'agent-browser 会启动独立后台 daemon；使用后必须执行 close，命名 session 必须带完全相同的 --session NAME。运行时的空闲超时仅用于异常收尾兜底。',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -169,7 +181,7 @@ export class ShellTool implements Tool {
       const { stdout, stderr } = await this.executeWrappedCommand(
         wrapped,
         executionDirectory.directory,
-        runtimeEnvironment.env,
+        applyShellRuntimeDefaults(runtimeEnvironment.env),
         timeout,
         context.abortSignal,
       );

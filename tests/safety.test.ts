@@ -4,11 +4,73 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-  isBashCommandAllowed,
-  isPathAllowed,
-} from '../src/utils/safety';
-import { ShellTool } from '../src/tools/bash-tool';
+  applyShellRuntimeDefaults,
+  DEFAULT_AGENT_BROWSER_IDLE_TIMEOUT_MS,
+  ShellTool,
+} from '../src/tools/bash-tool';
+import { isBashCommandAllowed, isPathAllowed } from '../src/utils/safety';
 import { WriteTool } from '../src/tools/write-tool';
+
+test('shell runtime bounds agent-browser daemon idle lifetime by default', () => {
+  const sourceEnv = { PATH: '/usr/bin' };
+  const result = applyShellRuntimeDefaults(sourceEnv);
+
+  assert.equal(result.AGENT_BROWSER_IDLE_TIMEOUT_MS, DEFAULT_AGENT_BROWSER_IDLE_TIMEOUT_MS);
+  assert.equal(sourceEnv.AGENT_BROWSER_IDLE_TIMEOUT_MS, undefined);
+});
+
+test('shell runtime preserves an explicit agent-browser idle timeout', () => {
+  const configured = applyShellRuntimeDefaults({
+    AGENT_BROWSER_IDLE_TIMEOUT_MS: '300000',
+  });
+  const disabled = applyShellRuntimeDefaults({
+    AGENT_BROWSER_IDLE_TIMEOUT_MS: '0',
+  });
+
+  assert.equal(configured.AGENT_BROWSER_IDLE_TIMEOUT_MS, '300000');
+  assert.equal(disabled.AGENT_BROWSER_IDLE_TIMEOUT_MS, '0');
+});
+
+test('execute_shell passes the default agent-browser idle timeout to child processes', async () => {
+  const previous = process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS;
+  delete process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS;
+
+  try {
+    const result = await new ShellTool().execute({
+      command: `node -e "process.stdout.write(process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS || '')"`,
+    }, {
+      workingDirectory: process.cwd(),
+      conversationHistory: [],
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(String(result.ok && result.content), new RegExp(DEFAULT_AGENT_BROWSER_IDLE_TIMEOUT_MS));
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS;
+    else process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS = previous;
+  }
+});
+
+test('Device RPC receivers apply the same agent-browser idle timeout locally', async () => {
+  const previous = process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS;
+  delete process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS;
+
+  try {
+    const result = await new ShellTool().execute({
+      command: `node -e "process.stdout.write(process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS || '')"`,
+    }, {
+      workingDirectory: process.cwd(),
+      conversationHistory: [],
+      deviceRpcReceiver: true,
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(String(result.ok && result.content), new RegExp(DEFAULT_AGENT_BROWSER_IDLE_TIMEOUT_MS));
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS;
+    else process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS = previous;
+  }
+});
 
 test('shell safety blocks confirmable destructive commands until explicitly confirmed', () => {
   assert.deepEqual(isBashCommandAllowed('git reset --hard'), {
