@@ -14,7 +14,7 @@ import {
 
 const ATRIDAISUKI_DEFAULTS = [
   'atridaisuki/web-search@1.0.2',
-  'atridaisuki/deep-research@1.0.4',
+  'atridaisuki/deep-research@1.0.5',
   'atridaisuki/read-pdf@1.0.15',
   'atridaisuki/pdf-author-editor@1.2.5',
   'atridaisuki/image-asset-generator@1.0.13',
