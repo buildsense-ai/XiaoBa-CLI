@@ -309,8 +309,8 @@ function normalizeCatalogRuntime(runtime: BotCatalogModelRuntime): BotCatalogMod
     ...runtime,
     modelId: profile.id,
     model: profile.model,
-    contextWindowTokens: profile.contextWindowTokens,
-    capabilities: profile.capabilities,
+    contextWindowTokens: runtime.contextWindowTokens || profile.contextWindowTokens,
+    capabilities: runtime.capabilities ?? profile.capabilities,
   };
 }
 

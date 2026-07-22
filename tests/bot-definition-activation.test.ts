@@ -73,6 +73,9 @@ describe('BotDefinition activation', () => {
       if (url.pathname === '/api/relay/key') {
         return Response.json({ key: { state: 'active', key: 'sk-bravo-relay-material' } });
       }
+      if (url.pathname === '/v1/models') {
+        return Response.json({ data: [{ id: 'MiniMax-M3', capabilities: { vision: true } }] });
+      }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
 
@@ -96,6 +99,7 @@ describe('BotDefinition activation', () => {
       'GET /api/bot/model-config',
       'GET /api/relay/config',
       'GET /api/relay/key',
+      'GET /v1/models',
     ]);
   });
 
@@ -205,6 +209,11 @@ describe('BotDefinition activation', () => {
       if (url.pathname === '/api/relay/key') {
         return Response.json({ key: { state: 'active', key: 'sk-cloud-gpt56' } });
       }
+      if (url.pathname === '/v1/models') {
+        return Response.json({
+          data: [{ id: 'gpt-5.6-terra', capabilities: { vision: true, tool_calling: true, streaming: true } }],
+        });
+      }
       if (url.pathname === '/api/bot/model-config/ack') {
         ackBody = JSON.parse(String(init?.body));
         return Response.json({ status: 'applied' });
@@ -220,6 +229,8 @@ describe('BotDefinition activation', () => {
     assert.equal(runtime?.openaiApiMode, 'responses');
     assert.equal(runtime?.model, 'gpt-5.6-terra');
     assert.equal(runtime?.reasoningEffort, 'xhigh');
+    assert.equal(runtime?.capabilities?.vision, true);
+    assert.equal(runtime?.capabilitiesSource, 'relay-models');
     assert.deepStrictEqual(ackBody, {
       revision: 5,
       model_id: 'gpt-5.6-terra',

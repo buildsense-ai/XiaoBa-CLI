@@ -8,6 +8,7 @@ import type { BotCatalogModelRuntime } from '../bot-definition/types';
 import type { ReasoningEffort } from '../types';
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const CAPABILITY_REQUEST_TIMEOUT_MS = 3_000;
 
 export interface CatsRelayBootstrapOptions {
   botId: string;
@@ -16,6 +17,8 @@ export interface CatsRelayBootstrapOptions {
   reasoningEffort?: ReasoningEffort;
   fetchImpl?: typeof fetch;
 }
+
+type RuntimeCapabilities = NonNullable<BotCatalogModelRuntime['capabilities']>;
 
 /**
  * Obtains the device-local material needed to run a catalog model. The caller
@@ -44,6 +47,13 @@ export async function provisionCatsRelayCatalogRuntime(
   ensureRequestedModelIsAvailable(relayConfig, profile.id, profile.model);
 
   const apiKey = await ensurePlainRelayKey(fetchImpl, httpBaseUrl, token, options.auth);
+  const relayCapabilities = await fetchRelayModelCapabilities(
+    fetchImpl,
+    relayEndpointForProvider(relayConfig, 'openai'),
+    apiKey,
+    profile.model,
+  );
+  const capabilities = mergeCapabilities(profile.capabilities, relayCapabilities);
   return {
     schema: 'xiaoba.bot-catalog-model-runtime.v1',
     botId,
@@ -55,12 +65,108 @@ export async function provisionCatsRelayCatalogRuntime(
     contextWindowTokens: profile.contextWindowTokens,
     reasoningEffort: options.reasoningEffort ?? 'high',
     openaiApiMode: profile.openaiApiMode ?? 'chat_completions',
-    capabilities: {
-      vision: profile.capabilities.vision,
-      toolCalling: profile.capabilities.toolCalling,
-      streaming: profile.capabilities.streaming,
-    },
+    capabilities,
+    capabilitiesSource: relayCapabilities ? 'relay-models' : 'static',
+    ...(relayCapabilities ? { capabilitiesCheckedAt: new Date().toISOString() } : {}),
   };
+}
+
+export async function refreshCatsRelayCatalogRuntimeCapabilities(
+  runtime: BotCatalogModelRuntime,
+  fetchImpl: typeof fetch = fetch,
+): Promise<BotCatalogModelRuntime> {
+  const profile = findRelayModelProfile(runtime.modelId) ?? findRelayModelProfile(runtime.model);
+  const relayCapabilities = await fetchRelayModelCapabilities(
+    fetchImpl,
+    runtime.apiBase,
+    runtime.apiKey,
+    runtime.model,
+  );
+  if (!relayCapabilities) {
+    if (runtime.capabilitiesSource === 'relay-models') return runtime;
+    return {
+      ...runtime,
+      capabilities: mergeCapabilities(profile?.capabilities),
+      capabilitiesSource: 'static',
+    };
+  }
+  return {
+    ...runtime,
+    capabilities: mergeCapabilities(profile?.capabilities, relayCapabilities),
+    capabilitiesSource: 'relay-models',
+    capabilitiesCheckedAt: new Date().toISOString(),
+  };
+}
+
+function mergeCapabilities(
+  fallback?: Partial<RuntimeCapabilities>,
+  primary?: Partial<RuntimeCapabilities>,
+): RuntimeCapabilities {
+  const merged = { ...(fallback || {}), ...(primary || {}) };
+  return {
+    ...(typeof merged.vision === 'boolean' ? { vision: merged.vision } : {}),
+    ...(typeof merged.toolCalling === 'boolean' ? { toolCalling: merged.toolCalling } : {}),
+    ...(typeof merged.streaming === 'boolean' ? { streaming: merged.streaming } : {}),
+  };
+}
+
+function relayModelsUrl(apiBase: string): string {
+  const parsed = new URL(String(apiBase || '').trim());
+  const path = parsed.pathname.replace(/\/+$/, '');
+  if (/\/anthropic$/i.test(path)) {
+    parsed.pathname = path.replace(/\/anthropic$/i, '/v1/models');
+  } else if (/\/v1$/i.test(path)) {
+    parsed.pathname = `${path}/models`;
+  } else if (/\/models$/i.test(path)) {
+    parsed.pathname = path;
+  } else {
+    parsed.pathname = `${path}/v1/models`;
+  }
+  return parsed.toString();
+}
+
+async function fetchRelayModelCapabilities(
+  fetchImpl: typeof fetch,
+  apiBase: string,
+  apiKey: string,
+  modelName: string,
+): Promise<RuntimeCapabilities | undefined> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CAPABILITY_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetchImpl(relayModelsUrl(apiBase), {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    const payload = await response.json() as any;
+    const requested = String(modelName || '').trim().toLowerCase();
+    const item = Array.isArray(payload?.data)
+      ? payload.data.find((candidate: any) => String(candidate?.id || '').trim().toLowerCase() === requested)
+      : undefined;
+    if (!item) return undefined;
+    const capabilities = item.capabilities && typeof item.capabilities === 'object'
+      ? item.capabilities
+      : {};
+    const rawModalities = capabilities.input_modalities ?? item.input_modalities;
+    const modalities = Array.isArray(rawModalities)
+      ? rawModalities.map((value: unknown) => String(value).trim().toLowerCase())
+      : undefined;
+    return {
+      ...(typeof capabilities.vision === 'boolean'
+        ? { vision: capabilities.vision }
+        : modalities ? { vision: modalities.includes('image') } : {}),
+      ...(typeof capabilities.tool_calling === 'boolean'
+        ? { toolCalling: capabilities.tool_calling }
+        : typeof capabilities.toolCalling === 'boolean' ? { toolCalling: capabilities.toolCalling } : {}),
+      ...(typeof capabilities.streaming === 'boolean' ? { streaming: capabilities.streaming } : {}),
+    };
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function ensurePlainRelayKey(
