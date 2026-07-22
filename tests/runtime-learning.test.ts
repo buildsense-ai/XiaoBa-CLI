@@ -511,29 +511,6 @@ function recordReviewAdmissionLoad(
     });
 }
 
-function admitReviewableEpisode(env: TestEnv, episode: LearningEpisode): LearningEpisode {
-  const agentTurnEpisodeId = episode.agentTurnEpisodeId ?? `turn-${episode.episodeId}`;
-  const runtimeSessionId = episode.runtimeSessionId ?? 'runtime-review-admission';
-  recordReviewAdmissionLoad(env, agentTurnEpisodeId, runtimeSessionId);
-  const hasExplicitAcceptance = episode.completionEvidence.some(evidence => (
-    evidence.kind === 'user-acceptance' || evidence.kind === 'artifact-validation'
-  ));
-  return {
-    ...episode,
-    agentTurnEpisodeId,
-    runtimeSessionId,
-    completionEvidence: hasExplicitAcceptance
-      ? episode.completionEvidence
-      : [...episode.completionEvidence, {
-          ref: `${episode.sourceFilePath}#turn-${episode.deliveryTurn + 1}:acceptance`,
-          sourceFilePath: episode.sourceFilePath,
-          turn: episode.deliveryTurn + 1,
-          kind: 'user-acceptance',
-          detail: 'The delivered result was explicitly accepted.',
-        }],
-  };
-}
-
 // ---------------------------------------------------------------------------
 // AC 1: Ingestion — session log → evidence admission
 // ---------------------------------------------------------------------------
@@ -609,6 +586,184 @@ describe('RuntimeLearning — AC1: Ingestion', () => {
       && evidence.turn === 6
       && evidence.detail.includes('opencli google images mirror'),
     ));
+  });
+
+  test('keeps an independent response-only preference separate from a prior artifact delivery', async () => {
+    const [delivery] = deliveryPair(0);
+    const preference = futureTurn(
+      2,
+      'cli',
+      'Use npm for this project from now on.',
+      'Understood. I will use npm for this project.',
+      0,
+    );
+    writeLog(env.logFile, [delivery, preference]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 2);
+    const episodes = Object.values(readOrEmpty(env.episodeStorePath).episodes) as LearningEpisode[];
+    assert.equal(episodes.length, 2);
+    const preferenceEpisode = episodes.find(episode => episode.deliveryTurn === 2);
+    const deliveryEpisode = episodes.find(episode => episode.deliveryTurn === 1);
+    assert.ok(preferenceEpisode?.semanticObservations.some(observation => observation.value.includes('Use npm')));
+    assert.equal(deliveryEpisode?.semanticObservations.some(observation => observation.value.includes('Use npm')), false);
+  });
+
+  test('keeps a response-only preference separate from a following artifact delivery', async () => {
+    const preference = futureTurn(
+      1,
+      'cli',
+      'Use npm for this project from now on.',
+      'Understood. I will use npm for this project.',
+      0,
+    );
+    const delivery = futureTurn(
+      2,
+      'cli',
+      'Create the release report.',
+      'The report is ready.',
+      0,
+      [{ id: 'send-2', name: 'send_file', arguments: { path: 'release.md' }, result: 'report sent' }],
+    );
+    writeLog(env.logFile, [preference, delivery]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 2);
+    const episodes = Object.values(readOrEmpty(env.episodeStorePath).episodes) as LearningEpisode[];
+    const preferenceEpisode = episodes.find(episode => episode.deliveryTurn === 1);
+    const deliveryEpisode = episodes.find(episode => episode.deliveryTurn === 2);
+    assert.deepEqual(
+      preferenceEpisode?.semanticObservations.filter(item => item.kind === 'user-intent').map(item => item.value),
+      ['Use npm for this project from now on.'],
+    );
+    assert.deepEqual(
+      deliveryEpisode?.semanticObservations.filter(item => item.kind === 'user-intent').map(item => item.value),
+      ['Create the release report.'],
+    );
+  });
+
+  test('keeps consecutive response-only intents in separate Episodes', async () => {
+    const packagePreference = futureTurn(
+      1,
+      'cli',
+      'Use npm for this project from now on.',
+      'Understood. I will use npm for this project.',
+      0,
+    );
+    const writingPreference = futureTurn(
+      2,
+      'cli',
+      'Keep answers concise from now on.',
+      'Understood. I will keep answers concise.',
+      0,
+    );
+    writeLog(env.logFile, [packagePreference, writingPreference]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 2);
+    const episodes = Object.values(readOrEmpty(env.episodeStorePath).episodes) as LearningEpisode[];
+    assert.deepEqual(
+      episodes
+        .sort((left, right) => left.deliveryTurn - right.deliveryTurn)
+        .map(episode => episode.semanticObservations.find(item => item.kind === 'user-intent')?.value),
+      ['Use npm for this project from now on.', 'Keep answers concise from now on.'],
+    );
+  });
+
+  test('folds a response-only acceptance into the prior artifact delivery', async () => {
+    const [delivery, acceptance] = deliveryPair(0);
+    writeLog(env.logFile, [delivery, acceptance]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 1);
+    const episodes = Object.values(readOrEmpty(env.episodeStorePath).episodes) as LearningEpisode[];
+    assert.equal(episodes.length, 1);
+    assert.ok(episodes[0]!.completionEvidence.some(evidence => evidence.kind === 'user-acceptance'));
+  });
+
+  test('folds a Chinese acknowledgement without creating a social Episode', async () => {
+    const [delivery] = deliveryPair(0);
+    const acceptance = futureTurn(2, 'cli', '谢谢！', '不客气。', 0);
+    writeLog(env.logFile, [delivery, acceptance]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 1);
+    const episodes = Object.values(readOrEmpty(env.episodeStorePath).episodes) as LearningEpisode[];
+    assert.equal(episodes.length, 1);
+    assert.ok(episodes[0]!.completionEvidence.some(evidence => (
+      evidence.kind === 'user-acceptance' && evidence.detail === '谢谢！'
+    )));
+  });
+
+  test('keeps a short acknowledgement when the assistant response carries a rule', async () => {
+    const clarifiedPreference = futureTurn(
+      1,
+      'cli',
+      'Yes.',
+      'Use npm for package-management commands in this project.',
+      0,
+    );
+    writeLog(env.logFile, [clarifiedPreference]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 1);
+    const episodes = Object.values(readOrEmpty(env.episodeStorePath).episodes) as LearningEpisode[];
+    assert.equal(episodes.length, 1);
+    assert.ok(episodes[0]!.completionEvidence.some(evidence => (
+      evidence.kind === 'assistant-response' && evidence.detail?.includes('Use npm')
+    )));
+  });
+
+  test('attributes acceptance to an intervening response-only Episode, not the older artifact', async () => {
+    const [delivery] = deliveryPair(0);
+    const explanation = futureTurn(
+      2,
+      'cli',
+      'How should the report title be formatted?',
+      'Use sentence case for the report title.',
+      0,
+    );
+    const acceptance = futureTurn(3, 'cli', 'Thanks, that works perfectly!', 'Glad it helped.', 0);
+    writeLog(env.logFile, [delivery, explanation, acceptance]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 2);
+    const episodes = Object.values(readOrEmpty(env.episodeStorePath).episodes) as LearningEpisode[];
+    const artifactEpisode = episodes.find(episode => episode.deliveryTurn === 1);
+    const explanationEpisode = episodes.find(episode => episode.deliveryTurn === 2);
+    assert.equal(artifactEpisode?.completionEvidence.some(evidence => evidence.kind === 'user-acceptance'), false);
+    assert.equal(explanationEpisode?.completionEvidence.some(evidence => evidence.kind === 'user-acceptance'), true);
+  });
+
+  test('attributes a correction to an intervening response-only Episode, not the older artifact', async () => {
+    const [delivery] = deliveryPair(0);
+    const explanation = futureTurn(
+      2,
+      'cli',
+      'How should the report title be formatted?',
+      'Use title case for the report title.',
+      0,
+    );
+    const correction = futureTurn(3, 'cli', 'No, that is wrong. Use sentence case.', '', 0);
+    writeLog(env.logFile, [delivery, explanation, correction]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 2);
+    const episodes = Object.values(readOrEmpty(env.episodeStorePath).episodes) as LearningEpisode[];
+    const artifactEpisode = episodes.find(episode => episode.deliveryTurn === 1);
+    const explanationEpisode = episodes.find(episode => episode.deliveryTurn === 2);
+    assert.equal(artifactEpisode?.status, 'settling');
+    assert.equal(explanationEpisode?.status, 'contradicted');
+    assert.equal(artifactEpisode?.contradictionSignals.length, 0);
+    assert.equal(explanationEpisode?.contradictionSignals.length, 1);
   });
 
   test('non-discovery wake skips log scanning', async () => {
@@ -744,7 +899,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
   beforeEach(() => { env = setupEnv(0); }); // Immediate settlement
   afterEach(() => { env.restore(); env.teardown(); });
 
-  test('an accepted single episode is retained without creating a new Current Skill', async () => {
+  test('an accepted single episode bootstraps a Current Skill without a prior Skill load', async () => {
     const [delivery, acceptance] = deliveryPair(-2); // 2 hours ago
     writeLog(env.logFile, [delivery, acceptance]);
 
@@ -754,17 +909,17 @@ describe('RuntimeLearning — AC3: Due Review', () => {
 
     assert.ok(result.ingestion.admittedEpisodes >= 1);
     assert.ok(result.maturation.becameEligible >= 1);
-    assert.equal(result.review.reviewedEpisodes, 0);
-    assert.equal(env.branchCalls.author, 0);
-    assert.equal(env.branchCalls.verifier, 0);
+    assert.equal(result.review.reviewedEpisodes, 1);
+    assert.equal(env.branchCalls.author, 1);
+    assert.equal(env.branchCalls.verifier, 1);
 
     const registry = readOrEmpty(env.registryPath);
-    assert.equal(Object.keys(registry?.capabilities ?? {}).length, 0);
+    assert.equal(Object.keys(registry?.capabilities ?? {}).length, 1);
     const heartbeat = readOrEmpty(path.join(env.root, 'data', 'heartbeat-record.json'));
     assert.equal(heartbeat?.backlog?.eligibleEpisodes, 0);
   });
 
-  test('a silently settled delivery is retained but does not enter capability review', async () => {
+  test('a settled delivery without explicit acceptance still enters capability review', async () => {
     const delivery = futureTurn(
       1,
       'cli',
@@ -778,11 +933,63 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     const result = await env.runtimeLearning.wake('startup');
 
     assert.ok(result.ingestion.admittedEpisodes >= 1, 'the delivery remains available for later correction');
+    assert.equal(result.review.reviewedEpisodes, 1);
+    assert.equal(env.branchCalls.author, 1);
+    assert.equal(env.branchCalls.verifier, 1);
+    const registry = readOrEmpty(env.registryPath);
+    assert.equal(Object.keys(registry?.capabilities ?? {}).length, 1);
+  });
+
+  test('a response-only preference turn can become a narrow Current Skill', async () => {
+    env.skillEvolutionOptions.authorFixture = ({ bundle }) => {
+      assert.ok(bundle.completionEvidence.some(ref => ref.ref.includes('assistant-response')));
+      assert.ok(bundle.semanticObservations?.some(observation => (
+        observation.kind === 'user-intent' && observation.value.includes('Use npm')
+      )));
+      return {
+        body: 'Use npm for Node.js package-management commands unless the user explicitly overrides it.',
+        envelope: {
+          decision: 'create_current_skill' as const,
+          routingName: 'use-npm-for-node-tasks',
+          description: 'Prefer npm for Node.js package-management commands.',
+          evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
+        },
+      };
+    };
+    env.skillEvolutionOptions.verifierFixture = ({ bundle }) => ({
+      decision: 'accept' as const,
+      transition: 'create_current_skill' as const,
+      issues: [],
+      rationale: 'The explicit preference and acknowledgement support a narrow package-manager rule.',
+      obligationDispositions: acceptReviewObligations(bundle),
+    });
+    const preference = futureTurn(
+      1,
+      'cli',
+      'Use npm for Node.js tasks from now on.',
+      'Understood. I will use npm for Node.js package-management commands.',
+      -2,
+    );
+    writeLog(env.logFile, [preference]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 1);
+    assert.equal(result.review.transitionsByKind.create_current_skill, 1);
+    const records = Object.values(readOrEmpty(env.registryPath).capabilities) as Array<{ routingName: string }>;
+    assert.deepEqual(records.map(record => record.routingName), ['use-npm-for-node-tasks']);
+  });
+
+  test('an empty assistant turn remains ineligible learning input', async () => {
+    const empty = futureTurn(1, 'cli', 'Use npm for Node.js tasks.', '', -2);
+    writeLog(env.logFile, [empty]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 0);
     assert.equal(result.review.reviewedEpisodes, 0);
     assert.equal(env.branchCalls.author, 0);
     assert.equal(env.branchCalls.verifier, 0);
-    const registry = readOrEmpty(env.registryPath);
-    assert.equal(Object.keys(registry?.capabilities ?? {}).length, 0);
   });
 
   test('a smoke session never enters the Learning Episode store', async () => {
@@ -825,8 +1032,8 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     assert.equal(result.ingestion.admittedEpisodes, 1);
     const state = readOrEmpty(env.episodeStorePath);
     assert.equal(Object.keys(state?.episodes ?? {}).length, 1);
-    assert.equal(env.branchCalls.author, 0);
-    assert.equal(env.branchCalls.verifier, 0);
+    assert.equal(env.branchCalls.author, 1);
+    assert.equal(env.branchCalls.verifier, 1);
   });
 
   test('an accepted episode can append evidence to the generated Skill it loaded', async () => {
@@ -947,7 +1154,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     ));
   });
 
-  test('one wake rejects single-episode creation and defers an unobserved candidate', async () => {
+  test('one wake creates from a transferable single episode and defers an unobserved candidate', async () => {
     const customEnv = setupEnv(0, {
       authorFixture: ({ bundle }) => {
         const hasObservation = (bundle.semanticObservations?.length ?? 0) > 0;
@@ -969,7 +1176,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
         obligationDispositions: acceptReviewObligations(bundle),
       }),
     });
-    const makeEpisode = (episodeId: string, semanticObservations: LearningEpisode['semanticObservations']): LearningEpisode => admitReviewableEpisode(customEnv, {
+    const makeEpisode = (episodeId: string, semanticObservations: LearningEpisode['semanticObservations']): LearningEpisode => ({
       schemaVersion: 3,
       episodeId,
       runtimeSessionId: 'runtime-semantic-naming',
@@ -1003,9 +1210,9 @@ describe('RuntimeLearning — AC3: Due Review', () => {
 
       const result = await customEnv.runtimeLearning.wake('startup');
 
-      assert.equal(result.review.transitionsByKind.reject_candidate, 1);
+      assert.equal(result.review.transitionsByKind.create_current_skill, 1);
       assert.equal(result.review.transitionsByKind.defer, 1);
-      assert.equal(Object.values(readOrEmpty(customEnv.registryPath)?.capabilities ?? {}).length, 0);
+      assert.equal(Object.values(readOrEmpty(customEnv.registryPath)?.capabilities ?? {}).length, 1);
       const jobs = loadEvidenceReviewJobStore(
         evidenceReviewJobStorePathForReviewQueue(customEnv.reviewQueuePath),
       );
@@ -1035,7 +1242,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
   });
 
   test('candidate cap persists a restart-safe continuation and schedules it', async () => {
-    const makeEpisode = (episodeId: string): LearningEpisode => admitReviewableEpisode(env, {
+    const makeEpisode = (episodeId: string): LearningEpisode => ({
       schemaVersion: 3,
       episodeId,
       runtimeSessionId: 'runtime-budget-continuation',
@@ -1106,7 +1313,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
   });
 
   test('candidate capacity remains work-conserving across review classes without prompt-size rejection', async () => {
-    const liveEpisode = admitReviewableEpisode(env, {
+    const liveEpisode: LearningEpisode = {
       schemaVersion: 3,
       episodeId: 'live-budget-admissible',
       runtimeSessionId: 'runtime-budget-admission',
@@ -1127,7 +1334,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       }],
       settlementDeadline: new Date(0).toISOString(),
       status: 'eligible',
-    });
+    };
     env.runtimeLearning.getEpisodeStore().save({
       schemaVersion: 3,
       episodes: { [liveEpisode.episodeId]: liveEpisode },
@@ -1204,7 +1411,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
   });
 
   test('maxCandidates=1 rotates retry, live, and historical work across successive wakes', async () => {
-    const makeEpisode = (episodeId: string, historical: boolean): LearningEpisode => admitReviewableEpisode(env, {
+    const makeEpisode = (episodeId: string, historical: boolean): LearningEpisode => ({
       schemaVersion: 3,
       episodeId,
       runtimeSessionId: 'runtime-three-class-fairness',
@@ -1271,7 +1478,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     env.runtimeLearning.getEpisodeStore().save({
       schemaVersion: 3,
       episodes: {
-        [episodeId]: admitReviewableEpisode(env, {
+        [episodeId]: {
           schemaVersion: 3,
           episodeId,
           runtimeSessionId: 'runtime-drain',
@@ -1292,7 +1499,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
           }],
           settlementDeadline: new Date(0).toISOString(),
           status: 'eligible',
-        }),
+        },
       },
     });
     let started!: () => void;
@@ -1334,7 +1541,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     env.runtimeLearning.getEpisodeStore().save({
       schemaVersion: 3,
       episodes: {
-        [episodeId]: admitReviewableEpisode(env, {
+        [episodeId]: {
           schemaVersion: 3,
           episodeId,
           runtimeSessionId: 'runtime-drain-pre-review',
@@ -1355,7 +1562,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
           }],
           settlementDeadline: new Date(0).toISOString(),
           status: 'eligible',
-        }),
+        },
       },
     });
 
@@ -1398,7 +1605,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     env.runtimeLearning.getEpisodeStore().save({
       schemaVersion: 3,
       episodes: {
-        [episodeId]: admitReviewableEpisode(env, {
+        [episodeId]: {
           schemaVersion: 3,
           episodeId,
           runtimeSessionId: 'runtime-drain-timeout',
@@ -1419,7 +1626,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
           }],
           settlementDeadline: new Date(0).toISOString(),
           status: 'eligible',
-        }),
+        },
       },
     });
 
@@ -1462,7 +1669,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     env.runtimeLearning.getEpisodeStore().save({
       schemaVersion: 3,
       episodes: {
-        [episodeId]: admitReviewableEpisode(env, {
+        [episodeId]: {
           schemaVersion: 3,
           episodeId,
           runtimeSessionId: 'runtime-drain-fair-lease',
@@ -1483,7 +1690,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
           }],
           settlementDeadline: new Date(0).toISOString(),
           status: 'eligible',
-        }),
+        },
       },
     });
 
@@ -1544,7 +1751,7 @@ describe('Issue 70 — Wake reason union and mask-free due-work', () => {
     episodeStore.save({
       schemaVersion: 3,
       episodes: {
-        'issue-70-settling': admitReviewableEpisode(env, {
+        'issue-70-settling': {
           schemaVersion: 3,
           episodeId: 'issue-70-settling',
           runtimeSessionId: 'issue-70-runtime',
@@ -1561,7 +1768,7 @@ describe('Issue 70 — Wake reason union and mask-free due-work', () => {
           semanticObservations: [],
           settlementDeadline: new Date(Date.now() - 60_000).toISOString(),
           status: 'settling',
-        }),
+        },
       },
     });
 
@@ -2020,19 +2227,19 @@ describe('RuntimeLearning — AC5: Discovery', () => {
   beforeEach(() => { env = setupEnv(0); });
   afterEach(() => { env.restore(); env.teardown(); });
 
-  test('an ordinary episode does not materialize a generated Skill', async () => {
+  test('an ordinary episode materializes a verified generated Skill', async () => {
     const [delivery, acceptance] = deliveryPair(-2);
     writeLog(env.logFile, [delivery, acceptance]);
     await env.runtimeLearning.wake('startup');
 
     const registry = readOrEmpty(env.registryPath);
-    assert.equal(Object.keys(registry?.capabilities ?? {}).length, 0);
+    assert.equal(Object.keys(registry?.capabilities ?? {}).length, 1);
     const skillDir = defaultDistilledOutputDir(env.skillsRoot);
     const entries = fs.existsSync(skillDir) ? fs.readdirSync(skillDir) : [];
-    assert.deepEqual(entries, []);
+    assert.equal(entries.length, 1);
   });
 
-  test('a retained ordinary episode remains traceable without a transition audit', async () => {
+  test('a retained ordinary episode remains traceable through its transition audit', async () => {
     const [delivery, acceptance] = deliveryPair(-2);
     writeLog(env.logFile, [delivery, acceptance]);
     await env.runtimeLearning.wake('startup');
@@ -2042,7 +2249,8 @@ describe('RuntimeLearning — AC5: Discovery', () => {
     );
     assert.equal(episodes.length, 1);
     assert.ok(episodes[0]!.completionEvidence.some(evidence => evidence.kind === 'user-acceptance'));
-    assert.equal(env.skillEvolution.getAudit().length, 0);
+    assert.equal(env.skillEvolution.getAudit().length, 1);
+    assert.equal(env.skillEvolution.getAudit()[0]?.transition, 'create_current_skill');
   });
 });
 
@@ -2121,7 +2329,7 @@ describe('Issue 2 — Generic wake reconciliation', () => {
     const episodeData = {
       schemaVersion: 3,
       episodes: {
-        [episodeId]: admitReviewableEpisode(env, {
+        [episodeId]: {
           schemaVersion: 3,
           episodeId,
           runtimeSessionId: 'cli',
@@ -2140,7 +2348,7 @@ describe('Issue 2 — Generic wake reconciliation', () => {
             sourceRefs: ['ev-1:user-intent'],
           }],
           createdAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
-        }),
+        },
       },
     };
     fs.mkdirSync(path.dirname(env.episodeStorePath), { recursive: true });
@@ -2165,10 +2373,10 @@ describe('Issue 2 — Generic wake reconciliation', () => {
       `expected verifier call, was ${env.branchCalls.verifier} before ${branchCallsBefore.verifier}`);
 
     // A transition was recorded
-    const foundRejection = Object.entries(result.review.transitionsByKind)
-      .some(([kind, count]) => kind === 'reject_candidate' && (count as number) >= 1);
-    assert.ok(foundRejection,
-      `expected reject_candidate, got ${JSON.stringify(result.review.transitionsByKind)}`);
+    const foundCreation = Object.entries(result.review.transitionsByKind)
+      .some(([kind, count]) => kind === 'create_current_skill' && (count as number) >= 1);
+    assert.ok(foundCreation,
+      `expected create_current_skill, got ${JSON.stringify(result.review.transitionsByKind)}`);
   });
 });
 
@@ -2347,7 +2555,7 @@ describe('Issue 4 — Heartbeat single-write', () => {
     assert.ok(after2.lastRunDurationMs >= 0, 'expected lastRunDurationMs');
   });
 
-  test('restart does not re-review an audited single-episode behavior rejection', async () => {
+  test('restart does not re-review an audited single-episode Skill creation', async () => {
     const [delivery, acceptance] = deliveryPair(-2);
     delivery.episode_id = 'turn-restart-single-episode';
     recordReviewAdmissionLoad(env, delivery.episode_id, delivery.session_id);
@@ -2356,9 +2564,9 @@ describe('Issue 4 — Heartbeat single-write', () => {
     await env.runtimeLearning.wake('startup');
     const before = env.runtimeLearning.loadHeartbeatRecord();
     const firstAudit = env.runtimeLearning.getSkillEvolution().getAudit();
-    const firstRejectCount = firstAudit.filter(entry => entry.transition === 'reject_candidate').length;
-    const firstReject = firstAudit.find(entry => entry.transition === 'reject_candidate');
-    assert.equal(firstRejectCount, 1);
+    const firstCreateCount = firstAudit.filter(entry => entry.transition === 'create_current_skill').length;
+    const firstCreate = firstAudit.find(entry => entry.transition === 'create_current_skill');
+    assert.equal(firstCreateCount, 1);
 
     const restarted = createRestartableRuntimeLearning(env.root);
     await restarted.wake('startup');
@@ -2367,22 +2575,22 @@ describe('Issue 4 — Heartbeat single-write', () => {
     assert.equal(after.runCount, before.runCount + 1, 'expected runCount to increase after restart');
     assert.deepEqual(after.lastPendingWakeReasons, ['startup']);
     const restartedAudit = restarted.getSkillEvolution().getAudit();
-    const secondRejectCount = restartedAudit.filter(entry => entry.transition === 'reject_candidate').length;
-    assert.equal(secondRejectCount, firstRejectCount, 'expected no duplicate transitions on restart');
-    const secondReject = restartedAudit.find(entry => entry.transition === 'reject_candidate');
-    assert.ok(firstReject && secondReject);
+    const secondCreateCount = restartedAudit.filter(entry => entry.transition === 'create_current_skill').length;
+    assert.equal(secondCreateCount, firstCreateCount, 'expected no duplicate transitions on restart');
+    const secondCreate = restartedAudit.find(entry => entry.transition === 'create_current_skill');
+    assert.ok(firstCreate && secondCreate);
     assert.deepEqual(
-      secondReject.branchTranscriptPaths,
-      firstReject.branchTranscriptPaths,
+      secondCreate.branchTranscriptPaths,
+      firstCreate.branchTranscriptPaths,
       'transcript references should be preserved across restart',
     );
   });
 });
 
 describe('Issue #83 — controlled production acceptance', () => {
-  test('audits a healthy transcript-linked rejection while a hanging peer queues timeout and a targeted wake coalesces', async () => {
+  test('audits a healthy transcript-linked creation while a hanging peer queues timeout and a targeted wake coalesces', async () => {
     const env = setupEnv(0);
-    const makeEpisode = (episodeId: string, intent: string): LearningEpisode => admitReviewableEpisode(env, {
+    const makeEpisode = (episodeId: string, intent: string): LearningEpisode => ({
       schemaVersion: 3,
       episodeId,
       runtimeSessionId: 'runtime-production-acceptance',
@@ -2461,15 +2669,15 @@ describe('Issue #83 — controlled production acceptance', () => {
         'episode-acceptance-timeout.jsonl',
       );
 
-      const rejectionAudit = env.skillEvolution.getAudit().find(
-        entry => entry.transition === 'reject_candidate',
+      const creationAudit = env.skillEvolution.getAudit().find(
+        entry => entry.transition === 'create_current_skill',
       );
-      assert.ok(rejectionAudit, 'healthy peer must commit one audited disposition');
+      assert.ok(creationAudit, 'healthy peer must commit one audited disposition');
       // Author/Verifier promotion transcripts plus retained dual-lane reader artifacts.
-      assert.equal(rejectionAudit.branchTranscriptPaths.length, 4);
-      assert.ok(rejectionAudit.branchTranscriptPaths.every(transcriptPath => fs.existsSync(transcriptPath)));
+      assert.equal(creationAudit.branchTranscriptPaths.length, 4);
+      assert.ok(creationAudit.branchTranscriptPaths.every(transcriptPath => fs.existsSync(transcriptPath)));
       assert.equal(
-        rejectionAudit.branchTranscriptPaths.filter(p => p.includes(`${path.sep}reader-transcripts${path.sep}`)).length,
+        creationAudit.branchTranscriptPaths.filter(p => p.includes(`${path.sep}reader-transcripts${path.sep}`)).length,
         2,
       );
 

@@ -44,11 +44,15 @@ import type { DistilledKnowledgeCandidate } from './capability-distiller';
 export const EVIDENCE_REVIEW_JOB_SCHEMA_VERSION = 1 as const;
 
 /** Default prompt / policy version stamps included in Quantum identity. */
-export const EVIDENCE_REVIEW_PROMPT_VERSION = 'evidence-review-job-v3' as const;
+export const EVIDENCE_REVIEW_PROMPT_VERSION = 'evidence-review-job-v4' as const;
 /**
- * Policy v5:
- *   - One ordinary Learning Episode may append evidence but cannot change
- *     Current Skill behavior or create a new capability.
+ * Policy v6:
+ *   - An eligible ordinary Learning Episode may create or append evidence
+ *     without prior Skill use or explicit positive feedback; behavior-changing
+ *     and structural catalog transitions use dedicated evidence paths.
+ *   - Rejection requires affirmative evidence that no safe, transferable
+ *     capability can be written; uncertainty narrows or defers the candidate.
+ * Policy v5 also established:
  *   - Only explicit contradiction outcomes drive usage reassessment.
  * Policy v4 also established:
  *   - Structural Difference Index corroboration now keys on classification +
@@ -64,7 +68,7 @@ export const EVIDENCE_REVIEW_PROMPT_VERSION = 'evidence-review-job-v3' as const;
  *   - Duplicate `create_current_skill` detection against relatedCurrentSkills.
  * Active jobs frozen under v3 must supersede to a successor on the v4 policy.
  */
-export const EVIDENCE_REVIEW_POLICY_VERSION = 'evidence-review-policy-v5' as const;
+export const EVIDENCE_REVIEW_POLICY_VERSION = 'evidence-review-policy-v6' as const;
 
 // ---------------------------------------------------------------------------
 // Shared quantum / job types

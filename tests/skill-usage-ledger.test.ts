@@ -200,6 +200,51 @@ describe('skill usage feedback admission', () => {
     assert.equal(outcomes[0]!.outcome, 'contradicted');
   });
 
+  test('legacy observed-episode state does not hide a later explicit contradiction', () => {
+    const ledgerPath = makeLedgerPath();
+    const statePath = path.join(path.dirname(ledgerPath), 'curator-state.json');
+    const ledger = new SkillUsageLedger(ledgerPath);
+    ledger.recordGeneratedSkillLoad({
+      runtimeSessionId: 'sess-1',
+      episodeId: 'turn-ep-1',
+      skill: generatedSkillIdentity(),
+    });
+    fs.writeFileSync(statePath, JSON.stringify({
+      schemaVersion: 1,
+      lastRoutineRunAt: null,
+      reviewedOutcomeFactIds: [],
+      observedEpisodeIds: ['episode-1'],
+      expedited: {},
+    }), 'utf8');
+    const curator = new SkillUsageCurator({
+      ledger,
+      statePath,
+      intervalMs: 86_400_000,
+    });
+
+    const outcomes = curator.observeEpisode(makeEpisode({
+      status: 'contradicted',
+      contradictionSignals: [{
+        signalId: 'signal-legacy-state',
+        kind: 'direct-correction',
+        message: 'That is not what I requested.',
+        source: {
+          ref: 'session.jsonl#turn-2:legacy-contradiction',
+          sourceFilePath: 'session.jsonl',
+          turn: 2,
+          kind: 'contradiction',
+        },
+        precedingDeliveryTurn: 1,
+        precedingSourceFilePath: 'session.jsonl',
+        runtimeSessionId: 'sess-1',
+        preventsPromotion: true,
+      }],
+    }));
+
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0]!.outcome, 'contradicted');
+  });
+
   test('legacy success and deferred outcomes do not trigger automatic reassessment', async () => {
     const ledgerPath = makeLedgerPath();
     const ledger = new SkillUsageLedger(ledgerPath);

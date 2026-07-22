@@ -148,12 +148,6 @@ export type {
 // Re-export provenance state type (preserved public API from former inline definition)
 export type { ExternalEpisodeProvenanceState };
 
-function hasExplicitPromotionEvidence(episode: LearningEpisode): boolean {
-  return episode.completionEvidence.some(evidence => (
-    evidence.kind === 'user-acceptance' || evidence.kind === 'artifact-validation'
-  ));
-}
-
 // ---------------------------------------------------------------------------
 // Public API: wake context / reports (shared with the heartbeat scheduler)
 // ---------------------------------------------------------------------------
@@ -2664,7 +2658,7 @@ export class RuntimeLearning {
     const reviewedOrQueuedBundleIds = this.skillEvolution.getReviewedOrQueuedBundleIds();
     const eligibleEpisodes = Object.values(this.episodeStore.load().episodes)
       .filter(episode => (
-        this.isEpisodeReviewable(episode)
+        episode.status === 'eligible'
         && !this.hasReviewedEpisode(episode, reviewedOrQueuedBundleIds)
       ));
     for (const episode of eligibleEpisodes) pendingEpisodeIds.add(episode.episodeId);
@@ -4483,12 +4477,6 @@ export class RuntimeLearning {
     return this.curator?.listLoadFactsForEpisode(episode) ?? [];
   }
 
-  private isEpisodeReviewable(episode: LearningEpisode): boolean {
-    return episode.status === 'eligible'
-      && hasExplicitPromotionEvidence(episode)
-      && this.listSkillLoadFactsForEpisode(episode).length > 0;
-  }
-
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
@@ -5149,7 +5137,7 @@ export class RuntimeLearning {
       const reviewedOrQueuedBundleIds = this.skillEvolution.getReviewedOrQueuedBundleIds();
       eligibleEpisodes = Object.values(this.episodeStore.load().episodes)
         .filter(episode => (
-          this.isEpisodeReviewable(episode)
+          episode.status === 'eligible'
           && !this.hasReviewedEpisode(episode, reviewedOrQueuedBundleIds)
         ))
         .length;

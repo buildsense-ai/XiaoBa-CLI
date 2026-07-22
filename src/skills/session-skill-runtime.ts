@@ -26,8 +26,7 @@ export class SessionSkillRuntime {
   }
 
   buildSkillsListMessage(): Message | undefined {
-    const skills = this.skillManager.getUserInvocableSkills()
-      .filter(skill => !skill.filePath.split(/[\\/]+/).includes('generated-distilled'));
+    const skills = this.skillManager.getUserInvocableSkills();
     if (skills.length === 0) return undefined;
 
     const skillList = skills

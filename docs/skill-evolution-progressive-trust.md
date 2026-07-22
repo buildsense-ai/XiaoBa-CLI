@@ -1,83 +1,106 @@
-# Signal-Bounded Skill Evolution
+# Progressive Trust for Skill Evolution
 
 ## Status
 
-This document defines the current acceptance policy for generated Current Skills. It replaces the earlier progressive-trust assumption that a silently settled, single Learning Episode could create a Skill.
+This document defines the acceptance policy for generated Current Skills. The policy keeps recall broad and removes only candidates that observable evidence shows cannot become useful, safe Skills.
 
-The implementation keeps the existing Reader, Author, Verifier, Evidence Review Job, commit fence, atomic transition journal, audit, immutable history, and restart recovery. It removes unsupported success inference and narrows the authority of ordinary Episodes.
+The implementation retains the Reader, Author, Verifier, Evidence Review Job, commit fence, atomic transition journal, audit, immutable history, restart recovery, and contradiction-bound correction path. It does not add scores, thresholds, lifecycle states, or an evaluation arena.
 
-## First-principles decision
+## First-principles objective
 
-Skill Evolution learns only from observable signals.
+Skill Evolution exists to improve future work by retaining transferable experience and preferences. Its objective is expected future utility, not maximum precision and not maximum Skill count.
 
-- Silence is not success. A settlement deadline only says that no contradiction was observed in that window.
-- Explicit user acceptance or artifact validation is evidence about one execution.
-- An explicit correction is negative evidence about the generated Skill loaded in that same AgentTurn and runtime session.
-- One observation cannot justify creating a new reusable behavior.
-- Runtime-owned identity and deterministic transition gates bound what model review may commit.
+- A false positive consumes routing and context attention and may give bad guidance.
+- A false negative discards information permanently and cannot collect later usage feedback.
+- Narrow guidance, independent verification, immutable revisions, correction, retirement, and restoration bound the cost of a false positive.
+- Missing positive feedback, one observed instance, or absence of a prior Skill load says that a candidate is uncertain. None says that it is useless.
 
-The system therefore distinguishes evidence accumulation from behavior change instead of adding confidence scores, lifecycle states, or an evaluation arena.
+The runtime therefore separates uncertainty from garbage. Uncertainty narrows or defers a candidate. Rejection requires affirmative evidence that no safe, transferable Skill can be written from the fixed bundle.
 
 ## Bayesian interpretation
 
-The prior probability that one completed execution is a reusable preference or workflow is low and domain-dependent. Silence has a likelihood ratio close to one, so treating it as success creates unjustified posterior confidence.
+An executed Episode is an observation about a possible reusable behavior. Explicit acceptance or artifact validation raises confidence in the observed result. A correction lowers confidence and identifies a boundary. Silence has little value as outcome evidence, but it does not erase the actions, decisions, or artifacts already observed in the Episode.
 
-Explicit acceptance has a stronger likelihood ratio, but still supports only the observed execution. It may add evidence to a Current Skill that was actually loaded for that Episode. It does not create, replace, migrate, merge, or retire a Skill.
+The posterior should change the scope of the hypothesis before it changes admission:
 
-An explicit correction has a strong negative likelihood ratio for the affected Skill. It triggers correction-bound reassessment. That reassessment may append evidence, replace the affected guidance with a narrower correction, or retire the affected Skill. It may not create a Skill, migrate a route, merge Skills, or target another capability.
+- One bounded observation can support a narrow, reversible Current Skill.
+- More aligned observations can append evidence or justify clearer guidance.
+- Ambiguity or consequential risk can defer the proposal.
+- Contradiction can replace or retire the affected guidance.
+
+The Skill Usage Ledger does not manufacture `verified-success` from settlement. Settlement only moves an Episode to its review decision point.
 
 ## Admission policy
 
 ### Ordinary Learning Episodes
 
-An ordinary `v3:learning-episode:*` bundle enters review only when all of the following are true:
+Every unreviewed `eligible` Learning Episode may enter review. Internal production AgentTurns with a non-empty assistant response can form Episodes even without artifact or tool activity, so explicit preferences and decisions use this same path. A narrow two-sided social filter excludes only turns where both user and assistant text are anchored greetings or acknowledgements; additional task content remains reviewable. Prior generated-Skill use, explicit user acceptance, artifact validation, and independent repetition are evidence available to the reviewer, not admission prerequisites.
 
-- The Episode is `eligible`.
-- Completion evidence contains explicit `user-acceptance` or `artifact-validation`.
-- A runtime-owned `GeneratedSkillLoadFact` matches both `agentTurnEpisodeId` and `runtimeSessionId`.
-- The loaded Skill identity matches the current `capabilityHandle`, `routingName`, and `guidanceHash`.
+The ordinary Episode interface is deliberately narrower than the full Registry transition vocabulary. A single observation may:
 
-At commit, the only mutating transition allowed is `append_evidence`, and its target must be one of those authenticated loaded Skills. `defer` and `reject_candidate` remain non-mutating dispositions. Every behavior-changing transition is converted to an audited rejection.
+- `create_current_skill` when the Registry has no matching capability.
+- `append_evidence` to a related Current Skill without changing its active guidance.
+- `defer` or `reject_candidate` without changing Registry state.
 
-The append may persist bounded evidence metadata, including authenticated dependency snapshots and semantic observations. It must not change the active guidance body, route, handle, or guidance hash.
+Recall through `relatedCurrentSkills` is enough to append evidence but not to overwrite guidance: Author and Verifier do not receive the old generated Skill body needed to compare behavior. Replacement, route migration, merge, and retirement are therefore deferred rather than semantically rejected. This restriction narrows write authority, not candidate recall: every eligible Episode still reaches Author/Verifier review.
+
+Accept a mutating transition only when all of the following hold:
+
+- The evidence contains a recognizable user-facing trigger and a transferable preference, action, or decision rule.
+- The draft stays within facts supported by the fixed Evidence Bundle.
+- Applicability, boundaries, and claims are narrowed to the observed evidence.
+- No unresolved contradiction applies to the proposed pattern.
+- The transition does not expand authority, privileges, data access, or external side effects beyond the evidence.
+- Every review obligation has an explicit resolved disposition with valid source spans.
+
+Defer when missing evidence or operator review could materially change a plausible proposal, especially for destructive, privileged, financial, privacy-sensitive, or irreversible behavior.
+
+Reject only when the evidence affirmatively shows that bounded revision cannot produce a useful Skill, including these cases:
+
+- The proposal repeats contradicted behavior.
+- It conflicts with its cited evidence or requires unsupported authority.
+- It follows source instructions, prompt injection, or unsafe content.
+- It contains no transferable user preference or capability.
+- It duplicates an existing capability but refuses a safe evidence append.
+
+Sample scarcity, missing positive feedback, and absence of a prior Skill load are not rejection reasons by themselves.
 
 ### Corrections
 
-The Skill Usage Ledger writes an outcome only for an explicit contradiction. It does not synthesize `verified-success` from settlement and does not feed legacy success or defer outcomes back into reassessment.
+Only explicit contradiction outcomes drive usage reassessment. Routine Curator cadence exists to recover a missed expedited wake, not to infer passive success.
 
-The Curator selects only unreviewed contradiction facts. Routine cadence exists only to recover a missed expedited wake; it is not a passive success threshold.
-
-A `usage-curation:*` transition must target the capability handle named by the correction bundle. Allowed mutating transitions are:
+A `usage-curation:*` transition must target the capability handle named by the correction bundle. It may:
 
 - `append_evidence`
 - `replace_current_skill`
 - `retire_capability`
 
-`create_current_skill`, `migrate_skill_route`, `merge_into_capability`, and every cross-Skill target fail closed as audited rejections.
+It may not create a Skill, migrate a route, merge Skills, or target another capability. A separately completed corrected retry is an ordinary Episode and may teach the supported corrected pattern.
 
 ### Non-production evidence
 
-Smoke, synthetic, and replay logs do not create Learning Episodes. Exact smoke, test, synthetic, and replay session types are also excluded. The filter is applied at Episode extraction so excluded input can still advance its source cursor without entering later learning stages.
+Smoke, synthetic, and replay logs do not create Learning Episodes. Exact smoke, test, synthetic, and replay session types are also excluded. The filter runs during extraction so excluded input still advances its source cursor without consuming review work.
+
+These sources are excluded because they are artifacts of testing the learning machinery, not observations of user work. An ordinary production session whose name merely contains a word such as `test` remains eligible.
 
 ## Discovery policy
 
 Generated Skills are Registry-owned.
 
-- An empty or unreadable Registry admits no generated Skill file.
-- Orphan files under `generated-distilled` remain undiscoverable.
+- An empty or unreadable Registry admits no orphan generated Skill file.
 - Manual Skills remain filesystem-discovered.
-- Generated Skills are omitted from the every-turn transient Skill list.
-- Active generated Skills remain available through `/skills` and explicit Skill tool invocation.
+- Active, user-invocable generated Skills expose their name and description in the transient Skill list.
+- Skill bodies remain progressively disclosed and load only through the Skill tool.
 
-This keeps accumulated experience available without automatically injecting mutable generated guidance into every prompt.
+Hiding generated metadata would make accumulated experience undiscoverable and prevent the use-correction loop that can improve it.
 
 ## Evidence and dependency identity
 
-`EvidenceBundle.referencedSkills` means dependencies proven by runtime-owned facts. It is not the global Skill catalog and is not populated from untrusted semantic content.
+`EvidenceBundle.referencedSkills` contains only dependencies proven by runtime-owned generated-Skill load facts. It is not the global Skill catalog and is not populated from untrusted semantic content.
 
-Bundle construction joins a load fact to an Episode using both `agentTurnEpisodeId` and `runtimeSessionId`, then verifies the exact `capabilityHandle`, `routingName`, and `guidanceHash`. Missing identities, stale guidance, route reuse, handle reuse, and cross-session Episode ID collisions fail closed.
+Bundle construction joins a load fact to an Episode using both `agentTurnEpisodeId` and `runtimeSessionId`, then verifies `capabilityHandle`, `routingName`, and `guidanceHash`. Missing identities, stale guidance, route reuse, handle reuse, and cross-session Episode ID collisions fail closed.
 
-`relatedCurrentSkills` remains bounded recall context. It does not authorize a dependency or a transition target. Specialized bundle builders may continue to pin dependencies under their own validation contract.
+This identity rule governs dependency claims. It is not a prerequisite for reviewing an Episode or creating a new Skill. `relatedCurrentSkills` remains bounded Registry recall context; recall alone does not authorize structural transitions.
 
 ## Safety boundaries
 
@@ -93,30 +116,29 @@ The following controls remain unchanged:
 - Review Basis freshness and commit fencing.
 - Atomic transition journal, audit log, immutable history, restoration, and restart recovery.
 
-Verification remains necessary because model execution demonstrates that one task ran; it does not prove the generalized Skill draft is correctly scoped. The deterministic commit gates constrain what can be written, while the Verifier checks the semantic proposal inside those bounds.
+Verification remains necessary because executing a task and generalizing an instruction are different claims. Execution supplies evidence; verification checks whether the proposed reusable instruction is necessary, supported, and no broader than that evidence.
 
 ## Non-goals
 
 This policy does not add a provisional Registry state, confidence score, promotion threshold, evaluation arena, HTTP API, Dashboard surface, Provider timeout change, or new command.
 
-It also does not allow an ordinary single Episode to create a Skill. New Skill creation remains available only to non-ordinary evidence families under their own evidence contracts.
+It also does not treat every Episode as a Skill. The existing Author and Verifier must still find a coherent transferable delta, and deterministic commit gates continue to fail closed.
 
 ## Acceptance tests
 
 Tests must verify these public boundaries:
 
-- Silence creates no success outcome and no review work.
-- Explicitly accepted ordinary Episodes can append evidence only to a Skill loaded in the same Episode and session.
-- Ordinary create, replace, retire, and append-to-unloaded-target proposals are audited rejections.
-- A correction triggers exactly one reassessment.
-- Correction-bound replace or retirement can affect only the contradicted capability.
-- Correction-bound create, merge, route migration, and cross-Skill append are rejected.
-- Cross-session Episode ID collisions never join load or outcome facts.
+- An eligible Episode without explicit acceptance or a prior Skill load can enter review and create a narrow Skill.
+- A reviewed Episode may append evidence to a related Current Skill; replacement, route migration, merge, and retirement remain deferred to dedicated correction or semantic-maintenance paths.
+- Missing transferable content is deferred or rejected by semantic review, not a provenance proxy.
+- A correction triggers exactly one target-bound reassessment.
+- Correction-bound create, merge, route migration, and cross-Skill writes are rejected.
+- Cross-session Episode ID collisions never authorize dependencies or outcomes.
 - Smoke, synthetic, and replay input produces no Episode.
 - Empty Registry and orphan generated files fail closed.
-- Active generated Skills remain explicitly invocable but are absent from automatic transient injection.
+- Active generated Skill metadata is discoverable while its body remains on demand.
 - Existing audit, commit-fence, recovery, and safety tests continue to pass.
 
 ## Rollout
 
-The versioned prompt and Evidence Review policy applies to new work and to active jobs that safely create a successor Review Basis. Existing audit history remains immutable. Terminal rejections are not silently reopened; later bounded evidence or explicit operator action requires a new audited transition.
+The bumped prompt and Evidence Review policy versions apply to new work and force stale active jobs to create a successor Review Basis before committing. Existing audit history remains immutable. Terminal rejections are not silently reopened; later bounded evidence or explicit operator action requires a new audited transition.

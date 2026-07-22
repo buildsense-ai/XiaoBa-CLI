@@ -23,9 +23,10 @@ import {
 } from './skill-evolution';
 
 /**
- * A completed delivery attempt is the unit of learning, not a whole chat
- * session. Verification and acceptance that do not deliver a new artifact
- * fold into the open delivery attempt in the same runtime session.
+ * A completed production AgentTurn is the unit of learning, not a whole chat
+ * session. This includes response-only turns that may carry preferences or
+ * decisions. Verification and acceptance that do not deliver a new artifact
+ * still fold into the open artifact-delivery attempt in the same session.
  */
 export const LEARNING_EPISODE_SCHEMA_VERSION = 3 as const;
 
@@ -142,7 +143,9 @@ export function buildLearningEpisodeCandidate(
   sourceUnit?: Pick<DistillationUnit, 'byteRange' | 'generatedAt'>,
 ): DistilledKnowledgeCandidate {
   const completionEvidence = episode.completionEvidence.filter(item => item.kind !== 'contradiction');
-  const toolNames = uniqueStrings(completionEvidence.map(item => item.detail?.split(':', 1)[0] || item.kind));
+  const toolNames = uniqueStrings(completionEvidence
+    .filter(item => item.kind !== 'assistant-response' && item.kind !== 'user-acceptance')
+    .map(item => item.detail?.split(':', 1)[0] || item.kind));
   const evidenceSummary = completionEvidence
     .map(item => item.detail || item.kind)
     .join('; ')
@@ -170,10 +173,10 @@ export function buildLearningEpisodeCandidate(
     actionPattern: task.actionPattern,
     boundaries: [
       'Only apply when a new task matches the same user-facing capability evidenced here.',
-      'Do not reuse the pattern while the user is correcting or iterating on the delivery.',
+      'Do not reuse the pattern while the user is correcting or iterating on the task.',
     ],
     risks: [
-      'This candidate is derived from one completed delivery attempt and may not generalize.',
+      'This candidate is derived from one completed AgentTurn and may not generalize.',
       'The Author and Verifier must keep the resulting skill bounded by the supplied evidence.',
       'Do not copy lifecycle words such as settled/episode/candidate into the public routing name.',
     ],
@@ -239,7 +242,7 @@ function deriveCandidateTaskSummary(
 
   const actionPattern = means.length > 0
     ? `Complete the user task${intentSnippet ? ` (${intentSnippet})` : ''} using ${means.join(', ')}: ${evidenceSummary}`
-    : `Complete the user task${intentSnippet ? ` (${intentSnippet})` : ''}: ${evidenceSummary}`;
+    : `Follow the observed user preference or task intent${intentSnippet ? ` (${intentSnippet})` : ''}: ${evidenceSummary}`;
 
   const problem = intentSnippet
     || (means.length > 0 ? `Deliver the requested artifact with ${means.join(', ')}.` : 'Deliver the requested artifact.');
@@ -306,12 +309,14 @@ const CONTINUATION = /(?:^|\W)(?:continue|resume|redo|try again|接着做|继续
 const NON_PRODUCTION_TOKEN = /(?:^|[:/_.-])(?:smoke|synthetic|replay)(?:$|[:/_.-])/i;
 
 /**
- * Extract delivery attempts from one Distillation Unit.
+ * Extract candidate learning episodes from one Distillation Unit.
  *
- * Corrections and true redeliveries stay independent. Verification or
- * acceptance that does not deliver a new artifact folds into the open
- * predecessor delivery in the same runtime session, so create→check→accept
- * remains one learning unit rather than two competing capabilities.
+ * Every completed internal production AgentTurn with a non-empty assistant
+ * response is observable evidence: response-only turns can carry reusable
+ * preferences, decisions, explanations, or workflows. Corrections and true
+ * redeliveries stay independent. Verification or acceptance that does not
+ * deliver a new artifact folds into the open predecessor delivery in the same
+ * runtime session, so create→check→accept remains one learning unit.
  *
  * Settlement is still the later durable decision point; a direct correction
  * attaches to the preceding episode and makes that episode ineligible for
@@ -333,12 +338,32 @@ export function extractLearningEpisodes(
     const deliveryTurn = turns[index];
     if (!newTurnNumbers.has(deliveryTurn.turn)) continue;
     const deliverySourceFilePath = turnSourceFilePath(deliveryTurn, unit.filePath);
-    const evidence = uniqueEvidence([
-      ...detectCompletionEvidence(deliverySourceFilePath, deliveryTurn),
-      ...collectPrecedingWorkflowEvidence(turns, index, unit.filePath),
-    ]);
-    const episodeId = makeEpisodeId(deliverySourceFilePath, deliveryTurn);
     const next = turns[index + 1];
+    const completionEvidence = detectCompletionEvidence(deliverySourceFilePath, deliveryTurn);
+    const evidence = uniqueEvidence([
+      ...completionEvidence,
+      ...(hasArtifactDeliveryEvidence(completionEvidence)
+        ? collectPrecedingWorkflowEvidence(turns, index, unit.filePath)
+        : []),
+    ]);
+    const isWorkflowStepForFollowingArtifact = next
+      ? detectWorkflowEvidence(deliverySourceFilePath, deliveryTurn).length > 0
+        && hasArtifactDeliveryEvidence(detectCompletionEvidence(
+          turnSourceFilePath(next, unit.filePath),
+          next,
+        ))
+      : false;
+    const definitelyNonLearningInteraction = isDefinitelyNonLearningInteraction(deliveryTurn);
+    if (
+      !hasDeliveryEvidence(evidence)
+      && String(deliveryTurn.session_type ?? '').trim().toLowerCase() !== 'external'
+      && !isWorkflowStepForFollowingArtifact
+      && !definitelyNonLearningInteraction
+    ) {
+      const assistantResponse = detectAssistantResponseEvidence(deliverySourceFilePath, deliveryTurn);
+      if (assistantResponse) evidence.push(assistantResponse);
+    }
+    const episodeId = makeEpisodeId(deliverySourceFilePath, deliveryTurn);
     const signal = next ? detectContradiction(deliverySourceFilePath, deliveryTurn, next, unit.filePath) : undefined;
     const accepted = next ? detectAcceptance(turnSourceFilePath(next, unit.filePath), next) : undefined;
     const hadInitialDeliveryEvidence = hasDeliveryEvidence(evidence);
@@ -349,11 +374,10 @@ export function extractLearningEpisodes(
       evidence.push(signal.source);
       contradictions.push(signal);
     } else if (accepted) {
-      // Legacy session logs often contain a completed assistant response but
-      // no tool-call records. A following explicit acceptance is still a
-      // bounded solved-loop signal; keep the response text as evidence and
-      // let the Author/Verifier decide whether it deserves a Capability.
-      if (!hasDeliveryEvidence(evidence)) {
+      // External and legacy inputs may not have admitted a response above. A
+      // following explicit acceptance still makes that response bounded
+      // evidence for Author/Verifier review.
+      if (!hasDeliveryEvidence(evidence) && !definitelyNonLearningInteraction) {
         const assistantResponse = detectAssistantResponseEvidence(deliverySourceFilePath, deliveryTurn);
         if (assistantResponse) evidence.push(assistantResponse);
       }
@@ -362,9 +386,8 @@ export function extractLearningEpisodes(
       // External Session Log Sources (xURL/Pi) materialize a complete
       // User→final-Assistant event with empty tool_calls. Treat the final
       // assistant text as candidate episode evidence only for external
-      // session metadata. Internal chat still requires tool delivery or a
-      // following acceptance; settlement/prefilter/Author/Verifier gates
-      // remain unchanged and external evidence never gets promotion authority.
+      // session metadata. External evidence remains terminal-outcome gated;
+      // Author/Verifier still decide whether it deserves a Capability.
       const assistantResponse = detectAssistantResponseEvidence(deliverySourceFilePath, deliveryTurn);
       if (assistantResponse) evidence.push(assistantResponse);
     }
@@ -506,7 +529,12 @@ function extractSemanticObservations(
   for (let index = deliveryIndex - 1; index >= 0; index--) {
     const preceding = turns[index];
     if (!preceding) continue;
-    if (hasDeliveryEvidence(detectCompletionEvidence(turnSourceFilePath(preceding, fallbackSourceFilePath), preceding))) break;
+    const sourceFilePath = turnSourceFilePath(preceding, fallbackSourceFilePath);
+    if (hasDeliveryEvidence(detectCompletionEvidence(sourceFilePath, preceding))) break;
+    if (
+      preceding.assistant.text.trim()
+      && detectWorkflowEvidence(sourceFilePath, preceding).length === 0
+    ) break;
     if (preceding.user.text.trim()) intentTurns.unshift(preceding);
     if (intentTurns.length >= 3) break;
   }
@@ -629,7 +657,9 @@ function collectPrecedingWorkflowEvidence(
     const preceding = turns[index];
     const sourceFilePath = turnSourceFilePath(preceding, unitFilePath);
     if (hasDeliveryEvidence(detectCompletionEvidence(sourceFilePath, preceding))) break;
-    evidence.unshift(...detectWorkflowEvidence(sourceFilePath, preceding));
+    const workflowEvidence = detectWorkflowEvidence(sourceFilePath, preceding);
+    if (preceding.assistant.text.trim() && workflowEvidence.length === 0) break;
+    evidence.unshift(...workflowEvidence);
   }
   return uniqueEvidence(evidence);
 }
@@ -684,12 +714,29 @@ function shouldFoldIntoOpenDelivery(
   if (hasArtifactDeliveryEvidence(evidence)) return false;
   if (!hasArtifactDeliveryEvidence(predecessor.completionEvidence)) return false;
   return evidence.some(item =>
-    item.kind === 'assistant-response'
-    || item.kind === 'artifact-validation'
-    || item.kind === 'user-acceptance'
-    || item.kind === 'contradiction'
+    item.kind === 'artifact-validation'
     || item.kind === 'verified-tool-result',
   );
+}
+
+/**
+ * Filter only interactions that cannot carry a user preference or workflow.
+ *
+ * This is deliberately an anchored, short-form allowlist rather than a
+ * classifier. Anything with additional task content remains a candidate and
+ * is left for Author/Verifier to narrow or reject.
+ */
+const PURE_ACKNOWLEDGEMENT = /^(?:thank(?:s| you)?(?: a lot)?(?:,? (?:that|it|this) (?:works?|worked)(?: perfectly| great| well)?)?|yes|yep|yeah|y|great|good|perfect|excellent|correct|done|verified|confirmed|that(?:'s|’s| is) (?:right|correct|good|great|perfect)|(?:that|it|this) (?:works?|worked)(?: perfectly| great| well)?|looks? good|you (?:did|fixed|solved) it|谢谢(?:你)?|多谢(?:你)?|感谢(?:你)?|好的?|可以|行|没问题|对|没错|正确|很好|完美|完成了?|解决了?|这样(?:就)?(?:好|可以|行))[\s.!?。！？，,]*$/iu;
+const PURE_GREETING = /^(?:hi|hello|hey|good morning|good afternoon|good evening|bye|goodbye|你好|您好|嗨|早上好|晚上好|再见|晚安)[\s.!?。！？，,]*$/iu;
+const PURE_SOCIAL_RESPONSE = /^(?:you(?:'re| are) welcome|glad (?:it|that) helped|glad to help|happy to help|anytime|ok(?:ay)?|got it|understood|hello(?:,? how can i help(?: you)?)?|hi(?:,? how can i help(?: you)?)?|goodbye|不客气|不用谢|好的?|收到|明白了?|你好|您好|再见)[\s.!?。！？，,]*$/iu;
+
+function isDefinitelyNonLearningInteraction(turn: CompletedTurn): boolean {
+  const userText = turn.user.text.replace(/\s+/g, ' ').trim();
+  const assistantText = turn.assistant.text.replace(/\s+/g, ' ').trim();
+  return userText.length > 0
+    && assistantText.length > 0
+    && (PURE_ACKNOWLEDGEMENT.test(userText) || PURE_GREETING.test(userText))
+    && PURE_SOCIAL_RESPONSE.test(assistantText);
 }
 
 function uniqueContradictionSignals(
@@ -856,7 +903,11 @@ function detectAcceptance(
   next: CompletedTurn,
 ): EpisodeEvidenceRef | undefined {
   const message = next.user.text.trim();
-  if (!message || !POSITIVE_ACCEPTANCE.test(message) || CONTRADICTION.test(message)) return undefined;
+  if (
+    !message
+    || (!POSITIVE_ACCEPTANCE.test(message) && !PURE_ACKNOWLEDGEMENT.test(message))
+    || CONTRADICTION.test(message)
+  ) return undefined;
   return {
     ref: evidenceRef(filePath, next.turn, 'acceptance'),
     sourceFilePath: filePath,

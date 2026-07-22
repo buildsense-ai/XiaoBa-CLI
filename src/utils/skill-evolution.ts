@@ -2097,24 +2097,17 @@ export class SkillEvolutionRuntime {
       ? (verifier.transition ?? draft.envelope.decision)
       : verifier.decision === 'defer' ? 'defer' : 'reject_candidate';
 
-    const isLearningEpisodeBundle = bundle.bundleId.startsWith('v3:learning-episode:');
-    const isUsageCurationBundle = bundle.bundleId.startsWith('usage-curation:');
     const nonMutatingTransition = transition === 'defer' || transition === 'reject_candidate';
     const targetHandle = draft.envelope.targetCapabilityHandle;
-    const trustedEpisodeTargets = new Set(
-      bundle.referencedSkillProvenance?.referencedSkills.map(skill => skill.capabilityHandle) ?? [],
-    );
+    const isLearningEpisode = bundle.bundleId.startsWith('v3:learning-episode:');
     const usageEpisode = bundle.episode as { kind?: unknown; capabilityHandle?: unknown } | null;
+    const isUsageReassessment = usageEpisode?.kind === 'usage-reassessment'
+      || bundle.bundleId.startsWith('usage-curation:');
     const usageTargetHandle = usageEpisode?.kind === 'usage-reassessment'
       && typeof usageEpisode.capabilityHandle === 'string'
       && bundle.bundleId.startsWith(`usage-curation:${usageEpisode.capabilityHandle}:`)
       ? usageEpisode.capabilityHandle
       : undefined;
-    const learningEpisodeTransitionAllowed = nonMutatingTransition || (
-      transition === 'append_evidence'
-      && typeof targetHandle === 'string'
-      && trustedEpisodeTargets.has(targetHandle)
-    );
     const usageCurationTransitionAllowed = nonMutatingTransition || (
       typeof usageTargetHandle === 'string'
       && usageTargetHandle === targetHandle
@@ -2124,25 +2117,31 @@ export class SkillEvolutionRuntime {
         || transition === 'retire_capability'
       )
     );
-    const observationScopeAllowed = isLearningEpisodeBundle
-      ? learningEpisodeTransitionAllowed
-      : isUsageCurationBundle ? usageCurationTransitionAllowed : true;
+    const learningEpisodeTransitionAllowed = nonMutatingTransition
+      || transition === 'create_current_skill'
+      || transition === 'append_evidence';
+    const usageTransitionExceedsAuthority = isUsageReassessment
+      && !usageCurationTransitionAllowed;
+    const learningTransitionExceedsAuthority = isLearningEpisode
+      && !learningEpisodeTransitionAllowed;
     if (
       verifier.decision === 'accept'
-      && (isLearningEpisodeBundle || isUsageCurationBundle)
-      && !observationScopeAllowed
+      && (usageTransitionExceedsAuthority || learningTransitionExceedsAuthority)
     ) {
-      transition = 'reject_candidate';
+      const rejectCorrection = usageTransitionExceedsAuthority;
+      transition = rejectCorrection ? 'reject_candidate' : 'defer';
       verifier = {
-        decision: 'reject',
+        decision: rejectCorrection ? 'reject' : 'defer',
         issues: [{
-          code: 'single-observation-scope',
-          message: isUsageCurationBundle
+          code: rejectCorrection ? 'usage-reassessment-scope' : 'learning-episode-scope',
+          message: rejectCorrection
             ? 'Correction-bound reassessment may only append, replace, or retire the affected Current Skill.'
-            : 'One Learning Episode may only append evidence to a Current Skill loaded in that episode.',
-          severity: 'danger',
+            : 'One Learning Episode may create a Skill or append evidence; behavior replacement and structural catalog changes require dedicated evidence paths.',
+          severity: rejectCorrection ? 'danger' : 'error',
         }],
-        rationale: 'Runtime rejected a transition that exceeded the bounded scope of one observation.',
+        rationale: rejectCorrection
+          ? 'Runtime rejected a transition that exceeded the target-bound authority of the correction.'
+          : 'Runtime deferred a structural catalog change that requires a dedicated evidence path.',
       };
     }
     let applied: AppliedTransition;
@@ -2833,12 +2832,15 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
     priorGuidanceHash = existing!.guidanceHash;
     const currentHash = hashFile(existing!.skillFilePath);
     if (currentHash !== existing!.guidanceHash) throw new Error('Active guidance hash does not match the Capability Registry.');
-    const content = renderCurrentSkill(input.draft, existing!.handle, transitionId, evidenceRefs);
+    const replacementDraft = input.draft.envelope.description?.trim()
+      ? input.draft
+      : { ...input.draft, envelope: { ...input.draft.envelope, description: existing!.description } };
+    const content = renderCurrentSkill(replacementDraft, existing!.handle, transitionId, evidenceRefs);
     resultingGuidanceHash = sha256(content);
     resultingRecord = {
       ...existing!,
       revision: existing!.revision + 1,
-      description: input.draft.envelope.description!.trim(),
+      description: replacementDraft.envelope.description!.trim(),
       guidanceHash: resultingGuidanceHash,
       guidanceContentHash: guidanceBodyHash(input.draft.body),
       evidenceRefs: mergeEvidence(existing!.evidenceRefs, evidenceRefs),
@@ -3195,7 +3197,8 @@ function validateDraft(draft: SkillDraft, bundle: EvidenceBundle, manualSkillNam
   if (Array.isArray(envelope?.evidenceRefs) && envelope!.evidenceRefs.some(ref => typeof ref !== 'string' || !availableEvidence.has(ref))) issues.push(issue('missing-evidence', 'Draft cites evidence outside the fixed Evidence Bundle.', 'danger'));
   const manualNames = new Set(manualSkillNames);
   if (envelope?.routingName && manualNames.has(envelope.routingName)) issues.push(issue('manual-collision', 'Generated skill cannot collide with a manually managed skill.', 'danger'));
-  if (UNSAFE_GUIDANCE_PATTERNS.some(pattern => pattern.test(draft?.body ?? ''))) issues.push(issue('privilege-expansion', 'Draft contains unsafe authority expansion or source-instruction contamination.', 'danger'));
+  const promptVisibleGuidance = `${draft?.body ?? ''}\n${envelope?.description ?? ''}`;
+  if (UNSAFE_GUIDANCE_PATTERNS.some(pattern => pattern.test(promptVisibleGuidance))) issues.push(issue('privilege-expansion', 'Draft contains unsafe authority expansion or source-instruction contamination.', 'danger'));
   if (envelope?.decision === 'create_current_skill' && envelope.targetCapabilityHandle) issues.push(issue('forged-handle', 'Runtime assigns the Capability Handle for a new capability.', 'danger'));
   if (envelope?.decision === 'create_current_skill' && (!envelope.routingName || typeof envelope.routingName !== 'string' || !envelope.description || typeof envelope.description !== 'string')) {
     issues.push(issue('creation-metadata', 'Current Skill creation requires a routing name and description.', 'danger'));
