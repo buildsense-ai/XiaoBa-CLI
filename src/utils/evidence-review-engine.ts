@@ -37,8 +37,6 @@ import {
 import type { EvidenceReviewLane } from './evidence-review';
 import { createEvidenceReviewJob } from './evidence-review-graph';
 import {
-  deriveJobDisposition,
-  listRunnableQuanta,
   loadEvidenceReviewJobStore,
   saveEvidenceReviewJobStore,
   upsertEvidenceReviewJob,
@@ -50,6 +48,8 @@ import {
   failQuantum as failQuantumCore,
   reclaimExpiredLeases,
   createReviewQuantum,
+  deriveJobDisposition,
+  listRunnableQuanta,
   stableStringify,
 } from './evidence-review-graph-core';
 import {
@@ -88,6 +88,8 @@ export interface EvidenceReviewEngineOptions {
   retryMaxMs?: number;
   now?: () => Date;
   maxQuantaPerAdvance?: number;
+  /** Skill Evolution reviewer version persisted when a commit semantically defers. */
+  reviewerVersion?: string;
   /**
    * Production / SkillEvolution seam: independent Author or Verifier reader
    * execution over one immutable shard. SkillEvolution wires a model-backed
@@ -355,7 +357,11 @@ export class EvidenceReviewEngine {
     let lastError: AdvanceJobResult['lastError'];
 
     for (let i = 0; i < maxQuanta; i++) {
-      if (signal?.aborted || options?.shouldStopClaiming?.()) break;
+      if (options?.shouldStopClaiming?.()) break;
+      // Shutdown/drain must not manufacture retry work. Other pre-existing
+      // aborts (notably a review deadline) are a real operational failure and
+      // are recorded on the selected Quantum below.
+      if (signal?.aborted && signal.reason === 'runtime-shutdown') break;
       const now = nowFn();
       const state = this.loadStore();
       let job = state.jobs[jobId];
@@ -407,6 +413,14 @@ export class EvidenceReviewEngine {
       this.saveStore(state);
 
       try {
+        if (signal?.aborted) {
+          const reason = typeof signal.reason === 'string' ? signal.reason : 'aborted';
+          const aborted = new Error(`Review quantum aborted before execution: ${reason}`) as Error & {
+            kind: 'branch_timeout' | 'branch_failure';
+          };
+          aborted.kind = /timeout|deadline/i.test(reason) ? 'branch_timeout' : 'branch_failure';
+          throw aborted;
+        }
         const execution = await this.executeQuantum(job, job.quanta[selected.quantumId]!, signal);
         const after = this.loadStore();
         const live = after.jobs[jobId]!;
@@ -488,6 +502,7 @@ export class EvidenceReviewEngine {
           now: nowFn(),
           retryBaseMs,
           retryMaxMs,
+          ...(operationalKind ? { maxAttempts: Number.MAX_SAFE_INTEGER } : {}),
           terminal,
         });
         if (!failed.ok) {
@@ -499,6 +514,17 @@ export class EvidenceReviewEngine {
             lease: undefined,
             updatedAt: nowFn().toISOString(),
           };
+        }
+        const failedQuantum = live.quanta[selected.quantumId]!;
+        if (operationalKind === 'branch_timeout'
+          || operationalKind === 'branch_failure'
+          || operationalKind === 'invalid_completion_schema') {
+          failedQuantum.failureKind = operationalKind;
+          failedQuantum.transcriptPaths = [...new Set([
+            ...failedQuantum.transcriptPaths,
+            ...operationalTranscripts,
+          ])];
+          live.workClass = 'operational_recovery';
         }
         live.disposition = deriveJobDisposition(live);
         if (live.disposition === 'terminal_failed') {
@@ -514,6 +540,7 @@ export class EvidenceReviewEngine {
         this.saveStore(after);
         executedQuantumIds.push(selected.quantumId);
         job = live;
+        if (signal?.aborted) break;
       }
     }
 
@@ -861,8 +888,8 @@ export class EvidenceReviewEngine {
       };
     }
 
-    const branchTranscriptPaths = uniqueTranscriptPaths(job);
-    const skillResult = await this.options.commitTransition({
+    const branchTranscriptPaths = successfulTranscriptPaths(job);
+    const committed = await this.options.commitTransition({
       bundle: job.bundle,
       draft,
       verifier: verifierForCommit,
@@ -870,6 +897,10 @@ export class EvidenceReviewEngine {
       branchTranscriptPaths,
       round,
     });
+    const isDeferred = committed.transition === 'defer' || committed.queued === 'deferred';
+    const skillResult: SkillEvolutionResult = isDeferred
+      ? { ...committed, queued: 'deferred', queueEntryId: job.jobId }
+      : committed;
 
     // commitTransition may have superseded the job (stale Review Basis).
     const reloaded = this.loadStore().jobs[job.jobId];
@@ -898,10 +929,18 @@ export class EvidenceReviewEngine {
       // for ordinary revise exhaustion — not the original 'revise' decision.
       verifierResult: verifierForCommit,
       obligationDispositions: verifierPayload.dispositions ?? job.obligationDispositions,
-      transitionId: skillResult.transitionId ?? skillResult.audit?.transitionId,
+      transitionId: committed.transitionId ?? committed.audit?.transitionId,
     };
-    if (skillResult.transition === 'defer' || skillResult.queued === 'deferred') {
+    if (isDeferred) {
       jobPatch.disposition = 'deferred';
+      jobPatch.workClass = 'semantic_reassessment';
+      jobPatch.deferState = {
+        reviewerVersion: this.options.reviewerVersion ?? job.basis.reviewPolicyVersion,
+        reason: committed.verifier?.rationale
+          ?? job.verifierResult?.rationale
+          ?? 'Verifier deferred for later review.',
+        deferredAt: new Date().toISOString(),
+      };
     }
 
     return {
@@ -1099,12 +1138,14 @@ export class EvidenceReviewEngine {
   }
 }
 
-function uniqueTranscriptPaths(job: EvidenceReviewJob): string[] {
+function successfulTranscriptPaths(job: EvidenceReviewJob): string[] {
   const paths: string[] = [];
   for (const quantum of Object.values(job.quanta)) {
-    for (const p of quantum.transcriptPaths ?? []) {
-      if (p && !paths.includes(p)) paths.push(p);
-    }
+    if (quantum.state !== 'succeeded') continue;
+    // Retry history remains on the Quantum for diagnostics, but commit
+    // reconstruction must validate the transcript from the successful attempt.
+    const p = quantum.transcriptPaths.at(-1);
+    if (p && !paths.includes(p)) paths.push(p);
   }
   return paths;
 }

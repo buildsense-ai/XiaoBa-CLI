@@ -230,6 +230,7 @@ export class CatsClient extends EventEmitter {
   private subscribedTopics = new Set<string>();
   private supportsClientMessageDedupe = false;
   public supportsThinToolRpc = false;
+  private supportsDeviceRpcProgress = false;
   private awaitingReady = false;
 
   public uid = '';
@@ -262,6 +263,7 @@ export class CatsClient extends EventEmitter {
     Logger.info(`[CatsCompany] 正在连接: ${this.config.serverUrl}, apiKey=${maskSecret(this.config.apiKey)}, bodyId=${bodyId}`);
     this.supportsClientMessageDedupe = false;
     this.supportsThinToolRpc = false;
+    this.supportsDeviceRpcProgress = false;
     this.ws = new WebSocket(this.config.serverUrl, {
       headers: {
         'X-API-Key': this.config.apiKey,
@@ -346,6 +348,11 @@ export class CatsClient extends EventEmitter {
           && msg.ctrl.params.features.includes('thin_tool_rpc');
         if (this.supportsThinToolRpc) {
           Logger.info('[CatsCompany] 服务端支持 thin_tool_rpc 轻量工具传输');
+        }
+        this.supportsDeviceRpcProgress = Array.isArray(msg.ctrl.params?.features)
+          && msg.ctrl.params.features.includes('device_rpc_progress');
+        if (this.supportsDeviceRpcProgress) {
+          Logger.info('[CatsCompany] 服务端支持 device_rpc_progress 进度确认');
         }
         this.emit('ready', { uid: this.uid, name: this.name });
         this.autoAcceptFriendRequests().catch(console.error);
@@ -659,6 +666,20 @@ export class CatsClient extends EventEmitter {
     const requestID = String(progress.request_id || '').trim();
     if (!requestID) {
       throw new Error('Device RPC progress request_id is required');
+    }
+    // Legacy peers without device_rpc_progress cannot ACK progress envelopes;
+    // send fire-and-forget to avoid a 10s timeout per update.
+    if (!this.supportsDeviceRpcProgress) {
+      const msgId = `${++this.msgId}`;
+      this.send({
+        device_rpc: {
+          ...progress,
+          id: msgId,
+          type: 'progress',
+          request_id: requestID,
+        },
+      });
+      return;
     }
     const msgId = `${++this.msgId}`;
     await this.sendEnvelopeWithAck(msgId, {

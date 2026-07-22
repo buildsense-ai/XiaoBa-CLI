@@ -16,22 +16,15 @@ import { AIService } from './ai-service';
 import { PathResolver } from './path-resolver';
 import { SkillParser } from '../skills/skill-parser';
 import {
-  addOrUpdateOperationalFailure,
-  findDeferByBundleId,
-  findOperationalByBundleId,
-  popDueOperationalEntries,
-  getDueDeferredEntries,
-  loadReviewQueueState,
-  SkillEvolutionReviewQueueState,
-  OperationalReviewFailureKind,
-  removeDeferredByBundleId,
-  removeOperationalFailureByBundleId,
-  saveReviewQueueState,
-  SkillEvolutionDeferredReviewEntry,
-  SkillEvolutionOperationalReviewFailureEntry,
-  upsertDeferredEntry,
-  upsertOperationalFailureTranscript,
-} from './skill-evolution-review-queue';
+  findDeferredJobByBundleId,
+  findOperationalJobByBundleId,
+  importLegacyReviewQueue,
+  loadEvidenceReviewJobStore,
+  upsertEvidenceReviewJob,
+} from './evidence-review-job-store';
+
+/** Operational failure category for retry backoff (moved from deleted legacy queue module). */
+export type OperationalReviewFailureKind = import('./evidence-review-types').ReviewOperationalFailureKind;
 import { DistilledKnowledgeCandidate } from './capability-distiller';
 import type { SemanticObservation } from './learning-episode';
 import {
@@ -49,7 +42,8 @@ import type {
   ReviewWorkClass,
   EvidenceReviewJob,
 } from './evidence-review-types';
-import { buildExplicitObligationDispositions } from './evidence-review';
+import { buildExplicitObligationDispositions, hashEvidenceBundle } from './evidence-review';
+import { createEvidenceReviewJob } from './evidence-review-graph';
 import { detectDuplicateCapabilityCreation } from './capability-update-guidance';
 import {
   createSuccessorReviewJob,
@@ -61,7 +55,6 @@ import {
   EVIDENCE_REVIEW_POLICY_VERSION,
   EVIDENCE_REVIEW_PROMPT_VERSION,
 } from './evidence-review-types';
-import { upsertEvidenceReviewJob } from './evidence-review-job-store';
 
 /**
  * V3's runtime-owned promotion seam.
@@ -77,7 +70,6 @@ export const SKILL_EVOLUTION_REVIEWER_VERSION = 'skill-evolution-v3';
 export const MAX_AUTHOR_VERIFIER_ROUNDS = 2;
 const DEFAULT_REVIEW_ATTEMPT_MAX_TURNS = 4;
 const DEFAULT_REVIEW_ATTEMPT_DEADLINE_MS = 10 * 60 * 1000;
-export const MAX_OPTIMISTIC_COMMIT_RETRIES = 2;
 
 export type CapabilityTransitionKind =
   | 'create_current_skill'
@@ -422,12 +414,12 @@ export interface SkillEvolutionPaths {
 }
 
 /**
- * Optional Review Commit Fence precommit hook (#109).
+ * Durable commit fence callback (#109).
  * Invoked inside the commit boundary immediately before applyCapabilityTransition
  * / journal / audit write. Returning a SkillEvolutionResult aborts the commit
  * without writing the journal.
  */
-export type BeforeAcceptedCommitHook = (input: {
+type BeforeAcceptedCommitHook = (input: {
   bundle: EvidenceBundle;
   draft: SkillDraft;
   verifier: SkillVerifierResult;
@@ -464,12 +456,6 @@ export interface SkillEvolutionOptions extends SkillEvolutionPaths {
   readerFixture?: (input: ReaderLaneInput) => ReaderLaneResult | Promise<ReaderLaneResult>;
   authorFactory?: (options: SkillAuthorBranchOptions) => SkillAuthorBranchSession;
   verifierFactory?: (options: SkillVerifierBranchOptions) => SkillVerifierBranchSession;
-  /**
-   * Optional precommit hook invoked immediately before applyCapabilityTransition
-   * for accepted transitions. Legacy callers omit this; Evidence Review Jobs supply
-   * a Review Commit Fence that blocks journal write on stale declared dependencies.
-   */
-  beforeAcceptedCommit?: BeforeAcceptedCommitHook;
 }
 
 export interface SkillEvolutionEffectiveConfig {
@@ -510,22 +496,6 @@ export interface SkillEvolutionQueueReviewResult {
     reason?: string;
     failureKind?: OperationalReviewFailureKind;
   }>;
-}
-
-export interface SkillEvolutionQueueReviewOptions {
-  /** Shared wake cancellation/deadline signal. */
-  signal?: AbortSignal;
-  /** Charge the actual frozen bundle before dispatching this queue entry. */
-  admit?: (bundle: EvidenceBundle) => boolean;
-  /** Restrict this pass to the Runtime-selected durable queue turns. */
-  bundleIds?: readonly string[];
-  /** Clock used to decide which operational retries are due. */
-  now?: Date;
-}
-
-export interface SkillEvolutionDueQueueReviewEntry {
-  readonly bundleId: string;
-  readonly bundle: EvidenceBundle;
 }
 
 export interface TransitionJournal {
@@ -580,6 +550,7 @@ export class SkillEvolutionRuntime {
     this.options = options;
     fs.mkdirSync(options.outputDir, { recursive: true });
     recoverTransitionJournal(options);
+    this.maybeMigrateLegacyReviewQueue();
   }
 
   /** Durable Evidence Review Job engine (ADR 0045). Created lazily. */
@@ -590,18 +561,8 @@ export class SkillEvolutionRuntime {
     return this.evidenceReviewEngine;
   }
 
-
-
   async reviewAndApply(bundle: EvidenceBundle, signal?: AbortSignal): Promise<SkillEvolutionResult> {
-    // Durable Evidence Review Jobs are the primary promotion path (ADR 0045).
-    // The linear Author/Verifier loop remains as an internal implementation
-    // detail for Skill Author / Verifier quanta and as a compatibility fallback
-    // when a job store path cannot be resolved.
-    if (this.options.reviewQueuePath || this.options.workingDirectory) {
-      return this.reviewAndApplyViaEvidenceReviewJob(bundle, signal);
-    }
-    const { result } = await this.reviewAndApplyWithRetries(bundle, undefined, true, signal);
-    return result;
+    return this.reviewAndApplyViaEvidenceReviewJob(bundle, signal);
   }
 
   /**
@@ -615,6 +576,11 @@ export class SkillEvolutionRuntime {
     const frozen = freezeClone(bundle);
     validateEvidenceBundle(frozen);
     const engine = this.getEvidenceReviewEngine();
+    const deferred = findDeferredJobByBundleId(engine.loadStore(), frozen.bundleId);
+    if (deferred) {
+      if (!this.isDeferredReviewEligible(deferred, frozen)) return deferred;
+      return this.createDeferredReviewSuccessor(deferred, frozen, 'Deferred review basis changed.');
+    }
     return engine.ensureJob({
       bundle: frozen,
       candidate: this.extractCandidateFromBundle(frozen),
@@ -623,9 +589,20 @@ export class SkillEvolutionRuntime {
     });
   }
 
-  /** Usage reassessment reuses Author/Verifier without candidate retry state. */
+  /**
+   * Usage reassessment shares the same durable promotion seam as normal review.
+   * Operational handoff still throws so the curator does not consume evidence
+   * as though a semantic rejection had completed.
+   */
   async reviewUsageAndApply(bundle: EvidenceBundle): Promise<SkillEvolutionResult> {
-    const { result } = await this.reviewAndApplyWithRetries(bundle, undefined, false);
+    const result = await this.reviewAndApplyViaEvidenceReviewJob(bundle, undefined, false);
+    if (result.queued === 'operational') {
+      throw new OperationalReviewError(
+        'branch_failure',
+        `Usage reassessment ${bundle.bundleId} remains queued for durable retry.`,
+        [],
+      );
+    }
     return result;
   }
 
@@ -640,13 +617,7 @@ export class SkillEvolutionRuntime {
         .map(entry => entry.bundleId)
         .filter((bundleId): bundleId is string => typeof bundleId === 'string'),
     );
-    const queuePath = this.options.reviewQueuePath;
-    if (queuePath) {
-      const queue = loadReviewQueueState(queuePath);
-      for (const entry of queue.deferred) bundleIds.add(entry.bundleId);
-      for (const entry of queue.operational) bundleIds.add(entry.bundleId);
-    }
-    // Active Evidence Review Jobs own their bundle until a terminal disposition.
+    // Evidence Review Jobs own their bundle until a terminal disposition.
     try {
       const jobs = this.getEvidenceReviewEngine().loadStore().jobs;
       for (const job of Object.values(jobs)) {
@@ -662,8 +633,8 @@ export class SkillEvolutionRuntime {
 
   /**
    * Return the durable retry state for a queued review. Reassessment uses the
-   * same queue as ordinary capability review, so the manifest can mirror the
-   * queue's actual deadline instead of inventing a second backoff clock.
+   * same job store as ordinary capability review, so the manifest can mirror
+   * the actual deadline instead of inventing a second backoff clock.
    */
   getQueuedReviewState(bundleId: string): {
     kind: 'deferred' | 'operational';
@@ -671,18 +642,25 @@ export class SkillEvolutionRuntime {
     reason?: string;
     failureKind?: OperationalReviewFailureKind;
   } | undefined {
-    const queuePath = this.options.reviewQueuePath;
-    if (!queuePath) return undefined;
-    const queue = loadReviewQueueState(queuePath);
-    const deferred = findDeferByBundleId(queue, bundleId);
-    if (deferred) return { kind: 'deferred', reason: deferred.reason };
-    const operational = findOperationalByBundleId(queue, bundleId);
-    if (operational) return {
-      kind: 'operational',
-      nextRetryAt: operational.nextRetryAt,
-      reason: operational.failureMessage,
-      failureKind: operational.failureKind,
-    };
+    try {
+      const state = this.getEvidenceReviewEngine().loadStore();
+      const deferred = findDeferredJobByBundleId(state, bundleId);
+      if (deferred?.deferState) return { kind: 'deferred', reason: deferred.deferState.reason };
+      const operational = findOperationalJobByBundleId(state, bundleId);
+      if (operational) {
+        const retry = Object.values(operational.quanta)
+          .filter(quantum => quantum.state === 'retry_wait' || quantum.state === 'terminal_failed')
+          .sort((left, right) => (left.nextRetryAt ?? '').localeCompare(right.nextRetryAt ?? '', 'en'))[0];
+        return {
+          kind: 'operational',
+          nextRetryAt: retry?.nextRetryAt ?? operational.nextDueAt,
+          reason: retry?.failureMessage ?? operational.terminalReason,
+          failureKind: retry?.failureKind,
+        };
+      }
+    } catch {
+      // Job store optional during early construction.
+    }
     return undefined;
   }
 
@@ -697,6 +675,7 @@ export class SkillEvolutionRuntime {
       retryBaseMs: this.getEffectiveConfig().operationalRetryMs,
       retryMaxMs: this.getEffectiveConfig().operationalRetryMaxMs,
       maxQuantaPerAdvance: 64,
+      reviewerVersion: this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
       runReaderLane: async (input) => this.runReaderLaneCallback(input),
       runSkillAuthor: async (input) => this.runSkillAuthorQuantum(input),
       runSkillVerifier: async (input) => this.runSkillVerifierQuantum(input),
@@ -711,6 +690,7 @@ export class SkillEvolutionRuntime {
   private async reviewAndApplyViaEvidenceReviewJob(
     bundle: EvidenceBundle,
     signal?: AbortSignal,
+    allowOperationalHandoff = true,
   ): Promise<SkillEvolutionResult> {
     const frozen = freezeClone(bundle);
     validateEvidenceBundle(frozen);
@@ -781,14 +761,6 @@ export class SkillEvolutionRuntime {
       const live = engine.loadStore().jobs[job.jobId] ?? advanced.job;
 
       if (advanced.result) {
-        // Queue deferred semantic results when a queue path is configured (legacy parity).
-        if (
-          this.options.reviewQueuePath
-          && advanced.result.transition === 'defer'
-          && !advanced.result.queued
-        ) {
-          return this.enqueueDeferredResult(frozen, advanced.result);
-        }
         return advanced.result;
       }
 
@@ -810,13 +782,6 @@ export class SkillEvolutionRuntime {
             ...(persistedCommitResult.queued ? { queued: persistedCommitResult.queued } : {}),
             ...(persistedCommitResult.queueEntryId ? { queueEntryId: persistedCommitResult.queueEntryId } : {}),
           };
-          if (
-            this.options.reviewQueuePath
-            && reconstructed.transition === 'defer'
-            && !reconstructed.queued
-          ) {
-            return this.enqueueDeferredResult(frozen, reconstructed);
-          }
           return reconstructed;
         }
 
@@ -840,12 +805,6 @@ export class SkillEvolutionRuntime {
             verifier: live.verifierResult,
             ...(live.disposition === 'deferred' ? { queued: 'deferred' as const } : {}),
           };
-          if (
-            this.options.reviewQueuePath
-            && reconstructed.transition === 'defer'
-          ) {
-            return this.enqueueDeferredResult(frozen, reconstructed);
-          }
           return reconstructed;
         }
       }
@@ -856,58 +815,34 @@ export class SkillEvolutionRuntime {
           live.terminalReason ?? 'Evidence Review Job terminal failure',
           this.collectPromotionTranscriptPaths(live, advanced.lastError),
         );
-        if (this.options.reviewQueuePath) {
-          return this.enqueueOperationalFailureAndReturnResult(
-            frozen,
-            terminalError,
-            new Date(),
-            this.options.reviewQueuePath,
-          );
-        }
         throw terminalError;
       }
 
       // Incomplete graph — surface the concrete quantum failure when present.
       const failure = this.buildIncompleteJobError(live, advanced.lastError, cancelledByRuntimeShutdown);
-      if (cancelledByRuntimeShutdown) {
+      if (cancelledByRuntimeShutdown || !allowOperationalHandoff) {
         throw failure;
       }
-      if (this.options.reviewQueuePath) {
-        return this.enqueueOperationalFailureAndReturnResult(
-          frozen,
-          failure,
-          new Date(),
-          this.options.reviewQueuePath,
-        );
+      if (!this.options.reviewQueuePath) {
+        throw failure;
       }
-      throw failure;
+      return this.queuedOperationalResult(live);
     } finally {
       clearTimeout(attemptDeadlineTimer);
       for (const remove of removeExternalAbortListeners) remove();
     }
   }
 
-  private enqueueDeferredResult(
-    bundle: EvidenceBundle,
-    result: SkillEvolutionResult,
+  private queuedOperationalResult(
+    job: EvidenceReviewJob,
   ): SkillEvolutionResult {
-    if (!this.options.reviewQueuePath) return result;
-    const queue = loadReviewQueueState(this.options.reviewQueuePath);
-    const candidate = this.extractCandidateFromBundle(bundle);
-    const relevantReadSet = result.verifier
-      ? declaredRegistryReadSet(result.verifier, bundle, result.draft!)
-      : [];
-    upsertDeferredEntry(
-      queue,
-      candidate,
-      bundle,
-      this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
-      relevantReadSet,
-      result.verifier?.rationale ?? 'Verifier deferred for later review.',
-      new Date(),
-    );
-    saveReviewQueueState(this.options.reviewQueuePath, queue);
-    return { ...result, queued: 'deferred' };
+    return {
+      transition: 'reject_candidate',
+      verified: false,
+      rounds: job.revisionRound ?? 1,
+      queued: 'operational',
+      queueEntryId: job.jobId,
+    };
   }
 
   private buildIncompleteJobError(
@@ -1050,8 +985,8 @@ export class SkillEvolutionRuntime {
     if (author.transcriptPath) {
       assertHealthyBranchTranscript(author.transcriptPath, 'skill-author', this.options.branchLogRoot);
     }
-    // Retryable schema issues enqueue operationally only when a durable queue exists
-    // (legacy parity). Semantic/policy issues remain on the draft for commit-time gate.
+    // Retryable schema issues enqueue operationally on durable quanta.
+    // Semantic/policy issues remain on the draft for commit-time gate.
     const draftIssues = validateDraft(draft, reviewBundle, this.getManualSkillNames());
     const hasDuplicateCapabilityIssue = draftIssues.some(
       issue => issue.code === 'duplicate-capability-creation',
@@ -1512,37 +1447,39 @@ export class SkillEvolutionRuntime {
         staleJob.basis.registryReadSet,
         handle => this.getRegistry().capabilities[handle],
       );
-    const successor = createSuccessorReviewJob({
+    let successor = createSuccessorReviewJob({
       staleJob,
       liveBundle: normalizedLiveBundle,
       candidate,
       registryReadSet: resolvedLiveReadSet,
     });
+    const state = engine.loadStore();
+    if (state.jobs[successor.jobId]) {
+      // A corrupted frozen basis can still produce the original deterministic
+      // ID when rebuilt from the live basis. Never overwrite that stale audit
+      // record: allocate a clean successor and do not copy its trusted quanta.
+      successor = createSuccessorReviewJob({
+        staleJob,
+        liveBundle: normalizedLiveBundle,
+        candidate,
+        registryReadSet: resolvedLiveReadSet,
+        jobId: `${successor.jobId}:successor:${randomUUID()}`,
+        reuseSucceededQuanta: false,
+      });
+    }
     const superseded = markJobSuperseded(staleJob, successor.jobId);
     superseded.terminalReason = reason;
-    const state = engine.loadStore();
     upsertEvidenceReviewJob(state, superseded);
     upsertEvidenceReviewJob(state, successor);
     engine.saveStore(state);
-    // Stale basis is not semantic rejection — queue operational follow-up for successor.
-    // Do not also enqueue semantic defer for the same supersession.
-    if (this.options.reviewQueuePath) {
-      return this.enqueueOperationalFailureAndReturnResult(
-        normalizedLiveBundle,
-        new OperationalReviewError(
-          'branch_failure',
-          `Review Basis stale; successor job ${successor.jobId} created. ${reason}`,
-          [],
-        ),
-        new Date(),
-        this.options.reviewQueuePath,
-      );
-    }
+    // The active successor itself is the durable follow-up. No parallel retry
+    // record is needed: its graph quanta and leases are the single owner.
     return {
       transition: 'defer',
       verified: false,
       rounds: 1,
       queued: 'operational',
+      queueEntryId: successor.jobId,
     };
   }
 
@@ -1582,7 +1519,10 @@ export class SkillEvolutionRuntime {
     for (const jobId of activeJobIds) {
       const current = engine.loadStore().jobs[jobId];
       if (!current || !isDueRunnableActiveJob(current)) continue;
-      const preFence = this.decideLiveReviewFence(current, current.bundle);
+      const preFence = this.decideLiveReviewFence(
+        current,
+        this.normalizePersistedBundleForReReview(current.bundle),
+      );
       if (
         preFence.decision.kind !== 'stale_before_fence'
         && preFence.decision.kind !== 'corrupted_basis'
@@ -1686,135 +1626,6 @@ export class SkillEvolutionRuntime {
       : undefined;
   }
 
-  private async reviewAndApplyWithRetries(
-    bundle: EvidenceBundle,
-    sharedBranchTranscriptPaths?: string[],
-    persistQueue = true,
-    reviewSignal?: AbortSignal,
-    beforeAcceptedCommit?: BeforeAcceptedCommitHook,
-  ): Promise<{ result: SkillEvolutionResult; branchTranscriptPaths: string[]; bundle: EvidenceBundle }> {
-    const branchTranscriptPaths = sharedBranchTranscriptPaths ?? [];
-    let reviewBundle = freezeClone(bundle);
-    const attemptController = new AbortController();
-    const externalSignals = [...new Set(
-      [this.options.reviewAttemptSignal, reviewSignal].filter(
-        (signal): signal is AbortSignal => signal !== undefined,
-      ),
-    )];
-    let cancelledByRuntimeShutdown = false;
-    const attemptDeadlineMs = this.getEffectiveConfig().reviewAttemptDeadlineMs;
-    const reviewAttempt: BranchReviewAttemptMetadata = {
-      deadlineMs: attemptDeadlineMs,
-      deadlineAt: new Date(Date.now() + Math.max(1, attemptDeadlineMs)).toISOString(),
-    };
-    const attemptDeadlineTimer = setTimeout(
-      () => attemptController.abort('review-timeout'),
-      Math.max(1, attemptDeadlineMs),
-    );
-    // A review deadline must bound an in-flight review, but it must not keep a
-    // connector process alive after the review has completed or shutdown has
-    // begun.
-    attemptDeadlineTimer.unref?.();
-    const removeExternalAbortListeners: Array<() => void> = [];
-    for (const externalSignal of externalSignals) {
-      if (externalSignal.aborted) {
-        const reason = this.resolveAbortReason(externalSignal.reason);
-        cancelledByRuntimeShutdown = reason === 'runtime-shutdown';
-        attemptController.abort(reason);
-        break;
-      }
-      const onAbort = () => {
-        const reason = this.resolveAbortReason(externalSignal.reason);
-        cancelledByRuntimeShutdown = reason === 'runtime-shutdown';
-        attemptController.abort(reason);
-      };
-      externalSignal.addEventListener('abort', onAbort, { once: true });
-      removeExternalAbortListeners.push(() => externalSignal.removeEventListener('abort', onAbort));
-    }
-    // Prefer the explicit precommit hook (Evidence Review Job fence) over any
-    // options-level hook so legacy callers remain optional and job-owned fences
-    // always win inside the commit boundary.
-    const commitFence = beforeAcceptedCommit ?? this.options.beforeAcceptedCommit;
-    try {
-      for (let retry = 0; retry <= MAX_OPTIMISTIC_COMMIT_RETRIES; retry++) {
-        try {
-          const result = await this.reviewAndApplyOnce(
-            reviewBundle,
-            branchTranscriptPaths,
-            attemptController.signal,
-            reviewAttempt,
-            commitFence,
-          );
-          // Fence supersession already queues operational follow-up. Do not also
-          // enqueue semantic defer for the same aborted commit.
-          if (
-            persistQueue
-            && result.transition === 'defer'
-            && result.queued !== 'operational'
-            && this.options.reviewQueuePath
-          ) {
-            const queue = loadReviewQueueState(this.options.reviewQueuePath);
-            const candidate = this.extractCandidateFromBundle(reviewBundle);
-            const relevantReadSet = result.verifier
-              ? declaredRegistryReadSet(result.verifier, reviewBundle, result.draft!)
-              : [];
-            const deferredEntry = upsertDeferredEntry(
-              queue,
-              candidate,
-              reviewBundle,
-              this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
-              relevantReadSet,
-              result.verifier?.rationale ?? 'Verifier deferred for later review.',
-              new Date(),
-            );
-            result.queued = 'deferred';
-            result.queueEntryId = deferredEntry.entryId;
-            saveReviewQueueState(this.options.reviewQueuePath, queue);
-          }
-          return { result, branchTranscriptPaths, bundle: reviewBundle };
-        } catch (error) {
-          // A wake/shutdown cancellation leaves the original eligible episode
-          // or queue entry untouched. It must not manufacture a new OPR write
-          // after the owning scheduler has begun draining.
-          if (cancelledByRuntimeShutdown) throw error;
-          const operationalFailure = this.extractOperationalFailure(error);
-          if (operationalFailure) {
-            const queuePath = this.options.reviewQueuePath;
-            if (!queuePath) {
-              throw operationalFailure;
-            }
-            if (!persistQueue) {
-              throw operationalFailure;
-            }
-            return {
-              result: this.enqueueOperationalFailureAndReturnResult(
-                reviewBundle,
-                operationalFailure,
-                new Date(),
-                queuePath,
-              ),
-              branchTranscriptPaths,
-              bundle: reviewBundle,
-            };
-          }
-
-          if (error instanceof ReviewCommitConflictError) {
-            if (retry >= MAX_OPTIMISTIC_COMMIT_RETRIES) {
-              throw error;
-            }
-            reviewBundle = freezeClone(this.refreshRegistryContext(reviewBundle));
-            continue;
-          }
-          throw error;
-        }
-      }
-    } finally {
-      clearTimeout(attemptDeadlineTimer);
-      for (const remove of removeExternalAbortListeners) remove();
-    }
-    throw new Error('Skill Evolution exceeded optimistic commit retries.');
-  }
-
   private buildOperationalReviewError(error: unknown, branchTranscriptPaths: string[]): OperationalReviewError {
     const transcriptPaths = uniqueStrings([
       ...branchTranscriptPaths,
@@ -1852,16 +1663,6 @@ export class SkillEvolutionRuntime {
       message,
       transcriptPaths,
     );
-  }
-
-  private extractOperationalFailure(error: unknown): OperationalReviewError | undefined {
-    if (error instanceof OperationalReviewError) {
-      return error;
-    }
-    if (error instanceof ReviewCommitConflictError) {
-      return undefined;
-    }
-    return this.buildOperationalReviewError(error, []);
   }
 
   private extractCandidateFromBundle(bundle: EvidenceBundle): DistilledKnowledgeCandidate {
@@ -1919,309 +1720,122 @@ export class SkillEvolutionRuntime {
     };
   }
 
-  private enqueueOperationalFailureAndReturnResult(
-    bundle: EvidenceBundle,
-    error: OperationalReviewError,
-    now: Date,
-    queuePath: string,
-  ): SkillEvolutionResult {
-    const queue = loadReviewQueueState(queuePath);
-    const snapshotBundle = this.buildOperationalFailureBundleSnapshot(bundle);
-    const candidate = this.extractCandidateFromBundle(bundle);
-    addOrUpdateOperationalFailure(
-      queue,
-      candidate,
-      snapshotBundle,
-      error.kind,
-      error.message,
-      error.transcriptPath,
-      this.getEffectiveConfig().operationalRetryMs,
-      this.getEffectiveConfig().operationalRetryMaxMs,
-      now,
+  /** Import released v1 queue state before any deadline planning reads the job store. */
+  private maybeMigrateLegacyReviewQueue(): void {
+    const queuePath = this.options.reviewQueuePath;
+    const jobStorePath = resolveEvidenceReviewJobStorePath(this.options);
+    if (loadEvidenceReviewJobStore(jobStorePath).stateCorrupt) {
+      throw new Error(
+        `Evidence Review Job store is corrupt; review startup stopped: ${jobStorePath}`,
+      );
+    }
+    if (!queuePath) return;
+    const migrated = importLegacyReviewQueue(
+      queuePath,
+      jobStorePath,
     );
-    this.appendOperationalFailureTranscripts(queue, snapshotBundle.bundleId, error.transcriptPaths);
-    saveReviewQueueState(queuePath, queue);
-    return {
-      transition: 'reject_candidate',
-      verified: false,
-      rounds: 1,
-      queued: 'operational',
-      queueEntryId: findOperationalByBundleId(queue, snapshotBundle.bundleId)?.entryId,
-    };
-  }
-
-  private buildOperationalFailureBundleSnapshot(bundle: EvidenceBundle): EvidenceBundle {
-    // The operational retry snapshot must remain a fixed Evidence Bundle whose
-    // completion/settlement refs stay consistent with the sourceEvidence roles.
-    // Merging settlement refs into completionEvidence (the previous behaviour)
-    // violated the source-evidence invariant: a settlement ref carries the
-    // 'verification' role, but validateEvidenceBundle requires every
-    // completionEvidence ref to map to a 'problem-action' sourceEvidence entry.
-    // On revalidation that mismatch threw a fresh operational failure, so the
-    // queue entry never cleared and bootstrap could never delete the artifact.
-    // A deep frozen clone preserves the original role-aligned refs unchanged.
-    return freezeClone(bundle);
-  }
-
-  private appendOperationalFailureTranscripts(
-    queue: SkillEvolutionReviewQueueState,
-    bundleId: string,
-    transcriptPaths: readonly string[],
-  ): void {
-    for (const transcriptPath of transcriptPaths) {
-      upsertOperationalFailureTranscript(queue, bundleId, transcriptPath);
+    if (migrated.status === 'quarantined') {
+      throw new Error(
+        `Legacy review queue was corrupt and quarantined at ${migrated.quarantinePath}; review startup stopped.`,
+      );
     }
   }
 
-  private async reviewDueQueueEntriesInternal(
-    options: SkillEvolutionQueueReviewOptions = {},
-  ): Promise<SkillEvolutionQueueReviewResult> {
-    const queuePath = this.options.reviewQueuePath;
-    const emptyResult = (): SkillEvolutionQueueReviewResult => ({
+  private isDeferredReviewEligible(job: EvidenceReviewJob, candidateBundle?: EvidenceBundle): boolean {
+    if (job.disposition !== 'deferred') return false;
+    if (job.deferState
+      && job.deferState.reviewerVersion !== (this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION)) {
+      return true;
+    }
+    if (job.basis.reviewPolicyVersion !== EVIDENCE_REVIEW_POLICY_VERSION
+      || job.basis.promptVersion !== EVIDENCE_REVIEW_PROMPT_VERSION) {
+      return true;
+    }
+    const registry = this.getRegistry();
+    const eligibilityReadSet = job.deferState?.registryReadSet ?? job.basis.registryReadSet;
+    if (eligibilityReadSet.some(entry => registry.capabilities[entry.handle]?.revision !== entry.revision)) {
+      return true;
+    }
+    if (!candidateBundle) return false;
+    if (job.deferState?.evidenceFingerprint) {
+      const refs = [...candidateBundle.completionEvidence, ...candidateBundle.settlementEvidence]
+        .map(item => item.ref)
+        .filter((ref): ref is string => typeof ref === 'string')
+        .sort();
+      return sha256(JSON.stringify(refs)) !== job.deferState.evidenceFingerprint;
+    }
+    return hashEvidenceBundle(candidateBundle) !== job.basis.evidenceBundleHash;
+  }
+
+  /**
+   * Replace a terminal deferred graph with a fresh, uniquely identified graph.
+   * No Author/Verifier/commit result is reused; stale + successor persist in one write.
+   */
+  private createDeferredReviewSuccessor(
+    staleJob: EvidenceReviewJob,
+    bundle: EvidenceBundle,
+    reason: string,
+  ): EvidenceReviewJob {
+    const engine = this.getEvidenceReviewEngine();
+    const state = engine.loadStore();
+    const liveStale = state.jobs[staleJob.jobId];
+    if (!liveStale || liveStale.disposition !== 'deferred') {
+      const existing = liveStale?.successorJobId ? state.jobs[liveStale.successorJobId] : undefined;
+      if (existing) return existing;
+      throw new Error(`Deferred review job ${staleJob.jobId} is no longer eligible for reactivation.`);
+    }
+    const normalized = this.normalizePersistedBundleForReReview(bundle);
+    const successor = createEvidenceReviewJob({
+      bundle: normalized,
+      candidate: this.extractCandidateFromBundle(normalized),
+      workClass: 'semantic_reassessment',
+      registryReadSet: resolveLiveDeclaredRegistryReadSet(
+        liveStale.basis.registryReadSet,
+        handle => this.getRegistry().capabilities[handle],
+      ),
+      parentJobId: liveStale.jobId,
+      jobId: `${liveStale.jobId}:retry:${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+    });
+    successor.domain = { ...successor.domain, reactivatedDeferred: true };
+    const superseded = markJobSuperseded(liveStale, successor.jobId);
+    superseded.terminalReason = reason;
+    upsertEvidenceReviewJob(state, superseded);
+    upsertEvidenceReviewJob(state, successor);
+    engine.saveStore(state);
+    return successor;
+  }
+
+  getDeferredReviewBundleIds(): string[] {
+    return Object.values(this.getEvidenceReviewEngine().loadStore().jobs)
+      .filter(job => job.disposition === 'deferred')
+      .map(job => job.bundle.bundleId)
+      .sort((left, right) => left.localeCompare(right, 'en'));
+  }
+
+  /** Reactivate dormant defers only when reviewer/policy, Registry, or evidence changed. */
+  reactivateDeferredReviews(candidateBundles: readonly EvidenceBundle[] = []): EvidenceReviewJob[] {
+    const liveBundles = new Map(candidateBundles.map(bundle => [bundle.bundleId, bundle]));
+    const jobs = Object.values(this.getEvidenceReviewEngine().loadStore().jobs)
+      .filter(job => job.disposition === 'deferred'
+        && this.isDeferredReviewEligible(job, liveBundles.get(job.bundle.bundleId)))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt, 'en'));
+    return jobs.map(job => this.createDeferredReviewSuccessor(
+      job,
+      liveBundles.get(job.bundle.bundleId) ?? job.bundle,
+      'Deferred review became eligible under a durable retry trigger.',
+    ));
+  }
+
+  /** Project the single fair executor's touched jobs into wake/report metrics. */
+  collectFairReviewOutcomes(
+    jobIds: readonly string[],
+  ): SkillEvolutionQueueReviewResult {
+    const empty: SkillEvolutionQueueReviewResult = {
       reviewed: 0,
       deferredReviewed: 0,
       operationalReviewed: 0,
       operationalRetried: 0,
       deferredRetried: 0,
-      transitionsByKind: {},
-      queueOutcomes: {},
-    });
-
-    type ReviewQueueTask =
-      | { type: 'operational'; entry: SkillEvolutionOperationalReviewFailureEntry }
-      | { type: 'deferred'; entry: SkillEvolutionDeferredReviewEntry }
-      | { type: 'migrated_job'; bundleId: string; bundle: EvidenceBundle; jobId: string };
-
-    const tasks: ReviewQueueTask[] = [];
-    let queue: SkillEvolutionReviewQueueState | undefined;
-
-    if (queuePath) {
-      queue = loadReviewQueueState(queuePath);
-      const registry = this.getRegistry();
-      const currentReadSet = normalizeRegistryReadSet(
-        Object.values(registry.capabilities).map(record => ({
-          handle: record.handle,
-          revision: record.revision,
-        })),
-      );
-      const dueOperational = popDueOperationalEntries(queue, options.now ?? new Date());
-      const dueDeferred = getDueDeferredEntries(
-        queue,
-        this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
-        currentReadSet,
-      );
-      tasks.push(
-        ...dueOperational.map(item => ({ type: 'operational' as const, entry: item })),
-        ...dueDeferred.map(item => ({ type: 'deferred' as const, entry: item })),
-      );
-    }
-
-    // Migrated operational recovery jobs own their retry after #104/#110 transfer.
-    // Only execute them when Runtime (or another caller) explicitly admits the
-    // bundle via bundleIds — unrestricted legacy scans must not re-run work that
-    // already transferred out of the linear queue.
-    const selectedBundleIds = options.bundleIds
-      ? new Set(options.bundleIds)
-      : undefined;
-    const legacyBundleIds = new Set(
-      tasks.map(task => (
-        task.type === 'migrated_job' ? task.bundleId : task.entry.bundleId
-      )),
-    );
-    if (selectedBundleIds && selectedBundleIds.size > 0) {
-      try {
-        const now = options.now ?? new Date();
-        const jobs = this.getEvidenceReviewEngine().loadStore().jobs;
-        for (const job of Object.values(jobs)) {
-          if (job.disposition !== 'active') continue;
-          if (job.workClass !== 'operational_recovery') continue;
-          if (!selectedBundleIds.has(job.bundle.bundleId)) continue;
-          if (legacyBundleIds.has(job.bundle.bundleId)) continue;
-          const notBefore = job.nextDueAt ? Date.parse(job.nextDueAt) : Number.NaN;
-          if (Number.isFinite(notBefore) && notBefore > now.getTime()) continue;
-          tasks.push({
-            type: 'migrated_job',
-            bundleId: job.bundle.bundleId,
-            bundle: job.bundle,
-            jobId: job.jobId,
-          });
-          legacyBundleIds.add(job.bundle.bundleId);
-        }
-      } catch {
-        // Job store optional.
-      }
-    }
-
-    let orderedTasks = tasks;
-    if (options.bundleIds) {
-      const selectedOrder = new Map(options.bundleIds.map((bundleId, index) => [bundleId, index]));
-      orderedTasks = tasks
-        .filter(item => selectedOrder.has(
-          item.type === 'migrated_job' ? item.bundleId : item.entry.bundleId,
-        ))
-        .sort((left, right) => {
-          const leftId = left.type === 'migrated_job' ? left.bundleId : left.entry.bundleId;
-          const rightId = right.type === 'migrated_job' ? right.bundleId : right.entry.bundleId;
-          return selectedOrder.get(leftId)! - selectedOrder.get(rightId)!;
-        });
-    }
-    if (orderedTasks.length === 0) return emptyResult();
-
-    const config = this.getEffectiveConfig();
-    const result = emptyResult();
-
-    await mapWithConcurrency(orderedTasks, config.reviewerConcurrency, async item => {
-      if (options.signal?.aborted) return;
-      if (item.type === 'migrated_job') {
-        if (options.admit && !options.admit(item.bundle)) return;
-        await this.reviewDueMigratedOperationalJob(item, result, options.signal);
-        return;
-      }
-      if (!queue) return;
-      if (options.admit && !options.admit(item.entry.bundle)) return;
-      if (item.type === 'deferred') {
-        await this.reviewDueDeferredEntry(
-          queue,
-          item.entry as SkillEvolutionDeferredReviewEntry,
-          result,
-          config,
-          options.signal,
-        );
-        return;
-      }
-      await this.reviewDueOperationalEntry(
-        queue,
-        item.entry as SkillEvolutionOperationalReviewFailureEntry,
-        result,
-        config,
-        options.signal,
-      );
-    });
-
-    if (queuePath && queue) saveReviewQueueState(queuePath, queue);
-    return result;
-  }
-
-  private async reviewDueMigratedOperationalJob(
-    task: { bundleId: string; bundle: EvidenceBundle; jobId: string },
-    result: SkillEvolutionQueueReviewResult,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    try {
-      const reviewed = await this.reviewAndApply(task.bundle, signal);
-      if (reviewed.queued === 'operational') {
-        result.operationalRetried++;
-        const queued = this.getQueuedReviewState(task.bundleId);
-        // Prefer the durable job nextDueAt when ownership stayed on the job store.
-        let nextRetryAt = queued?.nextRetryAt;
-        if (!nextRetryAt) {
-          try {
-            const job = this.getEvidenceReviewEngine().loadStore().jobs[task.jobId]
-              ?? this.getEvidenceReviewEngine().findActiveJobForBundle(task.bundleId);
-            nextRetryAt = job?.nextDueAt;
-          } catch {
-            // ignore
-          }
-        }
-        result.queueOutcomes![task.bundleId] = {
-          status: 'operational',
-          nextRetryAt,
-          reason: queued?.reason ?? 'Operational review remains queued after re-review.',
-          failureKind: queued?.failureKind ?? 'branch_failure',
-        };
-      } else if (reviewed.transition === 'defer' || reviewed.queued === 'deferred') {
-        result.queueOutcomes![task.bundleId] = {
-          status: 'deferred',
-          reason: reviewed.verifier?.rationale ?? 'Verifier deferred for later review.',
-        };
-      } else {
-        result.operationalReviewed++;
-        result.queueOutcomes![task.bundleId] = { status: 'succeeded' };
-      }
-      incrementTransitionCount(result.transitionsByKind, reviewed.transition);
-      result.reviewed++;
-    } catch (error) {
-      if (signal?.aborted && this.resolveAbortReason(signal.reason) === 'runtime-shutdown') return;
-      const operationalError = this.extractOperationalFailure(error);
-      if (!operationalError) throw error;
-      result.queueOutcomes![task.bundleId] = {
-        status: 'operational',
-        reason: operationalError.message,
-        failureKind: operationalError.kind,
-      };
-      result.reviewed++;
-      result.operationalReviewed++;
-      result.operationalRetried++;
-    }
-  }
-
-  async reviewDueQueueEntries(
-    options: SkillEvolutionQueueReviewOptions = {},
-  ): Promise<SkillEvolutionQueueReviewResult> {
-    return this.reviewDueQueueEntriesInternal(options);
-  }
-
-  /** Deterministic durable retry-class snapshot used by Runtime review arbitration. */
-  listDueQueueReviewEntries(now = new Date()): readonly SkillEvolutionDueQueueReviewEntry[] {
-    const queuePath = this.options.reviewQueuePath;
-    const byBundleId = new Map<string, EvidenceBundle>();
-    if (queuePath) {
-      const queue = loadReviewQueueState(queuePath);
-      const registry = this.getRegistry();
-      const currentReadSet = normalizeRegistryReadSet(
-        Object.values(registry.capabilities).map(record => ({
-          handle: record.handle,
-          revision: record.revision,
-        })),
-      );
-      const entries = [
-        ...popDueOperationalEntries(queue, now),
-        ...getDueDeferredEntries(
-          queue,
-          this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
-          currentReadSet,
-        ),
-      ];
-      for (const entry of entries) byBundleId.set(entry.bundleId, entry.bundle);
-    }
-
-    // Compatibility migration (#104/#110) transfers operational retries into the
-    // Evidence Review Job store and releases the legacy queue entry. Those jobs
-    // remain due under the Runtime retry class until a terminal disposition.
-    try {
-      const jobs = this.getEvidenceReviewEngine().loadStore().jobs;
-      for (const job of Object.values(jobs)) {
-        if (job.disposition !== 'active') continue;
-        if (job.workClass !== 'operational_recovery') continue;
-        if (byBundleId.has(job.bundle.bundleId)) continue;
-        const notBefore = job.nextDueAt ? Date.parse(job.nextDueAt) : Number.NaN;
-        if (Number.isFinite(notBefore) && notBefore > now.getTime()) continue;
-        byBundleId.set(job.bundle.bundleId, job.bundle);
-      }
-    } catch {
-      // Job store optional during early construction / V3-disabled paths.
-    }
-
-    return [...byBundleId.entries()]
-      .sort(([left], [right]) => left.localeCompare(right, 'en'))
-      .map(([bundleId, bundle]) => ({ bundleId, bundle }));
-  }
-
-  /**
-   * Fold terminal dispositions from fair job advance into the shared queue
-   * outcome contract so reassessment manifests and wake metrics converge when
-   * ownership lives only in the Evidence Review Job store.
-   */
-  collectMigratedJobReviewOutcomes(
-    jobIds: readonly string[],
-  ): Pick<
-    SkillEvolutionQueueReviewResult,
-    'reviewed' | 'operationalReviewed' | 'operationalRetried' | 'queueOutcomes' | 'transitionsByKind'
-  > {
-    const empty = {
-      reviewed: 0,
-      operationalReviewed: 0,
-      operationalRetried: 0,
       transitionsByKind: {} as Partial<Record<CapabilityTransitionKind, number>>,
       queueOutcomes: {} as NonNullable<SkillEvolutionQueueReviewResult['queueOutcomes']>,
     };
@@ -2230,12 +1844,16 @@ export class SkillEvolutionRuntime {
       const jobs = this.getEvidenceReviewEngine().loadStore().jobs;
       for (const jobId of jobIds) {
         const job = jobs[jobId];
-        if (!job || job.workClass !== 'operational_recovery') continue;
+        if (!job) continue;
+        const wasOperational = job.workClass === 'operational_recovery';
+        const wasDeferred = job.domain?.reactivatedDeferred === true;
+        if (!wasOperational && !wasDeferred) continue;
         const bundleId = job.bundle.bundleId;
         if (job.disposition === 'completed') {
           empty.reviewed += 1;
-          empty.operationalReviewed += 1;
-          empty.queueOutcomes[bundleId] = { status: 'succeeded' };
+          if (wasOperational) empty.operationalReviewed += 1;
+          if (wasDeferred) empty.deferredReviewed += 1;
+          empty.queueOutcomes![bundleId] = { status: 'succeeded' };
           if (job.verifierResult?.transition) {
             incrementTransitionCount(empty.transitionsByKind, job.verifierResult.transition);
           } else if (job.draft?.envelope.decision) {
@@ -2243,23 +1861,29 @@ export class SkillEvolutionRuntime {
           }
         } else if (job.disposition === 'deferred') {
           empty.reviewed += 1;
-          empty.queueOutcomes[bundleId] = {
+          if (wasOperational) empty.operationalReviewed += 1;
+          if (wasDeferred) {
+            empty.deferredReviewed += 1;
+            empty.deferredRetried += 1;
+          }
+          empty.queueOutcomes![bundleId] = {
             status: 'deferred',
             reason: job.verifierResult?.rationale ?? job.terminalReason,
           };
           incrementTransitionCount(empty.transitionsByKind, 'defer');
-        } else if (job.disposition === 'terminal_failed' || job.disposition === 'active') {
-          // Active means fair advance only partially progressed; linear dual-path
-          // reviewDueQueueEntries may still complete it. Only surface terminal_failed.
-          if (job.disposition !== 'terminal_failed') continue;
+        } else if (wasOperational) {
+          const retry = Object.values(job.quanta)
+            .filter(quantum => quantum.state === 'retry_wait' || quantum.state === 'terminal_failed')
+            .sort((left, right) => (left.nextRetryAt ?? '').localeCompare(right.nextRetryAt ?? '', 'en'))[0];
+          if (!retry) continue;
           empty.reviewed += 1;
           empty.operationalReviewed += 1;
           empty.operationalRetried += 1;
-          empty.queueOutcomes[bundleId] = {
+          empty.queueOutcomes![bundleId] = {
             status: 'operational',
-            nextRetryAt: job.nextDueAt,
-            reason: job.terminalReason ?? 'Evidence Review Job terminal failure',
-            failureKind: 'branch_failure',
+            nextRetryAt: retry.nextRetryAt ?? job.nextDueAt,
+            reason: retry.failureMessage ?? job.terminalReason,
+            failureKind: retry.failureKind ?? 'branch_failure',
           };
         }
       }
@@ -2267,300 +1891,6 @@ export class SkillEvolutionRuntime {
       // Job store optional.
     }
     return empty;
-  }
-
-  private async reviewAndApplyOnce(
-    frozenBundle: EvidenceBundle,
-    branchTranscriptPaths: string[],
-    attemptSignal?: AbortSignal,
-    reviewAttempt?: BranchReviewAttemptMetadata,
-    beforeAcceptedCommit?: BeforeAcceptedCommitHook,
-  ): Promise<SkillEvolutionResult> {
-    validateEvidenceBundle(frozenBundle);
-    let previousDraft: SkillDraft | undefined;
-    let issues: readonly SkillVerifierIssue[] = [];
-
-    for (let round = 1; round <= MAX_AUTHOR_VERIFIER_ROUNDS; round++) {
-      const author = this.createAuthorBranch(
-        frozenBundle,
-        round,
-        previousDraft,
-        issues,
-        { remainingTurns: this.getReviewAttemptMaxTurns() },
-        attemptSignal,
-        reviewAttempt,
-      );
-      let draft: SkillDraft;
-      try {
-        draft = await author.run();
-        this.throwIfReviewAborted(attemptSignal);
-      } catch (error) {
-        if (author.transcriptPath) branchTranscriptPaths.push(author.transcriptPath);
-        throw this.buildOperationalReviewError(error, branchTranscriptPaths);
-      }
-      if (author.transcriptPath) branchTranscriptPaths.push(author.transcriptPath);
-      assertHealthyBranchTranscript(author.transcriptPath, 'skill-author', this.options.branchLogRoot);
-      const draftIssues = validateDraft(draft, frozenBundle, this.getManualSkillNames());
-      if (draftIssues.length > 0) {
-        // Lifecycle/generic routing names are recoverable inside the same
-        // review attempt: feed the issue back for one Author revise round.
-        // This is semantic naming quality, not an operational schema failure.
-        if (
-          round < MAX_AUTHOR_VERIFIER_ROUNDS
-          && draftIssues.every(issue => issue.code === 'lifecycle-routing-name')
-        ) {
-          previousDraft = draft;
-          issues = draftIssues;
-          continue;
-        }
-        // A malformed Author completion is an operational/schema failure, not
-        // a semantic rejection. Keep the frozen Evidence Bundle in the
-        // durable retry queue so a corrected prompt/model can recover it on a
-        // later wake. Safety and policy violations remain terminal rejects.
-        if (
-          this.options.reviewQueuePath
-          && draftIssues.every(isRetryableAuthorDraftIssue)
-        ) {
-          throw new OperationalReviewError(
-            'invalid_completion_schema',
-            `Skill Author returned an invalid completion schema: ${draftIssues.map(issue => issue.message).join(' ')}`,
-            author.transcriptPath ? [author.transcriptPath] : [],
-          );
-        }
-        const result: SkillVerifierResult = {
-          decision: draftIssues.some(issue => issue.severity === 'danger') ? 'reject' : 'defer',
-          issues: draftIssues,
-          rationale: `Runtime ${draftIssues.some(issue => issue.severity === 'danger') ? 'rejected' : 'deferred'} the author envelope before persistence: ${draftIssues.map(issue => issue.message).join(' ')}`,
-        };
-        return this.applyReviewedTransition(
-          frozenBundle,
-          draft,
-          result,
-          round,
-          branchTranscriptPaths,
-          beforeAcceptedCommit,
-        );
-      }
-
-      const verifier = this.createVerifierBranch(
-        frozenBundle,
-        draft,
-        round,
-        { remainingTurns: this.getReviewAttemptMaxTurns() },
-        attemptSignal,
-        reviewAttempt,
-      );
-      let verification: SkillVerifierResult;
-      try {
-        verification = normalizeVerifierResult(await verifier.run());
-        this.throwIfReviewAborted(attemptSignal);
-      } catch (error) {
-        if (verifier.transcriptPath) branchTranscriptPaths.push(verifier.transcriptPath);
-        throw this.buildOperationalReviewError(error, branchTranscriptPaths);
-      }
-      if (verifier.transcriptPath) branchTranscriptPaths.push(verifier.transcriptPath);
-      assertHealthyBranchTranscript(verifier.transcriptPath, 'skill-verifier', this.options.branchLogRoot);
-      if (verification.decision === 'revise' && round < MAX_AUTHOR_VERIFIER_ROUNDS) {
-        previousDraft = draft;
-        issues = verification.issues;
-        continue;
-      }
-      if (verification.decision === 'revise') {
-        const dangerous = verification.issues.some(issue => issue.severity === 'danger');
-        return this.applyReviewedTransition(
-          frozenBundle,
-          draft,
-          { ...verification, decision: dangerous ? 'reject' : 'defer' },
-          round,
-          branchTranscriptPaths,
-          beforeAcceptedCommit,
-        );
-      }
-      return this.applyReviewedTransition(
-        frozenBundle,
-        draft,
-        verification,
-        round,
-        branchTranscriptPaths,
-        beforeAcceptedCommit,
-      );
-    }
-
-    throw new Error('Skill Evolution exhausted its bounded author-verifier loop.');
-  }
-
-  private async reviewDueDeferredEntry(
-    queue: SkillEvolutionReviewQueueState,
-    entry: SkillEvolutionDeferredReviewEntry,
-    result: SkillEvolutionQueueReviewResult,
-    config: SkillEvolutionEffectiveConfig,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    // Normalize the persisted bundle so a v2/policy-v3 legacy global-catalog
-    // referencedSkills array cannot reach the Author/Verifier branches through
-    // the direct linear review seam. Specialized bundles keep pinned deps.
-    const bundle = this.normalizePersistedBundleForReReview(entry.bundle);
-    try {
-      const { result: reviewed, bundle: reviewedBundle } = await this.reviewAndApplyWithRetries(
-        bundle,
-        [],
-        false,
-        signal,
-      );
-      removeDeferredByBundleId(queue, entry.bundle.bundleId);
-      if (reviewed.transition === 'defer' || reviewed.queued === 'deferred') {
-        const relevantReadSet = reviewed.verifier
-          ? declaredRegistryReadSet(reviewed.verifier, reviewedBundle, reviewed.draft!)
-          : entry.relevantReadSet;
-        upsertDeferredEntry(
-          queue,
-          entry.candidate,
-          reviewedBundle,
-          this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
-          relevantReadSet,
-          reviewed.verifier?.rationale ?? entry.reason,
-          new Date(),
-        );
-        result.deferredRetried++;
-        const queued = findDeferByBundleId(queue, entry.bundle.bundleId);
-        result.queueOutcomes![entry.bundle.bundleId] = {
-          status: 'deferred',
-          reason: queued?.reason ?? reviewed.verifier?.rationale ?? entry.reason,
-        };
-      } else {
-        result.queueOutcomes![entry.bundle.bundleId] = { status: 'succeeded' };
-      }
-      incrementTransitionCount(result.transitionsByKind, reviewed.transition);
-      result.reviewed++;
-      result.deferredReviewed++;
-    } catch (error) {
-      if (signal?.aborted && this.resolveAbortReason(signal.reason) === 'runtime-shutdown') return;
-      const operationalError = this.extractOperationalFailure(error);
-      if (!operationalError) {
-        throw error;
-      }
-      removeDeferredByBundleId(queue, entry.bundle.bundleId);
-      addOrUpdateOperationalFailure(
-        queue,
-        entry.candidate,
-        bundle,
-        operationalError.kind,
-        operationalError.message,
-        operationalError.transcriptPath,
-        config.operationalRetryMs,
-        config.operationalRetryMaxMs,
-        new Date(),
-      );
-      this.appendOperationalFailureTranscripts(
-        queue,
-        entry.bundle.bundleId,
-        operationalError.transcriptPaths,
-      );
-      const queued = findOperationalByBundleId(queue, entry.bundle.bundleId);
-      result.queueOutcomes![entry.bundle.bundleId] = {
-        status: 'operational',
-        nextRetryAt: queued?.nextRetryAt,
-        reason: queued?.failureMessage ?? operationalError.message,
-        failureKind: operationalError.kind,
-      };
-      result.reviewed++;
-      result.deferredReviewed++;
-      result.deferredRetried++;
-    }
-  }
-
-  private async reviewDueOperationalEntry(
-    queue: SkillEvolutionReviewQueueState,
-    entry: SkillEvolutionOperationalReviewFailureEntry,
-    result: SkillEvolutionQueueReviewResult,
-    config: SkillEvolutionEffectiveConfig,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    // Normalize the persisted bundle so a v2/policy-v3 legacy global-catalog
-    // referencedSkills array cannot reach the Author/Verifier branches through
-    // the direct linear review seam. Specialized bundles keep pinned deps.
-    const bundle = this.normalizePersistedBundleForReReview(entry.bundle);
-    try {
-      const { result: reviewed, bundle: reviewedBundle } = await this.reviewAndApplyWithRetries(
-        bundle,
-        [],
-        false,
-        signal,
-      );
-      removeOperationalFailureByBundleId(queue, entry.bundle.bundleId);
-      if (reviewed.queued === 'operational') {
-        addOrUpdateOperationalFailure(
-          queue,
-          entry.candidate,
-          bundle,
-          'branch_failure',
-          'Operational review remains queued after re-review.',
-          undefined,
-          config.operationalRetryMs,
-          config.operationalRetryMaxMs,
-          new Date(),
-        );
-      result.operationalRetried++;
-      const queued = findOperationalByBundleId(queue, entry.bundle.bundleId);
-      result.queueOutcomes![entry.bundle.bundleId] = {
-        status: 'operational',
-        nextRetryAt: queued?.nextRetryAt,
-        reason: queued?.failureMessage,
-        failureKind: 'branch_failure',
-      };
-      } else if (reviewed.transition === 'defer' || reviewed.queued === 'deferred') {
-        const relevantReadSet = reviewed.verifier
-          ? declaredRegistryReadSet(reviewed.verifier, reviewedBundle, reviewed.draft!)
-          : entry.bundle.relatedCurrentSkills.map(skill => ({ handle: skill.handle, revision: skill.revision }));
-        const deferred = upsertDeferredEntry(
-          queue,
-          entry.candidate,
-          reviewedBundle,
-          this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
-          relevantReadSet,
-          reviewed.verifier?.rationale ?? 'Verifier deferred for later review.',
-          new Date(),
-        );
-        result.queueOutcomes![entry.bundle.bundleId] = { status: 'deferred', reason: deferred.reason };
-      } else {
-        result.operationalReviewed++;
-        result.queueOutcomes![entry.bundle.bundleId] = { status: 'succeeded' };
-      }
-      incrementTransitionCount(result.transitionsByKind, reviewed.transition);
-      result.reviewed++;
-    } catch (error) {
-      if (signal?.aborted && this.resolveAbortReason(signal.reason) === 'runtime-shutdown') return;
-      const operationalError = this.extractOperationalFailure(error);
-      if (!operationalError) {
-        throw error;
-      }
-      addOrUpdateOperationalFailure(
-        queue,
-        entry.candidate,
-        bundle,
-        operationalError.kind,
-        operationalError.message,
-        operationalError.transcriptPath,
-        config.operationalRetryMs,
-        config.operationalRetryMaxMs,
-        new Date(),
-      );
-      this.appendOperationalFailureTranscripts(
-        queue,
-        entry.bundle.bundleId,
-        operationalError.transcriptPaths,
-      );
-      const queued = findOperationalByBundleId(queue, entry.bundle.bundleId);
-      result.queueOutcomes![entry.bundle.bundleId] = {
-        status: 'operational',
-        nextRetryAt: queued?.nextRetryAt,
-        reason: queued?.failureMessage ?? operationalError.message,
-        failureKind: operationalError.kind,
-      };
-      result.reviewed++;
-      result.operationalReviewed++;
-      result.operationalRetried++;
-    }
   }
 
   getRegistry(): CurrentSkillRegistryState {

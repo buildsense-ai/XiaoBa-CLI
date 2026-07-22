@@ -92,6 +92,11 @@ export type ReviewQuantumState =
   | 'retry_wait'
   | 'terminal_failed';
 
+export type ReviewOperationalFailureKind =
+  | 'branch_timeout'
+  | 'branch_failure'
+  | 'invalid_completion_schema';
+
 /**
  * Explicit job outcomes. Intermediate progress is always derived from quanta.
  * `superseded` is an extension point for Review Commit Fence successors (#109).
@@ -141,6 +146,7 @@ export interface ReviewQuantumRecord {
   resultHash?: string;
   result?: unknown;
   failureMessage?: string;
+  failureKind?: ReviewOperationalFailureKind;
   transcriptPaths: string[];
   updatedAt: string;
 }
@@ -259,6 +265,22 @@ export interface EvidenceReviewJob {
   parentJobId?: string;
   terminalReason?: string;
   nextDueAt?: string;
+
+  /**
+   * Defer re-eligibility state captured at defer time. A deferred job stays
+   * dormant until reviewer/policy, Registry read-set, or evidence changes.
+   * Absent when the job was never deferred.
+   */
+  deferState?: {
+    reviewerVersion: string;
+    reason: string;
+    deferredAt: string;
+    /** Released queue baseline retained only when importing pre-consolidation state. */
+    registryReadSet?: readonly CapabilityReadSetEntry[];
+    /** SHA-256 of sorted completion/settlement refs from the released queue. */
+    evidenceFingerprint?: string;
+  };
+
   /** Opaque extension bag for pure-graph compatibility. */
   domain?: Record<string, unknown>;
 }
@@ -270,6 +292,13 @@ export interface EvidenceReviewJobStoreState {
     nextWorkClass: ReviewWorkClass;
     classCursors: Partial<Record<ReviewWorkClass, string>>;
     jobCursors: Partial<Record<string, string>>;
+  };
+  /** Durable receipts for one-time imports into this authoritative store. */
+  migrations?: {
+    legacyReviewQueueV1?: {
+      sourceHash: string;
+      importedAt: string;
+    };
   };
   /** Set when a corrupt state file was quarantined on load (fail-closed). */
   stateCorrupt?: boolean;

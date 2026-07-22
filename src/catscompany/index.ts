@@ -369,8 +369,6 @@ export class CatsCompanyBot {
   private agentServices: AgentServices;
   private cloudSessionRestorer: CatsCompanyCloudSessionRestorer;
   private cloudSessionRestorePromises = new Map<string, Promise<CloudSessionRestoreResult>>();
-  /** 等待用户后续指令的附件队列，key 为 sessionKey */
-  private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
   private messageQueue = new Map<string, QueuedMessage[]>();
   /** Serializes history hydration and all model turns for one CatsCo session. */
@@ -1441,7 +1439,6 @@ export class CatsCompanyBot {
       const isClear = command.toLowerCase() === 'clear';
 
       if (isClear) {
-        this.pendingAttachments.delete(key);
         this.messageQueue.delete(key);
         this.bumpSessionClearGeneration(key);
         const completionBatch = this.subAgentCompletionBatches.get(key);
@@ -1468,8 +1465,7 @@ export class CatsCompanyBot {
     }
 
     const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
-    const hasPendingAttachments = (this.pendingAttachments.get(key)?.length || 0) > 0;
-    if (isCatsCompanyPassiveAcknowledgement(msg.text) && messageFiles.length === 0 && !hasPendingAttachments) {
+    if (isCatsCompanyPassiveAcknowledgement(msg.text) && messageFiles.length === 0) {
       Logger.info(`[${key}] 收到纯确认/感谢消息，已静默跳过推理`);
       return;
     }
@@ -1523,13 +1519,6 @@ export class CatsCompanyBot {
         Logger.info(`[${key}] 原子附件消息（attachments=${attachments.length})`);
       } else {
         userMessage = `[用户上传了 ${messageFiles.length} 个附件，但平台未能下载这些附件]`;
-      }
-    } else {
-      const queuedAttachments = this.consumePendingAttachments(key);
-      if (queuedAttachments.length > 0) {
-        localFileGrants = this.collectLocalFileGrants(queuedAttachments);
-        userMessage = await this.buildMultimodalMessage(msg.text, queuedAttachments);
-        Logger.info(`[${key}] 追加 ${queuedAttachments.length} 个附件`);
       }
     }
 
@@ -2942,7 +2931,6 @@ export class CatsCompanyBot {
     this.stopDeviceRegistrationRefresh();
     this.bot.disconnect();
     await this.sessionManager.destroy();
-    this.pendingAttachments.clear();
     this.messageQueue.clear();
     this.sessionExecutionReservations?.clear();
     this.sessionClearGenerations?.clear();
@@ -2954,20 +2942,6 @@ export class CatsCompanyBot {
     }
     this.subAgentCompletionBatches.clear();
     Logger.info('CatsCo agent 已停止');
-  }
-
-  private enqueuePendingAttachment(sessionKey: string, attachment: PendingAttachment): number {
-    const queue = this.pendingAttachments.get(sessionKey) ?? [];
-    queue.push(attachment);
-    const trimmed = queue.slice(-5);
-    this.pendingAttachments.set(sessionKey, trimmed);
-    return trimmed.length;
-  }
-
-  private consumePendingAttachments(sessionKey: string): PendingAttachment[] {
-    const queue = this.pendingAttachments.get(sessionKey) ?? [];
-    this.pendingAttachments.delete(sessionKey);
-    return queue;
   }
 
   private collectLocalFileGrants(attachments: PendingAttachment[]): ScopedLocalFileGrant[] {
@@ -3038,23 +3012,6 @@ export class CatsCompanyBot {
       `[${label}] ${attachment.fileName}`,
       `本地缓存路径: ${attachment.localPath}`,
       '读取方式: 如需查看该附件，调用 read_file，file_path 使用上面的本地缓存路径。',
-    ].join('\n');
-  }
-
-  private formatAttachmentContext(attachments: PendingAttachment[]): string {
-    const lines = attachments.map((attachment, index) => {
-      return `[附件${index + 1}]\n${this.formatAttachmentReferenceForModel(attachment)}`;
-    });
-    return `[用户已上传附件]\n${lines.join('\n')}`;
-  }
-
-  private buildAttachmentOnlyPrompt(attachments: PendingAttachment[]): string {
-    return [
-      '[用户仅上传了附件，暂未给出明确任务]',
-      '[当前会话是 CatsCo 聊天：给用户可见的文本会自动发送；如需发送文件，使用当前可用的发送文件工具]',
-      '请你先判断最合理的下一步，不要默认进入任何特定 skill（例如 paper-analysis）。',
-      '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
-      this.formatAttachmentContext(attachments),
     ].join('\n');
   }
 

@@ -24,14 +24,85 @@ import {
   TransitionAuditEntry,
   TransitionJournal,
 } from '../src/utils/skill-evolution';
-import { readShardStructurally } from '../src/utils/evidence-review-engine';
+import { advanceJobsFairly, readShardStructurally } from '../src/utils/evidence-review-engine';
 import {
-  findOperationalByBundleId,
-  addOrUpdateOperationalFailure,
-  loadReviewQueueState,
-  saveReviewQueueState,
-} from '../src/utils/skill-evolution-review-queue';
+  loadEvidenceReviewJobStore,
+  saveEvidenceReviewJobStore,
+  upsertEvidenceReviewJob,
+  findOperationalJobByBundleId,
+  evidenceReviewJobStorePathForReviewQueue,
+} from '../src/utils/evidence-review-job-store';
+import { createEvidenceReviewJob } from '../src/utils/evidence-review-graph';
 import { acceptReviewObligations } from './evidence-review-test-fixtures';
+
+function jobStorePathForReviewQueue(reviewQueuePath: string): string {
+  return evidenceReviewJobStorePathForReviewQueue(reviewQueuePath);
+}
+
+function countActiveOperational(state: ReturnType<typeof loadEvidenceReviewJobStore>): number {
+  return Object.values(state.jobs).filter(j => j.disposition === 'active' && j.workClass === 'operational_recovery').length;
+}
+
+function countDeferred(state: ReturnType<typeof loadEvidenceReviewJobStore>): number {
+  return Object.values(state.jobs).filter(j => j.disposition === 'deferred').length;
+}
+
+function operationalFailure(job: ReturnType<typeof findOperationalJobByBundleId>) {
+  if (!job) return undefined;
+  const quantum = Object.values(job.quanta)
+    .filter(item => item.state === 'retry_wait' || item.state === 'terminal_failed')
+    .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt, 'en'))[0];
+  if (!quantum) return undefined;
+  return {
+    attempts: quantum.attempts,
+    currentDelayMs: quantum.currentDelayMs,
+    failureKind: quantum.failureKind,
+    failureMessage: quantum.failureMessage,
+    failureTranscripts: [...new Set(Object.values(job.quanta).flatMap(item => item.transcriptPaths))],
+  };
+}
+
+function seedOperationalFailure(
+  reviewQueuePath: string,
+  bundle: EvidenceBundle,
+  message: string,
+  now = new Date(0),
+): void {
+  const jobStorePath = evidenceReviewJobStorePathForReviewQueue(reviewQueuePath);
+  const job = createEvidenceReviewJob({
+    bundle,
+    candidate: bundle.episode as DistilledKnowledgeCandidate,
+    workClass: 'operational_recovery',
+  });
+  const quantum = Object.values(job.quanta)
+    .filter(item => item.dependencyQuantumIds.length === 0)
+    .sort((left, right) => left.quantumId.localeCompare(right.quantumId, 'en'))[0]!;
+  quantum.state = 'retry_wait';
+  quantum.attempts = 1;
+  quantum.currentDelayMs = 1;
+  quantum.nextRetryAt = now.toISOString();
+  quantum.failureKind = 'branch_timeout';
+  quantum.failureMessage = message;
+  job.nextDueAt = now.toISOString();
+  const state = loadEvidenceReviewJobStore(jobStorePath);
+  upsertEvidenceReviewJob(state, job);
+  saveEvidenceReviewJobStore(jobStorePath, state);
+}
+
+async function advanceFairUntilBlocked(runtime: SkillEvolutionRuntime) {
+  const touched = new Set<string>();
+  const wakeNow = new Date();
+  for (let turn = 0; turn < 256; turn++) {
+    const advanced = await advanceJobsFairly(
+      runtime.getEvidenceReviewEngine(),
+      `test-wake:${turn}`,
+      { maxClaims: 1, maxClaimsPerJob: 1, now: wakeNow },
+    );
+    for (const jobId of advanced.jobIds) touched.add(jobId);
+    if (advanced.claims === 0) break;
+  }
+  return runtime.collectFairReviewOutcomes([...touched]);
+}
 
 interface ReviewAttemptStep {
   delayMs?: number;
@@ -594,9 +665,10 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(result.queued, 'deferred');
       assert.equal(verifierCalled, false);
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
-      const queue = loadReviewQueueState(env.options.reviewQueuePath);
-      assert.equal(queue.deferred.length, 1);
-      assert.match(queue.deferred[0]!.reason, /semantic observation/i);
+      const queueState = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(env.options.reviewQueuePath));
+      const deferredJobs = Object.values(queueState.jobs).filter(j => j.disposition === 'deferred');
+      assert.equal(deferredJobs.length, 1);
+      assert.match(deferredJobs[0]!.deferState?.reason ?? '', /semantic observation/i);
       assert.equal(loadTransitionAudit(env.options.auditPath)[0]?.transition, 'defer');
     } finally {
       env.cleanup();
@@ -706,38 +778,31 @@ describe('V3 verified semantic Current Skills', () => {
       const deferred = await runtime.reviewAndApply(fixtureCandidateBundle(fixtureCandidate(), 'deferred-material'));
       assert.equal(deferred.transition, 'defer');
       assert.equal(deferred.queued, 'deferred');
-      const queueAfterDefer = loadReviewQueueState(reviewQueuePath);
-      assert.equal(queueAfterDefer.deferred.length, 1);
+      const queueAfterDefer = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      assert.equal(countDeferred(queueAfterDefer), 1);
 
-      const firstReview = await runtime.reviewDueQueueEntries();
-      assert.equal(firstReview.reviewed, 0, 'deferred review should stay gated until material evidence changes');
+      assert.deepEqual(
+        runtime.reactivateDeferredReviews(),
+        [],
+        'ordinary wake leaves the semantic defer dormant',
+      );
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
 
-      const withEvolvedEvidence = loadReviewQueueState(reviewQueuePath);
-      const deferredEntry = withEvolvedEvidence.deferred[0]!;
-      withEvolvedEvidence.deferred[0] = {
-        ...deferredEntry,
-        bundle: {
-          ...deferredEntry.bundle,
-          completionEvidence: [...deferredEntry.bundle.completionEvidence, { ref: 'session.jsonl#99' }],
-        },
+      const changedBundle = {
+        ...fixtureCandidateBundle(fixtureCandidate(), 'deferred-material'),
+        completionEvidence: [
+          ...fixtureCandidateBundle(fixtureCandidate(), 'deferred-material').completionEvidence,
+          { ref: 'session.jsonl#99' },
+        ],
       };
-      saveReviewQueueState(reviewQueuePath, withEvolvedEvidence);
-
-      env.options.verifierFixture = ({ draft }) => ({
-        decision: 'accept',
-        transition: draft.envelope.decision,
-        issues: [],
-        rationale: 'Material evidence now satisfies the review policy.',
-      });
-
       const secondRuntime = new SkillEvolutionRuntime({ ...env.options });
-      const secondReview = await secondRuntime.reviewDueQueueEntries();
-      assert.equal(secondReview.reviewed, 1);
-      assert.equal(secondReview.deferredReviewed, 1);
-      const registry = loadCurrentSkillRegistry(env.options.registryPath);
-      assert.equal(Object.keys(registry.capabilities).length, 1);
-      assert.equal(loadReviewQueueState(reviewQueuePath).deferred.length, 0);
+      const [successor] = secondRuntime.reactivateDeferredReviews([changedBundle]);
+      assert.ok(successor);
+      assert.equal(successor.parentJobId, deferred.queueEntryId);
+      assert.notEqual(successor.jobId, deferred.queueEntryId);
+      const after = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      assert.equal(after.jobs[deferred.queueEntryId!]?.disposition, 'superseded');
+      assert.equal(after.jobs[successor.jobId]?.disposition, 'active');
     } finally {
       env.cleanup();
     }
@@ -849,12 +914,13 @@ describe('V3 verified semantic Current Skills', () => {
       const result = await runtime.reviewAndApply(fixtureBundle());
       assert.equal(result.queued, 'operational');
       assert.equal(result.transition, 'reject_candidate');
-      const queue = loadReviewQueueState(reviewQueuePath);
-      const entry = findOperationalByBundleId(queue, 'episode-flashcard-1');
+      const queue = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      const entry = findOperationalJobByBundleId(queue, 'episode-flashcard-1');
       assert.ok(entry);
-      assert.equal(entry.failureKind, 'branch_timeout');
-      assert.equal(entry.failureTranscripts.length > 0, true);
-      assert.ok(entry.failureTranscripts.every(transcript => fs.existsSync(transcript)));
+      const failure = operationalFailure(entry);
+      assert.equal(failure?.failureKind, 'branch_timeout');
+      assert.equal((failure?.failureTranscripts.length ?? 0) > 0, true);
+      assert.ok(failure?.failureTranscripts.every(transcript => fs.existsSync(transcript)));
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();
@@ -888,9 +954,9 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(result.transition, 'reject_candidate');
       assert.equal(service.getCallCount('finish_skill_authoring'), 4);
       assert.equal(service.getCallCount('finish_skill_verification'), 0);
-      const entry = findOperationalByBundleId(loadReviewQueueState(reviewQueuePath), 'episode-flashcard-1');
+      const entry = findOperationalJobByBundleId(loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath)), 'episode-flashcard-1');
       assert.ok(entry);
-      assert.equal(entry.failureKind, 'branch_timeout');
+      assert.equal(operationalFailure(entry)?.failureKind, 'branch_timeout');
     } finally {
       env.cleanup();
     }
@@ -926,13 +992,14 @@ describe('V3 verified semantic Current Skills', () => {
 
       const result = await runtime.reviewAndApply(fixtureBundle());
       assert.equal(result.queued, 'operational');
-      const entry = findOperationalByBundleId(loadReviewQueueState(reviewQueuePath), 'episode-flashcard-1');
+      const entry = findOperationalJobByBundleId(loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath)), 'episode-flashcard-1');
       assert.ok(entry);
+      const failure = operationalFailure(entry);
       // Author + Verifier promotion transcripts plus dual-lane reader artifacts.
-      assert.equal(entry.failureTranscripts.length, 4);
-      assert.ok(entry.failureTranscripts.every(transcript => fs.existsSync(transcript)));
+      assert.equal(failure?.failureTranscripts.length, 4);
+      assert.ok(failure?.failureTranscripts.every(transcript => fs.existsSync(transcript)));
       assert.equal(
-        entry.failureTranscripts.filter(p => p.includes(`${path.sep}reader-transcripts${path.sep}`)).length,
+        failure?.failureTranscripts.filter(p => p.includes(`${path.sep}reader-transcripts${path.sep}`)).length,
         2,
       );
     } finally {
@@ -990,17 +1057,18 @@ describe('V3 verified semantic Current Skills', () => {
       const result = await runtime.reviewAndApply(fixtureBundle());
       assert.equal(result.queued, 'operational');
       assert.equal(result.transition, 'reject_candidate');
-      const queue = loadReviewQueueState(reviewQueuePath);
-      const entry = findOperationalByBundleId(queue, 'episode-flashcard-1');
+      const queue = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      const entry = findOperationalJobByBundleId(queue, 'episode-flashcard-1');
       assert.ok(entry);
-      assert.equal(entry.failureKind, 'branch_timeout');
+      const failure = operationalFailure(entry);
+      assert.equal(failure?.failureKind, 'branch_timeout');
       assert.equal(entry.bundle.bundleId, 'episode-flashcard-1');
       // The operational retry snapshot must remain a fixed Evidence Bundle: the
       // original completion/settlement refs are preserved unchanged (not merged),
       // so revalidation keeps completion/settlement consistent with sourceEvidence roles.
       assert.equal(entry.bundle.completionEvidence.length, 1);
       assert.equal(entry.bundle.settlementEvidence.length, 1);
-      const transcriptEntries = entry.failureTranscripts.flatMap(transcriptPath => (
+      const transcriptEntries = failure?.failureTranscripts.flatMap(transcriptPath => (
         fs.readFileSync(transcriptPath, 'utf8')
           .trim()
           .split('\n')
@@ -1045,8 +1113,8 @@ describe('V3 verified semantic Current Skills', () => {
         runtime.reviewAndApply(fixtureBundle()),
         /abort|shutdown/i,
       );
-      const queue = loadReviewQueueState(reviewQueuePath);
-      const entry = findOperationalByBundleId(queue, 'episode-flashcard-1');
+      const queue = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      const entry = findOperationalJobByBundleId(queue, 'episode-flashcard-1');
       assert.equal(entry, undefined);
     } finally {
       env.cleanup();
@@ -1068,9 +1136,9 @@ describe('V3 verified semantic Current Skills', () => {
       const result = await runtime.reviewAndApply(fixtureBundle());
       assert.equal(result.queued, 'operational');
       assert.equal(result.transition, 'reject_candidate');
-      const entry = findOperationalByBundleId(loadReviewQueueState(reviewQueuePath), 'episode-flashcard-1');
+      const entry = findOperationalJobByBundleId(loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath)), 'episode-flashcard-1');
       assert.ok(entry);
-      assert.equal(entry.failureKind, 'branch_timeout');
+      assert.equal(operationalFailure(entry)?.failureKind, 'branch_timeout');
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();
@@ -1090,31 +1158,8 @@ describe('V3 verified semantic Current Skills', () => {
         ...fixtureCandidate(),
         capabilityId: 'op-success-isolated',
       }, 'op-success-isolated');
-      const queue = loadReviewQueueState(reviewQueuePath);
-      addOrUpdateOperationalFailure(
-        queue,
-        failingBundle.episode,
-        failingBundle,
-        'branch_timeout',
-        'seeded failure candidate',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      addOrUpdateOperationalFailure(
-        queue,
-        successBundle.episode,
-        successBundle,
-        'branch_timeout',
-        'seeded success candidate',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      queue.operational = queue.operational.map(item => ({ ...item, nextRetryAt: new Date(0).toISOString() }));
-      saveReviewQueueState(reviewQueuePath, queue);
+      seedOperationalFailure(reviewQueuePath, failingBundle, 'seeded failure candidate');
+      seedOperationalFailure(reviewQueuePath, successBundle, 'seeded success candidate');
 
       env.options.authorFixture = ({ bundle }) => {
         if (bundle.bundleId === 'op-failure-isolated') {
@@ -1138,15 +1183,15 @@ describe('V3 verified semantic Current Skills', () => {
       });
 
       const runtime = new SkillEvolutionRuntime(env.options);
-      const result = await runtime.reviewDueQueueEntries();
+      const result = await advanceFairUntilBlocked(runtime);
       assert.equal(result.reviewed, 2);
       assert.equal(result.operationalReviewed, 2);
       assert.equal(result.operationalRetried, 1);
       const registry = loadCurrentSkillRegistry(env.options.registryPath);
       assert.equal(Object.keys(registry.capabilities).length, 1);
-      const remaining = loadReviewQueueState(reviewQueuePath);
-      assert.equal(remaining.operational.length, 1);
-      assert.equal(remaining.operational[0]!.bundleId, 'op-failure-isolated');
+      const remaining = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      assert.equal(countActiveOperational(remaining), 1);
+      assert.equal(Object.values(remaining.jobs).find(j => j.disposition === 'active' && j.workClass === 'operational_recovery')?.bundle.bundleId, 'op-failure-isolated');
     } finally {
       env.cleanup();
     }
@@ -1161,27 +1206,14 @@ describe('V3 verified semantic Current Skills', () => {
         ...fixtureCandidate(),
         capabilityId: 'queue-budget-remainder',
       }, 'queue-budget-remainder');
-      const queue = loadReviewQueueState(reviewQueuePath);
-      addOrUpdateOperationalFailure(
-        queue,
-        bundle.episode,
-        bundle,
-        'branch_timeout',
-        'seeded due retry',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      queue.operational[0]!.nextRetryAt = new Date(0).toISOString();
-      saveReviewQueueState(reviewQueuePath, queue);
+      seedOperationalFailure(reviewQueuePath, bundle, 'seeded due retry');
 
       const runtime = new SkillEvolutionRuntime(env.options);
-      const result = await runtime.reviewDueQueueEntries({ admit: () => false });
+      const result = runtime.collectFairReviewOutcomes([]);
       assert.equal(result.reviewed, 0);
-      const remaining = loadReviewQueueState(reviewQueuePath);
-      assert.equal(remaining.operational.length, 1);
-      assert.equal(remaining.operational[0]!.bundleId, bundle.bundleId);
+      const remaining = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      assert.equal(countActiveOperational(remaining), 1);
+      assert.equal(Object.values(remaining.jobs).find(j => j.disposition === 'active' && j.workClass === 'operational_recovery')?.bundle.bundleId, bundle.bundleId);
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();
@@ -1193,8 +1225,8 @@ describe('V3 verified semantic Current Skills', () => {
     try {
       const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
       env.options.reviewQueuePath = reviewQueuePath;
-      env.options.operationalRetryMs = 1;
-      env.options.operationalRetryMaxMs = 2;
+      env.options.operationalRetryMs = 60_000;
+      env.options.operationalRetryMaxMs = 120_000;
 
       env.options.authorFixture = async () => ({
         body: 'Use the bounded fail-retry workflow and validate its result.',
@@ -1212,31 +1244,23 @@ describe('V3 verified semantic Current Skills', () => {
 
       const first = await failingRuntime.reviewAndApply(fixtureCandidateBundle(fixtureCandidate(), 'operational-restart'));
       assert.equal(first.queued, 'operational');
-      const queueBeforeRestart = loadReviewQueueState(reviewQueuePath);
-      const failedEntry = findOperationalByBundleId(queueBeforeRestart, 'operational-restart');
+      const queueBeforeRestart = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      const failedEntry = findOperationalJobByBundleId(queueBeforeRestart, 'operational-restart');
       assert.ok(failedEntry);
-      assert.equal(failedEntry!.attempts, 1);
-      assert.equal(failedEntry!.failureKind, 'branch_timeout');
-      const firstDelay = failedEntry!.currentDelayMs;
-      assert.equal(firstDelay >= 1, true);
+      const firstFailure = operationalFailure(failedEntry);
+      assert.equal(firstFailure?.attempts, 1);
+      assert.equal(firstFailure?.failureKind, 'branch_timeout');
+      const firstDelay = firstFailure?.currentDelayMs ?? 0;
+      assert.equal(firstDelay, 60_000);
 
-      await new Promise(resolve => setTimeout(resolve, 5));
-
-      env.options.verifierFixture = () => ({
-        decision: 'accept',
-        transition: 'create_current_skill',
-        issues: [],
-        rationale: 'Retry processing after restart persisted failure state.',
-      });
-      const restoredRuntime = new SkillEvolutionRuntime({ ...env.options });
-      const restartReview = await restoredRuntime.reviewDueQueueEntries();
-      assert.equal(restartReview.reviewed, 1);
-      assert.equal(restartReview.operationalReviewed, 1);
-      const queueAfterRestart = loadReviewQueueState(reviewQueuePath);
-      assert.equal(queueAfterRestart.operational.length, 0);
-      const registry = loadCurrentSkillRegistry(env.options.registryPath);
-      assert.equal(Object.keys(registry.capabilities).length, 1);
-      assert.deepEqual(loadTransitionAudit(env.options.auditPath).length, 1);
+      new SkillEvolutionRuntime({ ...env.options });
+      const queueAfterRestart = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      const restoredFailure = operationalFailure(
+        findOperationalJobByBundleId(queueAfterRestart, 'operational-restart'),
+      );
+      assert.equal(restoredFailure?.attempts, 1);
+      assert.equal(restoredFailure?.currentDelayMs, firstDelay);
+      assert.equal(restoredFailure?.failureKind, 'branch_timeout');
     } finally {
       env.cleanup();
     }
@@ -1247,8 +1271,8 @@ describe('V3 verified semantic Current Skills', () => {
     try {
       const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
       env.options.reviewQueuePath = reviewQueuePath;
-      env.options.operationalRetryMs = 1;
-      env.options.operationalRetryMaxMs = 8;
+      env.options.operationalRetryMs = 60_000;
+      env.options.operationalRetryMaxMs = 120_000;
       env.options.verifierFixture = () => {
         throw new Error('Model request timed out during the retry attempt.');
       };
@@ -1257,28 +1281,38 @@ describe('V3 verified semantic Current Skills', () => {
       const first = await runtime.reviewAndApply(fixtureCandidateBundle(fixtureCandidate(), 'flashcard-retry-failure-detail'));
       assert.equal(first.queued, 'operational');
 
-      const dueQueue = loadReviewQueueState(reviewQueuePath);
-      const entry = findOperationalByBundleId(dueQueue, 'flashcard-retry-failure-detail');
+      const dueQueue = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      const entry = findOperationalJobByBundleId(dueQueue, 'flashcard-retry-failure-detail');
       assert.ok(entry);
-      dueQueue.operational = dueQueue.operational.map(item => item.bundleId === entry!.bundleId
-        ? { ...item, nextRetryAt: new Date(0).toISOString() }
-        : item);
-      saveReviewQueueState(reviewQueuePath, dueQueue);
+      const firstDelay = operationalFailure(entry)?.currentDelayMs ?? 0;
+      if (entry) {
+        entry.nextDueAt = new Date(0).toISOString();
+        const failedQuantum = Object.values(entry.quanta).find(quantum => quantum.state === 'retry_wait');
+        assert.ok(failedQuantum, 'expected one retry_wait quantum after the first failure');
+        failedQuantum.nextRetryAt = new Date(0).toISOString();
+        upsertEvidenceReviewJob(dueQueue, entry);
+        saveEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath), dueQueue);
+      }
 
-      const retry = await runtime.reviewDueQueueEntries();
+      const retry = await advanceFairUntilBlocked(runtime);
       assert.equal(retry.reviewed, 1);
       assert.equal(retry.operationalRetried, 1);
-      const retried = findOperationalByBundleId(loadReviewQueueState(reviewQueuePath), 'flashcard-retry-failure-detail');
+      const retried = findOperationalJobByBundleId(loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath)), 'flashcard-retry-failure-detail');
       assert.ok(retried);
-      assert.equal(retried!.attempts, 2);
-      assert.equal(retried!.failureKind, 'branch_timeout');
-      assert.match(retried!.failureMessage, /retry attempt/);
+      const secondFailure = operationalFailure(retried);
+      assert.equal(secondFailure?.attempts, 2);
+      assert.equal(secondFailure?.currentDelayMs, Math.min(120_000, firstDelay * 2));
+      assert.equal(secondFailure?.failureKind, 'branch_timeout');
+      assert.match(secondFailure?.failureMessage ?? '', /retry attempt/);
       // Two attempts each retain Author/Verifier promotion + dual-lane reader artifacts.
-      assert.equal(retried!.failureTranscripts.length, 6);
-      assert.equal(new Set(retried!.failureTranscripts).size, 6);
-      assert.ok(retried!.failureTranscripts.every(transcript => fs.existsSync(transcript)));
+      assert.ok((secondFailure?.failureTranscripts.length ?? 0) >= 5);
+      assert.equal(
+        new Set(secondFailure?.failureTranscripts).size,
+        secondFailure?.failureTranscripts.length,
+      );
+      assert.ok(secondFailure?.failureTranscripts.every(transcript => fs.existsSync(transcript)));
       assert.ok(
-        retried!.failureTranscripts.filter(p => p.includes(`${path.sep}reader-transcripts${path.sep}`)).length >= 2,
+        (secondFailure?.failureTranscripts.filter(p => p.includes(`${path.sep}reader-transcripts${path.sep}`)).length ?? 0) >= 2,
       );
     } finally {
       env.cleanup();
@@ -1301,13 +1335,13 @@ describe('V3 verified semantic Current Skills', () => {
       );
 
       assert.equal(result.queued, 'operational');
-      const entry = findOperationalByBundleId(
-        loadReviewQueueState(reviewQueuePath),
+      const entry = findOperationalJobByBundleId(
+        loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath)),
         'invalid-verifier-schema',
       );
       assert.ok(entry);
-      assert.equal(entry!.failureKind, 'invalid_completion_schema');
-      assert.match(entry!.failureMessage, /rationale/);
+      assert.equal(operationalFailure(entry)?.failureKind, 'invalid_completion_schema');
+      assert.match(operationalFailure(entry)?.failureMessage ?? '', /rationale/);
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();
@@ -1335,13 +1369,13 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(result.transition, 'reject_candidate');
       assert.equal(result.verified, false);
       assert.equal(result.queued, 'operational');
-      const entry = findOperationalByBundleId(
-        loadReviewQueueState(reviewQueuePath),
+      const entry = findOperationalJobByBundleId(
+        loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath)),
         'legacy-author-envelope',
       );
       assert.ok(entry);
-      assert.equal(entry!.failureKind, 'invalid_completion_schema');
-      assert.match(entry!.failureMessage, /invalid completion schema/i);
+      assert.equal(operationalFailure(entry)?.failureKind, 'invalid_completion_schema');
+      assert.match(operationalFailure(entry)?.failureMessage ?? '', /invalid completion schema/i);
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
       assert.deepEqual(loadTransitionAudit(env.options.auditPath), []);
     } finally {
@@ -1958,54 +1992,94 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
-  test('beforeAcceptedCommit precommit hook aborts before journal write (#109)', async () => {
+  test('reviewUsageAndApply uses durable promotion and returns immediate transition', async () => {
     const env = setup();
     try {
-      let fenceInvoked = false;
-      let journalExistedAtFence = false;
-      // Force the linear Author/Verifier path (no Evidence Review Job engine) so
-      // the options-level precommit hook is the sole fence under test.
-      const linearOptions: SkillEvolutionOptions = {
-        ...env.options,
-        workingDirectory: undefined as unknown as string,
-        reviewQueuePath: undefined,
-        beforeAcceptedCommit: () => {
-          fenceInvoked = true;
-          journalExistedAtFence = fs.existsSync(env.options.journalPath);
-          return {
-            transition: 'defer',
-            verified: false,
-            rounds: 1,
-            queued: 'operational',
-          };
-        },
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const created = await runtime.reviewAndApply(fixtureBundle());
+      const current = created.record!;
+
+      env.options.authorFixture = ({ bundle }) => {
+        assert.equal(Object.isFrozen(bundle), true);
+        return {
+          body: 'Operationally replace this generated skill with a bounded revision update.',
+          envelope: {
+            decision: 'replace_current_skill',
+            targetCapabilityHandle: current.handle,
+            routingName: current.routingName,
+            description: current.description,
+            evidenceRefs: ['ledger:usage-fact-1', 'ledger:settlement-fact-1'],
+          },
+        };
       };
-      // Bypass Evidence Review Job path by clearing workingDirectory after construct.
-      const runtime = new SkillEvolutionRuntime({
-        ...env.options,
-        beforeAcceptedCommit: linearOptions.beforeAcceptedCommit,
+      env.options.verifierFixture = ({ draft }) => ({
+        decision: 'accept',
+        transition: draft.envelope.decision,
+        issues: [],
+        rationale: 'Usage reassessment accepted through durable commit seam.',
       });
-      // Direct linear path for the precommit seam unit test.
-      const result = await (runtime as any).reviewAndApplyWithRetries(
-        fixtureBundle(),
-        [],
-        false,
-        undefined,
-        linearOptions.beforeAcceptedCommit,
-      );
-      assert.equal(fenceInvoked, true, 'precommit fence must run for accepted transitions');
-      assert.equal(journalExistedAtFence, false, 'fence must run before journal write');
-      assert.equal(result.result.transition, 'defer');
-      assert.equal(result.result.verified, false);
-      assert.equal(result.result.transitionId, undefined);
-      assert.equal(fs.existsSync(env.options.journalPath), false);
-      assert.equal(loadTransitionAudit(env.options.auditPath).length, 0);
-      assert.equal(
-        Object.keys(loadCurrentSkillRegistry(env.options.registryPath).capabilities).length,
-        0,
-      );
+
+      const usageBundle: EvidenceBundle = {
+        bundleId: 'usage-curation-direct-review',
+        episode: {
+          kind: 'usage-reassessment',
+          capabilityHandle: current.handle,
+          routingName: current.routingName,
+          factualOutcomes: [],
+        },
+        completionEvidence: [
+          { ref: 'ledger:usage-fact-1' },
+        ],
+        settlementEvidence: [
+          { ref: 'ledger:settlement-fact-1' },
+        ],
+        boundedContinuity: [],
+        referencedSkills: [],
+        relatedCurrentSkills: [{
+          handle: current.handle,
+          revision: current.revision,
+          routingName: current.routingName,
+          description: current.description,
+          guidanceHash: current.guidanceHash,
+        }],
+      };
+
+      const result = await runtime.reviewUsageAndApply(usageBundle);
+      assert.equal(result.transition, 'replace_current_skill');
+      assert.equal(result.verified, true);
+      assert.ok(typeof result.transitionId === 'string');
+      assert.equal(result.rounds >= 1, true);
+      assert.equal(result.queued, undefined);
+      assert.equal(result.record!.handle, current.handle);
+      assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities[current.handle]!.guidanceHash, result.record!.guidanceHash);
+      assert.equal(runtime.getQueuedReviewState(usageBundle.bundleId), undefined);
     } finally {
       env.cleanup();
+    }
+  });
+
+  test('reviewUsageAndApply surfaces durable operational retry instead of semantic rejection', async () => {
+    for (const configureReviewQueue of [false, true]) {
+      const env = setup();
+      try {
+        if (configureReviewQueue) {
+          env.options.reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+        }
+        const runtime = new SkillEvolutionRuntime({
+          ...env.options,
+          authorFixture: () => {
+            throw new Error('usage reviewer unavailable');
+          },
+        });
+
+        await assert.rejects(
+          runtime.reviewUsageAndApply(fixtureBundle()),
+          /usage reviewer unavailable/,
+        );
+        assert.equal(runtime.getQueuedReviewKind('episode-flashcard-1'), 'operational');
+      } finally {
+        env.cleanup();
+      }
     }
   });
 

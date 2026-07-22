@@ -19,16 +19,9 @@ import { DistilledKnowledgeCandidate } from './capability-distiller';
 import {
   EvidenceBundle,
   ReferencedSkillSnapshot,
-  SkillAuthorFixture,
-  SkillDraft,
-  SkillEvolutionOptions,
-  SkillEvolutionResult,
   SkillEvolutionRuntime,
   SkillEvidenceRef,
-  SkillVerifierFixture,
 } from './skill-evolution';
-import { SkillParser } from '../skills/skill-parser';
-import { PathResolver } from './path-resolver';
 
 /**
  * A completed delivery attempt is the unit of learning, not a whole chat
@@ -1335,112 +1328,8 @@ export function readImmediatePredecessorContinuity(options: ContinuityReadOption
     }));
 }
 
-/** Read only the current file and its immediate predecessor when eligible. */
-export function readImmediatePredecessorContinuityFromDisk(
-  orderedFilePaths: readonly string[],
-  currentFilePath: string,
-  runtimeSessionId: string,
-  maxTurns = MAX_CONTINUITY_TURNS,
-): DistillationTurn[] {
-  const currentIndex = orderedFilePaths.indexOf(currentFilePath);
-  if (currentIndex <= 0) return [];
-  const currentEntries = readSessionEntries(currentFilePath);
-  const currentTurns = currentEntries.filter(isSessionTurnEntry);
-  if (currentTurns.length === 0 || !hasContinuationSignal(currentTurns[0].user.text)) return [];
-  const predecessorPath = orderedFilePaths[currentIndex - 1];
-  const predecessorEntries = readSessionEntries(predecessorPath);
-  return readImmediatePredecessorContinuity({
-    files: [
-      { filePath: predecessorPath, entries: predecessorEntries },
-      { filePath: currentFilePath, entries: currentEntries },
-    ],
-    currentFilePath,
-    runtimeSessionId,
-    maxTurns,
-  });
-}
-
-function readSessionEntries(filePath: string): ParsedSessionLogEntry[] {
-  if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, 'utf8')
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => JSON.parse(line) as ParsedSessionLogEntry);
-}
-
 function hasContinuationSignal(text: string): boolean {
   return CONTINUATION.test(String(text || '').replace(/\s+/g, ' ').trim());
-}
-
-export interface FlashcardCompositionOptions {
-  episode: LearningEpisode;
-  sourceFilePath: string;
-  outputDir: string;
-  registryPath: string;
-  auditPath: string;
-  journalPath: string;
-  workingDirectory: string;
-  wordCardMakerVersion?: string;
-  wordCardMakerPath?: string;
-  logEnabled?: boolean;
-  authorFixture?: SkillAuthorFixture;
-  verifierFixture?: SkillVerifierFixture;
-  /** Tests only — production model-backed Readers require AIService. */
-  readerFixture?: SkillEvolutionOptions['readerFixture'];
-}
-
-export interface FlashcardCompositionResult {
-  evolution: SkillEvolutionResult;
-  referencedSkill: ReferencedSkillSnapshot;
-  manualSkillHashBefore?: string;
-  manualSkillHashAfter?: string;
-}
-
-/**
- * Controlled V3 regression adapter for the flashcard workflow.
- *
- * The generated skill adds the opencli selection/validation/delivery pattern
- * and records word-card-maker as a live reference. It writes only the
- * generated output/registry/audit paths supplied by the caller.
- */
-export async function promoteFlashcardComposition(
-  options: FlashcardCompositionOptions,
-): Promise<FlashcardCompositionResult> {
-  if (options.episode.status !== 'eligible') {
-    throw new Error('A flashcard Composition Capability requires a settled, eligible retry episode.');
-  }
-  if (options.episode.contradictionSignals.length > 0 || !options.episode.retryOfEpisodeId) {
-    throw new Error('A flashcard Composition Capability requires an uncontested retry episode.');
-  }
-  if (options.episode.sourceFilePath !== options.sourceFilePath) {
-    throw new Error('Flashcard composition source file must match the episode provenance.');
-  }
-  const deliveryEvidence = options.episode.completionEvidence.filter(evidence => evidence.kind === 'artifact-delivery');
-  const validationEvidence = options.episode.completionEvidence.filter(evidence => evidence.kind === 'artifact-validation');
-  if (deliveryEvidence.length === 0 || validationEvidence.length === 0) {
-    throw new Error('A flashcard Composition Capability requires validated delivery evidence.');
-  }
-  const referencedSkill = makeReferencedSkill(options);
-  const manualSkillHashBefore = options.wordCardMakerPath ? hashFile(options.wordCardMakerPath) : undefined;
-  const bundle = buildFlashcardEvidenceBundle(options.episode, options.sourceFilePath, referencedSkill);
-  const runtime = new SkillEvolutionRuntime({
-    workingDirectory: options.workingDirectory,
-    outputDir: options.outputDir,
-    registryPath: options.registryPath,
-    auditPath: options.auditPath,
-    journalPath: options.journalPath,
-    logEnabled: options.logEnabled,
-    authorFixture: options.authorFixture ?? flashcardAuthor,
-    verifierFixture: options.verifierFixture ?? flashcardVerifier,
-    readerFixture: options.readerFixture,
-  });
-  const evolution = await runtime.reviewAndApply(bundle);
-  const manualSkillHashAfter = options.wordCardMakerPath ? hashFile(options.wordCardMakerPath) : undefined;
-  if (manualSkillHashBefore !== manualSkillHashAfter) {
-    throw new Error('word-card-maker changed during Composition Capability promotion.');
-  }
-  return { evolution, referencedSkill, manualSkillHashBefore, manualSkillHashAfter };
 }
 
 export function buildFlashcardEvidenceBundle(
@@ -1479,57 +1368,4 @@ function toSkillEvidenceRef(evidence: EpisodeEvidenceRef): SkillEvidenceRef {
     sourceFilePath: evidence.sourceFilePath,
     turn: evidence.turn,
   };
-}
-
-function makeReferencedSkill(options: FlashcardCompositionOptions): ReferencedSkillSnapshot {
-  return {
-    name: 'word-card-maker',
-    ...(options.wordCardMakerVersion && { version: options.wordCardMakerVersion }),
-    ...(options.wordCardMakerPath && { contentFingerprint: hashFile(options.wordCardMakerPath) }),
-  };
-}
-
-const flashcardAuthor: SkillAuthorFixture = ({ bundle }): SkillDraft => ({
-  body: [
-    'Use the referenced `word-card-maker` skill for the base word-card structure.',
-    'For image cards, use `opencli` to select a suitable image, validate the selected artifact and its dimensions/content, then deliver the validated card.',
-    'Keep selection, validation, and delivery explicit; if validation fails, report the failure and retry instead of delivering an unsuitable artifact.',
-  ].join('\n\n'),
-  envelope: {
-    decision: 'create_current_skill',
-    routingName: 'flashcard-image-delivery',
-    description: 'Create validated flashcards by composing word-card-maker with opencli image selection and delivery.',
-    referencedSkills: ['word-card-maker'],
-    evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
-    rationale: 'Controlled flashcard correction and verified retry workflow.',
-  },
-});
-
-const flashcardVerifier: SkillVerifierFixture = ({ bundle, draft }): ReturnType<SkillVerifierFixture> => ({
-  decision: draft.body.includes('word-card-maker')
-    && draft.body.includes('opencli')
-    && draft.envelope.referencedSkills?.includes('word-card-maker')
-    && bundle.referencedSkills.some(skill => skill.name === 'word-card-maker')
-    ? 'accept'
-    : 'reject',
-  transition: 'create_current_skill',
-  issues: [],
-  rationale: 'The draft is semantic, references the manual word-card-maker skill, and contains the opencli selection/validation/delivery workflow.',
-});
-
-function hashFile(filePath: string): string | undefined {
-  if (!fs.existsSync(filePath)) return undefined;
-  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
-}
-
-/** Existing discovery uses recursive SKILL.md files; expose a small testable view. */
-export function listDiscoverableGeneratedSkills(skillsRoot = PathResolver.getSkillsPath()): Array<{ name: string; description: string; filePath: string }> {
-  return PathResolver.findSkillFiles(skillsRoot).flatMap(filePath => {
-    try {
-      const skill = SkillParser.parse(filePath);
-      return [{ name: skill.metadata.name, description: skill.metadata.description, filePath: skill.filePath }];
-    } catch {
-      return [];
-    }
-  });
 }

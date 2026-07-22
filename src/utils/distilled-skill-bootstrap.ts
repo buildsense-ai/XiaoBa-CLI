@@ -6,6 +6,7 @@ import { CapabilityTransitionKind, EvidenceBundle, SkillEvolutionRuntime } from 
 import type { ReferencedSkillSnapshot } from './skill-evolution';
 import { SkillParser } from '../skills/skill-parser';
 import type { LearningEpisodeStore } from './learning-episode';
+import type { EvidenceReviewJob } from './evidence-review-types';
 import {
   SemanticReassessmentManifestStore,
   semanticDependencyFingerprint,
@@ -128,6 +129,52 @@ interface ReassessRecordOptions extends SemanticReassessmentBootstrapOptions {
   forceSchedule?: boolean;
 }
 
+interface DurableBundleReviewMirror {
+  status: SemanticReassessmentBootstrapResult['status'];
+  errorMessage?: string;
+  nextRetryAt?: string;
+}
+
+function durableBundleReviewMirror(
+  skillEvolution: SkillEvolutionRuntime,
+  bundleId: string,
+): DurableBundleReviewMirror | undefined {
+  const jobs = Object.values(skillEvolution.getEvidenceReviewEngine().loadStore().jobs)
+    .filter(job => job.bundle.bundleId === bundleId && job.disposition !== 'superseded')
+    .sort((left, right) => {
+      const ownership = (job: EvidenceReviewJob) => (
+        job.disposition === 'active' || job.disposition === 'deferred' ? 1 : 0
+      );
+      return ownership(right) - ownership(left)
+        || right.updatedAt.localeCompare(left.updatedAt, 'en')
+        || right.jobId.localeCompare(left.jobId, 'en');
+    });
+  const job = jobs[0];
+  if (!job) return undefined;
+  if (job.disposition === 'completed') return { status: 'succeeded' };
+  if (job.disposition === 'terminal_failed') {
+    const failed = Object.values(job.quanta).find(quantum => quantum.state === 'terminal_failed');
+    return {
+      status: 'failed',
+      errorMessage: job.terminalReason ?? failed?.failureMessage,
+    };
+  }
+  if (job.disposition === 'deferred') {
+    return { status: 'deferred', errorMessage: job.deferState?.reason };
+  }
+  if (job.workClass === 'operational_recovery') {
+    const retry = Object.values(job.quanta)
+      .filter(quantum => quantum.state === 'retry_wait' || quantum.state === 'terminal_failed')
+      .sort((left, right) => (left.nextRetryAt ?? '').localeCompare(right.nextRetryAt ?? '', 'en'))[0];
+    return {
+      status: 'failed',
+      errorMessage: retry?.failureMessage ?? job.terminalReason,
+      nextRetryAt: retry?.nextRetryAt ?? job.nextDueAt,
+    };
+  }
+  return { status: 'pending' };
+}
+
 function currentGuidanceContentHash(record: { guidanceContentHash?: string; skillFilePath: string }): string | undefined {
   if (record.guidanceContentHash) return record.guidanceContentHash;
   try {
@@ -238,6 +285,33 @@ async function reassessRecord(
       guidanceHash: item.guidanceHash,
     })),
   };
+  // The Job store is authoritative. Rebuild the manifest mirror before any
+  // submission so a crash after terminal Job persistence cannot re-admit the
+  // same deterministic bundle on restart.
+  const durableBeforeReview = durableBundleReviewMirror(options.skillEvolution, bundle.bundleId);
+  if (durableBeforeReview) {
+    const state = options.manifest.load();
+    const current = state.entries[entry.taskId];
+    if (current) {
+      current.status = durableBeforeReview.status;
+      current.lastError = durableBeforeReview.errorMessage;
+      if (durableBeforeReview.status === 'failed' && durableBeforeReview.nextRetryAt) {
+        current.nextRetryAt = durableBeforeReview.nextRetryAt;
+      } else {
+        delete current.nextRetryAt;
+      }
+      current.updatedAt = new Date().toISOString();
+      options.manifest.save(state);
+    }
+    return {
+      taskId: entry.taskId,
+      capabilityHandle: record.handle,
+      status: durableBeforeReview.status,
+      ...(durableBeforeReview.errorMessage
+        ? { errorMessage: durableBeforeReview.errorMessage }
+        : {}),
+    };
+  }
   try {
     const result = await options.skillEvolution.reviewAndApply(bundle);
     const queuedState = options.skillEvolution.getQueuedReviewState(bundle.bundleId);

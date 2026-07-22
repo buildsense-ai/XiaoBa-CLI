@@ -22,18 +22,7 @@ import {
   REVIEW_CONTINUATION_DELAY_MS,
   reviewContinuationPathForEpisodeStore,
 } from './due-work-planner';
-import {
-  CrossFileContinuityOptions,
-  DistillationUnit,
-  extractDistillationUnit,
-} from './distillation-unit';
-import {
-  advanceCursor,
-  getCursor,
-  loadLogCursorState,
-  markCursorFailed,
-  saveLogCursorState,
-} from './log-cursor-state';
+import { DistillationUnit } from './distillation-unit';
 import { getDistillationHeartbeatConfig, DistillationHeartbeatConfig } from './distillation-heartbeat-config';
 import type { ExternalHistoryMode } from './distillation-heartbeat-config';
 import { LearningEpisodeStore, LearningEpisode, buildLearningEpisodeCandidate } from './learning-episode';
@@ -46,7 +35,7 @@ import { SemanticReassessmentManifestStore } from './semantic-reassessment';
 import { cleanupBranchTranscripts } from './branch-transcript-retention';
 import { createReviewBudget, type ReviewBudget } from './review-budget';
 import { advanceJobsFairly } from './evidence-review-engine';
-import { listRunnableQuanta } from './evidence-review-job-store';
+import { listRunnableQuanta } from './evidence-review-graph-core';
 import { XurlExternalSourceReader } from './xurl-session-log-source';
 import { buildXurlSubprocessEnv } from './xurl-subprocess-env';
 import {
@@ -2608,39 +2597,48 @@ export class RuntimeLearning {
       );
     }
 
-    // Fair Review Quantum Rotation across durable jobs before admitting new
-    // episode/queue candidates (#108). Completes already-admitted coverage first.
-    // Capture fair-advance outcomes so migrated operational retries that finish
-    // under job ownership still feed wake metrics and reassessment reconciliation.
+    // Rebuild current bundles for dormant defers before scheduling. This is the
+    // production evidence-change trigger; reviewer/policy/Registry triggers are
+    // checked in the same single-owner reactivation pass.
+    const deferredBundleIds = new Set(this.skillEvolution.getDeferredReviewBundleIds());
+    const liveDeferredBundles: EvidenceBundle[] = [];
+    for (const episode of Object.values(this.episodeStore.load().episodes)) {
+      if (!deferredBundleIds.has(`v3:learning-episode:${episode.episodeId}`)) continue;
+      try {
+        liveDeferredBundles.push(buildEpisodeEvidenceBundle(
+          episode,
+          buildLearningEpisodeCandidate(episode),
+          this.skillEvolution,
+          this.evidenceCapsuleStore,
+          this.isEpisodeFromExternalSource.bind(this),
+          this.listSkillLoadFactsForEpisode(episode),
+        ));
+      } catch (error) {
+        Logger.warning(`[RuntimeLearning] deferred bundle refresh skipped for ${episode.episodeId}: ${toErrorMessage(error)}`);
+      }
+    }
+    this.skillEvolution.reactivateDeferredReviews(liveDeferredBundles);
+
+    const reviewBudget = createReviewBudget({
+      maxCandidates: this.config.skillEvolutionReviewMaxCandidates,
+      deadlineMs: this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000,
+      now: () => this.clock().getTime(),
+    });
+
+    // Fence before scheduling so the Runtime-level ring sees only runnable,
+    // current Jobs. Durable retry/defer execution remains exclusively one fair
+    // graph Quantum claim; there is no synchronous queue drain.
     let fairJobIds: string[] = [];
+    let hasRunnableReviewJob = false;
     try {
-      const engine = this.skillEvolution.getEvidenceReviewEngine();
       if (!this.shutdownDrainRequested) {
         this.skillEvolution.fenceStaleActiveJobsBeforeFairAdvance(this.clock());
-        const fair = await advanceJobsFairly(engine, `wake-fair:${this.clock().getTime()}`, {
-          // One provider-backed Quantum per wake is deliberate backpressure.
-          // The next durable wake continues immediately when work remains, but
-          // a shared provider outage cannot multiply into N synchronous calls
-          // that monopolize source ingestion for an entire heartbeat cycle.
-          maxClaims: 1,
-          maxClaimsPerJob: 1,
-          signal: wakeSignal,
-          now: this.clock(),
-          shouldStopClaiming: () => this.shutdownDrainRequested,
-        });
-        fairJobIds = fair.jobIds;
+        hasRunnableReviewJob = this.listRunnableReviewJobIds().length > 0;
       }
     } catch {
       // Job store optional during early construction / V3-disabled paths.
     }
 
-    const reviewBudget = createReviewBudget({
-      maxCandidates: this.config.skillEvolutionReviewMaxCandidates,
-      // skillEvolutionReviewMaxPromptTokens is compatibility-read only; estimated
-      // prompt size never gates Review Admission (ADR 0045 / Evidence Review Jobs).
-      deadlineMs: this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000,
-      now: () => this.clock().getTime(),
-    });
     const pendingEpisodeIds = new Set<string>();
     const fairness = this.loadReviewFairnessContinuation();
     const classCursors = { ...fairness.classCursors };
@@ -2654,8 +2652,7 @@ export class RuntimeLearning {
     type RetryReviewTask = {
       kind: 'retry';
       workClass: 'retry';
-      bundleId: string;
-      bundle: EvidenceBundle;
+      taskId: 'fair-review-quantum';
     };
     type ReviewTask = EpisodeReviewTask | RetryReviewTask;
 
@@ -2668,12 +2665,12 @@ export class RuntimeLearning {
     for (const episode of eligibleEpisodes) pendingEpisodeIds.add(episode.episodeId);
 
     const remainingByClass: Record<ReviewWorkClass, ReviewTask[]> = {
-      retry: this.skillEvolution.listDueQueueReviewEntries(this.clock()).map(entry => ({
-        kind: 'retry' as const,
-        workClass: 'retry' as const,
-        bundleId: entry.bundleId,
-        bundle: entry.bundle,
-      })),
+      // A single fair Quantum is one task in the same persistent ring as new
+      // live/historical admission. With maxCandidates=1 no class can monopolize
+      // every wake merely because it already has durable work.
+      retry: hasRunnableReviewJob
+        ? [{ kind: 'retry', workClass: 'retry', taskId: 'fair-review-quantum' }]
+        : [],
       live: eligibleEpisodes
         .filter(episode => episode.historicalTarget === undefined)
         .map(episode => ({ kind: 'episode' as const, workClass: 'live' as const, episode })),
@@ -2682,9 +2679,9 @@ export class RuntimeLearning {
         .map(episode => ({ kind: 'episode' as const, workClass: 'historical' as const, episode })),
     };
 
-    const taskId = (task: ReviewTask): string => (
-      task.kind === 'retry' ? task.bundleId : task.episode.episodeId
-    );
+    const taskId = (task: ReviewTask): string => task.kind === 'retry'
+      ? task.taskId
+      : task.episode.episodeId;
     for (const workClass of REVIEW_WORK_CLASS_ORDER) {
       remainingByClass[workClass].sort((left, right) => (
         taskId(left).localeCompare(taskId(right), 'en')
@@ -2698,7 +2695,6 @@ export class RuntimeLearning {
       episode: LearningEpisode;
       bundle: ReturnType<typeof buildEpisodeEvidenceBundle>;
     }> = [];
-    const admittedRetryBundleIds: string[] = [];
     let settlementError: unknown;
     while (reviewBudget.candidates < maxCandidates) {
       const availableClasses = new Set(
@@ -2730,24 +2726,46 @@ export class RuntimeLearning {
         (REVIEW_WORK_CLASS_ORDER.indexOf(selectedClass) + 1) % REVIEW_WORK_CLASS_ORDER.length
       ]!;
       if (wakeSignal?.aborted || this.shutdownDrainRequested) break;
+      if (selected.kind === 'retry') {
+        if (!this.canAdmitReviewWork(reviewBudget)) continue;
+        classCursors.retry = taskId(selected);
+        nextClass = 'live';
+        try {
+          const fair = await advanceJobsFairly(
+            this.skillEvolution.getEvidenceReviewEngine(),
+            `wake-fair:${this.clock().getTime()}`,
+            {
+              // One provider-backed Quantum is deliberate backpressure. The
+              // next durable wake continues it after live/historical get turns.
+              maxClaims: 1,
+              maxClaimsPerJob: 1,
+              signal: wakeSignal,
+              now: this.clock(),
+              shouldStopClaiming: () => this.shutdownDrainRequested,
+            },
+          );
+          fairJobIds = fair.jobIds;
+        } catch {
+          // Graph execution persists its own operational outcome. Keep the
+          // Runtime stage behavior identical to the former fair-advance seam.
+        }
+        continue;
+      }
       try {
-        const bundle = selected.kind === 'retry'
-          ? selected.bundle
-          : buildEpisodeEvidenceBundle(
-              selected.episode,
-              buildLearningEpisodeCandidate(selected.episode),
-              this.skillEvolution,
-              this.evidenceCapsuleStore,
-              this.isEpisodeFromExternalSource.bind(this),
-              this.listSkillLoadFactsForEpisode(selected.episode),
-            );
+        const bundle = buildEpisodeEvidenceBundle(
+          selected.episode,
+          buildLearningEpisodeCandidate(selected.episode),
+          this.skillEvolution,
+          this.evidenceCapsuleStore,
+          this.isEpisodeFromExternalSource.bind(this),
+          this.listSkillLoadFactsForEpisode(selected.episode),
+        );
         if (!this.canAdmitReviewWork(reviewBudget)) continue;
         classCursors[selected.workClass] = taskId(selected);
         nextClass = REVIEW_WORK_CLASS_ORDER[
           (REVIEW_WORK_CLASS_ORDER.indexOf(selected.workClass) + 1) % REVIEW_WORK_CLASS_ORDER.length
         ]!;
-        if (selected.kind === 'retry') admittedRetryBundleIds.push(selected.bundleId);
-        else admittedEpisodeTasks.push({ episode: selected.episode, bundle });
+        admittedEpisodeTasks.push({ episode: selected.episode, bundle });
       } catch (error) {
         settlementError = settlementError ?? error;
       }
@@ -2823,47 +2841,11 @@ export class RuntimeLearning {
       operationalRetried: 0, deferredRetried: 0, transitionsByKind: {},
       queueOutcomes: {},
     };
-    let queueError: unknown;
     let reviewTimeoutCount = episodeReviewTimeouts;
     let reviewFailureCount = episodeOperationalFailures;
-    try {
-      if (!this.shutdownDrainRequested && !wakeSignal?.aborted) {
-        // Skip retry bundles already terminalized by fair job advance so dual
-        // ownership cannot re-run the same operational recovery in one wake.
-        const fairOutcomes = this.skillEvolution.collectMigratedJobReviewOutcomes(fairJobIds);
-        const fairTerminalBundleIds = new Set(Object.keys(fairOutcomes.queueOutcomes ?? {}));
-        const remainingRetryBundleIds = admittedRetryBundleIds.filter(
-          bundleId => !fairTerminalBundleIds.has(bundleId),
-        );
-        queueResult = await this.skillEvolution.reviewDueQueueEntries({
-          signal: wakeSignal,
-          bundleIds: remainingRetryBundleIds,
-          now: this.clock(),
-        });
-        // Merge fair-advance terminal outcomes after linear review so metrics
-        // and reassessment manifests see both ownership paths.
-        queueResult = {
-          reviewed: queueResult.reviewed + fairOutcomes.reviewed,
-          deferredReviewed: queueResult.deferredReviewed,
-          operationalReviewed: queueResult.operationalReviewed + fairOutcomes.operationalReviewed,
-          operationalRetried: queueResult.operationalRetried + fairOutcomes.operationalRetried,
-          deferredRetried: queueResult.deferredRetried,
-          transitionsByKind: { ...queueResult.transitionsByKind },
-          queueOutcomes: {
-            ...(fairOutcomes.queueOutcomes ?? {}),
-            ...(queueResult.queueOutcomes ?? {}),
-          },
-        };
-        for (const [transition, count] of Object.entries(fairOutcomes.transitionsByKind)) {
-          if (!count) continue;
-          const key = transition as string;
-          queueResult.transitionsByKind[key] = (queueResult.transitionsByKind[key] ?? 0) + count;
-        }
-        this.reconcileReassessmentQueueOutcomes(queueResult.queueOutcomes);
-      }
-    } catch (error) {
-      queueError = error;
-      Logger.warning(`[RuntimeLearning] queue review failed: ${toErrorMessage(error)}`);
+    if (!this.shutdownDrainRequested && !wakeSignal?.aborted) {
+      queueResult = this.skillEvolution.collectFairReviewOutcomes(fairJobIds);
+      this.reconcileReassessmentQueueOutcomes(queueResult.queueOutcomes);
     }
 
     for (const [transition, count] of Object.entries(queueResult.transitionsByKind)) {
@@ -2872,13 +2854,10 @@ export class RuntimeLearning {
       transitionsByKind[key] = (transitionsByKind[key] ?? 0) + count;
     }
 
-    // Report failure when any per-episode review or queue review failed.
     // Completed counts and transitions are preserved; operational retry and
-    // cursor semantics are unaffected.
+    // cursor semantics are derived from the fair graph outcome.
     const hasEpisodeFailure = episodeReviewFailures > 0;
-    const hasQueueFailure = !!queueError;
     if (hasEpisodeFailure) reviewFailureCount += episodeReviewFailures;
-    if (hasQueueFailure) reviewFailureCount += 1;
 
     if (queueResult.queueOutcomes) {
       for (const outcome of Object.values(queueResult.queueOutcomes)) {
@@ -2891,13 +2870,12 @@ export class RuntimeLearning {
       }
     }
 
-    const status: RuntimeLearningStageStatus = (hasEpisodeFailure || hasQueueFailure || !!settlementError)
+    const status: RuntimeLearningStageStatus = (hasEpisodeFailure || !!settlementError)
       ? 'failed'
       : 'succeeded';
 
     const errorParts: string[] = [];
     if (hasEpisodeFailure) errorParts.push(`${episodeReviewFailures} episode review(s) failed`);
-    if (hasQueueFailure) errorParts.push(`queue review failed: ${toErrorMessage(queueError)}`);
     if (settlementError) errorParts.push(`settlement error: ${toErrorMessage(settlementError)}`);
 
     this.persistReviewContinuation(
@@ -4509,79 +4487,6 @@ export class RuntimeLearning {
     const episodeId = episode.agentTurnEpisodeId;
     if (!episodeId) return [];
     return this.curator?.listLoadFactsForEpisode(episodeId) ?? [];
-  }
-
-  // -----------------------------------------------------------------------
-  // Session log processing (legacy — preserved for compatibility)
-  // -----------------------------------------------------------------------
-
-  private async processSessionLogFile(
-    filePath: string,
-    orderedFilePaths: readonly string[],
-  ): Promise<{
-    distillationUnit: DistillationUnit | null;
-    advanced: boolean;
-    processed: boolean;
-    admittedEpisodes: number;
-    contradictionSignals: number;
-  }> {
-    const state = loadLogCursorState(this.config.stateFilePath);
-    const cursor = getCursor(state, filePath);
-    let extracted;
-
-    try {
-      const crossFileContinuity: CrossFileContinuityOptions = { orderedFilePaths };
-      extracted = extractDistillationUnit(filePath, cursor, { crossFileContinuity });
-    } catch (error) {
-      markCursorFailed(state, filePath, cursor.byteOffset, error);
-      saveLogCursorState(this.config.stateFilePath, state);
-      return {
-        distillationUnit: null,
-        advanced: false,
-        processed: false,
-        admittedEpisodes: 0,
-        contradictionSignals: 0,
-      };
-    }
-
-    if (!extracted.distillationUnit) {
-      if (extracted.advanced) {
-        advanceCursor(state, extracted.newCursor);
-        saveLogCursorState(this.config.stateFilePath, state);
-      }
-      return {
-        distillationUnit: null,
-        advanced: extracted.advanced,
-        processed: false,
-        admittedEpisodes: 0,
-        contradictionSignals: 0,
-      };
-    }
-
-    // Admit evidence via EvidenceIngestor (evidence ingestion only — no review)
-    try {
-      const ingestionResult = this.evidenceIngestor.ingest(extracted.distillationUnit);
-      this.queueCuratorObservation(ingestionResult.admittedEpisodeIds);
-      advanceCursor(state, extracted.newCursor);
-      saveLogCursorState(this.config.stateFilePath, state);
-      return {
-        distillationUnit: extracted.distillationUnit,
-        advanced: true,
-        processed: true,
-        admittedEpisodes: ingestionResult.admittedEpisodeIds.length,
-        contradictionSignals: ingestionResult.contradictionSignalIds.length,
-      };
-    } catch (error) {
-      markCursorFailed(state, filePath, cursor.byteOffset, error);
-      saveLogCursorState(this.config.stateFilePath, state);
-      return {
-        distillationUnit: extracted.distillationUnit,
-        advanced: false,
-        processed: false,
-        admittedEpisodes: 0,
-        contradictionSignals: 0,
-      };
-    }
   }
 
   // -----------------------------------------------------------------------

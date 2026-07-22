@@ -9,15 +9,12 @@
  * The heartbeat owns:
  *   - The setTimeout-based timer
  *   - Runtime guard (`shouldStartForCurrentRuntime`)
- *   - Heartbeat record keeping
  *   - Due-work-based next-wake planning
+ * RuntimeLearning owns heartbeat persistence.
  *
  * See CONTEXT.md → "Distillation Heartbeat".
  * See ADR 0001 → "Runtime Heartbeat Log Distillation".
  */
-
-import * as fs from 'fs';
-import * as path from 'path';
 
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
 import type { DueWorkPlanner } from './due-work-planner';
@@ -30,27 +27,13 @@ import type {
 } from './runtime-learning';
 
 // ---------------------------------------------------------------------------
-// Public types (preserved for backward compatibility)
+// Public types
 // ---------------------------------------------------------------------------
 
 export type HeartbeatReason = RuntimeLearningReason;
 
 export interface HeartbeatRunResult extends RuntimeLearningHeartbeatResult {
   // Same shape as RuntimeLearningHeartbeatResult — re-exported for compat.
-}
-
-export interface HeartbeatRecord {
-  schemaVersion: 1;
-  /** ISO timestamp of the last heartbeat run. */
-  lastRunAt: string;
-  /** Monotonic count of heartbeat runs since record creation. */
-  runCount: number;
-  /** Reason of the last run. */
-  lastReason: HeartbeatReason;
-  /** Distillation Units produced by the last run. */
-  lastUnitsProcessed: number;
-  /** Files whose cursor advanced on the last run. */
-  lastAdvancedFiles: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,17 +52,6 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
  */
 const MIN_NEXT_WAKE_BACKOFF_MS = 30 * 1000;
 const MAX_NEXT_WAKE_BACKOFF_MS = 10 * 60 * 1000;
-
-function emptyHeartbeatRecord(): HeartbeatRecord {
-  return {
-    schemaVersion: 1,
-    lastRunAt: '',
-    runCount: 0,
-    lastReason: 'manual',
-    lastUnitsProcessed: 0,
-    lastAdvancedFiles: 0,
-  };
-}
 
 function emptyWakeResult(ran = false): HeartbeatRunResult {
   return {
@@ -324,13 +296,6 @@ export class DistillationHeartbeatScheduler {
   // -----------------------------------------------------------------------
 
   /**
-   * Ordinary session turns no longer bypass the six-hour heartbeat boundary.
-   * Startup/scheduled/manual/planner wakes still provide the durable catch-up
-   * path, so this compatibility hook is intentionally a no-op.
-   */
-  requestDiscoveryWake(): void {}
-
-  /**
    * Run one heartbeat cycle.
    *
    * Production: delegates all work to `RuntimeLearning.wake()`.
@@ -523,58 +488,4 @@ export class DistillationHeartbeatScheduler {
     return Math.max(1, config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000);
   }
 
-  // -----------------------------------------------------------------------
-  // Heartbeat record keeping
-  // -----------------------------------------------------------------------
-
-  private recordHeartbeat(
-    reason: HeartbeatReason,
-    unitsProcessed: number,
-    advancedFiles: number,
-  ): void {
-    const config = getDistillationHeartbeatConfig(this.workingDirectory);
-    let record: HeartbeatRecord;
-    try {
-      if (fs.existsSync(config.heartbeatRecordPath)) {
-        record = JSON.parse(fs.readFileSync(config.heartbeatRecordPath, 'utf-8')) as HeartbeatRecord;
-      } else {
-        record = emptyHeartbeatRecord();
-      }
-    } catch {
-      record = emptyHeartbeatRecord();
-    }
-
-    record.lastRunAt = new Date().toISOString();
-    record.runCount += 1;
-    record.lastReason = reason;
-    record.lastUnitsProcessed = unitsProcessed;
-    record.lastAdvancedFiles = advancedFiles;
-
-    try {
-      fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });
-      const tmpPath = `${config.heartbeatRecordPath}.${process.pid}.${Date.now()}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(record, null, 2), {
-        encoding: 'utf-8',
-        mode: 0o600,
-      });
-      fs.renameSync(tmpPath, config.heartbeatRecordPath);
-    } catch (error: any) {
-      Logger.warning(`[DistillationHeartbeat] failed to record heartbeat: ${error.message}`);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Legacy: loadHeartbeatRecord (preserved for backward compatibility)
-// ---------------------------------------------------------------------------
-
-export function loadHeartbeatRecord(recordPath: string): HeartbeatRecord {
-  try {
-    if (!fs.existsSync(recordPath)) {
-      return emptyHeartbeatRecord();
-    }
-    return JSON.parse(fs.readFileSync(recordPath, 'utf-8')) as HeartbeatRecord;
-  } catch {
-    return emptyHeartbeatRecord();
-  }
 }

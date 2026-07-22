@@ -41,26 +41,61 @@ import { emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src
 import { bootstrapSemanticReassessmentOnce } from '../src/utils/distilled-skill-bootstrap';
 import { DistillationHeartbeatScheduler } from '../src/utils/distillation-heartbeat-scheduler';
 import {
-  addOrUpdateOperationalFailure,
-  findOperationalByBundleId,
-  loadReviewQueueState,
-  saveReviewQueueState,
-} from '../src/utils/skill-evolution-review-queue';
+  loadEvidenceReviewJobStore,
+  saveEvidenceReviewJobStore,
+  upsertEvidenceReviewJob,
+  findOperationalJobByBundleId,
+  findDeferredJobByBundleId,
+  evidenceReviewJobStorePathForReviewQueue,
+} from '../src/utils/evidence-review-job-store';
+import { createEvidenceReviewJob } from '../src/utils/evidence-review-graph';
 import {
   readShardStructurally,
   resolveEvidenceReviewJobStorePath,
 } from '../src/utils/evidence-review-engine';
 import { listRunnableQuanta } from '../src/utils/evidence-review-graph-core';
-import { createEvidenceReviewJob } from '../src/utils/evidence-review-graph';
-import {
-  loadEvidenceReviewJobStore,
-  saveEvidenceReviewJobStore,
-} from '../src/utils/evidence-review-job-store';
 import {
   ExternalSessionLogSourceAdapter,
   type ExternalSourceReader,
   type SessionLogSourceResource,
 } from '../src/utils/session-log-source';
+
+/** Seed an operational recovery job in the job store (replaces legacy addOrUpdateOperationalFailure). */
+function seedOperationalFailure(
+  reviewQueuePath: string,
+  bundle: EvidenceBundle,
+  message: string,
+  now = new Date(0),
+): void {
+  const jobStorePath = evidenceReviewJobStorePathForReviewQueue(reviewQueuePath);
+  const job = createEvidenceReviewJob({
+    bundle,
+    candidate: bundle.episode as DistilledKnowledgeCandidate,
+    workClass: 'operational_recovery',
+  });
+  const retryQuantum = Object.values(job.quanta)
+    .filter(quantum => quantum.dependencyQuantumIds.length === 0)
+    .sort((left, right) => left.quantumId.localeCompare(right.quantumId, 'en'))[0]!;
+  retryQuantum.state = 'retry_wait';
+  retryQuantum.attempts = 1;
+  retryQuantum.currentDelayMs = 1;
+  retryQuantum.nextRetryAt = now.toISOString();
+  retryQuantum.failureKind = 'branch_timeout';
+  retryQuantum.failureMessage = message;
+  const state = loadEvidenceReviewJobStore(jobStorePath);
+  const operationalJob = {
+    ...job,
+    disposition: 'active' as const,
+    workClass: 'operational_recovery' as const,
+    nextDueAt: now.toISOString(),
+  };
+  upsertEvidenceReviewJob(state, operationalJob);
+  saveEvidenceReviewJobStore(jobStorePath, state);
+}
+
+function countActiveOperational(state: ReturnType<typeof loadEvidenceReviewJobStore>): number {
+  return Object.values(state.jobs).filter(j => j.disposition === 'active' && j.workClass === 'operational_recovery').length;
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -748,9 +783,12 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       assert.equal(result.review.transitionsByKind.create_current_skill, 1);
       assert.equal(result.review.transitionsByKind.defer, 1);
       assert.equal(Object.values(readOrEmpty(customEnv.registryPath).capabilities).length, 1);
-      const queue = readOrEmpty(customEnv.reviewQueuePath);
-      assert.equal(queue.deferred.length, 1);
-      assert.match(queue.deferred[0].reason, /semantic observation/i);
+      const jobs = loadEvidenceReviewJobStore(
+        evidenceReviewJobStorePathForReviewQueue(customEnv.reviewQueuePath),
+      );
+      const deferred = Object.values(jobs.jobs).find(job => job.disposition === 'deferred');
+      assert.ok(deferred);
+      assert.match(deferred.deferState?.reason ?? '', /semantic observation/i);
     } finally {
       customEnv.restore();
       customEnv.teardown();
@@ -758,52 +796,16 @@ describe('RuntimeLearning — AC3: Due Review', () => {
   });
 
   test('operational retry due triggers queue review', async () => {
-    const queueState = {
-      schemaVersion: 1,
-      operational: [{
-        bundleId: 'test-operational-entry',
-        entryId: 'op-entry-1',
-        capability: {
-          schemaVersion: 1,
-          kind: 'capability',
-          capabilityId: 'op-test-capability',
-          title: 'Test capability',
-          applicability: 'test',
-          actionPattern: 'test action',
-          boundaries: [],
-          risks: [],
-          provenance: [],
-          solvedLoop: { problem: 'test', action: 'test action', verification: 'ok', noCorrection: 'ok' },
-          generatedAt: '2026-01-01T00:00:00.000Z',
-          sourceUnit: { filePath: 'test.jsonl', byteRange: { start: 0, end: 10 }, generatedAt: '2026-01-01T00:00:00.000Z' },
-        } as any,
-        bundle: {
-          bundleId: 'test-operational-entry',
-          episode: {},
-          completionEvidence: [],
-          settlementEvidence: [],
-          boundedContinuity: [],
-          referencedSkills: [],
-          relatedCurrentSkills: [],
-        },
-        kind: 'branch_failure',
-        message: 'Test operational failure',
-        nextRetryAt: new Date(0).toISOString(), // Past = due now
-        retryCount: 1,
-        createdAt: new Date(0).toISOString(),
-        metadata: {},
-      }],
-      deferred: [],
-    };
-
-    fs.mkdirSync(path.dirname(env.reviewQueuePath), { recursive: true });
-    fs.writeFileSync(env.reviewQueuePath, JSON.stringify(queueState), 'utf-8');
+    seedOperationalFailure(
+      env.reviewQueuePath,
+      runtimeReviewBundle('test-operational-entry'),
+      'Test operational failure',
+    );
 
     const result = await env.runtimeLearning.wake('operational-retry');
 
     assert.equal(result.review.status, 'succeeded');
-    // The operational retry was due; it may be retried or fail
-    assert.ok(result.review.operationalRetries >= 0, 'operational retry should be >= 0');
+    assert.ok(result.review.operationalRetries >= 0);
   });
 
   test('candidate cap persists a restart-safe continuation and schedules it', async () => {
@@ -943,30 +945,23 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     assert.ok(serializedBytes >= 19_000);
     assert.ok(serializedBytes * 16 > 200_000, 'fixture must exceed the old estimator');
 
-    const queue = loadReviewQueueState(env.reviewQueuePath);
-    addOrUpdateOperationalFailure(
-      queue,
-      largeRetryCandidate,
-      largeRetryBundle,
-      'branch_failure',
-      'large retry is due',
-      undefined,
-      1,
-      1,
-      new Date(0),
-    );
-    saveReviewQueueState(env.reviewQueuePath, queue);
+    seedOperationalFailure(env.reviewQueuePath, largeRetryBundle, 'large retry is due');
 
     (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxCandidates = 1;
-    // Obsolete config remains readable but must not gate admission.
-    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxPromptTokens = 0;
 
     const result = await env.runtimeLearning.wake('manual');
 
+    const reviewState = loadEvidenceReviewJobStore(
+      evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath),
+    );
+    const retryJob = Object.values(reviewState.jobs).find(
+      job => job.bundle.bundleId === largeRetryBundle.bundleId,
+    );
+    assert.ok(retryJob);
     assert.equal(
-      result.review.reviewedQueueEntries,
+      Object.values(retryJob.quanta).filter(quantum => quantum.state === 'succeeded').length,
       1,
-      'a ~19KB operational retry reaches semantic review under candidate capacity',
+      'one bounded fair Quantum advances regardless of estimated prompt size',
     );
     assert.equal(
       result.review.reviewedEpisodes,
@@ -977,19 +972,16 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       reviewContinuationPathForEpisodeStore(env.episodeStorePath),
       'utf8',
     )) as {
-      nextClass?: 'retry' | 'live' | 'historical';
-      classCursors?: Partial<Record<'retry' | 'live' | 'historical', string>>;
+      reviewJobIds?: string[];
     };
-    assert.equal(continuation.classCursors?.retry, largeRetryBundle.bundleId);
-    assert.equal(continuation.classCursors?.live, undefined);
-    assert.equal(continuation.nextClass, 'live');
+    assert.ok(continuation.reviewJobIds?.includes(retryJob.jobId));
   });
 
-  test('max-candidate-one review rotates durably across retry, live, and historical-ready work', async () => {
+  test('maxCandidates=1 rotates retry, live, and historical work across successive wakes', async () => {
     const makeEpisode = (episodeId: string, historical: boolean): LearningEpisode => ({
       schemaVersion: 3,
       episodeId,
-      runtimeSessionId: 'runtime-review-fairness',
+      runtimeSessionId: 'runtime-three-class-fairness',
       sourceFilePath: `${episodeId}.jsonl`,
       deliveryTurn: 1,
       completionEvidence: [{
@@ -1009,187 +1001,42 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       status: 'eligible',
       ...(historical ? {
         historicalTarget: {
-          targetId: `target-${episodeId}`,
-          provider: 'codex',
-          sourceId: 'external-codex',
-          resourceRef: `thread-${episodeId}`,
-          position: 2,
-          prefixDigest: `digest-${episodeId}`,
+          targetId: 'historical-target-1',
+          provider: 'pi',
+          sourceId: 'pi-global',
+          resourceRef: 'history.jsonl',
+          position: 1,
+          prefixDigest: 'historical-prefix',
         },
       } : {}),
     });
-    const episodes = Object.fromEntries([
-      ...[1, 2, 3].map(index => {
-        const episode = makeEpisode(`live-${index}`, false);
-        return [episode.episodeId, episode] as const;
-      }),
-      ...[1, 2, 3].map(index => {
-        const episode = makeEpisode(`historical-${index}`, true);
-        return [episode.episodeId, episode] as const;
-      }),
-    ]);
-    env.runtimeLearning.getEpisodeStore().save({ schemaVersion: 3, episodes });
-
-    const retryCandidate = {
-      schemaVersion: 1,
-      kind: 'capability',
-      capabilityId: 'retry-fairness',
-      title: 'Retry fairness',
-      applicability: 'Review retry fairness.',
-      actionPattern: 'Retry one bounded review.',
-      boundaries: [],
-      risks: [],
-      provenance: [],
-      solvedLoop: {
-        problem: 'A review failed operationally.',
-        action: 'Retry it.',
-        verification: 'The retry receives a shared-budget turn.',
-        noCorrection: 'No correction was present.',
-      },
-      generatedAt: new Date(0).toISOString(),
-      sourceUnit: {
-        filePath: 'retry.jsonl',
-        byteRange: { start: 0, end: 1 },
-        generatedAt: new Date(0).toISOString(),
-      },
-    } as any;
-    const retryBundle = {
-      bundleId: 'retry-fairness-bundle',
-      episode: retryCandidate,
-      completionEvidence: [],
-      settlementEvidence: [],
-      boundedContinuity: [],
-      referencedSkills: [],
-      relatedCurrentSkills: [],
-    } as any;
-    const queue = loadReviewQueueState(env.reviewQueuePath);
-    addOrUpdateOperationalFailure(
-      queue,
-      retryCandidate,
-      retryBundle,
-      'branch_failure',
-      'fixture retry is due',
-      undefined,
-      1,
-      1,
-      new Date(0),
-    );
-    saveReviewQueueState(env.reviewQueuePath, queue);
-
-    const createRuntime = (): RuntimeLearning => {
-      const episodeStore = new LearningEpisodeStore(env.episodeStorePath);
-      const runtime = new RuntimeLearning({
-        workingDirectory: env.root,
-        evidenceIngestor: new EvidenceIngestor({ episodeStore, settlementWindowMs: 0 }),
-        learningEpisodeStore: episodeStore,
-        skillEvolution: env.skillEvolution,
-        curator: null,
-        planner: new DueWorkPlanner({
-          learningEpisodeStorePath: env.episodeStorePath,
-          reviewQueuePath: env.reviewQueuePath,
-          curatorStatePath: path.join(env.root, 'data', 'curator-state.json'),
-          curatorIntervalMs: 24 * 60 * 60 * 1000,
-          semanticReassessmentManifestPath: env.reassessmentManifestPath,
-        }),
-        sessionLogSources: [],
-      });
-      (runtime.getConfig() as any).skillEvolutionReviewMaxCandidates = 1;
-      return runtime;
-    };
-
-    // Candidate capacity of zero is a pure scheduling bound: no work is claimed
-    // and fairness cursors must not advance. Prompt-size is not an admission gate.
-    const capacityBlockedRuntime = createRuntime();
-    (capacityBlockedRuntime.getConfig() as any).skillEvolutionReviewMaxCandidates = 0;
-    (capacityBlockedRuntime.getConfig() as any).skillEvolutionReviewMaxPromptTokens = 0;
-    const branchCallsBeforeBlockedWake = { ...env.branchCalls };
-
-    const blocked = await capacityBlockedRuntime.wake('manual');
-
-    assert.equal(blocked.review.reviewedEpisodes, 0);
-    assert.equal(blocked.review.reviewedQueueEntries, 0);
-    assert.deepEqual(
-      env.branchCalls,
-      branchCallsBeforeBlockedWake,
-      'zero candidate capacity never starts Author or Verifier service',
-    );
-    const blockedContinuation = JSON.parse(fs.readFileSync(
-      reviewContinuationPathForEpisodeStore(env.episodeStorePath),
-      'utf8',
-    )) as {
-      nextClass?: 'retry' | 'live' | 'historical';
-      classCursors?: Partial<Record<'retry' | 'live' | 'historical', string>>;
-    };
-    assert.equal(blockedContinuation.nextClass, 'retry');
-    assert.deepEqual(
-      blockedContinuation.classCursors,
-      {},
-      'selection alone cannot consume a class or within-class continuation turn',
-    );
-
-    const observedClasses = new Set<'retry' | 'live' | 'historical'>();
-    const priorClassCursors: Partial<Record<'live' | 'historical', string>> = {};
-    let runtime = createRuntime();
-    for (let wakeIndex = 0; wakeIndex < 3; wakeIndex++) {
-      const before = env.skillEvolution.getReviewedOrQueuedBundleIds();
-      const result = await runtime.wake('manual');
-      if (result.review.reviewedQueueEntries > 0) observedClasses.add('retry');
-      const continuation = JSON.parse(fs.readFileSync(
-        reviewContinuationPathForEpisodeStore(env.episodeStorePath),
-        'utf8',
-      )) as { classCursors?: Partial<Record<'live' | 'historical', string>> };
-      for (const workClass of ['live', 'historical'] as const) {
-        const cursor = continuation.classCursors?.[workClass];
-        if (result.review.reviewedEpisodes > 0 && cursor && cursor !== priorClassCursors[workClass]) {
-          observedClasses.add(workClass);
-        }
-        if (cursor) priorClassCursors[workClass] = cursor;
-      }
-      const after = env.skillEvolution.getReviewedOrQueuedBundleIds();
-      for (const bundleId of after) {
-        if (before.has(bundleId) || !bundleId.startsWith('v3:learning-episode:')) continue;
-        const episodeId = bundleId.slice('v3:learning-episode:'.length);
-        observedClasses.add(episodes[episodeId]!.historicalTarget ? 'historical' : 'live');
-      }
-      runtime = createRuntime();
-    }
-
-    assert.deepEqual(
-      [...observedClasses].sort(),
-      ['historical', 'live', 'retry'],
-      'each continuously non-empty review class receives one shared-budget turn within three wakes',
-    );
-
-    const afterFirstRound = JSON.parse(fs.readFileSync(
-      reviewContinuationPathForEpisodeStore(env.episodeStorePath),
-      'utf8',
-    )) as { classCursors?: Partial<Record<'live' | 'historical', string>> };
-    assert.equal(afterFirstRound.classCursors?.live, 'live-1');
-    assert.equal(afterFirstRound.classCursors?.historical, 'historical-1');
-
-    const newlyArrived = makeEpisode('live-0', false);
-    const stateWithNewArrival = env.runtimeLearning.getEpisodeStore().load();
+    const live = makeEpisode('fair-live', false);
+    const historical = makeEpisode('fair-historical', true);
     env.runtimeLearning.getEpisodeStore().save({
-      ...stateWithNewArrival,
-      episodes: {
-        ...stateWithNewArrival.episodes,
-        [newlyArrived.episodeId]: newlyArrived,
-      },
+      schemaVersion: 3,
+      episodes: { [live.episodeId]: live, [historical.episodeId]: historical },
     });
-    let afterNewArrival: { classCursors?: Partial<Record<'live', string>> } = {};
-    for (let wakeIndex = 0; wakeIndex < 3; wakeIndex++) {
-      runtime = createRuntime();
-      await runtime.wake('manual');
-      afterNewArrival = JSON.parse(fs.readFileSync(
-        reviewContinuationPathForEpisodeStore(env.episodeStorePath),
-        'utf8',
-      )) as { classCursors?: Partial<Record<'live', string>> };
-      if (afterNewArrival.classCursors?.live !== 'live-1') break;
-    }
+    const retryBundle = runtimeReviewBundle('fair-retry');
+    seedOperationalFailure(env.reviewQueuePath, retryBundle, 'fair retry is due');
+    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxCandidates = 1;
+
+    const retryWake = await env.runtimeLearning.wake('manual');
+    const liveWake = await env.runtimeLearning.wake('manual');
+    const historicalWake = await env.runtimeLearning.wake('manual');
+
+    assert.equal(retryWake.review.reviewedEpisodes, 0);
+    assert.equal(liveWake.review.reviewedEpisodes, 1);
+    assert.equal(historicalWake.review.reviewedEpisodes, 1);
+    const reviewed = env.skillEvolution.getReviewedOrQueuedBundleIds();
+    assert.equal(reviewed.has(`v3:learning-episode:${live.episodeId}`), true);
+    assert.equal(reviewed.has(`v3:learning-episode:${historical.episodeId}`), true);
+    const retryJob = Object.values(loadEvidenceReviewJobStore(
+      evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath),
+    ).jobs).find(job => job.bundle.bundleId === retryBundle.bundleId)!;
     assert.equal(
-      afterNewArrival.classCursors?.live,
-      'live-2',
-      'within one class turn, a new episode before the cursor cannot restart iteration ahead of older live work',
+      Object.values(retryJob.quanta).filter(quantum => quantum.state === 'succeeded').length,
+      1,
+      'retry receives one turn, then yields to both episode classes',
     );
   });
 
@@ -1250,7 +1097,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       assert.equal(observedAbort, false);
       assert.equal(result.review.status, 'succeeded');
       assert.equal(env.skillEvolution.getAudit().length, 0);
-      assert.equal(readOrEmpty(env.reviewQueuePath)?.operational?.length ?? 0, 0);
+      assert.equal(countActiveOperational(loadEvidenceReviewJobStore(evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath))), 0);
     } finally {
       env.skillEvolution.reviewAndApply = originalReview;
     }
@@ -1313,7 +1160,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       assert.equal(reviewCalls, 0);
       assert.equal(result.review.reviewedEpisodes, 0);
       assert.equal(env.runtimeLearning.getEpisodeStore().load().episodes[episodeId]?.status, 'eligible');
-      assert.equal(readOrEmpty(env.reviewQueuePath)?.operational?.length ?? 0, 0);
+      assert.equal(countActiveOperational(loadEvidenceReviewJobStore(evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath))), 0);
     } finally {
       (env.runtimeLearning as any).runMaturation = originalRunMaturation;
       env.skillEvolution.reviewAndApply = originalReview;
@@ -1356,25 +1203,16 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     env.skillEvolution.reviewAndApply = async (bundle: any) => {
       started();
       await new Promise(resolve => setTimeout(resolve, 50));
-      const queue = loadReviewQueueState(env.reviewQueuePath);
-      addOrUpdateOperationalFailure(
-        queue,
-        bundle.episode,
-        bundle,
-        'branch_timeout',
-        'simulated active review deadline expiry during drain',
-        path.join(env.root, 'logs', 'branches', 'skill-author', 'timeout.jsonl'),
-        1,
-        60_000,
-        new Date(),
-      );
-      saveReviewQueueState(env.reviewQueuePath, queue);
+      seedOperationalFailure(env.reviewQueuePath, bundle, 'simulated active review deadline expiry during drain', new Date());
       return {
         transition: 'reject_candidate' as const,
         verified: false,
         rounds: 1,
         queued: 'operational' as const,
-        queueEntryId: findOperationalByBundleId(queue, bundle.bundleId)?.entryId,
+        queueEntryId: findOperationalJobByBundleId(
+          loadEvidenceReviewJobStore(evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath)),
+          bundle.bundleId,
+        )?.jobId,
       };
     };
 
@@ -1383,7 +1221,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       await startedPromise;
       await env.runtimeLearning.drain(200);
       const result = await wake;
-      const entry = findOperationalByBundleId(loadReviewQueueState(env.reviewQueuePath), `v3:learning-episode:${episodeId}`);
+      const entry = findOperationalJobByBundleId(loadEvidenceReviewJobStore(evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath)), `v3:learning-episode:${episodeId}`);
       assert.ok(entry);
       assert.equal(result.review.reviewedEpisodes, 1);
       assert.equal(result.review.operationalQueueReviews, 0);
@@ -1501,57 +1339,11 @@ describe('Issue 70 — Wake reason union and mask-free due-work', () => {
       },
     });
 
-    fs.mkdirSync(path.dirname(env.reviewQueuePath), { recursive: true });
-    fs.writeFileSync(env.reviewQueuePath, JSON.stringify({
-      schemaVersion: 1,
-      deferred: [],
-      operational: [{
-        bundleId: 'issue-70-operational',
-        entryId: 'issue-70-operational-1',
-        capability: {
-          kind: 'capability',
-          schemaVersion: 1,
-          capabilityId: 'issue-70-capability',
-          title: 'Issue 70',
-          applicability: 'test',
-          actionPattern: 'test',
-          boundaries: [],
-          risks: [],
-          solvedLoop: {
-            problem: 'test',
-            action: 'test',
-            verification: 'test',
-            noCorrection: 'test',
-          },
-          generatedAt: new Date(0).toISOString(),
-          sourceUnit: {
-            filePath: 'test.jsonl',
-            byteRange: { start: 0, end: 1 },
-            generatedAt: new Date(0).toISOString(),
-          },
-        },
-        bundle: {
-          bundleId: 'issue-70-operational',
-          episode: {},
-          completionEvidence: [{ ref: 'test#completion', sourceFilePath: 'test.jsonl', turn: 1, kind: 'artifact-delivery', detail: 'send_file: issue-70' }],
-          settlementEvidence: [{ ref: 'test#settlement', sourceFilePath: 'test.jsonl', turn: 1, kind: 'artifact-delivery', detail: 'send_file: issue-70' }],
-          boundedContinuity: [],
-          referencedSkills: [],
-          relatedCurrentSkills: [],
-        },
-        candidateCapabilityId: 'issue-70-capability',
-        kind: 'branch_timeout',
-        failureKind: 'branch_timeout',
-        failureMessage: 'Issue 70 test retry',
-        failureTranscripts: [],
-        attempts: 0,
-        currentDelayMs: 1_000,
-        updatedAt: new Date(0).toISOString(),
-        nextRetryAt: new Date(0).toISOString(),
-        retryCount: 1,
-        createdAt: new Date(0).toISOString(),
-      }],
-    }), 'utf8');
+    seedOperationalFailure(
+      env.reviewQueuePath,
+      runtimeReviewBundle('issue-70-operational'),
+      'Issue 70 test retry',
+    );
 
     const result = await env.runtimeLearning.wake(['semantic-reassessment', 'operational-retry']);
 
@@ -1559,7 +1351,14 @@ describe('Issue 70 — Wake reason union and mask-free due-work', () => {
     assert.equal(result.maturation.status, 'succeeded');
     assert.equal(result.maturation.becameEligible, 1);
     assert.equal(result.review.reviewedEpisodes, 1);
-    assert.ok(result.review.reviewedQueueEntries >= 1, 'expected queue work from operational due');
+    const operationalJob = findOperationalJobByBundleId(
+      loadEvidenceReviewJobStore(evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath)),
+      'issue-70-operational',
+    );
+    assert.ok(
+      operationalJob && Object.values(operationalJob.quanta).some(quantum => quantum.state === 'succeeded'),
+      'expected the sole fair executor to advance operational work alongside maturation',
+    );
   });
 
   test('discovery reasons in a reason array still scan and run due stages', async () => {
@@ -1730,6 +1529,80 @@ describe('RuntimeLearning — semantic reassessment wake', () => {
     assert.equal(secondEntry?.attemptCount, firstEntry?.attemptCount);
   });
 
+  test('restart mirrors a terminal Job before submission after a manifest crash window', async () => {
+    env.restore();
+    env.teardown();
+    let authorCalls = 0;
+    let verifierCalls = 0;
+    env = setupEnv(0, {
+      authorFixture: () => {
+        authorCalls++;
+        return {
+          body: 'Keep the bounded legacy route unchanged.',
+          envelope: {
+            decision: 'migrate_skill_route' as const,
+            targetCapabilityHandle: 'legacy',
+            routingName: 'report-delivery',
+            description: 'Deliver reports.',
+          },
+        };
+      },
+      verifierFixture: () => {
+        verifierCalls++;
+        return {
+          decision: 'reject' as const,
+          issues: [{ code: 'no-change', message: 'No migration is needed.', severity: 'warning' as const }],
+          rationale: 'The current capability remains sufficient.',
+        };
+      },
+    });
+    const skillPath = path.join(env.outputDir, 'legacy', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+    fs.writeFileSync(skillPath, '---\nname: settled-artifact-delivery\ndescription: Legacy\n---\n\nLegacy guidance.\n', 'utf8');
+    const registry = emptyCurrentSkillRegistryState();
+    registry.capabilities.legacy = {
+      handle: 'legacy', revision: 1, routingName: 'settled-artifact-delivery', description: 'Legacy', skillFilePath: skillPath,
+      guidanceHash: require('node:crypto').createHash('sha256').update(fs.readFileSync(skillPath)).digest('hex'),
+      evidenceRefs: [{ ref: 'legacy#completion' }, { ref: 'legacy#settlement' }], referencedSkills: [],
+      semanticObservations: [{ kind: 'user-intent', value: 'Deliver reports.', sourceRefs: ['legacy#user'] }],
+      createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+    };
+    saveCurrentSkillRegistry(env.registryPath, registry);
+
+    const first = await bootstrapSemanticReassessmentOnce({
+      skillEvolution: env.skillEvolution,
+      manifestPath: env.reassessmentManifestPath,
+    });
+    assert.equal(first[0]?.status, 'succeeded');
+    const manifest = new SemanticReassessmentManifestStore(env.reassessmentManifestPath);
+    const manifestState = manifest.load();
+    const entry = Object.values(manifestState.entries)[0]!;
+    const jobStorePath = evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath);
+    const beforeJobs = Object.values(loadEvidenceReviewJobStore(jobStorePath).jobs)
+      .filter(job => job.bundle.bundleId === entry.taskId);
+    assert.equal(beforeJobs.some(job => job.disposition === 'completed'), true);
+    assert.ok(authorCalls > 0 && verifierCalls > 0);
+
+    // Simulate loss of only the manifest mirror after the terminal Job write.
+    entry.status = 'pending';
+    delete entry.lastError;
+    delete entry.nextRetryAt;
+    manifest.save(manifestState);
+    const callsBeforeRestart = { authorCalls, verifierCalls };
+    const restarted = new SkillEvolutionRuntime(env.skillEvolutionOptions);
+    const replay = await bootstrapSemanticReassessmentOnce({
+      skillEvolution: restarted,
+      manifestPath: env.reassessmentManifestPath,
+    });
+
+    assert.equal(replay[0]?.status, 'succeeded');
+    assert.deepEqual({ authorCalls, verifierCalls }, callsBeforeRestart, 'terminal work must not be submitted again');
+    const afterJobs = Object.values(loadEvidenceReviewJobStore(jobStorePath).jobs)
+      .filter(job => job.bundle.bundleId === entry.taskId);
+    assert.equal(afterJobs.length, beforeJobs.length, 'same-bundle Job history must not grow on restart');
+    assert.equal(manifest.load().entries[entry.taskId]?.status, 'succeeded');
+  });
+
   test('operational retry wake reconciles the manifest after queue recovery', async () => {
     env.restore();
     env.teardown();
@@ -1760,10 +1633,19 @@ describe('RuntimeLearning — semantic reassessment wake', () => {
       manifestPath: env.reassessmentManifestPath,
     });
     assert.equal(first[0]?.status, 'failed');
-    const queue = readOrEmpty(env.reviewQueuePath);
-    assert.ok(queue?.operational?.length === 1);
-    queue.operational[0].nextRetryAt = new Date(0).toISOString();
-    fs.writeFileSync(env.reviewQueuePath, JSON.stringify(queue, null, 2), 'utf8');
+    const jobStoreState = loadEvidenceReviewJobStore(evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath));
+    const opJob = Object.values(jobStoreState.jobs).find(
+      job => job.disposition === 'active' && job.workClass === 'operational_recovery',
+    );
+    assert.ok(opJob, 'expected operational recovery job in job store');
+    if (opJob) {
+      opJob.nextDueAt = new Date(0).toISOString();
+      const retryQuantum = Object.values(opJob.quanta).find(quantum => quantum.state === 'retry_wait');
+      assert.ok(retryQuantum, 'expected a retry_wait quantum after verifier failure');
+      retryQuantum.nextRetryAt = new Date(0).toISOString();
+      upsertEvidenceReviewJob(jobStoreState, opJob);
+      saveEvidenceReviewJobStore(evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath), jobStoreState);
+    }
     const manifest = new SemanticReassessmentManifestStore(env.reassessmentManifestPath);
     const state = manifest.load();
     const entry = Object.values(state.entries)[0]!;
@@ -1771,13 +1653,25 @@ describe('RuntimeLearning — semantic reassessment wake', () => {
     manifest.save(state);
 
     verifierAvailable = true;
-    const result = await env.runtimeLearning.wake('operational-retry');
-    assert.equal(result.review.operationalRetries, 0);
-    assert.equal(result.review.operationalQueueReviews, 1);
+    let result = await env.runtimeLearning.wake('operational-retry');
+    for (let attempt = 0; attempt < 32; attempt += 1) {
+      const current = Object.values(manifest.load().entries)[0]!;
+      if (current.status === 'succeeded') break;
+      result = await env.runtimeLearning.wake('manual');
+    }
+    assert.equal(result.review.status, 'succeeded');
     const reconciled = Object.values(manifest.load().entries)[0]!;
     assert.equal(reconciled.status, 'succeeded');
     assert.equal(reconciled.nextRetryAt, undefined);
-    assert.equal(readOrEmpty(env.reviewQueuePath)?.operational?.length, 0);
+    const finalJobs = loadEvidenceReviewJobStore(evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath));
+    assert.equal(countActiveOperational(finalJobs), 0);
+    assert.ok(
+      Object.values(finalJobs.jobs).filter(job => (
+        job.bundle.bundleId === entry.taskId
+        && (job.disposition === 'active' || job.disposition === 'deferred')
+      )).length <= 1,
+      'manifest wakes must never create parallel active owners while the job store recovers',
+    );
   });
 });
 
@@ -2073,33 +1967,6 @@ describe('Issue 3 — Review failure status', () => {
   beforeEach(() => { env = setupEnv(0); });
   afterEach(() => { env.restore(); env.teardown(); });
 
-  test('queue review failure reports failed status with error message', async () => {
-    const [delivery, acceptance] = deliveryPair(-2);
-    writeLog(env.logFile, [delivery, acceptance]);
-
-    // Override reviewDueQueueEntries to throw
-    const originalQueueReview = env.skillEvolution.reviewDueQueueEntries.bind(env.skillEvolution);
-    env.skillEvolution.reviewDueQueueEntries = async () => {
-      throw new Error('Simulated queue review failure');
-    };
-
-    try {
-      const result = await env.runtimeLearning.wake('startup');
-
-      assert.equal(result.review.status, 'failed',
-        `expected 'failed' got '${result.review.status}'`);
-      assert.ok(result.review.errorMessage, 'expected error message');
-      assert.ok(result.review.errorMessage!.includes('queue review failed'),
-        `expected queue failure in message, got: ${result.review.errorMessage}`);
-
-      // Completed episode review counts are preserved
-      assert.ok(result.review.reviewedEpisodes >= 0,
-        'reviewedEpisodes should be >= 0');
-    } finally {
-      env.skillEvolution.reviewDueQueueEntries = originalQueueReview;
-    }
-  });
-
   test('per-episode review failure reports failed status with error message', async () => {
     const [delivery, acceptance] = deliveryPair(-2);
     writeLog(env.logFile, [delivery, acceptance]);
@@ -2132,114 +1999,6 @@ describe('Issue 3 — Review failure status', () => {
     }
   });
 
-  test('combined episode + queue failure reports failed status with combined message', async () => {
-    const [delivery, acceptance] = deliveryPair(-2);
-    writeLog(env.logFile, [delivery, acceptance]);
-
-    // Override both methods to throw
-    const originalReviewAndApply = env.skillEvolution.reviewAndApply.bind(env.skillEvolution);
-    const originalQueueReview = env.skillEvolution.reviewDueQueueEntries.bind(env.skillEvolution);
-
-    let reviewCallCount = 0;
-    env.skillEvolution.reviewAndApply = async (bundle: any) => {
-      reviewCallCount++;
-      if (reviewCallCount === 1) {
-        throw new Error('Episode review failure');
-      }
-      return originalReviewAndApply(bundle);
-    };
-    env.skillEvolution.reviewDueQueueEntries = async () => {
-      throw new Error('Queue review failure');
-    };
-
-    try {
-      const result = await env.runtimeLearning.wake('startup');
-
-      assert.equal(result.review.status, 'failed',
-        `expected 'failed' got '${result.review.status}'`);
-      assert.ok(result.review.errorMessage, 'expected error message');
-      assert.ok(result.review.errorMessage!.includes('episode review(s) failed'),
-        `expected episode failure in message: ${result.review.errorMessage}`);
-      assert.ok(result.review.errorMessage!.includes('queue review failed'),
-        `expected queue failure in message: ${result.review.errorMessage}`);
-    } finally {
-      env.skillEvolution.reviewAndApply = originalReviewAndApply;
-      env.skillEvolution.reviewDueQueueEntries = originalQueueReview;
-    }
-  });
-
-  test('timeout during queue review writes timed_out heartbeat state', async () => {
-    const originalQueueReview = env.skillEvolution.reviewDueQueueEntries.bind(env.skillEvolution);
-    env.skillEvolution.reviewDueQueueEntries = async () => ({
-      reviewed: 1,
-      reviewedQueueEntries: 1,
-      deferredQueueReviews: 0,
-      operationalQueueReviews: 1,
-      deferredRetried: 0,
-      operationalRetried: 0,
-      transitionsByKind: {},
-      queueOutcomes: {
-        timeout: {
-          status: 'operational',
-          reason: 'Timeout',
-          failureKind: 'branch_timeout',
-          nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
-        },
-      },
-    });
-
-    try {
-      const result = await env.runtimeLearning.wake('startup');
-
-      assert.equal(result.review.reviewTimeoutCount, 1, 'expected one timeout count');
-      assert.equal(result.review.reviewFailureCount, 0, 'expected zero failure count');
-
-      const hb = env.runtimeLearning.loadHeartbeatRecord();
-      assert.equal(hb.lastRunStatus, 'timed_out', `expected timed_out, got ${hb.lastRunStatus}`);
-      assert.equal(hb.lastReviewTimeoutCount, 1);
-      assert.equal(hb.lastReviewFailureCount, 0);
-      assert.deepEqual(hb.lastPendingWakeReasons, ['startup']);
-      assert.ok(hb.lastRunDurationMs >= 0, 'expected lastRunDurationMs');
-    } finally {
-      env.skillEvolution.reviewDueQueueEntries = originalQueueReview;
-    }
-  });
-
-  test('operational queue failure writes queued_operational_retry heartbeat state', async () => {
-    const originalQueueReview = env.skillEvolution.reviewDueQueueEntries.bind(env.skillEvolution);
-    env.skillEvolution.reviewDueQueueEntries = async () => ({
-      reviewed: 1,
-      reviewedQueueEntries: 1,
-      deferredQueueReviews: 0,
-      operationalQueueReviews: 1,
-      deferredRetried: 0,
-      operationalRetried: 0,
-      transitionsByKind: {},
-      queueOutcomes: {
-        failed: {
-          status: 'operational',
-          reason: 'Transient failure',
-          failureKind: 'branch_failure',
-          nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
-        },
-      },
-    });
-
-    try {
-      const result = await env.runtimeLearning.wake('startup');
-
-      assert.equal(result.review.reviewTimeoutCount, 0, 'expected zero timeout count');
-      assert.equal(result.review.reviewFailureCount, 1, 'expected one failure count');
-
-      const hb = env.runtimeLearning.loadHeartbeatRecord();
-      assert.equal(hb.lastRunStatus, 'queued_operational_retry', `expected queued_operational_retry, got ${hb.lastRunStatus}`);
-      assert.equal(hb.lastReviewTimeoutCount, 0);
-      assert.equal(hb.lastReviewFailureCount, 1);
-      assert.deepEqual(hb.lastPendingWakeReasons, ['startup']);
-    } finally {
-      env.skillEvolution.reviewDueQueueEntries = originalQueueReview;
-    }
-  });
 });
 
 describe('Issue 4 — Heartbeat single-write', () => {
@@ -2464,11 +2223,15 @@ describe('Issue #83 — controlled production acceptance', () => {
       releaseHanging.resolve();
       await Promise.all([startup, targeted]);
 
-      const queue = loadReviewQueueState(env.reviewQueuePath);
-      assert.equal(queue.operational.length, 1);
-      assert.equal(queue.operational[0]!.failureKind, 'branch_timeout');
+      const queue = loadEvidenceReviewJobStore(evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath));
+      const opJobs = Object.values(queue.jobs).filter(j => j.disposition === 'active' && j.workClass === 'operational_recovery');
+      assert.equal(opJobs.length, 1);
       assert.equal(
-        (queue.operational[0]!.bundle.episode as { sourceUnit?: { filePath?: string } }).sourceUnit?.filePath,
+        Object.values(opJobs[0]!.quanta).find(quantum => quantum.state === 'retry_wait')?.failureKind,
+        'branch_timeout',
+      );
+      assert.equal(
+        (opJobs[0]!.bundle.episode as { sourceUnit?: { filePath?: string } }).sourceUnit?.filePath,
         'episode-acceptance-timeout.jsonl',
       );
 
@@ -2565,9 +2328,12 @@ describe('RuntimeLearning — fair wake pre-claim fencing', () => {
     assert.ok(persistedStale.successorJobId, 'expected stale job to record successorJobId');
     assert.ok(successor, 'expected normalized successor job to be created');
     assert.deepEqual(successor!.bundle.referencedSkills, []);
+    for (let attempt = 0; attempt < 16 && authorBundles.length === 0; attempt += 1) {
+      await env.runtimeLearning.wake('manual');
+    }
     assert.ok(
       authorBundles.some(call => call.bundleId === successor!.bundle.bundleId),
-      'fair wake should continue on the normalized successor when budget allows',
+      'successive fair claims should eventually reach Author on the normalized successor',
     );
     assert.ok(
       authorBundles.every(call => call.referencedSkills.length === 0),

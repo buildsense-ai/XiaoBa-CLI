@@ -107,7 +107,6 @@ function createProcessHarness() {
       taskStatuses.push({ topic, status });
     },
   };
-  bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
   bot.subAgentEventRoutes = new Map();
   bot.subAgentCompletionBatches = new Map();
@@ -281,8 +280,9 @@ describe('CatsCo content blocks', () => {
     };
 
     const blocks = await (bot as any).buildMultimodalMessage('请读取这个文件', [attachment]);
-    const prompt = (bot as any).buildAttachmentOnlyPrompt([attachment]);
-    const modelVisible = JSON.stringify(blocks) + '\n' + prompt;
+    const modelVisible = blocks
+      .map((block: any) => block.type === 'text' ? block.text : JSON.stringify(block))
+      .join('\n');
 
     assert.doesNotMatch(modelVisible, /catsco_attachment:visible-ref/);
     assert.match(modelVisible, /本地缓存路径:/);

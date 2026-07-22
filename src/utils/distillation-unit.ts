@@ -570,43 +570,6 @@ export function processSessionLog(
   return { distillationUnit: null, advanced: result.advanced, processed: false };
 }
 
-/**
- * Process all session log files found under a directory tree.
- *
- * Each file is processed independently via {@link processSessionLog}.
- */
-export function processSessionLogDirectory(
-  logDir: string,
-  stateFilePath: string,
-  processor: (unit: DistillationUnit) => void,
-): { units: DistillationUnit[]; advancedFiles: number } {
-  const files = collectJsonlFiles(logDir);
-  const units: DistillationUnit[] = [];
-  let advancedFiles = 0;
-
-  for (const filePath of files) {
-    const result = processSessionLog(filePath, stateFilePath, processor);
-    if (result.processed && result.distillationUnit) units.push(result.distillationUnit);
-    if (result.advanced) advancedFiles++;
-  }
-
-  return { units, advancedFiles };
-}
-
-function collectJsonlFiles(dir: string): string[] {
-  if (!fs.existsSync(dir)) return [];
-  const results: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      results.push(...collectJsonlFiles(fullPath));
-    } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-      results.push(fullPath);
-    }
-  }
-  return results.sort();
-}
-
 function parseLines(content: string): ParsedSessionLogEntry[] {
   return content
     .split(/\r?\n/)

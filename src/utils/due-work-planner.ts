@@ -3,7 +3,7 @@
  *
  * A small planner that derives due work and the earliest next wake from
  * durable Runtime Learning state. It reads three durable sources — the
- * Learning Episode store, the Skill Evolution Review Queue, and the
+ * Learning Episode store, the Evidence Review Job store, and the
  * Skill Usage Curator state — and produces a synchronous snapshot of what
  * work is past its deadline and when the next future wake is needed.
  *
@@ -12,8 +12,7 @@
  * which stages to run and when to wake next. All sources are durable files
  * so deadlines are restored after restart without migration.
  *
- * Semantic defers remain evidence-gated by the SkillEvolutionRuntime's
- * existing `isDeferredEntryEligible` check; the planner does not blindly
+ * Semantic defers remain evidence-gated by SkillEvolutionRuntime; the planner does not blindly
  * treat deferred entries as due.
  */
 
@@ -118,7 +117,7 @@ export interface DueWorkPlan {
 export interface PlannerSources {
   /** Path to the Learning Episode store JSON file. */
   learningEpisodeStorePath: string;
-  /** Path to the V3 Skill Evolution Review Queue JSON file. */
+  /** Former queue path; its directory locates the authoritative Evidence Review Job store. */
   reviewQueuePath: string;
   /** Path to the Curator state JSON file, or null when no curator is configured. */
   curatorStatePath: string | null;
@@ -314,35 +313,10 @@ export class DueWorkPlanner {
   }
 
   private readEarliestOperationalRetryDeadline(): number | null {
-    // SkillEvolutionReviewQueueState:
-    //   { schemaVersion: 1, operational: SkillEvolutionOperationalReviewFailureEntry[], ... }
-    // Entry fields relevant to planning:
-    //   nextRetryAt: string (ISO timestamp)
-    // After #104/#110 transfer, active operational_recovery jobs in the Evidence
-    // Review Job store also carry nextDueAt and must keep the wake path live.
+    // After Round 9 consolidation, the Evidence Review Job store is the single
+    // durable owner of operational retry state. Legacy review-queue.json
+    // entries are migrated by SkillEvolutionRuntime construction before planning.
     let earliest: number | null = null;
-    try {
-      if (fs.existsSync(this.sources.reviewQueuePath)) {
-        const raw = fs.readFileSync(this.sources.reviewQueuePath, 'utf8');
-        const parsed = JSON.parse(raw) as {
-          operational?: Array<{ nextRetryAt?: string }>;
-        };
-        const retrySchemaVersion = (parsed as { schemaVersion?: unknown }).schemaVersion;
-        if (retrySchemaVersion === undefined || retrySchemaVersion === 1) {
-          if (Array.isArray(parsed.operational)) {
-            for (const entry of parsed.operational) {
-              if (typeof entry.nextRetryAt !== 'string') continue;
-              const ms = Date.parse(entry.nextRetryAt);
-              if (!Number.isFinite(ms)) continue;
-              if (earliest === null || ms < earliest) earliest = ms;
-            }
-          }
-        }
-      }
-    } catch {
-      // corrupt queue is non-fatal; still check migrated jobs below
-    }
-
     try {
       const jobStorePath = evidenceReviewJobStorePathForReviewQueue(this.sources.reviewQueuePath);
       if (fs.existsSync(jobStorePath)) {

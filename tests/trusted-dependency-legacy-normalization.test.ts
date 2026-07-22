@@ -10,14 +10,18 @@ import {
   type SkillEvolutionOptions,
 } from '../src/utils/skill-evolution';
 import {
-  addOrUpdateOperationalFailure,
-  loadReviewQueueState,
-  saveReviewQueueState,
-  upsertDeferredEntry,
-} from '../src/utils/skill-evolution-review-queue';
-import { readShardStructurally, resolveEvidenceReviewJobStorePath } from '../src/utils/evidence-review-engine';
+  loadEvidenceReviewJobStore,
+  saveEvidenceReviewJobStore,
+  upsertEvidenceReviewJob,
+  findOperationalJobByBundleId,
+  findDeferredJobByBundleId,
+} from '../src/utils/evidence-review-job-store';
 import { createEvidenceReviewJob } from '../src/utils/evidence-review-graph';
-import { loadEvidenceReviewJobStore, saveEvidenceReviewJobStore } from '../src/utils/evidence-review-job-store';
+import {
+  advanceJobsFairly,
+  readShardStructurally,
+  resolveEvidenceReviewJobStorePath,
+} from '../src/utils/evidence-review-engine';
 
 function fixtureCandidate(id: string): DistilledKnowledgeCandidate {
   return {
@@ -171,6 +175,84 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
   };
 }
 
+/** Seed an operational recovery job in the job store (replaces legacy addOrUpdateOperationalFailure). */
+function seedOperationalFailure(
+  options: SkillEvolutionOptions,
+  bundle: EvidenceBundle,
+  message: string,
+  now = new Date(0),
+): void {
+  const jobStorePath = resolveEvidenceReviewJobStorePath(options);
+  const job = createEvidenceReviewJob({
+    bundle,
+    candidate: bundle.episode as DistilledKnowledgeCandidate,
+    workClass: 'operational_recovery',
+  });
+  const retryQuantum = Object.values(job.quanta)
+    .filter(quantum => quantum.dependencyQuantumIds.length === 0)
+    .sort((left, right) => left.quantumId.localeCompare(right.quantumId, 'en'))[0]!;
+  retryQuantum.state = 'retry_wait';
+  retryQuantum.attempts = 1;
+  retryQuantum.currentDelayMs = 1;
+  retryQuantum.nextRetryAt = now.toISOString();
+  retryQuantum.failureKind = 'branch_timeout';
+  retryQuantum.failureMessage = message;
+  const state = loadEvidenceReviewJobStore(jobStorePath);
+  const operationalJob = {
+    ...job,
+    disposition: 'active' as const,
+    workClass: 'operational_recovery' as const,
+    nextDueAt: now.toISOString(),
+  };
+  upsertEvidenceReviewJob(state, operationalJob);
+  saveEvidenceReviewJobStore(jobStorePath, state);
+}
+
+/** Seed a deferred job in the job store (replaces legacy upsertDeferredEntry). */
+function seedDeferredEntry(
+  options: SkillEvolutionOptions,
+  bundle: EvidenceBundle,
+  reviewerVersion: string,
+  reason: string,
+  now = new Date(0),
+): void {
+  const jobStorePath = resolveEvidenceReviewJobStorePath(options);
+  const job = createEvidenceReviewJob({
+    bundle,
+    candidate: bundle.episode as DistilledKnowledgeCandidate,
+    workClass: 'semantic_reassessment',
+  });
+  const state = loadEvidenceReviewJobStore(jobStorePath);
+  const deferredJob = {
+    ...job,
+    disposition: 'deferred' as const,
+    workClass: 'semantic_reassessment' as const,
+    deferState: {
+      reviewerVersion,
+      reason,
+      deferredAt: now.toISOString(),
+    },
+  };
+  upsertEvidenceReviewJob(state, deferredJob);
+  saveEvidenceReviewJobStore(jobStorePath, state);
+}
+
+async function advanceFairUntilBlocked(runtime: SkillEvolutionRuntime) {
+  const touched = new Set<string>();
+  runtime.reactivateDeferredReviews();
+  runtime.fenceStaleActiveJobsBeforeFairAdvance();
+  for (let turn = 0; turn < 256; turn++) {
+    const advanced = await advanceJobsFairly(
+      runtime.getEvidenceReviewEngine(),
+      `normalization:${turn}`,
+      { maxClaims: 1, maxClaimsPerJob: 1 },
+    );
+    for (const jobId of advanced.jobIds) touched.add(jobId);
+    if (advanced.claims === 0) break;
+  }
+  return runtime.collectFairReviewOutcomes([...touched]);
+}
+
 describe('legacy referencedSkills normalization', () => {
   test('ordinary persisted operational retry strips legacy global-catalog referencedSkills before Author/Verifier', async () => {
     const env = setup();
@@ -189,23 +271,10 @@ describe('legacy referencedSkills normalization', () => {
         };
       };
 
-      const queue = loadReviewQueueState(env.options.reviewQueuePath!);
-      const bundle = ordinaryBundle();
-      addOrUpdateOperationalFailure(
-        queue,
-        bundle.episode as DistilledKnowledgeCandidate,
-        bundle,
-        'branch_timeout',
-        'seeded legacy ordinary retry',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      queue.operational = queue.operational.map(item => ({ ...item, nextRetryAt: new Date(0).toISOString() }));
-      saveReviewQueueState(env.options.reviewQueuePath!, queue);
+            const bundle = ordinaryBundle();
+      seedOperationalFailure(env.options, bundle, 'seeded legacy ordinary retry');
 
-      const result = await new SkillEvolutionRuntime(env.options).reviewDueQueueEntries();
+      const result = await advanceFairUntilBlocked(new SkillEvolutionRuntime(env.options));
 
       assert.equal(result.reviewed, 1);
       assert.deepEqual(seenReferencedSkills, [[]]);
@@ -231,23 +300,10 @@ describe('legacy referencedSkills normalization', () => {
         };
       };
 
-      const queue = loadReviewQueueState(env.options.reviewQueuePath!);
-      const bundle = genericV3Bundle();
-      addOrUpdateOperationalFailure(
-        queue,
-        bundle.episode as DistilledKnowledgeCandidate,
-        bundle,
-        'branch_timeout',
-        'seeded generic v3 retry',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      queue.operational = queue.operational.map(item => ({ ...item, nextRetryAt: new Date(0).toISOString() }));
-      saveReviewQueueState(env.options.reviewQueuePath!, queue);
+            const bundle = genericV3Bundle();
+      seedOperationalFailure(env.options, bundle, 'seeded generic v3 retry');
 
-      const result = await new SkillEvolutionRuntime(env.options).reviewDueQueueEntries();
+      const result = await advanceFairUntilBlocked(new SkillEvolutionRuntime(env.options));
 
       assert.equal(result.reviewed, 1);
       assert.deepEqual(seenReferencedSkills, [[]]);
@@ -274,23 +330,10 @@ describe('legacy referencedSkills normalization', () => {
         };
       };
 
-      const queue = loadReviewQueueState(env.options.reviewQueuePath!);
-      const bundle = flashcardBundle();
-      addOrUpdateOperationalFailure(
-        queue,
-        bundle.episode as DistilledKnowledgeCandidate,
-        bundle,
-        'branch_timeout',
-        'seeded flashcard retry',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      queue.operational = queue.operational.map(item => ({ ...item, nextRetryAt: new Date(0).toISOString() }));
-      saveReviewQueueState(env.options.reviewQueuePath!, queue);
+            const bundle = flashcardBundle();
+      seedOperationalFailure(env.options, bundle, 'seeded flashcard retry');
 
-      const result = await new SkillEvolutionRuntime(env.options).reviewDueQueueEntries();
+      const result = await advanceFairUntilBlocked(new SkillEvolutionRuntime(env.options));
 
       assert.equal(result.reviewed, 1);
       assert.deepEqual(seenReferencedSkills, [['word-card-maker']]);
@@ -317,23 +360,10 @@ describe('legacy referencedSkills normalization', () => {
         };
       };
 
-      const queue = loadReviewQueueState(env.options.reviewQueuePath!);
-      const bundle = usageCurationBundle();
-      addOrUpdateOperationalFailure(
-        queue,
-        bundle.episode as DistilledKnowledgeCandidate,
-        bundle,
-        'branch_timeout',
-        'seeded usage-curation retry',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      queue.operational = queue.operational.map(item => ({ ...item, nextRetryAt: new Date(0).toISOString() }));
-      saveReviewQueueState(env.options.reviewQueuePath!, queue);
+            const bundle = usageCurationBundle();
+      seedOperationalFailure(env.options, bundle, 'seeded usage-curation retry');
 
-      const result = await new SkillEvolutionRuntime(env.options).reviewDueQueueEntries();
+      const result = await advanceFairUntilBlocked(new SkillEvolutionRuntime(env.options));
 
       assert.equal(result.reviewed, 1);
       assert.deepEqual(seenReferencedSkills, [['generated-helper-a']]);
@@ -360,23 +390,10 @@ describe('legacy referencedSkills normalization', () => {
         };
       };
 
-      const queue = loadReviewQueueState(env.options.reviewQueuePath!);
-      const bundle = semanticReassessmentBundle();
-      addOrUpdateOperationalFailure(
-        queue,
-        bundle.episode as DistilledKnowledgeCandidate,
-        bundle,
-        'branch_timeout',
-        'seeded semantic reassessment retry',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      queue.operational = queue.operational.map(item => ({ ...item, nextRetryAt: new Date(0).toISOString() }));
-      saveReviewQueueState(env.options.reviewQueuePath!, queue);
+            const bundle = semanticReassessmentBundle();
+      seedOperationalFailure(env.options, bundle, 'seeded semantic reassessment retry');
 
-      const result = await new SkillEvolutionRuntime(env.options).reviewDueQueueEntries();
+      const result = await advanceFairUntilBlocked(new SkillEvolutionRuntime(env.options));
 
       assert.equal(result.reviewed, 1);
       assert.deepEqual(seenReferencedSkills, [['generated-helper-a']]);
@@ -403,23 +420,10 @@ describe('legacy referencedSkills normalization', () => {
         };
       };
 
-      const queue = loadReviewQueueState(env.options.reviewQueuePath!);
-      const bundle = trustedOrdinaryBundle();
-      addOrUpdateOperationalFailure(
-        queue,
-        bundle.episode as DistilledKnowledgeCandidate,
-        bundle,
-        'branch_timeout',
-        'seeded trusted ordinary retry',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      queue.operational = queue.operational.map(item => ({ ...item, nextRetryAt: new Date(0).toISOString() }));
-      saveReviewQueueState(env.options.reviewQueuePath!, queue);
+            const bundle = trustedOrdinaryBundle();
+      seedOperationalFailure(env.options, bundle, 'seeded trusted ordinary retry');
 
-      const result = await new SkillEvolutionRuntime(env.options).reviewDueQueueEntries();
+      const result = await advanceFairUntilBlocked(new SkillEvolutionRuntime(env.options));
 
       assert.equal(result.reviewed, 1);
       assert.deepEqual(seenReferencedSkills, [['generated-helper-a']]);
@@ -452,22 +456,10 @@ describe('legacy referencedSkills normalization', () => {
         rationale: 'Looks bounded now.',
       });
 
-      const queue = loadReviewQueueState(env.options.reviewQueuePath!);
-      const bundle = trustedOrdinaryBundle('v3:learning-episode:episode-trusted-deferred-1');
-      upsertDeferredEntry(
-        queue,
-        bundle.episode as DistilledKnowledgeCandidate,
-        bundle,
-        'legacy-reviewer-version',
-        [],
-        'Waiting for retry.',
-        new Date(0),
-      );
-      saveReviewQueueState(env.options.reviewQueuePath!, queue);
+            const bundle = trustedOrdinaryBundle('v3:learning-episode:episode-trusted-deferred-1');
+      seedDeferredEntry(env.options, bundle, 'legacy-reviewer-version', 'Waiting for retry.');
 
-      const retried = await new SkillEvolutionRuntime(env.options).reviewDueQueueEntries();
-
-      assert.equal(retried.reviewed, 1);
+      await advanceFairUntilBlocked(new SkillEvolutionRuntime(env.options));
       assert.deepEqual(seenReferencedSkills, [['generated-helper-a']]);
     } finally {
       env.cleanup();
@@ -491,23 +483,10 @@ describe('legacy referencedSkills normalization', () => {
         };
       };
 
-      const queue = loadReviewQueueState(env.options.reviewQueuePath!);
-      const bundle = forgedTrustedOrdinaryBundle();
-      addOrUpdateOperationalFailure(
-        queue,
-        bundle.episode as DistilledKnowledgeCandidate,
-        bundle,
-        'branch_timeout',
-        'seeded forged ordinary retry',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      queue.operational = queue.operational.map(item => ({ ...item, nextRetryAt: new Date(0).toISOString() }));
-      saveReviewQueueState(env.options.reviewQueuePath!, queue);
+            const bundle = forgedTrustedOrdinaryBundle();
+      seedOperationalFailure(env.options, bundle, 'seeded forged ordinary retry');
 
-      const result = await new SkillEvolutionRuntime(env.options).reviewDueQueueEntries();
+      const result = await advanceFairUntilBlocked(new SkillEvolutionRuntime(env.options));
 
       assert.equal(result.reviewed, 1);
       assert.deepEqual(seenReferencedSkills, [[]]);
@@ -533,23 +512,10 @@ describe('legacy referencedSkills normalization', () => {
         };
       };
 
-      const queue = loadReviewQueueState(env.options.reviewQueuePath!);
-      const bundle = legacyV3Bundle();
-      addOrUpdateOperationalFailure(
-        queue,
-        bundle.episode as DistilledKnowledgeCandidate,
-        bundle,
-        'branch_timeout',
-        'seeded legacy v3 retry',
-        undefined,
-        1,
-        1,
-        new Date(0),
-      );
-      queue.operational = queue.operational.map(item => ({ ...item, nextRetryAt: new Date(0).toISOString() }));
-      saveReviewQueueState(env.options.reviewQueuePath!, queue);
+            const bundle = legacyV3Bundle();
+      seedOperationalFailure(env.options, bundle, 'seeded legacy v3 retry');
 
-      const result = await new SkillEvolutionRuntime(env.options).reviewDueQueueEntries();
+      const result = await advanceFairUntilBlocked(new SkillEvolutionRuntime(env.options));
 
       assert.equal(result.reviewed, 1);
       assert.deepEqual(seenReferencedSkills, [[]]);
@@ -570,7 +536,7 @@ describe('legacy referencedSkills normalization', () => {
       const staleJob = createEvidenceReviewJob({
         bundle,
         candidate: bundle.episode as DistilledKnowledgeCandidate,
-        workClass: 'live',
+        workClass: 'live_learning',
         reviewPolicyVersion: 'evidence-review-policy-v2',
         now: new Date('2026-07-19T00:00:00.000Z'),
       });

@@ -663,6 +663,8 @@ export function createSuccessorReviewJob(input: {
   candidate: DistilledKnowledgeCandidate;
   registryReadSet?: readonly CapabilityReadSetEntry[];
   now?: Date;
+  jobId?: string;
+  reuseSucceededQuanta?: boolean;
 }): EvidenceReviewJob {
   const successor = createEvidenceReviewJob({
     bundle: input.liveBundle,
@@ -671,7 +673,9 @@ export function createSuccessorReviewJob(input: {
     registryReadSet: input.registryReadSet ?? input.staleJob.basis.registryReadSet,
     parentJobId: input.staleJob.jobId,
     now: input.now,
+    jobId: input.jobId,
   });
+  if (input.reuseSucceededQuanta === false) return successor;
   const reused = reuseSucceededQuanta(successor, input.staleJob);
   reused.parentJobId = input.staleJob.jobId;
   return reused;

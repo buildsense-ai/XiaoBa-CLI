@@ -555,6 +555,7 @@ export function completeQuantum(
     lease: undefined,
     nextRetryAt: undefined,
     failureMessage: undefined,
+    failureKind: undefined,
     transcriptPaths,
     updatedAt: nowIso,
   };

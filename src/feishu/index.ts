@@ -14,7 +14,6 @@ import { BridgeClient } from '../bridge/bridge-client';
 import { ChimeInJudge } from '../bridge/chime-in-judge';
 import { ChannelCallbacks } from '../types/tool';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
-import { randomUUID } from 'crypto';
 import {
   createExecutionScopeFromRoute,
   createFeishuBridgeSessionRoute,
@@ -31,15 +30,6 @@ interface PendingAttachment {
   receivedAt: number;
 }
 
-interface PendingAnswer {
-  id: string;
-  sessionKey: string;
-  chatId: string;
-  expectedSenderId: string;
-  resolve: (text: string) => void;
-  timeoutHandle: ReturnType<typeof setTimeout>;
-}
-
 interface QueuedMessage {
   userText: string;
   chatId: string;
@@ -48,8 +38,6 @@ interface QueuedMessage {
   source?: 'user' | 'subagent_feedback';
   runtimeFeedback?: RuntimeFeedbackInput[];
 }
-
-const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 
 export function createFeishuRuntime(sessionTTL?: number): AdapterRuntimeBundle {
   return createAdapterRuntime({
@@ -102,10 +90,6 @@ export class FeishuBot {
   private knownChatIds = new Set<string>();
   /** 已处理的消息 ID，用于去重 */
   private processedMsgIds = new Set<string>();
-  /** key = pendingAnswerId */
-  private pendingAnswers = new Map<string, PendingAnswer>();
-  /** key = sessionKey, value = pendingAnswerId */
-  private pendingAnswerBySession = new Map<string, string>();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
@@ -273,23 +257,6 @@ export class FeishuBot {
     const key = route.sessionKey;
     const isGroup = msg.chatType === 'group';
 
-    // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
-    const pendingId = this.pendingAnswerBySession.get(key);
-    if (pendingId) {
-      const pending = this.pendingAnswers.get(pendingId);
-      if (!pending) {
-        this.pendingAnswerBySession.delete(key);
-      } else if (msg.senderId === pending.expectedSenderId) {
-        this.clearPendingAnswerById(pending.id);
-        Logger.info(`[${key}] 收到用户对提问的回复: ${msg.text.slice(0, 50)}...`);
-        pending.resolve(msg.text);
-        return;
-      } else {
-        Logger.info(`[${key}] 忽略非提问发起人的回复: ${msg.senderId}`);
-        return;
-      }
-    }
-
     // 获取或创建会话（传入 chatId 用于过期时主动唤醒）
     const session = this.sessionManager.getOrCreate(route);
 
@@ -383,18 +350,14 @@ export class FeishuBot {
       isGroup,
     });
 
-    try {
-      const result = await session.handleMessage(userText, {
-        channel,
-        sessionRoute: route,
-        executionScope: createExecutionScopeFromRoute(route),
-        runtimeFeedback,
-      });
-      if (result.text === BUSY_MESSAGE || result.text === ERROR_MESSAGE) {
-        await this.sender.reply(msg.chatId, result.text);
-      }
-    } finally {
-      this.clearPendingAnswerBySession(key);
+    const result = await session.handleMessage(userText, {
+      channel,
+      sessionRoute: route,
+      executionScope: createExecutionScopeFromRoute(route),
+      runtimeFeedback,
+    });
+    if (result.text === BUSY_MESSAGE || result.text === ERROR_MESSAGE) {
+      await this.sender.reply(msg.chatId, result.text);
     }
 
     // 处理忙时排队的消息
@@ -426,26 +389,22 @@ export class FeishuBot {
       senderId,
     });
 
-    try {
-      const result = await session.handleRuntimeObservation(text, {
-        channel,
-        sessionRoute: route,
-        executionScope: createExecutionScopeFromRoute(route),
-        source: 'subagent_result',
-        suppressFinalResponse: shouldSuppressSubAgentObservationReply(text),
-      });
-      if (result.text === BUSY_MESSAGE) {
-        this.enqueueSubAgentFeedback(sessionKey, chatId, senderId, text, route);
-        Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
-        return;
-      }
-      if (result.text === ERROR_MESSAGE) {
-        await this.sender.reply(chatId, result.text);
-      }
-      await this.drainMessageQueue(sessionKey);
-    } finally {
-      this.clearPendingAnswerBySession(sessionKey);
+    const result = await session.handleRuntimeObservation(text, {
+      channel,
+      sessionRoute: route,
+      executionScope: createExecutionScopeFromRoute(route),
+      source: 'subagent_result',
+      suppressFinalResponse: shouldSuppressSubAgentObservationReply(text),
+    });
+    if (result.text === BUSY_MESSAGE) {
+      this.enqueueSubAgentFeedback(sessionKey, chatId, senderId, text, route);
+      Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
+      return;
     }
+    if (result.text === ERROR_MESSAGE) {
+      await this.sender.reply(chatId, result.text);
+    }
+    await this.drainMessageQueue(sessionKey);
   }
 
   private enqueueSubAgentFeedback(
@@ -487,26 +446,22 @@ export class FeishuBot {
     });
     const executionScope = createExecutionScopeFromRoute(msg.sessionRoute);
 
-    try {
-      const result = msg.source === 'subagent_feedback'
-        ? await session.handleRuntimeObservation(msg.userText, {
-          channel,
-          sessionRoute: msg.sessionRoute,
-          executionScope,
-          source: 'subagent_result',
-          suppressFinalResponse: shouldSuppressSubAgentObservationReply(msg.userText),
-        })
-        : await session.handleMessage(msg.userText, {
-          channel,
-          sessionRoute: msg.sessionRoute,
-          executionScope,
-          runtimeFeedback: msg.runtimeFeedback,
-        });
-      if (result.text === ERROR_MESSAGE) {
-        await this.sender.reply(msg.chatId, result.text);
-      }
-    } finally {
-      this.clearPendingAnswerBySession(sessionKey);
+    const result = msg.source === 'subagent_feedback'
+      ? await session.handleRuntimeObservation(msg.userText, {
+        channel,
+        sessionRoute: msg.sessionRoute,
+        executionScope,
+        source: 'subagent_result',
+        suppressFinalResponse: shouldSuppressSubAgentObservationReply(msg.userText),
+      })
+      : await session.handleMessage(msg.userText, {
+        channel,
+        sessionRoute: msg.sessionRoute,
+        executionScope,
+        runtimeFeedback: msg.runtimeFeedback,
+      });
+    if (result.text === ERROR_MESSAGE) {
+      await this.sender.reply(msg.chatId, result.text);
     }
 
     // 处理期间可能又有新消息入队，递归排空
@@ -621,15 +576,11 @@ export class FeishuBot {
       senderId: msg.from || '',
       isGroup: true,
     });
-    try {
-      await session.handleMessage(messageText, {
-        channel,
-        sessionRoute: route,
-        executionScope: createExecutionScopeFromRoute(route),
-      });
-    } finally {
-      this.clearPendingAnswerBySession(sessionKey);
-    }
+    await session.handleMessage(messageText, {
+      channel,
+      sessionRoute: route,
+      executionScope: createExecutionScopeFromRoute(route),
+    });
     await this.drainMessageQueue(sessionKey);
   }
 
@@ -641,10 +592,6 @@ export class FeishuBot {
       this.bridgeServer.stop();
     }
     await this.sessionManager.destroy();
-    for (const pendingId of Array.from(this.pendingAnswers.keys())) {
-      this.clearPendingAnswerById(pendingId);
-    }
-    this.pendingAnswerBySession.clear();
     this.pendingAttachments.clear();
     this.messageQueue.clear();
     Logger.info('飞书机器人已停止');
@@ -680,57 +627,6 @@ export class FeishuBot {
       '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
       this.formatAttachmentContext(attachments),
     ].join('\n');
-  }
-
-  private registerPendingAnswer(
-    sessionKey: string,
-    chatId: string,
-    expectedSenderId: string,
-    resolve: (text: string) => void,
-  ): void {
-    const existingId = this.pendingAnswerBySession.get(sessionKey);
-    if (existingId) {
-      const existing = this.pendingAnswers.get(existingId);
-      this.clearPendingAnswerById(existingId);
-      existing?.resolve('（提问已更新，请回答最新问题）');
-    }
-
-    const id = randomUUID();
-    const timeoutHandle = setTimeout(() => {
-      const pending = this.pendingAnswers.get(id);
-      if (!pending) return;
-      this.clearPendingAnswerById(id);
-      pending.resolve('（用户未在120秒内回复）');
-    }, PENDING_ANSWER_TIMEOUT_MS);
-
-    this.pendingAnswers.set(id, {
-      id,
-      sessionKey,
-      chatId,
-      expectedSenderId,
-      resolve,
-      timeoutHandle,
-    });
-    this.pendingAnswerBySession.set(sessionKey, id);
-  }
-
-  private clearPendingAnswerBySession(sessionKey: string): void {
-    const pendingId = this.pendingAnswerBySession.get(sessionKey);
-    if (!pendingId) return;
-    this.clearPendingAnswerById(pendingId);
-  }
-
-  private clearPendingAnswerById(pendingId: string): void {
-    const pending = this.pendingAnswers.get(pendingId);
-    if (!pending) return;
-
-    clearTimeout(pending.timeoutHandle);
-    this.pendingAnswers.delete(pendingId);
-
-    const mappedId = this.pendingAnswerBySession.get(pending.sessionKey);
-    if (mappedId === pendingId) {
-      this.pendingAnswerBySession.delete(pending.sessionKey);
-    }
   }
 
   /** 判断消息是否在请求“立即停下当前行为” */

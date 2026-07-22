@@ -72,11 +72,6 @@ export interface DistillationHeartbeatConfig {
   skillEvolutionReviewAttemptDeadlineMinutes: number;
   /** Maximum review candidates admitted by one wake (eligible + due queue). */
   skillEvolutionReviewMaxCandidates: number;
-  /**
-   * @deprecated Estimated prompt size is not a Review Admission signal.
-   * Still read for compatibility with older env configs; ignored by wake admission.
-   */
-  skillEvolutionReviewMaxPromptTokens: number;
   /** Optional Author model override. */
   skillEvolutionAuthorModel?: string;
   /** Optional independent Verifier model override. */
@@ -406,13 +401,6 @@ export function getDistillationHeartbeatConfig(
     1,
     10_000,
   );
-  const skillEvolutionReviewMaxPromptTokens = readNumberInRange(
-    runtimeEnv,
-    'XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_PROMPT_TOKENS',
-    200_000,
-    1_000,
-    10_000_000,
-  );
   const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
   const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');
   const evidenceCapsulePath = resolveContainedPath(
@@ -491,7 +479,6 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionOperationalRetryMaxHours,
     skillEvolutionReviewAttemptDeadlineMinutes,
     skillEvolutionReviewMaxCandidates,
-    skillEvolutionReviewMaxPromptTokens,
     ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
     evidenceCapsulePath,

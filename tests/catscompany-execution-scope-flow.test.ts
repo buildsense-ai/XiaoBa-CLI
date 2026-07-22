@@ -145,7 +145,6 @@ function createHarness(options: {
     sendToolUse: async () => undefined,
     sendToolResult: async () => undefined,
   };
-  bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
   bot.sessionExecutionReservations = new Set();
   bot.sessionClearGenerations = new Map();

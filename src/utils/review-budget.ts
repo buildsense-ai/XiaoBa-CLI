@@ -3,11 +3,6 @@ export interface ReviewBudgetConfig {
   maxCandidates: number;
   deadlineMs: number;
   now?: () => number;
-  /**
-   * @deprecated Estimated prompt size is not a Review Admission signal.
-   * Accepted only for compatibility with older call sites and is ignored.
-   */
-  maxPromptTokens?: number;
 }
 
 export interface ReviewBudget {

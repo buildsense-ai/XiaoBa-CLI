@@ -32,7 +32,7 @@ import {
   type SkillEvolutionResult,
   saveCurrentSkillRegistry,
 } from '../src/utils/skill-evolution';
-import { loadReviewQueueState } from '../src/utils/skill-evolution-review-queue';
+import { loadEvidenceReviewJobStore, findDeferredJobByBundleId } from '../src/utils/evidence-review-job-store';
 import type { DistilledKnowledgeCandidate } from '../src/utils/capability-distiller';
 import { readShardStructurally } from '../src/utils/evidence-review-engine';
 import type { EvidenceReviewJob } from '../src/utils/evidence-review-types';
@@ -408,9 +408,12 @@ describe('SkillEvolution reconstruction seam (crash/re-entry after durable commi
 
       assert.equal(reconstructed.transition, 'defer');
       assert.equal(reconstructed.queued, 'deferred');
-      const queue = loadReviewQueueState(env.options.reviewQueuePath);
-      assert.equal(queue.deferred.length, 1);
-      assert.equal(queue.deferred[0]?.bundle.bundleId, bundleId);
+      const jobStoreState = loadEvidenceReviewJobStore(
+        path.join(env.root, 'data', 'evidence-review-jobs.json'),
+      );
+      const deferredJob = findDeferredJobByBundleId(jobStoreState, bundleId);
+      assert.ok(deferredJob, 'deferred job should exist in the job store');
+      assert.equal(deferredJob?.bundle.bundleId, bundleId);
     } finally {
       env.cleanup();
     }
