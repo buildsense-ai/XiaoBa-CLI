@@ -25,6 +25,8 @@ export interface BranchSessionOptions {
   type: string;
   aiService: AIService;
   workingDirectory: string;
+  /** Use the provider's streaming transport while keeping branch output internal. */
+  stream?: boolean;
   /** Runtime-owned root for all branch transcripts. */
   branchLogRoot?: string;
   signal?: AbortSignal;
@@ -176,7 +178,7 @@ export abstract class BranchSession {
     const maxTurns = this.options.sharedReviewTurnBudget?.remainingTurns;
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
       ...(maxTurns !== undefined ? { maxTurns } : {}),
-      stream: false,
+      stream: this.options.stream ?? false,
       enableCompression: true,
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {

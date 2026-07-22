@@ -200,6 +200,17 @@ class AbortAwareReviewAttemptAIService {
   }
 }
 
+class StreamingOnlyReviewAIService extends AbortAwareReviewAttemptAIService {
+  nonStreamingCalls = 0;
+
+  async chat(): Promise<never> {
+    this.nonStreamingCalls += 1;
+    throw Object.assign(new Error('non-streaming heartbeat model request timed out'), {
+      code: 'ETIMEDOUT',
+    });
+  }
+}
+
 function fixtureBundle(): EvidenceBundle {
   return {
     bundleId: 'episode-flashcard-1',
@@ -915,6 +926,60 @@ describe('V3 verified semantic Current Skills', () => {
           ?.includes('obligationDispositions'),
         'the live Verifier tool must require explicit obligation dispositions',
       );
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('uses streaming transport for heartbeat model-backed Author and Verifier calls', async () => {
+    const env = setup();
+    try {
+      const service = new StreamingOnlyReviewAIService({
+        finish_skill_authoring: [{
+          finish: {
+            tool: 'finish_skill_authoring',
+            args: {
+              body: 'Use the bounded workflow and validate the result.',
+              envelope: {
+                decision: 'create_current_skill',
+                routingName: 'streamed-heartbeat-workflow',
+                description: 'Review heartbeat evidence over a streaming model transport.',
+                evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+              },
+            },
+          },
+        }],
+        finish_skill_verification: [{
+          finish: {
+            tool: 'finish_skill_verification',
+            args: {
+              decision: 'accept',
+              transition: 'create_current_skill',
+              issues: [],
+              rationale: 'The streamed heartbeat review is grounded in the fixed evidence.',
+              registryReadSet: [],
+              obligationDispositions: acceptReviewObligations({
+                ...fixtureBundle(),
+                episode: { reviewObligations: [] },
+              } as any),
+            },
+          },
+        }],
+      });
+      const runtime = new SkillEvolutionRuntime({
+        ...env.options,
+        authorFixture: undefined,
+        verifierFixture: undefined,
+        aiService: service,
+      });
+
+      const result = await runtime.reviewAndApply(fixtureBundle());
+
+      assert.equal(result.transition, 'create_current_skill');
+      assert.equal(result.verified, true);
+      assert.equal(service.nonStreamingCalls, 0);
+      assert.equal(service.getCallCount('finish_skill_authoring'), 1);
+      assert.equal(service.getCallCount('finish_skill_verification'), 1);
     } finally {
       env.cleanup();
     }

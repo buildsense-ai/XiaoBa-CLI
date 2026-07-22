@@ -252,7 +252,7 @@ export class SkillAuthorBranchSession extends BranchSession {
   private payload: SkillDraft | null = null;
 
   constructor(private readonly authorOptions: SkillAuthorBranchOptions) {
-    super({ ...authorOptions, type: 'skill-author', logEnabled: true, transcriptContract: 'required' });
+    super({ ...authorOptions, type: 'skill-author', stream: true, logEnabled: true, transcriptContract: 'required' });
   }
 
   async run(): Promise<SkillDraft> {
@@ -325,7 +325,7 @@ export class SkillVerifierBranchSession extends BranchSession {
   private payload: SkillVerifierResult | null = null;
 
   constructor(private readonly verifierOptions: SkillVerifierBranchOptions) {
-    super({ ...verifierOptions, type: 'skill-verifier', logEnabled: true, transcriptContract: 'required' });
+    super({ ...verifierOptions, type: 'skill-verifier', stream: true, logEnabled: true, transcriptContract: 'required' });
   }
 
   async run(): Promise<SkillVerifierResult> {
