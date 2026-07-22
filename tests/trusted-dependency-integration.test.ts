@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -9,7 +10,12 @@ import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 import type { LearningEpisode } from '../src/utils/learning-episode';
 import type { DistilledKnowledgeCandidate } from '../src/utils/capability-distiller';
-import type { ReferencedSkillSnapshot, SkillEvolutionRuntime } from '../src/utils/skill-evolution';
+import {
+  emptyCurrentSkillRegistryState,
+  saveCurrentSkillRegistry,
+  type ReferencedSkillSnapshot,
+  type SkillEvolutionRuntime,
+} from '../src/utils/skill-evolution';
 
 let root = '';
 let originalCwd = '';
@@ -109,6 +115,27 @@ describe('trusted dependency public-seam integration', () => {
       ].join('\n'),
       'utf8',
     );
+    const guidanceHash = crypto.createHash('sha256')
+      .update(fs.readFileSync(generatedSkillPath))
+      .digest('hex');
+    const registry = emptyCurrentSkillRegistryState();
+    registry.catalogRevision = 1;
+    registry.capabilities['cap-helper'] = {
+      handle: 'cap-helper',
+      revision: 1,
+      routingName: 'generated-helper',
+      description: 'Generated helper',
+      skillFilePath: generatedSkillPath,
+      guidanceHash,
+      evidenceRefs: [],
+      referencedSkills: [],
+      createdAt: '2026-07-19T00:00:00.000Z',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+    };
+    saveCurrentSkillRegistry(
+      path.join(root, 'data', 'current-skill-registry.json'),
+      registry,
+    );
 
     const tool = new SkillTool(ledger);
     const toolResult = await tool.execute(
@@ -126,7 +153,10 @@ describe('trusted dependency public-seam integration', () => {
       statePath: path.join(root, 'data', 'curator-state.json'),
       intervalMs: 24 * 60 * 60 * 1000,
     });
-    const loadFacts = curator.listLoadFactsForEpisode('turn-ep-1');
+    const loadFacts = curator.listLoadFactsForEpisode({
+      agentTurnEpisodeId: 'turn-ep-1',
+      runtimeSessionId: 'sess-1',
+    });
 
     assert.equal(loadFacts.length, 1);
     assert.equal(loadFacts[0]!.runtimeSessionId, 'sess-1');

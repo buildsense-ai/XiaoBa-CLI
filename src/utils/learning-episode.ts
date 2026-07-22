@@ -303,6 +303,7 @@ const FAILURE_RESULT = /(?:fail|error|invalid|unable|cannot|denied|timeout)/i;
 const POSITIVE_ACCEPTANCE = /(?:^|\W)(?:thanks?|works?|worked|great|perfect|excellent|correct|verified|confirmed|done|yes|yep|that(?:'|’)s right|that did it)(?:$|\W)/i;
 const CONTRADICTION = /(?:^|\W)(?:redo|try again|unsuitable|not suitable|wrong|incorrect|not what|doesn['’]t work|didn['’]t work|still failing|still broken|failed|failure|error|no,|nope|instead)(?:$|\W)/i;
 const CONTINUATION = /(?:^|\W)(?:continue|resume|redo|try again|接着做|继续|重做)(?:$|\W)/i;
+const NON_PRODUCTION_TOKEN = /(?:^|[:/_.-])(?:smoke|synthetic|replay)(?:$|[:/_.-])/i;
 
 /**
  * Extract delivery attempts from one Distillation Unit.
@@ -320,6 +321,9 @@ export function extractLearningEpisodes(
   unit: DistillationUnit,
   settlementWindowMs = 3 * 60 * 60 * 1000,
 ): LearningEpisodeExtractionResult {
+  if (isNonProductionLearningUnit(unit)) {
+    return { episodes: [], contradictions: [] };
+  }
   const turns = [...unit.continuityTurns, ...unit.newTurns];
   const newTurnNumbers = new Set(unit.newTurns.map(turn => turn.turn));
   const episodes: LearningEpisode[] = [];
@@ -473,6 +477,14 @@ export function extractLearningEpisodes(
   }
 
   return { episodes, contradictions };
+}
+
+function isNonProductionLearningUnit(unit: DistillationUnit): boolean {
+  return NON_PRODUCTION_TOKEN.test(path.basename(unit.filePath))
+    || unit.newTurns.some(turn => (
+    NON_PRODUCTION_TOKEN.test(String(turn.session_id || ''))
+    || /^(?:smoke|test|synthetic|replay)$/i.test(String(turn.session_type || '').trim())
+    ));
 }
 
 /**

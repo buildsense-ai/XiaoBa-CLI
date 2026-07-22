@@ -258,16 +258,15 @@ export class SkillManager {
   }
 
   /**
-   * Generated output is registry-owned. Once a non-empty Registry exists,
-   * only the active file referenced by a capability is discoverable; stale
-   * retired/orphaned files must not become a second public Skill route.
+   * Generated output is registry-owned. Only an active file referenced by a
+   * capability is discoverable; an empty Registry admits no generated files.
    * Manual skills remain filesystem-discovered and are never filtered here.
    */
   private shouldDiscoverSkill(filePath: string): boolean {
     if (!isGeneratedSkillPath(filePath)) return true;
     if (this.registryLoadFailed) return false;
     const records = Object.values(this.registry?.capabilities ?? {});
-    if (records.length === 0) return true;
+    if (records.length === 0) return false;
     const resolvedPath = path.resolve(filePath);
     return records.some(record => path.resolve(record.skillFilePath) === resolvedPath);
   }

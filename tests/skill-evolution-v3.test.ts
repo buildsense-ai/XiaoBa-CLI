@@ -9,6 +9,7 @@ import { SkillManager } from '../src/skills/skill-manager';
 import type { DistilledKnowledgeCandidate } from '../src/utils/capability-distiller';
 import {
   computeCurrentSkillRegistryHash,
+  emptyCurrentSkillRegistryState,
   EvidenceBundle,
   isLifecycleOrGenericRoutingName,
   loadCurrentSkillRegistry,
@@ -432,6 +433,82 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(result.transition, 'create_current_skill');
       assert.ok(seen.some(item => item.startsWith('author:user-intent,workflow-tool')));
       assert.ok(seen.some(item => item.includes('Create a validated flashcard artifact.')));
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('a single Learning Episode cannot create a Current Skill even when Author and Verifier accept it', async () => {
+    const env = setup();
+    try {
+      const bundle = {
+        ...fixtureBundle(),
+        bundleId: 'v3:learning-episode:episode-single-observation',
+      };
+      env.options.verifierFixture = () => ({
+        decision: 'accept',
+        transition: 'create_current_skill',
+        issues: [],
+        rationale: 'The one execution completed successfully.',
+      });
+
+      const result = await new SkillEvolutionRuntime(env.options).reviewAndApply(bundle);
+
+      assert.equal(result.transition, 'reject_candidate');
+      assert.equal(result.verified, false);
+      assert.equal(Object.keys(loadCurrentSkillRegistry(env.options.registryPath).capabilities).length, 0);
+      const audit = loadTransitionAudit(env.options.auditPath);
+      assert.equal(audit.length, 1);
+      assert.equal(audit[0]?.transition, 'reject_candidate');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('a single Learning Episode cannot append evidence to a Skill it did not load', async () => {
+    const env = setup();
+    try {
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const current = (await runtime.reviewAndApply(fixtureBundle())).record!;
+      const bundle: EvidenceBundle = {
+        ...fixtureBundle(),
+        bundleId: 'v3:learning-episode:episode-unloaded-target',
+        referencedSkills: [],
+        referencedSkillProvenance: {
+          kind: 'runtime-owned-generated-skill-load-v1',
+          runtimeSessionId: 'runtime-unloaded-target',
+          agentTurnEpisodeId: 'turn-unloaded-target',
+          referencedSkills: [],
+        },
+        relatedCurrentSkills: [{
+          handle: current.handle,
+          revision: current.revision,
+          routingName: current.routingName,
+          description: current.description,
+          guidanceHash: current.guidanceHash,
+        }],
+      };
+      env.options.authorFixture = ({ bundle: fixedBundle }) => ({
+        body: 'Keep the current guidance unchanged while retaining evidence.',
+        envelope: {
+          decision: 'append_evidence',
+          targetCapabilityHandle: current.handle,
+          evidenceRefs: [...fixedBundle.completionEvidence, ...fixedBundle.settlementEvidence]
+            .map(ref => ref.ref),
+        },
+      });
+      env.options.verifierFixture = () => ({
+        decision: 'accept',
+        transition: 'append_evidence',
+        issues: [],
+        rationale: 'Fixture accepts the draft so the runtime target policy is exercised.',
+      });
+
+      const result = await runtime.reviewAndApply(bundle);
+
+      assert.equal(result.transition, 'reject_candidate');
+      assert.equal(result.verifier.issues.some(issue => issue.code === 'single-observation-scope'), true);
+      assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities[current.handle]!.revision, current.revision);
     } finally {
       env.cleanup();
     }
@@ -1647,6 +1724,27 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
+  test('an empty Registry hides orphan generated skills without hiding manual skills', async () => {
+    const env = setup();
+    try {
+      const generatedPath = path.join(env.options.outputDir, 'orphan', 'SKILL.md');
+      const manualPath = path.join(path.dirname(env.options.outputDir), 'manual-helper', 'SKILL.md');
+      fs.mkdirSync(path.dirname(generatedPath), { recursive: true });
+      fs.mkdirSync(path.dirname(manualPath), { recursive: true });
+      fs.writeFileSync(generatedPath, '---\nname: orphan-generated\ndescription: Orphan generated skill\n---\n\nOrphan guidance.\n', 'utf8');
+      fs.writeFileSync(manualPath, '---\nname: manual-helper\ndescription: Manual helper\n---\n\nManual guidance.\n', 'utf8');
+      saveCurrentSkillRegistry(env.options.registryPath, emptyCurrentSkillRegistryState());
+
+      const manager = new SkillManager();
+      await manager.loadSkills();
+
+      assert.equal(manager.getSkill('orphan-generated'), undefined);
+      assert.ok(manager.getSkill('manual-helper'));
+    } finally {
+      env.cleanup();
+    }
+  });
+
   test('rejects unsafe or out-of-bundle drafts without installing guidance', async () => {
     const env = setup();
     try {
@@ -2147,7 +2245,7 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
-  test('reviewUsageAndApply uses durable promotion and returns immediate transition', async () => {
+  test('reviewUsageAndApply can append contradiction evidence to the affected Current Skill', async () => {
     const env = setup();
     try {
       const runtime = new SkillEvolutionRuntime(env.options);
@@ -2157,12 +2255,10 @@ describe('V3 verified semantic Current Skills', () => {
       env.options.authorFixture = ({ bundle }) => {
         assert.equal(Object.isFrozen(bundle), true);
         return {
-          body: 'Operationally replace this generated skill with a bounded revision update.',
+          body: 'Keep the current guidance unchanged while retaining the contradiction evidence.',
           envelope: {
-            decision: 'replace_current_skill',
+            decision: 'append_evidence',
             targetCapabilityHandle: current.handle,
-            routingName: current.routingName,
-            description: current.description,
             evidenceRefs: ['ledger:usage-fact-1', 'ledger:settlement-fact-1'],
           },
         };
@@ -2175,7 +2271,7 @@ describe('V3 verified semantic Current Skills', () => {
       });
 
       const usageBundle: EvidenceBundle = {
-        bundleId: 'usage-curation-direct-review',
+        bundleId: `usage-curation:${current.handle}:usage-fact-1`,
         episode: {
           kind: 'usage-reassessment',
           capabilityHandle: current.handle,
@@ -2200,14 +2296,155 @@ describe('V3 verified semantic Current Skills', () => {
       };
 
       const result = await runtime.reviewUsageAndApply(usageBundle);
-      assert.equal(result.transition, 'replace_current_skill');
+      assert.equal(result.transition, 'append_evidence');
       assert.equal(result.verified, true);
       assert.ok(typeof result.transitionId === 'string');
       assert.equal(result.rounds >= 1, true);
       assert.equal(result.queued, undefined);
       assert.equal(result.record!.handle, current.handle);
-      assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities[current.handle]!.guidanceHash, result.record!.guidanceHash);
+      assert.equal(result.record!.guidanceHash, current.guidanceHash);
+      assert.equal(result.record!.revision, current.revision + 1);
       assert.equal(runtime.getQueuedReviewState(usageBundle.bundleId), undefined);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('reviewUsageAndApply can replace the affected Current Skill after an explicit contradiction', async () => {
+    const env = setup();
+    try {
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const current = (await runtime.reviewAndApply(fixtureBundle())).record!;
+      env.options.authorFixture = ({ bundle }) => ({
+        body: 'Use the corrected bounded workflow and validate its result.',
+        envelope: {
+          decision: 'replace_current_skill',
+          targetCapabilityHandle: current.handle,
+          routingName: current.routingName,
+          description: current.description,
+          evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
+        },
+      });
+      env.options.verifierFixture = ({ draft }) => ({
+        decision: 'accept',
+        transition: draft.envelope.decision,
+        issues: [],
+        rationale: 'The explicit correction supports narrowing the affected Skill.',
+      });
+      const usageBundle: EvidenceBundle = {
+        bundleId: `usage-curation:${current.handle}:replace-fact`,
+        episode: {
+          kind: 'usage-reassessment',
+          capabilityHandle: current.handle,
+          routingName: current.routingName,
+          factualOutcomes: [{ outcome: 'contradicted' }],
+        },
+        completionEvidence: [{ ref: 'ledger:load-fact' }],
+        settlementEvidence: [{ ref: 'ledger:replace-fact' }],
+        boundedContinuity: [],
+        referencedSkills: [],
+        relatedCurrentSkills: [{
+          handle: current.handle,
+          revision: current.revision,
+          routingName: current.routingName,
+          description: current.description,
+          guidanceHash: current.guidanceHash,
+        }],
+      };
+
+      const result = await runtime.reviewUsageAndApply(usageBundle);
+
+      assert.equal(result.transition, 'replace_current_skill');
+      assert.equal(result.record!.handle, current.handle);
+      assert.notEqual(result.record!.guidanceHash, current.guidanceHash);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('usage curation cannot create a Skill or append evidence to another Skill', async () => {
+    const env = setup();
+    try {
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const affected = (await runtime.reviewAndApply(fixtureBundle())).record!;
+
+      env.options.authorFixture = () => ({
+        body: 'Use a separate bounded workflow.',
+        envelope: {
+          decision: 'create_current_skill',
+          routingName: 'separate-bounded-workflow',
+          description: 'Run a separate bounded workflow.',
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        },
+      });
+      env.options.verifierFixture = ({ draft }) => ({
+        decision: 'accept',
+        transition: draft.envelope.decision,
+        issues: [],
+        rationale: 'Fixture accepts the proposed transition so the runtime policy is exercised.',
+      });
+      const other = (await runtime.reviewAndApply({
+        ...fixtureBundle(),
+        bundleId: 'episode-separate-workflow',
+        relatedCurrentSkills: [{
+          handle: affected.handle,
+          revision: affected.revision,
+          routingName: affected.routingName,
+          description: affected.description,
+          guidanceHash: affected.guidanceHash,
+        }],
+      })).record!;
+
+      const usageBundle = (factId: string): EvidenceBundle => ({
+        bundleId: `usage-curation:${affected.handle}:${factId}`,
+        episode: {
+          kind: 'usage-reassessment',
+          capabilityHandle: affected.handle,
+          routingName: affected.routingName,
+          factualOutcomes: [],
+        },
+        completionEvidence: [{ ref: `ledger:${factId}` }],
+        settlementEvidence: [{ ref: `ledger:settlement-${factId}` }],
+        boundedContinuity: [],
+        referencedSkills: [],
+        relatedCurrentSkills: [affected, other].map(record => ({
+          handle: record.handle,
+          revision: record.revision,
+          routingName: record.routingName,
+          description: record.description,
+          guidanceHash: record.guidanceHash,
+        })),
+      });
+
+      env.options.authorFixture = ({ bundle }) => ({
+        body: 'Create a new Skill from the correction.',
+        envelope: {
+          decision: 'create_current_skill',
+          routingName: 'correction-derived-workflow',
+          description: 'A workflow inferred from one correction.',
+          evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
+        },
+      });
+      const createResult = await runtime.reviewUsageAndApply(usageBundle('create-attempt'));
+
+      env.options.authorFixture = ({ bundle }) => ({
+        body: 'Keep guidance unchanged while appending evidence.',
+        envelope: {
+          decision: 'append_evidence',
+          targetCapabilityHandle: other.handle,
+          evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
+        },
+      });
+      const crossTargetResult = await runtime.reviewUsageAndApply(usageBundle('cross-target-attempt'));
+
+      assert.equal(createResult.transition, 'reject_candidate');
+      assert.equal(crossTargetResult.transition, 'reject_candidate');
+      assert.equal(Object.keys(loadCurrentSkillRegistry(env.options.registryPath).capabilities).length, 2);
+      assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities[other.handle]!.revision, other.revision);
+      assert.deepEqual(
+        loadTransitionAudit(env.options.auditPath).slice(-2).map(entry => entry.transition),
+        ['reject_candidate', 'reject_candidate'],
+      );
     } finally {
       env.cleanup();
     }

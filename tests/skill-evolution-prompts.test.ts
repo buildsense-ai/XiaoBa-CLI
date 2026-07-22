@@ -101,12 +101,10 @@ describe('skill-evolution prompt loading', () => {
 });
 
 describe('skill-evolution progressive-trust prompt policy', () => {
-  test('Skill Author prompt requires narrow single-episode guidance and issue-by-issue revision', () => {
+  test('Skill Author prompt limits one ordinary episode to evidence append', () => {
     const text = readRequiredDefaultPromptFile('subagents/skill-author.md');
-    // One settled low-risk episode can justify a narrow skill.
-    assert.match(text, /One settled, low-risk Learning Episode can justify a narrow Current Skill/);
-    // Single-sample uncertainty narrows applicability rather than forcing rejection.
-    assert.match(text, /Single-sample uncertainty narrows the hypothesis/);
+    assert.match(text, /A single ordinary Learning Episode may only append evidence/);
+    assert.match(text, /must not create, replace, migrate, merge, or retire/);
     // Issue-by-issue revision obligation.
     assert.match(text, /address every Verifier issue explicitly in the next round/);
     // Dependencies must be evidenced; relatedCurrentSkills is not a dependency.
@@ -114,19 +112,18 @@ describe('skill-evolution progressive-trust prompt policy', () => {
     assert.match(text, /relatedCurrentSkills is recall context/);
   });
 
-  test('Skill Author prompt allows correction retries to teach the corrected pattern', () => {
+  test('Skill Author prompt binds one correction to the affected Skill', () => {
     const text = readRequiredDefaultPromptFile('subagents/skill-author.md');
-    assert.match(text, /correction retry can teach the corrected pattern/);
-    // Must not promote the contradicted behavior.
-    assert.match(text, /Do not promote the contradicted behavior/);
-    // Must not copy an earlier failed action unless marked as a failure to avoid.
-    assert.match(text, /failure to avoid/);
+    assert.match(text, /One correction is negative evidence/);
+    assert.match(text, /may append evidence, replace the affected guidance with a narrower correction, or retire that Skill/);
+    assert.match(text, /must not create a Skill, migrate its route, merge Skills, or target any other Skill/);
+    assert.match(text, /Never copy the failed action into guidance or promote the contradicted behavior/);
   });
 
-  test('Skill Verifier prompt forbids rejection based only on one source or one instance', () => {
+  test('Skill Verifier prompt rejects behavior changes derived from one ordinary episode', () => {
     const text = readRequiredDefaultPromptFile('subagents/skill-verifier.md');
-    assert.match(text, /Sample scarcity by itself is never a rejection reason/);
-    assert.match(text, /Do not reject a candidate only because it has one source, one instance, or no independent repetition/);
+    assert.match(text, /A single ordinary Learning Episode may only support append_evidence/);
+    assert.match(text, /Reject any behavior-changing transition derived from that single Episode/);
   });
 
   test('Skill Verifier prompt routes fixable drafts to revise, missing evidence to defer, and affirmative invalidity to reject', () => {
@@ -145,6 +142,7 @@ describe('skill-evolution progressive-trust prompt policy', () => {
   test('Skill Verifier prompt describes correction episode handling', () => {
     const text = readRequiredDefaultPromptFile('subagents/skill-verifier.md');
     assert.match(text, /Correction episodes/);
-    assert.match(text, /A settled retry can support a narrow Skill that includes the learned boundary or corrected step/);
+    assert.match(text, /may append evidence, replace that Skill with narrower corrected guidance, or retire it/);
+    assert.match(text, /Reject create, migrate, merge, cross-Skill append/);
   });
 });

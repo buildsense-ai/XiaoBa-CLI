@@ -50,6 +50,7 @@ export interface RecordGeneratedSkillLoadInput {
 
 export interface RecordSkillUsageOutcomeInput {
   episodeId: string;
+  runtimeSessionId: string;
   outcome: SkillUsageOutcome;
   evidenceRefs: readonly string[];
   recordedAt?: Date;
@@ -83,11 +84,14 @@ export class SkillUsageLedger {
 
   recordOutcome(input: RecordSkillUsageOutcomeInput): SkillUsageOutcomeFact[] {
     assertNonEmpty(input.episodeId, 'episodeId');
+    assertNonEmpty(input.runtimeSessionId, 'runtimeSessionId');
     const evidenceRefs = uniqueNonEmpty(input.evidenceRefs);
     if (evidenceRefs.length === 0) throw new Error('Skill Usage Ledger outcome requires evidence refs.');
     const facts = this.listFacts();
     const loads = facts.filter((fact): fact is GeneratedSkillLoadFact =>
-      fact.kind === 'generated-skill-load' && fact.episodeId === input.episodeId,
+      fact.kind === 'generated-skill-load'
+      && fact.episodeId === input.episodeId
+      && fact.runtimeSessionId === input.runtimeSessionId,
     );
     const existing = new Set(facts
       .filter((fact): fact is SkillUsageOutcomeFact => fact.kind === 'episode-outcome')
@@ -118,17 +122,10 @@ export class SkillUsageLedger {
     // Legacy logs have no canonical AgentTurn correlation. Never join them by
     // timestamp, session proximity, or the distillation-owned episode id.
     if (!episodeId) return [];
-    if (episode.status === 'eligible') {
-      return this.recordOutcome({
-        episodeId,
-        outcome: 'verified-success',
-        evidenceRefs: episode.completionEvidence.map(item => item.ref),
-        recordedAt,
-      });
-    }
     if (episode.contradictionSignals.length > 0 || episode.status === 'contradicted') {
       return this.recordOutcome({
         episodeId,
+        runtimeSessionId: episode.runtimeSessionId,
         outcome: 'contradicted',
         evidenceRefs: episode.contradictionSignals.map(item => item.source.ref),
         recordedAt,

@@ -2093,9 +2093,58 @@ export class SkillEvolutionRuntime {
         rationale: 'Runtime rejected a verifier result that attempted to change the author-proposed transition.',
       };
     }
-    const transition = verifier.decision === 'accept'
+    let transition = verifier.decision === 'accept'
       ? (verifier.transition ?? draft.envelope.decision)
       : verifier.decision === 'defer' ? 'defer' : 'reject_candidate';
+
+    const isLearningEpisodeBundle = bundle.bundleId.startsWith('v3:learning-episode:');
+    const isUsageCurationBundle = bundle.bundleId.startsWith('usage-curation:');
+    const nonMutatingTransition = transition === 'defer' || transition === 'reject_candidate';
+    const targetHandle = draft.envelope.targetCapabilityHandle;
+    const trustedEpisodeTargets = new Set(
+      bundle.referencedSkillProvenance?.referencedSkills.map(skill => skill.capabilityHandle) ?? [],
+    );
+    const usageEpisode = bundle.episode as { kind?: unknown; capabilityHandle?: unknown } | null;
+    const usageTargetHandle = usageEpisode?.kind === 'usage-reassessment'
+      && typeof usageEpisode.capabilityHandle === 'string'
+      && bundle.bundleId.startsWith(`usage-curation:${usageEpisode.capabilityHandle}:`)
+      ? usageEpisode.capabilityHandle
+      : undefined;
+    const learningEpisodeTransitionAllowed = nonMutatingTransition || (
+      transition === 'append_evidence'
+      && typeof targetHandle === 'string'
+      && trustedEpisodeTargets.has(targetHandle)
+    );
+    const usageCurationTransitionAllowed = nonMutatingTransition || (
+      typeof usageTargetHandle === 'string'
+      && usageTargetHandle === targetHandle
+      && (
+        transition === 'append_evidence'
+        || transition === 'replace_current_skill'
+        || transition === 'retire_capability'
+      )
+    );
+    const observationScopeAllowed = isLearningEpisodeBundle
+      ? learningEpisodeTransitionAllowed
+      : isUsageCurationBundle ? usageCurationTransitionAllowed : true;
+    if (
+      verifier.decision === 'accept'
+      && (isLearningEpisodeBundle || isUsageCurationBundle)
+      && !observationScopeAllowed
+    ) {
+      transition = 'reject_candidate';
+      verifier = {
+        decision: 'reject',
+        issues: [{
+          code: 'single-observation-scope',
+          message: isUsageCurationBundle
+            ? 'Correction-bound reassessment may only append, replace, or retire the affected Current Skill.'
+            : 'One Learning Episode may only append evidence to a Current Skill loaded in that episode.',
+          severity: 'danger',
+        }],
+        rationale: 'Runtime rejected a transition that exceeded the bounded scope of one observation.',
+      };
+    }
     let applied: AppliedTransition;
     const isCreateTransition = transition === 'create_current_skill' && verifier.decision === 'accept';
     const routingName = draft.envelope.routingName;
@@ -2812,10 +2861,10 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
     resultingGuidanceHash = existing!.guidanceHash;
     resultingRecord = {
       ...existing!,
-      // Evidence and reference metadata do not change the active guidance
-      // body, but they are still a durable Registry mutation. Advance the
-      // record revision so reviewers holding an older read set cannot
-      // overwrite the newly admitted evidence metadata.
+      // Evidence metadata may include runtime-proven dependencies and bounded
+      // semantic observations. It never changes active guidance, route, or
+      // guidance hash, but still advances the Registry revision so an older
+      // read set cannot overwrite the newly admitted evidence.
       revision: existing!.revision + 1,
       evidenceRefs: mergeEvidence(existing!.evidenceRefs, evidenceRefs),
       referencedSkills: input.draft.envelope.referencedSkills !== undefined

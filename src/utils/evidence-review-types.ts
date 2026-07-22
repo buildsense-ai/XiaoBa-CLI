@@ -44,9 +44,13 @@ import type { DistilledKnowledgeCandidate } from './capability-distiller';
 export const EVIDENCE_REVIEW_JOB_SCHEMA_VERSION = 1 as const;
 
 /** Default prompt / policy version stamps included in Quantum identity. */
-export const EVIDENCE_REVIEW_PROMPT_VERSION = 'evidence-review-job-v2' as const;
+export const EVIDENCE_REVIEW_PROMPT_VERSION = 'evidence-review-job-v3' as const;
 /**
- * Policy v4 (Progressive Trust external-evidence false-negative fix):
+ * Policy v5:
+ *   - One ordinary Learning Episode may append evidence but cannot change
+ *     Current Skill behavior or create a new capability.
+ *   - Only explicit contradiction outcomes drive usage reassessment.
+ * Policy v4 also established:
  *   - Structural Difference Index corroboration now keys on classification +
  *     overlapping shard span instead of exact natural-language summary, so
  *     cross-lane paraphrases over the same cited evidence no longer inflate
@@ -60,7 +64,7 @@ export const EVIDENCE_REVIEW_PROMPT_VERSION = 'evidence-review-job-v2' as const;
  *   - Duplicate `create_current_skill` detection against relatedCurrentSkills.
  * Active jobs frozen under v3 must supersede to a successor on the v4 policy.
  */
-export const EVIDENCE_REVIEW_POLICY_VERSION = 'evidence-review-policy-v4' as const;
+export const EVIDENCE_REVIEW_POLICY_VERSION = 'evidence-review-policy-v5' as const;
 
 // ---------------------------------------------------------------------------
 // Shared quantum / job types
