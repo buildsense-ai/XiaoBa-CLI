@@ -1283,6 +1283,57 @@
       border-top: 1px solid var(--border-light);
     }
 
+    .model-mode-control {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      padding: 5px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface-muted);
+    }
+
+    .model-mode-option {
+      position: relative;
+      min-width: 0;
+    }
+
+    .model-mode-option input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .model-mode-option span {
+      min-height: 42px;
+      display: grid;
+      place-items: center;
+      padding: 8px 12px;
+      border-radius: 8px;
+      color: var(--text2);
+      font-size: 13px;
+      font-weight: 800;
+      text-align: center;
+      cursor: pointer;
+    }
+
+    .model-mode-option input:checked + span {
+      color: var(--accent);
+      background: var(--surface);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .model-mode-option input:focus-visible + span {
+      outline: 3px solid rgba(59, 130, 246, 0.28);
+      outline-offset: 2px;
+    }
+
+    .heartbeat-model-custom[hidden] { display: none; }
+
+    @media (max-width: 560px) {
+      .model-mode-control { grid-template-columns: 1fr; }
+    }
+
     .model-secret-row {
       display: flex;
       align-items: center;
@@ -5345,6 +5396,15 @@
           </div>
         </div>
         <div class="config-section" id="model-source-panel"><div class="loading">加载模型来源...</div></div>
+
+        <div class="settings-header" style="margin-top:28px">
+          <div class="settings-heading">
+            <div class="settings-kicker">Distillation Heartbeat</div>
+            <div class="section-title" style="margin-bottom:0">后台 Agent 模型</div>
+            <div class="settings-meta">为定时运行的 Distillation Heartbeat Agent 选择独立模型，或跟随主模型。</div>
+          </div>
+        </div>
+        <div class="config-section" id="heartbeat-model-panel"><div class="loading">加载后台 Agent 模型设置...</div></div>
       </div>
 
       <!-- Page: Companion -->
@@ -8733,6 +8793,7 @@
         if(!r.ok||data.error)throw new Error(data.error||'settings 加载失败');
         dashboardSettingsSnapshot=data;
         if(!shouldDeferModelSourceRender()) renderModelSource(data);
+        renderHeartbeatModelSettings();
         fetchRelayModelConfig();
       }catch(e){
         const p=document.getElementById('model-source-panel');
@@ -8746,6 +8807,110 @@
 
     function settingValue(id){
       return settingField(id).value||'';
+    }
+
+    function heartbeatSettingValue(id, fallback=''){
+      return settingValue('heartbeat.'+id)||fallback;
+    }
+
+    function syncHeartbeatModelForm(){
+      const mode=document.querySelector('input[name="heartbeat-model-mode"]:checked')?.value||'inherit';
+      const custom=document.getElementById('heartbeat-model-custom');
+      if(custom)custom.hidden=mode!=='custom';
+      const provider=document.getElementById('heartbeat-provider-setting')?.value||'anthropic';
+      const apiModeRow=document.getElementById('heartbeat-openai-api-mode-row');
+      if(apiModeRow)apiModeRow.style.display=provider==='openai'?'':'none';
+    }
+
+    function setHeartbeatModelStatus(message, state='muted'){
+      const status=document.getElementById('heartbeat-model-status');
+      if(!status)return;
+      status.textContent=message;
+      status.style.color=state==='error'?'var(--red)':state==='success'?'var(--green)':'var(--text2)';
+    }
+
+    function renderHeartbeatModelSettings(){
+      const panel=document.getElementById('heartbeat-model-panel');
+      if(!panel)return;
+      const mode=heartbeatSettingValue('mode','inherit')==='custom'?'custom':'inherit';
+      const provider=heartbeatSettingValue('provider','anthropic');
+      const apiMode=heartbeatSettingValue('openaiApiMode','chat_completions');
+      const contextWindow=heartbeatSettingValue('contextWindowTokens','128000');
+      const reasoning=heartbeatSettingValue('reasoningEffort','default');
+      const keyField=settingField('heartbeat.apiKey');
+      const credentialMeta=keyField.present?'已配置访问凭证':'未配置访问凭证';
+      panel.innerHTML=`<div class="model-source-layout">
+        <div class="model-source-card">
+          <div class="model-source-head">
+            <div>
+              <div class="model-source-title">模型来源</div>
+              <div class="model-source-copy">跟随主模型可保持当前行为；独立模型只用于 Distillation Heartbeat 的后台学习流程。</div>
+            </div>
+            ${runtimeTag(mode==='custom'?'独立模型':'跟随主模型',mode==='custom'?'green':'gray')}
+          </div>
+          <div class="model-source-form">
+            <div class="model-mode-control" role="radiogroup" aria-label="Distillation Heartbeat 模型来源">
+              <label class="model-mode-option"><input type="radio" name="heartbeat-model-mode" value="inherit"${mode==='inherit'?' checked':''} onchange="syncHeartbeatModelForm()"><span>跟随主模型</span></label>
+              <label class="model-mode-option"><input type="radio" name="heartbeat-model-mode" value="custom"${mode==='custom'?' checked':''} onchange="syncHeartbeatModelForm()"><span>使用独立模型</span></label>
+            </div>
+            <div class="heartbeat-model-custom" id="heartbeat-model-custom"${mode==='custom'?'':' hidden'}>
+              <div class="config-row"><label class="config-label">接口协议</label><select class="config-select" id="heartbeat-provider-setting" onchange="syncHeartbeatModelForm()"><option value="anthropic"${provider==='anthropic'?' selected':''}>Anthropic Messages</option><option value="openai"${provider==='openai'?' selected':''}>OpenAI compatible</option></select></div>
+              <div class="config-row" id="heartbeat-openai-api-mode-row"><label class="config-label">OpenAI API</label><select class="config-select" id="heartbeat-openai-api-mode-setting">${openAIApiModeOptionsHtml(apiMode)}</select></div>
+              <div class="config-row"><label class="config-label">模型地址</label><input class="config-input" id="heartbeat-api-base-setting" value="${escapeHtml(heartbeatSettingValue('apiBase'))}" placeholder="https://example.com/v1" /></div>
+              <div class="config-row"><label class="config-label">模型名称</label><input class="config-input" id="heartbeat-model-name-setting" value="${escapeHtml(heartbeatSettingValue('model'))}" placeholder="model-name" /></div>
+              <div class="config-row"><label class="config-label">上下文窗口</label><select class="config-select" id="heartbeat-context-window-setting">${customModelContextWindowOptionsHtml(contextWindow)}</select></div>
+              <div class="config-row"><label class="config-label">推理强度</label><select class="config-select" id="heartbeat-reasoning-effort-setting">${reasoningEffortOptionsHtml(reasoning)}</select></div>
+              <div class="config-row"><label class="config-label">访问凭证</label><input class="config-input" id="heartbeat-secret-setting" type="password" value="" placeholder="${keyField.present?'留空表示保持现有凭证':'输入访问凭证'}" /></div>
+              <div class="model-secret-row"><label><input type="checkbox" id="heartbeat-secret-clear-setting" /> 清除已保存的访问凭证</label><span>${credentialMeta}</span></div>
+            </div>
+            <div class="model-source-actions">
+              <button class="btn btn-primary" onclick="saveHeartbeatModelSettings()">保存后台模型</button>
+            </div>
+            <div id="heartbeat-model-status" style="color:var(--text2);font-size:13px">设置会在下一次启动 runtime 时应用，不会切换主会话模型。</div>
+          </div>
+        </div>
+      </div>`;
+      syncHeartbeatModelForm();
+    }
+
+    async function saveHeartbeatModelSettings(){
+      const mode=document.querySelector('input[name="heartbeat-model-mode"]:checked')?.value||'inherit';
+      const settings={'heartbeat.mode':mode};
+      if(mode==='custom'){
+        const provider=document.getElementById('heartbeat-provider-setting')?.value||'anthropic';
+        const apiBase=document.getElementById('heartbeat-api-base-setting')?.value.trim()||'';
+        const model=document.getElementById('heartbeat-model-name-setting')?.value.trim()||'';
+        const secret=document.getElementById('heartbeat-secret-setting')?.value.trim()||'';
+        const clearSecret=Boolean(document.getElementById('heartbeat-secret-clear-setting')?.checked);
+        const keyPresent=Boolean(settingField('heartbeat.apiKey').present);
+        if(!apiBase||!model){
+          setHeartbeatModelStatus('请填写模型地址和模型名称。','error');
+          return;
+        }
+        if((!keyPresent&&!secret)||clearSecret){
+          setHeartbeatModelStatus('独立模型需要访问凭证。','error');
+          return;
+        }
+        settings['heartbeat.provider']=provider;
+        settings['heartbeat.apiBase']=apiBase;
+        settings['heartbeat.model']=model;
+        settings['heartbeat.contextWindowTokens']=document.getElementById('heartbeat-context-window-setting')?.value||'128000';
+        settings['heartbeat.reasoningEffort']=document.getElementById('heartbeat-reasoning-effort-setting')?.value||'default';
+        settings['heartbeat.openaiApiMode']=provider==='openai'
+          ? document.getElementById('heartbeat-openai-api-mode-setting')?.value||'chat_completions'
+          : 'chat_completions';
+        settings['heartbeat.apiKey']=secret?{action:'replace',value:secret}:{action:'keep'};
+      }
+      try{
+        setHeartbeatModelStatus('保存中...');
+        const response=await fetch(API+'/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({settings})});
+        const data=await response.json();
+        if(!response.ok||data.error)throw new Error(data.error||'保存失败');
+        await fetchDashboardSettings();
+        setHeartbeatModelStatus('已保存，将在下一次启动 runtime 时应用。','success');
+      }catch(error){
+        setHeartbeatModelStatus('保存失败：'+formatDashboardApiError(error,'/api/settings'),'error');
+      }
     }
 
     function shouldDeferModelSourceRender(){

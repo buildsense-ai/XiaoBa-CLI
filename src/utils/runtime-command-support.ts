@@ -29,6 +29,7 @@ import { SkillUsageCurator } from './skill-usage-curator';
 import { SkillUsageLedger } from './skill-usage-ledger';
 import { DueWorkPlanner } from './due-work-planner';
 import { RuntimeLearning, type RuntimeLearningOptions } from './runtime-learning';
+import { getDistillationHeartbeatModelConfig } from './distillation-heartbeat-model-config';
 
 export interface RuntimeCommandSupportOptions {
   /**
@@ -62,6 +63,10 @@ export function buildRuntimeLearningStack(
   options: RuntimeLearningStackOptions = {},
 ): RuntimeLearningStack {
   const skillsRoot = PathResolver.getSkillsPath();
+  const heartbeatModel = getDistillationHeartbeatModelConfig(
+    process.env,
+    PathResolver.getRuntimeDataRoot(),
+  );
   const skillEvolution = new SkillEvolutionRuntime({
     workingDirectory,
     branchLogRoot: config.branchLogRoot,
@@ -70,7 +75,7 @@ export function buildRuntimeLearningStack(
     auditPath: config.skillEvolutionAuditPath,
     journalPath: config.skillEvolutionJournalPath,
     reviewQueuePath: config.skillEvolutionReviewQueuePath,
-    aiService: new AIService(),
+    aiService: new AIService(heartbeatModel.override),
     settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
     reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
     operationalRetryMs: config.skillEvolutionOperationalRetryMinutes * 60 * 1000,
