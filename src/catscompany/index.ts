@@ -29,7 +29,7 @@ import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-r
 import { randomUUID } from 'crypto';
 import { hostname, platform } from 'os';
 import { ConfigManager } from '../utils/config';
-import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
+import { resolvePrimaryModelVisionCapability } from '../utils/model-capabilities';
 import { createCatsCoSessionRoute } from '../core/session-router';
 import { ReadTool } from '../tools/read-tool';
 import { GlobTool } from '../tools/glob-tool';
@@ -2854,7 +2854,8 @@ export class CatsCompanyBot {
     const { createImageBlock } = require('../utils/image-utils');
     const blocks: import('../types').ContentBlock[] = [];
     const config = ConfigManager.getConfigReadonly();
-    const primaryModelCanSeeImages = isPrimaryModelVisionCapable(config);
+    const visionState = await resolvePrimaryModelVisionCapability(config);
+    const primaryModelCanSeeImages = visionState === 'supported';
     const modelName = config.model || 'unknown';
     const currentImageRefs: string[] = [];
 
@@ -2900,7 +2901,7 @@ export class CatsCompanyBot {
             currentImageRefs.join('\n\n'),
           ].join('\n'),
         });
-      Logger.info(`[CatsCo] vision_fallback_read_file model=${modelName} images=${currentImageRefs.length} reason=${primaryModelCanSeeImages ? 'image_block_create_failed' : 'model_not_vision_capable'}`);
+      Logger.info(`[CatsCo] vision_fallback_read_file model=${modelName} images=${currentImageRefs.length} reason=${primaryModelCanSeeImages ? 'image_block_create_failed' : visionState === 'unsupported' ? 'model_not_vision_capable' : 'model_capability_unknown'}`);
     }
 
     return blocks;

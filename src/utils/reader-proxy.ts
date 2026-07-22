@@ -64,27 +64,36 @@ function resolveReaderBaseUrl(config?: ChatConfig): string {
   return `${httpBaseUrl}${DEFAULT_READER_API_PATH}`;
 }
 
-function buildAuthHeaders(config?: ChatConfig): Record<string, string> {
-  const apiKey = (
-    process.env.CATSCOMPANY_API_KEY
-    || process.env.READER_PROXY_API_KEY
-    || config?.catscompany?.apiKey
-    || ''
-  ).trim();
-  if (apiKey) {
-    return { Authorization: `ApiKey ${apiKey}` };
+function buildAuthHeaderCandidates(config?: ChatConfig): Array<Record<string, string>> {
+  const candidates = [
+    ...[
+      process.env.READER_PROXY_API_KEY,
+      process.env.CATSCO_API_KEY,
+      process.env.CATSCOMPANY_API_KEY,
+      config?.catscompany?.apiKey,
+    ].map(value => ({ scheme: 'ApiKey', value })),
+    ...[
+      process.env.READER_PROXY_BEARER_TOKEN,
+      process.env.CATSCO_BEARER_TOKEN,
+      process.env.CATSCOMPANY_BEARER_TOKEN,
+      process.env.CATSCO_USER_TOKEN,
+      process.env.CATSCOMPANY_USER_TOKEN,
+    ].map(value => ({ scheme: 'Bearer', value })),
+  ];
+  const seen = new Set<string>();
+  const headers: Array<Record<string, string>> = [];
+  for (const candidate of candidates) {
+    const value = String(candidate.value || '').trim();
+    if (!value) continue;
+    const authorization = `${candidate.scheme} ${value}`;
+    if (seen.has(authorization)) continue;
+    seen.add(authorization);
+    headers.push({ Authorization: authorization });
   }
-
-  const bearerToken = (
-    process.env.CATSCOMPANY_BEARER_TOKEN
-    || process.env.READER_PROXY_BEARER_TOKEN
-    || ''
-  ).trim();
-  if (bearerToken) {
-    return { Authorization: `Bearer ${bearerToken}` };
+  if (headers.length === 0) {
+    throw new Error('Cats reader proxy could not find the current CatsCo account or bot authentication.');
   }
-
-  throw new Error('Cats reader proxy requires CATSCOMPANY_API_KEY / READER_PROXY_API_KEY, or CatsCo bot apiKey.');
+  return headers;
 }
 
 function appendField(chunks: Buffer[], boundary: string, name: string, value: string): void {
@@ -126,64 +135,78 @@ export async function analyzeImageWithReaderProxy(options: ReaderProxyOptions): 
   const analyzeUrl = `${baseUrl}/analyze`;
   const prompt = normalizePrompt(options.prompt);
   const { body, boundary } = buildMultipartBody(options.filePath, { prompt });
-  const maxAttempts = RETRY_DELAYS_MS.length + 1;
+  let authCandidates: Array<Record<string, string>>;
+  try {
+    authCandidates = buildAuthHeaderCandidates(options.config);
+  } catch (error: any) {
+    return { ok: false, attempts: 0, error: String(error?.message || error || 'Unknown reader proxy auth error') };
+  }
+  let totalAttempts = 0;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const response = await axios.post(analyzeUrl, body, {
-        timeout: DEFAULT_TIMEOUT_MS,
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-        validateStatus: () => true,
-        headers: {
-          ...buildAuthHeaders(options.config),
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          'Content-Length': String(body.length),
-        },
-      });
+  for (let authIndex = 0; authIndex < authCandidates.length; authIndex++) {
+    const authHeaders = authCandidates[authIndex];
+    const maxAttempts = RETRY_DELAYS_MS.length + 1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      totalAttempts += 1;
+      try {
+        const response = await axios.post(analyzeUrl, body, {
+          timeout: DEFAULT_TIMEOUT_MS,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          validateStatus: () => true,
+          headers: {
+            ...authHeaders,
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'Content-Length': String(body.length),
+          },
+        });
 
-      if (response.status !== 200) {
-        const errorText = typeof response.data === 'string'
-          ? response.data
-          : JSON.stringify(response.data);
+        if (response.status !== 200) {
+          const errorText = typeof response.data === 'string'
+            ? response.data
+            : JSON.stringify(response.data);
 
-        if (attempt < maxAttempts && RETRYABLE_STATUS_CODES.has(response.status)) {
+          if ((response.status === 401 || response.status === 403) && authIndex + 1 < authCandidates.length) {
+            break;
+          }
+          if (attempt < maxAttempts && RETRYABLE_STATUS_CODES.has(response.status)) {
+            await sleep(RETRY_DELAYS_MS[attempt - 1]);
+            continue;
+          }
+
+          return {
+            ok: false,
+            status: response.status,
+            attempts: totalAttempts,
+            error: `Cats reader proxy returned ${response.status} after ${totalAttempts} attempt(s): ${errorText}`,
+          };
+        }
+
+        const payload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        if (typeof payload?.analysis === 'string' && payload.analysis.trim()) {
+          return { ok: true, attempts: totalAttempts, analysis: payload.analysis.trim() };
+        }
+
+        return { ok: true, attempts: totalAttempts, analysis: JSON.stringify(payload, null, 2) };
+      } catch (error: any) {
+        const message = String(error?.message || error || 'Unknown reader proxy error');
+        if (attempt < maxAttempts && /timeout|ECONNRESET|ECONNABORTED|EAI_AGAIN|ENOTFOUND/i.test(message)) {
           await sleep(RETRY_DELAYS_MS[attempt - 1]);
           continue;
         }
 
         return {
           ok: false,
-          status: response.status,
-          attempts: attempt,
-          error: `Cats reader proxy returned ${response.status} after ${attempt} attempt(s): ${errorText}`,
+          attempts: totalAttempts,
+          error: message,
         };
       }
-
-      const payload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
-      if (typeof payload?.analysis === 'string' && payload.analysis.trim()) {
-        return { ok: true, attempts: attempt, analysis: payload.analysis.trim() };
-      }
-
-      return { ok: true, attempts: attempt, analysis: JSON.stringify(payload, null, 2) };
-    } catch (error: any) {
-      const message = String(error?.message || error || 'Unknown reader proxy error');
-      if (attempt < maxAttempts && /timeout|ECONNRESET|ECONNABORTED|EAI_AGAIN|ENOTFOUND/i.test(message)) {
-        await sleep(RETRY_DELAYS_MS[attempt - 1]);
-        continue;
-      }
-
-      return {
-        ok: false,
-        attempts: attempt,
-        error: message,
-      };
     }
   }
 
   return {
     ok: false,
-    attempts: maxAttempts,
+    attempts: totalAttempts,
     error: 'Unknown reader proxy retry state',
   };
 }

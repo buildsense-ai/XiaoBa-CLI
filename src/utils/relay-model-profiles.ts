@@ -18,7 +18,7 @@ export const RELAY_MODEL_SDK_LABELS: Record<RelayModelProvider, string> = {
 
 export interface RelayModelCapabilities {
   toolCalling: boolean;
-  vision: boolean;
+  vision?: boolean;
   streaming: boolean;
 }
 
@@ -88,7 +88,6 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     contextWindowTokens: 1_000_000,
     capabilities: {
       toolCalling: true,
-      vision: false,
       streaming: true,
     },
   })),
