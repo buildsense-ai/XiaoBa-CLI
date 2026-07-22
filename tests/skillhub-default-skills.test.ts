@@ -7,7 +7,17 @@ import {
   bootstrapDefaultSkillHubSkills,
   getDefaultSkillBootstrapStatePath,
 } from '../src/skillhub/default-skill-bootstrap';
-import type { DefaultSkillHubSkill } from '../src/skillhub/default-skills';
+import {
+  DEFAULT_SKILLHUB_SKILLS,
+  type DefaultSkillHubSkill,
+} from '../src/skillhub/default-skills';
+
+const ATRIDAISUKI_DEFAULTS = [
+  'atridaisuki/web-search@1.0.2',
+  'atridaisuki/read-pdf@1.0.15',
+  'atridaisuki/pdf-author-editor@1.2.5',
+  'atridaisuki/image-asset-generator@1.0.13',
+];
 
 describe('default SkillHub bootstrap', () => {
   let testRoot: string;
@@ -27,6 +37,21 @@ describe('default SkillHub bootstrap', () => {
     if (originalSkillsEnv === undefined) delete process.env.XIAOBA_SKILLS_DIR;
     else process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
     if (fs.existsSync(testRoot)) fs.rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  test('ships the selected atridaisuki defaults without cloud HTML artifact', () => {
+    const configured = DEFAULT_SKILLHUB_SKILLS
+      .filter(skill => skill.skillId.startsWith('atridaisuki/'))
+      .map(skill => `${skill.skillId}@${skill.version}`);
+
+    assert.deepEqual(configured, ATRIDAISUKI_DEFAULTS);
+    assert.equal(configured.some(skill => skill.includes('artifact')), false);
+  });
+
+  test('keeps default identifiers and install directories unique', () => {
+    assertUnique(DEFAULT_SKILLHUB_SKILLS.map(skill => skill.key), 'key');
+    assertUnique(DEFAULT_SKILLHUB_SKILLS.map(skill => skill.skillId), 'skillId');
+    assertUnique(DEFAULT_SKILLHUB_SKILLS.map(skill => skill.installName), 'installName');
   });
 
   test('installs a missing default skill once and records central state', async () => {
@@ -133,4 +158,8 @@ function fakeInstallService(calls: string[]) {
 
 function readState(): any {
   return JSON.parse(fs.readFileSync(getDefaultSkillBootstrapStatePath(), 'utf-8'));
+}
+
+function assertUnique(values: string[], label: string): void {
+  assert.equal(new Set(values).size, values.length, `Default SkillHub ${label} values must be unique.`);
 }
