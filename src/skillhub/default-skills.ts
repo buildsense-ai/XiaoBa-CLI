@@ -5,7 +5,6 @@ export interface DefaultSkillHubSkill {
   installName: string;
 }
 
-// agent-browser remains available for explicit installation, but is no longer
-// auto-installed: its unpinned npx CLI starts a detached daemon that can outlive
-// the task. ShellTool adds an idle timeout as defense in depth for explicit use.
-export const DEFAULT_SKILLHUB_SKILLS: DefaultSkillHubSkill[] = [];
+export const DEFAULT_SKILLHUB_SKILLS: DefaultSkillHubSkill[] = [
+  { key: 'lin/agent-browser', skillId: 'lin/agent-browser', version: '1.0.3', installName: 'agent-browser' },
+];

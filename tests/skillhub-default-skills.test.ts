@@ -7,17 +7,7 @@ import {
   bootstrapDefaultSkillHubSkills,
   getDefaultSkillBootstrapStatePath,
 } from '../src/skillhub/default-skill-bootstrap';
-import {
-  DEFAULT_SKILLHUB_SKILLS,
-  type DefaultSkillHubSkill,
-} from '../src/skillhub/default-skills';
-
-test('agent-browser is not installed as a default SkillHub skill', () => {
-  assert.equal(
-    DEFAULT_SKILLHUB_SKILLS.some(skill => skill.installName === 'agent-browser'),
-    false,
-  );
-});
+import type { DefaultSkillHubSkill } from '../src/skillhub/default-skills';
 
 describe('default SkillHub bootstrap', () => {
   let testRoot: string;
