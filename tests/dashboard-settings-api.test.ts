@@ -16,6 +16,8 @@ describe('dashboard typed settings API', () => {
   let originalCwd: string;
   let server: Server | undefined;
   let baseUrl: string;
+  let modelsDevCatalog: Record<string, unknown> | undefined;
+  let modelsDevFetchOverride: typeof fetch | undefined;
   const envKeys = [
     'GAUZ_LLM_PROVIDER',
     'GAUZ_LLM_API_BASE',
@@ -81,7 +83,15 @@ describe('dashboard typed settings API', () => {
 
     const app = express();
     app.use(express.json());
-    app.use('/api', createApiRouter({ getAll: () => [] } as any));
+    modelsDevCatalog = undefined;
+    modelsDevFetchOverride = undefined;
+    app.use('/api', createApiRouter({ getAll: () => [] } as any, undefined, {
+      modelsDevFetch: (async (input, init) => modelsDevFetchOverride
+        ? modelsDevFetchOverride(input, init)
+        : modelsDevCatalog
+          ? Response.json(modelsDevCatalog)
+          : new Response('', { status: 503 })) as typeof fetch,
+    }));
     server = await listen(app);
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('server did not bind to a TCP port');
@@ -1637,7 +1647,9 @@ describe('dashboard typed settings API', () => {
         restartCalled += 1;
         return service;
       },
-    } as any));
+    } as any, undefined, {
+      modelsDevFetch: (async () => new Response('', { status: 503 })) as typeof fetch,
+    }));
     const dashboardServer = await listen(dashboardApp);
     const dashboardAddress = dashboardServer.address();
     if (!dashboardAddress || typeof dashboardAddress === 'string') throw new Error('dashboard server did not bind');
@@ -1870,7 +1882,49 @@ describe('dashboard typed settings API', () => {
     }
   });
 
-  test('GET /cats/relay/model-config preserves partial unknown relay capabilities', async () => {
+  test('GET /cats/relay/model-config does not wait for a stalled models.dev request', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'custom-model',
+        self_service_enabled: false,
+        models: [{
+          id: 'custom-model',
+          label: 'Custom Model',
+          model: 'custom-model',
+          enabled: true,
+          default: true,
+        }],
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      modelsDevFetchOverride = (async (_input, init) => new Promise<Response>(resolve => {
+        init?.signal?.addEventListener('abort', () => resolve(new Response('', { status: 503 })), { once: true });
+      })) as typeof fetch;
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const startedAt = Date.now();
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config`);
+      const elapsedMs = Date.now() - startedAt;
+      const data = await response.json() as any;
+
+      assert.equal(response.status, 200);
+      assert.equal(data.selectedModel.model, 'custom-model');
+      assert.ok(elapsedMs < 1_000, `Dashboard waited ${elapsedMs}ms for models.dev`);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('GET /cats/relay/model-config dynamically reads vision capability from models.dev', async () => {
     const catsApp = express();
     catsApp.use(express.json());
     catsApp.get('/api/relay/config', (_req, res) => {
@@ -1889,7 +1943,6 @@ describe('dashboard typed settings API', () => {
             enabled: true,
             default: true,
             capabilities: {
-              vision: 'true',
               streaming: 0,
             },
           },
@@ -1901,6 +1954,16 @@ describe('dashboard typed settings API', () => {
     if (!address || typeof address === 'string') throw new Error('cats server did not bind');
 
     try {
+      modelsDevCatalog = {
+        custom: {
+          models: {
+            'custom-vision': {
+              id: 'custom-vision',
+              modalities: { input: ['text', 'image'] },
+            },
+          },
+        },
+      };
       process.env.CATSCO_USER_TOKEN = 'user-token';
       process.env.CATSCO_USER_UID = '38';
       process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;

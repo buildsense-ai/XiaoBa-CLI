@@ -67,6 +67,7 @@ describe('CatsCo default relay model bootstrap', () => {
       { path: '/api/relay/config', method: 'GET' },
       { path: '/api/relay/key', method: 'GET' },
       { path: '/api/relay/key', method: 'POST' },
+      { path: '/api.json', method: undefined },
       { path: '/v1/models', method: 'GET' },
     ]);
   });
@@ -97,7 +98,7 @@ describe('CatsCo default relay model bootstrap', () => {
     assert.ok(runtime.capabilitiesCheckedAt);
   });
 
-  test('drops legacy GPT vision=false even when relay metadata is temporarily unavailable', async () => {
+  test('replaces legacy GPT vision=false from static catalog metadata when relay metadata is unavailable', async () => {
     const runtime = await refreshCatsRelayCatalogRuntimeCapabilities({
       schema: 'xiaoba.bot-catalog-model-runtime.v1',
       botId: 'bot-1',
@@ -111,8 +112,44 @@ describe('CatsCo default relay model bootstrap', () => {
       capabilities: { vision: false, toolCalling: true, streaming: true },
     }, (async () => new Response('temporarily unavailable', { status: 503 })) as typeof fetch);
 
-    assert.equal(runtime.capabilities?.vision, undefined);
+    assert.equal(runtime.capabilities?.vision, true);
     assert.equal(runtime.capabilities?.toolCalling, true);
     assert.equal(runtime.capabilitiesSource, 'static');
+  });
+
+  test('uses models.dev when relay model metadata omits input modalities', async () => {
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'models.dev') {
+        return Response.json({
+          openai: {
+            models: {
+              'gpt-5.6-terra': {
+                id: 'gpt-5.6-terra',
+                modalities: { input: ['text', 'image', 'pdf'] },
+              },
+            },
+          },
+        });
+      }
+      return new Response('relay models unavailable', { status: 503 });
+    }) as typeof fetch;
+
+    const runtime = await refreshCatsRelayCatalogRuntimeCapabilities({
+      schema: 'xiaoba.bot-catalog-model-runtime.v1',
+      botId: 'bot-1',
+      modelId: 'gpt-5.6-terra',
+      provider: 'openai',
+      apiBase: 'https://relay.example.test/v1',
+      apiKey: 'sk-relay-key',
+      model: 'gpt-5.6-terra',
+      contextWindowTokens: 1_000_000,
+      openaiApiMode: 'responses',
+      capabilities: { vision: false, toolCalling: true, streaming: true },
+    }, fetchImpl);
+
+    assert.equal(runtime.capabilities?.vision, true);
+    assert.equal(runtime.capabilitiesSource, 'models-dev');
+    assert.ok(runtime.capabilitiesCheckedAt);
   });
 });

@@ -43,6 +43,7 @@ import {
   type RelayModelProfile,
   type RelayModelProvider,
 } from '../../utils/relay-model-profiles';
+import { fetchModelsDevVisionBatch } from '../../utils/models-dev-capabilities';
 import {
   RuntimeProfileEditInput,
   hasRuntimeProfileRollback,
@@ -105,6 +106,7 @@ const TRUSTED_CATSCO_WS_URL = new URL(DEFAULT_CATSCO_WS_URL);
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
 const PROMPT_EDITOR_SKILL_NAME = 'catsco-prompt-editor';
+const MODELS_DEV_DASHBOARD_WAIT_MS = 250;
 
 function runtimeDataRoot(): string {
   return PathResolver.getRuntimeDataRoot();
@@ -948,8 +950,18 @@ function canonicalRelayModelName(value: unknown): string {
   return model;
 }
 
+function normalizeRelayModalities(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const modalities = value
+    .map(item => String(item || '').trim().toLowerCase())
+    .filter(Boolean);
+  return modalities.length > 0 ? [...new Set(modalities)] : undefined;
+}
+
 function relayModelCapabilitiesPayload(item: any, profile?: RelayModelProfile): RelayModelConfig['capabilities'] {
-  const capabilities = item?.capabilities;
+  const capabilities = item?.capabilities && typeof item.capabilities === 'object'
+    ? item.capabilities
+    : {};
   const payload: RelayModelConfig['capabilities'] = profile
     ? {
       tool_calling: profile.capabilities.toolCalling,
@@ -957,12 +969,12 @@ function relayModelCapabilitiesPayload(item: any, profile?: RelayModelProfile): 
       streaming: profile.capabilities.streaming,
     }
     : {};
-  if (!capabilities || typeof capabilities !== 'object') {
-    return Object.keys(payload).length > 0 ? payload : undefined;
-  }
-
   const toolCalling = optionalBoolean(capabilities.tool_calling ?? capabilities.toolCalling);
-  const vision = optionalBoolean(capabilities.vision);
+  const inputModalities = normalizeRelayModalities(
+    capabilities.input_modalities ?? item?.input_modalities ?? item?.modalities?.input,
+  );
+  const vision = optionalBoolean(capabilities.vision)
+    ?? (inputModalities ? inputModalities.includes('image') : undefined);
   const streaming = optionalBoolean(capabilities.streaming);
   if (toolCalling !== undefined) payload.tool_calling = toolCalling;
   if (vision !== undefined) payload.vision = vision;
@@ -1050,6 +1062,61 @@ function relayModelCatalog(config: any): RelayModelConfig[] {
   return markRelayDefaultModel(fallbackRelayModelCatalog(config), config);
 }
 
+function relayModelRawEntry(config: any, model: RelayModelConfig): any {
+  if (!Array.isArray(config?.models)) return undefined;
+  const candidates = [model.id, model.model].map(value => String(value || '').trim().toLowerCase());
+  return config.models.find((item: any) => (
+    [item?.id, item?.model]
+      .map(value => String(value || '').trim().toLowerCase())
+      .some(value => candidates.includes(value))
+  ));
+}
+
+function relayModelHasUpstreamVisionMetadata(item: any): boolean {
+  if (!item || typeof item !== 'object') return false;
+  const capabilities = item.capabilities && typeof item.capabilities === 'object' ? item.capabilities : {};
+  if (optionalBoolean(capabilities.vision) !== undefined) return true;
+  return Array.isArray(capabilities.input_modalities)
+    || Array.isArray(item.input_modalities)
+    || Array.isArray(item.modalities?.input);
+}
+
+async function relayModelCatalogWithModelsDev(
+  config: any,
+  fetchImpl: typeof fetch,
+): Promise<RelayModelConfig[]> {
+  const models = relayModelCatalog(config);
+  const references = models.map(model => {
+    const profile = findRelayModelProfile(model.model) ?? findRelayModelProfile(model.id);
+    return {
+      model: profile?.modelsDevModel || model.model,
+      provider: profile?.modelsDevProvider,
+    };
+  });
+  const visionRequest = fetchModelsDevVisionBatch(references, fetchImpl);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const vision = await Promise.race([
+    visionRequest,
+    new Promise<Array<undefined>>(resolve => {
+      timeout = setTimeout(() => resolve(references.map(() => undefined)), MODELS_DEV_DASHBOARD_WAIT_MS);
+    }),
+  ]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+  return models.map((model, index) => {
+    if (vision[index] === undefined || relayModelHasUpstreamVisionMetadata(relayModelRawEntry(config, model))) {
+      return model;
+    }
+    return {
+      ...model,
+      capabilities: {
+        ...(model.capabilities || {}),
+        vision: vision[index],
+      },
+    };
+  });
+}
+
 function markRelayDefaultModel(models: RelayModelConfig[], config: any): RelayModelConfig[] {
   const defaultModel = String(config?.default_model || '').trim().toLowerCase();
   let defaultIndex = models.findIndex(model => model.default);
@@ -1066,9 +1133,9 @@ function markRelayDefaultModel(models: RelayModelConfig[], config: any): RelayMo
 function selectRelayModel(
   config: any,
   requested: unknown,
-  options: { strict?: boolean } = {},
+  options: { strict?: boolean; models?: RelayModelConfig[] } = {},
 ): RelayModelConfig {
-  const models = relayModelCatalog(config);
+  const models = options.models ?? relayModelCatalog(config);
   if (models.length === 0) {
     throw httpError('CatsCo 中转暂未提供可用模型', 503);
   }
@@ -1862,6 +1929,7 @@ async function setupCatsRelayModelForDesktop(
   botId: string,
   requestedModel: unknown,
   options: { rotateExisting?: boolean; reasoningEffort?: ReasoningEffort } = {},
+  modelsDevFetch: typeof fetch = fetch,
 ): Promise<CatsRelayModelSetupResult> {
   const config = await fetchCatsRelayConfig(state);
   if (config?.self_service_enabled === false) {
@@ -1875,7 +1943,11 @@ async function setupCatsRelayModelForDesktop(
   }
 
   const preferredModel = preferredRelayModelRequest(requestedModel);
-  const selectedModel = selectRelayModel(config, preferredModel, { strict: Boolean(String(requestedModel || '').trim()) });
+  const models = await relayModelCatalogWithModelsDev(config, modelsDevFetch);
+  const selectedModel = selectRelayModel(config, preferredModel, {
+    strict: Boolean(String(requestedModel || '').trim()),
+    models,
+  });
   const ensured = await ensureCatsRelayPlainKey(state, {
     rotateExisting: options.rotateExisting,
   });
@@ -2079,6 +2151,7 @@ async function getCatsCoAuthForSkillHub(): Promise<{
 
 export interface DashboardApiRouterOptions {
   getAuthStatus?: () => DashboardAuthStatus;
+  modelsDevFetch?: typeof fetch;
 }
 
 export function createApiRouter(
@@ -2087,6 +2160,7 @@ export function createApiRouter(
   options: DashboardApiRouterOptions = {}
 ): Router {
   const router = Router();
+  const modelsDevFetch = options.modelsDevFetch ?? fetch;
   registerSkillHubRoutes(router, { getCatsCoAuth: getCatsCoAuthForSkillHub });
   registerPetRoutes(router);
 
@@ -2184,10 +2258,11 @@ export function createApiRouter(
       if (state.token) {
         try { relayConfig = await fetchCatsRelayConfig(state); } catch { relayConfig = undefined; }
       }
+      const models = await relayModelCatalogWithModelsDev(relayConfig, modelsDevFetch);
       res.json({
         ok: true,
         authRequired: !state.token,
-        models: relayModelCatalog(relayConfig)
+        models: models
           .filter(model => model.capabilities?.tool_calling !== false)
           .map(relayModelPayload),
       });
@@ -2274,7 +2349,8 @@ export function createApiRouter(
       const state = getCatsAuthState();
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
       const relayConfig = await fetchCatsRelayConfig(state);
-      const selected = selectRelayModel(relayConfig, req.body?.modelId || req.body?.model, { strict: true });
+      const models = await relayModelCatalogWithModelsDev(relayConfig, modelsDevFetch);
+      const selected = selectRelayModel(relayConfig, req.body?.modelId || req.body?.model, { strict: true, models });
       if (selected.capabilities?.tool_calling === false) {
         return res.status(400).json({ error: 'Memory Search Branch requires tool calling support' });
       }
@@ -3515,6 +3591,7 @@ export function createApiRouter(
               rotateExisting: req.body?.rotateRelayKey === true || req.body?.rotateExisting === true,
               reasoningEffort: requestedReasoningEffort(req.body?.reasoningEffort),
             },
+            modelsDevFetch,
           );
           relayModelSetup = setup.response;
           selectedCatalogRuntime = setup.selectedCatalogRuntime;
@@ -3683,6 +3760,7 @@ export function createApiRouter(
               rotateExisting: req.body?.rotateRelayKey === true || req.body?.rotateExisting === true,
               reasoningEffort: requestedReasoningEffort(req.body?.reasoningEffort),
             },
+            modelsDevFetch,
           );
           relayModelSetup = setup.response;
           selectedCatalogRuntime = setup.selectedCatalogRuntime;
@@ -3828,12 +3906,13 @@ export function createApiRouter(
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
 
       const config = await fetchCatsRelayConfig(state);
+      const models = await relayModelCatalogWithModelsDev(config, modelsDevFetch);
       const currentConfig = getModelConfigReadonly();
       const requestedModel = req.query.modelId || req.query.model;
       const selectedModel = selectRelayModel(
         config,
         preferredRelayModelRequest(requestedModel),
-        { strict: Boolean(requestedModel) },
+        { strict: Boolean(requestedModel), models },
       );
       const keyResponse = config?.self_service_enabled ? await fetchCatsRelayKey(state) : { key: null };
       const apiBase = selectedModel.baseUrl;
@@ -3850,7 +3929,7 @@ export function createApiRouter(
         model,
         reasoningEffort,
         selectedModel: relayModelPayload(selectedModel),
-        models: relayModelCatalog(config).map(relayModelPayload),
+        models: models.map(relayModelPayload),
         configured: Boolean(
           currentConfig.apiKey
           && currentConfig.provider === provider
@@ -3876,11 +3955,12 @@ export function createApiRouter(
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
 
       const config = await fetchCatsRelayConfig(state);
+      const models = await relayModelCatalogWithModelsDev(config, modelsDevFetch);
       const requestedModel = req.body?.modelId || req.body?.model;
       const selectedModel = selectRelayModel(
         config,
         preferredRelayModelRequest(requestedModel),
-        { strict: Boolean(requestedModel) },
+        { strict: Boolean(requestedModel), models },
       );
       const reasoningEffort = relayReasoningEffortOrHigh(
         requestedReasoningEffort(req.body?.reasoningEffort) ?? currentRelayReasoningEffort(),
@@ -3941,7 +4021,7 @@ export function createApiRouter(
         model,
         reasoningEffort,
         selectedModel: relayModelPayload(selectedModel),
-        models: relayModelCatalog(config).map(relayModelPayload),
+        models: models.map(relayModelPayload),
         updated: settingsResult.updated,
         botDefinitionSync,
         key: sanitizeRelayKeyInfo(ensured.response?.key),

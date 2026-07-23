@@ -6,6 +6,7 @@ import {
 } from '../utils/relay-model-profiles';
 import type { BotCatalogModelRuntime } from '../bot-definition/types';
 import type { ReasoningEffort } from '../types';
+import { fetchModelsDevVision } from '../utils/models-dev-capabilities';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const CAPABILITY_REQUEST_TIMEOUT_MS = 3_000;
@@ -47,13 +48,24 @@ export async function provisionCatsRelayCatalogRuntime(
   ensureRequestedModelIsAvailable(relayConfig, profile.id, profile.model);
 
   const apiKey = await ensurePlainRelayKey(fetchImpl, httpBaseUrl, token, options.auth);
+  const modelsDevVisionRequest = fetchModelsDevVision({
+    provider: profile.modelsDevProvider,
+    model: profile.modelsDevModel,
+  }, fetchImpl);
   const relayCapabilities = await fetchRelayModelCapabilities(
     fetchImpl,
     relayEndpointForProvider(relayConfig, 'openai'),
     apiKey,
     profile.model,
   );
-  const capabilities = mergeCapabilities(profile.capabilities, relayCapabilities);
+  const modelsDevVision = typeof relayCapabilities?.vision === 'boolean'
+    ? undefined
+    : await modelsDevVisionRequest;
+  const modelsDevCapabilities = typeof modelsDevVision === 'boolean' ? { vision: modelsDevVision } : undefined;
+  const capabilities = mergeCapabilities(profile.capabilities, modelsDevCapabilities, relayCapabilities);
+  const capabilitiesSource = relayCapabilities
+    ? 'relay-models'
+    : modelsDevCapabilities ? 'models-dev' : 'static';
   return {
     schema: 'xiaoba.bot-catalog-model-runtime.v1',
     botId,
@@ -66,8 +78,8 @@ export async function provisionCatsRelayCatalogRuntime(
     reasoningEffort: options.reasoningEffort ?? 'high',
     openaiApiMode: profile.openaiApiMode ?? 'chat_completions',
     capabilities,
-    capabilitiesSource: relayCapabilities ? 'relay-models' : 'static',
-    ...(relayCapabilities ? { capabilitiesCheckedAt: new Date().toISOString() } : {}),
+    capabilitiesSource,
+    ...(capabilitiesSource !== 'static' ? { capabilitiesCheckedAt: new Date().toISOString() } : {}),
   };
 }
 
@@ -76,14 +88,22 @@ export async function refreshCatsRelayCatalogRuntimeCapabilities(
   fetchImpl: typeof fetch = fetch,
 ): Promise<BotCatalogModelRuntime> {
   const profile = findRelayModelProfile(runtime.modelId) ?? findRelayModelProfile(runtime.model);
+  const modelsDevVisionRequest = fetchModelsDevVision({
+    provider: profile?.modelsDevProvider,
+    model: profile?.modelsDevModel || runtime.model,
+  }, fetchImpl);
   const relayCapabilities = await fetchRelayModelCapabilities(
     fetchImpl,
     runtime.apiBase,
     runtime.apiKey,
     runtime.model,
   );
-  if (!relayCapabilities) {
-    if (runtime.capabilitiesSource === 'relay-models') return runtime;
+  const modelsDevVision = typeof relayCapabilities?.vision === 'boolean'
+    ? undefined
+    : await modelsDevVisionRequest;
+  const modelsDevCapabilities = typeof modelsDevVision === 'boolean' ? { vision: modelsDevVision } : undefined;
+  if (!relayCapabilities && !modelsDevCapabilities) {
+    if (runtime.capabilitiesSource === 'relay-models' || runtime.capabilitiesSource === 'models-dev') return runtime;
     return {
       ...runtime,
       capabilities: mergeCapabilities(profile?.capabilities),
@@ -92,17 +112,16 @@ export async function refreshCatsRelayCatalogRuntimeCapabilities(
   }
   return {
     ...runtime,
-    capabilities: mergeCapabilities(profile?.capabilities, relayCapabilities),
-    capabilitiesSource: 'relay-models',
+    capabilities: mergeCapabilities(profile?.capabilities, modelsDevCapabilities, relayCapabilities),
+    capabilitiesSource: relayCapabilities ? 'relay-models' : 'models-dev',
     capabilitiesCheckedAt: new Date().toISOString(),
   };
 }
 
 function mergeCapabilities(
-  fallback?: Partial<RuntimeCapabilities>,
-  primary?: Partial<RuntimeCapabilities>,
+  ...sources: Array<Partial<RuntimeCapabilities> | undefined>
 ): RuntimeCapabilities {
-  const merged = { ...(fallback || {}), ...(primary || {}) };
+  const merged = Object.assign({}, ...sources.filter(Boolean));
   return {
     ...(typeof merged.vision === 'boolean' ? { vision: merged.vision } : {}),
     ...(typeof merged.toolCalling === 'boolean' ? { toolCalling: merged.toolCalling } : {}),
