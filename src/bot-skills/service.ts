@@ -29,6 +29,7 @@ import {
   type BotSkillWorkspaceActivationLock,
   type BotSkillWorkspaceState,
 } from './workspace-service';
+import { scheduleBotSkillSync } from './sync-coordinator';
 import {
   BOT_SKILL_LOCAL_IDENTITY_FILE,
   newLocalSkillIdentity,
@@ -135,7 +136,7 @@ export class BotSkillService {
   async installVerifiedSkillHubPackage(
     options: InstallVerifiedSkillHubPackageOptions,
   ): Promise<BotSkillMutationResult<InstallVerifiedSkillHubPackageResult>> {
-    return this.runExclusive(() => {
+    return this.runMutationExclusive(() => {
       const current = this.requireCompleteManifest();
       const incoming = this.inspectVerifiedPackage(options);
       this.assertProspectiveEntry(current, incoming);
@@ -164,7 +165,7 @@ export class BotSkillService {
   async uninstallSkillHubPackage(
     options: UninstallSkillHubPackageOptions,
   ): Promise<BotSkillMutationResult<{ removed: boolean; path: string }>> {
-    return this.runExclusive(() => {
+    return this.runMutationExclusive(() => {
       const current = this.requireCompleteManifest();
       const targetDir = this.resolveDirectChild(options.installName);
       if (!fs.existsSync(targetDir)) {
@@ -198,7 +199,7 @@ export class BotSkillService {
   async claimInstalledSkillOwnership(
     options: ClaimSkillHubPackageOwnershipOptions,
   ): Promise<boolean> {
-    return this.runExclusive(() => claimSkillHubPackageOwnership({
+    return this.runMutationExclusive(() => claimSkillHubPackageOwnership({
       ...options,
       skillsRoot: this.skillsRoot,
     }));
@@ -213,7 +214,7 @@ export class BotSkillService {
     existing: boolean;
     path: string;
   }>> {
-    return this.runExclusive(() => {
+    return this.runMutationExclusive(() => {
       const current = this.requireCompleteManifest();
       const sourceDir = path.resolve(options.sourceDir);
       this.assertRealTree(sourceDir, 'Local Skill source');
@@ -294,7 +295,7 @@ export class BotSkillService {
   async removeByName(
     name: string,
   ): Promise<BotSkillMutationResult<{ removed: boolean; path: string }>> {
-    return this.runExclusive(() => {
+    return this.runMutationExclusive(() => {
       const entry = this.findUniqueEntry(name);
       const targetDir = path.join(this.skillsRoot, ...entry.path.split('/'));
       this.assertSafeSkillDirectory(targetDir);
@@ -310,7 +311,7 @@ export class BotSkillService {
     name: string,
     enabled: boolean,
   ): Promise<BotSkillMutationResult<{ enabled: boolean; path: string }>> {
-    return this.runExclusive(() => {
+    return this.runMutationExclusive(() => {
       const entry = this.findUniqueEntry(name);
       const targetDir = path.join(this.skillsRoot, ...entry.path.split('/'));
       this.assertSafeSkillDirectory(targetDir);
@@ -344,7 +345,7 @@ export class BotSkillService {
     name: string,
     metadata: Required<SkillHubLocalMetadata>,
   ): Promise<LocalSkillManifest> {
-    return this.runExclusive(() => {
+    return this.runMutationExclusive(() => {
       const matches = PathResolver.findSkillFiles(this.skillsRoot)
         .map(filePath => ({ filePath, skill: SkillParser.parse(filePath) }))
         .filter(item => item.skill.metadata.name === String(name || '').trim());
@@ -390,6 +391,23 @@ export class BotSkillService {
       }
       if (localLockId) this.releaseLocalLock(localLockId);
     }
+  }
+
+  private async runMutationExclusive<T>(action: () => Promise<T> | T): Promise<T> {
+    return this.runExclusive(async () => {
+      const result = await action();
+      if (this.managedWorkspace && !this.existingActivationLock) {
+        const workspace = this.workspaceContext();
+        if (workspace.botId && workspace.workspaceId) {
+          scheduleBotSkillSync({
+            runtimeRoot: this.runtimeRoot,
+            botId: workspace.botId,
+            workspaceId: workspace.workspaceId,
+          });
+        }
+      }
+      return result;
+    });
   }
 
   private guardExpectedWorkspace(

@@ -60,7 +60,8 @@ export interface BotSkillWorkspaceServiceOptions {
   onPhasePersisted?: (phase: BotSkillWorkspaceSwitchPhase) => void;
 }
 
-const MARKER_FILE = '.xiaoba-bot-workspace.json';
+export const BOT_SKILL_WORKSPACE_MARKER_FILE = '.xiaoba-bot-workspace.json';
+const MARKER_FILE = BOT_SKILL_WORKSPACE_MARKER_FILE;
 const MAX_JSON_BYTES = 256 * 1024;
 
 export class BotSkillWorkspaceService {

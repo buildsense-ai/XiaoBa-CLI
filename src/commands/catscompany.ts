@@ -17,9 +17,14 @@ import {
 } from '../bot-definition/cloud-client';
 import { CloudBotModelRuntimeReloadController } from '../bot-definition/runtime-reload';
 import { createBotDefinitionSyncService } from '../bot-definition/service';
+import { FileBotDefinitionRepository } from '../bot-definition/repository';
 import { createBotSkillWorkspaceService } from '../bot-skills/workspace-service';
 import { recoverBotSkillActivation } from '../bot-skills/activation-recovery';
 import { createBotSkillService } from '../bot-skills/service';
+import { BotSkillSyncError, createBotSkillSyncService } from '../bot-skills/sync-service';
+import { recoverBotSkillWorkspaceReconciles } from '../bot-skills/workspace-reconciler';
+import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
+import { SkillHubService } from '../skillhub/service';
 import * as fs from 'node:fs';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
@@ -48,6 +53,11 @@ export async function catscompanyCommand(): Promise<void> {
   const runtimeRoot = PathResolver.getRuntimeDataRoot();
   const localConfigService = createCatsCoLocalConfigService({ runtimeRoot });
   const workspaceService = createBotSkillWorkspaceService({ runtimeRoot });
+  const definitions = new FileBotDefinitionRepository({ runtimeRoot });
+  recoverBotSkillWorkspaceReconciles({
+    runtimeRoot,
+    definitionRepository: definitions,
+  });
   const activationRecovery = recoverBotSkillActivation(runtimeRoot, workspaceService, {
     expectedLiveTransactionId: process.env.XIAOBA_BOT_SKILL_ACTIVATION_TX,
   });
@@ -62,12 +72,16 @@ export async function catscompanyCommand(): Promise<void> {
   });
   if (configuredBotId && !activationRecovery.pendingTargetBotId && !hadWorkspace) {
     workspaceService.ensureActive(configuredBotId, {
-      allowCreate: Array.isArray(preparedBot?.definition.skills) &&
-        preparedBot.definition.skills.length === 0,
+      allowCreate: Array.isArray(preparedBot?.definition.skills),
     });
   }
   if (configuredBotId && !process.env.XIAOBA_BOT_SKILL_ACTIVATION_TX) {
-    const manifest = await createBotSkillService({ runtimeRoot }).scanManifest();
+    const botSkillService = createBotSkillService({
+      runtimeRoot,
+      expectedBotId: configuredBotId,
+      workspaceService,
+    });
+    let manifest = await botSkillService.scanManifest();
     if (manifest.status !== 'complete') {
       const issues = manifest.issues
         .map(issue => `[${issue.code}]${issue.path ? ` ${issue.path}:` : ''} ${issue.message}`)
@@ -75,6 +89,33 @@ export async function catscompanyCommand(): Promise<void> {
       throw new Error(
         `Active Bot Skill manifest is ${manifest.status}.${issues ? ` ${issues}` : ''}`,
       );
+    }
+    if (preparedBot?.definition.skills === undefined) {
+      await bootstrapDefaultSkillHubSkillsOnce({
+        workspaceId: manifest.workspaceId,
+        service: new SkillHubService({ botSkillService }),
+      }).catch(error => {
+        Logger.warning(
+          `Legacy default SkillHub bootstrap failed before migration: ${error?.message || String(error)}`,
+        );
+      });
+      manifest = await botSkillService.scanManifest();
+    }
+    try {
+      await createBotSkillSyncService({
+        runtimeRoot,
+        expectedBotId: configuredBotId,
+        workspaceService,
+        definitionRepository: definitions,
+      }).syncOnStartup(configuredBotId, {
+        workspaceWasMissing: !hadWorkspace,
+      });
+    } catch (error) {
+      if (error instanceof BotSkillSyncError && error.safeToUseLocal) {
+        Logger.warning(`Bot Skill startup sync deferred; using protected Local state: ${error.message}`);
+      } else {
+        throw error;
+      }
     }
   }
   if (preparedBot?.cloudRevision !== undefined) {

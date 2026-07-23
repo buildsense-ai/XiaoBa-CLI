@@ -73,6 +73,8 @@ export interface AgentServices {
   };
   toolManager: ToolManager;
   skillManager: SkillManager;
+  /** Fire-and-forget lifecycle hook used for coalesced background maintenance. */
+  onTurnSettled?: () => void;
 
 }
 
@@ -636,6 +638,11 @@ export class AgentSession {
 
         return { text: errorReply, visibleToUser: true, taskOutcome: 'failed' };
       } finally {
+        try {
+          this.services.onTurnSettled?.();
+        } catch (error) {
+          Logger.warning(`[会话 ${this.key}] 回合结束后台任务调度失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
         this.planRuntime.clear();
         this.busy = false;
         this.activeAbortController = null;

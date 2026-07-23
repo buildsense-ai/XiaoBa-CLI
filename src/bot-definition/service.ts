@@ -436,53 +436,68 @@ export class BotDefinitionSyncService {
     return definition;
   }
 
-  updateDefinition(botId: string, patch: BotDefinitionPatch): BotDefinitionSyncResult {
-    const canonical = this.repository.inspectCanonical(botId);
-    if (canonical.status === 'invalid') {
-      throw new Error(`BotDefinition canonical record is invalid for bot ${botId}; refusing to overwrite it`);
-    }
-    const canonicalDefinition = canonical.status === 'valid' ? canonical.definition : undefined;
-    const cachedDefinition = this.repository.readCache(botId);
-    const previous = canonicalDefinition ?? cachedDefinition;
-    if (!previous && !patch.model) {
-      throw new Error('Cannot update BotDefinition skills before its model has been initialized');
-    }
-    if (cachedDefinition?.model.kind === 'custom') {
-      this.storeCustomModelProfile(botId, cachedDefinition.model);
-    }
-    const previousModel = previous?.model;
-    if (previousModel?.kind === 'custom' && previousModel !== cachedDefinition?.model) {
-      this.storeCustomModelProfile(botId, previousModel);
-    }
-    const normalizedModel = patch.model
-      ? normalizeBotModelDefinition(patch.model)
-      : previousModel!;
-    if (normalizedModel.kind === 'custom') {
-      this.storeCustomModelProfile(botId, normalizedModel);
-    }
-    const definition = normalizeBotDefinition({
-      ...(previous ?? {}),
-      schema: BOT_DEFINITION_SCHEMA,
-      botId,
-      model: normalizedModel,
-      ...(patch.skills === undefined ? {} : { skills: patch.skills }),
-    });
-    this.repository.writeCanonical(definition);
-    this.repository.writeCache(definition);
-    this.clearLegacyModelConfigurationWhenReady(definition);
-    return {
-      botId,
-      direction: 'local_to_simulated_cloud',
-      definition,
+  updateDefinition(
+    botId: string,
+    patch: BotDefinitionPatch,
+    onCommitted?: (result: BotDefinitionSyncResult) => void,
+  ): BotDefinitionSyncResult {
+    const update = (): BotDefinitionSyncResult => {
+      const canonical = this.repository.inspectCanonical(botId);
+      if (canonical.status === 'invalid') {
+        throw new Error(`BotDefinition canonical record is invalid for bot ${botId}; refusing to overwrite it`);
+      }
+      const canonicalDefinition = canonical.status === 'valid' ? canonical.definition : undefined;
+      const cachedDefinition = this.repository.readCache(botId);
+      const previous = canonicalDefinition ?? cachedDefinition;
+      if (!previous && !patch.model) {
+        throw new Error('Cannot update BotDefinition skills before its model has been initialized');
+      }
+      if (cachedDefinition?.model.kind === 'custom') {
+        this.storeCustomModelProfile(botId, cachedDefinition.model);
+      }
+      const previousModel = previous?.model;
+      if (previousModel?.kind === 'custom' && previousModel !== cachedDefinition?.model) {
+        this.storeCustomModelProfile(botId, previousModel);
+      }
+      const normalizedModel = patch.model
+        ? normalizeBotModelDefinition(patch.model)
+        : previousModel!;
+      if (normalizedModel.kind === 'custom') {
+        this.storeCustomModelProfile(botId, normalizedModel);
+      }
+      const definition = normalizeBotDefinition({
+        ...(previous ?? {}),
+        schema: BOT_DEFINITION_SCHEMA,
+        botId,
+        model: normalizedModel,
+        ...(patch.skills === undefined ? {} : { skills: patch.skills }),
+      });
+      this.repository.writeCanonical(definition);
+      this.repository.writeCache(definition);
+      this.clearLegacyModelConfigurationWhenReady(definition);
+      const result: BotDefinitionSyncResult = {
+        botId,
+        direction: 'local_to_simulated_cloud',
+        definition,
+      };
+      onCommitted?.(result);
+      return result;
     };
+    return this.repository.withCanonicalLock
+      ? this.repository.withCanonicalLock(botId, update)
+      : update();
   }
 
   updateModel(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
     return this.updateDefinition(botId, { model });
   }
 
-  updateSkills(botId: string, skills: BotSkillRef[]): BotDefinitionSyncResult {
-    return this.updateDefinition(botId, { skills });
+  updateSkills(
+    botId: string,
+    skills: BotSkillRef[],
+    onCommitted?: (result: BotDefinitionSyncResult) => void,
+  ): BotDefinitionSyncResult {
+    return this.updateDefinition(botId, { skills }, onCommitted);
   }
 
   /** Compatibility alias for callers not yet converted to field-level updates. */

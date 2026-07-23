@@ -53,6 +53,7 @@ import {
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
 import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
 import { catalogRuntimeMatchesModelId, createBotDefinitionSyncService } from '../../bot-definition/service';
+import { FileBotDefinitionRepository } from '../../bot-definition/repository';
 import { prepareBoundBotDefinition } from '../../bot-definition/activation';
 import {
   customModelDefinitionToConfig,
@@ -78,6 +79,8 @@ import {
   readSkillHubLocalMetadata,
 } from '../../skillhub/local-skill-metadata';
 import { createBotSkillService } from '../../bot-skills/service';
+import { BotSkillSyncError, createBotSkillSyncService } from '../../bot-skills/sync-service';
+import { recoverBotSkillWorkspaceReconciles } from '../../bot-skills/workspace-reconciler';
 import {
   deletePromptOverride,
   getPromptEditorFile,
@@ -882,6 +885,10 @@ async function commitCatsBotBindingAndStartConnector(
   const workspaceService = createBotSkillWorkspaceService({ runtimeRoot });
   const activationLock = workspaceService.acquireActivationLock();
   try {
+    recoverBotSkillWorkspaceReconciles({
+      runtimeRoot,
+      definitionRepository: new FileBotDefinitionRepository({ runtimeRoot }),
+    });
     recoverBotSkillActivation(runtimeRoot, workspaceService, { lock: activationLock });
   } catch (error) {
     activationLock.release();
@@ -900,6 +907,7 @@ async function commitCatsBotBindingAndStartConnector(
   let restartPreviousConnectorAfterRelease = false;
   const initialMarkerPath = path.join(workspaceService.activePath, '.xiaoba-bot-workspace.json');
   const initialMarkerExisted = fs.existsSync(initialMarkerPath);
+  const initialActiveWorkspaceExisted = fs.existsSync(workspaceService.activePath);
   try {
     const warnings = await ensureCatsFriendBinding(state, input.userUid, input.botUid, input.apiKey);
     const preparedBot = await prepareBoundBotDefinition({
@@ -910,7 +918,7 @@ async function commitCatsBotBindingAndStartConnector(
     });
     const botDefinitionSync = toBotDefinitionSyncPayload(preparedBot?.sync);
     const allowCreateSkillWorkspace = input.allowCreateSkillWorkspace === true ||
-      (Array.isArray(preparedBot?.definition.skills) && preparedBot.definition.skills.length === 0);
+      Array.isArray(preparedBot?.definition.skills);
 
     const existingService = serviceManager.getService('catscompany');
     const targetPreflight = existingService
@@ -953,6 +961,18 @@ async function commitCatsBotBindingAndStartConnector(
         activationLock,
       }).scanManifest();
       assertBotSkillManifestReady(sourceManifest);
+      try {
+        await createBotSkillSyncService({
+          runtimeRoot,
+          expectedBotId: previousBotId,
+          workspaceService,
+          activationLock,
+        }).syncBeforeSwitch(previousBotId);
+      } catch (error) {
+        Logger.warning(
+          `旧 Bot Skill 上行同步暂未完成，保留本地工作区并继续切换: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     } else {
       workspaceService.ensureActive(input.botUid, {
         allowCreate: allowCreateSkillWorkspace,
@@ -963,6 +983,9 @@ async function commitCatsBotBindingAndStartConnector(
 
     connectorWasRunning = existingService?.status === 'running';
     const currentWorkspaceOwner = workspaceService.readState()?.workspaceOwnerBotId;
+    const targetWorkspaceExisted = currentWorkspaceOwner === input.botUid
+      ? (initialClaimed ? initialActiveWorkspaceExisted : fs.existsSync(workspaceService.activePath))
+      : fs.existsSync(workspaceService.getParkedPath(input.botUid));
     if (currentWorkspaceOwner && currentWorkspaceOwner !== input.botUid) {
       switchTransactionId = crypto.randomUUID();
       persistBotSkillBindingRollback(runtimeRoot, switchTransactionId);
@@ -980,14 +1003,40 @@ async function commitCatsBotBindingAndStartConnector(
 
     const updated = writeCatsBotBinding(state, input);
     if (switchChanged || initialClaimed) {
-      const targetManifest = await createBotSkillService({
+      const targetBotSkills = createBotSkillService({
         runtimeRoot,
         expectedBotId: input.botUid,
         workspaceService,
         activationLock,
         activationTransactionId: switchTransactionId,
-      }).scanManifest();
+      });
+      const targetManifest = await targetBotSkills.scanManifest();
       assertBotSkillManifestReady(targetManifest);
+      if (preparedBot?.definition.skills === undefined) {
+        await bootstrapDefaultSkillHubSkillsOnce({
+          workspaceId: targetManifest.workspaceId,
+          service: new SkillHubService({ botSkillService: targetBotSkills }),
+        }).catch(error => {
+          Logger.warning(`Legacy default SkillHub bootstrap failed before migration: ${error?.message || String(error)}`);
+        });
+      }
+      try {
+        await createBotSkillSyncService({
+          runtimeRoot,
+          expectedBotId: input.botUid,
+          workspaceService,
+          activationLock,
+          activationTransactionId: switchTransactionId,
+        }).syncOnStartup(input.botUid, {
+          workspaceWasMissing: !targetWorkspaceExisted,
+        });
+      } catch (error) {
+        if (error instanceof BotSkillSyncError && error.safeToUseLocal) {
+          Logger.warning(`目标 Bot Skill 上行同步暂未完成，继续使用受保护的本地工作区: ${error.message}`);
+        } else {
+          throw error;
+        }
+      }
     }
     let service: any;
     let startPreflight = targetPreflight;
@@ -1047,21 +1096,6 @@ async function commitCatsBotBindingAndStartConnector(
         // snapshot is safe to remove during the next startup recovery.
       }
       bindingSnapshotPersisted = false;
-    }
-    if (switchChanged || initialClaimed) {
-      const activeState = workspaceService.readState();
-      const scopedBotSkills = createBotSkillService({
-        runtimeRoot,
-        expectedBotId: input.botUid,
-        workspaceService,
-        activationLock,
-      });
-      await bootstrapDefaultSkillHubSkillsOnce({
-        workspaceId: activeState?.workspaceId,
-        service: new SkillHubService({ botSkillService: scopedBotSkills }),
-      }).catch(error => {
-        Logger.warning(`Default SkillHub bootstrap failed after Bot activation: ${error?.message || String(error)}`);
-      });
     }
     return {
       updated,

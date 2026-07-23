@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'node:crypto';
 import { PathResolver } from '../utils/path-resolver';
 import {
   BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
@@ -12,12 +13,16 @@ import {
   type CustomBotModelDefinition,
 } from './types';
 
+const MAX_DEFINITION_BYTES = 2 * 1024 * 1024;
+
 export interface BotDefinitionRepository {
   inspectCanonical(botId: string): BotDefinitionReadResult;
   readCanonical(botId: string): BotDefinition | undefined;
   writeCanonical(definition: BotDefinition): void;
   readCache(botId: string): BotDefinition | undefined;
   writeCache(definition: BotDefinition): void;
+  /** File implementations serialize field-preserving read/modify/write updates per Bot. */
+  withCanonicalLock?<T>(botId: string, action: () => T): T;
 }
 
 export type BotDefinitionReadResult =
@@ -132,13 +137,18 @@ function isValidCustomModelProfile(profile: unknown, expectedBotId: string): pro
 }
 
 function inspectDefinition(filePath: string, expectedBotId: string): BotDefinitionReadResult {
-  if (!fs.existsSync(filePath)) return { status: 'missing' };
   try {
+    assertDefinitionDirectorySafe(path.dirname(filePath));
+    const stat = fs.lstatSync(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_DEFINITION_BYTES) {
+      return { status: 'invalid' };
+    }
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as BotDefinition;
     return isValidDefinition(parsed, expectedBotId)
       ? { status: 'valid', definition: parsed }
       : { status: 'invalid' };
-  } catch {
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return { status: 'missing' };
     return { status: 'invalid' };
   }
 }
@@ -152,11 +162,31 @@ function writeDefinition(filePath: string, definition: BotDefinition): void {
   if (!isValidDefinition(definition, definition.botId)) {
     throw new Error('BotDefinition is invalid');
   }
+  const serialized = `${JSON.stringify(definition, null, 2)}\n`;
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_DEFINITION_BYTES) {
+    throw new Error('BotDefinition exceeds the local size limit');
+  }
   const directory = path.dirname(filePath);
   fs.mkdirSync(directory, { recursive: true });
-  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(definition, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
-  fs.renameSync(temporary, filePath);
+  assertDefinitionDirectorySafe(directory);
+  if (fs.existsSync(filePath)) {
+    const current = fs.lstatSync(filePath);
+    if (!current.isFile() || current.isSymbolicLink()) {
+      throw new Error(`BotDefinition path is unsafe: ${filePath}`);
+    }
+  }
+  const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, serialized, {
+      encoding: 'utf-8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+    fs.renameSync(temporary, filePath);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    throw error;
+  }
   if (process.platform !== 'win32') {
     try {
       fs.chmodSync(filePath, 0o600);
@@ -210,6 +240,7 @@ function writeCustomModelProfile(filePath: string, profile: BotCustomModelProfil
 export class FileBotDefinitionRepository implements BotDefinitionRepository {
   private readonly canonicalRoot: string;
   private readonly cacheRoot: string;
+  private readonly lockRoot: string;
 
   constructor(options: FileBotDefinitionRepositoryOptions = {}) {
     const runtimeRoot = path.resolve(options.runtimeRoot ?? PathResolver.getRuntimeDataRoot());
@@ -222,6 +253,7 @@ export class FileBotDefinitionRepository implements BotDefinitionRepository {
       options.cacheRoot
         ?? path.join(runtimeRoot, 'data', 'bot-definition-cache'),
     );
+    this.lockRoot = path.join(this.canonicalRoot, '.locks');
   }
 
   inspectCanonical(botId: string): BotDefinitionReadResult {
@@ -247,6 +279,36 @@ export class FileBotDefinitionRepository implements BotDefinitionRepository {
   writeCache(definition: BotDefinition): void {
     const botId = normalizeBotId(definition.botId);
     writeDefinition(this.definitionPath(this.cacheRoot, botId), { ...definition, botId });
+  }
+
+  withCanonicalLock<T>(botId: string, action: () => T): T {
+    const normalized = normalizeBotId(botId);
+    const lockPath = path.join(
+      this.lockRoot,
+      `b_${cryptoHash(normalized)}.lock`,
+    );
+    fs.mkdirSync(this.lockRoot, { recursive: true, mode: 0o700 });
+    assertDefinitionDirectorySafe(this.lockRoot);
+    const lockId = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+    while (true) {
+      try {
+        fs.mkdirSync(lockPath, { mode: 0o700 });
+        writeDefinitionLockOwner(lockPath, lockId);
+        break;
+      } catch (error: any) {
+        if (error?.code !== 'EEXIST') throw error;
+        if (reclaimStaleDefinitionLock(lockPath)) continue;
+        throw new Error(`BotDefinition update is busy for ${normalized}`);
+      }
+    }
+    try {
+      return action();
+    } finally {
+      const owner = readDefinitionLockOwner(lockPath);
+      if (owner?.lockId === lockId && owner.pid === process.pid) {
+        fs.rmSync(lockPath, { recursive: true, force: true });
+      }
+    }
   }
 
   getCanonicalPath(botId: string): string {
@@ -384,5 +446,93 @@ export class FileBotCustomModelProfileRepository implements BotCustomModelProfil
 
   private profilePath(botId: string): string {
     return path.join(this.root, 'bots', `${botId}.json`);
+  }
+}
+
+function cryptoHash(value: string): string {
+  return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function assertDefinitionDirectorySafe(directory: string): void {
+  const resolved = path.resolve(directory);
+  const stat = fs.lstatSync(resolved);
+  const real = fs.realpathSync.native(resolved);
+  if (
+    !stat.isDirectory()
+    || stat.isSymbolicLink()
+    || !samePath(resolved, real)
+  ) {
+    throw new Error(`BotDefinition directory is unsafe: ${directory}`);
+  }
+}
+
+function samePath(left: string, right: string): boolean {
+  return process.platform === 'win32'
+    ? path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()
+    : path.resolve(left) === path.resolve(right);
+}
+
+function writeDefinitionLockOwner(lockPath: string, lockId: string): void {
+  fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({
+    lockId,
+    pid: process.pid,
+    acquiredAt: new Date().toISOString(),
+  }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+}
+
+function readDefinitionLockOwner(
+  lockPath: string,
+): { lockId: string; pid: number; acquiredAt: string } | undefined {
+  try {
+    const ownerPath = path.join(lockPath, 'owner.json');
+    const stat = fs.lstatSync(ownerPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) return undefined;
+    const value = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as any;
+    if (
+      typeof value?.lockId !== 'string'
+      || !Number.isSafeInteger(value?.pid)
+      || typeof value?.acquiredAt !== 'string'
+    ) return undefined;
+    return value;
+  } catch {
+    return undefined;
+  }
+}
+
+function reclaimStaleDefinitionLock(lockPath: string): boolean {
+  const owner = readDefinitionLockOwner(lockPath);
+  if (!owner) {
+    try {
+      const age = Date.now() - fs.lstatSync(lockPath).mtimeMs;
+      if (age <= 5000) return false;
+    } catch (error: any) {
+      return error?.code === 'ENOENT';
+    }
+  }
+  const acquiredAt = Date.parse(String(owner?.acquiredAt || ''));
+  const stale = (
+    !owner
+    || !Number.isFinite(acquiredAt)
+    || !isProcessAlive(owner.pid)
+  );
+  if (!stale) return false;
+  const stalePath = `${lockPath}.stale-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    fs.renameSync(lockPath, stalePath);
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return true;
+    return false;
+  }
+  fs.rmSync(stalePath, { recursive: true, force: true });
+  return true;
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: any) {
+    return error?.code === 'EPERM';
   }
 }

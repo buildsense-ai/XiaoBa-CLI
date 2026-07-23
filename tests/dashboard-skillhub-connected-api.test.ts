@@ -9,6 +9,10 @@ import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 import { BotSkillWorkspaceService } from '../src/bot-skills/workspace-service';
+import {
+  cancelPendingBotSkillSync,
+  flushBotSkillSyncQueue,
+} from '../src/bot-skills/sync-coordinator';
 import { loadSkillHubConfig } from '../src/skillhub/config';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS, SkillHubTrustedRootKey } from '../src/skillhub/trusted-keys';
 
@@ -52,6 +56,8 @@ describe('dashboard connected SkillHub API', () => {
       await close(maliciousServer);
       maliciousServer = undefined;
     }
+    cancelPendingBotSkillSync(testRoot);
+    await flushBotSkillSyncQueue(testRoot);
     process.chdir(originalCwd);
     if (originalEnv === undefined) delete process.env.CATSCO_SKILLHUB_BASE_URL;
     else process.env.CATSCO_SKILLHUB_BASE_URL = originalEnv;

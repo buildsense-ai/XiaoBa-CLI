@@ -13,6 +13,7 @@ import {
   assertValidRuntimeProfile,
   resolveDefaultRuntimeProfile,
 } from './runtime-profile';
+import { scheduleActiveBotSkillSync } from '../bot-skills/sync-coordinator';
 
 export interface RuntimeSessionBundle {
   profile: RuntimeProfile;
@@ -86,6 +87,7 @@ export class RuntimeFactory {
         enabledToolNames: profile.tools.enabled,
       }),
       skillManager: new SkillManager(),
+      onTurnSettled: () => scheduleActiveBotSkillSync(),
     };
   }
 

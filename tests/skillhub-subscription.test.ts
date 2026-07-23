@@ -205,6 +205,31 @@ describe('SkillHub user subscriptions', () => {
     assert.deepEqual(store.list('user-a'), []);
   });
 
+  test('uses restored install markers when the legacy user subscription store is empty', async () => {
+    installVerifiedSkillHubPackage(
+      packageOptions('alice/ppt', 'ppt', '1.0.0', '# restored', undefined),
+    );
+    const store = new LocalUserSkillSubscriptionStore(path.join(testRoot, 'subscriptions.json'));
+    const gateway = {
+      resolveSubscriptionScope: async () => ({ kind: 'user' as const, userId: 'user-a' }),
+      install: async () => installResult('alice/ppt', '1.0.0', 'unchanged'),
+      uninstall: (input: { userId?: string; skillId: string; installName: string }) => (
+        uninstallSkillHubPackage(input)
+      ),
+      claimInstalledSkillOwnership: async input => claimSkillHubPackageOwnership(input),
+    };
+    const service = new SkillHubSubscriptionService(gateway, store);
+
+    const listed = await service.list();
+    const removed = await service.unsubscribe('alice/ppt');
+
+    assert.deepEqual(listed.subscriptions.map(item => item.skillId), ['alice/ppt']);
+    assert.equal(removed.subscriptionFound, true);
+    assert.equal(removed.removed, true);
+    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'ppt')), false);
+    assert.deepEqual(store.list('user-a'), []);
+  });
+
   test('runtime scope installs, lists, and removes Skills using only install markers', async () => {
     const storePath = path.join(testRoot, 'subscriptions.json');
     const store = new LocalUserSkillSubscriptionStore(storePath);

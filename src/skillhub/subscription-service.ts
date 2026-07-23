@@ -63,7 +63,10 @@ export class SkillHubSubscriptionService {
     }
 
     const userId = scope.userId;
-    const subscriptions = this.store.list(userId);
+    const subscriptions = mergeSubscriptions(
+      this.store.list(userId),
+      installedSubscriptionsVisibleToUser(userId),
+    );
     for (const subscription of subscriptions) {
       await this.gateway.claimInstalledSkillOwnership?.({
         userId,
@@ -78,7 +81,11 @@ export class SkillHubSubscriptionService {
     const scope = await this.gateway.resolveSubscriptionScope();
     const normalizedSkillId = required(skillId, 'skillId');
     const existing = scope.kind === 'user'
-      ? this.store.get(scope.userId, normalizedSkillId)
+      ? (
+        this.store.get(scope.userId, normalizedSkillId)
+        ?? installedSubscriptionsVisibleToUser(scope.userId)
+          .find(item => item.skillId === normalizedSkillId)
+      )
       : runtimeSubscriptions().find(item => item.skillId === normalizedSkillId);
     const installed = await this.gateway.install(normalizedSkillId, undefined, {
       allowUpdate: true,
@@ -104,7 +111,11 @@ export class SkillHubSubscriptionService {
     const scope = await this.gateway.resolveSubscriptionScope();
     const normalizedSkillId = required(skillId, 'skillId');
     const subscription = scope.kind === 'user'
-      ? this.store.get(scope.userId, normalizedSkillId)
+      ? (
+        this.store.get(scope.userId, normalizedSkillId)
+        ?? installedSubscriptionsVisibleToUser(scope.userId)
+          .find(item => item.skillId === normalizedSkillId)
+      )
       : runtimeSubscriptions().find(item => item.skillId === normalizedSkillId);
     if (!subscription) {
       return {
@@ -133,7 +144,19 @@ export class SkillHubSubscriptionService {
 }
 
 function runtimeSubscriptions(): UserSkillSubscription[] {
-  return listInstalledSkillHubSkills().map(marker => ({
+  return markersToSubscriptions(listInstalledSkillHubSkills());
+}
+
+function installedSubscriptionsVisibleToUser(userId: string): UserSkillSubscription[] {
+  return markersToSubscriptions(
+    listInstalledSkillHubSkills().filter(marker => !marker.userId || marker.userId === userId),
+  );
+}
+
+function markersToSubscriptions(
+  markers: ReturnType<typeof listInstalledSkillHubSkills>,
+): UserSkillSubscription[] {
+  return markers.map(marker => ({
     skillId: marker.skillId,
     name: marker.name,
     installName: marker.installName,
@@ -142,6 +165,23 @@ function runtimeSubscriptions(): UserSkillSubscription[] {
     subscribedAt: marker.installedAt,
     updatedAt: marker.installedAt,
   }));
+}
+
+function mergeSubscriptions(
+  stored: UserSkillSubscription[],
+  installed: UserSkillSubscription[],
+): UserSkillSubscription[] {
+  const merged = new Map(installed.map(item => [item.skillId, item]));
+  for (const item of stored) {
+    const active = merged.get(item.skillId);
+    merged.set(item.skillId, active
+      ? {
+        ...active,
+        subscribedAt: item.subscribedAt,
+      }
+      : item);
+  }
+  return [...merged.values()].sort((left, right) => left.skillId.localeCompare(right.skillId));
 }
 
 function scopeResult(scope: SkillHubSubscriptionScope): { scope: 'runtime' } | { scope: 'user'; userId: string } {

@@ -13,6 +13,7 @@ import { createBotDefinitionSyncService } from '../src/bot-definition/service';
 import { resolveActiveBotLLMConfig } from '../src/bot-definition/llm-config-resolver';
 import { BOT_CATALOG_MODEL_RUNTIME_SCHEMA, BOT_DEFINITION_SCHEMA } from '../src/bot-definition/types';
 import { BotSkillWorkspaceService } from '../src/bot-skills/workspace-service';
+import { FileBotSkillSyncBaseRepository } from '../src/bot-skills/sync-base';
 
 describe('dashboard CatsCo account status', () => {
   let testRoot: string;
@@ -1116,7 +1117,7 @@ describe('dashboard CatsCo account status', () => {
     fs.mkdirSync(activeSkill, { recursive: true });
     fs.writeFileSync(path.join(activeSkill, 'SKILL.md'), offlineSkillContent);
     const workspace = new BotSkillWorkspaceService({ runtimeRoot: testRoot, env: {} });
-    workspace.ensureActive('188');
+    const sourceWorkspaceId = workspace.ensureActive('188').workspaceId;
 
     const definitions = new FileBotDefinitionRepository({ runtimeRoot: testRoot });
     definitions.writeCanonical({
@@ -1200,6 +1201,17 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(
       fs.readFileSync(path.join(workspace.getParkedPath('188'), 'same-name', 'SKILL.md'), 'utf8'),
       offlineSkillContent,
+    );
+    assert.equal(definitions.readCanonical('188')?.skills?.length, 1);
+    assert.equal(
+      new FileBotSkillSyncBaseRepository({ runtimeRoot: testRoot })
+        .inspect('188', sourceWorkspaceId).status,
+      'valid',
+    );
+    assert.equal(
+      new FileBotSkillSyncBaseRepository({ runtimeRoot: testRoot })
+        .inspect('199', workspace.readState()!.workspaceId).status,
+      'valid',
     );
     assert.equal(stopCalled, 2);
     assert.equal(readyStartCalled, 2);
