@@ -31,6 +31,10 @@ export class ConfigManager {
         ...(base.catscompany || {}),
         ...(override.catscompany || {}),
       },
+      visionFallback: {
+        ...(base.visionFallback || {}),
+        ...(override.visionFallback || {}),
+      },
       weixin: {
         ...(base.weixin || {}),
         ...(override.weixin || {}),
@@ -104,6 +108,15 @@ export class ConfigManager {
       temperature: 0.7,
       provider,
       openaiApiMode: normalizeOpenAIApiMode(process.env.GAUZ_LLM_OPENAI_API_MODE) ?? 'chat_completions',
+      visionFallback: {
+        enabled: ['1', 'true', 'yes', 'on'].includes((process.env.CATSCOMPANY_VISION_FALLBACK_ENABLED || '').trim().toLowerCase()),
+        usePrimaryModel: ['1', 'true', 'yes', 'on'].includes((process.env.CATSCOMPANY_VISION_FALLBACK_USE_PRIMARY || '').trim().toLowerCase()),
+        baseUrl: process.env.CATSCOMPANY_VISION_FALLBACK_BASE_URL,
+        apiKey: process.env.CATSCOMPANY_VISION_FALLBACK_API_KEY,
+        model: process.env.CATSCOMPANY_VISION_FALLBACK_MODEL,
+        timeoutMs: this.parsePositiveIntegerEnv(process.env.CATSCOMPANY_VISION_FALLBACK_TIMEOUT_MS),
+        maxTokens: this.parsePositiveIntegerEnv(process.env.CATSCOMPANY_VISION_FALLBACK_MAX_TOKENS),
+      },
       feishu: {
         appId: process.env.FEISHU_APP_ID,
         appSecret: process.env.FEISHU_APP_SECRET,
