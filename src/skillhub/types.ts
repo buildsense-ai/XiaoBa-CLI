@@ -67,6 +67,8 @@ export interface SkillHubPackageInstallMarker {
   installName: string;
   version: string;
   packageChecksumSha256: string;
+  /** Hash of the installed editable tree at the time this package was committed. */
+  installedContentHash?: string;
   signature: VerifierRegistryEntry['signature'];
   packageUrl: string;
   installedAt: string;

@@ -7,6 +7,8 @@ import * as path from 'path';
 import express from 'express';
 import type { Server } from 'http';
 import { SkillHubService } from '../src/skillhub/service';
+import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
+import { BotSkillWorkspaceService } from '../src/bot-skills/workspace-service';
 import type { SkillHubTrustedRootKey } from '../src/skillhub/trusted-keys';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from '../src/skillhub/trusted-keys';
 
@@ -26,6 +28,7 @@ describe('SkillHub connected install service', () => {
     process.chdir(testRoot);
     process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
     fs.mkdirSync(path.join(testRoot, 'skills'), { recursive: true });
+    claimTestBotWorkspace(testRoot);
   });
 
   afterEach(async () => {
@@ -148,6 +151,25 @@ describe('SkillHub connected install service', () => {
     baseUrl = `http://127.0.0.1:${address.port}`;
   }
 });
+
+function claimTestBotWorkspace(runtimeRoot: string): void {
+  createCatsCoLocalConfigService({ runtimeRoot, env: process.env }).save({
+    version: 1,
+    currentBot: {
+      uid: 'bot_skillhub_test',
+      apiKey: 'test-api-key',
+      boundByUserUid: 'test-user',
+      bindingSource: 'test',
+    },
+    device: {
+      deviceId: 'test-device',
+      bodyId: 'test-device',
+      installationId: 'test-device',
+    },
+  });
+  new BotSkillWorkspaceService({ runtimeRoot, env: process.env })
+    .ensureActive('bot_skillhub_test');
+}
 
 function createFixture() {
   const rootKeys = crypto.generateKeyPairSync('ed25519');

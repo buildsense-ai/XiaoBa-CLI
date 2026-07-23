@@ -1105,8 +1105,16 @@ describe('dashboard CatsCo account status', () => {
       device: { deviceId: 'device-1', bodyId: 'body-1', installationId: 'install-1' },
     });
     const activeSkill = path.join(testRoot, 'skills', 'same-name');
+    const offlineSkillContent = [
+      '---',
+      'name: same-name',
+      'description: offline edit fixture',
+      '---',
+      '',
+      'offline edit from A',
+    ].join('\n');
     fs.mkdirSync(activeSkill, { recursive: true });
-    fs.writeFileSync(path.join(activeSkill, 'SKILL.md'), 'offline edit from A');
+    fs.writeFileSync(path.join(activeSkill, 'SKILL.md'), offlineSkillContent);
     const workspace = new BotSkillWorkspaceService({ runtimeRoot: testRoot, env: {} });
     workspace.ensureActive('188');
 
@@ -1177,7 +1185,7 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(workspace.readState()?.workspaceOwnerBotId, '188');
     assert.equal(
       fs.readFileSync(path.join(testRoot, 'skills', 'same-name', 'SKILL.md'), 'utf8'),
-      'offline edit from A',
+      offlineSkillContent,
     );
     assert.equal(recoveryStartCalled, 1);
 
@@ -1191,7 +1199,7 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'same-name')), false);
     assert.equal(
       fs.readFileSync(path.join(workspace.getParkedPath('188'), 'same-name', 'SKILL.md'), 'utf8'),
-      'offline edit from A',
+      offlineSkillContent,
     );
     assert.equal(stopCalled, 2);
     assert.equal(readyStartCalled, 2);

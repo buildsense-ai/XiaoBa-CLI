@@ -18,6 +18,7 @@ const SKILLHUB_METADATA_KEYS = {
 const SOURCE_SKIP_DIRS = new Set([
   '.git',
   'node_modules',
+  '__pycache__',
 ]);
 
 const GENERATED_PACKAGE_FILES = new Set([
@@ -26,6 +27,7 @@ const GENERATED_PACKAGE_FILES = new Set([
   'SBOM.json',
   '.xiaoba-bundled-skill.json',
   '.xiaoba-skillhub-install.json',
+  '.xiaoba-local-skill.json',
 ]);
 
 export function readSkillHubLocalMetadata(skillFilePath: string): SkillHubLocalMetadata | null {
@@ -37,7 +39,19 @@ export function readSkillHubLocalMetadata(skillFilePath: string): SkillHubLocalM
 
 export function writeSkillHubLocalMetadata(skillFilePath: string, metadata: Required<SkillHubLocalMetadata>): void {
   const raw = fs.readFileSync(skillFilePath, 'utf8');
-  fs.writeFileSync(skillFilePath, applySkillHubLocalMetadata(raw, metadata), 'utf8');
+  const updated = applySkillHubLocalMetadata(raw, metadata);
+  matter(updated);
+  const temporary = path.join(
+    path.dirname(skillFilePath),
+    `.${path.basename(skillFilePath)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`,
+  );
+  fs.writeFileSync(temporary, updated, { encoding: 'utf8', flag: 'wx' });
+  try {
+    fs.renameSync(temporary, skillFilePath);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    throw error;
+  }
 }
 
 export function applySkillHubLocalMetadata(markdown: string, metadata: Required<SkillHubLocalMetadata>): string {
@@ -60,23 +74,66 @@ export function applySkillHubLocalMetadata(markdown: string, metadata: Required<
 
 export function computeLocalSkillContentHash(skillDir: string): string {
   const root = path.resolve(skillDir);
-  const entries = walkSkillFiles(root)
+  const files = walkSkillFiles(root);
+  const initialFingerprint = fingerprintFiles(root, files);
+  const entries = files
     .map(filePath => {
       const relative = path.relative(root, filePath).replace(/\\/g, '/');
-      const buffer = skillHashBuffer(relative, fs.readFileSync(filePath));
+      const hashPath = canonicalSkillHashPath(relative);
+      const before = fs.lstatSync(filePath);
+      if (!before.isFile() || before.isSymbolicLink()) {
+        throw new Error(`Skill hash input is not a regular file: ${filePath}`);
+      }
+      const buffer = skillHashBuffer(hashPath, fs.readFileSync(filePath));
+      const after = fs.lstatSync(filePath);
+      if (
+        !after.isFile()
+        || after.isSymbolicLink()
+        || before.size !== after.size
+        || before.mtimeMs !== after.mtimeMs
+        || before.ino !== after.ino
+      ) {
+        throw new Error(`Skill changed while its content hash was being computed: ${filePath}`);
+      }
       return {
-        path: relative,
+        path: hashPath,
         size: buffer.length,
         sha256: sha256(buffer),
       };
     })
-    .sort((a, b) => a.path.localeCompare(b.path));
+    .sort((a, b) => compareUtf8(a.path, b.path));
+  const afterFiles = walkSkillFiles(root);
+  const afterFingerprint = fingerprintFiles(root, afterFiles);
+  if (initialFingerprint !== afterFingerprint) {
+    throw new Error(`Skill changed while its file list was being hashed: ${root}`);
+  }
   return sha256(Buffer.from(JSON.stringify(entries), 'utf8'));
+}
+
+function fingerprintFiles(root: string, files: string[]): string {
+  return JSON.stringify(files.map(filePath => {
+    const stat = fs.lstatSync(filePath);
+    return {
+      path: canonicalSkillHashPath(path.relative(root, filePath).replace(/\\/g, '/')),
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      ino: stat.ino,
+      regular: stat.isFile() && !stat.isSymbolicLink(),
+    };
+  }).sort((left, right) => compareUtf8(left.path, right.path)));
 }
 
 function skillHashBuffer(relativePath: string, buffer: Buffer): Buffer {
   if (relativePath !== 'SKILL.md') return buffer;
   return Buffer.from(buffer.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
+}
+
+function canonicalSkillHashPath(relativePath: string): string {
+  return relativePath === 'SKILL.md.disabled' ? 'SKILL.md' : relativePath;
+}
+
+function compareUtf8(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
 }
 
 function fromMatterData(data: Record<string, any>): SkillHubLocalMetadata {

@@ -17,8 +17,12 @@ export interface SkillHubSubscriptionGateway {
     version?: string,
     options?: { userId?: string; allowUpdate?: boolean },
   ): Promise<SkillHubInstallResult>;
-  uninstall(input: { userId?: string; skillId: string; installName: string }): { removed: boolean; path: string };
-  claimInstalledSkillOwnership?(input: { userId: string; skillId: string; installName: string }): boolean;
+  uninstall(input: { userId?: string; skillId: string; installName: string }):
+    | { removed: boolean; path: string }
+    | Promise<{ removed: boolean; path: string }>;
+  claimInstalledSkillOwnership?(input: { userId: string; skillId: string; installName: string }):
+    | boolean
+    | Promise<boolean>;
 }
 
 export interface SkillHubSubscriptionListResult {
@@ -61,7 +65,7 @@ export class SkillHubSubscriptionService {
     const userId = scope.userId;
     const subscriptions = this.store.list(userId);
     for (const subscription of subscriptions) {
-      this.gateway.claimInstalledSkillOwnership?.({
+      await this.gateway.claimInstalledSkillOwnership?.({
         userId,
         skillId: subscription.skillId,
         installName: subscription.installName,
@@ -111,7 +115,7 @@ export class SkillHubSubscriptionService {
       };
     }
 
-    const result = this.gateway.uninstall({
+    const result = await this.gateway.uninstall({
       skillId: normalizedSkillId,
       installName: subscription.installName,
       ...(scope.kind === 'user' ? { userId: scope.userId } : {}),

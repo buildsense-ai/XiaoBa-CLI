@@ -19,6 +19,7 @@ import { CloudBotModelRuntimeReloadController } from '../bot-definition/runtime-
 import { createBotDefinitionSyncService } from '../bot-definition/service';
 import { createBotSkillWorkspaceService } from '../bot-skills/workspace-service';
 import { recoverBotSkillActivation } from '../bot-skills/activation-recovery';
+import { createBotSkillService } from '../bot-skills/service';
 import * as fs from 'node:fs';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
@@ -64,6 +65,17 @@ export async function catscompanyCommand(): Promise<void> {
       allowCreate: Array.isArray(preparedBot?.definition.skills) &&
         preparedBot.definition.skills.length === 0,
     });
+  }
+  if (configuredBotId && !process.env.XIAOBA_BOT_SKILL_ACTIVATION_TX) {
+    const manifest = await createBotSkillService({ runtimeRoot }).scanManifest();
+    if (manifest.status !== 'complete') {
+      const issues = manifest.issues
+        .map(issue => `[${issue.code}]${issue.path ? ` ${issue.path}:` : ''} ${issue.message}`)
+        .join('; ');
+      throw new Error(
+        `Active Bot Skill manifest is ${manifest.status}.${issues ? ` ${issues}` : ''}`,
+      );
+    }
   }
   if (preparedBot?.cloudRevision !== undefined) {
     Logger.info(`CatsCo bot ${preparedBot.botId} 已准备云端模型配置 revision=${preparedBot.cloudRevision}。`);

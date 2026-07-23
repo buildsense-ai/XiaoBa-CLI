@@ -4,15 +4,16 @@ import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { SkillParser } from '../skills/skill-parser';
 import type { Skill } from '../types/skill';
 import { PathResolver } from '../utils/path-resolver';
+import {
+  BotSkillService,
+  createBotSkillService,
+} from '../bot-skills/service';
+import { readLocalSkillIdentity } from '../bot-skills/local-manifest';
 import { SkillHubClient } from './client';
 import {
+  computeLocalSkillContentHash,
   writeSkillHubLocalMetadata,
 } from './local-skill-metadata';
-import {
-  claimSkillHubPackageOwnership,
-  installVerifiedSkillHubPackage,
-  uninstallSkillHubPackage,
-} from './package-installer';
 import { listInstalledSkillHubSkills } from './install-marker';
 import { verifySkillHubPackage } from './package-verifier';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from './trusted-keys';
@@ -28,9 +29,11 @@ import type {
 
 export class SkillHubService {
   private readonly client: SkillHubClient;
+  private readonly botSkills: BotSkillService;
 
-  constructor(options: { baseUrl?: string } = {}) {
+  constructor(options: { baseUrl?: string; botSkillService?: BotSkillService } = {}) {
     this.client = new SkillHubClient(options);
+    this.botSkills = options.botSkillService ?? createBotSkillService();
   }
 
   async status(): Promise<SkillHubAuthState & { trustReady: boolean; installed: SkillHubPackageInstallMarker[] }> {
@@ -146,12 +149,13 @@ export class SkillHubService {
       registryEntry,
       trust,
     });
-    const installed = installVerifiedSkillHubPackage({
+    const mutation = await this.botSkills.installVerifiedSkillHubPackage({
       verification,
       registryEntry,
       userId: options.userId,
       allowUpdate: options.allowUpdate,
     });
+    const installed = mutation.result;
     return {
       ok: true,
       skill: installed,
@@ -160,12 +164,12 @@ export class SkillHubService {
     };
   }
 
-  uninstall(input: { userId?: string; skillId: string; installName: string }): { removed: boolean; path: string } {
-    return uninstallSkillHubPackage(input);
+  async uninstall(input: { userId?: string; skillId: string; installName: string }): Promise<{ removed: boolean; path: string }> {
+    return (await this.botSkills.uninstallSkillHubPackage(input)).result;
   }
 
-  claimInstalledSkillOwnership(input: { userId: string; skillId: string; installName: string }): boolean {
-    return claimSkillHubPackageOwnership(input);
+  claimInstalledSkillOwnership(input: { userId: string; skillId: string; installName: string }): Promise<boolean> {
+    return this.botSkills.claimInstalledSkillOwnership(input);
   }
 
   developerDashboard(): Promise<any> {
@@ -240,62 +244,74 @@ export class SkillHubService {
       throw error;
     }
 
-    const localSkill = findLocalShareableSkill(skillName);
-    if (!localSkill) {
-      const available = listLocalSkillNames().join(', ');
-      const error: any = new Error(`Local skill not found: ${skillName}${available ? `. Available skills: ${available}` : ''}`);
-      error.status = 404;
-      error.code = 'skillhub.local_skill_not_found';
-      throw error;
-    }
+    return this.botSkills.withWorkspaceLock(async () => {
+      const localSkill = findLocalShareableSkill(skillName);
+      if (!localSkill) {
+        const available = listLocalSkillNames().join(', ');
+        const error: any = new Error(`Local skill not found: ${skillName}${available ? `. Available skills: ${available}` : ''}`);
+        error.status = 404;
+        error.code = 'skillhub.local_skill_not_found';
+        throw error;
+      }
 
-    const { skill } = localSkill;
-    const localPath = path.dirname(skill.filePath);
-    const files = collectSkillSourceFiles(localPath);
-    if (!files.length) {
-      const error: any = new Error('Local skill package has no shareable files.');
-      error.status = 400;
-      error.code = 'skillhub.local_skill_empty';
-      throw error;
-    }
-    const submission = await this.client.quickShare({
-      manifest: {
-        id: skill.metadata.name,
-        name: skill.metadata.name,
-        displayName: skill.metadata.name,
-        version: '1.0.0',
-        description: skill.metadata.description,
-        keywords: [skill.metadata.name, ...splitWords(skill.metadata.description)].slice(0, 8),
-        triggerExamples: skill.metadata.argumentHint ? [`/${skill.metadata.name} ${skill.metadata.argumentHint}`] : [`/${skill.metadata.name}`],
-        minAgentVersion: '0.0.0',
-        platforms: [],
-      },
-      notes: String(input.notes || 'Quick shared from local XiaoBa Skills.'),
-      confirmVersionPublish: input.confirmVersionPublish === true || input.confirmPublish === true,
-      source: {
-        type: 'files',
-        files,
-      },
+      const { skill } = localSkill;
+      const localPath = path.dirname(skill.filePath);
+      const initialIdentity = readLocalSkillIdentity(localPath)?.localSkillId;
+      const initialContentHash = computeLocalSkillContentHash(localPath);
+      const files = collectSkillSourceFiles(localPath);
+      if (!files.length) {
+        const error: any = new Error('Local skill package has no shareable files.');
+        error.status = 400;
+        error.code = 'skillhub.local_skill_empty';
+        throw error;
+      }
+      const submission = await this.client.quickShare({
+        manifest: {
+          id: skill.metadata.name,
+          name: skill.metadata.name,
+          displayName: skill.metadata.name,
+          version: '1.0.0',
+          description: skill.metadata.description,
+          keywords: [skill.metadata.name, ...splitWords(skill.metadata.description)].slice(0, 8),
+          triggerExamples: skill.metadata.argumentHint ? [`/${skill.metadata.name} ${skill.metadata.argumentHint}`] : [`/${skill.metadata.name}`],
+          minAgentVersion: '0.0.0',
+          platforms: [],
+        },
+        notes: String(input.notes || 'Quick shared from local XiaoBa Skills.'),
+        confirmVersionPublish: input.confirmVersionPublish === true || input.confirmPublish === true,
+        source: {
+          type: 'files',
+          files,
+        },
+      });
+      const skillHubMetadata = skillHubMetadataFromShareResponse(submission);
+      const localUnchanged = (
+        readLocalSkillIdentity(localPath)?.localSkillId === initialIdentity
+        && computeLocalSkillContentHash(localPath) === initialContentHash
+      );
+      if (skillHubMetadata && localUnchanged) {
+        writeSkillHubLocalMetadata(skill.filePath, skillHubMetadata);
+      }
+
+      return {
+        ok: true,
+        skill: {
+          id: submission?.skill?.skillId || submission?.upload?.skillId || submission?.submission?.normalizedManifest?.id || skill.metadata.name,
+          name: skill.metadata.name,
+          description: skill.metadata.description,
+          path: localPath,
+        },
+        submission: submission?.submission || submission,
+        existing: submission?.existing,
+        requiresConfirmation: submission?.requiresConfirmation,
+        latestVersion: submission?.latestVersion,
+        contentHash: submission?.contentHash,
+        localMetadataUpdated: Boolean(skillHubMetadata && localUnchanged),
+        warning: localUnchanged
+          ? undefined
+          : 'Local Skill changed while it was being shared; remote upload succeeded but local metadata was not updated.',
+      };
     });
-    const skillHubMetadata = skillHubMetadataFromShareResponse(submission);
-    if (skillHubMetadata) {
-      writeSkillHubLocalMetadata(skill.filePath, skillHubMetadata);
-    }
-
-    return {
-      ok: true,
-      skill: {
-        id: submission?.skill?.skillId || submission?.upload?.skillId || submission?.submission?.normalizedManifest?.id || skill.metadata.name,
-        name: skill.metadata.name,
-        description: skill.metadata.description,
-        path: localPath,
-      },
-      submission: submission?.submission || submission,
-      existing: submission?.existing,
-      requiresConfirmation: submission?.requiresConfirmation,
-      latestVersion: submission?.latestVersion,
-      contentHash: submission?.contentHash,
-    };
   }
 
   async getPublishedVersion(skillId: string, version: string): Promise<SkillHubRegistryEntry | undefined> {
@@ -349,6 +365,7 @@ function normalizeRegistryEntryVersion(entry: SkillHubRegistryEntry | undefined,
 const SOURCE_SKIP_DIRS = new Set([
   '.git',
   'node_modules',
+  '__pycache__',
 ]);
 const SOURCE_SKIP_FILES = new Set([
   'skill.json',
@@ -356,6 +373,7 @@ const SOURCE_SKIP_FILES = new Set([
   'SBOM.json',
   '.xiaoba-bundled-skill.json',
   '.xiaoba-skillhub-install.json',
+  '.xiaoba-local-skill.json',
 ]);
 const MAX_SOURCE_FILES = 200;
 const MAX_SOURCE_TOTAL_BYTES = 20 * 1024 * 1024;

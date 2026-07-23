@@ -122,6 +122,38 @@ describe('default SkillHub bootstrap', () => {
     assert.equal(result.find(item => item.key === secondSkill.key)?.action, 'installed');
     assert.deepEqual(calls, ['catsco/agent-browser@1.0.0', 'catsco/officecli@1.0.0']);
   });
+
+  test('keeps default bootstrap state isolated by Bot workspace', async () => {
+    const calls: string[] = [];
+    const skill = defaultSkill('agent-browser');
+    const service = fakeInstallService(calls);
+    const workspaceA = path.join(testRoot, 'skills-a');
+    const workspaceB = path.join(testRoot, 'skills-b');
+
+    process.env.XIAOBA_SKILLS_DIR = workspaceA;
+    await bootstrapDefaultSkillHubSkills({
+      skills: [skill],
+      service,
+      workspaceId: 'workspace-a',
+    });
+    process.env.XIAOBA_SKILLS_DIR = workspaceB;
+    await bootstrapDefaultSkillHubSkills({
+      skills: [skill],
+      service,
+      workspaceId: 'workspace-b',
+    });
+
+    assert.deepEqual(calls, [
+      'catsco/agent-browser@1.0.0',
+      'catsco/agent-browser@1.0.0',
+    ]);
+    assert.notEqual(
+      getDefaultSkillBootstrapStatePath('workspace-a'),
+      getDefaultSkillBootstrapStatePath('workspace-b'),
+    );
+    assert.equal(fs.existsSync(path.join(workspaceA, 'agent-browser', 'SKILL.md')), true);
+    assert.equal(fs.existsSync(path.join(workspaceB, 'agent-browser', 'SKILL.md')), true);
+  });
 });
 
 function defaultSkill(name: string): DefaultSkillHubSkill {

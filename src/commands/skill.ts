@@ -2,11 +2,12 @@ import { Command } from 'commander';
 import { Logger } from '../utils/logger';
 import { styles } from '../theme/colors';
 import { SkillManager } from '../skills/skill-manager';
-import { PathResolver } from '../utils/path-resolver';
-import { execSync } from 'child_process';
+import { createBotSkillService } from '../bot-skills/service';
+import { execFileSync, execSync } from 'child_process';
 import chalk from 'chalk';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import inquirer from 'inquirer';
 
 /**
@@ -46,8 +47,9 @@ export function registerSkillCommand(program: Command): void {
   skillCmd
     .command('install-github <repo>')
     .description('从 GitHub 仓库安装 skill (格式: owner/repo)')
-    .action(async (repo: string) => {
-      await installGithubSkill(repo);
+    .option('--skill <name>', '从集合仓库中选择一个 Skill 目录')
+    .action(async (repo: string, options: { skill?: string }) => {
+      await installGithubSkill(repo, options.skill);
     });
 
   // skill remove - 移除 skill
@@ -165,60 +167,102 @@ async function showSkillInfo(name: string): Promise<void> {
 /**
  * 从 GitHub 安装 skill
  */
-async function installGithubSkill(repo: string): Promise<void> {
+async function installGithubSkill(repo: string, selectedSkill?: string): Promise<void> {
+  const botSkills = createBotSkillService();
   Logger.title(`从 GitHub 安装 Skill: ${repo}`);
 
   // 解析仓库地址
-  const repoMatch = repo.match(/^([^\/]+)\/([^\/]+)$/);
+  const repoMatch = repo.match(/^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})$/);
   if (!repoMatch) {
     Logger.error('仓库地址格式错误，应为: owner/repo');
-    Logger.info('例如: obra/superpowers');
+    Logger.info('例如: obra/superpowers --skill brainstorming');
     process.exit(1);
   }
 
   const [, owner, repoName] = repoMatch;
   const githubUrl = `https://github.com/${owner}/${repoName}.git`;
 
-  // 统一安装到 ~/.xiaoba/skills/
-  const targetDir = PathResolver.getSkillsPath();
-  PathResolver.ensureDir(targetDir);
-
-  const skillPath = path.join(targetDir, repoName);
-
-  // 检查目录是否已存在
-  if (fs.existsSync(skillPath)) {
-    Logger.warning(`Skill 目录已存在: ${skillPath}`);
-    Logger.info('如需重新安装，请先删除该目录');
-    process.exit(1);
-  }
-
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-github-'));
+  const repositoryDir = path.join(temporaryRoot, 'source');
   try {
     Logger.info(`\n克隆仓库: ${chalk.gray(githubUrl)}`);
-    Logger.info(`目标目录: ${chalk.gray(skillPath)} (项目 skills 目录)\n`);
 
     // 克隆仓库
-    execSync(`git clone ${githubUrl} "${skillPath}"`, {
+    execFileSync('git', ['clone', '--depth', '1', '--', githubUrl, repositoryDir], {
       stdio: 'inherit',
-      cwd: targetDir
+    });
+    const selection = selectGithubSkillDirectory(
+      repositoryDir,
+      repoName,
+      selectedSkill,
+    );
+    const mutation = await botSkills.installLocalDirectory({
+      sourceDir: selection.sourceDir,
+      installName: selection.installName,
     });
 
-    Logger.success(`\n✓ Skill ${styles.highlight(repoName)} 安装成功！`);
-    Logger.info(`安装位置: ${skillPath}`);
+    Logger.success(`\n✓ Skill ${styles.highlight(selection.installName)} 安装成功！`);
+    Logger.info(`安装位置: ${mutation.result.path}`);
     Logger.info('\n使用 catsco skill list 查看已安装的 skills');
   } catch (error: any) {
     Logger.error(`安装失败: ${error.message}`);
 
     // 清理失败的安装
-    if (fs.existsSync(skillPath)) {
+    if (fs.existsSync(temporaryRoot)) {
       try {
-        fs.rmSync(skillPath, { recursive: true, force: true });
-      } catch (cleanupError) {
-        // 忽略清理错误
+        fs.rmSync(temporaryRoot, { recursive: true, force: true });
+      } catch {
+        // Ignore temporary clone cleanup errors.
       }
     }
-
     process.exit(1);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
   }
+}
+
+function selectGithubSkillDirectory(
+  repositoryDir: string,
+  repoName: string,
+  selectedSkill?: string,
+): { sourceDir: string; installName: string } {
+  const rootEntry = path.join(repositoryDir, 'SKILL.md');
+  const requested = String(selectedSkill || '').trim();
+  if (fs.existsSync(rootEntry) && !requested) {
+    return { sourceDir: repositoryDir, installName: repoName };
+  }
+
+  const candidates: Array<{ sourceDir: string; installName: string }> = [];
+  const visit = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue;
+      if (!entry.isDirectory() || ['.git', 'node_modules', '__pycache__'].includes(entry.name)) {
+        continue;
+      }
+      const child = path.join(directory, entry.name);
+      if (fs.existsSync(path.join(child, 'SKILL.md'))) {
+        candidates.push({ sourceDir: child, installName: entry.name });
+      } else {
+        visit(child);
+      }
+    }
+  };
+  visit(repositoryDir);
+  const matches = requested
+    ? candidates.filter(candidate => candidate.installName === requested)
+    : candidates;
+  if (matches.length === 1) return matches[0];
+
+  const available = candidates.map(candidate => candidate.installName).sort().join(', ');
+  if (!requested && candidates.length > 1) {
+    throw new Error(
+      `该仓库包含多个 Skills，请使用 --skill <name> 选择一个：${available}`,
+    );
+  }
+  throw new Error(
+    `未找到可安装的 Skill${requested ? `：${requested}` : ''}`
+    + `${available ? `。可选：${available}` : '；仓库根目录或子目录必须包含 SKILL.md'}`,
+  );
 }
 
 /**
@@ -283,6 +327,7 @@ async function removeNpmSkill(packageName: string, force?: boolean): Promise<voi
  * 移除本地 skill
  */
 async function removeLocalSkill(name: string, force?: boolean): Promise<void> {
+  const botSkills = createBotSkillService();
   const manager = new SkillManager();
   await manager.loadSkills();
   const skill = manager.getSkill(name);
@@ -317,7 +362,7 @@ async function removeLocalSkill(name: string, force?: boolean): Promise<void> {
 
   try {
     Logger.info(`\n正在移除: ${chalk.gray(skillDir)}`);
-    fs.rmSync(skillDir, { recursive: true, force: true });
+    await botSkills.removeByName(name);
     Logger.success(`\n✓ Skill ${styles.highlight(name)} 已成功移除！`);
     Logger.info(`已删除目录: ${skillDir}`);
   } catch (error: any) {

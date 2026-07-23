@@ -58,9 +58,101 @@ describe('SkillHub package trust chain verification', () => {
       /checksum mismatch/,
     );
   });
+
+  test('rejects portable path collisions, reserved metadata, and nested Skill entrypoints', () => {
+    const cases = [
+      {
+        files: [
+          makeFile('SKILL.md', '# Skill'),
+          makeFile('readme.txt', 'one'),
+          makeFile('README.TXT', 'two'),
+        ],
+        code: 'PACKAGE_FILE_DUPLICATE',
+      },
+      {
+        files: [
+          makeFile('SKILL.md', '# Skill'),
+          makeFile('nested/.xiaoba-local-skill.json', '{}'),
+        ],
+        code: 'PACKAGE_RESERVED_FILE',
+      },
+      {
+        files: [
+          makeFile('SKILL.md', '# Skill'),
+          makeFile('nested/SKILL.md', '# Nested'),
+        ],
+        code: 'PACKAGE_NESTED_SKILL_UNSUPPORTED',
+      },
+      {
+        files: [
+          makeFile('SKILL.md', '# Skill'),
+          makeFile('CON.txt', 'unsafe'),
+        ],
+        code: 'PACKAGE_FILE_PATH_UNSAFE',
+      },
+      {
+        files: [
+          makeFile('SKILL.md', '# Skill'),
+          makeFile('unsafe.', 'unsafe'),
+        ],
+        code: 'PACKAGE_FILE_PATH_UNSAFE',
+      },
+      {
+        files: [
+          makeFile('SKILL.md', '# Skill'),
+          makeFile('unsafe ', 'unsafe'),
+        ],
+        code: 'PACKAGE_FILE_PATH_UNSAFE',
+      },
+    ];
+
+    for (const item of cases) {
+      const fixture = createFixture(item.files);
+      assert.throws(
+        () => verifySkillHubPackage({
+          packageBytes: fixture.packageBytes,
+          registryEntry: fixture.registryEntry,
+          trust: fixture.trust,
+          trustedRoots: [fixture.rootPublic],
+          now: new Date('2026-06-01T00:00:00.000Z'),
+        }),
+        (error: any) => error?.code === item.code,
+      );
+    }
+  });
+
+  test('rejects excessive file counts and invalid certificate dates', () => {
+    const tooMany = [
+      makeFile('SKILL.md', '# Skill'),
+      ...Array.from({ length: 256 }, (_, index) =>
+        makeFile(`files/${index}.txt`, String(index))),
+    ];
+    const oversizedFixture = createFixture(tooMany);
+    assert.throws(
+      () => verifySkillHubPackage({
+        packageBytes: oversizedFixture.packageBytes,
+        registryEntry: oversizedFixture.registryEntry,
+        trust: oversizedFixture.trust,
+        trustedRoots: [oversizedFixture.rootPublic],
+      }),
+      (error: any) => error?.code === 'PACKAGE_FILE_COUNT_EXCEEDED',
+    );
+
+    const invalidDateFixture = createFixture();
+    invalidDateFixture.trust.keys[0].certificate.issuedAt = 'not-a-date';
+    assert.throws(
+      () => verifySkillHubPackage({
+        packageBytes: invalidDateFixture.packageBytes,
+        registryEntry: invalidDateFixture.registryEntry,
+        trust: invalidDateFixture.trust,
+        trustedRoots: [invalidDateFixture.rootPublic],
+      }),
+      (error: any) => error?.code === 'CERT_DATE_INVALID',
+    );
+  });
 });
 
-function createFixture(): {
+function createFixture(files?: ReturnType<typeof makeFile>[]): {
   rootPublic: SkillHubTrustedRootKey;
   trust: SkillHubTrustResponse;
   registryEntry: SkillHubRegistryEntry;
@@ -98,7 +190,7 @@ function createFixture(): {
       name: 'contract-review',
       version: '1.0.0',
     },
-    files: [
+    files: files ?? [
       makeFile('skill.json', JSON.stringify({ id: 'contract-review', version: '1.0.0' })),
       makeFile('SKILL.md', '# Contract Review\n\nReview contract risks.'),
     ],

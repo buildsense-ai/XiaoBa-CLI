@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { PathResolver } from '../utils/path-resolver';
 import { Logger } from '../utils/logger';
 import { loadSkillHubConfig } from './config';
@@ -42,21 +43,25 @@ export interface DefaultSkillBootstrapResult {
 export interface DefaultSkillBootstrapOptions {
   skills?: DefaultSkillHubSkill[];
   service?: Pick<SkillHubService, 'install'>;
+  workspaceId?: string;
   now?: () => Date;
 }
 
-let bootstrapInFlight: Promise<DefaultSkillBootstrapResult[]> | null = null;
+const bootstrapInFlight = new Map<string, Promise<DefaultSkillBootstrapResult[]>>();
 
 export function bootstrapDefaultSkillHubSkillsOnce(
   options: DefaultSkillBootstrapOptions = {},
 ): Promise<DefaultSkillBootstrapResult[]> {
-  if (!bootstrapInFlight) {
-    bootstrapInFlight = bootstrapDefaultSkillHubSkills(options)
+  const statePath = getDefaultSkillBootstrapStatePath(options.workspaceId);
+  let inFlight = bootstrapInFlight.get(statePath);
+  if (!inFlight) {
+    inFlight = bootstrapDefaultSkillHubSkills(options)
       .finally(() => {
-        bootstrapInFlight = null;
+        bootstrapInFlight.delete(statePath);
       });
+    bootstrapInFlight.set(statePath, inFlight);
   }
-  return bootstrapInFlight;
+  return inFlight;
 }
 
 export async function bootstrapDefaultSkillHubSkills(
@@ -67,7 +72,8 @@ export async function bootstrapDefaultSkillHubSkills(
 
   const service = options.service ?? new SkillHubService();
   const now = options.now ?? (() => new Date());
-  const statePath = getDefaultSkillBootstrapStatePath();
+  const statePath = getDefaultSkillBootstrapStatePath(options.workspaceId);
+  migrateLegacyStateIfNeeded(statePath, options.workspaceId);
   const state = readStateFile(statePath);
   const results: DefaultSkillBootstrapResult[] = [];
   let changed = false;
@@ -142,8 +148,20 @@ export async function bootstrapDefaultSkillHubSkills(
   return results;
 }
 
-export function getDefaultSkillBootstrapStatePath(): string {
-  return path.join(loadSkillHubConfig().dataDir, 'default-skills-state.json');
+export function getDefaultSkillBootstrapStatePath(workspaceId?: string): string {
+  const dataDir = loadSkillHubConfig().dataDir;
+  const normalized = String(workspaceId || '').trim();
+  if (!normalized) return path.join(dataDir, 'default-skills-state.json');
+  const scope = crypto.createHash('sha256').update(normalized, 'utf8').digest('hex');
+  return path.join(dataDir, 'default-skills', `w_${scope}.json`);
+}
+
+function migrateLegacyStateIfNeeded(statePath: string, workspaceId?: string): void {
+  if (!String(workspaceId || '').trim() || fs.existsSync(statePath)) return;
+  const legacyPath = getDefaultSkillBootstrapStatePath();
+  if (!fs.existsSync(legacyPath)) return;
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  fs.renameSync(legacyPath, statePath);
 }
 
 function isValidDefaultSkill(item: DefaultSkillHubSkill): boolean {

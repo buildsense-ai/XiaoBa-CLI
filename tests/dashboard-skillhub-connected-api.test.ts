@@ -7,6 +7,8 @@ import * as path from 'path';
 import express from 'express';
 import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
+import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
+import { BotSkillWorkspaceService } from '../src/bot-skills/workspace-service';
 import { loadSkillHubConfig } from '../src/skillhub/config';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS, SkillHubTrustedRootKey } from '../src/skillhub/trusted-keys';
 
@@ -30,6 +32,7 @@ describe('dashboard connected SkillHub API', () => {
     process.chdir(testRoot);
     process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
     fs.mkdirSync(path.join(testRoot, 'skills'), { recursive: true });
+    claimTestBotWorkspace(testRoot);
   });
 
   afterEach(async () => {
@@ -132,7 +135,24 @@ describe('dashboard connected SkillHub API', () => {
     fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', 'REVIEW.json'), '{}\n');
     fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', 'SBOM.json'), '{}\n');
     fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', '.xiaoba-bundled-skill.json'), '{}\n');
-    fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', '.xiaoba-skillhub-install.json'), '{}\n');
+    fs.writeFileSync(
+      path.join(testRoot, 'skills', 'quick-demo', '.xiaoba-skillhub-install.json'),
+      `${JSON.stringify({
+        source: 'skillhub',
+        skillId: 'lin/quick-demo',
+        name: 'quick-demo',
+        installName: 'quick-demo',
+        version: '1.0.0',
+        packageChecksumSha256: 'test-checksum',
+        signature: {
+          algorithm: 'ed25519',
+          keyId: 'test-key',
+          signature: 'test-signature',
+        },
+        packageUrl: 'https://example.test/quick-demo.skillpkg',
+        installedAt: '2026-01-01T00:00:00.000Z',
+      })}\n`,
+    );
 
     const fixture = createFixture();
     await startCloud(fixture);
@@ -161,6 +181,33 @@ describe('dashboard connected SkillHub API', () => {
     assert.match(skillText, /skillhub_author:\s+["']?lin["']?/);
     assert.match(skillText, /skillhub_version:\s+["']?1\.0\.0["']?/);
     assert.match(skillText, /skillhub_uploaded_at:/);
+  });
+
+  test('returns partial manifest diagnostics when a local Skill blocks sharing', async () => {
+    const skillDir = path.join(testRoot, 'skills', 'broken-demo');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), [
+      '---',
+      'name: broken-demo',
+      'description: Broken demo skill',
+      '---',
+      '',
+      '# Broken Demo',
+    ].join('\n'));
+    fs.writeFileSync(path.join(skillDir, '.xiaoba-skillhub-install.json'), '{}\n');
+    await startDashboard();
+
+    const share = await post('/api/skillhub/share-local-skill', {
+      skillName: 'broken-demo',
+    });
+
+    assert.equal(share.status, 409);
+    assert.equal(share.body.code, 'LOCAL_SKILL_MANIFEST_INCOMPLETE');
+    assert.equal(share.body.manifest.status, 'partial');
+    assert.ok(
+      share.body.manifest.issues.some((issue: any) =>
+        issue.code === 'SKILL_SCAN_FAILED' && issue.path === 'broken-demo'),
+    );
   });
 
   test('connects SkillHub with the current CatsCo login token', async () => {
@@ -359,6 +406,25 @@ describe('dashboard connected SkillHub API', () => {
     return { status: response.status, body: await response.json() };
   }
 });
+
+function claimTestBotWorkspace(runtimeRoot: string): void {
+  createCatsCoLocalConfigService({ runtimeRoot, env: process.env }).save({
+    version: 1,
+    currentBot: {
+      uid: 'bot_skillhub_test',
+      apiKey: 'test-api-key',
+      boundByUserUid: 'test-user',
+      bindingSource: 'test',
+    },
+    device: {
+      deviceId: 'test-device',
+      bodyId: 'test-device',
+      installationId: 'test-device',
+    },
+  });
+  new BotSkillWorkspaceService({ runtimeRoot, env: process.env })
+    .ensureActive('bot_skillhub_test');
+}
 
 function createFixture() {
   const rootKeys = crypto.generateKeyPairSync('ed25519');

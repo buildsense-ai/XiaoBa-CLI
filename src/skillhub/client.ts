@@ -35,6 +35,8 @@ export interface SkillHubCatsCoExchangeInput {
   };
 }
 
+const MAX_SKILLHUB_PACKAGE_BYTES = 32 * 1024 * 1024;
+
 export class SkillHubClient {
   readonly config: SkillHubConfig;
   private readonly sessionStore: SkillHubSessionStore;
@@ -119,7 +121,25 @@ export class SkillHubClient {
   async downloadPackage(entry: SkillHubRegistryEntry): Promise<Buffer> {
     const path = `/api/skills/${encodeSkillIdPath(entry.skillId)}/versions/${encodeURIComponent(entry.latestVersion)}/download`;
     const response = await this.fetchRaw('GET', path);
-    return Buffer.from(await response.arrayBuffer());
+    const declaredLength = Number(response.headers.get('content-length') || 0);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_SKILLHUB_PACKAGE_BYTES) {
+      throw packageTooLarge();
+    }
+    if (!response.body) return Buffer.alloc(0);
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_SKILLHUB_PACKAGE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw packageTooLarge();
+      }
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, total);
   }
 
   async getDeveloperDashboard(): Promise<SkillHubDeveloperDashboard> {
@@ -250,5 +270,14 @@ function encodeSkillIdPath(skillId: string): string {
 
 function withStatus(error: Error, status: number): Error {
   (error as any).status = status;
+  return error;
+}
+
+function packageTooLarge(): Error {
+  const error = withStatus(
+    new Error(`SkillHub package exceeds ${MAX_SKILLHUB_PACKAGE_BYTES} bytes.`),
+    502,
+  );
+  (error as any).code = 'skillhub.package_too_large';
   return error;
 }

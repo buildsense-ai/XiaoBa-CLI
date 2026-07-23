@@ -12,6 +12,7 @@ import { createBotSkillWorkspaceService } from '../bot-skills/workspace-service'
 import { recoverBotSkillActivation } from '../bot-skills/activation-recovery';
 import * as fs from 'node:fs';
 import { FileBotDefinitionRepository } from '../bot-definition/repository';
+import { createBotSkillService } from '../bot-skills/service';
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -51,6 +52,7 @@ export async function startDashboard(
   ) || fs.existsSync(
     path.join(runtimeRoot, 'data', 'bot-skills', 'binding-rollback.json'),
   );
+  let activeBotWorkspaceReady = false;
   if (initialBotId || workspaceMetadataExists) {
     const workspaceService = createBotSkillWorkspaceService({ runtimeRoot });
     recoverBotSkillActivation(runtimeRoot, workspaceService);
@@ -73,11 +75,25 @@ export async function startDashboard(
         allowCreate: Array.isArray(definition?.skills) && definition.skills.length === 0,
       });
     }
+    const manifest = await createBotSkillService({ runtimeRoot }).scanManifest();
+    if (manifest.status === 'partial') {
+      Logger.warning(
+        `Active Bot Skill manifest is partial; Dashboard will start in degraded mode. ${formatManifestIssues(manifest.issues)}`,
+      );
+    } else if (manifest.status !== 'complete') {
+      throw new Error(`Active Bot Skill manifest is ${manifest.status}.`);
+    } else {
+      activeBotWorkspaceReady = true;
+    }
   }
 
-  await bootstrapDefaultSkillHubSkillsOnce().catch(error => {
-    Logger.warning(`Default SkillHub bootstrap failed: ${error?.message || String(error)}`);
-  });
+  if (activeBotWorkspaceReady) {
+    const workspaceId = createBotSkillWorkspaceService({ runtimeRoot })
+      .readState()?.workspaceId;
+    await bootstrapDefaultSkillHubSkillsOnce({ workspaceId }).catch(error => {
+      Logger.warning(`Default SkillHub bootstrap failed: ${error?.message || String(error)}`);
+    });
+  }
 
   // Configure and apply dashboard authentication.
   // Trim the env var so whitespace-only values are treated as "not set"
@@ -132,6 +148,14 @@ export async function startDashboard(
       await Promise.all(activeServers.splice(0).map(closeServer));
     },
   };
+}
+
+function formatManifestIssues(
+  issues: Array<{ code: string; message: string; path?: string }>,
+): string {
+  return issues
+    .map(issue => `[${issue.code}]${issue.path ? ` ${issue.path}:` : ''} ${issue.message}`)
+    .join('; ');
 }
 
 function closeServer(server: Server): Promise<void> {

@@ -71,10 +71,13 @@ import { registerSkillHubRoutes } from './skillhub';
 import { registerPetRoutes } from './pet';
 import type { DashboardAuthStatus } from '../auth';
 import { SkillHubService } from '../../skillhub/service';
+import { bootstrapDefaultSkillHubSkillsOnce } from '../../skillhub/default-skill-bootstrap';
+import { Logger } from '../../utils/logger';
 import {
   computeLocalSkillContentHash,
   readSkillHubLocalMetadata,
 } from '../../skillhub/local-skill-metadata';
+import { createBotSkillService } from '../../bot-skills/service';
 import {
   deletePromptOverride,
   getPromptEditorFile,
@@ -943,6 +946,13 @@ async function commitCatsBotBindingAndStartConnector(
         allowCreate: false,
         lock: activationLock,
       });
+      const sourceManifest = await createBotSkillService({
+        runtimeRoot,
+        expectedBotId: previousBotId,
+        workspaceService,
+        activationLock,
+      }).scanManifest();
+      assertBotSkillManifestReady(sourceManifest);
     } else {
       workspaceService.ensureActive(input.botUid, {
         allowCreate: allowCreateSkillWorkspace,
@@ -969,6 +979,16 @@ async function commitCatsBotBindingAndStartConnector(
     }
 
     const updated = writeCatsBotBinding(state, input);
+    if (switchChanged || initialClaimed) {
+      const targetManifest = await createBotSkillService({
+        runtimeRoot,
+        expectedBotId: input.botUid,
+        workspaceService,
+        activationLock,
+        activationTransactionId: switchTransactionId,
+      }).scanManifest();
+      assertBotSkillManifestReady(targetManifest);
+    }
     let service: any;
     let startPreflight = targetPreflight;
     let connectorStarted = false;
@@ -1027,6 +1047,21 @@ async function commitCatsBotBindingAndStartConnector(
         // snapshot is safe to remove during the next startup recovery.
       }
       bindingSnapshotPersisted = false;
+    }
+    if (switchChanged || initialClaimed) {
+      const activeState = workspaceService.readState();
+      const scopedBotSkills = createBotSkillService({
+        runtimeRoot,
+        expectedBotId: input.botUid,
+        workspaceService,
+        activationLock,
+      });
+      await bootstrapDefaultSkillHubSkillsOnce({
+        workspaceId: activeState?.workspaceId,
+        service: new SkillHubService({ botSkillService: scopedBotSkills }),
+      }).catch(error => {
+        Logger.warning(`Default SkillHub bootstrap failed after Bot activation: ${error?.message || String(error)}`);
+      });
     }
     return {
       updated,
@@ -1099,6 +1134,25 @@ async function commitCatsBotBindingAndStartConnector(
       }
     }
   }
+}
+
+function assertBotSkillManifestReady(manifest: {
+  status: string;
+  issues?: unknown[];
+}): void {
+  if (manifest.status === 'complete') return;
+  const error = httpError(
+    `Bot Skill workspace manifest is ${manifest.status}.`,
+    409,
+  ) as Error & { code?: string; data?: unknown };
+  error.code = 'bot_skill_manifest_not_ready';
+  error.data = {
+    manifest: {
+      status: manifest.status,
+      issues: manifest.issues ?? [],
+    },
+  };
+  throw error;
 }
 
 function normalizeRelayModelProtocol(value: unknown): RelayModelProtocol {
@@ -2114,6 +2168,33 @@ function sanitizeCatsErrorData(data: unknown): unknown {
       };
       continue;
     }
+    if (key === 'manifest' && value && typeof value === 'object') {
+      const manifest = value as Record<string, unknown>;
+      safe.manifest = {
+        ...(typeof manifest.status === 'string' ? { status: manifest.status } : {}),
+        ...(Array.isArray(manifest.issues)
+          ? {
+            issues: manifest.issues
+              .filter(item => item && typeof item === 'object')
+              .map(item => {
+                const issue = item as Record<string, unknown>;
+                return {
+                  ...(typeof issue.code === 'string'
+                    ? { code: sanitizeCatsErrorMessage(issue.code) }
+                    : {}),
+                  ...(typeof issue.message === 'string'
+                    ? { message: sanitizeCatsErrorMessage(issue.message) }
+                    : {}),
+                  ...(typeof issue.path === 'string'
+                    ? { path: sanitizeCatsErrorMessage(issue.path) }
+                    : {}),
+                };
+              }),
+          }
+          : {}),
+      };
+      continue;
+    }
     const lower = key.toLowerCase();
     if (
       lower.includes('key')
@@ -2144,6 +2225,7 @@ function sanitizeCatsErrorMessage(value: unknown): string {
 
 function catsErrorResponse(error: any): { status: number; body: Record<string, unknown> } {
   const body: Record<string, unknown> = { error: sanitizeCatsErrorMessage(error.message) };
+  if (typeof error?.code === 'string') body.code = sanitizeCatsErrorMessage(error.code);
   const data = sanitizeCatsErrorData(error.data);
   if (data) body.data = data;
   return { status: error.status || 500, body };
@@ -2602,14 +2684,18 @@ export function createApiRouter(
     }
   });
 
-  router.post('/prompts/editor-skill/install', (req, res) => {
+  router.post('/prompts/editor-skill/install', async (req, res) => {
     try {
       if (!requireJsonWrite(req, res)) return;
-      res.json(installPromptEditorSeedSkill({
+      res.json(await installPromptEditorSeedSkill({
         overwrite: req.body?.overwrite === true,
       }));
     } catch (e: any) {
-      res.status(400).json({ error: e?.message || String(e) });
+      res.status(e?.status || 400).json({
+        error: e?.message || String(e),
+        code: e?.code,
+        manifest: e?.manifest,
+      });
     }
   });
 
@@ -3183,8 +3269,7 @@ export function createApiRouter(
   router.get('/skills-root', async (_req, res) => {
     try {
       const skillsRoot = PathResolver.getSkillsPath();
-      PathResolver.ensureDir(skillsRoot);
-      res.json({ ok: true, path: skillsRoot });
+      res.json({ ok: true, path: skillsRoot, exists: fs.existsSync(skillsRoot) });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -3212,6 +3297,7 @@ export function createApiRouter(
 
   router.delete('/skills/:name', async (req, res) => {
     try {
+      const botSkills = createBotSkillService();
       const manager = new SkillManager();
       await manager.loadSkills();
       const skill = manager.getSkill(req.params.name);
@@ -3222,7 +3308,7 @@ export function createApiRouter(
           if (!management.canDelete) {
             return res.status(403).json({ error: formatSkillDeleteBlockedMessage(management) });
           }
-          fs.rmSync(path.dirname(disabled), { recursive: true, force: true });
+          await botSkills.removeByName(req.params.name);
           return res.json({ ok: true });
         }
         return res.status(404).json({ error: 'Skill not found' });
@@ -3231,15 +3317,20 @@ export function createApiRouter(
       if (!management.canDelete) {
         return res.status(403).json({ error: formatSkillDeleteBlockedMessage(management) });
       }
-      fs.rmSync(path.dirname(skill.filePath), { recursive: true, force: true });
+      await botSkills.removeByName(req.params.name);
       res.json({ ok: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(e?.status || 500).json({
+        error: e.message,
+        code: e?.code,
+        manifest: e?.manifest,
+      });
     }
   });
 
   router.post('/skills/:name/disable', async (req, res) => {
     try {
+      const botSkills = createBotSkillService();
       const manager = new SkillManager();
       await manager.loadSkills();
       const skill = manager.getSkill(req.params.name);
@@ -3248,21 +3339,30 @@ export function createApiRouter(
       if (!management.canDisable) {
         return res.status(403).json({ error: '系统 Skill 不能禁用。' });
       }
-      fs.renameSync(skill.filePath, skill.filePath + '.disabled');
+      await botSkills.setEnabledByName(req.params.name, false);
       res.json({ ok: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(e?.status || 500).json({
+        error: e.message,
+        code: e?.code,
+        manifest: e?.manifest,
+      });
     }
   });
 
   router.post('/skills/:name/enable', async (req, res) => {
     try {
+      const botSkills = createBotSkillService();
       const f = findDisabledSkillByName(PathResolver.getSkillsPath(), req.params.name);
       if (!f) return res.status(404).json({ error: 'Disabled skill not found' });
-      fs.renameSync(f, f.replace('.disabled', ''));
+      await botSkills.setEnabledByName(req.params.name, true);
       res.json({ ok: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(e?.status || 500).json({
+        error: e.message,
+        code: e?.code,
+        manifest: e?.manifest,
+      });
     }
   });
 
@@ -4341,52 +4441,31 @@ function sanitizeServerUrl(serverUrl?: string): string | undefined {
   }
 }
 
-function installPromptEditorSeedSkill(options: { overwrite?: boolean } = {}): any {
+async function installPromptEditorSeedSkill(options: { overwrite?: boolean } = {}): Promise<any> {
   const sourceDir = resolvePromptEditorSeedSkillDir();
   const sourceSkillFile = path.join(sourceDir, 'SKILL.md');
   if (!fs.existsSync(sourceSkillFile)) {
     throw new Error('Prompt editor seed skill is missing from this build.');
   }
 
-  const skillsRoot = PathResolver.getSkillsPath();
-  PathResolver.ensureDir(skillsRoot);
-  const targetDir = resolveChildDirectory(skillsRoot, PROMPT_EDITOR_SKILL_NAME);
-  const targetSkillFile = path.join(targetDir, 'SKILL.md');
-  const disabledSkillFile = targetSkillFile + '.disabled';
-  const targetDirExists = fs.existsSync(targetDir);
-  const existing = targetDirExists || fs.existsSync(targetSkillFile) || fs.existsSync(disabledSkillFile);
-
-  if (existing && !options.overwrite) {
-    return {
-      ok: true,
-      installed: false,
-      existing: true,
-      name: PROMPT_EDITOR_SKILL_NAME,
-      path: fs.existsSync(targetSkillFile)
-        ? targetSkillFile
-        : (fs.existsSync(disabledSkillFile) ? disabledSkillFile : targetDir),
-      disabled: !fs.existsSync(targetSkillFile),
-    };
-  }
-
-  if (targetDirExists) {
-    fs.rmSync(targetDir, { recursive: true, force: true });
-  }
-  fs.mkdirSync(path.dirname(targetSkillFile), { recursive: true });
-  fs.cpSync(sourceDir, targetDir, {
-    recursive: true,
-    filter: source => {
-      const name = path.basename(source).toLowerCase();
-      return name !== '.git' && name !== 'node_modules' && name !== '__pycache__';
-    },
+  const mutation = await createBotSkillService().installLocalDirectory({
+    sourceDir,
+    installName: PROMPT_EDITOR_SKILL_NAME,
+    overwrite: options.overwrite,
   });
+  const targetDir = mutation.result.path;
+  const activeSkillFile = path.join(targetDir, 'SKILL.md');
+  const disabledSkillFile = path.join(targetDir, 'SKILL.md.disabled');
 
   return {
     ok: true,
-    installed: true,
-    existing: false,
+    installed: mutation.result.installed,
+    existing: mutation.result.existing,
     name: PROMPT_EDITOR_SKILL_NAME,
-    path: targetSkillFile,
+    path: fs.existsSync(activeSkillFile)
+      ? activeSkillFile
+      : (fs.existsSync(disabledSkillFile) ? disabledSkillFile : targetDir),
+    disabled: !fs.existsSync(activeSkillFile),
   };
 }
 
@@ -4411,16 +4490,6 @@ function resolvePromptEditorSeedSkillDir(): string {
   }
 
   return path.join(path.resolve(candidates[0] || process.cwd()), 'skills', PROMPT_EDITOR_SKILL_NAME);
-}
-
-function resolveChildDirectory(rootDir: string, childName: string): string {
-  const root = path.resolve(rootDir);
-  const target = path.resolve(root, childName);
-  const relative = path.relative(root, target);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`Unsafe target path: ${childName}`);
-  }
-  return target;
 }
 
 // ==================== Helpers ====================

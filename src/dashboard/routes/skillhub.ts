@@ -192,5 +192,17 @@ function sendSkillHubError(res: any, error: any): void {
   res.status(status).json({
     error: error?.message || String(error),
     code: error?.code || 'skillhub.error',
+    ...(error?.manifest ? {
+      manifest: {
+        status: error.manifest.status,
+        issues: Array.isArray(error.manifest.issues)
+          ? error.manifest.issues.map((issue: any) => ({
+            code: issue?.code,
+            message: issue?.message,
+            path: issue?.path,
+          }))
+          : [],
+      },
+    } : {}),
   });
 }
