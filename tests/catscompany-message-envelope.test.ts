@@ -179,6 +179,8 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
         seq: 51,
         content: 'hello',
         type: 'text',
+        mentions: ['usr43'],
+        member_count: 4,
         metadata: {
           catsco_identity: {
             actor: { user_id: 'usr7' },
@@ -193,6 +195,8 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     const ctx = await messagePromise;
     assert.equal(ctx.topic, 'p2p_7_43');
     assert.equal(ctx.senderId, 'usr7');
+    assert.deepEqual(ctx.mentions, ['usr43']);
+    assert.equal(ctx.memberCount, 4);
     assert.deepEqual((ctx.metadata as any).catsco_identity.agent, {
       agent_id: 'usr43',
       body_id: 'body-test',
