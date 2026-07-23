@@ -88,6 +88,13 @@ import {
   type BranchModelRuntime,
 } from '../../core/branch-agent-config';
 import { normalizeReasoningEffort, reasoningEffortOrDefault } from '../../utils/reasoning-effort';
+import * as crypto from 'node:crypto';
+import { createBotSkillWorkspaceService } from '../../bot-skills/workspace-service';
+import {
+  discardBotSkillBindingRollback,
+  persistBotSkillBindingRollback,
+  recoverBotSkillActivation,
+} from '../../bot-skills/activation-recovery';
 import { normalizeOpenAIApiMode, openAIApiModeOrDefault } from '../../utils/openai-api-mode';
 import {
   BindWeixinChannelResult,
@@ -141,6 +148,7 @@ interface CatsBotBindingInput {
   apiKey: string;
   bindingSource?: string;
   selectedCatalogRuntime?: BotCatalogModelRuntime;
+  allowCreateSkillWorkspace?: boolean;
 }
 
 interface CatsRelayModelSetupResult {
@@ -867,26 +875,137 @@ async function commitCatsBotBindingAndStartConnector(
   connectorRestarted: boolean;
   botDefinitionSync?: Record<string, unknown>;
 }> {
+  const runtimeRoot = runtimeDataRoot();
+  const workspaceService = createBotSkillWorkspaceService({ runtimeRoot });
+  const activationLock = workspaceService.acquireActivationLock();
+  try {
+    recoverBotSkillActivation(runtimeRoot, workspaceService, { lock: activationLock });
+  } catch (error) {
+    activationLock.release();
+    throw error;
+  }
   ensureCatsDeviceId();
-  const rollback = createCatsCoLocalConfigRollback();
+  const rollbackBinding = createCatsCoLocalConfigRollback();
+  const localConfigService = createCatsCoLocalConfigService({ runtimeRoot });
+  const previousBotId = String(localConfigService.load().currentBot?.uid || '').trim();
+  let switchTransactionId: string | undefined;
+  let switchChanged = false;
+  let bindingSnapshotPersisted = false;
+  let connectorWasRunning = false;
+  let workspaceCommitted = false;
+  let initialClaimed = false;
+  let restartPreviousConnectorAfterRelease = false;
+  const initialMarkerPath = path.join(workspaceService.activePath, '.xiaoba-bot-workspace.json');
+  const initialMarkerExisted = fs.existsSync(initialMarkerPath);
   try {
     const warnings = await ensureCatsFriendBinding(state, input.userUid, input.botUid, input.apiKey);
-    const updated = writeCatsBotBinding(state, input);
     const preparedBot = await prepareBoundBotDefinition({
-      runtimeRoot: runtimeDataRoot(),
+      runtimeRoot,
       botId: input.botUid,
       selectedCatalogRuntime: input.selectedCatalogRuntime,
       acknowledgeCloudSelection: false,
     });
     const botDefinitionSync = toBotDefinitionSyncPayload(preparedBot?.sync);
-    const {
-      service,
-      preflight: startPreflight,
-      connectorStarted,
-      connectorRestarted,
-    } = await startCatsCompanyConnectorIfReady(serviceManager, {
-      restartIfRunning: true,
-    });
+    const allowCreateSkillWorkspace = input.allowCreateSkillWorkspace === true ||
+      (Array.isArray(preparedBot?.definition.skills) && preparedBot.definition.skills.length === 0);
+
+    const existingService = serviceManager.getService('catscompany');
+    const targetPreflight = existingService
+      ? getServicePreflight(serviceManager, 'catscompany', {
+        runtimeRoot,
+        config: ConfigManager.getConfigReadonly(),
+        botId: input.botUid,
+        catsCoOverrides: {
+          httpBaseUrl: state.httpBaseUrl,
+          serverUrl: state.serverUrl,
+          token: state.token,
+          uid: input.userUid,
+          botUid: input.botUid,
+          apiKey: input.apiKey,
+        },
+      })
+      : undefined;
+    if (targetPreflight?.status === 'blocked') {
+      const error = httpError('CatsCo connector preflight blocked', 400) as Error & { data?: unknown };
+      error.data = {
+        preflight: {
+          status: targetPreflight.status,
+          blockingChecks: targetPreflight.blockingChecks,
+          warningChecks: targetPreflight.warningChecks,
+        },
+      };
+      throw error;
+    }
+
+    const stateBeforeClaim = workspaceService.readState();
+    if (previousBotId) {
+      workspaceService.ensureActive(previousBotId, {
+        allowCreate: false,
+        lock: activationLock,
+      });
+    } else {
+      workspaceService.ensureActive(input.botUid, {
+        allowCreate: allowCreateSkillWorkspace,
+        lock: activationLock,
+      });
+      initialClaimed = !stateBeforeClaim;
+    }
+
+    connectorWasRunning = existingService?.status === 'running';
+    const currentWorkspaceOwner = workspaceService.readState()?.workspaceOwnerBotId;
+    if (currentWorkspaceOwner && currentWorkspaceOwner !== input.botUid) {
+      switchTransactionId = crypto.randomUUID();
+      persistBotSkillBindingRollback(runtimeRoot, switchTransactionId);
+      bindingSnapshotPersisted = true;
+      if (connectorWasRunning) {
+        await serviceManager.stopAndWait('catscompany');
+      }
+      const switching = workspaceService.beginSwitch(input.botUid, {
+        allowCreate: allowCreateSkillWorkspace,
+        transactionId: switchTransactionId,
+        lock: activationLock,
+      });
+      switchChanged = switching.changed;
+    }
+
+    const updated = writeCatsBotBinding(state, input);
+    let service: any;
+    let startPreflight = targetPreflight;
+    let connectorStarted = false;
+    let connectorRestarted = false;
+    if (switchChanged || (initialClaimed && !connectorWasRunning)) {
+      const previousActivationTx = process.env.XIAOBA_BOT_SKILL_ACTIVATION_TX;
+      const liveActivationTransactionId = switchTransactionId ??
+        `initial:${crypto.randomUUID()}`;
+      process.env.XIAOBA_BOT_SKILL_ACTIVATION_TX = liveActivationTransactionId;
+      try {
+        service = existingService
+          ? await (
+            typeof (serviceManager as any).startAndWaitReady === 'function'
+              ? serviceManager.startAndWaitReady('catscompany')
+              : Promise.resolve(serviceManager.start('catscompany'))
+          )
+          : existingService;
+        connectorStarted = Boolean(existingService);
+        connectorRestarted = switchChanged && connectorWasRunning && connectorStarted;
+      } finally {
+        if (previousActivationTx === undefined) {
+          delete process.env.XIAOBA_BOT_SKILL_ACTIVATION_TX;
+        } else {
+          process.env.XIAOBA_BOT_SKILL_ACTIVATION_TX = previousActivationTx;
+        }
+      }
+    } else {
+      ({
+        service,
+        preflight: startPreflight,
+        connectorStarted,
+        connectorRestarted,
+      } = await startCatsCompanyConnectorIfReady(serviceManager, {
+        restartIfRunning: true,
+        preflight: targetPreflight,
+      }));
+    }
     if (startPreflight?.status === 'blocked') {
       const error = httpError('CatsCo connector preflight blocked', 400) as Error & { data?: unknown };
       error.data = {
@@ -898,6 +1017,17 @@ async function commitCatsBotBindingAndStartConnector(
       };
       throw error;
     }
+    if (switchChanged && switchTransactionId) {
+      workspaceService.commitSwitch(switchTransactionId, activationLock);
+      workspaceCommitted = true;
+      try {
+        discardBotSkillBindingRollback(runtimeRoot, switchTransactionId);
+      } catch {
+        // The committed workspace and binding are authoritative. A stale
+        // snapshot is safe to remove during the next startup recovery.
+      }
+      bindingSnapshotPersisted = false;
+    }
     return {
       updated,
       warnings,
@@ -908,8 +1038,66 @@ async function commitCatsBotBindingAndStartConnector(
       botDefinitionSync,
     };
   } catch (error) {
-    rollback();
+    if (workspaceCommitted) throw error;
+    let workspaceRollbackError: unknown;
+    if (switchChanged || initialClaimed) {
+      try {
+        const currentService = serviceManager.getService('catscompany');
+        if (currentService?.status === 'running') {
+          await serviceManager.stopAndWait('catscompany');
+        }
+      } catch (stopError) {
+        workspaceRollbackError = stopError;
+      }
+    }
+    if (!workspaceRollbackError) {
+      rollbackBinding();
+      const journal = workspaceService.readState()?.switchJournal;
+      if (switchTransactionId && journal?.transactionId === switchTransactionId) {
+        try {
+          workspaceService.rollbackSwitch(switchTransactionId, activationLock);
+        } catch (rollbackError) {
+          workspaceRollbackError = rollbackError;
+        }
+      }
+    }
+    if (
+      !workspaceRollbackError &&
+      initialClaimed &&
+      !initialMarkerExisted &&
+      !previousBotId
+    ) {
+      try {
+        workspaceService.releaseInitialClaim(input.botUid, activationLock);
+      } catch (rollbackError) {
+        workspaceRollbackError = rollbackError;
+      }
+    }
+    if (!workspaceRollbackError && bindingSnapshotPersisted) {
+      discardBotSkillBindingRollback(runtimeRoot, switchTransactionId);
+      bindingSnapshotPersisted = false;
+    }
+    restartPreviousConnectorAfterRelease = connectorWasRunning && !workspaceRollbackError;
+    if (workspaceRollbackError) {
+      const message = workspaceRollbackError instanceof Error
+        ? workspaceRollbackError.message
+        : String(workspaceRollbackError);
+      throw new Error(`Bot binding failed and Skill workspace rollback also failed: ${message}`);
+    }
     throw error;
+  } finally {
+    activationLock.release();
+    if (restartPreviousConnectorAfterRelease) {
+      try {
+        const currentService = serviceManager.getService('catscompany');
+        if (currentService && currentService.status !== 'running') {
+          serviceManager.start('catscompany');
+        }
+      } catch {
+        // Restored binding/workspace remains authoritative even if the
+        // best-effort old Connector restart fails.
+      }
+    }
   }
 }
 
@@ -3557,6 +3745,7 @@ export function createApiRouter(
         apiKey,
         bindingSource: 'legacy-setup',
         selectedCatalogRuntime,
+        allowCreateSkillWorkspace: botSelectionSource === 'created-default',
       });
 
       res.json({

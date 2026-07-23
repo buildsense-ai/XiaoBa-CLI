@@ -17,6 +17,9 @@ import {
 } from '../bot-definition/cloud-client';
 import { CloudBotModelRuntimeReloadController } from '../bot-definition/runtime-reload';
 import { createBotDefinitionSyncService } from '../bot-definition/service';
+import { createBotSkillWorkspaceService } from '../bot-skills/workspace-service';
+import { recoverBotSkillActivation } from '../bot-skills/activation-recovery';
+import * as fs from 'node:fs';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
 const CLOUD_MODEL_POLL_MS = 5000;
@@ -42,10 +45,26 @@ export function resolveCatsCoCommandConfig(
  */
 export async function catscompanyCommand(): Promise<void> {
   const runtimeRoot = PathResolver.getRuntimeDataRoot();
+  const localConfigService = createCatsCoLocalConfigService({ runtimeRoot });
+  const workspaceService = createBotSkillWorkspaceService({ runtimeRoot });
+  const activationRecovery = recoverBotSkillActivation(runtimeRoot, workspaceService, {
+    expectedLiveTransactionId: process.env.XIAOBA_BOT_SKILL_ACTIVATION_TX,
+  });
+  const configuredBotId = String(localConfigService.load().currentBot?.uid || '').trim();
+  const hadWorkspace = Boolean(workspaceService.readState() || fs.existsSync(workspaceService.activePath));
+  if (configuredBotId && !activationRecovery.pendingTargetBotId && hadWorkspace) {
+    workspaceService.ensureActive(configuredBotId);
+  }
   const preparedBot = await prepareBoundBotDefinition({
     runtimeRoot,
     acknowledgeCloudSelection: false,
   });
+  if (configuredBotId && !activationRecovery.pendingTargetBotId && !hadWorkspace) {
+    workspaceService.ensureActive(configuredBotId, {
+      allowCreate: Array.isArray(preparedBot?.definition.skills) &&
+        preparedBot.definition.skills.length === 0,
+    });
+  }
   if (preparedBot?.cloudRevision !== undefined) {
     Logger.info(`CatsCo bot ${preparedBot.botId} 已准备云端模型配置 revision=${preparedBot.cloudRevision}。`);
   } else if (preparedBot?.initializedDefault) {
@@ -140,6 +159,8 @@ export async function catscompanyCommand(): Promise<void> {
 
   try {
     await bot.start();
+    await bot.waitUntilReady();
+    process.stdout.write('XIAOBA_CONNECTOR_READY\n');
     await startRuntimeCommandSupport();
     const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
     const modelBotId = String(preparedBot?.botId || connectorConfig.botUid || '').trim();

@@ -231,6 +231,35 @@ describe('dashboard service manager', () => {
     assert.equal(service?.status, 'stopped');
     assert.equal(service?.lastError, undefined);
   });
+
+  test('waits for the Connector ready marker before resolving startup', async () => {
+    const manager = new ServiceManager(process.cwd());
+    const serviceRecord = (manager as any).services.get('catscompany');
+    serviceRecord.info.command = process.execPath;
+    serviceRecord.info.args = [
+      '-e',
+      "setTimeout(() => console.log('XIAOBA_CONNECTOR_READY'), 50); setTimeout(() => process.exit(0), 150);",
+    ];
+
+    const startedAt = Date.now();
+    await manager.startAndWaitReady('catscompany', 5000);
+    assert.ok(Date.now() - startedAt >= 35);
+    assert.equal(manager.getService('catscompany')?.status, 'running');
+    await new Promise<void>(resolve => manager.once('service-stopped', () => resolve()));
+  });
+
+  test('rejects when the Connector exits before its ready marker', async () => {
+    const manager = new ServiceManager(process.cwd());
+    const serviceRecord = (manager as any).services.get('catscompany');
+    serviceRecord.info.command = process.execPath;
+    serviceRecord.info.args = ['-e', 'process.exit(23);'];
+
+    await assert.rejects(
+      () => manager.startAndWaitReady('catscompany', 5000),
+      /exited before ready/,
+    );
+    assert.equal(manager.getService('catscompany')?.status, 'error');
+  });
 });
 
 function normalize(value: string): string {

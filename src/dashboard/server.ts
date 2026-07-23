@@ -6,6 +6,12 @@ import { createApiRouter } from './routes/api';
 import { ServiceManager } from './service-manager';
 import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 import { createDashboardAuth } from './auth';
+import { PathResolver } from '../utils/path-resolver';
+import { createCatsCoLocalConfigService } from '../catscompany/local-config';
+import { createBotSkillWorkspaceService } from '../bot-skills/workspace-service';
+import { recoverBotSkillActivation } from '../bot-skills/activation-recovery';
+import * as fs from 'node:fs';
+import { FileBotDefinitionRepository } from '../bot-definition/repository';
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -36,7 +42,40 @@ export async function startDashboard(
 
   app.use(express.json({ limit: '25mb' }));
 
-  bootstrapDefaultSkillHubSkillsOnce().catch(error => {
+  const runtimeRoot = PathResolver.getRuntimeDataRoot();
+  const initialBotId = String(
+    createCatsCoLocalConfigService({ runtimeRoot }).load().currentBot?.uid || '',
+  ).trim();
+  const workspaceMetadataExists = fs.existsSync(
+    path.join(runtimeRoot, 'data', 'bot-skills', 'workspace-state.json'),
+  ) || fs.existsSync(
+    path.join(runtimeRoot, 'data', 'bot-skills', 'binding-rollback.json'),
+  );
+  if (initialBotId || workspaceMetadataExists) {
+    const workspaceService = createBotSkillWorkspaceService({ runtimeRoot });
+    recoverBotSkillActivation(runtimeRoot, workspaceService);
+    const recoveredBotId = String(
+      createCatsCoLocalConfigService({ runtimeRoot }).load().currentBot?.uid || '',
+    ).trim();
+    if (!recoveredBotId) {
+      throw new Error('Bot binding disappeared during Skill workspace recovery.');
+    }
+    const hasLocalWorkspace = Boolean(
+      workspaceService.readState() || fs.existsSync(workspaceService.activePath),
+    );
+    if (hasLocalWorkspace) {
+      workspaceService.ensureActive(recoveredBotId);
+    } else {
+      const definitions = new FileBotDefinitionRepository({ runtimeRoot });
+      const definition = definitions.readCache(recoveredBotId) ??
+        definitions.readCanonical(recoveredBotId);
+      workspaceService.ensureActive(recoveredBotId, {
+        allowCreate: Array.isArray(definition?.skills) && definition.skills.length === 0,
+      });
+    }
+  }
+
+  await bootstrapDefaultSkillHubSkillsOnce().catch(error => {
     Logger.warning(`Default SkillHub bootstrap failed: ${error?.message || String(error)}`);
   });
 

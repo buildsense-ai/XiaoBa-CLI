@@ -64,6 +64,7 @@ export interface DashboardReadinessOptions {
   env?: NodeJS.ProcessEnv;
   config?: ChatConfig;
   catsCoOverrides?: Record<string, unknown>;
+  botId?: string;
   now?: Date;
 }
 
@@ -80,7 +81,7 @@ export async function getDashboardReadiness(
   const runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
   const config = options.config ?? {};
   const env = getEffectiveCatsCoRuntimeEnv(runtimeRoot, getEffectiveDashboardEnv(runtimeRoot, options.env), config, options.catsCoOverrides);
-  const modelInputs = resolveReadinessModelInputs(runtimeRoot, env, config);
+  const modelInputs = resolveReadinessModelInputs(runtimeRoot, env, config, options.botId);
   const services = serviceManager.getAll().map(service => getServicePreflight(
     serviceManager,
     service.name,
@@ -115,7 +116,7 @@ export function getServicePreflight(
   const runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
   const config = options.config ?? {};
   const env = getEffectiveCatsCoRuntimeEnv(runtimeRoot, getEffectiveDashboardEnv(runtimeRoot, options.env), config, options.catsCoOverrides);
-  const modelInputs = resolveReadinessModelInputs(runtimeRoot, env, config);
+  const modelInputs = resolveReadinessModelInputs(runtimeRoot, env, config, options.botId);
   const service = serviceManager.getService(name);
   if (!service) {
     throw new Error(`Service "${name}" not found`);
@@ -151,9 +152,14 @@ function resolveReadinessModelInputs(
   runtimeRoot: string,
   env: NodeJS.ProcessEnv,
   config: ChatConfig,
+  botId?: string,
 ): { env: NodeJS.ProcessEnv; config: ChatConfig } {
-  const active = resolveActiveBotLLMConfig({ runtimeRoot, env });
-  if (!active) return { env, config };
+  const active = resolveActiveBotLLMConfig({ runtimeRoot, env, botId });
+  if (!active) {
+    // An explicit target Bot must never inherit the currently bound Bot's
+    // legacy model credentials during switch preflight.
+    return botId ? { env: {}, config: {} } : { env, config };
+  }
 
   // A bound bot is Definition-owned. Hide stale legacy model fields from model
   // readiness while keeping CatsCo account and connector settings available.

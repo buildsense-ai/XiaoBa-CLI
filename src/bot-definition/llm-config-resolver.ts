@@ -22,6 +22,7 @@ export interface ResolvedBotLLMConfig {
 export interface ResolveBotLLMConfigOptions {
   runtimeRoot?: string;
   env?: NodeJS.ProcessEnv;
+  botId?: string;
 }
 
 export function modelRuntimeToConfig(runtime: {
@@ -77,7 +78,7 @@ export function resolveActiveBotLLMConfig(
   const runtimeRoot = path.resolve(options.runtimeRoot ?? PathResolver.getRuntimeDataRoot());
   const env = options.env ?? process.env;
   const localConfig = createCatsCoLocalConfigService({ runtimeRoot, env }).load();
-  const botId = String(localConfig.currentBot?.uid || '').trim();
+  const botId = String(options.botId || localConfig.currentBot?.uid || '').trim();
   if (!botId) return undefined;
 
   const definitions = new FileBotDefinitionRepository({ runtimeRoot });

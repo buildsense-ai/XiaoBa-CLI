@@ -31,6 +31,7 @@ interface ManagedService {
 
 const MAX_LOG_LINES = 500;
 const MAX_LAST_ERROR_LENGTH = 500;
+const CONNECTOR_READY_MARKER = 'XIAOBA_CONNECTOR_READY';
 
 function stripAnsi(value: string): string {
   // eslint-disable-next-line no-control-regex
@@ -307,6 +308,9 @@ export class ServiceManager extends EventEmitter {
     const appendLog = (data: Buffer) => {
       const lines = data.toString().split('\n').filter(l => l.trim());
       svc.logs.push(...lines);
+      if (name === 'catscompany' && lines.some(line => line.includes(CONNECTOR_READY_MARKER))) {
+        this.emit('service-ready', name);
+      }
       if (svc.logs.length > MAX_LOG_LINES) {
         svc.logs = svc.logs.slice(-MAX_LOG_LINES);
       }
@@ -387,6 +391,92 @@ export class ServiceManager extends EventEmitter {
       forceKillTimer.unref?.();
     }
 
+    return this.getService(name)!;
+  }
+
+  async stopAndWait(name: string, timeoutMs: number = 10_000): Promise<ServiceInfo> {
+    const service = this.getService(name);
+    if (!service) throw new Error(`Service "${name}" not found`);
+    if (service.status !== 'running') return service;
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.off('service-stopped', onStopped);
+        this.off('service-error', onError);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onStopped = (stoppedName: string) => {
+        if (stoppedName === name) finish();
+      };
+      const onError = (failedName: string, error: unknown) => {
+        if (failedName === name) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      };
+      const timer = setTimeout(() => {
+        finish(new Error(`Timed out waiting for service "${name}" to stop.`));
+      }, timeoutMs);
+      timer.unref?.();
+      this.on('service-stopped', onStopped);
+      this.on('service-error', onError);
+      try {
+        this.stop(name);
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+
+    return this.getService(name)!;
+  }
+
+  async startAndWaitReady(name: string, timeoutMs: number = 35_000): Promise<ServiceInfo> {
+    const existing = this.getService(name);
+    if (!existing) throw new Error(`Service "${name}" not found`);
+    if (existing.status === 'running') return existing;
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.off('service-ready', onReady);
+        this.off('service-stopped', onStopped);
+        this.off('service-error', onError);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onReady = (readyName: string) => {
+        if (readyName === name) finish();
+      };
+      const onStopped = (stoppedName: string, code: number | null) => {
+        if (stoppedName === name) {
+          finish(new Error(`Service "${name}" exited before ready (code ${code ?? 'unknown'}).`));
+        }
+      };
+      const onError = (failedName: string, error: unknown) => {
+        if (failedName === name) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      };
+      const timer = setTimeout(() => {
+        finish(new Error(`Timed out waiting for service "${name}" to become ready.`));
+      }, timeoutMs);
+      timer.unref?.();
+      this.on('service-ready', onReady);
+      this.on('service-stopped', onStopped);
+      this.on('service-error', onError);
+      try {
+        this.start(name);
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
     return this.getService(name)!;
   }
 

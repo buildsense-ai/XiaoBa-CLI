@@ -12,6 +12,7 @@ import { FileBotCatalogModelRuntimeRepository, FileBotDefinitionRepository } fro
 import { createBotDefinitionSyncService } from '../src/bot-definition/service';
 import { resolveActiveBotLLMConfig } from '../src/bot-definition/llm-config-resolver';
 import { BOT_CATALOG_MODEL_RUNTIME_SCHEMA, BOT_DEFINITION_SCHEMA } from '../src/bot-definition/types';
+import { BotSkillWorkspaceService } from '../src/bot-skills/workspace-service';
 
 describe('dashboard CatsCo account status', () => {
   let testRoot: string;
@@ -68,6 +69,7 @@ describe('dashboard CatsCo account status', () => {
     originalCwd = process.cwd();
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dashboard-catsco-auth-'));
     process.chdir(testRoot);
+    fs.mkdirSync(path.join(testRoot, 'skills'));
 
     for (const key of envKeys) {
       originalEnv[key] = process.env[key];
@@ -1026,6 +1028,173 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.data?.preflight?.blockingChecks.includes('runtime.command'), true);
     assert.equal(localConfig.load().currentBot?.uid, '188');
     assert.equal(restartCalled, 0);
+  });
+
+  test('POST /cats/switch-bot parks offline edits and activates only the target Bot workspace', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'running',
+    };
+    let stopCalled = 0;
+    let readyStartCalled = 0;
+    let recoveryStartCalled = 0;
+    let failBeforeReady = true;
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'catscompany' ? service : undefined),
+      stopAndWait: async () => {
+        stopCalled += 1;
+        service.status = 'stopped';
+        return service;
+      },
+      start: () => {
+        recoveryStartCalled += 1;
+        service.status = 'running';
+        return service;
+      },
+      startAndWaitReady: async () => {
+        readyStartCalled += 1;
+        if (failBeforeReady) {
+          service.status = 'error';
+          throw new Error('connector exited before ready');
+        }
+        service.status = 'running';
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(dashboardApp);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 88, username: 'fresh', display_name: 'Fresh User' });
+      }
+      if (req.path === '/api/bots' && req.method === 'GET') {
+        return res.json({
+          bots: [{ uid: 199, username: 'target-agent', display_name: 'Target Agent', api_key: 'target-key' }],
+        });
+      }
+      if (req.path === '/api/friends/request' || req.path === '/api/friends/accept') {
+        return res.json({ ok: true });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+
+    const localConfig = createCatsCoLocalConfigService({ runtimeRoot: testRoot });
+    localConfig.save({
+      version: 1,
+      endpoints: { httpBaseUrl: catsBaseUrl, serverUrl: 'wss://app.catsco.cc/v0/channels' },
+      account: { token: 'user-token', uid: '88', username: 'fresh', displayName: 'Fresh User' },
+      currentBot: {
+        uid: '188',
+        name: 'Active Agent',
+        apiKey: 'active-key',
+        boundByUserUid: '88',
+        bindingSource: 'test',
+      },
+      device: { deviceId: 'device-1', bodyId: 'body-1', installationId: 'install-1' },
+    });
+    const activeSkill = path.join(testRoot, 'skills', 'same-name');
+    fs.mkdirSync(activeSkill, { recursive: true });
+    fs.writeFileSync(path.join(activeSkill, 'SKILL.md'), 'offline edit from A');
+    const workspace = new BotSkillWorkspaceService({ runtimeRoot: testRoot, env: {} });
+    workspace.ensureActive('188');
+
+    const definitions = new FileBotDefinitionRepository({ runtimeRoot: testRoot });
+    definitions.writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '188',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+      skills: [],
+    });
+    definitions.writeCache({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '188',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+      skills: [],
+    });
+    definitions.writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '199',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+      skills: [],
+    });
+    definitions.writeCache({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '199',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+      skills: [],
+    });
+    const runtimes = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot });
+    runtimes.write({
+      schema: BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+      botId: '188',
+      modelId: 'minimax-m3',
+      provider: 'anthropic',
+      apiBase: 'https://relay.example.test/anthropic',
+      apiKey: 'sk-active-runtime',
+      model: 'MiniMax-M3',
+      contextWindowTokens: 200000,
+      reasoningEffort: 'high',
+    });
+    const targetRuntime = {
+      schema: BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+      botId: '199',
+      modelId: 'minimax-m3',
+      provider: 'anthropic',
+      apiBase: 'https://relay.example.test/anthropic',
+      apiKey: 'sk-target-runtime',
+      model: 'MiniMax-M3',
+      contextWindowTokens: 200000,
+      reasoningEffort: 'high',
+    } as const;
+
+    const switchRequest = () => fetch(`${dashboardBaseUrl}/api/cats/switch-bot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+        botUid: '199',
+      }),
+    });
+    runtimes.write(targetRuntime);
+    const failedResponse = await switchRequest();
+    const failedText = await failedResponse.text();
+
+    assert.equal(failedResponse.status, 500, failedText);
+    assert.equal(localConfig.load().currentBot?.uid, '188');
+    assert.equal(workspace.readState()?.workspaceOwnerBotId, '188');
+    assert.equal(
+      fs.readFileSync(path.join(testRoot, 'skills', 'same-name', 'SKILL.md'), 'utf8'),
+      'offline edit from A',
+    );
+    assert.equal(recoveryStartCalled, 1);
+
+    failBeforeReady = false;
+    const response = await switchRequest();
+    const text = await response.text();
+
+    assert.equal(response.status, 200, text);
+    assert.equal(localConfig.load().currentBot?.uid, '199');
+    assert.equal(workspace.readState()?.workspaceOwnerBotId, '199');
+    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'same-name')), false);
+    assert.equal(
+      fs.readFileSync(path.join(workspace.getParkedPath('188'), 'same-name', 'SKILL.md'), 'utf8'),
+      'offline edit from A',
+    );
+    assert.equal(stopCalled, 2);
+    assert.equal(readyStartCalled, 2);
   });
 
   test('PUT /model/reasoning-effort accepts and normalizes a legacy catalog runtime alias', async () => {
