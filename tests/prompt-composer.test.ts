@@ -145,6 +145,32 @@ describe('PromptComposer', () => {
     assert.doesNotMatch(prompt.replace(/\\/g, '/'), /\/tmp\/xiaoba-runtime-profile/);
   });
 
+  test('profile prompt files are re-read on each composition', () => {
+    writePrompt('system-prompt.md', 'Base prompt');
+    writePrompt('profiles/review.md', 'Review profile version one');
+    const profile = resolveDefaultRuntimeProfile({
+      surface: 'agent',
+      promptFiles: ['profiles/review.md'],
+      env: {},
+    });
+
+    const first = PromptComposer.composeSystemPromptFromProfile({
+      promptsDir: testRoot,
+      profile,
+      now: new Date('2026-05-01T12:00:00.000Z'),
+    });
+    assert.match(first, /Review profile version one/);
+
+    writePrompt('profiles/review.md', 'Review profile version two');
+    const second = PromptComposer.composeSystemPromptFromProfile({
+      promptsDir: testRoot,
+      profile,
+      now: new Date('2026-05-01T12:00:00.000Z'),
+    });
+    assert.doesNotMatch(second, /version one/);
+    assert.match(second, /Review profile version two/);
+  });
+
   function writePrompt(filename: string, content: string): void {
     const filePath = path.join(testRoot, ...filename.split('/'));
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

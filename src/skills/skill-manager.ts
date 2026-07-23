@@ -6,13 +6,21 @@ import { Logger } from '../utils/logger';
 /**
  * Skills 管理器
  */
+export interface SkillManagerOptions {
+  allowedSkillNames?: string[];
+}
+
 export class SkillManager {
   private skills: Map<string, Skill>;
   private skillsPath: string;
+  private allowedSkillNames?: Set<string>;
 
-  constructor() {
+  constructor(options: SkillManagerOptions = {}) {
     this.skills = new Map();
     this.skillsPath = PathResolver.getSkillsPath();
+    this.allowedSkillNames = options.allowedSkillNames
+      ? new Set(options.allowedSkillNames)
+      : undefined;
   }
 
   /**
@@ -37,7 +45,9 @@ export class SkillManager {
       for (const filePath of skillFiles) {
         try {
           const skill = SkillParser.parse(filePath);
-          this.skills.set(skill.metadata.name, skill);
+          if (!this.allowedSkillNames || this.allowedSkillNames.has(skill.metadata.name)) {
+            this.skills.set(skill.metadata.name, skill);
+          }
         } catch (error: any) {
           Logger.warning(`Failed to load skill from ${filePath}: ${error.message}`);
         }

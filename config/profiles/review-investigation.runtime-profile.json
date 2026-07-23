@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "profile": {
+    "id": "review-investigation",
+    "displayName": "Review Investigation Agent",
+    "surface": "agent",
+    "prompt": {
+      "files": [
+        "profiles/review-investigation.md"
+      ]
+    },
+    "tools": {
+      "enabled": [
+        "read_file",
+        "glob",
+        "grep",
+        "execute_shell",
+        "send_file",
+        "spawn_subagent",
+        "check_subagent",
+        "wait_subagents",
+        "stop_subagent",
+        "resume_subagent",
+        "update_plan",
+        "record_decision",
+        "skill"
+      ]
+    },
+    "skills": {
+      "enabled": true,
+      "allowed": [
+        "review-evidence-workspace",
+        "read-pdf",
+        "web-search"
+      ]
+    },
+    "logging": {
+      "sessionEvents": true,
+      "uploadEnabled": false
+    }
+  }
+}

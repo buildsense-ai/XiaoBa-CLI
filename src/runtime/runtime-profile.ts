@@ -8,6 +8,8 @@ export interface RuntimePromptProfile {
   source: 'prompt-manager';
   displayName?: string;
   platform?: string;
+  /** Prompt files appended for this profile and re-read whenever its system prompt is composed. */
+  files?: string[];
 }
 
 export interface RuntimeToolProfile {
@@ -16,6 +18,8 @@ export interface RuntimeToolProfile {
 
 export interface RuntimeSkillProfile {
   enabled: boolean;
+  /** Optional allowlist. Omit to expose every locally installed skill. */
+  allowed?: string[];
 }
 
 export interface RuntimeLoggingProfile {
@@ -55,8 +59,10 @@ export interface ResolveRuntimeProfileOptions {
   surface?: RuntimeSurface;
   workingDirectory?: string;
   model?: RuntimeModelProfile;
+  promptFiles?: string[];
   tools?: string[];
   skillsEnabled?: boolean;
+  allowedSkills?: string[];
   logging?: Partial<RuntimeLoggingProfile>;
   env?: NodeJS.ProcessEnv;
 }
@@ -80,12 +86,14 @@ export function resolveDefaultRuntimeProfile(
       source: 'prompt-manager',
       displayName: envDisplayName || undefined,
       platform,
+      ...(options.promptFiles ? { files: [...options.promptFiles] } : {}),
     },
     tools: {
       enabled: [...(options.tools ?? DEFAULT_RUNTIME_TOOL_NAMES)],
     },
     skills: {
       enabled: options.skillsEnabled ?? true,
+      ...(options.allowedSkills ? { allowed: [...options.allowedSkills] } : {}),
     },
     logging: {
       sessionEvents: options.logging?.sessionEvents ?? true,

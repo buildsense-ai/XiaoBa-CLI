@@ -85,7 +85,9 @@ export class RuntimeFactory {
       toolManager: new ToolManager(profile.workingDirectory, {}, {
         enabledToolNames: profile.tools.enabled,
       }),
-      skillManager: new SkillManager(),
+      skillManager: new SkillManager({
+        allowedSkillNames: profile.skills.allowed,
+      }),
     };
   }
 
@@ -127,9 +129,15 @@ export class RuntimeFactory {
       surface: profile.surface,
       workingDirectory: profile.workingDirectory,
       model: { ...profile.model },
-      prompt: { ...profile.prompt },
+      prompt: {
+        ...profile.prompt,
+        ...(profile.prompt.files ? { files: [...profile.prompt.files] } : {}),
+      },
       tools: { enabled: [...profile.tools.enabled] },
-      skills: { ...profile.skills },
+      skills: {
+        ...profile.skills,
+        ...(profile.skills.allowed ? { allowed: [...profile.skills.allowed] } : {}),
+      },
       logging: { ...profile.logging },
     };
   }

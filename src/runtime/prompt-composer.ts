@@ -36,6 +36,7 @@ export class PromptComposer {
       promptsDir: options.promptsDir,
       displayName: (options.profile.prompt.displayName || '').trim(),
       platform: (options.profile.prompt.platform || '').trim(),
+      profileFiles: options.profile.prompt.files,
       workspacePath: options.profile.workingDirectory,
       now: options.now,
     });
@@ -45,6 +46,7 @@ export class PromptComposer {
     promptsDir: string;
     displayName: string;
     platform: string;
+    profileFiles?: string[];
     workspacePath?: string;
     now?: Date;
   }): string {
@@ -58,11 +60,15 @@ export class PromptComposer {
       this.getBaseSystemPrompt(options.promptsDir),
       templateValues,
     );
+    const profilePrompts = (options.profileFiles ?? []).map(relativePath => renderPromptTemplate(
+      readRequiredPromptFile(options.promptsDir, relativePath),
+      templateValues,
+    ));
     const runtimeInfo = this.getRuntimeContextPrompt(options.promptsDir, {
       ...templateValues,
     });
 
-    return [basePrompt, runtimeInfo].filter(Boolean).join('\n\n');
+    return [basePrompt, ...profilePrompts, runtimeInfo].filter(Boolean).join('\n\n');
   }
 
   static getBaseSystemPrompt(promptsDir: string): string {

@@ -24,6 +24,7 @@ export interface RuntimeProfileFileModelConfig extends Pick<RuntimeModelProfile,
 export interface RuntimeProfileFilePromptConfig {
   displayName?: string;
   platform?: string;
+  files?: string[];
 }
 
 export interface RuntimeProfileFileToolConfig {
@@ -32,6 +33,7 @@ export interface RuntimeProfileFileToolConfig {
 
 export interface RuntimeProfileFileSkillConfig {
   enabled?: boolean;
+  allowed?: string[];
 }
 
 export interface RuntimeProfileFileConfig {
@@ -203,12 +205,18 @@ export function applyRuntimeProfileFileConfig(
     if (isNonEmptyString(config.prompt.platform)) {
       profile.prompt.platform = config.prompt.platform.trim();
     }
+    if (config.prompt.files) {
+      profile.prompt.files = [...config.prompt.files];
+    }
   }
   if (config.tools?.enabled) {
     profile.tools.enabled = [...config.tools.enabled];
   }
   if (typeof config.skills?.enabled === 'boolean') {
     profile.skills.enabled = config.skills.enabled;
+  }
+  if (config.skills?.allowed) {
+    profile.skills.allowed = [...config.skills.allowed];
   }
   if (config.logging) {
     profile.logging = {
@@ -304,6 +312,30 @@ function copyString(
   target[key] = source[key];
 }
 
+function copyStringArray(
+  source: Record<string, unknown>,
+  target: Record<string, unknown>,
+  key: string,
+  issuePath: string,
+  issues: RuntimeProfileConfigIssue[],
+): void {
+  if (source[key] === undefined) return;
+  if (!Array.isArray(source[key])) {
+    issues.push({ path: issuePath, message: 'Expected string array' });
+    return;
+  }
+
+  const values: string[] = [];
+  (source[key] as unknown[]).forEach((value, index) => {
+    if (typeof value !== 'string') {
+      issues.push({ path: `${issuePath}[${index}]`, message: 'Expected string' });
+      return;
+    }
+    values.push(value);
+  });
+  target[key] = values;
+}
+
 function copySurface(
   source: Record<string, unknown>,
   target: RuntimeProfileFileConfig,
@@ -361,6 +393,7 @@ function copyPrompt(
   const prompt: RuntimeProfileFilePromptConfig = {};
   copyString(source.prompt, prompt as Record<string, unknown>, 'displayName', 'profile.prompt.displayName', issues);
   copyString(source.prompt, prompt as Record<string, unknown>, 'platform', 'profile.prompt.platform', issues);
+  copyStringArray(source.prompt, prompt as Record<string, unknown>, 'files', 'profile.prompt.files', issues);
   target.prompt = prompt;
 }
 
@@ -408,7 +441,11 @@ function copySkills(
     issues.push({ path: 'profile.skills.enabled', message: 'Expected boolean' });
     return;
   }
-  target.skills = { enabled: source.skills.enabled as boolean | undefined };
+  const skills: RuntimeProfileFileSkillConfig = {
+    enabled: source.skills.enabled as boolean | undefined,
+  };
+  copyStringArray(source.skills, skills as Record<string, unknown>, 'allowed', 'profile.skills.allowed', issues);
+  target.skills = skills;
 }
 
 function copyLogging(
