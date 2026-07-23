@@ -161,6 +161,33 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     assert.equal(scope.agentBodyId, undefined);
   });
 
+  test('client rejects malformed member counts instead of coercing them', async () => {
+    for (const memberCount of ['2', 1.5, 0, Number.MAX_SAFE_INTEGER + 1]) {
+      const client = new CatsClient({
+        serverUrl: 'ws://127.0.0.1:1',
+        apiKey: 'cc-test',
+        bodyId: 'body-test',
+      });
+
+      const messagePromise = new Promise<any>(resolve => {
+        client.once('message', resolve);
+      });
+
+      (client as any).handleMessage({
+        data: {
+          topic: 'grp_80',
+          from: 'usr7',
+          seq: 50,
+          content: 'hello',
+          member_count: memberCount,
+        },
+      });
+
+      const ctx = await messagePromise;
+      assert.equal(ctx.memberCount, undefined, `member_count=${String(memberCount)}`);
+    }
+  });
+
   test('client forwards inbound metadata into MessageContext', async () => {
     const client = new CatsClient({
       serverUrl: 'ws://127.0.0.1:1',

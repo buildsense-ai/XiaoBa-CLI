@@ -379,8 +379,10 @@ export class CatsClient extends EventEmitter {
         mentions: Array.isArray(msg.data.mentions)
           ? msg.data.mentions.filter((value: unknown): value is string => typeof value === 'string')
           : undefined,
-        memberCount: Number.isFinite(Number(msg.data.member_count))
-          ? Number(msg.data.member_count)
+        memberCount: typeof msg.data.member_count === 'number'
+          && Number.isSafeInteger(msg.data.member_count)
+          && msg.data.member_count > 0
+          ? msg.data.member_count
           : undefined,
       };
       this.emit('message', ctx);

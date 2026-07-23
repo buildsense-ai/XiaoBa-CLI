@@ -361,8 +361,11 @@ export function shouldActivateCatsCompanyMessage(
       || metadata.channel_native_group_triggered === 'true';
   }
 
-  const memberCount = Number(message.memberCount);
-  if (Number.isFinite(memberCount) && memberCount > 0 && memberCount <= 2) return true;
+  const memberCount = message.memberCount;
+  if (typeof memberCount === 'number'
+    && Number.isSafeInteger(memberCount)
+    && memberCount > 0
+    && memberCount <= 2) return true;
 
   const targetUid = normalizeCatsUid(botUid);
   if (!targetUid) return false;

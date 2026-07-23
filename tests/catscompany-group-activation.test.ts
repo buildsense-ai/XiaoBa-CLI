@@ -14,9 +14,17 @@ describe('CatsCompany group activation gate', () => {
     assert.equal(shouldActivateCatsCompanyMessage({ isGroup: true, memberCount: 4, mentions: ['usr43'] }, '43'), true);
   });
 
-  test('fails closed when group size is missing unless the current AI is targeted', () => {
+  test('fails closed when group size is missing or malformed unless the current AI is targeted', () => {
     assert.equal(shouldActivateCatsCompanyMessage({ isGroup: true }, 'usr43'), false);
+    assert.equal(shouldActivateCatsCompanyMessage({ isGroup: true, memberCount: 1.5 }, 'usr43'), false);
+    assert.equal(shouldActivateCatsCompanyMessage({ isGroup: true, memberCount: '2' } as any, 'usr43'), false);
+    assert.equal(shouldActivateCatsCompanyMessage({ isGroup: true, memberCount: Number.MAX_SAFE_INTEGER + 1 }, 'usr43'), false);
     assert.equal(shouldActivateCatsCompanyMessage({ isGroup: true, mentions: ['usr43'] }, 'usr43'), true);
+    assert.equal(shouldActivateCatsCompanyMessage({
+      isGroup: true,
+      memberCount: 1.5,
+      mentions: ['usr43'],
+    }, 'usr43'), true);
   });
 
   test('trusts only the structured channel trigger flag for externally managed groups', () => {
