@@ -1191,8 +1191,6 @@
       color: var(--text2);
       font-size: 11px;
       font-weight: 700;
-      line-height: 1.4;
-      overflow-wrap: anywhere;
     }
 
     .relay-model-controls {
@@ -6860,12 +6858,11 @@
     function renderBranchCatalogCard(model,active){
       const context=formatModelContextLabel(model.context_window_tokens,model.context_label);
       const sdk=model.sdk_label||model.protocol||model.provider||'';
-      const metadata=relayModelMetadataLabel(model);
       const encodedId=encodeURIComponent(String(model.id||''));
       return '<button class="branch-model-card '+(active?'active':'')+'" type="button" data-model-id="'+escapeHtml(encodedId)+'" onclick="applyBranchCatalogModel(decodeURIComponent(this.dataset.modelId))" '+(branchMutationInFlight?'disabled':'')+'>'+
         (active?'<span class="branch-selected-dot"></span>':'')+'<div class="branch-model-name">'+escapeHtml(model.label||model.model)+'</div>'+
         '<div class="branch-model-id">'+escapeHtml(model.model||model.id)+'</div>'+
-        '<div class="branch-model-meta">'+escapeHtml(['上下文 '+context,metadata,sdk].filter(Boolean).join(' · '))+'</div></button>';
+        '<div class="branch-model-meta">'+escapeHtml([context,sdk].filter(Boolean).join(' · '))+'</div></button>';
     }
 
     function renderBranchCustomPanel(custom,active){
@@ -8643,9 +8640,9 @@
     let catsAutoStartAttemptAt=0;
     const CUSTOM_MODEL_AUTO_SAVE_DELAY=900;
     const RELAY_FALLBACK_MODELS=[
-      {id:'minimax-m2.7',label:'MiniMax M2.7',model:'MiniMax-M2.7',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'standard',context_window_tokens:204800,context_label:'204.8K',max_output_tokens:131072,input_modalities:['text'],output_modalities:['text']},
-      {id:'minimax-m3',label:'MiniMax M3',model:'MiniMax-M3',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'multimodal',context_window_tokens:1000000,context_label:'1M',max_output_tokens:128000,input_modalities:['text','image','video'],output_modalities:['text'],default:true},
-      {id:'deepseek-v4-flash',label:'DeepSeek V4 Flash',model:'deepseek-v4-flash',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'flash-low',context_window_tokens:1000000,context_label:'1M',max_output_tokens:384000,input_modalities:['text'],output_modalities:['text']},
+      {id:'minimax-m2.7',label:'MiniMax M2.7',model:'MiniMax-M2.7',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'standard',context_window_tokens:204800,context_label:'204.8K'},
+      {id:'minimax-m3',label:'MiniMax M3',model:'MiniMax-M3',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'multimodal',context_window_tokens:1000000,context_label:'1M',default:true},
+      {id:'deepseek-v4-flash',label:'DeepSeek V4 Flash',model:'deepseek-v4-flash',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'flash-low',context_window_tokens:1000000,context_label:'1M'},
     ];
     const CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS=[
       {value:'128000',label:'128K',hint:'安全默认'},
@@ -8807,25 +8804,13 @@
       if(!Number.isFinite(n)||n<=0)return '安全默认';
       if(n>=1000000){
         const v=n/1000000;
-        return (Number.isInteger(v)?String(v):String(Number(v.toFixed(2))))+'M';
+        return (Number.isInteger(v)?String(v):v.toFixed(1))+'M';
       }
       if(n>=1000){
         const v=n/1000;
         return (Number.isInteger(v)?String(v):v.toFixed(1))+'K';
       }
       return String(n);
-    }
-
-    function relayModelMetadataLabel(model){
-      const labels={text:'文本',image:'图片',audio:'音频',video:'视频',pdf:'PDF'};
-      const inputs=Array.isArray(model.input_modalities)
-        ? model.input_modalities.map(value=>labels[String(value||'').toLowerCase()]).filter(Boolean)
-        : [];
-      const parts=[];
-      if(model.max_input_tokens)parts.push('输入上限 '+formatModelContextLabel(model.max_input_tokens));
-      if(model.max_output_tokens)parts.push('输出上限 '+formatModelContextLabel(model.max_output_tokens));
-      if(inputs.length)parts.push('输入 '+inputs.join('/'));
-      return parts.join(' · ');
     }
 
     function customModelContextWindowValue(){
@@ -9004,7 +8989,6 @@
       const active=id===activeId;
       const quota=model.quota_class==='flash-low'?'低额度 Flash':model.quota_class==='multimodal'?'多模态':'标准额度';
       const contextLabel=formatModelContextLabel(model.context_window_tokens, model.context_label);
-      const modelMetadata=relayModelMetadataLabel(model);
       const sdkLabel=model.sdk_label || (String(model.provider||model.protocol||'').toLowerCase().includes('openai')?'OpenAI SDK':'Anthropic SDK');
       const canShowReasoningMeta=typeof modelSupportsReasoningSwitch==='function'
         && typeof deepseekReasoningEffortLabel==='function'
@@ -9016,7 +9000,7 @@
         +'<button class="relay-model-main" type="button" data-relay-model-id="'+escapeHtml(id)+'" data-relay-model-context="'+escapeHtml(context)+'" '+(disabled?'disabled':'')+' onclick="enableCatsRelayModelFromButton(this)">'
         +'<span class="relay-model-label">'+escapeHtml(model.label||model.model||id)+'</span>'
         +'<span class="relay-model-name">'+escapeHtml(model.model||id)+'</span>'
-        +'<span class="relay-model-meta">'+escapeHtml([quota,'上下文 '+contextLabel,modelMetadata,sdkLabel].filter(Boolean).join(' · '))+escapeHtml(reasoningMeta)+'</span>'
+        +'<span class="relay-model-meta">'+escapeHtml(quota)+' · 上下文 '+escapeHtml(contextLabel)+' · '+escapeHtml(sdkLabel)+escapeHtml(reasoningMeta)+'</span>'
         +'</button>'
         +reasoningControl
         +'</div>';

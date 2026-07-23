@@ -5,7 +5,6 @@ import {
   calculatePromptBudgetTokens,
   calculateSummaryBudgetTokens,
   resolveModelContextWindow,
-  formatContextWindowTokens,
 } from '../src/utils/model-context-window';
 
 test('relay MiniMax M3 uses a 1M official window with output and estimator reserve', () => {
@@ -35,20 +34,6 @@ test('relay catalog models resolve to their official context windows', () => {
     model: 'deepseek-v4-flash',
     provider: 'anthropic',
   }, { CATSCO_MODEL_SOURCE: 'relay' } as NodeJS.ProcessEnv).contextWindowTokens, 1_000_000);
-});
-
-test('relay GPT 5.6 respects the models.dev input limit separately from context', () => {
-  const resolved = resolveModelContextWindow({
-    apiUrl: 'https://relay.catsco.cc/v1',
-    model: 'gpt-5.6-terra',
-    provider: 'openai',
-  }, { CATSCO_MODEL_SOURCE: 'relay' } as NodeJS.ProcessEnv);
-
-  assert.equal(resolved.contextWindowTokens, 1_050_000);
-  assert.equal(resolved.maxInputTokens, 922_000);
-  assert.equal(resolved.promptBudgetTokens, 922_000);
-  assert.equal(resolved.safetyReserveTokens, 128_000);
-  assert.equal(formatContextWindowTokens(resolved.contextWindowTokens), '1.05M');
 });
 
 test('custom models keep the safe default even if the model name resembles a known relay model', () => {

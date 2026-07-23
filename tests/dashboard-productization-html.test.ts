@@ -75,8 +75,7 @@ test('Agent Hub keeps connector controls and third-party model config without du
   assert.match(dashboardHtml, /'model\.openaiApiMode':document\.getElementById\('model-openai-api-mode-setting'\)/);
   assert.match(dashboardHtml, /'model\.contextWindowTokens':document\.getElementById\('model-context-window-setting'\)\.value/);
   assert.match(dashboardHtml, /自定义模型可在 128K 到 1M 间选择上下文/);
-  assert.match(dashboardHtml, /function relayModelMetadataLabel\(model\)/);
-  assert.match(dashboardHtml, /\['上下文 '\+context,metadata,sdk\]/);
+  assert.match(dashboardHtml, /上下文 '\+escapeHtml\(contextLabel\)\+'/);
   assert.match(dashboardHtml, /首页的一键启动区域负责选择 CatsCo 中转模型和推理强度/);
   assert.doesNotMatch(dashboardHtml, /当前启动模型的推理强度/);
   assert.doesNotMatch(dashboardHtml, /id="startup-reasoning-effort-setting"/);
@@ -245,7 +244,7 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
 test('relay model cards render SDK labels from model payloads', () => {
   assert.match(dashboardHtml, /sdk_label:'Anthropic SDK'/);
   assert.match(dashboardHtml, /const sdkLabel=model\.sdk_label \|\|/);
-  assert.match(dashboardHtml, /\[quota,'上下文 '\+contextLabel,modelMetadata,sdkLabel\]/);
+  assert.match(dashboardHtml, /escapeHtml\(contextLabel\)\+' · '\+escapeHtml\(sdkLabel\)/);
   assert.doesNotMatch(dashboardHtml, /escapeHtml\(contextLabel\)\+' · Anthropic SDK'/);
   assert.doesNotMatch(dashboardHtml, /label:'GLM 5\.1'/);
   assert.match(dashboardHtml, /DeepSeek 官方参数/);
@@ -264,23 +263,19 @@ test('relay model cards render SDK labels from model payloads', () => {
   assert.doesNotMatch(dashboardHtml, /function isInternalRelayModel\(model\)/);
   assert.doesNotMatch(dashboardHtml, /text\.includes\('glm'\)/);
 
-  const metadataFunctionSource = dashboardHtml.match(
-    /function relayModelMetadataLabel\(model\)\{[\s\S]*?\n    \}/,
-  )?.[0];
   const functionSource = dashboardHtml.match(
     /function relayModelChoiceHtml\(model, activeId, catsConnected, context='settings'\)\{[\s\S]*?\n    \}/,
   )?.[0];
-  assert.ok(metadataFunctionSource);
   assert.ok(functionSource);
 
-  const relayModelChoiceHtml = vm.runInNewContext(`${metadataFunctionSource}; ${functionSource}; relayModelChoiceHtml`, {
+  const relayModelChoiceHtml = vm.runInNewContext(`${functionSource}; relayModelChoiceHtml`, {
     escapeHtml: (value: unknown) => String(value ?? '')
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;'),
-    formatModelContextLabel: (tokens: unknown, fallback: unknown) => fallback || ({ 100000: '100K', 56000: '56K' }[Number(tokens)] ?? `${tokens} tokens`),
+    formatModelContextLabel: (tokens: unknown, fallback: unknown) => fallback || `${tokens} tokens`,
     relayActionBusy: () => false,
     String,
   }) as (
@@ -300,9 +295,6 @@ test('relay model cards render SDK labels from model payloads', () => {
       quota_class: 'standard',
       context_window_tokens: 128000,
       context_label: '128K',
-      max_input_tokens: 100000,
-      max_output_tokens: 56000,
-      input_modalities: ['text', 'image', 'pdf'],
     },
     'custom-openai',
     true,
@@ -314,7 +306,7 @@ test('relay model cards render SDK labels from model payloads', () => {
   assert.match(html, /data-relay-model-context="chat"/);
   assert.match(html, /OpenAI &lt;Relay&gt;/);
   assert.match(html, /custom&amp;model/);
-  assert.match(html, /上下文 128K · 输入上限 100K · 输出上限 56K · 输入 文本\/图片\/PDF · OpenAI SDK/);
+  assert.match(html, /上下文 128K · OpenAI SDK/);
   assert.doesNotMatch(html, /Anthropic SDK/);
 });
 

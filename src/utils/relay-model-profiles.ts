@@ -1,6 +1,5 @@
 export type RelayModelFamily = 'minimax' | 'deepseek' | 'gpt';
 export type RelayModelProvider = 'anthropic' | 'openai';
-export type RelayModelModality = 'text' | 'image' | 'audio' | 'video' | 'pdf';
 
 export const RELAY_MODEL_BASE_URLS: Record<RelayModelProvider, string> = {
   anthropic: 'https://relay.catsco.cc/anthropic',
@@ -32,15 +31,11 @@ export interface RelayModelProfile {
   preferredProvider: RelayModelProvider;
   openaiApiMode?: 'chat_completions' | 'responses';
   contextWindowTokens: number;
-  maxInputTokens?: number;
-  maxOutputTokens: number;
-  inputModalities: RelayModelModality[];
-  outputModalities: RelayModelModality[];
   capabilities: RelayModelCapabilities;
 }
 
-// Model limits and modalities mirror the first-party provider entries in
-// https://models.dev/api.json. Relay responses may override them at runtime.
+// Vision capabilities mirror the first-party provider entries in models.dev.
+// Relay input modalities may override them at runtime.
 export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
   {
     id: 'minimax-m2.7',
@@ -50,9 +45,6 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     quotaClass: 'standard',
     preferredProvider: 'anthropic',
     contextWindowTokens: 204_800,
-    maxOutputTokens: 131_072,
-    inputModalities: ['text'],
-    outputModalities: ['text'],
     capabilities: {
       toolCalling: true,
       vision: false,
@@ -67,9 +59,6 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     quotaClass: 'multimodal',
     preferredProvider: 'anthropic',
     contextWindowTokens: 1_000_000,
-    maxOutputTokens: 128_000,
-    inputModalities: ['text', 'image', 'video'],
-    outputModalities: ['text'],
     capabilities: {
       toolCalling: true,
       vision: true,
@@ -84,9 +73,6 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     quotaClass: 'flash-low',
     preferredProvider: 'anthropic',
     contextWindowTokens: 1_000_000,
-    maxOutputTokens: 384_000,
-    inputModalities: ['text'],
-    outputModalities: ['text'],
     capabilities: {
       toolCalling: true,
       vision: false,
@@ -101,11 +87,7 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     quotaClass: 'gpt-5.6',
     preferredProvider: 'openai' as const,
     openaiApiMode: 'responses' as const,
-    contextWindowTokens: 1_050_000,
-    maxInputTokens: 922_000,
-    maxOutputTokens: 128_000,
-    inputModalities: ['text', 'image', 'pdf'] as RelayModelModality[],
-    outputModalities: ['text'] as RelayModelModality[],
+    contextWindowTokens: 1_000_000,
     capabilities: {
       toolCalling: true,
       vision: true,

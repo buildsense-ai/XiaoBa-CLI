@@ -41,7 +41,6 @@ import {
   relayModelProviderProtocolLabel,
   relayModelProviderSdkLabel,
   type RelayModelProfile,
-  type RelayModelModality,
   type RelayModelProvider,
 } from '../../utils/relay-model-profiles';
 import {
@@ -214,10 +213,6 @@ interface RelayModelConfig {
   default: boolean;
   quotaClass?: string;
   contextWindowTokens?: number;
-  maxInputTokens?: number;
-  maxOutputTokens?: number;
-  inputModalities?: RelayModelModality[];
-  outputModalities?: RelayModelModality[];
   capabilities?: {
     tool_calling?: boolean;
     vision?: boolean;
@@ -953,12 +948,11 @@ function canonicalRelayModelName(value: unknown): string {
   return model;
 }
 
-function normalizeRelayModalities(value: unknown): RelayModelModality[] | undefined {
+function normalizeRelayModalities(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const supported = new Set<RelayModelModality>(['text', 'image', 'audio', 'video', 'pdf']);
   const modalities = value
     .map(item => String(item || '').trim().toLowerCase())
-    .filter((item): item is RelayModelModality => supported.has(item as RelayModelModality));
+    .filter(Boolean);
   return modalities.length > 0 ? [...new Set(modalities)] : undefined;
 }
 
@@ -1009,23 +1003,8 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
   const baseUrl = relayEndpointForProtocol(config, provider);
   const contextWindowTokens = parsePositiveInteger(item?.context_window_tokens)
     ?? parsePositiveInteger(item?.contextWindowTokens)
-    ?? parsePositiveInteger(item?.limit?.context)
     ?? profile?.contextWindowTokens
     ?? resolveKnownModelContextWindowTokens(model);
-  const maxInputTokens = parsePositiveInteger(item?.max_input_tokens)
-    ?? parsePositiveInteger(item?.maxInputTokens)
-    ?? parsePositiveInteger(item?.limit?.input)
-    ?? profile?.maxInputTokens;
-  const maxOutputTokens = parsePositiveInteger(item?.max_output_tokens)
-    ?? parsePositiveInteger(item?.maxOutputTokens)
-    ?? parsePositiveInteger(item?.limit?.output)
-    ?? profile?.maxOutputTokens;
-  const inputModalities = normalizeRelayModalities(
-    item?.input_modalities ?? item?.capabilities?.input_modalities ?? item?.modalities?.input,
-  ) ?? profile?.inputModalities;
-  const outputModalities = normalizeRelayModalities(
-    item?.output_modalities ?? item?.capabilities?.output_modalities ?? item?.modalities?.output,
-  ) ?? profile?.outputModalities;
   return {
     id: String(item?.id || profile?.id || model || `relay-model-${index}`).trim(),
     label: String(item?.label || profile?.label || model).trim(),
@@ -1039,10 +1018,6 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
     default: item?.default === true,
     quotaClass: String(item?.quota_class || item?.quotaClass || profile?.quotaClass || '').trim() || undefined,
     contextWindowTokens,
-    maxInputTokens,
-    maxOutputTokens,
-    inputModalities,
-    outputModalities,
     capabilities: relayModelCapabilitiesPayload(item, profile),
   };
 }
@@ -1061,10 +1036,6 @@ function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
     default: index === 0,
     quotaClass: profile.quotaClass,
     contextWindowTokens: profile.contextWindowTokens,
-    maxInputTokens: profile.maxInputTokens,
-    maxOutputTokens: profile.maxOutputTokens,
-    inputModalities: profile.inputModalities,
-    outputModalities: profile.outputModalities,
     capabilities: {
       tool_calling: profile.capabilities.toolCalling,
       vision: profile.capabilities.vision,
@@ -1142,12 +1113,9 @@ function preferredRelayModelRequest(requested: unknown): unknown {
 }
 
 function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
-  const calculatedPromptBudget = model.contextWindowTokens
+  const promptBudget = model.contextWindowTokens
     ? calculatePromptBudgetTokens(model.contextWindowTokens, 32_768).promptBudgetTokens
     : undefined;
-  const promptBudget = calculatedPromptBudget && model.maxInputTokens
-    ? Math.min(calculatedPromptBudget, model.maxInputTokens)
-    : calculatedPromptBudget;
   return {
     id: model.id,
     label: model.label,
@@ -1161,10 +1129,6 @@ function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
     default: model.default,
     quota_class: model.quotaClass,
     context_window_tokens: model.contextWindowTokens,
-    max_input_tokens: model.maxInputTokens,
-    max_output_tokens: model.maxOutputTokens,
-    input_modalities: model.inputModalities,
-    output_modalities: model.outputModalities,
     prompt_budget_tokens: promptBudget,
     context_label: model.contextWindowTokens ? formatContextWindowTokens(model.contextWindowTokens) : undefined,
     capabilities: model.capabilities,

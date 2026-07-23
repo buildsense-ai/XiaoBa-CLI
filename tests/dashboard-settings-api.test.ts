@@ -1890,12 +1890,6 @@ describe('dashboard typed settings API', () => {
             default: true,
             modalities: {
               input: ['text', 'image', 'pdf'],
-              output: ['text'],
-            },
-            limit: {
-              context: 256000,
-              input: 200000,
-              output: 56000,
             },
             capabilities: {
               streaming: 0,
@@ -1922,12 +1916,6 @@ describe('dashboard typed settings API', () => {
         vision: true,
         streaming: false,
       });
-      assert.equal(data.selectedModel.context_window_tokens, 256000);
-      assert.equal(data.selectedModel.max_input_tokens, 200000);
-      assert.equal(data.selectedModel.max_output_tokens, 56000);
-      assert.equal(data.selectedModel.prompt_budget_tokens, 200000);
-      assert.deepStrictEqual(data.selectedModel.input_modalities, ['text', 'image', 'pdf']);
-      assert.deepStrictEqual(data.selectedModel.output_modalities, ['text']);
       assert.equal('tool_calling' in data.selectedModel.capabilities, false);
       assert.deepStrictEqual(data.models[0].capabilities, data.selectedModel.capabilities);
     } finally {
