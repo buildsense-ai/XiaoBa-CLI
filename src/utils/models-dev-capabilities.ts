@@ -1,6 +1,7 @@
 const MODELS_DEV_API_URL = 'https://models.dev/api.json';
 const REQUEST_TIMEOUT_MS = 3_000;
 const CACHE_TTL_MS = 6 * 60 * 60 * 1_000;
+const FAILURE_CACHE_TTL_MS = 60_000;
 
 export interface ModelsDevModelReference {
   model: string;
@@ -18,8 +19,13 @@ interface ModelsDevProvider {
 
 type ModelsDevCatalog = Record<string, ModelsDevProvider>;
 
-let cachedCatalog: { value: ModelsDevCatalog; expiresAt: number } | undefined;
-let catalogRequest: Promise<ModelsDevCatalog | undefined> | undefined;
+interface CatalogCacheState {
+  cached?: { value: ModelsDevCatalog; expiresAt: number };
+  failureExpiresAt?: number;
+  request?: Promise<ModelsDevCatalog | undefined>;
+}
+
+const catalogCaches = new WeakMap<typeof fetch, CatalogCacheState>();
 
 function normalized(value: unknown): string {
   return String(value || '').trim().toLowerCase();
@@ -53,18 +59,21 @@ export function resolveModelsDevVision(
   }
 
   const target = normalized(reference.model);
-  const matches: ModelsDevModel[] = [];
+  const exactMatches: ModelsDevModel[] = [];
+  const leafMatches: ModelsDevModel[] = [];
   for (const provider of Object.values(catalog)) {
     for (const [key, model] of Object.entries(provider?.models || {})) {
       const candidates = [normalized(key), normalized(model.id)];
-      if (candidates.some(candidate => candidate === target || candidate.split('/').pop() === target)) {
-        matches.push(model);
-      }
+      if (candidates.includes(target)) exactMatches.push(model);
+      else if (candidates.some(candidate => candidate.split('/').pop() === target)) leafMatches.push(model);
     }
   }
-  const resolved = matches.map(modelInputsImage).filter((value): value is boolean => value !== undefined);
+  const matches = exactMatches.length > 0 ? exactMatches : leafMatches;
+  const resolved = [...new Set(
+    matches.map(modelInputsImage).filter((value): value is boolean => value !== undefined),
+  )];
   if (resolved.length === 0) return undefined;
-  return resolved.some(Boolean);
+  return resolved.length === 1 ? resolved[0] : undefined;
 }
 
 async function requestCatalog(fetchImpl: typeof fetch): Promise<ModelsDevCatalog | undefined> {
@@ -86,16 +95,26 @@ async function requestCatalog(fetchImpl: typeof fetch): Promise<ModelsDevCatalog
 }
 
 async function loadCatalog(fetchImpl: typeof fetch): Promise<ModelsDevCatalog | undefined> {
-  if (fetchImpl !== fetch) return requestCatalog(fetchImpl);
   const now = Date.now();
-  if (cachedCatalog && cachedCatalog.expiresAt > now) return cachedCatalog.value;
-  if (!catalogRequest) {
-    catalogRequest = requestCatalog(fetchImpl).then(value => {
-      if (value) cachedCatalog = { value, expiresAt: Date.now() + CACHE_TTL_MS };
-      return value;
-    }).finally(() => { catalogRequest = undefined; });
+  let state = catalogCaches.get(fetchImpl);
+  if (!state) {
+    state = {};
+    catalogCaches.set(fetchImpl, state);
   }
-  return catalogRequest;
+  if (state.cached && state.cached.expiresAt > now) return state.cached.value;
+  if (state.failureExpiresAt && state.failureExpiresAt > now) return undefined;
+  if (!state.request) {
+    state.request = requestCatalog(fetchImpl).then(value => {
+      if (value) {
+        state!.cached = { value, expiresAt: Date.now() + CACHE_TTL_MS };
+        state!.failureExpiresAt = undefined;
+      } else {
+        state!.failureExpiresAt = Date.now() + FAILURE_CACHE_TTL_MS;
+      }
+      return value;
+    }).finally(() => { state!.request = undefined; });
+  }
+  return state.request;
 }
 
 export async function fetchModelsDevVision(

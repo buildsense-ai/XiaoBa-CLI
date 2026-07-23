@@ -29,7 +29,7 @@ test('models.dev vision lookup prefers the configured first-party provider', () 
   assert.equal(resolveModelsDevVision(catalog, { provider: 'hosted', model: 'MiniMax-M3' }), false);
 });
 
-test('models.dev vision lookup discovers an unknown relay model by exact id', () => {
+test('models.dev vision lookup discovers an unknown relay model by leaf id', () => {
   const catalog = {
     provider: {
       models: {
@@ -45,11 +45,39 @@ test('models.dev vision lookup discovers an unknown relay model by exact id', ()
   assert.equal(resolveModelsDevVision(catalog, { model: 'missing-model' }), undefined);
 });
 
-test('models.dev fetch failures return no capability instead of blocking model setup', async () => {
-  const vision = await fetchModelsDevVision(
+test('models.dev leaf lookup returns undefined when providers disagree', () => {
+  const catalog = {
+    first: {
+      models: {
+        'a/shared-model': { modalities: { input: ['text'] } },
+      },
+    },
+    second: {
+      models: {
+        'b/shared-model': { modalities: { input: ['text', 'image'] } },
+      },
+    },
+  };
+
+  assert.equal(resolveModelsDevVision(catalog, { model: 'shared-model' }), undefined);
+});
+
+test('models.dev fetch failures are negatively cached without blocking model setup', async () => {
+  let requests = 0;
+  const fetchImpl = (async () => {
+    requests += 1;
+    return new Response('', { status: 503 });
+  }) as typeof fetch;
+  const first = await fetchModelsDevVision(
     { provider: 'openai', model: 'gpt-5.6-terra' },
-    (async () => new Response('', { status: 503 })) as typeof fetch,
+    fetchImpl,
+  );
+  const second = await fetchModelsDevVision(
+    { provider: 'openai', model: 'gpt-5.6-terra' },
+    fetchImpl,
   );
 
-  assert.equal(vision, undefined);
+  assert.equal(first, undefined);
+  assert.equal(second, undefined);
+  assert.equal(requests, 1);
 });

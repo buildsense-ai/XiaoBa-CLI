@@ -106,6 +106,7 @@ const TRUSTED_CATSCO_WS_URL = new URL(DEFAULT_CATSCO_WS_URL);
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
 const PROMPT_EDITOR_SKILL_NAME = 'catsco-prompt-editor';
+const MODELS_DEV_DASHBOARD_WAIT_MS = 250;
 
 function runtimeDataRoot(): string {
   return PathResolver.getRuntimeDataRoot();
@@ -1092,7 +1093,16 @@ async function relayModelCatalogWithModelsDev(
       provider: profile?.modelsDevProvider,
     };
   });
-  const vision = await fetchModelsDevVisionBatch(references, fetchImpl);
+  const visionRequest = fetchModelsDevVisionBatch(references, fetchImpl);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const vision = await Promise.race([
+    visionRequest,
+    new Promise<Array<undefined>>(resolve => {
+      timeout = setTimeout(() => resolve(references.map(() => undefined)), MODELS_DEV_DASHBOARD_WAIT_MS);
+    }),
+  ]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
   return models.map((model, index) => {
     if (vision[index] === undefined || relayModelHasUpstreamVisionMetadata(relayModelRawEntry(config, model))) {
       return model;

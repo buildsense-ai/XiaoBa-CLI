@@ -48,6 +48,10 @@ export async function provisionCatsRelayCatalogRuntime(
   ensureRequestedModelIsAvailable(relayConfig, profile.id, profile.model);
 
   const apiKey = await ensurePlainRelayKey(fetchImpl, httpBaseUrl, token, options.auth);
+  const modelsDevVisionRequest = fetchModelsDevVision({
+    provider: profile.modelsDevProvider,
+    model: profile.modelsDevModel,
+  }, fetchImpl);
   const relayCapabilities = await fetchRelayModelCapabilities(
     fetchImpl,
     relayEndpointForProvider(relayConfig, 'openai'),
@@ -56,10 +60,7 @@ export async function provisionCatsRelayCatalogRuntime(
   );
   const modelsDevVision = typeof relayCapabilities?.vision === 'boolean'
     ? undefined
-    : await fetchModelsDevVision({
-      provider: profile.modelsDevProvider,
-      model: profile.modelsDevModel,
-    }, fetchImpl);
+    : await modelsDevVisionRequest;
   const modelsDevCapabilities = typeof modelsDevVision === 'boolean' ? { vision: modelsDevVision } : undefined;
   const capabilities = mergeCapabilities(profile.capabilities, modelsDevCapabilities, relayCapabilities);
   const capabilitiesSource = relayCapabilities
@@ -87,6 +88,10 @@ export async function refreshCatsRelayCatalogRuntimeCapabilities(
   fetchImpl: typeof fetch = fetch,
 ): Promise<BotCatalogModelRuntime> {
   const profile = findRelayModelProfile(runtime.modelId) ?? findRelayModelProfile(runtime.model);
+  const modelsDevVisionRequest = fetchModelsDevVision({
+    provider: profile?.modelsDevProvider,
+    model: profile?.modelsDevModel || runtime.model,
+  }, fetchImpl);
   const relayCapabilities = await fetchRelayModelCapabilities(
     fetchImpl,
     runtime.apiBase,
@@ -95,10 +100,7 @@ export async function refreshCatsRelayCatalogRuntimeCapabilities(
   );
   const modelsDevVision = typeof relayCapabilities?.vision === 'boolean'
     ? undefined
-    : await fetchModelsDevVision({
-      provider: profile?.modelsDevProvider,
-      model: profile?.modelsDevModel || runtime.model,
-    }, fetchImpl);
+    : await modelsDevVisionRequest;
   const modelsDevCapabilities = typeof modelsDevVision === 'boolean' ? { vision: modelsDevVision } : undefined;
   if (!relayCapabilities && !modelsDevCapabilities) {
     if (runtime.capabilitiesSource === 'relay-models' || runtime.capabilitiesSource === 'models-dev') return runtime;

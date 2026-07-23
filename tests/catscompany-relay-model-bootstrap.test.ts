@@ -67,6 +67,7 @@ describe('CatsCo default relay model bootstrap', () => {
       { path: '/api/relay/config', method: 'GET' },
       { path: '/api/relay/key', method: 'GET' },
       { path: '/api/relay/key', method: 'POST' },
+      { path: '/api.json', method: undefined },
       { path: '/v1/models', method: 'GET' },
     ]);
   });

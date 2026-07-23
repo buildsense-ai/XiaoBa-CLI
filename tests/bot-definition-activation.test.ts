@@ -99,6 +99,7 @@ describe('BotDefinition activation', () => {
       'GET /api/bot/model-config',
       'GET /api/relay/config',
       'GET /api/relay/key',
+      'GET /api.json',
       'GET /v1/models',
     ]);
   });
