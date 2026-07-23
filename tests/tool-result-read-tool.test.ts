@@ -523,4 +523,62 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.ok(content.includes('安装 Poppler(pdftoppm) 后重试'));
     assert.ok(!content.includes('paper-analysis'));
   });
+
+  test('非视觉主模型优先通过备用多模态 Provider 读取图片', async () => {
+    const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
+    const previousReaderUrl = process.env.CATSCOMPANY_READER_API_URL;
+    let requestCount = 0;
+    const server = http.createServer((req, res) => {
+      requestCount += 1;
+      assert.equal(req.url, '/v1/chat/completions');
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        assert.equal(body.model, 'fallback-vision');
+        assert.match(body.messages[0].content[1].image_url.url, /^data:image\/png;base64,/);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: 'fallback-analysis' } }] }));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const configPath = path.join(testRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      apiUrl: 'https://text-only.example/v1',
+      apiKey: 'primary-key',
+      model: 'deepseek-chat',
+      provider: 'openai',
+      modelCapabilities: { vision: false },
+      visionFallback: {
+        enabled: true,
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: 'fallback-key',
+        model: 'fallback-vision',
+      },
+    }));
+    process.env.XIAOBA_CONFIG_PATH = configPath;
+    process.env.CATSCOMPANY_READER_API_URL = 'http://127.0.0.1:1/reader-must-not-run';
+    const imagePath = path.join(testRoot, 'sample.png');
+    fs.writeFileSync(imagePath, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+
+    try {
+      const result = await tool.execute({ file_path: imagePath, prompt: 'read it' }, context);
+      assert.equal(result.ok, true);
+      const content = result.content as string;
+      assert.match(content, /备用多模态 Provider/);
+      assert.match(content, /fallback-analysis/);
+      assert.equal(requestCount, 1);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      if (previousConfigPath === undefined) delete process.env.XIAOBA_CONFIG_PATH;
+      else process.env.XIAOBA_CONFIG_PATH = previousConfigPath;
+      if (previousReaderUrl === undefined) delete process.env.CATSCOMPANY_READER_API_URL;
+      else process.env.CATSCOMPANY_READER_API_URL = previousReaderUrl;
+    }
+  });
 });

@@ -54,6 +54,16 @@ export interface ChatConfig {
     toolCalling?: boolean;
     streaming?: boolean;
   };
+  /** Optional OpenAI-compatible multimodal provider used when the primary model cannot receive images. */
+  visionFallback?: {
+    enabled?: boolean;
+    usePrimaryModel?: boolean;
+    baseUrl?: string;
+    apiKey?: string;
+    model?: string;
+    timeoutMs?: number;
+    maxTokens?: number;
+  };
   provider?: 'openai' | 'anthropic';
   feishu?: {
     appId?: string;

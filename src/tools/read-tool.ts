@@ -10,6 +10,7 @@ import { createImageBlock } from '../utils/image-utils';
 import { ConfigManager } from '../utils/config';
 import { resolvePrimaryModelVisionCapability } from '../utils/model-capabilities';
 import { analyzeImageWithReaderProxy, ReaderProxyResult } from '../utils/reader-proxy';
+import { analyzeImageWithVisionFallback } from '../utils/vision-fallback-provider';
 import { Logger } from '../utils/logger';
 import { formatPathForLog } from '../utils/log-redaction';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
@@ -784,7 +785,7 @@ export class ReadTool implements Tool {
           ? 'PDF 文本层已提取；由于用户任务可能涉及图片、签名、印章、手写、版式或表格，已额外转成页面图片补充读取。'
           : 'PDF 文本层未提取到内容，已自动转成页面图片继续读取。',
         `${isSupplement ? '视觉补充页码' : '转图片页码'}: ${renderedPages.map(page => page.pageNumber).join(', ')}`,
-        `读取方式: ${renderedPages[0]?.renderer === 'pdftoppm' ? '系统 pdftoppm 渲染' : '内置 PDF.js 渲染'} + ${visionCapable ? '当前主模型读图' : 'Cats reader proxy 读图'}`,
+        `读取方式: ${renderedPages[0]?.renderer === 'pdftoppm' ? '系统 pdftoppm 渲染' : '内置 PDF.js 渲染'} + ${visionCapable ? '当前主模型读图' : '备用多模态 Provider / Cats reader proxy 回退读图'}`,
       ];
       const imageBlocks: ContentBlock[] = [];
 
@@ -1132,6 +1133,28 @@ export class ReadTool implements Tool {
       Logger.info(`[CatsCo] vision_fallback_read_file model=${modelName} tool=read_file file=${formatPathForLog(absolutePath || filePath)} reason=${visionState === 'unsupported' ? 'model_not_vision_capable' : 'model_capability_unknown'}`);
     }
 
+    const visionFallbackResult = await analyzeImageWithVisionFallback({
+      filePath: absolutePath,
+      prompt: imagePrompt,
+      config,
+    });
+
+    if (visionFallbackResult.ok && visionFallbackResult.analysis) {
+      Logger.info(`[CatsCo] vision_fallback_provider_success model=${modelName} tool=read_file file=${formatPathForLog(absolutePath || filePath)}`);
+      return [
+        this.formatImageMetadata(absolutePath, filePath, visiblePath, options?.metadataType),
+        '',
+        options?.proxyIntro || (visionCapable
+          ? '主模型图片块生成失败，已自动改用备用多模态 Provider 解析：'
+          : '读图结果（由备用多模态 Provider 解析，已作为 read_file 结果返回给当前非多模态主模型）：'),
+        visionFallbackResult.analysis,
+      ].join('\n');
+    }
+
+    if (visionFallbackResult.configured) {
+      Logger.warning(`[CatsCo] vision_fallback_provider_failed model=${modelName} tool=read_file file=${formatPathForLog(absolutePath || filePath)} status=${visionFallbackResult.status || 'unknown'} error=${visionFallbackResult.error || 'unknown'}`);
+    }
+
     const proxyResult = await analyzeImageWithReaderProxy({
       filePath: absolutePath,
       prompt: imagePrompt,
@@ -1149,10 +1172,13 @@ export class ReadTool implements Tool {
       ].join('\n');
     }
 
+    const providerFailure = visionFallbackResult.configured
+      ? `备用多模态 Provider 解析失败：${visionFallbackResult.error || '未知错误'}\n`
+      : '';
     return [
       this.formatImageMetadata(absolutePath, filePath, visiblePath, options?.metadataType),
       '',
-      this.formatReaderProxyFailure(proxyResult, visionCapable),
+      providerFailure + this.formatReaderProxyFailure(proxyResult, visionCapable),
     ].join('\n');
   }
 
