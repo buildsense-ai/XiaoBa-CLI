@@ -5,21 +5,29 @@ import {
   BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
   BOT_CUSTOM_MODEL_PROFILE_SCHEMA,
   type BotCatalogModelRuntime,
+  type BotCloudModelOverride,
   type BotCustomModelProfile,
   type BotDefinition,
+  type BotSkillRef,
   type CustomBotModelDefinition,
 } from './types';
 
 export interface BotDefinitionRepository {
+  inspectCanonical(botId: string): BotDefinitionReadResult;
   readCanonical(botId: string): BotDefinition | undefined;
   writeCanonical(definition: BotDefinition): void;
   readCache(botId: string): BotDefinition | undefined;
   writeCache(definition: BotDefinition): void;
 }
 
+export type BotDefinitionReadResult =
+  | { status: 'missing' }
+  | { status: 'invalid' }
+  | { status: 'valid'; definition: BotDefinition };
+
 export interface BotCloudModelOverrideRepository {
-  read(botId: string): BotDefinition | undefined;
-  write(definition: BotDefinition): void;
+  read(botId: string): BotCloudModelOverride | undefined;
+  write(definition: BotCloudModelOverride): void;
   delete(botId: string): void;
 }
 
@@ -61,11 +69,27 @@ function isValidDefinition(definition: unknown, expectedBotId: string): definiti
   if (!value || value.schema !== 'xiaoba.bot-definition.v1' || value.botId !== expectedBotId || !value.model) {
     return false;
   }
+  if (value.skills !== undefined && !isValidSkillRefs(value.skills)) return false;
   if (value.model.kind === 'catalog') {
     return Boolean(String(value.model.modelId || '').trim());
   }
   if (value.model.kind !== 'custom') return false;
   return isValidCustomModel(value.model);
+}
+
+function isValidSkillRefs(skills: unknown): skills is BotSkillRef[] {
+  if (!Array.isArray(skills)) return false;
+  const versionsBySkillId = new Map<string, string>();
+  for (const entry of skills) {
+    const value = entry as Partial<BotSkillRef> | null;
+    const skillId = typeof value?.skillId === 'string' ? value.skillId.trim() : '';
+    const version = typeof value?.version === 'string' ? value.version.trim() : '';
+    if (!skillId || !version) return false;
+    const previousVersion = versionsBySkillId.get(skillId);
+    if (previousVersion && previousVersion !== version) return false;
+    versionsBySkillId.set(skillId, version);
+  }
+  return true;
 }
 
 function isValidCustomModel(model: unknown): model is CustomBotModelDefinition {
@@ -107,14 +131,21 @@ function isValidCustomModelProfile(profile: unknown, expectedBotId: string): pro
   );
 }
 
-function readDefinition(filePath: string, expectedBotId: string): BotDefinition | undefined {
-  if (!fs.existsSync(filePath)) return undefined;
+function inspectDefinition(filePath: string, expectedBotId: string): BotDefinitionReadResult {
+  if (!fs.existsSync(filePath)) return { status: 'missing' };
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as BotDefinition;
-    return isValidDefinition(parsed, expectedBotId) ? parsed : undefined;
+    return isValidDefinition(parsed, expectedBotId)
+      ? { status: 'valid', definition: parsed }
+      : { status: 'invalid' };
   } catch {
-    return undefined;
+    return { status: 'invalid' };
   }
+}
+
+function readDefinition(filePath: string, expectedBotId: string): BotDefinition | undefined {
+  const result = inspectDefinition(filePath, expectedBotId);
+  return result.status === 'valid' ? result.definition : undefined;
 }
 
 function writeDefinition(filePath: string, definition: BotDefinition): void {
@@ -193,14 +224,19 @@ export class FileBotDefinitionRepository implements BotDefinitionRepository {
     );
   }
 
-  readCanonical(botId: string): BotDefinition | undefined {
+  inspectCanonical(botId: string): BotDefinitionReadResult {
     const normalized = normalizeBotId(botId);
-    return readDefinition(this.definitionPath(this.canonicalRoot, normalized), normalized);
+    return inspectDefinition(this.definitionPath(this.canonicalRoot, normalized), normalized);
+  }
+
+  readCanonical(botId: string): BotDefinition | undefined {
+    const result = this.inspectCanonical(botId);
+    return result.status === 'valid' ? result.definition : undefined;
   }
 
   writeCanonical(definition: BotDefinition): void {
     const botId = normalizeBotId(definition.botId);
-    writeDefinition(this.definitionPath(this.canonicalRoot, botId), definition);
+    writeDefinition(this.definitionPath(this.canonicalRoot, botId), { ...definition, botId });
   }
 
   readCache(botId: string): BotDefinition | undefined {
@@ -210,7 +246,7 @@ export class FileBotDefinitionRepository implements BotDefinitionRepository {
 
   writeCache(definition: BotDefinition): void {
     const botId = normalizeBotId(definition.botId);
-    writeDefinition(this.definitionPath(this.cacheRoot, botId), definition);
+    writeDefinition(this.definitionPath(this.cacheRoot, botId), { ...definition, botId });
   }
 
   getCanonicalPath(botId: string): string {
@@ -237,14 +273,23 @@ export class FileBotCloudModelOverrideRepository implements BotCloudModelOverrid
     );
   }
 
-  read(botId: string): BotDefinition | undefined {
+  read(botId: string): BotCloudModelOverride | undefined {
     const normalized = normalizeBotId(botId);
-    return readDefinition(this.overridePath(normalized), normalized);
+    const definition = readDefinition(this.overridePath(normalized), normalized);
+    return definition && {
+      schema: definition.schema,
+      botId: definition.botId,
+      model: definition.model,
+    };
   }
 
-  write(definition: BotDefinition): void {
+  write(definition: BotCloudModelOverride): void {
     const botId = normalizeBotId(definition.botId);
-    writeDefinition(this.overridePath(botId), definition);
+    writeDefinition(this.overridePath(botId), {
+      schema: definition.schema,
+      botId,
+      model: definition.model,
+    });
   }
 
   delete(botId: string): void {

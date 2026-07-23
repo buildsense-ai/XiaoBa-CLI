@@ -14,7 +14,7 @@ import {
   FileBotDefinitionRepository,
 } from '../src/bot-definition/repository';
 import { resolveActiveBotLLMConfig } from '../src/bot-definition/llm-config-resolver';
-import { BOT_DEFINITION_SCHEMA } from '../src/bot-definition/types';
+import { BOT_DEFINITION_SCHEMA, type BotDefinition } from '../src/bot-definition/types';
 
 describe('BotDefinition activation', () => {
   const roots: string[] = [];
@@ -532,7 +532,12 @@ describe('BotDefinition activation', () => {
       apiKey: 'sk-local-model',
       contextWindowTokens: 128_000,
     };
-    const localDefinition = { schema: BOT_DEFINITION_SCHEMA, botId: '43', model: localModel } as const;
+    const localDefinition: BotDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: localModel,
+      skills: [{ skillId: 'alice/browser', version: '1.0.3' }],
+    };
     const definitions = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
     definitions.writeCanonical(localDefinition);
 
@@ -557,6 +562,7 @@ describe('BotDefinition activation', () => {
     });
 
     assert.equal(cloudPrepared?.cloudRevision, 11);
+    assert.deepStrictEqual(cloudPrepared?.definition.skills, localDefinition.skills);
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'cloud-model');
     assert.deepStrictEqual(definitions.readCanonical('43'), localDefinition);
     assert.deepStrictEqual(definitions.readCache('43'), localDefinition);
@@ -571,6 +577,7 @@ describe('BotDefinition activation', () => {
       acknowledgeCloudSelection: false,
     });
     assert.equal(restartPrepared?.definition.model.kind, 'custom');
+    assert.deepStrictEqual(restartPrepared?.definition.skills, localDefinition.skills);
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'cloud-model');
 
     const localPrepared = await prepareBoundBotDefinition({
@@ -581,6 +588,7 @@ describe('BotDefinition activation', () => {
       acknowledgeCloudSelection: false,
     });
     assert.equal(localPrepared?.cloudRevision, 12);
+    assert.deepStrictEqual(localPrepared?.definition.skills, localDefinition.skills);
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'local-model');
     assert.equal(new FileBotCloudModelOverrideRepository({ runtimeRoot }).read('43'), undefined);
     assert.deepStrictEqual(definitions.readCanonical('43'), localDefinition);

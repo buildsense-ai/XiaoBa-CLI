@@ -15,9 +15,12 @@ import {
   BOT_CUSTOM_MODEL_PROFILE_SCHEMA,
   BOT_DEFINITION_SCHEMA,
   type BotCatalogModelRuntime,
+  type BotCloudModelOverride,
   type BotDefinition,
+  type BotDefinitionPatch,
   type BotDefinitionSyncResult,
   type BotModelDefinition,
+  type BotSkillRef,
   type CustomBotModelDefinition,
   type LocalModelProfile,
 } from './types';
@@ -297,9 +300,38 @@ function normalizeBotModelDefinition(model: BotModelDefinition): BotModelDefinit
   return modelId && modelId !== model.modelId ? { ...model, modelId } : model;
 }
 
-function normalizeBotDefinition(definition: BotDefinition): BotDefinition {
+export function normalizeBotSkillRefs(skills: readonly BotSkillRef[]): BotSkillRef[] {
+  if (!Array.isArray(skills)) {
+    throw new Error('BotDefinition skills must be an array');
+  }
+  const normalized = skills.map(entry => ({
+    skillId: typeof entry?.skillId === 'string' ? entry.skillId.trim() : '',
+    version: typeof entry?.version === 'string' ? entry.version.trim() : '',
+  }));
+  const versionsBySkillId = new Map<string, string>();
+  for (const entry of normalized) {
+    if (!entry.skillId || !entry.version) {
+      throw new Error('BotDefinition Skill references require a non-empty skillId and version');
+    }
+    const previousVersion = versionsBySkillId.get(entry.skillId);
+    if (previousVersion && previousVersion !== entry.version) {
+      throw new Error(`BotDefinition cannot reference multiple versions of Skill ${entry.skillId}`);
+    }
+    versionsBySkillId.set(entry.skillId, entry.version);
+  }
+  return Array.from(versionsBySkillId, ([skillId, version]) => ({ skillId, version }))
+    .sort((left, right) => left.skillId < right.skillId ? -1 : left.skillId > right.skillId ? 1 : 0);
+}
+
+export function normalizeBotDefinition(definition: BotDefinition): BotDefinition {
   const model = normalizeBotModelDefinition(definition.model);
-  return model === definition.model ? definition : { ...definition, model };
+  const skills = definition.skills === undefined
+    ? undefined
+    : normalizeBotSkillRefs(definition.skills);
+  const skillsChanged = skills !== undefined && JSON.stringify(skills) !== JSON.stringify(definition.skills);
+  return model === definition.model && !skillsChanged
+    ? definition
+    : { ...definition, model, ...(skills === undefined ? {} : { skills }) };
 }
 
 function normalizeCatalogRuntime(runtime: BotCatalogModelRuntime): BotCatalogModelRuntime {
@@ -381,13 +413,21 @@ export class BotDefinitionSyncService {
 
   pull(botId: string): BotDefinition | undefined {
     const previousCache = this.repository.readCache(botId);
-    const rawDefinition = this.repository.readCanonical(botId);
+    const canonical = this.repository.inspectCanonical(botId);
+    if (canonical.status === 'invalid' && !previousCache) {
+      throw new Error(`BotDefinition canonical record is invalid for bot ${botId}; refusing to overwrite it`);
+    }
+    const usingCacheFallback = canonical.status === 'invalid';
+    const rawDefinition = canonical.status === 'valid'
+      ? canonical.definition
+      : usingCacheFallback
+        ? previousCache
+        : undefined;
     const definition = rawDefinition && normalizeBotDefinition(rawDefinition);
     if (definition) {
       if (previousCache?.model.kind === 'custom') {
         this.storeCustomModelProfile(botId, previousCache.model);
       }
-      if (definition !== rawDefinition) this.repository.writeCanonical(definition);
       this.repository.writeCache(definition);
       if (definition.model.kind === 'custom') {
         this.storeCustomModelProfile(definition.botId, definition.model);
@@ -396,20 +436,37 @@ export class BotDefinitionSyncService {
     return definition;
   }
 
-  publish(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
-    const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
-    if (previous?.model.kind === 'custom') {
-      this.storeCustomModelProfile(botId, previous.model);
+  updateDefinition(botId: string, patch: BotDefinitionPatch): BotDefinitionSyncResult {
+    const canonical = this.repository.inspectCanonical(botId);
+    if (canonical.status === 'invalid') {
+      throw new Error(`BotDefinition canonical record is invalid for bot ${botId}; refusing to overwrite it`);
     }
-    const normalizedModel = normalizeBotModelDefinition(model);
+    const canonicalDefinition = canonical.status === 'valid' ? canonical.definition : undefined;
+    const cachedDefinition = this.repository.readCache(botId);
+    const previous = canonicalDefinition ?? cachedDefinition;
+    if (!previous && !patch.model) {
+      throw new Error('Cannot update BotDefinition skills before its model has been initialized');
+    }
+    if (cachedDefinition?.model.kind === 'custom') {
+      this.storeCustomModelProfile(botId, cachedDefinition.model);
+    }
+    const previousModel = previous?.model;
+    if (previousModel?.kind === 'custom' && previousModel !== cachedDefinition?.model) {
+      this.storeCustomModelProfile(botId, previousModel);
+    }
+    const normalizedModel = patch.model
+      ? normalizeBotModelDefinition(patch.model)
+      : previousModel!;
     if (normalizedModel.kind === 'custom') {
       this.storeCustomModelProfile(botId, normalizedModel);
     }
-    const definition: BotDefinition = {
+    const definition = normalizeBotDefinition({
+      ...(previous ?? {}),
       schema: BOT_DEFINITION_SCHEMA,
       botId,
       model: normalizedModel,
-    };
+      ...(patch.skills === undefined ? {} : { skills: patch.skills }),
+    });
     this.repository.writeCanonical(definition);
     this.repository.writeCache(definition);
     this.clearLegacyModelConfigurationWhenReady(definition);
@@ -420,13 +477,30 @@ export class BotDefinitionSyncService {
     };
   }
 
+  updateModel(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
+    return this.updateDefinition(botId, { model });
+  }
+
+  updateSkills(botId: string, skills: BotSkillRef[]): BotDefinitionSyncResult {
+    return this.updateDefinition(botId, { skills });
+  }
+
+  /** Compatibility alias for callers not yet converted to field-level updates. */
+  publish(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
+    return this.updateModel(botId, model);
+  }
+
   acceptCloud(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
-    const definition: BotDefinition = {
+    const override: BotCloudModelOverride = {
       schema: BOT_DEFINITION_SCHEMA,
       botId,
       model: normalizeBotModelDefinition(model),
     };
-    this.cloudOverrideRepository.write(definition);
+    this.cloudOverrideRepository.write(override);
+    const localDefinition = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
+    const definition: BotDefinition = localDefinition
+      ? { ...localDefinition, model: override.model }
+      : override;
     return {
       botId,
       direction: 'cloud_to_local',
@@ -434,10 +508,11 @@ export class BotDefinitionSyncService {
     };
   }
 
-  readCloudModelOverride(botId: string): BotDefinition | undefined {
+  readCloudModelOverride(botId: string): BotCloudModelOverride | undefined {
     const raw = this.cloudOverrideRepository.read(botId);
     if (!raw) return undefined;
-    const normalized = normalizeBotDefinition(raw);
+    const model = normalizeBotModelDefinition(raw.model);
+    const normalized = model === raw.model ? raw : { ...raw, model };
     if (normalized !== raw) this.cloudOverrideRepository.write(normalized);
     return normalized;
   }

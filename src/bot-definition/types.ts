@@ -32,15 +32,35 @@ export interface CustomBotModelDefinition {
 
 export type BotModelDefinition = CatalogBotModelDefinition | CustomBotModelDefinition;
 
+/** A portable, exact SkillHub package reference owned by one bot definition. */
+export interface BotSkillRef {
+  skillId: string;
+  version: string;
+}
+
 /**
- * The deliberately small, portable part of a bot. Prompt and skill fields are
- * intentionally deferred until their source/version contracts are settled.
+ * The deliberately small, portable part of a bot. Skill contents remain in
+ * SkillHub; the definition stores only exact, restorable package references.
  */
 export interface BotDefinition {
   schema: typeof BOT_DEFINITION_SCHEMA;
   botId: string;
   model: BotModelDefinition;
+  /** Missing means a legacy definition that has not completed Skill migration. */
+  skills?: BotSkillRef[];
 }
+
+/**
+ * Field-level definition update. Omitted fields are preserved; an empty skills
+ * array explicitly means that the bot has no Skills.
+ */
+export interface BotDefinitionPatch {
+  model?: BotModelDefinition;
+  skills?: BotSkillRef[];
+}
+
+/** Device-local model selection layered over the portable local definition. */
+export type BotCloudModelOverride = Pick<BotDefinition, 'schema' | 'botId' | 'model'>;
 
 export interface LocalModelProfile {
   source: 'catalog' | 'custom';

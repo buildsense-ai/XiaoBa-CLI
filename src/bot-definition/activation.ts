@@ -10,7 +10,12 @@ import {
   createBotDefinitionSyncService,
   type BotDefinitionSyncServiceOptions,
 } from './service';
-import type { BotCatalogModelRuntime, BotDefinition, BotDefinitionSyncResult } from './types';
+import type {
+  BotCatalogModelRuntime,
+  BotCloudModelOverride,
+  BotDefinition,
+  BotDefinitionSyncResult,
+} from './types';
 import {
   acknowledgeCloudBotModelSelection,
   pullCloudBotModelSelection,
@@ -59,7 +64,7 @@ export async function prepareBoundBotDefinition(
   let localDefinition = sync?.definition;
   const previousCloudDefinition = definitionService.readCloudModelOverride(botId);
   const previousCloudRuntime = definitionService.readCloudCatalogRuntime(botId);
-  let definition = previousCloudDefinition ?? localDefinition;
+  let definition = applyCloudModelOverride(localDefinition, previousCloudDefinition);
   const auth = options.auth ?? createCatsCoLocalConfigService({ runtimeRoot: options.runtimeRoot }).getAuthState();
   let initializedDefault = false;
   let materializedCatalogRuntime = false;
@@ -176,7 +181,7 @@ export async function prepareBoundBotDefinition(
       try {
         if (previousCloudDefinition) {
           definitionService.acceptCloud(botId, previousCloudDefinition.model);
-          definition = previousCloudDefinition;
+          definition = applyCloudModelOverride(localDefinition, previousCloudDefinition);
         } else {
           definitionService.clearCloudModelOverride(botId);
           definition = localDefinition;
@@ -215,7 +220,7 @@ export async function prepareBoundBotDefinition(
       modelId: selectedCatalogRuntime.modelId,
     });
     localDefinition = sync.definition;
-    definition = definitionService.readCloudModelOverride(botId) ?? sync.definition;
+    definition = applyCloudModelOverride(sync.definition, definitionService.readCloudModelOverride(botId));
     materializedCatalogRuntime = true;
   }
 
@@ -237,7 +242,7 @@ export async function prepareBoundBotDefinition(
   }
 
   const activeCloudOverride = definitionService.readCloudModelOverride(botId);
-  if (activeCloudOverride) definition = activeCloudOverride;
+  if (activeCloudOverride) definition = applyCloudModelOverride(localDefinition ?? definition, activeCloudOverride)!;
   if (definition.model.kind === 'catalog') {
     const runtime = activeCloudOverride
       ? definitionService.readCloudCatalogRuntime(botId)
@@ -272,6 +277,16 @@ export async function prepareBoundBotDefinition(
     ...(cloudApplyError ? { cloudApplyError } : {}),
     ...(cloudSelectionApplied && cloudSelection ? { cloudRevision: cloudSelection.revision } : {}),
   };
+}
+
+function applyCloudModelOverride(
+  localDefinition: BotDefinition | undefined,
+  override: BotCloudModelOverride | undefined,
+): BotDefinition | undefined {
+  if (!override) return localDefinition;
+  return localDefinition
+    ? { ...localDefinition, model: override.model }
+    : override;
 }
 
 function catalogCapabilitiesNeedRefresh(runtime: BotCatalogModelRuntime): boolean {

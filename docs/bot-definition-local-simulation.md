@@ -1,6 +1,6 @@
 # BotDefinition 本地模拟与模型配置解耦
 
-这是 BotDefinition 的第一块落地实现，刻意保持很小：它当前只定义一个 CatsCo bot 选择了什么模型。Prompt 与 skill 快照仍待后续确定各自的版本契约后再加入。
+这是 BotDefinition 的第一块落地实现。它定义一个 CatsCo bot 选择了什么模型，以及这个 Bot 应恢复哪些确定版本的 Skill。Skill 文件本身仍由 SkillHub 保存，Definition 只保存 `skillId + version` 引用。
 
 ## 定义范围
 
@@ -11,7 +11,9 @@
 
 目录模型的 endpoint 与 relay key 不属于可迁移的 BotDefinition。它们是当前设备取得的运行时材料，单独保存；未来接入 CatsCompany Definition API 后，新设备会按 `modelId` 重新获取这份设备运行时材料。
 
-第一版不纳入显示名、设备身份、session、额度、工作目录、prompt 或 skill 数据。
+第一版不纳入显示名、设备身份、session、额度、工作目录、prompt 或 Skill 文件内容。
+
+`skills` 字段缺失表示老 Definition 尚未完成 Skill 迁移，空数组表示已经迁移且当前 Bot 明确没有 Skill。模型和 Skill 使用字段保留更新：修改模型不能清空 `skills`，修改 Skill 引用也不能覆盖 `model`。
 
 ## 本地文件接口
 
