@@ -275,7 +275,7 @@ export async function prepareBoundBotDefinition(
 }
 
 function catalogCapabilitiesNeedRefresh(runtime: BotCatalogModelRuntime): boolean {
-  if (runtime.capabilitiesSource !== 'relay-models' || !runtime.capabilitiesCheckedAt) return true;
+  if (!['relay-models', 'models-dev'].includes(runtime.capabilitiesSource || '') || !runtime.capabilitiesCheckedAt) return true;
   const checkedAt = Date.parse(runtime.capabilitiesCheckedAt);
   return !Number.isFinite(checkedAt) || Date.now() - checkedAt >= 24 * 60 * 60 * 1000;
 }

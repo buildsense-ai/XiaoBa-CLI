@@ -16,6 +16,7 @@ describe('dashboard typed settings API', () => {
   let originalCwd: string;
   let server: Server | undefined;
   let baseUrl: string;
+  let modelsDevCatalog: Record<string, unknown> | undefined;
   const envKeys = [
     'GAUZ_LLM_PROVIDER',
     'GAUZ_LLM_API_BASE',
@@ -81,7 +82,12 @@ describe('dashboard typed settings API', () => {
 
     const app = express();
     app.use(express.json());
-    app.use('/api', createApiRouter({ getAll: () => [] } as any));
+    modelsDevCatalog = undefined;
+    app.use('/api', createApiRouter({ getAll: () => [] } as any, undefined, {
+      modelsDevFetch: (async () => modelsDevCatalog
+        ? Response.json(modelsDevCatalog)
+        : new Response('', { status: 503 })) as typeof fetch,
+    }));
     server = await listen(app);
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('server did not bind to a TCP port');
@@ -1637,7 +1643,9 @@ describe('dashboard typed settings API', () => {
         restartCalled += 1;
         return service;
       },
-    } as any));
+    } as any, undefined, {
+      modelsDevFetch: (async () => new Response('', { status: 503 })) as typeof fetch,
+    }));
     const dashboardServer = await listen(dashboardApp);
     const dashboardAddress = dashboardServer.address();
     if (!dashboardAddress || typeof dashboardAddress === 'string') throw new Error('dashboard server did not bind');
@@ -1870,7 +1878,7 @@ describe('dashboard typed settings API', () => {
     }
   });
 
-  test('GET /cats/relay/model-config preserves partial unknown relay capabilities', async () => {
+  test('GET /cats/relay/model-config dynamically reads vision capability from models.dev', async () => {
     const catsApp = express();
     catsApp.use(express.json());
     catsApp.get('/api/relay/config', (_req, res) => {
@@ -1888,9 +1896,6 @@ describe('dashboard typed settings API', () => {
             model: 'custom-vision',
             enabled: true,
             default: true,
-            modalities: {
-              input: ['text', 'image', 'pdf'],
-            },
             capabilities: {
               streaming: 0,
             },
@@ -1903,6 +1908,16 @@ describe('dashboard typed settings API', () => {
     if (!address || typeof address === 'string') throw new Error('cats server did not bind');
 
     try {
+      modelsDevCatalog = {
+        custom: {
+          models: {
+            'custom-vision': {
+              id: 'custom-vision',
+              modalities: { input: ['text', 'image'] },
+            },
+          },
+        },
+      };
       process.env.CATSCO_USER_TOKEN = 'user-token';
       process.env.CATSCO_USER_UID = '38';
       process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
