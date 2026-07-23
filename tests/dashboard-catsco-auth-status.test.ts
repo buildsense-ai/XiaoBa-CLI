@@ -1202,11 +1202,14 @@ describe('dashboard CatsCo account status', () => {
       fs.readFileSync(path.join(workspace.getParkedPath('188'), 'same-name', 'SKILL.md'), 'utf8'),
       offlineSkillContent,
     );
-    assert.equal(definitions.readCanonical('188')?.skills?.length, 1);
+    // Private SkillHub is deliberately unavailable in this switch fixture.
+    // Switching still parks the local workspace, but must not pretend the
+    // failed upload advanced canonical Definition or Base.
+    assert.equal(definitions.readCanonical('188')?.skills?.length, 0);
     assert.equal(
       new FileBotSkillSyncBaseRepository({ runtimeRoot: testRoot })
         .inspect('188', sourceWorkspaceId).status,
-      'valid',
+      'missing',
     );
     assert.equal(
       new FileBotSkillSyncBaseRepository({ runtimeRoot: testRoot })

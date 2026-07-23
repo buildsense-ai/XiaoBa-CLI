@@ -16,6 +16,7 @@ export interface BotSkillSyncLocalSourceRef {
   version: string;
   installedChecksum?: string;
   installedContentHash?: string;
+  visibility?: 'public' | 'private';
 }
 
 export interface BotSkillSyncLocalEntry {
@@ -31,7 +32,7 @@ export interface BotSkillSyncLocalEntry {
 export interface BotSkillSyncBinding {
   localSkillId: string;
   ref: BotSkillRef;
-  storage: 'skillhub-mirror' | 'simulated-private';
+  storage: 'skillhub-mirror' | 'simulated-private' | 'skillhub-private';
   artifactDigest: string;
 }
 
@@ -214,6 +215,9 @@ function projectLocalEntry(entry: LocalSkillManifestEntry): BotSkillSyncLocalEnt
         ...(entry.installedContentHash
           ? { installedContentHash: requiredHash(entry.installedContentHash, 'installedContentHash') }
           : {}),
+        ...(entry.sourceVisibility
+          ? { visibility: entry.sourceVisibility }
+          : {}),
       },
     } : {}),
   };
@@ -231,6 +235,14 @@ function normalizeLocalEntries(
     if (source !== 'local' && source !== 'skillhub') {
       throw new Error(`Invalid Local Skill source for ${localSkillId}`);
     }
+    if (
+      raw.sourceRef
+      && raw.sourceRef.visibility !== undefined
+      && raw.sourceRef.visibility !== 'public'
+      && raw.sourceRef.visibility !== 'private'
+    ) {
+      throw new Error(`Invalid sourceRef.visibility for ${localSkillId}`);
+    }
     const sourceRef = raw.sourceRef && {
       skillId: required(raw.sourceRef.skillId, 'sourceRef.skillId'),
       version: required(raw.sourceRef.version, 'sourceRef.version'),
@@ -239,6 +251,9 @@ function normalizeLocalEntries(
         : {}),
       ...(raw.sourceRef.installedContentHash
         ? { installedContentHash: requiredHash(raw.sourceRef.installedContentHash, 'installedContentHash') }
+        : {}),
+      ...(raw.sourceRef.visibility === 'public' || raw.sourceRef.visibility === 'private'
+        ? { visibility: raw.sourceRef.visibility }
         : {}),
     };
     if (source === 'skillhub' && !sourceRef) {
@@ -270,7 +285,11 @@ function normalizeBindings(
     }
     if (seen.has(localSkillId)) throw new Error(`Duplicate binding: ${localSkillId}`);
     seen.add(localSkillId);
-    if (raw.storage !== 'skillhub-mirror' && raw.storage !== 'simulated-private') {
+    if (
+      raw.storage !== 'skillhub-mirror'
+      && raw.storage !== 'simulated-private'
+      && raw.storage !== 'skillhub-private'
+    ) {
       throw new Error(`Invalid binding storage: ${String(raw.storage)}`);
     }
     return {

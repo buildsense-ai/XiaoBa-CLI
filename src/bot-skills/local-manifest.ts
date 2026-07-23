@@ -44,6 +44,7 @@ export interface LocalSkillManifestEntry {
   version?: string;
   installedChecksum?: string;
   installedContentHash?: string;
+  sourceVisibility?: 'public' | 'private';
 }
 
 export interface LocalSkillManifest {
@@ -178,6 +179,7 @@ export function scanLocalSkillManifest(
           version: marker.version,
           installedChecksum: marker.packageChecksumSha256,
           installedContentHash: marker.installedContentHash,
+          sourceVisibility: marker.visibility ?? 'public',
         } : {}),
       };
       result.entries.push(entry);

@@ -12,6 +12,7 @@ import {
   type BotSkillRef,
   type CustomBotModelDefinition,
 } from './types';
+import { isValidBotSkillRef } from './skill-ref';
 
 const MAX_DEFINITION_BYTES = 2 * 1024 * 1024;
 
@@ -83,13 +84,12 @@ function isValidDefinition(definition: unknown, expectedBotId: string): definiti
 }
 
 function isValidSkillRefs(skills: unknown): skills is BotSkillRef[] {
-  if (!Array.isArray(skills)) return false;
+  if (!Array.isArray(skills) || skills.length > 256) return false;
   const versionsBySkillId = new Map<string, string>();
   for (const entry of skills) {
-    const value = entry as Partial<BotSkillRef> | null;
-    const skillId = typeof value?.skillId === 'string' ? value.skillId.trim() : '';
-    const version = typeof value?.version === 'string' ? value.version.trim() : '';
-    if (!skillId || !version) return false;
+    if (!isValidBotSkillRef(entry)) return false;
+    const skillId = entry.skillId.trim();
+    const version = entry.version.trim();
     const previousVersion = versionsBySkillId.get(skillId);
     if (previousVersion && previousVersion !== version) return false;
     versionsBySkillId.set(skillId, version);

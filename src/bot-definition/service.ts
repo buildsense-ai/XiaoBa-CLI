@@ -36,6 +36,7 @@ import {
   type BotDefinitionRepository,
   type FileBotDefinitionRepositoryOptions,
 } from './repository';
+import { normalizeBotSkillRef } from './skill-ref';
 
 const CUSTOM_DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
 
@@ -304,15 +305,12 @@ export function normalizeBotSkillRefs(skills: readonly BotSkillRef[]): BotSkillR
   if (!Array.isArray(skills)) {
     throw new Error('BotDefinition skills must be an array');
   }
-  const normalized = skills.map(entry => ({
-    skillId: typeof entry?.skillId === 'string' ? entry.skillId.trim() : '',
-    version: typeof entry?.version === 'string' ? entry.version.trim() : '',
-  }));
+  if (skills.length > 256) {
+    throw new Error('BotDefinition cannot reference more than 256 Skills');
+  }
+  const normalized = skills.map(entry => normalizeBotSkillRef(entry));
   const versionsBySkillId = new Map<string, string>();
   for (const entry of normalized) {
-    if (!entry.skillId || !entry.version) {
-      throw new Error('BotDefinition Skill references require a non-empty skillId and version');
-    }
     const previousVersion = versionsBySkillId.get(entry.skillId);
     if (previousVersion && previousVersion !== entry.version) {
       throw new Error(`BotDefinition cannot reference multiple versions of Skill ${entry.skillId}`);

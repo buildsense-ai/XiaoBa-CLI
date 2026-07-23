@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { BotSkillRef } from '../bot-definition/types';
+import { normalizeBotSkillRef } from '../bot-definition/skill-ref';
 import {
   BOT_SKILL_LOCAL_IDENTITY_FILE,
   type LocalSkillManifestEntry,
@@ -36,7 +37,7 @@ export interface SimulatedSkillArtifact {
   botId: string;
   localSkillId: string;
   ref: BotSkillRef;
-  storage: 'skillhub-mirror' | 'simulated-private';
+  storage: 'skillhub-mirror' | 'simulated-private' | 'skillhub-private';
   name: string;
   installName: string;
   contentHash: string;
@@ -53,9 +54,23 @@ export interface PutSimulatedSkillArtifactOptions {
 }
 
 export interface SimulatedSkillArtifactStore {
+  snapshot(options: PutSimulatedSkillArtifactOptions): SimulatedSkillArtifact;
   put(options: PutSimulatedSkillArtifactOptions): SimulatedSkillArtifact;
   read(ref: BotSkillRef): SimulatedSkillArtifact;
   materialize(artifact: SimulatedSkillArtifact, targetDir: string): void;
+  cacheVerified(options: CacheVerifiedSkillArtifactOptions): SimulatedSkillArtifact;
+}
+
+export interface CacheVerifiedSkillArtifactOptions {
+  ref: BotSkillRef;
+  botId: string;
+  localSkillId: string;
+  storage: 'skillhub-mirror' | 'skillhub-private';
+  name: string;
+  installName: string;
+  contentHash: string;
+  files: SimulatedSkillArtifactFile[];
+  installMarker: SkillHubPackageInstallMarker;
 }
 
 export interface FileSimulatedSkillArtifactStoreOptions {
@@ -83,6 +98,10 @@ export class FileSimulatedSkillArtifactStore implements SimulatedSkillArtifactSt
   }
 
   put(options: PutSimulatedSkillArtifactOptions): SimulatedSkillArtifact {
+    return this.persistArtifact(this.snapshot(options));
+  }
+
+  snapshot(options: PutSimulatedSkillArtifactOptions): SimulatedSkillArtifact {
     const botId = required(options.botId, 'botId');
     const root = path.resolve(options.skillsRoot);
     const relative = normalizeRelativePath(options.entry.path);
@@ -139,11 +158,15 @@ export class FileSimulatedSkillArtifactStore implements SimulatedSkillArtifactSt
       files,
       ...(installMarker ? { installMarker } : {}),
     };
-    const filePath = this.filePath(ref);
-    const existing = this.inspectFile(filePath, ref);
+    return artifact;
+  }
+
+  private persistArtifact(artifact: SimulatedSkillArtifact): SimulatedSkillArtifact {
+    const filePath = this.filePath(artifact.ref);
+    const existing = this.inspectFile(filePath, artifact.ref);
     if (existing) {
       if (existing.artifactDigest !== artifact.artifactDigest) {
-        throw new Error(`Immutable Skill artifact conflict for ${ref.skillId}@${ref.version}`);
+        throw new Error(`Immutable Skill artifact conflict for ${artifact.ref.skillId}@${artifact.ref.version}`);
       }
       return existing;
     }
@@ -191,6 +214,53 @@ export class FileSimulatedSkillArtifactStore implements SimulatedSkillArtifactSt
     }
   }
 
+  cacheVerified(options: CacheVerifiedSkillArtifactOptions): SimulatedSkillArtifact {
+    const ref = normalizeRef(options.ref);
+    const files = options.files.map(file => ({ ...file }));
+    const installMarker = { ...options.installMarker };
+    const candidate = {
+      schema: SIMULATED_SKILL_ARTIFACT_SCHEMA,
+      botId: required(options.botId, 'botId'),
+      localSkillId: required(options.localSkillId, 'localSkillId'),
+      ref,
+      storage: options.storage,
+      name: required(options.name, 'name').normalize('NFC'),
+      installName: normalizeInstallName(options.installName),
+      contentHash: requiredHash(options.contentHash, 'contentHash'),
+      files,
+      installMarker,
+    };
+    const artifactDigest = digest({
+      botId: candidate.botId,
+      localSkillId: candidate.localSkillId,
+      storage: candidate.storage,
+      name: candidate.name,
+      installName: candidate.installName,
+      contentHash: candidate.contentHash,
+      files: files.map(file => ({
+        path: file.path,
+        size: file.size,
+        sha256: file.sha256,
+      })),
+      installMarker,
+    });
+    const artifact = parseArtifact(
+      { ...candidate, artifactDigest },
+      ref,
+    );
+    if (!artifact) throw new Error(`Verified Skill artifact is invalid: ${ref.skillId}@${ref.version}`);
+    const filePath = this.filePath(ref);
+    const existing = this.inspectFile(filePath, ref);
+    if (existing) {
+      if (existing.artifactDigest !== artifact.artifactDigest) {
+        throw new Error(`Immutable Skill artifact conflict for ${ref.skillId}@${ref.version}`);
+      }
+      return existing;
+    }
+    writeJsonAtomic(this.root, filePath, artifact);
+    return artifact;
+  }
+
   getPath(ref: BotSkillRef): string {
     return this.filePath(normalizeRef(ref));
   }
@@ -226,21 +296,26 @@ export class FileSimulatedSkillArtifactStore implements SimulatedSkillArtifactSt
 
 function collectArtifactFiles(skillDir: string): SimulatedSkillArtifactFile[] {
   assertRealDirectory(skillDir, 'Skill artifact source');
-  const paths: string[] = [];
-  const visit = (current: string): void => {
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const fullPath = path.join(current, entry.name);
-      const stat = fs.lstatSync(fullPath);
-      if (stat.isSymbolicLink()) throw new Error(`Skill artifact source contains a link: ${fullPath}`);
-      if (stat.isDirectory()) {
-        if (!SKIP_DIRECTORIES.has(entry.name)) visit(fullPath);
-        continue;
+  const listPaths = (): string[] => {
+    const paths: string[] = [];
+    const visit = (current: string): void => {
+      assertRealDirectory(current, 'Skill artifact source directory');
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const fullPath = path.join(current, entry.name);
+        const stat = fs.lstatSync(fullPath);
+        if (stat.isSymbolicLink()) throw new Error(`Skill artifact source contains a link: ${fullPath}`);
+        if (stat.isDirectory()) {
+          if (!SKIP_DIRECTORIES.has(entry.name)) visit(fullPath);
+          continue;
+        }
+        if (!stat.isFile()) throw new Error(`Skill artifact source contains a non-file: ${fullPath}`);
+        if (!SKIP_FILES.has(entry.name)) paths.push(fullPath);
       }
-      if (!stat.isFile()) throw new Error(`Skill artifact source contains a non-file: ${fullPath}`);
-      if (!SKIP_FILES.has(entry.name)) paths.push(fullPath);
-    }
+    };
+    visit(skillDir);
+    return paths.sort(compareUtf8);
   };
-  visit(skillDir);
+  const paths = listPaths();
   if (paths.length === 0 || paths.length > MAX_FILES) {
     throw new Error(`Skill artifact file count is invalid: ${paths.length}`);
   }
@@ -277,6 +352,13 @@ function collectArtifactFiles(skillDir: string): SimulatedSkillArtifactFile[] {
       contentBase64: content.toString('base64'),
     };
   });
+  const afterPaths = listPaths();
+  if (
+    paths.length !== afterPaths.length
+    || paths.some((filePath, index) => !samePath(filePath, afterPaths[index]))
+  ) {
+    throw new Error('Skill changed while creating its artifact: file list changed');
+  }
   return files.sort((left, right) => compareUtf8(left.path, right.path));
 }
 
@@ -289,7 +371,11 @@ function parseArtifact(value: unknown, expectedRef: BotSkillRef): SimulatedSkill
       || !Array.isArray(raw.files)
       || raw.files.length === 0
       || raw.files.length > MAX_FILES
-      || (raw.storage !== 'skillhub-mirror' && raw.storage !== 'simulated-private')
+      || (
+        raw.storage !== 'skillhub-mirror'
+        && raw.storage !== 'simulated-private'
+        && raw.storage !== 'skillhub-private'
+      )
     ) return undefined;
     const ref = normalizeRef(raw.ref);
     if (ref.skillId !== expectedRef.skillId || ref.version !== expectedRef.version) return undefined;
@@ -330,12 +416,16 @@ function parseArtifact(value: unknown, expectedRef: BotSkillRef): SimulatedSkill
     if (!files.some(file => file.path === 'SKILL.md')) return undefined;
     const installMarker = raw.installMarker;
     if (
-      raw.storage === 'skillhub-mirror'
+      (raw.storage === 'skillhub-mirror' || raw.storage === 'skillhub-private')
       && (
         !isValidInstallMarker(installMarker)
         || installMarker.skillId !== ref.skillId
         || installMarker.version !== ref.version
         || installMarker.installName !== installName
+        || (raw.storage === 'skillhub-mirror' && installMarker.visibility === 'private')
+        || (raw.storage === 'skillhub-private' && installMarker.visibility !== 'private')
+        || (raw.storage === 'skillhub-private' && installMarker.ownerBotId !== botId)
+        || (raw.storage === 'skillhub-private' && installMarker.localSkillId !== localSkillId)
       )
     ) return undefined;
     if (raw.storage === 'simulated-private' && installMarker) return undefined;
@@ -446,10 +536,7 @@ function portablePath(relative: string): string {
 }
 
 function normalizeRef(ref: BotSkillRef): BotSkillRef {
-  return {
-    skillId: required(ref?.skillId, 'skillId'),
-    version: required(ref?.version, 'version'),
-  };
+  return normalizeBotSkillRef(ref);
 }
 
 function isValidInstallMarker(
@@ -487,6 +574,7 @@ function canonicalPublicInstallMarker(
   ).toISOString();
   return {
     source: 'skillhub',
+    visibility: 'public',
     skillId: required(marker.skillId, 'marker.skillId'),
     name: required(marker.name, 'marker.name').normalize('NFC'),
     installName: normalizeInstallName(marker.installName),

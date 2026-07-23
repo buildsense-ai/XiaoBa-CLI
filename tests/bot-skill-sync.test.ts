@@ -194,6 +194,42 @@ describe('BotSkillSyncService', () => {
     );
   });
 
+  test('keeps the workspace localSkillId when Cloud upgrades the same public Skill', async () => {
+    const fixture = createFixture(runtimeRoot, cloudRoot, artifactRoot, 'bot_A');
+    const skillDir = path.join(fixture.skillsRoot, 'browser');
+    writeSkill(skillDir, 'browser', '# public v1\n');
+    writeSkillHubInstallMarker(skillDir, publicMarker(computeLocalSkillContentHash(skillDir)));
+    const first = await fixture.sync.syncOnStartup('bot_A');
+    const originalLocalSkillId = first.manifest.entries[0].localSkillId;
+    const originalSkill = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
+    const originalMarker = fs.readFileSync(
+      path.join(skillDir, '.xiaoba-skillhub-install.json'),
+      'utf8',
+    );
+
+    writeSkill(skillDir, 'browser', '# public v2\n');
+    writeSkillHubInstallMarker(skillDir, {
+      ...publicMarker(computeLocalSkillContentHash(skillDir)),
+      version: '1.0.4',
+    });
+    const v2Manifest = await fixture.botSkills.scanManifest();
+    const v2Artifact = fixture.artifacts.put({
+      botId: 'bot_A',
+      skillsRoot: fixture.skillsRoot,
+      entry: v2Manifest.entries[0],
+      publicRef: { skillId: 'alice/browser', version: '1.0.4' },
+    });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), originalSkill);
+    fs.writeFileSync(path.join(skillDir, '.xiaoba-skillhub-install.json'), originalMarker);
+    fixture.definitionService.updateSkills('bot_A', [v2Artifact.ref]);
+
+    const pulled = await fixture.sync.syncOnStartup('bot_A');
+
+    assert.equal(pulled.direction, 'cloud_to_local');
+    assert.equal(pulled.manifest.entries[0].localSkillId, originalLocalSkillId);
+    assert.match(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8'), /public v2/);
+  });
+
   test('pulls a Cloud-only version when Local still equals Base', async () => {
     const fixture = createFixture(runtimeRoot, cloudRoot, artifactRoot, 'bot_A');
     const skillFile = path.join(fixture.skillsRoot, 'notes', 'SKILL.md');

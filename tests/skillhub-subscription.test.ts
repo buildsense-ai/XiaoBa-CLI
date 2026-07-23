@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as crypto from 'node:crypto';
 import * as fs from 'fs';
 import { createServer } from 'http';
 import * as os from 'os';
@@ -472,7 +473,7 @@ function installResult(
 
 function packageOptions(skillId: string, name: string, version: string, content: string, userId?: string): any {
   const encoded = Buffer.from(content).toString('base64');
-  const checksum = `${skillId}:${version}:${content}`;
+  const checksum = crypto.createHash('sha256').update(content, 'utf8').digest('hex');
   return {
     userId,
     allowUpdate: true,

@@ -1,5 +1,9 @@
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SkillHubService } from '../skillhub/service';
+import {
+  isCatsCoLocalOwnerSelfContext,
+  isCatsCoToolGatewayContext,
+} from './tool-gateway';
 
 export class ShareSkillHubSkillTool implements Tool {
   definition: ToolDefinition = {
@@ -29,7 +33,19 @@ export class ShareSkillHubSkillTool implements Tool {
     },
   };
 
-  async execute(args: any, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    if (
+      isCatsCoToolGatewayContext(context)
+      && !isCatsCoLocalOwnerSelfContext(context)
+    ) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: 'Only the local CatsCo owner can share local Skills to SkillHub.',
+        retryable: false,
+      };
+    }
+
     const skillName = String(args?.skillName || args?.skill || args?.name || '').trim();
     if (!skillName) {
       return {

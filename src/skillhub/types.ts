@@ -61,7 +61,10 @@ export type SkillHubSubscriptionScope =
 
 export interface SkillHubPackageInstallMarker {
   source: 'skillhub';
+  visibility?: 'public' | 'private';
   userId?: string;
+  ownerBotId?: string;
+  localSkillId?: string;
   skillId: string;
   name: string;
   installName: string;
@@ -75,6 +78,10 @@ export interface SkillHubPackageInstallMarker {
 }
 
 export type SkillHubRegistryEntry = VerifierRegistryEntry & {
+  visibility?: 'public' | 'private';
+  ownerBotId?: string;
+  localSkillId?: string;
+  installName?: string;
   contentHash?: string;
   description?: string;
   categories?: string[];
@@ -83,6 +90,37 @@ export type SkillHubRegistryEntry = VerifierRegistryEntry & {
   runtime?: Record<string, unknown>;
   riskLevel?: string;
 };
+
+export interface SkillHubBotCredential {
+  botId: string;
+  apiKey: string;
+}
+
+export interface SkillHubPrivateUpsertInput {
+  botId: string;
+  workspaceId: string;
+  localSkillId: string;
+  contentHash: string;
+  name: string;
+  installName: string;
+  forkedFrom?: { skillId: string; version: string };
+  files: Array<{
+    path: string;
+    size: number;
+    sha256: string;
+    contentBase64: string;
+  }>;
+}
+
+export interface SkillHubPrivateSkillResponse {
+  skill: SkillHubRegistryEntry & {
+    visibility: 'private';
+    ownerBotId: string;
+    localSkillId: string;
+    installName: string;
+    contentHash: string;
+  };
+}
 
 export interface UserSkillSubscription {
   skillId: string;

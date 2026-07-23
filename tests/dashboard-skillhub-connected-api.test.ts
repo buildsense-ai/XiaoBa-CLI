@@ -149,11 +149,12 @@ describe('dashboard connected SkillHub API', () => {
         name: 'quick-demo',
         installName: 'quick-demo',
         version: '1.0.0',
-        packageChecksumSha256: 'test-checksum',
+        packageChecksumSha256: 'a'.repeat(64),
         signature: {
           algorithm: 'ed25519',
           keyId: 'test-key',
           signature: 'test-signature',
+          signedAt: '2026-01-01T00:00:00.000Z',
         },
         packageUrl: 'https://example.test/quick-demo.skillpkg',
         installedAt: '2026-01-01T00:00:00.000Z',

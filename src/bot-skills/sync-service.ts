@@ -33,6 +33,8 @@ import {
   type SimulatedSkillArtifact,
   type SimulatedSkillArtifactStore,
 } from './simulated-artifact-store';
+import type { BotSkillArtifactTransport } from './artifact-transport';
+import { createSkillHubBotSkillArtifactTransport } from './skillhub-artifact-transport';
 import type { LocalSkillManifest, LocalSkillManifestEntry } from './local-manifest';
 import {
   createBotSkillWorkspaceService,
@@ -58,6 +60,7 @@ export interface BotSkillSyncResult {
     | 'cloud_missing'
     | 'workspace_restore'
     | 'legacy_migration'
+    | 'transport_migration'
     | 'base_initialized';
   manifest: LocalSkillManifest;
   base: BotSkillSyncBase;
@@ -88,6 +91,7 @@ export interface BotSkillSyncServiceOptions {
   definitionService?: BotDefinitionSyncService;
   baseRepository?: BotSkillSyncBaseRepository;
   artifactStore?: SimulatedSkillArtifactStore;
+  artifactTransport?: BotSkillArtifactTransport | null;
   onPullPhasePersisted?: Parameters<typeof reconcileBotSkillWorkspace>[0]['onPhasePersisted'];
 }
 
@@ -103,6 +107,7 @@ export class BotSkillSyncService {
   private readonly definitionService: BotDefinitionSyncService;
   private readonly baseRepository: BotSkillSyncBaseRepository;
   private readonly artifactStore: SimulatedSkillArtifactStore;
+  private readonly artifactTransport?: BotSkillArtifactTransport;
   private readonly onPullPhasePersisted?: BotSkillSyncServiceOptions['onPullPhasePersisted'];
 
   constructor(options: BotSkillSyncServiceOptions = {}) {
@@ -133,6 +138,15 @@ export class BotSkillSyncService {
         simulatedCloudRoot: options.simulatedCloudRoot,
         env: this.env,
       });
+    this.artifactTransport = options.artifactTransport === undefined
+      ? (options.artifactStore || options.simulatedCloudRoot
+        ? undefined
+        : createSkillHubBotSkillArtifactTransport({
+          runtimeRoot: this.runtimeRoot,
+          env: this.env,
+          artifactStore: this.artifactStore,
+        }))
+      : options.artifactTransport ?? undefined;
     this.onPullPhasePersisted = options.onPullPhasePersisted;
   }
 
@@ -233,7 +247,7 @@ export class BotSkillSyncService {
         ) {
           return this.pullSafely(botSkills, context, manifest, cloud, baseRead, false);
         }
-        const prepared = this.preparePush(manifest, undefined);
+        const prepared = await this.preparePush(manifest, context, undefined);
         if (
           cloudProjectionDigest(prepared.cloudSkills)
           === cloudProjectionDigest(cloudSkills)
@@ -276,6 +290,12 @@ export class BotSkillSyncService {
       }
       if (cloudDigest !== baseRead.base.cloud.digest) {
         return this.pullSafely(botSkills, context, manifest, cloud, baseRead, false);
+      }
+      if (
+        this.artifactTransport
+        && baseRead.base.bindings.some(binding => binding.storage === 'simulated-private')
+      ) {
+        return this.push(botSkills, context, 'transport_migration', manifest, baseRead);
       }
       const committedCloud = this.writeCacheFromLatestCanonical(
         botId,
@@ -351,7 +371,7 @@ export class BotSkillSyncService {
   private async push(
     botSkills: BotSkillService,
     context: { botId: string; workspaceId: string },
-    reason: 'local_changed' | 'cloud_missing' | 'legacy_migration',
+    reason: PushReason,
     knownManifest?: LocalSkillManifest,
     knownBase?: BotSkillSyncBaseReadResult,
     knownPrepared?: PreparedPush,
@@ -381,7 +401,7 @@ export class BotSkillSyncService {
   private async pushUnsafe(
     botSkills: BotSkillService,
     context: { botId: string; workspaceId: string },
-    reason: 'local_changed' | 'cloud_missing' | 'legacy_migration',
+    reason: PushReason,
     knownManifest?: LocalSkillManifest,
     knownBase?: BotSkillSyncBaseReadResult,
     knownPrepared?: PreparedPush,
@@ -397,8 +417,9 @@ export class BotSkillSyncService {
         manifest,
       );
     }
-    const prepared = knownPrepared ?? this.preparePush(
+    const prepared = knownPrepared ?? await this.preparePush(
       manifest,
+      context,
       baseRead.status === 'valid' ? baseRead.base : undefined,
     );
     const confirmed = await botSkills.scanManifest();
@@ -408,7 +429,7 @@ export class BotSkillSyncService {
       !== localProjectionDigest(prepared.localEntries)
     ) {
       throw new BotSkillSyncError(
-        'Local Skills changed while the simulated upload was being prepared.',
+        'Local Skills changed while the upload was being prepared.',
         'BOT_SKILL_SYNC_LOCAL_CHANGED',
         true,
         confirmed,
@@ -442,32 +463,69 @@ export class BotSkillSyncService {
     };
   }
 
-  private preparePush(
+  private async preparePush(
     manifest: LocalSkillManifest,
+    context: { botId: string; workspaceId: string },
     previousBase?: BotSkillSyncBase,
-  ): PreparedPush {
+  ): Promise<PreparedPush> {
     const localEntries = projectLocalManifest(manifest);
     const bindings: BotSkillSyncBinding[] = [];
     const cloudSkills: BotSkillRef[] = [];
     const previousBindings = new Map(
       (previousBase?.bindings ?? []).map(binding => [binding.localSkillId, binding]),
     );
+    const previousLocalEntries = new Map(
+      (previousBase?.local.entries ?? []).map(entry => [entry.localSkillId, entry]),
+    );
     for (const entry of manifest.entries) {
       const publicRef = unmodifiedPublicRef(entry);
-      const artifact = this.artifactStore.put({
+      const previous = previousBindings.get(entry.localSkillId);
+      const previousLocal = previousLocalEntries.get(entry.localSkillId);
+      const reusablePrivate = (
+        !publicRef
+        && this.artifactTransport
+        && previous?.storage === 'skillhub-private'
+        && previousLocal?.contentHash === entry.contentHash
+      );
+      if (reusablePrivate) {
+        bindings.push({ ...previous, ref: { ...previous.ref } });
+        if (entry.enabled) cloudSkills.push(previous.ref);
+        continue;
+      }
+      const snapshotOptions = {
         botId: required(manifest.botId, 'manifest.botId'),
         skillsRoot: this.skillsRoot(),
         entry,
         ...(publicRef ? { publicRef } : {}),
-      });
-      const previous = previousBindings.get(entry.localSkillId);
+      };
+      const artifact = await this.prepareArtifactForPush(
+        snapshotOptions,
+        entry,
+        publicRef,
+        context,
+      );
       if (
         previous
-        && previous.storage === 'simulated-private'
-        && artifact.storage === 'simulated-private'
+        && (
+          previous.storage === 'simulated-private'
+          || previous.storage === 'skillhub-private'
+        )
+        && artifact.storage === previous.storage
         && previous.ref.skillId !== artifact.ref.skillId
       ) {
         throw new Error(`Private Skill identity changed for ${entry.localSkillId}`);
+      }
+      if (
+        !publicRef
+        && this.artifactTransport
+        && (
+          artifact.storage !== 'skillhub-private'
+          || artifact.botId !== context.botId
+          || artifact.localSkillId !== entry.localSkillId
+          || artifact.contentHash !== entry.contentHash
+        )
+      ) {
+        throw new Error(`Private Skill upload verification failed for ${entry.localSkillId}`);
       }
       bindings.push({
         localSkillId: entry.localSkillId,
@@ -484,13 +542,32 @@ export class BotSkillSyncService {
     };
   }
 
-  private pull(
+  private async prepareArtifactForPush(
+    snapshotOptions: Parameters<SimulatedSkillArtifactStore['snapshot']>[0],
+    entry: LocalSkillManifestEntry,
+    publicRef: BotSkillRef | undefined,
+    context: { botId: string; workspaceId: string },
+  ): Promise<SimulatedSkillArtifact> {
+    const snapshot = !publicRef && this.artifactTransport
+      ? this.artifactStore.snapshot(snapshotOptions)
+      : this.artifactStore.put(snapshotOptions);
+    if (publicRef || !this.artifactTransport) return snapshot;
+    return this.artifactTransport.upsertPrivate({
+      ...context,
+      artifact: snapshot,
+      ...(entry.skillId && entry.version
+        ? { forkedFrom: { skillId: entry.skillId, version: entry.version } }
+        : {}),
+    });
+  }
+
+  private async pull(
     _botSkills: BotSkillService,
     context: { botId: string; workspaceId: string },
     manifest: LocalSkillManifest,
     cloud: BotDefinition,
     baseRead: BotSkillSyncBaseReadResult,
-  ): BotSkillSyncResult {
+  ): Promise<BotSkillSyncResult> {
     this.requireCompleteLocal(manifest, context.botId, context.workspaceId);
     const cloudSkills = projectCloudSkills(cloud.skills ?? []);
     const previousBase = baseRead.status === 'valid' ? baseRead.base : undefined;
@@ -504,8 +581,11 @@ export class BotSkillSyncService {
     const desired: BotSkillWorkspaceDesiredEntry[] = [];
     const desiredArtifacts = new Map<string, SimulatedSkillArtifact>();
     for (const ref of cloudSkills) {
-      const artifact = this.artifactStore.read(ref);
-      if (artifact.storage === 'simulated-private' && artifact.botId !== context.botId) {
+      const artifact = await this.resolveArtifact(ref, context);
+      if (
+        (artifact.storage === 'simulated-private' || artifact.storage === 'skillhub-private')
+        && artifact.botId !== context.botId
+      ) {
         throw new BotSkillSyncError(
           `Private Skill artifact belongs to another Bot: ${ref.skillId}@${ref.version}`,
           'BOT_SKILL_ARTIFACT_OWNER_MISMATCH',
@@ -516,7 +596,10 @@ export class BotSkillSyncService {
       const previous = bindingsByExactRef.get(refKey(ref))
         ?? bindingsBySkillId.get(ref.skillId);
       const localSkillId = previous?.localSkillId
-        ?? (artifact.storage === 'simulated-private'
+        ?? ((
+          artifact.storage === 'simulated-private'
+          || artifact.storage === 'skillhub-private'
+        )
           ? artifact.localSkillId
           : restoredPublicLocalSkillId(context.workspaceId, ref));
       desired.push({
@@ -545,7 +628,7 @@ export class BotSkillSyncService {
             manifest,
           );
         }
-        const artifact = this.artifactStore.read(binding.ref);
+        const artifact = await this.resolveArtifact(binding.ref, context);
         desired.push({
           artifact,
           localSkillId: local.localSkillId,
@@ -609,16 +692,16 @@ export class BotSkillSyncService {
     };
   }
 
-  private pullSafely(
+  private async pullSafely(
     botSkills: BotSkillService,
     context: { botId: string; workspaceId: string },
     manifest: LocalSkillManifest,
     cloud: BotDefinition,
     baseRead: BotSkillSyncBaseReadResult,
     safeToUseLocal: boolean,
-  ): BotSkillSyncResult {
+  ): Promise<BotSkillSyncResult> {
     try {
-      return this.pull(botSkills, context, manifest, cloud, baseRead);
+      return await this.pull(botSkills, context, manifest, cloud, baseRead);
     } catch (error) {
       if (error instanceof BotSkillSyncError) {
         if (error.safeToUseLocal === safeToUseLocal) throw error;
@@ -640,6 +723,32 @@ export class BotSkillSyncService {
       (wrapped as any).cause = error;
       throw wrapped;
     }
+  }
+
+  private async resolveArtifact(
+    ref: BotSkillRef,
+    context: { botId: string; workspaceId: string },
+  ): Promise<SimulatedSkillArtifact> {
+    try {
+      return this.artifactStore.read(ref);
+    } catch (error: any) {
+      if (error?.code !== 'SIMULATED_SKILL_ARTIFACT_MISSING') throw error;
+    }
+    if (ref.skillId.startsWith('sim-private:')) {
+      const error: NodeJS.ErrnoException = new Error(
+        `Legacy private Skill artifact is missing: ${ref.skillId}@${ref.version}; its original device must migrate it before another device can restore it.`,
+      );
+      error.code = 'BOT_SKILL_LEGACY_ARTIFACT_MIGRATION_REQUIRED';
+      throw error;
+    }
+    if (!this.artifactTransport) {
+      const error: NodeJS.ErrnoException = new Error(
+        `Skill artifact is not cached: ${ref.skillId}@${ref.version}`,
+      );
+      error.code = 'BOT_SKILL_ARTIFACT_TRANSPORT_UNAVAILABLE';
+      throw error;
+    }
+    return this.artifactTransport.fetchVerified(ref, context);
   }
 
   private requireCloud(botId: string, manifest: LocalSkillManifest): BotDefinition {
@@ -716,6 +825,12 @@ interface PreparedPush {
   cloudSkills: BotSkillRef[];
 }
 
+type PushReason =
+  | 'local_changed'
+  | 'cloud_missing'
+  | 'legacy_migration'
+  | 'transport_migration';
+
 export function createBotSkillSyncService(
   options: BotSkillSyncServiceOptions = {},
 ): BotSkillSyncService {
@@ -725,6 +840,7 @@ export function createBotSkillSyncService(
 function unmodifiedPublicRef(entry: LocalSkillManifestEntry): BotSkillRef | undefined {
   if (
     entry.source !== 'skillhub'
+    || entry.sourceVisibility === 'private'
     || !entry.skillId
     || !entry.version
     || !entry.installedContentHash
