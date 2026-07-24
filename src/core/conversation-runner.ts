@@ -5,6 +5,7 @@ import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks, StreamRetryInfo } from '../providers/provider';
 import { Logger } from '../utils/logger';
+import { isRateLimitErrorCode } from '../utils/rate-limit-error';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
@@ -1784,48 +1785,9 @@ export class ConversationRunner {
 
   private static readonly MAX_RETRIES = 2;
   private static readonly RETRY_BASE_DELAY_MS = 5000;
-  private static readonly RATE_LIMIT_ERROR_CODES = new Set([
-    'RATE_LIMIT',
-    'HTTP_429',
-    'TOO_MANY_REQUESTS',
-  ]);
-
-  private static hasRateLimitMarkers(text: string): boolean {
-    if (!text) {
-      return false;
-    }
-
-    const lower = text.toLowerCase();
-    if (
-      lower.includes('rate limit')
-      || lower.includes('too many requests')
-      || lower.includes('频率受限')
-      || lower.includes('限流')
-    ) {
-      return true;
-    }
-
-    return /(status(?:\s*code)?|http(?:\s*status)?|错误码|code)\s*[:=]?\s*429\b/i.test(text)
-      || /\b429\b.{0,24}(too many requests|rate limit|频率受限|限流)/i.test(text)
-      || /(too many requests|rate limit|频率受限|限流).{0,24}\b429\b/i.test(text);
-  }
-
-  /** 检测工具结果是否为 429 限流错误（避免把正文里的数字 429 误判为限流） */
+  /** 检测工具结果是否为 429 限流错误；正文和通用 retryable 标记都不能驱动限流退避。 */
   private static isRateLimitError(result: ToolResult): boolean {
-    const content = String(result.content || '');
-    if (result.errorCode && ConversationRunner.RATE_LIMIT_ERROR_CODES.has(result.errorCode)) {
-      return true;
-    }
-
-    const isFailure = result.ok === false
-      || Boolean(result.errorCode)
-      || result.retryable === true;
-
-    if (!isFailure) {
-      return false;
-    }
-
-    return ConversationRunner.hasRateLimitMarkers(content);
+    return isRateLimitErrorCode(result.errorCode);
   }
 
   /** 带 429 重试的工具执行 */

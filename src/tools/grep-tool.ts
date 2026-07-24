@@ -1,4 +1,5 @@
-import { execFileSync, spawnSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
@@ -8,6 +9,7 @@ import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
 const DEFAULT_LIMIT = 250;
+const execFileAsync = promisify(execFile);
 
 interface GrepResult {
   mode: 'content' | 'files' | 'count';
@@ -62,15 +64,6 @@ function toRelativePath(absolutePath: string, cwd: string): string {
   }
 
   return relative.replace(/\\/g, '/');
-}
-
-function isCommandAvailable(command: string): boolean {
-  try {
-    const result = spawnSync(command, ['--version'], { stdio: 'pipe' });
-    return result.status === 0;
-  } catch {
-    return false;
-  }
 }
 
 export class GrepTool implements Tool {
@@ -147,6 +140,9 @@ export class GrepTool implements Tool {
         lastError = null; // 重置错误，因为空结果是正常情况
         continue;
       } catch (error: any) {
+        if (context.abortSignal?.aborted || error?.message === '搜索已取消') {
+          return { ok: false, errorCode: 'EXECUTION_ERROR', message: '搜索已取消' };
+        }
         lastError = error;
         // 如果有多个 fallback，继续尝试下一个
         continue;
@@ -160,7 +156,7 @@ export class GrepTool implements Tool {
   }
 
   private async executeWithRipgrep(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
-    const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
+    const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files' } = args;
     const rgArgs: string[] = ['--color=never', '--no-heading', '--hidden'];
 
     for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) rgArgs.push('--glob', `!${dir}`);
@@ -178,21 +174,25 @@ export class GrepTool implements Tool {
     rgArgs.push(originalPath ? searchPath : '.');
 
     try {
-      const output = execFileSync('rg', rgArgs, { cwd: context.workingDirectory, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }) as string;
-      return { content: this.processOutput(output, args, context, visibleSearchPath) };
+      const { stdout } = await execFileAsync('rg', rgArgs, {
+        cwd: context.workingDirectory,
+        encoding: 'utf-8',
+        maxBuffer: 10 * 1024 * 1024,
+        signal: context.abortSignal,
+      });
+      return { content: this.processOutput(stdout, args, context, visibleSearchPath) };
     } catch (error: any) {
-      if (error.status === 1) {
-        // 无匹配，返回格式化的"未找到"
+      if (this.isAborted(error, context)) throw new Error('搜索已取消');
+      if (error.code === 1) {
         return { content: this.formatNoMatch(pattern, visibleSearchPath ?? originalPath, globPattern, fileType) };
       }
-      // exit code 2 或其他错误，抛出让 execute 统一处理
-      const errorMsg = error.stderr || `rg 执行失败 (exit ${error.status})`;
+      const errorMsg = error.stderr || `rg 执行失败 (exit ${error.code})`;
       throw new Error(errorMsg);
     }
   }
 
   private async executeWithSystemGrep(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
-    const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
+    const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files' } = args;
     const grepArgs: string[] = [];
 
     if (case_insensitive) grepArgs.push('-i');
@@ -205,67 +205,94 @@ export class GrepTool implements Tool {
     grepArgs.push(pattern, searchPath);
 
     try {
-      const output = execFileSync('grep', grepArgs, { cwd: context.workingDirectory, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }) as string;
-      let processedOutput = output;
+      const { stdout } = await execFileAsync('grep', grepArgs, {
+        cwd: context.workingDirectory,
+        encoding: 'utf-8',
+        maxBuffer: 10 * 1024 * 1024,
+        signal: context.abortSignal,
+      });
+      let processedOutput = stdout;
 
       if (globPattern) {
-        const lines = output.trim().split('\n').filter(Boolean);
+        const lines = stdout.trim().split('\n').filter(Boolean);
         const globRegex = new RegExp(globPattern.replace(/\*/g, '.*').replace(/\?/g, '.'));
         processedOutput = lines.filter(line => globRegex.test(path.basename(line.split(':')[0]))).join('\n');
       }
 
       return { content: this.processOutput(processedOutput, args, context, visibleSearchPath) };
     } catch (error: any) {
-      if (error.status === 1) {
+      if (this.isAborted(error, context)) throw new Error('搜索已取消');
+      if (error.code === 1) {
         return { content: this.formatNoMatch(pattern, visibleSearchPath ?? originalPath, globPattern, fileType) };
       }
-      const errorMsg = error.stderr || `grep 执行失败 (exit ${error.status})`;
+      const errorMsg = error.stderr || `grep 执行失败 (exit ${error.code})`;
       throw new Error(errorMsg);
     }
   }
 
   private async executeWithNodeJS(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
-    const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
-
-    if (!fs.existsSync(searchPath)) {
-      throw new Error(`目录不存在: ${searchPath}`);
-    }
-
-    const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const { pattern, glob: globPattern, case_insensitive = false, output_mode = 'files' } = args;
+    const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(escapeRegex(pattern), case_insensitive ? 'i' : '');
+    const globRegex = globPattern
+      ? new RegExp('^' + globPattern.replace(/\*/g, '.*').replace(/\?/g, '.') + '$')
+      : undefined;
     const results: string[] = [];
 
-    const walkDir = (dir: string) => {
-      if (!fs.existsSync(dir)) return;
+    const ensureNotAborted = () => {
+      if (context.abortSignal?.aborted) throw new Error('搜索已取消');
+    };
+
+    const searchFile = async (fullPath: string, fileName: string): Promise<void> => {
+      ensureNotAborted();
+      if (globRegex && !globRegex.test(fileName)) return;
       try {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          const fullPath = path.join(dir, entry.name);
-          if (VCS_DIRECTORIES_TO_EXCLUDE.includes(entry.name as any)) continue;
-          if (entry.isDirectory()) { walkDir(fullPath); continue; }
-          if (entry.isFile()) {
-            if (globPattern) {
-              const globRegex = new RegExp('^' + globPattern.replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
-              if (!globRegex.test(entry.name)) continue;
-            }
-            try {
-              const lines = fs.readFileSync(fullPath, 'utf-8').split('\n');
-              for (let i = 0; i < lines.length; i++) {
-                if (regex.test(lines[i])) {
-                  if (output_mode === 'files') { results.push(fullPath); break; }
-                  else if (output_mode === 'count') { results.push(`${fullPath}:1`); break; }
-                  else results.push(`${fullPath}:${i + 1}:${lines[i]}`);
-                }
-              }
-            } catch {}
-          }
+        const lines = (await fs.promises.readFile(fullPath, 'utf-8')).split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (!regex.test(lines[i])) continue;
+          if (output_mode === 'files') { results.push(fullPath); break; }
+          if (output_mode === 'count') { results.push(`${fullPath}:1`); break; }
+          results.push(`${fullPath}:${i + 1}:${lines[i]}`);
         }
       } catch (error: any) {
-        throw new Error(`读取目录失败: ${error.message}`);
+        if (context.abortSignal?.aborted) throw new Error('搜索已取消');
+        if (!['EACCES', 'EPERM', 'EISDIR'].includes(error?.code)) throw error;
       }
     };
 
-    walkDir(searchPath);
+    const walkDir = async (dir: string): Promise<void> => {
+      ensureNotAborted();
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      } catch (error: any) {
+        throw new Error(`读取目录失败: ${error.message}`);
+      }
+
+      for (const entry of entries) {
+        ensureNotAborted();
+        if (VCS_DIRECTORIES_TO_EXCLUDE.includes(entry.name as any)) continue;
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) await walkDir(fullPath);
+        else if (entry.isFile()) await searchFile(fullPath, entry.name);
+      }
+    };
+
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.stat(searchPath);
+    } catch (error: any) {
+      if (error?.code === 'ENOENT') throw new Error(`目录不存在: ${searchPath}`);
+      throw error;
+    }
+
+    if (stats.isDirectory()) await walkDir(searchPath);
+    else if (stats.isFile()) await searchFile(searchPath, path.basename(searchPath));
     return { content: this.processOutput(results.join('\n'), args, context, visibleSearchPath) };
+  }
+
+  private isAborted(error: any, context: ToolExecutionContext): boolean {
+    return context.abortSignal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
   }
 
   private processOutput(output: string, args: any, context: ToolExecutionContext, visibleSearchPath?: string): string {
