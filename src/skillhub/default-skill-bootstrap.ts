@@ -43,6 +43,8 @@ export interface DefaultSkillBootstrapOptions {
   skills?: DefaultSkillHubSkill[];
   service?: Pick<SkillHubService, 'install'>;
   now?: () => Date;
+  skillsRoot?: string;
+  statePath?: string;
 }
 
 let bootstrapInFlight: Promise<DefaultSkillBootstrapResult[]> | null = null;
@@ -65,16 +67,17 @@ export async function bootstrapDefaultSkillHubSkills(
   const defaults = (options.skills ?? DEFAULT_SKILLHUB_SKILLS).filter(isValidDefaultSkill);
   if (!defaults.length) return [];
 
-  const service = options.service ?? new SkillHubService();
+  const skillsRoot = path.resolve(options.skillsRoot ?? PathResolver.getSkillsPath());
+  const service = options.service ?? new SkillHubService({ skillsRoot });
   const now = options.now ?? (() => new Date());
-  const statePath = getDefaultSkillBootstrapStatePath();
+  const statePath = options.statePath ?? getDefaultSkillBootstrapStatePath();
   const state = readStateFile(statePath);
   const results: DefaultSkillBootstrapResult[] = [];
   let changed = false;
 
   for (const item of defaults) {
     const itemState = state.items[item.key];
-    const targetDir = resolveSkillDirectory(item.installName);
+    const targetDir = resolveSkillDirectory(item.installName, skillsRoot);
     const activeSkillFile = path.join(targetDir, 'SKILL.md');
     const disabledSkillFile = `${activeSkillFile}.disabled`;
 
@@ -103,7 +106,7 @@ export async function bootstrapDefaultSkillHubSkills(
     if (fs.existsSync(targetDir)) {
       state.items[item.key] = {
         ...nextState(item, 'name_conflict', now),
-        relativePath: path.relative(PathResolver.getSkillsPath(), targetDir),
+        relativePath: path.relative(skillsRoot, targetDir),
       };
       changed = true;
       results.push({ key: item.key, state: 'name_conflict', action: 'recorded', reason: 'local_same_name_exists' });
@@ -115,7 +118,7 @@ export async function bootstrapDefaultSkillHubSkills(
       const installed = await service.install(item.skillId, item.version);
       state.items[item.key] = {
         ...nextState(item, 'installed', now),
-        relativePath: path.relative(PathResolver.getSkillsPath(), installed.skill.path),
+        relativePath: path.relative(skillsRoot, installed.skill.path),
         installedAt: attemptedAt,
         lastAttemptAt: attemptedAt,
       };
@@ -189,8 +192,8 @@ function writeStateFile(filePath: string, state: DefaultSkillBootstrapStateFile)
   fs.renameSync(tmpPath, filePath);
 }
 
-function resolveSkillDirectory(installName: string): string {
-  const root = path.resolve(PathResolver.getSkillsPath());
+function resolveSkillDirectory(installName: string, skillsRoot?: string): string {
+  const root = path.resolve(skillsRoot ?? PathResolver.getSkillsPath());
   const target = path.resolve(root, installName);
   const relative = path.relative(root, target);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {

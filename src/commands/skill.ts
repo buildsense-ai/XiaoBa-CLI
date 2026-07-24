@@ -8,6 +8,14 @@ import chalk from 'chalk';
 import * as path from 'path';
 import * as fs from 'fs';
 import inquirer from 'inquirer';
+import { withBotSkillWorkspaceLock } from '../bot-skills/workspace-lock';
+import { notifyBotSkillMutation } from '../bot-skills/mutation-events';
+import {
+  BotSkillRuntime,
+  isBotSkillRuntimeEnabled,
+  resolveBotSkillRuntimeTransport,
+} from '../bot-skills/runtime';
+import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 
 /**
  * Skill 命令处理器
@@ -58,6 +66,17 @@ export function registerSkillCommand(program: Command): void {
     .option('--npm', '移除 npm 包形式的 skill')
     .action(async (name: string, options: { force?: boolean; npm?: boolean }) => {
       await removeSkill(name, options);
+    });
+
+  skillCmd
+    .command('sync-repair <strategy>')
+    .description('Repair a missing/corrupt Bot Skill sync Base with local-wins or cloud-wins')
+    .option('-f, --force', 'Apply the selected repair strategy without confirmation')
+    .action(async (
+      strategy: string,
+      options: { force?: boolean },
+    ) => {
+      await repairBotSkillSync(strategy, options.force);
     });
 }
 
@@ -181,7 +200,7 @@ async function installGithubSkill(repo: string): Promise<void> {
 
   // 统一安装到 ~/.xiaoba/skills/
   const targetDir = PathResolver.getSkillsPath();
-  PathResolver.ensureDir(targetDir);
+  const expectedRuntime = currentCliBotSkillRuntime(targetDir);
 
   const skillPath = path.join(targetDir, repoName);
 
@@ -197,10 +216,20 @@ async function installGithubSkill(repo: string): Promise<void> {
     Logger.info(`目标目录: ${chalk.gray(skillPath)} (项目 skills 目录)\n`);
 
     // 克隆仓库
-    execSync(`git clone ${githubUrl} "${skillPath}"`, {
-      stdio: 'inherit',
-      cwd: targetDir
+    await withBotSkillWorkspaceLock(targetDir, async () => {
+      assertCliBotSkillOwnerUnchanged(expectedRuntime, targetDir);
+      PathResolver.ensureDir(targetDir);
+      if (fs.existsSync(skillPath)) {
+        const error: any = new Error(`Skill directory already exists: ${skillPath}`);
+        error.code = 'SKILL_ALREADY_EXISTS';
+        throw error;
+      }
+      execSync(`git clone ${githubUrl} "${skillPath}"`, {
+        stdio: 'inherit',
+        cwd: targetDir,
+      });
     });
+    await notifyAndSyncBotSkills(targetDir);
 
     Logger.success(`\n✓ Skill ${styles.highlight(repoName)} 安装成功！`);
     Logger.info(`安装位置: ${skillPath}`);
@@ -211,7 +240,10 @@ async function installGithubSkill(repo: string): Promise<void> {
     // 清理失败的安装
     if (fs.existsSync(skillPath)) {
       try {
-        fs.rmSync(skillPath, { recursive: true, force: true });
+        await withBotSkillWorkspaceLock(targetDir, async () => {
+          assertCliBotSkillOwnerUnchanged(expectedRuntime, targetDir);
+          fs.rmSync(skillPath, { recursive: true, force: true });
+        });
       } catch (cleanupError) {
         // 忽略清理错误
       }
@@ -283,6 +315,8 @@ async function removeNpmSkill(packageName: string, force?: boolean): Promise<voi
  * 移除本地 skill
  */
 async function removeLocalSkill(name: string, force?: boolean): Promise<void> {
+  const skillsRoot = PathResolver.getSkillsPath();
+  const expectedRuntime = currentCliBotSkillRuntime(skillsRoot);
   const manager = new SkillManager();
   await manager.loadSkills();
   const skill = manager.getSkill(name);
@@ -317,11 +351,129 @@ async function removeLocalSkill(name: string, force?: boolean): Promise<void> {
 
   try {
     Logger.info(`\n正在移除: ${chalk.gray(skillDir)}`);
-    fs.rmSync(skillDir, { recursive: true, force: true });
+    await withBotSkillWorkspaceLock(skillsRoot, async () => {
+      assertCliBotSkillOwnerUnchanged(expectedRuntime, skillsRoot);
+      const latestManager = new SkillManager();
+      await latestManager.loadSkills();
+      const latestSkill = latestManager.getSkill(name);
+      if (!latestSkill) {
+        const error: any = new Error(`Skill no longer exists: ${name}`);
+        error.code = 'SKILL_CHANGED_DURING_CONFIRMATION';
+        throw error;
+      }
+      fs.rmSync(path.dirname(latestSkill.filePath), { recursive: true, force: true });
+    });
+    await notifyAndSyncBotSkills(skillsRoot);
     Logger.success(`\n✓ Skill ${styles.highlight(name)} 已成功移除！`);
     Logger.info(`已删除目录: ${skillDir}`);
   } catch (error: any) {
     Logger.error(`移除失败: ${error.message}`);
     process.exit(1);
+  }
+}
+
+async function notifyAndSyncBotSkills(skillsRoot: string): Promise<void> {
+  notifyBotSkillMutation(skillsRoot);
+  if (!isBotSkillRuntimeEnabled()) return;
+  try {
+    const runtimeRoot = PathResolver.getRuntimeDataRoot();
+    const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
+    if (!auth.botUid || !auth.apiKey) return;
+    const runtime = new BotSkillRuntime({
+      runtimeRoot,
+      skillsRoot,
+      auth,
+      transport: resolveBotSkillRuntimeTransport(),
+    });
+    const outcome = await runtime.sync({ allowLegacyClaim: true });
+    if (outcome.result.action === 'blocked' || outcome.result.action === 'conflict') {
+      Logger.warning(`Bot Skill cloud sync is pending: ${outcome.result.reason || outcome.result.action}`);
+    }
+  } catch (error: any) {
+    Logger.warning(`Bot Skill cloud sync is pending: ${error?.code || error?.message || String(error)}`);
+  }
+}
+
+async function repairBotSkillSync(strategyValue: string, force?: boolean): Promise<void> {
+  const strategy = String(strategyValue || '').trim().toLowerCase();
+  if (strategy !== 'local-wins' && strategy !== 'cloud-wins') {
+    Logger.error('Strategy must be local-wins or cloud-wins.');
+    process.exitCode = 1;
+    return;
+  }
+  if (!isBotSkillRuntimeEnabled()) {
+    Logger.error('Bot Skill sync is not enabled.');
+    process.exitCode = 1;
+    return;
+  }
+  const runtime = currentCliBotSkillRuntime(PathResolver.getSkillsPath());
+  if (!runtime) {
+    Logger.error('A bound CatsCo Bot is required to repair Bot Skill sync.');
+    process.exitCode = 1;
+    return;
+  }
+  if (!force) {
+    const direction = strategy === 'local-wins'
+      ? 'replace the Cloud Skill references with the current local workspace'
+      : 'replace the current local workspace with the Cloud Skill references';
+    const { confirmed } = await inquirer.prompt([{
+      type: 'confirm',
+      name: 'confirmed',
+      message: `This will ${direction}. Continue?`,
+      default: false,
+    }]);
+    if (!confirmed) {
+      Logger.info('Bot Skill sync repair was cancelled.');
+      return;
+    }
+  }
+  const outcome = await runtime.repair(strategy);
+  if (outcome.result.action !== 'uploaded' && outcome.result.action !== 'downloaded') {
+    const blocked = outcome.result.blockedSkills?.map(skill => skill.name).join(', ');
+    Logger.error(
+      `Bot Skill sync repair did not complete: ${outcome.result.reason || outcome.result.action}`
+      + (blocked ? ` (${blocked})` : ''),
+    );
+    if (outcome.result.reason === 'SYNC_REPAIR_PENDING_COMMIT_EXISTS') {
+      Logger.info('Run a normal Bot Skill sync first so its pending commit can be recovered.');
+    }
+    process.exitCode = 1;
+    return;
+  }
+  Logger.success(
+    strategy === 'local-wins'
+      ? 'Bot Skill sync Base repaired from the local workspace.'
+      : 'Bot Skill sync Base repaired from Cloud.',
+  );
+}
+
+function currentCliBotSkillRuntime(skillsRoot: string): BotSkillRuntime | undefined {
+  if (!isBotSkillRuntimeEnabled()) return undefined;
+  const runtimeRoot = PathResolver.getRuntimeDataRoot();
+  const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
+  if (!auth.botUid || !auth.apiKey) return undefined;
+  return new BotSkillRuntime({
+    runtimeRoot,
+    skillsRoot,
+    auth,
+    transport: resolveBotSkillRuntimeTransport(),
+  });
+}
+
+function assertCliBotSkillOwnerUnchanged(
+  expected: BotSkillRuntime | undefined,
+  skillsRoot: string,
+): void {
+  if (!expected) return;
+  const current = currentCliBotSkillRuntime(skillsRoot);
+  if (
+    !current
+    || current.owner.botId !== expected.owner.botId
+    || current.owner.authority !== expected.owner.authority
+    || current.workspace.inspect(current.owner).kind !== 'valid'
+  ) {
+    const error: any = new Error('The active Bot changed while waiting to modify its Skill workspace.');
+    error.code = 'BOT_SKILL_ACTIVE_OWNER_CHANGED';
+    throw error;
   }
 }

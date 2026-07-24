@@ -231,6 +231,44 @@ describe('dashboard service manager', () => {
     assert.equal(service?.status, 'stopped');
     assert.equal(service?.lastError, undefined);
   });
+
+  test('waits for the CatsCo ready marker and for the child to fully stop', async () => {
+    const manager = new ServiceManager(process.cwd());
+    const serviceRecord = (manager as any).services.get('catscompany');
+    serviceRecord.info.command = process.execPath;
+    serviceRecord.info.args = [
+      '-e',
+      "setTimeout(() => console.log('[CATSCO_READY]'), 25); setInterval(() => {}, 1000);",
+    ];
+
+    try {
+      const running = await manager.startAndWait('catscompany', 5_000);
+      assert.equal(running.status, 'running');
+      assert.ok(manager.getLogs('catscompany').some(line => line.includes('[CATSCO_READY]')));
+
+      const stopped = await manager.stopAndWait('catscompany', 5_000);
+      assert.equal(stopped.status, 'stopped');
+      assert.equal((manager as any).services.get('catscompany').process, undefined);
+    } finally {
+      if (manager.getService('catscompany')?.status === 'running') {
+        await manager.stopAndWait('catscompany', 5_000);
+      }
+    }
+  });
+
+  test('stops a connector that never becomes ready before returning the timeout', async () => {
+    const manager = new ServiceManager(process.cwd());
+    const serviceRecord = (manager as any).services.get('catscompany');
+    serviceRecord.info.command = process.execPath;
+    serviceRecord.info.args = ['-e', 'setInterval(() => {}, 1000);'];
+
+    await assert.rejects(
+      manager.startAndWait('catscompany', 100),
+      /Timed out waiting for service "catscompany" to become ready/,
+    );
+    assert.notEqual(manager.getService('catscompany')?.status, 'running');
+    assert.equal((manager as any).services.get('catscompany').process, undefined);
+  });
 });
 
 function normalize(value: string): string {

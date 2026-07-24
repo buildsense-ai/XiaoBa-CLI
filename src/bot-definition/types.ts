@@ -38,13 +38,26 @@ export interface BotPromptDefinition {
 }
 
 /**
- * The deliberately small, portable part of a bot.
+ * A portable, immutable Skill package reference. Local workspace identity and
+ * content hashes deliberately live in the device-local sync base instead of
+ * leaking into the cloud Definition.
+ */
+export interface BotSkillReference {
+  skillId: string;
+  version: string;
+}
+
+/**
+ * The deliberately small, portable part of a bot. Missing `skills` means the
+ * Definition predates Bot Skill sync and still needs one-time migration;
+ * `skills: []` is an explicit, valid empty workspace.
  */
 export interface BotDefinition {
   schema: typeof BOT_DEFINITION_SCHEMA;
   botId: string;
   model: BotModelDefinition;
   prompt?: BotPromptDefinition;
+  skills?: BotSkillReference[];
 }
 
 export interface LocalModelProfile {

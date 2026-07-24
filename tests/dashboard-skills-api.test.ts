@@ -185,6 +185,29 @@ describe('dashboard skills API', () => {
     assert.equal(applyProposal.status, 415);
   });
 
+  test('legacy prompt file writes remain read-only until a Bot Definition is available', async () => {
+    for (const promptPath of [
+      'system-prompt.md',
+      './system-prompt.md',
+      'foo/../system-prompt.md',
+      '.\\system-prompt.md',
+    ]) {
+      const writePrompt = await fetch(`${baseUrl}/api/prompts/file`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: promptPath, content: 'must not persist' }),
+      });
+      assert.equal(writePrompt.status, 409, promptPath);
+
+      const deletePrompt = await fetch(`${baseUrl}/api/prompts/file`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: promptPath }),
+      });
+      assert.equal(deletePrompt.status, 409, promptPath);
+    }
+  });
+
   function writeSkill(relativePath: string, name: string, description: string): void {
     const filePath = path.join(testRoot, relativePath);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

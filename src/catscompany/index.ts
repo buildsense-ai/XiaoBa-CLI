@@ -384,6 +384,10 @@ function shouldHydrateCatsCompanyGroupContext(
   return !sourceChannel || isNativeFeishuGroupTrigger(message);
 }
 
+export interface CatsCompanyBotLifecycleHooks {
+  onTurnSettled?(): void;
+}
+
 /**
  * CatsCompanyBot 主类
  * 初始化官方 SDK，注册事件，编排消息处理流程
@@ -434,8 +438,10 @@ export class CatsCompanyBot {
     capabilities: string[];
     model_status?: ReturnType<typeof resolveCatsDeviceModelStatus>;
   };
+  private readonly lifecycleHooks: CatsCompanyBotLifecycleHooks;
 
-  constructor(config: CatsCompanyConfig) {
+  constructor(config: CatsCompanyConfig, lifecycleHooks: CatsCompanyBotLifecycleHooks = {}) {
+    this.lifecycleHooks = lifecycleHooks;
     this.botUid = String(config.botUid || '').trim() || null;
     const localDeviceId = config.installationId || config.bodyId;
     const deviceRegistration = localDeviceId
@@ -1758,6 +1764,11 @@ export class CatsCompanyBot {
 
   private releaseSessionExecution(sessionKey: string): void {
     this.sessionExecutionReservations?.delete(sessionKey);
+    try {
+      this.lifecycleHooks.onTurnSettled?.();
+    } catch {
+      // Background Skill sync notification must never affect a completed turn.
+    }
   }
 
   private getSessionClearGeneration(sessionKey: string): number {

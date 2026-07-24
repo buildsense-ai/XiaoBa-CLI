@@ -15,6 +15,7 @@ export interface InstallVerifiedSkillHubPackageOptions {
   userId?: string;
   allowUpdate?: boolean;
   now?: () => Date;
+  skillsRoot?: string;
 }
 
 export interface InstallVerifiedSkillHubPackageResult {
@@ -30,12 +31,14 @@ export interface UninstallSkillHubPackageOptions {
   userId?: string;
   skillId: string;
   installName: string;
+  skillsRoot?: string;
 }
 
 export interface ClaimSkillHubPackageOwnershipOptions {
   userId: string;
   skillId: string;
   installName: string;
+  skillsRoot?: string;
 }
 
 export interface UninstallSkillHubPackageResult {
@@ -76,7 +79,7 @@ export function installVerifiedSkillHubPackage(
     throw new SkillHubInstallError(`SkillHub package is missing entry file ${entryFile}.`, 'ENTRY_FILE_MISSING');
   }
 
-  const skillsRoot = path.resolve(PathResolver.getSkillsPath());
+  const skillsRoot = path.resolve(options.skillsRoot ?? PathResolver.getSkillsPath());
   PathResolver.ensureDir(skillsRoot);
   const targetDir = safeJoin(skillsRoot, installName);
   const operationId = `${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
@@ -174,7 +177,7 @@ export function installVerifiedSkillHubPackage(
 export function uninstallSkillHubPackage(
   options: UninstallSkillHubPackageOptions,
 ): UninstallSkillHubPackageResult {
-  const skillsRoot = path.resolve(PathResolver.getSkillsPath());
+  const skillsRoot = path.resolve(options.skillsRoot ?? PathResolver.getSkillsPath());
   const targetDir = safeJoin(skillsRoot, options.installName);
   if (!fs.existsSync(targetDir)) return { removed: false, path: targetDir };
 
@@ -191,7 +194,7 @@ export function uninstallSkillHubPackage(
 }
 
 export function claimSkillHubPackageOwnership(options: ClaimSkillHubPackageOwnershipOptions): boolean {
-  const skillsRoot = path.resolve(PathResolver.getSkillsPath());
+  const skillsRoot = path.resolve(options.skillsRoot ?? PathResolver.getSkillsPath());
   const targetDir = safeJoin(skillsRoot, options.installName);
   if (!fs.existsSync(targetDir)) return false;
 

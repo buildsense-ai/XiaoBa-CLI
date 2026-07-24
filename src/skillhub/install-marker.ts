@@ -33,8 +33,11 @@ export function writeSkillHubInstallMarker(skillDir: string, marker: SkillHubPac
   fs.renameSync(tempPath, markerPath);
 }
 
-export function listInstalledSkillHubSkills(userId?: string): SkillHubPackageInstallMarker[] {
-  const root = path.resolve(PathResolver.getSkillsPath());
+export function listInstalledSkillHubSkills(
+  userId?: string,
+  skillsRoot: string = PathResolver.getSkillsPath(),
+): SkillHubPackageInstallMarker[] {
+  const root = path.resolve(skillsRoot);
   if (!fs.existsSync(root)) return [];
   const expectedUserId = stringValue(userId);
   const markers: SkillHubPackageInstallMarker[] = [];

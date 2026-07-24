@@ -22,6 +22,8 @@ import {
 export interface PrepareBoundBotDefinitionOptions extends BotDefinitionSyncServiceOptions {
   runtimeRoot: string;
   botId?: string;
+  /** Full Definition already reconciled through the real Bot Skill cloud API. */
+  definitionOverride?: BotDefinition;
   selectedCatalogRuntime?: BotCatalogModelRuntime;
   auth?: CatsCoAuthSnapshot;
   fetchImpl?: typeof fetch;
@@ -56,11 +58,24 @@ export async function prepareBoundBotDefinition(
   if (selectedCatalogRuntime && selectedCatalogRuntime.botId !== botId) {
     throw new Error('Selected catalog runtime does not belong to the bound bot.');
   }
-  let sync = definitionService.pullOrBootstrap(botId);
-  let localDefinition = sync?.definition;
+  if (options.definitionOverride && options.definitionOverride.botId !== botId) {
+    throw new Error('Definition override does not belong to the bound bot.');
+  }
+  let sync = options.definitionOverride
+    ? undefined
+    : definitionService.pullOrBootstrap(botId);
+  let localDefinition = options.definitionOverride
+    ? definitionService.acceptRemoteSnapshot(options.definitionOverride)
+    : sync?.definition;
   const previousCloudDefinition = definitionService.readCloudModelOverride(botId);
   const previousCloudRuntime = definitionService.readCloudCatalogRuntime(botId);
-  let definition = previousCloudDefinition ?? localDefinition;
+  let definition = previousCloudDefinition
+    ? {
+      ...previousCloudDefinition,
+      ...(localDefinition?.prompt !== undefined ? { prompt: localDefinition.prompt } : {}),
+      ...(localDefinition?.skills !== undefined ? { skills: localDefinition.skills } : {}),
+    }
+    : localDefinition;
   const auth = options.auth ?? createCatsCoLocalConfigService({ runtimeRoot: options.runtimeRoot }).getAuthState();
   let initializedDefault = false;
   let materializedCatalogRuntime = false;

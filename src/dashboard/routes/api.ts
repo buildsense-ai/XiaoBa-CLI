@@ -71,6 +71,18 @@ import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { registerSkillHubRoutes } from './skillhub';
 import { registerPetRoutes } from './pet';
+import { mutateCurrentBotSkills } from '../bot-skill-runtime';
+import {
+  assertBotSkillStartupReady,
+  BotSkillRuntime,
+  isBotSkillRuntimeEnabled,
+  resolveBotSkillRuntimeTransport,
+} from '../../bot-skills/runtime';
+import { FileBotSkillSwitchJournalStore } from '../../bot-skills/switch-journal';
+import { BotSkillWorkspaceSwitchService } from '../../bot-skills/switch-service';
+import { BotSkillWorkspaceService } from '../../bot-skills/workspace';
+import { FileBotSkillNewBotIntentStore } from '../../bot-skills/new-bot-intent';
+import { withBotSkillWorkspaceLock } from '../../bot-skills/workspace-lock';
 import type { DashboardAuthStatus } from '../auth';
 import { SkillHubService } from '../../skillhub/service';
 import {
@@ -81,6 +93,7 @@ import {
   deletePromptOverride,
   getPromptEditorFile,
   getPromptEditorState,
+  normalizeEditablePromptPath,
   writePromptOverride,
 } from '../../utils/prompt-editor';
 import {
@@ -861,16 +874,31 @@ async function commitCatsBotBindingAndStartConnector(
   serviceManager: ServiceManager,
   state: CatsAuthState,
   input: CatsBotBindingInput,
-): Promise<{
-  updated: string[];
-  warnings: string[];
-  service: any;
-  preflight: any;
-  connectorStarted: boolean;
-  connectorRestarted: boolean;
-  botDefinitionSync?: Record<string, unknown>;
-}> {
+): Promise<CatsBotSwitchTransactionResult> {
   ensureCatsDeviceId();
+  if (isBotSkillRuntimeEnabled()) {
+    const runtimeRoot = runtimeDataRoot();
+    const transactionLock = path.join(runtimeRoot, 'data', 'bot-skill-switch', 'transaction');
+    return withBotSkillWorkspaceLock(transactionLock, () => (
+      commitCatsBotBindingAndStartConnectorLocked(serviceManager, state, input)
+    ));
+  }
+  return commitCatsBotBindingAndStartConnectorLocked(serviceManager, state, input);
+}
+
+async function commitCatsBotBindingAndStartConnectorLocked(
+  serviceManager: ServiceManager,
+  state: CatsAuthState,
+  input: CatsBotBindingInput,
+): Promise<CatsBotSwitchTransactionResult> {
+  const currentBinding = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load().currentBot;
+  if (
+    isBotSkillRuntimeEnabled()
+    && currentBinding?.uid
+    && currentBinding.uid !== input.botUid
+  ) {
+    return commitCatsBotSwitchTransaction(serviceManager, state, input);
+  }
   const rollback = createCatsCoLocalConfigRollback();
   const promptCoordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
   await promptCoordinator.prepareCurrentBotForSwitch();
@@ -918,6 +946,224 @@ async function commitCatsBotBindingAndStartConnector(
     promptCoordinator.restoreActiveSnapshot(promptSnapshot);
     throw error;
   }
+}
+
+interface CatsBotSwitchTransactionResult {
+  updated: string[];
+  warnings: string[];
+  service: any;
+  preflight: any;
+  connectorStarted: boolean;
+  connectorRestarted: boolean;
+  botDefinitionSync?: Record<string, unknown>;
+}
+
+async function commitCatsBotSwitchTransaction(
+  serviceManager: ServiceManager,
+  state: CatsAuthState,
+  input: CatsBotBindingInput,
+): Promise<CatsBotSwitchTransactionResult> {
+  const runtimeRoot = runtimeDataRoot();
+  const activeRoot = PathResolver.getSkillsPath();
+  const transactionLock = path.join(runtimeRoot, 'data', 'bot-skill-switch', 'transaction');
+  return withBotSkillWorkspaceLock(transactionLock, () => commitCatsBotSwitchTransactionLocked(
+    serviceManager,
+    state,
+    input,
+    runtimeRoot,
+    activeRoot,
+  ));
+}
+
+async function commitCatsBotSwitchTransactionLocked(
+  serviceManager: ServiceManager,
+  state: CatsAuthState,
+  input: CatsBotBindingInput,
+  runtimeRoot: string,
+  activeRoot: string,
+): Promise<CatsBotSwitchTransactionResult> {
+  const localConfigService = createCatsCoLocalConfigService({ runtimeRoot });
+  const current = localConfigService.load().currentBot;
+  if (!current?.uid || !current.apiKey) {
+    throw httpError('Current Bot binding is incomplete; cannot switch workspaces safely', 409);
+  }
+  if (current.uid === input.botUid) {
+    return {
+      updated: [],
+      warnings: [],
+      service: serviceManager.getService('catscompany'),
+      preflight: getServicePreflight(serviceManager, 'catscompany', {
+        runtimeRoot,
+        config: ConfigManager.getConfigReadonly(),
+      }),
+      connectorStarted: false,
+      connectorRestarted: false,
+    };
+  }
+  const rollbackBinding = createCatsCoLocalConfigRollback();
+  const sourceAuth = localConfigService.getAuthState({
+    botUid: current.uid,
+    apiKey: current.apiKey,
+  });
+  const targetAuth = localConfigService.getAuthState({
+    token: state.token,
+    uid: input.userUid,
+    httpBaseUrl: state.httpBaseUrl,
+    serverUrl: state.serverUrl,
+    botUid: input.botUid,
+    apiKey: input.apiKey,
+  });
+  const newBotIntents = new FileBotSkillNewBotIntentStore(runtimeRoot);
+  const isExplicitNewBot = newBotIntents.matches({
+    botId: input.botUid,
+    authority: targetAuth.httpBaseUrl,
+    ownerUserId: input.userUid,
+  });
+  const transport = resolveBotSkillRuntimeTransport();
+  const sourceRuntime = new BotSkillRuntime({
+    runtimeRoot,
+    skillsRoot: activeRoot,
+    auth: sourceAuth,
+    botId: current.uid,
+    transport,
+  });
+  const sourcePrepared = await prepareBoundBotDefinition({
+    runtimeRoot,
+    botId: current.uid,
+    auth: sourceAuth,
+    acknowledgeCloudSelection: false,
+  });
+  const sourceReady = await sourceRuntime.sync({
+    definitionForCreate: sourcePrepared?.definition,
+    allowLegacyClaim: true,
+  });
+  assertBotSkillStartupReady(sourceReady, sourceRuntime.workspace, sourceRuntime.owner);
+
+  const sourceParkedRoot = parkedBotSkillWorkspaceRoot(runtimeRoot, current.uid);
+  const targetParkedRoot = parkedBotSkillWorkspaceRoot(runtimeRoot, input.botUid);
+  const connectorWasRunning = serviceManager.getService('catscompany')?.status === 'running';
+  const warnings = await ensureCatsFriendBinding(state, input.userUid, input.botUid, input.apiKey);
+  let updated: string[] = [];
+  let targetPrepared: Awaited<ReturnType<typeof prepareBoundBotDefinition>>;
+  let targetSyncPayload: Record<string, unknown> | undefined;
+  let startPreflight: any;
+  let service: any = serviceManager.getService('catscompany');
+  let connectorStarted = false;
+
+  const switchService = new BotSkillWorkspaceSwitchService({
+    workspace: new BotSkillWorkspaceService({ runtimeRoot, skillsRoot: activeRoot }),
+    journalStore: new FileBotSkillSwitchJournalStore({ runtimeRoot }),
+  });
+  try {
+    await switchService.switch({
+      fromOwner: sourceRuntime.owner,
+      toOwner: {
+        botId: input.botUid,
+        authority: targetAuth.httpBaseUrl ? new URL(targetAuth.httpBaseUrl).origin.toLowerCase() : undefined,
+        ownerUserId: input.userUid,
+      },
+      fromParkedRoot: sourceParkedRoot,
+      targetPreparedRoot: targetParkedRoot,
+      oldConnectorWasRunning: connectorWasRunning,
+      prepareTarget: async targetRoot => {
+        const preliminary = await prepareBoundBotDefinition({
+          runtimeRoot,
+          botId: input.botUid,
+          auth: targetAuth,
+          selectedCatalogRuntime: input.selectedCatalogRuntime,
+          acknowledgeCloudSelection: false,
+        });
+        const targetRuntime = new BotSkillRuntime({
+          runtimeRoot,
+          skillsRoot: targetRoot,
+          auth: targetAuth,
+          botId: input.botUid,
+          transport,
+        });
+        const outcome = await targetRuntime.sync({
+          definitionForCreate: preliminary?.definition,
+          allowLegacyClaim: true,
+          allowNewWorkspaceCreate: isExplicitNewBot,
+          initializeDefaultSkill: isExplicitNewBot,
+        });
+        assertBotSkillStartupReady(outcome, targetRuntime.workspace, targetRuntime.owner);
+        targetSyncPayload = {
+          botId: outcome.result.botId,
+          action: outcome.result.action,
+          definitionETag: outcome.result.definitionETag,
+          blockedSkills: outcome.result.blockedSkills,
+        };
+        targetPrepared = outcome.definition
+          ? await prepareBoundBotDefinition({
+            runtimeRoot,
+            botId: input.botUid,
+            auth: targetAuth,
+            definitionOverride: outcome.definition,
+            selectedCatalogRuntime: input.selectedCatalogRuntime,
+            acknowledgeCloudSelection: false,
+          })
+          : preliminary;
+      },
+      stopOldConnector: async () => {
+        if (connectorWasRunning) await serviceManager.stopAndWait('catscompany');
+      },
+      syncOldWorkspace: async () => {
+        const outcome = await sourceRuntime.sync({
+          definitionForCreate: sourcePrepared?.definition,
+          allowLegacyClaim: true,
+        });
+        assertBotSkillStartupReady(outcome, sourceRuntime.workspace, sourceRuntime.owner);
+      },
+      preflightTarget: async () => {
+        if (!targetPrepared?.definition) {
+          throw httpError('Target Bot Definition could not be prepared', 409);
+        }
+      },
+      commitTargetBinding: async () => {
+        updated = writeCatsBotBinding(state, input);
+      },
+      rollbackSourceBinding: async () => {
+        rollbackBinding();
+      },
+      startTargetConnector: async () => {
+        startPreflight = getServicePreflight(serviceManager, 'catscompany', {
+          runtimeRoot,
+          config: ConfigManager.getConfigReadonly(),
+        });
+        if (startPreflight.status === 'blocked') {
+          throw httpError('CatsCo connector preflight blocked', 400);
+        }
+        service = await serviceManager.startAndWait('catscompany');
+        connectorStarted = true;
+      },
+      stopTargetConnector: async () => {
+        if (serviceManager.getService('catscompany')?.status === 'running') {
+          await serviceManager.stopAndWait('catscompany');
+        }
+      },
+      restartOldConnector: async () => {
+        if (connectorWasRunning) await serviceManager.startAndWait('catscompany');
+      },
+    });
+  } catch (error) {
+    throw error;
+  }
+  if (isExplicitNewBot) newBotIntents.delete(input.botUid);
+  return {
+    updated,
+    warnings,
+    service,
+    preflight: startPreflight,
+    connectorStarted,
+    connectorRestarted: connectorWasRunning,
+    botDefinitionSync: targetSyncPayload,
+  };
+}
+
+function parkedBotSkillWorkspaceRoot(runtimeRoot: string, botId: string): string {
+  const key = Buffer.from(String(botId || '').trim(), 'utf8').toString('base64url');
+  if (!key) throw httpError('Bot uid is required for its Skill workspace', 400);
+  return path.join(runtimeRoot, 'data', 'bot-skill-workspaces', `bot_${key}`);
 }
 
 function normalizeRelayModelProtocol(value: unknown): RelayModelProtocol {
@@ -2166,7 +2412,10 @@ export function createApiRouter(
 ): Router {
   const router = Router();
   const modelsDevFetch = options.modelsDevFetch ?? fetch;
-  registerSkillHubRoutes(router, { getCatsCoAuth: getCatsCoAuthForSkillHub });
+  registerSkillHubRoutes(router, {
+    getCatsCoAuth: getCatsCoAuthForSkillHub,
+    mutate: mutateCurrentBotSkills,
+  });
   registerPetRoutes(router);
 
   // ==================== 总览 ====================
@@ -2487,21 +2736,26 @@ export function createApiRouter(
     try {
       if (!requireJsonWrite(req, res)) return;
       const relativePath = String(req.body?.path || '');
+      const normalizedPath = normalizeEditablePromptPath(relativePath);
       const content = String(req.body?.content ?? '');
       const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
       const botId = coordinator.getCurrentBotId();
-      if (botId && relativePath === 'system-prompt.md') {
+      if (normalizedPath === 'system-prompt.md') {
+        if (!botId) {
+          res.status(409).json({ error: 'No bound bot is available for prompt selection' });
+          return;
+        }
         if (!coordinator.getSelection(botId).definitionReady) {
           res.status(409).json({ error: '机器人配置尚未初始化，连接完成后即可编辑' });
           return;
         }
         void coordinator.select(botId, 'custom', content).then(
-          () => res.json(getPromptEditorFile(relativePath)),
+          () => res.json(getPromptEditorFile(normalizedPath)),
           error => res.status(400).json({ error: error instanceof Error ? error.message : String(error) }),
         );
         return;
       }
-      res.json(writePromptOverride(relativePath, content));
+      res.json(writePromptOverride(normalizedPath, content));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
     }
@@ -2511,20 +2765,25 @@ export function createApiRouter(
     try {
       if (!requireJsonWrite(req, res)) return;
       const relativePath = String(req.body?.path || req.query.path || '');
+      const normalizedPath = normalizeEditablePromptPath(relativePath);
       const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
       const botId = coordinator.getCurrentBotId();
-      if (botId && relativePath === 'system-prompt.md') {
+      if (normalizedPath === 'system-prompt.md') {
+        if (!botId) {
+          res.status(409).json({ error: 'No bound bot is available for prompt selection' });
+          return;
+        }
         if (!coordinator.getSelection(botId).definitionReady) {
           res.status(409).json({ error: '机器人配置尚未初始化，连接完成后即可编辑' });
           return;
         }
         void coordinator.select(botId, 'default').then(
-          () => res.json(getPromptEditorFile(relativePath)),
+          () => res.json(getPromptEditorFile(normalizedPath)),
           error => res.status(400).json({ error: error instanceof Error ? error.message : String(error) }),
         );
         return;
       }
-      res.json(deletePromptOverride(relativePath));
+      res.json(deletePromptOverride(normalizedPath));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
     }
@@ -2558,12 +2817,14 @@ export function createApiRouter(
     }
   });
 
-  router.post('/prompts/editor-skill/install', (req, res) => {
+  router.post('/prompts/editor-skill/install', async (req, res) => {
     try {
       if (!requireJsonWrite(req, res)) return;
-      res.json(installPromptEditorSeedSkill({
-        overwrite: req.body?.overwrite === true,
-      }));
+      res.json(await mutateCurrentBotSkills(() => (
+        installPromptEditorSeedSkill({
+          overwrite: req.body?.overwrite === true,
+        })
+      )));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
     }
@@ -3168,34 +3429,38 @@ export function createApiRouter(
 
   router.delete('/skills/:name', async (req, res) => {
     try {
-      const manager = new SkillManager();
-      await manager.loadSkills();
-      const skill = manager.getSkill(req.params.name);
-      if (!skill) {
-        const disabled = findDisabledSkillByName(PathResolver.getSkillsPath(), req.params.name);
-        if (disabled) {
-          const management = getSkillManagementInfo(disabled);
-          if (!management.canDelete) {
-            return res.status(403).json({ error: formatSkillDeleteBlockedMessage(management) });
+      const result = await mutateCurrentBotSkills(async () => {
+        const manager = new SkillManager();
+        await manager.loadSkills();
+        const skill = manager.getSkill(req.params.name);
+        if (!skill) {
+          const disabled = findDisabledSkillByName(PathResolver.getSkillsPath(), req.params.name);
+          if (disabled) {
+            const management = getSkillManagementInfo(disabled);
+            if (!management.canDelete) {
+              return { status: 403, body: { error: formatSkillDeleteBlockedMessage(management) } };
+            }
+            fs.rmSync(path.dirname(disabled), { recursive: true, force: true });
+            return { status: 200, body: { ok: true } };
           }
-          fs.rmSync(path.dirname(disabled), { recursive: true, force: true });
-          return res.json({ ok: true });
+          return { status: 404, body: { error: 'Skill not found' } };
         }
-        return res.status(404).json({ error: 'Skill not found' });
-      }
-      const management = getSkillManagementInfo(skill.filePath);
-      if (!management.canDelete) {
-        return res.status(403).json({ error: formatSkillDeleteBlockedMessage(management) });
-      }
-      fs.rmSync(path.dirname(skill.filePath), { recursive: true, force: true });
-      res.json({ ok: true });
+        const management = getSkillManagementInfo(skill.filePath);
+        if (!management.canDelete) {
+          return { status: 403, body: { error: formatSkillDeleteBlockedMessage(management) } };
+        }
+        fs.rmSync(path.dirname(skill.filePath), { recursive: true, force: true });
+        return { status: 200, body: { ok: true } };
+      });
+      res.status(result.status).json(result.body);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(Number(e?.status) || 500).json({ error: e.message });
     }
   });
 
   router.post('/skills/:name/disable', async (req, res) => {
     try {
+      await mutateCurrentBotSkills(async () => {
       const manager = new SkillManager();
       await manager.loadSkills();
       const skill = manager.getSkill(req.params.name);
@@ -3204,21 +3469,24 @@ export function createApiRouter(
       if (!management.canDisable) {
         return res.status(403).json({ error: '系统 Skill 不能禁用。' });
       }
-      fs.renameSync(skill.filePath, skill.filePath + '.disabled');
-      res.json({ ok: true });
+        fs.renameSync(skill.filePath, skill.filePath + '.disabled');
+        return res.json({ ok: true });
+      });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(Number(e?.status) || 500).json({ error: e.message });
     }
   });
 
   router.post('/skills/:name/enable', async (req, res) => {
     try {
-      const f = findDisabledSkillByName(PathResolver.getSkillsPath(), req.params.name);
-      if (!f) return res.status(404).json({ error: 'Disabled skill not found' });
-      fs.renameSync(f, f.replace('.disabled', ''));
-      res.json({ ok: true });
+      await mutateCurrentBotSkills(() => {
+        const f = findDisabledSkillByName(PathResolver.getSkillsPath(), req.params.name);
+        if (!f) return res.status(404).json({ error: 'Disabled skill not found' });
+        fs.renameSync(f, f.replace('.disabled', ''));
+        return res.json({ ok: true });
+      });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(Number(e?.status) || 500).json({ error: e.message });
     }
   });
 
@@ -3783,12 +4051,20 @@ export function createApiRouter(
         username,
         display_name: displayName,
       }, state.token);
+      const createdBotId = String(created.uid || created.id || '').trim();
+      if (isBotSkillRuntimeEnabled() && createdBotId) {
+        new FileBotSkillNewBotIntentStore(runtimeDataRoot()).write({
+          botId: createdBotId,
+          authority: state.httpBaseUrl,
+          ownerUserId: userUid,
+        });
+      }
 
       res.json({
         ok: true,
         deviceId,
         bot: {
-          uid: String(created.uid || created.id || ''),
+          uid: createdBotId,
           username: created.username || username,
           display_name: created.display_name || displayName,
           hasApiKey: Boolean(created.api_key),

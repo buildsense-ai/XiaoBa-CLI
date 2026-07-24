@@ -17,6 +17,14 @@ import {
 } from '../bot-definition/cloud-client';
 import { CloudBotModelRuntimeReloadController } from '../bot-definition/runtime-reload';
 import { createBotDefinitionSyncService } from '../bot-definition/service';
+import {
+  assertBotSkillStartupReady,
+  BotSkillRuntime,
+  isBotSkillRuntimeEnabled,
+  resolveBotSkillRuntimeTransport,
+} from '../bot-skills/runtime';
+import { FileBotSkillNewBotIntentStore } from '../bot-skills/new-bot-intent';
+import { onBotSkillMutation } from '../bot-skills/mutation-events';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
 const CLOUD_MODEL_POLL_MS = 5000;
@@ -42,7 +50,7 @@ export function resolveCatsCoCommandConfig(
  */
 export async function catscompanyCommand(): Promise<void> {
   const runtimeRoot = PathResolver.getRuntimeDataRoot();
-  const preparedBot = await prepareBoundBotDefinition({
+  let preparedBot = await prepareBoundBotDefinition({
     runtimeRoot,
     acknowledgeCloudSelection: false,
   });
@@ -93,8 +101,80 @@ export async function catscompanyCommand(): Promise<void> {
     return;
   }
 
-  let bot = new CatsCompanyBot(connectorConfig);
   let lock: CatsCoConnectorLock | null = connectorLock;
+  let botSkillRuntime: BotSkillRuntime | undefined;
+  let unsubscribeBotSkillMutations: (() => void) | undefined;
+  let bot!: CatsCompanyBot;
+  let botSkillIdleRetryTimer: NodeJS.Timeout | null = null;
+  const scheduleBotSkillSyncWhenIdle = () => {
+    if (!botSkillRuntime) return;
+    if (bot?.isIdleForRuntimeReload()) {
+      if (botSkillIdleRetryTimer) clearTimeout(botSkillIdleRetryTimer);
+      botSkillIdleRetryTimer = null;
+      botSkillRuntime.schedule();
+      return;
+    }
+    if (botSkillIdleRetryTimer) return;
+    botSkillIdleRetryTimer = setTimeout(() => {
+      botSkillIdleRetryTimer = null;
+      scheduleBotSkillSyncWhenIdle();
+    }, 250);
+    botSkillIdleRetryTimer.unref?.();
+  };
+  try {
+    if (isBotSkillRuntimeEnabled()) {
+      const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState({
+        botUid: connectorConfig.botUid,
+        apiKey: connectorConfig.apiKey,
+        httpBaseUrl: connectorConfig.httpBaseUrl,
+      });
+      botSkillRuntime = new BotSkillRuntime({
+        runtimeRoot,
+        auth,
+        botId: connectorConfig.botUid,
+        transport: resolveBotSkillRuntimeTransport(),
+        canRunScheduledSync: () => Boolean(bot?.isIdleForRuntimeReload()),
+      });
+      unsubscribeBotSkillMutations = onBotSkillMutation(skillsRoot => {
+        if (botSkillRuntime && skillsRoot === botSkillRuntime.workspace.root) {
+          scheduleBotSkillSyncWhenIdle();
+        }
+      });
+      const newBotIntents = new FileBotSkillNewBotIntentStore(runtimeRoot);
+      const isExplicitNewBot = newBotIntents.matches({
+        botId: botSkillRuntime.owner.botId,
+        authority: botSkillRuntime.owner.authority || auth.httpBaseUrl,
+        ownerUserId: botSkillRuntime.owner.ownerUserId,
+      });
+      const outcome = await botSkillRuntime.sync({
+        definitionForCreate: preparedBot?.definition,
+        allowLegacyClaim: true,
+        allowNewWorkspaceCreate: isExplicitNewBot,
+        initializeDefaultSkill: isExplicitNewBot,
+      });
+      assertBotSkillStartupReady(outcome, botSkillRuntime.workspace, botSkillRuntime.owner);
+      if (outcome.result.action === 'created_cloud') {
+        newBotIntents.delete(botSkillRuntime.owner.botId);
+      }
+      if (outcome.definition) {
+        preparedBot = await prepareBoundBotDefinition({
+          runtimeRoot,
+          botId: connectorConfig.botUid,
+          auth,
+          definitionOverride: outcome.definition,
+          acknowledgeCloudSelection: false,
+        });
+      }
+    }
+  } catch (error) {
+    unsubscribeBotSkillMutations?.();
+    unsubscribeBotSkillMutations = undefined;
+    lock.release();
+    lock = null;
+    throw error;
+  }
+  const onTurnSettled = scheduleBotSkillSyncWhenIdle;
+  bot = new CatsCompanyBot(connectorConfig, { onTurnSettled });
   let ownerWatchTimer: NodeJS.Timeout | null = null;
   let cloudModelWatchTimer: NodeJS.Timeout | null = null;
   let cloudModelReloadPromise: Promise<void> | null = null;
@@ -113,11 +193,18 @@ export async function catscompanyCommand(): Promise<void> {
       clearInterval(cloudModelWatchTimer);
       cloudModelWatchTimer = null;
     }
+    if (botSkillIdleRetryTimer) {
+      clearTimeout(botSkillIdleRetryTimer);
+      botSkillIdleRetryTimer = null;
+    }
     try {
       await cloudModelReloadPromise;
+      await flushBotSkillRuntime(botSkillRuntime);
       await stopRuntimeCommandSupport();
       await bot.destroy();
     } finally {
+      unsubscribeBotSkillMutations?.();
+      unsubscribeBotSkillMutations = undefined;
       lock?.release();
       lock = null;
       process.exit(0);
@@ -140,6 +227,8 @@ export async function catscompanyCommand(): Promise<void> {
 
   try {
     await bot.start();
+    await bot.waitUntilReady();
+    Logger.info('[CATSCO_READY]');
     await startRuntimeCommandSupport();
     const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
     const modelBotId = String(preparedBot?.botId || connectorConfig.botUid || '').trim();
@@ -181,6 +270,7 @@ export async function catscompanyCommand(): Promise<void> {
         replaceBot: next => { bot = next; },
         botId: modelBotId,
         canApply: () => !shuttingDown,
+        onTurnSettled,
         scheduleAckRetry: (selection, applyError) => {
           pendingCloudModelAck = { selection, applyError, attempts: 0 };
         },
@@ -246,6 +336,7 @@ interface ApplyCloudModelRuntimeSelectionOptions {
   replaceBot(bot: CatsCompanyBot): void;
   botId: string;
   canApply(): boolean;
+  onTurnSettled?(): void;
   scheduleAckRetry(selection: CloudBotModelSelection, applyError: string): void;
   clearAckRetry(selection: CloudBotModelSelection): void;
   selection: CloudBotModelSelection;
@@ -322,7 +413,9 @@ async function applyCloudModelRuntimeSelection(
   let nextBot: CatsCompanyBot | undefined;
   try {
     await previousBot.destroy();
-    nextBot = new CatsCompanyBot(options.connectorConfig);
+    nextBot = new CatsCompanyBot(options.connectorConfig, {
+      onTurnSettled: options.onTurnSettled,
+    });
     await nextBot.start();
     await nextBot.waitUntilReady();
     options.replaceBot(nextBot);
@@ -337,7 +430,9 @@ async function applyCloudModelRuntimeSelection(
     await acknowledgeCloudModelApply(options, safeMessage);
     await recoverCloudModelFallbackConnector({
       canApply: options.canApply,
-      createBot: () => new CatsCompanyBot(options.connectorConfig),
+      createBot: () => new CatsCompanyBot(options.connectorConfig, {
+        onTurnSettled: options.onTurnSettled,
+      }),
       replaceBot: options.replaceBot,
     });
     throw new Error(safeMessage);
@@ -388,6 +483,22 @@ export async function recoverCloudModelFallbackConnector(
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+}
+
+async function flushBotSkillRuntime(runtime?: BotSkillRuntime): Promise<void> {
+  if (!runtime) return;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      runtime.flush(),
+      new Promise<void>(resolve => {
+        timer = setTimeout(resolve, 5_000);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function acknowledgeCloudModelApply(

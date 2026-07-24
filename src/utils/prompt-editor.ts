@@ -160,7 +160,7 @@ function textDigest(text: string): PromptEditorFile['effective'] {
   };
 }
 
-function normalizeEditablePromptPath(relativePath: string): string {
+export function normalizeEditablePromptPath(relativePath: string): string {
   const normalized = normalizePromptRelativePath(relativePath);
   if (normalized !== SYSTEM_PROMPT_RELATIVE_PATH) {
     throw new Error(`Prompt file is not editable: ${relativePath}`);

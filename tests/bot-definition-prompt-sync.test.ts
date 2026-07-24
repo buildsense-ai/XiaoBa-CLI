@@ -175,18 +175,21 @@ describe('BotDefinition system prompt sync', () => {
   test('keeps custom text across upgrades and restores it after using default', async () => {
     const { coordinator, repository } = createCoordinator();
     await coordinator.activateBot('bot-a');
-    await coordinator.select('bot-a', 'custom', 'my custom prompt');
+    await coordinator.select('bot-a', 'custom', '# My prompt\n\n- item\tvalue');
     fs.writeFileSync(path.join(appRoot, 'prompts', 'system-prompt.md'), 'bundled v2\n', 'utf-8');
 
     await coordinator.activateBot('bot-a');
-    assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'my custom prompt\n');
+    assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), '# My prompt\n\n- item\tvalue\n');
 
     await coordinator.select('bot-a', 'default');
     assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'bundled v2\n');
-    assert.equal(repository.readCanonical('bot-a')?.prompt?.customSystemPrompt, 'my custom prompt');
+    assert.equal(
+      repository.readCanonical('bot-a')?.prompt?.customSystemPrompt,
+      '# My prompt\n\n- item\tvalue',
+    );
 
     await coordinator.select('bot-a', 'custom');
-    assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'my custom prompt\n');
+    assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), '# My prompt\n\n- item\tvalue\n');
   });
 
   test('keeps an unsynced custom file edit across restart activation', async () => {

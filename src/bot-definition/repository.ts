@@ -7,9 +7,9 @@ import {
   type BotCatalogModelRuntime,
   type BotCustomModelProfile,
   type BotDefinition,
-  type BotPromptDefinition,
   type CustomBotModelDefinition,
 } from './types';
+import { isValidBotDefinition } from './validation';
 
 export interface BotDefinitionRepository {
   readCanonical(botId: string): BotDefinition | undefined;
@@ -58,28 +58,6 @@ function normalizeBotId(botId: string): string {
   return value;
 }
 
-function isValidDefinition(definition: unknown, expectedBotId: string): definition is BotDefinition {
-  const value = definition as BotDefinition | undefined;
-  if (!value || value.schema !== 'xiaoba.bot-definition.v1' || value.botId !== expectedBotId || !value.model) {
-    return false;
-  }
-  if (value.prompt !== undefined && !isValidPromptDefinition(value.prompt)) {
-    return false;
-  }
-  if (value.model.kind === 'catalog') {
-    return Boolean(String(value.model.modelId || '').trim());
-  }
-  if (value.model.kind !== 'custom') return false;
-  return isValidCustomModel(value.model);
-}
-
-function isValidPromptDefinition(prompt: unknown): prompt is BotPromptDefinition {
-  const value = prompt as BotPromptDefinition | undefined;
-  if (!value || (value.selected !== 'default' && value.selected !== 'custom')) return false;
-  if (value.customSystemPrompt === undefined) return true;
-  return Boolean(String(value.customSystemPrompt || '').trim());
-}
-
 function isValidCustomModel(model: unknown): model is CustomBotModelDefinition {
   const value = model as CustomBotModelDefinition | undefined;
   return (
@@ -123,14 +101,14 @@ function readDefinition(filePath: string, expectedBotId: string): BotDefinition 
   if (!fs.existsSync(filePath)) return undefined;
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as BotDefinition;
-    return isValidDefinition(parsed, expectedBotId) ? parsed : undefined;
+    return isValidBotDefinition(parsed, expectedBotId) ? parsed : undefined;
   } catch {
     return undefined;
   }
 }
 
 function writeDefinition(filePath: string, definition: BotDefinition): void {
-  if (!isValidDefinition(definition, definition.botId)) {
+  if (!isValidBotDefinition(definition, definition.botId)) {
     throw new Error('BotDefinition is invalid');
   }
   const directory = path.dirname(filePath);
