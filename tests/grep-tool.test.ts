@@ -64,6 +64,63 @@ describe('GrepTool', () => {
   });
 
   describe('基础搜索功能', () => {
+    test('ripgrep 执行期间不应阻塞共享事件循环', async () => {
+      if (process.platform === 'win32') return;
+
+      const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-fake-bin-'));
+      const fakeRg = path.join(fakeBin, 'rg');
+      fs.writeFileSync(fakeRg, [
+        '#!/bin/sh',
+        'sleep 0.15',
+        `printf '%s\\n' '${path.join(testDir, 'test1.js').replace(/'/g, "'\\''")}'`,
+      ].join('\n'));
+      fs.chmodSync(fakeRg, 0o755);
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${fakeBin}:${originalPath || ''}`;
+      let timerFired = false;
+      const timer = setTimeout(() => { timerFired = true; }, 10);
+
+      try {
+        const result = await grepTool.execute({ pattern: 'Hello', output_mode: 'files' }, context);
+        assert.strictEqual(result.ok, true);
+        assert.strictEqual(timerFired, true, 'grep 子进程运行时事件循环应该继续处理其他 session');
+      } finally {
+        clearTimeout(timer);
+        process.env.PATH = originalPath;
+        fs.rmSync(fakeBin, { recursive: true, force: true });
+      }
+    });
+
+    test('取消搜索时应立即终止异步 ripgrep', async () => {
+      if (process.platform === 'win32') return;
+
+      const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-abort-bin-'));
+      const fakeRg = path.join(fakeBin, 'rg');
+      fs.writeFileSync(fakeRg, '#!/bin/sh\nsleep 5\nprintf "never\\n"\n');
+      fs.chmodSync(fakeRg, 0o755);
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${fakeBin}:${originalPath || ''}`;
+      const controller = new AbortController();
+      const startedAt = Date.now();
+      const timer = setTimeout(() => controller.abort(), 20);
+
+      try {
+        const result = await grepTool.execute(
+          { pattern: 'Hello', output_mode: 'files' },
+          { ...context, abortSignal: controller.signal },
+        );
+        assert.strictEqual(result.ok, false);
+        assert.match(result.ok ? '' : result.message, /搜索已取消/);
+        assert.ok(Date.now() - startedAt < 500, '取消后不应继续尝试其他 fallback');
+      } finally {
+        clearTimeout(timer);
+        process.env.PATH = originalPath;
+        fs.rmSync(fakeBin, { recursive: true, force: true });
+      }
+    });
+
     test('应该能找到匹配的文件（files模式）', async () => {
       const result = await grepTool.execute({
         pattern: 'Hello',

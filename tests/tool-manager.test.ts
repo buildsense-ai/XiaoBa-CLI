@@ -111,6 +111,47 @@ function catsDeviceSelection(
 }
 
 describe('ToolManager', () => {
+  test('does not infer retryability from a failed tool result body', async () => {
+    const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
+    manager.registerTool(fakeTool('execute_shell', async () => ({
+      ok: false,
+      errorCode: 'TOOL_EXECUTION_ERROR',
+      message: [
+        'Command failed',
+        "command: sed -n '1,80p' src/openai-provider.ts",
+        "stdout: throw new Error('rate limit response')",
+        'stderr: Segmentation fault',
+      ].join('\n'),
+    })));
+
+    const result = await manager.executeTool({
+      id: 'call-shell-failed-source-read',
+      type: 'function',
+      function: { name: 'execute_shell', arguments: JSON.stringify({ command: 'exit 139' }) },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.equal(result.retryable, false);
+  });
+
+  test('classifies structured HTTP 429 errors as retryable', async () => {
+    const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
+    manager.registerTool(fakeTool('remote_api', async () => {
+      throw Object.assign(new Error('request rejected'), { response: { status: 429 } });
+    }));
+
+    const result = await manager.executeTool({
+      id: 'call-http-429',
+      type: 'function',
+      function: { name: 'remote_api', arguments: '{}' },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'HTTP_429');
+    assert.equal(result.retryable, true);
+  });
+
   test('registers all default tools when no enabled list is provided', () => {
     const manager = new ToolManager('/tmp/xiaoba-tool-manager');
 

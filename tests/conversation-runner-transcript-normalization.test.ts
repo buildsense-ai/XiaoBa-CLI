@@ -1381,6 +1381,39 @@ test('runner keeps repeated send_file calls in the same assistant response as le
   );
 });
 
+test('runner does not infer rate limiting from ordinary failed tool output', () => {
+  const result: ToolResult = {
+    tool_call_id: 'call_shell',
+    role: 'tool',
+    name: 'execute_shell',
+    content: [
+      'Command failed',
+      "command: sed -n '1,80p' src/openai-provider.ts",
+      "stdout: throw new Error('rate limit response')",
+      'stderr: Segmentation fault',
+    ].join('\n'),
+    ok: false,
+    errorCode: 'TOOL_EXECUTION_ERROR',
+    retryable: true,
+  };
+
+  assert.equal((ConversationRunner as any).isRateLimitError(result), false);
+});
+
+test('runner still recognizes structured rate-limit errors', () => {
+  const result: ToolResult = {
+    tool_call_id: 'call_remote',
+    role: 'tool',
+    name: 'remote_api',
+    content: 'request rejected',
+    ok: false,
+    errorCode: 'RATE_LIMIT',
+    retryable: true,
+  };
+
+  assert.equal((ConversationRunner as any).isRateLimitError(result), true);
+});
+
 test('runner does not locally retry failed outbound file sends unless the failure is rate limited', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_file', 'send_file', {
