@@ -381,6 +381,41 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     }
   });
 
+  test('preserves UTF-8 when Chat Completions SSE splits a character across chunks', async () => {
+    const originalPost = axios.post;
+    const splitEvent = splitInsideUtf8Character(
+      'data: {"choices":[{"delta":{"content":"中文"},"finish_reason":"stop"}]}\n\n',
+      '中',
+    );
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        ...splitEvent,
+        Buffer.from('data: [DONE]\n\n', 'utf8'),
+      ]),
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        apiKey: 'test-key',
+        apiUrl: 'https://example.test/v1/chat/completions',
+        model: 'test-model',
+      });
+      const chunks: string[] = [];
+
+      const result = await provider.chatStream(
+        [{ role: 'user', content: 'hello' }],
+        undefined,
+        { onText: chunk => chunks.push(chunk) },
+      );
+
+      assert.equal(result.content, '中文');
+      assert.deepEqual(chunks, ['中文']);
+      assert.equal(JSON.stringify(result).includes('�'), false);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
   test('hides OpenAI-compatible reasoning fields and split think tags in stream responses', async () => {
     const originalPost = axios.post;
     (axios as any).post = async () => ({
@@ -469,6 +504,17 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     }
   });
 });
+
+function splitInsideUtf8Character(value: string, character: string): Buffer[] {
+  const buffer = Buffer.from(value, 'utf8');
+  const characterBytes = Buffer.from(character, 'utf8');
+  const offset = buffer.indexOf(characterBytes);
+  assert.notEqual(offset, -1);
+  return [
+    buffer.subarray(0, offset + 1),
+    buffer.subarray(offset + 1),
+  ];
+}
 
 function sse(payload: unknown): string {
   return `data: ${JSON.stringify(payload)}\n\n`;

@@ -305,6 +305,43 @@ describe('OpenAIProvider Responses API mode', () => {
     }
   });
 
+  test('preserves UTF-8 when Responses SSE splits a character across chunks', async () => {
+    const originalPost = axios.post;
+    const terminalResponse = {
+      status: 'completed',
+      output: [{
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: '中文' }],
+      }],
+    };
+    const splitEvent = splitInsideUtf8Character(
+      sse({ type: 'response.output_text.delta', delta: '中文' }),
+      '中',
+    );
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        ...splitEvent,
+        Buffer.from(sse({ type: 'response.completed', response: terminalResponse }), 'utf8'),
+      ]),
+    });
+
+    try {
+      const chunks: string[] = [];
+      const result = await createProvider().chatStream(
+        [{ role: 'user', content: 'hello' }],
+        undefined,
+        { onText: value => chunks.push(value) },
+      );
+
+      assert.deepEqual(chunks, ['中文']);
+      assert.equal(result.content, '中文');
+      assert.equal(JSON.stringify(result).includes('�'), false);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
   test('preserves streamed text when the terminal response omits its message', async () => {
     const originalPost = axios.post;
     (axios as any).post = async () => ({
@@ -408,4 +445,15 @@ describe('OpenAIProvider Responses API mode', () => {
 
 function sse(payload: unknown): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
+function splitInsideUtf8Character(value: string, character: string): Buffer[] {
+  const buffer = Buffer.from(value, 'utf8');
+  const characterBytes = Buffer.from(character, 'utf8');
+  const offset = buffer.indexOf(characterBytes);
+  assert.notEqual(offset, -1);
+  return [
+    buffer.subarray(0, offset + 1),
+    buffer.subarray(offset + 1),
+  ];
 }
