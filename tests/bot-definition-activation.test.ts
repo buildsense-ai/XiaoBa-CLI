@@ -104,6 +104,45 @@ describe('BotDefinition activation', () => {
     ]);
   });
 
+  test('activates an already reconciled Definition without replacing its Skill references from legacy simulated cloud', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-override-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-override-cloud-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'user-token', uid: '7' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    const definitions = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
+    definitions.writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: { kind: 'custom', protocol: 'openai-responses', apiBase: 'https://legacy.example.test/v1', model: 'legacy', apiKey: 'legacy-key', contextWindowTokens: 64_000 },
+      skills: [{ skillId: 'legacy-skill', version: 'legacy-version' }],
+    });
+    const reconciled = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: { kind: 'custom' as const, protocol: 'openai-responses' as const, apiBase: 'https://current.example.test/v1', model: 'current', apiKey: 'current-key', contextWindowTokens: 128_000 },
+      skills: [{ skillId: 'priv_0123456789abcdef0123456789abcdef01234567', version: 'v_0123456789abcdef0123456789abcdef0123456789abcdef' }],
+    };
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      simulatedCloudRoot,
+      env,
+      definitionOverride: reconciled,
+      cloudSelection: { kind: 'local', modelId: 'local', revision: 1 },
+      acknowledgeCloudSelection: false,
+    });
+
+    assert.deepStrictEqual(prepared?.definition.skills, reconciled.skills);
+    assert.deepStrictEqual(definitions.readCache('43')?.skills, reconciled.skills);
+    assert.deepStrictEqual(definitions.readCanonical('43')?.skills, [{ skillId: 'legacy-skill', version: 'legacy-version' }]);
+  });
+
   test('applies and acknowledges a cloud-selected model after its local runtime is ready', async () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cloud-model-runtime-'));
     const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cloud-model-canonical-'));

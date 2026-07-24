@@ -25,12 +25,16 @@ import type {
   SkillHubSubscriptionScope,
   SkillHubUser,
 } from './types';
+import { withBotSkillWorkspaceLock } from '../bot-skills/workspace-lock';
+import { notifyBotSkillMutation } from '../bot-skills/mutation-events';
 
 export class SkillHubService {
   private readonly client: SkillHubClient;
+  private readonly skillsRoot?: string;
 
-  constructor(options: { baseUrl?: string } = {}) {
+  constructor(options: { baseUrl?: string; skillsRoot?: string } = {}) {
     this.client = new SkillHubClient(options);
+    this.skillsRoot = options.skillsRoot ? path.resolve(options.skillsRoot) : undefined;
   }
 
   async status(): Promise<SkillHubAuthState & { trustReady: boolean; installed: SkillHubPackageInstallMarker[] }> {
@@ -38,7 +42,7 @@ export class SkillHubService {
     return {
       ...status,
       trustReady: CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.length > 0,
-      installed: listInstalledSkillHubSkills(),
+      installed: listInstalledSkillHubSkills(undefined, this.skillsRoot),
     };
   }
 
@@ -146,12 +150,17 @@ export class SkillHubService {
       registryEntry,
       trust,
     });
-    const installed = installVerifiedSkillHubPackage({
-      verification,
-      registryEntry,
-      userId: options.userId,
-      allowUpdate: options.allowUpdate,
-    });
+    const skillsRoot = this.skillsRoot ?? PathResolver.getSkillsPath();
+    const installed = await withBotSkillWorkspaceLock(skillsRoot, async () => (
+      installVerifiedSkillHubPackage({
+        verification,
+        registryEntry,
+        userId: options.userId,
+        allowUpdate: options.allowUpdate,
+        skillsRoot,
+      })
+    ));
+    notifyBotSkillMutation(skillsRoot);
     return {
       ok: true,
       skill: installed,
@@ -160,12 +169,17 @@ export class SkillHubService {
     };
   }
 
-  uninstall(input: { userId?: string; skillId: string; installName: string }): { removed: boolean; path: string } {
-    return uninstallSkillHubPackage(input);
+  async uninstall(input: { userId?: string; skillId: string; installName: string }): Promise<{ removed: boolean; path: string }> {
+    const skillsRoot = this.skillsRoot ?? PathResolver.getSkillsPath();
+    const result = await withBotSkillWorkspaceLock(skillsRoot, async () => (
+      uninstallSkillHubPackage({ ...input, skillsRoot })
+    ));
+    if (result.removed) notifyBotSkillMutation(skillsRoot);
+    return result;
   }
 
   claimInstalledSkillOwnership(input: { userId: string; skillId: string; installName: string }): boolean {
-    return claimSkillHubPackageOwnership(input);
+    return claimSkillHubPackageOwnership({ ...input, skillsRoot: this.skillsRoot });
   }
 
   developerDashboard(): Promise<any> {
@@ -279,7 +293,11 @@ export class SkillHubService {
     });
     const skillHubMetadata = skillHubMetadataFromShareResponse(submission);
     if (skillHubMetadata) {
-      writeSkillHubLocalMetadata(skill.filePath, skillHubMetadata);
+      const skillsRoot = this.skillsRoot ?? PathResolver.getSkillsPath();
+      await withBotSkillWorkspaceLock(skillsRoot, async () => {
+        writeSkillHubLocalMetadata(skill.filePath, skillHubMetadata);
+      });
+      notifyBotSkillMutation(skillsRoot);
     }
 
     return {

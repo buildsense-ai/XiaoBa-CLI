@@ -143,6 +143,114 @@ describe('BotDefinition local simulation', () => {
     assert.deepStrictEqual(repository.readCache('bot-alpha'), canonical);
   });
 
+  test('model and prompt updates preserve Definition fields owned by the other subsystem', () => {
+    const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
+    repository.writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'old-model' },
+      prompt: { selected: 'custom', customSystemPrompt: 'keep me' },
+      skills: [
+        { skillId: 'private/skill-a', version: 'sha256:aaa' },
+        { skillId: 'public/skill-b', version: '1.2.3' },
+      ],
+    });
+    const service = createBotDefinitionSyncService({
+      runtimeRoot,
+      simulatedCloudRoot,
+      repository,
+    });
+
+    const result = service.publish('bot-alpha', { kind: 'catalog', modelId: 'new-model' });
+
+    assert.deepStrictEqual(result.definition.skills, [
+      { skillId: 'private/skill-a', version: 'sha256:aaa' },
+      { skillId: 'public/skill-b', version: '1.2.3' },
+    ]);
+    assert.deepStrictEqual(result.definition.prompt, {
+      selected: 'custom',
+      customSystemPrompt: 'keep me',
+    });
+    assert.deepStrictEqual(repository.readCanonical('bot-alpha')?.skills, result.definition.skills);
+
+    const promptResult = service.updatePrompt('bot-alpha', { selected: 'default' });
+    assert.deepStrictEqual(promptResult.definition.model, { kind: 'catalog', modelId: 'new-model' });
+    assert.deepStrictEqual(promptResult.definition.skills, result.definition.skills);
+  });
+
+  test('accepting an older Skill snapshot keeps the latest locked local prompt', () => {
+    const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
+    repository.writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'canonical-model' },
+      prompt: { selected: 'custom', customSystemPrompt: 'canonical prompt' },
+      skills: [{ skillId: 'canonical-skill', version: '1' }],
+    });
+    repository.writeCache({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'latest-model' },
+      prompt: { selected: 'custom', customSystemPrompt: 'latest prompt' },
+      skills: [{ skillId: 'old-skill', version: '1' }],
+    });
+    const service = createBotDefinitionSyncService({
+      runtimeRoot,
+      simulatedCloudRoot,
+      repository,
+    });
+
+    const accepted = service.acceptRemoteSnapshot({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'remote-model' },
+      prompt: { selected: 'custom', customSystemPrompt: 'stale prompt' },
+      skills: [{ skillId: 'remote-skill', version: '2' }],
+    });
+
+    assert.deepStrictEqual(accepted.prompt, {
+      selected: 'custom',
+      customSystemPrompt: 'latest prompt',
+    });
+    assert.deepStrictEqual(accepted.skills, [{ skillId: 'remote-skill', version: '2' }]);
+    assert.deepStrictEqual(repository.readCache('bot-alpha'), accepted);
+  });
+
+  test('distinguishes a migrated empty Skill list from a legacy missing field', () => {
+    const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
+    repository.writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'model-a' },
+      skills: [],
+    });
+    repository.writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-legacy',
+      model: { kind: 'catalog', modelId: 'model-b' },
+    });
+
+    assert.deepStrictEqual(repository.readCanonical('bot-alpha')?.skills, []);
+    assert.equal(repository.readCanonical('bot-legacy')?.skills, undefined);
+  });
+
+  test('rejects malformed or duplicate Skill references', () => {
+    const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
+    const canonicalPath = repository.getCanonicalPath('bot-alpha');
+    fs.mkdirSync(path.dirname(canonicalPath), { recursive: true });
+    fs.writeFileSync(canonicalPath, JSON.stringify({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'model-a' },
+      skills: [
+        { skillId: 'same', version: '1' },
+        { skillId: 'same', version: '1' },
+      ],
+    }));
+
+    assert.equal(repository.readCanonical('bot-alpha'), undefined);
+  });
+
   test('pull preserves the previous custom profile outside the active Definition and runtime roots stay isolated', () => {
     const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
     const customModel = {

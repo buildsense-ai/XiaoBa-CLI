@@ -416,9 +416,36 @@ export class BotDefinitionSyncService {
     return cached ? normalizeBotDefinition(cached) : this.pull(botId);
   }
 
+  /**
+   * Accepts the already reconciled full Definition from the real cloud
+   * transport without consulting the legacy simulated-canonical file again.
+   */
+  acceptRemoteSnapshot(definition: BotDefinition): BotDefinition {
+    return this.withDefinitionWriteLock(definition.botId, () => {
+      const normalized = normalizeBotDefinition(definition);
+      const current = this.repository.readCache(normalized.botId)
+        ?? this.repository.readCanonical(normalized.botId);
+      const merged = current?.prompt !== undefined
+        ? { ...normalized, prompt: current.prompt }
+        : normalized;
+      this.repository.writeCache(merged);
+      const override = this.cloudOverrideRepository.read(normalized.botId);
+      if (override) {
+        this.cloudOverrideRepository.write({
+          ...override,
+          ...(merged.prompt !== undefined ? { prompt: merged.prompt } : {}),
+          ...(merged.skills !== undefined ? { skills: merged.skills } : {}),
+        });
+      }
+      return merged;
+    });
+  }
+
   publish(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
     return this.withDefinitionWriteLock(botId, () => {
-      const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
+      const previousCanonical = this.repository.readCanonical(botId);
+      const previousCache = this.repository.readCache(botId);
+      const previous = previousCache ?? previousCanonical;
       if (previous?.model.kind === 'custom') {
         this.storeCustomModelProfile(botId, previous.model);
       }
@@ -426,19 +453,25 @@ export class BotDefinitionSyncService {
       if (normalizedModel.kind === 'custom') {
         this.storeCustomModelProfile(botId, normalizedModel);
       }
-      const definition: BotDefinition = {
-        ...previous,
+      const canonicalDefinition: BotDefinition = {
+        ...(previousCanonical ?? previousCache),
         schema: BOT_DEFINITION_SCHEMA,
         botId,
         model: normalizedModel,
       };
-      this.repository.writeCanonical(definition);
-      this.repository.writeCache(definition);
-      this.clearLegacyModelConfigurationWhenReady(definition);
+      const cacheDefinition: BotDefinition = {
+        ...(previousCache ?? previousCanonical),
+        schema: BOT_DEFINITION_SCHEMA,
+        botId,
+        model: normalizedModel,
+      };
+      this.repository.writeCanonical(canonicalDefinition);
+      this.repository.writeCache(cacheDefinition);
+      this.clearLegacyModelConfigurationWhenReady(cacheDefinition);
       return {
         botId,
         direction: 'local_to_simulated_cloud',
-        definition,
+        definition: cacheDefinition,
       };
     });
   }
@@ -449,28 +482,38 @@ export class BotDefinitionSyncService {
 
   updatePrompt(botId: string, prompt: BotPromptDefinition): BotDefinitionSyncResult {
     return this.withDefinitionWriteLock(botId, () => {
-      const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
-      if (!previous) {
+      const previousCanonical = this.repository.readCanonical(botId);
+      const previousCache = this.repository.readCache(botId);
+      if (!previousCache && !previousCanonical) {
         throw new Error(`BotDefinition does not exist for bot ${botId}`);
       }
-      const definition: BotDefinition = {
-        ...previous,
+      const normalizedPrompt = normalizePromptDefinition(prompt);
+      const canonicalDefinition: BotDefinition = {
+        ...(previousCanonical ?? previousCache!),
         schema: BOT_DEFINITION_SCHEMA,
         botId,
-        prompt: normalizePromptDefinition(prompt),
+        prompt: normalizedPrompt,
       };
-      this.repository.writeCache(definition);
-      this.repository.writeCanonical(definition);
+      const cacheDefinition: BotDefinition = {
+        ...(previousCache ?? previousCanonical!),
+        schema: BOT_DEFINITION_SCHEMA,
+        botId,
+        prompt: normalizedPrompt,
+      };
+      this.repository.writeCache(cacheDefinition);
+      this.repository.writeCanonical(canonicalDefinition);
       return {
         botId,
         direction: 'local_to_simulated_cloud',
-        definition,
+        definition: cacheDefinition,
       };
     });
   }
 
   acceptCloud(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
+    const previous = this.cloudOverrideRepository.read(botId) ?? this.repository.readCache(botId);
     const definition: BotDefinition = {
+      ...previous,
       schema: BOT_DEFINITION_SCHEMA,
       botId,
       model: normalizeBotModelDefinition(model),

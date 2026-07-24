@@ -13,6 +13,7 @@ export interface SkillHubCatsCoAuthPayload {
 
 export interface SkillHubRouteOptions {
   getCatsCoAuth?: () => Promise<SkillHubCatsCoAuthPayload> | SkillHubCatsCoAuthPayload;
+  mutate?<T>(operation: () => Promise<T> | T): Promise<T>;
 }
 
 export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOptions = {}): void {
@@ -87,7 +88,11 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
     try {
       const skillId = String(req.body?.skillId || '').trim();
       if (!skillId) return res.status(400).json({ error: 'skillId required' });
-      res.json(await serviceFrom(req.body).install(skillId, String(req.body?.version || '').trim() || undefined));
+      const install = () => serviceFrom(req.body).install(
+        skillId,
+        String(req.body?.version || '').trim() || undefined,
+      );
+      res.json(await (options.mutate ? options.mutate(install) : install()));
     } catch (error: any) {
       sendSkillHubError(res, error);
     }
@@ -136,7 +141,8 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
 
   router.post('/skillhub/developer/share-local-skill', async (req, res) => {
     try {
-      res.status(201).json(await serviceFrom(req.body).shareLocalSkill(req.body || {}));
+      const share = () => serviceFrom(req.body).shareLocalSkill(req.body || {});
+      res.status(201).json(await (options.mutate ? options.mutate(share) : share()));
     } catch (error: any) {
       sendSkillHubError(res, error);
     }
@@ -144,7 +150,8 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
 
   router.post('/skillhub/share-local-skill', async (req, res) => {
     try {
-      res.status(201).json(await serviceFrom(req.body).shareLocalSkill(req.body || {}));
+      const share = () => serviceFrom(req.body).shareLocalSkill(req.body || {});
+      res.status(201).json(await (options.mutate ? options.mutate(share) : share()));
     } catch (error: any) {
       sendSkillHubError(res, error);
     }

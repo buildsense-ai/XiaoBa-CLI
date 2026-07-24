@@ -307,6 +307,9 @@ export class ServiceManager extends EventEmitter {
     const appendLog = (data: Buffer) => {
       const lines = data.toString().split('\n').filter(l => l.trim());
       svc.logs.push(...lines);
+      if (lines.some(line => line.includes('[CATSCO_READY]'))) {
+        this.emit('service-ready', name);
+      }
       if (svc.logs.length > MAX_LOG_LINES) {
         svc.logs = svc.logs.slice(-MAX_LOG_LINES);
       }
@@ -376,17 +379,101 @@ export class ServiceManager extends EventEmitter {
       this.killProcess(svc.process, true);
     } else {
       svc.expectedExit = 'stop';
-      svc.process.kill('SIGTERM');
+      const child = svc.process;
+      child.kill('SIGTERM');
 
       // 5秒后强制kill
       const forceKillTimer = setTimeout(() => {
-        if (svc.process && !svc.process.killed) {
-          svc.process.kill('SIGKILL');
+        if (svc.process === child) {
+          child.kill('SIGKILL');
         }
       }, 5000);
       forceKillTimer.unref?.();
     }
 
+    return this.getService(name)!;
+  }
+
+  async stopAndWait(name: string, timeoutMs = 10_000): Promise<ServiceInfo> {
+    const svc = this.services.get(name);
+    if (!svc) throw new Error(`Service "${name}" not found`);
+    if (svc.info.status !== 'running' || !svc.process) return this.getService(name)!;
+    const child = svc.process;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.off('exit', onExit);
+        reject(new Error(`Timed out waiting for service "${name}" to stop`));
+      }, timeoutMs);
+      timer.unref?.();
+      const onExit = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      child.once('exit', onExit);
+      try {
+        this.stop(name);
+      } catch (error) {
+        clearTimeout(timer);
+        child.off('exit', onExit);
+        reject(error);
+      }
+    });
+    return this.getService(name)!;
+  }
+
+  async startAndWait(name: string, timeoutMs = 35_000): Promise<ServiceInfo> {
+    const existing = this.services.get(name);
+    if (!existing) throw new Error(`Service "${name}" not found`);
+    if (existing.info.status === 'running' && existing.logs.some(line => line.includes('[CATSCO_READY]'))) {
+      return this.getService(name)!;
+    }
+    this.start(name);
+    const service = this.services.get(name)!;
+    if (service.logs.some(line => line.includes('[CATSCO_READY]'))) return this.getService(name)!;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onReady = (readyName: string) => {
+          if (readyName !== name) return;
+          cleanup();
+          resolve();
+        };
+        const onStopped = (stoppedName: string) => {
+          if (stoppedName !== name) return;
+          cleanup();
+          reject(new Error(`Service "${name}" stopped before it became ready`));
+        };
+        const onError = (errorName: string, error: unknown) => {
+          if (errorName !== name) return;
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        };
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error(`Timed out waiting for service "${name}" to become ready`));
+        }, timeoutMs);
+        timer.unref?.();
+        const cleanup = () => {
+          clearTimeout(timer);
+          this.off('service-ready', onReady);
+          this.off('service-stopped', onStopped);
+          this.off('service-error', onError);
+        };
+        this.on('service-ready', onReady);
+        this.on('service-stopped', onStopped);
+        this.on('service-error', onError);
+      });
+    } catch (error) {
+      const current = this.services.get(name);
+      if (current && current.process === service.process && current.info.status === 'running') {
+        try {
+          await this.stopAndWait(name, Math.min(10_000, Math.max(1_000, timeoutMs)));
+        } catch {
+          // Preserve the original readiness failure; stopAndWait already
+          // escalates to the platform's force-stop path.
+        }
+      }
+      throw error;
+    }
     return this.getService(name)!;
   }
 

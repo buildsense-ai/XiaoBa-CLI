@@ -2,10 +2,16 @@ import express from 'express';
 import * as path from 'path';
 import type { Server } from 'http';
 import { Logger } from '../utils/logger';
+import { PathResolver } from '../utils/path-resolver';
+import { isBotSkillRuntimeEnabled } from '../bot-skills/runtime';
+import { BotSkillWorkspaceService } from '../bot-skills/workspace';
+import { FileBotSkillSwitchJournalStore } from '../bot-skills/switch-journal';
+import { BotSkillWorkspaceSwitchService } from '../bot-skills/switch-service';
+import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { createApiRouter } from './routes/api';
 import { ServiceManager } from './service-manager';
-import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 import { createDashboardAuth } from './auth';
+import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -33,12 +39,34 @@ export async function startDashboard(
   const envPackaged = /^(1|true|yes)$/i.test(process.env.XIAOBA_IS_PACKAGED || '');
   const projectRoot = controllers.projectRoot || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined) || process.cwd();
   const serviceManager = new ServiceManager(projectRoot);
+  if (!isBotSkillRuntimeEnabled()) {
+    void bootstrapDefaultSkillHubSkillsOnce().catch(error => {
+      Logger.warning(`Default Skill bootstrap failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  } else {
+    const runtimeRoot = PathResolver.getRuntimeDataRoot();
+    const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
+    const recovery = await new BotSkillWorkspaceSwitchService({
+      workspace: new BotSkillWorkspaceService({ runtimeRoot }),
+      journalStore: new FileBotSkillSwitchJournalStore({ runtimeRoot }),
+    }).recover({
+      currentBotId: auth.botUid,
+      restartConnector: async result => {
+        try {
+          await serviceManager.startAndWait('catscompany');
+        } catch (error) {
+          Logger.warning(
+            `Recovered Bot Skill switch (${result}), but the CatsCo connector could not restart: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      },
+    });
+    if (recovery !== 'none') Logger.info(`Recovered Bot Skill workspace switch: ${recovery}`);
+  }
 
   app.use(express.json({ limit: '25mb' }));
-
-  bootstrapDefaultSkillHubSkillsOnce().catch(error => {
-    Logger.warning(`Default SkillHub bootstrap failed: ${error?.message || String(error)}`);
-  });
 
   // Configure and apply dashboard authentication.
   // Trim the env var so whitespace-only values are treated as "not set"

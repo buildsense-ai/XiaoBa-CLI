@@ -12,6 +12,7 @@ import { FileBotCatalogModelRuntimeRepository, FileBotDefinitionRepository } fro
 import { createBotDefinitionSyncService } from '../src/bot-definition/service';
 import { resolveActiveBotLLMConfig } from '../src/bot-definition/llm-config-resolver';
 import { BOT_CATALOG_MODEL_RUNTIME_SCHEMA, BOT_DEFINITION_SCHEMA } from '../src/bot-definition/types';
+import { BotSkillRuntime } from '../src/bot-skills/runtime';
 
 describe('dashboard CatsCo account status', () => {
   let testRoot: string;
@@ -61,6 +62,8 @@ describe('dashboard CatsCo account status', () => {
     'CATSCOMPANY_INSTALLATION_ID',
     'CATSCO_ALLOW_LOCAL_ENDPOINTS',
     'CATSCOMPANY_ALLOW_LOCAL_ENDPOINTS',
+    'XIAOBA_BOT_SKILL_SYNC_ENABLED',
+    'XIAOBA_BOT_SKILL_SYNC_TRANSPORT',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -1118,6 +1121,151 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.data?.preflight?.blockingChecks.includes('runtime.command'), true);
     assert.equal(localConfig.load().currentBot?.uid, '188');
     assert.equal(restartCalled, 0);
+  });
+
+  test('POST /cats/switch-bot stops A, swaps complete workspaces, binds B, then starts B', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+    process.env.XIAOBA_BOT_SKILL_SYNC_ENABLED = '1';
+    process.env.XIAOBA_BOT_SKILL_SYNC_TRANSPORT = 'file';
+
+    const events: string[] = [];
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'running',
+    };
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'catscompany' ? service : undefined),
+      stopAndWait: async () => {
+        events.push('stop-a');
+        service.status = 'stopped';
+        return service;
+      },
+      startAndWait: async () => {
+        events.push('start-b');
+        service.status = 'running';
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(dashboardApp);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 88, username: 'owner', display_name: 'Owner' });
+      }
+      if (req.path === '/api/bots' && req.method === 'GET') {
+        return res.json({
+          bots: [{ uid: 199, username: 'bot-b', display_name: 'Bot B', api_key: 'bot-b-key' }],
+        });
+      }
+      if (
+        req.path === '/api/friends/request'
+        || req.path === '/api/friends/accept'
+      ) {
+        return res.json({ ok: true });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+
+    const localConfig = createCatsCoLocalConfigService({ runtimeRoot: testRoot });
+    localConfig.save({
+      version: 1,
+      endpoints: { httpBaseUrl: catsBaseUrl, serverUrl: 'wss://app.catsco.cc/v0/channels' },
+      account: { token: 'user-token', uid: '88', username: 'owner', displayName: 'Owner' },
+      currentBot: {
+        uid: '188',
+        name: 'Bot A',
+        apiKey: 'bot-a-key',
+        boundByUserUid: '88',
+        bindingSource: 'test',
+      },
+      device: { deviceId: 'device-1', bodyId: 'device-1', installationId: 'device-1' },
+    });
+    const definitions = new FileBotDefinitionRepository({ runtimeRoot: testRoot });
+    for (const botId of ['188', '199']) {
+      const definition = {
+        schema: BOT_DEFINITION_SCHEMA,
+        botId,
+        model: { kind: 'catalog' as const, modelId: 'minimax-m3' },
+      };
+      definitions.writeCanonical(definition);
+      definitions.writeCache(definition);
+      new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).write({
+        schema: BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+        botId,
+        modelId: 'minimax-m3',
+        provider: 'anthropic',
+        apiBase: 'https://relay.example.test/anthropic',
+        apiKey: `runtime-${botId}`,
+        model: 'MiniMax-M3',
+        contextWindowTokens: 200000,
+      });
+    }
+    const activeRoot = path.join(testRoot, 'skills');
+    const targetRoot = path.join(
+      testRoot,
+      'data',
+      'bot-skill-workspaces',
+      `bot_${Buffer.from('199').toString('base64url')}`,
+    );
+    const authority = new URL(catsBaseUrl).origin.toLowerCase();
+    const makeRuntime = (botId: string, apiKey: string, skillsRoot: string) => new BotSkillRuntime({
+      runtimeRoot: testRoot,
+      skillsRoot,
+      auth: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+        botUid: botId,
+        apiKey,
+        uid: '88',
+      },
+      transport: 'file',
+    });
+    const botA = makeRuntime('188', 'bot-a-key', activeRoot);
+    const botB = makeRuntime('199', 'bot-b-key', targetRoot);
+    for (const [runtime, name] of [[botA, 'skill-a'], [botB, 'skill-b']] as const) {
+      runtime.workspace.initializeEmpty({
+        botId: runtime.owner.botId,
+        authority,
+        ownerUserId: '88',
+      });
+      const directory = path.join(runtime.workspace.root, name);
+      fs.mkdirSync(directory);
+      fs.writeFileSync(path.join(directory, 'SKILL.md'), [
+        '---', `name: ${name}`, `description: ${name}`, '---', '', `# ${name}`, '',
+      ].join('\n'));
+      const outcome = await runtime.sync({ definitionForCreate: definitions.readCache(runtime.owner.botId) });
+      assert.equal(outcome.result.action, 'created_cloud');
+    }
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/switch-bot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ botUid: '199' }),
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 200, text);
+    assert.deepStrictEqual(events, ['stop-a', 'start-b']);
+    assert.equal(localConfig.load().currentBot?.uid, '199');
+    assert.equal(fs.existsSync(path.join(activeRoot, 'skill-b', 'SKILL.md')), true);
+    const sourceParked = path.join(
+      testRoot,
+      'data',
+      'bot-skill-workspaces',
+      `bot_${Buffer.from('188').toString('base64url')}`,
+    );
+    assert.equal(fs.existsSync(path.join(sourceParked, 'skill-a', 'SKILL.md')), true);
+    assert.equal(fs.existsSync(targetRoot), false);
   });
 
   test('PUT /model/reasoning-effort accepts and normalizes a legacy catalog runtime alias', async () => {
