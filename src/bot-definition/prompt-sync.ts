@@ -75,8 +75,32 @@ export class PromptReconcileCoordinator {
   }
 
   getSelection(botId: string): PromptSelectionState {
-    const definition = this.requireDefinition(botId);
     const bundledDefaultSystemPrompt = this.readBundledDefault();
+    const definition = this.definitionService.read(botId);
+    if (!definition) {
+      const state = this.readState();
+      const active = this.readActivePrompt({ force: true });
+      const activeBelongsToBot = Boolean(
+        active
+        && (
+          !state
+          || (
+            state.activeBotId === botId
+            && (
+              state.materializedSelection === 'custom'
+              || active.hash !== state.lastSyncedHash
+            )
+          )
+        ),
+      );
+      return {
+        botId,
+        selected: activeBelongsToBot ? 'custom' : 'default',
+        ...(activeBelongsToBot ? { customSystemPrompt: active!.text } : {}),
+        effectiveSystemPrompt: activeBelongsToBot ? active!.text : bundledDefaultSystemPrompt,
+        bundledDefaultSystemPrompt,
+      };
+    }
     const prompt = definition.prompt ?? { selected: 'default' as const };
     const effectiveSystemPrompt = prompt.selected === 'custom'
       ? prompt.customSystemPrompt || bundledDefaultSystemPrompt

@@ -136,6 +136,29 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.topicId, '');
   });
 
+  test('GET /prompts remains available for a bound legacy bot without a Definition', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      currentBot: {
+        uid: 'legacy-bound-bot',
+        name: 'Legacy Bot',
+        apiKey: 'legacy-agent-key',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/prompts`);
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.system_prompt.botId, 'legacy-bound-bot');
+    assert.equal(data.system_prompt.selected, 'default');
+    assert.equal(
+      new FileBotDefinitionRepository({ runtimeRoot: testRoot }).readCache('legacy-bound-bot'),
+      undefined,
+    );
+  });
+
   test('PUT /settings immediately restarts a running connector after a bound custom model update', async () => {
     if (dashboardServer) {
       await close(dashboardServer);

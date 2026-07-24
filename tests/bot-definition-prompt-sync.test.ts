@@ -47,6 +47,7 @@ describe('BotDefinition system prompt sync', () => {
   function createCoordinator(
     botId = 'bot-a',
     repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }),
+    initializeDefinition = true,
   ): {
     coordinator: PromptReconcileCoordinator;
     repository: FileBotDefinitionRepository;
@@ -60,12 +61,14 @@ describe('BotDefinition system prompt sync', () => {
         bindingSource: 'test',
       },
     });
-    repository.writeCanonical({
-      schema: BOT_DEFINITION_SCHEMA,
-      botId,
-      model: { kind: 'catalog', modelId: 'minimax-m3' },
-    });
-    repository.writeCache(repository.readCanonical(botId)!);
+    if (initializeDefinition) {
+      repository.writeCanonical({
+        schema: BOT_DEFINITION_SCHEMA,
+        botId,
+        model: { kind: 'catalog', modelId: 'minimax-m3' },
+      });
+      repository.writeCache(repository.readCanonical(botId)!);
+    }
     const definitionService = createBotDefinitionSyncService({
       runtimeRoot,
       simulatedCloudRoot,
@@ -93,6 +96,40 @@ describe('BotDefinition system prompt sync', () => {
       fs.rmSync(fakePrompts, { recursive: true, force: true });
       fs.rmSync(fakeOverrides, { recursive: true, force: true });
     }
+  });
+
+  test('returns a default read view when the bound bot Definition is not initialized yet', () => {
+    const { coordinator, repository } = createCoordinator(
+      'legacy-bound-bot',
+      new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }),
+      false,
+    );
+
+    const selection = coordinator.getSelection('legacy-bound-bot');
+
+    assert.equal(selection.selected, 'default');
+    assert.equal(selection.effectiveSystemPrompt, 'bundled v1');
+    assert.equal(selection.customSystemPrompt, undefined);
+    assert.equal(repository.readCache('legacy-bound-bot'), undefined);
+    assert.equal(repository.readCanonical('legacy-bound-bot'), undefined);
+  });
+
+  test('preserves a legacy system override as a custom read view before Definition bootstrap', () => {
+    const { coordinator, repository } = createCoordinator(
+      'legacy-custom-bot',
+      new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }),
+      false,
+    );
+    fs.mkdirSync(path.dirname(coordinator.getActivePromptPath()), { recursive: true });
+    fs.writeFileSync(coordinator.getActivePromptPath(), 'Legacy custom prompt\n', 'utf-8');
+
+    const selection = coordinator.getSelection('legacy-custom-bot');
+
+    assert.equal(selection.selected, 'custom');
+    assert.equal(selection.customSystemPrompt, 'Legacy custom prompt');
+    assert.equal(selection.effectiveSystemPrompt, 'Legacy custom prompt');
+    assert.equal(repository.readCache('legacy-custom-bot'), undefined);
+    assert.equal(repository.readCanonical('legacy-custom-bot'), undefined);
   });
 
   test('bound bots always use the runtime-root prompt override directory', () => {
