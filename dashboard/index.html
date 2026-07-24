@@ -7239,9 +7239,15 @@
     }
 
     function renderPromptEditorPane(file){
-      const saveDisabled=promptEditorState?.writable?'':' disabled';
+      const definitionReady=promptEditorState?.system_prompt?.definitionReady===true;
+      const promptWritable=Boolean(promptEditorState?.writable&&definitionReady);
+      const saveDisabled=promptWritable?'':' disabled';
       const selectedMode=promptEditorState?.system_prompt?.selected||'default';
       const isCustom=selectedMode==='custom';
+      const modeDisabled=definitionReady?'':' disabled';
+      const editorStatus=!definitionReady
+        ?'机器人配置尚未初始化，连接完成后即可编辑。'
+        :(isCustom?'编辑后保存；下一条用户消息开始前生效。':'当前使用随 XiaoBa 更新的内置默认 Prompt。');
       return '<div class="prompt-editor-pane">'+
         '<div class="prompt-editor-head">'+
           '<div><div class="prompt-editor-title">'+escapeHtml(file.path)+'</div>'+
@@ -7249,13 +7255,13 @@
           (file.overridden?'<span class="tag green">override</span>':'<span class="tag">base</span>')+
         '</div>'+
         '<div class="settings-actions" style="justify-content:flex-start;margin-bottom:12px">'+
-          '<button class="btn'+(!isCustom?' btn-primary':'')+'" type="button" onclick="selectSystemPromptMode(\'default\')">默认 System Prompt</button>'+
-          '<button class="btn'+(isCustom?' btn-primary':'')+'" type="button" onclick="selectSystemPromptMode(\'custom\')">自定义 System Prompt</button>'+
-          '<button class="btn" type="button" onclick="insertDisplayNameTemplate()"'+(isCustom?'':' disabled')+'>插入 {{displayName}}</button>'+
+          '<button class="btn'+(!isCustom?' btn-primary':'')+'" type="button" onclick="selectSystemPromptMode(\'default\')"'+modeDisabled+'>默认 System Prompt</button>'+
+          '<button class="btn'+(isCustom?' btn-primary':'')+'" type="button" onclick="selectSystemPromptMode(\'custom\')"'+modeDisabled+'>自定义 System Prompt</button>'+
+          '<button class="btn" type="button" onclick="insertDisplayNameTemplate()"'+(isCustom&&definitionReady?'':' disabled')+'>插入 {{displayName}}</button>'+
         '</div>'+
-        '<textarea class="config-input prompt-editor-textarea" id="prompt-editor-textarea" spellcheck="false" oninput="markPromptEditorDirty()"'+(isCustom?'':' readonly')+'>'+escapeHtml(file.content||'')+'</textarea>'+
+        '<textarea class="config-input prompt-editor-textarea" id="prompt-editor-textarea" spellcheck="false" oninput="markPromptEditorDirty()"'+(isCustom&&definitionReady?'':' readonly')+'>'+escapeHtml(file.content||'')+'</textarea>'+
         '<div class="prompt-editor-actions">'+
-          '<div class="prompt-editor-status" id="prompt-editor-status">'+(isCustom?'编辑后保存；下一条用户消息开始前生效。':'当前使用随 XiaoBa 更新的内置默认 Prompt。')+'</div>'+
+          '<div class="prompt-editor-status" id="prompt-editor-status">'+editorStatus+'</div>'+
           '<div class="settings-actions">'+
             '<button class="btn btn-primary" id="prompt-editor-save-btn" onclick="savePromptEditorFile()"'+(isCustom?saveDisabled:' disabled')+'>保存自定义 Prompt</button>'+
           '</div>'+

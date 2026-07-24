@@ -152,11 +152,22 @@ describe('dashboard CatsCo account status', () => {
 
     assert.equal(response.status, 200, text);
     assert.equal(data.system_prompt.botId, 'legacy-bound-bot');
+    assert.equal(data.system_prompt.definitionReady, false);
     assert.equal(data.system_prompt.selected, 'default');
     assert.equal(
       new FileBotDefinitionRepository({ runtimeRoot: testRoot }).readCache('legacy-bound-bot'),
       undefined,
     );
+
+    const writeResponse = await fetch(`${dashboardBaseUrl}/api/prompts/system`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selected: 'custom' }),
+    });
+    const writeData = await writeResponse.json() as any;
+
+    assert.equal(writeResponse.status, 409);
+    assert.match(writeData.error, /机器人配置尚未初始化/);
   });
 
   test('PUT /settings immediately restarts a running connector after a bound custom model update', async () => {

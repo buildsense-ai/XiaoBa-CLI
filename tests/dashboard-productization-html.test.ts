@@ -143,6 +143,9 @@ test('Prompt editor exposes only the BotDefinition system prompt choices', () =>
   assert.match(dashboardHtml, /function selectSystemPromptMode\(selected\)/);
   assert.match(dashboardHtml, /\/api\/prompts\/system/);
   assert.match(dashboardHtml, /function insertDisplayNameTemplate\(\)/);
+  assert.match(dashboardHtml, /const definitionReady=promptEditorState\?\.system_prompt\?\.definitionReady===true/);
+  assert.match(dashboardHtml, /const modeDisabled=definitionReady\?'':' disabled'/);
+  assert.match(dashboardHtml, /isCustom&&definitionReady\?'':' readonly'/);
   assert.doesNotMatch(dashboardHtml, /重置为内置/);
 });
 

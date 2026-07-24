@@ -24,6 +24,7 @@ export interface ActivePromptSyncState {
 
 export interface PromptSelectionState {
   botId: string;
+  definitionReady: boolean;
   selected: 'default' | 'custom';
   customSystemPrompt?: string;
   effectiveSystemPrompt: string;
@@ -95,6 +96,7 @@ export class PromptReconcileCoordinator {
       );
       return {
         botId,
+        definitionReady: false,
         selected: activeBelongsToBot ? 'custom' : 'default',
         ...(activeBelongsToBot ? { customSystemPrompt: active!.text } : {}),
         effectiveSystemPrompt: activeBelongsToBot ? active!.text : bundledDefaultSystemPrompt,
@@ -107,6 +109,7 @@ export class PromptReconcileCoordinator {
       : bundledDefaultSystemPrompt;
     return {
       botId,
+      definitionReady: true,
       selected: prompt.selected,
       ...(prompt.customSystemPrompt ? { customSystemPrompt: prompt.customSystemPrompt } : {}),
       effectiveSystemPrompt,
@@ -342,6 +345,7 @@ export class PromptReconcileCoordinator {
     const prompt = definition.prompt ?? { selected: 'default' as const };
     return {
       botId: definition.botId,
+      definitionReady: true,
       selected: prompt.selected,
       ...(prompt.customSystemPrompt ? { customSystemPrompt: prompt.customSystemPrompt } : {}),
       effectiveSystemPrompt,

@@ -2491,6 +2491,10 @@ export function createApiRouter(
       const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
       const botId = coordinator.getCurrentBotId();
       if (botId && relativePath === 'system-prompt.md') {
+        if (!coordinator.getSelection(botId).definitionReady) {
+          res.status(409).json({ error: '机器人配置尚未初始化，连接完成后即可编辑' });
+          return;
+        }
         void coordinator.select(botId, 'custom', content).then(
           () => res.json(getPromptEditorFile(relativePath)),
           error => res.status(400).json({ error: error instanceof Error ? error.message : String(error) }),
@@ -2510,6 +2514,10 @@ export function createApiRouter(
       const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
       const botId = coordinator.getCurrentBotId();
       if (botId && relativePath === 'system-prompt.md') {
+        if (!coordinator.getSelection(botId).definitionReady) {
+          res.status(409).json({ error: '机器人配置尚未初始化，连接完成后即可编辑' });
+          return;
+        }
         void coordinator.select(botId, 'default').then(
           () => res.json(getPromptEditorFile(relativePath)),
           error => res.status(400).json({ error: error instanceof Error ? error.message : String(error) }),
@@ -2529,6 +2537,10 @@ export function createApiRouter(
       const botId = coordinator.getCurrentBotId();
       if (!botId) {
         res.status(409).json({ error: 'No bound bot is available for prompt selection' });
+        return;
+      }
+      if (!coordinator.getSelection(botId).definitionReady) {
+        res.status(409).json({ error: '机器人配置尚未初始化，连接完成后即可编辑' });
         return;
       }
       const selected = req.body?.selected;

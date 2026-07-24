@@ -107,6 +107,7 @@ describe('BotDefinition system prompt sync', () => {
 
     const selection = coordinator.getSelection('legacy-bound-bot');
 
+    assert.equal(selection.definitionReady, false);
     assert.equal(selection.selected, 'default');
     assert.equal(selection.effectiveSystemPrompt, 'bundled v1');
     assert.equal(selection.customSystemPrompt, undefined);
@@ -125,6 +126,7 @@ describe('BotDefinition system prompt sync', () => {
 
     const selection = coordinator.getSelection('legacy-custom-bot');
 
+    assert.equal(selection.definitionReady, false);
     assert.equal(selection.selected, 'custom');
     assert.equal(selection.customSystemPrompt, 'Legacy custom prompt');
     assert.equal(selection.effectiveSystemPrompt, 'Legacy custom prompt');
@@ -145,6 +147,7 @@ describe('BotDefinition system prompt sync', () => {
     const { coordinator, repository } = createCoordinator();
     await coordinator.activateBot('bot-a');
 
+    assert.equal(coordinator.getSelection('bot-a').definitionReady, true);
     assert.equal(repository.readCanonical('bot-a')?.prompt?.selected, 'default');
     assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'bundled v1\n');
 
