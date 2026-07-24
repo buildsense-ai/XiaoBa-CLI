@@ -573,12 +573,7 @@ function normalizeAdvisorTargetPath(value: unknown, state: PromptEditorStateSnap
 }
 
 function shouldIncludePromptExcerpt(filePath: string): boolean {
-  return filePath === 'system-prompt.md'
-    || filePath === 'runtime-context.md'
-    || filePath === 'compact-system.md'
-    || filePath === 'sidecars/prompt-companion-advisor.md'
-    || filePath.startsWith('subagents/')
-    || filePath.startsWith('transient/');
+  return filePath === 'system-prompt.md';
 }
 
 function createBriefProposal(current: string, baseHash: string, signals: PromptCompanionSignals): PromptCompanionProposal {

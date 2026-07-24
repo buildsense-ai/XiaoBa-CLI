@@ -11,7 +11,7 @@ Use this skill to improve CatsCo prompts without distracting the main agent from
 
 - Treat prompt editing as a side workflow: diagnose, propose, ask for confirmation, then apply.
 - Prefer local prompt overrides over editing built-in prompt files. Built-in files are the baseline; overrides are the experiment layer.
-- Only edit existing prompt `.md` paths exposed by Prompt Lab, such as `system-prompt.md`, `runtime-context.md`, `compact-system.md`, `transient/*.md`, `subagents/*.md`, and `sidecars/*.md`.
+- Only edit `system-prompt.md`. Runtime, sidecar, and sub-agent prompts are fixed implementation details.
 - Do not edit `src/`, tool schemas, provider adapters, credentials, or user data unless the user explicitly asks for code changes.
 - Never put secrets, private file contents, long chat transcripts, screenshots, or API keys into prompt files.
 
@@ -20,12 +20,8 @@ Use this skill to improve CatsCo prompts without distracting the main agent from
 1. Inspect the current prompt state.
    - Prefer `GET http://127.0.0.1:3800/api/prompts` when the local Dashboard API is running.
    - Otherwise ask the user for the Prompt Lab state or the override directory path.
-2. Pick the smallest prompt file that matches the behavior being tuned.
-   - Global behavior: `system-prompt.md`.
-   - Runtime facts and current directory wording: `runtime-context.md` or `transient/current-directory.md`.
-   - Compression quality: `compact-system.md`.
-   - Sub-agent behavior: `subagents/*`.
-   - Small side model calls: `sidecars/*`.
+2. Confirm that the requested behavior belongs in the main `system-prompt.md`.
+   - Runtime facts, compression rules, sub-agent behavior, and sidecar protocols are not user-editable prompts.
 3. Propose the change before writing it.
    - Explain the target file, the intended behavioral change, and the risk.
    - Ask for a clear apply/cancel confirmation if the user has not already approved.

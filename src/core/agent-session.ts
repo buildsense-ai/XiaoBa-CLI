@@ -48,6 +48,10 @@ import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifac
 import type { PromptTraceSnapshot } from '../utils/prompt-observability';
 import { toPromptTurnMetadata } from '../utils/prompt-observability';
 import type { StreamRetryInfo } from '../providers/provider';
+import {
+  reconcileCurrentBotPromptBeforeTurn,
+  scheduleCurrentBotPromptReconcile,
+} from '../bot-definition/prompt-sync';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -520,6 +524,7 @@ export class AgentSession {
       this.lastActiveAt = Date.now();
 
       try {
+        await reconcileCurrentBotPromptBeforeTurn();
         await this.refreshSystemPromptIfNeeded(lifecycleGeneration, this.activeAbortController.signal);
       } catch (error: any) {
         Logger.warning(`[会话 ${this.key}] Prompt 热加载失败，继续使用上一版: ${error?.message || error}`);
@@ -637,6 +642,7 @@ export class AgentSession {
         return { text: errorReply, visibleToUser: true, taskOutcome: 'failed' };
       } finally {
         this.planRuntime.clear();
+        scheduleCurrentBotPromptReconcile();
         this.busy = false;
         this.activeAbortController = null;
       }

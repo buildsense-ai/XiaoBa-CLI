@@ -559,8 +559,14 @@ describe('BotDefinition activation', () => {
 
     assert.equal(cloudPrepared?.cloudRevision, 11);
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'cloud-model');
-    assert.deepStrictEqual(definitions.readCanonical('43'), localDefinition);
-    assert.deepStrictEqual(definitions.readCache('43'), localDefinition);
+    assert.deepStrictEqual(definitions.readCanonical('43'), {
+      ...localDefinition,
+      prompt: { selected: 'default' },
+    });
+    assert.deepStrictEqual(definitions.readCache('43'), {
+      ...localDefinition,
+      prompt: { selected: 'default' },
+    });
     assert.deepStrictEqual(new FileBotCustomModelProfileRepository({ runtimeRoot }).read('43')?.model, localModel);
     assert.equal(new FileBotCloudModelOverrideRepository({ runtimeRoot }).read('43')?.model.kind, 'custom');
 
@@ -584,7 +590,10 @@ describe('BotDefinition activation', () => {
     assert.equal(localPrepared?.cloudRevision, 12);
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'local-model');
     assert.equal(new FileBotCloudModelOverrideRepository({ runtimeRoot }).read('43'), undefined);
-    assert.deepStrictEqual(definitions.readCanonical('43'), localDefinition);
+    assert.deepStrictEqual(definitions.readCanonical('43'), {
+      ...localDefinition,
+      prompt: { selected: 'default' },
+    });
     assert.deepStrictEqual(new FileBotCustomModelProfileRepository({ runtimeRoot }).read('43')?.model, localModel);
   });
 

@@ -12,10 +12,13 @@ import {
 
 describe('prompt-editor', () => {
   test('writes and resets prompt overrides without editing bundled prompts', async () => {
-    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-editor-base-'));
+    const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-editor-app-'));
+    const base = path.join(appRoot, 'prompts');
     const overrides = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-editor-overrides-'));
     const previous = capturePromptEnv();
     try {
+      fs.mkdirSync(base, { recursive: true });
+      process.env.XIAOBA_APP_ROOT = appRoot;
       process.env.XIAOBA_PROMPTS_DIR = base;
       process.env.XIAOBA_PROMPT_OVERRIDES_DIR = overrides;
       process.env.XIAOBA_USER_DATA_DIR = base;
@@ -28,7 +31,7 @@ describe('prompt-editor', () => {
       assert.equal(initial.writable, true);
       assert.deepStrictEqual(
         initial.files.map(file => file.path),
-        ['runtime-context.md', 'system-prompt.md'],
+        ['system-prompt.md'],
       );
       assert.equal(getPromptEditorFile('system-prompt.md').content, 'base prompt');
 
@@ -44,16 +47,19 @@ describe('prompt-editor', () => {
       assert.equal(fs.existsSync(path.join(overrides, 'system-prompt.md')), false);
     } finally {
       restorePromptEnv(previous);
-      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(appRoot, { recursive: true, force: true });
       fs.rmSync(overrides, { recursive: true, force: true });
     }
   });
 
   test('rejects traversal and non-existing prompt paths', () => {
-    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-editor-base-'));
+    const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-editor-app-'));
+    const base = path.join(appRoot, 'prompts');
     const overrides = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-editor-overrides-'));
     const previous = capturePromptEnv();
     try {
+      fs.mkdirSync(base, { recursive: true });
+      process.env.XIAOBA_APP_ROOT = appRoot;
       process.env.XIAOBA_PROMPTS_DIR = base;
       process.env.XIAOBA_PROMPT_OVERRIDES_DIR = overrides;
       process.env.XIAOBA_USER_DATA_DIR = base;
@@ -68,17 +74,24 @@ describe('prompt-editor', () => {
         () => writePromptOverride('unknown.md', 'nope'),
         /Prompt file is not editable/,
       );
+      assert.throws(
+        () => writePromptOverride('runtime-context.md', 'nope'),
+        /Prompt file is not editable/,
+      );
     } finally {
       restorePromptEnv(previous);
-      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(appRoot, { recursive: true, force: true });
       fs.rmSync(overrides, { recursive: true, force: true });
     }
   });
 
   test('rejects override directory that points at bundled prompts', async () => {
-    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-editor-base-'));
+    const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-editor-app-'));
+    const base = path.join(appRoot, 'prompts');
     const previous = capturePromptEnv();
     try {
+      fs.mkdirSync(base, { recursive: true });
+      process.env.XIAOBA_APP_ROOT = appRoot;
       process.env.XIAOBA_PROMPTS_DIR = base;
       process.env.XIAOBA_PROMPT_OVERRIDES_DIR = base;
       process.env.XIAOBA_USER_DATA_DIR = base;
@@ -102,13 +115,14 @@ describe('prompt-editor', () => {
       assert.equal(fs.existsSync(path.join(base, 'system-prompt.md')), true);
     } finally {
       restorePromptEnv(previous);
-      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(appRoot, { recursive: true, force: true });
     }
   });
 });
 
 function capturePromptEnv(): Record<string, string | undefined> {
   return {
+    XIAOBA_APP_ROOT: process.env.XIAOBA_APP_ROOT,
     XIAOBA_PROMPTS_DIR: process.env.XIAOBA_PROMPTS_DIR,
     XIAOBA_PROMPT_OVERRIDES_DIR: process.env.XIAOBA_PROMPT_OVERRIDES_DIR,
     XIAOBA_USER_DATA_DIR: process.env.XIAOBA_USER_DATA_DIR,

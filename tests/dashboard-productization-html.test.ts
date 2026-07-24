@@ -136,6 +136,16 @@ test('Companion prompt ask preserves the current proposal when no new diff is ge
   assert.match(dashboardHtml, /else \{\s*promptCompanionProposal = null;\s*promptCompanionAdvisor = null;\s*promptCompanionAdvisorNotice = '';\s*\}/);
 });
 
+test('Prompt editor exposes only the BotDefinition system prompt choices', () => {
+  assert.match(dashboardHtml, /默认 System Prompt/);
+  assert.match(dashboardHtml, /自定义 System Prompt/);
+  assert.match(dashboardHtml, /插入 \{\{displayName\}\}/);
+  assert.match(dashboardHtml, /function selectSystemPromptMode\(selected\)/);
+  assert.match(dashboardHtml, /\/api\/prompts\/system/);
+  assert.match(dashboardHtml, /function insertDisplayNameTemplate\(\)/);
+  assert.doesNotMatch(dashboardHtml, /重置为内置/);
+});
+
 test('SkillHub Skills page is separate from Companion Hub and owns publishing controls', () => {
   assert.match(dashboardHtml, /onclick="switchPage\('store'\)" data-page="store"/);
   assert.match(dashboardHtml, /<div class="page" id="page-store">/);

@@ -7,6 +7,7 @@ import {
   type BotCatalogModelRuntime,
   type BotCustomModelProfile,
   type BotDefinition,
+  type BotPromptDefinition,
   type CustomBotModelDefinition,
 } from './types';
 
@@ -15,6 +16,7 @@ export interface BotDefinitionRepository {
   writeCanonical(definition: BotDefinition): void;
   readCache(botId: string): BotDefinition | undefined;
   writeCache(definition: BotDefinition): void;
+  withWriteLock?<T>(botId: string, operation: () => T): T;
 }
 
 export interface BotCloudModelOverrideRepository {
@@ -61,11 +63,21 @@ function isValidDefinition(definition: unknown, expectedBotId: string): definiti
   if (!value || value.schema !== 'xiaoba.bot-definition.v1' || value.botId !== expectedBotId || !value.model) {
     return false;
   }
+  if (value.prompt !== undefined && !isValidPromptDefinition(value.prompt)) {
+    return false;
+  }
   if (value.model.kind === 'catalog') {
     return Boolean(String(value.model.modelId || '').trim());
   }
   if (value.model.kind !== 'custom') return false;
   return isValidCustomModel(value.model);
+}
+
+function isValidPromptDefinition(prompt: unknown): prompt is BotPromptDefinition {
+  const value = prompt as BotPromptDefinition | undefined;
+  if (!value || (value.selected !== 'default' && value.selected !== 'custom')) return false;
+  if (value.customSystemPrompt === undefined) return true;
+  return Boolean(String(value.customSystemPrompt || '').trim());
 }
 
 function isValidCustomModel(model: unknown): model is CustomBotModelDefinition {
@@ -179,6 +191,7 @@ function writeCustomModelProfile(filePath: string, profile: BotCustomModelProfil
 export class FileBotDefinitionRepository implements BotDefinitionRepository {
   private readonly canonicalRoot: string;
   private readonly cacheRoot: string;
+  private readonly lockRoot: string;
 
   constructor(options: FileBotDefinitionRepositoryOptions = {}) {
     const runtimeRoot = path.resolve(options.runtimeRoot ?? PathResolver.getRuntimeDataRoot());
@@ -191,6 +204,7 @@ export class FileBotDefinitionRepository implements BotDefinitionRepository {
       options.cacheRoot
         ?? path.join(runtimeRoot, 'data', 'bot-definition-cache'),
     );
+    this.lockRoot = path.join(runtimeRoot, 'data', 'bot-definition-locks');
   }
 
   readCanonical(botId: string): BotDefinition | undefined {
@@ -213,6 +227,37 @@ export class FileBotDefinitionRepository implements BotDefinitionRepository {
     writeDefinition(this.definitionPath(this.cacheRoot, botId), definition);
   }
 
+  withWriteLock<T>(botId: string, operation: () => T): T {
+    const normalized = normalizeBotId(botId);
+    fs.mkdirSync(this.lockRoot, { recursive: true });
+    const lockPath = path.join(this.lockRoot, `${normalized}.lock`);
+    const deadline = Date.now() + 5_000;
+
+    while (true) {
+      try {
+        const descriptor = fs.openSync(lockPath, 'wx', 0o600);
+        try {
+          fs.writeFileSync(descriptor, `${process.pid}\n`, 'utf-8');
+          return operation();
+        } finally {
+          fs.closeSync(descriptor);
+          try {
+            fs.unlinkSync(lockPath);
+          } catch {
+            // A stale-lock cleanup may already have removed the file.
+          }
+        }
+      } catch (error: any) {
+        if (error?.code !== 'EEXIST') throw error;
+        if (removeStaleDefinitionLock(lockPath)) continue;
+        if (Date.now() >= deadline) {
+          throw new Error(`Timed out waiting for BotDefinition write lock: ${normalized}`);
+        }
+        sleepSync(20);
+      }
+    }
+  }
+
   getCanonicalPath(botId: string): string {
     return this.definitionPath(this.canonicalRoot, normalizeBotId(botId));
   }
@@ -224,6 +269,33 @@ export class FileBotDefinitionRepository implements BotDefinitionRepository {
   private definitionPath(root: string, botId: string): string {
     return path.join(root, 'bots', `${botId}.json`);
   }
+}
+
+function removeStaleDefinitionLock(lockPath: string): boolean {
+  try {
+    const pid = Number.parseInt(fs.readFileSync(lockPath, 'utf-8').trim(), 10);
+    const stat = fs.statSync(lockPath);
+    const processExited = Number.isInteger(pid) && pid > 0 && !isProcessAlive(pid);
+    if (!processExited && Date.now() - stat.mtimeMs < 30_000) return false;
+    fs.unlinkSync(lockPath);
+    return true;
+  } catch (error: any) {
+    return error?.code === 'ENOENT';
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: any) {
+    return error?.code === 'EPERM';
+  }
+}
+
+function sleepSync(milliseconds: number): void {
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(signal, 0, 0, milliseconds);
 }
 
 /** Device-local cloud override. The canonical/cache repositories remain the user's local preference. */

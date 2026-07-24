@@ -32,14 +32,19 @@ export interface CustomBotModelDefinition {
 
 export type BotModelDefinition = CatalogBotModelDefinition | CustomBotModelDefinition;
 
+export interface BotPromptDefinition {
+  selected: 'default' | 'custom';
+  customSystemPrompt?: string;
+}
+
 /**
- * The deliberately small, portable part of a bot. Prompt and skill fields are
- * intentionally deferred until their source/version contracts are settled.
+ * The deliberately small, portable part of a bot.
  */
 export interface BotDefinition {
   schema: typeof BOT_DEFINITION_SCHEMA;
   botId: string;
   model: BotModelDefinition;
+  prompt?: BotPromptDefinition;
 }
 
 export interface LocalModelProfile {

@@ -11,6 +11,7 @@ import {
   type BotDefinitionSyncServiceOptions,
 } from './service';
 import type { BotCatalogModelRuntime, BotDefinition, BotDefinitionSyncResult } from './types';
+import { getPromptReconcileCoordinator } from './prompt-sync';
 import {
   acknowledgeCloudBotModelSelection,
   pullCloudBotModelSelection,
@@ -262,6 +263,17 @@ export async function prepareBoundBotDefinition(
   }
 
   definitionService.clearLegacyModelConfigurationWhenReady(definition);
+  if (!definitionService.read(botId)) {
+    definitionService.publish(botId, {
+      kind: 'catalog',
+      modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
+    });
+  }
+  await getPromptReconcileCoordinator({
+    runtimeRoot: options.runtimeRoot,
+    env: options.env,
+    definitionService,
+  }).activateBot(botId);
   return {
     botId,
     definition,

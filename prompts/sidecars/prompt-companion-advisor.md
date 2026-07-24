@@ -29,7 +29,7 @@
 也可以使用精确替换：
 {
   "skip": false,
-  "target_path": "runtime-context.md",
+  "target_path": "system-prompt.md",
   "operation": "replace",
   "title": "40 字以内标题",
   "issue": "先写清楚要解决的问题，160 字以内",

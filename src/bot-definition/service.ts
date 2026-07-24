@@ -18,6 +18,7 @@ import {
   type BotDefinition,
   type BotDefinitionSyncResult,
   type BotModelDefinition,
+  type BotPromptDefinition,
   type CustomBotModelDefinition,
   type LocalModelProfile,
 } from './types';
@@ -299,7 +300,19 @@ function normalizeBotModelDefinition(model: BotModelDefinition): BotModelDefinit
 
 function normalizeBotDefinition(definition: BotDefinition): BotDefinition {
   const model = normalizeBotModelDefinition(definition.model);
-  return model === definition.model ? definition : { ...definition, model };
+  const prompt = definition.prompt && normalizePromptDefinition(definition.prompt);
+  return model === definition.model && prompt === definition.prompt
+    ? definition
+    : { ...definition, model, ...(prompt ? { prompt } : {}) };
+}
+
+function normalizePromptDefinition(prompt: BotPromptDefinition): BotPromptDefinition {
+  const customSystemPrompt = prompt.customSystemPrompt?.trim();
+  if (customSystemPrompt === prompt.customSystemPrompt) return prompt;
+  return {
+    selected: prompt.selected,
+    ...(customSystemPrompt ? { customSystemPrompt } : {}),
+  };
 }
 
 function normalizeCatalogRuntime(runtime: BotCatalogModelRuntime): BotCatalogModelRuntime {
@@ -380,44 +393,80 @@ export class BotDefinitionSyncService {
   }
 
   pull(botId: string): BotDefinition | undefined {
-    const previousCache = this.repository.readCache(botId);
-    const rawDefinition = this.repository.readCanonical(botId);
-    const definition = rawDefinition && normalizeBotDefinition(rawDefinition);
-    if (definition) {
-      if (previousCache?.model.kind === 'custom') {
-        this.storeCustomModelProfile(botId, previousCache.model);
+    return this.withDefinitionWriteLock(botId, () => {
+      const previousCache = this.repository.readCache(botId);
+      const rawDefinition = this.repository.readCanonical(botId);
+      const definition = rawDefinition && normalizeBotDefinition(rawDefinition);
+      if (definition) {
+        if (previousCache?.model.kind === 'custom') {
+          this.storeCustomModelProfile(botId, previousCache.model);
+        }
+        if (definition !== rawDefinition) this.repository.writeCanonical(definition);
+        this.repository.writeCache(definition);
+        if (definition.model.kind === 'custom') {
+          this.storeCustomModelProfile(definition.botId, definition.model);
+        }
       }
-      if (definition !== rawDefinition) this.repository.writeCanonical(definition);
-      this.repository.writeCache(definition);
-      if (definition.model.kind === 'custom') {
-        this.storeCustomModelProfile(definition.botId, definition.model);
-      }
-    }
-    return definition;
+      return definition;
+    });
+  }
+
+  read(botId: string): BotDefinition | undefined {
+    const cached = this.repository.readCache(botId);
+    return cached ? normalizeBotDefinition(cached) : this.pull(botId);
   }
 
   publish(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
-    const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
-    if (previous?.model.kind === 'custom') {
-      this.storeCustomModelProfile(botId, previous.model);
-    }
-    const normalizedModel = normalizeBotModelDefinition(model);
-    if (normalizedModel.kind === 'custom') {
-      this.storeCustomModelProfile(botId, normalizedModel);
-    }
-    const definition: BotDefinition = {
-      schema: BOT_DEFINITION_SCHEMA,
-      botId,
-      model: normalizedModel,
-    };
-    this.repository.writeCanonical(definition);
-    this.repository.writeCache(definition);
-    this.clearLegacyModelConfigurationWhenReady(definition);
-    return {
-      botId,
-      direction: 'local_to_simulated_cloud',
-      definition,
-    };
+    return this.withDefinitionWriteLock(botId, () => {
+      const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
+      if (previous?.model.kind === 'custom') {
+        this.storeCustomModelProfile(botId, previous.model);
+      }
+      const normalizedModel = normalizeBotModelDefinition(model);
+      if (normalizedModel.kind === 'custom') {
+        this.storeCustomModelProfile(botId, normalizedModel);
+      }
+      const definition: BotDefinition = {
+        ...previous,
+        schema: BOT_DEFINITION_SCHEMA,
+        botId,
+        model: normalizedModel,
+      };
+      this.repository.writeCanonical(definition);
+      this.repository.writeCache(definition);
+      this.clearLegacyModelConfigurationWhenReady(definition);
+      return {
+        botId,
+        direction: 'local_to_simulated_cloud',
+        definition,
+      };
+    });
+  }
+
+  updateModel(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
+    return this.publish(botId, model);
+  }
+
+  updatePrompt(botId: string, prompt: BotPromptDefinition): BotDefinitionSyncResult {
+    return this.withDefinitionWriteLock(botId, () => {
+      const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
+      if (!previous) {
+        throw new Error(`BotDefinition does not exist for bot ${botId}`);
+      }
+      const definition: BotDefinition = {
+        ...previous,
+        schema: BOT_DEFINITION_SCHEMA,
+        botId,
+        prompt: normalizePromptDefinition(prompt),
+      };
+      this.repository.writeCache(definition);
+      this.repository.writeCanonical(definition);
+      return {
+        botId,
+        direction: 'local_to_simulated_cloud',
+        definition,
+      };
+    });
   }
 
   acceptCloud(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
@@ -539,6 +588,12 @@ export class BotDefinitionSyncService {
     const localConfig = createCatsCoLocalConfigService({ runtimeRoot: this.runtimeRoot, env: this.env }).load();
     const botId = String(localConfig.currentBot?.uid || '').trim();
     return botId ? this.pullOrBootstrap(botId) : undefined;
+  }
+
+  private withDefinitionWriteLock<T>(botId: string, operation: () => T): T {
+    return this.repository.withWriteLock
+      ? this.repository.withWriteLock(botId, operation)
+      : operation();
   }
 
   private bootstrapCatalogRuntimeFromLocalProfile(

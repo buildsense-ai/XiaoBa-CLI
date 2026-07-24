@@ -55,6 +55,7 @@ import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/uplo
 import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
 import { catalogRuntimeMatchesModelId, createBotDefinitionSyncService } from '../../bot-definition/service';
 import { prepareBoundBotDefinition } from '../../bot-definition/activation';
+import { getPromptReconcileCoordinator } from '../../bot-definition/prompt-sync';
 import {
   customModelDefinitionToConfig,
   modelRuntimeToConfig,
@@ -871,6 +872,9 @@ async function commitCatsBotBindingAndStartConnector(
 }> {
   ensureCatsDeviceId();
   const rollback = createCatsCoLocalConfigRollback();
+  const promptCoordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
+  await promptCoordinator.prepareCurrentBotForSwitch();
+  const promptSnapshot = promptCoordinator.captureActiveSnapshot();
   try {
     const warnings = await ensureCatsFriendBinding(state, input.userUid, input.botUid, input.apiKey);
     const updated = writeCatsBotBinding(state, input);
@@ -911,6 +915,7 @@ async function commitCatsBotBindingAndStartConnector(
     };
   } catch (error) {
     rollback();
+    promptCoordinator.restoreActiveSnapshot(promptSnapshot);
     throw error;
   }
 }
@@ -2207,7 +2212,13 @@ export function createApiRouter(
 
   router.get('/prompts', async (_req, res) => {
     try {
-      res.json(await getPromptEditorState());
+      const state = await getPromptEditorState();
+      const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
+      const botId = coordinator.getCurrentBotId();
+      res.json({
+        ...state,
+        ...(botId ? { system_prompt: coordinator.getSelection(botId) } : {}),
+      });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || String(e) });
     }
@@ -2475,7 +2486,18 @@ export function createApiRouter(
   router.put('/prompts/file', (req, res) => {
     try {
       if (!requireJsonWrite(req, res)) return;
-      res.json(writePromptOverride(String(req.body?.path || ''), String(req.body?.content ?? '')));
+      const relativePath = String(req.body?.path || '');
+      const content = String(req.body?.content ?? '');
+      const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
+      const botId = coordinator.getCurrentBotId();
+      if (botId && relativePath === 'system-prompt.md') {
+        void coordinator.select(botId, 'custom', content).then(
+          () => res.json(getPromptEditorFile(relativePath)),
+          error => res.status(400).json({ error: error instanceof Error ? error.message : String(error) }),
+        );
+        return;
+      }
+      res.json(writePromptOverride(relativePath, content));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
     }
@@ -2484,7 +2506,41 @@ export function createApiRouter(
   router.delete('/prompts/file', (req, res) => {
     try {
       if (!requireJsonWrite(req, res)) return;
-      res.json(deletePromptOverride(String(req.body?.path || req.query.path || '')));
+      const relativePath = String(req.body?.path || req.query.path || '');
+      const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
+      const botId = coordinator.getCurrentBotId();
+      if (botId && relativePath === 'system-prompt.md') {
+        void coordinator.select(botId, 'default').then(
+          () => res.json(getPromptEditorFile(relativePath)),
+          error => res.status(400).json({ error: error instanceof Error ? error.message : String(error) }),
+        );
+        return;
+      }
+      res.json(deletePromptOverride(relativePath));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.put('/prompts/system', (req, res) => {
+    try {
+      if (!requireJsonWrite(req, res)) return;
+      const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
+      const botId = coordinator.getCurrentBotId();
+      if (!botId) {
+        res.status(409).json({ error: 'No bound bot is available for prompt selection' });
+        return;
+      }
+      const selected = req.body?.selected;
+      if (selected !== 'default' && selected !== 'custom') {
+        res.status(400).json({ error: 'selected must be default or custom' });
+        return;
+      }
+      const content = req.body?.content === undefined ? undefined : String(req.body.content);
+      void coordinator.select(botId, selected, content).then(
+        result => res.json(result),
+        error => res.status(400).json({ error: error instanceof Error ? error.message : String(error) }),
+      );
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
     }

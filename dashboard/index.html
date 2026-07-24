@@ -7240,22 +7240,55 @@
 
     function renderPromptEditorPane(file){
       const saveDisabled=promptEditorState?.writable?'':' disabled';
-      const resetDisabled=file.overridden?'':' disabled';
+      const selectedMode=promptEditorState?.system_prompt?.selected||'default';
+      const isCustom=selectedMode==='custom';
       return '<div class="prompt-editor-pane">'+
         '<div class="prompt-editor-head">'+
           '<div><div class="prompt-editor-title">'+escapeHtml(file.path)+'</div>'+
           '<div class="prompt-editor-meta">当前 '+escapeHtml(file.effective.short_hash)+' · 基线 '+escapeHtml(file.base.short_hash)+' · '+(file.overridden?'已有本地覆盖':'使用内置基线')+'</div></div>'+
           (file.overridden?'<span class="tag green">override</span>':'<span class="tag">base</span>')+
         '</div>'+
-        '<textarea class="config-input prompt-editor-textarea" id="prompt-editor-textarea" spellcheck="false" oninput="markPromptEditorDirty()">'+escapeHtml(file.content||'')+'</textarea>'+
+        '<div class="settings-actions" style="justify-content:flex-start;margin-bottom:12px">'+
+          '<button class="btn'+(!isCustom?' btn-primary':'')+'" type="button" onclick="selectSystemPromptMode(\'default\')">默认 System Prompt</button>'+
+          '<button class="btn'+(isCustom?' btn-primary':'')+'" type="button" onclick="selectSystemPromptMode(\'custom\')">自定义 System Prompt</button>'+
+          '<button class="btn" type="button" onclick="insertDisplayNameTemplate()"'+(isCustom?'':' disabled')+'>插入 {{displayName}}</button>'+
+        '</div>'+
+        '<textarea class="config-input prompt-editor-textarea" id="prompt-editor-textarea" spellcheck="false" oninput="markPromptEditorDirty()"'+(isCustom?'':' readonly')+'>'+escapeHtml(file.content||'')+'</textarea>'+
         '<div class="prompt-editor-actions">'+
-          '<div class="prompt-editor-status" id="prompt-editor-status">'+(promptEditorState?.writable?'编辑后保存覆盖版本；下一条用户消息开始前生效。':'当前环境没有配置覆盖目录，不能保存。')+'</div>'+
+          '<div class="prompt-editor-status" id="prompt-editor-status">'+(isCustom?'编辑后保存；下一条用户消息开始前生效。':'当前使用随 XiaoBa 更新的内置默认 Prompt。')+'</div>'+
           '<div class="settings-actions">'+
-            '<button class="btn" onclick="resetPromptEditorFile()"'+resetDisabled+'>重置为内置</button>'+
-            '<button class="btn btn-primary" id="prompt-editor-save-btn" onclick="savePromptEditorFile()"'+saveDisabled+'>保存覆盖</button>'+
+            '<button class="btn btn-primary" id="prompt-editor-save-btn" onclick="savePromptEditorFile()"'+(isCustom?saveDisabled:' disabled')+'>保存自定义 Prompt</button>'+
           '</div>'+
         '</div>'+
       '</div>';
+    }
+
+    async function selectSystemPromptMode(selected){
+      if(promptEditorDirty && !confirm('当前 Prompt 有未保存改动，确定切换吗？'))return;
+      const status=document.getElementById('prompt-editor-status');
+      try{
+        if(status)status.textContent='正在切换...';
+        await parseSimpleResponse(await fetch(API+'/api/prompts/system',{
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({selected:selected})
+        }));
+        await refreshPromptWorkbench('system-prompt.md',{preserveFileListScroll:true});
+      }catch(e){
+        if(status)status.textContent='切换失败：'+(e.message||String(e));
+      }
+    }
+
+    function insertDisplayNameTemplate(){
+      const textarea=document.getElementById('prompt-editor-textarea');
+      if(!textarea || textarea.readOnly)return;
+      const value='{{displayName}}';
+      const start=textarea.selectionStart||0;
+      const end=textarea.selectionEnd||start;
+      textarea.value=textarea.value.slice(0,start)+value+textarea.value.slice(end);
+      textarea.selectionStart=textarea.selectionEnd=start+value.length;
+      textarea.focus();
+      markPromptEditorDirty();
     }
 
     function markPromptEditorDirty(){
