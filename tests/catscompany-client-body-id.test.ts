@@ -855,4 +855,122 @@ describe('CatsCompany client body identity', () => {
     assert.equal(result.request_id, 'rpc-result-1');
     assert.deepEqual(result.result, { ok: true });
   });
+
+  test('sends device rpc progress with ack when server advertises device_rpc_progress', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+
+    const progressPromise = new Promise<any>(resolve => {
+      server.once('connection', socket => {
+        socket.on('message', data => {
+          const msg = JSON.parse(data.toString());
+          if (msg.hi) {
+            socket.send(JSON.stringify({
+              ctrl: {
+                id: msg.hi.id,
+                code: 200,
+                params: {
+                  build: 'catscompany',
+                  features: ['client_msg_id', 'device_rpc', 'device_rpc_progress'],
+                  uid: 'usr-prog',
+                  name: 'Progress',
+                },
+              },
+            }));
+            return;
+          }
+          if (msg.device_rpc?.type === 'progress') {
+            resolve(msg.device_rpc);
+            socket.send(JSON.stringify({ ctrl: { id: msg.device_rpc.id, code: 200, text: 'ok' } }));
+          }
+        });
+      });
+    });
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: `ws://127.0.0.1:${address.port}`,
+      apiKey: 'cc-test-key',
+      bodyId: 'body-progress',
+      installationId: 'install-progress',
+    });
+    client.on('error', () => undefined);
+    await new Promise<void>(resolve => {
+      client.once('ready', () => resolve());
+      client.connect();
+    });
+
+    await client.sendDeviceRpcProgress({
+      request_id: 'rpc-progress-1',
+      progress: { processed: 1, total: 2, completed: 1, failed: 0, skipped: 0, remaining: 1, provider: 'codex', phase: 'importing' },
+    });
+    const progress = await progressPromise;
+    client.disconnect();
+
+    assert.equal(progress.request_id, 'rpc-progress-1');
+    assert.equal(progress.progress.phase, 'importing');
+  });
+
+  test('sends device rpc progress fire-and-forget when server lacks device_rpc_progress', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+
+    const progressPromise = new Promise<any>(resolve => {
+      server.once('connection', socket => {
+        socket.on('message', data => {
+          const msg = JSON.parse(data.toString());
+          if (msg.hi) {
+            // Legacy server: advertises device_rpc but NOT device_rpc_progress.
+            socket.send(JSON.stringify({
+              ctrl: {
+                id: msg.hi.id,
+                code: 200,
+                params: {
+                  build: 'catscompany',
+                  features: ['client_msg_id', 'device_rpc'],
+                  uid: 'usr-legacy',
+                  name: 'Legacy',
+                },
+              },
+            }));
+            return;
+          }
+          if (msg.device_rpc?.type === 'progress') {
+            resolve(msg.device_rpc);
+            // Legacy server does NOT send a ctrl ack for progress.
+          }
+        });
+      });
+    });
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: `ws://127.0.0.1:${address.port}`,
+      apiKey: 'cc-test-key',
+      bodyId: 'body-legacy',
+      installationId: 'install-legacy',
+    });
+    client.on('error', () => undefined);
+    await new Promise<void>(resolve => {
+      client.once('ready', () => resolve());
+      client.connect();
+    });
+
+    // Fire-and-forget: must resolve immediately without waiting for a server ack.
+    const start = Date.now();
+    await client.sendDeviceRpcProgress({
+      request_id: 'rpc-progress-legacy',
+      progress: { processed: 1, total: 2, completed: 1, failed: 0, skipped: 0, remaining: 1, provider: 'codex', phase: 'importing' },
+    });
+    const elapsed = Date.now() - start;
+    const progress = await progressPromise;
+    client.disconnect();
+
+    assert.equal(progress.request_id, 'rpc-progress-legacy');
+    assert.equal(progress.progress.phase, 'importing');
+    // Must resolve well under the 10s ack timeout — no per-progress ack wait.
+    assert.ok(elapsed < 2000, `fire-and-forget progress must not wait for ack (elapsed=${elapsed}ms)`);
+  });
 });

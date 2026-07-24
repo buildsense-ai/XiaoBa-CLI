@@ -76,8 +76,6 @@ function createHarness(options: { busy?: boolean; message: any }): any {
   bot.createdSessions = [] as string[];
   bot.handledTurns = [] as any[];
   bot.processedMsgIds = new Set();
-  bot.pendingAnswers = new Map();
-  bot.pendingAnswerBySession = new Map();
   bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
   bot.bridgeClient = null;

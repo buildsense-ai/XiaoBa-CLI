@@ -26,6 +26,13 @@ const LOW_RISK_TOOLS = new Set([
   'memory_read_turn',
   'memory_neighbors',
   'finish_memory_search',
+  'finish_prompt_mode_routing',
+  // Constrained Author/Verifier branches only return a structured result to
+  // their parent runtime. They do not write files, execute commands, or
+  // create external side effects, so background branches must not wait for a
+  // user confirmation that cannot exist in a heartbeat wake.
+  'finish_skill_authoring',
+  'finish_skill_verification',
 ]);
 
 const CONFIRM_TOOLS = new Set([

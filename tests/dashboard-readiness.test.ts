@@ -8,6 +8,11 @@ import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
 import { ServiceInfo } from '../src/dashboard/service-manager';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
+import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
+import {
+  ExternalProviderOverrideStore,
+  resolveExternalProviderOverridePath,
+} from '../src/utils/external-provider-controls';
 
 describe('dashboard readiness and service preflight API', () => {
   let testRoot: string;
@@ -55,7 +60,11 @@ describe('dashboard readiness and service preflight API', () => {
     'FEISHU_APP_SECRET',
     'WEIXIN_TOKEN',
     'XIAOBA_CONFIG_PATH',
+    'XIAOBA_RUNTIME_ROOT',
     'XIAOBA_RUNTIME_PROFILE_PATH',
+    'XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED',
+    'XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS',
+    'XIAOBA_EXTERNAL_SESSION_LOG_MAX_CONCURRENCY',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -71,6 +80,7 @@ describe('dashboard readiness and service preflight API', () => {
       delete process.env[key];
     }
     process.env.XIAOBA_CONFIG_PATH = path.join(testRoot, 'user-config.json');
+    process.env.XIAOBA_RUNTIME_ROOT = testRoot;
     process.env.XIAOBA_RUNTIME_PROFILE_PATH = path.join(testRoot, 'runtime-profile.json');
 
     const app = express();
@@ -138,15 +148,157 @@ describe('dashboard readiness and service preflight API', () => {
     const text = await response.text();
     const data = JSON.parse(text) as any;
     const model = data.sections.find((section: any) => section.id === 'model');
+    const runtimeLearning = data.sections.find((section: any) => section.id === 'runtimeLearning');
 
     assert.equal(response.status, 200);
     assert.equal(data.status, 'blocked');
+    assert.equal(data.runtimeLearning.enabled, true);
+    assert.equal(data.runtimeLearning.liveness, 'owner_missing');
+    assert.equal(runtimeLearning.status, 'warning');
+    assert.equal(runtimeLearning.checks[0]?.id, 'runtimeLearning.owner');
     assert.equal(model.status, 'blocked');
     assert.equal(model.label, '模型来源');
     assert.equal(model.checks.some((check: any) => check.id === 'model.managed.account' && check.status === 'warning'), true);
     assert.equal(model.checks.some((check: any) => check.id === 'model.custom.credential' && check.status === 'fail'), true);
     assert.equal(text.includes('GAUZ_LLM_API_KEY'), false);
     assert.equal(text.includes('buildsense.asia'), false);
+  });
+
+  test('GET /readiness exposes durable pending Runtime Learning reasons', async () => {
+    const config = getDistillationHeartbeatConfig(testRoot, process.env);
+    fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });
+    fs.writeFileSync(config.heartbeatRecordPath, JSON.stringify({
+      schemaVersion: 1,
+      pendingWakeReasons: ['operational-retry', 'curator'],
+    }), { mode: 0o600 });
+
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(data.runtimeLearning.pendingWakeReasons, ['operational-retry', 'curator']);
+  });
+
+  test('GET /readiness gates a stuck Runtime Learning wake', async () => {
+    const config = getDistillationHeartbeatConfig(testRoot, process.env);
+    const ownerPath = path.join(testRoot, '.xiaoba', 'heartbeat-scheduler-owner', 'owner.json');
+    fs.mkdirSync(path.dirname(ownerPath), { recursive: true });
+    fs.writeFileSync(ownerPath, JSON.stringify({
+      pid: process.pid,
+      generation: 'readiness-test-generation',
+      token: 'readiness-test-token',
+      startedAt: new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+    }));
+    fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });
+    fs.writeFileSync(config.heartbeatRecordPath, JSON.stringify({
+      schemaVersion: 1,
+      inProgress: {
+        startedAt: new Date(0).toISOString(),
+        reasons: ['operational-retry'],
+      },
+    }));
+
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
+    const data = await response.json() as any;
+    const runtimeLearning = data.sections.find((section: any) => section.id === 'runtimeLearning');
+
+    assert.equal(data.runtimeLearning.liveness, 'wake_stuck');
+    assert.equal(runtimeLearning.status, 'blocked');
+    assert.equal(runtimeLearning.checks[0]?.severity, 'blocker');
+    assert.equal(data.status, 'blocked');
+  });
+
+  test('GET /readiness exposes external source recovery diagnostics', async () => {
+    const config = getDistillationHeartbeatConfig(testRoot, process.env);
+    fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });
+    fs.writeFileSync(config.heartbeatRecordPath, JSON.stringify({
+      schemaVersion: 1,
+      lastSourceReports: [{
+        sourceId: 'external-codex',
+        category: 'external',
+        provider: 'codex',
+        reader: 'xurl',
+        status: 'quarantined',
+        resourcesDiscovered: 1,
+        unitsProcessed: 0,
+        failureClass: 'integrity_conflict',
+        requiresOperatorAction: true,
+        nextAction: 'retry or skip quarantined event',
+        drainState: 'active',
+      }],
+    }), { mode: 0o600 });
+
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
+    const data = await response.json() as any;
+    const source = data.runtimeLearning.sources.find((entry: any) => entry.sourceId === 'external-codex');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(source, {
+      sourceId: 'external-codex',
+      category: 'external',
+      status: 'quarantined',
+      provider: 'codex',
+      reader: 'xurl',
+      resourcesDiscovered: 1,
+      unitsProcessed: 0,
+      failureClass: 'integrity_conflict',
+      requiresOperatorAction: true,
+      nextAction: 'retry or skip quarantined event',
+      drainState: 'active',
+    });
+  });
+
+  test('GET /readiness exposes read-only external provider override diagnostics', async () => {
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+    process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS = 'codex,claude';
+    const config = getDistillationHeartbeatConfig(testRoot, process.env);
+    const store = new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(config),
+      now: () => new Date('2026-01-01T00:00:00.000Z'),
+    });
+    store.disableProvider('claude');
+    store.enableProvider('pi', { scope: 'path', scopePath: '/project/x' });
+    store.rebaselineProvider('pi', true);
+
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.ok(Array.isArray(data.runtimeLearning.providerStatuses));
+    const claude = data.runtimeLearning.providerStatuses.find((entry: any) => entry.provider === 'claude');
+    const codex = data.runtimeLearning.providerStatuses.find((entry: any) => entry.provider === 'codex');
+    const pi = data.runtimeLearning.providerStatuses.find((entry: any) => entry.provider === 'pi');
+    assert.deepEqual(codex, {
+      provider: 'codex',
+      enabled: true,
+      source: 'environment',
+      scope: 'global',
+      admissionGate: 'open',
+    });
+    assert.deepEqual(claude, {
+      provider: 'claude',
+      enabled: false,
+      source: 'override',
+      scope: 'global',
+      admissionGate: 'closed',
+    });
+    assert.equal(pi.provider, 'pi');
+    assert.equal(pi.enabled, true);
+    const codexDiagnostic = data.runtimeLearning.providerDiagnostics.providers
+      .find((entry: any) => entry.provider === 'codex');
+    assert.equal(data.runtimeLearning.providerDiagnostics.overallReadiness, 'ready');
+    assert.equal(codexDiagnostic.admissionGate, 'open');
+    assert.equal(codexDiagnostic.activationState, 'active');
+    assert.equal(codexDiagnostic.historyMode, 'future-only');
+    assert.equal(codexDiagnostic.catchUpState, 'idle');
+    assert.equal(codexDiagnostic.sourceHealth, 'healthy');
+    assert.equal(pi.source, 'override');
+    assert.equal(pi.scope, 'path');
+    assert.equal(pi.scopePath, undefined, 'readiness payload must not expose an absolute scope path');
+    assert.doesNotMatch(JSON.stringify(data.runtimeLearning), /\/project\/x/);
+    assert.equal(pi.admissionGate, 'open');
+    assert.equal(typeof pi.rebaselineRequestedAt, 'string');
   });
 
   test('CatsCo readiness warns when account and binding are ready but connector is stopped', async () => {

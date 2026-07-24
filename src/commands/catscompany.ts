@@ -8,6 +8,7 @@ import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { CatsCoConnectorLock, acquireCatsCoConnectorLock, isProcessAlive } from '../catscompany/connector-lock';
 import { PathResolver } from '../utils/path-resolver';
 import { prepareBoundBotDefinition } from '../bot-definition/activation';
+import { isRuntimeShutdownMessage } from '../utils/runtime-shutdown-message';
 import { createCatsCoLocalConfigService, type CatsCoAuthSnapshot } from '../catscompany/local-config';
 import {
   acknowledgeCloudBotModelSelection,
@@ -125,6 +126,10 @@ export async function catscompanyCommand(): Promise<void> {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  process.on('message', message => {
+    if (isRuntimeShutdownMessage(message)) void shutdown();
+  });
+  process.on('disconnect', () => { void shutdown(); });
   process.on('exit', () => {
     lock?.release();
     lock = null;

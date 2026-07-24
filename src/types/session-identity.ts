@@ -96,6 +96,7 @@ export type DeviceGrantOperation =
   | 'execute_shell'
   | 'glob'
   | 'grep'
+  | 'external_history'
   | 'browser_control'
   | 'desktop_control';
 

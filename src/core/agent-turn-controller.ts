@@ -107,6 +107,7 @@ export interface AgentTurnControllerOptions {
   turnContextBuilder: TurnContextBuilder;
   turnLogRecorder: TurnLogRecorder;
   workspaceRoot: string;
+  branchLogRoot?: string;
   getCurrentDirectory: () => string;
   updateCurrentDirectory: (directory: string) => void;
 }
@@ -224,6 +225,7 @@ export class AgentTurnController {
     this.options.turnLogRecorder.recordTurn({
       userInput: params.input,
       result,
+      episodeId,
       tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
       runtimeFeedback: turnContext.runtimeFeedbackForLog,
       runtimeObservationSource: params.runtimeObservationSource,
@@ -292,6 +294,7 @@ export class AgentTurnController {
         suppressFinalResponse: options.suppressFinalResponse,
         toolExecutionContext: {
           sessionId: this.options.sessionKey,
+          episodeId: options.episodeId,
           surface,
           permissionProfile: options.confirmToolExecution ? 'strict' : undefined,
           workspaceRoot: this.options.workspaceRoot,
@@ -420,6 +423,7 @@ export class AgentTurnController {
       input: options.input,
       recentMessages: options.messages,
       workingDirectory: this.options.getCurrentDirectory(),
+      branchLogRoot: this.options.branchLogRoot,
       aiService: this.options.services.memoryBranch?.aiService ?? this.options.services.aiService,
       queue: options.queue,
       signal: options.abortSignal,

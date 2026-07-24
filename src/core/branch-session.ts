@@ -8,13 +8,32 @@ import { Tool } from '../types/tool';
 import { AgentToolExecutor } from '../agents/agent-tool-executor';
 import { ConversationRunner, RunResult, RunnerCallbacks } from './conversation-runner';
 
+export type BranchSessionAbortReason = 'review-timeout' | 'runtime-shutdown' | 'turn_budget_exhausted';
+export type BranchTranscriptContract = 'required' | 'best-effort';
+
+export interface SharedReviewTurnBudget {
+  remainingTurns: number;
+}
+
+export interface BranchReviewAttemptMetadata {
+  deadlineMs: number;
+  deadlineAt: string;
+}
+
 export interface BranchSessionOptions {
   id: string;
   type: string;
   aiService: AIService;
   workingDirectory: string;
+  /** Use the provider's streaming transport while keeping branch output internal. */
+  stream?: boolean;
+  /** Runtime-owned root for all branch transcripts. */
+  branchLogRoot?: string;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  transcriptContract?: BranchTranscriptContract;
+  sharedReviewTurnBudget?: SharedReviewTurnBudget;
+  reviewAttempt?: BranchReviewAttemptMetadata;
 }
 
 export interface BranchRunOutcome {
@@ -34,15 +53,56 @@ export abstract class BranchSession {
       branchId: options.id,
       branchType: options.type,
       workingDirectory: options.workingDirectory,
+      branchLogRoot: options.branchLogRoot ?? PathResolver.getLogsPath('branches'),
       enabled: options.logEnabled !== false,
+      contract: options.transcriptContract ?? 'best-effort',
     });
-    options.signal?.addEventListener('abort', () => this.stop(), { once: true });
+    if (options.signal?.aborted) {
+      this.stop(this.extractAbortReason(options.signal.reason) ?? 'runtime-shutdown');
+      return;
+    }
+    options.signal?.addEventListener('abort', () => {
+      this.stop(this.extractAbortReason(options.signal?.reason) ?? 'runtime-shutdown');
+    }, { once: true });
   }
 
-  stop(): void {
+  stop(reason: BranchSessionAbortReason = 'runtime-shutdown'): void {
     if (this.stopped) return;
     this.stopped = true;
-    this.abortController.abort();
+    this.logger.write('abort_requested', {
+      terminal_abort_reason: reason,
+    });
+    this.abortController.abort(reason);
+  }
+
+  private extractAbortReason(value: unknown): BranchSessionAbortReason | undefined {
+    if (value === 'review-timeout') return 'review-timeout';
+    if (value === 'runtime-shutdown') return 'runtime-shutdown';
+    if (value === 'turn_budget_exhausted') return 'turn_budget_exhausted';
+    return undefined;
+  }
+
+  private resolveAbortReason(): BranchSessionAbortReason | undefined {
+    if (this.options.signal?.aborted) {
+      return this.extractAbortReason(this.options.signal.reason) ?? 'runtime-shutdown';
+    }
+    if (this.abortController.signal.aborted) {
+      return this.extractAbortReason(this.abortController.signal.reason) ?? 'runtime-shutdown';
+    }
+    return undefined;
+  }
+
+  protected throwAbortError(message = 'Review branch was aborted.'): never {
+    const reason = this.resolveAbortReason() ?? 'runtime-shutdown';
+    throw new BranchSessionAbortError(reason, message);
+  }
+
+  protected deductTurnBudget(turnsUsed: number): void {
+    if (!this.options.sharedReviewTurnBudget) return;
+    this.options.sharedReviewTurnBudget.remainingTurns = Math.max(
+      0,
+      this.options.sharedReviewTurnBudget.remainingTurns - turnsUsed,
+    );
   }
 
   protected shouldContinue(): boolean {
@@ -51,16 +111,58 @@ export abstract class BranchSession {
       && !this.options.signal?.aborted;
   }
 
+  /** Runtime audit path for constrained branches. */
+  protected getBranchTranscriptPath(): string | null {
+    return this.logger.getFilePath();
+  }
+
   protected abstract buildInitialMessages(): Promise<Message[]>;
   protected abstract buildTools(): Tool[];
+
+  protected logStart(payload: Record<string, unknown>): void {
+    this.logger.write('start', {
+      ...payload,
+      ...(this.options.reviewAttempt
+        ? {
+          review_deadline_ms: this.options.reviewAttempt.deadlineMs,
+          review_deadline_at: this.options.reviewAttempt.deadlineAt,
+        }
+        : {}),
+    });
+  }
+
+  protected logCompletion(): void {
+    this.logger.write('completed', {
+      outcome: 'succeeded',
+      terminal_abort_reason: null,
+      failure_outcome: null,
+    });
+  }
+
+  protected async runWithTerminalAudit<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      const result = await run();
+      this.logCompletion();
+      return result;
+    } catch (error) {
+      this.logFailure(error);
+      throw error;
+    }
+  }
 
   protected async runConversation(): Promise<BranchRunOutcome> {
     if (!this.initialized) {
       this.messages.push(...await this.buildInitialMessages());
       this.initialized = true;
-      this.logger.write('start', {
+      this.logStart({
         message_count: this.messages.length,
       });
+    }
+    if (this.options.sharedReviewTurnBudget && this.options.sharedReviewTurnBudget.remainingTurns <= 0) {
+      throw new BranchSessionAbortError(
+        'turn_budget_exhausted',
+        'The shared review attempt model-turn budget is exhausted.',
+      );
     }
 
     const toolExecutor = new AgentToolExecutor(
@@ -73,8 +175,10 @@ export abstract class BranchSession {
         abortSignal: this.abortController.signal,
       },
     );
+    const maxTurns = this.options.sharedReviewTurnBudget?.remainingTurns;
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
-      stream: false,
+      ...(maxTurns !== undefined ? { maxTurns } : {}),
+      stream: this.options.stream ?? false,
       enableCompression: true,
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
@@ -104,12 +208,51 @@ export abstract class BranchSession {
 
     try {
       const result = await runner.run(this.messages, callbacks);
+      this.deductTurnBudget(result.turnsUsed);
+      if (!this.shouldContinue()) {
+        this.throwAbortError();
+      }
+      if (result.maxTurnsReached) {
+        this.logger.write('run_result', {
+          response: result.response,
+          final_response_visible: result.finalResponseVisible,
+          turns_used: result.turnsUsed,
+          max_turns: result.maxTurns,
+          max_turns_reached: result.maxTurnsReached,
+          remaining_turns: this.options.sharedReviewTurnBudget?.remainingTurns,
+        });
+        throw new BranchSessionAbortError('turn_budget_exhausted', 'The shared review attempt model-turn budget was exhausted.');
+      }
       this.logger.write('run_result', {
         response: result.response,
         final_response_visible: result.finalResponseVisible,
         new_message_count: result.newMessages.length,
       });
       return { messages: this.messages, result };
+    } catch (error) {
+      if (error instanceof BranchSessionAbortError) {
+        this.logger.write('run_result', {
+          outcome: 'failed',
+          ...this.failureAuditFields(error),
+        });
+        throw error;
+      }
+      if (this.isAbortError(error) || !this.shouldContinue()) {
+        const abortError = new BranchSessionAbortError(
+          this.resolveAbortReason() ?? 'runtime-shutdown',
+          'Review branch was aborted.',
+        );
+        this.logger.write('run_result', {
+          outcome: 'failed',
+          ...this.failureAuditFields(abortError),
+        });
+        throw abortError;
+      }
+      this.logger.write('run_result', {
+        outcome: 'failed',
+        ...this.failureAuditFields(error),
+      });
+      throw error;
     } finally {
       this.logger.write('transcript', { messages: this.messages });
     }
@@ -124,10 +267,36 @@ export abstract class BranchSession {
     this.logger.write('failed', {
       message: String(error?.message || error || 'unknown error'),
       name: error?.name,
+      ...this.failureAuditFields(error),
     });
     if (!this.isAbortError(error)) {
       Logger.warning(`[branch:${this.options.type}:${this.options.id}] failed: ${error?.message || error}`);
     }
+  }
+
+  private failureAuditFields(error: unknown): {
+    terminal_abort_reason: BranchSessionAbortReason | null;
+    failure_outcome: 'branch_timeout' | 'branch_failure' | 'cancelled';
+  } {
+    const terminalAbortReason = error instanceof BranchSessionAbortError
+      ? error.reason
+      : this.resolveAbortReason();
+    return {
+      terminal_abort_reason: terminalAbortReason ?? null,
+      failure_outcome: terminalAbortReason === 'review-timeout'
+        || terminalAbortReason === 'turn_budget_exhausted'
+        ? 'branch_timeout'
+        : terminalAbortReason === 'runtime-shutdown'
+          ? 'cancelled'
+          : 'branch_failure',
+    };
+  }
+}
+
+export class BranchSessionAbortError extends Error {
+  constructor(public readonly reason: BranchSessionAbortReason, message: string) {
+    super(message);
+    this.name = 'BranchSessionAbortError';
   }
 }
 
@@ -135,7 +304,9 @@ export interface BranchSessionLoggerOptions {
   branchId: string;
   branchType: string;
   workingDirectory: string;
+  branchLogRoot: string;
   enabled: boolean;
+  contract: BranchTranscriptContract;
 }
 
 export class BranchSessionLogger {
@@ -146,31 +317,93 @@ export class BranchSessionLogger {
       this.filePath = null;
       return;
     }
-    const date = new Date();
-    const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-    const dir = PathResolver.getLogsPath('branches', options.branchType, dateStr);
-    fs.mkdirSync(dir, { recursive: true });
-    this.filePath = path.join(dir, `${sanitizeFilePart(options.branchId)}.jsonl`);
+    try {
+      const date = new Date();
+      const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      const root = path.resolve(options.branchLogRoot);
+      const typeDir = path.join(root, sanitizeFilePart(options.branchType));
+      const dir = path.join(typeDir, dateStr);
+      fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+      fs.chmodSync(root, 0o700);
+      fs.mkdirSync(typeDir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(typeDir, 0o700);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+      this.filePath = path.join(dir, `${sanitizeFilePart(options.branchId)}.jsonl`);
+    } catch (error: any) {
+      this.filePath = null;
+      Logger.warning(`[branch:${options.branchType}:${options.branchId}] log setup failed: ${error.message}`);
+      if (options.contract === 'required') throw error;
+    }
   }
 
   write(eventType: string, payload: Record<string, unknown> = {}): void {
     if (!this.filePath) return;
-    const entry = {
+    const entry = redactRecord({
       entry_type: 'branch',
       branch_type: this.options.branchType,
       branch_id: this.options.branchId,
       event_type: eventType,
       timestamp: new Date().toISOString(),
       ...payload,
-    };
+    });
     try {
-      fs.appendFileSync(this.filePath, JSON.stringify(entry) + '\n');
+      fs.appendFileSync(this.filePath, JSON.stringify(entry) + '\n', {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      fs.chmodSync(this.filePath, 0o600);
     } catch (error: any) {
       Logger.warning(`[branch:${this.options.branchType}:${this.options.branchId}] log write failed: ${error.message}`);
+      if (this.options.contract === 'required') throw error;
     }
+  }
+
+  getFilePath(): string | null {
+    return this.filePath;
   }
 }
 
 function sanitizeFilePart(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120) || 'branch';
+}
+
+const CREDENTIAL_FIELD_PATTERN = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|credential)/i;
+const CREDENTIAL_ASSIGNMENT_PATTERN = /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|credential)\s*[:=]\s*["']?)[^\s,"'}\]]+/gi;
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
+const TOKEN_PATTERN = /\b(?:sk|rk|xox[baprs])-[-_A-Za-z0-9]{8,}\b/g;
+
+function redactRecord(record: Record<string, unknown>): Record<string, unknown> {
+  return redactValue(record) as Record<string, unknown>;
+}
+
+function redactValue(value: unknown, key?: string): unknown {
+  if (key && CREDENTIAL_FIELD_PATTERN.test(key)) return '[REDACTED]';
+  if (typeof value === 'string') return redactString(value);
+  if (Array.isArray(value)) return value.map(item => redactValue(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
+      childKey,
+      redactValue(childValue, childKey),
+    ]));
+  }
+  return value;
+}
+
+function redactString(value: string): string {
+  let redacted = value;
+  for (const credential of knownCredentialValues()) {
+    redacted = redacted.split(credential).join('[REDACTED]');
+  }
+  return redacted
+    .replace(CREDENTIAL_ASSIGNMENT_PATTERN, '$1[REDACTED]')
+    .replace(BEARER_PATTERN, 'Bearer [REDACTED]')
+    .replace(TOKEN_PATTERN, '[REDACTED]');
+}
+
+function knownCredentialValues(): string[] {
+  return Object.entries(process.env)
+    .filter(([key, value]) => value && CREDENTIAL_FIELD_PATTERN.test(key) && value.length >= 6)
+    .map(([, value]) => value as string)
+    .sort((left, right) => right.length - left.length);
 }

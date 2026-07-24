@@ -28,7 +28,6 @@ export class OpenAIProvider implements AIProvider {
   private maxTokens: number;
   private reasoningEffort: ChatConfig['reasoningEffort'];
   private openaiApiMode: ChatConfig['openaiApiMode'];
-
   constructor(config: ChatConfig) {
     this.apiUrl = config.apiUrl!;
     this.chatCompletionsUrl = normalizeOpenAIChatCompletionsUrl(this.apiUrl);

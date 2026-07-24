@@ -25,6 +25,8 @@ import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
 import { confirmLocalToolExecution } from './local-tool-risk';
 import { buildToolTargetContext, operationForToolTargetContext } from './tool-target-context';
+import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
+import { SkillUsageLedger } from '../utils/skill-usage-ledger';
 
 const INTERNAL_TOOL_NAMES = ['ask_parent'] as const;
 const LEGACY_DISABLED_TOOL_NAMES = ['prompt_mode'] as const;
@@ -101,7 +103,7 @@ export class ToolManager implements ToolExecutor {
       new RecordDecisionTool(),
       new ShareSkillHubSkillTool(),
       new SkillHubTool(),
-      new SkillTool(),
+      new SkillTool(new SkillUsageLedger(getDistillationHeartbeatConfig(this.workingDirectory).skillUsageLedgerPath)),
     ];
 
     for (const tool of defaultTools) {

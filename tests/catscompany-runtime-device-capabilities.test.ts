@@ -13,6 +13,7 @@ describe('CatsCompany runtime device capabilities', () => {
       'edit_file',
       'send_file',
       'execute_shell',
+      'external_history',
     ]);
   });
 });

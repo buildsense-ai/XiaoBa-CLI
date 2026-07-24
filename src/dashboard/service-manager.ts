@@ -7,6 +7,7 @@ import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { PathResolver } from '../utils/path-resolver';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { weixinBindingEnvOverlay } from './weixin-channel-binding';
+import { RUNTIME_SHUTDOWN_MESSAGE_TYPE } from '../utils/runtime-shutdown-message';
 
 const isWindows = process.platform === 'win32';
 
@@ -27,10 +28,46 @@ interface ManagedService {
   process?: ChildProcess;
   logs: string[];  // 最近的日志
   expectedExit?: 'stop' | 'restart';
+  forceKillTimer?: NodeJS.Timeout;
 }
 
 const MAX_LOG_LINES = 500;
 const MAX_LAST_ERROR_LENGTH = 500;
+
+/**
+ * App/runtime shutdown allows an active wake to drain within the configured
+ * Review Deadline. Interactive Dashboard stop/restart requests use a separate,
+ * short fallback so an unresponsive connector does not block the UI.
+ */
+const DEFAULT_GRACEFUL_DRAIN_MS = 10 * 60 * 1000;
+const DEFAULT_SERVICE_STOP_FORCE_KILL_MS = 5_000;
+const FORCE_KILL_PERSIST_GRACE_MS = 250;
+
+function resolveGracefulDrainMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES;
+  if (raw !== undefined && raw !== '') {
+    const minutes = Number(raw);
+    if (Number.isFinite(minutes) && minutes > 0) {
+      return Math.round(minutes * 60 * 1000);
+    }
+  }
+  return DEFAULT_GRACEFUL_DRAIN_MS;
+}
+
+function resolveDrainForceKillMs(env: NodeJS.ProcessEnv = process.env): number {
+  return resolveGracefulDrainMs(env) + FORCE_KILL_PERSIST_GRACE_MS;
+}
+
+function resolveServiceStopForceKillMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.XIAOBA_SERVICE_STOP_FORCE_KILL_MS;
+  if (raw !== undefined && raw !== '') {
+    const milliseconds = Number(raw);
+    if (Number.isFinite(milliseconds) && milliseconds > 0) {
+      return Math.round(milliseconds);
+    }
+  }
+  return DEFAULT_SERVICE_STOP_FORCE_KILL_MS;
+}
 
 function stripAnsi(value: string): string {
   // eslint-disable-next-line no-control-regex
@@ -68,10 +105,14 @@ function readEnvFile(root: string): Record<string, string> {
 export class ServiceManager extends EventEmitter {
   private services: Map<string, ManagedService> = new Map();
   private projectRoot: string;
+  private readonly serviceStopForceKillMs: number;
+  private readonly drainForceKillMs: number;
 
   constructor(projectRoot: string) {
     super();
     this.projectRoot = projectRoot;
+    this.serviceStopForceKillMs = resolveServiceStopForceKillMs();
+    this.drainForceKillMs = resolveDrainForceKillMs();
     this.registerBuiltinServices();
   }
 
@@ -284,7 +325,10 @@ export class ServiceManager extends EventEmitter {
       child = spawn(svc.info.command, svc.info.args, {
         cwd: spawnCwd,
         env: envVars,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        // Windows has no catchable POSIX SIGTERM for Node children. The IPC
+        // channel carries a cooperative shutdown request; taskkill /F remains
+        // the deadline-only fallback.
+        stdio: isWindows ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       });
     } catch (err) {
@@ -332,6 +376,7 @@ export class ServiceManager extends EventEmitter {
           : `Process exited with ${exitReason}`;
       }
       svc.process = undefined;
+      if (svc.forceKillTimer) { clearTimeout(svc.forceKillTimer); svc.forceKillTimer = undefined; }
       this.emit('service-stopped', name, code);
     });
 
@@ -339,6 +384,7 @@ export class ServiceManager extends EventEmitter {
       svc.info.status = 'error';
       svc.info.lastError = this.formatSpawnError(svc.info, err);
       svc.process = undefined;
+      if (svc.forceKillTimer) { clearTimeout(svc.forceKillTimer); svc.forceKillTimer = undefined; }
       this.emit('service-error', name, err);
     });
 
@@ -352,15 +398,41 @@ export class ServiceManager extends EventEmitter {
     if (!proc.pid) return;
 
     if (isWindows) {
-      try {
-        // /T = 终止子进程树, /F = 强制终止
-        execSync(`taskkill /PID ${proc.pid} /T /F`, { stdio: 'ignore' });
-      } catch {
-        // 进程可能已退出，忽略错误
+      if (force) {
+        try {
+          // /T = terminate the process tree; /F is deadline-only fallback.
+          execSync(`taskkill /PID ${proc.pid} /T /F`, { stdio: 'ignore' });
+        } catch {
+          // The process may already have exited.
+        }
+      } else {
+        // Give the connector a real cooperative channel on Windows. A Node
+        // SIGTERM there terminates rather than invoking a trappable handler.
+        if (proc.connected && typeof proc.send === 'function') {
+          try {
+            proc.send({ type: RUNTIME_SHUTDOWN_MESSAGE_TYPE }, error => {
+              if (!error) return;
+              try { proc.kill('SIGTERM'); } catch { /* already exited */ }
+            });
+            return;
+          } catch {
+            // Fall through to the best available non-force termination.
+          }
+        }
+        try { proc.kill('SIGTERM'); } catch { /* already exited */ }
       }
     } else {
       proc.kill(force ? 'SIGKILL' : 'SIGTERM');
     }
+  }
+
+  private scheduleInteractiveForceKill(svc: ManagedService): void {
+    if (svc.forceKillTimer) clearTimeout(svc.forceKillTimer);
+    svc.forceKillTimer = setTimeout(() => {
+      svc.forceKillTimer = undefined;
+      if (svc.process) this.killProcess(svc.process, true);
+    }, this.serviceStopForceKillMs);
+    svc.forceKillTimer.unref?.();
   }
 
   stop(name: string): ServiceInfo {
@@ -370,22 +442,13 @@ export class ServiceManager extends EventEmitter {
       throw new Error(`Service "${name}" is not running`);
     }
 
-    if (isWindows) {
-      // Windows: 直接用 taskkill 强制终止进程树
-      svc.expectedExit = 'stop';
-      this.killProcess(svc.process, true);
-    } else {
-      svc.expectedExit = 'stop';
-      svc.process.kill('SIGTERM');
+    svc.expectedExit = 'stop';
+    this.killProcess(svc.process);
 
-      // 5秒后强制kill
-      const forceKillTimer = setTimeout(() => {
-        if (svc.process && !svc.process.killed) {
-          svc.process.kill('SIGKILL');
-        }
-      }, 5000);
-      forceKillTimer.unref?.();
-    }
+    // Interactive stop must stay responsive even if the connector cannot
+    // cooperate. ChildProcess.killed only means a signal was sent; the exit
+    // handler clears svc.process and remains the completion authority.
+    this.scheduleInteractiveForceKill(svc);
 
     return this.getService(name)!;
   }
@@ -413,18 +476,103 @@ export class ServiceManager extends EventEmitter {
       });
       svc.expectedExit = 'restart';
       this.killProcess(svc.process);
+      this.scheduleInteractiveForceKill(svc);
       return this.getService(name)!;
     }
 
     return this.start(name);
   }
 
+  /**
+   * Stop all running services with the short interactive fallback. Windows
+   * requests cooperative shutdown first and uses taskkill /F only if the
+   * connector does not exit promptly.
+   *
+   * This is a fire-and-forget sync method for API compatibility. For
+   * graceful shutdown that awaits child exit, use {@link drainAll}.
+   */
   stopAll() {
-    for (const [name, svc] of this.services) {
+    for (const svc of this.services.values()) {
       if (svc.info.status === 'running' && svc.process) {
         svc.expectedExit = 'stop';
-        this.killProcess(svc.process, true);
+        this.killProcess(svc.process);
+        this.scheduleInteractiveForceKill(svc);
       }
+    }
+  }
+
+  /**
+   * Gracefully stop all running services and await their exit within the
+   * configured Review Deadline. Sends SIGTERM first, then force-kills any
+   * process that has not exited after the deadline. Resolves when every
+   * running child has exited (or been killed). See ADR 0041.
+   */
+  async drainAll(): Promise<void> {
+    const forceKillMs = this.drainForceKillMs;
+    const running = Array.from(this.services.entries())
+      .filter(([, svc]) => svc.info.status === 'running' && svc.process)
+      .map(([name, svc]) => ({ name, svc }));
+
+    if (running.length === 0) return;
+
+    const runningNames = running.map(({ name }) => name);
+    const stoppedSet = new Set<string>();
+    let resolveAllStopped!: () => void;
+    const allStopped = new Promise<void>(resolve => {
+      resolveAllStopped = resolve;
+    });
+    const markStopped = (name: string) => {
+      if (!runningNames.includes(name)) return;
+      stoppedSet.add(name);
+      if (runningNames.every(n => stoppedSet.has(n))) resolveAllStopped();
+    };
+    const onStopped = (name: string) => markStopped(name);
+    const onError = (name: string) => markStopped(name);
+
+    // Register terminal-event listeners before sending signals. A child can
+    // emit `error` without a later `exit`; treating both events as terminal
+    // prevents shutdown from waiting forever on a failed spawn.
+    this.on('service-stopped', onStopped);
+    this.on('service-error', onError);
+
+    const forceKillTimer = setTimeout(() => {
+      for (const { name, svc } of running) {
+        if (!svc.process) {
+          markStopped(name);
+          continue;
+        }
+        try {
+          this.killProcess(svc.process, true);
+        } catch {
+          // The child may have exited between the check and the signal.
+        }
+        // SIGKILL should produce an exit event, but resolve defensively if a
+        // platform/runtime does not deliver one after the deadline.
+        markStopped(name);
+      }
+    }, forceKillMs);
+
+    try {
+      // Re-check for children that exited between collection and listener
+      // registration, then request graceful shutdown for the remainder.
+      for (const { name, svc } of running) {
+        if (!svc.process) {
+          markStopped(name);
+          continue;
+        }
+        svc.expectedExit = 'stop';
+        try {
+          this.killProcess(svc.process);
+        } catch {
+          // The exit/error event (or the deadline fallback) completes drain.
+        }
+      }
+
+      await allStopped;
+    } finally {
+      clearTimeout(forceKillTimer);
+      this.off('service-stopped', onStopped);
+      this.off('service-error', onError);
     }
   }
 }

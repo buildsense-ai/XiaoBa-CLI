@@ -20,6 +20,7 @@ const ALLOWED_SOURCE_HOSTS = new Set([
   'objects.githubusercontent.com',
   'github-releases.githubusercontent.com',
   'release-assets.githubusercontent.com',
+  'registry.npmjs.org',
 ]);
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
 
@@ -65,6 +66,17 @@ export async function main(options = {}) {
   preparedRuntimes.push(
     await prepareDownloadedRuntime(manifest, 'python', platform, arch, runtimeRoot, downloadCacheRoot, refresh),
   );
+  const xurlRuntime = await prepareDownloadedRuntime(
+    manifest,
+    'xurl',
+    platform,
+    arch,
+    runtimeRoot,
+    downloadCacheRoot,
+    refresh,
+  );
+  verifyXurlRuntime(xurlRuntime.target, platform, xurlRuntime.version);
+  preparedRuntimes.push(xurlRuntime);
 
   if (platform === 'win32') {
     preparedRuntimes.push(prepareGitRuntime(runtimeRoot));
@@ -212,6 +224,35 @@ function prepareGitRuntime(runtimeRoot) {
     source: installRoot,
     target: targetRoot,
   };
+}
+
+export function verifyXurlRuntime(runtimeRoot, platform, expectedVersion) {
+  const normalizedPlatform = normalizePlatform(platform);
+  const executable = path.join(runtimeRoot, normalizedPlatform === 'win32' ? 'xurl.exe' : 'xurl');
+
+  if (!fs.existsSync(executable) || !fs.statSync(executable).isFile()) {
+    throw new Error(`Bundled xURL runtime is missing executable: ${executable}`);
+  }
+
+  if (normalizedPlatform !== 'win32') {
+    fs.chmodSync(executable, 0o755);
+  }
+
+  const result = spawnSync(executable, ['--version'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
+  const expectedOutput = `xurl ${expectedVersion}`;
+
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message || output || `exit status ${result.status}`;
+    throw new Error(`Bundled xURL runtime failed its version check: ${detail}`);
+  }
+
+  if (output !== expectedOutput) {
+    throw new Error(`Bundled xURL runtime version mismatch: expected "${expectedOutput}", received "${output}"`);
+  }
 }
 
 async function downloadRuntimeArtifact(target, downloadCacheRoot, refresh) {
@@ -417,7 +458,13 @@ export function repairNodeRuntimeEntrypoints(nodeRuntimeRoot, platform = process
       continue;
     }
 
-    fs.rmSync(linkPath, { force: true });
+    // Node.js v24+ does not remove broken symlinks with rmSync({ force: true }).
+    // Use unlinkSync which reliably removes symlink entries regardless of target state.
+    try {
+      fs.unlinkSync(linkPath);
+    } catch {
+      fs.rmSync(linkPath, { force: true, recursive: true });
+    }
     fs.symlinkSync(link.target, linkPath);
     fs.chmodSync(targetPath, 0o755);
     repaired.push(link.name);
@@ -440,7 +487,11 @@ export function removeBrokenRuntimeSymlinks(runtimeRoot) {
 
       if (stat.isSymbolicLink()) {
         if (!fs.existsSync(entryPath)) {
-          fs.rmSync(entryPath, { force: true });
+          try {
+            fs.unlinkSync(entryPath);
+          } catch {
+            fs.rmSync(entryPath, { force: true, recursive: true });
+          }
           removed.push(path.relative(runtimeRoot, entryPath));
         }
         continue;

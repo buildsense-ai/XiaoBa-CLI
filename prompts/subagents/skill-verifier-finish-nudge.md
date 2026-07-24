@@ -1,0 +1,1 @@
+This branch must finish by calling finish_skill_verification with a structured result.

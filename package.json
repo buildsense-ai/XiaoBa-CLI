@@ -116,6 +116,8 @@
       "!skills/**/*.pyc",
       "!skills/**/__pycache__/**",
       "skills/README.md",
+      "THIRD_PARTY_NOTICES.md",
+      "LICENSE",
       ".env.example",
       "package.json"
     ],

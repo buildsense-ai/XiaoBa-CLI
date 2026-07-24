@@ -10,7 +10,7 @@ export type SecretSettingAction = 'keep' | 'replace' | 'clear';
 
 export interface DashboardSettingDefinition {
   id: string;
-  group: 'model' | 'catsco';
+  group: 'model' | 'heartbeat' | 'catsco';
   label: string;
   description: string;
   envKey: string;
@@ -177,6 +177,77 @@ export const DASHBOARD_SETTING_DEFINITIONS: DashboardSettingDefinition[] = [
     envKey: 'GAUZ_LLM_API_KEY',
     type: 'secret',
     required: true,
+  },
+  {
+    id: 'heartbeat.mode',
+    group: 'heartbeat',
+    label: '模型来源',
+    description: '跟随主模型，或为 Distillation Heartbeat Agent 使用独立模型。',
+    envKey: 'DISTILLATION_HEARTBEAT_LLM_MODE',
+    type: 'enum',
+    required: true,
+    options: ['inherit', 'custom'],
+  },
+  {
+    id: 'heartbeat.provider',
+    group: 'heartbeat',
+    label: '模型服务',
+    description: '独立模型使用的兼容 API 类型。',
+    envKey: 'DISTILLATION_HEARTBEAT_LLM_PROVIDER',
+    type: 'enum',
+    options: ['anthropic', 'openai'],
+  },
+  {
+    id: 'heartbeat.apiBase',
+    group: 'heartbeat',
+    label: 'API 地址',
+    description: '独立模型 API Base URL。',
+    envKey: 'DISTILLATION_HEARTBEAT_LLM_API_BASE',
+    type: 'url',
+    protocols: ['http:', 'https:'],
+  },
+  {
+    id: 'heartbeat.openaiApiMode',
+    group: 'heartbeat',
+    label: 'OpenAI 接口模式',
+    description: 'OpenAI provider 使用的接口模式。',
+    envKey: 'DISTILLATION_HEARTBEAT_LLM_OPENAI_API_MODE',
+    type: 'enum',
+    options: OPENAI_API_MODE_OPTIONS,
+  },
+  {
+    id: 'heartbeat.model',
+    group: 'heartbeat',
+    label: '模型',
+    description: 'Distillation Heartbeat Agent 使用的独立模型名称。',
+    envKey: 'DISTILLATION_HEARTBEAT_LLM_MODEL',
+    type: 'string',
+  },
+  {
+    id: 'heartbeat.contextWindowTokens',
+    group: 'heartbeat',
+    label: '上下文窗口',
+    description: '独立模型可用的上下文窗口。',
+    envKey: 'DISTILLATION_HEARTBEAT_LLM_CONTEXT_WINDOW_TOKENS',
+    type: 'enum',
+    options: CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS,
+  },
+  {
+    id: 'heartbeat.reasoningEffort',
+    group: 'heartbeat',
+    label: '推理强度',
+    description: '独立模型的 reasoning effort。',
+    envKey: 'DISTILLATION_HEARTBEAT_LLM_REASONING_EFFORT',
+    type: 'enum',
+    options: REASONING_EFFORT_OPTIONS,
+  },
+  {
+    id: 'heartbeat.apiKey',
+    group: 'heartbeat',
+    label: 'API Key',
+    description: '独立模型 API key，只显示是否已配置。',
+    envKey: 'DISTILLATION_HEARTBEAT_LLM_API_KEY',
+    type: 'secret',
   },
   {
     id: 'catsco.httpBaseUrl',
@@ -473,6 +544,12 @@ export function getDashboardSettings(
           ? sanitizeUrlSettingValue(value ?? '')
           : definition.id === 'model.openaiApiMode'
             ? openAIApiModeOrDefault(value)
+            : definition.id === 'heartbeat.mode'
+              ? value || 'inherit'
+              : definition.id === 'heartbeat.openaiApiMode'
+                ? openAIApiModeOrDefault(value)
+                : definition.id === 'heartbeat.reasoningEffort'
+                  ? reasoningEffortOrDefault(normalizeReasoningEffort(value))
             : value ?? '',
       };
     }),

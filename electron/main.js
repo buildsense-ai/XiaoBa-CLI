@@ -527,19 +527,22 @@ async function startServer() {
   console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.node));
   console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.python));
   console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.git));
+  console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.xurl));
 
   // 闂備胶鍎甸弲娑㈡偤閵娧勬殰闁圭虎鍠栭幑鍫曟煏婵炲灝鈧洟鎯佸鍫濈骇闁冲搫鍊婚妴鎺楁煃鐠囧眰鍋㈢€规洏鍎甸、娑橆潩椤戭偅顣筧shboard server
   const { startDashboard } = require(path.join(appRoot, 'dist', 'dashboard', 'server'));
   dashboardServerHandle = await startDashboard(DASHBOARD_PORT, { updateController, projectRoot: appRoot });
 }
 
-function stopDashboardServer() {
+async function stopDashboardServer() {
   if (!dashboardServerHandle) return;
   const handle = dashboardServerHandle;
   dashboardServerHandle = null;
-  handle.stop?.().catch((error) => {
+  try {
+    await handle.stop?.();
+  } catch (error) {
     console.warn('Failed to stop dashboard server:', error);
-  });
+  }
 }
 
 function createWindow() {
@@ -861,7 +864,18 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
+let isDrainingForQuit = false;
+app.on('before-quit', (event) => {
   app.isQuitting = true;
-  stopDashboardServer();
+  // Delay quit until the dashboard server (and its child services) have
+  // drained, so an active heartbeat wake can finish within the configured
+  // Review Deadline. The second before-quit (after drain completes) will
+  // proceed normally because isDrainingForQuit is already true.
+  if (!isDrainingForQuit && dashboardServerHandle) {
+    event.preventDefault();
+    isDrainingForQuit = true;
+    stopDashboardServer().finally(() => {
+      app.quit();
+    });
+  }
 });

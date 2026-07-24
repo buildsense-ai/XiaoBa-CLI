@@ -53,6 +53,17 @@ import { formatPathForLog } from '../utils/log-redaction';
 import { resolveCatsDeviceModelStatus } from './model-status';
 import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
 import {
+  configureExternalHistoryProviders,
+  getExternalHistoryControlStatus,
+  mapExternalBackfillReportToDeviceRpcError,
+  runExternalHistoryBackfillControl,
+} from '../commands/external-source';
+import {
+  activateExternalHistoryRuntimeConfiguration,
+  getActiveRuntimeLearning,
+} from '../utils/runtime-command-support';
+import type { ExternalHistoryProgressUpdate } from '../utils/session-log-backfill';
+import {
   buildCatsCoAttachmentCachePath,
   scheduleCatsCoAttachmentCacheCleanup,
 } from './attachment-cache';
@@ -167,6 +178,7 @@ export const CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[
   'edit_file',
   'send_file',
   'execute_shell',
+  'external_history',
 ];
 
 function currentRuntimeOS(): 'windows' | 'macos' | 'linux' | 'unknown' {
@@ -397,8 +409,6 @@ export class CatsCompanyBot {
   private agentServices: AgentServices;
   private cloudSessionRestorer: CatsCompanyCloudSessionRestorer;
   private cloudSessionRestorePromises = new Map<string, Promise<CloudSessionRestoreResult>>();
-  /** 等待用户后续指令的附件队列，key 为 sessionKey */
-  private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
   private messageQueue = new Map<string, QueuedMessage[]>();
   /** Serializes history hydration and all model turns for one CatsCo session. */
@@ -830,11 +840,16 @@ export class CatsCompanyBot {
     const requestID = request.request_id;
     if (!requestID) return;
 
-    const validationError = this.validateDeviceRpcToolRequest(request);
+    const externalHistoryRequest = request.operation === 'external_history';
+    const validationError = externalHistoryRequest
+      ? this.validateExternalHistoryRequest(request)
+      : this.validateDeviceRpcToolRequest(request);
     let result: ToolExecutionResult | undefined;
     if (!validationError) {
       try {
-        result = await this.executeLocalDeviceRpcTool(request);
+        result = externalHistoryRequest
+          ? await this.executeExternalHistoryControl(request)
+          : await this.executeLocalDeviceRpcTool(request);
       } catch (error: any) {
         result = {
           ok: false,
@@ -849,6 +864,7 @@ export class CatsCompanyBot {
       : {
           code: result.errorCode || 'tool_execution_error',
           message: result.message,
+          ...(result.ok === false && result.details ? { details: result.details } : {}),
         });
 
     try {
@@ -874,6 +890,149 @@ export class CatsCompanyBot {
     } catch (err: any) {
       Logger.warning(`[CatsCompany] Device RPC result 发送失败: request=${requestID}, error=${err?.message || err}`);
     }
+  }
+
+  private validateExternalHistoryRequest(request: CatsDeviceRpcMessage): { code: string; message: string } | undefined {
+    const targetError = this.validateDeviceRpcTarget(request);
+    if (targetError) return targetError;
+    if (!String(request.device_id || '').trim()) {
+      return { code: 'invalid_request', message: 'External history request missing device_id.' };
+    }
+    if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
+      return { code: 'request_expired', message: 'External history request has expired.' };
+    }
+    const payload = request.payload;
+    const action = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? String((payload as Record<string, unknown>).action || '').trim()
+      : '';
+    if (!['status', 'configure', 'preview', 'execute'].includes(action)) {
+      return { code: 'unsupported_operation', message: 'Unsupported external history action.' };
+    }
+    return undefined;
+  }
+
+  private async executeExternalHistoryControl(request: CatsDeviceRpcMessage): Promise<ToolExecutionResult> {
+    const payload = request.payload as Record<string, unknown>;
+    const action = String(payload.action || '').trim();
+    const workingDirectory = this.runtimeProfile?.workingDirectory || this.runtime?.profile?.workingDirectory || process.cwd();
+    let response: Record<string, unknown>;
+
+    if (action === 'status') {
+      response = {
+        ...getExternalHistoryControlStatus(workingDirectory),
+        runtimeOwnerReady: Boolean(getActiveRuntimeLearning()),
+      };
+    } else if (action === 'configure') {
+      const providers = Array.isArray(payload.providers)
+        ? payload.providers.map(provider => String(provider))
+        : [];
+      const configured = configureExternalHistoryProviders(providers, workingDirectory);
+      const activation = activateExternalHistoryRuntimeConfiguration(workingDirectory);
+      response = {
+        ...configured,
+        ...activation,
+        restartRequired: !activation.appliedImmediately,
+      };
+    } else {
+      const provider = String(payload.provider || '').trim().toLowerCase();
+      const updatedSince = String(payload.updatedSince || '').trim();
+      if (provider !== 'codex' && provider !== 'pi') {
+        return { ok: false, errorCode: 'INVALID_ARGUMENT', message: 'Provider must be codex or pi.' };
+      }
+      if (!updatedSince) {
+        return { ok: false, errorCode: 'INVALID_ARGUMENT', message: 'History range is required.' };
+      }
+      const execute = action === 'execute';
+      const runtimeLearning = execute ? getActiveRuntimeLearning() : undefined;
+      if (execute && !runtimeLearning) {
+        return {
+          ok: false,
+          errorCode: 'RUNTIME_NOT_READY',
+          message: 'The local Runtime owner is not ready. Restart the local assistant and try again.',
+          retryable: true,
+        };
+      }
+      const recovery = execute
+        ? runtimeLearning!.retryExternalProviderRecovery(provider)
+        : undefined;
+      const requestID = request.request_id;
+      let progressSendTail = Promise.resolve();
+      const sendProgress = (progress: ExternalHistoryProgressUpdate): void => {
+        if (!requestID || !this.bot) return;
+        progressSendTail = progressSendTail.then(async () => {
+          try {
+            await this.bot.sendDeviceRpcProgress({
+              request_id: requestID,
+              grant_id: request.grant_id,
+              session_key: request.session_key,
+              topic_id: request.topic_id,
+              topic_type: request.topic_type,
+              actor_user_id: request.actor_user_id,
+              owner_user_id: request.owner_user_id,
+              identity_source: request.identity_source,
+              agent_id: request.agent_id,
+              agent_body_id: request.agent_body_id,
+              device_id: this.localDeviceGrant?.deviceId || request.device_id,
+              device_body_id: this.localDeviceGrant?.bodyId || request.device_body_id,
+              device_installation_id: this.localDeviceGrant?.installationId || request.device_installation_id,
+              operation: request.operation,
+              tool_name: request.tool_name,
+              progress: {
+                processed: progress.processed,
+                total: progress.total,
+                completed: progress.completed,
+                failed: progress.failed,
+                skipped: progress.skipped,
+                remaining: progress.remaining,
+                provider: progress.provider || provider,
+                phase: progress.phase,
+              },
+            });
+          } catch (err: any) {
+            Logger.warning(`[CatsCompany] Device RPC progress 发送失败: request=${requestID}, error=${err?.message || err}`);
+          }
+        });
+      };
+      try {
+        response = {
+          ...await runExternalHistoryBackfillControl({
+            provider,
+            updatedSince,
+            execute,
+            operationId: typeof payload.operationId === 'string' ? payload.operationId : undefined,
+            preferExistingOperation: !execute,
+            workingDirectory,
+            runtimeLearning: runtimeLearning ?? undefined,
+            onProgress: execute ? sendProgress : undefined,
+          }),
+          ...(recovery && (
+            recovery.quarantinesRetried > 0
+            || recovery.sourceFailuresRetried > 0
+          ) ? { recovery } : {}),
+        };
+      } finally {
+        // Keep the backfill service synchronous for existing callers while
+        // guaranteeing ordered progress delivery before the terminal result.
+        await progressSendTail;
+      }
+
+      // Map durable source_failed/blocked_zero_progress reports to stable Device
+      // RPC errors so the Web receives a structured error (not a silent quota
+      // pause). Output-limit failures map to external_history_record_too_large;
+      // generic source failures map to external_history_source_failed. Structured
+      // failure codes drive the mapping, never English messages.
+      if (response && typeof response === 'object') {
+        const deviceError = mapExternalBackfillReportToDeviceRpcError(
+          response as Record<string, unknown>,
+          provider,
+        );
+        if (deviceError) {
+          return deviceError;
+        }
+      }
+    }
+
+    return { ok: true, content: JSON.stringify(response) };
   }
 
   private async executeLocalDeviceRpcTool(request: CatsDeviceRpcMessage): Promise<ToolExecutionResult> {
@@ -1360,7 +1519,6 @@ export class CatsCompanyBot {
       const isClear = command.toLowerCase() === 'clear';
 
       if (isClear) {
-        this.pendingAttachments.delete(key);
         this.messageQueue.delete(key);
         this.bumpSessionClearGeneration(key);
         const completionBatch = this.subAgentCompletionBatches.get(key);
@@ -1387,8 +1545,7 @@ export class CatsCompanyBot {
     }
 
     const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
-    const hasPendingAttachments = (this.pendingAttachments.get(key)?.length || 0) > 0;
-    if (isCatsCompanyPassiveAcknowledgement(msg.text) && messageFiles.length === 0 && !hasPendingAttachments) {
+    if (isCatsCompanyPassiveAcknowledgement(msg.text) && messageFiles.length === 0) {
       Logger.info(`[${key}] 收到纯确认/感谢消息，已静默跳过推理`);
       return;
     }
@@ -1442,13 +1599,6 @@ export class CatsCompanyBot {
         Logger.info(`[${key}] 原子附件消息（attachments=${attachments.length})`);
       } else {
         userMessage = `[用户上传了 ${messageFiles.length} 个附件，但平台未能下载这些附件]`;
-      }
-    } else {
-      const queuedAttachments = this.consumePendingAttachments(key);
-      if (queuedAttachments.length > 0) {
-        localFileGrants = this.collectLocalFileGrants(queuedAttachments);
-        userMessage = await this.buildMultimodalMessage(msg.text, queuedAttachments);
-        Logger.info(`[${key}] 追加 ${queuedAttachments.length} 个附件`);
       }
     }
 
@@ -2877,7 +3027,6 @@ export class CatsCompanyBot {
     this.stopDeviceRegistrationRefresh();
     this.bot.disconnect();
     await this.sessionManager.destroy();
-    this.pendingAttachments.clear();
     this.messageQueue.clear();
     this.sessionExecutionReservations?.clear();
     this.sessionClearGenerations?.clear();
@@ -2889,20 +3038,6 @@ export class CatsCompanyBot {
     }
     this.subAgentCompletionBatches.clear();
     Logger.info('CatsCo agent 已停止');
-  }
-
-  private enqueuePendingAttachment(sessionKey: string, attachment: PendingAttachment): number {
-    const queue = this.pendingAttachments.get(sessionKey) ?? [];
-    queue.push(attachment);
-    const trimmed = queue.slice(-5);
-    this.pendingAttachments.set(sessionKey, trimmed);
-    return trimmed.length;
-  }
-
-  private consumePendingAttachments(sessionKey: string): PendingAttachment[] {
-    const queue = this.pendingAttachments.get(sessionKey) ?? [];
-    this.pendingAttachments.delete(sessionKey);
-    return queue;
   }
 
   private collectLocalFileGrants(attachments: PendingAttachment[]): ScopedLocalFileGrant[] {
@@ -2974,23 +3109,6 @@ export class CatsCompanyBot {
       `[${label}] ${attachment.fileName}`,
       `本地缓存路径: ${attachment.localPath}`,
       '读取方式: 如需查看该附件，调用 read_file，file_path 使用上面的本地缓存路径。',
-    ].join('\n');
-  }
-
-  private formatAttachmentContext(attachments: PendingAttachment[]): string {
-    const lines = attachments.map((attachment, index) => {
-      return `[附件${index + 1}]\n${this.formatAttachmentReferenceForModel(attachment)}`;
-    });
-    return `[用户已上传附件]\n${lines.join('\n')}`;
-  }
-
-  private buildAttachmentOnlyPrompt(attachments: PendingAttachment[]): string {
-    return [
-      '[用户仅上传了附件，暂未给出明确任务]',
-      '[当前会话是 CatsCo 聊天：给用户可见的文本会自动发送；如需发送文件，使用当前可用的发送文件工具]',
-      '请你先判断最合理的下一步，不要默认进入任何特定 skill（例如 paper-analysis）。',
-      '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
-      this.formatAttachmentContext(attachments),
     ].join('\n');
   }
 

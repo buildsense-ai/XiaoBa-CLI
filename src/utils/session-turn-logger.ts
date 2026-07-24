@@ -42,6 +42,8 @@ function parseOptionalLimit(raw: string | undefined): number | null {
 export interface LogTurnOptions {
   runtimeFeedback?: string[];
   runtimeObservationSource?: string;
+  /** AgentTurnController's canonical episode correlation. */
+  episodeId?: string;
   prompt?: SessionPromptTurnLog;
 }
 
@@ -97,6 +99,7 @@ export class SessionTurnLogger {
       timestamp: new Date().toISOString(),
       session_id: this.sessionId,
       session_type: this.sessionType,
+      ...(options.episodeId?.trim() && { episode_id: options.episodeId.trim() }),
       user: {
         text: userText,
         ...(userImages.length > 0 && { images: userImages }),
@@ -184,12 +187,15 @@ export class SessionTurnLogger {
     return text.slice(0, maxLength) + '... [truncated]';
   }
 
-  private appendLog(entry: SessionLogEntry): void {
+  private appendLog(entry: SessionLogEntry): boolean {
     try {
       fs.appendFileSync(this.logFilePath, JSON.stringify(entry) + '\n');
+      return true;
     } catch (error) {
       // 日志写入失败不影响主流程
       console.error('[SessionTurnLogger] Failed to write log:', error);
+      return false;
     }
   }
+
 }

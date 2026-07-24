@@ -1,6 +1,14 @@
 import * as path from 'path';
 import * as fs from 'fs';
 
+/** Default sub-directory under the skills root for generated distilled skills. */
+export const GENERATED_DISTILLED_DIR_NAME = 'generated-distilled';
+
+/** Resolve the default generated-distilled output directory under a skills root. */
+export function defaultDistilledOutputDir(skillsRoot: string): string {
+  return path.join(skillsRoot, GENERATED_DISTILLED_DIR_NAME);
+}
+
 export class PathResolver {
   static getRuntimeDataRoot(
     env: NodeJS.ProcessEnv = process.env,
@@ -24,6 +32,10 @@ export class PathResolver {
     return path.join(this.getRuntimeDataRoot(), 'data', ...segments);
   }
 
+  static getSessionLogAppendSignalPath(runtimeRoot: string = process.cwd()): string {
+    return path.join(this.getRuntimeDataRoot(process.env, runtimeRoot), 'data', 'session-log-append.signal');
+  }
+
   static getLogsPath(...segments: string[]): string {
     return path.join(this.getRuntimeDataRoot(), 'logs', ...segments);
   }
@@ -40,6 +52,11 @@ export class PathResolver {
     const override = process.env.XIAOBA_SKILLS_DIR?.trim();
     if (override) return path.resolve(override);
     return this.getUserDataSkillsPath();
+  }
+
+  static getSkillEvolutionRegistryPath(): string {
+    const override = process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE?.trim();
+    return path.resolve(override || this.getDataPath('current-skill-registry.json'));
   }
 
   static getUserDataSkillsPath(): string {
@@ -61,6 +78,7 @@ export class PathResolver {
 
     const entries = fs.readdirSync(baseDir, { withFileTypes: true });
     for (const entry of entries) {
+      if (entry.isDirectory() && entry.name === 'history') continue;
       const fullPath = path.join(baseDir, entry.name);
 
       if (entry.isDirectory()) {

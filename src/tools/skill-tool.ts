@@ -1,19 +1,28 @@
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SkillManager } from '../skills/skill-manager';
-import { SkillInvocationContext } from '../types/skill';
+import { Skill, SkillInvocationContext } from '../types/skill';
 import { SkillExecutor } from '../skills/skill-executor';
 import { Logger } from '../utils/logger';
 import { getPetService } from '../pet/pet-service';
 import { PetEventType } from '../pet/pet-types';
+import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
+import {
+  GeneratedCurrentSkillIdentity,
+  SkillUsageLedger,
+} from '../utils/skill-usage-ledger';
 
 /**
  * Skill 工具 - 调用已注册的 skills
  */
 export class SkillTool implements Tool {
   private skillManager: SkillManager;
+  private usageLedger: SkillUsageLedger;
 
-  constructor() {
+  constructor(usageLedger = new SkillUsageLedger(getDistillationHeartbeatConfig().skillUsageLedgerPath)) {
     this.skillManager = new SkillManager();
+    this.usageLedger = usageLedger;
   }
 
   definition: ToolDefinition = {
@@ -54,7 +63,8 @@ export class SkillTool implements Tool {
       await this.skillManager.loadSkills();
 
       // 获取指定的 skill
-      const skill = this.skillManager.getSkill(skillName);
+      const resolution = await this.skillManager.resolveSkill(skillName);
+      const skill = resolution?.skill;
 
       if (!skill) {
         const availableSkills = this.skillManager.getAllSkills()
@@ -66,6 +76,10 @@ export class SkillTool implements Tool {
           errorCode: 'TOOL_NOT_FOUND',
         });
         return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: `错误：未找到 skill "${skillName}"。\n\n可用的 skills: ${availableSkills}` };
+      }
+
+      if (resolution?.redirected) {
+        Logger.info(`Skill route 已迁移: ${resolution.requestedName} → ${resolution.resolvedName}`);
       }
 
       // 检查 skill 是否可被用户调用
@@ -99,9 +113,19 @@ export class SkillTool implements Tool {
       // 直接返回渲染后的 SKILL.md 内容，由 tool_result 并入上下文
       const result = SkillExecutor.execute(skill, invocationContext);
 
+      this.recordGeneratedSkillLoad(skill, context, resolution?.requestedName);
+
       this.recordPetEvent('skill_succeeded', skillName, context);
       return { ok: true, content: result };
     } catch (error: any) {
+      if (error?.code === 'STALE_SKILL_REDIRECT') {
+        this.recordPetEvent('skill_failed', skillName, context, {
+          status: 'failed',
+          message: `「${skillName}」skill 路由已失效，点我查看`,
+          errorCode: 'STALE_SKILL_REDIRECT',
+        });
+        return { ok: false, errorCode: 'STALE_SKILL_REDIRECT', message: error.message };
+      }
       this.recordPetEvent('skill_failed', skillName, context, {
         status: 'failed',
         message: `「${skillName}」skill 出错了，点我查看`,
@@ -110,6 +134,16 @@ export class SkillTool implements Tool {
       Logger.error(`Skill 执行失败: ${error.message}`);
       return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `Skill 执行失败: ${error.message}` };
     }
+  }
+
+  private recordGeneratedSkillLoad(skill: Skill, context: ToolExecutionContext, requestedRoutingName?: string): void {
+    if (!isGeneratedDistilledSkill(skill) || !context.sessionId || !context.episodeId) return;
+    this.usageLedger.recordGeneratedSkillLoad({
+      runtimeSessionId: context.sessionId,
+      episodeId: context.episodeId,
+      requestedRoutingName,
+      skill: generatedSkillIdentity(skill),
+    });
   }
 
   private recordPetEvent(
@@ -130,4 +164,21 @@ export class SkillTool implements Tool {
       },
     });
   }
+}
+
+function isGeneratedDistilledSkill(skill: Skill): boolean {
+  return skill.filePath.split(/[\\/]+/).includes('generated-distilled');
+}
+
+function generatedSkillIdentity(skill: Skill): GeneratedCurrentSkillIdentity {
+  const segments = skill.filePath.split(/[\\/]+/);
+  const generatedIndex = segments.lastIndexOf('generated-distilled');
+  const capabilityHandle = generatedIndex >= 0 ? segments[generatedIndex + 1] : undefined;
+  if (!capabilityHandle) throw new Error(`Generated skill path has no capability handle: ${skill.filePath}`);
+  return {
+    capabilityHandle,
+    routingName: skill.metadata.name,
+    skillFilePath: skill.filePath,
+    guidanceHash: crypto.createHash('sha256').update(fs.readFileSync(skill.filePath)).digest('hex'),
+  };
 }

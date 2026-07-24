@@ -97,7 +97,7 @@ export interface UploadedFileResult {
 
 export type ToolExecutionResult = (
   | { ok: true; content: string | import('./index').ContentBlock[] }
-  | { ok: false; errorCode: string; message: string; retryable?: boolean }
+  | { ok: false; errorCode: string; message: string; retryable?: boolean; details?: Record<string, unknown> }
 ) & {
   /** Route-aware context for the model-visible tool result. */
   targetContext?: string;
@@ -215,6 +215,8 @@ export interface ToolExecutionContext {
   workspaceRoot?: string;
   conversationHistory: any[];
   sessionId?: string;
+  /** Stable correlation for the externally visible turn / Learning Episode. */
+  episodeId?: string;
   surface?: ToolSurface;
   permissionProfile?: ToolPermissionProfile;
   runId?: string;

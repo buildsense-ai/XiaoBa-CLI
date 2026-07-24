@@ -13,6 +13,7 @@ import {
   resolveRuntimeTarget,
   resolveRuntimeTargetKey,
   validateRuntimeManifest,
+  verifyXurlRuntime,
 } from '../scripts/prepare-runtime.mjs';
 
 describe('runtime manifest resolution', () => {
@@ -28,10 +29,11 @@ describe('runtime manifest resolution', () => {
     assert.strictEqual(resolveRuntimeTargetKey('windows', 'x86_64'), 'win32-x64');
   });
 
-  test('loads node and python targets from the manifest', () => {
+  test('loads node, python, and xurl targets from the manifest', () => {
     const manifest = loadRuntimeManifest();
     const nodeTarget = resolveRuntimeTarget(manifest, 'node', 'darwin', 'arm64');
     const pythonTarget = resolveRuntimeTarget(manifest, 'python', 'linux', 'x64');
+    const xurlTarget = resolveRuntimeTarget(manifest, 'xurl', 'darwin', 'arm64');
 
     assert.strictEqual(nodeTarget.archiveType, 'tar.xz');
     assert.strictEqual(nodeTarget.targetSubdir, 'node');
@@ -42,6 +44,12 @@ describe('runtime manifest resolution', () => {
     assert.strictEqual(pythonTarget.targetSubdir, 'python');
     assert.ok(pythonTarget.sources.length >= 2);
     assert.ok(pythonTarget.sources[0].url.includes('cpython-3.12.7%2B20241016-x86_64-unknown-linux-gnu'));
+
+    assert.strictEqual(xurlTarget.archiveType, 'tar.gz');
+    assert.strictEqual(xurlTarget.targetSubdir, 'xurl');
+    assert.strictEqual(xurlTarget.packageRoot, 'package/vendor/aarch64-apple-darwin/xurl');
+    assert.strictEqual(xurlTarget.sources.length, 1);
+    assert.ok(xurlTarget.sources[0].url.includes('xurl-0.0.27-darwin-arm64.tgz'));
   });
 });
 
@@ -98,6 +106,55 @@ describe('runtime manifest safety checks', () => {
     assert.throws(
       () => validateRuntimeManifest(manifest),
       /invalid sha256/,
+    );
+  });
+});
+
+describe('xurl runtime verification', () => {
+  test('rejects a runtime without the expected executable', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-xurl-runtime-'));
+    try {
+      assert.throws(
+        () => verifyXurlRuntime(root, process.platform, '0.0.27'),
+        /missing executable/,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('runs the prepared executable and verifies its pinned version', (t) => {
+    if (process.platform === 'win32') {
+      t.skip('A synthetic Windows executable is not portable in this unit test');
+      return;
+    }
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-xurl-runtime-'));
+    try {
+      const executable = path.join(root, 'xurl');
+      fs.writeFileSync(executable, '#!/bin/sh\necho xurl 0.0.27\n');
+
+      assert.doesNotThrow(() => verifyXurlRuntime(root, process.platform, '0.0.27'));
+      assert.strictEqual(fs.statSync(executable).mode & 0o111, 0o111);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('desktop runtime packaging', () => {
+  test('ships the prepared runtime and third-party license notices', () => {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+    );
+
+    assert.ok(packageJson.build.files.includes('LICENSE'));
+    assert.ok(packageJson.build.files.includes('THIRD_PARTY_NOTICES.md'));
+    assert.ok(
+      packageJson.build.extraFiles.some(
+        (fileSet: { from?: string; to?: string }) =>
+          fileSet.from === 'build-resources/runtime' && fileSet.to === 'runtime',
+      ),
     );
   });
 });
