@@ -18,11 +18,14 @@ describe('Bot Skill workspace lock', () => {
 
   test('can lock a not-yet-created workspace and re-enter the same lock', async () => {
     const workspaceRoot = path.join(root, 'runtime', '.skills');
+    const equivalentWorkspaceRoot = process.platform === 'win32'
+      ? workspaceRoot.toUpperCase()
+      : path.join(workspaceRoot, '.');
     const events: string[] = [];
 
     await withBotSkillWorkspaceLock(workspaceRoot, async () => {
       events.push('outer');
-      await withBotSkillWorkspaceLock(workspaceRoot.toUpperCase(), async () => {
+      await withBotSkillWorkspaceLock(equivalentWorkspaceRoot, async () => {
         events.push('inner');
       });
     });
