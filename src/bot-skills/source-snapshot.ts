@@ -317,13 +317,32 @@ function containsHighConfidenceSecret(bytes: Buffer): boolean {
   if (/\bxox[baprs]-[A-Za-z0-9-]{20,}\b/.test(text)) return true;
   if (/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/.test(text)) return true;
   const assignments = text.matchAll(
-    /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password)\b\s*[:=]\s*["']?([^\s"'#]{16,})/gi,
+    /(?=(?:^|[^A-Za-z0-9_-])["']?(?<key>[A-Za-z_][A-Za-z0-9_.-]{0,127})["']?\]?\s*(?:[?+]?=|:)\s*(?:"(?<double>[^"\r\n]*)"|'(?<single>[^'\r\n]*)'|(?<bare>[^\s#,;]+)))/gm,
   );
   for (const match of assignments) {
-    const candidate = String(match[1] || '').toLowerCase();
-    if (!/(example|placeholder|dummy|changeme|your[_-]|test[_-]|\*{3,})/.test(candidate)) return true;
+    const key = String(match.groups?.key || '').replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+    if (!/(?:apikey|accesstoken|authtoken|clientsecret|secretaccesskey|secretkey|password|passwd|token|secret)$/.test(key)) {
+      continue;
+    }
+    const candidate = String(
+      match.groups?.double ?? match.groups?.single ?? match.groups?.bare ?? '',
+    ).toLowerCase();
+    if (!isExplicitSafeCredentialValue(key, candidate)) return true;
   }
   return false;
+}
+
+function isExplicitSafeCredentialValue(key: string, candidate: string): boolean {
+  return (
+    candidate === ''
+    || /^\$\{[a-z_][a-z0-9_]*\}$/.test(candidate)
+    || (
+      /(?:password|passwd)$/.test(key)
+      && /^(?:minimum|maximum)[-_]length[-_]\d+$/.test(candidate)
+    )
+    || /^(?:string|number|boolean|unknown|null|undefined|z\.string\(\)(?:\.min\(\d+\))?)$/.test(candidate)
+    || /^(?:example[-_](?:api[-_]?key|token|secret|password)|placeholder(?:[-_]value)?|dummy[-_]value|changeme(?:[-_]please)?|your[-_](?:api[-_]?key|token|secret|password)[-_]here|\*{3,})$/.test(candidate)
+  );
 }
 
 function sha256(bytes: Buffer): string {

@@ -69,6 +69,65 @@ describe('Bot Skill source snapshot security boundary', () => {
     );
   });
 
+  test('blocks service-prefixed, AWS, generic, and camelCase credential assignments', () => {
+    const assignments = [
+      'CATSCO_API_KEY=not-a-real-catsco-key-1234567890',
+      'AWS_SECRET_ACCESS_KEY=not-a-real-aws-secret-1234567890',
+      'MY_SERVICE_TOKEN=not-a-real-service-token-1234567890',
+      '{"catscoApiKey":"not-a-real-json-key-1234567890"}',
+      'DJANGO_SECRET_KEY=django-insecure-abcdefghijklmnopqrstuvwxyz1234567890',
+      'API_KEY=abcd1234',
+      'password=S3cur3Pass!',
+      'SAFE=${SAFE};PASSWORD=realpassword',
+      'config["apiKey"]="realpassword"',
+      'API_KEY?=realpassword',
+      'API_KEY+=realpassword',
+      'connect(api_key="realpassword")',
+      'API_KEY="${SAFE_ENV} actual-secret-value"',
+      'SAFE=x&&PASSWORD=realpassword',
+      'SAFE=x&PASSWORD=realpassword',
+      'https://x.test/?access_token=realpassword',
+    ];
+
+    for (const [index, assignment] of assignments.entries()) {
+      const filePath = path.join(skillDir, `config-${index}.txt`);
+      fs.writeFileSync(filePath, `${assignment}\n`);
+      assert.throws(
+        () => buildBotSkillSourceSnapshot(skillDir),
+        (error: any) => (
+          error.code === 'SKILL_SOURCE_SENSITIVE'
+          && error.relativePaths.includes(`config-${index}.txt`)
+          && !error.message.includes('not-a-real')
+        ),
+      );
+      fs.rmSync(filePath);
+    }
+  });
+
+  test('allows only explicit safe credential references, placeholders, and schema values', () => {
+    fs.writeFileSync(path.join(skillDir, 'example.txt'), [
+      'CATSCO_API_KEY=your_api_key_here',
+      'MY_SERVICE_TOKEN=placeholder-value',
+      'clientSecret=****************',
+      'STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}',
+      'password=minimum_length_16',
+      'interface Config { apiKey: string; }',
+      '{ password: z.string().min(8) }',
+      'clientSecret: null',
+      'API_KEY=""',
+    ].join('\n'));
+
+    assert.doesNotThrow(() => buildBotSkillSourceSnapshot(skillDir));
+  });
+
+  test('does not treat a password-only policy value as a general secret placeholder', () => {
+    fs.writeFileSync(path.join(skillDir, 'unsafe-policy.txt'), 'STRIPE_SECRET_KEY=minimum_length_16\n');
+    assert.throws(
+      () => buildBotSkillSourceSnapshot(skillDir),
+      (error: any) => error.code === 'SKILL_SOURCE_SENSITIVE',
+    );
+  });
+
   test('fails the whole snapshot on file count or file size limits instead of truncating it', () => {
     for (let index = 0; index < BOT_SKILL_SOURCE_MAX_FILES; index += 1) {
       fs.writeFileSync(path.join(skillDir, `file-${index}.txt`), String(index));
