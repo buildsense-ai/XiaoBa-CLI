@@ -75,7 +75,7 @@ interface PendingAttachment {
   localFileGrant?: ScopedLocalFileGrant;
 }
 
-type NativeFeishuGroupTriggerMessage = Pick<ParsedCatsMessage, 'topic' | 'chatType' | 'seq' | 'metadata'>;
+type NativeFeishuGroupTriggerMessage = Pick<ParsedCatsMessage, 'topic' | 'chatType' | 'seq' | 'metadata' | 'mentions' | 'memberCount'>;
 
 interface NativeFeishuContextHydration {
   message: NativeFeishuGroupTriggerMessage;
@@ -342,6 +342,46 @@ export function createCatsCompanyRuntime(sessionTTL?: number): AdapterRuntimeBun
     sessionTTL,
     promptSnapshotMode: 'mutable-identity',
   });
+}
+
+export function shouldActivateCatsCompanyMessage(
+  message: Pick<MessageContext, 'isGroup' | 'metadata' | 'mentions' | 'memberCount'>,
+  botUid: string | null | undefined,
+): boolean {
+  if (!message.isGroup) return true;
+
+  const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+  const sourceChannel = typeof metadata.source_channel === 'string'
+    ? metadata.source_channel.trim()
+    : '';
+  if (sourceChannel) {
+    return metadata.channel_native_group_triggered === true
+      || metadata.channel_native_group_triggered === 1
+      || metadata.channel_native_group_triggered === '1'
+      || metadata.channel_native_group_triggered === 'true';
+  }
+
+  const memberCount = message.memberCount;
+  if (typeof memberCount === 'number'
+    && Number.isSafeInteger(memberCount)
+    && memberCount > 0
+    && memberCount <= 2) return true;
+
+  const targetUid = normalizeCatsUid(botUid);
+  if (!targetUid) return false;
+  return Array.isArray(message.mentions)
+    && message.mentions.some(mention => normalizeCatsUid(mention) === targetUid);
+}
+
+function shouldHydrateCatsCompanyGroupContext(
+  message: Pick<ParsedCatsMessage, 'chatType' | 'metadata' | 'seq'>,
+): boolean {
+  if (message.chatType !== 'group' || message.seq <= 0) return false;
+  const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+  const sourceChannel = typeof metadata.source_channel === 'string'
+    ? metadata.source_channel.trim()
+    : '';
+  return !sourceChannel || isNativeFeishuGroupTrigger(message);
 }
 
 /**
@@ -1254,11 +1294,17 @@ export class CatsCompanyBot {
       return;
     }
 
+    // 过滤 bot 自己发出的消息，防止循环。
+    if (this.botUid && normalizeCatsUid(ctx.senderId) === normalizeCatsUid(this.botUid)) return;
+
+    // 群聊激活门控必须发生在 parse 后续的云恢复和 session 创建之前。
+    if (!shouldActivateCatsCompanyMessage(ctx, this.botUid)) {
+      Logger.info(`[CatsCompany] 群消息未命中当前 AI 的结构化 mention，跳过: topic=${ctx.topic}, seq=${ctx.seq || 0}`);
+      return;
+    }
+
     const msg = this.parseMessage(ctx);
     if (!msg) return;
-
-    // 过滤 bot 自己发出的消息，防止循环
-    if (this.botUid && msg.senderId === this.botUid) return;
 
     const key = msg.envelope.sessionKey;
 
@@ -1288,7 +1334,7 @@ export class CatsCompanyBot {
 
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
     const entryClearGeneration = this.getSessionClearGeneration(key);
-    const nativeFeishuTrigger = isNativeFeishuGroupTrigger(msg);
+    const nativeFeishuTrigger = shouldHydrateCatsCompanyGroupContext(msg);
     const sessionRoute = msg.envelope ? createCatsCoSessionRoute(msg.envelope) : undefined;
     let cloudRestoreResult: CloudSessionRestoreResult | undefined;
     if (sessionRoute && !isClearCommand(msg.text)) {
@@ -1416,6 +1462,8 @@ export class CatsCompanyBot {
           chatType: msg.chatType,
           seq: msg.seq,
           metadata: msg.metadata,
+          mentions: msg.mentions,
+          memberCount: msg.memberCount,
         },
         cloudRestoreStatus: cloudRestoreResult?.status,
         clearGeneration: entryClearGeneration,
@@ -1525,9 +1573,20 @@ export class CatsCompanyBot {
     sessionKey: string,
   ): Promise<boolean> {
     const { message: msg, cloudRestoreStatus, clearGeneration } = hydration;
-    if (!isNativeFeishuGroupTrigger(msg)) return true;
+    if (!shouldHydrateCatsCompanyGroupContext(msg)) return true;
     if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return false;
     const cursorKey = 'catscompany.agent_context';
+    const memberCount = Number(msg.memberCount);
+    const sourceChannel = typeof msg.metadata?.source_channel === 'string'
+      ? msg.metadata.source_channel.trim()
+      : '';
+    if (!sourceChannel && Number.isFinite(memberCount) && memberCount > 0 && memberCount <= 2) {
+      session.saveRemoteContextCursor(
+        cursorKey,
+        Math.max(session.getRemoteContextCursor(cursorKey), msg.seq),
+      );
+      return true;
+    }
     if (cloudRestoreStatus === 'restored' || cloudRestoreStatus === 'empty') {
       if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return false;
       session.saveRemoteContextCursor(
@@ -1546,11 +1605,11 @@ export class CatsCompanyBot {
       }
       session.saveRemoteContextCursor(cursorKey, Math.max(previousCursor, msg.seq));
       if (contextMessages.length > 0) {
-        Logger.info(`[${sessionKey}] 已补入 ${contextMessages.length} 条飞书群普通消息上下文`);
+        Logger.info(`[${sessionKey}] 已补入 ${contextMessages.length} 条群聊普通消息上下文`);
       }
       return true;
     } catch (err: any) {
-      Logger.warning(`[${sessionKey}] 飞书群历史上下文恢复失败，继续处理当前消息: ${err?.message || err}`);
+      Logger.warning(`[${sessionKey}] 群聊历史上下文恢复失败，继续处理当前消息: ${err?.message || err}`);
       return clearGeneration === this.getSessionClearGeneration(sessionKey);
     }
   }
@@ -1601,7 +1660,7 @@ export class CatsCompanyBot {
     }
 
     Logger.warning(
-      `[${topic}] 飞书群历史超过 ${NATIVE_FEISHU_CONTEXT_MAX_PAGES * NATIVE_FEISHU_CONTEXT_PAGE_SIZE} 条，`
+      `[${topic}] 群聊历史超过 ${NATIVE_FEISHU_CONTEXT_MAX_PAGES * NATIVE_FEISHU_CONTEXT_PAGE_SIZE} 条，`
       + '仅补入最近一段并推进游标',
     );
     return [...messagesBySeq.values()]
@@ -1891,6 +1950,8 @@ export class CatsCompanyBot {
       senderId: ctx.senderId,
       seq: ctx.seq ?? 0,
       text: messageText,
+      mentions: ctx.mentions,
+      memberCount: ctx.memberCount,
       rawContent: ctx.content,
       metadata: ctx.metadata,
       envelope,

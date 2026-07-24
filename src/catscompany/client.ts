@@ -95,6 +95,8 @@ export interface MessageContext {
   isGroup: boolean;
   from?: string;  // 原始 Cats 发送方字段，供兼容和排查使用
   seq?: number;   // Cats 服务端消息序号，用于排序和补充消息合并
+  mentions?: string[]; // 服务端确认的结构化 @mention 目标
+  memberCount?: number; // 群成员数；用于运行时在创建 session 前兜底门控
 }
 
 export interface CatsAgentContextMessage {
@@ -374,6 +376,14 @@ export class CatsClient extends EventEmitter {
         mode: typeof msg.data.mode === 'string' ? msg.data.mode : undefined,
         isGroup: msg.data.topic?.startsWith('grp_') ?? false,
         seq: Number(msg.data.seq || 0),
+        mentions: Array.isArray(msg.data.mentions)
+          ? msg.data.mentions.filter((value: unknown): value is string => typeof value === 'string')
+          : undefined,
+        memberCount: typeof msg.data.member_count === 'number'
+          && Number.isSafeInteger(msg.data.member_count)
+          && msg.data.member_count > 0
+          ? msg.data.member_count
+          : undefined,
       };
       this.emit('message', ctx);
     } else if (msg.pres) {

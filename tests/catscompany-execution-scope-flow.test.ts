@@ -187,6 +187,31 @@ function createHarness(options: {
 }
 
 describe('CatsCompany execution scope flow', () => {
+  test('drops an unmentioned large-group message before cloud restore or session creation', async () => {
+    const { bot, handledTurns, sessionKeys } = createHarness();
+    let restoreCalls = 0;
+    bot.ensureCloudSessionRestored = async () => {
+      restoreCalls++;
+      return { status: 'local_present', fetched: 0, restored: 0, compressed: false };
+    };
+
+    await bot.onMessage({
+      topic: 'grp_80',
+      senderId: 'usr7',
+      text: '@usr43 只是正文，不是结构化 mention',
+      content: '@usr43 只是正文，不是结构化 mention',
+      metadata: canonicalMetadata('usr7', 'grp_80'),
+      isGroup: true,
+      mentions: [],
+      memberCount: 4,
+      seq: 11,
+    });
+
+    assert.equal(restoreCalls, 0);
+    assert.deepEqual(sessionKeys, []);
+    assert.deepEqual(handledTurns, []);
+  });
+
   test('does not create a blank session when first cloud recovery fails', async () => {
     const { bot, handledTurns, sessionKeys, replies } = createHarness({
       existingSession: false,
@@ -691,6 +716,7 @@ describe('CatsCompany execution scope flow', () => {
       content: '先处理这个任务',
       metadata: canonicalMetadata('usr8', 'grp_80'),
       isGroup: true,
+      memberCount: 2,
       seq: 19,
     });
     await firstTurnStartedPromise;
@@ -850,6 +876,8 @@ describe('CatsCompany execution scope flow', () => {
       content: '@usr43 看一下',
       metadata: canonicalMetadata('usr7', 'grp_80'),
       isGroup: true,
+      mentions: ['usr43'],
+      memberCount: 3,
       seq: 12,
     });
 
@@ -903,6 +931,7 @@ describe('CatsCompany execution scope flow', () => {
         }),
       ]),
       isGroup: true,
+      memberCount: 2,
       seq: 12,
     });
 
