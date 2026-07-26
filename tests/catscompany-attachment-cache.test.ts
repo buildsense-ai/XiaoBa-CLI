@@ -7,6 +7,7 @@ import {
   buildCatsCoAttachmentCachePath,
   cleanupCatsCoAttachmentCache,
   getCatsCoAttachmentCacheRoot,
+  getCatsCoAttachmentCacheSessionRoot,
 } from '../src/catscompany/attachment-cache';
 
 async function withRuntimeRoot<T>(run: (root: string) => T | Promise<T>): Promise<T> {
@@ -33,7 +34,9 @@ describe('CatsCo attachment cache', () => {
   test('builds stable cache paths under the runtime data root', () => {
     return withRuntimeRoot((root) => {
       const filePath = buildCatsCoAttachmentCachePath('cc_group:grp/123', '../image.png', new Date(2026, 6, 3, 1, 2, 3, 4));
+      const sessionRoot = getCatsCoAttachmentCacheSessionRoot('cc_group:grp/123');
 
+      assert.equal(path.dirname(filePath), sessionRoot);
       assert.equal(path.dirname(path.dirname(filePath)), getCatsCoAttachmentCacheRoot());
       assert.ok(filePath.startsWith(path.join(root, 'data', 'attachments', 'catscompany')));
       assert.match(path.basename(filePath), /^20260703_010203_004_[a-f0-9-]{8}_image\.png$/);

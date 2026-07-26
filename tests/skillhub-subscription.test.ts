@@ -308,7 +308,7 @@ describe('SkillHub user subscriptions', () => {
     assert.equal('agentId' in claimed, false);
   });
 
-  test('Tool can browse and owner can subscribe without a confirmation step', async () => {
+  test('Tool can browse and a non-owner CatsCo actor can subscribe without a confirmation step', async () => {
     const calls: string[] = [];
     const tool = new SkillHubTool(
       {
@@ -339,7 +339,7 @@ describe('SkillHub user subscriptions', () => {
     assert.equal(browse.ok, true);
     assert.match(String(browse.ok && browse.content), /alice\/ppt/);
 
-    const subscribed = await tool.execute({ action: 'subscribe', skillId: 'alice/ppt' }, ownerContext());
+    const subscribed = await tool.execute({ action: 'subscribe', skillId: 'alice/ppt' }, catsCoContext('usr9'));
     assert.equal(subscribed.ok, true);
     assert.deepEqual(calls, ['alice/ppt']);
     assert.doesNotMatch(String(subscribed.ok && subscribed.content), /usr43/);
@@ -352,9 +352,10 @@ describe('SkillHub user subscriptions', () => {
     assert.match(tool.definition.description, /一次只调用一个 subscribe\/unsubscribe/);
     assert.match(tool.definition.description, /任一操作失败后停止/);
     assert.match(tool.definition.description, /不要并行或重试/);
+    assert.match(tool.definition.description, /任何明确提出请求的用户/);
   });
 
-  test('Tool rejects subscription mutations from a non-owner CatsCo actor', async () => {
+  test('Tool allows a non-owner CatsCo actor to unsubscribe', async () => {
     let called = false;
     const tool = new SkillHubTool(
       { search: async () => ({ skills: [] }) },
@@ -370,10 +371,41 @@ describe('SkillHub user subscriptions', () => {
         },
       },
     );
-    const context = ownerContext();
-    context.executionScope = { ...context.executionScope!, actorUserId: 'usr9' };
+    const result = await tool.execute(
+      { action: 'unsubscribe', skillId: 'alice/ppt' },
+      catsCoContext('usr9'),
+    );
 
-    const result = await tool.execute({ action: 'unsubscribe', skillId: 'alice/ppt' }, context);
+    assert.equal(result.ok, true);
+    assert.equal(called, true);
+  });
+
+  test('Tool rejects Skill mutations from an untrusted CatsCo actor', async () => {
+    let called = false;
+    const tool = mutationTrackingTool(() => {
+      called = true;
+    });
+
+    const result = await tool.execute(
+      { action: 'subscribe', skillId: 'alice/ppt' },
+      catsCoContext('usr9', 'untrusted'),
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.equal(called, false);
+  });
+
+  test('Tool rejects Skill mutations from a legacy CatsCo context', async () => {
+    let called = false;
+    const tool = mutationTrackingTool(() => {
+      called = true;
+    });
+
+    const result = await tool.execute(
+      { action: 'unsubscribe', skillId: 'alice/ppt' },
+      catsCoContext('usr9', 'legacy_context'),
+    );
 
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.errorCode, 'PERMISSION_DENIED');
@@ -477,17 +509,37 @@ function baseContext(): ToolExecutionContext {
   return { workingDirectory: testCwd(), conversationHistory: [] };
 }
 
-function ownerContext(): ToolExecutionContext {
+function mutationTrackingTool(onMutation: () => void): SkillHubTool {
+  return new SkillHubTool(
+    { search: async () => ({ skills: [] }) },
+    {
+      list: async () => ({ scope: 'runtime', subscriptions: [] }),
+      subscribe: async skillId => {
+        onMutation();
+        return { scope: 'runtime', action: 'installed', subscription: subscription(skillId, 'ppt', '1.0.0') };
+      },
+      unsubscribe: async skillId => {
+        onMutation();
+        return { scope: 'runtime', skillId, removed: true, subscriptionFound: true };
+      },
+    },
+  );
+}
+
+function catsCoContext(
+  actorUserId = 'usr7',
+  identityTrust: ExecutionScope['identityTrust'] = 'server_canonical',
+): ToolExecutionContext {
   const scope: ExecutionScope = {
     source: 'catscompany',
     sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
     topicId: 'p2p_7_43',
     topicType: 'p2p',
-    actorUserId: 'usr7',
+    actorUserId,
     agentId: 'usr43',
     agentBodyId: 'body-main',
-    identityTrust: 'server_canonical',
-    isTrusted: true,
+    identityTrust,
+    isTrusted: identityTrust === 'server_canonical',
   };
   const localDeviceGrant: ScopedLocalDeviceGrant = {
     kind: 'catscompany_body',

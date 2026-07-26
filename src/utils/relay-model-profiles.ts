@@ -18,7 +18,7 @@ export const RELAY_MODEL_SDK_LABELS: Record<RelayModelProvider, string> = {
 
 export interface RelayModelCapabilities {
   toolCalling: boolean;
-  vision: boolean;
+  vision?: boolean;
   streaming: boolean;
 }
 
@@ -31,9 +31,13 @@ export interface RelayModelProfile {
   preferredProvider: RelayModelProvider;
   openaiApiMode?: 'chat_completions' | 'responses';
   contextWindowTokens: number;
+  modelsDevProvider: string;
+  modelsDevModel: string;
   capabilities: RelayModelCapabilities;
 }
 
+// Vision capabilities mirror the first-party provider entries in models.dev.
+// Relay input modalities may override them at runtime.
 export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
   {
     id: 'minimax-m2.7',
@@ -43,6 +47,8 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     quotaClass: 'standard',
     preferredProvider: 'anthropic',
     contextWindowTokens: 204_800,
+    modelsDevProvider: 'minimax',
+    modelsDevModel: 'MiniMax-M2.7',
     capabilities: {
       toolCalling: true,
       vision: false,
@@ -57,6 +63,8 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     quotaClass: 'multimodal',
     preferredProvider: 'anthropic',
     contextWindowTokens: 1_000_000,
+    modelsDevProvider: 'minimax',
+    modelsDevModel: 'MiniMax-M3',
     capabilities: {
       toolCalling: true,
       vision: true,
@@ -71,6 +79,8 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     quotaClass: 'flash-low',
     preferredProvider: 'anthropic',
     contextWindowTokens: 1_000_000,
+    modelsDevProvider: 'deepseek',
+    modelsDevModel: 'deepseek-v4-flash',
     capabilities: {
       toolCalling: true,
       vision: false,
@@ -86,9 +96,11 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     preferredProvider: 'openai' as const,
     openaiApiMode: 'responses' as const,
     contextWindowTokens: 1_000_000,
+    modelsDevProvider: 'openai',
+    modelsDevModel: `gpt-5.6-${variant}`,
     capabilities: {
       toolCalling: true,
-      vision: false,
+      vision: true,
       streaming: true,
     },
   })),

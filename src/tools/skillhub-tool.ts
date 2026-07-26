@@ -2,10 +2,7 @@ import type { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } 
 import { SkillHubService } from '../skillhub/service';
 import { SkillHubSubscriptionService } from '../skillhub/subscription-service';
 import type { SkillHubSearchResponse } from '../skillhub/types';
-import {
-  isCatsCoLocalOwnerSelfContext,
-  isCatsCoToolGatewayContext,
-} from './tool-gateway';
+import { isCatsCoToolGatewayContext } from './tool-gateway';
 
 export interface SkillHubCatalogGateway {
   search(query?: string, options?: { category?: string }): Promise<SkillHubSearchResponse & { installed?: unknown[] }>;
@@ -30,7 +27,7 @@ export class SkillHubTool implements Tool {
       'browse/search 用于查看可用 Skill；list_subscriptions 查看当前运行环境已添加的 Skill。',
       '只有当用户在当前请求中明确要求订阅、安装、取消订阅或删除时，才能调用 subscribe/unsubscribe。',
       'subscribe 总是获取 latest：未安装时安装，已有同一 Skill 时更新或保持最新；同名异源会安全拒绝。',
-      '在虚拟员工中，subscribe/unsubscribe 只表示为当前员工添加或删除 Skill，不需要 SkillHub 登录。',
+      '在虚拟员工中，任何明确提出请求的用户都可以通过 subscribe/unsubscribe 为当前员工添加或删除 Skill，不需要 SkillHub 登录。',
       '一次只调用一个 subscribe/unsubscribe；多个 Skill 必须串行处理，任一操作失败后停止，不要并行或重试。',
       'unsubscribe 只删除带有匹配 SkillHub 安装标记的本地 Skill。不要把发布者删除版本的请求交给本工具。',
     ].join('\n'),
@@ -133,11 +130,19 @@ export class SkillHubTool implements Tool {
 }
 
 function mutationDenied(context: ToolExecutionContext): ToolExecutionResult | undefined {
-  if (!isCatsCoToolGatewayContext(context) || isCatsCoLocalOwnerSelfContext(context)) return undefined;
+  if (!isCatsCoToolGatewayContext(context)) return undefined;
+  const scope = context.executionScope;
+  if (
+    scope?.source === 'catscompany'
+    && scope.identityTrust === 'server_canonical'
+    && scope.isTrusted
+  ) {
+    return undefined;
+  }
   return {
     ok: false,
     errorCode: 'PERMISSION_DENIED',
-    message: '只有当前 Agent 的所有者可以添加或删除 Skill。',
+    message: '当前消息身份未经服务端确认，不能添加或删除 Skill。',
   };
 }
 
