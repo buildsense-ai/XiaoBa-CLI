@@ -99,6 +99,8 @@ export class DistillationHeartbeatScheduler {
    * A normal scheduled interval resets the counter to zero.
    */
   private consecutiveImmediateReschedules = 0;
+  /** Prevent an overdue operational retry from starving session discovery. */
+  private consecutiveOperationalRetries = 0;
 
   /**
    * Production constructor: delegates all wake logic to RuntimeLearning.
@@ -392,6 +394,17 @@ export class DistillationHeartbeatScheduler {
           if (deadlineDelta === 0) {
             isImmediateReschedule = true;
           }
+          if (wakeReason === 'operational-retry') {
+            this.consecutiveOperationalRetries += 1;
+            if (this.consecutiveOperationalRetries >= 3) {
+              wakeReason = 'scheduled';
+              nextDelay = intervalDelay;
+              isImmediateReschedule = false;
+              this.consecutiveOperationalRetries = 0;
+            }
+          } else {
+            this.consecutiveOperationalRetries = 0;
+          }
         } else {
           nextDelay = intervalDelay;
           wakeReason = 'scheduled';
@@ -399,6 +412,7 @@ export class DistillationHeartbeatScheduler {
       } else {
         nextDelay = intervalDelay;
         wakeReason = 'scheduled';
+        this.consecutiveOperationalRetries = 0;
       }
     } catch (error: any) {
       Logger.warning(
