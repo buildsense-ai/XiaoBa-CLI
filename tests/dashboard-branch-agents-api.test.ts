@@ -39,7 +39,9 @@ describe('Dashboard Branch agent API', () => {
     };
     const app = express();
     app.use(express.json());
-    app.use('/api', createApiRouter(serviceManager as any));
+    app.use('/api', createApiRouter(serviceManager as any, undefined, {
+      modelsDevFetch: (async () => new Response('', { status: 503 })) as typeof fetch,
+    }));
     server = await new Promise<Server>(resolve => {
       const next = app.listen(0, '127.0.0.1', () => resolve(next));
     });

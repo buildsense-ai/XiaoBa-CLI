@@ -3,6 +3,7 @@ import * as path from 'path';
 import { PathResolver } from './path-resolver';
 
 export const DEFAULT_PROMPTS_DIR = path.join(__dirname, '../../prompts');
+export const SYSTEM_PROMPT_RELATIVE_PATH = 'system-prompt.md';
 
 export function getPromptBaseDir(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = (env.XIAOBA_PROMPTS_DIR || env.CATSCO_PROMPTS_DIR || '').trim();
@@ -10,6 +11,10 @@ export function getPromptBaseDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 export function getPromptOverridesDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (hasBoundBotIdentity(env)) {
+    const runtimeRoot = (env.XIAOBA_RUNTIME_ROOT || '').trim();
+    return runtimeRoot ? path.resolve(runtimeRoot, 'prompt-overrides') : PathResolver.getPromptOverridesPath();
+  }
   if (/^(1|true|yes|on)$/i.test(String(env.XIAOBA_DISABLE_PROMPT_OVERRIDES || '').trim())) {
     return undefined;
   }
@@ -77,9 +82,11 @@ export function resolvePromptPathWithin(rootDir: string, relativePath: string): 
 
 export function resolvePromptOverrideFilePath(promptsDir: string, relativePath: string): string | undefined {
   if (!shouldUsePromptOverrides(promptsDir)) return undefined;
+  const normalized = normalizePromptRelativePath(relativePath);
+  if (normalized !== SYSTEM_PROMPT_RELATIVE_PATH && hasBoundBotIdentity()) return undefined;
   const overridesDir = getPromptOverridesDir();
   if (overridesDir && !isSafePromptOverridesDir(promptsDir, overridesDir)) return undefined;
-  return overridesDir ? resolvePromptPathWithin(overridesDir, relativePath) : undefined;
+  return overridesDir ? resolvePromptPathWithin(overridesDir, normalized) : undefined;
 }
 
 export function readPromptFile(promptsDir: string, relativePath: string): string {
@@ -112,6 +119,35 @@ export function readDefaultPromptFile(relativePath: string): string {
 
 export function readRequiredDefaultPromptFile(relativePath: string): string {
   return readRequiredPromptFile(getPromptBaseDir(), relativePath);
+}
+
+/**
+ * Reads a prompt shipped with the current XiaoBa installation. Unlike the
+ * generic prompt readers, this deliberately ignores prompt directories and
+ * overrides supplied by the user.
+ */
+export function readRequiredBundledPromptFile(
+  relativePath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const normalized = normalizePromptRelativePath(relativePath);
+  const promptsDir = getBundledPromptsDir(env);
+  const filePath = resolvePromptPathWithin(promptsDir, normalized);
+  try {
+    const text = normalizePromptText(fs.readFileSync(filePath, 'utf-8'));
+    if (!text) throw new Error(`Bundled prompt file is empty: ${normalized}`);
+    return text;
+  } catch (error: any) {
+    if (error?.message?.startsWith('Bundled prompt file is empty:')) throw error;
+    throw new Error(`Bundled prompt file is missing or unreadable: ${normalized}`);
+  }
+}
+
+export function getBundledPromptsDir(env: NodeJS.ProcessEnv = process.env): string {
+  const appRoot = String(env.XIAOBA_APP_ROOT || '').trim();
+  return appRoot
+    ? path.resolve(appRoot, 'prompts')
+    : path.resolve(DEFAULT_PROMPTS_DIR);
 }
 
 export function readDefaultPromptLines(relativePath: string): string[] {
@@ -174,6 +210,10 @@ function shouldUsePromptOverrides(promptsDir: string): boolean {
   if (!overridesDir) return false;
   const resolved = path.resolve(promptsDir);
   return resolved === path.resolve(getPromptBaseDir()) || resolved === path.resolve(DEFAULT_PROMPTS_DIR);
+}
+
+function hasBoundBotIdentity(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(String(env.CATSCO_BOT_UID || env.CATSCOMPANY_BOT_UID || '').trim());
 }
 
 function canonicalPath(value: string): string {

@@ -34,13 +34,17 @@ export function buildCatsCoAttachmentCachePath(
   fileName: string,
   now = new Date(),
 ): string {
-  const sessionSegment = sanitizePathSegment(sessionKey || 'unknown-session');
-  const dir = path.join(getCatsCoAttachmentCacheRoot(), sessionSegment);
+  const dir = getCatsCoAttachmentCacheSessionRoot(sessionKey);
 
   const safeName = sanitizeFileName(fileName || 'attachment');
   const stamp = formatTimestamp(now);
   const nonce = randomUUID().slice(0, 8);
   return path.join(dir, `${stamp}_${nonce}_${safeName}`);
+}
+
+export function getCatsCoAttachmentCacheSessionRoot(sessionKey: string | undefined): string {
+  const sessionSegment = sanitizePathSegment(sessionKey || 'unknown-session');
+  return path.join(getCatsCoAttachmentCacheRoot(), sessionSegment);
 }
 
 export function isInsideCatsCoAttachmentCacheRoot(filePath: string): boolean {

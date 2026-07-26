@@ -41,6 +41,10 @@ export interface ParsedCatsMessage {
   text: string;
   /** 原始 content（可能是 string 或 RichContent） */
   rawContent: unknown;
+  /** 服务端确认的结构化 @mention 目标 */
+  mentions?: string[];
+  /** 群成员数；用于运行时 session 前门控 */
+  memberCount?: number;
   /** 原始 metadata，由 CatsCo 服务端透传/注入 */
   metadata?: Record<string, unknown>;
   /** 标准化后的消息信封 */

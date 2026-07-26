@@ -3,12 +3,15 @@ import * as path from 'path';
 import { PromptManager } from './prompt-manager';
 import {
   assertSafePromptOverridesDir,
+  getBundledPromptsDir,
   getPromptOverridesDir,
   isSafePromptOverridesDir,
   normalizePromptRelativePath,
   normalizePromptText,
+  readRequiredBundledPromptFile,
   readPromptFile,
   resolvePromptPathWithin,
+  SYSTEM_PROMPT_RELATIVE_PATH,
 } from './prompt-template';
 import { buildPromptTraceSnapshot, hashText } from './prompt-observability';
 import { BRANCH_AGENTS_ENABLED_ENV } from '../core/branch-agent-settings';
@@ -60,7 +63,7 @@ export async function getPromptEditorState(): Promise<PromptEditorState> {
   const writable = Boolean(overridesDir && isSafePromptOverridesDir(baseDir, overridesDir));
 
   return {
-    base_dir: labelLocalPath(baseDir),
+    base_dir: labelLocalPath(getBundledPromptsDir()),
     overrides_dir: overridesDir ? labelLocalPath(overridesDir) : undefined,
     writable,
     trace: buildPromptTraceSnapshot({
@@ -84,8 +87,7 @@ export function getPromptBranchAgentsState(): PromptBranchAgentsState {
 export function getPromptEditorFile(relativePath: string): PromptEditorFileDetail {
   const normalized = normalizeEditablePromptPath(relativePath);
   const baseDir = PromptManager.getPromptsDir();
-  const basePath = resolvePromptPathWithin(baseDir, normalized);
-  const baseContent = normalizePromptText(fs.readFileSync(basePath, 'utf-8'));
+  const baseContent = readRequiredBundledPromptFile(normalized);
   const content = readPromptFile(baseDir, normalized);
   const file = buildPromptEditorFile(normalized, baseContent, content);
   return {
@@ -130,9 +132,8 @@ export function deletePromptOverride(relativePath: string): PromptEditorFileDeta
 
 function listPromptEditorFiles(): PromptEditorFile[] {
   const baseDir = PromptManager.getPromptsDir();
-  return listBasePromptPaths(baseDir).map(relativePath => {
-    const basePath = resolvePromptPathWithin(baseDir, relativePath);
-    const baseContent = normalizePromptText(fs.readFileSync(basePath, 'utf-8'));
+  return [SYSTEM_PROMPT_RELATIVE_PATH].map(relativePath => {
+    const baseContent = readRequiredBundledPromptFile(relativePath);
     const effectiveContent = readPromptFile(baseDir, relativePath);
     return buildPromptEditorFile(relativePath, baseContent, effectiveContent);
   });
@@ -143,7 +144,7 @@ function buildPromptEditorFile(relativePath: string, baseContent: string, effect
   const effectiveHash = hashText(effectiveContent);
   return {
     path: relativePath,
-    overridden: baseHash !== effectiveHash || promptOverrideExists(relativePath),
+    overridden: baseHash !== effectiveHash,
     base: textDigest(baseContent),
     effective: textDigest(effectiveContent),
   };
@@ -161,29 +162,10 @@ function textDigest(text: string): PromptEditorFile['effective'] {
 
 function normalizeEditablePromptPath(relativePath: string): string {
   const normalized = normalizePromptRelativePath(relativePath);
-  const available = new Set(listBasePromptPaths(PromptManager.getPromptsDir()));
-  if (!available.has(normalized)) {
+  if (normalized !== SYSTEM_PROMPT_RELATIVE_PATH) {
     throw new Error(`Prompt file is not editable: ${relativePath}`);
   }
   return normalized;
-}
-
-function listBasePromptPaths(baseDir: string): string[] {
-  const root = path.resolve(baseDir);
-  if (!fs.existsSync(root)) return [];
-  const results: string[] = [];
-  walk(root, filePath => {
-    if (path.extname(filePath).toLowerCase() !== '.md') return;
-    results.push(path.relative(root, filePath).split(path.sep).join('/'));
-  });
-  return results.sort((a, b) => a.localeCompare(b));
-}
-
-function promptOverrideExists(relativePath: string): boolean {
-  const overridesDir = getPromptOverridesDir();
-  if (!overridesDir) return false;
-  if (!isSafePromptOverridesDir(PromptManager.getPromptsDir(), overridesDir)) return false;
-  return fs.existsSync(resolvePromptPathWithin(overridesDir, relativePath));
 }
 
 function pruneEmptyPromptDirs(startDir: string, rootDir: string): void {
@@ -196,17 +178,6 @@ function pruneEmptyPromptDirs(startDir: string, rootDir: string): void {
       return;
     }
     current = path.dirname(current);
-  }
-}
-
-function walk(directory: string, visit: (filePath: string) => void): void {
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    const filePath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      walk(filePath, visit);
-    } else if (entry.isFile()) {
-      visit(filePath);
-    }
   }
 }
 

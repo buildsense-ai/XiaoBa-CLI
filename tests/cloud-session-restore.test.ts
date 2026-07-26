@@ -400,6 +400,96 @@ test('summary failure still bounds a single oversized history message', async ()
   assert.match(String(restored[1]?.content), /已截断/);
 });
 
+test('summary timeout persists the bounded fallback instead of failing every retry', async () => {
+  const store = new MemorySessionStore();
+  const client = new FakeHistoryClient([
+    page([contextMessage({ content: 'x'.repeat(400_000) })]),
+  ]);
+  const timedOutAIService = {
+    chatStream: async (
+      _messages: Message[],
+      _tools: unknown,
+      _callbacks: unknown,
+      options: { signal?: AbortSignal } = {},
+    ) => await new Promise((_resolve, reject) => {
+      const signal = options.signal;
+      if (!signal) {
+        reject(new Error('missing summary timeout signal'));
+        return;
+      }
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+  } as any;
+  const restorer = new CatsCompanyCloudSessionRestorer(client, timedOutAIService, store);
+
+  const result = await restorer.restoreIfMissing({
+    sessionKey: 'summary-timeout-session',
+    topicId: 'p2p_7_42',
+    topicType: 'p2p',
+    agentId: 'usr42',
+    currentSeq: 2,
+    signal: AbortSignal.timeout(10),
+  });
+
+  assert.equal(result.status, 'restored');
+  assert.equal(result.compressed, true);
+  assert.equal(store.saveCalls, 1);
+  const restored = store.sessions.get('summary-timeout-session') || [];
+  assert.ok(estimateMessagesTokens(restored) <= 60_000);
+  assert.match(String(restored[0]?.content), /设备恢复提示/);
+});
+
+test('explicit cancellation during summary still prevents stale history persistence', async () => {
+  const store = new MemorySessionStore();
+  const client = new FakeHistoryClient([
+    page([contextMessage({ content: 'x'.repeat(400_000) })]),
+  ]);
+  let summaryStarted!: () => void;
+  const summaryStartedPromise = new Promise<void>(resolve => { summaryStarted = resolve; });
+  const cancelledAIService = {
+    chatStream: async (
+      _messages: Message[],
+      _tools: unknown,
+      _callbacks: unknown,
+      options: { signal?: AbortSignal } = {},
+    ) => await new Promise((_resolve, reject) => {
+      summaryStarted();
+      const signal = options.signal;
+      if (!signal) {
+        reject(new Error('missing cancellation signal'));
+        return;
+      }
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+  } as any;
+  const controller = new AbortController();
+  const restorer = new CatsCompanyCloudSessionRestorer(client, cancelledAIService, store);
+
+  const restoring = restorer.restoreIfMissing({
+    sessionKey: 'summary-cancelled-session',
+    topicId: 'p2p_7_42',
+    topicType: 'p2p',
+    agentId: 'usr42',
+    currentSeq: 2,
+    signal: controller.signal,
+  });
+  await summaryStartedPromise;
+  controller.abort();
+  const result = await restoring;
+
+  assert.equal(result.status, 'failed');
+  assert.equal(store.hasSession('summary-cancelled-session'), false);
+  assert.equal(store.saveCalls, 0);
+});
+
 test('history failure leaves the local session untouched for a later retry', async () => {
   const store = new MemorySessionStore();
   const client = new FakeHistoryClient(new Error('offline'));

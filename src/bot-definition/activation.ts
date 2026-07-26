@@ -1,5 +1,8 @@
 import { createCatsCoLocalConfigService, type CatsCoAuthSnapshot } from '../catscompany/local-config';
-import { provisionCatsRelayCatalogRuntime } from '../catscompany/relay-model-bootstrap';
+import {
+  provisionCatsRelayCatalogRuntime,
+  refreshCatsRelayCatalogRuntimeCapabilities,
+} from '../catscompany/relay-model-bootstrap';
 import { DEFAULT_CATSCO_RELAY_MODEL_ID } from '../utils/relay-model-profiles';
 import { Logger } from '../utils/logger';
 import {
@@ -8,6 +11,7 @@ import {
   type BotDefinitionSyncServiceOptions,
 } from './service';
 import type { BotCatalogModelRuntime, BotDefinition, BotDefinitionSyncResult } from './types';
+import { getPromptReconcileCoordinator } from './prompt-sync';
 import {
   acknowledgeCloudBotModelSelection,
   pullCloudBotModelSelection,
@@ -249,10 +253,27 @@ export async function prepareBoundBotDefinition(
       if (activeCloudOverride) definitionService.storeCloudCatalogRuntime(materialized);
       else definitionService.storeCatalogRuntime(materialized);
       materializedCatalogRuntime = true;
+    } else if (catalogCapabilitiesNeedRefresh(runtime)) {
+      const refreshed = await refreshCatsRelayCatalogRuntimeCapabilities(runtime, options.fetchImpl ?? fetch);
+      if (refreshed !== runtime) {
+        if (activeCloudOverride) definitionService.storeCloudCatalogRuntime(refreshed);
+        else definitionService.storeCatalogRuntime(refreshed);
+      }
     }
   }
 
   definitionService.clearLegacyModelConfigurationWhenReady(definition);
+  if (!definitionService.read(botId)) {
+    definitionService.publish(botId, {
+      kind: 'catalog',
+      modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
+    });
+  }
+  await getPromptReconcileCoordinator({
+    runtimeRoot: options.runtimeRoot,
+    env: options.env,
+    definitionService,
+  }).activateBot(botId);
   return {
     botId,
     definition,
@@ -263,6 +284,12 @@ export async function prepareBoundBotDefinition(
     ...(cloudApplyError ? { cloudApplyError } : {}),
     ...(cloudSelectionApplied && cloudSelection ? { cloudRevision: cloudSelection.revision } : {}),
   };
+}
+
+function catalogCapabilitiesNeedRefresh(runtime: BotCatalogModelRuntime): boolean {
+  if (!['relay-models', 'models-dev'].includes(runtime.capabilitiesSource || '') || !runtime.capabilitiesCheckedAt) return true;
+  const checkedAt = Date.parse(runtime.capabilitiesCheckedAt);
+  return !Number.isFinite(checkedAt) || Date.now() - checkedAt >= 24 * 60 * 60 * 1000;
 }
 
 function errorMessage(error: unknown): string {

@@ -6,6 +6,7 @@ import * as path from 'path';
 import { AgentSession } from '../src/core/agent-session';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../src/core/runtime-context-builder';
+import { getCatsCoAttachmentCacheSessionRoot } from '../src/catscompany/attachment-cache';
 import { createDeviceGrant, createUserDevice } from '../src/core/device-grants';
 import { createExecutionScopeFromRoute, createSessionRoute } from '../src/core/session-router';
 import type { Message } from '../src/types';
@@ -70,6 +71,8 @@ describe('runtime context builder', () => {
     const runtimeText = String(result.messages[runtimeIndex].content || '');
     assert.match(runtimeText, /^\[transient_runtime_context\]/);
     assert.match(runtimeText, /\[\/transient_runtime_context\]$/);
+    assert.ok(runtimeText.includes(`当前会话附件缓存目录（XiaoBa 本地运行体）：${getCatsCoAttachmentCacheSessionRoot(route.sessionKey)}`));
+    assert.match(runtimeText, /用不带 target 的 glob 查看该目录/);
     assert.match(runtimeText, /默认不要传 target/);
     assert.match(runtimeText, /你的电脑\/XiaoBa 的电脑\/bot 的电脑/);
     assert.doesNotMatch(runtimeText, /可在用户电脑执行的工具/);

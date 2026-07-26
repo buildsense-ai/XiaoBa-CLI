@@ -73,6 +73,9 @@ describe('BotDefinition activation', () => {
       if (url.pathname === '/api/relay/key') {
         return Response.json({ key: { state: 'active', key: 'sk-bravo-relay-material' } });
       }
+      if (url.pathname === '/v1/models') {
+        return Response.json({ data: [{ id: 'MiniMax-M3', capabilities: { vision: true } }] });
+      }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
 
@@ -96,6 +99,8 @@ describe('BotDefinition activation', () => {
       'GET /api/bot/model-config',
       'GET /api/relay/config',
       'GET /api/relay/key',
+      'GET /api.json',
+      'GET /v1/models',
     ]);
   });
 
@@ -205,6 +210,11 @@ describe('BotDefinition activation', () => {
       if (url.pathname === '/api/relay/key') {
         return Response.json({ key: { state: 'active', key: 'sk-cloud-gpt56' } });
       }
+      if (url.pathname === '/v1/models') {
+        return Response.json({
+          data: [{ id: 'gpt-5.6-terra', capabilities: { vision: true, tool_calling: true, streaming: true } }],
+        });
+      }
       if (url.pathname === '/api/bot/model-config/ack') {
         ackBody = JSON.parse(String(init?.body));
         return Response.json({ status: 'applied' });
@@ -220,6 +230,8 @@ describe('BotDefinition activation', () => {
     assert.equal(runtime?.openaiApiMode, 'responses');
     assert.equal(runtime?.model, 'gpt-5.6-terra');
     assert.equal(runtime?.reasoningEffort, 'xhigh');
+    assert.equal(runtime?.capabilities?.vision, true);
+    assert.equal(runtime?.capabilitiesSource, 'relay-models');
     assert.deepStrictEqual(ackBody, {
       revision: 5,
       model_id: 'gpt-5.6-terra',
@@ -547,8 +559,14 @@ describe('BotDefinition activation', () => {
 
     assert.equal(cloudPrepared?.cloudRevision, 11);
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'cloud-model');
-    assert.deepStrictEqual(definitions.readCanonical('43'), localDefinition);
-    assert.deepStrictEqual(definitions.readCache('43'), localDefinition);
+    assert.deepStrictEqual(definitions.readCanonical('43'), {
+      ...localDefinition,
+      prompt: { selected: 'default' },
+    });
+    assert.deepStrictEqual(definitions.readCache('43'), {
+      ...localDefinition,
+      prompt: { selected: 'default' },
+    });
     assert.deepStrictEqual(new FileBotCustomModelProfileRepository({ runtimeRoot }).read('43')?.model, localModel);
     assert.equal(new FileBotCloudModelOverrideRepository({ runtimeRoot }).read('43')?.model.kind, 'custom');
 
@@ -572,7 +590,10 @@ describe('BotDefinition activation', () => {
     assert.equal(localPrepared?.cloudRevision, 12);
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'local-model');
     assert.equal(new FileBotCloudModelOverrideRepository({ runtimeRoot }).read('43'), undefined);
-    assert.deepStrictEqual(definitions.readCanonical('43'), localDefinition);
+    assert.deepStrictEqual(definitions.readCanonical('43'), {
+      ...localDefinition,
+      prompt: { selected: 'default' },
+    });
     assert.deepStrictEqual(new FileBotCustomModelProfileRepository({ runtimeRoot }).read('43')?.model, localModel);
   });
 

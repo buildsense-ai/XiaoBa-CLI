@@ -55,7 +55,12 @@ export async function catscompanyCommand(): Promise<void> {
     Logger.info(`CatsCo bot ${preparedBot.botId} 已在当前设备准备 ${preparedBot.definition.model.kind === 'catalog' ? preparedBot.definition.model.modelId : '模型'} 的运行材料。`);
   }
   const config = ConfigManager.getConfig();
-  const resolved = resolveCatsCoCommandConfig(config);
+  const resolvedRuntime = resolveCatsCoRuntimeConfig({ runtimeRoot, env: process.env, config });
+  Object.assign(process.env, resolvedRuntime.envOverlay);
+  const resolved: CatsCoCommandConfigResolution = {
+    missing: resolvedRuntime.missing,
+    config: resolvedRuntime.connector,
+  };
 
   const connectorConfig = resolved.config;
   if (!connectorConfig) {
