@@ -5821,9 +5821,9 @@
       return promptForDashboardApiKey(message);
     }
     function withDashboardApiKey(input, init){
-      if(!isDashboardApiUrl(input))return { input, init };
+      if(!isDashboardApiUrl(input))return { input, init, dashboardApiKey:'' };
       const key = getDashboardStoredApiKey();
-      if(!key)return { input, init };
+      if(!key)return { input, init, dashboardApiKey:'' };
       const nextInit = Object.assign({}, init || {});
       const sourceHeaders = nextInit.headers || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : {});
       const headers = new Headers(sourceHeaders || {});
@@ -5831,7 +5831,7 @@
         headers.set('X-API-Key', key);
       }
       nextInit.headers = headers;
-      return { input, init: nextInit };
+      return { input, init: nextInit, dashboardApiKey:key };
     }
     async function isDashboardAuthFailure(response){
       if(response.status !== 401 && response.status !== 403 && response.status !== 429)return false;
@@ -5862,8 +5862,10 @@
         if(response.status === 429){
           return response;
         }
-        setDashboardStoredApiKey('');
-        const key = await promptForDashboardApiKey('Dashboard API Key 无效或缺失，请重新输入');
+        if(getDashboardStoredApiKey() === request.dashboardApiKey){
+          setDashboardStoredApiKey('');
+        }
+        const key = await ensureDashboardApiKey('Dashboard API Key 无效或缺失，请重新输入');
         if(key){
           request = withDashboardApiKey(retryInput, init);
           response = await nativeFetch(request.input, request.init);
