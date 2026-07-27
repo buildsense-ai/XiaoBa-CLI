@@ -34,6 +34,12 @@ test('relay catalog models resolve to their official context windows', () => {
     model: 'deepseek-v4-flash',
     provider: 'anthropic',
   }, { CATSCO_MODEL_SOURCE: 'relay' } as NodeJS.ProcessEnv).contextWindowTokens, 1_000_000);
+
+  assert.equal(resolveModelContextWindow({
+    apiUrl: 'https://relay.catsco.cc/v1',
+    model: 'gpt-5.6-sol',
+    provider: 'openai',
+  }, { CATSCO_MODEL_SOURCE: 'relay' } as NodeJS.ProcessEnv).contextWindowTokens, 256_000);
 });
 
 test('custom models keep the safe default even if the model name resembles a known relay model', () => {
@@ -47,6 +53,20 @@ test('custom models keep the safe default even if the model name resembles a kno
   assert.equal(resolved.contextWindowTokens, CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS);
   assert.equal(resolved.summaryBudgetTokens, 50_000);
   assert.ok(resolved.promptBudgetTokens < CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS);
+});
+
+test('an explicit custom GPT-5.6 window is not clamped to the relay catalog window', () => {
+  const resolved = resolveModelContextWindow({
+    apiUrl: 'https://relay.catsco.cc/v1',
+    model: 'gpt-5.6-sol',
+    provider: 'openai',
+  }, {
+    CATSCO_MODEL_SOURCE: 'custom',
+    GAUZ_LLM_CONTEXT_WINDOW_TOKENS: '1000000',
+  } as NodeJS.ProcessEnv);
+
+  assert.equal(resolved.source, 'explicit');
+  assert.equal(resolved.contextWindowTokens, 1_000_000);
 });
 
 test('explicit context window override still keeps a safety reserve', () => {

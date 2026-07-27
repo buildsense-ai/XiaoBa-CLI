@@ -95,7 +95,7 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     quotaClass: 'gpt-5.6',
     preferredProvider: 'openai' as const,
     openaiApiMode: 'responses' as const,
-    contextWindowTokens: 1_000_000,
+    contextWindowTokens: 256_000,
     modelsDevProvider: 'openai',
     modelsDevModel: `gpt-5.6-${variant}`,
     capabilities: {
