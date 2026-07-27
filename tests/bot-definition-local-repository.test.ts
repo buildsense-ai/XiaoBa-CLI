@@ -121,6 +121,35 @@ describe('BotDefinition local simulation', () => {
     assert.deepStrictEqual(repository.readCache('bot-alpha'), result?.definition);
   });
 
+  test('keeps an explicit 1M window for a local custom GPT-5.6 model', () => {
+    bindCurrentBot();
+    const env = {
+      CATSCO_MODEL_SOURCE: 'custom',
+      CATSCO_CUSTOM_LLM_PROVIDER: 'openai',
+      CATSCO_CUSTOM_LLM_API_BASE: 'https://relay.catsco.cc/v1',
+      CATSCO_CUSTOM_LLM_MODEL: 'gpt-5.6-sol',
+      CATSCO_CUSTOM_LLM_API_KEY: 'sk-custom-gpt56',
+      CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS: '1000000',
+      CATSCO_CUSTOM_LLM_OPENAI_API_MODE: 'responses',
+    } as NodeJS.ProcessEnv;
+
+    const result = createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot, env })
+      .publishCurrentBoundBot();
+
+    assert.deepStrictEqual(result?.definition.model, {
+      kind: 'custom',
+      protocol: 'openai-responses',
+      apiBase: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-sol',
+      apiKey: 'sk-custom-gpt56',
+      contextWindowTokens: 1_000_000,
+    });
+    assert.equal(
+      resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.contextWindowTokens,
+      1_000_000,
+    );
+  });
+
   test('pull uses canonical data over stale cache and does not overwrite canonical data', () => {
     const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
     const canonical: BotDefinition = {
