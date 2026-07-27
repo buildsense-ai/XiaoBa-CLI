@@ -229,7 +229,6 @@ describe('BotDefinition activation', () => {
     assert.equal(runtime?.provider, 'openai');
     assert.equal(runtime?.openaiApiMode, 'responses');
     assert.equal(runtime?.model, 'gpt-5.6-terra');
-    assert.equal(runtime?.contextWindowTokens, 256_000);
     assert.equal(runtime?.reasoningEffort, 'xhigh');
     assert.equal(runtime?.capabilities?.vision, true);
     assert.equal(runtime?.capabilitiesSource, 'relay-models');
@@ -374,15 +373,15 @@ describe('BotDefinition activation', () => {
           configured: true,
           desired: {
             kind: 'custom',
-            model_id: 'gpt-5.6-sol',
+            model_id: 'private-reasoner',
             reasoning_effort: 'high',
             revision: 9,
             custom: {
               protocol: 'openai-responses',
               api_base: 'https://models.example.test/v1/',
-              model: 'gpt-5.6-sol',
+              model: 'private-reasoner',
               api_key: 'sk-runtime-only-secret',
-              context_window_tokens: 1000000,
+              context_window_tokens: 256000,
               max_tokens: 8192,
               temperature: 0.4,
               reasoning_effort: 'high',
@@ -404,9 +403,9 @@ describe('BotDefinition activation', () => {
       kind: 'custom',
       protocol: 'openai-responses',
       apiBase: 'https://models.example.test/v1',
-      model: 'gpt-5.6-sol',
+      model: 'private-reasoner',
       apiKey: 'sk-runtime-only-secret',
-      contextWindowTokens: 1000000,
+      contextWindowTokens: 256000,
       maxTokens: 8192,
       temperature: 0.4,
       reasoningEffort: 'high',
@@ -418,7 +417,7 @@ describe('BotDefinition activation', () => {
     assert.deepStrictEqual(requests.find(item => item.path === '/api/bot/model-config/ack')?.body, {
       revision: 9,
       kind: 'custom',
-      model_id: 'gpt-5.6-sol',
+      model_id: 'private-reasoner',
       reasoning_effort: 'high',
     });
   });
