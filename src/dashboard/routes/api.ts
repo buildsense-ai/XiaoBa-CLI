@@ -55,6 +55,7 @@ import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/uplo
 import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
 import { catalogRuntimeMatchesModelId, createBotDefinitionSyncService } from '../../bot-definition/service';
 import { prepareBoundBotDefinition } from '../../bot-definition/activation';
+import { pullCloudBotDefinition } from '../../bot-definition/definition-client';
 import { getPromptReconcileCoordinator } from '../../bot-definition/prompt-sync';
 import {
   customModelDefinitionToConfig,
@@ -3348,6 +3349,53 @@ export function createApiRouter(
   });
 
   // ==================== CatsCo webapp 本地连接器 ====================
+
+  router.get('/bot-definition/conflict', (_req, res) => {
+    const local = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() });
+    const auth = local.getAuthState();
+    const botId = String(auth.botUid || '').trim();
+    if (!botId) return res.status(409).json({ error: 'no_bound_bot' });
+    const pending = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() })
+      .readCloudState(botId).pendingPatch;
+    return res.json({
+      botId,
+      conflicted: pending?.status === 'conflicted',
+      expectedRevision: pending?.expectedRevision,
+      conflictRevision: pending?.conflictRevision,
+      changedFields: pending ? Object.keys(pending.changes) : [],
+    });
+  });
+
+  router.post('/bot-definition/conflict', async (req, res) => {
+    try {
+      const action = String(req.body?.action || '').trim();
+      if (action !== 'accept-cloud' && action !== 'keep-local') {
+        return res.status(400).json({ error: 'action must be accept-cloud or keep-local' });
+      }
+      const local = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() });
+      const auth = local.getAuthState();
+      const botId = String(auth.botUid || '').trim();
+      if (!botId) return res.status(409).json({ error: 'no_bound_bot' });
+      const service = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() });
+      const pending = service.readCloudState(botId).pendingPatch;
+      if (!pending || pending.status !== 'conflicted') {
+        return res.status(409).json({ error: 'no_definition_conflict' });
+      }
+      const remote = await pullCloudBotDefinition({ botId, auth });
+      if (remote.kind !== 'found') {
+        return res.status(409).json({ error: 'cloud_definition_unavailable', state: remote.kind });
+      }
+      if (action === 'accept-cloud') {
+        service.discardPendingCloudPatch(botId, remote.snapshot, pending);
+        return res.json({ ok: true, action, revision: remote.snapshot.revision });
+      }
+      service.rebasePendingCloudPatch(botId, remote.snapshot.revision);
+      const committed = await service.flushPendingCloudPatch(botId, auth);
+      return res.json({ ok: true, action, revision: committed?.revision });
+    } catch (error: any) {
+      return res.status(409).json({ error: String(error?.message || error) });
+    }
+  });
 
   router.get('/cats/status', async (_req, res) => {
     const runtime = resolveCatsCoRuntimeConfig({

@@ -21,6 +21,7 @@ import {
   type BotPromptDefinition,
   type CustomBotModelDefinition,
   type LocalModelProfile,
+  type PendingBotDefinitionPatch,
 } from './types';
 import {
   FileBotCatalogModelRuntimeRepository,
@@ -34,6 +35,15 @@ import {
   type BotDefinitionRepository,
   type FileBotDefinitionRepositoryOptions,
 } from './repository';
+import { FileBotDefinitionCloudStateRepository } from './cloud-state';
+import {
+  acknowledgeCloudBotDefinition,
+  BotDefinitionRevisionConflictError,
+  patchCloudBotDefinition,
+  pullCloudBotDefinition,
+} from './definition-client';
+import type { CatsCoAuthSnapshot } from '../catscompany/local-config';
+import type { CloudBotDefinitionSnapshot } from './types';
 
 const CUSTOM_DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
 
@@ -362,6 +372,7 @@ export interface BotDefinitionSyncServiceOptions extends FileBotDefinitionReposi
   cloudOverrideRepository?: BotCloudModelOverrideRepository;
   cloudCatalogRuntimeRepository?: BotCatalogModelRuntimeRepository;
   customModelProfileRepository?: BotCustomModelProfileRepository;
+  cloudStateRepository?: FileBotDefinitionCloudStateRepository;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -377,6 +388,7 @@ export class BotDefinitionSyncService {
   private readonly cloudOverrideRepository: BotCloudModelOverrideRepository;
   private readonly cloudCatalogRuntimeRepository: BotCatalogModelRuntimeRepository;
   private readonly customModelProfileRepository: BotCustomModelProfileRepository;
+  private readonly cloudStateRepository: FileBotDefinitionCloudStateRepository;
 
   constructor(options: BotDefinitionSyncServiceOptions = {}) {
     this.runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
@@ -390,11 +402,16 @@ export class BotDefinitionSyncService {
       ?? new FileBotCloudCatalogModelRuntimeRepository({ runtimeRoot: this.runtimeRoot });
     this.customModelProfileRepository = options.customModelProfileRepository
       ?? new FileBotCustomModelProfileRepository({ runtimeRoot: this.runtimeRoot });
+    this.cloudStateRepository = options.cloudStateRepository
+      ?? new FileBotDefinitionCloudStateRepository(this.runtimeRoot);
   }
 
   pull(botId: string): BotDefinition | undefined {
     return this.withDefinitionWriteLock(botId, () => {
       const previousCache = this.repository.readCache(botId);
+      if (this.cloudSyncConfigured() && previousCache) {
+        return normalizeBotDefinition(previousCache);
+      }
       const rawDefinition = this.repository.readCanonical(botId);
       const definition = rawDefinition && normalizeBotDefinition(rawDefinition);
       if (definition) {
@@ -431,10 +448,20 @@ export class BotDefinitionSyncService {
         schema: BOT_DEFINITION_SCHEMA,
         botId,
         model: normalizedModel,
+        ...(normalizedModel.kind === 'custom'
+          ? { savedCustomModel: normalizedModel }
+          : previous?.savedCustomModel
+            ? { savedCustomModel: previous.savedCustomModel }
+            : {}),
       };
-      this.repository.writeCanonical(definition);
+      this.queueCloudPatch(botId, {
+        model: normalizedModel,
+        ...(definition.savedCustomModel ? { savedCustomModel: definition.savedCustomModel } : {}),
+      });
+      if (!this.cloudSyncConfigured()) {
+        this.repository.writeCanonical(definition);
+      }
       this.repository.writeCache(definition);
-      this.clearLegacyModelConfigurationWhenReady(definition);
       return {
         botId,
         direction: 'local_to_simulated_cloud',
@@ -459,8 +486,11 @@ export class BotDefinitionSyncService {
         botId,
         prompt: normalizePromptDefinition(prompt),
       };
+      this.queueCloudPatch(botId, { prompt: definition.prompt! });
       this.repository.writeCache(definition);
-      this.repository.writeCanonical(definition);
+      if (!this.cloudSyncConfigured()) {
+        this.repository.writeCanonical(definition);
+      }
       return {
         botId,
         direction: 'local_to_simulated_cloud',
@@ -481,6 +511,199 @@ export class BotDefinitionSyncService {
       direction: 'cloud_to_local',
       definition,
     };
+  }
+
+  acceptCloudDefinition(snapshot: CloudBotDefinitionSnapshot): BotDefinitionSyncResult {
+    return this.withDefinitionWriteLock(snapshot.definition.botId, () => {
+      const definition = normalizeBotDefinition(snapshot.definition);
+      this.cloudStateRepository.recordSnapshot(definition.botId, {
+        ...snapshot,
+        definition,
+      });
+      return {
+        botId: definition.botId,
+        direction: 'cloud_to_local',
+        definition,
+      };
+    });
+  }
+
+  /** Publishes a verified snapshot as the effective local runtime Definition. */
+  promoteCloudDefinition(snapshot: CloudBotDefinitionSnapshot): BotDefinitionSyncResult {
+    return this.withDefinitionWriteLock(snapshot.definition.botId, () => {
+      const definition = normalizeBotDefinition(snapshot.definition);
+      this.cloudStateRepository.recordSnapshot(definition.botId, { ...snapshot, definition });
+      this.repository.writeCache(definition);
+      if (definition.model.kind === 'custom') {
+        this.storeCustomModelProfile(definition.botId, definition.model);
+      } else if (definition.savedCustomModel) {
+        this.storeCustomModelProfile(definition.botId, definition.savedCustomModel);
+      }
+      return { botId: definition.botId, direction: 'cloud_to_local', definition };
+    });
+  }
+
+  commitCloudDefinitionIfNoPending(
+    snapshot: CloudBotDefinitionSnapshot,
+    stagedCatalogRuntime?: BotCatalogModelRuntime,
+  ): boolean {
+    return this.withDefinitionWriteLock(snapshot.definition.botId, () => {
+      if (this.cloudStateRepository.read(snapshot.definition.botId).pendingPatch) return false;
+      const definition = normalizeBotDefinition(snapshot.definition);
+      this.cloudStateRepository.recordSnapshot(definition.botId, { ...snapshot, definition });
+      if (stagedCatalogRuntime) {
+        this.catalogRuntimeRepository.write(normalizeCatalogRuntime(stagedCatalogRuntime));
+      }
+      this.repository.writeCache(definition);
+      if (definition.model.kind === 'custom') {
+        this.storeCustomModelProfile(definition.botId, definition.model);
+      } else if (definition.savedCustomModel) {
+        this.storeCustomModelProfile(definition.botId, definition.savedCustomModel);
+      }
+      return true;
+    });
+  }
+
+  applyPendingChanges(
+    base: BotDefinition,
+    changes: {
+      model?: BotModelDefinition;
+      savedCustomModel?: CustomBotModelDefinition;
+      prompt?: BotPromptDefinition;
+    },
+  ): BotDefinition {
+    return normalizeBotDefinition({
+      ...base,
+      ...(changes.model ? { model: changes.model } : {}),
+      ...(changes.savedCustomModel ? { savedCustomModel: changes.savedCustomModel } : {}),
+      ...(changes.prompt ? { prompt: changes.prompt } : {}),
+    });
+  }
+
+  restoreLocalDefinitionCache(definition: BotDefinition): void {
+    this.repository.writeCache(normalizeBotDefinition(definition));
+  }
+
+  readCloudState(botId: string) {
+    return this.cloudStateRepository.read(botId);
+  }
+
+  async flushPendingCloudPatch(
+    botId: string,
+    auth: CatsCoAuthSnapshot,
+    fetchImpl?: typeof fetch,
+  ): Promise<CloudBotDefinitionSnapshot | undefined> {
+    const state = this.cloudStateRepository.read(botId);
+    const pending = state.pendingPatch;
+    if (!pending || pending.status === 'conflicted') return state.snapshot;
+    try {
+      const snapshot = await patchCloudBotDefinition(
+        { botId, auth, fetchImpl },
+        pending.expectedRevision,
+        pending.changes,
+      );
+      this.acceptCloudDefinition(snapshot);
+      this.cloudStateRepository.completePatch(botId, pending, snapshot.revision);
+      return snapshot;
+    } catch (error) {
+      if (error instanceof BotDefinitionRevisionConflictError) {
+        this.cloudStateRepository.markDefinitionProtocolSeen(botId);
+        const current = await pullCloudBotDefinition({ botId, auth, fetchImpl });
+        if (
+          current.kind === 'found'
+          && pendingChangesMatchSnapshot(pending.changes, current.snapshot)
+        ) {
+          this.acceptCloudDefinition(current.snapshot);
+          this.cloudStateRepository.completePatch(botId, pending, current.snapshot.revision);
+          return current.snapshot;
+        }
+        this.cloudStateRepository.markPatchConflicted(botId, error.currentRevision);
+      }
+      throw error;
+    }
+  }
+
+  markCloudDefinitionApplied(botId: string, revision: number): void {
+    this.cloudStateRepository.markApplied(botId, revision);
+  }
+
+  markCloudDefinitionAppliedIfNoPending(botId: string, revision: number): boolean {
+    return this.withDefinitionWriteLock(botId, () => {
+      const state = this.cloudStateRepository.read(botId);
+      if (state.pendingPatch || state.snapshot?.revision !== revision) return false;
+      this.cloudStateRepository.markApplied(botId, revision);
+      return true;
+    });
+  }
+
+  markCloudDefinitionProtocolSeen(botId: string): void {
+    this.cloudStateRepository.markDefinitionProtocolSeen(botId);
+  }
+
+  discardPendingCloudPatch(
+    botId: string,
+    acceptedCloudSnapshot: CloudBotDefinitionSnapshot,
+    expectedPending: PendingBotDefinitionPatch,
+  ): void {
+    if (acceptedCloudSnapshot.definition.botId !== botId) {
+      throw new Error('Cannot accept a BotDefinition snapshot for a different bot.');
+    }
+    this.withDefinitionWriteLock(botId, () => {
+      if (!this.cloudStateRepository.acceptCloudAndClearConflict(
+        botId,
+        expectedPending,
+        acceptedCloudSnapshot,
+      )) {
+        throw new Error('BotDefinition conflict changed while it was being resolved; review it again.');
+      }
+    });
+  }
+
+  rebasePendingCloudPatch(botId: string, confirmedCloudRevision: number): void {
+    if (!Number.isInteger(confirmedCloudRevision) || confirmedCloudRevision <= 0) {
+      throw new Error('A positive confirmed cloud revision is required.');
+    }
+    this.cloudStateRepository.rebasePatch(botId, confirmedCloudRevision);
+  }
+
+  async acknowledgeCloudDefinition(
+    botId: string,
+    revision: number,
+    auth: CatsCoAuthSnapshot,
+    applyError = '',
+    fetchImpl?: typeof fetch,
+  ): Promise<void> {
+    this.cloudStateRepository.queueAck(botId, revision, applyError);
+    await acknowledgeCloudBotDefinition({ botId, auth, fetchImpl }, revision, applyError);
+    this.cloudStateRepository.clearAck(botId, revision);
+  }
+
+  async retryPendingCloudAck(
+    botId: string,
+    auth: CatsCoAuthSnapshot,
+    fetchImpl?: typeof fetch,
+  ): Promise<boolean> {
+    const pending = this.cloudStateRepository.read(botId).pendingAck;
+    if (!pending) return false;
+    try {
+      await acknowledgeCloudBotDefinition(
+        { botId, auth, fetchImpl },
+        pending.revision,
+        pending.error || '',
+      );
+      this.cloudStateRepository.clearAck(botId, pending.revision);
+      return true;
+    } catch (error) {
+      if (
+        error instanceof BotDefinitionRevisionConflictError
+        && error.currentRevision !== undefined
+        && error.currentRevision > pending.revision
+      ) {
+        this.cloudStateRepository.clearAck(botId, pending.revision);
+        return false;
+      }
+      throw error;
+    }
   }
 
   readCloudModelOverride(botId: string): BotDefinition | undefined {
@@ -549,7 +772,9 @@ export class BotDefinitionSyncService {
     if (existing) {
       this.migrateLegacyCustomModelProfile(existing.botId);
       this.migrateLegacyCatalogRuntime(existing);
-      this.clearLegacyModelConfigurationWhenReady(existing);
+      if (!this.cloudSyncConfigured()) {
+        this.clearLegacyModelConfigurationWhenReady(existing);
+      }
       return {
         botId,
         direction: 'simulated_cloud_to_local',
@@ -564,7 +789,9 @@ export class BotDefinitionSyncService {
       this.storeCustomModelProfile(botId, legacySavedCustomModel);
     }
     this.bootstrapCatalogRuntimeFromLocalProfile(definition, profile);
-    this.clearLegacyModelConfigurationWhenReady(definition);
+    if (!this.cloudSyncConfigured()) {
+      this.clearLegacyModelConfigurationWhenReady(definition);
+    }
     return {
       botId,
       direction: 'bootstrap_to_simulated_cloud',
@@ -596,6 +823,31 @@ export class BotDefinitionSyncService {
       : operation();
   }
 
+  private queueCloudPatch(
+    botId: string,
+    changes: {
+      model?: BotModelDefinition;
+      savedCustomModel?: CustomBotModelDefinition;
+      prompt?: BotPromptDefinition;
+    },
+  ): void {
+    const state = this.cloudStateRepository.read(botId);
+    this.cloudStateRepository.queuePatch(
+      botId,
+      state.snapshot?.revision ?? 0,
+      changes,
+      state.snapshot ? 'user' : 'legacy',
+    );
+  }
+
+  private cloudSyncConfigured(): boolean {
+    const auth = createCatsCoLocalConfigService({
+      runtimeRoot: this.runtimeRoot,
+      env: this.env,
+    }).getAuthState();
+    return Boolean(auth.token && auth.apiKey && auth.httpBaseUrl);
+  }
+
   private bootstrapCatalogRuntimeFromLocalProfile(
     definition: BotDefinition,
     knownProfile?: LocalModelProfile,
@@ -623,7 +875,6 @@ export class BotDefinitionSyncService {
     const runtime = catalogRuntimeFromLocalProfile(definition.botId, definition.model.modelId, profile);
     if (!runtime) return;
     this.storeCatalogRuntime(runtime);
-    this.clearLegacyModelConfiguration();
   }
 
   private migrateLegacyCustomModelProfile(botId: string): void {
@@ -703,4 +954,35 @@ export function readCachedDefinitionForCurrentBot(
   const botId = String(localConfig.currentBot?.uid || '').trim();
   if (!botId) return undefined;
   return new FileBotDefinitionRepository({ runtimeRoot }).readCache(botId);
+}
+
+function pendingChangesMatchSnapshot(
+  changes: {
+    model?: BotModelDefinition;
+    savedCustomModel?: CustomBotModelDefinition;
+    prompt?: BotPromptDefinition;
+  },
+  snapshot: CloudBotDefinitionSnapshot,
+): boolean {
+  const definition = normalizeBotDefinition(snapshot.definition);
+  if (
+    changes.model
+    && JSON.stringify(normalizeBotModelDefinition(changes.model)) !== JSON.stringify(definition.model)
+  ) {
+    return false;
+  }
+  if (
+    changes.savedCustomModel
+    && JSON.stringify(normalizeBotModelDefinition(changes.savedCustomModel))
+      !== JSON.stringify(definition.savedCustomModel)
+  ) {
+    return false;
+  }
+  if (
+    changes.prompt
+    && JSON.stringify(normalizePromptDefinition(changes.prompt)) !== JSON.stringify(definition.prompt)
+  ) {
+    return false;
+  }
+  return true;
 }

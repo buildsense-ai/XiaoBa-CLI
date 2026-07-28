@@ -1280,7 +1280,7 @@ describe('dashboard CatsCo account status', () => {
     const data = JSON.parse(text) as any;
     const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
     const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('188');
-    const definition = definitionRepository.readCanonical('188');
+    const definition = definitionRepository.readCache('188');
     const resolved = resolveActiveBotLLMConfig({ runtimeRoot: testRoot });
 
     assert.equal(response.status, 200, text);
@@ -1410,7 +1410,7 @@ describe('dashboard CatsCo account status', () => {
     const text = await response.text();
     const data = JSON.parse(text) as any;
     const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('188');
-    const definition = definitionRepository.readCanonical('188');
+    const definition = definitionRepository.readCache('188');
     const resolved = resolveActiveBotLLMConfig({ runtimeRoot: testRoot });
 
     assert.equal(response.status, 200, text);
@@ -1529,6 +1529,60 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(response.status, 502);
     assert.match(data.error, /CatsCo\/CatsCompany 服务/);
     assert.equal(data.data.host, '127.0.0.1:9');
+  });
+
+  test('BotDefinition conflict API exposes no secrets and can explicitly accept cloud', async () => {
+    const cloudDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: {
+        kind: 'custom' as const,
+        protocol: 'openai-chat-completions' as const,
+        apiBase: 'https://models.example.test/v1',
+        model: 'cloud-model',
+        apiKey: 'sk-cloud-secret',
+        contextWindowTokens: 128_000,
+      },
+      prompt: { selected: 'default' as const },
+    };
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/bot/definition' && req.method === 'GET') {
+        return res.json({ definition: cloudDefinition, revision: 9 });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: catsBaseUrl, serverUrl: 'ws://127.0.0.1/v0/channels' },
+      account: { token: 'owner-token', uid: '7' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    const service = createBotDefinitionSyncService({ runtimeRoot: testRoot });
+    service.promoteCloudDefinition({ definition: cloudDefinition, revision: 8 });
+    service.markCloudDefinitionApplied('43', 8);
+    service.updatePrompt('43', { selected: 'custom', customSystemPrompt: 'local edit' });
+    const cloudStatePath = path.join(testRoot, 'data', 'bot-definition-cloud-state', '43.json');
+    const cloudState = JSON.parse(fs.readFileSync(cloudStatePath, 'utf-8'));
+    cloudState.pendingPatch.status = 'conflicted';
+    cloudState.pendingPatch.conflictRevision = 9;
+    fs.writeFileSync(cloudStatePath, `${JSON.stringify(cloudState, null, 2)}\n`);
+
+    const status = await fetch(`${dashboardBaseUrl}/api/bot-definition/conflict`);
+    const statusText = await status.text();
+    assert.equal(status.status, 200, statusText);
+    assert.equal(statusText.includes('sk-cloud-secret'), false);
+    assert.deepStrictEqual(JSON.parse(statusText).changedFields, ['prompt']);
+
+    const resolved = await fetch(`${dashboardBaseUrl}/api/bot-definition/conflict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'accept-cloud' }),
+    });
+    const resolvedText = await resolved.text();
+    assert.equal(resolved.status, 200, resolvedText);
+    assert.equal(resolvedText.includes('sk-cloud-secret'), false);
+    assert.equal(service.readCloudState('43').pendingPatch, undefined);
+    assert.equal(service.readCloudState('43').snapshot?.revision, 9);
   });
 
   async function startCatsServer(handler: express.RequestHandler): Promise<void> {

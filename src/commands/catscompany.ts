@@ -17,6 +17,17 @@ import {
 } from '../bot-definition/cloud-client';
 import { CloudBotModelRuntimeReloadController } from '../bot-definition/runtime-reload';
 import { createBotDefinitionSyncService } from '../bot-definition/service';
+import {
+  BotDefinitionRevisionConflictError,
+  pullCloudBotDefinition,
+  redactBotDefinitionError,
+} from '../bot-definition/definition-client';
+import type {
+  BotCatalogModelRuntime,
+  BotDefinition,
+  CloudBotDefinitionSnapshot,
+} from '../bot-definition/types';
+import { getPromptReconcileCoordinator } from '../bot-definition/prompt-sync';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
 const CLOUD_MODEL_POLL_MS = 5000;
@@ -140,10 +151,39 @@ export async function catscompanyCommand(): Promise<void> {
 
   try {
     await bot.start();
+    await bot.waitUntilReady();
     await startRuntimeCommandSupport();
     const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
     const modelBotId = String(preparedBot?.botId || connectorConfig.botUid || '').trim();
-    if (preparedBot?.cloudSelection) {
+    const definitionService = createBotDefinitionSyncService({ runtimeRoot });
+    if (preparedBot?.cloudDefinitionSnapshot) {
+      const initial = preparedBot.cloudDefinitionSnapshot;
+      if (preparedBot.cloudDefinitionApplyError) {
+        Logger.warning(
+          `CatsCo BotDefinition revision=${initial.revision} 未应用，继续使用上一份配置: `
+          + preparedBot.cloudDefinitionApplyError,
+        );
+      } else if (
+        !preparedBot.cloudDefinitionHasPendingLocal
+        && definitionService.markCloudDefinitionAppliedIfNoPending(modelBotId, initial.revision)
+      ) {
+        try {
+          await definitionService.acknowledgeCloudDefinition(modelBotId, initial.revision, auth);
+        } catch (error) {
+          Logger.warning(
+            `CatsCo BotDefinition revision=${initial.revision} ACK 失败，已持久化等待重试: `
+            + redactBotDefinitionError(error, initial.definition),
+          );
+        }
+        try {
+          definitionService.clearCloudModelOverride(modelBotId);
+          definitionService.clearLegacyModelConfigurationWhenReady(initial.definition);
+        } catch (error) {
+          Logger.warning(`CatsCo BotDefinition 旧配置清理失败: ${errorMessage(error)}`);
+        }
+      }
+    }
+    if (!preparedBot?.cloudDefinitionSnapshot && preparedBot?.cloudSelection) {
       const initialApplyError = preparedBot.cloudApplyError || '';
       try {
         await acknowledgeCloudBotModelSelection(
@@ -161,6 +201,57 @@ export async function catscompanyCommand(): Promise<void> {
       }
     }
     let lastCloudPollWarningAt = 0;
+    if (preparedBot?.cloudDefinitionManaged) {
+      cloudModelWatchTimer = setInterval(() => {
+        if (cloudModelReloadPromise) return;
+        const run = (async () => {
+          try {
+            try {
+              await definitionService.retryPendingCloudAck(modelBotId, auth);
+            } catch (error) {
+              Logger.warning(
+                `CatsCo BotDefinition ACK 暂时无法重试，将继续检查新版本: ${errorMessage(error)}`,
+              );
+            }
+            const state = definitionService.readCloudState(modelBotId);
+            const previousDefinition = definitionService.read(modelBotId);
+            if (state.pendingPatch?.status === 'conflicted') return;
+            let snapshot: CloudBotDefinitionSnapshot | undefined;
+            if (state.pendingPatch) {
+              snapshot = await definitionService.flushPendingCloudPatch(modelBotId, auth);
+            } else {
+              const remote = await pullCloudBotDefinition({ botId: modelBotId, auth });
+              if (remote.kind === 'found') snapshot = remote.snapshot;
+            }
+            if (!snapshot || snapshot.revision <= (state.appliedRevision ?? 0)) return;
+            if (!bot.isIdleForRuntimeReload() || shuttingDown) return;
+            await applyCloudDefinitionRuntimeSnapshot({
+              runtimeRoot,
+              connectorConfig,
+              currentBot: () => bot,
+              replaceBot: next => { bot = next; },
+              botId: modelBotId,
+              canApply: () => !shuttingDown,
+              snapshot,
+              previousSnapshot: state.appliedSnapshot
+                ?? (state.appliedRevision === state.snapshot?.revision ? state.snapshot : undefined),
+              previousDefinition,
+              auth,
+            });
+          } catch (error) {
+            const now = Date.now();
+            if (error instanceof BotDefinitionRevisionConflictError || now - lastCloudPollWarningAt >= 60_000) {
+              lastCloudPollWarningAt = now;
+              Logger.warning(`CatsCo BotDefinition 轮询/应用失败: ${errorMessage(error)}`);
+            }
+          }
+        })();
+        cloudModelReloadPromise = run;
+        void run.finally(() => {
+          if (cloudModelReloadPromise === run) cloudModelReloadPromise = null;
+        });
+      }, CLOUD_MODEL_POLL_MS);
+    } else {
     const reloadController = new CloudBotModelRuntimeReloadController({
       initialRevision: preparedBot?.cloudSelection?.revision,
       pullSelection: async () => {
@@ -228,6 +319,7 @@ export async function catscompanyCommand(): Promise<void> {
         if (cloudModelReloadPromise === run) cloudModelReloadPromise = null;
       });
     }, CLOUD_MODEL_POLL_MS);
+    }
   } catch (error) {
     if (ownerWatchTimer) {
       clearInterval(ownerWatchTimer);
@@ -236,6 +328,151 @@ export async function catscompanyCommand(): Promise<void> {
     lock?.release();
     lock = null;
     throw error;
+  }
+}
+
+interface ApplyCloudDefinitionRuntimeSnapshotOptions {
+  runtimeRoot: string;
+  connectorConfig: CatsCompanyConfig;
+  currentBot(): CatsCompanyBot;
+  replaceBot(bot: CatsCompanyBot): void;
+  botId: string;
+  canApply(): boolean;
+  snapshot: CloudBotDefinitionSnapshot;
+  previousSnapshot?: CloudBotDefinitionSnapshot;
+  previousDefinition?: BotDefinition;
+  auth: CatsCoAuthSnapshot;
+}
+
+async function applyCloudDefinitionRuntimeSnapshot(
+  options: ApplyCloudDefinitionRuntimeSnapshotOptions,
+): Promise<void> {
+  const service = createBotDefinitionSyncService({ runtimeRoot: options.runtimeRoot });
+  const previousState = service.readCloudState(options.botId);
+  const previousSnapshot = options.previousSnapshot ?? previousState.appliedSnapshot;
+  const previousDefinition = options.previousDefinition ?? service.read(options.botId);
+  const previousRuntime = service.readCatalogRuntime(options.botId);
+  const promptCoordinator = getPromptReconcileCoordinator({
+    runtimeRoot: options.runtimeRoot,
+    definitionService: service,
+  });
+  const previousPrompt = promptCoordinator.captureActiveSnapshot();
+  const restoreFiles = () => {
+    if (previousSnapshot) service.promoteCloudDefinition(previousSnapshot);
+    else if (previousDefinition) service.restoreLocalDefinitionCache(previousDefinition);
+    if (previousRuntime) service.storeCatalogRuntime(previousRuntime);
+    promptCoordinator.restoreActiveSnapshot(previousPrompt);
+  };
+
+  let stagedCatalogRuntime: BotCatalogModelRuntime | undefined;
+  try {
+    service.acceptCloudDefinition(options.snapshot);
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot: options.runtimeRoot,
+      botId: options.botId,
+      auth: options.auth,
+      acknowledgeCloudSelection: false,
+      stageCloudDefinition: true,
+    });
+    if (
+      !prepared?.cloudDefinitionSnapshot
+      || prepared.cloudDefinitionSnapshot.revision !== options.snapshot.revision
+    ) {
+      restoreFiles();
+      return;
+    }
+    stagedCatalogRuntime = prepared.stagedCatalogRuntime;
+  } catch (error) {
+    restoreFiles();
+    const message = redactBotDefinitionError(error, options.snapshot.definition);
+    await service.acknowledgeCloudDefinition(
+      options.botId,
+      options.snapshot.revision,
+      options.auth,
+      message,
+    ).catch(() => undefined);
+    throw new Error(message);
+  }
+
+  const latest = await pullCloudBotDefinition({ botId: options.botId, auth: options.auth });
+  if (latest.kind !== 'found' || latest.snapshot.revision !== options.snapshot.revision) {
+    restoreFiles();
+    return;
+  }
+  if (service.readCloudState(options.botId).pendingPatch) {
+    // A newer local edit won while this cloud revision was being staged.
+    // Leave the running connector untouched; the next poll uploads that edit
+    // and stages the combined revision.
+    return;
+  }
+  const previousBot = options.currentBot();
+  if (!options.canApply() || !previousBot.isIdleForRuntimeReload()) {
+    restoreFiles();
+    return;
+  }
+
+  let nextBot: CatsCompanyBot | undefined;
+  try {
+    await previousBot.destroy();
+    if (!service.commitCloudDefinitionIfNoPending(options.snapshot, stagedCatalogRuntime)) {
+      const localWinner = new CatsCompanyBot(options.connectorConfig);
+      await localWinner.start();
+      await localWinner.waitUntilReady();
+      options.replaceBot(localWinner);
+      return;
+    }
+    await promptCoordinator.activateBot(options.botId);
+    nextBot = new CatsCompanyBot(options.connectorConfig);
+    await nextBot.start();
+    await nextBot.waitUntilReady();
+    options.replaceBot(nextBot);
+    if (!service.markCloudDefinitionAppliedIfNoPending(options.botId, options.snapshot.revision)) {
+      // A local edit landed after the connector became ready. Keep that edit
+      // and the running connector, but do not claim the pure cloud revision was
+      // applied; the next poll will upload and apply the combined revision.
+      return;
+    }
+  } catch (error) {
+    if (nextBot) {
+      await nextBot.destroy().catch(() => undefined);
+    }
+    restoreFiles();
+    if (options.canApply()) {
+      const fallback = new CatsCompanyBot(options.connectorConfig);
+      await fallback.start();
+      await fallback.waitUntilReady();
+      options.replaceBot(fallback);
+    }
+    const message = redactBotDefinitionError(error, options.snapshot.definition);
+    await service.acknowledgeCloudDefinition(
+      options.botId,
+      options.snapshot.revision,
+      options.auth,
+      message,
+    ).catch(() => undefined);
+    throw new Error(message);
+  }
+
+  try {
+    await service.acknowledgeCloudDefinition(
+      options.botId,
+      options.snapshot.revision,
+      options.auth,
+    );
+  } catch (error) {
+    Logger.warning(
+      `CatsCo BotDefinition revision=${options.snapshot.revision} ACK 失败，`
+      + `新配置保持运行并等待重试: ${redactBotDefinitionError(error, options.snapshot.definition)}`,
+    );
+    return;
+  }
+  try {
+    service.clearCloudModelOverride(options.botId);
+    service.clearLegacyModelConfigurationWhenReady(options.snapshot.definition);
+  } catch (error) {
+    Logger.warning(
+      `CatsCo BotDefinition 已应用并 ACK，但清理旧配置失败: ${errorMessage(error)}`,
+    );
   }
 }
 

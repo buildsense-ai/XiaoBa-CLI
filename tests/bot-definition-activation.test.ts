@@ -15,6 +15,7 @@ import {
 } from '../src/bot-definition/repository';
 import { resolveActiveBotLLMConfig } from '../src/bot-definition/llm-config-resolver';
 import { BOT_DEFINITION_SCHEMA } from '../src/bot-definition/types';
+import { FileBotDefinitionCloudStateRepository } from '../src/bot-definition/cloud-state';
 
 describe('BotDefinition activation', () => {
   const roots: string[] = [];
@@ -96,6 +97,7 @@ describe('BotDefinition activation', () => {
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.apiKey, 'sk-bravo-relay-material');
     assert.equal(env.CATSCO_RELAY_LLM_API_KEY, undefined);
     assert.deepStrictEqual(requests, [
+      'GET /api/bot/definition',
       'GET /api/bot/model-config',
       'GET /api/relay/config',
       'GET /api/relay/key',
@@ -711,5 +713,216 @@ describe('BotDefinition activation', () => {
     assert.deepStrictEqual(new FileBotCloudModelOverrideRepository({ runtimeRoot }).read('43')?.model, cloudModel);
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'cloud-model');
     assert.equal(new FileBotCatalogModelRuntimeRepository({ runtimeRoot }).read('43'), undefined);
+  });
+
+  test('offline startup restores the last applied snapshot instead of a newer fetched snapshot', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-offline-applied-'));
+    roots.push(runtimeRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'user-token', uid: '7' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    const applied = {
+      definition: {
+        schema: BOT_DEFINITION_SCHEMA,
+        botId: '43',
+        model: {
+          kind: 'custom' as const,
+          protocol: 'openai-chat-completions' as const,
+          apiBase: 'https://applied.example.test/v1',
+          model: 'applied-model',
+          apiKey: 'sk-applied',
+          contextWindowTokens: 128_000,
+        },
+        prompt: { selected: 'default' as const },
+      },
+      revision: 8,
+    };
+    const fetched = {
+      definition: {
+        ...applied.definition,
+        model: { ...applied.definition.model, model: 'not-yet-applied' },
+      },
+      revision: 9,
+    };
+    const cloudState = new FileBotDefinitionCloudStateRepository(runtimeRoot);
+    cloudState.recordSnapshot('43', applied);
+    cloudState.markApplied('43', 8);
+    cloudState.recordSnapshot('43', fetched);
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      env,
+      fetchImpl: (async () => Response.json({ error: 'offline' }, { status: 503 })) as typeof fetch,
+    });
+
+    assert.equal(prepared?.definition.model.kind, 'custom');
+    assert.equal(prepared?.definition.model.kind === 'custom' && prepared.definition.model.model, 'applied-model');
+    assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'applied-model');
+    assert.equal(prepared?.cloudDefinitionSnapshot?.revision, 8);
+  });
+
+  test('offline startup overlays durable local pending fields on the applied snapshot', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-offline-pending-'));
+    roots.push(runtimeRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'user-token', uid: '7' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    const applied = {
+      definition: {
+        schema: BOT_DEFINITION_SCHEMA,
+        botId: '43',
+        model: {
+          kind: 'custom' as const,
+          protocol: 'openai-chat-completions' as const,
+          apiBase: 'https://applied.example.test/v1',
+          model: 'applied-model',
+          apiKey: 'sk-applied',
+          contextWindowTokens: 128_000,
+        },
+        prompt: { selected: 'custom' as const, customSystemPrompt: 'old prompt' },
+      },
+      revision: 8,
+    };
+    const cloudState = new FileBotDefinitionCloudStateRepository(runtimeRoot);
+    cloudState.recordSnapshot('43', applied);
+    cloudState.markApplied('43', 8);
+    cloudState.queuePatch('43', 8, {
+      prompt: { selected: 'custom', customSystemPrompt: 'offline local edit' },
+    });
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      env,
+      fetchImpl: (async () => Response.json({ error: 'offline' }, { status: 503 })) as typeof fetch,
+    });
+
+    assert.deepStrictEqual(prepared?.definition.prompt, {
+      selected: 'custom',
+      customSystemPrompt: 'offline local edit',
+    });
+    assert.equal(prepared?.cloudDefinitionHasPendingLocal, true);
+    assert.equal(
+      new FileBotDefinitionRepository({ runtimeRoot }).readCache('43')?.prompt?.customSystemPrompt,
+      'offline local edit',
+    );
+    assert.equal(cloudState.read('43').pendingPatch?.status, 'pending');
+  });
+
+  test('a first-migration conflict stays on the Definition path without falling back to model-config', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-first-conflict-'));
+    roots.push(runtimeRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'user-token', uid: '7' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    const localDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: {
+        kind: 'custom' as const,
+        protocol: 'openai-chat-completions' as const,
+        apiBase: 'https://local.example.test/v1',
+        model: 'local-pending-model',
+        apiKey: 'sk-local',
+        contextWindowTokens: 128_000,
+      },
+      prompt: { selected: 'default' as const },
+    };
+    new FileBotDefinitionRepository({ runtimeRoot }).writeCache(localDefinition);
+    const cloudState = new FileBotDefinitionCloudStateRepository(runtimeRoot);
+    cloudState.queuePatch('43', 0, { model: localDefinition.model, prompt: localDefinition.prompt });
+    cloudState.markPatchConflicted('43', 1);
+    cloudState.markDefinitionProtocolSeen('43');
+    const requests: string[] = [];
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      env,
+      fetchImpl: (async input => {
+        requests.push(new URL(String(input)).pathname);
+        return Response.json({ error: 'unexpected request' }, { status: 500 });
+      }) as typeof fetch,
+    });
+
+    assert.equal(prepared?.cloudDefinitionManaged, true);
+    assert.equal(prepared?.cloudDefinitionSnapshot, undefined);
+    assert.equal(prepared?.definition.model.kind === 'custom' && prepared.definition.model.model, 'local-pending-model');
+    assert.equal(requests.includes('/api/bot/model-config'), false);
+  });
+
+  test('migration uses the server legacy model and only fills missing Definition fields locally', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-legacy-model-'));
+    roots.push(runtimeRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'user-token', uid: '7' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    new FileBotDefinitionRepository({ runtimeRoot }).writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: {
+        kind: 'custom',
+        protocol: 'openai-chat-completions',
+        apiBase: 'https://local.example.test/v1',
+        model: 'local-model',
+        apiKey: 'sk-local',
+        contextWindowTokens: 128_000,
+      },
+      prompt: { selected: 'default' },
+    });
+    const legacyModel = {
+      kind: 'custom' as const,
+      protocol: 'openai-chat-completions' as const,
+      apiBase: 'https://legacy.example.test/v1',
+      model: 'legacy-cloud-model',
+      apiKey: 'sk-legacy',
+      contextWindowTokens: 128_000,
+    };
+    let patchedModel: unknown;
+    let runtimeReads = 0;
+    const fetchImpl = (async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/bot/definition' && (!init?.method || init.method === 'GET')) {
+        runtimeReads += 1;
+        if (runtimeReads === 1) {
+          return Response.json({ error: 'migration_required', legacy_model: legacyModel }, { status: 409 });
+        }
+        return Response.json({
+          definition: {
+            schema: BOT_DEFINITION_SCHEMA,
+            botId: '43',
+            model: legacyModel,
+            prompt: { selected: 'default' },
+          },
+          revision: 1,
+        });
+      }
+      if (url.pathname === '/api/bots/definition' && init?.method === 'PATCH') {
+        patchedModel = JSON.parse(String(init.body)).model;
+        return Response.json({ revision: 1 });
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 });
+    }) as typeof fetch;
+
+    const prepared = await prepareBoundBotDefinition({ runtimeRoot, env, fetchImpl });
+    assert.deepStrictEqual(patchedModel, legacyModel);
+    assert.equal(
+      prepared?.definition.model.kind === 'custom' && prepared.definition.model.model,
+      'legacy-cloud-model',
+    );
   });
 });

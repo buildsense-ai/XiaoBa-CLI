@@ -44,7 +44,48 @@ export interface BotDefinition {
   schema: typeof BOT_DEFINITION_SCHEMA;
   botId: string;
   model: BotModelDefinition;
+  savedCustomModel?: CustomBotModelDefinition;
   prompt?: BotPromptDefinition;
+}
+
+export interface CloudBotDefinitionSnapshot {
+  definition: BotDefinition;
+  revision: number;
+  updatedAt?: string;
+}
+
+export interface BotDefinitionFieldPatch {
+  model?: BotModelDefinition;
+  savedCustomModel?: CustomBotModelDefinition;
+  prompt?: BotPromptDefinition;
+}
+
+export interface PendingBotDefinitionPatch {
+  botId: string;
+  expectedRevision: number;
+  changes: BotDefinitionFieldPatch;
+  source: 'user' | 'legacy';
+  idempotencyKey: string;
+  createdAt: string;
+  status: 'pending' | 'conflicted';
+  conflictRevision?: number;
+}
+
+export interface PendingBotDefinitionAck {
+  revision: number;
+  error?: string;
+  createdAt: string;
+}
+
+export interface LocalBotDefinitionCloudState {
+  schema: 'xiaoba.bot-definition-cloud-state.v1';
+  botId: string;
+  snapshot?: CloudBotDefinitionSnapshot;
+  appliedRevision?: number;
+  appliedSnapshot?: CloudBotDefinitionSnapshot;
+  definitionProtocolSeen?: boolean;
+  pendingPatch?: PendingBotDefinitionPatch;
+  pendingAck?: PendingBotDefinitionAck;
 }
 
 export interface LocalModelProfile {

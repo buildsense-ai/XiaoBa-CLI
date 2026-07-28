@@ -18,6 +18,12 @@ import {
   redactCloudBotModelError,
   type CloudBotModelSelection,
 } from './cloud-client';
+import {
+  BotDefinitionRevisionConflictError,
+  pullCloudBotDefinition,
+  redactBotDefinitionError,
+} from './definition-client';
+import type { CloudBotDefinitionSnapshot } from './types';
 
 export interface PrepareBoundBotDefinitionOptions extends BotDefinitionSyncServiceOptions {
   runtimeRoot: string;
@@ -27,6 +33,7 @@ export interface PrepareBoundBotDefinitionOptions extends BotDefinitionSyncServi
   fetchImpl?: typeof fetch;
   cloudSelection?: CloudBotModelSelection;
   acknowledgeCloudSelection?: boolean;
+  stageCloudDefinition?: boolean;
 }
 
 export interface PreparedBoundBotDefinition {
@@ -36,6 +43,11 @@ export interface PreparedBoundBotDefinition {
   initializedDefault: boolean;
   materializedCatalogRuntime: boolean;
   cloudRevision?: number;
+  cloudDefinitionSnapshot?: CloudBotDefinitionSnapshot;
+  cloudDefinitionApplyError?: string;
+  cloudDefinitionHasPendingLocal?: boolean;
+  cloudDefinitionManaged?: boolean;
+  stagedCatalogRuntime?: BotCatalogModelRuntime;
   cloudSelection?: CloudBotModelSelection;
   cloudApplyError?: string;
 }
@@ -62,15 +74,121 @@ export async function prepareBoundBotDefinition(
   const previousCloudRuntime = definitionService.readCloudCatalogRuntime(botId);
   let definition = previousCloudDefinition ?? localDefinition;
   const auth = options.auth ?? createCatsCoLocalConfigService({ runtimeRoot: options.runtimeRoot }).getAuthState();
+  let cloudDefinitionSnapshot: CloudBotDefinitionSnapshot | undefined;
+  let fullDefinitionActive = false;
+  let usingPendingDefinition = false;
   let initializedDefault = false;
   let materializedCatalogRuntime = false;
+  let stagedCatalogRuntime: BotCatalogModelRuntime | undefined;
   let cloudSelection = options.cloudSelection;
   let cloudApplyError: string | undefined;
   let cloudSelectionApplied = false;
   let selectedCatalogRuntimeApplied = false;
   const shouldAcknowledgeCloudSelection = options.acknowledgeCloudSelection !== false;
 
-  if (!cloudSelection) {
+  try {
+    await definitionService.retryPendingCloudAck(botId, auth, options.fetchImpl);
+  } catch (error) {
+    Logger.warning(`CatsCo BotDefinition ACK 暂时无法重试，继续使用本地配置: ${errorMessage(error)}`);
+  }
+
+  const cloudState = definitionService.readCloudState(botId);
+  const previousAppliedSnapshot = cloudState.appliedSnapshot;
+  const previousLocalDefinition = localDefinition;
+  if (cloudState.definitionProtocolSeen || cloudState.snapshot || cloudState.appliedSnapshot) {
+    fullDefinitionActive = true;
+  }
+  if (previousAppliedSnapshot) {
+    const effective = cloudState.pendingPatch
+      ? definitionService.applyPendingChanges(
+        previousAppliedSnapshot.definition,
+        cloudState.pendingPatch.changes,
+      )
+      : previousAppliedSnapshot.definition;
+    if (cloudState.pendingPatch) {
+      definitionService.restoreLocalDefinitionCache(effective);
+      usingPendingDefinition = true;
+    } else {
+      definitionService.promoteCloudDefinition(previousAppliedSnapshot);
+    }
+    cloudDefinitionSnapshot = previousAppliedSnapshot;
+    definition = effective;
+    localDefinition = definition;
+    fullDefinitionActive = true;
+  }
+  if (cloudState.pendingPatch?.status === 'conflicted') {
+    Logger.warning(
+      `CatsCo BotDefinition 本地修改与云端 revision=${cloudState.pendingPatch.conflictRevision ?? 'unknown'} 冲突，`
+      + '已保留本地修改并停止自动覆盖。',
+    );
+  } else {
+    try {
+      if (cloudState.pendingPatch) {
+        cloudDefinitionSnapshot = await definitionService.flushPendingCloudPatch(
+          botId,
+          auth,
+          options.fetchImpl,
+        );
+      } else {
+        const remote = await pullCloudBotDefinition({ botId, auth, fetchImpl: options.fetchImpl });
+        if (remote.kind === 'found') {
+          cloudDefinitionSnapshot = remote.snapshot;
+          definitionService.acceptCloudDefinition(remote.snapshot);
+        } else if (remote.kind === 'migration_required') {
+          definitionService.markCloudDefinitionProtocolSeen(botId);
+          fullDefinitionActive = true;
+          if (remote.legacyModel) {
+            if (localDefinition) {
+              localDefinition = definitionService.updateModel(botId, remote.legacyModel).definition;
+            } else {
+              localDefinition = definitionService.publish(botId, remote.legacyModel).definition;
+            }
+          }
+          if (!localDefinition) {
+            localDefinition = definitionService.publish(botId, {
+              kind: 'catalog',
+              modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
+            }).definition;
+            initializedDefault = true;
+          }
+          if (!localDefinition.prompt) {
+            localDefinition = definitionService.updatePrompt(botId, { selected: 'default' }).definition;
+          }
+          definitionService.updateModel(botId, localDefinition.model);
+          definitionService.updatePrompt(botId, localDefinition.prompt!);
+          cloudDefinitionSnapshot = await definitionService.flushPendingCloudPatch(
+            botId,
+            auth,
+            options.fetchImpl,
+          );
+        }
+      }
+      if (cloudDefinitionSnapshot) {
+        fullDefinitionActive = true;
+        const latestPending = definitionService.readCloudState(botId).pendingPatch;
+        definition = latestPending
+          ? definitionService.applyPendingChanges(cloudDefinitionSnapshot.definition, latestPending.changes)
+          : cloudDefinitionSnapshot.definition;
+        usingPendingDefinition = Boolean(latestPending);
+        localDefinition = definition;
+      }
+    } catch (error) {
+      if (error instanceof BotDefinitionRevisionConflictError) {
+        fullDefinitionActive = true;
+        Logger.warning(
+          `CatsCo BotDefinition revision 冲突（云端 ${error.currentRevision ?? 'unknown'}），`
+          + '已保留本地 pending 修改，未用云端值覆盖。',
+        );
+      } else {
+        Logger.warning(
+          `CatsCo BotDefinition 暂时不可用，继续使用上次本地缓存: `
+          + redactBotDefinitionError(error, definition),
+        );
+      }
+    }
+  }
+
+  if (!fullDefinitionActive && !cloudSelection) {
     try {
       cloudSelection = await pullCloudBotModelSelection({
         botId,
@@ -82,7 +200,7 @@ export async function prepareBoundBotDefinition(
     }
   }
 
-  if (cloudSelection) {
+  if (!fullDefinitionActive && cloudSelection) {
     try {
       if (cloudSelection.kind === 'local') {
         if (selectedCatalogRuntime) {
@@ -237,43 +355,102 @@ export async function prepareBoundBotDefinition(
     materializedCatalogRuntime = true;
   }
 
-  const activeCloudOverride = definitionService.readCloudModelOverride(botId);
-  if (activeCloudOverride) definition = activeCloudOverride;
-  if (definition.model.kind === 'catalog') {
-    const runtime = activeCloudOverride
-      ? definitionService.readCloudCatalogRuntime(botId)
-      : definitionService.readCatalogRuntime(botId);
-    if (!runtime || !catalogRuntimeMatchesModelId(runtime, definition.model.modelId)) {
-      const materialized = await provisionCatsRelayCatalogRuntime({
-        botId,
-        modelId: definition.model.modelId,
-        auth,
-        fetchImpl: options.fetchImpl,
-      });
-      if (activeCloudOverride) definitionService.storeCloudCatalogRuntime(materialized);
-      else definitionService.storeCatalogRuntime(materialized);
-      materializedCatalogRuntime = true;
-    } else if (catalogCapabilitiesNeedRefresh(runtime)) {
-      const refreshed = await refreshCatsRelayCatalogRuntimeCapabilities(runtime, options.fetchImpl ?? fetch);
-      if (refreshed !== runtime) {
-        if (activeCloudOverride) definitionService.storeCloudCatalogRuntime(refreshed);
-        else definitionService.storeCatalogRuntime(refreshed);
+  let cloudDefinitionApplyError: string | undefined;
+  try {
+    const activeCloudOverride = fullDefinitionActive
+      ? undefined
+      : definitionService.readCloudModelOverride(botId);
+    if (activeCloudOverride) definition = activeCloudOverride;
+    if (definition.model.kind === 'catalog') {
+      const runtime = activeCloudOverride
+        ? definitionService.readCloudCatalogRuntime(botId)
+        : definitionService.readCatalogRuntime(botId);
+      if (!runtime || !catalogRuntimeMatchesModelId(runtime, definition.model.modelId)) {
+        const materialized = await provisionCatsRelayCatalogRuntime({
+          botId,
+          modelId: definition.model.modelId,
+          auth,
+          fetchImpl: options.fetchImpl,
+        });
+        if (options.stageCloudDefinition && fullDefinitionActive) {
+          stagedCatalogRuntime = materialized;
+        } else if (activeCloudOverride) {
+          definitionService.storeCloudCatalogRuntime(materialized);
+        } else {
+          definitionService.storeCatalogRuntime(materialized);
+        }
+        materializedCatalogRuntime = true;
+      } else if (catalogCapabilitiesNeedRefresh(runtime)) {
+        const refreshed = await refreshCatsRelayCatalogRuntimeCapabilities(runtime, options.fetchImpl ?? fetch);
+        if (refreshed !== runtime) {
+          if (options.stageCloudDefinition && fullDefinitionActive) {
+            stagedCatalogRuntime = refreshed;
+          } else if (activeCloudOverride) {
+            definitionService.storeCloudCatalogRuntime(refreshed);
+          } else {
+            definitionService.storeCatalogRuntime(refreshed);
+          }
+        }
       }
     }
-  }
 
-  definitionService.clearLegacyModelConfigurationWhenReady(definition);
-  if (!definitionService.read(botId)) {
-    definitionService.publish(botId, {
-      kind: 'catalog',
-      modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
-    });
+    if (!fullDefinitionActive) {
+      definitionService.clearLegacyModelConfigurationWhenReady(definition);
+    }
+    if (!definitionService.read(botId)) {
+      definitionService.publish(botId, {
+        kind: 'catalog',
+        modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
+      });
+    }
+    if (fullDefinitionActive && cloudDefinitionSnapshot && !options.stageCloudDefinition) {
+      if (usingPendingDefinition) {
+        definitionService.restoreLocalDefinitionCache(definition);
+      } else {
+        definitionService.promoteCloudDefinition(cloudDefinitionSnapshot);
+        definition = cloudDefinitionSnapshot.definition;
+      }
+    }
+    if (!options.stageCloudDefinition) {
+      await getPromptReconcileCoordinator({
+        runtimeRoot: options.runtimeRoot,
+        env: options.env,
+        definitionService,
+      }).activateBot(botId);
+    }
+  } catch (error) {
+    if (!fullDefinitionActive || !cloudDefinitionSnapshot) throw error;
+    cloudDefinitionApplyError = redactBotDefinitionError(error, cloudDefinitionSnapshot.definition);
+    if (previousAppliedSnapshot) {
+      definitionService.promoteCloudDefinition(previousAppliedSnapshot);
+      definition = previousAppliedSnapshot.definition;
+    } else if (previousLocalDefinition) {
+      definitionService.restoreLocalDefinitionCache(previousLocalDefinition);
+      definition = previousLocalDefinition;
+    } else {
+      throw error;
+    }
+    try {
+      await definitionService.acknowledgeCloudDefinition(
+        botId,
+        cloudDefinitionSnapshot.revision,
+        auth,
+        cloudDefinitionApplyError,
+        options.fetchImpl,
+      );
+    } catch {
+      // The failed ACK remains durable and is retried after reconnect.
+    }
+    await getPromptReconcileCoordinator({
+      runtimeRoot: options.runtimeRoot,
+      env: options.env,
+      definitionService,
+    }).activateBot(botId);
+    Logger.warning(
+      `CatsCo BotDefinition revision=${cloudDefinitionSnapshot.revision} 应用失败，`
+      + `已恢复上一份本地配置: ${cloudDefinitionApplyError}`,
+    );
   }
-  await getPromptReconcileCoordinator({
-    runtimeRoot: options.runtimeRoot,
-    env: options.env,
-    definitionService,
-  }).activateBot(botId);
   return {
     botId,
     definition,
@@ -281,6 +458,11 @@ export async function prepareBoundBotDefinition(
     initializedDefault,
     materializedCatalogRuntime,
     ...(cloudSelection ? { cloudSelection } : {}),
+    ...(cloudDefinitionSnapshot ? { cloudDefinitionSnapshot } : {}),
+    ...(cloudDefinitionApplyError ? { cloudDefinitionApplyError } : {}),
+    ...(usingPendingDefinition ? { cloudDefinitionHasPendingLocal: true } : {}),
+    ...(fullDefinitionActive ? { cloudDefinitionManaged: true } : {}),
+    ...(stagedCatalogRuntime ? { stagedCatalogRuntime } : {}),
     ...(cloudApplyError ? { cloudApplyError } : {}),
     ...(cloudSelectionApplied && cloudSelection ? { cloudRevision: cloudSelection.revision } : {}),
   };

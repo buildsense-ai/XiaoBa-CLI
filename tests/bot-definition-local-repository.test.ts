@@ -143,6 +143,41 @@ describe('BotDefinition local simulation', () => {
     assert.deepStrictEqual(repository.readCache('bot-alpha'), canonical);
   });
 
+  test('bound cloud mode keeps a verified remote cache above the migration-only simulated canonical', () => {
+    const localConfig = createCatsCoLocalConfigService({ runtimeRoot, env: {} as NodeJS.ProcessEnv });
+    localConfig.save({
+      version: 1,
+      account: { uid: 'user-alpha', token: 'owner-token' },
+      currentBot: {
+        uid: 'bot-alpha',
+        apiKey: 'bot-api-key',
+        boundByUserUid: 'user-alpha',
+        bindingSource: 'test',
+      },
+    });
+    const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
+    const simulated: BotDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'minimax-m2.7' },
+      prompt: { selected: 'default' },
+    };
+    const remote: BotDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+      prompt: { selected: 'custom', customSystemPrompt: 'remote prompt' },
+    };
+    repository.writeCanonical(simulated);
+    repository.writeCache(remote);
+
+    const service = createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot });
+    assert.deepStrictEqual(service.pull('bot-alpha'), remote);
+    service.updatePrompt('bot-alpha', { selected: 'custom', customSystemPrompt: 'local pending prompt' });
+    assert.deepStrictEqual(repository.readCanonical('bot-alpha'), simulated);
+    assert.equal(repository.readCache('bot-alpha')?.prompt?.customSystemPrompt, 'local pending prompt');
+  });
+
   test('pull preserves the previous custom profile outside the active Definition and runtime roots stay isolated', () => {
     const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
     const customModel = {
@@ -431,7 +466,7 @@ describe('BotDefinition local simulation', () => {
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env }), undefined);
   });
 
-  test('captures legacy model settings once, then removes only model keys', () => {
+  test('captures legacy model settings but keeps them until cloud apply is acknowledged', () => {
     bindCurrentBot();
     const configPath = path.join(runtimeRoot, 'legacy-config.json');
     fs.writeFileSync(path.join(runtimeRoot, '.env'), [
@@ -470,11 +505,11 @@ describe('BotDefinition local simulation', () => {
     }
     const envContents = fs.readFileSync(path.join(runtimeRoot, '.env'), 'utf-8');
     assert.match(envContents, /CATSCO_USER_TOKEN=user-token-must-remain/);
-    assert.doesNotMatch(envContents, /CATSCO_(MODEL_SOURCE|CUSTOM_LLM_)|GAUZ_LLM_/);
-    assert.equal(env.CATSCO_CUSTOM_LLM_API_KEY, undefined);
+    assert.match(envContents, /CATSCO_CUSTOM_LLM_API_KEY=sk-portable/);
+    assert.equal(env.CATSCO_CUSTOM_LLM_API_KEY, 'sk-portable');
     const cleanedConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    assert.equal(cleanedConfig.apiKey, undefined);
-    assert.equal(cleanedConfig.model, undefined);
+    assert.equal(cleanedConfig.apiKey, 'stale-config-key');
+    assert.equal(cleanedConfig.model, 'stale-config-model');
     assert.deepStrictEqual(cleanedConfig.catscompany, { enabled: true });
   });
 });
