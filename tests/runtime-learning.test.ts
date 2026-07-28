@@ -40,6 +40,7 @@ import { SemanticReassessmentManifestStore } from '../src/utils/semantic-reasses
 import { emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src/utils/skill-evolution';
 import { bootstrapSemanticReassessmentOnce } from '../src/utils/distilled-skill-bootstrap';
 import { DistillationHeartbeatScheduler } from '../src/utils/distillation-heartbeat-scheduler';
+import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
 import {
   loadEvidenceReviewJobStore,
   saveEvidenceReviewJobStore,
@@ -391,6 +392,9 @@ function setupEnv(
     XIAOBA_ROLE: process.env.XIAOBA_ROLE,
     XIAOBA_SKILLS_DIR: process.env.XIAOBA_SKILLS_DIR,
     XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
+    XIAOBA_USER_DATA_DIR: process.env.XIAOBA_USER_DATA_DIR,
+    CATSCO_USER_DATA_DIR: process.env.CATSCO_USER_DATA_DIR,
+    XIAOBA_ELECTRON_USER_DATA_DIR: process.env.XIAOBA_ELECTRON_USER_DATA_DIR,
     XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE: process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE,
     XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED,
     XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS: process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS,
@@ -406,6 +410,9 @@ function setupEnv(
   process.env.DISTILLATION_HEARTBEAT_RECORD_FILE = heartbeatRecordFile;
   delete process.env.XIAOBA_ROLE;
   process.env.XIAOBA_SKILLS_DIR = skillsRoot;
+  delete process.env.XIAOBA_USER_DATA_DIR;
+  delete process.env.CATSCO_USER_DATA_DIR;
+  delete process.env.XIAOBA_ELECTRON_USER_DATA_DIR;
   process.env.XIAOBA_RUNTIME_ROOT = root;
   process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE = reassessmentManifestPath;
   process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'false';
@@ -516,6 +523,73 @@ function setupEnv(
     },
   };
 }
+
+describe('RuntimeLearning — test environment isolation', () => {
+  test('ignores and restores host user-data roots', () => {
+    const userDataEnvKeys = [
+      'XIAOBA_USER_DATA_DIR',
+      'CATSCO_USER_DATA_DIR',
+      'XIAOBA_ELECTRON_USER_DATA_DIR',
+    ] as const;
+    const savedHostEnv = Object.fromEntries(
+      userDataEnvKeys.map(key => [key, process.env[key]]),
+    );
+    const hostileRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-hostile-'));
+    const hostileValues = Object.fromEntries(
+      userDataEnvKeys.map(key => [key, path.join(hostileRoot, key.toLowerCase())]),
+    ) as Record<(typeof userDataEnvKeys)[number], string>;
+    let env: TestEnv | undefined;
+
+    try {
+      for (const key of userDataEnvKeys) process.env[key] = hostileValues[key];
+
+      env = setupEnv();
+      for (const key of userDataEnvKeys) assert.equal(process.env[key], undefined);
+
+      const config = getDistillationHeartbeatConfig(env.root);
+      const durablePaths = {
+        cursor: config.stateFilePath,
+        heartbeat: config.heartbeatRecordPath,
+        episodes: config.learningEpisodeStorePath,
+        reviewQueue: config.skillEvolutionReviewQueuePath,
+        registry: config.skillEvolutionRegistryPath,
+        audit: config.skillEvolutionAuditPath,
+        journal: config.skillEvolutionJournalPath,
+        reassessment: config.skillEvolutionReassessmentManifestPath,
+        usageLedger: config.skillUsageLedgerPath,
+        curatorState: config.skillEvolutionCuratorStatePath,
+      };
+      for (const [label, candidate] of Object.entries(durablePaths)) {
+        const relative = path.relative(env.root, candidate);
+        assert.ok(
+          relative !== ''
+            && relative !== '..'
+            && !relative.startsWith(`..${path.sep}`)
+            && !path.isAbsolute(relative),
+          `${label} escaped the temporary runtime root: ${candidate}`,
+        );
+      }
+
+      env.restore();
+      for (const key of userDataEnvKeys) {
+        assert.equal(process.env[key], hostileValues[key]);
+      }
+      env.teardown();
+      env = undefined;
+    } finally {
+      if (env) {
+        env.restore();
+        env.teardown();
+      }
+      for (const key of userDataEnvKeys) {
+        const value = savedHostEnv[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(hostileRoot, { recursive: true, force: true });
+    }
+  });
+});
 
 function recordReviewAdmissionLoad(
   env: Pick<TestEnv, 'root' | 'outputDir'>,
@@ -3109,6 +3183,9 @@ describe('RuntimeLearning — Provenance (AC4 follow-up)', () => {
       XIAOBA_ROLE: process.env.XIAOBA_ROLE,
       XIAOBA_SKILLS_DIR: process.env.XIAOBA_SKILLS_DIR,
       XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
+      XIAOBA_USER_DATA_DIR: process.env.XIAOBA_USER_DATA_DIR,
+      CATSCO_USER_DATA_DIR: process.env.CATSCO_USER_DATA_DIR,
+      XIAOBA_ELECTRON_USER_DATA_DIR: process.env.XIAOBA_ELECTRON_USER_DATA_DIR,
     };
 
     process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
@@ -3118,6 +3195,9 @@ describe('RuntimeLearning — Provenance (AC4 follow-up)', () => {
     process.env.DISTILLATION_HEARTBEAT_RECORD_FILE = heartbeatRecordFile;
     delete process.env.XIAOBA_ROLE;
     process.env.XIAOBA_SKILLS_DIR = skillsRoot;
+    delete process.env.XIAOBA_USER_DATA_DIR;
+    delete process.env.CATSCO_USER_DATA_DIR;
+    delete process.env.XIAOBA_ELECTRON_USER_DATA_DIR;
     process.env.XIAOBA_RUNTIME_ROOT = root;
 
     const skillEvolution = new SkillEvolutionRuntime({
