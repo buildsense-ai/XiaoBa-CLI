@@ -2748,6 +2748,7 @@ export class RuntimeLearning {
               maxClaimsPerJob: 1,
               signal: wakeSignal,
               now: this.clock(),
+              quantumTimeoutMs: this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000,
               shouldStopClaiming: () => this.shutdownDrainRequested,
             },
           );
@@ -2812,14 +2813,16 @@ export class RuntimeLearning {
       }
     }
 
-    // Preserve the established one-wake behavior for local delivery episodes,
-    // whose callers and tests rely on an immediate transition result.
+    // Local work is also admitted durably before the first model call. Preserve
+    // its established one-wake completion behavior, but every leased Quantum
+    // now receives a fresh independent deadline in EvidenceReviewEngine.
     try {
       await mapWithConcurrency(
         localEpisodeTasks,
         Math.max(1, Math.floor(this.config.skillEvolutionReviewerConcurrency)),
         async ({ episode, bundle }) => {
           try {
+            this.skillEvolution.enqueueReview(bundle);
             const result = await this.skillEvolution.reviewAndApply(bundle, wakeSignal);
             if (result.queued === 'operational') {
               const queued = this.skillEvolution.getQueuedReviewState(bundle.bundleId);

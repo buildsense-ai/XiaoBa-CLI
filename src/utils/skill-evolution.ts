@@ -37,6 +37,7 @@ import type {
   DossierDifferenceIndex,
   ObligationDisposition,
   ReviewObligation,
+  ReviewOperationalFailureReason,
   ReviewWorkClass,
   EvidenceReviewJob,
 } from './evidence-review-types';
@@ -785,7 +786,8 @@ export class SkillEvolutionRuntime {
       );
     }
 
-    // Preserve Branch Transcript Contract deadlines/abort across quanta.
+    // External cancellation is shared, but every leased Quantum receives its own
+    // fresh execution deadline inside EvidenceReviewEngine.
     const attemptController = new AbortController();
     const externalSignals = [...new Set(
       [this.options.reviewAttemptSignal, signal].filter(
@@ -793,12 +795,6 @@ export class SkillEvolutionRuntime {
       ),
     )];
     let cancelledByRuntimeShutdown = false;
-    const attemptDeadlineMs = this.getEffectiveConfig().reviewAttemptDeadlineMs;
-    const attemptDeadlineTimer = setTimeout(
-      () => attemptController.abort('review-timeout'),
-      Math.max(1, attemptDeadlineMs),
-    );
-    attemptDeadlineTimer.unref?.();
     const removeExternalAbortListeners: Array<() => void> = [];
     for (const externalSignal of externalSignals) {
       if (externalSignal.aborted) {
@@ -817,7 +813,12 @@ export class SkillEvolutionRuntime {
     }
 
     try {
-      const advanced = await engine.advanceJob(job.jobId, wakeId, attemptController.signal);
+      const advanced = await engine.advanceJob(
+        job.jobId,
+        wakeId,
+        attemptController.signal,
+        { quantumTimeoutMs: this.getEffectiveConfig().reviewAttemptDeadlineMs },
+      );
       const live = engine.loadStore().jobs[job.jobId] ?? advanced.job;
 
       if (advanced.result) {
@@ -888,7 +889,6 @@ export class SkillEvolutionRuntime {
       }
       return this.queuedOperationalResult(live);
     } finally {
-      clearTimeout(attemptDeadlineTimer);
       for (const remove of removeExternalAbortListeners) remove();
     }
   }
@@ -1743,6 +1743,7 @@ export class SkillEvolutionRuntime {
         error.kind,
         error.message,
         uniqueStrings([...transcriptPaths, ...error.transcriptPaths]),
+        error.reviewFailureReason,
       );
     }
     if (error instanceof BranchSessionAbortError) {
@@ -1753,6 +1754,9 @@ export class SkillEvolutionRuntime {
         kind,
         error.message,
         transcriptPaths,
+        error.reason === 'review-timeout' || error.reason === 'turn_budget_exhausted'
+          ? 'attempt-deadline-exceeded'
+          : error.reason,
       );
     }
 
@@ -1765,10 +1769,14 @@ export class SkillEvolutionRuntime {
       kind = 'branch_timeout';
     }
 
+    const reviewFailureReason = (error as { reviewFailureReason?: unknown })?.reviewFailureReason;
     return new OperationalReviewError(
       kind,
       message,
       transcriptPaths,
+      typeof reviewFailureReason === 'string'
+        ? reviewFailureReason as ReviewOperationalFailureReason
+        : undefined,
     );
   }
 
@@ -2103,10 +2111,19 @@ export class SkillEvolutionRuntime {
     return DEFAULT_REVIEW_ATTEMPT_MAX_TURNS;
   }
 
-  private resolveAbortReason(reason: unknown): 'review-timeout' | 'runtime-shutdown' | 'turn_budget_exhausted' {
+  private resolveAbortReason(reason: unknown):
+    | 'quantum-timeout'
+    | 'attempt-deadline-exceeded'
+    | 'review-timeout'
+    | 'runtime-shutdown'
+    | 'external-abort'
+    | 'turn_budget_exhausted' {
+    if (reason === 'quantum-timeout') return 'quantum-timeout';
+    if (reason === 'attempt-deadline-exceeded') return 'attempt-deadline-exceeded';
     if (reason === 'review-timeout') return 'review-timeout';
+    if (reason === 'runtime-shutdown') return 'runtime-shutdown';
     if (reason === 'turn_budget_exhausted') return 'turn_budget_exhausted';
-    return 'runtime-shutdown';
+    return 'external-abort';
   }
 
   private throwIfReviewAborted(signal?: AbortSignal): void {
@@ -2699,6 +2716,7 @@ class OperationalReviewError extends Error {
     public readonly kind: OperationalReviewFailureKind,
     message: string,
     transcriptPaths: readonly string[] = [],
+    public readonly reviewFailureReason?: ReviewOperationalFailureReason,
   ) {
     super(message);
     this.name = 'OperationalReviewError';

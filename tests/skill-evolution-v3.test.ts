@@ -61,6 +61,7 @@ function operationalFailure(job: ReturnType<typeof findOperationalJobByBundleId>
     attempts: quantum.attempts,
     currentDelayMs: quantum.currentDelayMs,
     failureKind: quantum.failureKind,
+    failureReason: quantum.failureReason,
     failureMessage: quantum.failureMessage,
     failureTranscripts: [...new Set(Object.values(job.quanta).flatMap(item => item.transcriptPaths))],
   };
@@ -171,8 +172,8 @@ class AbortAwareReviewAttemptAIService {
     return this.chatStream(
       args[0] as Message[] | undefined,
       args[1] as ToolDefinition[] | undefined,
-      args[2],
-      args[3] as { signal?: AbortSignal } | undefined,
+      undefined,
+      args[2] as { signal?: AbortSignal } | undefined,
     );
   }
 
@@ -1578,6 +1579,7 @@ describe('V3 verified semantic Current Skills', () => {
       assert.ok(entry);
       const failure = operationalFailure(entry);
       assert.equal(failure?.failureKind, 'branch_timeout');
+      assert.equal(failure?.failureReason, 'quantum-timeout');
       assert.equal(entry.bundle.bundleId, 'episode-flashcard-1');
       // The operational retry snapshot must remain a fixed Evidence Bundle: the
       // original completion/settlement refs are preserved unchanged (not merged),
@@ -1599,12 +1601,12 @@ describe('V3 verified semantic Current Skills', () => {
       assert.ok(transcriptEntries.some(event => (
         event.event_type === 'run_result'
         && event.outcome === 'failed'
-        && event.terminal_abort_reason === 'review-timeout'
+        && event.terminal_abort_reason === 'quantum-timeout'
         && event.failure_outcome === 'branch_timeout'
       )));
       assert.ok(transcriptEntries.some(event => (
         event.event_type === 'failed'
-        && event.terminal_abort_reason === 'review-timeout'
+        && event.terminal_abort_reason === 'quantum-timeout'
         && event.failure_outcome === 'branch_timeout'
       )));
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});

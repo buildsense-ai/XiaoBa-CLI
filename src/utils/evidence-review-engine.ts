@@ -29,6 +29,8 @@ import {
   type ObligationDisposition,
   type ReviewObligation,
   type ReviewQuantumRecord,
+  type ReviewOperationalFailureKind,
+  type ReviewOperationalFailureReason,
   type ReviewWorkClass,
   type ShardFindingSet,
   type TypedFinding,
@@ -147,6 +149,7 @@ export interface AdvanceJobResult {
   lastError?: {
     message: string;
     kind?: string;
+    reason?: ReviewOperationalFailureReason;
     transcriptPaths?: string[];
     quantumId?: string;
     quantumKind?: string;
@@ -337,6 +340,8 @@ export class EvidenceReviewEngine {
       quantumId?: string;
       /** Per-call execution bound; defaults to the engine-wide setting. */
       maxQuanta?: number;
+      /** Independent hard deadline for every leased Quantum in this call. */
+      quantumTimeoutMs?: number;
       /** Shutdown/drain gate checked before every new lease claim. */
       shouldStopClaiming?: () => boolean;
     },
@@ -412,20 +417,32 @@ export class EvidenceReviewEngine {
       upsertEvidenceReviewJob(state, job);
       this.saveStore(state);
 
+      // Provider-backed quanta are cancellable and independently bounded.
+      // Commit owns external side effects and must run to its durable receipt;
+      // racing it against a timeout could retry a commit that already applied.
+      const quantumBoundary = selected.kind === 'commit'
+        ? createNonInterruptibleCommitBoundary()
+        : createQuantumAbortBoundary(signal, options?.quantumTimeoutMs ?? leaseMs);
       try {
-        if (signal?.aborted) {
-          const reason = typeof signal.reason === 'string' ? signal.reason : 'aborted';
-          const aborted = new Error(`Review quantum aborted before execution: ${reason}`) as Error & {
-            kind: 'branch_timeout' | 'branch_failure';
-          };
-          aborted.kind = /timeout|deadline/i.test(reason) ? 'branch_timeout' : 'branch_failure';
-          throw aborted;
+        if (quantumBoundary.signal.aborted) {
+          throw reviewAbortError(quantumBoundary.signal.reason, 'Review quantum aborted before execution.');
         }
-        const execution = await this.executeQuantum(job, job.quanta[selected.quantumId]!, signal);
+        const execution = await awaitQuantumExecution(
+          this.executeQuantum(
+            job,
+            job.quanta[selected.quantumId]!,
+            quantumBoundary.signal,
+          ),
+          quantumBoundary.signal,
+        );
+        if (quantumBoundary.signal.aborted) {
+          throw reviewAbortError(quantumBoundary.signal.reason, 'Review quantum exceeded its execution boundary.');
+        }
         const after = this.loadStore();
         const live = after.jobs[jobId]!;
         const completed = completeQuantumCore(live, selected.quantumId, {
           result: execution.result,
+          leaseId: claim.lease.leaseId,
           now: nowFn(),
           // graph-core accepts a single transcriptPath; fold multiples into result metadata
           ...(execution.transcriptPaths[0] ? { transcriptPath: execution.transcriptPaths[0] } : {}),
@@ -487,10 +504,13 @@ export class EvidenceReviewEngine {
         const message = error instanceof Error ? error.message : String(error);
         const operationalKind = extractOperationalKind(error)
           ?? (message.startsWith('invalid_completion_schema:') ? 'invalid_completion_schema' : undefined);
+        const operationalReason = extractOperationalReason(error)
+          ?? (message.startsWith('invalid_completion_schema:') ? 'schema-validation-error' : undefined);
         const operationalTranscripts = extractOperationalTranscripts(error);
         lastError = {
           message,
           ...(operationalKind ? { kind: operationalKind } : {}),
+          ...(operationalReason ? { reason: operationalReason } : {}),
           ...(operationalTranscripts.length > 0 ? { transcriptPaths: operationalTranscripts } : {}),
           quantumId: selected.quantumId,
           quantumKind: selected.kind,
@@ -500,6 +520,7 @@ export class EvidenceReviewEngine {
         const live = after.jobs[jobId]!;
         const failed = failQuantumCore(live, selected.quantumId, {
           message,
+          leaseId: claim.lease.leaseId,
           now: nowFn(),
           retryBaseMs,
           retryMaxMs,
@@ -507,13 +528,14 @@ export class EvidenceReviewEngine {
           terminal,
         });
         if (!failed.ok) {
-          // Fall back to manual retry_wait if pure helper rejects.
-          live.quanta[selected.quantumId] = {
-            ...live.quanta[selected.quantumId]!,
-            state: terminal ? 'terminal_failed' : 'retry_wait',
-            failureMessage: message,
-            lease: undefined,
-            updatedAt: nowFn().toISOString(),
+          // A stale attempt must never overwrite a newer lease, success, or
+          // terminal disposition. Return the authoritative durable state.
+          return {
+            job: live,
+            executedQuantumIds,
+            remainingRunnable: listRunnableQuanta(live, nowFn()).length,
+            result,
+            lastError,
           };
         }
         const failedQuantum = live.quanta[selected.quantumId]!;
@@ -521,6 +543,7 @@ export class EvidenceReviewEngine {
           || operationalKind === 'branch_failure'
           || operationalKind === 'invalid_completion_schema') {
           failedQuantum.failureKind = operationalKind;
+          failedQuantum.failureReason = operationalReason;
           failedQuantum.transcriptPaths = [...new Set([
             ...failedQuantum.transcriptPaths,
             ...operationalTranscripts,
@@ -541,7 +564,11 @@ export class EvidenceReviewEngine {
         this.saveStore(after);
         executedQuantumIds.push(selected.quantumId);
         job = live;
-        if (signal?.aborted) break;
+        // A failed Quantum is the wake boundary. Persist its retry/continuation
+        // and return control instead of spending this attempt on peer quanta.
+        break;
+      } finally {
+        quantumBoundary.cleanup();
       }
     }
 
@@ -1155,10 +1182,116 @@ function sanitizeFilePart(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120) || 'quantum';
 }
 
-function extractOperationalKind(error: unknown): string | undefined {
+const QUANTUM_ABORT_SETTLE_GRACE_MS = 1_000;
+
+async function awaitQuantumExecution<T>(execution: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw reviewAbortError(signal.reason, 'Review quantum aborted before execution.');
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let abortGraceTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      if (abortGraceTimer) clearTimeout(abortGraceTimer);
+      callback();
+    };
+    const boundaryError = () => reviewAbortError(
+      signal.reason,
+      'Review quantum exceeded its execution boundary.',
+    );
+    const onAbort = () => {
+      // Give the active branch one bounded grace period to flush its failure
+      // audit and reject with transcript metadata. Never wait indefinitely for
+      // a provider that ignores cancellation.
+      abortGraceTimer = setTimeout(
+        () => finish(() => reject(boundaryError())),
+        QUANTUM_ABORT_SETTLE_GRACE_MS,
+      );
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    execution.then(
+      value => finish(() => {
+        if (signal.aborted) reject(boundaryError());
+        else resolve(value);
+      }),
+      error => finish(() => reject(error)),
+    );
+  });
+}
+
+function createNonInterruptibleCommitBoundary(): { signal: AbortSignal; cleanup: () => void } {
+  return {
+    signal: new AbortController().signal,
+    cleanup: () => undefined,
+  };
+}
+
+function createQuantumAbortBoundary(
+  externalSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(normalizeExternalAbortReason(externalSignal?.reason));
+  if (externalSignal?.aborted) forwardAbort();
+  else externalSignal?.addEventListener('abort', forwardAbort, { once: true });
+  const timer = setTimeout(
+    () => controller.abort('quantum-timeout'),
+    Math.max(1, timeoutMs),
+  );
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener('abort', forwardAbort);
+    },
+  };
+}
+
+function normalizeExternalAbortReason(reason: unknown): 'runtime-shutdown' | 'attempt-deadline-exceeded' | 'external-abort' {
+  if (reason === 'runtime-shutdown') return 'runtime-shutdown';
+  if (reason === 'attempt-deadline-exceeded' || reason === 'review-timeout') {
+    return 'attempt-deadline-exceeded';
+  }
+  return 'external-abort';
+}
+
+function reviewAbortError(reason: unknown, message: string): Error {
+  const failureReason: ReviewOperationalFailureReason = reason === 'quantum-timeout'
+    ? 'quantum-timeout'
+    : normalizeExternalAbortReason(reason);
+  const kind: ReviewOperationalFailureKind = failureReason === 'quantum-timeout'
+    || failureReason === 'attempt-deadline-exceeded'
+    ? 'branch_timeout'
+    : 'branch_failure';
+  return Object.assign(new Error(`${message} Cause: ${failureReason}.`), {
+    name: 'AbortError',
+    kind,
+    reviewFailureReason: failureReason,
+  });
+}
+
+function extractOperationalKind(error: unknown): ReviewOperationalFailureKind | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const kind = (error as { kind?: unknown }).kind;
-  return typeof kind === 'string' && kind.length > 0 ? kind : undefined;
+  return kind === 'branch_timeout'
+    || kind === 'branch_failure'
+    || kind === 'invalid_completion_schema'
+    ? kind
+    : undefined;
+}
+
+function extractOperationalReason(error: unknown): ReviewOperationalFailureReason | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const reason = (error as { reviewFailureReason?: unknown }).reviewFailureReason;
+  return reason === 'quantum-timeout'
+    || reason === 'attempt-deadline-exceeded'
+    || reason === 'runtime-shutdown'
+    || reason === 'external-abort'
+    || reason === 'reader-error'
+    || reason === 'schema-validation-error'
+    ? reason
+    : undefined;
 }
 
 function extractOperationalTranscripts(error: unknown): string[] {
@@ -1208,6 +1341,8 @@ export async function advanceJobsFairly(
     maxClaimsPerJob?: number;
     signal?: AbortSignal;
     now?: Date;
+    /** Independent hard deadline for each claimed Quantum. */
+    quantumTimeoutMs?: number;
     shouldStopClaiming?: () => boolean;
   },
 ): Promise<{ claims: number; jobIds: string[] }> {
@@ -1231,6 +1366,7 @@ export async function advanceJobsFairly(
       {
         quantumId: claim.quantumId,
         maxQuanta: 1,
+        quantumTimeoutMs: options.quantumTimeoutMs,
         shouldStopClaiming: options.shouldStopClaiming,
       },
     );

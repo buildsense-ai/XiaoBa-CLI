@@ -510,14 +510,12 @@ export function completeQuantum(
     return { ok: false, reason: 'job_not_active' };
   }
 
-  if (quantum.state === 'terminal_failed') {
+  if (quantum.state !== 'leased' || !quantum.lease) {
     return { ok: false, reason: 'not_leased' };
   }
 
-  if (options.leaseId !== undefined) {
-    if (quantum.lease && quantum.lease.leaseId !== options.leaseId) {
-      return { ok: false, reason: 'lease_mismatch' };
-    }
+  if (options.leaseId !== undefined && quantum.lease.leaseId !== options.leaseId) {
+    return { ok: false, reason: 'lease_mismatch' };
   }
 
   const now = options.now ?? new Date();
@@ -536,6 +534,7 @@ export function completeQuantum(
     nextRetryAt: undefined,
     failureMessage: undefined,
     failureKind: undefined,
+    failureReason: undefined,
     transcriptPaths,
     updatedAt: nowIso,
   };
@@ -574,11 +573,12 @@ export function failQuantum(
   if (!quantum) return { ok: false, reason: 'missing' };
   if (job.disposition !== 'active') return { ok: false, reason: 'job_not_active' };
   if (quantum.state === 'succeeded') return { ok: false, reason: 'already_succeeded' };
+  if (quantum.state !== 'leased' || !quantum.lease) {
+    return { ok: false, reason: 'lease_mismatch' };
+  }
 
-  if (options.leaseId !== undefined) {
-    if (quantum.lease && quantum.lease.leaseId !== options.leaseId) {
-      return { ok: false, reason: 'lease_mismatch' };
-    }
+  if (options.leaseId !== undefined && quantum.lease.leaseId !== options.leaseId) {
+    return { ok: false, reason: 'lease_mismatch' };
   }
 
   const now = options.now ?? new Date();

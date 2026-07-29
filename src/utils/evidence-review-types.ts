@@ -114,6 +114,15 @@ export type ReviewOperationalFailureKind =
   | 'branch_failure'
   | 'invalid_completion_schema';
 
+/** Precise persisted cause behind the compatibility-level failure kind. */
+export type ReviewOperationalFailureReason =
+  | 'quantum-timeout'
+  | 'attempt-deadline-exceeded'
+  | 'runtime-shutdown'
+  | 'external-abort'
+  | 'reader-error'
+  | 'schema-validation-error';
+
 /**
  * Explicit job outcomes. Intermediate progress is always derived from quanta.
  * `superseded` is an extension point for Review Commit Fence successors (#109).
@@ -164,6 +173,7 @@ export interface ReviewQuantumRecord {
   result?: unknown;
   failureMessage?: string;
   failureKind?: ReviewOperationalFailureKind;
+  failureReason?: ReviewOperationalFailureReason;
   transcriptPaths: string[];
   updatedAt: string;
 }
