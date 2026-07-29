@@ -48,6 +48,7 @@ import {
   claimQuantum as claimQuantumCore,
   completeQuantum as completeQuantumCore,
   failQuantum as failQuantumCore,
+  releaseQuantum as releaseQuantumCore,
   reclaimExpiredLeases,
   createReviewQuantum,
   deriveJobDisposition,
@@ -518,6 +519,23 @@ export class EvidenceReviewEngine {
         const terminal = /terminal|integrity|manifest/i.test(message);
         const after = this.loadStore();
         const live = after.jobs[jobId]!;
+        if (operationalReason === 'runtime-shutdown' || operationalReason === 'external-abort') {
+          const released = releaseQuantumCore(live, selected.quantumId, {
+            leaseId: claim.lease.leaseId,
+            message,
+            reason: operationalReason,
+            now: nowFn(),
+          });
+          if (released.ok) {
+            upsertEvidenceReviewJob(after, live);
+            this.saveStore(after);
+            executedQuantumIds.push(selected.quantumId);
+          }
+          // Lifecycle cancellation is not a provider failure: preserve attempts
+          // and work class, then yield so a later wake can reclaim the Quantum.
+          job = live;
+          break;
+        }
         const failed = failQuantumCore(live, selected.quantumId, {
           message,
           leaseId: claim.lease.leaseId,

@@ -2813,34 +2813,18 @@ export class RuntimeLearning {
       }
     }
 
-    // Local work is also admitted durably before the first model call. Preserve
-    // its established one-wake completion behavior, but every leased Quantum
-    // now receives a fresh independent deadline in EvidenceReviewEngine.
-    try {
-      await mapWithConcurrency(
-        localEpisodeTasks,
-        Math.max(1, Math.floor(this.config.skillEvolutionReviewerConcurrency)),
-        async ({ episode, bundle }) => {
-          try {
-            this.skillEvolution.enqueueReview(bundle);
-            const result = await this.skillEvolution.reviewAndApply(bundle, wakeSignal);
-            if (result.queued === 'operational') {
-              const queued = this.skillEvolution.getQueuedReviewState(bundle.bundleId);
-              if (queued?.failureKind === 'branch_timeout') episodeReviewTimeouts++;
-              else episodeOperationalFailures++;
-            }
-            this.linkEvidenceCapsuleToAudit(bundle.bundleId, result.audit?.transitionId ?? result.transitionId);
-            incrementTransition(transitionsByKind, result.transition);
-            reviewedEpisodes++;
-            pendingEpisodeIds.delete(episode.episodeId);
-          } catch (error: any) {
-            episodeReviewFailures++;
-            Logger.warning(`[RuntimeLearning] review failed for ${episode.episodeId}: ${error.message}`);
-          }
-        },
-      );
-    } catch (error) {
-      settlementError = settlementError ?? error;
+    // Local work follows the same durable admission contract as external work.
+    // Newly admitted jobs are not drained synchronously; fair background wakes
+    // claim one Quantum per job and resume from the persisted graph.
+    for (const { episode, bundle } of localEpisodeTasks) {
+      try {
+        this.skillEvolution.enqueueReview(bundle);
+        pendingEpisodeIds.delete(episode.episodeId);
+      } catch (error) {
+        episodeReviewFailures++;
+        settlementError = settlementError ?? error;
+        Logger.warning(`[RuntimeLearning] review admission failed for ${episode.episodeId}: ${toErrorMessage(error)}`);
+      }
     }
 
     type QueueResult = {

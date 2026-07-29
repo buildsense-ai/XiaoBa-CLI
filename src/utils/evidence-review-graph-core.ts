@@ -473,7 +473,7 @@ export function claimQuantum(
 
 export type CompleteQuantumResult =
   | { ok: true; quantum: ReviewQuantumRecord; alreadySucceeded: boolean }
-  | { ok: false; reason: 'missing' | 'lease_mismatch' | 'not_leased' | 'job_not_active' };
+  | { ok: false; reason: 'missing' | 'lease_mismatch' | 'lease_expired' | 'not_leased' | 'job_not_active' };
 
 export interface CompleteQuantumOptions {
   result: unknown;
@@ -519,6 +519,9 @@ export function completeQuantum(
   }
 
   const now = options.now ?? new Date();
+  if (new Date(quantum.lease.expiresAt).getTime() <= now.getTime()) {
+    return { ok: false, reason: 'lease_expired' };
+  }
   const nowIso = now.toISOString();
   const resultHash = sha256Hex(stableStringify(options.result));
   const transcriptPaths = options.transcriptPath
@@ -545,6 +548,48 @@ export function completeQuantum(
   return { ok: true, quantum: succeeded, alreadySucceeded: false };
 }
 
+export interface ReleaseQuantumOptions {
+  leaseId: string;
+  message?: string;
+  reason?: ReviewQuantumRecord['failureReason'];
+  now?: Date;
+}
+
+/**
+ * Release a cancelled lease without consuming a retry attempt. This is used for
+ * lifecycle/external cancellation, where the Quantum itself did not fail.
+ */
+export function releaseQuantum(
+  job: GraphJobView,
+  quantumId: string,
+  options: ReleaseQuantumOptions,
+): { ok: true; quantum: ReviewQuantumRecord } | { ok: false; reason: 'missing' | 'lease_mismatch' | 'lease_expired' | 'job_not_active' } {
+  const quantum = job.quanta[quantumId];
+  if (!quantum) return { ok: false, reason: 'missing' };
+  if (job.disposition !== 'active') return { ok: false, reason: 'job_not_active' };
+  if (quantum.state !== 'leased' || !quantum.lease || quantum.lease.leaseId !== options.leaseId) {
+    return { ok: false, reason: 'lease_mismatch' };
+  }
+
+  const now = options.now ?? new Date();
+  if (new Date(quantum.lease.expiresAt).getTime() <= now.getTime()) {
+    return { ok: false, reason: 'lease_expired' };
+  }
+  const released: ReviewQuantumRecord = {
+    ...quantum,
+    state: 'pending',
+    lease: undefined,
+    nextRetryAt: undefined,
+    failureMessage: options.message,
+    failureReason: options.reason,
+    updatedAt: now.toISOString(),
+  };
+  job.quanta[quantumId] = released;
+  job.updatedAt = released.updatedAt;
+  job.nextDueAt = computeJobNextDueAt(job);
+  return { ok: true, quantum: released };
+}
+
 export interface FailQuantumOptions {
   message: string;
   retryBaseMs?: number;
@@ -558,7 +603,7 @@ export interface FailQuantumOptions {
 
 export type FailQuantumResult =
   | { ok: true; quantum: ReviewQuantumRecord }
-  | { ok: false; reason: 'missing' | 'already_succeeded' | 'lease_mismatch' | 'job_not_active' };
+  | { ok: false; reason: 'missing' | 'already_succeeded' | 'lease_mismatch' | 'lease_expired' | 'job_not_active' };
 
 /**
  * Record a local provider/schema failure. Retries only this Quantum with
@@ -582,6 +627,9 @@ export function failQuantum(
   }
 
   const now = options.now ?? new Date();
+  if (new Date(quantum.lease.expiresAt).getTime() <= now.getTime()) {
+    return { ok: false, reason: 'lease_expired' };
+  }
   const nowIso = now.toISOString();
   const attempts = quantum.attempts + 1;
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;

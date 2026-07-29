@@ -42,6 +42,28 @@ describe('Evidence Review Quantum lease fencing', () => {
     assert.equal(job.quanta[quantumId]?.state, 'pending');
   });
 
+  test('rejects completion and failure after an unreclaimed lease has expired', () => {
+    const { job, quantumId } = fixtureJob();
+    const claim = claimQuantum(job, quantumId, {
+      ownerWakeId: 'wake:expired',
+      now: new Date('2026-07-29T00:00:00.000Z'),
+      leaseMs: 10,
+    });
+    assert.equal(claim.ok, true);
+    if (!claim.ok) return;
+
+    const expiredAt = new Date('2026-07-29T00:00:00.011Z');
+    assert.deepEqual(
+      completeQuantum(job, quantumId, { result: { late: true }, leaseId: claim.lease.leaseId, now: expiredAt }),
+      { ok: false, reason: 'lease_expired' },
+    );
+    assert.deepEqual(
+      failQuantum(job, quantumId, { message: 'late failure', leaseId: claim.lease.leaseId, now: expiredAt }),
+      { ok: false, reason: 'lease_expired' },
+    );
+    assert.equal(job.quanta[quantumId]?.state, 'leased');
+  });
+
   test('rejects stale attempt completion and failure after a newer lease is claimed', () => {
     const { job, quantumId } = fixtureJob();
     const first = claimQuantum(job, quantumId, {

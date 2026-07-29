@@ -745,8 +745,8 @@ export class SkillEvolutionRuntime {
   }
 
   /**
-   * Public promotion path: create or resume a durable Evidence Review Job and
-   * advance all runnable quanta (readers through commit) under lease ownership.
+   * Legacy direct promotion path. Runtime heartbeats enqueue jobs and advance
+   * them via the fair single-Quantum scheduler instead of calling this drain.
    */
   private async reviewAndApplyViaEvidenceReviewJob(
     bundle: EvidenceBundle,
@@ -817,7 +817,13 @@ export class SkillEvolutionRuntime {
         job.jobId,
         wakeId,
         attemptController.signal,
-        { quantumTimeoutMs: this.getEffectiveConfig().reviewAttemptDeadlineMs },
+        {
+          // Legacy direct promotion remains an explicit drain API for callers
+          // that require a synchronous result. Heartbeat/runtime paths enqueue
+          // first and use advanceJobsFairly, which is bounded to one Quantum.
+          maxQuanta: 64,
+          quantumTimeoutMs: this.getEffectiveConfig().reviewAttemptDeadlineMs,
+        },
       );
       const live = engine.loadStore().jobs[job.jobId] ?? advanced.job;
 
