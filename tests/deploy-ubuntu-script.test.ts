@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -98,6 +98,43 @@ cat > "$FAKE_SSH_PAYLOAD"
   assert.match(payload, /xiaoba-dashboard\.service/);
   assert.match(payload, /opencli-chrome\.service/);
   assert.match(payload, /fonts-noto-cjk/);
+  const chromeUnit = payload.match(
+    /cat\s*>\s*\/etc\/systemd\/system\/opencli-chrome\.service\s*<<EOF\n([\s\S]*?)\nEOF/,
+  )?.[1];
+  assert.ok(chromeUnit, 'expected generated opencli-chrome systemd unit');
+  assert.match(chromeUnit, /\[Unit\][\s\S]*StartLimitIntervalSec=300[\s\S]*StartLimitBurst=10[\s\S]*\[Service\]/);
+  assert.match(chromeUnit, /\[Service\][\s\S]*RestartPreventExitStatus=21/);
+  assert.match(chromeUnit, /ExecStartPre=.*DeferredBrowserMetrics/);
+
+  assert.match(payload, /prepare_chrome_profile \/var\/lib\/opencli-cft/);
+  assert.match(payload, /systemctl reset-failed opencli-chrome\.service/);
   const syntax = spawnSync('bash', ['-n', payloadFile], { encoding: 'utf8' });
   assert.equal(syntax.status, 0, syntax.stderr);
+
+  const prepareFunction = payload.match(/function prepare_chrome_profile \(\)\s*\n\s*\{\s*\n([\s\S]*?)\n\s*\};/);
+  assert.ok(prepareFunction, 'expected Chrome profile preparation function');
+  const functionSource = `prepare_chrome_profile() {\n${prepareFunction[1]}\n}`;
+  writeFileSync(path.join(fixtureDir, 'systemctl'), '#!/bin/sh\nexit 0\n');
+  writeFileSync(path.join(fixtureDir, 'pgrep'), '#!/bin/sh\nexit "${FAKE_PGREP_STATUS:-1}"\n');
+  chmodSync(path.join(fixtureDir, 'systemctl'), 0o755);
+  chmodSync(path.join(fixtureDir, 'pgrep'), 0o755);
+
+  const profileDir = path.join(fixtureDir, 'chrome-profile');
+  mkdirSync(profileDir);
+  const singletonFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+  for (const file of singletonFiles) writeFileSync(path.join(profileDir, file), 'stale');
+  const prepare = spawnSync('bash', ['-c', `${functionSource}\nfail() { exit 1; }\nprepare_chrome_profile "$1"`, 'bash', profileDir], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${fixtureDir}:${process.env.PATH}`, FAKE_PGREP_STATUS: '1' },
+  });
+  assert.equal(prepare.status, 0, prepare.stderr);
+  for (const file of singletonFiles) assert.equal(existsSync(path.join(profileDir, file)), false);
+
+  writeFileSync(path.join(profileDir, 'SingletonLock'), 'active');
+  const active = spawnSync('bash', ['-c', `${functionSource}\nfail() { exit 1; }\nprepare_chrome_profile "$1"`, 'bash', profileDir], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${fixtureDir}:${process.env.PATH}`, FAKE_PGREP_STATUS: '0' },
+  });
+  assert.notEqual(active.status, 0);
+  assert.equal(existsSync(path.join(profileDir, 'SingletonLock')), true);
 });

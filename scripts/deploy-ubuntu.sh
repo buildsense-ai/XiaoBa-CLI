@@ -218,6 +218,18 @@ remote_install() {
     fi
   }
 
+  prepare_chrome_profile() {
+    local chrome_profile=$1
+    systemctl stop opencli-chrome.service 2>/dev/null || true
+    if pgrep -af -- "[c]hrome.*--user-data-dir=$chrome_profile" >/dev/null; then
+      fail "a Chrome process outside opencli-chrome.service is using $chrome_profile"
+    fi
+    rm -f -- \
+      "$chrome_profile/SingletonLock" \
+      "$chrome_profile/SingletonCookie" \
+      "$chrome_profile/SingletonSocket"
+  }
+
   log "Updating and building XiaoBa"
   update_repo "$xiaoba_repo" "$xiaoba_branch" "$xiaoba_dir"
   (
@@ -298,6 +310,7 @@ EOF
     useradd --system --home-dir /var/lib/opencli-chrome --create-home --shell /usr/sbin/nologin opencli
   fi
   install -d -o opencli -g opencli /var/lib/opencli-chrome /var/lib/opencli-cft
+  install -d -o opencli -g opencli /var/lib/opencli-cft/DeferredBrowserMetrics
 
   cat >/etc/systemd/system/opencli-daemon.service <<EOF
 [Unit]
@@ -323,6 +336,8 @@ EOF
 Description=OpenCLI Chrome Browser Bridge
 After=network-online.target opencli-daemon.service
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -332,14 +347,23 @@ Environment=HOME=/var/lib/opencli-chrome
 ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1440x900x24" /opt/chrome-for-testing/chrome-linux64/chrome --no-sandbox --disable-dev-shm-usage --disable-gpu --silent-debugger-extension-api --lang=zh-CN --no-first-run --no-default-browser-check --password-store=basic --user-data-dir=/var/lib/opencli-cft --disable-extensions-except=$opencli_dir/extension --load-extension=$opencli_dir/extension about:blank
 Restart=always
 RestartSec=3
+RestartPreventExitStatus=21
+# Chrome exit 21 means the profile is locked by another process/machine.
+# Stop retrying instead of generating unbounded BrowserMetrics .pma files.
+ExecStartPre=/usr/bin/mkdir -p /var/lib/opencli-cft/DeferredBrowserMetrics
+ExecStartPre=/usr/bin/find /var/lib/opencli-cft/DeferredBrowserMetrics -maxdepth 1 -type f -name BrowserMetrics-*.pma -mtime +1 -delete
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+  log "Preparing the machine-local Chrome profile"
+  prepare_chrome_profile /var/lib/opencli-cft
+
   log "Refreshing fonts and starting services"
   fc-cache -f
   systemctl daemon-reload
+  systemctl reset-failed opencli-chrome.service
   systemctl enable --now xiaoba-dashboard.service opencli-daemon.service opencli-chrome.service
   systemctl restart xiaoba-dashboard.service opencli-daemon.service opencli-chrome.service
 
