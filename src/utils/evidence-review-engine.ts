@@ -41,6 +41,7 @@ import { createEvidenceReviewJob } from './evidence-review-graph';
 import {
   loadEvidenceReviewJobStore,
   saveEvidenceReviewJobStore,
+  mutateEvidenceReviewJobStore,
   upsertEvidenceReviewJob,
   evidenceReviewJobStorePathForReviewQueue,
 } from './evidence-review-job-store';
@@ -369,54 +370,51 @@ export class EvidenceReviewEngine {
       // are recorded on the selected Quantum below.
       if (signal?.aborted && signal.reason === 'runtime-shutdown') break;
       const now = nowFn();
-      const state = this.loadStore();
-      let job = state.jobs[jobId];
-      if (!job || job.disposition !== 'active') {
+      const claimedWork = mutateEvidenceReviewJobStore(this.jobStorePath, (state) => {
+        const job = state.jobs[jobId];
+        if (!job || job.disposition !== 'active') {
+          return { job, selected: undefined, claim: undefined, remainingRunnable: 0 };
+        }
+
+        // Reclaim, reconcile, select and lease are one durable transaction.
+        // Never hold this lock while a provider-backed Quantum executes.
+        reclaimExpiredLeases(job, now);
+        this.reconcileRevisionRound(state, job, now);
+        const runnable = listRunnableQuanta(job, now).filter(q => (
+          (!allowedKinds || allowedKinds.has(q.kind))
+          && (!options?.quantumId || q.quantumId === options.quantumId)
+        ));
+        if (runnable.length === 0) {
+          job.disposition = deriveJobDisposition(job);
+          job.updatedAt = now.toISOString();
+          upsertEvidenceReviewJob(state, job);
+          return { job, selected: undefined, claim: undefined, remainingRunnable: 0 };
+        }
+
+        const selected = selectNextQuantum(job, runnable);
+        if (!selected) return { job, selected: undefined, claim: undefined, remainingRunnable: 0 };
+        const claim = claimQuantumCore(job, selected.quantumId, {
+          ownerWakeId: wakeId,
+          now,
+          leaseMs,
+        });
+        if (!claim.ok) return { job, selected: undefined, claim: undefined, remainingRunnable: runnable.length };
+        upsertEvidenceReviewJob(state, job);
+        return { job, selected, claim, remainingRunnable: runnable.length - 1 };
+      });
+      let { job, selected, claim } = claimedWork;
+      if (!job) {
+        throw new Error(`Evidence Review Job not found: ${jobId}`);
+      }
+      if (!selected || !claim || !claim.ok) {
         return {
-          job: job ?? state.jobs[jobId]!,
+          job,
           executedQuantumIds,
-          remainingRunnable: 0,
+          remainingRunnable: claimedWork.remainingRunnable,
           result,
           lastError,
         };
       }
-
-      // Reclaim expired leases via pure graph helper (mutates quanta in place).
-      reclaimExpiredLeases(job, now);
-
-      // FAIL-CLOSED RECONCILIATION: if a crash interrupted the atomic
-      // verifier-completion-plus-expansion write, the persisted state may
-      // have a succeeded round-1 verifier with 'revise' but no round-2
-      // nodes and a still-runnable old commit. Expand the graph here so
-      // the old commit can never claim round 1 before any runnable selection.
-      this.reconcileRevisionRound(state, job, now);
-
-      upsertEvidenceReviewJob(state, job);
-      this.saveStore(state);
-
-      const runnable = listRunnableQuanta(job, now).filter(q => (
-        (!allowedKinds || allowedKinds.has(q.kind))
-        && (!options?.quantumId || q.quantumId === options.quantumId)
-      ));
-      if (runnable.length === 0) {
-        job.disposition = deriveJobDisposition(job);
-        job.updatedAt = now.toISOString();
-        upsertEvidenceReviewJob(state, job);
-        this.saveStore(state);
-        return { job, executedQuantumIds, remainingRunnable: 0, result, lastError };
-      }
-
-      const selected = selectNextQuantum(job, runnable);
-      if (!selected) break;
-
-      const claim = claimQuantumCore(job, selected.quantumId, {
-        ownerWakeId: wakeId,
-        now,
-        leaseMs,
-      });
-      if (!claim.ok) break;
-      upsertEvidenceReviewJob(state, job);
-      this.saveStore(state);
 
       // Provider-backed quanta are cancellable and independently bounded.
       // Commit owns external side effects and must run to its durable receipt;
@@ -439,8 +437,8 @@ export class EvidenceReviewEngine {
         if (quantumBoundary.signal.aborted) {
           throw reviewAbortError(quantumBoundary.signal.reason, 'Review quantum exceeded its execution boundary.');
         }
-        const after = this.loadStore();
-        const live = after.jobs[jobId]!;
+        const live = mutateEvidenceReviewJobStore(this.jobStorePath, (after) => {
+          const live = after.jobs[jobId]!;
         const completed = completeQuantumCore(live, selected.quantumId, {
           result: execution.result,
           leaseId: claim.lease.leaseId,
@@ -488,7 +486,8 @@ export class EvidenceReviewEngine {
           this.maybeExpandRevisionRound(after, live, selected.quantumId, nowFn());
         }
         upsertEvidenceReviewJob(after, live);
-        this.saveStore(after);
+          return live;
+        });
         executedQuantumIds.push(selected.quantumId);
 
         if (selected.kind === 'commit' && result) {

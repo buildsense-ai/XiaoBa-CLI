@@ -8,6 +8,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
+import {
+  reclaimStaleClaimDirectory,
+  sameProcessLockClaim,
+  tryInstallRecordDirectory,
+  type ProcessLockClaimIdentity,
+} from './process-lock-claim';
 import {
   EVIDENCE_REVIEW_JOB_SCHEMA_VERSION,
   type EvidenceReviewJob,
@@ -142,6 +149,82 @@ export function saveEvidenceReviewJobStore(
       // best effort cleanup
     }
     throw error;
+  }
+}
+
+const STORE_LOCK_FILE = 'owner.json';
+
+function storeLockPath(filePath: string): string {
+  return `${filePath}.lock`;
+}
+
+function readLockClaim(filePath: string): ProcessLockClaimIdentity | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<ProcessLockClaimIdentity>;
+    return typeof parsed.pid === 'number'
+      && typeof parsed.startedAt === 'string'
+      && typeof parsed.token === 'string'
+      ? { pid: parsed.pid, startedAt: parsed.startedAt, token: parsed.token }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Atomically load, mutate and persist the whole-file store. The lock never
+ * spans asynchronous Quantum execution; it protects only a short read/modify/
+ * rename transaction and safely reclaims claims left by dead processes.
+ */
+export function mutateEvidenceReviewJobStore<T>(
+  filePath: string,
+  mutation: (state: EvidenceReviewJobStoreState) => T,
+): T {
+  const lockPath = storeLockPath(filePath);
+  const identity: ProcessLockClaimIdentity = {
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    token: crypto.randomUUID(),
+  };
+  const serialized = `${JSON.stringify(identity)}\n`;
+  const install = () => tryInstallRecordDirectory(lockPath, STORE_LOCK_FILE, serialized);
+  let installed = install();
+  if (!installed) {
+    const observed = readLockClaim(path.join(lockPath, STORE_LOCK_FILE));
+    if (observed && !isProcessAlive(observed.pid)) {
+      reclaimStaleClaimDirectory({
+        claimDir: lockPath,
+        claimFileName: STORE_LOCK_FILE,
+        observed,
+        reclaimer: identity,
+        readClaim: readLockClaim,
+        isProcessAlive,
+      });
+      installed = install();
+    }
+  }
+  if (!installed) throw new Error(`Evidence Review Job store is busy: ${filePath}`);
+
+  try {
+    const state = loadEvidenceReviewJobStore(filePath);
+    const result = mutation(state);
+    saveEvidenceReviewJobStore(filePath, state);
+    return result;
+  } finally {
+    const installedClaim = readLockClaim(path.join(lockPath, STORE_LOCK_FILE));
+    if (sameProcessLockClaim(installedClaim, identity)) {
+      try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
   }
 }
 
