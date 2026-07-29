@@ -531,6 +531,8 @@ export interface SkillEvolutionResult {
 }
 
 export interface SkillEvolutionQueueReviewResult {
+  /** Ordinary live/historical episode Jobs that reached a terminal review outcome in this wake. */
+  reviewedEpisodes: number;
   reviewed: number;
   deferredReviewed: number;
   operationalReviewed: number;
@@ -1996,6 +1998,7 @@ export class SkillEvolutionRuntime {
     jobIds: readonly string[],
   ): SkillEvolutionQueueReviewResult {
     const empty: SkillEvolutionQueueReviewResult = {
+      reviewedEpisodes: 0,
       reviewed: 0,
       deferredReviewed: 0,
       operationalReviewed: 0,
@@ -2007,34 +2010,63 @@ export class SkillEvolutionRuntime {
     if (jobIds.length === 0) return empty;
     try {
       const jobs = this.getEvidenceReviewEngine().loadStore().jobs;
+      const hasAncestor = (
+        job: EvidenceReviewJob,
+        predicate: (candidate: EvidenceReviewJob) => boolean,
+      ): boolean => {
+        const visited = new Set<string>();
+        let current: EvidenceReviewJob | undefined = job;
+        while (current && !visited.has(current.jobId)) {
+          if (predicate(current)) return true;
+          visited.add(current.jobId);
+          current = current.parentJobId ? jobs[current.parentJobId] : undefined;
+        }
+        return false;
+      };
+      const projectedJobIds = new Set<string>();
       for (const jobId of jobIds) {
-        const job = jobs[jobId];
+        let job = jobs[jobId];
         if (!job) continue;
-        const wasOperational = job.workClass === 'operational_recovery';
-        const wasDeferred = job.domain?.reactivatedDeferred === true;
-        if (!wasOperational && !wasDeferred) continue;
+        const successorPath = new Set<string>();
+        while (job.successorJobId && !successorPath.has(job.jobId)) {
+          successorPath.add(job.jobId);
+          const successor = jobs[job.successorJobId];
+          if (!successor) break;
+          job = successor;
+        }
+        if (projectedJobIds.has(job.jobId)) continue;
+        projectedJobIds.add(job.jobId);
+        const wasOperational = hasAncestor(job, candidate => candidate.workClass === 'operational_recovery');
+        const wasDeferred = hasAncestor(job, candidate => candidate.domain?.reactivatedDeferred === true);
+        const wasEpisode = !wasOperational && !wasDeferred
+          && classifyEvidenceBundleAuthority(job.bundle).authority?.kind === 'learning-episode';
+        if (!wasOperational && !wasDeferred && !wasEpisode) continue;
         const bundleId = job.bundle.bundleId;
         if (job.disposition === 'completed') {
-          empty.reviewed += 1;
+          if (wasEpisode) empty.reviewedEpisodes += 1;
+          else empty.reviewed += 1;
           if (wasOperational) empty.operationalReviewed += 1;
           if (wasDeferred) empty.deferredReviewed += 1;
-          empty.queueOutcomes![bundleId] = { status: 'succeeded' };
+          if (!wasEpisode) empty.queueOutcomes![bundleId] = { status: 'succeeded' };
           if (job.verifierResult?.transition) {
             incrementTransitionCount(empty.transitionsByKind, job.verifierResult.transition);
           } else if (job.draft?.envelope.decision) {
             incrementTransitionCount(empty.transitionsByKind, job.draft.envelope.decision);
           }
         } else if (job.disposition === 'deferred') {
-          empty.reviewed += 1;
+          if (wasEpisode) empty.reviewedEpisodes += 1;
+          else empty.reviewed += 1;
           if (wasOperational) empty.operationalReviewed += 1;
           if (wasDeferred) {
             empty.deferredReviewed += 1;
             empty.deferredRetried += 1;
           }
-          empty.queueOutcomes![bundleId] = {
-            status: 'deferred',
-            reason: job.verifierResult?.rationale ?? job.terminalReason,
-          };
+          if (!wasEpisode) {
+            empty.queueOutcomes![bundleId] = {
+              status: 'deferred',
+              reason: job.verifierResult?.rationale ?? job.terminalReason,
+            };
+          }
           incrementTransitionCount(empty.transitionsByKind, 'defer');
         } else if (wasOperational) {
           const retry = Object.values(job.quanta)

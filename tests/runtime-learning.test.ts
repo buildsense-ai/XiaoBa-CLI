@@ -270,14 +270,16 @@ async function wakeUntil(
   env: TestEnv,
   done: () => boolean,
   maxWakes = 64,
-): Promise<void> {
+  onWake?: (result: Awaited<ReturnType<RuntimeLearning['wake']>>) => void,
+): Promise<Awaited<ReturnType<RuntimeLearning['wake']>>> {
   for (let wake = 0; wake < maxWakes; wake++) {
     const before = durableQuantumProgress(env);
-    await env.runtimeLearning.wake('manual');
+    const result = await env.runtimeLearning.wake('manual');
+    onWake?.(result);
     const after = durableQuantumProgress(env);
     assert.ok(after - before >= 0 && after - before <= 1,
       `one heartbeat may advance at most one Quantum; observed progress delta ${after - before}`);
-    if (done()) return;
+    if (done()) return result;
   }
   throw new Error(`Durable review did not converge after ${maxWakes} wakes.`);
 }
@@ -1053,10 +1055,16 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     assert.equal(result.review.reviewedEpisodes, 0);
     assert.equal(env.skillEvolution.getReviewedOrQueuedBundleIds().size, 1);
 
-    await wakeUntil(
+    const commitWake = await wakeUntil(
       env,
       () => Object.keys(readOrEmpty(env.registryPath)?.capabilities ?? {}).length === 1,
     );
+    assert.equal(commitWake.review.reviewedEpisodes, 1);
+    assert.equal(commitWake.review.reviewedQueueEntries, 0);
+    assert.equal(commitWake.review.transitionsByKind.create_current_skill, 1);
+    const afterCommitWake = await env.runtimeLearning.wake('manual');
+    assert.equal(afterCommitWake.review.reviewedEpisodes, 0);
+    assert.equal(afterCommitWake.review.transitionsByKind.create_current_skill, undefined);
     assert.equal(env.skillEvolution.getAudit().filter(entry => entry.transition === 'create_current_skill').length, 1);
     assert.equal(env.branchCalls.author, 1);
     assert.equal(env.branchCalls.verifier, 1);
@@ -1397,6 +1405,9 @@ describe('RuntimeLearning — AC3: Due Review', () => {
 
       assert.equal(result.review.reviewedEpisodes, 0);
       assert.equal(customEnv.skillEvolution.getReviewedOrQueuedBundleIds().size, 2);
+      let reportedEpisodes = 0;
+      let reportedCreates = 0;
+      let reportedDefers = 0;
       await wakeUntil(customEnv, () => {
         const state = loadEvidenceReviewJobStore(
           evidenceReviewJobStorePathForReviewQueue(customEnv.reviewQueuePath),
@@ -1404,7 +1415,14 @@ describe('RuntimeLearning — AC3: Due Review', () => {
         return Object.values(state.jobs).filter(job => (
           job.disposition === 'completed' || job.disposition === 'deferred'
         )).length === 2;
-      }, 128);
+      }, 128, wake => {
+        reportedEpisodes += wake.review.reviewedEpisodes;
+        reportedCreates += wake.review.transitionsByKind.create_current_skill ?? 0;
+        reportedDefers += wake.review.transitionsByKind.defer ?? 0;
+      });
+      assert.equal(reportedEpisodes, 2);
+      assert.equal(reportedCreates, 1);
+      assert.equal(reportedDefers, 1);
       assert.equal(customEnv.skillEvolution.getAudit().filter(entry => entry.transition === 'create_current_skill').length, 1);
       assert.equal(customEnv.skillEvolution.getAudit().filter(entry => entry.transition === 'defer').length, 1);
       assert.equal(Object.values(readOrEmpty(customEnv.registryPath)?.capabilities ?? {}).length, 1);
