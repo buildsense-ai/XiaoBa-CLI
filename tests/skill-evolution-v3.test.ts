@@ -333,8 +333,10 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-v3-skill-evolution-'));
   const skillsRoot = path.join(root, 'skills');
   const previousRuntimeRoot = process.env.XIAOBA_RUNTIME_ROOT;
+  const previousUserDataRoot = process.env.XIAOBA_USER_DATA_DIR;
   const previousSkillsRoot = process.env.XIAOBA_SKILLS_DIR;
   process.env.XIAOBA_RUNTIME_ROOT = root;
+  process.env.XIAOBA_USER_DATA_DIR = root;
   process.env.XIAOBA_SKILLS_DIR = skillsRoot;
   const options: SkillEvolutionOptions = {
     workingDirectory: root,
@@ -375,6 +377,8 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
       fs.rmSync(root, { recursive: true, force: true });
       if (previousRuntimeRoot === undefined) delete process.env.XIAOBA_RUNTIME_ROOT;
       else process.env.XIAOBA_RUNTIME_ROOT = previousRuntimeRoot;
+      if (previousUserDataRoot === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previousUserDataRoot;
       if (previousSkillsRoot === undefined) delete process.env.XIAOBA_SKILLS_DIR;
       else process.env.XIAOBA_SKILLS_DIR = previousSkillsRoot;
     },
@@ -1867,7 +1871,7 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
-  test('queues missing verifier obligation dispositions for operational retry', async () => {
+  test('completes missing verifier obligation dispositions as cited semantic defer', async () => {
     const env = setup();
     try {
       const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
@@ -1897,14 +1901,15 @@ describe('V3 verified semantic Current Skills', () => {
         fixtureCandidateBundle(fixtureCandidate(), 'missing-obligation-dispositions'),
       );
 
-      assert.equal(result.queued, 'operational');
-      const entry = findOperationalJobByBundleId(
-        loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath)),
-        'missing-obligation-dispositions',
-      );
+      assert.equal(result.transition, 'defer');
+      assert.equal(result.queued, 'deferred');
+      const state = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      const entry = Object.values(state.jobs)
+        .find(job => job.bundle.bundleId === 'missing-obligation-dispositions');
       assert.ok(entry);
-      assert.equal(operationalFailure(entry)?.failureKind, 'invalid_completion_schema');
-      assert.match(operationalFailure(entry)?.failureMessage ?? '', /Missing disposition/);
+      assert.equal(entry.disposition, 'deferred');
+      assert.equal(entry.obligationDispositions?.length, entry.obligations?.length);
+      assert.ok(entry.obligationDispositions?.every(disposition => disposition.decision === 'deferred'));
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();
@@ -2734,9 +2739,35 @@ describe('V3 verified semantic Current Skills', () => {
         reviewCommitKey: 'job:test:quantum:commit',
       };
 
+      const runtime = new SkillEvolutionRuntime(env.options);
       const first = applyCapabilityTransition(input);
       const replayed = applyCapabilityTransition(input);
       assert.equal(replayed.transitionId, first.transitionId);
+
+      // Simulate the crash window after audit append but before journal cleanup.
+      const targetRegistry = loadCurrentSkillRegistry(env.options.registryPath);
+      const residualJournal: TransitionJournal = {
+        schemaVersion: first.audit.schemaVersion,
+        transitionId: first.transitionId,
+        priorRegistryHash: computeCurrentSkillRegistryHash(targetRegistry),
+        targetRegistryHash: computeCurrentSkillRegistryHash(targetRegistry),
+        targetRegistry,
+        skillOperations: [],
+        audit: first.audit,
+      };
+      fs.writeFileSync(env.options.journalPath, JSON.stringify(residualJournal), 'utf8');
+      const recovered = (runtime as any).recoverCommittedTransitionQuantum({
+        bundle,
+        draft: input.draft,
+        verifier: input.verifier,
+        job: { jobId: 'job:test' },
+        branchTranscriptPaths: [],
+        round: 1,
+        reviewCommitKey: input.reviewCommitKey,
+      });
+      assert.equal(recovered?.transitionId, first.transitionId);
+      assert.equal(fs.existsSync(env.options.journalPath), false);
+
       const receipts = loadTransitionAudit(env.options.auditPath)
         .filter(entry => entry.reviewCommitKey === input.reviewCommitKey);
       assert.equal(receipts.length, 1);

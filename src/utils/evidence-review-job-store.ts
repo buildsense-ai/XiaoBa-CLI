@@ -153,6 +153,7 @@ export function saveEvidenceReviewJobStore(
 }
 
 const STORE_LOCK_FILE = 'owner.json';
+const STORE_LOCK_BACKUP_FILE = 'owner.backup.json';
 const STORE_LOCK_RETRY_ATTEMPTS = 50;
 const STORE_LOCK_RETRY_DELAY_MS = 5;
 const STORE_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
@@ -184,6 +185,14 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+function resolveRedundantLockClaim(
+  primary: ProcessLockClaimIdentity | null,
+  backup: ProcessLockClaimIdentity | null,
+): ProcessLockClaimIdentity | null {
+  if (primary && backup && !sameProcessLockClaim(primary, backup)) return null;
+  return primary ?? backup;
+}
+
 /**
  * Atomically load, mutate and persist the whole-file store. The lock never
  * spans asynchronous Quantum execution; it protects only a short read/modify/
@@ -203,16 +212,27 @@ export function mutateEvidenceReviewJobStore<T>(
     token: crypto.randomUUID(),
   };
   const serialized = `${JSON.stringify(identity)}\n`;
-  const install = () => tryInstallRecordDirectory(lockPath, STORE_LOCK_FILE, serialized);
+  const install = () => tryInstallRecordDirectory(
+    lockPath,
+    STORE_LOCK_FILE,
+    serialized,
+    { [STORE_LOCK_BACKUP_FILE]: serialized },
+  );
   let installed = false;
   for (let attempt = 0; attempt <= STORE_LOCK_RETRY_ATTEMPTS && !installed; attempt++) {
     installed = install();
     if (installed) break;
-    const observed = readLockClaim(path.join(lockPath, STORE_LOCK_FILE));
+    const primary = readLockClaim(path.join(lockPath, STORE_LOCK_FILE));
+    const backup = readLockClaim(path.join(lockPath, STORE_LOCK_BACKUP_FILE));
+    const observed = resolveRedundantLockClaim(primary, backup);
+    // New locks publish two immutable owner records atomically with the
+    // directory. One damaged record can be recovered from the other without
+    // guessing. If both are missing/malformed, fail closed: a live owner may
+    // still be inside the mutation and must never have its lock deleted.
     if (observed && !isProcessAlive(observed.pid)) {
       reclaimStaleClaimDirectory({
         claimDir: lockPath,
-        claimFileName: STORE_LOCK_FILE,
+        claimFileName: primary ? STORE_LOCK_FILE : STORE_LOCK_BACKUP_FILE,
         observed,
         reclaimer: identity,
         readClaim: readLockClaim,
@@ -232,7 +252,10 @@ export function mutateEvidenceReviewJobStore<T>(
     saveEvidenceReviewJobStore(filePath, state);
     return result;
   } finally {
-    const installedClaim = readLockClaim(path.join(lockPath, STORE_LOCK_FILE));
+    const installedClaim = resolveRedundantLockClaim(
+      readLockClaim(path.join(lockPath, STORE_LOCK_FILE)),
+      readLockClaim(path.join(lockPath, STORE_LOCK_BACKUP_FILE)),
+    );
     if (sameProcessLockClaim(installedClaim, identity)) {
       try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best effort */ }
     }

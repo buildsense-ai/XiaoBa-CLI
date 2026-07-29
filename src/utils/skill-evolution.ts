@@ -744,6 +744,7 @@ export class SkillEvolutionRuntime {
       runSkillAuthor: async (input) => this.runSkillAuthorQuantum(input),
       runSkillVerifier: async (input) => this.runSkillVerifierQuantum(input),
       commitTransition: async (input) => this.commitTransitionQuantum(input),
+      recoverCommittedTransition: (input) => this.recoverCommittedTransitionQuantum(input),
     });
   }
 
@@ -1160,6 +1161,51 @@ export class SkillEvolutionRuntime {
     }
     const dispositions = verification.obligationDispositions ?? [];
     return { verifier: verification, dispositions, transcriptPaths };
+  }
+
+  private recoverCommittedTransitionQuantum(input: {
+    bundle: EvidenceBundle;
+    draft: SkillDraft;
+    verifier: SkillVerifierResult;
+    job: EvidenceReviewJob;
+    branchTranscriptPaths: string[];
+    round: number;
+    reviewCommitKey: string;
+  }): SkillEvolutionResult | undefined {
+    // A prior process may have appended the audit but failed before marking or
+    // unlinking the journal. Finish that idempotent recovery first so receipt
+    // reconciliation cannot strand a journal that makes discovery fail closed.
+    recoverTransitionJournal(this.options);
+    const audit = loadTransitionAudit(this.options.auditPath)
+      .slice()
+      .reverse()
+      .find(entry => entry.reviewCommitKey === input.reviewCommitKey);
+    if (!audit) return undefined;
+    const registry = loadCurrentSkillRegistry(this.options.registryPath);
+    const activeHandle = audit.involvedCapabilityHandles.find(handle => registry.capabilities[handle]);
+    const record = activeHandle ? registry.capabilities[activeHandle] : undefined;
+    const deferred = audit.transition === 'defer';
+    const recovered: SkillEvolutionResult = {
+      transition: audit.transition,
+      transitionId: audit.transitionId,
+      verified: input.verifier.decision === 'accept'
+        && audit.transition !== 'defer'
+        && audit.transition !== 'reject_candidate',
+      rounds: input.round,
+      draft: input.draft,
+      verifier: input.verifier,
+      ...(record ? { record } : {}),
+      audit,
+      ...(deferred ? { queued: 'deferred' as const, queueEntryId: input.job.jobId } : {}),
+    };
+    this.schedulePostCommitReassessmentIfNeeded(
+      this.getEvidenceReviewEngine(),
+      input.job.jobId,
+      input.bundle,
+      this.extractCandidateFromBundle(input.bundle),
+      recovered,
+    );
+    return recovered;
   }
 
   private async commitTransitionQuantum(input: {

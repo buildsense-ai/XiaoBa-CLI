@@ -25,6 +25,7 @@ export function tryInstallRecordDirectory(
   targetDir: string,
   fileName: string,
   serialized: string,
+  additionalRecords: Readonly<Record<string, string>> = {},
 ): boolean {
   const candidateDir = `${targetDir}.candidate-${process.pid}-${crypto.randomUUID()}`;
   fs.mkdirSync(candidateDir, { recursive: false });
@@ -33,6 +34,15 @@ export function tryInstallRecordDirectory(
       encoding: 'utf8',
       mode: 0o600,
     });
+    for (const [additionalName, additionalSerialized] of Object.entries(additionalRecords)) {
+      if (!additionalName || path.basename(additionalName) !== additionalName || additionalName === fileName) {
+        throw new Error(`Invalid additional lock record name: ${additionalName}`);
+      }
+      fs.writeFileSync(path.join(candidateDir, additionalName), additionalSerialized, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+    }
     try {
       fs.renameSync(candidateDir, targetDir);
       return true;

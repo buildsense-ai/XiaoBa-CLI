@@ -146,6 +146,16 @@ export interface EvidenceReviewEngineOptions {
     /** Execute synchronous transition side effects while the durable lease is fenced. */
     commitUnderLease: CommitLeaseGuard;
   }) => Promise<SkillEvolutionResult>;
+  /** Resolve a previously committed audit receipt without invoking commit again. */
+  recoverCommittedTransition?: (input: {
+    bundle: EvidenceBundle;
+    draft: SkillDraft;
+    verifier: SkillVerifierResult;
+    job: EvidenceReviewJob;
+    branchTranscriptPaths: string[];
+    round: number;
+    reviewCommitKey: string;
+  }) => SkillEvolutionResult | undefined;
 }
 
 export interface AdvanceJobResult {
@@ -489,7 +499,40 @@ export class EvidenceReviewEngine {
             }
             // The whole-store lock remains held through this synchronous work.
             // A newer wake cannot reclaim the lease before journal side effects.
-            return work();
+            const value = work();
+            const completedAt = nowFn();
+            const current = live.quanta[selected.quantumId];
+            if (
+              !current
+              || current.state !== 'leased'
+              || current.lease?.leaseId !== claim.lease.leaseId
+              || current.lease.ownerWakeId !== claim.lease.ownerWakeId
+            ) {
+              throw new Error('quantum_lease_lost: identity changed during commit');
+            }
+            // Synchronous journal recovery may block the event loop longer than
+            // leaseMs. Extend before releasing the store lock so no contender
+            // can reclaim the just-committed Quantum in the completion gap.
+            current.lease = {
+              ...current.lease,
+              expiresAt: new Date(completedAt.getTime() + leaseMs).toISOString(),
+            };
+            current.updatedAt = completedAt.toISOString();
+            const receipt = value && typeof value === 'object'
+              ? value as { transitionId?: unknown; audit?: { transitionId?: unknown } }
+              : undefined;
+            const transitionId = typeof receipt?.transitionId === 'string'
+              ? receipt.transitionId
+              : typeof receipt?.audit?.transitionId === 'string'
+                ? receipt.audit.transitionId
+                : undefined;
+            current.commitReceipt = {
+              key: current.commitIntent?.key ?? `${live.jobId}:${selected.quantumId}`,
+              ...(transitionId ? { transitionId } : {}),
+              recordedAt: completedAt.toISOString(),
+            };
+            live.updatedAt = completedAt.toISOString();
+            return value;
           });
         const execution = await awaitQuantumExecution(
           this.executeQuantum(
@@ -610,7 +653,14 @@ export class EvidenceReviewEngine {
               reason: operationalReason,
               now: nowFn(),
             });
-            if (released.ok) upsertEvidenceReviewJob(after, live);
+            if (released.ok) {
+              const releasedQuantum = live.quanta[selected.quantumId]!;
+              releasedQuantum.transcriptPaths = [...new Set([
+                ...releasedQuantum.transcriptPaths,
+                ...operationalTranscripts,
+              ])];
+              upsertEvidenceReviewJob(after, live);
+            }
             return { live, changed: released.ok };
           }
           const failed = failQuantumCore(live, selected.quantumId, {
@@ -1016,14 +1066,27 @@ export class EvidenceReviewEngine {
     }
 
     const branchTranscriptPaths = successfulTranscriptPaths(job);
-    const committed = await this.options.commitTransition({
+    const reviewCommitKey = quantum.commitIntent?.key ?? `${job.jobId}:${quantum.quantumId}`;
+    // The Transition Audit is the authoritative external receipt. If a process
+    // crashed after journal/audit commit but before completing this Quantum,
+    // reconcile by stable key instead of invoking the side effect again.
+    const recovered = this.options.recoverCommittedTransition?.({
       bundle: job.bundle,
       draft,
       verifier: verifierForCommit,
       job,
       branchTranscriptPaths,
       round,
-      reviewCommitKey: quantum.commitIntent?.key ?? `${job.jobId}:${quantum.quantumId}`,
+      reviewCommitKey,
+    });
+    const committed = recovered ?? await this.options.commitTransition({
+      bundle: job.bundle,
+      draft,
+      verifier: verifierForCommit,
+      job,
+      branchTranscriptPaths,
+      round,
+      reviewCommitKey,
       commitUnderLease,
     });
     const isDeferred = committed.transition === 'defer' || committed.queued === 'deferred';
@@ -1297,10 +1360,16 @@ async function awaitQuantumExecution<T>(execution: Promise<T>, signal: AbortSign
       if (abortGraceTimer) clearTimeout(abortGraceTimer);
       callback();
     };
-    const boundaryError = () => reviewAbortError(
-      signal.reason,
-      'Review quantum exceeded its execution boundary.',
-    );
+    const boundaryError = (sourceError?: unknown) => {
+      const error = reviewAbortError(
+        signal.reason,
+        'Review quantum exceeded its execution boundary.',
+      );
+      const transcriptPaths = extractOperationalTranscripts(sourceError);
+      return transcriptPaths.length > 0
+        ? Object.assign(error, { transcriptPaths })
+        : error;
+    };
     const onAbort = () => {
       // Give the active branch one bounded grace period to flush its failure
       // audit and reject with transcript metadata. Never wait indefinitely for
@@ -1316,7 +1385,7 @@ async function awaitQuantumExecution<T>(execution: Promise<T>, signal: AbortSign
         if (signal.aborted) reject(boundaryError());
         else resolve(value);
       }),
-      error => finish(() => reject(signal.aborted ? boundaryError() : error)),
+      error => finish(() => reject(signal.aborted ? boundaryError(error) : error)),
     );
   });
 }

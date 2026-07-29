@@ -857,10 +857,15 @@ describe('Evidence Review revision loop (durable graph)', () => {
         jobStorePath: dir.jobStorePath,
         workingDirectory: dir.root,
       });
+      const abortTranscript = path.join(dir.root, 'runtime-shutdown-reader.jsonl');
+      fs.writeFileSync(abortTranscript, '{"event_type":"failed"}\n', 'utf8');
       (engine as any).options.runReaderLane = ({ signal }: { signal?: AbortSignal }) =>
         new Promise((_resolve, reject) => {
           readerStarted();
-          signal?.addEventListener('abort', () => reject(new Error('provider surfaced a generic abort error')), { once: true });
+          signal?.addEventListener('abort', () => reject(Object.assign(
+            new Error('provider surfaced a generic abort error'),
+            { transcriptPaths: [abortTranscript] },
+          )), { once: true });
         });
       (engine as any).options.runSkillAuthor = makeEngineCallbacks(
         { authorCalls: [], verifierCalls: [], commitCalls: [] },
@@ -889,6 +894,7 @@ describe('Evidence Review revision loop (durable graph)', () => {
       assert.equal(attempted.attempts, 0);
       assert.equal(attempted.failureReason, 'runtime-shutdown');
       assert.equal(attempted.nextRetryAt, undefined);
+      assert.deepEqual(attempted.transcriptPaths, [abortTranscript]);
     } finally {
       dir.cleanup();
     }
@@ -1012,6 +1018,92 @@ describe('Evidence Review revision loop (durable graph)', () => {
       assert.equal(commit.state, 'succeeded');
       assert.ok(commit.commitIntent?.key);
       assert.equal(commit.commitReceipt?.key, commit.commitIntent?.key);
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  test('reconciles a durable commit receipt before invoking commit again', async () => {
+    const dir = setupEngineDir();
+    try {
+      const tracker: CallTracker = { authorCalls: [], verifierCalls: [], commitCalls: [] };
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+      });
+      const callbacks = makeEngineCallbacks(tracker, ['accept']);
+      (engine as any).options.runReaderLane = callbacks.runReaderLane;
+      (engine as any).options.runSkillAuthor = callbacks.runSkillAuthor;
+      (engine as any).options.runSkillVerifier = callbacks.runSkillVerifier;
+      (engine as any).options.commitTransition = callbacks.commitTransition;
+      let recoveredKey: string | undefined;
+      (engine as any).options.recoverCommittedTransition = (input: any) => {
+        recoveredKey = input.reviewCommitKey;
+        return {
+          transition: 'create_current_skill',
+          transitionId: 'transition:recovered-receipt',
+          verified: true,
+          rounds: input.round,
+          draft: input.draft,
+          verifier: input.verifier,
+        };
+      };
+
+      const bundle = fixtureBundle(`receipt-recovery-${crypto.randomUUID().slice(0, 8)}`);
+      const job = engine.createJob({ bundle, candidate: fixtureCandidate(), workClass: 'live_learning' });
+      const advanced = await engine.advanceJob(job.jobId, 'wake:receipt-recovery');
+
+      assert.equal(tracker.commitCalls.length, 0, 'durable receipt must skip commit callback');
+      assert.equal(advanced.result?.transitionId, 'transition:recovered-receipt');
+      const commit = Object.values(engine.loadStore().jobs[job.jobId]!.quanta)
+        .find(quantum => quantum.kind === 'commit')!;
+      assert.equal(commit.state, 'succeeded');
+      assert.equal(recoveredKey, commit.commitIntent?.key);
+      assert.equal(commit.commitReceipt?.key, commit.commitIntent?.key);
+      assert.equal(commit.commitReceipt?.transitionId, 'transition:recovered-receipt');
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  test('extends the fenced lease after a synchronous commit blocks past its expiry', async () => {
+    const dir = setupEngineDir();
+    try {
+      let clockMs = Date.parse('2026-07-29T00:00:00.000Z');
+      const tracker: CallTracker = { authorCalls: [], verifierCalls: [], commitCalls: [] };
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+        leaseMs: 50,
+        now: () => new Date(clockMs),
+      });
+      const callbacks = makeEngineCallbacks(tracker, ['accept']);
+      (engine as any).options.runReaderLane = callbacks.runReaderLane;
+      (engine as any).options.runSkillAuthor = callbacks.runSkillAuthor;
+      (engine as any).options.runSkillVerifier = callbacks.runSkillVerifier;
+      (engine as any).options.commitTransition = async (input: any) => input.commitUnderLease(() => {
+        tracker.commitCalls.push({ round: input.round, verifierDecision: input.verifier.decision });
+        clockMs += 500;
+        return {
+          transition: 'create_current_skill',
+          transitionId: 'transition:sync-block',
+          verified: true,
+          rounds: input.round,
+          draft: input.draft,
+          verifier: input.verifier,
+        };
+      });
+
+      const bundle = fixtureBundle(`sync-block-${crypto.randomUUID().slice(0, 8)}`);
+      const job = engine.createJob({ bundle, candidate: fixtureCandidate(), workClass: 'live_learning' });
+      const advanced = await engine.advanceJob(job.jobId, 'wake:sync-block');
+
+      assert.equal(advanced.result?.transitionId, 'transition:sync-block');
+      assert.equal(tracker.commitCalls.length, 1);
+      const commit = Object.values(engine.loadStore().jobs[job.jobId]!.quanta)
+        .find(quantum => quantum.kind === 'commit')!;
+      assert.equal(commit.state, 'succeeded');
+      assert.equal(commit.commitReceipt?.transitionId, 'transition:sync-block');
     } finally {
       dir.cleanup();
     }
