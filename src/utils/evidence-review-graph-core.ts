@@ -339,6 +339,12 @@ export function dependenciesSatisfied(
  * satisfied dependencies, has an expired lease, or has reached its retry deadline.
  * Successful results are never re-run.
  */
+export function isLeaseExpired(lease: QuantumLease | undefined, now: Date): boolean {
+  if (!lease) return true;
+  const expiresAt = Date.parse(lease.expiresAt);
+  return !Number.isFinite(expiresAt) || expiresAt <= now.getTime();
+}
+
 export function isQuantumRunnable(
   job: GraphJobView,
   quantum: ReviewQuantumRecord,
@@ -348,8 +354,7 @@ export function isQuantumRunnable(
   if (quantum.state === 'succeeded' || quantum.state === 'terminal_failed') return false;
 
   if (quantum.state === 'leased') {
-    if (!quantum.lease) return true; // fail-open reclaim of malformed lease
-    return new Date(quantum.lease.expiresAt).getTime() <= now.getTime();
+    return isLeaseExpired(quantum.lease, now);
   }
 
   if (quantum.state === 'retry_wait') {
@@ -471,14 +476,56 @@ export function claimQuantum(
   return { ok: true, quantum: claimed, lease };
 }
 
+export interface RenewQuantumLeaseOptions {
+  leaseId: string;
+  ownerWakeId: string;
+  leaseMs?: number;
+  now?: Date;
+}
+
+export type RenewQuantumLeaseResult =
+  | { ok: true; quantum: ReviewQuantumRecord; lease: QuantumLease }
+  | { ok: false; reason: 'missing' | 'lease_mismatch' | 'lease_expired' | 'job_not_active' };
+
+/** Extend one still-live lease without changing its identity or attempt budget. */
+export function renewQuantumLease(
+  job: GraphJobView,
+  quantumId: string,
+  options: RenewQuantumLeaseOptions,
+): RenewQuantumLeaseResult {
+  const quantum = job.quanta[quantumId];
+  if (!quantum) return { ok: false, reason: 'missing' };
+  if (job.disposition !== 'active') return { ok: false, reason: 'job_not_active' };
+  if (
+    quantum.state !== 'leased'
+    || !quantum.lease
+    || quantum.lease.leaseId !== options.leaseId
+    || quantum.lease.ownerWakeId !== options.ownerWakeId
+  ) {
+    return { ok: false, reason: 'lease_mismatch' };
+  }
+  const now = options.now ?? new Date();
+  if (isLeaseExpired(quantum.lease, now)) return { ok: false, reason: 'lease_expired' };
+  const lease: QuantumLease = {
+    ...quantum.lease,
+    expiresAt: new Date(now.getTime() + (options.leaseMs ?? DEFAULT_QUANTUM_LEASE_MS)).toISOString(),
+  };
+  const renewed: ReviewQuantumRecord = { ...quantum, lease, updatedAt: now.toISOString() };
+  job.quanta[quantumId] = renewed;
+  job.updatedAt = renewed.updatedAt;
+  job.nextDueAt = computeJobNextDueAt(job);
+  return { ok: true, quantum: renewed, lease };
+}
+
 export type CompleteQuantumResult =
   | { ok: true; quantum: ReviewQuantumRecord; alreadySucceeded: boolean }
   | { ok: false; reason: 'missing' | 'lease_mismatch' | 'lease_expired' | 'not_leased' | 'job_not_active' };
 
 export interface CompleteQuantumOptions {
   result: unknown;
-  /** When set, only the matching lease owner may complete. */
-  leaseId?: string;
+  /** Only the matching durable lease identity may complete. */
+  leaseId: string;
+  ownerWakeId: string;
   transcriptPath?: string;
   now?: Date;
 }
@@ -514,12 +561,15 @@ export function completeQuantum(
     return { ok: false, reason: 'not_leased' };
   }
 
-  if (options.leaseId !== undefined && quantum.lease.leaseId !== options.leaseId) {
+  if (
+    quantum.lease.leaseId !== options.leaseId
+    || quantum.lease.ownerWakeId !== options.ownerWakeId
+  ) {
     return { ok: false, reason: 'lease_mismatch' };
   }
 
   const now = options.now ?? new Date();
-  if (new Date(quantum.lease.expiresAt).getTime() <= now.getTime()) {
+  if (isLeaseExpired(quantum.lease, now)) {
     return { ok: false, reason: 'lease_expired' };
   }
   const nowIso = now.toISOString();
@@ -550,6 +600,7 @@ export function completeQuantum(
 
 export interface ReleaseQuantumOptions {
   leaseId: string;
+  ownerWakeId: string;
   message?: string;
   reason?: ReviewQuantumRecord['failureReason'];
   now?: Date;
@@ -567,12 +618,17 @@ export function releaseQuantum(
   const quantum = job.quanta[quantumId];
   if (!quantum) return { ok: false, reason: 'missing' };
   if (job.disposition !== 'active') return { ok: false, reason: 'job_not_active' };
-  if (quantum.state !== 'leased' || !quantum.lease || quantum.lease.leaseId !== options.leaseId) {
+  if (
+    quantum.state !== 'leased'
+    || !quantum.lease
+    || quantum.lease.leaseId !== options.leaseId
+    || quantum.lease.ownerWakeId !== options.ownerWakeId
+  ) {
     return { ok: false, reason: 'lease_mismatch' };
   }
 
   const now = options.now ?? new Date();
-  if (new Date(quantum.lease.expiresAt).getTime() <= now.getTime()) {
+  if (isLeaseExpired(quantum.lease, now)) {
     return { ok: false, reason: 'lease_expired' };
   }
   const released: ReviewQuantumRecord = {
@@ -597,7 +653,8 @@ export interface FailQuantumOptions {
   maxAttempts?: number;
   /** When true, mark terminal_failed immediately. */
   terminal?: boolean;
-  leaseId?: string;
+  leaseId: string;
+  ownerWakeId: string;
   now?: Date;
 }
 
@@ -622,12 +679,15 @@ export function failQuantum(
     return { ok: false, reason: 'lease_mismatch' };
   }
 
-  if (options.leaseId !== undefined && quantum.lease.leaseId !== options.leaseId) {
+  if (
+    quantum.lease.leaseId !== options.leaseId
+    || quantum.lease.ownerWakeId !== options.ownerWakeId
+  ) {
     return { ok: false, reason: 'lease_mismatch' };
   }
 
   const now = options.now ?? new Date();
-  if (new Date(quantum.lease.expiresAt).getTime() <= now.getTime()) {
+  if (isLeaseExpired(quantum.lease, now)) {
     return { ok: false, reason: 'lease_expired' };
   }
   const nowIso = now.toISOString();
@@ -686,12 +746,9 @@ export function reclaimExpiredLeases(
   if (job.disposition !== 'active') return [];
   const reclaimed: ReviewQuantumRecord[] = [];
   const nowIso = now.toISOString();
-  const nowMs = now.getTime();
-
   for (const [quantumId, quantum] of Object.entries(job.quanta)) {
     if (quantum.state !== 'leased') continue;
-    const expired = !quantum.lease
-      || new Date(quantum.lease.expiresAt).getTime() <= nowMs;
+    const expired = isLeaseExpired(quantum.lease, now);
     if (!expired) continue;
     const pending: ReviewQuantumRecord = {
       ...quantum,

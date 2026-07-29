@@ -63,6 +63,7 @@ import {
   type EvidenceBundleAuthority,
 } from './evidence-bundle-authority';
 import { validateFrozenSourceEvidence } from './frozen-source-evidence';
+import { withProcessExclusiveLock } from './process-exclusive-lock';
 
 /**
  * V3's runtime-owned promotion seam.
@@ -430,6 +431,8 @@ export interface TransitionAuditEntry {
   transition: CapabilityTransitionKind;
   /** Stable input identity, used by bootstrap recovery to avoid re-review. */
   bundleId?: string;
+  /** Stable Evidence Review commit identity (jobId + quantumId). */
+  reviewCommitKey?: string;
   occurredAt: string;
   reviewerVersion: string;
   promptVersion: string;
@@ -1166,6 +1169,8 @@ export class SkillEvolutionRuntime {
     job: EvidenceReviewJob;
     branchTranscriptPaths: string[];
     round: number;
+    reviewCommitKey: string;
+    commitUnderLease: <T>(work: () => T) => T;
   }): Promise<SkillEvolutionResult> {
     const engine = this.getEvidenceReviewEngine();
     const candidate = this.extractCandidateFromBundle(input.bundle);
@@ -1244,6 +1249,9 @@ export class SkillEvolutionRuntime {
         applyVerifierDecisionGate(input.verifier, gate),
         input.round,
         [...input.branchTranscriptPaths],
+        undefined,
+        input.reviewCommitKey,
+        input.commitUnderLease,
       );
     }
 
@@ -1258,6 +1266,8 @@ export class SkillEvolutionRuntime {
         input.round,
         [...input.branchTranscriptPaths],
         beforeAcceptedCommit,
+        input.reviewCommitKey,
+        input.commitUnderLease,
       );
       if (result.transitionId || result.audit) {
         this.schedulePostCommitReassessmentIfNeeded(
@@ -1410,15 +1420,14 @@ export class SkillEvolutionRuntime {
     });
     reassessment.workClass = 'semantic_reassessment';
     reassessment.parentJobId = completed.jobId;
-    upsertEvidenceReviewJob(state, reassessment);
-    // Annotate completed job with successor link for audit without superseding
-    // the already-committed disposition.
-    if (!completed.successorJobId) {
-      completed.successorJobId = reassessment.jobId;
-      completed.updatedAt = new Date().toISOString();
-      state.jobs[completed.jobId] = completed;
-    }
-    engine.saveStore(state);
+    engine.mutateStore(liveState => {
+      const liveCompleted = liveState.jobs[jobId];
+      if (!liveCompleted || liveCompleted.successorJobId) return;
+      if (!liveState.jobs[reassessment.jobId]) upsertEvidenceReviewJob(liveState, reassessment);
+      liveCompleted.successorJobId = reassessment.jobId;
+      liveCompleted.updatedAt = new Date().toISOString();
+      liveState.jobs[liveCompleted.jobId] = liveCompleted;
+    });
   }
 
   /** Apply the just-committed Registry write onto a Review Basis for post-fence checks. */
@@ -1503,31 +1512,34 @@ export class SkillEvolutionRuntime {
         staleJob.basis.registryReadSet,
         handle => this.getRegistry().capabilities[handle],
       );
-    let successor = createSuccessorReviewJob({
-      staleJob,
-      liveBundle: normalizedLiveBundle,
-      candidate,
-      registryReadSet: resolvedLiveReadSet,
-    });
-    const state = engine.loadStore();
-    if (state.jobs[successor.jobId]) {
-      // A corrupted frozen basis can still produce the original deterministic
-      // ID when rebuilt from the live basis. Never overwrite that stale audit
-      // record: allocate a clean successor and do not copy its trusted quanta.
-      successor = createSuccessorReviewJob({
-        staleJob,
+    const successor = engine.mutateStore(state => {
+      const liveStale = state.jobs[staleJob.jobId] ?? staleJob;
+      if (liveStale.supersededByJobId && state.jobs[liveStale.supersededByJobId]) {
+        return state.jobs[liveStale.supersededByJobId]!;
+      }
+      let next = createSuccessorReviewJob({
+        staleJob: liveStale,
         liveBundle: normalizedLiveBundle,
         candidate,
         registryReadSet: resolvedLiveReadSet,
-        jobId: `${successor.jobId}:successor:${randomUUID()}`,
-        reuseSucceededQuanta: false,
       });
-    }
-    const superseded = markJobSuperseded(staleJob, successor.jobId);
-    superseded.terminalReason = reason;
-    upsertEvidenceReviewJob(state, superseded);
-    upsertEvidenceReviewJob(state, successor);
-    engine.saveStore(state);
+      if (state.jobs[next.jobId]) {
+        // Never overwrite an existing audit record with the deterministic ID.
+        next = createSuccessorReviewJob({
+          staleJob: liveStale,
+          liveBundle: normalizedLiveBundle,
+          candidate,
+          registryReadSet: resolvedLiveReadSet,
+          jobId: `${next.jobId}:successor:${randomUUID()}`,
+          reuseSucceededQuanta: false,
+        });
+      }
+      const superseded = markJobSuperseded(liveStale, next.jobId);
+      superseded.terminalReason = reason;
+      upsertEvidenceReviewJob(state, superseded);
+      upsertEvidenceReviewJob(state, next);
+      return next;
+    });
     // The active successor itself is the durable follow-up. No parallel retry
     // record is needed: its graph quanta and leases are the single owner.
     return {
@@ -1595,9 +1607,9 @@ export class SkillEvolutionRuntime {
         || bundleAuthority.malformedAuthority
         || (bundleAuthority.legacy && !migratedLegacyBundle)
       ) {
-        const state = engine.loadStore();
-        const live = state.jobs[jobId];
-        if (live && live.disposition === 'active') {
+        engine.mutateStore(state => {
+          const live = state.jobs[jobId];
+          if (!live || live.disposition !== 'active') return;
           const reason = missingLearningSource
             ? 'Learning Episode review basis has no complete frozen source evidence; explicit migration is required.'
             : bundleAuthority.malformedAuthority
@@ -1613,8 +1625,7 @@ export class SkillEvolutionRuntime {
           live.nextDueAt = undefined;
           live.updatedAt = now.toISOString();
           upsertEvidenceReviewJob(state, live);
-          engine.saveStore(state);
-        }
+        });
         continue;
       }
       if (migratedLegacyBundle) {
@@ -1879,13 +1890,6 @@ export class SkillEvolutionRuntime {
     reason: string,
   ): EvidenceReviewJob {
     const engine = this.getEvidenceReviewEngine();
-    const state = engine.loadStore();
-    const liveStale = state.jobs[staleJob.jobId];
-    if (!liveStale || liveStale.disposition !== 'deferred') {
-      const existing = liveStale?.successorJobId ? state.jobs[liveStale.successorJobId] : undefined;
-      if (existing) return existing;
-      throw new Error(`Deferred review job ${staleJob.jobId} is no longer eligible for reactivation.`);
-    }
     const normalizedPersisted = this.normalizePersistedBundleForReReview(bundle);
     const normalized = migratePersistedEvidenceBundleAuthority(normalizedPersisted);
     if (!normalized) {
@@ -1893,24 +1897,31 @@ export class SkillEvolutionRuntime {
         `Deferred review job ${staleJob.jobId} has no migratable Evidence Bundle authority.`,
       );
     }
-    const successor = createEvidenceReviewJob({
-      bundle: normalized,
-      candidate: this.extractCandidateFromBundle(normalized),
-      workClass: 'semantic_reassessment',
-      registryReadSet: resolveLiveDeclaredRegistryReadSet(
-        liveStale.basis.registryReadSet,
-        handle => this.getRegistry().capabilities[handle],
-      ),
-      parentJobId: liveStale.jobId,
-      jobId: `${liveStale.jobId}:retry:${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+    return engine.mutateStore(state => {
+      const liveStale = state.jobs[staleJob.jobId];
+      if (!liveStale || liveStale.disposition !== 'deferred') {
+        const existing = liveStale?.successorJobId ? state.jobs[liveStale.successorJobId] : undefined;
+        if (existing) return existing;
+        throw new Error(`Deferred review job ${staleJob.jobId} is no longer eligible for reactivation.`);
+      }
+      const successor = createEvidenceReviewJob({
+        bundle: normalized,
+        candidate: this.extractCandidateFromBundle(normalized),
+        workClass: 'semantic_reassessment',
+        registryReadSet: resolveLiveDeclaredRegistryReadSet(
+          liveStale.basis.registryReadSet,
+          handle => this.getRegistry().capabilities[handle],
+        ),
+        parentJobId: liveStale.jobId,
+        jobId: `${liveStale.jobId}:retry:${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+      });
+      successor.domain = { ...successor.domain, reactivatedDeferred: true };
+      const superseded = markJobSuperseded(liveStale, successor.jobId);
+      superseded.terminalReason = reason;
+      upsertEvidenceReviewJob(state, superseded);
+      upsertEvidenceReviewJob(state, successor);
+      return successor;
     });
-    successor.domain = { ...successor.domain, reactivatedDeferred: true };
-    const superseded = markJobSuperseded(liveStale, successor.jobId);
-    superseded.terminalReason = reason;
-    upsertEvidenceReviewJob(state, superseded);
-    upsertEvidenceReviewJob(state, successor);
-    engine.saveStore(state);
-    return successor;
   }
 
   getDeferredReviewBundleIds(): string[] {
@@ -2015,7 +2026,15 @@ export class SkillEvolutionRuntime {
     targetCapabilityHandle: string,
     referencedSkills: readonly ReferencedSkillSnapshot[],
   ): AppliedTransition {
-    recoverTransitionJournal(this.options);
+    return withProcessExclusiveLock(`${this.options.journalPath}.lock`, () =>
+      this.refreshReferencedSkillMetadataLocked(targetCapabilityHandle, referencedSkills));
+  }
+
+  private refreshReferencedSkillMetadataLocked(
+    targetCapabilityHandle: string,
+    referencedSkills: readonly ReferencedSkillSnapshot[],
+  ): AppliedTransition {
+    recoverTransitionJournalLocked(this.options);
     const registry = loadCurrentSkillRegistry(this.options.registryPath);
     const current = registry.capabilities[targetCapabilityHandle];
     if (!current) throw new Error('Referenced-skill metadata target is not active.');
@@ -2071,7 +2090,7 @@ export class SkillEvolutionRuntime {
       audit,
     };
     writeJsonAtomic(this.options.journalPath, journal);
-    recoverTransitionJournal(this.options);
+    recoverTransitionJournalLocked(this.options);
     return { transitionId, record: updated, audit };
   }
 
@@ -2207,6 +2226,8 @@ export class SkillEvolutionRuntime {
     round: number,
     branchTranscriptPaths: string[],
     beforeAcceptedCommit?: BeforeAcceptedCommitHook,
+    reviewCommitKey?: string,
+    commitUnderLease?: <T>(work: () => T) => T,
   ): Promise<SkillEvolutionResult> {
     if (
       verifier.decision === 'accept'
@@ -2427,7 +2448,7 @@ export class SkillEvolutionRuntime {
           return fenceAbort;
         }
       }
-      applied = applyCapabilityTransition({
+      const apply = () => applyCapabilityTransition({
         ...this.options,
         reviewerVersion: this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
         promptVersion: this.options.promptVersion ?? 'skill-author-verifier-v3',
@@ -2438,7 +2459,9 @@ export class SkillEvolutionRuntime {
         verifier,
         registryReadSet: declaredRegistryReadSet(verifier, bundle, draft),
         branchTranscriptPaths,
+        reviewCommitKey,
       });
+      applied = commitUnderLease ? commitUnderLease(apply) : apply();
     } catch (error) {
       if (error instanceof CapabilityRoutingCollisionError) {
         return {
@@ -2663,6 +2686,8 @@ export interface ApplyTransitionInput extends SkillEvolutionPaths {
   promptVersion: string;
   manualSkillNames?: readonly string[];
   registryReadSet?: readonly CapabilityReadSetEntry[];
+  /** Stable durable identity for one Evidence Review commit Quantum. */
+  reviewCommitKey?: string;
   /**
    * Working directory used to authorize independent reader transcript roots
    * (`data/reader-transcripts`) during commit audit validation.
@@ -2902,15 +2927,21 @@ function findIdempotentTransition(
   targetHandle: string | undefined,
   sourceHandle: string | undefined,
 ): AppliedTransition | undefined {
-  // Non-mutating outcomes are not crash-recovery targets: the same bundle may
-  // emit multiple distinct defer/reject audits (different drafts/rationale).
-  // Treating them as idempotent would short-circuit later rejects and re-check
-  // older transcript paths that later jobs may legitimately supersede.
-  if (input.transition === 'reject_candidate' || input.transition === 'defer') {
-    return undefined;
+  const audits = loadTransitionAudit(input.auditPath);
+  if (input.reviewCommitKey) {
+    const committed = audits.slice().reverse()
+      .find(entry => entry.reviewCommitKey === input.reviewCommitKey);
+    if (!committed) return undefined;
+    const activeHandle = targetHandle
+      ?? committed.involvedCapabilityHandles.find(handle => registry.capabilities[handle]);
+    const record = activeHandle ? registry.capabilities[activeHandle] : undefined;
+    return { transitionId: committed.transitionId, record, audit: committed };
   }
 
-  const prior = loadTransitionAudit(input.auditPath)
+  // Outside Evidence Review, non-mutating outcomes remain fresh decisions.
+  if (input.transition === 'reject_candidate' || input.transition === 'defer') return undefined;
+
+  const prior = audits
     .filter(entry => entry.bundleId === input.bundle.bundleId)
     .slice()
     .reverse();
@@ -2951,6 +2982,12 @@ function findIdempotentTransition(
 }
 
 export function recoverTransitionJournal(
+  paths: Pick<SkillEvolutionPaths, 'outputDir' | 'registryPath' | 'auditPath' | 'journalPath'>,
+): boolean {
+  return withProcessExclusiveLock(`${paths.journalPath}.lock`, () => recoverTransitionJournalLocked(paths));
+}
+
+function recoverTransitionJournalLocked(
   paths: Pick<SkillEvolutionPaths, 'outputDir' | 'registryPath' | 'auditPath' | 'journalPath'>,
 ): boolean {
   const journal = loadTransitionJournalForInspection(paths);
@@ -3080,7 +3117,11 @@ function validateTransitionJournalForRecovery(
 }
 
 export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedTransition {
-  recoverTransitionJournal(input);
+  return withProcessExclusiveLock(`${input.journalPath}.lock`, () => applyCapabilityTransitionLocked(input));
+}
+
+function applyCapabilityTransitionLocked(input: ApplyTransitionInput): AppliedTransition {
+  recoverTransitionJournalLocked(input);
   validateEvidenceBundle(input.bundle);
   const registry = loadCurrentSkillRegistry(input.registryPath);
   const envelope = input.draft?.envelope ?? {};
@@ -3324,6 +3365,7 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
     transitionId,
     transition: input.transition,
     bundleId: input.bundle.bundleId,
+    ...(input.reviewCommitKey ? { reviewCommitKey: input.reviewCommitKey } : {}),
     occurredAt: now,
     reviewerVersion: input.reviewerVersion,
     promptVersion: input.promptVersion,
@@ -3348,7 +3390,7 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
     audit,
   };
   writeJsonAtomic(input.journalPath, journal);
-  recoverTransitionJournal(input);
+  recoverTransitionJournalLocked(input);
   assertTransitionAuditReadable(
     input.auditPath,
     audit,
@@ -3360,7 +3402,11 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
 
 /** Explicit, audited restoration of one immutable guidance snapshot. */
 export function restoreCapabilityRevision(input: RestoreCapabilityRevisionInput): AppliedTransition {
-  recoverTransitionJournal(input);
+  return withProcessExclusiveLock(`${input.journalPath}.lock`, () => restoreCapabilityRevisionLocked(input));
+}
+
+function restoreCapabilityRevisionLocked(input: RestoreCapabilityRevisionInput): AppliedTransition {
+  recoverTransitionJournalLocked(input);
   const registry = loadCurrentSkillRegistry(input.registryPath);
   const current = registry.capabilities[input.targetCapabilityHandle];
   if (!current) throw new Error('Capability revision restore target is not active.');
@@ -3442,7 +3488,7 @@ export function restoreCapabilityRevision(input: RestoreCapabilityRevisionInput)
     audit,
   };
   writeJsonAtomic(input.journalPath, journal);
-  recoverTransitionJournal(input);
+  recoverTransitionJournalLocked(input);
   return { transitionId, record: restored, audit };
 }
 

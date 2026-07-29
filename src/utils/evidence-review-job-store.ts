@@ -153,6 +153,9 @@ export function saveEvidenceReviewJobStore(
 }
 
 const STORE_LOCK_FILE = 'owner.json';
+const STORE_LOCK_RETRY_ATTEMPTS = 50;
+const STORE_LOCK_RETRY_DELAY_MS = 5;
+const STORE_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
 function storeLockPath(filePath: string): string {
   return `${filePath}.lock`;
@@ -190,6 +193,9 @@ export function mutateEvidenceReviewJobStore<T>(
   filePath: string,
   mutation: (state: EvidenceReviewJobStoreState) => T,
 ): T {
+  // The first mutation may occur before the JSON store or its data directory
+  // exists. Directory-lock publication requires the parent to exist first.
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const lockPath = storeLockPath(filePath);
   const identity: ProcessLockClaimIdentity = {
     pid: process.pid,
@@ -198,8 +204,10 @@ export function mutateEvidenceReviewJobStore<T>(
   };
   const serialized = `${JSON.stringify(identity)}\n`;
   const install = () => tryInstallRecordDirectory(lockPath, STORE_LOCK_FILE, serialized);
-  let installed = install();
-  if (!installed) {
+  let installed = false;
+  for (let attempt = 0; attempt <= STORE_LOCK_RETRY_ATTEMPTS && !installed; attempt++) {
+    installed = install();
+    if (installed) break;
     const observed = readLockClaim(path.join(lockPath, STORE_LOCK_FILE));
     if (observed && !isProcessAlive(observed.pid)) {
       reclaimStaleClaimDirectory({
@@ -210,7 +218,10 @@ export function mutateEvidenceReviewJobStore<T>(
         readClaim: readLockClaim,
         isProcessAlive,
       });
-      installed = install();
+      continue;
+    }
+    if (attempt < STORE_LOCK_RETRY_ATTEMPTS) {
+      Atomics.wait(STORE_LOCK_SLEEP, 0, 0, STORE_LOCK_RETRY_DELAY_MS);
     }
   }
   if (!installed) throw new Error(`Evidence Review Job store is busy: ${filePath}`);

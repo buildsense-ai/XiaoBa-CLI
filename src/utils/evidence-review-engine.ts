@@ -40,7 +40,6 @@ import type { EvidenceReviewLane } from './evidence-review';
 import { createEvidenceReviewJob } from './evidence-review-graph';
 import {
   loadEvidenceReviewJobStore,
-  saveEvidenceReviewJobStore,
   mutateEvidenceReviewJobStore,
   upsertEvidenceReviewJob,
   evidenceReviewJobStorePathForReviewQueue,
@@ -50,6 +49,7 @@ import {
   completeQuantum as completeQuantumCore,
   failQuantum as failQuantumCore,
   releaseQuantum as releaseQuantumCore,
+  renewQuantumLease as renewQuantumLeaseCore,
   reclaimExpiredLeases,
   createReviewQuantum,
   deriveJobDisposition,
@@ -83,6 +83,8 @@ export interface ReaderLaneResult {
   /** Optional pre-written transcript path; engine persists one when omitted. */
   transcriptPath?: string;
 }
+
+type CommitLeaseGuard = <T>(work: () => T) => T;
 
 export interface EvidenceReviewEngineOptions {
   jobStorePath: string;
@@ -139,6 +141,10 @@ export interface EvidenceReviewEngineOptions {
     branchTranscriptPaths: string[];
     /** Final review round (1 or 2). */
     round: number;
+    /** Stable durable identity for crash-safe commit replay. */
+    reviewCommitKey: string;
+    /** Execute synchronous transition side effects while the durable lease is fenced. */
+    commitUnderLease: CommitLeaseGuard;
   }) => Promise<SkillEvolutionResult>;
 }
 
@@ -271,8 +277,17 @@ export class EvidenceReviewEngine {
     return loadEvidenceReviewJobStore(this.options.jobStorePath);
   }
 
+  /** Production mutations must use this whole-store transaction. */
+  mutateStore<T>(mutation: (state: EvidenceReviewJobStoreState) => T): T {
+    return mutateEvidenceReviewJobStore(this.options.jobStorePath, mutation);
+  }
+
+  /** Test/bootstrap replacement only; production read-modify-write must use mutateStore. */
   saveStore(state: ReturnType<typeof loadEvidenceReviewJobStore>): void {
-    saveEvidenceReviewJobStore(this.options.jobStorePath, state);
+    this.mutateStore(live => {
+      live.jobs = state.jobs;
+      live.fairness = state.fairness;
+    });
   }
 
   findActiveJobForBundle(bundleId: string): EvidenceReviewJob | undefined {
@@ -289,35 +304,37 @@ export class EvidenceReviewEngine {
     registryReadSet?: Parameters<typeof createEvidenceReviewJob>[0]['registryReadSet'];
     sharding?: Parameters<typeof createEvidenceReviewJob>[0]['sharding'];
   }): EvidenceReviewJob {
-    const state = this.loadStore();
-    const provisional = createEvidenceReviewJob({
-      bundle: input.bundle,
-      candidate: input.candidate,
-      workClass: input.workClass,
-      registryReadSet: input.registryReadSet,
-      now: this.options.now?.() ?? new Date(),
-      sharding: input.sharding,
-    });
-    // Deterministic job ids collide across sequential reviews of the same bundle.
-    // Never overwrite a terminal job: mint a unique id so reader transcript paths
-    // and quanta remain owned by a single commit audit.
-    let job = provisional;
-    const prior = state.jobs[provisional.jobId];
-    if (prior && prior.disposition !== 'active') {
-      const uniqueSuffix = crypto.randomBytes(4).toString('hex');
-      job = createEvidenceReviewJob({
+    return this.mutateStore(state => {
+      const now = this.options.now?.() ?? new Date();
+      const provisional = createEvidenceReviewJob({
         bundle: input.bundle,
         candidate: input.candidate,
         workClass: input.workClass,
         registryReadSet: input.registryReadSet,
-        now: this.options.now?.() ?? new Date(),
+        now,
         sharding: input.sharding,
-        jobId: `${provisional.jobId}:${uniqueSuffix}`,
       });
-    }
-    upsertEvidenceReviewJob(state, job);
-    this.saveStore(state);
-    return job;
+      // Deterministic job ids collide across sequential reviews of the same bundle.
+      // Never overwrite a terminal job: mint a unique id so reader transcript paths
+      // and quanta remain owned by a single commit audit.
+      let job = provisional;
+      const prior = state.jobs[provisional.jobId];
+      if (prior?.disposition === 'active') return prior;
+      if (prior) {
+        const uniqueSuffix = crypto.randomBytes(4).toString('hex');
+        job = createEvidenceReviewJob({
+          bundle: input.bundle,
+          candidate: input.candidate,
+          workClass: input.workClass,
+          registryReadSet: input.registryReadSet,
+          now,
+          sharding: input.sharding,
+          jobId: `${provisional.jobId}:${uniqueSuffix}`,
+        });
+      }
+      upsertEvidenceReviewJob(state, job);
+      return job;
+    });
   }
 
   ensureJob(input: {
@@ -399,6 +416,16 @@ export class EvidenceReviewEngine {
           leaseMs,
         });
         if (!claim.ok) return { job, selected: undefined, claim: undefined, remainingRunnable: runnable.length };
+        if (selected.kind === 'commit') {
+          const claimed = job.quanta[selected.quantumId]!;
+          job.quanta[selected.quantumId] = {
+            ...claimed,
+            commitIntent: claimed.commitIntent ?? {
+              key: `${job.jobId}:${selected.quantumId}`,
+              preparedAt: now.toISOString(),
+            },
+          };
+        }
         upsertEvidenceReviewJob(state, job);
         return { job, selected, claim, remainingRunnable: runnable.length - 1 };
       });
@@ -422,39 +449,96 @@ export class EvidenceReviewEngine {
       const quantumBoundary = selected.kind === 'commit'
         ? createNonInterruptibleCommitBoundary()
         : createQuantumAbortBoundary(signal, options?.quantumTimeoutMs ?? leaseMs);
+      let leaseLost = false;
+      const renewLease = (): void => {
+        try {
+          const renewed = this.mutateStore(state => {
+            const live = state.jobs[jobId];
+            if (!live) return { ok: false as const, reason: 'missing' as const };
+            return renewQuantumLeaseCore(live, selected.quantumId, {
+              leaseId: claim.lease.leaseId,
+              ownerWakeId: claim.lease.ownerWakeId,
+              leaseMs,
+              now: nowFn(),
+            });
+          });
+          if (!renewed.ok) leaseLost = true;
+        } catch {
+          // Busy store locks are transient. Completion still performs the
+          // authoritative lease CAS inside the same whole-store lock.
+        }
+      };
+      const renewalTimer = setInterval(renewLease, Math.max(10, Math.floor(leaseMs / 3)));
+      renewalTimer.unref?.();
       try {
         if (quantumBoundary.signal.aborted) {
           throw reviewAbortError(quantumBoundary.signal.reason, 'Review quantum aborted before execution.');
         }
+        const commitUnderLease: CommitLeaseGuard = <T>(work: () => T): T =>
+          this.mutateStore(state => {
+            const live = state.jobs[jobId];
+            if (!live) throw new Error('quantum_lease_lost: job is missing');
+            const renewed = renewQuantumLeaseCore(live, selected.quantumId, {
+              leaseId: claim.lease.leaseId,
+              ownerWakeId: claim.lease.ownerWakeId,
+              leaseMs,
+              now: nowFn(),
+            });
+            if (!renewed.ok) {
+              throw new Error(`quantum_lease_lost: ${renewed.reason}`);
+            }
+            // The whole-store lock remains held through this synchronous work.
+            // A newer wake cannot reclaim the lease before journal side effects.
+            return work();
+          });
         const execution = await awaitQuantumExecution(
           this.executeQuantum(
             job,
             job.quanta[selected.quantumId]!,
             quantumBoundary.signal,
+            selected.kind === 'commit' ? commitUnderLease : undefined,
           ),
           quantumBoundary.signal,
         );
         if (quantumBoundary.signal.aborted) {
           throw reviewAbortError(quantumBoundary.signal.reason, 'Review quantum exceeded its execution boundary.');
         }
+        renewLease();
+        if (leaseLost) throw new Error('quantum_lease_lost: execution result is stale');
         const live = mutateEvidenceReviewJobStore(this.jobStorePath, (after) => {
           const live = after.jobs[jobId]!;
-        const completed = completeQuantumCore(live, selected.quantumId, {
-          result: execution.result,
-          leaseId: claim.lease.leaseId,
-          now: nowFn(),
-          // graph-core accepts a single transcriptPath; fold multiples into result metadata
-          ...(execution.transcriptPaths[0] ? { transcriptPath: execution.transcriptPaths[0] } : {}),
-        });
-        if (!completed.ok) {
-          throw new Error(`completeQuantum failed: ${completed.reason}`);
-        }
-        // Preserve additional transcript paths on the quantum when present.
+          const completed = completeQuantumCore(live, selected.quantumId, {
+            result: execution.result,
+            leaseId: claim.lease.leaseId,
+            ownerWakeId: claim.lease.ownerWakeId,
+            now: nowFn(),
+            // graph-core accepts a single transcriptPath; fold multiples into result metadata
+            ...(execution.transcriptPaths[0] ? { transcriptPath: execution.transcriptPaths[0] } : {}),
+          });
+          if (!completed.ok) {
+            throw new Error(`completeQuantum failed: ${completed.reason}`);
+          }
+          // A late attempt that observes authoritative success is a pure no-op.
+          // Never apply its stale transcript metadata, jobPatch, or skill result.
+          if (completed.alreadySucceeded) return live;
+          // Preserve additional transcript paths on the quantum when present.
         if (execution.transcriptPaths.length > 1) {
           const q = live.quanta[selected.quantumId]!;
           live.quanta[selected.quantumId] = {
             ...q,
             transcriptPaths: [...new Set([...q.transcriptPaths, ...execution.transcriptPaths])],
+          };
+        }
+        if (selected.kind === 'commit') {
+          const q = live.quanta[selected.quantumId]!;
+          const key = q.commitIntent?.key ?? `${live.jobId}:${selected.quantumId}`;
+          live.quanta[selected.quantumId] = {
+            ...q,
+            commitReceipt: {
+              key,
+              ...(execution.skillResult?.transitionId ? { transitionId: execution.skillResult.transitionId } : {}),
+              recordedAt: nowFn().toISOString(),
+            },
           };
         }
         if (execution.jobPatch) Object.assign(live, execution.jobPatch);
@@ -516,75 +600,69 @@ export class EvidenceReviewEngine {
           quantumKind: selected.kind,
         };
         const terminal = /terminal|integrity|manifest/i.test(message);
-        const after = this.loadStore();
-        const live = after.jobs[jobId]!;
-        if (operationalReason === 'runtime-shutdown' || operationalReason === 'external-abort') {
-          const released = releaseQuantumCore(live, selected.quantumId, {
-            leaseId: claim.lease.leaseId,
-            message,
-            reason: operationalReason,
-            now: nowFn(),
-          });
-          if (released.ok) {
-            upsertEvidenceReviewJob(after, live);
-            this.saveStore(after);
-            executedQuantumIds.push(selected.quantumId);
+        const mutation = this.mutateStore(after => {
+          const live = after.jobs[jobId]!;
+          if (operationalReason === 'runtime-shutdown' || operationalReason === 'external-abort') {
+            const released = releaseQuantumCore(live, selected.quantumId, {
+              leaseId: claim.lease.leaseId,
+              ownerWakeId: claim.lease.ownerWakeId,
+              message,
+              reason: operationalReason,
+              now: nowFn(),
+            });
+            if (released.ok) upsertEvidenceReviewJob(after, live);
+            return { live, changed: released.ok };
           }
-          // Lifecycle cancellation is not a provider failure: preserve attempts
-          // and work class, then yield so a later wake can reclaim the Quantum.
-          job = live;
-          break;
-        }
-        const failed = failQuantumCore(live, selected.quantumId, {
-          message,
-          leaseId: claim.lease.leaseId,
-          now: nowFn(),
-          retryBaseMs,
-          retryMaxMs,
-          ...(operationalKind ? { maxAttempts: Number.MAX_SAFE_INTEGER } : {}),
-          terminal,
+          const failed = failQuantumCore(live, selected.quantumId, {
+            message,
+            leaseId: claim.lease.leaseId,
+            ownerWakeId: claim.lease.ownerWakeId,
+            now: nowFn(),
+            retryBaseMs,
+            retryMaxMs,
+            ...(operationalKind ? { maxAttempts: Number.MAX_SAFE_INTEGER } : {}),
+            terminal,
+          });
+          if (!failed.ok) return { live, changed: false };
+          const failedQuantum = live.quanta[selected.quantumId]!;
+          if (operationalKind === 'branch_timeout'
+            || operationalKind === 'branch_failure'
+            || operationalKind === 'invalid_completion_schema') {
+            failedQuantum.failureKind = operationalKind;
+            failedQuantum.failureReason = operationalReason;
+            failedQuantum.transcriptPaths = [...new Set([
+              ...failedQuantum.transcriptPaths,
+              ...operationalTranscripts,
+            ])];
+            live.workClass = 'operational_recovery';
+          }
+          live.disposition = deriveJobDisposition(live);
+          if (live.disposition === 'terminal_failed') live.terminalReason = message;
+          live.updatedAt = nowFn().toISOString();
+          const retrying = Object.values(live.quanta)
+            .filter(q => q.state === 'retry_wait' && q.nextRetryAt)
+            .map(q => q.nextRetryAt!)
+            .sort();
+          live.nextDueAt = retrying[0];
+          upsertEvidenceReviewJob(after, live);
+          return { live, changed: true };
         });
-        if (!failed.ok) {
-          // A stale attempt must never overwrite a newer lease, success, or
-          // terminal disposition. Return the authoritative durable state.
+        job = mutation.live;
+        if (mutation.changed) executedQuantumIds.push(selected.quantumId);
+        if (!mutation.changed) {
           return {
-            job: live,
+            job: mutation.live,
             executedQuantumIds,
-            remainingRunnable: listRunnableQuanta(live, nowFn()).length,
+            remainingRunnable: listRunnableQuanta(mutation.live, nowFn()).length,
             result,
             lastError,
           };
         }
-        const failedQuantum = live.quanta[selected.quantumId]!;
-        if (operationalKind === 'branch_timeout'
-          || operationalKind === 'branch_failure'
-          || operationalKind === 'invalid_completion_schema') {
-          failedQuantum.failureKind = operationalKind;
-          failedQuantum.failureReason = operationalReason;
-          failedQuantum.transcriptPaths = [...new Set([
-            ...failedQuantum.transcriptPaths,
-            ...operationalTranscripts,
-          ])];
-          live.workClass = 'operational_recovery';
-        }
-        live.disposition = deriveJobDisposition(live);
-        if (live.disposition === 'terminal_failed') {
-          live.terminalReason = message;
-        }
-        live.updatedAt = nowFn().toISOString();
-        const retrying = Object.values(live.quanta)
-          .filter(q => q.state === 'retry_wait' && q.nextRetryAt)
-          .map(q => q.nextRetryAt!)
-          .sort();
-        live.nextDueAt = retrying[0];
-        upsertEvidenceReviewJob(after, live);
-        this.saveStore(after);
-        executedQuantumIds.push(selected.quantumId);
-        job = live;
-        // A failed Quantum is the wake boundary. Persist its retry/continuation
-        // and return control instead of spending this attempt on peer quanta.
+        // Cancellation and failure both yield at this wake boundary. Lifecycle
+        // cancellation keeps the attempt budget; provider failure persists retry.
         break;
       } finally {
+        clearInterval(renewalTimer);
         quantumBoundary.cleanup();
       }
     }
@@ -604,6 +682,7 @@ export class EvidenceReviewEngine {
     job: EvidenceReviewJob,
     quantum: ReviewQuantumRecord,
     signal?: AbortSignal,
+    commitUnderLease?: CommitLeaseGuard,
   ): Promise<{
     result: unknown;
     transcriptPaths: string[];
@@ -627,7 +706,8 @@ export class EvidenceReviewEngine {
       case 'skill_verifier':
         return this.executeSkillVerifier(job, signal);
       case 'commit':
-        return this.executeCommit(job);
+        if (!commitUnderLease) throw new Error('commit lease guard is required');
+        return this.executeCommit(job, quantum, commitUnderLease);
       default:
         throw new Error(`unknown quantum kind: ${(quantum as ReviewQuantumRecord).kind}`);
     }
@@ -876,6 +956,8 @@ export class EvidenceReviewEngine {
 
   private async executeCommit(
     job: EvidenceReviewJob,
+    quantum: ReviewQuantumRecord,
+    commitUnderLease: CommitLeaseGuard,
   ): Promise<{
     result: SkillEvolutionResult;
     transcriptPaths: string[];
@@ -941,6 +1023,8 @@ export class EvidenceReviewEngine {
       job,
       branchTranscriptPaths,
       round,
+      reviewCommitKey: quantum.commitIntent?.key ?? `${job.jobId}:${quantum.quantumId}`,
+      commitUnderLease,
     });
     const isDeferred = committed.transition === 'defer' || committed.queued === 'deferred';
     const skillResult: SkillEvolutionResult = isDeferred
@@ -1232,7 +1316,7 @@ async function awaitQuantumExecution<T>(execution: Promise<T>, signal: AbortSign
         if (signal.aborted) reject(boundaryError());
         else resolve(value);
       }),
-      error => finish(() => reject(error)),
+      error => finish(() => reject(signal.aborted ? boundaryError() : error)),
     );
   });
 }
@@ -1363,14 +1447,15 @@ export async function advanceJobsFairly(
     shouldStopClaiming?: () => boolean;
   },
 ): Promise<{ claims: number; jobIds: string[] }> {
-  const state = engine.loadStore();
-  const plan = planFairQuantumClaims(state, {
-    maxClaims: options.maxClaims,
-    maxClaimsPerJob: options.maxClaimsPerJob ?? 1,
-    now: options.now,
+  const plan = engine.mutateStore(state => {
+    const planned = planFairQuantumClaims(state, {
+      maxClaims: options.maxClaims,
+      maxClaimsPerJob: options.maxClaimsPerJob ?? 1,
+      now: options.now,
+    });
+    state.fairness = planned.fairness;
+    return planned;
   });
-  state.fairness = plan.fairness;
-  engine.saveStore(state);
 
   const touched = new Set<string>();
   let executedClaims = 0;

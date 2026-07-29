@@ -169,6 +169,10 @@ export interface ReviewQuantumRecord {
   currentDelayMs: number;
   nextRetryAt?: string;
   lease?: QuantumLease;
+  /** Durable prepare record for a side-effecting commit Quantum. */
+  commitIntent?: { key: string; preparedAt: string };
+  /** Job-store projection of the durable Transition Audit receipt. */
+  commitReceipt?: { key: string; transitionId?: string; recordedAt: string };
   resultHash?: string;
   result?: unknown;
   failureMessage?: string;

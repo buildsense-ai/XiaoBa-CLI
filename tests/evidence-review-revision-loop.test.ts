@@ -847,6 +847,176 @@ describe('Evidence Review revision loop (durable graph)', () => {
     }
   });
 
+  test('runtime shutdown wins over an in-flight callback error without consuming retry', async () => {
+    const dir = setupEngineDir();
+    try {
+      const controller = new AbortController();
+      let readerStarted!: () => void;
+      const started = new Promise<void>(resolve => { readerStarted = resolve; });
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+      });
+      (engine as any).options.runReaderLane = ({ signal }: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          readerStarted();
+          signal?.addEventListener('abort', () => reject(new Error('provider surfaced a generic abort error')), { once: true });
+        });
+      (engine as any).options.runSkillAuthor = makeEngineCallbacks(
+        { authorCalls: [], verifierCalls: [], commitCalls: [] },
+        [],
+      ).runSkillAuthor;
+      (engine as any).options.runSkillVerifier = makeEngineCallbacks(
+        { authorCalls: [], verifierCalls: [], commitCalls: [] },
+        [],
+      ).runSkillVerifier;
+      (engine as any).options.commitTransition = makeEngineCallbacks(
+        { authorCalls: [], verifierCalls: [], commitCalls: [] },
+        [],
+      ).commitTransition;
+
+      const bundle = fixtureBundle(`shutdown-${crypto.randomUUID().slice(0, 8)}`);
+      const job = engine.createJob({ bundle, candidate: fixtureCandidate(), workClass: 'live_learning' });
+      const advancing = engine.advanceJob(job.jobId, 'wake:shutdown', controller.signal, { maxQuanta: 1 });
+      await started;
+      controller.abort('runtime-shutdown');
+      const advanced = await advancing;
+
+      assert.equal(advanced.lastError?.reason, 'runtime-shutdown');
+      const attempted = Object.values(engine.loadStore().jobs[job.jobId]!.quanta)
+        .find(quantum => quantum.quantumId === advanced.lastError?.quantumId)!;
+      assert.equal(attempted.state, 'pending');
+      assert.equal(attempted.attempts, 0);
+      assert.equal(attempted.failureReason, 'runtime-shutdown');
+      assert.equal(attempted.nextRetryAt, undefined);
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  test('blocks commit side effects when the durable lease is replaced before journal apply', async () => {
+    const dir = setupEngineDir();
+    try {
+      const tracker: CallTracker = { authorCalls: [], verifierCalls: [], commitCalls: [] };
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+        leaseMs: 500,
+      });
+      const callbacks = makeEngineCallbacks(tracker, ['accept']);
+      (engine as any).options.runReaderLane = callbacks.runReaderLane;
+      (engine as any).options.runSkillAuthor = callbacks.runSkillAuthor;
+      (engine as any).options.runSkillVerifier = callbacks.runSkillVerifier;
+      let commitStarted!: () => void;
+      const started = new Promise<void>(resolve => { commitStarted = resolve; });
+      let sideEffects = 0;
+      (engine as any).options.commitTransition = async (input: any) => {
+        commitStarted();
+        await new Promise(resolve => setTimeout(resolve, 150));
+        return input.commitUnderLease(() => {
+          sideEffects++;
+          return {
+            transition: 'create_current_skill',
+            transitionId: 'transition:must-not-commit',
+            verified: true,
+            rounds: input.round,
+          };
+        });
+      };
+
+      const bundle = fixtureBundle(`stale-commit-${crypto.randomUUID().slice(0, 8)}`);
+      const job = engine.createJob({ bundle, candidate: fixtureCandidate(), workClass: 'live_learning' });
+      const advancing = engine.advanceJob(job.jobId, 'wake:stale-commit');
+      await started;
+      engine.mutateStore(state => {
+        const live = state.jobs[job.jobId]!;
+        const commit = Object.values(live.quanta).find(quantum => quantum.kind === 'commit')!;
+        commit.lease = {
+          leaseId: 'lease:replacement',
+          ownerWakeId: 'wake:replacement',
+          leasedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 5_000).toISOString(),
+        };
+      });
+
+      const advanced = await advancing;
+      assert.equal(sideEffects, 0);
+      assert.match(advanced.lastError?.message ?? '', /quantum_lease_lost/);
+      const commit = Object.values(engine.loadStore().jobs[job.jobId]!.quanta)
+        .find(quantum => quantum.kind === 'commit')!;
+      assert.equal(commit.state, 'leased');
+      assert.equal(commit.lease?.leaseId, 'lease:replacement');
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  test('keeps a long commit lease renewed so a concurrent wake cannot execute it twice', async () => {
+    const dir = setupEngineDir();
+    try {
+      const tracker: CallTracker = { authorCalls: [], verifierCalls: [], commitCalls: [] };
+      const engine1 = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+        leaseMs: 500,
+      });
+      const callbacks = makeEngineCallbacks(tracker, ['accept']);
+      (engine1 as any).options.runReaderLane = callbacks.runReaderLane;
+      (engine1 as any).options.runSkillAuthor = callbacks.runSkillAuthor;
+      (engine1 as any).options.runSkillVerifier = callbacks.runSkillVerifier;
+      let commitStarted!: () => void;
+      const started = new Promise<void>(resolve => { commitStarted = resolve; });
+      (engine1 as any).options.commitTransition = async (input: any) => {
+        tracker.commitCalls.push({ round: input.round, verifierDecision: input.verifier.decision });
+        commitStarted();
+        await new Promise(resolve => setTimeout(resolve, 1_500));
+        return {
+          transition: 'create_current_skill',
+          transitionId: 'transition:long-commit',
+          verified: true,
+          rounds: input.round,
+          draft: input.draft,
+          verifier: input.verifier,
+        };
+      };
+
+      const bundle = fixtureBundle(`long-commit-${crypto.randomUUID().slice(0, 8)}`);
+      const job = engine1.createJob({ bundle, candidate: fixtureCandidate(), workClass: 'live_learning' });
+      const firstAdvance = engine1.advanceJob(job.jobId, 'wake:first');
+      await started;
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+
+      const engine2 = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+        leaseMs: 500,
+      });
+      (engine2 as any).options.runReaderLane = callbacks.runReaderLane;
+      (engine2 as any).options.runSkillAuthor = callbacks.runSkillAuthor;
+      (engine2 as any).options.runSkillVerifier = callbacks.runSkillVerifier;
+      (engine2 as any).options.commitTransition = (engine1 as any).options.commitTransition;
+      const beforeSecond = Object.values(engine1.loadStore().jobs[job.jobId]!.quanta)
+        .find(quantum => quantum.kind === 'commit')!;
+      assert.equal(beforeSecond.state, 'leased');
+      assert.ok(Date.parse(beforeSecond.lease!.expiresAt) > Date.now(),
+        `expected renewed lease, got ${beforeSecond.lease!.expiresAt}`);
+      const second = await engine2.advanceJob(job.jobId, 'wake:second');
+      assert.equal(second.executedQuantumIds.length, 0);
+      assert.equal(tracker.commitCalls.length, 1);
+
+      const first = await firstAdvance;
+      assert.equal(first.result?.transitionId, 'transition:long-commit');
+      assert.equal(tracker.commitCalls.length, 1);
+      const commit = Object.values(engine1.loadStore().jobs[job.jobId]!.quanta)
+        .find(quantum => quantum.kind === 'commit')!;
+      assert.equal(commit.state, 'succeeded');
+      assert.ok(commit.commitIntent?.key);
+      assert.equal(commit.commitReceipt?.key, commit.commitIntent?.key);
+    } finally {
+      dir.cleanup();
+    }
+  });
+
   test('RED: first-round reject skips round-2 Author/Verifier entirely', async () => {
     const dir = setupEngineDir();
     try {

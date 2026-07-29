@@ -2706,6 +2706,46 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
+  test('replays an Evidence Review defer receipt without duplicate audit', () => {
+    const env = setup();
+    try {
+      const bundle = fixtureBundle();
+      const input = {
+        ...env.options,
+        bundle,
+        draft: {
+          body: 'A bounded draft awaiting more corroboration.',
+          envelope: {
+            decision: 'defer' as const,
+            routingName: 'flashcard-image-delivery',
+            description: 'Defer this bounded candidate.',
+            evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+          },
+        },
+        transition: 'defer' as const,
+        verifier: {
+          decision: 'defer' as const,
+          issues: [],
+          rationale: 'Await another settled example.',
+        },
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test-reviewer',
+        promptVersion: 'test-prompt',
+        reviewCommitKey: 'job:test:quantum:commit',
+      };
+
+      const first = applyCapabilityTransition(input);
+      const replayed = applyCapabilityTransition(input);
+      assert.equal(replayed.transitionId, first.transitionId);
+      const receipts = loadTransitionAudit(env.options.auditPath)
+        .filter(entry => entry.reviewCommitKey === input.reviewCommitKey);
+      assert.equal(receipts.length, 1);
+      assert.equal(receipts[0]!.transition, 'defer');
+    } finally {
+      env.cleanup();
+    }
+  });
+
   test('retries the same material revision idempotently without duplicate history or audit', async () => {
     const env = setup();
     try {

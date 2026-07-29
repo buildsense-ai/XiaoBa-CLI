@@ -32,11 +32,11 @@ describe('Evidence Review Quantum lease fencing', () => {
     const { job, quantumId } = fixtureJob();
 
     assert.deepEqual(
-      completeQuantum(job, quantumId, { result: { ok: true }, leaseId: 'lease:stale' }),
+      completeQuantum(job, quantumId, { result: { ok: true }, leaseId: 'lease:stale', ownerWakeId: 'wake:stale' }),
       { ok: false, reason: 'not_leased' },
     );
     assert.deepEqual(
-      failQuantum(job, quantumId, { message: 'late failure', leaseId: 'lease:stale' }),
+      failQuantum(job, quantumId, { message: 'late failure', leaseId: 'lease:stale', ownerWakeId: 'wake:stale' }),
       { ok: false, reason: 'lease_mismatch' },
     );
     assert.equal(job.quanta[quantumId]?.state, 'pending');
@@ -54,11 +54,11 @@ describe('Evidence Review Quantum lease fencing', () => {
 
     const expiredAt = new Date('2026-07-29T00:00:00.011Z');
     assert.deepEqual(
-      completeQuantum(job, quantumId, { result: { late: true }, leaseId: claim.lease.leaseId, now: expiredAt }),
+      completeQuantum(job, quantumId, { result: { late: true }, leaseId: claim.lease.leaseId, ownerWakeId: claim.lease.ownerWakeId, now: expiredAt }),
       { ok: false, reason: 'lease_expired' },
     );
     assert.deepEqual(
-      failQuantum(job, quantumId, { message: 'late failure', leaseId: claim.lease.leaseId, now: expiredAt }),
+      failQuantum(job, quantumId, { message: 'late failure', leaseId: claim.lease.leaseId, ownerWakeId: claim.lease.ownerWakeId, now: expiredAt }),
       { ok: false, reason: 'lease_expired' },
     );
     assert.equal(job.quanta[quantumId]?.state, 'leased');
@@ -83,11 +83,11 @@ describe('Evidence Review Quantum lease fencing', () => {
     if (!second.ok) return;
 
     assert.deepEqual(
-      completeQuantum(job, quantumId, { result: { stale: true }, leaseId: first.lease.leaseId }),
+      completeQuantum(job, quantumId, { result: { stale: true }, leaseId: first.lease.leaseId, ownerWakeId: first.lease.ownerWakeId }),
       { ok: false, reason: 'lease_mismatch' },
     );
     assert.deepEqual(
-      failQuantum(job, quantumId, { message: 'stale failure', leaseId: first.lease.leaseId }),
+      failQuantum(job, quantumId, { message: 'stale failure', leaseId: first.lease.leaseId, ownerWakeId: first.lease.ownerWakeId }),
       { ok: false, reason: 'lease_mismatch' },
     );
     assert.equal(job.quanta[quantumId]?.lease?.leaseId, second.lease.leaseId);
