@@ -61,6 +61,7 @@ function operationalFailure(job: ReturnType<typeof findOperationalJobByBundleId>
     attempts: quantum.attempts,
     currentDelayMs: quantum.currentDelayMs,
     failureKind: quantum.failureKind,
+    failureReason: quantum.failureReason,
     failureMessage: quantum.failureMessage,
     failureTranscripts: [...new Set(Object.values(job.quanta).flatMap(item => item.transcriptPaths))],
   };
@@ -171,8 +172,8 @@ class AbortAwareReviewAttemptAIService {
     return this.chatStream(
       args[0] as Message[] | undefined,
       args[1] as ToolDefinition[] | undefined,
-      args[2],
-      args[3] as { signal?: AbortSignal } | undefined,
+      undefined,
+      args[2] as { signal?: AbortSignal } | undefined,
     );
   }
 
@@ -332,8 +333,10 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-v3-skill-evolution-'));
   const skillsRoot = path.join(root, 'skills');
   const previousRuntimeRoot = process.env.XIAOBA_RUNTIME_ROOT;
+  const previousUserDataRoot = process.env.XIAOBA_USER_DATA_DIR;
   const previousSkillsRoot = process.env.XIAOBA_SKILLS_DIR;
   process.env.XIAOBA_RUNTIME_ROOT = root;
+  process.env.XIAOBA_USER_DATA_DIR = root;
   process.env.XIAOBA_SKILLS_DIR = skillsRoot;
   const options: SkillEvolutionOptions = {
     workingDirectory: root,
@@ -374,6 +377,8 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
       fs.rmSync(root, { recursive: true, force: true });
       if (previousRuntimeRoot === undefined) delete process.env.XIAOBA_RUNTIME_ROOT;
       else process.env.XIAOBA_RUNTIME_ROOT = previousRuntimeRoot;
+      if (previousUserDataRoot === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previousUserDataRoot;
       if (previousSkillsRoot === undefined) delete process.env.XIAOBA_SKILLS_DIR;
       else process.env.XIAOBA_SKILLS_DIR = previousSkillsRoot;
     },
@@ -1578,6 +1583,7 @@ describe('V3 verified semantic Current Skills', () => {
       assert.ok(entry);
       const failure = operationalFailure(entry);
       assert.equal(failure?.failureKind, 'branch_timeout');
+      assert.equal(failure?.failureReason, 'quantum-timeout');
       assert.equal(entry.bundle.bundleId, 'episode-flashcard-1');
       // The operational retry snapshot must remain a fixed Evidence Bundle: the
       // original completion/settlement refs are preserved unchanged (not merged),
@@ -1599,12 +1605,12 @@ describe('V3 verified semantic Current Skills', () => {
       assert.ok(transcriptEntries.some(event => (
         event.event_type === 'run_result'
         && event.outcome === 'failed'
-        && event.terminal_abort_reason === 'review-timeout'
+        && event.terminal_abort_reason === 'quantum-timeout'
         && event.failure_outcome === 'branch_timeout'
       )));
       assert.ok(transcriptEntries.some(event => (
         event.event_type === 'failed'
-        && event.terminal_abort_reason === 'review-timeout'
+        && event.terminal_abort_reason === 'quantum-timeout'
         && event.failure_outcome === 'branch_timeout'
       )));
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
@@ -1865,7 +1871,7 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
-  test('queues missing verifier obligation dispositions for operational retry', async () => {
+  test('completes missing verifier obligation dispositions as cited semantic defer', async () => {
     const env = setup();
     try {
       const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
@@ -1895,14 +1901,15 @@ describe('V3 verified semantic Current Skills', () => {
         fixtureCandidateBundle(fixtureCandidate(), 'missing-obligation-dispositions'),
       );
 
-      assert.equal(result.queued, 'operational');
-      const entry = findOperationalJobByBundleId(
-        loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath)),
-        'missing-obligation-dispositions',
-      );
+      assert.equal(result.transition, 'defer');
+      assert.equal(result.queued, 'deferred');
+      const state = loadEvidenceReviewJobStore(jobStorePathForReviewQueue(reviewQueuePath));
+      const entry = Object.values(state.jobs)
+        .find(job => job.bundle.bundleId === 'missing-obligation-dispositions');
       assert.ok(entry);
-      assert.equal(operationalFailure(entry)?.failureKind, 'invalid_completion_schema');
-      assert.match(operationalFailure(entry)?.failureMessage ?? '', /Missing disposition/);
+      assert.equal(entry.disposition, 'deferred');
+      assert.equal(entry.obligationDispositions?.length, entry.obligations?.length);
+      assert.ok(entry.obligationDispositions?.every(disposition => disposition.decision === 'deferred'));
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();
@@ -2699,6 +2706,72 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(fs.readFileSync(first.skillFilePath, 'utf8'), priorContent);
       assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities[first.handle]!.revision, replacement.record!.revision + 1);
       assert.equal(loadTransitionAudit(env.options.auditPath).at(-1)!.transition, 'restore_capability_revision');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('replays an Evidence Review defer receipt without duplicate audit', () => {
+    const env = setup();
+    try {
+      const bundle = fixtureBundle();
+      const input = {
+        ...env.options,
+        bundle,
+        draft: {
+          body: 'A bounded draft awaiting more corroboration.',
+          envelope: {
+            decision: 'defer' as const,
+            routingName: 'flashcard-image-delivery',
+            description: 'Defer this bounded candidate.',
+            evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+          },
+        },
+        transition: 'defer' as const,
+        verifier: {
+          decision: 'defer' as const,
+          issues: [],
+          rationale: 'Await another settled example.',
+        },
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test-reviewer',
+        promptVersion: 'test-prompt',
+        reviewCommitKey: 'job:test:quantum:commit',
+      };
+
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const first = applyCapabilityTransition(input);
+      const replayed = applyCapabilityTransition(input);
+      assert.equal(replayed.transitionId, first.transitionId);
+
+      // Simulate the crash window after audit append but before journal cleanup.
+      const targetRegistry = loadCurrentSkillRegistry(env.options.registryPath);
+      const residualJournal: TransitionJournal = {
+        schemaVersion: first.audit.schemaVersion,
+        transitionId: first.transitionId,
+        priorRegistryHash: computeCurrentSkillRegistryHash(targetRegistry),
+        targetRegistryHash: computeCurrentSkillRegistryHash(targetRegistry),
+        targetRegistry,
+        skillOperations: [],
+        audit: first.audit,
+      };
+      fs.writeFileSync(env.options.journalPath, JSON.stringify(residualJournal), 'utf8');
+      const recovered = (runtime as any).recoverCommittedTransitionQuantum({
+        bundle,
+        draft: input.draft,
+        verifier: input.verifier,
+        job: { jobId: 'job:test' },
+        branchTranscriptPaths: [],
+        round: 1,
+        reviewCommitKey: input.reviewCommitKey,
+      });
+      assert.equal(recovered?.transitionId, first.transitionId);
+      assert.equal(fs.existsSync(env.options.journalPath), false);
+
+      const receipts = loadTransitionAudit(env.options.auditPath)
+        .filter(entry => entry.reviewCommitKey === input.reviewCommitKey);
+      assert.equal(receipts.length, 1);
+      assert.equal(receipts[0]!.transition, 'defer');
     } finally {
       env.cleanup();
     }

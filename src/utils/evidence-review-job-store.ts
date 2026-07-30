@@ -8,6 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { withProcessExclusiveLock } from './process-exclusive-lock';
 import {
   EVIDENCE_REVIEW_JOB_SCHEMA_VERSION,
   type EvidenceReviewJob,
@@ -140,6 +141,40 @@ export function saveEvidenceReviewJobStore(
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     } catch {
       // best effort cleanup
+    }
+    throw error;
+  }
+}
+
+const STORE_LOCK_RETRY_ATTEMPTS = 50;
+const STORE_LOCK_RETRY_DELAY_MS = 5;
+
+function storeLockPath(filePath: string): string {
+  return `${filePath}.lock`;
+}
+
+/**
+ * Atomically load, mutate and persist the whole-file store. The lock never
+ * spans asynchronous Quantum execution; it protects only a short read/modify/
+ * rename transaction and safely reclaims claims left by dead processes.
+ */
+export function mutateEvidenceReviewJobStore<T>(
+  filePath: string,
+  mutation: (state: EvidenceReviewJobStoreState) => T,
+): T {
+  try {
+    return withProcessExclusiveLock(storeLockPath(filePath), () => {
+      const state = loadEvidenceReviewJobStore(filePath);
+      const result = mutation(state);
+      saveEvidenceReviewJobStore(filePath, state);
+      return result;
+    }, {
+      retryAttempts: STORE_LOCK_RETRY_ATTEMPTS,
+      retryDelayMs: STORE_LOCK_RETRY_DELAY_MS,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Process-exclusive lock is busy:')) {
+      throw new Error(`Evidence Review Job store is busy: ${filePath}`);
     }
     throw error;
   }

@@ -64,6 +64,7 @@ export {
   OBLIGATION_FINDING_CLASSES,
   allObligationsResolvedForCommit,
   buildReviewObligations,
+  completeMissingObligationDispositions,
   validateObligationDispositions,
 } from './obligations';
 export type { ObligationDispositionValidation } from './obligations';

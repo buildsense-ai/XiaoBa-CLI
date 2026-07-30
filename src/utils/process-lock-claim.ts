@@ -1,16 +1,109 @@
 import * as crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 export interface ProcessLockClaimIdentity {
   pid: number;
   startedAt: string;
+  /** Stable OS process-start identity used to distinguish a reused PID. */
+  processStartedAt?: string;
   token: string;
 }
 
 const RECLAIM_DIR_NAME = '.reclaim';
 const RECLAIMER_FILE_NAME = 'claimer.json';
 const MAX_RECLAIM_DEPTH = 32;
+const CURRENT_PROCESS_STARTED_AT_MS = readOsProcessStartedAt(process.pid);
+const CURRENT_PROCESS_STARTED_AT = CURRENT_PROCESS_STARTED_AT_MS === undefined
+  ? undefined
+  : new Date(CURRENT_PROCESS_STARTED_AT_MS).toISOString();
+
+export function createProcessLockClaimIdentity(now = new Date()): ProcessLockClaimIdentity {
+  return {
+    pid: process.pid,
+    startedAt: now.toISOString(),
+    ...(CURRENT_PROCESS_STARTED_AT ? { processStartedAt: CURRENT_PROCESS_STARTED_AT } : {}),
+    token: crypto.randomUUID(),
+  };
+}
+
+export function readProcessLockClaim(filePath: string): ProcessLockClaimIdentity | null {
+  try {
+    const value = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<ProcessLockClaimIdentity>;
+    return typeof value.pid === 'number'
+      && typeof value.startedAt === 'string'
+      && typeof value.token === 'string'
+      && (value.processStartedAt === undefined || typeof value.processStartedAt === 'string')
+      ? {
+        pid: value.pid,
+        startedAt: value.startedAt,
+        ...(value.processStartedAt ? { processStartedAt: value.processStartedAt } : {}),
+        token: value.token,
+      }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isProcessIdAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * PID liveness is insufficient after PID reuse. New claims also pin the OS
+ * process-start identity; legacy claims without it remain fail-closed.
+ */
+export function isProcessLockClaimAlive(claim: ProcessLockClaimIdentity): boolean {
+  if (!isProcessIdAlive(claim.pid)) return false;
+  if (!claim.processStartedAt) return true;
+  const expectedStart = Date.parse(claim.processStartedAt);
+  if (!Number.isFinite(expectedStart)) return true;
+  const liveStart = readLiveProcessStartedAt(claim.pid);
+  if (liveStart === undefined) return true;
+  return liveStart === expectedStart;
+}
+
+function readLiveProcessStartedAt(pid: number): number | undefined {
+  if (pid === process.pid) return CURRENT_PROCESS_STARTED_AT_MS;
+  return readOsProcessStartedAt(pid);
+}
+
+function readOsProcessStartedAt(pid: number): number | undefined {
+  try {
+    const output = process.platform === 'win32'
+      ? execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')`,
+        ],
+        { encoding: 'utf8', windowsHide: true },
+      )
+      : execFileSync(
+        'ps',
+        ['-p', String(pid), '-o', 'lstart='],
+        {
+          encoding: 'utf8',
+          env: { ...process.env, LC_ALL: 'C' },
+          windowsHide: true,
+        },
+      );
+    const parsed = Date.parse(output.trim());
+    return Number.isFinite(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function sameProcessLockClaim(
   left: ProcessLockClaimIdentity | null,
@@ -25,6 +118,7 @@ export function tryInstallRecordDirectory(
   targetDir: string,
   fileName: string,
   serialized: string,
+  additionalRecords: Readonly<Record<string, string>> = {},
 ): boolean {
   const candidateDir = `${targetDir}.candidate-${process.pid}-${crypto.randomUUID()}`;
   fs.mkdirSync(candidateDir, { recursive: false });
@@ -33,6 +127,15 @@ export function tryInstallRecordDirectory(
       encoding: 'utf8',
       mode: 0o600,
     });
+    for (const [additionalName, additionalSerialized] of Object.entries(additionalRecords)) {
+      if (!additionalName || path.basename(additionalName) !== additionalName || additionalName === fileName) {
+        throw new Error(`Invalid additional lock record name: ${additionalName}`);
+      }
+      fs.writeFileSync(path.join(candidateDir, additionalName), additionalSerialized, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+    }
     try {
       fs.renameSync(candidateDir, targetDir);
       return true;
@@ -69,6 +172,7 @@ export function reclaimStaleClaimDirectory(options: {
   reclaimer: ProcessLockClaimIdentity;
   readClaim: (claimPath: string) => ProcessLockClaimIdentity | null;
   isProcessAlive: (pid: number) => boolean;
+  isClaimAlive?: (claim: ProcessLockClaimIdentity) => boolean;
 }): boolean {
   const {
     claimDir,
@@ -77,6 +181,7 @@ export function reclaimStaleClaimDirectory(options: {
     reclaimer,
     readClaim,
     isProcessAlive,
+    isClaimAlive = claim => isProcessAlive(claim.pid),
   } = options;
   const serialized = `${JSON.stringify(reclaimer, null, 2)}\n`;
   let guardParent = claimDir;
@@ -93,7 +198,7 @@ export function reclaimStaleClaimDirectory(options: {
 
     if (!installed) {
       const existingGuard = readClaim(path.join(guardDir, RECLAIMER_FILE_NAME));
-      if (existingGuard && isProcessAlive(existingGuard.pid)) return false;
+      if (existingGuard && isClaimAlive(existingGuard)) return false;
       guardParent = guardDir;
       continue;
     }
@@ -103,7 +208,7 @@ export function reclaimStaleClaimDirectory(options: {
     if (
       !sameProcessLockClaim(currentClaim, observed)
       || !sameProcessLockClaim(currentGuard, reclaimer)
-      || (currentClaim !== null && isProcessAlive(currentClaim.pid))
+      || (currentClaim !== null && isClaimAlive(currentClaim))
     ) {
       return false;
     }

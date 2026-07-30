@@ -8,7 +8,13 @@ import { Tool } from '../types/tool';
 import { AgentToolExecutor } from '../agents/agent-tool-executor';
 import { ConversationRunner, RunResult, RunnerCallbacks } from './conversation-runner';
 
-export type BranchSessionAbortReason = 'review-timeout' | 'runtime-shutdown' | 'turn_budget_exhausted';
+export type BranchSessionAbortReason =
+  | 'quantum-timeout'
+  | 'attempt-deadline-exceeded'
+  | 'review-timeout'
+  | 'runtime-shutdown'
+  | 'external-abort'
+  | 'turn_budget_exhausted';
 export type BranchTranscriptContract = 'required' | 'best-effort';
 
 export interface SharedReviewTurnBudget {
@@ -58,11 +64,11 @@ export abstract class BranchSession {
       contract: options.transcriptContract ?? 'best-effort',
     });
     if (options.signal?.aborted) {
-      this.stop(this.extractAbortReason(options.signal.reason) ?? 'runtime-shutdown');
+      this.stop(this.extractAbortReason(options.signal.reason) ?? 'external-abort');
       return;
     }
     options.signal?.addEventListener('abort', () => {
-      this.stop(this.extractAbortReason(options.signal?.reason) ?? 'runtime-shutdown');
+      this.stop(this.extractAbortReason(options.signal?.reason) ?? 'external-abort');
     }, { once: true });
   }
 
@@ -76,15 +82,18 @@ export abstract class BranchSession {
   }
 
   private extractAbortReason(value: unknown): BranchSessionAbortReason | undefined {
+    if (value === 'quantum-timeout') return 'quantum-timeout';
+    if (value === 'attempt-deadline-exceeded') return 'attempt-deadline-exceeded';
     if (value === 'review-timeout') return 'review-timeout';
     if (value === 'runtime-shutdown') return 'runtime-shutdown';
+    if (value === 'external-abort') return 'external-abort';
     if (value === 'turn_budget_exhausted') return 'turn_budget_exhausted';
     return undefined;
   }
 
   private resolveAbortReason(): BranchSessionAbortReason | undefined {
     if (this.options.signal?.aborted) {
-      return this.extractAbortReason(this.options.signal.reason) ?? 'runtime-shutdown';
+      return this.extractAbortReason(this.options.signal.reason) ?? 'external-abort';
     }
     if (this.abortController.signal.aborted) {
       return this.extractAbortReason(this.abortController.signal.reason) ?? 'runtime-shutdown';
@@ -283,10 +292,13 @@ export abstract class BranchSession {
       : this.resolveAbortReason();
     return {
       terminal_abort_reason: terminalAbortReason ?? null,
-      failure_outcome: terminalAbortReason === 'review-timeout'
+      failure_outcome: terminalAbortReason === 'quantum-timeout'
+        || terminalAbortReason === 'attempt-deadline-exceeded'
+        || terminalAbortReason === 'review-timeout'
         || terminalAbortReason === 'turn_budget_exhausted'
         ? 'branch_timeout'
         : terminalAbortReason === 'runtime-shutdown'
+          || terminalAbortReason === 'external-abort'
           ? 'cancelled'
           : 'branch_failure',
     };

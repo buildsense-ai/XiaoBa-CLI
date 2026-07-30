@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { defaultDistilledOutputDir, PathResolver } from '../utils/path-resolver';
 import { SkillParser } from './skill-parser';
 import { Logger } from '../utils/logger';
+import { withProcessExclusiveLock } from '../utils/process-exclusive-lock';
 import {
   loadCurrentSkillRegistry,
   reconcileActiveGeneratedSkillArtifacts,
@@ -166,21 +167,31 @@ export class SkillManager {
 
   private loadAndEnforceActiveSkillInvariants(): CurrentSkillRegistryState {
     const registryPath = PathResolver.getSkillEvolutionRegistryPath();
-    const loaded = loadCurrentSkillRegistry(registryPath);
-    // Fail closed / restore from authoritative history only. Never invent guidance.
-    const reconciled = reconcileActiveGeneratedSkillArtifacts(
-      loaded,
-      defaultDistilledOutputDir(PathResolver.getSkillsPath()),
-    );
-    if (reconciled.repaired) {
-      try {
-        // Persist restored paths only after successful artifact recovery.
-        saveCurrentSkillRegistry(registryPath, reconciled.state);
-      } catch (error: any) {
-        Logger.warning(`Failed to persist repaired generated skill Registry: ${error.message}`);
-      }
+    const journalPath = PathResolver.getSkillEvolutionJournalPath();
+    const outputDir = defaultDistilledOutputDir(PathResolver.getSkillsPath());
+    try {
+      // Artifact reconciliation can restore SKILL.md and persist Registry paths,
+      // so the entire check is a writer. Serialize it with journal recovery and
+      // re-read only after acquiring the lock; stale catalog snapshots must
+      // never overwrite a Capability Transition that committed while waiting.
+      return withProcessExclusiveLock(`${journalPath}.lock`, () => {
+        if (fs.existsSync(journalPath)) {
+          // The transition owner (or startup recovery) owns this pending journal.
+          // Serving a possibly half-applied Registry would violate the active
+          // generated-skill invariant, so this read path fails closed.
+          throw new Error('Generated skill transition journal requires recovery before catalog refresh.');
+        }
+        const latest = reconcileActiveGeneratedSkillArtifacts(
+          loadCurrentSkillRegistry(registryPath),
+          outputDir,
+        );
+        if (latest.repaired) saveCurrentSkillRegistry(registryPath, latest.state);
+        return latest.state;
+      }, { retryAttempts: 50, retryDelayMs: 5 });
+    } catch (error: any) {
+      Logger.warning(`Failed to enforce generated skill Registry invariants: ${error.message}`);
+      throw error;
     }
-    return reconciled.state;
   }
 
   private async refreshCatalogIfChanged(): Promise<void> {

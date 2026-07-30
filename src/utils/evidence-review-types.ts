@@ -114,6 +114,15 @@ export type ReviewOperationalFailureKind =
   | 'branch_failure'
   | 'invalid_completion_schema';
 
+/** Precise persisted cause behind the compatibility-level failure kind. */
+export type ReviewOperationalFailureReason =
+  | 'quantum-timeout'
+  | 'attempt-deadline-exceeded'
+  | 'runtime-shutdown'
+  | 'external-abort'
+  | 'reader-error'
+  | 'schema-validation-error';
+
 /**
  * Explicit job outcomes. Intermediate progress is always derived from quanta.
  * `superseded` is an extension point for Review Commit Fence successors (#109).
@@ -160,10 +169,15 @@ export interface ReviewQuantumRecord {
   currentDelayMs: number;
   nextRetryAt?: string;
   lease?: QuantumLease;
+  /** Durable prepare record for a side-effecting commit Quantum. */
+  commitIntent?: { key: string; preparedAt: string };
+  /** Job-store projection of the durable Transition Audit receipt. */
+  commitReceipt?: { key: string; transitionId?: string; recordedAt: string };
   resultHash?: string;
   result?: unknown;
   failureMessage?: string;
   failureKind?: ReviewOperationalFailureKind;
+  failureReason?: ReviewOperationalFailureReason;
   transcriptPaths: string[];
   updatedAt: string;
 }

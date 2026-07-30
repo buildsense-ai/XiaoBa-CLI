@@ -59,6 +59,11 @@ export class PathResolver {
     return path.resolve(override || this.getDataPath('current-skill-registry.json'));
   }
 
+  static getSkillEvolutionJournalPath(): string {
+    const override = process.env.XIAOBA_SKILL_EVOLUTION_JOURNAL_FILE?.trim();
+    return path.resolve(override || this.getDataPath('transition-journal.json'));
+  }
+
   static getUserDataSkillsPath(): string {
     return path.join(this.getRuntimeDataRoot(), 'skills');
   }
