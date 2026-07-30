@@ -55,6 +55,8 @@ import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/uplo
 import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
 import { catalogRuntimeMatchesModelId, createBotDefinitionSyncService } from '../../bot-definition/service';
 import { prepareBoundBotDefinition } from '../../bot-definition/activation';
+import { createBotDefinitionCloudSyncService } from '../../bot-definition/cloud-sync';
+import { getPromptReconcileCoordinator } from '../../bot-definition/prompt-sync';
 import {
   customModelDefinitionToConfig,
   modelRuntimeToConfig,
@@ -64,6 +66,7 @@ import {
   BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
   type BotCatalogModelRuntime,
   type BotDefinitionSyncResult,
+  type BotModelDefinition,
   type CustomBotModelDefinition,
 } from '../../bot-definition/types';
 import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
@@ -871,6 +874,9 @@ async function commitCatsBotBindingAndStartConnector(
 }> {
   ensureCatsDeviceId();
   const rollback = createCatsCoLocalConfigRollback();
+  const promptCoordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
+  await promptCoordinator.prepareCurrentBotForSwitch();
+  const promptSnapshot = promptCoordinator.captureActiveSnapshot();
   try {
     const warnings = await ensureCatsFriendBinding(state, input.userUid, input.botUid, input.apiKey);
     const updated = writeCatsBotBinding(state, input);
@@ -911,6 +917,7 @@ async function commitCatsBotBindingAndStartConnector(
     };
   } catch (error) {
     rollback();
+    promptCoordinator.restoreActiveSnapshot(promptSnapshot);
     throw error;
   }
 }
@@ -1393,10 +1400,10 @@ function dashboardSecretValue(raw: unknown, current: string | undefined, id: str
 }
 
 /** Saves the custom profile independently and only selects it when activation is explicit. */
-function updateBoundBotCustomModelFromDashboardSettings(
+async function updateBoundBotCustomModelFromDashboardSettings(
   body: any,
   options: { publishActive: boolean },
-): Record<string, unknown> | undefined {
+): Promise<Record<string, unknown> | undefined> {
   const botId = currentBoundBotId();
   if (!botId || !hasDashboardModelUpdates(body)) return undefined;
   if (body?.modelProfileSource !== undefined && body.modelProfileSource !== 'custom') {
@@ -1442,8 +1449,36 @@ function updateBoundBotCustomModelFromDashboardSettings(
   };
   service.storeCustomModelProfile(botId, customModel);
   return options.publishActive
-    ? toBotDefinitionSyncPayload(service.publish(botId, customModel))
+    ? syncBoundBotModelToCloud(botId, customModel)
     : undefined;
+}
+
+async function syncBoundBotModelToCloud(
+  botId: string,
+  model: BotModelDefinition,
+): Promise<Record<string, unknown>> {
+  const runtimeRoot = runtimeDataRoot();
+  const definitionService = createBotDefinitionSyncService({ runtimeRoot });
+  const result = definitionService.updateModel(botId, model);
+  const payload = toBotDefinitionSyncPayload(result) ?? {};
+  const cloudSync = createBotDefinitionCloudSyncService({ runtimeRoot, definitionService });
+  cloudSync.markModelPending(botId);
+  try {
+    const snapshot = await cloudSync.pushModel(botId, getCatsAuthState(), result.definition.model);
+    return {
+      ...payload,
+      cloudSynced: Boolean(snapshot),
+      cloudPending: !snapshot,
+      ...(snapshot ? { cloudRevision: snapshot.revision } : {}),
+    };
+  } catch (error) {
+    return {
+      ...payload,
+      cloudSynced: false,
+      cloudPending: true,
+      cloudError: sanitizeCatsErrorMessage(error instanceof Error ? error.message : String(error)),
+    };
+  }
 }
 
 function publishCurrentBotDefinition(): BotDefinitionSyncResult | undefined {
@@ -1469,22 +1504,21 @@ function publishCurrentBotDefinitionPayload(): Record<string, unknown> | undefin
   return toBotDefinitionSyncPayload(publishCurrentBotDefinition());
 }
 
-function updateCurrentCustomDefinitionReasoningEffort(
+async function updateCurrentCustomDefinitionReasoningEffort(
   reasoningEffort: ReasoningEffort,
-): Record<string, unknown> | undefined {
+): Promise<Record<string, unknown> | undefined> {
   const service = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() });
   const definition = service.pullOrBootstrapCurrentBoundBot()?.definition;
   if (!definition || definition.model.kind !== 'custom') return undefined;
-  const result = service.publish(definition.botId, {
+  return syncBoundBotModelToCloud(definition.botId, {
     ...definition.model,
     reasoningEffort,
   });
-  return toBotDefinitionSyncPayload(result);
 }
 
-function updateCurrentCatalogRuntimeReasoningEffort(
+async function updateCurrentCatalogRuntimeReasoningEffort(
   reasoningEffort: ReasoningEffort,
-): Record<string, unknown> | undefined {
+): Promise<Record<string, unknown> | undefined> {
   const service = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() });
   const definition = service.pullOrBootstrapCurrentBoundBot()?.definition;
   if (!definition || definition.model.kind !== 'catalog') return undefined;
@@ -1493,7 +1527,10 @@ function updateCurrentCatalogRuntimeReasoningEffort(
     throw httpError('The selected catalog model is not materialized on this device.', 409);
   }
   service.storeCatalogRuntime({ ...runtime, reasoningEffort });
-  return toBotDefinitionSyncPayload(service.publish(definition.botId, definition.model));
+  return syncBoundBotModelToCloud(definition.botId, {
+    ...definition.model,
+    reasoningEffort,
+  });
 }
 
 function modelProfileFromStoredEnv(
@@ -2207,7 +2244,13 @@ export function createApiRouter(
 
   router.get('/prompts', async (_req, res) => {
     try {
-      res.json(await getPromptEditorState());
+      const state = await getPromptEditorState();
+      const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
+      const botId = coordinator.getCurrentBotId();
+      res.json({
+        ...state,
+        ...(botId ? { system_prompt: coordinator.getSelection(botId) } : {}),
+      });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || String(e) });
     }
@@ -2475,7 +2518,22 @@ export function createApiRouter(
   router.put('/prompts/file', (req, res) => {
     try {
       if (!requireJsonWrite(req, res)) return;
-      res.json(writePromptOverride(String(req.body?.path || ''), String(req.body?.content ?? '')));
+      const relativePath = String(req.body?.path || '');
+      const content = String(req.body?.content ?? '');
+      const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
+      const botId = coordinator.getCurrentBotId();
+      if (botId && relativePath === 'system-prompt.md') {
+        if (!coordinator.getSelection(botId).definitionReady) {
+          res.status(409).json({ error: '机器人配置尚未初始化，连接完成后即可编辑' });
+          return;
+        }
+        void coordinator.select(botId, 'custom', content).then(
+          () => res.json(getPromptEditorFile(relativePath)),
+          error => res.status(400).json({ error: error instanceof Error ? error.message : String(error) }),
+        );
+        return;
+      }
+      res.json(writePromptOverride(relativePath, content));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
     }
@@ -2484,7 +2542,49 @@ export function createApiRouter(
   router.delete('/prompts/file', (req, res) => {
     try {
       if (!requireJsonWrite(req, res)) return;
-      res.json(deletePromptOverride(String(req.body?.path || req.query.path || '')));
+      const relativePath = String(req.body?.path || req.query.path || '');
+      const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
+      const botId = coordinator.getCurrentBotId();
+      if (botId && relativePath === 'system-prompt.md') {
+        if (!coordinator.getSelection(botId).definitionReady) {
+          res.status(409).json({ error: '机器人配置尚未初始化，连接完成后即可编辑' });
+          return;
+        }
+        void coordinator.select(botId, 'default').then(
+          () => res.json(getPromptEditorFile(relativePath)),
+          error => res.status(400).json({ error: error instanceof Error ? error.message : String(error) }),
+        );
+        return;
+      }
+      res.json(deletePromptOverride(relativePath));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.put('/prompts/system', (req, res) => {
+    try {
+      if (!requireJsonWrite(req, res)) return;
+      const coordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
+      const botId = coordinator.getCurrentBotId();
+      if (!botId) {
+        res.status(409).json({ error: 'No bound bot is available for prompt selection' });
+        return;
+      }
+      if (!coordinator.getSelection(botId).definitionReady) {
+        res.status(409).json({ error: '机器人配置尚未初始化，连接完成后即可编辑' });
+        return;
+      }
+      const selected = req.body?.selected;
+      if (selected !== 'default' && selected !== 'custom') {
+        res.status(400).json({ error: 'selected must be default or custom' });
+        return;
+      }
+      const content = req.body?.content === undefined ? undefined : String(req.body.content);
+      void coordinator.select(botId, selected, content).then(
+        result => res.json(result),
+        error => res.status(400).json({ error: error instanceof Error ? error.message : String(error) }),
+      );
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
     }
@@ -2742,7 +2842,7 @@ export function createApiRouter(
     }
   });
 
-  router.put('/settings', (req, res) => {
+  router.put('/settings', async (req, res) => {
     try {
       const previousModel = modelProfileFromCurrentConfig();
       const previousSource = storedModelSource();
@@ -2752,7 +2852,7 @@ export function createApiRouter(
       // Bound bots never write a second model source to .env. Non-model
       // dashboard settings keep their existing machine-local behavior.
       const botDefinitionSync = boundBot
-        ? updateBoundBotCustomModelFromDashboardSettings(req.body, { publishActive: publishBoundCustom })
+        ? await updateBoundBotCustomModelFromDashboardSettings(req.body, { publishActive: publishBoundCustom })
         : undefined;
       const result = updateDashboardSettings(
         boundBot ? withoutDashboardModelUpdates(req.body) : req.body,
@@ -2786,14 +2886,14 @@ export function createApiRouter(
     }
   });
 
-  router.put('/model/reasoning-effort', (req, res) => {
+  router.put('/model/reasoning-effort', async (req, res) => {
     try {
       const requested = requestedReasoningEffort(req.body?.reasoningEffort);
       const activeBotConfig = resolveActiveBotLLMConfig({ runtimeRoot: runtimeDataRoot() });
       if (activeBotConfig?.source === 'custom_definition') {
         const previousReasoningEffort = activeBotConfig.config.reasoningEffort ?? 'default';
         const reasoningEffort = requested ?? previousReasoningEffort;
-        const botDefinitionSync = updateCurrentCustomDefinitionReasoningEffort(reasoningEffort);
+        const botDefinitionSync = await updateCurrentCustomDefinitionReasoningEffort(reasoningEffort);
         const restartInfo = req.body?.restartConnector === true || req.body?.activateConnector === true
           ? activateCatsCompanyConnector(serviceManager, {
             startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
@@ -2818,7 +2918,7 @@ export function createApiRouter(
       if (activeBotConfig?.source === 'catalog_runtime') {
         const previousReasoningEffort = activeBotConfig.config.reasoningEffort ?? 'high';
         const reasoningEffort = relayReasoningEffortOrHigh(requested ?? previousReasoningEffort);
-        const botDefinitionSync = updateCurrentCatalogRuntimeReasoningEffort(reasoningEffort);
+        const botDefinitionSync = await updateCurrentCatalogRuntimeReasoningEffort(reasoningEffort);
         const restartInfo = req.body?.restartConnector === true || req.body?.activateConnector === true
           ? activateCatsCompanyConnector(serviceManager, {
             startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
@@ -2849,7 +2949,7 @@ export function createApiRouter(
         : requested ?? previousReasoningEffort;
       const result = writeStartupReasoningEffort(reasoningEffort);
       const botDefinitionSync = result.source === 'custom'
-        ? updateCurrentCustomDefinitionReasoningEffort(reasoningEffort)
+        ? await updateCurrentCustomDefinitionReasoningEffort(reasoningEffort)
         : undefined;
       const restartInfo = req.body?.restartConnector === true || req.body?.activateConnector === true
         ? activateCatsCompanyConnector(serviceManager, {
@@ -2876,7 +2976,7 @@ export function createApiRouter(
     }
   });
 
-  router.post('/model-source/custom/apply', (req, res) => {
+  router.post('/model-source/custom/apply', async (req, res) => {
     try {
       const activeBotConfig = resolveActiveBotLLMConfig({ runtimeRoot: runtimeDataRoot() });
       const botId = currentBoundBotId();
@@ -2894,7 +2994,7 @@ export function createApiRouter(
           if (!savedCustom) {
             throw httpError('Set custom model fields in Settings before selecting the custom source.', 409);
           }
-          botDefinitionSync = toBotDefinitionSyncPayload(definitionService.publish(botId, savedCustom));
+          botDefinitionSync = await syncBoundBotModelToCloud(botId, savedCustom);
         }
         const activation = activateCatsCompanyConnector(serviceManager, {
           startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
@@ -3406,6 +3506,7 @@ export function createApiRouter(
       const login = await catsRequest('POST', state.httpBaseUrl, '/api/auth/login', {
         account: email,
         password,
+        persistent: true,
       }, undefined, { timeoutMs: 10000 });
       persistCatsUserSession(state, login);
       res.json({
@@ -3428,7 +3529,14 @@ export function createApiRouter(
       const password = String(req.body?.password || '');
       if (!account || !password) return res.status(400).json({ error: 'account and password are required' });
 
-      const login = await catsRequest('POST', state.httpBaseUrl, '/api/auth/login', { account, password }, undefined, { timeoutMs: 10000 });
+      const login = await catsRequest(
+        'POST',
+        state.httpBaseUrl,
+        '/api/auth/login',
+        { account, password, persistent: true },
+        undefined,
+        { timeoutMs: 10000 },
+      );
       persistCatsUserSession(state, login);
       res.json({
         ok: true,
@@ -4005,9 +4113,11 @@ export function createApiRouter(
         definitionService.storeCatalogRuntime(
           selectedRelayCatalogRuntime(botId, selectedModel, ensured.plainKey, reasoningEffort),
         );
-        botDefinitionSync = toBotDefinitionSyncPayload(
-          definitionService.publish(botId, { kind: 'catalog', modelId: selectedModel.id }),
-        );
+        botDefinitionSync = await syncBoundBotModelToCloud(botId, {
+          kind: 'catalog',
+          modelId: selectedModel.id,
+          reasoningEffort,
+        });
       }
       const restartInfo = activateCatsCompanyConnector(serviceManager, {
         startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,

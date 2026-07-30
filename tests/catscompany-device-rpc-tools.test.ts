@@ -1,6 +1,7 @@
-import { describe, test } from 'node:test';
+import { after, before, describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { CatsCompanyBot } from '../src/catscompany';
 import type { CatsDeviceRpcMessage, CatsThinToolRpcMessage } from '../src/catscompany/client';
@@ -86,6 +87,17 @@ function serverGrant(overrides: Partial<ScopedDeviceGrant> = {}): ScopedDeviceGr
 }
 
 describe('CatsCompany Device RPC file tools', () => {
+  let testRoot: string;
+
+  before(() => {
+    testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-device-rpc-tools-'));
+    fs.mkdirSync(path.join(testRoot, 'tmp'), { recursive: true });
+  });
+
+  after(() => {
+    if (testRoot) fs.rmSync(testRoot, { recursive: true, force: true });
+  });
+
   test('materializes trusted remote upload metadata without publishing a chat attachment', async () => {
     let downloaded: any;
     const bot = Object.create(CatsCompanyBot.prototype) as any;
@@ -257,7 +269,7 @@ describe('CatsCompany Device RPC file tools', () => {
   test('executes read_file on the target local device and returns a normalized result', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
-    const tmpRoot = path.join(process.cwd(), 'tmp');
+    const tmpRoot = path.join(testRoot, 'tmp');
     fs.mkdirSync(tmpRoot, { recursive: true });
     const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-read-'));
     const filePath = path.join(dir, 'notes.txt');
@@ -277,7 +289,7 @@ describe('CatsCompany Device RPC file tools', () => {
   test('uploads the original file bytes for a thin import_file request', async () => {
     const captured: { uploaded?: { path: string; type: string; bytes: Buffer } } = {};
     const bot = botWithDevice(captured);
-    const tmpRoot = path.join(process.cwd(), 'tmp');
+    const tmpRoot = path.join(testRoot, 'tmp');
     fs.mkdirSync(tmpRoot, { recursive: true });
     const dir = fs.mkdtempSync(path.join(tmpRoot, 'thin-rpc-import-file-'));
     const filePath = path.join(dir, 'original.bin');
@@ -310,7 +322,7 @@ describe('CatsCompany Device RPC file tools', () => {
   test('accepts import_file through authorized Device RPC and returns upload metadata', async () => {
     const captured: { result?: any; uploaded?: { path: string; type: string; bytes: Buffer } } = {};
     const bot = botWithDevice(captured);
-    const tmpRoot = path.join(process.cwd(), 'tmp');
+    const tmpRoot = path.join(testRoot, 'tmp');
     fs.mkdirSync(tmpRoot, { recursive: true });
     const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-import-file-'));
     const filePath = path.join(dir, 'report.txt');
@@ -338,7 +350,7 @@ describe('CatsCompany Device RPC file tools', () => {
   test('executes write_file on the target local device when RPC scope is valid', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
-    const tmpRoot = path.join(process.cwd(), 'tmp');
+    const tmpRoot = path.join(testRoot, 'tmp');
     fs.mkdirSync(tmpRoot, { recursive: true });
     const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-write-'));
     const filePath = path.join(dir, 'created.txt');
@@ -359,7 +371,7 @@ describe('CatsCompany Device RPC file tools', () => {
   test('executes edit_file on the target local device when RPC scope is valid', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
-    const tmpRoot = path.join(process.cwd(), 'tmp');
+    const tmpRoot = path.join(testRoot, 'tmp');
     fs.mkdirSync(tmpRoot, { recursive: true });
     const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-edit-'));
     const filePath = path.join(dir, 'edit.txt');
@@ -381,25 +393,26 @@ describe('CatsCompany Device RPC file tools', () => {
   test('executes Device RPC requests even when owner identity is omitted', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
+    const filePath = path.join(testRoot, 'tmp', 'missing-owner.txt');
 
     await bot.handleDeviceRpcRequest(request({
       request_id: 'rpc-missing-owner-1',
       owner_user_id: '',
       operation: 'write_file',
       tool_name: 'write_file',
-      payload: { args: { file_path: path.join(process.cwd(), 'tmp', 'missing-owner.txt'), content: 'nope' } },
+      payload: { args: { file_path: filePath, content: 'nope' } },
     }));
 
     assert.ok(captured.result);
     assert.equal(captured.result.error, undefined);
     assert.equal(captured.result.result.ok, true);
-    assert.equal(fs.readFileSync(path.join(process.cwd(), 'tmp', 'missing-owner.txt'), 'utf8'), 'nope');
+    assert.equal(fs.readFileSync(filePath, 'utf8'), 'nope');
   });
 
   test('executes Device RPC requests without owner mismatch checks after target delivery', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
-    const filePath = path.join(process.cwd(), 'tmp', 'wrong-owner.txt');
+    const filePath = path.join(testRoot, 'tmp', 'wrong-owner.txt');
 
     await bot.handleDeviceRpcRequest(request({
       request_id: 'rpc-wrong-owner-1',
@@ -419,6 +432,7 @@ describe('CatsCompany Device RPC file tools', () => {
   test('executes delegated Device RPC requests without channel identity permission checks after target delivery', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
+    const filePath = path.join(testRoot, 'tmp', 'bad-delegated.txt');
 
     await bot.handleDeviceRpcRequest(request({
       request_id: 'rpc-bad-delegation-1',
@@ -427,13 +441,13 @@ describe('CatsCompany Device RPC file tools', () => {
       identity_source: 'metadata.catsco_identity',
       operation: 'write_file',
       tool_name: 'write_file',
-      payload: { args: { file_path: path.join(process.cwd(), 'tmp', 'bad-delegated.txt'), content: 'nope' } },
+      payload: { args: { file_path: filePath, content: 'nope' } },
     }));
 
     assert.ok(captured.result);
     assert.equal(captured.result.error, undefined);
     assert.equal(captured.result.result.ok, true);
-    assert.equal(fs.readFileSync(path.join(process.cwd(), 'tmp', 'bad-delegated.txt'), 'utf8'), 'nope');
+    assert.equal(fs.readFileSync(filePath, 'utf8'), 'nope');
   });
 
   test('executes shell Device RPC operations on the selected local device', async () => {

@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { glob } from 'glob';
+import { buildIsolatedTestEnvironment } from './test-environment.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -53,13 +56,28 @@ if (selectedTests.length === 0) {
 }
 
 const tsxCli = require.resolve('tsx/cli');
+const testSandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-test-runner-'));
+const testHome = path.join(testSandbox, 'home');
+const testTemp = path.join(testSandbox, 'tmp');
+const testDotenv = path.join(testSandbox, '.env');
+fs.mkdirSync(testHome, { recursive: true });
+fs.mkdirSync(testTemp, { recursive: true });
+fs.writeFileSync(testDotenv, '', 'utf8');
+
 const child = spawn(process.execPath, [tsxCli, '--test', ...selectedTests], {
   cwd: rootDir,
+  env: buildIsolatedTestEnvironment(process.env, {
+    homeDir: testHome,
+    tempDir: testTemp,
+    appRoot: rootDir,
+    dotenvPath: testDotenv,
+  }),
   stdio: 'inherit',
   shell: false,
 });
 
 child.on('exit', (code, signal) => {
+  cleanupTestSandbox();
   if (signal) {
     console.error(`[test] terminated by ${signal}`);
     process.exit(1);
@@ -68,9 +86,14 @@ child.on('exit', (code, signal) => {
 });
 
 child.on('error', error => {
+  cleanupTestSandbox();
   console.error(`[test] failed to start: ${error.message}`);
   process.exit(1);
 });
+
+function cleanupTestSandbox() {
+  fs.rmSync(testSandbox, { recursive: true, force: true });
+}
 
 function normalizeTestPath(file) {
   return file.replace(/\\/g, '/');

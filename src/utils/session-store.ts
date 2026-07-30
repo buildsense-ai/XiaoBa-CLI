@@ -137,16 +137,18 @@ export class SessionStore {
     return SessionStore.instance;
   }
 
-  /** 保存完整 context（覆盖写入） */
-  saveContext(sessionKey: string, messages: Message[]): void {
+  /** 保存完整 context（覆盖写入）；返回是否真实落盘成功。 */
+  saveContext(sessionKey: string, messages: Message[]): boolean {
     try {
       ensureDir();
       const fp = filePath(sessionKey);
       const lines = sanitizeForPersistence(messages)
         .map(m => JSON.stringify(m));
       fs.writeFileSync(fp, lines.join('\n') + '\n', 'utf-8');
+      return true;
     } catch (err) {
       Logger.error(`保存 context 失败 [${sessionKey}]: ${err}`);
+      return false;
     }
   }
 
@@ -181,14 +183,16 @@ export class SessionStore {
     return fs.existsSync(filePath(sessionKey));
   }
 
-  /** 删除会话文件 */
-  deleteSession(sessionKey: string): void {
+  /** 删除会话文件；返回是否真实删除成功或本就不存在。 */
+  deleteSession(sessionKey: string): boolean {
     try {
       const fp = filePath(sessionKey);
       if (fs.existsSync(fp)) fs.unlinkSync(fp);
       Logger.info(`会话已删除: ${sessionKey}`);
+      return true;
     } catch (err) {
       Logger.error(`删除会话失败 [${sessionKey}]: ${err}`);
+      return false;
     }
   }
 
@@ -205,24 +209,28 @@ export class SessionStore {
     }
   }
 
-  saveRuntimeState(sessionKey: string, state: SessionRuntimeState): void {
+  saveRuntimeState(sessionKey: string, state: SessionRuntimeState): boolean {
     try {
       if (!fs.existsSync(SESSION_STATE_DIR)) fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
       fs.writeFileSync(stateFilePath(sessionKey), JSON.stringify({
         ...state,
         updatedAt: new Date().toISOString(),
       }, null, 2), 'utf-8');
+      return true;
     } catch (err) {
       Logger.error(`Failed to save session state [${sessionKey}]: ${err}`);
+      return false;
     }
   }
 
-  deleteRuntimeState(sessionKey: string): void {
+  deleteRuntimeState(sessionKey: string): boolean {
     try {
       const fp = stateFilePath(sessionKey);
       if (fs.existsSync(fp)) fs.unlinkSync(fp);
+      return true;
     } catch (err) {
       Logger.error(`Failed to delete session state [${sessionKey}]: ${err}`);
+      return false;
     }
   }
 

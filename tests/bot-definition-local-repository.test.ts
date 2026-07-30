@@ -93,7 +93,7 @@ describe('BotDefinition local simulation', () => {
     });
   }
 
-  test('publishes a custom model on local change and refreshes the local cache', () => {
+  test('bootstraps a custom model into the local cache without rewriting legacy simulated cloud', () => {
     bindCurrentBot();
     const env = {
       CATSCO_MODEL_SOURCE: 'custom',
@@ -106,7 +106,7 @@ describe('BotDefinition local simulation', () => {
     const service = createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot, env });
 
     const result = service.publishCurrentBoundBot();
-    assert.equal(result?.direction, 'bootstrap_to_simulated_cloud');
+    assert.equal(result?.direction, 'legacy_bootstrap_to_local');
     assert.deepStrictEqual(result?.definition.model, {
       kind: 'custom',
       protocol: 'anthropic',
@@ -117,11 +117,34 @@ describe('BotDefinition local simulation', () => {
     });
 
     const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
-    assert.deepStrictEqual(repository.readCanonical('bot-alpha'), result?.definition);
+    assert.equal(repository.readCanonical('bot-alpha'), undefined);
     assert.deepStrictEqual(repository.readCache('bot-alpha'), result?.definition);
   });
 
-  test('pull uses canonical data over stale cache and does not overwrite canonical data', () => {
+  test('an existing local cache remains the runtime truth over legacy simulated cloud', () => {
+    const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
+    const canonical: BotDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'gpt-5.6-terra' },
+    };
+    const cached: BotDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'old-model' },
+    };
+    repository.writeCanonical(canonical);
+    repository.writeCache(cached);
+    const service = createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot });
+
+    const result = service.pullOrBootstrap('bot-alpha');
+    assert.equal(result?.direction, 'local_cache_update');
+    assert.deepStrictEqual(result?.definition, cached);
+    assert.deepStrictEqual(repository.readCanonical('bot-alpha'), canonical);
+    assert.deepStrictEqual(repository.readCache('bot-alpha'), cached);
+  });
+
+  test('migrates legacy simulated cloud once when no local cache exists', () => {
     const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
     const canonical: BotDefinition = {
       schema: BOT_DEFINITION_SCHEMA,
@@ -129,15 +152,11 @@ describe('BotDefinition local simulation', () => {
       model: { kind: 'catalog', modelId: 'gpt-5.6-terra' },
     };
     repository.writeCanonical(canonical);
-    repository.writeCache({
-      schema: BOT_DEFINITION_SCHEMA,
-      botId: 'bot-alpha',
-      model: { kind: 'catalog', modelId: 'old-model' },
-    });
     const service = createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot });
 
     const result = service.pullOrBootstrap('bot-alpha');
-    assert.equal(result?.direction, 'simulated_cloud_to_local');
+
+    assert.equal(result?.direction, 'legacy_simulated_cloud_to_local');
     assert.deepStrictEqual(result?.definition, canonical);
     assert.deepStrictEqual(repository.readCanonical('bot-alpha'), canonical);
     assert.deepStrictEqual(repository.readCache('bot-alpha'), canonical);
@@ -476,5 +495,23 @@ describe('BotDefinition local simulation', () => {
     assert.equal(cleanedConfig.apiKey, undefined);
     assert.equal(cleanedConfig.model, undefined);
     assert.deepStrictEqual(cleanedConfig.catscompany, { enabled: true });
+  });
+
+  test('preserves the complete custom system prompt received from canonical storage', () => {
+    const repository = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
+    const service = createBotDefinitionSyncService({ runtimeRoot, simulatedCloudRoot });
+    const customSystemPrompt = '\nPreserve leading and trailing lines.\n';
+
+    service.acceptCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+      prompt: { selected: 'custom', customSystemPrompt },
+    });
+
+    assert.equal(
+      repository.readCache('bot-alpha')?.prompt?.customSystemPrompt,
+      customSystemPrompt,
+    );
   });
 });

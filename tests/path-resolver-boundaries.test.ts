@@ -35,4 +35,27 @@ describe('PathResolver runtime data boundary', () => {
 
     assert.equal(PathResolver.getRuntimeDataRoot(env, testRoot), legacyDataRoot);
   });
+
+  test('Node tests refuse an explicit runtime root outside the OS temp directory', () => {
+    const unsafeRoot = path.resolve(path.parse(testRoot).root, 'srv', 'catsco-agent');
+    const env = {
+      NODE_TEST_CONTEXT: 'child-v8',
+      XIAOBA_USER_DATA_DIR: unsafeRoot,
+    } as NodeJS.ProcessEnv;
+
+    assert.throws(
+      () => PathResolver.getRuntimeDataRoot(env, testRoot),
+      /Refusing Node test runtime data root outside the OS temporary directory/,
+    );
+  });
+
+  test('Node tests may use an explicit runtime root inside the OS temp directory', () => {
+    const safeRoot = path.join(testRoot, 'isolated-runtime');
+    const env = {
+      NODE_TEST_CONTEXT: 'child-v8',
+      XIAOBA_USER_DATA_DIR: safeRoot,
+    } as NodeJS.ProcessEnv;
+
+    assert.equal(PathResolver.getRuntimeDataRoot(env, testRoot), path.resolve(safeRoot));
+  });
 });

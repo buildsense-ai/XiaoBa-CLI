@@ -60,6 +60,9 @@ describe('BotDefinition activation', () => {
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
       requests.push(`${init?.method || 'GET'} ${url.pathname}`);
+      if (url.pathname === '/api/bot/definition') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       if (url.pathname === '/api/bot/model-config') {
         return Response.json({ error: 'not deployed' }, { status: 404 });
       }
@@ -96,12 +99,123 @@ describe('BotDefinition activation', () => {
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.apiKey, 'sk-bravo-relay-material');
     assert.equal(env.CATSCO_RELAY_LLM_API_KEY, undefined);
     assert.deepStrictEqual(requests, [
+      'GET /api/bot/definition',
       'GET /api/bot/model-config',
       'GET /api/relay/config',
       'GET /api/relay/key',
       'GET /api.json',
       'GET /v1/models',
     ]);
+  });
+
+  test('uploads a local legacy Definition when the cloud bot is not configured yet', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-cloud-bootstrap-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-cloud-bootstrap-legacy-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://cats.example.test',
+        serverUrl: 'wss://cats.example.test/v0/channels',
+      },
+      account: { token: 'owner-token', uid: '7', displayName: 'Alice' },
+      currentBot: {
+        uid: '43',
+        apiKey: 'bot-api-key',
+        boundByUserUid: '7',
+        bindingSource: 'test',
+      },
+    });
+    const legacyDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: {
+        kind: 'custom' as const,
+        protocol: 'openai-responses' as const,
+        apiBase: 'https://models.example.test/v1',
+        apiKey: 'sk-local-legacy',
+        model: 'legacy-custom-model',
+        contextWindowTokens: 256_000,
+        maxTokens: 8192,
+      },
+      prompt: {
+        selected: 'custom' as const,
+        customSystemPrompt: 'Legacy custom system prompt.',
+      },
+    };
+    new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }).writeCanonical(legacyDefinition);
+
+    let revision = 0;
+    let cloudDefinition: typeof legacyDefinition | undefined;
+    const requests: Array<{ method: string; path: string; authorization: string; body?: any }> = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method || 'GET';
+      const authorization = new Headers(init?.headers).get('Authorization') || '';
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      requests.push({ method, path: url.pathname, authorization, body });
+
+      if (url.pathname === '/api/bot/definition' && method === 'GET') {
+        return Response.json(cloudDefinition
+          ? { configured: true, revision, definition: cloudDefinition }
+          : { configured: false, revision: 0 });
+      }
+      if (url.pathname === '/api/bots/definition/model' && method === 'PATCH') {
+        assert.equal(authorization, 'Bearer owner-token');
+        assert.equal(body.revision, revision);
+        revision += 1;
+        cloudDefinition = {
+          schema: BOT_DEFINITION_SCHEMA,
+          botId: '43',
+          model: body.model,
+          prompt: { selected: 'default' },
+        };
+        return Response.json({ revision });
+      }
+      if (url.pathname === '/api/bots/definition/prompt' && method === 'PATCH') {
+        assert.equal(authorization, 'Bearer owner-token');
+        assert.equal(body.revision, revision);
+        revision += 1;
+        cloudDefinition = {
+          ...cloudDefinition!,
+          prompt: body.prompt,
+        };
+        return Response.json({ revision });
+      }
+      if (url.pathname === '/api/bot/definition/ack' && method === 'POST') {
+        assert.equal(authorization, 'ApiKey bot-api-key');
+        assert.equal(body.revision, revision);
+        return Response.json({ status: 'applied' });
+      }
+      if (url.pathname === '/api/bot/model-config') {
+        assert.fail('new BotDefinition initialization must not use the legacy model-config endpoint');
+      }
+      return Response.json({ error: `unexpected ${method} ${url.pathname}` }, { status: 500 });
+    }) as typeof fetch;
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      simulatedCloudRoot,
+      env,
+      fetchImpl,
+    });
+
+    assert.equal(prepared?.cloudRevision, 2);
+    assert.deepStrictEqual(prepared?.definition, legacyDefinition);
+    assert.deepStrictEqual(cloudDefinition, legacyDefinition);
+    assert.equal(
+      requests.filter(item => item.path === '/api/bots/definition/model').length,
+      1,
+    );
+    assert.equal(
+      requests.filter(item => item.path === '/api/bots/definition/prompt').length,
+      1,
+    );
+    assert.equal(
+      requests.filter(item => item.path === '/api/bot/definition/ack').length,
+      1,
+    );
   });
 
   test('applies and acknowledges a cloud-selected model after its local runtime is ready', async () => {
@@ -133,6 +247,9 @@ describe('BotDefinition activation', () => {
         body,
         authorization: new Headers(init?.headers).get('Authorization') || undefined,
       });
+      if (url.pathname === '/api/bot/definition') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       if (url.pathname === '/api/bot/model-config') {
         return Response.json({
           uid: 43,
@@ -192,6 +309,9 @@ describe('BotDefinition activation', () => {
     let ackBody: any;
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
+      if (url.pathname === '/api/bot/definition') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       if (url.pathname === '/api/bot/model-config') {
         return Response.json({
           uid: 43,
@@ -312,6 +432,9 @@ describe('BotDefinition activation', () => {
     let failureAck: any;
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
+      if (url.pathname === '/api/bot/definition') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       if (url.pathname === '/api/bot/model-config') {
         return Response.json({ uid: 43, configured: true, desired: { model_id: 'unknown-model', revision: 4 } });
       }
@@ -367,6 +490,9 @@ describe('BotDefinition activation', () => {
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
       requests.push({ path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.pathname === '/api/bot/definition') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       if (url.pathname === '/api/bot/model-config') {
         return Response.json({
           uid: 43,
@@ -450,6 +576,9 @@ describe('BotDefinition activation', () => {
     });
     const fetchImpl = (async (input: string | URL | Request) => {
       const url = new URL(String(input));
+      if (url.pathname === '/api/bot/definition') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       if (url.pathname === '/api/bot/model-config') {
         return Response.json({
           uid: 43,
@@ -497,6 +626,9 @@ describe('BotDefinition activation', () => {
     let acknowledged = false;
     const fetchImpl = (async (input: string | URL | Request) => {
       const url = new URL(String(input));
+      if (url.pathname === '/api/bot/definition') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       if (url.pathname === '/api/bot/model-config') {
         return Response.json({
           uid: 43,
@@ -560,7 +692,10 @@ describe('BotDefinition activation', () => {
     assert.equal(cloudPrepared?.cloudRevision, 11);
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'cloud-model');
     assert.deepStrictEqual(definitions.readCanonical('43'), localDefinition);
-    assert.deepStrictEqual(definitions.readCache('43'), localDefinition);
+    assert.deepStrictEqual(definitions.readCache('43'), {
+      ...localDefinition,
+      prompt: { selected: 'default' },
+    });
     assert.deepStrictEqual(new FileBotCustomModelProfileRepository({ runtimeRoot }).read('43')?.model, localModel);
     assert.equal(new FileBotCloudModelOverrideRepository({ runtimeRoot }).read('43')?.model.kind, 'custom');
 
@@ -585,6 +720,10 @@ describe('BotDefinition activation', () => {
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'local-model');
     assert.equal(new FileBotCloudModelOverrideRepository({ runtimeRoot }).read('43'), undefined);
     assert.deepStrictEqual(definitions.readCanonical('43'), localDefinition);
+    assert.deepStrictEqual(definitions.readCache('43'), {
+      ...localDefinition,
+      prompt: { selected: 'default' },
+    });
     assert.deepStrictEqual(new FileBotCustomModelProfileRepository({ runtimeRoot }).read('43')?.model, localModel);
   });
 

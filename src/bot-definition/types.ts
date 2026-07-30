@@ -32,14 +32,19 @@ export interface CustomBotModelDefinition {
 
 export type BotModelDefinition = CatalogBotModelDefinition | CustomBotModelDefinition;
 
+export interface BotPromptDefinition {
+  selected: 'default' | 'custom';
+  customSystemPrompt?: string;
+}
+
 /**
- * The deliberately small, portable part of a bot. Prompt and skill fields are
- * intentionally deferred until their source/version contracts are settled.
+ * The deliberately small, portable part of a bot.
  */
 export interface BotDefinition {
   schema: typeof BOT_DEFINITION_SCHEMA;
   botId: string;
   model: BotModelDefinition;
+  prompt?: BotPromptDefinition;
 }
 
 export interface LocalModelProfile {
@@ -102,6 +107,13 @@ export interface BotCustomModelProfile {
 
 export interface BotDefinitionSyncResult {
   botId: string;
-  direction: 'local_to_simulated_cloud' | 'simulated_cloud_to_local' | 'bootstrap_to_simulated_cloud' | 'cloud_to_local';
+  direction:
+    | 'local_cache_update'
+    | 'legacy_simulated_cloud_to_local'
+    | 'legacy_bootstrap_to_local'
+    | 'cloud_to_local'
+    | 'local_to_simulated_cloud'
+    | 'simulated_cloud_to_local'
+    | 'bootstrap_to_simulated_cloud';
   definition: BotDefinition;
 }

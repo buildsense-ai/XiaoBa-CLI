@@ -7,5 +7,6 @@ export function buildPendingUserInputBoundaryMessage(): Message {
   return {
     role: 'system',
     content: `${TRANSIENT_PENDING_USER_INPUT_PREFIX}\n${renderRequiredDefaultPromptFile('transient/pending-user-input-boundary.md', {})}`,
+    __cacheScope: 'dynamic',
   };
 }

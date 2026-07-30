@@ -1,5 +1,6 @@
 import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
+import { getStructuredRateLimitErrorCode } from '../utils/rate-limit-error';
 import { ReadTool } from './read-tool';
 import { WriteTool } from './write-tool';
 import { ShellTool } from './bash-tool';
@@ -44,17 +45,6 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
 
 function resolveToolName(name: string): string {
   return TOOL_NAME_ALIASES[name] ?? name;
-}
-
-function isRateLimitLikeMessage(message: string): boolean {
-  const lower = message.toLowerCase();
-  return lower.includes('rate limit')
-    || lower.includes('too many requests')
-    || lower.includes('频率受限')
-    || lower.includes('限流')
-    || /(status(?:\s*code)?|http(?:\s*status)?|错误码|code)\s*[:=]?\s*429\b/i.test(message)
-    || /\b429\b.{0,24}(too many requests|rate limit|频率受限|限流)/i.test(message)
-    || /(too many requests|rate limit|频率受限|限流).{0,24}\b429\b/i.test(message);
 }
 
 /**
@@ -230,7 +220,7 @@ export class ToolManager implements ToolExecutor {
           targetContext,
           ok: false,
           errorCode: output.errorCode,
-          retryable: output.retryable ?? isRateLimitLikeMessage(output.message),
+          retryable: output.retryable ?? false,
         };
       }
 
@@ -245,15 +235,15 @@ export class ToolManager implements ToolExecutor {
       };
     } catch (error: any) {
       const message = String(error?.message || error || '');
-      const isRateLimit = isRateLimitLikeMessage(message);
+      const rateLimitErrorCode = getStructuredRateLimitErrorCode(error);
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
         name: toolCall.function.name,
         content: `工具执行错误: ${message}`,
         ok: false,
-        errorCode: isRateLimit ? 'RATE_LIMIT' : 'TOOL_EXECUTION_ERROR',
-        retryable: isRateLimit,
+        errorCode: rateLimitErrorCode || 'TOOL_EXECUTION_ERROR',
+        retryable: Boolean(rateLimitErrorCode),
       };
     }
   }

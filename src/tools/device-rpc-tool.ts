@@ -1,5 +1,6 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolErrorCode, ToolExecutionContext, ToolExecutionResult, UploadedFileResult } from '../types/tool';
+import { isRateLimitErrorCode } from '../utils/rate-limit-error';
 import type { ToolGatewayDecision } from './tool-gateway';
 
 const REMOTE_TOOL_DEFAULT_TIMEOUT_MS = 60_000;
@@ -214,11 +215,11 @@ function truncateText(value: string, options: DeviceRpcNormalizeOptions = {}): s
 
 function normalizeErrorCode(value: unknown): ToolErrorCode {
   const text = String(value || '').trim();
+  if (isRateLimitErrorCode(text)) return 'RATE_LIMIT';
   if (
     text === 'TOOL_NOT_FOUND'
     || text === 'INVALID_TOOL_ARGUMENTS'
     || text === 'TOOL_EXECUTION_ERROR'
-    || text === 'RATE_LIMIT'
     || text === 'PERMISSION_DENIED'
     || text === 'FILE_NOT_FOUND'
     || text === 'EXECUTION_TIMEOUT'

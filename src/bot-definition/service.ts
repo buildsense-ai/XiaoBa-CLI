@@ -18,6 +18,7 @@ import {
   type BotDefinition,
   type BotDefinitionSyncResult,
   type BotModelDefinition,
+  type BotPromptDefinition,
   type CustomBotModelDefinition,
   type LocalModelProfile,
 } from './types';
@@ -299,7 +300,14 @@ function normalizeBotModelDefinition(model: BotModelDefinition): BotModelDefinit
 
 function normalizeBotDefinition(definition: BotDefinition): BotDefinition {
   const model = normalizeBotModelDefinition(definition.model);
-  return model === definition.model ? definition : { ...definition, model };
+  const prompt = definition.prompt && normalizePromptDefinition(definition.prompt);
+  return model === definition.model && prompt === definition.prompt
+    ? definition
+    : { ...definition, model, ...(prompt ? { prompt } : {}) };
+}
+
+function normalizePromptDefinition(prompt: BotPromptDefinition): BotPromptDefinition {
+  return prompt;
 }
 
 function normalizeCatalogRuntime(runtime: BotCatalogModelRuntime): BotCatalogModelRuntime {
@@ -380,44 +388,105 @@ export class BotDefinitionSyncService {
   }
 
   pull(botId: string): BotDefinition | undefined {
-    const previousCache = this.repository.readCache(botId);
-    const rawDefinition = this.repository.readCanonical(botId);
-    const definition = rawDefinition && normalizeBotDefinition(rawDefinition);
-    if (definition) {
-      if (previousCache?.model.kind === 'custom') {
-        this.storeCustomModelProfile(botId, previousCache.model);
+    return this.withDefinitionWriteLock(botId, () => {
+      const previousCache = this.repository.readCache(botId);
+      const rawDefinition = this.repository.readCanonical(botId);
+      const definition = rawDefinition && normalizeBotDefinition(rawDefinition);
+      if (definition) {
+        if (previousCache?.model.kind === 'custom') {
+          this.storeCustomModelProfile(botId, previousCache.model);
+        }
+        this.repository.writeCache(definition);
+        if (definition.model.kind === 'custom') {
+          this.storeCustomModelProfile(definition.botId, definition.model);
+        }
       }
-      if (definition !== rawDefinition) this.repository.writeCanonical(definition);
-      this.repository.writeCache(definition);
-      if (definition.model.kind === 'custom') {
-        this.storeCustomModelProfile(definition.botId, definition.model);
-      }
-    }
-    return definition;
+      return definition;
+    });
+  }
+
+  read(botId: string): BotDefinition | undefined {
+    const cached = this.repository.readCache(botId);
+    return cached ? normalizeBotDefinition(cached) : this.pull(botId);
   }
 
   publish(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
-    const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
-    if (previous?.model.kind === 'custom') {
-      this.storeCustomModelProfile(botId, previous.model);
-    }
-    const normalizedModel = normalizeBotModelDefinition(model);
-    if (normalizedModel.kind === 'custom') {
-      this.storeCustomModelProfile(botId, normalizedModel);
-    }
-    const definition: BotDefinition = {
-      schema: BOT_DEFINITION_SCHEMA,
-      botId,
-      model: normalizedModel,
-    };
-    this.repository.writeCanonical(definition);
-    this.repository.writeCache(definition);
-    this.clearLegacyModelConfigurationWhenReady(definition);
-    return {
-      botId,
-      direction: 'local_to_simulated_cloud',
-      definition,
-    };
+    return this.withDefinitionWriteLock(botId, () => {
+      const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
+      if (previous?.model.kind === 'custom') {
+        this.storeCustomModelProfile(botId, previous.model);
+      }
+      const normalizedModel = normalizeBotModelDefinition(model);
+      if (normalizedModel.kind === 'custom') {
+        this.storeCustomModelProfile(botId, normalizedModel);
+      }
+      const definition: BotDefinition = {
+        ...previous,
+        schema: BOT_DEFINITION_SCHEMA,
+        botId,
+        model: normalizedModel,
+      };
+      this.repository.writeCache(definition);
+      this.clearLegacyModelConfigurationWhenReady(definition);
+      return {
+        botId,
+        direction: 'local_cache_update',
+        definition,
+      };
+    });
+  }
+
+  updateModel(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
+    return this.publish(botId, model);
+  }
+
+  updatePrompt(botId: string, prompt: BotPromptDefinition): BotDefinitionSyncResult {
+    return this.withDefinitionWriteLock(botId, () => {
+      const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
+      if (!previous) {
+        throw new Error(`BotDefinition does not exist for bot ${botId}`);
+      }
+      const definition: BotDefinition = {
+        ...previous,
+        schema: BOT_DEFINITION_SCHEMA,
+        botId,
+        prompt: normalizePromptDefinition(prompt),
+      };
+      this.repository.writeCache(definition);
+      return {
+        botId,
+        direction: 'local_cache_update',
+        definition,
+      };
+    });
+  }
+
+  /**
+   * Accepts the canonical cloud snapshot as the only runnable local cache.
+   * The old simulated canonical file is intentionally not rewritten.
+   */
+  acceptCanonical(definition: BotDefinition): BotDefinitionSyncResult {
+    return this.withDefinitionWriteLock(definition.botId, () => {
+      const normalized = normalizeBotDefinition(definition);
+      const previous = this.repository.readCache(normalized.botId);
+      if (previous?.model.kind === 'custom') {
+        this.storeCustomModelProfile(normalized.botId, previous.model);
+      }
+      this.repository.writeCache(normalized);
+      if (normalized.model.kind === 'custom') {
+        this.storeCustomModelProfile(normalized.botId, normalized.model);
+      }
+      return {
+        botId: normalized.botId,
+        direction: 'cloud_to_local',
+        definition: normalized,
+      };
+    });
+  }
+
+  readLegacyCanonical(botId: string): BotDefinition | undefined {
+    const definition = this.repository.readCanonical(botId);
+    return definition ? normalizeBotDefinition(definition) : undefined;
   }
 
   acceptCloud(botId: string, model: BotModelDefinition): BotDefinitionSyncResult {
@@ -496,15 +565,27 @@ export class BotDefinitionSyncService {
   }
 
   pullOrBootstrap(botId: string): BotDefinitionSyncResult | undefined {
-    const existing = this.pull(botId);
-    if (existing) {
+    const cached = this.repository.readCache(botId);
+    if (cached) {
+      const existing = normalizeBotDefinition(cached);
       this.migrateLegacyCustomModelProfile(existing.botId);
       this.migrateLegacyCatalogRuntime(existing);
       this.clearLegacyModelConfigurationWhenReady(existing);
       return {
         botId,
-        direction: 'simulated_cloud_to_local',
+        direction: 'local_cache_update',
         definition: existing,
+      };
+    }
+    const legacyCanonical = this.pull(botId);
+    if (legacyCanonical) {
+      this.migrateLegacyCustomModelProfile(legacyCanonical.botId);
+      this.migrateLegacyCatalogRuntime(legacyCanonical);
+      this.clearLegacyModelConfigurationWhenReady(legacyCanonical);
+      return {
+        botId,
+        direction: 'legacy_simulated_cloud_to_local',
+        definition: legacyCanonical,
       };
     }
     const profile = readLegacyLocalModelProfile(this.runtimeRoot, this.env);
@@ -518,7 +599,7 @@ export class BotDefinitionSyncService {
     this.clearLegacyModelConfigurationWhenReady(definition);
     return {
       botId,
-      direction: 'bootstrap_to_simulated_cloud',
+      direction: 'legacy_bootstrap_to_local',
       definition,
     };
   }
@@ -539,6 +620,12 @@ export class BotDefinitionSyncService {
     const localConfig = createCatsCoLocalConfigService({ runtimeRoot: this.runtimeRoot, env: this.env }).load();
     const botId = String(localConfig.currentBot?.uid || '').trim();
     return botId ? this.pullOrBootstrap(botId) : undefined;
+  }
+
+  private withDefinitionWriteLock<T>(botId: string, operation: () => T): T {
+    return this.repository.withWriteLock
+      ? this.repository.withWriteLock(botId, operation)
+      : operation();
   }
 
   private bootstrapCatalogRuntimeFromLocalProfile(

@@ -81,8 +81,12 @@ export function resolveActiveBotLLMConfig(
   if (!botId) return undefined;
 
   const definitions = new FileBotDefinitionRepository({ runtimeRoot });
+  const cachedDefinition = definitions.readCache(botId);
+  // The real Definition path clears this legacy override after a successful
+  // pull. If it still exists, the connected server is using the old
+  // model-config contract and the override remains its active selection.
   const cloudOverride = new FileBotCloudModelOverrideRepository({ runtimeRoot }).read(botId);
-  const definition = cloudOverride ?? definitions.readCache(botId);
+  const definition = cloudOverride ?? cachedDefinition;
   if (!definition) return undefined;
 
   if (definition.model.kind === 'custom') {

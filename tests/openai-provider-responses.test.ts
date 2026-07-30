@@ -52,6 +52,119 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.deepEqual(first.include, ['reasoning.encrypted_content']);
   });
 
+  test('keeps dynamic system context out of cache identity and appends it to input', () => {
+    const provider = createProvider();
+    const first = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'system', content: '[transient_plan_status]\nstep one', __cacheScope: 'dynamic' },
+      { role: 'user', content: 'first question' },
+    ], [lookupTool]);
+    const second = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'system', content: '[transient_plan_status]\nstep two' },
+      { role: 'user', content: 'another question' },
+    ], [lookupTool]);
+
+    assert.equal(first.instructions, 'Stable policy.');
+    assert.equal(second.instructions, 'Stable policy.');
+    assert.equal(first.prompt_cache_key, second.prompt_cache_key);
+    assert.deepEqual(first.input, [
+      { role: 'user', content: 'first question' },
+      { role: 'system', content: '[transient_plan_status]\nstep one' },
+    ]);
+    assert.deepEqual(second.input, [
+      { role: 'user', content: 'another question' },
+      { role: 'system', content: '[transient_plan_status]\nstep two' },
+    ]);
+  });
+
+  test('keeps plan, subagent, runner, and device changes out of cache identity', () => {
+    const provider = createProvider();
+    const variants = [
+      ['[transient_plan_status]\nstep one', '[transient_plan_status]\nstep two'],
+      ['[transient_subagent_status]\nrunning', '[transient_subagent_status]\ncompleted'],
+      ['[transient_runner_hint]\nfirst hint', '[transient_runner_hint]\nnext hint'],
+      ['[transient_runtime_context]\ndevice-a', '[transient_runtime_context]\ndevice-b'],
+    ];
+
+    for (const [firstDynamic, secondDynamic] of variants) {
+      const first = (provider as any).buildResponsesRequestBody([
+        { role: 'system', content: 'Stable policy.' },
+        { role: 'system', content: firstDynamic },
+        { role: 'user', content: 'hello' },
+      ], [lookupTool]);
+      const second = (provider as any).buildResponsesRequestBody([
+        { role: 'system', content: 'Stable policy.' },
+        { role: 'system', content: secondDynamic },
+        { role: 'user', content: 'hello' },
+      ], [lookupTool]);
+
+      assert.equal(first.prompt_cache_key, second.prompt_cache_key);
+      assert.equal(first.input.at(-1).role, 'system');
+      assert.equal(first.input.at(-1).content, firstDynamic);
+    }
+
+    const changedStable = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Changed stable policy.' },
+      { role: 'user', content: 'hello' },
+    ], [lookupTool]);
+    const baseline = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'hello' },
+    ], [lookupTool]);
+    assert.notEqual(changedStable.prompt_cache_key, baseline.prompt_cache_key);
+  });
+
+  test('canonicalizes tool order and schema keys while detecting contract changes', () => {
+    const provider = createProvider();
+    const alpha: ToolDefinition = {
+      name: 'alpha',
+      description: 'Alpha tool',
+      parameters: {
+        type: 'object',
+        properties: {
+          zebra: { description: 'last', type: 'string' },
+          apple: { type: 'string', description: 'first' },
+        },
+        required: ['apple'],
+      },
+    };
+    const alphaReordered: ToolDefinition = {
+      name: 'alpha',
+      description: 'Alpha tool',
+      parameters: {
+        required: ['apple'],
+        properties: {
+          apple: { description: 'first', type: 'string' },
+          zebra: { type: 'string', description: 'last' },
+        },
+        type: 'object',
+      },
+    };
+    const beta: ToolDefinition = {
+      name: 'beta',
+      description: 'Beta tool',
+      parameters: { type: 'object', properties: {} },
+    };
+
+    const first = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'hello' },
+    ], [beta, alpha]);
+    const reordered = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'hello' },
+    ], [alphaReordered, beta]);
+    const changed = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'hello' },
+    ], [{ ...alphaReordered, description: 'Changed contract' }, beta]);
+
+    assert.deepEqual(first.tools.map((tool: any) => tool.name), ['alpha', 'beta']);
+    assert.equal(first.prompt_cache_key, reordered.prompt_cache_key);
+    assert.notEqual(first.prompt_cache_key, changed.prompt_cache_key);
+  });
+
   test('applies configured reasoning only to endpoints known to support it', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
@@ -98,7 +211,7 @@ describe('OpenAIProvider Responses API mode', () => {
             input_tokens: 10000,
             output_tokens: 20,
             total_tokens: 10020,
-            input_tokens_details: { cached_tokens: 9472 },
+            input_tokens_details: { cached_tokens: 9472, cache_creation_tokens: 512 },
           },
         },
       };
@@ -111,6 +224,7 @@ describe('OpenAIProvider Responses API mode', () => {
       assert.equal(seenBody.stream, false);
       assert.equal(result.content, 'cached answer');
       assert.equal(result.usage?.cachedReadTokens, 9472);
+      assert.equal(result.usage?.cachedWriteTokens, 512);
       assert.equal(result.usage?.totalTokens, 10020);
     } finally {
       (axios as any).post = originalPost;
@@ -404,8 +518,83 @@ describe('OpenAIProvider Responses API mode', () => {
       (axios as any).post = originalPost;
     }
   });
+
+  test('preserves Chinese text when a UTF-8 character crosses Responses SSE chunks', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        ...splitSseInsideUtf8({ type: 'response.output_text.delta', delta: '中文' }, '中'),
+        sse({
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            output: [{
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: '中文' }],
+            }],
+          },
+        }),
+      ]),
+    });
+
+    try {
+      const chunks: string[] = [];
+      const result = await createProvider().chatStream(
+        [{ role: 'user', content: 'hello' }],
+        undefined,
+        { onText: value => chunks.push(value) },
+      );
+
+      assert.equal(chunks.join(''), '中文');
+      assert.equal(result.content, '中文');
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('preserves Chinese text when a UTF-8 character crosses Chat Completions SSE chunks', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        ...splitSseInsideUtf8({
+          choices: [{ index: 0, delta: { content: '中文' }, finish_reason: null }],
+        }, '中'),
+        sse({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+      ]),
+    });
+
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://example.test/v1/chat/completions',
+      model: 'gpt-test',
+      openaiApiMode: 'chat_completions',
+    });
+
+    try {
+      const chunks: string[] = [];
+      const result = await provider.chatStream(
+        [{ role: 'user', content: 'hello' }],
+        undefined,
+        { onText: value => chunks.push(value) },
+      );
+
+      assert.equal(chunks.join(''), '中文');
+      assert.equal(result.content, '中文');
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
 });
 
 function sse(payload: unknown): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
+function splitSseInsideUtf8(payload: unknown, character: string): Buffer[] {
+  const bytes = Buffer.from(sse(payload), 'utf8');
+  const characterBytes = Buffer.from(character, 'utf8');
+  const index = bytes.indexOf(characterBytes);
+  assert.notEqual(index, -1, `expected ${character} in SSE payload`);
+  return [bytes.subarray(0, index + 1), bytes.subarray(index + 1)];
 }

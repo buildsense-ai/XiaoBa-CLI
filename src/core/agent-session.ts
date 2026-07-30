@@ -48,8 +48,20 @@ import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifac
 import type { PromptTraceSnapshot } from '../utils/prompt-observability';
 import { toPromptTurnMetadata } from '../utils/prompt-observability';
 import type { StreamRetryInfo } from '../providers/provider';
+import {
+  reconcileCurrentBotPromptBeforeTurn,
+  scheduleCurrentBotPromptReconcile,
+} from '../bot-definition/prompt-sync';
+import { collectRemoteContextWatermarks } from './remote-context-watermarks';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
+
+export interface DurableRemoteContextEntry {
+  source: string;
+  id: number;
+  role?: 'user' | 'assistant';
+  content: string;
+}
 
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
@@ -371,8 +383,8 @@ export class AgentSession {
         signal: compactionSignal,
         onStatus: this.createContextCompactionNotifier(options.callbacks),
       });
-      if (compactionSignal?.aborted || this.interruptRequested) {
-        Logger.info(`[会话 ${this.key}] 当前请求已取消，忽略恢复压缩在中断后的返回`);
+      if (compactionSignal?.aborted || this.interruptRequested || lifecycleGeneration !== this.lifecycleGeneration) {
+        Logger.info(`[会话 ${this.key}] 当前请求已取消或会话已重置，忽略恢复压缩的旧结果`);
         return;
       }
       this.messages = compactedMessages;
@@ -387,19 +399,88 @@ export class AgentSession {
 
   private static readonly MAX_INJECTED_CONTEXT = 30;
 
-  /** 静默注入上下文消息，不触发 AI 推理。超过上限自动丢弃最早的注入消息。 */
+  /** 静默注入瞬时运行上下文，不触发 AI 推理。超过上限自动丢弃最早的注入消息。 */
   injectContext(text: string): void {
     this.messages.push({ role: 'user', content: text, __injected: true });
     this.lastActiveAt = Date.now();
     this.enforceInjectedContextLimit();
   }
 
+  /**
+   * 追加远端耐久会话历史。先恢复本地会话，再纳入统一 token 压缩并落盘；
+   * 调用方只有在返回 true 后才能推进远端游标，避免崩溃或写盘失败造成永久漏历史。
+   */
+  async appendDurableContext(
+    inputs: Array<string | DurableRemoteContextEntry>,
+    cursorUpdate?: { source: string; cursor: number },
+  ): Promise<boolean> {
+    const lifecycleGeneration = this.lifecycleGeneration;
+    await this.init();
+    if (lifecycleGeneration !== this.lifecycleGeneration) return false;
+
+    const knownRemoteIds = new Set(this.messages
+      .filter(message => message.__remoteContextSource && Number(message.__remoteContextId) > 0)
+      .map(message => `${message.__remoteContextSource}:${message.__remoteContextId}`));
+    const remoteContextWatermarks = collectRemoteContextWatermarks(this.messages);
+    const durableEntries = inputs
+      .map(input => typeof input === 'string'
+        ? { content: input }
+        : input)
+      .filter(entry => typeof entry.content === 'string' && entry.content.trim())
+      .filter(entry => {
+        if (!('source' in entry) || !('id' in entry) || !entry.source || entry.id <= 0) return true;
+        const key = `${entry.source}:${entry.id}`;
+        if (
+          knownRemoteIds.has(key)
+          || entry.id <= (remoteContextWatermarks[entry.source] || 0)
+        ) {
+          return false;
+        }
+        knownRemoteIds.add(key);
+        return true;
+      });
+    if (durableEntries.length === 0) {
+      return cursorUpdate
+        ? this.lifecycleManager.saveRemoteContextCursor(cursorUpdate.source, cursorUpdate.cursor)
+        : true;
+    }
+    const messagesBeforeAppend = [...this.messages];
+    this.messages.push(...durableEntries.map(entry => ({
+      role: 'role' in entry && entry.role === 'assistant' ? 'assistant' as const : 'user' as const,
+      content: entry.content,
+      ...('source' in entry && 'id' in entry ? {
+        __remoteContextSource: entry.source,
+        __remoteContextId: entry.id,
+      } : {}),
+    })));
+    const messagesBeforeCompaction = stripAssistantArtifactsFromMessages(this.messages);
+    const compacted = await this.contextWindowManager.compactIfNeeded(messagesBeforeCompaction, {
+      sessionKey: this.key,
+      reason: '群聊历史补入',
+    });
+    if (lifecycleGeneration !== this.lifecycleGeneration) return false;
+    this.messages = compacted;
+    this.lastActiveAt = Date.now();
+    if (!this.lifecycleManager.saveContext(this.messages)) {
+      this.messages = messagesBeforeAppend;
+      return false;
+    }
+    if (!cursorUpdate) return true;
+    if (this.lifecycleManager.saveRemoteContextCursor(cursorUpdate.source, cursorUpdate.cursor)) return true;
+
+    this.messages = messagesBeforeAppend;
+    if (!this.lifecycleManager.saveContext(this.messages)) {
+      Logger.error(`[${this.key}] 远端游标落盘失败后，本地历史回滚也失败`);
+    }
+    return false;
+  }
+
   getRemoteContextCursor(source: string): number {
     return this.lifecycleManager.loadRemoteContextCursor(source);
   }
 
-  saveRemoteContextCursor(source: string, cursor: number): void {
-    this.lifecycleManager.saveRemoteContextCursor(source, cursor);
+  saveRemoteContextCursor(source: string, cursor: number): boolean {
+    return this.lifecycleManager.saveRemoteContextCursor(source, cursor);
   }
 
   /**
@@ -520,6 +601,7 @@ export class AgentSession {
       this.lastActiveAt = Date.now();
 
       try {
+        await reconcileCurrentBotPromptBeforeTurn();
         await this.refreshSystemPromptIfNeeded(lifecycleGeneration, this.activeAbortController.signal);
       } catch (error: any) {
         Logger.warning(`[会话 ${this.key}] Prompt 热加载失败，继续使用上一版: ${error?.message || error}`);
@@ -637,6 +719,7 @@ export class AgentSession {
         return { text: errorReply, visibleToUser: true, taskOutcome: 'failed' };
       } finally {
         this.planRuntime.clear();
+        scheduleCurrentBotPromptReconcile();
         this.busy = false;
         this.activeAbortController = null;
       }
@@ -664,8 +747,13 @@ export class AgentSession {
       if (commandName === 'clear') {
         this.requestInterrupt();
         if (args.includes('--all')) {
-          this.clear();
-          return { handled: true, reply: '历史已清空，文件已删除' };
+          const persisted = this.clear();
+          return {
+            handled: true,
+            reply: persisted
+              ? '历史已清空，文件已删除'
+              : '历史已在当前进程清空，但文件删除失败，请重试 /clear --all。',
+          };
         }
         this.reset();
         return { handled: true, reply: '历史已清空' };
@@ -711,18 +799,19 @@ export class AgentSession {
     this.lastActiveAt = state.lastActiveAt;
   }
 
-  /** 清空历史（同时删除文件） */
-  clear(): void {
+  /** 清空历史（同时删除文件），返回本地文件与状态是否都删除成功。 */
+  clear(): boolean {
     this.lifecycleGeneration++;
     this.planRuntime.clear();
     this.stopSubAgents('父会话 clear');
     this.messages = [];
     const state = this.lifecycleManager.clear();
-    this.resetCurrentDirectory();
+    this.currentDirectory = this.defaultDirectory;
     this.initialized = state.initialized;
     this.promptTrace = undefined;
     this.turnLogRecorder.setPromptMetadata(undefined);
     this.lastActiveAt = state.lastActiveAt;
+    return state.persisted;
   }
 
   async summarizeAndDestroy(): Promise<boolean> {

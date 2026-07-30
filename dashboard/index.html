@@ -5287,7 +5287,7 @@
       <div class="sidebar-brand-icon"><img src="cat-icon.png" style="width:100%;height:100%;object-fit:contain;border-radius:inherit" alt="CatsCo"></div>
       <div>
         <div class="sidebar-brand-text">CatsCo</div>
-        <div class="sidebar-brand-ver">v1.4.5</div>
+        <div class="sidebar-brand-ver">v1.4.7</div>
       </div>
     </div>
     <nav class="sidebar-nav">
@@ -5821,9 +5821,9 @@
       return promptForDashboardApiKey(message);
     }
     function withDashboardApiKey(input, init){
-      if(!isDashboardApiUrl(input))return { input, init };
+      if(!isDashboardApiUrl(input))return { input, init, dashboardApiKey:'' };
       const key = getDashboardStoredApiKey();
-      if(!key)return { input, init };
+      if(!key)return { input, init, dashboardApiKey:'' };
       const nextInit = Object.assign({}, init || {});
       const sourceHeaders = nextInit.headers || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : {});
       const headers = new Headers(sourceHeaders || {});
@@ -5831,7 +5831,7 @@
         headers.set('X-API-Key', key);
       }
       nextInit.headers = headers;
-      return { input, init: nextInit };
+      return { input, init: nextInit, dashboardApiKey:key };
     }
     async function isDashboardAuthFailure(response){
       if(response.status !== 401 && response.status !== 403 && response.status !== 429)return false;
@@ -5862,8 +5862,10 @@
         if(response.status === 429){
           return response;
         }
-        setDashboardStoredApiKey('');
-        const key = await promptForDashboardApiKey('Dashboard API Key 无效或缺失，请重新输入');
+        if(getDashboardStoredApiKey() === request.dashboardApiKey){
+          setDashboardStoredApiKey('');
+        }
+        const key = await ensureDashboardApiKey('Dashboard API Key 无效或缺失，请重新输入');
         if(key){
           request = withDashboardApiKey(retryInput, init);
           response = await nativeFetch(request.input, request.init);
@@ -7239,23 +7241,62 @@
     }
 
     function renderPromptEditorPane(file){
-      const saveDisabled=promptEditorState?.writable?'':' disabled';
-      const resetDisabled=file.overridden?'':' disabled';
+      const definitionReady=promptEditorState?.system_prompt?.definitionReady===true;
+      const promptWritable=Boolean(promptEditorState?.writable&&definitionReady);
+      const saveDisabled=promptWritable?'':' disabled';
+      const selectedMode=promptEditorState?.system_prompt?.selected||'default';
+      const isCustom=selectedMode==='custom';
+      const modeDisabled=definitionReady?'':' disabled';
+      const editorStatus=!definitionReady
+        ?'机器人配置尚未初始化，连接完成后即可编辑。'
+        :(isCustom?'编辑后保存；下一条用户消息开始前生效。':'当前使用随 XiaoBa 更新的内置默认 Prompt。');
       return '<div class="prompt-editor-pane">'+
         '<div class="prompt-editor-head">'+
           '<div><div class="prompt-editor-title">'+escapeHtml(file.path)+'</div>'+
           '<div class="prompt-editor-meta">当前 '+escapeHtml(file.effective.short_hash)+' · 基线 '+escapeHtml(file.base.short_hash)+' · '+(file.overridden?'已有本地覆盖':'使用内置基线')+'</div></div>'+
           (file.overridden?'<span class="tag green">override</span>':'<span class="tag">base</span>')+
         '</div>'+
-        '<textarea class="config-input prompt-editor-textarea" id="prompt-editor-textarea" spellcheck="false" oninput="markPromptEditorDirty()">'+escapeHtml(file.content||'')+'</textarea>'+
+        '<div class="settings-actions" style="justify-content:flex-start;margin-bottom:12px">'+
+          '<button class="btn'+(!isCustom?' btn-primary':'')+'" type="button" onclick="selectSystemPromptMode(\'default\')"'+modeDisabled+'>默认 System Prompt</button>'+
+          '<button class="btn'+(isCustom?' btn-primary':'')+'" type="button" onclick="selectSystemPromptMode(\'custom\')"'+modeDisabled+'>自定义 System Prompt</button>'+
+          '<button class="btn" type="button" onclick="insertDisplayNameTemplate()"'+(isCustom&&definitionReady?'':' disabled')+'>插入 {{displayName}}</button>'+
+        '</div>'+
+        '<textarea class="config-input prompt-editor-textarea" id="prompt-editor-textarea" spellcheck="false" oninput="markPromptEditorDirty()"'+(isCustom&&definitionReady?'':' readonly')+'>'+escapeHtml(file.content||'')+'</textarea>'+
         '<div class="prompt-editor-actions">'+
-          '<div class="prompt-editor-status" id="prompt-editor-status">'+(promptEditorState?.writable?'编辑后保存覆盖版本；下一条用户消息开始前生效。':'当前环境没有配置覆盖目录，不能保存。')+'</div>'+
+          '<div class="prompt-editor-status" id="prompt-editor-status">'+editorStatus+'</div>'+
           '<div class="settings-actions">'+
-            '<button class="btn" onclick="resetPromptEditorFile()"'+resetDisabled+'>重置为内置</button>'+
-            '<button class="btn btn-primary" id="prompt-editor-save-btn" onclick="savePromptEditorFile()"'+saveDisabled+'>保存覆盖</button>'+
+            '<button class="btn btn-primary" id="prompt-editor-save-btn" onclick="savePromptEditorFile()"'+(isCustom?saveDisabled:' disabled')+'>保存自定义 Prompt</button>'+
           '</div>'+
         '</div>'+
       '</div>';
+    }
+
+    async function selectSystemPromptMode(selected){
+      if(promptEditorDirty && !confirm('当前 Prompt 有未保存改动，确定切换吗？'))return;
+      const status=document.getElementById('prompt-editor-status');
+      try{
+        if(status)status.textContent='正在切换...';
+        await parseSimpleResponse(await fetch(API+'/api/prompts/system',{
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({selected:selected})
+        }));
+        await refreshPromptWorkbench('system-prompt.md',{preserveFileListScroll:true});
+      }catch(e){
+        if(status)status.textContent='切换失败：'+(e.message||String(e));
+      }
+    }
+
+    function insertDisplayNameTemplate(){
+      const textarea=document.getElementById('prompt-editor-textarea');
+      if(!textarea || textarea.readOnly)return;
+      const value='{{displayName}}';
+      const start=textarea.selectionStart||0;
+      const end=textarea.selectionEnd||start;
+      textarea.value=textarea.value.slice(0,start)+value+textarea.value.slice(end);
+      textarea.selectionStart=textarea.selectionEnd=start+value.length;
+      textarea.focus();
+      markPromptEditorDirty();
     }
 
     function markPromptEditorDirty(){

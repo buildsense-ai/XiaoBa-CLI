@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { createHash } from 'crypto';
+import { StringDecoder } from 'string_decoder';
 import { Message, ChatConfig, ChatResponse, ContentBlock } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
@@ -235,6 +236,7 @@ export class OpenAIProvider implements AIProvider {
       let contentStripper = new OpenAIThinkingStripper();
       const toolCallsMap = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>();
       let buffer = '';
+      const decoder = new StringDecoder('utf8');
       let streamUsage: ChatResponse['usage'] = undefined;
       let finishReason: string | undefined;
 
@@ -249,7 +251,7 @@ export class OpenAIProvider implements AIProvider {
       }
 
       stream.on('data', (chunk: Buffer) => {
-        buffer += chunk.toString();
+        buffer += decoder.write(chunk);
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
@@ -325,6 +327,7 @@ export class OpenAIProvider implements AIProvider {
 
       stream.on('end', () => {
         options?.signal?.removeEventListener('abort', onAbort);
+        buffer += decoder.end();
         const tail = contentStripper.flush();
         if (tail) {
           fullContent += tail;
@@ -362,16 +365,11 @@ export class OpenAIProvider implements AIProvider {
 
   private buildResponsesRequestBody(messages: Message[], tools?: ToolDefinition[], stream = false): any {
     const instructions = messages
-      .filter(message => message.role === 'system')
+      .filter(message => message.role === 'system' && !this.isDynamicCacheMessage(message))
       .map(message => this.contentAsText(message.content))
       .filter(Boolean)
       .join('\n\n');
-    const responseTools = tools?.map(tool => ({
-      type: 'function',
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-    })) ?? [];
+    const responseTools = this.buildCanonicalResponsesTools(tools ?? []);
     const body: any = {
       model: this.model,
       input: this.buildResponsesInput(messages),
@@ -399,9 +397,13 @@ export class OpenAIProvider implements AIProvider {
 
   private buildResponsesInput(messages: Message[]): any[] {
     const input: any[] = [];
+    const dynamicSystemMessages: Message[] = [];
 
     for (const message of messages) {
-      if (message.role === 'system') continue;
+      if (message.role === 'system') {
+        if (this.isDynamicCacheMessage(message)) dynamicSystemMessages.push(message);
+        continue;
+      }
 
       if (message.role === 'tool') {
         if (!message.tool_call_id) continue;
@@ -441,7 +443,43 @@ export class OpenAIProvider implements AIProvider {
       });
     }
 
+    for (const message of dynamicSystemMessages) {
+      input.push({
+        role: 'system',
+        content: this.responsesMessageContent(message.content),
+      });
+    }
+
     return input;
+  }
+
+  private isDynamicCacheMessage(message: Message): boolean {
+    if (message.__cacheScope === 'dynamic') return true;
+    if (message.__cacheScope === 'stable') return false;
+    if (message.role !== 'system' || typeof message.content !== 'string') return false;
+    return /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(message.content);
+  }
+
+  private buildCanonicalResponsesTools(tools: ToolDefinition[]): any[] {
+    return tools
+      .map(tool => ({
+        type: 'function',
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      }))
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+      .map(tool => this.canonicalizeJsonValue(tool));
+  }
+
+  private canonicalizeJsonValue(value: any): any {
+    if (Array.isArray(value)) return value.map(item => this.canonicalizeJsonValue(item));
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map(key => [key, this.canonicalizeJsonValue(value[key])]),
+    );
   }
 
   private responsesMessageContent(content: Message['content']): any {
@@ -477,7 +515,12 @@ export class OpenAIProvider implements AIProvider {
 
   private buildPromptCacheKey(instructions: string, tools: any[]): string {
     const digest = createHash('sha256')
-      .update(JSON.stringify({ model: this.model, instructions, tools }))
+      .update(JSON.stringify({
+        identityVersion: 'responses-cache-v2',
+        model: this.model,
+        instructions,
+        tools,
+      }))
       .digest('hex')
       .slice(0, 48);
     return `catsco-${digest}`;
@@ -629,6 +672,7 @@ export class OpenAIProvider implements AIProvider {
       const outputItems: any[] = [];
       let streamedVisibleText = '';
       let buffer = '';
+      const decoder = new StringDecoder('utf8');
       let finalResponse: any;
       let settled = false;
 
@@ -675,7 +719,7 @@ export class OpenAIProvider implements AIProvider {
       };
 
       stream.on('data', (chunk: Buffer) => {
-        buffer += chunk.toString();
+        buffer += decoder.write(chunk);
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
         for (const line of lines) {
@@ -693,6 +737,7 @@ export class OpenAIProvider implements AIProvider {
 
       stream.on('end', () => {
         options?.signal?.removeEventListener('abort', onAbort);
+        buffer += decoder.end();
         if (settled) return;
         const tail = contentStripper.flush();
         emitVisibleText(tail);

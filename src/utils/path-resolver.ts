@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 
 export class PathResolver {
   static getRuntimeDataRoot(
@@ -16,6 +17,17 @@ export class PathResolver {
     ]
       .map(value => String(value || '').trim())
       .find(Boolean);
+
+    if (
+      explicit
+      && env.NODE_TEST_CONTEXT
+      && env.XIAOBA_ALLOW_NON_TEMP_TEST_RUNTIME_ROOT !== '1'
+      && !isPathInside(path.resolve(explicit), path.resolve(os.tmpdir()))
+    ) {
+      throw new Error(
+        `Refusing Node test runtime data root outside the OS temporary directory: ${path.resolve(explicit)}`,
+      );
+    }
 
     return path.resolve(explicit || cwd);
   }
@@ -74,4 +86,9 @@ export class PathResolver {
 
     return results;
   }
+}
+
+function isPathInside(candidate: string, parent: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }

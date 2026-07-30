@@ -73,7 +73,7 @@ export class TurnContextBuilder {
       await params.skillRuntime.reloadSkills();
       const skillsListMsg = params.skillRuntime.buildSkillsListMessage();
       if (skillsListMsg) {
-        this.insertBeforeLastUser(contextMessages, skillsListMsg);
+        this.insertBeforeLastUser(contextMessages, { ...skillsListMsg, __cacheScope: 'dynamic' });
       }
     }
 
@@ -114,7 +114,7 @@ export class TurnContextBuilder {
       localFileGrants: params.localFileGrants,
     });
     if (!message) return;
-    this.insertBeforeLastUser(messages, message);
+    this.insertBeforeLastUser(messages, { ...message, __cacheScope: 'dynamic' });
   }
 
   private injectRuntimeObservationRules(messages: Message[]): void {
@@ -151,6 +151,7 @@ export class TurnContextBuilder {
     this.insertBeforeLastUser(messages, {
       role: 'system',
       content: `${TRANSIENT_PLAN_STATUS_PREFIX}\n${planText}`,
+      __cacheScope: 'dynamic',
     });
   }
 
