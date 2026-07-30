@@ -1075,6 +1075,25 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     assert.equal(heartbeat?.backlog?.eligibleEpisodes, 0);
   });
 
+  test('projects the durable commit outcome when a commit-time gate rejects the draft', async () => {
+    env.skillEvolutionOptions.manualSkillNames = ['test-report-delivery'];
+    const [delivery, acceptance] = deliveryPair(-2);
+    writeLog(env.logFile, [delivery, acceptance]);
+
+    await env.runtimeLearning.wake('startup');
+    const commitWake = await wakeUntil(
+      env,
+      () => Object.values(env.skillEvolution.getEvidenceReviewEngine().loadStore().jobs)
+        .some(job => job.disposition === 'completed'),
+    );
+
+    assert.equal(commitWake.review.reviewedEpisodes, 1);
+    assert.equal(commitWake.review.transitionsByKind.reject_candidate, 1);
+    assert.equal(commitWake.review.transitionsByKind.create_current_skill, undefined);
+    assert.equal(Object.keys(readOrEmpty(env.registryPath)?.capabilities ?? {}).length, 0);
+    assert.equal(env.skillEvolution.getAudit()[0]?.transition, 'reject_candidate');
+  });
+
   test('a settled delivery without explicit acceptance still enters capability review', async () => {
     const delivery = futureTurn(
       1,

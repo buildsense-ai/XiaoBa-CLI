@@ -146,6 +146,8 @@ export interface EvidenceReviewEngineOptions {
     reviewCommitKey: string;
     /** Execute synchronous transition side effects while the durable lease is fenced. */
     commitUnderLease: CommitLeaseGuard;
+    /** Independent Quantum boundary for cancellable pre-commit preparation. */
+    signal?: AbortSignal;
   }) => Promise<SkillEvolutionResult>;
   /** Resolve a previously committed audit receipt without invoking commit again. */
   recoverCommittedTransition?: (input: {
@@ -454,12 +456,13 @@ export class EvidenceReviewEngine {
         };
       }
 
-      // Provider-backed quanta are cancellable and independently bounded.
-      // Commit owns external side effects and must run to its durable receipt;
-      // racing it against a timeout could retry a commit that already applied.
-      const quantumBoundary = selected.kind === 'commit'
-        ? createNonInterruptibleCommitBoundary()
-        : createQuantumAbortBoundary(signal, options?.quantumTimeoutMs ?? leaseMs);
+      // Every Quantum has its own execution boundary. Commit implementations
+      // must honor this signal before entering the synchronous fenced section;
+      // once commitUnderLease begins, journal/apply/receipt writes run to completion.
+      const quantumBoundary = createQuantumAbortBoundary(
+        signal,
+        options?.quantumTimeoutMs ?? leaseMs,
+      );
       let leaseLost = false;
       const renewLease = (): void => {
         try {
@@ -485,8 +488,14 @@ export class EvidenceReviewEngine {
         if (quantumBoundary.signal.aborted) {
           throw reviewAbortError(quantumBoundary.signal.reason, 'Review quantum aborted before execution.');
         }
-        const commitUnderLease: CommitLeaseGuard = <T>(work: () => T): T =>
-          this.mutateStore(state => {
+        const commitUnderLease: CommitLeaseGuard = <T>(work: () => T): T => {
+          if (quantumBoundary.signal.aborted) {
+            throw reviewAbortError(
+              quantumBoundary.signal.reason,
+              'Review commit preparation exceeded its execution boundary.',
+            );
+          }
+          return this.mutateStore(state => {
             const live = state.jobs[jobId];
             if (!live) throw new Error('quantum_lease_lost: job is missing');
             const renewed = renewQuantumLeaseCore(live, selected.quantumId, {
@@ -535,6 +544,7 @@ export class EvidenceReviewEngine {
             live.updatedAt = completedAt.toISOString();
             return value;
           });
+        };
         const execution = await awaitQuantumExecution(
           this.executeQuantum(
             job,
@@ -758,7 +768,7 @@ export class EvidenceReviewEngine {
         return this.executeSkillVerifier(job, signal);
       case 'commit':
         if (!commitUnderLease) throw new Error('commit lease guard is required');
-        return this.executeCommit(job, quantum, commitUnderLease);
+        return this.executeCommit(job, quantum, commitUnderLease, signal);
       default:
         throw new Error(`unknown quantum kind: ${(quantum as ReviewQuantumRecord).kind}`);
     }
@@ -1014,6 +1024,7 @@ export class EvidenceReviewEngine {
     job: EvidenceReviewJob,
     quantum: ReviewQuantumRecord,
     commitUnderLease: CommitLeaseGuard,
+    signal?: AbortSignal,
   ): Promise<{
     result: SkillEvolutionResult;
     transcriptPaths: string[];
@@ -1094,6 +1105,7 @@ export class EvidenceReviewEngine {
       round,
       reviewCommitKey,
       commitUnderLease,
+      signal,
     });
     const isDeferred = committed.transition === 'defer' || committed.queued === 'deferred';
     const skillResult: SkillEvolutionResult = isDeferred
@@ -1394,13 +1406,6 @@ async function awaitQuantumExecution<T>(execution: Promise<T>, signal: AbortSign
       error => finish(() => reject(signal.aborted ? boundaryError(error) : error)),
     );
   });
-}
-
-function createNonInterruptibleCommitBoundary(): { signal: AbortSignal; cleanup: () => void } {
-  return {
-    signal: new AbortController().signal,
-    cleanup: () => undefined,
-  };
 }
 
 function createQuantumAbortBoundary(

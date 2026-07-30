@@ -1219,7 +1219,9 @@ export class SkillEvolutionRuntime {
     round: number;
     reviewCommitKey: string;
     commitUnderLease: <T>(work: () => T) => T;
+    signal?: AbortSignal;
   }): Promise<SkillEvolutionResult> {
+    this.throwIfReviewAborted(input.signal);
     const engine = this.getEvidenceReviewEngine();
     const candidate = this.extractCandidateFromBundle(input.bundle);
 
@@ -1300,6 +1302,7 @@ export class SkillEvolutionRuntime {
         undefined,
         input.reviewCommitKey,
         input.commitUnderLease,
+        input.signal,
       );
     }
 
@@ -1316,6 +1319,7 @@ export class SkillEvolutionRuntime {
         beforeAcceptedCommit,
         input.reviewCommitKey,
         input.commitUnderLease,
+        input.signal,
       );
       if (result.transitionId || result.audit) {
         this.schedulePostCommitReassessmentIfNeeded(
@@ -2048,7 +2052,10 @@ export class SkillEvolutionRuntime {
           if (wasOperational) empty.operationalReviewed += 1;
           if (wasDeferred) empty.deferredReviewed += 1;
           if (!wasEpisode) empty.queueOutcomes![bundleId] = { status: 'succeeded' };
-          if (job.verifierResult?.transition) {
+          const committed = readSucceededCommitQuantumResult(job);
+          if (committed?.transition) {
+            incrementTransitionCount(empty.transitionsByKind, committed.transition);
+          } else if (job.verifierResult?.transition) {
             incrementTransitionCount(empty.transitionsByKind, job.verifierResult.transition);
           } else if (job.draft?.envelope.decision) {
             incrementTransitionCount(empty.transitionsByKind, job.draft.envelope.decision);
@@ -2306,7 +2313,9 @@ export class SkillEvolutionRuntime {
     beforeAcceptedCommit?: BeforeAcceptedCommitHook,
     reviewCommitKey?: string,
     commitUnderLease?: <T>(work: () => T) => T,
+    signal?: AbortSignal,
   ): Promise<SkillEvolutionResult> {
+    this.throwIfReviewAborted(signal);
     if (
       verifier.decision === 'accept'
       && verifier.transition
@@ -2522,10 +2531,12 @@ export class SkillEvolutionRuntime {
           round,
           branchTranscriptPaths,
         });
+        this.throwIfReviewAborted(signal);
         if (fenceAbort) {
           return fenceAbort;
         }
       }
+      this.throwIfReviewAborted(signal);
       const apply = () => applyCapabilityTransition({
         ...this.options,
         reviewerVersion: this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,

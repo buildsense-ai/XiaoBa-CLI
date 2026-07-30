@@ -957,6 +957,58 @@ describe('Evidence Review revision loop (durable graph)', () => {
     }
   });
 
+  test('bounds asynchronous commit preparation with the Quantum timeout', async () => {
+    const dir = setupEngineDir();
+    try {
+      const tracker: CallTracker = { authorCalls: [], verifierCalls: [], commitCalls: [] };
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+        leaseMs: 5_000,
+      });
+      const callbacks = makeEngineCallbacks(tracker, ['accept']);
+      (engine as any).options.runReaderLane = callbacks.runReaderLane;
+      (engine as any).options.runSkillAuthor = callbacks.runSkillAuthor;
+      (engine as any).options.runSkillVerifier = callbacks.runSkillVerifier;
+      let sideEffects = 0;
+      (engine as any).options.commitTransition = async (input: any) => {
+        // Deliberately ignore the cooperative signal. The lease guard itself
+        // must reject entry after the Quantum boundary has expired.
+        await new Promise<void>(resolve => setTimeout(resolve, 60));
+        return input.commitUnderLease(() => {
+          sideEffects++;
+          return {
+            transition: 'create_current_skill',
+            transitionId: 'transition:too-late',
+            verified: true,
+            rounds: input.round,
+          };
+        });
+      };
+
+      const bundle = fixtureBundle(`commit-timeout-${crypto.randomUUID().slice(0, 8)}`);
+      const job = engine.createJob({ bundle, candidate: fixtureCandidate(), workClass: 'live_learning' });
+      const advanced = await engine.advanceJob(
+        job.jobId,
+        'wake:commit-timeout',
+        undefined,
+        { quantumTimeoutMs: 25 },
+      );
+
+      assert.equal(sideEffects, 0);
+      assert.equal(advanced.result, undefined);
+      assert.equal(advanced.lastError?.kind, 'branch_timeout');
+      assert.match(advanced.lastError?.message ?? '', /quantum-timeout/);
+      const commit = Object.values(engine.loadStore().jobs[job.jobId]!.quanta)
+        .find(quantum => quantum.kind === 'commit')!;
+      assert.equal(commit.state, 'retry_wait');
+      assert.equal(commit.failureKind, 'branch_timeout');
+      assert.equal(commit.failureReason, 'quantum-timeout');
+    } finally {
+      dir.cleanup();
+    }
+  });
+
   test('keeps a long commit lease renewed so a concurrent wake cannot execute it twice', async () => {
     const dir = setupEngineDir();
     try {
@@ -988,7 +1040,12 @@ describe('Evidence Review revision loop (durable graph)', () => {
 
       const bundle = fixtureBundle(`long-commit-${crypto.randomUUID().slice(0, 8)}`);
       const job = engine1.createJob({ bundle, candidate: fixtureCandidate(), workClass: 'live_learning' });
-      const firstAdvance = engine1.advanceJob(job.jobId, 'wake:first');
+      const firstAdvance = engine1.advanceJob(
+        job.jobId,
+        'wake:first',
+        undefined,
+        { quantumTimeoutMs: 3_000 },
+      );
       await started;
       await new Promise(resolve => setTimeout(resolve, 1_000));
 

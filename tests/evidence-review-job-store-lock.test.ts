@@ -12,6 +12,7 @@ import {
   loadEvidenceReviewJobStore,
   mutateEvidenceReviewJobStore,
 } from '../src/utils/evidence-review-job-store';
+import { createProcessLockClaimIdentity } from '../src/utils/process-lock-claim';
 
 describe('Evidence Review whole-store lock', () => {
   test('recovers one damaged owner record from the atomically published backup', () => {
@@ -28,6 +29,36 @@ describe('Evidence Review whole-store lock', () => {
       });
       assert.equal(fs.existsSync(lockPath), false);
       assert.equal(loadEvidenceReviewJobStore(storePath).fairness.jobCursors.recovered, 'backup-owner');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reclaims a stale owner after its PID has been reused', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-review-store-reused-pid-'));
+    const storePath = path.join(root, 'data', 'evidence-review-jobs.json');
+    const lockPath = `${storePath}.lock`;
+    try {
+      const currentIdentity = createProcessLockClaimIdentity();
+      assert.ok(currentIdentity.processStartedAt, 'expected an OS process-start identity');
+      const reusedPidOwner = JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        processStartedAt: new Date(
+          Date.parse(currentIdentity.processStartedAt) + 1_000,
+        ).toISOString(),
+        token: randomUUID(),
+      });
+      fs.mkdirSync(lockPath, { recursive: true });
+      fs.writeFileSync(path.join(lockPath, 'owner.json'), reusedPidOwner, 'utf8');
+      fs.writeFileSync(path.join(lockPath, 'owner.backup.json'), reusedPidOwner, 'utf8');
+
+      mutateEvidenceReviewJobStore(storePath, state => {
+        state.fairness.jobCursors.recovered = 'reused-pid';
+      });
+
+      assert.equal(fs.existsSync(lockPath), false);
+      assert.equal(loadEvidenceReviewJobStore(storePath).fairness.jobCursors.recovered, 'reused-pid');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -80,7 +111,8 @@ describe('Evidence Review whole-store lock', () => {
     try {
       const moduleUrl = pathToFileURL(path.resolve('src/utils/evidence-review-job-store.ts')).href;
       const childScript = `
-        const { mutateEvidenceReviewJobStore } = await import(${JSON.stringify(moduleUrl)});
+        const imported = await import(${JSON.stringify(moduleUrl)});
+        const { mutateEvidenceReviewJobStore } = imported.default ?? imported;
         const fs = await import('node:fs');
         const [storePath, readyPath] = process.argv.slice(1);
         mutateEvidenceReviewJobStore(storePath, state => {

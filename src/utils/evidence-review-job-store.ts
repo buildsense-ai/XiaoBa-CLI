@@ -8,13 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
-import {
-  reclaimStaleClaimDirectory,
-  sameProcessLockClaim,
-  tryInstallRecordDirectory,
-  type ProcessLockClaimIdentity,
-} from './process-lock-claim';
+import { withProcessExclusiveLock } from './process-exclusive-lock';
 import {
   EVIDENCE_REVIEW_JOB_SCHEMA_VERSION,
   type EvidenceReviewJob,
@@ -152,45 +146,11 @@ export function saveEvidenceReviewJobStore(
   }
 }
 
-const STORE_LOCK_FILE = 'owner.json';
-const STORE_LOCK_BACKUP_FILE = 'owner.backup.json';
 const STORE_LOCK_RETRY_ATTEMPTS = 50;
 const STORE_LOCK_RETRY_DELAY_MS = 5;
-const STORE_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
 function storeLockPath(filePath: string): string {
   return `${filePath}.lock`;
-}
-
-function readLockClaim(filePath: string): ProcessLockClaimIdentity | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<ProcessLockClaimIdentity>;
-    return typeof parsed.pid === 'number'
-      && typeof parsed.startedAt === 'string'
-      && typeof parsed.token === 'string'
-      ? { pid: parsed.pid, startedAt: parsed.startedAt, token: parsed.token }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
-function resolveRedundantLockClaim(
-  primary: ProcessLockClaimIdentity | null,
-  backup: ProcessLockClaimIdentity | null,
-): ProcessLockClaimIdentity | null {
-  if (primary && backup && !sameProcessLockClaim(primary, backup)) return null;
-  return primary ?? backup;
 }
 
 /**
@@ -202,63 +162,21 @@ export function mutateEvidenceReviewJobStore<T>(
   filePath: string,
   mutation: (state: EvidenceReviewJobStoreState) => T,
 ): T {
-  // The first mutation may occur before the JSON store or its data directory
-  // exists. Directory-lock publication requires the parent to exist first.
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const lockPath = storeLockPath(filePath);
-  const identity: ProcessLockClaimIdentity = {
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    token: crypto.randomUUID(),
-  };
-  const serialized = `${JSON.stringify(identity)}\n`;
-  const install = () => tryInstallRecordDirectory(
-    lockPath,
-    STORE_LOCK_FILE,
-    serialized,
-    { [STORE_LOCK_BACKUP_FILE]: serialized },
-  );
-  let installed = false;
-  for (let attempt = 0; attempt <= STORE_LOCK_RETRY_ATTEMPTS && !installed; attempt++) {
-    installed = install();
-    if (installed) break;
-    const primary = readLockClaim(path.join(lockPath, STORE_LOCK_FILE));
-    const backup = readLockClaim(path.join(lockPath, STORE_LOCK_BACKUP_FILE));
-    const observed = resolveRedundantLockClaim(primary, backup);
-    // New locks publish two immutable owner records atomically with the
-    // directory. One damaged record can be recovered from the other without
-    // guessing. If both are missing/malformed, fail closed: a live owner may
-    // still be inside the mutation and must never have its lock deleted.
-    if (observed && !isProcessAlive(observed.pid)) {
-      reclaimStaleClaimDirectory({
-        claimDir: lockPath,
-        claimFileName: primary ? STORE_LOCK_FILE : STORE_LOCK_BACKUP_FILE,
-        observed,
-        reclaimer: identity,
-        readClaim: readLockClaim,
-        isProcessAlive,
-      });
-      continue;
-    }
-    if (attempt < STORE_LOCK_RETRY_ATTEMPTS) {
-      Atomics.wait(STORE_LOCK_SLEEP, 0, 0, STORE_LOCK_RETRY_DELAY_MS);
-    }
-  }
-  if (!installed) throw new Error(`Evidence Review Job store is busy: ${filePath}`);
-
   try {
-    const state = loadEvidenceReviewJobStore(filePath);
-    const result = mutation(state);
-    saveEvidenceReviewJobStore(filePath, state);
-    return result;
-  } finally {
-    const installedClaim = resolveRedundantLockClaim(
-      readLockClaim(path.join(lockPath, STORE_LOCK_FILE)),
-      readLockClaim(path.join(lockPath, STORE_LOCK_BACKUP_FILE)),
-    );
-    if (sameProcessLockClaim(installedClaim, identity)) {
-      try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best effort */ }
+    return withProcessExclusiveLock(storeLockPath(filePath), () => {
+      const state = loadEvidenceReviewJobStore(filePath);
+      const result = mutation(state);
+      saveEvidenceReviewJobStore(filePath, state);
+      return result;
+    }, {
+      retryAttempts: STORE_LOCK_RETRY_ATTEMPTS,
+      retryDelayMs: STORE_LOCK_RETRY_DELAY_MS,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Process-exclusive lock is busy:')) {
+      throw new Error(`Evidence Review Job store is busy: ${filePath}`);
     }
+    throw error;
   }
 }
 

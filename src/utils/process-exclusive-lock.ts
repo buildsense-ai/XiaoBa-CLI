@@ -1,12 +1,14 @@
-import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import {
+  createProcessLockClaimIdentity,
+  isProcessIdAlive,
+  isProcessLockClaimAlive,
+  readProcessLockClaim,
   reclaimStaleClaimDirectory,
   sameProcessLockClaim,
   tryInstallRecordDirectory,
-  type ProcessLockClaimIdentity,
 } from './process-lock-claim';
 
 const OWNER_FILE = 'owner.json';
@@ -18,33 +20,10 @@ export interface ProcessExclusiveLockOptions {
   retryDelayMs?: number;
 }
 
-function readOwner(filePath: string): ProcessLockClaimIdentity | null {
-  try {
-    const value = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<ProcessLockClaimIdentity>;
-    return typeof value.pid === 'number'
-      && typeof value.startedAt === 'string'
-      && typeof value.token === 'string'
-      ? { pid: value.pid, startedAt: value.startedAt, token: value.token }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 function resolveRedundantOwner(
-  primary: ProcessLockClaimIdentity | null,
-  backup: ProcessLockClaimIdentity | null,
-): ProcessLockClaimIdentity | null {
+  primary: ReturnType<typeof readProcessLockClaim>,
+  backup: ReturnType<typeof readProcessLockClaim>,
+): ReturnType<typeof readProcessLockClaim> {
   if (primary && backup && !sameProcessLockClaim(primary, backup)) return null;
   return primary ?? backup;
 }
@@ -56,11 +35,7 @@ export function withProcessExclusiveLock<T>(
   options: ProcessExclusiveLockOptions = {},
 ): T {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  const identity: ProcessLockClaimIdentity = {
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    token: crypto.randomUUID(),
-  };
+  const identity = createProcessLockClaimIdentity();
   const serialized = `${JSON.stringify(identity)}\n`;
   const install = () => tryInstallRecordDirectory(
     lockPath,
@@ -74,19 +49,20 @@ export function withProcessExclusiveLock<T>(
   for (let attempt = 0; attempt <= retryAttempts && !installed; attempt++) {
     installed = install();
     if (installed) break;
-    const primary = readOwner(path.join(lockPath, OWNER_FILE));
-    const backup = readOwner(path.join(lockPath, OWNER_BACKUP_FILE));
+    const primary = readProcessLockClaim(path.join(lockPath, OWNER_FILE));
+    const backup = readProcessLockClaim(path.join(lockPath, OWNER_BACKUP_FILE));
     const observed = resolveRedundantOwner(primary, backup);
     // A malformed legacy/singly-corrupted lock is ambiguous: fail closed rather
     // than deleting a directory that a live owner may still be using.
-    if (observed && !isProcessAlive(observed.pid)) {
+    if (observed && !isProcessLockClaimAlive(observed)) {
       reclaimStaleClaimDirectory({
         claimDir: lockPath,
         claimFileName: primary ? OWNER_FILE : OWNER_BACKUP_FILE,
         observed,
         reclaimer: identity,
-        readClaim: readOwner,
-        isProcessAlive,
+        readClaim: readProcessLockClaim,
+        isProcessAlive: isProcessIdAlive,
+        isClaimAlive: isProcessLockClaimAlive,
       });
       continue;
     }
@@ -100,8 +76,8 @@ export function withProcessExclusiveLock<T>(
     return work();
   } finally {
     const installedOwner = resolveRedundantOwner(
-      readOwner(path.join(lockPath, OWNER_FILE)),
-      readOwner(path.join(lockPath, OWNER_BACKUP_FILE)),
+      readProcessLockClaim(path.join(lockPath, OWNER_FILE)),
+      readProcessLockClaim(path.join(lockPath, OWNER_BACKUP_FILE)),
     );
     if (sameProcessLockClaim(installedOwner, identity)) {
       try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best effort */ }
