@@ -20,6 +20,10 @@ export interface MetricsSummary {
   totalPromptTokens: number;
   totalCompletionTokens: number;
   totalTokens: number;
+  totalCachedReadTokens: number;
+  totalCachedWriteTokens: number;
+  /** cached read / prompt tokens; omitted when no prompt tokens were recorded. */
+  cacheReadRatio?: number;
   toolCalls: number;
   toolDurationMs: number;
   /** 按工具名分组的调用次数和总耗时 */
@@ -50,11 +54,15 @@ export class Metrics {
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
     let totalTokens = 0;
+    let totalCachedReadTokens = 0;
+    let totalCachedWriteTokens = 0;
 
     for (const call of this.aiCalls) {
       totalPromptTokens += call.usage.promptTokens;
       totalCompletionTokens += call.usage.completionTokens;
       totalTokens += call.usage.totalTokens;
+      totalCachedReadTokens += call.usage.cachedReadTokens ?? 0;
+      totalCachedWriteTokens += call.usage.cachedWriteTokens ?? 0;
     }
 
     let toolDurationMs = 0;
@@ -74,6 +82,9 @@ export class Metrics {
       totalPromptTokens,
       totalCompletionTokens,
       totalTokens,
+      totalCachedReadTokens,
+      totalCachedWriteTokens,
+      cacheReadRatio: totalPromptTokens > 0 ? totalCachedReadTokens / totalPromptTokens : undefined,
       toolCalls: this.toolCalls.length,
       toolDurationMs,
       toolBreakdown,

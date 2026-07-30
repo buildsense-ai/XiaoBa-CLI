@@ -5,17 +5,18 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 import { PromptReconcileCoordinator } from '../src/bot-definition/prompt-sync';
+import type { BotDefinitionCloudSyncService } from '../src/bot-definition/cloud-sync';
 import { FileBotDefinitionRepository } from '../src/bot-definition/repository';
 import { createBotDefinitionSyncService } from '../src/bot-definition/service';
 import { BOT_DEFINITION_SCHEMA, type BotDefinition } from '../src/bot-definition/types';
 import { getPromptOverridesDir, readRequiredBundledPromptFile } from '../src/utils/prompt-template';
 
-class FailingCanonicalRepository extends FileBotDefinitionRepository {
-  failCanonicalWrite = false;
+class FailingCacheRepository extends FileBotDefinitionRepository {
+  failCacheWrite = false;
 
-  override writeCanonical(definition: BotDefinition): void {
-    if (this.failCanonicalWrite) throw new Error('simulated canonical write failure');
-    super.writeCanonical(definition);
+  override writeCache(definition: BotDefinition): void {
+    if (this.failCacheWrite) throw new Error('simulated cache write failure');
+    super.writeCache(definition);
   }
 }
 
@@ -35,6 +36,8 @@ describe('BotDefinition system prompt sync', () => {
       XIAOBA_APP_ROOT: appRoot,
       XIAOBA_USER_DATA_DIR: runtimeRoot,
       XIAOBA_BOT_DEFINITION_SIMULATED_CLOUD_DIR: simulatedCloudRoot,
+      CATSCO_HTTP_BASE_URL: 'https://example.invalid',
+      CATSCO_USER_TOKEN: 'host-token-that-must-not-be-used',
     } as NodeJS.ProcessEnv;
   });
 
@@ -75,8 +78,24 @@ describe('BotDefinition system prompt sync', () => {
       env,
       repository,
     });
+    const cloudSyncService = {
+      pushPrompt: async () => undefined,
+      readState: (uid: string) => ({
+        schema: 'xiaoba.bot-definition-cloud-sync.v1',
+        botId: uid,
+        revision: 0,
+        pendingModel: false,
+        pendingPrompt: false,
+      }),
+      flushPending: async () => undefined,
+    } as unknown as BotDefinitionCloudSyncService;
     return {
-      coordinator: new PromptReconcileCoordinator({ runtimeRoot, env, definitionService }),
+      coordinator: new PromptReconcileCoordinator({
+        runtimeRoot,
+        env,
+        definitionService,
+        cloudSyncService,
+      }),
       repository,
     };
   }
@@ -148,14 +167,14 @@ describe('BotDefinition system prompt sync', () => {
     await coordinator.activateBot('bot-a');
 
     assert.equal(coordinator.getSelection('bot-a').definitionReady, true);
-    assert.equal(repository.readCanonical('bot-a')?.prompt?.selected, 'default');
+    assert.equal(repository.readCache('bot-a')?.prompt?.selected, 'default');
     assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'bundled v1\n');
 
     fs.writeFileSync(path.join(appRoot, 'prompts', 'system-prompt.md'), 'bundled v2\n', 'utf-8');
     await coordinator.activateBot('bot-a');
 
     assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'bundled v2\n');
-    assert.equal(repository.readCanonical('bot-a')?.prompt?.selected, 'default');
+    assert.equal(repository.readCache('bot-a')?.prompt?.selected, 'default');
   });
 
   test('captures a locally edited default as custom instead of overwriting it', async () => {
@@ -165,7 +184,7 @@ describe('BotDefinition system prompt sync', () => {
 
     await coordinator.activateBot('bot-a');
 
-    assert.deepStrictEqual(repository.readCanonical('bot-a')?.prompt, {
+    assert.deepStrictEqual(repository.readCache('bot-a')?.prompt, {
       selected: 'custom',
       customSystemPrompt: 'agent edited prompt',
     });
@@ -183,7 +202,7 @@ describe('BotDefinition system prompt sync', () => {
 
     await coordinator.select('bot-a', 'default');
     assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'bundled v2\n');
-    assert.equal(repository.readCanonical('bot-a')?.prompt?.customSystemPrompt, 'my custom prompt');
+    assert.equal(repository.readCache('bot-a')?.prompt?.customSystemPrompt, 'my custom prompt');
 
     await coordinator.select('bot-a', 'custom');
     assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'my custom prompt\n');
@@ -197,11 +216,29 @@ describe('BotDefinition system prompt sync', () => {
 
     await coordinator.activateBot('bot-a');
 
-    assert.deepStrictEqual(repository.readCanonical('bot-a')?.prompt, {
+    assert.deepStrictEqual(repository.readCache('bot-a')?.prompt, {
       selected: 'custom',
       customSystemPrompt: 'last local edit',
     });
     assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'last local edit\n');
+  });
+
+  test('materializes the cloud-selected prompt over an offline file edit', async () => {
+    const { coordinator, repository } = createCoordinator();
+    await coordinator.activateBot('bot-a');
+    fs.writeFileSync(coordinator.getActivePromptPath(), 'offline local edit\n', 'utf-8');
+    repository.writeCache({
+      ...repository.readCache('bot-a')!,
+      prompt: { selected: 'custom', customSystemPrompt: 'cloud prompt' },
+    });
+
+    await coordinator.activateBot('bot-a', { preferDefinition: true });
+
+    assert.deepStrictEqual(repository.readCache('bot-a')?.prompt, {
+      selected: 'custom',
+      customSystemPrompt: 'cloud prompt',
+    });
+    assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'cloud prompt\n');
   });
 
   test('model and prompt field updates preserve each other', async () => {
@@ -216,10 +253,10 @@ describe('BotDefinition system prompt sync', () => {
     });
 
     service.updateModel('bot-a', { kind: 'catalog', modelId: 'deepseek-v4-flash' });
-    assert.equal(repository.readCanonical('bot-a')?.prompt?.customSystemPrompt, 'portable prompt');
+    assert.equal(repository.readCache('bot-a')?.prompt?.customSystemPrompt, 'portable prompt');
 
     service.updatePrompt('bot-a', { selected: 'default', customSystemPrompt: 'portable prompt' });
-    assert.deepStrictEqual(repository.readCanonical('bot-a')?.model, {
+    assert.deepStrictEqual(repository.readCache('bot-a')?.model, {
       kind: 'catalog',
       modelId: 'deepseek-v4-flash',
     });
@@ -247,7 +284,7 @@ describe('BotDefinition system prompt sync', () => {
       customSystemPrompt: 'cross-process prompt',
     });
 
-    assert.deepStrictEqual(repository.readCanonical('bot-a'), {
+    assert.deepStrictEqual(repository.readCache('bot-a'), {
       schema: BOT_DEFINITION_SCHEMA,
       botId: 'bot-a',
       model: { kind: 'catalog', modelId: 'deepseek-v4-flash' },
@@ -264,57 +301,61 @@ describe('BotDefinition system prompt sync', () => {
     fs.writeFileSync(coordinator.getActivePromptPath(), '  \n\n', 'utf-8');
 
     assert.equal(await coordinator.reconcileCurrent({ force: true }), false);
-    assert.deepStrictEqual(repository.readCanonical('bot-a')?.prompt, { selected: 'default' });
+    assert.deepStrictEqual(repository.readCache('bot-a')?.prompt, { selected: 'default' });
   });
 
   test('does not advance the sync baseline when canonical persistence fails', async () => {
-    const repository = new FailingCanonicalRepository({ runtimeRoot, simulatedCloudRoot });
+    const repository = new FailingCacheRepository({ runtimeRoot, simulatedCloudRoot });
     const { coordinator } = createCoordinator('bot-a', repository);
     await coordinator.activateBot('bot-a');
     const stateBefore = fs.readFileSync(coordinator.getStatePath(), 'utf-8');
     fs.writeFileSync(coordinator.getActivePromptPath(), 'retry this prompt\n', 'utf-8');
-    repository.failCanonicalWrite = true;
+    repository.failCacheWrite = true;
 
     await assert.rejects(
       () => coordinator.reconcileCurrent({ force: true }),
-      /simulated canonical write failure/,
+      /simulated cache write failure/,
     );
     assert.equal(fs.readFileSync(coordinator.getStatePath(), 'utf-8'), stateBefore);
-    assert.deepStrictEqual(repository.readCanonical('bot-a')?.prompt, { selected: 'default' });
+    assert.deepStrictEqual(repository.readCache('bot-a')?.prompt, { selected: 'default' });
 
-    repository.failCanonicalWrite = false;
+    repository.failCacheWrite = false;
     assert.equal(await coordinator.reconcileCurrent({ force: true }), true);
-    assert.deepStrictEqual(repository.readCanonical('bot-a')?.prompt, {
+    assert.deepStrictEqual(repository.readCache('bot-a')?.prompt, {
       selected: 'custom',
       customSystemPrompt: 'retry this prompt',
     });
   });
 
   test('restores the active prompt when an explicit selection cannot persist', async () => {
-    const repository = new FailingCanonicalRepository({ runtimeRoot, simulatedCloudRoot });
+    const repository = new FailingCacheRepository({ runtimeRoot, simulatedCloudRoot });
     const { coordinator } = createCoordinator('bot-a', repository);
     await coordinator.activateBot('bot-a');
     const promptBefore = fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8');
     const stateBefore = fs.readFileSync(coordinator.getStatePath(), 'utf-8');
-    repository.failCanonicalWrite = true;
+    repository.failCacheWrite = true;
 
     await assert.rejects(
       () => coordinator.select('bot-a', 'custom', 'should roll back'),
-      /simulated canonical write failure/,
+      /simulated cache write failure/,
     );
     assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), promptBefore);
     assert.equal(fs.readFileSync(coordinator.getStatePath(), 'utf-8'), stateBefore);
-    assert.deepStrictEqual(repository.readCanonical('bot-a')?.prompt, { selected: 'default' });
+    assert.deepStrictEqual(repository.readCache('bot-a')?.prompt, { selected: 'default' });
   });
 
-  test('migrates an existing active override only for the active bot', async () => {
+  test('backs up a legacy active override while selecting the current bundled default', async () => {
     const { coordinator, repository } = createCoordinator('bot-a');
     fs.mkdirSync(path.dirname(coordinator.getActivePromptPath()), { recursive: true });
     fs.writeFileSync(coordinator.getActivePromptPath(), 'legacy override\n', 'utf-8');
 
     await coordinator.activateBot('bot-a');
-    assert.equal(repository.readCanonical('bot-a')?.prompt?.selected, 'custom');
-    assert.equal(repository.readCanonical('bot-a')?.prompt?.customSystemPrompt, 'legacy override');
+    assert.equal(repository.readCache('bot-a')?.prompt?.selected, 'default');
+    assert.equal(repository.readCache('bot-a')?.prompt?.customSystemPrompt, 'legacy override');
+    assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'bundled v1\n');
+    await coordinator.select('bot-a', 'custom');
+    assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'legacy override\n');
+    await coordinator.select('bot-a', 'default');
 
     repository.writeCanonical({
       schema: BOT_DEFINITION_SCHEMA,
@@ -324,7 +365,28 @@ describe('BotDefinition system prompt sync', () => {
     repository.writeCache(repository.readCanonical('bot-b')!);
     await coordinator.activateBot('bot-b');
 
-    assert.equal(repository.readCanonical('bot-b')?.prompt?.selected, 'default');
+    assert.equal(repository.readCache('bot-b')?.prompt?.selected, 'default');
+    assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'bundled v1\n');
+  });
+
+  test('backs up a legacy override even when cloud bootstrap already supplied default prompt', async () => {
+    const { coordinator, repository } = createCoordinator('bot-a');
+    repository.writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-a',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+      prompt: { selected: 'default' },
+    });
+    repository.writeCache(repository.readCanonical('bot-a')!);
+    fs.mkdirSync(path.dirname(coordinator.getActivePromptPath()), { recursive: true });
+    fs.writeFileSync(coordinator.getActivePromptPath(), 'legacy override\n', 'utf-8');
+
+    await coordinator.activateBot('bot-a');
+
+    assert.deepStrictEqual(repository.readCache('bot-a')?.prompt, {
+      selected: 'default',
+      customSystemPrompt: 'legacy override',
+    });
     assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'bundled v1\n');
   });
 
@@ -351,11 +413,11 @@ describe('BotDefinition system prompt sync', () => {
     });
     await coordinator.activateBot('bot-b');
 
-    assert.deepStrictEqual(repository.readCanonical('bot-a')?.prompt, {
-      selected: 'custom',
+    assert.deepStrictEqual(repository.readCache('bot-a')?.prompt, {
+      selected: 'default',
       customSystemPrompt: 'legacy prompt from bot A',
     });
-    assert.deepStrictEqual(repository.readCanonical('bot-b')?.prompt, {
+    assert.deepStrictEqual(repository.readCache('bot-b')?.prompt, {
       selected: 'default',
     });
     assert.equal(fs.readFileSync(coordinator.getActivePromptPath(), 'utf-8'), 'bundled v1\n');

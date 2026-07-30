@@ -1,5 +1,6 @@
 import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor, ToolExecutionResult } from '../types/tool';
 import { mergeToolExecutionContext } from '../utils/tool-context';
+import { getStructuredRateLimitErrorCode } from '../utils/rate-limit-error';
 import { confirmLocalToolExecution } from '../tools/local-tool-risk';
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
@@ -115,14 +116,16 @@ export class AgentToolExecutor implements ToolExecutor {
         controlSignal: tool.definition.controlMode,
       };
     } catch (error: any) {
+      const message = String(error?.message || error || '');
+      const rateLimitErrorCode = getStructuredRateLimitErrorCode(error);
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
         name: requestedName,
-        content: `工具执行错误: ${error.message}`,
+        content: `工具执行错误: ${message}`,
         ok: false,
-        errorCode: 'TOOL_EXECUTION_ERROR',
-        retryable: false,
+        errorCode: rateLimitErrorCode || 'TOOL_EXECUTION_ERROR',
+        retryable: Boolean(rateLimitErrorCode),
       };
     }
   }

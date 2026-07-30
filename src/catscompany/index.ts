@@ -15,7 +15,13 @@ import { extractCatsCoDeviceGrants } from './device-grants';
 import { extractCatsCoDeviceSelection } from './device-selection';
 import { extractCatsCoRuntimeContext } from './runtime-context';
 import { MessageSessionManager } from '../core/message-session-manager';
-import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } from '../core/agent-session';
+import {
+  AgentServices,
+  BUSY_MESSAGE,
+  type DurableRemoteContextEntry,
+  RuntimeFeedbackInput,
+  SessionCallbacks,
+} from '../core/agent-session';
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
@@ -71,7 +77,7 @@ import {
   agentContextMessageSeq,
   isNativeFeishuGroupTrigger,
   isNativeFeishuClearBoundary,
-  selectNativeFeishuGroupContext,
+  selectNativeFeishuGroupContextEntries,
 } from './agent-context-history';
 import {
   CatsCompanyCloudSessionRestorer,
@@ -108,6 +114,7 @@ interface QueuedMessage {
   source?: 'user' | 'subagent_feedback';
   runtimeFeedback?: RuntimeFeedbackInput[];
   nativeFeishuContext?: NativeFeishuContextHydration;
+  clearGeneration?: number;
   attempts?: number;
   deliveryOnly?: boolean;
   deliveryAttempts?: number;
@@ -150,7 +157,6 @@ const BACKGROUND_SUBAGENT_COMPLETION_DEBOUNCE_MS = 1_500;
 const BACKGROUND_SUBAGENT_COMPLETION_MAX_DELAY_MS = 15_000;
 const SUBAGENT_FALLBACK_MAX_DELIVERY_ATTEMPTS = 3;
 const NATIVE_FEISHU_CONTEXT_PAGE_SIZE = 100;
-const NATIVE_FEISHU_CONTEXT_MAX_PAGES = 10;
 const BACKGROUND_SUBAGENT_COMPLETION_MAX_ITEMS = 6;
 const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
 const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
@@ -1354,12 +1360,24 @@ export class CatsCompanyBot {
 
   private buildSessionCallbacks(
     topic: string,
-    opts?: { sessionKey?: string; senderId?: string; channelSource?: string },
+    opts?: {
+      sessionKey?: string;
+      senderId?: string;
+      channelSource?: string;
+      clearGeneration?: number;
+    },
   ): SessionCallbacks {
     const suppressToolProgress = shouldSuppressStructuredToolProgress(opts?.channelSource);
+    const callbackGeneration = opts?.sessionKey
+      ? opts.clearGeneration ?? this.getSessionClearGeneration(opts.sessionKey)
+      : undefined;
+    const isStaleCallback = (): boolean => Boolean(
+      opts?.sessionKey
+      && callbackGeneration !== this.getSessionClearGeneration(opts.sessionKey),
+    );
     return {
       onRetry: async (attempt, maxRetries, info) => {
-        if (suppressToolProgress) {
+        if (isStaleCallback() || suppressToolProgress) {
           return;
         }
         try {
@@ -1375,6 +1393,7 @@ export class CatsCompanyBot {
         }
       },
       onAssistantText: async (text: string) => {
+        if (isStaleCallback()) return;
         try {
           await this.sender.reply(topic, text);
         } catch (err: any) {
@@ -1382,7 +1401,7 @@ export class CatsCompanyBot {
         }
       },
       onThinking: async (thinking: string) => {
-        if (suppressToolProgress) {
+        if (isStaleCallback() || suppressToolProgress) {
           return;
         }
         try {
@@ -1393,7 +1412,7 @@ export class CatsCompanyBot {
       },
       onToolStart: async (toolName: string, toolUseId: string, input: any) => {
         // 跳过输出型工具的 WORKING 消息
-        if (suppressToolProgress || shouldHideCatsToolProgress(toolName)) {
+        if (isStaleCallback() || suppressToolProgress || shouldHideCatsToolProgress(toolName)) {
           return;
         }
         try {
@@ -1404,7 +1423,7 @@ export class CatsCompanyBot {
       },
       onToolEnd: async (toolName: string, toolUseId: string, result: string) => {
         // 跳过输出型工具的 WORKING 消息
-        if (suppressToolProgress || shouldHideCatsToolProgress(toolName)) {
+        if (isStaleCallback() || suppressToolProgress || shouldHideCatsToolProgress(toolName)) {
           return;
         }
         try {
@@ -1480,12 +1499,15 @@ export class CatsCompanyBot {
     topic: string,
     senderId: string,
     executionScope?: ParsedCatsMessage['executionScope'],
+    clearGeneration = this.getSessionClearGeneration(sessionKey),
   ): void {
     SubAgentManager.getInstance().registerPlatformCallbacks(sessionKey, {
       injectMessage: async (text: string) => {
-        await this.handleSubAgentFeedback(sessionKey, topic, senderId, text, executionScope);
+        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return;
+        await this.handleSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, clearGeneration);
       },
       onSubAgentEvent: async (event: any, info?: SubAgentInfo) => {
+        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return;
         await this.handleSubAgentRuntimeEvent(topic, event, info, executionScope?.channelSource, sessionKey);
       },
     } as any);
@@ -1531,12 +1553,17 @@ export class CatsCompanyBot {
       }
 
       const result = await session.handleCommand(command, args);
+      let commandReply = result.reply;
       if (result.handled && isClear && !args.includes('--all')) {
-        this.cloudSessionRestorer.markLocalSessionCleared(sessionRoute?.sessionKey || key);
+        const clearPersisted = this.cloudSessionRestorer.markLocalSessionCleared(sessionRoute?.sessionKey || key);
+        if (!clearPersisted) {
+          commandReply = '历史已在当前进程清空，但本地持久化失败，请立即重试 /clear。';
+          Logger.error(`[${key}] /clear 哨兵连续两次落盘失败，禁止误报持久清空成功`);
+        }
       }
-      if (result.handled && result.reply) {
+      if (result.handled && commandReply) {
         try {
-          await this.sender.reply(msg.topic, result.reply);
+          await this.sender.reply(msg.topic, commandReply);
         } catch (err: any) {
           Logger.warning(`命令回复发送失败: ${err.message}`);
         }
@@ -1636,13 +1663,14 @@ export class CatsCompanyBot {
         source: 'user',
         runtimeFeedback,
         nativeFeishuContext,
+        clearGeneration: entryClearGeneration,
       });
       this.messageQueue.set(key, queue);
       Logger.info(`[${key}] 主会话忙，消息已入队 (队列长度: ${queue.length})`);
       return;
     }
 
-    this.registerSubAgentPlatformCallbacks(key, msg.topic, msg.senderId, msg.executionScope);
+    this.registerSubAgentPlatformCallbacks(key, msg.topic, msg.senderId, msg.executionScope, entryClearGeneration);
 
     // 构建通道回调，通过 context 传递给工具（替代 bind/unbind）
     const channel = this.buildChannel(msg.topic, {
@@ -1677,33 +1705,41 @@ export class CatsCompanyBot {
           thinToolRpc: this.maybeBuildThinToolRpcTransport(),
           localFileGrants,
           runtimeFeedback,
-          pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope),
+          pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope, entryClearGeneration),
           callbacks: this.buildSessionCallbacks(msg.topic, {
             sessionKey: key,
             senderId: msg.senderId,
             channelSource: msg.executionScope?.channelSource,
+            clearGeneration: entryClearGeneration,
           }),
         });
 
-        // 最终文本回复
-        let replyDelivered = true;
-        if (result.visibleToUser && result.text) {
-          try {
-            await this.sender.reply(msg.topic, result.text);
-          } catch (err: any) {
-            replyDelivered = false;
-            Logger.warning(`前端通知发送失败 (text): ${err.message}`);
+        if (entryClearGeneration === this.getSessionClearGeneration(key)) {
+          // 最终文本回复
+          let replyDelivered = true;
+          if (result.visibleToUser && result.text) {
+            try {
+              await this.sender.reply(msg.topic, result.text);
+            } catch (err: any) {
+              replyDelivered = false;
+              Logger.warning(`前端通知发送失败 (text): ${err.message}`);
+            }
           }
+          this.finishConversationTask(key, task, this.taskStatusForResult(result, replyDelivered));
+        } else {
+          Logger.info(`[${key}] clear 后忽略旧 turn 的返回`);
         }
-        this.finishConversationTask(key, task, this.taskStatusForResult(result, replyDelivered));
       }
     } catch (err: any) {
-      this.finishConversationTask(key, task, {
-        state: 'failed',
-        summary: '任务执行失败',
-        error: '任务执行失败',
-      });
-      throw err;
+      if (entryClearGeneration === this.getSessionClearGeneration(key)) {
+        this.finishConversationTask(key, task, {
+          state: 'failed',
+          summary: '任务执行失败',
+          error: '任务执行失败',
+        });
+        throw err;
+      }
+      Logger.info(`[${key}] clear 后忽略旧 turn 的异常`);
     } finally {
       this.releaseSessionExecution(key);
       stopTypingHeartbeat();
@@ -1715,9 +1751,12 @@ export class CatsCompanyBot {
 
   private async hydrateNativeFeishuGroupContext(
     session: {
-      injectContext(text: string): void;
+      appendDurableContext(
+        messages: Array<string | DurableRemoteContextEntry>,
+        cursorUpdate?: { source: string; cursor: number },
+      ): Promise<boolean>;
       getRemoteContextCursor(source: string): number;
-      saveRemoteContextCursor(source: string, cursor: number): void;
+      saveRemoteContextCursor(source: string, cursor: number): boolean;
     },
     hydration: NativeFeishuContextHydration,
     sessionKey: string,
@@ -1726,41 +1765,50 @@ export class CatsCompanyBot {
     if (!shouldHydrateCatsCompanyGroupContext(msg)) return true;
     if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return false;
     const cursorKey = 'catscompany.agent_context';
-    const memberCount = Number(msg.memberCount);
-    const sourceChannel = typeof msg.metadata?.source_channel === 'string'
-      ? msg.metadata.source_channel.trim()
-      : '';
-    if (!sourceChannel && Number.isFinite(memberCount) && memberCount > 0 && memberCount <= 2) {
-      session.saveRemoteContextCursor(
-        cursorKey,
-        Math.max(session.getRemoteContextCursor(cursorKey), msg.seq),
-      );
-      return true;
-    }
-    if (cloudRestoreStatus === 'restored' || cloudRestoreStatus === 'empty') {
-      if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return false;
-      session.saveRemoteContextCursor(
-        cursorKey,
-        Math.max(session.getRemoteContextCursor(cursorKey), msg.seq),
-      );
-      return true;
-    }
     try {
       const previousCursor = session.getRemoteContextCursor(cursorKey);
+      const nextCursor = Math.max(previousCursor, msg.seq);
+      const cursorUpdate = { source: cursorKey, cursor: nextCursor };
+      const memberCount = Number(msg.memberCount);
+      const sourceChannel = typeof msg.metadata?.source_channel === 'string'
+        ? msg.metadata.source_channel.trim()
+        : '';
+      if (!sourceChannel && Number.isFinite(memberCount) && memberCount > 0 && memberCount <= 2) {
+        if (!session.saveRemoteContextCursor(cursorKey, nextCursor)) {
+          throw new Error('remote context cursor could not be persisted');
+        }
+        return true;
+      }
+      if (cloudRestoreStatus === 'restored' || cloudRestoreStatus === 'empty') {
+        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return false;
+        if (!session.saveRemoteContextCursor(cursorKey, nextCursor)) {
+          throw new Error('remote context cursor could not be persisted after cloud restore');
+        }
+        return true;
+      }
+
       const history = await this.fetchNativeFeishuGroupContextHistory(msg.topic, msg.seq, previousCursor);
       if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return false;
-      const contextMessages = selectNativeFeishuGroupContext(history, previousCursor);
-      for (const message of contextMessages) {
-        session.injectContext(message);
-      }
-      session.saveRemoteContextCursor(cursorKey, Math.max(previousCursor, msg.seq));
-      if (contextMessages.length > 0) {
-        Logger.info(`[${sessionKey}] 已补入 ${contextMessages.length} 条群聊普通消息上下文`);
+      const contextEntries = selectNativeFeishuGroupContextEntries(history, previousCursor, msg.seq);
+      const persisted = await session.appendDurableContext(contextEntries, cursorUpdate);
+      if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return false;
+      if (!persisted) throw new Error('durable group context and cursor could not be persisted');
+      if (contextEntries.length > 0) {
+        Logger.info(`[${sessionKey}] 已补入 ${contextEntries.length} 条完整群聊消息上下文`);
       }
       return true;
     } catch (err: any) {
-      Logger.warning(`[${sessionKey}] 群聊历史上下文恢复失败，继续处理当前消息: ${err?.message || err}`);
-      return clearGeneration === this.getSessionClearGeneration(sessionKey);
+      if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return false;
+      Logger.warning(`[${sessionKey}] 群聊历史上下文恢复失败，本次消息不执行: ${err?.message || err}`);
+      if (this.sender?.reply) {
+        await this.sender.reply(
+          msg.topic,
+          '群聊历史暂时恢复失败，当前消息尚未处理。请稍后重新发送这条消息。',
+        ).catch((replyError: any) => {
+          Logger.warning(`[${sessionKey}] 群聊历史恢复失败提示发送失败: ${replyError?.message || replyError}`);
+        });
+      }
+      return false;
     }
   }
 
@@ -1773,7 +1821,7 @@ export class CatsCompanyBot {
     let pageBeforeId = beforeId;
     const signal = AbortSignal.timeout(10_000);
 
-    for (let pageIndex = 0; pageIndex < NATIVE_FEISHU_CONTEXT_MAX_PAGES; pageIndex++) {
+    for (;;) {
       const page = await this.bot.getAgentContextHistory(topic, {
         beforeId: pageBeforeId,
         limit: NATIVE_FEISHU_CONTEXT_PAGE_SIZE,
@@ -1808,13 +1856,6 @@ export class CatsCompanyBot {
       }
       pageBeforeId = page.next_before_id;
     }
-
-    Logger.warning(
-      `[${topic}] 群聊历史超过 ${NATIVE_FEISHU_CONTEXT_MAX_PAGES * NATIVE_FEISHU_CONTEXT_PAGE_SIZE} 条，`
-      + '仅补入最近一段并推进游标',
-    );
-    return [...messagesBySeq.values()]
-      .sort((left, right) => agentContextMessageSeq(left) - agentContextMessageSeq(right));
   }
 
   private tryReserveSessionExecution(
@@ -2123,7 +2164,9 @@ export class CatsCompanyBot {
     senderId: string,
     text: string,
     executionScope?: ParsedCatsMessage['executionScope'],
+    clearGeneration = this.getSessionClearGeneration(sessionKey),
   ): Promise<void> {
+    if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return;
     const subAgentManager = SubAgentManager.getInstance();
     const resultObservationHandling = subAgentManager.getResultObservationHandlingForParent(sessionKey, text);
     if (resultObservationHandling === 'drop') {
@@ -2133,7 +2176,7 @@ export class CatsCompanyBot {
 
     const session = this.sessionManager.getOrCreate(sessionKey);
 
-    this.registerSubAgentPlatformCallbacks(sessionKey, topic, senderId, executionScope);
+    this.registerSubAgentPlatformCallbacks(sessionKey, topic, senderId, executionScope, clearGeneration);
 
     const channel = this.buildChannel(topic, {
       sessionKey,
@@ -2150,7 +2193,7 @@ export class CatsCompanyBot {
     }
 
     if (!this.tryReserveSessionExecution(sessionKey, session)) {
-      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope);
+      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 0, clearGeneration);
       Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
       return;
     }
@@ -2170,6 +2213,7 @@ export class CatsCompanyBot {
           sessionKey,
           senderId,
           channelSource: executionScope?.channelSource,
+          clearGeneration,
         }),
         source: 'subagent_result',
         suppressFinalResponse,
@@ -2178,8 +2222,10 @@ export class CatsCompanyBot {
         deviceRpc: this.buildDeviceRpcTransport(),
         thinToolRpc: this.maybeBuildThinToolRpcTransport(),
       });
-      if (result.text === BUSY_MESSAGE) {
-        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope);
+      if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
+        Logger.info(`[${sessionKey}] clear 后忽略旧子智能体反馈结果`);
+      } else if (result.text === BUSY_MESSAGE) {
+        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 0, clearGeneration);
         Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
       } else {
         subAgentManager.markResultObservationHandledForParent(sessionKey, text);
@@ -2198,8 +2244,11 @@ export class CatsCompanyBot {
         }
       }
     } catch (err: any) {
-      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 1);
-      Logger.warning(`[${sessionKey}] 子智能体反馈执行异常，已入队重试: ${err?.message || err}`);
+      if (clearGeneration === this.getSessionClearGeneration(sessionKey)) {
+        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 1, clearGeneration);
+        Logger.warning(`[${sessionKey}] 子智能体反馈执行异常，已入队重试: ${err?.message || err}`);
+      }
+
     } finally {
       this.releaseSessionExecution(sessionKey);
       stopTypingHeartbeatOnce();
@@ -2215,6 +2264,7 @@ export class CatsCompanyBot {
     text: string,
     executionScope?: ParsedCatsMessage['executionScope'],
     attempts = 0,
+    clearGeneration = this.getSessionClearGeneration(sessionKey),
   ): void {
     const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
@@ -2229,6 +2279,7 @@ export class CatsCompanyBot {
       })),
       receivedAt: Date.now(),
       source: 'subagent_feedback',
+      clearGeneration,
       attempts,
     });
     this.messageQueue.set(sessionKey, queue);
@@ -2311,7 +2362,7 @@ export class CatsCompanyBot {
       const observation = this.formatSubAgentCompletionBatchObservation(items, activeSubAgents.length);
       if (!observation) return;
 
-      this.registerSubAgentPlatformCallbacks(sessionKey, batch.topic, batch.senderId, batch.executionScope);
+      this.registerSubAgentPlatformCallbacks(sessionKey, batch.topic, batch.senderId, batch.executionScope, batch.clearGeneration);
       const channel = this.buildChannel(batch.topic, {
         sessionKey,
         senderId: batch.senderId,
@@ -2325,6 +2376,7 @@ export class CatsCompanyBot {
           sessionKey,
           senderId: batch.senderId,
           channelSource: batch.channelSource,
+          clearGeneration: batch.clearGeneration,
         }),
         source: 'subagent_result_batch',
         suppressFinalResponse: false,
@@ -2333,21 +2385,28 @@ export class CatsCompanyBot {
         deviceRpc: this.buildDeviceRpcTransport(),
         thinToolRpc: this.maybeBuildThinToolRpcTransport(),
       });
-      if (result.text === BUSY_MESSAGE) {
-        this.subAgentCompletionBatches.set(sessionKey, batch);
-        this.rescheduleSubAgentCompletionBatch(sessionKey, batch);
-        return;
-      }
-      if (batch.clearGeneration !== this.getSessionClearGeneration(sessionKey)) return;
+      if (batch.clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
+        Logger.info(`[${sessionKey}] clear 后忽略旧批量子任务回流结果`);
+      } else if (result.text === BUSY_MESSAGE) {
+        const pendingBatch = this.subAgentCompletionBatches.get(sessionKey);
+        if (pendingBatch && pendingBatch !== batch) {
+          for (const [itemKey, item] of batch.items) pendingBatch.items.set(itemKey, item);
+          pendingBatch.firstAt = Math.min(pendingBatch.firstAt, batch.firstAt);
+          this.rescheduleSubAgentCompletionBatch(sessionKey, pendingBatch);
+        } else {
+          this.subAgentCompletionBatches.set(sessionKey, batch);
+          this.rescheduleSubAgentCompletionBatch(sessionKey, batch);
+        }
+      } else {
+        for (const item of items) {
+          manager.markResultObservationHandledForParent(sessionKey, item.observation);
+        }
 
-      for (const item of items) {
-        manager.markResultObservationHandledForParent(sessionKey, item.observation);
-      }
-
-      if (result.text.startsWith('处理消息时出错:')) {
-        await this.sender.reply(batch.topic, result.text);
-      } else if (result.visibleToUser && result.text) {
-        await this.sender.reply(batch.topic, result.text);
+        if (result.text.startsWith('处理消息时出错:')) {
+          await this.sender.reply(batch.topic, result.text);
+        } else if (result.visibleToUser && result.text) {
+          await this.sender.reply(batch.topic, result.text);
+        }
       }
     } catch (err: any) {
       Logger.warning(`后台子任务批量回流失败: ${err.message}`);
@@ -2741,6 +2800,14 @@ export class CatsCompanyBot {
     if (!queue || queue.length === 0) return;
 
     const msg = queue[0];
+    const clearGeneration = msg.clearGeneration ?? this.getSessionClearGeneration(sessionKey);
+    if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
+      queue.shift();
+      if (queue.length === 0) this.messageQueue.delete(sessionKey);
+      Logger.info(`[${sessionKey}] 丢弃 clear 前已入队的旧消息`);
+      await this.drainMessageQueue(sessionKey);
+      return;
+    }
 
     const subAgentManager = SubAgentManager.getInstance();
     const queuedResultObservationHandling = msg.source === 'subagent_feedback'
@@ -2782,7 +2849,8 @@ export class CatsCompanyBot {
         await this.drainMessageQueue(sessionKey);
       } catch (err: any) {
         const deliveryAttempts = (msg.deliveryAttempts ?? 0) + 1;
-        if (deliveryAttempts < SUBAGENT_FALLBACK_MAX_DELIVERY_ATTEMPTS) {
+        if (deliveryAttempts < SUBAGENT_FALLBACK_MAX_DELIVERY_ATTEMPTS
+          && clearGeneration === this.getSessionClearGeneration(sessionKey)) {
           const pending = this.messageQueue.get(sessionKey) ?? [];
           pending.unshift({ ...msg, deliveryAttempts });
           this.messageQueue.set(sessionKey, pending);
@@ -2802,7 +2870,7 @@ export class CatsCompanyBot {
     queue.shift();
     if (queue.length === 0) this.messageQueue.delete(sessionKey);
 
-    this.registerSubAgentPlatformCallbacks(sessionKey, msg.topic, msg.senderId, msg.executionScope);
+    this.registerSubAgentPlatformCallbacks(sessionKey, msg.topic, msg.senderId, msg.executionScope, clearGeneration);
     const channel = this.buildChannel(msg.topic, {
       sessionKey,
       senderId: msg.senderId,
@@ -2832,6 +2900,7 @@ export class CatsCompanyBot {
               sessionKey,
               senderId: msg.senderId,
               channelSource: msg.executionScope?.channelSource,
+              clearGeneration,
             }),
             source: 'subagent_result',
             suppressFinalResponse: suppressSubAgentFinalResponse,
@@ -2853,14 +2922,17 @@ export class CatsCompanyBot {
             thinToolRpc: this.maybeBuildThinToolRpcTransport(),
             runtimeFeedback: msg.runtimeFeedback,
             localFileGrants: msg.localFileGrants,
-            pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey, msg.executionScope),
+            pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey, msg.executionScope, clearGeneration),
             callbacks: this.buildSessionCallbacks(msg.topic, {
               sessionKey,
               senderId: msg.senderId,
               channelSource: msg.executionScope?.channelSource,
+              clearGeneration,
             }),
           });
-        if (result.text === BUSY_MESSAGE) {
+        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
+          Logger.info(`[${sessionKey}] clear 后忽略已出队旧消息的返回`);
+        } else if (result.text === BUSY_MESSAGE) {
           const pending = this.messageQueue.get(sessionKey) ?? [];
           pending.unshift(msg);
           this.messageQueue.set(sessionKey, pending);
@@ -2891,7 +2963,9 @@ export class CatsCompanyBot {
       }
     } catch (err: any) {
       const attempts = (msg.attempts ?? 0) + 1;
-      if (attempts <= 2) {
+      if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
+        Logger.info(`[${sessionKey}] clear 后不再重试已出队的旧消息`);
+      } else if (attempts <= 2) {
         const pending = this.messageQueue.get(sessionKey) ?? [];
         pending.unshift({ ...msg, attempts });
         this.messageQueue.set(sessionKey, pending);
@@ -2909,7 +2983,7 @@ export class CatsCompanyBot {
           pending.unshift({ ...msg, attempts, deliveryOnly: true });
           this.messageQueue.set(sessionKey, pending);
           retryLater = true;
-        } else {
+        } else if (clearGeneration === this.getSessionClearGeneration(sessionKey)) {
           await this.sender.reply(msg.topic, '处理消息时出错，请稍后重试。').catch(() => undefined);
         }
       }
@@ -2929,14 +3003,17 @@ export class CatsCompanyBot {
   private consumeQueuedUserInput(
     sessionKey: string,
     currentScope?: ParsedCatsMessage['executionScope'],
+    expectedClearGeneration = this.getSessionClearGeneration(sessionKey),
   ): string | ContentBlock[] | PendingUserInput | null {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return null;
 
+    if (expectedClearGeneration !== this.getSessionClearGeneration(sessionKey)) return null;
     const userMessages: QueuedMessage[] = [];
     let firstRemainingIndex = 0;
     for (; firstRemainingIndex < queue.length; firstRemainingIndex++) {
       const item = queue[firstRemainingIndex];
+      if ((item.clearGeneration ?? expectedClearGeneration) !== expectedClearGeneration) break;
       if (item.source === 'subagent_feedback') break;
       if (item.nativeFeishuContext) break;
       if (!this.canMergeQueuedMessage(currentScope, item.executionScope)) break;

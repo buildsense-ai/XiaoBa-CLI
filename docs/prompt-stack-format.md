@@ -50,6 +50,16 @@ Runtime context only. Not a user request.
 - Work state：计划状态、子 agent 状态、后台观察结果、恢复提示。
 - Recovery hints：重复外发、空 max_tokens、工具失败后的单轮纠偏。
 
+### Provider-specific system priority
+
+`role: "user"` 是动态注入的默认传输形式，不覆盖明确要求 system priority 的 provider 适配规则。
+
+原生 Anthropic Messages 是当前的例外：plan、subagent、runner、skills 和 runtime 等已经标记为
+`role: "system"` 的临时上下文，仍作为 top-level system text blocks 发送。稳定 system 前缀使用
+`cache_control: { type: "ephemeral" }`，动态 system 后缀位于 cache breakpoint 之后且不缓存。
+这些消息仍然是 turn-scoped provider input，不写入 durable history。Anthropic-compatible relay 在确认
+支持 prompt-caching blocks 之前继续使用原有的单字符串 system request shape。
+
 ## Add-New-Requirement Checklist
 
 新增一条 prompt 需求时，先回答：

@@ -21,6 +21,11 @@ export interface Message {
   name?: string;
   /** 标记由 injectContext 注入的消息，用于滑动窗口清理 */
   __injected?: boolean;
+  /**
+   * Provider-only cache placement hint. Dynamic system context remains system-priority
+   * but is appended to Responses input instead of destabilizing instructions.
+   */
+  __cacheScope?: 'stable' | 'dynamic';
   /** 标记注入给 agent 看的运行时反馈，仅供内部清理和日志记录使用 */
   __runtimeFeedback?: boolean;
   /** 标记内部 runtime observation，例如子 agent 完成结果；对模型仍以 user role 承载 */
@@ -35,6 +40,11 @@ export interface Message {
   __episodeId?: string;
   /** Distinguishes the initial user input from user messages merged while a turn is running. */
   __episodeInputKind?: 'root' | 'pending';
+  /** 远端耐久上下文来源和消息序号，用于游标写盘失败后的幂等补拉。 */
+  __remoteContextSource?: string;
+  __remoteContextId?: number;
+  /** 压缩后仍被当前 transcript 表示的远端消息高水位；不发送给 provider。 */
+  __remoteContextWatermarks?: Record<string, number>;
   /** Provider 原始 assistant content blocks，仅用于下次请求回放，不展示给用户。 */
   providerContent?: ProviderContentBlock[];
 }

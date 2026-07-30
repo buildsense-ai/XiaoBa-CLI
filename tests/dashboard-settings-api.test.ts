@@ -388,19 +388,12 @@ describe('dashboard typed settings API', () => {
     });
     const text = await response.text();
     const data = JSON.parse(text) as any;
-    const definitionPath = path.join(
-      testRoot,
-      'data',
-      'bot-definition-simulated-cloud',
-      'bots',
-      'bot-definition-test.json',
-    );
-
     assert.equal(response.status, 200, text);
     assert.ok(data.botDefinitionSync, text);
-    const definition = JSON.parse(fs.readFileSync(definitionPath, 'utf-8')) as any;
+    const definition = new FileBotDefinitionRepository({ runtimeRoot: testRoot })
+      .readCache('bot-definition-test') as any;
     assert.equal(data.botDefinitionSync.botId, 'bot-definition-test');
-    assert.equal(data.botDefinitionSync.direction, 'local_to_simulated_cloud');
+    assert.equal(data.botDefinitionSync.direction, 'local_cache_update');
     assert.equal(data.botDefinitionSync.model.kind, 'custom');
     assert.equal(data.botDefinitionSync.model.model, 'gpt-portable');
     assert.equal(data.connectorRestarted, false);
@@ -655,7 +648,7 @@ describe('dashboard typed settings API', () => {
     assert.equal(data.reasoningEffort, 'high');
     assert.equal(definition.model.reasoningEffort, 'high');
     assert.equal(env.GAUZ_LLM_REASONING_EFFORT, undefined);
-    assert.equal(data.botDefinitionSync.direction, 'local_to_simulated_cloud');
+    assert.equal(data.botDefinitionSync.direction, 'local_cache_update');
   });
 
   test('PUT /model/reasoning-effort updates the active relay source without touching custom startup', async () => {

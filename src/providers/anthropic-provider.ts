@@ -10,6 +10,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+type AnthropicSystemBlock = Anthropic.TextBlockParam & {
+  cache_control?: { type: 'ephemeral' };
+};
+
+type AnthropicSystemPrompt = string | AnthropicSystemBlock[];
+
 /**
  * Anthropic Provider
  * 使用官方 SDK 替代 axios 手动调用，支持 streaming
@@ -48,16 +54,14 @@ export class AnthropicProvider implements AIProvider {
    * 标准化 base URL（去掉末尾的 /v1/messages 等路径）
    */
   private normalizeBaseURL(url: string): string {
-    return url.replace(/\/v1\/messages\/?$/, '').replace(/\/v1\/?$/, '');
+    return url.replace(/\/+$/, '').replace(/\/v1\/messages$/, '').replace(/\/v1$/, '');
   }
 
   /**
    * 转换消息为 Anthropic 格式
    */
-  private transformMessages(messages: Message[]): { system?: string; messages: Anthropic.MessageParam[] } {
-    const systemMessages = messages.filter(msg => msg.role === 'system');
-    const systemPrompt = systemMessages.map(msg => typeof msg.content === 'string' ? msg.content : '').join('\n\n');
-
+  private transformMessages(messages: Message[]): { system?: AnthropicSystemPrompt; messages: Anthropic.MessageParam[] } {
+    const systemPrompt = this.buildSystemPrompt(messages);
     const nonSystemMessages = messages.filter(msg => msg.role !== 'system');
     const transformedMessages: Anthropic.MessageParam[] = [];
     let pendingToolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -171,9 +175,69 @@ export class AnthropicProvider implements AIProvider {
     flushToolResults();
 
     return {
-      system: systemPrompt || undefined,
+      system: systemPrompt,
       messages: this.coalesceAdjacentUserMessages(transformedMessages)
     };
+  }
+
+  private buildSystemPrompt(messages: Message[]): AnthropicSystemPrompt | undefined {
+    const systemMessages = messages.filter(message => (
+      message.role === 'system'
+      && typeof message.content === 'string'
+      && message.content.length > 0
+    ));
+    if (systemMessages.length === 0) return undefined;
+
+    if (!this.supportsNativePromptCaching()) {
+      return systemMessages.map(message => message.content as string).join('\n\n');
+    }
+
+    const firstDynamicIndex = systemMessages.findIndex(message => this.isDynamicSystemMessage(message));
+    if (firstDynamicIndex === 0) {
+      return [{
+        type: 'text',
+        text: systemMessages.map(message => message.content as string).join('\n\n'),
+      }];
+    }
+
+    const stableEnd = firstDynamicIndex < 0 ? systemMessages.length : firstDynamicIndex;
+    const blocks: AnthropicSystemBlock[] = [{
+      type: 'text',
+      text: systemMessages.slice(0, stableEnd).map(message => message.content as string).join('\n\n'),
+      cache_control: { type: 'ephemeral' },
+    }];
+    if (stableEnd < systemMessages.length) {
+      blocks.push({
+        type: 'text',
+        text: systemMessages.slice(stableEnd).map(message => message.content as string).join('\n\n'),
+      });
+    }
+    return blocks;
+  }
+
+  private supportsNativePromptCaching(): boolean {
+    try {
+      const url = new URL(this.apiUrl);
+      const normalizedPath = url.pathname.replace(/\/+$/, '') || '/';
+      return url.protocol === 'https:'
+        && url.hostname.toLowerCase() === 'api.anthropic.com'
+        && (url.port === '' || url.port === '443')
+        && !url.username
+        && !url.password
+        && !url.search
+        && !url.hash
+        && ['/', '/v1', '/v1/messages'].includes(normalizedPath);
+    } catch {
+      return false;
+    }
+  }
+
+  private isDynamicSystemMessage(message: Message): boolean {
+    const cacheScope = message.__cacheScope;
+    if (cacheScope === 'dynamic') return true;
+    if (cacheScope === 'stable') return false;
+    return typeof message.content === 'string'
+      && /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(message.content);
   }
 
   private coalesceAdjacentUserMessages(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
@@ -348,10 +412,17 @@ export class AnthropicProvider implements AIProvider {
 
     // 提取 token 用量
     const responseUsage = (response as any)?.usage;
+    const uncachedInputTokens = Number(responseUsage?.input_tokens ?? 0);
+    const cachedReadTokens = Number(responseUsage?.cache_read_input_tokens ?? 0);
+    const cachedWriteTokens = Number(responseUsage?.cache_creation_input_tokens ?? 0);
+    const promptTokens = uncachedInputTokens + cachedReadTokens + cachedWriteTokens;
+    const completionTokens = Number(responseUsage?.output_tokens ?? 0);
     const usage = responseUsage ? {
-      promptTokens: responseUsage.input_tokens ?? 0,
-      completionTokens: responseUsage.output_tokens ?? 0,
-      totalTokens: (responseUsage.input_tokens ?? 0) + (responseUsage.output_tokens ?? 0),
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+      cachedReadTokens,
+      cachedWriteTokens,
     } : undefined;
 
     return {
@@ -407,6 +478,22 @@ export class AnthropicProvider implements AIProvider {
     return blocks;
   }
 
+  private createMessage(params: Anthropic.MessageCreateParamsNonStreaming, options?: AIRequestOptions): Promise<any> {
+    const requestOptions = { signal: options?.signal } as any;
+    if (this.supportsNativePromptCaching()) {
+      return this.client.beta.promptCaching.messages.create(params as any, requestOptions) as any;
+    }
+    return this.client.messages.create(params, requestOptions) as any;
+  }
+
+  private createMessageStream(params: Anthropic.MessageCreateParamsStreaming, options?: AIRequestOptions): any {
+    const requestOptions = { signal: options?.signal } as any;
+    if (this.supportsNativePromptCaching()) {
+      return this.client.beta.promptCaching.messages.stream(params as any, requestOptions);
+    }
+    return this.client.messages.stream(params, requestOptions);
+  }
+
   /**
    * 普通调用
    */
@@ -434,7 +521,7 @@ export class AnthropicProvider implements AIProvider {
       params
     });
 
-    const response = await this.client.messages.create(params, { signal: options?.signal } as any);
+    const response = await this.createMessage(params, options);
 
     // [CONTEXT_DEBUG] SDK 调用后：记录完整的响应
     ContextDebugLogger.dumpSdkBoundary('after', undefined, { response });
@@ -476,10 +563,10 @@ export class AnthropicProvider implements AIProvider {
         params
       });
 
-      const stream = this.client.messages.stream(params, { signal: options?.signal } as any);
+      const stream = this.createMessageStream(params, options);
 
       // 逐 token 回调文本
-      stream.on('text', (text) => {
+      stream.on('text', (text: string) => {
         callbacks?.onText?.(text);
       });
 

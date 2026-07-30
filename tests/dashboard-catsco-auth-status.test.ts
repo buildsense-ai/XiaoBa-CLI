@@ -1280,7 +1280,7 @@ describe('dashboard CatsCo account status', () => {
     const data = JSON.parse(text) as any;
     const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
     const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('188');
-    const definition = definitionRepository.readCanonical('188');
+    const definition = definitionRepository.readCache('188');
     const resolved = resolveActiveBotLLMConfig({ runtimeRoot: testRoot });
 
     assert.equal(response.status, 200, text);
@@ -1410,7 +1410,7 @@ describe('dashboard CatsCo account status', () => {
     const text = await response.text();
     const data = JSON.parse(text) as any;
     const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('188');
-    const definition = definitionRepository.readCanonical('188');
+    const definition = definitionRepository.readCache('188');
     const resolved = resolveActiveBotLLMConfig({ runtimeRoot: testRoot });
 
     assert.equal(response.status, 200, text);

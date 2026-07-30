@@ -55,6 +55,30 @@ describe('Device RPC tool helpers', () => {
     assert.equal(result.ok ? result.content : '', content);
   });
 
+  test('preserves every recognized rate-limit code across Device RPC', () => {
+    for (const errorCode of ['RATE_LIMIT', 'HTTP_429', 'TOO_MANY_REQUESTS']) {
+      const transportResult = normalizeDeviceRpcToolResultForTransport({
+        ok: false,
+        errorCode,
+        message: 'request rejected',
+        retryable: true,
+      });
+      assert.equal(transportResult.ok, false);
+      assert.equal(transportResult.ok ? undefined : transportResult.errorCode, 'RATE_LIMIT');
+      assert.equal(transportResult.ok ? undefined : transportResult.retryable, true);
+
+      const payloadResult = normalizeDeviceRpcToolResultPayload({
+        ok: false,
+        errorCode,
+        message: 'request rejected',
+        retryable: true,
+      });
+      assert.equal(payloadResult.ok, false);
+      assert.equal(payloadResult.ok ? undefined : payloadResult.errorCode, 'RATE_LIMIT');
+      assert.equal(payloadResult.ok ? undefined : payloadResult.retryable, true);
+    }
+  });
+
   test('preserves valid uploaded file metadata and rejects malformed metadata', () => {
     const valid = normalizeDeviceRpcToolResultPayload({
       ok: true,
