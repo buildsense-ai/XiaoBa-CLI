@@ -1647,7 +1647,7 @@ export class RuntimeLearning {
    * Ask an active backfill to stop after its current bounded slice. The
    * persisted operation remains resumable on the next explicit invocation.
    */
-  async drain(timeoutMs = this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000): Promise<void> {
+  async drain(timeoutMs = this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000): Promise<boolean> {
     this.shutdownDrainRequested = true;
     this.backfillDrainRequested = true;
     this.externalReadAbortController?.abort();
@@ -1659,24 +1659,41 @@ export class RuntimeLearning {
       if (this.activeWakeAbortControllers.size === 0) {
         this.shutdownDrainRequested = false;
       }
-      return;
+      return true;
     }
     let timer: NodeJS.Timeout | null = null;
     const settling = Promise.allSettled([
       ...(active ? [active] : []),
       ...activeWakes,
     ]).then(() => undefined);
-    await Promise.race([
+    const settledWithinDeadline = await Promise.race([
       settling.finally(() => {
         if (timer) clearTimeout(timer);
         timer = null;
-      }),
-      new Promise<void>(resolve => {
-        timer = setTimeout(resolve, Math.max(1, timeoutMs));
+      }).then(() => true),
+      new Promise<boolean>(resolve => {
+        timer = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
       }),
     ]);
-    if (!this.activeBackfill && this.activeWakeAbortControllers.size === 0) {
+    const drained = settledWithinDeadline
+      && !this.activeBackfill
+      && this.activeWakeResults.size === 0
+      && this.activeWakeAbortControllers.size === 0;
+    if (drained) {
       this.shutdownDrainRequested = false;
+    }
+    return drained;
+  }
+
+  /** Wait without a deadline after a bounded drain reports false. */
+  async waitForDrain(): Promise<void> {
+    while (this.activeBackfill || this.activeWakeResults.size > 0) {
+      const active = this.activeBackfill;
+      const activeWakes = [...this.activeWakeResults];
+      await Promise.allSettled([
+        ...(active ? [active] : []),
+        ...activeWakes,
+      ]);
     }
   }
 

@@ -199,6 +199,43 @@ function isInBounds(span: EvidenceShardSpan, contentByteLength: number): boolean
 }
 
 /**
+ * Conservatively close schema gaps in a Verifier result. A missing disposition
+ * is never treated as acceptance: Runtime records it as deferred and cites the
+ * immutable source shards that raised the obligation. Malformed, duplicate, or
+ * unknown dispositions are intentionally preserved for validation to reject.
+ */
+export function completeMissingObligationDispositions(
+  obligations: readonly ReviewObligation[],
+  dispositions: readonly ObligationDisposition[],
+  shards: readonly EvidenceShard[],
+): ObligationDisposition[] {
+  const completed = [...dispositions];
+  const knownDispositionIds = new Set(dispositions.map(item => item.obligationId));
+  const shardById = new Map(shards.map(shard => [shard.shardId, shard]));
+
+  for (const obligation of obligations) {
+    if (knownDispositionIds.has(obligation.obligationId)) continue;
+    const citedSpans = obligation.requiredShardIds.flatMap(shardId => {
+      const shard = shardById.get(shardId);
+      if (!shard || shard.byteLength <= 0) return [];
+      return [{ shardId, span: { start: 0, end: shard.byteLength } }];
+    });
+    // Without a valid original shard citation, keep the item missing so the
+    // ordinary validator fails closed instead of manufacturing evidence.
+    if (citedSpans.length === 0) continue;
+    completed.push({
+      obligationId: obligation.obligationId,
+      decision: 'deferred',
+      rationale: 'Verifier omitted an explicit disposition; Runtime deferred this obligation for semantic reassessment.',
+      citedSpans,
+    });
+    knownDispositionIds.add(obligation.obligationId);
+  }
+
+  return completed;
+}
+
+/**
  * True when every obligation is dispositioned and none remain deferred.
  * Integrators use this as the final commit gate.
  */

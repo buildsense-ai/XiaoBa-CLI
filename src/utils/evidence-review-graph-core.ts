@@ -348,7 +348,7 @@ export function isLeaseExpired(lease: QuantumLease | undefined, now: Date): bool
 export function isQuantumRunnable(
   job: GraphJobView,
   quantum: ReviewQuantumRecord,
-  now: Date,
+  now: Date = new Date(),
 ): boolean {
   if (job.disposition !== 'active') return false;
   if (quantum.state === 'succeeded' || quantum.state === 'terminal_failed') return false;
@@ -384,7 +384,7 @@ export function criticalPathRank(quantum: ReviewQuantumRecord): number {
 
 export function listRunnableQuanta(
   job: GraphJobView,
-  now: Date,
+  now: Date = new Date(),
 ): ReviewQuantumRecord[] {
   return Object.values(job.quanta)
     .filter(quantum => isQuantumRunnable(job, quantum, now))

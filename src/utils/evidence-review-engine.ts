@@ -60,6 +60,7 @@ import {
   buildDossierDifferenceIndex,
   buildEvidenceDossier,
   buildReviewObligations,
+  completeMissingObligationDispositions,
   verifyShardContent,
   validateShardFindingSet,
   validateObligationDispositions,
@@ -982,11 +983,16 @@ export class EvidenceReviewEngine {
     if (!outcome?.verifier) {
       throw new Error('invalid_completion_schema: skill_verifier returned no verifier result');
     }
-    const dispositions = outcome.dispositions ?? [];
+    const shards = Object.values(job.shards);
+    const dispositions = completeMissingObligationDispositions(
+      job.obligations,
+      outcome.dispositions ?? [],
+      shards,
+    );
     const validation = validateObligationDispositions(
       job.obligations,
       dispositions,
-      Object.values(job.shards),
+      shards,
     );
     if (!validation.ok) {
       throw new Error(
