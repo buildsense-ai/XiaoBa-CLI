@@ -510,7 +510,7 @@ process.exit(result.status ?? 1);
       assert.notEqual(foreignResult.status, 0);
       assert.match(
         `${foreignResult.stdout}\n${foreignResult.stderr}`,
-        /Refusing to delete image .*sourceServerID 'instance-foreign'/,
+        /Refusing to delete image[\s\S]*sourceServerID 'instance-foreign'/,
       );
       const foreignCalls = fs.readFileSync(logPath, "utf8");
       assert.doesNotMatch(foreignCalls, /ims DeleteImage/);

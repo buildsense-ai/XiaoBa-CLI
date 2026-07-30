@@ -100,6 +100,38 @@ function Invoke-External {
     }
 }
 
+function Get-PropertyValue {
+    param(
+        [AllowNull()]
+        [object]$InputObject,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if (-not $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Get-ResponseItems {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Response,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $returnObject = Get-PropertyValue -InputObject $Response -Name "returnObj"
+    return @(
+        Get-PropertyValue -InputObject $returnObject -Name $Name
+    )
+}
+
 function Invoke-Ctyun {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
@@ -117,8 +149,12 @@ function Invoke-Ctyun {
     } catch {
         throw "ctyun-cli returned non-JSON output: $raw"
     }
-    if ($response.statusCode -ne 800) {
-        throw "Tianyi Cloud API failed: $($response.errorCode) $($response.message) $($response.description)"
+    $statusCode = Get-PropertyValue -InputObject $response -Name "statusCode"
+    if ($statusCode -ne 800) {
+        $errorCode = Get-PropertyValue -InputObject $response -Name "errorCode"
+        $message = Get-PropertyValue -InputObject $response -Name "message"
+        $description = Get-PropertyValue -InputObject $response -Name "description"
+        throw "Tianyi Cloud API failed: $errorCode $message $description"
     }
     return $response
 }
@@ -190,7 +226,8 @@ function Get-Instance {
         "--pageNo", "1",
         "--pageSize", "10"
     )
-    return @($response.returnObj.results) | Select-Object -First 1
+    return @(Get-ResponseItems -Response $response -Name "results") |
+        Select-Object -First 1
 }
 
 function Find-BuilderInstance {
@@ -216,7 +253,7 @@ function Find-BuilderInstance {
 
     foreach ($query in $queries) {
         $response = Invoke-Ctyun $query
-        foreach ($candidate in @($response.returnObj.results)) {
+        foreach ($candidate in @(Get-ResponseItems -Response $response -Name "results")) {
             if (
                 [string]$candidate.instanceName -eq $script:BuilderName -and
                 (
@@ -347,7 +384,8 @@ function Get-Image {
             "--imageID", $ImageID,
             "--errorFree", "false"
         )
-        return @($detail.returnObj.images) | Select-Object -First 1
+        return @(Get-ResponseItems -Response $detail -Name "images") |
+            Select-Object -First 1
     } catch {
         if (Test-NotFoundError $_.Exception.Message) {
             return $null
@@ -368,7 +406,7 @@ function Find-ImageByName {
         "--pageNo", "1",
         "--pageSize", "200"
     )
-    return @($response.returnObj.images) |
+    return @(Get-ResponseItems -Response $response -Name "images") |
         Where-Object { [string]$_.imageName -eq $Name } |
         Select-Object -First 1
 }
@@ -555,7 +593,7 @@ function Remove-KeyPair {
             "--pageSize", "10"
         )
         $existing = @(
-            @($details.returnObj.results) |
+            @(Get-ResponseItems -Response $details -Name "results") |
                 Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
         )
         if ($existing.Count -gt 0 -or -not $WaitForLateResources) {
@@ -588,7 +626,7 @@ function Remove-KeyPair {
             "--pageSize", "10"
         )
         $remaining = @(
-            @($details.returnObj.results) |
+            @(Get-ResponseItems -Response $details -Name "results") |
                 Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
         )
         if ($remaining.Count -eq 0) {
@@ -931,7 +969,7 @@ try {
         "--pageSize", "10"
     )
     $existingKeyPairs = @(
-        @($existingKeyPairResponse.returnObj.results) |
+        @(Get-ResponseItems -Response $existingKeyPairResponse -Name "results") |
             Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
     )
     if ($existingKeyPairs.Count -gt 0) {
@@ -956,10 +994,13 @@ try {
         "--pageNo", "1",
         "--pageSize", "10"
     )
-    $keyPair = @($keyPairResponse.returnObj.results) |
+    $keyPair = @(Get-ResponseItems -Response $keyPairResponse -Name "results") |
         Where-Object { [string]$_.keyPairName -eq $script:KeyPairName } |
         Select-Object -First 1
-    if (-not $keyPair.keyPairID) {
+    $keyPairID = [string](
+        Get-PropertyValue -InputObject $keyPair -Name "keyPairID"
+    )
+    if (-not $keyPairID) {
         throw "Imported key pair could not be resolved"
     }
 
@@ -971,7 +1012,7 @@ try {
         "--pageSize", "10"
     )
     $existingBuilders = @(
-        @($existingBuilderResponse.returnObj.results) |
+        @(Get-ResponseItems -Response $existingBuilderResponse -Name "results") |
             Where-Object { [string]$_.instanceName -eq $script:BuilderName }
     )
     if ($existingBuilders.Count -gt 0) {
@@ -996,7 +1037,7 @@ try {
         "--vpcID", $VpcID,
         "--networkCardList", "[{`"isMaster`":true,`"subnetID`":`"$SubnetID`"}]",
         "--secGroupList", "[`"$SecurityGroupID`"]",
-        "--keyPairID", $keyPair.keyPairID,
+        "--keyPairID", $keyPairID,
         "--onDemand", "true",
         "--extIP", "1",
         "--bandwidth", "$BuilderBandwidth",
@@ -1008,7 +1049,12 @@ try {
         "--trustInstance", "false",
         "--labelList", "[{`"labelKey`":`"purpose`",`"labelValue`":`"catsco-image-builder`"},{`"labelKey`":`"commit`",`"labelValue`":`"$shortCommit`"}]"
     )
-    $script:BuilderResourceID = [string]$createResponse.returnObj.masterResourceID
+    $createReturnObject = Get-PropertyValue `
+        -InputObject $createResponse `
+        -Name "returnObj"
+    $script:BuilderResourceID = [string](
+        Get-PropertyValue -InputObject $createReturnObject -Name "masterResourceID"
+    )
     if (-not $script:BuilderResourceID) {
         throw "CreateEcsInstance did not return masterResourceID"
     }
@@ -1110,8 +1156,11 @@ bash /tmp/prepare-image.sh --finalize
         "--enableImageIntegrityCheck", "true",
         "--labels", "[{`"labelKey`":`"product`",`"labelValue`":`"catsco-worker`"},{`"labelKey`":`"version`",`"labelValue`":`"$version`"},{`"labelKey`":`"commit`",`"labelValue`":`"$commit`"},{`"labelKey`":`"bake`",`"labelValue`":`"$script:BakeID`"}]"
     )
-    $image = @($imageResponse.returnObj.images) | Select-Object -First 1
-    $script:ImageID = [string]$image.imageID
+    $image = @(Get-ResponseItems -Response $imageResponse -Name "images") |
+        Select-Object -First 1
+    $script:ImageID = [string](
+        Get-PropertyValue -InputObject $image -Name "imageID"
+    )
     if (-not $script:ImageID) {
         throw "CreateImage did not return an image ID"
     }
