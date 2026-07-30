@@ -7,10 +7,12 @@ session, skill installation, or runtime `.env`.
 
 ## Release Policy
 
-- Every stable `v*` tag builds and publishes an immutable worker artifact.
-- Worker artifacts use the private `worker-private/` TOS prefix. They are never
-  exposed through the public desktop installer path; the disposable builder
-  receives a masked, one-hour presigned URL.
+- Only stable `vX.Y.Z` tags whose commit is contained in `main` may bake an
+  image automatically. Manual runs are restricted to `main` and default to
+  not baking until the operator explicitly checks the input.
+- The source-free worker artifact stays on the GitHub runner and is copied
+  directly to the disposable builder over SSH. It is never uploaded to TOS,
+  a public release bucket, or a GitHub Actions artifact.
 - A Tianyi Cloud private ECS image is baked only for a stable release selected
   for provisioning, or when the base OS/system dependencies change.
 - `CTYUN_AUTO_BAKE_WORKER_IMAGE=true` makes every stable tag bake an image;
@@ -39,9 +41,14 @@ after the worker has claimed its bot identity.
 ## Local Bake
 
 `New-CatsCoWorkerImage.ps1` defaults to plan mode. Execute mode creates a new
-temporary on-demand ECS named `catsco-img-*`, builds the artifact there, stops
-that temporary instance, creates a private image, and then deletes the builder
-and its temporary key pair.
+temporary on-demand ECS named `catsco-img-*`, copies in a checked source-free
+artifact, stops that temporary instance, creates a private image, and then
+deletes the builder and its temporary key pair.
+
+CI names builders and key pairs from the workflow sequence and retry:
+`catsco-img-000123-01` and `catsco-img-key-000123-01`. This keeps names
+recognizable while preventing a rerun from colliding with an uncertain prior
+attempt.
 
 The script refuses to stop or delete any instance whose name does not begin
 with `catsco-img-`. Existing `worker1`, `worker2`, and `ck-work` instances are
@@ -59,15 +66,20 @@ pwsh ops/ctyun-worker-image/New-CatsCoWorkerImage.ps1 `
   -SecurityGroupID '<security-group-id>'
 ```
 
-Run the same command with `-Mode Create` only after reviewing the plan. The
-machine running it needs `ctyun-cli`, Git, OpenSSH, SCP, and `ssh-keygen`.
+Run the same command with `-Mode Create`, `-ArtifactPath`, and
+`-ArtifactSha256` only after reviewing the plan. The machine running it needs
+`ctyun-cli`, Git, OpenSSH, SCP, `ssh-keygen`, and GNU `timeout`.
 
-CI passes a one-hour presigned `-ArtifactUrl` and `-ArtifactSha256`, so the
-temporary builder downloads the private, source-free release directly from
-Guangzhou TOS. The signed URL is masked in GitHub and redacted from the bake
-plan. Local emergency bakes may omit those options; in that case the temporary
-builder receives a `git archive` without repository history and removes it
-before imaging.
+The builder verifies the artifact checksum again before extracting it. Remote
+transfer and preparation have hard timeouts. The script resolves a newly
+ordered instance by both the order resource ID and its exact temporary name,
+so it can still clean up after an ambiguous create response. A failed image is
+deleted, and unconfirmed ECS, image, or key-pair deletion fails the workflow
+instead of being reduced to a warning.
+
+The workflow also pins both GitHub Actions by commit and verifies the exact
+Tianyi CLI package SHA-256 before installing it; it does not execute a remote
+installer script.
 
 The resulting system image is not a TOS object. `CreateImage` writes it to the
 Tianyi Cloud private image repository for the configured region and account.

@@ -78,6 +78,7 @@ apt-get install -y --no-install-recommends \
   curl \
   git \
   jq \
+  nodejs \
   poppler-utils \
   ripgrep \
   sudo \

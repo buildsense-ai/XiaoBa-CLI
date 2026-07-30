@@ -1,62 +1,74 @@
-name: Linux Worker Artifact and Image
+name: Bake Tianyi Cloud Worker Image
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       bake_image:
-        description: Bake a Tianyi Cloud private ECS image after publishing the artifact
+        description: Bake a private worker image from the current main commit
         required: false
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: worker-image-${{ github.ref }}
+  group: worker-image-bake
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '20'
-  TOS_SOURCE_BUCKET: github-hk
-  TOS_SOURCE_REGION: cn-hongkong
-  TOS_TARGET_BUCKET: github-release
-  TOS_TARGET_REGION: cn-guangzhou
+  NODE_VERSION: "20"
+  CTYUN_CLI_VERSION: v0.1.1
+  CTYUN_CLI_PACKAGE_SHA256: 93272c3fd377a6f642a89cb326fa2f4a3d2fab7dfc9587e49906527230b767fa
 
 jobs:
-  artifact:
-    name: Build source-free worker artifact
-    runs-on: ubuntu-latest
+  image:
+    name: Build artifact and bake private image
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.bake_image &&
+       github.ref == 'refs/heads/main') ||
+      (startsWith(github.ref, 'refs/tags/') &&
+       vars.CTYUN_AUTO_BAKE_WORKER_IMAGE == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     environment: release-prod
-    outputs:
-      artifact_name: ${{ steps.artifact_meta.outputs.name }}
-      artifact_key: ${{ steps.artifact_meta.outputs.key }}
-      artifact_sha256: ${{ steps.artifact_meta.outputs.sha256 }}
-    env:
-      VOLC_TOS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
-      VOLC_TOS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
-      AWS_EC2_METADATA_DISABLED: 'true'
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - name: Validate release tag
-        if: startsWith(github.ref, 'refs/tags/')
-        run: npm run release:verify-version
+      - name: Validate trusted release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "Only stable vX.Y.Z tags can bake worker images"
+              exit 1
+            }
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+              echo "Release tag commit is not contained in main"
+              exit 1
+            }
+            npm run release:verify-version
+          elif [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "Manual image baking is restricted to main"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: npm ci --prefer-offline --no-audit --fund=false
@@ -64,121 +76,52 @@ jobs:
       - name: Build CatsCo
         run: npm run build
 
-      - name: Build Linux worker artifact
+      - name: Build deterministic Linux worker artifact
         run: npm run worker:artifact
 
       - name: Record artifact identity
         id: artifact_meta
+        shell: bash
         run: |
           set -euo pipefail
           mapfile -t artifacts < <(find release/worker -maxdepth 1 -type f -name '*.tar.gz')
-          [ "${#artifacts[@]}" -eq 1 ]
+          [[ "${#artifacts[@]}" -eq 1 ]]
           artifact="${artifacts[0]}"
-          echo "name=$(basename "$artifact")" >> "$GITHUB_OUTPUT"
-          echo "key=worker-private/$(basename "$artifact")" >> "$GITHUB_OUTPUT"
+          echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "$artifact" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure AWS CLI is available
-        run: |
-          if ! command -v aws >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y awscli
-          fi
-          aws configure set default.s3.addressing_style virtual
-
-      - name: Publish immutable artifact to domestic storage
-        run: |
-          set -euo pipefail
-          SOURCE_ENDPOINT="https://tos-s3-${TOS_SOURCE_REGION}.volces.com"
-          for file in release/worker/*; do
-            aws s3 cp "$file" "s3://${TOS_SOURCE_BUCKET}/worker-private/$(basename "$file")" \
-              --endpoint-url "$SOURCE_ENDPOINT" \
-              --cache-control "private, max-age=31536000, immutable" \
-              --only-show-errors
-          done
-
-      - name: Wait for Guangzhou replication
-        run: |
-          set -euo pipefail
-          TARGET_ENDPOINT="https://tos-s3-${TOS_TARGET_REGION}.volces.com"
-          for file in release/worker/*; do
-            key="worker-private/$(basename "$file")"
-            for attempt in $(seq 1 36); do
-              if aws s3api head-object \
-                --bucket "$TOS_TARGET_BUCKET" \
-                --key "$key" \
-                --endpoint-url "$TARGET_ENDPOINT" >/dev/null 2>&1; then
-                echo "Replicated: $key"
-                break
-              fi
-              if [ "$attempt" -eq 36 ]; then
-                echo "Timed out waiting for $key"
-                exit 1
-              fi
-              sleep 10
-            done
-          done
-
-  image:
-    name: Bake Tianyi Cloud private image
-    needs: artifact
-    if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.bake_image) ||
-      (startsWith(github.ref, 'refs/tags/') && vars.CTYUN_AUTO_BAKE_WORKER_IMAGE == 'true')
-    runs-on: ubuntu-latest
-    environment: release-prod
-    env:
-      CTYUN_AK: ${{ secrets.CTYUN_AK }}
-      CTYUN_SK: ${{ secrets.CTYUN_SK }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
-      AWS_EC2_METADATA_DISABLED: 'true'
-      TOS_TARGET_BUCKET: github-release
-      TOS_TARGET_REGION: cn-guangzhou
-    steps:
-      - name: Checkout exact release source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install Tianyi Cloud CLI
+      - name: Install pinned Tianyi Cloud CLI package
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL "https://huabei-2.zos.ctyun.cn/ctyun-cli/install-cli.sh" |
-            sh -s -- \
-              --base-url "https://huabei-2.zos.ctyun.cn/ctyun-cli" \
-              --version v0.1.1
-          echo "$HOME/.ctyun-cli/bin" >> "$GITHUB_PATH"
-          "$HOME/.ctyun-cli/bin/ctyun-cli" version
-
-      - name: Create short-lived private artifact URL
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v aws >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y awscli
-          fi
-          aws configure set default.s3.addressing_style virtual
-          TARGET_ENDPOINT="https://tos-s3-${TOS_TARGET_REGION}.volces.com"
-          artifact_url="$(
-            aws s3 presign \
-              "s3://${TOS_TARGET_BUCKET}/${{ needs.artifact.outputs.artifact_key }}" \
-              --expires-in 3600 \
-              --endpoint-url "$TARGET_ENDPOINT"
-          )"
-          echo "::add-mask::$artifact_url"
-          echo "WORKER_ARTIFACT_URL=$artifact_url" >> "$GITHUB_ENV"
+          package_dir="$(mktemp -d)"
+          trap 'rm -rf "$package_dir"' EXIT
+          package="$package_dir/ctyun-cli.tar.gz"
+          curl --fail --silent --show-error --location \
+            --retry 4 --retry-all-errors \
+            "https://huabei-2.zos.ctyun.cn/ctyun-cli/${CTYUN_CLI_VERSION}/ctyun-cli-${CTYUN_CLI_VERSION}-linux-amd64-setup.tar.gz" \
+            --output "$package"
+          echo "${CTYUN_CLI_PACKAGE_SHA256}  $package" | sha256sum --check --strict
+          tar -xzf "$package" -C "$package_dir"
+          test -x "$package_dir/ctyun-cli"
+          install -d "$HOME/.local/bin"
+          install -m 0755 "$package_dir/ctyun-cli" "$HOME/.local/bin/ctyun-cli"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/ctyun-cli" version
 
       - name: Bake private ECS image
         shell: pwsh
+        env:
+          CTYUN_AK: ${{ secrets.CTYUN_AK }}
+          CTYUN_SK: ${{ secrets.CTYUN_SK }}
         run: |
           ./ops/ctyun-worker-image/New-CatsCoWorkerImage.ps1 `
             -Mode Create `
             -SourceRef '${{ github.sha }}' `
-            -ArtifactUrl $env:WORKER_ARTIFACT_URL `
-            -ArtifactSha256 '${{ needs.artifact.outputs.artifact_sha256 }}' `
+            -ArtifactPath '${{ steps.artifact_meta.outputs.path }}' `
+            -ArtifactSha256 '${{ steps.artifact_meta.outputs.sha256 }}' `
+            -BuildNumber '${{ github.run_number }}' `
+            -BuildAttempt '${{ github.run_attempt }}' `
             -RegionID '${{ vars.CTYUN_WORKER_REGION_ID }}' `
             -AzName '${{ vars.CTYUN_WORKER_AZ_NAME }}' `
             -BaseImageID '${{ vars.CTYUN_WORKER_BASE_IMAGE_ID }}' `
