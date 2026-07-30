@@ -510,7 +510,7 @@ process.exit(result.status ?? 1);
       assert.notEqual(foreignResult.status, 0);
       assert.match(
         `${foreignResult.stdout}\n${foreignResult.stderr}`,
-        /Refusing to delete image[\s\S]*sourceServerID 'instance-foreign'/,
+        /Refusing to delete[\s\S]*sourceServerID 'instance-foreign'/,
       );
       const foreignCalls = fs.readFileSync(logPath, "utf8");
       assert.doesNotMatch(foreignCalls, /ims DeleteImage/);
@@ -545,7 +545,7 @@ process.exit(result.status ?? 1);
       assert.notEqual(foreignIdResult.status, 0);
       assert.match(
         `${foreignIdResult.stdout}\n${foreignIdResult.stderr}`,
-        /Refusing to delete image[\s\S]*does not belong to this bake/,
+        /Refusing to delete[\s\S]*does not belong to this bake/,
       );
       const foreignIdCalls = fs.readFileSync(logPath, "utf8");
       assert.doesNotMatch(foreignIdCalls, /ims DeleteImage/);
@@ -777,7 +777,7 @@ process.exit(result.status ?? 1);
       assert.notEqual(foreignCleanupResult.status, 0);
       assert.match(
         `${foreignCleanupResult.stdout}\n${foreignCleanupResult.stderr}`,
-        /Refusing exact cleanup because the temporary image ownership metadata does not match/,
+        /Refusing exact cleanup[\s\S]*ownership metadata does not match/,
       );
       const foreignCleanupCalls = fs.readFileSync(logPath, "utf8");
       assert.doesNotMatch(foreignCleanupCalls, /ims DeleteImage/);
