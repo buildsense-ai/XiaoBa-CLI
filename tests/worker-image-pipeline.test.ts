@@ -46,6 +46,7 @@ describe('Tianyi Cloud worker image pipeline', () => {
     assert.match(workflow, /aws s3 presign/);
     assert.match(workflow, /--expires-in 3600/);
     assert.doesNotMatch(workflow, /public-read/);
+    assert.doesNotMatch(workflow, /actions\/upload-artifact/);
     assert.match(workflow, /needs: artifact/);
     assert.match(workflow, /CTYUN_AUTO_BAKE_WORKER_IMAGE/);
   });

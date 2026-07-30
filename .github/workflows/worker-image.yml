@@ -78,15 +78,6 @@ jobs:
           echo "key=worker-private/$(basename "$artifact")" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "$artifact" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: catsco-linux-worker-${{ github.sha }}
-          if-no-files-found: error
-          path: |
-            release/worker/*.tar.gz
-            release/worker/*.sha256
-
       - name: Ensure AWS CLI is available
         run: |
           if ! command -v aws >/dev/null 2>&1; then
