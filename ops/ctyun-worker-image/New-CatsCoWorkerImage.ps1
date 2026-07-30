@@ -49,6 +49,8 @@ param(
     [int]$CleanupTimeoutMinutes = 45,
     [ValidateRange(15, 300)]
     [int]$ApiTimeoutSeconds = 90,
+    [ValidateRange(5, 300)]
+    [int]$LateResourceWaitSeconds = 120,
     [switch]$WaitForLateResources
 )
 
@@ -288,8 +290,18 @@ function Resolve-BuilderInstance {
                 }
             }
             # Once the provider returned an authoritative instance ID, never
-            # fall back to a possibly reused instance name.
-            return $null
+            # fall back to a possibly reused instance name. A missing result can
+            # still be an eventually-consistent read, so retry the same ID when
+            # the caller requested a discovery window.
+            if ((Get-Date) -ge $deadline) {
+                break
+            }
+            $sleepSeconds = [Math]::Max(
+                1,
+                [Math]::Min(8, [int][Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
+            )
+            Start-Sleep -Seconds $sleepSeconds
+            continue
         }
 
         $resolved = Find-BuilderInstance
@@ -538,11 +550,19 @@ function Remove-FailedImage {
 }
 
 function Remove-Builder {
+    param([switch]$WaitForLate)
+
     if (-not $script:BuilderCreateAttempted -and -not $script:BuilderID) {
         return
     }
 
-    $resolveWaitSeconds = if ($script:BuilderID -or $script:BuilderResourceID) { 0 } else { 480 }
+    $resolveWaitSeconds = if ($WaitForLate) {
+        $LateResourceWaitSeconds
+    } elseif ($script:BuilderID -or $script:BuilderResourceID) {
+        0
+    } else {
+        480
+    }
     $instance = Resolve-BuilderInstance -WaitSeconds $resolveWaitSeconds
     if (-not $instance) {
         Write-Host "No temporary builder record remains for $script:BuilderName"
@@ -574,11 +594,13 @@ function Remove-Builder {
 }
 
 function Remove-KeyPair {
+    param([switch]$WaitForLate)
+
     if (-not $script:KeyPairName -or -not $script:KeyPairCreateAttempted) {
         return
     }
 
-    $keyDiscoverySeconds = if ($WaitForLateResources) { 2 * 60 } else { 0 }
+    $keyDiscoverySeconds = if ($WaitForLate) { $LateResourceWaitSeconds } else { 0 }
     $keyDiscoveryDeadline = Get-BoundedDeadline `
         -RequestedSeconds $keyDiscoverySeconds `
         -Phase "temporary key pair discovery"
@@ -596,7 +618,7 @@ function Remove-KeyPair {
             @(Get-ResponseItems -Response $details -Name "results") |
                 Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
         )
-        if ($existing.Count -gt 0 -or -not $WaitForLateResources) {
+        if ($existing.Count -gt 0 -or -not $WaitForLate) {
             break
         }
         Start-Sleep -Seconds 5
@@ -638,7 +660,10 @@ function Remove-KeyPair {
 }
 
 function Remove-TemporaryResources {
-    param([switch]$Failure)
+    param(
+        [switch]$Failure,
+        [switch]$WaitForLate
+    )
 
     $errors = [Collections.Generic.List[string]]::new()
     if ($Failure) {
@@ -656,7 +681,7 @@ function Remove-TemporaryResources {
         )
     } else {
         try {
-            Remove-Builder
+            Remove-Builder -WaitForLate:$WaitForLate
         } catch {
             $errors.Add(
                 "builder cleanup (name=$script:BuilderName instanceID=$script:BuilderID resourceID=$script:BuilderResourceID): $($_.Exception.Message)"
@@ -664,7 +689,7 @@ function Remove-TemporaryResources {
         }
     }
     try {
-        Remove-KeyPair
+        Remove-KeyPair -WaitForLate:$WaitForLate
     } catch {
         $errors.Add(
             "key pair cleanup (name=$script:KeyPairName): $($_.Exception.Message)"
@@ -699,7 +724,7 @@ function Complete-PendingPublishedImage {
     $script:InCleanup = $true
     $script:CleanupDeadline = (Get-Date).AddMinutes($CleanupTimeoutMinutes)
 
-    Remove-TemporaryResources
+    Remove-TemporaryResources -WaitForLate
     Invoke-Ctyun @(
         "ims", "UpdateImage",
         "--regionID", $RegionID,
@@ -717,7 +742,7 @@ function Invoke-ExactBakeCleanup {
     $script:InCleanup = $true
     $script:CleanupDeadline = (Get-Date).AddMinutes($CleanupTimeoutMinutes)
 
-    $discoverySeconds = if ($WaitForLateResources) { 3 * 60 } else { 0 }
+    $discoverySeconds = if ($WaitForLateResources) { $LateResourceWaitSeconds } else { 0 }
     $discoveryDeadline = Get-BoundedDeadline `
         -RequestedSeconds $discoverySeconds `
         -Phase "exact bake resource discovery"
@@ -757,7 +782,9 @@ function Invoke-ExactBakeCleanup {
 
     $cleanupFailure = ""
     try {
-        Remove-TemporaryResources -Failure:$script:ImageCreateAttempted
+        Remove-TemporaryResources `
+            -Failure:$script:ImageCreateAttempted `
+            -WaitForLate:$WaitForLateResources
     } catch {
         $cleanupFailure = $_.Exception.Message
     }
@@ -1220,7 +1247,9 @@ bash /tmp/prepare-image.sh --finalize
     $script:InCleanup = $true
     $script:CleanupDeadline = (Get-Date).AddMinutes($CleanupTimeoutMinutes)
     try {
-        Remove-TemporaryResources -Failure:(-not $script:Completed)
+        Remove-TemporaryResources `
+            -Failure:(-not $script:Completed) `
+            -WaitForLate:$WaitForLateResources
     } catch {
         $cleanupFailure = $_.Exception.Message
     }

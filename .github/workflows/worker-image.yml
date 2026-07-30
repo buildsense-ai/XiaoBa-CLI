@@ -118,8 +118,8 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/ctyun-cli" version
 
-      - name: Find the latest interrupted image run
-        id: prior_run
+      - name: Find interrupted image runs
+        id: prior_runs
         timeout-minutes: 3
         shell: bash
         env:
@@ -131,84 +131,214 @@ jobs:
             --header 'Accept: application/vnd.github+json' \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
             --header 'X-GitHub-Api-Version: 2022-11-28' \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/worker-image.yml/runs?per_page=20")"
-          prior="$(jq --arg current "$GITHUB_RUN_ID" '
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/worker-image.yml/runs?per_page=100")"
+          interrupted="$(jq -c --arg current "$GITHUB_RUN_ID" '
             [
               .workflow_runs[]
               | select((.id | tostring) != $current)
-            ][0] // empty
+              | select(
+                  .conclusion == "failure" or
+                  .conclusion == "cancelled" or
+                  .conclusion == "timed_out" or
+                  .conclusion == "startup_failure" or
+                  .conclusion == "stale"
+                )
+              | {
+                  build_number: .run_number,
+                  attempt: (.run_attempt // 1),
+                  run_id: .id,
+                  sha: .head_sha,
+                  conclusion: .conclusion,
+                  updated_at: .updated_at
+                }
+            ]
           ' <<<"$response")"
-          if [[ -z "$prior" ]]; then
+          if [[ "$(jq 'length' <<<"$interrupted")" -eq 0 ]]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          conclusion="$(jq -r '.conclusion // ""' <<<"$prior")"
-          case "$conclusion" in
-            failure|cancelled|timed_out|startup_failure|stale) ;;
-            *)
-              echo "found=false" >> "$GITHUB_OUTPUT"
-              exit 0
-              ;;
-          esac
           echo "found=true" >> "$GITHUB_OUTPUT"
-          echo "build_number=$(jq -r '.run_number' <<<"$prior")" >> "$GITHUB_OUTPUT"
-          echo "attempt=$(jq -r '.run_attempt' <<<"$prior")" >> "$GITHUB_OUTPUT"
-          echo "run_id=$(jq -r '.id' <<<"$prior")" >> "$GITHUB_OUTPUT"
-          echo "sha=$(jq -r '.head_sha' <<<"$prior")" >> "$GITHUB_OUTPUT"
-          echo "conclusion=$conclusion" >> "$GITHUB_OUTPUT"
+          echo "runs=$interrupted" >> "$GITHUB_OUTPUT"
 
-      - name: Reconcile the latest interrupted image run
-        if: ${{ steps.prior_run.outputs.found == 'true' }}
-        timeout-minutes: 20
+      - name: Reconcile interrupted image runs
+        if: ${{ steps.prior_runs.outputs.found == 'true' }}
+        timeout-minutes: 90
         shell: pwsh
         env:
           CTYUN_AK: ${{ secrets.CTYUN_AK }}
           CTYUN_SK: ${{ secrets.CTYUN_SK }}
+          INTERRUPTED_RUNS_JSON: ${{ steps.prior_runs.outputs.runs }}
         run: |
-          Write-Host "Reconciling prior run ${{ steps.prior_run.outputs.run_id }} (${{ steps.prior_run.outputs.conclusion }})"
-          ./ops/ctyun-worker-image/New-CatsCoWorkerImage.ps1 `
-            -Mode Cleanup `
-            -SourceRef '${{ steps.prior_run.outputs.sha }}' `
-            -BuildNumber '${{ steps.prior_run.outputs.build_number }}' `
-            -BuildAttempt '${{ steps.prior_run.outputs.attempt }}' `
-            -BuildIdentity '${{ steps.prior_run.outputs.run_id }}' `
-            -BakeTimeoutMinutes 150 `
-            -CleanupTimeoutMinutes 15 `
-            -ApiTimeoutSeconds 90 `
-            -RegionID '${{ vars.CTYUN_WORKER_REGION_ID }}' `
-            -AzName '${{ vars.CTYUN_WORKER_AZ_NAME }}' `
-            -BaseImageID '${{ vars.CTYUN_WORKER_BASE_IMAGE_ID }}' `
-            -FlavorID '${{ vars.CTYUN_WORKER_FLAVOR_ID }}' `
-            -VpcID '${{ vars.CTYUN_WORKER_VPC_ID }}' `
-            -SubnetID '${{ vars.CTYUN_WORKER_SUBNET_ID }}' `
-            -SecurityGroupID '${{ vars.CTYUN_WORKER_SECURITY_GROUP_ID }}'
+          $runs = @($env:INTERRUPTED_RUNS_JSON | ConvertFrom-Json)
+          $recentRuns = [Collections.Generic.List[object]]::new()
+          $historicalRuns = [Collections.Generic.List[object]]::new()
+          $blockingFailures = [Collections.Generic.List[string]]::new()
+          $historicalWarnings = [Collections.Generic.List[string]]::new()
+          foreach ($run in $runs) {
+            $updatedAt = [DateTimeOffset]::Parse([string]$run.updated_at)
+            if (([DateTimeOffset]::UtcNow - $updatedAt).TotalMinutes -le 30) {
+              $recentRuns.Add($run)
+            } else {
+              $historicalRuns.Add($run)
+            }
+          }
+
+          function Invoke-InterruptedRunCleanup {
+            param(
+              [Parameter(Mandatory = $true)]$Run,
+              [Parameter(Mandatory = $true)][int]$Attempt,
+              [Parameter(Mandatory = $true)][bool]$WaitForLate,
+              [Parameter(Mandatory = $true)][bool]$Historical
+            )
+
+            $cleanupTimeoutMinutes = if ($Historical) { 10 } else { 15 }
+            $apiTimeoutSeconds = if ($Historical) { 30 } else { 90 }
+            $hardTimeout = if ($Historical) { '120s' } else { '1000s' }
+            $arguments = @(
+              '-NoProfile',
+              '-NonInteractive',
+              '-File', './ops/ctyun-worker-image/New-CatsCoWorkerImage.ps1',
+              '-Mode', 'Cleanup',
+              '-SourceRef', [string]$Run.sha,
+              '-BuildNumber', [string]$Run.build_number,
+              '-BuildAttempt', [string]$Attempt,
+              '-BuildIdentity', [string]$Run.run_id,
+              '-BakeTimeoutMinutes', '150',
+              '-CleanupTimeoutMinutes', [string]$cleanupTimeoutMinutes,
+              '-ApiTimeoutSeconds', [string]$apiTimeoutSeconds,
+              '-RegionID', '${{ vars.CTYUN_WORKER_REGION_ID }}',
+              '-AzName', '${{ vars.CTYUN_WORKER_AZ_NAME }}',
+              '-BaseImageID', '${{ vars.CTYUN_WORKER_BASE_IMAGE_ID }}',
+              '-FlavorID', '${{ vars.CTYUN_WORKER_FLAVOR_ID }}',
+              '-VpcID', '${{ vars.CTYUN_WORKER_VPC_ID }}',
+              '-SubnetID', '${{ vars.CTYUN_WORKER_SUBNET_ID }}',
+              '-SecurityGroupID', '${{ vars.CTYUN_WORKER_SECURITY_GROUP_ID }}'
+            )
+            if ($WaitForLate) {
+              $arguments += '-WaitForLateResources'
+            }
+
+            $PSNativeCommandUseErrorActionPreference = $false
+            & timeout '--signal=TERM' '--kill-after=15s' $hardTimeout pwsh @arguments |
+              ForEach-Object { Write-Host $_ }
+            return $LASTEXITCODE
+          }
+
+          $recentDeadline = [DateTimeOffset]::UtcNow.AddMinutes(45)
+          :recentRunLoop foreach ($run in $recentRuns) {
+            $runAttempt = [Math]::Max(1, [int]$run.attempt)
+            foreach ($attempt in 1..$runAttempt) {
+              if ([DateTimeOffset]::UtcNow -ge $recentDeadline) {
+                $blockingFailures.Add(
+                  "Recent cleanup budget exhausted before run=$($run.run_id) attempt=$attempt/$runAttempt"
+                )
+                break recentRunLoop
+              }
+              Write-Host "Reconciling run $($run.run_id) attempt $attempt/$runAttempt ($($run.conclusion))"
+              $exitCode = Invoke-InterruptedRunCleanup `
+                -Run $run `
+                -Attempt $attempt `
+                -WaitForLate:($attempt -eq $runAttempt) `
+                -Historical:$false
+              if ($exitCode -ne 0) {
+                $blockingFailures.Add(
+                  "run=$($run.run_id) attempt=$attempt/$runAttempt conclusion=$($run.conclusion) exit=$exitCode"
+                )
+              }
+            }
+          }
+
+          $historicalDeadline = [DateTimeOffset]::UtcNow.AddMinutes(10)
+          :historicalRunLoop foreach ($run in $historicalRuns) {
+            $runAttempt = [Math]::Max(1, [int]$run.attempt)
+            foreach ($attempt in 1..$runAttempt) {
+              if ([DateTimeOffset]::UtcNow -ge $historicalDeadline) {
+                $historicalWarnings.Add(
+                  "Historical cleanup budget exhausted; remaining attempts require a later run or manual reconciliation"
+                )
+                break historicalRunLoop
+              }
+              Write-Host "Reconciling historical run $($run.run_id) attempt $attempt/$runAttempt ($($run.conclusion))"
+              $exitCode = Invoke-InterruptedRunCleanup `
+                -Run $run `
+                -Attempt $attempt `
+                -WaitForLate:$false `
+                -Historical:$true
+              if ($exitCode -ne 0) {
+                $message = (
+                  "run=$($run.run_id) attempt=$attempt/$runAttempt " +
+                  "conclusion=$($run.conclusion) exit=$exitCode"
+                )
+                $historicalWarnings.Add($message)
+                Write-Warning "Historical image cleanup needs manual attention: $message"
+              }
+            }
+          }
+          if ($historicalWarnings.Count -gt 0) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '### Historical Tianyi image cleanup warnings'
+            foreach ($warning in $historicalWarnings) {
+              $summary = $warning.Replace("`r", " ").Replace("`n", " ")
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- $summary"
+            }
+          }
+          if ($blockingFailures.Count -gt 0) {
+            throw "Recent interrupted image cleanup failed:`n$($blockingFailures -join "`n")"
+          }
 
       - name: Reconcile the previous attempt before a rerun
         if: ${{ github.run_attempt > 1 }}
-        timeout-minutes: 40
+        timeout-minutes: 90
         shell: pwsh
         env:
           CTYUN_AK: ${{ secrets.CTYUN_AK }}
           CTYUN_SK: ${{ secrets.CTYUN_SK }}
         run: |
-          $previousAttempt = [int]'${{ github.run_attempt }}' - 1
-          ./ops/ctyun-worker-image/New-CatsCoWorkerImage.ps1 `
-            -Mode Cleanup `
-            -SourceRef '${{ github.sha }}' `
-            -BuildNumber '${{ github.run_number }}' `
-            -BuildAttempt "$previousAttempt" `
-            -BuildIdentity '${{ github.run_id }}' `
-            -BakeTimeoutMinutes 150 `
-            -CleanupTimeoutMinutes 40 `
-            -ApiTimeoutSeconds 90 `
-            -WaitForLateResources `
-            -RegionID '${{ vars.CTYUN_WORKER_REGION_ID }}' `
-            -AzName '${{ vars.CTYUN_WORKER_AZ_NAME }}' `
-            -BaseImageID '${{ vars.CTYUN_WORKER_BASE_IMAGE_ID }}' `
-            -FlavorID '${{ vars.CTYUN_WORKER_FLAVOR_ID }}' `
-            -VpcID '${{ vars.CTYUN_WORKER_VPC_ID }}' `
-            -SubnetID '${{ vars.CTYUN_WORKER_SUBNET_ID }}' `
-            -SecurityGroupID '${{ vars.CTYUN_WORKER_SECURITY_GROUP_ID }}'
+          $currentAttempt = [int]'${{ github.run_attempt }}'
+          $rerunDeadline = [DateTimeOffset]::UtcNow.AddMinutes(45)
+          $rerunFailures = [Collections.Generic.List[string]]::new()
+          foreach ($previousAttempt in 1..($currentAttempt - 1)) {
+            if ([DateTimeOffset]::UtcNow -ge $rerunDeadline) {
+              $rerunFailures.Add(
+                "Rerun cleanup budget exhausted before attempt $previousAttempt/$($currentAttempt - 1)"
+              )
+              break
+            }
+            Write-Host "Reconciling current run attempt $previousAttempt/$($currentAttempt - 1)"
+            $arguments = @(
+              '-NoProfile',
+              '-NonInteractive',
+              '-File', './ops/ctyun-worker-image/New-CatsCoWorkerImage.ps1',
+              '-Mode', 'Cleanup',
+              '-SourceRef', '${{ github.sha }}',
+              '-BuildNumber', '${{ github.run_number }}',
+              '-BuildAttempt', [string]$previousAttempt,
+              '-BuildIdentity', '${{ github.run_id }}',
+              '-BakeTimeoutMinutes', '150',
+              '-CleanupTimeoutMinutes', '15',
+              '-ApiTimeoutSeconds', '90',
+              '-RegionID', '${{ vars.CTYUN_WORKER_REGION_ID }}',
+              '-AzName', '${{ vars.CTYUN_WORKER_AZ_NAME }}',
+              '-BaseImageID', '${{ vars.CTYUN_WORKER_BASE_IMAGE_ID }}',
+              '-FlavorID', '${{ vars.CTYUN_WORKER_FLAVOR_ID }}',
+              '-VpcID', '${{ vars.CTYUN_WORKER_VPC_ID }}',
+              '-SubnetID', '${{ vars.CTYUN_WORKER_SUBNET_ID }}',
+              '-SecurityGroupID', '${{ vars.CTYUN_WORKER_SECURITY_GROUP_ID }}'
+            )
+            if ($previousAttempt -eq $currentAttempt - 1) {
+              $arguments += '-WaitForLateResources'
+            }
+            $PSNativeCommandUseErrorActionPreference = $false
+            & timeout '--signal=TERM' '--kill-after=15s' '1000s' pwsh @arguments |
+              ForEach-Object { Write-Host $_ }
+            if ($LASTEXITCODE -ne 0) {
+              $rerunFailures.Add(
+                "attempt=$previousAttempt/$($currentAttempt - 1) exit=$LASTEXITCODE"
+              )
+            }
+          }
+          if ($rerunFailures.Count -gt 0) {
+            throw "Previous attempt cleanup failed:`n$($rerunFailures -join "`n")"
+          }
 
       - name: Bake private ECS image
         id: bake

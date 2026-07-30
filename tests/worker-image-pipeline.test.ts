@@ -139,10 +139,22 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(workflow, /-Mode Cleanup/);
     assert.match(workflow, /steps\.bake\.outcome != 'success'/);
     assert.match(workflow, /actions: read/);
-    assert.match(workflow, /Find the latest interrupted image run/);
+    assert.match(workflow, /Find interrupted image runs/);
+    assert.match(workflow, /per_page=100/);
+    assert.match(workflow, /foreach \(\$run in \$runs\)/);
+    assert.match(workflow, /foreach \(\$attempt in 1\.\.\$runAttempt\)/);
+    assert.match(workflow, /foreach \(\$previousAttempt in 1\.\./);
+    assert.match(workflow, /Historical image cleanup needs manual attention/);
+    assert.match(workflow, /GITHUB_STEP_SUMMARY/);
+    assert.match(workflow, /Recent interrupted image cleanup failed/);
+    assert.match(workflow, /recentDeadline[\s\S]*AddMinutes\(45\)/);
+    assert.match(workflow, /historicalDeadline[\s\S]*AddMinutes\(10\)/);
+    assert.match(workflow, /rerunDeadline[\s\S]*AddMinutes\(45\)/);
+    assert.match(workflow, /Previous attempt cleanup failed/);
+    assert.match(workflow, /\$Historical\) \{ '120s' \} else \{ '1000s' \}/);
     assert.match(
       workflow,
-      /steps\.prior_run\.outputs\.run_id[\s\S]*BuildIdentity/,
+      /steps\.prior_runs\.outputs\.runs[\s\S]*INTERRUPTED_RUNS_JSON/,
     );
     assert.doesNotMatch(
       workflow,
@@ -231,8 +243,10 @@ if (operation === "ims ListImage") {
   state.keyExists = true;
   state.keyPairName = value("--keyPairName");
 } else if (operation === "ecs GetEcsKeypairDetails") {
+  const keyVisible = state.keyExists && !(state.keyHiddenReads > 0);
+  if (state.keyHiddenReads > 0) state.keyHiddenReads -= 1;
   returnObj = {
-    results: state.keyExists
+    results: keyVisible
       ? [{ keyPairID: "key-1", keyPairName: state.keyPairName }]
       : [],
   };
@@ -245,9 +259,12 @@ if (operation === "ims ListImage") {
   const requestedID = value("--instanceIDList");
   const requestedName = value("--instanceName");
   const orderLookupStillPending = args.includes("--resourceID");
+  const instanceVisible =
+    state.instanceExists && !(state.instanceHiddenReads > 0);
+  if (state.instanceHiddenReads > 0) state.instanceHiddenReads -= 1;
   returnObj = {
     results:
-      state.instanceExists &&
+      instanceVisible &&
       !orderLookupStillPending &&
       (!requestedID || requestedID === instanceID) &&
       (!requestedName || requestedName === state.instanceName)
@@ -374,6 +391,8 @@ process.exit(result.status ?? 1);
             buildNumber,
             "-BuildAttempt",
             "1",
+            "-LateResourceWaitSeconds",
+            "10",
             "-ImageName",
             imageName,
             "-RegionID",
@@ -591,7 +610,9 @@ process.exit(result.status ?? 1);
         statePath,
         JSON.stringify({
           instanceExists: true,
+          instanceHiddenReads: 1,
           keyExists: true,
+          keyHiddenReads: 1,
           keyPairName: "catsco-img-key-001003-01",
           imageExists: true,
           imageName: "catsco-worker-pending",
@@ -611,6 +632,12 @@ process.exit(result.status ?? 1);
       assert.match(recoveryResult.stdout, /"result":\s*"recovered"/);
       const recoveryCalls = fs.readFileSync(logPath, "utf8");
       assert.doesNotMatch(recoveryCalls, /ecs CreateEcsInstance/);
+      assert.ok(
+        (recoveryCalls.match(/ecs ListEcsInstances/g) || []).length >= 2,
+      );
+      assert.ok(
+        (recoveryCalls.match(/ecs GetEcsKeypairDetails/g) || []).length >= 2,
+      );
       assert.match(recoveryCalls, /ecs DeleteEcsInstance/);
       assert.match(recoveryCalls, /ecs DeleteEcsKeypair/);
       assert.match(recoveryCalls, /ims UpdateImage/);

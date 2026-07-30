@@ -91,10 +91,21 @@ only when its full version and commit description match. A conflicting or
 incomplete image with the same stable name still fails closed. If a prior run
 published the image but failed during final cleanup, the next run uses the bake
 marker and source instance ID to finish cleaning that exact builder and key
-pair before marking the image complete. Each new workflow run also queries the
-GitHub Actions API for the latest cancelled, timed-out, or failed image run and
-reconciles resources derived from that run's exact ID, sequence, attempt, and
-commit. This covers process termination before PowerShell can enter `finally`.
+pair before marking the image complete. Missing builder and key-pair reads are
+retried during this recovery window so an eventually consistent API response
+cannot make the image ready while billable resources still exist. Each new
+workflow run also queries the GitHub Actions API for recent cancelled,
+timed-out, or failed image runs and reconciles every attempt derived from each
+run's exact ID, sequence, and commit. The newest recently failed attempt gets an
+additional late-resource discovery window. This covers process termination
+before PowerShell can enter `finally`, including failures that would otherwise
+be hidden behind a later unsuccessful reconciliation run. Cleanup failures
+from runs updated in the last 30 minutes block a new bake, with a bounded
+45-minute strict-recovery budget. A rerun applies the same bounded strict policy
+to all of its previous attempts. Older conflicts are attempted independently
+with a 120-second per-attempt cap and a 10-minute total budget, surfaced as
+workflow warnings and in the job summary, and left for manual reconciliation
+instead of permanently blocking all future image releases.
 
 The workflow also pins both GitHub Actions by commit and verifies the exact
 Tianyi CLI package SHA-256 before installing it; it does not execute a remote
