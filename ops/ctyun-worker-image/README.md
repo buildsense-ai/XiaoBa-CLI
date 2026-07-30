@@ -42,8 +42,11 @@ after the worker has claimed its bot identity.
 
 `New-CatsCoWorkerImage.ps1` defaults to plan mode. Execute mode creates a new
 temporary on-demand ECS named `catsco-img-*`, copies in a checked source-free
-artifact, stops that temporary instance, creates a private image, and then
-deletes the builder and its temporary key pair.
+artifact, stops that temporary instance, and creates a uniquely named
+`catsco-bake-*` image. After the image is active and its source builder has been
+verified, the script publishes it under the stable `catsco-worker-*` name with
+a pending bake marker, deletes the builder and its temporary key pair, and only
+then replaces that marker with the final release description.
 
 CI names builders and key pairs from the workflow sequence and retry:
 `catsco-img-000123-01` and `catsco-img-key-000123-01`. This keeps names
@@ -71,15 +74,35 @@ Run the same command with `-Mode Create`, `-ArtifactPath`, and
 `ctyun-cli`, Git, OpenSSH, SCP, `ssh-keygen`, and GNU `timeout`.
 
 The builder verifies the artifact checksum again before extracting it. Remote
-transfer and preparation have hard timeouts. The script resolves a newly
+transfer, preparation, and every Tianyi Cloud API call have hard timeouts. The
+whole bake also has a deadline separate from its cleanup deadline, while the
+GitHub job keeps additional time in reserve for compensating cleanup. The script resolves a newly
 ordered instance by both the order resource ID and its exact temporary name,
 so it can still clean up after an ambiguous create response. A failed image is
-deleted, and unconfirmed ECS, image, or key-pair deletion fails the workflow
-instead of being reduced to a warning.
+resolved by its per-run name and deleted only when `sourceServerID` matches the
+current builder. Unconfirmed ECS, image, or key-pair deletion fails the
+workflow instead of being reduced to a warning. If image deletion is
+temporarily unconfirmed, the source builder is retained as ownership evidence
+for the workflow's exact-attempt reconciliation rather than deleting that
+evidence first.
+
+Rerunning a release is idempotent: an existing active stable image is reused
+only when its full version and commit description match. A conflicting or
+incomplete image with the same stable name still fails closed. If a prior run
+published the image but failed during final cleanup, the next run uses the bake
+marker and source instance ID to finish cleaning that exact builder and key
+pair before marking the image complete. Each new workflow run also queries the
+GitHub Actions API for the latest cancelled, timed-out, or failed image run and
+reconciles resources derived from that run's exact ID, sequence, attempt, and
+commit. This covers process termination before PowerShell can enter `finally`.
 
 The workflow also pins both GitHub Actions by commit and verifies the exact
 Tianyi CLI package SHA-256 before installing it; it does not execute a remote
-installer script.
+installer script. The supported Node.js patch version used for the source-free
+artifact is pinned, and the same Node/npm runtime is bundled into the private
+artifact instead of installing a different distro version on the builder.
+Installed Debian package versions are recorded in
+`/etc/catsco-image-packages.txt` for later provenance checks.
 
 The resulting system image is not a TOS object. `CreateImage` writes it to the
 Tianyi Cloud private image repository for the configured region and account.

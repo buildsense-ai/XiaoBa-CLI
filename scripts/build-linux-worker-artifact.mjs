@@ -56,6 +56,7 @@ const appRoot = path.join(stagingRoot, "app");
 
 try {
   fs.mkdirSync(appRoot, { recursive: true });
+  const stagedNode = stageNodeRuntime(appRoot);
   fs.cpSync(path.join(root, "dist"), path.join(appRoot, "dist"), {
     recursive: true,
     dereference: false,
@@ -88,7 +89,7 @@ try {
   );
 
   run(
-    "node",
+    stagedNode,
     [
       "-e",
       'require("sharp"); const canvas = require("@napi-rs/canvas"); canvas.createCanvas(2, 2); require("deasync");',
@@ -205,6 +206,39 @@ function copyTrackedFiles(
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(source, destination);
   }
+}
+
+function stageNodeRuntime(destinationRoot) {
+  const runtimeRoot = path.join(destinationRoot, "runtime", "node");
+  const runtimeBin = path.join(runtimeRoot, "bin");
+  const runtimeModules = path.join(runtimeRoot, "lib", "node_modules");
+  fs.mkdirSync(runtimeBin, { recursive: true });
+  fs.mkdirSync(runtimeModules, { recursive: true });
+
+  const stagedNode = path.join(runtimeBin, "node");
+  fs.copyFileSync(process.execPath, stagedNode);
+  fs.chmodSync(stagedNode, 0o755);
+
+  const globalModules = execFileSync("npm", ["root", "--global"], {
+    encoding: "utf8",
+  }).trim();
+  const npmSource = path.join(globalModules, "npm");
+  if (!fs.existsSync(npmSource)) {
+    throw new Error(`Could not locate npm runtime under ${globalModules}`);
+  }
+  fs.cpSync(npmSource, path.join(runtimeModules, "npm"), {
+    recursive: true,
+    dereference: false,
+  });
+  fs.symlinkSync(
+    "../lib/node_modules/npm/bin/npm-cli.js",
+    path.join(runtimeBin, "npm"),
+  );
+  fs.symlinkSync(
+    "../lib/node_modules/npm/bin/npx-cli.js",
+    path.join(runtimeBin, "npx"),
+  );
+  return stagedNode;
 }
 
 function git(cwd, args) {

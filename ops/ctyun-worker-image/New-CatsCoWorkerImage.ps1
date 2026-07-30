@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("Plan", "Create")]
+    [ValidateSet("Plan", "Create", "Cleanup")]
     [string]$Mode = "Plan",
 
     [Parameter(Mandatory = $true)]
@@ -31,6 +31,7 @@ param(
     [string]$ArtifactSha256 = "",
     [string]$BuildNumber = "",
     [string]$BuildAttempt = "1",
+    [string]$BuildIdentity = "",
     [string]$BootDiskType = "SATA",
     [ValidateRange(40, 2048)]
     [int]$BootDiskSize = 40,
@@ -41,7 +42,14 @@ param(
     [ValidateRange(10, 90)]
     [int]$RemoteBuildTimeoutMinutes = 45,
     [ValidateRange(10, 60)]
-    [int]$ArtifactTransferTimeoutMinutes = 30
+    [int]$ArtifactTransferTimeoutMinutes = 30,
+    [ValidateRange(60, 300)]
+    [int]$BakeTimeoutMinutes = 240,
+    [ValidateRange(10, 90)]
+    [int]$CleanupTimeoutMinutes = 45,
+    [ValidateRange(15, 300)]
+    [int]$ApiTimeoutSeconds = 90,
+    [switch]$WaitForLateResources
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,7 +66,14 @@ $script:TemporaryRoot = ""
 $script:ImageID = ""
 $script:ImageCreateAttempted = $false
 $script:ImageActive = $false
+$script:PreserveBuilderForImageRecovery = $false
 $script:Completed = $false
+$script:BakeID = ""
+$script:ImageWorkName = ""
+$script:BakeDescription = ""
+$script:OperationDeadline = $null
+$script:CleanupDeadline = $null
+$script:InCleanup = $false
 
 function Invoke-External {
     param(
@@ -88,7 +103,15 @@ function Invoke-External {
 function Invoke-Ctyun {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
-    $raw = Invoke-External -Command "ctyun-cli" -Arguments ($Arguments + @("--output", "json")) -Capture
+    $timeoutSeconds = Get-BoundedTimeoutSeconds `
+        -RequestedSeconds $ApiTimeoutSeconds `
+        -Phase "Tianyi Cloud API call"
+    $raw = Invoke-External -Command "timeout" -Arguments (@(
+        "--signal=TERM",
+        "--kill-after=15s",
+        "$($timeoutSeconds)s",
+        "ctyun-cli"
+    ) + $Arguments + @("--output", "json")) -Capture
     try {
         $response = $raw | ConvertFrom-Json
     } catch {
@@ -98,6 +121,57 @@ function Invoke-Ctyun {
         throw "Tianyi Cloud API failed: $($response.errorCode) $($response.message) $($response.description)"
     }
     return $response
+}
+
+function Get-ActiveDeadline {
+    if ($script:InCleanup) {
+        return $script:CleanupDeadline
+    }
+    return $script:OperationDeadline
+}
+
+function Get-BoundedTimeoutSeconds {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 86400)]
+        [int]$RequestedSeconds,
+        [Parameter(Mandatory = $true)]
+        [string]$Phase
+    )
+
+    $deadline = Get-ActiveDeadline
+    if (-not $deadline) {
+        return $RequestedSeconds
+    }
+    $remaining = [int][Math]::Floor(($deadline - (Get-Date)).TotalSeconds)
+    if ($remaining -lt 1) {
+        throw "$Phase cannot start because the current bake deadline has expired"
+    }
+    return [Math]::Max(1, [Math]::Min($RequestedSeconds, $remaining))
+}
+
+function Get-BoundedDeadline {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(0, 86400)]
+        [int]$RequestedSeconds,
+        [Parameter(Mandatory = $true)]
+        [string]$Phase
+    )
+
+    if ($RequestedSeconds -eq 0) {
+        return Get-Date
+    }
+
+    $deadline = (Get-Date).AddSeconds($RequestedSeconds)
+    $activeDeadline = Get-ActiveDeadline
+    if ($activeDeadline -and $activeDeadline -lt $deadline) {
+        $deadline = $activeDeadline
+    }
+    if ($deadline -le (Get-Date)) {
+        throw "$Phase cannot start because the current bake deadline has expired"
+    }
+    return $deadline
 }
 
 function Test-NotFoundError {
@@ -161,7 +235,9 @@ function Find-BuilderInstance {
 function Resolve-BuilderInstance {
     param([ValidateRange(0, 7200)][int]$WaitSeconds = 0)
 
-    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    $deadline = Get-BoundedDeadline `
+        -RequestedSeconds $WaitSeconds `
+        -Phase "temporary builder resolution"
     do {
         if ($script:BuilderID) {
             try {
@@ -174,6 +250,9 @@ function Resolve-BuilderInstance {
                     throw
                 }
             }
+            # Once the provider returned an authoritative instance ID, never
+            # fall back to a possibly reused instance name.
+            return $null
         }
 
         $resolved = Find-BuilderInstance
@@ -213,7 +292,9 @@ function Wait-ForInstance {
         [switch]$RequireIP
     )
 
-    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    $deadline = Get-BoundedDeadline `
+        -RequestedSeconds ($TimeoutMinutes * 60) `
+        -Phase "temporary builder state wait"
     while ((Get-Date) -lt $deadline) {
         $instance = Resolve-BuilderInstance
         Assert-TemporaryBuilder $instance
@@ -235,7 +316,9 @@ function Wait-ForSsh {
         [Parameter(Mandatory = $true)][string]$KnownHosts
     )
 
-    $deadline = (Get-Date).AddMinutes(12)
+    $deadline = Get-BoundedDeadline `
+        -RequestedSeconds (12 * 60) `
+        -Phase "temporary builder SSH wait"
     while ((Get-Date) -lt $deadline) {
         & ssh `
             -i $PrivateKey `
@@ -245,7 +328,7 @@ function Wait-ForSsh {
             -o ServerAliveCountMax=3 `
             -o StrictHostKeyChecking=accept-new `
             -o "UserKnownHostsFile=$KnownHosts" `
-            "root@$IP" "timeout --signal=TERM --kill-after=15s 90s cloud-init status --wait >/dev/null 2>&1; printf ready" 2>$null
+            "root@$IP" "timeout --signal=TERM --kill-after=15s 90s cloud-init status --wait >/dev/null 2>&1 && printf ready" 2>$null
         if ($LASTEXITCODE -eq 0) {
             return
         }
@@ -274,17 +357,46 @@ function Get-Image {
 }
 
 function Find-ImageByName {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
     $response = Invoke-Ctyun @(
         "ims", "ListImage",
         "--regionID", $RegionID,
         "--imageVisibilityCode", "0",
-        "--imageName", $ImageName,
+        "--imageName", $Name,
+        "--projectID", $ProjectID,
         "--pageNo", "1",
-        "--pageSize", "10"
+        "--pageSize", "200"
     )
     return @($response.returnObj.images) |
-        Where-Object { [string]$_.imageName -eq $ImageName } |
+        Where-Object { [string]$_.imageName -eq $Name } |
         Select-Object -First 1
+}
+
+function Wait-ForPublishedImageIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$PublishedImageID,
+        [Parameter(Mandatory = $true)][string]$PublishedImageName,
+        [Parameter(Mandatory = $true)][string]$PublishedDescription
+    )
+
+    $publishDeadline = Get-BoundedDeadline `
+        -RequestedSeconds (2 * 60) `
+        -Phase "published image identity verification"
+    do {
+        $candidate = Get-Image -ImageID $PublishedImageID
+        if (
+            $candidate -and
+            ([string]$candidate.imageStatus).ToLowerInvariant() -eq "active" -and
+            [string]$candidate.imageName -eq $PublishedImageName -and
+            [string]$candidate.description -eq $PublishedDescription
+        ) {
+            return $candidate
+        }
+        Start-Sleep -Seconds 5
+    } while ((Get-Date) -lt $publishDeadline)
+
+    throw "Could not verify the published private image identity"
 }
 
 function Remove-FailedImage {
@@ -292,23 +404,57 @@ function Remove-FailedImage {
         return
     }
 
+    # Keep the source builder as ownership evidence until the image is gone.
+    $script:PreserveBuilderForImageRecovery = $true
     if (-not $script:ImageID) {
-        $resolveDeadline = (Get-Date).AddMinutes(3)
+        $resolveDeadline = Get-BoundedDeadline `
+            -RequestedSeconds (3 * 60) `
+            -Phase "incomplete image resolution"
         while ((Get-Date) -lt $resolveDeadline -and -not $script:ImageID) {
-            $candidate = Find-ImageByName
+            $candidate = Find-ImageByName -Name $script:ImageWorkName
             if ($candidate) {
+                if (
+                    -not $script:BuilderID -or
+                    [string]$candidate.sourceServerID -ne $script:BuilderID
+                ) {
+                    $script:PreserveBuilderForImageRecovery = $false
+                    throw (
+                        "Refusing to delete image '$($candidate.imageID)' because " +
+                        "sourceServerID '$($candidate.sourceServerID)' does not match " +
+                        "this bake's builder '$script:BuilderID'"
+                    )
+                }
                 $script:ImageID = [string]$candidate.imageID
                 break
             }
             Start-Sleep -Seconds 10
         }
         if (-not $script:ImageID) {
-            Write-Host "No incomplete image record appeared for $ImageName"
-            return
+            throw "Could not prove absence of incomplete image $script:ImageWorkName"
         }
     }
 
-    $deadline = (Get-Date).AddMinutes(12)
+    $ownedImage = Get-Image -ImageID $script:ImageID
+    if (-not $ownedImage) {
+        $script:PreserveBuilderForImageRecovery = $false
+        return
+    }
+    if (
+        [string]$ownedImage.imageName -ne $script:ImageWorkName -or
+        -not $script:BuilderID -or
+        [string]$ownedImage.sourceServerID -ne $script:BuilderID -or
+        [string]$ownedImage.description -ne $script:BakeDescription
+    ) {
+        $script:PreserveBuilderForImageRecovery = $false
+        throw (
+            "Refusing to delete image '$script:ImageID' because its name, " +
+            "sourceServerID, or bake description does not belong to this bake"
+        )
+    }
+
+    $deadline = Get-BoundedDeadline `
+        -RequestedSeconds (12 * 60) `
+        -Phase "incomplete image deletable-state wait"
     $deletableStates = @(
         "active", "deactivated", "deactivating", "deleting",
         "error", "killed", "reactivating"
@@ -316,11 +462,13 @@ function Remove-FailedImage {
     while ((Get-Date) -lt $deadline) {
         $image = Get-Image -ImageID $script:ImageID
         if (-not $image) {
+            $script:PreserveBuilderForImageRecovery = $false
             return
         }
         $status = ([string]$image.imageStatus).ToLowerInvariant()
         Write-Host "failed image cleanup state=$status"
         if ($status -eq "deleted") {
+            $script:PreserveBuilderForImageRecovery = $false
             return
         }
         if ($status -in $deletableStates) {
@@ -337,10 +485,13 @@ function Remove-FailedImage {
         Start-Sleep -Seconds 15
     }
 
-    $deleteDeadline = (Get-Date).AddMinutes(8)
+    $deleteDeadline = Get-BoundedDeadline `
+        -RequestedSeconds (8 * 60) `
+        -Phase "incomplete image deletion confirmation"
     while ((Get-Date) -lt $deleteDeadline) {
         $remaining = Get-Image -ImageID $script:ImageID
         if (-not $remaining -or ([string]$remaining.imageStatus).ToLowerInvariant() -eq "deleted") {
+            $script:PreserveBuilderForImageRecovery = $false
             return
         }
         Start-Sleep -Seconds 10
@@ -353,9 +504,11 @@ function Remove-Builder {
         return
     }
 
-    $instance = Resolve-BuilderInstance -WaitSeconds 480
+    $resolveWaitSeconds = if ($script:BuilderID -or $script:BuilderResourceID) { 0 } else { 480 }
+    $instance = Resolve-BuilderInstance -WaitSeconds $resolveWaitSeconds
     if (-not $instance) {
-        throw "Could not prove cleanup of builder name=$script:BuilderName resourceID=$script:BuilderResourceID"
+        Write-Host "No temporary builder record remains for $script:BuilderName"
+        return
     }
     Assert-TemporaryBuilder $instance
     Write-Host "Deleting temporary builder $script:BuilderID"
@@ -368,7 +521,9 @@ function Remove-Builder {
         "--deleteVolume", "true"
     ) | Out-Null
 
-    $deadline = (Get-Date).AddMinutes(8)
+    $deadline = Get-BoundedDeadline `
+        -RequestedSeconds (8 * 60) `
+        -Phase "temporary builder deletion confirmation"
     while ((Get-Date) -lt $deadline) {
         $remaining = Resolve-BuilderInstance
         if (-not $remaining) {
@@ -385,6 +540,34 @@ function Remove-KeyPair {
         return
     }
 
+    $keyDiscoverySeconds = if ($WaitForLateResources) { 2 * 60 } else { 0 }
+    $keyDiscoveryDeadline = Get-BoundedDeadline `
+        -RequestedSeconds $keyDiscoverySeconds `
+        -Phase "temporary key pair discovery"
+    $existing = @()
+    do {
+        $details = Invoke-Ctyun @(
+            "ecs", "GetEcsKeypairDetails",
+            "--regionID", $RegionID,
+            "--projectID", $ProjectID,
+            "--keyPairName", $script:KeyPairName,
+            "--pageNo", "1",
+            "--pageSize", "10"
+        )
+        $existing = @(
+            @($details.returnObj.results) |
+                Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
+        )
+        if ($existing.Count -gt 0 -or -not $WaitForLateResources) {
+            break
+        }
+        Start-Sleep -Seconds 5
+    } while ((Get-Date) -lt $keyDiscoveryDeadline)
+    if ($existing.Count -eq 0) {
+        Write-Host "No temporary key pair record remains for $script:KeyPairName"
+        return
+    }
+
     Write-Host "Deleting temporary key pair $script:KeyPairName"
     Invoke-Ctyun @(
         "ecs", "DeleteEcsKeypair",
@@ -392,7 +575,9 @@ function Remove-KeyPair {
         "--keyPairName", $script:KeyPairName
     ) | Out-Null
 
-    $deadline = (Get-Date).AddMinutes(2)
+    $deadline = Get-BoundedDeadline `
+        -RequestedSeconds (2 * 60) `
+        -Phase "temporary key pair deletion confirmation"
     while ((Get-Date) -lt $deadline) {
         $details = Invoke-Ctyun @(
             "ecs", "GetEcsKeypairDetails",
@@ -423,16 +608,22 @@ function Remove-TemporaryResources {
             Remove-FailedImage
         } catch {
             $errors.Add(
-                "image cleanup (name=$ImageName imageID=$script:ImageID): $($_.Exception.Message)"
+                "image cleanup (name=$script:ImageWorkName imageID=$script:ImageID): $($_.Exception.Message)"
             )
         }
     }
-    try {
-        Remove-Builder
-    } catch {
+    if ($script:PreserveBuilderForImageRecovery) {
         $errors.Add(
-            "builder cleanup (name=$script:BuilderName instanceID=$script:BuilderID resourceID=$script:BuilderResourceID): $($_.Exception.Message)"
+            "builder cleanup deferred because the source builder is still required to prove incomplete image ownership"
         )
+    } else {
+        try {
+            Remove-Builder
+        } catch {
+            $errors.Add(
+                "builder cleanup (name=$script:BuilderName instanceID=$script:BuilderID resourceID=$script:BuilderResourceID): $($_.Exception.Message)"
+            )
+        }
     }
     try {
         Remove-KeyPair
@@ -447,10 +638,110 @@ function Remove-TemporaryResources {
     }
 }
 
+function Complete-PendingPublishedImage {
+    param(
+        [Parameter(Mandatory = $true)]$PendingImage,
+        [Parameter(Mandatory = $true)][string]$PendingBakeID,
+        [Parameter(Mandatory = $true)][string]$FinalDescription
+    )
+
+    if (
+        $PendingBakeID -notmatch "^(?:\d{6,}-\d{2,}|\d{12}-[0-9a-f]{8})$" -or
+        -not $PendingImage.sourceServerID
+    ) {
+        throw "Published image has invalid pending cleanup ownership metadata"
+    }
+
+    $script:BuilderName = "catsco-img-$PendingBakeID"
+    $script:KeyPairName = "catsco-img-key-$PendingBakeID"
+    $script:BuilderID = [string]$PendingImage.sourceServerID
+    $script:BuilderResourceID = ""
+    $script:BuilderCreateAttempted = $true
+    $script:KeyPairCreateAttempted = $true
+    $script:InCleanup = $true
+    $script:CleanupDeadline = (Get-Date).AddMinutes($CleanupTimeoutMinutes)
+
+    Remove-TemporaryResources
+    Invoke-Ctyun @(
+        "ims", "UpdateImage",
+        "--regionID", $RegionID,
+        "--imageID", ([string]$PendingImage.imageID),
+        "--imageName", $ImageName,
+        "--description", $FinalDescription
+    ) | Out-Null
+    return Wait-ForPublishedImageIdentity `
+        -PublishedImageID ([string]$PendingImage.imageID) `
+        -PublishedImageName $ImageName `
+        -PublishedDescription $FinalDescription
+}
+
+function Invoke-ExactBakeCleanup {
+    $script:InCleanup = $true
+    $script:CleanupDeadline = (Get-Date).AddMinutes($CleanupTimeoutMinutes)
+
+    $discoverySeconds = if ($WaitForLateResources) { 3 * 60 } else { 0 }
+    $discoveryDeadline = Get-BoundedDeadline `
+        -RequestedSeconds $discoverySeconds `
+        -Phase "exact bake resource discovery"
+    $builder = Resolve-BuilderInstance -WaitSeconds $discoverySeconds
+    if ($builder) {
+        Assert-TemporaryBuilder $builder
+        $script:BuilderID = [string]$builder.instanceID
+        $script:BuilderCreateAttempted = $true
+    }
+
+    $candidateImage = $null
+    do {
+        $candidateImage = Find-ImageByName -Name $script:ImageWorkName
+        if ($candidateImage -or -not $WaitForLateResources) {
+            break
+        }
+        Start-Sleep -Seconds 10
+    } while ((Get-Date) -lt $discoveryDeadline)
+
+    $imageOwnershipFailure = ""
+    if ($candidateImage) {
+        if (
+            [string]$candidateImage.imageName -ne $script:ImageWorkName -or
+            -not $script:BuilderID -or
+            [string]$candidateImage.sourceServerID -ne $script:BuilderID -or
+            [string]$candidateImage.description -ne $script:BakeDescription
+        ) {
+            $imageOwnershipFailure = (
+                "Refusing exact cleanup because the temporary image ownership metadata does not match"
+            )
+        } else {
+            $script:ImageID = [string]$candidateImage.imageID
+            $script:ImageCreateAttempted = $true
+        }
+    }
+    $script:KeyPairCreateAttempted = $true
+
+    $cleanupFailure = ""
+    try {
+        Remove-TemporaryResources -Failure:$script:ImageCreateAttempted
+    } catch {
+        $cleanupFailure = $_.Exception.Message
+    }
+    if ($imageOwnershipFailure -or $cleanupFailure) {
+        throw (@($imageOwnershipFailure, $cleanupFailure) |
+            Where-Object { $_ } |
+            ForEach-Object { $_ }) -join "`n"
+    }
+    return [ordered]@{
+        result = "cleaned"
+        bakeID = $script:BakeID
+        temporaryImageName = $script:ImageWorkName
+        builderName = $script:BuilderName
+        keyPairName = $script:KeyPairName
+        regionID = $RegionID
+    }
+}
+
 if (-not (Get-Command "git" -ErrorAction SilentlyContinue)) {
     throw "Missing required command: git"
 }
-if ($Mode -eq "Create") {
+if ($Mode -in @("Create", "Cleanup")) {
     foreach ($command in @("ctyun-cli", "ssh", "scp", "ssh-keygen", "timeout")) {
         if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
             throw "Missing required command: $command"
@@ -491,11 +782,36 @@ if ($BuildNumber) {
         throw "BuildNumber and BuildAttempt must be positive integers"
     }
     $builderSuffix = "$($buildSequence.ToString('D6'))-$($attemptSequence.ToString('D2'))"
+    if (-not $BuildIdentity) {
+        $BuildIdentity = $BuildNumber
+    }
+    $bakeTokenBytes = [Text.Encoding]::UTF8.GetBytes(
+        "$BuildIdentity/$BuildAttempt/$commit"
+    )
+    $bakeTokenHash = [Security.Cryptography.SHA256]::HashData($bakeTokenBytes)
+    $bakeToken = [Convert]::ToHexString($bakeTokenHash).Substring(0, 8).ToLowerInvariant()
 } else {
-    $builderSuffix = "$(Get-Date -AsUTC -Format 'yyMMddHHmmss')"
+    $localToken = [guid]::NewGuid().ToString("N").Substring(0, 8)
+    $builderSuffix = "$(Get-Date -AsUTC -Format 'yyMMddHHmmss')-$localToken"
+    $bakeToken = $localToken
 }
+$script:BakeID = $builderSuffix
 $script:BuilderName = "catsco-img-$builderSuffix"
 $script:KeyPairName = "catsco-img-key-$builderSuffix"
+$script:ImageWorkName = "catsco-bake-$shortCommit-$bakeToken"
+$releaseIdentity = "CatsCo worker $version commit $commit"
+$releaseDescription = "$releaseIdentity ready"
+$bakeDescription = "$releaseIdentity bake $script:BakeID"
+$script:BakeDescription = $bakeDescription
+if ($releaseDescription.Length -gt 128 -or $bakeDescription.Length -gt 128) {
+    throw "Generated image description exceeds Tianyi Cloud's 128-character limit"
+}
+if (
+    $script:ImageWorkName.Length -gt 32 -or
+    $script:ImageWorkName -notmatch "^[A-Za-z][A-Za-z0-9-]*[A-Za-z0-9]$"
+) {
+    throw "Generated temporary image name is invalid: $script:ImageWorkName"
+}
 
 $resolvedArtifactPath = ""
 if ($ArtifactPath) {
@@ -519,6 +835,8 @@ $plan = [ordered]@{
     version = $version
     commit = $commit
     imageName = $ImageName
+    temporaryImageName = $script:ImageWorkName
+    bakeID = $script:BakeID
     builderName = $script:BuilderName
     regionID = $RegionID
     azName = $AzName
@@ -537,16 +855,53 @@ if ($Mode -eq "Plan") {
     exit 0
 }
 
-$existing = Invoke-Ctyun @(
-    "ims", "ListImage",
-    "--regionID", $RegionID,
-    "--imageVisibilityCode", "0",
-    "--imageName", $ImageName,
-    "--pageNo", "1",
-    "--pageSize", "10"
-)
-if (@($existing.returnObj.images).Count -gt 0) {
-    throw "Private image already exists: $ImageName"
+$script:OperationDeadline = (Get-Date).AddMinutes($BakeTimeoutMinutes)
+if ($Mode -eq "Cleanup") {
+    Invoke-ExactBakeCleanup | ConvertTo-Json
+    exit 0
+}
+
+$existingImage = Find-ImageByName -Name $ImageName
+if ($existingImage) {
+    $existingStatus = ([string]$existingImage.imageStatus).ToLowerInvariant()
+    $existingDescription = [string]$existingImage.description
+    $pendingPrefix = "$releaseIdentity bake "
+    if ($existingStatus -eq "active" -and $existingDescription -eq $releaseDescription) {
+        [ordered]@{
+            result = "reused"
+            imageID = [string]$existingImage.imageID
+            imageName = $ImageName
+            version = $version
+            commit = $commit
+            builderName = $null
+            regionID = $RegionID
+        } | ConvertTo-Json
+        exit 0
+    }
+    if (
+        $existingStatus -eq "active" -and
+        $existingDescription.StartsWith($pendingPrefix)
+    ) {
+        $pendingBakeID = $existingDescription.Substring($pendingPrefix.Length)
+        $existingImage = Complete-PendingPublishedImage `
+            -PendingImage $existingImage `
+            -PendingBakeID $pendingBakeID `
+            -FinalDescription $releaseDescription
+        [ordered]@{
+            result = "recovered"
+            imageID = [string]$existingImage.imageID
+            imageName = $ImageName
+            version = $version
+            commit = $commit
+            builderName = $null
+            regionID = $RegionID
+        } | ConvertTo-Json
+        exit 0
+    }
+    throw (
+        "Private image name is already occupied by a different or incomplete image: " +
+        "$ImageName status=$existingStatus imageID=$($existingImage.imageID)"
+    )
 }
 
 $script:TemporaryRoot = Join-Path ([IO.Path]::GetTempPath()) "catsco-image-$([guid]::NewGuid().ToString('N'))"
@@ -696,29 +1051,38 @@ bash /tmp/prepare-image.sh --finalize
         "-o", "StrictHostKeyChecking=accept-new",
         "-o", "UserKnownHostsFile=$knownHosts"
     )
+    $artifactTransferTimeoutSeconds = Get-BoundedTimeoutSeconds `
+        -RequestedSeconds ($ArtifactTransferTimeoutMinutes * 60) `
+        -Phase "worker artifact transfer"
     Invoke-External -Command "timeout" -Arguments (@(
         "--signal=TERM",
         "--kill-after=30s",
-        "$($ArtifactTransferTimeoutMinutes)m",
+        "$($artifactTransferTimeoutSeconds)s",
         "scp"
     ) + $sshOptions + @(
         $resolvedArtifactPath,
         "root@$($script:BuilderIP):/tmp/$artifactName"
     ))
+    $scriptTransferTimeoutSeconds = Get-BoundedTimeoutSeconds `
+        -RequestedSeconds (5 * 60) `
+        -Phase "image preparation script transfer"
     Invoke-External -Command "timeout" -Arguments (@(
         "--signal=TERM",
         "--kill-after=30s",
-        "5m",
+        "$($scriptTransferTimeoutSeconds)s",
         "scp"
     ) + $sshOptions + @(
         "$PSScriptRoot/prepare-image.sh",
         $remoteBuildScript,
         "root@$($script:BuilderIP):/tmp/"
     ))
+    $remoteBuildTimeoutSeconds = Get-BoundedTimeoutSeconds `
+        -RequestedSeconds (($RemoteBuildTimeoutMinutes + 3) * 60) `
+        -Phase "remote image preparation"
     Invoke-External -Command "timeout" -Arguments (@(
         "--signal=TERM",
         "--kill-after=150s",
-        "$($RemoteBuildTimeoutMinutes + 3)m",
+        "$($remoteBuildTimeoutSeconds)s",
         "ssh"
     ) + $sshOptions + @(
         "root@$($script:BuilderIP)",
@@ -741,10 +1105,10 @@ bash /tmp/prepare-image.sh --finalize
         "--regionID", $RegionID,
         "--projectID", $ProjectID,
         "--instanceID", $script:BuilderID,
-        "--imageName", $ImageName,
-        "--description", "CatsCo worker $version commit $commit",
+        "--imageName", $script:ImageWorkName,
+        "--description", $bakeDescription,
         "--enableImageIntegrityCheck", "true",
-        "--labels", "[{`"labelKey`":`"product`",`"labelValue`":`"catsco-worker`"},{`"labelKey`":`"version`",`"labelValue`":`"$version`"},{`"labelKey`":`"commit`",`"labelValue`":`"$commit`"}]"
+        "--labels", "[{`"labelKey`":`"product`",`"labelValue`":`"catsco-worker`"},{`"labelKey`":`"version`",`"labelValue`":`"$version`"},{`"labelKey`":`"commit`",`"labelValue`":`"$commit`"},{`"labelKey`":`"bake`",`"labelValue`":`"$script:BakeID`"}]"
     )
     $image = @($imageResponse.returnObj.images) | Select-Object -First 1
     $script:ImageID = [string]$image.imageID
@@ -752,7 +1116,9 @@ bash /tmp/prepare-image.sh --finalize
         throw "CreateImage did not return an image ID"
     }
 
-    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    $deadline = Get-BoundedDeadline `
+        -RequestedSeconds ($TimeoutMinutes * 60) `
+        -Phase "private image creation wait"
     while ((Get-Date) -lt $deadline) {
         $currentImage = Get-Image -ImageID $script:ImageID
         if (-not $currentImage) {
@@ -761,6 +1127,23 @@ bash /tmp/prepare-image.sh --finalize
         $status = ([string]$currentImage.imageStatus).ToLowerInvariant()
         Write-Host "image state=$status progress=$($currentImage.taskProgress)"
         if ($status -eq "active") {
+            if ([string]$currentImage.sourceServerID -ne $script:BuilderID) {
+                throw (
+                    "Created image sourceServerID '$($currentImage.sourceServerID)' " +
+                    "does not match builder '$script:BuilderID'"
+                )
+            }
+            Invoke-Ctyun @(
+                "ims", "UpdateImage",
+                "--regionID", $RegionID,
+                "--imageID", $script:ImageID,
+                "--imageName", $ImageName,
+                "--description", $bakeDescription
+            ) | Out-Null
+            $publishedImage = Wait-ForPublishedImageIdentity `
+                -PublishedImageID $script:ImageID `
+                -PublishedImageName $ImageName `
+                -PublishedDescription $bakeDescription
             $script:ImageActive = $true
             $script:Completed = $true
             $result = [ordered]@{
@@ -785,6 +1168,8 @@ bash /tmp/prepare-image.sh --finalize
 } catch {
     $primaryFailure = $_.Exception.Message
 } finally {
+    $script:InCleanup = $true
+    $script:CleanupDeadline = (Get-Date).AddMinutes($CleanupTimeoutMinutes)
     try {
         Remove-TemporaryResources -Failure:(-not $script:Completed)
     } catch {
@@ -813,5 +1198,19 @@ if ($primaryFailure -or $cleanupFailure) {
     }
     throw ($failures -join "`n")
 }
+
+$script:InCleanup = $false
+$script:OperationDeadline = (Get-Date).AddMinutes(5)
+Invoke-Ctyun @(
+    "ims", "UpdateImage",
+    "--regionID", $RegionID,
+    "--imageID", $script:ImageID,
+    "--imageName", $ImageName,
+    "--description", $releaseDescription
+) | Out-Null
+Wait-ForPublishedImageIdentity `
+    -PublishedImageID $script:ImageID `
+    -PublishedImageName $ImageName `
+    -PublishedDescription $releaseDescription | Out-Null
 
 $result | ConvertTo-Json

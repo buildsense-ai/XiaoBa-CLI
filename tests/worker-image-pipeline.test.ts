@@ -30,6 +30,9 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(artifactBuilder, /--mtime=@\$\{commitEpoch\}/);
     assert.match(artifactBuilder, /gzip["'], \[["']-n["']/);
     assert.match(artifactBuilder, /createdAt: new Date\(commitEpoch \* 1000\)/);
+    assert.match(workflow, /NODE_VERSION: ["']22\.23\.1["']/);
+    assert.match(artifactBuilder, /stageNodeRuntime\(appRoot\)/);
+    assert.match(artifactBuilder, /npm["'], \[["']root["'], ["']--global["']\]/);
   });
 
   test("image keeps immutable application files separate from runtime data", () => {
@@ -40,7 +43,12 @@ describe("Tianyi Cloud worker image pipeline", () => {
       imagePreparer,
       /systemctl disable --now catsco-agent\.service/,
     );
-    assert.match(imagePreparer, /nodejs/);
+    assert.doesNotMatch(imagePreparer, /^\s+nodejs \\/m);
+    assert.match(
+      imagePreparer,
+      /runtime\/node\/bin\/node .*dist\/index\.js catsco/,
+    );
+    assert.match(imagePreparer, /catsco-image-packages\.txt/);
   });
 
   test("finalization removes worker identity and machine identity before imaging", () => {
@@ -68,7 +76,10 @@ describe("Tianyi Cloud worker image pipeline", () => {
       /"--resourceID", \$script:BuilderResourceID/,
     );
     assert.match(imageOrchestrator, /"--instanceName", \$script:BuilderName/);
-    assert.match(imageOrchestrator, /Could not prove cleanup of builder/);
+    assert.match(
+      imageOrchestrator,
+      /No temporary builder record remains/,
+    );
     assert.match(imageOrchestrator, /ImageCreateAttempted/);
     assert.match(imageOrchestrator, /Find-ImageByName/);
     assert.match(imageOrchestrator, /"ims", "DeleteImage"/);
@@ -89,8 +100,21 @@ describe("Tianyi Cloud worker image pipeline", () => {
   test("remote transfer and image preparation cannot run indefinitely", () => {
     assert.match(imageOrchestrator, /ArtifactTransferTimeoutMinutes/);
     assert.match(imageOrchestrator, /RemoteBuildTimeoutMinutes/);
+    assert.match(imageOrchestrator, /ApiTimeoutSeconds/);
+    assert.match(
+      imageOrchestrator,
+      /"timeout"[\s\S]*?"ctyun-cli"/,
+    );
     assert.match(imageOrchestrator, /ServerAliveInterval=15/);
     assert.match(imageOrchestrator, /--kill-after=120s/);
+    assert.match(
+      imageOrchestrator,
+      /cloud-init status --wait[^"\r\n]+&& printf ready/,
+    );
+    assert.doesNotMatch(
+      imageOrchestrator,
+      /cloud-init status --wait[^"\r\n]+; printf ready/,
+    );
   });
 
   test("workflow is restricted, secret-scoped, and never publishes the artifact", () => {
@@ -108,6 +132,18 @@ describe("Tianyi Cloud worker image pipeline", () => {
       /ArtifactPath '\$\{\{ steps\.artifact_meta\.outputs\.path \}\}'/,
     );
     assert.match(workflow, /BuildNumber '\$\{\{ github\.run_number \}\}'/);
+    assert.match(workflow, /BuildIdentity '\$\{\{ github\.run_id \}\}'/);
+    assert.match(workflow, /timeout-minutes: 420/);
+    assert.match(workflow, /-BakeTimeoutMinutes 150/);
+    assert.match(workflow, /-CleanupTimeoutMinutes 40/);
+    assert.match(workflow, /-Mode Cleanup/);
+    assert.match(workflow, /steps\.bake\.outcome != 'success'/);
+    assert.match(workflow, /actions: read/);
+    assert.match(workflow, /Find the latest interrupted image run/);
+    assert.match(
+      workflow,
+      /steps\.prior_run\.outputs\.run_id[\s\S]*BuildIdentity/,
+    );
     assert.doesNotMatch(
       workflow,
       /TOS_|aws s3|presign|upload-artifact|public-read/,
@@ -133,7 +169,7 @@ describe("Tianyi Cloud worker image pipeline", () => {
     );
   });
 
-  test("failed image bake deletes the image, builder, and key pair", () => {
+  test("image bake lifecycle is owned, idempotent, and strictly cleaned", () => {
     const sandbox = fs.mkdtempSync(
       path.join(os.tmpdir(), "catsco-worker-image-test-"),
     );
@@ -146,7 +182,12 @@ describe("Tianyi Cloud worker image pipeline", () => {
         JSON.stringify({
           instanceExists: false,
           keyExists: false,
+          keyPairName: "",
           imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
           instanceName: "",
           instanceStatus: "running",
         }),
@@ -174,17 +215,25 @@ const value = flag => {
 fs.appendFileSync(logPath, operation + "\\n");
 let returnObj = {};
 if (operation === "ims ListImage") {
+  const requestedName = value("--imageName");
   returnObj = {
-    images: state.imageExists
-      ? [{ imageID: "image-1", imageName: "catsco-worker-test-999" }]
+    images: state.imageExists && state.imageName === requestedName
+      ? [{
+          imageID: "image-1",
+          imageName: state.imageName,
+          imageStatus: state.imageStatus,
+          description: state.imageDescription,
+          sourceServerID: state.imageSourceServerID,
+        }]
       : [],
   };
 } else if (operation === "ecs ImportEcsKeypair") {
   state.keyExists = true;
+  state.keyPairName = value("--keyPairName");
 } else if (operation === "ecs GetEcsKeypairDetails") {
   returnObj = {
     results: state.keyExists
-      ? [{ keyPairID: "key-1", keyPairName: "catsco-img-key-000999-01" }]
+      ? [{ keyPairID: "key-1", keyPairName: state.keyPairName }]
       : [],
   };
 } else if (operation === "ecs CreateEcsInstance") {
@@ -192,11 +241,18 @@ if (operation === "ims ListImage") {
   state.instanceName = value("--instanceName");
   returnObj = { masterResourceID: "resource-1" };
 } else if (operation === "ecs ListEcsInstances") {
+  const instanceID = state.instanceID || "instance-1";
+  const requestedID = value("--instanceIDList");
+  const requestedName = value("--instanceName");
   const orderLookupStillPending = args.includes("--resourceID");
   returnObj = {
-    results: state.instanceExists && !orderLookupStillPending
+    results:
+      state.instanceExists &&
+      !orderLookupStillPending &&
+      (!requestedID || requestedID === instanceID) &&
+      (!requestedName || requestedName === state.instanceName)
       ? [{
-          instanceID: "instance-1",
+          instanceID,
           resourceID: "resource-1",
           instanceName: state.instanceName,
           instanceStatus: state.instanceStatus,
@@ -208,13 +264,39 @@ if (operation === "ims ListImage") {
   state.instanceStatus = "stopped";
 } else if (operation === "ims CreateImage") {
   state.imageExists = true;
-  returnObj = { images: [] };
+  state.imageName = value("--imageName");
+  state.imageDescription = value("--description");
+  state.imageSourceServerID =
+    process.env.FAKE_CTYUN_SCENARIO === "foreign-image" ||
+    process.env.FAKE_CTYUN_SCENARIO === "foreign-id"
+      ? "instance-foreign"
+      : "instance-1";
+  state.imageStatus =
+    process.env.FAKE_CTYUN_SCENARIO === "success" ? "active" : "error";
+  returnObj = {
+    images:
+      process.env.FAKE_CTYUN_SCENARIO === "success"
+        || process.env.FAKE_CTYUN_SCENARIO === "foreign-id"
+        ? [{ imageID: "image-1" }]
+        : [],
+  };
 } else if (operation === "ims GetImageDetail") {
   returnObj = {
     images: state.imageExists
-      ? [{ imageID: "image-1", imageStatus: "error", taskProgress: "100" }]
+      ? [{
+          imageID: "image-1",
+          imageName: state.imageName,
+          imageStatus: state.imageStatus,
+          taskProgress: "100",
+          description: state.imageDescription,
+          sourceServerID: state.imageSourceServerID,
+        }]
       : [],
   };
+} else if (operation === "ims UpdateImage") {
+  state.imageName = value("--imageName");
+  state.imageDescription = value("--description");
+  state.imageStatus = "active";
 } else if (operation === "ims DeleteImage") {
   state.imageExists = false;
 } else if (operation === "ecs DeleteEcsInstance") {
@@ -245,58 +327,131 @@ fs.writeFileSync(output, "private");
 fs.writeFileSync(output + ".pub", "ssh-rsa AAAA catsco-test");
 `,
       );
-      for (const command of ["ssh", "scp", "timeout"]) {
+      for (const command of ["ssh", "scp"]) {
         writeCommand(sandbox, command, "process.exit(0);");
       }
-
-      const result = spawnSync(
-        "pwsh",
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-File",
-          imageOrchestratorPath,
-          "-Mode",
-          "Create",
-          "-SourceRef",
-          "HEAD",
-          "-ArtifactPath",
-          artifactPath,
-          "-ArtifactSha256",
-          artifactSha,
-          "-BuildNumber",
-          "999",
-          "-BuildAttempt",
-          "1",
-          "-ImageName",
-          "catsco-worker-test-999",
-          "-RegionID",
-          "region-test",
-          "-AzName",
-          "az-test",
-          "-BaseImageID",
-          "base-image-test",
-          "-FlavorID",
-          "flavor-test",
-          "-VpcID",
-          "vpc-test",
-          "-SubnetID",
-          "subnet-test",
-          "-SecurityGroupID",
-          "security-group-test",
-        ],
-        {
-          cwd: root,
-          encoding: "utf8",
-          timeout: 30_000,
-          env: {
-            ...process.env,
-            PATH: `${sandbox}${path.delimiter}${process.env.PATH || ""}`,
-            FAKE_CTYUN_STATE: statePath,
-            FAKE_CTYUN_LOG: logPath,
-          },
-        },
+      writeCommand(
+        sandbox,
+        "timeout",
+        `
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+const args = process.argv.slice(2);
+const durationIndex = args.findIndex(arg => !arg.startsWith("-"));
+if (durationIndex < 0 || !args[durationIndex + 1]) process.exit(2);
+const command = args[durationIndex + 1];
+const commandPath = path.join(path.dirname(process.argv[1]), command);
+const result = spawnSync(
+  process.execPath,
+  [commandPath, ...args.slice(durationIndex + 2)],
+  { stdio: "inherit" },
+);
+process.exit(result.status ?? 1);
+`,
       );
+
+      const runBake = (
+        buildNumber: string,
+        imageName: string,
+        scenario = "",
+      ) =>
+        spawnSync(
+          "pwsh",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            imageOrchestratorPath,
+            "-Mode",
+            "Create",
+            "-SourceRef",
+            "HEAD",
+            "-ArtifactPath",
+            artifactPath,
+            "-ArtifactSha256",
+            artifactSha,
+            "-BuildNumber",
+            buildNumber,
+            "-BuildAttempt",
+            "1",
+            "-ImageName",
+            imageName,
+            "-RegionID",
+            "region-test",
+            "-AzName",
+            "az-test",
+            "-BaseImageID",
+            "base-image-test",
+            "-FlavorID",
+            "flavor-test",
+            "-VpcID",
+            "vpc-test",
+            "-SubnetID",
+            "subnet-test",
+            "-SecurityGroupID",
+            "security-group-test",
+          ],
+          {
+            cwd: root,
+            encoding: "utf8",
+            timeout: 30_000,
+            env: {
+              ...process.env,
+              PATH: `${sandbox}${path.delimiter}${process.env.PATH || ""}`,
+              FAKE_CTYUN_STATE: statePath,
+              FAKE_CTYUN_LOG: logPath,
+              FAKE_CTYUN_SCENARIO: scenario,
+            },
+          },
+        );
+
+      const runCleanup = (buildNumber: string, imageName: string) =>
+        spawnSync(
+          "pwsh",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            imageOrchestratorPath,
+            "-Mode",
+            "Cleanup",
+            "-SourceRef",
+            "HEAD",
+            "-BuildNumber",
+            buildNumber,
+            "-BuildAttempt",
+            "1",
+            "-ImageName",
+            imageName,
+            "-RegionID",
+            "region-test",
+            "-AzName",
+            "az-test",
+            "-BaseImageID",
+            "base-image-test",
+            "-FlavorID",
+            "flavor-test",
+            "-VpcID",
+            "vpc-test",
+            "-SubnetID",
+            "subnet-test",
+            "-SecurityGroupID",
+            "security-group-test",
+          ],
+          {
+            cwd: root,
+            encoding: "utf8",
+            timeout: 30_000,
+            env: {
+              ...process.env,
+              PATH: `${sandbox}${path.delimiter}${process.env.PATH || ""}`,
+              FAKE_CTYUN_STATE: statePath,
+              FAKE_CTYUN_LOG: logPath,
+            },
+          },
+        );
+
+      const result = runBake("999", "catsco-worker-test-999");
 
       assert.notEqual(
         result.status,
@@ -315,13 +470,325 @@ fs.writeFileSync(output + ".pub", "ssh-rsa AAAA catsco-test");
         calls.indexOf("ims DeleteImage") <
           calls.indexOf("ecs DeleteEcsInstance"),
       );
-      assert.deepEqual(JSON.parse(fs.readFileSync(statePath, "utf8")), {
-        instanceExists: false,
-        keyExists: false,
-        imageExists: false,
-        instanceName: "catsco-img-000999-01",
-        instanceStatus: "stopped",
-      });
+      const finalState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(finalState.instanceExists, false);
+      assert.equal(finalState.keyExists, false);
+      assert.equal(finalState.imageExists, false);
+      assert.equal(finalState.instanceName, "catsco-img-000999-01");
+      assert.equal(finalState.instanceStatus, "stopped");
+      assert.equal(finalState.imageSourceServerID, "instance-1");
+      assert.match(
+        finalState.imageName,
+        /^catsco-bake-[0-9a-f]{8}-[0-9a-f]{8}$/,
+      );
+      assert.match(
+        finalState.imageDescription,
+        /^CatsCo worker \S+ commit [0-9a-f]{40} bake 000999-01$/,
+      );
+
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: false,
+          keyExists: false,
+          keyPairName: "",
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: "",
+          instanceStatus: "running",
+        }),
+      );
+      const foreignResult = runBake(
+        "1000",
+        "catsco-worker-test-1000",
+        "foreign-image",
+      );
+      assert.notEqual(foreignResult.status, 0);
+      assert.match(
+        `${foreignResult.stdout}\n${foreignResult.stderr}`,
+        /Refusing to delete image .*sourceServerID 'instance-foreign'/,
+      );
+      const foreignCalls = fs.readFileSync(logPath, "utf8");
+      assert.doesNotMatch(foreignCalls, /ims DeleteImage/);
+      assert.match(foreignCalls, /ecs DeleteEcsInstance/);
+      assert.match(foreignCalls, /ecs DeleteEcsKeypair/);
+      const foreignState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(foreignState.imageExists, true);
+      assert.equal(foreignState.instanceExists, false);
+      assert.equal(foreignState.keyExists, false);
+
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: false,
+          keyExists: false,
+          keyPairName: "",
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: "",
+          instanceStatus: "running",
+        }),
+      );
+      const foreignIdResult = runBake(
+        "1005",
+        "catsco-worker-test-1005",
+        "foreign-id",
+      );
+      assert.notEqual(foreignIdResult.status, 0);
+      assert.match(
+        `${foreignIdResult.stdout}\n${foreignIdResult.stderr}`,
+        /Refusing to delete image[\s\S]*does not belong to this bake/,
+      );
+      const foreignIdCalls = fs.readFileSync(logPath, "utf8");
+      assert.doesNotMatch(foreignIdCalls, /ims DeleteImage/);
+      assert.match(foreignIdCalls, /ecs DeleteEcsInstance/);
+      assert.match(foreignIdCalls, /ecs DeleteEcsKeypair/);
+
+      const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim();
+      const version = JSON.parse(read("package.json")).version;
+      const releaseIdentity = `CatsCo worker ${version} commit ${commit}`;
+      const releaseDescription = `${releaseIdentity} ready`;
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: false,
+          keyExists: false,
+          keyPairName: "",
+          imageExists: true,
+          imageName: "catsco-worker-existing",
+          imageDescription: releaseDescription,
+          imageSourceServerID: "instance-prior",
+          imageStatus: "active",
+          instanceName: "",
+          instanceStatus: "stopped",
+        }),
+      );
+      const reuseResult = runBake("1001", "catsco-worker-existing");
+      assert.equal(
+        reuseResult.status,
+        0,
+        `${reuseResult.stdout}\n${reuseResult.stderr}`,
+      );
+      assert.match(reuseResult.stdout, /"result":\s*"reused"/);
+      const reuseCalls = fs.readFileSync(logPath, "utf8");
+      assert.doesNotMatch(reuseCalls, /ecs CreateEcsInstance/);
+      assert.doesNotMatch(reuseCalls, /ecs ImportEcsKeypair/);
+
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: true,
+          keyExists: true,
+          keyPairName: "catsco-img-key-001003-01",
+          imageExists: true,
+          imageName: "catsco-worker-pending",
+          imageDescription: `${releaseIdentity} bake 001003-01`,
+          imageSourceServerID: "instance-1",
+          imageStatus: "active",
+          instanceName: "catsco-img-001003-01",
+          instanceStatus: "stopped",
+        }),
+      );
+      const recoveryResult = runBake("1004", "catsco-worker-pending");
+      assert.equal(
+        recoveryResult.status,
+        0,
+        `${recoveryResult.stdout}\n${recoveryResult.stderr}`,
+      );
+      assert.match(recoveryResult.stdout, /"result":\s*"recovered"/);
+      const recoveryCalls = fs.readFileSync(logPath, "utf8");
+      assert.doesNotMatch(recoveryCalls, /ecs CreateEcsInstance/);
+      assert.match(recoveryCalls, /ecs DeleteEcsInstance/);
+      assert.match(recoveryCalls, /ecs DeleteEcsKeypair/);
+      assert.match(recoveryCalls, /ims UpdateImage/);
+      const recoveryState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(recoveryState.imageExists, true);
+      assert.equal(recoveryState.imageDescription, releaseDescription);
+      assert.equal(recoveryState.instanceExists, false);
+      assert.equal(recoveryState.keyExists, false);
+
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: true,
+          instanceID: "instance-new",
+          keyExists: true,
+          keyPairName: "catsco-img-key-001008-01",
+          imageExists: true,
+          imageName: "catsco-pending-reused",
+          imageDescription: `${releaseIdentity} bake 001008-01`,
+          imageSourceServerID: "instance-prior",
+          imageStatus: "active",
+          instanceName: "catsco-img-001008-01",
+          instanceStatus: "running",
+        }),
+      );
+      const reusedNameRecoveryResult = runBake(
+        "1008",
+        "catsco-pending-reused",
+      );
+      assert.equal(
+        reusedNameRecoveryResult.status,
+        0,
+        `${reusedNameRecoveryResult.stdout}\n${reusedNameRecoveryResult.stderr}`,
+      );
+      const reusedNameRecoveryCalls = fs.readFileSync(logPath, "utf8");
+      assert.doesNotMatch(
+        reusedNameRecoveryCalls,
+        /ecs DeleteEcsInstance/,
+      );
+      assert.match(reusedNameRecoveryCalls, /ecs DeleteEcsKeypair/);
+      const reusedNameRecoveryState = JSON.parse(
+        fs.readFileSync(statePath, "utf8"),
+      );
+      assert.equal(reusedNameRecoveryState.instanceExists, true);
+      assert.equal(reusedNameRecoveryState.instanceID, "instance-new");
+      assert.equal(
+        reusedNameRecoveryState.imageDescription,
+        releaseDescription,
+      );
+
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: false,
+          keyExists: false,
+          keyPairName: "",
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: "",
+          instanceStatus: "running",
+        }),
+      );
+      const successResult = runBake(
+        "1002",
+        "catsco-worker-published",
+        "success",
+      );
+      assert.equal(
+        successResult.status,
+        0,
+        `${successResult.stdout}\n${successResult.stderr}`,
+      );
+      assert.match(successResult.stdout, /"result":\s*"created"/);
+      const successCalls = fs.readFileSync(logPath, "utf8");
+      assert.match(successCalls, /ims UpdateImage/);
+      assert.match(successCalls, /ecs DeleteEcsInstance/);
+      assert.match(successCalls, /ecs DeleteEcsKeypair/);
+      const successState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(successState.imageExists, true);
+      assert.equal(successState.imageName, "catsco-worker-published");
+      assert.equal(successState.imageDescription, releaseDescription);
+      assert.equal(successState.imageStatus, "active");
+      assert.equal(successState.instanceExists, false);
+      assert.equal(successState.keyExists, false);
+
+      const cleanupBuildNumber = "1006";
+      const cleanupBakeId = "001006-01";
+      const cleanupToken = crypto
+        .createHash("sha256")
+        .update(`${cleanupBuildNumber}/1/${commit}`)
+        .digest("hex")
+        .slice(0, 8);
+      const cleanupImageName =
+        `catsco-bake-${commit.slice(0, 8)}-${cleanupToken}`;
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: true,
+          keyExists: true,
+          keyPairName: `catsco-img-key-${cleanupBakeId}`,
+          imageExists: true,
+          imageName: cleanupImageName,
+          imageDescription: `${releaseIdentity} bake ${cleanupBakeId}`,
+          imageSourceServerID: "instance-1",
+          imageStatus: "error",
+          instanceName: `catsco-img-${cleanupBakeId}`,
+          instanceStatus: "stopped",
+        }),
+      );
+      const cleanupResult = runCleanup(
+        cleanupBuildNumber,
+        "catsco-worker-cleanup",
+      );
+      assert.equal(
+        cleanupResult.status,
+        0,
+        `${cleanupResult.stdout}\n${cleanupResult.stderr}`,
+      );
+      assert.match(cleanupResult.stdout, /"result":\s*"cleaned"/);
+      const cleanupCalls = fs.readFileSync(logPath, "utf8");
+      assert.match(cleanupCalls, /ims DeleteImage/);
+      assert.match(cleanupCalls, /ecs DeleteEcsInstance/);
+      assert.match(cleanupCalls, /ecs DeleteEcsKeypair/);
+      const cleanupState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(cleanupState.imageExists, false);
+      assert.equal(cleanupState.instanceExists, false);
+      assert.equal(cleanupState.keyExists, false);
+
+      const foreignCleanupBuildNumber = "1007";
+      const foreignCleanupBakeId = "001007-01";
+      const foreignCleanupToken = crypto
+        .createHash("sha256")
+        .update(`${foreignCleanupBuildNumber}/1/${commit}`)
+        .digest("hex")
+        .slice(0, 8);
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: true,
+          keyExists: true,
+          keyPairName: `catsco-img-key-${foreignCleanupBakeId}`,
+          imageExists: true,
+          imageName:
+            `catsco-bake-${commit.slice(0, 8)}-${foreignCleanupToken}`,
+          imageDescription:
+            `${releaseIdentity} bake ${foreignCleanupBakeId}`,
+          imageSourceServerID: "instance-foreign",
+          imageStatus: "error",
+          instanceName: `catsco-img-${foreignCleanupBakeId}`,
+          instanceStatus: "stopped",
+        }),
+      );
+      const foreignCleanupResult = runCleanup(
+        foreignCleanupBuildNumber,
+        "catsco-worker-cleanup-foreign",
+      );
+      assert.notEqual(foreignCleanupResult.status, 0);
+      assert.match(
+        `${foreignCleanupResult.stdout}\n${foreignCleanupResult.stderr}`,
+        /Refusing exact cleanup because the temporary image ownership metadata does not match/,
+      );
+      const foreignCleanupCalls = fs.readFileSync(logPath, "utf8");
+      assert.doesNotMatch(foreignCleanupCalls, /ims DeleteImage/);
+      assert.match(foreignCleanupCalls, /ecs DeleteEcsInstance/);
+      assert.match(foreignCleanupCalls, /ecs DeleteEcsKeypair/);
+      const foreignCleanupState = JSON.parse(
+        fs.readFileSync(statePath, "utf8"),
+      );
+      assert.equal(foreignCleanupState.imageExists, true);
+      assert.equal(foreignCleanupState.instanceExists, false);
+      assert.equal(foreignCleanupState.keyExists, false);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

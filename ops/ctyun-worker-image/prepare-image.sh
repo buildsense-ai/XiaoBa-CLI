@@ -78,7 +78,6 @@ apt-get install -y --no-install-recommends \
   curl \
   git \
   jq \
-  nodejs \
   poppler-utils \
   ripgrep \
   sudo \
@@ -108,6 +107,8 @@ MANIFEST_COMMIT="$(jq -r '.commit' "$TEMP_EXTRACT/app/worker-release.json")"
 [[ "$MANIFEST_COMMIT" == "$EXPECTED_COMMIT" ]] || die "artifact commit mismatch"
 
 cp -a "$TEMP_EXTRACT/app/." "$RELEASE_ROOT/"
+[[ -x "$RELEASE_ROOT/runtime/node/bin/node" ]] || die "bundled Node.js runtime missing"
+[[ -x "$RELEASE_ROOT/runtime/node/bin/npm" ]] || die "bundled npm runtime missing"
 ln -sfn "$RELEASE_ROOT" /opt/catsco/current
 chown -R root:root /opt/catsco
 chown -R catsco-agent:catsco-agent /srv/catsco-agent
@@ -116,9 +117,12 @@ chmod 0755 /opt/catsco /opt/catsco/releases "$RELEASE_ROOT"
 cat >/usr/local/bin/catsco-agent <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-exec /usr/bin/node /opt/catsco/current/dist/index.js "$@"
+exec /opt/catsco/current/runtime/node/bin/node /opt/catsco/current/dist/index.js "$@"
 EOF
 chmod 0755 /usr/local/bin/catsco-agent
+ln -sfn /opt/catsco/current/runtime/node/bin/node /usr/local/bin/node
+ln -sfn /opt/catsco/current/runtime/node/bin/npm /usr/local/bin/npm
+ln -sfn /opt/catsco/current/runtime/node/bin/npx /usr/local/bin/npx
 
 cat >/etc/systemd/system/catsco-agent.service <<'EOF'
 [Unit]
@@ -139,7 +143,7 @@ Environment=XIAOBA_USER_DATA_DIR=/srv/catsco-agent
 Environment=XIAOBA_RUNTIME_ROOT=/srv/catsco-agent
 Environment=XIAOBA_RUNTIME_SURFACE=catscompany
 EnvironmentFile=-/srv/catsco-agent/.env
-ExecStart=/usr/bin/node /opt/catsco/current/dist/index.js catsco
+ExecStart=/opt/catsco/current/runtime/node/bin/node /opt/catsco/current/dist/index.js catsco
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
@@ -155,9 +159,13 @@ systemctl disable --now catsco-agent.service 2>/dev/null || true
 
 sudo -u catsco-agent -- bash -c '
   cd /opt/catsco/current
-  node -e '\''require("sharp"); const canvas = require("@napi-rs/canvas"); canvas.createCanvas(2, 2); require("deasync")'\''
-  node dist/index.js --version >/dev/null
+  runtime/node/bin/node -e '\''require("sharp"); const canvas = require("@napi-rs/canvas"); canvas.createCanvas(2, 2); require("deasync")'\''
+  runtime/node/bin/node dist/index.js --version >/dev/null
+  runtime/node/bin/npm --version >/dev/null
 '
+
+dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort >/etc/catsco-image-packages.txt
+chmod 0644 /etc/catsco-image-packages.txt
 
 cat >/etc/catsco-image.json <<EOF
 {
