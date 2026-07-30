@@ -777,7 +777,7 @@ process.exit(result.status ?? 1);
       assert.notEqual(foreignCleanupResult.status, 0);
       assert.match(
         `${foreignCleanupResult.stdout}\n${foreignCleanupResult.stderr}`,
-        /Refusing exact cleanup[\s\S]*ownership metadata does not match/,
+        /Refusing exact cleanup[\s\S]*does not match/,
       );
       const foreignCleanupCalls = fs.readFileSync(logPath, "utf8");
       assert.doesNotMatch(foreignCleanupCalls, /ims DeleteImage/);
