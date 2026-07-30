@@ -40,13 +40,19 @@ describe('Tianyi Cloud worker image pipeline', () => {
     assert.doesNotMatch(imageOrchestrator, /worker1|worker2|ck-work/);
   });
 
-  test('tag workflow publishes in China before optional image baking', () => {
+  test('tag workflow publishes a private China artifact before optional image baking', () => {
     assert.match(workflow, /tags:\s*\n\s*- 'v\*'/);
-    assert.match(workflow, /tos-cn-guangzhou\.volces\.com\/worker/);
-    assert.match(workflow, /put-object-acl/);
-    assert.match(workflow, /--acl public-read/);
+    assert.match(workflow, /worker-private\//);
+    assert.match(workflow, /aws s3 presign/);
+    assert.match(workflow, /--expires-in 3600/);
+    assert.doesNotMatch(workflow, /public-read/);
     assert.match(workflow, /needs: artifact/);
     assert.match(workflow, /CTYUN_AUTO_BAKE_WORKER_IMAGE/);
+  });
+
+  test('orchestrator never prints the private artifact URL', () => {
+    assert.match(imageOrchestrator, /signed URL redacted/);
+    assert.doesNotMatch(imageOrchestrator, /artifactSource = \$ArtifactUrl/);
   });
 });
 

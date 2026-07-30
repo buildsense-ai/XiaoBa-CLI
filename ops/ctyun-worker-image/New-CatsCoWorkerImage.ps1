@@ -271,7 +271,7 @@ $plan = [ordered]@{
     subnetID = $SubnetID
     securityGroupID = $SecurityGroupID
     bootDisk = "$BootDiskType $BootDiskSize GiB"
-    artifactSource = $(if ($ArtifactUrl) { $ArtifactUrl } else { "local git archive built on temporary ECS" })
+    artifactSource = $(if ($ArtifactUrl) { "private HTTPS artifact (signed URL redacted)" } else { "local git archive built on temporary ECS" })
     mutatesExistingWorkers = $false
 }
 $plan | ConvertTo-Json

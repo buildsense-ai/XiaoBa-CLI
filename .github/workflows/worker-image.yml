@@ -33,6 +33,7 @@ jobs:
     environment: release-prod
     outputs:
       artifact_name: ${{ steps.artifact_meta.outputs.name }}
+      artifact_key: ${{ steps.artifact_meta.outputs.key }}
       artifact_sha256: ${{ steps.artifact_meta.outputs.sha256 }}
     env:
       VOLC_TOS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
@@ -74,6 +75,7 @@ jobs:
           [ "${#artifacts[@]}" -eq 1 ]
           artifact="${artifacts[0]}"
           echo "name=$(basename "$artifact")" >> "$GITHUB_OUTPUT"
+          echo "key=worker-private/$(basename "$artifact")" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "$artifact" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Upload workflow artifact
@@ -98,9 +100,9 @@ jobs:
           set -euo pipefail
           SOURCE_ENDPOINT="https://tos-s3-${TOS_SOURCE_REGION}.volces.com"
           for file in release/worker/*; do
-            aws s3 cp "$file" "s3://${TOS_SOURCE_BUCKET}/worker/$(basename "$file")" \
+            aws s3 cp "$file" "s3://${TOS_SOURCE_BUCKET}/worker-private/$(basename "$file")" \
               --endpoint-url "$SOURCE_ENDPOINT" \
-              --cache-control "public, max-age=31536000, immutable" \
+              --cache-control "private, max-age=31536000, immutable" \
               --only-show-errors
           done
 
@@ -109,7 +111,7 @@ jobs:
           set -euo pipefail
           TARGET_ENDPOINT="https://tos-s3-${TOS_TARGET_REGION}.volces.com"
           for file in release/worker/*; do
-            key="worker/$(basename "$file")"
+            key="worker-private/$(basename "$file")"
             for attempt in $(seq 1 36); do
               if aws s3api head-object \
                 --bucket "$TOS_TARGET_BUCKET" \
@@ -126,20 +128,6 @@ jobs:
             done
           done
 
-      - name: Expose replicated artifacts to the temporary builder
-        run: |
-          set -euo pipefail
-          TARGET_ENDPOINT="https://tos-s3-${TOS_TARGET_REGION}.volces.com"
-          for file in release/worker/*; do
-            key="worker/$(basename "$file")"
-            aws s3api put-object-acl \
-              --bucket "$TOS_TARGET_BUCKET" \
-              --key "$key" \
-              --acl public-read \
-              --endpoint-url "$TARGET_ENDPOINT" \
-              >/dev/null
-          done
-
   image:
     name: Bake Tianyi Cloud private image
     needs: artifact
@@ -151,6 +139,11 @@ jobs:
     env:
       CTYUN_AK: ${{ secrets.CTYUN_AK }}
       CTYUN_SK: ${{ secrets.CTYUN_SK }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: 'true'
+      TOS_TARGET_BUCKET: github-release
+      TOS_TARGET_REGION: cn-guangzhou
     steps:
       - name: Checkout exact release source
         uses: actions/checkout@v4
@@ -168,13 +161,32 @@ jobs:
           echo "$HOME/.ctyun-cli/bin" >> "$GITHUB_PATH"
           "$HOME/.ctyun-cli/bin/ctyun-cli" version
 
+      - name: Create short-lived private artifact URL
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y awscli
+          fi
+          aws configure set default.s3.addressing_style virtual
+          TARGET_ENDPOINT="https://tos-s3-${TOS_TARGET_REGION}.volces.com"
+          artifact_url="$(
+            aws s3 presign \
+              "s3://${TOS_TARGET_BUCKET}/${{ needs.artifact.outputs.artifact_key }}" \
+              --expires-in 3600 \
+              --endpoint-url "$TARGET_ENDPOINT"
+          )"
+          echo "::add-mask::$artifact_url"
+          echo "WORKER_ARTIFACT_URL=$artifact_url" >> "$GITHUB_ENV"
+
       - name: Bake private ECS image
         shell: pwsh
         run: |
           ./ops/ctyun-worker-image/New-CatsCoWorkerImage.ps1 `
             -Mode Create `
             -SourceRef '${{ github.sha }}' `
-            -ArtifactUrl 'https://github-release.tos-cn-guangzhou.volces.com/worker/${{ needs.artifact.outputs.artifact_name }}' `
+            -ArtifactUrl $env:WORKER_ARTIFACT_URL `
             -ArtifactSha256 '${{ needs.artifact.outputs.artifact_sha256 }}' `
             -RegionID '${{ vars.CTYUN_WORKER_REGION_ID }}' `
             -AzName '${{ vars.CTYUN_WORKER_AZ_NAME }}' `

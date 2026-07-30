@@ -8,6 +8,9 @@ session, skill installation, or runtime `.env`.
 ## Release Policy
 
 - Every stable `v*` tag builds and publishes an immutable worker artifact.
+- Worker artifacts use the private `worker-private/` TOS prefix. They are never
+  exposed through the public desktop installer path; the disposable builder
+  receives a masked, one-hour presigned URL.
 - A Tianyi Cloud private ECS image is baked only for a stable release selected
   for provisioning, or when the base OS/system dependencies change.
 - `CTYUN_AUTO_BAKE_WORKER_IMAGE=true` makes every stable tag bake an image;
@@ -59,10 +62,37 @@ pwsh ops/ctyun-worker-image/New-CatsCoWorkerImage.ps1 `
 Run the same command with `-Mode Create` only after reviewing the plan. The
 machine running it needs `ctyun-cli`, Git, OpenSSH, SCP, and `ssh-keygen`.
 
-CI passes `-ArtifactUrl` and `-ArtifactSha256`, so the temporary builder
-downloads the source-free release directly from Guangzhou TOS. Local emergency
-bakes may omit those options; in that case the temporary builder receives a
-`git archive` without repository history and removes it before imaging.
+CI passes a one-hour presigned `-ArtifactUrl` and `-ArtifactSha256`, so the
+temporary builder downloads the private, source-free release directly from
+Guangzhou TOS. The signed URL is masked in GitHub and redacted from the bake
+plan. Local emergency bakes may omit those options; in that case the temporary
+builder receives a `git archive` without repository history and removes it
+before imaging.
+
+The resulting system image is not a TOS object. `CreateImage` writes it to the
+Tianyi Cloud private image repository for the configured region and account.
+
+## Managed Worker Updates
+
+Workers must not receive Tianyi Cloud account credentials. CatsCompany's
+control plane should list private images by the `product=catsco-worker` label
+and compare the newest image version with `/etc/catsco-image.json` reported by
+each worker heartbeat.
+
+For future paid workers, mount a separate persistent data disk at
+`/srv/catsco-agent`. An owner-approved update can then:
+
+1. mark the worker as draining and stop accepting new tasks;
+2. wait for the active task to finish, then stop `catsco-agent.service`;
+3. back up the data disk and switch the ECS system disk to the selected private
+   image while retaining the instance, EIP and data disk;
+4. remount `/srv/catsco-agent`, run migrations, start the service and verify its
+   CatsCompany heartbeat;
+5. return to the old image if health checks fail.
+
+The web UI should show the expected maintenance window and require explicit
+owner confirmation. Existing workers whose data still lives on the system disk
+must be migrated to a separate data disk before image-based updates are enabled.
 
 ## First-Boot Contract
 
