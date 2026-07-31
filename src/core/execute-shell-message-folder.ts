@@ -227,7 +227,6 @@ function buildFoldedExecuteShellContent(
   const artifact = persistToolResultArtifact({
     artifactId: `sh_${hash.slice(0, 16)}`,
     toolName: 'execute_shell',
-    toolCallId: candidate.message.tool_call_id,
     sha256: hash,
     rawText: candidate.rawText,
     store: options.artifactStore,

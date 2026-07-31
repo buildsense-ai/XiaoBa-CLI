@@ -210,7 +210,6 @@ function buildFoldedReadFileContent(
   const artifact = persistToolResultArtifact({
     artifactId: `rf_${hash.slice(0, 16)}`,
     toolName: 'read_file',
-    toolCallId: candidate.message.tool_call_id,
     sha256: hash,
     rawText: candidate.rawText,
     store: options.artifactStore,
