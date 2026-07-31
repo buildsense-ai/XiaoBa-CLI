@@ -204,14 +204,23 @@ export class CheckpointCompactionCoordinator {
   ): Promise<Message[]> {
     request.signal?.throwIfAborted();
     const { durable, transient } = splitDurableAndTransient(messages);
+    const priorCheckpoint = findLatestCheckpoint(durable);
     const stableSystemMessages = durable.filter(message => (
       message.role === 'system' && !isCompactionBoundary(message)
     ));
-    // A prior checkpoint is durable evidence for the next checkpoint. It must be
-    // summarized again, but is not retained verbatim in the compacted output.
-    const sessionMessages = durable.filter(message => message.role !== 'system');
+    const sessionMessages = priorCheckpoint
+      ? durable
+        .slice(priorCheckpoint.sourceStartIndex)
+        .filter(message => message.role !== 'system' && !isCheckpointSummary(message))
+      : durable.filter(message => message.role !== 'system');
     if (sessionMessages.length === 0) {
-      return messages;
+      if (!priorCheckpoint || priorCheckpoint.sourceStartIndex >= durable.length) {
+        return messages;
+      }
+      // A previous checkpoint may have retained recent verbatim messages that
+      // are now redundant. Prune only that mutable tail; the old checkpoint
+      // prefix remains byte-identical for provider cache reuse.
+      return [...durable.slice(0, priorCheckpoint.summaryIndex + 1), ...transient];
     }
 
     const summary = await this.generateContinuationSummary(
@@ -219,6 +228,7 @@ export class CheckpointCompactionCoordinator {
       request.phase,
       request.sessionKey,
       request.signal,
+      priorCheckpoint?.summary,
     );
     const retainedContext = selectRetainedContextMessages(
       sessionMessages,
@@ -233,18 +243,22 @@ export class CheckpointCompactionCoordinator {
       role: 'system',
       content: [
         CHECKPOINT_COMPACTION_BOUNDARY_PREFIX,
+        `kind=${priorCheckpoint ? 'delta' : 'base'}`,
         `phase=${request.phase}`,
         activeEpisodeId ? `episode=${activeEpisodeId}` : '',
         stableBoundary ? `last_stable=${stableBoundary}` : '',
         `tokens_before=${usage.usedTokens}`,
       ].filter(Boolean).join(' '),
       __checkpointBoundary: true,
+      __checkpointRetainedCount: retainedContext.length,
+      __checkpointKind: priorCheckpoint ? 'delta' : 'base',
       __checkpointPhase: request.phase,
     };
     const summaryMessage: Message = {
       role: 'user',
       content: `${CHECKPOINT_SUMMARY_PREFIX}\n\n${summary}`,
       __checkpointSummary: true,
+      __checkpointKind: priorCheckpoint ? 'delta' : 'base',
       __checkpointPhase: request.phase,
       ...(activeEpisodeId ? { __episodeId: activeEpisodeId } : {}),
       ...(Object.keys(remoteContextWatermarks).length > 0
@@ -253,7 +267,9 @@ export class CheckpointCompactionCoordinator {
     };
 
     return [
-      ...stableSystemMessages,
+      ...(priorCheckpoint
+        ? durable.slice(0, priorCheckpoint.summaryIndex + 1)
+        : stableSystemMessages),
       boundary,
       summaryMessage,
       ...retainedContext,
@@ -266,6 +282,7 @@ export class CheckpointCompactionCoordinator {
     phase: CheckpointCompactionPhase,
     promptCacheScopeKey: string,
     signal?: AbortSignal,
+    priorSummary?: Message,
   ): Promise<string> {
     let attemptMessages = prepareSummarySourceMessages(sourceMessages);
     let omittedMessageCount = 0;
@@ -276,8 +293,25 @@ export class CheckpointCompactionCoordinator {
       const promptMessages: Message[] = [
         {
           role: 'system',
-          content: buildCheckpointCompactionPrompt(phase, omittedMessageCount),
+          content: buildCheckpointCompactionPrompt(
+            phase,
+            omittedMessageCount,
+            Boolean(priorSummary),
+          ),
         },
+        ...(priorSummary
+          ? [{
+            role: 'user' as const,
+            content: [
+              '[checkpoint_compaction_prior_summary]',
+              'The following checkpoint is immutable provider-visible history.',
+              'Do not rewrite or repeat it; summarize only durable changes that follow it.',
+              '',
+              String(priorSummary.content || ''),
+            ].join('\n'),
+            __checkpointSummary: true,
+          }]
+          : []),
         ...attemptMessages,
       ];
       let streamed = '';
@@ -373,6 +407,7 @@ function prepareSummarySourceMessages(messages: Message[]): Message[] {
 export function buildCheckpointCompactionPrompt(
   phase: CheckpointCompactionPhase,
   omittedMessageCount = 0,
+  isDelta = false,
 ): string {
   const base = readRequiredBundledPromptFile('checkpoint-compact-system.md').trim();
   const phaseInstruction = phase === 'mid_turn'
@@ -397,7 +432,16 @@ export function buildCheckpointCompactionPrompt(
   const omissionInstruction = omittedMessageCount > 0
     ? `${omittedMessageCount} oldest source message(s) were omitted after a provider context-length error. Explicitly mark missing evidence as unknown and recommend retrieval instead of guessing.`
     : '';
-  return [base, phaseInstruction, omissionInstruction].filter(Boolean).join('\n\n');
+  const deltaInstruction = isDelta
+    ? [
+      'A prior continuation checkpoint is already part of the provider-visible transcript.',
+      'Treat that prior checkpoint as immutable evidence.',
+      'Summarize only new durable messages after that checkpoint as a delta; do not rewrite the prior summary.',
+    ].join(' ')
+    : '';
+  return [base, phaseInstruction, deltaInstruction, omissionInstruction]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 export function splitDurableAndTransient(messages: Message[]): {
@@ -568,7 +612,7 @@ function buildCompactionAudit(
   retainedPendingCount: number;
   retainedUserEvidenceCount: number;
 } {
-  const summary = messages.find(message => message.__checkpointSummary);
+  const summary = [...messages].reverse().find(message => message.__checkpointSummary);
   const summaryText = typeof summary?.content === 'string' ? summary.content : '';
   return {
     summaryChars: summaryText.length,
@@ -580,6 +624,42 @@ function buildCompactionAudit(
       && message.content.startsWith(CHECKPOINT_USER_INPUT_EVIDENCE_PREFIX)
     )).length,
   };
+}
+
+interface LatestCheckpoint {
+  summary: Message;
+  summaryIndex: number;
+  sourceStartIndex: number;
+}
+
+/**
+ * Finds the latest durable checkpoint and skips its retained verbatim tail.
+ *
+ * Retained messages are deliberately excluded from the next summary source:
+ * they were already provider-visible after the previous checkpoint. The
+ * boundary stores their count so a later compaction can append a delta without
+ * rewriting the old cacheable prefix.
+ */
+function findLatestCheckpoint(messages: Message[]): LatestCheckpoint | undefined {
+  for (let summaryIndex = messages.length - 1; summaryIndex >= 0; summaryIndex--) {
+    const summary = messages[summaryIndex];
+    if (!isCheckpointSummary(summary)) continue;
+
+    let boundaryIndex = summaryIndex - 1;
+    while (boundaryIndex >= 0 && !isCompactionBoundary(messages[boundaryIndex])) {
+      boundaryIndex--;
+    }
+    const retainedCount = Number(messages[boundaryIndex]?.__checkpointRetainedCount);
+    const safeRetainedCount = Number.isFinite(retainedCount) && retainedCount >= 0
+      ? Math.floor(retainedCount)
+      : 0;
+    return {
+      summary,
+      summaryIndex,
+      sourceStartIndex: Math.min(messages.length, summaryIndex + 1 + safeRetainedCount),
+    };
+  }
+  return undefined;
 }
 
 function findLatestEpisodeId(messages: Message[]): string | undefined {

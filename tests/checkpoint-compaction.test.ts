@@ -178,6 +178,62 @@ test('a later checkpoint summarizes the prior checkpoint instead of forgetting i
     String(message.content).includes('checkpoint one exact fact: port 18088')));
 });
 
+test('repeated checkpoints preserve the old provider prefix and append a delta checkpoint', async () => {
+  const { service, requests } = createService((_messages, attempt) =>
+    attempt === 1 ? 'summary-1: exact fact from the first checkpoint' : 'summary-2: only the new delta');
+  const coordinator = new CheckpointCompactionCoordinator(service, {
+    maxContextTokens: 200,
+    compactionThreshold: 0.5,
+    retainedUserTokenBudget: 1_000,
+  });
+  const first = await coordinator.compactIfNeeded([
+    {
+      role: 'user',
+      content: largeText('stable root objective'),
+      __episodeId: 'episode-cache',
+      __episodeInputKind: 'root',
+    },
+    {
+      role: 'assistant',
+      content: largeText('first completed work'),
+      __episodeId: 'episode-cache',
+    },
+  ], {
+    sessionKey: 'session-prefix-stability',
+    phase: 'mid_turn',
+  });
+  assert.equal(first.compacted, true);
+
+  const firstSummaryIndex = first.messages.findIndex(message => message.__checkpointSummary);
+  assert.ok(firstSummaryIndex >= 0);
+  const firstProviderPrefix = first.messages.slice(0, firstSummaryIndex + 1);
+  const firstSummary = first.messages[firstSummaryIndex];
+
+  const second = await coordinator.compactIfNeeded([
+    ...first.messages,
+    {
+      role: 'user',
+      content: largeText('new durable delta'),
+      __episodeId: 'episode-cache',
+      __episodeInputKind: 'pending',
+    },
+  ], {
+    sessionKey: 'session-prefix-stability',
+    phase: 'mid_turn',
+  });
+
+  assert.equal(second.compacted, true);
+  const summaries = second.messages.filter(message => message.__checkpointSummary);
+  assert.equal(summaries.length, 2);
+  assert.deepEqual(second.messages.slice(0, firstProviderPrefix.length), firstProviderPrefix);
+  assert.equal(summaries[0].content, firstSummary.content);
+  assert.match(String(summaries[1].content), /summary-2: only the new delta/);
+  assert.ok(requests[1].some(message =>
+    String(message.content).includes('summary-1: exact fact from the first checkpoint')));
+  assert.ok(requests[1].some(message =>
+    String(message.content).includes('new durable delta')));
+});
+
 test('restore checkpoint explicitly marks runtime state for re-verification', async () => {
   const { service, requests } = createService(() => 'restored history summary');
   const coordinator = new CheckpointCompactionCoordinator(service, {

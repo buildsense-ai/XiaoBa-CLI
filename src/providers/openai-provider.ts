@@ -542,6 +542,7 @@ export class OpenAIProvider implements AIProvider {
   }
 
   private isDynamicCacheMessage(message: Message): boolean {
+    if (message.__checkpointBoundary) return true;
     if (message.__cacheScope === 'dynamic') return true;
     if (message.__cacheScope === 'stable') return false;
     if (message.__injected || message.__runtimeFeedback || message.__syntheticObservation) return true;
