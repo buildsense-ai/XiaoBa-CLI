@@ -89,18 +89,23 @@ export class OpenAIProvider implements AIProvider {
     if (message.name) {
       sanitized.name = message.name;
     }
-    if (message.role === 'assistant' && message.tool_calls) {
-      sanitized.tool_calls = message.tool_calls.map(toolCall => ({
-        id: toolCall.id,
-        type: toolCall.type,
-        function: {
-          name: toolCall.function.name,
-          arguments: toolCall.function.arguments,
-        },
-      }));
+    if (message.role === 'assistant') {
+      // Attach reasoning_content to assistant messages for providers that
+      // require it (e.g. DeepSeek V4 in thinking mode). This is independent
+      // of whether the message also carries tool_calls.
       const reasoningContent = this.extractOpenAIReasoningContent(message);
       if (reasoningContent) {
         sanitized.reasoning_content = reasoningContent;
+      }
+      if (message.tool_calls) {
+        sanitized.tool_calls = message.tool_calls.map(toolCall => ({
+          id: toolCall.id,
+          type: toolCall.type,
+          function: {
+            name: toolCall.function.name,
+            arguments: toolCall.function.arguments,
+          },
+        }));
       }
     }
     if (message.role === 'tool' && message.tool_call_id) {
@@ -112,17 +117,26 @@ export class OpenAIProvider implements AIProvider {
 
   private extractOpenAIReasoningContent(message: Message): string | undefined {
     if (!this.shouldReplayOpenAIReasoningContent()) return undefined;
-    if (!Array.isArray(message.providerContent) || !message.tool_calls?.length) return undefined;
-    const block = message.providerContent.find(item =>
-      item
-      && typeof item === 'object'
-      && item.type === 'openai_reasoning'
-      && typeof (item as any).reasoning_content === 'string'
-    );
-    const reasoning = typeof (block as any)?.reasoning_content === 'string'
-      ? (block as any).reasoning_content.trim()
-      : '';
-    return reasoning || undefined;
+    // Check providerContent first (always populated when tool_calls present)
+    if (Array.isArray(message.providerContent)) {
+      const block = message.providerContent.find(item =>
+        item
+        && typeof item === 'object'
+        && item.type === 'openai_reasoning'
+        && typeof (item as any).reasoning_content === 'string'
+      );
+      const reasoning = typeof (block as any)?.reasoning_content === 'string'
+        ? (block as any).reasoning_content.trim()
+        : '';
+      if (reasoning) return reasoning;
+    }
+    // Fallback: reasoning_content may be a top-level field on the message
+    // (non-streaming API responses or pure-text assistant messages)
+    const topLevel = (message as any)?.reasoning_content;
+    if (typeof topLevel === 'string' && topLevel.trim()) {
+      return topLevel.trim();
+    }
+    return undefined;
   }
 
   private shouldReplayOpenAIReasoningContent(): boolean {
@@ -342,8 +356,12 @@ export class OpenAIProvider implements AIProvider {
           toolCalls,
           usage: streamUsage,
           stopReason: finishReason,
-          ...(toolCalls && fullReasoningContent.trim()
-            ? { providerContent: buildOpenAIProviderContentFromToolCalls(toolCalls, fullReasoningContent.trim()) }
+          ...(fullReasoningContent.trim()
+            ? {
+                providerContent: toolCalls
+                  ? buildOpenAIProviderContentFromToolCalls(toolCalls, fullReasoningContent.trim())
+                  : [{ type: 'openai_reasoning', reasoning_content: fullReasoningContent.trim() }],
+              }
             : {}),
         };
 
@@ -775,9 +793,15 @@ export class OpenAIProvider implements AIProvider {
     const reasoningContent = typeof message?.reasoning_content === 'string'
       ? message.reasoning_content.trim()
       : '';
-    if (!toolCalls.length || !reasoningContent) return {};
+    if (!reasoningContent) return {};
+    if (toolCalls.length) {
+      return {
+        providerContent: buildOpenAIProviderContentFromToolCalls(toolCalls, reasoningContent),
+      };
+    }
+    // Pure text assistant message with reasoning_content (e.g. DeepSeek thinking mode)
     return {
-      providerContent: buildOpenAIProviderContentFromToolCalls(toolCalls, reasoningContent),
+      providerContent: [{ type: 'openai_reasoning', reasoning_content: reasoningContent }],
     };
   }
 }
