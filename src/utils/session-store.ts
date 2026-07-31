@@ -123,6 +123,31 @@ function serializeMessages(messages: Message[]): string {
   return messages.map(message => JSON.stringify(message)).join('\n') + '\n';
 }
 
+type AtomicWriteFileSystem = Pick<typeof fs, 'writeFileSync' | 'renameSync' | 'existsSync' | 'unlinkSync'>;
+
+export function atomicWriteFileSync(
+  targetPath: string,
+  content: string,
+  fileSystem: AtomicWriteFileSystem = fs,
+): void {
+  const temporaryPath = `${targetPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  let temporaryCreated = false;
+  try {
+    temporaryCreated = true;
+    fileSystem.writeFileSync(temporaryPath, content, { encoding: 'utf-8', flag: 'wx' });
+    fileSystem.renameSync(temporaryPath, targetPath);
+    temporaryCreated = false;
+  } finally {
+    if (temporaryCreated) {
+      try {
+        if (fileSystem.existsSync(temporaryPath)) fileSystem.unlinkSync(temporaryPath);
+      } catch {
+        // Best-effort cleanup must not hide the original persistence failure.
+      }
+    }
+  }
+}
+
 export interface SessionRuntimeState {
   currentDirectory?: string;
   remoteContextCursors?: Record<string, number>;
@@ -131,6 +156,8 @@ export interface SessionRuntimeState {
 
 export class SessionStore {
   private static instance: SessionStore | null = null;
+
+  constructor(private readonly atomicWriter = atomicWriteFileSync) {}
 
   static getInstance(): SessionStore {
     if (!SessionStore.instance) SessionStore.instance = new SessionStore();
@@ -144,7 +171,7 @@ export class SessionStore {
       const fp = filePath(sessionKey);
       const lines = sanitizeForPersistence(messages)
         .map(m => JSON.stringify(m));
-      fs.writeFileSync(fp, lines.join('\n') + '\n', 'utf-8');
+      this.atomicWriter(fp, lines.join('\n') + '\n');
     } catch (err) {
       Logger.error(`保存 context 失败 [${sessionKey}]: ${err}`);
     }
@@ -165,8 +192,12 @@ export class SessionStore {
       const sanitized = sanitizeForPersistence(msgs);
       const migratedContent = serializeMessages(sanitized).trim();
       if (migratedContent !== content) {
-        fs.writeFileSync(fp, serializeMessages(sanitized), 'utf-8');
-        Logger.info(`会话已迁移清理 provider replay: ${sessionKey}`);
+        try {
+          this.atomicWriter(fp, serializeMessages(sanitized));
+          Logger.info(`会话已迁移清理 provider replay: ${sessionKey}`);
+        } catch (err) {
+          Logger.error(`会话迁移写回失败，继续使用已读取历史 [${sessionKey}]: ${err}`);
+        }
       }
       return sanitized;
     } catch (err) {
@@ -208,10 +239,10 @@ export class SessionStore {
   saveRuntimeState(sessionKey: string, state: SessionRuntimeState): void {
     try {
       if (!fs.existsSync(SESSION_STATE_DIR)) fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
-      fs.writeFileSync(stateFilePath(sessionKey), JSON.stringify({
+      this.atomicWriter(stateFilePath(sessionKey), JSON.stringify({
         ...state,
         updatedAt: new Date().toISOString(),
-      }, null, 2), 'utf-8');
+      }, null, 2));
     } catch (err) {
       Logger.error(`Failed to save session state [${sessionKey}]: ${err}`);
     }
