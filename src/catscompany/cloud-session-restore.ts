@@ -4,6 +4,10 @@ import { Logger } from '../utils/logger';
 import { SessionStore } from '../utils/session-store';
 import { stripAssistantTranscriptArtifacts } from '../utils/transcript-artifacts';
 import { ContextCompressor } from '../core/context-compressor';
+import {
+  CheckpointCompactionCoordinator,
+  isCheckpointCompactionEnabled,
+} from '../core/checkpoint-compaction';
 import { estimateMessagesTokens } from '../core/token-estimator';
 import type {
   CatsAgentContextMessage,
@@ -168,7 +172,7 @@ export class CatsCompanyCloudSessionRestorer {
 
   private async prepareForPersistence(
     messages: Message[],
-    promptCacheScopeKey: string,
+    sessionKey: string,
     signal?: AbortSignal,
   ): Promise<{ messages: Message[]; compressed: boolean; summaryFallback: boolean }> {
     const usedTokens = estimateMessagesTokens(messages);
@@ -177,6 +181,27 @@ export class CatsCompanyCloudSessionRestorer {
     }
 
     try {
+      if (isCheckpointCompactionEnabled()) {
+        const coordinator = new CheckpointCompactionCoordinator(this.aiService, {
+          maxContextTokens: CLOUD_RESTORE_FINAL_TOKEN_CEILING,
+          compactionThreshold: 0.65,
+          retainedUserTokenBudget: CLOUD_RESTORE_RECENT_TOKEN_BUDGET,
+        });
+        const result = await coordinator.compactIfNeeded(messages, {
+          sessionKey,
+          phase: 'restore',
+          signal,
+        });
+        if (!result.compacted) {
+          throw new Error('cloud restore checkpoint compaction did not produce a checkpoint');
+        }
+        return {
+          messages: trimToTokenBudget(result.messages, CLOUD_RESTORE_FINAL_TOKEN_CEILING),
+          compressed: true,
+          summaryFallback: false,
+        };
+      }
+
       const compressor = new ContextCompressor(this.aiService, {
         maxContextTokens: CLOUD_RESTORE_FINAL_TOKEN_CEILING,
         summaryContentBudget: CLOUD_RESTORE_SUMMARY_INPUT_BUDGET,
@@ -186,7 +211,7 @@ export class CatsCompanyCloudSessionRestorer {
       });
       const compacted = await compressor.compact(messages, {
         signal,
-        promptCacheScopeKey,
+        promptCacheScopeKey: sessionKey,
         customInstructions: [
           '这些内容来自 CatsCompany 云端可见聊天历史，用于在新设备上恢复主会话。',
           '保留用户目标、关键决定、已交付结果、文件名、未完成事项和重要约束。',

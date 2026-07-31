@@ -20,6 +20,7 @@
     "watch": "tsc --watch",
     "test": "node scripts/run-tests.mjs runtime",
     "test:runtime": "node scripts/run-tests.mjs runtime",
+    "test:cross-repo:catsco-skills": "node scripts/cross-repo-catsco-skills-smoke.mjs",
     "test:legacy": "node scripts/run-tests.mjs legacy",
     "test:all": "node scripts/run-tests.mjs all",
     "test:list": "node scripts/run-tests.mjs runtime --list",

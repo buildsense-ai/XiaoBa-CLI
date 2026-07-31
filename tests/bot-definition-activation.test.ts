@@ -79,6 +79,9 @@ describe('BotDefinition activation', () => {
       if (url.pathname === '/v1/models') {
         return Response.json({ data: [{ id: 'MiniMax-M3', capabilities: { vision: true } }] });
       }
+      if (url.pathname === '/api/bot/definition/skills') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
 
@@ -105,6 +108,7 @@ describe('BotDefinition activation', () => {
       'GET /api/relay/key',
       'GET /api.json',
       'GET /v1/models',
+      'GET /api/bot/definition',
     ]);
   });
 
@@ -270,6 +274,9 @@ describe('BotDefinition activation', () => {
       if (url.pathname === '/api/bot/model-config/ack') {
         return Response.json({ status: 'applied' });
       }
+      if (url.pathname === '/api/bot/definition/skills') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
 
@@ -339,6 +346,9 @@ describe('BotDefinition activation', () => {
         ackBody = JSON.parse(String(init?.body));
         return Response.json({ status: 'applied' });
       }
+      if (url.pathname === '/api/bot/definition/skills') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
 
@@ -384,6 +394,9 @@ describe('BotDefinition activation', () => {
       }
       if (url.pathname === '/api/relay/key') {
         return Response.json({ key: { state: 'active', key: 'sk-runtime-reload' } });
+      }
+      if (url.pathname === '/api/bot/definition/skills') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
       }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
@@ -441,6 +454,9 @@ describe('BotDefinition activation', () => {
       if (url.pathname === '/api/bot/model-config/ack') {
         failureAck = JSON.parse(String(init?.body));
         return Response.json({ status: 'failed' });
+      }
+      if (url.pathname === '/api/bot/definition/skills') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
       }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
@@ -518,6 +534,9 @@ describe('BotDefinition activation', () => {
       if (url.pathname === '/api/bot/model-config/ack') {
         return Response.json({ status: 'applied' });
       }
+      if (url.pathname === '/api/bot/definition/skills') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
 
@@ -592,6 +611,9 @@ describe('BotDefinition activation', () => {
           },
         });
       }
+      if (url.pathname === '/api/bot/definition/skills') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
 
@@ -637,6 +659,9 @@ describe('BotDefinition activation', () => {
         });
       }
       if (url.pathname === '/api/bot/model-config/ack') acknowledged = true;
+      if (url.pathname === '/api/bot/definition/skills') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
+      }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
 
@@ -682,6 +707,7 @@ describe('BotDefinition activation', () => {
       runtimeRoot,
       simulatedCloudRoot,
       env,
+      fetchImpl: skillEndpointUnavailable,
       cloudSelection: {
         kind: 'custom', modelId: 'cloud-model', revision: 11,
         reasoningEffort: 'high', customModel: cloudModel,
@@ -703,8 +729,13 @@ describe('BotDefinition activation', () => {
       runtimeRoot,
       simulatedCloudRoot,
       env,
-      fetchImpl: (async () => Response.json({ error: 'temporary outage' }, { status: 500 })) as typeof fetch,
+      fetchImpl: (async (input: string | URL | Request) => (
+        new URL(String(input)).pathname === '/api/bot/definition/skills'
+          ? Response.json({ error: 'not deployed' }, { status: 404 })
+          : Response.json({ error: 'temporary outage' }, { status: 500 })
+      )) as typeof fetch,
       acknowledgeCloudSelection: false,
+      prepareSkills: false,
     });
     assert.equal(restartPrepared?.definition.model.kind, 'custom');
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'cloud-model');
@@ -713,6 +744,7 @@ describe('BotDefinition activation', () => {
       runtimeRoot,
       simulatedCloudRoot,
       env,
+      fetchImpl: skillEndpointUnavailable,
       cloudSelection: { kind: 'local', modelId: 'local', revision: 12 },
       acknowledgeCloudSelection: false,
     });
@@ -769,6 +801,9 @@ describe('BotDefinition activation', () => {
       }
       if (url.pathname === '/api/bot/model-config/ack') {
         return Response.json({ status: 'applied' });
+      }
+      if (url.pathname === '/api/bot/definition/skills') {
+        return Response.json({ error: 'not deployed' }, { status: 404 });
       }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
@@ -831,7 +866,11 @@ describe('BotDefinition activation', () => {
       runtimeRoot,
       simulatedCloudRoot,
       env,
-      fetchImpl: (async () => Response.json({ error: 'relay temporarily unavailable' }, { status: 503 })) as typeof fetch,
+      fetchImpl: (async (input: string | URL | Request) => (
+        new URL(String(input)).pathname === '/api/bot/definition/skills'
+          ? Response.json({ error: 'not deployed' }, { status: 404 })
+          : Response.json({ error: 'relay temporarily unavailable' }, { status: 503 })
+      )) as typeof fetch,
       cloudSelection: { kind: 'local', modelId: 'local', revision: 22 },
       acknowledgeCloudSelection: false,
     });
@@ -843,3 +882,9 @@ describe('BotDefinition activation', () => {
     assert.equal(new FileBotCatalogModelRuntimeRepository({ runtimeRoot }).read('43'), undefined);
   });
 });
+
+const skillEndpointUnavailable = (async (input: string | URL | Request) => (
+  new URL(String(input)).pathname === '/api/bot/definition/skills'
+    ? Response.json({ error: 'not deployed' }, { status: 404 })
+    : Response.json({ error: 'unexpected request' }, { status: 500 })
+)) as typeof fetch;

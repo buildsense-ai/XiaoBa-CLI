@@ -3,7 +3,10 @@ import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { PathResolver } from '../utils/path-resolver';
 
-export const DEFAULT_SKILLHUB_BASE_URL = 'https://logs.catsco.fun:9000';
+export const DEFAULT_SKILLHUB_BASE_URL = 'https://skillhub.catsco.fun:19990';
+export const LEGACY_OFFICIAL_SKILLHUB_BASE_URLS = [
+  'https://logs.catsco.fun:9000',
+];
 
 export interface SkillHubConfig {
   baseUrl: string;
@@ -16,10 +19,10 @@ export function loadSkillHubConfig(overrides: { baseUrl?: unknown } = {}): Skill
   const baseUrl = normalizeBaseUrl(
     firstNonEmpty(
       overrides.baseUrl,
-      env.CATSCO_SKILLHUB_BASE_URL,
       process.env.CATSCO_SKILLHUB_BASE_URL,
-      env.SKILLHUB_BASE_URL,
+      env.CATSCO_SKILLHUB_BASE_URL,
       process.env.SKILLHUB_BASE_URL,
+      env.SKILLHUB_BASE_URL,
     ),
     DEFAULT_SKILLHUB_BASE_URL,
   );
@@ -39,7 +42,11 @@ export function normalizeBaseUrl(value: unknown, fallback = DEFAULT_SKILLHUB_BAS
     if (!/^https?:$/.test(url.protocol)) return fallback;
     url.hash = '';
     url.search = '';
-    return url.toString().replace(/\/+$/, '');
+    const normalized = url.toString().replace(/\/+$/, '');
+    if (LEGACY_OFFICIAL_SKILLHUB_BASE_URLS.includes(normalized)) {
+      return DEFAULT_SKILLHUB_BASE_URL;
+    }
+    return normalized;
   } catch {
     return fallback;
   }

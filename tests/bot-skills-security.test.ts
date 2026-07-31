@@ -1,0 +1,160 @@
+import { afterEach, describe, test } from 'node:test';
+import * as assert from 'node:assert';
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { canonicalizeBotSkillRefs } from '../src/bot-skills/canonical';
+import { scanLocalBotSkill } from '../src/bot-skills/local-manifest';
+import { BotPrivateSkillClient } from '../src/bot-skills/private-package-client';
+import type { BotSkillRef } from '../src/bot-definition/types';
+import type { BotSkillPackage } from '../src/bot-skills/types';
+
+describe('Bot Skill sync security boundaries', () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('rejects archives by filename and by magic bytes before automatic upload', () => {
+    const extensionRoot = createSkill(roots, 'archive-extension');
+    fs.writeFileSync(path.join(extensionRoot, 'payload.tar.gz'), 'not even a real archive');
+    assert.throws(() => scanLocalBotSkill(extensionRoot), /archive file/i);
+
+    const magicRoot = createSkill(roots, 'archive-magic');
+    fs.writeFileSync(
+      path.join(magicRoot, 'payload.bin'),
+      Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]),
+    );
+    assert.throws(() => scanLocalBotSkill(magicRoot), /archive file/i);
+  });
+
+  test('rejects unsafe reference segments and matches Go byte/control limits', async () => {
+    for (const skillId of ['.', '..', 'owner/../skill', 'owner/./skill', 'owner//skill']) {
+      assert.throws(() => canonicalizeBotSkillRefs([ref(skillId, 'v1')]), /unsafe Skill reference/i);
+    }
+    for (const version of ['.', '..']) {
+      assert.throws(() => canonicalizeBotSkillRefs([ref('owner/skill', version)]), /unsafe Skill reference/i);
+    }
+    assert.throws(
+      () => canonicalizeBotSkillRefs([ref('界'.repeat(81), 'v1')]),
+      /invalid skillId/i,
+    );
+    assert.throws(
+      () => canonicalizeBotSkillRefs([ref('owner/\u0085skill', 'v1')]),
+      /invalid skillId/i,
+    );
+    assert.throws(
+      () => canonicalizeBotSkillRefs([{ ...ref('owner/skill', 'v1'), contentHash: `sha256:${'a'.repeat(64)}` }]),
+      /contentHash/i,
+    );
+
+    let requested = false;
+    const client = createClient(async () => {
+      requested = true;
+      return Response.json({});
+    });
+    await assert.rejects(client.download(ref('owner/../skill', 'v1')), /invalid Skill reference/i);
+    assert.equal(requested, false);
+  });
+
+  test('normalizes preferred install names and rejects Windows reserved names', async () => {
+    const skillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-materialize-'));
+    roots.push(skillsRoot);
+    const client = createClient(async () => Response.json({}));
+
+    const installed = await client.materialize(packageValue('nested-skill'), skillsRoot, 'group\\nested-skill');
+    assert.equal(installed, path.join(skillsRoot, 'group', 'nested-skill'));
+    assert.equal(fs.existsSync(path.join(installed, 'SKILL.md')), true);
+
+    await assert.rejects(
+      client.materialize(packageValue('reserved-skill'), skillsRoot, 'group/CON'),
+      /unsafe install directory/i,
+    );
+    await assert.rejects(
+      client.materialize(packageValue('reserved-root'), skillsRoot, 'NUL.txt'),
+      /unsafe install directory/i,
+    );
+    await assert.rejects(
+      client.materialize(packageValue('control-name'), skillsRoot, 'group/\u0085skill'),
+      /unsafe install directory/i,
+    );
+  });
+
+  test('falls back to a portable directory for a package name reserved on Windows', async () => {
+    const skillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-materialize-'));
+    roots.push(skillsRoot);
+    const client = createClient(async () => Response.json({}));
+    const installed = await client.materialize(packageValue('CON'), skillsRoot);
+    assert.match(path.basename(installed), /^skill-[a-f0-9]{16}$/);
+    assert.equal(fs.existsSync(path.join(installed, 'SKILL.md')), true);
+  });
+
+  test('rejects a package whose verified hash differs from the Definition reference', async () => {
+    const packageData = packageValue('hash-mismatch');
+    const client = createClient(async () => Response.json(packageData));
+    await assert.rejects(
+      client.download({
+        source: 'skillhub',
+        ...packageData.reference,
+        contentHash: '0'.repeat(64),
+      }),
+      /BotDefinition contentHash/i,
+    );
+  });
+});
+
+function ref(skillId: string, version: string, contentHash = 'a'.repeat(64)): BotSkillRef {
+  return { source: 'skillhub', skillId, version, contentHash };
+}
+
+function createSkill(roots: string[], name: string): string {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-security-'));
+  roots.push(parent);
+  const skillRoot = path.join(parent, name);
+  fs.mkdirSync(skillRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(skillRoot, 'SKILL.md'),
+    `---\nname: ${name}\ndescription: security test\n---\n`,
+  );
+  return skillRoot;
+}
+
+function createClient(fetchImpl: typeof fetch): BotPrivateSkillClient {
+  return new BotPrivateSkillClient({
+    auth: {
+      apiKey: 'test-key',
+      httpBaseUrl: 'https://cats.test',
+      serverUrl: 'wss://cats.test',
+    },
+    botId: 'bot-a',
+    baseUrl: 'https://hub.test',
+    fetchImpl,
+  });
+}
+
+function packageValue(name: string): BotSkillPackage {
+  const bytes = Buffer.from(`---\nname: ${name}\ndescription: materialize test\n---\n`, 'utf8');
+  const file = {
+    path: 'SKILL.md',
+    size: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    contentBase64: bytes.toString('base64'),
+  };
+  const contentHash = crypto.createHash('sha256').update(Buffer.from(JSON.stringify([{
+    path: file.path,
+    size: file.size,
+    sha256: file.sha256,
+  }]), 'utf8')).digest('hex');
+  return {
+    schema: 'catsco.private-skill-package.v1',
+    source: 'private',
+    reference: { skillId: `private/${name.toLowerCase()}`, version: 'v1' },
+    localSkillId: `local-${name.toLowerCase()}`,
+    name,
+    contentHash,
+    createdAt: '2026-07-28T00:00:00.000Z',
+    files: [file],
+  };
+}

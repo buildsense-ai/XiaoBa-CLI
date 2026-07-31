@@ -285,6 +285,7 @@ async function applyCloudModelRuntimeSelection(
       auth: options.auth,
       cloudSelection: options.selection,
       acknowledgeCloudSelection: false,
+      prepareSkills: false,
     });
   } catch (error) {
     restorePreviousModelFiles();
@@ -376,13 +377,31 @@ async function applyCloudBotDefinitionSelection(
     return 'deferred';
   }
 
+  try {
+    const latestSelection = await pullCloudBotModelSelection({
+      botId: options.botId,
+      auth: options.auth,
+    });
+    if (!cloudSelectionsMatch(latestSelection, options.selection)) return 'deferred';
+  } catch (error) {
+    Logger.warning(`CatsCo BotDefinition revision check failed; applying it was deferred: ${errorMessage(error)}`);
+    return 'deferred';
+  }
+
   const restorePreviousRuntime = () => {
-    if (previousDefinition) definitionService.acceptCanonical(previousDefinition);
+    if (previousDefinition) {
+      const activeSkills = definitionService.read(options.botId)?.skills;
+      definitionService.acceptCanonical({
+        ...previousDefinition,
+        ...(activeSkills !== undefined ? { skills: activeSkills } : {}),
+      });
+    }
     if (previousCatalogRuntime) definitionService.storeCatalogRuntime(previousCatalogRuntime);
     promptCoordinator.restoreActiveSnapshot(previousPrompt);
   };
 
   let prepared: Awaited<ReturnType<typeof prepareBoundBotDefinition>>;
+  let appliedSelection = options.selection;
   try {
     definitionService.acceptCanonical(incoming);
     prepared = await prepareBoundBotDefinition({
@@ -398,32 +417,26 @@ async function applyCloudBotDefinitionSelection(
     throw new Error(message);
   }
 
-  if (!prepared || prepared.cloudRevision !== options.selection.revision || prepared.cloudApplyError) {
+  if (
+    !prepared
+    || prepared.cloudRevision === undefined
+    || prepared.cloudRevision < options.selection.revision
+    || prepared.cloudApplyError
+  ) {
     const message = prepared?.cloudApplyError || 'Cloud BotDefinition runtime preparation did not complete.';
     restorePreviousRuntime();
     await acknowledgeCloudModelApply(options, message);
     throw new Error(message);
   }
-
-  let latestSelection: CloudBotModelSelection | undefined;
-  try {
-    latestSelection = await pullCloudBotModelSelection({
-      botId: options.botId,
-      auth: options.auth,
-    });
-  } catch (error) {
-    restorePreviousRuntime();
-    Logger.warning(`CatsCo BotDefinition revision check failed; applying it was deferred: ${errorMessage(error)}`);
-    return 'deferred';
-  }
-  if (!cloudSelectionsMatch(latestSelection, options.selection)) {
-    restorePreviousRuntime();
-    return 'deferred';
-  }
+  appliedSelection = {
+    ...options.selection,
+    revision: prepared.cloudRevision,
+    definition: prepared.definition,
+  };
 
   if (!modelChanged) {
-    await acknowledgeCloudModelApply(options);
-    Logger.success(`CatsCo applied Prompt revision=${options.selection.revision} without restarting the connector.`);
+    await acknowledgeCloudModelApply(options, '', appliedSelection);
+    Logger.success(`CatsCo applied BotDefinition revision=${appliedSelection.revision} without restarting the connector.`);
     return 'applied';
   }
 
@@ -443,7 +456,7 @@ async function applyCloudBotDefinitionSelection(
     }
     restorePreviousRuntime();
     const message = redactCloudBotModelError(error, options.selection);
-    await acknowledgeCloudModelApply(options, message);
+    await acknowledgeCloudModelApply(options, message, appliedSelection);
     await recoverCloudModelFallbackConnector({
       canApply: options.canApply,
       createBot: () => new CatsCompanyBot(options.connectorConfig),
@@ -452,7 +465,7 @@ async function applyCloudBotDefinitionSelection(
     throw new Error(message);
   }
 
-  await acknowledgeCloudModelApply(options);
+  await acknowledgeCloudModelApply(options, '', appliedSelection);
   Logger.success(
     `CatsCo applied BotDefinition model ${options.selection.modelId}, revision=${options.selection.revision}.`,
   );
@@ -500,15 +513,16 @@ function delay(ms: number): Promise<void> {
 async function acknowledgeCloudModelApply(
   options: ApplyCloudModelRuntimeSelectionOptions,
   applyError = '',
+  selection: CloudBotModelSelection = options.selection,
 ): Promise<void> {
   try {
     await acknowledgeCloudBotModelSelection({
       botId: options.botId,
       auth: options.auth,
-    }, options.selection, applyError);
-    options.clearAckRetry(options.selection);
+    }, selection, applyError);
+    options.clearAckRetry(selection);
   } catch (error) {
-    options.scheduleAckRetry(options.selection, applyError);
+    options.scheduleAckRetry(selection, applyError);
     Logger.warning(`CatsCo 云端模型应用状态回报失败: ${errorMessage(error)}`);
   }
 }

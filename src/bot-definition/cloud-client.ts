@@ -1,11 +1,13 @@
 import type { CatsCoAuthSnapshot } from '../catscompany/local-config';
 import { normalizeReasoningEffort } from '../utils/reasoning-effort';
 import type { ReasoningEffort } from '../types';
+import { canonicalizeBotSkillRefs } from '../bot-skills/canonical';
 import {
   BOT_DEFINITION_SCHEMA,
   type BotDefinition,
   type BotModelDefinition,
   type BotPromptDefinition,
+  type BotSkillRef,
   type CustomBotModelDefinition,
 } from './types';
 
@@ -149,6 +151,25 @@ export async function patchCloudBotDefinitionPrompt(
   return parseRevision(response);
 }
 
+export async function patchCloudBotDefinitionSkills(
+  options: CloudBotModelClientOptions,
+  skills: readonly BotSkillRef[],
+  revision: number,
+): Promise<number | undefined> {
+  const response = await cloudDefinitionRequest(
+    options,
+    'bot',
+    'PATCH',
+    '/api/bot/definition/skills',
+    {
+      revision,
+      skills: canonicalizeBotSkillRefs(skills),
+    },
+  );
+  if (response === undefined) return undefined;
+  return parseRevision(response);
+}
+
 export async function acknowledgeCloudBotDefinition(
   options: CloudBotModelClientOptions,
   revision: number,
@@ -273,6 +294,13 @@ function parseCloudBotDefinitionSnapshot(
     throw new Error(`CatsCo cloud returned an unsupported BotDefinition model kind: ${kind}`);
   }
   const prompt = parseCloudPromptDefinition(raw.prompt);
+  const hasSkills = Object.prototype.hasOwnProperty.call(raw, 'skills');
+  if (hasSkills && raw.skills !== null && !Array.isArray(raw.skills)) {
+    throw new Error('CatsCo cloud returned an invalid BotDefinition Skills field.');
+  }
+  const skills = hasSkills
+    ? canonicalizeBotSkillRefs((raw.skills ?? []) as BotSkillRef[])
+    : undefined;
   return {
     configured: true,
     revision,
@@ -281,6 +309,7 @@ function parseCloudBotDefinitionSnapshot(
       botId,
       model,
       ...(prompt ? { prompt } : {}),
+      ...(skills !== undefined ? { skills } : {}),
     },
     ...(response?.runtime && typeof response.runtime === 'object'
       ? { runtime: response.runtime as Record<string, unknown> }
