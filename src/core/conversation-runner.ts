@@ -507,6 +507,12 @@ export class ConversationRunner {
       if (promptTrimmed && callbacks?.onThinking) {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
       }
+      // Freeze the exact final provider representation before the call, then copy
+      // those immutable bytes back into caller-owned durable history. Provider
+      // failures therefore cannot persist raw or turn-dependent tool results.
+      this.stabilizeToolResultHistory(requestMessages, [], turns);
+      this.syncStableToolResultsToHistory(requestMessages, messages, newMessages);
+      this.stabilizeToolResultHistory(messages, newMessages, turns);
       this.logProviderMessagesForDebug(requestMessages, requestTools, turns);
       this.promptTraceLogger.recordRequest(turns, requestMessages, requestTools);
       const aiStartTime = Date.now();
@@ -830,10 +836,19 @@ export class ConversationRunner {
   }
 
   private finalizeRunResult(result: RunResult, turn: number): RunResult {
+    this.stabilizeToolResultHistory(result.messages, result.newMessages, turn);
+    return result;
+  }
+
+  private stabilizeToolResultHistory(
+    messages: Message[],
+    newMessages: Message[],
+    turn: number,
+  ): void {
     const artifactStore = this.resolveToolResultArtifactStoreOptions(turn);
     const stats = stabilizeToolResultsForHistory(
-      result.messages,
-      result.newMessages,
+      messages,
+      newMessages,
       { ...resolveReadFileMessageFoldingOptions(), artifactStore },
       { ...resolveExecuteShellMessageFoldingOptions(), artifactStore },
     );
@@ -845,7 +860,27 @@ export class ConversationRunner {
         + `execute_shell_truncated=${stats.executeShellFoldedCount}`,
       );
     }
-    return result;
+  }
+
+  private syncStableToolResultsToHistory(
+    providerMessages: Message[],
+    messages: Message[],
+    newMessages: Message[],
+  ): void {
+    const stableByCallId = new Map<string, Message>();
+    for (const message of providerMessages) {
+      if (message.role === 'tool' && message.tool_call_id && message.__toolResultStable) {
+        stableByCallId.set(message.tool_call_id, message);
+      }
+    }
+    const sync = (message: Message): Message => {
+      const stable = message.tool_call_id ? stableByCallId.get(message.tool_call_id) : undefined;
+      return stable
+        ? { ...message, content: stable.content, __toolResultStable: true }
+        : message;
+    };
+    this.replaceMessages(messages, messages.map(sync));
+    this.replaceMessages(newMessages, newMessages.map(sync));
   }
 
   private async appendPendingUserInput(
@@ -1328,6 +1363,7 @@ export class ConversationRunner {
   }
 
   private transientMessageKey(message: Message): string | null {
+    if (message.role !== 'system' && !message.__injected) return null;
     if (typeof message.content !== 'string') return null;
     const firstLine = message.content.split('\n', 1)[0].trim();
     return /^\[transient_[a-z0-9_-]+\]$/i.test(firstLine) ? firstLine.toLowerCase() : null;

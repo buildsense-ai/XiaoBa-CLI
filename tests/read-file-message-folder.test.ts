@@ -405,7 +405,7 @@ test('runner keeps folded historical read_file output stable across model turns'
   assert.equal(JSON.stringify(secondFolded), JSON.stringify(firstFolded));
 });
 
-test('runner delayed-folds older current-run tool results and keeps recent ones raw', async () => {
+test('runner freezes both older and recent current-run tool results after delayed folding', async () => {
   const previousThreshold = process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
   const previousCurrentRunFolding = process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLDING;
   const previousKeepRecent = process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLD_KEEP_RECENT;
@@ -453,9 +453,9 @@ test('runner delayed-folds older current-run tool results and keeps recent ones 
   const providerOld = captured[0].find(message => message.tool_call_id === 'call_current_provider_old');
   const providerRecent = captured[0].find(message => message.tool_call_id === 'call_current_provider_recent');
   assert.ok(String(providerOld?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
-  assert.equal(providerRecent?.content, secondRaw);
-  assert.ok(String(messages[2].content).startsWith(TRUNCATED_READ_FILE_PREFIX));
-  assert.ok(String(messages[5].content).startsWith(TRUNCATED_READ_FILE_PREFIX));
+  assert.ok(String(providerRecent?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
+  assert.equal(messages[2].content, providerOld?.content);
+  assert.equal(messages[5].content, providerRecent?.content);
   assert.equal(messages[2].__toolResultStable, true);
   assert.equal(messages[5].__toolResultStable, true);
 });

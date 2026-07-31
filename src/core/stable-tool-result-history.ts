@@ -64,6 +64,7 @@ function isSupportedToolResult(message: Message): boolean {
   if (message.role !== 'tool') return false;
   const name = message.name?.toLowerCase();
   return name === 'read_file'
+    || name === 'read'
     || name === 'execute_shell'
     || name === 'bash'
     || name === 'shell'

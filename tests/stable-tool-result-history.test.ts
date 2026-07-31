@@ -99,3 +99,23 @@ test('small supported results are also frozen instead of being rewritten by a la
   assert.equal(later.stats.folded_count, 0);
   assert.equal(later.messages[2].content, original);
 });
+
+test('freezes the supported Read alias before adaptive folding can rewrite it', () => {
+  const messages: Message[] = [
+    { role: 'user', content: 'inspect it' },
+    makeToolCall('read_alias', 'Read'),
+    { role: 'tool', name: 'Read', tool_call_id: 'read_alias', content: 'short alias output' },
+  ];
+
+  stabilizeToolResultsForHistory(messages, [], readOptions, shellOptions);
+  const original = messages[2].content;
+  messages.push({ role: 'user', content: 'continue' });
+  const later = foldHistoricalReadFileMessages(messages, {
+    ...readOptions,
+    thresholdTokens: 1,
+  });
+
+  assert.equal(messages[2].__toolResultStable, true);
+  assert.equal(later.stats.folded_count, 0);
+  assert.equal(later.messages[2].content, original);
+});
