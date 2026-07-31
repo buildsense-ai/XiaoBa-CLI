@@ -206,7 +206,7 @@ test('repeated checkpoints preserve the old provider prefix and append a delta c
 
   const firstSummaryIndex = first.messages.findIndex(message => message.__checkpointSummary);
   assert.ok(firstSummaryIndex >= 0);
-  const firstProviderPrefix = first.messages.slice(0, firstSummaryIndex + 1);
+  const firstProviderPrefix = first.messages;
   const firstSummary = first.messages[firstSummaryIndex];
 
   const second = await coordinator.compactIfNeeded([
@@ -228,10 +228,113 @@ test('repeated checkpoints preserve the old provider prefix and append a delta c
   assert.deepEqual(second.messages.slice(0, firstProviderPrefix.length), firstProviderPrefix);
   assert.equal(summaries[0].content, firstSummary.content);
   assert.match(String(summaries[1].content), /summary-2: only the new delta/);
+  assert.equal(
+    second.messages.find(message => message.__episodeInputKind === 'root')?.content,
+    first.messages.find(message => message.__episodeInputKind === 'root')?.content,
+  );
   assert.ok(requests[1].some(message =>
     String(message.content).includes('summary-1: exact fact from the first checkpoint')));
   assert.ok(requests[1].some(message =>
     String(message.content).includes('new durable delta')));
+});
+
+test('persisted checkpoint metadata resumes with the same retained provider prefix', async () => {
+  const { service } = createService((_messages, attempt) =>
+    attempt === 1 ? 'persisted base summary' : 'persisted delta summary');
+  const coordinator = new CheckpointCompactionCoordinator(service, {
+    maxContextTokens: 200,
+    compactionThreshold: 0.5,
+    retainedUserTokenBudget: 1_000,
+  });
+  const first = await coordinator.compactIfNeeded([
+    {
+      role: 'user',
+      content: largeText('persisted exact root'),
+      __episodeId: 'episode-persisted',
+      __episodeInputKind: 'root',
+    },
+    {
+      role: 'assistant',
+      content: largeText('persisted completed work'),
+      __episodeId: 'episode-persisted',
+    },
+  ], {
+    sessionKey: 'session-persisted-prefix',
+    phase: 'mid_turn',
+  });
+  assert.equal(first.compacted, true);
+
+  const restored = JSON.parse(JSON.stringify(first.messages)) as Message[];
+  const second = await coordinator.compactIfNeeded([
+    ...restored,
+    {
+      role: 'user',
+      content: largeText('work added after restore'),
+      __episodeId: 'episode-persisted',
+      __episodeInputKind: 'pending',
+    },
+  ], {
+    sessionKey: 'session-persisted-prefix',
+    phase: 'mid_turn',
+  });
+
+  assert.equal(second.compacted, true);
+  assert.deepEqual(second.messages.slice(0, restored.length), restored);
+  assert.equal(
+    second.messages.find(message => message.__episodeInputKind === 'root')?.content,
+    largeText('persisted exact root'),
+  );
+});
+
+test('legacy checkpoints without retained counts migrate without losing retained evidence', async () => {
+  const { service, requests } = createService(() => 'legacy checkpoint delta');
+  const coordinator = new CheckpointCompactionCoordinator(service, {
+    maxContextTokens: 200,
+    compactionThreshold: 0.5,
+    retainedUserTokenBudget: 1_000,
+  });
+  const legacyBoundary: Message = {
+    role: 'system',
+    content: '[checkpoint_compaction_boundary] phase=mid_turn tokens_before=1000',
+    __checkpointBoundary: true,
+    __checkpointPhase: 'mid_turn',
+  };
+  const legacySummary: Message = {
+    role: 'user',
+    content: `${CHECKPOINT_SUMMARY_PREFIX}\n\nlegacy exact summary`,
+    __checkpointSummary: true,
+    __episodeId: 'episode-legacy',
+  };
+  const legacyRoot: Message = {
+    role: 'user',
+    content: largeText('legacy retained root'),
+    __episodeId: 'episode-legacy',
+    __episodeInputKind: 'root',
+  };
+
+  const result = await coordinator.compactIfNeeded([
+    legacyBoundary,
+    legacySummary,
+    legacyRoot,
+    {
+      role: 'user',
+      content: largeText('new work after legacy checkpoint'),
+      __episodeId: 'episode-legacy',
+      __episodeInputKind: 'pending',
+    },
+  ], {
+    sessionKey: 'session-legacy-checkpoint',
+    phase: 'mid_turn',
+  });
+
+  assert.equal(result.compacted, true);
+  assert.deepEqual(result.messages.slice(0, 2), [legacyBoundary, legacySummary]);
+  assert.ok(requests[0].some(message =>
+    String(message.content).includes('legacy retained root')));
+  assert.ok(requests[0].some(message =>
+    String(message.content).includes('new work after legacy checkpoint')));
+  assert.ok(result.messages.some(message =>
+    String(message.content).includes('legacy retained root')));
 });
 
 test('restore checkpoint explicitly marks runtime state for re-verification', async () => {

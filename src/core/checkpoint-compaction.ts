@@ -214,13 +214,7 @@ export class CheckpointCompactionCoordinator {
         .filter(message => message.role !== 'system' && !isCheckpointSummary(message))
       : durable.filter(message => message.role !== 'system');
     if (sessionMessages.length === 0) {
-      if (!priorCheckpoint || priorCheckpoint.sourceStartIndex >= durable.length) {
-        return messages;
-      }
-      // A previous checkpoint may have retained recent verbatim messages that
-      // are now redundant. Prune only that mutable tail; the old checkpoint
-      // prefix remains byte-identical for provider cache reuse.
-      return [...durable.slice(0, priorCheckpoint.summaryIndex + 1), ...transient];
+      return messages;
     }
 
     const summary = await this.generateContinuationSummary(
@@ -268,7 +262,7 @@ export class CheckpointCompactionCoordinator {
 
     return [
       ...(priorCheckpoint
-        ? durable.slice(0, priorCheckpoint.summaryIndex + 1)
+        ? durable.slice(0, priorCheckpoint.sourceStartIndex)
         : stableSystemMessages),
       boundary,
       summaryMessage,

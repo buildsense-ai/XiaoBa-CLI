@@ -230,8 +230,8 @@ threshold = 65%
 ```
 
 旧 boundary 和旧 summary 原样保留，旧 summary 只作为 delta 摘要模型的只读证据。
-上一个 checkpoint 后已经保留的近期原文不会再次送入 delta 摘要，也不会被重复写回；
-boundary 中的 retained count 用于识别真正新增的 durable 消息。这样 Responses
+上一个 checkpoint 后已经保留的 root/近期原文也原样留在旧前缀中，但不会再次送入
+delta 摘要；boundary 中的 retained count 用于识别真正新增的 durable 消息。这样 Responses
 API 的 `prompt_cache_key` 和旧 checkpoint 前缀都保持稳定，新增内容只形成可写的缓存后缀。
 
 首次升级到该链路的旧 checkpoint 如果没有 retained count，会安全地把 summary
