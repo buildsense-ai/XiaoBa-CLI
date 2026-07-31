@@ -240,6 +240,18 @@ API 的 `prompt_cache_key` 和旧 checkpoint 前缀都保持稳定，新增内�
 checkpoint boundary 属于动态运行元数据，不进入 provider 的稳定 `instructions`；它仍会随
 checkpoint 一起持久化，供恢复和审计使用。普通 system prompt 仍不会写入 Session。
 
+delta 链不是无限增长的。如果旧 checkpoint + retained tail 本身已经超过压缩阈值，
+继续追加 delta 已无法恢复 headroom，此时执行一次显式 `rebase`：
+
+```text
+旧 checkpoint 链
+→ 单个 rebase checkpoint
+→ 后续重新进入 append-only delta
+```
+
+`rebase` 会产生一次预期的冷缓存边界，但避免长寿命会话陷入“每轮都触发、每轮都不缩小”
+的无效压缩循环。只有不可变旧前缀本身超过预算时才允许 rebase。
+
 ## 断线、进程重启与恢复
 
 短暂 WebSocket 重连本身不触发压缩。

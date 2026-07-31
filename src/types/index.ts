@@ -47,7 +47,7 @@ export interface Message {
   /** Number of verbatim messages retained immediately after this checkpoint. */
   __checkpointRetainedCount?: number;
   /** Distinguishes the first checkpoint from an appended delta checkpoint. */
-  __checkpointKind?: 'base' | 'delta';
+  __checkpointKind?: 'base' | 'delta' | 'rebase';
   /** Internal compaction phase. Never sent to providers. */
   __checkpointPhase?: 'pre_turn' | 'mid_turn' | 'restore';
   /** 远端耐久上下文来源和消息序号，用于游标写盘失败后的幂等补拉。 */

@@ -146,6 +146,20 @@ export class CheckpointCompactionCoordinator {
 
     try {
       const result = await this.compact(messages, request, usage);
+      if (result === messages) {
+        await this.emitStatus(request, {
+          status: 'complete',
+          sessionKey: request.sessionKey,
+          phase: request.phase,
+          messageCount: messages.length,
+          ...usage,
+        });
+        Logger.warning(
+          `[${request.sessionKey}] checkpoint compaction made no progress `
+          + `phase=${request.phase}; keeping the original transcript`,
+        );
+        return { messages, compacted: false, ...usage };
+      }
       await this.emitStatus(request, {
         status: 'complete',
         sessionKey: request.sessionKey,
@@ -201,6 +215,7 @@ export class CheckpointCompactionCoordinator {
     messages: Message[],
     request: CheckpointCompactionRequest,
     usage: ReturnType<CheckpointCompactionCoordinator['getUsageInfo']>,
+    forceRebase = false,
   ): Promise<Message[]> {
     request.signal?.throwIfAborted();
     const { durable, transient } = splitDurableAndTransient(messages);
@@ -208,7 +223,20 @@ export class CheckpointCompactionCoordinator {
     const stableSystemMessages = durable.filter(message => (
       message.role === 'system' && !isCompactionBoundary(message)
     ));
-    const sessionMessages = priorCheckpoint
+    const priorProviderPrefix = priorCheckpoint
+      ? durable.slice(0, priorCheckpoint.sourceStartIndex)
+      : [];
+    const shouldRebase = forceRebase || Boolean(
+      priorCheckpoint
+      && estimateMessagesTokens(priorProviderPrefix) + usage.toolTokens
+        > this.maxContextTokens * this.compactionThreshold
+    );
+    const checkpointKind: NonNullable<Message['__checkpointKind']> = shouldRebase
+      ? 'rebase'
+      : priorCheckpoint ? 'delta' : 'base';
+    const sessionMessages = shouldRebase
+      ? durable.filter(message => message.role !== 'system')
+      : priorCheckpoint
       ? durable
         .slice(priorCheckpoint.sourceStartIndex)
         .filter(message => message.role !== 'system' && !isCheckpointSummary(message))
@@ -222,7 +250,7 @@ export class CheckpointCompactionCoordinator {
       request.phase,
       request.sessionKey,
       request.signal,
-      priorCheckpoint?.summary,
+      checkpointKind === 'delta' ? priorCheckpoint?.summary : undefined,
     );
     const retainedContext = selectRetainedContextMessages(
       sessionMessages,
@@ -237,7 +265,7 @@ export class CheckpointCompactionCoordinator {
       role: 'system',
       content: [
         CHECKPOINT_COMPACTION_BOUNDARY_PREFIX,
-        `kind=${priorCheckpoint ? 'delta' : 'base'}`,
+        `kind=${checkpointKind}`,
         `phase=${request.phase}`,
         activeEpisodeId ? `episode=${activeEpisodeId}` : '',
         stableBoundary ? `last_stable=${stableBoundary}` : '',
@@ -245,14 +273,14 @@ export class CheckpointCompactionCoordinator {
       ].filter(Boolean).join(' '),
       __checkpointBoundary: true,
       __checkpointRetainedCount: retainedContext.length,
-      __checkpointKind: priorCheckpoint ? 'delta' : 'base',
+      __checkpointKind: checkpointKind,
       __checkpointPhase: request.phase,
     };
     const summaryMessage: Message = {
       role: 'user',
       content: `${CHECKPOINT_SUMMARY_PREFIX}\n\n${summary}`,
       __checkpointSummary: true,
-      __checkpointKind: priorCheckpoint ? 'delta' : 'base',
+      __checkpointKind: checkpointKind,
       __checkpointPhase: request.phase,
       ...(activeEpisodeId ? { __episodeId: activeEpisodeId } : {}),
       ...(Object.keys(remoteContextWatermarks).length > 0
@@ -260,15 +288,23 @@ export class CheckpointCompactionCoordinator {
         : {}),
     };
 
-    return [
-      ...(priorCheckpoint
-        ? durable.slice(0, priorCheckpoint.sourceStartIndex)
+    const result = [
+      ...(checkpointKind === 'delta'
+        ? priorProviderPrefix
         : stableSystemMessages),
       boundary,
       summaryMessage,
       ...retainedContext,
       ...transient,
     ];
+    if (
+      checkpointKind === 'delta'
+      && this.getUsageInfo(result, usage.toolTokens).usedTokens + usage.toolTokens
+        > this.maxContextTokens * this.compactionThreshold
+    ) {
+      return this.compact(messages, request, usage, true);
+    }
+    return result;
   }
 
   private async generateContinuationSummary(
