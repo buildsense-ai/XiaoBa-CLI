@@ -404,7 +404,7 @@ export class ConversationRunner {
         requestMessages,
         currentRunToolResultFoldingOptions,
       );
-      const toolResultArtifactStoreOptions = this.resolveToolResultArtifactStoreOptions(turns);
+      const toolResultArtifactStoreOptions = this.resolveToolResultArtifactStoreOptions();
       const readFileFoldingOptions = {
         ...resolveReadFileMessageFoldingOptions(),
         foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
@@ -1547,7 +1547,7 @@ export class ConversationRunner {
     };
   }
 
-  private resolveToolResultArtifactStoreOptions(turn: number) {
+  private resolveToolResultArtifactStoreOptions() {
     const workspaceRoot = this.toolExecutionContext?.workspaceRoot
       || this.toolExecutionContext?.workingDirectory;
     const defaultRoot = workspaceRoot
@@ -1558,7 +1558,6 @@ export class ConversationRunner {
       rootDirectory: defaultRoot,
       sessionId: this.toolExecutionContext?.sessionId
         || this.toolExecutionContext?.executionScope?.sessionKey,
-      turn,
     });
   }
 

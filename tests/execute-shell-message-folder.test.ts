@@ -137,10 +137,42 @@ test('writes truncated execute_shell full output to a linkable artifact', () => 
     const fullOutputPath = content.match(/^full_output_path: (.+)$/m)?.[1];
 
     assert.ok(content.startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
-    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/turn-0009\/sh_[a-f0-9]{16}/);
+    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/sh_[a-f0-9]{16}/);
     assert.match(content, /full_output_link: file:\/\//);
     assert.ok(fullOutputPath);
     assert.equal(fs.readFileSync(fullOutputPath, 'utf8').includes(raw), true);
+  } finally {
+    fs.rmSync(artifactRoot, { recursive: true, force: true });
+  }
+});
+
+test('keeps folded execute_shell artifact references stable across model turns', () => {
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-shell-cache-prefix-'));
+  const raw = makeShellOutput('npm test -- cache-prefix', 100, true);
+  const messages: Message[] = [
+    { role: 'user', content: 'run cache-prefix tests' },
+    makeToolCallMessage('call_shell_cache_prefix', 'npm test -- cache-prefix'),
+    { role: 'tool', name: 'execute_shell', tool_call_id: 'call_shell_cache_prefix', content: raw },
+    { role: 'assistant', content: 'tests failed' },
+    { role: 'user', content: 'continue' },
+  ];
+
+  try {
+    const foldForTurn = (turn: number) => foldHistoricalExecuteShellMessages(messages, {
+      thresholdTokens: 20,
+      artifactStore: {
+        enabled: true,
+        rootDirectory: artifactRoot,
+        sessionId: 'stable session',
+        turn,
+      },
+    }).messages[2];
+
+    const firstFolded = foldForTurn(1);
+    const secondFolded = foldForTurn(2);
+
+    assert.ok(String(firstFolded.content).startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
+    assert.equal(JSON.stringify(secondFolded), JSON.stringify(firstFolded));
   } finally {
     fs.rmSync(artifactRoot, { recursive: true, force: true });
   }

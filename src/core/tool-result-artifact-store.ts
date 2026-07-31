@@ -5,6 +5,7 @@ export interface ToolResultArtifactStoreOptions {
   enabled: boolean;
   rootDirectory?: string;
   sessionId?: string;
+  /** @deprecated Artifact paths are content-addressed and no longer scoped by model turn. */
   turn?: number;
 }
 
@@ -19,7 +20,6 @@ export interface ToolResultArtifactReference {
 export interface PersistToolResultArtifactParams {
   artifactId: string;
   toolName: string;
-  toolCallId?: string;
   sha256: string;
   rawText: string;
   store?: Partial<ToolResultArtifactStoreOptions>;
@@ -55,12 +55,9 @@ export function persistToolResultArtifact(
   }
 
   const sessionSegment = sanitizeFileSegment(resolved.sessionId || 'unknown-session');
-  const turnSegment = typeof resolved.turn === 'number' && Number.isFinite(resolved.turn)
-    ? `turn-${String(Math.max(0, Math.floor(resolved.turn))).padStart(4, '0')}`
-    : 'turn-unknown';
-  const directory = path.resolve(resolved.rootDirectory, sessionSegment, turnSegment);
+  const directory = path.resolve(resolved.rootDirectory, sessionSegment);
   const filePath = path.join(directory, `${artifactId}.txt`);
-  const ref = `tool-result://${sessionSegment}/${turnSegment}/${artifactId}`;
+  const ref = `tool-result://${sessionSegment}/${artifactId}`;
 
   try {
     fs.mkdirSync(directory, { recursive: true });
@@ -85,7 +82,6 @@ export function persistToolResultArtifact(
 function buildArtifactPayload(params: PersistToolResultArtifactParams): string {
   return [
     `tool_name: ${params.toolName}`,
-    params.toolCallId ? `tool_call_id: ${params.toolCallId}` : '',
     `sha256: ${params.sha256}`,
     '',
     params.rawText,

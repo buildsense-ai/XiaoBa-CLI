@@ -96,7 +96,7 @@ test('writes truncated read_file full output to a linkable artifact', () => {
     const fullOutputPath = content.match(/^full_output_path: (.+)$/m)?.[1];
 
     assert.ok(content.startsWith(TRUNCATED_READ_FILE_PREFIX));
-    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/turn-0007\/rf_[a-f0-9]{16}/);
+    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/rf_[a-f0-9]{16}/);
     assert.match(content, /full_output_link: file:\/\//);
     assert.ok(fullOutputPath);
     assert.equal(fs.readFileSync(fullOutputPath, 'utf8').includes(raw), true);
@@ -232,6 +232,77 @@ test('runner folds only provider input and leaves durable session messages raw',
   const providerToolResult = captured[0].find(message => message.role === 'tool');
   assert.ok(String(providerToolResult?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
   assert.equal(messages[2].content, raw);
+});
+
+test('runner keeps folded historical read_file output stable across model turns', async () => {
+  const previousThreshold = process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-prefix-'));
+  process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS = '20';
+
+  const raw = makeReadFileOutput('E:/repo/cache-prefix.ts', 90);
+  const messages: Message[] = [
+    { role: 'user', content: 'read cache-prefix.ts' },
+    makeToolCallMessage('call_cache_prefix', 'E:/repo/cache-prefix.ts'),
+    { role: 'tool', name: 'read_file', tool_call_id: 'call_cache_prefix', content: raw },
+    { role: 'assistant', content: 'read complete' },
+    { role: 'user', content: 'continue with one tool call' },
+  ];
+  const captured: Message[][] = [];
+  let callCount = 0;
+  const aiService = {
+    async chat(requestMessages: Message[]) {
+      captured.push(JSON.parse(JSON.stringify(requestMessages)));
+      callCount++;
+      if (callCount === 1) {
+        return {
+          content: null,
+          toolCalls: [{
+            id: 'call_noop',
+            type: 'function',
+            function: { name: 'noop', arguments: '{}' },
+          }],
+        };
+      }
+      return { content: 'done', toolCalls: [] };
+    },
+  };
+  const executor: ToolExecutor = {
+    getToolDefinitions: () => [{
+      name: 'noop',
+      description: 'No-op tool used to force a second model turn',
+      parameters: { type: 'object', properties: {} },
+    }],
+    executeTool: async () => ({
+      ok: true,
+      tool_call_id: 'call_noop',
+      role: 'tool',
+      name: 'noop',
+      content: 'ok',
+    }),
+  };
+
+  try {
+    const runner = new ConversationRunner(aiService as any, executor, {
+      stream: false,
+      enableCompression: false,
+      toolExecutionContext: {
+        workingDirectory: workspaceRoot,
+        workspaceRoot,
+        sessionId: 'stable-session',
+      },
+    });
+    await runner.run(messages);
+  } finally {
+    if (previousThreshold === undefined) delete process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
+    else process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS = previousThreshold;
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  }
+
+  assert.equal(captured.length, 2);
+  const firstFolded = captured[0].find(message => message.tool_call_id === 'call_cache_prefix');
+  const secondFolded = captured[1].find(message => message.tool_call_id === 'call_cache_prefix');
+  assert.ok(String(firstFolded?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
+  assert.equal(JSON.stringify(secondFolded), JSON.stringify(firstFolded));
 });
 
 test('runner delayed-folds older current-run tool results and keeps recent ones raw', async () => {
