@@ -39,6 +39,7 @@ import {
   withSyntheticObservationTiming,
 } from './synthetic-observation';
 import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-memory-branch';
+import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 
 const EMPTY_FINAL_RESPONSE_MESSAGE = '模型本轮未返回有效内容。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
 
@@ -109,6 +110,8 @@ export interface AgentTurnControllerOptions {
   workspaceRoot: string;
   getCurrentDirectory: () => string;
   updateCurrentDirectory: (directory: string) => void;
+  checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
+  persistCheckpoint?: (messages: Message[]) => void | Promise<void>;
 }
 
 interface MemoryBranchSlot {
@@ -286,6 +289,8 @@ export class AgentTurnController {
         pendingUserInputProvider: options.pendingUserInputProvider,
         syntheticObservationProvider: options.syntheticObservationProvider,
         episodeId: options.episodeId,
+        checkpointCompactionCoordinator: this.options.checkpointCompactionCoordinator,
+        onCompactionCheckpoint: this.options.persistCheckpoint,
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,
