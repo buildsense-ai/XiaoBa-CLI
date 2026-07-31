@@ -204,12 +204,15 @@ export class AIService {
     const provider = this.config.provider;
     const model = this.config.model;
 
-    Logger.error(
-      `API调用失败 | Provider: ${provider} | Model: ${model}`
-    );
-
     const status = this.extractStatus(error);
     const errorMessage = this.extractErrorMessage(error);
+    const responseBody = this.extractResponseBody(error);
+
+    Logger.error(
+      `API调用失败 | Provider: ${provider} | Model: ${model}`
+      + (status ? ` | Status: ${status}` : '')
+      + (responseBody ? ` | Body: ${responseBody}` : '')
+    );
 
     const wrapped = status
       ? new Error(`API错误 (${status}): ${errorMessage}`)
@@ -470,6 +473,87 @@ export class AIService {
       || error?.error?.message
       || error?.message
       || String(error);
+  }
+
+  private extractResponseBody(error: any): string | null {
+    const parts: string[] = [];
+
+    // axios sets error.message to "Request failed with status code 400"
+    if (error?.message && typeof error.message === 'string') {
+      parts.push(`msg=${error.message.slice(0, 200)}`);
+    }
+
+    const data = error?.response?.data;
+    if (data === undefined || data === null) {
+      return parts.length > 0 ? parts.join(' | ') : null;
+    }
+
+    // Case 1: streaming response — error body is inside the stream itself.
+    // axios with responseType:'stream' wraps the HTTP response in a Readable.
+    if (typeof data === 'object' && typeof data.on === 'function' && typeof data.read === 'function') {
+      const streamBody = this.safeReadStream(data);
+      if (streamBody) {
+        try {
+          const parsed = JSON.parse(streamBody);
+          const err = parsed?.error;
+          if (err?.message) parts.push(`api=${err.message.slice(0, 300)}`);
+          if (err?.code) parts.push(`code=${err.code}`);
+          if (err?.type) parts.push(`type=${err.type}`);
+        } catch {
+          parts.push(`raw=${streamBody.slice(0, 300)}`);
+        }
+      }
+      return parts.length > 0 ? parts.join(' | ') : null;
+    }
+
+    // Case 2: plain parsed JSON object (non-streaming responses)
+    if (typeof data === 'object') {
+      const apiMsg = data?.error?.message || data?.message;
+      if (apiMsg && typeof apiMsg === 'string') {
+        parts.push(`api=${apiMsg.slice(0, 300)}`);
+      }
+      if (data?.error?.code || data?.code) {
+        parts.push(`code=${data?.error?.code || data?.code}`);
+      }
+      if (data?.error?.type || data?.type) {
+        parts.push(`type=${data?.error?.type || data?.type}`);
+      }
+      try {
+        const compact = JSON.stringify(data);
+        if (!apiMsg || compact.length <= 200) {
+          parts.push(`json=${compact.length > 200 ? compact.slice(0, 200) + '…' : compact}`);
+        }
+      } catch {
+        // ignore
+      }
+      return parts.length > 0 ? parts.join(' | ') : null;
+    }
+
+    // Case 3: plain string
+    if (typeof data === 'string') {
+      parts.push(`data=${data.slice(0, 300)}`);
+      return parts.join(' | ');
+    }
+
+    return parts.length > 0 ? parts.join(' | ') : null;
+  }
+
+  /**
+   * Synchronously drain a Node.js Readable stream that has already ended.
+   * Used for axios error responses with responseType: 'stream'.
+   */
+  private safeReadStream(stream: any): string | null {
+    try {
+      let body = '';
+      let chunk = stream.read();
+      while (chunk !== null) {
+        body += typeof chunk === 'string' ? chunk : chunk.toString();
+        chunk = stream.read();
+      }
+      return body || null;
+    } catch {
+      return null;
+    }
   }
 
   private extractErrorCode(error: any): string {
