@@ -26,6 +26,8 @@ export interface Message {
    * but is appended to Responses input instead of destabilizing instructions.
    */
   __cacheScope?: 'stable' | 'dynamic';
+  /** Durable checkpoint boundary metadata must stay out of stable provider instructions. */
+  __checkpointBoundary?: boolean;
   /** 标记注入给 agent 看的运行时反馈，仅供内部清理和日志记录使用 */
   __runtimeFeedback?: boolean;
   /** 标记内部 runtime observation，例如子 agent 完成结果；对模型仍以 user role 承载 */

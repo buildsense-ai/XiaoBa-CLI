@@ -250,6 +250,47 @@ describe('OpenAIProvider Responses API mode', () => {
     );
   });
 
+  test('keeps checkpoint boundaries out of the stable cache identity', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-terra',
+      openaiApiMode: 'responses',
+    });
+    const first = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      {
+        role: 'system',
+        content: '[checkpoint_compaction_boundary] kind=base tokens_before=100',
+        __checkpointBoundary: true,
+      },
+      { role: 'user', content: 'summary one' },
+      { role: 'user', content: 'new question' },
+    ]);
+    const second = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      {
+        role: 'system',
+        content: '[checkpoint_compaction_boundary] kind=delta tokens_before=200',
+        __checkpointBoundary: true,
+      },
+      { role: 'user', content: 'summary one' },
+      { role: 'user', content: 'new question' },
+    ]);
+
+    assert.equal(first.instructions, 'Stable policy.');
+    assert.equal(second.instructions, 'Stable policy.');
+    assert.equal(first.prompt_cache_key, second.prompt_cache_key);
+    assert.deepEqual(first.input.at(-1), {
+      role: 'system',
+      content: '[checkpoint_compaction_boundary] kind=base tokens_before=100',
+    });
+    assert.deepEqual(second.input.at(-1), {
+      role: 'system',
+      content: '[checkpoint_compaction_boundary] kind=delta tokens_before=200',
+    });
+  });
+
   test('keeps explicit mode when transient content closes every cache boundary', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
