@@ -596,13 +596,13 @@ describe('AgentSession lifecycle', () => {
     assert.equal(session.restoreFromStore(), true);
 
     const compactReasons: string[] = [];
-    (session as any).contextWindowManager.compactIfNeeded = async (messages: any[], options: any) => {
-      compactReasons.push(options.reason || '');
-      if (options.reason === '恢复后') {
+    (session as any).checkpointCompactionCoordinator.compactIfNeeded = async (messages: any[], options: any) => {
+      compactReasons.push(options.phase || '');
+      if (options.phase === 'restore') {
         await options.onStatus?.({
           status: 'start',
           sessionKey: 'catscompany:lifecycle-compact-status',
-          reason: options.reason,
+          phase: options.phase,
           usedTokens: 900,
           maxTokens: 1000,
           usagePercent: 90,
@@ -610,14 +610,17 @@ describe('AgentSession lifecycle', () => {
         await options.onStatus?.({
           status: 'complete',
           sessionKey: 'catscompany:lifecycle-compact-status',
-          reason: options.reason,
+          phase: options.phase,
           usedTokens: 900,
           maxTokens: 1000,
           usagePercent: 90,
           messageCount: messages.length,
         });
       }
-      return messages;
+      return {
+        compacted: options.phase === 'restore',
+        messages,
+      };
     };
 
     const thinking: string[] = [];
@@ -629,7 +632,7 @@ describe('AgentSession lifecycle', () => {
       },
     });
 
-    assert.deepStrictEqual(compactReasons, ['处理前', '恢复后']);
+    assert.deepStrictEqual(compactReasons, ['pre_turn', 'restore']);
     assert.deepStrictEqual(thinking, [
       CONTEXT_COMPACTION_START_MESSAGE,
       CONTEXT_COMPACTION_COMPLETE_MESSAGE,
@@ -647,11 +650,11 @@ describe('AgentSession lifecycle', () => {
     );
 
     let preCompactMessages: any[] = [];
-    (session as any).contextWindowManager.compactIfNeeded = async (messages: any[], options: any) => {
-      if (options.reason === '处理前') {
+    (session as any).checkpointCompactionCoordinator.compactIfNeeded = async (messages: any[], options: any) => {
+      if (options.phase === 'pre_turn') {
         preCompactMessages = messages.map(message => ({ ...message }));
       }
-      return messages;
+      return { compacted: false, messages };
     };
 
     await session.handleMessage('继续');

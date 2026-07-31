@@ -8,6 +8,7 @@ import { Logger } from '../utils/logger';
 import { isRateLimitErrorCode } from '../utils/rate-limit-error';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
+import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
 import { foldHistoricalReadFileMessages, resolveReadFileMessageFoldingOptions } from './read-file-message-folder';
 import { foldHistoricalExecuteShellMessages, resolveExecuteShellMessageFoldingOptions } from './execute-shell-message-folder';
@@ -215,6 +216,10 @@ export interface RunnerOptions {
   runtimeTransientProvider?: RuntimeTransientProvider;
   /** Internal id that ties all messages created by one externally visible user turn together. */
   episodeId?: string;
+  /** Main-Agent-only continuation compaction. Branch and subagent runners omit it. */
+  checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
+  /** Persists a successful continuation checkpoint before execution resumes. */
+  onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
 }
 
 /**
@@ -238,6 +243,8 @@ export class ConversationRunner {
   private runtimeTransientProvider?: RuntimeTransientProvider;
   private episodeId?: string;
   private suppressFinalResponse: boolean;
+  private checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
+  private onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -263,6 +270,8 @@ export class ConversationRunner {
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
     this.runtimeTransientProvider = options?.runtimeTransientProvider;
     this.episodeId = options?.episodeId;
+    this.checkpointCompactionCoordinator = options?.checkpointCompactionCoordinator;
+    this.onCompactionCheckpoint = options?.onCompactionCheckpoint;
     this.maxTurns = options?.maxTurns;
     this.suppressFinalResponse = options?.suppressFinalResponse === true;
 
@@ -411,6 +420,8 @@ export class ConversationRunner {
         ? summarizeToolResultContext(requestMessages, toolResultContextReportOptions)
         : null;
       const currentRunToolResultFoldingOptions = resolveCurrentRunToolResultFoldingOptions();
+      const foldCurrentRunToolResults = !this.checkpointCompactionCoordinator
+        && currentRunToolResultFoldingOptions.enabled;
       const protectedCurrentRunToolResultIndexes = selectProtectedCurrentRunToolResultIndexes(
         requestMessages,
         currentRunToolResultFoldingOptions,
@@ -418,13 +429,13 @@ export class ConversationRunner {
       const toolResultArtifactStoreOptions = this.resolveToolResultArtifactStoreOptions();
       const readFileFoldingOptions = {
         ...resolveReadFileMessageFoldingOptions(),
-        foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
+        foldCurrentRun: foldCurrentRunToolResults,
         protectedCurrentRunToolResultIndexes,
         artifactStore: toolResultArtifactStoreOptions,
       };
       const executeShellFoldingOptions = {
         ...resolveExecuteShellMessageFoldingOptions(),
-        foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
+        foldCurrentRun: foldCurrentRunToolResults,
         protectedCurrentRunToolResultIndexes,
         artifactStore: toolResultArtifactStoreOptions,
       };
@@ -788,6 +799,7 @@ export class ConversationRunner {
         };
       }
 
+      await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
       await this.appendPendingUserInput(messages, newMessages, turns);
     }
 
@@ -875,22 +887,53 @@ export class ConversationRunner {
     return true;
   }
 
+  private async compactMidTurnIfNeeded(
+    messages: Message[],
+    tools: ToolDefinition[],
+    turns: number,
+    callbacks?: RunnerCallbacks,
+  ): Promise<void> {
+    if (!this.checkpointCompactionCoordinator) return;
+    const result = await this.checkpointCompactionCoordinator.compactIfNeeded(messages, {
+      sessionKey: this.toolExecutionContext?.sessionId || this.sessionLabel.trim() || 'runner',
+      phase: 'mid_turn',
+      toolTokens: estimateToolsTokens(tools),
+      signal: this.toolExecutionContext?.abortSignal,
+      onStatus: callbacks?.onThinking
+        ? async event => {
+          if (event.status === 'start') {
+            await callbacks.onThinking?.('Context is full. Creating a continuation checkpoint.');
+          } else if (event.status === 'complete') {
+            await callbacks.onThinking?.('Continuation checkpoint created. Preparing to resume the same task.');
+          } else {
+            await callbacks.onThinking?.('Checkpoint creation failed. Continuing with the original context.');
+          }
+        }
+        : undefined,
+    });
+    if (!result.compacted) return;
+
+    try {
+      await this.onCompactionCheckpoint?.(result.messages);
+    } catch (error) {
+      Logger.warning(
+        `[${this.sessionLabel}Turn ${turns}] continuation checkpoint persistence failed; `
+        + `keeping original transcript: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+
+    messages.splice(0, messages.length, ...result.messages);
+    this.refreshRuntimeContextForPendingInput(messages);
+    Logger.info(
+      `[${this.sessionLabel}Turn ${turns}] durable mid-turn checkpoint persisted; continuing same episode`,
+    );
+  }
+
   private refreshRuntimeContextForPendingInput(messages: Message[]): void {
     const sessionKey = this.toolExecutionContext?.sessionId
       || this.toolExecutionContext?.executionScope?.sessionKey;
     if (!sessionKey) return;
-
-    const runtimeContext = buildRuntimeContextMessage({
-      sessionKey,
-      sessionType: this.toolExecutionContext?.surface,
-      executionScope: this.toolExecutionContext?.executionScope,
-      localDeviceGrant: this.toolExecutionContext?.localDeviceGrant,
-      deviceGrants: this.toolExecutionContext?.deviceGrants,
-      deviceSelection: this.toolExecutionContext?.deviceSelection,
-      targetRoutes: this.toolExecutionContext?.targetRoutes,
-      localFileGrants: this.toolExecutionContext?.localFileGrants,
-    });
-    if (!runtimeContext) return;
 
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i];
@@ -902,7 +945,17 @@ export class ConversationRunner {
         messages.splice(i, 1);
       }
     }
-    messages.push(runtimeContext);
+    const runtimeContext = buildRuntimeContextMessage({
+      sessionKey,
+      sessionType: this.toolExecutionContext?.surface,
+      executionScope: this.toolExecutionContext?.executionScope,
+      localDeviceGrant: this.toolExecutionContext?.localDeviceGrant,
+      deviceGrants: this.toolExecutionContext?.deviceGrants,
+      deviceSelection: this.toolExecutionContext?.deviceSelection,
+      targetRoutes: this.toolExecutionContext?.targetRoutes,
+      localFileGrants: this.toolExecutionContext?.localFileGrants,
+    });
+    if (runtimeContext) messages.push(runtimeContext);
   }
 
   private injectSyntheticObservations(messages: Message[], turn: number): void {

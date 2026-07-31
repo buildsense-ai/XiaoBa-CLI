@@ -28,7 +28,7 @@ import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { SessionTurnLogger } from '../utils/session-turn-logger';
 import { Metrics } from '../utils/metrics';
-import { ContextWindowManager, type ContextCompactionStatusEvent } from './context-window-manager';
+import { ContextWindowManager } from './context-window-manager';
 import {
   RuntimeFeedbackInbox,
   RuntimeFeedbackInput,
@@ -54,6 +54,12 @@ import {
   scheduleCurrentBotPromptReconcile,
 } from '../bot-definition/prompt-sync';
 import { collectRemoteContextWatermarks } from './remote-context-watermarks';
+import {
+  CheckpointCompactionCoordinator,
+  type CheckpointCompactionPhase,
+  isCheckpointCompactionEnabled,
+} from './checkpoint-compaction';
+import { estimateToolsTokens } from './token-estimator';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -191,6 +197,8 @@ export class AgentSession {
   private turnContextBuilder = new TurnContextBuilder();
   private turnController: AgentTurnController;
   private contextWindowManager: ContextWindowManager;
+  private checkpointCompactionCoordinator: CheckpointCompactionCoordinator;
+  private readonly useCheckpointCompaction: boolean;
   private skillRuntime: SessionSkillRuntime;
   private runtimeFeedbackInbox = new RuntimeFeedbackInbox();
   private planRuntime = new PlanRuntime();
@@ -218,6 +226,11 @@ export class AgentSession {
       maxContextTokens: contextWindow.promptBudgetTokens,
       summaryContentBudget: contextWindow.summaryBudgetTokens,
     });
+    this.checkpointCompactionCoordinator = new CheckpointCompactionCoordinator(
+      services.aiService,
+      { maxContextTokens: contextWindow.promptBudgetTokens },
+    );
+    this.useCheckpointCompaction = isCheckpointCompactionEnabled();
     this.skillRuntime = new SessionSkillRuntime(services.skillManager, key);
     this.lifecycleManager = new SessionLifecycleManager({
       sessionKey: key,
@@ -242,6 +255,14 @@ export class AgentSession {
       branchLogRoot: getDistillationHeartbeatConfig(this.defaultDirectory).branchLogRoot,
       getCurrentDirectory: () => this.currentDirectory,
       updateCurrentDirectory: directory => this.updateCurrentDirectory(directory),
+      checkpointCompactionCoordinator: this.useCheckpointCompaction
+        ? this.checkpointCompactionCoordinator
+        : undefined,
+      persistCheckpoint: messages => {
+        if (!this.persistCheckpoint(messages)) {
+          throw new Error('Failed to persist continuation checkpoint');
+        }
+      },
     });
 
     const runtimeFeedbackInbox = this.runtimeFeedbackInbox;
@@ -374,22 +395,32 @@ export class AgentSession {
       this.messages.push(...restoredMessages);
       Logger.info(`[会话 ${this.key}] 已恢复 ${restoredMessages.length} 条消息`);
 
-      const usage = this.contextWindowManager.getUsageInfo(this.messages);
+      const usage = this.getContextUsageInfo(this.messages);
       Logger.info(`[${this.key}] 恢复后上下文: ${usage.usedTokens}/${usage.maxTokens} tokens (${usage.usagePercent}%)`);
 
       const compactionSignal = initSignal;
       const messagesBeforeRestoreCompaction = stripAssistantArtifactsFromMessages(this.messages);
-      const compactedMessages = await this.contextWindowManager.compactIfNeeded(messagesBeforeRestoreCompaction, {
-        sessionKey: this.key,
-        reason: '恢复后',
-        signal: compactionSignal,
-        onStatus: this.createContextCompactionNotifier(options.callbacks),
-      });
+      const compactionResult = await this.compactContextIfNeeded(
+        messagesBeforeRestoreCompaction,
+        'restore',
+        '恢复后',
+        compactionSignal,
+        options.callbacks,
+      );
       if (compactionSignal?.aborted || this.interruptRequested || lifecycleGeneration !== this.lifecycleGeneration) {
         Logger.info(`[会话 ${this.key}] 当前请求已取消或会话已重置，忽略恢复压缩的旧结果`);
         return;
       }
-      this.messages = compactedMessages;
+      if (compactionResult.compacted) {
+        if (this.persistCheckpoint(compactionResult.messages)) {
+          this.messages = compactionResult.messages;
+        } else {
+          Logger.warning(`[会话 ${this.key}] 恢复检查点持久化失败，保留原始上下文`);
+          this.messages = messagesBeforeRestoreCompaction;
+        }
+      } else {
+        this.messages = compactionResult.messages;
+      }
     }
 
     if (injectedContext.length > 0) {
@@ -456,12 +487,13 @@ export class AgentSession {
       } : {}),
     })));
     const messagesBeforeCompaction = stripAssistantArtifactsFromMessages(this.messages);
-    const compacted = await this.contextWindowManager.compactIfNeeded(messagesBeforeCompaction, {
-      sessionKey: this.key,
-      reason: '群聊历史补入',
-    });
+    const compactionResult = await this.compactContextIfNeeded(
+      messagesBeforeCompaction,
+      'restore',
+      '群聊历史补入',
+    );
     if (lifecycleGeneration !== this.lifecycleGeneration) return false;
-    this.messages = compacted;
+    this.messages = compactionResult.messages;
     this.lastActiveAt = Date.now();
     if (!this.lifecycleManager.saveContext(this.messages)) {
       this.messages = messagesBeforeAppend;
@@ -611,18 +643,28 @@ export class AgentSession {
 
       try {
         const messagesBeforeCompaction = stripAssistantArtifactsFromMessages(this.messages);
-        const compactedMessages = await this.contextWindowManager.compactIfNeeded(messagesBeforeCompaction, {
-          sessionKey: this.key,
-          reason: '处理前',
-          signal: this.activeAbortController.signal,
-          onStatus: this.createContextCompactionNotifier(callbacks),
-        });
+        const compactionResult = await this.compactContextIfNeeded(
+          messagesBeforeCompaction,
+          'pre_turn',
+          '处理前',
+          this.activeAbortController.signal,
+          callbacks,
+        );
         if (this.interruptRequested || this.activeAbortController.signal.aborted) {
           Logger.info(`[会话 ${this.key}] 当前请求已取消，忽略压缩在中断后的返回`);
           this.saveInterruptedContextIfCurrent(lifecycleGeneration);
           return { text: '已停止当前请求。', visibleToUser: true, taskOutcome: 'cancelled' };
         }
-        this.messages = compactedMessages;
+        if (compactionResult.compacted) {
+          if (this.persistCheckpoint(compactionResult.messages)) {
+            this.messages = compactionResult.messages;
+          } else {
+            Logger.warning(`[会话 ${this.key}] 处理前检查点持久化失败，保留原始上下文`);
+            this.messages = messagesBeforeCompaction;
+          }
+        } else {
+          this.messages = compactionResult.messages;
+        }
 
         await this.init({
           callbacks,
@@ -977,9 +1019,64 @@ export class AgentSession {
     );
   }
 
-  private createContextCompactionNotifier(callbacks?: SessionCallbacks): ((event: ContextCompactionStatusEvent) => Promise<void>) | undefined {
+  private getContextUsageInfo(messages: Message[]): {
+    usedTokens: number;
+    maxTokens: number;
+    usagePercent: number;
+  } {
+    if (!this.useCheckpointCompaction) {
+      return this.contextWindowManager.getUsageInfo(messages);
+    }
+    return this.checkpointCompactionCoordinator.getUsageInfo(
+      messages,
+      this.getToolDefinitionTokens(),
+    );
+  }
+
+  private async compactContextIfNeeded(
+    messages: Message[],
+    phase: CheckpointCompactionPhase,
+    reason: string,
+    signal?: AbortSignal,
+    callbacks?: SessionCallbacks,
+  ): Promise<{ messages: Message[]; compacted: boolean }> {
+    if (!this.useCheckpointCompaction) {
+      const compactedMessages = await this.contextWindowManager.compactIfNeeded(messages, {
+        sessionKey: this.key,
+        reason,
+        signal,
+        onStatus: this.createContextCompactionNotifier(callbacks),
+      });
+      return {
+        messages: compactedMessages,
+        compacted: false,
+      };
+    }
+    return this.checkpointCompactionCoordinator.compactIfNeeded(messages, {
+      sessionKey: this.key,
+      phase,
+      toolTokens: this.getToolDefinitionTokens(),
+      signal,
+      onStatus: this.createContextCompactionNotifier(callbacks),
+    });
+  }
+
+  private getToolDefinitionTokens(): number {
+    return estimateToolsTokens(this.services.toolManager.getToolDefinitions());
+  }
+
+  private persistCheckpoint(messages: Message[]): boolean {
+    const durable = this.turnContextBuilder.removeTransientMessages(
+      stripAssistantArtifactsFromMessages(messages),
+    );
+    return this.lifecycleManager.saveContext(durable);
+  }
+
+  private createContextCompactionNotifier(callbacks?: SessionCallbacks): ((event: {
+    status: 'start' | 'complete' | 'error';
+  }) => Promise<void>) | undefined {
     if (!callbacks?.onThinking) return undefined;
-    return async (event: ContextCompactionStatusEvent) => {
+    return async (event) => {
       const message = this.formatContextCompactionStatus(event);
       if (!message) return;
       try {
@@ -990,7 +1087,9 @@ export class AgentSession {
     };
   }
 
-  private formatContextCompactionStatus(event: ContextCompactionStatusEvent): string {
+  private formatContextCompactionStatus(event: {
+    status: 'start' | 'complete' | 'error';
+  }): string {
     switch (event.status) {
       case 'start':
         return CONTEXT_COMPACTION_START_MESSAGE;
