@@ -8,6 +8,7 @@ import {
   buildCheckpointCompactionPrompt,
   isCheckpointCompactionEnabled,
 } from '../src/core/checkpoint-compaction';
+import { Metrics } from '../src/utils/metrics';
 
 const usage = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
 
@@ -20,21 +21,25 @@ function createService(
 ): {
   service: any;
   requests: Message[][];
+  requestOptions: Array<{ promptCacheScopeKey?: string } | undefined>;
 } {
   const requests: Message[][] = [];
+  const requestOptions: Array<{ promptCacheScopeKey?: string } | undefined> = [];
   const service = {
     chatStream: async (
       messages: Message[],
       _tools: unknown,
       callbacks: { onText?: (text: string) => void },
+      options?: { promptCacheScopeKey?: string },
     ) => {
       requests.push(messages.map(message => ({ ...message })));
+      requestOptions.push(options);
       const text = await handler(messages, requests.length);
       callbacks.onText?.(text);
       return { content: text, usage };
     },
   };
-  return { service, requests };
+  return { service, requests, requestOptions };
 }
 
 test('checkpoint compaction switch defaults on and supports explicit rollback', () => {
@@ -108,6 +113,26 @@ test('checkpoint compaction preserves stable system and transient runtime messag
   const retainedUserIndex = result.messages.findIndex(message =>
     message.role === 'user' && String(message.content).includes('original objective'));
   assert.ok(summaryIndex >= 0 && retainedUserIndex > summaryIndex);
+});
+
+test('checkpoint compaction uses the session cache scope and session metrics collector', async () => {
+  const { service, requestOptions } = createService(() => 'continuation checkpoint');
+  const metrics = new Metrics();
+  const coordinator = new CheckpointCompactionCoordinator(service, {
+    maxContextTokens: 200,
+    compactionThreshold: 0.5,
+  }, metrics);
+
+  await coordinator.compactIfNeeded([
+    { role: 'user', content: largeText('cache-scoped objective') },
+  ], {
+    sessionKey: 'checkpoint-session',
+    phase: 'pre_turn',
+  });
+
+  assert.equal(requestOptions[0]?.promptCacheScopeKey, 'checkpoint-session');
+  assert.equal(metrics.getSummary().aiCalls, 1);
+  assert.equal(metrics.getSummary().totalTokens, usage.totalTokens);
 });
 
 test('a later checkpoint summarizes the prior checkpoint instead of forgetting it', async () => {

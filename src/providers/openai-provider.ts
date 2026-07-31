@@ -14,6 +14,33 @@ import {
 } from '../utils/reasoning-effort';
 import { openAIApiModeOrDefault } from '../utils/openai-api-mode';
 
+type ExplicitPromptCacheBreakpoint = { mode: 'explicit' };
+type ResponsesPromptContentBlock = Record<string, unknown> & {
+  type: string;
+  prompt_cache_breakpoint?: ExplicitPromptCacheBreakpoint;
+};
+type ResponsesPromptContent = string | ResponsesPromptContentBlock[];
+type ResponsesInputItem = Record<string, unknown> & {
+  role?: Message['role'];
+  type?: string;
+  content?: ResponsesPromptContent;
+  output?: ResponsesPromptContent;
+};
+interface ResponsesRequestBody {
+  model: string;
+  input: ResponsesInputItem[];
+  max_output_tokens: number;
+  stream: boolean;
+  store: boolean;
+  instructions?: string;
+  temperature?: number;
+  tools?: any[];
+  prompt_cache_key?: string;
+  prompt_cache_options?: { mode: 'explicit' };
+  include?: string[];
+  [key: string]: unknown;
+}
+
 /**
  * OpenAI Provider
  * 兼容所有 OpenAI API 格式的服务（OpenAI、本地 LLM 等）
@@ -362,41 +389,67 @@ export class OpenAIProvider implements AIProvider {
     });
   }
 
-  private buildResponsesRequestBody(messages: Message[], tools?: ToolDefinition[], stream = false): any {
+  private buildResponsesRequestBody(
+    messages: Message[],
+    tools?: ToolDefinition[],
+    stream = false,
+    promptCacheScopeKey?: string,
+  ): ResponsesRequestBody {
     const instructions = messages
       .filter(message => message.role === 'system' && !this.isDynamicCacheMessage(message))
       .map(message => this.contentAsText(message.content))
       .filter(Boolean)
       .join('\n\n');
+    const supportsPromptCaching = this.supportsPromptCaching();
+    const supportsExplicitPromptCaching = supportsPromptCaching
+      && /^gpt-5\.6(?:-|$)/i.test(this.model);
+    const responseInput = this.buildResponsesInput(messages, supportsExplicitPromptCaching);
     const responseTools = this.buildCanonicalResponsesTools(tools ?? []);
-    const body: any = {
+    const body: ResponsesRequestBody = {
       model: this.model,
-      input: this.buildResponsesInput(messages),
+      input: responseInput,
       max_output_tokens: this.maxTokens,
       stream,
       store: false,
-      prompt_cache_key: this.buildPromptCacheKey(instructions, responseTools),
     };
 
     if (instructions) body.instructions = instructions;
     if (Number.isFinite(this.temperature)) body.temperature = this.temperature;
     if (responseTools.length > 0) body.tools = responseTools;
+    if (supportsPromptCaching) {
+      body.prompt_cache_key = this.buildPromptCacheKey(
+        instructions,
+        responseTools,
+        promptCacheScopeKey,
+      );
+      if (supportsExplicitPromptCaching) {
+        body.prompt_cache_options = { mode: 'explicit' };
+      }
+    }
     body.include = ['reasoning.encrypted_content'];
     this.applyResponsesReasoningOptions(body);
     return body;
   }
 
   private isOfficialOpenAIResponsesEndpoint(): boolean {
+    return this.responsesEndpointHostname() === 'api.openai.com';
+  }
+
+  private responsesEndpointHostname(): string | undefined {
     try {
-      return new URL(this.responsesUrl).hostname.toLowerCase() === 'api.openai.com';
+      return new URL(this.responsesUrl).hostname.toLowerCase();
     } catch {
-      return false;
+      return undefined;
     }
   }
 
-  private buildResponsesInput(messages: Message[]): any[] {
-    const input: any[] = [];
+  private buildResponsesInput(
+    messages: Message[],
+    addExplicitPromptCacheBreakpoints = false,
+  ): ResponsesInputItem[] {
+    const input: ResponsesInputItem[] = [];
     const dynamicSystemMessages: Message[] = [];
+    let promptCacheBoundaryClosed = false;
 
     for (const message of messages) {
       if (message.role === 'system') {
@@ -404,12 +457,20 @@ export class OpenAIProvider implements AIProvider {
         continue;
       }
 
+      if (this.isDynamicCacheMessage(message)) {
+        promptCacheBoundaryClosed = true;
+      }
+
       if (message.role === 'tool') {
         if (!message.tool_call_id) continue;
+        const output = this.responsesFunctionOutput(message.content);
+        const markedOutput = addExplicitPromptCacheBreakpoints && !promptCacheBoundaryClosed
+          ? this.addPromptCacheBreakpointToContent(output)
+          : undefined;
         input.push({
           type: 'function_call_output',
           call_id: message.tool_call_id,
-          output: this.responsesFunctionOutput(message.content),
+          output: markedOutput ?? output,
         });
         continue;
       }
@@ -436,9 +497,15 @@ export class OpenAIProvider implements AIProvider {
         continue;
       }
 
+      const content = this.responsesMessageContent(message.content);
+      const markedContent = addExplicitPromptCacheBreakpoints
+        && message.role === 'user'
+        && !promptCacheBoundaryClosed
+        ? this.addPromptCacheBreakpointToContent(content)
+        : undefined;
       input.push({
         role: message.role,
-        content: this.responsesMessageContent(message.content),
+        content: markedContent ?? content,
       });
     }
 
@@ -452,9 +519,32 @@ export class OpenAIProvider implements AIProvider {
     return input;
   }
 
+  private supportsPromptCaching(): boolean {
+    const hostname = this.responsesEndpointHostname();
+    return hostname === 'api.openai.com' || hostname === 'relay.catsco.cc';
+  }
+
+  private addPromptCacheBreakpointToContent(
+    content: ResponsesPromptContent,
+  ): ResponsesPromptContentBlock[] | undefined {
+    const blocks: ResponsesPromptContentBlock[] = Array.isArray(content)
+      ? content.map(block => ({ ...block }))
+      : [{ type: 'input_text', text: String(content ?? '') }];
+    for (let index = blocks.length - 1; index >= 0; index--) {
+      if (!['input_text', 'input_image', 'input_file'].includes(blocks[index]?.type)) continue;
+      blocks[index] = {
+        ...blocks[index],
+        prompt_cache_breakpoint: { mode: 'explicit' },
+      };
+      return blocks;
+    }
+    return undefined;
+  }
+
   private isDynamicCacheMessage(message: Message): boolean {
     if (message.__cacheScope === 'dynamic') return true;
     if (message.__cacheScope === 'stable') return false;
+    if (message.__injected || message.__runtimeFeedback || message.__syntheticObservation) return true;
     if (message.role !== 'system' || typeof message.content !== 'string') return false;
     return /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(message.content);
   }
@@ -481,14 +571,14 @@ export class OpenAIProvider implements AIProvider {
     );
   }
 
-  private responsesMessageContent(content: Message['content']): any {
+  private responsesMessageContent(content: Message['content']): ResponsesPromptContent {
     if (!Array.isArray(content)) return content ?? '';
     return content.map(block => block.type === 'text'
       ? { type: 'input_text', text: block.text }
       : { type: 'input_image', image_url: `data:${block.source.media_type};base64,${block.source.data}` });
   }
 
-  private responsesFunctionOutput(content: Message['content']): any {
+  private responsesFunctionOutput(content: Message['content']): ResponsesPromptContent {
     if (!Array.isArray(content)) return content ?? '';
     return content.map(block => block.type === 'text'
       ? { type: 'input_text', text: block.text }
@@ -512,13 +602,23 @@ export class OpenAIProvider implements AIProvider {
     ].includes(String(item.type || '')));
   }
 
-  private buildPromptCacheKey(instructions: string, tools: any[]): string {
+  private buildPromptCacheKey(
+    instructions: string,
+    tools: any[],
+    promptCacheScopeKey?: string,
+  ): string {
+    const tenantPartition = createHash('sha256')
+      .update(this.apiKey)
+      .digest('hex')
+      .slice(0, 16);
     const digest = createHash('sha256')
       .update(JSON.stringify({
-        identityVersion: 'responses-cache-v2',
+        identityVersion: 'responses-cache-v3',
         model: this.model,
         instructions,
         tools,
+        tenant: tenantPartition,
+        scope: promptCacheScopeKey?.trim() || 'default',
       }))
       .digest('hex')
       .slice(0, 48);
@@ -633,7 +733,12 @@ export class OpenAIProvider implements AIProvider {
     tools?: ToolDefinition[],
     options?: AIRequestOptions,
   ): Promise<ChatResponse> {
-    const body = this.buildResponsesRequestBody(messages, tools, false);
+    const body = this.buildResponsesRequestBody(
+      messages,
+      tools,
+      false,
+      options?.promptCacheScopeKey,
+    );
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.responsesUrl,
       body,
@@ -654,7 +759,12 @@ export class OpenAIProvider implements AIProvider {
     callbacks?: StreamCallbacks,
     options?: AIRequestOptions,
   ): Promise<ChatResponse> {
-    const body = this.buildResponsesRequestBody(messages, tools, true);
+    const body = this.buildResponsesRequestBody(
+      messages,
+      tools,
+      true,
+      options?.promptCacheScopeKey,
+    );
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.responsesUrl,
       body,
