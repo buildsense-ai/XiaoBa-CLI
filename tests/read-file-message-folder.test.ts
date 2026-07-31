@@ -96,12 +96,111 @@ test('writes truncated read_file full output to a linkable artifact', () => {
     const fullOutputPath = content.match(/^full_output_path: (.+)$/m)?.[1];
 
     assert.ok(content.startsWith(TRUNCATED_READ_FILE_PREFIX));
-    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/turn-0007\/rf_[a-f0-9]{16}/);
+    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/rf_[a-f0-9]{16}/);
     assert.match(content, /full_output_link: file:\/\//);
     assert.ok(fullOutputPath);
     assert.equal(fs.readFileSync(fullOutputPath, 'utf8').includes(raw), true);
   } finally {
     fs.rmSync(artifactRoot, { recursive: true, force: true });
+  }
+});
+
+test('keeps folded historical artifact references byte-identical across inference turns', () => {
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-stable-read-artifacts-'));
+  const raw = makeReadFileOutput('E:/repo/stable-large.ts', 90);
+  const messages: Message[] = [
+    { role: 'user', content: 'read stable-large.ts' },
+    makeToolCallMessage('call_stable_read', 'E:/repo/stable-large.ts'),
+    { role: 'tool', name: 'read_file', tool_call_id: 'call_stable_read', content: raw },
+    { role: 'assistant', content: 'read complete' },
+    { role: 'user', content: 'continue' },
+  ];
+
+  try {
+    const foldAtTurn = (turn: number) => foldHistoricalReadFileMessages(messages, {
+      thresholdTokens: 20,
+      artifactStore: {
+        enabled: true,
+        rootDirectory: artifactRoot,
+        sessionId: 'stable session',
+        turn,
+      },
+    }).messages[2];
+
+    const first = foldAtTurn(1);
+    const second = foldAtTurn(2);
+
+    assert.equal(JSON.stringify(second), JSON.stringify(first));
+    assert.match(String(first.content), /full_output_ref: tool-result:\/\/stable_session\/rf_[a-f0-9]{16}/);
+    assert.equal(String(first.content).includes('/turn-'), false);
+  } finally {
+    fs.rmSync(artifactRoot, { recursive: true, force: true });
+  }
+});
+
+test('runner keeps the same historical provider tool result byte-identical across tool-loop turns', async () => {
+  const previousThreshold = process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
+  process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS = '20';
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runner-stable-prefix-'));
+  const raw = makeReadFileOutput('E:/repo/runner-stable.ts', 90);
+  const messages: Message[] = [
+    { role: 'user', content: 'read runner-stable.ts' },
+    makeToolCallMessage('call_historical_read', 'E:/repo/runner-stable.ts'),
+    { role: 'tool', name: 'read_file', tool_call_id: 'call_historical_read', content: raw },
+    { role: 'assistant', content: 'historical read complete' },
+    { role: 'user', content: 'continue with one more read' },
+  ];
+  const captured: Message[][] = [];
+  const aiService = {
+    async chat(requestMessages: Message[]) {
+      captured.push(JSON.parse(JSON.stringify(requestMessages)));
+      if (captured.length === 1) {
+        return {
+          content: null,
+          toolCalls: [{
+            id: 'call_current_read',
+            type: 'function' as const,
+            function: { name: 'read_file', arguments: JSON.stringify({ file_path: 'E:/repo/current.ts' }) },
+          }],
+        };
+      }
+      return { content: 'done', toolCalls: [] };
+    },
+  };
+  const executor: ToolExecutor = {
+    getToolDefinitions: () => [{
+      name: 'read_file',
+      description: 'read a file',
+      parameters: { type: 'object', properties: {} },
+    }],
+    executeTool: async toolCall => ({
+      tool_call_id: toolCall.id,
+      role: 'tool',
+      name: 'read_file',
+      content: 'current read output',
+    }),
+  };
+
+  try {
+    const runner = new ConversationRunner(aiService as any, executor, {
+      stream: false,
+      enableCompression: false,
+      toolExecutionContext: {
+        workspaceRoot,
+        sessionId: 'stable-runner-session',
+      },
+    });
+    await runner.run(messages);
+
+    assert.equal(captured.length, 2);
+    const historicalAtTurn1 = captured[0].find(message => message.tool_call_id === 'call_historical_read');
+    const historicalAtTurn2 = captured[1].find(message => message.tool_call_id === 'call_historical_read');
+    assert.equal(JSON.stringify(historicalAtTurn2), JSON.stringify(historicalAtTurn1));
+    assert.match(String(historicalAtTurn1?.content), /full_output_ref: tool-result:\/\/stable-runner-session\/rf_[a-f0-9]{16}/);
+  } finally {
+    if (previousThreshold === undefined) delete process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
+    else process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS = previousThreshold;
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
   }
 });
 
@@ -194,7 +293,7 @@ test('environment options are deterministic and can disable folding', () => {
   assert.equal(options.keepRecentHistoricalReads, 2);
 });
 
-test('runner folds only provider input and leaves durable session messages raw', async () => {
+test('runner folds provider input and persists the same stable historical read_file result', async () => {
   const previousThreshold = process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
   process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS = '20';
 
@@ -231,10 +330,11 @@ test('runner folds only provider input and leaves durable session messages raw',
 
   const providerToolResult = captured[0].find(message => message.role === 'tool');
   assert.ok(String(providerToolResult?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
-  assert.equal(messages[2].content, raw);
+  assert.equal(messages[2].content, providerToolResult?.content);
+  assert.equal(messages[2].__toolResultStable, true);
 });
 
-test('runner delayed-folds older current-run tool results and keeps recent ones raw', async () => {
+test('runner freezes both older and recent current-run tool results after delayed folding', async () => {
   const previousThreshold = process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
   const previousCurrentRunFolding = process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLDING;
   const previousKeepRecent = process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLD_KEEP_RECENT;
@@ -282,7 +382,9 @@ test('runner delayed-folds older current-run tool results and keeps recent ones 
   const providerOld = captured[0].find(message => message.tool_call_id === 'call_current_provider_old');
   const providerRecent = captured[0].find(message => message.tool_call_id === 'call_current_provider_recent');
   assert.ok(String(providerOld?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
-  assert.equal(providerRecent?.content, secondRaw);
-  assert.equal(messages[2].content, firstRaw);
-  assert.equal(messages[5].content, secondRaw);
+  assert.ok(String(providerRecent?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
+  assert.equal(messages[2].content, providerOld?.content);
+  assert.equal(messages[5].content, providerRecent?.content);
+  assert.equal(messages[2].__toolResultStable, true);
+  assert.equal(messages[5].__toolResultStable, true);
 });

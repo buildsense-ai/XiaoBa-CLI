@@ -137,7 +137,7 @@ test('writes truncated execute_shell full output to a linkable artifact', () => 
     const fullOutputPath = content.match(/^full_output_path: (.+)$/m)?.[1];
 
     assert.ok(content.startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
-    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/turn-0009\/sh_[a-f0-9]{16}/);
+    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/sh_[a-f0-9]{16}/);
     assert.match(content, /full_output_link: file:\/\//);
     assert.ok(fullOutputPath);
     assert.equal(fs.readFileSync(fullOutputPath, 'utf8').includes(raw), true);
@@ -264,7 +264,7 @@ test('environment options are deterministic and can disable folding', () => {
   assert.equal(options.keepRecentHistoricalShells, 2);
 });
 
-test('runner folds execute_shell only in provider input and leaves durable session messages raw', async () => {
+test('runner folds provider input and persists the same stable execute_shell result', async () => {
   const previousThreshold = process.env.XIAOBA_EXECUTE_SHELL_FOLD_THRESHOLD_TOKENS;
   process.env.XIAOBA_EXECUTE_SHELL_FOLD_THRESHOLD_TOKENS = '20';
 
@@ -301,5 +301,6 @@ test('runner folds execute_shell only in provider input and leaves durable sessi
 
   const providerToolResult = captured[0].find(message => message.role === 'tool');
   assert.ok(String(providerToolResult?.content).startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
-  assert.equal(messages[2].content, raw);
+  assert.equal(messages[2].content, providerToolResult?.content);
+  assert.equal(messages[2].__toolResultStable, true);
 });

@@ -122,7 +122,7 @@ export function foldHistoricalExecuteShellMessages(
   let protectedCurrentTurnCount = 0;
 
   messages.forEach((message, index) => {
-    if (!isExecuteShellToolResult(message)) return;
+    if (!isExecuteShellToolResult(message) || message.__toolResultStable) return;
     const currentRun = index > lastUserIndex;
     if (currentRun && !resolved.foldCurrentRun) {
       skippedCurrentTurnCount++;

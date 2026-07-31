@@ -55,12 +55,12 @@ export function persistToolResultArtifact(
   }
 
   const sessionSegment = sanitizeFileSegment(resolved.sessionId || 'unknown-session');
-  const turnSegment = typeof resolved.turn === 'number' && Number.isFinite(resolved.turn)
-    ? `turn-${String(Math.max(0, Math.floor(resolved.turn))).padStart(4, '0')}`
-    : 'turn-unknown';
-  const directory = path.resolve(resolved.rootDirectory, sessionSegment, turnSegment);
+  // Artifact references are part of provider-visible historical tool results. Keep
+  // them independent of the current inference turn so folding the same durable
+  // history remains byte-identical across requests.
+  const directory = path.resolve(resolved.rootDirectory, sessionSegment);
   const filePath = path.join(directory, `${artifactId}.txt`);
-  const ref = `tool-result://${sessionSegment}/${turnSegment}/${artifactId}`;
+  const ref = `tool-result://${sessionSegment}/${artifactId}`;
 
   try {
     fs.mkdirSync(directory, { recursive: true });

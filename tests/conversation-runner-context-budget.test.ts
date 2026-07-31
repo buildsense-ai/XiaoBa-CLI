@@ -168,7 +168,9 @@ test('adaptive tool result folding uses runner message budget before mechanical 
   const providerToolResult = captured[0].find(message => message.tool_call_id === 'call_budget_read');
   assert.ok(String(providerToolResult?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
   assert.ok(estimateMessagesTokens(captured[0]) <= 5_000);
-  assert.equal(messages[2].content, raw);
+  assert.ok(String(messages[2].content).startsWith(TRUNCATED_READ_FILE_PREFIX));
+  assert.equal(messages[2].content, providerToolResult?.content);
+  assert.equal(messages[2].__toolResultStable, true);
 });
 
 test('adaptive tool result folding does not double-count tool schema budget', async () => {
