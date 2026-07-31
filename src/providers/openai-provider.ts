@@ -5,6 +5,7 @@ import { Message, ChatConfig, ChatResponse, ContentBlock } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
+import { CacheTraceProviderInfo } from '../utils/cache-trace-logger';
 import { normalizeOpenAIChatCompletionsUrl, normalizeOpenAIResponsesUrl } from './openai-url';
 import { resolveMaxTokens } from './output-limits';
 import {
@@ -29,6 +30,7 @@ export class OpenAIProvider implements AIProvider {
   private maxTokens: number;
   private reasoningEffort: ChatConfig['reasoningEffort'];
   private openaiApiMode: ChatConfig['openaiApiMode'];
+  private lastRequestDebugInfo?: CacheTraceProviderInfo;
 
   constructor(config: ChatConfig) {
     this.apiUrl = config.apiUrl!;
@@ -40,6 +42,30 @@ export class OpenAIProvider implements AIProvider {
     this.maxTokens = resolveMaxTokens(config);
     this.reasoningEffort = config.reasoningEffort;
     this.openaiApiMode = openAIApiModeOrDefault(config.openaiApiMode);
+  }
+
+  getLastRequestDebugInfo(): CacheTraceProviderInfo | undefined {
+    return this.lastRequestDebugInfo;
+  }
+
+  private captureCacheTraceRequest(
+    apiType: 'openai-chat-completions' | 'openai-responses',
+    endpoint: string,
+    payload: unknown,
+  ): void {
+    if (!/^(1|true|yes)$/i.test(process.env.XIAOBA_CACHE_TRACE || '')) return;
+    const sanitized = ContextDebugLogger.sanitizeSdkPayload(payload);
+    const json = JSON.stringify(sanitized);
+    this.lastRequestDebugInfo = {
+      provider: 'openai',
+      api_type: apiType,
+      request_snapshot: {
+        endpoint,
+        payload: sanitized,
+        sha256: createHash('sha256').update(json).digest('hex'),
+        chars: json.length,
+      },
+    };
   }
 
   /**
@@ -185,6 +211,7 @@ export class OpenAIProvider implements AIProvider {
       return this.chatResponses(messages, tools, options);
     }
     const body = this.buildRequestBody(messages, tools, false);
+    this.captureCacheTraceRequest('openai-chat-completions', this.chatCompletionsUrl, body);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.chatCompletionsUrl,
       body,
@@ -232,6 +259,7 @@ export class OpenAIProvider implements AIProvider {
       return this.chatStreamResponses(messages, tools, callbacks, options);
     }
     const body = this.buildRequestBody(messages, tools, true);
+    this.captureCacheTraceRequest('openai-chat-completions', this.chatCompletionsUrl, body);
 
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.chatCompletionsUrl,
@@ -653,6 +681,7 @@ export class OpenAIProvider implements AIProvider {
     options?: AIRequestOptions,
   ): Promise<ChatResponse> {
     const body = this.buildResponsesRequestBody(messages, tools, false);
+    this.captureCacheTraceRequest('openai-responses', this.responsesUrl, body);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.responsesUrl,
       body,
@@ -674,6 +703,7 @@ export class OpenAIProvider implements AIProvider {
     options?: AIRequestOptions,
   ): Promise<ChatResponse> {
     const body = this.buildResponsesRequestBody(messages, tools, true);
+    this.captureCacheTraceRequest('openai-responses', this.responsesUrl, body);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.responsesUrl,
       body,

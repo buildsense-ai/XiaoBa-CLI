@@ -55,6 +55,7 @@ import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/mo
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import { PromptTraceLogger } from '../utils/prompt-trace-logger';
+import { CacheTraceLogger, CacheTraceProviderInfo, createRunId } from '../utils/cache-trace-logger';
 import { PathResolver } from '../utils/path-resolver';
 import {
   restoreProviderReplayToolCalls,
@@ -228,6 +229,7 @@ export class ConversationRunner {
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
   private promptTraceLogger: PromptTraceLogger;
+  private cacheTraceLogger: CacheTraceLogger;
   private syntheticObservationProvider?: SyntheticObservationProvider;
   private runtimeTransientProvider?: RuntimeTransientProvider;
   private episodeId?: string;
@@ -273,6 +275,11 @@ export class ConversationRunner {
       sessionId: this.toolExecutionContext?.sessionId,
       surface: this.toolExecutionContext?.surface,
       modelConfig: this.resolveModelConfig(),
+    });
+    this.cacheTraceLogger = new CacheTraceLogger({
+      sessionId: this.toolExecutionContext?.sessionId,
+      surface: this.toolExecutionContext?.surface ?? 'unknown',
+      episodeId: this.episodeId,
     });
   }
 
@@ -489,6 +496,7 @@ export class ConversationRunner {
         response = await this.requestModelResponse(requestMessages, requestTools, callbacks);
         const aiDuration = Date.now() - aiStartTime;
         this.promptTraceLogger.recordResponse(turns, response, aiDuration);
+        this.recordCacheTrace(turns, requestMessages, requestTools, response, aiDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
       } catch (error: any) {
         this.promptTraceLogger.recordError(turns, error);
@@ -1381,6 +1389,47 @@ export class ConversationRunner {
     };
   }
 
+  private recordCacheTrace(
+    episode: number,
+    messages: Message[],
+    tools: ToolDefinition[],
+    response: ChatResponse,
+    durationMs: number,
+  ): void {
+    if (!this.cacheTraceLogger.isEnabled) return;
+
+    const runId = createRunId();
+    const modelConfig = this.resolveModelConfig();
+
+    const providerInfo = (this.aiService as any).provider?.getLastRequestDebugInfo?.() as CacheTraceProviderInfo | undefined;
+    const apiType = modelConfig.provider === 'anthropic'
+      ? 'anthropic-messages'
+      : modelConfig.openaiApiMode === 'responses'
+        ? 'openai-responses'
+        : 'openai-chat-completions';
+    const traceProviderInfo: CacheTraceProviderInfo = {
+      provider: (modelConfig.provider as 'anthropic' | 'openai') ?? 'openai',
+      ...providerInfo,
+      api_type: apiType,
+    };
+
+    this.cacheTraceLogger.recordRequest({
+      episodeNumber: episode,
+      runId,
+      provider: modelConfig.provider ?? 'unknown',
+      model: modelConfig.model ?? 'unknown',
+      messages,
+      tools,
+      providerInfo: traceProviderInfo,
+    });
+    this.cacheTraceLogger.recordResponse({
+      usage: response.usage,
+      durationMs,
+      stopReason: response.stopReason,
+    });
+    this.cacheTraceLogger.flush();
+  }
+
   private logProviderMessagesForDebug(
     messages: Message[],
     activeTools: ToolDefinition[],
@@ -1761,7 +1810,7 @@ export class ConversationRunner {
     return resolveModelPromptBudgetTokens(this.resolveModelConfig());
   }
 
-  private resolveModelConfig(): Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'maxTokens' | 'contextWindowTokens'> {
+  private resolveModelConfig(): Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'openaiApiMode' | 'maxTokens' | 'contextWindowTokens'> {
     const serviceConfig = typeof (this.aiService as any).getConfig === 'function'
       ? (this.aiService as any).getConfig()
       : undefined;

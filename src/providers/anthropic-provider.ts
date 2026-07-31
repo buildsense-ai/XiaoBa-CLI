@@ -1,8 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { createHash } from 'crypto';
 import { Message, ChatConfig, ChatResponse, ContentBlock } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
+import { CacheTraceProviderInfo } from '../utils/cache-trace-logger';
 import { resolveMaxTokens } from './output-limits';
 import { applyAnthropicReasoningOptions } from '../utils/reasoning-effort';
 
@@ -27,6 +29,7 @@ export class AnthropicProvider implements AIProvider {
   private temperature: number;
   private maxTokens: number;
   private reasoningEffort: ChatConfig['reasoningEffort'];
+  private lastRequestDebugInfo?: CacheTraceProviderInfo;
 
   constructor(config: ChatConfig) {
     this.apiUrl = config.apiUrl!;
@@ -48,6 +51,26 @@ export class AnthropicProvider implements AIProvider {
     this.temperature = config.temperature ?? 0.7;
     this.maxTokens = resolveMaxTokens(config);
     this.reasoningEffort = config.reasoningEffort;
+  }
+
+  getLastRequestDebugInfo(): CacheTraceProviderInfo | undefined {
+    return this.lastRequestDebugInfo;
+  }
+
+  private captureCacheTraceRequest(params: unknown): void {
+    if (!/^(1|true|yes)$/i.test(process.env.XIAOBA_CACHE_TRACE || '')) return;
+    const payload = ContextDebugLogger.sanitizeSdkPayload(params);
+    const json = JSON.stringify(payload);
+    this.lastRequestDebugInfo = {
+      provider: 'anthropic',
+      api_type: 'anthropic-messages',
+      request_snapshot: {
+        endpoint: `${this.client.baseURL.replace(/\/$/, '')}/v1/messages`,
+        payload,
+        sha256: createHash('sha256').update(json).digest('hex'),
+        chars: json.length,
+      },
+    };
   }
 
   /**
@@ -516,6 +539,7 @@ export class AnthropicProvider implements AIProvider {
     });
 
     // [CONTEXT_DEBUG] SDK 调用前：记录完整的请求参数
+    this.captureCacheTraceRequest(params);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       baseURL: this.client.baseURL,
       params
@@ -558,6 +582,7 @@ export class AnthropicProvider implements AIProvider {
 
     try {
       // [CONTEXT_DEBUG] SDK 调用前：记录完整的请求参数
+      this.captureCacheTraceRequest(params);
       ContextDebugLogger.dumpSdkBoundary('before', undefined, {
         baseURL: this.client.baseURL,
         params

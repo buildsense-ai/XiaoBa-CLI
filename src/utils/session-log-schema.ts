@@ -64,6 +64,20 @@ export interface SessionRuntimeLogEvent {
   payload?: Record<string, unknown>;
 }
 
+/**
+ * Structured error payload for turn-level failures.
+ * Added so dashboards can aggregate errors by code/category/model
+ * without regex-matching free-text messages.
+ */
+export interface TurnErrorPayload {
+  error_code: string;
+  category: string;
+  model?: string | null;
+  provider?: string | null;
+  http_status?: number | null;
+  turn?: number;
+}
+
 export interface SessionSubAgentEventLogEntry {
   entry_type: 'subagent_event';
   timestamp: string;

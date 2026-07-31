@@ -162,6 +162,10 @@ export class ContextDebugLogger {
     return /(?:authorization|token|api[_-]?key|apikey|secret|password|credential)/i.test(key);
   }
 
+  static sanitizeSdkPayload(value: unknown): unknown {
+    return ContextDebugLogger.sanitizeSdkDump(value);
+  }
+
   private static sanitizeSdkDump(value: unknown, seen = new WeakSet<object>()): unknown {
     if (typeof value === 'string') return ContextDebugLogger.sanitizeSecretString(value);
     if (value === null || typeof value !== 'object') return value;

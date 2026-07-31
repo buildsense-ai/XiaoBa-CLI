@@ -47,6 +47,7 @@ import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/mo
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import type { PromptTraceSnapshot } from '../utils/prompt-observability';
 import { toPromptTurnMetadata } from '../utils/prompt-observability';
+import type { SessionRuntimeLogEvent, TurnErrorPayload } from '../utils/session-log-schema';
 import type { StreamRetryInfo } from '../providers/provider';
 import {
   reconcileCurrentBotPromptBeforeTurn,
@@ -64,13 +65,43 @@ export interface DurableRemoteContextEntry {
 }
 
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
-export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
+export const ERROR_MESSAGE = '当前请求遇到一个未预期的错误，我已保留上下文。你可以直接再试一次；如果持续失败，建议临时切换到其他模型。';
 export const MODEL_TIMEOUT_MESSAGE = '模型中转请求超时了，我已经保留本轮已完成的工具结果和上下文。你可以直接说“继续”，我会从这里接上。';
 export const MODEL_TRANSIENT_ERROR_MESSAGE = '当前模型服务临时异常，刚才这次请求没有完成。我已经保留上下文；你可以稍后重试，或临时切换到其他模型继续。';
 export const EMPTY_MODEL_RESPONSE_MESSAGE = '模型本轮未返回有效内容，自动重试后仍未恢复。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
 export const CONTEXT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
 export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '上下文压缩完成，继续处理当前请求。';
 export const CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文继续处理。';
+
+// ─── 错误码常量（用于 JSONL 结构化聚合）───
+const ERR_CATEGORY = {
+  IMAGE_SAFETY: 'image_safety',
+  BUDGET: 'budget',
+  VISION_UNSUPPORTED: 'vision_unsupported',
+  TIMEOUT: 'timeout',
+  EMPTY_RESPONSE: 'empty_response',
+  TRANSIENT: 'transient',
+  UNEXPECTED: 'unexpected',
+} as const;
+
+function buildErrorCode(err: any, flags: {
+  isImageSafetyError: boolean;
+  isRelayBudgetError: boolean;
+  isVisionError: boolean;
+  isTimeout: boolean;
+  isEmptyResponse: boolean;
+  isTransient: boolean;
+}): { error_code: string; category: string } {
+  if (flags.isImageSafetyError) return { error_code: 'image_safety_block', category: ERR_CATEGORY.IMAGE_SAFETY };
+  if (flags.isRelayBudgetError) return { error_code: 'relay_budget_exhausted', category: ERR_CATEGORY.BUDGET };
+  if (flags.isVisionError) return { error_code: 'vision_not_supported', category: ERR_CATEGORY.VISION_UNSUPPORTED };
+  if (flags.isTimeout) return { error_code: 'model_timeout', category: ERR_CATEGORY.TIMEOUT };
+  if (flags.isEmptyResponse) return { error_code: 'empty_model_response', category: ERR_CATEGORY.EMPTY_RESPONSE };
+  if (flags.isTransient) return { error_code: 'transient_provider_error', category: ERR_CATEGORY.TRANSIENT };
+  const status = typeof err?.status === 'number' ? err.status : err?.response?.status;
+  const suffix = status ? `_${status}` : '';
+  return { error_code: `unexpected${suffix}`, category: ERR_CATEGORY.UNEXPECTED };
+}
 
 // ─── 接口定义 ───────────────────────────────────────────
 
@@ -676,16 +707,39 @@ export class AgentSession {
 
         // 不删除用户消息，而是添加一个错误回复，保持上下文连贯
         // 这样用户说"继续"时可以接上
-        Logger.error(`[会话 ${this.key}] 处理失败: ${err.message}`);
 
         // 识别多模态相关错误
         const errorMsg = err.message || String(err);
         const isImageSafetyError = isModelImageSafetyError(err);
+        const relayBudgetErrorReply = this.formatRelayBudgetErrorReply(err);
+        const isRelayBudgetError = relayBudgetErrorReply !== null;
         const isVisionError = !isImageSafetyError && errorMsg.match(/image|vision|multimodal|media_type|base64.*not supported/i);
         const isModelTimeoutError = this.isModelTimeoutError(err);
         const isTransientProviderError = this.isTransientProviderError(err);
         const isEmptyModelResponseError = this.isEmptyModelResponseError(err);
-        const relayBudgetErrorReply = this.formatRelayBudgetErrorReply(err);
+
+        const { error_code, category } = buildErrorCode(err, {
+          isImageSafetyError,
+          isRelayBudgetError,
+          isVisionError: !!isVisionError,
+          isTimeout: isModelTimeoutError,
+          isEmptyResponse: isEmptyModelResponseError,
+          isTransient: isTransientProviderError,
+        });
+
+        Logger.error(
+          `[会话 ${this.key}] 处理失败: ${err.message}`,
+          {
+            type: 'turn_error',
+            payload: {
+              error_code,
+              category,
+              model: this.currentModelName(),
+              provider: this.getProviderName(),
+              http_status: this.extractErrorStatus(err),
+            },
+          } as SessionRuntimeLogEvent,
+        );
 
         let errorReply = ERROR_MESSAGE;
         if (isImageSafetyError) {
@@ -1095,6 +1149,14 @@ export class AgentSession {
       : {};
     const model = String(config?.model || '').trim();
     return model || null;
+  }
+
+  private getProviderName(): string | null {
+    const config = typeof (this.services.aiService as any).getConfig === 'function'
+      ? (this.services.aiService as any).getConfig()
+      : {};
+    const provider = String(config?.provider || '').trim();
+    return provider || null;
   }
 
   private formatTransientProviderErrorReply(): string {
