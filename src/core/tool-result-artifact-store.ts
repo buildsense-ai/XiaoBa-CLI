@@ -55,6 +55,9 @@ export function persistToolResultArtifact(
   }
 
   const sessionSegment = sanitizeFileSegment(resolved.sessionId || 'unknown-session');
+  // Artifact references are part of provider-visible historical tool results. Keep
+  // them independent of the current inference turn so folding the same durable
+  // history remains byte-identical across requests.
   const directory = path.resolve(resolved.rootDirectory, sessionSegment);
   const filePath = path.join(directory, `${artifactId}.txt`);
   const ref = `tool-result://${sessionSegment}/${artifactId}`;
