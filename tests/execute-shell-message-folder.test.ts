@@ -137,7 +137,7 @@ test('writes truncated execute_shell full output to a linkable artifact', () => 
     const fullOutputPath = content.match(/^full_output_path: (.+)$/m)?.[1];
 
     assert.ok(content.startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
-    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/turn-0009\/sh_[a-f0-9]{16}/);
+    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/sh_[a-f0-9]{16}/);
     assert.match(content, /full_output_link: file:\/\//);
     assert.ok(fullOutputPath);
     assert.equal(fs.readFileSync(fullOutputPath, 'utf8').includes(raw), true);
