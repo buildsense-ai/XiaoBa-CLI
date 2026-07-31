@@ -8,6 +8,7 @@ import {
   buildCheckpointCompactionPrompt,
   isCheckpointCompactionEnabled,
 } from '../src/core/checkpoint-compaction';
+import { Metrics } from '../src/utils/metrics';
 
 const usage = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
 
@@ -42,6 +43,37 @@ test('checkpoint compaction switch defaults on and supports explicit rollback', 
   assert.equal(isCheckpointCompactionEnabled({
     XIAOBA_CHECKPOINT_COMPACTION_ENABLED: 'false',
   } as NodeJS.ProcessEnv), false);
+});
+
+test('checkpoint summary metrics stay isolated between sessions', async () => {
+  const firstMetrics = new Metrics();
+  const secondMetrics = new Metrics();
+  const first = new CheckpointCompactionCoordinator(
+    createService(() => 'first checkpoint').service,
+    { maxContextTokens: 200, compactionThreshold: 0.5 },
+    firstMetrics,
+  );
+  const second = new CheckpointCompactionCoordinator(
+    createService(() => 'second checkpoint').service,
+    { maxContextTokens: 200, compactionThreshold: 0.5 },
+    secondMetrics,
+  );
+
+  await Promise.all([
+    first.compactIfNeeded([{ role: 'user', content: largeText('first session') }], {
+      sessionKey: 'metrics-first',
+      phase: 'pre_turn',
+    }),
+    second.compactIfNeeded([{ role: 'user', content: largeText('second session') }], {
+      sessionKey: 'metrics-second',
+      phase: 'pre_turn',
+    }),
+  ]);
+  secondMetrics.reset();
+
+  assert.equal(firstMetrics.getSummary().aiCalls, 1);
+  assert.equal(firstMetrics.getSummary().totalPromptTokens, usage.promptTokens);
+  assert.equal(secondMetrics.getSummary().aiCalls, 0);
 });
 
 test('checkpoint compaction preserves stable system and transient runtime messages', async () => {

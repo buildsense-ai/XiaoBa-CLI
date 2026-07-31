@@ -53,6 +53,31 @@ describe('AgentSession lifecycle', () => {
     assert.equal(messages[3].__injected, true);
   });
 
+  test('persists checkpoint boundaries while still dropping ordinary system prompts', async () => {
+    const { SessionStore } = loadSessionModules();
+    const store = SessionStore.getInstance();
+    store.saveContext('user:lifecycle-checkpoint-boundary', [
+      { role: 'system', content: 'ordinary system prompt' },
+      {
+        role: 'system',
+        content: '[checkpoint_compaction_boundary] kind=base phase=pre_turn',
+        __checkpointBoundary: true,
+      },
+      { role: 'user', content: 'continuation summary' },
+      { role: 'user', content: 'retained objective' },
+    ]);
+
+    const restored = store.loadContext('user:lifecycle-checkpoint-boundary');
+    assert.deepStrictEqual(
+      restored.map((message: any) => message.content),
+      [
+        '[checkpoint_compaction_boundary] kind=base phase=pre_turn',
+        'continuation summary',
+        'retained objective',
+      ],
+    );
+  });
+
   test('reset and clear discard pending restored history before initialization', async () => {
     const { AgentSession, SessionStore } = loadSessionModules();
     SessionStore.getInstance().saveContext('user:lifecycle-reset', [

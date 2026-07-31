@@ -31,26 +31,26 @@ export interface MetricsSummary {
 }
 
 /**
- * Metrics - 轻量 metrics 收集器（静态单例）
+ * Metrics - 轻量、会话隔离的 metrics 收集器
  *
  * 三层数据：Provider 层（token）→ 工具层（耗时）→ 会话层（汇总）
  */
 export class Metrics {
-  private static aiCalls: AICallRecord[] = [];
-  private static toolCalls: ToolCallRecord[] = [];
+  private aiCalls: AICallRecord[] = [];
+  private toolCalls: ToolCallRecord[] = [];
 
   /** 记录一次 AI 调用 */
-  static recordAICall(model: string, usage: TokenUsage): void {
+  recordAICall(model: string, usage: TokenUsage): void {
     this.aiCalls.push({ model, usage, timestamp: Date.now() });
   }
 
   /** 记录一次工具执行 */
-  static recordToolCall(name: string, durationMs: number): void {
+  recordToolCall(name: string, durationMs: number): void {
     this.toolCalls.push({ name, durationMs, timestamp: Date.now() });
   }
 
   /** 获取当前 session 汇总 */
-  static getSummary(): MetricsSummary {
+  getSummary(): MetricsSummary {
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
     let totalTokens = 0;
@@ -92,7 +92,7 @@ export class Metrics {
   }
 
   /** 重置（session 结束时） */
-  static reset(): void {
+  reset(): void {
     this.aiCalls = [];
     this.toolCalls = [];
   }

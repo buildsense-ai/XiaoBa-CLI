@@ -203,6 +203,7 @@ export class AgentSession {
   private skillRuntime: SessionSkillRuntime;
   private runtimeFeedbackInbox = new RuntimeFeedbackInbox();
   private planRuntime = new PlanRuntime();
+  private metrics = new Metrics();
   private lifecycleManager: SessionLifecycleManager;
   private readonly defaultDirectory: string;
   private currentDirectory: string;
@@ -226,10 +227,11 @@ export class AgentSession {
     this.contextWindowManager = new ContextWindowManager(services.aiService, {
       maxContextTokens: contextWindow.promptBudgetTokens,
       summaryContentBudget: contextWindow.summaryBudgetTokens,
-    });
+    }, this.metrics);
     this.checkpointCompactionCoordinator = new CheckpointCompactionCoordinator(
       services.aiService,
       { maxContextTokens: contextWindow.promptBudgetTokens },
+      this.metrics,
     );
     this.useCheckpointCompaction = isCheckpointCompactionEnabled();
     this.skillRuntime = new SessionSkillRuntime(services.skillManager, key);
@@ -255,6 +257,7 @@ export class AgentSession {
       workspaceRoot: this.defaultDirectory,
       getCurrentDirectory: () => this.currentDirectory,
       updateCurrentDirectory: directory => this.updateCurrentDirectory(directory),
+      metrics: this.metrics,
       checkpointCompactionCoordinator: this.useCheckpointCompaction
         ? this.checkpointCompactionCoordinator
         : undefined,
@@ -627,7 +630,7 @@ export class AgentSession {
       const runtimeFeedback = this.consumeRuntimeFeedback(runtimeFeedbackInputs);
 
       // 按"单次消息"统计 metrics，避免跨轮次累积导致定位困难
-      Metrics.reset();
+      this.metrics.reset();
 
       this.busy = true;
       this.interruptRequested = false;

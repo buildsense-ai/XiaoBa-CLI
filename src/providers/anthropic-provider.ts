@@ -233,6 +233,7 @@ export class AnthropicProvider implements AIProvider {
   }
 
   private isDynamicSystemMessage(message: Message): boolean {
+    if (message.__checkpointBoundary) return true;
     const cacheScope = message.__cacheScope;
     if (cacheScope === 'dynamic') return true;
     if (cacheScope === 'stable') return false;

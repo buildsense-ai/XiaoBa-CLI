@@ -85,6 +85,7 @@ export class CheckpointCompactionCoordinator {
   constructor(
     private readonly aiService: AIService,
     options: CheckpointCompactionCoordinatorOptions,
+    private readonly metrics = new Metrics(),
   ) {
     this.maxContextTokens = Math.max(1, Math.floor(options.maxContextTokens));
     this.compactionThreshold = readRatio(
@@ -286,7 +287,7 @@ export class CheckpointCompactionCoordinator {
           { signal },
         );
         if (response.usage) {
-          Metrics.recordAICall('stream', response.usage);
+          this.metrics.recordAICall('stream', response.usage);
         }
         const summary = (streamed || response.content || '').trim();
         if (!summary) {

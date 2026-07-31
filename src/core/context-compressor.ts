@@ -283,6 +283,7 @@ export function parseCompactSummary(raw: string): string {
 export interface CompactOptions {
   customInstructions?: string;
   signal?: AbortSignal;
+  promptCacheScopeKey?: string;
 }
 
 // ─── ContextCompressor ──────────────────────────────────────
@@ -306,9 +307,11 @@ export class ContextCompressor {
   private toolResultCompactionCountThreshold: number;
   private toolResultCompactionTokenThreshold: number;
   private aiService: AIService;
+  private metrics: Metrics;
 
-  constructor(aiService: AIService, options?: ContextCompressorOptions) {
+  constructor(aiService: AIService, options?: ContextCompressorOptions, metrics = new Metrics()) {
     this.aiService = aiService;
+    this.metrics = metrics;
     this.maxContextTokens = options?.maxContextTokens ?? 128000;
     this.compactionThreshold = options?.compactionThreshold ?? 0.7;
     this.summaryContentBudget = options?.summaryContentBudget ?? SUMMARY_CONTENT_BUDGET;
@@ -426,12 +429,15 @@ export class ContextCompressor {
         {
           onText: (text) => { fullContent += text; },
         },
-        { signal: options.signal },
+        {
+          signal: options.signal,
+          promptCacheScopeKey: options.promptCacheScopeKey,
+        },
       );
       const rawSummary = fullContent;
 
       if (resp.usage) {
-        Metrics.recordAICall('stream', resp.usage);
+        this.metrics.recordAICall('stream', resp.usage);
       }
 
       const summaryText = parseCompactSummary(rawSummary);
