@@ -68,7 +68,11 @@ export class CatsCompanyCloudSessionRestorer {
         return this.result('empty', { fetchedMessages: fetched.fetchedMessages });
       }
 
-      const prepared = await this.prepareForPersistence(fetched.messages, request.signal);
+      const prepared = await this.prepareForPersistence(
+        fetched.messages,
+        request.sessionKey,
+        request.signal,
+      );
       if (
         request.signal?.aborted
         && !(prepared.summaryFallback && isTimeoutAbortReason(request.signal.reason))
@@ -164,6 +168,7 @@ export class CatsCompanyCloudSessionRestorer {
 
   private async prepareForPersistence(
     messages: Message[],
+    promptCacheScopeKey: string,
     signal?: AbortSignal,
   ): Promise<{ messages: Message[]; compressed: boolean; summaryFallback: boolean }> {
     const usedTokens = estimateMessagesTokens(messages);
@@ -181,6 +186,7 @@ export class CatsCompanyCloudSessionRestorer {
       });
       const compacted = await compressor.compact(messages, {
         signal,
+        promptCacheScopeKey,
         customInstructions: [
           '这些内容来自 CatsCompany 云端可见聊天历史，用于在新设备上恢复主会话。',
           '保留用户目标、关键决定、已交付结果、文件名、未完成事项和重要约束。',

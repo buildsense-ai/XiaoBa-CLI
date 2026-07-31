@@ -209,6 +209,8 @@ export interface RunnerOptions {
   runtimeTransientProvider?: RuntimeTransientProvider;
   /** Internal id that ties all messages created by one externally visible user turn together. */
   episodeId?: string;
+  /** Session-owned metrics collector; defaults to an isolated runner collector. */
+  metrics?: Metrics;
 }
 
 /**
@@ -232,6 +234,7 @@ export class ConversationRunner {
   private runtimeTransientProvider?: RuntimeTransientProvider;
   private episodeId?: string;
   private suppressFinalResponse: boolean;
+  private metrics: Metrics;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -259,6 +262,7 @@ export class ConversationRunner {
     this.episodeId = options?.episodeId;
     this.maxTurns = options?.maxTurns;
     this.suppressFinalResponse = options?.suppressFinalResponse === true;
+    this.metrics = options?.metrics ?? new Metrics();
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -268,7 +272,7 @@ export class ConversationRunner {
       maxContextTokens: this.maxPromptTokens,
       compactionThreshold: 0.5,
       summaryContentBudget: calculateSummaryBudgetTokens(this.maxPromptTokens),
-    });
+    }, this.metrics);
     this.promptTraceLogger = new PromptTraceLogger({
       sessionId: this.toolExecutionContext?.sessionId,
       surface: this.toolExecutionContext?.surface,
@@ -347,6 +351,7 @@ export class ConversationRunner {
           }
           const compacted = await this.compressor.compact(messages, {
             signal: this.toolExecutionContext?.abortSignal,
+            promptCacheScopeKey: this.toolExecutionContext?.sessionId,
           });
           messages.length = 0;
           messages.push(...compacted);
@@ -530,8 +535,17 @@ export class ConversationRunner {
       }
 
       if (response.usage) {
-        Metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
+        this.metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
+        const cachedReadTokens = response.usage.cachedReadTokens ?? 0;
+        const cachedWriteTokens = response.usage.cachedWriteTokens ?? 0;
+        const cacheReadRatioPercent = response.usage.promptTokens > 0
+          ? Math.round((cachedReadTokens / response.usage.promptTokens) * 100)
+          : 0;
+        Logger.info(
+          `[${this.sessionLabel}Turn ${turns}] AI返回 tokens: `
+          + `${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}, `
+          + `cache: read=${cachedReadTokens}, write=${cachedWriteTokens}, read_ratio=${cacheReadRatioPercent}%`,
+        );
       }
 
       if ((!response.toolCalls || response.toolCalls.length === 0) && response.content) {
@@ -691,7 +705,7 @@ export class ConversationRunner {
           hasRecordedDecision = true;
         }
         const toolDuration = Date.now() - toolStart;
-        Metrics.recordToolCall(toolName, toolDuration);
+        this.metrics.recordToolCall(toolName, toolDuration);
         this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
         callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
@@ -1471,6 +1485,7 @@ export class ConversationRunner {
   ) {
     const requestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
+      promptCacheScopeKey: this.toolExecutionContext?.sessionId,
     };
     try {
       if (this.stream) {

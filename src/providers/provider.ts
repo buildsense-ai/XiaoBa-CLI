@@ -27,6 +27,8 @@ export interface StreamRetryInfo {
 
 export interface AIRequestOptions {
   signal?: AbortSignal;
+  /** Stable per-session/tenant shard for provider prompt-cache routing. */
+  promptCacheScopeKey?: string;
 }
 
 /**

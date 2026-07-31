@@ -26,9 +26,18 @@ function createProvider(): OpenAIProvider {
   });
 }
 
+function createCacheProvider(): OpenAIProvider {
+  return new OpenAIProvider({
+    apiKey: 'test-key',
+    apiUrl: 'https://relay.catsco.cc/v1',
+    model: 'gpt-test',
+    openaiApiMode: 'responses',
+  });
+}
+
 describe('OpenAIProvider Responses API mode', () => {
   test('builds Responses input and a stable prompt cache key', () => {
-    const provider = createProvider();
+    const provider = createCacheProvider();
     const first = (provider as any).buildResponsesRequestBody([
       { role: 'system', content: 'You are concise.' },
       { role: 'user', content: 'first question' },
@@ -52,8 +61,222 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.deepEqual(first.include, ['reasoning.encrypted_content']);
   });
 
+  test('adds explicit cache breakpoints for GPT-5.6 Responses requests', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-terra',
+      openaiApiMode: 'responses',
+    });
+    const body = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'first question' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_lookup',
+          type: 'function',
+          function: { name: 'lookup', arguments: '{"query":"one"}' },
+        }],
+      },
+      { role: 'tool', name: 'lookup', tool_call_id: 'call_lookup', content: 'first result' },
+      { role: 'user', content: 'second question' },
+      {
+        role: 'system',
+        content: '[transient_plan_status]\nstep two',
+        __cacheScope: 'dynamic',
+      },
+    ], [lookupTool]);
+
+    assert.deepEqual(body.prompt_cache_options, { mode: 'explicit' });
+    assert.equal(body.tools.at(-1).prompt_cache_breakpoint, undefined);
+    assert.deepEqual(
+      body.input
+        .filter((item: any) => {
+          const content = item.type === 'function_call_output' ? item.output : item.content;
+          return Array.isArray(content)
+            && content.some((block: any) => block.prompt_cache_breakpoint);
+        })
+        .map((item: any) => item.type ?? item.role),
+      ['user', 'function_call_output', 'user'],
+    );
+    assert.equal(body.input.at(-1).role, 'system');
+    const trailingContent = body.input.at(-1).content;
+    assert.equal(
+      Array.isArray(trailingContent)
+        && trailingContent.some((block: any) => block.prompt_cache_breakpoint),
+      false,
+    );
+    for (const item of body.input.slice(0, -1)) {
+      if (item.role !== 'user' && item.type !== 'function_call_output') continue;
+      const content = item.type === 'function_call_output' ? item.output : item.content;
+      assert.deepEqual(content.at(-1).prompt_cache_breakpoint, { mode: 'explicit' });
+    }
+  });
+
+  test('preserves cache boundaries as a GPT-5.6 conversation grows', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-terra',
+      openaiApiMode: 'responses',
+    });
+    const firstMessages: Message[] = Array.from(
+      { length: 5 },
+      (_, index) => ({ role: 'user', content: `question ${index + 1}` }),
+    );
+    const first = (provider as any).buildResponsesRequestBody(firstMessages);
+    const grown = (provider as any).buildResponsesRequestBody([
+      ...firstMessages,
+      { role: 'user', content: 'question 6' },
+    ]);
+
+    assert.deepEqual(grown.input.slice(0, first.input.length), first.input);
+
+    const longMessages: Message[] = Array.from(
+      { length: 52 },
+      (_, index) => ({ role: 'user', content: `question ${index + 1}` }),
+    );
+    const long = (provider as any).buildResponsesRequestBody(longMessages);
+    const longer = (provider as any).buildResponsesRequestBody([
+      ...longMessages,
+      { role: 'user', content: 'question 53' },
+    ]);
+    const marked = long.input.filter((item: any) => Array.isArray(item.content)
+      && item.content.some((block: any) => block.prompt_cache_breakpoint));
+    assert.equal(marked.length, 52);
+    assert.deepEqual(marked[0].content.at(-1).prompt_cache_breakpoint, { mode: 'explicit' });
+    assert.deepEqual(longer.input.slice(0, long.input.length), long.input);
+  });
+
+  test('does not send GPT-5.6 cache extensions to an unknown Responses endpoint', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://custom.example.test/v1',
+      model: 'gpt-5.6-terra',
+      openaiApiMode: 'responses',
+    });
+    const body = (provider as any).buildResponsesRequestBody([
+      { role: 'user', content: 'question' },
+    ]);
+
+    assert.equal(body.prompt_cache_options, undefined);
+    assert.equal(body.prompt_cache_key, undefined);
+    assert.deepEqual(body.input, [{ role: 'user', content: 'question' }]);
+  });
+
+  test('partitions prompt cache keys by stable request scope', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-terra',
+      openaiApiMode: 'responses',
+    });
+    const first = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'first question' },
+    ], [lookupTool], false, 'session-a');
+    const grown = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'another question' },
+    ], [lookupTool], false, 'session-a');
+    const independent = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'first question' },
+    ], [lookupTool], false, 'session-b');
+    const otherTenantProvider = new OpenAIProvider({
+      apiKey: 'other-test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-terra',
+      openaiApiMode: 'responses',
+    });
+    const otherTenant = (otherTenantProvider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'first question' },
+    ], [lookupTool], false, 'session-a');
+
+    assert.equal(first.prompt_cache_key, grown.prompt_cache_key);
+    assert.notEqual(first.prompt_cache_key, independent.prompt_cache_key);
+    assert.notEqual(first.prompt_cache_key, otherTenant.prompt_cache_key);
+  });
+
+  test('keeps transient user and tool observations in the suffix after the last cache boundary', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-terra',
+      openaiApiMode: 'responses',
+    });
+    const body = (provider as any).buildResponsesRequestBody([
+      { role: 'user', content: 'durable question' },
+      {
+        role: 'user',
+        content: 'temporary retry feedback',
+        __injected: true,
+        __runtimeFeedback: true,
+      },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'synthetic-call',
+          type: 'function',
+          function: { name: 'runtime_observation', arguments: '{}' },
+        }],
+        __syntheticObservation: true,
+      },
+      {
+        role: 'tool',
+        name: 'runtime_observation',
+        tool_call_id: 'synthetic-call',
+        content: 'temporary branch result',
+        __syntheticObservation: true,
+      },
+      { role: 'user', content: 'current question' },
+    ]);
+
+    assert.deepEqual(body.input[0].content.at(-1).prompt_cache_breakpoint, { mode: 'explicit' });
+    assert.equal(body.input[1].content, 'temporary retry feedback');
+    assert.equal(body.input[3].output, 'temporary branch result');
+    assert.equal(body.input[4].content, 'current question');
+    assert.equal(
+      body.input.slice(1).some((item: any) => {
+        const content = item.type === 'function_call_output' ? item.output : item.content;
+        return Array.isArray(content)
+          && content.some((block: any) => block.prompt_cache_breakpoint);
+      }),
+      false,
+    );
+  });
+
+  test('keeps explicit mode when transient content closes every cache boundary', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'gpt-5.6-terra',
+      openaiApiMode: 'responses',
+    });
+    const body = (provider as any).buildResponsesRequestBody([
+      {
+        role: 'user',
+        content: 'temporary runtime feedback',
+        __injected: true,
+        __runtimeFeedback: true,
+      },
+      { role: 'user', content: 'current question' },
+    ]);
+
+    assert.deepEqual(body.prompt_cache_options, { mode: 'explicit' });
+    assert.equal(
+      body.input.some((item: any) => Array.isArray(item.content)
+        && item.content.some((block: any) => block.prompt_cache_breakpoint)),
+      false,
+    );
+  });
+
   test('keeps dynamic system context out of cache identity and appends it to input', () => {
-    const provider = createProvider();
+    const provider = createCacheProvider();
     const first = (provider as any).buildResponsesRequestBody([
       { role: 'system', content: 'Stable policy.' },
       { role: 'system', content: '[transient_plan_status]\nstep one', __cacheScope: 'dynamic' },
@@ -79,7 +302,7 @@ describe('OpenAIProvider Responses API mode', () => {
   });
 
   test('keeps plan, subagent, runner, and device changes out of cache identity', () => {
-    const provider = createProvider();
+    const provider = createCacheProvider();
     const variants = [
       ['[transient_plan_status]\nstep one', '[transient_plan_status]\nstep two'],
       ['[transient_subagent_status]\nrunning', '[transient_subagent_status]\ncompleted'],
@@ -116,7 +339,7 @@ describe('OpenAIProvider Responses API mode', () => {
   });
 
   test('canonicalizes tool order and schema keys while detecting contract changes', () => {
-    const provider = createProvider();
+    const provider = createCacheProvider();
     const alpha: ToolDefinition = {
       name: 'alpha',
       description: 'Alpha tool',
