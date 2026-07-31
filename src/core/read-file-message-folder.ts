@@ -106,7 +106,7 @@ export function foldHistoricalReadFileMessages(
   let protectedCurrentTurnCount = 0;
 
   messages.forEach((message, index) => {
-    if (!isReadFileToolResult(message)) return;
+    if (!isReadFileToolResult(message) || message.__toolResultStable) return;
     const currentRun = index > lastUserIndex;
     if (currentRun && !resolved.foldCurrentRun) {
       skippedCurrentTurnCount++;

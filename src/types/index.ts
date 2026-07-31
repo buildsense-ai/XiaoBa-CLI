@@ -19,6 +19,8 @@ export interface Message {
   }>;
   tool_call_id?: string;
   name?: string;
+  /** Historical tool result was normalized once and must not be rewritten by later prompt-budget passes. */
+  __toolResultStable?: boolean;
   /** 标记由 injectContext 注入的消息，用于滑动窗口清理 */
   __injected?: boolean;
   /**

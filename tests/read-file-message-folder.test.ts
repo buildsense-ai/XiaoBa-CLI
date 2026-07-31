@@ -194,7 +194,7 @@ test('environment options are deterministic and can disable folding', () => {
   assert.equal(options.keepRecentHistoricalReads, 2);
 });
 
-test('runner folds only provider input and leaves durable session messages raw', async () => {
+test('runner folds provider input and persists the same stable historical read_file result', async () => {
   const previousThreshold = process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
   process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS = '20';
 
@@ -231,7 +231,8 @@ test('runner folds only provider input and leaves durable session messages raw',
 
   const providerToolResult = captured[0].find(message => message.role === 'tool');
   assert.ok(String(providerToolResult?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
-  assert.equal(messages[2].content, raw);
+  assert.equal(messages[2].content, providerToolResult?.content);
+  assert.equal(messages[2].__toolResultStable, true);
 });
 
 test('runner keeps folded historical read_file output stable across model turns', async () => {
@@ -354,6 +355,8 @@ test('runner delayed-folds older current-run tool results and keeps recent ones 
   const providerRecent = captured[0].find(message => message.tool_call_id === 'call_current_provider_recent');
   assert.ok(String(providerOld?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
   assert.equal(providerRecent?.content, secondRaw);
-  assert.equal(messages[2].content, firstRaw);
-  assert.equal(messages[5].content, secondRaw);
+  assert.ok(String(messages[2].content).startsWith(TRUNCATED_READ_FILE_PREFIX));
+  assert.ok(String(messages[5].content).startsWith(TRUNCATED_READ_FILE_PREFIX));
+  assert.equal(messages[2].__toolResultStable, true);
+  assert.equal(messages[5].__toolResultStable, true);
 });
