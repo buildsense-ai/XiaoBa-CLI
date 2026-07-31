@@ -42,6 +42,36 @@ class NoopToolExecutor implements ToolExecutor {
 }
 
 describe('ConversationRunner runtime transient messages', () => {
+  test('deduplicates transient messages by prefix and keeps the latest value', async () => {
+    const received: Message[][] = [];
+    const aiService = {
+      chat: async (messages: Message[]) => {
+        received.push(cloneMessages(messages));
+        return { content: 'done', toolCalls: [], usage };
+      },
+    } as any;
+    const runner = new ConversationRunner(aiService, new NoopToolExecutor(), {
+      stream: false,
+      enableCompression: false,
+      runtimeTransientProvider: () => [{
+        role: 'system',
+        content: '[transient_runtime_context]\nlatest runtime context',
+      }],
+    });
+
+    await runner.run([
+      { role: 'system', content: '[transient_runtime_context]\nstale runtime context' },
+      { role: 'user', content: 'debug it' },
+    ]);
+
+    const runtimeMessages = received[0].filter(message =>
+      typeof message.content === 'string'
+      && message.content.startsWith('[transient_runtime_context]'),
+    );
+    assert.equal(runtimeMessages.length, 1);
+    assert.match(String(runtimeMessages[0].content), /latest runtime context/);
+  });
+
   test('injects non-legacy runtime transient context into a later provider call in the same run', async () => {
     const received: Message[][] = [];
     const transientPrefix = '[transient_test_hint]';

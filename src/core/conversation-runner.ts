@@ -25,6 +25,7 @@ import {
   resolveAdaptiveToolResultFoldingOptions,
 } from './adaptive-tool-result-folder';
 import { resolveToolResultArtifactStoreOptions } from './tool-result-artifact-store';
+import { stabilizeToolResultsForHistory } from './stable-tool-result-history';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -314,12 +315,12 @@ export class ConversationRunner {
       }
       if (this.maxTurns && turns > this.maxTurns) {
         Logger.warning(`[${this.sessionLabel}] 已达到最大推理轮次 ${this.maxTurns}，正在收束`);
-        return {
+        return this.finalizeRunResult({
           response: `已达到本次后台任务的轮次预算（${this.maxTurns} 轮），我先基于已完成的信息收束。`,
           finalResponseVisible: true,
           messages,
           newMessages,
-        };
+        }, turns);
       }
       this.injectSyntheticObservations(messages, turns);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
@@ -510,21 +511,21 @@ export class ConversationRunner {
           messages.push(assistantMessage);
           newMessages.push(assistantMessage);
           Logger.warning(`[${this.sessionLabel}Turn ${turns}] 图片被模型安全策略拒绝，已发送可见收束提示: ${formatProviderErrorForLog(error)}`);
-          return {
+          return this.finalizeRunResult({
             response: MODEL_IMAGE_SAFETY_MESSAGE,
             finalResponseVisible: true,
             messages,
             newMessages,
-          };
+          }, turns);
         }
         if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
           Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${formatProviderErrorForLog(error)}`);
-          return {
+          return this.finalizeRunResult({
             response: '',
             finalResponseVisible: false,
             messages,
             newMessages,
-          };
+          }, turns);
         }
         throw error;
       }
@@ -616,24 +617,24 @@ export class ConversationRunner {
             }
           }
 
-          return {
+          return this.finalizeRunResult({
             response: finalText,
             finalResponseVisible: true,
             messages,
             newMessages,
-          };
+          }, turns);
         }
 
         let cleanedResponse = visibleContent;
         cleanedResponse = cleanedResponse.replace(/^\[已发送信息\]\s*/, '');
         cleanedResponse = cleanedResponse.replace(/^\[已发送文件\]\s*/, '');
 
-        return {
+        return this.finalizeRunResult({
           response: cleanedResponse,
           finalResponseVisible: true,
           messages,
           newMessages,
-        };
+        }, turns);
       }
 
       if (response.content) {
@@ -751,23 +752,42 @@ export class ConversationRunner {
 
       if (shouldPauseTurn) {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] pause_turn 已触发，本轮收束`);
-        return {
+        return this.finalizeRunResult({
           response: '',
           finalResponseVisible: false,
           messages,
           newMessages,
-        };
+        }, turns);
       }
 
       await this.appendPendingUserInput(messages, newMessages, turns);
     }
 
-    return {
+    return this.finalizeRunResult({
       response: '',
       finalResponseVisible: false,
       messages,
       newMessages,
-    };
+    }, Math.max(1, turns));
+  }
+
+  private finalizeRunResult(result: RunResult, turn: number): RunResult {
+    const artifactStore = this.resolveToolResultArtifactStoreOptions(turn);
+    const stats = stabilizeToolResultsForHistory(
+      result.messages,
+      result.newMessages,
+      { ...resolveReadFileMessageFoldingOptions(), artifactStore },
+      { ...resolveExecuteShellMessageFoldingOptions(), artifactStore },
+    );
+    if (stats.stabilizedCount > 0) {
+      Logger.info(
+        `[${this.sessionLabel}] stable tool_result history: `
+        + `stabilized=${stats.stabilizedCount}, `
+        + `read_file_truncated=${stats.readFileFoldedCount}, `
+        + `execute_shell_truncated=${stats.executeShellFoldedCount}`,
+      );
+    }
+    return result;
   }
 
   private async appendPendingUserInput(
@@ -1185,14 +1205,33 @@ export class ConversationRunner {
   }
 
   private insertProviderTransientHints(messages: Message[], hints: Message[]): Message[] {
-    if (hints.length === 0) return messages;
+    if (hints.length === 0) return this.dedupeTransientMessages(messages);
 
     const insertIndex = this.findCurrentDirectoryHintInsertIndex(messages);
-    return [
+    return this.dedupeTransientMessages([
       ...messages.slice(0, insertIndex),
       ...hints,
       ...messages.slice(insertIndex),
-    ];
+    ]);
+  }
+
+  private dedupeTransientMessages(messages: Message[]): Message[] {
+    const seen = new Set<string>();
+    const dedupedReversed: Message[] = [];
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      const key = this.transientMessageKey(message);
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      dedupedReversed.push(message);
+    }
+    return dedupedReversed.reverse();
+  }
+
+  private transientMessageKey(message: Message): string | null {
+    if (typeof message.content !== 'string') return null;
+    const firstLine = message.content.split('\n', 1)[0].trim();
+    return /^\[transient_[a-z0-9_-]+\]$/i.test(firstLine) ? firstLine.toLowerCase() : null;
   }
 
   private findCurrentDirectoryHintInsertIndex(messages: Message[]): number {
