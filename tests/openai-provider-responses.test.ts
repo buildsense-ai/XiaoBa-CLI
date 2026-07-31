@@ -291,7 +291,7 @@ describe('OpenAIProvider Responses API mode', () => {
     });
   });
 
-  test('keeps explicit mode when transient content closes every cache boundary', () => {
+  test('falls back to implicit caching when transient content closes every safe breakpoint', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
       apiUrl: 'https://relay.catsco.cc/v1',
@@ -308,7 +308,7 @@ describe('OpenAIProvider Responses API mode', () => {
       { role: 'user', content: 'current question' },
     ]);
 
-    assert.deepEqual(body.prompt_cache_options, { mode: 'explicit' });
+    assert.equal(body.prompt_cache_options, undefined);
     assert.equal(
       body.input.some((item: any) => Array.isArray(item.content)
         && item.content.some((block: any) => block.prompt_cache_breakpoint)),

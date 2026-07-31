@@ -343,7 +343,7 @@ export class ConversationRunner {
           maxTurns: this.maxTurns,
           messages,
           newMessages,
-        }, turns);
+        });
       }
       turns++;
       this.injectSyntheticObservations(messages, turns);
@@ -510,9 +510,9 @@ export class ConversationRunner {
       // Freeze the exact final provider representation before the call, then copy
       // those immutable bytes back into caller-owned durable history. Provider
       // failures therefore cannot persist raw or turn-dependent tool results.
-      this.stabilizeToolResultHistory(requestMessages, [], turns);
+      this.stabilizeToolResultHistory(requestMessages, []);
       this.syncStableToolResultsToHistory(requestMessages, messages, newMessages);
-      this.stabilizeToolResultHistory(messages, newMessages, turns);
+      this.stabilizeToolResultHistory(messages, newMessages);
       this.logProviderMessagesForDebug(requestMessages, requestTools, turns);
       this.promptTraceLogger.recordRequest(turns, requestMessages, requestTools);
       const aiStartTime = Date.now();
@@ -552,7 +552,7 @@ export class ConversationRunner {
             maxTurns: this.maxTurns,
             messages,
             newMessages,
-          }, turns);
+          });
         }
         if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
           Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${formatProviderErrorForLog(error)}`);
@@ -564,7 +564,7 @@ export class ConversationRunner {
             maxTurns: this.maxTurns,
             messages,
             newMessages,
-          }, turns);
+          });
         }
         throw error;
       }
@@ -673,7 +673,7 @@ export class ConversationRunner {
             maxTurns: this.maxTurns,
             messages,
             newMessages,
-          }, turns);
+          });
         }
 
         let cleanedResponse = visibleContent;
@@ -688,7 +688,7 @@ export class ConversationRunner {
           maxTurns: this.maxTurns,
           messages,
           newMessages,
-        }, turns);
+        });
       }
 
       if (response.content) {
@@ -817,7 +817,7 @@ export class ConversationRunner {
           maxTurns: this.maxTurns,
           messages,
           newMessages,
-        }, turns);
+        });
       }
 
       await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
@@ -832,20 +832,19 @@ export class ConversationRunner {
       maxTurns: this.maxTurns,
       messages,
       newMessages,
-    }, Math.max(1, turns));
+    });
   }
 
-  private finalizeRunResult(result: RunResult, turn: number): RunResult {
-    this.stabilizeToolResultHistory(result.messages, result.newMessages, turn);
+  private finalizeRunResult(result: RunResult): RunResult {
+    this.stabilizeToolResultHistory(result.messages, result.newMessages);
     return result;
   }
 
   private stabilizeToolResultHistory(
     messages: Message[],
     newMessages: Message[],
-    turn: number,
   ): void {
-    const artifactStore = this.resolveToolResultArtifactStoreOptions(turn);
+    const artifactStore = this.resolveToolResultArtifactStoreOptions();
     const stats = stabilizeToolResultsForHistory(
       messages,
       newMessages,
