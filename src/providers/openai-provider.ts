@@ -404,7 +404,10 @@ export class OpenAIProvider implements AIProvider {
     const supportsPromptCaching = this.supportsPromptCaching();
     const supportsExplicitPromptCaching = supportsPromptCaching
       && /^gpt-5\.6(?:-|$)/i.test(this.model);
-    const responseInput = this.buildResponsesInput(messages, supportsExplicitPromptCaching);
+    const {
+      input: responseInput,
+      hasExplicitPromptCacheBreakpoint,
+    } = this.buildResponsesInput(messages, supportsExplicitPromptCaching);
     const responseTools = this.buildCanonicalResponsesTools(tools ?? []);
     const body: ResponsesRequestBody = {
       model: this.model,
@@ -423,7 +426,7 @@ export class OpenAIProvider implements AIProvider {
         responseTools,
         promptCacheScopeKey,
       );
-      if (supportsExplicitPromptCaching) {
+      if (supportsExplicitPromptCaching && hasExplicitPromptCacheBreakpoint) {
         body.prompt_cache_options = { mode: 'explicit' };
       }
     }
@@ -447,10 +450,14 @@ export class OpenAIProvider implements AIProvider {
   private buildResponsesInput(
     messages: Message[],
     addExplicitPromptCacheBreakpoints = false,
-  ): ResponsesInputItem[] {
+  ): {
+    input: ResponsesInputItem[];
+    hasExplicitPromptCacheBreakpoint: boolean;
+  } {
     const input: ResponsesInputItem[] = [];
     const dynamicSystemMessages: Message[] = [];
     let promptCacheBoundaryClosed = false;
+    let hasExplicitPromptCacheBreakpoint = false;
 
     for (const message of messages) {
       if (message.role === 'system') {
@@ -468,6 +475,7 @@ export class OpenAIProvider implements AIProvider {
         const markedOutput = addExplicitPromptCacheBreakpoints && !promptCacheBoundaryClosed
           ? this.addPromptCacheBreakpointToContent(output)
           : undefined;
+        if (markedOutput) hasExplicitPromptCacheBreakpoint = true;
         input.push({
           type: 'function_call_output',
           call_id: message.tool_call_id,
@@ -504,6 +512,7 @@ export class OpenAIProvider implements AIProvider {
         && !promptCacheBoundaryClosed
         ? this.addPromptCacheBreakpointToContent(content)
         : undefined;
+      if (markedContent) hasExplicitPromptCacheBreakpoint = true;
       input.push({
         role: message.role,
         content: markedContent ?? content,
@@ -517,7 +526,7 @@ export class OpenAIProvider implements AIProvider {
       });
     }
 
-    return input;
+    return { input, hasExplicitPromptCacheBreakpoint };
   }
 
   private supportsPromptCaching(): boolean {
