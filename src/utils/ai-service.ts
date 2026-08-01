@@ -32,6 +32,10 @@ const EMPTY_RESPONSE_MAX_DELAY_MS = 2000;
 const BARE_400_MAX_RETRIES = 2;
 const BARE_400_MAX_ELAPSED_MS = 15 * 1000;
 const BARE_400_MAX_DELAY_MS = 2000;
+// 裸 403 可能来自模型切换后的短暂权限传播延迟；只补一次短重试。
+const BARE_403_MAX_RETRIES = 1;
+const BARE_403_MAX_ELAPSED_MS = 8 * 1000;
+const BARE_403_MAX_DELAY_MS = 2000;
 
 type ProviderKind = 'openai' | 'anthropic';
 
@@ -252,6 +256,10 @@ export class AIService {
       return true;
     }
 
+    if (this.isBare403(error)) {
+      return true;
+    }
+
     // 网络错误可重试
     const code = this.extractErrorCode(error);
     if ([
@@ -289,24 +297,20 @@ export class AIService {
 
   private isKnownNonRetryableProviderError(error: any): boolean {
     const status = this.extractStatus(error);
-    // 401/403/404/413/422 是确定性的配置/权限/资源/参数错误，重试无意义。
+    // 401/404/413/422 是确定性的配置/资源/参数错误，重试无意义。
     // 400 特殊处理：只有错误文本明确指向请求格式问题时才不可重试；
     // 裸 400（如 axios 默认消息）大多是上游瞬态或 reasoning 回传问题，
     // 重试/说"继续"即可恢复，交给 isRetryable 决定。
-    if (status && [401, 403, 404, 413, 422].includes(status)) {
+    // 403 只有在上游给出明确权限语义时才直接失败；裸 403 允许一次短重试，
+    // 覆盖模型切换后权限传播尚未完成的窗口。
+    if (status && [401, 404, 413, 422].includes(status)) {
+      return true;
+    }
+    if (status === 403 && !this.isBare403(error)) {
       return true;
     }
 
-    const message = [
-      error?.response?.data?.error?.code,
-      error?.response?.data?.error?.type,
-      error?.response?.data?.error?.message,
-      error?.response?.data?.message,
-      error?.error?.code,
-      error?.error?.type,
-      error?.error?.message,
-      error?.message,
-    ].filter(Boolean).join(' ');
+    const message = this.providerErrorText(error);
 
     if (status === 400
       && /invalid[_\s-]?request|bad request|invalid (?:parameter|input|argument)|schema is invalid|tool schema|malformed|invalid json|unexpected token/i.test(message)) {
@@ -323,7 +327,29 @@ export class AIService {
   private isBareOrReasoning400(error: any): boolean {
     const status = this.extractStatus(error);
     if (status !== 400) return false;
-    const message = [
+    const message = this.providerErrorText(error);
+    // reasoning 必须回传（reasoning_content/reasoning_text）属于可修复后重试，
+    // 例如消息已被重建或上游瞬态时，重试一次即可通过。
+    if (/reasoning[_\s-]?(?:content|text).{0,60}(must be passed back|must be echoed|not passed back|expected)/i.test(message)
+      || /thinking mode.{0,60}reasoning/i.test(message)) {
+      return true;
+    }
+    // 裸 400：没有明确格式错误标记（格式错误在 isKnownNonRetryableProviderError 已拦截）
+    return !/invalid[_\s-]?request|bad request|invalid (?:parameter|input|argument)|schema is invalid|tool schema|malformed|invalid json|unexpected token/i.test(message);
+  }
+
+  /**
+   * 仅把没有明确权限语义的 403 当作短暂错误。
+   * 真正的鉴权/授权失败仍然立即返回，避免无意义地反复请求。
+   */
+  private isBare403(error: any): boolean {
+    if (this.extractStatus(error) !== 403) return false;
+    const message = this.providerErrorText(error);
+    return !/invalid[_\s-]?api[_\s-]?key|unauthorized|forbidden|permission denied|access denied|not authorized|insufficient[_\s-]?scope|(?:do not|does not|don't|doesn't|no) have access|model .{0,40}not (?:allowed|available|authorized)/i.test(message);
+  }
+
+  private providerErrorText(error: any): string {
+    return [
       error?.response?.data?.error?.code,
       error?.response?.data?.error?.type,
       error?.response?.data?.error?.message,
@@ -333,14 +359,6 @@ export class AIService {
       error?.error?.message,
       error?.message,
     ].filter(Boolean).join(' ');
-    // reasoning 必须回传（reasoning_content/reasoning_text）属于可修复后重试，
-    // 例如消息已被重建或上游瞬态时，重试一次即可通过。
-    if (/reasoning[_\s-]?(?:content|text).{0,60}(must be passed back|must be echoed|not passed back|expected)/i.test(message)
-      || /thinking mode.{0,60}reasoning/i.test(message)) {
-      return true;
-    }
-    // 裸 400：没有明确格式错误标记（格式错误在 isKnownNonRetryableProviderError 已拦截）
-    return !/invalid[_\s-]?request|bad request|invalid (?:parameter|input|argument)|schema is invalid|tool schema|malformed|invalid json|unexpected token/i.test(message);
   }
 
   /**
@@ -481,6 +499,15 @@ export class AIService {
         maxRetries: Math.min(policy.maxRetries, BARE_400_MAX_RETRIES),
         maxElapsedMs: Math.min(policy.maxElapsedMs, BARE_400_MAX_ELAPSED_MS),
         maxDelayMs: Math.min(policy.maxDelayMs, BARE_400_MAX_DELAY_MS),
+      };
+    }
+
+    if (this.isBare403(error)) {
+      return {
+        ...policy,
+        maxRetries: Math.min(policy.maxRetries, BARE_403_MAX_RETRIES),
+        maxElapsedMs: Math.min(policy.maxElapsedMs, BARE_403_MAX_ELAPSED_MS),
+        maxDelayMs: Math.min(policy.maxDelayMs, BARE_403_MAX_DELAY_MS),
       };
     }
 
