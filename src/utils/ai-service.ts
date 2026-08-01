@@ -28,6 +28,10 @@ const EMPTY_RESPONSE_ERROR_CODE = 'EMPTY_MODEL_RESPONSE';
 const EMPTY_RESPONSE_MAX_RETRIES = 2;
 const EMPTY_RESPONSE_MAX_ELAPSED_MS = 2 * 60 * 1000;
 const EMPTY_RESPONSE_MAX_DELAY_MS = 2000;
+// 裸 400 / reasoning 回传 400：快速有限重试，避免浪费 token 又覆盖瞬态场景
+const BARE_400_MAX_RETRIES = 2;
+const BARE_400_MAX_ELAPSED_MS = 15 * 1000;
+const BARE_400_MAX_DELAY_MS = 2000;
 
 type ProviderKind = 'openai' | 'anthropic';
 
@@ -243,6 +247,11 @@ export class AIService {
       return true;
     }
 
+    // 裸 400 / reasoning 回传 400：有限次数快速重试（上游瞬态或消息已修复时一次即过）
+    if (this.isBareOrReasoning400(error)) {
+      return true;
+    }
+
     // 网络错误可重试
     const code = this.extractErrorCode(error);
     if ([
@@ -280,7 +289,11 @@ export class AIService {
 
   private isKnownNonRetryableProviderError(error: any): boolean {
     const status = this.extractStatus(error);
-    if (status && [400, 401, 403, 404, 413, 422].includes(status)) {
+    // 401/403/404/413/422 是确定性的配置/权限/资源/参数错误，重试无意义。
+    // 400 特殊处理：只有错误文本明确指向请求格式问题时才不可重试；
+    // 裸 400（如 axios 默认消息）大多是上游瞬态或 reasoning 回传问题，
+    // 重试/说"继续"即可恢复，交给 isRetryable 决定。
+    if (status && [401, 403, 404, 413, 422].includes(status)) {
       return true;
     }
 
@@ -295,8 +308,39 @@ export class AIService {
       error?.message,
     ].filter(Boolean).join(' ');
 
+    if (status === 400
+      && /invalid[_\s-]?request|bad request|invalid (?:parameter|input|argument)|schema is invalid|tool schema|malformed|invalid json|unexpected token/i.test(message)) {
+      return true;
+    }
+
     return /insufficient[_\s-]?quota|quota[_\s-]?exceeded|billing|(?:insufficient|low|exhausted)[_\s-]?(?:credit|balance)|(?:credit|balance)[_\s-]?(?:exhausted|insufficient|too low)|账户余额|余额不足|额度不足|额度已用尽|context length|maximum context|max(?:imum)? tokens?|prompt too long|invalid[_\s-]?request|invalid[_\s-]?api[_\s-]?key|unauthorized|forbidden|permission denied|model .*not found|model_not_found|tool schema|schema is invalid|content policy|safety/i
       .test(message);
+  }
+
+  /**
+   * 裸 400 / reasoning 回传 400：可快速自动重试（瞬态或消息已修复时一次即过）。
+   */
+  private isBareOrReasoning400(error: any): boolean {
+    const status = this.extractStatus(error);
+    if (status !== 400) return false;
+    const message = [
+      error?.response?.data?.error?.code,
+      error?.response?.data?.error?.type,
+      error?.response?.data?.error?.message,
+      error?.response?.data?.message,
+      error?.error?.code,
+      error?.error?.type,
+      error?.error?.message,
+      error?.message,
+    ].filter(Boolean).join(' ');
+    // reasoning 必须回传（reasoning_content/reasoning_text）属于可修复后重试，
+    // 例如消息已被重建或上游瞬态时，重试一次即可通过。
+    if (/reasoning[_\s-]?(?:content|text).{0,60}(must be passed back|must be echoed|not passed back|expected)/i.test(message)
+      || /thinking mode.{0,60}reasoning/i.test(message)) {
+      return true;
+    }
+    // 裸 400：没有明确格式错误标记（格式错误在 isKnownNonRetryableProviderError 已拦截）
+    return !/invalid[_\s-]?request|bad request|invalid (?:parameter|input|argument)|schema is invalid|tool schema|malformed|invalid json|unexpected token/i.test(message);
   }
 
   /**
@@ -428,6 +472,15 @@ export class AIService {
         maxRetries: Math.min(policy.maxRetries, EMPTY_RESPONSE_MAX_RETRIES),
         maxElapsedMs: Math.min(policy.maxElapsedMs, EMPTY_RESPONSE_MAX_ELAPSED_MS),
         maxDelayMs: Math.min(policy.maxDelayMs, EMPTY_RESPONSE_MAX_DELAY_MS),
+      };
+    }
+
+    if (this.isBareOrReasoning400(error)) {
+      return {
+        ...policy,
+        maxRetries: Math.min(policy.maxRetries, BARE_400_MAX_RETRIES),
+        maxElapsedMs: Math.min(policy.maxElapsedMs, BARE_400_MAX_ELAPSED_MS),
+        maxDelayMs: Math.min(policy.maxDelayMs, BARE_400_MAX_DELAY_MS),
       };
     }
 
