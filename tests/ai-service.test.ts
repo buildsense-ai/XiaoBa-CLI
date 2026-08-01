@@ -341,6 +341,98 @@ test('AIService does not retry quota exhaustion even when provider uses HTTP 429
   assert.equal(attempts, 1);
 });
 
+test('AIService retries a bare 400 with a short bounded policy', async () => {
+  const service = createTestService();
+  let attempts = 0;
+  const bare400 = Object.assign(new Error('Request failed with status code 400'), {
+    response: { status: 400, headers: {} },
+  });
+  (service as any).sleepWithAbort = async () => undefined;
+  (service as any).provider = {
+    chat: async () => {
+      attempts += 1;
+      if (attempts === 1) throw bare400;
+      return { content: 'recovered' };
+    },
+    chatStream: async () => ({ content: null }),
+  };
+
+  const result = await service.chat([]);
+  const policy = (service as any).resolveRetryPolicy(bare400);
+
+  assert.deepStrictEqual(result, { content: 'recovered' });
+  assert.equal(attempts, 2);
+  assert.equal(policy.maxRetries, 2);
+  assert.equal(policy.maxElapsedMs, 15 * 1000);
+});
+
+test('AIService does not retry an explicit invalid-request 400', async () => {
+  const service = createTestService();
+  let attempts = 0;
+  const invalidRequest = Object.assign(new Error('Request failed with status code 400'), {
+    response: {
+      status: 400,
+      data: { error: { type: 'invalid_request_error', message: 'tool schema is invalid' } },
+    },
+  });
+  (service as any).provider = {
+    chat: async () => {
+      attempts += 1;
+      throw invalidRequest;
+    },
+    chatStream: async () => ({ content: null }),
+  };
+
+  await assert.rejects(() => service.chat([]), /API错误 \(400\): tool schema is invalid/);
+  assert.equal(attempts, 1);
+});
+
+test('AIService retries a bare 403 once for model-switch propagation', async () => {
+  const service = createTestService();
+  let attempts = 0;
+  const bare403 = Object.assign(new Error('Request failed with status code 403'), {
+    response: { status: 403, headers: {} },
+  });
+  (service as any).sleepWithAbort = async () => undefined;
+  (service as any).provider = {
+    chat: async () => {
+      attempts += 1;
+      if (attempts === 1) throw bare403;
+      return { content: 'recovered after switch' };
+    },
+    chatStream: async () => ({ content: null }),
+  };
+
+  const result = await service.chat([]);
+  const policy = (service as any).resolveRetryPolicy(bare403);
+
+  assert.deepStrictEqual(result, { content: 'recovered after switch' });
+  assert.equal(attempts, 2);
+  assert.equal(policy.maxRetries, 1);
+  assert.equal(policy.maxElapsedMs, 8 * 1000);
+});
+
+test('AIService does not retry an explicit permission-denied 403', async () => {
+  const service = createTestService();
+  let attempts = 0;
+  const denied = Object.assign(new Error('Request failed with status code 403'), {
+    response: {
+      status: 403,
+      data: { error: { message: 'permission denied for this model' } },
+    },
+  });
+  (service as any).provider = {
+    chat: async () => {
+      attempts += 1;
+      throw denied;
+    },
+    chatStream: async () => ({ content: null }),
+  };
+
+  await assert.rejects(() => service.chat([]), /API错误 \(403\): permission denied for this model/);
+  assert.equal(attempts, 1);
+});
+
 test('AIService still retries transient load balancer failures', async () => {
   process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '1';
   const service = createTestService();
