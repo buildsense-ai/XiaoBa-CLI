@@ -1,0 +1,32 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Provider 与本地缓存 Trace 对账报告</title><style>
+@page { size:A4; margin:16mm 15mm 15mm; }
+*{box-sizing:border-box} body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#172033;font-size:10.5pt;line-height:1.55;margin:0} h1{font-size:22pt;margin:0 0 4px} h2{font-size:14pt;margin:22px 0 8px;color:#123b66;border-bottom:1px solid #cbd9e6;padding-bottom:5px} p{margin:6px 0} .sub{color:#607083;font-size:9pt} .verdict{margin:16px 0 12px;padding:13px 15px;border-left:5px solid #d89400;background:#fff7e2;border-radius:4px;font-size:11pt} .ok{color:#156f3d;font-weight:700} .warn{color:#9b5d00;font-weight:700} .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:13px 0} .card{border:1px solid #d8e1ea;border-radius:7px;padding:10px;background:#f8fbfd} .num{font-size:18pt;font-weight:750;color:#0e4f84} .label{font-size:8.5pt;color:#66788a} table{border-collapse:collapse;width:100%;margin:8px 0 12px;font-size:9.2pt} th{background:#eaf2f9;color:#183b5b} th,td{padding:7px 8px;border:1px solid #ccd8e3;text-align:left;vertical-align:top} .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#f1f4f6;padding:8px 10px;border-radius:5px;font-size:8.5pt;word-break:break-word} ul{margin:6px 0 8px;padding-left:20px} .foot{margin-top:18px;color:#697a8a;font-size:8.5pt;border-top:1px solid #dce4eb;padding-top:8px} .pagebreak{page-break-before:always}
+</style></head><body>
+<h1>Provider 与本地缓存 Trace 对账报告</h1>
+<div class="sub">审计日期：2026-07-31。冻结时间：2026-07-31T08:44:29.779175+00:00。范围：gpt-5.6-terra 与 /v1/responses 使用账单。</div>
+<div class="verdict"><span class="ok">结论：已捕获调用的 token 记录正确。</span>573 条调用在未缓存输入、输出、缓存读取和缓存创建四项上逐笔完全一致。<br><span class="warn">需要修正：cache_hit_ratio 将“缓存创建”误计为“缓存命中”。</span>本样本仅影响 1 条缓存创建调用，但字段语义应调整。</div>
+<div class="grid"><div class="card"><div class="num">600</div><div class="label">CSV 调用数</div></div><div class="card"><div class="num">573</div><div class="label">逐笔完全匹配，95.50%</div></div><div class="card"><div class="num">27</div><div class="label">仅见于账单，未见本地 trace</div></div><div class="card"><div class="num">66.98%</div><div class="label">账单加权缓存读取命中率</div></div></div>
+<h2>逐笔校验结果</h2>
+<p>匹配键为四项 token 的统一口径；重复键按请求时间最近者配对。573 条匹配的时间误差中位数为 59.8ms，P95 为 226.7ms，最大为 1.163s。</p>
+<table><tr><th>字段</th><th>573 条匹配调用：CSV</th><th>本地 trace 统一口径</th><th>结果</th></tr>
+<tr><td>未缓存输入</td><td>10,063,982</td><td>10,063,982</td><td class="ok">一致</td></tr>
+<tr><td>输出</td><td>184,920</td><td>184,920</td><td class="ok">一致</td></tr>
+<tr><td>缓存读取</td><td>20,036,736</td><td>20,036,736</td><td class="ok">一致</td></tr>
+<tr><td>缓存创建</td><td>3,530</td><td>3,530</td><td class="ok">一致</td></tr></table>
+<h2>字段口径</h2>
+<table><tr><th>Provider CSV</th><th>本地 trace</th><th>正确对应</th></tr>
+<tr><td>Input Tokens</td><td>input_tokens</td><td>本地 input_tokens 是总 prompt token，等于 CSV Input Tokens 加 Cache Read Tokens 加 Cache Creation Tokens。</td></tr>
+<tr><td>Cache Read Tokens</td><td>cache_read_tokens</td><td>数值逐笔一致；它才是“命中”的 token。</td></tr>
+<tr><td>Cache Creation Tokens</td><td>cache_write_tokens</td><td>数值逐笔一致；它代表写入缓存，不是命中。</td></tr>
+</table>
+<h2>命中率审计</h2>
+<p>Provider 全量账单的加权读取命中率为 66.98%。已匹配的本地调用按同一口径为 66.56%。</p>
+<p>当前代码使用的公式：</p><div class="code">(cache_read_tokens + cache_write_tokens) / input_tokens</div>
+<p>正确的“缓存命中率”应为：</p><div class="code">cache_read_tokens / input_tokens</div>
+<p>异常调用 run_id 为 ms8oe745-apb7t5：输入 3,530，读取 0，创建 3,530。本地记录为 100% 命中，实际读取命中应为 0%。</p>
+<h2>未匹配项与边界</h2>
+<ul><li>27 条账单调用未找到同时间窗的本地 gpt-5.6-terra trace，总计未缓存输入 280,369、缓存读取 950,912、输出 13,174。</li><li>时间窗内没有“仅本地 trace”的调用。因而本地采集没有虚构调用；缺口更像同一 API key 的其他来源调用，或本地 trace 未落盘。</li><li>本地 trace 不保存 provider request ID、API key 或 IP，无法仅依这些文件对 27 条缺口做来源归因。</li></ul>
+<h2>建议</h2>
+<ul><li>把 cache_hit_ratio 改为只使用 cache_read_tokens；保留 cache_write_tokens 作为独立的“缓存创建率/写入量”。</li><li>看板汇总命中率使用 token 加权值，而不是逐调用简单平均，以避免小调用放大影响。</li><li>如需账单全量归因，trace 增加脱敏 request ID 与 endpoint 关联字段。</li></ul>
+<div class="foot">证据：用户提供的 usage_2026-07-31_to_2026-07-31.csv；本地 logs/cache-trace/2026-07-31 中位于 CSV 时间窗的 gpt-5.6-terra trace。原始 CSV 未被修改。</div>
+</body></html>
