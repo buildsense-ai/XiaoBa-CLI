@@ -380,6 +380,98 @@ describe('OpenAIProvider Responses API mode', () => {
     }
   });
 
+  test('replays reasoning from a pure-text assistant turn', async () => {
+    const originalPost = axios.post;
+    const bodies: any[] = [];
+    const reasoning = {
+      type: 'reasoning',
+      id: 'reasoning_text_1',
+      status: 'completed',
+      content: [{ type: 'reasoning_text', text: 'private reasoning' }],
+      summary: [],
+    };
+    (axios as any).post = async (_url: string, body: any) => {
+      bodies.push(body);
+      return {
+        data: bodies.length === 1
+          ? {
+              status: 'completed',
+              output: [
+                reasoning,
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: 'first answer' }],
+                },
+              ],
+            }
+          : {
+              status: 'completed',
+              output: [{
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'second answer' }],
+              }],
+            },
+      };
+    };
+
+    try {
+      const provider = createProvider();
+      const first = await provider.chat([{ role: 'user', content: 'first question' }]);
+      await provider.chat([
+        { role: 'user', content: 'first question' },
+        { role: 'assistant', content: first.content, providerContent: first.providerContent },
+        { role: 'user', content: 'follow up' },
+      ]);
+
+      assert.deepEqual(first.providerContent, [reasoning]);
+      assert.deepEqual(bodies[1].input, [
+        { role: 'user', content: 'first question' },
+        reasoning,
+        { role: 'assistant', content: 'first answer' },
+        { role: 'user', content: 'follow up' },
+      ]);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('reconstructs canonical function calls when replay only contains reasoning', () => {
+    const provider = createProvider();
+    const reasoning = {
+      type: 'reasoning',
+      id: 'reasoning_tool_1',
+      status: 'completed',
+      content: [{ type: 'reasoning_text', text: 'private reasoning' }],
+      summary: [],
+    };
+    const body = (provider as any).buildResponsesRequestBody([
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'lookup', arguments: '{"query":"cats"}' },
+        }],
+        providerContent: [reasoning],
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: 'found cats' },
+    ], [lookupTool]);
+
+    assert.deepEqual(body.input, [
+      reasoning,
+      {
+        type: 'function_call',
+        call_id: 'call_1',
+        name: 'lookup',
+        arguments: '{"query":"cats"}',
+      },
+      { type: 'function_call_output', call_id: 'call_1', output: 'found cats' },
+    ]);
+  });
+
   test('streams visible text and resolves from the terminal Responses event', async () => {
     const originalPost = axios.post;
     const terminalResponse = {
