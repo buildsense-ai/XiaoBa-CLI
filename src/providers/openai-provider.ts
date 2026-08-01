@@ -662,8 +662,15 @@ export class OpenAIProvider implements AIProvider {
     const stopReason = response?.status === 'incomplete'
       ? incompleteReason === 'max_output_tokens' ? 'length' : incompleteReason || 'incomplete'
       : toolCalls.length > 0 ? 'tool_calls' : response?.status || undefined;
-    const providerContent = toolCalls.length > 0
-      ? output.filter((item: any) => this.isResponsesReplayItem(item)).map((item: any) => JSON.parse(JSON.stringify(item)))
+    // 提取可回放项（function_call + reasoning）。reasoning 必须独立于
+    // tool_calls 保留：DeepSeek thinking 模式下，纯文本 assistant 回复
+    // 的 reasoning_text 也要在下一轮回传，否则 API 返回 400。
+    // message 项不在此回放（其文本会走 content fallback）。
+    const replayItems = output.filter((item: any) =>
+      this.isResponsesReplayItem(item) && item?.type !== 'message',
+    );
+    const providerContent = replayItems.length > 0
+      ? replayItems.map((item: any) => JSON.parse(JSON.stringify(item)))
       : undefined;
 
     return {

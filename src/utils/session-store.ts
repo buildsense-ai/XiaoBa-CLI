@@ -87,7 +87,7 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
       durable.push({
         ...message,
         content: publicText || null,
-        providerContent: undefined,
+        providerContent: keepResponsesReasoning(message.providerContent),
       });
       continue;
     }
@@ -98,12 +98,12 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
         durable.push({
           ...message,
           content: cleanedText,
-          providerContent: undefined,
+          providerContent: keepResponsesReasoning(message.providerContent),
         });
         continue;
       }
     } else if (message.content !== null) {
-      durable.push({ ...message, providerContent: undefined });
+      durable.push({ ...message, providerContent: keepResponsesReasoning(message.providerContent) });
       continue;
     }
 
@@ -111,12 +111,24 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
       durable.push({
         ...message,
         content: null,
-        providerContent: undefined,
+        providerContent: keepResponsesReasoning(message.providerContent),
       });
     }
   }
 
   return durable;
+}
+
+/**
+ * 持久化时只保留 responses 模式的 reasoning 块。
+ * DeepSeek 等模型在 thinking 模式下要求下一轮把 reasoning_text 原样回传，
+ * 否则 API 返回 400。其余 providerContent 块（thinking/redacted_thinking/
+ * openai_reasoning 等隐藏回放、function_call/tool_use 等工具回放）不落盘。
+ */
+function keepResponsesReasoning(providerContent: Message['providerContent']): Message['providerContent'] | undefined {
+  if (!Array.isArray(providerContent)) return undefined;
+  const reasoning = providerContent.filter(block => block && typeof block === 'object' && block.type === 'reasoning');
+  return reasoning.length > 0 ? reasoning : undefined;
 }
 
 function serializeMessages(messages: Message[]): string {

@@ -992,11 +992,11 @@ export class ConversationRunner {
     assistantMsg: Message,
     transcriptToolCalls: Message['tool_calls'],
   ): Message['providerContent'] {
-    if (!Array.isArray(assistantMsg.providerContent) || !transcriptToolCalls?.length) {
+    if (!Array.isArray(assistantMsg.providerContent)) {
       return undefined;
     }
 
-    const transcriptToolCallIds = new Set(transcriptToolCalls.map(toolCall => toolCall.id));
+    const transcriptToolCallIds = new Set((transcriptToolCalls ?? []).map(toolCall => toolCall.id));
     const blocks: NonNullable<Message['providerContent']> = [];
     let hasMatchingToolCall = false;
 
@@ -1012,10 +1012,19 @@ export class ConversationRunner {
         if (!transcriptToolCallIds.has(callId)) continue;
         hasMatchingToolCall = true;
       }
+      // reasoning 块必须无条件保留：DeepSeek 等模型在 thinking 模式下
+      // 要求下一轮把 reasoning_text 原样回传，否则 API 返回 400。
+      // 纯文本 assistant 回复（无 tool_calls）时也绝不能丢失。
+      if (block.type === 'reasoning') {
+        blocks.push(block);
+        continue;
+      }
       blocks.push(block);
     }
 
-    return hasMatchingToolCall ? blocks : undefined;
+    return hasMatchingToolCall || blocks.some(block => block?.type === 'reasoning')
+      ? blocks
+      : undefined;
   }
 
   private shouldKeepAssistantDraft(
@@ -1666,7 +1675,16 @@ export class ConversationRunner {
 
       const content = contentToString(message.content).trim();
       if (content) {
-        repaired.push({ ...message, tool_calls: undefined, providerContent: undefined });
+        // 工具调用被裁剪时，仍要保留 reasoning 回放项（thinking 模式要求回传），
+        // 但清掉与工具调用相关的 providerContent 块。
+        const reasoningBlocks = Array.isArray(message.providerContent)
+          ? message.providerContent.filter(block => block && typeof block === 'object' && block.type === 'reasoning')
+          : undefined;
+        repaired.push({
+          ...message,
+          tool_calls: undefined,
+          providerContent: reasoningBlocks?.length ? reasoningBlocks : undefined,
+        });
       }
     }
 
