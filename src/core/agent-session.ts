@@ -43,7 +43,7 @@ import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
 import { resolveModelContextWindow } from '../utils/model-context-window';
 import { parseSessionKeyV2 } from './session-router';
-import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
+import { isModelImageSafetyError, classifyModelError } from '../utils/model-error-classifier';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import type { PromptTraceSnapshot } from '../utils/prompt-observability';
 import { toPromptTurnMetadata } from '../utils/prompt-observability';
@@ -78,36 +78,6 @@ export const EMPTY_MODEL_RESPONSE_MESSAGE = '模型本轮未返回有效内容�
 export const CONTEXT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
 export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '上下文压缩完成，继续处理当前请求。';
 export const CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文继续处理。';
-
-// ─── 错误码常量（用于 JSONL 结构化聚合）───
-const ERR_CATEGORY = {
-  IMAGE_SAFETY: 'image_safety',
-  BUDGET: 'budget',
-  VISION_UNSUPPORTED: 'vision_unsupported',
-  TIMEOUT: 'timeout',
-  EMPTY_RESPONSE: 'empty_response',
-  TRANSIENT: 'transient',
-  UNEXPECTED: 'unexpected',
-} as const;
-
-function buildErrorCode(err: any, flags: {
-  isImageSafetyError: boolean;
-  isRelayBudgetError: boolean;
-  isVisionError: boolean;
-  isTimeout: boolean;
-  isEmptyResponse: boolean;
-  isTransient: boolean;
-}): { error_code: string; category: string } {
-  if (flags.isImageSafetyError) return { error_code: 'image_safety_block', category: ERR_CATEGORY.IMAGE_SAFETY };
-  if (flags.isRelayBudgetError) return { error_code: 'relay_budget_exhausted', category: ERR_CATEGORY.BUDGET };
-  if (flags.isVisionError) return { error_code: 'vision_not_supported', category: ERR_CATEGORY.VISION_UNSUPPORTED };
-  if (flags.isTimeout) return { error_code: 'model_timeout', category: ERR_CATEGORY.TIMEOUT };
-  if (flags.isEmptyResponse) return { error_code: 'empty_model_response', category: ERR_CATEGORY.EMPTY_RESPONSE };
-  if (flags.isTransient) return { error_code: 'transient_provider_error', category: ERR_CATEGORY.TRANSIENT };
-  const status = typeof err?.status === 'number' ? err.status : err?.response?.status;
-  const suffix = status ? `_${status}` : '';
-  return { error_code: `unexpected${suffix}`, category: ERR_CATEGORY.UNEXPECTED };
-}
 
 // ─── 接口定义 ───────────────────────────────────────────
 
@@ -760,7 +730,7 @@ export class AgentSession {
         const isTransientProviderError = this.isTransientProviderError(err);
         const isEmptyModelResponseError = this.isEmptyModelResponseError(err);
 
-        const { error_code, category } = buildErrorCode(err, {
+        const classified = classifyModelError(err, {
           isImageSafetyError,
           isRelayBudgetError,
           isVisionError: !!isVisionError,
@@ -774,28 +744,20 @@ export class AgentSession {
           {
             type: 'turn_error',
             payload: {
-              error_code,
-              category,
+              error_code: classified.error_code,
+              category: classified.category,
               model: this.currentModelName(),
               provider: this.getProviderName(),
-              http_status: this.extractErrorStatus(err),
+              http_status: classified.http_status ?? this.extractErrorStatus(err),
+              retry_strategy: classified.retry_strategy,
             },
           } as SessionRuntimeLogEvent,
         );
 
-        let errorReply = ERROR_MESSAGE;
-        if (isImageSafetyError) {
-          errorReply = MODEL_IMAGE_SAFETY_MESSAGE;
-        } else if (relayBudgetErrorReply) {
+        let errorReply = classified.user_message;
+        // relay 额度提示有按模型/账号细分的文案，优先使用
+        if (relayBudgetErrorReply) {
           errorReply = relayBudgetErrorReply;
-        } else if (isVisionError) {
-          errorReply = '当前模型不支持图片识别。请使用支持多模态的模型（如 Claude 3.5 Sonnet 或 GPT-4V），或者用文字描述图片内容。';
-        } else if (isModelTimeoutError) {
-          errorReply = MODEL_TIMEOUT_MESSAGE;
-        } else if (isEmptyModelResponseError) {
-          errorReply = EMPTY_MODEL_RESPONSE_MESSAGE;
-        } else if (isTransientProviderError) {
-          errorReply = this.formatTransientProviderErrorReply();
         }
 
         // 添加错误回复到上下文，保持对话连贯性
@@ -1256,13 +1218,6 @@ export class AgentSession {
       : {};
     const provider = String(config?.provider || '').trim();
     return provider || null;
-  }
-
-  private formatTransientProviderErrorReply(): string {
-    const model = this.currentModelName();
-    return model
-      ? `当前模型 ${model} 的服务临时异常，刚才这次请求没有完成。我已经保留上下文；你可以稍后重试，或临时切换到其他模型继续。`
-      : MODEL_TRANSIENT_ERROR_MESSAGE;
   }
 
   private formatErrorContextMessage(
