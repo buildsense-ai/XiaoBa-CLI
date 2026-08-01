@@ -251,12 +251,20 @@ export class CacheTraceLogger {
   flush(): void {
     if (!this.enabled || !this.pending) return;
 
-    // Compute diff against previous entry
-    this.computeDiff();
+    try {
+      // Compute diff against previous entry
+      this.computeDiff();
 
-    this.writeEntry(this.pending.entry);
-    this.previousEntry = this.pending.entry;
-    this.pending = null;
+      this.writeEntry(this.pending.entry);
+      this.previousEntry = this.pending.entry;
+    } catch (error: any) {
+      // Tracing must never break the main reply flow.
+      if (typeof console !== 'undefined') {
+        console.warn(`[cache-trace] flush 失败（已忽略）: ${error?.message || error}`);
+      }
+    } finally {
+      this.pending = null;
+    }
   }
 
   private computeDiff(): void {
@@ -274,7 +282,15 @@ export class CacheTraceLogger {
             .sort();
           if (files.length > 0) {
             const lastFile = path.join(dir, files[files.length - 1]);
-            prev = JSON.parse(fs.readFileSync(lastFile, 'utf-8')) as CacheTraceEntry;
+            const loaded = JSON.parse(fs.readFileSync(lastFile, 'utf-8')) as CacheTraceEntry;
+            // 旧 schema 的 trace 文件（如 memory branch 早期输出）可能缺少
+            // episode/request 字段；结构不完整时不能用作 diff 基线，否则
+            // 访问 prev.episode.run_id 会抛 TypeError 并中断主流程。
+            if (loaded?.episode && loaded?.request?.system_prompt) {
+              prev = loaded;
+            } else {
+              prev = null;
+            }
           }
         }
       } catch {
@@ -297,11 +313,11 @@ export class CacheTraceLogger {
 
     const current = this.pending.entry;
 
-    current.diff.previous_run_id = prev.episode.run_id;
+    current.diff.previous_run_id = prev.episode?.run_id ?? '';
     current.diff.stable_system_identical =
-      current.request.system_prompt.stable_sha256 === prev.request.system_prompt.stable_sha256;
+      current.request.system_prompt.stable_sha256 === prev.request.system_prompt?.stable_sha256;
     current.diff.dynamic_system_sha256 =
-      `${prev.request.system_prompt.stable_sha256.slice(0, 8)}... → ${current.request.system_prompt.stable_sha256.slice(0, 8)}...`;
+      `${String(prev.request.system_prompt?.stable_sha256 ?? '').slice(0, 8)}... → ${String(current.request.system_prompt.stable_sha256 ?? '').slice(0, 8)}...`;
     current.diff.tools_identical =
       current.request.tools_sha256 === prev.request.tools_sha256;
 

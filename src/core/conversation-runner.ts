@@ -408,8 +408,17 @@ export class ConversationRunner {
       try {
         response = await this.requestModelResponse(requestMessages, requestTools, callbacks);
         const aiDuration = Date.now() - aiStartTime;
-        this.promptTraceLogger.recordResponse(turns, response, aiDuration);
-        this.recordCacheTrace(turns, requestMessages, requestTools, response, aiDuration);
+        // 观测类记录必须完全容错：任何 trace 读写失败都不能污染主回复流程。
+        try {
+          this.promptTraceLogger.recordResponse(turns, response, aiDuration);
+        } catch (traceError: any) {
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] prompt trace 记录失败（已忽略）: ${traceError?.message || traceError}`);
+        }
+        try {
+          this.recordCacheTrace(turns, requestMessages, requestTools, response, aiDuration);
+        } catch (traceError: any) {
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] cache trace 记录失败（已忽略）: ${traceError?.message || traceError}`);
+        }
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
       } catch (error: any) {
         this.promptTraceLogger.recordError(turns, error);
