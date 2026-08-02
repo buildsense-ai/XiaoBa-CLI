@@ -1,6 +1,8 @@
 import { Message, ChatResponse } from '../types';
 import { ToolDefinition } from '../types/tool';
 import type { ProviderRequestPreflightSummary } from './request-preflight';
+import type { OpenAIReasoningReplayMode } from '../utils/reasoning-effort';
+import type { ReasoningReplayRecoveryAction } from './deepseek-reasoning-recovery';
 
 /**
  * Streaming 回调
@@ -24,6 +26,7 @@ export interface StreamRetryInfo {
   maxElapsedMs: number;
   status?: string | number;
   message?: string;
+  recoveryAction?: ReasoningReplayRecoveryAction;
 }
 
 export type ModelAttemptApiType = 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses';
@@ -50,6 +53,7 @@ export interface ModelAttemptRetry {
   maxElapsedMs: number;
   delayMs?: number;
   stopReason?: ModelAttemptStopReason;
+  recoveryAction?: ReasoningReplayRecoveryAction;
 }
 
 /**
@@ -89,6 +93,8 @@ export interface ModelAttemptSink {
 
 export interface AIRequestOptions {
   signal?: AbortSignal;
+  /** Internal one-attempt override used by evidence-driven DeepSeek recovery. */
+  reasoningReplayMode?: OpenAIReasoningReplayMode;
   /** Optional best-effort observer; it can never alter request control flow. */
   modelAttemptSink?: ModelAttemptSink;
   modelAttemptContext?: ModelAttemptContext;

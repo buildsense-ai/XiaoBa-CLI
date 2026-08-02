@@ -133,6 +133,11 @@ export function classifyModelError(
   if (known.isEmptyResponse) return result('empty_response', 'empty_model_response', 'high', 'transport', 'retry_same_context');
   if (known.isTransient) return result('transient', 'transient_provider_error', 'high', 'transport', 'retry_later');
 
+  if (/reasoning[_\s-]?content.{0,100}(?:unknown|unrecognized|unsupported|unexpected|not allowed|not permitted|must not be)/i.test(evidence)
+    || /(?:unknown|unrecognized|unsupported|unexpected|extra) (?:field|parameter).{0,80}reasoning[_\s-]?content/i.test(evidence)) {
+    return result('reasoning_replay_required', 'reasoning_replay_incompatible', 'high', 'fix_and_retry_once', 'repair_session');
+  }
+
   if (/reasoning[_\s-]?(?:content|text).{0,80}(must be passed back|must be echoed|not passed back|required|expected)/i.test(evidence)
     || /thinking mode.{0,80}reasoning/i.test(evidence)) {
     return result('reasoning_replay_required', 'reasoning_replay_required', 'high', 'fix_and_retry_once', 'repair_session');

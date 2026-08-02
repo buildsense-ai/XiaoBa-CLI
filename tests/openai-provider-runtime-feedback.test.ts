@@ -353,6 +353,39 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.equal(body.messages[0].reasoning_content, 'private deepseek chain');
   });
 
+  test('legacy deepseek-reasoner omits replay by default but accepts an evidence-driven override', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-reasoner',
+    });
+    const message = {
+      role: 'assistant' as const,
+      content: null,
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function' as const,
+        function: { name: 'lookup', arguments: '{"query":"cats"}' },
+      }],
+      providerContent: [
+        { type: 'openai_reasoning', reasoning_content: 'legacy private chain' },
+        { type: 'tool_use', id: 'call_1', name: 'lookup', input: { query: 'cats' } },
+      ],
+      providerState: (provider as any).providerStateReference('openai-chat-completions'),
+    };
+
+    const defaultBody = (provider as any).buildRequestBody([message]);
+    const repairedBody = (provider as any).buildRequestBody(
+      [message],
+      undefined,
+      false,
+      { reasoningReplayMode: 'include' },
+    );
+
+    assert.equal(defaultBody.messages[0].reasoning_content, undefined);
+    assert.equal(repairedBody.messages[0].reasoning_content, 'legacy private chain');
+  });
+
   test('does not replay DeepSeek reasoning content from another model scope', () => {
     const source = new OpenAIProvider({
       apiKey: 'test-key',
