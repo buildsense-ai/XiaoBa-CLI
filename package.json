@@ -72,7 +72,6 @@
     "gray-matter": "^4.0.3",
     "inquirer": "^8.2.7",
     "ora": "^5.4.1",
-    "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^4.6.82",
     "sharp": "^0.34.5"
   },

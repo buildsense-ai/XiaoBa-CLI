@@ -52,6 +52,61 @@ function writeVectorOnlyPdf(filePath: string): void {
   fs.writeFileSync(filePath, body, 'ascii');
 }
 
+function writeTextPdf(filePath: string, pageCount = 14): void {
+  const fontId = 3 + pageCount * 2;
+  const pageIds = Array.from({ length: pageCount }, (_, index) => 3 + index * 2);
+  const objects = new Map<number, Buffer>();
+  objects.set(1, Buffer.from('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n', 'ascii'));
+  objects.set(2, Buffer.from(
+    `2 0 obj\n<< /Type /Pages /Kids [${pageIds.map(id => `${id} 0 R`).join(' ')}] /Count ${pageCount} >>\nendobj\n`,
+    'ascii',
+  ));
+  for (let index = 0; index < pageCount; index++) {
+    const pageId = pageIds[index];
+    const contentId = pageId + 1;
+    const pageText = index === 0
+      ? 'Trace-based Just-in-Time Type Specialization'
+      : index === 1
+        ? 'Every compiled trace belongs to page two'
+        : `Generated PDF page ${index + 1}`;
+    const stream = `BT\n/F1 16 Tf\n36 720 Td\n(${pageText}) Tj\nET`;
+    objects.set(pageId, Buffer.from(
+      `${pageId} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>\nendobj\n`,
+      'ascii',
+    ));
+    objects.set(contentId, Buffer.from(
+      `${contentId} 0 obj\n<< /Length ${Buffer.byteLength(stream, 'ascii')} >>\nstream\n${stream}\nendstream\nendobj\n`,
+      'ascii',
+    ));
+  }
+  objects.set(fontId, Buffer.from(
+    `${fontId} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n`,
+    'ascii',
+  ));
+
+  const chunks: Buffer[] = [Buffer.from('%PDF-1.4\n', 'ascii')];
+  const offsets: number[] = [];
+  for (let id = 1; id <= fontId; id++) {
+    offsets[id] = Buffer.concat(chunks).length;
+    chunks.push(objects.get(id)!);
+  }
+  const body = Buffer.concat(chunks);
+  const xref = [
+    `xref\n0 ${fontId + 1}`,
+    '0000000000 65535 f ',
+    ...Array.from({ length: fontId }, (_, index) => (
+      `${String(offsets[index + 1]).padStart(10, '0')} 00000 n `
+    )),
+    'trailer',
+    `<< /Size ${fontId + 1} /Root 1 0 R >>`,
+    'startxref',
+    String(body.length),
+    '%%EOF',
+    '',
+  ].join('\n');
+  fs.writeFileSync(filePath, Buffer.concat([body, Buffer.from(xref, 'ascii')]));
+}
+
 function writeInlineImagePdf(filePath: string): void {
   const inlineImageData = Buffer.from([
     255, 255, 255,
@@ -230,14 +285,8 @@ describe('ReadTool - ToolExecutionResult', () => {
   });
 
   test('PDF 文件会提取正文文本', async () => {
-    const fixturePath = path.join(
-      path.dirname(require.resolve('pdf-parse')),
-      'test',
-      'data',
-      '01-valid.pdf',
-    );
     const filePath = path.join(testRoot, 'fixture.pdf');
-    fs.copyFileSync(fixturePath, filePath);
+    writeTextPdf(filePath);
 
     const result = await tool.execute({ file_path: filePath, pages: '1' }, context);
 
@@ -251,15 +300,24 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.ok(!content.includes('不再做 PDF 全文解析'));
   });
 
+  test('并发 PDF 文本提取等待各自清理完成', async () => {
+    const filePath = path.join(testRoot, 'concurrent-fixture.pdf');
+    writeTextPdf(filePath);
+
+    const results = await Promise.all(Array.from({ length: 8 }, () => (
+      tool.execute({ file_path: filePath, pages: '1' }, context)
+    )));
+
+    assert.equal(results.length, 8);
+    for (const result of results) {
+      assert.strictEqual(result.ok, true);
+      assert.ok(String(result.content).includes('Trace-based'));
+    }
+  });
+
   test('PDF 默认只读取前若干页并提示继续读取', async () => {
-    const fixturePath = path.join(
-      path.dirname(require.resolve('pdf-parse')),
-      'test',
-      'data',
-      '01-valid.pdf',
-    );
     const filePath = path.join(testRoot, 'fixture-default.pdf');
-    fs.copyFileSync(fixturePath, filePath);
+    writeTextPdf(filePath);
 
     const result = await tool.execute({ file_path: filePath }, context);
 
@@ -274,14 +332,8 @@ describe('ReadTool - ToolExecutionResult', () => {
   });
 
   test('PDF pages 参数只返回指定页内容', async () => {
-    const fixturePath = path.join(
-      path.dirname(require.resolve('pdf-parse')),
-      'test',
-      'data',
-      '01-valid.pdf',
-    );
     const filePath = path.join(testRoot, 'fixture-page-filter.pdf');
-    fs.copyFileSync(fixturePath, filePath);
+    writeTextPdf(filePath);
 
     const result = await tool.execute({ file_path: filePath, pages: '2' }, context);
 
@@ -329,14 +381,8 @@ describe('ReadTool - ToolExecutionResult', () => {
       process.env.CATSCOMPANY_READER_API_URL = `http://127.0.0.1:${address.port}`;
       process.env.CATSCOMPANY_API_KEY = 'cats-reader-test-key';
 
-      const fixturePath = path.join(
-        path.dirname(require.resolve('pdf-parse')),
-        'test',
-        'data',
-        '01-valid.pdf',
-      );
       const filePath = path.join(testRoot, 'fixture-visual-supplement.pdf');
-      fs.copyFileSync(fixturePath, filePath);
+      writeTextPdf(filePath, 1);
       context = {
         ...context,
         conversationHistory: [{ role: 'user', content: '请读取这个 PDF，并检查有没有签名、印章和版式问题' }],
