@@ -1,5 +1,11 @@
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
-import { jsonToolError, jsonToolResult, MemoryLogStore } from '../core/memory-log-store';
+import {
+  fingerprintMemoryReadResult,
+  jsonToolError,
+  jsonToolResult,
+  MemoryLogStore,
+  type MemoryReadResult,
+} from '../core/memory-log-store';
 
 export interface MemorySearchFinishPayload {
   summary: string;
@@ -8,6 +14,7 @@ export interface MemorySearchFinishPayload {
 }
 
 export type MemorySearchFinishHandler = (payload: MemorySearchFinishPayload) => void;
+export type MemoryReadEvidenceHandler = (result: MemoryReadResult) => void;
 
 const CANONICAL_REF_PATTERN = /^[^/\\#]+\/\d{4}-\d{2}-\d{2}\/[^/\\#]+\.jsonl#\d+$/;
 
@@ -93,13 +100,17 @@ export class MemoryReadTurnTool implements Tool {
     },
   };
 
-  constructor(private readonly store: MemoryLogStore) {}
+  constructor(
+    private readonly store: MemoryLogStore,
+    private readonly onRead?: MemoryReadEvidenceHandler,
+  ) {}
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
       const result = await this.store.readTurn(String(args?.ref || ''), {
         budgetChars: args?.budget_chars,
       }, context.abortSignal);
+      this.onRead?.(result);
       return { ok: true, content: jsonToolResult(result) };
     } catch (error: any) {
       return toolError(error);
@@ -138,7 +149,10 @@ export class MemoryNeighborsTool implements Tool {
     },
   };
 
-  constructor(private readonly store: MemoryLogStore) {}
+  constructor(
+    private readonly store: MemoryLogStore,
+    private readonly onRead?: MemoryReadEvidenceHandler,
+  ) {}
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
@@ -147,6 +161,7 @@ export class MemoryNeighborsTool implements Tool {
         next: args?.next,
         budgetChars: args?.budget_chars,
       }, context.abortSignal);
+      for (const turn of result.turns) this.onRead?.(turn);
       return { ok: true, content: jsonToolResult(result) };
     } catch (error: any) {
       return toolError(error);
@@ -186,10 +201,13 @@ export class FinishMemorySearchTool implements Tool {
     },
   };
 
-  constructor(private readonly onFinish: MemorySearchFinishHandler) {}
+  constructor(
+    private readonly onFinish: MemorySearchFinishHandler,
+    private readonly isVerifiedRef: (ref: string) => boolean = () => true,
+  ) {}
 
   async execute(args: any): Promise<ToolExecutionResult> {
-    const validation = validateFinishArgs(args);
+    const validation = validateFinishArgs(args, this.isVerifiedRef);
     if (!validation.ok) {
       return {
         ok: false,
@@ -206,7 +224,7 @@ export class FinishMemorySearchTool implements Tool {
   }
 }
 
-function validateFinishArgs(args: any):
+function validateFinishArgs(args: any, isVerifiedRef: (ref: string) => boolean):
   | { ok: true; payload: MemorySearchFinishPayload }
   | { ok: false; error: string } {
   const summary = String(args?.summary || '').trim();
@@ -233,6 +251,9 @@ function validateFinishArgs(args: any):
   if (!inject && uniqueRefs.length > 0) {
     return { ok: false, error: 'refs must be empty when inject is false' };
   }
+  if (inject && uniqueRefs.some(ref => !isVerifiedRef(ref))) {
+    return { ok: false, error: 'every ref must have been successfully read by this memory branch' };
+  }
   return {
     ok: true,
     payload: {
@@ -242,6 +263,8 @@ function validateFinishArgs(args: any):
     },
   };
 }
+
+export { fingerprintMemoryReadResult };
 
 function toolError(error: any): ToolExecutionResult {
   return {

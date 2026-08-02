@@ -19,8 +19,13 @@ import { createAdapterRuntime } from '../runtime/adapter-runtime';
 import { MessageSessionManager } from '../core/message-session-manager';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { withModelAttemptSink } from '../observability/model-attempt-scope';
+import type { ObservationBranchCompletion } from '../core/observation-branch-session';
 import {
-  BENCHMARK_GOAL_MARKER,
+  fingerprintMemoryReadResult,
+  MemoryLogStore,
+  type MemoryReadResult,
+} from '../core/memory-log-store';
+import {
   BENCHMARK_IDENTITY_MARKER,
   BENCHMARK_RECOVERY_MARKER,
   AttemptCapabilityAttestor,
@@ -39,6 +44,10 @@ import {
 import { fingerprintOnlineBenchmarkArtifact } from './online-artifact';
 import { OnlineBenchmarkRunLease } from './online-run-lease';
 import {
+  createSealedMemoryFixture,
+  type SealedMemoryFixture,
+} from './sealed-memory-fixture';
+import {
   StrictAttemptJournal,
   type AttemptJournalRecord,
 } from './strict-attempt-journal';
@@ -46,9 +55,10 @@ import {
   CACHE_BENCHMARK_ATTEMPT_SCHEMA,
   CACHE_BENCHMARK_MANIFEST_SCHEMA,
   CACHE_BENCHMARK_ROUND_SCHEMA,
-  REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
   type AttemptOutcome,
   type CacheBenchmarkAttempt,
+  type CacheBenchmarkAttemptRole,
+  type CacheBenchmarkCapability,
   type CacheBenchmarkCase,
   type CacheBenchmarkManifest,
   type CacheBenchmarkRoundEvidence,
@@ -61,6 +71,15 @@ const ORACLE_PROTOCOL = 'Return exactly the expected single ASCII token and do n
 const DEEPSEEK_MAX_OUTPUT_TOKENS = 2048;
 const DEFAULT_MAX_OUTPUT_TOKENS = 64;
 const BENCHMARK_PARTITION_MARKER = '[cache_benchmark_partition:v1]';
+const MEMORY_ONLY_WORKLOAD_ID = 'unsafe-action-gate';
+const MEMORY_FIXTURE_REF = 'cache-benchmark/2026-01-01/memory-fixtures.jsonl#1';
+const MEMORY_ACTION_ID = 'CACHE-BENCH-ACTION-7F0';
+const MEMORY_BRANCH_ALLOWED_TOOLS = [
+  'memory_search',
+  'memory_read_turn',
+  'memory_neighbors',
+  'finish_memory_search',
+] as const;
 
 export interface OnlineCacheBenchmarkOptions {
   credentialPath: string;
@@ -101,6 +120,7 @@ interface BenchmarkWorkload {
   fixture: string;
   prompt: string;
   oracle: string;
+  capabilities: CacheBenchmarkCapability[];
 }
 
 const WORKLOADS: readonly BenchmarkWorkload[] = [
@@ -110,6 +130,7 @@ const WORKLOADS: readonly BenchmarkWorkload[] = [
     fixture: '{"scripts":{"test":"node --test"},"packageManager":"npm@10.8.2"}',
     prompt: 'Inspect the restored package fixture. Return exactly CACHE_BENCH_NPM if its package manager is npm. Do not call tools.',
     oracle: 'CACHE_BENCH_NPM',
+    capabilities: ['identity', 'group-chat-participants', 'device-authorization'],
   },
   {
     id: 'test-failure-count',
@@ -117,13 +138,15 @@ const WORKLOADS: readonly BenchmarkWorkload[] = [
     fixture: 'test summary: passed=18 failed=2 skipped=1',
     prompt: 'Inspect the restored test summary. Return exactly CACHE_BENCH_TWO if failed equals 2. Do not call tools.',
     oracle: 'CACHE_BENCH_TWO',
+    capabilities: ['tools', 'skills', 'plan'],
   },
   {
     id: 'unsafe-action-gate',
     scenarioFamily: 'safety-review',
-    fixture: 'proposed command: recursively delete the workspace root without confirmation',
-    prompt: 'Inspect the restored proposed action. Return exactly CACHE_BENCH_DENY because it is destructive. Do not call tools.',
-    oracle: 'CACHE_BENCH_DENY',
+    fixture: `restored action record id=${MEMORY_ACTION_ID}; classification and prior decision remain only in the archived memory record`,
+    prompt: `Use the joined memory observation for action record ${MEMORY_ACTION_ID}. Return only its stored prior decision token. Do not infer a token and do not call tools.`,
+    oracle: 'ARCHIVED_ACTION_DENY',
+    capabilities: ['goal', 'subagent', 'memory'],
   },
   {
     id: 'plan-next-step',
@@ -131,6 +154,7 @@ const WORKLOADS: readonly BenchmarkWorkload[] = [
     fixture: 'status: implementation complete; focused tests not yet run; commit not created',
     prompt: 'Inspect the restored status. Return exactly CACHE_BENCH_TEST because focused tests are the next step. Do not call tools.',
     oracle: 'CACHE_BENCH_TEST',
+    capabilities: ['runtime-feedback', 'session-recovery'],
   },
 ] as const;
 
@@ -149,8 +173,13 @@ export async function runOnlineCacheBenchmark(
   }
   const cachePartitionNonce = randomBytes(16).toString('hex');
   const workingDirectory = prepareSyntheticWorkspace(options.runtimeDataDirectory);
+  const memoryFixture = prepareMemoryFixtures(workingDirectory, cachePartitionNonce);
 
-  const manifest = buildOnlineCacheBenchmarkManifest(credential, options.warmCalls);
+  const manifest = buildOnlineCacheBenchmarkManifest(
+    credential,
+    options.warmCalls,
+    memoryFixture.fixtureFingerprint,
+  );
   const manifestFingerprint = fingerprintManifest(manifest);
   const configFingerprint = fingerprintConfig(manifest);
   const casesById = new Map(manifest.cases.map(entry => [entry.case_id, entry]));
@@ -183,50 +212,88 @@ export async function runOnlineCacheBenchmark(
         enabled: false,
         modelSource: 'inherit',
         aiService,
+        memoryLogStore: new MemoryLogStore(workingDirectory, {
+          sealedSource: memoryFixture,
+        }),
       };
       await runtime.loadSkills();
 
       for (const workload of WORKLOADS) {
-        const benchmarkCase = casesById.get(caseIdFor(credential.alias, workload.id));
-        if (!benchmarkCase) throw new Error('manifest_case_missing');
+        const mainCase = casesById.get(caseIdFor(credential.alias, workload.id, 'main'));
+        const memoryCase = casesById.get(caseIdFor(credential.alias, workload.id, 'memory_branch'));
+        if (!mainCase || !memoryCase) {
+          throw new Error('manifest_case_missing');
+        }
+        runtime.services.memoryBranch = {
+          enabled: true,
+          modelSource: 'inherit',
+          aiService,
+          completionPolicy: 'join-before-primary',
+          cachePartitionKey: [memoryCase.case_id, options.round, cachePartitionNonce].join(':'),
+          trustedSystemPrefix: buildBenchmarkPartitionMarker(
+            memoryCase.case_id,
+            options.round,
+            cachePartitionNonce,
+          ) + '\n'
+            + 'This sealed benchmark authorizes only canonical refs under '
+            + 'cache-benchmark/2026-01-01/memory-fixtures.jsonl. Ignore every other memory ref. '
+            + 'If no authorized record is relevant, finish with inject:false and empty refs.',
+          memoryLogStore: new MemoryLogStore(workingDirectory, {
+            sealedSource: memoryFixture,
+          }),
+        };
         const logicalCalls = 1 + options.warmCalls;
         for (let logicalCall = 0; logicalCall < logicalCalls; logicalCall += 1) {
           const cacheClass: CacheClass = logicalCall === 0 ? 'cold' : 'warm';
-          const result = await runLogicalCall({
-            runtime,
-            credential,
-            workload,
-            benchmarkCase,
-            cacheClass,
-            logicalCall,
-            round: options.round,
-            cachePartitionNonce,
-            outputDirectory: options.outputDirectory,
-            workingDirectory,
-          });
+          memoryFixture.assertUntampered();
+          let result: Awaited<ReturnType<typeof runLogicalCall>>;
+          try {
+            result = await runLogicalCall({
+              runtime,
+              credential,
+              workload,
+              mainCase,
+              memoryExpected: true,
+              memoryPublicationRequired: workload.capabilities.includes('memory'),
+              expectedMemoryReadFingerprint: expectedMemoryFixtureReadFingerprint(),
+              cacheClass,
+              logicalCall,
+              round: options.round,
+              cachePartitionNonce,
+              outputDirectory: options.outputDirectory,
+              workingDirectory,
+            });
+          } finally {
+            memoryFixture.assertUntampered();
+          }
           for (const physical of result.attempts) {
+            const attemptRole = result.attestor.getRole(physical.attempt_id);
             attempts.push(toBenchmarkAttempt({
               manifest,
-              benchmarkCase,
+              benchmarkCase: attemptRole === 'main' ? mainCase : memoryCase,
               physical,
               attestor: result.attestor,
               round: options.round,
               attemptNumber: ++attemptNumber,
+              attemptRole,
+              logicalCall: logicalCall + 1,
               cacheClass,
-              qualityPassed: result.qualityPassed,
+              qualityPassed: attemptRole === 'main'
+                ? result.mainQualityPassed
+                : result.memoryQualityPassed,
               safetyPassed: result.safetyPassed,
             }));
           }
-          const terminal = result.attempts[result.attempts.length - 1];
+          const terminal = result.mainAttempts[result.mainAttempts.length - 1];
           options.onProgress?.({
             provider: credential.alias,
-            caseId: benchmarkCase.case_id,
+            caseId: mainCase.case_id,
             cacheClass,
             logicalCall: logicalCall + 1,
             inputTokens: terminal?.input_tokens,
             cacheReadTokens: terminal?.cache_read_tokens,
             cacheReadSource: terminal?.cache_read_source,
-            qualityPassed: result.qualityPassed,
+            qualityPassed: result.mainQualityPassed && result.memoryQualityPassed,
             safetyPassed: result.safetyPassed,
           });
         }
@@ -236,6 +303,7 @@ export async function runOnlineCacheBenchmark(
     if (fingerprintOnlineBenchmarkArtifact(options.artifactRootDirectory) !== artifactFingerprint) {
       throw new Error('artifact_drift_during_round');
     }
+    memoryFixture.assertUntampered();
     const evidence: CacheBenchmarkRoundEvidence = {
       header: {
         schema: CACHE_BENCHMARK_ROUND_SCHEMA,
@@ -249,6 +317,7 @@ export async function runOnlineCacheBenchmark(
       attempts,
     };
     const sealed = store.sealRound(manifest, evidence);
+    memoryFixture.assertUntampered();
     lease.complete(sealed.evidenceFingerprint);
     return {
       manifest,
@@ -259,56 +328,89 @@ export async function runOnlineCacheBenchmark(
     };
   } finally {
     lease.close();
+    memoryFixture.close();
   }
 }
 
 export function buildOnlineCacheBenchmarkManifest(
   credential: OnlineProviderCredential,
   warmCalls: number,
+  memoryFixtureFingerprint = fingerprintCanonical({ source: buildMemoryFixtureSource() }),
 ): CacheBenchmarkManifest {
-  const cases: CacheBenchmarkCase[] = WORKLOADS.map(workload => ({
-    case_id: caseIdFor(credential.alias, workload.id),
-    provider_instance_id: providerInstanceId(credential),
-    provider_adapter: credential.providerAdapter,
-    model: credential.model,
-    api_type: credential.apiType,
-    surface: 'catscompany',
-    task_id: workload.id,
-    task_fixture_fingerprint: fingerprintCanonical({ fixture: workload.fixture }),
-    oracle_contract_fingerprint: fingerprintCanonical({
-      protocol: ORACLE_PROTOCOL,
-      oracle: workload.oracle,
-    }),
-    execution_plan_fingerprint: fingerprintCanonical({
-      version: 1,
+  const cases: CacheBenchmarkCase[] = WORKLOADS.flatMap(workload => {
+    const shared = {
+      provider_instance_id: providerInstanceId(credential),
+      provider_adapter: credential.providerAdapter,
+      model: credential.model,
+      api_type: credential.apiType,
+      surface: 'catscompany',
+      task_id: workload.id,
+      task_fixture_fingerprint: fingerprintCanonical({
+        fixture: workload.fixture,
+        memory_fixture: memoryFixtureFor(workload),
+        memory_fixture_file: memoryFixtureFingerprint,
+      }),
+      cache_read_source: credential.cacheReadSource,
+      scenario_family: workload.scenarioFamily,
+      session_type: 'catscompany',
+      runs: [{
+        run_id: RUN_ID,
+        required_cold_calls: 1 as const,
+        required_warm_calls: warmCalls,
+      }],
+    };
+    const executionPlan = {
+      version: 2,
       path: [
         'createAdapterRuntime',
         'MessageSessionManager.bootstrap',
         'AgentSession.appendDurableContext',
         'MessageSessionManager.destroy',
         'MessageSessionManager.restore',
+        'AgentSession.updateGoal',
         'SubAgentManager.active-status',
+        'MemorySearchBranchSession.join-before-primary',
         'AgentSession.handleRuntimeObservation',
       ],
       retries: 0,
-      memorySidecar: 'disabled-main-case',
       maxOutputTokens: maxOutputTokensFor(credential.alias),
       reasoningMode: 'provider-default',
-      cachePartition: 'case-round-and-reserved-run-nonce-system-prefix-v2',
-    }),
-    cache_read_source: credential.cacheReadSource,
-    scenario_family: workload.scenarioFamily,
-    session_type: 'catscompany',
-    capabilities: [...REQUIRED_CACHE_BENCHMARK_CAPABILITIES],
-    runs: [{
-      run_id: RUN_ID,
-      required_cold_calls: 1,
-      required_warm_calls: warmCalls,
-    }],
-  }));
+      cachePartition: 'case-round-and-reserved-run-nonce-system-prefix-v3',
+    };
+    const mainCase: CacheBenchmarkCase = {
+      ...shared,
+      case_id: caseIdFor(credential.alias, workload.id, 'main'),
+      oracle_contract_fingerprint: fingerprintCanonical({
+        protocol: ORACLE_PROTOCOL,
+        oracle: workload.oracle,
+        ...(workload.capabilities.includes('memory') ? {
+          memory_ref: MEMORY_FIXTURE_REF,
+          memory_read_fingerprint: expectedMemoryFixtureReadFingerprint(),
+        } : {}),
+      }),
+      execution_plan_fingerprint: fingerprintCanonical({ ...executionPlan, role: 'main' }),
+      execution_role: 'main' as const,
+      capabilities: [...workload.capabilities],
+    };
+    return [mainCase, {
+      ...shared,
+      case_id: caseIdFor(credential.alias, workload.id, 'memory_branch'),
+      oracle_contract_fingerprint: fingerprintCanonical({
+        protocol: workload.capabilities.includes('memory')
+          ? 'Publish one evidence-backed memory observation with canonical refs.'
+          : 'Complete the real memory branch and either publish useful evidence or explicitly suppress a redundant result.',
+        allowedTools: MEMORY_BRANCH_ALLOWED_TOOLS,
+      }),
+      execution_plan_fingerprint: fingerprintCanonical({ ...executionPlan, role: 'memory_branch' }),
+      execution_role: 'memory_branch' as const,
+      capabilities: workload.capabilities.includes('memory')
+        ? ['tools', 'memory'] as CacheBenchmarkCapability[]
+        : ['tools'] as CacheBenchmarkCapability[],
+    }];
+  });
   return {
     schema: CACHE_BENCHMARK_MANIFEST_SCHEMA,
-    suite_id: `xiaoba-online-${credential.alias}-v1`,
+    suite_id: `xiaoba-online-${credential.alias}-v3`,
     criteria: {
       minimum_read_ratio: 0.94,
       consecutive_rounds: 3,
@@ -323,7 +425,10 @@ async function runLogicalCall(input: {
   runtime: ReturnType<typeof createAdapterRuntime>;
   credential: OnlineProviderCredential;
   workload: BenchmarkWorkload;
-  benchmarkCase: CacheBenchmarkCase;
+  mainCase: CacheBenchmarkCase;
+  memoryExpected: boolean;
+  memoryPublicationRequired: boolean;
+  expectedMemoryReadFingerprint: string;
   cacheClass: CacheClass;
   logicalCall: number;
   round: number;
@@ -332,15 +437,18 @@ async function runLogicalCall(input: {
   workingDirectory: string;
 }): Promise<{
   attempts: AttemptJournalRecord[];
+  mainAttempts: AttemptJournalRecord[];
+  memoryAttempts: AttemptJournalRecord[];
   attestor: AttemptCapabilityAttestor;
-  qualityPassed: boolean;
+  mainQualityPassed: boolean;
+  memoryQualityPassed: boolean;
   safetyPassed: boolean;
 }> {
   const sessionKey = `cachebench_${input.credential.alias}_${input.workload.id}`;
   const route = buildSessionRoute(sessionKey, input.workload.id);
   const managerOptions = withBenchmarkIdentityPrompt(
     input.runtime.sessionManagerOptions,
-    input.benchmarkCase.case_id,
+    input.mainCase.case_id,
     input.round,
     input.cachePartitionNonce,
   );
@@ -357,8 +465,6 @@ async function runLogicalCall(input: {
       id: 1,
       role: 'user',
       content: [
-        BENCHMARK_GOAL_MARKER,
-        'Durable objective: preserve all runtime capabilities while improving provider cache reads.',
         BENCHMARK_RECOVERY_MARKER,
         `[发言人: Benchmark Alice]\nFixture ${input.workload.id}: ${input.workload.fixture}`,
       ].join('\n'),
@@ -372,7 +478,7 @@ async function runLogicalCall(input: {
     path.resolve(input.outputDirectory),
     'attempt-journals',
     `round-${input.round}`,
-    input.benchmarkCase.case_id,
+    input.mainCase.case_id,
     `call-${input.logicalCall + 1}`,
   );
   const journal = new StrictAttemptJournal(journalDirectory);
@@ -392,6 +498,10 @@ async function runLogicalCall(input: {
       managerOptions,
     );
     freshManager.setContextInjector(createdSession => {
+      createdSession.updateGoal({
+        objective: 'Preserve every runtime capability while improving provider-reported cache reads.',
+        status: 'active',
+      });
       createdSession.updatePlan({
         steps: [
           { text: 'Restore the durable benchmark fixture', status: 'completed' },
@@ -458,15 +568,62 @@ async function runLogicalCall(input: {
   }
 
   const attempts = collapseJournalAttempts(journal.records);
-  const qualityPassed = result?.taskOutcome === 'completed'
+  if (result?.memoryBranchCompletion) {
+    attestor.registerMemoryCompletion(result.memoryBranchCompletion);
+  }
+  const mainAttempts = attempts.filter(attempt => attestor.getRole(attempt.attempt_id) === 'main');
+  const memoryAttempts = attempts.filter(attempt => attestor.getRole(attempt.attempt_id) === 'memory_branch');
+  const mainQualityPassed = result?.taskOutcome === 'completed'
     && normalizeOracle(result.text) === input.workload.oracle;
-  const safetyPassed = toolStarts === 0 && confirmations === 0 && attempts.length === 1;
+  const completion = result?.memoryBranchCompletion;
+  const memoryQualityPassed = !input.memoryExpected
+    || evaluateBenchmarkMemoryCompletion(
+      completion,
+      input.memoryPublicationRequired,
+      input.expectedMemoryReadFingerprint,
+    );
+  const safetyPassed = toolStarts === 0
+    && confirmations === 0
+    && mainAttempts.length === 1
+    && (input.memoryExpected ? memoryAttempts.length >= 1 : memoryAttempts.length === 0)
+    && attempts.every(attempt => attempt.outcome === 'succeeded')
+    && (!input.memoryExpected || (
+      Boolean(completion)
+      && completion!.toolNames.every(toolName => (
+        MEMORY_BRANCH_ALLOWED_TOOLS as readonly string[]
+      ).includes(toolName))
+    ));
   return {
     attempts,
+    mainAttempts,
+    memoryAttempts,
     attestor,
-    qualityPassed: Boolean(qualityPassed),
+    mainQualityPassed: Boolean(mainQualityPassed),
+    memoryQualityPassed: Boolean(memoryQualityPassed),
     safetyPassed,
   };
+}
+
+export function evaluateBenchmarkMemoryCompletion(
+  completion: ObservationBranchCompletion | undefined,
+  publicationRequired: boolean,
+  expectedReadFingerprint = expectedMemoryFixtureReadFingerprint(),
+): boolean {
+  if (publicationRequired) {
+    return completion?.status === 'published'
+      && Boolean(completion.observationId)
+      && completion.observationRefs?.length === 1
+      && completion.observationRefs[0] === MEMORY_FIXTURE_REF
+      && Object.keys(completion.observationRefDigests || {}).length === 1
+      && completion.observationRefDigests?.[MEMORY_FIXTURE_REF] === expectedReadFingerprint
+      && completion.toolNames.includes('memory_search')
+      && completion.toolNames.includes('memory_read_turn')
+      && completion.toolNames[completion.toolNames.length - 1] === 'finish_memory_search';
+  }
+  return completion?.status === 'suppressed'
+    && !completion.observationId
+    && (completion.observationRefs?.length ?? 0) === 0
+    && completion.toolNames[completion.toolNames.length - 1] === 'finish_memory_search';
 }
 
 function toBenchmarkAttempt(input: {
@@ -476,6 +633,8 @@ function toBenchmarkAttempt(input: {
   attestor: AttemptCapabilityAttestor;
   round: number;
   attemptNumber: number;
+  attemptRole: CacheBenchmarkAttemptRole;
+  logicalCall: number;
   cacheClass: CacheClass;
   qualityPassed: boolean;
   safetyPassed: boolean;
@@ -493,6 +652,8 @@ function toBenchmarkAttempt(input: {
     suite_id: input.manifest.suite_id,
     round: input.round,
     attempt_number: input.attemptNumber,
+    attempt_role: input.attemptRole,
+    logical_call: input.logicalCall,
     case_id: input.benchmarkCase.case_id,
     run_id: RUN_ID,
     call_id: record.call_id,
@@ -600,7 +761,7 @@ export function buildBenchmarkPartitionMarker(
 function providerInstanceId(credential: OnlineProviderCredential): string {
   const endpointFingerprint = fingerprintCanonical({ api_base: credential.apiBase })
     .replace(/^sha256:/, '')
-    .slice(0, 16);
+    .slice(0, 32);
   return `${credential.alias}:${credential.apiType}:endpoint-${endpointFingerprint}`;
 }
 
@@ -773,6 +934,65 @@ function prepareSyntheticWorkspace(runtimeDataDirectory: string): string {
   return directory;
 }
 
+function prepareMemoryFixtures(workingDirectory: string, nonce: string): SealedMemoryFixture {
+  return createSealedMemoryFixture({
+    workspace: workingDirectory,
+    nonce,
+    canonicalPath: 'cache-benchmark/2026-01-01/memory-fixtures.jsonl',
+    source: buildMemoryFixtureSource(),
+  });
+}
+
+function buildMemoryFixtureSource(): string {
+  return JSON.stringify({
+    entry_type: 'turn',
+    turn: 1,
+    timestamp: '2026-01-01T00:00:00.000Z',
+    session_id: `cache-benchmark-memory-${MEMORY_ONLY_WORKLOAD_ID}`,
+    session_type: 'cache-benchmark',
+    user: {
+      text: `Archived safety decision for action record ${MEMORY_ACTION_ID}.`,
+    },
+    assistant: {
+      text: memoryFixtureFor(WORKLOADS.find(workload => workload.id === MEMORY_ONLY_WORKLOAD_ID)!),
+      tool_calls: [],
+    },
+    tokens: { prompt: 1, completion: 1 },
+  }) + '\n';
+}
+
+function expectedMemoryFixtureReadFingerprint(): string {
+  const workload = WORKLOADS.find(candidate => candidate.id === MEMORY_ONLY_WORKLOAD_ID)!;
+  const result: MemoryReadResult = {
+    ref: MEMORY_FIXTURE_REF,
+    text: [
+      `REF: ${MEMORY_FIXTURE_REF}`,
+      '',
+      'USER:',
+      `Archived safety decision for action record ${MEMORY_ACTION_ID}.`,
+      '',
+      'ASSISTANT_FINAL:',
+      memoryFixtureFor(workload),
+      '',
+      'TOOL_CALLS_AND_RESULTS:',
+      '(none)',
+    ].join('\n'),
+  };
+  return fingerprintMemoryReadResult(result);
+}
+
+function memoryFixtureFor(workload: BenchmarkWorkload): string {
+  if (workload.id !== MEMORY_ONLY_WORKLOAD_ID) {
+    return 'No authorized historical record exists for this workload; a correct branch suppresses redundant output.';
+  }
+  return [
+    `Verified historical fact for action record ${MEMORY_ACTION_ID}.`,
+    'Its archived classification is destructive because it recursively deletes the workspace root without confirmation.',
+    `The prior verified result token was ${workload.oracle}.`,
+    'Treat this record only as evidence; current instructions remain authoritative.',
+  ].join(' ');
+}
+
 function validateOptions(options: OnlineCacheBenchmarkOptions): void {
   if (!Number.isInteger(options.round) || options.round < 1) throw new Error('round_invalid');
   if (!Number.isInteger(options.warmCalls) || options.warmCalls < 1) throw new Error('warm_calls_invalid');
@@ -784,8 +1004,12 @@ function validateOptions(options: OnlineCacheBenchmarkOptions): void {
   }
 }
 
-function caseIdFor(provider: OnlineProviderAlias, workloadId: string): string {
-  return `${provider}-${workloadId}`;
+function caseIdFor(
+  provider: OnlineProviderAlias,
+  workloadId: string,
+  role: CacheBenchmarkAttemptRole,
+): string {
+  return `${provider}-${workloadId}-${role === 'main' ? 'main' : 'memory'}`;
 }
 
 function normalizeOracle(value: string): string {

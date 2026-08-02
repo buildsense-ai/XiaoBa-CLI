@@ -78,6 +78,10 @@ test('runner checkpoints only after a complete tool result and resumes the same 
   const runner = new ConversationRunner(aiService, executor, {
     stream: false,
     episodeId: 'episode-main',
+    toolExecutionContext: {
+      sessionId: 'branch:memory:checkpoint',
+      surface: 'memory_branch',
+    },
     checkpointCompactionCoordinator: coordinator,
     onCompactionCheckpoint: async messages => {
       events.push('persist');
@@ -93,6 +97,13 @@ test('runner checkpoints only after a complete tool result and resumes the same 
 
   assert.equal(result.response, 'continued successfully');
   assert.equal(checkpointRequest.phase, 'mid_turn');
+  assert.equal(checkpointRequest.modelRequestOptions.modelAttemptSink, undefined);
+  assert.deepEqual(checkpointRequest.modelRequestOptions.modelAttemptContext, {
+    sessionId: 'branch:memory:checkpoint',
+    surface: 'memory_branch',
+    episodeId: 'episode-main',
+    episodeNumber: 1,
+  });
   assert.deepEqual(events, [
     'model:first',
     'tool:complete',

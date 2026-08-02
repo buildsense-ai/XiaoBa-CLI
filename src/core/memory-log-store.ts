@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import type { SessionToolCallLog, SessionTurnLogEntry } from '../utils/session-log-schema';
 import { stripAssistantTranscriptArtifacts } from '../utils/transcript-artifacts';
 import { PathResolver } from '../utils/path-resolver';
@@ -39,8 +40,26 @@ export interface MemoryNeighborsResult {
   omitted?: number;
 }
 
+export function fingerprintMemoryReadResult(result: MemoryReadResult): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify({
+    ref: result.ref,
+    text: result.text,
+    truncated: result.truncated === true,
+  })).digest('hex')}`;
+}
+
 interface LogRoot {
   root: string;
+}
+
+export interface SealedMemoryLogSource {
+  root: string;
+  filePath: string;
+  readVerifiedUtf8(): string;
+}
+
+export interface MemoryLogStoreOptions {
+  sealedSource?: SealedMemoryLogSource;
 }
 
 interface ParsedRef {
@@ -59,9 +78,13 @@ const MAX_NEIGHBORS_BUDGET_CHARS = 60_000;
 
 export class MemoryLogStore {
   private readonly roots: LogRoot[];
+  private readonly sealedSource?: SealedMemoryLogSource;
 
-  constructor(private readonly workingDirectory: string) {
-    this.roots = resolveLogRoots(workingDirectory).map(root => ({ root }));
+  constructor(private readonly workingDirectory: string, options: MemoryLogStoreOptions = {}) {
+    this.sealedSource = options.sealedSource;
+    this.roots = options.sealedSource
+      ? [{ root: path.resolve(options.sealedSource.root) }]
+      : resolveLogRoots(workingDirectory).map(root => ({ root }));
   }
 
   hasRoots(): boolean {
@@ -84,7 +107,9 @@ export class MemoryLogStore {
     const matches: MemorySearchMatch[] = [];
     for (const root of this.roots) {
       throwIfAborted(signal);
-      const files = await collectJsonlFiles(root.root, signal);
+      const files = this.sealedSource
+        ? [path.resolve(this.sealedSource.filePath)]
+        : await collectJsonlFiles(root.root, signal);
       for (const file of files) {
         throwIfAborted(signal);
         const records = await this.readTurnsFromFile(root.root, file, signal);
@@ -193,10 +218,26 @@ export class MemoryLogStore {
   }
 
   private resolveFilePath(ref: ParsedRef): string {
+    if (this.sealedSource) {
+      const candidate = path.resolve(
+        this.sealedSource.root,
+        ref.sessionType,
+        ref.date,
+        ref.fileName,
+      );
+      if (candidate !== path.resolve(this.sealedSource.filePath)) {
+        throw createToolInputError(`memory file not found for ref: ${formatRef(ref)}`);
+      }
+      return candidate;
+    }
     for (const root of this.roots) {
       const candidate = path.resolve(root.root, ref.sessionType, ref.date, ref.fileName);
-      if (isSameOrInside(root.root, candidate) && fs.existsSync(candidate)) {
+      if (!isSameOrInside(root.root, candidate)) continue;
+      try {
+        assertSafeRegularFile(root.root, candidate);
         return candidate;
+      } catch {
+        continue;
       }
     }
     throw createToolInputError(`memory file not found for ref: ${formatRef(ref)}`);
@@ -214,7 +255,9 @@ export class MemoryLogStore {
     throwIfAborted(signal);
     let content = '';
     try {
-      content = await fs.promises.readFile(filePath, 'utf-8');
+      content = this.sealedSource
+        ? this.sealedSource.readVerifiedUtf8()
+        : readVerifiedRegularFile(root, filePath);
     } catch {
       return [];
     }
@@ -276,13 +319,70 @@ function resolveLogRoots(workingDirectory: string): string[] {
     PathResolver.getLogsPath('sessions'),
     path.resolve(workingDirectory, 'logs', 'sessions'),
   ];
-  return Array.from(new Set(roots)).filter(root => {
+  return Array.from(new Set(roots)).flatMap(root => {
     try {
-      return fs.existsSync(root) && fs.statSync(root).isDirectory();
+      const lstat = fs.lstatSync(root);
+      if (lstat.isSymbolicLink() || !lstat.isDirectory()) return [];
+      return [fs.realpathSync(root)];
     } catch {
-      return false;
+      return [];
     }
   });
+}
+
+function assertSafeRegularFile(root: string, filePath: string): void {
+  const canonicalRoot = fs.realpathSync(root);
+  const relative = path.relative(canonicalRoot, path.resolve(filePath));
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw createToolInputError('memory file is outside configured roots');
+  }
+  let current = canonicalRoot;
+  for (const segment of relative.split(path.sep)) {
+    current = path.join(current, segment);
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink()) {
+      throw createToolInputError('memory path must not contain symbolic links');
+    }
+  }
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile()) throw createToolInputError('memory ref must resolve to a regular file');
+  const real = fs.realpathSync(filePath);
+  if (!isSameOrInside(canonicalRoot, real)) {
+    throw createToolInputError('memory file is outside configured roots');
+  }
+}
+
+function readVerifiedRegularFile(root: string, filePath: string): string {
+  assertSafeRegularFile(root, filePath);
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const before = fs.fstatSync(descriptor);
+    if (!before.isFile()) throw createToolInputError('memory ref must resolve to a regular file');
+    const content = fs.readFileSync(descriptor, 'utf8');
+    const after = fs.fstatSync(descriptor);
+    const pathStat = fs.lstatSync(filePath);
+    if (
+      !sameStableFile(before, after)
+      || pathStat.isSymbolicLink()
+      || pathStat.dev !== after.dev
+      || pathStat.ino !== after.ino
+    ) throw createToolInputError('memory file changed while it was read');
+    assertSafeRegularFile(root, filePath);
+    return content;
+  } finally {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch { /* best effort */ }
+    }
+  }
+}
+
+function sameStableFile(before: fs.Stats, after: fs.Stats): boolean {
+  return before.dev === after.dev
+    && before.ino === after.ino
+    && before.size === after.size
+    && before.mtimeMs === after.mtimeMs
+    && before.ctimeMs === after.ctimeMs;
 }
 
 async function collectJsonlFiles(root: string, signal?: AbortSignal): Promise<string[]> {

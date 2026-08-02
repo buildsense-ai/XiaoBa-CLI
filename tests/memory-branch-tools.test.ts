@@ -157,6 +157,44 @@ describe('memory branch tools', () => {
     }, { workingDirectory: testRoot, conversationHistory: [] });
     assert.equal(contradictory.ok, false);
     assert.match(JSON.parse(String(contradictory.message)).error, /refs must be empty/);
+
+    const verifiedOnly = new FinishMemorySearchTool(() => {}, ref => ref.endsWith('#2'));
+    const forged = await verifiedOnly.execute({
+      summary: 'The branch read a different ref.',
+      refs: ['chat/2026-06-16/demo.jsonl#1'],
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(forged.ok, false);
+    assert.match(JSON.parse(String(forged.message)).error, /successfully read/);
+  });
+
+  test('direct reads reject file and parent-directory symlink escapes', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('symlink semantics require POSIX');
+      return;
+    }
+    const outside = path.join(testRoot, 'outside');
+    fs.mkdirSync(outside);
+    const outsideFile = path.join(outside, 'outside.jsonl');
+    fs.writeFileSync(outsideFile, JSON.stringify(
+      turn(1, '2026-06-16T10:00:00.000Z', 'outside secret', 'must not read'),
+    ) + '\n');
+
+    const leafDir = path.join(testRoot, 'logs', 'sessions', 'chat', '2026-06-16');
+    fs.mkdirSync(leafDir, { recursive: true });
+    fs.symlinkSync(outsideFile, path.join(leafDir, 'demo.jsonl'));
+    const leafResult = await new MemoryReadTurnTool(new MemoryLogStore(testRoot)).execute({
+      ref: 'chat/2026-06-16/demo.jsonl#1',
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(leafResult.ok, false);
+
+    fs.rmSync(path.join(testRoot, 'logs'), { recursive: true, force: true });
+    const sessions = path.join(testRoot, 'logs', 'sessions');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.symlinkSync(outside, path.join(sessions, 'chat'));
+    const parentResult = await new MemoryReadTurnTool(new MemoryLogStore(testRoot)).execute({
+      ref: 'chat/2026-06-16/outside.jsonl#1',
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(parentResult.ok, false);
   });
 
   test('read applies field-level truncation for oversized single episodes', async () => {

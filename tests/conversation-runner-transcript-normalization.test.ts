@@ -959,12 +959,56 @@ test('runner recovers once from empty max_tokens responses before surfacing a fa
   assert.equal(mock.getReceivedMessages().length, 2);
   assert.ok(
     mock.getReceivedMessages()[1].some(message =>
-      message.role === 'system'
+      message.role === 'user'
       && typeof message.content === 'string'
       && message.content.includes('输出 max_tokens 上限被截断')
     ),
     'second call should include a recovery hint',
   );
+  assert.equal(mock.getReceivedMessages()[1].at(-1)?.role, 'user');
+});
+
+test('empty max_tokens recovery stays after a completed tool exchange', async () => {
+  const toolCall = makeToolCall('call_before_empty', 'lookup', { query: 'fixture' });
+  const responses: ChatResponse[] = [
+    makeToolResponse(toolCall),
+    {
+      content: null,
+      toolCalls: [],
+      stopReason: 'max_tokens',
+      usage: { promptTokens: 100, completionTokens: 2048, totalTokens: 2148 },
+    },
+    makeFinalResponse('已完成。'),
+  ];
+  const mock = createMockAI(responses);
+  const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([{
+    name: 'lookup',
+    description: 'lookup fixture',
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string' } },
+      required: ['query'],
+    },
+  }], { lookup: 'fixture result' }), {
+    stream: true,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: '查 fixture' }]);
+
+  assert.equal(result.response, '已完成。');
+  const recoveryRequest = mock.getReceivedMessages()[2];
+  assert.deepEqual(
+    recoveryRequest.slice(0, -1),
+    mock.getReceivedMessages()[1],
+    'the empty-max request must remain an exact provider-visible prefix',
+  );
+  assert.deepEqual(recoveryRequest.slice(-3).map(message => message.role), [
+    'assistant',
+    'tool',
+    'user',
+  ]);
+  assert.match(String(recoveryRequest.at(-1)?.content), /输出 max_tokens 上限被截断/);
 });
 
 test('runner does not return raw no-reply when empty max_tokens recovery fails', async () => {

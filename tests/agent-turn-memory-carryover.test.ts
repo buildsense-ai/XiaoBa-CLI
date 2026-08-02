@@ -9,6 +9,7 @@ import { InMemorySyntheticObservationQueue, SYNTHETIC_OBSERVATION_TOOL_NAME, Syn
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
 import { AIService } from '../src/utils/ai-service';
+import { GoalRuntime } from '../src/core/goal-runtime';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
 
@@ -83,6 +84,118 @@ function createMemoryBranchController(enabled: boolean): AgentTurnController {
 }
 
 describe('AgentTurnController memory branch carryover', () => {
+  test('join-before-primary waits for a published observation before the main provider call', async () => {
+    const mainAI = new CapturingAIService();
+    const memoryAI = new AIService({
+      provider: 'openai',
+      apiUrl: 'https://models.example.test/v1',
+      apiKey: 'test-key',
+      model: 'tool-model',
+      modelCapabilities: { toolCalling: true },
+    });
+    let releaseBranch: (() => void) | undefined;
+    const branchDone = new Promise<void>(resolve => {
+      releaseBranch = resolve;
+    });
+    const controller = new AgentTurnController({
+      sessionKey: 'session:v2:catscompany:p2p:join-test',
+      sessionType: 'catscompany',
+      services: {
+        aiService: mainAI as any,
+        memoryBranch: {
+          enabled: true,
+          modelSource: 'inherit',
+          aiService: memoryAI,
+          completionPolicy: 'join-before-primary',
+        },
+        toolManager: {
+          getToolDefinitions: () => [],
+          executeTool: async () => {
+            throw new Error('not expected');
+          },
+        } as any,
+        skillManager: {} as any,
+      },
+      skillRuntime: {
+        reloadSkills: async () => undefined,
+        buildSkillsListMessage: () => null,
+      } as any,
+      goalRuntime: new GoalRuntime(),
+      planRuntime: undefined as any,
+      turnContextBuilder: new TurnContextBuilder(),
+      turnLogRecorder: { recordTurn: () => undefined } as any,
+      workspaceRoot: process.cwd(),
+      getCurrentDirectory: () => process.cwd(),
+      updateCurrentDirectory: () => undefined,
+    });
+
+    (controller as any).createMemorySidecarHandle = (options: {
+      queue: InMemorySyntheticObservationQueue;
+    }) => ({
+      branchId: 'branch-joined',
+      cancel: () => undefined,
+      done: branchDone.then(() => {
+        const observation = memoryObservation('joined');
+        options.queue.push(observation);
+        return {
+          branchId: 'branch-joined',
+          branchType: 'memory',
+          status: 'published' as const,
+          observationId: observation.id,
+          toolNames: ['memory_search', 'finish_memory_search'],
+        };
+      }),
+    });
+
+    const turn = controller.run({
+      input: 'use the prior decision',
+      messages: [],
+      runtimeFeedback: [],
+      shouldContinue: () => true,
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(mainAI.requests.length, 0);
+
+    releaseBranch?.();
+    await turn;
+    assert.equal(mainAI.requests.length, 1);
+    const synthetic = mainAI.requests[0].filter(message => message.__syntheticObservation);
+    assert.equal(synthetic.length, 2);
+    assert.equal(synthetic[0].syntheticObservationId, 'joined');
+
+    let previousCancelled = 0;
+    let failedCurrentCancelled = 0;
+    (controller as any).memoryBranchCarryover = {
+      queue: new InMemorySyntheticObservationQueue(),
+      originTurn: 1,
+      done: false,
+      handle: {
+        branchId: 'previous-carryover',
+        cancel: () => { previousCancelled += 1; },
+        done: new Promise(() => undefined),
+      },
+    };
+    (controller as any).createMemorySidecarHandle = () => ({
+      branchId: 'failed-current',
+      cancel: () => { failedCurrentCancelled += 1; },
+      done: Promise.resolve({
+        branchId: 'failed-current',
+        branchType: 'memory',
+        status: 'failed' as const,
+        toolNames: [],
+        errorCode: 'branch_execution_failed' as const,
+      }),
+    });
+    await assert.rejects(() => controller.run({
+      input: 'joined branch now fails',
+      messages: [],
+      runtimeFeedback: [],
+      shouldContinue: () => true,
+    }), /branch_execution_failed/);
+    assert.equal(previousCancelled, 1);
+    assert.equal(failedCurrentCancelled, 1);
+  });
+
   test('uses the persisted Branch switch even when both legacy env switches are disabled', () => {
     const previousBranch = process.env[BRANCH_AGENTS_ENABLED_ENV];
     const previousMemory = process.env[MEMORY_SIDECAR_ENABLED_ENV];

@@ -262,6 +262,62 @@ test('repairs malformed tool exchanges before invocation and records the preflig
   });
 });
 
+test('DeepSeek receives a local synthetic observation without fabricated tool history', async () => {
+  const service = createTestService({
+    apiUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-v4-flash',
+  });
+  const events: ModelAttemptEvent[] = [];
+  let providerMessages: Message[] | undefined;
+  (service as any).provider = {
+    chat: async (messages: Message[]) => {
+      providerMessages = messages;
+      return { content: 'observation accepted' };
+    },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+  const provenance = { branchType: 'memory', branchId: 'memory:branch-1' };
+  const messages: Message[] = [
+    { role: 'system', content: 'Stable system policy.' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'synthetic_observation_obs-1',
+        type: 'function',
+        function: { name: 'runtime_observation', arguments: '{"observation_id":"obs-1"}' },
+      }],
+      __syntheticObservation: true,
+      syntheticObservationId: 'obs-1',
+      syntheticObservationProvenance: provenance,
+    },
+    {
+      role: 'tool',
+      name: 'runtime_observation',
+      tool_call_id: 'synthetic_observation_obs-1',
+      content: '{"observation_id":"obs-1","summary":"Remember the approved blue setting."}',
+      __syntheticObservation: true,
+      syntheticObservationId: 'obs-1',
+      syntheticObservationProvenance: provenance,
+    },
+    { role: 'user', content: 'Continue safely.' },
+  ];
+
+  const result = await service.chat(messages, undefined, {
+    modelAttemptSink: collectingSink(events),
+  });
+
+  assert.equal(result.content, 'observation accepted');
+  assert.deepEqual(providerMessages?.map(message => message.role), ['system', 'user', 'user']);
+  assert.equal(providerMessages?.some(message => message.tool_calls?.length), false);
+  assert.equal(providerMessages?.some(message => message.role === 'tool'), false);
+  assert.match(String(providerMessages?.[1].content), /^\[runtime_observation\]/);
+  assert.deepEqual(providerMessages?.[1].syntheticObservationProvenance, provenance);
+  assert.equal(events[0].request.messages, providerMessages);
+  assert.equal(messages[1].role, 'assistant');
+  assert.equal(messages[2].role, 'tool');
+});
+
 test('recovers once when DeepSeek explicitly requires missing reasoning history', async () => {
   const service = createTestService({
     apiUrl: 'https://api.deepseek.com/v1',

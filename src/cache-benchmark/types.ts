@@ -1,10 +1,10 @@
 import type { ProviderReportedUsage } from '../types';
 
-export const CACHE_BENCHMARK_MANIFEST_SCHEMA = 'xiaoba.cache_benchmark_manifest.v3' as const;
-export const CACHE_BENCHMARK_LEDGER_SCHEMA = 'xiaoba.cache_benchmark_ledger.v3' as const;
-export const CACHE_BENCHMARK_ROUND_SCHEMA = 'xiaoba.cache_benchmark_round.v3' as const;
-export const CACHE_BENCHMARK_ATTEMPT_SCHEMA = 'xiaoba.cache_benchmark_attempt.v3' as const;
-export const CACHE_BENCHMARK_RESULT_SCHEMA = 'xiaoba.cache_benchmark_result.v3' as const;
+export const CACHE_BENCHMARK_MANIFEST_SCHEMA = 'xiaoba.cache_benchmark_manifest.v4' as const;
+export const CACHE_BENCHMARK_LEDGER_SCHEMA = 'xiaoba.cache_benchmark_ledger.v4' as const;
+export const CACHE_BENCHMARK_ROUND_SCHEMA = 'xiaoba.cache_benchmark_round.v4' as const;
+export const CACHE_BENCHMARK_ATTEMPT_SCHEMA = 'xiaoba.cache_benchmark_attempt.v4' as const;
+export const CACHE_BENCHMARK_RESULT_SCHEMA = 'xiaoba.cache_benchmark_result.v4' as const;
 
 export const CACHE_READ_SOURCES = [
   'openai.input_tokens_details.cached_tokens',
@@ -32,6 +32,7 @@ export type CacheBenchmarkCapability = typeof REQUIRED_CACHE_BENCHMARK_CAPABILIT
 export type ProviderAdapter = 'openai' | 'anthropic';
 export type ApiType = 'openai-responses' | 'openai-chat-completions' | 'anthropic-messages';
 export type CacheClass = 'cold' | 'warm';
+export type CacheBenchmarkAttemptRole = 'main' | 'memory_branch';
 export type AttemptOutcome = 'succeeded' | 'failed' | 'cancelled' | 'incomplete' | 'retrying';
 export type CacheBenchmarkVerdict = 'passed' | 'failed' | 'unobservable';
 
@@ -62,6 +63,7 @@ export interface CacheBenchmarkCase {
   cache_read_source: CacheReadSource;
   scenario_family: string;
   session_type: string;
+  execution_role: CacheBenchmarkAttemptRole;
   capabilities: CacheBenchmarkCapability[];
   runs: CacheBenchmarkRun[];
 }
@@ -126,6 +128,8 @@ export interface CacheBenchmarkAttempt {
   suite_id: string;
   round: number;
   attempt_number: number;
+  attempt_role: CacheBenchmarkAttemptRole;
+  logical_call: number;
   case_id: string;
   run_id: string;
   call_id: string;
@@ -181,6 +185,7 @@ export type CacheBenchmarkLedgerReason =
   | 'ledger_rounds_not_contiguous'
   | 'missing_ledger_round'
   | 'unexpected_evidence_round'
+  | 'duplicate_cache_partition_nonce'
   | 'evidence_fingerprint_mismatch';
 
 export interface CacheBenchmarkCellResult {

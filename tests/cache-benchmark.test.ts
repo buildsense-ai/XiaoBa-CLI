@@ -200,6 +200,47 @@ describe('cache benchmark evidence scorer', () => {
     assert.ok(result.reasons.includes('missing_warm_attempt'));
   });
 
+  test('allows variable memory-branch physical attempts and weights every provider token', () => {
+    const manifest = fixtureManifest();
+    manifest.cases[2].execution_role = 'memory_branch';
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+    for (const evidence of rounds) {
+      const branchCold = evidence.attempts.find(attempt => (
+        attempt.case_id === manifest.cases[2].case_id && attempt.logical_call === 1
+      ))!;
+      const branchWarm = evidence.attempts.find(attempt => (
+        attempt.case_id === manifest.cases[2].case_id && attempt.logical_call === 2
+      ))!;
+      for (const [template, suffix] of [
+        [branchCold, 'cold-extra-1'],
+        [branchWarm, 'warm-extra-1'],
+        [branchWarm, 'warm-extra-2'],
+      ] as const) {
+        const extra = structuredClone(template);
+        extra.call_id = `${extra.call_id}-${suffix}`;
+        extra.attempt_id = `${extra.attempt_id}-${suffix}`;
+        extra.attempt_number = evidence.attempts.length + 1;
+        evidence.attempts.push(extra);
+      }
+    }
+    const result = scoreRounds(manifest, rounds);
+
+    assert.equal(result.status, 'passed');
+    assert.equal(result.rounds[0].cells[0].input_tokens, 2750);
+    assert.equal(result.rounds[0].cells[0].cache_read_tokens, 2585);
+    assert.equal(result.rounds[0].cells[0].raw_read_ratio, 0.94);
+  });
+
+  test('rejects cache-cold evidence that reuses a prior round nonce', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+    rounds[2].header.cache_partition_nonce = rounds[1].header.cache_partition_nonce;
+    const result = scoreRounds(manifest, rounds);
+
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.ledger_reasons.includes('duplicate_cache_partition_nonce'));
+  });
+
   test('requires both raw and 25% water-filled task ratios to pass', () => {
     const manifest = fixtureManifest();
     const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
@@ -685,10 +726,12 @@ function buildRound(
     for (const run of entry.runs) {
       for (const cacheClass of ['cold', 'warm'] as const) {
         const attempt: CacheBenchmarkAttempt = {
-          schema: 'xiaoba.cache_benchmark_attempt.v3',
+          schema: 'xiaoba.cache_benchmark_attempt.v4',
           suite_id: manifest.suite_id,
           round,
           attempt_number: attempts.length + 1,
+          attempt_role: entry.execution_role,
+          logical_call: cacheClass === 'cold' ? 1 : 2,
           case_id: entry.case_id,
           run_id: run.run_id,
           call_id: `${entry.case_id}-${run.run_id}-${cacheClass}`,
@@ -736,7 +779,7 @@ function buildRound(
   }
   return {
     header: {
-      schema: 'xiaoba.cache_benchmark_round.v3',
+      schema: 'xiaoba.cache_benchmark_round.v4',
       suite_id: manifest.suite_id,
       round,
       cache_partition_nonce: round.toString(16).padStart(32, '0'),
@@ -764,7 +807,7 @@ function buildLedger(
 ): CacheBenchmarkLedger {
   const ordered = [...rounds].sort((left, right) => left.header.round - right.header.round);
   return {
-    schema: 'xiaoba.cache_benchmark_ledger.v3',
+    schema: 'xiaoba.cache_benchmark_ledger.v4',
     suite_id: manifest.suite_id,
     latest_round: ordered[ordered.length - 1]?.header.round ?? 1,
     rounds: ordered.map(round => ({

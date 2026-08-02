@@ -28,6 +28,7 @@ import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
+import { GoalRuntime } from './goal-runtime';
 import { getPetService } from '../pet/pet-service';
 import {
   buildSyntheticObservationLifecycleEvent,
@@ -39,6 +40,7 @@ import {
   withSyntheticObservationTiming,
 } from './synthetic-observation';
 import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-memory-branch';
+import type { ObservationBranchCompletion } from './observation-branch-session';
 import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 
 const EMPTY_FINAL_RESPONSE_MESSAGE = '模型本轮未返回有效内容。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
@@ -49,6 +51,10 @@ export interface AgentTurnServices {
     enabled: boolean;
     modelSource: 'inherit' | 'catalog' | 'custom';
     aiService: AIService;
+    completionPolicy?: 'detached' | 'join-before-primary';
+    cachePartitionKey?: string;
+    trustedSystemPrefix?: string;
+    memoryLogStore?: import('./memory-log-store').MemoryLogStore;
   };
   toolManager: ToolManager;
   skillManager: SkillManager;
@@ -92,6 +98,8 @@ export interface RunAgentTurnResult {
   visibleToUser: boolean;
   newMessages: Message[];
   messages: Message[];
+  /** Present only when the caller selected the strict joined memory-branch policy. */
+  memoryBranchCompletion?: ObservationBranchCompletion;
 }
 
 export interface AgentTurnRunError extends Error {
@@ -104,6 +112,7 @@ export interface AgentTurnControllerOptions {
   sessionRoute?: SessionRoute;
   services: AgentTurnServices;
   skillRuntime: SessionSkillRuntime;
+  goalRuntime: GoalRuntime;
   planRuntime: PlanRuntime;
   turnContextBuilder: TurnContextBuilder;
   turnLogRecorder: TurnLogRecorder;
@@ -165,6 +174,7 @@ export class AgentTurnController {
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
       skillRuntime: this.options.skillRuntime,
+      goalRuntime: this.options.goalRuntime,
       planRuntime: this.options.planRuntime,
       contextEpoch: episodeId,
     });
@@ -175,29 +185,54 @@ export class AgentTurnController {
       messages: params.messages,
       abortSignal: params.abortSignal,
     });
+    let memoryBranchCompletion: ObservationBranchCompletion | undefined;
+    if (currentMemoryBranch && this.memoryBranchCompletionPolicy() === 'join-before-primary') {
+      let completion: ObservationBranchCompletion;
+      try {
+        completion = await currentMemoryBranch.handle.done;
+      } catch (error) {
+        this.expireMemoryBranch(carryoverMemoryBranch, 'join_rejected_before_primary');
+        this.expireMemoryBranch(currentMemoryBranch, 'join_rejected_before_primary');
+        throw error;
+      }
+      memoryBranchCompletion = completion;
+      currentMemoryBranch.done = true;
+      if (completion.status === 'failed' || completion.status === 'cancelled') {
+        this.expireMemoryBranch(carryoverMemoryBranch, `join_${completion.status}`);
+        this.expireMemoryBranch(currentMemoryBranch, `join_${completion.status}`);
+        throw new Error(completion.errorCode || `memory_branch_${completion.status}`);
+      }
+    }
 
-    const runner = this.createRunner({
-      channel: params.channel,
-      executionScope: params.executionScope,
-      localDeviceGrant: params.localDeviceGrant,
-      deviceGrants: params.deviceGrants,
-      deviceSelection: params.deviceSelection,
-      deviceRpc: params.deviceRpc,
-      thinToolRpc: params.thinToolRpc,
-      targetRoutes: params.targetRoutes,
-      localFileGrants: params.localFileGrants,
-      executionContext: turnContext.executionContext,
-      pendingUserInputProvider: params.pendingUserInputProvider,
-      confirmToolExecution: params.callbacks?.confirmToolExecution,
-      episodeId,
-      syntheticObservationProvider: () => this.drainMemoryObservations(
-        carryoverMemoryBranch,
-        currentMemoryBranch,
-      ),
-      abortSignal: params.abortSignal,
-      suppressFinalResponse: params.suppressFinalResponse,
-      shouldContinue: params.shouldContinue,
-    });
+    let runner: ConversationRunner;
+    try {
+      runner = this.createRunner({
+        channel: params.channel,
+        executionScope: params.executionScope,
+        localDeviceGrant: params.localDeviceGrant,
+        deviceGrants: params.deviceGrants,
+        deviceSelection: params.deviceSelection,
+        deviceRpc: params.deviceRpc,
+        thinToolRpc: params.thinToolRpc,
+        targetRoutes: params.targetRoutes,
+        localFileGrants: params.localFileGrants,
+        executionContext: turnContext.executionContext,
+        pendingUserInputProvider: params.pendingUserInputProvider,
+        confirmToolExecution: params.callbacks?.confirmToolExecution,
+        episodeId,
+        syntheticObservationProvider: () => this.drainMemoryObservations(
+          carryoverMemoryBranch,
+          currentMemoryBranch,
+        ),
+        abortSignal: params.abortSignal,
+        suppressFinalResponse: params.suppressFinalResponse,
+        shouldContinue: params.shouldContinue,
+      });
+    } catch (error) {
+      this.expireMemoryBranch(carryoverMemoryBranch, 'runner_creation_failed');
+      this.expireMemoryBranch(currentMemoryBranch, 'runner_creation_failed');
+      throw error;
+    }
 
     let result;
     try {
@@ -248,6 +283,7 @@ export class AgentTurnController {
       visibleToUser: finalResponseVisible,
       newMessages: result.newMessages,
       messages: nextMessages,
+      ...(memoryBranchCompletion ? { memoryBranchCompletion } : {}),
     };
   }
 
@@ -429,11 +465,19 @@ export class AgentTurnController {
       aiService: this.options.services.memoryBranch?.aiService ?? this.options.services.aiService,
       queue: options.queue,
       signal: options.abortSignal,
+      cachePartitionKey: this.options.services.memoryBranch?.cachePartitionKey
+        ?? `${this.options.sessionKey}:memory`,
+      trustedSystemPrefix: this.options.services.memoryBranch?.trustedSystemPrefix,
+      memoryLogStore: this.options.services.memoryBranch?.memoryLogStore,
     });
   }
 
   private isMemoryBranchEnabled(): boolean {
     return this.options.services.memoryBranch?.enabled ?? true;
+  }
+
+  private memoryBranchCompletionPolicy(): 'detached' | 'join-before-primary' {
+    return this.options.services.memoryBranch?.completionPolicy ?? 'detached';
   }
 
   private withMemoryBranchObservationMetadata(

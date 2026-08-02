@@ -175,9 +175,14 @@ function validateLedger(
   }
 
   const roundsByNumber = new Map<number, CacheBenchmarkRoundEvidence>();
+  const cachePartitionNonces = new Set<string>();
   for (const round of rounds) {
     if (roundsByNumber.has(round.header.round)) reasons.add('unexpected_evidence_round');
     roundsByNumber.set(round.header.round, round);
+    if (cachePartitionNonces.has(round.header.cache_partition_nonce)) {
+      reasons.add('duplicate_cache_partition_nonce');
+    }
+    cachePartitionNonces.add(round.header.cache_partition_nonce);
     if (round.header.round < 1 || round.header.round > ledger.latest_round) {
       reasons.add('unexpected_evidence_round');
     }
@@ -254,6 +259,7 @@ function scoreRound(
       attempt.suite_id !== round.header.suite_id
       || attempt.round !== round.header.round
       || attempt.attempt_number !== attemptIndex + 1
+      || attempt.attempt_role !== expected.caseEntry.execution_role
       || !metadataMatches(attempt, expected.caseEntry)
     ) cell.reasons.add('metadata_mismatch');
     const normalizedUsage = normalizeProviderUsage(attempt.usage.provider_usage);
@@ -286,11 +292,34 @@ function scoreRound(
       cell.reasons.add('missing_required_run');
       continue;
     }
-    const coldCount = attempts.filter(attempt => attempt.cache_class === 'cold').length;
-    const warmCount = attempts.filter(attempt => attempt.cache_class === 'warm').length;
-    if (coldCount < expected.requiredColdCalls) cell.reasons.add('missing_cold_attempt');
-    if (warmCount < expected.requiredWarmCalls) cell.reasons.add('missing_warm_attempt');
-    if (coldCount > expected.requiredColdCalls || warmCount > expected.requiredWarmCalls) {
+    const expectedLogicalCalls = expected.requiredColdCalls + expected.requiredWarmCalls;
+    const attemptsByLogicalCall = new Map<number, CacheBenchmarkAttempt[]>();
+    for (const attempt of attempts) {
+      const group = attemptsByLogicalCall.get(attempt.logical_call) ?? [];
+      group.push(attempt);
+      attemptsByLogicalCall.set(attempt.logical_call, group);
+    }
+    for (let logicalCall = 1; logicalCall <= expectedLogicalCalls; logicalCall += 1) {
+      const group = attemptsByLogicalCall.get(logicalCall) ?? [];
+      if (group.length === 0) {
+        cell.reasons.add(logicalCall <= expected.requiredColdCalls
+          ? 'missing_cold_attempt'
+          : 'missing_warm_attempt');
+        continue;
+      }
+      const expectedClass: CacheBenchmarkAttempt['cache_class'] = logicalCall <= expected.requiredColdCalls
+        ? 'cold'
+        : 'warm';
+      if (group.some(attempt => attempt.cache_class !== expectedClass)) {
+        cell.reasons.add('metadata_mismatch');
+      }
+      if (expected.caseEntry.execution_role === 'main' && group.length !== 1) {
+        cell.reasons.add('unexpected_attempt_count');
+      }
+    }
+    if ([...attemptsByLogicalCall.keys()].some(logicalCall => (
+      logicalCall < 1 || logicalCall > expectedLogicalCalls
+    ))) {
       cell.reasons.add('unexpected_attempt_count');
     }
   }

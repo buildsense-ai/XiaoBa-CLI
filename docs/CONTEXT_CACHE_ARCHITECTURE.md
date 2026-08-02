@@ -36,7 +36,7 @@ orthogonal facts:
 |---|---|---|---|---|
 | Core system prompt and stable tool schemas | session | stable | durable or rebuilt | Earliest prefix; changing these should intentionally invalidate the cache |
 | Runtime-observation rules and Skills list | session | stable | transient | Stable session policy before per-turn state |
-| Current execution identity, plan status, runtime feedback, subagent state | episode | epoch | transient | Same throughout one user-turn episode; changes on the next episode |
+| Current execution identity, Goal, plan status, runtime feedback, subagent state | episode | epoch | transient | Same throughout one user-turn episode; changes on the next episode |
 | Pending-user-input boundary | episode | epoch | transient | Prevents queued user text from being confused with durable history |
 | Current directory, shell, branch, and request-only hints | call | volatile | transient | Last possible position; never summarized or persisted |
 | Compaction instruction | call | volatile | transient | One-off model request with cache bypass |
@@ -81,6 +81,40 @@ For DeepSeek thinking tool calls, the first assistant tool-call response may inc
 `reasoning_content`. The matching tool result and private state must be replayed together. If an
 endpoint explicitly rejects the chosen dialect, XiaoBa can perform one evidence-driven replay
 repair; a generic 400 is not blindly retried as if it were transient.
+
+Local synthetic observations are not fabricated DeepSeek tool history. Before DeepSeek thinking
+preflight, only the paired local synthetic assistant/tool representation is lowered to a transient
+user observation with the same provenance. Real provider tool history and provider reasoning state
+remain unchanged. If a DeepSeek turn reaches `max_tokens` without visible text or a tool call, the
+one-shot recovery hint is appended as an injected user tail after the complete assistant/tool
+exchange; it never splits the reusable history prefix.
+
+## Goal and memory branches
+
+Goal state is typed session state, not an arbitrary durable marker. `GoalRuntime` validates updates,
+persists its snapshot with the session, restores it after process/session recovery, and formats the
+trusted `goal_status` fragment for the next turn. Persistence failure rolls the in-memory update
+back and fails closed. Runtime state is committed through a private temporary file, file fsync,
+atomic rename, and directory fsync, so a failed write cannot truncate the previously recoverable
+Goal. Clearing a Goal stores an explicit tombstone that blocks legacy-state resurrection.
+
+Memory search runs in a distinct observation branch with its own trace identity and a stable cache
+partition. The branch may publish a provenance-linked synthetic observation, explicitly suppress a
+redundant result, be discarded, be cancelled, or fail. Joined mode waits before the primary model
+call when an exact capability chain must be verified; detached mode remains the production default
+and can deliver a late observation without blocking the main response. Branch tool-loop usage is
+real provider usage and must never be dropped from cache scoring.
+
+A published memory ref is not trusted merely because the model included it in the finish payload.
+The read tools record successful canonical refs and SHA-256 fingerprints inside the branch; finish
+accepts only those verified refs, and provenance-aware consumers can require the corresponding
+receipt. Production memory file reads reject symlink components and verify the opened regular-file
+identity before and after reading. Benchmark fixtures additionally use a held, isolated sealed
+source so concurrent path replacement or unrelated global logs cannot alter capability evidence.
+
+Ordinary memory queries receive a day-stable UTC clock. Queries with relative-time intent retain a
+minute-bucket timestamp, preserving searches such as “刚才”, “半小时前”, “last 90 seconds”, or “earlier this morning” without changing the
+initial provider request at millisecond cadence.
 
 This is the key distinction in error handling:
 
@@ -146,6 +180,9 @@ Cache improvements must be evaluated as repeated sequences, not screenshots of o
    terminal outcome.
 5. Separately evaluate semantic retention after pruning/compaction; a high hit ratio is not useful if
    the agent forgets required facts.
+6. Separate deterministic fixed-fixture calibration from final performance evidence. Final suites
+   must include changing dynamic task tails, growing multi-turn/tool histories, session restore,
+   production-default detached memory behavior, and real project tasks.
 
 Reproducible billable probes are documented in [PROVIDER_CANARIES.md](./PROVIDER_CANARIES.md).
 The local evidence for this workstream is in

@@ -108,6 +108,7 @@ export function buildSyntheticObservationMessages(
   for (const observation of observations) {
     const id = observation.id || stableObservationId(observation);
     const toolCallId = `synthetic-${observation.source}-${id}`;
+    const provenance = observationProvenance(observation);
     messages.push(annotateContextMessage({
       role: 'assistant',
       content: null,
@@ -127,6 +128,7 @@ export function buildSyntheticObservationMessages(
       }],
       __syntheticObservation: true,
       syntheticObservationId: id,
+      ...(provenance ? { syntheticObservationProvenance: provenance } : {}),
     }, {
       source: 'synthetic_observation',
       lifecycle: 'episode',
@@ -139,6 +141,7 @@ export function buildSyntheticObservationMessages(
       content: formatSyntheticObservation(observation),
       __syntheticObservation: true,
       syntheticObservationId: id,
+      ...(provenance ? { syntheticObservationProvenance: provenance } : {}),
     }, {
       source: 'synthetic_observation',
       lifecycle: 'episode',
@@ -146,6 +149,19 @@ export function buildSyntheticObservationMessages(
     }));
   }
   return messages;
+}
+
+function observationProvenance(
+  observation: SyntheticObservation,
+): Message['syntheticObservationProvenance'] | undefined {
+  const branchId = typeof observation.metadata?.branchId === 'string'
+    ? observation.metadata.branchId.trim()
+    : '';
+  const branchType = typeof observation.metadata?.branchType === 'string'
+    ? observation.metadata.branchType.trim()
+    : '';
+  if (!branchId || !branchType) return undefined;
+  return { branchId, branchType };
 }
 
 export function formatSyntheticObservation(observation: SyntheticObservation): string {

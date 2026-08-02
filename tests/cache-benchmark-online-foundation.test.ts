@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createRequire } from 'node:module';
 import { afterEach, test } from 'node:test';
 import type { ModelAttemptEvent } from '../src/providers/provider';
+import { MemoryLogStore } from '../src/core/memory-log-store';
 import {
   AttemptCapabilityAttestor,
   BENCHMARK_GOAL_MARKER,
@@ -11,6 +13,8 @@ import {
   BENCHMARK_RECOVERY_MARKER,
   buildBenchmarkPartitionMarker,
   buildOnlineCacheBenchmarkManifest,
+  createSealedMemoryFixture,
+  evaluateBenchmarkMemoryCompletion,
   CacheBenchmarkEvidenceStore,
   CACHE_BENCHMARK_ATTEMPT_SCHEMA,
   CACHE_BENCHMARK_ROUND_SCHEMA,
@@ -20,6 +24,7 @@ import {
   loadOnlineProviderCredentials,
   OnlineBenchmarkRunLease,
   OnlineCredentialError,
+  REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
   parseManifestJson,
   prepareFreshRuntimeDataDirectory,
   safeOnlineBenchmarkErrorCode,
@@ -27,6 +32,7 @@ import {
 } from '../src/cache-benchmark';
 
 const temporaryDirectories: string[] = [];
+const require = createRequire(import.meta.url);
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -63,29 +69,28 @@ test('strict credential loader accepts only the private non-shell provider contr
   }
 });
 
-test('online manifest uses four capped real-session tasks with complete declared coverage', () => {
+test('online manifest counts the production memory branch for every capped task', () => {
   const { file } = credentialFixture();
   const credential = loadOnlineProviderCredentials(file)[0];
   const manifest = buildOnlineCacheBenchmarkManifest(credential, 24);
 
-  assert.equal(manifest.cases.length, 4);
+  assert.equal(manifest.cases.length, 8);
   assert.equal(new Set(manifest.cases.map(entry => entry.task_id)).size, 4);
+  assert.equal(manifest.cases.filter(entry => entry.execution_role === 'main').length, 4);
+  assert.equal(manifest.cases.filter(entry => entry.execution_role === 'memory_branch').length, 4);
   for (const benchmarkCase of manifest.cases) {
-    assert.deepEqual(benchmarkCase.capabilities, [
-      'identity',
-      'group-chat-participants',
-      'device-authorization',
-      'tools',
-      'skills',
-      'plan',
-      'goal',
-      'subagent',
-      'memory',
-      'runtime-feedback',
-      'session-recovery',
-    ]);
     assert.equal(benchmarkCase.runs[0].required_warm_calls, 24);
+    if (benchmarkCase.execution_role === 'memory_branch') {
+      assert.deepEqual(
+        benchmarkCase.capabilities,
+        benchmarkCase.task_id === 'unsafe-action-gate' ? ['tools', 'memory'] : ['tools'],
+      );
+    }
   }
+  assert.deepEqual(
+    [...new Set(manifest.cases.flatMap(entry => entry.capabilities))].sort(),
+    [...REQUIRED_CACHE_BENCHMARK_CAPABILITIES].sort(),
+  );
 });
 
 test('online provider cells bind a redacted endpoint identity', () => {
@@ -98,7 +103,7 @@ test('online provider cells bind a redacted endpoint identity', () => {
   }, 2);
 
   assert.notEqual(first.cases[0].provider_instance_id, second.cases[0].provider_instance_id);
-  assert.match(first.cases[0].provider_instance_id, /^newcli:openai-responses:endpoint-[a-f0-9]{16}$/);
+  assert.match(first.cases[0].provider_instance_id, /^newcli:openai-responses:endpoint-[a-f0-9]{32}$/);
   assert.equal(JSON.stringify(first).includes(credential.apiBase), false);
   assert.notEqual(fingerprintManifest(first), fingerprintManifest(second));
 });
@@ -156,6 +161,30 @@ test('strict credential loader rejects weak modes, unknown keys, and symlinks', 
   const link = path.join(target.directory, 'linked.env');
   fs.symlinkSync(target.file, link);
   assertCredentialError(() => loadOnlineProviderCredentials(link), 'credential_path_invalid');
+});
+
+test('credential loader rejects a path replacement during descriptor read', () => {
+  const fixture = credentialFixture();
+  const nativeFs = require('node:fs') as typeof import('node:fs');
+  const readFileSync = nativeFs.readFileSync;
+  let replaced = false;
+  (nativeFs as any).readFileSync = ((target: any, options?: any) => {
+    if (!replaced && typeof target === 'number') {
+      replaced = true;
+      fs.renameSync(fixture.file, `${fixture.file}.original`);
+      fs.writeFileSync(fixture.file, 'UNEXPECTED_KEY=replacement\n', { mode: 0o600 });
+    }
+    return (readFileSync as any)(target, options);
+  }) as typeof fs.readFileSync;
+  try {
+    assertCredentialError(
+      () => loadOnlineProviderCredentials(fixture.file),
+      'credential_path_invalid',
+    );
+    assert.equal(replaced, true);
+  } finally {
+    (nativeFs as any).readFileSync = readFileSync;
+  }
 });
 
 test('synchronous attempt journal fsyncs only allowlisted fingerprints and usage', () => {
@@ -325,9 +354,34 @@ test('capability attestation rejects durable Goal and direct memory marker spoof
   ]);
 });
 
-test('capability attestation accepts only typed Goal and synthetic memory provenance', () => {
+test('capability attestation accepts typed Goal and memory only after a linked branch succeeds', () => {
   const attestor = new AttemptCapabilityAttestor();
+  const branchStarted = attemptEvent({
+    callId: 'branch-call',
+    attemptId: 'branch-call:1',
+    context: {
+      sessionId: 'branch:memory:memory-test',
+      episodeId: 'branch-episode',
+      surface: 'memory_branch',
+    },
+  });
+  attestor.observe(branchStarted);
+  attestor.observe({ ...branchStarted, outcome: 'succeeded' });
+  attestor.registerMemoryCompletion({
+    branchId: 'memory-test',
+    branchType: 'memory',
+    status: 'published',
+    observationId: 'observation-test',
+    observationRefs: ['cache-benchmark/2026-01-01/memory-fixtures.jsonl#1'],
+    observationRefDigests: {
+      'cache-benchmark/2026-01-01/memory-fixtures.jsonl#1': `sha256:${'a'.repeat(64)}`,
+    },
+    toolNames: ['memory_search', 'memory_read_turn', 'finish_memory_search'],
+  });
+
   const event = attemptEvent({
+    callId: 'main-call',
+    attemptId: 'main-call:1',
     request: {
       messages: [
         annotatedMessage('goal_status', 'active goal state'),
@@ -335,6 +389,11 @@ test('capability attestation accepts only typed Goal and synthetic memory proven
           role: 'user',
           content: '{"source":"memory"}',
           __syntheticObservation: true,
+          syntheticObservationId: 'observation-test',
+          syntheticObservationProvenance: {
+            branchType: 'memory',
+            branchId: 'memory-test',
+          },
           __context: {
             schema: 'xiaoba.context_lifecycle.v1',
             source: 'synthetic_observation',
@@ -349,6 +408,106 @@ test('capability attestation accepts only typed Goal and synthetic memory proven
   });
   attestor.observe(event);
   assert.deepEqual(attestor.get(event.attemptId), ['goal', 'memory']);
+  assert.deepEqual(attestor.get(branchStarted.attemptId), ['tools', 'memory']);
+});
+
+test('capability attestation credits a successful suppressed branch without spoofing a main observation', () => {
+  const attestor = new AttemptCapabilityAttestor();
+  const branch = attemptEvent({
+    callId: 'suppressed-branch',
+    attemptId: 'suppressed-branch:1',
+    context: { sessionId: 'branch:memory:suppressed-memory', surface: 'memory_branch' },
+  });
+  attestor.observe(branch);
+  attestor.observe({ ...branch, outcome: 'succeeded' });
+  attestor.registerMemoryCompletion({
+    branchId: 'suppressed-memory',
+    branchType: 'memory',
+    status: 'suppressed',
+    toolNames: ['memory_search', 'finish_memory_search'],
+  });
+
+  assert.deepEqual(attestor.get(branch.attemptId), ['tools']);
+
+  const main = attemptEvent({
+    callId: 'main-without-observation',
+    attemptId: 'main-without-observation:1',
+    request: { messages: [], tools: [] },
+  });
+  attestor.observe(main);
+  assert.deepEqual(attestor.get(main.attemptId), []);
+});
+
+test('capability attestation rejects dangling, failed, and mismatched memory provenance', () => {
+  const attestor = new AttemptCapabilityAttestor();
+  const branch = attemptEvent({
+    callId: 'failed-branch',
+    attemptId: 'failed-branch:1',
+    context: { sessionId: 'branch:memory:failed-memory', surface: 'memory_branch' },
+  });
+  attestor.observe(branch);
+  attestor.observe({ ...branch, outcome: 'failed' });
+  attestor.registerMemoryCompletion({
+    branchId: 'failed-memory',
+    branchType: 'memory',
+    status: 'published',
+    observationId: 'other-observation',
+    toolNames: ['memory_search', 'finish_memory_search'],
+  });
+  const main = attemptEvent({
+    callId: 'main-dangling',
+    attemptId: 'main-dangling:1',
+    request: {
+      messages: [{
+        role: 'tool',
+        content: '{"source":"memory"}',
+        __syntheticObservation: true,
+        syntheticObservationId: 'claimed-observation',
+        syntheticObservationProvenance: { branchType: 'memory', branchId: 'failed-memory' },
+        __context: {
+          schema: 'xiaoba.context_lifecycle.v1',
+          source: 'synthetic_observation',
+          lifecycle: 'episode',
+          cacheScope: 'epoch',
+          persistence: 'transient',
+        },
+      }],
+      tools: [],
+    },
+  });
+  attestor.observe(main);
+  assert.deepEqual(attestor.get(branch.attemptId), ['tools']);
+  assert.deepEqual(attestor.get(main.attemptId), []);
+});
+
+test('memory benchmark quality requires published only for the memory-only task', () => {
+  const expectedReadFingerprint = `sha256:${'a'.repeat(64)}`;
+  const published = {
+    branchId: 'memory-published',
+    branchType: 'memory',
+    status: 'published' as const,
+    observationId: 'observation-published',
+    observationRefs: ['cache-benchmark/2026-01-01/memory-fixtures.jsonl#1'],
+    observationRefDigests: {
+      'cache-benchmark/2026-01-01/memory-fixtures.jsonl#1': expectedReadFingerprint,
+    },
+    toolNames: ['memory_search', 'memory_read_turn', 'finish_memory_search'],
+  };
+  const suppressed = {
+    branchId: 'memory-suppressed',
+    branchType: 'memory',
+    status: 'suppressed' as const,
+    toolNames: ['memory_search', 'finish_memory_search'],
+  };
+
+  assert.equal(evaluateBenchmarkMemoryCompletion(published, true, expectedReadFingerprint), true);
+  assert.equal(evaluateBenchmarkMemoryCompletion(suppressed, true, expectedReadFingerprint), false);
+  assert.equal(evaluateBenchmarkMemoryCompletion(published, false, expectedReadFingerprint), false);
+  assert.equal(evaluateBenchmarkMemoryCompletion(suppressed, false, expectedReadFingerprint), true);
+  assert.equal(evaluateBenchmarkMemoryCompletion({
+    ...published,
+    observationRefs: ['cache-benchmark/2026-01-01/memory-fixtures.jsonl#2'],
+  }, true, expectedReadFingerprint), false);
 });
 
 test('fresh runtime bootstrap is private and cannot reuse an existing session root', () => {
@@ -361,6 +520,63 @@ test('fresh runtime bootstrap is private and cannot reuse an existing session ro
     assert.equal(fs.statSync(runtime).mode & 0o777, 0o700);
     assert.equal(fs.statSync(path.join(runtime, 'skills')).mode & 0o777, 0o700);
     assert.equal(fs.statSync(path.join(runtime, '.cache-benchmark-runtime-v1')).mode & 0o777, 0o600);
+  }
+});
+
+test('sealed memory fixture reads only its held source and detects in-place restoration', async () => {
+  const workspace = makeTemporaryDirectory('sealed-memory-workspace-');
+  if (process.platform !== 'win32') fs.chmodSync(workspace, 0o700);
+  const source = JSON.stringify({
+    entry_type: 'turn',
+    turn: 1,
+    timestamp: '2026-01-01T00:00:00.000Z',
+    session_id: 'sealed:test',
+    session_type: 'cache-benchmark',
+    user: { text: 'sealed_unique_fact' },
+    assistant: { text: 'sealed answer', tool_calls: [] },
+    tokens: { prompt: 1, completion: 1 },
+  }) + '\n';
+  const fixture = createSealedMemoryFixture({
+    workspace,
+    nonce: 'a'.repeat(32),
+    canonicalPath: 'cache-benchmark/2026-01-01/memory-fixtures.jsonl',
+    source,
+  });
+  try {
+    const extraDir = path.join(workspace, 'logs', 'sessions', 'chat', '2026-01-01');
+    fs.mkdirSync(extraDir, { recursive: true });
+    fs.writeFileSync(path.join(extraDir, 'extra.jsonl'), source.replace(/sealed_unique_fact/g, 'extra_unique_fact'));
+    const store = new MemoryLogStore(workspace, { sealedSource: fixture });
+    assert.equal((await store.search({ keywords: ['sealed_unique_fact'] })).length, 1);
+    assert.equal((await store.search({ keywords: ['extra_unique_fact'] })).length, 0);
+
+    if (process.platform !== 'win32') fs.chmodSync(fixture.filePath, 0o600);
+    fs.writeFileSync(fixture.filePath, source.replace('sealed answer', 'tampered answer'));
+    fs.writeFileSync(fixture.filePath, source);
+    if (process.platform !== 'win32') fs.chmodSync(fixture.filePath, 0o400);
+    assert.throws(() => fixture.assertUntampered(), /benchmark_memory_fixture_tampered/);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('sealed memory fixture detects atomic path replacement', () => {
+  const workspace = makeTemporaryDirectory('sealed-memory-replace-');
+  if (process.platform !== 'win32') fs.chmodSync(workspace, 0o700);
+  const source = '{"entry_type":"turn"}\n';
+  const fixture = createSealedMemoryFixture({
+    workspace,
+    nonce: 'b'.repeat(32),
+    canonicalPath: 'cache-benchmark/2026-01-01/memory-fixtures.jsonl',
+    source,
+  });
+  try {
+    const displaced = `${fixture.filePath}.old`;
+    fs.renameSync(fixture.filePath, displaced);
+    fs.writeFileSync(fixture.filePath, source, { mode: 0o400 });
+    assert.throws(() => fixture.assertUntampered(), /benchmark_memory_fixture_tampered/);
+  } finally {
+    fixture.close();
   }
 });
 
@@ -432,6 +648,8 @@ test('evidence store seals a round before advancing its private contiguous ledge
       suite_id: manifest.suite_id,
       round: 1,
       attempt_number: 1,
+      attempt_role: benchmarkCase.execution_role,
+      logical_call: 1,
       case_id: benchmarkCase.case_id,
       run_id: run.run_id,
       call_id: 'call-1',

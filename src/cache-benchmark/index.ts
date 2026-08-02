@@ -4,6 +4,7 @@ export * from './cli';
 export * from './evidence-store';
 export * from './reporter';
 export * from './online-credentials';
+export * from './sealed-memory-fixture';
 export * from './online-artifact';
 export * from './online-cli';
 export * from './online-runner';

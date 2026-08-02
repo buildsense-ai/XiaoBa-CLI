@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { Message } from '../types';
 import { Logger } from './logger';
 import {
@@ -7,6 +8,7 @@ import {
   stripAssistantTranscriptArtifacts,
 } from './transcript-artifacts';
 import { PathResolver } from './path-resolver';
+import type { PersistedRuntimeGoalState } from '../core/goal-runtime';
 
 const SESSIONS_DIR = PathResolver.getDataPath('sessions');
 const SESSION_STATE_DIR = PathResolver.getDataPath('session-state');
@@ -21,8 +23,53 @@ function ensurePrivateDirectory(directory: string): void {
 }
 
 function writePrivateFile(file: string, content: string): void {
-  fs.writeFileSync(file, content, { encoding: 'utf8', mode: 0o600 });
-  if (process.platform !== 'win32') fs.chmodSync(file, 0o600);
+  const directory = path.dirname(file);
+  ensurePrivateDirectory(directory);
+  const temporary = path.join(
+    directory,
+    `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let descriptor: number | undefined;
+  let committed = false;
+  try {
+    descriptor = fs.openSync(
+      temporary,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+      0o600,
+    );
+    fs.writeFileSync(descriptor, content, { encoding: 'utf8' });
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    if (process.platform !== 'win32') fs.chmodSync(temporary, 0o600);
+    fs.renameSync(temporary, file);
+    committed = true;
+    fsyncDirectoryBestEffort(directory);
+  } finally {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch { /* best effort */ }
+    }
+    if (!committed) {
+      try { fs.unlinkSync(temporary); } catch { /* best effort */ }
+    }
+  }
+}
+
+function fsyncDirectoryBestEffort(directory: string): void {
+  if (process.platform === 'win32') return;
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(directory, fs.constants.O_RDONLY);
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    // rename is already an atomic commit. A directory-fsync failure must not
+    // make callers roll back memory to a state older than the file on disk.
+    Logger.warning(`Failed to fsync session directory [${directory}]: ${error}`);
+  } finally {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch { /* best effort */ }
+    }
+  }
 }
 
 function keyToFilename(key: string): string {
@@ -140,6 +187,8 @@ function serializeMessages(messages: Message[]): string {
 export interface SessionRuntimeState {
   currentDirectory?: string;
   remoteContextCursors?: Record<string, number>;
+  /** null is a migration tombstone that prevents legacy Goal resurrection. */
+  goal?: PersistedRuntimeGoalState | null;
   updatedAt?: string;
 }
 

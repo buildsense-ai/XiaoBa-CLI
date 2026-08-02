@@ -119,6 +119,8 @@ export function parseAttempt(value: unknown): CacheBenchmarkAttempt {
     'suite_id',
     'round',
     'attempt_number',
+    'attempt_role',
+    'logical_call',
     'case_id',
     'run_id',
     'call_id',
@@ -135,6 +137,8 @@ export function parseAttempt(value: unknown): CacheBenchmarkAttempt {
     suite_id: identifier(record.suite_id),
     round: positiveInteger(record.round),
     attempt_number: positiveInteger(record.attempt_number),
+    attempt_role: enumeration(record.attempt_role, ['main', 'memory_branch'] as const),
+    logical_call: positiveInteger(record.logical_call),
     case_id: identifier(record.case_id),
     run_id: identifier(record.run_id),
     call_id: identifier(record.call_id),
@@ -183,6 +187,7 @@ function parseCase(value: unknown): CacheBenchmarkCase {
     'cache_read_source',
     'scenario_family',
     'session_type',
+    'execution_role',
     'capabilities',
     'runs',
   ]);
@@ -213,6 +218,7 @@ function parseCase(value: unknown): CacheBenchmarkCase {
     cache_read_source: cacheReadSource,
     scenario_family: identifier(record.scenario_family),
     session_type: identifier(record.session_type),
+    execution_role: enumeration(record.execution_role, ['main', 'memory_branch'] as const),
     capabilities,
     runs,
   };

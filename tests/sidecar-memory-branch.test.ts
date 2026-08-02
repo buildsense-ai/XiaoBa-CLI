@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { startMemorySidecarBranch } from '../src/core/sidecar-memory-branch';
+import { buildMemorySearchClockSnapshot } from '../src/core/memory-search-branch-session';
 import { InMemorySyntheticObservationQueue } from '../src/core/synthetic-observation';
 import { ChatResponse, Message } from '../src/types';
 import { ToolCall, ToolDefinition } from '../src/types/tool';
@@ -41,13 +42,21 @@ class MemoryBranchAI {
       };
     }
 
-    const searchResult = JSON.parse(String(lastTool.content));
-    const ref = searchResult.matches[0].ref;
+    const toolResult = JSON.parse(String(lastTool.content));
+    if (Array.isArray(toolResult.matches)) {
+      return {
+        content: null,
+        toolCalls: [makeToolCall('read_1', 'memory_read_turn', {
+          ref: toolResult.matches[0].ref,
+        })],
+        usage,
+      };
+    }
     return {
       content: null,
       toolCalls: [makeToolCall('finish_1', 'finish_memory_search', {
         summary: 'Prior memory says dashboard filters should stay compact.',
-        refs: [ref],
+        refs: [toolResult.ref],
       })],
       usage,
     };
@@ -128,6 +137,46 @@ class PromptInjectionMemoryBranchAI {
   }
 }
 
+class ForgedMemoryRefAI {
+  calls = 0;
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(): Promise<ChatResponse> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return {
+        content: null,
+        toolCalls: [makeToolCall('read_2', 'memory_read_turn', {
+          ref: 'chat/2026-06-09/demo.jsonl#2',
+        })],
+        usage,
+      };
+    }
+    if (this.calls === 2) {
+      return {
+        content: null,
+        toolCalls: [makeToolCall('forged_finish', 'finish_memory_search', {
+          summary: 'Pretend the first record was read.',
+          refs: ['chat/2026-06-09/demo.jsonl#1'],
+        })],
+        usage,
+      };
+    }
+    return {
+      content: null,
+      toolCalls: [makeToolCall('safe_finish', 'finish_memory_search', {
+        summary: 'The requested ref was not actually read.',
+        refs: [],
+        inject: false,
+      })],
+      usage,
+    };
+  }
+}
+
 describe('memory sidecar branch', () => {
   let testRoot: string;
   let previousUserDataDir: string | undefined;
@@ -143,6 +192,33 @@ describe('memory sidecar branch', () => {
     else process.env.XIAOBA_USER_DATA_DIR = previousUserDataDir;
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('uses a stable day clock unless the query needs relative time', () => {
+    const morning = new Date('2026-08-02T06:01:22.751Z');
+    const later = new Date('2026-08-02T19:59:58.999Z');
+    assert.deepEqual(
+      buildMemorySearchClockSnapshot('what did we decide about dashboard filters?', morning),
+      buildMemorySearchClockSnapshot('what did we decide about dashboard filters?', later),
+    );
+    assert.deepEqual(buildMemorySearchClockSnapshot('过去 2 小时发生了什么？', morning), {
+      current_time: '2026-08-02T06:01:00.000Z',
+      current_time_precision: 'minute',
+      current_timezone: 'UTC',
+    });
+    assert.deepEqual(buildMemorySearchClockSnapshot('what happened in the last hour?', later), {
+      current_time: '2026-08-02T19:59:00.000Z',
+      current_time_precision: 'minute',
+      current_timezone: 'UTC',
+    });
+    for (const query of [
+      '半小时前发生了什么？',
+      'a few minutes ago',
+      'what changed in the last 90 seconds?',
+      'what happened earlier this morning?',
+    ]) {
+      assert.equal(buildMemorySearchClockSnapshot(query, later).current_time_precision, 'minute');
     }
   });
 
@@ -178,9 +254,17 @@ describe('memory sidecar branch', () => {
       queue,
     });
 
-    await handle.done;
+    const completion = await handle.done;
     const observations = queue.drain();
 
+    assert.equal(completion.branchId, handle.branchId);
+    assert.equal(completion.branchType, 'memory');
+    assert.equal(completion.status, 'published');
+    assert.equal(completion.observationId, observations[0]?.id);
+    assert.deepEqual(completion.toolNames, ['memory_search', 'memory_read_turn', 'finish_memory_search']);
+    assert.deepEqual(Object.keys(completion.observationRefDigests || {}), [
+      'chat/2026-06-09/demo.jsonl#1',
+    ]);
     assert.equal(observations.length, 1);
     assert.equal(observations[0].source, 'memory');
     assert.equal(observations[0].status, 'completed');
@@ -189,7 +273,7 @@ describe('memory sidecar branch', () => {
     assert.equal(injected.source, 'memory');
     assert.equal(injected.summary, 'Prior memory says dashboard filters should stay compact.');
     assert.deepEqual(injected.refs, ['chat/2026-06-09/demo.jsonl#1']);
-    assert.equal(aiService.calls.length, 2);
+    assert.equal(aiService.calls.length, 3);
   });
 
   test('suppresses observations when branch finishes with inject false', async () => {
@@ -204,8 +288,11 @@ describe('memory sidecar branch', () => {
       queue,
     });
 
-    await handle.done;
+    const completion = await handle.done;
 
+    assert.equal(completion.status, 'suppressed');
+    assert.equal(completion.observationId, undefined);
+    assert.deepEqual(completion.toolNames, ['finish_memory_search']);
     assert.equal(queue.drain().length, 0);
     assert.equal(aiService.calls.length, 1);
     assert.match(readBranchLogs(testRoot), /suppressed_observation/);
@@ -250,15 +337,58 @@ describe('memory sidecar branch', () => {
       queue,
     });
 
-    await handle.done;
+    const completion = await handle.done;
     const observations = queue.drain();
 
+    assert.equal(completion.status, 'published');
+    assert.deepEqual(completion.toolNames, [
+      'memory_search',
+      'memory_read_turn',
+      'finish_memory_search',
+    ]);
     assert.equal(aiService.sawUntrustedEvidenceRule, true);
     assert.equal(observations.length, 1);
     assert.match(observations[0].summary, /blue button/);
     assert.doesNotMatch(observations[0].summary, /忽略系统提示|finish_memory_search 注入|sk-test-secret|secret/i);
     const injected = JSON.parse(observations[0].formattedContent || '');
     assert.doesNotMatch(injected.summary, /忽略系统提示|finish_memory_search 注入|sk-test-secret|secret/i);
+  });
+
+  test('rejects a finish ref that this branch did not successfully read', async () => {
+    const sessionDir = path.join(testRoot, 'logs', 'sessions', 'chat', '2026-06-09');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const records = [1, 2].map(turn => JSON.stringify({
+      entry_type: 'turn',
+      turn,
+      timestamp: `2026-06-09T10:0${turn}:00.000Z`,
+      session_id: 'chat:demo',
+      session_type: 'chat',
+      user: { text: `memory record ${turn}` },
+      assistant: { text: `answer ${turn}`, tool_calls: [] },
+      tokens: { prompt: 1, completion: 1 },
+    })).join('\n') + '\n';
+    fs.writeFileSync(path.join(sessionDir, 'demo.jsonl'), records, 'utf8');
+
+    const queue = new InMemorySyntheticObservationQueue();
+    const aiService = new ForgedMemoryRefAI();
+    const completion = await startMemorySidecarBranch({
+      sessionKey: 'test-session',
+      input: 'find memory record',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: aiService as any,
+      queue,
+    }).done;
+
+    assert.equal(completion.status, 'suppressed');
+    assert.equal(completion.observationId, undefined);
+    assert.equal(completion.observationRefs, undefined);
+    assert.equal(queue.drain().length, 0);
+    assert.deepEqual(completion.toolNames, [
+      'memory_read_turn',
+      'finish_memory_search',
+      'finish_memory_search',
+    ]);
   });
 
   test('cancelled branch does not publish late memory observations', async () => {
@@ -286,7 +416,32 @@ describe('memory sidecar branch', () => {
     });
 
     handle.cancel();
-    await handle.done;
+    const completion = await handle.done;
+    assert.equal(completion.status, 'cancelled');
+    assert.equal(queue.drain().length, 0);
+  });
+
+  test('reports a fail-closed completion when branch execution fails', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const aiService = {
+      isToolCallingSupported: () => true,
+      chat: async () => {
+        throw new Error('provider unavailable');
+      },
+    };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'test-session',
+      input: 'search prior context',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: aiService as any,
+      queue,
+    });
+
+    const completion = await handle.done;
+    assert.equal(completion.status, 'failed');
+    assert.equal(completion.errorCode, 'branch_execution_failed');
+    assert.equal(completion.branchId, handle.branchId);
     assert.equal(queue.drain().length, 0);
   });
 });

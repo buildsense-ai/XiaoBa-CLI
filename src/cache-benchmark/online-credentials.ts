@@ -44,8 +44,7 @@ export type OnlineCredentialErrorCode =
 /** Reads a deliberately tiny, non-shell env format from a private external file. */
 export function loadOnlineProviderCredentials(filePath: string): OnlineProviderCredential[] {
   const resolved = path.resolve(filePath);
-  validatePrivateCredentialPath(resolved);
-  const values = parseStrictEnv(fs.readFileSync(resolved, 'utf8'));
+  const values = parseStrictEnv(readPrivateCredentialFile(resolved));
   return [
     providerFromValues(values, {
       alias: 'newcli',
@@ -65,29 +64,62 @@ export function loadOnlineProviderCredentials(filePath: string): OnlineProviderC
   ];
 }
 
-function validatePrivateCredentialPath(filePath: string): void {
-  let stat: fs.Stats;
-  let parentStat: fs.Stats;
+function readPrivateCredentialFile(filePath: string): string {
+  let descriptor: number | undefined;
   try {
-    const lstat = fs.lstatSync(filePath);
-    if (lstat.isSymbolicLink() || !lstat.isFile()) fail('credential_path_invalid');
-    stat = fs.statSync(filePath);
     const parent = path.dirname(filePath);
     const parentLstat = fs.lstatSync(parent);
     if (parentLstat.isSymbolicLink() || !parentLstat.isDirectory()) fail('credential_path_invalid');
-    parentStat = fs.statSync(parent);
+    validateOwnerAndMode(parentLstat, 'parent');
+
+    descriptor = fs.openSync(
+      filePath,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0),
+    );
+    const before = fs.fstatSync(descriptor);
+    if (!before.isFile()) fail('credential_path_invalid');
+    validateOwnerAndMode(before, 'file');
+
+    const content = fs.readFileSync(descriptor, 'utf8');
+    const after = fs.fstatSync(descriptor);
+    if (!sameStableFile(before, after)) fail('credential_path_invalid');
+
+    const parentAfter = fs.lstatSync(parent);
+    if (
+      parentAfter.isSymbolicLink()
+      || !parentAfter.isDirectory()
+      || parentAfter.dev !== parentLstat.dev
+      || parentAfter.ino !== parentLstat.ino
+    ) fail('credential_path_invalid');
+    validateOwnerAndMode(parentAfter, 'parent');
+    return content;
   } catch (error) {
     if (error instanceof OnlineCredentialError) throw error;
-    fail('credential_path_invalid');
+    return fail('credential_path_invalid');
+  } finally {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch { /* best effort */ }
+    }
   }
-  if (typeof process.getuid === 'function') {
-    const uid = process.getuid();
-    if (stat.uid !== uid || parentStat.uid !== uid) fail('credential_owner_mismatch');
+}
+
+function validateOwnerAndMode(stat: fs.Stats, kind: 'file' | 'parent'): void {
+  if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+    fail('credential_owner_mismatch');
   }
-  if (process.platform !== 'win32') {
-    if ((stat.mode & 0o777) !== 0o600) fail('credential_file_not_private');
-    if ((parentStat.mode & 0o777) !== 0o700) fail('credential_parent_not_private');
+  if (process.platform === 'win32') return;
+  const expected = kind === 'file' ? 0o600 : 0o700;
+  if ((stat.mode & 0o777) !== expected) {
+    fail(kind === 'file' ? 'credential_file_not_private' : 'credential_parent_not_private');
   }
+}
+
+function sameStableFile(before: fs.Stats, after: fs.Stats): boolean {
+  return before.dev === after.dev
+    && before.ino === after.ino
+    && before.size === after.size
+    && before.mtimeMs === after.mtimeMs
+    && before.ctimeMs === after.ctimeMs;
 }
 
 function parseStrictEnv(source: string): Map<string, string> {

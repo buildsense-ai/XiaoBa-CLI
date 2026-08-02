@@ -112,6 +112,108 @@ describe('AgentSession lifecycle', () => {
     assert.equal(SessionStore.getInstance().loadRuntimeState('user:lifecycle-cwd').currentDirectory, defaultDir);
   });
 
+  test('trusted Goal state survives session reconstruction and reset removes it', () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const key = 'user:lifecycle-goal';
+    const services = buildMockServices();
+    const first = new AgentSession(key, services, 'feishu');
+    const updated = first.updateGoal({
+      objective: 'Preserve capability completeness across recovery.',
+      status: 'active',
+    });
+
+    const restored = new AgentSession(key, services, 'feishu');
+    assert.deepEqual(restored.getGoalSnapshot(), updated);
+    assert.equal(
+      SessionStore.getInstance().loadRuntimeState(key).goal?.objective,
+      'Preserve capability completeness across recovery.',
+    );
+
+    restored.reset();
+    assert.equal(restored.getGoalSnapshot().objective, '');
+    assert.equal(SessionStore.getInstance().loadRuntimeState(key).goal, null);
+  });
+
+  test('updateGoal clear persists a tombstone and survives reconstruction', () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const key = 'user:lifecycle-goal-update-clear';
+    const services = buildMockServices();
+    const session = new AgentSession(key, services, 'feishu');
+    session.updateGoal({ objective: 'This goal must be cleared durably.', status: 'active' });
+
+    const cleared = session.updateGoal({ clear: true });
+    assert.equal(cleared.objective, '');
+    assert.equal(SessionStore.getInstance().loadRuntimeState(key).goal, null);
+    assert.equal(new AgentSession(key, services, 'feishu').getGoalSnapshot().objective, '');
+  });
+
+  test('Goal persistence failures roll back updates and clears in memory', () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession('user:lifecycle-goal-rollback', buildMockServices(), 'feishu');
+    const initial = session.updateGoal({ objective: 'Keep the prior durable goal.', status: 'active' });
+    (session as any).lifecycleManager.saveGoal = () => false;
+
+    assert.throws(
+      () => session.updateGoal({ objective: 'This failed update must not remain.' }),
+      /goal_persistence_failed/,
+    );
+    assert.deepEqual(session.getGoalSnapshot(), initial);
+    assert.throws(() => session.updateGoal({ clear: true }), /goal_persistence_failed/);
+    assert.deepEqual(session.getGoalSnapshot(), initial);
+  });
+
+  test('atomic runtime-state write preserves the old Goal when rename fails', () => {
+    const { AgentSession } = loadSessionModules();
+    const key = 'user:lifecycle-goal-atomic-failure';
+    const services = buildMockServices();
+    const session = new AgentSession(key, services, 'feishu');
+    const initial = session.updateGoal({ objective: 'Durable goal before failed rename.', status: 'active' });
+
+    const nativeFs = require('node:fs') as typeof import('node:fs');
+    const renameSync = nativeFs.renameSync;
+    nativeFs.renameSync = ((source: fs.PathLike, target: fs.PathLike) => {
+      if (String(target).includes('session-state')) throw new Error('injected rename failure');
+      return renameSync(source, target);
+    }) as typeof fs.renameSync;
+    try {
+      assert.throws(
+        () => session.updateGoal({ objective: 'Must not replace the durable goal.' }),
+        /goal_persistence_failed/,
+      );
+    } finally {
+      nativeFs.renameSync = renameSync;
+    }
+
+    assert.deepEqual(session.getGoalSnapshot(), initial);
+    assert.deepEqual(new AgentSession(key, services, 'feishu').getGoalSnapshot(), initial);
+  });
+
+  test('cleared Goal leaves a tombstone that blocks legacy state resurrection', () => {
+    const { SessionLifecycleManager, SessionStore } = loadSessionModules();
+    const store = SessionStore.getInstance();
+    store.saveRuntimeState('legacy:goal-source', {
+      goal: {
+        revision: 1,
+        updatedAt: 1_700_000_000_000,
+        objective: 'legacy objective must not return after reset',
+        status: 'active',
+      },
+    });
+    const options = {
+      sessionKey: 'session:v2:goal-current',
+      legacyRestoreKey: 'legacy:goal-source',
+      runtimeFeedbackInbox: { reset() {} },
+      sessionStore: store,
+    };
+    const first = new SessionLifecycleManager(options);
+    assert.equal(first.loadGoal()?.objective, 'legacy objective must not return after reset');
+
+    assert.equal(first.saveGoal(undefined), true);
+    assert.equal(store.loadRuntimeState(options.sessionKey).goal, null);
+    const restored = new SessionLifecycleManager(options);
+    assert.equal(restored.loadGoal(), undefined);
+  });
+
   test('remote context cursor survives restart without overwriting current directory', async () => {
     const { AgentSession } = loadSessionModules();
     const defaultDir = fs.mkdtempSync(path.join(testRoot, 'cursor-default-'));
@@ -1168,6 +1270,7 @@ function loadSessionModules(): any {
     CONTEXT_COMPACTION_START_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_START_MESSAGE,
     CONTEXT_COMPACTION_COMPLETE_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_COMPLETE_MESSAGE,
     SessionStore: require('../src/utils/session-store').SessionStore,
+    SessionLifecycleManager: require('../src/core/session-lifecycle-manager').SessionLifecycleManager,
     createSessionRoute: require('../src/core/session-router').createSessionRoute,
     createCatsCoSessionRoute: require('../src/core/session-router').createCatsCoSessionRoute,
   };

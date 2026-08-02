@@ -2,6 +2,7 @@ import { Message } from '../types';
 import { Logger } from '../utils/logger';
 import { SessionStore } from '../utils/session-store';
 import { RuntimeFeedbackInbox } from './runtime-feedback-inbox';
+import type { PersistedRuntimeGoalState } from './goal-runtime';
 
 export interface SessionLifecycleManagerOptions {
   sessionKey: string;
@@ -103,6 +104,25 @@ export class SessionLifecycleManager {
     this.sessionStore.saveRuntimeState(this.options.sessionKey, {
       ...this.sessionStore.loadRuntimeState(this.options.sessionKey),
       currentDirectory,
+    });
+  }
+
+  loadGoal(): PersistedRuntimeGoalState | undefined {
+    const currentState = this.sessionStore.loadRuntimeState(this.options.sessionKey);
+    if (Object.prototype.hasOwnProperty.call(currentState, 'goal')) {
+      return currentState.goal ?? undefined;
+    }
+    if (!this.shouldUseLegacySessionFallback()) return undefined;
+    const legacyRestoreKey = this.resolveLegacyRestoreKey();
+    if (!legacyRestoreKey || legacyRestoreKey === this.options.sessionKey) return undefined;
+    return this.sessionStore.loadRuntimeState(legacyRestoreKey).goal ?? undefined;
+  }
+
+  saveGoal(goal: PersistedRuntimeGoalState | undefined): boolean {
+    const state = this.sessionStore.loadRuntimeState(this.options.sessionKey);
+    return this.sessionStore.saveRuntimeState(this.options.sessionKey, {
+      ...state,
+      goal: goal ?? null,
     });
   }
 

@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AgentSession } from '../src/core/agent-session';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
+import { GoalRuntime } from '../src/core/goal-runtime';
 import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../src/core/runtime-context-builder';
 import { getCatsCoAttachmentCacheSessionRoot } from '../src/catscompany/attachment-cache';
 import { createDeviceGrant, createUserDevice } from '../src/core/device-grants';
@@ -18,6 +19,37 @@ import type {
 } from '../src/types/session-identity';
 
 describe('runtime context builder', () => {
+  test('injects typed Goal state before the latest user and removes it from durable history', async () => {
+    const builder = new TurnContextBuilder();
+    const goalRuntime = new GoalRuntime();
+    goalRuntime.update({ objective: 'Verify provider-truth cache evidence.', status: 'active' });
+    const result = await builder.build({
+      sessionKey: 'goal-runtime-test',
+      durableMessages: [{ role: 'system', content: 'base' }, { role: 'user', content: 'continue' }],
+      runtimeFeedback: [],
+      skillRuntime: emptySkillRuntime(),
+      goalRuntime,
+      contextEpoch: 'episode-goal',
+    });
+
+    const goalIndex = result.messages.findIndex(message => message.__context?.source === 'goal_status');
+    const userIndex = result.messages.findIndex(message => message.role === 'user' && message.content === 'continue');
+    assert.ok(goalIndex >= 0);
+    assert.ok(goalIndex < userIndex);
+    assert.deepEqual(result.messages[goalIndex].__context, {
+      schema: 'xiaoba.context_lifecycle.v1',
+      source: 'goal_status',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+      persistence: 'transient',
+      epoch: 'episode-goal',
+    });
+    assert.match(String(result.messages[goalIndex].content), /Verify provider-truth cache evidence\./);
+    assert.equal(builder.removeTransientMessages(result.messages).some(
+      message => message.__context?.source === 'goal_status',
+    ), false);
+  });
+
   test('injects short transient runtime context before the latest user message and removes it from durable history', async () => {
     const builder = new TurnContextBuilder();
     const route = createSessionRoute({

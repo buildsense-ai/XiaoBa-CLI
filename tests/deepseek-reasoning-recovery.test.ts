@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Message } from '../src/types';
-import { planDeepSeekReasoningRecovery } from '../src/providers/deepseek-reasoning-recovery';
+import {
+  planDeepSeekReasoningRecovery,
+  prepareDeepSeekSyntheticObservations,
+} from '../src/providers/deepseek-reasoning-recovery';
 import { createProviderStateReference } from '../src/providers/provider-state';
 import { resolveOpenAIReasoningReplayMode } from '../src/utils/reasoning-effort';
 
@@ -50,6 +53,97 @@ test('DeepSeek replay defaults distinguish legacy reasoner from current thinking
     apiUrl: 'https://api.openai.com/v1',
     model: 'gpt-5.6-sol',
   }), undefined);
+});
+
+test('DeepSeek converts only local synthetic tool pairs before provider replay', () => {
+  const provenance = { branchType: 'memory', branchId: 'memory-1' };
+  const context = {
+    schema: 'xiaoba.context_lifecycle.v1' as const,
+    source: 'synthetic_observation' as const,
+    lifecycle: 'episode' as const,
+    cacheScope: 'epoch' as const,
+    persistence: 'transient' as const,
+  };
+  const messages: Message[] = [
+    { role: 'user', content: 'current request' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'synthetic-memory-1',
+        type: 'function',
+        function: {
+          name: 'runtime_observation',
+          arguments: JSON.stringify({
+            source: 'memory',
+            status: 'completed',
+            relevance: 'high',
+            timing: 'late_previous_turn',
+            confidence: 0.8,
+          }),
+        },
+      }],
+      __syntheticObservation: true,
+      syntheticObservationId: 'observation-1',
+      syntheticObservationProvenance: provenance,
+      __context: context,
+    },
+    {
+      role: 'tool',
+      content: '{"source":"memory","summary":"fact"}',
+      tool_call_id: 'synthetic-memory-1',
+      name: 'runtime_observation',
+      __syntheticObservation: true,
+      syntheticObservationId: 'observation-1',
+      syntheticObservationProvenance: provenance,
+      __context: context,
+    },
+  ];
+
+  const prepared = prepareDeepSeekSyntheticObservations({ config: v4Config, messages });
+  assert.deepEqual(prepared.map(message => message.role), ['user', 'user']);
+  assert.match(String(prepared[1].content), /runtime_observation/);
+  const envelope = JSON.parse(String(prepared[1].content).split('\n')[1]);
+  assert.deepEqual(envelope.lifecycle, {
+    source: 'memory',
+    status: 'completed',
+    relevance: 'high',
+    timing: 'late_previous_turn',
+    confidence: 0.8,
+  });
+  assert.deepEqual(envelope.observation, { source: 'memory', summary: 'fact' });
+  assert.equal(prepared[1].syntheticObservationId, 'observation-1');
+  assert.deepEqual(prepared[1].syntheticObservationProvenance, provenance);
+  assert.equal(prepared.some(message => message.tool_calls?.length), false);
+  assert.equal(prepareDeepSeekSyntheticObservations({
+    config: { ...v4Config, openaiApiMode: 'responses' },
+    messages,
+  }), messages);
+});
+
+test('DeepSeek synthetic lowering fails closed to late timing on malformed metadata', () => {
+  const messages: Message[] = [{
+    role: 'assistant',
+    content: null,
+    tool_calls: [{
+      id: 'synthetic-runtime-malformed',
+      type: 'function',
+      function: { name: 'runtime_observation', arguments: '{bad json' },
+    }],
+    __syntheticObservation: true,
+    syntheticObservationId: 'malformed',
+  }, {
+    role: 'tool',
+    name: 'runtime_observation',
+    tool_call_id: 'synthetic-runtime-malformed',
+    content: 'plain observation content',
+    __syntheticObservation: true,
+    syntheticObservationId: 'malformed',
+  }];
+  const prepared = prepareDeepSeekSyntheticObservations({ config: v4Config, messages });
+  const envelope = JSON.parse(String(prepared[0].content).split('\n')[1]);
+  assert.equal(envelope.lifecycle.timing, 'late_previous_turn');
+  assert.deepEqual(envelope.observation, { content: 'plain observation content' });
 });
 
 test('explicit rejection can switch a current DeepSeek request to omit replay', () => {
