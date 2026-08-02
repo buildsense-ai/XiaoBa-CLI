@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildAttemptUsage,
   buildCapabilityProbeText,
   buildCanaryEvidence,
   evaluateCanaryAttempts,
@@ -37,7 +38,34 @@ describe('OpenAI-compatible provider cache canary evidence', () => {
 
     assert.equal(evaluateCanaryAttempts([attempt(100, 0), attempt(100, 80)]), 'passed');
     assert.equal(evaluateCanaryAttempts([attempt(100, 0), attempt(100, 0)]), 'failed_no_reuse');
+    assert.equal(evaluateCanaryAttempts([attempt(100, 0), attempt(100, 101)]), 'unobservable_usage');
+    assert.equal(evaluateCanaryAttempts([attempt(0, 0), attempt(100, 80)]), 'unobservable_usage');
+    assert.equal(evaluateCanaryAttempts([
+      attempt(100, 0),
+      { usage: { input_tokens: 100 } },
+    ]), 'unobservable_usage');
     assert.equal(evaluateCanaryAttempts([]), 'unsupported_usage');
+  });
+
+  test('preserves missing cache fields separately from explicit zero', () => {
+    assert.deepEqual(buildAttemptUsage({
+      promptTokens: 100,
+      completionTokens: 1,
+    }), {
+      input_tokens: 100,
+      output_tokens: 1,
+    });
+    assert.deepEqual(buildAttemptUsage({
+      promptTokens: 100,
+      cachedReadTokens: 0,
+      cachedWriteTokens: 0,
+      completionTokens: 1,
+    }), {
+      input_tokens: 100,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      output_tokens: 1,
+    });
   });
 
   test('redacts compatible endpoint origins', () => {

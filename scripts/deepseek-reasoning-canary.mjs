@@ -7,11 +7,32 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const CANARY_SCHEMA = 'xiaoba.deepseek-reasoning-canary.v1';
+const CANARY_SCHEMA = 'xiaoba.deepseek-reasoning-canary.v2';
 const CANONICAL_ORIGIN = 'https://api.deepseek.com';
 
 export function sha256(value) {
   return createHash('sha256').update(String(value), 'utf8').digest('hex');
+}
+
+function reportedNumber(value, key) {
+  if (!value || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, key)) {
+    return undefined;
+  }
+  const raw = value[key];
+  if ((typeof raw !== 'number' && typeof raw !== 'string') || raw === '') return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function buildUsageEvidence(usage) {
+  const result = {};
+  const inputTokens = reportedNumber(usage, 'promptTokens');
+  const cacheReadTokens = reportedNumber(usage, 'cachedReadTokens');
+  const outputTokens = reportedNumber(usage, 'completionTokens');
+  if (inputTokens !== undefined) result.input_tokens = inputTokens;
+  if (cacheReadTokens !== undefined) result.cache_read_tokens = cacheReadTokens;
+  if (outputTokens !== undefined) result.output_tokens = outputTokens;
+  return result;
 }
 
 export function buildCanaryEvidence({ apiBase, model, first, second, recordedAt = new Date() }) {
@@ -38,11 +59,7 @@ export function buildCanaryEvidence({ apiBase, model, first, second, recordedAt 
       stop_reason: second.stopReason || null,
       text_present: Boolean(second.content),
       tool_calls: Number(second.toolCalls?.length || 0),
-      usage: {
-        input_tokens: Number(second.usage?.promptTokens ?? 0),
-        cache_read_tokens: Number(second.usage?.cachedReadTokens ?? 0),
-        output_tokens: Number(second.usage?.completionTokens ?? 0),
-      },
+      usage: buildUsageEvidence(second.usage),
     } : null,
   };
 }

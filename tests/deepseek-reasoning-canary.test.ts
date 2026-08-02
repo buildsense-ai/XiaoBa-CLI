@@ -34,3 +34,24 @@ test('DeepSeek reasoning canary evidence omits prompt, response, and compatible 
   assert.equal(serialized.includes('secret reasoning'), false);
   assert.equal(serialized.includes('relay.secret.example'), false);
 });
+
+test('DeepSeek reasoning canary preserves missing cache usage versus explicit zero', () => {
+  const base = {
+    apiBase: 'https://api.deepseek.com',
+    model: 'deepseek-test',
+    first: { toolCalls: [{ id: 'call_1' }] },
+    recordedAt: new Date('2026-08-02T00:00:00.000Z'),
+  };
+  const missing = buildCanaryEvidence({
+    ...base,
+    second: { usage: { promptTokens: 100, completionTokens: 3 } },
+  });
+  const explicitZero = buildCanaryEvidence({
+    ...base,
+    second: { usage: { promptTokens: 100, cachedReadTokens: 0, completionTokens: 3 } },
+  });
+
+  assert.equal(Object.prototype.hasOwnProperty.call(missing.second?.usage, 'cache_read_tokens'), false);
+  assert.equal(explicitZero.second?.usage.cache_read_tokens, 0);
+  assert.equal(Object.prototype.hasOwnProperty.call(explicitZero.second?.usage, 'cache_read_tokens'), true);
+});

@@ -148,7 +148,11 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** True only when the provider explicitly reports the input-token component(s). */
+  inputTokensReported?: boolean;
+  /** Present only when the provider explicitly reports cache-read usage. */
   cachedReadTokens?: number;
+  /** Present only when the provider explicitly reports cache-write usage. */
   cachedWriteTokens?: number;
 }
 

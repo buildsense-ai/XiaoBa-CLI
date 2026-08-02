@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const CANARY_SCHEMA = 'xiaoba.provider-cache-canary.v1';
+const CANARY_SCHEMA = 'xiaoba.provider-cache-canary.v2';
 const CANARY_MIN_STABLE_CHARS = 24_000;
 const OFFICIAL_ORIGINS = new Set(['https://api.openai.com', 'https://api.deepseek.com']);
 
@@ -27,12 +27,52 @@ export function buildCapabilityProbeText(sourceText, minimumChars = CANARY_MIN_S
   return segments.join('\n\n');
 }
 
+function reportedNumber(value, key) {
+  if (!value || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, key)) {
+    return undefined;
+  }
+  const raw = value[key];
+  if ((typeof raw !== 'number' && typeof raw !== 'string') || raw === '') return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function hasReportedNumber(value, key) {
+  return reportedNumber(value, key) !== undefined;
+}
+
+export function buildAttemptUsage(usage) {
+  const attemptUsage = {};
+  const inputTokens = reportedNumber(usage, 'promptTokens');
+  const cacheReadTokens = reportedNumber(usage, 'cachedReadTokens');
+  const cacheWriteTokens = reportedNumber(usage, 'cachedWriteTokens');
+  const outputTokens = reportedNumber(usage, 'completionTokens');
+  if (inputTokens !== undefined) attemptUsage.input_tokens = inputTokens;
+  if (cacheReadTokens !== undefined) attemptUsage.cache_read_tokens = cacheReadTokens;
+  if (cacheWriteTokens !== undefined) attemptUsage.cache_write_tokens = cacheWriteTokens;
+  if (outputTokens !== undefined) attemptUsage.output_tokens = outputTokens;
+  return attemptUsage;
+}
+
 export function evaluateCanaryAttempts(attempts) {
+  if (!Array.isArray(attempts) || attempts.length === 0) return 'unsupported_usage';
+  if (attempts.some(attempt => {
+    const inputTokens = reportedNumber(attempt?.usage, 'input_tokens');
+    const cacheReadTokens = reportedNumber(attempt?.usage, 'cache_read_tokens');
+    const cacheWriteTokens = reportedNumber(attempt?.usage, 'cache_write_tokens');
+    return inputTokens === undefined
+      || inputTokens <= 0
+      || cacheReadTokens === undefined
+      || cacheReadTokens > inputTokens
+      || (cacheWriteTokens !== undefined && cacheWriteTokens > inputTokens);
+  })) {
+    return 'unobservable_usage';
+  }
   const laterAttempts = (attempts || []).slice(1);
-  if (laterAttempts.some(attempt => Number(attempt?.usage?.cache_read_tokens ?? 0) > 0)) {
+  if (laterAttempts.some(attempt => reportedNumber(attempt?.usage, 'cache_read_tokens') > 0)) {
     return 'passed';
   }
-  if ((attempts || []).some(attempt => Number(attempt?.usage?.input_tokens ?? 0) > 0)) {
+  if ((attempts || []).some(attempt => reportedNumber(attempt?.usage, 'input_tokens') > 0)) {
     return 'failed_no_reuse';
   }
   return 'unsupported_usage';
@@ -106,16 +146,11 @@ export async function runCanary({
         signal: controller.signal,
         cachePartitionKey: `canary-${sha256(`${apiBase}\0${model}`).slice(0, 16)}`,
       });
-      const usage = response?.usage || {};
+      const usage = response?.usage;
       attempts.push({
         dynamic_suffix_sha256: sha256(dynamicText),
         stop_reason: response?.stopReason || null,
-        usage: {
-          input_tokens: Number(usage.promptTokens ?? 0),
-          cache_read_tokens: Number(usage.cachedReadTokens ?? 0),
-          cache_write_tokens: Number(usage.cachedWriteTokens ?? 0),
-          output_tokens: Number(usage.completionTokens ?? 0),
-        },
+        usage: buildAttemptUsage(usage),
       });
     } finally {
       clearTimeout(timeout);

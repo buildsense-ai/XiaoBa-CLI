@@ -16,6 +16,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function reportedUsageNumber(value: unknown, key: string): number | undefined {
+  if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, key)) return undefined;
+  const raw = value[key];
+  if ((typeof raw !== 'number' && typeof raw !== 'string') || raw === '') return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 type AnthropicSystemBlock = Anthropic.TextBlockParam & {
   cache_control?: { type: 'ephemeral' };
 };
@@ -461,17 +469,18 @@ export class AnthropicProvider implements AIProvider {
 
     // 提取 token 用量
     const responseUsage = (response as any)?.usage;
-    const uncachedInputTokens = Number(responseUsage?.input_tokens ?? 0);
-    const cachedReadTokens = Number(responseUsage?.cache_read_input_tokens ?? 0);
-    const cachedWriteTokens = Number(responseUsage?.cache_creation_input_tokens ?? 0);
-    const promptTokens = uncachedInputTokens + cachedReadTokens + cachedWriteTokens;
+    const uncachedInputTokens = reportedUsageNumber(responseUsage, 'input_tokens');
+    const cachedReadTokens = reportedUsageNumber(responseUsage, 'cache_read_input_tokens');
+    const cachedWriteTokens = reportedUsageNumber(responseUsage, 'cache_creation_input_tokens');
+    const promptTokens = (uncachedInputTokens ?? 0) + (cachedReadTokens ?? 0) + (cachedWriteTokens ?? 0);
     const completionTokens = Number(responseUsage?.output_tokens ?? 0);
     const usage = responseUsage ? {
       promptTokens,
       completionTokens,
       totalTokens: promptTokens + completionTokens,
-      cachedReadTokens,
-      cachedWriteTokens,
+      inputTokensReported: uncachedInputTokens !== undefined,
+      ...(cachedReadTokens !== undefined ? { cachedReadTokens } : {}),
+      ...(cachedWriteTokens !== undefined ? { cachedWriteTokens } : {}),
     } : undefined;
 
     return {

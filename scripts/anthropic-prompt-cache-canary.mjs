@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 
 const CANONICAL_API_ORIGIN = 'https://api.anthropic.com';
-const CANARY_SCHEMA = 'xiaoba.anthropic-prompt-cache-canary.v2';
+const CANARY_SCHEMA = 'xiaoba.anthropic-prompt-cache-canary.v3';
 const CANARY_MIN_STABLE_CHARS = 24_000;
 const REQUEST_ID_HEADERS = ['request-id', 'x-request-id'];
 
@@ -39,6 +39,20 @@ export function buildCapabilityProbeText(sourceText, minimumChars = CANARY_MIN_S
   return segments.join('\n\n');
 }
 
+function reportedNumber(value, key) {
+  if (!value || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, key)) {
+    return undefined;
+  }
+  const raw = value[key];
+  if ((typeof raw !== 'number' && typeof raw !== 'string') || raw === '') return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function hasReportedNumber(value, key) {
+  return reportedNumber(value, key) !== undefined;
+}
+
 export function buildAttemptEvidence({ response, message, dynamicText }) {
   const responseUrl = new URL(response.url);
   const usage = message?.usage || {};
@@ -46,27 +60,46 @@ export function buildAttemptEvidence({ response, message, dynamicText }) {
     .map(header => response.headers.get(header))
     .find(Boolean);
 
+  const attemptUsage = {};
+  for (const key of [
+    'input_tokens',
+    'cache_creation_input_tokens',
+    'cache_read_input_tokens',
+    'output_tokens',
+  ]) {
+    const value = reportedNumber(usage, key);
+    if (value !== undefined) attemptUsage[key] = value;
+  }
+
   return {
     request_id: requestId || null,
     message_id: typeof message?.id === 'string' ? message.id : null,
-    api_path: `${responseUrl.pathname}${responseUrl.search}`,
+    api_path: responseUrl.pathname,
     dynamic_system_sha256: sha256(dynamicText),
-    usage: {
-      input_tokens: Number(usage.input_tokens ?? 0),
-      cache_creation_input_tokens: Number(usage.cache_creation_input_tokens ?? 0),
-      cache_read_input_tokens: Number(usage.cache_read_input_tokens ?? 0),
-      output_tokens: Number(usage.output_tokens ?? 0),
-    },
+    usage: attemptUsage,
   };
 }
 
 export function evaluateCanaryAttempts(attempts) {
-  const secondRead = Number(attempts?.[1]?.usage?.cache_read_input_tokens ?? 0);
+  if (!Array.isArray(attempts) || attempts.length === 0) return 'unobservable_usage';
+  if (attempts.some(attempt => {
+    const inputTokens = reportedNumber(attempt?.usage, 'input_tokens');
+    const cacheReadTokens = reportedNumber(attempt?.usage, 'cache_read_input_tokens');
+    const cacheCreationTokens = reportedNumber(attempt?.usage, 'cache_creation_input_tokens');
+    if (inputTokens === undefined || cacheReadTokens === undefined || cacheCreationTokens === undefined) {
+      return true;
+    }
+    const normalizedInputTokens = inputTokens + cacheReadTokens + cacheCreationTokens;
+    return normalizedInputTokens <= 0 || cacheReadTokens > normalizedInputTokens;
+  })) {
+    return 'unobservable_usage';
+  }
+  const secondRead = reportedNumber(attempts?.[1]?.usage, 'cache_read_input_tokens');
   const anyRead = (attempts || []).some(attempt => (
-    Number(attempt?.usage?.cache_read_input_tokens ?? 0) > 0
+    reportedNumber(attempt?.usage, 'cache_read_input_tokens') > 0
   ));
   const anyWrite = (attempts || []).some(attempt => (
-    Number(attempt?.usage?.cache_creation_input_tokens ?? 0) > 0
+    reportedNumber(attempt?.usage, 'cache_creation_input_tokens') > 0
   ));
   if (secondRead > 0) return 'passed';
   if (anyRead) return 'inconclusive_prior_entry';

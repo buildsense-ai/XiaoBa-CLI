@@ -3,15 +3,36 @@ import * as path from 'path';
 import { resolveCacheTraceDir } from './cache-trace';
 
 export interface CacheTraceUsage {
-  inputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  freshInputTokens: number;
-  outputTokens: number;
-  hitRatio: number;
+  responseUsagePresent: boolean;
+  inputTokens?: number;
+  cacheReadReported: boolean;
+  cacheReadTokens?: number;
+  cacheWriteReported: boolean;
+  cacheWriteTokens?: number;
+  freshInputTokens?: number;
+  outputTokens?: number;
+  hitRatio?: number;
 }
 
 export type CacheTraceOutcome = 'succeeded' | 'retrying' | 'failed' | 'cancelled' | 'incomplete';
+
+export type CacheTraceQualificationReason =
+  | 'legacy-trace-schema'
+  | 'attempt-not-succeeded'
+  | 'response-usage-missing'
+  | 'input-tokens-not-reported'
+  | 'cache-read-not-reported'
+  | 'cache-write-not-reported'
+  | 'invalid-input-tokens'
+  | 'invalid-cache-read-tokens'
+  | 'cache-read-exceeds-input'
+  | 'invalid-cache-write-tokens'
+  | 'cache-write-exceeds-input';
+
+export interface CacheTraceQualification {
+  eligible: boolean;
+  reasons: CacheTraceQualificationReason[];
+}
 
 export interface CacheTraceRecord {
   schema: string;
@@ -57,6 +78,7 @@ export interface CacheTraceRecord {
   errorSummary: string;
   httpStatus: number | null;
   usage: CacheTraceUsage;
+  qualification: CacheTraceQualification;
   diff: {
     baselineReset: boolean;
     resetReason?: 'first-record' | 'provider-model-api-changed';
@@ -84,10 +106,13 @@ export interface CacheTraceSessionSummary {
   lastTimestamp: string;
   providers: string[];
   models: string[];
-  inputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  weightedHitRatio: number;
+  inputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  weightedHitRatio?: number;
+  eligibleAttempts: number;
+  ineligibleAttempts: number;
+  ineligibleReasons: Partial<Record<CacheTraceQualificationReason, number>>;
   anomalousRecords: number;
 }
 
@@ -130,7 +155,7 @@ export async function readCacheTraceStore(
         if (malformed || groups.size === 0) malformedFiles++;
       } else {
         const raw = JSON.parse(content);
-        const record = raw?.schema === 'xiaoba.cache_trace.v4'
+        const record = raw?.schema === 'xiaoba.cache_trace.v4' || raw?.schema === 'xiaoba.cache_trace.v5'
           ? normalizeAttemptEvents([raw], relative)
           : normalizeLegacyRecord(raw, relative);
         if (record) normalized.push(record);
@@ -170,6 +195,9 @@ function normalizeAttemptEvents(
   const contextLifecycle = normalizeContextLifecycle(request.context_lifecycle);
   const lifecycle = final.lifecycle || {};
   const firstLifecycle = base.lifecycle || {};
+  const responseUsagePresent = hasOwn(final, 'response_usage')
+    || Boolean(final.response && hasOwn(final.response, 'usage'))
+    || hasOwn(final, 'usage');
   const responseUsage = final.response_usage || final.response?.usage || final.usage || {};
   const session = base.session || final.session || {};
   const episode = base.episode || final.episode || {};
@@ -179,15 +207,15 @@ function normalizeAttemptEvents(
   const outcome = terminal
     ? normalizeOutcome(lifecycle.outcome)
     : 'incomplete';
-  const inputTokens = number(responseUsage.input_tokens ?? responseUsage.prompt_tokens ?? responseUsage.promptTokens);
-  const cacheReadTokens = number(responseUsage.cache_read_tokens ?? responseUsage.cached_read_tokens ?? responseUsage.cachedReadTokens);
-  const cacheWriteTokens = number(responseUsage.cache_write_tokens ?? responseUsage.cached_write_tokens ?? responseUsage.cachedWriteTokens);
+  const schema = text(final.schema || base.schema || 'xiaoba.cache_trace.v4');
+  const apiType = text(request.api_type || base.api_type || 'unknown');
+  const normalizedUsage = normalizeUsage(responseUsage, responseUsagePresent, schema, outcome, apiType);
   const failure = final.failure || {};
   const callId = text(lifecycle.call_id || firstLifecycle.call_id || episode.run_id || path.basename(file));
   const attemptId = text(lifecycle.attempt_id || firstLifecycle.attempt_id || `${callId}:1`);
 
   return {
-    schema: text(final.schema || base.schema || 'xiaoba.cache_trace.v4'),
+    schema,
     file,
     sessionId: text(session.session_id || base.session_id || 'unknown'),
     sessionType: text(session.session_type || base.session_type || 'agent'),
@@ -203,7 +231,7 @@ function normalizeAttemptEvents(
     durationMs: number(lifecycle.duration_ms ?? final.response?.duration_ms),
     provider: text(request.provider || base.provider || 'unknown'),
     model: text(request.model || base.model || 'unknown'),
-    apiType: text(request.api_type || base.api_type || 'unknown'),
+    apiType,
     cacheStrategy: text(request.cache_strategy || 'unknown'),
     ...(cachePlan ? { cachePlan } : {}),
     ...(contextLifecycle ? { contextLifecycle } : {}),
@@ -217,14 +245,8 @@ function normalizeAttemptEvents(
     errorCategory: text(failure.category),
     errorSummary: text(failure.summary),
     httpStatus: nullableNumber(failure.http_status),
-    usage: {
-      inputTokens,
-      cacheReadTokens,
-      cacheWriteTokens,
-      freshInputTokens: number(responseUsage.fresh_input_tokens ?? Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens)),
-      outputTokens: number(responseUsage.output_tokens ?? responseUsage.completion_tokens ?? responseUsage.completionTokens),
-      hitRatio: ratio(cacheReadTokens, inputTokens),
-    },
+    usage: normalizedUsage.usage,
+    qualification: normalizedUsage.qualification,
   };
 }
 
@@ -234,18 +256,21 @@ function normalizeLegacyRecord(raw: any, file: string): Omit<CacheTraceRecord, '
   const request = raw.request || {};
   const cachePlan = normalizeCachePlan(request.cache_plan);
   const contextLifecycle = normalizeContextLifecycle(request.context_lifecycle);
+  const responseUsagePresent = hasOwn(raw, 'response_usage')
+    || Boolean(raw.response && hasOwn(raw.response, 'usage'))
+    || hasOwn(raw, 'usage');
   const responseUsage = raw.response_usage || raw.response?.usage || raw.usage || {};
   const session = raw.session || {};
   const sessionId = text(session.session_id || raw.session_id || raw.conversation_id || 'unknown');
-  const inputTokens = number(responseUsage.input_tokens ?? responseUsage.prompt_tokens ?? responseUsage.promptTokens);
-  const cacheReadTokens = number(responseUsage.cache_read_tokens ?? responseUsage.cached_read_tokens ?? responseUsage.cachedReadTokens);
-  const cacheWriteTokens = number(responseUsage.cache_write_tokens ?? responseUsage.cached_write_tokens ?? responseUsage.cachedWriteTokens);
+  const schema = text(raw.schema || 'unknown');
+  const apiType = text(request.api_type || raw.api_type || 'unknown');
+  const normalizedUsage = normalizeUsage(responseUsage, responseUsagePresent, schema, 'succeeded', apiType);
   const messageHashes = request.message_sha256s || request.messages_sha256 || request.message_hashes || [];
   const timestamp = text(request.timestamp || raw.timestamp || raw.response?.timestamp || '');
   if (!timestamp) return null;
   const runId = text(episode.run_id || raw.run_id || path.basename(file, '.json'));
   return {
-    schema: text(raw.schema || 'unknown'),
+    schema,
     file,
     sessionId,
     sessionType: text(session.session_type || raw.session_type || 'agent'),
@@ -261,7 +286,7 @@ function normalizeLegacyRecord(raw: any, file: string): Omit<CacheTraceRecord, '
     durationMs: number(raw.response?.duration_ms),
     provider: text(request.provider || raw.provider || 'unknown'),
     model: text(request.model || raw.model || 'unknown'),
-    apiType: text(request.api_type || raw.api_type || 'unknown'),
+    apiType,
     cacheStrategy: text(request.cache_strategy || 'unknown'),
     ...(cachePlan ? { cachePlan } : {}),
     ...(contextLifecycle ? { contextLifecycle } : {}),
@@ -275,15 +300,116 @@ function normalizeLegacyRecord(raw: any, file: string): Omit<CacheTraceRecord, '
     errorCategory: '',
     errorSummary: '',
     httpStatus: null,
+    usage: normalizedUsage.usage,
+    qualification: normalizedUsage.qualification,
+  };
+}
+
+interface UsageField {
+  present: boolean;
+  value?: number;
+  valid: boolean;
+}
+
+function normalizeUsage(
+  raw: any,
+  responseUsagePresent: boolean,
+  schema: string,
+  outcome: CacheTraceOutcome,
+  apiType: string,
+): { usage: CacheTraceUsage; qualification: CacheTraceQualification } {
+  const value = raw && typeof raw === 'object' ? raw : {};
+  const input = usageField(value, ['input_tokens', 'prompt_tokens', 'promptTokens']);
+  const cacheRead = usageField(value, ['cache_read_tokens', 'cached_read_tokens', 'cachedReadTokens']);
+  const cacheWrite = usageField(value, ['cache_write_tokens', 'cached_write_tokens', 'cachedWriteTokens']);
+  const freshInput = usageField(value, ['fresh_input_tokens']);
+  const output = usageField(value, ['output_tokens', 'completion_tokens', 'completionTokens']);
+  const isV5 = schema === 'xiaoba.cache_trace.v5';
+  const inputReported = isV5 ? value.input_tokens_reported === true : input.present;
+  const cacheReadReported = isV5 ? value.cache_read_reported === true : cacheRead.present;
+  const cacheWriteReported = isV5 ? value.cache_write_reported === true : cacheWrite.present;
+  const reasons: CacheTraceQualificationReason[] = [];
+
+  if (!isV5) reasons.push('legacy-trace-schema');
+  if (outcome !== 'succeeded') reasons.push('attempt-not-succeeded');
+  if (!responseUsagePresent) {
+    reasons.push('response-usage-missing');
+  } else {
+    if (!inputReported) {
+      reasons.push('input-tokens-not-reported');
+    } else if (!input.valid || input.value === undefined || input.value <= 0) {
+      reasons.push('invalid-input-tokens');
+    }
+    if (!cacheReadReported) {
+      reasons.push('cache-read-not-reported');
+    } else if (!cacheRead.valid || cacheRead.value === undefined) {
+      reasons.push('invalid-cache-read-tokens');
+    } else if (input.valid && input.value !== undefined && cacheRead.value > input.value) {
+      reasons.push('cache-read-exceeds-input');
+    }
+    if (isV5 && apiType === 'anthropic-messages' && !cacheWriteReported) {
+      reasons.push('cache-write-not-reported');
+    }
+    if (cacheWriteReported && (!cacheWrite.valid || cacheWrite.value === undefined)) {
+      reasons.push('invalid-cache-write-tokens');
+    } else if (cacheWriteReported
+      && cacheWrite.value !== undefined
+      && input.valid
+      && input.value !== undefined
+      && cacheWrite.value > input.value) {
+      reasons.push('cache-write-exceeds-input');
+    }
+  }
+
+  const computedFreshInput = freshInput.valid
+    ? freshInput.value
+    : input.valid
+      && cacheRead.valid
+      && cacheWrite.valid
+      && input.value !== undefined
+      && cacheRead.value !== undefined
+      && cacheWrite.value !== undefined
+      ? Math.max(0, input.value - cacheRead.value - cacheWrite.value)
+      : undefined;
+  const hitRatio = input.valid
+    && input.value !== undefined
+    && input.value > 0
+    && cacheReadReported
+    && cacheRead.valid
+    && cacheRead.value !== undefined
+    ? ratio(cacheRead.value, input.value)
+    : undefined;
+
+  return {
     usage: {
-      inputTokens,
-      cacheReadTokens,
-      cacheWriteTokens,
-      freshInputTokens: number(responseUsage.fresh_input_tokens ?? Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens)),
-      outputTokens: number(responseUsage.output_tokens ?? responseUsage.completion_tokens ?? responseUsage.completionTokens),
-      hitRatio: ratio(cacheReadTokens, inputTokens),
+      responseUsagePresent,
+      ...(input.valid && input.value !== undefined ? { inputTokens: input.value } : {}),
+      cacheReadReported,
+      ...(cacheRead.valid && cacheRead.value !== undefined ? { cacheReadTokens: cacheRead.value } : {}),
+      cacheWriteReported,
+      ...(cacheWrite.valid && cacheWrite.value !== undefined ? { cacheWriteTokens: cacheWrite.value } : {}),
+      ...(computedFreshInput === undefined ? {} : { freshInputTokens: computedFreshInput }),
+      ...(output.valid && output.value !== undefined ? { outputTokens: output.value } : {}),
+      ...(hitRatio === undefined ? {} : { hitRatio }),
+    },
+    qualification: {
+      eligible: reasons.length === 0,
+      reasons,
     },
   };
+}
+
+function usageField(value: Record<string, unknown>, keys: string[]): UsageField {
+  const key = keys.find(candidate => hasOwn(value, candidate));
+  if (!key) return { present: false, valid: false };
+  const raw = value[key];
+  if ((typeof raw !== 'number' && typeof raw !== 'string') || raw === '') {
+    return { present: true, valid: false };
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0
+    ? { present: true, valid: true, value: parsed }
+    : { present: true, valid: false };
 }
 
 function normalizeCachePlan(value: any): CacheTraceRecord['cachePlan'] | undefined {
@@ -349,10 +475,20 @@ function summarizeSessions(records: CacheTraceRecord[]): CacheTraceSessionSummar
   const groups = new Map<string, CacheTraceRecord[]>();
   for (const record of records) groups.set(record.sessionId, [...(groups.get(record.sessionId) || []), record]);
   return [...groups.entries()].map(([sessionId, items]) => {
-    const inputTokens = sum(items, item => item.usage.inputTokens);
-    const cacheReadTokens = sum(items, item => item.usage.cacheReadTokens);
+    const eligibleItems = items.filter(item => item.qualification.eligible);
+    const inputTokens = sum(eligibleItems, item => item.usage.inputTokens ?? 0);
+    const cacheReadTokens = sum(eligibleItems, item => item.usage.cacheReadTokens ?? 0);
+    const cacheWriteFullyReported = eligibleItems.length > 0
+      && eligibleItems.every(item => item.usage.cacheWriteReported
+        && item.usage.cacheWriteTokens !== undefined);
     const calls = groupBy(items, item => item.callId);
     const callItems = [...calls.values()];
+    const ineligibleReasons: Partial<Record<CacheTraceQualificationReason, number>> = {};
+    for (const item of items) {
+      for (const reason of item.qualification.reasons) {
+        ineligibleReasons[reason] = (ineligibleReasons[reason] ?? 0) + 1;
+      }
+    }
     return {
       sessionId,
       sessionType: items.at(-1)?.sessionType || 'agent',
@@ -372,10 +508,14 @@ function summarizeSessions(records: CacheTraceRecord[]): CacheTraceSessionSummar
       lastTimestamp: items.at(-1)?.timestamp || '',
       providers: unique(items.map(item => item.provider)),
       models: unique(items.map(item => item.model)),
-      inputTokens,
-      cacheReadTokens,
-      cacheWriteTokens: sum(items, item => item.usage.cacheWriteTokens),
-      weightedHitRatio: ratio(cacheReadTokens, inputTokens),
+      ...(eligibleItems.length > 0 ? { inputTokens, cacheReadTokens } : {}),
+      ...(cacheWriteFullyReported ? {
+        cacheWriteTokens: sum(eligibleItems, item => item.usage.cacheWriteTokens ?? 0),
+      } : {}),
+      ...(inputTokens > 0 ? { weightedHitRatio: ratio(cacheReadTokens, inputTokens) } : {}),
+      eligibleAttempts: eligibleItems.length,
+      ineligibleAttempts: items.length - eligibleItems.length,
+      ineligibleReasons,
       anomalousRecords: items.filter(item => !item.diff.baselineReset && item.diff.stableSystemChanged).length,
     };
   }).sort((left, right) => right.lastTimestamp.localeCompare(left.lastTimestamp));
@@ -420,6 +560,10 @@ function nullableNumber(value: unknown): number | null {
   if (value === undefined || value === null || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function hasOwn(value: unknown, key: string): boolean {
+  return value !== undefined && value !== null && Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function text(value: unknown): string {

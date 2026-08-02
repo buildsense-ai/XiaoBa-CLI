@@ -15,11 +15,11 @@ import {
   sanitizeProviderErrorMessageForLog,
 } from '../utils/provider-error-log-sanitizer';
 
-export const CACHE_TRACE_SCHEMA = 'xiaoba.cache_trace.v4';
+export const CACHE_TRACE_SCHEMA = 'xiaoba.cache_trace.v5';
 
 export type CacheTraceApiType = 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses';
 
-export interface CacheTraceEntryV4 {
+export interface CacheTraceEntryV5 {
   schema: typeof CACHE_TRACE_SCHEMA;
   session: {
     session_id: string;
@@ -110,13 +110,16 @@ export interface CacheTraceEntryV4 {
     stop_reason?: string;
   };
   response_usage?: {
-    input_tokens: number;
-    cache_read_tokens: number;
-    cache_write_tokens: number;
-    fresh_input_tokens: number;
-    output_tokens: number;
-    cache_hit_ratio: number;
-    cache_write_ratio: number;
+    input_tokens?: number;
+    input_tokens_reported: boolean;
+    cache_read_reported: boolean;
+    cache_read_tokens?: number;
+    cache_write_reported: boolean;
+    cache_write_tokens?: number;
+    fresh_input_tokens?: number;
+    output_tokens?: number;
+    cache_hit_ratio?: number;
+    cache_write_ratio?: number;
   };
   failure?: {
     category: string;
@@ -137,7 +140,7 @@ export interface CacheTraceObserverOptions {
   env?: NodeJS.ProcessEnv;
   traceDir?: string;
   onError?: (error: unknown) => void;
-  writeEntry?: (filePath: string, entry: CacheTraceEntryV4) => Promise<void>;
+  writeEntry?: (filePath: string, entry: CacheTraceEntryV5) => Promise<void>;
 }
 
 /**
@@ -156,7 +159,7 @@ export class CacheTraceObserver implements CacheTraceSink {
   private readonly episodeId?: string;
   private readonly traceDir?: string;
   private readonly onError?: (error: unknown) => void;
-  private readonly writeEntry: (filePath: string, entry: CacheTraceEntryV4) => Promise<void>;
+  private readonly writeEntry: (filePath: string, entry: CacheTraceEntryV5) => Promise<void>;
   private readonly fileByAttemptId = new Map<string, string>();
   private writeChain: Promise<void> = Promise.resolve();
 
@@ -199,7 +202,7 @@ export class CacheTraceObserver implements CacheTraceSink {
     }
   }
 
-  private buildEntry(event: ModelAttemptEvent): CacheTraceEntryV4 {
+  private buildEntry(event: ModelAttemptEvent): CacheTraceEntryV5 {
     const system = summarizeSystemPrompt(event.request.messages as Message[]);
     const messageSha256s = event.request.messages.map(message => hashMessage(message));
     const toolsCanonical = event.request.tools.map(tool => ({
@@ -217,11 +220,22 @@ export class CacheTraceObserver implements CacheTraceSink {
       toolsSha256,
     }));
     const usage = event.response?.usage;
-    const inputTokens = finiteNonNegative(usage?.promptTokens);
-    const cacheReadTokens = finiteNonNegative(usage?.cachedReadTokens);
-    const cacheWriteTokens = finiteNonNegative(usage?.cachedWriteTokens);
-    const outputTokens = finiteNonNegative(usage?.completionTokens);
-    const freshInputTokens = Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
+    const inputTokens = optionalFiniteNonNegative(usage?.promptTokens);
+    const inputTokensReported = usage?.inputTokensReported === true;
+    const cacheReadReported = hasOwn(usage, 'cachedReadTokens');
+    const cacheReadTokens = cacheReadReported
+      ? optionalFiniteNonNegative(usage?.cachedReadTokens)
+      : undefined;
+    const cacheWriteReported = hasOwn(usage, 'cachedWriteTokens');
+    const cacheWriteTokens = cacheWriteReported
+      ? optionalFiniteNonNegative(usage?.cachedWriteTokens)
+      : undefined;
+    const outputTokens = optionalFiniteNonNegative(usage?.completionTokens);
+    const freshInputTokens = inputTokens !== undefined
+      && cacheReadTokens !== undefined
+      && cacheWriteTokens !== undefined
+      ? Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens)
+      : undefined;
     const includeContent = event.outcome === 'started'
       && /^(1|true|yes|on)$/i.test(this.env.XIAOBA_CACHE_TRACE_CONTENT || '');
     const retry = event.retry;
@@ -321,21 +335,28 @@ export class CacheTraceObserver implements CacheTraceSink {
           duration_ms: finiteNonNegative(event.durationMs),
           ...(event.response?.stopReason ? { stop_reason: event.response.stopReason } : {}),
         },
-        response_usage: {
-          input_tokens: inputTokens,
-          cache_read_tokens: cacheReadTokens,
-          cache_write_tokens: cacheWriteTokens,
-          fresh_input_tokens: freshInputTokens,
-          output_tokens: outputTokens,
-          cache_hit_ratio: ratio(cacheReadTokens, inputTokens),
-          cache_write_ratio: ratio(cacheWriteTokens, inputTokens),
-        },
+        ...(usage ? {
+          response_usage: {
+            ...(inputTokens === undefined ? {} : { input_tokens: inputTokens }),
+            input_tokens_reported: inputTokensReported,
+            cache_read_reported: cacheReadReported,
+            ...(cacheReadTokens === undefined ? {} : { cache_read_tokens: cacheReadTokens }),
+            cache_write_reported: cacheWriteReported,
+            ...(cacheWriteTokens === undefined ? {} : { cache_write_tokens: cacheWriteTokens }),
+            ...(freshInputTokens === undefined ? {} : { fresh_input_tokens: freshInputTokens }),
+            ...(outputTokens === undefined ? {} : { output_tokens: outputTokens }),
+            ...(inputTokens !== undefined && inputTokens > 0 && cacheReadTokens !== undefined
+              ? { cache_hit_ratio: ratio(cacheReadTokens, inputTokens) } : {}),
+            ...(inputTokens !== undefined && inputTokens > 0 && cacheWriteTokens !== undefined
+              ? { cache_write_ratio: ratio(cacheWriteTokens, inputTokens) } : {}),
+          },
+        } : {}),
       }),
       ...(failure ? { failure } : {}),
     };
   }
 
-  private resolveFilePath(entry: CacheTraceEntryV4): string {
+  private resolveFilePath(entry: CacheTraceEntryV5): string {
     const root = this.traceDir
       || String(this.env.XIAOBA_CACHE_TRACE_DIR || '').trim()
       || path.join(PathResolver.getRuntimeDataRoot(this.env), 'logs', 'cache-trace');
@@ -383,7 +404,7 @@ export function resolveCacheTraceDir(env: NodeJS.ProcessEnv = process.env): stri
   return path.resolve(explicit || path.join(PathResolver.getRuntimeDataRoot(env), 'logs', 'cache-trace'));
 }
 
-function summarizeSystemPrompt(messages: readonly Message[]): CacheTraceEntryV4['request']['system_prompt'] {
+function summarizeSystemPrompt(messages: readonly Message[]): CacheTraceEntryV5['request']['system_prompt'] {
   const stable: string[] = [];
   const dynamic: string[] = [];
 
@@ -414,7 +435,7 @@ function isDynamicSystemMessage(message: Message, text: string): boolean {
   return /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(text);
 }
 
-function resolveCacheStrategy(event: ModelAttemptEvent): CacheTraceEntryV4['request']['cache_strategy'] {
+function resolveCacheStrategy(event: ModelAttemptEvent): CacheTraceEntryV5['request']['cache_strategy'] {
   if (event.request.cache) return event.request.cache.strategy;
   if (event.apiType === 'anthropic-messages') return 'anthropic-explicit-prefix';
   if (event.apiType === 'openai-responses') return 'openai-prompt-cache-key';
@@ -506,7 +527,7 @@ function stableSerialize(value: unknown): string {
   return JSON.stringify(visit(value));
 }
 
-function summarizeFailure(error: unknown): NonNullable<CacheTraceEntryV4['failure']> {
+function summarizeFailure(error: unknown): NonNullable<CacheTraceEntryV5['failure']> {
   const raw = error as any;
   const status = finiteInteger(raw?.response?.status ?? raw?.status ?? raw?.statusCode);
   const code = text(raw?.response?.data?.error?.code ?? raw?.error?.code ?? raw?.code);
@@ -539,6 +560,16 @@ function finiteNonNegative(value: unknown): number {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
+function optionalFiniteNonNegative(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
+function hasOwn(value: unknown, key: string): boolean {
+  return value !== undefined && value !== null && Object.prototype.hasOwnProperty.call(value, key);
+}
+
 function finiteInteger(value: unknown): number {
   const number = Number(value ?? 0);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
@@ -558,7 +589,7 @@ function inferSessionType(sessionId: string): string {
   return 'agent';
 }
 
-async function appendEntry(filePath: string, entry: CacheTraceEntryV4): Promise<void> {
+async function appendEntry(filePath: string, entry: CacheTraceEntryV5): Promise<void> {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   await fs.promises.appendFile(filePath, `${JSON.stringify(entry)}\n`, { encoding: 'utf-8', mode: 0o600 });
 }

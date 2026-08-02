@@ -306,6 +306,7 @@ describe('OpenAIProvider Responses API mode', () => {
       assert.equal(seenUrl, 'https://example.test/v1/responses');
       assert.equal(seenBody.stream, false);
       assert.equal(result.content, 'cached answer');
+      assert.equal(result.usage?.inputTokensReported, true);
       assert.equal(result.usage?.cachedReadTokens, 9472);
       assert.equal(result.usage?.cachedWriteTokens, 512);
       assert.equal(result.usage?.totalTokens, 10020);
@@ -529,10 +530,40 @@ describe('OpenAIProvider Responses API mode', () => {
 
       assert.deepEqual(chunks, ['hello', '<']);
       assert.equal(result.content, 'hello<');
+      assert.equal(result.usage?.inputTokensReported, true);
       assert.equal(result.usage?.cachedReadTokens, 8);
+      assert.equal(Object.prototype.hasOwnProperty.call(result.usage, 'cachedWriteTokens'), false);
     } finally {
       (axios as any).post = originalPost;
     }
+  });
+
+  test('distinguishes omitted cache usage from explicit zero in Responses usage', () => {
+    const provider = createCompatibleProvider();
+    const missing = (provider as any).parseResponsesUsage({
+      input_tokens: 10,
+      output_tokens: 1,
+      total_tokens: 11,
+    });
+    const explicitZero = (provider as any).parseResponsesUsage({
+      input_tokens: 10,
+      output_tokens: 1,
+      total_tokens: 11,
+      input_tokens_details: { cached_tokens: 0, cache_creation_tokens: 0 },
+    });
+    const missingInput = (provider as any).parseResponsesUsage({
+      output_tokens: 1,
+      input_tokens_details: { cached_tokens: 5 },
+    });
+
+    assert.equal(missing.inputTokensReported, true);
+    assert.equal(missingInput.inputTokensReported, false);
+    assert.equal(Object.prototype.hasOwnProperty.call(missing, 'cachedReadTokens'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(missing, 'cachedWriteTokens'), false);
+    assert.equal(explicitZero.cachedReadTokens, 0);
+    assert.equal(explicitZero.cachedWriteTokens, 0);
+    assert.equal(Object.prototype.hasOwnProperty.call(explicitZero, 'cachedReadTokens'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(explicitZero, 'cachedWriteTokens'), true);
   });
 
   test('preserves streamed text when the terminal response omits its message', async () => {
