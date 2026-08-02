@@ -30,6 +30,7 @@
     "benchmark:cache": "node dist/cache-benchmark/cli.js",
     "benchmark:cache:acceptance": "node dist/cache-benchmark/acceptance-cli.js",
     "benchmark:cache:online": "node dist/cache-benchmark/online-cli.js",
+    "benchmark:checkpoint-canary": "node dist/cache-benchmark/checkpoint-small-window-canary.js",
     "report": "node dist/index.js chat --exec '/report'",
     "clean-logs": "node scripts/clean-logs.mjs",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",

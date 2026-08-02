@@ -885,7 +885,7 @@ describe('AgentSession lifecycle', () => {
       },
     });
 
-    assert.deepStrictEqual(compactReasons, ['pre_turn', 'restore']);
+    assert.deepStrictEqual(compactReasons, ['pre_turn', 'restore', 'mid_turn']);
     assert.deepStrictEqual(thinking, [
       CONTEXT_COMPACTION_START_MESSAGE,
       CONTEXT_COMPACTION_COMPLETE_MESSAGE,
@@ -1300,7 +1300,8 @@ describe('AgentSession lifecycle', () => {
       interrupted.appendDurableContext([entry], { source: entry.source, cursor: 402 }),
       /simulated process exit/,
     );
-    assert.equal(summaryCalls, 1);
+    assert.ok(summaryCalls >= 1);
+    const summaryCallsAfterCheckpoint = summaryCalls;
 
     const restored = new AgentSession(sessionKey, services, 'catscompany');
     restored.setSystemPromptProvider(() => 'system prompt');
@@ -1310,7 +1311,7 @@ describe('AgentSession lifecycle', () => {
       true,
     );
 
-    assert.equal(summaryCalls, 1);
+    assert.equal(summaryCalls, summaryCallsAfterCheckpoint);
     assert.equal(restored.getRemoteContextCursor(entry.source), 402);
   });
 

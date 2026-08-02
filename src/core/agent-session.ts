@@ -30,7 +30,6 @@ import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { SessionTurnLogger } from '../utils/session-turn-logger';
 import { Metrics } from '../utils/metrics';
-import { ContextWindowManager } from './context-window-manager';
 import {
   RuntimeFeedbackInbox,
   RuntimeFeedbackInput,
@@ -51,7 +50,10 @@ import {
   type UpdateGoalInput,
 } from './goal-runtime';
 import { SubAgentManager } from './sub-agent-manager';
-import type { PendingUserInputProvider } from './conversation-runner';
+import {
+  CONTEXT_CHECKPOINT_FAILED_MESSAGE,
+  type PendingUserInputProvider,
+} from './conversation-runner';
 import { resolveModelContextWindow } from '../utils/model-context-window';
 import { parseSessionKeyV2 } from './session-router';
 import {
@@ -76,7 +78,6 @@ import { collectRemoteContextWatermarks } from './remote-context-watermarks';
 import {
   CheckpointCompactionCoordinator,
   type CheckpointCompactionPhase,
-  isCheckpointCompactionEnabled,
 } from './checkpoint-compaction';
 import { estimateToolsTokens } from './token-estimator';
 import type { SessionRuntimeLogEvent, TurnErrorPayload } from '../utils/session-log-schema';
@@ -99,8 +100,8 @@ export const MODEL_TIMEOUT_MESSAGE = '模型中转请求超时了，我已经保
 export const MODEL_TRANSIENT_ERROR_MESSAGE = '当前模型服务临时异常，刚才这次请求没有完成。我已经保留上下文；你可以稍后重试，或临时切换到其他模型继续。';
 export const EMPTY_MODEL_RESPONSE_MESSAGE = '模型本轮未返回有效内容，自动重试后仍未恢复。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
 export const CONTEXT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
-export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '上下文压缩完成，继续处理当前请求。';
-export const CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文继续处理。';
+export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '上下文压缩候选已生成，正在验证并持久化；尚未替换原上下文。';
+export const CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败；原上下文已保留，本轮不会截断后继续。';
 
 // ─── 接口定义 ───────────────────────────────────────────
 
@@ -228,9 +229,7 @@ export class AgentSession {
   private turnLogRecorder: TurnLogRecorder;
   private turnContextBuilder = new TurnContextBuilder();
   private turnController: AgentTurnController;
-  private contextWindowManager: ContextWindowManager;
   private checkpointCompactionCoordinator: CheckpointCompactionCoordinator;
-  private readonly useCheckpointCompaction: boolean;
   private skillRuntime: SessionSkillRuntime;
   private runtimeFeedbackInbox = new RuntimeFeedbackInbox();
   private planRuntime = new PlanRuntime();
@@ -256,15 +255,10 @@ export class AgentSession {
     Logger.info(
       `[${key}] 模型上下文: ${contextWindow.label} window=${contextWindow.contextWindowTokens}, promptBudget=${contextWindow.promptBudgetTokens}, reserve=${contextWindow.safetyReserveTokens}`,
     );
-    this.contextWindowManager = new ContextWindowManager(services.aiService, {
-      maxContextTokens: contextWindow.promptBudgetTokens,
-      summaryContentBudget: contextWindow.summaryBudgetTokens,
-    });
     this.checkpointCompactionCoordinator = new CheckpointCompactionCoordinator(
       services.aiService,
       { maxContextTokens: contextWindow.promptBudgetTokens },
     );
-    this.useCheckpointCompaction = isCheckpointCompactionEnabled();
     this.skillRuntime = new SessionSkillRuntime(services.skillManager, key);
     this.lifecycleManager = new SessionLifecycleManager({
       sessionKey: key,
@@ -290,9 +284,10 @@ export class AgentSession {
       workspaceRoot: this.defaultDirectory,
       getCurrentDirectory: () => this.currentDirectory,
       updateCurrentDirectory: directory => this.updateCurrentDirectory(directory),
-      checkpointCompactionCoordinator: this.useCheckpointCompaction
-        ? this.checkpointCompactionCoordinator
-        : undefined,
+      // Same-episode overflow recovery must always use an atomic, durable
+      // checkpoint. The rollback flag controls only the between-turn strategy;
+      // it may never re-enable request-only trimming in the ReAct loop.
+      checkpointCompactionCoordinator: this.checkpointCompactionCoordinator,
       persistCheckpoint: messages => {
         if (!this.persistCheckpoint(messages)) {
           throw new Error('Failed to persist continuation checkpoint');
@@ -447,11 +442,11 @@ export class AgentSession {
         return;
       }
       if (compactionResult.compacted) {
-        if (this.persistCheckpoint(compactionResult.messages)) {
-          this.messages = compactionResult.messages;
-        } else {
-          Logger.warning(`[会话 ${this.key}] 恢复检查点持久化失败，保留原始上下文`);
-          this.messages = messagesBeforeRestoreCompaction;
+          if (this.persistCheckpoint(compactionResult.messages)) {
+            this.messages = compactionResult.messages;
+          } else {
+            this.messages = messagesBeforeRestoreCompaction;
+            throw this.checkpointPersistenceError('恢复检查点');
         }
       } else {
         this.messages = compactionResult.messages;
@@ -753,8 +748,8 @@ export class AgentSession {
           if (this.persistCheckpoint(compactionResult.messages)) {
             this.messages = compactionResult.messages;
           } else {
-            Logger.warning(`[会话 ${this.key}] 处理前检查点持久化失败，保留原始上下文`);
             this.messages = messagesBeforeCompaction;
+            throw this.checkpointPersistenceError('处理前检查点');
           }
         } else {
           this.messages = compactionResult.messages;
@@ -827,6 +822,7 @@ export class AgentSession {
         const isModelTimeoutError = this.isModelTimeoutError(err);
         const isTransientProviderError = this.isTransientProviderError(err);
         const isEmptyModelResponseError = this.isEmptyModelResponseError(err);
+        const isContextCheckpointFailure = err?.code === 'CONTEXT_CHECKPOINT_FAILED';
         const relayBudgetErrorReply = this.formatRelayBudgetErrorReply(err);
         const isRelayBudgetError = relayBudgetErrorReply !== null;
         const closestDiagnostics = readModelErrorDiagnostics(err);
@@ -886,7 +882,9 @@ export class AgentSession {
 
         // This PR observes failures without changing the established user-facing behavior.
         let errorReply = ERROR_MESSAGE;
-        if (isImageSafetyError) {
+        if (isContextCheckpointFailure) {
+          errorReply = CONTEXT_CHECKPOINT_FAILED_MESSAGE;
+        } else if (isImageSafetyError) {
           errorReply = MODEL_IMAGE_SAFETY_MESSAGE;
         } else if (relayBudgetErrorReply) {
           errorReply = relayBudgetErrorReply;
@@ -1042,7 +1040,7 @@ export class AgentSession {
       if (commandName === 'history') {
         return {
           handled: true,
-          reply: `对话历史信息:\n当前历史长度: ${this.messages.length} 条消息\n上下文压缩: 由 ContextWindowManager 自动管理`,
+          reply: `对话历史信息:\n当前历史长度: ${this.messages.length} 条消息\n上下文压缩: durable continuation checkpoint`,
         };
       }
 
@@ -1267,9 +1265,6 @@ export class AgentSession {
     maxTokens: number;
     usagePercent: number;
   } {
-    if (!this.useCheckpointCompaction) {
-      return this.contextWindowManager.getUsageInfo(messages);
-    }
     return this.checkpointCompactionCoordinator.getUsageInfo(
       messages,
       this.getToolDefinitionTokens(),
@@ -1279,24 +1274,11 @@ export class AgentSession {
   private async compactContextIfNeeded(
     messages: Message[],
     phase: CheckpointCompactionPhase,
-    reason: string,
+    _reason: string,
     signal?: AbortSignal,
     callbacks?: SessionCallbacks,
   ): Promise<{ messages: Message[]; compacted: boolean }> {
     const modelRequestOptions = this.createCompactionModelRequestOptions(messages);
-    if (!this.useCheckpointCompaction) {
-      const compactedMessages = await this.contextWindowManager.compactIfNeeded(messages, {
-        sessionKey: this.key,
-        reason,
-        signal,
-        modelRequestOptions,
-        onStatus: this.createContextCompactionNotifier(callbacks),
-      });
-      return {
-        messages: compactedMessages,
-        compacted: false,
-      };
-    }
     return this.checkpointCompactionCoordinator.compactIfNeeded(messages, {
       sessionKey: this.key,
       phase,
@@ -1347,6 +1329,12 @@ export class AgentSession {
       stripAssistantArtifactsFromMessages(messages),
     );
     return this.lifecycleManager.saveContext(durable);
+  }
+
+  private checkpointPersistenceError(stage: string): Error {
+    const error = new Error(`${stage}持久化失败；原始上下文已保留`);
+    (error as any).code = 'CONTEXT_CHECKPOINT_FAILED';
+    return error;
   }
 
   private createContextCompactionNotifier(callbacks?: SessionCallbacks): ((event: {

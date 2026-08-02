@@ -798,7 +798,7 @@ function isRuntimeContextMessage(message: Message): boolean {
 
 function assertPendingBoundaryBeforeUser(messages: Message[], userContent: string): void {
   const boundaryIndex = messages.findIndex(message =>
-    message.role === 'system'
+    message.role === 'user'
     && typeof message.content === 'string'
     && message.content.startsWith(TRANSIENT_PENDING_USER_INPUT_PREFIX)
   );

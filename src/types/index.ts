@@ -1,6 +1,17 @@
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } };
+  | {
+      type: 'image';
+      source: {
+        type: 'base64';
+        media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+        data: string;
+      };
+      /** Durable identity used to reinspect the image after checkpoint/restart. */
+      filePath?: string;
+      attachmentRef?: string;
+      dimensions?: { width: number; height: number };
+    };
 
 export type ProviderContentBlock = Record<string, unknown> & { type: string };
 export type ProviderApiType = 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses';
@@ -60,6 +71,20 @@ export interface ProviderStateReference {
   endpointFingerprint: string;
 }
 
+/** Durable identity for a media artifact that must be re-opened after compaction. */
+export interface CheckpointArtifactIdentity {
+  kind: 'image';
+  mediaType: string;
+  encodedBytes: number;
+  sha256: string;
+  filePath?: string;
+  attachmentRef?: string;
+  dimensions?: { width: number; height: number };
+  sourceRole: Message['role'];
+  sourceName?: string;
+  sourceToolCallId?: string;
+}
+
 export type ReasoningEffort = 'default' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'disabled';
 export type OpenAIApiMode = 'chat_completions' | 'responses';
 
@@ -110,6 +135,8 @@ export interface Message {
   __checkpointBoundary?: boolean;
   /** Internal compaction phase. Never sent to providers. */
   __checkpointPhase?: 'pre_turn' | 'mid_turn' | 'restore';
+  /** Deterministic media identities represented by this checkpoint. */
+  __checkpointArtifacts?: CheckpointArtifactIdentity[];
   /** 远端耐久上下文来源和消息序号，用于游标写盘失败后的幂等补拉。 */
   __remoteContextSource?: string;
   __remoteContextId?: number;

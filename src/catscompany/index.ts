@@ -3590,6 +3590,7 @@ export class CatsCompanyBot {
           blocks.push({
             ...imgBlock,
             filePath: att.localPath || `[CatsCo attachment: ${att.fileName}]`,
+            attachmentRef: attachmentReference,
           } as any);
           Logger.info(`[CatsCo] vision_direct model=${modelName} file=${logFile} bytes_base64=${((imgBlock as any).source as any)?.data?.length || 0}`);
         } else {

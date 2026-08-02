@@ -34,6 +34,7 @@ import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from './pending-user-input-bounda
 import {
   annotateContextMessage,
   isTransientContextMessage,
+  resolveContextCacheScope,
 } from './context-lifecycle';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
@@ -252,7 +253,12 @@ export class TurnContextBuilder {
 
   private insertAfterLeadingSystemPrefix(messages: Message[], ...inserted: Message[]): void {
     let index = 0;
-    while (index < messages.length && messages[index].role === 'system') index++;
+    while (
+      index < messages.length
+      && messages[index].role === 'system'
+      && resolveContextCacheScope(messages[index]) !== 'epoch'
+      && resolveContextCacheScope(messages[index]) !== 'volatile'
+    ) index++;
     messages.splice(index, 0, ...inserted);
   }
 }

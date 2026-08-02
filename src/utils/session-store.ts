@@ -123,7 +123,7 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
     if (
       isTransientContextMessage(message)
       || (message as any).__injected
-      || message.role === 'system'
+      || (message.role === 'system' && !message.__checkpointBoundary)
       || (message.__syntheticObservation && message.__context?.persistence !== 'durable')
       || (message.__runtimeFeedback && message.__context?.persistence !== 'durable')
     ) {

@@ -430,6 +430,7 @@ test('synchronous attempt journal fsyncs only allowlisted fingerprints and usage
   assert.equal(source.includes('RESPONSE_SECRET_MUST_NOT_PERSIST'), false);
   const records = source.trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(records.map(record => record.outcome), ['started', 'succeeded']);
+  assert.equal(records.every(record => record.request_kind === 'main_inference'), true);
   assert.equal(records[1].cache_read_tokens, 80);
   assert.equal(records[1].cache_read_source, 'deepseek.prompt_cache_hit_tokens');
   assert.deepEqual(records[1].provider_usage, {
@@ -1360,6 +1361,7 @@ function attemptEvent(overrides: Partial<ModelAttemptEvent>): ModelAttemptEvent 
     model: 'model-deepseek',
     apiType: 'openai-chat-completions',
     stream: false,
+    requestKind: 'main_inference',
     context: {
       sessionId: 'private-session-id',
       episodeId: 'private-episode-id',

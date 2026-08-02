@@ -48,6 +48,7 @@ export interface CacheTraceEntryV6 {
   };
   request: {
     timestamp: string;
+    request_kind: ModelAttemptEvent['requestKind'];
     provider: string;
     model: string;
     api_type: CacheTraceApiType;
@@ -276,6 +277,7 @@ export class CacheTraceObserver implements CacheTraceSink {
       },
       request: {
         timestamp: event.timestamp,
+        request_kind: event.requestKind,
         provider: event.provider,
         model: event.model,
         api_type: event.apiType,

@@ -63,10 +63,13 @@ test('stale tool pruning preserves protocol identity and protects the active epi
   assert.equal(prepareProviderRequestMessages(result.messages).summary, undefined);
 });
 
-test('checkpoint coordinator persists pruning without calling a summary model when enough space is recovered', async () => {
+test('main checkpoint coordinator never persists prune-only transcript replacements', async () => {
+  let summaryCalls = 0;
   const service = {
-    chatStream: async () => {
-      throw new Error('summary model must not be called');
+    chatStream: async (_messages: Message[], _tools: unknown, callbacks: any) => {
+      summaryCalls++;
+      callbacks.onText?.('semantic continuation summary covering both tool exchanges');
+      return { content: 'semantic continuation summary covering both tool exchanges' };
     },
   } as any;
   const coordinator = new CheckpointCompactionCoordinator(service, {
@@ -88,7 +91,10 @@ test('checkpoint coordinator persists pruning without calling a summary model wh
   });
 
   assert.equal(result.compacted, true);
-  assert.equal(result.action, 'tool_result_prune');
-  assert.ok(String(result.messages[2].content).startsWith(TOOL_RESULT_PRUNED_PREFIX));
-  assert.equal(result.messages.at(-1)?.content, 'current result');
+  assert.equal(result.action, 'checkpoint');
+  assert.ok(summaryCalls >= 1);
+  assert.equal(result.messages.some(message => (
+    String(message.content).startsWith(TOOL_RESULT_PRUNED_PREFIX)
+  )), false);
+  assert.ok(result.messages.some(message => message.__checkpointSummary));
 });

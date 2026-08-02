@@ -601,7 +601,7 @@ test('large cloud transcript is summarized before it is persisted', async () => 
   assert.ok(restored.some(message => String(message.content).includes('recent answer')));
 });
 
-test('summary failure still bounds a single oversized history message', async () => {
+test('summary failure preserves the cloud source and does not persist a truncated session', async () => {
   const store = new MemorySessionStore();
   const client = new FakeHistoryClient([
     page([contextMessage({ content: 'x'.repeat(400_000) })]),
@@ -621,15 +621,13 @@ test('summary failure still bounds a single oversized history message', async ()
     currentSeq: 2,
   });
 
-  assert.equal(result.status, 'restored');
-  assert.equal(result.compressed, true);
-  const restored = store.sessions.get('oversized-session') || [];
-  assert.ok(estimateMessagesTokens(restored) <= 60_000);
-  assert.match(String(restored[0]?.content), /设备恢复提示/);
-  assert.match(String(restored[1]?.content), /已截断/);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.compressed, false);
+  assert.equal(store.saveCalls, 0);
+  assert.equal(store.hasSession('oversized-session'), false);
 });
 
-test('summary timeout persists the bounded fallback instead of failing every retry', async () => {
+test('summary timeout fails closed instead of persisting a truncated fallback', async () => {
   const store = new MemorySessionStore();
   const client = new FakeHistoryClient([
     page([contextMessage({ content: 'x'.repeat(400_000) })]),
@@ -668,12 +666,10 @@ test('summary timeout persists the bounded fallback instead of failing every ret
     signal: timeoutController.signal,
   }).finally(() => clearTimeout(timeout));
 
-  assert.equal(result.status, 'restored');
-  assert.equal(result.compressed, true);
-  assert.equal(store.saveCalls, 1);
-  const restored = store.sessions.get('summary-timeout-session') || [];
-  assert.ok(estimateMessagesTokens(restored) <= 60_000);
-  assert.match(String(restored[0]?.content), /设备恢复提示/);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.compressed, false);
+  assert.equal(store.saveCalls, 0);
+  assert.equal(store.hasSession('summary-timeout-session'), false);
 });
 
 test('explicit cancellation during summary still prevents stale history persistence', async () => {

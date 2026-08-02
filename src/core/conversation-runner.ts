@@ -15,7 +15,10 @@ import { deviceGrantSnapshotCanonicalValue } from './device-grants';
 import { isRateLimitErrorCode } from '../utils/rate-limit-error';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
-import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
+import {
+  splitDurableAndTransient,
+  type CheckpointCompactionCoordinator,
+} from './checkpoint-compaction';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
 import {
   buildExplicitPlanRequestHintIfUseful,
@@ -46,7 +49,11 @@ import {
 } from './transient-environment';
 import { resolveProviderTransientPolicy } from './transient-injection-policy';
 import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '../utils/model-context-window';
-import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
+import {
+  MODEL_IMAGE_SAFETY_MESSAGE,
+  isModelContextLengthError,
+  isModelImageSafetyError,
+} from '../utils/model-error-classifier';
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import { PromptTraceLogger } from '../utils/prompt-trace-logger';
@@ -96,13 +103,10 @@ function normalizeToolName(name: string): string {
   return TOOL_NAME_ALIASES[name] ?? name;
 }
 
-const MIN_MESSAGE_BUDGET = 2000;
-const OVERFLOW_REDUCTION_RATIO = 0.6;
 const MAX_EMPTY_MAX_TOKEN_RECOVERIES = 1;
 const EMPTY_MAX_TOKENS_MESSAGE = '模型这轮输出达到了 max_tokens 上限，但没有生成可见回复或工具调用。已保留当前上下文；请回复“继续”，我会从刚才的位置继续推进。';
 const REPLAY_ARTIFACT_ONLY_MESSAGE = '模型工具调用回放异常，这轮没有生成可见回复。上下文已保留；你可以直接说“继续”，我会从这里接上。';
-export const PROMPT_BUDGET_TRIM_MESSAGE = '当前上下文超过模型窗口，已裁剪较早的历史内容以继续处理。';
-export const PROMPT_TOOLS_DISABLED_MESSAGE = '当前模型上下文不足以加载全部工具，本轮已先按纯文本继续处理。';
+export const CONTEXT_CHECKPOINT_FAILED_MESSAGE = '当前上下文需要生成 continuation checkpoint，但压缩或持久化失败；原始上下文已保留，本轮没有截断后重试。';
 const MAX_VISIBLE_TOOL_PRELUDE_CHARS = 180;
 const MAX_VISIBLE_TOOL_PRELUDE_LINES = 3;
 
@@ -234,6 +238,8 @@ export interface RunnerOptions {
   cacheTraceSink?: CacheTraceSink;
   /** Stable provider cache partition, distinct from the unique tracing session id. */
   cachePartitionKey?: string;
+  /** Prevent sensitive benchmark payloads from being persisted by the optional prompt trace. */
+  disablePromptTrace?: boolean;
 }
 
 /**
@@ -280,7 +286,11 @@ export class ConversationRunner {
   ) {
     this.stream = options?.stream ?? true;
     this.shouldContinue = options?.shouldContinue;
-    this.enableCompression = options?.enableCompression ?? true;
+    // A coordinator and the legacy runner compressor must never mutate the
+    // same episode. Coordinator ownership is authoritative when provided.
+    this.enableCompression = options?.checkpointCompactionCoordinator
+      ? false
+      : (options?.enableCompression ?? true);
     this.toolExecutionContext = options?.toolExecutionContext;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
@@ -305,6 +315,9 @@ export class ConversationRunner {
       sessionId: this.toolExecutionContext?.sessionId,
       surface: this.toolExecutionContext?.surface,
       modelConfig: this.resolveModelConfig(),
+      ...(options?.disablePromptTrace
+        ? { env: { ...process.env, XIAOBA_PROMPT_TRACE: '' } }
+        : {}),
     });
     try {
       if (options?.cacheTraceSink) {
@@ -355,7 +368,6 @@ export class ConversationRunner {
     let nextPlanNudgeAt = nextPlanNudgeToolCount(0);
     let nextSubagentNudgeAt = nextSubagentNudgeToolCount(0);
     let emptyMaxTokenRecoveries = 0;
-    let notifiedToolBudgetDisabled = false;
 
     while (true) {
       turns++;
@@ -377,13 +389,7 @@ export class ConversationRunner {
       }
       this.injectSyntheticObservations(messages, turns);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
-      const requestTools = this.fitToolsToPromptBudget(activeTools);
-      if (requestTools.length < activeTools.length && !notifiedToolBudgetDisabled) {
-        notifiedToolBudgetDisabled = true;
-        if (callbacks?.onThinking) {
-          await callbacks.onThinking(PROMPT_TOOLS_DISABLED_MESSAGE);
-        }
-      }
+      const requestTools = activeTools;
 
       if (this.enableCompression) {
         const toolTokens = estimateToolsTokens(requestTools);
@@ -431,35 +437,45 @@ export class ConversationRunner {
       }
 
       const currentDirectory = this.getCurrentDirectoryForHint();
-      const transientPolicy = resolveProviderTransientPolicy({
-        messages,
-        tools: requestTools,
-        turn: turns,
-        executedToolCalls,
-        surface: this.toolExecutionContext?.surface,
-        currentDirectory,
-        orchestrationHintCount: orchestrationHints.length,
-      });
-      const perTurnRunnerHint = transientPolicy.injectRunnerHint
-        ? buildPerTurnRunnerHint(requestTools)
-        : null;
-      let requestMessages = this.buildProviderInputMessages(messages, [
-        ...runtimeTransientHints,
-        ...(perTurnRunnerHint ? [perTurnRunnerHint] : []),
-        ...orchestrationHints,
-      ], {
-        includeCurrentDirectoryHint: transientPolicy.injectEnvironment,
-        currentDirectory,
-      });
       // Recovery hints describe the result of the complete preceding attempt.
       // Keep them at the tail so they never split an assistant tool call from
       // its tool results or invalidate the already reusable history prefix.
-      requestMessages.push(...nextTurnTransientHints);
+      const recoveryHintsForTurn = nextTurnTransientHints;
       nextTurnTransientHints = [];
-      const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
-      if (promptTrimmed && callbacks?.onThinking) {
-        await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
-      }
+
+      const buildRequestMessages = (sourceMessages: Message[] = messages): Message[] => {
+        const transientPolicy = resolveProviderTransientPolicy({
+          messages: sourceMessages,
+          tools: requestTools,
+          turn: turns,
+          executedToolCalls,
+          surface: this.toolExecutionContext?.surface,
+          currentDirectory,
+          orchestrationHintCount: orchestrationHints.length,
+        });
+        const perTurnRunnerHint = transientPolicy.injectRunnerHint
+          ? buildPerTurnRunnerHint(requestTools)
+          : null;
+        const built = this.buildProviderInputMessages(sourceMessages, [
+          ...runtimeTransientHints,
+          ...(perTurnRunnerHint ? [perTurnRunnerHint] : []),
+          ...orchestrationHints,
+        ], {
+          includeCurrentDirectoryHint: transientPolicy.injectEnvironment,
+          currentDirectory,
+        });
+        built.push(...recoveryHintsForTurn);
+        return built;
+      };
+
+      let requestMessages = await this.prepareProviderRequestWithinBudget(
+        messages,
+        newMessages,
+        requestTools,
+        turns,
+        buildRequestMessages,
+        callbacks,
+      );
       this.logProviderMessagesForDebug(requestMessages, requestTools, turns);
       this.runObservation(() => this.promptTraceLogger.recordRequest(turns, requestMessages, requestTools));
       const aiStartTime = Date.now();
@@ -467,7 +483,70 @@ export class ConversationRunner {
 
       let response: ChatResponse;
       try {
-        response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks);
+        let firstRequestDeliveredText = false;
+        const firstRequestCallbacks = callbacks?.onText
+          ? {
+            ...callbacks,
+            onText: (text: string) => {
+              if (text.length > 0) firstRequestDeliveredText = true;
+              callbacks.onText?.(text);
+            },
+          }
+          : callbacks;
+        try {
+          response = await this.requestModelResponse(
+            requestMessages,
+            requestTools,
+            turns,
+            firstRequestCallbacks,
+          );
+        } catch (error) {
+          if (!isModelContextLengthError(error)) throw error;
+          if (firstRequestDeliveredText) {
+            Logger.warning(
+              `[${this.sessionLabel}Turn ${turns}] provider reported context overflow after `
+              + 'streaming visible text; refusing automatic checkpoint replay',
+            );
+            throw error;
+          }
+
+          Logger.warning(
+            `[${this.sessionLabel}Turn ${turns}] provider confirmed context overflow; `
+            + 'creating a durable checkpoint before one same-episode retry',
+          );
+          await this.createAndPersistCheckpoint(
+            messages,
+            requestTools,
+            turns,
+            callbacks,
+            requestMessages,
+            true,
+            candidateMessages => {
+              const candidateRequest = buildRequestMessages(candidateMessages);
+              this.assertProviderRequestFits(
+                candidateRequest,
+                requestTools,
+                'provider overflow checkpoint candidate',
+              );
+            },
+          );
+          if (await this.appendPendingUserInput(messages, newMessages, turns)) {
+            requestMessages = await this.prepareProviderRequestWithinBudget(
+              messages,
+              newMessages,
+              requestTools,
+              turns,
+              buildRequestMessages,
+              callbacks,
+            );
+          } else {
+            requestMessages = buildRequestMessages();
+            this.assertProviderRequestFits(requestMessages, requestTools, 'provider overflow recovery');
+          }
+          this.logProviderMessagesForDebug(requestMessages, requestTools, turns);
+          this.runObservation(() => this.promptTraceLogger.recordRequest(turns, requestMessages, requestTools));
+          response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks);
+        }
       } catch (error: any) {
         this.runObservation(() => this.promptTraceLogger.recordError(turns, error));
         if (this.isMessageSurface() && isModelImageSafetyError(error)) {
@@ -743,7 +822,6 @@ export class ConversationRunner {
         };
       }
 
-      await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
       await this.appendPendingUserInput(messages, newMessages, turns);
     }
 
@@ -862,17 +940,102 @@ export class ConversationRunner {
     return true;
   }
 
-  private async compactMidTurnIfNeeded(
+  private async prepareProviderRequestWithinBudget(
+    messages: Message[],
+    newMessages: Message[],
+    tools: ToolDefinition[],
+    turns: number,
+    buildRequestMessages: (messages?: Message[]) => Message[],
+    callbacks?: RunnerCallbacks,
+  ): Promise<Message[]> {
+    const toolTokens = estimateToolsTokens(tools);
+    if (toolTokens >= this.maxPromptTokens) {
+      throw this.contextCheckpointError(
+        `all ${tools.length} tool definitions require ${toolTokens} tokens, `
+        + `which cannot fit in the ${this.maxPromptTokens}-token prompt budget`,
+      );
+    }
+
+    let requestMessages = buildRequestMessages();
+    if (this.checkpointCompactionCoordinator) {
+      const compacted = await this.createAndPersistCheckpoint(
+        messages,
+        tools,
+        turns,
+        callbacks,
+        requestMessages,
+        false,
+        candidateMessages => {
+          const candidateRequest = buildRequestMessages(candidateMessages);
+          this.assertProviderRequestFits(
+            candidateRequest,
+            tools,
+            'request preflight checkpoint candidate',
+          );
+        },
+      );
+      if (compacted) {
+        if (await this.appendPendingUserInput(messages, newMessages, turns)) {
+          return await this.prepareProviderRequestWithinBudget(
+            messages,
+            newMessages,
+            tools,
+            turns,
+            buildRequestMessages,
+            callbacks,
+          );
+        }
+        requestMessages = buildRequestMessages();
+      }
+    } else if (
+      this.enableCompression
+      && estimateMessagesTokens(requestMessages) + toolTokens > this.maxPromptTokens
+    ) {
+      if (callbacks?.onThinking) {
+        await callbacks.onThinking('Context is full. Compressing before the provider request.');
+      }
+      const compacted = await this.compressor.compact(messages, {
+        signal: this.toolExecutionContext?.abortSignal,
+      });
+      messages.splice(0, messages.length, ...compacted);
+      requestMessages = buildRequestMessages();
+    }
+
+    this.assertProviderRequestFits(requestMessages, tools, 'request preflight');
+    return requestMessages;
+  }
+
+  private async createAndPersistCheckpoint(
     messages: Message[],
     tools: ToolDefinition[],
     turns: number,
-    callbacks?: RunnerCallbacks,
-  ): Promise<void> {
-    if (!this.checkpointCompactionCoordinator) return;
+    callbacks: RunnerCallbacks | undefined,
+    providerRequestMessages: Message[] | undefined,
+    force: boolean,
+    validateCandidate?: (candidateMessages: Message[]) => void,
+  ): Promise<boolean> {
+    if (!this.checkpointCompactionCoordinator) {
+      if (force) {
+        throw this.contextCheckpointError(
+          'provider reported a context-length error but no checkpoint coordinator is available',
+        );
+      }
+      return false;
+    }
+
+    const durableTokens = estimateMessagesTokens(splitDurableAndTransient(messages).durable);
+    const requestOverheadTokens = providerRequestMessages
+      ? Math.max(0, estimateMessagesTokens(providerRequestMessages) - durableTokens)
+      : 0;
     const result = await this.checkpointCompactionCoordinator.compactIfNeeded(messages, {
       sessionKey: this.toolExecutionContext?.sessionId || this.sessionLabel.trim() || 'runner',
       phase: 'mid_turn',
       toolTokens: estimateToolsTokens(tools),
+      requestOverheadTokens,
+      requestMessageTokens: providerRequestMessages
+        ? estimateMessagesTokens(providerRequestMessages)
+        : undefined,
+      force,
       signal: this.toolExecutionContext?.abortSignal,
       modelRequestOptions: {
         cachePartitionKey: this.cachePartitionKey
@@ -893,30 +1056,86 @@ export class ConversationRunner {
           if (event.status === 'start') {
             await callbacks.onThinking?.('Context is full. Creating a continuation checkpoint.');
           } else if (event.status === 'complete') {
-            await callbacks.onThinking?.('Continuation checkpoint created. Preparing to resume the same task.');
+            await callbacks.onThinking?.('Continuation checkpoint candidate generated. Validating before persistence.');
           } else {
-            await callbacks.onThinking?.('Checkpoint creation failed. Continuing with the original context.');
+            await callbacks.onThinking?.(CONTEXT_CHECKPOINT_FAILED_MESSAGE);
           }
         }
         : undefined,
     });
-    if (!result.compacted) return;
-
-    try {
-      await this.onCompactionCheckpoint?.(result.messages);
-    } catch (error) {
-      Logger.warning(
-        `[${this.sessionLabel}Turn ${turns}] continuation checkpoint persistence failed; `
-        + `keeping original transcript: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return;
+    if (!result.compacted) {
+      if (force || result.attempted || result.error) {
+        throw this.contextCheckpointError(
+          'checkpoint generation failed; original transcript preserved',
+          result.error,
+        );
+      }
+      return false;
     }
 
-    messages.splice(0, messages.length, ...result.messages);
-    this.refreshRuntimeContextForPendingInput(messages);
+    if (!this.onCompactionCheckpoint) {
+      throw this.contextCheckpointError(
+        'checkpoint was generated but no durable persistence callback is configured',
+      );
+    }
+
+    // Validate the exact post-checkpoint request while the original canonical
+    // transcript is still untouched. A verbose summary or incompressible
+    // transient suffix must fail before durable state is overwritten.
+    const candidateMessages = result.messages.map(message => ({ ...message }));
+    this.refreshRuntimeContextForPendingInput(candidateMessages);
+    validateCandidate?.(candidateMessages);
+
+    try {
+      await this.onCompactionCheckpoint(candidateMessages);
+    } catch (error) {
+      throw this.contextCheckpointError(
+        'checkpoint persistence failed; original transcript preserved',
+        error,
+      );
+    }
+
+    messages.splice(0, messages.length, ...candidateMessages);
+    if (callbacks?.onThinking) {
+      try {
+        await callbacks.onThinking('Continuation checkpoint persisted. Resuming the same task.');
+      } catch (error) {
+        Logger.warning(
+          `[${this.sessionLabel}Turn ${turns}] checkpoint persisted status callback failed: `
+          + `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     Logger.info(
       `[${this.sessionLabel}Turn ${turns}] durable mid-turn checkpoint persisted; continuing same episode`,
     );
+    return true;
+  }
+
+  private assertProviderRequestFits(
+    messages: Message[],
+    tools: ToolDefinition[],
+    stage: string,
+  ): void {
+    const messageTokens = estimateMessagesTokens(messages);
+    const toolTokens = estimateToolsTokens(tools);
+    const totalTokens = messageTokens + toolTokens;
+    if (totalTokens <= this.maxPromptTokens) return;
+
+    throw this.contextCheckpointError(
+      `${stage} remains over budget after compression: `
+      + `messages=${messageTokens}, tools=${toolTokens}, `
+      + `total=${totalTokens}, budget=${this.maxPromptTokens}`,
+    );
+  }
+
+  private contextCheckpointError(message: string, cause?: unknown): Error {
+    const error = new Error(`${CONTEXT_CHECKPOINT_FAILED_MESSAGE} ${message}`);
+    (error as any).code = 'CONTEXT_CHECKPOINT_FAILED';
+    if (cause !== undefined) {
+      (error as any).cause = cause;
+    }
+    return error;
   }
 
   private refreshRuntimeContextForPendingInput(messages: Message[]): void {
@@ -1682,6 +1901,7 @@ export class ConversationRunner {
   ) {
     const requestOptions: AIRequestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
+      requestKind: this.resolveInferenceRequestKind(),
       cachePartitionKey: this.cachePartitionKey
         || this.toolExecutionContext?.sessionId
         || this.toolExecutionContext?.executionScope?.sessionKey
@@ -1695,162 +1915,26 @@ export class ConversationRunner {
         episodeNumber,
       },
     };
-    try {
-      if (this.stream) {
-        const streamCallbacks: StreamCallbacks = {
-          onText: (text) => callbacks?.onText?.(text),
-          onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
-        };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
-      }
-      return await this.aiService.chat(messages, activeTools, requestOptions);
-    } catch (error: any) {
-      if (!this.isPromptTooLongError(error)) {
-        throw error;
-      }
-
-      Logger.warning('检测到提示词超长，执行紧急上下文裁剪后重试一次');
-      this.forceTrimForOverflow(messages);
-      const promptTrimmed = this.ensurePromptBudget(messages, activeTools);
-      if (promptTrimmed && callbacks?.onThinking) {
-        await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
-      }
-
-      if (this.stream) {
-        const streamCallbacks: StreamCallbacks = {
-          onText: (text) => callbacks?.onText?.(text),
-          onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
-        };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
-      }
-      return await this.aiService.chat(messages, activeTools, requestOptions);
+    if (this.stream) {
+      const streamCallbacks: StreamCallbacks = {
+        onText: (text) => callbacks?.onText?.(text),
+        onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
+      };
+      return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
     }
+    return await this.aiService.chat(messages, activeTools, requestOptions);
   }
 
-  private ensurePromptBudget(messages: Message[], tools: ToolDefinition[]): boolean {
-    const toolTokens = estimateToolsTokens(tools);
-    const messageBudget = Math.max(1, this.maxPromptTokens - toolTokens);
-    let messageTokens = estimateMessagesTokens(messages);
-
-    if (messageTokens <= messageBudget) {
-      return false;
+  private resolveInferenceRequestKind(): 'main_inference' | 'memory_branch_inference' | 'subagent_inference' {
+    const sessionId = String(this.toolExecutionContext?.sessionId || '');
+    const surface = String(this.toolExecutionContext?.surface || '');
+    if (sessionId.startsWith('branch:memory:') || surface === 'memory_branch') {
+      return 'memory_branch_inference';
     }
-
-    Logger.warning(
-      `[上下文守门] 估算超预算: messages=${messageTokens}, tools=${toolTokens}, budget=${this.maxPromptTokens}`
-    );
-
-    // 纯机械裁剪（同步，不调用 AI）
-    for (let pass = 0; pass < 3 && messageTokens > messageBudget; pass++) {
-      const trimmed = this.hardTrimMessages(messages, messageBudget);
-      this.replaceMessages(messages, trimmed);
-      messageTokens = estimateMessagesTokens(messages);
+    if (/^(?:subagent|branch:subagent)/i.test(sessionId) || /subagent/i.test(surface)) {
+      return 'subagent_inference';
     }
-
-    if (messageTokens > messageBudget) {
-      const minimal = this.buildMinimalFallback(messages, messageBudget);
-      this.replaceMessages(messages, minimal);
-      messageTokens = estimateMessagesTokens(messages);
-    }
-
-    Logger.info(
-      `[上下文守门] 裁剪后: messages=${messageTokens}, tools=${toolTokens}, budget=${this.maxPromptTokens}`
-    );
-    return true;
-  }
-
-  private fitToolsToPromptBudget(tools: ToolDefinition[]): ToolDefinition[] {
-    if (tools.length === 0) {
-      return tools;
-    }
-
-    const toolTokens = estimateToolsTokens(tools);
-    const toolBudget = Math.max(1, this.maxPromptTokens - MIN_MESSAGE_BUDGET);
-    if (toolTokens <= toolBudget) {
-      return tools;
-    }
-
-    Logger.warning(
-      `[上下文守门] 工具定义超预算: tools=${toolTokens}, toolBudget=${toolBudget}, promptBudget=${this.maxPromptTokens}; 本轮禁用工具定义`
-    );
-    return [];
-  }
-
-  private forceTrimForOverflow(messages: Message[]): void {
-    const before = estimateMessagesTokens(messages);
-    const target = Math.max(MIN_MESSAGE_BUDGET, Math.floor(before * OVERFLOW_REDUCTION_RATIO));
-    const trimmed = this.hardTrimMessages(messages, target);
-    this.replaceMessages(messages, trimmed);
-  }
-
-  private hardTrimMessages(messages: Message[], targetTokens: number): Message[] {
-    const system = messages.filter(msg => msg.role === 'system');
-    const nonSystem = messages.filter(msg => msg.role !== 'system');
-
-    const recentCount = Math.min(8, nonSystem.length);
-    const old = nonSystem.slice(0, -recentCount).map(msg => this.shrinkMessage(msg, true));
-    const recent = nonSystem.slice(-recentCount).map(msg => this.shrinkMessage(msg, false));
-
-    let candidate = [...system, ...old, ...recent];
-
-    while (estimateMessagesTokens(candidate) > targetTokens && old.length > 0) {
-      old.shift();
-      candidate = [...system, ...old, ...recent];
-    }
-
-    while (estimateMessagesTokens(candidate) > targetTokens && recent.length > 2) {
-      recent.shift();
-      candidate = [...system, ...old, ...recent];
-    }
-
-    if (estimateMessagesTokens(candidate) > targetTokens && system.length > 1) {
-      const trimmedSystem = [
-        system[0],
-        ...system.slice(1).map(msg => this.shrinkMessage(msg, true)),
-      ];
-      candidate = [...trimmedSystem, ...old, ...recent];
-    }
-
-    return this.repairToolExchangeMessages(candidate);
-  }
-
-  private buildMinimalFallback(messages: Message[], targetTokens: number): Message[] {
-    const system = messages.find(msg => msg.role === 'system');
-    const nonSystem = messages.filter(msg => msg.role !== 'system');
-    const tail = nonSystem.slice(-2).map(msg => this.shrinkMessage(msg, true));
-
-    const result: Message[] = [];
-    if (system) {
-      result.push(this.shrinkMessage(system, true));
-    }
-    result.push(...tail);
-
-    return this.fitMessagesToBudget(result, targetTokens);
-  }
-
-  private fitMessagesToBudget(messages: Message[], targetTokens: number): Message[] {
-    let candidate = this.repairToolExchangeMessages(messages);
-    const caps = [600, 320, 160, 80];
-
-    for (const cap of caps) {
-      if (estimateMessagesTokens(candidate) <= targetTokens) {
-        return candidate;
-      }
-      candidate = candidate.map((message, index) => (
-        this.truncateMessageContent(message, index === 0 ? cap * 2 : cap)
-      ));
-      candidate = this.repairToolExchangeMessages(candidate);
-    }
-
-    while (estimateMessagesTokens(candidate) > targetTokens && candidate.length > 1) {
-      candidate.splice(1, 1);
-    }
-
-    if (estimateMessagesTokens(candidate) > targetTokens && candidate.length > 0) {
-      candidate = [this.truncateMessageContent(candidate[0], 80)];
-    }
-
-    return this.repairToolExchangeMessages(candidate);
+    return 'main_inference';
   }
 
   private repairToolExchangeMessages(messages: Message[]): Message[] {
@@ -1901,63 +1985,6 @@ export class ConversationRunner {
     });
   }
 
-  private truncateMessageContent(message: Message, maxChars: number): Message {
-    const content = contentToString(message.content);
-    if (content.length <= maxChars) {
-      return message;
-    }
-    return {
-      ...message,
-      content: `${content.slice(0, maxChars)}\n...[已截断以适配模型上下文预算，原始 ${content.length} 字符]`,
-      tool_calls: undefined,
-      providerContent: undefined,
-      providerState: undefined,
-    };
-  }
-
-  private shrinkMessage(message: Message, aggressive: boolean): Message {
-    const maxChars = this.resolveMessageCharLimit(message, aggressive);
-    const content = contentToString(message.content);
-    let nextContent = message.content;
-
-    if (content.length > maxChars) {
-      nextContent = content.slice(0, maxChars) + `\n...[已截断，原始 ${content.length} 字符]`;
-    }
-
-    if (message.role === 'tool') {
-      const toolName = message.name || 'unknown';
-      nextContent = `[tool:${toolName}] 历史输出已省略`;
-    }
-
-    const next: Message = {
-      ...message,
-      content: nextContent,
-    };
-
-    if (aggressive && next.tool_calls) {
-      delete next.tool_calls;
-    }
-
-    if (content.length > maxChars || aggressive) {
-      delete next.providerContent;
-      delete next.providerState;
-    }
-
-    return next;
-  }
-
-  private resolveMessageCharLimit(message: Message, aggressive: boolean): number {
-    if (message.role === 'system') return aggressive ? 1200 : 2400;
-    if (message.role === 'user') return aggressive ? 600 : 1200;
-    if (message.role === 'assistant') return aggressive ? 400 : 900;
-    return aggressive ? 120 : 240;
-  }
-
-  private replaceMessages(target: Message[], next: Message[]): void {
-    target.length = 0;
-    target.push(...next);
-  }
-
   private resolvePromptBudget(maxContextTokens?: number): number {
     if (maxContextTokens && maxContextTokens > 0) {
       return maxContextTokens;
@@ -1975,17 +2002,6 @@ export class ConversationRunner {
     }
 
     return {};
-  }
-
-  private isPromptTooLongError(error: any): boolean {
-    const text = String(error?.message || error || '').toLowerCase();
-    return (
-      text.includes('prompt is too long') ||
-      text.includes('maximum context length') ||
-      text.includes('context_length_exceeded') ||
-      text.includes('input is too long') ||
-      text.includes('premature close')
-    );
   }
 
   // ─── 429 重试逻辑 ──────────────────────────────────
