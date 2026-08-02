@@ -22,9 +22,12 @@ import {
 import {
   type ExecutionContextSnapshot,
   TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+  TRANSIENT_RUNTIME_TARGET_RULES_PREFIX,
   buildRuntimeContextMessage,
   buildRuntimeContextSnapshot,
+  buildRuntimeTargetRulesMessage,
 } from './runtime-context-builder';
+import { preserveAuthorizedDeviceContextWitness } from './authorized-device-witness';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import { resolveTurnContextTransientPolicy } from './transient-injection-policy';
 import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from './pending-user-input-boundary';
@@ -48,6 +51,7 @@ export interface BuildTurnContextParams {
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
+  remoteTransportAvailable?: boolean;
   localFileGrants?: ScopedLocalFileGrant[];
   durableMessages: Message[];
   runtimeFeedback: string[];
@@ -76,11 +80,12 @@ export class TurnContextBuilder {
     // provider prefix caches can reuse them independently of a changing turn.
     const transientPolicy = resolveTurnContextTransientPolicy(contextMessages);
     this.injectRuntimeObservationRules(contextMessages);
+    this.injectRuntimeTargetRules(contextMessages, params);
     if (transientPolicy.injectSkillsList) {
       await params.skillRuntime.reloadSkills();
       const skillsListMsg = params.skillRuntime.buildSkillsListMessage();
       if (skillsListMsg) {
-        this.insertBeforeLastUser(contextMessages, annotateContextMessage(skillsListMsg, {
+        this.insertAfterLeadingSystemPrefix(contextMessages, annotateContextMessage(skillsListMsg, {
           source: 'skills_list',
           lifecycle: 'session',
           cacheScope: 'stable',
@@ -115,6 +120,7 @@ export class TurnContextBuilder {
       if (msg.content.startsWith(TRANSIENT_RUNTIME_OBSERVATION_RULES_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_RUNTIME_TARGET_RULES_PREFIX)) return false;
       return true;
     });
   }
@@ -129,19 +135,32 @@ export class TurnContextBuilder {
       deviceGrants: params.deviceGrants,
       deviceSelection: params.deviceSelection,
       targetRoutes: params.targetRoutes,
+      remoteTransportAvailable: params.remoteTransportAvailable,
       localFileGrants: params.localFileGrants,
     });
     if (!message) return;
-    this.insertBeforeLastUser(messages, annotateContextMessage(message, {
+    const annotated = annotateContextMessage(message, {
       source: 'runtime_context',
       lifecycle: 'episode',
       cacheScope: 'epoch',
       epoch: params.contextEpoch,
+    });
+    preserveAuthorizedDeviceContextWitness(message, annotated);
+    this.insertBeforeLastUser(messages, annotated);
+  }
+
+  private injectRuntimeTargetRules(messages: Message[], params: BuildTurnContextParams): void {
+    const message = buildRuntimeTargetRulesMessage(params);
+    if (!message) return;
+    this.insertAfterLeadingSystemPrefix(messages, annotateContextMessage(message, {
+      source: 'runtime_target_rules',
+      lifecycle: 'session',
+      cacheScope: 'stable',
     }));
   }
 
   private injectRuntimeObservationRules(messages: Message[]): void {
-    this.insertBeforeLastUser(messages, annotateContextMessage({
+    this.insertAfterLeadingSystemPrefix(messages, annotateContextMessage({
       role: 'system',
       content: [
         TRANSIENT_RUNTIME_OBSERVATION_RULES_PREFIX,
@@ -229,6 +248,12 @@ export class TurnContextBuilder {
       return;
     }
     messages.splice(lastUserIdx, 0, ...inserted);
+  }
+
+  private insertAfterLeadingSystemPrefix(messages: Message[], ...inserted: Message[]): void {
+    let index = 0;
+    while (index < messages.length && messages[index].role === 'system') index++;
+    messages.splice(index, 0, ...inserted);
   }
 }
 

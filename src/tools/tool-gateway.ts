@@ -104,6 +104,16 @@ export function resolveToolGatewayAccess(
   context: ToolExecutionContext,
   options: ResolveToolGatewayAccessOptions,
 ): ToolGatewayDecision {
+  const liveAuthority = context.deviceAuthority?.getCurrent();
+  if (liveAuthority) {
+    context = {
+      ...context,
+      deviceGrants: liveAuthority.deviceGrants,
+      deviceGrantSnapshot: liveAuthority.deviceGrantSnapshot,
+      deviceSelection: liveAuthority.deviceSelection,
+      targetRoutes: liveAuthority.targetRoutes,
+    };
+  }
   if (!isCatsCoToolGatewayContext(context)) {
     return { ok: true, mode: 'local' };
   }
@@ -305,11 +315,9 @@ function resolveBackendSelectedDevice(
   if (matchesLocalDevice(selection, localDevice)) {
     if (!options.allowLocalSelfOperation
       && Array.isArray(selection.selectedDeviceOperations)
-      && selection.selectedDeviceOperations.length > 0
       && !selection.selectedDeviceOperations.includes(operation)) {
       return selectedDenied([
         `后端选定设备没有声明支持 ${operation}，已阻止设备工具调用。`,
-        selection.selectedDeviceDisplayName ? `Selected device: ${selection.selectedDeviceDisplayName}` : '',
       ], targetLabel);
     }
     return {
@@ -321,11 +329,9 @@ function resolveBackendSelectedDevice(
   }
 
   if (Array.isArray(selection.selectedDeviceOperations)
-    && selection.selectedDeviceOperations.length > 0
     && !selection.selectedDeviceOperations.includes(operation)) {
     return selectedDenied([
       `后端选定设备没有声明支持 ${operation}，已阻止设备工具调用。`,
-      selection.selectedDeviceDisplayName ? `Selected device: ${selection.selectedDeviceDisplayName}` : '',
     ], targetLabel);
   }
 

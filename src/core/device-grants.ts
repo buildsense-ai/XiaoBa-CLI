@@ -155,10 +155,12 @@ export function createDeviceGrant(
 }
 
 export function resolveDeviceGrant(
-  context: Pick<ToolExecutionContext, 'executionScope' | 'deviceGrants'>,
+  context: Pick<ToolExecutionContext, 'executionScope' | 'deviceGrants' | 'deviceAuthority'>,
   options: ResolveDeviceGrantOptions,
 ): DeviceGrantDecision {
-  const grants = context.deviceGrants || [];
+  const grants = context.deviceAuthority
+    ? context.deviceAuthority.getCurrent().deviceGrants || []
+    : context.deviceGrants || [];
   if (grants.length === 0) {
     return denied('当前会话没有可用的用户设备授权，无法操作本地设备。');
   }
@@ -170,11 +172,7 @@ export function resolveDeviceGrant(
   });
 
   if (matchingGrants.length === 0) {
-    return denied(
-      normalizedDeviceId
-        ? `当前会话没有允许 ${options.operation} 的设备授权：${normalizedDeviceId}。`
-        : `当前会话没有允许 ${options.operation} 的设备授权。`,
-    );
+    return denied(`当前会话没有允许 ${options.operation} 的设备授权。`);
   }
 
   const validDecisions = matchingGrants
@@ -207,7 +205,7 @@ export function validateDeviceGrant(
 
   const normalizedDeviceId = normalizeId(options.deviceId);
   if (normalizedDeviceId && grant.deviceId !== normalizedDeviceId) {
-    return denied(`设备授权与目标设备不一致，已阻止操作：grant=${grant.deviceId} target=${normalizedDeviceId}`);
+    return denied('设备授权与目标设备不一致，已阻止操作。');
   }
 
   if (grant.status !== 'active') {
@@ -242,14 +240,7 @@ export function validateDeviceGrant(
   }
 
   if (mismatches.length > 0) {
-    return {
-      ok: false,
-      errorCode: 'PERMISSION_DENIED',
-      message: [
-        '设备授权与当前执行身份不一致，已阻止操作以避免串用户或串设备。',
-        ...mismatches.map(([field, grantValue, scopeValue]) => `${field}: grant=${grantValue || '(empty)'} scope=${scopeValue || '(empty)'}`),
-      ].join('\n'),
-    };
+    return denied('设备授权与当前执行身份不一致，已阻止操作以避免串用户或串设备。');
   }
 
   return { ok: true, grant };

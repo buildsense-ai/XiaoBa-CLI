@@ -1,15 +1,20 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { CatsCompanyBot } from '../src/catscompany';
 import { createCatsCoMessageEnvelope, createExecutionScope } from '../src/catscompany/message-envelope';
 import { SubAgentManager } from '../src/core/sub-agent-manager';
+import { buildTargetRoutes } from '../src/catscompany/runtime-context';
+import { DeviceAuthorityState } from '../src/core/device-authority-state';
 
 function canonicalMetadata(actorUserId: string, topicId: string, agentId = 'usr43', bodyId = 'body-main') {
   return {
     catsco_identity: {
       actor: { user_id: actorUserId },
       agent: { agent_id: agentId, body_id: bodyId },
-      topic: { topic_id: topicId, type: topicId.startsWith('grp_') ? 'group' : 'p2p', channel_seq: 12 },
+      topic: { topic_id: topicId, type: topicId.startsWith('grp_') ? 'group' : 'p2p' },
       permissions: { source: 'server_canonical_message' },
     },
   };
@@ -101,6 +106,8 @@ function createHarness(options: {
   const injectedContext: string[] = [];
   const contextEvents: string[] = [];
   const savedContextCursors: Array<[string, number]> = [];
+  const authorityUpdates: any[] = [];
+  let interrupts = 0;
   let busy = options.busy ?? false;
   let remoteContextCursor = 0;
 
@@ -118,6 +125,11 @@ function createHarness(options: {
       ? { handled: true, reply: '历史已清空' }
       : { handled: false },
     handleRuntimeObservation: async () => ({ visibleToUser: false, text: '' }),
+    updateDeviceAuthority: (input: any) => {
+      authorityUpdates.push(input);
+      return undefined;
+    },
+    requestInterrupt: () => { interrupts += 1; },
     injectContext: (text: string) => {
       contextEvents.push('inject');
       injectedContext.push(text);
@@ -159,6 +171,9 @@ function createHarness(options: {
   };
   bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
+  bot.createPendingDeviceAuthorityState = (executionScope: any) => (
+    new DeviceAuthorityState(executionScope, { watermarkDirectory: null })
+  );
   bot.sessionExecutionReservations = new Set();
   bot.sessionClearGenerations = new Map();
   bot.botUid = 'usr43';
@@ -199,6 +214,8 @@ function createHarness(options: {
     injectedContext,
     contextEvents,
     savedContextCursors,
+    authorityUpdates,
+    get interrupts() { return interrupts; },
   };
 }
 
@@ -228,6 +245,331 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(handledTurns, []);
   });
 
+  test('applies an unmentioned canonical revocation to an existing live session', async () => {
+    const { bot, handledTurns, sessionKeys, authorityUpdates } = createHarness();
+    const metadata = canonicalMetadata('usr7', 'grp_80');
+    (metadata.catsco_identity as any).device_grants = [];
+
+    await bot.onMessage({
+      topic: 'grp_80',
+      senderId: 'usr7',
+      text: 'ordinary group message',
+      content: 'ordinary group message',
+      metadata,
+      isGroup: true,
+      mentions: [],
+      memberCount: 4,
+      seq: 12,
+    });
+
+    assert.equal(authorityUpdates.length, 1);
+    assert.equal(authorityUpdates[0].deviceGrantSnapshot.revision, 12);
+    assert.deepEqual(authorityUpdates[0].deviceGrantSnapshot.grants, []);
+    assert.deepEqual(sessionKeys, []);
+    assert.deepEqual(handledTurns, []);
+  });
+
+  test('applies an empty authority-only revocation without creating history or invoking the model', async () => {
+    const harness = createHarness();
+    const metadata = canonicalMetadata('usr7', 'grp_80');
+    (metadata.catsco_identity as any).device_grants = [];
+
+    await harness.bot.onMessage({
+      topic: 'grp_80',
+      senderId: 'usr7',
+      text: '',
+      content: '',
+      metadata,
+      isGroup: true,
+      mentions: [],
+      memberCount: 4,
+      seq: 13,
+    });
+
+    assert.equal(harness.authorityUpdates.length, 1);
+    assert.equal(harness.authorityUpdates[0].deviceGrantSnapshot.revision, 13);
+    assert.deepEqual(harness.authorityUpdates[0].deviceGrantSnapshot.grants, []);
+    assert.deepEqual(harness.handledTurns, []);
+    assert.deepEqual(harness.sessionKeys, []);
+  });
+
+  test('applies canonical revocation before handling an empty stream-cancel control', async () => {
+    const harness = createHarness();
+    const metadata = canonicalMetadata('usr7', 'p2p_7_43');
+    (metadata.catsco_identity as any).device_grants = [];
+
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '',
+      content: '',
+      type: 'stream_cancel',
+      metadata,
+      isGroup: false,
+      seq: 14,
+    });
+
+    assert.equal(harness.authorityUpdates.length, 1);
+    assert.deepEqual(harness.authorityUpdates[0].deviceGrantSnapshot.grants, []);
+    assert.equal(harness.interrupts, 1);
+    assert.deepEqual(harness.handledTurns, []);
+  });
+
+  test('applies an authority-only unavailable selection as an ordered live-lease update', async () => {
+    const harness = createHarness();
+    const metadata = canonicalMetadata('usr7', 'p2p_7_43');
+    (metadata.catsco_identity as any).device_selection = {
+      kind: 'user_device_selection',
+      source: 'catscompany',
+      status: 'unavailable',
+      session_key: expectedCatsCoSessionKey('usr7', 'p2p_7_43'),
+      topic_id: 'p2p_7_43',
+      topic_type: 'p2p',
+      actor_user_id: 'usr7',
+      agent_id: 'usr43',
+      selected_device_operations: [],
+    };
+
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '',
+      content: '',
+      metadata,
+      isGroup: false,
+      seq: 15,
+    });
+
+    assert.equal(harness.authorityUpdates.length, 1);
+    assert.equal(harness.authorityUpdates[0].executionScope.channelSeq, 15);
+    assert.equal(harness.authorityUpdates[0].deviceGrantSnapshot, undefined);
+    assert.equal(harness.authorityUpdates[0].deviceSelection.status, 'unavailable');
+    assert.deepEqual(harness.authorityUpdates[0].deviceSelection.selectedDeviceOperations, []);
+    assert.deepEqual(harness.handledTurns, []);
+  });
+
+  test('persists a revision floor for authority-only revoke when no session exists', async () => {
+    const harness = createHarness({ existingSession: false });
+    const replacements: any[] = [];
+    const floors: number[] = [];
+    harness.bot.createPendingDeviceAuthorityState = () => ({
+      replace: (input: any) => { replacements.push(input); return { generation: 1 }; },
+      persistRevokedFloor: (revision: number) => { floors.push(revision); return true; },
+    });
+    const metadata = metadataWithDeviceGrants('usr7', 'p2p_7_43', []);
+
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '',
+      content: '',
+      metadata,
+      isGroup: false,
+      seq: 16,
+    });
+
+    assert.equal(replacements.length, 1);
+    assert.deepEqual(replacements[0].deviceGrantSnapshot.grants, []);
+    assert.deepEqual(floors, [16]);
+    assert.deepEqual(harness.sessionKeys, []);
+    assert.equal(harness.bot.pendingDeviceAuthority?.size ?? 0, 0);
+  });
+
+  test('retains authority-only active grants until a later grant-omitting message creates the session', async () => {
+    const harness = createHarness({ existingSession: false });
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '',
+      content: '',
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', [deviceGrant()]),
+      isGroup: false,
+      seq: 18,
+    });
+    assert.equal(harness.bot.pendingDeviceAuthority.size, 1);
+    assert.deepEqual(harness.sessionKeys, []);
+
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'now use the authorized device',
+      content: 'now use the authorized device',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      isGroup: false,
+      seq: 19,
+    });
+
+    assert.equal(harness.authorityUpdates.length, 1);
+    assert.equal(harness.authorityUpdates[0].deviceGrantSnapshot.revision, 18);
+    assert.equal(harness.authorityUpdates[0].deviceGrantSnapshot.grants.length, 1);
+    assert.equal(harness.bot.pendingDeviceAuthority.size, 0);
+    assert.equal(harness.handledTurns.length, 1);
+  });
+
+  test('adopts the connector live authority lease without replaying its persisted revision', async () => {
+    const harness = createHarness({ existingSession: false });
+    let adoptedState: DeviceAuthorityState | undefined;
+    harness.session.adoptDeviceAuthorityState = (_scope: any, state: DeviceAuthorityState) => {
+      adoptedState = state;
+      return state;
+    };
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '',
+      content: '',
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', [deviceGrant()]),
+      isGroup: false,
+      seq: 29,
+    });
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'continue without repeating grants',
+      content: 'continue without repeating grants',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      isGroup: false,
+      seq: 30,
+    });
+
+    assert.equal(adoptedState?.getCurrent().deviceGrants?.length, 1);
+    assert.equal(harness.authorityUpdates.length, 0);
+    assert.equal(harness.bot.pendingDeviceAuthority.size, 0);
+    assert.equal(harness.bot.pendingDeviceAuthorityStates.size, 0);
+  });
+
+  test('retains a denied selection grant base for a later selection-only activation', async () => {
+    const harness = createHarness({ existingSession: false });
+    const deniedMetadata = metadataWithDeviceGrants('usr7', 'p2p_7_43', [deviceGrant()]);
+    (deniedMetadata.catsco_identity as any).device_selection = {
+      kind: 'user_device_selection',
+      source: 'catscompany',
+      status: 'unavailable',
+      session_key: expectedCatsCoSessionKey('usr7', 'p2p_7_43'),
+      topic_id: 'p2p_7_43',
+      topic_type: 'p2p',
+      actor_user_id: 'usr7',
+      agent_id: 'usr43',
+      selected_device_operations: [],
+    };
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '',
+      content: '',
+      metadata: deniedMetadata,
+      isGroup: false,
+      seq: 21,
+    });
+
+    const selectedMetadata = metadataWithDeviceSelection('usr7', 'p2p_7_43', {});
+    delete (selectedMetadata.catsco_identity as any).device_grants;
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'use the selected device now',
+      content: 'use the selected device now',
+      metadata: selectedMetadata,
+      isGroup: false,
+      seq: 22,
+    });
+
+    assert.equal(harness.authorityUpdates.length, 2);
+    assert.equal(harness.authorityUpdates[0].deviceGrantSnapshot.revision, 21);
+    assert.equal(harness.authorityUpdates[0].deviceGrantSnapshot.grants.length, 1);
+    assert.equal(harness.authorityUpdates[1].deviceGrantSnapshot, undefined);
+    assert.equal(harness.authorityUpdates[1].deviceSelection.status, 'selected');
+    assert.equal(harness.authorityUpdates[1].executionScope.channelSeq, 22);
+  });
+
+  test('keeps pending group authority isolated per participant scope', async () => {
+    const harness = createHarness({ existingSession: false });
+    const groupGrant = (actorUserId: string, suffix: string) => deviceGrant({
+      grantId: `grant-${suffix}`,
+      deviceId: `device-${suffix}`,
+      ownerUserId: actorUserId,
+      sessionKey: 'cc_group:grp_80',
+      topicId: 'grp_80',
+      topicType: 'group',
+      actorUserId,
+    });
+    for (const [actorUserId, seq, suffix] of [
+      ['usr7', 23, 'alice'],
+      ['usr8', 24, 'bob'],
+    ] as const) {
+      await harness.bot.onMessage({
+        topic: 'grp_80',
+        senderId: actorUserId,
+        text: '',
+        content: '',
+        metadata: metadataWithDeviceGrants(actorUserId, 'grp_80', [groupGrant(actorUserId, suffix)]),
+        isGroup: true,
+        mentions: [],
+        memberCount: 4,
+        seq,
+      });
+    }
+    assert.equal(harness.bot.pendingDeviceAuthority.size, 2);
+
+    await harness.bot.onMessage({
+      topic: 'grp_80',
+      senderId: 'usr7',
+      text: '@usr43 use my device',
+      content: '@usr43 use my device',
+      metadata: canonicalMetadata('usr7', 'grp_80'),
+      isGroup: true,
+      mentions: ['usr43'],
+      memberCount: 4,
+      seq: 25,
+    });
+
+    assert.equal(harness.authorityUpdates.length, 2);
+    assert.deepEqual(
+      new Set(harness.authorityUpdates.map((update: any) => update.executionScope.actorUserId)),
+      new Set(['usr7', 'usr8']),
+    );
+    assert.equal(harness.bot.pendingDeviceAuthority.size, 0);
+    assert.equal(harness.handledTurns[0].options.executionScope.actorUserId, 'usr7');
+  });
+
+  test('retains delegated grants even when the speaker selection is unavailable', async () => {
+    const harness = createHarness({ existingSession: false });
+    const metadata = metadataWithDeviceGrants('usr7', 'p2p_7_43', [deviceGrant({
+      grantId: 'delegated-grant',
+      deviceId: 'delegated-device',
+      ownerUserId: 'usr9',
+      identitySource: 'channel_identity_link',
+    })]);
+    (metadata.catsco_identity as any).device_selection = {
+      kind: 'user_device_selection',
+      source: 'catscompany',
+      status: 'unavailable',
+      session_key: expectedCatsCoSessionKey('usr7', 'p2p_7_43'),
+      topic_id: 'p2p_7_43',
+      topic_type: 'p2p',
+      actor_user_id: 'usr7',
+      agent_id: 'usr43',
+      selected_device_operations: [],
+    };
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43', senderId: 'usr7', text: '', content: '', metadata, isGroup: false, seq: 26,
+    });
+    assert.equal(harness.bot.pendingDeviceAuthority.size, 1);
+
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'continue delegated work',
+      content: 'continue delegated work',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      isGroup: false,
+      seq: 27,
+    });
+    assert.equal(harness.authorityUpdates.length, 1);
+    assert.equal(harness.authorityUpdates[0].deviceGrantSnapshot.grants[0].ownerUserId, 'usr9');
+    assert.equal(harness.authorityUpdates[0].deviceSelection.status, 'unavailable');
+  });
+
   test('does not create a blank session when first cloud recovery fails', async () => {
     const { bot, handledTurns, sessionKeys, replies } = createHarness({
       existingSession: false,
@@ -247,6 +589,156 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(sessionKeys, []);
     assert.equal(handledTurns.length, 0);
     assert.match(replies[0] || '', /没有新建空白上下文/);
+  });
+
+  test('retains active pending authority when initial cloud recovery fails', async () => {
+    const harness = createHarness({ existingSession: false, restoreStatus: 'failed' });
+
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'continue',
+      content: 'continue',
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', [deviceGrant()]),
+      isGroup: false,
+      seq: 17,
+    });
+
+    assert.equal(harness.bot.pendingDeviceAuthority.size, 1);
+    assert.equal(harness.bot.pendingDeviceAuthority.values().next().value.revision, 17);
+    assert.deepEqual(harness.sessionKeys, []);
+  });
+
+  test('evicts an expired active authority fragment only after persisting a revoked floor', async () => {
+    const harness = createHarness({ existingSession: false });
+    const floors: number[] = [];
+    harness.bot.createPendingDeviceAuthorityState = () => ({
+      replace: () => ({ generation: 1 }),
+      persistRevokedFloor: (revision: number) => { floors.push(revision); return true; },
+    });
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '',
+      content: '',
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', [deviceGrant()]),
+      isGroup: false,
+      seq: 20,
+    });
+    const fragment = harness.bot.pendingDeviceAuthority.values().next().value;
+    fragment.observedAt = 0;
+    harness.bot.prunePendingDeviceAuthority(Date.now());
+
+    assert.deepEqual(floors, [20]);
+    assert.equal(harness.bot.pendingDeviceAuthority.size, 0);
+  });
+
+  test('retains a revoke in memory when its durable floor cannot be confirmed', async () => {
+    const harness = createHarness({ existingSession: false });
+    harness.bot.createPendingDeviceAuthorityState = () => ({
+      replace: () => ({ generation: 1 }),
+      persistRevokedFloor: () => false,
+    });
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '',
+      content: '',
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', []),
+      isGroup: false,
+      seq: 28,
+    });
+    const fragment = harness.bot.pendingDeviceAuthority.values().next().value;
+    fragment.observedAt = 0;
+    harness.bot.prunePendingDeviceAuthority(Date.now());
+
+    assert.equal(harness.bot.pendingDeviceAuthority.size, 1);
+    assert.equal(harness.bot.pendingDeviceAuthorityStates.size, 1);
+  });
+
+  test('persists a selection-only revoke before a session exists or the process restarts', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-connector-authority-'));
+    try {
+      const executionScope: any = {
+        source: 'catscompany',
+        sessionKey: expectedCatsCoSessionKey('usr7', 'p2p_7_43'),
+        topicId: 'p2p_7_43',
+        topicType: 'p2p',
+        actorUserId: 'usr7',
+        agentId: 'usr43',
+        agentBodyId: 'body-main',
+        identityTrust: 'server_canonical',
+        isTrusted: true,
+        channelSeq: 9,
+      };
+      const activeGrant = deviceGrant();
+      const authoritySnapshot = (revision: number) => ({
+        kind: 'user_device_grant_snapshot',
+        source: 'catscompany',
+        sessionKey: executionScope.sessionKey,
+        topicId: executionScope.topicId,
+        topicType: executionScope.topicType,
+        actorUserId: executionScope.actorUserId,
+        agentId: executionScope.agentId,
+        agentBodyId: executionScope.agentBodyId,
+        identityTrust: 'server_canonical',
+        revision,
+        grants: [activeGrant],
+      } as any);
+      const initial = new DeviceAuthorityState(executionScope, { watermarkDirectory: directory });
+      initial.replace({ executionScope, deviceGrantSnapshot: authoritySnapshot(9) });
+
+      const harness = createHarness({ existingSession: false });
+      harness.bot.createPendingDeviceAuthorityState = (scopeInput: any) => (
+        new DeviceAuthorityState(scopeInput, { watermarkDirectory: directory })
+      );
+      await harness.bot.onMessage({
+        topic: 'p2p_7_43',
+        senderId: 'usr7',
+        text: '',
+        content: '',
+        metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', [activeGrant]),
+        isGroup: false,
+        seq: 10,
+      });
+      const unavailableMetadata = canonicalMetadata('usr7', 'p2p_7_43');
+      (unavailableMetadata.catsco_identity as any).device_selection = {
+        kind: 'user_device_selection',
+        source: 'catscompany',
+        status: 'unavailable',
+        session_key: executionScope.sessionKey,
+        topic_id: 'p2p_7_43',
+        topic_type: 'p2p',
+        actor_user_id: 'usr7',
+        agent_id: 'usr43',
+        selected_device_operations: [],
+      };
+      await harness.bot.onMessage({
+        topic: 'p2p_7_43',
+        senderId: 'usr7',
+        text: '',
+        content: '',
+        metadata: unavailableMetadata,
+        isGroup: false,
+        seq: 11,
+      });
+
+      const restarted = new DeviceAuthorityState(executionScope, { watermarkDirectory: directory });
+      assert.equal(restarted.replace({
+        executionScope: { ...executionScope, channelSeq: 10 },
+        deviceGrantSnapshot: authoritySnapshot(10),
+      }).deviceGrants, undefined);
+      assert.equal(restarted.replace({
+        executionScope: { ...executionScope, channelSeq: 11 },
+        deviceGrantSnapshot: authoritySnapshot(11),
+      }).deviceGrants, undefined);
+      assert.equal(restarted.replace({
+        executionScope: { ...executionScope, channelSeq: 12 },
+        deviceGrantSnapshot: authoritySnapshot(12),
+      }).deviceGrants?.length, 1);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test('a trigger waiting on another initial cloud restore performs incremental hydration later', async () => {
@@ -319,6 +811,73 @@ describe('CatsCompany execution scope flow', () => {
       assert.equal(restoreSignal?.aborted, true, clearCommand);
       assert.equal(harness.handledTurns.length, 0, clearCommand);
     }
+  });
+
+  test('a newer revoke received during initial restore wins before the older turn can run', async () => {
+    const harness = createHarness({ existingSession: false });
+    let finishRestore!: () => void;
+    let restoreStarted!: () => void;
+    const restoreStartedPromise = new Promise<void>(resolve => { restoreStarted = resolve; });
+    const restoreGate = new Promise<void>(resolve => { finishRestore = resolve; });
+    harness.bot.cloudSessionRestorer.restoreIfMissing = async () => {
+      restoreStarted();
+      await restoreGate;
+      return {
+        status: 'restored',
+        restoredMessages: 2,
+        fetchedMessages: 2,
+        compressed: false,
+      };
+    };
+
+    let authorityState: DeviceAuthorityState | undefined;
+    const authorityEvents: string[] = [];
+    harness.session.updateDeviceAuthority = (input: any) => {
+      authorityEvents.push(`flush:${input.deviceGrantSnapshot?.revision ?? input.executionScope.channelSeq}`);
+      authorityState ??= new DeviceAuthorityState(input.executionScope, { watermarkDirectory: null });
+      return authorityState.replace(input);
+    };
+    harness.session.handleMessage = async (userMessage: unknown, handleOptions: any) => {
+      authorityEvents.push(`handle:${handleOptions.executionScope.channelSeq}`);
+      authorityState ??= new DeviceAuthorityState(handleOptions.executionScope, { watermarkDirectory: null });
+      authorityState.replace({
+        executionScope: handleOptions.executionScope,
+        deviceGrantSnapshot: handleOptions.deviceGrantSnapshot,
+        deviceSelection: handleOptions.deviceSelection,
+        targetRoutes: handleOptions.targetRoutes,
+      });
+      harness.handledTurns.push({ userMessage, options: handleOptions });
+      return { visibleToUser: false, text: '' };
+    };
+
+    const olderTurn = harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'use my device',
+      content: 'use my device',
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', [deviceGrant()]),
+      isGroup: false,
+      seq: 10,
+    });
+    await restoreStartedPromise;
+
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '',
+      content: '',
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', []),
+      isGroup: false,
+      seq: 11,
+    });
+    assert.deepEqual(harness.sessionKeys, []);
+
+    finishRestore();
+    await olderTurn;
+
+    assert.deepEqual(authorityEvents, ['flush:11', 'handle:10']);
+    assert.equal(harness.handledTurns.length, 1);
+    assert.equal(authorityState?.getCurrent().deviceGrants, undefined);
   });
 
   test('a message after clear starts a fresh restore without waiting for the aborted promise', async () => {
@@ -1222,7 +1781,7 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(handledTurns[0].options.deviceSelection?.selectedDeviceOperations, ['read_file', 'send_file']);
   });
 
-  test('drops device selection that does not match the canonical execution scope', async () => {
+  test('turns a present out-of-scope device selection into an explicit deny-all selection', async () => {
     const { bot, handledTurns } = createHarness();
 
     await (bot as any).onMessage({
@@ -1238,7 +1797,8 @@ describe('CatsCompany execution scope flow', () => {
     });
 
     assert.equal(handledTurns.length, 1);
-    assert.equal(handledTurns[0].options.deviceSelection, undefined);
+    assert.equal(handledTurns[0].options.deviceSelection?.status, 'unavailable');
+    assert.deepEqual(handledTurns[0].options.deviceSelection?.selectedDeviceOperations, []);
   });
 
   test('drops device grants that do not match the canonical execution scope', async () => {
@@ -1277,7 +1837,7 @@ describe('CatsCompany execution scope flow', () => {
 
     assert.equal(handledTurns.length, 1);
     assert.equal(handledTurns[0].options.deviceGrants, undefined);
-    assert.equal(handledTurns[0].options.deviceGrantSnapshot?.revision, 12);
+    assert.equal(handledTurns[0].options.deviceGrantSnapshot?.revision, 13);
     assert.deepEqual(handledTurns[0].options.deviceGrantSnapshot?.grants, []);
   });
 
@@ -1325,6 +1885,7 @@ describe('CatsCompany execution scope flow', () => {
     const scope = createExecutionScope(createCatsCoMessageEnvelope({
       topic: 'p2p_7_43',
       senderId: 'usr7',
+      seq: 13,
       text: 'first',
       metadata: canonicalMetadata('usr7', 'p2p_7_43'),
       botUid: 'usr43',
@@ -1350,6 +1911,7 @@ describe('CatsCompany execution scope flow', () => {
     const scope = createExecutionScope(createCatsCoMessageEnvelope({
       topic: 'p2p_7_43',
       senderId: 'usr7',
+      seq: 13,
       text: 'first',
       metadata: canonicalMetadata('usr7', 'p2p_7_43'),
       botUid: 'usr43',
@@ -1549,6 +2111,7 @@ describe('CatsCompany execution scope flow', () => {
     const scope = createExecutionScope(createCatsCoMessageEnvelope({
       topic: 'p2p_7_43',
       senderId: 'usr7',
+      seq: 13,
       text: 'first',
       metadata: canonicalMetadata('usr7', 'p2p_7_43'),
       botUid: 'usr43',
@@ -1582,6 +2145,80 @@ describe('CatsCompany execution scope flow', () => {
     const pending = (bot as any).consumeQueuedUserInput(scope.sessionKey, scope);
     assert.equal(typeof pending, 'object');
     assert.equal(pending.content, '补充读取文件');
+    assert.equal(pending.deviceGrantSnapshot, undefined);
+    assert.equal(pending.executionScope.channelSeq, 13);
     assert.equal(pending.deviceSelection.selectedDeviceId, 'alice-laptop');
+  });
+
+  test('never combines a newer authority snapshot with an older selection or route', () => {
+    const { bot } = createHarness();
+    const scope = createExecutionScope(createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'first',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      botUid: 'usr43',
+    }));
+    const snapshot = (revision: number) => ({
+      kind: 'user_device_grant_snapshot',
+      source: scope.source,
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      agentBodyId: scope.agentBodyId,
+      identityTrust: scope.identityTrust,
+      revision,
+      grants: [deviceGrant()],
+    });
+    const oldSelection = {
+      kind: 'user_device_selection',
+      source: 'catscompany',
+      status: 'selected',
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      identityTrust: 'server_canonical',
+      selectedDeviceId: 'alice-laptop',
+    };
+    const oldRoutes = buildTargetRoutes([{
+      userId: scope.actorUserId,
+      ownerUserId: scope.actorUserId,
+      deviceId: 'alice-laptop',
+      label: 'old route',
+      os: 'macos',
+      status: 'ready',
+    }]);
+    bot.messageQueue.set(scope.sessionKey, [{
+      userMessage: 'old',
+      topic: scope.topicId,
+      senderId: scope.actorUserId,
+      seq: 100,
+      executionScope: scope,
+      deviceGrantSnapshot: snapshot(100),
+      deviceSelection: oldSelection,
+      targetRoutes: oldRoutes,
+      receivedAt: Date.now(),
+      source: 'user',
+    }, {
+      userMessage: 'new conflict tombstone',
+      topic: scope.topicId,
+      senderId: scope.actorUserId,
+      seq: 101,
+      executionScope: scope,
+      deviceGrantSnapshot: snapshot(101),
+      deviceSelection: undefined,
+      targetRoutes: undefined,
+      receivedAt: Date.now() + 1,
+      source: 'user',
+    }]);
+
+    const pending = (bot as any).consumeQueuedUserInput(scope.sessionKey, scope);
+    assert.equal(pending.deviceGrantSnapshot.revision, 101);
+    assert.equal(pending.deviceSelection, undefined);
+    assert.equal(pending.targetRoutes, undefined);
   });
 });

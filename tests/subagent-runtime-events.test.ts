@@ -11,6 +11,12 @@ import { buildSubAgentStatusMessage } from '../src/core/sub-agent-observation';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { SpawnSubagentTool } from '../src/tools/spawn-subagent-tool';
 import { WaitSubagentsTool } from '../src/tools/wait-subagents-tool';
+import { DeviceAuthorityState } from '../src/core/device-authority-state';
+import { buildTargetRoutes } from '../src/catscompany/runtime-context';
+import {
+  TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+  TRANSIENT_RUNTIME_TARGET_RULES_PREFIX,
+} from '../src/core/runtime-context-builder';
 
 describe('subagent runtime events', () => {
   test('running status uses a stable control ref and excludes volatile progress text', () => {
@@ -1832,10 +1838,12 @@ describe('subagent runtime events', () => {
 
   test('subagent runner inherits delegated tool authorization context', async () => {
     let observedContext: any;
+    let observedMessages: any[] = [];
     const originalRun = ConversationRunner.prototype.run;
     const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-subagent-delegated-'));
-    (ConversationRunner.prototype as any).run = async function runMock() {
+    (ConversationRunner.prototype as any).run = async function runMock(messages: any[]) {
       observedContext = (this as any).toolExecutionContext;
+      observedMessages = messages;
       return {
         response: 'done',
         finalResponseVisible: true,
@@ -1861,6 +1869,53 @@ describe('subagent runtime events', () => {
       bodyId: 'body-main',
       createdAt: Date.now(),
     };
+    const delegatedGrant = {
+      kind: 'user_device_grant',
+      source: 'catscompany',
+      grantId: 'delegated-grant',
+      status: 'active',
+      identityTrust: 'server_canonical',
+      identitySource: 'server_canonical_message',
+      deviceId: 'delegated-device-secret',
+      deviceDisplayName: 'Alice Laptop',
+      ownerUserId: 'usr7',
+      sessionKey: executionScope.sessionKey,
+      topicId: executionScope.topicId,
+      topicType: executionScope.topicType,
+      actorUserId: executionScope.actorUserId,
+      agentId: executionScope.agentId,
+      agentBodyId: executionScope.agentBodyId,
+      operations: ['read_file'],
+      createdAt: 1,
+      expiresAt: Date.now() + 60_000,
+    };
+    const targetRoutes = buildTargetRoutes([{
+      userId: 'usr7',
+      userName: 'Alice',
+      ownerUserId: 'usr7',
+      deviceId: 'delegated-device-secret',
+      label: 'Alice Laptop',
+      os: 'macos',
+      status: 'ready',
+    }]);
+    const authority = new DeviceAuthorityState(executionScope as any, { watermarkDirectory: null });
+    authority.replace({
+      executionScope: executionScope as any,
+      deviceGrantSnapshot: {
+        kind: 'user_device_grant_snapshot',
+        source: 'catscompany',
+        sessionKey: executionScope.sessionKey,
+        topicId: executionScope.topicId,
+        topicType: executionScope.topicType,
+        actorUserId: executionScope.actorUserId,
+        agentId: executionScope.agentId,
+        agentBodyId: executionScope.agentBodyId,
+        identityTrust: 'server_canonical',
+        revision: 1,
+        grants: [delegatedGrant as any],
+      },
+      targetRoutes,
+    });
 
     try {
       const session = new SubAgentSession('sub-delegated-context', {} as any, {} as any, {
@@ -1871,7 +1926,12 @@ describe('subagent runtime events', () => {
           surface: 'catscompany',
           executionScope: executionScope as any,
           localDeviceGrant: localDeviceGrant as any,
-          deviceGrants: [{ operations: ['read_file'] } as any],
+          deviceGrants: [delegatedGrant as any],
+          deviceAuthority: authority,
+          thinToolRpc: {
+            executeTool: async () => { throw new Error('not expected'); },
+          },
+          targetRoutes,
           localFileGrants: [{ filePath: 'C:\\tmp\\a.txt' } as any],
         },
       });
@@ -1883,8 +1943,23 @@ describe('subagent runtime events', () => {
       assert.strictEqual(observedContext.executionScope, executionScope);
       assert.strictEqual(observedContext.localDeviceGrant, localDeviceGrant);
       assert.equal(observedContext.deviceGrants.length, 1);
+      assert.strictEqual(observedContext.deviceAuthority, authority);
       assert.equal(observedContext.localFileGrants.length, 1);
       assert.equal(typeof observedContext.requestParentInput, 'function');
+      const stableRules = observedMessages.find(message => (
+        typeof message.content === 'string'
+        && message.content.startsWith(TRANSIENT_RUNTIME_TARGET_RULES_PREFIX)
+      ));
+      const deviceContext = observedMessages.find(message => (
+        typeof message.content === 'string'
+        && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)
+      ));
+      assert.ok(stableRules);
+      assert.equal(stableRules.__context?.cacheScope, 'stable');
+      assert.ok(deviceContext);
+      assert.equal(deviceContext.__context?.cacheScope, 'epoch');
+      assert.match(deviceContext.content, /target="device_target_[a-f0-9]{16}"/u);
+      assert.doesNotMatch(deviceContext.content, /delegated-device-secret/u);
     } finally {
       ConversationRunner.prototype.run = originalRun;
       fs.rmSync(workingDirectory, { recursive: true, force: true });

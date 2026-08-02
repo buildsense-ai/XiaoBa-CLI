@@ -137,7 +137,7 @@ describe('tool target context', () => {
 
     assert.ok(context);
     assert.match(context, /target: speaker_default/);
-    assert.match(context, /target_display_name: Alice Laptop/);
+    assert.match(context, /target_display_name: authorized_device/);
   });
 
   test('strips target context before CatsCo display', () => {

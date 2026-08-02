@@ -34,18 +34,29 @@ export function extractCatsCoDeviceGrantSnapshot(
   const identityHasGrants = hasOwn(identity, 'device_grants');
   const permissionsHasGrants = hasOwn(permissions, 'device_grants');
   if (!identityHasGrants && !permissionsHasGrants) return undefined;
-  const rawValue = identityHasGrants
-    ? identity!.device_grants
-    : permissions!.device_grants;
-  const rawGrants = Array.isArray(rawValue) ? rawValue : [];
-  if (!Array.isArray(rawValue)) {
+  const identityValue = identityHasGrants ? identity!.device_grants : undefined;
+  const permissionsValue = permissionsHasGrants ? permissions!.device_grants : undefined;
+  const selectedValue = identityHasGrants ? identityValue : permissionsValue;
+  if (!Array.isArray(selectedValue)) {
     Logger.warning('[CatsCompany] canonical device_grants is present but is not an array; cleared device authority');
   }
-
-  const grants = rawGrants
+  const normalizeScopedGrants = (value: unknown) => (Array.isArray(value) ? value : [])
     .map(normalizeDeviceGrant)
     .filter((grant): grant is ScopedDeviceGrant => Boolean(grant))
     .filter(grant => grantMatchesScope(grant, scope));
+  const identityGrants = identityHasGrants ? normalizeScopedGrants(identityValue) : undefined;
+  const permissionsGrants = permissionsHasGrants ? normalizeScopedGrants(permissionsValue) : undefined;
+  const dualSourceConflict = identityHasGrants && permissionsHasGrants && (
+    !Array.isArray(identityValue)
+    || !Array.isArray(permissionsValue)
+    || canonicalGrantList(identityGrants || []) !== canonicalGrantList(permissionsGrants || [])
+  );
+  if (dualSourceConflict) {
+    Logger.warning('[CatsCompany] canonical device_grants sources conflict; cleared device authority');
+  }
+  const grants = dualSourceConflict
+    ? []
+    : identityGrants ?? permissionsGrants ?? [];
 
   return pruneUndefined({
     kind: 'user_device_grant_snapshot',
@@ -124,7 +135,31 @@ function normalizeOperations(value: unknown): DeviceGrantOperation[] {
   for (const item of value) {
     if (isDeviceGrantOperation(item)) unique.add(item);
   }
-  return [...unique];
+  return [...unique].sort((left, right) => operationRank(left) - operationRank(right));
+}
+
+function canonicalGrantList(grants: readonly ScopedDeviceGrant[]): string {
+  return JSON.stringify([...grants]
+    .map(grant => ({ ...grant, operations: [...grant.operations] }))
+    .sort((left, right) => (
+      left.grantId.localeCompare(right.grantId)
+      || left.deviceId.localeCompare(right.deviceId)
+    )));
+}
+
+function operationRank(operation: DeviceGrantOperation): number {
+  return [
+    'read_file',
+    'resolve_common_directory',
+    'glob',
+    'grep',
+    'write_file',
+    'edit_file',
+    'send_file',
+    'execute_shell',
+    'browser_control',
+    'desktop_control',
+  ].indexOf(operation);
 }
 
 function isDeviceGrantOperation(value: unknown): value is DeviceGrantOperation {

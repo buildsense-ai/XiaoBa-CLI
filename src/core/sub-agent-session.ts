@@ -12,6 +12,13 @@ import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-te
 import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext } from '../types/tool';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  buildRuntimeContextMessage,
+  buildRuntimeTargetRulesMessage,
+} from './runtime-context-builder';
+import { annotateContextMessage } from './context-lifecycle';
+import { preserveAuthorizedDeviceContextWitness } from './authorized-device-witness';
+import { materializeCurrentDeviceAuthority } from './device-authority-state';
 
 // ─── 类型定义 ───────────────────────────────────────────
 
@@ -234,6 +241,24 @@ export class SubAgentSession {
         buildSubAgentSystemPrompt(this.toolScope, this.temporaryDirectory, this.allowedTools, this.options.subAgentPrompt, this.options.maxTurns),
       ].filter(Boolean).join('\n\n'),
     });
+    const delegatedToolContext = materializeCurrentDeviceAuthority(
+      this.options.delegatedToolContext || {},
+    );
+    const delegatedSessionKey = delegatedToolContext.executionScope?.sessionKey
+      || `subagent:${this.id}`;
+    const runtimeTargetRules = buildRuntimeTargetRulesMessage({
+      sessionKey: delegatedSessionKey,
+      sessionType: delegatedToolContext.surface,
+      executionScope: delegatedToolContext.executionScope,
+      localFileGrants: delegatedToolContext.localFileGrants,
+    });
+    if (runtimeTargetRules) {
+      this.messages.push(annotateContextMessage(runtimeTargetRules, {
+        source: 'runtime_target_rules',
+        lifecycle: 'session',
+        cacheScope: 'stable',
+      }));
+    }
     await fs.promises.mkdir(this.temporaryDirectory, { recursive: true });
 
     // 2. 以 tool_result 形式注入 skill 内容（兼容旧 spawn_subagent(skill_name) 形式）
@@ -272,11 +297,34 @@ export class SubAgentSession {
       });
     }
 
+    const runtimeContext = buildRuntimeContextMessage({
+      sessionKey: delegatedSessionKey,
+      sessionType: delegatedToolContext.surface,
+      executionScope: delegatedToolContext.executionScope,
+      localDeviceGrant: delegatedToolContext.localDeviceGrant,
+      deviceGrants: delegatedToolContext.deviceGrants,
+      deviceSelection: delegatedToolContext.deviceSelection,
+      targetRoutes: delegatedToolContext.targetRoutes,
+      remoteTransportAvailable: Boolean(
+        delegatedToolContext.deviceRpc || delegatedToolContext.thinToolRpc
+      ),
+      localFileGrants: delegatedToolContext.localFileGrants,
+    });
+    if (runtimeContext) {
+      const annotated = annotateContextMessage(runtimeContext, {
+        source: 'runtime_context',
+        lifecycle: 'episode',
+        cacheScope: 'epoch',
+        epoch: `subagent:${this.id}`,
+      });
+      preserveAuthorizedDeviceContextWitness(runtimeContext, annotated);
+      this.messages.push(annotated);
+    }
+
     // 3. 注入用户消息
     this.messages.push({ role: 'user', content: this.options.userMessage });
 
     // 4. 创建独立的 ToolManager
-    const delegatedToolContext = this.options.delegatedToolContext || {};
     const toolManager = new ToolManager(this.options.workingDirectory, {
       ...delegatedToolContext,
       sessionId: `subagent:${this.id}`,

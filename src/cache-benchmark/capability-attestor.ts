@@ -1,6 +1,8 @@
 import type { Message } from '../types';
 import type { ModelAttemptEvent, ModelAttemptSink } from '../providers/provider';
 import type { ObservationBranchCompletion } from '../core/observation-branch-session';
+import { readAuthorizedDeviceContextWitness } from '../core/authorized-device-witness';
+import { remoteToolNameForDeviceOperation } from '../core/authorized-device-projection';
 import {
   REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
   type CacheBenchmarkAttemptRole,
@@ -131,7 +133,18 @@ export function attestRequestCapabilities(event: ModelAttemptEvent): CacheBenchm
   ) {
     capabilities.add('group-chat-participants');
   }
-  if (sources.has('runtime_context') && /可操作的用户电脑：/.test(text)) {
+  const runtimeContextMessages = messages.filter(message => (
+    message.__context?.source === 'runtime_context'
+  ));
+  const requestTools = new Map(event.request.tools.map(tool => [tool.name, tool]));
+  if (
+    runtimeContextMessages.length === 1
+    && attestsAuthorizedDeviceContext(
+      runtimeContextMessages[0],
+      event.timestamp,
+      requestTools,
+    )
+  ) {
     capabilities.add('device-authorization');
   }
   if (event.request.tools.length > 0) capabilities.add('tools');
@@ -147,6 +160,67 @@ export function attestRequestCapabilities(event: ModelAttemptEvent): CacheBenchm
   )) capabilities.add('session-recovery');
 
   return REQUIRED_CACHE_BENCHMARK_CAPABILITIES.filter(capability => capabilities.has(capability));
+}
+
+function attestsAuthorizedDeviceContext(
+  message: Message,
+  attemptTimestamp: string,
+  requestTools: ReadonlyMap<string, ModelAttemptEvent['request']['tools'][number]>,
+): boolean {
+  const witness = readAuthorizedDeviceContextWitness(message);
+  if (
+    !witness
+    || witness.schema !== 'xiaoba.authorized_device_context_witness.v1'
+    || witness.remoteTransportAvailable !== true
+    || witness.devices.length === 0
+    || typeof message.content !== 'string'
+  ) return false;
+  const visibleLines = message.content.split('\n').filter(line => line.startsWith('- target="'));
+  const targetLines = visibleLines.map(line => (
+    line.match(/^- target="(device_target_[a-f0-9]{16}|speaker_default)"：/u)?.[1] || ''
+  ));
+  const targets = witness.devices.map(device => device.target);
+  const grantIds = witness.devices.flatMap(device => device.grantIds);
+  const deviceKeys = witness.devices.map(device => `${device.ownerUserId}\0${device.deviceId}`);
+  const attemptAt = Date.parse(attemptTimestamp);
+  return Number.isFinite(attemptAt)
+    && visibleLines.length === witness.devices.length
+    && new Set(targetLines).size === targetLines.length
+    && new Set(targets).size === targets.length
+    && new Set(grantIds).size === grantIds.length
+    && new Set(deviceKeys).size === deviceKeys.length
+    && targets.every(target => targetLines.includes(target))
+    && witness.devices.every(device => visibleLines.includes(device.visibleLine))
+    && witness.devices.some(device => device.operations.some(operation => {
+      const toolName = remoteToolNameForDeviceOperation(operation);
+      const tool = toolName ? requestTools.get(toolName) : undefined;
+      if (!tool || !hasStringTargetParameter(tool.parameters)) return false;
+      return operation !== 'send_file'
+        || Array.isArray(tool.parameters.required) && tool.parameters.required.includes('target');
+    }))
+    && witness.devices.every(device => (
+      Boolean(device.grantIds.length > 0 && device.ownerUserId && device.deviceId)
+      && new Set(device.grantIds).size === device.grantIds.length
+      && device.operations.length > 0
+      && new Set(device.operations).size === device.operations.length
+      && device.operations.every(operation => (
+        Number.isFinite(device.operationExpiresAt[operation])
+        && Number(device.operationExpiresAt[operation]) > attemptAt
+      ))
+    ));
+}
+
+function hasStringTargetParameter(parameters: unknown): boolean {
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return false;
+  const properties = (parameters as Record<string, unknown>).properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return false;
+  const target = (properties as Record<string, unknown>).target;
+  return Boolean(
+    target
+    && typeof target === 'object'
+    && !Array.isArray(target)
+    && (target as Record<string, unknown>).type === 'string'
+  );
 }
 
 function memoryBranchId(sessionId: string | undefined): string | undefined {

@@ -189,6 +189,74 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     assert.ok(envelope.warnings?.some(warning => warning.includes('topic.type')));
   });
 
+  test('binds the canonical channel sequence to the transport sequence', () => {
+    const envelope = createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 42,
+      text: 'hello',
+      botUid: 'usr43',
+      metadata: {
+        catsco_identity: {
+          actor: { user_id: 'usr7' },
+          agent: { agent_id: 'usr43', body_id: 'body-main' },
+          topic: { topic_id: 'p2p_7_43', type: 'p2p', channel_seq: 9_999_999 },
+          permissions: { source: 'server_canonical_message' },
+        },
+      },
+    });
+
+    assert.equal(envelope.identityTrust, 'untrusted');
+    assert.equal(envelope.channelSeq, 42);
+    assert.equal(createExecutionScope(envelope).channelSeq, 42);
+    assert.ok(envelope.warnings?.some(warning => warning.includes('does not match transport seq')));
+  });
+
+  test('uses a validated canonical channel sequence when the transport omits it', () => {
+    const envelope = createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'hello',
+      botUid: 'usr43',
+      metadata: {
+        catsco_identity: {
+          actor: { user_id: 'usr7' },
+          agent: { agent_id: 'usr43', body_id: 'body-main' },
+          topic: { topic_id: 'p2p_7_43', type: 'p2p', channel_seq: 42 },
+          permissions: { source: 'server_canonical_message' },
+        },
+      },
+    });
+
+    assert.equal(envelope.identityTrust, 'server_canonical');
+    assert.equal(envelope.channelSeq, 42);
+    assert.equal(createExecutionScope(envelope).channelSeq, 42);
+  });
+
+  test('rejects malformed canonical channel sequences instead of coercing them', () => {
+    for (const channelSeq of [-1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1, '42']) {
+      const envelope = createCatsCoMessageEnvelope({
+        topic: 'p2p_7_43',
+        senderId: 'usr7',
+        seq: 42,
+        text: 'hello',
+        botUid: 'usr43',
+        metadata: {
+          catsco_identity: {
+            actor: { user_id: 'usr7' },
+            agent: { agent_id: 'usr43', body_id: 'body-main' },
+            topic: { topic_id: 'p2p_7_43', type: 'p2p', channel_seq: channelSeq },
+            permissions: { source: 'server_canonical_message' },
+          },
+        },
+      });
+
+      assert.equal(envelope.identityTrust, 'untrusted', `channel_seq=${String(channelSeq)}`);
+      assert.equal(envelope.channelSeq, 42);
+      assert.ok(envelope.warnings?.some(warning => warning.includes('positive safe integer')));
+    }
+  });
+
   test('marks missing canonical identity as legacy context instead of trusted', () => {
     const envelope = createCatsCoMessageEnvelope({
       topic: 'p2p_7_43',

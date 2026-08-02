@@ -39,7 +39,7 @@ function canonicalMetadata(actorUserId: string, topicId: string, agentId = 'usr4
     catsco_identity: {
       actor: { user_id: actorUserId },
       agent: { agent_id: agentId, body_id: bodyId },
-      topic: { topic_id: topicId, type: topicId.startsWith('grp_') ? 'group' : 'p2p', channel_seq: 12 },
+      topic: { topic_id: topicId, type: topicId.startsWith('grp_') ? 'group' : 'p2p' },
       permissions: { source: 'server_canonical_message' },
     },
   };

@@ -1,5 +1,6 @@
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
 import type {
+  ExecutionScope,
   ScopedDeviceGrant,
   ScopedDeviceGrantSnapshot,
   ScopedDeviceSelection,
@@ -35,6 +36,8 @@ import {
   TRANSIENT_RUNTIME_CONTEXT_PREFIX,
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
+import { preserveAuthorizedDeviceContextWitness } from './authorized-device-witness';
+import { materializeCurrentDeviceAuthority } from './device-authority-state';
 import { buildPendingUserInputBoundaryMessage } from './pending-user-input-boundary';
 import { annotateContextMessage } from './context-lifecycle';
 import {
@@ -69,6 +72,16 @@ function contentToString(content: string | ContentBlock[] | null): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '[图片]';
   return content.map(block => block.type === 'text' ? block.text : '[图片]').join('');
+}
+
+function findLastMessageIndex(
+  messages: readonly Message[],
+  predicate: (message: Message) => boolean,
+): number {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (predicate(messages[index])) return index;
+  }
+  return -1;
 }
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
@@ -147,6 +160,8 @@ export interface RunResult {
 
 export interface PendingUserInput {
   content: string | ContentBlock[];
+  /** Canonical scope carried by the authority fragment, including channelSeq. */
+  executionScope?: ExecutionScope;
   /** Complete replacement snapshot. Empty grants explicitly revoke prior authority. */
   deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
   /** Legacy pending-input compatibility; treated as a complete replacement, never a union. */
@@ -169,6 +184,12 @@ function isPendingUserInput(value: string | ContentBlock[] | PendingUserInput): 
     && typeof value === 'object'
     && !Array.isArray(value)
     && 'content' in value;
+}
+
+function normalizePositiveRevision(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
 }
 
 export type SyntheticObservationProvider = () => SyntheticObservation[];
@@ -349,6 +370,10 @@ export class ConversationRunner {
           messages,
           newMessages,
         };
+      }
+      if (this.toolExecutionContext?.deviceAuthority) {
+        this.toolExecutionContext = materializeCurrentDeviceAuthority(this.toolExecutionContext);
+        this.refreshRuntimeContextForPendingInput(messages);
       }
       this.injectSyntheticObservations(messages, turns);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
@@ -745,18 +770,55 @@ export class ConversationRunner {
     if (isPendingUserInput(pending)) {
       const deviceGrantSnapshot = pending.deviceGrantSnapshot
         ?? this.buildLegacyPendingDeviceGrantSnapshot(pending.deviceGrants);
-      if (deviceGrantSnapshot && this.applyPendingDeviceGrantSnapshot(deviceGrantSnapshot)) {
+      if (this.toolExecutionContext?.deviceAuthority) {
+        const pendingScope = pending.executionScope ?? this.toolExecutionContext.executionScope;
+        const snapshotRevision = normalizePositiveRevision(deviceGrantSnapshot?.revision);
+        const pendingSequence = normalizePositiveRevision(pendingScope?.channelSeq);
+        let authorityView;
+        if (
+          deviceGrantSnapshot
+          && pendingScope
+          && snapshotRevision !== undefined
+          && pendingSequence !== undefined
+          && snapshotRevision < pendingSequence
+        ) {
+          this.toolExecutionContext.deviceAuthority.replace({
+            executionScope: { ...pendingScope, channelSeq: snapshotRevision },
+            deviceGrantSnapshot,
+          });
+          authorityView = this.toolExecutionContext.deviceAuthority.replace({
+            executionScope: pendingScope,
+            deviceSelection: pending.deviceSelection,
+            targetRoutes: pending.targetRoutes,
+          });
+        } else {
+          authorityView = this.toolExecutionContext.deviceAuthority.replace({
+            executionScope: pendingScope,
+            deviceGrantSnapshot,
+            deviceSelection: pending.deviceSelection,
+            targetRoutes: pending.targetRoutes,
+          });
+        }
+        this.toolExecutionContext = {
+          ...this.toolExecutionContext,
+          deviceGrants: authorityView.deviceGrants,
+          deviceGrantSnapshot: authorityView.deviceGrantSnapshot,
+          deviceSelection: authorityView.deviceSelection,
+          targetRoutes: authorityView.targetRoutes,
+        };
+        shouldRefreshRuntimeContext = true;
+      } else if (deviceGrantSnapshot && this.applyPendingDeviceGrantSnapshot(deviceGrantSnapshot)) {
         shouldRefreshRuntimeContext = true;
       }
     }
-    if (isPendingUserInput(pending) && pending.deviceSelection) {
+    if (isPendingUserInput(pending) && pending.deviceSelection && !this.toolExecutionContext?.deviceAuthority) {
       this.toolExecutionContext = {
         ...(this.toolExecutionContext || {}),
         deviceSelection: pending.deviceSelection,
       };
       shouldRefreshRuntimeContext = true;
     }
-    if (isPendingUserInput(pending) && pending.targetRoutes) {
+    if (isPendingUserInput(pending) && pending.targetRoutes && !this.toolExecutionContext?.deviceAuthority) {
       this.toolExecutionContext = {
         ...(this.toolExecutionContext || {}),
         targetRoutes: pending.targetRoutes,
@@ -858,6 +920,9 @@ export class ConversationRunner {
   }
 
   private refreshRuntimeContextForPendingInput(messages: Message[]): void {
+    if (this.toolExecutionContext?.deviceAuthority) {
+      this.toolExecutionContext = materializeCurrentDeviceAuthority(this.toolExecutionContext);
+    }
     const sessionKey = this.toolExecutionContext?.sessionId
       || this.toolExecutionContext?.executionScope?.sessionKey;
     if (!sessionKey) return;
@@ -880,15 +945,22 @@ export class ConversationRunner {
       deviceGrants: this.toolExecutionContext?.deviceGrants,
       deviceSelection: this.toolExecutionContext?.deviceSelection,
       targetRoutes: this.toolExecutionContext?.targetRoutes,
+      remoteTransportAvailable: Boolean(
+        this.toolExecutionContext?.deviceRpc || this.toolExecutionContext?.thinToolRpc
+      ),
       localFileGrants: this.toolExecutionContext?.localFileGrants,
     });
     if (runtimeContext) {
-      messages.push(annotateContextMessage(runtimeContext, {
+      const annotated = annotateContextMessage(runtimeContext, {
         source: 'runtime_context',
         lifecycle: 'episode',
         cacheScope: 'epoch',
         epoch: this.episodeId,
-      }));
+      });
+      preserveAuthorizedDeviceContextWitness(runtimeContext, annotated);
+      const lastUserIndex = findLastMessageIndex(messages, message => message.role === 'user');
+      if (lastUserIndex < 0) messages.push(annotated);
+      else messages.splice(lastUserIndex, 0, annotated);
     }
   }
 

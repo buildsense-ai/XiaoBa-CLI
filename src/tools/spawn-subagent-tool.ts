@@ -245,6 +245,8 @@ function buildDelegatedSubAgentToolContext(context: ToolExecutionContext): Parti
     executionScope: context.executionScope,
     localDeviceGrant: context.localDeviceGrant,
     deviceGrants: context.deviceGrants,
+    deviceGrantSnapshot: context.deviceGrantSnapshot,
+    deviceAuthority: context.deviceAuthority,
     deviceSelection: context.deviceSelection,
     deviceRpc: context.deviceRpc,
     deviceRpcReceiver: context.deviceRpcReceiver,

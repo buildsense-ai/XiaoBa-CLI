@@ -17,6 +17,7 @@ export interface ContextEventIdentity {
 }
 export type ContextSource =
   | 'runtime_context'
+  | 'runtime_target_rules'
   | 'runtime_observation_rules'
   | 'runtime_feedback'
   | 'runtime_transient'
@@ -58,6 +59,7 @@ export interface ProviderStateReference {
   model: string;
   endpointFingerprint: string;
 }
+
 export type ReasoningEffort = 'default' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'disabled';
 export type OpenAIApiMode = 'chat_completions' | 'responses';
 

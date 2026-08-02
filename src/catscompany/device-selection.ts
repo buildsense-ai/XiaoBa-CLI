@@ -19,11 +19,29 @@ export function extractCatsCoDeviceSelection(
   const permissions = asRecord(identity?.permissions);
   if (stringField(permissions, 'source') !== 'server_canonical_message') return undefined;
 
-  const rawSelection = asRecord(identity?.device_selection) ?? asRecord(permissions?.device_selection);
-  if (!rawSelection) return undefined;
+  const identityHasSelection = hasOwn(identity, 'device_selection');
+  const permissionsHasSelection = hasOwn(permissions, 'device_selection');
+  if (!identityHasSelection && !permissionsHasSelection) return undefined;
+  const identitySelection = identityHasSelection
+    ? normalizeDeviceSelection(asRecord(identity?.device_selection) || {}, scope)
+    : undefined;
+  const permissionsSelection = permissionsHasSelection
+    ? normalizeDeviceSelection(asRecord(permissions?.device_selection) || {}, scope)
+    : undefined;
+  if (
+    identityHasSelection
+    && permissionsHasSelection
+    && canonicalSelection(identitySelection) !== canonicalSelection(permissionsSelection)
+  ) return unavailableSelection(scope, 'conflicting_canonical_selection');
+  const rawSelection = identityHasSelection
+    ? asRecord(identity?.device_selection)
+    : asRecord(permissions?.device_selection);
+  if (!rawSelection) return unavailableSelection(scope, 'invalid_canonical_selection');
 
   const selection = normalizeDeviceSelection(rawSelection, scope);
-  if (!selectionMatchesScope(selection, scope)) return undefined;
+  if (!selectionMatchesScope(selection, scope)) {
+    return unavailableSelection(scope, 'invalid_canonical_selection');
+  }
   return selection;
 }
 
@@ -37,13 +55,17 @@ function normalizeDeviceSelection(record: UnknownRecord, scope: ExecutionScope):
     || stringField(record, 'selected_device_id')
     || stringField(selectedDevice, 'deviceId')
     || stringField(selectedDevice, 'device_id');
-  const status = normalizeStatus(stringField(record, 'status'), selectedDeviceId);
+  const rawStatus = stringField(record, 'status');
+  if (hasOwn(record, 'status') && rawStatus === undefined) return undefined;
+  const status = normalizeStatus(rawStatus, selectedDeviceId);
+  if (!status) return undefined;
   if (status === 'selected' && !selectedDeviceId) return undefined;
 
   const sessionKey = stringField(record, 'sessionKey') || stringField(record, 'session_key');
   const topicId = stringField(record, 'topicId') || stringField(record, 'topic_id');
   const actorUserId = stringField(record, 'actorUserId') || stringField(record, 'actor_user_id');
   if (!sessionKey || !topicId || !actorUserId) return undefined;
+  const selectedOperations = presentSelectedOperations(record, selectedDevice);
 
   return pruneUndefined({
     kind: 'user_device_selection',
@@ -70,11 +92,55 @@ function normalizeDeviceSelection(record: UnknownRecord, scope: ExecutionScope):
       || stringField(record, 'selected_device_installation_id')
       || stringField(selectedDevice, 'installationId')
       || stringField(selectedDevice, 'installation_id'),
-    selectedDeviceOperations: normalizeOperations(selectedDevice?.operations ?? record.selectedDeviceOperations ?? record.selected_device_operations),
+    // Omission means "no additional narrowing". A present empty, malformed,
+    // or all-invalid list is an explicit deny-all constraint and must remain [].
+    selectedDeviceOperations: selectedOperations.present
+      ? normalizeSelectedOperations(selectedOperations.value)
+      : undefined,
     candidates: normalizeCandidates(record.candidates),
     candidateCount: numberField(record, 'candidateCount') ?? numberField(record, 'candidate_count'),
     createdAt: numberField(record, 'createdAt') ?? numberField(record, 'created_at'),
   }) as ScopedDeviceSelection;
+}
+
+function unavailableSelection(
+  scope: ExecutionScope,
+  selectionSource: string,
+): ScopedDeviceSelection {
+  return {
+    kind: 'user_device_selection',
+    source: 'catscompany',
+    status: 'unavailable',
+    selectionSource,
+    sessionKey: scope.sessionKey,
+    topicId: scope.topicId,
+    topicType: scope.topicType,
+    actorUserId: scope.actorUserId,
+    agentId: scope.agentId,
+    identityTrust: 'server_canonical',
+    identitySource: 'metadata.catsco_identity',
+    selectedDeviceOperations: [],
+  };
+}
+
+function presentSelectedOperations(
+  record: UnknownRecord,
+  selectedDevice: UnknownRecord | undefined,
+): { present: boolean; value?: unknown } {
+  if (hasOwn(selectedDevice, 'operations')) {
+    return { present: true, value: selectedDevice!.operations };
+  }
+  if (hasOwn(record, 'selectedDeviceOperations')) {
+    return { present: true, value: record.selectedDeviceOperations };
+  }
+  if (hasOwn(record, 'selected_device_operations')) {
+    return { present: true, value: record.selected_device_operations };
+  }
+  return { present: false };
+}
+
+function normalizeSelectedOperations(value: unknown): DeviceGrantOperation[] {
+  return normalizeOperations(value) ?? [];
 }
 
 function selectionMatchesScope(selection: ScopedDeviceSelection | undefined, scope: ExecutionScope): selection is ScopedDeviceSelection {
@@ -128,9 +194,14 @@ function isDeviceGrantOperation(value: unknown): value is DeviceGrantOperation {
     || value === 'desktop_control';
 }
 
-function normalizeStatus(value: string | undefined, selectedDeviceId?: string): DeviceSelectionStatus {
+function normalizeStatus(
+  value: string | undefined,
+  selectedDeviceId?: string,
+): DeviceSelectionStatus | undefined {
   if (value === 'needs_selection' || value === 'unavailable') return value;
-  if (value === 'selected' || selectedDeviceId) return 'selected';
+  if (value === 'selected') return 'selected';
+  if (value !== undefined) return undefined;
+  if (selectedDeviceId) return 'selected';
   return 'needs_selection';
 }
 
@@ -146,6 +217,26 @@ function normalizeTopicType(value: string | undefined): MessageTopicType {
 function asRecord(value: unknown): UnknownRecord | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   return value as UnknownRecord;
+}
+
+function hasOwn(record: UnknownRecord | undefined, key: string): boolean {
+  return Boolean(record && Object.prototype.hasOwnProperty.call(record, key));
+}
+
+function canonicalSelection(selection: ScopedDeviceSelection | undefined): string {
+  if (!selection) return 'invalid';
+  return JSON.stringify({
+    ...selection,
+    selectedDeviceOperations: selection.selectedDeviceOperations === undefined
+      ? null
+      : [...selection.selectedDeviceOperations].sort(),
+    candidates: [...(selection.candidates || [])]
+      .map(candidate => ({
+        ...candidate,
+        operations: [...(candidate.operations || [])].sort(),
+      }))
+      .sort((left, right) => left.deviceId.localeCompare(right.deviceId)),
+  });
 }
 
 function stringField(record: UnknownRecord | undefined, key: string): string | undefined {

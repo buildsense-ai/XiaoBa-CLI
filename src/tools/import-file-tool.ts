@@ -32,7 +32,7 @@ export class ImportFileTool implements Tool {
       '把聊天参与者电脑上的原始文件复制到当前 agent 的托管工作区。',
       '当用户要求把自己电脑上的文件传给云端虚拟员工继续处理时使用此工具，不要使用 send_file。',
       'file_path 是目标参与者电脑上的文件路径，可以是 Windows、macOS 或 Linux 路径。',
-      'target 必须填写聊天参与者的显示名或用户 ID；目标电脑需要在线且已出现在当前运行时设备上下文中。',
+      'target 必须复制当前授权设备上下文中的精确 target alias；目标电脑需要在线且仍有有效授权。',
       '成功后返回当前 agent 工作区中的绝对路径，不会把附件发送到聊天。',
     ].join('\n'),
     parameters: {
@@ -48,7 +48,7 @@ export class ImportFileTool implements Tool {
         },
         target: {
           type: 'string',
-          description: '必填。文件所在聊天参与者的显示名或用户 ID。不能填写 agent_self。',
+          description: '必填。复制当前授权设备上下文中的精确 target alias。不能填写 agent_self。',
         },
       },
       required: ['file_path', 'file_name', 'target'],
@@ -105,7 +105,7 @@ export async function importRemoteFileToAgentWorkspace(
         message: '远程设备文件上传未返回结果。',
       };
     }
-    if (!result.ok) return rewriteUnsupportedImportFileError(result, route.label);
+    if (!result.ok) return rewriteUnsupportedImportFileError(result);
     if (!result.uploadedFile) {
       return {
         ok: false,
@@ -165,7 +165,6 @@ export async function importRemoteFileToAgentWorkspace(
 
 function rewriteUnsupportedImportFileError(
   result: Extract<ToolExecutionResult, { ok: false }>,
-  targetLabel: string,
 ): ToolExecutionResult {
   const unsupported = result.errorCode === 'TOOL_NOT_FOUND'
     || /does not have tool:\s*import_file/i.test(result.message);
@@ -173,7 +172,7 @@ function rewriteUnsupportedImportFileError(
 
   return {
     ...result,
-    message: `目标用户电脑（${targetLabel}）上的 XiaoBa 版本过旧，不支持 import_file。请让该用户升级或重启电脑端 XiaoBa 后再重试。`,
+    message: '目标授权电脑上的 XiaoBa 版本过旧，不支持 import_file。请让该用户升级或重启电脑端 XiaoBa 后再重试。',
     retryable: false,
   };
 }
