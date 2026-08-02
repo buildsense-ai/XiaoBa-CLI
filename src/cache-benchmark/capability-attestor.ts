@@ -95,7 +95,42 @@ export function attestRequestCapabilities(event: ModelAttemptEvent): CacheBenchm
     .filter((source): source is NonNullable<typeof source> => Boolean(source)));
 
   if (text.includes(BENCHMARK_IDENTITY_MARKER)) capabilities.add('identity');
-  if (/\[发言人:\s*[^\]]+\]/.test(text)) capabilities.add('group-chat-participants');
+  const durableBenchmarkMessages = messages.filter(
+    message => message.__remoteContextSource === 'cache-benchmark'
+      && Number.isSafeInteger(message.__remoteContextId)
+      && Number(message.__remoteContextId) > 0,
+  );
+  const durableRecordIds = durableBenchmarkMessages.map(
+    message => Number(message.__remoteContextId),
+  );
+  const hasDuplicateDurableRecordId = new Set(durableRecordIds).size !== durableRecordIds.length;
+  const participantsByRecordId = new Map<number, {
+    speakerId: string;
+    kind: 'human' | 'other_agent';
+  }>();
+  for (const message of durableBenchmarkMessages) {
+    const match = messageText(message).match(
+      /^\[(发言人|其他 Agent): [^;\]\n]+; id=([^\]\n]+)\](?:\n|$)/u,
+    );
+    if (!match) continue;
+    participantsByRecordId.set(Number(message.__remoteContextId), {
+      speakerId: match[2],
+      kind: match[1] === '其他 Agent' ? 'other_agent' : 'human',
+    });
+  }
+  const participantIds = new Set(
+    [...participantsByRecordId.values()].map(participant => participant.speakerId),
+  );
+  const participantKinds = [...participantsByRecordId.values()].map(participant => participant.kind);
+  if (
+    !hasDuplicateDurableRecordId
+    && participantsByRecordId.size >= 2
+    && participantIds.size >= 2
+    && participantKinds.includes('human')
+    && participantKinds.includes('other_agent')
+  ) {
+    capabilities.add('group-chat-participants');
+  }
   if (sources.has('runtime_context') && /可操作的用户电脑：/.test(text)) {
     capabilities.add('device-authorization');
   }
@@ -107,7 +142,9 @@ export function attestRequestCapabilities(event: ModelAttemptEvent): CacheBenchm
   if (sources.has('goal_status')) capabilities.add('goal');
   if (sources.has('subagent_status')) capabilities.add('subagent');
   if (sources.has('runtime_feedback')) capabilities.add('runtime-feedback');
-  if (text.includes(BENCHMARK_RECOVERY_MARKER)) capabilities.add('session-recovery');
+  if (!hasDuplicateDurableRecordId && durableBenchmarkMessages.some(
+    message => messageText(message).includes(BENCHMARK_RECOVERY_MARKER),
+  )) capabilities.add('session-recovery');
 
   return REQUIRED_CACHE_BENCHMARK_CAPABILITIES.filter(capability => capabilities.has(capability));
 }

@@ -15,6 +15,13 @@ import type {
 } from './client';
 import { CacheTraceObserver } from '../observability/cache-trace';
 import type { AIRequestOptions } from '../providers/provider';
+import { isCatsCoAgentContextRecordInScope } from './agent-context-history';
+import {
+  prefixCatsCoParticipantContent,
+  resolveTrustedCatsCoSpeakerIdentity,
+  sameCatsCoUserId,
+  type CatsCoSpeakerKind,
+} from './speaker-label';
 
 const CLOUD_RESTORE_PAGE_SIZE = 200;
 const CLOUD_RESTORE_DIRECT_TOKEN_BUDGET = 60_000;
@@ -135,7 +142,12 @@ export class CatsCompanyCloudSessionRestorer {
       this.assertPageScope(page, request);
       fetchedMessages += page.messages.length;
 
-      const orderedPage = [...page.messages]
+      const orderedPage = page.messages
+        .filter(message => isCatsCoAgentContextRecordInScope(
+          message,
+          request.topicId,
+          request.agentId,
+        ))
         .sort((left, right) => agentContextMessageSeq(left) - agentContextMessageSeq(right))
         .filter(message => {
           const id = Number(message.id || message.seq_id || 0);
@@ -280,28 +292,32 @@ export class CatsCompanyCloudSessionRestorer {
 
 export function normalizeAgentContextMessages(
   messages: CatsAgentContextMessage[],
-  request: Pick<CloudSessionRestoreRequest, 'topicType' | 'agentId'>,
+  request: Pick<CloudSessionRestoreRequest, 'topicId' | 'topicType' | 'agentId'>,
 ): Message[] {
   const normalized: Message[] = [];
   let episodeId = 'cloud:initial';
 
   for (const message of messages) {
-    const role = normalizedAgentContextRole(message);
-    if (
-      !role
-      || normalizeUID(message.agent_id || message.agent_uid) !== normalizeUID(request.agentId)
-    ) {
-      continue;
-    }
+    if (!isCatsCoAgentContextRecordInScope(message, request.topicId, request.agentId)) continue;
+    const normalizedRole = normalizedAgentContextRole(message, request.agentId, request.topicType);
+    if (!normalizedRole) continue;
+    const { role, speakerKind } = normalizedRole;
 
     let text = cloudMessageText(message);
     if (role === 'assistant') {
       text = stripAssistantTranscriptArtifacts(text);
     }
     if (!text || isNonAnswerPlaceholder(text)) continue;
-    if (request.topicType === 'group' && role === 'user') {
-      const speaker = cloudSpeakerLabel(message);
-      if (speaker) text = `[发言人: ${speaker}]\n${text}`;
+    if (role === 'user') {
+      const speaker = resolveTrustedCatsCoSpeakerIdentity({
+        trustSource: 'server_agent_context',
+        metadata: message.metadata,
+        fallbackUserId: message.from_uid,
+        expectedTopicId: request.topicId,
+        messageTopicId: message.topic_id,
+        kind: speakerKind,
+      });
+      text = prefixCatsCoParticipantContent(speaker, text) as string;
     }
 
     if (role === 'user') {
@@ -322,25 +338,41 @@ export function normalizeAgentContextMessages(
 
 function normalizedAgentContextRole(
   message: CatsAgentContextMessage,
-): 'user' | 'assistant' | undefined {
+  expectedAgentId: string,
+  topicType: 'p2p' | 'group',
+): { role: 'user' | 'assistant'; speakerKind?: CatsCoSpeakerKind } | undefined {
   if (
     message.context_role === 'other_agent'
     && message.context_reason === 'other_agent_message'
+    && isUsableParticipantId(message.from_uid)
+    && !sameCatsCoUserId(message.from_uid, expectedAgentId)
   ) {
-    return 'user';
+    return { role: 'user', speakerKind: 'other_agent' };
   }
   if (
     message.context_eligible === true
-    && (message.context_role === 'user' || message.context_role === 'assistant')
+    && message.context_role === 'assistant'
+    && sameCatsCoUserId(message.from_uid, expectedAgentId)
+    && (topicType === 'group'
+      ? message.context_reason === 'current_agent_message'
+      : message.context_reason === undefined || message.context_reason === 'current_agent_message')
   ) {
-    return message.context_role;
+    return { role: 'assistant' };
+  }
+  if (
+    message.context_eligible === true
+    && message.context_role === 'user'
+    && !sameCatsCoUserId(message.from_uid, expectedAgentId)
+    && isUsableParticipantId(message.from_uid)
+  ) {
+    return { role: 'user', speakerKind: 'human' };
   }
   return undefined;
 }
 
 function findLastClearBoundaryIndex(
   messages: CatsAgentContextMessage[],
-  request: Pick<CloudSessionRestoreRequest, 'agentId' | 'topicType'>,
+  request: Pick<CloudSessionRestoreRequest, 'agentId' | 'topicId' | 'topicType'>,
 ): number {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
@@ -348,9 +380,8 @@ function findLastClearBoundaryIndex(
       ? message.context_reason === 'group_message_targets_agent'
       : message.context_reason === undefined || message.context_reason === 'participant_message';
     if (
-      message.context_eligible === true
-      && message.context_role === 'user'
-      && normalizeUID(message.agent_id || message.agent_uid) === normalizeUID(request.agentId)
+      isCatsCoAgentContextRecordInScope(message, request.topicId, request.agentId)
+      && normalizedAgentContextRole(message, request.agentId, request.topicType)?.role === 'user'
       && clearReasonMatches
       && /^\/clear(?:\s|$)/i.test(cloudMessageText(message))
     ) {
@@ -408,17 +439,6 @@ function cloudContentBlocksText(blocks: unknown[] | undefined): string {
     }
   }
   return parts.join('\n');
-}
-
-function cloudSpeakerLabel(message: CatsAgentContextMessage): string {
-  const metadata = message.metadata;
-  if (!metadata || typeof metadata !== 'object') return normalizeUID(message.from_uid);
-  const identity = metadata.catsco_identity;
-  if (!identity || typeof identity !== 'object') return normalizeUID(message.from_uid);
-  const actor = (identity as Record<string, unknown>).actor;
-  if (!actor || typeof actor !== 'object') return normalizeUID(message.from_uid);
-  const values = actor as Record<string, unknown>;
-  return String(values.display_name || values.username || values.user_id || normalizeUID(message.from_uid)).trim();
 }
 
 function coalesceAssistantSegments(messages: Message[]): Message[] {
@@ -487,6 +507,11 @@ function isNonAnswerPlaceholder(text: string): boolean {
   return normalized === '[无回复]'
     || normalized === '[No response]'
     || normalized.startsWith('[处理失败:');
+}
+
+function isUsableParticipantId(value: unknown): boolean {
+  const normalized = String(value ?? '').trim();
+  return Boolean(normalized && !/^(?:usr)?0$/i.test(normalized));
 }
 
 function normalizeUID(value: unknown): string {

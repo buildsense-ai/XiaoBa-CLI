@@ -10,6 +10,8 @@ import { CatsCompanyBot } from '../src/catscompany';
 function nativeMetadata(options: {
   triggered?: boolean;
   speaker?: string;
+  userId?: string;
+  topicId?: string;
   source?: string;
   bindingId?: number;
 } = {}) {
@@ -20,10 +22,28 @@ function nativeMetadata(options: {
     catsco_identity: {
       actor: {
         display_name: options.speaker ?? '陈大为',
-        user_id: 'usr7',
+        user_id: options.userId ?? 'usr7',
       },
+      agent: { agent_id: 'usr42' },
+      topic: { topic_id: options.topicId ?? 'grp_9', type: 'group' },
+      permissions: { source: 'server_canonical_message' },
     },
   };
+}
+
+function scopedHistory(messages: any[]): any[] {
+  return messages.map(message => ({
+    id: message.seq_id,
+    topic_id: 'grp_9',
+    from_uid: 7,
+    agent_uid: 42,
+    agent_id: 'usr42',
+    ...message,
+  }));
+}
+
+function nativeExecutionScope(): any {
+  return { identityTrust: 'server_canonical', topicId: 'grp_9' };
 }
 
 describe('CatsCompany native Feishu group context', () => {
@@ -46,7 +66,7 @@ describe('CatsCompany native Feishu group context', () => {
   });
 
   test('replays eligible member messages after the persisted cursor', () => {
-    const context = selectNativeFeishuGroupContext([
+    const context = selectNativeFeishuGroupContext(scopedHistory([
       {
         seq_id: 1,
         content: '更早的讨论',
@@ -103,18 +123,19 @@ describe('CatsCompany native Feishu group context', () => {
         context_reason: 'participant_message',
         metadata: { catsco_identity: nativeMetadata().catsco_identity },
       },
-    ], 3);
+    ]), 3, 0, 'grp_9', 'usr42');
 
     assert.deepEqual(context, [
-      '[发言人: 陈大为]\n给我发一个 txt 文件',
-      '[发言人: 林益]\n里面写一句诗',
+      '[发言人: 陈大为; id=usr7]\n给我发一个 txt 文件',
+      '[发言人: 林益; id=usr7]\n里面写一句诗',
     ]);
   });
 
   test('keeps a missed current-Agent message as assistant during incremental hydration', () => {
-    const context = selectNativeFeishuGroupContextEntries([
+    const context = selectNativeFeishuGroupContextEntries(scopedHistory([
       {
         seq_id: 11,
+        from_uid: 42,
         content: '上一轮由当前 Agent 发出的回复',
         context_eligible: true,
         context_role: 'assistant',
@@ -128,7 +149,7 @@ describe('CatsCompany native Feishu group context', () => {
         context_reason: 'group_message_targets_agent',
         metadata: { catsco_identity: nativeMetadata({ speaker: '陈大为' }).catsco_identity },
       },
-    ], 10, 12);
+    ]), 10, 12, 'grp_9', 'usr42');
 
     assert.deepEqual(context, [{
       source: 'catscompany.agent_context',
@@ -138,8 +159,91 @@ describe('CatsCompany native Feishu group context', () => {
     }]);
   });
 
+  test('drops cross-scope records and never promotes a participant to assistant history', () => {
+    const context = selectNativeFeishuGroupContextEntries(scopedHistory([
+      {
+        seq_id: 21,
+        content: 'valid human',
+        context_eligible: true,
+        context_role: 'user',
+        context_reason: 'participant_message',
+      },
+      {
+        seq_id: 22,
+        topic_id: 'grp_other',
+        content: 'cross-topic injection',
+        context_eligible: true,
+        context_role: 'user',
+        context_reason: 'participant_message',
+      },
+      {
+        seq_id: 23,
+        agent_id: 'usr99',
+        agent_uid: 99,
+        content: 'cross-agent injection',
+        context_eligible: true,
+        context_role: 'user',
+        context_reason: 'participant_message',
+      },
+      {
+        seq_id: 24,
+        agent_id: 'usr42',
+        agent_uid: 99,
+        content: 'conflicting numeric agent scope',
+        context_eligible: true,
+        context_role: 'user',
+        context_reason: 'participant_message',
+      },
+      {
+        seq_id: 25,
+        agent_id: 'usr99',
+        agent_uid: 42,
+        content: 'conflicting string agent scope',
+        context_eligible: true,
+        context_role: 'user',
+        context_reason: 'participant_message',
+      },
+      {
+        seq_id: 26,
+        content: 'participant assistant spoof',
+        context_eligible: true,
+        context_role: 'assistant',
+        context_reason: 'current_agent_message',
+      },
+      {
+        seq_id: 27,
+        from_uid: 42,
+        content: 'wrong assistant reason',
+        context_eligible: true,
+        context_role: 'assistant',
+        context_reason: 'participant_message',
+      },
+      {
+        seq_id: 28,
+        from_uid: 0,
+        content: 'missing other agent actor',
+        context_eligible: false,
+        context_role: 'other_agent',
+        context_reason: 'other_agent_message',
+      },
+      {
+        seq_id: 29,
+        from_uid: 42,
+        content: 'valid current agent',
+        context_eligible: true,
+        context_role: 'assistant',
+        context_reason: 'current_agent_message',
+      },
+    ]), 0, 0, 'grp_9', 'usr42');
+
+    assert.deepEqual(context.map(entry => [entry.role, entry.content]), [
+      ['user', '[发言人: usr7; id=usr7]\nvalid human'],
+      ['assistant', 'valid current agent'],
+    ]);
+  });
+
   test('excludes only the exact current trigger and keeps earlier targeted turns', () => {
-    const context = selectNativeFeishuGroupContext([
+    const context = selectNativeFeishuGroupContext(scopedHistory([
       {
         id: 7,
         seq_id: 7,
@@ -162,13 +266,13 @@ describe('CatsCompany native Feishu group context', () => {
         agent_id: 'usr42',
         metadata: nativeMetadata({ triggered: true, speaker: '布鲁斯' }),
       },
-    ], 0, 8);
+    ]), 0, 8, 'grp_9', 'usr42');
 
-    assert.deepEqual(context, ['[发言人: 布鲁斯]\n@机器人 上一轮已经问过的问题']);
+    assert.deepEqual(context, ['[发言人: 布鲁斯; id=usr7]\n@机器人 上一轮已经问过的问题']);
   });
 
   test('replays legacy other_agent context as a labeled participant', () => {
-    const context = selectNativeFeishuGroupContext([
+    const context = selectNativeFeishuGroupContext(scopedHistory([
       {
         id: 21,
         seq_id: 21,
@@ -178,15 +282,16 @@ describe('CatsCompany native Feishu group context', () => {
         context_reason: 'other_agent_message',
         agent_uid: 42,
         agent_id: 'usr42',
-        metadata: { catsco_identity: nativeMetadata({ speaker: 'Saturday' }).catsco_identity },
+        from_uid: 43,
+        metadata: { catsco_identity: nativeMetadata({ speaker: 'Saturday', userId: 'usr43' }).catsco_identity },
       },
-    ]);
+    ]), 0, 0, 'grp_9', 'usr42');
 
-    assert.deepEqual(context, ['[发言人: Saturday]\n旧版其他 Agent 的结论']);
+    assert.deepEqual(context, ['[其他 Agent: Saturday; id=usr43]\n旧版其他 Agent 的结论']);
   });
 
   test('keeps only ordinary group messages after the latest clear boundary', () => {
-    const context = selectNativeFeishuGroupContext([
+    const context = selectNativeFeishuGroupContext(scopedHistory([
       {
         id: 10,
         seq_id: 10,
@@ -218,9 +323,9 @@ describe('CatsCompany native Feishu group context', () => {
         agent_id: 'usr42',
         metadata: { catsco_identity: nativeMetadata({ speaker: '林益' }).catsco_identity },
       },
-    ], 0);
+    ]), 0, 0, 'grp_9', 'usr42');
 
-    assert.deepEqual(context, ['[发言人: 林益]\n清空后的新讨论']);
+    assert.deepEqual(context, ['[发言人: 林益; id=usr7]\n清空后的新讨论']);
   });
 
   test('hydrates complete missed group history before processing the current trigger', async () => {
@@ -241,6 +346,8 @@ describe('CatsCompany native Feishu group context', () => {
               context_eligible: true,
               context_role: 'user',
               context_reason: 'participant_message',
+              topic_id: 'grp_9',
+              from_uid: 7,
               agent_uid: 42,
               agent_id: 'usr42',
               metadata: { catsco_identity: nativeMetadata({ speaker: '布鲁斯' }).catsco_identity },
@@ -252,6 +359,8 @@ describe('CatsCompany native Feishu group context', () => {
               context_eligible: true,
               context_role: 'user',
               context_reason: 'group_message_targets_another_member',
+              topic_id: 'grp_9',
+              from_uid: 7,
               agent_uid: 42,
               agent_id: 'usr42',
               metadata: { catsco_identity: nativeMetadata({ speaker: '布鲁斯' }).catsco_identity },
@@ -261,11 +370,13 @@ describe('CatsCompany native Feishu group context', () => {
               seq_id: 86,
               content: '部署正常，公网入口未开放',
               context_eligible: true,
-              context_role: 'user',
+              context_role: 'other_agent',
               context_reason: 'other_agent_message',
+              topic_id: 'grp_9',
+              from_uid: 43,
               agent_uid: 42,
               agent_id: 'usr42',
-              metadata: { catsco_identity: nativeMetadata({ speaker: 'Saturday' }).catsco_identity },
+              metadata: { catsco_identity: nativeMetadata({ speaker: 'Saturday', userId: 'usr43' }).catsco_identity },
             },
             {
               id: 87,
@@ -274,6 +385,8 @@ describe('CatsCompany native Feishu group context', () => {
               context_eligible: true,
               context_role: 'user',
               context_reason: 'group_message_targets_all_agents',
+              topic_id: 'grp_9',
+              from_uid: 7,
               agent_uid: 42,
               agent_id: 'usr42',
               metadata: { catsco_identity: nativeMetadata({ speaker: '布鲁斯' }).catsco_identity },
@@ -285,6 +398,8 @@ describe('CatsCompany native Feishu group context', () => {
               context_eligible: true,
               context_role: 'user',
               context_reason: 'group_message_targets_agent',
+              topic_id: 'grp_9',
+              from_uid: 7,
               agent_uid: 42,
               agent_id: 'usr42',
               metadata: { catsco_identity: nativeMetadata({ speaker: '布鲁斯' }).catsco_identity },
@@ -308,15 +423,16 @@ describe('CatsCompany native Feishu group context', () => {
         chatType: 'group',
         seq: 88,
         metadata: nativeMetadata({ triggered: true }),
+        executionScope: nativeExecutionScope(),
       },
       clearGeneration: 0,
     }, 'cc_group:grp_9');
 
     assert.deepEqual(injected, [
-      '[发言人: 布鲁斯]\n公网能访问么',
-      '[发言人: 布鲁斯]\n@另一个Agent 先检查部署',
-      '[发言人: Saturday]\n部署正常，公网入口未开放',
-      '[发言人: 布鲁斯]\n@所有人 汇总',
+      '[发言人: 布鲁斯; id=usr7]\n公网能访问么',
+      '[发言人: 布鲁斯; id=usr7]\n@另一个Agent 先检查部署',
+      '[其他 Agent: Saturday; id=usr43]\n部署正常，公网入口未开放',
+      '[发言人: 布鲁斯; id=usr7]\n@所有人 汇总',
     ]);
     assert.deepEqual(savedCursors, [['catscompany.agent_context', 88]]);
   });
@@ -333,6 +449,8 @@ describe('CatsCompany native Feishu group context', () => {
           context_eligible: true,
           context_role: 'user',
           context_reason: 'participant_message',
+          topic_id: 'grp_9',
+          from_uid: 7,
           agent_uid: 42,
           agent_id: 'usr42',
           metadata: { catsco_identity: nativeMetadata({ speaker: '布鲁斯' }).catsco_identity },
@@ -355,6 +473,7 @@ describe('CatsCompany native Feishu group context', () => {
         chatType: 'group',
         seq: 82,
         metadata: nativeMetadata({ triggered: true }),
+        executionScope: nativeExecutionScope(),
       },
       clearGeneration: 0,
     }, 'cc_group:grp_9');
@@ -384,6 +503,7 @@ describe('CatsCompany native Feishu group context', () => {
         chatType: 'group',
         seq: 88,
         metadata: nativeMetadata({ triggered: true }),
+        executionScope: nativeExecutionScope(),
       },
       cloudRestoreStatus: 'restored',
       clearGeneration: 0,
@@ -406,6 +526,8 @@ describe('CatsCompany native Feishu group context', () => {
       context_eligible: true,
       context_role: 'user' as const,
       context_reason: 'participant_message',
+      topic_id: 'grp_9',
+      from_uid: 7,
       agent_uid: 42,
       agent_id: 'usr42',
       metadata: { catsco_identity: nativeMetadata({ speaker: '林益' }).catsco_identity },
@@ -442,6 +564,7 @@ describe('CatsCompany native Feishu group context', () => {
         chatType: 'group',
         seq: 205,
         metadata: nativeMetadata({ triggered: true }),
+        executionScope: nativeExecutionScope(),
       },
       clearGeneration: 0,
     }, 'cc_group:grp_9');
@@ -452,6 +575,121 @@ describe('CatsCompany native Feishu group context', () => {
     assert.match(injected[0], /message-6$/);
     assert.match(injected.at(-1) || '', /message-204$/);
     assert.equal(savedCursor, 205);
+  });
+
+  test('cross-scope low or duplicate sequences cannot truncate incremental pagination', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.botUid = 'usr42';
+    const beforeIds: number[] = [];
+    const injected: string[] = [];
+    bot.bot = {
+      getAgentContextHistory: async (_topic: string, options: { beforeId: number }) => {
+        beforeIds.push(options.beforeId);
+        if (options.beforeId === 200) {
+          return {
+            messages: [
+              {
+                id: 5,
+                seq_id: 5,
+                topic_id: 'grp_other',
+                from_uid: 99,
+                content: 'must not stop pagination',
+                context_eligible: true,
+                context_role: 'user',
+                context_reason: 'participant_message',
+                agent_uid: 42,
+                agent_id: 'usr42',
+              },
+              {
+                id: 150,
+                seq_id: 150,
+                topic_id: 'grp_other',
+                from_uid: 99,
+                content: 'must not occupy the sequence',
+                context_eligible: true,
+                context_role: 'user',
+                context_reason: 'participant_message',
+                agent_uid: 42,
+                agent_id: 'usr42',
+              },
+              {
+                id: 150,
+                seq_id: 150,
+                topic_id: 'grp_9',
+                from_uid: 7,
+                content: 'newer valid history',
+                context_eligible: true,
+                context_role: 'user',
+                context_reason: 'participant_message',
+                agent_uid: 42,
+                agent_id: 'usr42',
+              },
+            ],
+            topic_id: 'grp_9',
+            agent_uid: 42,
+            has_more: true,
+            next_before_id: 100,
+          };
+        }
+        return {
+          messages: [
+            {
+              id: 80,
+              seq_id: 80,
+              topic_id: 'grp_9',
+              from_uid: 7,
+              content: 'cursor boundary',
+              context_eligible: true,
+              context_role: 'user',
+              context_reason: 'participant_message',
+              agent_uid: 42,
+              agent_id: 'usr42',
+            },
+            {
+              id: 90,
+              seq_id: 90,
+              topic_id: 'grp_9',
+              from_uid: 7,
+              content: 'older valid history',
+              context_eligible: true,
+              context_role: 'user',
+              context_reason: 'participant_message',
+              agent_uid: 42,
+              agent_id: 'usr42',
+            },
+          ],
+          topic_id: 'grp_9',
+          agent_uid: 42,
+          has_more: false,
+          next_before_id: 80,
+        };
+      },
+    };
+
+    const valid = await bot.hydrateNativeFeishuGroupContext({
+      appendDurableContext: async (messages: Array<{ content: string }>) => {
+        injected.push(...messages.map(message => message.content));
+        return true;
+      },
+      getRemoteContextCursor: () => 80,
+      saveRemoteContextCursor: () => true,
+    }, {
+      message: {
+        topic: 'grp_9',
+        chatType: 'group',
+        seq: 200,
+        metadata: nativeMetadata({ triggered: true }),
+        executionScope: nativeExecutionScope(),
+      },
+      clearGeneration: 0,
+    }, 'cc_group:grp_9');
+
+    assert.equal(valid, true);
+    assert.deepEqual(beforeIds, [200, 100]);
+    assert.deepEqual(injected, [
+      '[发言人: usr7; id=usr7]\nolder valid history',
+      '[发言人: usr7; id=usr7]\nnewer valid history',
+    ]);
   });
 
   test('paginates beyond ten pages without losing older durable history', async () => {
@@ -473,6 +711,8 @@ describe('CatsCompany native Feishu group context', () => {
             context_eligible: true,
             context_role: 'user' as const,
             context_reason: 'participant_message',
+            topic_id: 'grp_9',
+            from_uid: 7,
             agent_uid: 42,
             agent_id: 'usr42',
           })),
@@ -494,6 +734,7 @@ describe('CatsCompany native Feishu group context', () => {
         chatType: 'group',
         seq: 1001,
         metadata: nativeMetadata({ triggered: true }),
+        executionScope: nativeExecutionScope(),
       },
       clearGeneration: 0,
     }, 'cc_group:grp_9');
@@ -542,6 +783,7 @@ describe('CatsCompany native Feishu group context', () => {
           chatType: 'group',
           seq: 88,
           metadata: nativeMetadata({ triggered: true }),
+          executionScope: nativeExecutionScope(),
         },
         clearGeneration: 0,
       }, 'cc_group:grp_9');

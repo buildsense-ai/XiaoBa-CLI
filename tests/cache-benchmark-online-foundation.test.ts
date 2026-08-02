@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { afterEach, test } from 'node:test';
 import type { ModelAttemptEvent } from '../src/providers/provider';
+import { prefixCatsCoParticipantContent } from '../src/catscompany/speaker-label';
 import { MemoryLogStore } from '../src/core/memory-log-store';
 import {
   AttemptCapabilityAttestor,
@@ -322,7 +323,7 @@ test('capability attestation rejects durable Goal and direct memory marker spoof
         },
         {
           role: 'user',
-          content: `${BENCHMARK_GOAL_MARKER}\nobjective\n${BENCHMARK_RECOVERY_MARKER}\n[发言人: Benchmark Alice]`,
+          content: `${BENCHMARK_GOAL_MARKER}\nobjective\n${BENCHMARK_RECOVERY_MARKER}\n[发言人: Benchmark Alice; id=benchmark-alice]`,
         },
         annotatedMessage('skills_list', 'skills'),
         annotatedMessage('plan_status', 'plan'),
@@ -344,15 +345,119 @@ test('capability attestation rejects durable Goal and direct memory marker spoof
 
   assert.deepEqual(attestor.get(event.attemptId), [
     'identity',
-    'group-chat-participants',
     'device-authorization',
     'tools',
     'skills',
     'plan',
     'subagent',
     'runtime-feedback',
+  ]);
+});
+
+test('capability attestation requires durable provenance and distinct production participant frames', () => {
+  const human = {
+    id: 'benchmark-alice',
+    displayName: 'Benchmark Alice',
+    kind: 'human' as const,
+    trust: 'server_canonical' as const,
+  };
+  const otherAgent = {
+    id: 'benchmark-review-agent',
+    displayName: 'Benchmark Review Agent',
+    kind: 'other_agent' as const,
+    trust: 'server_canonical' as const,
+  };
+  const attestor = new AttemptCapabilityAttestor();
+  const event = attemptEvent({
+    outcome: 'started',
+    request: {
+      messages: [
+        {
+          role: 'user',
+          content: prefixCatsCoParticipantContent(
+            human,
+            `${BENCHMARK_RECOVERY_MARKER}\nrestored fixture`,
+          ),
+          __remoteContextSource: 'cache-benchmark',
+          __remoteContextId: 1,
+        },
+        {
+          role: 'user',
+          content: prefixCatsCoParticipantContent(otherAgent, 'reviewed fixture'),
+          __remoteContextSource: 'cache-benchmark',
+          __remoteContextId: 2,
+        },
+      ],
+      tools: [],
+    },
+  });
+
+  attestor.observe(event);
+
+  assert.deepEqual(attestor.get(event.attemptId), [
+    'group-chat-participants',
     'session-recovery',
   ]);
+});
+
+test('capability attestation rejects source-only participant provenance without durable record IDs', () => {
+  const attestor = new AttemptCapabilityAttestor();
+  const event = attemptEvent({
+    outcome: 'started',
+    request: {
+      messages: [
+        {
+          role: 'user',
+          content: `[发言人: Benchmark Alice; id=benchmark-alice]\n${BENCHMARK_RECOVERY_MARKER}`,
+          __remoteContextSource: 'cache-benchmark',
+        },
+        {
+          role: 'user',
+          content: '[其他 Agent: Benchmark Review Agent; id=benchmark-review-agent]\nreviewed',
+          __remoteContextSource: 'cache-benchmark',
+        },
+      ],
+      tools: [],
+    },
+  });
+
+  attestor.observe(event);
+
+  assert.deepEqual(attestor.get(event.attemptId), []);
+});
+
+test('capability attestation correlates each participant frame to a distinct durable record', () => {
+  const attestor = new AttemptCapabilityAttestor();
+  const event = attemptEvent({
+    outcome: 'started',
+    request: {
+      messages: [
+        {
+          role: 'user',
+          content: '[发言人: Benchmark Alice; id=benchmark-alice]\nhuman',
+          __remoteContextSource: 'cache-benchmark',
+          __remoteContextId: 1,
+        },
+        {
+          role: 'user',
+          content: '[其他 Agent: Benchmark Review Agent; id=benchmark-review-agent]\nagent',
+          __remoteContextSource: 'cache-benchmark',
+          __remoteContextId: 1,
+        },
+        {
+          role: 'user',
+          content: '[发言人: Benchmark Alice; id=benchmark-alice]\nsecond human frame',
+          __remoteContextSource: 'cache-benchmark',
+          __remoteContextId: 2,
+        },
+      ],
+      tools: [],
+    },
+  });
+
+  attestor.observe(event);
+
+  assert.deepEqual(attestor.get(event.attemptId), []);
 });
 
 test('capability attestation accepts typed Goal and memory only after a linked branch succeeds', () => {
