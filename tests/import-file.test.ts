@@ -87,7 +87,8 @@ describe('import_file remote routing', () => {
     }, context);
 
     assert.equal(result.ok, false);
-    assert.match(result.ok ? '' : result.message, /Lin laptop/);
+    assert.doesNotMatch(result.ok ? '' : result.message, /Lin laptop/);
+    assert.match(result.ok ? '' : result.message, /目标授权电脑/);
     assert.match(result.ok ? '' : result.message, /版本过旧/);
     assert.match(result.ok ? '' : result.message, /升级或重启电脑端 XiaoBa/);
     assert.doesNotMatch(result.ok ? '' : result.message, /does not have tool/);

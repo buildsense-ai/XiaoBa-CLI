@@ -143,6 +143,8 @@ export interface TargetRoute {
   userName?: string;
   ownerUserId: string;
   deviceId: string;
+  /** Stable, model-safe alias accepted by the runtime router. */
+  targetAlias?: string;
   label: string;
   os: TargetRouteOS;
   status: 'ready';
@@ -190,6 +192,30 @@ export type FeishuChannelCallbacks = ChannelCallbacks;
 export interface RuntimeToolServices {
   aiService: AIService;
   skillManager: SkillManager;
+}
+
+export interface DeviceAuthorityView {
+  generation: number;
+  deviceGrants?: ScopedDeviceGrant[];
+  deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
+  deviceSelection?: ScopedDeviceSelection;
+  targetRoutes?: TargetRoutes;
+}
+
+export interface DeviceAuthorityReplacement {
+  executionScope?: ExecutionScope;
+  deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
+  deviceSelection?: ScopedDeviceSelection;
+  targetRoutes?: TargetRoutes;
+}
+
+/**
+ * Live, process-private device authority shared by a parent run and its
+ * subagents. It is deliberately not serializable into the conversation.
+ */
+export interface DeviceAuthorityLease {
+  getCurrent(): DeviceAuthorityView;
+  replace(input: DeviceAuthorityReplacement): DeviceAuthorityView;
 }
 
 export type ToolRiskLevel = 'low' | 'medium' | 'high';
@@ -241,6 +267,8 @@ export interface ToolExecutionContext {
   deviceGrants?: ScopedDeviceGrant[];
   /** 当前 turn 的完整设备授权快照；仅用于同一 run 内的单调替换。 */
   deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
+  /** Live authority lease. Tools prefer this over copied grant fields. */
+  deviceAuthority?: DeviceAuthorityLease;
   /** 服务端为当前 turn 选定的用户设备，或明确要求先选择设备。 */
   deviceSelection?: ScopedDeviceSelection;
   /** CatsCo 远程设备 RPC 通道。工具只能通过窄接口请求后端选定设备执行。 */

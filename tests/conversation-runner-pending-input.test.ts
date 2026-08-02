@@ -1,5 +1,7 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'path';
 import { ConversationRunner } from '../src/core/conversation-runner';
 import { resolveDeviceGrant } from '../src/core/device-grants';
@@ -7,6 +9,7 @@ import { extractCatsCoDeviceGrantSnapshot } from '../src/catscompany/device-gran
 import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../src/core/runtime-context-builder';
 import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from '../src/core/pending-user-input-boundary';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
+import { DeviceAuthorityState } from '../src/core/device-authority-state';
 import { Message } from '../src/types';
 import type {
   ExecutionScope,
@@ -376,6 +379,9 @@ describe('ConversationRunner pending input', () => {
         executionScope: scope(),
         deviceGrants: [initialGrant],
         deviceGrantSnapshot: deviceGrantSnapshot(10, [initialGrant]),
+        thinToolRpc: {
+          executeTool: async () => { throw new Error('not expected'); },
+        },
       },
       pendingUserInputProvider: () => {
         if (pendingUsed) return null;
@@ -397,7 +403,7 @@ describe('ConversationRunner pending input', () => {
     const refreshedContext = requests[1].find(isRuntimeContextMessage);
     assert.ok(refreshedContext);
     const refreshedContent = String(refreshedContext.content || '');
-    assert.match(refreshedContent, /规则：/);
+    assert.match(refreshedContent, /可操作的用户电脑：/);
     assert.doesNotMatch(refreshedContent, /device-initial/);
     assert.doesNotMatch(refreshedContent, /device-pending/);
     assert.doesNotMatch(refreshedContext.content as string, /install:device-/);
@@ -417,6 +423,228 @@ describe('ConversationRunner pending input', () => {
       executionScope: scope(),
       deviceGrants: contexts[1]?.deviceGrants,
     }, { operation: 'execute_shell', deviceId: 'device-main' }).ok, false);
+  });
+
+  test('refreshes provider context and shared tool authority from one atomic live lease', async () => {
+    const activeGrant = deviceGrant('device-live');
+    const authority = new DeviceAuthorityState(scope(), { watermarkDirectory: null });
+    authority.replace({
+      executionScope: scope(),
+      deviceGrantSnapshot: deviceGrantSnapshot(60, [activeGrant]),
+    });
+    const requests: Message[][] = [];
+    const contexts: Array<Partial<ToolExecutionContext> | undefined> = [];
+    const aiService = {
+      chat: async (messages: Message[]) => {
+        requests.push(messages.map(message => ({ ...message })));
+        if (requests.length < 3) {
+          return {
+            content: null,
+            toolCalls: [{
+              id: `call_${requests.length}`,
+              type: 'function',
+              function: { name: 'noop', arguments: '{}' },
+            }],
+            usage,
+          };
+        }
+        return { content: 'done', toolCalls: [], usage };
+      },
+    } as any;
+    const executor: ToolExecutor = {
+      getToolDefinitions: () => [{
+        name: 'noop',
+        description: 'noop',
+        parameters: { type: 'object', properties: {} },
+      }],
+      executeTool: async (toolCall, _history, contextOverrides) => {
+        contexts.push(contextOverrides);
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: toolCall.function.name,
+          content: 'ok',
+          ok: true,
+        };
+      },
+    };
+    let pendingUsed = false;
+    const runner = new ConversationRunner(aiService, executor, {
+      stream: false,
+      toolExecutionContext: {
+        sessionId: scope().sessionKey,
+        surface: 'catscompany',
+        executionScope: scope(),
+        deviceGrants: [activeGrant],
+        deviceGrantSnapshot: deviceGrantSnapshot(60, [activeGrant]),
+        deviceAuthority: authority,
+        thinToolRpc: {
+          executeTool: async () => { throw new Error('not expected'); },
+        },
+      },
+      pendingUserInputProvider: () => {
+        if (pendingUsed) return null;
+        pendingUsed = true;
+        return {
+          content: 'revoke while busy',
+          deviceGrantSnapshot: deviceGrantSnapshot(61, []),
+        };
+      },
+    });
+
+    await runner.run([{ role: 'user', content: 'run' }]);
+
+    assert.equal(contexts[0]?.deviceGrants?.length, 1);
+    assert.equal(contexts[1]?.deviceGrants, undefined);
+    assert.ok(requests[0].some(isRuntimeContextMessage));
+    assert.equal(requests[1].some(isRuntimeContextMessage), false);
+    assert.equal(resolveDeviceGrant({
+      executionScope: scope(),
+      deviceGrants: [activeGrant],
+      deviceAuthority: authority,
+    }, { operation: 'read_file', deviceId: activeGrant.deviceId }).ok, false);
+  });
+
+  test('applies an ordered selection-only pending update to the shared live lease', async () => {
+    const activeGrant = deviceGrant('device-selection-live');
+    const authority = new DeviceAuthorityState(scope(), { watermarkDirectory: null });
+    authority.replace({
+      executionScope: scope(),
+      deviceGrantSnapshot: deviceGrantSnapshot(70, [activeGrant]),
+    });
+    let requestCount = 0;
+    const aiService = {
+      chat: async () => {
+        requestCount += 1;
+        if (requestCount <= 2) {
+          return {
+            content: null,
+            toolCalls: [{
+              id: `selection_call_${requestCount}`,
+              type: 'function',
+              function: { name: 'noop', arguments: '{}' },
+            }],
+            usage,
+          };
+        }
+        return { content: 'done', toolCalls: [], usage };
+      },
+    } as any;
+    const contexts: Array<Partial<ToolExecutionContext> | undefined> = [];
+    const executor: ToolExecutor = {
+      getToolDefinitions: () => [{
+        name: 'noop',
+        description: 'noop',
+        parameters: { type: 'object', properties: {} },
+      }],
+      executeTool: async (toolCall, _history, contextOverrides) => {
+        contexts.push(contextOverrides);
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: toolCall.function.name,
+          content: 'ok',
+          ok: true,
+        };
+      },
+    };
+    let pendingUsed = false;
+    const runner = new ConversationRunner(aiService, executor, {
+      stream: false,
+      toolExecutionContext: {
+        sessionId: scope().sessionKey,
+        surface: 'catscompany',
+        executionScope: scope(),
+        deviceGrants: [activeGrant],
+        deviceGrantSnapshot: deviceGrantSnapshot(70, [activeGrant]),
+        deviceAuthority: authority,
+        thinToolRpc: {
+          executeTool: async () => { throw new Error('not expected'); },
+        },
+      },
+      pendingUserInputProvider: () => {
+        if (pendingUsed) return null;
+        pendingUsed = true;
+        return {
+          content: 'selection became unavailable while busy',
+          executionScope: { ...scope(), channelSeq: 71 },
+          deviceSelection: {
+            kind: 'user_device_selection',
+            source: 'catscompany',
+            status: 'unavailable',
+            sessionKey: scope().sessionKey,
+            topicId: scope().topicId,
+            topicType: scope().topicType,
+            actorUserId: scope().actorUserId,
+            agentId: scope().agentId,
+            identityTrust: 'server_canonical',
+            selectedDeviceOperations: [],
+          },
+        };
+      },
+    });
+
+    await runner.run([{ role: 'user', content: 'run' }]);
+
+    assert.equal(contexts[0]?.deviceGrants?.length, 1);
+    assert.equal(contexts[1]?.deviceSelection?.status, 'unavailable');
+    assert.deepEqual(contexts[1]?.deviceSelection?.selectedDeviceOperations, []);
+    assert.equal(authority.getCurrent().deviceSelection?.status, 'unavailable');
+  });
+
+  test('persists the newer selection floor when pending input carries an older grant base', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-pending-authority-'));
+    try {
+      const activeGrant = deviceGrant('device-composite-pending');
+      const authority = new DeviceAuthorityState(scope(), { watermarkDirectory: directory });
+      let pendingUsed = false;
+      const runner = new ConversationRunner({} as any, createNoopToolExecutor(), {
+        stream: false,
+        toolExecutionContext: {
+          sessionId: scope().sessionKey,
+          surface: 'catscompany',
+          executionScope: scope(),
+          deviceAuthority: authority,
+        },
+        pendingUserInputProvider: () => {
+          if (pendingUsed) return null;
+          pendingUsed = true;
+          return {
+            content: 'selection delta with retained grant base',
+            executionScope: { ...scope(), channelSeq: 19 },
+            deviceGrantSnapshot: deviceGrantSnapshot(18, [activeGrant]),
+            deviceSelection: {
+              kind: 'user_device_selection',
+              source: 'catscompany',
+              status: 'selected',
+              sessionKey: scope().sessionKey,
+              topicId: scope().topicId,
+              topicType: scope().topicType,
+              actorUserId: scope().actorUserId,
+              agentId: scope().agentId,
+              identityTrust: 'server_canonical',
+              selectedDeviceId: activeGrant.deviceId,
+              selectedDeviceOperations: ['read_file'],
+            },
+          };
+        },
+      });
+
+      assert.equal(await (runner as any).appendPendingUserInput([], [], 1), true);
+      assert.equal(authority.getCurrent().deviceGrants?.length, 1);
+
+      const restarted = new DeviceAuthorityState(scope(), { watermarkDirectory: directory });
+      assert.equal(restarted.replace({
+        executionScope: { ...scope(), channelSeq: 19 },
+        deviceGrantSnapshot: deviceGrantSnapshot(19, [activeGrant]),
+      }).deviceGrants, undefined);
+      assert.equal(restarted.replace({
+        executionScope: { ...scope(), channelSeq: 20 },
+        deviceGrantSnapshot: deviceGrantSnapshot(20, [activeGrant]),
+      }).deviceGrants?.length, 1);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test('treats a malformed canonical device_grants container as pending-loop revocation', async () => {

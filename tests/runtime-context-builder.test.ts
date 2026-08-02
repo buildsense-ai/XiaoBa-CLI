@@ -6,7 +6,10 @@ import * as path from 'path';
 import { AgentSession } from '../src/core/agent-session';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { GoalRuntime } from '../src/core/goal-runtime';
-import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../src/core/runtime-context-builder';
+import {
+  TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+  TRANSIENT_RUNTIME_TARGET_RULES_PREFIX,
+} from '../src/core/runtime-context-builder';
 import { getCatsCoAttachmentCacheSessionRoot } from '../src/catscompany/attachment-cache';
 import { createDeviceGrant, createUserDevice } from '../src/core/device-grants';
 import { createExecutionScopeFromRoute, createSessionRoute } from '../src/core/session-router';
@@ -97,13 +100,18 @@ describe('runtime context builder', () => {
 
     assert.deepEqual(durableMessages.map(message => message.content), ['base system', '帮我查合同']);
     const runtimeIndex = result.messages.findIndex(isRuntimeContextMessage);
+    const targetRulesIndex = result.messages.findIndex(message => (
+      message.__context?.source === 'runtime_target_rules'
+    ));
     const stableRulesIndex = result.messages.findIndex(message => (
       message.__context?.source === 'runtime_observation_rules'
     ));
     const userIndex = result.messages.findIndex(message => message.role === 'user' && message.content === '帮我查合同');
     assert.ok(runtimeIndex >= 0, 'runtime context should be injected');
+    assert.ok(targetRulesIndex >= 0, 'stable target rules should be injected');
     assert.ok(stableRulesIndex >= 0, 'stable runtime rules should be injected');
     assert.ok(stableRulesIndex < runtimeIndex, 'session-stable additions must precede episode context');
+    assert.ok(targetRulesIndex < runtimeIndex, 'target rules must precede authorized device facts');
     assert.ok(runtimeIndex < userIndex, 'runtime context should appear before the latest user message');
     assert.deepEqual(result.messages[runtimeIndex].__context, {
       schema: 'xiaoba.context_lifecycle.v1',
@@ -113,16 +121,27 @@ describe('runtime context builder', () => {
       persistence: 'transient',
       epoch: 'episode-runtime-context',
     });
+    assert.deepEqual(result.messages[targetRulesIndex].__context, {
+      schema: 'xiaoba.context_lifecycle.v1',
+      source: 'runtime_target_rules',
+      lifecycle: 'session',
+      cacheScope: 'stable',
+      persistence: 'transient',
+    });
 
     const runtimeText = String(result.messages[runtimeIndex].content || '');
     assert.match(runtimeText, /^\[transient_runtime_context\]/);
     assert.match(runtimeText, /\[\/transient_runtime_context\]$/);
-    assert.ok(runtimeText.includes(`当前会话附件缓存目录（XiaoBa 本地运行体）：${getCatsCoAttachmentCacheSessionRoot(route.sessionKey)}`));
-    assert.match(runtimeText, /用不带 target 的 glob 查看该目录/);
-    assert.match(runtimeText, /默认不要传 target/);
-    assert.match(runtimeText, /你的电脑\/XiaoBa 的电脑\/bot 的电脑/);
-    assert.doesNotMatch(runtimeText, /可在用户电脑执行的工具/);
-    assert.doesNotMatch(runtimeText, /read_file, resolve_common_directory, glob, grep, write_file, edit_file, execute_shell/);
+    assert.match(runtimeText, /可操作的用户电脑：/);
+    assert.match(runtimeText, /target="speaker_default"/);
+    assert.match(runtimeText, /已授权操作对应工具（仅当本轮提供该工具时可调用）：read_file/);
+    assert.doesNotMatch(runtimeText, /execute_shell/);
+    const targetRulesText = String(result.messages[targetRulesIndex].content || '');
+    assert.ok(targetRulesText.startsWith(TRANSIENT_RUNTIME_TARGET_RULES_PREFIX));
+    assert.ok(targetRulesText.includes(`当前会话附件缓存目录（XiaoBa 本地运行体）：${getCatsCoAttachmentCacheSessionRoot(route.sessionKey)}`));
+    assert.match(targetRulesText, /用不带 target 的 glob 查看该目录/);
+    assert.match(targetRulesText, /默认不要传 target/);
+    assert.match(targetRulesText, /你的电脑\/XiaoBa 的电脑\/bot 的电脑/);
     assert.doesNotMatch(runtimeText, /xiaoba\.execution_context\.v1/);
     assert.doesNotMatch(runtimeText, /"conversation"/);
     assert.doesNotMatch(runtimeText, /C:\\secret/);
@@ -132,6 +151,52 @@ describe('runtime context builder', () => {
 
     const durable = builder.removeTransientMessages(result.messages);
     assert.equal(durable.some(isRuntimeContextMessage), false);
+  });
+
+  test('keeps session-stable rules in the leading provider prefix across turns', async () => {
+    const builder = new TurnContextBuilder();
+    const route = createSessionRoute({
+      source: 'catscompany',
+      topicType: 'group',
+      topicId: 'grp-prefix',
+      actorUserId: 'usr7',
+      agentId: 'usr43',
+      agentBodyId: 'body-main',
+      identityTrust: 'server_canonical',
+      identitySource: 'metadata.catsco_identity',
+      legacySessionKey: 'cc_group:grp-prefix',
+    });
+    const build = (durableMessages: Message[]) => builder.build({
+      sessionKey: route.sessionKey,
+      sessionType: 'catscompany',
+      sessionRoute: route,
+      executionScope: createExecutionScopeFromRoute(route),
+      durableMessages,
+      runtimeFeedback: [],
+      skillRuntime: emptySkillRuntime(),
+      contextEpoch: 'prefix-episode',
+    });
+    const first = await build([
+      { role: 'system', content: 'primary system' },
+      { role: 'user', content: 'turn one' },
+    ]);
+    const second = await build([
+      { role: 'system', content: 'primary system' },
+      { role: 'user', content: 'turn one' },
+      { role: 'assistant', content: 'answer one' },
+      { role: 'user', content: 'turn two' },
+    ]);
+    const stablePrefix = (messages: Message[]) => messages.slice(0, 3).map(message => ({
+      role: message.role,
+      content: message.content,
+      source: message.__context?.source,
+    }));
+    assert.deepEqual(stablePrefix(first.messages), stablePrefix(second.messages));
+    assert.deepEqual(first.messages.slice(0, 3).map(message => message.__context?.source), [
+      undefined,
+      'runtime_observation_rules',
+      'runtime_target_rules',
+    ]);
   });
 
   test('AgentSession sends runtime context to the provider every turn without persisting it', async () => {
@@ -196,6 +261,63 @@ describe('runtime context builder', () => {
       fs.rmSync(testRoot, { recursive: true, force: true });
     }
   });
+
+  test('AgentSession ignores untrusted authority without poisoning the later canonical scope', () => {
+    const route = createSessionRoute({
+      source: 'catscompany',
+      topicType: 'group',
+      topicId: 'grp-authority-session',
+      actorUserId: 'usr7',
+      agentId: 'usr43',
+      agentBodyId: 'body-main',
+      channelSeq: 10,
+      identityTrust: 'server_canonical',
+      identitySource: 'metadata.catsco_identity',
+      legacySessionKey: 'cc_group:grp-authority-session',
+    });
+    const trusted = createExecutionScopeFromRoute(route);
+    const untrusted = { ...trusted, identityTrust: 'untrusted' as const, isTrusted: false };
+    const session = new AgentSession(route.sessionKey, buildMockServices(), 'catscompany', route);
+    assert.equal(session.updateDeviceAuthority({
+      executionScope: untrusted,
+      deviceGrantSnapshot: {
+        kind: 'user_device_grant_snapshot',
+        source: trusted.source,
+        sessionKey: trusted.sessionKey,
+        topicId: trusted.topicId,
+        topicType: trusted.topicType,
+        actorUserId: trusted.actorUserId,
+        agentId: trusted.agentId,
+        agentBodyId: trusted.agentBodyId,
+        identityTrust: 'server_canonical',
+        revision: 10,
+        grants: [],
+      },
+    }), undefined);
+
+    const grant = deviceGrant(trusted);
+    const lease = session.updateDeviceAuthority({
+      executionScope: trusted,
+      deviceGrantSnapshot: {
+        kind: 'user_device_grant_snapshot',
+        source: trusted.source,
+        sessionKey: trusted.sessionKey,
+        topicId: trusted.topicId,
+        topicType: trusted.topicType,
+        actorUserId: trusted.actorUserId,
+        agentId: trusted.agentId,
+        agentBodyId: trusted.agentBodyId,
+        identityTrust: 'server_canonical',
+        revision: 10,
+        grants: [grant],
+      },
+    });
+    assert.equal(lease?.getCurrent().deviceGrants?.length, 1);
+    session.updateDeviceAuthority({
+      executionScope: { ...trusted, channelSeq: 11 },
+    });
+    assert.equal(lease?.getCurrent().deviceGrants?.length, 1);
+  });
 });
 
 function emptySkillRuntime(): any {
@@ -248,10 +370,11 @@ function deviceGrant(scope: ExecutionScope, deviceId = 'device-user-1'): ScopedD
     status: 'online',
     registeredAt: 1_000,
   });
+  const now = Date.now();
   const grant = createDeviceGrant(scope, device, {
     grantId: 'device_grant_current',
     operations: ['read_file', 'execute_shell'],
-    now: 2_000,
+    now,
     ttlMs: 60_000,
   });
   assert.ok(grant);
@@ -276,7 +399,7 @@ function deviceSelection(scope: ExecutionScope): ScopedDeviceSelection {
     selectedDeviceBodyId: 'body-secret',
     selectedDeviceInstallationId: 'installation-main',
     selectedDeviceOperations: ['read_file'],
-    createdAt: 2_000,
+    createdAt: Date.now(),
   };
 }
 

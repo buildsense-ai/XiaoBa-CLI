@@ -36,7 +36,9 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
   const canonicalTopicId = stringField(identityTopic, 'topic_id');
   const canonicalTopicType = normalizeTopicType(stringField(identityTopic, 'type'));
   const permissionsSource = stringField(permissions, 'source');
-  const canonicalChannelSeq = numberField(identityTopic, 'channel_seq');
+  const canonicalChannelSeqPresent = hasOwn(identityTopic, 'channel_seq');
+  const canonicalChannelSeq = positiveSafeIntegerField(identityTopic, 'channel_seq');
+  const transportChannelSeq = normalizeSeq(input.seq);
   const metadataLooksCanonical = permissionsSource === 'server_canonical_message';
 
   if (catscoIdentity && !metadataLooksCanonical) {
@@ -47,6 +49,17 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
   }
   if (metadataLooksCanonical && canonicalTopicType !== topicType) {
     warnings.push('catsco_identity topic.type does not match message transport');
+  }
+  if (metadataLooksCanonical && canonicalChannelSeqPresent && canonicalChannelSeq === undefined) {
+    warnings.push('catsco_identity topic.channel_seq is not a positive safe integer');
+  }
+  if (
+    metadataLooksCanonical
+    && canonicalChannelSeq !== undefined
+    && transportChannelSeq !== undefined
+    && canonicalChannelSeq !== transportChannelSeq
+  ) {
+    warnings.push('catsco_identity topic.channel_seq does not match transport seq');
   }
   const senderMatchesCanonicalActor = senderId !== 'unknown'
     && sameCatsCoUserId(canonicalActorId, senderId);
@@ -72,6 +85,12 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     && canonicalTopicId === topicId
     && canonicalTopicType !== 'unknown'
     && canonicalTopicType === topicType
+    && !(canonicalChannelSeqPresent && canonicalChannelSeq === undefined)
+    && !(
+      canonicalChannelSeq !== undefined
+      && transportChannelSeq !== undefined
+      && canonicalChannelSeq !== transportChannelSeq
+    )
     && senderMatchesCanonicalActor
     && agentMatchesConnectedBot,
   );
@@ -93,9 +112,11 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
       stringField(metadata, 'channel'),
     )
     : undefined;
-  const channelSeq = isCanonicalTrusted
-    ? canonicalChannelSeq ?? normalizeSeq(input.seq)
-    : normalizeSeq(input.seq);
+  // The canonical identity record is allowed to carry the ordering watermark
+  // when a transport adapter cannot surface its outer sequence. A disagreement
+  // was already rejected above, so this fallback cannot override transport
+  // evidence with a conflicting value.
+  const channelSeq = transportChannelSeq ?? (isCanonicalTrusted ? canonicalChannelSeq : undefined);
   const identityTrust: IdentityTrustLevel = isCanonicalTrusted
     ? 'server_canonical'
     : catscoIdentity
@@ -215,18 +236,18 @@ function stringField(record: UnknownRecord | undefined, key: string): string | u
   return text || undefined;
 }
 
-function numberField(record: UnknownRecord | undefined, key: string): number | undefined {
+function positiveSafeIntegerField(record: UnknownRecord | undefined, key: string): number | undefined {
   const value = record?.[key];
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
   return undefined;
 }
 
+function hasOwn(record: UnknownRecord | undefined, key: string): boolean {
+  return Boolean(record && Object.prototype.hasOwnProperty.call(record, key));
+}
+
 function normalizeSeq(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return undefined;
   return value;
 }
 

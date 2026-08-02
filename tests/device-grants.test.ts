@@ -206,7 +206,10 @@ describe('device grants', () => {
       });
 
       assert.equal(decision.ok, false, field);
-      if (!decision.ok) assert.match(decision.message, new RegExp(field), field);
+      if (!decision.ok) {
+        assert.match(decision.message, /执行身份不一致/u, field);
+        assert.doesNotMatch(decision.message, /grant=|scope=/u, field);
+      }
     }
   });
 });

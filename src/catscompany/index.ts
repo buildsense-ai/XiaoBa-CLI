@@ -16,9 +16,16 @@ import {
 import { logCatsCoExecutionContextDiagnostics } from './execution-context-diagnostics';
 import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
 import { extractCatsCoDeviceGrantSnapshot } from './device-grants';
-import { deviceGrantSnapshotCanonicalValue } from '../core/device-grants';
+import {
+  DeviceAuthorityState,
+  deviceAuthorityFragmentCanonicalValue,
+  deviceAuthorityScopeKey,
+} from '../core/device-authority-state';
 import { extractCatsCoDeviceSelection } from './device-selection';
-import { extractCatsCoRuntimeContext } from './runtime-context';
+import {
+  bindCatsCoRuntimeContextToDeviceGrants,
+  extractCatsCoRuntimeContext,
+} from './runtime-context';
 import { MessageSessionManager } from '../core/message-session-manager';
 import {
   AgentServices,
@@ -114,6 +121,43 @@ interface QueuedMessage {
   attempts?: number;
   deliveryOnly?: boolean;
   deliveryAttempts?: number;
+}
+
+interface QueuedDeviceAuthorityFragment {
+  executionScope: ExecutionScope;
+  revision?: number;
+  deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
+  deviceSelection?: ScopedDeviceSelection;
+  targetRoutes?: TargetRoutes;
+  observedAt?: number;
+}
+
+const PENDING_DEVICE_AUTHORITY_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_PENDING_DEVICE_AUTHORITY_SCOPES = 4096;
+
+function normalizePositiveSequence(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function emptyQueuedAuthoritySnapshot(
+  scope: ExecutionScope,
+  revision: number,
+): ScopedDeviceGrantSnapshot {
+  return {
+    kind: 'user_device_grant_snapshot',
+    source: scope.source,
+    sessionKey: scope.sessionKey,
+    topicId: scope.topicId,
+    topicType: scope.topicType,
+    actorUserId: scope.actorUserId,
+    agentId: scope.agentId,
+    agentBodyId: scope.agentBodyId,
+    identityTrust: scope.identityTrust,
+    revision,
+    grants: [],
+  };
 }
 
 interface ActiveConversationTask {
@@ -478,6 +522,10 @@ export class CatsCompanyBot {
   private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
   private messageQueue = new Map<string, QueuedMessage[]>();
+  /** Latest canonical authority seen before an AgentSession exists. */
+  private pendingDeviceAuthority = new Map<string, QueuedDeviceAuthorityFragment>();
+  /** Live durable leases for canonical scopes that do not have an AgentSession yet. */
+  private pendingDeviceAuthorityStates = new Map<string, DeviceAuthorityState>();
   /** Serializes history hydration and all model turns for one CatsCo session. */
   private sessionExecutionReservations = new Set<string>();
   /** Serializes auxiliary status events so a terminal state cannot overtake its running state. */
@@ -1523,24 +1571,73 @@ export class CatsCompanyBot {
    * 处理收到的消息
    */
   private async onMessage(ctx: MessageContext): Promise<void> {
+    // 过滤 bot 自己发出的消息，防止循环。
+    if (this.botUid && normalizeCatsUid(ctx.senderId) === normalizeCatsUid(this.botUid)) return;
+
+    const msg = this.parseMessage(ctx);
+    const key = msg?.envelope.sessionKey;
+    this.prunePendingDeviceAuthority();
+    // Canonical authority is a control plane independent of message content.
+    // Apply it before cancellation and activation gates so an empty revoke or
+    // stream-cancel event cannot leave a live parent/subagent lease authorized.
+    if (msg && key && (msg.deviceGrantSnapshot || msg.deviceSelection)) {
+      const existingSession = this.sessionManager.get(key);
+      const hasMessageContent = Boolean(msg.text) || (msg.files?.length ?? 0) > 0;
+      const willMaterializeSession = hasMessageContent
+        && !this.isCancelMessage(ctx)
+        && shouldActivateCatsCompanyMessage(ctx, this.botUid);
+      const authorityFragment: QueuedDeviceAuthorityFragment = {
+        executionScope: msg.executionScope,
+        revision: msg.deviceGrantSnapshot?.revision
+          ?? normalizePositiveSequence(msg.executionScope.channelSeq),
+        deviceGrantSnapshot: msg.deviceGrantSnapshot,
+        deviceSelection: msg.deviceSelection,
+        targetRoutes: msg.targetRoutes,
+        observedAt: Date.now(),
+      };
+      const sessionMayMaterialize = willMaterializeSession
+        || this.cloudSessionRestorePromises?.has(key)
+        || this.sessionExecutionReservations?.has(key);
+      if (existingSession) {
+        existingSession.updateDeviceAuthority({
+          executionScope: authorityFragment.executionScope,
+          deviceGrantSnapshot: authorityFragment.deviceGrantSnapshot,
+          deviceSelection: authorityFragment.deviceSelection,
+          targetRoutes: authorityFragment.targetRoutes,
+        });
+      } else {
+        this.rememberDeviceAuthority(key, authorityFragment);
+        const merged = this.getPendingDeviceAuthority(key, authorityFragment.executionScope);
+        if (
+          !sessionMayMaterialize
+          && !this.authorityFragmentHasGrantBase(merged)
+          && merged
+          && this.confirmPendingDeviceAuthorityRevokedFloor(key, merged)
+        ) {
+          // A connector-level revoked floor needs no reconstructable grant
+          // payload once its durable lease has been updated.
+          this.deletePendingDeviceAuthority(key, authorityFragment.executionScope);
+        }
+      }
+    }
+
     if (this.isCancelMessage(ctx)) {
       this.handleCancelMessage(ctx);
       return;
     }
+    if (!msg || !key) return;
 
-    // 过滤 bot 自己发出的消息，防止循环。
-    if (this.botUid && normalizeCatsUid(ctx.senderId) === normalizeCatsUid(this.botUid)) return;
+    // Authority-only protocol records must never create history or invoke a
+    // model. The live lease was already updated above.
+    if (!msg.text && (msg.files?.length ?? 0) === 0) return;
 
-    // 群聊激活门控必须发生在 parse 后续的云恢复和 session 创建之前。
+    // Activation still gates history/session/model work, but canonical device
+    // revocation above is an independent security event and must not require a
+    // mention while a parent or subagent is using the live lease.
     if (!shouldActivateCatsCompanyMessage(ctx, this.botUid)) {
       Logger.info(`[CatsCompany] 群消息未命中当前 AI 的结构化 mention，跳过: topic=${ctx.topic}, seq=${ctx.seq || 0}`);
       return;
     }
-
-    const msg = this.parseMessage(ctx);
-    if (!msg) return;
-
-    const key = msg.envelope.sessionKey;
 
     this.activeMessageHandlers += 1;
     try {
@@ -1578,6 +1675,16 @@ export class CatsCompanyBot {
       cloudRestoreResult = await this.ensureCloudSessionRestored(msg, sessionRoute);
       if (entryClearGeneration !== this.getSessionClearGeneration(key)) return;
       if (cloudRestoreResult.status === 'failed' || cloudRestoreResult.status === 'skipped') {
+        for (const [pendingKey, pendingAuthority] of this.pendingDeviceAuthorityEntries(key)) {
+          if (
+            !this.authorityFragmentHasGrantBase(pendingAuthority)
+            && this.confirmPendingDeviceAuthorityRevokedFloor(key, pendingAuthority)
+            && this.pendingDeviceAuthority?.get(pendingKey) === pendingAuthority
+          ) {
+            this.pendingDeviceAuthority.delete(pendingKey);
+            this.pendingDeviceAuthorityStates?.delete(pendingKey);
+          }
+        }
         await this.sender.reply(
           msg.topic,
           '这台设备暂时没能恢复这段会话，我没有新建空白上下文。请稍后再发一次。',
@@ -1588,6 +1695,7 @@ export class CatsCompanyBot {
       }
     }
     const session = this.sessionManager.getOrCreate(sessionRoute && sessionRoute.sessionKey === key ? sessionRoute : key);
+    this.flushPendingDeviceAuthority(key, session);
 
     // 处理斜杠命令
     if (typeof msg.text === 'string' && msg.text.startsWith('/')) {
@@ -2194,7 +2302,6 @@ export class CatsCompanyBot {
     const blockText = blockTextParts.join('\n\n');
     const mergedText = blockText || text;
     const userText = isCatsCoAttachmentSummaryText(mergedText, files) ? '' : mergedText;
-    if (!userText && files.length === 0) return null;
     const messageText = userText;
     const envelope = createCatsCoMessageEnvelope({
       topic: ctx.topic,
@@ -2207,7 +2314,13 @@ export class CatsCompanyBot {
     });
     const executionScope = createExecutionScope(envelope);
     const deviceGrantSnapshot = extractCatsCoDeviceGrantSnapshot(ctx.metadata, executionScope);
-    const targetRoutes = extractCatsCoRuntimeContext(ctx.metadata);
+    const deviceSelection = extractCatsCoDeviceSelection(ctx.metadata, executionScope);
+    if (!userText && files.length === 0 && !deviceGrantSnapshot && !deviceSelection) return null;
+    const targetRoutes = bindCatsCoRuntimeContextToDeviceGrants(
+      extractCatsCoRuntimeContext(ctx.metadata),
+      executionScope,
+      deviceGrantSnapshot?.grants,
+    );
     if (targetRoutes?.routes?.length) {
       Logger.info(`[CatsCompany][xiaoba_runtime] parsed target routes: topic=${ctx.topic}, sender=${ctx.senderId}, routes=${targetRoutes.routes.map(route => `${route.userName || route.userId || '?'}:${route.ownerUserId}/${route.deviceId}/${route.os}`).join(', ')}`);
     } else {
@@ -2230,7 +2343,7 @@ export class CatsCompanyBot {
         ? deviceGrantSnapshot.grants
         : undefined,
       deviceGrantSnapshot,
-      deviceSelection: extractCatsCoDeviceSelection(ctx.metadata, executionScope),
+      deviceSelection,
       targetRoutes,
       file: files[0],
       files,
@@ -2257,6 +2370,7 @@ export class CatsCompanyBot {
     }
 
     const session = this.sessionManager.getOrCreate(sessionKey);
+    this.flushPendingDeviceAuthority(sessionKey, session);
 
     this.registerSubAgentPlatformCallbacks(sessionKey, topic, senderId, executionScope, clearGeneration);
 
@@ -2418,6 +2532,7 @@ export class CatsCompanyBot {
     }
 
     const session = this.sessionManager.get?.(sessionKey) || this.sessionManager.getOrCreate(sessionKey);
+    this.flushPendingDeviceAuthority(sessionKey, session);
 
     const manager = SubAgentManager.getInstance();
     const activeSubAgents = manager
@@ -2740,6 +2855,7 @@ export class CatsCompanyBot {
     if (sessionKey) {
       const manager = SubAgentManager.getInstance();
       const parentSession = this.sessionManager.get?.(sessionKey) || this.sessionManager.getOrCreate(sessionKey);
+      this.flushPendingDeviceAuthority(sessionKey, parentSession);
       const shouldShowTerminalForWait = isTerminalEvent
         && manager.isResultWaitClaimedForParent(sessionKey, subAgentId);
       const shouldSuppressForSession = (parentSession && !parentSession.isBusy())
@@ -2904,6 +3020,7 @@ export class CatsCompanyBot {
     }
 
     const session = this.sessionManager.getOrCreate(sessionKey);
+    this.flushPendingDeviceAuthority(sessionKey, session);
     const suppressSubAgentFinalResponse = msg.source === 'subagent_feedback'
       && queuedResultObservationHandling !== 'notify'
       && shouldSuppressSubAgentObservationReply(msg.userMessage as string);
@@ -3118,12 +3235,14 @@ export class CatsCompanyBot {
     Logger.info(`[${sessionKey}] 合并 ${messages.length} 条处理期间新到的用户消息`);
     const content = this.mergeQueuedMessages(messages);
     const localFileGrants = messages.flatMap(item => item.localFileGrants || []);
-    const deviceGrantSnapshot = this.selectNewestQueuedDeviceGrantSnapshot(messages);
-    const legacyDeviceGrants = deviceGrantSnapshot
+    const authority = this.selectNewestQueuedDeviceAuthority(messages);
+    const legacyAuthority = authority
       ? undefined
-      : [...messages].reverse().find(item => item.deviceGrants !== undefined)?.deviceGrants;
-    const deviceSelection = [...messages].reverse().find(item => item.deviceSelection)?.deviceSelection;
-    const targetRoutes = [...messages].reverse().find(item => item.targetRoutes)?.targetRoutes;
+      : [...messages].reverse().find(item => item.deviceGrants !== undefined);
+    const deviceGrantSnapshot = authority?.deviceGrantSnapshot;
+    const legacyDeviceGrants = legacyAuthority?.deviceGrants;
+    const deviceSelection = authority?.deviceSelection ?? legacyAuthority?.deviceSelection;
+    const targetRoutes = authority?.targetRoutes ?? legacyAuthority?.targetRoutes;
     if (
       localFileGrants.length === 0
       && !deviceGrantSnapshot
@@ -3133,6 +3252,7 @@ export class CatsCompanyBot {
     ) return content;
     return {
       content,
+      executionScope: authority?.executionScope,
       localFileGrants: localFileGrants.length > 0 ? localFileGrants : undefined,
       deviceGrants: legacyDeviceGrants,
       deviceGrantSnapshot,
@@ -3155,41 +3275,215 @@ export class CatsCompanyBot {
       && currentScope.identityTrust === queuedScope.identityTrust;
   }
 
-  private selectNewestQueuedDeviceGrantSnapshot(
+  private selectNewestQueuedDeviceAuthority(
     messages: QueuedMessage[],
-  ): ScopedDeviceGrantSnapshot | undefined {
-    let selected: ScopedDeviceGrantSnapshot | undefined;
+  ): QueuedDeviceAuthorityFragment | undefined {
+    let selected: QueuedDeviceAuthorityFragment | undefined;
     for (const message of messages) {
       const incoming = message.deviceGrantSnapshot;
-      if (!incoming) continue;
-      if (!selected) {
-        selected = incoming;
-        continue;
-      }
-      const currentRevision = selected.revision;
-      const incomingRevision = incoming.revision;
-      if (currentRevision !== undefined && incomingRevision !== undefined) {
-        if (incomingRevision < currentRevision) continue;
-        if (incomingRevision > currentRevision) {
-          selected = incoming;
-          continue;
-        }
-        if (deviceGrantSnapshotCanonicalValue(selected) !== deviceGrantSnapshotCanonicalValue(incoming)) {
-          selected = { ...incoming, grants: [] };
-        }
-        continue;
-      }
-      if (incomingRevision !== undefined) {
-        selected = incoming;
-        continue;
-      }
-      if (currentRevision !== undefined) {
-        selected = { ...incoming, revision: currentRevision, grants: [] };
-        continue;
-      }
-      selected = incoming;
+      if (!incoming && !message.deviceSelection && !message.targetRoutes) continue;
+      selected = this.mergeDeviceAuthorityFragments(selected, {
+        executionScope: message.executionScope,
+        revision: incoming?.revision ?? normalizePositiveSequence(message.executionScope.channelSeq),
+        deviceGrantSnapshot: incoming,
+        deviceSelection: message.deviceSelection,
+        targetRoutes: message.targetRoutes,
+      });
     }
     return selected;
+  }
+
+  private rememberDeviceAuthority(
+    sessionKey: string,
+    incoming: QueuedDeviceAuthorityFragment,
+  ): void {
+    const pendingBySession = this.pendingDeviceAuthority ??= new Map();
+    const pendingKey = this.pendingDeviceAuthorityKey(sessionKey, incoming.executionScope);
+    const statesByScope = this.pendingDeviceAuthorityStates ??= new Map();
+    let authorityState = statesByScope.get(pendingKey);
+    if (!authorityState) {
+      authorityState = this.createPendingDeviceAuthorityState(incoming.executionScope);
+      statesByScope.set(pendingKey, authorityState);
+    }
+    authorityState.replace({
+      executionScope: incoming.executionScope,
+      deviceGrantSnapshot: incoming.deviceGrantSnapshot,
+      deviceSelection: incoming.deviceSelection,
+      targetRoutes: incoming.targetRoutes,
+    });
+    const merged = this.mergeDeviceAuthorityFragments(pendingBySession.get(pendingKey), {
+      ...incoming,
+      observedAt: incoming.observedAt ?? Date.now(),
+    });
+    pendingBySession.set(pendingKey, merged);
+    this.prunePendingDeviceAuthority();
+  }
+
+  private createPendingDeviceAuthorityState(scope: ExecutionScope): DeviceAuthorityState {
+    return new DeviceAuthorityState(scope);
+  }
+
+  private authorityFragmentHasGrantBase(
+    fragment: QueuedDeviceAuthorityFragment | undefined,
+  ): boolean {
+    return Boolean(fragment?.deviceGrantSnapshot?.grants.length);
+  }
+
+  private pendingDeviceAuthorityKey(sessionKey: string, scope: ExecutionScope): string {
+    return `${sessionKey}\0${deviceAuthorityScopeKey(scope)}`;
+  }
+
+  private pendingDeviceAuthorityEntries(
+    sessionKey: string,
+  ): Array<[string, QueuedDeviceAuthorityFragment]> {
+    const prefix = `${sessionKey}\0`;
+    return [...(this.pendingDeviceAuthority?.entries() || [])]
+      .filter(([pendingKey]) => pendingKey.startsWith(prefix));
+  }
+
+  private getPendingDeviceAuthority(
+    sessionKey: string,
+    scope: ExecutionScope,
+  ): QueuedDeviceAuthorityFragment | undefined {
+    return this.pendingDeviceAuthority?.get(this.pendingDeviceAuthorityKey(sessionKey, scope));
+  }
+
+  private deletePendingDeviceAuthority(sessionKey: string, scope: ExecutionScope): void {
+    const pendingKey = this.pendingDeviceAuthorityKey(sessionKey, scope);
+    this.pendingDeviceAuthority?.delete(pendingKey);
+    this.pendingDeviceAuthorityStates?.delete(pendingKey);
+  }
+
+  private confirmPendingDeviceAuthorityRevokedFloor(
+    sessionKey: string,
+    fragment: QueuedDeviceAuthorityFragment,
+  ): boolean {
+    const revision = fragment.revision
+      ?? normalizePositiveSequence(fragment.executionScope.channelSeq);
+    if (revision === undefined) return false;
+    const pendingKey = this.pendingDeviceAuthorityKey(sessionKey, fragment.executionScope);
+    return this.pendingDeviceAuthorityStates?.get(pendingKey)?.persistRevokedFloor(revision) === true;
+  }
+
+  private prunePendingDeviceAuthority(now = Date.now()): void {
+    const pendingBySession = this.pendingDeviceAuthority;
+    if (!pendingBySession?.size) return;
+    const candidates = [...pendingBySession.entries()]
+      .sort((left, right) => (left[1].observedAt ?? 0) - (right[1].observedAt ?? 0));
+    let excess = Math.max(0, pendingBySession.size - MAX_PENDING_DEVICE_AUTHORITY_SCOPES);
+    for (const [sessionKey, fragment] of candidates) {
+      const expired = (fragment.observedAt ?? 0) + PENDING_DEVICE_AUTHORITY_TTL_MS <= now;
+      if (!expired && excess <= 0) break;
+      if (!this.confirmPendingDeviceAuthorityRevokedFloor(
+        fragment.executionScope.sessionKey,
+        fragment,
+      )) continue;
+      if (pendingBySession.get(sessionKey) === fragment) {
+        pendingBySession.delete(sessionKey);
+        this.pendingDeviceAuthorityStates?.delete(sessionKey);
+        excess = Math.max(0, excess - 1);
+      }
+    }
+  }
+
+  private flushPendingDeviceAuthority(
+    sessionKey: string,
+    session: ReturnType<MessageSessionManager['getOrCreate']>,
+  ): void {
+    const pendingBySession = this.pendingDeviceAuthority ??= new Map();
+    for (const [pendingKey, pending] of this.pendingDeviceAuthorityEntries(sessionKey)) {
+      const pendingState = this.pendingDeviceAuthorityStates?.get(pendingKey);
+      if (pendingState && typeof (session as any).adoptDeviceAuthorityState === 'function') {
+        const adopted = (session as any).adoptDeviceAuthorityState(
+          pending.executionScope,
+          pendingState,
+        );
+        if (adopted) {
+          if (pendingBySession.get(pendingKey) === pending) {
+            pendingBySession.delete(pendingKey);
+            this.pendingDeviceAuthorityStates.delete(pendingKey);
+          }
+          continue;
+        }
+      }
+      const snapshotRevision = normalizePositiveSequence(pending.deviceGrantSnapshot?.revision);
+      if (
+        pending.deviceGrantSnapshot
+        && snapshotRevision !== undefined
+        && pending.revision !== undefined
+        && snapshotRevision < pending.revision
+      ) {
+        session.updateDeviceAuthority({
+          executionScope: { ...pending.executionScope, channelSeq: snapshotRevision },
+          deviceGrantSnapshot: pending.deviceGrantSnapshot,
+        });
+        session.updateDeviceAuthority({
+          executionScope: pending.executionScope,
+          deviceSelection: pending.deviceSelection,
+          targetRoutes: pending.targetRoutes,
+        });
+      } else {
+        session.updateDeviceAuthority({
+          executionScope: pending.executionScope,
+          deviceGrantSnapshot: pending.deviceGrantSnapshot,
+          deviceSelection: pending.deviceSelection,
+          targetRoutes: pending.targetRoutes,
+        });
+      }
+      if (pendingBySession.get(pendingKey) === pending) {
+        pendingBySession.delete(pendingKey);
+        this.pendingDeviceAuthorityStates?.delete(pendingKey);
+      }
+    }
+  }
+
+  private mergeDeviceAuthorityFragments(
+    current: QueuedDeviceAuthorityFragment | undefined,
+    incoming: QueuedDeviceAuthorityFragment,
+  ): QueuedDeviceAuthorityFragment {
+    if (!current) return incoming;
+    const currentRevision = current.revision;
+    const incomingRevision = incoming.revision;
+    if (currentRevision !== undefined && incomingRevision !== undefined) {
+      if (incomingRevision < currentRevision) return current;
+      if (incomingRevision > currentRevision) {
+        if (!incoming.deviceGrantSnapshot && current.deviceGrantSnapshot?.grants.length) {
+          return {
+            ...incoming,
+            deviceGrantSnapshot: current.deviceGrantSnapshot,
+            targetRoutes: incoming.targetRoutes ?? current.targetRoutes,
+          };
+        }
+        return incoming;
+      }
+      if (
+        deviceAuthorityFragmentCanonicalValue(
+          current.deviceGrantSnapshot,
+          current.deviceSelection,
+          current.targetRoutes,
+        ) === deviceAuthorityFragmentCanonicalValue(
+          incoming.deviceGrantSnapshot,
+          incoming.deviceSelection,
+          incoming.targetRoutes,
+        )
+      ) return { ...current, observedAt: incoming.observedAt ?? current.observedAt };
+      return {
+        executionScope: incoming.executionScope,
+        revision: incomingRevision,
+        deviceGrantSnapshot: emptyQueuedAuthoritySnapshot(incoming.executionScope, incomingRevision),
+        observedAt: incoming.observedAt ?? current.observedAt,
+      };
+    }
+    if (incomingRevision !== undefined) return incoming;
+    if (currentRevision !== undefined) {
+      return {
+        executionScope: incoming.executionScope,
+        revision: currentRevision,
+        deviceGrantSnapshot: emptyQueuedAuthoritySnapshot(incoming.executionScope, currentRevision),
+        observedAt: incoming.observedAt ?? current.observedAt,
+      };
+    }
+    return incoming;
   }
 
   private mergeQueuedMessages(messages: QueuedMessage[]): string | ContentBlock[] {

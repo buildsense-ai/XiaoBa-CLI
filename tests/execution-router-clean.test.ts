@@ -8,6 +8,7 @@ import {
 import { buildRuntimeContextMessage } from '../src/core/runtime-context-builder';
 import { buildTargetRoutes } from '../src/catscompany/runtime-context';
 import { ShellTool } from '../src/tools/bash-tool';
+import { DeviceAuthorityState } from '../src/core/device-authority-state';
 
 function catsContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext {
   return {
@@ -137,7 +138,7 @@ test('username target routes through Thin Tool RPC, strips target args, and owns
   assert.equal(result?.ok, true);
   assert.equal(result?.ok && result.content, 'remote preface\nremote ok');
   assert.match(result?.targetContext || '', /target: Alice/);
-  assert.match(result?.targetContext || '', /target_display_name: Alice 的电脑/);
+  assert.match(result?.targetContext || '', /target_display_name: authorized_device/);
   assert.doesNotMatch(String(result?.ok && result.content), /target: agent_self/);
 });
 
@@ -293,6 +294,132 @@ test('remote dispatch revalidates authority and tool/operation pairing', async (
   assert.equal(rpcCalls, 0);
 });
 
+test('exact aliases cannot bypass the canonical current-speaker selection', () => {
+  const base = catsContext();
+  const scope = base.executionScope!;
+  const first = base.deviceGrants![0];
+  const second = {
+    ...first,
+    grantId: 'grant-2',
+    deviceId: 'dev-alice-mac',
+    operations: ['read_file'] as const,
+  };
+  const targetRoutes = buildTargetRoutes([{
+    userId: 'usr85',
+    ownerUserId: 'usr85',
+    deviceId: first.deviceId,
+    label: 'first',
+    os: 'windows',
+    status: 'ready',
+  }, {
+    userId: 'usr85',
+    ownerUserId: 'usr85',
+    deviceId: second.deviceId,
+    label: 'second',
+    os: 'macos',
+    status: 'ready',
+  }], scope);
+  const context = catsContext({
+    deviceGrants: [first, second as any],
+    targetRoutes,
+    thinToolRpc: {
+      executeTool: async () => ({ ok: true, content: 'ok' }),
+    },
+    deviceSelection: {
+      kind: 'user_device_selection',
+      source: 'catscompany',
+      status: 'selected',
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      identityTrust: 'server_canonical',
+      selectedDeviceId: first.deviceId,
+      selectedDeviceOperations: ['read_file'],
+    },
+  });
+  const firstAlias = targetRoutes!.routes.find(route => route.deviceId === first.deviceId)!.targetAlias!;
+  const secondAlias = targetRoutes!.routes.find(route => route.deviceId === second.deviceId)!.targetAlias!;
+  assert.equal(resolveExecutionRoute(context, {
+    toolName: 'read_file',
+    operation: 'read_file',
+    target: firstAlias,
+  }).ok, true);
+  const denied = resolveExecutionRoute(context, {
+    toolName: 'read_file',
+    operation: 'read_file',
+    target: secondAlias,
+  });
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.errorCode, 'PERMISSION_DENIED');
+});
+
+test('live revocation after route resolution prevents remote dispatch', async () => {
+  let rpcCalls = 0;
+  const base = catsContext();
+  const scope = base.executionScope!;
+  const grant = base.deviceGrants![0];
+  const authority = new DeviceAuthorityState(scope, { watermarkDirectory: null });
+  authority.replace({
+    executionScope: scope,
+    deviceGrantSnapshot: {
+      kind: 'user_device_grant_snapshot',
+      source: scope.source,
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      agentBodyId: scope.agentBodyId,
+      identityTrust: 'server_canonical',
+      revision: 10,
+      grants: [grant],
+    },
+    targetRoutes: base.targetRoutes,
+  });
+  const context = catsContext({
+    deviceAuthority: authority,
+    thinToolRpc: {
+      executeTool: async () => {
+        rpcCalls += 1;
+        return { ok: true, content: 'must not execute' };
+      },
+    },
+  });
+  const resolved = resolveExecutionRoute(context, {
+    toolName: 'glob',
+    operation: 'glob',
+    target: 'Alice',
+  });
+  assert.equal(resolved.ok, true);
+  authority.replace({
+    executionScope: scope,
+    deviceGrantSnapshot: {
+      kind: 'user_device_grant_snapshot',
+      source: scope.source,
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      agentBodyId: scope.agentBodyId,
+      identityTrust: 'server_canonical',
+      revision: 11,
+      grants: [],
+    },
+  });
+  const result = await executeRouteIfRemote(
+    context,
+    resolved,
+    'glob',
+    'glob',
+    { path: '.', pattern: '*' },
+  );
+  assert.equal(result?.ok, false);
+  assert.equal(rpcCalls, 0);
+});
+
 test('legacy speaker_default fallback still uses Device RPC when runtime routes are unavailable', async () => {
   let capturedArgs: Record<string, unknown> | undefined;
   const context = catsContext({
@@ -366,27 +493,31 @@ test('Device RPC receiver always executes locally and does not route again', () 
   assert.equal(route.ok && route.mode, 'local');
 });
 
-test('runtime context injects short text with username targets instead of JSON', () => {
-  const message = buildRuntimeContextMessage({
+test('runtime context rejects route-only claims and lists only scoped grant operations', () => {
+  const context = catsContext();
+  const routeOnly = buildRuntimeContextMessage({
     sessionKey: 'session:v2:catscompany:p2p:p2p_85_320:agent:usr320',
     sessionType: 'catscompany',
-    executionScope: {
-      source: 'catscompany',
-      sessionKey: 'session:v2:catscompany:p2p:p2p_85_320:agent:usr320',
-      topicId: 'p2p_85_320',
-      topicType: 'p2p',
-      actorUserId: 'usr85',
-      agentId: 'usr320',
-      identityTrust: 'server_canonical',
-      isTrusted: true,
-    },
-    targetRoutes: catsContext().targetRoutes,
+    executionScope: context.executionScope,
+    targetRoutes: context.targetRoutes,
+  });
+  assert.equal(routeOnly, null);
+
+  const message = buildRuntimeContextMessage({
+    sessionKey: context.executionScope!.sessionKey,
+    sessionType: 'catscompany',
+    executionScope: context.executionScope,
+    deviceGrants: context.deviceGrants,
+    targetRoutes: context.targetRoutes,
   });
 
   assert.ok(message);
   assert.equal(message.role, 'system');
   assert.match(String(message.content), /\[transient_runtime_context\]/);
-  assert.match(String(message.content), /Alice：Alice 的电脑，Windows/);
-  assert.match(String(message.content), /target="Alice"/);
+  assert.match(String(message.content), /target="device_target_[a-f0-9]{16}"/);
+  assert.match(String(message.content), /用户 usr85 \(id=usr85\)/);
+  assert.match(String(message.content), /已授权操作对应工具（仅当本轮提供该工具时可调用）：read_file, glob, import_file, execute_shell/);
+  assert.doesNotMatch(String(message.content), /usr85 device/);
+  assert.doesNotMatch(String(message.content), /write_file/);
   assert.doesNotMatch(String(message.content), /"executionTargets"/);
 });

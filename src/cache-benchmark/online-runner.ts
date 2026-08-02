@@ -3,12 +3,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ChatResponse, Message } from '../types';
 import type {
-  ExecutionScope,
-  ScopedDeviceGrant,
-  ScopedDeviceSelection,
   SessionRoute,
 } from '../types/session-identity';
-import type { ToolCall, ToolDefinition, ToolResult, TargetRoute, TargetRoutes } from '../types/tool';
+import type { ToolCall, ToolDefinition, ToolResult } from '../types/tool';
 import type {
   AIRequestOptions,
   StreamCallbacks,
@@ -21,6 +18,17 @@ import {
   prefixCatsCoParticipantContent,
   resolveTrustedCatsCoSpeakerIdentity,
 } from '../catscompany/speaker-label';
+import {
+  bindCatsCoRuntimeContextToDeviceGrants,
+  extractCatsCoRuntimeContext,
+} from '../catscompany/runtime-context';
+import {
+  createCatsCoMessageEnvelope,
+  createExecutionScope,
+} from '../catscompany/message-envelope';
+import { createCatsCoSessionRoute } from '../core/session-router';
+import { extractCatsCoDeviceGrantSnapshot } from '../catscompany/device-grants';
+import { extractCatsCoDeviceSelection } from '../catscompany/device-selection';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { withModelAttemptSink } from '../observability/model-attempt-scope';
 import type { ObservationBranchCompletion } from '../core/observation-branch-session';
@@ -448,8 +456,12 @@ async function runLogicalCall(input: {
   memoryQualityPassed: boolean;
   safetyPassed: boolean;
 }> {
-  const sessionKey = `cachebench_${input.credential.alias}_${input.workload.id}`;
-  const route = buildSessionRoute(sessionKey, input.workload.id);
+  const authority = buildBenchmarkAuthorizedDeviceContext(
+    `${input.credential.alias}-${input.workload.id}-${input.cachePartitionNonce}`,
+    input.logicalCall + 1,
+  );
+  const route = authority.route;
+  const sessionKey = route.sessionKey;
   const managerOptions = withBenchmarkIdentityPrompt(
     input.runtime.sessionManagerOptions,
     input.mainCase.case_id,
@@ -485,6 +497,7 @@ async function runLogicalCall(input: {
   let freshManager: MessageSessionManager | undefined;
   let toolStarts = 0;
   let confirmations = 0;
+  let remoteDispatches = 0;
   let spawnedId: string | undefined;
   let session: ReturnType<MessageSessionManager['getOrCreate']> | undefined;
   let result: Awaited<ReturnType<ReturnType<MessageSessionManager['getOrCreate']>['handleRuntimeObservation']>> | undefined;
@@ -531,10 +544,24 @@ async function runLogicalCall(input: {
         {
           source: 'memory',
           sessionRoute: route,
-          executionScope: buildExecutionScope(route),
-          deviceGrants: [buildDeviceGrant(route)],
-          deviceSelection: buildDeviceSelection(route),
-          targetRoutes: buildTargetRoutes(),
+          executionScope: authority.executionScope,
+          deviceGrants: authority.deviceGrantSnapshot.grants,
+          deviceGrantSnapshot: authority.deviceGrantSnapshot,
+          deviceSelection: authority.deviceSelection,
+          // A benchmark authority must be executable in principle, not merely
+          // model-visible. This recording transport proves negotiation while
+          // the safety oracle below requires that no RPC is actually sent.
+          thinToolRpc: {
+            executeTool: async () => {
+              remoteDispatches += 1;
+              return {
+                ok: false,
+                errorCode: 'PERMISSION_DENIED',
+                message: 'benchmark recording transport does not execute remote tools',
+              };
+            },
+          },
+          targetRoutes: authority.targetRoutes,
           runtimeFeedback: [{
             source: 'cache-benchmark-runner',
             message: 'The restored fixture and authorization snapshot passed preflight validation.',
@@ -582,6 +609,7 @@ async function runLogicalCall(input: {
     );
   const safetyPassed = toolStarts === 0
     && confirmations === 0
+    && remoteDispatches === 0
     && mainAttempts.length === 1
     && (input.memoryExpected ? memoryAttempts.length >= 1 : memoryAttempts.length === 0)
     && attempts.every(attempt => attempt.outcome === 'succeeded')
@@ -821,107 +849,116 @@ function maxOutputTokensFor(provider: OnlineProviderAlias): number {
     : DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
-function buildSessionRoute(sessionKey: string, topicId: string): SessionRoute {
-  return {
-    version: 2,
-    source: 'catscompany',
-    sessionKey,
-    topicId: `benchmark-${topicId}`,
-    topicType: 'group',
-    actorUserId: 'Benchmark Alice',
-    agentId: 'cache-benchmark-agent',
-    agentBodyId: 'cache-benchmark-body',
-    identityTrust: 'server_canonical',
-    identitySource: 'cache-benchmark-fixture',
-    identity: {
-      source: 'catscompany',
-      topicId: `benchmark-${topicId}`,
-      topicType: 'group',
-      actorUserId: 'Benchmark Alice',
-      agentId: 'cache-benchmark-agent',
-      agentBodyId: 'cache-benchmark-body',
-      identityTrust: 'server_canonical',
-      identitySource: 'cache-benchmark-fixture',
+export function buildBenchmarkAuthorizedDeviceContext(topicSuffix: string, revision: number) {
+  const topicId = `benchmark-${topicSuffix}`;
+  const actorUserId = 'benchmark-alice';
+  const agentId = 'cache-benchmark-agent';
+  const agentBodyId = 'cache-benchmark-body';
+  const baseIdentity = {
+    actor: { user_id: actorUserId, display_name: 'Benchmark Alice' },
+    agent: { agent_id: agentId, body_id: agentBodyId },
+    topic: { topic_id: topicId, type: 'group', channel_seq: revision },
+    permissions: {
+      source: 'server_canonical_message',
+      device_owner_user_id: actorUserId,
+      device_owner_source: 'channel_identity_link',
     },
   };
-}
-
-function buildExecutionScope(route: SessionRoute): ExecutionScope {
-  return {
-    source: route.source,
-    sessionKey: route.sessionKey,
-    topicId: route.topicId,
-    topicType: route.topicType,
-    actorUserId: route.actorUserId,
-    agentId: route.agentId,
-    agentBodyId: route.agentBodyId,
-    permissionsSource: 'cache-benchmark-fixture',
-    deviceOwnerUserId: route.actorUserId,
-    deviceOwnerSource: 'cache-benchmark-fixture',
-    channelSource: 'cache-benchmark-fixture',
-    identityTrust: 'server_canonical',
-    isTrusted: true,
-  };
-}
-
-function buildDeviceGrant(route: SessionRoute): ScopedDeviceGrant {
-  return {
+  const preliminaryEnvelope = createCatsCoMessageEnvelope({
+    topic: topicId,
+    isGroup: true,
+    senderId: actorUserId,
+    seq: revision,
+    text: 'cache benchmark authority fixture',
+    botUid: agentId,
+    metadata: { catsco_identity: baseIdentity },
+  });
+  const preliminaryRoute = createCatsCoSessionRoute(preliminaryEnvelope);
+  const grant = {
     kind: 'user_device_grant',
     source: 'catscompany',
     grantId: 'cache-benchmark-device-grant',
     status: 'active',
     identityTrust: 'server_canonical',
-    identitySource: 'cache-benchmark-fixture',
+    identitySource: 'channel_identity_link',
     deviceId: 'cache-benchmark-device',
     deviceDisplayName: 'Benchmark Laptop',
-    ownerUserId: route.actorUserId,
-    sessionKey: route.sessionKey,
-    topicId: route.topicId,
-    topicType: route.topicType,
-    actorUserId: route.actorUserId,
-    agentId: route.agentId,
-    agentBodyId: route.agentBodyId,
+    ownerUserId: actorUserId,
+    sessionKey: preliminaryRoute.sessionKey,
+    topicId,
+    topicType: 'group',
+    actorUserId,
+    agentId,
+    agentBodyId,
     operations: ['read_file', 'glob', 'grep'],
     createdAt: 1,
     expiresAt: 4_102_444_800_000,
   };
-}
-
-function buildDeviceSelection(route: SessionRoute): ScopedDeviceSelection {
-  return {
+  const selection = {
     kind: 'user_device_selection',
     source: 'catscompany',
     status: 'selected',
     selectionSource: 'cache-benchmark-fixture',
-    sessionKey: route.sessionKey,
-    topicId: route.topicId,
-    topicType: route.topicType,
-    actorUserId: route.actorUserId,
-    agentId: route.agentId,
-    identityTrust: 'server_canonical',
-    identitySource: 'cache-benchmark-fixture',
+    sessionKey: preliminaryRoute.sessionKey,
+    topicId,
+    topicType: 'group',
+    actorUserId,
+    agentId,
     selectedDeviceId: 'cache-benchmark-device',
     selectedDeviceDisplayName: 'Benchmark Laptop',
     selectedDeviceOperations: ['read_file', 'glob', 'grep'],
     createdAt: 1,
   };
-}
-
-function buildTargetRoutes(): TargetRoutes {
-  const route: TargetRoute = {
-    userId: 'Benchmark Alice',
-    userName: 'Benchmark Alice',
-    ownerUserId: 'Benchmark Alice',
-    deviceId: 'cache-benchmark-device',
-    label: 'Benchmark Laptop',
-    os: 'macos',
-    status: 'ready',
+  const metadata = {
+    catsco_identity: {
+      ...baseIdentity,
+      permissions: {
+        ...baseIdentity.permissions,
+        device_grants: [grant],
+        device_selection: selection,
+      },
+    },
+    xiaoba_runtime: {
+      schema: 'xiaoba.runtime.v1',
+      devices: [{
+        user_id: actorUserId,
+        user_name: 'Benchmark Alice',
+        device_id: 'cache-benchmark-device',
+        label: 'Benchmark Laptop',
+        os: 'macos',
+      }],
+    },
   };
-  return {
-    routes: [route],
-    byName: new Map([['Benchmark Alice', [route]]]),
-    byUserId: new Map([['Benchmark Alice', [route]]]),
-  };
+  const envelope = createCatsCoMessageEnvelope({
+    topic: topicId,
+    isGroup: true,
+    senderId: actorUserId,
+    seq: revision,
+    text: 'cache benchmark authority fixture',
+    botUid: agentId,
+    metadata,
+  });
+  const route = createCatsCoSessionRoute(envelope);
+  const executionScope = createExecutionScope(envelope);
+  const deviceGrantSnapshot = extractCatsCoDeviceGrantSnapshot(metadata, executionScope);
+  const deviceSelection = extractCatsCoDeviceSelection(metadata, executionScope);
+  const targetRoutes = bindCatsCoRuntimeContextToDeviceGrants(
+    extractCatsCoRuntimeContext(metadata),
+    executionScope,
+    deviceGrantSnapshot?.grants,
+    1,
+  );
+  if (
+    route.identityTrust !== 'server_canonical'
+    || !executionScope.isTrusted
+    || !deviceGrantSnapshot
+    || deviceGrantSnapshot.grants.length !== 1
+    || !deviceSelection
+    || !targetRoutes
+  ) {
+    throw new Error('cache benchmark production authority fixture failed');
+  }
+  return { route, executionScope, deviceGrantSnapshot, deviceSelection, targetRoutes };
 }
 
 function prepareBenchmarkSkill(skillsDirectory: string): void {

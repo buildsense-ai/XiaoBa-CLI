@@ -15,6 +15,7 @@ import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import {
   ChannelCallbacks,
+  DeviceAuthorityLease,
   DeviceRpcTransport,
   TargetRoutes,
   ThinToolRpcTransport,
@@ -81,6 +82,7 @@ import { estimateToolsTokens } from './token-estimator';
 import type { SessionRuntimeLogEvent, TurnErrorPayload } from '../utils/session-log-schema';
 import { CacheTraceObserver } from '../observability/cache-trace';
 import { resolveSessionSurface } from './session-surface';
+import { DeviceAuthorityState, deviceAuthorityScopeKey } from './device-authority-state';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -233,6 +235,7 @@ export class AgentSession {
   private runtimeFeedbackInbox = new RuntimeFeedbackInbox();
   private planRuntime = new PlanRuntime();
   private goalRuntime: GoalRuntime;
+  private readonly deviceAuthorityStates = new Map<string, DeviceAuthorityState>();
   private lifecycleManager: SessionLifecycleManager;
   private readonly defaultDirectory: string;
   private currentDirectory: string;
@@ -639,6 +642,7 @@ export class AgentSession {
       let deviceRpc: DeviceRpcTransport | undefined;
       let thinToolRpc: ThinToolRpcTransport | undefined;
       let targetRoutes: TargetRoutes | undefined;
+      let deviceAuthority: DeviceAuthorityLease | undefined;
       let localFileGrants: ScopedLocalFileGrant[] | undefined;
       let runtimeFeedbackInputs: RuntimeFeedbackInput[] = [];
       let pendingUserInputProvider: PendingUserInputProvider | undefined;
@@ -684,6 +688,31 @@ export class AgentSession {
 
       if (this.busy) {
         return { text: BUSY_MESSAGE, visibleToUser: true };
+      }
+      if (
+        executionScope?.source === 'catscompany'
+        && executionScope.identityTrust === 'server_canonical'
+        && executionScope.isTrusted
+      ) {
+        deviceAuthority = this.updateDeviceAuthority({
+          executionScope,
+          deviceGrants,
+          deviceGrantSnapshot,
+          deviceSelection,
+          targetRoutes,
+        });
+        const authorityView = deviceAuthority!.getCurrent();
+        deviceGrants = authorityView.deviceGrants;
+        deviceGrantSnapshot = authorityView.deviceGrantSnapshot;
+        deviceSelection = authorityView.deviceSelection;
+        targetRoutes = authorityView.targetRoutes;
+      } else if (executionScope?.source === 'catscompany') {
+        // Never cache an untrusted lease under the same logical scope key: a
+        // later canonical message must be able to establish fresh authority.
+        deviceGrants = undefined;
+        deviceGrantSnapshot = undefined;
+        deviceSelection = undefined;
+        targetRoutes = undefined;
       }
       const lifecycleGeneration = this.lifecycleGeneration;
 
@@ -755,6 +784,7 @@ export class AgentSession {
           localDeviceGrant,
           deviceGrants,
           deviceGrantSnapshot,
+          deviceAuthority,
           deviceSelection,
           deviceRpc,
           thinToolRpc,
@@ -893,6 +923,81 @@ export class AgentSession {
         this.activeAbortController = null;
       }
     });
+  }
+
+  private buildLegacyDeviceGrantSnapshot(
+    scope: ExecutionScope,
+    grants: ScopedDeviceGrant[] | undefined,
+  ): ScopedDeviceGrantSnapshot | undefined {
+    if (grants === undefined) return undefined;
+    return {
+      kind: 'user_device_grant_snapshot',
+      source: scope.source,
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      agentBodyId: scope.agentBodyId,
+      identityTrust: scope.identityTrust,
+      revision: scope.channelSeq,
+      grants: [...grants],
+    };
+  }
+
+  /** Transfers a connector-level live lease without replaying its durable floor. */
+  adoptDeviceAuthorityState(
+    scope: ExecutionScope,
+    authorityState: DeviceAuthorityState,
+  ): DeviceAuthorityLease | undefined {
+    if (
+      scope.source !== 'catscompany'
+      || scope.identityTrust !== 'server_canonical'
+      || !scope.isTrusted
+      || !authorityState.matchesExecutionScope(scope)
+    ) return undefined;
+    const authorityKey = deviceAuthorityScopeKey(scope);
+    const existing = this.deviceAuthorityStates.get(authorityKey);
+    if (existing && existing !== authorityState) return undefined;
+    this.deviceAuthorityStates.set(authorityKey, authorityState);
+    return authorityState;
+  }
+
+  /**
+   * Applies a complete canonical device-authority fragment immediately. This
+   * is public so a connector can revoke a live parent/subagent lease at message
+   * ingress, before the queued user text is consumed by the runner.
+   */
+  updateDeviceAuthority(input: {
+    executionScope: ExecutionScope;
+    deviceGrants?: ScopedDeviceGrant[];
+    deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
+    deviceSelection?: ScopedDeviceSelection;
+    targetRoutes?: TargetRoutes;
+  }): DeviceAuthorityLease | undefined {
+    const scope = input.executionScope;
+    if (
+      scope.source !== 'catscompany'
+      || scope.identityTrust !== 'server_canonical'
+      || !scope.isTrusted
+    ) return undefined;
+    const authorityKey = deviceAuthorityScopeKey(scope);
+    let authorityState = this.deviceAuthorityStates.get(authorityKey);
+    if (!authorityState) {
+      authorityState = new DeviceAuthorityState(scope);
+      this.deviceAuthorityStates.set(authorityKey, authorityState);
+    }
+    const snapshot = input.deviceGrantSnapshot
+      ?? this.buildLegacyDeviceGrantSnapshot(scope, input.deviceGrants);
+    if (snapshot || input.deviceSelection || input.targetRoutes) {
+      authorityState.replace({
+        executionScope: scope,
+        deviceGrantSnapshot: snapshot,
+        deviceSelection: input.deviceSelection,
+        targetRoutes: input.targetRoutes,
+      });
+    }
+    return authorityState;
   }
 
   // ─── 命令处理 ───────────────────────────────────────

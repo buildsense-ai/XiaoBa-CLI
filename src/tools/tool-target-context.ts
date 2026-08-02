@@ -33,6 +33,16 @@ export function buildToolTargetContext(
   context: ToolExecutionContext,
   options: ToolTargetContextOptions,
 ): string | undefined {
+  const liveAuthority = context.deviceAuthority?.getCurrent();
+  if (liveAuthority) {
+    context = {
+      ...context,
+      deviceGrants: liveAuthority.deviceGrants,
+      deviceGrantSnapshot: liveAuthority.deviceGrantSnapshot,
+      deviceSelection: liveAuthority.deviceSelection,
+      targetRoutes: liveAuthority.targetRoutes,
+    };
+  }
   if (!isCatsCoToolGatewayContext(context)) return undefined;
   const operation = options.operation || operationForToolTargetContext(options.toolName);
   if (!operation) return undefined;
@@ -44,7 +54,7 @@ export function buildToolTargetContext(
     `tool: ${options.toolName}`,
     `operation: ${operation}`,
     `target: ${target.kind}`,
-    target.displayName ? `target_display_name: ${target.displayName}` : '',
+    'target_display_name: authorized_device',
     cwd ? `cwd: ${cwd}` : '',
     options.shell ? `shell: ${options.shell}` : '',
     'path_scope: Paths in this result belong only to the target above. Re-resolve common directories after switching targets.',

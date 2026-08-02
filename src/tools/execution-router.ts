@@ -1,6 +1,10 @@
 import type { DeviceGrantOperation, ScopedDeviceGrant } from '../types/session-identity';
 import type { TargetRoute, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
-import { normalizeTargetText } from '../catscompany/runtime-context';
+import {
+  normalizeTargetText,
+  sanitizeCatsCoDeviceLabel,
+} from '../catscompany/runtime-context';
+import { sameCatsCoUserId } from '../catscompany/speaker-label';
 import { resolveDeviceGrant } from '../core/device-grants';
 import { executeRemoteDeviceRpcTool, isRemoteDeviceRpcTool } from './device-rpc-tool';
 import { TOOL_TARGET_CONTEXT_PREFIX, TOOL_TARGET_CONTEXT_SUFFIX } from './tool-target-context';
@@ -37,7 +41,7 @@ export function stripExecutionTargetArg<T extends Record<string, unknown>>(args:
 export function targetParameterDescription(): { type: 'string'; description: string } {
   return {
     type: 'string',
-    description: 'Optional. Omit target to run on the host computer running this agent. Set target to a chat participant\'s displayed name or user id only when the user explicitly asks to operate that participant\'s computer.',
+    description: 'Optional. Omit target to run on the host computer running this agent. Only when the user explicitly asks to operate an authorized participant computer, copy the exact target alias from the current authorized-device context.',
   };
 }
 
@@ -49,6 +53,7 @@ export function resolveExecutionRoute(
     target?: unknown;
   },
 ): ExecutionRoute {
+  context = materializeDeviceAuthority(context);
   if (context.deviceRpcReceiver) {
     return { ok: true, mode: 'local', target: 'speaker_default', label: 'current Device RPC receiver' };
   }
@@ -77,7 +82,7 @@ export function resolveExecutionRoute(
       return {
         ok: false,
         errorCode: 'TARGET_UNAVAILABLE',
-        message: `Target "${target}" matched ${runtimeRoute.route.label}, but this runtime has no negotiated authority-v1 Thin RPC or Device RPC transport.`,
+        message: `Target "${target}" is authorized, but this runtime has no negotiated authority-v1 Thin RPC or Device RPC transport.`,
       };
     }
     return {
@@ -254,7 +259,7 @@ export function buildExecutionRouteTargetContext(
     `tool: ${options.toolName}`,
     `operation: ${options.operation}`,
     `target: ${route.target}`,
-    route.label ? `target_display_name: ${route.label}` : '',
+    'target_display_name: authorized_device',
     options.cwd ? `cwd: ${options.cwd}` : '',
     options.shell ? `shell: ${options.shell}` : '',
     'path_scope: Paths in this result belong only to the target above. Re-resolve common directories after switching targets.',
@@ -363,17 +368,36 @@ function authorizeRemoteTarget(
       message: 'The current device grant owner does not match the requested runtime route owner.',
     };
   }
+  const authoritySelection = context.deviceAuthority?.getCurrent().deviceSelection
+    ?? context.deviceSelection;
+  if (
+    authoritySelection
+    && sameCatsCoUserId(decision.grant.ownerUserId, scope.actorUserId)
+  ) {
+    const selectionMatchesScope = authoritySelection.identityTrust === 'server_canonical'
+      && authoritySelection.source === scope.source
+      && authoritySelection.sessionKey === scope.sessionKey
+      && authoritySelection.topicId === scope.topicId
+      && authoritySelection.topicType === scope.topicType
+      && sameCatsCoUserId(authoritySelection.actorUserId, scope.actorUserId)
+      && authoritySelection.agentId === scope.agentId;
+    if (
+      !selectionMatchesScope
+      || authoritySelection.status !== 'selected'
+      || authoritySelection.selectedDeviceId !== decision.grant.deviceId
+      || (
+        Array.isArray(authoritySelection.selectedDeviceOperations)
+        && !authoritySelection.selectedDeviceOperations.includes(options.operation)
+      )
+    ) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: 'The requested current-speaker device or operation does not match the server-canonical device selection.',
+      };
+    }
+  }
   return { ok: true, grant: decision.grant };
-}
-
-function sameCatsCoUserId(left: string | undefined, right: string | undefined): boolean {
-  const normalize = (value: string | undefined) => String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/^usr[_:-]?/, '');
-  const normalizedLeft = normalize(left);
-  const normalizedRight = normalize(right);
-  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 }
 
 function remainingGrantTimeoutMs(grant: ScopedDeviceGrant, requested?: number): number {
@@ -407,7 +431,7 @@ function findRuntimeTargetRoute(context: ToolExecutionContext, target: string): 
       message: [
         `Target "${target}" matches multiple user computers.`,
         availableTargetsMessage(context),
-        'Use the exact displayed name or user id.',
+        'Use the exact target alias from the current authorized-device context.',
       ].filter(Boolean).join('\n'),
     };
   }
@@ -437,7 +461,7 @@ function uniqueRoutes(routes: TargetRoute[]): TargetRoute[] {
 function availableTargetsMessage(context: ToolExecutionContext): string {
   const routes = context.targetRoutes?.routes || [];
   if (routes.length === 0) return 'No user computer targets are currently available.';
-  return `Available user computer targets: ${routes.map(route => route.userName || route.userId).join(', ')}`;
+  return `Available user computer targets: ${routes.map(route => route.targetAlias || route.userName || route.userId).join(', ')}`;
 }
 
 function findSpeakerRemoteTarget(context: ToolExecutionContext): {
@@ -464,6 +488,11 @@ function findSpeakerRemoteTarget(context: ToolExecutionContext): {
       ...selected,
       ownerUserId: selectedGrant?.ownerUserId || context.deviceSelection?.actorUserId,
       grant: selectedGrant,
+      displayName: sanitizeCatsCoDeviceLabel(
+        selected.displayName,
+        selected.deviceId,
+        '当前发言人的电脑',
+      ),
     };
   }
 
@@ -473,10 +502,25 @@ function findSpeakerRemoteTarget(context: ToolExecutionContext): {
       grant,
       ownerUserId: grant.ownerUserId || grant.actorUserId,
       deviceId: grant.deviceId,
-      displayName: grant.deviceDisplayName,
+      displayName: sanitizeCatsCoDeviceLabel(
+        grant.deviceDisplayName,
+        grant.deviceId,
+        '当前发言人的电脑',
+      ),
       bodyId: grant.deviceBodyId,
       installationId: grant.deviceInstallationId,
     };
   }
   return undefined;
+}
+
+function materializeDeviceAuthority(context: ToolExecutionContext): ToolExecutionContext {
+  const current = context.deviceAuthority?.getCurrent();
+  return current ? {
+    ...context,
+    deviceGrants: current.deviceGrants,
+    deviceGrantSnapshot: current.deviceGrantSnapshot,
+    deviceSelection: current.deviceSelection,
+    targetRoutes: current.targetRoutes,
+  } : context;
 }

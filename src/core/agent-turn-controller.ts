@@ -11,6 +11,7 @@ import type {
 } from '../types/session-identity';
 import {
   ChannelCallbacks,
+  DeviceAuthorityLease,
   DeviceRpcTransport,
   TargetRoutes,
   ThinToolRpcTransport,
@@ -86,6 +87,7 @@ export interface RunAgentTurnParams {
   localDeviceGrant?: ScopedLocalDeviceGrant;
   deviceGrants?: ScopedDeviceGrant[];
   deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
+  deviceAuthority?: DeviceAuthorityLease;
   deviceSelection?: ScopedDeviceSelection;
   deviceRpc?: DeviceRpcTransport;
   thinToolRpc?: ThinToolRpcTransport;
@@ -173,6 +175,7 @@ export class AgentTurnController {
       deviceGrants: params.deviceGrants,
       deviceSelection: params.deviceSelection,
       targetRoutes: params.targetRoutes,
+      remoteTransportAvailable: Boolean(params.deviceRpc || params.thinToolRpc),
       localFileGrants: params.localFileGrants,
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
@@ -215,6 +218,7 @@ export class AgentTurnController {
         localDeviceGrant: params.localDeviceGrant,
         deviceGrants: params.deviceGrants,
         deviceGrantSnapshot: params.deviceGrantSnapshot,
+        deviceAuthority: params.deviceAuthority,
         deviceSelection: params.deviceSelection,
         deviceRpc: params.deviceRpc,
         thinToolRpc: params.thinToolRpc,
@@ -308,6 +312,7 @@ export class AgentTurnController {
     localDeviceGrant?: ScopedLocalDeviceGrant;
     deviceGrants?: ScopedDeviceGrant[];
     deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
+    deviceAuthority?: DeviceAuthorityLease;
     deviceSelection?: ScopedDeviceSelection;
     deviceRpc?: DeviceRpcTransport;
     thinToolRpc?: ThinToolRpcTransport;
@@ -356,6 +361,7 @@ export class AgentTurnController {
           localDeviceGrant: options.localDeviceGrant,
           deviceGrants: options.deviceGrants,
           deviceGrantSnapshot: options.deviceGrantSnapshot,
+          deviceAuthority: options.deviceAuthority,
           deviceSelection: options.deviceSelection,
           deviceRpc: options.deviceRpc,
           thinToolRpc: options.thinToolRpc,

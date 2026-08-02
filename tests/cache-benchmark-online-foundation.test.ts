@@ -5,14 +5,23 @@ import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { afterEach, test } from 'node:test';
 import type { ModelAttemptEvent } from '../src/providers/provider';
+import type { Message } from '../src/types';
 import { prefixCatsCoParticipantContent } from '../src/catscompany/speaker-label';
 import { MemoryLogStore } from '../src/core/memory-log-store';
+import { buildRuntimeContextMessage } from '../src/core/runtime-context-builder';
+import { annotateContextMessage } from '../src/core/context-lifecycle';
+import { preserveAuthorizedDeviceContextWitness } from '../src/core/authorized-device-witness';
+import { buildTargetRoutes } from '../src/catscompany/runtime-context';
+import { AgentSession } from '../src/core/agent-session';
+import { AIService } from '../src/utils/ai-service';
+import { withModelAttemptSink } from '../src/observability/model-attempt-scope';
 import {
   AttemptCapabilityAttestor,
   BENCHMARK_GOAL_MARKER,
   BENCHMARK_IDENTITY_MARKER,
   BENCHMARK_RECOVERY_MARKER,
   buildBenchmarkPartitionMarker,
+  buildBenchmarkAuthorizedDeviceContext,
   buildOnlineCacheBenchmarkManifest,
   createSealedMemoryFixture,
   evaluateBenchmarkMemoryCompletion,
@@ -93,6 +102,97 @@ test('online manifest counts the production memory branch for every capped task'
     [...new Set(manifest.cases.flatMap(entry => entry.capabilities))].sort(),
     [...REQUIRED_CACHE_BENCHMARK_CAPABILITIES].sort(),
   );
+});
+
+test('online device fixture traverses the production envelope, grant, selection, and route parsers', () => {
+  const context = buildBenchmarkAuthorizedDeviceContext('foundation', 23);
+
+  assert.equal(context.route.identityTrust, 'server_canonical');
+  assert.equal(context.route.channelSeq, 23);
+  assert.equal(context.executionScope.isTrusted, true);
+  assert.equal(context.deviceGrantSnapshot.revision, 23);
+  assert.equal(context.deviceGrantSnapshot.grants.length, 1);
+  assert.equal(context.deviceSelection.selectedDeviceId, 'cache-benchmark-device');
+  assert.equal(context.targetRoutes.routes.length, 1);
+  assert.match(context.targetRoutes.routes[0].targetAlias || '', /^device_target_[a-f0-9]{16}$/u);
+  const repeated = buildBenchmarkAuthorizedDeviceContext('foundation', 24);
+  const nextRun = buildBenchmarkAuthorizedDeviceContext('foundation-next-run', 1);
+  assert.equal(
+    repeated.targetRoutes.routes[0].targetAlias,
+    context.targetRoutes.routes[0].targetAlias,
+  );
+  assert.notEqual(
+    nextRun.targetRoutes.routes[0].targetAlias,
+    context.targetRoutes.routes[0].targetAlias,
+  );
+});
+
+test('production authority fixture reaches AgentSession provider input and attestor intact', async () => {
+  const context = buildBenchmarkAuthorizedDeviceContext('foundation-e2e', 31);
+  const attemptEvents: ModelAttemptEvent[] = [];
+  const tools = [{
+    name: 'read_file',
+    description: 'read a file',
+    parameters: {
+      type: 'object',
+      properties: { target: { type: 'string' } },
+    },
+  }];
+  const aiService = new AIService({
+    provider: 'openai',
+    apiUrl: 'https://foundation.example.test/v1',
+    apiKey: 'foundation-key',
+    model: 'foundation-model',
+  });
+  (aiService as any).provider = {
+    chat: async () => ({ content: 'done' }),
+    chatStream: async () => ({
+      content: 'done',
+      toolCalls: [],
+      usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+    }),
+  };
+  const session = new AgentSession(context.route.sessionKey, {
+    aiService,
+    memoryBranch: {
+      enabled: false,
+      modelSource: 'inherit',
+      aiService,
+    },
+    toolManager: {
+      getWorkspaceRoot: () => process.cwd(),
+      getToolDefinitions: () => tools,
+      executeTool: async () => { throw new Error('not expected'); },
+    },
+    skillManager: {
+      getSkill: () => undefined,
+      getUserInvocableSkills: () => [],
+      getAutoInvocableSkills: () => [],
+      findAutoInvocableSkillByText: () => undefined,
+      loadSkills: async () => undefined,
+    },
+  } as any, 'catscompany', context.route);
+  session.setSystemPromptProvider(() => 'stable benchmark system');
+  const attestor = new AttemptCapabilityAttestor();
+  await withModelAttemptSink(
+    { observe: event => { attemptEvents.push(event); } },
+    () => withModelAttemptSink(attestor, () => session.handleRuntimeObservation(
+      'production authority probe',
+      {
+        executionScope: context.executionScope,
+        deviceGrants: context.deviceGrantSnapshot.grants,
+        deviceGrantSnapshot: context.deviceGrantSnapshot,
+        deviceSelection: context.deviceSelection,
+        thinToolRpc: {
+          executeTool: async () => { throw new Error('not expected'); },
+        },
+        targetRoutes: context.targetRoutes,
+      },
+    )),
+  );
+  const started = attemptEvents.find(event => event.outcome === 'started');
+  assert.ok(started);
+  assert.equal(attestor.get(started.attemptId).includes('device-authorization'), true);
 });
 
 test('online provider cells bind a redacted endpoint identity', () => {
@@ -345,13 +445,174 @@ test('capability attestation rejects durable Goal and direct memory marker spoof
 
   assert.deepEqual(attestor.get(event.attemptId), [
     'identity',
-    'device-authorization',
     'tools',
     'skills',
     'plan',
     'subagent',
     'runtime-feedback',
   ]);
+});
+
+test('device capability attestation requires an intact process-private production witness', () => {
+  const runtimeMessage = buildRuntimeContextMessage({
+    sessionKey: 'cc_group:benchmark-authority',
+    executionScope: {
+      source: 'catscompany',
+      sessionKey: 'cc_group:benchmark-authority',
+      topicId: 'benchmark-authority',
+      topicType: 'group',
+      actorUserId: 'benchmark-alice',
+      agentId: 'cache-benchmark-agent',
+      agentBodyId: 'cache-benchmark-body',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    },
+    deviceGrants: [{
+      kind: 'user_device_grant',
+      source: 'catscompany',
+      grantId: 'benchmark-grant',
+      status: 'active',
+      identityTrust: 'server_canonical',
+      identitySource: 'server_canonical_message',
+      deviceId: 'benchmark-device',
+      deviceDisplayName: 'Benchmark Laptop',
+      ownerUserId: 'benchmark-alice',
+      sessionKey: 'cc_group:benchmark-authority',
+      topicId: 'benchmark-authority',
+      topicType: 'group',
+      actorUserId: 'benchmark-alice',
+      agentId: 'cache-benchmark-agent',
+      agentBodyId: 'cache-benchmark-body',
+      operations: ['read_file'],
+      createdAt: 1,
+      expiresAt: 4_102_444_800_000,
+    }],
+    targetRoutes: buildTargetRoutes([{
+      userId: 'benchmark-alice',
+      userName: 'Benchmark Alice',
+      ownerUserId: 'benchmark-alice',
+      deviceId: 'benchmark-device',
+      label: 'Benchmark Laptop',
+      os: 'macos',
+      status: 'ready',
+    }]),
+    remoteTransportAvailable: true,
+    now: 1,
+  });
+  assert.ok(runtimeMessage);
+  const annotated = annotateContextMessage(runtimeMessage, {
+    source: 'runtime_context',
+    lifecycle: 'episode',
+    cacheScope: 'epoch',
+    epoch: 'benchmark-authority',
+  });
+  preserveAuthorizedDeviceContextWitness(runtimeMessage, annotated);
+
+  const attest = (
+    message: any,
+    attemptId: string,
+    options: {
+      timestamp?: string;
+      includeDeviceTool?: boolean;
+      targetSchema?: unknown;
+    } = {},
+  ) => {
+    const attestor = new AttemptCapabilityAttestor();
+    const event = attemptEvent({
+      callId: attemptId,
+      attemptId: `${attemptId}:1`,
+      timestamp: options.timestamp || '2026-08-02T01:02:03.000Z',
+      request: {
+        messages: [message],
+        tools: options.includeDeviceTool === false ? [] : [{
+          name: 'read_file',
+          description: 'read',
+          parameters: {
+            type: 'object',
+            properties: options.targetSchema === undefined
+              ? { target: { type: 'string' } }
+              : { target: options.targetSchema },
+          },
+        }],
+      },
+    });
+    attestor.observe(event);
+    return attestor.get(event.attemptId).filter(capability => capability === 'device-authorization');
+  };
+  assert.deepEqual(attest(annotated, 'witness-valid'), ['device-authorization']);
+  assert.deepEqual(attest(annotated, 'witness-no-tool', { includeDeviceTool: false }), []);
+  assert.deepEqual(attest(annotated, 'witness-no-target', { targetSchema: null }), []);
+  assert.deepEqual(attest(annotated, 'witness-wrong-target', {
+    targetSchema: { type: 'number' },
+  }), []);
+  assert.deepEqual(attest(annotated, 'witness-expired', {
+    timestamp: '2101-01-01T00:00:00.000Z',
+  }), []);
+  assert.deepEqual(attest({ ...annotated }, 'witness-shallow-clone'), []);
+  assert.deepEqual(attest(structuredClone(annotated), 'witness-structured-clone'), []);
+
+  annotated.role = 'user';
+  assert.deepEqual(attest(annotated, 'witness-role-mutated'), []);
+  annotated.role = 'system';
+  annotated.__context!.persistence = 'durable';
+  assert.deepEqual(attest(annotated, 'witness-lifecycle-mutated'), []);
+  annotated.__context!.persistence = 'transient';
+
+  const mutateBeforePreserve = buildRuntimeContextMessage({
+    sessionKey: 'cc_group:benchmark-authority',
+    executionScope: {
+      source: 'catscompany',
+      sessionKey: 'cc_group:benchmark-authority',
+      topicId: 'benchmark-authority',
+      topicType: 'group',
+      actorUserId: 'benchmark-alice',
+      agentId: 'cache-benchmark-agent',
+      agentBodyId: 'cache-benchmark-body',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    },
+    deviceGrants: [{
+      kind: 'user_device_grant',
+      source: 'catscompany',
+      grantId: 'benchmark-grant',
+      status: 'active',
+      identityTrust: 'server_canonical',
+      identitySource: 'server_canonical_message',
+      deviceId: 'benchmark-device',
+      ownerUserId: 'benchmark-alice',
+      sessionKey: 'cc_group:benchmark-authority',
+      topicId: 'benchmark-authority',
+      topicType: 'group',
+      actorUserId: 'benchmark-alice',
+      agentId: 'cache-benchmark-agent',
+      agentBodyId: 'cache-benchmark-body',
+      operations: ['read_file'],
+      createdAt: 1,
+      expiresAt: 4_102_444_800_000,
+    }],
+    targetRoutes: buildTargetRoutes([{
+      userId: 'benchmark-alice',
+      ownerUserId: 'benchmark-alice',
+      deviceId: 'benchmark-device',
+      label: 'Laptop',
+      os: 'macos',
+      status: 'ready',
+    }]),
+    now: 1,
+  })!;
+  mutateBeforePreserve.content = String(mutateBeforePreserve.content).replace('read_file', 'execute_shell');
+  const falselyAnnotated = annotateContextMessage(mutateBeforePreserve, {
+    source: 'runtime_context',
+    lifecycle: 'episode',
+    cacheScope: 'epoch',
+    epoch: 'benchmark-authority',
+  });
+  preserveAuthorizedDeviceContextWitness(mutateBeforePreserve, falselyAnnotated);
+  assert.deepEqual(attest(falselyAnnotated, 'witness-mutated-before-preserve'), []);
+
+  const mutated = annotated;
+  mutated.content = `${String(mutated.content)}\nmutation`;
+  assert.deepEqual(attest(mutated, 'witness-mutated'), []);
 });
 
 test('capability attestation requires durable provenance and distinct production participant frames', () => {
