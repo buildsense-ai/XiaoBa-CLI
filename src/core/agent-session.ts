@@ -55,7 +55,7 @@ import {
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import type { PromptTraceSnapshot } from '../utils/prompt-observability';
 import { toPromptTurnMetadata } from '../utils/prompt-observability';
-import type { StreamRetryInfo } from '../providers/provider';
+import type { AIRequestOptions, StreamRetryInfo } from '../providers/provider';
 import {
   reconcileCurrentBotPromptBeforeTurn,
   scheduleCurrentBotPromptReconcile,
@@ -69,6 +69,8 @@ import {
 } from './checkpoint-compaction';
 import { estimateToolsTokens } from './token-estimator';
 import type { SessionRuntimeLogEvent, TurnErrorPayload } from '../utils/session-log-schema';
+import { CacheTraceObserver } from '../observability/cache-trace';
+import { resolveSessionSurface } from './session-surface';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -1110,11 +1112,13 @@ export class AgentSession {
     signal?: AbortSignal,
     callbacks?: SessionCallbacks,
   ): Promise<{ messages: Message[]; compacted: boolean }> {
+    const modelRequestOptions = this.createCompactionModelRequestOptions(messages);
     if (!this.useCheckpointCompaction) {
       const compactedMessages = await this.contextWindowManager.compactIfNeeded(messages, {
         sessionKey: this.key,
         reason,
         signal,
+        modelRequestOptions,
         onStatus: this.createContextCompactionNotifier(callbacks),
       });
       return {
@@ -1127,8 +1131,40 @@ export class AgentSession {
       phase,
       toolTokens: this.getToolDefinitionTokens(),
       signal,
+      modelRequestOptions,
       onStatus: this.createContextCompactionNotifier(callbacks),
     });
+  }
+
+  private createCompactionModelRequestOptions(
+    messages: Message[],
+  ): Pick<AIRequestOptions, 'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'> {
+    const base: Pick<AIRequestOptions, 'cachePartitionKey'> = {
+      cachePartitionKey: this.key,
+    };
+    try {
+      const episodeId = [...messages].reverse().find(message => message.__episodeId)?.__episodeId;
+      const surface = resolveSessionSurface(this.key, this.sessionType);
+      const observer = new CacheTraceObserver({
+        sessionId: this.key,
+        sessionType: this.sessionType,
+        surface,
+        episodeId,
+      });
+      if (!observer.enabled) return base;
+      return {
+        ...base,
+        modelAttemptSink: observer,
+        modelAttemptContext: {
+          sessionId: this.key,
+          sessionType: this.sessionType,
+          surface,
+          episodeId,
+        },
+      };
+    } catch {
+      return base;
+    }
   }
 
   private getToolDefinitionTokens(): number {

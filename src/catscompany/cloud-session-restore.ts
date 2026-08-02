@@ -13,6 +13,8 @@ import type {
   CatsAgentContextMessage,
   CatsAgentContextPage,
 } from './client';
+import { CacheTraceObserver } from '../observability/cache-trace';
+import type { AIRequestOptions } from '../providers/provider';
 
 const CLOUD_RESTORE_PAGE_SIZE = 200;
 const CLOUD_RESTORE_DIRECT_TOKEN_BUDGET = 60_000;
@@ -181,6 +183,7 @@ export class CatsCompanyCloudSessionRestorer {
     }
 
     try {
+      const modelRequestOptions = this.createCompactionModelRequestOptions(sessionKey, messages);
       if (isCheckpointCompactionEnabled()) {
         const coordinator = new CheckpointCompactionCoordinator(this.aiService, {
           maxContextTokens: CLOUD_RESTORE_FINAL_TOKEN_CEILING,
@@ -191,6 +194,7 @@ export class CatsCompanyCloudSessionRestorer {
           sessionKey,
           phase: 'restore',
           signal,
+          modelRequestOptions,
         });
         if (!result.compacted) {
           throw new Error('cloud restore checkpoint compaction did not produce a checkpoint');
@@ -211,6 +215,7 @@ export class CatsCompanyCloudSessionRestorer {
       });
       const compacted = await compressor.compact(messages, {
         signal,
+        modelRequestOptions,
         customInstructions: [
           '这些内容来自 CatsCompany 云端可见聊天历史，用于在新设备上恢复主会话。',
           '保留用户目标、关键决定、已交付结果、文件名、未完成事项和重要约束。',
@@ -229,6 +234,33 @@ export class CatsCompanyCloudSessionRestorer {
         compressed: true,
         summaryFallback: true,
       };
+    }
+  }
+
+  private createCompactionModelRequestOptions(
+    sessionKey: string,
+    messages: Message[],
+  ): Pick<AIRequestOptions, 'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'> {
+    const base: Pick<AIRequestOptions, 'cachePartitionKey'> = { cachePartitionKey: sessionKey };
+    try {
+      const episodeId = [...messages].reverse().find(message => message.__episodeId)?.__episodeId;
+      const observer = new CacheTraceObserver({
+        sessionId: sessionKey,
+        surface: 'catscompany-restore',
+        episodeId,
+      });
+      if (!observer.enabled) return base;
+      return {
+        ...base,
+        modelAttemptSink: observer,
+        modelAttemptContext: {
+          sessionId: sessionKey,
+          surface: 'catscompany-restore',
+          episodeId,
+        },
+      };
+    } catch {
+      return base;
     }
   }
 

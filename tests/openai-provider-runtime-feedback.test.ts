@@ -109,6 +109,23 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.deepEqual(Object.keys(body.tools[1].function.parameters), ['properties', 'required', 'type']);
   });
 
+  test('cache bypass emits no Chat Completions cache key or explicit marker', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5.6-terra',
+    });
+    const stablePolicy = 'Stable policy and examples. '.repeat(180);
+    const body = (provider as any).buildRequestBody([
+      { role: 'system', content: stablePolicy },
+      { role: 'user', content: 'summarize once' },
+    ], undefined, false, { cachePartitionKey: 'session-a', cacheMode: 'bypass' });
+
+    assert.equal(body.prompt_cache_key, undefined);
+    assert.equal(body.prompt_cache_options, undefined);
+    assert.equal(body.messages[0].content, stablePolicy);
+  });
+
   test('adds explicit DeepSeek reasoning effort only when configured', () => {
     const maxProvider = new OpenAIProvider({
       apiKey: 'test-key',

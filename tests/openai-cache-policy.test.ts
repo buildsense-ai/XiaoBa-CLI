@@ -91,3 +91,21 @@ test('Chat cache policy never places a breakpoint after a dynamic leading system
   assert.equal(plan.explicitBreakpoints, 0);
   assert.equal(plan.chatBreakpointMessageIndex, undefined);
 });
+
+test('one-off internal calls bypass every OpenAI cache hint', () => {
+  const plan = resolveOpenAICachePlan({
+    apiUrl: 'https://api.openai.com/v1/responses',
+    model: 'gpt-5.6-sol',
+    apiType: 'openai-responses',
+    messages: [longStable, { role: 'user', content: 'summarize once' }],
+    tools: [],
+    partitionKey: 'session-a',
+    cacheMode: 'bypass',
+  });
+
+  assert.equal(plan.strategy, 'openai-cache-bypassed');
+  assert.equal(plan.promptCacheKey, undefined);
+  assert.equal(plan.promptCacheKeyFingerprint, undefined);
+  assert.equal(plan.explicitBreakpoints, 0);
+  assert.equal(plan.stablePrefixEstimatedTokens, 0);
+});

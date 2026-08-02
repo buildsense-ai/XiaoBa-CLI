@@ -75,3 +75,21 @@ test('canonical Anthropic endpoint detection rejects relay-like URL variations',
   assert.equal(isCanonicalAnthropicEndpoint('https://user@api.anthropic.com/v1/messages'), false);
   assert.equal(isCanonicalAnthropicEndpoint('https://relay.catsco.cc/anthropic'), false);
 });
+
+test('one-off internal calls bypass every Anthropic cache marker', () => {
+  const plan = resolveAnthropicCachePlan({
+    apiUrl: 'https://api.anthropic.com/v1/messages',
+    messages: [
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'summarize once' },
+    ],
+    tools,
+    cacheMode: 'bypass',
+  });
+
+  assert.equal(plan.strategy, 'anthropic-cache-bypassed');
+  assert.equal(plan.explicitBreakpoints, 0);
+  assert.equal(plan.toolBreakpointIndex, undefined);
+  assert.equal(plan.conversationBreakpoint, false);
+  assert.equal(plan.stablePrefixEstimatedTokens, 0);
+});

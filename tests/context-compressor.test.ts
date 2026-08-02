@@ -40,15 +40,17 @@ function mockAIService(summaryText: string): AIService {
   } as unknown as AIService;
 }
 
-function mockAIServiceWithCapture(summaryText: string): { service: AIService; requests: Message[][] } {
+function mockAIServiceWithCapture(summaryText: string): { service: AIService; requests: Message[][]; options: any[] } {
   const requests: Message[][] = [];
+  const options: any[] = [];
   const service = {
     chat: async () => ({
       content: `<summary>\n${summaryText}\n</summary>`,
       usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
     }),
-    chatStream: async (_messages: Message[], _tools?: any, callbacks?: any) => {
+    chatStream: async (_messages: Message[], _tools?: any, callbacks?: any, requestOptions?: any) => {
       requests.push(_messages.map(message => ({ ...message })));
+      options.push(requestOptions);
       const content = `<summary>\n${summaryText}\n</summary>`;
       callbacks?.onText?.(content);
       return {
@@ -57,7 +59,7 @@ function mockAIServiceWithCapture(summaryText: string): { service: AIService; re
       };
     },
   } as unknown as AIService;
-  return { service, requests };
+  return { service, requests, options };
 }
 
 // ─── contentToString ─────────────────────────────────────
@@ -200,7 +202,8 @@ describe('ContextCompressor.compact', () => {
   });
 
   test('全量压缩：session 被摘要，system 保留', async () => {
-    const compressor = new ContextCompressor(aiService, { preserveRecentEpisodes: 0 });
+    const capture = mockAIServiceWithCapture('1. 用户要求读文件\n2. 已完成');
+    const compressor = new ContextCompressor(capture.service, { preserveRecentEpisodes: 0 });
     const messages: Message[] = [
       system('你是小八'),
       system('[session_context] adapter context'),
@@ -231,6 +234,10 @@ describe('ContextCompressor.compact', () => {
     const roles = result.map(m => m.role);
     assert.ok(!roles.includes('assistant'), 'assistant 不应在结果中');
     assert.ok(!roles.includes('tool'), 'tool 不应在结果中');
+    assert.equal(capture.options[0].cacheMode, 'bypass');
+    assert.equal(boundaryMsg?.__context?.source, 'compaction_boundary');
+    assert.equal(boundaryMsg?.__context?.persistence, 'durable');
+    assert.equal(userMsgs[0].__context?.source, 'compaction_summary');
   });
 
   test('全量压缩：结果中无任何 tool_call_id 引用', async () => {

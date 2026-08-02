@@ -20,21 +20,25 @@ function createService(
 ): {
   service: any;
   requests: Message[][];
+  options: any[];
 } {
   const requests: Message[][] = [];
+  const options: any[] = [];
   const service = {
     chatStream: async (
       messages: Message[],
       _tools: unknown,
       callbacks: { onText?: (text: string) => void },
+      requestOptions?: any,
     ) => {
       requests.push(messages.map(message => ({ ...message })));
+      options.push(requestOptions);
       const text = await handler(messages, requests.length);
       callbacks.onText?.(text);
       return { content: text, usage };
     },
   };
-  return { service, requests };
+  return { service, requests, options };
 }
 
 test('checkpoint compaction switch defaults on and supports explicit rollback', () => {
@@ -45,7 +49,7 @@ test('checkpoint compaction switch defaults on and supports explicit rollback', 
 });
 
 test('checkpoint compaction preserves stable system and transient runtime messages', async () => {
-  const { service } = createService(() => [
+  const { service, options } = createService(() => [
     'Objective: finish the active task.',
     'Completed: inspected the repository.',
     'Next: edit the target file.',
@@ -90,6 +94,11 @@ test('checkpoint compaction preserves stable system and transient runtime messag
   const result = await coordinator.compactIfNeeded(messages, {
     sessionKey: 'session-1',
     phase: 'mid_turn',
+    modelRequestOptions: {
+      cachePartitionKey: 'session-1',
+      modelAttemptSink: { observe() {} },
+      modelAttemptContext: { sessionId: 'session-1', surface: 'test' },
+    },
   });
 
   assert.equal(result.compacted, true);
@@ -108,6 +117,14 @@ test('checkpoint compaction preserves stable system and transient runtime messag
   const retainedUserIndex = result.messages.findIndex(message =>
     message.role === 'user' && String(message.content).includes('original objective'));
   assert.ok(summaryIndex >= 0 && retainedUserIndex > summaryIndex);
+  assert.equal(options[0].cacheMode, 'bypass');
+  assert.equal(options[0].cachePartitionKey, 'session-1');
+  assert.equal(options[0].modelAttemptContext.surface, 'test');
+  assert.equal(result.messages[summaryIndex].__context?.source, 'compaction_summary');
+  assert.equal(result.messages[summaryIndex].__context?.persistence, 'durable');
+  const boundary = result.messages.find(message => message.__checkpointBoundary);
+  assert.equal(boundary?.__context?.source, 'compaction_boundary');
+  assert.equal(boundary?.__context?.cacheScope, 'epoch');
 });
 
 test('a later checkpoint summarizes the prior checkpoint instead of forgetting it', async () => {

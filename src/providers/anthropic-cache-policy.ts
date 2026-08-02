@@ -1,10 +1,11 @@
 import { estimateMessagesTokens, estimateToolsTokens } from '../core/token-estimator';
 import type { Message } from '../types';
 import type { ToolDefinition } from '../types/tool';
-import type { ProviderCachePlanSummary } from './provider-cache-policy';
+import type { ProviderCacheMode, ProviderCachePlanSummary } from './provider-cache-policy';
 import { resolveContextCacheScope } from '../core/context-lifecycle';
 
 export type AnthropicCacheStrategy =
+  | 'anthropic-cache-bypassed'
   | 'anthropic-compatible-no-markers'
   | 'anthropic-explicit-stable-prefix';
 
@@ -22,6 +23,7 @@ export interface AnthropicCachePlanInput {
   apiUrl: string;
   messages: readonly Message[];
   tools: readonly ToolDefinition[];
+  cacheMode?: ProviderCacheMode;
 }
 
 /**
@@ -31,6 +33,16 @@ export interface AnthropicCachePlanInput {
  * paid writes that a subsequent request cannot reuse.
  */
 export function resolveAnthropicCachePlan(input: AnthropicCachePlanInput): AnthropicCachePlan {
+  if (input.cacheMode === 'bypass') {
+    return {
+      strategy: 'anthropic-cache-bypassed',
+      stablePrefixEstimatedTokens: 0,
+      stableSystemMessages: 0,
+      explicitBreakpoints: 0,
+      stableSystemEnd: 0,
+      conversationBreakpoint: false,
+    };
+  }
   const systemMessages = input.messages.filter(message => (
     message.role === 'system'
     && typeof message.content === 'string'

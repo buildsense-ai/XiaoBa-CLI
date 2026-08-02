@@ -17,6 +17,7 @@ import {
   canonicalizeOpenAICacheValue,
   resolveOpenAICachePlan,
 } from './openai-cache-policy';
+import { resolveContextCacheScope } from '../core/context-lifecycle';
 
 /**
  * OpenAI Provider
@@ -62,6 +63,7 @@ export class OpenAIProvider implements AIProvider {
       messages,
       tools: tools ?? [],
       partitionKey: options?.cachePartitionKey,
+      cacheMode: options?.cacheMode,
     });
     const sanitizedMessages = messages.map(message => this.sanitizeMessage(message, options));
     if (cachePlan.chatBreakpointMessageIndex !== undefined) {
@@ -454,6 +456,7 @@ export class OpenAIProvider implements AIProvider {
       messages,
       tools: tools ?? [],
       partitionKey: options?.cachePartitionKey,
+      cacheMode: options?.cacheMode,
     });
     const input = this.buildResponsesInput(messages);
     if (cachePlan.explicitBreakpoints > 0 && instructions) {
@@ -555,8 +558,9 @@ export class OpenAIProvider implements AIProvider {
   }
 
   private isDynamicCacheMessage(message: Message): boolean {
-    if (message.__cacheScope === 'dynamic') return true;
-    if (message.__cacheScope === 'stable') return false;
+    const scope = resolveContextCacheScope(message);
+    if (scope === 'epoch' || scope === 'volatile') return true;
+    if (scope === 'stable') return false;
     if (message.role !== 'system' || typeof message.content !== 'string') return false;
     return /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(message.content);
   }

@@ -52,10 +52,12 @@ export interface CacheTraceEntryV4 {
     model: string;
     api_type: CacheTraceApiType;
     cache_strategy:
+      | 'anthropic-cache-bypassed'
       | 'anthropic-explicit-prefix'
       | 'anthropic-compatible-no-markers'
       | 'anthropic-explicit-stable-prefix'
       | 'openai-automatic-prefix'
+      | 'openai-cache-bypassed'
       | 'openai-compatible-automatic-prefix'
       | 'openai-prompt-cache-key'
       | 'openai-explicit-stable-prefix';

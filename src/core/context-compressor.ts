@@ -5,6 +5,8 @@ import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { readRequiredDefaultPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 import { collectRemoteContextWatermarks } from './remote-context-watermarks';
+import { annotateContextMessage, isTransientContextMessage } from './context-lifecycle';
+import type { AIRequestOptions } from '../providers/provider';
 
 const COMPACT_BOUNDARY_PREFIX = '[compact_boundary]';
 const RECENT_EPISODE_CONTEXT_PREFIX = '[recent_episode_context]';
@@ -283,6 +285,10 @@ export function parseCompactSummary(raw: string): string {
 export interface CompactOptions {
   customInstructions?: string;
   signal?: AbortSignal;
+  modelRequestOptions?: Pick<
+    AIRequestOptions,
+    'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'
+  >;
 }
 
 // ─── ContextCompressor ──────────────────────────────────────
@@ -397,6 +403,7 @@ export class ContextCompressor {
 
     const system = messages.filter(m => m.role === 'system');
     const session = messages.filter(m => m.role !== 'system' && !isTransientCompactionMessage(m));
+    const activeEpisodeId = findLatestEpisodeId(session);
 
     if (session.length === 0) {
       return messages;
@@ -408,10 +415,15 @@ export class ContextCompressor {
 
     try {
       const summaryMessages: Message[] = [
-        {
+        annotateContextMessage({
           role: 'system',
           content: buildCompactSystemPrompt(options.customInstructions),
-        },
+        }, {
+          source: 'compaction_instruction',
+          lifecycle: 'call',
+          cacheScope: 'volatile',
+          persistence: 'transient',
+        }),
         {
           role: 'user',
           content: `Please summarize the following ${recentPlan.summaryMessages.length} messages:\n\n${truncated}`,
@@ -426,7 +438,11 @@ export class ContextCompressor {
         {
           onText: (text) => { fullContent += text; },
         },
-        { signal: options.signal },
+        {
+          ...options.modelRequestOptions,
+          signal: options.signal,
+          cacheMode: 'bypass',
+        },
       );
       const rawSummary = fullContent;
 
@@ -437,7 +453,7 @@ export class ContextCompressor {
       const summaryText = parseCompactSummary(rawSummary);
 
       // 构建压缩边界标记（role: system，标记这是压缩点）
-      const boundaryMessage: Message = {
+      const boundaryMessage: Message = annotateContextMessage({
         role: 'system',
         content: [
           `${COMPACT_BOUNDARY_PREFIX} ${recentPlan.summaryMessages.length} messages summarized. Pre-compact tokens: ${before}`,
@@ -448,15 +464,27 @@ export class ContextCompressor {
             ? `${recentPlan.capsuleCount} oversized recent episode(s) preserved as text capsules.`
             : '',
         ].filter(Boolean).join(' '),
-      };
+      }, {
+        source: 'compaction_boundary',
+        lifecycle: 'episode',
+        cacheScope: 'epoch',
+        persistence: 'durable',
+        ...(activeEpisodeId ? { epoch: activeEpisodeId } : {}),
+      });
 
-      const summaryMessage: Message = {
+      const summaryMessage: Message = annotateContextMessage({
         role: 'user',
         content: `[以下是之前 ${recentPlan.summaryMessages.length} 条对话的 AI 摘要]\n\n${summaryText}`,
         ...(Object.keys(remoteContextWatermarks).length > 0
           ? { __remoteContextWatermarks: remoteContextWatermarks }
           : {}),
-      };
+      }, {
+        source: 'compaction_summary',
+        lifecycle: 'episode',
+        cacheScope: 'epoch',
+        persistence: 'durable',
+        ...(activeEpisodeId ? { epoch: activeEpisodeId } : {}),
+      });
 
       // 组装：system + boundary + summary（session 历史已被全量摘要，不再保留）
       const result: Message[] = [
@@ -707,11 +735,19 @@ function truncateChars(value: string, maxChars: number): string {
 }
 
 function isTransientCompactionMessage(message: Message): boolean {
+  if (isTransientContextMessage(message)) return true;
   return Boolean(
     message.__injected
     || message.__runtimeFeedback
     || message.__syntheticObservation,
   );
+}
+
+function findLatestEpisodeId(messages: Message[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index].__episodeId) return messages[index].__episodeId;
+  }
+  return undefined;
 }
 
 function readNonNegativeInteger(value: unknown, fallback: number): number {
