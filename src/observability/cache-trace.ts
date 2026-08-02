@@ -43,6 +43,7 @@ export interface CacheTraceEntryV4 {
     retry_elapsed_ms?: number;
     retry_max_elapsed_ms?: number;
     retry_stop_reason?: string;
+    retry_recovery_action?: string;
   };
   request: {
     timestamp: string;
@@ -230,6 +231,7 @@ export class CacheTraceObserver implements CacheTraceSink {
           retry_elapsed_ms: retry.elapsedMs,
           retry_max_elapsed_ms: retry.maxElapsedMs,
           ...(retry.stopReason ? { retry_stop_reason: retry.stopReason } : {}),
+          ...(retry.recoveryAction ? { retry_recovery_action: retry.recoveryAction } : {}),
         } : {}),
       },
       request: {

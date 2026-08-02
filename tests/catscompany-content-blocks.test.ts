@@ -171,6 +171,25 @@ describe('CatsCo content blocks', () => {
     assert.equal(sentThinking[0].metadata.delay_ms, 8000);
   });
 
+  test('reasoning dialect recovery is explained as a local repair, not a connection failure', async () => {
+    const { bot, sentThinking, replies } = createProcessHarness();
+    const callbacks = (bot as any).buildSessionCallbacks('p2p_repair');
+
+    await callbacks.onRetry(1, 1, {
+      attempt: 1,
+      maxRetries: 1,
+      delayMs: 0,
+      elapsedMs: 20,
+      maxElapsedMs: 30_000,
+      status: 400,
+      recoveryAction: 'reasoning_history_degrade',
+    });
+
+    assert.equal(replies.length, 0);
+    assert.equal(sentThinking[0].text, '检测到历史推理状态缺失，已安全降级旧工具记录，正在自动修复后重试 1/1...');
+    assert.equal(sentThinking[0].metadata.recovery_action, 'reasoning_history_degrade');
+  });
+
   test('parses text and multiple attachments from one CatsCompany message', () => {
     const bot = Object.create(CatsCompanyBot.prototype);
 

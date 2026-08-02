@@ -145,6 +145,106 @@ test('repairs malformed tool exchanges before invocation and records the preflig
   });
 });
 
+test('recovers once when DeepSeek explicitly requires missing reasoning history', async () => {
+  const service = createTestService({
+    apiUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-v4-flash',
+  });
+  const events: ModelAttemptEvent[] = [];
+  const providerRequests: Array<{ messages: Message[]; options: any }> = [];
+  let calls = 0;
+  (service as any).provider = {
+    chat: async (messages: Message[], _tools: unknown, options: unknown) => {
+      calls++;
+      providerRequests.push({ messages, options });
+      if (calls === 1) {
+        throw {
+          response: {
+            status: 400,
+            data: { error: { message: 'reasoning_content is required and was missing' } },
+          },
+        };
+      }
+      return { content: 'recovered after local history repair' };
+    },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+  const messages: Message[] = [
+    { role: 'user', content: 'find cats' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'lookup', arguments: '{}' },
+      }],
+    },
+    { role: 'tool', tool_call_id: 'call_1', name: 'lookup', content: 'cats found' },
+    { role: 'user', content: 'continue' },
+  ];
+
+  const result = await service.chat(messages, undefined, {
+    modelAttemptSink: collectingSink(events),
+  });
+
+  assert.equal(result.content, 'recovered after local history repair');
+  assert.equal(calls, 2);
+  assert.equal(providerRequests[0].messages.some(message => message.tool_calls?.length), true);
+  assert.equal(providerRequests[1].messages.some(message => message.tool_calls?.length), false);
+  assert.equal(providerRequests[1].messages.some(message => message.role === 'tool'), false);
+  assert.equal(providerRequests[1].options.reasoningReplayMode, 'include');
+  assert.deepEqual(events.map(event => event.outcome), ['started', 'retrying', 'started', 'succeeded']);
+  assert.equal(events[1].retry?.recoveryAction, 'reasoning_history_degrade');
+  assert.equal(events[1].retry?.delayMs, 0);
+  assert.equal(events[0].request.messages, providerRequests[0].messages);
+  assert.equal(events[2].request.messages, providerRequests[1].messages);
+});
+
+test('DeepSeek reasoning recovery is evidence-driven and bounded to one retry', async () => {
+  const service = createTestService({
+    apiUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-v4-flash',
+  });
+  const events: ModelAttemptEvent[] = [];
+  let calls = 0;
+  (service as any).provider = {
+    chat: async () => {
+      calls++;
+      throw {
+        response: {
+          status: 400,
+          data: { error: { message: 'reasoning_content is required and was missing' } },
+        },
+      };
+    },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+  const messages: Message[] = [
+    {
+      role: 'assistant',
+      content: 'historical attempt',
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'lookup', arguments: '{}' },
+      }],
+    },
+    { role: 'tool', tool_call_id: 'call_1', content: 'old result' },
+    { role: 'user', content: 'continue' },
+  ];
+
+  await assert.rejects(
+    () => service.chat(messages, undefined, { modelAttemptSink: collectingSink(events) }),
+    /API错误 \(400\): reasoning_content is required and was missing/,
+  );
+
+  assert.equal(calls, 2);
+  assert.deepEqual(events.map(event => event.outcome), ['started', 'retrying', 'started', 'failed']);
+  assert.equal(events[1].retry?.recoveryAction, 'reasoning_history_degrade');
+  assert.equal(events[3].retry?.stopReason, 'non_retryable');
+});
+
 test('distinguishes a stream failure after visible output from a retryable failure', async () => {
   const service = createTestService();
   const events: ModelAttemptEvent[] = [];

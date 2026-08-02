@@ -21,6 +21,7 @@ const NORMALIZABLE_REASONING_EFFORTS = [
 ];
 
 type ReasoningModelFamily = 'deepseek' | 'glm' | 'gpt56';
+export type OpenAIReasoningReplayMode = 'include' | 'omit';
 
 export function normalizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
   const text = String(value || '').trim().toLowerCase();
@@ -83,7 +84,20 @@ export function supportsReasoningSwitch(config: Pick<ChatConfig, 'model' | 'apiU
 }
 
 export function supportsOpenAIReasoningReplay(config: Pick<ChatConfig, 'model' | 'apiUrl'>): boolean {
-  return inferReasoningModelFamily(config) === 'deepseek';
+  return resolveOpenAIReasoningReplayMode(config) === 'include';
+}
+
+/**
+ * DeepSeek has two incompatible Chat Completions dialects: legacy
+ * deepseek-reasoner rejects replay, while current thinking/tool-call models
+ * require it. Explicit provider evidence may override this default once.
+ */
+export function resolveOpenAIReasoningReplayMode(
+  config: Pick<ChatConfig, 'model' | 'apiUrl'>,
+): OpenAIReasoningReplayMode | undefined {
+  if (inferReasoningModelFamily(config) !== 'deepseek') return undefined;
+  const model = String(config.model || '').trim().toLowerCase();
+  return /^deepseek-reasoner(?:$|[-_:])/.test(model) ? 'omit' : 'include';
 }
 
 function inferReasoningModelFamily(config: Pick<ChatConfig, 'model' | 'apiUrl'>): ReasoningModelFamily | undefined {
