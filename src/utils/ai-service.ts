@@ -24,8 +24,12 @@ import type { OpenAIReasoningReplayMode } from './reasoning-effort';
 import {
   resolveOpenAICachePlan,
   summarizeOpenAICachePlan,
-  type OpenAICachePlanSummary,
 } from '../providers/openai-cache-policy';
+import {
+  resolveAnthropicCachePlan,
+  summarizeAnthropicCachePlan,
+} from '../providers/anthropic-cache-policy';
+import type { ProviderCachePlanSummary } from '../providers/provider-cache-policy';
 import { Logger } from './logger';
 import { isPrimaryModelToolCallingCapable } from './model-capabilities';
 import { resolveModelContextWindow } from './model-context-window';
@@ -74,7 +78,7 @@ interface ModelAttemptRun {
   tools: readonly ToolDefinition[];
   stream: boolean;
   preflight?: ProviderRequestPreflightSummary;
-  cache?: OpenAICachePlanSummary;
+  cache?: ProviderCachePlanSummary;
 }
 
 interface RetryRecoveryPlan {
@@ -641,7 +645,13 @@ export class AIService {
           tools: tools || [],
           partitionKey: options.cachePartitionKey,
         }))
-      : undefined;
+      : this.config.provider === 'anthropic'
+        ? summarizeAnthropicCachePlan(resolveAnthropicCachePlan({
+            apiUrl: this.config.apiUrl || '',
+            messages,
+            tools: tools || [],
+          }))
+        : undefined;
     return {
       callId: `${Date.now().toString(36)}-${process.pid.toString(36)}-${modelAttemptCallSequence.toString(36)}`,
       sink: options.modelAttemptSink,

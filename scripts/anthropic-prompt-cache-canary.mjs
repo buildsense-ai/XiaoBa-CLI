@@ -7,7 +7,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 
 const CANONICAL_API_ORIGIN = 'https://api.anthropic.com';
-const CANARY_SCHEMA = 'xiaoba.anthropic-prompt-cache-canary.v1';
+const CANARY_SCHEMA = 'xiaoba.anthropic-prompt-cache-canary.v2';
+const CANARY_MIN_STABLE_CHARS = 24_000;
 const REQUEST_ID_HEADERS = ['request-id', 'x-request-id'];
 
 export function sha256(text) {
@@ -26,6 +27,16 @@ export function buildCanarySystem(stableText, dynamicText) {
       text: dynamicText,
     },
   ];
+}
+
+export function buildCapabilityProbeText(sourceText, minimumChars = CANARY_MIN_STABLE_CHARS) {
+  const source = String(sourceText || '').trim();
+  if (!source) throw new Error('Canary stable source text must not be empty.');
+  const segments = [];
+  while (segments.join('\n\n').length < minimumChars) {
+    segments.push(source);
+  }
+  return segments.join('\n\n');
 }
 
 export function buildAttemptEvidence({ response, message, dynamicText }) {
@@ -49,21 +60,57 @@ export function buildAttemptEvidence({ response, message, dynamicText }) {
   };
 }
 
-export function buildCanaryEvidence({ model, stableText, attempts, recordedAt = new Date() }) {
+export function evaluateCanaryAttempts(attempts) {
+  const secondRead = Number(attempts?.[1]?.usage?.cache_read_input_tokens ?? 0);
+  const anyRead = (attempts || []).some(attempt => (
+    Number(attempt?.usage?.cache_read_input_tokens ?? 0) > 0
+  ));
+  const anyWrite = (attempts || []).some(attempt => (
+    Number(attempt?.usage?.cache_creation_input_tokens ?? 0) > 0
+  ));
+  if (secondRead > 0) return 'passed';
+  if (anyRead) return 'inconclusive_prior_entry';
+  if (anyWrite) return 'failed_no_reuse';
+  return 'unsupported_or_below_threshold';
+}
+
+export function buildCanaryEvidence({
+  model,
+  apiBase = CANONICAL_API_ORIGIN,
+  sourceText,
+  stableText,
+  attempts,
+  recordedAt = new Date(),
+}) {
+  const parsedBase = new URL(apiBase);
+  const origin = parsedBase.origin;
+  const normalizedBase = parsedBase.href.replace(/\/+$/, '');
+  const canonical = origin === CANONICAL_API_ORIGIN;
   return {
     schema: CANARY_SCHEMA,
     recorded_at: recordedAt.toISOString(),
-    api_origin: CANONICAL_API_ORIGIN,
+    api_kind: canonical ? 'canonical-anthropic' : 'anthropic-compatible',
+    api_origin: canonical ? CANONICAL_API_ORIGIN : null,
+    api_base_sha256: sha256(normalizedBase),
     model,
+    source_system_sha256: sha256(sourceText ?? stableText),
     stable_system_sha256: sha256(stableText),
+    stable_system_chars: stableText.length,
+    verdict: evaluateCanaryAttempts(attempts),
     attempts,
   };
 }
 
-export async function runCanary({ apiKey, model, stableText }) {
+export async function runCanary({
+  apiKey,
+  model,
+  stableText: sourceText,
+  apiBase = CANONICAL_API_ORIGIN,
+}) {
+  const stableText = buildCapabilityProbeText(sourceText);
   const client = new Anthropic({
     apiKey,
-    baseURL: CANONICAL_API_ORIGIN,
+    baseURL: apiBase,
     timeout: 10 * 60 * 1000,
   });
   const dynamicVariants = [
@@ -86,7 +133,7 @@ export async function runCanary({ apiKey, model, stableText }) {
     attempts.push(buildAttemptEvidence({ response, message, dynamicText }));
   }
 
-  return buildCanaryEvidence({ model, stableText, attempts });
+  return buildCanaryEvidence({ model, apiBase, sourceText, stableText, attempts });
 }
 
 function parseOutputPath(args) {
@@ -102,7 +149,11 @@ function printUsage() {
     '  ANTHROPIC_CANARY_API_KEY=... ANTHROPIC_CANARY_MODEL=... \\',
     '    npm run canary:anthropic-prompt-cache -- --run [--output evidence.json]',
     '',
-    'The command makes two canonical Anthropic API requests and never records prompt bodies or credentials.',
+    'Optional compatible endpoint:',
+    '  ANTHROPIC_CANARY_API_BASE=https://... ANTHROPIC_CANARY_ALLOW_COMPATIBLE=true',
+    '',
+    'The command makes two API requests with a deterministic >=24k-character stable prefix.',
+    'It never records prompt bodies, credentials, or a compatible endpoint in plaintext.',
   ].join('\n'));
 }
 
@@ -131,12 +182,34 @@ async function main() {
     process.exitCode = 2;
     return;
   }
+  const apiBase = process.env.ANTHROPIC_CANARY_API_BASE || CANONICAL_API_ORIGIN;
+  let origin;
+  try {
+    const url = new URL(apiBase);
+    if (url.protocol !== 'https:') throw new Error('HTTPS is required');
+    if (url.username || url.password || url.search || url.hash) {
+      throw new Error('Credentials, query parameters, and fragments are not allowed');
+    }
+    origin = url.origin;
+  } catch {
+    console.error('ANTHROPIC_CANARY_API_BASE must be a valid HTTPS URL.');
+    process.exitCode = 2;
+    return;
+  }
+  if (
+    origin !== CANONICAL_API_ORIGIN
+    && !/^(1|true|yes)$/i.test(process.env.ANTHROPIC_CANARY_ALLOW_COMPATIBLE || '')
+  ) {
+    console.error('Compatible endpoints require ANTHROPIC_CANARY_ALLOW_COMPATIBLE=true.');
+    process.exitCode = 2;
+    return;
+  }
 
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
   const stableText = fs.readFileSync(path.join(scriptDir, '..', 'prompts', 'system-prompt.md'), 'utf8');
 
   try {
-    const evidence = await runCanary({ apiKey, model, stableText });
+    const evidence = await runCanary({ apiKey, model, stableText, apiBase });
     const serialized = `${JSON.stringify(evidence, null, 2)}\n`;
     const outputPath = parseOutputPath(args);
     if (outputPath) {

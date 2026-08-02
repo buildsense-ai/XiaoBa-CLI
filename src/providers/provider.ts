@@ -3,7 +3,7 @@ import { ToolDefinition } from '../types/tool';
 import type { ProviderRequestPreflightSummary } from './request-preflight';
 import type { OpenAIReasoningReplayMode } from '../utils/reasoning-effort';
 import type { ReasoningReplayRecoveryAction } from './deepseek-reasoning-recovery';
-import type { OpenAICachePlanSummary } from './openai-cache-policy';
+import type { ProviderCachePlanSummary } from './provider-cache-policy';
 
 /**
  * Streaming 回调
@@ -81,7 +81,7 @@ export interface ModelAttemptEvent {
     messages: readonly Message[];
     tools: readonly ToolDefinition[];
     preflight?: ProviderRequestPreflightSummary;
-    cache?: OpenAICachePlanSummary;
+    cache?: ProviderCachePlanSummary;
   };
   durationMs?: number;
   response?: ChatResponse;

@@ -2,8 +2,10 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildAttemptEvidence,
+  buildCapabilityProbeText,
   buildCanaryEvidence,
   buildCanarySystem,
+  evaluateCanaryAttempts,
   sha256,
 } from '../scripts/anthropic-prompt-cache-canary.mjs';
 
@@ -25,7 +27,8 @@ describe('Anthropic prompt-cache canary evidence', () => {
   });
 
   test('records required evidence without prompt bodies', () => {
-    const stableText = 'stable secret prompt';
+    const sourceText = 'stable secret prompt';
+    const stableText = buildCapabilityProbeText(sourceText, 100);
     const dynamicText = 'dynamic secret state';
     const response = {
       url: 'https://api.anthropic.com/v1/messages?beta=prompt_caching',
@@ -43,13 +46,18 @@ describe('Anthropic prompt-cache canary evidence', () => {
     const attempt = buildAttemptEvidence({ response, message, dynamicText });
     const evidence = buildCanaryEvidence({
       model: 'claude-test',
+      sourceText,
       stableText,
       attempts: [attempt],
       recordedAt: new Date('2026-07-30T00:00:00.000Z'),
     });
     const serialized = JSON.stringify(evidence);
 
+    assert.equal(evidence.source_system_sha256, sha256(sourceText));
     assert.equal(evidence.stable_system_sha256, sha256(stableText));
+    assert.equal(evidence.stable_system_chars >= 100, true);
+    assert.equal(evidence.api_kind, 'canonical-anthropic');
+    assert.equal(evidence.verdict, 'inconclusive_prior_entry');
     assert.equal(attempt.dynamic_system_sha256, sha256(dynamicText));
     assert.equal(attempt.request_id, 'req_123');
     assert.equal(attempt.api_path, '/v1/messages?beta=prompt_caching');
@@ -61,5 +69,34 @@ describe('Anthropic prompt-cache canary evidence', () => {
     });
     assert.equal(serialized.includes(stableText), false);
     assert.equal(serialized.includes(dynamicText), false);
+  });
+
+  test('requires a cache read on the second request for a passing verdict', () => {
+    const attempt = (write: number, read: number) => ({
+      usage: {
+        cache_creation_input_tokens: write,
+        cache_read_input_tokens: read,
+      },
+    });
+
+    assert.equal(evaluateCanaryAttempts([attempt(5000, 0), attempt(0, 5000)]), 'passed');
+    assert.equal(evaluateCanaryAttempts([attempt(5000, 0), attempt(5000, 0)]), 'failed_no_reuse');
+    assert.equal(evaluateCanaryAttempts([attempt(0, 0), attempt(0, 0)]), 'unsupported_or_below_threshold');
+  });
+
+  test('redacts compatible endpoint origins from evidence', () => {
+    const evidence = buildCanaryEvidence({
+      model: 'claude-test',
+      apiBase: 'https://relay.secret.example/anthropic',
+      sourceText: 'source',
+      stableText: 'stable',
+      attempts: [],
+      recordedAt: new Date('2026-07-30T00:00:00.000Z'),
+    });
+    const serialized = JSON.stringify(evidence);
+
+    assert.equal(evidence.api_kind, 'anthropic-compatible');
+    assert.equal(evidence.api_origin, null);
+    assert.equal(serialized.includes('relay.secret.example'), false);
   });
 });

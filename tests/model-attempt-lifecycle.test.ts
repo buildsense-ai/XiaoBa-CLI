@@ -106,6 +106,37 @@ test('attaches the provider cache plan to the exact observed attempt', async () 
   assert.equal(JSON.stringify(events[0].request.cache).includes('catsco-v3-'), false);
 });
 
+test('attaches the Anthropic stable-prefix plan to the exact observed attempt', async () => {
+  const service = createTestService({
+    provider: 'anthropic',
+    apiUrl: 'https://api.anthropic.com/v1/messages',
+    model: 'claude-sonnet-4-20250514',
+  });
+  const events: ModelAttemptEvent[] = [];
+  (service as any).provider = {
+    chat: async () => ({ content: 'ok' }),
+    chatStream: async () => ({ content: 'unused' }),
+  };
+
+  await service.chat([
+    { role: 'system', content: 'Stable reusable policy.' },
+    { role: 'system', content: '[transient_plan_status]\nrunning', __cacheScope: 'dynamic' },
+    { role: 'user', content: 'hello' },
+  ], [{
+    name: 'lookup',
+    description: 'look something up',
+    parameters: { type: 'object', properties: {} },
+  }], {
+    modelAttemptSink: collectingSink(events),
+  });
+
+  assert.deepEqual(events.map(event => event.outcome), ['started', 'succeeded']);
+  assert.equal(events[0].request.cache?.strategy, 'anthropic-explicit-stable-prefix');
+  assert.equal(events[0].request.cache?.explicitBreakpoints, 2);
+  assert.equal(events[0].request.cache?.stableSystemMessages, 1);
+  assert.equal(events[0].request.cache?.promptCacheKeyFingerprint, undefined);
+});
+
 test('records a non-retryable provider rejection as the terminal attempt', async () => {
   process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '0';
   const service = createTestService();

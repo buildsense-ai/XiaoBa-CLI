@@ -6,12 +6,21 @@ import { ContextDebugLogger } from '../utils/context-debug-logger';
 import { resolveMaxTokens } from './output-limits';
 import { applyAnthropicReasoningOptions } from '../utils/reasoning-effort';
 import { createProviderStateReference, isProviderStateCompatible } from './provider-state';
+import {
+  isCanonicalAnthropicEndpoint,
+  resolveAnthropicCachePlan,
+} from './anthropic-cache-policy';
+import { canonicalizeProviderCacheValue } from './provider-cache-policy';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 type AnthropicSystemBlock = Anthropic.TextBlockParam & {
+  cache_control?: { type: 'ephemeral' };
+};
+
+type AnthropicCacheableTool = Anthropic.Tool & {
   cache_control?: { type: 'ephemeral' };
 };
 
@@ -201,15 +210,19 @@ export class AnthropicProvider implements AIProvider {
       return systemMessages.map(message => message.content as string).join('\n\n');
     }
 
-    const firstDynamicIndex = systemMessages.findIndex(message => this.isDynamicSystemMessage(message));
-    if (firstDynamicIndex === 0) {
+    const plan = resolveAnthropicCachePlan({
+      apiUrl: this.apiUrl,
+      messages,
+      tools: [],
+    });
+    if (plan.stableSystemEnd === 0) {
       return [{
         type: 'text',
         text: systemMessages.map(message => message.content as string).join('\n\n'),
       }];
     }
 
-    const stableEnd = firstDynamicIndex < 0 ? systemMessages.length : firstDynamicIndex;
+    const stableEnd = plan.stableSystemEnd;
     const blocks: AnthropicSystemBlock[] = [{
       type: 'text',
       text: systemMessages.slice(0, stableEnd).map(message => message.content as string).join('\n\n'),
@@ -225,28 +238,7 @@ export class AnthropicProvider implements AIProvider {
   }
 
   private supportsNativePromptCaching(): boolean {
-    try {
-      const url = new URL(this.apiUrl);
-      const normalizedPath = url.pathname.replace(/\/+$/, '') || '/';
-      return url.protocol === 'https:'
-        && url.hostname.toLowerCase() === 'api.anthropic.com'
-        && (url.port === '' || url.port === '443')
-        && !url.username
-        && !url.password
-        && !url.search
-        && !url.hash
-        && ['/', '/v1', '/v1/messages'].includes(normalizedPath);
-    } catch {
-      return false;
-    }
-  }
-
-  private isDynamicSystemMessage(message: Message): boolean {
-    const cacheScope = message.__cacheScope;
-    if (cacheScope === 'dynamic') return true;
-    if (cacheScope === 'stable') return false;
-    return typeof message.content === 'string'
-      && /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(message.content);
+    return isCanonicalAnthropicEndpoint(this.apiUrl);
   }
 
   private coalesceAdjacentUserMessages(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
@@ -306,12 +298,18 @@ export class AnthropicProvider implements AIProvider {
   /**
    * 转换工具定义为 Anthropic 格式
    */
-  private transformTools(tools: ToolDefinition[]): Anthropic.Tool[] {
-    return tools.map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      input_schema: tool.parameters as Anthropic.Tool.InputSchema
-    }));
+  private transformTools(tools: ToolDefinition[]): AnthropicCacheableTool[] {
+    const transformed = tools
+      .map(tool => canonicalizeProviderCacheValue({
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.parameters as Anthropic.Tool.InputSchema,
+      }) as AnthropicCacheableTool)
+      .sort((left, right) => left.name.localeCompare(right.name));
+    if (this.supportsNativePromptCaching() && transformed.length > 0) {
+      transformed[transformed.length - 1].cache_control = { type: 'ephemeral' };
+    }
+    return transformed;
   }
 
   private transformAssistantToolCallBlocks(msg: Message): (Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam)[] {
