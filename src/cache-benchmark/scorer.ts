@@ -42,6 +42,16 @@ interface CellAccumulator {
   input: number;
   read: number;
   tasks: Map<string, TaskTotals>;
+  coldInput: number;
+  coldRead: number;
+  allInput: number;
+  allRead: number;
+}
+
+interface TaskCallOrder {
+  cells: Set<CellAccumulator>;
+  firstMainIndex?: number;
+  lastMemoryBranchIndex?: number;
 }
 
 const STATUS_PRECEDENCE: Record<BenchmarkStatus, number> = {
@@ -217,6 +227,7 @@ function scoreRound(
   const expectedRuns = buildExpectedRuns(manifest);
   const attemptsByRun = new Map<string, CacheBenchmarkAttempt[]>();
   const stablePrefixByRun = new Map<string, string>();
+  const taskCallOrder = new Map<string, TaskCallOrder>();
   const cellByCase = new Map<string, CellAccumulator>();
   const cells = new Map<string, CellAccumulator>();
   for (const caseEntry of manifest.cases) {
@@ -229,6 +240,10 @@ function scoreRound(
         input: 0,
         read: 0,
         tasks: new Map(),
+        coldInput: 0,
+        coldRead: 0,
+        allInput: 0,
+        allRead: 0,
       };
       cells.set(fingerprint, cell);
     }
@@ -271,6 +286,17 @@ function scoreRound(
     const runAttempts = attemptsByRun.get(key) ?? [];
     runAttempts.push(attempt);
     attemptsByRun.set(key, runAttempts);
+    const orderKey = [
+      cell.fingerprint,
+      expected.caseEntry.task_id,
+      attempt.run_id,
+      attempt.logical_call,
+    ].join('\0');
+    const order = taskCallOrder.get(orderKey) ?? { cells: new Set<CellAccumulator>() };
+    order.cells.add(cell);
+    if (attempt.attempt_role === 'memory_branch') order.lastMemoryBranchIndex = attemptIndex;
+    else if (order.firstMainIndex === undefined) order.firstMainIndex = attemptIndex;
+    taskCallOrder.set(orderKey, order);
     scoreAttempt(attempt, cell, expected.caseEntry);
     const stablePrefix = attempt.attestation.stable_prefix_fingerprint;
     const previousStablePrefix = stablePrefixByRun.get(key);
@@ -278,6 +304,16 @@ function scoreRound(
       cell.reasons.add('stable_prefix_drift');
     } else {
       stablePrefixByRun.set(key, stablePrefix);
+    }
+  }
+
+  for (const order of taskCallOrder.values()) {
+    if (
+      order.firstMainIndex !== undefined
+      && order.lastMemoryBranchIndex !== undefined
+      && order.lastMemoryBranchIndex > order.firstMainIndex
+    ) {
+      for (const cell of order.cells) cell.reasons.add('attempt_order_mismatch');
     }
   }
 
@@ -298,6 +334,11 @@ function scoreRound(
       const group = attemptsByLogicalCall.get(attempt.logical_call) ?? [];
       group.push(attempt);
       attemptsByLogicalCall.set(attempt.logical_call, group);
+    }
+    if (attempts.some((attempt, index) => (
+      index > 0 && attempt.logical_call < attempts[index - 1].logical_call
+    ))) {
+      cell.reasons.add('attempt_order_mismatch');
     }
     for (let logicalCall = 1; logicalCall <= expectedLogicalCalls; logicalCall += 1) {
       const group = attemptsByLogicalCall.get(logicalCall) ?? [];
@@ -348,13 +389,11 @@ function scoreAttempt(
   cell: CellAccumulator,
   expectedCase: CacheBenchmarkCase,
 ): void {
+  const succeeded = attempt.outcome === 'succeeded';
   if (attempt.outcome === 'incomplete' || attempt.outcome === 'retrying') {
     cell.reasons.add('non_terminal_attempt');
-    return;
-  }
-  if (attempt.outcome !== 'succeeded') {
+  } else if (!succeeded) {
     cell.reasons.add('non_succeeded_attempt');
-    return;
   }
   const attestation = attempt.attestation;
   if (attestation.quality_status === 'failed') cell.reasons.add('quality_gate_failed');
@@ -393,6 +432,14 @@ function scoreAttempt(
     cell.reasons.add('cache_read_exceeds_input');
     return;
   }
+  cell.allInput += usage.input;
+  cell.allRead += read;
+  if (attempt.cache_class === 'cold') {
+    cell.coldInput += usage.input;
+    cell.coldRead += read;
+    return;
+  }
+  if (!succeeded) return;
   cell.input += usage.input;
   cell.read += read;
   const task = cell.tasks.get(attempt.metadata.task_id) ?? { input: 0, read: 0 };
@@ -454,6 +501,10 @@ function finalizeCell(cell: CellAccumulator, manifest: CacheBenchmarkManifest): 
   const positiveTasks = [...cell.tasks.values()].filter(task => task.input > 0);
   let rawRatio: number | null = null;
   let cappedRatio: number | null = null;
+  const coldRatio = cell.coldInput > 0 ? cell.coldRead / cell.coldInput : null;
+  const allInput = cell.allInput;
+  const allRead = cell.allRead;
+  const allRatio = allInput > 0 ? allRead / allInput : null;
   if (cell.input > 0) {
     rawRatio = cell.read / cell.input;
     if (!meetsThreshold(rawRatio, manifest.criteria.minimum_read_ratio)) {
@@ -471,11 +522,18 @@ function finalizeCell(cell: CellAccumulator, manifest: CacheBenchmarkManifest): 
   return {
     cell_fingerprint: cell.fingerprint,
     status: statusFromReasons([...reasons]),
+    qualification_cache_class: 'warm',
     input_tokens: cell.input,
     cache_read_tokens: cell.read,
     raw_read_ratio: rawRatio,
     capped_task_ratio: cappedRatio,
     positive_task_count: positiveTasks.length,
+    cold_input_tokens: cell.coldInput,
+    cold_cache_read_tokens: cell.coldRead,
+    cold_read_ratio: coldRatio,
+    all_input_tokens: allInput,
+    all_cache_read_tokens: allRead,
+    all_read_ratio: allRatio,
     reasons: uniqueSorted([...reasons]),
   };
 }
@@ -623,6 +681,7 @@ function isInvalidReason(reason: BenchmarkReason): boolean {
     'schema_invalid',
     'duplicate_round',
     'duplicate_attempt',
+    'attempt_order_mismatch',
     'unexpected_attempt_count',
     'unknown_case_or_run',
     'metadata_mismatch',

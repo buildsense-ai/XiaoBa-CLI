@@ -162,13 +162,13 @@ function parseCriteria(value: unknown): CacheBenchmarkCriteria {
     record.minimum_read_ratio !== 0.94
     || record.consecutive_rounds !== 3
     || record.maximum_task_weight !== 0.25
-    || record.include_cold_in_primary_ratio !== true
+    || record.include_cold_in_primary_ratio !== false
   ) invalid();
   return {
     minimum_read_ratio: 0.94,
     consecutive_rounds: 3,
     maximum_task_weight: 0.25,
-    include_cold_in_primary_ratio: true,
+    include_cold_in_primary_ratio: false,
   };
 }
 

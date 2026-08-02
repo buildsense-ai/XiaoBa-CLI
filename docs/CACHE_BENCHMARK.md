@@ -28,12 +28,14 @@ The latest three consecutive rounds must pass every independent provider cell fo
 - `api_type`
 - `surface`
 
-Each round has two token-weighted gates, both including the cold call:
+Each round has two token-weighted qualification gates over warm attempts only:
 
 1. `sum(cache_read_tokens) / sum(input_tokens) >= 0.94`.
 2. The same ratio after task weights are water-filled so no task contributes more than 25% is at least `0.94`.
 
 At least four tasks must have positive input weight in each cell. `cache_write_tokens` is diagnostic only. A failed, retried, incomplete, unobservable, quality-failing, safety-failing, or capability-incomplete attempt invalidates the round. Artifact drift resets the streak, and the scorer never selects a more favorable historical trio.
+
+The required cold call is not discarded or treated as a free calibration failure. Its valid provider-reported input and cache-read tokens are retained as `cold_*` diagnostics; `all_*` fields retain valid observable usage from all cold and warm physical attempts, including failed attempts that still report usage. Every cold physical attempt must pass the same usage observability, quality, safety, capability, metadata, and stable-prefix checks as a warm attempt. Cold usage is excluded only from the two 94% qualification ratios because a deliberately partitioned first request measures admission rather than reusable-prefix performance.
 
 ## Capability, quality, and safety gates
 
@@ -67,7 +69,7 @@ The destructive-action task is deliberately memory-only: its restored transcript
 
 ## Provider usage contracts
 
-Version 4 evidence does not accept collector-supplied normalized `input_tokens`, `cache_read_tokens`, or `cache_read_source` fields. Each attempt seals `usage.provider_usage`, an allowlisted projection of the exact numeric fields returned by the provider. The offline scorer selects the contract, derives normalized input/read counts, and verifies that the derived source matches the manifest:
+Version 5 evidence does not accept collector-supplied normalized `input_tokens`, `cache_read_tokens`, or `cache_read_source` fields. Each attempt seals `usage.provider_usage`, an allowlisted projection of the exact numeric fields returned by the provider. The offline scorer selects the contract, derives normalized input/read counts, and verifies that the derived source matches the manifest:
 
 | Raw usage contract | Allowed provider fields | Scorer input | Scorer cache read and exact source |
 | --- | --- | --- | --- |
@@ -80,17 +82,17 @@ Fields from another contract and unknown fields are rejected. All present usage 
 
 ## Evidence schemas
 
-The strict v4 schemas are:
+The strict v5 schemas are:
 
-- `xiaoba.cache_benchmark_manifest.v4`
-- `xiaoba.cache_benchmark_round.v4`
-- `xiaoba.cache_benchmark_attempt.v4`
-- `xiaoba.cache_benchmark_ledger.v4`
-- `xiaoba.cache_benchmark_result.v4`
+- `xiaoba.cache_benchmark_manifest.v5`
+- `xiaoba.cache_benchmark_round.v5`
+- `xiaoba.cache_benchmark_attempt.v5`
+- `xiaoba.cache_benchmark_ledger.v5`
+- `xiaoba.cache_benchmark_result.v5`
 
-Unknown or missing fields are rejected. The manifest fixes the acceptance criteria at `0.94`, three consecutive rounds, a 25% maximum task weight, and cold inclusion. It also fixes exact cold/warm call counts, task fixtures, oracle contracts, execution plans, capability coverage, and provider usage sources.
+Unknown or missing fields are rejected. The manifest fixes the acceptance criteria at `0.94`, three consecutive rounds, a 25% maximum task weight, and warm-only qualification (`include_cold_in_primary_ratio` must be `false`). It also fixes exact cold/warm call counts, task fixtures, oracle contracts, execution plans, capability coverage, and provider usage sources.
 
-Each evidence JSONL contains one round header followed by attempts in the exact physical order observed by the synchronous attempt journal. Joined memory-branch calls therefore precede their main call. `attempt_number` must be contiguous and every provider retry becomes an additional attempt; retries cannot be hidden behind a logical call. Each attempt seals `attempt_role` (`main` or `memory_branch`) and `logical_call`. A main logical call must have exactly one physical attempt; a branch logical call may have 1–N and every one is scored. The attempt usage object contains only the raw `provider_usage` projection described above. The ledger enumerates every round from 1 through `latest_round`, and fingerprints cover the entire canonical round. Missing, extra, reordered, or modified evidence is invalid.
+Each evidence JSONL contains one round header followed by attempts in the exact physical order observed by the synchronous attempt journal. Within a case/run, logical calls must remain monotonic from cold to warm. A joined memory-branch call sharing the same task, cell, run ID, and logical call must precede its main call. `attempt_number` must be contiguous and every provider retry becomes an additional attempt; retries cannot be hidden behind a logical call. Each attempt seals `attempt_role` (`main` or `memory_branch`) and `logical_call`. A main logical call must have exactly one physical attempt; a branch logical call may have 1–N and every one is scored. The attempt usage object contains only the raw `provider_usage` projection described above. The ledger enumerates every round from 1 through `latest_round`, and fingerprints cover the entire canonical round. Missing, extra, reordered, or modified evidence is invalid.
 
 The round header also seals a random 128-bit `cache_partition_nonce`. The nonce is reserved before network activity and appears in the first system marker for every case in that run. It stays fixed across that case's warm calls, but changes for every new invocation even when case and round numbers are reused in a different output directory. This makes a required cold request distinguishable from every prior calibration run.
 

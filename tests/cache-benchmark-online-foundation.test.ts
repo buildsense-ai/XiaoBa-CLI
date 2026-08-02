@@ -74,6 +74,7 @@ test('online manifest counts the production memory branch for every capped task'
   const credential = loadOnlineProviderCredentials(file)[0];
   const manifest = buildOnlineCacheBenchmarkManifest(credential, 24);
 
+  assert.equal(manifest.criteria.include_cold_in_primary_ratio, false);
   assert.equal(manifest.cases.length, 8);
   assert.equal(new Set(manifest.cases.map(entry => entry.task_id)).size, 4);
   assert.equal(manifest.cases.filter(entry => entry.execution_role === 'main').length, 4);

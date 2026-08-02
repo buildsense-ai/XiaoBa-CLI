@@ -32,11 +32,18 @@ export function renderCacheBenchmarkResult(
       lines.push([
         `cell=${cell.cell_fingerprint}`,
         `status=${cell.status}`,
+        `qualification_cache_class=${cell.qualification_cache_class}`,
         `input_tokens=${cell.input_tokens}`,
         `cache_read_tokens=${cell.cache_read_tokens}`,
         `raw_read_ratio=${formatRatio(cell.raw_read_ratio)}`,
         `capped_task_ratio=${formatRatio(cell.capped_task_ratio)}`,
         `positive_task_count=${cell.positive_task_count}`,
+        `cold_input_tokens=${cell.cold_input_tokens}`,
+        `cold_cache_read_tokens=${cell.cold_cache_read_tokens}`,
+        `cold_read_ratio=${formatRatio(cell.cold_read_ratio)}`,
+        `all_input_tokens=${cell.all_input_tokens}`,
+        `all_cache_read_tokens=${cell.all_cache_read_tokens}`,
+        `all_read_ratio=${formatRatio(cell.all_read_ratio)}`,
         `reasons=${cell.reasons.join(',') || 'none'}`,
       ].join(' '));
     }
@@ -47,7 +54,7 @@ export function renderCacheBenchmarkResult(
 export function renderCacheBenchmarkInputError(format: CacheBenchmarkReportFormat): string {
   if (format === 'json') {
     return `${canonicalJson({
-      schema: 'xiaoba.cache_benchmark_result.v4',
+      schema: 'xiaoba.cache_benchmark_result.v5',
       status: 'invalid',
       exit_code: 2,
       reasons: ['schema_invalid'],
