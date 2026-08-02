@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 export const RUNTIME_WRITE_PATH_ENV_KEYS = Object.freeze([
   'XIAOBA_USER_DATA_DIR',
   'CATSCO_USER_DATA_DIR',
@@ -29,11 +31,14 @@ export function buildIsolatedTestEnvironment(
   if (homeDir) {
     env.HOME = homeDir;
     env.USERPROFILE = homeDir;
+    env.XIAOBA_TEST_SANDBOX_ROOT = path.dirname(homeDir);
   }
   if (tempDir) {
     env.TMPDIR = tempDir;
     env.TMP = tempDir;
     env.TEMP = tempDir;
+    env.XIAOBA_USER_DATA_DIR = path.join(tempDir, 'runtime-data');
+    env.XIAOBA_TEST_DEFAULT_DATA_DIR = env.XIAOBA_USER_DATA_DIR;
   }
   if (appRoot) env.XIAOBA_APP_ROOT = appRoot;
   if (dotenvPath) env.DOTENV_CONFIG_PATH = dotenvPath;

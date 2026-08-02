@@ -88,7 +88,7 @@ export function previewRuntimeProfileEdit(
   const configDir = path.dirname(configPath);
   const baseProfile = resolveDefaultRuntimeProfile({
     env: options.env,
-    workingDirectory: options.runtimeRoot ?? process.cwd(),
+    workingDirectory: process.cwd(),
   });
   const currentFileConfig = loaded.profileConfig ?? {};
   const safeCurrentFileConfig = stripToEditableProfileConfig(currentFileConfig);

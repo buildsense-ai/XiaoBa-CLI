@@ -18,6 +18,7 @@ import {
   parseSessionKeyV2,
 } from '../core/session-router';
 import type { SessionRoute } from '../types/session-identity';
+import { PathResolver } from '../utils/path-resolver';
 
 const CHANNEL_VERSION = 'xiaoba-weixin/1.0';
 const DEFAULT_LONGPOLL_MS = 30000;
@@ -54,7 +55,7 @@ export class WeixinBot {
   constructor(private config: WeixinConfig) {
     this.handler = new MessageHandler(config.cdnBaseUrl);
     this.sender = new MessageSender(config.token, config.baseUrl, config.cdnBaseUrl);
-    this.stateDir = config.stateDir || path.join(process.cwd(), 'data', 'weixin');
+    this.stateDir = config.stateDir || PathResolver.getDataPath('weixin');
 
     const runtime = createWeixinRuntime();
     this.runtime = runtime;
