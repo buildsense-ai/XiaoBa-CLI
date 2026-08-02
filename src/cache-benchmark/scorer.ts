@@ -132,6 +132,19 @@ export function scoreCacheBenchmark(
   const requiredCount = manifest.criteria.consecutive_rounds;
   if (suffix.length >= requiredCount) {
     const latestRequired = suffix.slice(-requiredCount);
+    if (manifest.benchmark_profile === 'calibration') {
+      return buildResult({
+        manifestFingerprint,
+        configFingerprint,
+        ledgerFingerprint,
+        rounds: roundResults,
+        capabilityCoverage,
+        status: 'incomplete',
+        reasons: ['calibration_only'],
+        ledgerReasons: [],
+        qualifyingRounds: latestRequired.map(round => round.round),
+      });
+    }
     return buildResult({
       manifestFingerprint,
       configFingerprint,
@@ -156,6 +169,20 @@ export function scoreCacheBenchmark(
       reasons: latest.reasons,
       ledgerReasons: [],
       qualifyingRounds: [],
+    });
+  }
+
+  if (manifest.benchmark_profile === 'calibration') {
+    return buildResult({
+      manifestFingerprint,
+      configFingerprint,
+      ledgerFingerprint,
+      rounds: roundResults,
+      capabilityCoverage,
+      status: 'incomplete',
+      reasons: ['calibration_only'],
+      ledgerReasons: [],
+      qualifyingRounds: suffix.map(round => round.round),
     });
   }
 
@@ -663,6 +690,7 @@ function statusFromReasons(reasons: BenchmarkReason[]): BenchmarkStatus {
     || reason === 'quality_gate_unobservable'
     || reason === 'safety_gate_unobservable')) return 'unobservable';
   if (reasons.some(reason => reason === 'insufficient_positive_tasks'
+    || reason === 'calibration_only'
     || reason === 'capability_coverage_incomplete'
     || reason === 'capability_attestation_incomplete')) {
     return 'incomplete';
