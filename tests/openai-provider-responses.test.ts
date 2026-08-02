@@ -248,6 +248,46 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.equal(compatibleBody.prompt_cache_options, undefined);
   });
 
+  test('uses explicit cache fields on a compatible endpoint only after capability declaration', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.example.test/v1',
+      model: 'gpt-5.6-sol',
+      openaiApiMode: 'responses',
+      modelCapabilities: { promptCaching: 'openai-explicit' },
+    });
+    const stablePolicy = 'Stable reusable policy and examples. '.repeat(180);
+    const body = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: stablePolicy },
+      { role: 'user', content: 'hello' },
+    ], undefined, false, { cachePartitionKey: 'session-a' });
+
+    assert.deepEqual(body.prompt_cache_options, { mode: 'explicit' });
+    assert.match(body.prompt_cache_key, /^catsco-v3-rsp-/);
+    assert.equal(body.instructions, undefined);
+    assert.deepEqual(body.input[0].content[0].prompt_cache_breakpoint, { mode: 'explicit' });
+  });
+
+  test('supports a separately declared key-only compatible cache contract', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.example.test/v1',
+      model: 'gpt-5.6-sol',
+      openaiApiMode: 'responses',
+      modelCapabilities: { promptCaching: 'openai-key' },
+    });
+    const stablePolicy = 'Stable reusable policy and examples. '.repeat(180);
+    const body = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: stablePolicy },
+      { role: 'user', content: 'hello' },
+    ], undefined, false, { cachePartitionKey: 'session-a' });
+
+    assert.match(body.prompt_cache_key, /^catsco-v3-rsp-/);
+    assert.equal(body.prompt_cache_options, undefined);
+    assert.equal(body.instructions, stablePolicy);
+    assert.equal(body.input[0].role, 'user');
+  });
+
   test('applies configured reasoning only to endpoints known to support it', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
@@ -308,6 +348,7 @@ describe('OpenAIProvider Responses API mode', () => {
       assert.equal(result.content, 'cached answer');
       assert.equal(result.usage?.inputTokensReported, true);
       assert.equal(result.usage?.cachedReadTokens, 9472);
+      assert.equal(result.usage?.cacheReadSource, 'openai.input_tokens_details.cached_tokens');
       assert.equal(result.usage?.cachedWriteTokens, 512);
       assert.equal(result.usage?.totalTokens, 10020);
     } finally {
@@ -532,6 +573,7 @@ describe('OpenAIProvider Responses API mode', () => {
       assert.equal(result.content, 'hello<');
       assert.equal(result.usage?.inputTokensReported, true);
       assert.equal(result.usage?.cachedReadTokens, 8);
+      assert.equal(result.usage?.cacheReadSource, 'openai.input_tokens_details.cached_tokens');
       assert.equal(Object.prototype.hasOwnProperty.call(result.usage, 'cachedWriteTokens'), false);
     } finally {
       (axios as any).post = originalPost;
@@ -555,12 +597,24 @@ describe('OpenAIProvider Responses API mode', () => {
       output_tokens: 1,
       input_tokens_details: { cached_tokens: 5 },
     });
+    const compatiblePromptFallback = (provider as any).parseResponsesUsage({
+      prompt_tokens: 10,
+      output_tokens: 1,
+      input_tokens_details: { cached_tokens: 5 },
+    });
 
     assert.equal(missing.inputTokensReported, true);
     assert.equal(missingInput.inputTokensReported, false);
+    assert.equal(compatiblePromptFallback.promptTokens, 10);
+    assert.equal(compatiblePromptFallback.inputTokensReported, false);
+    assert.deepEqual(compatiblePromptFallback.providerUsage, {
+      contract: 'openai-responses-v1',
+      cached_tokens: 5,
+    });
     assert.equal(Object.prototype.hasOwnProperty.call(missing, 'cachedReadTokens'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(missing, 'cachedWriteTokens'), false);
     assert.equal(explicitZero.cachedReadTokens, 0);
+    assert.equal(explicitZero.cacheReadSource, 'openai.input_tokens_details.cached_tokens');
     assert.equal(explicitZero.cachedWriteTokens, 0);
     assert.equal(Object.prototype.hasOwnProperty.call(explicitZero, 'cachedReadTokens'), true);
     assert.equal(Object.prototype.hasOwnProperty.call(explicitZero, 'cachedWriteTokens'), true);

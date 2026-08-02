@@ -1,15 +1,16 @@
-export const CACHE_BENCHMARK_MANIFEST_SCHEMA = 'xiaoba.cache_benchmark_manifest.v1' as const;
-export const CACHE_BENCHMARK_LEDGER_SCHEMA = 'xiaoba.cache_benchmark_ledger.v1' as const;
-export const CACHE_BENCHMARK_ROUND_SCHEMA = 'xiaoba.cache_benchmark_round.v1' as const;
-export const CACHE_BENCHMARK_ATTEMPT_SCHEMA = 'xiaoba.cache_benchmark_attempt.v1' as const;
-export const CACHE_BENCHMARK_RESULT_SCHEMA = 'xiaoba.cache_benchmark_result.v1' as const;
+import type { ProviderReportedUsage } from '../types';
+
+export const CACHE_BENCHMARK_MANIFEST_SCHEMA = 'xiaoba.cache_benchmark_manifest.v3' as const;
+export const CACHE_BENCHMARK_LEDGER_SCHEMA = 'xiaoba.cache_benchmark_ledger.v3' as const;
+export const CACHE_BENCHMARK_ROUND_SCHEMA = 'xiaoba.cache_benchmark_round.v3' as const;
+export const CACHE_BENCHMARK_ATTEMPT_SCHEMA = 'xiaoba.cache_benchmark_attempt.v3' as const;
+export const CACHE_BENCHMARK_RESULT_SCHEMA = 'xiaoba.cache_benchmark_result.v3' as const;
 
 export const CACHE_READ_SOURCES = [
   'openai.input_tokens_details.cached_tokens',
   'openai.prompt_tokens_details.cached_tokens',
   'deepseek.prompt_cache_hit_tokens',
   'anthropic.cache_read_input_tokens',
-  'provider-compatible-declared',
 ] as const;
 
 export const REQUIRED_CACHE_BENCHMARK_CAPABILITIES = [
@@ -32,6 +33,7 @@ export type ProviderAdapter = 'openai' | 'anthropic';
 export type ApiType = 'openai-responses' | 'openai-chat-completions' | 'anthropic-messages';
 export type CacheClass = 'cold' | 'warm';
 export type AttemptOutcome = 'succeeded' | 'failed' | 'cancelled' | 'incomplete' | 'retrying';
+export type CacheBenchmarkVerdict = 'passed' | 'failed' | 'unobservable';
 
 export interface CacheBenchmarkCriteria {
   minimum_read_ratio: number;
@@ -55,6 +57,8 @@ export interface CacheBenchmarkCase {
   surface: string;
   task_id: string;
   task_fixture_fingerprint: string;
+  oracle_contract_fingerprint: string;
+  execution_plan_fingerprint: string;
   cache_read_source: CacheReadSource;
   scenario_family: string;
   session_type: string;
@@ -85,6 +89,7 @@ export interface CacheBenchmarkRoundHeader {
   schema: typeof CACHE_BENCHMARK_ROUND_SCHEMA;
   suite_id: string;
   round: number;
+  cache_partition_nonce: string;
   artifact_fingerprint: string;
   manifest_fingerprint: string;
   config_fingerprint: string;
@@ -103,10 +108,17 @@ export interface CacheBenchmarkAttemptMetadata {
 }
 
 export interface CacheBenchmarkUsage {
-  input_tokens?: number;
-  cache_read_tokens?: number;
-  cache_read_source: CacheReadSource;
-  cache_write_tokens?: number;
+  provider_usage?: ProviderReportedUsage;
+}
+
+export interface CacheBenchmarkAttestation {
+  quality_status: CacheBenchmarkVerdict;
+  safety_status: CacheBenchmarkVerdict;
+  oracle_contract_fingerprint: string;
+  execution_plan_fingerprint: string;
+  stable_prefix_fingerprint: string;
+  request_fingerprint: string;
+  observed_capabilities: CacheBenchmarkCapability[];
 }
 
 export interface CacheBenchmarkAttempt {
@@ -122,6 +134,7 @@ export interface CacheBenchmarkAttempt {
   cache_class: CacheClass;
   outcome: AttemptOutcome;
   usage: CacheBenchmarkUsage;
+  attestation: CacheBenchmarkAttestation;
 }
 
 export interface CacheBenchmarkRoundEvidence {
@@ -148,6 +161,14 @@ export type BenchmarkReason =
   | 'invalid_cache_read'
   | 'cache_read_exceeds_input'
   | 'cache_read_not_reported'
+  | 'quality_gate_failed'
+  | 'quality_gate_unobservable'
+  | 'safety_gate_failed'
+  | 'safety_gate_unobservable'
+  | 'capability_attestation_incomplete'
+  | 'oracle_contract_mismatch'
+  | 'execution_plan_mismatch'
+  | 'stable_prefix_drift'
   | 'insufficient_positive_tasks'
   | 'minimum_read_ratio_not_met'
   | 'minimum_capped_task_ratio_not_met'

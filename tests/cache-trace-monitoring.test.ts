@@ -34,7 +34,17 @@ function oneReplyAI(onOptions?: (options?: AIRequestOptions) => void) {
       options?: AIRequestOptions,
     ): Promise<ChatResponse> {
       onOptions?.(options);
-      return { content: 'normal reply', toolCalls: [], usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12, cachedReadTokens: 4 } };
+      return {
+        content: 'normal reply',
+        toolCalls: [],
+        usage: {
+          promptTokens: 10,
+          completionTokens: 2,
+          totalTokens: 12,
+          cachedReadTokens: 4,
+          cacheReadSource: 'openai.input_tokens_details.cached_tokens',
+        },
+      };
     },
   };
 }
@@ -217,11 +227,11 @@ test('reader keeps legacy and v4 traces diagnostic-only while resetting diff on 
   }
 });
 
-test('v5 preserves missing cache usage and qualifies an explicitly reported zero cache read', async () => {
+test('v6 preserves missing cache usage and qualifies an explicitly reported zero cache read', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-v5-truth-'));
   try {
     const observer = new CacheTraceObserver({
-      sessionId: 'cache:v5-truth',
+      sessionId: 'cache:v6-truth',
       traceDir: dir,
       env: { XIAOBA_CACHE_TRACE: 'true' },
     });
@@ -239,7 +249,14 @@ test('v5 preserves missing cache usage and qualifies an explicitly reported zero
       attemptId: 'zero:1',
       response: {
         content: 'ok',
-        usage: { promptTokens: 20, completionTokens: 1, totalTokens: 21, inputTokensReported: true, cachedReadTokens: 0 },
+        usage: {
+          promptTokens: 20,
+          completionTokens: 1,
+          totalTokens: 21,
+          inputTokensReported: true,
+          cachedReadTokens: 0,
+          cacheReadSource: 'openai.input_tokens_details.cached_tokens',
+        },
       },
     }));
     await observer.drain();
@@ -257,6 +274,7 @@ test('v5 preserves missing cache usage and qualifies an explicitly reported zero
       && line.lifecycle.call_id === 'zero').response_usage;
     assert.equal(zeroUsage.cache_read_reported, true);
     assert.equal(zeroUsage.cache_read_tokens, 0);
+    assert.equal(zeroUsage.cache_read_source, 'openai.input_tokens_details.cached_tokens');
 
     const store = await readCacheTraceStore(dir);
     const missing = store.records.find(record => record.callId === 'missing')!;
@@ -275,11 +293,11 @@ test('v5 preserves missing cache usage and qualifies an explicitly reported zero
   }
 });
 
-test('v5 omits response_usage without provider usage and reports stable qualification reasons', async () => {
+test('v6 omits response_usage without provider usage and reports stable qualification reasons', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-v5-reasons-'));
   try {
     const observer = new CacheTraceObserver({
-      sessionId: 'cache:v5-reasons',
+      sessionId: 'cache:v6-reasons',
       traceDir: dir,
       env: { XIAOBA_CACHE_TRACE: 'true' },
     });
@@ -302,7 +320,7 @@ test('v5 omits response_usage without provider usage and reports stable qualific
 
     fs.writeFileSync(path.join(dir, 'invalid.jsonl'), [
       cacheTraceLine({
-        schema: 'xiaoba.cache_trace.v5',
+        schema: 'xiaoba.cache_trace.v6',
         outcome: 'succeeded',
         attemptId: 'invalid-input:1',
         callId: 'invalid-input',
@@ -310,10 +328,10 @@ test('v5 omits response_usage without provider usage and reports stable qualific
         model: 'gpt-test',
         apiType: 'openai-responses',
         timestamp: '2026-08-01T01:02:00.000Z',
-        usage: { input_tokens: 0, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 0, cache_write_reported: false },
+        usage: { input_tokens: 0, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 0, cache_read_source: 'openai.input_tokens_details.cached_tokens', cache_write_reported: false },
       }),
       cacheTraceLine({
-        schema: 'xiaoba.cache_trace.v5',
+        schema: 'xiaoba.cache_trace.v6',
         outcome: 'succeeded',
         attemptId: 'read-exceeds:1',
         callId: 'read-exceeds',
@@ -321,10 +339,10 @@ test('v5 omits response_usage without provider usage and reports stable qualific
         model: 'gpt-test',
         apiType: 'openai-responses',
         timestamp: '2026-08-01T01:03:00.000Z',
-        usage: { input_tokens: 10, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 11, cache_write_reported: false },
+        usage: { input_tokens: 10, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 11, cache_read_source: 'openai.input_tokens_details.cached_tokens', cache_write_reported: false },
       }),
       cacheTraceLine({
-        schema: 'xiaoba.cache_trace.v5',
+        schema: 'xiaoba.cache_trace.v6',
         outcome: 'succeeded',
         attemptId: 'anthropic-missing-input:1',
         callId: 'anthropic-missing-input',
@@ -332,10 +350,10 @@ test('v5 omits response_usage without provider usage and reports stable qualific
         model: 'claude-test',
         apiType: 'anthropic-messages',
         timestamp: '2026-08-01T01:04:00.000Z',
-        usage: { input_tokens: 100, input_tokens_reported: false, cache_read_reported: true, cache_read_tokens: 90, cache_write_reported: true, cache_write_tokens: 10 },
+        usage: { input_tokens: 100, input_tokens_reported: false, cache_read_reported: true, cache_read_tokens: 90, cache_read_source: 'anthropic.cache_read_input_tokens', cache_write_reported: true, cache_write_tokens: 10 },
       }),
       cacheTraceLine({
-        schema: 'xiaoba.cache_trace.v5',
+        schema: 'xiaoba.cache_trace.v6',
         outcome: 'succeeded',
         attemptId: 'anthropic-missing-write:1',
         callId: 'anthropic-missing-write',
@@ -343,7 +361,7 @@ test('v5 omits response_usage without provider usage and reports stable qualific
         model: 'claude-test',
         apiType: 'anthropic-messages',
         timestamp: '2026-08-01T01:05:00.000Z',
-        usage: { input_tokens: 100, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 90, cache_write_reported: false },
+        usage: { input_tokens: 100, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 90, cache_read_source: 'anthropic.cache_read_input_tokens', cache_write_reported: false },
       }),
     ].join('\n') + '\n');
     const invalidStore = await readCacheTraceStore(dir);
@@ -385,7 +403,16 @@ test('observer writes retry recovery as two correlated attempts and preserves ca
       outcome: 'succeeded',
       attemptNumber: 2,
       attemptId: 'call-1:2',
-      response: { content: 'ok', usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11, cachedReadTokens: 4 } },
+      response: {
+        content: 'ok',
+        usage: {
+          promptTokens: 10,
+          completionTokens: 1,
+          totalTokens: 11,
+          cachedReadTokens: 4,
+          cacheReadSource: 'openai.input_tokens_details.cached_tokens',
+        },
+      },
     }));
     await observer.drain();
 
@@ -674,7 +701,7 @@ function attemptEvent(overrides: Partial<ModelAttemptEvent> = {}): ModelAttemptE
 }
 
 function cacheTraceLine(options: {
-  schema?: 'xiaoba.cache_trace.v4' | 'xiaoba.cache_trace.v5';
+  schema?: 'xiaoba.cache_trace.v4' | 'xiaoba.cache_trace.v5' | 'xiaoba.cache_trace.v6';
   outcome: 'started' | 'succeeded';
   callId: string;
   attemptId: string;

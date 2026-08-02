@@ -7,11 +7,40 @@ import { formatSubAgentEventLine, SubAgentEventStore } from '../src/core/sub-age
 import { ConversationRunner } from '../src/core/conversation-runner';
 import { SubAgentManager } from '../src/core/sub-agent-manager';
 import { SubAgentSession } from '../src/core/sub-agent-session';
+import { buildSubAgentStatusMessage } from '../src/core/sub-agent-observation';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { SpawnSubagentTool } from '../src/tools/spawn-subagent-tool';
 import { WaitSubagentsTool } from '../src/tools/wait-subagents-tool';
 
 describe('subagent runtime events', () => {
+  test('running status uses a stable control ref and excludes volatile progress text', () => {
+    const info = (id: string, displayName: string, progress: string) => ({
+      id,
+      displayName,
+      agentType: 'tester',
+      skillName: 'tester',
+      toolScope: 'read_only',
+      taskDescription: 'verify cache behavior',
+      status: 'running',
+      createdAt: Date.now(),
+      progressLog: [progress],
+      outputFiles: [],
+      allowedTools: [],
+    });
+    const first = buildSubAgentStatusMessage('parent', {
+      listByParent: () => [info('sub-random-a', '子agent1', 'phase A')],
+      getPromptReference: () => 'subtask-stable',
+    } as any);
+    const second = buildSubAgentStatusMessage('parent', {
+      listByParent: () => [info('sub-random-b', '子agent9', 'phase B')],
+      getPromptReference: () => 'subtask-stable',
+    } as any);
+
+    assert.equal(first?.content, second?.content);
+    assert.match(String(first?.content), /subtask-stable/);
+    assert.doesNotMatch(String(first?.content), /sub-random|phase A/);
+  });
+
   test('event store keeps bounded per-parent event streams with per-agent sequence numbers', () => {
     const store = new SubAgentEventStore({ maxEventsPerParent: 2, retentionMs: Number.MAX_SAFE_INTEGER });
 
@@ -127,17 +156,17 @@ describe('subagent runtime events', () => {
 
       assert.ok(eventIndex >= 0, 'subagent status observation should be injected');
       assert.ok(eventIndex < userIndex, 'subagent observation should appear before latest user message');
-      assert.match(String(result.messages[eventIndex].content), /完成 dashboard 账号链路审查/);
+      assert.match(String(result.messages[eventIndex].content), /dashboard 账号链路审查/);
       assert.doesNotMatch(
         String(result.messages[eventIndex].content),
-        /agent_tool_end|最近 runtime 事件|read_file 完成/,
-        'automatic current-turn observation should not include noisy runtime event details',
+        /agent_tool_end|最近 runtime 事件|read_file 完成|完成 dashboard 账号链路审查/,
+        'automatic status should keep task/state stable and leave volatile progress to runtime events/check_subagent',
       );
 
       const durable = builder.removeTransientMessages(result.messages);
       assert.equal(durable.some(message => (
         typeof message.content === 'string'
-        && message.content.includes('完成 dashboard 账号链路审查')
+        && message.content.includes('dashboard 账号链路审查')
       )), false);
     } finally {
       (SubAgentManager as any).getInstance = originalGetInstance;
@@ -1278,6 +1307,68 @@ describe('subagent runtime events', () => {
         (manager as any).parentMap.delete(info.id);
         (manager as any).displayNameByAgent.delete(info.id);
         (manager as any).dedupeKeyByAgent.delete(info.id);
+        (manager as any).promptRefByAgent.delete(info.id);
+        (manager as any).promptLabelByAgent.delete(info.id);
+      }
+      manager.unregisterPlatformCallbacks(parentSessionKey);
+    }
+  });
+
+  test('manager separates stable cache labels from unique retained control references', async () => {
+    const manager = SubAgentManager.getInstance();
+    const parentSessionKey = `test-parent:${Date.now()}:stable-label-unique-ref`;
+    manager.registerPlatformCallbacks(parentSessionKey, {
+      injectMessage: async () => undefined,
+      onSubAgentEvent: async () => undefined,
+    });
+    const originalRun = SubAgentSession.prototype.run;
+    const originalClose = SubAgentSession.prototype.close;
+    (SubAgentSession.prototype as any).run = async function runMock() {
+      this.status = 'completed';
+      this.completedAt = Date.now();
+      this.resultSummary = 'done';
+    };
+    (SubAgentSession.prototype as any).close = async function closeMock() {};
+
+    try {
+      const spawnSameTask = () => manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'reviewer',
+          taskDescription: 'review the same bounded change',
+          userMessage: 'review the same bounded change',
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      const first = await spawnSameTask();
+      assert.ok(!('error' in first));
+      await waitFor(() => manager.getInfoForParent(parentSessionKey, first.id)?.status === 'completed');
+      // A process restart or expired parent counter must never make a stale
+      // transcript control reference point at a new runtime instance.
+      (manager as any).displayCounterByParent.delete(parentSessionKey);
+      const second = await spawnSameTask();
+      assert.ok(!('error' in second));
+      await waitFor(() => manager.getInfoForParent(parentSessionKey, second.id)?.status === 'completed');
+
+      assert.equal(manager.getPromptLabel(first.id), manager.getPromptLabel(second.id));
+      assert.notEqual(first.promptRef, second.promptRef);
+      assert.match(first.promptRef || '', /^subtask-[a-f0-9]{12}-r[a-f0-9]{12}$/);
+      assert.match(second.promptRef || '', /^subtask-[a-f0-9]{12}-r[a-f0-9]{12}$/);
+      assert.equal(manager.getInfoForParent(parentSessionKey, first.promptRef || '')?.id, first.id);
+      assert.equal(manager.getInfoForParent(parentSessionKey, second.promptRef || '')?.id, second.id);
+    } finally {
+      SubAgentSession.prototype.run = originalRun;
+      SubAgentSession.prototype.close = originalClose;
+      for (const info of manager.listByParent(parentSessionKey)) {
+        (manager as any).subAgents.delete(info.id);
+        (manager as any).completedSubAgents.delete(info.id);
+        (manager as any).parentMap.delete(info.id);
+        (manager as any).displayNameByAgent.delete(info.id);
+        (manager as any).dedupeKeyByAgent.delete(info.id);
+        (manager as any).promptRefByAgent.delete(info.id);
+        (manager as any).promptLabelByAgent.delete(info.id);
       }
       manager.unregisterPlatformCallbacks(parentSessionKey);
     }

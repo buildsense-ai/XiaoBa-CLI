@@ -47,7 +47,7 @@ export function renderCacheBenchmarkResult(
 export function renderCacheBenchmarkInputError(format: CacheBenchmarkReportFormat): string {
   if (format === 'json') {
     return `${canonicalJson({
-      schema: 'xiaoba.cache_benchmark_result.v1',
+      schema: 'xiaoba.cache_benchmark_result.v3',
       status: 'invalid',
       exit_code: 2,
       reasons: ['schema_invalid'],

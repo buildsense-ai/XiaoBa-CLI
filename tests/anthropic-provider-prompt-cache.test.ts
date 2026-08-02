@@ -177,7 +177,14 @@ describe('AnthropicProvider prompt caching', () => {
       completionTokens: 20,
       totalTokens: 1020,
       inputTokensReported: true,
+      providerUsage: {
+        contract: 'anthropic-messages-v1',
+        input_tokens: 100,
+        cache_read_input_tokens: 500,
+        cache_creation_input_tokens: 400,
+      },
       cachedReadTokens: 500,
+      cacheReadSource: 'anthropic.cache_read_input_tokens',
       cachedWriteTokens: 400,
     });
   });
@@ -209,6 +216,7 @@ describe('AnthropicProvider prompt caching', () => {
     assert.equal(missingRawInput.usage?.promptTokens, 100);
     assert.equal(missingRawInput.usage?.inputTokensReported, false);
     assert.equal(missingRawInput.usage?.cachedReadTokens, 90);
+    assert.equal(missingRawInput.usage?.cacheReadSource, 'anthropic.cache_read_input_tokens');
     assert.equal(missingRawInput.usage?.cachedWriteTokens, 10);
 
     (provider as any).client.beta.promptCaching.messages.create = async () => ({
@@ -227,7 +235,14 @@ describe('AnthropicProvider prompt caching', () => {
       completionTokens: 2,
       totalTokens: 102,
       inputTokensReported: true,
+      providerUsage: {
+        contract: 'anthropic-messages-v1',
+        input_tokens: 100,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
       cachedReadTokens: 0,
+      cacheReadSource: 'anthropic.cache_read_input_tokens',
       cachedWriteTokens: 0,
     });
   });
@@ -409,7 +424,14 @@ describe('AnthropicProvider prompt caching', () => {
       completionTokens: 5,
       totalTokens: 105,
       inputTokensReported: true,
+      providerUsage: {
+        contract: 'anthropic-messages-v1',
+        input_tokens: 10,
+        cache_read_input_tokens: 70,
+        cache_creation_input_tokens: 20,
+      },
       cachedReadTokens: 70,
+      cacheReadSource: 'anthropic.cache_read_input_tokens',
       cachedWriteTokens: 20,
     });
   });

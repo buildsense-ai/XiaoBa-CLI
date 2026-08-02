@@ -28,6 +28,7 @@
     "canary:provider-cache": "node scripts/provider-cache-canary.mjs",
     "canary:deepseek-reasoning": "node scripts/deepseek-reasoning-canary.mjs",
     "benchmark:cache": "node dist/cache-benchmark/cli.js",
+    "benchmark:cache:online": "node dist/cache-benchmark/online-cli.js",
     "report": "node dist/index.js chat --exec '/report'",
     "clean-logs": "node scripts/clean-logs.mjs",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",

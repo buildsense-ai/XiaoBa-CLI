@@ -17,7 +17,7 @@ export class CheckSubagentTool implements Tool {
       properties: {
         subagent_id: {
           type: 'string',
-          description: '子智能体 ID 或展示名（如 sub-... 或 子agent1）。不填则列出当前会话所有子智能体',
+          description: '子智能体任务引用或展示名（如 subtask-... 或 子agent1）。不填则列出当前会话所有子智能体',
         },
       },
       required: [],
@@ -66,8 +66,8 @@ export class CheckSubagentTool implements Tool {
       : Math.round((Date.now() - info.createdAt) / 1000);
 
     const lines = [
-      `[${info.displayName || info.id}] ${info.taskDescription}`,
-      info.displayName ? `ID: ${info.id}` : '',
+      `[${info.displayName || info.promptRef || info.id}] ${info.taskDescription}`,
+      info.promptRef ? `任务引用: ${info.promptRef}` : '',
       `状态: ${statusMap[info.status] || info.status}`,
       `类型: ${info.agentType || 'skill'}`,
       `工具范围: ${info.toolScope || 'unknown'}`,

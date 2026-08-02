@@ -42,6 +42,7 @@ import {
   attachRetrySummary,
   captureModelErrorDiagnostics,
 } from './model-error-observability';
+import { resolveModelAttemptSink } from '../observability/model-attempt-scope';
 
 /**
  * AI 服务 - 统一的 AI 调用入口
@@ -330,6 +331,9 @@ export class AIService {
     if (this.isAbortError(error)) {
       return this.createAbortError();
     }
+    if (isCriticalModelAttemptSinkError(error)) {
+      return error;
+    }
 
     const provider = this.config.provider;
     const model = this.config.model;
@@ -510,6 +514,7 @@ export class AIService {
         });
         return result;
       } catch (error: any) {
+        if (isCriticalModelAttemptSinkError(error)) throw error;
         if (this.isAbortError(error) || signal?.aborted) {
           const policy = this.resolveRetryPolicy(error);
           this.emitModelAttempt(attemptRun, attemptNumber, {
@@ -637,7 +642,8 @@ export class AIService {
     options: AIRequestOptions,
     preflight?: ProviderRequestPreflightSummary,
   ): ModelAttemptRun | undefined {
-    if (!options.modelAttemptSink) return undefined;
+    const sink = resolveModelAttemptSink(options.modelAttemptSink);
+    if (!sink) return undefined;
     modelAttemptCallSequence = (modelAttemptCallSequence + 1) % Number.MAX_SAFE_INTEGER;
     const cache = this.config.provider === 'openai'
       ? summarizeOpenAICachePlan(resolveOpenAICachePlan({
@@ -650,6 +656,11 @@ export class AIService {
           tools: tools || [],
           partitionKey: options.cachePartitionKey,
           cacheMode: options.cacheMode,
+          compatiblePromptCaching: this.config.modelCapabilities?.promptCaching === 'openai-explicit'
+            ? 'explicit'
+            : this.config.modelCapabilities?.promptCaching === 'openai-key'
+              ? 'key'
+              : undefined,
         }))
       : this.config.provider === 'anthropic'
         ? summarizeAnthropicCachePlan(resolveAnthropicCachePlan({
@@ -662,7 +673,7 @@ export class AIService {
     const contextLifecycle = summarizeContextLifecycle(messages);
     return {
       callId: `${Date.now().toString(36)}-${process.pid.toString(36)}-${modelAttemptCallSequence.toString(36)}`,
-      sink: options.modelAttemptSink,
+      sink,
       context: options.modelAttemptContext ? { ...options.modelAttemptContext } : undefined,
       messages,
       tools: tools || [],
@@ -712,9 +723,13 @@ export class AIService {
     try {
       const result = run.sink.observe(event);
       if (result && typeof (result as Promise<void>).then === 'function') {
+        if (run.sink.critical) {
+          throw new Error('critical_model_attempt_sink_must_be_synchronous');
+        }
         Promise.resolve(result).catch(() => undefined);
       }
-    } catch {
+    } catch (error) {
+      if (run.sink.critical) throw new CriticalModelAttemptSinkError(error);
       // Diagnostics about diagnostics must never affect the provider request.
     }
   }
@@ -852,4 +867,17 @@ export class AIService {
     err.name = 'AbortError';
     return err;
   }
+}
+
+class CriticalModelAttemptSinkError extends Error {
+  readonly code = 'critical_model_attempt_sink_failed';
+
+  constructor(readonly cause: unknown) {
+    super('critical_model_attempt_sink_failed');
+    this.name = 'CriticalModelAttemptSinkError';
+  }
+}
+
+function isCriticalModelAttemptSinkError(error: unknown): error is CriticalModelAttemptSinkError {
+  return error instanceof CriticalModelAttemptSinkError;
 }

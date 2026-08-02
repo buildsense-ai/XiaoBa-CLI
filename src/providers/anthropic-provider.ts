@@ -52,6 +52,9 @@ export class AnthropicProvider implements AIProvider {
       apiKey: config.apiKey!,
       baseURL: this.normalizeBaseURL(this.apiUrl),
       timeout: 10 * 60 * 1000, // 10 分钟，Opus 长输出需要足够时间
+      // AIService owns the single observable retry lifecycle. SDK retries here
+      // would create hidden billable requests without ModelAttempt events.
+      maxRetries: 0,
       defaultHeaders: {
         'User-Agent': 'CatsCo',
         'x-stainless-lang': undefined as any,
@@ -479,7 +482,16 @@ export class AnthropicProvider implements AIProvider {
       completionTokens,
       totalTokens: promptTokens + completionTokens,
       inputTokensReported: uncachedInputTokens !== undefined,
-      ...(cachedReadTokens !== undefined ? { cachedReadTokens } : {}),
+      providerUsage: {
+        contract: 'anthropic-messages-v1' as const,
+        ...(uncachedInputTokens !== undefined ? { input_tokens: uncachedInputTokens } : {}),
+        ...(cachedReadTokens !== undefined ? { cache_read_input_tokens: cachedReadTokens } : {}),
+        ...(cachedWriteTokens !== undefined ? { cache_creation_input_tokens: cachedWriteTokens } : {}),
+      },
+      ...(cachedReadTokens !== undefined ? {
+        cachedReadTokens,
+        cacheReadSource: 'anthropic.cache_read_input_tokens' as const,
+      } : {}),
       ...(cachedWriteTokens !== undefined ? { cachedWriteTokens } : {}),
     } : undefined;
 

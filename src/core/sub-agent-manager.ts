@@ -14,7 +14,7 @@ import {
   SubAgentEventType,
   SubAgentRuntimeEvent,
 } from './sub-agent-events';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 // ─── 平台回调注册 ───────────────────────────────────────
 
@@ -91,6 +91,10 @@ export class SubAgentManager {
   private eventLoggers = new Map<string, SubAgentEventLogger>();
   /** 子智能体展示名，便于日志/UI 使用 子agent1/子agent2 这类稳定标签 */
   private displayNameByAgent = new Map<string, string>();
+  /** Unique model-facing control handle, stable within one subagent lifetime. */
+  private promptRefByAgent = new Map<string, string>();
+  /** Stable task label used only by automatic status injection for cache reuse. */
+  private promptLabelByAgent = new Map<string, string>();
   private displayCounterByParent = new Map<string, number>();
   /** Conservative active-task idempotency key, key = subagent id. */
   private dedupeKeyByAgent = new Map<string, string>();
@@ -195,15 +199,20 @@ export class SubAgentManager {
       };
     }
 
-    const id = `sub-${randomUUID()}`;
-    const displayName = this.nextDisplayName(parentSessionKey);
-    this.displayNameByAgent.set(id, displayName);
-
     // 获取平台回调（子智能体需要 injectMessage 向主 Agent 报告）
     const platform = this.platformCallbacks.get(parentSessionKey);
     if (!platform) {
       return { error: '平台回调未注册，无法派遣子智能体' };
     }
+
+    const id = `sub-${randomUUID()}`;
+    const displayName = this.nextDisplayName(parentSessionKey);
+    const promptLabel = buildStablePromptLabel(parentSessionKey, dedupeKey);
+    const instanceSuffix = id.slice('sub-'.length).replace(/-/g, '').slice(0, 12);
+    const promptRef = `${promptLabel}-r${instanceSuffix}`;
+    this.displayNameByAgent.set(id, displayName);
+    this.promptRefByAgent.set(id, promptRef);
+    this.promptLabelByAgent.set(id, promptLabel);
 
     const options: SubAgentSpawnOptions = {
       displayName,
@@ -222,8 +231,8 @@ export class SubAgentManager {
         this.recordEvent(parentSessionKey, id, type, summary, payload);
       },
       // ask_parent 通道：子 agent 需要主 agent/用户补信息时才注入父会话。
-      notifyParent: async (subAgentId, taskDesc, question) => {
-        const msg = `[${displayName} 反馈]\nID：${subAgentId}\n任务：${taskDesc}\n需要你的指示：${question}`;
+      notifyParent: async (_subAgentId, taskDesc, question) => {
+        const msg = `[${displayName} 反馈]\n任务引用：${promptRef}\n任务：${taskDesc}\n需要你的指示：${question}`;
         await platform.injectMessage(msg);
       },
     };
@@ -327,6 +336,14 @@ export class SubAgentManager {
       }
     }
     return false;
+  }
+
+  getPromptReference(subAgentId: string): string | undefined {
+    return this.promptRefByAgent.get(subAgentId);
+  }
+
+  getPromptLabel(subAgentId: string): string | undefined {
+    return this.promptLabelByAgent.get(subAgentId);
   }
 
   shutdown(reason = 'runtime shutdown'): StopAllSubAgentsResult {
@@ -498,7 +515,10 @@ export class SubAgentManager {
   formatRefsForParent(parentSessionKey: string, limit = 6): string {
     const all = this.listByParent(parentSessionKey);
     const refs = all.slice(0, limit).map(info => {
-      const label = info.displayName ? `${info.displayName} (${info.id})` : info.id;
+      const ref = info.promptRef || info.displayName || info.id;
+      const label = info.displayName && info.displayName !== ref
+        ? `${info.displayName} (${ref})`
+        : ref;
       return `- ${label}: ${info.status}`;
     });
     if (refs.length === 0) return '';
@@ -508,7 +528,7 @@ export class SubAgentManager {
     return [
       '当前会话可用子任务：',
       refs.join('\n') + suffix,
-      '可使用完整 ID、唯一短前缀或展示名（如 子agent1）。',
+      '可使用任务引用或展示名（如 子agent1）；兼容旧的完整 ID/唯一短前缀。',
     ].join('\n');
   }
 
@@ -554,7 +574,8 @@ export class SubAgentManager {
   }
 
   getResultObservationHandlingForParent(parentSessionKey: string, observation: string): ResultObservationHandling {
-    const id = parseTerminalResultObservationId(observation);
+    const ref = parseTerminalResultObservationRef(observation);
+    const id = ref ? this.resolveSubAgentIdForParent(parentSessionKey, ref) : undefined;
     if (!id || this.parentMap.get(id) !== parentSessionKey) return 'silent';
     if (this.resultConsumedByWait.has(id)) return 'drop';
     if (this.resultNotifyOnObservation.has(id)) return 'notify';
@@ -567,7 +588,8 @@ export class SubAgentManager {
   }
 
   markResultObservationHandledForParent(parentSessionKey: string, observation: string): void {
-    const id = parseTerminalResultObservationId(observation);
+    const ref = parseTerminalResultObservationRef(observation);
+    const id = ref ? this.resolveSubAgentIdForParent(parentSessionKey, ref) : undefined;
     if (!id || this.parentMap.get(id) !== parentSessionKey) return;
     this.resultNotifyOnObservation.delete(id);
   }
@@ -576,6 +598,7 @@ export class SubAgentManager {
     const recentEvents = this.eventStore.listByAgent(parentSessionKey, info.id, 8);
     return {
       ...info,
+      promptRef: this.promptRefByAgent.get(info.id),
       displayName: info.displayName || this.displayNameByAgent.get(info.id),
       recentEvents,
       eventCount: this.eventStore.listByAgent(parentSessionKey, info.id).length,
@@ -607,6 +630,7 @@ export class SubAgentManager {
     if (info.status !== 'stopped') {
       const statusLabel = info.status === 'completed' ? '已完成' : '失败';
       const displayName = info.displayName || this.displayNameByAgent.get(id) || id;
+      const promptRef = this.promptRefByAgent.get(id) || displayName;
       const fileList = info.outputFiles.length > 0
         ? `\n产出文件：\n${info.outputFiles.map(f => `- ${f}`).join('\n')}`
         : '';
@@ -616,7 +640,7 @@ export class SubAgentManager {
       );
       const resultObservation = [
         `[${displayName} ${statusLabel}]`,
-        `ID：${id}`,
+        `任务引用：${promptRef}`,
         `任务：${taskDescription}`,
         `结果摘要：${resultSummary}`,
         '说明：这是压缩后的子 agent 结果。需要更多细节时先用 check_subagent 查看，再按需重新读取具体文件或更小范围。',
@@ -647,6 +671,8 @@ export class SubAgentManager {
       this.eventStore.removeAgent(parentSessionKey, id);
       this.parentMap.delete(id);
       this.displayNameByAgent.delete(id);
+      this.promptRefByAgent.delete(id);
+      this.promptLabelByAgent.delete(id);
       this.cleanupParentCachesIfIdle(parentSessionKey);
     }, SubAgentManager.RETENTION_MS);
     retentionTimer.unref?.();
@@ -741,9 +767,19 @@ export class SubAgentManager {
     const owner = this.parentMap.get(ref);
     if (owner) return ref;
 
+    for (const [id, session] of this.subAgents) {
+      if (this.parentMap.get(id) !== parentSessionKey || !isActiveSubAgentStatus(session.status)) continue;
+      if (
+        this.promptRefByAgent.get(id) === ref
+        || this.promptLabelByAgent.get(id) === ref
+        || this.displayNameByAgent.get(id) === ref
+      ) return id;
+    }
+
     let prefixMatch: string | undefined;
     for (const [id, ownerKey] of this.parentMap) {
       if (ownerKey !== parentSessionKey) continue;
+      if (this.promptRefByAgent.get(id) === ref) return id;
       if (this.displayNameByAgent.get(id) === ref) return id;
       if (ref.length >= SubAgentManager.MIN_ID_PREFIX_LENGTH && id.startsWith(ref)) {
         if (prefixMatch && prefixMatch !== id) {
@@ -791,6 +827,14 @@ export class SubAgentManager {
       Logger.warning(`[SubAgentManager] 平台子智能体事件通知失败: ${error.message}`);
     }
   }
+}
+
+function buildStablePromptLabel(parentSessionKey: string, dedupeKey: string): string {
+  const digest = createHash('sha256')
+    .update(`${parentSessionKey}\n${dedupeKey}`, 'utf8')
+    .digest('hex')
+    .slice(0, 12);
+  return `subtask-${digest}`;
 }
 
 function isActiveSubAgentStatus(status: SubAgentInfo['status']): boolean {
@@ -879,11 +923,13 @@ function normalizeSubAgentTaskKey(text: string): string {
     .trim();
 }
 
-function parseTerminalResultObservationId(text: string): string | undefined {
+function parseTerminalResultObservationRef(text: string): string | undefined {
   const normalized = String(text || '').trim();
   if (!/^\[[^\]]+\s+(已完成|失败|已停止)\]/.test(normalized)
     && !/^\[子智能体(已)?(完成|失败|停止)\]/.test(normalized)) {
     return undefined;
   }
-  return normalized.match(/\bID[：:]\s*(sub-[0-9a-f-]+)/i)?.[1];
+  return normalized.match(
+    /(?:任务引用|ID)[：:]\s*((?:subtask-[a-f0-9]{12}-(?:r[a-f0-9]{12}|g\d+))|(?:sub-[0-9a-f-]+))/i,
+  )?.[1];
 }

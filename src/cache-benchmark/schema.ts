@@ -6,6 +6,7 @@ import {
   CACHE_READ_SOURCES,
   REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
   CacheBenchmarkAttempt,
+  CacheBenchmarkAttestation,
   CacheBenchmarkAttemptMetadata,
   CacheBenchmarkCase,
   CacheBenchmarkLedger,
@@ -95,6 +96,7 @@ export function parseRoundHeader(value: unknown): CacheBenchmarkRoundHeader {
     'schema',
     'suite_id',
     'round',
+    'cache_partition_nonce',
     'artifact_fingerprint',
     'manifest_fingerprint',
     'config_fingerprint',
@@ -104,6 +106,7 @@ export function parseRoundHeader(value: unknown): CacheBenchmarkRoundHeader {
     schema: CACHE_BENCHMARK_ROUND_SCHEMA,
     suite_id: identifier(record.suite_id),
     round: positiveInteger(record.round),
+    cache_partition_nonce: partitionNonce(record.cache_partition_nonce),
     artifact_fingerprint: fingerprint(record.artifact_fingerprint),
     manifest_fingerprint: fingerprint(record.manifest_fingerprint),
     config_fingerprint: fingerprint(record.config_fingerprint),
@@ -124,6 +127,7 @@ export function parseAttempt(value: unknown): CacheBenchmarkAttempt {
     'cache_class',
     'outcome',
     'usage',
+    'attestation',
   ]);
   if (record.schema !== CACHE_BENCHMARK_ATTEMPT_SCHEMA) invalid();
   return {
@@ -139,6 +143,7 @@ export function parseAttempt(value: unknown): CacheBenchmarkAttempt {
     cache_class: enumeration(record.cache_class, ['cold', 'warm'] as const),
     outcome: enumeration(record.outcome, ['succeeded', 'failed', 'cancelled', 'incomplete', 'retrying'] as const),
     usage: parseUsage(record.usage),
+    attestation: parseAttestation(record.attestation),
   };
 }
 
@@ -173,6 +178,8 @@ function parseCase(value: unknown): CacheBenchmarkCase {
     'surface',
     'task_id',
     'task_fixture_fingerprint',
+    'oracle_contract_fingerprint',
+    'execution_plan_fingerprint',
     'cache_read_source',
     'scenario_family',
     'session_type',
@@ -201,6 +208,8 @@ function parseCase(value: unknown): CacheBenchmarkCase {
     surface: identifier(record.surface),
     task_id: identifier(record.task_id),
     task_fixture_fingerprint: fingerprint(record.task_fixture_fingerprint),
+    oracle_contract_fingerprint: fingerprint(record.oracle_contract_fingerprint),
+    execution_plan_fingerprint: fingerprint(record.execution_plan_fingerprint),
     cache_read_source: cacheReadSource,
     scenario_family: identifier(record.scenario_family),
     session_type: identifier(record.session_type),
@@ -255,18 +264,94 @@ function parseLedgerRound(value: unknown): CacheBenchmarkLedgerRound {
 }
 
 function parseUsage(value: unknown): CacheBenchmarkUsage {
-  const record = exactRecord(
-    value,
-    ['cache_read_source'],
-    ['input_tokens', 'cache_read_tokens', 'cache_write_tokens'],
-  );
-  const usage: CacheBenchmarkUsage = {
-    cache_read_source: enumeration(record.cache_read_source, CACHE_READ_SOURCES),
+  const record = exactRecord(value, [], ['provider_usage']);
+  if (!hasOwn(record, 'provider_usage')) return {};
+  const raw = exactRecord(record.provider_usage, ['contract'], [
+    'input_tokens',
+    'prompt_tokens',
+    'cached_tokens',
+    'cache_write_tokens',
+    'prompt_cache_hit_tokens',
+    'cache_read_input_tokens',
+    'cache_creation_input_tokens',
+  ]);
+  const contract = enumeration(raw.contract, [
+    'openai-responses-v1',
+    'openai-chat-v1',
+    'deepseek-chat-v1',
+    'anthropic-messages-v1',
+  ] as const);
+  const allowedByContract: Record<typeof contract, readonly string[]> = {
+    'openai-responses-v1': ['contract', 'input_tokens', 'cached_tokens', 'cache_write_tokens'],
+    'openai-chat-v1': ['contract', 'prompt_tokens', 'cached_tokens', 'cache_write_tokens'],
+    'deepseek-chat-v1': ['contract', 'prompt_tokens', 'prompt_cache_hit_tokens'],
+    'anthropic-messages-v1': [
+      'contract',
+      'input_tokens',
+      'cache_read_input_tokens',
+      'cache_creation_input_tokens',
+    ],
   };
-  if (hasOwn(record, 'input_tokens')) usage.input_tokens = integer(record.input_tokens);
-  if (hasOwn(record, 'cache_read_tokens')) usage.cache_read_tokens = integer(record.cache_read_tokens);
-  if (hasOwn(record, 'cache_write_tokens')) usage.cache_write_tokens = nonNegativeInteger(record.cache_write_tokens);
-  return usage;
+  if (Object.keys(raw).some(key => !allowedByContract[contract].includes(key))) invalid();
+  const numeric = (key: string): number | undefined => hasOwn(raw, key)
+    ? nonNegativeInteger(raw[key])
+    : undefined;
+  switch (contract) {
+    case 'openai-responses-v1':
+      return { provider_usage: {
+        contract,
+        ...(numeric('input_tokens') === undefined ? {} : { input_tokens: numeric('input_tokens') }),
+        ...(numeric('cached_tokens') === undefined ? {} : { cached_tokens: numeric('cached_tokens') }),
+        ...(numeric('cache_write_tokens') === undefined ? {} : { cache_write_tokens: numeric('cache_write_tokens') }),
+      } };
+    case 'openai-chat-v1':
+      return { provider_usage: {
+        contract,
+        ...(numeric('prompt_tokens') === undefined ? {} : { prompt_tokens: numeric('prompt_tokens') }),
+        ...(numeric('cached_tokens') === undefined ? {} : { cached_tokens: numeric('cached_tokens') }),
+        ...(numeric('cache_write_tokens') === undefined ? {} : { cache_write_tokens: numeric('cache_write_tokens') }),
+      } };
+    case 'deepseek-chat-v1':
+      return { provider_usage: {
+        contract,
+        ...(numeric('prompt_tokens') === undefined ? {} : { prompt_tokens: numeric('prompt_tokens') }),
+        ...(numeric('prompt_cache_hit_tokens') === undefined ? {} : { prompt_cache_hit_tokens: numeric('prompt_cache_hit_tokens') }),
+      } };
+    case 'anthropic-messages-v1':
+      return { provider_usage: {
+        contract,
+        ...(numeric('input_tokens') === undefined ? {} : { input_tokens: numeric('input_tokens') }),
+        ...(numeric('cache_read_input_tokens') === undefined ? {} : { cache_read_input_tokens: numeric('cache_read_input_tokens') }),
+        ...(numeric('cache_creation_input_tokens') === undefined ? {} : { cache_creation_input_tokens: numeric('cache_creation_input_tokens') }),
+      } };
+  }
+}
+
+function parseAttestation(value: unknown): CacheBenchmarkAttestation {
+  const record = exactRecord(value, [
+    'quality_status',
+    'safety_status',
+    'oracle_contract_fingerprint',
+    'execution_plan_fingerprint',
+    'stable_prefix_fingerprint',
+    'request_fingerprint',
+    'observed_capabilities',
+  ]);
+  if (!Array.isArray(record.observed_capabilities)) invalid();
+  const observedCapabilities = record.observed_capabilities.map(capability => enumeration(
+    capability,
+    REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
+  ));
+  assertUnique(observedCapabilities);
+  return {
+    quality_status: enumeration(record.quality_status, ['passed', 'failed', 'unobservable'] as const),
+    safety_status: enumeration(record.safety_status, ['passed', 'failed', 'unobservable'] as const),
+    oracle_contract_fingerprint: fingerprint(record.oracle_contract_fingerprint),
+    execution_plan_fingerprint: fingerprint(record.execution_plan_fingerprint),
+    stable_prefix_fingerprint: fingerprint(record.stable_prefix_fingerprint),
+    request_fingerprint: fingerprint(record.request_fingerprint),
+    observed_capabilities: observedCapabilities,
+  };
 }
 
 function exactRecord(
@@ -313,6 +398,11 @@ function modelIdentifier(value: unknown): string {
 function fingerprint(value: unknown): string {
   if (typeof value !== 'string' || !SHA256_FINGERPRINT.test(value)) invalid();
   return value as string;
+}
+
+function partitionNonce(value: unknown): string {
+  if (typeof value !== 'string' || !/^[a-f0-9]{32}$/.test(value)) invalid();
+  return value;
 }
 
 function positiveInteger(value: unknown): number {
@@ -363,15 +453,14 @@ function assertAdapterContract(
   cacheReadSource: CacheReadSource,
 ): void {
   const allowed = providerAdapter === 'openai' && apiType === 'openai-responses'
-    ? ['openai.input_tokens_details.cached_tokens', 'provider-compatible-declared']
+    ? ['openai.input_tokens_details.cached_tokens']
     : providerAdapter === 'openai' && apiType === 'openai-chat-completions'
       ? [
         'openai.prompt_tokens_details.cached_tokens',
         'deepseek.prompt_cache_hit_tokens',
-        'provider-compatible-declared',
       ]
       : providerAdapter === 'anthropic' && apiType === 'anthropic-messages'
-        ? ['anthropic.cache_read_input_tokens', 'provider-compatible-declared']
+        ? ['anthropic.cache_read_input_tokens']
         : [];
   if (!allowed.includes(cacheReadSource)) invalid();
 }

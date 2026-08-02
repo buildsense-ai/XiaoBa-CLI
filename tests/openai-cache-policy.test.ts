@@ -20,6 +20,22 @@ test('OpenAI cache policy gates provider-only fields by endpoint and model capab
     messages,
     tools: [],
   });
+  const declaredCompatible = resolveOpenAICachePlan({
+    apiUrl: 'https://relay.example.test/v1/responses',
+    model: 'gpt-5.6-sol',
+    apiType: 'openai-responses',
+    messages,
+    tools: [],
+    compatiblePromptCaching: 'explicit',
+  });
+  const keyOnlyCompatible = resolveOpenAICachePlan({
+    apiUrl: 'https://relay.example.test/v1/responses',
+    model: 'gpt-5.6-sol',
+    apiType: 'openai-responses',
+    messages,
+    tools: [],
+    compatiblePromptCaching: 'key',
+  });
   const olderOfficial = resolveOpenAICachePlan({
     apiUrl: 'https://api.openai.com/v1/responses',
     model: 'gpt-5.5',
@@ -38,6 +54,12 @@ test('OpenAI cache policy gates provider-only fields by endpoint and model capab
   assert.equal(compatible.strategy, 'openai-compatible-automatic-prefix');
   assert.equal(compatible.promptCacheKey, undefined);
   assert.equal(compatible.explicitBreakpoints, 0);
+  assert.equal(declaredCompatible.strategy, 'openai-explicit-stable-prefix');
+  assert.match(declaredCompatible.promptCacheKey || '', /^catsco-v3-rsp-/);
+  assert.equal(declaredCompatible.explicitBreakpoints, 1);
+  assert.equal(keyOnlyCompatible.strategy, 'openai-prompt-cache-key');
+  assert.match(keyOnlyCompatible.promptCacheKey || '', /^catsco-v3-rsp-/);
+  assert.equal(keyOnlyCompatible.explicitBreakpoints, 0);
   assert.equal(olderOfficial.strategy, 'openai-prompt-cache-key');
   assert.match(olderOfficial.promptCacheKey || '', /^catsco-v3-rsp-/);
   assert.equal(olderOfficial.explicitBreakpoints, 0);

@@ -16,7 +16,7 @@ export class ResumeSubagentTool implements Tool {
       properties: {
         subagent_id: {
           type: 'string',
-          description: '要恢复的子智能体 ID 或展示名（如 sub-... 或 子agent1）',
+          description: '要恢复的子智能体任务引用或展示名（如 subtask-... 或 子agent1）',
         },
         answer: {
           type: 'string',
@@ -42,14 +42,14 @@ export class ResumeSubagentTool implements Tool {
       case 'resumed':
         {
           const info = manager.getInfoForParent(sessionKey, subagent_id);
-          const label = info?.displayName ? `${info.displayName} (${info.id})` : subagent_id;
+          const label = modelFacingSubAgentLabel(info, subagent_id);
           Logger.info(`[ResumeSubagent] 已恢复 ${label}`);
           return { ok: true, content: `${label} 已恢复执行。` };
         }
       case 'not_waiting':
         {
           const info = manager.getInfoForParent(sessionKey, subagent_id);
-          const label = info?.displayName ? `${info.displayName} (${info.id})` : subagent_id;
+          const label = modelFacingSubAgentLabel(info, subagent_id);
           return { ok: true, content: `${label} 当前未处于等待状态，无需恢复。` };
         }
       case 'forbidden':
@@ -62,4 +62,9 @@ export class ResumeSubagentTool implements Tool {
         };
     }
   }
+}
+
+function modelFacingSubAgentLabel(info: any, fallback: string): string {
+  const ref = info?.promptRef || info?.displayName || fallback;
+  return info?.displayName && info.displayName !== ref ? `${info.displayName} (${ref})` : ref;
 }

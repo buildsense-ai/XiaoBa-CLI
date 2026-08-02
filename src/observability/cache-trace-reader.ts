@@ -7,6 +7,7 @@ export interface CacheTraceUsage {
   inputTokens?: number;
   cacheReadReported: boolean;
   cacheReadTokens?: number;
+  cacheReadSource?: string;
   cacheWriteReported: boolean;
   cacheWriteTokens?: number;
   freshInputTokens?: number;
@@ -22,6 +23,8 @@ export type CacheTraceQualificationReason =
   | 'response-usage-missing'
   | 'input-tokens-not-reported'
   | 'cache-read-not-reported'
+  | 'cache-read-source-not-reported'
+  | 'cache-read-source-invalid'
   | 'cache-write-not-reported'
   | 'invalid-input-tokens'
   | 'invalid-cache-read-tokens'
@@ -155,7 +158,9 @@ export async function readCacheTraceStore(
         if (malformed || groups.size === 0) malformedFiles++;
       } else {
         const raw = JSON.parse(content);
-        const record = raw?.schema === 'xiaoba.cache_trace.v4' || raw?.schema === 'xiaoba.cache_trace.v5'
+        const record = raw?.schema === 'xiaoba.cache_trace.v4'
+          || raw?.schema === 'xiaoba.cache_trace.v5'
+          || raw?.schema === 'xiaoba.cache_trace.v6'
           ? normalizeAttemptEvents([raw], relative)
           : normalizeLegacyRecord(raw, relative);
         if (record) normalized.push(record);
@@ -324,13 +329,17 @@ function normalizeUsage(
   const cacheWrite = usageField(value, ['cache_write_tokens', 'cached_write_tokens', 'cachedWriteTokens']);
   const freshInput = usageField(value, ['fresh_input_tokens']);
   const output = usageField(value, ['output_tokens', 'completion_tokens', 'completionTokens']);
-  const isV5 = schema === 'xiaoba.cache_trace.v5';
-  const inputReported = isV5 ? value.input_tokens_reported === true : input.present;
-  const cacheReadReported = isV5 ? value.cache_read_reported === true : cacheRead.present;
-  const cacheWriteReported = isV5 ? value.cache_write_reported === true : cacheWrite.present;
+  const isV6 = schema === 'xiaoba.cache_trace.v6';
+  const isStructured = isV6 || schema === 'xiaoba.cache_trace.v5';
+  const inputReported = isStructured ? value.input_tokens_reported === true : input.present;
+  const cacheReadReported = isStructured ? value.cache_read_reported === true : cacheRead.present;
+  const cacheWriteReported = isStructured ? value.cache_write_reported === true : cacheWrite.present;
+  const cacheReadSource = typeof value.cache_read_source === 'string'
+    ? value.cache_read_source
+    : undefined;
   const reasons: CacheTraceQualificationReason[] = [];
 
-  if (!isV5) reasons.push('legacy-trace-schema');
+  if (!isV6) reasons.push('legacy-trace-schema');
   if (outcome !== 'succeeded') reasons.push('attempt-not-succeeded');
   if (!responseUsagePresent) {
     reasons.push('response-usage-missing');
@@ -347,7 +356,12 @@ function normalizeUsage(
     } else if (input.valid && input.value !== undefined && cacheRead.value > input.value) {
       reasons.push('cache-read-exceeds-input');
     }
-    if (isV5 && apiType === 'anthropic-messages' && !cacheWriteReported) {
+    if (isV6 && cacheReadReported && !cacheReadSource) {
+      reasons.push('cache-read-source-not-reported');
+    } else if (isV6 && cacheReadReported && !isCacheReadSourceAllowed(apiType, cacheReadSource)) {
+      reasons.push('cache-read-source-invalid');
+    }
+    if (isStructured && apiType === 'anthropic-messages' && !cacheWriteReported) {
       reasons.push('cache-write-not-reported');
     }
     if (cacheWriteReported && (!cacheWrite.valid || cacheWrite.value === undefined)) {
@@ -386,6 +400,7 @@ function normalizeUsage(
       ...(input.valid && input.value !== undefined ? { inputTokens: input.value } : {}),
       cacheReadReported,
       ...(cacheRead.valid && cacheRead.value !== undefined ? { cacheReadTokens: cacheRead.value } : {}),
+      ...(cacheReadSource ? { cacheReadSource } : {}),
       cacheWriteReported,
       ...(cacheWrite.valid && cacheWrite.value !== undefined ? { cacheWriteTokens: cacheWrite.value } : {}),
       ...(computedFreshInput === undefined ? {} : { freshInputTokens: computedFreshInput }),
@@ -397,6 +412,21 @@ function normalizeUsage(
       reasons,
     },
   };
+}
+
+function isCacheReadSourceAllowed(apiType: string, source: string | undefined): boolean {
+  if (!source) return false;
+  if (apiType === 'openai-responses') {
+    return source === 'openai.input_tokens_details.cached_tokens';
+  }
+  if (apiType === 'openai-chat-completions') {
+    return source === 'openai.prompt_tokens_details.cached_tokens'
+      || source === 'deepseek.prompt_cache_hit_tokens';
+  }
+  if (apiType === 'anthropic-messages') {
+    return source === 'anthropic.cache_read_input_tokens';
+  }
+  return false;
 }
 
 function usageField(value: Record<string, unknown>, keys: string[]): UsageField {

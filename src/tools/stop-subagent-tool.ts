@@ -16,7 +16,7 @@ export class StopSubagentTool implements Tool {
       properties: {
         subagent_id: {
           type: 'string',
-          description: '要停止的子智能体 ID 或展示名（如 sub-... 或 子agent1）',
+          description: '要停止的子智能体任务引用或展示名（如 subtask-... 或 子agent1）',
         },
       },
       required: ['subagent_id'],
@@ -36,13 +36,13 @@ export class StopSubagentTool implements Tool {
 
     if (result === 'stopped') {
       const info = manager.getInfoForParent(sessionKey, subagent_id);
-      const label = info?.displayName ? `${info.displayName} (${info.id})` : subagent_id;
+      const label = modelFacingSubAgentLabel(info, subagent_id);
       Logger.info(`[StopSubagent] 已停止 ${label}`);
       return { ok: true, content: `${label} 已停止。` };
     }
     if (result === 'not_running') {
       const info = manager.getInfoForParent(sessionKey, subagent_id);
-      const label = info?.displayName ? `${info.displayName} (${info.id})` : subagent_id;
+      const label = modelFacingSubAgentLabel(info, subagent_id);
       return { ok: true, content: `${label} 当前状态为 ${info?.status || 'unknown'}，无法停止。` };
     }
     if (result === 'forbidden') {
@@ -55,4 +55,9 @@ export class StopSubagentTool implements Tool {
       message: [`未找到子智能体 ${subagent_id}。`, manager.formatRefsForParent(sessionKey)].filter(Boolean).join('\n'),
     };
   }
+}
+
+function modelFacingSubAgentLabel(info: any, fallback: string): string {
+  const ref = info?.promptRef || info?.displayName || fallback;
+  return info?.displayName && info.displayName !== ref ? `${info.displayName} (${ref})` : ref;
 }

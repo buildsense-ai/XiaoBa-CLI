@@ -38,7 +38,11 @@ import { TurnLogRecorder } from './turn-log-recorder';
 import { TurnContextBuilder } from './turn-context-builder';
 import { AgentTurnController, AgentTurnRunError } from './agent-turn-controller';
 import { SessionLifecycleManager } from './session-lifecycle-manager';
-import { PlanRuntime } from './plan-runtime';
+import {
+  PlanRuntime,
+  type RuntimePlanSnapshot,
+  type UpdatePlanInput,
+} from './plan-runtime';
 import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
 import { resolveModelContextWindow } from '../utils/model-context-window';
@@ -542,6 +546,17 @@ export class AgentSession {
       this.lastActiveAt = Date.now();
     }
     return enqueued;
+  }
+
+  /** Allows adapters with an external task UI to seed the same runtime plan used by update_plan. */
+  updatePlan(input: UpdatePlanInput): RuntimePlanSnapshot {
+    const snapshot = this.planRuntime.update(input);
+    this.lastActiveAt = Date.now();
+    return snapshot;
+  }
+
+  getPlanSnapshot(): RuntimePlanSnapshot {
+    return this.planRuntime.getSnapshot();
   }
 
   /**

@@ -12,7 +12,17 @@ const SESSIONS_DIR = PathResolver.getDataPath('sessions');
 const SESSION_STATE_DIR = PathResolver.getDataPath('session-state');
 
 function ensureDir(): void {
-  if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+  ensurePrivateDirectory(SESSIONS_DIR);
+}
+
+function ensurePrivateDirectory(directory: string): void {
+  if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') fs.chmodSync(directory, 0o700);
+}
+
+function writePrivateFile(file: string, content: string): void {
+  fs.writeFileSync(file, content, { encoding: 'utf8', mode: 0o600 });
+  if (process.platform !== 'win32') fs.chmodSync(file, 0o600);
 }
 
 function keyToFilename(key: string): string {
@@ -148,7 +158,7 @@ export class SessionStore {
       const fp = filePath(sessionKey);
       const lines = sanitizeForPersistence(messages)
         .map(m => JSON.stringify(m));
-      fs.writeFileSync(fp, lines.join('\n') + '\n', 'utf-8');
+      writePrivateFile(fp, lines.join('\n') + '\n');
       return true;
     } catch (err) {
       Logger.error(`保存 context 失败 [${sessionKey}]: ${err}`);
@@ -171,7 +181,7 @@ export class SessionStore {
       const sanitized = sanitizeForPersistence(msgs);
       const migratedContent = serializeMessages(sanitized).trim();
       if (migratedContent !== content) {
-        fs.writeFileSync(fp, serializeMessages(sanitized), 'utf-8');
+        writePrivateFile(fp, serializeMessages(sanitized));
         Logger.info(`会话已迁移清理 provider replay: ${sessionKey}`);
       }
       return sanitized;
@@ -215,11 +225,11 @@ export class SessionStore {
 
   saveRuntimeState(sessionKey: string, state: SessionRuntimeState): boolean {
     try {
-      if (!fs.existsSync(SESSION_STATE_DIR)) fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
-      fs.writeFileSync(stateFilePath(sessionKey), JSON.stringify({
+      ensurePrivateDirectory(SESSION_STATE_DIR);
+      writePrivateFile(stateFilePath(sessionKey), JSON.stringify({
         ...state,
         updatedAt: new Date().toISOString(),
-      }, null, 2), 'utf-8');
+      }, null, 2));
       return true;
     } catch (err) {
       Logger.error(`Failed to save session state [${sessionKey}]: ${err}`);
@@ -257,8 +267,9 @@ export class SessionStore {
     if (!source) return;
 
     try {
-      if (!fs.existsSync(path.dirname(target))) fs.mkdirSync(path.dirname(target), { recursive: true });
+      ensurePrivateDirectory(path.dirname(target));
       fs.copyFileSync(source, target);
+      if (process.platform !== 'win32') fs.chmodSync(target, 0o600);
       Logger.info(`CatsCo group session migrated to legacy key: ${path.basename(source)} -> ${path.basename(target)}`);
     } catch (err) {
       Logger.error(`Failed to migrate CatsCo group session [${sessionKey}]: ${err}`);
