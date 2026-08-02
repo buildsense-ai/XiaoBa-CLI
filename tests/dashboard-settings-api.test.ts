@@ -355,6 +355,10 @@ describe('dashboard typed settings API', () => {
     const status = await statusResponse.json() as any;
     assert.equal(status.provider, 'anthropic');
     assert.equal(status.model, 'MiniMax-M2.7-highspeed');
+    assert.equal(status.runtimeIdentity.dataRoot, fs.realpathSync(testRoot));
+    assert.equal(status.runtimeIdentity.profile, 'default');
+    assert.equal(typeof status.runtimeIdentity.codeRoot, 'string');
+    assert.equal(typeof status.runtimeIdentity.workspaceRoot, 'string');
   });
 
   test('PUT /settings publishes the bound bot model definition without exposing its API key', async () => {

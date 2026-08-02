@@ -2038,6 +2038,90 @@
       margin-bottom: 20px;
     }
 
+    .runtime-identity-card {
+      margin-bottom: 20px;
+      padding: 18px 20px;
+      border-radius: 22px;
+      background: linear-gradient(135deg, rgba(25, 30, 54, 0.96), rgba(40, 55, 91, 0.94));
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 18px 42px rgba(27, 35, 64, 0.18);
+    }
+
+    .runtime-identity-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .runtime-identity-title {
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    .runtime-identity-badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .runtime-identity-badge {
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      color: rgba(255, 255, 255, 0.82);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .runtime-identity-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .runtime-identity-item {
+      min-width: 0;
+      padding: 11px 12px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    .runtime-identity-label {
+      margin-bottom: 6px;
+      color: rgba(255, 255, 255, 0.56);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .runtime-identity-path {
+      color: rgba(255, 255, 255, 0.94);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .runtime-identity-copy {
+      border: 0;
+      background: rgba(255, 255, 255, 0.1);
+      color: rgba(255, 255, 255, 0.86);
+      padding: 6px 9px;
+      border-radius: 10px;
+      font: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .runtime-identity-copy:hover { background: rgba(255, 255, 255, 0.17); }
+
     .status-card,
     .service-card {
       border-radius: 22px;
@@ -2746,6 +2830,8 @@
         grid-template-columns: 1fr;
         gap: 6px;
       }
+
+      .runtime-identity-grid { grid-template-columns: 1fr; }
     }
 
     @media (max-width: 640px) {
@@ -2768,6 +2854,20 @@
 
       body::after {
         left: -80px;
+      }
+
+      .runtime-identity-card { padding: 16px; }
+      .runtime-identity-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .runtime-identity-badges {
+        justify-content: flex-start;
+        width: 100%;
+      }
+      .runtime-identity-badge {
+        max-width: 100%;
+        overflow-wrap: anywhere;
       }
 
       .topbar {
@@ -5334,6 +5434,18 @@
           </div>
           <button class="btn btn-primary" onclick="fetchStatus()">刷新状态</button>
         </div>
+        <section class="runtime-identity-card" id="runtime-identity-card" aria-label="当前运行目录">
+          <div class="runtime-identity-head">
+            <div class="runtime-identity-title">当前运行目录</div>
+            <div class="runtime-identity-badges" id="runtime-identity-badges"><span class="runtime-identity-badge">正在读取...</span></div>
+          </div>
+          <div class="runtime-identity-grid">
+            <div class="runtime-identity-item"><div class="runtime-identity-label">Data Root</div><div class="runtime-identity-path" id="runtime-data-root">正在读取...</div></div>
+            <div class="runtime-identity-item"><div class="runtime-identity-label">Code Root</div><div class="runtime-identity-path" id="runtime-code-root">正在读取...</div></div>
+            <div class="runtime-identity-item"><div class="runtime-identity-label">Workspace Root</div><div class="runtime-identity-path" id="runtime-workspace-root">正在读取...</div></div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="runtime-identity-copy" id="copy-runtime-data-root" onclick="copyRuntimeDataRoot()">复制 Data Root</button></div>
+        </section>
         <div class="services-grid robot-grid" id="services-grid"><div class="loading">加载中...</div></div>
 
         <div class="settings-header" style="margin-top:28px">
@@ -7476,12 +7588,45 @@
 
     function renderStatus(d) {
       const grid = document.getElementById('status-grid');
+      renderRuntimeIdentity(d.runtimeIdentity || {});
       if (!grid) return;
       grid.innerHTML =
         '<div class="status-card"><div class="label">Version</div><div class="value">'+escapeHtml(d.version||'-')+'</div></div>'+
         '<div class="status-card"><div class="label">Runtime</div><div class="value">'+escapeHtml(d.platform||'-')+'</div><div class="readiness-summary">Host: '+escapeHtml(d.hostname||'-')+'</div></div>'+
         '<div class="status-card"><div class="label">Model</div><div class="value">'+escapeHtml(d.model||'-')+'</div><div class="readiness-summary">'+escapeHtml(d.provider||'-')+'</div></div>'+
         '<div class="status-card"><div class="label">Skills Path</div><div class="value" style="font-size:12px;word-break:break-all">'+escapeHtml(d.skillsPath||'-')+'</div></div>';
+    }
+
+    function renderRuntimeIdentity(identity) {
+      const dataRoot = document.getElementById('runtime-data-root');
+      const codeRoot = document.getElementById('runtime-code-root');
+      const workspaceRoot = document.getElementById('runtime-workspace-root');
+      const badges = document.getElementById('runtime-identity-badges');
+      if(dataRoot)dataRoot.textContent=identity.dataRoot||'-';
+      if(codeRoot)codeRoot.textContent=identity.codeRoot||'-';
+      if(workspaceRoot)workspaceRoot.textContent=identity.workspaceRoot||'-';
+      if(badges){
+        const code=identity.code||{};
+        const revision=code.commit?((code.branch||'detached')+'@'+String(code.commit).slice(0,8)):'no-git';
+        badges.innerHTML='<span class="runtime-identity-badge">profile: '+escapeHtml(identity.profile||'default')+'</span>'+
+          '<span class="runtime-identity-badge">'+escapeHtml(revision)+(code.dirty?' · dirty':'')+'</span>';
+      }
+    }
+
+    async function copyRuntimeDataRoot(){
+      const value=document.getElementById('runtime-data-root')?.textContent||'';
+      const button=document.getElementById('copy-runtime-data-root');
+      if(!value||value==='-'||value==='正在读取...')return;
+      try{
+        await copyTextToClipboard(value);
+        if(button)button.textContent='已复制';
+        pulsePetState('success','Data Root 已复制',1200);
+      }catch(error){
+        if(button)button.textContent='复制失败';
+        pulsePetState('error','Data Root 复制失败',1800);
+      }finally{
+        setTimeout(()=>{if(button)button.textContent='复制 Data Root';},1400);
+      }
     }
 
     function renderReadiness(data) {
