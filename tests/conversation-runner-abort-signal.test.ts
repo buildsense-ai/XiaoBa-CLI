@@ -41,7 +41,7 @@ test('ConversationRunner passes AbortSignal to streamed model requests', async (
   assert.equal(observedSignal?.aborted, true);
 });
 
-test('ConversationRunner reuses AbortSignal after prompt-too-long trim retry', async () => {
+test('ConversationRunner reuses AbortSignal after provider overflow checkpoint retry', async () => {
   const controller = new AbortController();
   const observedSignals: Array<AbortSignal | undefined> = [];
   let calls = 0;
@@ -65,6 +65,23 @@ test('ConversationRunner reuses AbortSignal after prompt-too-long trim retry', a
     stream: false,
     enableCompression: false,
     toolExecutionContext: { abortSignal: controller.signal },
+    checkpointCompactionCoordinator: {
+      compactIfNeeded: async (messages: Message[], request: any) => {
+        if (!request.force) {
+          return { messages, compacted: false, attempted: false };
+        }
+        return {
+          messages: [{
+            role: 'user',
+            content: 'Continuation checkpoint for the same episode.',
+            __checkpointSummary: true,
+          }],
+          compacted: true,
+          attempted: true,
+        };
+      },
+    } as any,
+    onCompactionCheckpoint: async () => {},
   });
 
   const result = await runner.run([{ role: 'user', content: 'x'.repeat(2000) }]);

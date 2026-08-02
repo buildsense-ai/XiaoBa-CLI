@@ -3,12 +3,9 @@ import type { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
 import { SessionStore } from '../utils/session-store';
 import { stripAssistantTranscriptArtifacts } from '../utils/transcript-artifacts';
-import { ContextCompressor } from '../core/context-compressor';
-import {
-  CheckpointCompactionCoordinator,
-  isCheckpointCompactionEnabled,
-} from '../core/checkpoint-compaction';
+import { CheckpointCompactionCoordinator } from '../core/checkpoint-compaction';
 import { estimateMessagesTokens } from '../core/token-estimator';
+import { resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import type {
   CatsAgentContextMessage,
   CatsAgentContextPage,
@@ -26,8 +23,6 @@ import {
 const CLOUD_RESTORE_PAGE_SIZE = 200;
 const CLOUD_RESTORE_DIRECT_TOKEN_BUDGET = 60_000;
 const CLOUD_RESTORE_FINAL_TOKEN_CEILING = 90_000;
-const CLOUD_RESTORE_SUMMARY_INPUT_BUDGET = 70_000;
-const CLOUD_RESTORE_RECENT_EPISODES = 12;
 const CLOUD_RESTORE_RECENT_TOKEN_BUDGET = 30_000;
 
 interface AgentContextHistoryClient {
@@ -86,12 +81,7 @@ export class CatsCompanyCloudSessionRestorer {
         request.sessionKey,
         request.signal,
       );
-      if (
-        request.signal?.aborted
-        && !(prepared.summaryFallback && isTimeoutAbortReason(request.signal.reason))
-      ) {
-        request.signal.throwIfAborted();
-      }
+      request.signal?.throwIfAborted();
       if (this.hasLocalSession(request.sessionKey)) {
         return this.result('local_present', { fetchedMessages: fetched.fetchedMessages });
       }
@@ -188,64 +178,51 @@ export class CatsCompanyCloudSessionRestorer {
     messages: Message[],
     sessionKey: string,
     signal?: AbortSignal,
-  ): Promise<{ messages: Message[]; compressed: boolean; summaryFallback: boolean }> {
+  ): Promise<{ messages: Message[]; compressed: boolean }> {
+    const finalTokenCeiling = this.resolveRestoreTokenCeiling();
     const usedTokens = estimateMessagesTokens(messages);
-    if (usedTokens <= CLOUD_RESTORE_DIRECT_TOKEN_BUDGET) {
-      return { messages, compressed: false, summaryFallback: false };
+    if (usedTokens <= Math.min(CLOUD_RESTORE_DIRECT_TOKEN_BUDGET, finalTokenCeiling)) {
+      return { messages, compressed: false };
     }
 
-    try {
-      const modelRequestOptions = this.createCompactionModelRequestOptions(sessionKey, messages);
-      if (isCheckpointCompactionEnabled()) {
-        const coordinator = new CheckpointCompactionCoordinator(this.aiService, {
-          maxContextTokens: CLOUD_RESTORE_FINAL_TOKEN_CEILING,
-          compactionThreshold: 0.65,
-          retainedUserTokenBudget: CLOUD_RESTORE_RECENT_TOKEN_BUDGET,
-        });
-        const result = await coordinator.compactIfNeeded(messages, {
-          sessionKey,
-          phase: 'restore',
-          signal,
-          modelRequestOptions,
-        });
-        if (!result.compacted) {
-          throw new Error('cloud restore checkpoint compaction did not produce a checkpoint');
-        }
-        return {
-          messages: trimToTokenBudget(result.messages, CLOUD_RESTORE_FINAL_TOKEN_CEILING),
-          compressed: true,
-          summaryFallback: false,
-        };
-      }
+    const modelRequestOptions = this.createCompactionModelRequestOptions(sessionKey, messages);
+    const coordinator = new CheckpointCompactionCoordinator(this.aiService, {
+      maxContextTokens: finalTokenCeiling,
+      compactionThreshold: 0.65,
+      retainedUserTokenBudget: Math.min(
+        CLOUD_RESTORE_RECENT_TOKEN_BUDGET,
+        Math.max(1_000, Math.floor(finalTokenCeiling * 0.35)),
+      ),
+    });
+    const result = await coordinator.compactIfNeeded(messages, {
+      sessionKey,
+      phase: 'restore',
+      force: true,
+      signal,
+      modelRequestOptions,
+    });
+    if (!result.compacted) {
+      throw result.error instanceof Error
+        ? result.error
+        : new Error('cloud restore checkpoint compaction did not produce a checkpoint');
+    }
+    const compactedTokens = estimateMessagesTokens(result.messages);
+    if (compactedTokens > finalTokenCeiling) {
+      throw new Error(
+        `cloud restore checkpoint remains over budget: ${compactedTokens}/${finalTokenCeiling}`,
+      );
+    }
+    return { messages: result.messages, compressed: true };
+  }
 
-      const compressor = new ContextCompressor(this.aiService, {
-        maxContextTokens: CLOUD_RESTORE_FINAL_TOKEN_CEILING,
-        summaryContentBudget: CLOUD_RESTORE_SUMMARY_INPUT_BUDGET,
-        preserveRecentEpisodes: CLOUD_RESTORE_RECENT_EPISODES,
-        preserveRecentEpisodeTokenBudget: CLOUD_RESTORE_RECENT_TOKEN_BUDGET,
-        preserveRecentEpisodeMaxShare: 0.4,
-      });
-      const compacted = await compressor.compact(messages, {
-        signal,
-        modelRequestOptions,
-        customInstructions: [
-          '这些内容来自 CatsCompany 云端可见聊天历史，用于在新设备上恢复主会话。',
-          '保留用户目标、关键决定、已交付结果、文件名、未完成事项和重要约束。',
-          '不要声称恢复了工具调用、本地文件状态、设备授权或未出现在历史里的信息。',
-        ].join('\n'),
-      });
-      return {
-        messages: trimToTokenBudget(compacted, CLOUD_RESTORE_FINAL_TOKEN_CEILING),
-        compressed: true,
-        summaryFallback: false,
-      };
-    } catch (error) {
-      Logger.warning(`云端历史摘要失败，降级保留最近上下文: ${describeError(error)}`);
-      return {
-        messages: trimToTokenBudget(messages, CLOUD_RESTORE_DIRECT_TOKEN_BUDGET),
-        compressed: true,
-        summaryFallback: true,
-      };
+  private resolveRestoreTokenCeiling(): number {
+    try {
+      return Math.min(
+        CLOUD_RESTORE_FINAL_TOKEN_CEILING,
+        resolveModelPromptBudgetTokens(this.aiService.getConfig()),
+      );
+    } catch {
+      return CLOUD_RESTORE_FINAL_TOKEN_CEILING;
     }
   }
 
@@ -460,48 +437,6 @@ function coalesceAssistantSegments(messages: Message[]): Message[] {
   return result;
 }
 
-function trimToTokenBudget(messages: Message[], budget: number): Message[] {
-  if (estimateMessagesTokens(messages) <= budget) return messages;
-  const boundary: Message = {
-    role: 'user',
-    content: '[设备恢复提示] 更早的 CatsCompany 云端历史已截断，以避免恢复后的上下文过大。',
-  };
-  const contentBudget = Math.max(1, budget - estimateMessagesTokens([boundary]));
-  const selected: Message[] = [];
-  let used = 0;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
-    const tokens = estimateMessagesTokens([message]);
-    if (tokens > contentBudget && selected.length === 0) {
-      selected.unshift(truncateMessageToTokenBudget(message, contentBudget));
-      break;
-    }
-    if (used + tokens > contentBudget) break;
-    selected.unshift(message);
-    used += tokens;
-  }
-  return [boundary, ...selected];
-}
-
-function truncateMessageToTokenBudget(message: Message, budget: number): Message {
-  const text = typeof message.content === 'string' ? message.content : String(message.content ?? '');
-  const suffix = '\n\n[该条历史消息在设备恢复时已截断]';
-  let low = 0;
-  let high = text.length;
-  let best = suffix;
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    const candidate = `${text.slice(0, middle)}${suffix}`;
-    if (estimateMessagesTokens([{ ...message, content: candidate }]) <= budget) {
-      best = candidate;
-      low = middle + 1;
-    } else {
-      high = middle - 1;
-    }
-  }
-  return { ...message, content: best };
-}
-
 function isNonAnswerPlaceholder(text: string): boolean {
   const normalized = text.trim();
   return normalized === '[无回复]'
@@ -522,10 +457,4 @@ function normalizeUID(value: unknown): string {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isTimeoutAbortReason(reason: unknown): boolean {
-  return !!reason
-    && typeof reason === 'object'
-    && (reason as { name?: unknown }).name === 'TimeoutError';
 }

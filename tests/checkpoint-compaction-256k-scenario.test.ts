@@ -142,10 +142,12 @@ test('256K mid-turn scenario waits for tool completion and keeps the active requ
   assert.ok(result.messages.some(message =>
     String(message.content).includes('Active long-task objective.')));
   assert.equal(result.messages.some(message => message.role === 'tool'), false);
-  const summaryInputTool = requests[0].find(message => message.role === 'tool');
-  assert.ok(summaryInputTool);
-  assert.match(String(summaryInputTool.content), /\[checkpoint_tool_evidence\]/);
-  assert.match(String(summaryInputTool.content), /call-complete/);
+  const hierarchicalSource = requests.flatMap(request => request)
+    .map(message => String(message.content))
+    .join('\n');
+  assert.match(hierarchicalSource, /"role":"tool"/);
+  assert.match(hierarchicalSource, /call-complete/);
+  assert.match(hierarchicalSource, /Complete tool result/);
 });
 
 test('256K restore scenario creates a checkpoint that requires runtime re-verification', async () => {

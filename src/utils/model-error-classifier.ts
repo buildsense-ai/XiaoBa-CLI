@@ -21,6 +21,44 @@ export function isModelImageSafetyError(error: unknown): boolean {
   return hasSafetyCode && hasImageEvidence;
 }
 
+/**
+ * Matches only explicit provider evidence that the submitted input exceeded the
+ * model context window. Transport failures (for example `premature close`) are
+ * intentionally excluded: treating them as overflow would mutate a healthy
+ * episode and destroy an otherwise reusable provider-cache prefix.
+ */
+export function isModelContextLengthError(error: unknown): boolean {
+  const chain: any[] = [];
+  const seen = new Set<unknown>();
+  let candidate: any = error;
+  while (candidate && typeof candidate === 'object' && chain.length < 6 && !seen.has(candidate)) {
+    seen.add(candidate);
+    chain.push(candidate);
+    candidate = candidate.cause;
+  }
+  if (chain.some(entry => [
+    entry?.status,
+    entry?.response?.status,
+    entry?.error?.status,
+  ].includes(413))) return true;
+
+  const evidence = chain.flatMap(entry => [
+    entry?.code,
+    entry?.type,
+    entry?.error?.code,
+    entry?.error?.type,
+    entry?.response?.data?.code,
+    entry?.response?.data?.type,
+    entry?.response?.data?.error?.code,
+    entry?.response?.data?.error?.type,
+    entry?.message,
+    entry?.response?.data?.message,
+    entry?.response?.data?.error?.message,
+  ]).filter(value => value !== undefined && value !== null).join(' ');
+
+  return /context[_\s-]*(?:length|window)[_\s-]*(?:exceeded|limit)|maximum context length|prompt (?:is )?too long|input (?:is )?too (?:long|large)|too many (?:input )?tokens|request.{0,40}token limit|tokens?.{0,40}(?:exceed|over).{0,20}(?:context|limit)|\binput_too_large\b/i.test(evidence);
+}
+
 export type ModelErrorCategory =
   | 'image_safety'
   | 'budget'

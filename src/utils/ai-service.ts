@@ -79,6 +79,7 @@ interface RetryPolicy {
 interface ModelAttemptRun {
   callId: string;
   sink?: ModelAttemptSink;
+  requestKind: ModelAttemptEvent['requestKind'];
   context?: AIRequestOptions['modelAttemptContext'];
   messages: readonly Message[];
   tools: readonly ToolDefinition[];
@@ -678,6 +679,7 @@ export class AIService {
     return {
       callId: `${Date.now().toString(36)}-${process.pid.toString(36)}-${modelAttemptCallSequence.toString(36)}`,
       sink,
+      requestKind: options.requestKind || 'main_inference',
       context: options.modelAttemptContext ? { ...options.modelAttemptContext } : undefined,
       messages,
       tools: tools || [],
@@ -710,6 +712,7 @@ export class AIService {
           ? 'openai-responses'
           : 'openai-chat-completions',
       stream: run.stream,
+      requestKind: run.requestKind,
       ...(run.context ? { context: run.context } : {}),
       request: {
         messages: run.messages,

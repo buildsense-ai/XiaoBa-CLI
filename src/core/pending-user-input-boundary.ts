@@ -6,7 +6,10 @@ export const TRANSIENT_PENDING_USER_INPUT_PREFIX = '[transient_pending_user_inpu
 
 export function buildPendingUserInputBoundaryMessage(epoch?: string): Message {
   return annotateContextMessage({
-    role: 'system',
+    // Keep this as user-priority context immediately before the real pending
+    // input. Mid-conversation system messages invalidate prefix caching on
+    // some providers; Anthropic safely merges consecutive user messages.
+    role: 'user',
     content: `${TRANSIENT_PENDING_USER_INPUT_PREFIX}\n${renderRequiredDefaultPromptFile('transient/pending-user-input-boundary.md', {})}`,
   }, {
     source: 'pending_user_input',

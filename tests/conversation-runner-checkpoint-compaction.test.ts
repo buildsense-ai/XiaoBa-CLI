@@ -55,6 +55,17 @@ test('runner checkpoints only after a complete tool result and resumes the same 
   let checkpointRequest: any;
   const coordinator = {
     compactIfNeeded: async (messages: Message[], request: any) => {
+      if (!messages.some(message => message.role === 'tool')) {
+        return {
+          messages,
+          compacted: false,
+          attempted: false,
+          usedTokens: 10,
+          toolTokens: 10,
+          maxTokens: 100,
+          usagePercent: 20,
+        };
+      }
       checkpointRequest = request;
       events.push('checkpoint');
       assert.ok(messages.some(message =>
@@ -67,6 +78,7 @@ test('runner checkpoints only after a complete tool result and resumes the same 
           __episodeId: 'episode-main',
         }],
         compacted: true,
+        attempted: true,
         usedTokens: 100,
         toolTokens: 10,
         maxTokens: 100,
@@ -79,8 +91,8 @@ test('runner checkpoints only after a complete tool result and resumes the same 
     stream: false,
     episodeId: 'episode-main',
     toolExecutionContext: {
-      sessionId: 'branch:memory:checkpoint',
-      surface: 'memory_branch',
+      sessionId: 'session:v2:catscompany:group:checkpoint-main',
+      surface: 'catscompany',
     },
     checkpointCompactionCoordinator: coordinator,
     onCompactionCheckpoint: async messages => {
@@ -99,10 +111,10 @@ test('runner checkpoints only after a complete tool result and resumes the same 
   assert.equal(checkpointRequest.phase, 'mid_turn');
   assert.equal(checkpointRequest.modelRequestOptions.modelAttemptSink, undefined);
   assert.deepEqual(checkpointRequest.modelRequestOptions.modelAttemptContext, {
-    sessionId: 'branch:memory:checkpoint',
-    surface: 'memory_branch',
+    sessionId: 'session:v2:catscompany:group:checkpoint-main',
+    surface: 'catscompany',
     episodeId: 'episode-main',
-    episodeNumber: 1,
+    episodeNumber: 2,
   });
   assert.deepEqual(events, [
     'model:first',
@@ -114,7 +126,7 @@ test('runner checkpoints only after a complete tool result and resumes the same 
   assert.ok(modelRequests[1].some(message => message.__checkpointSummary));
 });
 
-test('runner keeps the original transcript when checkpoint persistence fails', async () => {
+test('runner preserves the original transcript and stops when checkpoint persistence fails', async () => {
   const modelRequests: Message[][] = [];
   const aiService = {
     chat: async (messages: Message[]) => {
@@ -149,18 +161,32 @@ test('runner keeps the original transcript when checkpoint persistence fails', a
     }),
   };
   const coordinator = {
-    compactIfNeeded: async () => ({
-      messages: [{
-        role: 'user',
-        content: `${CHECKPOINT_SUMMARY_PREFIX}\n\nThis checkpoint must not be used.`,
-        __checkpointSummary: true,
-      }],
-      compacted: true,
-      usedTokens: 100,
-      toolTokens: 10,
-      maxTokens: 100,
-      usagePercent: 110,
-    }),
+    compactIfNeeded: async (messages: Message[]) => {
+      if (!messages.some(message => message.role === 'tool')) {
+        return {
+          messages,
+          compacted: false,
+          attempted: false,
+          usedTokens: 10,
+          toolTokens: 10,
+          maxTokens: 100,
+          usagePercent: 20,
+        };
+      }
+      return {
+        messages: [{
+          role: 'user',
+          content: `${CHECKPOINT_SUMMARY_PREFIX}\n\nThis checkpoint must not be used.`,
+          __checkpointSummary: true,
+        }],
+        compacted: true,
+        attempted: true,
+        usedTokens: 100,
+        toolTokens: 10,
+        maxTokens: 100,
+        usagePercent: 110,
+      };
+    },
   } as any;
 
   const runner = new ConversationRunner(aiService, executor, {
@@ -172,14 +198,15 @@ test('runner keeps the original transcript when checkpoint persistence fails', a
     },
   });
 
-  const result = await runner.run([{
+  const messages: Message[] = [{
     role: 'user',
     content: 'inspect and continue',
     __episodeId: 'episode-main',
-  }]);
+  }];
 
-  assert.equal(result.response, 'continued with original transcript');
-  assert.ok(modelRequests[1].some(message =>
+  await assert.rejects(runner.run(messages), /checkpoint persistence failed/);
+  assert.equal(modelRequests.length, 1);
+  assert.ok(messages.some(message =>
     message.role === 'tool' && message.content === 'verified tool evidence'));
-  assert.equal(modelRequests[1].some(message => message.__checkpointSummary), false);
+  assert.equal(messages.some(message => message.__checkpointSummary), false);
 });

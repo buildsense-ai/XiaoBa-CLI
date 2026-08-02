@@ -19,6 +19,7 @@ export interface AttemptJournalRecord {
   model: string;
   api_type: ModelAttemptEvent['apiType'];
   stream: boolean;
+  request_kind: ModelAttemptEvent['requestKind'];
   request_fingerprint: string;
   stable_prefix_fingerprint: string;
   tools_fingerprint: string;
@@ -145,6 +146,7 @@ function toJournalRecord(event: ModelAttemptEvent, sequence: number): AttemptJou
     model: event.model,
     api_type: event.apiType,
     stream: event.stream,
+    request_kind: event.requestKind,
     request_fingerprint: fingerprintCanonical({
       messages,
       tools,

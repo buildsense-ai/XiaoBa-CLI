@@ -4,7 +4,10 @@ import {
   attachRetrySummary,
   captureModelErrorDiagnostics,
 } from '../src/utils/model-error-observability';
-import { classifyModelError } from '../src/utils/model-error-classifier';
+import {
+  classifyModelError,
+  isModelContextLengthError,
+} from '../src/utils/model-error-classifier';
 
 const noKnownFlags = {
   isImageSafetyError: false,
@@ -123,5 +126,29 @@ describe('model error observability', () => {
     assert.equal(incompatibleReplay.category, 'reasoning_replay_required');
     assert.equal(incompatibleReplay.error_code, 'reasoning_replay_incompatible');
     assert.equal(incompatibleReplay.confidence, 'high');
+  });
+
+  test('context overflow detection requires explicit provider evidence', () => {
+    assert.equal(isModelContextLengthError(Object.assign(new Error('payload rejected'), {
+      response: { status: 413 },
+    })), true);
+    assert.equal(isModelContextLengthError(Object.assign(new Error('request failed'), {
+      response: {
+        status: 400,
+        data: { error: { code: 'context_length_exceeded' } },
+      },
+    })), true);
+    assert.equal(isModelContextLengthError(new Error('maximum context length exceeded')), true);
+    assert.equal(isModelContextLengthError(Object.assign(new Error('provider wrapper'), {
+      cause: {
+        response: {
+          status: 400,
+          data: { error: { code: 'context_length_exceeded' } },
+        },
+      },
+    })), true);
+    assert.equal(isModelContextLengthError(new Error('premature close')), false);
+    assert.equal(isModelContextLengthError(new Error('socket hang up')), false);
+    assert.equal(isModelContextLengthError(new Error('token authentication failed')), false);
   });
 });

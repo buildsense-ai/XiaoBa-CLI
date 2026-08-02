@@ -199,6 +199,45 @@ describe('runtime context builder', () => {
     ]);
   });
 
+  test('reinjects session-stable rules before a dynamic checkpoint boundary', async () => {
+    const builder = new TurnContextBuilder();
+    const result = await builder.build({
+      sessionKey: 'checkpoint-prefix-order',
+      durableMessages: [
+        { role: 'system', content: 'primary system' },
+        {
+          role: 'system',
+          content: '[checkpoint_compaction_boundary] phase=mid_turn',
+          __checkpointBoundary: true,
+          __context: {
+            schema: 'xiaoba.context_lifecycle.v1',
+            source: 'compaction_boundary',
+            lifecycle: 'episode',
+            cacheScope: 'epoch',
+            persistence: 'durable',
+            epoch: 'episode-checkpoint',
+          },
+          __cacheScope: 'dynamic',
+        },
+        {
+          role: 'user',
+          content: 'continuation summary',
+          __checkpointSummary: true,
+        },
+      ],
+      runtimeFeedback: [],
+      skillRuntime: emptySkillRuntime(),
+      contextEpoch: 'episode-checkpoint',
+    });
+
+    const stableRulesIndex = result.messages.findIndex(message => (
+      message.__context?.source === 'runtime_observation_rules'
+    ));
+    const boundaryIndex = result.messages.findIndex(message => message.__checkpointBoundary);
+    assert.ok(stableRulesIndex > 0);
+    assert.ok(stableRulesIndex < boundaryIndex);
+  });
+
   test('AgentSession sends runtime context to the provider every turn without persisting it', async () => {
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-context-'));
     const originalCwd = process.cwd();

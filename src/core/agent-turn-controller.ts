@@ -530,8 +530,8 @@ export class AgentTurnController {
       if (!Array.isArray(msg.content)) continue;
       msg.content = msg.content.map(block => {
         if (block.type === 'image' && block.source?.data) {
-          const filePath = (block as any).filePath || '未知路径';
-          return { type: 'text' as const, text: `[图片: ${filePath}]` };
+          const identity = block.attachmentRef || block.filePath || '未知路径';
+          return { type: 'text' as const, text: `[图片: ${identity}]` };
         }
         return block;
       });

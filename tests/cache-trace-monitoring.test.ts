@@ -313,6 +313,7 @@ test('v6 preserves missing cache usage and qualifies an explicitly reported zero
       .map(line => JSON.parse(line)));
     const missingUsage = rawLines.find(line => line.lifecycle.outcome === 'succeeded'
       && line.lifecycle.call_id === 'missing').response_usage;
+    assert.equal(rawLines.every(line => line.request.request_kind === 'main_inference'), true);
     assert.equal(missingUsage.cache_read_reported, false);
     assert.equal(missingUsage.input_tokens_reported, true);
     assert.equal(Object.hasOwn(missingUsage, 'cache_read_tokens'), false);
@@ -737,6 +738,7 @@ function attemptEvent(overrides: Partial<ModelAttemptEvent> = {}): ModelAttemptE
     model: 'gpt-test',
     apiType: 'openai-responses',
     stream: true,
+    requestKind: 'main_inference',
     context: { sessionId: 'cache:write', surface: 'cli', episodeNumber: 7 },
     request: {
       messages: [{ role: 'user', content: 'secret content must not be stored' }],

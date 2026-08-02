@@ -692,16 +692,27 @@ export class OpenAIProvider implements AIProvider {
     const promptTokens = reportedInputTokens ?? 0;
     const completionTokens = Number(usage.completion_tokens ?? 0);
     const standardCachedReadTokens = firstReportedUsageNumber(details, ['cached_tokens']);
+    const deepSeekCachedReadTokens = firstReportedUsageNumber(usage, ['prompt_cache_hit_tokens']);
     const hasStandardCacheRead = hasOwnField(details, 'cached_tokens');
     const hasDeepSeekCacheRead = hasOwnField(usage, 'prompt_cache_hit_tokens');
     // A compatible gateway must expose one unambiguous cache-read contract.
-    // If both shapes are present, do not choose the more favorable value.
-    const hasConflictingCacheContracts = hasStandardCacheRead && hasDeepSeekCacheRead;
+    // Current official DeepSeek responses expose both shapes with the same
+    // value. Accept that redundant evidence only when both parsed values are
+    // exactly equal; disagreement remains unobservable rather than choosing
+    // the more favorable field.
+    const matchingDualCacheContracts = hasStandardCacheRead
+      && hasDeepSeekCacheRead
+      && standardCachedReadTokens !== undefined
+      && deepSeekCachedReadTokens !== undefined
+      && standardCachedReadTokens === deepSeekCachedReadTokens;
+    const hasConflictingCacheContracts = hasStandardCacheRead
+      && hasDeepSeekCacheRead
+      && !matchingDualCacheContracts;
     const cachedReadTokens = hasConflictingCacheContracts
       ? undefined
-      : hasStandardCacheRead
-      ? standardCachedReadTokens
-      : firstReportedUsageNumber(usage, ['prompt_cache_hit_tokens']);
+      : hasDeepSeekCacheRead
+      ? deepSeekCachedReadTokens
+      : standardCachedReadTokens;
     const cachedWriteTokens = firstReportedUsageNumber(details, [
       'cache_write_tokens',
       'cached_creation_tokens',
@@ -713,19 +724,19 @@ export class OpenAIProvider implements AIProvider {
           ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),
           ...(cachedWriteTokens !== undefined ? { cache_write_tokens: cachedWriteTokens } : {}),
         }
-      : hasStandardCacheRead
-      ? {
-          contract: 'openai-chat-v1' as const,
-          ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),
-          ...(standardCachedReadTokens !== undefined ? { cached_tokens: standardCachedReadTokens } : {}),
-          ...(cachedWriteTokens !== undefined ? { cache_write_tokens: cachedWriteTokens } : {}),
-        }
       : hasDeepSeekCacheRead
         ? {
             contract: 'deepseek-chat-v1' as const,
             ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),
             ...(cachedReadTokens !== undefined ? { prompt_cache_hit_tokens: cachedReadTokens } : {}),
           }
+        : hasStandardCacheRead
+          ? {
+              contract: 'openai-chat-v1' as const,
+              ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),
+              ...(standardCachedReadTokens !== undefined ? { cached_tokens: standardCachedReadTokens } : {}),
+              ...(cachedWriteTokens !== undefined ? { cache_write_tokens: cachedWriteTokens } : {}),
+            }
         : {
             contract: 'openai-chat-v1' as const,
             ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),
@@ -739,9 +750,9 @@ export class OpenAIProvider implements AIProvider {
       providerUsage,
       ...(cachedReadTokens !== undefined ? {
         cachedReadTokens,
-        cacheReadSource: hasStandardCacheRead
-          ? 'openai.prompt_tokens_details.cached_tokens' as const
-          : 'deepseek.prompt_cache_hit_tokens' as const,
+        cacheReadSource: hasDeepSeekCacheRead
+          ? 'deepseek.prompt_cache_hit_tokens' as const
+          : 'openai.prompt_tokens_details.cached_tokens' as const,
       } : {}),
       ...(cachedWriteTokens !== undefined ? { cachedWriteTokens } : {}),
     };

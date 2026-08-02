@@ -17,16 +17,18 @@
 → 继续同一任务
 ```
 
-旧 `ContextWindowManager`、`ContextCompressor` 和机械裁剪代码暂时保留，用于回滚和最后兜底。新旧语义压缩不会在同一次运行中同时生效。
+旧 `ContextWindowManager` 和 `ContextCompressor` 暂时只保留给 Branch Agent、Subagent 和独立兼容代码。主 Agent 的 `pre_turn`、`mid_turn`、`restore` 不再保留机械裁剪兜底：只能生成并持久化 continuation checkpoint，失败时保留原文并显式停止。
 
-## 唯一开关
+## 兼容开关
 
 ```text
 XIAOBA_CHECKPOINT_COMPACTION_ENABLED
 ```
 
-- 未设置或不为 `false`：使用新检查点链路。
-- 设置为 `false`：恢复旧 `ContextWindowManager` / `ContextCompressor` 链路。
+- 未设置或不为 `false`：旧独立调用方可使用新检查点链路。
+- 设置为 `false`：只影响尚未迁移的非主 Agent 兼容调用方。
+
+该开关不能关闭主 Agent 任一阶段的 checkpoint coordinator，也不能恢复请求副本硬截断。上游明确返回 context-length error 时，即使开关为 `false`，ReAct loop 仍必须走持久 checkpoint。
 
 Branch Agent 和 Subagent 暂不接入新 coordinator，行为保持不变。
 
@@ -88,14 +90,14 @@ flowchart LR
 flowchart LR
   A["模型发出一批 tool calls"] --> B["等待全部工具结果完整返回"]
   B --> C["将 assistant/tool 交换加入当前 transcript"]
-  C --> D{"超过 80%?"}
-  D -- "否" --> I["合并忙时新用户输入"]
-  D -- "是" --> E["生成 continuation checkpoint"]
-  E --> F["原子替换当前内存上下文"]
-  F --> G["立即持久化检查点"]
-  G --> H["重建当前 runtime context"]
-  H --> I
-  I --> J["使用同一 episodeId 继续请求模型"]
+  C --> D["合并已到达的忙时新用户输入"]
+  D --> E{"完整最终请求超过 80%?"}
+  E -- "否" --> J["使用同一 episodeId 继续请求模型"]
+  E -- "是" --> F["生成 continuation checkpoint"]
+  F --> G["验证压缩后的精确最终请求"]
+  G --> H["原子持久化并替换内存上下文"]
+  H --> I["再次拉取摘要期间到达的 pending input"]
+  I --> E
 ```
 
 稳定边界要求：
@@ -103,7 +105,8 @@ flowchart LR
 - 不在工具执行中途压缩；
 - 不把尚未返回的工具调用写成成功；
 - 检查点完成并保存后才继续下一次模型请求；
-- 忙时到达的新用户消息在检查点之后加入，仍属于当前 episode。
+- 工具批次完成后，已到达的 pending input 会先加入 transcript，再由下一次精确预检决定是否连同 root 一起 checkpoint；
+- 摘要生成期间新到达的 correction 会在 resumed inference 前再次拉取，随后重建并重新预算，仍属于当前 episode。
 
 ### 3. `restore`
 
@@ -139,22 +142,27 @@ Restore checkpoint 会明确把以下内容标为 `unknown until reverified`：
 ### 主 Agent
 
 ```text
-耐久消息估算 token + 当前工具 schema token
+最终 provider 请求估算 token（耐久消息 + transient/runtime 注入）
++ 当前完整工具 schema token
 > prompt budget × 80%
 ```
 
 才会触发检查点。
+
+预检发生在所有 identity、群聊参与者、设备授权、runtime feedback、runner hint、环境信息和 recovery hint 都完成注入之后。checkpoint 成功后用相同 episode 状态重新构建整份请求，再次测量；不会在测量后裁剪请求副本。
+
+如果本地估算仍低于阈值、但 provider 明确返回 `413`、`context_length_exceeded`、`maximum context length` 等证据，Runner 会强制生成一次完整 checkpoint，持久化并在同一 episode 内重试一次。第二次仍超限时显式失败，不循环压缩或截断。`premature close`、socket 断开和普通传输错误不属于 context overflow。
 
 ### 云端历史恢复
 
 云端历史超过直接落盘预算后进入准备流程。新 coordinator 使用：
 
 ```text
-max context = 90K
-threshold = 65%
+target = min(90K, 当前 provider prompt budget)
+force = true
 ```
 
-现有云端恢复入口只在历史超过约 60K 时调用该流程，因此实际触发点保持在既有范围附近。
+现有云端恢复入口在历史超过约 60K（或 provider prompt budget 更小时）调用该流程。候选若仍超过 target、摘要失败、超时或取消，则不创建本地 Session，保留云端来源供下次完整重试；不会裁剪最近历史后冒充恢复成功。
 
 ## 检查点内容
 
@@ -182,14 +190,22 @@ threshold = 65%
 
 ```text
 稳定 system prompt
+→ stable transient rules / skills
+→ 当前 episode 的 root（`mid_turn` 且能保留时）
 → checkpoint boundary
 → continuation summary
-→ 最近保留的原始 user/assistant 消息
+→ 最近保留的后续 user/assistant 消息
 → 新生成的 transient runtime context
 → 当前或后续用户输入
 ```
 
-这样旧历史由 summary 承接，最近原文保持自然对话顺序，真正的新用户输入仍是最后的任务指令。
+`mid_turn` checkpoint boundary 使用 assistant role；在已有 user 之后插入新的 system message
+会让部分 provider 放弃此前稳定前缀。`pre_turn` / `restore` 没有保留在边界前的 root，
+因此使用 leading system boundary，避免 assistant-first transcript。这样 `mid_turn` 的稳定
+system、skills 和原始 root 能保持在边界之前，旧历史由 summary 承接。
+
+每条 retained pending correction 前会重新生成一条紧邻的 user-level transient boundary；
+不会把 system message 插进既有对话，也不会留下没有对应 correction 的孤立 boundary。
 
 `mid_turn` 永远优先保留当前 episode 的首条 root 用户请求，再按预算尽量保留同一 episode 后续到达的用户补充。短消息“继续”不能挤掉 root。
 
@@ -204,18 +220,17 @@ threshold = 65%
 处理方式：
 
 1. 原始 `Message` 不修改。
-2. 只在发送给摘要模型的副本中，将超过 24,000 字符的工具结果转换为证据代理。
-3. 证据代理保留：
-   - tool name；
-   - tool call id；
-   - 原字符数；
-   - SHA-256；
-   - 头部 16,000 字符；
-   - 尾部 4,000 字符；
-   - 重新运行或重读来源的指令。
-4. 摘要生成失败时，原始 transcript 原样返回给后续兜底。
+2. 将每条 source message 的 role、tool name、tool call id、episode 元数据和完整文本序列化。
+3. 如果一次摘要请求装不下，则按 token budget 对序列化文本做无遗漏切块；所有 chunk 都必须成功，再递归归并 partial summaries。
+4. chunk 摘要采用固定小并发；任一 chunk 失败后停止调度新 chunk，整个 checkpoint fail-closed。
+5. 图片二进制不重复嵌入摘要 prompt，但由运行时确定性生成
+   `[checkpoint_artifact_manifest]`：保留 media type、encoded size、SHA-256、可用的
+   file path / attachment ref，以及恢复后必须重新视觉检查的要求。manifest 同时写入
+   `__checkpointArtifacts`，不依赖摘要模型自觉复述，并随下一次 checkpoint 和 Session
+   重启继续代谢。
+6. 任一层失败、超限或不收敛时，原始 transcript 保持不变且正常 provider 不会被调用。
 
-工具结果不会在正常 provider 请求前被重写或替换。只有生成 checkpoint 的临时副本会使用上述证据代理，原始 Session 和正常模型请求仍保留完整结果。
+工具结果不会在正常 provider 请求前被重写、head/tail 代理或静默删除。层级摘要的每个 source chunk 合起来覆盖完整序列化来源。
 
 ## 重复压缩
 
@@ -253,8 +268,8 @@ threshold = 65%
 checkpoint 失败
 → 不替换原 transcript
 → 不推进检查点状态
-→ ConversationRunner 继续原链路
-→ provider 请求前的机械预算裁剪作为最后兜底
+→ 不调用正常 provider
+→ 原始 transcript 原样保留并显式结束本轮
 ```
 
 ### 检查点持久化失败
@@ -264,14 +279,14 @@ checkpoint 已生成但落盘失败
 → 不替换当前内存 transcript
 → 不继续使用这份未持久化 checkpoint
 → 保留原 transcript
-→ 继续走既有 provider 预算兜底
+→ 不调用正常 provider 并显式结束本轮
 ```
 
 中途压缩必须先成功写入 Session，才会替换内存上下文并继续下一次模型请求。
 
 ### 云端恢复摘要失败
 
-保持现有有界机械 fallback，保存最近可用历史，避免每次启动都重复恢复失败。
+云端历史导入 fail-closed：不写入截断 fallback、不创建空白 Session，也不推进恢复成功状态。下一次请求会从云端 authoritative source 重新拉取完整历史。
 
 ### 回滚
 
@@ -281,7 +296,7 @@ checkpoint 已生成但落盘失败
 XIAOBA_CHECKPOINT_COMPACTION_ENABLED=false
 ```
 
-即可恢复旧语义压缩链路。新代码不删除旧 compressor、旧 prompt 或旧测试。
+不会恢复主 Agent 任一阶段的旧语义压缩、ReAct 请求硬裁剪或静默工具禁用；只保留给尚未迁移的非主兼容调用方。
 
 ## 与旧裁剪的关系
 
@@ -289,18 +304,36 @@ XIAOBA_CHECKPOINT_COMPACTION_ENABLED=false
 
 - 当前 episode 和历史 episode 的工具结果都不再提前折叠；
 - `read_file`、`execute_shell`、adaptive folding 和 current-run folding 的旧环境变量不再影响运行；
-- 超大工具结果只在 checkpoint 生成副本中转换为带哈希和头尾内容的证据代理；
-- provider 请求前的 prompt budget guard 仍保留；
-- hard trim 只作为 checkpoint 失败或异常超限时的最后防线；
+- 超大工具结果通过完整覆盖的层级分块进入 checkpoint，不再转换为 head/tail 证据代理；
+- provider 请求前保留完整预算 guard，但它只触发 checkpoint 或显式失败；
+- 不再存在 request-only hard trim、minimal fallback 或 provider-error trim retry；
+- 工具 schema 必须完整发送；工具本身无法装入窗口时显式报告能力无法保留，而不是本轮禁用工具；
 - Runner 内旧 AI compressor 不重新启用。
 
 这不是两套摘要串联，而是：
 
 ```text
 新 checkpoint = 主语义压缩
-旧机械裁剪 = 最后安全阀
-旧 AI compressor = 开关回滚路线
+完整请求预算 guard = checkpoint 或 fail-closed
+旧 AI compressor = 尚未迁移的 Branch/Subagent 兼容路线
 ```
+
+## 真实小窗口 canary
+
+`npm run benchmark:checkpoint-canary` 把本地 prompt budget 压到 8K，并用真实 provider、
+完整工具定义和超大工具结果强制同一 ReAct episode 触发 checkpoint。每次运行使用新的
+cache-isolation nonce；同一运行的 checkpoint 前后必须保持相同 stable-prefix 与 toolset
+fingerprint。验收同时要求：
+
+- 恰好一次工具执行、两次主推理，所有物理请求都有完整 started→terminal 生命周期；
+- checkpoint 先持久化再恢复主推理，episode 不变且工具集不变；
+- head / middle / tail 三处事实都能在最终答案中恢复；
+- provider usage/source 全部可观测，恢复主推理的 cache-read 至少达到稳定前缀估算的
+  75%，且绝对值不低于 1024 tokens；
+- 控制台和 Prompt Trace 不记录 canary oracle，错误输出只暴露 allowlist 字段。
+
+该 canary 验证 no-truncation continuation 的真实行为与一次缓存复用，不替代正式的
+多任务、连续三轮、token-weighted 94% acceptance benchmark。
 
 ## 256K 场景验收
 
@@ -357,7 +390,7 @@ $env:XIAOBA_PROMPT_TRACE_CONTENT="1"
 $env:XIAOBA_PROMPT_TRACE_MESSAGE_CHARS="24000"
 ```
 
-建议先在一台测试机启用新链路，另一台保持旧链路作为对照。真实验收至少覆盖：
+真实验收至少覆盖：
 
 1. 预先写入精确端口、路径、ID 和禁止事项；
 2. 运行足够长的工具任务触发 `mid_turn`；
@@ -374,14 +407,12 @@ $env:XIAOBA_PROMPT_TRACE_MESSAGE_CHARS="24000"
 3. 忙时输入不会被拆成错误的新 episode；
 4. 中断/重启能从持久 checkpoint 恢复；
 5. 云端大历史恢复正常；
-6. 检查点失败时机械兜底可用；
-7. 至少一个发布周期内未依赖回滚开关；
+6. 检查点生成或持久化失败时原 transcript 完整保留且 provider 不被调用；
+7. 主 Agent 无旧压缩回退开关依赖；
 8. 观察日志确认不存在重复 checkpoint、频繁压缩或 runtime 状态污染。
 
 满足后可单独提交清理 PR，删除：
 
-- 主 Agent 对旧 `ContextWindowManager` 的运行依赖；
-- 云端恢复对旧 `ContextCompressor` 的运行依赖；
 - 对应旧摘要 prompt 和只服务旧链路的测试。
 
-机械 prompt budget guard、工具结果 artifact 和 Session 原始日志不应随之删除。
+完整请求预算 guard、工具结果 artifact 和 Session 原始日志不应随之删除；预算 guard 必须继续保持“checkpoint 或显式失败”的语义。

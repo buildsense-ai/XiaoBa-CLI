@@ -748,6 +748,29 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.equal(Object.prototype.hasOwnProperty.call(usage.providerUsage, 'prompt_cache_hit_tokens'), false);
   });
 
+  test('accepts matching redundant DeepSeek cache fields from the official response shape', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
+    });
+    const usage = (provider as any).parseChatUsage({
+      prompt_tokens: 4_086,
+      completion_tokens: 2,
+      prompt_tokens_details: { cached_tokens: 3_968 },
+      prompt_cache_hit_tokens: 3_968,
+      prompt_cache_miss_tokens: 118,
+    });
+
+    assert.equal(usage.cachedReadTokens, 3_968);
+    assert.equal(usage.cacheReadSource, 'deepseek.prompt_cache_hit_tokens');
+    assert.deepEqual(usage.providerUsage, {
+      contract: 'deepseek-chat-v1',
+      prompt_tokens: 4_086,
+      prompt_cache_hit_tokens: 3_968,
+    });
+  });
+
   test('hides OpenAI-compatible reasoning fields and split think tags in stream responses', async () => {
     const originalPost = axios.post;
     (axios as any).post = async () => ({

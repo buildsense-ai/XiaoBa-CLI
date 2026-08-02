@@ -41,6 +41,13 @@ export type ModelAttemptStopReason =
   | 'stream_output_started'
   | 'aborted';
 
+/** Semantic purpose of one physical provider request. */
+export type ModelRequestKind =
+  | 'main_inference'
+  | 'checkpoint_compaction'
+  | 'memory_branch_inference'
+  | 'subagent_inference';
+
 export interface ModelAttemptContext {
   sessionId?: string;
   sessionType?: string;
@@ -78,6 +85,7 @@ export interface ModelAttemptEvent {
   model: string;
   apiType: ModelAttemptApiType;
   stream: boolean;
+  requestKind: ModelRequestKind;
   context?: ModelAttemptContext;
   request: {
     messages: readonly Message[];
@@ -100,6 +108,8 @@ export interface ModelAttemptSink {
 
 export interface AIRequestOptions {
   signal?: AbortSignal;
+  /** Semantic purpose of this physical provider request. */
+  requestKind?: ModelRequestKind;
   /** Bypass provider cache routing and explicit markers for one-off internal calls. */
   cacheMode?: ProviderCacheMode;
   /** Stable, non-secret identity used to shard provider cache routing keys. */
