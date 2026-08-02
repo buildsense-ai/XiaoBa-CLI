@@ -37,21 +37,12 @@ const PDF_VISUAL_INTENT_PATTERNS = [
   /\b(image|photo|picture|screenshot|scan|scanned|signature|handwriting|stamp|seal|layout|table|chart|diagram|visual)\b/i,
 ];
 
-interface PdfParseOptions {
-  max?: number;
-  version?: string;
-  pagerender?: (pageData: any) => Promise<string>;
-}
-
-interface PdfParseResult {
+interface PdfTextExtractionResult {
   numpages?: number;
   numrender?: number;
   text?: string;
   info?: Record<string, unknown>;
 }
-
-type PdfParse = (dataBuffer: Buffer, options?: PdfParseOptions) => Promise<PdfParseResult>;
-const pdfParse: PdfParse = require('pdf-parse');
 
 interface TextReadOptions {
   offset?: unknown;
@@ -555,38 +546,74 @@ export class ReadTool implements Tool {
     ];
   }
 
-  private async extractPdfText(absolutePath: string, selection: PdfPageSelection): Promise<PdfParseResult> {
-    const data = fs.readFileSync(absolutePath);
+  private async extractPdfText(
+    absolutePath: string,
+    selection: PdfPageSelection,
+  ): Promise<PdfTextExtractionResult> {
+    const pdfjs = await this.loadPdfJsModule();
+    const data = new Uint8Array(fs.readFileSync(absolutePath));
+    const loadingTask = pdfjs.getDocument({
+      data,
+      disableWorker: true,
+      useSystemFonts: true,
+    });
     const selectedPages = selection.selectedPages;
-    const options: PdfParseOptions = {
-      max: selection.maxPageToRender,
-      pagerender: async (pageData: any) => {
-        const pageNumber = typeof pageData?.pageIndex === 'number' ? pageData.pageIndex + 1 : undefined;
-        if (selectedPages && pageNumber && !selectedPages.has(pageNumber)) return '';
+    let doc: any;
+    try {
+      doc = await loadingTask.promise;
+    } catch (error) {
+      try {
+        await loadingTask.destroy();
+      } catch {
+        // Preserve the parser error; cleanup failure is secondary evidence.
+      }
+      throw error;
+    }
+    try {
+      const pageNumbers = selectedPages
+        ? Array.from(selectedPages).filter(page => page <= doc.numPages).sort((a, b) => a - b)
+        : Array.from(
+            { length: Math.min(selection.maxPageToRender, doc.numPages) },
+            (_, index) => index + 1,
+          );
+      const pages: string[] = [];
+      for (const pageNumber of pageNumbers) {
+        const pageData = await doc.getPage(pageNumber);
+        try {
+          const textContent = await pageData.getTextContent({
+            normalizeWhitespace: false,
+            disableCombineTextItems: false,
+          });
 
-        const textContent = await pageData.getTextContent({
-          normalizeWhitespace: false,
-          disableCombineTextItems: false,
-        });
-
-        let lastY: number | undefined;
-        let text = '';
-        for (const item of textContent.items || []) {
-          const value = typeof item?.str === 'string' ? item.str : '';
-          const y = Array.isArray(item?.transform) ? item.transform[5] : undefined;
-          if (!value) continue;
-          if (lastY === undefined || y === lastY) {
-            text += value;
-          } else {
-            text += `\n${value}`;
+          let lastY: number | undefined;
+          let text = '';
+          for (const item of textContent.items || []) {
+            const value = typeof item?.str === 'string' ? item.str : '';
+            const y = Array.isArray(item?.transform) ? item.transform[5] : undefined;
+            if (!value) continue;
+            if (lastY === undefined || y === lastY) {
+              text += value;
+            } else {
+              text += `\n${value}`;
+            }
+            lastY = y;
           }
-          lastY = y;
+          pages.push(text);
+        } finally {
+          pageData.cleanup?.();
         }
-        return text;
-      },
-    };
+      }
 
-    return pdfParse(data, options);
+      return {
+        numpages: doc.numPages,
+        numrender: pageNumbers.length,
+        text: pages.join('\n\n'),
+      };
+    } finally {
+      // pdf-parse 1.x dropped this Promise, causing late unhandled rejections
+      // under concurrent reads. Always wait for PDF.js workers/resources here.
+      await doc.destroy();
+    }
   }
 
   private getPdfRenderedImagePages(selection: PdfPageSelection, totalPages?: number): number[] {
@@ -620,6 +647,24 @@ export class ReadTool implements Tool {
       throw new Error('@napi-rs/canvas createCanvas is unavailable');
     }
     return canvasModule;
+  }
+
+  private installPdfCanvasGlobals(canvasModule: any): void {
+    const globalScope = globalThis as any;
+    if (!globalScope.DOMMatrix && canvasModule.DOMMatrix) globalScope.DOMMatrix = canvasModule.DOMMatrix;
+    if (!globalScope.DOMPoint && canvasModule.DOMPoint) globalScope.DOMPoint = canvasModule.DOMPoint;
+    if (!globalScope.DOMRect && canvasModule.DOMRect) globalScope.DOMRect = canvasModule.DOMRect;
+    if (!globalScope.ImageData && canvasModule.ImageData) globalScope.ImageData = canvasModule.ImageData;
+    if (!globalScope.Path2D && canvasModule.Path2D) globalScope.Path2D = canvasModule.Path2D;
+  }
+
+  private async loadPdfJsModule(): Promise<any> {
+    try {
+      this.installPdfCanvasGlobals(this.loadPdfCanvasModule());
+    } catch {
+      // Text extraction does not need canvas; rendering reports its own error.
+    }
+    return dynamicImport('pdfjs-dist/legacy/build/pdf.mjs');
   }
 
   private createPdfCanvasFactory(canvasModule: any): any {
@@ -660,14 +705,8 @@ export class ReadTool implements Tool {
     tempDir: string,
   ): Promise<RenderedPdfPage[]> {
     const canvasModule = this.loadPdfCanvasModule();
-    const globalScope = globalThis as any;
-    if (!globalScope.DOMMatrix && canvasModule.DOMMatrix) globalScope.DOMMatrix = canvasModule.DOMMatrix;
-    if (!globalScope.DOMPoint && canvasModule.DOMPoint) globalScope.DOMPoint = canvasModule.DOMPoint;
-    if (!globalScope.DOMRect && canvasModule.DOMRect) globalScope.DOMRect = canvasModule.DOMRect;
-    if (!globalScope.ImageData && canvasModule.ImageData) globalScope.ImageData = canvasModule.ImageData;
-    if (!globalScope.Path2D && canvasModule.Path2D) globalScope.Path2D = canvasModule.Path2D;
-
-    const pdfjs = await dynamicImport('pdfjs-dist/legacy/build/pdf.mjs');
+    this.installPdfCanvasGlobals(canvasModule);
+    const pdfjs = await this.loadPdfJsModule();
     const canvasFactory = this.createPdfCanvasFactory(canvasModule);
     const data = new Uint8Array(fs.readFileSync(absolutePath));
     const loadingTask = pdfjs.getDocument({
