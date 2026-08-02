@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ChatResponse, Message } from '../types';
@@ -359,7 +359,7 @@ export async function runOnlineCacheBenchmark(
 export function buildOnlineCacheBenchmarkManifest(
   credential: OnlineProviderCredential,
   warmCalls: number,
-  memoryFixtureFingerprint = fingerprintCanonical({ source: buildMemoryFixtureSource() }),
+  memoryFixtureFingerprint = fingerprintMemoryFixtureSource(),
 ): CacheBenchmarkManifest {
   const cases: CacheBenchmarkCase[] = WORKLOADS.flatMap(workload => {
     const shared = {
@@ -441,6 +441,7 @@ export function buildOnlineCacheBenchmarkManifest(
       consecutive_rounds: 3,
       maximum_task_weight: 0.25,
       include_cold_in_primary_ratio: false,
+      qualification_traffic_class: 'primary',
     },
     cases,
   };
@@ -1090,6 +1091,10 @@ function buildMemoryFixtureSource(): string {
     },
     tokens: { prompt: 1, completion: 1 },
   }) + '\n';
+}
+
+function fingerprintMemoryFixtureSource(): string {
+  return `sha256:${createHash('sha256').update(buildMemoryFixtureSource(), 'utf8').digest('hex')}`;
 }
 
 function expectedMemoryFixtureReadFingerprint(): string {

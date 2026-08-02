@@ -6,21 +6,23 @@ import { spawnSync } from 'node:child_process';
 import { describe, test } from 'node:test';
 import {
   aggregateCacheBenchmarkAcceptance,
+  buildOnlineCacheBenchmarkManifest,
   CACHE_BENCHMARK_LEDGER_SCHEMA,
   CACHE_BENCHMARK_ROUND_SCHEMA,
   CACHE_BENCHMARK_RESULT_SCHEMA,
+  fingerprintBenchmarkAcceptanceTopology,
   fingerprintBenchmarkWorkloadContract,
   fingerprintConfig,
   fingerprintManifest,
-  parseManifestJson,
+  REQUIRED_ACCEPTANCE_TOPOLOGY_FINGERPRINT,
   validateCompletedOnlineRuns,
   type AcceptanceProviderAlias,
   type CacheBenchmarkAcceptanceCandidate,
   type CacheBenchmarkManifest,
   type CacheBenchmarkResult,
+  type OnlineProviderCredential,
 } from '../src/cache-benchmark';
 
-const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'cache-benchmark', 'manifest.json');
 const ARTIFACT_A = `sha256:${'a'.repeat(64)}`;
 const ARTIFACT_B = `sha256:${'b'.repeat(64)}`;
 
@@ -32,7 +34,7 @@ describe('multi-provider cache acceptance', () => {
       candidate('deepseek', ARTIFACT_A),
     ]);
 
-    assert.equal(result.status, 'passed');
+    assert.equal(result.status, 'passed', JSON.stringify(result.reasons));
     assert.equal(result.exit_code, 0);
     assert.equal(result.artifact_fingerprint, ARTIFACT_A);
     assert.equal(
@@ -40,6 +42,20 @@ describe('multi-provider cache acceptance', () => {
       fingerprintBenchmarkWorkloadContract(newcli.manifest.cases),
     );
     assert.deepEqual(result.reasons, []);
+  });
+
+  test('qualifies provider identity from primary cases while preserving the joined branch schedule', () => {
+    const newcli = candidateWithAuxiliaryMemory('newcli', ARTIFACT_A);
+    const deepseek = candidateWithAuxiliaryMemory('deepseek', ARTIFACT_A);
+    const result = aggregateCacheBenchmarkAcceptance([newcli, deepseek]);
+
+    assert.equal(result.status, 'passed', JSON.stringify(result.reasons));
+    assert.deepEqual(result.reasons, []);
+    for (const candidateEntry of [newcli, deepseek]) {
+      const branch = candidateEntry.manifest.cases.find(entry => entry.execution_role === 'memory_branch')!;
+      assert.equal(branch.model, 'small-memory-model');
+      assert.equal(branch.runs[0].required_warm_calls, 24);
+    }
   });
 
   test('rejects calibration, insufficient samples, and mismatched artifacts', () => {
@@ -107,6 +123,63 @@ describe('multi-provider cache acceptance', () => {
     assert.equal(workloadMismatch.status, 'invalid');
     assert.ok(workloadMismatch.reasons.includes('workload_contract_invalid'));
     assert.ok(workloadMismatch.reasons.includes('workload_contract_mismatch'));
+  });
+
+  test('rejects a self-declared role relabel even when all ordinary fingerprints are recomputed', () => {
+    const relabeled = candidate('newcli', ARTIFACT_A);
+    const main = relabeled.manifest.cases.find(entry => (
+      entry.task_id === 'unsafe-action-gate' && entry.execution_role === 'main'
+    ))!;
+    const branch = relabeled.manifest.cases.find(entry => (
+      entry.task_id === 'unsafe-action-gate' && entry.execution_role === 'memory_branch'
+    ))!;
+    main.execution_role = 'memory_branch';
+    branch.execution_role = 'main';
+    relabeled.manifest.workload_contract_fingerprint = fingerprintBenchmarkWorkloadContract(
+      relabeled.manifest.cases,
+    );
+    relabeled.result = passingResult(relabeled.manifest, ARTIFACT_A);
+    const result = aggregateCacheBenchmarkAcceptance([
+      relabeled,
+      candidate('deepseek', ARTIFACT_A),
+    ]);
+
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('workload_topology_mismatch'));
+  });
+
+  test('rejects provider-visible case ID padding even when ordinary fingerprints are recomputed', () => {
+    const renamed = candidate('newcli', ARTIFACT_A);
+    renamed.manifest.cases[0].case_id += '-cache-padding';
+    renamed.manifest.workload_contract_fingerprint = fingerprintBenchmarkWorkloadContract(
+      renamed.manifest.cases,
+    );
+    renamed.result = passingResult(renamed.manifest, ARTIFACT_A);
+    const result = aggregateCacheBenchmarkAcceptance([
+      renamed,
+      candidate('deepseek', ARTIFACT_A),
+    ]);
+
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('workload_topology_mismatch'));
+  });
+
+  test('rejects undersampled joined branches even when ordinary fingerprints are recomputed', () => {
+    const undersampled = candidateWithAuxiliaryMemory('newcli', ARTIFACT_A);
+    for (const branch of undersampled.manifest.cases.filter(entry => entry.execution_role === 'memory_branch')) {
+      branch.runs = branch.runs.map(run => ({ ...run, required_warm_calls: 1 }));
+    }
+    undersampled.manifest.workload_contract_fingerprint = fingerprintBenchmarkWorkloadContract(
+      undersampled.manifest.cases,
+    );
+    undersampled.result = passingResult(undersampled.manifest, ARTIFACT_A);
+    const result = aggregateCacheBenchmarkAcceptance([
+      undersampled,
+      candidateWithAuxiliaryMemory('deepseek', ARTIFACT_A),
+    ]);
+
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('workload_topology_mismatch'));
   });
 
   test('validates every online started-to-sealed reservation and rejects orphan rounds', () => {
@@ -210,20 +283,46 @@ function candidate(
   return { provider, manifest, result: passingResult(manifest, artifactFingerprint) };
 }
 
-function acceptanceManifest(provider: AcceptanceProviderAlias): CacheBenchmarkManifest {
-  const manifest = parseManifestJson(fs.readFileSync(FIXTURE_PATH, 'utf8'));
-  manifest.suite_id = `xiaoba-online-${provider}-acceptance-v1`;
-  manifest.benchmark_profile = 'acceptance';
-  for (const entry of manifest.cases) {
-    entry.provider_instance_id = provider === 'newcli'
-      ? `newcli:openai-responses:endpoint-${'1'.repeat(32)}`
-      : `deepseek:openai-chat-completions:endpoint-${'2'.repeat(32)}`;
-    if (provider === 'deepseek') {
-      entry.api_type = 'openai-chat-completions';
-      entry.cache_read_source = 'openai.prompt_tokens_details.cached_tokens';
-    }
-    for (const run of entry.runs) run.required_warm_calls = 24;
+function candidateWithAuxiliaryMemory(
+  provider: AcceptanceProviderAlias,
+  artifactFingerprint: string,
+): CacheBenchmarkAcceptanceCandidate {
+  const manifest = acceptanceManifest(provider);
+  for (const branch of manifest.cases.filter(entry => entry.execution_role === 'memory_branch')) {
+    branch.provider_instance_id = `auxiliary-memory:openai-chat-completions:endpoint-${'3'.repeat(32)}`;
+    branch.provider_adapter = 'openai';
+    branch.model = 'small-memory-model';
+    branch.api_type = 'openai-chat-completions';
+    branch.cache_read_source = 'openai.prompt_tokens_details.cached_tokens';
   }
+  manifest.workload_contract_fingerprint = fingerprintBenchmarkWorkloadContract(manifest.cases);
+  return { provider, manifest, result: passingResult(manifest, artifactFingerprint) };
+}
+
+function acceptanceManifest(provider: AcceptanceProviderAlias): CacheBenchmarkManifest {
+  const credential: OnlineProviderCredential = provider === 'newcli' ? {
+    alias: 'newcli',
+    providerAdapter: 'openai',
+    apiType: 'openai-responses',
+    cacheReadSource: 'openai.input_tokens_details.cached_tokens',
+    apiKey: 'test-key',
+    apiBase: 'https://newcli.example.invalid/v1',
+    model: 'model-newcli',
+  } : {
+    alias: 'deepseek',
+    providerAdapter: 'openai',
+    apiType: 'openai-chat-completions',
+    cacheReadSource: 'openai.prompt_tokens_details.cached_tokens',
+    apiKey: 'test-key',
+    apiBase: 'https://deepseek.example.invalid/v1',
+    model: 'model-deepseek',
+  };
+  const manifest = buildOnlineCacheBenchmarkManifest(credential, 24);
+  manifest.benchmark_profile = 'acceptance';
+  assert.equal(
+    fingerprintBenchmarkAcceptanceTopology(manifest.cases),
+    REQUIRED_ACCEPTANCE_TOPOLOGY_FINGERPRINT,
+  );
   manifest.workload_contract_fingerprint = fingerprintBenchmarkWorkloadContract(manifest.cases);
   return manifest;
 }

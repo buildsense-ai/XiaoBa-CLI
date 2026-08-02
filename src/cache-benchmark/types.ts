@@ -1,10 +1,10 @@
 import type { ProviderReportedUsage } from '../types';
 
-export const CACHE_BENCHMARK_MANIFEST_SCHEMA = 'xiaoba.cache_benchmark_manifest.v5' as const;
-export const CACHE_BENCHMARK_LEDGER_SCHEMA = 'xiaoba.cache_benchmark_ledger.v5' as const;
-export const CACHE_BENCHMARK_ROUND_SCHEMA = 'xiaoba.cache_benchmark_round.v5' as const;
-export const CACHE_BENCHMARK_ATTEMPT_SCHEMA = 'xiaoba.cache_benchmark_attempt.v5' as const;
-export const CACHE_BENCHMARK_RESULT_SCHEMA = 'xiaoba.cache_benchmark_result.v5' as const;
+export const CACHE_BENCHMARK_MANIFEST_SCHEMA = 'xiaoba.cache_benchmark_manifest.v6' as const;
+export const CACHE_BENCHMARK_LEDGER_SCHEMA = 'xiaoba.cache_benchmark_ledger.v6' as const;
+export const CACHE_BENCHMARK_ROUND_SCHEMA = 'xiaoba.cache_benchmark_round.v6' as const;
+export const CACHE_BENCHMARK_ATTEMPT_SCHEMA = 'xiaoba.cache_benchmark_attempt.v6' as const;
+export const CACHE_BENCHMARK_RESULT_SCHEMA = 'xiaoba.cache_benchmark_result.v6' as const;
 
 export const CACHE_READ_SOURCES = [
   'openai.input_tokens_details.cached_tokens',
@@ -34,6 +34,7 @@ export type ProviderAdapter = 'openai' | 'anthropic';
 export type ApiType = 'openai-responses' | 'openai-chat-completions' | 'anthropic-messages';
 export type CacheClass = 'cold' | 'warm';
 export type CacheBenchmarkAttemptRole = 'main' | 'memory_branch';
+export type CacheBenchmarkTrafficClass = 'primary' | 'auxiliary_memory';
 export type AttemptOutcome = 'succeeded' | 'failed' | 'cancelled' | 'incomplete' | 'retrying';
 export type CacheBenchmarkVerdict = 'passed' | 'failed' | 'unobservable';
 
@@ -42,6 +43,7 @@ export interface CacheBenchmarkCriteria {
   consecutive_rounds: number;
   maximum_task_weight: number;
   include_cold_in_primary_ratio: boolean;
+  qualification_traffic_class: 'primary';
 }
 
 export interface CacheBenchmarkRun {
@@ -199,6 +201,7 @@ export type CacheBenchmarkLedgerReason =
 
 export interface CacheBenchmarkCellResult {
   cell_fingerprint: string;
+  traffic_class: CacheBenchmarkTrafficClass;
   status: BenchmarkStatus;
   qualification_cache_class: 'warm';
   input_tokens: number;
@@ -225,6 +228,7 @@ export interface CacheBenchmarkRoundResult {
 
 export interface CacheBenchmarkCoverageResult {
   scope_fingerprint: string;
+  traffic_class: CacheBenchmarkTrafficClass;
   status: 'passed' | 'incomplete';
   missing_capabilities: CacheBenchmarkCapability[];
 }

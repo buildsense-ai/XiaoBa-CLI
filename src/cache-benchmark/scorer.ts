@@ -20,6 +20,7 @@ import {
   CacheBenchmarkResult,
   CacheBenchmarkRoundEvidence,
   CacheBenchmarkRoundResult,
+  CacheBenchmarkTrafficClass,
   CacheReadSource,
   CACHE_BENCHMARK_RESULT_SCHEMA,
   REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
@@ -38,6 +39,7 @@ interface TaskTotals {
 
 interface CellAccumulator {
   fingerprint: string;
+  trafficClass: CacheBenchmarkTrafficClass;
   reasons: Set<BenchmarkReason>;
   input: number;
   read: number;
@@ -261,8 +263,10 @@ function scoreRound(
     const fingerprint = fingerprintCell(caseEntry);
     let cell = cells.get(fingerprint);
     if (!cell) {
+      const trafficClass = trafficClassForRole(caseEntry.execution_role);
       cell = {
         fingerprint,
+        trafficClass,
         reasons: new Set(),
         input: 0,
         read: 0,
@@ -314,7 +318,6 @@ function scoreRound(
     runAttempts.push(attempt);
     attemptsByRun.set(key, runAttempts);
     const orderKey = [
-      cell.fingerprint,
       expected.caseEntry.task_id,
       attempt.run_id,
       attempt.logical_call,
@@ -466,7 +469,6 @@ function scoreAttempt(
     cell.coldRead += read;
     return;
   }
-  if (!succeeded) return;
   cell.input += usage.input;
   cell.read += read;
   const task = cell.tasks.get(attempt.metadata.task_id) ?? { input: 0, read: 0 };
@@ -534,20 +536,27 @@ function finalizeCell(cell: CellAccumulator, manifest: CacheBenchmarkManifest): 
   const allRatio = allInput > 0 ? allRead / allInput : null;
   if (cell.input > 0) {
     rawRatio = cell.read / cell.input;
-    if (!meetsThreshold(rawRatio, manifest.criteria.minimum_read_ratio)) {
+    if (
+      cell.trafficClass === manifest.criteria.qualification_traffic_class
+      && !meetsThreshold(rawRatio, manifest.criteria.minimum_read_ratio)
+    ) {
       reasons.add('minimum_read_ratio_not_met');
     }
   }
-  if (positiveTasks.length < Math.ceil(1 / manifest.criteria.maximum_task_weight)) {
-    reasons.add('insufficient_positive_tasks');
-  } else {
+  if (positiveTasks.length >= Math.ceil(1 / manifest.criteria.maximum_task_weight)) {
     cappedRatio = calculateCappedTaskRatio(positiveTasks, manifest.criteria.maximum_task_weight);
-    if (!meetsThreshold(cappedRatio, manifest.criteria.minimum_read_ratio)) {
+    if (
+      cell.trafficClass === manifest.criteria.qualification_traffic_class
+      && !meetsThreshold(cappedRatio, manifest.criteria.minimum_read_ratio)
+    ) {
       reasons.add('minimum_capped_task_ratio_not_met');
     }
+  } else if (cell.trafficClass === manifest.criteria.qualification_traffic_class) {
+    reasons.add('insufficient_positive_tasks');
   }
   return {
     cell_fingerprint: cell.fingerprint,
+    traffic_class: cell.trafficClass,
     status: statusFromReasons([...reasons]),
     qualification_cache_class: 'warm',
     input_tokens: cell.input,
@@ -621,6 +630,7 @@ function fingerprintCell(caseEntry: CacheBenchmarkCase): string {
     model: caseEntry.model,
     api_type: caseEntry.api_type,
     surface: caseEntry.surface,
+    traffic_class: trafficClassForRole(caseEntry.execution_role),
   });
 }
 
@@ -628,39 +638,69 @@ function buildCapabilityCoverage(
   manifest: CacheBenchmarkManifest,
   attempts: readonly CacheBenchmarkAttempt[],
 ): CacheBenchmarkCoverageResult[] {
-  const scopes = new Map<string, Set<CacheBenchmarkCapability>>();
+  const scopes = new Map<string, {
+    trafficClass: CacheBenchmarkTrafficClass;
+    required: Set<CacheBenchmarkCapability>;
+    observed: Set<CacheBenchmarkCapability>;
+  }>();
   for (const entry of manifest.cases) {
+    const trafficClass = trafficClassForRole(entry.execution_role);
     const scopeFingerprint = fingerprintCanonical({
       provider_instance_id: entry.provider_instance_id,
       provider_adapter: entry.provider_adapter,
       model: entry.model,
       api_type: entry.api_type,
+      traffic_class: trafficClass,
     });
-    if (!scopes.has(scopeFingerprint)) scopes.set(scopeFingerprint, new Set());
+    let scope = scopes.get(scopeFingerprint);
+    if (!scope) {
+      scope = {
+        trafficClass,
+        required: new Set(trafficClass === 'primary'
+          ? REQUIRED_CACHE_BENCHMARK_CAPABILITIES
+          : []),
+        observed: new Set(),
+      };
+      scopes.set(scopeFingerprint, scope);
+    }
+    if (trafficClass === 'auxiliary_memory') {
+      for (const capability of entry.capabilities) scope.required.add(capability);
+    }
   }
   const cases = new Map(manifest.cases.map(entry => [entry.case_id, entry]));
   for (const attempt of attempts) {
     const entry = cases.get(attempt.case_id);
     if (!entry) continue;
+    const trafficClass = trafficClassForRole(entry.execution_role);
     const scopeFingerprint = fingerprintCanonical({
       provider_instance_id: entry.provider_instance_id,
       provider_adapter: entry.provider_adapter,
       model: entry.model,
       api_type: entry.api_type,
+      traffic_class: trafficClass,
     });
-    const capabilities = scopes.get(scopeFingerprint)!;
-    for (const capability of attempt.attestation.observed_capabilities) capabilities.add(capability);
+    const scope = scopes.get(scopeFingerprint)!;
+    for (const capability of attempt.attestation.observed_capabilities) {
+      scope.observed.add(capability);
+    }
   }
   return [...scopes.entries()]
-    .map(([scopeFingerprint, capabilities]) => {
-      const missing = REQUIRED_CACHE_BENCHMARK_CAPABILITIES.filter(capability => !capabilities.has(capability));
+    .map(([scopeFingerprint, scope]) => {
+      const missing = REQUIRED_CACHE_BENCHMARK_CAPABILITIES.filter(capability => (
+        scope.required.has(capability) && !scope.observed.has(capability)
+      ));
       return {
         scope_fingerprint: scopeFingerprint,
+        traffic_class: scope.trafficClass,
         status: missing.length === 0 ? 'passed' as const : 'incomplete' as const,
         missing_capabilities: [...missing],
       };
     })
     .sort((left, right) => compareStrings(left.scope_fingerprint, right.scope_fingerprint));
+}
+
+function trafficClassForRole(role: CacheBenchmarkCase['execution_role']): CacheBenchmarkTrafficClass {
+  return role === 'main' ? 'primary' : 'auxiliary_memory';
 }
 
 function runKey(caseId: string, runId: string): string {

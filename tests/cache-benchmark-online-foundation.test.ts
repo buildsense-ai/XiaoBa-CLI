@@ -32,6 +32,7 @@ import {
   CACHE_BENCHMARK_ATTEMPT_SCHEMA,
   CACHE_BENCHMARK_ROUND_SCHEMA,
   fingerprintConfig,
+  fingerprintBenchmarkAcceptanceTopology,
   fingerprintManifest,
   fingerprintOnlineBenchmarkArtifact,
   fingerprintOnlineBenchmarkRuntimeContract,
@@ -40,6 +41,7 @@ import {
   OnlineCredentialError,
   onlineBenchmarkInheritedChildEnvKeys,
   REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
+  REQUIRED_ACCEPTANCE_TOPOLOGY_FINGERPRINT,
   parseManifestJson,
   prepareFreshRuntimeDataDirectory,
   safeOnlineBenchmarkErrorCode,
@@ -129,6 +131,11 @@ test('online manifest counts the production memory branch for every capped task'
     deepSeekManifest.workload_contract_fingerprint,
   );
   assert.equal(manifest.criteria.include_cold_in_primary_ratio, false);
+  assert.equal(manifest.criteria.qualification_traffic_class, 'primary');
+  assert.equal(
+    fingerprintBenchmarkAcceptanceTopology(manifest.cases),
+    REQUIRED_ACCEPTANCE_TOPOLOGY_FINGERPRINT,
+  );
   assert.equal(manifest.cases.length, 8);
   assert.equal(new Set(manifest.cases.map(entry => entry.task_id)).size, 4);
   assert.equal(manifest.cases.filter(entry => entry.execution_role === 'main').length, 4);

@@ -67,6 +67,36 @@ export function fingerprintBenchmarkWorkloadContract(
   });
 }
 
+/**
+ * Binds acceptance to the official case/role topology while allowing provider
+ * identities and independently chosen primary/auxiliary sample counts to vary.
+ */
+export function fingerprintBenchmarkAcceptanceTopology(
+  cases: readonly CacheBenchmarkCase[],
+): string {
+  const projections = cases.map(entry => ({
+    surface: entry.surface,
+    task_id: entry.task_id,
+    task_fixture_fingerprint: entry.task_fixture_fingerprint,
+    oracle_contract_fingerprint: entry.oracle_contract_fingerprint,
+    execution_plan_fingerprint: entry.execution_plan_fingerprint,
+    scenario_family: entry.scenario_family,
+    session_type: entry.session_type,
+    execution_role: entry.execution_role,
+    capabilities: [...entry.capabilities].sort(compareStrings),
+    runs: [...entry.runs]
+      .sort(compareRuns)
+      .map(run => ({
+        run_id: run.run_id,
+        required_cold_calls: run.required_cold_calls,
+      })),
+  })).sort((left, right) => compareStrings(canonicalJson(left), canonicalJson(right)));
+  return fingerprintCanonical({
+    schema: 'xiaoba.cache_benchmark_acceptance_topology.v1',
+    cases: projections,
+  });
+}
+
 export function normalizeManifest(manifest: CacheBenchmarkManifest): CacheBenchmarkManifest {
   return {
     ...manifest,

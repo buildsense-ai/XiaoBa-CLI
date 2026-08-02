@@ -1,5 +1,5 @@
 import { canonicalJson } from './canonical';
-import { CacheBenchmarkResult } from './types';
+import { CACHE_BENCHMARK_RESULT_SCHEMA, CacheBenchmarkResult } from './types';
 
 export type CacheBenchmarkReportFormat = 'json' | 'text';
 
@@ -21,7 +21,7 @@ export function renderCacheBenchmarkResult(
   ];
   for (const coverage of result.capability_coverage) {
     lines.push(
-      `capability_scope=${coverage.scope_fingerprint} status=${coverage.status} missing_capabilities=${coverage.missing_capabilities.join(',') || 'none'}`,
+      `capability_scope=${coverage.scope_fingerprint} traffic_class=${coverage.traffic_class} status=${coverage.status} missing_capabilities=${coverage.missing_capabilities.join(',') || 'none'}`,
     );
   }
   for (const round of result.rounds) {
@@ -31,6 +31,7 @@ export function renderCacheBenchmarkResult(
     for (const cell of round.cells) {
       lines.push([
         `cell=${cell.cell_fingerprint}`,
+        `traffic_class=${cell.traffic_class}`,
         `status=${cell.status}`,
         `qualification_cache_class=${cell.qualification_cache_class}`,
         `input_tokens=${cell.input_tokens}`,
@@ -54,7 +55,7 @@ export function renderCacheBenchmarkResult(
 export function renderCacheBenchmarkInputError(format: CacheBenchmarkReportFormat): string {
   if (format === 'json') {
     return `${canonicalJson({
-      schema: 'xiaoba.cache_benchmark_result.v5',
+      schema: CACHE_BENCHMARK_RESULT_SCHEMA,
       status: 'invalid',
       exit_code: 2,
       reasons: ['schema_invalid'],
