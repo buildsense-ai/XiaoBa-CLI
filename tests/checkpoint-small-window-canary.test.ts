@@ -47,7 +47,7 @@ test('checkpoint canary error projection allowlists names, codes, and HTTP statu
     code: 'SECRET_BRAVO_7E42',
     status: 'credential-like-status',
   }), {
-    schema: 'xiaoba.checkpoint-small-window-canary.v2',
+    schema: 'xiaoba.checkpoint-small-window-canary.v3',
     error: { name: 'Error', code: null, status: null },
   });
   assert.deepEqual(sanitizeCheckpointCanaryError({
@@ -55,7 +55,7 @@ test('checkpoint canary error projection allowlists names, codes, and HTTP statu
     code: 'ETIMEDOUT',
     response: { status: 504 },
   }), {
-    schema: 'xiaoba.checkpoint-small-window-canary.v2',
+    schema: 'xiaoba.checkpoint-small-window-canary.v3',
     error: { name: 'TimeoutError', code: 'ETIMEDOUT', status: 504 },
   });
 });

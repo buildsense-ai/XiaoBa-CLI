@@ -336,6 +336,7 @@ export class AgentTurnController {
         pendingUserInputProvider: options.pendingUserInputProvider,
         syntheticObservationProvider: options.syntheticObservationProvider,
         episodeId: options.episodeId,
+        requestKind: 'main_inference',
         checkpointCompactionCoordinator: this.options.checkpointCompactionCoordinator,
         onCompactionCheckpoint: this.options.persistCheckpoint,
         // AgentSession/ContextWindowManager compacts durable history before the turn.

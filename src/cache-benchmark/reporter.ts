@@ -47,6 +47,18 @@ export function renderCacheBenchmarkResult(
         `all_read_ratio=${formatRatio(cell.all_read_ratio)}`,
         `reasons=${cell.reasons.join(',') || 'none'}`,
       ].join(' '));
+      for (const usage of cell.request_kind_usage) {
+        lines.push([
+          `cell=${cell.cell_fingerprint}`,
+          `request_kind=${usage.request_kind}`,
+          `input_tokens=${usage.input_tokens}`,
+          `cache_read_tokens=${usage.cache_read_tokens}`,
+          `cold_input_tokens=${usage.cold_input_tokens}`,
+          `cold_cache_read_tokens=${usage.cold_cache_read_tokens}`,
+          `all_input_tokens=${usage.all_input_tokens}`,
+          `all_cache_read_tokens=${usage.all_cache_read_tokens}`,
+        ].join(' '));
+      }
     }
   }
   return `${lines.join('\n')}\n`;

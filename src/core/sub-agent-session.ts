@@ -337,6 +337,7 @@ export class SubAgentSession {
     // 创建独立的 ConversationRunner（不注入 channel，子智能体不直接和用户通信）
     const runner = new ConversationRunner(this.aiService, toolManager, {
       maxTurns: this.options.maxTurns,
+      requestKind: 'subagent_inference',
       enableCompression: true,
       shouldContinue: () => !this.stopped,
       toolExecutionContext: {

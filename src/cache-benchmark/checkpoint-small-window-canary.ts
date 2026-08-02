@@ -20,7 +20,7 @@ import {
   type OnlineProviderCredential,
 } from './online-credentials';
 
-const SCHEMA = 'xiaoba.checkpoint-small-window-canary.v2';
+const SCHEMA = 'xiaoba.checkpoint-small-window-canary.v3';
 const DEFAULT_PROMPT_BUDGET = 8_000;
 const TOOL_NAME = 'collect_checkpoint_evidence';
 const HEAD_SECRET = 'SECRET_ALPHA_5A77';
@@ -31,6 +31,7 @@ interface AttemptEvidence {
   attempt_id: string;
   role: 'primary' | 'checkpoint_summary';
   request_kind: ModelAttemptEvent['requestKind'];
+  request_origin: ModelAttemptEvent['requestOrigin'];
   outcome: ModelAttemptEvent['outcome'];
   episode_id: string | null;
   episode_number: number | null;
@@ -83,6 +84,7 @@ interface CanaryEvidence {
     no_request_truncation_markers: boolean;
     final_quality_passed: boolean;
     all_provider_attempts_succeeded: boolean;
+    all_provider_attempts_main_owned: boolean;
     provider_attempt_lifecycle_complete: boolean;
     all_provider_attempts_reported_cache_usage: boolean;
     stable_prefix_and_tools_match: boolean;
@@ -113,6 +115,7 @@ class AttemptCollector implements ModelAttemptSink {
       attempt_id: event.attemptId,
       role,
       request_kind: event.requestKind,
+      request_origin: event.requestOrigin,
       outcome: event.outcome,
       episode_id: event.context?.episodeId || null,
       episode_number: event.context?.episodeNumber ?? null,
@@ -225,6 +228,7 @@ export async function runCheckpointSmallWindowCanary(input: {
     enableCompression: false,
     maxContextTokens: promptBudget,
     episodeId,
+    requestKind: 'main_inference',
     cachePartitionKey: `checkpoint-canary-${input.credential.alias}-${cacheIsolationNonceSha256}`,
     cacheTraceSink: attemptCollector,
     checkpointCompactionCoordinator: coordinator,
@@ -273,6 +277,9 @@ export async function runCheckpointSmallWindowCanary(input: {
     const allProviderAttemptsSucceeded = terminalAttempts.every(
       attempt => attempt.outcome === 'succeeded',
     ) && lifecycle.complete;
+    const allProviderAttemptsMainOwned = terminalAttempts.every(
+      attempt => attempt.request_origin === 'main',
+    );
     const allProviderAttemptsReportedCacheUsage = terminalAttempts.every(attempt => (
       attempt.usage?.input_reported === true
       && attempt.usage.cache_read_reported === true
@@ -302,6 +309,7 @@ export async function runCheckpointSmallWindowCanary(input: {
       && sameEpisode
       && finalQualityPassed
       && allProviderAttemptsSucceeded
+      && allProviderAttemptsMainOwned
       && lifecycle.complete
       && allProviderAttemptsReportedCacheUsage
       && stablePrefixAndToolsMatch
@@ -342,6 +350,7 @@ export async function runCheckpointSmallWindowCanary(input: {
         no_request_truncation_markers: noRequestTruncationMarkers,
         final_quality_passed: finalQualityPassed,
         all_provider_attempts_succeeded: allProviderAttemptsSucceeded,
+        all_provider_attempts_main_owned: allProviderAttemptsMainOwned,
         provider_attempt_lifecycle_complete: lifecycle.complete,
         all_provider_attempts_reported_cache_usage: allProviderAttemptsReportedCacheUsage,
         stable_prefix_and_tools_match: stablePrefixAndToolsMatch,

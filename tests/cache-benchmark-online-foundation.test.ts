@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { afterEach, test } from 'node:test';
 import type { ModelAttemptEvent } from '../src/providers/provider';
+import { attestProviderRequestDispatch } from '../src/providers/request-dispatch-evidence';
 import type { Message } from '../src/types';
 import { prefixCatsCoParticipantContent } from '../src/catscompany/speaker-label';
 import { MemoryLogStore } from '../src/core/memory-log-store';
@@ -22,21 +23,26 @@ import {
   assertSealedOnlineBenchmarkEnvironment,
   BENCHMARK_GOAL_MARKER,
   BENCHMARK_IDENTITY_MARKER,
+  BENCHMARK_MEMORY_RELEVANCE_CONTRACT,
   BENCHMARK_RECOVERY_MARKER,
   buildBenchmarkPartitionMarker,
   buildBenchmarkAuthorizedDeviceContext,
   buildOnlineCacheBenchmarkManifest,
+  areTransparentRetryChainsSuccessful,
+  collapseJournalAttempts,
   createSealedMemoryFixture,
   evaluateBenchmarkMemoryCompletion,
   CacheBenchmarkEvidenceStore,
   CACHE_BENCHMARK_ATTEMPT_SCHEMA,
   CACHE_BENCHMARK_ROUND_SCHEMA,
+  fingerprintCanonical,
   fingerprintConfig,
   fingerprintBenchmarkAcceptanceTopology,
   fingerprintManifest,
   fingerprintOnlineBenchmarkArtifact,
   fingerprintOnlineBenchmarkRuntimeContract,
   loadOnlineProviderCredentials,
+  maxOutputTokensFor,
   OnlineBenchmarkRunLease,
   OnlineCredentialError,
   onlineBenchmarkInheritedChildEnvKeys,
@@ -47,6 +53,7 @@ import {
   safeOnlineBenchmarkErrorCode,
   sealOnlineBenchmarkEnvironment,
   StrictAttemptJournal,
+  withOnlineBenchmarkDeadline,
 } from '../src/cache-benchmark';
 
 const temporaryDirectories: string[] = [];
@@ -117,14 +124,75 @@ test('DeepSeek cache usage contract is explicit and fail-closed per compatible e
   );
 });
 
+test('online benchmark preserves enough output budget for reasoning providers', () => {
+  assert.equal(maxOutputTokensFor('deepseek'), 8192);
+  assert.equal(maxOutputTokensFor('newcli'), 64);
+});
+
+test('sealed memory benchmark rejects authorization metadata as relevance evidence', () => {
+  assert.match(BENCHMARK_MEMORY_RELEVANCE_CONTRACT, /exact task-specific entity/);
+  assert.match(BENCHMARK_MEMORY_RELEVANCE_CONTRACT, /inject:false and empty refs/);
+  assert.match(BENCHMARK_MEMORY_RELEVANCE_CONTRACT, /generic benchmark terms are not relevance evidence/);
+});
+
+test('online benchmark deadline aborts a stalled logical call before reporting timeout', async () => {
+  let aborts = 0;
+  let release!: (value: string) => void;
+  const stalled = new Promise<string>(resolve => { release = resolve; });
+
+  await assert.rejects(
+    withOnlineBenchmarkDeadline(
+      () => stalled,
+      () => {
+        aborts += 1;
+        release('cancelled');
+      },
+      5,
+    ),
+    /benchmark_logical_call_timeout/,
+  );
+  assert.equal(aborts, 1);
+});
+
+test('online benchmark deadline leaves a completed logical call untouched', async () => {
+  let aborts = 0;
+  assert.equal(
+    await withOnlineBenchmarkDeadline(
+      async () => 'completed',
+      () => { aborts += 1; },
+      1_000,
+    ),
+    'completed',
+  );
+  assert.equal(aborts, 0);
+});
+
 test('online manifest counts the production memory branch for every capped task', () => {
   const { file } = credentialFixture();
   const credentials = loadOnlineProviderCredentials(file);
   const credential = credentials[0];
-  const manifest = buildOnlineCacheBenchmarkManifest(credential, 24);
+  const manifest = buildOnlineCacheBenchmarkManifest(
+    credential,
+    24,
+    undefined,
+    'calibration',
+    credentials[1],
+  );
   const deepSeekManifest = buildOnlineCacheBenchmarkManifest(credentials[1], 24);
+  const acceptanceManifest = buildOnlineCacheBenchmarkManifest(
+    credential,
+    24,
+    undefined,
+    'acceptance',
+    credentials[1],
+  );
 
   assert.equal(manifest.benchmark_profile, 'calibration');
+  assert.equal(acceptanceManifest.benchmark_profile, 'acceptance');
+  assert.throws(
+    () => buildOnlineCacheBenchmarkManifest(credential, 23, undefined, 'acceptance'),
+    /acceptance_warm_calls_invalid/,
+  );
   assert.match(manifest.workload_contract_fingerprint || '', /^sha256:[a-f0-9]{64}$/u);
   assert.equal(
     manifest.workload_contract_fingerprint,
@@ -140,6 +208,13 @@ test('online manifest counts the production memory branch for every capped task'
   assert.equal(new Set(manifest.cases.map(entry => entry.task_id)).size, 4);
   assert.equal(manifest.cases.filter(entry => entry.execution_role === 'main').length, 4);
   assert.equal(manifest.cases.filter(entry => entry.execution_role === 'memory_branch').length, 4);
+  assert.ok(manifest.cases
+    .filter(entry => entry.execution_role === 'main')
+    .every(entry => entry.model === 'model-newcli' && entry.api_type === 'openai-responses'));
+  assert.ok(manifest.cases
+    .filter(entry => entry.execution_role === 'memory_branch')
+    .every(entry => entry.model === 'model-deepseek'
+      && entry.api_type === 'openai-chat-completions'));
   for (const benchmarkCase of manifest.cases) {
     assert.equal(benchmarkCase.runs[0].required_warm_calls, 24);
     if (benchmarkCase.execution_role === 'memory_branch') {
@@ -288,6 +363,14 @@ test('online CLI error projection never emits arbitrary error text', () => {
     safeOnlineBenchmarkErrorCode(new Error('benchmark_node_invocation_forbidden')),
     'benchmark_node_invocation_forbidden',
   );
+  assert.equal(safeOnlineBenchmarkErrorCode(Object.assign(
+    new Error('physical_attempt_role_context_mismatch'),
+    { code: 'ERR_WRAPPED' },
+  )), 'physical_attempt_role_context_mismatch');
+  assert.equal(safeOnlineBenchmarkErrorCode(Object.assign(
+    new Error('outer failure'),
+    { code: 'ERR_WRAPPED', cause: new Error('attempt_request_origin_missing') },
+  )), 'attempt_request_origin_missing');
 });
 
 test('online artifact fingerprint covers executable code, prompts, installed dependencies, and metadata', () => {
@@ -445,6 +528,69 @@ test('synchronous attempt journal fsyncs only allowlisted fingerprints and usage
   }
 });
 
+test('retry evidence only attests failures that prove the provider request was never dispatched', () => {
+  assert.equal(attestProviderRequestDispatch({
+    code: 'ETIMEDOUT',
+    message: 'connect ETIMEDOUT 203.0.113.10:443',
+  }), 'not_dispatched');
+  assert.equal(attestProviderRequestDispatch({ code: 'ENOTFOUND' }), 'not_dispatched');
+  assert.equal(attestProviderRequestDispatch({ code: 'ECONNREFUSED' }), 'not_dispatched');
+  assert.equal(attestProviderRequestDispatch({ code: 'UND_ERR_CONNECT_TIMEOUT' }), 'not_dispatched');
+
+  assert.equal(attestProviderRequestDispatch({
+    code: 'ETIMEDOUT',
+    message: 'timeout of 75000ms exceeded',
+  }), undefined);
+  assert.equal(attestProviderRequestDispatch({ code: 'ECONNRESET' }), undefined);
+  assert.equal(attestProviderRequestDispatch({
+    code: 'ETIMEDOUT',
+    message: 'connect ETIMEDOUT 203.0.113.10:443',
+    response: { status: 504 },
+  }), undefined);
+});
+
+test('attempt journal persists only the sealed pre-dispatch retry verdict, never raw errors', () => {
+  const directory = makeTemporaryDirectory('cache-journal-dispatch-');
+  const journal = new StrictAttemptJournal(directory);
+  journal.observe(attemptEvent({ outcome: 'started' }));
+  journal.observe(attemptEvent({
+    outcome: 'retrying',
+    error: {
+      code: 'ETIMEDOUT',
+      message: 'connect ETIMEDOUT SECRET_ENDPOINT:443',
+    },
+    retry: {
+      retryNumber: 1,
+      maxRetries: 1,
+      delayMs: 0,
+      elapsedMs: 25,
+      maxElapsedMs: 120_000,
+    },
+  }));
+  journal.close();
+
+  assert.equal(journal.records[1].dispatch_status, 'not_dispatched');
+  const persisted = fs.readFileSync(journal.filePath, 'utf8');
+  assert.equal(persisted.includes('SECRET_ENDPOINT'), false);
+  assert.equal(persisted.includes('ETIMEDOUT'), false);
+
+  const unknown = new StrictAttemptJournal(makeTemporaryDirectory('cache-journal-dispatch-unknown-'));
+  unknown.observe(attemptEvent({ outcome: 'started' }));
+  unknown.observe(attemptEvent({
+    outcome: 'retrying',
+    error: { code: 'ETIMEDOUT', message: 'timeout of 75000ms exceeded' },
+    retry: {
+      retryNumber: 1,
+      maxRetries: 1,
+      delayMs: 0,
+      elapsedMs: 75_000,
+      maxElapsedMs: 120_000,
+    },
+  }));
+  unknown.close();
+  assert.equal(unknown.records[1].dispatch_status, undefined);
+});
+
 test('attempt request fingerprints ignore internal episode IDs but retain cache placement', () => {
   const root = makeTemporaryDirectory('cache-journal-visible-');
   const first = new StrictAttemptJournal(path.join(root, 'first'));
@@ -487,6 +633,32 @@ test('attempt request fingerprints ignore internal episode IDs but retain cache 
   assert.notEqual(first.records[0].request_fingerprint, third.records[0].request_fingerprint);
 });
 
+test('stable prefix fingerprint covers the leading root and stops at the first volatile message', () => {
+  const root = makeTemporaryDirectory('cache-journal-prefix-');
+  const write = (name: string, rootContent: string, volatileContent: string) => {
+    const journal = new StrictAttemptJournal(path.join(root, name));
+    journal.observe(attemptEvent({
+      request: {
+        messages: [
+          { role: 'system', content: 'stable system', __cacheScope: 'stable' },
+          { role: 'user', content: rootContent },
+          {
+            role: 'system',
+            content: volatileContent,
+            __cacheScope: 'dynamic',
+          },
+        ],
+        tools: [],
+      },
+    }));
+    journal.close();
+    return journal.records[0].stable_prefix_fingerprint;
+  };
+  const baseline = write('baseline', 'root-a', 'volatile-a');
+  assert.equal(baseline, write('volatile-change', 'root-a', 'volatile-b'));
+  assert.notEqual(baseline, write('root-change', 'root-b', 'volatile-a'));
+});
+
 test('attempt journal preserves dangling started records and refuses a torn tail', () => {
   const directory = makeTemporaryDirectory('cache-journal-resume-');
   const journal = new StrictAttemptJournal(directory);
@@ -502,6 +674,83 @@ test('attempt journal preserves dangling started records and refuses a torn tail
   fs.appendFileSync(journal.filePath, '{"torn":');
   const invalid = new StrictAttemptJournal(directory);
   assert.equal(invalid.failureCode, 'journal_existing_invalid');
+});
+
+test('attempt journal lifecycle collapse rejects missing, duplicate, and kind-drifting events', () => {
+  const directory = makeTemporaryDirectory('cache-journal-lifecycle-');
+  const journal = new StrictAttemptJournal(directory);
+  journal.observe(attemptEvent({ outcome: 'started' }));
+  journal.observe(attemptEvent({ outcome: 'succeeded' }));
+  journal.close();
+  const [started, terminal] = journal.records;
+
+  assert.equal(collapseJournalAttempts([started]).length, 1);
+  assert.throws(() => collapseJournalAttempts([terminal]), /physical_attempt_lifecycle_invalid/);
+  assert.throws(
+    () => collapseJournalAttempts([started, structuredClone(started), terminal]),
+    /physical_attempt_lifecycle_invalid/,
+  );
+  assert.throws(
+    () => collapseJournalAttempts([
+      started,
+      { ...terminal, request_kind: 'checkpoint_compaction' },
+    ]),
+    /physical_attempt_lifecycle_mismatch/,
+  );
+});
+
+test('transparent retry validation accepts normal Memory attempts without an episode fingerprint', () => {
+  const directory = makeTemporaryDirectory('cache-journal-memory-no-episode-');
+  const journal = new StrictAttemptJournal(directory);
+  const memoryEvent: Partial<ModelAttemptEvent> = {
+    requestKind: 'memory_branch_inference',
+    requestOrigin: 'memory_branch',
+    context: { sessionId: 'branch:memory:memory-test-1' },
+  };
+  journal.observe(attemptEvent({ ...memoryEvent, outcome: 'started' }));
+  journal.observe(attemptEvent({
+    ...memoryEvent,
+    outcome: 'succeeded',
+    response: {
+      content: 'done',
+      usage: {
+        promptTokens: 100,
+        completionTokens: 2,
+        totalTokens: 102,
+        inputTokensReported: true,
+        cachedReadTokens: 80,
+        cacheReadSource: 'deepseek.prompt_cache_hit_tokens',
+        providerUsage: {
+          contract: 'deepseek-chat-v1',
+          prompt_tokens: 100,
+          prompt_cache_hit_tokens: 80,
+        },
+      },
+    },
+  }));
+  journal.close();
+  const collapsed = collapseJournalAttempts(journal.records);
+  assert.equal(collapsed[0].episode_fingerprint, undefined);
+  assert.equal(areTransparentRetryChainsSuccessful(collapsed), true);
+});
+
+test('attempt journal v2 rejects legacy schema, unknown kind, and a broken hash chain', () => {
+  for (const [label, mutate] of [
+    ['legacy schema', (record: any) => { record.schema = 'xiaoba.cache_benchmark_attempt_journal.v1'; }],
+    ['unknown kind', (record: any) => { record.request_kind = 'unknown_kind'; }],
+    ['broken chain', (record: any) => { record.previous_record_fingerprint = `sha256:${'f'.repeat(64)}`; }],
+  ] as const) {
+    const directory = makeTemporaryDirectory(`cache-journal-invalid-${label.replace(' ', '-')}-`);
+    const journal = new StrictAttemptJournal(directory);
+    journal.observe(attemptEvent({ outcome: 'started' }));
+    journal.close();
+    const [record] = journal.records;
+    const invalid = structuredClone(record) as any;
+    mutate(invalid);
+    fs.writeFileSync(journal.filePath, `${JSON.stringify(invalid)}\n`, { mode: 0o600 });
+    const reopened = new StrictAttemptJournal(directory);
+    assert.equal(reopened.failureCode, 'journal_existing_invalid', label);
+  }
 });
 
 test('attempt journal rejects path traversal and pre-existing weak files', () => {
@@ -836,6 +1085,8 @@ test('capability attestation accepts typed Goal and memory only after a linked b
   const branchStarted = attemptEvent({
     callId: 'branch-call',
     attemptId: 'branch-call:1',
+    requestKind: 'memory_branch_inference',
+    requestOrigin: 'memory_branch',
     context: {
       sessionId: 'branch:memory:memory-test',
       episodeId: 'branch-episode',
@@ -893,6 +1144,8 @@ test('capability attestation credits a successful suppressed branch without spoo
   const branch = attemptEvent({
     callId: 'suppressed-branch',
     attemptId: 'suppressed-branch:1',
+    requestKind: 'memory_branch_inference',
+    requestOrigin: 'memory_branch',
     context: { sessionId: 'branch:memory:suppressed-memory', surface: 'memory_branch' },
   });
   attestor.observe(branch);
@@ -920,6 +1173,8 @@ test('capability attestation rejects dangling, failed, and mismatched memory pro
   const branch = attemptEvent({
     callId: 'failed-branch',
     attemptId: 'failed-branch:1',
+    requestKind: 'memory_branch_inference',
+    requestOrigin: 'memory_branch',
     context: { sessionId: 'branch:memory:failed-memory', surface: 'memory_branch' },
   });
   attestor.observe(branch);
@@ -1173,6 +1428,33 @@ test('compiled online CLI reaches the sealed runner with no inherited overrides'
   }
 });
 
+test('compiled online CLI fail-closes missing, invalid, and undersized acceptance profiles', () => {
+  const executable = path.join(process.cwd(), 'dist', 'cache-benchmark', 'online-cli.js');
+  const scenarios = [
+    ['missing', undefined, 'arguments_invalid'],
+    ['invalid', 'production', 'benchmark_profile_invalid'],
+    ['undersized', 'acceptance', 'acceptance_warm_calls_invalid'],
+  ] as const;
+  for (const [label, profile, code] of scenarios) {
+    const fixture = onlineCliFixtureArguments();
+    const argv = [...fixture.argv];
+    const profileIndex = argv.indexOf('--profile');
+    if (profile === undefined) argv.splice(profileIndex, 2);
+    else argv[profileIndex + 1] = profile;
+    if (label === 'undersized') {
+      argv[argv.indexOf('--warm-calls') + 1] = '23';
+    }
+    const run = spawnSync(process.execPath, [executable, ...argv], {
+      encoding: 'utf8',
+      env: cleanOnlineSubprocessEnvironment(),
+    });
+    assert.equal(run.status, 2, `${label}: ${run.stderr}`);
+    assert.match(run.stderr, new RegExp(`"code":"${code}"`));
+    assert.equal(fs.existsSync(fixture.outputDirectory), false);
+    assert.equal(fs.existsSync(fixture.runtimeDataDirectory), false);
+  }
+});
+
 test('sealed memory fixture reads only its held source and detects in-place restoration', async () => {
   const workspace = makeTemporaryDirectory('sealed-memory-workspace-');
   if (process.platform !== 'win32') fs.chmodSync(workspace, 0o700);
@@ -1283,6 +1565,9 @@ test('evidence store seals a round before advancing its private contiguous ledge
   const benchmarkCase = manifest.cases[0];
   const run = benchmarkCase.runs[0];
   const manifestFingerprint = fingerprintManifest(manifest);
+  const startedPreviousRecordFingerprint = `sha256:${'0'.repeat(64)}`;
+  const startedRecordFingerprint = fingerprintCanonical({ attempt: 'call-1:1', state: 'started' });
+  const terminalRecordFingerprint = fingerprintCanonical({ attempt: 'call-1:1', state: 'succeeded' });
   const evidence = {
     header: {
       schema: CACHE_BENCHMARK_ROUND_SCHEMA,
@@ -1298,7 +1583,28 @@ test('evidence store seals a round before advancing its private contiguous ledge
       suite_id: manifest.suite_id,
       round: 1,
       attempt_number: 1,
+      provider_attempt_number: 1,
       attempt_role: benchmarkCase.execution_role,
+      request_kind: benchmarkCase.execution_role === 'main'
+        ? 'main_inference' as const
+        : 'memory_branch_inference' as const,
+      request_origin: benchmarkCase.execution_role === 'main'
+        ? 'main' as const
+        : 'memory_branch' as const,
+      cache_strategy: 'openai-prompt-cache-key' as const,
+      tools_count: 1,
+      tools_fingerprint: `sha256:${'d'.repeat(64)}`,
+      session_fingerprint: `sha256:${'e'.repeat(64)}`,
+      journal_started_sequence: 1,
+      journal_started_previous_record_fingerprint: startedPreviousRecordFingerprint,
+      journal_started_record_fingerprint: startedRecordFingerprint,
+      journal_terminal_sequence: 2,
+      journal_terminal_previous_record_fingerprint: startedRecordFingerprint,
+      journal_terminal_record_fingerprint: terminalRecordFingerprint,
+      journal_lifecycle_fingerprint: fingerprintCanonical({
+        started_record_fingerprint: startedRecordFingerprint,
+        terminal_record_fingerprint: terminalRecordFingerprint,
+      }),
       logical_call: 1,
       case_id: benchmarkCase.case_id,
       run_id: run.run_id,
@@ -1351,7 +1657,7 @@ test('evidence store seals a round before advancing its private contiguous ledge
 
 function attemptEvent(overrides: Partial<ModelAttemptEvent>): ModelAttemptEvent {
   return {
-    schema: 'xiaoba.model_attempt.v1',
+    schema: 'xiaoba.model_attempt.v2',
     callId: 'call-1',
     attemptId: 'call-1:1',
     attemptNumber: 1,
@@ -1362,6 +1668,7 @@ function attemptEvent(overrides: Partial<ModelAttemptEvent>): ModelAttemptEvent 
     apiType: 'openai-chat-completions',
     stream: false,
     requestKind: 'main_inference',
+    requestOrigin: 'main',
     context: {
       sessionId: 'private-session-id',
       episodeId: 'private-episode-id',
@@ -1438,6 +1745,7 @@ function onlineCliFixtureArguments(): {
       '--output-dir', outputDirectory,
       '--runtime-data-dir', runtimeDataDirectory,
       '--provider', 'newcli',
+      '--profile', 'calibration',
       '--round', '1',
       '--warm-calls', '1',
     ],

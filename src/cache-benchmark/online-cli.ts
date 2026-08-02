@@ -20,6 +20,7 @@ interface OnlineCliOptions {
   outputDirectory: string;
   runtimeDataDirectory: string;
   provider: 'newcli' | 'deepseek';
+  profile: 'calibration' | 'acceptance';
   round: number;
   warmCalls: number;
 }
@@ -128,6 +129,7 @@ function parseArguments(argv: string[]): OnlineCliOptions {
     '--output-dir',
     '--runtime-data-dir',
     '--provider',
+    '--profile',
     '--round',
     '--warm-calls',
   ]);
@@ -142,13 +144,22 @@ function parseArguments(argv: string[]): OnlineCliOptions {
   if (values.size !== allowed.size) throw new Error('arguments_invalid');
   const provider = values.get('--provider');
   if (provider !== 'newcli' && provider !== 'deepseek') throw new Error('provider_invalid');
+  const profile = values.get('--profile');
+  if (profile !== 'calibration' && profile !== 'acceptance') {
+    throw new Error('benchmark_profile_invalid');
+  }
+  const warmCalls = parsePositiveInteger(values.get('--warm-calls'));
+  if (profile === 'acceptance' && warmCalls < 24) {
+    throw new Error('acceptance_warm_calls_invalid');
+  }
   return {
     credentialPath: path.resolve(values.get('--credentials')!),
     outputDirectory: path.resolve(values.get('--output-dir')!),
     runtimeDataDirectory: path.resolve(values.get('--runtime-data-dir')!),
     provider,
+    profile,
     round: parsePositiveInteger(values.get('--round')),
-    warmCalls: parsePositiveInteger(values.get('--warm-calls')),
+    warmCalls,
   };
 }
 
@@ -173,15 +184,22 @@ function parsePositiveInteger(value: string | undefined): number {
 }
 
 export function safeOnlineBenchmarkErrorCode(error: unknown): string {
-  const code = error && typeof error === 'object' && 'code' in error
-    ? String((error as any).code || '')
-    : error instanceof Error
-      ? error.message
-      : '';
-  return SAFE_ERROR_CODES.has(code) ? code : 'online_benchmark_failed';
+  const candidate = error as {
+    code?: unknown;
+    message?: unknown;
+    cause?: { code?: unknown; message?: unknown };
+  } | undefined;
+  const candidates = [
+    candidate?.code,
+    candidate?.cause?.code,
+    candidate?.cause?.message,
+    candidate?.message,
+  ].map(value => String(value ?? ''));
+  return candidates.find(code => SAFE_ERROR_CODES.has(code)) ?? 'online_benchmark_failed';
 }
 
 const SAFE_ERROR_CODES = new Set([
+  'acceptance_warm_calls_invalid',
   'arguments_invalid',
   'artifact_directory_invalid',
   'artifact_changed_during_scan',
@@ -192,9 +210,12 @@ const SAFE_ERROR_CODES = new Set([
   'artifact_file_invalid',
   'artifact_fingerprint_invalid',
   'artifact_symlink_invalid',
+  'attempt_request_kind_missing',
+  'attempt_request_origin_missing',
   'benchmark_partition_case_invalid',
   'benchmark_partition_nonce_invalid',
   'benchmark_partition_round_invalid',
+  'benchmark_profile_invalid',
   'benchmark_environment_invalid',
   'benchmark_environment_override_forbidden',
   'benchmark_node_invocation_forbidden',
@@ -204,6 +225,14 @@ const SAFE_ERROR_CODES = new Set([
   'benchmark_memory_fixture_invalid',
   'benchmark_memory_fixture_path_invalid',
   'benchmark_memory_fixture_tampered',
+  'benchmark_logical_call_timeout',
+  'benchmark_logical_call_timeout_invalid',
+  'benchmark_logical_call_failed',
+  'benchmark_attestation_finalize_failed',
+  'benchmark_journal_collapse_failed',
+  'benchmark_journal_finalize_failed',
+  'benchmark_progress_projection_failed',
+  'benchmark_session_execution_failed',
   'benchmark_skill_mismatch',
   'bootstrap_persistence_failed',
   'credential_path_invalid',
@@ -236,7 +265,15 @@ const SAFE_ERROR_CODES = new Set([
   'online_round_reservation_invalid',
   'online_round_reservation_not_private',
   'orphan_round_mismatch',
+  'physical_attempt_cache_contract_mismatch',
+  'physical_attempt_lifecycle_invalid',
+  'physical_attempt_lifecycle_mismatch',
+  'physical_attempt_linkage_missing',
   'physical_attempt_metadata_mismatch',
+  'physical_attempt_projection_failed',
+  'physical_attempt_request_kind_mismatch',
+  'physical_attempt_role_context_mismatch',
+  'physical_attempt_usage_mismatch',
   'provider_contract_missing',
   'provider_invalid',
   'round_invalid',
@@ -247,11 +284,14 @@ const SAFE_ERROR_CODES = new Set([
   'runtime_data_not_private',
   'sealed_round_mismatch',
   'sealed_round_missing',
+  'session_fixture_cleanup_failed',
   'skills_path_not_bootstrapped',
   'skills_path_outside_runtime',
   'subagent_fixture_failed',
+  'subagent_fixture_cleanup_failed',
   'subagent_fixture_stop_timeout',
   'system_prompt_factory_missing',
+  'unexpected_subagent_attempt',
   'warm_calls_invalid',
 ]);
 

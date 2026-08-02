@@ -229,8 +229,14 @@ export class CatsCompanyCloudSessionRestorer {
   private createCompactionModelRequestOptions(
     sessionKey: string,
     messages: Message[],
-  ): Pick<AIRequestOptions, 'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'> {
-    const base: Pick<AIRequestOptions, 'cachePartitionKey'> = { cachePartitionKey: sessionKey };
+  ): Pick<
+    AIRequestOptions,
+    'requestOrigin' | 'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'
+  > {
+    const base: Pick<AIRequestOptions, 'requestOrigin' | 'cachePartitionKey'> = {
+      requestOrigin: 'main',
+      cachePartitionKey: sessionKey,
+    };
     try {
       const episodeId = [...messages].reverse().find(message => message.__episodeId)?.__episodeId;
       const observer = new CacheTraceObserver({

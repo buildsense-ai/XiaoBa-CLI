@@ -288,7 +288,7 @@ export interface CompactOptions {
   signal?: AbortSignal;
   modelRequestOptions?: Pick<
     AIRequestOptions,
-    'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'
+    'requestKind' | 'requestOrigin' | 'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'
   >;
 }
 
@@ -444,6 +444,8 @@ export class ContextCompressor {
           ...options.modelRequestOptions,
           signal: options.signal,
           cacheMode: 'bypass',
+          requestKind: 'checkpoint_compaction',
+          requestOrigin: options.modelRequestOptions?.requestOrigin ?? 'main',
         },
       );
       const rawSummary = fullContent;

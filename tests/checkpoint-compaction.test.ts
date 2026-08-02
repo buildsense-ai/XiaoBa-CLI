@@ -157,6 +157,7 @@ test('checkpoint compaction preserves stable system and transient runtime messag
   assert.ok(summaryIndex > boundaryIndex);
   assert.equal(options[0].cacheMode, 'bypass');
   assert.equal(options[0].requestKind, 'checkpoint_compaction');
+  assert.equal(options[0].requestOrigin, 'main');
   assert.equal(options[0].cachePartitionKey, 'session-1');
   assert.equal(options[0].modelAttemptContext.surface, 'test');
   assert.equal(result.messages[summaryIndex].__context?.source, 'compaction_summary');
@@ -635,6 +636,7 @@ test('hierarchical checkpoint bounds chunk concurrency', async () => {
     ) => {
       calls++;
       assert.equal(options.requestKind, 'checkpoint_compaction');
+      assert.equal(options.requestOrigin, 'main');
       active++;
       peak = Math.max(peak, active);
       await new Promise(resolve => setTimeout(resolve, 2));

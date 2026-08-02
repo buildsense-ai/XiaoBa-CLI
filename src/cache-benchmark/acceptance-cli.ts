@@ -7,6 +7,7 @@ import {
   type AcceptanceProviderAlias,
   type CacheBenchmarkAcceptanceCandidate,
   type CacheBenchmarkAcceptanceResult,
+  CACHE_BENCHMARK_ACCEPTANCE_SCHEMA,
   REQUIRED_ACCEPTANCE_PROVIDERS,
 } from './acceptance';
 import { canonicalJson } from './canonical';
@@ -34,7 +35,7 @@ export function runCacheBenchmarkAcceptanceCli(argv: string[]): 0 | 1 | 2 {
   } catch {
     process.stdout.write(format === 'json'
       ? `${canonicalJson({
-        schema: 'xiaoba.cache_benchmark_acceptance.v1',
+        schema: CACHE_BENCHMARK_ACCEPTANCE_SCHEMA,
         status: 'invalid',
         exit_code: 2,
         reasons: ['input_invalid'],

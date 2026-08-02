@@ -9,7 +9,13 @@ import type {
 import type { TargetRoutes } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
-import { AIRequestOptions, StreamCallbacks, StreamRetryInfo } from '../providers/provider';
+import {
+  AIRequestOptions,
+  StreamCallbacks,
+  StreamRetryInfo,
+  type ModelRequestKind,
+  type ModelRequestOrigin,
+} from '../providers/provider';
 import { Logger } from '../utils/logger';
 import { deviceGrantSnapshotCanonicalValue } from './device-grants';
 import { isRateLimitErrorCode } from '../utils/rate-limit-error';
@@ -240,6 +246,8 @@ export interface RunnerOptions {
   cachePartitionKey?: string;
   /** Prevent sensitive benchmark payloads from being persisted by the optional prompt trace. */
   disablePromptTrace?: boolean;
+  /** Explicit owner for agent-bearing provider requests. Session IDs are not classification input. */
+  requestKind?: Exclude<ModelRequestKind, 'checkpoint_compaction'>;
 }
 
 /**
@@ -267,6 +275,7 @@ export class ConversationRunner {
   private checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   private onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
   private cachePartitionKey?: string;
+  private inferenceRequestKind: Exclude<ModelRequestKind, 'checkpoint_compaction'>;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -301,6 +310,7 @@ export class ConversationRunner {
     this.maxTurns = options?.maxTurns;
     this.suppressFinalResponse = options?.suppressFinalResponse === true;
     this.cachePartitionKey = options?.cachePartitionKey;
+    this.inferenceRequestKind = options?.requestKind ?? 'main_inference';
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -407,6 +417,7 @@ export class ConversationRunner {
           }
           const compacted = await this.compressor.compact(messages, {
             signal: this.toolExecutionContext?.abortSignal,
+            modelRequestOptions: this.legacyCompactionRequestOptions(turns),
           });
           messages.length = 0;
           messages.push(...compacted);
@@ -996,6 +1007,7 @@ export class ConversationRunner {
       }
       const compacted = await this.compressor.compact(messages, {
         signal: this.toolExecutionContext?.abortSignal,
+        modelRequestOptions: this.legacyCompactionRequestOptions(0),
       });
       messages.splice(0, messages.length, ...compacted);
       requestMessages = buildRequestMessages();
@@ -1038,6 +1050,7 @@ export class ConversationRunner {
       force,
       signal: this.toolExecutionContext?.abortSignal,
       modelRequestOptions: {
+        requestOrigin: 'main',
         cachePartitionKey: this.cachePartitionKey
           || this.toolExecutionContext?.sessionId
           || this.toolExecutionContext?.executionScope?.sessionKey
@@ -1901,7 +1914,8 @@ export class ConversationRunner {
   ) {
     const requestOptions: AIRequestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
-      requestKind: this.resolveInferenceRequestKind(),
+      requestKind: this.inferenceRequestKind,
+      requestOrigin: this.inferenceRequestOrigin(),
       cachePartitionKey: this.cachePartitionKey
         || this.toolExecutionContext?.sessionId
         || this.toolExecutionContext?.executionScope?.sessionKey
@@ -1925,16 +1939,32 @@ export class ConversationRunner {
     return await this.aiService.chat(messages, activeTools, requestOptions);
   }
 
-  private resolveInferenceRequestKind(): 'main_inference' | 'memory_branch_inference' | 'subagent_inference' {
-    const sessionId = String(this.toolExecutionContext?.sessionId || '');
-    const surface = String(this.toolExecutionContext?.surface || '');
-    if (sessionId.startsWith('branch:memory:') || surface === 'memory_branch') {
-      return 'memory_branch_inference';
-    }
-    if (/^(?:subagent|branch:subagent)/i.test(sessionId) || /subagent/i.test(surface)) {
-      return 'subagent_inference';
-    }
-    return 'main_inference';
+  private inferenceRequestOrigin(): ModelRequestOrigin {
+    return this.inferenceRequestKind === 'memory_branch_inference'
+      ? 'memory_branch'
+      : this.inferenceRequestKind === 'subagent_inference'
+        ? 'subagent'
+        : 'main';
+  }
+
+  private legacyCompactionRequestOptions(
+    episodeNumber: number,
+  ): Pick<AIRequestOptions, 'requestKind' | 'requestOrigin' | 'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'> {
+    return {
+      requestKind: 'checkpoint_compaction',
+      requestOrigin: this.inferenceRequestOrigin(),
+      cachePartitionKey: this.cachePartitionKey
+        || this.toolExecutionContext?.sessionId
+        || this.sessionLabel.trim()
+        || 'runner',
+      ...(this.cacheTraceSink ? { modelAttemptSink: this.cacheTraceSink } : {}),
+      modelAttemptContext: {
+        sessionId: this.toolExecutionContext?.sessionId,
+        surface: this.toolExecutionContext?.surface,
+        episodeId: this.episodeId,
+        episodeNumber,
+      },
+    };
   }
 
   private repairToolExchangeMessages(messages: Message[]): Message[] {

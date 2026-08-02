@@ -1,5 +1,7 @@
 import type { Message } from '../types';
 import type { ModelAttemptEvent, ModelAttemptSink } from '../providers/provider';
+import type { ModelRequestKind } from '../providers/provider';
+import type { ModelRequestOrigin } from '../providers/provider';
 import type { ObservationBranchCompletion } from '../core/observation-branch-session';
 import { readAuthorizedDeviceContextWitness } from '../core/authorized-device-witness';
 import { remoteToolNameForDeviceOperation } from '../core/authorized-device-projection';
@@ -19,6 +21,9 @@ export const BENCHMARK_RECOVERY_MARKER = '[cache_benchmark_recovery:v1]';
  */
 export class AttemptCapabilityAttestor implements ModelAttemptSink {
   private readonly capabilitiesByAttempt = new Map<string, CacheBenchmarkCapability[]>();
+  private readonly requestKindByAttempt = new Map<string, ModelRequestKind>();
+  private readonly requestOriginByAttempt = new Map<string, ModelRequestOrigin>();
+  private readonly roleContextValidByAttempt = new Map<string, boolean>();
   private readonly branchByAttempt = new Map<string, string>();
   private readonly outcomesByAttempt = new Map<string, ModelAttemptEvent['outcome']>();
   private readonly attemptsByBranch = new Map<string, Set<string>>();
@@ -31,8 +36,19 @@ export class AttemptCapabilityAttestor implements ModelAttemptSink {
   observe(event: ModelAttemptEvent): void {
     this.outcomesByAttempt.set(event.attemptId, event.outcome);
     if (event.outcome !== 'started') return;
+    this.requestKindByAttempt.set(event.attemptId, event.requestKind);
+    this.requestOriginByAttempt.set(event.attemptId, event.requestOrigin);
+    const contextMemoryBranchId = memoryBranchId(event.context?.sessionId);
+    this.roleContextValidByAttempt.set(
+      event.attemptId,
+      event.requestOrigin === 'memory_branch'
+        ? Boolean(contextMemoryBranchId)
+        : !contextMemoryBranchId,
+    );
     this.capabilitiesByAttempt.set(event.attemptId, attestRequestCapabilities(event));
-    const branchId = memoryBranchId(event.context?.sessionId);
+    const branchId = event.requestOrigin === 'memory_branch'
+      ? contextMemoryBranchId
+      : undefined;
     if (branchId) {
       this.branchByAttempt.set(event.attemptId, branchId);
       const attempts = this.attemptsByBranch.get(branchId) ?? new Set<string>();
@@ -51,7 +67,26 @@ export class AttemptCapabilityAttestor implements ModelAttemptSink {
   }
 
   getRole(attemptId: string): CacheBenchmarkAttemptRole {
-    return this.branchByAttempt.has(attemptId) ? 'memory_branch' : 'main';
+    const origin = this.getRequestOrigin(attemptId);
+    if (origin === 'memory_branch') return 'memory_branch';
+    if (origin === 'main') return 'main';
+    throw new Error('unexpected_subagent_attempt');
+  }
+
+  getRequestKind(attemptId: string): ModelRequestKind {
+    const kind = this.requestKindByAttempt.get(attemptId);
+    if (!kind) throw new Error('attempt_request_kind_missing');
+    return kind;
+  }
+
+  getRequestOrigin(attemptId: string): ModelRequestOrigin {
+    const origin = this.requestOriginByAttempt.get(attemptId);
+    if (!origin) throw new Error('attempt_request_origin_missing');
+    return origin;
+  }
+
+  isRoleContextValid(attemptId: string): boolean {
+    return this.roleContextValidByAttempt.get(attemptId) === true;
   }
 
   get(attemptId: string): CacheBenchmarkCapability[] {

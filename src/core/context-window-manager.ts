@@ -17,7 +17,7 @@ export interface CompactIfNeededOptions {
   signal?: AbortSignal;
   modelRequestOptions?: Pick<
     AIRequestOptions,
-    'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'
+    'requestKind' | 'requestOrigin' | 'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'
   >;
   onStatus?: (event: ContextCompactionStatusEvent) => void | Promise<void>;
 }

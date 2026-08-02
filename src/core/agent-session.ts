@@ -1291,8 +1291,9 @@ export class AgentSession {
 
   private createCompactionModelRequestOptions(
     messages: Message[],
-  ): Pick<AIRequestOptions, 'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'> {
-    const base: Pick<AIRequestOptions, 'cachePartitionKey'> = {
+  ): Pick<AIRequestOptions, 'requestOrigin' | 'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'> {
+    const base: Pick<AIRequestOptions, 'requestOrigin' | 'cachePartitionKey'> = {
+      requestOrigin: 'main',
       cachePartitionKey: this.key,
     };
     try {
