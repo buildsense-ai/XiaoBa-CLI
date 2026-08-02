@@ -59,6 +59,7 @@ test('Anthropic SDK serializes both stable cache breakpoints on the real wire pa
     assert.deepEqual(requestBody.tools[1].cache_control, { type: 'ephemeral' });
     assert.deepEqual(requestBody.system[0].cache_control, { type: 'ephemeral' });
     assert.equal(requestBody.system[1].cache_control, undefined);
+    assert.deepEqual(requestBody.messages[0].content[0].cache_control, { type: 'ephemeral' });
     assert.deepEqual(result.usage, {
       promptTokens: 60,
       completionTokens: 1,

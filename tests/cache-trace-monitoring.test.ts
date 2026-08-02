@@ -100,6 +100,47 @@ test('observer records the exact OpenAI cache policy without exposing its routin
   }
 });
 
+test('observer persists only redacted context lifecycle counts and fingerprints', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-context-lifecycle-'));
+  try {
+    const observer = new CacheTraceObserver({
+      sessionId: 'cache:lifecycle',
+      traceDir: dir,
+      env: { XIAOBA_CACHE_TRACE: 'true' },
+    });
+    const base = attemptEvent();
+    observer.observe(attemptEvent({
+      request: {
+        ...base.request,
+        contextLifecycle: {
+          annotatedMessages: 4,
+          transientMessages: 3,
+          lifecycleCounts: { session: 1, episode: 2, call: 1 },
+          cacheScopeCounts: { stable: 1, epoch: 2, volatile: 1 },
+          epochFingerprint: '0123456789abcdef',
+          requestFingerprint: 'fedcba9876543210',
+        },
+      },
+    }));
+    await observer.drain();
+
+    const store = await readCacheTraceStore(dir);
+    assert.deepEqual(store.records[0].contextLifecycle, {
+      annotatedMessages: 4,
+      transientMessages: 3,
+      lifecycleCounts: { session: 1, episode: 2, call: 1 },
+      cacheScopeCounts: { stable: 1, epoch: 2, volatile: 1 },
+      epochFingerprint: '0123456789abcdef',
+      requestFingerprint: 'fedcba9876543210',
+    });
+    const raw = fs.readFileSync(listTraceFiles(dir)[0], 'utf8');
+    assert.doesNotMatch(raw, /secret content must not be stored/);
+    assert.match(raw, /\"context_lifecycle\"/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('observer consumes an asynchronous writer rejection', async () => {
   let errors = 0;
   const observer = new CacheTraceObserver({
@@ -368,6 +409,9 @@ test('dashboard exposes a discoverable cache trace page', () => {
   assert.match(page, /未完成/);
   assert.match(page, /缓存策略/);
   assert.match(page, /OpenAI 显式稳定前缀/);
+  assert.match(page, /Anthropic 分层显式断点/);
+  assert.match(page, /上下文 S\/E\/C/);
+  assert.match(page, /epoch/);
   assert.match(page, /stablePrefixEstimatedTokens/);
   assert.match(page, /@media\(max-width:900px\)/);
   assert.match(page, /\.layout\{grid-template-columns:minmax\(0,1fr\)\}/);

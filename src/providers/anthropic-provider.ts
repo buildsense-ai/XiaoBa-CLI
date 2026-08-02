@@ -192,10 +192,39 @@ export class AnthropicProvider implements AIProvider {
 
     flushToolResults();
 
+    const providerMessages = this.coalesceAdjacentUserMessages(transformedMessages);
+    if (this.supportsNativePromptCaching()) {
+      this.applyConversationCacheBreakpoint(providerMessages);
+    }
+
     return {
       system: systemPrompt,
-      messages: this.coalesceAdjacentUserMessages(transformedMessages)
+      messages: providerMessages,
     };
+  }
+
+  private applyConversationCacheBreakpoint(messages: Anthropic.MessageParam[]): void {
+    const target = messages[messages.length - 1];
+    if (!target || target.role !== 'user') return;
+    if (typeof target.content === 'string') {
+      if (!target.content) return;
+      target.content = [{
+        type: 'text',
+        text: target.content,
+        cache_control: { type: 'ephemeral' },
+      }] as any;
+      return;
+    }
+    if (!Array.isArray(target.content)) return;
+    for (let index = target.content.length - 1; index >= 0; index--) {
+      const block = target.content[index] as any;
+      if (!block || !['text', 'image', 'tool_result'].includes(String(block.type || ''))) continue;
+      target.content[index] = {
+        ...block,
+        cache_control: { type: 'ephemeral' },
+      } as any;
+      return;
+    }
   }
 
   private buildSystemPrompt(messages: Message[]): AnthropicSystemPrompt | undefined {

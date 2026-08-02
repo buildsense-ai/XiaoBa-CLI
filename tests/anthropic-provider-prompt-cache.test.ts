@@ -38,7 +38,14 @@ describe('AnthropicProvider prompt caching', () => {
         text: '[transient_plan_status]\n1. [in_progress] inspect provider',
       },
     ]);
-    assert.deepEqual(transformed.messages, [{ role: 'user', content: 'Latest query' }]);
+    assert.deepEqual(transformed.messages, [{
+      role: 'user',
+      content: [{
+        type: 'text',
+        text: 'Latest query',
+        cache_control: { type: 'ephemeral' },
+      }],
+    }]);
   });
 
   test('keeps the cached system block stable when plan and subagent state changes', () => {
@@ -161,6 +168,10 @@ describe('AnthropicProvider prompt caching', () => {
 
     assert.equal(compatibleCalled, false);
     assert.deepEqual(nativeParams.system[0].cache_control, { type: 'ephemeral' });
+    assert.deepEqual(
+      nativeParams.messages[0].content[0].cache_control,
+      { type: 'ephemeral' },
+    );
     assert.deepEqual(response.usage, {
       promptTokens: 1000,
       completionTokens: 20,
@@ -201,6 +212,33 @@ describe('AnthropicProvider prompt caching', () => {
     assert.deepEqual(Object.keys(nativeParams.tools[1].input_schema), ['properties', 'type']);
     assert.deepEqual(Object.keys(nativeParams.tools[1].input_schema.properties), ['a', 'b']);
     assert.deepEqual(nativeParams.system[0].cache_control, { type: 'ephemeral' });
+    assert.deepEqual(
+      nativeParams.messages[0].content[0].cache_control,
+      { type: 'ephemeral' },
+    );
+  });
+
+  test('places the growing conversation breakpoint after a trailing tool result', () => {
+    const provider = createProvider();
+    const transformed = (provider as any).transformMessages([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'Look up the current status.' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'lookup', arguments: '{}' },
+        }],
+      },
+      { role: 'tool', tool_call_id: 'call_1', name: 'lookup', content: 'ready' },
+    ] as Message[]);
+
+    const finalMessage = transformed.messages.at(-1);
+    assert.equal(finalMessage.role, 'user');
+    assert.equal(finalMessage.content[0].type, 'tool_result');
+    assert.deepEqual(finalMessage.content[0].cache_control, { type: 'ephemeral' });
   });
 
   test('uses the standard create path for compatible endpoints', async () => {

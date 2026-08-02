@@ -166,6 +166,7 @@ export class AgentTurnController {
       runtimeFeedback: params.runtimeFeedback,
       skillRuntime: this.options.skillRuntime,
       planRuntime: this.options.planRuntime,
+      contextEpoch: episodeId,
     });
 
     const currentMemoryBranch = this.startMemorySidecarIfEnabled({

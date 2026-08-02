@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Message } from '../types';
+import { annotateContextMessage } from './context-lifecycle';
 
 export type SyntheticObservationSource = 'memory' | 'web' | 'runtime' | 'subagent' | 'skill_context';
 export type SyntheticObservationStatus = 'completed' | 'partial' | 'failed' | 'cancelled';
@@ -107,7 +108,7 @@ export function buildSyntheticObservationMessages(
   for (const observation of observations) {
     const id = observation.id || stableObservationId(observation);
     const toolCallId = `synthetic-${observation.source}-${id}`;
-    messages.push({
+    messages.push(annotateContextMessage({
       role: 'assistant',
       content: null,
       tool_calls: [{
@@ -126,15 +127,23 @@ export function buildSyntheticObservationMessages(
       }],
       __syntheticObservation: true,
       syntheticObservationId: id,
-    });
-    messages.push({
+    }, {
+      source: 'synthetic_observation',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+    }));
+    messages.push(annotateContextMessage({
       role: 'tool',
       name: SYNTHETIC_OBSERVATION_TOOL_NAME,
       tool_call_id: toolCallId,
       content: formatSyntheticObservation(observation),
       __syntheticObservation: true,
       syntheticObservationId: id,
-    });
+    }, {
+      source: 'synthetic_observation',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+    }));
   }
   return messages;
 }

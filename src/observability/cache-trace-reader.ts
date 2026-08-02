@@ -38,6 +38,14 @@ export interface CacheTraceRecord {
     explicitBreakpoints: number;
     promptCacheKeyFingerprint: string;
   };
+  contextLifecycle?: {
+    annotatedMessages: number;
+    transientMessages: number;
+    lifecycleCounts: { session: number; episode: number; call: number };
+    cacheScopeCounts: { stable: number; epoch: number; volatile: number };
+    epochFingerprint: string;
+    requestFingerprint: string;
+  };
   requestSha256: string;
   stableSystemSha256: string;
   messageSha256s: string[];
@@ -159,6 +167,7 @@ function normalizeAttemptEvents(
   const final = terminal || base;
   const request = base.request || final.request || {};
   const cachePlan = normalizeCachePlan(request.cache_plan);
+  const contextLifecycle = normalizeContextLifecycle(request.context_lifecycle);
   const lifecycle = final.lifecycle || {};
   const firstLifecycle = base.lifecycle || {};
   const responseUsage = final.response_usage || final.response?.usage || final.usage || {};
@@ -197,6 +206,7 @@ function normalizeAttemptEvents(
     apiType: text(request.api_type || base.api_type || 'unknown'),
     cacheStrategy: text(request.cache_strategy || 'unknown'),
     ...(cachePlan ? { cachePlan } : {}),
+    ...(contextLifecycle ? { contextLifecycle } : {}),
     requestSha256: text(request.request_sha256 || request.sha256 || ''),
     stableSystemSha256: text(request.system_prompt?.stable_sha256 || request.stable_system_sha256 || ''),
     messageSha256s: Array.isArray(messageHashes) ? messageHashes.map(text) : [],
@@ -223,6 +233,7 @@ function normalizeLegacyRecord(raw: any, file: string): Omit<CacheTraceRecord, '
   const episode = raw.episode || raw.turn || {};
   const request = raw.request || {};
   const cachePlan = normalizeCachePlan(request.cache_plan);
+  const contextLifecycle = normalizeContextLifecycle(request.context_lifecycle);
   const responseUsage = raw.response_usage || raw.response?.usage || raw.usage || {};
   const session = raw.session || {};
   const sessionId = text(session.session_id || raw.session_id || raw.conversation_id || 'unknown');
@@ -253,6 +264,7 @@ function normalizeLegacyRecord(raw: any, file: string): Omit<CacheTraceRecord, '
     apiType: text(request.api_type || raw.api_type || 'unknown'),
     cacheStrategy: text(request.cache_strategy || 'unknown'),
     ...(cachePlan ? { cachePlan } : {}),
+    ...(contextLifecycle ? { contextLifecycle } : {}),
     requestSha256: text(request.request_sha256 || request.sha256 || ''),
     stableSystemSha256: text(request.system_prompt?.stable_sha256 || request.stable_system_sha256 || ''),
     messageSha256s: Array.isArray(messageHashes) ? messageHashes.map(text) : [],
@@ -281,6 +293,28 @@ function normalizeCachePlan(value: any): CacheTraceRecord['cachePlan'] | undefin
     stableSystemMessages: integer(value.stable_system_messages),
     explicitBreakpoints: integer(value.explicit_breakpoints),
     promptCacheKeyFingerprint: text(value.prompt_cache_key_fingerprint),
+  };
+}
+
+function normalizeContextLifecycle(value: any): CacheTraceRecord['contextLifecycle'] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const lifecycle = value.lifecycle_counts || {};
+  const scopes = value.cache_scope_counts || {};
+  return {
+    annotatedMessages: integer(value.annotated_messages),
+    transientMessages: integer(value.transient_messages),
+    lifecycleCounts: {
+      session: integer(lifecycle.session),
+      episode: integer(lifecycle.episode),
+      call: integer(lifecycle.call),
+    },
+    cacheScopeCounts: {
+      stable: integer(scopes.stable),
+      epoch: integer(scopes.epoch),
+      volatile: integer(scopes.volatile),
+    },
+    epochFingerprint: text(value.epoch_fingerprint),
+    requestFingerprint: text(value.request_fingerprint),
   };
 }
 

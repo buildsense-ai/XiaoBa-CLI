@@ -8,6 +8,7 @@ import type {
 } from '../providers/provider';
 import type { ToolDefinition, ToolSurface } from '../types/tool';
 import { estimateMessagesTokens, estimateToolsTokens } from '../core/token-estimator';
+import { resolveContextCacheScope } from '../core/context-lifecycle';
 import { PathResolver } from '../utils/path-resolver';
 import {
   classifyProviderErrorForLog,
@@ -63,6 +64,14 @@ export interface CacheTraceEntryV4 {
       stable_system_messages: number;
       explicit_breakpoints: number;
       prompt_cache_key_fingerprint?: string;
+    };
+    context_lifecycle?: {
+      annotated_messages: number;
+      transient_messages: number;
+      lifecycle_counts: { session: number; episode: number; call: number };
+      cache_scope_counts: { stable: number; epoch: number; volatile: number };
+      epoch_fingerprint?: string;
+      request_fingerprint?: string;
     };
     system_prompt: {
       stable_sha256: string;
@@ -263,6 +272,20 @@ export class CacheTraceObserver implements CacheTraceSink {
             } : {}),
           },
         } : {}),
+        ...(event.request.contextLifecycle ? {
+          context_lifecycle: {
+            annotated_messages: event.request.contextLifecycle.annotatedMessages,
+            transient_messages: event.request.contextLifecycle.transientMessages,
+            lifecycle_counts: event.request.contextLifecycle.lifecycleCounts,
+            cache_scope_counts: event.request.contextLifecycle.cacheScopeCounts,
+            ...(event.request.contextLifecycle.epochFingerprint ? {
+              epoch_fingerprint: event.request.contextLifecycle.epochFingerprint,
+            } : {}),
+            ...(event.request.contextLifecycle.requestFingerprint ? {
+              request_fingerprint: event.request.contextLifecycle.requestFingerprint,
+            } : {}),
+          },
+        } : {}),
         system_prompt: system,
         message_count: event.request.messages.length,
         message_sha256s: messageSha256s,
@@ -383,8 +406,9 @@ function summarizeSystemPrompt(messages: readonly Message[]): CacheTraceEntryV4[
 }
 
 function isDynamicSystemMessage(message: Message, text: string): boolean {
-  if (message.__cacheScope === 'dynamic') return true;
-  if (message.__cacheScope === 'stable') return false;
+  const scope = resolveContextCacheScope(message);
+  if (scope === 'epoch' || scope === 'volatile') return true;
+  if (scope === 'stable') return false;
   return /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(text);
 }
 

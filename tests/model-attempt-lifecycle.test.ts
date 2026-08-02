@@ -132,9 +132,40 @@ test('attaches the Anthropic stable-prefix plan to the exact observed attempt', 
 
   assert.deepEqual(events.map(event => event.outcome), ['started', 'succeeded']);
   assert.equal(events[0].request.cache?.strategy, 'anthropic-explicit-stable-prefix');
-  assert.equal(events[0].request.cache?.explicitBreakpoints, 2);
+  assert.equal(events[0].request.cache?.explicitBreakpoints, 3);
   assert.equal(events[0].request.cache?.stableSystemMessages, 1);
   assert.equal(events[0].request.cache?.promptCacheKeyFingerprint, undefined);
+});
+
+test('attaches a redacted context lifecycle epoch to the exact observed attempt', async () => {
+  const service = createTestService();
+  const events: ModelAttemptEvent[] = [];
+  (service as any).provider = {
+    chat: async () => ({ content: 'ok' }),
+    chatStream: async () => ({ content: 'unused' }),
+  };
+
+  await service.chat([
+    {
+      role: 'system',
+      content: 'Episode plan.',
+      __context: {
+        schema: 'xiaoba.context_lifecycle.v1',
+        source: 'plan_status',
+        lifecycle: 'episode',
+        cacheScope: 'epoch',
+        persistence: 'transient',
+        epoch: 'raw-episode-id-must-not-leak',
+      },
+    },
+    { role: 'user', content: 'hello' },
+  ], undefined, { modelAttemptSink: collectingSink(events) });
+
+  const lifecycle = events[0].request.contextLifecycle;
+  assert.equal(lifecycle?.annotatedMessages, 1);
+  assert.deepEqual(lifecycle?.lifecycleCounts, { session: 0, episode: 1, call: 0 });
+  assert.match(lifecycle?.epochFingerprint || '', /^[a-f0-9]{16}$/);
+  assert.equal(JSON.stringify(lifecycle).includes('raw-episode-id-must-not-leak'), false);
 });
 
 test('records a non-retryable provider rejection as the terminal attempt', async () => {

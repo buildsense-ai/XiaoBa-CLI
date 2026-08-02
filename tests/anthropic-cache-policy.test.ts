@@ -36,7 +36,8 @@ test('Anthropic cache policy separates stable system content from a dynamic suff
   assert.equal(plan.stableSystemEnd, 1);
   assert.equal(plan.stableSystemMessages, 1);
   assert.equal(plan.toolBreakpointIndex, 1);
-  assert.equal(plan.explicitBreakpoints, 2);
+  assert.equal(plan.explicitBreakpoints, 3);
+  assert.equal(plan.conversationBreakpoint, true);
   assert.ok(plan.stablePrefixEstimatedTokens > 0);
 });
 
@@ -50,6 +51,21 @@ test('Anthropic-compatible endpoints remain marker-free until capability is prov
   assert.equal(plan.strategy, 'anthropic-compatible-no-markers');
   assert.equal(plan.explicitBreakpoints, 0);
   assert.equal(plan.toolBreakpointIndex, undefined);
+  assert.equal(plan.conversationBreakpoint, false);
+});
+
+test('Anthropic cache policy does not claim a conversation marker when the wire input ends with an assistant', () => {
+  const plan = resolveAnthropicCachePlan({
+    apiUrl: 'https://api.anthropic.com/v1/messages',
+    messages: [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'done' },
+    ],
+    tools: [],
+  });
+
+  assert.equal(plan.conversationBreakpoint, false);
+  assert.equal(plan.explicitBreakpoints, 0);
 });
 
 test('canonical Anthropic endpoint detection rejects relay-like URL variations', () => {

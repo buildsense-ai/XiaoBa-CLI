@@ -1,6 +1,7 @@
 import { ContentBlock, Message } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
+import { annotateContextMessage } from './context-lifecycle';
 
 export const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 export const SUBAGENT_TOOL_NAME = 'spawn_subagent';
@@ -121,11 +122,14 @@ export function nextSubagentNudgeToolCount(current: number): number {
 }
 
 export function makeRunnerHint(lines: string[]): Message {
-  return {
+  return annotateContextMessage({
     role: 'system',
     content: [TRANSIENT_RUNNER_HINT_PREFIX, ...lines].join('\n'),
-    __cacheScope: 'dynamic',
-  };
+  }, {
+    source: 'runner_hint',
+    lifecycle: 'call',
+    cacheScope: 'volatile',
+  });
 }
 
 function makeRunnerHintFromTemplate(

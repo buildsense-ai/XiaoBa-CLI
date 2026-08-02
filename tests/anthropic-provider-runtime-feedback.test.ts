@@ -27,6 +27,14 @@ describe('AnthropicProvider runtime feedback boundary', () => {
         content: '[运行时反馈] weixin.media_download\n错误: 媒体下载不完整',
         __injected: true,
         __runtimeFeedback: true,
+        __context: {
+          schema: 'xiaoba.context_lifecycle.v1',
+          source: 'runtime_feedback',
+          lifecycle: 'episode',
+          cacheScope: 'epoch',
+          persistence: 'transient',
+          epoch: 'episode:test',
+        },
         __runtimeObservation: true,
         runtimeObservationSource: 'subagent_result',
         __episodeId: 'episode:test',
@@ -44,6 +52,8 @@ describe('AnthropicProvider runtime feedback boundary', () => {
     }]);
     assert.equal(JSON.stringify(transformed).includes('__injected'), false);
     assert.equal(JSON.stringify(transformed).includes('__runtimeFeedback'), false);
+    assert.equal(JSON.stringify(transformed).includes('__context'), false);
+    assert.equal(JSON.stringify(transformed).includes('xiaoba.context_lifecycle'), false);
     assert.equal(JSON.stringify(transformed).includes('__runtimeObservation'), false);
     assert.equal(JSON.stringify(transformed).includes('__episodeId'), false);
     assert.equal(JSON.stringify(transformed).includes('__episodeInputKind'), false);
