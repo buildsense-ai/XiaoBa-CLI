@@ -14,6 +14,7 @@ export type ContextSource =
   | 'runtime_feedback'
   | 'runtime_transient'
   | 'plan_status'
+  | 'goal_status'
   | 'subagent_status'
   | 'skills_list'
   | 'current_directory'
@@ -114,6 +115,8 @@ export interface ChatConfig {
     vision?: boolean;
     toolCalling?: boolean;
     streaming?: boolean;
+    /** Endpoint capability; never inferred from a relay hostname. */
+    promptCaching?: 'automatic' | 'openai-key' | 'openai-explicit';
   };
   provider?: 'openai' | 'anthropic';
   feishu?: {
@@ -144,6 +147,39 @@ export interface ChatConfig {
   };
 }
 
+/** Exact provider response field that supplied cachedReadTokens. */
+export type ProviderCacheReadSource =
+  | 'openai.input_tokens_details.cached_tokens'
+  | 'openai.prompt_tokens_details.cached_tokens'
+  | 'deepseek.prompt_cache_hit_tokens'
+  | 'anthropic.cache_read_input_tokens';
+
+/** Allowlisted projection of exact numeric provider usage fields. */
+export type ProviderReportedUsage =
+  | {
+      contract: 'openai-responses-v1';
+      input_tokens?: number;
+      cached_tokens?: number;
+      cache_write_tokens?: number;
+    }
+  | {
+      contract: 'openai-chat-v1';
+      prompt_tokens?: number;
+      cached_tokens?: number;
+      cache_write_tokens?: number;
+    }
+  | {
+      contract: 'deepseek-chat-v1';
+      prompt_tokens?: number;
+      prompt_cache_hit_tokens?: number;
+    }
+  | {
+      contract: 'anthropic-messages-v1';
+      input_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+
 export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
@@ -152,8 +188,12 @@ export interface TokenUsage {
   inputTokensReported?: boolean;
   /** Present only when the provider explicitly reports cache-read usage. */
   cachedReadTokens?: number;
+  /** Present only with cachedReadTokens; never inferred from endpoint/model names. */
+  cacheReadSource?: ProviderCacheReadSource;
   /** Present only when the provider explicitly reports cache-write usage. */
   cachedWriteTokens?: number;
+  /** Exact allowlisted raw fields used by strict benchmark evidence. */
+  providerUsage?: ProviderReportedUsage;
 }
 
 export interface ChatResponse {

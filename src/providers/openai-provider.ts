@@ -49,6 +49,7 @@ export class OpenAIProvider implements AIProvider {
   private maxTokens: number;
   private reasoningEffort: ChatConfig['reasoningEffort'];
   private openaiApiMode: ChatConfig['openaiApiMode'];
+  private compatiblePromptCaching?: 'key' | 'explicit';
 
   constructor(config: ChatConfig) {
     this.apiUrl = config.apiUrl!;
@@ -60,6 +61,11 @@ export class OpenAIProvider implements AIProvider {
     this.maxTokens = resolveMaxTokens(config);
     this.reasoningEffort = config.reasoningEffort;
     this.openaiApiMode = openAIApiModeOrDefault(config.openaiApiMode);
+    this.compatiblePromptCaching = config.modelCapabilities?.promptCaching === 'openai-explicit'
+      ? 'explicit'
+      : config.modelCapabilities?.promptCaching === 'openai-key'
+        ? 'key'
+        : undefined;
   }
 
   /**
@@ -79,6 +85,7 @@ export class OpenAIProvider implements AIProvider {
       tools: tools ?? [],
       partitionKey: options?.cachePartitionKey,
       cacheMode: options?.cacheMode,
+      compatiblePromptCaching: this.compatiblePromptCaching,
     });
     const sanitizedMessages = messages.map(message => this.sanitizeMessage(message, options));
     if (cachePlan.chatBreakpointMessageIndex !== undefined) {
@@ -452,6 +459,7 @@ export class OpenAIProvider implements AIProvider {
       tools: tools ?? [],
       partitionKey: options?.cachePartitionKey,
       cacheMode: options?.cacheMode,
+      compatiblePromptCaching: this.compatiblePromptCaching,
     });
     const input = this.buildResponsesInput(messages);
     if (cachePlan.explicitBreakpoints > 0 && instructions) {
@@ -643,8 +651,9 @@ export class OpenAIProvider implements AIProvider {
   private parseResponsesUsage(usage: any): ChatResponse['usage'] {
     if (!usage || typeof usage !== 'object') return undefined;
     const details = usage.input_tokens_details || {};
-    const reportedInputTokens = firstReportedUsageNumber(usage, ['input_tokens', 'prompt_tokens']);
-    const promptTokens = reportedInputTokens ?? 0;
+    const reportedInputTokens = firstReportedUsageNumber(usage, ['input_tokens']);
+    const compatiblePromptTokens = firstReportedUsageNumber(usage, ['prompt_tokens']);
+    const promptTokens = reportedInputTokens ?? compatiblePromptTokens ?? 0;
     const completionTokens = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
     const cachedReadTokens = firstReportedUsageNumber(details, ['cached_tokens']);
     const cachedWriteTokens = firstReportedUsageNumber(details, [
@@ -657,7 +666,16 @@ export class OpenAIProvider implements AIProvider {
       completionTokens,
       totalTokens: Number(usage.total_tokens ?? promptTokens + completionTokens),
       inputTokensReported: reportedInputTokens !== undefined,
-      ...(cachedReadTokens !== undefined ? { cachedReadTokens } : {}),
+      providerUsage: {
+        contract: 'openai-responses-v1',
+        ...(reportedInputTokens !== undefined ? { input_tokens: reportedInputTokens } : {}),
+        ...(cachedReadTokens !== undefined ? { cached_tokens: cachedReadTokens } : {}),
+        ...(cachedWriteTokens !== undefined ? { cache_write_tokens: cachedWriteTokens } : {}),
+      },
+      ...(cachedReadTokens !== undefined ? {
+        cachedReadTokens,
+        cacheReadSource: 'openai.input_tokens_details.cached_tokens' as const,
+      } : {}),
       ...(cachedWriteTokens !== undefined ? { cachedWriteTokens } : {}),
     };
   }
@@ -674,7 +692,8 @@ export class OpenAIProvider implements AIProvider {
     const promptTokens = reportedInputTokens ?? 0;
     const completionTokens = Number(usage.completion_tokens ?? 0);
     const standardCachedReadTokens = firstReportedUsageNumber(details, ['cached_tokens']);
-    const cachedReadTokens = hasOwnField(details, 'cached_tokens')
+    const hasStandardCacheRead = hasOwnField(details, 'cached_tokens');
+    const cachedReadTokens = hasStandardCacheRead
       ? standardCachedReadTokens
       : firstReportedUsageNumber(usage, ['prompt_cache_hit_tokens']);
     const cachedWriteTokens = firstReportedUsageNumber(details, [
@@ -682,12 +701,36 @@ export class OpenAIProvider implements AIProvider {
       'cached_creation_tokens',
       'cache_creation_tokens',
     ]);
+    const providerUsage = hasStandardCacheRead
+      ? {
+          contract: 'openai-chat-v1' as const,
+          ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),
+          ...(standardCachedReadTokens !== undefined ? { cached_tokens: standardCachedReadTokens } : {}),
+          ...(cachedWriteTokens !== undefined ? { cache_write_tokens: cachedWriteTokens } : {}),
+        }
+      : hasOwnField(usage, 'prompt_cache_hit_tokens')
+        ? {
+            contract: 'deepseek-chat-v1' as const,
+            ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),
+            ...(cachedReadTokens !== undefined ? { prompt_cache_hit_tokens: cachedReadTokens } : {}),
+          }
+        : {
+            contract: 'openai-chat-v1' as const,
+            ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),
+            ...(cachedWriteTokens !== undefined ? { cache_write_tokens: cachedWriteTokens } : {}),
+          };
     return {
       promptTokens,
       completionTokens,
       totalTokens: Number(usage.total_tokens ?? promptTokens + completionTokens),
       inputTokensReported: reportedInputTokens !== undefined,
-      ...(cachedReadTokens !== undefined ? { cachedReadTokens } : {}),
+      providerUsage,
+      ...(cachedReadTokens !== undefined ? {
+        cachedReadTokens,
+        cacheReadSource: hasStandardCacheRead
+          ? 'openai.prompt_tokens_details.cached_tokens' as const
+          : 'deepseek.prompt_cache_hit_tokens' as const,
+      } : {}),
       ...(cachedWriteTokens !== undefined ? { cachedWriteTokens } : {}),
     };
   }

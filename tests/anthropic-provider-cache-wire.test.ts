@@ -65,7 +65,14 @@ test('Anthropic SDK serializes both stable cache breakpoints on the real wire pa
       completionTokens: 1,
       totalTokens: 61,
       inputTokensReported: true,
+      providerUsage: {
+        contract: 'anthropic-messages-v1',
+        input_tokens: 10,
+        cache_read_input_tokens: 30,
+        cache_creation_input_tokens: 20,
+      },
       cachedReadTokens: 30,
+      cacheReadSource: 'anthropic.cache_read_input_tokens',
       cachedWriteTokens: 20,
     });
   } finally {

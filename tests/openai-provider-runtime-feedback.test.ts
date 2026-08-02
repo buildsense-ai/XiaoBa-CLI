@@ -542,6 +542,7 @@ describe('OpenAIProvider runtime feedback boundary', () => {
       assert.equal(result.usage?.promptTokens, 120);
       assert.equal(result.usage?.inputTokensReported, true);
       assert.equal(result.usage?.cachedReadTokens, 96);
+      assert.equal(result.usage?.cacheReadSource, 'deepseek.prompt_cache_hit_tokens');
       assert.equal(Object.prototype.hasOwnProperty.call(result.usage, 'cachedWriteTokens'), false);
     } finally {
       (axios as any).post = originalPost;
@@ -568,6 +569,7 @@ describe('OpenAIProvider runtime feedback boundary', () => {
       assert.equal(result.usage?.promptTokens, 120);
       assert.equal(result.usage?.inputTokensReported, true);
       assert.equal(result.usage?.cachedReadTokens, 96);
+      assert.equal(result.usage?.cacheReadSource, 'deepseek.prompt_cache_hit_tokens');
       assert.equal(Object.prototype.hasOwnProperty.call(result.usage, 'cachedWriteTokens'), false);
     } finally {
       (axios as any).post = originalPost;
@@ -603,6 +605,7 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.equal(Object.prototype.hasOwnProperty.call(missing, 'cachedReadTokens'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(missing, 'cachedWriteTokens'), false);
     assert.equal(explicitZero.cachedReadTokens, 0);
+    assert.equal(explicitZero.cacheReadSource, 'openai.prompt_tokens_details.cached_tokens');
     assert.equal(explicitZero.cachedWriteTokens, 0);
     assert.equal(Object.prototype.hasOwnProperty.call(explicitZero, 'cachedReadTokens'), true);
     assert.equal(Object.prototype.hasOwnProperty.call(explicitZero, 'cachedWriteTokens'), true);

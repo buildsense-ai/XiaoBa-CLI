@@ -22,7 +22,7 @@ export class SpawnSubagentTool implements Tool {
       '适合可并行的探索、审查、测试或边界清晰的小块实现；具体分工由 subagent_prompt/context 描述，当前主线必须由主 agent 继续推进。',
       '如果最终回复依赖子智能体结果，主 agent 应使用 wait_subagents 等待并整合结果后再收口；只看状态时用 check_subagent。',
       'allowed_tools 是主 agent 从安全工具集合里挑出的子集；默认不会给 ask_parent，除非显式开启。',
-      '只有本工具返回的展示名和 ID 才是真实子智能体引用，不要编造子智能体或 sub-... ID。',
+      '只有本工具返回的展示名和任务引用才可用于后续控制；不要编造子智能体引用。',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -135,6 +135,7 @@ export class SpawnSubagentTool implements Tool {
     }
 
     const reusedExisting = result.reusedExisting === true;
+    const promptRef = result.promptRef || result.displayName || result.id;
     console.log('\n' + styles.highlight(`${reusedExisting ? '复用子智能体' : '🚀 派遣子智能体'}: ${taskDescription}`));
     if (result.displayName) {
       console.log(styles.text(`   Name: ${result.displayName}`));
@@ -149,8 +150,8 @@ export class SpawnSubagentTool implements Tool {
 
     return { ok: true, content: [
       reusedExisting
-        ? `已复用正在运行的 ${result.displayName || '子智能体'} (${result.id})，避免重复派发同类任务。`
-        : `已派遣 ${result.displayName || '子智能体'} (${result.id})。`,
+        ? `已复用正在运行的 ${result.displayName || '子智能体'} (${promptRef})，避免重复派发同类任务。`
+        : `已派遣 ${result.displayName || '子智能体'} (${promptRef})。`,
       `任务: ${taskDescription}`,
       `类型: ${displayAgentType}`,
       `工具范围: ${displayToolScope}`,

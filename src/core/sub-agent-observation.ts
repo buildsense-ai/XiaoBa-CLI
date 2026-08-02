@@ -15,14 +15,24 @@ export function buildSubAgentStatusMessage(
 
   const sections: string[] = [];
   const statusLines = subAgents.map(s => {
-    const latest = compactInline(s.progressLog[s.progressLog.length - 1] ?? '', 120);
+    const promptRef = (manager as Partial<SubAgentManager>).getPromptLabel?.(s.id)
+      || s.promptRef
+      || (manager as Partial<SubAgentManager>).getPromptReference?.(s.id)
+      || s.displayName
+      || s.id;
+    // Running progress is already available through runtime events/check_subagent.
+    // Keeping it out of the automatic prompt status prevents every progress tick
+    // from invalidating the provider prefix while preserving task/state/control.
+    const latest = s.status === 'waiting_for_input'
+      ? compactInline(s.progressLog[s.progressLog.length - 1] ?? '', 120)
+      : '';
     const summary = s.status === 'completed' && s.resultSummary
       ? `\n  结果摘要: ${compactInline(s.resultSummary, 220)}`
       : '';
     const pending = s.status === 'waiting_for_input' && s.pendingQuestion
       ? `\n  待回复: ${compactInline(s.pendingQuestion, 180)}`
       : '';
-    return `- [${s.id}] ${s.taskDescription} (${statusLabel(s.status)}, ${s.agentType}/${s.toolScope}) ${latest}${pending}${summary}`;
+    return `- [${promptRef}] ${s.taskDescription} (${statusLabel(s.status)}, ${s.agentType}/${s.toolScope}) ${latest}${pending}${summary}`;
   }).join('\n');
 
   if (statusLines) {

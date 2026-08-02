@@ -20,8 +20,8 @@ describe('prompt copy regression', () => {
     assert.doesNotMatch(descriptions, /超过 150 字/);
     assert.doesNotMatch(descriptions, /分成多段/);
     assert.match(descriptions, /调用成功后立即返回，不等待完成/);
-    assert.match(descriptions, /只有本工具返回的展示名和 ID 才是真实子智能体引用/);
-    assert.match(descriptions, /不要编造子智能体或 sub-\.\.\. ID/);
+    assert.match(descriptions, /只有本工具返回的展示名和任务引用才可用于后续控制/);
+    assert.match(descriptions, /不要编造子智能体引用/);
     assert.match(descriptions, /当前主线必须由主 agent 继续推进/);
     assert.match(descriptions, /普通最终回复可以直接作为 assistant 内容返回/);
     assert.match(descriptions, /只代表普通文本已发送/);

@@ -72,6 +72,7 @@ export interface LocalModelProfile {
     vision?: boolean;
     toolCalling?: boolean;
     streaming?: boolean;
+    promptCaching?: 'automatic' | 'openai-key' | 'openai-explicit';
   };
 }
 
@@ -98,6 +99,7 @@ export interface BotCatalogModelRuntime {
     vision?: boolean;
     toolCalling?: boolean;
     streaming?: boolean;
+    promptCaching?: 'automatic' | 'openai-key' | 'openai-explicit';
   };
   capabilitiesSource?: 'relay-models' | 'models-dev' | 'static' | 'probe';
   capabilitiesCheckedAt?: string;

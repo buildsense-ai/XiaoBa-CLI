@@ -31,6 +31,8 @@ export type SafeSubAgentToolName = typeof SAFE_SUB_AGENT_TOOL_NAMES[number];
 
 export interface SubAgentInfo {
   id: string;
+  /** Unique model-facing control handle; the random runtime id remains available to UI/logging. */
+  promptRef?: string;
   displayName?: string;
   agentType: SubAgentType;
   skillName: string;

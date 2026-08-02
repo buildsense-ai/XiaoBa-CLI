@@ -66,8 +66,7 @@ describe('cache benchmark evidence scorer', () => {
     });
     const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
       const ordinal = Number(attempt.metadata.task_id.slice('uneven-task-'.length));
-      attempt.usage.input_tokens = 50 * ordinal;
-      attempt.usage.cache_read_tokens = 47 * ordinal;
+      setProviderUsage(attempt, 50 * ordinal, 47 * ordinal);
     }));
     const result = scoreRounds(manifest, rounds);
 
@@ -80,7 +79,7 @@ describe('cache benchmark evidence scorer', () => {
   test('fails when the provider reports one fewer read token', () => {
     const manifest = fixtureManifest();
     const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
-    rounds[2].attempts[rounds[2].attempts.length - 1].usage.cache_read_tokens = 234;
+    setProviderUsage(rounds[2].attempts[rounds[2].attempts.length - 1], 250, 234);
     const result = scoreRounds(manifest, rounds);
 
     assert.equal(result.status, 'failed');
@@ -91,8 +90,7 @@ describe('cache benchmark evidence scorer', () => {
   test('does not credit cache writes in the numerator', () => {
     const manifest = fixtureManifest();
     const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
-      attempt.usage.cache_read_tokens = 0;
-      attempt.usage.cache_write_tokens = attempt.usage.input_tokens;
+      setProviderUsage(attempt, 250, 0, 250);
     }));
     const result = scoreRounds(manifest, rounds);
 
@@ -103,7 +101,7 @@ describe('cache benchmark evidence scorer', () => {
   test('treats a missing provider cache-read value as unobservable', () => {
     const manifest = fixtureManifest();
     const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
-    delete rounds[2].attempts[0].usage.cache_read_tokens;
+    setProviderUsage(rounds[2].attempts[0], 250, undefined);
     const result = scoreRounds(manifest, rounds);
 
     assert.equal(result.status, 'unobservable');
@@ -111,11 +109,22 @@ describe('cache benchmark evidence scorer', () => {
     assert.ok(result.reasons.includes('cache_read_not_reported'));
   });
 
+  test('treats a missing provider input component as unobservable', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+    setProviderUsage(rounds[2].attempts[0], undefined, 235);
+    const result = scoreRounds(manifest, rounds);
+
+    assert.equal(result.status, 'unobservable');
+    assert.equal(result.exit_code, 2);
+    assert.ok(result.reasons.includes('missing_input_usage'));
+  });
+
   test('isolates provider instance, model, API type, and surface into separate cells', () => {
     const manifest = twoCellManifest();
     const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
       if (attempt.metadata.provider_instance_id === 'provider-local-b') {
-        attempt.usage.cache_read_tokens = 0;
+        setProviderUsage(attempt, 250, 0);
       }
     }));
     const result = scoreRounds(manifest, rounds);
@@ -136,13 +145,10 @@ describe('cache benchmark evidence scorer', () => {
         round.attempts.push(structuredClone(round.attempts[0]));
       }, 'duplicate_attempt'],
       ['read exceeds input', round => {
-        round.attempts[0].usage.cache_read_tokens = 251;
+        setProviderUsage(round.attempts[0], 250, 251);
       }, 'cache_read_exceeds_input'],
-      ['missing input', round => {
-        delete round.attempts[0].usage.input_tokens;
-      }, 'missing_input_usage'],
       ['zero input', round => {
-        round.attempts[0].usage.input_tokens = 0;
+        setProviderUsage(round.attempts[0], 0, 0);
       }, 'non_positive_input'],
       ['failed', round => {
         round.attempts[0].outcome = 'failed';
@@ -198,11 +204,9 @@ describe('cache benchmark evidence scorer', () => {
     const manifest = fixtureManifest();
     const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
       if (attempt.metadata.task_id === 'task-1') {
-        attempt.usage.input_tokens = 4850;
-        attempt.usage.cache_read_tokens = 4850;
+        setProviderUsage(attempt, 4850, 4850);
       } else {
-        attempt.usage.input_tokens = 50;
-        attempt.usage.cache_read_tokens = 0;
+        setProviderUsage(attempt, 50, 0);
       }
     }));
     const result = scoreRounds(manifest, rounds);
@@ -249,7 +253,7 @@ describe('cache benchmark evidence scorer', () => {
   test('ledger prevents omitting the latest failed round', () => {
     const manifest = fixtureManifest();
     const rounds = [1, 2, 3, 4].map(round => buildRound(manifest, round));
-    for (const attempt of rounds[3].attempts) attempt.usage.cache_read_tokens = 0;
+    for (const attempt of rounds[3].attempts) setProviderUsage(attempt, 250, 0);
     const completeLedger = buildLedger(manifest, rounds);
     const result = scoreCacheBenchmark(manifest, completeLedger, rounds.slice(0, 3));
 
@@ -273,7 +277,7 @@ describe('cache benchmark evidence scorer', () => {
   test('an old unobservable round also permits a clean three-round recovery', () => {
     const manifest = fixtureManifest();
     const rounds = [1, 2, 3, 4].map(round => buildRound(manifest, round));
-    delete rounds[0].attempts[0].usage.cache_read_tokens;
+    setProviderUsage(rounds[0].attempts[0], 250, undefined);
     const result = scoreRounds(manifest, rounds);
 
     assert.equal(result.rounds[0].status, 'unobservable');
@@ -306,7 +310,7 @@ describe('cache benchmark evidence scorer', () => {
   test('uses the latest rounds rather than selecting an older passing trio', () => {
     const manifest = fixtureManifest();
     const rounds = [1, 2, 3, 4].map(round => buildRound(manifest, round));
-    for (const attempt of rounds[3].attempts) attempt.usage.cache_read_tokens = 0;
+    for (const attempt of rounds[3].attempts) setProviderUsage(attempt, 250, 0);
     const result = scoreRounds(manifest, rounds);
 
     assert.equal(result.status, 'failed');
@@ -323,15 +327,39 @@ describe('cache benchmark evidence scorer', () => {
     assert.throws(() => parseManifestJson(JSON.stringify(illegalAdapterApi)));
 
     const heterogeneousSource = fixtureManifest();
-    heterogeneousSource.cases[1].cache_read_source = 'provider-compatible-declared';
+    heterogeneousSource.cases[1].cache_read_source = 'provider-compatible-declared' as any;
     assert.throws(() => parseManifestJson(JSON.stringify(heterogeneousSource)));
 
     const sourceMismatchManifest = fixtureManifest();
     const rounds = [1, 2, 3].map(round => buildRound(sourceMismatchManifest, round));
-    rounds[2].attempts[0].usage.cache_read_source = 'provider-compatible-declared';
+    rounds[2].attempts[0].usage.provider_usage = {
+      contract: 'deepseek-chat-v1',
+      prompt_tokens: 250,
+      prompt_cache_hit_tokens: 235,
+    };
     const result = scoreRounds(sourceMismatchManifest, rounds);
     assert.equal(result.status, 'invalid');
     assert.ok(result.reasons.includes('metadata_mismatch'));
+  });
+
+  test('derives Anthropic input only when every raw denominator component is explicit', () => {
+    const manifest = fixtureManifest();
+    for (const benchmarkCase of manifest.cases) {
+      benchmarkCase.provider_adapter = 'anthropic';
+      benchmarkCase.api_type = 'anthropic-messages';
+      benchmarkCase.cache_read_source = 'anthropic.cache_read_input_tokens';
+    }
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
+      setProviderUsage(attempt, 250, 235, 0);
+    }));
+    assert.equal(scoreRounds(manifest, rounds).status, 'passed');
+
+    const raw = rounds[2].attempts[0].usage.provider_usage;
+    assert.equal(raw?.contract, 'anthropic-messages-v1');
+    if (raw?.contract === 'anthropic-messages-v1') delete raw.cache_creation_input_tokens;
+    const result = scoreRounds(manifest, rounds);
+    assert.equal(result.status, 'unobservable');
+    assert.ok(result.reasons.includes('missing_input_usage'));
   });
 
   test('includes provider adapter in the independent cell fingerprint', () => {
@@ -359,6 +387,59 @@ describe('cache benchmark evidence scorer', () => {
     assert.equal(result.capability_coverage.length, 1);
     assert.equal(result.capability_coverage[0].status, 'passed');
     assert.deepEqual(result.capability_coverage[0].missing_capabilities, []);
+  });
+
+  test('requires deterministic quality and safety gates on every provider attempt', () => {
+    const qualityManifest = fixtureManifest();
+    const qualityRounds = [1, 2, 3].map(round => buildRound(qualityManifest, round));
+    qualityRounds[2].attempts[0].attestation.quality_status = 'failed';
+    let result = scoreRounds(qualityManifest, qualityRounds);
+    assert.equal(result.status, 'failed');
+    assert.ok(result.reasons.includes('quality_gate_failed'));
+
+    const safetyManifest = fixtureManifest();
+    const safetyRounds = [1, 2, 3].map(round => buildRound(safetyManifest, round));
+    safetyRounds[2].attempts[0].attestation.safety_status = 'unobservable';
+    result = scoreRounds(safetyManifest, safetyRounds);
+    assert.equal(result.status, 'unobservable');
+    assert.ok(result.reasons.includes('safety_gate_unobservable'));
+  });
+
+  test('computes capability coverage from observed request attestations', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+    rounds[2].attempts
+      .filter(attempt => attempt.case_id === 'case-4')
+      .forEach(attempt => {
+        attempt.attestation.observed_capabilities = ['runtime-feedback'];
+      });
+    const result = scoreRounds(manifest, rounds);
+
+    assert.equal(result.status, 'incomplete');
+    assert.ok(result.reasons.includes('capability_coverage_incomplete'));
+    assert.deepEqual(result.capability_coverage[0].missing_capabilities, ['session-recovery']);
+  });
+
+  test('invalidates oracle, execution-plan, and stable-prefix drift', () => {
+    const scenarios: Array<[string, (round: CacheBenchmarkRoundEvidence) => void, string]> = [
+      ['oracle', round => {
+        round.attempts[0].attestation.oracle_contract_fingerprint = `sha256:${'f'.repeat(64)}`;
+      }, 'oracle_contract_mismatch'],
+      ['execution plan', round => {
+        round.attempts[0].attestation.execution_plan_fingerprint = `sha256:${'f'.repeat(64)}`;
+      }, 'execution_plan_mismatch'],
+      ['stable prefix', round => {
+        round.attempts[1].attestation.stable_prefix_fingerprint = `sha256:${'f'.repeat(64)}`;
+      }, 'stable_prefix_drift'],
+    ];
+    for (const [label, mutate, reason] of scenarios) {
+      const manifest = fixtureManifest();
+      const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+      mutate(rounds[2]);
+      const result = scoreRounds(manifest, rounds);
+      assert.equal(result.status, 'invalid', label);
+      assert.ok(result.reasons.includes(reason as any), label);
+    }
   });
 
   test('canonical manifest fingerprint is stable across case and run ordering', () => {
@@ -398,6 +479,16 @@ describe('cache benchmark evidence scorer', () => {
     const withPrompt = JSON.parse(JSON.stringify(round.attempts[0]));
     withPrompt.prompt = 'SECRET_SENTINEL';
     assert.throws(() => parseRoundJsonl(`${JSON.stringify(round.header)}\n${JSON.stringify(withPrompt)}\n`));
+
+    const collectorNormalized = JSON.parse(JSON.stringify(round.attempts[0]));
+    collectorNormalized.usage = {
+      input_tokens: 250,
+      cache_read_tokens: 235,
+      cache_read_source: 'openai.input_tokens_details.cached_tokens',
+    };
+    assert.throws(() => parseRoundJsonl(
+      `${JSON.stringify(round.header)}\n${JSON.stringify(collectorNormalized)}\n`,
+    ));
   });
 
   test('accepts namespaced model IDs but rejects endpoint-shaped provider identities', () => {
@@ -478,7 +569,7 @@ describe('cache benchmark CLI safety', () => {
     assert.equal(passing.stdout.includes(directory), false);
 
     const failingRounds = [1, 2, 3].map(round => buildRound(manifest, round));
-    failingRounds[2].attempts[0].usage.cache_read_tokens = 234;
+    setProviderUsage(failingRounds[2].attempts[0], 250, 234);
     const failingPaths = writeRoundFiles(directory, failingRounds, 'fail');
     const failingLedgerPath = writeLedger(directory, manifest, failingRounds, 'fail');
     const failing = spawnCli(manifestPath, failingLedgerPath, failingPaths);
@@ -526,6 +617,63 @@ function twoCellManifest(): CacheBenchmarkManifest {
   return manifest;
 }
 
+function providerUsageFor(
+  source: CacheBenchmarkManifest['cases'][number]['cache_read_source'],
+  input: number | undefined,
+  read: number | undefined,
+  write?: number,
+): NonNullable<CacheBenchmarkAttempt['usage']['provider_usage']> {
+  switch (source) {
+    case 'openai.input_tokens_details.cached_tokens':
+      return {
+        contract: 'openai-responses-v1',
+        ...(input === undefined ? {} : { input_tokens: input }),
+        ...(read === undefined ? {} : { cached_tokens: read }),
+        ...(write === undefined ? {} : { cache_write_tokens: write }),
+      };
+    case 'openai.prompt_tokens_details.cached_tokens':
+      return {
+        contract: 'openai-chat-v1',
+        ...(input === undefined ? {} : { prompt_tokens: input }),
+        ...(read === undefined ? {} : { cached_tokens: read }),
+        ...(write === undefined ? {} : { cache_write_tokens: write }),
+      };
+    case 'deepseek.prompt_cache_hit_tokens':
+      return {
+        contract: 'deepseek-chat-v1',
+        ...(input === undefined ? {} : { prompt_tokens: input }),
+        ...(read === undefined ? {} : { prompt_cache_hit_tokens: read }),
+      };
+    case 'anthropic.cache_read_input_tokens': {
+      const uncached = input === undefined
+        ? undefined
+        : Math.max(0, input - (read ?? 0) - (write ?? 0));
+      return {
+        contract: 'anthropic-messages-v1',
+        ...(uncached === undefined ? {} : { input_tokens: uncached }),
+        ...(read === undefined ? {} : { cache_read_input_tokens: read }),
+        ...(write === undefined ? {} : { cache_creation_input_tokens: write }),
+      };
+    }
+  }
+}
+
+function setProviderUsage(
+  attempt: CacheBenchmarkAttempt,
+  input: number | undefined,
+  read: number | undefined,
+  write?: number,
+): void {
+  const expectedSource = attempt.metadata.api_type === 'openai-responses'
+    ? 'openai.input_tokens_details.cached_tokens'
+    : attempt.metadata.provider_adapter === 'anthropic'
+      ? 'anthropic.cache_read_input_tokens'
+      : attempt.metadata.provider_instance_id === 'provider-local-b'
+        ? 'deepseek.prompt_cache_hit_tokens'
+        : 'openai.prompt_tokens_details.cached_tokens';
+  attempt.usage.provider_usage = providerUsageFor(expectedSource, input, read, write);
+}
+
 function buildRound(
   manifest: CacheBenchmarkManifest,
   round: number,
@@ -537,7 +685,7 @@ function buildRound(
     for (const run of entry.runs) {
       for (const cacheClass of ['cold', 'warm'] as const) {
         const attempt: CacheBenchmarkAttempt = {
-          schema: 'xiaoba.cache_benchmark_attempt.v1',
+          schema: 'xiaoba.cache_benchmark_attempt.v3',
           suite_id: manifest.suite_id,
           round,
           attempt_number: attempts.length + 1,
@@ -559,9 +707,26 @@ function buildRound(
           cache_class: cacheClass,
           outcome: 'succeeded',
           usage: {
-            input_tokens: 250,
-            cache_read_tokens: 235,
-            cache_read_source: entry.cache_read_source,
+            provider_usage: providerUsageFor(entry.cache_read_source, 250, 235),
+          },
+          attestation: {
+            quality_status: 'passed',
+            safety_status: 'passed',
+            oracle_contract_fingerprint: entry.oracle_contract_fingerprint,
+            execution_plan_fingerprint: entry.execution_plan_fingerprint,
+            stable_prefix_fingerprint: fingerprintCanonical({
+              provider: entry.provider_instance_id,
+              model: entry.model,
+              surface: entry.surface,
+              case: entry.case_id,
+            }),
+            request_fingerprint: fingerprintCanonical({
+              round,
+              case: entry.case_id,
+              run: run.run_id,
+              cacheClass,
+            }),
+            observed_capabilities: [...entry.capabilities],
           },
         };
         mutateAttempt?.(attempt);
@@ -571,9 +736,10 @@ function buildRound(
   }
   return {
     header: {
-      schema: 'xiaoba.cache_benchmark_round.v1',
+      schema: 'xiaoba.cache_benchmark_round.v3',
       suite_id: manifest.suite_id,
       round,
+      cache_partition_nonce: round.toString(16).padStart(32, '0'),
       artifact_fingerprint: artifactFingerprint,
       manifest_fingerprint: fingerprintManifest(manifest),
       config_fingerprint: fingerprintConfig(manifest),
@@ -598,7 +764,7 @@ function buildLedger(
 ): CacheBenchmarkLedger {
   const ordered = [...rounds].sort((left, right) => left.header.round - right.header.round);
   return {
-    schema: 'xiaoba.cache_benchmark_ledger.v1',
+    schema: 'xiaoba.cache_benchmark_ledger.v3',
     suite_id: manifest.suite_id,
     latest_round: ordered[ordered.length - 1]?.header.round ?? 1,
     rounds: ordered.map(round => ({

@@ -20,6 +20,7 @@ import {
   CacheBenchmarkResult,
   CacheBenchmarkRoundEvidence,
   CacheBenchmarkRoundResult,
+  CacheReadSource,
   CACHE_BENCHMARK_RESULT_SCHEMA,
   REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
 } from './types';
@@ -68,7 +69,10 @@ export function scoreCacheBenchmark(
   const roundResults = rounds
     .map(round => scoreRound(manifest, round, manifestFingerprint, configFingerprint))
     .sort((left, right) => left.round - right.round);
-  const capabilityCoverage = buildCapabilityCoverage(manifest);
+  const latestRoundInput = rounds.reduce<CacheBenchmarkRoundEvidence | undefined>((latest, round) => (
+    !latest || round.header.round > latest.header.round ? round : latest
+  ), undefined);
+  const capabilityCoverage = buildCapabilityCoverage(manifest, latestRoundInput?.attempts ?? []);
   const ledgerReasons = validateLedger(manifest, ledger, rounds);
 
   if (ledgerReasons.length > 0) {
@@ -207,6 +211,7 @@ function scoreRound(
 
   const expectedRuns = buildExpectedRuns(manifest);
   const attemptsByRun = new Map<string, CacheBenchmarkAttempt[]>();
+  const stablePrefixByRun = new Map<string, string>();
   const cellByCase = new Map<string, CellAccumulator>();
   const cells = new Map<string, CellAccumulator>();
   for (const caseEntry of manifest.cases) {
@@ -249,14 +254,29 @@ function scoreRound(
       attempt.suite_id !== round.header.suite_id
       || attempt.round !== round.header.round
       || attempt.attempt_number !== attemptIndex + 1
-      || attempt.usage.cache_read_source !== expected.caseEntry.cache_read_source
       || !metadataMatches(attempt, expected.caseEntry)
     ) cell.reasons.add('metadata_mismatch');
+    const normalizedUsage = normalizeProviderUsage(attempt.usage.provider_usage);
+    if (normalizedUsage.source !== undefined
+      && normalizedUsage.source !== expected.caseEntry.cache_read_source) {
+      cell.reasons.add('metadata_mismatch');
+    }
     const key = runKey(attempt.case_id, attempt.run_id);
     const runAttempts = attemptsByRun.get(key) ?? [];
     runAttempts.push(attempt);
     attemptsByRun.set(key, runAttempts);
-    scoreAttempt(attempt, cell);
+    scoreAttempt(attempt, cell, expected.caseEntry);
+    const stablePrefix = attempt.attestation.stable_prefix_fingerprint;
+    const previousStablePrefix = stablePrefixByRun.get(key);
+    if (previousStablePrefix !== undefined && previousStablePrefix !== stablePrefix) {
+      cell.reasons.add('stable_prefix_drift');
+    } else {
+      stablePrefixByRun.set(key, stablePrefix);
+    }
+  }
+
+  if (buildCapabilityCoverage(manifest, round.attempts).some(entry => entry.status === 'incomplete')) {
+    roundReasons.add('capability_attestation_incomplete');
   }
 
   for (const [key, expected] of expectedRuns) {
@@ -294,7 +314,11 @@ function scoreRound(
   };
 }
 
-function scoreAttempt(attempt: CacheBenchmarkAttempt, cell: CellAccumulator): void {
+function scoreAttempt(
+  attempt: CacheBenchmarkAttempt,
+  cell: CellAccumulator,
+  expectedCase: CacheBenchmarkCase,
+): void {
   if (attempt.outcome === 'incomplete' || attempt.outcome === 'retrying') {
     cell.reasons.add('non_terminal_attempt');
     return;
@@ -303,15 +327,31 @@ function scoreAttempt(attempt: CacheBenchmarkAttempt, cell: CellAccumulator): vo
     cell.reasons.add('non_succeeded_attempt');
     return;
   }
-  if (attempt.usage.input_tokens === undefined) {
+  const attestation = attempt.attestation;
+  if (attestation.quality_status === 'failed') cell.reasons.add('quality_gate_failed');
+  if (attestation.quality_status === 'unobservable') cell.reasons.add('quality_gate_unobservable');
+  if (attestation.safety_status === 'failed') cell.reasons.add('safety_gate_failed');
+  if (attestation.safety_status === 'unobservable') cell.reasons.add('safety_gate_unobservable');
+  if (attestation.oracle_contract_fingerprint !== expectedCase.oracle_contract_fingerprint) {
+    cell.reasons.add('oracle_contract_mismatch');
+  }
+  if (attestation.execution_plan_fingerprint !== expectedCase.execution_plan_fingerprint) {
+    cell.reasons.add('execution_plan_mismatch');
+  }
+  const observed = new Set(attestation.observed_capabilities);
+  if (expectedCase.capabilities.some(capability => !observed.has(capability))) {
+    cell.reasons.add('capability_attestation_incomplete');
+  }
+  const usage = normalizeProviderUsage(attempt.usage.provider_usage);
+  if (usage.input === undefined) {
     cell.reasons.add('missing_input_usage');
     return;
   }
-  if (attempt.usage.input_tokens <= 0) {
+  if (usage.input <= 0) {
     cell.reasons.add('non_positive_input');
     return;
   }
-  const read = attempt.usage.cache_read_tokens;
+  const read = usage.read;
   if (read === undefined) {
     cell.reasons.add('cache_read_not_reported');
     return;
@@ -320,16 +360,64 @@ function scoreAttempt(attempt: CacheBenchmarkAttempt, cell: CellAccumulator): vo
     cell.reasons.add('invalid_cache_read');
     return;
   }
-  if (read > attempt.usage.input_tokens) {
+  if (read > usage.input) {
     cell.reasons.add('cache_read_exceeds_input');
     return;
   }
-  cell.input += attempt.usage.input_tokens;
+  cell.input += usage.input;
   cell.read += read;
   const task = cell.tasks.get(attempt.metadata.task_id) ?? { input: 0, read: 0 };
-  task.input += attempt.usage.input_tokens;
+  task.input += usage.input;
   task.read += read;
   cell.tasks.set(attempt.metadata.task_id, task);
+}
+
+function normalizeProviderUsage(usage: CacheBenchmarkAttempt['usage']['provider_usage']): {
+  input?: number;
+  read?: number;
+  source?: CacheReadSource;
+} {
+  if (!usage) return {};
+  switch (usage.contract) {
+    case 'openai-responses-v1':
+      return {
+        input: usage.input_tokens,
+        read: usage.cached_tokens,
+        ...(usage.cached_tokens === undefined
+          ? {}
+          : { source: 'openai.input_tokens_details.cached_tokens' }),
+      };
+    case 'openai-chat-v1':
+      return {
+        input: usage.prompt_tokens,
+        read: usage.cached_tokens,
+        ...(usage.cached_tokens === undefined
+          ? {}
+          : { source: 'openai.prompt_tokens_details.cached_tokens' }),
+      };
+    case 'deepseek-chat-v1':
+      return {
+        input: usage.prompt_tokens,
+        read: usage.prompt_cache_hit_tokens,
+        ...(usage.prompt_cache_hit_tokens === undefined
+          ? {}
+          : { source: 'deepseek.prompt_cache_hit_tokens' }),
+      };
+    case 'anthropic-messages-v1':
+      return {
+        input: usage.input_tokens === undefined
+          || usage.cache_read_input_tokens === undefined
+          || usage.cache_creation_input_tokens === undefined
+          ? undefined
+          : usage.input_tokens
+            + usage.cache_read_input_tokens
+            + usage.cache_creation_input_tokens,
+        read: usage.cache_read_input_tokens,
+        ...(usage.cache_read_input_tokens === undefined
+          ? {}
+          : { source: 'anthropic.cache_read_input_tokens' }),
+      };
+  }
 }
 
 function finalizeCell(cell: CellAccumulator, manifest: CacheBenchmarkManifest): CacheBenchmarkCellResult {
@@ -422,7 +510,10 @@ function fingerprintCell(caseEntry: CacheBenchmarkCase): string {
   });
 }
 
-function buildCapabilityCoverage(manifest: CacheBenchmarkManifest): CacheBenchmarkCoverageResult[] {
+function buildCapabilityCoverage(
+  manifest: CacheBenchmarkManifest,
+  attempts: readonly CacheBenchmarkAttempt[],
+): CacheBenchmarkCoverageResult[] {
   const scopes = new Map<string, Set<CacheBenchmarkCapability>>();
   for (const entry of manifest.cases) {
     const scopeFingerprint = fingerprintCanonical({
@@ -431,9 +522,20 @@ function buildCapabilityCoverage(manifest: CacheBenchmarkManifest): CacheBenchma
       model: entry.model,
       api_type: entry.api_type,
     });
-    const capabilities = scopes.get(scopeFingerprint) ?? new Set<CacheBenchmarkCapability>();
-    for (const capability of entry.capabilities) capabilities.add(capability);
-    scopes.set(scopeFingerprint, capabilities);
+    if (!scopes.has(scopeFingerprint)) scopes.set(scopeFingerprint, new Set());
+  }
+  const cases = new Map(manifest.cases.map(entry => [entry.case_id, entry]));
+  for (const attempt of attempts) {
+    const entry = cases.get(attempt.case_id);
+    if (!entry) continue;
+    const scopeFingerprint = fingerprintCanonical({
+      provider_instance_id: entry.provider_instance_id,
+      provider_adapter: entry.provider_adapter,
+      model: entry.model,
+      api_type: entry.api_type,
+    });
+    const capabilities = scopes.get(scopeFingerprint)!;
+    for (const capability of attempt.attestation.observed_capabilities) capabilities.add(capability);
   }
   return [...scopes.entries()]
     .map(([scopeFingerprint, capabilities]) => {
@@ -469,11 +571,19 @@ function latestPassingSuffix(rounds: CacheBenchmarkRoundResult[]): CacheBenchmar
 
 function statusFromReasons(reasons: BenchmarkReason[]): BenchmarkStatus {
   if (reasons.some(isInvalidReason)) return 'invalid';
-  if (reasons.includes('cache_read_not_reported')) return 'unobservable';
-  if (reasons.some(reason => reason === 'insufficient_positive_tasks' || reason === 'capability_coverage_incomplete')) {
+  if (reasons.some(reason => reason === 'missing_input_usage'
+    || reason === 'cache_read_not_reported'
+    || reason === 'quality_gate_unobservable'
+    || reason === 'safety_gate_unobservable')) return 'unobservable';
+  if (reasons.some(reason => reason === 'insufficient_positive_tasks'
+    || reason === 'capability_coverage_incomplete'
+    || reason === 'capability_attestation_incomplete')) {
     return 'incomplete';
   }
-  if (reasons.some(reason => reason === 'minimum_read_ratio_not_met' || reason === 'minimum_capped_task_ratio_not_met')) {
+  if (reasons.some(reason => reason === 'minimum_read_ratio_not_met'
+    || reason === 'minimum_capped_task_ratio_not_met'
+    || reason === 'quality_gate_failed'
+    || reason === 'safety_gate_failed')) {
     return 'failed';
   }
   return 'passed';
@@ -492,10 +602,12 @@ function isInvalidReason(reason: BenchmarkReason): boolean {
     'missing_warm_attempt',
     'non_terminal_attempt',
     'non_succeeded_attempt',
-    'missing_input_usage',
     'non_positive_input',
     'invalid_cache_read',
     'cache_read_exceeds_input',
+    'oracle_contract_mismatch',
+    'execution_plan_mismatch',
+    'stable_prefix_drift',
     'fingerprint_mismatch',
   ].includes(reason);
 }

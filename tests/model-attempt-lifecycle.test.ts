@@ -8,6 +8,7 @@ import type {
 } from '../src/providers/provider';
 import type { ChatResponse, Message } from '../src/types';
 import type { ToolDefinition } from '../src/types/tool';
+import { withModelAttemptSink } from '../src/observability/model-attempt-scope';
 
 const originalMaxRetries = process.env.CATSCO_MODEL_RETRY_MAX_RETRIES;
 
@@ -446,6 +447,98 @@ test('sync throws and async rejections from a sink never alter the model result'
 
   assert.deepEqual(result, { content: 'ok' });
   assert.equal(observations, 2);
+});
+
+test('a critical journal failure aborts before provider invocation and is never retried', async () => {
+  const service = createTestService();
+  let providerCalls = 0;
+  let observations = 0;
+  (service as any).provider = {
+    chat: async () => {
+      providerCalls += 1;
+      return { content: 'must not run' };
+    },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+  const sink: ModelAttemptSink = {
+    critical: true,
+    observe(event) {
+      observations += 1;
+      assert.equal(event.outcome, 'started');
+      throw new Error('disk unavailable');
+    },
+  };
+
+  await assert.rejects(
+    () => service.chat([], undefined, { modelAttemptSink: sink }),
+    (error: any) => error?.code === 'critical_model_attempt_sink_failed',
+  );
+  assert.equal(observations, 1);
+  assert.equal(providerCalls, 0);
+});
+
+test('a scoped critical sink still fail-closes when an explicit diagnostic sink is present', async () => {
+  const service = createTestService();
+  let providerCalls = 0;
+  const diagnosticEvents: ModelAttemptEvent[] = [];
+  (service as any).provider = {
+    chat: async () => {
+      providerCalls += 1;
+      return { content: 'must not run' };
+    },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+  const critical: ModelAttemptSink = {
+    critical: true,
+    observe() {
+      throw new Error('journal unavailable');
+    },
+  };
+
+  await assert.rejects(
+    () => withModelAttemptSink(critical, () => service.chat([], undefined, {
+      modelAttemptSink: collectingSink(diagnosticEvents),
+    })),
+    (error: any) => error?.code === 'critical_model_attempt_sink_failed',
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(diagnosticEvents.length, 0);
+});
+
+test('captures calls in an async observer scope without request plumbing', async () => {
+  const service = createTestService();
+  (service as any).provider = {
+    chat: async () => ({ content: 'ok' }),
+    chatStream: async () => ({ content: 'unused' }),
+  };
+  const scopedEvents: ModelAttemptEvent[] = [];
+
+  await withModelAttemptSink(collectingSink(scopedEvents), async () => {
+    await Promise.resolve();
+    await service.chat([{ role: 'user', content: 'scoped' }]);
+  });
+
+  assert.deepEqual(scopedEvents.map(event => event.outcome), ['started', 'succeeded']);
+});
+
+test('keeps explicit and nested scoped attempt observers without duplicates', async () => {
+  const service = createTestService();
+  (service as any).provider = {
+    chat: async () => ({ content: 'ok' }),
+    chatStream: async () => ({ content: 'unused' }),
+  };
+  const sharedEvents: ModelAttemptEvent[] = [];
+  const outerEvents: ModelAttemptEvent[] = [];
+  const shared = collectingSink(sharedEvents);
+
+  await withModelAttemptSink(collectingSink(outerEvents), () =>
+    withModelAttemptSink(shared, () => service.chat([], undefined, {
+      modelAttemptSink: shared,
+    }))
+  );
+
+  assert.deepEqual(sharedEvents.map(event => event.outcome), ['started', 'succeeded']);
+  assert.deepEqual(outerEvents.map(event => event.outcome), ['started', 'succeeded']);
 });
 
 function collectingSink(events: ModelAttemptEvent[]): ModelAttemptSink {

@@ -93,6 +93,8 @@ export interface ModelAttemptEvent {
 }
 
 export interface ModelAttemptSink {
+  /** Critical sinks are synchronous and may abort a provider request on persistence failure. */
+  critical?: boolean;
   observe(event: ModelAttemptEvent): void | Promise<void>;
 }
 
@@ -104,7 +106,7 @@ export interface AIRequestOptions {
   cachePartitionKey?: string;
   /** Internal one-attempt override used by evidence-driven DeepSeek recovery. */
   reasoningReplayMode?: OpenAIReasoningReplayMode;
-  /** Optional best-effort observer; it can never alter request control flow. */
+  /** Attempt observer; only an explicitly critical synchronous sink may abort before invocation. */
   modelAttemptSink?: ModelAttemptSink;
   modelAttemptContext?: ModelAttemptContext;
 }

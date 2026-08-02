@@ -35,6 +35,8 @@ export interface OpenAICachePlanInput {
   /** A stable, non-secret identity used only to shard routing keys. */
   partitionKey?: string;
   cacheMode?: ProviderCacheMode;
+  /** Explicitly declared by a compatible endpoint profile after a live canary. */
+  compatiblePromptCaching?: 'key' | 'explicit';
 }
 
 const OPENAI_EXPLICIT_CACHE_MIN_TOKENS = 1024;
@@ -62,7 +64,10 @@ export function resolveOpenAICachePlan(input: OpenAICachePlanInput): OpenAICache
   const stablePrefixEstimatedTokens = estimateMessagesTokens(stable.messages)
     + estimateToolsTokens([...input.tools]);
   const official = isOfficialOpenAIEndpoint(input.apiUrl);
-  const promptCacheKey = official
+  const supportsCacheKey = official || input.compatiblePromptCaching === 'key'
+    || input.compatiblePromptCaching === 'explicit';
+  const supportsExplicitFields = official || input.compatiblePromptCaching === 'explicit';
+  const promptCacheKey = supportsCacheKey
     ? buildOpenAIPromptCacheKey({
         apiType: input.apiType,
         model: input.model,
@@ -72,14 +77,14 @@ export function resolveOpenAICachePlan(input: OpenAICachePlanInput): OpenAICache
       })
     : undefined;
   const explicit = Boolean(
-    official
+    supportsExplicitFields
     && supportsOpenAIExplicitPromptCaching(input.model)
     && stable.hasText
     && stablePrefixEstimatedTokens >= OPENAI_EXPLICIT_CACHE_MIN_TOKENS,
   );
 
   const plan: OpenAICachePlan = {
-    strategy: !official
+    strategy: !supportsCacheKey
       ? 'openai-compatible-automatic-prefix'
       : explicit
         ? 'openai-explicit-stable-prefix'

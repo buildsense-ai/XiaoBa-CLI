@@ -16,7 +16,7 @@ export class WaitSubagentsTool implements Tool {
         subagent_ids: {
           type: 'array',
           items: { type: 'string' },
-          description: '可选。要等待的子智能体 ID、唯一短前缀或展示名（如 子agent1）。不填则等待所有当前运行中的子 agent。',
+          description: '可选。要等待的子智能体任务引用或展示名（如 subtask-... 或 子agent1）。不填则等待所有当前运行中的子 agent。',
         },
         wait_for: {
           type: 'string',
@@ -96,8 +96,8 @@ function formatInfo(info: any): string {
     waiting_for_input: '等待主 agent 回复',
   };
   const lines = [
-    `[${info.displayName || info.id}] ${info.taskDescription}`,
-    info.displayName ? `ID: ${info.id}` : '',
+    `[${info.displayName || info.promptRef || info.id}] ${info.taskDescription}`,
+    info.promptRef ? `任务引用: ${info.promptRef}` : '',
     `状态: ${statusMap[info.status] || info.status}`,
     info.pendingQuestion ? `等待问题: ${info.pendingQuestion}` : '',
     info.resultSummary ? `结果摘要: ${String(info.resultSummary).slice(0, 1200)}` : '',
