@@ -15,6 +15,7 @@ export interface BranchSessionOptions {
   workingDirectory: string;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  cachePartitionKey?: string;
 }
 
 export interface BranchRunOutcome {
@@ -25,6 +26,7 @@ export interface BranchRunOutcome {
 export abstract class BranchSession {
   protected readonly messages: Message[] = [];
   protected readonly logger: BranchSessionLogger;
+  private readonly executedToolNames: string[] = [];
   private readonly abortController = new AbortController();
   private stopped = false;
   private initialized = false;
@@ -43,6 +45,18 @@ export abstract class BranchSession {
     if (this.stopped) return;
     this.stopped = true;
     this.abortController.abort();
+  }
+
+  get branchId(): string {
+    return this.options.id;
+  }
+
+  get branchType(): string {
+    return this.options.type;
+  }
+
+  protected getExecutedToolNames(): string[] {
+    return [...this.executedToolNames];
   }
 
   protected shouldContinue(): boolean {
@@ -76,6 +90,7 @@ export abstract class BranchSession {
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
       stream: false,
       enableCompression: true,
+      cachePartitionKey: this.options.cachePartitionKey,
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
         sessionId: `branch:${this.options.type}:${this.options.id}`,
@@ -89,11 +104,14 @@ export abstract class BranchSession {
 
     const callbacks: RunnerCallbacks = {
       onThinking: text => this.logger.write('assistant_text', { text }),
-      onToolStart: (name, toolUseId, input) => this.logger.write('tool_start', {
-        name,
-        tool_use_id: toolUseId,
-        input,
-      }),
+      onToolStart: (name, toolUseId, input) => {
+        this.executedToolNames.push(name);
+        this.logger.write('tool_start', {
+          name,
+          tool_use_id: toolUseId,
+          input,
+        });
+      },
       onToolEnd: (name, toolUseId, result) => this.logger.write('tool_end', {
         name,
         tool_use_id: toolUseId,

@@ -7,6 +7,111 @@ import { normalizeOpenAIChatCompletionsUrl } from './openai-url';
 import { createProviderStateReference, isProviderStateCompatible } from './provider-state';
 import { annotateContextMessage } from '../core/context-lifecycle';
 
+/**
+ * DeepSeek thinking/tool-call dialects cannot replay a synthetic assistant
+ * tool call because no provider reasoning state exists for that local event.
+ * Preserve the same transient observation as a user-context message before
+ * structural preflight so the provider sees no fabricated reasoning history.
+ */
+export function prepareDeepSeekSyntheticObservations(input: {
+  config: Pick<ChatConfig, 'provider' | 'model' | 'apiUrl' | 'openaiApiMode'>;
+  messages: Message[];
+}): Message[] {
+  if (
+    input.config.provider !== 'openai'
+    || input.config.openaiApiMode === 'responses'
+    || resolveOpenAIReasoningReplayMode(input.config) !== 'include'
+  ) return input.messages;
+
+  const output: Message[] = [];
+  let changed = false;
+  for (let index = 0; index < input.messages.length; index += 1) {
+    const assistant = input.messages[index];
+    const tool = input.messages[index + 1];
+    const toolCallId = assistant?.tool_calls?.[0]?.id;
+    if (
+      !assistant?.__syntheticObservation
+      || assistant.role !== 'assistant'
+      || assistant.tool_calls?.length !== 1
+      || !tool?.__syntheticObservation
+      || tool.role !== 'tool'
+      || !toolCallId
+      || tool.tool_call_id !== toolCallId
+      || assistant.syntheticObservationId !== tool.syntheticObservationId
+    ) {
+      output.push(assistant);
+      continue;
+    }
+    const content = contentAsText(tool.content);
+    const lifecycle = parseSyntheticLifecycleMetadata(
+      assistant.tool_calls[0].function.arguments,
+    );
+    const envelope = {
+      type: 'runtime_observation',
+      lifecycle,
+      observation: parseObservationContent(content),
+    };
+    output.push({
+      role: 'user',
+      content: `[runtime_observation]\n${JSON.stringify(envelope)}`,
+      __syntheticObservation: true,
+      syntheticObservationId: tool.syntheticObservationId,
+      syntheticObservationProvenance: tool.syntheticObservationProvenance,
+      __context: tool.__context,
+    });
+    changed = true;
+    index += 1;
+  }
+  return changed ? output : input.messages;
+}
+
+function parseSyntheticLifecycleMetadata(argumentsJson: string): {
+  source: string;
+  status: string;
+  relevance: string;
+  timing: 'current_turn' | 'late_previous_turn';
+  confidence?: number;
+} {
+  let value: any;
+  try {
+    value = JSON.parse(argumentsJson);
+  } catch {
+    value = {};
+  }
+  const source = ['memory', 'web', 'runtime', 'subagent', 'skill_context'].includes(value?.source)
+    ? value.source
+    : 'runtime';
+  const status = ['completed', 'partial', 'failed', 'cancelled'].includes(value?.status)
+    ? value.status
+    : 'partial';
+  const relevance = ['high', 'medium', 'low'].includes(value?.relevance)
+    ? value.relevance
+    : 'low';
+  const timing = value?.timing === 'current_turn'
+    ? 'current_turn'
+    : 'late_previous_turn';
+  const confidence = typeof value?.confidence === 'number' && Number.isFinite(value.confidence)
+    ? Math.max(0, Math.min(1, value.confidence))
+    : undefined;
+  return {
+    source,
+    status,
+    relevance,
+    timing,
+    ...(confidence === undefined ? {} : { confidence }),
+  };
+}
+
+function parseObservationContent(content: string): unknown {
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {
+    // Preserve explicit content when a branch uses a human-readable format.
+  }
+  return { content };
+}
+
 export type ReasoningReplayRecoveryAction =
   | 'reasoning_replay_include'
   | 'reasoning_replay_omit'

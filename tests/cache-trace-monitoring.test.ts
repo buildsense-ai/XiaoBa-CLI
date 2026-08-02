@@ -7,9 +7,11 @@ import * as dotenv from 'dotenv';
 import express, { Router } from 'express';
 import type { Server } from 'http';
 import { ConversationRunner } from '../src/core/conversation-runner';
+import { withModelAttemptSink } from '../src/observability/model-attempt-scope';
 import { CacheTraceObserver, isCacheTraceEnabledForSession } from '../src/observability/cache-trace';
 import { readCacheTraceStore } from '../src/observability/cache-trace-reader';
 import { registerCacheTraceRoutes } from '../src/dashboard/routes/cache-trace';
+import { AIService } from '../src/utils/ai-service';
 import type { ChatResponse, Message } from '../src/types';
 import type {
   AIRequestOptions,
@@ -70,6 +72,50 @@ test('ConversationRunner forwards attempt observation with session and episode c
     episodeId: 'episode-1',
     episodeNumber: 1,
   });
+});
+
+test('ConversationRunner gives a scoped-only attempt sink branch context without local cache tracing', async () => {
+  const previousCacheTrace = process.env.XIAOBA_CACHE_TRACE;
+  process.env.XIAOBA_CACHE_TRACE = 'false';
+  try {
+    const service = new AIService({
+      provider: 'openai',
+      apiUrl: 'https://provider.example.test/v1',
+      apiKey: 'test-key',
+      model: 'test-model',
+    });
+    (service as any).provider = {
+      chat: async () => ({ content: 'scoped reply' }),
+      chatStream: async () => ({ content: 'unused' }),
+    };
+    const events: ModelAttemptEvent[] = [];
+    const runner = new ConversationRunner(service, new EmptyTools(), {
+      stream: false,
+      enableCompression: false,
+      episodeId: 'episode-memory-1',
+      toolExecutionContext: {
+        sessionId: 'branch:memory:session-1',
+        surface: 'memory_branch',
+      },
+    });
+
+    const result = await withModelAttemptSink(
+      { observe: event => { events.push(event); } },
+      () => runner.run([{ role: 'user', content: 'inspect memory' }]),
+    );
+
+    assert.equal(result.response, 'scoped reply');
+    const started = events.find(event => event.outcome === 'started');
+    assert.deepEqual(started?.context, {
+      sessionId: 'branch:memory:session-1',
+      surface: 'memory_branch',
+      episodeId: 'episode-memory-1',
+      episodeNumber: 1,
+    });
+  } finally {
+    if (previousCacheTrace === undefined) delete process.env.XIAOBA_CACHE_TRACE;
+    else process.env.XIAOBA_CACHE_TRACE = previousCacheTrace;
+  }
 });
 
 test('observer records the exact OpenAI cache policy without exposing its routing key', async () => {

@@ -14,6 +14,7 @@ import {
 } from '../skills/session-skill-runtime';
 import { isRuntimeFeedbackContent } from './runtime-feedback';
 import { PlanRuntime } from './plan-runtime';
+import { GoalRuntime } from './goal-runtime';
 import {
   TRANSIENT_SUBAGENT_STATUS_PREFIX,
   buildSubAgentStatusMessage,
@@ -33,6 +34,7 @@ import {
 } from './context-lifecycle';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
+const TRANSIENT_GOAL_STATUS_PREFIX = '[transient_goal_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
 const TRANSIENT_RUNTIME_OBSERVATION_RULES_PREFIX = '[transient_runtime_observation_rules]';
@@ -50,6 +52,7 @@ export interface BuildTurnContextParams {
   durableMessages: Message[];
   runtimeFeedback: string[];
   skillRuntime: SessionSkillRuntime;
+  goalRuntime?: GoalRuntime;
   planRuntime?: PlanRuntime;
   /** Stable for every provider call inside one user-turn episode. */
   contextEpoch?: string;
@@ -86,6 +89,7 @@ export class TurnContextBuilder {
     }
     this.injectRuntimeContext(contextMessages, params);
     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback, params.contextEpoch);
+    this.injectGoalStatus(contextMessages, params.goalRuntime, params.contextEpoch);
     this.injectPlanStatus(contextMessages, params.planRuntime, params.contextEpoch);
     this.injectSubAgentStatus(contextMessages, params.sessionKey, params.contextEpoch);
 
@@ -103,6 +107,7 @@ export class TurnContextBuilder {
       if (msg.__runtimeFeedback) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_GOAL_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_PENDING_USER_INPUT_PREFIX)) return false;
@@ -180,6 +185,20 @@ export class TurnContextBuilder {
       content: `${TRANSIENT_PLAN_STATUS_PREFIX}\n${planText}`,
     }, {
       source: 'plan_status',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+      epoch: contextEpoch,
+    }));
+  }
+
+  private injectGoalStatus(messages: Message[], goalRuntime?: GoalRuntime, contextEpoch?: string): void {
+    const goalText = goalRuntime?.formatForPrompt();
+    if (!goalText) return;
+    this.insertBeforeLastUser(messages, annotateContextMessage({
+      role: 'system',
+      content: `${TRANSIENT_GOAL_STATUS_PREFIX}\n${goalText}`,
+    }, {
+      source: 'goal_status',
       lifecycle: 'episode',
       cacheScope: 'epoch',
       epoch: contextEpoch,

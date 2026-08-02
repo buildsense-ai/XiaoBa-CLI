@@ -80,6 +80,11 @@ export interface Message {
   /** Synthetic tool-call/tool-result pair used as transient runtime context. */
   __syntheticObservation?: boolean;
   syntheticObservationId?: string;
+  /** Internal branch provenance for evidence correlation. Never sent to providers. */
+  syntheticObservationProvenance?: {
+    branchType: string;
+    branchId: string;
+  };
   /** Internal episode marker used for local compaction grouping. Never sent to providers. */
   __episodeId?: string;
   /** Distinguishes the initial user input from user messages merged while a turn is running. */

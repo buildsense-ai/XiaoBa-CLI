@@ -1,7 +1,9 @@
 import type { Message } from '../types';
 import type { ModelAttemptEvent, ModelAttemptSink } from '../providers/provider';
+import type { ObservationBranchCompletion } from '../core/observation-branch-session';
 import {
   REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
+  type CacheBenchmarkAttemptRole,
   type CacheBenchmarkCapability,
 } from './types';
 
@@ -15,15 +17,73 @@ export const BENCHMARK_RECOVERY_MARKER = '[cache_benchmark_recovery:v1]';
  */
 export class AttemptCapabilityAttestor implements ModelAttemptSink {
   private readonly capabilitiesByAttempt = new Map<string, CacheBenchmarkCapability[]>();
+  private readonly branchByAttempt = new Map<string, string>();
+  private readonly outcomesByAttempt = new Map<string, ModelAttemptEvent['outcome']>();
+  private readonly attemptsByBranch = new Map<string, Set<string>>();
+  private readonly observationsByAttempt = new Map<string, Array<{
+    branchId: string;
+    observationId: string;
+  }>>();
+  private readonly completionsByBranch = new Map<string, ObservationBranchCompletion>();
 
   observe(event: ModelAttemptEvent): void {
+    this.outcomesByAttempt.set(event.attemptId, event.outcome);
     if (event.outcome !== 'started') return;
     this.capabilitiesByAttempt.set(event.attemptId, attestRequestCapabilities(event));
+    const branchId = memoryBranchId(event.context?.sessionId);
+    if (branchId) {
+      this.branchByAttempt.set(event.attemptId, branchId);
+      const attempts = this.attemptsByBranch.get(branchId) ?? new Set<string>();
+      attempts.add(event.attemptId);
+      this.attemptsByBranch.set(branchId, attempts);
+    }
+    const observations = memoryObservationLinks(event.request.messages);
+    if (observations.length > 0) {
+      this.observationsByAttempt.set(event.attemptId, observations);
+    }
+  }
+
+  registerMemoryCompletion(completion: ObservationBranchCompletion): void {
+    if (completion.branchType !== 'memory') return;
+    this.completionsByBranch.set(completion.branchId, structuredClone(completion));
+  }
+
+  getRole(attemptId: string): CacheBenchmarkAttemptRole {
+    return this.branchByAttempt.has(attemptId) ? 'memory_branch' : 'main';
   }
 
   get(attemptId: string): CacheBenchmarkCapability[] {
-    return [...(this.capabilitiesByAttempt.get(attemptId) ?? [])];
+    const capabilities = new Set(this.capabilitiesByAttempt.get(attemptId) ?? []);
+    const branchId = this.branchByAttempt.get(attemptId);
+    if (branchId && this.isValidPublishedBranch(branchId)) {
+      capabilities.add('memory');
+    }
+    const observations = this.observationsByAttempt.get(attemptId) ?? [];
+    if (observations.some(observation => {
+      const completion = this.completionsByBranch.get(observation.branchId);
+      return completion?.status === 'published'
+        && completion.observationId === observation.observationId
+        && this.isValidPublishedBranch(observation.branchId);
+    })) {
+      capabilities.add('memory');
+    }
+    return REQUIRED_CACHE_BENCHMARK_CAPABILITIES.filter(capability => capabilities.has(capability));
   }
+
+  private isValidPublishedBranch(branchId: string): boolean {
+    const completion = this.completionsByBranch.get(branchId);
+    const attempts = this.attemptsByBranch.get(branchId);
+    if (completion?.status !== 'published' || !completion.observationId || !attempts?.size) return false;
+    const refs = completion.observationRefs ?? [];
+    const digests = completion.observationRefDigests ?? {};
+    if (
+      refs.length === 0
+      || Object.keys(digests).length !== refs.length
+      || refs.some(ref => !/^sha256:[a-f0-9]{64}$/.test(digests[ref] || ''))
+    ) return false;
+    return [...attempts].every(attemptId => this.outcomesByAttempt.get(attemptId) === 'succeeded');
+  }
+
 }
 
 export function attestRequestCapabilities(event: ModelAttemptEvent): CacheBenchmarkCapability[] {
@@ -46,20 +106,41 @@ export function attestRequestCapabilities(event: ModelAttemptEvent): CacheBenchm
   // Goal runtime. Acceptance requires typed Goal provenance.
   if (sources.has('goal_status')) capabilities.add('goal');
   if (sources.has('subagent_status')) capabilities.add('subagent');
-  if (
-    event.context?.sessionId?.startsWith('branch:memory:')
-    || messages.some(message => (
-      message.__syntheticObservation
-      && message.__context?.source === 'synthetic_observation'
-      && messageText(message).includes('"source":"memory"')
-    ))
-  ) {
-    capabilities.add('memory');
-  }
   if (sources.has('runtime_feedback')) capabilities.add('runtime-feedback');
   if (text.includes(BENCHMARK_RECOVERY_MARKER)) capabilities.add('session-recovery');
 
   return REQUIRED_CACHE_BENCHMARK_CAPABILITIES.filter(capability => capabilities.has(capability));
+}
+
+function memoryBranchId(sessionId: string | undefined): string | undefined {
+  const prefix = 'branch:memory:';
+  if (!sessionId?.startsWith(prefix)) return undefined;
+  const branchId = sessionId.slice(prefix.length).trim();
+  return branchId || undefined;
+}
+
+function memoryObservationLinks(messages: readonly Message[]): Array<{
+  branchId: string;
+  observationId: string;
+}> {
+  const seen = new Set<string>();
+  const links: Array<{ branchId: string; observationId: string }> = [];
+  for (const message of messages) {
+    if (
+      !message.__syntheticObservation
+      || message.__context?.source !== 'synthetic_observation'
+      || message.syntheticObservationProvenance?.branchType !== 'memory'
+      || !message.syntheticObservationId
+    ) continue;
+    const branchId = message.syntheticObservationProvenance.branchId.trim();
+    const observationId = message.syntheticObservationId.trim();
+    if (!branchId || !observationId) continue;
+    const key = `${branchId}\0${observationId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    links.push({ branchId, observationId });
+  }
+  return links;
 }
 
 function messageText(message: Message): string {

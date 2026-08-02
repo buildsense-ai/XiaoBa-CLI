@@ -1,5 +1,5 @@
 {
-  "schema": "xiaoba.cache_benchmark_manifest.v3",
+  "schema": "xiaoba.cache_benchmark_manifest.v4",
   "suite_id": "cache-truth-v1",
   "criteria": {
     "minimum_read_ratio": 0.94,
@@ -22,6 +22,7 @@
       "cache_read_source": "openai.input_tokens_details.cached_tokens",
       "scenario_family": "identity-and-device",
       "session_type": "direct",
+      "execution_role": "main",
       "capabilities": ["identity", "group-chat-participants", "device-authorization"],
       "runs": [{ "run_id": "run-1", "required_cold_calls": 1, "required_warm_calls": 1 }]
     },
@@ -39,6 +40,7 @@
       "cache_read_source": "openai.input_tokens_details.cached_tokens",
       "scenario_family": "tools-and-planning",
       "session_type": "direct",
+      "execution_role": "main",
       "capabilities": ["tools", "skills", "plan"],
       "runs": [{ "run_id": "run-2", "required_cold_calls": 1, "required_warm_calls": 1 }]
     },
@@ -56,6 +58,7 @@
       "cache_read_source": "openai.input_tokens_details.cached_tokens",
       "scenario_family": "delegation-and-memory",
       "session_type": "branch",
+      "execution_role": "main",
       "capabilities": ["goal", "subagent", "memory"],
       "runs": [{ "run_id": "run-3", "required_cold_calls": 1, "required_warm_calls": 1 }]
     },
@@ -73,6 +76,7 @@
       "cache_read_source": "openai.input_tokens_details.cached_tokens",
       "scenario_family": "feedback-and-recovery",
       "session_type": "resumed",
+      "execution_role": "main",
       "capabilities": ["runtime-feedback", "session-recovery"],
       "runs": [{ "run_id": "run-4", "required_cold_calls": 1, "required_warm_calls": 1 }]
     }

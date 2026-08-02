@@ -43,6 +43,11 @@ import {
   type RuntimePlanSnapshot,
   type UpdatePlanInput,
 } from './plan-runtime';
+import {
+  GoalRuntime,
+  type RuntimeGoalSnapshot,
+  type UpdateGoalInput,
+} from './goal-runtime';
 import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
 import { resolveModelContextWindow } from '../utils/model-context-window';
@@ -104,6 +109,10 @@ export interface AgentServices {
     enabled: boolean;
     modelSource: 'inherit' | 'catalog' | 'custom';
     aiService: AIService;
+    completionPolicy?: 'detached' | 'join-before-primary';
+    cachePartitionKey?: string;
+    trustedSystemPrefix?: string;
+    memoryLogStore?: import('./memory-log-store').MemoryLogStore;
   };
   toolManager: ToolManager;
   skillManager: SkillManager;
@@ -177,6 +186,8 @@ export interface HandleMessageResult {
   taskOutcome?: 'completed' | 'failed' | 'cancelled';
   /** code mode 过程数据（thinking / tool_use / tool_result） */
   newMessages?: import('../types').Message[];
+  /** Strict joined sidecar result for internal workload evidence. */
+  memoryBranchCompletion?: import('./observation-branch-session').ObservationBranchCompletion;
 }
 
 export interface SessionCleanupOptions {
@@ -218,6 +229,7 @@ export class AgentSession {
   private skillRuntime: SessionSkillRuntime;
   private runtimeFeedbackInbox = new RuntimeFeedbackInbox();
   private planRuntime = new PlanRuntime();
+  private goalRuntime: GoalRuntime;
   private lifecycleManager: SessionLifecycleManager;
   private readonly defaultDirectory: string;
   private currentDirectory: string;
@@ -256,6 +268,7 @@ export class AgentSession {
       allowLegacySessionFallback: this.shouldAllowLegacySessionFallback(sessionRoute),
       runtimeFeedbackInbox: this.runtimeFeedbackInbox,
     });
+    this.goalRuntime = new GoalRuntime(this.lifecycleManager.loadGoal());
     this.defaultDirectory = this.resolveDefaultDirectory();
     this.currentDirectory = this.loadInitialCurrentDirectory();
     this.turnController = new AgentTurnController({
@@ -264,6 +277,7 @@ export class AgentSession {
       sessionRoute,
       services,
       skillRuntime: this.skillRuntime,
+      goalRuntime: this.goalRuntime,
       planRuntime: this.planRuntime,
       turnContextBuilder: this.turnContextBuilder,
       turnLogRecorder: this.turnLogRecorder,
@@ -557,6 +571,23 @@ export class AgentSession {
 
   getPlanSnapshot(): RuntimePlanSnapshot {
     return this.planRuntime.getSnapshot();
+  }
+
+  /** Seeds trusted objective state shared by adapters and future task-control tools. */
+  updateGoal(input: UpdateGoalInput): RuntimeGoalSnapshot {
+    const previous = this.goalRuntime.getSnapshot();
+    const snapshot = this.goalRuntime.update(input);
+    const persisted = this.goalRuntime.hasGoal() ? snapshot : undefined;
+    if (!this.lifecycleManager.saveGoal(persisted)) {
+      this.goalRuntime.restore(previous.revision > 0 ? previous : undefined);
+      throw new Error('goal_persistence_failed');
+    }
+    this.lastActiveAt = Date.now();
+    return snapshot;
+  }
+
+  getGoalSnapshot(): RuntimeGoalSnapshot {
+    return this.goalRuntime.getSnapshot();
   }
 
   /**
@@ -918,6 +949,12 @@ export class AgentSession {
 
   /** 重置会话状态（仅清内存，保留历史文件） */
   reset(): void {
+    const previousGoal = this.goalRuntime.getSnapshot();
+    this.goalRuntime.clear();
+    if (!this.lifecycleManager.saveGoal(undefined)) {
+      this.goalRuntime.restore(previousGoal.revision > 0 ? previousGoal : undefined);
+      throw new Error('goal_persistence_failed');
+    }
     this.lifecycleGeneration++;
     this.planRuntime.clear();
     this.stopSubAgents('父会话 reset');
@@ -934,6 +971,7 @@ export class AgentSession {
   clear(): boolean {
     this.lifecycleGeneration++;
     this.planRuntime.clear();
+    this.goalRuntime.clear();
     this.stopSubAgents('父会话 clear');
     this.messages = [];
     const state = this.lifecycleManager.clear();
@@ -947,6 +985,12 @@ export class AgentSession {
 
   async summarizeAndDestroy(): Promise<boolean> {
     return this.withLogContext(async () => {
+      const previousGoal = this.goalRuntime.getSnapshot();
+      this.goalRuntime.clear();
+      if (!this.lifecycleManager.saveGoal(undefined)) {
+        this.goalRuntime.restore(previousGoal.revision > 0 ? previousGoal : undefined);
+        throw new Error('goal_persistence_failed');
+      }
       this.planRuntime.clear();
       this.stopSubAgents('父会话退出');
       if (this.messages.length === 0) return false;

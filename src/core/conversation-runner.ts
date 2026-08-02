@@ -202,6 +202,8 @@ export interface RunnerOptions {
   onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
   /** Best-effort observer. Its result never participates in reply control flow. */
   cacheTraceSink?: CacheTraceSink;
+  /** Stable provider cache partition, distinct from the unique tracing session id. */
+  cachePartitionKey?: string;
 }
 
 /**
@@ -228,6 +230,7 @@ export class ConversationRunner {
   private suppressFinalResponse: boolean;
   private checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   private onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
+  private cachePartitionKey?: string;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -257,6 +260,7 @@ export class ConversationRunner {
     this.onCompactionCheckpoint = options?.onCompactionCheckpoint;
     this.maxTurns = options?.maxTurns;
     this.suppressFinalResponse = options?.suppressFinalResponse === true;
+    this.cachePartitionKey = options?.cachePartitionKey;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -408,12 +412,15 @@ export class ConversationRunner {
       let requestMessages = this.buildProviderInputMessages(messages, [
         ...runtimeTransientHints,
         ...(perTurnRunnerHint ? [perTurnRunnerHint] : []),
-        ...nextTurnTransientHints,
         ...orchestrationHints,
       ], {
         includeCurrentDirectoryHint: transientPolicy.injectEnvironment,
         currentDirectory,
       });
+      // Recovery hints describe the result of the complete preceding attempt.
+      // Keep them at the tail so they never split an assistant tool call from
+      // its tool results or invalidate the already reusable history prefix.
+      requestMessages.push(...nextTurnTransientHints);
       nextTurnTransientHints = [];
       const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
       if (promptTrimmed && callbacks?.onThinking) {
@@ -800,19 +807,18 @@ export class ConversationRunner {
       toolTokens: estimateToolsTokens(tools),
       signal: this.toolExecutionContext?.abortSignal,
       modelRequestOptions: {
-        cachePartitionKey: this.toolExecutionContext?.sessionId
+        cachePartitionKey: this.cachePartitionKey
+          || this.toolExecutionContext?.sessionId
           || this.toolExecutionContext?.executionScope?.sessionKey
           || this.sessionLabel.trim()
           || 'runner',
-        ...(this.cacheTraceSink ? {
-          modelAttemptSink: this.cacheTraceSink,
-          modelAttemptContext: {
-            sessionId: this.toolExecutionContext?.sessionId,
-            surface: this.toolExecutionContext?.surface,
-            episodeId: this.episodeId,
-            episodeNumber: turns,
-          },
-        } : {}),
+        ...(this.cacheTraceSink ? { modelAttemptSink: this.cacheTraceSink } : {}),
+        modelAttemptContext: {
+          sessionId: this.toolExecutionContext?.sessionId,
+          surface: this.toolExecutionContext?.surface,
+          episodeId: this.episodeId,
+          episodeNumber: turns,
+        },
       },
       onStatus: callbacks?.onThinking
         ? async event => {
@@ -1390,11 +1396,12 @@ export class ConversationRunner {
 
   private buildEmptyMaxTokensRecoveryHint(): Message {
     return annotateContextMessage({
-      role: 'system',
+      role: 'user',
       content: [
         TRANSIENT_RUNNER_HINT_PREFIX,
         renderRequiredDefaultPromptFile('transient/runner-empty-max-tokens.md', {}),
       ].join('\n'),
+      __injected: true,
     }, {
       source: 'provider_recovery',
       lifecycle: 'call',
@@ -1493,19 +1500,18 @@ export class ConversationRunner {
   ) {
     const requestOptions: AIRequestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
-      cachePartitionKey: this.toolExecutionContext?.sessionId
+      cachePartitionKey: this.cachePartitionKey
+        || this.toolExecutionContext?.sessionId
         || this.toolExecutionContext?.executionScope?.sessionKey
         || this.sessionLabel.trim()
         || 'runner',
-      ...(this.cacheTraceSink ? {
-        modelAttemptSink: this.cacheTraceSink,
-        modelAttemptContext: {
-          sessionId: this.toolExecutionContext?.sessionId,
-          surface: this.toolExecutionContext?.surface,
-          episodeId: this.episodeId,
-          episodeNumber,
-        },
-      } : {}),
+      ...(this.cacheTraceSink ? { modelAttemptSink: this.cacheTraceSink } : {}),
+      modelAttemptContext: {
+        sessionId: this.toolExecutionContext?.sessionId,
+        surface: this.toolExecutionContext?.surface,
+        episodeId: this.episodeId,
+        episodeNumber,
+      },
     };
     try {
       if (this.stream) {

@@ -7,14 +7,16 @@ The cache benchmark has two deliberately separate layers:
 
 Calibration runs diagnose the implementation. Acceptance requires the complete contract below; an isolated high cache-read ratio is not a pass.
 
-## Stage 2 status: calibration only
+## Stage 3 status: capability calibration, not final acceptance
 
-The current Stage 2 online workload is deliberately **non-acceptance** evidence. It exercises a real main `AgentSession`, but two required capability paths are not yet present:
+The Stage 3 runner exercises the real typed Goal and Memory Branch paths. It is still calibration evidence until the ratio target and representative-workload requirements below are satisfied.
 
-- the durable objective marker is workload state, not a typed Goal runtime observation (`goal_status`);
-- the memory sidecar is disabled, so a final `memory` runtime-observation marker is not evidence of a real Memory Branch session and its physical provider attempts.
+- Goal state is updated through `GoalRuntime`, persisted with the session, restored, and attested only from typed `goal_status` provenance.
+- Every workload runs the real Memory Branch and records every physical branch-provider attempt. One memory-only task must search, successfully read, publish an exact canonical ref backed by a branch-local content receipt, and link that observation into the main request. The other three tasks must suppress redundant memory when no authorized record is relevant.
+- The joined branch mode is intentional for deterministic capability correlation. Final product-performance evidence must also exercise the production-default detached/concurrent path and late-observation behavior.
+- Repeating one fixed fixture is useful for diagnosing cache admission and prefix drift, but it is not a claim about real-task averages. Final evidence must add changing dynamic tails and a real project-task corpus.
 
-Until both paths are implemented and observed at the provider boundary, the machine gate must return a non-passing result even if the reported cache-read ratio is at least 94%. In particular, the request attestor does not credit the durable objective as `goal`, so the current all-capabilities manifest produces `capability_attestation_incomplete`/`capability_coverage_incomplete`. Do not edit evidence, weaken the manifest, or promote a synthetic marker to make a calibration run pass.
+Do not edit evidence, exclude branch retries/tool-loop calls, weaken capability declarations, or promote a synthetic marker to make a calibration run pass.
 
 ## Acceptance contract
 
@@ -35,7 +37,7 @@ At least four tasks must have positive input weight in each cell. `cache_write_t
 
 ## Capability, quality, and safety gates
 
-Every case declares and every physical provider request must attest all fixed capabilities:
+The manifest as a whole must cover all fixed capabilities, and every physical provider request must attest the capabilities declared by its own case:
 
 - `identity`
 - `group-chat-participants`
@@ -59,11 +61,13 @@ The online runner derives this attestation from the actual request observed at t
 
 Stable-prefix drift within a case/run/round is invalid. Internal lifecycle IDs are excluded from the provider-visible fingerprint, but model-visible content and cache placement remain covered.
 
-The main online workload uses four deterministic common tasks: repository orientation, test triage, destructive-action review, and next-step planning. It creates and restores a real session, installs a real read-only skill fixture, supplies a trusted group identity and scoped device grant, exposes actual tools, creates a plan and active subagent, injects runtime feedback, and handles the final prompt as a `memory` runtime observation. This is useful calibration coverage, but the observation is not a Memory Branch. A separate workload must execute the real branch session and record every physical branch-provider attempt before acceptance can be enabled.
+The online workload uses four deterministic common tasks: repository orientation, test triage, destructive-action review, and next-step planning. It creates and restores a real session, installs a real read-only skill fixture, supplies trusted group identity and a scoped device grant, exposes actual tools, creates a typed Goal, plan, and active subagent, and injects runtime feedback. Each task has a paired Memory Branch case, so the manifest contains four main cases and four branch cases. Main calls must have exactly one physical provider attempt; a branch logical call may have one or more physical attempts, all of which remain in token-weighted scoring.
+
+The destructive-action task is deliberately memory-only: its restored transcript contains an opaque action record ID, while the prior classification and exact decision token exist only in one authorized historical ref. The branch must publish that exact ref and the linked main call must use the observation. A finish payload cannot invent provenance: every published ref must have a branch-local receipt from a successful `memory_read_turn` or `memory_neighbors` result, and the benchmark requires the expected SHA-256 of the model-visible read result. The other three tasks have no relevant authorized memory and must finish with `inject:false`; suppressed branches prove that the sidecar ran without granting a fake `memory` capability to the main request.
 
 ## Provider usage contracts
 
-Version 3 evidence does not accept collector-supplied normalized `input_tokens`, `cache_read_tokens`, or `cache_read_source` fields. Each attempt seals `usage.provider_usage`, an allowlisted projection of the exact numeric fields returned by the provider. The offline scorer selects the contract, derives normalized input/read counts, and verifies that the derived source matches the manifest:
+Version 4 evidence does not accept collector-supplied normalized `input_tokens`, `cache_read_tokens`, or `cache_read_source` fields. Each attempt seals `usage.provider_usage`, an allowlisted projection of the exact numeric fields returned by the provider. The offline scorer selects the contract, derives normalized input/read counts, and verifies that the derived source matches the manifest:
 
 | Raw usage contract | Allowed provider fields | Scorer input | Scorer cache read and exact source |
 | --- | --- | --- | --- |
@@ -76,17 +80,17 @@ Fields from another contract and unknown fields are rejected. All present usage 
 
 ## Evidence schemas
 
-The strict v3 schemas are:
+The strict v4 schemas are:
 
-- `xiaoba.cache_benchmark_manifest.v3`
-- `xiaoba.cache_benchmark_round.v3`
-- `xiaoba.cache_benchmark_attempt.v3`
-- `xiaoba.cache_benchmark_ledger.v3`
-- `xiaoba.cache_benchmark_result.v3`
+- `xiaoba.cache_benchmark_manifest.v4`
+- `xiaoba.cache_benchmark_round.v4`
+- `xiaoba.cache_benchmark_attempt.v4`
+- `xiaoba.cache_benchmark_ledger.v4`
+- `xiaoba.cache_benchmark_result.v4`
 
 Unknown or missing fields are rejected. The manifest fixes the acceptance criteria at `0.94`, three consecutive rounds, a 25% maximum task weight, and cold inclusion. It also fixes exact cold/warm call counts, task fixtures, oracle contracts, execution plans, capability coverage, and provider usage sources.
 
-Each evidence JSONL contains one round header followed by attempts in physical order. `attempt_number` must be contiguous and every provider retry becomes an additional attempt; retries cannot be hidden behind a logical call. The attempt usage object contains only the raw `provider_usage` projection described above. The ledger enumerates every round from 1 through `latest_round`, and fingerprints cover the entire canonical round. Missing, extra, reordered, or modified evidence is invalid.
+Each evidence JSONL contains one round header followed by attempts in the exact physical order observed by the synchronous attempt journal. Joined memory-branch calls therefore precede their main call. `attempt_number` must be contiguous and every provider retry becomes an additional attempt; retries cannot be hidden behind a logical call. Each attempt seals `attempt_role` (`main` or `memory_branch`) and `logical_call`. A main logical call must have exactly one physical attempt; a branch logical call may have 1–N and every one is scored. The attempt usage object contains only the raw `provider_usage` projection described above. The ledger enumerates every round from 1 through `latest_round`, and fingerprints cover the entire canonical round. Missing, extra, reordered, or modified evidence is invalid.
 
 The round header also seals a random 128-bit `cache_partition_nonce`. The nonce is reserved before network activity and appears in the first system marker for every case in that run. It stays fixed across that case's warm calls, but changes for every new invocation even when case and round numbers are reused in a different output directory. This makes a required cold request distinguishable from every prior calibration run.
 
@@ -107,11 +111,11 @@ npm run benchmark:cache:online -- \
   --warm-calls 24
 ```
 
-The credential parser accepts only the six provider-specific `API_KEY`, `BASE_URL`, and `MODEL` variables defined by the runner. It is a non-shell format: no `export`, comments, substitutions, duplicate keys, unknown keys, or unsafe whitespace. On POSIX, the parent must be `0700`, the file `0600`, and both must be owned by the current user.
+The credential parser accepts only the six provider-specific `API_KEY`, `BASE_URL`, and `MODEL` variables defined by the runner. It is a non-shell format: no `export`, comments, substitutions, duplicate keys, unknown keys, or unsafe whitespace. On POSIX, the parent must be `0700`, the file `0600`, and both must be owned by the current user. The loader opens with `O_NOFOLLOW`, validates with `fstat`, and reads that same descriptor; replacing the path after validation cannot substitute different credentials.
 
 The runner disables model retries, uses provider-default reasoning, gives DeepSeek enough output budget to return visible text, and adds a case/round/reserved-run-nonce system marker. The marker isolates the required cold call from earlier calibration caches while remaining identical for all warm calls in that case and round. It contains no user or credential data.
 
-The runtime path must not exist before invocation. The CLI has no `--working-directory` option and rejects unknown arguments; callers cannot point the benchmark at their repository. It creates a private runtime root, skills directory, marker, and synthetic workspace beneath `--runtime-data-dir`, then runs the real session against that workspace. Every model-selected tool is denied before dispatch, so a tool call fails safety and exact-attempt gates without reading or changing the caller's repository. Use a different fresh runtime path for every provider round.
+The runtime path must not exist before invocation. The CLI has no `--working-directory` option and rejects unknown arguments; callers cannot point the benchmark at their repository. It creates a private runtime root, skills directory, marker, and synthetic workspace beneath `--runtime-data-dir`, then runs the real session against that workspace. The memory fixture is an isolated per-run `O_EXCL`/`O_NOFOLLOW` source held open for the round; the branch store reads that descriptor instead of scanning global or workspace logs. Its bytes, inode, path identity, directory identities, and content fingerprint are checked before and after every logical call and again before evidence sealing. Every model-selected non-memory tool is denied before dispatch, so a tool call fails safety and exact-attempt gates without reading or changing the caller's repository. Use a different fresh runtime path for every provider round.
 
 ### Online run reservation and incomplete runs
 
@@ -127,7 +131,7 @@ Failure, interruption, or process death leaves an unsealed reservation and any c
 
 The CLI fingerprints the executable `dist` tree, prompt assets, package manifest, and lockfile before dynamically loading the online runner. The runner recomputes and compares that pre-bound value before reserving or making a provider request, then recomputes it again before sealing. Symlinks are rejected. Rebuild before every run; changing any covered file changes the fingerprint and resets acceptance.
 
-`provider_instance_id` includes a short SHA-256-derived fingerprint of the normalized configured API base. The endpoint itself is never written to evidence, but switching a gateway or provider endpoint changes the manifest and therefore cannot silently continue the same provider cell or acceptance streak.
+`provider_instance_id` includes a 128-bit SHA-256-derived fingerprint of the normalized configured API base. The endpoint itself is never written to evidence, but switching a gateway or provider endpoint changes the manifest and therefore cannot silently continue the same provider cell or acceptance streak. A cache-partition nonce may appear only once in a ledger; duplicate nonces are rejected.
 
 Run each provider into its own evidence directory. Do not reuse calibration evidence for final acceptance. For a final acceptance candidate, every consecutive round for one provider must use the **same exact `--output-dir`**, so one manifest and append-only ledger bind rounds 1, 2, 3, and any later rounds. Only `--runtime-data-dir` changes to a new nonexistent directory for each round. Do not collect the three rounds in separate output directories and later combine them.
 

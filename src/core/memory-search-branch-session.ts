@@ -8,6 +8,7 @@ import {
   MemoryReadTurnTool,
   MemorySearchFinishPayload,
   MemorySearchTool,
+  fingerprintMemoryReadResult,
 } from '../tools/memory-branch-tools';
 import { SyntheticObservation, SyntheticObservationQueue } from './synthetic-observation';
 import { ObservationBranchDisposition, ObservationBranchSession } from './observation-branch-session';
@@ -22,10 +23,14 @@ export interface MemorySearchBranchSessionOptions {
   queue: SyntheticObservationQueue;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  cachePartitionKey?: string;
+  trustedSystemPrefix?: string;
+  memoryLogStore?: MemoryLogStore;
 }
 
 export class MemorySearchBranchSession extends ObservationBranchSession<MemorySearchFinishPayload> {
   private readonly store: MemoryLogStore;
+  private readonly verifiedRefDigests = new Map<string, string>();
 
   constructor(private readonly memoryOptions: MemorySearchBranchSessionOptions) {
     super({
@@ -36,15 +41,16 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       queue: memoryOptions.queue,
       signal: memoryOptions.signal,
       logEnabled: memoryOptions.logEnabled,
+      cachePartitionKey: memoryOptions.cachePartitionKey,
     });
-    this.store = new MemoryLogStore(memoryOptions.workingDirectory);
+    this.store = memoryOptions.memoryLogStore ?? new MemoryLogStore(memoryOptions.workingDirectory);
   }
 
   protected async buildInitialMessages(): Promise<Message[]> {
     return [
       {
         role: 'system',
-        content: buildMemorySearchSystemPrompt(),
+        content: buildMemorySearchSystemPrompt(this.memoryOptions.trustedSystemPrefix),
       },
       {
         role: 'user',
@@ -60,11 +66,15 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   protected buildTools(): Tool[] {
     return [
       new MemorySearchTool(this.store),
-      new MemoryReadTurnTool(this.store),
-      new MemoryNeighborsTool(this.store),
+      new MemoryReadTurnTool(this.store, result => {
+        this.verifiedRefDigests.set(result.ref, fingerprintMemoryReadResult(result));
+      }),
+      new MemoryNeighborsTool(this.store, result => {
+        this.verifiedRefDigests.set(result.ref, fingerprintMemoryReadResult(result));
+      }),
       new FinishMemorySearchTool(payload => {
         this.complete(payload);
-      }),
+      }, ref => this.verifiedRefDigests.has(ref)),
     ];
   }
 
@@ -100,6 +110,10 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         branchId: this.options.id,
         branchType: this.options.type,
         refs: payload.refs,
+        refDigests: Object.fromEntries(payload.refs.map(ref => [
+          ref,
+          this.verifiedRefDigests.get(ref)!,
+        ])),
       },
       formattedContent: JSON.stringify({
         source: 'memory',
@@ -110,8 +124,9 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   }
 }
 
-function buildMemorySearchSystemPrompt(): string {
+function buildMemorySearchSystemPrompt(trustedSystemPrefix?: string): string {
   return [
+    ...(trustedSystemPrefix ? [trustedSystemPrefix, ''] : []),
     '你是 MemorySearchBranchSession，一个后台运行的记忆检索 branch。',
     '你不会直接回复用户。你的唯一任务是为主 agent 检索、分析并总结相关的历史会话记忆。',
     '',
@@ -150,7 +165,6 @@ function buildMemorySearchSystemPrompt(): string {
     '工具结果约定：memory tools 都返回紧凑 JSON 字符串。你需要解析 JSON 后继续判断。',
     'canonical refs 可以手动调整：如果看到 ...#42，你可以读取 ...#41 或 ...#43 来查看相邻 episode。',
     '最终 summary 应该是给主 agent 使用的任务辅助记忆总结，优先用清晰自然的中文表达。',
-    '当前时间：' + new Date().toISOString(),
   ].join('\n');
 }
 
@@ -160,12 +174,50 @@ function buildMemorySearchUserInput(options: {
   hasMemoryRoots: boolean;
 }): string {
   const recentTurns = extractRecentCompletedTurns(options.recentMessages).slice(-2);
+  const clock = buildMemorySearchClockSnapshot(options.input);
   const payload = {
     current_user_input: contentToText(options.input),
     recent_completed_turns: recentTurns,
     memory_source_available: options.hasMemoryRoots,
+    ...clock,
   };
   return JSON.stringify(payload, null, 2);
+}
+
+export interface MemorySearchClockSnapshot {
+  current_time: string;
+  current_time_precision: 'day' | 'minute';
+  current_timezone: 'UTC';
+}
+
+/**
+ * Most memory lookups only need a stable calendar boundary. Relative-time
+ * requests retain minute precision so "刚才" / "last hour" searches do not
+ * lose capability while ordinary turns stop changing at millisecond cadence.
+ */
+export function buildMemorySearchClockSnapshot(
+  input: string | ContentBlock[],
+  now = new Date(),
+): MemorySearchClockSnapshot {
+  const text = contentToText(input);
+  if (hasRelativeTimeIntent(text)) {
+    const minute = new Date(now.getTime());
+    minute.setUTCSeconds(0, 0);
+    return {
+      current_time: minute.toISOString(),
+      current_time_precision: 'minute',
+      current_timezone: 'UTC',
+    };
+  }
+  return {
+    current_time: now.toISOString().slice(0, 10),
+    current_time_precision: 'day',
+    current_timezone: 'UTC',
+  };
+}
+
+function hasRelativeTimeIntent(text: string): boolean {
+  return /(?:刚才|刚刚|现在|今天|昨天|前天|今早|今天早上|今天上午|早些时候|(?:过去|最近|近)\s*(?:\d+|一|几|半)?\s*(?:秒|分钟|小时|天)|(?:\d+|一|几|半)\s*(?:秒|分钟|小时|天)前|截至|自从|\bnow\b|\btoday\b|\byesterday\b|\b(?:last|past)\s+(?:(?:\d+|a|an|few|couple(?:\s+of)?)\s*)?(?:seconds?|minutes?|hours?|days?)\b|\b(?:a|an|few|couple(?:\s+of)?|\d+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago\b|\bearlier(?:\s+this\s+(?:morning|afternoon|evening|day))?\b|\bthis\s+(?:morning|afternoon|evening)\b|\bsince\b|\brecently\b)/i.test(text);
 }
 
 interface RecentCompletedTurn {

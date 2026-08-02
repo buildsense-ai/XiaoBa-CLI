@@ -18,6 +18,7 @@ import {
 } from '../providers/request-preflight';
 import {
   planDeepSeekReasoningRecovery,
+  prepareDeepSeekSyntheticObservations,
   type ReasoningReplayRecoveryAction,
 } from '../providers/deepseek-reasoning-recovery';
 import type { OpenAIReasoningReplayMode } from './reasoning-effort';
@@ -259,7 +260,10 @@ export class AIService {
   }
 
   private prepareProviderRequest(messages: Message[]): ReturnType<typeof prepareProviderRequestMessages> {
-    const prepared = prepareProviderRequestMessages(messages);
+    const prepared = prepareProviderRequestMessages(prepareDeepSeekSyntheticObservations({
+      config: this.config,
+      messages,
+    }));
     if (prepared.summary) {
       Logger.warning(
         `Provider request preflight repaired message structure: issues=${prepared.summary.issueCodes.join(',')}`

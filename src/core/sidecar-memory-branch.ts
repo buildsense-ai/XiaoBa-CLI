@@ -3,6 +3,8 @@ import { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
 import { SyntheticObservationQueue } from './synthetic-observation';
 import { MemorySearchBranchSession } from './memory-search-branch-session';
+import type { ObservationBranchCompletion } from './observation-branch-session';
+import type { MemoryLogStore } from './memory-log-store';
 
 export interface MemorySidecarBranchOptions {
   sessionKey: string;
@@ -13,11 +15,15 @@ export interface MemorySidecarBranchOptions {
   queue: SyntheticObservationQueue;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  cachePartitionKey?: string;
+  trustedSystemPrefix?: string;
+  memoryLogStore?: MemoryLogStore;
 }
 
 export interface MemorySidecarBranchHandle {
+  branchId: string;
   cancel(): void;
-  done: Promise<void>;
+  done: Promise<ObservationBranchCompletion>;
 }
 
 export function startMemorySidecarBranch(options: MemorySidecarBranchOptions): MemorySidecarBranchHandle {
@@ -28,11 +34,22 @@ export function startMemorySidecarBranch(options: MemorySidecarBranchOptions): M
     signal,
   });
   const done = session.run().catch(error => {
-    if (isAbortError(error) || signal.aborted) return;
-    Logger.warning(`[${options.sessionKey}] memory branch failed: ${error.message}`);
+    if (!isAbortError(error) && !signal.aborted) {
+      Logger.warning(`[${options.sessionKey}] memory branch failed: ${error.message}`);
+    }
+    return {
+      branchId: session.branchId,
+      branchType: session.branchType,
+      status: signal.aborted || isAbortError(error) ? 'cancelled' as const : 'failed' as const,
+      toolNames: [],
+      ...(!signal.aborted && !isAbortError(error) ? {
+        errorCode: 'branch_execution_failed' as const,
+      } : {}),
+    };
   });
 
   return {
+    branchId: session.branchId,
     cancel: () => {
       controller.abort();
       session.stop();
