@@ -70,6 +70,15 @@ test('runner checkpoints only after a complete tool result and resumes the same 
       events.push('checkpoint');
       assert.ok(messages.some(message =>
         message.role === 'tool' && message.content === 'verified tool evidence'));
+      assert.ok(messages.some(message => (
+        message.role === 'assistant'
+        && message.tool_calls?.[0]?.id === 'call-1'
+        && message.__episodeId === 'episode-main'
+      )));
+      assert.deepEqual(messages.find(message => message.role === 'tool')?.__toolResultState, {
+        status: 'success',
+        retryable: false,
+      });
       return {
         messages: [{
           role: 'user',
@@ -209,4 +218,55 @@ test('runner preserves the original transcript and stops when checkpoint persist
   assert.ok(messages.some(message =>
     message.role === 'tool' && message.content === 'verified tool evidence'));
   assert.equal(messages.some(message => message.__checkpointSummary), false);
+});
+
+test('runner records failed retryable tool-result state for checkpoint semantics', async () => {
+  const modelRequests: Message[][] = [];
+  const aiService = {
+    chat: async (messages: Message[]) => {
+      modelRequests.push(messages.map(message => ({ ...message })));
+      return modelRequests.length === 1 ? {
+        content: null,
+        toolCalls: [{
+          id: 'retry-call',
+          type: 'function',
+          function: { name: 'inspect', arguments: '{}' },
+        }],
+        usage,
+      } : { content: 'retry may be attempted', toolCalls: [], usage };
+    },
+  } as any;
+  const executor: ToolExecutor = {
+    getToolDefinitions: () => [{
+      name: 'inspect',
+      description: 'inspect',
+      parameters: { type: 'object', properties: {} },
+    }],
+    executeTool: async (call: ToolCall): Promise<ToolResult> => ({
+      role: 'tool',
+      tool_call_id: call.id,
+      name: call.function.name,
+      content: 'temporary timeout',
+      ok: false,
+      errorCode: 'TEMPORARY_TIMEOUT',
+      retryable: true,
+    }),
+  };
+  const runner = new ConversationRunner(aiService, executor, {
+    stream: false,
+    episodeId: 'episode-retry-state',
+  });
+
+  await runner.run([{
+    role: 'user',
+    content: 'inspect status',
+    __episodeId: 'episode-retry-state',
+  }]);
+
+  const failedResult = modelRequests[1].find(message => message.role === 'tool');
+  assert.equal(failedResult?.__episodeId, 'episode-retry-state');
+  assert.deepEqual(failedResult?.__toolResultState, {
+    status: 'failure',
+    retryable: true,
+  });
 });

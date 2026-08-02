@@ -113,7 +113,7 @@ export class OpenAIProvider implements AIProvider {
     applyOpenAIReasoningOptions(body, {
       apiUrl: this.apiUrl,
       model: this.model,
-      reasoningEffort: this.reasoningEffort,
+      reasoningEffort: options?.reasoningEffortOverride ?? this.reasoningEffort,
     });
 
     if (tools && tools.length > 0) {
@@ -492,7 +492,7 @@ export class OpenAIProvider implements AIProvider {
     if (Number.isFinite(this.temperature)) body.temperature = this.temperature;
     if (responseTools.length > 0) body.tools = responseTools;
     body.include = ['reasoning.encrypted_content'];
-    this.applyResponsesReasoningOptions(body);
+    this.applyResponsesReasoningOptions(body, options?.reasoningEffortOverride);
     return body;
   }
 
@@ -672,8 +672,11 @@ export class OpenAIProvider implements AIProvider {
     ].includes(String(item.type || '')));
   }
 
-  private applyResponsesReasoningOptions(body: any): void {
-    const effort = this.reasoningEffort;
+  private applyResponsesReasoningOptions(
+    body: any,
+    reasoningEffortOverride?: ChatConfig['reasoningEffort'],
+  ): void {
+    const effort = reasoningEffortOverride ?? this.reasoningEffort;
     if (!effort || effort === 'default') return;
     if (!this.isOfficialOpenAIResponsesEndpoint() && !supportsReasoningSwitch({
       apiUrl: this.apiUrl,

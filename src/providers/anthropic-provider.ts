@@ -584,7 +584,7 @@ export class AnthropicProvider implements AIProvider {
     applyAnthropicReasoningOptions(params as any, {
       apiUrl: this.apiUrl,
       model: this.model,
-      reasoningEffort: this.reasoningEffort,
+      reasoningEffort: options?.reasoningEffortOverride ?? this.reasoningEffort,
     });
 
     // [CONTEXT_DEBUG] SDK 调用前：记录完整的请求参数
@@ -626,7 +626,7 @@ export class AnthropicProvider implements AIProvider {
     applyAnthropicReasoningOptions(params as any, {
       apiUrl: this.apiUrl,
       model: this.model,
-      reasoningEffort: this.reasoningEffort,
+      reasoningEffort: options?.reasoningEffortOverride ?? this.reasoningEffort,
     });
 
     try {

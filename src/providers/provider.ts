@@ -1,4 +1,4 @@
-import { Message, ChatResponse } from '../types';
+import { Message, ChatResponse, type ReasoningEffort } from '../types';
 import { ToolDefinition } from '../types/tool';
 import type { ProviderRequestPreflightSummary } from './request-preflight';
 import type { OpenAIReasoningReplayMode } from '../utils/reasoning-effort';
@@ -122,6 +122,8 @@ export interface AIRequestOptions {
   cachePartitionKey?: string;
   /** Internal one-attempt override used by evidence-driven DeepSeek recovery. */
   reasoningReplayMode?: OpenAIReasoningReplayMode;
+  /** Internal-call-only reasoning override; ordinary task inference keeps the configured capability. */
+  reasoningEffortOverride?: ReasoningEffort;
   /** Attempt observer; only an explicitly critical synchronous sink may abort before invocation. */
   modelAttemptSink?: ModelAttemptSink;
   modelAttemptContext?: ModelAttemptContext;

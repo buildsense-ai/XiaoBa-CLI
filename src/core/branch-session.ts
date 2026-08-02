@@ -7,6 +7,13 @@ import { PathResolver } from '../utils/path-resolver';
 import { Tool } from '../types/tool';
 import { AgentToolExecutor } from '../agents/agent-tool-executor';
 import { ConversationRunner, RunResult, RunnerCallbacks } from './conversation-runner';
+import { CheckpointCompactionCoordinator } from './checkpoint-compaction';
+import { resolveModelContextWindow } from '../utils/model-context-window';
+import {
+  continuationCheckpointPath,
+  persistContinuationCheckpoint,
+  removeContinuationCheckpoint,
+} from './continuation-checkpoint-store';
 
 export interface BranchSessionOptions {
   id: string;
@@ -76,27 +83,42 @@ export abstract class BranchSession {
         message_count: this.messages.length,
       });
     }
+    const sessionId = `branch:${this.options.type}:${this.options.id}`;
+    const episodeId = sessionId;
+    annotateBranchEpisode(this.messages, episodeId);
 
     const toolExecutor = new AgentToolExecutor(
       this.buildTools(),
       this.options.workingDirectory,
       {
-        sessionId: `branch:${this.options.type}:${this.options.id}`,
+        sessionId,
         surface: 'agent',
         permissionProfile: 'strict',
         abortSignal: this.abortController.signal,
       },
     );
+    const modelConfig = typeof (this.options.aiService as any).getConfig === 'function'
+      ? (this.options.aiService as any).getConfig()
+      : {};
+    const contextWindow = resolveModelContextWindow(modelConfig);
+    const checkpointCoordinator = new CheckpointCompactionCoordinator(
+      this.options.aiService,
+      { maxContextTokens: contextWindow.promptBudgetTokens },
+    );
+    const checkpointPath = continuationCheckpointPath(sessionId);
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
       stream: false,
-      enableCompression: true,
+      maxContextTokens: contextWindow.promptBudgetTokens,
+      episodeId,
+      checkpointCompactionCoordinator: checkpointCoordinator,
+      onCompactionCheckpoint: messages => persistContinuationCheckpoint(messages, checkpointPath),
       cachePartitionKey: this.options.cachePartitionKey,
       requestKind: this.options.type === 'memory'
         ? 'memory_branch_inference'
         : 'subagent_inference',
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
-        sessionId: `branch:${this.options.type}:${this.options.id}`,
+        sessionId,
         surface: 'agent',
         permissionProfile: 'strict',
         workingDirectory: this.options.workingDirectory,
@@ -133,6 +155,9 @@ export abstract class BranchSession {
       return { messages: this.messages, result };
     } finally {
       this.logger.write('transcript', { messages: this.messages });
+      await removeContinuationCheckpoint(checkpointPath).catch(error => {
+        Logger.warning(`[${sessionId}] continuation checkpoint cleanup failed: ${error.message}`);
+      });
     }
   }
 
@@ -149,6 +174,25 @@ export abstract class BranchSession {
     if (!this.isAbortError(error)) {
       Logger.warning(`[branch:${this.options.type}:${this.options.id}] failed: ${error?.message || error}`);
     }
+  }
+}
+
+function annotateBranchEpisode(messages: Message[], episodeId: string): void {
+  let rootAssigned = messages.some(message => (
+    message.__episodeId === episodeId && message.__episodeInputKind === 'root'
+  ));
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.role === 'system') continue;
+    const episodeInputKind = message.role === 'user' && !message.__episodeInputKind
+      ? (rootAssigned ? 'pending' as const : 'root' as const)
+      : message.__episodeInputKind;
+    if (episodeInputKind === 'root') rootAssigned = true;
+    messages[index] = {
+      ...message,
+      __episodeId: message.__episodeId || episodeId,
+      ...(episodeInputKind ? { __episodeInputKind: episodeInputKind } : {}),
+    };
   }
 }
 

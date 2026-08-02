@@ -19,6 +19,9 @@ import {
 import { annotateContextMessage } from './context-lifecycle';
 import { preserveAuthorizedDeviceContextWitness } from './authorized-device-witness';
 import { materializeCurrentDeviceAuthority } from './device-authority-state';
+import { CheckpointCompactionCoordinator } from './checkpoint-compaction';
+import { resolveModelContextWindow } from '../utils/model-context-window';
+import { persistContinuationCheckpoint } from './continuation-checkpoint-store';
 
 // ─── 类型定义 ───────────────────────────────────────────
 
@@ -246,6 +249,7 @@ export class SubAgentSession {
     );
     const delegatedSessionKey = delegatedToolContext.executionScope?.sessionKey
       || `subagent:${this.id}`;
+    const episodeId = `subagent:${this.id}`;
     const runtimeTargetRules = buildRuntimeTargetRulesMessage({
       sessionKey: delegatedSessionKey,
       sessionType: delegatedToolContext.surface,
@@ -288,12 +292,15 @@ export class SubAgentSession {
             arguments: JSON.stringify({ skill: this.options.skillName, args: '' }),
           },
         }],
+        __episodeId: episodeId,
       });
       this.messages.push({
         role: 'tool',
         content: SkillExecutor.execute(skill, invocationContext),
         tool_call_id: skillToolCallId,
         name: 'skill',
+        __toolResultState: { status: 'success', retryable: false },
+        __episodeId: episodeId,
       });
     }
 
@@ -311,7 +318,7 @@ export class SubAgentSession {
       localFileGrants: delegatedToolContext.localFileGrants,
     });
     if (runtimeContext) {
-      const annotated = annotateContextMessage(runtimeContext, {
+      const annotated = annotateContextMessage({ ...runtimeContext, __episodeId: episodeId }, {
         source: 'runtime_context',
         lifecycle: 'episode',
         cacheScope: 'epoch',
@@ -322,7 +329,12 @@ export class SubAgentSession {
     }
 
     // 3. 注入用户消息
-    this.messages.push({ role: 'user', content: this.options.userMessage });
+    this.messages.push({
+      role: 'user',
+      content: this.options.userMessage,
+      __episodeId: episodeId,
+      __episodeInputKind: 'root',
+    });
 
     // 4. 创建独立的 ToolManager
     const toolManager = new ToolManager(this.options.workingDirectory, {
@@ -334,11 +346,26 @@ export class SubAgentSession {
       enabledToolNames: this.allowedTools,
     });
 
+    const modelConfig = typeof (this.aiService as any).getConfig === 'function'
+      ? (this.aiService as any).getConfig()
+      : {};
+    const contextWindow = resolveModelContextWindow(modelConfig);
+    const checkpointCoordinator = new CheckpointCompactionCoordinator(this.aiService, {
+      maxContextTokens: contextWindow.promptBudgetTokens,
+    });
+    const checkpointPath = path.join(
+      this.temporaryDirectory,
+      '.xiaoba-continuation-checkpoint.json',
+    );
+
     // 创建独立的 ConversationRunner（不注入 channel，子智能体不直接和用户通信）
     const runner = new ConversationRunner(this.aiService, toolManager, {
       maxTurns: this.options.maxTurns,
       requestKind: 'subagent_inference',
-      enableCompression: true,
+      maxContextTokens: contextWindow.promptBudgetTokens,
+      episodeId,
+      checkpointCompactionCoordinator: checkpointCoordinator,
+      onCompactionCheckpoint: messages => persistContinuationCheckpoint(messages, checkpointPath),
       shouldContinue: () => !this.stopped,
       toolExecutionContext: {
         ...delegatedToolContext,
