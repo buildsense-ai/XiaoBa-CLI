@@ -15,6 +15,7 @@ import {
   fingerprintCanonical,
   fingerprintManifest,
   fingerprintRoundEvidence,
+  parseLedgerJson,
   parseManifestJson,
   parseRoundJsonl,
   renderCacheBenchmarkResult,
@@ -41,10 +42,17 @@ describe('cache benchmark evidence scorer', () => {
     assert.equal(result.status, 'passed');
     assert.equal(result.exit_code, 0);
     assert.deepEqual(result.qualifying_rounds, [1, 2, 3]);
-    assert.equal(result.rounds[0].cells[0].input_tokens, 2000);
-    assert.equal(result.rounds[0].cells[0].cache_read_tokens, 1880);
+    assert.equal(result.rounds[0].cells[0].qualification_cache_class, 'warm');
+    assert.equal(result.rounds[0].cells[0].input_tokens, 1000);
+    assert.equal(result.rounds[0].cells[0].cache_read_tokens, 940);
     assert.equal(result.rounds[0].cells[0].raw_read_ratio, 0.94);
     assert.equal(result.rounds[0].cells[0].capped_task_ratio, 0.94);
+    assert.equal(result.rounds[0].cells[0].cold_input_tokens, 1000);
+    assert.equal(result.rounds[0].cells[0].cold_cache_read_tokens, 940);
+    assert.equal(result.rounds[0].cells[0].cold_read_ratio, 0.94);
+    assert.equal(result.rounds[0].cells[0].all_input_tokens, 2000);
+    assert.equal(result.rounds[0].cells[0].all_cache_read_tokens, 1880);
+    assert.equal(result.rounds[0].cells[0].all_read_ratio, 0.94);
   });
 
   test('passes the exact 94% water-filled boundary across many uneven tasks', () => {
@@ -98,7 +106,55 @@ describe('cache benchmark evidence scorer', () => {
     assert.equal(result.rounds[0].cells[0].cache_read_tokens, 0);
   });
 
-  test('treats a missing provider cache-read value as unobservable', () => {
+  test('keeps cold usage observable as diagnostics but qualifies on warm attempts only', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
+      if (attempt.cache_class === 'cold') setProviderUsage(attempt, 250, 0);
+    }));
+    const result = scoreRounds(manifest, rounds);
+    const cell = result.rounds[0].cells[0];
+
+    assert.equal(result.status, 'passed');
+    assert.equal(cell.qualification_cache_class, 'warm');
+    assert.equal(cell.raw_read_ratio, 0.94);
+    assert.equal(cell.cold_input_tokens, 1000);
+    assert.equal(cell.cold_cache_read_tokens, 0);
+    assert.equal(cell.cold_read_ratio, 0);
+    assert.equal(cell.all_read_ratio, 0.47);
+  });
+
+  test('does not let a cache-hot cold diagnostic rescue warm evidence below 94%', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
+      setProviderUsage(attempt, 250, attempt.cache_class === 'cold' ? 250 : 234);
+    }));
+    const result = scoreRounds(manifest, rounds);
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.rounds[0].cells[0].cold_read_ratio, 1);
+    assert.equal(result.rounds[0].cells[0].raw_read_ratio, 0.936);
+    assert.ok(result.reasons.includes('minimum_read_ratio_not_met'));
+  });
+
+  test('retains valid provider usage from failed physical attempts in diagnostics only', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+    rounds[2].attempts[1].outcome = 'failed';
+    setProviderUsage(rounds[2].attempts[1], 300, 120);
+    const result = scoreRounds(manifest, rounds);
+    const cell = result.rounds[2].cells[0];
+
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('non_succeeded_attempt'));
+    assert.equal(cell.input_tokens, 750);
+    assert.equal(cell.cache_read_tokens, 705);
+    assert.equal(cell.cold_input_tokens, 1000);
+    assert.equal(cell.cold_cache_read_tokens, 940);
+    assert.equal(cell.all_input_tokens, 2050);
+    assert.equal(cell.all_cache_read_tokens, 1765);
+  });
+
+  test('keeps a missing cold provider cache-read value unobservable', () => {
     const manifest = fixtureManifest();
     const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
     setProviderUsage(rounds[2].attempts[0], 250, undefined);
@@ -222,13 +278,76 @@ describe('cache benchmark evidence scorer', () => {
         extra.attempt_number = evidence.attempts.length + 1;
         evidence.attempts.push(extra);
       }
+      const branchAttempts = evidence.attempts
+        .filter(attempt => attempt.case_id === manifest.cases[2].case_id)
+        .sort((left, right) => left.logical_call - right.logical_call);
+      evidence.attempts = [
+        ...evidence.attempts.filter(attempt => attempt.case_id !== manifest.cases[2].case_id),
+        ...branchAttempts,
+      ];
+      evidence.attempts.forEach((attempt, index) => { attempt.attempt_number = index + 1; });
     }
     const result = scoreRounds(manifest, rounds);
 
     assert.equal(result.status, 'passed');
-    assert.equal(result.rounds[0].cells[0].input_tokens, 2750);
-    assert.equal(result.rounds[0].cells[0].cache_read_tokens, 2585);
+    assert.equal(result.rounds[0].cells[0].input_tokens, 1500);
+    assert.equal(result.rounds[0].cells[0].cache_read_tokens, 1410);
     assert.equal(result.rounds[0].cells[0].raw_read_ratio, 0.94);
+    assert.equal(result.rounds[0].cells[0].cold_input_tokens, 1250);
+    assert.equal(result.rounds[0].cells[0].cold_cache_read_tokens, 1175);
+  });
+
+  test('invalidates joined memory-branch evidence recorded after its main attempt', () => {
+    const manifest = fixtureManifest();
+    manifest.cases[1].task_id = manifest.cases[0].task_id;
+    manifest.cases[1].execution_role = 'memory_branch';
+    manifest.cases[1].runs[0].run_id = manifest.cases[0].runs[0].run_id;
+    const result = scoreRounds(manifest, [1, 2, 3].map(round => buildRound(manifest, round)));
+
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('attempt_order_mismatch'));
+  });
+
+  test('accepts multiple paired runs without comparing one run branch to another run main', () => {
+    const manifest = fixtureManifest();
+    const main = manifest.cases[0];
+    const branch = manifest.cases[1];
+    branch.task_id = main.task_id;
+    branch.execution_role = 'memory_branch';
+    branch.runs[0].run_id = main.runs[0].run_id;
+    main.runs.push({ ...main.runs[0], run_id: 'run-1-second' });
+    branch.runs.push({ ...branch.runs[0], run_id: 'run-1-second' });
+    const rounds = [1, 2, 3].map(roundNumber => {
+      const round = buildRound(manifest, roundNumber);
+      const paired = round.attempts.filter(attempt => attempt.metadata.task_id === main.task_id);
+      const other = round.attempts.filter(attempt => attempt.metadata.task_id !== main.task_id);
+      paired.sort((left, right) => (
+        left.run_id.localeCompare(right.run_id)
+        || left.logical_call - right.logical_call
+        || (left.attempt_role === right.attempt_role ? 0 : left.attempt_role === 'memory_branch' ? -1 : 1)
+      ));
+      round.attempts = [...paired, ...other];
+      round.attempts.forEach((attempt, index) => { attempt.attempt_number = index + 1; });
+      return round;
+    });
+    const result = scoreRounds(manifest, rounds);
+
+    assert.equal(result.rounds[0].reasons.includes('attempt_order_mismatch'), false);
+  });
+
+  test('invalidates a warm logical call recorded before its cold call', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(roundNumber => {
+      const round = buildRound(manifest, roundNumber);
+      [round.attempts[0], round.attempts[1]] = [round.attempts[1], round.attempts[0]];
+      round.attempts[0].attempt_number = 1;
+      round.attempts[1].attempt_number = 2;
+      return round;
+    });
+    const result = scoreRounds(manifest, rounds);
+
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('attempt_order_mismatch'));
   });
 
   test('rejects cache-cold evidence that reuses a prior round nonce', () => {
@@ -532,6 +651,40 @@ describe('cache benchmark evidence scorer', () => {
     ));
   });
 
+  test('rejects all v4 evidence schemas and any attempt to include cold usage in the primary ratio', () => {
+    const legacy = structuredClone(fixtureManifest()) as any;
+    legacy.schema = 'xiaoba.cache_benchmark_manifest.v4';
+    assert.throws(() => parseManifestJson(JSON.stringify(legacy)));
+
+    const coldIncluded = structuredClone(fixtureManifest()) as any;
+    coldIncluded.criteria.include_cold_in_primary_ratio = true;
+    assert.throws(() => parseManifestJson(JSON.stringify(coldIncluded)));
+
+    const round = buildRound(fixtureManifest(), 1);
+    const legacyRound = structuredClone(round) as any;
+    legacyRound.header.schema = 'xiaoba.cache_benchmark_round.v4';
+    assert.throws(() => parseRoundJsonl(roundToJsonl(legacyRound)));
+
+    const legacyAttempt = structuredClone(round) as any;
+    legacyAttempt.attempts[0].schema = 'xiaoba.cache_benchmark_attempt.v4';
+    assert.throws(() => parseRoundJsonl(roundToJsonl(legacyAttempt)));
+
+    const legacyLedger = structuredClone(buildLedger(fixtureManifest(), [round])) as any;
+    legacyLedger.schema = 'xiaoba.cache_benchmark_ledger.v4';
+    assert.throws(() => parseLedgerJson(JSON.stringify(legacyLedger)));
+  });
+
+  test('renders warm qualification and cold diagnostics without ambiguity', () => {
+    const manifest = fixtureManifest();
+    const result = scoreRounds(manifest, [1, 2, 3].map(round => buildRound(manifest, round)));
+    const report = renderCacheBenchmarkResult(result, 'text');
+
+    assert.match(report, /qualification_cache_class=warm/);
+    assert.match(report, /input_tokens=1000 cache_read_tokens=940/);
+    assert.match(report, /cold_input_tokens=1000 cold_cache_read_tokens=940 cold_read_ratio=0\.940000/);
+    assert.match(report, /all_input_tokens=2000 all_cache_read_tokens=1880 all_read_ratio=0\.940000/);
+  });
+
   test('accepts namespaced model IDs but rejects endpoint-shaped provider identities', () => {
     const manifest = fixtureManifest();
     manifest.cases[0].model = 'vendor/model-a';
@@ -610,7 +763,7 @@ describe('cache benchmark CLI safety', () => {
     assert.equal(passing.stdout.includes(directory), false);
 
     const failingRounds = [1, 2, 3].map(round => buildRound(manifest, round));
-    setProviderUsage(failingRounds[2].attempts[0], 250, 234);
+    setProviderUsage(failingRounds[2].attempts[1], 250, 234);
     const failingPaths = writeRoundFiles(directory, failingRounds, 'fail');
     const failingLedgerPath = writeLedger(directory, manifest, failingRounds, 'fail');
     const failing = spawnCli(manifestPath, failingLedgerPath, failingPaths);
@@ -726,7 +879,7 @@ function buildRound(
     for (const run of entry.runs) {
       for (const cacheClass of ['cold', 'warm'] as const) {
         const attempt: CacheBenchmarkAttempt = {
-          schema: 'xiaoba.cache_benchmark_attempt.v4',
+          schema: 'xiaoba.cache_benchmark_attempt.v5',
           suite_id: manifest.suite_id,
           round,
           attempt_number: attempts.length + 1,
@@ -779,7 +932,7 @@ function buildRound(
   }
   return {
     header: {
-      schema: 'xiaoba.cache_benchmark_round.v4',
+      schema: 'xiaoba.cache_benchmark_round.v5',
       suite_id: manifest.suite_id,
       round,
       cache_partition_nonce: round.toString(16).padStart(32, '0'),
@@ -807,7 +960,7 @@ function buildLedger(
 ): CacheBenchmarkLedger {
   const ordered = [...rounds].sort((left, right) => left.header.round - right.header.round);
   return {
-    schema: 'xiaoba.cache_benchmark_ledger.v4',
+    schema: 'xiaoba.cache_benchmark_ledger.v5',
     suite_id: manifest.suite_id,
     latest_round: ordered[ordered.length - 1]?.header.round ?? 1,
     rounds: ordered.map(round => ({

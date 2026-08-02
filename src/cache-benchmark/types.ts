@@ -1,10 +1,10 @@
 import type { ProviderReportedUsage } from '../types';
 
-export const CACHE_BENCHMARK_MANIFEST_SCHEMA = 'xiaoba.cache_benchmark_manifest.v4' as const;
-export const CACHE_BENCHMARK_LEDGER_SCHEMA = 'xiaoba.cache_benchmark_ledger.v4' as const;
-export const CACHE_BENCHMARK_ROUND_SCHEMA = 'xiaoba.cache_benchmark_round.v4' as const;
-export const CACHE_BENCHMARK_ATTEMPT_SCHEMA = 'xiaoba.cache_benchmark_attempt.v4' as const;
-export const CACHE_BENCHMARK_RESULT_SCHEMA = 'xiaoba.cache_benchmark_result.v4' as const;
+export const CACHE_BENCHMARK_MANIFEST_SCHEMA = 'xiaoba.cache_benchmark_manifest.v5' as const;
+export const CACHE_BENCHMARK_LEDGER_SCHEMA = 'xiaoba.cache_benchmark_ledger.v5' as const;
+export const CACHE_BENCHMARK_ROUND_SCHEMA = 'xiaoba.cache_benchmark_round.v5' as const;
+export const CACHE_BENCHMARK_ATTEMPT_SCHEMA = 'xiaoba.cache_benchmark_attempt.v5' as const;
+export const CACHE_BENCHMARK_RESULT_SCHEMA = 'xiaoba.cache_benchmark_result.v5' as const;
 
 export const CACHE_READ_SOURCES = [
   'openai.input_tokens_details.cached_tokens',
@@ -152,6 +152,7 @@ export type BenchmarkReason =
   | 'schema_invalid'
   | 'duplicate_round'
   | 'duplicate_attempt'
+  | 'attempt_order_mismatch'
   | 'unexpected_attempt_count'
   | 'unknown_case_or_run'
   | 'metadata_mismatch'
@@ -191,11 +192,18 @@ export type CacheBenchmarkLedgerReason =
 export interface CacheBenchmarkCellResult {
   cell_fingerprint: string;
   status: BenchmarkStatus;
+  qualification_cache_class: 'warm';
   input_tokens: number;
   cache_read_tokens: number;
   raw_read_ratio: number | null;
   capped_task_ratio: number | null;
   positive_task_count: number;
+  cold_input_tokens: number;
+  cold_cache_read_tokens: number;
+  cold_read_ratio: number | null;
+  all_input_tokens: number;
+  all_cache_read_tokens: number;
+  all_read_ratio: number | null;
   reasons: BenchmarkReason[];
 }
 
