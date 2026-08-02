@@ -171,18 +171,21 @@ function parseCriteria(value: unknown): CacheBenchmarkCriteria {
     'consecutive_rounds',
     'maximum_task_weight',
     'include_cold_in_primary_ratio',
+    'qualification_traffic_class',
   ]);
   if (
     record.minimum_read_ratio !== 0.94
     || record.consecutive_rounds !== 3
     || record.maximum_task_weight !== 0.25
     || record.include_cold_in_primary_ratio !== false
+    || record.qualification_traffic_class !== 'primary'
   ) invalid();
   return {
     minimum_read_ratio: 0.94,
     consecutive_rounds: 3,
     maximum_task_weight: 0.25,
     include_cold_in_primary_ratio: false,
+    qualification_traffic_class: 'primary',
   };
 }
 

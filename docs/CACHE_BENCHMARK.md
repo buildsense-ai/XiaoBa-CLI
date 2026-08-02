@@ -12,7 +12,7 @@ Calibration runs diagnose the implementation. Acceptance requires the complete c
 The current online runner exercises the real typed Goal and Memory Branch paths. Every manifest it produces is explicitly sealed with `benchmark_profile: "calibration"`; even three 100% rounds remain `calibration_only` and cannot become a final pass. A later acceptance profile must satisfy the representative-workload requirements below.
 
 - Goal state is updated through `GoalRuntime`, persisted with the session, restored, and attested only from typed `goal_status` provenance.
-- Every workload runs the real Memory Branch and records every physical branch-provider attempt. One memory-only task must search, successfully read, publish an exact canonical ref backed by a branch-local content receipt, and link that observation into the main request. The other three tasks must suppress redundant memory when no authorized record is relevant.
+- Every workload runs the real Memory Branch and records every physical branch-provider attempt. One memory-only task must search, successfully read, publish an exact canonical ref backed by a branch-local content receipt, and link that observation into the main request. The other three tasks must suppress redundant memory when no authorized record is relevant. Branch usage remains observable and fail-closed, but its cache ratio does not qualify the primary model.
 - The joined branch mode is intentional for deterministic capability correlation. Final product-performance evidence must also exercise the production-default detached/concurrent path and late-observation behavior.
 - Repeating one fixed fixture is useful for diagnosing cache admission and prefix drift, but it is not a claim about real-task averages. Final evidence must add changing dynamic tails and a real project-task corpus.
 
@@ -27,19 +27,20 @@ The latest three consecutive rounds must pass every independent provider cell fo
 - `model`
 - `api_type`
 - `surface`
+- `traffic_class` (`primary` or `auxiliary_memory`)
 
-Each round has two token-weighted qualification gates over warm attempts only:
+Only `primary` cells qualify the cache target. Each round has two token-weighted qualification gates over their warm attempts:
 
 1. `sum(cache_read_tokens) / sum(input_tokens) >= 0.94`.
 2. The same ratio after task weights are water-filled so no task contributes more than 25% is at least `0.94`.
 
-At least four tasks must have positive input weight in each cell. `cache_write_tokens` is diagnostic only. A failed, retried, incomplete, unobservable, quality-failing, safety-failing, or capability-incomplete attempt invalidates the round. Artifact drift resets the streak, and the scorer never selects a more favorable historical trio.
+At least four tasks must have positive input weight in each primary cell. An `auxiliary_memory` cell reports its actual warm/cold/all token totals and raw ratio, but it has neither a 94% threshold nor a task-cap threshold. `cache_write_tokens` is diagnostic only. In both traffic classes, a failed, retried, incomplete, unobservable, quality-failing, safety-failing, or capability-incomplete attempt invalidates the round. Artifact drift resets the streak, and the scorer never selects a more favorable historical trio.
 
 The required cold call is not discarded or treated as a free calibration failure. Its valid provider-reported input and cache-read tokens are retained as `cold_*` diagnostics; `all_*` fields retain valid observable usage from all cold and warm physical attempts, including failed attempts that still report usage. Every cold physical attempt must pass the same usage observability, quality, safety, capability, metadata, and stable-prefix checks as a warm attempt. Cold usage is excluded only from the two 94% qualification ratios because a deliberately partitioned first request measures admission rather than reusable-prefix performance.
 
 ## Capability, quality, and safety gates
 
-The manifest as a whole must cover all fixed capabilities, and every physical provider request must attest the capabilities declared by its own case:
+Primary scopes must cover all fixed capabilities, and every physical provider request in either traffic class must attest the capabilities declared by its own case:
 
 - `identity`
 - `group-chat-participants`
@@ -63,13 +64,13 @@ The online runner derives this attestation from the actual request observed at t
 
 Stable-prefix drift within a case/run/round is invalid. Internal lifecycle IDs are excluded from the provider-visible fingerprint, but model-visible content and cache placement remain covered.
 
-The online workload uses four deterministic common tasks: repository orientation, test triage, destructive-action review, and next-step planning. It creates and restores a real session, installs a real read-only skill fixture, supplies trusted group identity and a scoped device grant, exposes actual tools, creates a typed Goal, plan, and active subagent, and injects runtime feedback. Each task has a paired Memory Branch case, so the manifest contains four main cases and four branch cases. Main calls must have exactly one physical provider attempt; a branch logical call may have one or more physical attempts, all of which remain in token-weighted scoring.
+The online workload uses four deterministic common tasks: repository orientation, test triage, destructive-action review, and next-step planning. It creates and restores a real session, installs a real read-only skill fixture, supplies trusted group identity and a scoped device grant, exposes actual tools, creates a typed Goal, plan, and active subagent, and injects runtime feedback. Each task has a paired Memory Branch case, so the manifest contains four main cases and four branch cases. Each current main logical call must contain exactly one physical provider attempt. A branch logical call may contain multiple physical attempts for its tool loop; every attempt remains ordered, observable, and token-accounted. Future primary tool loops require a sealed continuation contract before this exact-one rule can be relaxed without permitting ratio padding.
 
 The destructive-action task is deliberately memory-only: its restored transcript contains an opaque action record ID, while the prior classification and exact decision token exist only in one authorized historical ref. The branch must publish that exact ref and the linked main call must use the observation. A finish payload cannot invent provenance: every published ref must have a branch-local receipt from a successful `memory_read_turn` or `memory_neighbors` result, and the benchmark requires the expected SHA-256 of the model-visible read result. The other three tasks have no relevant authorized memory and must finish with `inject:false`; suppressed branches prove that the sidecar ran without granting a fake `memory` capability to the main request.
 
 ## Provider usage contracts
 
-Version 5 evidence does not accept collector-supplied normalized `input_tokens`, `cache_read_tokens`, or `cache_read_source` fields. Each attempt seals `usage.provider_usage`, an allowlisted projection of the exact numeric fields returned by the provider. The offline scorer selects the contract, derives normalized input/read counts, and verifies that the derived source matches the manifest:
+Version 6 evidence does not accept collector-supplied normalized `input_tokens`, `cache_read_tokens`, or `cache_read_source` fields. Each attempt seals `usage.provider_usage`, an allowlisted projection of the exact numeric fields returned by the provider. The offline scorer selects the contract, derives normalized input/read counts, and verifies that the derived source matches the manifest:
 
 | Raw usage contract | Allowed provider fields | Scorer input | Scorer cache read and exact source |
 | --- | --- | --- | --- |
@@ -82,19 +83,19 @@ Fields from another contract and unknown fields are rejected. All present usage 
 
 ## Evidence schemas
 
-The strict v5 schemas are:
+The strict v6 schemas are:
 
-- `xiaoba.cache_benchmark_manifest.v5`
-- `xiaoba.cache_benchmark_round.v5`
-- `xiaoba.cache_benchmark_attempt.v5`
-- `xiaoba.cache_benchmark_ledger.v5`
-- `xiaoba.cache_benchmark_result.v5`
+- `xiaoba.cache_benchmark_manifest.v6`
+- `xiaoba.cache_benchmark_round.v6`
+- `xiaoba.cache_benchmark_attempt.v6`
+- `xiaoba.cache_benchmark_ledger.v6`
+- `xiaoba.cache_benchmark_result.v6`
 
-Unknown or missing fields are rejected. The manifest fixes the acceptance criteria at `0.94`, three consecutive rounds, a 25% maximum task weight, and warm-only qualification (`include_cold_in_primary_ratio` must be `false`). It also fixes exact cold/warm call counts, task fixtures, oracle contracts, execution plans, capability coverage, and provider usage sources.
+Unknown or missing fields are rejected. The manifest fixes the acceptance criteria at `0.94`, three consecutive rounds, a 25% maximum task weight, warm-only qualification (`include_cold_in_primary_ratio` must be `false`), and `qualification_traffic_class: "primary"`. Main attempts derive the `primary` class and Memory Branch attempts derive `auxiliary_memory`; only primary cache ratios qualify, while auxiliary usage observability, completion, quality, safety, capability, and provenance gates remain mandatory. It also fixes exact cold/warm call counts, task fixtures, oracle contracts, execution plans, capability coverage, and provider usage sources.
 
 Online manifests additionally seal `benchmark_profile` and a provider-neutral `workload_contract_fingerprint`. The config fingerprint covers both values as well as the fixed scoring criteria. Legacy offline fixtures may omit the pair, but final multi-provider acceptance rejects any manifest that is not explicitly `acceptance`.
 
-Each evidence JSONL contains one round header followed by attempts in the exact physical order observed by the synchronous attempt journal. Within a case/run, logical calls must remain monotonic from cold to warm. A joined memory-branch call sharing the same task, cell, run ID, and logical call must precede its main call. `attempt_number` must be contiguous and every provider retry becomes an additional attempt; retries cannot be hidden behind a logical call. Each attempt seals `attempt_role` (`main` or `memory_branch`) and `logical_call`. A main logical call must have exactly one physical attempt; a branch logical call may have 1–N and every one is scored. The attempt usage object contains only the raw `provider_usage` projection described above. The ledger enumerates every round from 1 through `latest_round`, and fingerprints cover the entire canonical round. Missing, extra, reordered, or modified evidence is invalid.
+Each evidence JSONL contains one round header followed by attempts in the exact physical order observed by the synchronous attempt journal. Within a case/run, logical calls must remain monotonic from cold to warm. A joined memory-branch call sharing the same task, run ID, and logical call must precede its main call even when the branch uses a different provider/model. `attempt_number` must be contiguous and every provider retry or branch tool-loop continuation becomes an additional attempt; physical attempts cannot be hidden behind a logical call. Each attempt seals `attempt_role` (`main` or `memory_branch`) and `logical_call`. The manifest fixes the exact number and cache class of logical calls; every main logical call has exactly one physical attempt, while a declared branch logical call may have one or more fully recorded attempts. The attempt usage object contains only the raw `provider_usage` projection described above. The ledger enumerates every round from 1 through `latest_round`, and fingerprints cover the entire canonical round. Missing logical calls, undeclared logical calls, primary call padding, reordered attempts, or modified evidence are invalid.
 
 The round header also seals a random 128-bit `cache_partition_nonce`. The nonce is reserved before network activity and appears in the first system marker for every case in that run. It stays fixed across that case's warm calls, but changes for every new invocation even when case and round numbers are reused in a different output directory. This makes a required cold request distinguishable from every prior calibration run.
 
@@ -176,4 +177,4 @@ npm run benchmark:cache:acceptance -- \
 
 The aggregator takes the same exclusive `.online-run.lock` used by the writer while loading each provider snapshot. It rejects an active writer, missing or extra round/reservation files, and any reservation that is not exactly one `started` record followed by a matching `sealed` record whose suite, nonce, artifact, manifest, config, and evidence fingerprints bind the sealed round and ledger.
 
-It then runs the strict scorer itself and requires exactly NewCLI Responses plus DeepSeek Chat Completions, explicit `acceptance` profiles, at least 24 warm logical calls per case, three passing qualifying rounds per provider, and one identical executable artifact fingerprint across both provider streaks. That artifact fingerprint covers compiled code, prompts, package manifests and lockfile, every installed `node_modules` file and in-tree symlink target, and the actual Node/V8/OpenSSL/platform/architecture runtime contract. A repository-external `node_modules` root is allowed only because its resolved bytes are scanned; dependency symlinks that escape that resolved tree fail closed. The fingerprint is recomputed before execution and after the round to detect drift. The provider-neutral workload fingerprint is recomputed from the concrete task fixture, oracle, execution plan, scenario, role, capability, surface, and run contract of every case; a self-declared hash cannot conceal different workloads. Missing/duplicate or disguised providers, calibration evidence, insufficient samples, malformed evidence, or mismatched workload/artifact identities fail closed. A valid but observable provider result that simply misses the ratio remains an ordinary failed acceptance (exit 1), not invalid evidence.
+It then runs the strict scorer itself and requires exactly NewCLI Responses plus DeepSeek Chat Completions for the primary traffic, explicit `acceptance` profiles, at least 24 warm logical calls per primary case, three passing qualifying rounds per provider, and one identical executable artifact fingerprint across both provider streaks. Acceptance also recomputes a versioned official topology fingerprint over task fixtures, oracle/execution plans, scenario, surface, role, declared capabilities, and run identity. Provider fields and warm sample counts are deliberately excluded from that topology fingerprint, then validated separately. Every provider-visible `case_id` must additionally equal the official provider/task/role identity, so a renamed or padded stable partition marker also fails. The current joined topology requires each task's main and branch cases to declare identical run IDs and cold/warm logical-call counts; a separate small branch provider is allowed, but undersampling or running it after the paired main call is not. Relabeling a cache-hostile main case as auxiliary therefore fails even if every ordinary manifest/workload fingerprint is recomputed. A future asynchronous/sampled Memory Branch must introduce a new versioned topology and explicit link schedule rather than silently weakening this joined contract. That artifact fingerprint covers compiled code, prompts, package manifests and lockfile, every installed `node_modules` file and in-tree symlink target, and the actual Node/V8/OpenSSL/platform/architecture runtime contract. A repository-external `node_modules` root is allowed only because its resolved bytes are scanned; dependency symlinks that escape that resolved tree fail closed. The fingerprint is recomputed before execution and after the round to detect drift. The provider-neutral workload fingerprint is recomputed from the concrete task fixture, oracle, execution plan, scenario, role, capability, surface, and run contract of every case; a self-declared hash cannot conceal different workloads. Missing/duplicate or disguised primary providers, calibration evidence, insufficient primary samples, topology drift, malformed evidence, or mismatched workload/artifact identities fail closed. A valid but observable primary result that simply misses the ratio remains an ordinary failed acceptance (exit 1), not invalid evidence.

@@ -1,4 +1,5 @@
 import {
+  fingerprintBenchmarkAcceptanceTopology,
   fingerprintBenchmarkWorkloadContract,
   fingerprintConfig,
   fingerprintManifest,
@@ -9,6 +10,8 @@ import type { CacheBenchmarkManifest, CacheBenchmarkResult } from './types';
 export const CACHE_BENCHMARK_ACCEPTANCE_SCHEMA = 'xiaoba.cache_benchmark_acceptance.v1' as const;
 export const REQUIRED_ACCEPTANCE_PROVIDERS = ['newcli', 'deepseek'] as const;
 export const MINIMUM_ACCEPTANCE_WARM_CALLS = 24;
+export const REQUIRED_ACCEPTANCE_TOPOLOGY_FINGERPRINT =
+  'sha256:fea44796d4b4b4b7f2373fb572f80688c1fbb25232d350621cdbe2febb9cb500' as const;
 
 export type AcceptanceProviderAlias = typeof REQUIRED_ACCEPTANCE_PROVIDERS[number];
 export type CacheBenchmarkAcceptanceReason =
@@ -21,6 +24,7 @@ export type CacheBenchmarkAcceptanceReason =
   | 'insufficient_warm_calls'
   | 'provider_not_passed'
   | 'qualifying_rounds_invalid'
+  | 'workload_topology_mismatch'
   | 'workload_contract_invalid'
   | 'workload_contract_mismatch'
   | 'config_fingerprint_mismatch'
@@ -92,14 +96,22 @@ export function aggregateCacheBenchmarkAcceptance(
       reasons.add('provider_identity_mismatch');
     }
     const actualWorkloadFingerprint = fingerprintBenchmarkWorkloadContract(manifest.cases);
+    const actualTopologyFingerprint = fingerprintBenchmarkAcceptanceTopology(manifest.cases);
     if (manifest.benchmark_profile !== 'acceptance' || !manifest.workload_contract_fingerprint) {
       reasons.add('profile_not_acceptance');
     }
     if (manifest.workload_contract_fingerprint !== actualWorkloadFingerprint) {
       reasons.add('workload_contract_invalid');
     }
+    if (
+      actualTopologyFingerprint !== REQUIRED_ACCEPTANCE_TOPOLOGY_FINGERPRINT
+      || !officialCaseIdentitiesMatch(provider, manifest)
+      || !officialJoinedScheduleMatches(manifest)
+    ) {
+      reasons.add('workload_topology_mismatch');
+    }
     workloadFingerprints.add(actualWorkloadFingerprint);
-    if (manifest.cases.some(entry => entry.runs.some(
+    if (manifest.cases.some(entry => entry.execution_role === 'main' && entry.runs.some(
       run => run.required_warm_calls < MINIMUM_ACCEPTANCE_WARM_CALLS,
     ))) reasons.add('insufficient_warm_calls');
     if (result.config_fingerprint !== expectedConfigFingerprint) {
@@ -153,6 +165,7 @@ export function aggregateCacheBenchmarkAcceptance(
     || reason === 'profile_not_acceptance'
     || reason === 'insufficient_warm_calls'
     || reason === 'qualifying_rounds_invalid'
+    || reason === 'workload_topology_mismatch'
     || reason === 'workload_contract_invalid'
     || reason === 'workload_contract_mismatch'
     || reason === 'config_fingerprint_mismatch'
@@ -175,18 +188,20 @@ function providerIdentityMatches(
   manifest: CacheBenchmarkManifest,
 ): boolean {
   if (!manifest.suite_id.startsWith(`xiaoba-online-${provider}-`)) return false;
-  const instances = new Set(manifest.cases.map(entry => entry.provider_instance_id));
+  const primaryCases = manifest.cases.filter(entry => entry.execution_role === 'main');
+  if (primaryCases.length === 0) return false;
+  const instances = new Set(primaryCases.map(entry => entry.provider_instance_id));
   if (instances.size !== 1) return false;
   if (provider === 'newcli') {
     return [...instances].every(value => /^newcli:openai-responses:endpoint-[a-f0-9]{32}$/u.test(value))
-      && manifest.cases.every(entry => (
+      && primaryCases.every(entry => (
         entry.provider_adapter === 'openai'
         && entry.api_type === 'openai-responses'
         && entry.cache_read_source === 'openai.input_tokens_details.cached_tokens'
       ));
   }
   return [...instances].every(value => /^deepseek:openai-chat-completions:endpoint-[a-f0-9]{32}$/u.test(value))
-    && manifest.cases.every(entry => (
+    && primaryCases.every(entry => (
       entry.provider_adapter === 'openai'
       && entry.api_type === 'openai-chat-completions'
       && (
@@ -194,6 +209,37 @@ function providerIdentityMatches(
         || entry.cache_read_source === 'deepseek.prompt_cache_hit_tokens'
       )
     ));
+}
+
+function officialCaseIdentitiesMatch(
+  provider: AcceptanceProviderAlias,
+  manifest: CacheBenchmarkManifest,
+): boolean {
+  return manifest.cases.every(entry => entry.case_id === [
+    provider,
+    entry.task_id,
+    entry.execution_role === 'main' ? 'main' : 'memory',
+  ].join('-'));
+}
+
+function officialJoinedScheduleMatches(manifest: CacheBenchmarkManifest): boolean {
+  const casesByTask = new Map<string, CacheBenchmarkManifest['cases']>();
+  for (const entry of manifest.cases) {
+    const entries = casesByTask.get(entry.task_id) ?? [];
+    entries.push(entry);
+    casesByTask.set(entry.task_id, entries);
+  }
+  return [...casesByTask.values()].every(entries => {
+    const main = entries.find(entry => entry.execution_role === 'main');
+    const branch = entries.find(entry => entry.execution_role === 'memory_branch');
+    if (!main || !branch || entries.length !== 2 || main.runs.length !== branch.runs.length) return false;
+    return main.runs.every((mainRun, index) => {
+      const branchRun = branch.runs[index];
+      return mainRun.run_id === branchRun.run_id
+        && mainRun.required_cold_calls === branchRun.required_cold_calls
+        && mainRun.required_warm_calls === branchRun.required_warm_calls;
+    });
+  });
 }
 
 function isAcceptanceProvider(value: string): value is AcceptanceProviderAlias {

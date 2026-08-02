@@ -8,6 +8,7 @@ import {
   CacheBenchmarkAttempt,
   CacheBenchmarkLedger,
   CacheBenchmarkManifest,
+  CacheBenchmarkResult,
   CacheBenchmarkRoundEvidence,
   REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
   canonicalJson,
@@ -162,7 +163,7 @@ describe('cache benchmark evidence scorer', () => {
     assert.ok(result.reasons.includes('minimum_read_ratio_not_met'));
   });
 
-  test('retains valid provider usage from failed physical attempts in diagnostics only', () => {
+  test('counts valid provider usage from failed physical attempts without letting failures pass', () => {
     const manifest = fixtureManifest();
     const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
     rounds[2].attempts[1].outcome = 'failed';
@@ -172,8 +173,8 @@ describe('cache benchmark evidence scorer', () => {
 
     assert.equal(result.status, 'invalid');
     assert.ok(result.reasons.includes('non_succeeded_attempt'));
-    assert.equal(cell.input_tokens, 750);
-    assert.equal(cell.cache_read_tokens, 705);
+    assert.equal(cell.input_tokens, 1050);
+    assert.equal(cell.cache_read_tokens, 825);
     assert.equal(cell.cold_input_tokens, 1000);
     assert.equal(cell.cold_cache_read_tokens, 940);
     assert.equal(cell.all_input_tokens, 2050);
@@ -247,7 +248,7 @@ describe('cache benchmark evidence scorer', () => {
       ['coverage', round => {
         round.attempts = round.attempts.filter(attempt => !(attempt.case_id === 'case-1' && attempt.cache_class === 'warm'));
       }, 'missing_warm_attempt'],
-      ['extra warm call', round => {
+      ['extra primary physical attempt', round => {
         const extra = structuredClone(round.attempts[1]);
         extra.call_id = 'extra-warm-call';
         extra.attempt_id = 'extra-warm-attempt';
@@ -283,15 +284,15 @@ describe('cache benchmark evidence scorer', () => {
   });
 
   test('allows variable memory-branch physical attempts and weights every provider token', () => {
-    const manifest = fixtureManifest();
-    manifest.cases[2].execution_role = 'memory_branch';
+    const manifest = manifestWithAuxiliaryCase();
+    const branch = manifest.cases.at(-1)!;
     const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
     for (const evidence of rounds) {
       const branchCold = evidence.attempts.find(attempt => (
-        attempt.case_id === manifest.cases[2].case_id && attempt.logical_call === 1
+        attempt.case_id === branch.case_id && attempt.logical_call === 1
       ))!;
       const branchWarm = evidence.attempts.find(attempt => (
-        attempt.case_id === manifest.cases[2].case_id && attempt.logical_call === 2
+        attempt.case_id === branch.case_id && attempt.logical_call === 2
       ))!;
       for (const [template, suffix] of [
         [branchCold, 'cold-extra-1'],
@@ -305,29 +306,122 @@ describe('cache benchmark evidence scorer', () => {
         evidence.attempts.push(extra);
       }
       const branchAttempts = evidence.attempts
-        .filter(attempt => attempt.case_id === manifest.cases[2].case_id)
+        .filter(attempt => attempt.case_id === branch.case_id)
         .sort((left, right) => left.logical_call - right.logical_call);
       evidence.attempts = [
-        ...evidence.attempts.filter(attempt => attempt.case_id !== manifest.cases[2].case_id),
+        ...evidence.attempts.filter(attempt => attempt.case_id !== branch.case_id),
         ...branchAttempts,
       ];
       evidence.attempts.forEach((attempt, index) => { attempt.attempt_number = index + 1; });
     }
     const result = scoreRounds(manifest, rounds);
+    const primary = result.rounds[0].cells.find(cell => cell.traffic_class === 'primary')!;
+    const auxiliary = result.rounds[0].cells.find(cell => cell.traffic_class === 'auxiliary_memory')!;
 
     assert.equal(result.status, 'passed');
-    assert.equal(result.rounds[0].cells[0].input_tokens, 1500);
-    assert.equal(result.rounds[0].cells[0].cache_read_tokens, 1410);
-    assert.equal(result.rounds[0].cells[0].raw_read_ratio, 0.94);
-    assert.equal(result.rounds[0].cells[0].cold_input_tokens, 1250);
-    assert.equal(result.rounds[0].cells[0].cold_cache_read_tokens, 1175);
+    assert.equal(result.rounds[0].cells.length, 2);
+    assert.equal(primary.input_tokens, 1000);
+    assert.equal(primary.cache_read_tokens, 940);
+    assert.equal(primary.raw_read_ratio, 0.94);
+    assert.equal(auxiliary.input_tokens, 750);
+    assert.equal(auxiliary.cache_read_tokens, 705);
+    assert.equal(auxiliary.raw_read_ratio, 0.94);
+    assert.equal(auxiliary.cold_input_tokens, 500);
+    assert.equal(auxiliary.cold_cache_read_tokens, 470);
   });
 
-  test('invalidates joined memory-branch evidence recorded after its main attempt', () => {
+  test('excludes auxiliary cache ratio from primary qualification without hiding its usage', () => {
+    const manifest = manifestWithAuxiliaryCase();
+    const branch = manifest.cases.at(-1)!;
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
+      if (attempt.case_id === branch.case_id) setProviderUsage(attempt, 250, 0);
+    }));
+    const result = scoreRounds(manifest, rounds);
+    const primary = result.rounds[0].cells.find(cell => cell.traffic_class === 'primary')!;
+    const auxiliary = result.rounds[0].cells.find(cell => cell.traffic_class === 'auxiliary_memory')!;
+
+    assert.equal(result.status, 'passed');
+    assert.equal(primary.raw_read_ratio, 0.94);
+    assert.equal(primary.input_tokens, 1000);
+    assert.equal(auxiliary.raw_read_ratio, 0);
+    assert.equal(auxiliary.input_tokens, 250);
+    assert.equal(auxiliary.cache_read_tokens, 0);
+    assert.equal(auxiliary.reasons.includes('minimum_read_ratio_not_met'), false);
+    assert.equal(auxiliary.reasons.includes('insufficient_positive_tasks'), false);
+  });
+
+  test('does not let a cache-hot auxiliary call rescue a primary ratio below 94%', () => {
+    const manifest = manifestWithAuxiliaryCase();
+    const branch = manifest.cases.at(-1)!;
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
+      if (attempt.case_id === branch.case_id) setProviderUsage(attempt, 250, 250);
+    }));
+    const primaryWarm = rounds[2].attempts.find(attempt => (
+      attempt.attempt_role === 'main' && attempt.cache_class === 'warm'
+    ))!;
+    setProviderUsage(primaryWarm, 250, 234);
+    const result = scoreRounds(manifest, rounds);
+
+    assert.equal(result.status, 'failed');
+    assert.ok(result.reasons.includes('minimum_read_ratio_not_met'));
+  });
+
+  test('scores a separate small-model auxiliary provider without adding it to primary qualification', () => {
+    const manifest = manifestWithAuxiliaryCase(true);
+    const branch = manifest.cases.at(-1)!;
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round, attempt => {
+      if (attempt.case_id === branch.case_id) setProviderUsage(attempt, 250, 0);
+    }));
+    const result = scoreRounds(manifest, rounds);
+    const auxiliary = result.rounds[0].cells.find(cell => cell.traffic_class === 'auxiliary_memory')!;
+
+    assert.equal(result.status, 'passed');
+    assert.equal(result.rounds[0].cells.length, 2);
+    assert.equal(auxiliary.raw_read_ratio, 0);
+    assert.equal(auxiliary.reasons.length, 0);
+  });
+
+  test('keeps auxiliary completion, usage, quality, safety, and role gates fail-closed', () => {
+    const scenarios: Array<[
+      string,
+      (attempt: CacheBenchmarkAttempt) => void,
+      CacheBenchmarkResult['status'],
+      string,
+    ]> = [
+      ['failed outcome', attempt => { attempt.outcome = 'failed'; }, 'invalid', 'non_succeeded_attempt'],
+      ['non-terminal outcome', attempt => { attempt.outcome = 'retrying'; }, 'invalid', 'non_terminal_attempt'],
+      ['missing usage', attempt => { setProviderUsage(attempt, 250, undefined); }, 'unobservable', 'cache_read_not_reported'],
+      ['quality failure', attempt => { attempt.attestation.quality_status = 'failed'; }, 'failed', 'quality_gate_failed'],
+      ['safety failure', attempt => { attempt.attestation.safety_status = 'failed'; }, 'failed', 'safety_gate_failed'],
+      ['missing memory provenance capability', attempt => {
+        attempt.attestation.observed_capabilities = ['tools'];
+      }, 'incomplete', 'capability_attestation_incomplete'],
+      ['role mismatch', attempt => { attempt.attempt_role = 'main'; }, 'invalid', 'metadata_mismatch'],
+    ];
+    for (const [label, mutate, expectedStatus, reason] of scenarios) {
+      const manifest = manifestWithAuxiliaryCase();
+      const branch = manifest.cases.at(-1)!;
+      const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+      const attempt = rounds[2].attempts.find(entry => (
+        entry.case_id === branch.case_id && entry.cache_class === 'warm'
+      ))!;
+      mutate(attempt);
+      const result = scoreRounds(manifest, rounds);
+      assert.equal(result.status, expectedStatus, label);
+      assert.ok(result.reasons.includes(reason as never), label);
+    }
+  });
+
+  test('invalidates joined memory-branch evidence recorded after its main across providers', () => {
     const manifest = fixtureManifest();
     manifest.cases[1].task_id = manifest.cases[0].task_id;
     manifest.cases[1].execution_role = 'memory_branch';
     manifest.cases[1].runs[0].run_id = manifest.cases[0].runs[0].run_id;
+    manifest.cases[1].provider_instance_id = 'auxiliary-provider';
+    manifest.cases[1].model = 'small-memory-model';
+    manifest.cases[1].api_type = 'openai-chat-completions';
+    manifest.cases[1].surface = 'memory-branch';
+    manifest.cases[1].cache_read_source = 'openai.prompt_tokens_details.cached_tokens';
     const result = scoreRounds(manifest, [1, 2, 3].map(round => buildRound(manifest, round)));
 
     assert.equal(result.status, 'invalid');
@@ -677,9 +771,9 @@ describe('cache benchmark evidence scorer', () => {
     ));
   });
 
-  test('rejects all v4 evidence schemas and any attempt to include cold usage in the primary ratio', () => {
+  test('rejects legacy v5 evidence schemas and any attempt to include cold usage in the primary ratio', () => {
     const legacy = structuredClone(fixtureManifest()) as any;
-    legacy.schema = 'xiaoba.cache_benchmark_manifest.v4';
+    legacy.schema = 'xiaoba.cache_benchmark_manifest.v5';
     assert.throws(() => parseManifestJson(JSON.stringify(legacy)));
 
     const coldIncluded = structuredClone(fixtureManifest()) as any;
@@ -688,15 +782,15 @@ describe('cache benchmark evidence scorer', () => {
 
     const round = buildRound(fixtureManifest(), 1);
     const legacyRound = structuredClone(round) as any;
-    legacyRound.header.schema = 'xiaoba.cache_benchmark_round.v4';
+    legacyRound.header.schema = 'xiaoba.cache_benchmark_round.v5';
     assert.throws(() => parseRoundJsonl(roundToJsonl(legacyRound)));
 
     const legacyAttempt = structuredClone(round) as any;
-    legacyAttempt.attempts[0].schema = 'xiaoba.cache_benchmark_attempt.v4';
+    legacyAttempt.attempts[0].schema = 'xiaoba.cache_benchmark_attempt.v5';
     assert.throws(() => parseRoundJsonl(roundToJsonl(legacyAttempt)));
 
     const legacyLedger = structuredClone(buildLedger(fixtureManifest(), [round])) as any;
-    legacyLedger.schema = 'xiaoba.cache_benchmark_ledger.v4';
+    legacyLedger.schema = 'xiaoba.cache_benchmark_ledger.v5';
     assert.throws(() => parseLedgerJson(JSON.stringify(legacyLedger)));
   });
 
@@ -810,6 +904,29 @@ function fixtureManifest(): CacheBenchmarkManifest {
   return parseManifestJson(fs.readFileSync(FIXTURE_PATH, 'utf8'));
 }
 
+function manifestWithAuxiliaryCase(separateProvider = false): CacheBenchmarkManifest {
+  const manifest = fixtureManifest();
+  const branch = structuredClone(manifest.cases[2]);
+  branch.case_id = 'case-memory-branch';
+  branch.task_id = 'task-memory-branch';
+  branch.task_fixture_fingerprint = `sha256:${'5'.repeat(64)}`;
+  branch.execution_role = 'memory_branch';
+  branch.capabilities = ['tools', 'memory'];
+  if (separateProvider) {
+    branch.provider_instance_id = 'auxiliary-provider';
+    branch.model = 'small-memory-model';
+    branch.api_type = 'openai-chat-completions';
+    branch.surface = 'memory-branch';
+    branch.cache_read_source = 'openai.prompt_tokens_details.cached_tokens';
+  }
+  branch.runs = [{
+    ...branch.runs[0],
+    run_id: 'run-memory-branch',
+  }];
+  manifest.cases.push(branch);
+  return manifest;
+}
+
 function canonicalCellFingerprint(entry: CacheBenchmarkManifest['cases'][number]): string {
   return fingerprintCanonical({
     provider_instance_id: entry.provider_instance_id,
@@ -817,6 +934,7 @@ function canonicalCellFingerprint(entry: CacheBenchmarkManifest['cases'][number]
     model: entry.model,
     api_type: entry.api_type,
     surface: entry.surface,
+    traffic_class: entry.execution_role === 'main' ? 'primary' : 'auxiliary_memory',
   });
 }
 
@@ -905,7 +1023,7 @@ function buildRound(
     for (const run of entry.runs) {
       for (const cacheClass of ['cold', 'warm'] as const) {
         const attempt: CacheBenchmarkAttempt = {
-          schema: 'xiaoba.cache_benchmark_attempt.v5',
+          schema: 'xiaoba.cache_benchmark_attempt.v6',
           suite_id: manifest.suite_id,
           round,
           attempt_number: attempts.length + 1,
@@ -958,7 +1076,7 @@ function buildRound(
   }
   return {
     header: {
-      schema: 'xiaoba.cache_benchmark_round.v5',
+      schema: 'xiaoba.cache_benchmark_round.v6',
       suite_id: manifest.suite_id,
       round,
       cache_partition_nonce: round.toString(16).padStart(32, '0'),
@@ -986,7 +1104,7 @@ function buildLedger(
 ): CacheBenchmarkLedger {
   const ordered = [...rounds].sort((left, right) => left.header.round - right.header.round);
   return {
-    schema: 'xiaoba.cache_benchmark_ledger.v5',
+    schema: 'xiaoba.cache_benchmark_ledger.v6',
     suite_id: manifest.suite_id,
     latest_round: ordered[ordered.length - 1]?.header.round ?? 1,
     rounds: ordered.map(round => ({
