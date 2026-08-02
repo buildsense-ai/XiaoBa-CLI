@@ -540,8 +540,9 @@ describe('OpenAIProvider runtime feedback boundary', () => {
       const result = await provider.chat([{ role: 'user', content: 'hello' }]);
 
       assert.equal(result.usage?.promptTokens, 120);
+      assert.equal(result.usage?.inputTokensReported, true);
       assert.equal(result.usage?.cachedReadTokens, 96);
-      assert.equal(result.usage?.cachedWriteTokens, 0);
+      assert.equal(Object.prototype.hasOwnProperty.call(result.usage, 'cachedWriteTokens'), false);
     } finally {
       (axios as any).post = originalPost;
     }
@@ -565,11 +566,46 @@ describe('OpenAIProvider runtime feedback boundary', () => {
       const result = await provider.chatStream([{ role: 'user', content: 'hello' }]);
 
       assert.equal(result.usage?.promptTokens, 120);
+      assert.equal(result.usage?.inputTokensReported, true);
       assert.equal(result.usage?.cachedReadTokens, 96);
-      assert.equal(result.usage?.cachedWriteTokens, 0);
+      assert.equal(Object.prototype.hasOwnProperty.call(result.usage, 'cachedWriteTokens'), false);
     } finally {
       (axios as any).post = originalPost;
     }
+  });
+
+  test('does not invent cache usage for compatible Chat Completions relays', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.example.test/v1',
+      model: 'relay-model',
+    });
+    const missing = (provider as any).parseChatUsage({
+      prompt_tokens: 10,
+      completion_tokens: 1,
+      total_tokens: 11,
+      prompt_cache_miss_tokens: 10,
+      cache_read_tokens: 7,
+    });
+    const explicitZero = (provider as any).parseChatUsage({
+      prompt_tokens: 10,
+      completion_tokens: 1,
+      total_tokens: 11,
+      prompt_tokens_details: { cached_tokens: 0, cache_creation_tokens: 0 },
+    });
+    const missingInput = (provider as any).parseChatUsage({
+      completion_tokens: 1,
+      prompt_tokens_details: { cached_tokens: 5 },
+    });
+
+    assert.equal(missing.inputTokensReported, true);
+    assert.equal(missingInput.inputTokensReported, false);
+    assert.equal(Object.prototype.hasOwnProperty.call(missing, 'cachedReadTokens'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(missing, 'cachedWriteTokens'), false);
+    assert.equal(explicitZero.cachedReadTokens, 0);
+    assert.equal(explicitZero.cachedWriteTokens, 0);
+    assert.equal(Object.prototype.hasOwnProperty.call(explicitZero, 'cachedReadTokens'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(explicitZero, 'cachedWriteTokens'), true);
   });
 
   test('hides OpenAI-compatible reasoning fields and split think tags in stream responses', async () => {

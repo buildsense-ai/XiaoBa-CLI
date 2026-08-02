@@ -19,6 +19,21 @@ import {
 } from './openai-cache-policy';
 import { resolveContextCacheScope } from '../core/context-lifecycle';
 
+function hasOwnField(value: unknown, key: string): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function firstReportedUsageNumber(value: unknown, keys: string[]): number | undefined {
+  for (const key of keys) {
+    if (!hasOwnField(value, key)) continue;
+    const raw = value[key];
+    if ((typeof raw !== 'number' && typeof raw !== 'string') || raw === '') return undefined;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+  }
+  return undefined;
+}
+
 /**
  * OpenAI Provider
  * 兼容所有 OpenAI API 格式的服务（OpenAI、本地 LLM 等）
@@ -628,21 +643,22 @@ export class OpenAIProvider implements AIProvider {
   private parseResponsesUsage(usage: any): ChatResponse['usage'] {
     if (!usage || typeof usage !== 'object') return undefined;
     const details = usage.input_tokens_details || {};
-    const promptTokens = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0);
+    const reportedInputTokens = firstReportedUsageNumber(usage, ['input_tokens', 'prompt_tokens']);
+    const promptTokens = reportedInputTokens ?? 0;
     const completionTokens = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
-    const cachedReadTokens = Number(details.cached_tokens ?? 0);
-    const cachedWriteTokens = Number(
-      details.cache_write_tokens
-      ?? details.cached_creation_tokens
-      ?? details.cache_creation_tokens
-      ?? 0,
-    );
+    const cachedReadTokens = firstReportedUsageNumber(details, ['cached_tokens']);
+    const cachedWriteTokens = firstReportedUsageNumber(details, [
+      'cache_write_tokens',
+      'cached_creation_tokens',
+      'cache_creation_tokens',
+    ]);
     return {
       promptTokens,
       completionTokens,
       totalTokens: Number(usage.total_tokens ?? promptTokens + completionTokens),
-      cachedReadTokens,
-      cachedWriteTokens,
+      inputTokensReported: reportedInputTokens !== undefined,
+      ...(cachedReadTokens !== undefined ? { cachedReadTokens } : {}),
+      ...(cachedWriteTokens !== undefined ? { cachedWriteTokens } : {}),
     };
   }
 
@@ -654,25 +670,25 @@ export class OpenAIProvider implements AIProvider {
   private parseChatUsage(usage: any): ChatResponse['usage'] {
     if (!usage || typeof usage !== 'object') return undefined;
     const details = usage.prompt_tokens_details || {};
-    const promptTokens = Number(usage.prompt_tokens ?? 0);
+    const reportedInputTokens = firstReportedUsageNumber(usage, ['prompt_tokens']);
+    const promptTokens = reportedInputTokens ?? 0;
     const completionTokens = Number(usage.completion_tokens ?? 0);
-    const cachedReadTokens = Number(
-      details.cached_tokens
-      ?? usage.prompt_cache_hit_tokens
-      ?? 0,
-    );
-    const cachedWriteTokens = Number(
-      details.cache_write_tokens
-      ?? details.cached_creation_tokens
-      ?? details.cache_creation_tokens
-      ?? 0,
-    );
+    const standardCachedReadTokens = firstReportedUsageNumber(details, ['cached_tokens']);
+    const cachedReadTokens = hasOwnField(details, 'cached_tokens')
+      ? standardCachedReadTokens
+      : firstReportedUsageNumber(usage, ['prompt_cache_hit_tokens']);
+    const cachedWriteTokens = firstReportedUsageNumber(details, [
+      'cache_write_tokens',
+      'cached_creation_tokens',
+      'cache_creation_tokens',
+    ]);
     return {
       promptTokens,
       completionTokens,
       totalTokens: Number(usage.total_tokens ?? promptTokens + completionTokens),
-      cachedReadTokens,
-      cachedWriteTokens,
+      inputTokensReported: reportedInputTokens !== undefined,
+      ...(cachedReadTokens !== undefined ? { cachedReadTokens } : {}),
+      ...(cachedWriteTokens !== undefined ? { cachedWriteTokens } : {}),
     };
   }
 

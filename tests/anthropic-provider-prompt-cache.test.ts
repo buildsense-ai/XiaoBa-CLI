@@ -176,8 +176,59 @@ describe('AnthropicProvider prompt caching', () => {
       promptTokens: 1000,
       completionTokens: 20,
       totalTokens: 1020,
+      inputTokensReported: true,
       cachedReadTokens: 500,
       cachedWriteTokens: 400,
+    });
+  });
+
+  test('normalizes Anthropic input totals without inventing omitted cache fields', async () => {
+    const provider = createProvider();
+    (provider as any).client.beta.promptCaching.messages.create = async () => ({
+      content: [{ type: 'text', text: 'missing' }],
+      usage: { input_tokens: 100, output_tokens: 2 },
+    });
+
+    const missing = await provider.chat(nativeMessages('[transient_plan_status]\nrunning'));
+    assert.equal(missing.usage?.promptTokens, 100);
+    assert.equal(missing.usage?.totalTokens, 102);
+    assert.equal(missing.usage?.inputTokensReported, true);
+    assert.equal(Object.prototype.hasOwnProperty.call(missing.usage, 'cachedReadTokens'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(missing.usage, 'cachedWriteTokens'), false);
+
+    (provider as any).client.beta.promptCaching.messages.create = async () => ({
+      content: [{ type: 'text', text: 'missing raw input' }],
+      usage: {
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 90,
+        output_tokens: 2,
+      },
+    });
+
+    const missingRawInput = await provider.chat(nativeMessages('[transient_plan_status]\nrunning'));
+    assert.equal(missingRawInput.usage?.promptTokens, 100);
+    assert.equal(missingRawInput.usage?.inputTokensReported, false);
+    assert.equal(missingRawInput.usage?.cachedReadTokens, 90);
+    assert.equal(missingRawInput.usage?.cachedWriteTokens, 10);
+
+    (provider as any).client.beta.promptCaching.messages.create = async () => ({
+      content: [{ type: 'text', text: 'zero' }],
+      usage: {
+        input_tokens: 100,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 2,
+      },
+    });
+
+    const explicitZero = await provider.chat(nativeMessages('[transient_plan_status]\nrunning'));
+    assert.deepEqual(explicitZero.usage, {
+      promptTokens: 100,
+      completionTokens: 2,
+      totalTokens: 102,
+      inputTokensReported: true,
+      cachedReadTokens: 0,
+      cachedWriteTokens: 0,
     });
   });
 
@@ -357,6 +408,7 @@ describe('AnthropicProvider prompt caching', () => {
       promptTokens: 100,
       completionTokens: 5,
       totalTokens: 105,
+      inputTokensReported: true,
       cachedReadTokens: 70,
       cachedWriteTokens: 20,
     });

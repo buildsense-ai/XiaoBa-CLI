@@ -1,0 +1,556 @@
+import {
+  fingerprintCanonical,
+  fingerprintConfig,
+  fingerprintLedger,
+  fingerprintManifest,
+  fingerprintRoundEvidence,
+} from './canonical';
+import { parseAttempt, parseLedger, parseManifest, parseRoundHeader } from './schema';
+import {
+  BenchmarkReason,
+  BenchmarkStatus,
+  CacheBenchmarkAttempt,
+  CacheBenchmarkCapability,
+  CacheBenchmarkCase,
+  CacheBenchmarkCellResult,
+  CacheBenchmarkCoverageResult,
+  CacheBenchmarkLedger,
+  CacheBenchmarkLedgerReason,
+  CacheBenchmarkManifest,
+  CacheBenchmarkResult,
+  CacheBenchmarkRoundEvidence,
+  CacheBenchmarkRoundResult,
+  CACHE_BENCHMARK_RESULT_SCHEMA,
+  REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
+} from './types';
+
+interface ExpectedRun {
+  caseEntry: CacheBenchmarkCase;
+  requiredColdCalls: number;
+  requiredWarmCalls: number;
+}
+
+interface TaskTotals {
+  input: number;
+  read: number;
+}
+
+interface CellAccumulator {
+  fingerprint: string;
+  reasons: Set<BenchmarkReason>;
+  input: number;
+  read: number;
+  tasks: Map<string, TaskTotals>;
+}
+
+const STATUS_PRECEDENCE: Record<BenchmarkStatus, number> = {
+  passed: 0,
+  failed: 1,
+  incomplete: 2,
+  unobservable: 3,
+  invalid: 4,
+};
+
+export function scoreCacheBenchmark(
+  manifestInput: CacheBenchmarkManifest,
+  ledgerInput: CacheBenchmarkLedger,
+  roundInputs: CacheBenchmarkRoundEvidence[],
+): CacheBenchmarkResult {
+  const manifest = parseManifest(manifestInput);
+  const ledger = parseLedger(ledgerInput);
+  const manifestFingerprint = fingerprintManifest(manifest);
+  const configFingerprint = fingerprintConfig(manifest);
+  const ledgerFingerprint = fingerprintLedger(ledger);
+  const rounds = roundInputs.map(round => ({
+    header: parseRoundHeader(round.header),
+    attempts: round.attempts.map(parseAttempt),
+  }));
+  const roundResults = rounds
+    .map(round => scoreRound(manifest, round, manifestFingerprint, configFingerprint))
+    .sort((left, right) => left.round - right.round);
+  const capabilityCoverage = buildCapabilityCoverage(manifest);
+  const ledgerReasons = validateLedger(manifest, ledger, rounds);
+
+  if (ledgerReasons.length > 0) {
+    return buildResult({
+      manifestFingerprint,
+      configFingerprint,
+      ledgerFingerprint,
+      rounds: roundResults,
+      capabilityCoverage,
+      status: 'invalid',
+      reasons: [],
+      ledgerReasons,
+      qualifyingRounds: [],
+    });
+  }
+
+  const latest = roundResults[roundResults.length - 1];
+  if (latest && (latest.status === 'invalid' || latest.status === 'unobservable')) {
+    return buildResult({
+      manifestFingerprint,
+      configFingerprint,
+      ledgerFingerprint,
+      rounds: roundResults,
+      capabilityCoverage,
+      status: latest.status,
+      reasons: latest.reasons,
+      ledgerReasons: [],
+      qualifyingRounds: [],
+    });
+  }
+
+  if (capabilityCoverage.some(entry => entry.status === 'incomplete')) {
+    return buildResult({
+      manifestFingerprint,
+      configFingerprint,
+      ledgerFingerprint,
+      rounds: roundResults,
+      capabilityCoverage,
+      status: 'incomplete',
+      reasons: ['capability_coverage_incomplete'],
+      ledgerReasons: [],
+      qualifyingRounds: [],
+    });
+  }
+
+  const suffix = latestPassingSuffix(roundResults);
+  const requiredCount = manifest.criteria.consecutive_rounds;
+  if (suffix.length >= requiredCount) {
+    const latestRequired = suffix.slice(-requiredCount);
+    return buildResult({
+      manifestFingerprint,
+      configFingerprint,
+      ledgerFingerprint,
+      rounds: roundResults,
+      capabilityCoverage,
+      status: 'passed',
+      reasons: [],
+      ledgerReasons: [],
+      qualifyingRounds: latestRequired.map(round => round.round),
+    });
+  }
+
+  if (latest && latest.status !== 'passed') {
+    return buildResult({
+      manifestFingerprint,
+      configFingerprint,
+      ledgerFingerprint,
+      rounds: roundResults,
+      capabilityCoverage,
+      status: latest.status,
+      reasons: latest.reasons,
+      ledgerReasons: [],
+      qualifyingRounds: [],
+    });
+  }
+
+  return buildResult({
+    manifestFingerprint,
+    configFingerprint,
+    ledgerFingerprint,
+    rounds: roundResults,
+    capabilityCoverage,
+    status: 'incomplete',
+    reasons: ['insufficient_consecutive_rounds'],
+    ledgerReasons: [],
+    qualifyingRounds: suffix.map(round => round.round),
+  });
+}
+
+function validateLedger(
+  manifest: CacheBenchmarkManifest,
+  ledger: CacheBenchmarkLedger,
+  rounds: CacheBenchmarkRoundEvidence[],
+): CacheBenchmarkLedgerReason[] {
+  const reasons = new Set<CacheBenchmarkLedgerReason>();
+  if (ledger.suite_id !== manifest.suite_id) reasons.add('ledger_mismatch');
+  if (ledger.rounds.length !== ledger.latest_round) reasons.add('ledger_rounds_not_contiguous');
+  for (let index = 0; index < ledger.rounds.length; index += 1) {
+    if (ledger.rounds[index].round !== index + 1) reasons.add('ledger_rounds_not_contiguous');
+  }
+
+  const roundsByNumber = new Map<number, CacheBenchmarkRoundEvidence>();
+  for (const round of rounds) {
+    if (roundsByNumber.has(round.header.round)) reasons.add('unexpected_evidence_round');
+    roundsByNumber.set(round.header.round, round);
+    if (round.header.round < 1 || round.header.round > ledger.latest_round) {
+      reasons.add('unexpected_evidence_round');
+    }
+  }
+  for (const ledgerRound of ledger.rounds) {
+    const evidence = roundsByNumber.get(ledgerRound.round);
+    if (!evidence) {
+      reasons.add('missing_ledger_round');
+      continue;
+    }
+    if (fingerprintRoundEvidence(evidence) !== ledgerRound.evidence_fingerprint) {
+      reasons.add('evidence_fingerprint_mismatch');
+    }
+  }
+  if (rounds.length > ledger.rounds.length) reasons.add('unexpected_evidence_round');
+  return uniqueSorted([...reasons]);
+}
+
+function scoreRound(
+  manifest: CacheBenchmarkManifest,
+  round: CacheBenchmarkRoundEvidence,
+  manifestFingerprint: string,
+  configFingerprint: string,
+): CacheBenchmarkRoundResult {
+  const roundReasons = new Set<BenchmarkReason>();
+  if (
+    round.header.suite_id !== manifest.suite_id
+    || round.header.manifest_fingerprint !== manifestFingerprint
+    || round.header.config_fingerprint !== configFingerprint
+  ) roundReasons.add('fingerprint_mismatch');
+
+  const expectedRuns = buildExpectedRuns(manifest);
+  const attemptsByRun = new Map<string, CacheBenchmarkAttempt[]>();
+  const cellByCase = new Map<string, CellAccumulator>();
+  const cells = new Map<string, CellAccumulator>();
+  for (const caseEntry of manifest.cases) {
+    const fingerprint = fingerprintCell(caseEntry);
+    let cell = cells.get(fingerprint);
+    if (!cell) {
+      cell = {
+        fingerprint,
+        reasons: new Set(),
+        input: 0,
+        read: 0,
+        tasks: new Map(),
+      };
+      cells.set(fingerprint, cell);
+    }
+    cellByCase.set(caseEntry.case_id, cell);
+  }
+
+  const attemptIds = new Set<string>();
+  const callIds = new Set<string>();
+  const attemptNumbers = new Set<number>();
+  for (let attemptIndex = 0; attemptIndex < round.attempts.length; attemptIndex += 1) {
+    const attempt = round.attempts[attemptIndex];
+    const expected = expectedRuns.get(runKey(attempt.case_id, attempt.run_id));
+    if (!expected) {
+      roundReasons.add('unknown_case_or_run');
+      continue;
+    }
+    const cell = cellByCase.get(expected.caseEntry.case_id)!;
+    if (
+      attemptIds.has(attempt.attempt_id)
+      || callIds.has(attempt.call_id)
+      || attemptNumbers.has(attempt.attempt_number)
+    ) cell.reasons.add('duplicate_attempt');
+    attemptIds.add(attempt.attempt_id);
+    callIds.add(attempt.call_id);
+    attemptNumbers.add(attempt.attempt_number);
+
+    if (
+      attempt.suite_id !== round.header.suite_id
+      || attempt.round !== round.header.round
+      || attempt.attempt_number !== attemptIndex + 1
+      || attempt.usage.cache_read_source !== expected.caseEntry.cache_read_source
+      || !metadataMatches(attempt, expected.caseEntry)
+    ) cell.reasons.add('metadata_mismatch');
+    const key = runKey(attempt.case_id, attempt.run_id);
+    const runAttempts = attemptsByRun.get(key) ?? [];
+    runAttempts.push(attempt);
+    attemptsByRun.set(key, runAttempts);
+    scoreAttempt(attempt, cell);
+  }
+
+  for (const [key, expected] of expectedRuns) {
+    const cell = cellByCase.get(expected.caseEntry.case_id)!;
+    const attempts = attemptsByRun.get(key) ?? [];
+    if (attempts.length === 0) {
+      cell.reasons.add('missing_required_run');
+      continue;
+    }
+    const coldCount = attempts.filter(attempt => attempt.cache_class === 'cold').length;
+    const warmCount = attempts.filter(attempt => attempt.cache_class === 'warm').length;
+    if (coldCount < expected.requiredColdCalls) cell.reasons.add('missing_cold_attempt');
+    if (warmCount < expected.requiredWarmCalls) cell.reasons.add('missing_warm_attempt');
+    if (coldCount > expected.requiredColdCalls || warmCount > expected.requiredWarmCalls) {
+      cell.reasons.add('unexpected_attempt_count');
+    }
+  }
+
+  const cellResults = [...cells.values()]
+    .map(cell => finalizeCell(cell, manifest))
+    .sort((left, right) => compareStrings(left.cell_fingerprint, right.cell_fingerprint));
+  for (const cell of cellResults) {
+    for (const reason of cell.reasons) roundReasons.add(reason);
+  }
+  const status = strongestStatus([
+    statusFromReasons([...roundReasons]),
+    ...cellResults.map(cell => cell.status),
+  ]) ?? 'passed';
+  return {
+    round: round.header.round,
+    artifact_fingerprint: round.header.artifact_fingerprint,
+    status,
+    cells: cellResults,
+    reasons: uniqueSorted([...roundReasons]),
+  };
+}
+
+function scoreAttempt(attempt: CacheBenchmarkAttempt, cell: CellAccumulator): void {
+  if (attempt.outcome === 'incomplete' || attempt.outcome === 'retrying') {
+    cell.reasons.add('non_terminal_attempt');
+    return;
+  }
+  if (attempt.outcome !== 'succeeded') {
+    cell.reasons.add('non_succeeded_attempt');
+    return;
+  }
+  if (attempt.usage.input_tokens === undefined) {
+    cell.reasons.add('missing_input_usage');
+    return;
+  }
+  if (attempt.usage.input_tokens <= 0) {
+    cell.reasons.add('non_positive_input');
+    return;
+  }
+  const read = attempt.usage.cache_read_tokens;
+  if (read === undefined) {
+    cell.reasons.add('cache_read_not_reported');
+    return;
+  }
+  if (read < 0) {
+    cell.reasons.add('invalid_cache_read');
+    return;
+  }
+  if (read > attempt.usage.input_tokens) {
+    cell.reasons.add('cache_read_exceeds_input');
+    return;
+  }
+  cell.input += attempt.usage.input_tokens;
+  cell.read += read;
+  const task = cell.tasks.get(attempt.metadata.task_id) ?? { input: 0, read: 0 };
+  task.input += attempt.usage.input_tokens;
+  task.read += read;
+  cell.tasks.set(attempt.metadata.task_id, task);
+}
+
+function finalizeCell(cell: CellAccumulator, manifest: CacheBenchmarkManifest): CacheBenchmarkCellResult {
+  const reasons = new Set(cell.reasons);
+  const positiveTasks = [...cell.tasks.values()].filter(task => task.input > 0);
+  let rawRatio: number | null = null;
+  let cappedRatio: number | null = null;
+  if (cell.input > 0) {
+    rawRatio = cell.read / cell.input;
+    if (!meetsThreshold(rawRatio, manifest.criteria.minimum_read_ratio)) {
+      reasons.add('minimum_read_ratio_not_met');
+    }
+  }
+  if (positiveTasks.length < Math.ceil(1 / manifest.criteria.maximum_task_weight)) {
+    reasons.add('insufficient_positive_tasks');
+  } else {
+    cappedRatio = calculateCappedTaskRatio(positiveTasks, manifest.criteria.maximum_task_weight);
+    if (!meetsThreshold(cappedRatio, manifest.criteria.minimum_read_ratio)) {
+      reasons.add('minimum_capped_task_ratio_not_met');
+    }
+  }
+  return {
+    cell_fingerprint: cell.fingerprint,
+    status: statusFromReasons([...reasons]),
+    input_tokens: cell.input,
+    cache_read_tokens: cell.read,
+    raw_read_ratio: rawRatio,
+    capped_task_ratio: cappedRatio,
+    positive_task_count: positiveTasks.length,
+    reasons: uniqueSorted([...reasons]),
+  };
+}
+
+export function calculateCappedTaskRatio(tasks: TaskTotals[], maximumWeight: number): number {
+  const positive = tasks.filter(task => task.input > 0);
+  if (positive.length === 0 || positive.length * maximumWeight < 1 - 1e-12) return Number.NaN;
+  let low = 0;
+  let high = 1;
+  while (sumProjectedWeights(positive, high, maximumWeight) < 1) high *= 2;
+  for (let iteration = 0; iteration < 100; iteration += 1) {
+    const middle = (low + high) / 2;
+    if (sumProjectedWeights(positive, middle, maximumWeight) < 1) low = middle;
+    else high = middle;
+  }
+  const weights = positive.map(task => Math.min(maximumWeight, high * task.input));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  return positive.reduce((sum, task, index) => {
+    return sum + (weights[index] / totalWeight) * (task.read / task.input);
+  }, 0);
+}
+
+function sumProjectedWeights(tasks: TaskTotals[], scale: number, cap: number): number {
+  return tasks.reduce((sum, task) => sum + Math.min(cap, scale * task.input), 0);
+}
+
+function buildExpectedRuns(manifest: CacheBenchmarkManifest): Map<string, ExpectedRun> {
+  const result = new Map<string, ExpectedRun>();
+  for (const caseEntry of manifest.cases) {
+    for (const run of caseEntry.runs) {
+      result.set(runKey(caseEntry.case_id, run.run_id), {
+        caseEntry,
+        requiredColdCalls: run.required_cold_calls,
+        requiredWarmCalls: run.required_warm_calls,
+      });
+    }
+  }
+  return result;
+}
+
+function metadataMatches(attempt: CacheBenchmarkAttempt, expected: CacheBenchmarkCase): boolean {
+  const actual = attempt.metadata;
+  return actual.provider_instance_id === expected.provider_instance_id
+    && actual.provider_adapter === expected.provider_adapter
+    && actual.model === expected.model
+    && actual.api_type === expected.api_type
+    && actual.surface === expected.surface
+    && actual.task_id === expected.task_id
+    && actual.task_fixture_fingerprint === expected.task_fixture_fingerprint
+    && actual.scenario_family === expected.scenario_family
+    && actual.session_type === expected.session_type;
+}
+
+function fingerprintCell(caseEntry: CacheBenchmarkCase): string {
+  return fingerprintCanonical({
+    provider_instance_id: caseEntry.provider_instance_id,
+    provider_adapter: caseEntry.provider_adapter,
+    model: caseEntry.model,
+    api_type: caseEntry.api_type,
+    surface: caseEntry.surface,
+  });
+}
+
+function buildCapabilityCoverage(manifest: CacheBenchmarkManifest): CacheBenchmarkCoverageResult[] {
+  const scopes = new Map<string, Set<CacheBenchmarkCapability>>();
+  for (const entry of manifest.cases) {
+    const scopeFingerprint = fingerprintCanonical({
+      provider_instance_id: entry.provider_instance_id,
+      provider_adapter: entry.provider_adapter,
+      model: entry.model,
+      api_type: entry.api_type,
+    });
+    const capabilities = scopes.get(scopeFingerprint) ?? new Set<CacheBenchmarkCapability>();
+    for (const capability of entry.capabilities) capabilities.add(capability);
+    scopes.set(scopeFingerprint, capabilities);
+  }
+  return [...scopes.entries()]
+    .map(([scopeFingerprint, capabilities]) => {
+      const missing = REQUIRED_CACHE_BENCHMARK_CAPABILITIES.filter(capability => !capabilities.has(capability));
+      return {
+        scope_fingerprint: scopeFingerprint,
+        status: missing.length === 0 ? 'passed' as const : 'incomplete' as const,
+        missing_capabilities: [...missing],
+      };
+    })
+    .sort((left, right) => compareStrings(left.scope_fingerprint, right.scope_fingerprint));
+}
+
+function runKey(caseId: string, runId: string): string {
+  return `${caseId}\0${runId}`;
+}
+
+function latestPassingSuffix(rounds: CacheBenchmarkRoundResult[]): CacheBenchmarkRoundResult[] {
+  if (rounds.length === 0) return [];
+  const result: CacheBenchmarkRoundResult[] = [];
+  const latest = rounds[rounds.length - 1];
+  let expectedRound = latest.round;
+  for (let index = rounds.length - 1; index >= 0; index -= 1) {
+    const candidate = rounds[index];
+    if (candidate.round !== expectedRound) break;
+    if (candidate.artifact_fingerprint !== latest.artifact_fingerprint) break;
+    if (candidate.status !== 'passed') break;
+    result.unshift(candidate);
+    expectedRound -= 1;
+  }
+  return result;
+}
+
+function statusFromReasons(reasons: BenchmarkReason[]): BenchmarkStatus {
+  if (reasons.some(isInvalidReason)) return 'invalid';
+  if (reasons.includes('cache_read_not_reported')) return 'unobservable';
+  if (reasons.some(reason => reason === 'insufficient_positive_tasks' || reason === 'capability_coverage_incomplete')) {
+    return 'incomplete';
+  }
+  if (reasons.some(reason => reason === 'minimum_read_ratio_not_met' || reason === 'minimum_capped_task_ratio_not_met')) {
+    return 'failed';
+  }
+  return 'passed';
+}
+
+function isInvalidReason(reason: BenchmarkReason): boolean {
+  return [
+    'schema_invalid',
+    'duplicate_round',
+    'duplicate_attempt',
+    'unexpected_attempt_count',
+    'unknown_case_or_run',
+    'metadata_mismatch',
+    'missing_required_run',
+    'missing_cold_attempt',
+    'missing_warm_attempt',
+    'non_terminal_attempt',
+    'non_succeeded_attempt',
+    'missing_input_usage',
+    'non_positive_input',
+    'invalid_cache_read',
+    'cache_read_exceeds_input',
+    'fingerprint_mismatch',
+  ].includes(reason);
+}
+
+function strongestStatus(statuses: BenchmarkStatus[]): BenchmarkStatus | undefined {
+  return statuses.reduce<BenchmarkStatus | undefined>((strongest, status) => {
+    if (!strongest || STATUS_PRECEDENCE[status] > STATUS_PRECEDENCE[strongest]) return status;
+    return strongest;
+  }, undefined);
+}
+
+function meetsThreshold(value: number, threshold: number): boolean {
+  // The capped task ratio is produced by an iterative water-filling calculation.
+  // Keep the acceptance tolerance aligned with that calculation's 1e-12
+  // feasibility tolerance so an exact mathematical boundary is not rejected by
+  // accumulated IEEE-754 rounding across many tasks.
+  return value >= threshold || Math.abs(value - threshold) <= 1e-12;
+}
+
+function uniqueSorted<T extends string>(values: T[]): T[] {
+  return [...new Set(values)].sort(compareStrings);
+}
+
+function compareStrings(left: string, right: string): number {
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+function buildResult(input: {
+  manifestFingerprint: string;
+  configFingerprint: string;
+  ledgerFingerprint: string;
+  rounds: CacheBenchmarkRoundResult[];
+  capabilityCoverage: CacheBenchmarkCoverageResult[];
+  status: BenchmarkStatus;
+  reasons: BenchmarkReason[];
+  ledgerReasons: CacheBenchmarkLedgerReason[];
+  qualifyingRounds: number[];
+}): CacheBenchmarkResult {
+  const exitCode: 0 | 1 | 2 = input.status === 'passed'
+    ? 0
+    : input.status === 'invalid' || input.status === 'unobservable'
+      ? 2
+      : 1;
+  return {
+    schema: CACHE_BENCHMARK_RESULT_SCHEMA,
+    status: input.status,
+    exit_code: exitCode,
+    manifest_fingerprint: input.manifestFingerprint,
+    config_fingerprint: input.configFingerprint,
+    ledger_fingerprint: input.ledgerFingerprint,
+    latest_round: input.rounds.length > 0 ? input.rounds[input.rounds.length - 1].round : null,
+    qualifying_rounds: input.qualifyingRounds,
+    rounds: input.rounds,
+    reasons: uniqueSorted(input.reasons),
+    ledger_reasons: uniqueSorted(input.ledgerReasons),
+    capability_coverage: input.capabilityCoverage,
+  };
+}

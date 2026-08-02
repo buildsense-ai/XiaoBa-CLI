@@ -161,7 +161,7 @@ test('session allow-list enables only the selected session', () => {
   assert.equal(new CacheTraceObserver({ sessionId: 'two', env }).enabled, true);
 });
 
-test('reader accepts legacy JSON and v4 JSONL while resetting diff on a model switch', async () => {
+test('reader keeps legacy and v4 traces diagnostic-only while resetting diff on a model switch', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-reader-'));
   try {
     fs.writeFileSync(path.join(dir, 'old.json'), JSON.stringify({
@@ -203,7 +203,162 @@ test('reader accepts legacy JSON and v4 JSONL while resetting diff on a model sw
     assert.equal(store.records[1].hasStarted, true);
     assert.equal(store.records[1].diff.baselineReset, true);
     assert.equal(store.records[1].diff.resetReason, 'provider-model-api-changed');
-    assert.equal(store.sessions[0].weightedHitRatio, 0.4);
+    assert.equal(store.sessions[0].weightedHitRatio, undefined);
+    assert.equal(store.sessions[0].eligibleAttempts, 0);
+    assert.equal(store.sessions[0].ineligibleAttempts, 2);
+    assert.equal(store.sessions[0].ineligibleReasons['legacy-trace-schema'], 2);
+    assert.equal(store.records[1].usage.hitRatio, 0.5);
+    assert.deepEqual(store.records[1].qualification, {
+      eligible: false,
+      reasons: ['legacy-trace-schema'],
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('v5 preserves missing cache usage and qualifies an explicitly reported zero cache read', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-v5-truth-'));
+  try {
+    const observer = new CacheTraceObserver({
+      sessionId: 'cache:v5-truth',
+      traceDir: dir,
+      env: { XIAOBA_CACHE_TRACE: 'true' },
+    });
+    observer.observe(attemptEvent({ outcome: 'started', callId: 'missing', attemptId: 'missing:1' }));
+    observer.observe(attemptEvent({
+      outcome: 'succeeded',
+      callId: 'missing',
+      attemptId: 'missing:1',
+      response: { content: 'ok', usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11, inputTokensReported: true } },
+    }));
+    observer.observe(attemptEvent({ outcome: 'started', callId: 'zero', attemptId: 'zero:1' }));
+    observer.observe(attemptEvent({
+      outcome: 'succeeded',
+      callId: 'zero',
+      attemptId: 'zero:1',
+      response: {
+        content: 'ok',
+        usage: { promptTokens: 20, completionTokens: 1, totalTokens: 21, inputTokensReported: true, cachedReadTokens: 0 },
+      },
+    }));
+    await observer.drain();
+
+    const rawLines = listTraceFiles(dir).flatMap(file => fs.readFileSync(file, 'utf8')
+      .trim()
+      .split(/\r?\n/)
+      .map(line => JSON.parse(line)));
+    const missingUsage = rawLines.find(line => line.lifecycle.outcome === 'succeeded'
+      && line.lifecycle.call_id === 'missing').response_usage;
+    assert.equal(missingUsage.cache_read_reported, false);
+    assert.equal(missingUsage.input_tokens_reported, true);
+    assert.equal(Object.hasOwn(missingUsage, 'cache_read_tokens'), false);
+    const zeroUsage = rawLines.find(line => line.lifecycle.outcome === 'succeeded'
+      && line.lifecycle.call_id === 'zero').response_usage;
+    assert.equal(zeroUsage.cache_read_reported, true);
+    assert.equal(zeroUsage.cache_read_tokens, 0);
+
+    const store = await readCacheTraceStore(dir);
+    const missing = store.records.find(record => record.callId === 'missing')!;
+    const zero = store.records.find(record => record.callId === 'zero')!;
+    assert.equal(missing.usage.cacheReadTokens, undefined);
+    assert.equal(missing.usage.hitRatio, undefined);
+    assert.deepEqual(missing.qualification.reasons, ['cache-read-not-reported']);
+    assert.equal(zero.usage.cacheReadTokens, 0);
+    assert.equal(zero.usage.hitRatio, 0);
+    assert.deepEqual(zero.qualification, { eligible: true, reasons: [] });
+    assert.equal(store.sessions[0].eligibleAttempts, 1);
+    assert.equal(store.sessions[0].ineligibleAttempts, 1);
+    assert.equal(store.sessions[0].weightedHitRatio, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('v5 omits response_usage without provider usage and reports stable qualification reasons', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-v5-reasons-'));
+  try {
+    const observer = new CacheTraceObserver({
+      sessionId: 'cache:v5-reasons',
+      traceDir: dir,
+      env: { XIAOBA_CACHE_TRACE: 'true' },
+    });
+    observer.observe(attemptEvent({ outcome: 'started', callId: 'no-usage', attemptId: 'no-usage:1' }));
+    observer.observe(attemptEvent({
+      outcome: 'succeeded',
+      callId: 'no-usage',
+      attemptId: 'no-usage:1',
+      response: { content: 'ok' },
+    }));
+    await observer.drain();
+
+    const lines = fs.readFileSync(listTraceFiles(dir)[0], 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
+    assert.equal(Object.hasOwn(lines[1], 'response_usage'), false);
+    const store = await readCacheTraceStore(dir);
+    assert.deepEqual(store.records[0].qualification, {
+      eligible: false,
+      reasons: ['response-usage-missing'],
+    });
+
+    fs.writeFileSync(path.join(dir, 'invalid.jsonl'), [
+      cacheTraceLine({
+        schema: 'xiaoba.cache_trace.v5',
+        outcome: 'succeeded',
+        attemptId: 'invalid-input:1',
+        callId: 'invalid-input',
+        provider: 'openai',
+        model: 'gpt-test',
+        apiType: 'openai-responses',
+        timestamp: '2026-08-01T01:02:00.000Z',
+        usage: { input_tokens: 0, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 0, cache_write_reported: false },
+      }),
+      cacheTraceLine({
+        schema: 'xiaoba.cache_trace.v5',
+        outcome: 'succeeded',
+        attemptId: 'read-exceeds:1',
+        callId: 'read-exceeds',
+        provider: 'openai',
+        model: 'gpt-test',
+        apiType: 'openai-responses',
+        timestamp: '2026-08-01T01:03:00.000Z',
+        usage: { input_tokens: 10, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 11, cache_write_reported: false },
+      }),
+      cacheTraceLine({
+        schema: 'xiaoba.cache_trace.v5',
+        outcome: 'succeeded',
+        attemptId: 'anthropic-missing-input:1',
+        callId: 'anthropic-missing-input',
+        provider: 'anthropic',
+        model: 'claude-test',
+        apiType: 'anthropic-messages',
+        timestamp: '2026-08-01T01:04:00.000Z',
+        usage: { input_tokens: 100, input_tokens_reported: false, cache_read_reported: true, cache_read_tokens: 90, cache_write_reported: true, cache_write_tokens: 10 },
+      }),
+      cacheTraceLine({
+        schema: 'xiaoba.cache_trace.v5',
+        outcome: 'succeeded',
+        attemptId: 'anthropic-missing-write:1',
+        callId: 'anthropic-missing-write',
+        provider: 'anthropic',
+        model: 'claude-test',
+        apiType: 'anthropic-messages',
+        timestamp: '2026-08-01T01:05:00.000Z',
+        usage: { input_tokens: 100, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 90, cache_write_reported: false },
+      }),
+    ].join('\n') + '\n');
+    const invalidStore = await readCacheTraceStore(dir);
+    assert.deepEqual(invalidStore.records.find(record => record.callId === 'invalid-input')?.qualification.reasons, [
+      'invalid-input-tokens',
+    ]);
+    assert.deepEqual(invalidStore.records.find(record => record.callId === 'read-exceeds')?.qualification.reasons, [
+      'cache-read-exceeds-input',
+    ]);
+    assert.deepEqual(invalidStore.records.find(record => record.callId === 'anthropic-missing-input')?.qualification.reasons, [
+      'input-tokens-not-reported',
+    ]);
+    assert.deepEqual(invalidStore.records.find(record => record.callId === 'anthropic-missing-write')?.qualification.reasons, [
+      'cache-write-not-reported',
+    ]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -274,6 +429,10 @@ test('a started-only trace stays visible as incomplete and failure details are r
     const failed = store.records.find(record => record.outcome === 'failed')!;
     assert.equal(failed.httpStatus, 403);
     assert.doesNotMatch(failed.errorSummary, /secret-token|private\.example/);
+    assert.deepEqual(failed.qualification.reasons, [
+      'attempt-not-succeeded',
+      'response-usage-missing',
+    ]);
     assert.equal(store.sessions[0].incompleteAttempts, 1);
     assert.equal(store.sessions[0].terminalFailedCalls, 1);
   } finally {
@@ -413,6 +572,13 @@ test('dashboard exposes a discoverable cache trace page', () => {
   assert.match(page, /上下文 S\/E\/C/);
   assert.match(page, /epoch/);
   assert.match(page, /stablePrefixEstimatedTokens/);
+  assert.match(page, /可验收 Attempts/);
+  assert.match(page, /不具资格 Attempts/);
+  assert.match(page, /不可验收/);
+  assert.match(page, /未上报/);
+  assert.match(page, /legacy-trace-schema/);
+  assert.match(page, /class="muted reason">原因：/);
+  assert.match(page, /bar=ineligible===0&&hasNumber/);
   assert.match(page, /@media\(max-width:900px\)/);
   assert.match(page, /\.layout\{grid-template-columns:minmax\(0,1fr\)\}/);
   assert.match(page, /\/api\/cache-trace\/config/);
@@ -508,6 +674,7 @@ function attemptEvent(overrides: Partial<ModelAttemptEvent> = {}): ModelAttemptE
 }
 
 function cacheTraceLine(options: {
+  schema?: 'xiaoba.cache_trace.v4' | 'xiaoba.cache_trace.v5';
   outcome: 'started' | 'succeeded';
   callId: string;
   attemptId: string;
@@ -515,10 +682,10 @@ function cacheTraceLine(options: {
   model: string;
   apiType: string;
   timestamp: string;
-  usage?: Record<string, number>;
+  usage?: Record<string, unknown>;
 }): string {
   return JSON.stringify({
-    schema: 'xiaoba.cache_trace.v4',
+    schema: options.schema ?? 'xiaoba.cache_trace.v4',
     session: { session_id: 'session-a', session_type: 'agent', surface: 'cli' },
     episode: { episode_number: 2, run_id: options.callId },
     lifecycle: {

@@ -60,7 +60,8 @@ describe('Anthropic prompt-cache canary evidence', () => {
     assert.equal(evidence.verdict, 'inconclusive_prior_entry');
     assert.equal(attempt.dynamic_system_sha256, sha256(dynamicText));
     assert.equal(attempt.request_id, 'req_123');
-    assert.equal(attempt.api_path, '/v1/messages?beta=prompt_caching');
+    assert.equal(attempt.api_path, '/v1/messages');
+    assert.equal(serialized.includes('prompt_caching'), false);
     assert.deepEqual(attempt.usage, {
       input_tokens: 10,
       cache_creation_input_tokens: 20,
@@ -72,8 +73,9 @@ describe('Anthropic prompt-cache canary evidence', () => {
   });
 
   test('requires a cache read on the second request for a passing verdict', () => {
-    const attempt = (write: number, read: number) => ({
+    const attempt = (write: number, read: number, input: number = 100) => ({
       usage: {
+        input_tokens: input,
         cache_creation_input_tokens: write,
         cache_read_input_tokens: read,
       },
@@ -81,7 +83,30 @@ describe('Anthropic prompt-cache canary evidence', () => {
 
     assert.equal(evaluateCanaryAttempts([attempt(5000, 0), attempt(0, 5000)]), 'passed');
     assert.equal(evaluateCanaryAttempts([attempt(5000, 0), attempt(5000, 0)]), 'failed_no_reuse');
-    assert.equal(evaluateCanaryAttempts([attempt(0, 0), attempt(0, 0)]), 'unsupported_or_below_threshold');
+    assert.equal(evaluateCanaryAttempts([attempt(0, 0, 1), attempt(0, 0, 1)]), 'unsupported_or_below_threshold');
+    assert.equal(evaluateCanaryAttempts([
+      attempt(5000, 0),
+      { usage: { input_tokens: 100, cache_creation_input_tokens: 0 } },
+    ]), 'unobservable_usage');
+    assert.equal(evaluateCanaryAttempts([
+      attempt(5000, 0),
+      { usage: { cache_creation_input_tokens: 0, cache_read_input_tokens: 5000 } },
+    ]), 'unobservable_usage');
+  });
+
+  test('omits missing usage fields instead of recording them as zero', () => {
+    const attempt = buildAttemptEvidence({
+      response: {
+        url: 'https://api.anthropic.com/v1/messages',
+        headers: new Headers(),
+      } as Response,
+      message: { id: 'msg_missing', usage: { input_tokens: 10, output_tokens: 1 } },
+      dynamicText: 'dynamic',
+    });
+
+    assert.deepEqual(attempt.usage, { input_tokens: 10, output_tokens: 1 });
+    assert.equal(Object.prototype.hasOwnProperty.call(attempt.usage, 'cache_read_input_tokens'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(attempt.usage, 'cache_creation_input_tokens'), false);
   });
 
   test('redacts compatible endpoint origins from evidence', () => {

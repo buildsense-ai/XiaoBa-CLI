@@ -1,0 +1,72 @@
+{
+  "schema": "xiaoba.cache_benchmark_manifest.v1",
+  "suite_id": "cache-truth-v1",
+  "criteria": {
+    "minimum_read_ratio": 0.94,
+    "consecutive_rounds": 3,
+    "maximum_task_weight": 0.25,
+    "include_cold_in_primary_ratio": true
+  },
+  "cases": [
+    {
+      "case_id": "case-1",
+      "provider_instance_id": "provider-local-a",
+      "provider_adapter": "openai",
+      "model": "model-a",
+      "api_type": "openai-responses",
+      "surface": "cli",
+      "task_id": "task-1",
+      "task_fixture_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "cache_read_source": "openai.input_tokens_details.cached_tokens",
+      "scenario_family": "identity-and-device",
+      "session_type": "direct",
+      "capabilities": ["identity", "group-chat-participants", "device-authorization"],
+      "runs": [{ "run_id": "run-1", "required_cold_calls": 1, "required_warm_calls": 1 }]
+    },
+    {
+      "case_id": "case-2",
+      "provider_instance_id": "provider-local-a",
+      "provider_adapter": "openai",
+      "model": "model-a",
+      "api_type": "openai-responses",
+      "surface": "cli",
+      "task_id": "task-2",
+      "task_fixture_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "cache_read_source": "openai.input_tokens_details.cached_tokens",
+      "scenario_family": "tools-and-planning",
+      "session_type": "direct",
+      "capabilities": ["tools", "skills", "plan"],
+      "runs": [{ "run_id": "run-2", "required_cold_calls": 1, "required_warm_calls": 1 }]
+    },
+    {
+      "case_id": "case-3",
+      "provider_instance_id": "provider-local-a",
+      "provider_adapter": "openai",
+      "model": "model-a",
+      "api_type": "openai-responses",
+      "surface": "cli",
+      "task_id": "task-3",
+      "task_fixture_fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "cache_read_source": "openai.input_tokens_details.cached_tokens",
+      "scenario_family": "delegation-and-memory",
+      "session_type": "branch",
+      "capabilities": ["goal", "subagent", "memory"],
+      "runs": [{ "run_id": "run-3", "required_cold_calls": 1, "required_warm_calls": 1 }]
+    },
+    {
+      "case_id": "case-4",
+      "provider_instance_id": "provider-local-a",
+      "provider_adapter": "openai",
+      "model": "model-a",
+      "api_type": "openai-responses",
+      "surface": "cli",
+      "task_id": "task-4",
+      "task_fixture_fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "cache_read_source": "openai.input_tokens_details.cached_tokens",
+      "scenario_family": "feedback-and-recovery",
+      "session_type": "resumed",
+      "capabilities": ["runtime-feedback", "session-recovery"],
+      "runs": [{ "run_id": "run-4", "required_cold_calls": 1, "required_warm_calls": 1 }]
+    }
+  ]
+}

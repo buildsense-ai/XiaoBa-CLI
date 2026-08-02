@@ -64,6 +64,7 @@ test('Anthropic SDK serializes both stable cache breakpoints on the real wire pa
       promptTokens: 60,
       completionTokens: 1,
       totalTokens: 61,
+      inputTokensReported: true,
       cachedReadTokens: 30,
       cachedWriteTokens: 20,
     });
