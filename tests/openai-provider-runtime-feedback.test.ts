@@ -3,9 +3,46 @@ import * as assert from 'node:assert';
 import { Readable } from 'node:stream';
 import axios from 'axios';
 import { OpenAIProvider } from '../src/providers/openai-provider';
+import { buildSyntheticObservationMessages } from '../src/core/synthetic-observation';
 import { Message } from '../src/types';
 
 describe('OpenAIProvider runtime feedback boundary', () => {
+  test('keeps equivalent Chat observation wire messages stable across internal branch ids', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.deepseek.com',
+      model: 'deepseek-test',
+    });
+    const build = (suffix: string) => {
+      const first = buildSyntheticObservationMessages([{
+        id: `observation-one-${suffix}`,
+        source: 'memory',
+        status: 'completed',
+        relevance: 'high',
+        summary: 'Equivalent visible memory result.',
+        metadata: { branchType: 'memory', branchId: `branch-one-${suffix}` },
+      }]);
+      const second = buildSyntheticObservationMessages([{
+        id: `observation-two-${suffix}`,
+        source: 'memory',
+        status: 'completed',
+        relevance: 'high',
+        summary: 'Equivalent visible memory result.',
+        metadata: { branchType: 'memory', branchId: `branch-two-${suffix}` },
+      }], { existingMessages: first });
+      return (provider as any).buildRequestBody([
+        { role: 'user', content: 'current question' },
+        ...first,
+        ...second,
+      ]).messages;
+    };
+
+    const first = build('a');
+    const second = build('b');
+    assert.deepStrictEqual(first, second);
+    assert.notEqual(first[1].tool_calls[0].id, first[3].tool_calls[0].id);
+  });
+
   test('strips internal injected fields before building SDK messages', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
