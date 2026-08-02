@@ -183,6 +183,26 @@ node dist/index.js chat --interactive
 
 本地 Agent 不要求部署 CatsCo Platform。
 
+源代码目录、Agent 工作目录和运行数据目录彼此独立。CLI 默认把登录配置、会话和日志保存在 `~/.xiaoba`，不会因为切换 Git worktree 而变化。启动时会打印三个目录；也可以显式选择实验 profile：
+
+```bash
+node dist/index.js --profile cache-baseline data status
+node dist/index.js --profile cache-baseline chat --interactive
+```
+
+需要完全指定目录时使用 `--data-dir` 或进程环境变量 `XIAOBA_USER_DATA_DIR`。两者必须在启动命令或 shell 中设置，不能只写在目标目录自己的 `.env` 中：
+
+```bash
+XIAOBA_USER_DATA_DIR=/Users/me/.xiaoba-dev/profiles/default node dist/index.js dashboard
+```
+
+从旧版仓库内 Data Dir 迁移前可先预览；迁移只复制已知运行数据，不覆盖冲突文件，也不删除来源：
+
+```bash
+node dist/index.js --data-dir /Users/me/.xiaoba-dev/profiles/default data migrate --from /path/to/old/XiaoBa-CLI
+node dist/index.js --data-dir /Users/me/.xiaoba-dev/profiles/default data migrate --from /path/to/old/XiaoBa-CLI --apply
+```
+
 ### 连接 CatsCo Platform
 
 ```bash

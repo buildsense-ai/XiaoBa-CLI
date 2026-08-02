@@ -1,18 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
-import * as dotenv from 'dotenv';
 import { ChatConfig } from '../types';
 import { normalizeReasoningEffort } from './reasoning-effort';
 import { normalizeOpenAIApiMode } from './openai-api-mode';
 import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
 import { PathResolver } from './path-resolver';
+import { loadRuntimeEnvFiles } from '../runtime/runtime-env';
 
-// 加载环境变量（静默模式）
-dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || '.env', quiet: true });
-
-const DEFAULT_CONFIG_DIR = path.join(os.homedir(), '.xiaoba');
-const DEFAULT_CONFIG_FILE = path.join(DEFAULT_CONFIG_DIR, 'config.json');
+loadRuntimeEnvFiles();
 
 export class ConfigManager {
   private static mergeConfig(base: ChatConfig, override?: Partial<ChatConfig>): ChatConfig {
@@ -61,7 +56,9 @@ export class ConfigManager {
 
   private static getConfigFilePath(): string {
     const explicitPath = process.env.XIAOBA_CONFIG_PATH?.trim();
-    return explicitPath ? path.resolve(explicitPath) : DEFAULT_CONFIG_FILE;
+    return explicitPath
+      ? path.resolve(explicitPath)
+      : path.join(PathResolver.getRuntimeDataRoot(), 'config.json');
   }
 
   static getConfig(): ChatConfig {

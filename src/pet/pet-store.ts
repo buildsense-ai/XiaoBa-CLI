@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { PathResolver } from '../utils/path-resolver';
 import {
   applyPetEvent,
   cleanupPetEvents,
@@ -138,13 +139,16 @@ export function resolvePetDataDir(env: NodeJS.ProcessEnv = process.env, cwd: str
   const explicit = String(env.XIAOBA_PET_DATA_DIR || '').trim();
   if (explicit) return path.isAbsolute(explicit) ? explicit : path.resolve(cwd, explicit);
 
+  // Preserve the packaged app's existing <electron-user-data>/pet location.
+  // It is already outside the code tree and changing it would make existing
+  // companion progress appear to disappear after an upgrade.
   const electronUserData = String(env.XIAOBA_ELECTRON_USER_DATA_DIR || '').trim();
   if (electronUserData) {
     const resolved = path.isAbsolute(electronUserData) ? electronUserData : path.resolve(cwd, electronUserData);
     return path.join(resolved, 'pet');
   }
 
-  return path.join(cwd, 'data', 'pet');
+  return path.join(PathResolver.getRuntimeDataRoot(env, cwd), 'data', 'pet');
 }
 
 function createDefaultStoreData(): PetStoreData {
