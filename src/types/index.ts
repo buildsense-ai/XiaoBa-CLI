@@ -5,6 +5,35 @@ export type ContentBlock =
 export type ProviderContentBlock = Record<string, unknown> & { type: string };
 export type ProviderApiType = 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses';
 
+export type ContextLifecycle = 'session' | 'episode' | 'call';
+export type ContextCacheScope = 'stable' | 'epoch' | 'volatile';
+export type ContextPersistence = 'durable' | 'transient';
+export type ContextSource =
+  | 'runtime_context'
+  | 'runtime_observation_rules'
+  | 'runtime_feedback'
+  | 'runtime_transient'
+  | 'plan_status'
+  | 'subagent_status'
+  | 'skills_list'
+  | 'current_directory'
+  | 'runner_hint'
+  | 'pending_user_input'
+  | 'synthetic_observation'
+  | 'compaction_boundary'
+  | 'provider_recovery';
+
+/** Internal context lifecycle metadata. Provider serializers never emit it. */
+export interface ContextLifecycleAnnotation {
+  schema: 'xiaoba.context_lifecycle.v1';
+  source: ContextSource;
+  lifecycle: ContextLifecycle;
+  cacheScope: ContextCacheScope;
+  persistence: ContextPersistence;
+  /** Raw epoch identity stays in memory; telemetry exposes only a fingerprint. */
+  epoch?: string;
+}
+
 /** Opaque scope that prevents provider-only replay state crossing model/API boundaries. */
 export interface ProviderStateReference {
   schema: 'xiaoba.provider_state.v1';
@@ -35,6 +64,8 @@ export interface Message {
    * but is appended to Responses input instead of destabilizing instructions.
    */
   __cacheScope?: 'stable' | 'dynamic';
+  /** Typed replacement for prefix/boolean-based transient and cache conventions. */
+  __context?: ContextLifecycleAnnotation;
   /** 标记注入给 agent 看的运行时反馈，仅供内部清理和日志记录使用 */
   __runtimeFeedback?: boolean;
   /** 标记内部 runtime observation，例如子 agent 完成结果；对模型仍以 user role 承载 */

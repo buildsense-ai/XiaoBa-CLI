@@ -30,6 +30,7 @@ import {
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
 import { buildPendingUserInputBoundaryMessage } from './pending-user-input-boundary';
+import { annotateContextMessage } from './context-lifecycle';
 import {
   TRANSIENT_CURRENT_DIRECTORY_PREFIX,
   buildTransientEnvironmentHint,
@@ -372,8 +373,12 @@ export class ConversationRunner {
       }
 
       const orchestrationHints: Message[] = [];
-      const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, requestTools);
-      const decisionHint = buildInitialDecisionHintIfUseful(messages, requestTools);
+      const explicitPlanHint = turns === 1
+        ? buildExplicitPlanRequestHintIfUseful(messages, requestTools)
+        : null;
+      const decisionHint = turns === 1
+        ? buildInitialDecisionHintIfUseful(messages, requestTools)
+        : null;
       if (explicitPlanHint) orchestrationHints.push(explicitPlanHint);
       if (decisionHint) orchestrationHints.push(decisionHint);
       if (shouldAddPlanSoftNudge(requestTools, turns, executedToolCalls, hasUpdatedPlan || hasRecordedDecision, nextPlanNudgeAt)) {
@@ -759,7 +764,7 @@ export class ConversationRunner {
       this.refreshRuntimeContextForPendingInput(messages);
     }
 
-    messages.push(buildPendingUserInputBoundaryMessage());
+    messages.push(buildPendingUserInputBoundaryMessage(this.episodeId));
     const userMessage: Message = {
       role: 'user',
       content,
@@ -850,7 +855,14 @@ export class ConversationRunner {
       targetRoutes: this.toolExecutionContext?.targetRoutes,
       localFileGrants: this.toolExecutionContext?.localFileGrants,
     });
-    if (runtimeContext) messages.push(runtimeContext);
+    if (runtimeContext) {
+      messages.push(annotateContextMessage(runtimeContext, {
+        source: 'runtime_context',
+        lifecycle: 'episode',
+        cacheScope: 'epoch',
+        epoch: this.episodeId,
+      }));
+    }
   }
 
   private injectSyntheticObservations(messages: Message[], turn: number): void {
@@ -1215,7 +1227,15 @@ export class ConversationRunner {
   private drainRuntimeTransientMessages(turn: number): Message[] {
     if (!this.runtimeTransientProvider) return [];
     try {
-      return this.runtimeTransientProvider();
+      return this.runtimeTransientProvider().map(message => (
+        message.__context
+          ? message
+          : annotateContextMessage(message, {
+              source: 'runtime_transient',
+              lifecycle: 'call',
+              cacheScope: 'volatile',
+            })
+      ));
     } catch (error: any) {
       Logger.warning(`[${this.sessionLabel}Turn ${turn}] runtime transient drain failed: ${error.message}`);
       return [];
@@ -1335,11 +1355,14 @@ export class ConversationRunner {
   }
 
   private buildDuplicateOutboundHint(content: string): Message {
-    return {
+    return annotateContextMessage({
       role: 'system',
       content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n${renderRequiredDefaultPromptFile('transient/runner-duplicate-outbound.md', { content })}`,
-      __cacheScope: 'dynamic',
-    };
+    }, {
+      source: 'runner_hint',
+      lifecycle: 'call',
+      cacheScope: 'volatile',
+    });
   }
 
   private isEmptyMaxTokensResponse(response: ChatResponse): boolean {
@@ -1351,14 +1374,17 @@ export class ConversationRunner {
   }
 
   private buildEmptyMaxTokensRecoveryHint(): Message {
-    return {
+    return annotateContextMessage({
       role: 'system',
       content: [
         TRANSIENT_RUNNER_HINT_PREFIX,
         renderRequiredDefaultPromptFile('transient/runner-empty-max-tokens.md', {}),
       ].join('\n'),
-      __cacheScope: 'dynamic',
-    };
+    }, {
+      source: 'provider_recovery',
+      lifecycle: 'call',
+      cacheScope: 'volatile',
+    });
   }
 
   private logProviderMessagesForDebug(

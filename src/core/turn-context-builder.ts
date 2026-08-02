@@ -27,6 +27,10 @@ import {
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import { resolveTurnContextTransientPolicy } from './transient-injection-policy';
 import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from './pending-user-input-boundary';
+import {
+  annotateContextMessage,
+  isTransientContextMessage,
+} from './context-lifecycle';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
@@ -47,6 +51,8 @@ export interface BuildTurnContextParams {
   runtimeFeedback: string[];
   skillRuntime: SessionSkillRuntime;
   planRuntime?: PlanRuntime;
+  /** Stable for every provider call inside one user-turn episode. */
+  contextEpoch?: string;
 }
 
 export interface BuildTurnContextResult {
@@ -63,19 +69,25 @@ export interface BuildTurnContextResult {
 export class TurnContextBuilder {
   async build(params: BuildTurnContextParams): Promise<BuildTurnContextResult> {
     const contextMessages = stripAssistantArtifactsFromMessages(params.durableMessages);
-    this.injectRuntimeContext(contextMessages, params);
-    this.injectRuntimeObservationRules(contextMessages);
-    this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
-    this.injectPlanStatus(contextMessages, params.planRuntime);
-    this.injectSubAgentStatus(contextMessages, params.sessionKey);
+    // Stable/session-scoped additions must stay before episode/call additions so
+    // provider prefix caches can reuse them independently of a changing turn.
     const transientPolicy = resolveTurnContextTransientPolicy(contextMessages);
+    this.injectRuntimeObservationRules(contextMessages);
     if (transientPolicy.injectSkillsList) {
       await params.skillRuntime.reloadSkills();
       const skillsListMsg = params.skillRuntime.buildSkillsListMessage();
       if (skillsListMsg) {
-        this.insertBeforeLastUser(contextMessages, { ...skillsListMsg, __cacheScope: 'dynamic' });
+        this.insertBeforeLastUser(contextMessages, annotateContextMessage(skillsListMsg, {
+          source: 'skills_list',
+          lifecycle: 'session',
+          cacheScope: 'stable',
+        }));
       }
     }
+    this.injectRuntimeContext(contextMessages, params);
+    this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback, params.contextEpoch);
+    this.injectPlanStatus(contextMessages, params.planRuntime, params.contextEpoch);
+    this.injectSubAgentStatus(contextMessages, params.sessionKey, params.contextEpoch);
 
     return {
       messages: contextMessages,
@@ -86,6 +98,7 @@ export class TurnContextBuilder {
 
   removeTransientMessages(messages: Message[]): Message[] {
     return messages.filter(msg => {
+      if (isTransientContextMessage(msg)) return false;
       if (msg.__syntheticObservation) return false;
       if (msg.__runtimeFeedback) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
@@ -114,11 +127,16 @@ export class TurnContextBuilder {
       localFileGrants: params.localFileGrants,
     });
     if (!message) return;
-    this.insertBeforeLastUser(messages, { ...message, __cacheScope: 'dynamic' });
+    this.insertBeforeLastUser(messages, annotateContextMessage(message, {
+      source: 'runtime_context',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+      epoch: params.contextEpoch,
+    }));
   }
 
   private injectRuntimeObservationRules(messages: Message[]): void {
-    this.insertBeforeLastUser(messages, {
+    this.insertBeforeLastUser(messages, annotateContextMessage({
       role: 'system',
       content: [
         TRANSIENT_RUNTIME_OBSERVATION_RULES_PREFIX,
@@ -130,35 +148,53 @@ export class TurnContextBuilder {
         '如果 late_previous_turn 与当前用户输入冲突，以当前用户输入为准。',
         '如果它说明上一轮回答有遗漏且当前仍在同一话题，可以简短补充或修正；否则保持安静。',
       ].join('\n'),
-    });
+    }, {
+      source: 'runtime_observation_rules',
+      lifecycle: 'session',
+      cacheScope: 'stable',
+    }));
   }
 
-  private injectRuntimeFeedback(messages: Message[], runtimeFeedback: string[]): void {
+  private injectRuntimeFeedback(messages: Message[], runtimeFeedback: string[], contextEpoch?: string): void {
     if (runtimeFeedback.length === 0) return;
 
-    const runtimeFeedbackMessages: Message[] = runtimeFeedback.map(content => ({
+    const runtimeFeedbackMessages: Message[] = runtimeFeedback.map(content => annotateContextMessage({
       role: 'user',
       content,
       __injected: true,
       __runtimeFeedback: true,
+    }, {
+      source: 'runtime_feedback',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+      epoch: contextEpoch,
     }));
     this.insertBeforeLastUser(messages, ...runtimeFeedbackMessages);
   }
 
-  private injectPlanStatus(messages: Message[], planRuntime?: PlanRuntime): void {
+  private injectPlanStatus(messages: Message[], planRuntime?: PlanRuntime, contextEpoch?: string): void {
     const planText = planRuntime?.formatForPrompt();
     if (!planText) return;
-    this.insertBeforeLastUser(messages, {
+    this.insertBeforeLastUser(messages, annotateContextMessage({
       role: 'system',
       content: `${TRANSIENT_PLAN_STATUS_PREFIX}\n${planText}`,
-      __cacheScope: 'dynamic',
-    });
+    }, {
+      source: 'plan_status',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+      epoch: contextEpoch,
+    }));
   }
 
-  private injectSubAgentStatus(messages: Message[], sessionKey: string): void {
+  private injectSubAgentStatus(messages: Message[], sessionKey: string, contextEpoch?: string): void {
     const statusMessage = buildSubAgentStatusMessage(sessionKey);
     if (!statusMessage) return;
-    this.insertBeforeLastUser(messages, statusMessage);
+    this.insertBeforeLastUser(messages, annotateContextMessage(statusMessage, {
+      source: 'subagent_status',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+      epoch: contextEpoch,
+    }));
   }
 
   private extractRuntimeFeedback(messages: Message[]): string[] {

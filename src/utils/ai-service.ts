@@ -30,6 +30,10 @@ import {
   summarizeAnthropicCachePlan,
 } from '../providers/anthropic-cache-policy';
 import type { ProviderCachePlanSummary } from '../providers/provider-cache-policy';
+import {
+  summarizeContextLifecycle,
+  type ContextLifecycleSummary,
+} from '../core/context-lifecycle';
 import { Logger } from './logger';
 import { isPrimaryModelToolCallingCapable } from './model-capabilities';
 import { resolveModelContextWindow } from './model-context-window';
@@ -79,6 +83,7 @@ interface ModelAttemptRun {
   stream: boolean;
   preflight?: ProviderRequestPreflightSummary;
   cache?: ProviderCachePlanSummary;
+  contextLifecycle?: ContextLifecycleSummary;
 }
 
 interface RetryRecoveryPlan {
@@ -652,6 +657,7 @@ export class AIService {
             tools: tools || [],
           }))
         : undefined;
+    const contextLifecycle = summarizeContextLifecycle(messages);
     return {
       callId: `${Date.now().toString(36)}-${process.pid.toString(36)}-${modelAttemptCallSequence.toString(36)}`,
       sink: options.modelAttemptSink,
@@ -661,6 +667,7 @@ export class AIService {
       stream,
       ...(preflight ? { preflight } : {}),
       ...(cache ? { cache } : {}),
+      ...(contextLifecycle ? { contextLifecycle } : {}),
     };
   }
 
@@ -692,6 +699,7 @@ export class AIService {
         tools: run.tools,
         ...(run.preflight ? { preflight: run.preflight } : {}),
         ...(run.cache ? { cache: run.cache } : {}),
+        ...(run.contextLifecycle ? { contextLifecycle: run.contextLifecycle } : {}),
       },
       ...(fields.durationMs === undefined ? {} : { durationMs: fields.durationMs }),
       ...(fields.response === undefined ? {} : { response: fields.response }),

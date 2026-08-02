@@ -6,6 +6,7 @@ import {
   canonicalizeProviderCacheValue,
   type ProviderCachePlanSummary,
 } from './provider-cache-policy';
+import { resolveContextCacheScope } from '../core/context-lifecycle';
 
 export type OpenAICacheApiType = 'openai-chat-completions' | 'openai-responses';
 export type OpenAICacheStrategy =
@@ -151,8 +152,9 @@ function collectResponsesStableSystemMessages(messages: readonly Message[]): Sta
 }
 
 function isDynamicCacheMessage(message: Message): boolean {
-  if (message.__cacheScope === 'dynamic') return true;
-  if (message.__cacheScope === 'stable') return false;
+  const scope = resolveContextCacheScope(message);
+  if (scope === 'epoch' || scope === 'volatile') return true;
+  if (scope === 'stable') return false;
   return message.role === 'system'
     && typeof message.content === 'string'
     && /^(?:\[(?:transient_[^\]]+|compact_boundary)\])/.test(message.content);

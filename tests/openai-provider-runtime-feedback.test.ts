@@ -19,6 +19,14 @@ describe('OpenAIProvider runtime feedback boundary', () => {
         content: '[运行时反馈] feishu.file_download\n错误: 文件下载失败',
         __injected: true,
         __cacheScope: 'dynamic',
+        __context: {
+          schema: 'xiaoba.context_lifecycle.v1',
+          source: 'runtime_feedback',
+          lifecycle: 'episode',
+          cacheScope: 'epoch',
+          persistence: 'transient',
+          epoch: 'episode:test',
+        },
         __runtimeFeedback: true,
         __runtimeObservation: true,
         runtimeObservationSource: 'subagent_result',
@@ -52,6 +60,8 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.deepStrictEqual(Object.keys(body.messages[2]).sort(), ['content', 'name', 'role', 'tool_call_id']);
     assert.equal(JSON.stringify(body.messages).includes('__injected'), false);
     assert.equal(JSON.stringify(body.messages).includes('__cacheScope'), false);
+    assert.equal(JSON.stringify(body.messages).includes('__context'), false);
+    assert.equal(JSON.stringify(body.messages).includes('xiaoba.context_lifecycle'), false);
     assert.equal(JSON.stringify(body.messages).includes('__runtimeFeedback'), false);
     assert.equal(JSON.stringify(body.messages).includes('__runtimeObservation'), false);
     assert.equal(JSON.stringify(body.messages).includes('__episodeId'), false);

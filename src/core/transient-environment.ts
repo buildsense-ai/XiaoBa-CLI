@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { Message } from '../types';
+import { annotateContextMessage } from './context-lifecycle';
 
 export const TRANSIENT_CURRENT_DIRECTORY_PREFIX = '[transient_current_directory]';
 
@@ -44,11 +45,15 @@ export function buildTransientEnvironmentHint(
     'Use cwd for relative file and shell paths.',
   ].filter(Boolean);
 
-  return {
+  return annotateContextMessage({
     role: 'user',
     content: lines.join('\n'),
     __injected: true,
-  };
+  }, {
+    source: 'current_directory',
+    lifecycle: 'call',
+    cacheScope: 'volatile',
+  });
 }
 
 export function resolveShellName(

@@ -60,13 +60,27 @@ describe('runtime context builder', () => {
       durableMessages,
       runtimeFeedback: [],
       skillRuntime: emptySkillRuntime(),
+      contextEpoch: 'episode-runtime-context',
     });
 
     assert.deepEqual(durableMessages.map(message => message.content), ['base system', '帮我查合同']);
     const runtimeIndex = result.messages.findIndex(isRuntimeContextMessage);
+    const stableRulesIndex = result.messages.findIndex(message => (
+      message.__context?.source === 'runtime_observation_rules'
+    ));
     const userIndex = result.messages.findIndex(message => message.role === 'user' && message.content === '帮我查合同');
     assert.ok(runtimeIndex >= 0, 'runtime context should be injected');
+    assert.ok(stableRulesIndex >= 0, 'stable runtime rules should be injected');
+    assert.ok(stableRulesIndex < runtimeIndex, 'session-stable additions must precede episode context');
     assert.ok(runtimeIndex < userIndex, 'runtime context should appear before the latest user message');
+    assert.deepEqual(result.messages[runtimeIndex].__context, {
+      schema: 'xiaoba.context_lifecycle.v1',
+      source: 'runtime_context',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+      persistence: 'transient',
+      epoch: 'episode-runtime-context',
+    });
 
     const runtimeText = String(result.messages[runtimeIndex].content || '');
     assert.match(runtimeText, /^\[transient_runtime_context\]/);

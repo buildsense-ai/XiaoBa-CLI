@@ -65,10 +65,11 @@ describe('AnthropicProvider - Extra Fields in Image Block Bug', () => {
     assert.strictEqual(imageBlock.filePath, undefined, 
       'filePath field should be filtered out');
     
-    // 验证只有 type 和 source 两个字段
+    // 官方端点允许最后一个内容块携带 prompt-cache 断点；业务侧额外字段仍必须移除。
     const imageBlockKeys = Object.keys(imageBlock);
-    assert.deepStrictEqual(imageBlockKeys.sort(), ['source', 'type'], 
-      'Image block should only have type and source fields');
+    assert.deepStrictEqual(imageBlockKeys.sort(), ['cache_control', 'source', 'type'],
+      'Image block should only have protocol-defined fields');
+    assert.deepStrictEqual(imageBlock.cache_control, { type: 'ephemeral' });
   });
 
   test('should filter out extra fields from image blocks in tool results', () => {
@@ -144,8 +145,9 @@ describe('AnthropicProvider - Extra Fields in Image Block Bug', () => {
         'filePath should be filtered from tool result images');
       
       const keys = Object.keys(imgBlock);
-      assert.deepStrictEqual(keys.sort(), ['source', 'type'],
-        'Image block should only have type and source');
+      assert.deepStrictEqual(keys.sort(), ['cache_control', 'source', 'type'],
+        'Image block should only have protocol-defined fields');
+      assert.deepStrictEqual(imgBlock.cache_control, { type: 'ephemeral' });
     }
   });
 });

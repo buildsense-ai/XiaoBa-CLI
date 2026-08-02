@@ -2,6 +2,7 @@ import { estimateMessagesTokens, estimateToolsTokens } from '../core/token-estim
 import type { Message } from '../types';
 import type { ToolDefinition } from '../types/tool';
 import type { ProviderCachePlanSummary } from './provider-cache-policy';
+import { resolveContextCacheScope } from '../core/context-lifecycle';
 
 export type AnthropicCacheStrategy =
   | 'anthropic-compatible-no-markers'
@@ -14,6 +15,7 @@ export interface AnthropicCachePlanSummary extends ProviderCachePlanSummary {
 export interface AnthropicCachePlan extends AnthropicCachePlanSummary {
   toolBreakpointIndex?: number;
   stableSystemEnd: number;
+  conversationBreakpoint: boolean;
 }
 
 export interface AnthropicCachePlanInput {
@@ -23,11 +25,10 @@ export interface AnthropicCachePlanInput {
 }
 
 /**
- * Keep breakpoints on prefixes that are identical across calls.
- *
- * We intentionally do not enable top-level automatic caching yet. XiaoBa's
- * current per-call system suffix changes ahead of message history, which would
- * otherwise create a paid cache write on each request without a reusable hit.
+ * Keep explicit breakpoints on stable tools/system plus the latest growing
+ * conversation boundary. We intentionally do not enable top-level automatic
+ * caching yet: a per-call system suffix ahead of history can otherwise create
+ * paid writes that a subsequent request cannot reuse.
  */
 export function resolveAnthropicCachePlan(input: AnthropicCachePlanInput): AnthropicCachePlan {
   const systemMessages = input.messages.filter(message => (
@@ -45,8 +46,16 @@ export function resolveAnthropicCachePlan(input: AnthropicCachePlanInput): Anthr
   const toolBreakpointIndex = official && input.tools.length > 0
     ? input.tools.length - 1
     : undefined;
+  const lastEmittedMessage = [...input.messages].reverse().find(emitsAnthropicMessage);
+  const conversationBreakpoint = Boolean(
+    official
+    && lastEmittedMessage
+    && (lastEmittedMessage.role === 'user' || lastEmittedMessage.role === 'tool'),
+  );
   const explicitBreakpoints = official
-    ? Number(toolBreakpointIndex !== undefined) + Number(hasStableSystemText)
+    ? Number(toolBreakpointIndex !== undefined)
+      + Number(hasStableSystemText)
+      + Number(conversationBreakpoint)
     : 0;
 
   return {
@@ -58,6 +67,7 @@ export function resolveAnthropicCachePlan(input: AnthropicCachePlanInput): Anthr
     stableSystemMessages: stableMessages.length,
     explicitBreakpoints,
     stableSystemEnd,
+    conversationBreakpoint,
     ...(toolBreakpointIndex === undefined ? {} : { toolBreakpointIndex }),
   };
 }
@@ -89,8 +99,17 @@ export function isCanonicalAnthropicEndpoint(apiUrl: string): boolean {
 }
 
 function isDynamicSystemMessage(message: Message): boolean {
-  if (message.__cacheScope === 'dynamic') return true;
-  if (message.__cacheScope === 'stable') return false;
+  const scope = resolveContextCacheScope(message);
+  if (scope === 'epoch' || scope === 'volatile') return true;
+  if (scope === 'stable') return false;
   return typeof message.content === 'string'
     && /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(message.content);
+}
+
+function emitsAnthropicMessage(message: Message): boolean {
+  if (message.role === 'system') return false;
+  if (message.role === 'tool') return Boolean(message.tool_call_id);
+  if (message.role === 'assistant' && (message.tool_calls?.length || 0) > 0) return true;
+  if (typeof message.content === 'string') return Boolean(message.content.trim());
+  return Array.isArray(message.content) && message.content.length > 0;
 }

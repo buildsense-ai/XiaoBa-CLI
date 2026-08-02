@@ -5,6 +5,7 @@ import {
 } from '../utils/reasoning-effort';
 import { normalizeOpenAIChatCompletionsUrl } from './openai-url';
 import { createProviderStateReference, isProviderStateCompatible } from './provider-state';
+import { annotateContextMessage } from '../core/context-lifecycle';
 
 export type ReasoningReplayRecoveryAction =
   | 'reasoning_replay_include'
@@ -126,12 +127,15 @@ function degradeToolHistoryWithoutReasoning(
         providerState: undefined,
       });
     }
-    output.push({
+    output.push(annotateContextMessage({
       role: 'user',
       content: buildDegradedHistoryNote(results),
       __runtimeFeedback: true,
-      __cacheScope: 'dynamic',
-    });
+    }, {
+      source: 'provider_recovery',
+      lifecycle: 'call',
+      cacheScope: 'volatile',
+    }));
     index = nextIndex - 1;
   }
 
