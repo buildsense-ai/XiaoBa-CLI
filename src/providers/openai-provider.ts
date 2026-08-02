@@ -1,5 +1,4 @@
 import axios from 'axios';
-import { createHash } from 'crypto';
 import { StringDecoder } from 'string_decoder';
 import { Message, ChatConfig, ChatResponse, ContentBlock, type ProviderApiType, type ProviderStateReference } from '../types';
 import { ToolDefinition } from '../types/tool';
@@ -14,6 +13,10 @@ import {
 } from '../utils/reasoning-effort';
 import { openAIApiModeOrDefault } from '../utils/openai-api-mode';
 import { createProviderStateReference, isProviderStateCompatible } from './provider-state';
+import {
+  canonicalizeOpenAICacheValue,
+  resolveOpenAICachePlan,
+} from './openai-cache-policy';
 
 /**
  * OpenAI Provider
@@ -52,7 +55,18 @@ export class OpenAIProvider implements AIProvider {
     stream = false,
     options?: AIRequestOptions,
   ): any {
+    const cachePlan = resolveOpenAICachePlan({
+      apiUrl: this.chatCompletionsUrl,
+      model: this.model,
+      apiType: 'openai-chat-completions',
+      messages,
+      tools: tools ?? [],
+      partitionKey: options?.cachePartitionKey,
+    });
     const sanitizedMessages = messages.map(message => this.sanitizeMessage(message, options));
+    if (cachePlan.chatBreakpointMessageIndex !== undefined) {
+      this.applyChatCacheBreakpoint(sanitizedMessages, cachePlan.chatBreakpointMessageIndex);
+    }
 
     const body: any = {
       model: this.model,
@@ -61,6 +75,11 @@ export class OpenAIProvider implements AIProvider {
       max_tokens: this.maxTokens,
       stream,
     };
+
+    if (cachePlan.promptCacheKey) body.prompt_cache_key = cachePlan.promptCacheKey;
+    if (cachePlan.explicitBreakpoints > 0) {
+      body.prompt_cache_options = { mode: 'explicit' };
+    }
 
     if (stream) {
       body.stream_options = { include_usage: true };
@@ -73,17 +92,43 @@ export class OpenAIProvider implements AIProvider {
     });
 
     if (tools && tools.length > 0) {
-      body.tools = tools.map(tool => ({
+      body.tools = this.buildCanonicalChatTools(tools);
+    }
+
+    return body;
+  }
+
+  private applyChatCacheBreakpoint(messages: any[], messageIndex: number): void {
+    const message = messages[messageIndex];
+    if (!message) return;
+    if (typeof message.content === 'string' && message.content) {
+      message.content = [{
+        type: 'text',
+        text: message.content,
+        prompt_cache_breakpoint: { mode: 'explicit' },
+      }];
+      return;
+    }
+    if (!Array.isArray(message.content) || message.content.length === 0) return;
+    const lastIndex = message.content.length - 1;
+    message.content[lastIndex] = {
+      ...message.content[lastIndex],
+      prompt_cache_breakpoint: { mode: 'explicit' },
+    };
+  }
+
+  private buildCanonicalChatTools(tools: ToolDefinition[]): any[] {
+    return tools
+      .map(tool => ({
         type: 'function',
         function: {
           name: tool.name,
           description: tool.description,
-          parameters: tool.parameters
-        }
-      }));
-    }
-
-    return body;
+          parameters: tool.parameters,
+        },
+      }))
+      .sort((left, right) => left.function.name.localeCompare(right.function.name))
+      .map(tool => canonicalizeOpenAICacheValue(tool));
   }
 
   private sanitizeMessage(message: Message, options?: AIRequestOptions): any {
@@ -390,23 +435,50 @@ export class OpenAIProvider implements AIProvider {
     });
   }
 
-  private buildResponsesRequestBody(messages: Message[], tools?: ToolDefinition[], stream = false): any {
+  private buildResponsesRequestBody(
+    messages: Message[],
+    tools?: ToolDefinition[],
+    stream = false,
+    options?: AIRequestOptions,
+  ): any {
     const instructions = messages
       .filter(message => message.role === 'system' && !this.isDynamicCacheMessage(message))
       .map(message => this.contentAsText(message.content))
       .filter(Boolean)
       .join('\n\n');
     const responseTools = this.buildCanonicalResponsesTools(tools ?? []);
+    const cachePlan = resolveOpenAICachePlan({
+      apiUrl: this.responsesUrl,
+      model: this.model,
+      apiType: 'openai-responses',
+      messages,
+      tools: tools ?? [],
+      partitionKey: options?.cachePartitionKey,
+    });
+    const input = this.buildResponsesInput(messages);
+    if (cachePlan.explicitBreakpoints > 0 && instructions) {
+      input.unshift({
+        role: 'system',
+        content: [{
+          type: 'input_text',
+          text: instructions,
+          prompt_cache_breakpoint: { mode: 'explicit' },
+        }],
+      });
+    }
     const body: any = {
       model: this.model,
-      input: this.buildResponsesInput(messages),
+      input,
       max_output_tokens: this.maxTokens,
       stream,
       store: false,
-      prompt_cache_key: this.buildPromptCacheKey(instructions, responseTools),
     };
 
-    if (instructions) body.instructions = instructions;
+    if (instructions && cachePlan.explicitBreakpoints === 0) body.instructions = instructions;
+    if (cachePlan.promptCacheKey) body.prompt_cache_key = cachePlan.promptCacheKey;
+    if (cachePlan.explicitBreakpoints > 0) {
+      body.prompt_cache_options = { mode: 'explicit' };
+    }
     if (Number.isFinite(this.temperature)) body.temperature = this.temperature;
     if (responseTools.length > 0) body.tools = responseTools;
     body.include = ['reasoning.encrypted_content'];
@@ -498,17 +570,7 @@ export class OpenAIProvider implements AIProvider {
         parameters: tool.parameters,
       }))
       .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
-      .map(tool => this.canonicalizeJsonValue(tool));
-  }
-
-  private canonicalizeJsonValue(value: any): any {
-    if (Array.isArray(value)) return value.map(item => this.canonicalizeJsonValue(item));
-    if (!value || typeof value !== 'object') return value;
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map(key => [key, this.canonicalizeJsonValue(value[key])]),
-    );
+      .map(tool => canonicalizeOpenAICacheValue(tool));
   }
 
   private responsesMessageContent(content: Message['content']): any {
@@ -540,19 +602,6 @@ export class OpenAIProvider implements AIProvider {
       'function_call',
       'reasoning',
     ].includes(String(item.type || '')));
-  }
-
-  private buildPromptCacheKey(instructions: string, tools: any[]): string {
-    const digest = createHash('sha256')
-      .update(JSON.stringify({
-        identityVersion: 'responses-cache-v2',
-        model: this.model,
-        instructions,
-        tools,
-      }))
-      .digest('hex')
-      .slice(0, 48);
-    return `catsco-${digest}`;
   }
 
   private applyResponsesReasoningOptions(body: any): void {
@@ -664,7 +713,7 @@ export class OpenAIProvider implements AIProvider {
     tools?: ToolDefinition[],
     options?: AIRequestOptions,
   ): Promise<ChatResponse> {
-    const body = this.buildResponsesRequestBody(messages, tools, false);
+    const body = this.buildResponsesRequestBody(messages, tools, false, options);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.responsesUrl,
       body,
@@ -685,7 +734,7 @@ export class OpenAIProvider implements AIProvider {
     callbacks?: StreamCallbacks,
     options?: AIRequestOptions,
   ): Promise<ChatResponse> {
-    const body = this.buildResponsesRequestBody(messages, tools, true);
+    const body = this.buildResponsesRequestBody(messages, tools, true, options);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.responsesUrl,
       body,

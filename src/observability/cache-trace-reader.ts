@@ -31,6 +31,13 @@ export interface CacheTraceRecord {
   provider: string;
   model: string;
   apiType: string;
+  cacheStrategy: string;
+  cachePlan?: {
+    stablePrefixEstimatedTokens: number;
+    stableSystemMessages: number;
+    explicitBreakpoints: number;
+    promptCacheKeyFingerprint: string;
+  };
   requestSha256: string;
   stableSystemSha256: string;
   messageSha256s: string[];
@@ -151,6 +158,7 @@ function normalizeAttemptEvents(
   const base = started || terminal || valid[0];
   const final = terminal || base;
   const request = base.request || final.request || {};
+  const cachePlan = normalizeCachePlan(request.cache_plan);
   const lifecycle = final.lifecycle || {};
   const firstLifecycle = base.lifecycle || {};
   const responseUsage = final.response_usage || final.response?.usage || final.usage || {};
@@ -187,6 +195,8 @@ function normalizeAttemptEvents(
     provider: text(request.provider || base.provider || 'unknown'),
     model: text(request.model || base.model || 'unknown'),
     apiType: text(request.api_type || base.api_type || 'unknown'),
+    cacheStrategy: text(request.cache_strategy || 'unknown'),
+    ...(cachePlan ? { cachePlan } : {}),
     requestSha256: text(request.request_sha256 || request.sha256 || ''),
     stableSystemSha256: text(request.system_prompt?.stable_sha256 || request.stable_system_sha256 || ''),
     messageSha256s: Array.isArray(messageHashes) ? messageHashes.map(text) : [],
@@ -212,6 +222,7 @@ function normalizeLegacyRecord(raw: any, file: string): Omit<CacheTraceRecord, '
   if (!raw || typeof raw !== 'object') return null;
   const episode = raw.episode || raw.turn || {};
   const request = raw.request || {};
+  const cachePlan = normalizeCachePlan(request.cache_plan);
   const responseUsage = raw.response_usage || raw.response?.usage || raw.usage || {};
   const session = raw.session || {};
   const sessionId = text(session.session_id || raw.session_id || raw.conversation_id || 'unknown');
@@ -240,6 +251,8 @@ function normalizeLegacyRecord(raw: any, file: string): Omit<CacheTraceRecord, '
     provider: text(request.provider || raw.provider || 'unknown'),
     model: text(request.model || raw.model || 'unknown'),
     apiType: text(request.api_type || raw.api_type || 'unknown'),
+    cacheStrategy: text(request.cache_strategy || 'unknown'),
+    ...(cachePlan ? { cachePlan } : {}),
     requestSha256: text(request.request_sha256 || request.sha256 || ''),
     stableSystemSha256: text(request.system_prompt?.stable_sha256 || request.stable_system_sha256 || ''),
     messageSha256s: Array.isArray(messageHashes) ? messageHashes.map(text) : [],
@@ -258,6 +271,16 @@ function normalizeLegacyRecord(raw: any, file: string): Omit<CacheTraceRecord, '
       outputTokens: number(responseUsage.output_tokens ?? responseUsage.completion_tokens ?? responseUsage.completionTokens),
       hitRatio: ratio(cacheReadTokens, inputTokens),
     },
+  };
+}
+
+function normalizeCachePlan(value: any): CacheTraceRecord['cachePlan'] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  return {
+    stablePrefixEstimatedTokens: number(value.stable_prefix_estimated_tokens),
+    stableSystemMessages: integer(value.stable_system_messages),
+    explicitBreakpoints: integer(value.explicit_breakpoints),
+    promptCacheKeyFingerprint: text(value.prompt_cache_key_fingerprint),
   };
 }
 

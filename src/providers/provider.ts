@@ -3,6 +3,7 @@ import { ToolDefinition } from '../types/tool';
 import type { ProviderRequestPreflightSummary } from './request-preflight';
 import type { OpenAIReasoningReplayMode } from '../utils/reasoning-effort';
 import type { ReasoningReplayRecoveryAction } from './deepseek-reasoning-recovery';
+import type { OpenAICachePlanSummary } from './openai-cache-policy';
 
 /**
  * Streaming 回调
@@ -80,6 +81,7 @@ export interface ModelAttemptEvent {
     messages: readonly Message[];
     tools: readonly ToolDefinition[];
     preflight?: ProviderRequestPreflightSummary;
+    cache?: OpenAICachePlanSummary;
   };
   durationMs?: number;
   response?: ChatResponse;
@@ -93,6 +95,8 @@ export interface ModelAttemptSink {
 
 export interface AIRequestOptions {
   signal?: AbortSignal;
+  /** Stable, non-secret identity used to shard provider cache routing keys. */
+  cachePartitionKey?: string;
   /** Internal one-attempt override used by evidence-driven DeepSeek recovery. */
   reasoningReplayMode?: OpenAIReasoningReplayMode;
   /** Optional best-effort observer; it can never alter request control flow. */

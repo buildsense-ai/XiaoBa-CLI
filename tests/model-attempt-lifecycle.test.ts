@@ -78,6 +78,34 @@ test('records every provider retry as a correlated attempt lifecycle', async () 
   assert.equal(events[3].response?.usage?.cachedReadTokens, 60);
 });
 
+test('attaches the provider cache plan to the exact observed attempt', async () => {
+  const service = createTestService({
+    apiUrl: 'https://api.openai.com/v1',
+    model: 'gpt-5.6-sol',
+    openaiApiMode: 'responses',
+  });
+  const events: ModelAttemptEvent[] = [];
+  (service as any).provider = {
+    chat: async () => ({ content: 'ok' }),
+    chatStream: async () => ({ content: 'unused' }),
+  };
+
+  await service.chat([
+    { role: 'system', content: 'Stable reusable policy. '.repeat(220) },
+    { role: 'user', content: 'hello' },
+  ], undefined, {
+    cachePartitionKey: 'session:cache-plan',
+    modelAttemptSink: collectingSink(events),
+  });
+
+  assert.deepEqual(events.map(event => event.outcome), ['started', 'succeeded']);
+  assert.equal(events[0].request.cache?.strategy, 'openai-explicit-stable-prefix');
+  assert.equal(events[0].request.cache?.explicitBreakpoints, 1);
+  assert.equal(events[0].request.cache?.stableSystemMessages, 1);
+  assert.match(events[0].request.cache?.promptCacheKeyFingerprint || '', /^[a-f0-9]{16}$/);
+  assert.equal(JSON.stringify(events[0].request.cache).includes('catsco-v3-'), false);
+});
+
 test('records a non-retryable provider rejection as the terminal attempt', async () => {
   process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '0';
   const service = createTestService();

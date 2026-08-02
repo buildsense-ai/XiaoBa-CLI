@@ -53,12 +53,51 @@ test('ConversationRunner forwards attempt observation with session and episode c
 
   assert.equal(result.response, 'normal reply');
   assert.equal(captured?.modelAttemptSink, sink);
+  assert.equal(captured?.cachePartitionKey, 'session-1');
   assert.deepEqual(captured?.modelAttemptContext, {
     sessionId: 'session-1',
     surface: 'cli',
     episodeId: 'episode-1',
     episodeNumber: 1,
   });
+});
+
+test('observer records the exact OpenAI cache policy without exposing its routing key', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-policy-'));
+  try {
+    const observer = new CacheTraceObserver({
+      sessionId: 'cache:policy',
+      traceDir: dir,
+      env: { XIAOBA_CACHE_TRACE: 'true' },
+    });
+    const base = attemptEvent();
+    observer.observe(attemptEvent({
+      request: {
+        ...base.request,
+        cache: {
+          strategy: 'openai-explicit-stable-prefix',
+          stablePrefixEstimatedTokens: 4096,
+          stableSystemMessages: 2,
+          explicitBreakpoints: 1,
+          promptCacheKeyFingerprint: 'abcdef1234567890',
+        },
+      },
+    }));
+    await observer.drain();
+
+    const store = await readCacheTraceStore(dir);
+    assert.equal(store.records[0].cacheStrategy, 'openai-explicit-stable-prefix');
+    assert.deepEqual(store.records[0].cachePlan, {
+      stablePrefixEstimatedTokens: 4096,
+      stableSystemMessages: 2,
+      explicitBreakpoints: 1,
+      promptCacheKeyFingerprint: 'abcdef1234567890',
+    });
+    const raw = fs.readFileSync(listTraceFiles(dir)[0], 'utf8');
+    assert.equal(raw.includes('catsco-v3-'), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('observer consumes an asynchronous writer rejection', async () => {
@@ -327,6 +366,11 @@ test('dashboard exposes a discoverable cache trace page', () => {
   assert.match(page, /重试后恢复/);
   assert.match(page, /最终失败/);
   assert.match(page, /未完成/);
+  assert.match(page, /缓存策略/);
+  assert.match(page, /OpenAI 显式稳定前缀/);
+  assert.match(page, /stablePrefixEstimatedTokens/);
+  assert.match(page, /@media\(max-width:900px\)/);
+  assert.match(page, /\.layout\{grid-template-columns:minmax\(0,1fr\)\}/);
   assert.match(page, /\/api\/cache-trace\/config/);
   assert.match(page, /\/api\/cache-trace\/sessions/);
 });

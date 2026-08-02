@@ -21,6 +21,11 @@ import {
   type ReasoningReplayRecoveryAction,
 } from '../providers/deepseek-reasoning-recovery';
 import type { OpenAIReasoningReplayMode } from './reasoning-effort';
+import {
+  resolveOpenAICachePlan,
+  summarizeOpenAICachePlan,
+  type OpenAICachePlanSummary,
+} from '../providers/openai-cache-policy';
 import { Logger } from './logger';
 import { isPrimaryModelToolCallingCapable } from './model-capabilities';
 import { resolveModelContextWindow } from './model-context-window';
@@ -69,6 +74,7 @@ interface ModelAttemptRun {
   tools: readonly ToolDefinition[];
   stream: boolean;
   preflight?: ProviderRequestPreflightSummary;
+  cache?: OpenAICachePlanSummary;
 }
 
 interface RetryRecoveryPlan {
@@ -624,6 +630,18 @@ export class AIService {
   ): ModelAttemptRun | undefined {
     if (!options.modelAttemptSink) return undefined;
     modelAttemptCallSequence = (modelAttemptCallSequence + 1) % Number.MAX_SAFE_INTEGER;
+    const cache = this.config.provider === 'openai'
+      ? summarizeOpenAICachePlan(resolveOpenAICachePlan({
+          apiUrl: this.config.apiUrl || '',
+          model: this.config.model || '',
+          apiType: this.config.openaiApiMode === 'responses'
+            ? 'openai-responses'
+            : 'openai-chat-completions',
+          messages,
+          tools: tools || [],
+          partitionKey: options.cachePartitionKey,
+        }))
+      : undefined;
     return {
       callId: `${Date.now().toString(36)}-${process.pid.toString(36)}-${modelAttemptCallSequence.toString(36)}`,
       sink: options.modelAttemptSink,
@@ -632,6 +650,7 @@ export class AIService {
       tools: tools || [],
       stream,
       ...(preflight ? { preflight } : {}),
+      ...(cache ? { cache } : {}),
     };
   }
 
@@ -662,6 +681,7 @@ export class AIService {
         messages: run.messages,
         tools: run.tools,
         ...(run.preflight ? { preflight: run.preflight } : {}),
+        ...(run.cache ? { cache: run.cache } : {}),
       },
       ...(fields.durationMs === undefined ? {} : { durationMs: fields.durationMs }),
       ...(fields.response === undefined ? {} : { response: fields.response }),

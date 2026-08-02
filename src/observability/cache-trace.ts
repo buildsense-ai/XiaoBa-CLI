@@ -50,7 +50,18 @@ export interface CacheTraceEntryV4 {
     provider: string;
     model: string;
     api_type: CacheTraceApiType;
-    cache_strategy: 'anthropic-explicit-prefix' | 'openai-automatic-prefix' | 'openai-prompt-cache-key';
+    cache_strategy:
+      | 'anthropic-explicit-prefix'
+      | 'openai-automatic-prefix'
+      | 'openai-compatible-automatic-prefix'
+      | 'openai-prompt-cache-key'
+      | 'openai-explicit-stable-prefix';
+    cache_plan?: {
+      stable_prefix_estimated_tokens: number;
+      stable_system_messages: number;
+      explicit_breakpoints: number;
+      prompt_cache_key_fingerprint?: string;
+    };
     system_prompt: {
       stable_sha256: string;
       stable_blocks: number;
@@ -239,7 +250,17 @@ export class CacheTraceObserver implements CacheTraceSink {
         provider: event.provider,
         model: event.model,
         api_type: event.apiType,
-        cache_strategy: resolveCacheStrategy(event.apiType),
+        cache_strategy: resolveCacheStrategy(event),
+        ...(event.request.cache ? {
+          cache_plan: {
+            stable_prefix_estimated_tokens: event.request.cache.stablePrefixEstimatedTokens,
+            stable_system_messages: event.request.cache.stableSystemMessages,
+            explicit_breakpoints: event.request.cache.explicitBreakpoints,
+            ...(event.request.cache.promptCacheKeyFingerprint ? {
+              prompt_cache_key_fingerprint: event.request.cache.promptCacheKeyFingerprint,
+            } : {}),
+          },
+        } : {}),
         system_prompt: system,
         message_count: event.request.messages.length,
         message_sha256s: messageSha256s,
@@ -365,9 +386,10 @@ function isDynamicSystemMessage(message: Message, text: string): boolean {
   return /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(text);
 }
 
-function resolveCacheStrategy(apiType: CacheTraceApiType): CacheTraceEntryV4['request']['cache_strategy'] {
-  if (apiType === 'anthropic-messages') return 'anthropic-explicit-prefix';
-  if (apiType === 'openai-responses') return 'openai-prompt-cache-key';
+function resolveCacheStrategy(event: ModelAttemptEvent): CacheTraceEntryV4['request']['cache_strategy'] {
+  if (event.request.cache) return event.request.cache.strategy;
+  if (event.apiType === 'anthropic-messages') return 'anthropic-explicit-prefix';
+  if (event.apiType === 'openai-responses') return 'openai-prompt-cache-key';
   return 'openai-automatic-prefix';
 }
 
