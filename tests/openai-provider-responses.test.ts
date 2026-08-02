@@ -4,7 +4,10 @@ import { Readable } from 'node:stream';
 import axios from 'axios';
 import { OpenAIProvider } from '../src/providers/openai-provider';
 import { AIService } from '../src/utils/ai-service';
-import { buildSyntheticObservationMessages } from '../src/core/synthetic-observation';
+import {
+  buildSyntheticObservationMessages,
+  createDurableMemoryObservation,
+} from '../src/core/synthetic-observation';
 import type { Message } from '../src/types';
 import type { ToolDefinition } from '../src/types/tool';
 
@@ -67,6 +70,33 @@ describe('OpenAIProvider Responses API mode', () => {
     const second = build('b');
     assert.deepEqual(first, second);
     assert.notEqual(first[1].call_id, first[3].call_id);
+  });
+
+  test('keeps a restored durable memory event as an exact Responses input prefix', () => {
+    const provider = createProvider();
+    const durablePair = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'responses-durable-memory',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'The verified migration gate remains enabled.',
+      metadata: { branchType: 'memory', branchId: 'branch-responses' },
+    })], { episodeId: 'episode:responses' });
+    const firstInput = (provider as any).buildResponsesRequestBody([
+      { role: 'user', content: 'Recover the migration decision.' },
+      ...durablePair,
+    ]).input;
+    const restoredInput = (provider as any).buildResponsesRequestBody([
+      { role: 'user', content: 'Recover the migration decision.' },
+      ...durablePair,
+      { role: 'assistant', content: 'The gate remains enabled.' },
+      { role: 'user', content: 'Now verify the rollout checklist.' },
+    ]).input;
+
+    assert.deepEqual(restoredInput.slice(0, firstInput.length), firstInput);
+    assert.equal(JSON.stringify(restoredInput).includes('__context'), false);
+    assert.equal(JSON.stringify(restoredInput).includes('branch-responses'), false);
+    assert.equal(JSON.stringify(restoredInput).includes('episode:responses'), false);
   });
 
   test('builds Responses input and a stable prompt cache key', () => {

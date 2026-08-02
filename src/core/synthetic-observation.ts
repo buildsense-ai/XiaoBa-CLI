@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'crypto';
 import { Message } from '../types';
 import { annotateContextMessage } from './context-lifecycle';
+import {
+  collectContextEventIds,
+  isValidDurableSyntheticObservationEvent,
+} from './context-event-watermarks';
 
 export type SyntheticObservationSource = 'memory' | 'web' | 'runtime' | 'subagent' | 'skill_context';
 export type SyntheticObservationStatus = 'completed' | 'partial' | 'failed' | 'cancelled';
@@ -63,6 +67,22 @@ export interface SyntheticObservationQueue {
 }
 
 export const SYNTHETIC_OBSERVATION_TOOL_NAME = 'runtime_observation';
+const DURABLE_MEMORY_OBSERVATION = Symbol('xiaoba.durable_memory_observation');
+
+/**
+ * Runtime-only trust boundary for MemorySearchBranchSession publications.
+ * The symbol is deliberately private and is never serialized or provider-visible;
+ * arbitrary observation payloads cannot opt themselves into persistence.
+ */
+export function createDurableMemoryObservation<T extends SyntheticObservation & { source: 'memory' }>(
+  observation: T,
+): T {
+  const branchId = observation.metadata?.branchId;
+  if (observation.metadata?.branchType !== 'memory' || typeof branchId !== 'string' || !branchId.trim()) {
+    throw new Error('durable_memory_observation_attestation_invalid');
+  }
+  return markDurableMemoryObservation(observation);
+}
 
 export class InMemorySyntheticObservationQueue implements SyntheticObservationQueue {
   private observations: SyntheticObservation[] = [];
@@ -74,11 +94,14 @@ export class InMemorySyntheticObservationQueue implements SyntheticObservationQu
     const id = observation.id || stableObservationId(observation);
     if (this.seen.has(id)) return false;
     this.seen.add(id);
-    this.observations.push({
+    const normalized = {
       ...observation,
       id,
       createdAt: observation.createdAt ?? Date.now(),
-    });
+    };
+    this.observations.push(isDurableMemoryObservation(observation)
+      ? markDurableMemoryObservation(normalized)
+      : normalized);
     return true;
   }
 
@@ -103,7 +126,7 @@ export class InMemorySyntheticObservationQueue implements SyntheticObservationQu
 
 export function buildSyntheticObservationMessages(
   observations: SyntheticObservation[],
-  options: { existingMessages?: readonly Message[] } = {},
+  options: { existingMessages?: readonly Message[]; episodeId?: string } = {},
 ): Message[] {
   const messages: Message[] = [];
   const usedToolCallIds = collectToolCallIds(options.existingMessages || []);
@@ -123,6 +146,17 @@ export function buildSyntheticObservationMessages(
       .update(toolOutput)
       .digest('hex')
       .slice(0, 20);
+    const persistence = isDurableMemoryObservation(observation) ? 'durable' : 'transient';
+    const eventId = `synthetic_observation:${observation.source}:${visiblePayloadDigest}`;
+    if (persistence === 'durable') {
+      const priorMessages = [...(options.existingMessages || []), ...messages];
+      const existingEvent = collectContextEventParts(priorMessages, eventId);
+      if (existingEvent.length > 0) {
+        if (matchesExistingSyntheticEvent(existingEvent, toolArguments, toolOutput)) continue;
+        throw new Error('synthetic_observation_event_conflict');
+      }
+      if (collectContextEventIds(priorMessages).has(eventId)) continue;
+    }
     // Provider-visible IDs participate in exact-prefix cache identity. Keep
     // them deterministic for equivalent visible observations while retaining
     // the unique internal observation/branch IDs below for audit correlation.
@@ -145,11 +179,16 @@ export function buildSyntheticObservationMessages(
       }],
       __syntheticObservation: true,
       syntheticObservationId: id,
+      ...(options.episodeId ? { __episodeId: options.episodeId } : {}),
       ...(provenance ? { syntheticObservationProvenance: provenance } : {}),
     }, {
       source: 'synthetic_observation',
       lifecycle: 'episode',
       cacheScope: 'epoch',
+      persistence,
+      placement: 'transcript',
+      retention: persistence === 'durable' ? 'append' : 'request',
+      event: { id: eventId, part: 0, parts: 2 },
     }));
     messages.push(annotateContextMessage({
       role: 'tool',
@@ -158,14 +197,107 @@ export function buildSyntheticObservationMessages(
       content: toolOutput,
       __syntheticObservation: true,
       syntheticObservationId: id,
+      ...(options.episodeId ? { __episodeId: options.episodeId } : {}),
       ...(provenance ? { syntheticObservationProvenance: provenance } : {}),
     }, {
       source: 'synthetic_observation',
       lifecycle: 'episode',
       cacheScope: 'epoch',
+      persistence,
+      placement: 'transcript',
+      retention: persistence === 'durable' ? 'append' : 'request',
+      event: { id: eventId, part: 1, parts: 2 },
     }));
   }
   return messages;
+}
+
+/** Drops every malformed durable synthetic event as one atomic unit. */
+export function filterValidDurableSyntheticObservationEvents(messages: Message[]): Message[] {
+  const candidates = new Set(messages.filter(isCandidateDurableSyntheticMessage));
+  const candidateCallIds = new Set<string>();
+  for (const message of candidates) {
+    for (const call of message.tool_calls || []) {
+      if (call.id) candidateCallIds.add(call.id);
+    }
+    if (message.tool_call_id) candidateCallIds.add(message.tool_call_id);
+  }
+  for (const message of messages) {
+    if (
+      (message.role === 'tool' && message.tool_call_id && candidateCallIds.has(message.tool_call_id))
+      || (message.role === 'assistant'
+        && message.tool_calls?.some(call => candidateCallIds.has(call.id)))
+    ) candidates.add(message);
+  }
+  const groups = new Map<string, Message[]>();
+  for (const message of messages) {
+    if (!candidates.has(message)) continue;
+    const eventId = message.__context?.event?.id;
+    if (typeof eventId !== 'string') continue;
+    const group = groups.get(eventId) || [];
+    group.push(message);
+    groups.set(eventId, group);
+  }
+
+  const validMessages = new Set<Message>();
+  for (const group of groups.values()) {
+    if (!isValidDurableSyntheticObservationEvent(group)) continue;
+    for (const message of group) validMessages.add(message);
+  }
+  return messages.filter(message => !candidates.has(message) || validMessages.has(message));
+}
+
+function collectContextEventParts(messages: readonly Message[], eventId: string): Message[] {
+  return messages.filter(message => message.__context?.event?.id === eventId);
+}
+
+function matchesExistingSyntheticEvent(
+  messages: readonly Message[],
+  toolArguments: string,
+  toolOutput: string,
+): boolean {
+  if (!isValidDurableSyntheticObservationEvent(messages)) return false;
+  const assistant = messages.find(message => message.__context?.event?.part === 0);
+  const tool = messages.find(message => message.__context?.event?.part === 1);
+  if (!assistant || !tool) return false;
+  const call = assistant.tool_calls?.[0];
+  if (!call) return false;
+  return call.function.arguments === toolArguments && tool.content === toolOutput;
+}
+
+function isCandidateDurableSyntheticMessage(message: Message): boolean {
+  return message.__syntheticObservation === true
+    || message.__context?.source === 'synthetic_observation'
+    || message.name === SYNTHETIC_OBSERVATION_TOOL_NAME
+    || Boolean(message.tool_calls?.some(call => call.function.name === SYNTHETIC_OBSERVATION_TOOL_NAME));
+}
+
+function isDurableMemoryObservation(observation: SyntheticObservation): boolean {
+  const branchId = observation.metadata?.branchId;
+  return (observation as any)[DURABLE_MEMORY_OBSERVATION] === true
+    && observation.source === 'memory'
+    && observation.metadata?.branchType === 'memory'
+    && typeof branchId === 'string'
+    && Boolean(branchId.trim());
+}
+
+function markDurableMemoryObservation<T extends SyntheticObservation>(observation: T): T {
+  Object.defineProperty(observation, DURABLE_MEMORY_OBSERVATION, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return observation;
+}
+
+function inheritDurableMemoryAttestation<T extends SyntheticObservation>(
+  source: SyntheticObservation,
+  clone: T,
+): T {
+  return isDurableMemoryObservation(source) && clone.source === 'memory'
+    ? markDurableMemoryObservation(clone)
+    : clone;
 }
 
 function collectToolCallIds(messages: readonly Message[]): Set<string> {
@@ -334,7 +466,17 @@ export function withSyntheticObservationTiming(
     next.formattedContent = formatTimedObservationContent(observation.formattedContent, timing);
   }
 
-  return next;
+  return inheritDurableMemoryAttestation(observation, next);
+}
+
+export function withSyntheticObservationMetadata(
+  observation: SyntheticObservation,
+  metadata: SyntheticObservationMetadata,
+): SyntheticObservation {
+  return inheritDurableMemoryAttestation(observation, {
+    ...observation,
+    metadata: { ...metadata },
+  });
 }
 
 function resolveObservationTiming(observation: SyntheticObservation): SyntheticObservationTiming {

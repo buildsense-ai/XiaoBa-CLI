@@ -3,7 +3,12 @@ import * as assert from 'node:assert';
 import { Readable } from 'node:stream';
 import axios from 'axios';
 import { OpenAIProvider } from '../src/providers/openai-provider';
-import { buildSyntheticObservationMessages } from '../src/core/synthetic-observation';
+import {
+  buildSyntheticObservationMessages,
+  createDurableMemoryObservation,
+} from '../src/core/synthetic-observation';
+import { prepareDeepSeekSyntheticObservations } from '../src/providers/deepseek-reasoning-recovery';
+import { prepareProviderRequestMessages } from '../src/providers/request-preflight';
 import { Message } from '../src/types';
 
 describe('OpenAIProvider runtime feedback boundary', () => {
@@ -41,6 +46,80 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     const second = build('b');
     assert.deepStrictEqual(first, second);
     assert.notEqual(first[1].tool_calls[0].id, first[3].tool_calls[0].id);
+  });
+
+  test('keeps restored durable memory events as an exact official OpenAI Chat prefix', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5.5',
+    });
+    const durablePair = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'chat-durable-memory',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'The verified deployment region is east.',
+      metadata: { branchType: 'memory', branchId: 'branch-chat' },
+    })], { episodeId: 'episode:chat' });
+
+    const firstMessages = (provider as any).buildRequestBody([
+      { role: 'user', content: 'Recover the deployment region.' },
+      ...durablePair,
+    ]).messages;
+    const restoredMessages = (provider as any).buildRequestBody([
+      { role: 'user', content: 'Recover the deployment region.' },
+      ...durablePair,
+      { role: 'assistant', content: 'The region is east.' },
+      { role: 'user', content: 'Continue with the next check.' },
+    ]).messages;
+
+    assert.deepStrictEqual(restoredMessages.slice(0, firstMessages.length), firstMessages);
+    assert.equal(JSON.stringify(restoredMessages).includes('__context'), false);
+    assert.equal(JSON.stringify(restoredMessages).includes('branch-chat'), false);
+    assert.equal(JSON.stringify(restoredMessages).includes('episode:chat'), false);
+  });
+
+  test('keeps the real DeepSeek durable-memory lowering as an exact restored prefix', () => {
+    const config = {
+      provider: 'openai' as const,
+      apiKey: 'test-key',
+      apiUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
+      openaiApiMode: 'chat_completions' as const,
+    };
+    const provider = new OpenAIProvider(config);
+    const durablePair = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'deepseek-durable-memory',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'The verified deployment region is east.',
+      metadata: { branchType: 'memory', branchId: 'branch-deepseek' },
+    })], { episodeId: 'episode:deepseek' });
+    const lower = (messages: Message[]) => {
+      const deepSeekPrepared = prepareDeepSeekSyntheticObservations({ config, messages });
+      const preflight = prepareProviderRequestMessages(deepSeekPrepared);
+      assert.equal(preflight.summary, undefined);
+      return (provider as any).buildRequestBody(preflight.messages).messages;
+    };
+    const firstMessages = lower([
+      { role: 'user', content: 'Recover the deployment region.' },
+      ...durablePair,
+    ]);
+    const restoredMessages = lower([
+      { role: 'user', content: 'Recover the deployment region.' },
+      ...durablePair,
+      { role: 'assistant', content: 'The region is east.' },
+      { role: 'user', content: 'Continue with the next check.' },
+    ]);
+
+    assert.equal(firstMessages.length, 2);
+    assert.match(String(firstMessages[1].content), /^\[runtime_observation\]/);
+    assert.deepStrictEqual(restoredMessages.slice(0, firstMessages.length), firstMessages);
+    assert.equal(JSON.stringify(restoredMessages).includes('__context'), false);
+    assert.equal(JSON.stringify(restoredMessages).includes('branch-deepseek'), false);
+    assert.equal(JSON.stringify(restoredMessages).includes('episode:deepseek'), false);
   });
 
   test('strips internal injected fields before building SDK messages', () => {

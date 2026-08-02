@@ -49,3 +49,37 @@ test('a new episode creates a new context epoch fingerprint', () => {
   assert.notEqual(first.epochFingerprint, second.epochFingerprint);
   assert.equal(isTransientContextMessage(episodeMessages('same call')[0]), true);
 });
+
+test('durable append event metadata remains provider-neutral typed context', () => {
+  const message = annotateContextMessage({ role: 'tool', content: 'historical evidence' }, {
+    source: 'synthetic_observation',
+    lifecycle: 'episode',
+    cacheScope: 'epoch',
+    persistence: 'durable',
+    placement: 'transcript',
+    retention: 'append',
+    event: {
+      id: 'synthetic_observation:memory:0123456789abcdef0123',
+      part: 1,
+      parts: 2,
+    },
+    epoch: 'episode:one',
+  });
+
+  assert.deepEqual(message.__context, {
+    schema: 'xiaoba.context_lifecycle.v1',
+    source: 'synthetic_observation',
+    lifecycle: 'episode',
+    cacheScope: 'epoch',
+    persistence: 'durable',
+    placement: 'transcript',
+    retention: 'append',
+    event: {
+      id: 'synthetic_observation:memory:0123456789abcdef0123',
+      part: 1,
+      parts: 2,
+    },
+    epoch: 'episode:one',
+  });
+  assert.equal(isTransientContextMessage(message), false);
+});

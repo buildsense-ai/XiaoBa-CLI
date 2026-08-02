@@ -1,6 +1,10 @@
 import { describe, test, beforeEach } from 'node:test';
 import * as assert from 'node:assert';
 import { ContextCompressor, contentToString, messagesToConversationText, parseCompactSummary, buildCompactSystemPrompt, truncateForSummary } from '../src/core/context-compressor';
+import {
+  buildSyntheticObservationMessages,
+  createDurableMemoryObservation,
+} from '../src/core/synthetic-observation';
 import { estimateTokens } from '../src/core/token-estimator';
 import type { Message } from '../src/types';
 import type { AIService } from '../src/utils/ai-service';
@@ -238,6 +242,32 @@ describe('ContextCompressor.compact', () => {
     assert.equal(boundaryMsg?.__context?.source, 'compaction_boundary');
     assert.equal(boundaryMsg?.__context?.persistence, 'durable');
     assert.equal(userMsgs[0].__context?.source, 'compaction_summary');
+  });
+
+  test('includes durable synthetic observation events in compaction input', async () => {
+    const capture = mockAIServiceWithCapture('summary-body');
+    const compressor = new ContextCompressor(capture.service, { preserveRecentEpisodes: 0 });
+    const observation = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'durable-observation',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'durable observation fact: keep the verified migration decision',
+      metadata: { branchType: 'memory', branchId: 'compressor-memory' },
+    })]);
+
+    const result = await compressor.compact([
+      user('original request'),
+      ...observation,
+      assistant('used the observation'),
+    ]);
+
+    assert.match(
+      String(capture.requests[0][1].content),
+      /durable observation fact: keep the verified migration decision/,
+    );
+    const summary = result.find(message => message.__context?.source === 'compaction_summary');
+    assert.deepEqual(summary?.__contextEventIds, [observation[0].__context?.event?.id]);
   });
 
   test('全量压缩：结果中无任何 tool_call_id 引用', async () => {

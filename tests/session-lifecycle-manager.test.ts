@@ -446,6 +446,144 @@ describe('AgentSession lifecycle', () => {
     );
   });
 
+  test('session persistence restores durable synthetic events and rejects request-only pairs', () => {
+    const {
+      SessionStore,
+      buildSyntheticObservationMessages,
+      createDurableMemoryObservation,
+    } = loadSessionModules();
+    const durable = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'persisted-memory-event',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'persisted memory decision',
+      metadata: { branchType: 'memory', branchId: 'branch-persisted' },
+    })], { episodeId: 'episode:persisted' });
+    const requestOnly = buildSyntheticObservationMessages([{
+      id: 'request-only-event',
+      source: 'runtime',
+      status: 'completed',
+      relevance: 'low',
+      summary: 'request only context',
+    }]);
+
+    SessionStore.getInstance().saveContext('user:lifecycle-durable-events', [
+      { role: 'user', content: 'original request' },
+      ...durable,
+      ...requestOnly,
+      { role: 'assistant', content: 'original answer' },
+    ]);
+    const restored = SessionStore.getInstance().loadContext('user:lifecycle-durable-events');
+    const restoredEvent = restored.filter((message: any) => message.__syntheticObservation);
+
+    assert.equal(restoredEvent.length, 2);
+    assert.deepEqual(
+      restoredEvent.map((message: any) => message.__context?.event?.part),
+      [0, 1],
+    );
+    assert.equal(restoredEvent[0].__context.event.id, restoredEvent[1].__context.event.id);
+    assert.equal(restoredEvent[0].__episodeId, 'episode:persisted');
+    assert.deepEqual(restoredEvent[0].syntheticObservationProvenance, {
+      branchType: 'memory',
+      branchId: 'branch-persisted',
+    });
+    assert.equal(
+      restored.some((message: any) => String(message.content || '').includes('request only context')),
+      false,
+    );
+  });
+
+  test('session persistence atomically rejects incomplete and malformed durable event pairs', () => {
+    const {
+      SessionStore,
+      buildSyntheticObservationMessages,
+      createDurableMemoryObservation,
+    } = loadSessionModules();
+    const pair = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'malformed-memory-event',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'must survive only as a complete verified pair',
+      metadata: { branchType: 'memory', branchId: 'branch-malformed' },
+    })], { episodeId: 'episode:malformed' });
+    const wrongCallPair = JSON.parse(JSON.stringify(pair));
+    wrongCallPair[1].tool_call_id = 'wrong-call-id';
+    const missingMetadataPair = JSON.parse(JSON.stringify(pair));
+    delete missingMetadataPair[0].__context.event;
+    const digestMismatchPair = JSON.parse(JSON.stringify(pair));
+    digestMismatchPair[1].content += ' tampered';
+    const bogusCallTypePair = JSON.parse(JSON.stringify(pair));
+    bogusCallTypePair[0].tool_calls[0].type = 'bogus';
+    const assistantTextPair = JSON.parse(JSON.stringify(pair));
+    assistantTextPair[0].content = 'unexpected assistant text';
+    const rewrittenCallIdPair = JSON.parse(JSON.stringify(pair));
+    rewrittenCallIdPair[0].tool_calls[0].id = 'rewritten-call-id';
+    rewrittenCallIdPair[1].tool_call_id = 'rewritten-call-id';
+    const stableScopePair = JSON.parse(JSON.stringify(pair));
+    stableScopePair[0].__context.cacheScope = 'stable';
+    stableScopePair[0].__cacheScope = 'stable';
+    const missingToolMarkerPair = JSON.parse(JSON.stringify(pair));
+    delete missingToolMarkerPair[1].__syntheticObservation;
+    const missingBranchIdPair = JSON.parse(JSON.stringify(pair));
+    delete missingBranchIdPair[0].syntheticObservationProvenance.branchId;
+    delete missingBranchIdPair[1].syntheticObservationProvenance.branchId;
+    const blankBranchIdPair = JSON.parse(JSON.stringify(pair));
+    blankBranchIdPair[0].syntheticObservationProvenance.branchId = '   ';
+    blankBranchIdPair[1].syntheticObservationProvenance.branchId = '   ';
+
+    const store = SessionStore.getInstance();
+    store.saveContext('user:lifecycle-incomplete-event', [
+      { role: 'user', content: 'keep incomplete boundary' },
+      pair[0],
+      { role: 'assistant', content: 'keep incomplete answer' },
+    ]);
+    store.saveContext('user:lifecycle-wrong-call-event', [
+      { role: 'user', content: 'keep wrong-call boundary' },
+      ...wrongCallPair,
+      { role: 'assistant', content: 'keep wrong-call answer' },
+    ]);
+    store.saveContext('user:lifecycle-missing-event-metadata', [
+      { role: 'user', content: 'keep missing-metadata boundary' },
+      ...missingMetadataPair,
+      { role: 'assistant', content: 'keep missing-metadata answer' },
+    ]);
+    store.saveContext('user:lifecycle-event-digest-mismatch', [
+      { role: 'user', content: 'keep digest-mismatch boundary' },
+      ...digestMismatchPair,
+      { role: 'assistant', content: 'keep digest-mismatch answer' },
+    ]);
+    const canonicalShapeFailures = [
+      ['bogus-call-type', bogusCallTypePair],
+      ['assistant-text', assistantTextPair],
+      ['rewritten-call-id', rewrittenCallIdPair],
+      ['stable-scope', stableScopePair],
+      ['missing-tool-marker', missingToolMarkerPair],
+      ['missing-branch-id', missingBranchIdPair],
+      ['blank-branch-id', blankBranchIdPair],
+    ] as const;
+    for (const [suffix, malformedPair] of canonicalShapeFailures) {
+      store.saveContext(`user:lifecycle-${suffix}`, [
+        { role: 'user', content: `keep ${suffix} boundary` },
+        ...malformedPair,
+        { role: 'assistant', content: `keep ${suffix} answer` },
+      ]);
+    }
+
+    for (const key of [
+      'user:lifecycle-incomplete-event',
+      'user:lifecycle-wrong-call-event',
+      'user:lifecycle-missing-event-metadata',
+      'user:lifecycle-event-digest-mismatch',
+      ...canonicalShapeFailures.map(([suffix]) => `user:lifecycle-${suffix}`),
+    ]) {
+      const restored = store.loadContext(key);
+      assert.equal(restored.some((message: any) => message.__syntheticObservation), false);
+      assert.deepEqual(restored.map((message: any) => message.role), ['user', 'assistant']);
+    }
+  });
+
   test('session persistence strips provider replay hidden thinking from restored history', async () => {
     const { SessionStore } = loadSessionModules();
     SessionStore.getInstance().saveContext('user:lifecycle-provider-replay', [
@@ -1258,6 +1396,7 @@ function loadSessionModules(): any {
     '../src/core/session-lifecycle-manager',
     '../src/utils/session-store',
     '../src/core/session-router',
+    '../src/core/synthetic-observation',
   ]) {
     delete require.cache[require.resolve(modulePath)];
   }
@@ -1273,6 +1412,8 @@ function loadSessionModules(): any {
     SessionLifecycleManager: require('../src/core/session-lifecycle-manager').SessionLifecycleManager,
     createSessionRoute: require('../src/core/session-router').createSessionRoute,
     createCatsCoSessionRoute: require('../src/core/session-router').createCatsCoSessionRoute,
+    buildSyntheticObservationMessages: require('../src/core/synthetic-observation').buildSyntheticObservationMessages,
+    createDurableMemoryObservation: require('../src/core/synthetic-observation').createDurableMemoryObservation,
   };
 }
 

@@ -5,7 +5,12 @@ import {
   BRANCH_AGENTS_ENABLED_ENV,
   MEMORY_SIDECAR_ENABLED_ENV,
 } from '../src/core/branch-agent-settings';
-import { InMemorySyntheticObservationQueue, SYNTHETIC_OBSERVATION_TOOL_NAME, SyntheticObservation } from '../src/core/synthetic-observation';
+import {
+  createDurableMemoryObservation,
+  InMemorySyntheticObservationQueue,
+  SYNTHETIC_OBSERVATION_TOOL_NAME,
+  SyntheticObservation,
+} from '../src/core/synthetic-observation';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
 import { AIService } from '../src/utils/ai-service';
@@ -14,7 +19,7 @@ import { GoalRuntime } from '../src/core/goal-runtime';
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
 
 function memoryObservation(id: string): SyntheticObservation {
-  return {
+  return createDurableMemoryObservation({
     id,
     source: 'memory',
     status: 'completed',
@@ -30,7 +35,7 @@ function memoryObservation(id: string): SyntheticObservation {
       summary: 'Previous turn found the birthday dinner decision.',
       refs: ['catscompany/2026-06-16/demo.jsonl#7'],
     }),
-  };
+  });
 }
 
 class CapturingAIService {
@@ -321,8 +326,10 @@ describe('AgentTurnController memory branch carryover', () => {
     assert.equal(cancelled[0], true, 'previous-turn branch is expired after its carryover turn');
     assert.equal(queues[0].push(memoryObservation('too-late')), false);
 
-    await runTurn('turn three should not receive turn one memory');
+    await runTurn('turn three keeps the historical event without reinjecting the expired branch');
     const thirdSynthetic = aiService.requests[2].filter(message => message.__syntheticObservation);
-    assert.equal(thirdSynthetic.length, 0);
+    assert.equal(thirdSynthetic.length, 2);
+    assert.equal(thirdSynthetic[0].syntheticObservationId, 'late-one');
+    assert.equal(thirdSynthetic[1].syntheticObservationId, 'late-one');
   });
 });

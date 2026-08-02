@@ -5,6 +5,7 @@ import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { readRequiredDefaultPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 import { collectRemoteContextWatermarks } from './remote-context-watermarks';
+import { collectContextEventIds } from './context-event-watermarks';
 import { annotateContextMessage, isTransientContextMessage } from './context-lifecycle';
 import type { AIRequestOptions } from '../providers/provider';
 
@@ -400,6 +401,7 @@ export class ContextCompressor {
       : (optionsOrCustomInstructions || {});
     const before = estimateMessagesTokens(messages);
     const remoteContextWatermarks = collectRemoteContextWatermarks(messages);
+    const contextEventIds = [...collectContextEventIds(messages)].sort();
 
     const system = messages.filter(m => m.role === 'system');
     const session = messages.filter(m => m.role !== 'system' && !isTransientCompactionMessage(m));
@@ -478,6 +480,7 @@ export class ContextCompressor {
         ...(Object.keys(remoteContextWatermarks).length > 0
           ? { __remoteContextWatermarks: remoteContextWatermarks }
           : {}),
+        ...(contextEventIds.length > 0 ? { __contextEventIds: contextEventIds } : {}),
       }, {
         source: 'compaction_summary',
         lifecycle: 'episode',
@@ -739,7 +742,7 @@ function isTransientCompactionMessage(message: Message): boolean {
   return Boolean(
     message.__injected
     || message.__runtimeFeedback
-    || message.__syntheticObservation,
+    || (message.__syntheticObservation && message.__context?.persistence !== 'durable'),
   );
 }
 

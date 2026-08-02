@@ -10,7 +10,11 @@ import {
   MemorySearchTool,
   fingerprintMemoryReadResult,
 } from '../tools/memory-branch-tools';
-import { SyntheticObservation, SyntheticObservationQueue } from './synthetic-observation';
+import {
+  createDurableMemoryObservation,
+  SyntheticObservation,
+  SyntheticObservationQueue,
+} from './synthetic-observation';
 import { ObservationBranchDisposition, ObservationBranchSession } from './observation-branch-session';
 import { MemoryLogStore } from './memory-log-store';
 
@@ -100,7 +104,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   }
 
   protected buildObservation(payload: MemorySearchFinishPayload): SyntheticObservation {
-    return {
+    return createDurableMemoryObservation({
       id: `memory-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
       source: 'memory',
       status: 'completed',
@@ -120,7 +124,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         summary: payload.summary,
         refs: payload.refs,
       }),
-    };
+    });
   }
 }
 

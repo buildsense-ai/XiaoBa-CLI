@@ -8,6 +8,10 @@ import {
   buildCheckpointCompactionPrompt,
   isCheckpointCompactionEnabled,
 } from '../src/core/checkpoint-compaction';
+import {
+  buildSyntheticObservationMessages,
+  createDurableMemoryObservation,
+} from '../src/core/synthetic-observation';
 
 const usage = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
 
@@ -49,7 +53,7 @@ test('checkpoint compaction switch defaults on and supports explicit rollback', 
 });
 
 test('checkpoint compaction preserves stable system and transient runtime messages', async () => {
-  const { service, options } = createService(() => [
+  const { service, requests, options } = createService(() => [
     'Objective: finish the active task.',
     'Completed: inspected the repository.',
     'Next: edit the target file.',
@@ -63,6 +67,14 @@ test('checkpoint compaction preserves stable system and transient runtime messag
     content: '[transient_runtime_context]\ncurrent device facts\n[/transient_runtime_context]',
     __injected: true,
   };
+  const durableObservation = buildSyntheticObservationMessages([createDurableMemoryObservation({
+    id: 'durable-memory-observation',
+    source: 'memory',
+    status: 'completed',
+    relevance: 'high',
+    summary: 'durable observation fact: the release gate stays enabled',
+    metadata: { branchType: 'memory', branchId: 'checkpoint-memory' },
+  })]).map(message => ({ ...message, __episodeId: 'episode-1' }));
   const messages: Message[] = [
     { role: 'system', content: 'stable system prompt' },
     {
@@ -88,6 +100,7 @@ test('checkpoint compaction preserves stable system and transient runtime messag
       content: largeText('tool evidence'),
       __episodeId: 'episode-1',
     },
+    ...durableObservation,
     transient,
   ];
 
@@ -108,11 +121,14 @@ test('checkpoint compaction preserves stable system and transient runtime messag
   assert.ok(result.messages.some(message =>
     String(message.content).startsWith(CHECKPOINT_SUMMARY_PREFIX)));
   assert.ok(result.messages.some(message => message.content === transient.content));
-  assert.equal(result.messages.some(message => message.role === 'tool'), false);
+  assert.equal(result.messages.some(message => message.role === 'tool' && !message.__syntheticObservation), false);
   assert.equal(
     result.messages.some(message => String(message.content).includes('tool evidence')),
     false,
   );
+  assert.equal(requests[0].some(message => String(message.content).includes(
+    'durable observation fact: the release gate stays enabled',
+  )), true);
   const summaryIndex = result.messages.findIndex(message => message.__checkpointSummary);
   const retainedUserIndex = result.messages.findIndex(message =>
     message.role === 'user' && String(message.content).includes('original objective'));
@@ -122,6 +138,9 @@ test('checkpoint compaction preserves stable system and transient runtime messag
   assert.equal(options[0].modelAttemptContext.surface, 'test');
   assert.equal(result.messages[summaryIndex].__context?.source, 'compaction_summary');
   assert.equal(result.messages[summaryIndex].__context?.persistence, 'durable');
+  assert.deepEqual(result.messages[summaryIndex].__contextEventIds, [
+    durableObservation[0].__context?.event?.id,
+  ]);
   const boundary = result.messages.find(message => message.__checkpointBoundary);
   assert.equal(boundary?.__context?.source, 'compaction_boundary');
   assert.equal(boundary?.__context?.cacheScope, 'epoch');
