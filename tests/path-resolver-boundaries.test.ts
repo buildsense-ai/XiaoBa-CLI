@@ -9,9 +9,44 @@ describe('PathResolver runtime data boundary', () => {
 
   test('bundled executables directory never becomes runtime data root', () => {
     const bundledExecutablesDir = path.join(testRoot, 'bundled-executables');
+    const homeDir = path.join(testRoot, 'home');
     const env = { XIAOBA_BUNDLED_EXECUTABLES_DIR: bundledExecutablesDir } as NodeJS.ProcessEnv;
 
-    assert.equal(PathResolver.getRuntimeDataRoot(env, testRoot), path.resolve(testRoot));
+    assert.equal(PathResolver.getRuntimeDataRoot(env, testRoot, homeDir), path.join(homeDir, '.xiaoba'));
+  });
+
+  test('named profiles use a stable directory outside the Git worktree', () => {
+    const homeDir = path.join(testRoot, 'home');
+    const env = { XIAOBA_PROFILE: 'cache-candidate' } as NodeJS.ProcessEnv;
+
+    const resolution = PathResolver.resolveRuntimeDataRoot(env, testRoot, homeDir);
+
+    assert.equal(resolution.path, path.join(homeDir, '.xiaoba', 'profiles', 'cache-candidate'));
+    assert.equal(resolution.profile, 'cache-candidate');
+    assert.equal(resolution.source, 'profile');
+  });
+
+  test('explicit data directory remains exact while profile supplies experiment identity', () => {
+    const userDataRoot = path.join(testRoot, 'experiment-data');
+    const resolution = PathResolver.resolveRuntimeDataRoot({
+      XIAOBA_USER_DATA_DIR: userDataRoot,
+      XIAOBA_PROFILE: 'baseline',
+    } as NodeJS.ProcessEnv, testRoot, path.join(testRoot, 'home'));
+
+    assert.equal(resolution.path, userDataRoot);
+    assert.equal(resolution.profile, 'baseline');
+    assert.equal(resolution.source, 'XIAOBA_USER_DATA_DIR');
+  });
+
+  test('profile names cannot escape the profile directory', () => {
+    assert.throws(
+      () => PathResolver.getRuntimeDataRoot(
+        { XIAOBA_PROFILE: '../outside' } as NodeJS.ProcessEnv,
+        testRoot,
+        path.join(testRoot, 'home'),
+      ),
+      /Invalid XiaoBa profile/,
+    );
   });
 
   test('explicit user data root wins over all compatibility roots', () => {
@@ -57,5 +92,15 @@ describe('PathResolver runtime data boundary', () => {
     } as NodeJS.ProcessEnv;
 
     assert.equal(PathResolver.getRuntimeDataRoot(env, testRoot), path.resolve(safeRoot));
+  });
+
+  test('Node tests also reject a non-temporary default home root', () => {
+    const unsafeHome = path.resolve(path.parse(testRoot).root, 'Users', 'unsafe-test-home');
+    const env = { NODE_TEST_CONTEXT: 'child-v8' } as NodeJS.ProcessEnv;
+
+    assert.throws(
+      () => PathResolver.getRuntimeDataRoot(env, testRoot, unsafeHome),
+      /Refusing Node test runtime data root outside the OS temporary directory/,
+    );
   });
 });

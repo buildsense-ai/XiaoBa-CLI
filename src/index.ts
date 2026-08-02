@@ -2,22 +2,39 @@
 
 import { Command } from 'commander';
 import { Logger } from './utils/logger';
-import { chatCommand } from './commands/chat';
-import { configCommand } from './commands/config';
-import { registerSkillCommand } from './commands/skill';
-import { feishuCommand } from './commands/feishu';
-import { runtimeCommand } from './commands/runtime';
 import { APP_VERSION } from './version';
+import { applyRuntimeDataOptionsFromArgv } from './runtime/runtime-data-bootstrap';
+import { findLegacyRuntimeArtifacts } from './runtime/data-migration';
+import { resolveRuntimeIdentity } from './runtime/runtime-identity';
 
-function main() {
+async function main() {
+  applyRuntimeDataOptionsFromArgv(process.argv);
+  const [
+    { chatCommand },
+    { configCommand },
+    { registerSkillCommand },
+    { feishuCommand },
+    { runtimeCommand },
+    { registerDataCommand },
+  ] = await Promise.all([
+    import('./commands/chat'),
+    import('./commands/config'),
+    import('./commands/skill'),
+    import('./commands/feishu'),
+    import('./commands/runtime'),
+    import('./commands/data'),
+  ]);
   const program = new Command();
 
   Logger.brand();
+  logRuntimeIdentity();
 
   program
     .name('catsco')
     .description('CatsCo agent CLI')
-    .version(APP_VERSION);
+    .version(APP_VERSION)
+    .option('--data-dir <path>', 'Use an explicit runtime data directory')
+    .option('--profile <name>', 'Use a named runtime data profile');
 
   program
     .command('chat')
@@ -83,12 +100,33 @@ function main() {
     .action(runtimeCommand);
 
   registerSkillCommand(program);
+  registerDataCommand(program);
 
   program.action(() => {
     chatCommand({ interactive: true });
   });
 
-  program.parse();
+  await program.parseAsync();
 }
 
-main();
+function logRuntimeIdentity(): void {
+  const identity = resolveRuntimeIdentity();
+  const codeLabel = identity.code.commit
+    ? `${identity.code.branch || 'detached'}@${identity.code.commit.slice(0, 8)}${identity.code.dirty ? ' (dirty)' : ''}`
+    : 'not a Git checkout';
+  Logger.info(`Code root: ${identity.codeRoot} · ${codeLabel}`);
+  Logger.info(`Workspace root: ${identity.workspaceRoot}`);
+  Logger.info(`Data root: ${identity.dataRoot} · profile=${identity.profile} · source=${identity.dataRootSource}`);
+  if (identity.workspaceRoot !== identity.dataRoot) {
+    const legacyArtifacts = findLegacyRuntimeArtifacts(identity.workspaceRoot);
+    if (legacyArtifacts.length > 0) {
+      Logger.warning(`Legacy runtime data detected in the workspace: ${legacyArtifacts.join(', ')}`);
+      Logger.info('Run `catsco data migrate` to preview a safe, copy-only migration.');
+    }
+  }
+}
+
+main().catch(error => {
+  Logger.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});

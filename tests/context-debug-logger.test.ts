@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ContextDebugLogger } from '../src/utils/context-debug-logger';
+import { PathResolver } from '../src/utils/path-resolver';
 
 test('SDK debug dumps redact provider hidden thinking blocks', () => {
   const previous = process.env.CONTEXT_DEBUG;
   process.env.CONTEXT_DEBUG = 'true';
   const requestId = `redact42-${Date.now()}`;
-  const debugDir = path.resolve('logs/context-debug');
+  const debugDir = PathResolver.getLogsPath('context-debug');
 
   try {
     ContextDebugLogger.dumpSdkBoundary('before', requestId, {

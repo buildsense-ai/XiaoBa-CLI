@@ -11,6 +11,7 @@ import {
 } from './runtime-profile';
 import { normalizeReasoningEffort } from '../utils/reasoning-effort';
 import { normalizeOpenAIApiMode } from '../utils/openai-api-mode';
+import { PathResolver } from '../utils/path-resolver';
 
 export const RUNTIME_PROFILE_SCHEMA_VERSION = 1;
 export const DEFAULT_RUNTIME_PROFILE_FILENAME = 'runtime-profile.json';
@@ -84,7 +85,8 @@ export function getDefaultRuntimeProfileConfigPath(
   options: Pick<ResolveRuntimeProfileFromConfigOptions, 'env' | 'runtimeRoot' | 'homeDir' | 'configPath'> = {},
 ): string {
   const env = options.env ?? process.env;
-  const runtimeRoot = options.runtimeRoot ?? process.cwd();
+  const runtimeRoot = options.runtimeRoot
+    ?? PathResolver.getRuntimeDataRoot(env, process.cwd(), options.homeDir ?? os.homedir());
   const explicitPath = options.configPath || PROFILE_PATH_ENV_KEYS
     .map(key => env[key])
     .find(value => typeof value === 'string' && value.trim().length > 0);
@@ -93,7 +95,7 @@ export function getDefaultRuntimeProfileConfigPath(
     return resolvePath(explicitPath, runtimeRoot, options.homeDir);
   }
 
-  return path.join(options.homeDir ?? os.homedir(), '.xiaoba', DEFAULT_RUNTIME_PROFILE_FILENAME);
+  return path.join(runtimeRoot, DEFAULT_RUNTIME_PROFILE_FILENAME);
 }
 
 export function loadRuntimeProfileConfigFile(

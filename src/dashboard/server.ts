@@ -6,6 +6,7 @@ import { createApiRouter } from './routes/api';
 import { ServiceManager } from './service-manager';
 import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 import { createDashboardAuth } from './auth';
+import { resolveCodeRoot } from '../runtime/runtime-identity';
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -31,7 +32,9 @@ export async function startDashboard(
 ): Promise<DashboardServerHandle> {
   const app = express();
   const envPackaged = /^(1|true|yes)$/i.test(process.env.XIAOBA_IS_PACKAGED || '');
-  const projectRoot = controllers.projectRoot || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined) || process.cwd();
+  const projectRoot = controllers.projectRoot
+    || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined)
+    || resolveCodeRoot();
   const serviceManager = new ServiceManager(projectRoot);
 
   app.use(express.json({ limit: '25mb' }));

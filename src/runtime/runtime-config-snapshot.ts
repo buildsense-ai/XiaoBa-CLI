@@ -220,7 +220,7 @@ function resolveRuntimeProfileForSnapshot(options: {
     configPath: options.profileConfigPath,
     runtimeRoot: options.runtimeRoot,
     surface: options.surface,
-    workingDirectory: options.workingDirectory ?? options.runtimeRoot,
+    workingDirectory: options.workingDirectory ?? process.cwd(),
     model: {
       provider: options.config?.provider,
       apiUrl: sanitizeServerUrl(options.config?.apiUrl),

@@ -261,16 +261,7 @@ export class OpenAIProvider implements AIProvider {
       content: this.visibleMessageContent(message),
       toolCalls: message.tool_calls,
       stopReason: choice.finish_reason || undefined,
-      usage: usage ? {
-        promptTokens: usage.prompt_tokens ?? 0,
-        completionTokens: usage.completion_tokens ?? 0,
-        totalTokens: usage.total_tokens ?? 0,
-        cachedReadTokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
-        cachedWriteTokens: usage.prompt_tokens_details?.cache_write_tokens
-          ?? usage.prompt_tokens_details?.cached_creation_tokens
-          ?? usage.prompt_tokens_details?.cache_creation_tokens
-          ?? 0,
-      } : undefined,
+      usage: this.parseChatUsage(usage),
       ...this.buildOpenAIProviderContent(message),
     };
   }
@@ -340,18 +331,7 @@ export class OpenAIProvider implements AIProvider {
             }
 
             // 提取 usage（stream_options.include_usage 时在最后一个 chunk 返回）
-            if (parsed.usage) {
-              streamUsage = {
-                promptTokens: parsed.usage.prompt_tokens ?? 0,
-                completionTokens: parsed.usage.completion_tokens ?? 0,
-                totalTokens: parsed.usage.total_tokens ?? 0,
-                cachedReadTokens: parsed.usage.prompt_tokens_details?.cached_tokens ?? 0,
-                cachedWriteTokens: parsed.usage.prompt_tokens_details?.cache_write_tokens
-                  ?? parsed.usage.prompt_tokens_details?.cached_creation_tokens
-                  ?? parsed.usage.prompt_tokens_details?.cache_creation_tokens
-                  ?? 0,
-              };
-            }
+            if (parsed.usage) streamUsage = this.parseChatUsage(parsed.usage);
 
             const delta = choice?.delta;
             if (!delta) continue;
@@ -651,6 +631,36 @@ export class OpenAIProvider implements AIProvider {
     const promptTokens = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0);
     const completionTokens = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
     const cachedReadTokens = Number(details.cached_tokens ?? 0);
+    const cachedWriteTokens = Number(
+      details.cache_write_tokens
+      ?? details.cached_creation_tokens
+      ?? details.cache_creation_tokens
+      ?? 0,
+    );
+    return {
+      promptTokens,
+      completionTokens,
+      totalTokens: Number(usage.total_tokens ?? promptTokens + completionTokens),
+      cachedReadTokens,
+      cachedWriteTokens,
+    };
+  }
+
+  /**
+   * Normalize usage from OpenAI Chat Completions and compatible endpoints.
+   * DeepSeek reports cache hits in the documented top-level
+   * `prompt_cache_hit_tokens` field instead of OpenAI's nested field.
+   */
+  private parseChatUsage(usage: any): ChatResponse['usage'] {
+    if (!usage || typeof usage !== 'object') return undefined;
+    const details = usage.prompt_tokens_details || {};
+    const promptTokens = Number(usage.prompt_tokens ?? 0);
+    const completionTokens = Number(usage.completion_tokens ?? 0);
+    const cachedReadTokens = Number(
+      details.cached_tokens
+      ?? usage.prompt_cache_hit_tokens
+      ?? 0,
+    );
     const cachedWriteTokens = Number(
       details.cache_write_tokens
       ?? details.cached_creation_tokens

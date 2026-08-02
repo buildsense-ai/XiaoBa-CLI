@@ -24,7 +24,11 @@ describe('test runner environment isolation', () => {
     });
 
     for (const key of RUNTIME_WRITE_PATH_ENV_KEYS) {
-      assert.equal(isolated[key], undefined, key);
+      if (key === 'XIAOBA_USER_DATA_DIR') {
+        assert.equal(isolated[key], '/tmp/xiaoba-test-tmp/runtime-data', key);
+      } else {
+        assert.equal(isolated[key], undefined, key);
+      }
       assert.ok(source[key], `source ${key} should remain unchanged`);
     }
     assert.equal(isolated.KEEP_ME, 'yes');
@@ -34,6 +38,8 @@ describe('test runner environment isolation', () => {
     assert.equal(isolated.TMP, '/tmp/xiaoba-test-tmp');
     assert.equal(isolated.TEMP, '/tmp/xiaoba-test-tmp');
     assert.equal(isolated.XIAOBA_APP_ROOT, '/workspace/xiaoba');
+    assert.equal(isolated.XIAOBA_TEST_SANDBOX_ROOT, '/tmp');
+    assert.equal(isolated.XIAOBA_TEST_DEFAULT_DATA_DIR, '/tmp/xiaoba-test-tmp/runtime-data');
     assert.equal(isolated.DOTENV_CONFIG_PATH, '/tmp/xiaoba-test-runner/.env');
     assert.equal(source.DOTENV_CONFIG_PATH, '/production/.env');
     assert.equal(isolated.NODE_ENV, 'test');

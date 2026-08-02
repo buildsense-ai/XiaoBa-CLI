@@ -5,16 +5,16 @@ the same stable system prefix and use different dynamic system suffixes.
 
 ## Safety boundary
 
-The script always targets `https://api.anthropic.com`; a relay URL cannot be configured. It emits
-only:
+The script defaults to `https://api.anthropic.com`. A compatible endpoint requires both an explicit
+API base and `ANTHROPIC_CANARY_ALLOW_COMPATIBLE=true`. It emits only:
 
 - the request and message IDs;
 - the model and API path;
 - SHA-256 hashes of the stable and dynamic system blocks;
 - input, cache creation/read, and output token usage.
 
-Prompt bodies and credentials are never written to the evidence record. Error output is limited to
-the error type, HTTP status, and request ID.
+Prompt bodies and credentials are never written to the evidence record. Compatible endpoint origins
+are replaced with a hash. Error output is limited to the error type, HTTP status, and request ID.
 
 ## Run
 
@@ -31,6 +31,16 @@ npm run canary:anthropic-prompt-cache -- \
 The command makes two billable API requests. The output file is created with owner-only
 permissions. Inspect the record before attaching it to an issue or pull request; do not attach
 environment files or debug logs.
+
+To probe a compatible endpoint, also set:
+
+```bash
+ANTHROPIC_CANARY_API_BASE=https://... \
+ANTHROPIC_CANARY_ALLOW_COMPATIBLE=true
+```
+
+Passing proves only that endpoint/model pair. XiaoBa keeps compatible Anthropic cache markers
+disabled until an explicit per-endpoint capability mechanism is implemented.
 
 ## Interpret
 
