@@ -15,4 +15,9 @@ test('dashboard visibly distinguishes data, code, and workspace roots', () => {
   assert.match(html, /copyRuntimeDataRoot/);
   assert.match(html, /已复制/);
   assert.match(html, /复制失败/);
+  assert.match(
+    html,
+    /body:not\(\.chat-active\) \.sidebar-nav \{\s*flex: 1 0 auto;\s*flex-direction: row;/,
+  );
+  assert.match(html, /body:not\(\.chat-active\) \.sidebar-footer \{\s*display: none;/);
 });

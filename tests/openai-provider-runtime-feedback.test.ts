@@ -516,6 +516,62 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     }
   });
 
+  test('reads DeepSeek cache hits from non-stream Chat Completions usage', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: {
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 120,
+          completion_tokens: 2,
+          total_tokens: 122,
+          prompt_cache_hit_tokens: 96,
+          prompt_cache_miss_tokens: 24,
+        },
+      },
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        apiKey: 'test-key',
+        apiUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-chat',
+      });
+      const result = await provider.chat([{ role: 'user', content: 'hello' }]);
+
+      assert.equal(result.usage?.promptTokens, 120);
+      assert.equal(result.usage?.cachedReadTokens, 96);
+      assert.equal(result.usage?.cachedWriteTokens, 0);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('reads DeepSeek cache hits from streamed Chat Completions usage', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":2,"total_tokens":122,"prompt_cache_hit_tokens":96,"prompt_cache_miss_tokens":24}}\n\n',
+        'data: [DONE]\n\n',
+      ]),
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        apiKey: 'test-key',
+        apiUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-chat',
+      });
+      const result = await provider.chatStream([{ role: 'user', content: 'hello' }]);
+
+      assert.equal(result.usage?.promptTokens, 120);
+      assert.equal(result.usage?.cachedReadTokens, 96);
+      assert.equal(result.usage?.cachedWriteTokens, 0);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
   test('hides OpenAI-compatible reasoning fields and split think tags in stream responses', async () => {
     const originalPost = axios.post;
     (axios as any).post = async () => ({

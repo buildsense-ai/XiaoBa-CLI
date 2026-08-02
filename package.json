@@ -25,6 +25,8 @@
     "test:all": "node scripts/run-tests.mjs all",
     "test:list": "node scripts/run-tests.mjs runtime --list",
     "canary:anthropic-prompt-cache": "node scripts/anthropic-prompt-cache-canary.mjs",
+    "canary:provider-cache": "node scripts/provider-cache-canary.mjs",
+    "canary:deepseek-reasoning": "node scripts/deepseek-reasoning-canary.mjs",
     "report": "node dist/index.js chat --exec '/report'",
     "clean-logs": "node scripts/clean-logs.mjs",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",

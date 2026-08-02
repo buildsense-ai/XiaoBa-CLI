@@ -5263,9 +5263,43 @@
         position: static;
         width: 100%;
         min-height: auto;
-        padding: 12px;
+        padding: 8px 12px;
         border-right: 0;
         border-bottom: 1px solid var(--border);
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+        overflow-x: auto;
+      }
+
+      body:not(.chat-active) .sidebar-brand {
+        flex: 0 0 32px;
+        width: 32px;
+        margin: 0;
+        padding: 0;
+      }
+
+      body:not(.chat-active) .sidebar-brand-icon {
+        width: 32px;
+        height: 32px;
+      }
+
+      body:not(.chat-active) .sidebar-nav {
+        flex: 1 0 auto;
+        flex-direction: row;
+        gap: 4px;
+      }
+
+      body:not(.chat-active) .nav-item {
+        flex: 0 0 40px;
+        width: 40px;
+        min-height: 40px;
+        justify-content: center;
+        padding: 8px;
+      }
+
+      body:not(.chat-active) .sidebar-footer {
+        display: none;
       }
 
       body:not(.chat-active) .main-wrapper {
