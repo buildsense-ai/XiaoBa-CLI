@@ -133,6 +133,28 @@ export interface Message {
   __checkpointSummary?: boolean;
   /** Durable marker for a continuation checkpoint boundary. */
   __checkpointBoundary?: boolean;
+  /** Local result state retained only to distinguish completed success from retryable failure. */
+  __toolResultState?: {
+    status: 'success' | 'failure' | 'unknown';
+    retryable: boolean;
+  };
+  /** Marks an internally derived, canonical completed-tool witness. */
+  __checkpointCompletedToolWitness?: true;
+  /** Durable local MAC proving the witness was derived by the checkpoint runtime. */
+  __checkpointCompletedToolWitnessProvenance?: {
+    schema: 'xiaoba.checkpoint_completed_tool_witness.v1';
+    episodeId: string;
+    keyIdSha256: string;
+    macSha256: string;
+  };
+  /** Deterministic completed-tool ledger propagated across continuation checkpoints. */
+  __checkpointCompletedToolCalls?: Array<{
+    toolName: string;
+    toolCallId: string;
+    argumentsSha256: string;
+    resultStatus: 'success' | 'failure' | 'unknown';
+    retryable: boolean;
+  }>;
   /** Internal compaction phase. Never sent to providers. */
   __checkpointPhase?: 'pre_turn' | 'mid_turn' | 'restore';
   /** Deterministic media identities represented by this checkpoint. */

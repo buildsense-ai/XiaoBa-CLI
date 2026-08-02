@@ -312,6 +312,28 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.equal(body.reasoning_effort, undefined);
   });
 
+  test('allows an internal request to disable DeepSeek reasoning without changing configured task inference', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'max',
+    });
+
+    const taskBody = (provider as any).buildRequestBody([{ role: 'user', content: 'task' }]);
+    const internalBody = (provider as any).buildRequestBody(
+      [{ role: 'user', content: 'checkpoint summary' }],
+      undefined,
+      false,
+      { reasoningEffortOverride: 'disabled' },
+    );
+
+    assert.deepStrictEqual(taskBody.thinking, { type: 'enabled' });
+    assert.equal(taskBody.reasoning_effort, 'max');
+    assert.deepStrictEqual(internalBody.thinking, { type: 'disabled' });
+    assert.equal(internalBody.reasoning_effort, undefined);
+  });
+
   test('maps OpenAI-compatible GLM reasoning to thinking switch without effort field', () => {
     const highProvider = new OpenAIProvider({
       apiKey: 'test-key',

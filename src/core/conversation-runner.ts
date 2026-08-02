@@ -87,6 +87,20 @@ function contentToString(content: string | ContentBlock[] | null): string {
   return content.map(block => block.type === 'text' ? block.text : '[图片]').join('');
 }
 
+function checkpointToolResultState(
+  result: ToolResult,
+): NonNullable<Message['__toolResultState']> {
+  const status = result.ok === false || Boolean(result.errorCode)
+    ? 'failure'
+    : result.ok === true
+      ? 'success'
+      : 'unknown';
+  return {
+    status,
+    retryable: result.retryable === true,
+  };
+}
+
 function findLastMessageIndex(
   messages: readonly Message[],
   predicate: (message: Message) => boolean,
@@ -236,7 +250,7 @@ export interface RunnerOptions {
   runtimeTransientProvider?: RuntimeTransientProvider;
   /** Internal id that ties all messages created by one externally visible user turn together. */
   episodeId?: string;
-  /** Main-Agent-only continuation compaction. Branch and subagent runners omit it. */
+  /** Continuation compaction owner for any agent-bearing ReAct loop. */
   checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   /** Persists a successful continuation checkpoint before execution resumes. */
   onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
@@ -1050,7 +1064,7 @@ export class ConversationRunner {
       force,
       signal: this.toolExecutionContext?.abortSignal,
       modelRequestOptions: {
-        requestOrigin: 'main',
+        requestOrigin: this.inferenceRequestOrigin(),
         cachePartitionKey: this.cachePartitionKey
           || this.toolExecutionContext?.sessionId
           || this.toolExecutionContext?.executionScope?.sessionKey
@@ -1389,6 +1403,7 @@ export class ConversationRunner {
       ...(providerContent?.length
         ? { providerContent, providerState: assistantMsg.providerState }
         : {}),
+      ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
     };
 
     if (assistant.content || assistant.tool_calls?.length) {
@@ -1423,6 +1438,8 @@ export class ConversationRunner {
           ],
           tool_call_id: record.result.tool_call_id,
           name: record.result.name,
+          __toolResultState: checkpointToolResultState(record.result),
+          ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
         });
       } else {
         // 正常的 tool result
@@ -1431,6 +1448,8 @@ export class ConversationRunner {
           content: record.toolContent,
           tool_call_id: record.result.tool_call_id,
           name: record.result.name,
+          __toolResultState: checkpointToolResultState(record.result),
+          ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
         });
 
         // 插入额外消息（如图片）

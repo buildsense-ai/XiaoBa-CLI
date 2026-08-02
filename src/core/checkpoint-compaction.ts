@@ -15,6 +15,10 @@ import {
 } from './context-lifecycle';
 import { isModelContextLengthError } from '../utils/model-error-classifier';
 import { buildPendingUserInputBoundaryMessage } from './pending-user-input-boundary';
+import {
+  signCheckpointCompletedToolWitness,
+  verifyCheckpointCompletedToolWitness,
+} from './checkpoint-witness-integrity';
 
 export const CHECKPOINT_COMPACTION_BOUNDARY_PREFIX = '[checkpoint_compaction_boundary]';
 export const CHECKPOINT_SUMMARY_PREFIX = [
@@ -36,6 +40,7 @@ const SUMMARY_CHUNK_CONCURRENCY = 3;
 const CHECKPOINT_SOURCE_CHUNK_PREFIX = '[checkpoint_source_chunk]';
 const CHECKPOINT_USER_INPUT_EVIDENCE_PREFIX = '[checkpoint_user_input_evidence]';
 export const CHECKPOINT_ARTIFACT_MANIFEST_PREFIX = '[checkpoint_artifact_manifest]';
+export const CHECKPOINT_COMPLETED_TOOL_BOUNDARY_PREFIX = '[checkpoint_completed_tool_boundary]';
 
 export type CheckpointCompactionPhase = 'pre_turn' | 'mid_turn' | 'restore';
 
@@ -237,6 +242,7 @@ export class CheckpointCompactionCoordinator {
             retained_root_count: audit.retainedRootCount,
             retained_pending_count: audit.retainedPendingCount,
             retained_user_evidence_count: audit.retainedUserEvidenceCount,
+            completed_tool_boundary_count: audit.completedToolBoundaryCount,
           },
         },
       );
@@ -366,6 +372,10 @@ export class CheckpointCompactionCoordinator {
       persistence: 'durable',
       ...(activeEpisodeId ? { epoch: activeEpisodeId } : {}),
     });
+    const completedToolBoundaryWitness = buildCompletedToolBoundaryWitness(
+      sessionMessages,
+      activeEpisodeId,
+    );
 
     return [
       ...stableSystemMessages,
@@ -374,6 +384,7 @@ export class CheckpointCompactionCoordinator {
       boundary,
       summaryMessage,
       ...dynamicTail,
+      ...(completedToolBoundaryWitness ? [completedToolBoundaryWitness] : []),
     ];
   }
 
@@ -544,6 +555,7 @@ export class CheckpointCompactionCoordinator {
     modelRequestOptions?: CheckpointCompactionRequest['modelRequestOptions'],
   ): Promise<string> {
     let streamed = '';
+    const reasoningEffortOverride = this.checkpointReasoningEffortOverride();
     const response = await this.aiService.chatStream(
       promptMessages,
       undefined,
@@ -554,6 +566,7 @@ export class CheckpointCompactionCoordinator {
         cacheMode: 'bypass',
         requestKind: 'checkpoint_compaction',
         requestOrigin: modelRequestOptions?.requestOrigin ?? 'main',
+        ...(reasoningEffortOverride ? { reasoningEffortOverride } : {}),
       },
     );
     if (response.usage) {
@@ -564,6 +577,17 @@ export class CheckpointCompactionCoordinator {
       throw new Error('checkpoint compaction returned an empty summary');
     }
     return summary;
+  }
+
+  private checkpointReasoningEffortOverride(): 'disabled' | undefined {
+    const config = typeof (this.aiService as any).getConfig === 'function'
+      ? (this.aiService as any).getConfig()
+      : {};
+    const identity = `${config?.model || ''} ${config?.apiUrl || ''}`.toLowerCase();
+    // DeepSeek thinking models can spend the entire bounded summary output on
+    // private reasoning and return no usable checkpoint. Disable thinking only
+    // for this internal summarizer; primary task inference remains unchanged.
+    return identity.includes('deepseek') ? 'disabled' : undefined;
   }
 
   private summaryInputBudget(): number {
@@ -954,6 +978,152 @@ function buildDynamicCheckpointTail(
   return tail;
 }
 
+function buildCompletedToolBoundaryWitness(
+  messages: readonly Message[],
+  episodeId?: string,
+): Message | undefined {
+  const completed: NonNullable<Message['__checkpointCompletedToolCalls']> = [];
+  const seen = new Set<string>();
+  const add = (entry: NonNullable<Message['__checkpointCompletedToolCalls']>[number]): void => {
+    if (
+      !entry.toolName
+      || !entry.toolCallId
+      || !/^[a-f0-9]{64}$/u.test(entry.argumentsSha256)
+      || !['success', 'failure', 'unknown'].includes(entry.resultStatus)
+      || typeof entry.retryable !== 'boolean'
+    ) {
+      return;
+    }
+    const key = `${entry.toolName}\u0000${entry.toolCallId}\u0000${entry.argumentsSha256}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    completed.push({ ...entry });
+  };
+
+  for (const message of messages) {
+    if (!isCanonicalCompletedToolWitness(message, episodeId)) continue;
+    for (const prior of message.__checkpointCompletedToolCalls || []) add(prior);
+  }
+
+  for (let assistantIndex = 0; assistantIndex < messages.length; assistantIndex++) {
+    const message = messages[assistantIndex];
+    if (
+      message.role !== 'assistant'
+      || (episodeId && message.__episodeId !== episodeId)
+    ) {
+      continue;
+    }
+    for (const toolCall of message.tool_calls || []) {
+      let result: Message | undefined;
+      for (let resultIndex = assistantIndex + 1; resultIndex < messages.length; resultIndex++) {
+        const candidate = messages[resultIndex];
+        if (candidate.role === 'assistant' || candidate.role === 'user') break;
+        if (
+          candidate.role === 'tool'
+          && candidate.tool_call_id === toolCall.id
+          && candidate.name === toolCall.function.name
+          && (!episodeId || candidate.__episodeId === episodeId)
+        ) {
+          result = candidate;
+          break;
+        }
+      }
+      if (!result) continue;
+      add({
+        toolName: toolCall.function.name,
+        toolCallId: toolCall.id,
+        argumentsSha256: createHash('sha256')
+          .update(toolCall.function.arguments, 'utf8')
+          .digest('hex'),
+        resultStatus: result.__toolResultState?.status ?? 'unknown',
+        retryable: result.__toolResultState?.retryable === true,
+      });
+    }
+  }
+  if (completed.length === 0 || !episodeId) return undefined;
+
+  const retained = completed.slice(-32);
+  return annotateContextMessage({
+    role: 'assistant',
+    content: completedToolWitnessContent(retained),
+    __checkpointCompletedToolWitness: true,
+    __checkpointCompletedToolWitnessProvenance:
+      signCheckpointCompletedToolWitness(episodeId, retained),
+    __checkpointCompletedToolCalls: retained,
+    __episodeId: episodeId,
+  }, {
+    source: 'compaction_summary',
+    lifecycle: 'episode',
+    cacheScope: 'epoch',
+    persistence: 'durable',
+    ...(episodeId ? { epoch: episodeId } : {}),
+  });
+}
+
+function isCanonicalCompletedToolWitness(
+  message: Message,
+  episodeId?: string,
+): boolean {
+  const entries = message.__checkpointCompletedToolCalls;
+  const witnessEpisodeId = message.__episodeId;
+  return message.role === 'assistant'
+    && message.__checkpointCompletedToolWitness === true
+    && Boolean(witnessEpisodeId)
+    && message.__context?.source === 'compaction_summary'
+    && message.__context.schema === 'xiaoba.context_lifecycle.v1'
+    && message.__context.lifecycle === 'episode'
+    && message.__context.cacheScope === 'epoch'
+    && message.__context.persistence === 'durable'
+    && message.__context.epoch === witnessEpisodeId
+    && (!episodeId || witnessEpisodeId === episodeId)
+    && Array.isArray(entries)
+    && entries.length > 0
+    && message.content === completedToolWitnessContent(entries)
+    && verifyCheckpointCompletedToolWitness(
+      message.__checkpointCompletedToolWitnessProvenance,
+      witnessEpisodeId!,
+      entries,
+    );
+}
+
+function completedToolWitnessContent(
+  entries: NonNullable<Message['__checkpointCompletedToolCalls']>,
+): string {
+  return [
+    CHECKPOINT_COMPLETED_TOOL_BOUNDARY_PREFIX,
+    'These tool calls already have complete result messages in the compacted source.',
+    'A ledger entry proves that a result boundary exists; it does not by itself prove success.',
+    'Do not repeat a successful call merely to satisfy an older retained instruction.',
+    'A retained user instruction that postdates a listed result remains authoritative and may explicitly request a retry.',
+    'A failed or retryable result, or the continuation summary, may also authorize a retry.',
+    ...entries.map(entry => `completed: ${JSON.stringify({
+      tool_name: entry.toolName,
+      tool_call_id: entry.toolCallId,
+      arguments_sha256: entry.argumentsSha256,
+      result_status: entry.resultStatus,
+      retryable: entry.retryable,
+    })}`),
+  ].join('\n');
+}
+
+export function collectCanonicalCompletedToolBoundaryEntries(
+  messages: readonly Message[],
+  episodeId = findLatestEpisodeId(messages),
+): NonNullable<Message['__checkpointCompletedToolCalls']> {
+  return messages.flatMap(message => (
+    isCanonicalCompletedToolWitness(message, episodeId)
+      ? message.__checkpointCompletedToolCalls!.map(entry => ({ ...entry }))
+      : []
+  ));
+}
+
+export function countCanonicalCompletedToolBoundaryEntries(
+  messages: readonly Message[],
+  episodeId = findLatestEpisodeId(messages),
+): number {
+  return collectCanonicalCompletedToolBoundaryEntries(messages, episodeId).length;
+}
+
 function buildUserInputEvidence(message: Message, maxTokens: number): Message | undefined {
   if (maxTokens < 128) return undefined;
   const raw = serializeUserInputForEvidence(message);
@@ -1028,6 +1198,7 @@ function buildCompactionAudit(
   retainedRootCount: number;
   retainedPendingCount: number;
   retainedUserEvidenceCount: number;
+  completedToolBoundaryCount: number;
 } {
   const summary = messages.find(message => message.__checkpointSummary);
   const summaryText = typeof summary?.content === 'string' ? summary.content : '';
@@ -1040,10 +1211,11 @@ function buildCompactionAudit(
       typeof message.content === 'string'
       && message.content.startsWith(CHECKPOINT_USER_INPUT_EVIDENCE_PREFIX)
     )).length,
+    completedToolBoundaryCount: countCanonicalCompletedToolBoundaryEntries(messages),
   };
 }
 
-function findLatestEpisodeId(messages: Message[]): string | undefined {
+function findLatestEpisodeId(messages: readonly Message[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index--) {
     if (messages[index].__episodeId) return messages[index].__episodeId;
   }
