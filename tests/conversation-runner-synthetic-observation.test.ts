@@ -4,6 +4,7 @@ import { ConversationRunner } from '../src/core/conversation-runner';
 import { SYNTHETIC_OBSERVATION_TOOL_NAME, SyntheticObservation } from '../src/core/synthetic-observation';
 import { ChatResponse, Message } from '../src/types';
 import { ToolCall, ToolDefinition, ToolExecutor, ToolResult } from '../src/types/tool';
+import { prepareProviderRequestMessages } from '../src/providers/request-preflight';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
 
@@ -22,9 +23,9 @@ function makeToolCall(id: string): ToolCall {
   };
 }
 
-function makeObservation(): SyntheticObservation {
+function makeObservation(id = 'memory-ready'): SyntheticObservation {
   return {
-    id: 'memory-ready',
+    id,
     source: 'memory',
     status: 'completed',
     relevance: 'medium',
@@ -111,5 +112,40 @@ describe('ConversationRunner synthetic observations', () => {
       2,
       'matching synthetic pair is injected exactly once',
     );
+  });
+
+  test('keeps equivalent observations from separate loop drains provider-valid and uniquely paired', async () => {
+    const received: Message[][] = [];
+    const responses: ChatResponse[] = [
+      { content: null, toolCalls: [makeToolCall('call_1')], usage },
+      { content: null, toolCalls: [makeToolCall('call_2')], usage },
+      { content: 'done', toolCalls: [], usage },
+    ];
+    const aiService = {
+      chat: async (messages: Message[]) => {
+        received.push(cloneMessages(messages));
+        return responses[received.length - 1];
+      },
+    } as any;
+    let providerCalls = 0;
+    const runner = new ConversationRunner(aiService, new NoopToolExecutor(), {
+      stream: false,
+      enableCompression: false,
+      syntheticObservationProvider: () => {
+        providerCalls += 1;
+        if (providerCalls === 1) return [makeObservation('internal-one')];
+        if (providerCalls === 2) return [makeObservation('internal-two')];
+        return [];
+      },
+    });
+
+    await runner.run([{ role: 'user', content: 'deploy it' }]);
+
+    const syntheticCalls = received[2]
+      .filter(message => message.__syntheticObservation && message.role === 'assistant')
+      .map(message => message.tool_calls?.[0].id);
+    assert.equal(syntheticCalls.length, 2);
+    assert.notEqual(syntheticCalls[0], syntheticCalls[1]);
+    assert.equal(prepareProviderRequestMessages(received[2]).summary, undefined);
   });
 });

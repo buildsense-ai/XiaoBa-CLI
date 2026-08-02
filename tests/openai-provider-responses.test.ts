@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import axios from 'axios';
 import { OpenAIProvider } from '../src/providers/openai-provider';
 import { AIService } from '../src/utils/ai-service';
+import { buildSyntheticObservationMessages } from '../src/core/synthetic-observation';
 import type { Message } from '../src/types';
 import type { ToolDefinition } from '../src/types/tool';
 
@@ -36,6 +37,38 @@ function createCompatibleProvider(): OpenAIProvider {
 }
 
 describe('OpenAIProvider Responses API mode', () => {
+  test('keeps equivalent synthetic observation wire input stable across internal branch ids', () => {
+    const provider = createProvider();
+    const build = (suffix: string) => {
+      const first = buildSyntheticObservationMessages([{
+        id: `observation-one-${suffix}`,
+        source: 'memory',
+        status: 'completed',
+        relevance: 'high',
+        summary: 'Equivalent visible memory result.',
+        metadata: { branchType: 'memory', branchId: `branch-one-${suffix}` },
+      }]);
+      const second = buildSyntheticObservationMessages([{
+        id: `observation-two-${suffix}`,
+        source: 'memory',
+        status: 'completed',
+        relevance: 'high',
+        summary: 'Equivalent visible memory result.',
+        metadata: { branchType: 'memory', branchId: `branch-two-${suffix}` },
+      }], { existingMessages: first });
+      return (provider as any).buildResponsesRequestBody([
+        { role: 'user', content: 'current question' },
+        ...first,
+        ...second,
+      ]).input;
+    };
+
+    const first = build('a');
+    const second = build('b');
+    assert.deepEqual(first, second);
+    assert.notEqual(first[1].call_id, first[3].call_id);
+  });
+
   test('builds Responses input and a stable prompt cache key', () => {
     const provider = createProvider();
     const first = (provider as any).buildResponsesRequestBody([

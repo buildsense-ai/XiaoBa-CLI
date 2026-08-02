@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { Message } from '../types';
 import { annotateContextMessage } from './context-lifecycle';
 
@@ -103,11 +103,34 @@ export class InMemorySyntheticObservationQueue implements SyntheticObservationQu
 
 export function buildSyntheticObservationMessages(
   observations: SyntheticObservation[],
+  options: { existingMessages?: readonly Message[] } = {},
 ): Message[] {
   const messages: Message[] = [];
+  const usedToolCallIds = collectToolCallIds(options.existingMessages || []);
   for (const observation of observations) {
     const id = observation.id || stableObservationId(observation);
-    const toolCallId = `synthetic-${observation.source}-${id}`;
+    const toolArguments = JSON.stringify({
+      source: observation.source,
+      status: observation.status,
+      relevance: observation.relevance,
+      timing: resolveObservationTiming(observation),
+      confidence: observation.confidence,
+    });
+    const toolOutput = formatSyntheticObservation(observation);
+    const visiblePayloadDigest = createHash('sha256')
+      .update(toolArguments)
+      .update('\0')
+      .update(toolOutput)
+      .digest('hex')
+      .slice(0, 20);
+    // Provider-visible IDs participate in exact-prefix cache identity. Keep
+    // them deterministic for equivalent visible observations while retaining
+    // the unique internal observation/branch IDs below for audit correlation.
+    const toolCallIdPrefix = `synthetic-${observation.source}-${visiblePayloadDigest}`;
+    let ordinal = 1;
+    while (usedToolCallIds.has(`${toolCallIdPrefix}-${ordinal}`)) ordinal++;
+    const toolCallId = `${toolCallIdPrefix}-${ordinal}`;
+    usedToolCallIds.add(toolCallId);
     const provenance = observationProvenance(observation);
     messages.push(annotateContextMessage({
       role: 'assistant',
@@ -117,13 +140,7 @@ export function buildSyntheticObservationMessages(
         type: 'function',
         function: {
           name: SYNTHETIC_OBSERVATION_TOOL_NAME,
-          arguments: JSON.stringify({
-            source: observation.source,
-            status: observation.status,
-            relevance: observation.relevance,
-            timing: resolveObservationTiming(observation),
-            confidence: observation.confidence,
-          }),
+          arguments: toolArguments,
         },
       }],
       __syntheticObservation: true,
@@ -138,7 +155,7 @@ export function buildSyntheticObservationMessages(
       role: 'tool',
       name: SYNTHETIC_OBSERVATION_TOOL_NAME,
       tool_call_id: toolCallId,
-      content: formatSyntheticObservation(observation),
+      content: toolOutput,
       __syntheticObservation: true,
       syntheticObservationId: id,
       ...(provenance ? { syntheticObservationProvenance: provenance } : {}),
@@ -149,6 +166,19 @@ export function buildSyntheticObservationMessages(
     }));
   }
   return messages;
+}
+
+function collectToolCallIds(messages: readonly Message[]): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    for (const toolCall of message.tool_calls || []) {
+      const id = toolCall.id?.trim();
+      if (id) ids.add(id);
+    }
+    const resultId = message.tool_call_id?.trim();
+    if (resultId) ids.add(resultId);
+  }
+  return ids;
 }
 
 function observationProvenance(

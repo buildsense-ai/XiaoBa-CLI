@@ -9,6 +9,7 @@ import {
   SyntheticObservation,
   withSyntheticObservationTiming,
 } from '../src/core/synthetic-observation';
+import { prepareProviderRequestMessages } from '../src/providers/request-preflight';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
 
@@ -53,6 +54,61 @@ describe('synthetic observations', () => {
     assert.match(String(messages[1].content), /Earlier session decided/);
     assert.match(String(messages[1].content), /Decision: keep dashboard filters compact/);
     assert.match(String(messages[1].content), /timing: current_turn/);
+  });
+
+  test('keeps provider-visible pair ids stable across different internal ids and provenance', () => {
+    const first = buildSyntheticObservationMessages([{
+      ...observation('internal-one'),
+      metadata: { branchType: 'memory', branchId: 'branch-one' },
+    }]);
+    const second = buildSyntheticObservationMessages([{
+      ...observation('internal-two'),
+      metadata: { branchType: 'memory', branchId: 'branch-two' },
+    }]);
+
+    assert.equal(first[0].tool_calls?.[0].id, second[0].tool_calls?.[0].id);
+    assert.equal(first[1].tool_call_id, second[1].tool_call_id);
+    assert.equal(first[0].syntheticObservationId, 'internal-one');
+    assert.equal(second[0].syntheticObservationId, 'internal-two');
+    assert.deepEqual(first[0].syntheticObservationProvenance, {
+      branchType: 'memory',
+      branchId: 'branch-one',
+    });
+    assert.deepEqual(second[0].syntheticObservationProvenance, {
+      branchType: 'memory',
+      branchId: 'branch-two',
+    });
+  });
+
+  test('changes provider-visible pair ids when visible content changes', () => {
+    const first = buildSyntheticObservationMessages([observation('internal-one')]);
+    const second = buildSyntheticObservationMessages([{
+      ...observation('internal-two'),
+      summary: 'A different model-visible memory summary.',
+    }]);
+
+    assert.notEqual(first[0].tool_calls?.[0].id, second[0].tool_calls?.[0].id);
+  });
+
+  test('assigns deterministic unique ordinals across separate drains in one growing request', () => {
+    const firstBatch = buildSyntheticObservationMessages([observation('internal-one')]);
+    const secondBatch = buildSyntheticObservationMessages([observation('internal-two')], {
+      existingMessages: firstBatch,
+    });
+    const combined = [...firstBatch, ...secondBatch];
+    const replayFirstBatch = buildSyntheticObservationMessages([observation('different-internal-one')]);
+    const replaySecondBatch = buildSyntheticObservationMessages([observation('different-internal-two')], {
+      existingMessages: replayFirstBatch,
+    });
+    const firstIds = [firstBatch[0].tool_calls?.[0].id, secondBatch[0].tool_calls?.[0].id];
+    const secondIds = [replayFirstBatch[0].tool_calls?.[0].id, replaySecondBatch[0].tool_calls?.[0].id];
+
+    assert.notEqual(firstIds[0], firstIds[1]);
+    assert.deepEqual(firstIds, secondIds);
+    assert.equal(firstBatch[1].tool_call_id, firstIds[0]);
+    assert.equal(secondBatch[1].tool_call_id, firstIds[1]);
+    assert.equal(prepareProviderRequestMessages(combined).summary, undefined);
+    assert.equal(prepareProviderRequestMessages(combined).messages.length, 4);
   });
 
   test('queue drains once, dedupes ids, and discards after cancellation', () => {

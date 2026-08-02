@@ -897,7 +897,9 @@ export class ConversationRunner {
     }
     if (observations.length === 0) return;
 
-    const syntheticMessages = buildSyntheticObservationMessages(observations);
+    const syntheticMessages = buildSyntheticObservationMessages(observations, {
+      existingMessages: messages,
+    });
     messages.push(...syntheticMessages);
     Logger.info(
       `[${this.sessionLabel}Turn ${turn}] injected ${observations.length} synthetic runtime observation(s): `
