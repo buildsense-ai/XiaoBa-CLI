@@ -165,4 +165,6 @@ jobs:
         working-directory: XiaoBa-CLI
         env:
           CATSCOMPANY_REPO: ../cats-company
+          XIAOBA_TEST_SANDBOX_ROOT: ${{ runner.temp }}
+          XIAOBA_USER_DATA_DIR: ${{ runner.temp }}/xiaoba-catsco-skills
         run: npm run test:cross-repo:catsco-skills
