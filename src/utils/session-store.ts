@@ -9,6 +9,8 @@ import {
 } from './transcript-artifacts';
 import { PathResolver } from './path-resolver';
 import type { PersistedRuntimeGoalState } from '../core/goal-runtime';
+import { isTransientContextMessage } from '../core/context-lifecycle';
+import { filterValidDurableSyntheticObservationEvents } from '../core/synthetic-observation';
 
 const SESSIONS_DIR = PathResolver.getDataPath('sessions');
 const SESSION_STATE_DIR = PathResolver.getDataPath('session-state');
@@ -118,7 +120,13 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
   const durable: Message[] = [];
 
   for (const message of messages) {
-    if ((message as any).__injected || message.role === 'system') {
+    if (
+      isTransientContextMessage(message)
+      || (message as any).__injected
+      || message.role === 'system'
+      || (message.__syntheticObservation && message.__context?.persistence !== 'durable')
+      || (message.__runtimeFeedback && message.__context?.persistence !== 'durable')
+    ) {
       continue;
     }
 
@@ -177,7 +185,7 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
     }
   }
 
-  return durable;
+  return filterValidDurableSyntheticObservationEvents(durable);
 }
 
 function serializeMessages(messages: Message[]): string {

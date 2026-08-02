@@ -103,7 +103,7 @@ export class TurnContextBuilder {
   removeTransientMessages(messages: Message[]): Message[] {
     return messages.filter(msg => {
       if (isTransientContextMessage(msg)) return false;
-      if (msg.__syntheticObservation) return false;
+      if (msg.__syntheticObservation && msg.__context?.persistence !== 'durable') return false;
       if (msg.__runtimeFeedback) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;

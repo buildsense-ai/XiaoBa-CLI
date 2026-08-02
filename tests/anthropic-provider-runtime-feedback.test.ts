@@ -4,6 +4,7 @@ import { AnthropicProvider } from '../src/providers/anthropic-provider';
 import { Message } from '../src/types';
 import {
   buildSyntheticObservationMessages,
+  createDurableMemoryObservation,
   SYNTHETIC_OBSERVATION_TOOL_NAME,
   withSyntheticObservationTiming,
 } from '../src/core/synthetic-observation';
@@ -69,7 +70,7 @@ describe('AnthropicProvider runtime feedback boundary', () => {
     });
 
     const syntheticPair = buildSyntheticObservationMessages([
-      withSyntheticObservationTiming({
+      createDurableMemoryObservation(withSyntheticObservationTiming({
         id: 'late-memory',
         source: 'memory',
         status: 'completed',
@@ -80,12 +81,19 @@ describe('AnthropicProvider runtime feedback boundary', () => {
           summary: 'Prior dinner planning memory.',
           refs: ['catscompany/2026-06-16/demo.jsonl#7'],
         }),
-      }, 'late_previous_turn'),
-    ]);
+        metadata: { branchType: 'memory', branchId: 'branch-anthropic' },
+      }, 'late_previous_turn')),
+    ], { episodeId: 'episode:anthropic' });
 
     const transformed = (provider as any).transformMessages([
       { role: 'user', content: 'continue the dinner plan' },
       ...syntheticPair,
+    ] as Message[]);
+    const restored = (provider as any).transformMessages([
+      { role: 'user', content: 'continue the dinner plan' },
+      ...syntheticPair,
+      { role: 'assistant', content: 'The prior plan was recovered.' },
+      { role: 'user', content: 'Continue with the next decision.' },
     ] as Message[]);
 
     const toolUseId = syntheticPair[0].tool_calls?.[0].id;
@@ -116,6 +124,13 @@ describe('AnthropicProvider runtime feedback boundary', () => {
         }),
       }],
     });
+    assert.equal(JSON.stringify(transformed).includes('__context'), false);
+    assert.equal(JSON.stringify(transformed).includes('branch-anthropic'), false);
+    assert.equal(JSON.stringify(transformed).includes('episode:anthropic'), false);
+    assert.deepStrictEqual(
+      restored.messages.slice(0, transformed.messages.length),
+      transformed.messages,
+    );
   });
 
   test('coalesces adjacent user messages before Anthropic-compatible requests', () => {

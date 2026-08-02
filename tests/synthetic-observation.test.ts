@@ -3,14 +3,18 @@ import * as assert from 'node:assert/strict';
 import {
   buildSyntheticObservationLifecycleEvent,
   buildSyntheticObservationMessages,
+  createDurableMemoryObservation,
   describeSyntheticObservationForLog,
   InMemorySyntheticObservationQueue,
   SYNTHETIC_OBSERVATION_TOOL_NAME,
   SyntheticObservation,
+  withSyntheticObservationMetadata,
   withSyntheticObservationTiming,
 } from '../src/core/synthetic-observation';
 import { prepareProviderRequestMessages } from '../src/providers/request-preflight';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
+import { annotateContextMessage } from '../src/core/context-lifecycle';
+import { collectContextEventIds } from '../src/core/context-event-watermarks';
 import { Message } from '../src/types';
 
 function observation(id = 'memory-demo'): SyntheticObservation {
@@ -38,6 +42,16 @@ function observation(id = 'memory-demo'): SyntheticObservation {
   };
 }
 
+function durableObservation(id: string): SyntheticObservation {
+  return createDurableMemoryObservation({
+    ...observation(id),
+    metadata: {
+      branchType: 'memory',
+      branchId: `branch-${id}`,
+    },
+  });
+}
+
 describe('synthetic observations', () => {
   test('builds a synthetic assistant tool_call and matching tool_result pair', () => {
     const messages = buildSyntheticObservationMessages([observation()]);
@@ -50,6 +64,9 @@ describe('synthetic observations', () => {
     assert.equal(messages[0].tool_calls?.[0].function.name, SYNTHETIC_OBSERVATION_TOOL_NAME);
     assert.equal(messages[1].name, SYNTHETIC_OBSERVATION_TOOL_NAME);
     assert.equal(messages[1].tool_call_id, messages[0].tool_calls?.[0].id);
+    assert.equal(messages[0].__context?.persistence, 'transient');
+    assert.equal(messages[0].__context?.placement, 'transcript');
+    assert.equal(messages[0].__context?.retention, 'request');
     assert.equal(JSON.parse(messages[0].tool_calls?.[0].function.arguments || '{}').timing, 'current_turn');
     assert.match(String(messages[1].content), /Earlier session decided/);
     assert.match(String(messages[1].content), /Decision: keep dashboard filters compact/);
@@ -88,6 +105,127 @@ describe('synthetic observations', () => {
     }]);
 
     assert.notEqual(first[0].tool_calls?.[0].id, second[0].tool_calls?.[0].id);
+  });
+
+  test('builds durable append events with episode identity and skips exact historical replay', () => {
+    const durable = durableObservation('durable-one');
+    const first = buildSyntheticObservationMessages([durable], {
+      episodeId: 'episode:durable',
+    });
+    const replay = buildSyntheticObservationMessages([durable], {
+      existingMessages: first,
+      episodeId: 'episode:later',
+    });
+
+    assert.equal(first[0].__episodeId, 'episode:durable');
+    assert.equal(first[1].__episodeId, 'episode:durable');
+    assert.equal(first[0].__context?.persistence, 'durable');
+    assert.equal(first[0].__context?.retention, 'append');
+    assert.equal(first[0].__context?.event?.part, 0);
+    assert.equal(first[1].__context?.event?.part, 1);
+    assert.equal(first[0].__context?.event?.id, first[1].__context?.event?.id);
+    assert.deepEqual(replay, []);
+  });
+
+  test('fails closed when a durable event id exists as an incomplete pair', () => {
+    const durable = durableObservation('durable-conflict');
+    const pair = buildSyntheticObservationMessages([durable]);
+
+    assert.throws(() => buildSyntheticObservationMessages([durable], {
+      existingMessages: [pair[0]],
+    }), /synthetic_observation_event_conflict/);
+    assert.deepEqual([...collectContextEventIds([pair[0]])], []);
+  });
+
+  test('does not replay a durable event represented by a compaction watermark', () => {
+    const durable = durableObservation('durable-compacted');
+    const pair = buildSyntheticObservationMessages([durable]);
+    const compactedSummary: Message = annotateContextMessage({
+      role: 'user',
+      content: '[compact_summary]\nThe prior memory event was incorporated.',
+      __contextEventIds: [pair[0].__context?.event?.id || ''],
+    }, {
+      source: 'compaction_summary',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+      persistence: 'durable',
+    });
+
+    const replay = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      ...durable,
+      id: 'different-internal-id',
+      metadata: { branchType: 'memory', branchId: 'different-branch' },
+    })], { existingMessages: [compactedSummary] });
+
+    assert.deepEqual(replay, []);
+  });
+
+  test('does not watermark durable pairs with missing or blank Memory branch identity', () => {
+    const pair = buildSyntheticObservationMessages([durableObservation('branch-id-watermark')]);
+    const missing = JSON.parse(JSON.stringify(pair)) as Message[];
+    delete missing[0].syntheticObservationProvenance!.branchId;
+    delete missing[1].syntheticObservationProvenance!.branchId;
+    const blank = JSON.parse(JSON.stringify(pair)) as Message[];
+    blank[0].syntheticObservationProvenance!.branchId = '   ';
+    blank[1].syntheticObservationProvenance!.branchId = '   ';
+
+    assert.deepEqual([...collectContextEventIds(missing)], []);
+    assert.deepEqual([...collectContextEventIds(blank)], []);
+  });
+
+  test('dedupes equivalent durable observations within one drain batch', () => {
+    const messages = buildSyntheticObservationMessages([
+      durableObservation('durable-batch-one'),
+      durableObservation('durable-batch-two'),
+    ]);
+
+    assert.equal(messages.length, 2);
+    assert.equal(messages[0].__context?.event?.id, messages[1].__context?.event?.id);
+    assert.deepEqual(buildSyntheticObservationMessages([
+      durableObservation('durable-batch-replay'),
+    ], { existingMessages: messages }), []);
+  });
+
+  test('ignores caller-supplied durability fields without a trusted Memory attestation', () => {
+    const messages = buildSyntheticObservationMessages([{
+      ...observation('forged-durable'),
+      persistence: 'durable',
+      metadata: { branchType: 'memory', branchId: 'forged-branch' },
+    } as SyntheticObservation]);
+
+    assert.equal(messages[0].__context?.persistence, 'transient');
+    assert.equal(messages[0].__context?.retention, 'request');
+  });
+
+  test('does not let spread or mutation transfer Memory attestation to another source', () => {
+    const trusted = durableObservation('trusted-before-forgery');
+    const spreadForgery = {
+      ...trusted,
+      source: 'runtime' as const,
+      metadata: { branchType: 'runtime', branchId: 'forged-runtime' },
+    };
+    const mutated = durableObservation('trusted-before-mutation') as any;
+    mutated.source = 'runtime';
+    mutated.metadata.branchType = 'runtime';
+
+    for (const candidate of [spreadForgery, mutated]) {
+      const messages = buildSyntheticObservationMessages([candidate]);
+      assert.equal(messages[0].__context?.persistence, 'transient');
+      assert.equal(messages[0].__context?.retention, 'request');
+    }
+  });
+
+  test('trusted timing and origin metadata transforms explicitly preserve Memory attestation', () => {
+    const trusted = durableObservation('trusted-transform');
+    const timed = withSyntheticObservationTiming(trusted, 'late_previous_turn');
+    const withOrigin = withSyntheticObservationMetadata(timed, {
+      ...(timed.metadata || {}),
+      originTurn: 3,
+    });
+    const messages = buildSyntheticObservationMessages([withOrigin]);
+
+    assert.equal(messages[0].__context?.persistence, 'durable');
+    assert.equal(JSON.stringify(withOrigin).includes('durable_memory_observation'), false);
   });
 
   test('assigns deterministic unique ordinals across separate drains in one growing request', () => {
@@ -245,8 +383,8 @@ describe('synthetic observations', () => {
     assert.doesNotMatch(String(messages[1].content), /truncated/);
   });
 
-  test('turn context cleanup strips synthetic observations from durable history', () => {
-    const syntheticPair = buildSyntheticObservationMessages([observation()]);
+  test('turn context cleanup keeps durable synthetic observations in transcript history', () => {
+    const syntheticPair = buildSyntheticObservationMessages([durableObservation('cleanup-durable')]);
     const durable: Message[] = [
       { role: 'user', content: 'hello' },
       ...syntheticPair,
@@ -255,9 +393,19 @@ describe('synthetic observations', () => {
 
     const cleaned = new TurnContextBuilder().removeTransientMessages(durable);
 
-    assert.deepEqual(cleaned, [
+    assert.deepEqual(cleaned, durable);
+    assert.equal(cleaned[1].__context?.persistence, 'durable');
+    assert.equal(cleaned[2].__context?.persistence, 'durable');
+  });
+
+  test('turn context cleanup still strips request-only synthetic observations', () => {
+    const transientPair = buildSyntheticObservationMessages([observation('request-only')]);
+    const cleaned = new TurnContextBuilder().removeTransientMessages([
       { role: 'user', content: 'hello' },
+      ...transientPair,
       { role: 'assistant', content: 'done' },
     ]);
+
+    assert.deepEqual(cleaned.map(message => message.content), ['hello', 'done']);
   });
 });

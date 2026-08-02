@@ -6,6 +6,7 @@ import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { readRequiredBundledPromptFile } from '../utils/prompt-template';
 import { collectRemoteContextWatermarks } from './remote-context-watermarks';
+import { collectContextEventIds } from './context-event-watermarks';
 import { estimateMessagesTokens } from './token-estimator';
 import { annotateContextMessage, isTransientContextMessage } from './context-lifecycle';
 import {
@@ -296,6 +297,7 @@ export class CheckpointCompactionCoordinator {
       this.retainedUserTokenBudget,
     );
     const remoteContextWatermarks = collectRemoteContextWatermarks(durable);
+    const contextEventIds = [...collectContextEventIds(durable)].sort();
     const activeEpisodeId = findLatestEpisodeId(sessionMessages);
     const stableBoundary = findLastStableBoundary(sessionMessages);
 
@@ -327,6 +329,7 @@ export class CheckpointCompactionCoordinator {
       ...(Object.keys(remoteContextWatermarks).length > 0
         ? { __remoteContextWatermarks: remoteContextWatermarks }
         : {}),
+      ...(contextEventIds.length > 0 ? { __contextEventIds: contextEventIds } : {}),
     }, {
       source: 'compaction_summary',
       lifecycle: 'episode',
@@ -750,7 +753,7 @@ function isTransientMessage(message: Message): boolean {
   if (
     message.__injected
     || message.__runtimeFeedback
-    || message.__syntheticObservation
+    || (message.__syntheticObservation && message.__context?.persistence !== 'durable')
   ) {
     return true;
   }

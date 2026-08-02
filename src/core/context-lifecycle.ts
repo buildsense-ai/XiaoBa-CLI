@@ -1,7 +1,10 @@
 import { createHash } from 'crypto';
 import type {
   ContextCacheScope,
+  ContextEventIdentity,
   ContextLifecycleAnnotation,
+  ContextPlacement,
+  ContextRetention,
   ContextSource,
   Message,
 } from '../types';
@@ -28,6 +31,9 @@ export interface ContextAnnotationInput {
   lifecycle: ContextLifecycleAnnotation['lifecycle'];
   cacheScope: ContextCacheScope;
   persistence?: ContextLifecycleAnnotation['persistence'];
+  placement?: ContextPlacement;
+  retention?: ContextRetention;
+  event?: ContextEventIdentity;
   epoch?: string;
 }
 
@@ -43,6 +49,9 @@ export function annotateContextMessage<T extends Message>(
       lifecycle: input.lifecycle,
       cacheScope: input.cacheScope,
       persistence: input.persistence ?? 'transient',
+      ...(input.placement ? { placement: input.placement } : {}),
+      ...(input.retention ? { retention: input.retention } : {}),
+      ...(input.event ? { event: { ...input.event } } : {}),
       ...(input.epoch ? { epoch: input.epoch } : {}),
     },
     ...(input.cacheScope === 'stable'
@@ -94,6 +103,9 @@ function contextIdentity(message: Message): Record<string, unknown> {
     lifecycle: annotation.lifecycle,
     cacheScope: annotation.cacheScope,
     persistence: annotation.persistence,
+    placement: annotation.placement || '',
+    retention: annotation.retention || '',
+    event: annotation.event || null,
     epoch: annotation.epoch || '',
     content: sha256(contentText(message)).slice(0, 16),
   };

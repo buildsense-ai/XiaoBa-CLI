@@ -8,6 +8,13 @@ export type ProviderApiType = 'anthropic-messages' | 'openai-chat-completions' |
 export type ContextLifecycle = 'session' | 'episode' | 'call';
 export type ContextCacheScope = 'stable' | 'epoch' | 'volatile';
 export type ContextPersistence = 'durable' | 'transient';
+export type ContextPlacement = 'instruction_prefix' | 'transcript' | 'request_tail';
+export type ContextRetention = 'append' | 'replace' | 'request';
+export interface ContextEventIdentity {
+  id: string;
+  part: number;
+  parts: number;
+}
 export type ContextSource =
   | 'runtime_context'
   | 'runtime_observation_rules'
@@ -34,6 +41,12 @@ export interface ContextLifecycleAnnotation {
   lifecycle: ContextLifecycle;
   cacheScope: ContextCacheScope;
   persistence: ContextPersistence;
+  /** Provider-neutral placement semantics; serializers still choose the wire representation. */
+  placement?: ContextPlacement;
+  /** Whether later requests append, replace, or discard this context item. */
+  retention?: ContextRetention;
+  /** Internal idempotency identity for a multi-message context event. Never sent to providers. */
+  event?: ContextEventIdentity;
   /** Raw epoch identity stays in memory; telemetry exposes only a fingerprint. */
   epoch?: string;
 }
@@ -100,6 +113,8 @@ export interface Message {
   __remoteContextId?: number;
   /** 压缩后仍被当前 transcript 表示的远端消息高水位；不发送给 provider。 */
   __remoteContextWatermarks?: Record<string, number>;
+  /** Durable context event IDs represented by a compaction checkpoint. Never sent to providers. */
+  __contextEventIds?: string[];
   /** Provider 原始 assistant content blocks，仅用于下次请求回放，不展示给用户。 */
   providerContent?: ProviderContentBlock[];
   /** Identity of the provider boundary that produced providerContent. Never sent verbatim. */

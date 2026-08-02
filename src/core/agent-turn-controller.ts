@@ -37,6 +37,7 @@ import {
   SyntheticObservation,
   SyntheticObservationQueue,
   SyntheticObservationTiming,
+  withSyntheticObservationMetadata,
   withSyntheticObservationTiming,
 } from './synthetic-observation';
 import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-memory-branch';
@@ -486,13 +487,10 @@ export class AgentTurnController {
     originTurn: number,
   ): SyntheticObservation {
     const timed = withSyntheticObservationTiming(observation, timing);
-    return {
-      ...timed,
-      metadata: {
-        ...(timed.metadata || {}),
-        originTurn,
-      },
-    };
+    return withSyntheticObservationMetadata(timed, {
+      ...(timed.metadata || {}),
+      originTurn,
+    });
   }
 
   private toRunnerCallbacks(callbacks?: AgentTurnCallbacks): RunnerCallbacks {

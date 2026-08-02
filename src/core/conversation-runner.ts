@@ -899,6 +899,7 @@ export class ConversationRunner {
 
     const syntheticMessages = buildSyntheticObservationMessages(observations, {
       existingMessages: messages,
+      episodeId: this.episodeId,
     });
     messages.push(...syntheticMessages);
     Logger.info(
