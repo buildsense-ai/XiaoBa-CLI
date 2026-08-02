@@ -1,5 +1,10 @@
 import type { ParsedCatsMessage } from './types';
 import type { CatsAgentContextMessage } from './client';
+import {
+  prefixCatsCoParticipantContent,
+  resolveTrustedCatsCoSpeakerIdentity,
+  sameCatsCoUserId,
+} from './speaker-label';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -30,8 +35,16 @@ export function selectNativeFeishuGroupContext(
   history: CatsAgentContextMessage[],
   afterSeq = 0,
   currentTriggerSeq = 0,
+  expectedTopicId = '',
+  expectedAgentId = '',
 ): string[] {
-  return selectNativeFeishuGroupContextEntries(history, afterSeq, currentTriggerSeq)
+  return selectNativeFeishuGroupContextEntries(
+    history,
+    afterSeq,
+    currentTriggerSeq,
+    expectedTopicId,
+    expectedAgentId,
+  )
     .map(entry => entry.content);
 }
 
@@ -39,69 +52,120 @@ export function selectNativeFeishuGroupContextEntries(
   history: CatsAgentContextMessage[],
   afterSeq = 0,
   currentTriggerSeq = 0,
+  expectedTopicId = '',
+  expectedAgentId = '',
 ): NativeFeishuGroupContextEntry[] {
+  if (!expectedTopicId.trim() || !expectedAgentId.trim()) return [];
   const ordered = [...history].sort((a, b) => agentContextMessageSeq(a) - agentContextMessageSeq(b));
   const clearBoundarySeq = ordered.reduce((latest, message) => (
-    isNativeFeishuClearBoundary(message) ? Math.max(latest, agentContextMessageSeq(message)) : latest
+    isNativeFeishuClearBoundary(message, expectedTopicId, expectedAgentId)
+      ? Math.max(latest, agentContextMessageSeq(message))
+      : latest
   ), 0);
   const effectiveAfterSeq = Math.max(afterSeq, clearBoundarySeq);
   return ordered
     .filter(message => {
       const seq = agentContextMessageSeq(message);
-      return seq > effectiveAfterSeq && (currentTriggerSeq <= 0 || seq !== currentTriggerSeq);
+      return seq > effectiveAfterSeq
+        && (currentTriggerSeq <= 0 || seq !== currentTriggerSeq)
+        && isCatsCoAgentContextRecordInScope(message, expectedTopicId, expectedAgentId);
     })
     .map(message => {
-      const role = normalizedContextRole(message);
+      const contextRole = normalizedContextRole(message, expectedAgentId);
+      const role = contextRole === 'other_agent' ? 'user' as const : contextRole;
       return {
         source: 'catscompany.agent_context' as const,
         id: agentContextMessageSeq(message),
         role,
         content: role === 'assistant'
           ? extractMessageText(message)
-          : formatParticipantMessage(message),
+          : formatParticipantMessage(message, expectedTopicId, contextRole === 'other_agent'),
       };
     })
-    .filter((entry): entry is NativeFeishuGroupContextEntry => Boolean(entry.role))
+    .filter((entry): entry is NativeFeishuGroupContextEntry => (
+      entry.role === 'user' || entry.role === 'assistant'
+    ))
     .filter(entry => entry.id > 0 && Boolean(entry.content));
 }
 
 function normalizedContextRole(
   message: CatsAgentContextMessage,
-): 'user' | 'assistant' | undefined {
+  expectedAgentId: string,
+): 'user' | 'assistant' | 'other_agent' | undefined {
   if (
     message.context_role === 'other_agent'
     && message.context_reason === 'other_agent_message'
+    && isUsableParticipantId(message.from_uid)
+    && !sameCatsCoUserId(message.from_uid, expectedAgentId)
   ) {
-    return 'user';
+    return 'other_agent';
   }
   if (
     message.context_eligible === true
-    && (message.context_role === 'user' || message.context_role === 'assistant')
+    && message.context_role === 'assistant'
+    && message.context_reason === 'current_agent_message'
+    && sameCatsCoUserId(message.from_uid, expectedAgentId)
   ) {
-    return message.context_role;
+    return 'assistant';
+  }
+  if (
+    message.context_eligible === true
+    && message.context_role === 'user'
+    && !sameCatsCoUserId(message.from_uid, expectedAgentId)
+    && isUsableParticipantId(message.from_uid)
+  ) {
+    return 'user';
   }
   return undefined;
 }
 
-export function isNativeFeishuClearBoundary(message: CatsAgentContextMessage): boolean {
-  return message.context_eligible === true
-    && message.context_role === 'user'
+export function isNativeFeishuClearBoundary(
+  message: CatsAgentContextMessage,
+  expectedTopicId = '',
+  expectedAgentId = '',
+): boolean {
+  return Boolean(expectedTopicId && expectedAgentId)
+    && isCatsCoAgentContextRecordInScope(message, expectedTopicId, expectedAgentId)
+    && normalizedContextRole(message, expectedAgentId) === 'user'
     && message.context_reason === 'group_message_targets_agent'
     && /^\/clear(?:\s|$)/i.test(extractMessageText(message));
 }
 
-function formatParticipantMessage(message: CatsAgentContextMessage): string {
+function formatParticipantMessage(
+  message: CatsAgentContextMessage,
+  expectedTopicId: string,
+  otherAgent: boolean,
+): string {
   const text = extractMessageText(message);
   if (!text) return '';
-  const metadata = asRecord(message.metadata);
-  const identity = asRecord(metadata.catsco_identity);
-  const actor = asRecord(identity.actor);
-  const speaker = stringField(actor, 'display_name')
-    || stringField(actor, 'username')
-    || stringField(actor, 'user_id')
-    || String(message.from_uid || '').trim()
-    || 'User';
-  return `[发言人: ${speaker}]\n${text}`;
+  const speaker = resolveTrustedCatsCoSpeakerIdentity({
+    trustSource: 'server_agent_context',
+    metadata: message.metadata,
+    fallbackUserId: message.from_uid,
+    expectedTopicId,
+    messageTopicId: message.topic_id,
+    kind: otherAgent ? 'other_agent' : 'human',
+  });
+  return prefixCatsCoParticipantContent(speaker, text) as string;
+}
+
+export function isCatsCoAgentContextRecordInScope(
+  message: CatsAgentContextMessage,
+  expectedTopicId: string,
+  expectedAgentId: string,
+): boolean {
+  const messageTopicId = String(message.topic_id ?? '').trim();
+  if (messageTopicId !== expectedTopicId) return false;
+  const messageAgentId = String(message.agent_id ?? '').trim();
+  const messageAgentUid = String(message.agent_uid ?? '').trim();
+  return Boolean(messageAgentId && messageAgentUid)
+    && sameCatsCoUserId(messageAgentId, expectedAgentId)
+    && sameCatsCoUserId(messageAgentUid, expectedAgentId);
+}
+
+function isUsableParticipantId(value: unknown): boolean {
+  const normalized = String(value ?? '').trim();
+  return Boolean(normalized && !/^(?:usr)?0$/i.test(normalized));
 }
 
 function extractMessageText(message: CatsAgentContextMessage): string {

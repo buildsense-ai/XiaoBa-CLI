@@ -60,6 +60,7 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
       senderId: 'usr7',
       seq: 31,
       text: '@usr43 请看一下',
+      botUid: 'usr43',
       metadata: {
         catsco_identity: {
           actor: { user_id: 'usr7', username: 'alice' },
@@ -140,6 +141,52 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     assert.equal(scope.actorUserId, 'usr7');
     assert.equal(scope.agentBodyId, undefined);
     assert.ok(envelope.warnings?.some(warning => warning.includes('actor.user_id')));
+  });
+
+  test('rejects canonical metadata bound to another connected Agent', () => {
+    const envelope = createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 40,
+      text: 'hello',
+      botUid: 'usr43',
+      metadata: {
+        catsco_identity: {
+          actor: { user_id: 'usr7' },
+          agent: { agent_id: 'usr99', body_id: 'wrong-body' },
+          topic: { topic_id: 'p2p_7_43', type: 'p2p', channel_seq: 40 },
+          permissions: { source: 'server_canonical_message' },
+        },
+      },
+    });
+
+    assert.equal(envelope.identityTrust, 'untrusted');
+    assert.equal(envelope.agentId, 'usr43');
+    assert.equal(envelope.agentBodyId, undefined);
+    assert.ok(envelope.warnings?.some(warning => warning.includes('connected bot')));
+  });
+
+  test('rejects canonical metadata whose topic type conflicts with transport', () => {
+    const envelope = createCatsCoMessageEnvelope({
+      topic: 'grp_80',
+      isGroup: true,
+      senderId: 'usr7',
+      seq: 40,
+      text: 'hello',
+      botUid: 'usr43',
+      metadata: {
+        catsco_identity: {
+          actor: { user_id: 'usr7' },
+          agent: { agent_id: 'usr43' },
+          topic: { topic_id: 'grp_80', type: 'p2p', channel_seq: 40 },
+          permissions: { source: 'server_canonical_message' },
+        },
+      },
+    });
+
+    assert.equal(envelope.identityTrust, 'untrusted');
+    assert.equal(envelope.topicType, 'group');
+    assert.ok(envelope.warnings?.some(warning => warning.includes('topic.type')));
   });
 
   test('marks missing canonical identity as legacy context instead of trusted', () => {

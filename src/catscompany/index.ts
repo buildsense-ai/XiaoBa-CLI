@@ -9,6 +9,10 @@ import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender, type ConversationTaskStatusInput } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
 import { createCatsCoMessageEnvelope, createExecutionScope } from './message-envelope';
+import {
+  prefixCatsCoParticipantContent,
+  resolveTrustedCatsCoSpeakerIdentity,
+} from './speaker-label';
 import { logCatsCoExecutionContextDiagnostics } from './execution-context-diagnostics';
 import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
 import { extractCatsCoDeviceGrantSnapshot } from './device-grants';
@@ -65,6 +69,7 @@ import {
 } from './attachment-cache';
 import {
   agentContextMessageSeq,
+  isCatsCoAgentContextRecordInScope,
   isNativeFeishuGroupTrigger,
   isNativeFeishuClearBoundary,
   selectNativeFeishuGroupContextEntries,
@@ -82,7 +87,7 @@ interface PendingAttachment {
   localFileGrant?: ScopedLocalFileGrant;
 }
 
-type NativeFeishuGroupTriggerMessage = Pick<ParsedCatsMessage, 'topic' | 'chatType' | 'seq' | 'metadata' | 'mentions' | 'memberCount'>;
+type NativeFeishuGroupTriggerMessage = Pick<ParsedCatsMessage, 'topic' | 'chatType' | 'seq' | 'metadata' | 'mentions' | 'memberCount' | 'executionScope'>;
 
 interface NativeFeishuContextHydration {
   message: NativeFeishuGroupTriggerMessage;
@@ -242,32 +247,17 @@ function canonicalJsonValue(value: unknown): unknown {
   );
 }
 
-function speakerNameFromMetadata(msg: Pick<ParsedCatsMessage, 'metadata' | 'senderId'>): string {
-  const metadata = asRecord(msg.metadata);
-  const identity = asRecord(metadata?.catsco_identity);
-  const actor = asRecord(identity?.actor);
-  return stringField(actor, 'display_name')
-    || stringField(actor, 'username')
-    || stringField(actor, 'user_id')
-    || msg.senderId
-    || 'User';
-}
-
-function prefixCatsUserMessage(name: string, content: string | ContentBlock[]): string | ContentBlock[] {
-  const prefix = `[发言人: ${name}]\n`;
-  if (typeof content === 'string') return `${prefix}${content}`;
-  const blocks = [...content];
-  const firstTextIndex = blocks.findIndex(block => block.type === 'text');
-  if (firstTextIndex >= 0) {
-    const textBlock = blocks[firstTextIndex];
-    if (textBlock.type !== 'text') return blocks;
-    blocks[firstTextIndex] = {
-      ...textBlock,
-      text: `${prefix}${textBlock.text}`,
-    };
-    return blocks;
-  }
-  return [{ type: 'text', text: prefix.trimEnd() }, ...blocks];
+function speakerIdentityFromMessage(
+  msg: Pick<ParsedCatsMessage, 'metadata' | 'senderId'> & Partial<Pick<ParsedCatsMessage, 'executionScope'>>,
+): ReturnType<typeof resolveTrustedCatsCoSpeakerIdentity> {
+  const scope = msg.executionScope;
+  return resolveTrustedCatsCoSpeakerIdentity({
+    trustSource: 'live_message',
+    metadata: msg.metadata,
+    fallbackUserId: scope?.actorUserId || msg.senderId,
+    identityTrust: scope?.identityTrust ?? 'legacy_context',
+    expectedTopicId: scope?.topicId ?? 'unknown_topic',
+  });
 }
 
 function escapeRegExp(value: string): string {
@@ -404,7 +394,8 @@ export function createCatsCompanyRuntime(sessionTTL?: number): AdapterRuntimeBun
 }
 
 export function shouldActivateCatsCompanyMessage(
-  message: Pick<MessageContext, 'isGroup' | 'metadata' | 'mentions' | 'memberCount'>,
+  message: Pick<MessageContext, 'isGroup' | 'metadata' | 'mentions' | 'memberCount'>
+    & Partial<Pick<MessageContext, 'topic' | 'senderId' | 'seq'>>,
   botUid: string | null | undefined,
 ): boolean {
   if (!message.isGroup) return true;
@@ -414,10 +405,33 @@ export function shouldActivateCatsCompanyMessage(
     ? metadata.source_channel.trim()
     : '';
   if (sourceChannel) {
-    return metadata.channel_native_group_triggered === true
-      || metadata.channel_native_group_triggered === 1
-      || metadata.channel_native_group_triggered === '1'
-      || metadata.channel_native_group_triggered === 'true';
+    if (!message.topic || !message.senderId) return false;
+    // External group activation is a server-materialized Feishu protocol record,
+    // not an arbitrary metadata flag. The envelope below additionally binds it
+    // to the connected bot, transport sender, topic id, and topic type.
+    if (!isNativeFeishuGroupTrigger({
+      chatType: 'group',
+      seq: message.seq ?? 0,
+      metadata,
+    })) return false;
+    const envelope = createCatsCoMessageEnvelope({
+      topic: message.topic,
+      isGroup: true,
+      senderId: message.senderId,
+      seq: message.seq,
+      text: '',
+      metadata,
+      botUid,
+    });
+    const identity = asRecord(metadata.catsco_identity);
+    const canonicalAgentId = stringField(asRecord(identity?.agent), 'agent_id');
+    const targetUid = normalizeCatsUid(botUid);
+    const hasServerStructuredMention = Boolean(targetUid)
+      && Array.isArray(message.mentions)
+      && message.mentions.some(mention => normalizeCatsUid(mention) === targetUid);
+    return envelope.identityTrust === 'server_canonical'
+      && hasServerStructuredMention
+      && normalizeCatsUid(canonicalAgentId) === targetUid;
   }
 
   const memberCount = message.memberCount;
@@ -433,14 +447,18 @@ export function shouldActivateCatsCompanyMessage(
 }
 
 function shouldHydrateCatsCompanyGroupContext(
-  message: Pick<ParsedCatsMessage, 'chatType' | 'metadata' | 'seq'>,
+  message: Pick<ParsedCatsMessage, 'topic' | 'chatType' | 'metadata' | 'seq' | 'executionScope'>,
 ): boolean {
   if (message.chatType !== 'group' || message.seq <= 0) return false;
   const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
   const sourceChannel = typeof metadata.source_channel === 'string'
     ? metadata.source_channel.trim()
     : '';
-  return !sourceChannel || isNativeFeishuGroupTrigger(message);
+  return !sourceChannel || (
+    message.executionScope?.identityTrust === 'server_canonical'
+    && message.executionScope?.topicId === message.topic
+    && isNativeFeishuGroupTrigger(message)
+  );
 }
 
 /**
@@ -1678,7 +1696,7 @@ export class CatsCompanyBot {
 
     // 并发保护：忙时消息静默入队，空闲后自动处理
     if (entryClearGeneration !== this.getSessionClearGeneration(key)) return;
-    userMessage = prefixCatsUserMessage(speakerNameFromMetadata(msg), userMessage);
+    userMessage = prefixCatsCoParticipantContent(speakerIdentityFromMessage(msg), userMessage);
     const nativeFeishuContext: NativeFeishuContextHydration | undefined = nativeFeishuTrigger
       ? {
         message: {
@@ -1688,6 +1706,7 @@ export class CatsCompanyBot {
           metadata: msg.metadata,
           mentions: msg.mentions,
           memberCount: msg.memberCount,
+          executionScope: msg.executionScope,
         },
         cloudRestoreStatus: cloudRestoreResult?.status,
         clearGeneration: entryClearGeneration,
@@ -1838,7 +1857,13 @@ export class CatsCompanyBot {
 
       const history = await this.fetchNativeFeishuGroupContextHistory(msg.topic, msg.seq, previousCursor);
       if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return false;
-      const contextEntries = selectNativeFeishuGroupContextEntries(history, previousCursor, msg.seq);
+      const contextEntries = selectNativeFeishuGroupContextEntries(
+        history,
+        previousCursor,
+        msg.seq,
+        msg.topic,
+        this.botUid ?? '',
+      );
       const persisted = await session.appendDurableContext(contextEntries, cursorUpdate);
       if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return false;
       if (!persisted) throw new Error('durable group context and cursor could not be persisted');
@@ -1882,15 +1907,19 @@ export class CatsCompanyBot {
       if (normalizeCatsUid(page.agent_uid) !== normalizeCatsUid(this.botUid)) {
         throw new Error(`agent context identity mismatch: ${page.agent_uid}`);
       }
-      for (const message of page.messages || []) {
+      const pageMessages = (page.messages || []).filter(message => (
+        isCatsCoAgentContextRecordInScope(message, topic, this.botUid ?? '')
+      ));
+      for (const message of pageMessages) {
         const seq = agentContextMessageSeq(message);
         if (seq > 0 && !messagesBySeq.has(seq)) messagesBySeq.set(seq, message);
       }
 
-      const pageMessages = page.messages || [];
       const reachedPreviousCursor = afterSeq > 0
         && pageMessages.some(message => agentContextMessageSeq(message) <= afterSeq);
-      const reachedClearBoundary = pageMessages.some(isNativeFeishuClearBoundary);
+      const reachedClearBoundary = pageMessages.some(message => (
+        isNativeFeishuClearBoundary(message, topic, this.botUid ?? '')
+      ));
       if (
         reachedPreviousCursor
         || reachedClearBoundary
@@ -3176,7 +3205,7 @@ export class CatsCompanyBot {
     const hasRichContent = messages.some(item => Array.isArray(item.userMessage));
     if (!hasRichContent) {
       const body = messages
-        .map((item, index) => `${index + 1}. ${item.senderId}: ${item.userMessage as string}`)
+        .map((item, index) => `${index + 1}. ${item.userMessage as string}`)
         .join('\n');
       return `${header}\n\n${body}`;
     }
@@ -3185,7 +3214,7 @@ export class CatsCompanyBot {
     for (const [index, item] of messages.entries()) {
       blocks.push({
         type: 'text',
-        text: `\n[补充消息 ${index + 1} / ${messages.length}，来自 ${item.senderId}]\n`,
+        text: `\n[补充消息 ${index + 1} / ${messages.length}]\n`,
       });
       if (Array.isArray(item.userMessage)) {
         blocks.push(...item.userMessage);

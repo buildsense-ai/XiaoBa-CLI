@@ -17,6 +17,10 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { createAdapterRuntime } from '../runtime/adapter-runtime';
 import { MessageSessionManager } from '../core/message-session-manager';
+import {
+  prefixCatsCoParticipantContent,
+  resolveTrustedCatsCoSpeakerIdentity,
+} from '../catscompany/speaker-label';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { withModelAttemptSink } from '../observability/model-attempt-scope';
 import type { ObservationBranchCompletion } from '../core/observation-branch-session';
@@ -460,15 +464,9 @@ async function runLogicalCall(input: {
   );
   try {
     const bootstrap = bootstrapManager.getOrCreate(route);
-    const persisted = await bootstrap.appendDurableContext([{
-      source: 'cache-benchmark',
-      id: 1,
-      role: 'user',
-      content: [
-        BENCHMARK_RECOVERY_MARKER,
-        `[发言人: Benchmark Alice]\nFixture ${input.workload.id}: ${input.workload.fixture}`,
-      ].join('\n'),
-    }]);
+    const persisted = await bootstrap.appendDurableContext(
+      buildBenchmarkParticipantContext(route, input.workload),
+    );
     if (!persisted) throw new Error('bootstrap_persistence_failed');
   } finally {
     await bootstrapManager.destroy();
@@ -602,6 +600,58 @@ async function runLogicalCall(input: {
     memoryQualityPassed: Boolean(memoryQualityPassed),
     safetyPassed,
   };
+}
+
+function buildBenchmarkParticipantContext(
+  route: SessionRoute,
+  workload: BenchmarkWorkload,
+): Array<{ source: string; id: number; role: 'user'; content: string }> {
+  const participant = (
+    id: number,
+    actorId: string,
+    displayName: string,
+    kind: 'human' | 'other_agent',
+    body: string,
+  ) => {
+    const identity = resolveTrustedCatsCoSpeakerIdentity({
+      trustSource: 'server_agent_context',
+      fallbackUserId: actorId,
+      expectedTopicId: route.topicId,
+      messageTopicId: route.topicId,
+      kind,
+      metadata: {
+        catsco_identity: {
+          actor: { user_id: actorId, display_name: displayName },
+          agent: { agent_id: route.agentId },
+          topic: { topic_id: route.topicId, type: 'group' },
+          permissions: { source: 'server_canonical_message' },
+        },
+      },
+    });
+    return {
+      source: 'cache-benchmark',
+      id,
+      role: 'user' as const,
+      content: prefixCatsCoParticipantContent(identity, body) as string,
+    };
+  };
+
+  return [
+    participant(
+      1,
+      'benchmark-alice',
+      'Benchmark Alice',
+      'human',
+      `${BENCHMARK_RECOVERY_MARKER}\nFixture ${workload.id}: ${workload.fixture}`,
+    ),
+    participant(
+      2,
+      'benchmark-review-agent',
+      'Benchmark Review Agent',
+      'other_agent',
+      `Independent participant context for fixture ${workload.id}.`,
+    ),
+  ];
 }
 
 export function evaluateBenchmarkMemoryCompletion(

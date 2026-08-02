@@ -4,6 +4,7 @@ import {
   buildLegacyCatsCoSessionKey,
   createSessionRoute,
 } from '../core/session-router';
+import { sameCatsCoUserId } from './speaker-label';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -31,6 +32,7 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
   const permissions = asRecord(catscoIdentity?.permissions);
 
   const canonicalActorId = stringField(actor, 'user_id');
+  const canonicalAgentId = stringField(agent, 'agent_id');
   const canonicalTopicId = stringField(identityTopic, 'topic_id');
   const canonicalTopicType = normalizeTopicType(stringField(identityTopic, 'type'));
   const permissionsSource = stringField(permissions, 'source');
@@ -43,28 +45,40 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
   if (metadataLooksCanonical && canonicalTopicId && canonicalTopicId !== topicId) {
     warnings.push('catsco_identity topic_id does not match message topic');
   }
-  const senderMatchesCanonicalActor = senderId === 'unknown'
-    || sameCatsCoUserId(canonicalActorId, senderId);
+  if (metadataLooksCanonical && canonicalTopicType !== topicType) {
+    warnings.push('catsco_identity topic.type does not match message transport');
+  }
+  const senderMatchesCanonicalActor = senderId !== 'unknown'
+    && sameCatsCoUserId(canonicalActorId, senderId);
 
   if (metadataLooksCanonical && canonicalActorId && !senderMatchesCanonicalActor) {
     warnings.push('catsco_identity actor.user_id does not match message sender');
+  }
+  const botUid = safeString(input.botUid);
+  const agentMatchesConnectedBot = Boolean(
+    canonicalAgentId
+    && botUid
+    && sameCatsCoUserId(canonicalAgentId, botUid),
+  );
+  if (metadataLooksCanonical && !agentMatchesConnectedBot) {
+    warnings.push('catsco_identity agent.agent_id does not match connected bot');
   }
 
   const isCanonicalTrusted = Boolean(
     catscoIdentity
     && metadataLooksCanonical
     && canonicalActorId
+    && canonicalAgentId
     && canonicalTopicId === topicId
-    && senderMatchesCanonicalActor,
+    && canonicalTopicType !== 'unknown'
+    && canonicalTopicType === topicType
+    && senderMatchesCanonicalActor
+    && agentMatchesConnectedBot,
   );
 
   const actorUserId = isCanonicalTrusted ? canonicalActorId! : senderId;
-  const resolvedTopicType = isCanonicalTrusted && canonicalTopicType !== 'unknown'
-    ? canonicalTopicType
-    : topicType;
-  const agentId = isCanonicalTrusted
-    ? firstNonEmpty(stringField(agent, 'agent_id'), safeString(input.botUid))
-    : safeString(input.botUid);
+  const resolvedTopicType = topicType;
+  const agentId = isCanonicalTrusted ? canonicalAgentId : botUid;
   const agentBodyId = isCanonicalTrusted ? stringField(agent, 'body_id') : undefined;
   const deviceOwnerUserId = isCanonicalTrusted
     ? stringField(permissions, 'device_owner_user_id')
@@ -227,16 +241,4 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
     if (value) return value;
   }
   return undefined;
-}
-
-function sameCatsCoUserId(left: string | undefined, right: string | undefined): boolean {
-  const normalizedLeft = normalizeCatsCoUserId(left);
-  const normalizedRight = normalizeCatsCoUserId(right);
-  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
-}
-
-function normalizeCatsCoUserId(value: string | undefined): string {
-  const text = String(value || '').trim();
-  if (!text) return '';
-  return /^\d+$/.test(text) ? `usr${text}` : text;
 }
