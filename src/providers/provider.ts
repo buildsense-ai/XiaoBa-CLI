@@ -48,6 +48,9 @@ export type ModelRequestKind =
   | 'memory_branch_inference'
   | 'subagent_inference';
 
+/** Traffic owner used when internal requests such as compaction have no agent-bearing kind. */
+export type ModelRequestOrigin = 'main' | 'memory_branch' | 'subagent';
+
 export interface ModelAttemptContext {
   sessionId?: string;
   sessionType?: string;
@@ -75,7 +78,7 @@ export interface ModelAttemptRetry {
  * synchronously inside observe().
  */
 export interface ModelAttemptEvent {
-  schema: 'xiaoba.model_attempt.v1';
+  schema: 'xiaoba.model_attempt.v2';
   callId: string;
   attemptId: string;
   attemptNumber: number;
@@ -86,6 +89,7 @@ export interface ModelAttemptEvent {
   apiType: ModelAttemptApiType;
   stream: boolean;
   requestKind: ModelRequestKind;
+  requestOrigin: ModelRequestOrigin;
   context?: ModelAttemptContext;
   request: {
     messages: readonly Message[];
@@ -110,6 +114,8 @@ export interface AIRequestOptions {
   signal?: AbortSignal;
   /** Semantic purpose of this physical provider request. */
   requestKind?: ModelRequestKind;
+  /** Explicit traffic owner. Required by callers whose request kind is checkpoint_compaction. */
+  requestOrigin?: ModelRequestOrigin;
   /** Bypass provider cache routing and explicit markers for one-off internal calls. */
   cacheMode?: ProviderCacheMode;
   /** Stable, non-secret identity used to shard provider cache routing keys. */

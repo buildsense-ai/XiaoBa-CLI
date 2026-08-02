@@ -241,10 +241,14 @@ describe('cache benchmark evidence scorer', () => {
       }, 'non_succeeded_attempt'],
       ['incomplete', round => {
         round.attempts[0].outcome = 'incomplete';
+        rebuildJournalLinkage(round.attempts);
       }, 'non_terminal_attempt'],
       ['retrying', round => {
         round.attempts[0].outcome = 'retrying';
-      }, 'non_terminal_attempt'],
+        round.attempts[0].retry_number = 1;
+        round.attempts[0].usage = {};
+        rebuildJournalLinkage(round.attempts);
+      }, 'retry_chain_invalid'],
       ['coverage', round => {
         round.attempts = round.attempts.filter(attempt => !(attempt.case_id === 'case-1' && attempt.cache_class === 'warm'));
       }, 'missing_warm_attempt'],
@@ -274,6 +278,69 @@ describe('cache benchmark evidence scorer', () => {
     }
   });
 
+  test('accepts one transparent retry only with provider-not-dispatched evidence', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+    const succeeded = rounds[2].attempts.find(attempt => (
+      attempt.attempt_role === 'main' && attempt.cache_class === 'warm'
+    ))!;
+    const retrying = insertTransportRetry(rounds[2], succeeded, true);
+
+    const result = scoreRounds(manifest, rounds);
+    assert.equal(result.status, 'passed');
+    assert.equal(result.reasons.includes('retry_chain_invalid'), false);
+    assert.equal(result.reasons.includes('retry_not_provably_pre_dispatch'), false);
+    assert.equal(retrying.dispatch_status, 'not_dispatched');
+    assert.equal(retrying.usage.provider_usage, undefined);
+  });
+
+  test('invalidates retry success when the first request may have self-warmed provider cache', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+    const succeeded = rounds[2].attempts.find(attempt => (
+      attempt.attempt_role === 'main' && attempt.cache_class === 'warm'
+    ))!;
+    insertTransportRetry(rounds[2], succeeded, false);
+
+    const result = scoreRounds(manifest, rounds);
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('retry_not_provably_pre_dispatch'));
+  });
+
+  test('invalidates malformed retry chains and request-changing recovery attempts', () => {
+    const scenarios: Array<[string, (retrying: CacheBenchmarkAttempt, succeeded: CacheBenchmarkAttempt) => void]> = [
+      ['attempt number jump', (_retrying, succeeded) => { succeeded.provider_attempt_number = 3; }],
+      ['retry usage', retrying => {
+        retrying.usage.provider_usage = providerUsageFor(
+          'openai.input_tokens_details.cached_tokens',
+          250,
+          235,
+        );
+      }],
+      ['request drift', retrying => {
+        retrying.attestation.request_fingerprint = `sha256:${'f'.repeat(64)}`;
+      }],
+      ['reasoning recovery drift', (_retrying, succeeded) => {
+        succeeded.tools_fingerprint = `sha256:${'e'.repeat(64)}`;
+      }],
+      ['explicit reasoning recovery', retrying => {
+        retrying.retry_recovery_action = 'reasoning_history_degrade';
+      }],
+    ];
+    for (const [label, mutate] of scenarios) {
+      const manifest = fixtureManifest();
+      const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+      const succeeded = rounds[2].attempts.find(attempt => (
+        attempt.attempt_role === 'main' && attempt.cache_class === 'warm'
+      ))!;
+      const retrying = insertTransportRetry(rounds[2], succeeded, true);
+      mutate(retrying, succeeded);
+      const result = scoreRounds(manifest, rounds);
+      assert.equal(result.status, 'invalid', label);
+      assert.ok(result.reasons.includes('retry_chain_invalid'), label);
+    }
+  });
+
   test('treats required warm calls as an exact contract rather than a minimum', () => {
     const manifest = fixtureManifest();
     manifest.cases[0].runs[0].required_warm_calls = 2;
@@ -281,6 +348,173 @@ describe('cache benchmark evidence scorer', () => {
 
     assert.equal(result.status, 'invalid');
     assert.ok(result.reasons.includes('missing_warm_attempt'));
+  });
+
+  test('charges checkpoint compaction to the primary token-weighted ratio', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(roundNumber => {
+      const round = buildRound(manifest, roundNumber);
+      for (const main of round.attempts.filter(attempt => (
+        attempt.request_kind === 'main_inference' && attempt.cache_class === 'warm'
+      ))) addCheckpointAttempt(round, main, 10, 0);
+      return round;
+    });
+    const result = scoreRounds(manifest, rounds);
+    const primary = result.rounds[0].cells[0];
+
+    assert.equal(result.status, 'failed');
+    assert.equal(primary.input_tokens, 1040);
+    assert.equal(primary.cache_read_tokens, 940);
+    assert.equal(primary.raw_read_ratio, 940 / 1040);
+    assert.deepEqual(primary.request_kind_usage.map(entry => [
+      entry.request_kind,
+      entry.input_tokens,
+      entry.cache_read_tokens,
+    ]), [
+      ['checkpoint_compaction', 40, 0],
+      ['main_inference', 1000, 940],
+    ]);
+  });
+
+  test('allows multiple checkpoint attempts without inflating the exact main inference count', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(roundNumber => {
+      const round = buildRound(manifest, roundNumber);
+      for (const main of round.attempts.filter(attempt => (
+        attempt.request_kind === 'main_inference' && attempt.cache_class === 'warm'
+      ))) {
+        addCheckpointAttempt(round, main, 10, 10, 'first');
+        addCheckpointAttempt(round, main, 10, 10, 'second');
+      }
+      return round;
+    });
+    const result = scoreRounds(manifest, rounds);
+    assert.equal(result.status, 'passed');
+    assert.equal(result.reasons.includes('unexpected_attempt_count'), false);
+    assert.equal(result.rounds[0].cells[0].input_tokens, 1080);
+  });
+
+  test('ignores checkpoint prefix and semantic attestations while retaining its safety and usage gates', () => {
+    const manifest = fixtureManifest();
+    const rounds = [1, 2, 3].map(roundNumber => {
+      const round = buildRound(manifest, roundNumber);
+      const main = round.attempts.find(attempt => (
+        attempt.request_kind === 'main_inference' && attempt.cache_class === 'warm'
+      ))!;
+      const checkpoint = addCheckpointAttempt(round, main, 10, 10);
+      checkpoint.attestation.stable_prefix_fingerprint = `sha256:${'f'.repeat(64)}`;
+      checkpoint.attestation.quality_status = 'unobservable';
+      checkpoint.attestation.oracle_contract_fingerprint = `sha256:${'e'.repeat(64)}`;
+      checkpoint.attestation.execution_plan_fingerprint = `sha256:${'d'.repeat(64)}`;
+      checkpoint.attestation.observed_capabilities = [];
+      return round;
+    });
+    const result = scoreRounds(manifest, rounds);
+    assert.equal(result.status, 'passed');
+    assert.equal(result.reasons.includes('stable_prefix_drift'), false);
+    assert.equal(result.reasons.includes('quality_gate_unobservable'), false);
+  });
+
+  test('fails closed on failed or usage-unobservable checkpoint attempts while retaining valid cost', () => {
+    const failedManifest = fixtureManifest();
+    const failedRounds = [1, 2, 3].map(roundNumber => buildRound(failedManifest, roundNumber));
+    const failedMain = failedRounds[2].attempts.find(attempt => (
+      attempt.request_kind === 'main_inference' && attempt.cache_class === 'warm'
+    ))!;
+    const failedCheckpoint = addCheckpointAttempt(failedRounds[2], failedMain, 10, 5);
+    failedCheckpoint.outcome = 'failed';
+    let result = scoreRounds(failedManifest, failedRounds);
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('non_succeeded_attempt'));
+    assert.equal(result.rounds[2].cells[0].input_tokens, 1010);
+    assert.equal(result.rounds[2].cells[0].cache_read_tokens, 945);
+
+    const missingManifest = fixtureManifest();
+    const missingRounds = [1, 2, 3].map(roundNumber => buildRound(missingManifest, roundNumber));
+    const missingMain = missingRounds[2].attempts.find(attempt => (
+      attempt.request_kind === 'main_inference' && attempt.cache_class === 'warm'
+    ))!;
+    const missingCheckpoint = addCheckpointAttempt(missingRounds[2], missingMain, 10, 5);
+    missingCheckpoint.usage = {};
+    result = scoreRounds(missingManifest, missingRounds);
+    assert.equal(result.status, 'unobservable');
+    assert.ok(result.reasons.includes('missing_input_usage'));
+  });
+
+  test('rejects unsupported request kinds and malformed checkpoint cache contracts at parse', () => {
+    const manifest = fixtureManifest();
+    const round = buildRound(manifest, 1);
+    const main = round.attempts.find(attempt => attempt.request_kind === 'main_inference')!;
+    const checkpoint = addCheckpointAttempt(round, main, 10, 10);
+
+    checkpoint.cache_strategy = 'openai-prompt-cache-key';
+    assert.throws(() => parseRoundJsonl(roundToJsonl(round)));
+
+    const forgedToolsRound = buildRound(manifest, 1);
+    const forgedToolsMain = forgedToolsRound.attempts.find(attempt => (
+      attempt.request_kind === 'main_inference'
+    ))!;
+    const forgedToolsCheckpoint = addCheckpointAttempt(forgedToolsRound, forgedToolsMain, 10, 10);
+    forgedToolsCheckpoint.tools_fingerprint = `sha256:${'b'.repeat(64)}`;
+    assert.throws(() => parseRoundJsonl(roundToJsonl(forgedToolsRound)));
+
+    const missingTerminal = buildRound(manifest, 1);
+    delete missingTerminal.attempts[0].journal_terminal_sequence;
+    delete missingTerminal.attempts[0].journal_terminal_previous_record_fingerprint;
+    delete missingTerminal.attempts[0].journal_terminal_record_fingerprint;
+    missingTerminal.attempts[0].journal_lifecycle_fingerprint = fingerprintCanonical({
+      started_record_fingerprint: missingTerminal.attempts[0].journal_started_record_fingerprint,
+    });
+    assert.throws(() => parseRoundJsonl(roundToJsonl(missingTerminal)));
+
+    const terminalIncomplete = buildRound(manifest, 1);
+    terminalIncomplete.attempts[0].outcome = 'incomplete';
+    assert.throws(() => parseRoundJsonl(roundToJsonl(terminalIncomplete)));
+
+    const forgedLifecycle = buildRound(manifest, 1);
+    forgedLifecycle.attempts[0].journal_lifecycle_fingerprint = `sha256:${'c'.repeat(64)}`;
+    assert.throws(() => parseRoundJsonl(roundToJsonl(forgedLifecycle)));
+
+    const subagentRound = buildRound(manifest, 1);
+    subagentRound.attempts[0].request_kind = 'subagent_inference';
+    assert.throws(() => parseRoundJsonl(roundToJsonl(subagentRound)));
+
+    const criteria = structuredClone(manifest) as any;
+    criteria.criteria.primary_accounting_request_kinds = ['checkpoint_compaction', 'main_inference'];
+    assert.throws(() => parseManifestJson(JSON.stringify(criteria)));
+  });
+
+  test('invalidates checkpoint session drift and broken per-call journal hash chains', () => {
+    const manifest = fixtureManifest();
+    const sessionRounds = [1, 2, 3].map(roundNumber => buildRound(manifest, roundNumber));
+    const sessionMain = sessionRounds[2].attempts.find(attempt => (
+      attempt.request_kind === 'main_inference' && attempt.cache_class === 'warm'
+    ))!;
+    const sessionCheckpoint = addCheckpointAttempt(sessionRounds[2], sessionMain, 10, 10);
+    sessionCheckpoint.session_fingerprint = `sha256:${'9'.repeat(64)}`;
+    let result = scoreRounds(manifest, sessionRounds);
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('metadata_mismatch'));
+
+    const sequenceRounds = [1, 2, 3].map(roundNumber => buildRound(manifest, roundNumber));
+    const sequenceMain = sequenceRounds[2].attempts.find(attempt => (
+      attempt.request_kind === 'main_inference' && attempt.cache_class === 'warm'
+    ))!;
+    const sequenceCheckpoint = addCheckpointAttempt(sequenceRounds[2], sequenceMain, 10, 10);
+    sequenceMain.journal_started_sequence = sequenceCheckpoint.journal_started_sequence;
+    result = scoreRounds(manifest, sequenceRounds);
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('metadata_mismatch'));
+
+    const chainRounds = [1, 2, 3].map(roundNumber => buildRound(manifest, roundNumber));
+    const chainMain = chainRounds[2].attempts.find(attempt => (
+      attempt.request_kind === 'main_inference' && attempt.cache_class === 'warm'
+    ))!;
+    const chainCheckpoint = addCheckpointAttempt(chainRounds[2], chainMain, 10, 10);
+    chainCheckpoint.journal_started_previous_record_fingerprint = `sha256:${'8'.repeat(64)}`;
+    result = scoreRounds(manifest, chainRounds);
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('metadata_mismatch'));
   });
 
   test('allows variable memory-branch physical attempts and weights every provider token', () => {
@@ -313,6 +547,7 @@ describe('cache benchmark evidence scorer', () => {
         ...branchAttempts,
       ];
       evidence.attempts.forEach((attempt, index) => { attempt.attempt_number = index + 1; });
+      rebuildJournalLinkage(evidence.attempts);
     }
     const result = scoreRounds(manifest, rounds);
     const primary = result.rounds[0].cells.find(cell => cell.traffic_class === 'primary')!;
@@ -381,7 +616,7 @@ describe('cache benchmark evidence scorer', () => {
     assert.equal(auxiliary.reasons.length, 0);
   });
 
-  test('keeps auxiliary completion, usage, quality, safety, and role gates fail-closed', () => {
+  test('keeps auxiliary completion, quality, safety, provenance, and role gates fail-closed', () => {
     const scenarios: Array<[
       string,
       (attempt: CacheBenchmarkAttempt) => void,
@@ -389,14 +624,16 @@ describe('cache benchmark evidence scorer', () => {
       string,
     ]> = [
       ['failed outcome', attempt => { attempt.outcome = 'failed'; }, 'invalid', 'non_succeeded_attempt'],
-      ['non-terminal outcome', attempt => { attempt.outcome = 'retrying'; }, 'invalid', 'non_terminal_attempt'],
-      ['missing usage', attempt => { setProviderUsage(attempt, 250, undefined); }, 'unobservable', 'cache_read_not_reported'],
+      ['non-terminal outcome', attempt => {
+        attempt.outcome = 'retrying';
+        attempt.retry_number = 1;
+        attempt.usage = {};
+      }, 'invalid', 'retry_chain_invalid'],
       ['quality failure', attempt => { attempt.attestation.quality_status = 'failed'; }, 'failed', 'quality_gate_failed'],
       ['safety failure', attempt => { attempt.attestation.safety_status = 'failed'; }, 'failed', 'safety_gate_failed'],
       ['missing memory provenance capability', attempt => {
         attempt.attestation.observed_capabilities = ['tools'];
       }, 'incomplete', 'capability_attestation_incomplete'],
-      ['role mismatch', attempt => { attempt.attempt_role = 'main'; }, 'invalid', 'metadata_mismatch'],
     ];
     for (const [label, mutate, expectedStatus, reason] of scenarios) {
       const manifest = manifestWithAuxiliaryCase();
@@ -410,6 +647,55 @@ describe('cache benchmark evidence scorer', () => {
       assert.equal(result.status, expectedStatus, label);
       assert.ok(result.reasons.includes(reason as never), label);
     }
+
+    const roleManifest = manifestWithAuxiliaryCase();
+    const roleRounds = [1, 2, 3].map(round => buildRound(roleManifest, round));
+    roleRounds[2].attempts.find(attempt => attempt.attempt_role === 'memory_branch')!.attempt_role = 'main';
+    assert.throws(() => scoreRounds(roleManifest, roleRounds));
+  });
+
+  test('treats missing Memory Branch cache usage as non-qualifying diagnostics', () => {
+    const manifest = manifestWithAuxiliaryCase();
+    const branch = manifest.cases.at(-1)!;
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+    for (const round of rounds) {
+      for (const attempt of round.attempts.filter(entry => entry.case_id === branch.case_id)) {
+        attempt.usage = {};
+      }
+    }
+    const result = scoreRounds(manifest, rounds);
+    const auxiliary = result.rounds[0].cells.find(cell => cell.traffic_class === 'auxiliary_memory')!;
+    assert.equal(result.status, 'passed');
+    assert.equal(auxiliary.input_tokens, 0);
+    assert.equal(auxiliary.cache_read_tokens, 0);
+    assert.deepEqual(auxiliary.reasons, []);
+  });
+
+  test('keeps Memory-origin checkpoints outside primary accounting but fail-closes execution', () => {
+    const manifest = manifestWithAuxiliaryCase();
+    const branch = manifest.cases.at(-1)!;
+    const rounds = [1, 2, 3].map(roundNumber => buildRound(manifest, roundNumber));
+    for (const round of rounds) {
+      const memory = round.attempts.find(attempt => (
+        attempt.case_id === branch.case_id
+        && attempt.request_kind === 'memory_branch_inference'
+        && attempt.cache_class === 'warm'
+      ))!;
+      addCheckpointAttempt(round, memory, 1000, 0).usage = {};
+    }
+    let result = scoreRounds(manifest, rounds);
+    const primary = result.rounds[0].cells.find(cell => cell.traffic_class === 'primary')!;
+    assert.equal(result.status, 'passed');
+    assert.equal(primary.input_tokens, 1000);
+    assert.equal(primary.cache_read_tokens, 940);
+
+    const failedCheckpoint = rounds[2].attempts.find(attempt => (
+      attempt.case_id === branch.case_id && attempt.request_kind === 'checkpoint_compaction'
+    ))!;
+    failedCheckpoint.outcome = 'failed';
+    result = scoreRounds(manifest, rounds);
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.reasons.includes('non_succeeded_attempt'));
   });
 
   test('invalidates joined memory-branch evidence recorded after its main across providers', () => {
@@ -448,6 +734,7 @@ describe('cache benchmark evidence scorer', () => {
       ));
       round.attempts = [...paired, ...other];
       round.attempts.forEach((attempt, index) => { attempt.attempt_number = index + 1; });
+      rebuildJournalLinkage(round.attempts);
       return round;
     });
     const result = scoreRounds(manifest, rounds);
@@ -771,9 +1058,9 @@ describe('cache benchmark evidence scorer', () => {
     ));
   });
 
-  test('rejects legacy v5 evidence schemas and any attempt to include cold usage in the primary ratio', () => {
+  test('rejects legacy v6 evidence schemas and any attempt to include cold usage in the primary ratio', () => {
     const legacy = structuredClone(fixtureManifest()) as any;
-    legacy.schema = 'xiaoba.cache_benchmark_manifest.v5';
+    legacy.schema = 'xiaoba.cache_benchmark_manifest.v6';
     assert.throws(() => parseManifestJson(JSON.stringify(legacy)));
 
     const coldIncluded = structuredClone(fixtureManifest()) as any;
@@ -782,15 +1069,15 @@ describe('cache benchmark evidence scorer', () => {
 
     const round = buildRound(fixtureManifest(), 1);
     const legacyRound = structuredClone(round) as any;
-    legacyRound.header.schema = 'xiaoba.cache_benchmark_round.v5';
+    legacyRound.header.schema = 'xiaoba.cache_benchmark_round.v6';
     assert.throws(() => parseRoundJsonl(roundToJsonl(legacyRound)));
 
     const legacyAttempt = structuredClone(round) as any;
-    legacyAttempt.attempts[0].schema = 'xiaoba.cache_benchmark_attempt.v5';
+    legacyAttempt.attempts[0].schema = 'xiaoba.cache_benchmark_attempt.v6';
     assert.throws(() => parseRoundJsonl(roundToJsonl(legacyAttempt)));
 
     const legacyLedger = structuredClone(buildLedger(fixtureManifest(), [round])) as any;
-    legacyLedger.schema = 'xiaoba.cache_benchmark_ledger.v5';
+    legacyLedger.schema = 'xiaoba.cache_benchmark_ledger.v6';
     assert.throws(() => parseLedgerJson(JSON.stringify(legacyLedger)));
   });
 
@@ -1023,11 +1310,40 @@ function buildRound(
     for (const run of entry.runs) {
       for (const cacheClass of ['cold', 'warm'] as const) {
         const attempt: CacheBenchmarkAttempt = {
-          schema: 'xiaoba.cache_benchmark_attempt.v6',
+          schema: 'xiaoba.cache_benchmark_attempt.v7',
           suite_id: manifest.suite_id,
           round,
           attempt_number: attempts.length + 1,
+          provider_attempt_number: 1,
           attempt_role: entry.execution_role,
+          request_kind: entry.execution_role === 'main'
+            ? 'main_inference'
+            : 'memory_branch_inference',
+          request_origin: entry.execution_role === 'main' ? 'main' : 'memory_branch',
+          cache_strategy: entry.provider_adapter === 'anthropic'
+            ? 'anthropic-explicit-stable-prefix'
+            : entry.api_type === 'openai-responses'
+              ? 'openai-prompt-cache-key'
+              : 'openai-compatible-automatic-prefix',
+          tools_count: 1,
+          tools_fingerprint: fingerprintCanonical({ tools: entry.case_id }),
+          session_fingerprint: fingerprintCanonical({ session: entry.case_id, cacheClass }),
+          journal_started_sequence: 1,
+          journal_started_previous_record_fingerprint: `sha256:${'0'.repeat(64)}`,
+          journal_started_record_fingerprint: fingerprintCanonical({
+            attempt: `${entry.case_id}-${run.run_id}-${cacheClass}-attempt`,
+            state: 'started',
+          }),
+          journal_terminal_sequence: 2,
+          journal_terminal_previous_record_fingerprint: fingerprintCanonical({
+            attempt: `${entry.case_id}-${run.run_id}-${cacheClass}-attempt`,
+            state: 'started',
+          }),
+          journal_terminal_record_fingerprint: fingerprintCanonical({
+            attempt: `${entry.case_id}-${run.run_id}-${cacheClass}-attempt`,
+            state: 'terminal',
+          }),
+          journal_lifecycle_fingerprint: `sha256:${'0'.repeat(64)}`,
           logical_call: cacheClass === 'cold' ? 1 : 2,
           case_id: entry.case_id,
           run_id: run.run_id,
@@ -1074,9 +1390,10 @@ function buildRound(
       }
     }
   }
+  rebuildJournalLinkage(attempts);
   return {
     header: {
-      schema: 'xiaoba.cache_benchmark_round.v6',
+      schema: 'xiaoba.cache_benchmark_round.v7',
       suite_id: manifest.suite_id,
       round,
       cache_partition_nonce: round.toString(16).padStart(32, '0'),
@@ -1086,6 +1403,102 @@ function buildRound(
     },
     attempts,
   };
+}
+
+function addCheckpointAttempt(
+  round: CacheBenchmarkRoundEvidence,
+  main: CacheBenchmarkAttempt,
+  input: number,
+  read: number,
+  suffix = 'checkpoint',
+): CacheBenchmarkAttempt {
+  const checkpoint = structuredClone(main);
+  checkpoint.request_kind = 'checkpoint_compaction';
+  checkpoint.cache_strategy = main.metadata.provider_adapter === 'anthropic'
+    ? 'anthropic-cache-bypassed'
+    : 'openai-cache-bypassed';
+  checkpoint.tools_count = 0;
+  checkpoint.tools_fingerprint = fingerprintCanonical([]);
+  checkpoint.call_id = `${main.call_id}-${suffix}`;
+  checkpoint.attempt_id = `${main.attempt_id}-${suffix}`;
+  setProviderUsage(checkpoint, input, read);
+  const mainIndex = round.attempts.indexOf(main);
+  round.attempts.splice(mainIndex, 0, checkpoint);
+  round.attempts.forEach((attempt, index) => { attempt.attempt_number = index + 1; });
+  rebuildJournalLinkage(round.attempts);
+  return checkpoint;
+}
+
+function insertTransportRetry(
+  round: CacheBenchmarkRoundEvidence,
+  succeeded: CacheBenchmarkAttempt,
+  provablyNotDispatched: boolean,
+): CacheBenchmarkAttempt {
+  const retrying = structuredClone(succeeded);
+  retrying.provider_attempt_number = 1;
+  retrying.attempt_id = `${succeeded.call_id}:1`;
+  retrying.outcome = 'retrying';
+  retrying.retry_number = 1;
+  retrying.usage = {};
+  delete retrying.retry_stop_reason;
+  if (provablyNotDispatched) retrying.dispatch_status = 'not_dispatched';
+  else delete retrying.dispatch_status;
+
+  succeeded.provider_attempt_number = 2;
+  succeeded.attempt_id = `${succeeded.call_id}:2`;
+  delete succeeded.retry_number;
+  delete succeeded.retry_stop_reason;
+  delete succeeded.dispatch_status;
+
+  const succeededIndex = round.attempts.indexOf(succeeded);
+  round.attempts.splice(succeededIndex, 0, retrying);
+  round.attempts.forEach((attempt, index) => { attempt.attempt_number = index + 1; });
+  rebuildJournalLinkage(round.attempts);
+  return retrying;
+}
+
+function rebuildJournalLinkage(attempts: CacheBenchmarkAttempt[]): void {
+  const groups = new Map<string, CacheBenchmarkAttempt[]>();
+  for (const attempt of attempts) {
+    const key = [attempt.metadata.task_id, attempt.run_id, attempt.logical_call].join('\0');
+    groups.set(key, [...(groups.get(key) ?? []), attempt]);
+  }
+  for (const group of groups.values()) {
+    let sequence = 0;
+    let previous = `sha256:${'0'.repeat(64)}`;
+    for (const attempt of group) {
+      attempt.journal_started_sequence = ++sequence;
+      attempt.journal_started_previous_record_fingerprint = previous;
+      attempt.journal_started_record_fingerprint = fingerprintCanonical({
+        attempt_id: attempt.attempt_id,
+        outcome: 'started',
+        sequence,
+        previous,
+      });
+      previous = attempt.journal_started_record_fingerprint;
+      if (attempt.outcome === 'incomplete') {
+        delete attempt.journal_terminal_sequence;
+        delete attempt.journal_terminal_previous_record_fingerprint;
+        delete attempt.journal_terminal_record_fingerprint;
+      } else {
+        attempt.journal_terminal_sequence = ++sequence;
+        attempt.journal_terminal_previous_record_fingerprint = previous;
+        attempt.journal_terminal_record_fingerprint = fingerprintCanonical({
+          attempt_id: attempt.attempt_id,
+          outcome: attempt.outcome,
+          sequence,
+          previous,
+        });
+        previous = attempt.journal_terminal_record_fingerprint;
+      }
+      attempt.journal_lifecycle_fingerprint = fingerprintCanonical({
+        started_record_fingerprint: attempt.journal_started_record_fingerprint,
+        ...(attempt.journal_terminal_record_fingerprint === undefined ? {} : {
+          terminal_record_fingerprint: attempt.journal_terminal_record_fingerprint,
+        }),
+      });
+    }
+  }
 }
 
 function roundToJsonl(round: CacheBenchmarkRoundEvidence): string {
@@ -1104,7 +1517,7 @@ function buildLedger(
 ): CacheBenchmarkLedger {
   const ordered = [...rounds].sort((left, right) => left.header.round - right.header.round);
   return {
-    schema: 'xiaoba.cache_benchmark_ledger.v6',
+    schema: 'xiaoba.cache_benchmark_ledger.v7',
     suite_id: manifest.suite_id,
     latest_round: ordered[ordered.length - 1]?.header.round ?? 1,
     rounds: ordered.map(round => ({

@@ -6,12 +6,13 @@ import {
 } from './canonical';
 import { parseManifest } from './schema';
 import type { CacheBenchmarkManifest, CacheBenchmarkResult } from './types';
+import { CACHE_BENCHMARK_RESULT_SCHEMA } from './types';
 
-export const CACHE_BENCHMARK_ACCEPTANCE_SCHEMA = 'xiaoba.cache_benchmark_acceptance.v1' as const;
+export const CACHE_BENCHMARK_ACCEPTANCE_SCHEMA = 'xiaoba.cache_benchmark_acceptance.v2' as const;
 export const REQUIRED_ACCEPTANCE_PROVIDERS = ['newcli', 'deepseek'] as const;
 export const MINIMUM_ACCEPTANCE_WARM_CALLS = 24;
 export const REQUIRED_ACCEPTANCE_TOPOLOGY_FINGERPRINT =
-  'sha256:fea44796d4b4b4b7f2373fb572f80688c1fbb25232d350621cdbe2febb9cb500' as const;
+  'sha256:294bf303208cc8e8416a3ea9294dd0bb25219851d36975bf0e78e6da7119ad29' as const;
 
 export type AcceptanceProviderAlias = typeof REQUIRED_ACCEPTANCE_PROVIDERS[number];
 export type CacheBenchmarkAcceptanceReason =
@@ -89,6 +90,9 @@ export function aggregateCacheBenchmarkAcceptance(
     if (!candidate) continue;
     const manifest = parseManifest(candidate.manifest);
     const { result } = candidate;
+    if (result.schema !== CACHE_BENCHMARK_RESULT_SCHEMA) {
+      reasons.add('provider_evidence_invalid');
+    }
     const expectedManifestFingerprint = fingerprintManifest(manifest);
     const expectedConfigFingerprint = fingerprintConfig(manifest);
     if (!providerIdentityMatches(provider, manifest)

@@ -66,12 +66,35 @@ test('ConversationRunner forwards attempt observation with session and episode c
   assert.equal(result.response, 'normal reply');
   assert.equal(captured?.modelAttemptSink, sink);
   assert.equal(captured?.cachePartitionKey, 'session-1');
+  assert.equal(captured?.requestKind, 'main_inference');
+  assert.equal(captured?.requestOrigin, 'main');
   assert.deepEqual(captured?.modelAttemptContext, {
     sessionId: 'session-1',
     surface: 'cli',
     episodeId: 'episode-1',
     episodeNumber: 1,
   });
+});
+
+test('AIService requires an explicit traffic owner for checkpoint compaction', async () => {
+  const service = new AIService({
+    provider: 'openai',
+    apiUrl: 'https://provider.example.test/v1',
+    apiKey: 'test-key',
+    model: 'test-model',
+  });
+  (service as any).provider = {
+    chat: async () => ({ content: 'unused' }),
+    chatStream: async () => ({ content: 'unused' }),
+  };
+  await assert.rejects(
+    () => service.chat(
+      [{ role: 'user', content: 'compact' }],
+      [],
+      { requestKind: 'checkpoint_compaction' },
+    ),
+    /model_request_origin_missing/,
+  );
 });
 
 test('ConversationRunner gives a scoped-only attempt sink branch context without local cache tracing', async () => {
@@ -92,6 +115,7 @@ test('ConversationRunner gives a scoped-only attempt sink branch context without
     const runner = new ConversationRunner(service, new EmptyTools(), {
       stream: false,
       enableCompression: false,
+      requestKind: 'memory_branch_inference',
       episodeId: 'episode-memory-1',
       toolExecutionContext: {
         sessionId: 'branch:memory:session-1',
@@ -106,6 +130,8 @@ test('ConversationRunner gives a scoped-only attempt sink branch context without
 
     assert.equal(result.response, 'scoped reply');
     const started = events.find(event => event.outcome === 'started');
+    assert.equal(started?.requestKind, 'memory_branch_inference');
+    assert.equal(started?.requestOrigin, 'memory_branch');
     assert.deepEqual(started?.context, {
       sessionId: 'branch:memory:session-1',
       surface: 'memory_branch',
@@ -258,7 +284,7 @@ test('reader keeps legacy and v4 traces diagnostic-only while resetting diff on 
     assert.equal(store.records[1].outcome, 'succeeded');
     assert.equal(store.records[1].hasStarted, true);
     assert.equal(store.records[1].diff.baselineReset, true);
-    assert.equal(store.records[1].diff.resetReason, 'provider-model-api-changed');
+    assert.equal(store.records[1].diff.resetReason, 'first-record');
     assert.equal(store.sessions[0].weightedHitRatio, undefined);
     assert.equal(store.sessions[0].eligibleAttempts, 0);
     assert.equal(store.sessions[0].ineligibleAttempts, 2);
@@ -273,7 +299,7 @@ test('reader keeps legacy and v4 traces diagnostic-only while resetting diff on 
   }
 });
 
-test('v6 preserves missing cache usage and qualifies an explicitly reported zero cache read', async () => {
+test('v7 preserves missing cache usage and qualifies an explicitly reported zero cache read', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-v5-truth-'));
   try {
     const observer = new CacheTraceObserver({
@@ -334,13 +360,16 @@ test('v6 preserves missing cache usage and qualifies an explicitly reported zero
     assert.deepEqual(zero.qualification, { eligible: true, reasons: [] });
     assert.equal(store.sessions[0].eligibleAttempts, 1);
     assert.equal(store.sessions[0].ineligibleAttempts, 1);
+    assert.equal(store.sessions[0].primaryEligibleAttempts, 1);
+    assert.equal(store.sessions[0].primaryIneligibleAttempts, 1);
+    assert.equal(store.sessions[0].auxiliaryIneligibleAttempts, 0);
     assert.equal(store.sessions[0].weightedHitRatio, 0);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('v6 omits response_usage without provider usage and reports stable qualification reasons', async () => {
+test('v7 omits response_usage without provider usage and reports stable qualification reasons', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-v5-reasons-'));
   try {
     const observer = new CacheTraceObserver({
@@ -367,7 +396,7 @@ test('v6 omits response_usage without provider usage and reports stable qualific
 
     fs.writeFileSync(path.join(dir, 'invalid.jsonl'), [
       cacheTraceLine({
-        schema: 'xiaoba.cache_trace.v6',
+        schema: 'xiaoba.cache_trace.v7',
         outcome: 'succeeded',
         attemptId: 'invalid-input:1',
         callId: 'invalid-input',
@@ -378,7 +407,7 @@ test('v6 omits response_usage without provider usage and reports stable qualific
         usage: { input_tokens: 0, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 0, cache_read_source: 'openai.input_tokens_details.cached_tokens', cache_write_reported: false },
       }),
       cacheTraceLine({
-        schema: 'xiaoba.cache_trace.v6',
+        schema: 'xiaoba.cache_trace.v7',
         outcome: 'succeeded',
         attemptId: 'read-exceeds:1',
         callId: 'read-exceeds',
@@ -389,7 +418,7 @@ test('v6 omits response_usage without provider usage and reports stable qualific
         usage: { input_tokens: 10, input_tokens_reported: true, cache_read_reported: true, cache_read_tokens: 11, cache_read_source: 'openai.input_tokens_details.cached_tokens', cache_write_reported: false },
       }),
       cacheTraceLine({
-        schema: 'xiaoba.cache_trace.v6',
+        schema: 'xiaoba.cache_trace.v7',
         outcome: 'succeeded',
         attemptId: 'anthropic-missing-input:1',
         callId: 'anthropic-missing-input',
@@ -400,7 +429,7 @@ test('v6 omits response_usage without provider usage and reports stable qualific
         usage: { input_tokens: 100, input_tokens_reported: false, cache_read_reported: true, cache_read_tokens: 90, cache_read_source: 'anthropic.cache_read_input_tokens', cache_write_reported: true, cache_write_tokens: 10 },
       }),
       cacheTraceLine({
-        schema: 'xiaoba.cache_trace.v6',
+        schema: 'xiaoba.cache_trace.v7',
         outcome: 'succeeded',
         attemptId: 'anthropic-missing-write:1',
         callId: 'anthropic-missing-write',
@@ -423,6 +452,142 @@ test('v6 omits response_usage without provider usage and reports stable qualific
     ]);
     assert.deepEqual(invalidStore.records.find(record => record.callId === 'anthropic-missing-write')?.qualification.reasons, [
       'cache-write-not-reported',
+    ]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('trace accounting isolates checkpoint drift and excludes Memory Branch usage from primary totals', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-kind-accounting-'));
+  try {
+    const observer = new CacheTraceObserver({
+      sessionId: 'cache:kind-accounting',
+      traceDir: dir,
+      env: { XIAOBA_CACHE_TRACE: 'true' },
+    });
+    const emit = (
+      callId: string,
+      requestKind: ModelAttemptEvent['requestKind'],
+      stable: string,
+      input: number,
+      read: number,
+      explicitOrigin?: ModelAttemptEvent['requestOrigin'],
+    ) => {
+      const requestOrigin = explicitOrigin ?? (requestKind === 'memory_branch_inference'
+        ? 'memory_branch'
+        : requestKind === 'subagent_inference'
+          ? 'subagent'
+          : 'main');
+      const request = {
+        messages: [{ role: 'system' as const, content: stable, __cacheScope: 'stable' as const }],
+        tools: [],
+        cache: {
+          strategy: requestKind === 'checkpoint_compaction'
+            ? 'openai-cache-bypassed' as const
+            : 'openai-prompt-cache-key' as const,
+          stablePrefixEstimatedTokens: 100,
+          stableSystemMessages: 1,
+          explicitBreakpoints: 0,
+        },
+      };
+      observer.observe(attemptEvent({
+        callId,
+        attemptId: `${callId}:1`,
+        outcome: 'started',
+        requestKind,
+        requestOrigin,
+        request,
+      }));
+      observer.observe(attemptEvent({
+        callId,
+        attemptId: `${callId}:1`,
+        outcome: 'succeeded',
+        requestKind,
+        requestOrigin,
+        request,
+        response: {
+          content: 'ok',
+          usage: {
+            promptTokens: input,
+            completionTokens: 1,
+            totalTokens: input + 1,
+            inputTokensReported: true,
+            cachedReadTokens: read,
+            cacheReadSource: 'openai.input_tokens_details.cached_tokens',
+          },
+        },
+      }));
+    };
+    emit('main-1', 'main_inference', 'stable-main', 100, 80);
+    emit('checkpoint-1', 'checkpoint_compaction', 'different-checkpoint-prefix', 10, 0);
+    emit('memory-1', 'memory_branch_inference', 'memory-prefix', 100, 100);
+    emit('memory-checkpoint-1', 'checkpoint_compaction', 'memory-checkpoint-prefix', 50, 0, 'memory_branch');
+    emit('main-2', 'main_inference', 'stable-main', 100, 80);
+    const missingMemoryCheckpointRequest = {
+      messages: [{ role: 'system' as const, content: 'missing-memory-checkpoint', __cacheScope: 'stable' as const }],
+      tools: [],
+      cache: {
+        strategy: 'openai-cache-bypassed' as const,
+        stablePrefixEstimatedTokens: 100,
+        stableSystemMessages: 1,
+        explicitBreakpoints: 0,
+      },
+    };
+    observer.observe(attemptEvent({
+      callId: 'memory-checkpoint-missing',
+      attemptId: 'memory-checkpoint-missing:1',
+      outcome: 'started',
+      requestKind: 'checkpoint_compaction',
+      requestOrigin: 'memory_branch',
+      request: missingMemoryCheckpointRequest,
+    }));
+    observer.observe(attemptEvent({
+      callId: 'memory-checkpoint-missing',
+      attemptId: 'memory-checkpoint-missing:1',
+      outcome: 'succeeded',
+      requestKind: 'checkpoint_compaction',
+      requestOrigin: 'memory_branch',
+      request: missingMemoryCheckpointRequest,
+      response: {
+        content: 'ok',
+        usage: {
+          promptTokens: 40,
+          completionTokens: 1,
+          totalTokens: 41,
+          inputTokensReported: true,
+        },
+      },
+    }));
+    await observer.drain();
+
+    const store = await readCacheTraceStore(dir);
+    const summary = store.sessions[0];
+    const checkpoint = store.records.find(record => record.requestKind === 'checkpoint_compaction')!;
+    const secondMain = store.records.find(record => record.callId === 'main-2')!;
+    assert.equal(checkpoint.diff.resetReason, 'checkpoint-compaction');
+    assert.equal(checkpoint.diff.stableSystemChanged, false);
+    assert.equal(secondMain.diff.baselineReset, false);
+    assert.equal(secondMain.diff.stableSystemChanged, false);
+    assert.equal(summary.inputTokens, 210);
+    assert.equal(summary.cacheReadTokens, 160);
+    assert.equal(summary.weightedHitRatio, 0.7619);
+    assert.equal(summary.primaryAccountingAttempts, 3);
+    assert.equal(summary.primaryEligibleAttempts, 3);
+    assert.equal(summary.primaryIneligibleAttempts, 0);
+    assert.equal(summary.auxiliaryEligibleAttempts, 2);
+    assert.equal(summary.auxiliaryIneligibleAttempts, 1);
+    assert.deepEqual(summary.requestKindBreakdown.map(entry => [
+      entry.requestKind,
+      entry.requestOrigin,
+      entry.inputTokens,
+      entry.cacheReadTokens,
+      entry.ineligibleAttempts,
+    ]), [
+      ['checkpoint_compaction', 'main', 10, 0, 0],
+      ['checkpoint_compaction', 'memory_branch', 50, 0, 1],
+      ['main_inference', 'main', 200, 160, 0],
+      ['memory_branch_inference', 'memory_branch', 100, 100, 0],
     ]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -646,9 +811,11 @@ test('dashboard exposes a discoverable cache trace page', () => {
   assert.match(page, /上下文 S\/E\/C/);
   assert.match(page, /epoch/);
   assert.match(page, /stablePrefixEstimatedTokens/);
-  assert.match(page, /可验收 Attempts/);
-  assert.match(page, /不具资格 Attempts/);
-  assert.match(page, /不可验收/);
+  assert.match(page, /主验收可用 Attempts/);
+  assert.match(page, /主验收不合格 Attempts/);
+  assert.match(page, /请求类型 \/ 所属/);
+  assert.match(page, /辅助诊断，不计主验收/);
+  assert.match(page, /primaryIneligibleAttempts/);
   assert.match(page, /未上报/);
   assert.match(page, /legacy-trace-schema/);
   assert.match(page, /class="muted reason">原因：/);
@@ -728,7 +895,7 @@ test('cache trace switch waits for the next Agent start when the connector is st
 
 function attemptEvent(overrides: Partial<ModelAttemptEvent> = {}): ModelAttemptEvent {
   return {
-    schema: 'xiaoba.model_attempt.v1',
+    schema: 'xiaoba.model_attempt.v2',
     callId: 'call-1',
     attemptId: 'call-1:1',
     attemptNumber: 1,
@@ -739,6 +906,7 @@ function attemptEvent(overrides: Partial<ModelAttemptEvent> = {}): ModelAttemptE
     apiType: 'openai-responses',
     stream: true,
     requestKind: 'main_inference',
+    requestOrigin: 'main',
     context: { sessionId: 'cache:write', surface: 'cli', episodeNumber: 7 },
     request: {
       messages: [{ role: 'user', content: 'secret content must not be stored' }],
@@ -749,7 +917,7 @@ function attemptEvent(overrides: Partial<ModelAttemptEvent> = {}): ModelAttemptE
 }
 
 function cacheTraceLine(options: {
-  schema?: 'xiaoba.cache_trace.v4' | 'xiaoba.cache_trace.v5' | 'xiaoba.cache_trace.v6';
+  schema?: 'xiaoba.cache_trace.v4' | 'xiaoba.cache_trace.v5' | 'xiaoba.cache_trace.v6' | 'xiaoba.cache_trace.v7';
   outcome: 'started' | 'succeeded';
   callId: string;
   attemptId: string;
@@ -772,6 +940,8 @@ function cacheTraceLine(options: {
     },
     request: {
       timestamp: options.timestamp,
+      request_kind: 'main_inference',
+      request_origin: 'main',
       provider: options.provider,
       model: options.model,
       api_type: options.apiType,

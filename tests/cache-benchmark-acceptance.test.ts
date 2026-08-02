@@ -123,6 +123,15 @@ describe('multi-provider cache acceptance', () => {
     assert.equal(workloadMismatch.status, 'invalid');
     assert.ok(workloadMismatch.reasons.includes('workload_contract_invalid'));
     assert.ok(workloadMismatch.reasons.includes('workload_contract_mismatch'));
+
+    const legacyResult = candidate('newcli', ARTIFACT_A);
+    (legacyResult.result as any).schema = 'xiaoba.cache_benchmark_result.v6';
+    const legacyRejected = aggregateCacheBenchmarkAcceptance([
+      legacyResult,
+      candidate('deepseek', ARTIFACT_A),
+    ]);
+    assert.equal(legacyRejected.status, 'invalid');
+    assert.ok(legacyRejected.reasons.includes('provider_evidence_invalid'));
   });
 
   test('rejects a self-declared role relabel even when all ordinary fingerprints are recomputed', () => {
@@ -317,8 +326,7 @@ function acceptanceManifest(provider: AcceptanceProviderAlias): CacheBenchmarkMa
     apiBase: 'https://deepseek.example.invalid/v1',
     model: 'model-deepseek',
   };
-  const manifest = buildOnlineCacheBenchmarkManifest(credential, 24);
-  manifest.benchmark_profile = 'acceptance';
+  const manifest = buildOnlineCacheBenchmarkManifest(credential, 24, undefined, 'acceptance');
   assert.equal(
     fingerprintBenchmarkAcceptanceTopology(manifest.cases),
     REQUIRED_ACCEPTANCE_TOPOLOGY_FINGERPRINT,

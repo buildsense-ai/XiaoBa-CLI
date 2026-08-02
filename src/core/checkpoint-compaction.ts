@@ -63,7 +63,7 @@ export interface CheckpointCompactionRequest {
   /** Attempt telemetry stays attached to the real one-off provider request. */
   modelRequestOptions?: Pick<
     AIRequestOptions,
-    'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'
+    'requestOrigin' | 'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'
   >;
   onStatus?: (event: CheckpointCompactionStatusEvent) => void | Promise<void>;
 }
@@ -553,6 +553,7 @@ export class CheckpointCompactionCoordinator {
         signal,
         cacheMode: 'bypass',
         requestKind: 'checkpoint_compaction',
+        requestOrigin: modelRequestOptions?.requestOrigin ?? 'main',
       },
     );
     if (response.usage) {

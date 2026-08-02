@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { resolveCacheTraceDir } from './cache-trace';
+import type { ModelRequestKind, ModelRequestOrigin } from '../providers/provider';
 
 export interface CacheTraceUsage {
   responseUsagePresent: boolean;
@@ -19,6 +20,10 @@ export type CacheTraceOutcome = 'succeeded' | 'retrying' | 'failed' | 'cancelled
 
 export type CacheTraceQualificationReason =
   | 'legacy-trace-schema'
+  | 'request-kind-not-reported'
+  | 'request-kind-invalid'
+  | 'request-origin-not-reported'
+  | 'request-origin-invalid'
   | 'attempt-not-succeeded'
   | 'response-usage-missing'
   | 'input-tokens-not-reported'
@@ -55,6 +60,8 @@ export interface CacheTraceRecord {
   provider: string;
   model: string;
   apiType: string;
+  requestKind: ModelRequestKind | 'unknown';
+  requestOrigin: ModelRequestOrigin | 'unknown';
   cacheStrategy: string;
   cachePlan?: {
     stablePrefixEstimatedTokens: number;
@@ -84,7 +91,7 @@ export interface CacheTraceRecord {
   qualification: CacheTraceQualification;
   diff: {
     baselineReset: boolean;
-    resetReason?: 'first-record' | 'provider-model-api-changed';
+    resetReason?: 'first-record' | 'provider-model-api-changed' | 'checkpoint-compaction';
     requestChanged: boolean;
     stableSystemChanged: boolean;
     changedMessageIndices: number[];
@@ -117,6 +124,23 @@ export interface CacheTraceSessionSummary {
   ineligibleAttempts: number;
   ineligibleReasons: Partial<Record<CacheTraceQualificationReason, number>>;
   anomalousRecords: number;
+  requestKindBreakdown: CacheTraceRequestKindSummary[];
+  primaryAccountingAttempts: number;
+  primaryEligibleAttempts: number;
+  primaryIneligibleAttempts: number;
+  auxiliaryEligibleAttempts: number;
+  auxiliaryIneligibleAttempts: number;
+}
+
+export interface CacheTraceRequestKindSummary {
+  requestKind: ModelRequestKind | 'unknown';
+  requestOrigin: ModelRequestOrigin | 'unknown';
+  records: number;
+  eligibleAttempts: number;
+  ineligibleAttempts: number;
+  inputTokens?: number;
+  cacheReadTokens?: number;
+  weightedHitRatio?: number;
 }
 
 export interface CacheTraceStore {
@@ -161,6 +185,7 @@ export async function readCacheTraceStore(
         const record = raw?.schema === 'xiaoba.cache_trace.v4'
           || raw?.schema === 'xiaoba.cache_trace.v5'
           || raw?.schema === 'xiaoba.cache_trace.v6'
+          || raw?.schema === 'xiaoba.cache_trace.v7'
           ? normalizeAttemptEvents([raw], relative)
           : normalizeLegacyRecord(raw, relative);
         if (record) normalized.push(record);
@@ -214,7 +239,19 @@ function normalizeAttemptEvents(
     : 'incomplete';
   const schema = text(final.schema || base.schema || 'xiaoba.cache_trace.v4');
   const apiType = text(request.api_type || base.api_type || 'unknown');
-  const normalizedUsage = normalizeUsage(responseUsage, responseUsagePresent, schema, outcome, apiType);
+  const requestKind = normalizeRequestKind(request.request_kind);
+  const requestOrigin = normalizeRequestOrigin(request.request_origin);
+  const normalizedUsage = normalizeUsage(
+    responseUsage,
+    responseUsagePresent,
+    schema,
+    outcome,
+    apiType,
+    requestKind,
+    hasOwn(request, 'request_kind'),
+    requestOrigin,
+    hasOwn(request, 'request_origin'),
+  );
   const failure = final.failure || {};
   const callId = text(lifecycle.call_id || firstLifecycle.call_id || episode.run_id || path.basename(file));
   const attemptId = text(lifecycle.attempt_id || firstLifecycle.attempt_id || `${callId}:1`);
@@ -237,6 +274,8 @@ function normalizeAttemptEvents(
     provider: text(request.provider || base.provider || 'unknown'),
     model: text(request.model || base.model || 'unknown'),
     apiType,
+    requestKind,
+    requestOrigin,
     cacheStrategy: text(request.cache_strategy || 'unknown'),
     ...(cachePlan ? { cachePlan } : {}),
     ...(contextLifecycle ? { contextLifecycle } : {}),
@@ -269,7 +308,19 @@ function normalizeLegacyRecord(raw: any, file: string): Omit<CacheTraceRecord, '
   const sessionId = text(session.session_id || raw.session_id || raw.conversation_id || 'unknown');
   const schema = text(raw.schema || 'unknown');
   const apiType = text(request.api_type || raw.api_type || 'unknown');
-  const normalizedUsage = normalizeUsage(responseUsage, responseUsagePresent, schema, 'succeeded', apiType);
+  const requestKind = normalizeRequestKind(request.request_kind);
+  const requestOrigin = normalizeRequestOrigin(request.request_origin);
+  const normalizedUsage = normalizeUsage(
+    responseUsage,
+    responseUsagePresent,
+    schema,
+    'succeeded',
+    apiType,
+    requestKind,
+    hasOwn(request, 'request_kind'),
+    requestOrigin,
+    hasOwn(request, 'request_origin'),
+  );
   const messageHashes = request.message_sha256s || request.messages_sha256 || request.message_hashes || [];
   const timestamp = text(request.timestamp || raw.timestamp || raw.response?.timestamp || '');
   if (!timestamp) return null;
@@ -292,6 +343,8 @@ function normalizeLegacyRecord(raw: any, file: string): Omit<CacheTraceRecord, '
     provider: text(request.provider || raw.provider || 'unknown'),
     model: text(request.model || raw.model || 'unknown'),
     apiType,
+    requestKind,
+    requestOrigin,
     cacheStrategy: text(request.cache_strategy || 'unknown'),
     ...(cachePlan ? { cachePlan } : {}),
     ...(contextLifecycle ? { contextLifecycle } : {}),
@@ -322,6 +375,10 @@ function normalizeUsage(
   schema: string,
   outcome: CacheTraceOutcome,
   apiType: string,
+  requestKind: ModelRequestKind | 'unknown',
+  requestKindReported: boolean,
+  requestOrigin: ModelRequestOrigin | 'unknown',
+  requestOriginReported: boolean,
 ): { usage: CacheTraceUsage; qualification: CacheTraceQualification } {
   const value = raw && typeof raw === 'object' ? raw : {};
   const input = usageField(value, ['input_tokens', 'prompt_tokens', 'promptTokens']);
@@ -329,8 +386,10 @@ function normalizeUsage(
   const cacheWrite = usageField(value, ['cache_write_tokens', 'cached_write_tokens', 'cachedWriteTokens']);
   const freshInput = usageField(value, ['fresh_input_tokens']);
   const output = usageField(value, ['output_tokens', 'completion_tokens', 'completionTokens']);
-  const isV6 = schema === 'xiaoba.cache_trace.v6';
-  const isStructured = isV6 || schema === 'xiaoba.cache_trace.v5';
+  const isV7 = schema === 'xiaoba.cache_trace.v7';
+  const isStructured = isV7
+    || schema === 'xiaoba.cache_trace.v6'
+    || schema === 'xiaoba.cache_trace.v5';
   const inputReported = isStructured ? value.input_tokens_reported === true : input.present;
   const cacheReadReported = isStructured ? value.cache_read_reported === true : cacheRead.present;
   const cacheWriteReported = isStructured ? value.cache_write_reported === true : cacheWrite.present;
@@ -339,7 +398,20 @@ function normalizeUsage(
     : undefined;
   const reasons: CacheTraceQualificationReason[] = [];
 
-  if (!isV6) reasons.push('legacy-trace-schema');
+  if (!isV7) reasons.push('legacy-trace-schema');
+  if (isV7 && requestKind === 'unknown') {
+    reasons.push(requestKindReported
+      ? 'request-kind-invalid'
+      : 'request-kind-not-reported');
+  }
+  if (isV7 && requestOrigin === 'unknown') {
+    reasons.push(requestOriginReported
+      ? 'request-origin-invalid'
+      : 'request-origin-not-reported');
+  }
+  if (isV7 && !requestKindOriginMatches(requestKind, requestOrigin)) {
+    reasons.push('request-origin-invalid');
+  }
   if (outcome !== 'succeeded') reasons.push('attempt-not-succeeded');
   if (!responseUsagePresent) {
     reasons.push('response-usage-missing');
@@ -356,9 +428,9 @@ function normalizeUsage(
     } else if (input.valid && input.value !== undefined && cacheRead.value > input.value) {
       reasons.push('cache-read-exceeds-input');
     }
-    if (isV6 && cacheReadReported && !cacheReadSource) {
+    if (isV7 && cacheReadReported && !cacheReadSource) {
       reasons.push('cache-read-source-not-reported');
-    } else if (isV6 && cacheReadReported && !isCacheReadSourceAllowed(apiType, cacheReadSource)) {
+    } else if (isV7 && cacheReadReported && !isCacheReadSourceAllowed(apiType, cacheReadSource)) {
       reasons.push('cache-read-source-invalid');
     }
     if (isStructured && apiType === 'anthropic-messages' && !cacheWriteReported) {
@@ -475,9 +547,22 @@ function normalizeContextLifecycle(value: any): CacheTraceRecord['contextLifecyc
 }
 
 function attachDiffs(records: Omit<CacheTraceRecord, 'diff'>[]): CacheTraceRecord[] {
-  const previousBySession = new Map<string, Omit<CacheTraceRecord, 'diff'>>();
+  const previousBySessionAndKind = new Map<string, Omit<CacheTraceRecord, 'diff'>>();
   return records.map(record => {
-    const previous = previousBySession.get(record.sessionId);
+    if (record.requestKind === 'checkpoint_compaction') {
+      return {
+        ...record,
+        diff: {
+          baselineReset: true,
+          resetReason: 'checkpoint-compaction' as const,
+          requestChanged: false,
+          stableSystemChanged: false,
+          changedMessageIndices: [],
+        },
+      };
+    }
+    const baselineKey = `${record.sessionId}\0${record.requestKind}\0${record.requestOrigin}`;
+    const previous = previousBySessionAndKind.get(baselineKey);
     const sameSegment = previous && segment(previous) === segment(record);
     const changedMessageIndices: number[] = [];
     if (sameSegment && previous) {
@@ -486,7 +571,7 @@ function attachDiffs(records: Omit<CacheTraceRecord, 'diff'>[]): CacheTraceRecor
         if (previous.messageSha256s[index] !== record.messageSha256s[index]) changedMessageIndices.push(index);
       }
     }
-    previousBySession.set(record.sessionId, record);
+    previousBySessionAndKind.set(baselineKey, record);
     return {
       ...record,
       diff: {
@@ -506,10 +591,14 @@ function summarizeSessions(records: CacheTraceRecord[]): CacheTraceSessionSummar
   for (const record of records) groups.set(record.sessionId, [...(groups.get(record.sessionId) || []), record]);
   return [...groups.entries()].map(([sessionId, items]) => {
     const eligibleItems = items.filter(item => item.qualification.eligible);
-    const inputTokens = sum(eligibleItems, item => item.usage.inputTokens ?? 0);
-    const cacheReadTokens = sum(eligibleItems, item => item.usage.cacheReadTokens ?? 0);
-    const cacheWriteFullyReported = eligibleItems.length > 0
-      && eligibleItems.every(item => item.usage.cacheWriteReported
+    const primaryItems = items.filter(isPrimaryAccountingRecord);
+    const primaryEligibleItems = primaryItems.filter(item => item.qualification.eligible);
+    const auxiliaryItems = items.filter(item => !isPrimaryAccountingRecord(item));
+    const auxiliaryEligibleItems = auxiliaryItems.filter(item => item.qualification.eligible);
+    const inputTokens = sum(primaryEligibleItems, item => item.usage.inputTokens ?? 0);
+    const cacheReadTokens = sum(primaryEligibleItems, item => item.usage.cacheReadTokens ?? 0);
+    const cacheWriteFullyReported = primaryEligibleItems.length > 0
+      && primaryEligibleItems.every(item => item.usage.cacheWriteReported
         && item.usage.cacheWriteTokens !== undefined);
     const calls = groupBy(items, item => item.callId);
     const callItems = [...calls.values()];
@@ -538,17 +627,50 @@ function summarizeSessions(records: CacheTraceRecord[]): CacheTraceSessionSummar
       lastTimestamp: items.at(-1)?.timestamp || '',
       providers: unique(items.map(item => item.provider)),
       models: unique(items.map(item => item.model)),
-      ...(eligibleItems.length > 0 ? { inputTokens, cacheReadTokens } : {}),
+      ...(primaryEligibleItems.length > 0 ? { inputTokens, cacheReadTokens } : {}),
       ...(cacheWriteFullyReported ? {
-        cacheWriteTokens: sum(eligibleItems, item => item.usage.cacheWriteTokens ?? 0),
+        cacheWriteTokens: sum(primaryEligibleItems, item => item.usage.cacheWriteTokens ?? 0),
       } : {}),
       ...(inputTokens > 0 ? { weightedHitRatio: ratio(cacheReadTokens, inputTokens) } : {}),
       eligibleAttempts: eligibleItems.length,
       ineligibleAttempts: items.length - eligibleItems.length,
       ineligibleReasons,
       anomalousRecords: items.filter(item => !item.diff.baselineReset && item.diff.stableSystemChanged).length,
+      requestKindBreakdown: summarizeRequestKinds(items),
+      primaryAccountingAttempts: primaryEligibleItems.length,
+      primaryEligibleAttempts: primaryEligibleItems.length,
+      primaryIneligibleAttempts: primaryItems.length - primaryEligibleItems.length,
+      auxiliaryEligibleAttempts: auxiliaryEligibleItems.length,
+      auxiliaryIneligibleAttempts: auxiliaryItems.length - auxiliaryEligibleItems.length,
     };
   }).sort((left, right) => right.lastTimestamp.localeCompare(left.lastTimestamp));
+}
+
+function summarizeRequestKinds(items: CacheTraceRecord[]): CacheTraceRequestKindSummary[] {
+  const groups = groupBy(items, item => `${item.requestKind}\0${item.requestOrigin}`);
+  return [...groups.values()].map(records => {
+    const eligible = records.filter(record => record.qualification.eligible);
+    const inputTokens = sum(eligible, record => record.usage.inputTokens ?? 0);
+    const cacheReadTokens = sum(eligible, record => record.usage.cacheReadTokens ?? 0);
+    return {
+      requestKind: records[0].requestKind,
+      requestOrigin: records[0].requestOrigin,
+      records: records.length,
+      eligibleAttempts: eligible.length,
+      ineligibleAttempts: records.length - eligible.length,
+      ...(eligible.length > 0 ? { inputTokens, cacheReadTokens } : {}),
+      ...(inputTokens > 0 ? { weightedHitRatio: ratio(cacheReadTokens, inputTokens) } : {}),
+    };
+  }).sort((left, right) => (
+    left.requestKind.localeCompare(right.requestKind)
+    || left.requestOrigin.localeCompare(right.requestOrigin)
+  ));
+}
+
+function isPrimaryAccountingRecord(record: Pick<CacheTraceRecord, 'requestKind' | 'requestOrigin'>): boolean {
+  return record.requestOrigin === 'main'
+    && (record.requestKind === 'main_inference'
+      || record.requestKind === 'checkpoint_compaction');
 }
 
 async function listTraceFiles(root: string): Promise<string[]> {
@@ -570,6 +692,32 @@ function normalizeOutcome(value: unknown): CacheTraceOutcome {
   return value === 'succeeded' || value === 'retrying' || value === 'failed' || value === 'cancelled'
     ? value
     : 'incomplete';
+}
+
+function normalizeRequestKind(value: unknown): ModelRequestKind | 'unknown' {
+  return value === 'main_inference'
+    || value === 'checkpoint_compaction'
+    || value === 'memory_branch_inference'
+    || value === 'subagent_inference'
+    ? value
+    : 'unknown';
+}
+
+function normalizeRequestOrigin(value: unknown): ModelRequestOrigin | 'unknown' {
+  return value === 'main' || value === 'memory_branch' || value === 'subagent'
+    ? value
+    : 'unknown';
+}
+
+function requestKindOriginMatches(
+  kind: ModelRequestKind | 'unknown',
+  origin: ModelRequestOrigin | 'unknown',
+): boolean {
+  if (kind === 'unknown' || origin === 'unknown') return true;
+  return kind === 'checkpoint_compaction'
+    || (kind === 'main_inference' && origin === 'main')
+    || (kind === 'memory_branch_inference' && origin === 'memory_branch')
+    || (kind === 'subagent_inference' && origin === 'subagent');
 }
 
 function segment(record: Pick<CacheTraceRecord, 'provider' | 'model' | 'apiType'>): string {

@@ -1,10 +1,12 @@
 import type { ProviderReportedUsage } from '../types';
+import type { ModelRequestKind, ModelRequestOrigin } from '../providers/provider';
+import type { ProviderCacheStrategy } from '../providers/provider-cache-policy';
 
-export const CACHE_BENCHMARK_MANIFEST_SCHEMA = 'xiaoba.cache_benchmark_manifest.v6' as const;
-export const CACHE_BENCHMARK_LEDGER_SCHEMA = 'xiaoba.cache_benchmark_ledger.v6' as const;
-export const CACHE_BENCHMARK_ROUND_SCHEMA = 'xiaoba.cache_benchmark_round.v6' as const;
-export const CACHE_BENCHMARK_ATTEMPT_SCHEMA = 'xiaoba.cache_benchmark_attempt.v6' as const;
-export const CACHE_BENCHMARK_RESULT_SCHEMA = 'xiaoba.cache_benchmark_result.v6' as const;
+export const CACHE_BENCHMARK_MANIFEST_SCHEMA = 'xiaoba.cache_benchmark_manifest.v7' as const;
+export const CACHE_BENCHMARK_LEDGER_SCHEMA = 'xiaoba.cache_benchmark_ledger.v7' as const;
+export const CACHE_BENCHMARK_ROUND_SCHEMA = 'xiaoba.cache_benchmark_round.v7' as const;
+export const CACHE_BENCHMARK_ATTEMPT_SCHEMA = 'xiaoba.cache_benchmark_attempt.v7' as const;
+export const CACHE_BENCHMARK_RESULT_SCHEMA = 'xiaoba.cache_benchmark_result.v7' as const;
 
 export const CACHE_READ_SOURCES = [
   'openai.input_tokens_details.cached_tokens',
@@ -34,8 +36,16 @@ export type ProviderAdapter = 'openai' | 'anthropic';
 export type ApiType = 'openai-responses' | 'openai-chat-completions' | 'anthropic-messages';
 export type CacheClass = 'cold' | 'warm';
 export type CacheBenchmarkAttemptRole = 'main' | 'memory_branch';
+export type CacheBenchmarkRequestKind = ModelRequestKind;
+export type CacheBenchmarkRequestOrigin = ModelRequestOrigin;
 export type CacheBenchmarkTrafficClass = 'primary' | 'auxiliary_memory';
 export type AttemptOutcome = 'succeeded' | 'failed' | 'cancelled' | 'incomplete' | 'retrying';
+export type CacheBenchmarkRetryStopReason =
+  | 'non_retryable'
+  | 'retry_limit_exhausted'
+  | 'retry_window_exhausted'
+  | 'stream_output_started'
+  | 'aborted';
 export type CacheBenchmarkVerdict = 'passed' | 'failed' | 'unobservable';
 
 export interface CacheBenchmarkCriteria {
@@ -44,6 +54,7 @@ export interface CacheBenchmarkCriteria {
   maximum_task_weight: number;
   include_cold_in_primary_ratio: boolean;
   qualification_traffic_class: 'primary';
+  primary_accounting_request_kinds: readonly ['main_inference', 'checkpoint_compaction'];
 }
 
 export interface CacheBenchmarkRun {
@@ -137,12 +148,33 @@ export interface CacheBenchmarkAttempt {
   suite_id: string;
   round: number;
   attempt_number: number;
+  provider_attempt_number: number;
   attempt_role: CacheBenchmarkAttemptRole;
+  request_kind: CacheBenchmarkRequestKind;
+  request_origin: CacheBenchmarkRequestOrigin;
+  cache_strategy: ProviderCacheStrategy;
+  tools_count: number;
+  tools_fingerprint: string;
+  session_fingerprint: string;
+  journal_started_sequence: number;
+  journal_started_previous_record_fingerprint: string;
+  journal_started_record_fingerprint: string;
+  journal_terminal_sequence?: number;
+  journal_terminal_previous_record_fingerprint?: string;
+  journal_terminal_record_fingerprint?: string;
+  journal_lifecycle_fingerprint: string;
   logical_call: number;
   case_id: string;
   run_id: string;
   call_id: string;
   attempt_id: string;
+  retry_number?: number;
+  retry_stop_reason?: CacheBenchmarkRetryStopReason;
+  retry_recovery_action?:
+    | 'reasoning_replay_include'
+    | 'reasoning_replay_omit'
+    | 'reasoning_history_degrade';
+  dispatch_status?: 'not_dispatched';
   metadata: CacheBenchmarkAttemptMetadata;
   cache_class: CacheClass;
   outcome: AttemptOutcome;
@@ -163,6 +195,8 @@ export type BenchmarkReason =
   | 'duplicate_attempt'
   | 'attempt_order_mismatch'
   | 'unexpected_attempt_count'
+  | 'retry_chain_invalid'
+  | 'retry_not_provably_pre_dispatch'
   | 'unknown_case_or_run'
   | 'metadata_mismatch'
   | 'missing_required_run'
@@ -215,7 +249,18 @@ export interface CacheBenchmarkCellResult {
   all_input_tokens: number;
   all_cache_read_tokens: number;
   all_read_ratio: number | null;
+  request_kind_usage: CacheBenchmarkRequestKindUsage[];
   reasons: BenchmarkReason[];
+}
+
+export interface CacheBenchmarkRequestKindUsage {
+  request_kind: CacheBenchmarkRequestKind;
+  input_tokens: number;
+  cache_read_tokens: number;
+  cold_input_tokens: number;
+  cold_cache_read_tokens: number;
+  all_input_tokens: number;
+  all_cache_read_tokens: number;
 }
 
 export interface CacheBenchmarkRoundResult {

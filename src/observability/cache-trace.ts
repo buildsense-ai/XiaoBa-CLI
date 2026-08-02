@@ -15,11 +15,11 @@ import {
   sanitizeProviderErrorMessageForLog,
 } from '../utils/provider-error-log-sanitizer';
 
-export const CACHE_TRACE_SCHEMA = 'xiaoba.cache_trace.v6';
+export const CACHE_TRACE_SCHEMA = 'xiaoba.cache_trace.v7';
 
 export type CacheTraceApiType = 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses';
 
-export interface CacheTraceEntryV6 {
+export interface CacheTraceEntryV7 {
   schema: typeof CACHE_TRACE_SCHEMA;
   session: {
     session_id: string;
@@ -49,6 +49,7 @@ export interface CacheTraceEntryV6 {
   request: {
     timestamp: string;
     request_kind: ModelAttemptEvent['requestKind'];
+    request_origin: ModelAttemptEvent['requestOrigin'];
     provider: string;
     model: string;
     api_type: CacheTraceApiType;
@@ -142,7 +143,7 @@ export interface CacheTraceObserverOptions {
   env?: NodeJS.ProcessEnv;
   traceDir?: string;
   onError?: (error: unknown) => void;
-  writeEntry?: (filePath: string, entry: CacheTraceEntryV6) => Promise<void>;
+  writeEntry?: (filePath: string, entry: CacheTraceEntryV7) => Promise<void>;
 }
 
 /**
@@ -161,7 +162,7 @@ export class CacheTraceObserver implements CacheTraceSink {
   private readonly episodeId?: string;
   private readonly traceDir?: string;
   private readonly onError?: (error: unknown) => void;
-  private readonly writeEntry: (filePath: string, entry: CacheTraceEntryV6) => Promise<void>;
+  private readonly writeEntry: (filePath: string, entry: CacheTraceEntryV7) => Promise<void>;
   private readonly fileByAttemptId = new Map<string, string>();
   private writeChain: Promise<void> = Promise.resolve();
 
@@ -204,7 +205,7 @@ export class CacheTraceObserver implements CacheTraceSink {
     }
   }
 
-  private buildEntry(event: ModelAttemptEvent): CacheTraceEntryV6 {
+  private buildEntry(event: ModelAttemptEvent): CacheTraceEntryV7 {
     const system = summarizeSystemPrompt(event.request.messages as Message[]);
     const messageSha256s = event.request.messages.map(message => hashMessage(message));
     const toolsCanonical = event.request.tools.map(tool => ({
@@ -217,6 +218,8 @@ export class CacheTraceObserver implements CacheTraceSink {
       provider: event.provider,
       model: event.model,
       apiType: event.apiType,
+      requestKind: event.requestKind,
+      requestOrigin: event.requestOrigin,
       system,
       messageSha256s,
       toolsSha256,
@@ -278,6 +281,7 @@ export class CacheTraceObserver implements CacheTraceSink {
       request: {
         timestamp: event.timestamp,
         request_kind: event.requestKind,
+        request_origin: event.requestOrigin,
         provider: event.provider,
         model: event.model,
         api_type: event.apiType,
@@ -361,7 +365,7 @@ export class CacheTraceObserver implements CacheTraceSink {
     };
   }
 
-  private resolveFilePath(entry: CacheTraceEntryV6): string {
+  private resolveFilePath(entry: CacheTraceEntryV7): string {
     const root = this.traceDir
       || String(this.env.XIAOBA_CACHE_TRACE_DIR || '').trim()
       || path.join(PathResolver.getRuntimeDataRoot(this.env), 'logs', 'cache-trace');
@@ -409,7 +413,7 @@ export function resolveCacheTraceDir(env: NodeJS.ProcessEnv = process.env): stri
   return path.resolve(explicit || path.join(PathResolver.getRuntimeDataRoot(env), 'logs', 'cache-trace'));
 }
 
-function summarizeSystemPrompt(messages: readonly Message[]): CacheTraceEntryV6['request']['system_prompt'] {
+function summarizeSystemPrompt(messages: readonly Message[]): CacheTraceEntryV7['request']['system_prompt'] {
   const stable: string[] = [];
   const dynamic: string[] = [];
 
@@ -440,7 +444,7 @@ function isDynamicSystemMessage(message: Message, text: string): boolean {
   return /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(text);
 }
 
-function resolveCacheStrategy(event: ModelAttemptEvent): CacheTraceEntryV6['request']['cache_strategy'] {
+function resolveCacheStrategy(event: ModelAttemptEvent): CacheTraceEntryV7['request']['cache_strategy'] {
   if (event.request.cache) return event.request.cache.strategy;
   if (event.apiType === 'anthropic-messages') return 'anthropic-explicit-prefix';
   if (event.apiType === 'openai-responses') return 'openai-prompt-cache-key';
@@ -532,7 +536,7 @@ function stableSerialize(value: unknown): string {
   return JSON.stringify(visit(value));
 }
 
-function summarizeFailure(error: unknown): NonNullable<CacheTraceEntryV6['failure']> {
+function summarizeFailure(error: unknown): NonNullable<CacheTraceEntryV7['failure']> {
   const raw = error as any;
   const status = finiteInteger(raw?.response?.status ?? raw?.status ?? raw?.statusCode);
   const code = text(raw?.response?.data?.error?.code ?? raw?.error?.code ?? raw?.code);
@@ -594,7 +598,7 @@ function inferSessionType(sessionId: string): string {
   return 'agent';
 }
 
-async function appendEntry(filePath: string, entry: CacheTraceEntryV6): Promise<void> {
+async function appendEntry(filePath: string, entry: CacheTraceEntryV7): Promise<void> {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   await fs.promises.appendFile(filePath, `${JSON.stringify(entry)}\n`, { encoding: 'utf-8', mode: 0o600 });
 }

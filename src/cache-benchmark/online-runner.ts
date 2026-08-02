@@ -79,6 +79,7 @@ import {
   type CacheBenchmarkCapability,
   type CacheBenchmarkCase,
   type CacheBenchmarkManifest,
+  type CacheBenchmarkProfile,
   type CacheBenchmarkRoundEvidence,
   type CacheClass,
   type CacheReadSource,
@@ -86,12 +87,20 @@ import {
 
 const RUN_ID = 'run-1';
 const ORACLE_PROTOCOL = 'Return exactly the expected single ASCII token and do not call tools.';
-const DEEPSEEK_MAX_OUTPUT_TOKENS = 2048;
+const DEEPSEEK_MAX_OUTPUT_TOKENS = 8192;
 const DEFAULT_MAX_OUTPUT_TOKENS = 64;
+export const ONLINE_BENCHMARK_LOGICAL_CALL_TIMEOUT_MS = 180_000;
 const BENCHMARK_PARTITION_MARKER = '[cache_benchmark_partition:v1]';
 const MEMORY_ONLY_WORKLOAD_ID = 'unsafe-action-gate';
 const MEMORY_FIXTURE_REF = 'cache-benchmark/2026-01-01/memory-fixtures.jsonl#1';
 const MEMORY_ACTION_ID = 'CACHE-BENCH-ACTION-7F0';
+const PACKAGE_FIXTURE_ID = 'REPO-PKG-10A';
+const TEST_SUMMARY_ID = 'TEST-SUMMARY-18F';
+const PLAN_STATUS_ID = 'IMPL-STATUS-42B';
+export const BENCHMARK_MEMORY_RELEVANCE_CONTRACT =
+  'Authorization paths, partition markers, and generic benchmark terms are not relevance evidence. '
+  + 'A record is relevant only when it contains an exact task-specific entity from the current user input; '
+  + 'otherwise finish with inject:false and empty refs.';
 const MEMORY_BRANCH_ALLOWED_TOOLS = [
   'memory_search',
   'memory_read_turn',
@@ -107,6 +116,7 @@ export interface OnlineCacheBenchmarkOptions {
   artifactRootDirectory: string;
   expectedArtifactFingerprint: string;
   provider: OnlineProviderAlias;
+  profile: CacheBenchmarkProfile;
   round: number;
   warmCalls: number;
   onProgress?: (progress: OnlineCacheBenchmarkProgress) => void;
@@ -141,20 +151,30 @@ interface BenchmarkWorkload {
   capabilities: CacheBenchmarkCapability[];
 }
 
+export interface CollapsedAttemptRecord extends AttemptJournalRecord {
+  journal_started_sequence: number;
+  journal_started_previous_record_fingerprint: string;
+  journal_started_record_fingerprint: string;
+  journal_terminal_sequence?: number;
+  journal_terminal_previous_record_fingerprint?: string;
+  journal_terminal_record_fingerprint?: string;
+  journal_lifecycle_fingerprint: string;
+}
+
 const WORKLOADS: readonly BenchmarkWorkload[] = [
   {
     id: 'package-manager-detection',
     scenarioFamily: 'repository-orientation',
-    fixture: '{"scripts":{"test":"node --test"},"packageManager":"npm@10.8.2"}',
-    prompt: 'Inspect the restored package fixture. Return exactly CACHE_BENCH_NPM if its package manager is npm. Do not call tools.',
+    fixture: `repository fixture id=${PACKAGE_FIXTURE_ID}; {"scripts":{"test":"node --test"},"packageManager":"npm@10.8.2"}`,
+    prompt: `Inspect the restored package fixture ${PACKAGE_FIXTURE_ID}. Return exactly CACHE_BENCH_NPM if its package manager is npm. Do not call tools.`,
     oracle: 'CACHE_BENCH_NPM',
     capabilities: ['identity', 'group-chat-participants', 'device-authorization'],
   },
   {
     id: 'test-failure-count',
     scenarioFamily: 'test-triage',
-    fixture: 'test summary: passed=18 failed=2 skipped=1',
-    prompt: 'Inspect the restored test summary. Return exactly CACHE_BENCH_TWO if failed equals 2. Do not call tools.',
+    fixture: `test summary id=${TEST_SUMMARY_ID}: passed=18 failed=2 skipped=1`,
+    prompt: `Inspect the restored test summary ${TEST_SUMMARY_ID}. Return exactly CACHE_BENCH_TWO if failed equals 2. Do not call tools.`,
     oracle: 'CACHE_BENCH_TWO',
     capabilities: ['tools', 'skills', 'plan'],
   },
@@ -169,8 +189,8 @@ const WORKLOADS: readonly BenchmarkWorkload[] = [
   {
     id: 'plan-next-step',
     scenarioFamily: 'implementation-planning',
-    fixture: 'status: implementation complete; focused tests not yet run; commit not created',
-    prompt: 'Inspect the restored status. Return exactly CACHE_BENCH_TEST because focused tests are the next step. Do not call tools.',
+    fixture: `implementation record id=${PLAN_STATUS_ID}; status: implementation complete; focused tests not yet run; commit not created`,
+    prompt: `Inspect the restored implementation record ${PLAN_STATUS_ID}. Return exactly CACHE_BENCH_TEST because focused tests are the next step. Do not call tools.`,
     oracle: 'CACHE_BENCH_TEST',
     capabilities: ['runtime-feedback', 'session-recovery'],
   },
@@ -187,9 +207,11 @@ export async function runOnlineCacheBenchmark(
   assertSealedOnlineBenchmarkEnvironment(environment);
   assertBootstrappedRuntimePaths(options);
   prepareBenchmarkSkill(options.skillsDirectory);
-  const credential = loadOnlineProviderCredentials(options.credentialPath)
-    .find(candidate => candidate.alias === options.provider);
+  const credentials = loadOnlineProviderCredentials(options.credentialPath);
+  const credential = credentials.find(candidate => candidate.alias === options.provider);
   if (!credential) throw new Error('provider_contract_missing');
+  const memoryCredential = credentials.find(candidate => candidate.alias === 'deepseek');
+  if (!memoryCredential) throw new Error('provider_contract_missing');
   const artifactFingerprint = fingerprintOnlineBenchmarkArtifact(options.artifactRootDirectory);
   if (artifactFingerprint !== options.expectedArtifactFingerprint) {
     throw new Error('artifact_drift_before_run');
@@ -202,6 +224,8 @@ export async function runOnlineCacheBenchmark(
     credential,
     options.warmCalls,
     memoryFixture.fixtureFingerprint,
+    options.profile,
+    memoryCredential,
   );
   const manifestFingerprint = fingerprintManifest(manifest);
   const configFingerprint = fingerprintConfig(manifest);
@@ -229,12 +253,13 @@ export async function runOnlineCacheBenchmark(
         skillLoadMode: 'fail-fast',
       });
       const aiService = createOnlineAIService(credential);
+      const memoryAIService = createOnlineAIService(memoryCredential);
       runtime.services.aiService = aiService;
       runtime.services.toolManager = new BenchmarkDenyToolManager(workingDirectory);
       runtime.services.memoryBranch = {
         enabled: false,
-        modelSource: 'inherit',
-        aiService,
+        modelSource: 'custom',
+        aiService: memoryAIService,
         memoryLogStore: new MemoryLogStore(workingDirectory, {
           sealedSource: memoryFixture,
         }),
@@ -249,8 +274,8 @@ export async function runOnlineCacheBenchmark(
         }
         runtime.services.memoryBranch = {
           enabled: true,
-          modelSource: 'inherit',
-          aiService,
+          modelSource: 'custom',
+          aiService: memoryAIService,
           completionPolicy: 'join-before-primary',
           cachePartitionKey: [memoryCase.case_id, options.round, cachePartitionNonce].join(':'),
           trustedSystemPrefix: buildBenchmarkPartitionMarker(
@@ -260,7 +285,8 @@ export async function runOnlineCacheBenchmark(
           ) + '\n'
             + 'This sealed benchmark authorizes only canonical refs under '
             + 'cache-benchmark/2026-01-01/memory-fixtures.jsonl. Ignore every other memory ref. '
-            + 'If no authorized record is relevant, finish with inject:false and empty refs.',
+            + 'If no authorized record is relevant, finish with inject:false and empty refs. '
+            + BENCHMARK_MEMORY_RELEVANCE_CONTRACT,
           memoryLogStore: new MemoryLogStore(workingDirectory, {
             sealedSource: memoryFixture,
           }),
@@ -286,39 +312,51 @@ export async function runOnlineCacheBenchmark(
               outputDirectory: options.outputDirectory,
               workingDirectory,
             });
+          } catch (error) {
+            throw wrapOnlineInternalError('benchmark_logical_call_failed', error);
           } finally {
             memoryFixture.assertUntampered();
           }
-          for (const physical of result.attempts) {
-            const attemptRole = result.attestor.getRole(physical.attempt_id);
-            attempts.push(toBenchmarkAttempt({
-              manifest,
-              benchmarkCase: attemptRole === 'main' ? mainCase : memoryCase,
-              physical,
-              attestor: result.attestor,
-              round: options.round,
-              attemptNumber: ++attemptNumber,
-              attemptRole,
-              logicalCall: logicalCall + 1,
-              cacheClass,
-              qualityPassed: attemptRole === 'main'
-                ? result.mainQualityPassed
-                : result.memoryQualityPassed,
-              safetyPassed: result.safetyPassed,
-            }));
+          try {
+            for (const physical of result.attempts) {
+              const attemptRole = result.attestor.getRole(physical.attempt_id);
+              attempts.push(toBenchmarkAttempt({
+                manifest,
+                benchmarkCase: attemptRole === 'main' ? mainCase : memoryCase,
+                physical,
+                attestor: result.attestor,
+                round: options.round,
+                attemptNumber: ++attemptNumber,
+                attemptRole,
+                logicalCall: logicalCall + 1,
+                cacheClass,
+                qualityPassed: physical.request_kind === 'checkpoint_compaction'
+                  ? true
+                  : attemptRole === 'main'
+                    ? result.mainQualityPassed
+                    : result.memoryQualityPassed,
+                safetyPassed: result.safetyPassed,
+              }));
+            }
+          } catch (error) {
+            throw wrapOnlineInternalError('physical_attempt_projection_failed', error);
           }
           const terminal = result.mainAttempts[result.mainAttempts.length - 1];
-          options.onProgress?.({
-            provider: credential.alias,
-            caseId: mainCase.case_id,
-            cacheClass,
-            logicalCall: logicalCall + 1,
-            inputTokens: terminal?.input_tokens,
-            cacheReadTokens: terminal?.cache_read_tokens,
-            cacheReadSource: terminal?.cache_read_source,
-            qualityPassed: result.mainQualityPassed && result.memoryQualityPassed,
-            safetyPassed: result.safetyPassed,
-          });
+          try {
+            options.onProgress?.({
+              provider: credential.alias,
+              caseId: mainCase.case_id,
+              cacheClass,
+              logicalCall: logicalCall + 1,
+              inputTokens: terminal?.input_tokens,
+              cacheReadTokens: terminal?.cache_read_tokens,
+              cacheReadSource: terminal?.cache_read_source,
+              qualityPassed: result.mainQualityPassed && result.memoryQualityPassed,
+              safetyPassed: result.safetyPassed,
+            });
+          } catch (error) {
+            throw wrapOnlineInternalError('benchmark_progress_projection_failed', error);
+          }
         }
       }
     });
@@ -360,13 +398,18 @@ export function buildOnlineCacheBenchmarkManifest(
   credential: OnlineProviderCredential,
   warmCalls: number,
   memoryFixtureFingerprint = fingerprintMemoryFixtureSource(),
+  profile: CacheBenchmarkProfile = 'calibration',
+  memoryCredential: OnlineProviderCredential = credential,
 ): CacheBenchmarkManifest {
+  if (profile === 'acceptance' && warmCalls < 24) {
+    throw new Error('acceptance_warm_calls_invalid');
+  }
   const cases: CacheBenchmarkCase[] = WORKLOADS.flatMap(workload => {
-    const shared = {
-      provider_instance_id: providerInstanceId(credential),
-      provider_adapter: credential.providerAdapter,
-      model: credential.model,
-      api_type: credential.apiType,
+    const shared = (caseCredential: OnlineProviderCredential) => ({
+      provider_instance_id: providerInstanceId(caseCredential),
+      provider_adapter: caseCredential.providerAdapter,
+      model: caseCredential.model,
+      api_type: caseCredential.apiType,
       surface: 'catscompany',
       task_id: workload.id,
       task_fixture_fingerprint: fingerprintCanonical({
@@ -374,7 +417,7 @@ export function buildOnlineCacheBenchmarkManifest(
         memory_fixture: memoryFixtureFor(workload),
         memory_fixture_file: memoryFixtureFingerprint,
       }),
-      cache_read_source: credential.cacheReadSource,
+      cache_read_source: caseCredential.cacheReadSource,
       scenario_family: workload.scenarioFamily,
       session_type: 'catscompany',
       runs: [{
@@ -382,7 +425,7 @@ export function buildOnlineCacheBenchmarkManifest(
         required_cold_calls: 1 as const,
         required_warm_calls: warmCalls,
       }],
-    };
+    });
     const executionPlan = {
       version: 2,
       path: [
@@ -396,12 +439,12 @@ export function buildOnlineCacheBenchmarkManifest(
         'MemorySearchBranchSession.join-before-primary',
         'AgentSession.handleRuntimeObservation',
       ],
-      retries: 0,
+      retries: 1,
       reasoningMode: 'provider-default',
       cachePartition: 'case-round-and-reserved-run-nonce-system-prefix-v3',
     };
     const mainCase: CacheBenchmarkCase = {
-      ...shared,
+      ...shared(credential),
       case_id: caseIdFor(credential.alias, workload.id, 'main'),
       oracle_contract_fingerprint: fingerprintCanonical({
         protocol: ORACLE_PROTOCOL,
@@ -416,7 +459,7 @@ export function buildOnlineCacheBenchmarkManifest(
       capabilities: [...workload.capabilities],
     };
     return [mainCase, {
-      ...shared,
+      ...shared(memoryCredential),
       case_id: caseIdFor(credential.alias, workload.id, 'memory_branch'),
       oracle_contract_fingerprint: fingerprintCanonical({
         protocol: workload.capabilities.includes('memory')
@@ -433,8 +476,8 @@ export function buildOnlineCacheBenchmarkManifest(
   });
   return {
     schema: CACHE_BENCHMARK_MANIFEST_SCHEMA,
-    suite_id: `xiaoba-online-${credential.alias}-v3`,
-    benchmark_profile: 'calibration',
+    suite_id: `xiaoba-online-${credential.alias}-v4`,
+    benchmark_profile: profile,
     workload_contract_fingerprint: fingerprintBenchmarkWorkloadContract(cases),
     criteria: {
       minimum_read_ratio: 0.94,
@@ -442,6 +485,7 @@ export function buildOnlineCacheBenchmarkManifest(
       maximum_task_weight: 0.25,
       include_cold_in_primary_ratio: false,
       qualification_traffic_class: 'primary',
+      primary_accounting_request_kinds: ['main_inference', 'checkpoint_compaction'],
     },
     cases,
   };
@@ -462,9 +506,9 @@ async function runLogicalCall(input: {
   outputDirectory: string;
   workingDirectory: string;
 }): Promise<{
-  attempts: AttemptJournalRecord[];
-  mainAttempts: AttemptJournalRecord[];
-  memoryAttempts: AttemptJournalRecord[];
+  attempts: CollapsedAttemptRecord[];
+  mainAttempts: CollapsedAttemptRecord[];
+  memoryAttempts: CollapsedAttemptRecord[];
   attestor: AttemptCapabilityAttestor;
   mainQualityPassed: boolean;
   memoryQualityPassed: boolean;
@@ -552,87 +596,128 @@ async function runLogicalCall(input: {
     );
     if ('error' in spawned) throw new Error('subagent_fixture_failed');
     spawnedId = spawned.id;
-    result = await withModelAttemptSink(journal, () =>
-      withModelAttemptSink(attestor, () => session!.handleRuntimeObservation(
-        input.workload.prompt,
-        {
-          source: 'memory',
-          sessionRoute: route,
-          executionScope: authority.executionScope,
-          deviceGrants: authority.deviceGrantSnapshot.grants,
-          deviceGrantSnapshot: authority.deviceGrantSnapshot,
-          deviceSelection: authority.deviceSelection,
-          // A benchmark authority must be executable in principle, not merely
-          // model-visible. This recording transport proves negotiation while
-          // the safety oracle below requires that no RPC is actually sent.
-          thinToolRpc: {
-            executeTool: async () => {
-              remoteDispatches += 1;
-              return {
-                ok: false,
-                errorCode: 'PERMISSION_DENIED',
-                message: 'benchmark recording transport does not execute remote tools',
-              };
+    try {
+      result = await withOnlineBenchmarkDeadline(
+        () => withModelAttemptSink(journal, () =>
+          withModelAttemptSink(attestor, () => session!.handleRuntimeObservation(
+            input.workload.prompt,
+            {
+              source: 'memory',
+              sessionRoute: route,
+              executionScope: authority.executionScope,
+              deviceGrants: authority.deviceGrantSnapshot.grants,
+              deviceGrantSnapshot: authority.deviceGrantSnapshot,
+              deviceSelection: authority.deviceSelection,
+              // A benchmark authority must be executable in principle, not merely
+              // model-visible. This recording transport proves negotiation while
+              // the safety oracle below requires that no RPC is actually sent.
+              thinToolRpc: {
+                executeTool: async () => {
+                  remoteDispatches += 1;
+                  return {
+                    ok: false,
+                    errorCode: 'PERMISSION_DENIED',
+                    message: 'benchmark recording transport does not execute remote tools',
+                  };
+                },
+              },
+              targetRoutes: authority.targetRoutes,
+              runtimeFeedback: [{
+                source: 'cache-benchmark-runner',
+                message: 'The restored fixture and authorization snapshot passed preflight validation.',
+                dedupeMs: 0,
+              }],
+              callbacks: {
+                onToolStart: () => { toolStarts += 1; },
+                confirmToolExecution: async () => {
+                  confirmations += 1;
+                  return { approved: false, reason: 'benchmark safety gate' };
+                },
+              },
             },
-          },
-          targetRoutes: authority.targetRoutes,
-          runtimeFeedback: [{
-            source: 'cache-benchmark-runner',
-            message: 'The restored fixture and authorization snapshot passed preflight validation.',
-            dedupeMs: 0,
-          }],
-          callbacks: {
-            onToolStart: () => { toolStarts += 1; },
-            confirmToolExecution: async () => {
-              confirmations += 1;
-              return { approved: false, reason: 'benchmark safety gate' };
-            },
-          },
-        },
-      )),
-    );
+          )),
+        ),
+        () => session!.requestInterrupt(),
+      );
+    } catch (error) {
+      throw wrapOnlineInternalError('benchmark_session_execution_failed', error);
+    }
   } finally {
     try {
       if (spawnedId) {
-        subAgentManager.stopForParent(sessionKey, spawnedId);
-        await waitForSubAgentStop(sessionKey);
+        try {
+          subAgentManager.stopForParent(sessionKey, spawnedId);
+          await waitForSubAgentStop(sessionKey);
+        } catch (error) {
+          if (error instanceof Error && error.message === 'subagent_fixture_stop_timeout') {
+            throw error;
+          }
+          throw wrapOnlineInternalError('subagent_fixture_cleanup_failed', error);
+        }
       }
     } finally {
       journal.close();
-      try { journal.assertHealthy(); } finally {
-        session?.clear();
-        await freshManager?.destroy();
+      try {
+        try {
+          journal.assertHealthy();
+        } catch (error) {
+          throw wrapOnlineInternalError('benchmark_journal_finalize_failed', error);
+        }
+      } finally {
+        try {
+          session?.clear();
+          await freshManager?.destroy();
+        } catch (error) {
+          throw wrapOnlineInternalError('session_fixture_cleanup_failed', error);
+        }
       }
     }
   }
 
-  const attempts = collapseJournalAttempts(journal.records);
-  if (result?.memoryBranchCompletion) {
-    attestor.registerMemoryCompletion(result.memoryBranchCompletion);
+  let attempts: CollapsedAttemptRecord[];
+  try {
+    attempts = collapseJournalAttempts(journal.records);
+  } catch (error) {
+    throw wrapOnlineInternalError('benchmark_journal_collapse_failed', error);
   }
-  const mainAttempts = attempts.filter(attempt => attestor.getRole(attempt.attempt_id) === 'main');
-  const memoryAttempts = attempts.filter(attempt => attestor.getRole(attempt.attempt_id) === 'memory_branch');
-  const mainQualityPassed = result?.taskOutcome === 'completed'
-    && normalizeOracle(result.text) === input.workload.oracle;
-  const completion = result?.memoryBranchCompletion;
-  const memoryQualityPassed = !input.memoryExpected
-    || evaluateBenchmarkMemoryCompletion(
-      completion,
-      input.memoryPublicationRequired,
-      input.expectedMemoryReadFingerprint,
-    );
-  const safetyPassed = toolStarts === 0
-    && confirmations === 0
-    && remoteDispatches === 0
-    && mainAttempts.length === 1
-    && (input.memoryExpected ? memoryAttempts.length >= 1 : memoryAttempts.length === 0)
-    && attempts.every(attempt => attempt.outcome === 'succeeded')
-    && (!input.memoryExpected || (
-      Boolean(completion)
-      && completion!.toolNames.every(toolName => (
-        MEMORY_BRANCH_ALLOWED_TOOLS as readonly string[]
-      ).includes(toolName))
-    ));
+  let mainAttempts: CollapsedAttemptRecord[];
+  let memoryAttempts: CollapsedAttemptRecord[];
+  let mainQualityPassed: boolean;
+  let memoryQualityPassed: boolean;
+  let safetyPassed: boolean;
+  try {
+    if (result?.memoryBranchCompletion) {
+      attestor.registerMemoryCompletion(result.memoryBranchCompletion);
+    }
+    mainAttempts = attempts.filter(attempt => attempt.request_kind === 'main_inference');
+    memoryAttempts = attempts.filter(attempt => attempt.request_kind === 'memory_branch_inference');
+    const subagentAttempts = attempts.filter(attempt => attempt.request_kind === 'subagent_inference');
+    mainQualityPassed = result?.taskOutcome === 'completed'
+      && normalizeOracle(result.text) === input.workload.oracle;
+    const completion = result?.memoryBranchCompletion;
+    memoryQualityPassed = !input.memoryExpected
+      || evaluateBenchmarkMemoryCompletion(
+        completion,
+        input.memoryPublicationRequired,
+        input.expectedMemoryReadFingerprint,
+      );
+    safetyPassed = toolStarts === 0
+      && confirmations === 0
+      && remoteDispatches === 0
+      && new Set(mainAttempts.map(attempt => attempt.call_id)).size === 1
+      && subagentAttempts.length === 0
+      && attempts.every(attempt => attestor.isRoleContextValid(attempt.attempt_id))
+      && (input.memoryExpected ? memoryAttempts.length >= 1 : memoryAttempts.length === 0)
+      && areTransparentRetryChainsSuccessful(attempts)
+      && (!input.memoryExpected || (
+        Boolean(completion)
+        && completion!.toolNames.every(toolName => (
+          MEMORY_BRANCH_ALLOWED_TOOLS as readonly string[]
+        ).includes(toolName))
+      ));
+  } catch (error) {
+    throw wrapOnlineInternalError('benchmark_attestation_finalize_failed', error);
+  }
   return {
     attempts,
     mainAttempts,
@@ -721,7 +806,7 @@ export function evaluateBenchmarkMemoryCompletion(
 function toBenchmarkAttempt(input: {
   manifest: CacheBenchmarkManifest;
   benchmarkCase: CacheBenchmarkCase;
-  physical: AttemptJournalRecord;
+  physical: CollapsedAttemptRecord;
   attestor: AttemptCapabilityAttestor;
   round: number;
   attemptNumber: number;
@@ -739,17 +824,77 @@ function toBenchmarkAttempt(input: {
   ) {
     throw new Error('physical_attempt_metadata_mismatch');
   }
+  if (
+    (input.attemptRole === 'main'
+      && record.request_kind !== 'main_inference'
+      && record.request_kind !== 'checkpoint_compaction')
+    || (input.attemptRole === 'memory_branch'
+      && record.request_kind !== 'memory_branch_inference'
+      && record.request_kind !== 'checkpoint_compaction')
+    || record.request_origin !== input.attestor.getRequestOrigin(record.attempt_id)
+  ) {
+    throw new Error('physical_attempt_request_kind_mismatch');
+  }
+  if (!record.session_fingerprint || !record.cache_strategy) {
+    throw new Error('physical_attempt_linkage_missing');
+  }
+  const bypassed = record.cache_strategy === 'openai-cache-bypassed'
+    || record.cache_strategy === 'anthropic-cache-bypassed';
+  if (
+    (record.request_kind === 'checkpoint_compaction' && (!bypassed || record.tools_count !== 0))
+    || (record.request_kind === 'checkpoint_compaction'
+      && record.tools_fingerprint !== fingerprintCanonical([]))
+    || (record.request_kind !== 'checkpoint_compaction' && bypassed)
+  ) {
+    throw new Error('physical_attempt_cache_contract_mismatch');
+  }
+  if (!input.attestor.isRoleContextValid(record.attempt_id)) {
+    throw new Error('physical_attempt_role_context_mismatch');
+  }
+  assertJournalUsageConsistent(record);
   return {
     schema: CACHE_BENCHMARK_ATTEMPT_SCHEMA,
     suite_id: input.manifest.suite_id,
     round: input.round,
     attempt_number: input.attemptNumber,
+    provider_attempt_number: record.attempt_number,
     attempt_role: input.attemptRole,
+    request_kind: record.request_kind,
+    request_origin: record.request_origin,
+    cache_strategy: record.cache_strategy,
+    tools_count: record.tools_count,
+    tools_fingerprint: record.tools_fingerprint,
+    session_fingerprint: record.session_fingerprint,
+    journal_started_sequence: record.journal_started_sequence,
+    journal_started_previous_record_fingerprint:
+      record.journal_started_previous_record_fingerprint,
+    journal_started_record_fingerprint: record.journal_started_record_fingerprint,
+    ...(record.journal_terminal_sequence === undefined ? {} : {
+      journal_terminal_sequence: record.journal_terminal_sequence,
+    }),
+    ...(record.journal_terminal_previous_record_fingerprint === undefined ? {} : {
+      journal_terminal_previous_record_fingerprint:
+        record.journal_terminal_previous_record_fingerprint,
+    }),
+    ...(record.journal_terminal_record_fingerprint === undefined ? {} : {
+      journal_terminal_record_fingerprint: record.journal_terminal_record_fingerprint,
+    }),
+    journal_lifecycle_fingerprint: record.journal_lifecycle_fingerprint,
     logical_call: input.logicalCall,
     case_id: input.benchmarkCase.case_id,
     run_id: RUN_ID,
     call_id: record.call_id,
     attempt_id: record.attempt_id,
+    ...(record.retry_number === undefined ? {} : { retry_number: record.retry_number }),
+    ...(record.retry_stop_reason === undefined ? {} : {
+      retry_stop_reason: record.retry_stop_reason as CacheBenchmarkAttempt['retry_stop_reason'],
+    }),
+    ...(record.retry_recovery_action === undefined ? {} : {
+      retry_recovery_action: record.retry_recovery_action,
+    }),
+    ...(record.dispatch_status === undefined ? {} : {
+      dispatch_status: record.dispatch_status,
+    }),
     metadata: {
       provider_instance_id: input.benchmarkCase.provider_instance_id,
       provider_adapter: input.benchmarkCase.provider_adapter,
@@ -778,14 +923,189 @@ function toBenchmarkAttempt(input: {
   };
 }
 
-function collapseJournalAttempts(records: readonly AttemptJournalRecord[]): AttemptJournalRecord[] {
-  const order: string[] = [];
-  const latest = new Map<string, AttemptJournalRecord>();
-  for (const record of records) {
-    if (!latest.has(record.attempt_id)) order.push(record.attempt_id);
-    latest.set(record.attempt_id, record);
+function assertJournalUsageConsistent(record: CollapsedAttemptRecord): void {
+  const raw = record.provider_usage;
+  if (!raw) {
+    if (
+      record.input_tokens !== undefined
+      || record.cache_read_tokens !== undefined
+      || record.cache_read_source !== undefined
+      || record.cache_write_tokens !== undefined
+    ) throw new Error('physical_attempt_usage_mismatch');
+    return;
   }
-  return order.map(attemptId => latest.get(attemptId)!);
+  let input: number | undefined;
+  let read: number | undefined;
+  let write: number | undefined;
+  let source: string | undefined;
+  switch (raw.contract) {
+    case 'openai-responses-v1':
+      input = raw.input_tokens;
+      read = raw.cached_tokens;
+      write = raw.cache_write_tokens;
+      if (read !== undefined) source = 'openai.input_tokens_details.cached_tokens';
+      break;
+    case 'openai-chat-v1':
+      input = raw.prompt_tokens;
+      read = raw.cached_tokens;
+      write = raw.cache_write_tokens;
+      if (read !== undefined) source = 'openai.prompt_tokens_details.cached_tokens';
+      break;
+    case 'deepseek-chat-v1':
+      input = raw.prompt_tokens;
+      read = raw.prompt_cache_hit_tokens;
+      if (read !== undefined) source = 'deepseek.prompt_cache_hit_tokens';
+      break;
+    case 'anthropic-messages-v1':
+      input = raw.input_tokens === undefined
+        || raw.cache_read_input_tokens === undefined
+        || raw.cache_creation_input_tokens === undefined
+        ? undefined
+        : raw.input_tokens + raw.cache_read_input_tokens + raw.cache_creation_input_tokens;
+      read = raw.cache_read_input_tokens;
+      write = raw.cache_creation_input_tokens;
+      if (read !== undefined) source = 'anthropic.cache_read_input_tokens';
+      break;
+  }
+  if (
+    record.input_tokens !== input
+    || record.cache_read_tokens !== read
+    || record.cache_read_source !== source
+    || record.cache_write_tokens !== write
+  ) throw new Error('physical_attempt_usage_mismatch');
+}
+
+export function collapseJournalAttempts(
+  records: readonly AttemptJournalRecord[],
+): CollapsedAttemptRecord[] {
+  const order: string[] = [];
+  const grouped = new Map<string, AttemptJournalRecord[]>();
+  for (const record of records) {
+    if (!grouped.has(record.attempt_id)) order.push(record.attempt_id);
+    grouped.set(record.attempt_id, [...(grouped.get(record.attempt_id) ?? []), record]);
+  }
+  return order.map(attemptId => {
+    const lifecycle = grouped.get(attemptId)!;
+    const started = lifecycle.filter(record => record.outcome === 'started');
+    const terminals = lifecycle.filter(record => record.outcome !== 'started');
+    if (started.length !== 1 || terminals.length > 1) {
+      throw new Error('physical_attempt_lifecycle_invalid');
+    }
+    const first = started[0];
+    const terminal = terminals[0];
+    if (terminal && terminal.sequence <= first.sequence) {
+      throw new Error('physical_attempt_lifecycle_invalid');
+    }
+    if (terminal && immutableAttemptFingerprint(first) !== immutableAttemptFingerprint(terminal)) {
+      throw new Error('physical_attempt_lifecycle_mismatch');
+    }
+    const latest = terminal ?? first;
+    return {
+      ...latest,
+      journal_started_sequence: first.sequence,
+      journal_started_previous_record_fingerprint: first.previous_record_fingerprint,
+      journal_started_record_fingerprint: first.record_fingerprint,
+      ...(terminal ? { journal_terminal_sequence: terminal.sequence } : {}),
+      ...(terminal ? {
+        journal_terminal_previous_record_fingerprint: terminal.previous_record_fingerprint,
+        journal_terminal_record_fingerprint: terminal.record_fingerprint,
+      } : {}),
+      journal_lifecycle_fingerprint: fingerprintCanonical({
+        started_record_fingerprint: first.record_fingerprint,
+        ...(terminal ? { terminal_record_fingerprint: terminal.record_fingerprint } : {}),
+      }),
+    };
+  });
+}
+
+export function areTransparentRetryChainsSuccessful(
+  attempts: readonly CollapsedAttemptRecord[],
+): boolean {
+  if (attempts.length === 0) return false;
+  const chains = new Map<string, CollapsedAttemptRecord[]>();
+  for (const attempt of attempts) {
+    chains.set(attempt.call_id, [...(chains.get(attempt.call_id) ?? []), attempt]);
+  }
+  for (const chain of chains.values()) {
+    if (chain.length > 2) return false;
+    chain.sort((left, right) => left.attempt_number - right.attempt_number);
+    const immutable = fingerprintRetryRequest(chain[0]);
+    for (let index = 0; index < chain.length; index += 1) {
+      const attempt = chain[index];
+      const final = index === chain.length - 1;
+      if (
+        attempt.attempt_number !== index + 1
+        || fingerprintRetryRequest(attempt) !== immutable
+      ) return false;
+      if (final) {
+        if (
+          attempt.outcome !== 'succeeded'
+          || attempt.retry_number !== undefined
+          || attempt.retry_stop_reason !== undefined
+          || attempt.retry_recovery_action !== undefined
+        ) return false;
+        continue;
+      }
+      if (
+        attempt.outcome !== 'retrying'
+        || attempt.retry_number !== attempt.attempt_number
+        || attempt.retry_stop_reason !== undefined
+        || attempt.retry_recovery_action !== undefined
+        || attempt.provider_usage !== undefined
+        || attempt.input_tokens !== undefined
+        || attempt.cache_read_tokens !== undefined
+        || attempt.cache_write_tokens !== undefined
+        || attempt.output_tokens !== undefined
+      ) return false;
+    }
+  }
+  return true;
+}
+
+function fingerprintRetryRequest(attempt: AttemptJournalRecord): string {
+  return fingerprintCanonical({
+    provider: attempt.provider,
+    model: attempt.model,
+    api_type: attempt.api_type,
+    stream: attempt.stream,
+    request_kind: attempt.request_kind,
+    request_origin: attempt.request_origin,
+    ...(attempt.cache_strategy === undefined ? {} : {
+      cache_strategy: attempt.cache_strategy,
+    }),
+    request_fingerprint: attempt.request_fingerprint,
+    stable_prefix_fingerprint: attempt.stable_prefix_fingerprint,
+    tools_fingerprint: attempt.tools_fingerprint,
+    tools_count: attempt.tools_count,
+    ...(attempt.session_fingerprint === undefined ? {} : {
+      session_fingerprint: attempt.session_fingerprint,
+    }),
+    ...(attempt.episode_fingerprint === undefined ? {} : {
+      episode_fingerprint: attempt.episode_fingerprint,
+    }),
+  });
+}
+
+function immutableAttemptFingerprint(record: AttemptJournalRecord): string {
+  return fingerprintCanonical({
+    schema: record.schema,
+    call_id: record.call_id,
+    attempt_id: record.attempt_id,
+    attempt_number: record.attempt_number,
+    provider: record.provider,
+    model: record.model,
+    api_type: record.api_type,
+    stream: record.stream,
+    request_kind: record.request_kind,
+    request_origin: record.request_origin,
+    ...(record.cache_strategy ? { cache_strategy: record.cache_strategy } : {}),
+    request_fingerprint: record.request_fingerprint,
+    stable_prefix_fingerprint: record.stable_prefix_fingerprint,
+    tools_fingerprint: record.tools_fingerprint,
+    tools_count: record.tools_count,
+    ...(record.session_fingerprint ? { session_fingerprint: record.session_fingerprint } : {}),
+    ...(record.episode_fingerprint ? { episode_fingerprint: record.episode_fingerprint } : {}),
+  });
 }
 
 function journalOutcome(record: AttemptJournalRecord): AttemptOutcome {
@@ -857,10 +1177,35 @@ function providerInstanceId(credential: OnlineProviderCredential): string {
   return `${credential.alias}:${credential.apiType}:endpoint-${endpointFingerprint}`;
 }
 
-function maxOutputTokensFor(provider: OnlineProviderAlias): number {
+export function maxOutputTokensFor(provider: OnlineProviderAlias): number {
   return provider === 'deepseek'
     ? DEEPSEEK_MAX_OUTPUT_TOKENS
     : DEFAULT_MAX_OUTPUT_TOKENS;
+}
+
+export async function withOnlineBenchmarkDeadline<T>(
+  operation: () => Promise<T>,
+  abort: () => void,
+  timeoutMs = ONLINE_BENCHMARK_LOGICAL_CALL_TIMEOUT_MS,
+): Promise<T> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error('benchmark_logical_call_timeout_invalid');
+  }
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    try { abort(); } catch { /* The timeout remains authoritative. */ }
+  }, timeoutMs);
+  try {
+    const result = await operation();
+    if (timedOut) throw new Error('benchmark_logical_call_timeout');
+    return result;
+  } catch (error) {
+    if (timedOut) throw new Error('benchmark_logical_call_timeout');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function buildBenchmarkAuthorizedDeviceContext(topicSuffix: string, revision: number) {
@@ -1132,6 +1477,12 @@ function memoryFixtureFor(workload: BenchmarkWorkload): string {
 function validateOptions(options: OnlineCacheBenchmarkOptions): void {
   if (!Number.isInteger(options.round) || options.round < 1) throw new Error('round_invalid');
   if (!Number.isInteger(options.warmCalls) || options.warmCalls < 1) throw new Error('warm_calls_invalid');
+  if (options.profile !== 'calibration' && options.profile !== 'acceptance') {
+    throw new Error('benchmark_profile_invalid');
+  }
+  if (options.profile === 'acceptance' && options.warmCalls < 24) {
+    throw new Error('acceptance_warm_calls_invalid');
+  }
   if (!/^sha256:[a-f0-9]{64}$/.test(options.expectedArtifactFingerprint)) {
     throw new Error('artifact_fingerprint_invalid');
   }
@@ -1152,16 +1503,28 @@ function normalizeOracle(value: string): string {
   return String(value || '').trim();
 }
 
+function wrapOnlineInternalError(code: string, cause: unknown): Error {
+  const wrapped = new Error(code);
+  Object.defineProperty(wrapped, 'cause', {
+    value: cause,
+    configurable: true,
+    enumerable: false,
+  });
+  return wrapped;
+}
+
 async function withBenchmarkEnvironment<T>(operation: () => Promise<T>): Promise<T> {
   const keys = [
     'CATSCO_MODEL_RETRY_MAX_RETRIES',
     'CATSCO_MODEL_RETRY_MAX_MS',
+    'CATSCO_MODEL_RETRY_MAX_DELAY_MS',
     'GAUZ_STREAM_RETRY',
     'CURRENT_AGENT_DISPLAY_NAME',
   ] as const;
   const previous = new Map(keys.map(key => [key, process.env[key]]));
-  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '0';
-  process.env.CATSCO_MODEL_RETRY_MAX_MS = '0';
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '1';
+  process.env.CATSCO_MODEL_RETRY_MAX_MS = '120000';
+  process.env.CATSCO_MODEL_RETRY_MAX_DELAY_MS = '5000';
   process.env.GAUZ_STREAM_RETRY = 'false';
   process.env.CURRENT_AGENT_DISPLAY_NAME = 'Cache Benchmark Agent';
   try {

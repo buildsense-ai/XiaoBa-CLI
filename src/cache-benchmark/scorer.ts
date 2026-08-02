@@ -20,6 +20,7 @@ import {
   CacheBenchmarkResult,
   CacheBenchmarkRoundEvidence,
   CacheBenchmarkRoundResult,
+  CacheBenchmarkRequestKind,
   CacheBenchmarkTrafficClass,
   CacheReadSource,
   CACHE_BENCHMARK_RESULT_SCHEMA,
@@ -48,11 +49,21 @@ interface CellAccumulator {
   coldRead: number;
   allInput: number;
   allRead: number;
+  requestKinds: Map<CacheBenchmarkRequestKind, RequestKindTotals>;
+}
+
+interface RequestKindTotals {
+  input: number;
+  read: number;
+  coldInput: number;
+  coldRead: number;
+  allInput: number;
+  allRead: number;
 }
 
 interface TaskCallOrder {
   cells: Set<CellAccumulator>;
-  firstMainIndex?: number;
+  firstMainInferenceIndex?: number;
   lastMemoryBranchIndex?: number;
 }
 
@@ -275,6 +286,10 @@ function scoreRound(
         coldRead: 0,
         allInput: 0,
         allRead: 0,
+        requestKinds: new Map((trafficClass === 'primary'
+          ? ['main_inference', 'checkpoint_compaction'] as const
+          : ['memory_branch_inference'] as const
+        ).map(kind => [kind, emptyRequestKindTotals()])),
       };
       cells.set(fingerprint, cell);
     }
@@ -282,8 +297,9 @@ function scoreRound(
   }
 
   const attemptIds = new Set<string>();
-  const callIds = new Set<string>();
   const attemptNumbers = new Set<number>();
+  const journalLinkageInvalidAttemptIds = validateJournalLinkage(round.attempts);
+  const retryChainInvalidAttemptIds = validateTransparentRetryChains(round.attempts);
   for (let attemptIndex = 0; attemptIndex < round.attempts.length; attemptIndex += 1) {
     const attempt = round.attempts[attemptIndex];
     const expected = expectedRuns.get(runKey(attempt.case_id, attempt.run_id));
@@ -294,11 +310,9 @@ function scoreRound(
     const cell = cellByCase.get(expected.caseEntry.case_id)!;
     if (
       attemptIds.has(attempt.attempt_id)
-      || callIds.has(attempt.call_id)
       || attemptNumbers.has(attempt.attempt_number)
     ) cell.reasons.add('duplicate_attempt');
     attemptIds.add(attempt.attempt_id);
-    callIds.add(attempt.call_id);
     attemptNumbers.add(attempt.attempt_number);
 
     if (
@@ -306,8 +320,20 @@ function scoreRound(
       || attempt.round !== round.header.round
       || attempt.attempt_number !== attemptIndex + 1
       || attempt.attempt_role !== expected.caseEntry.execution_role
+      || !requestKindMatchesRole(attempt, expected.caseEntry.execution_role)
       || !metadataMatches(attempt, expected.caseEntry)
+      || journalLinkageInvalidAttemptIds.has(attempt.attempt_id)
     ) cell.reasons.add('metadata_mismatch');
+    if (retryChainInvalidAttemptIds.has(attempt.attempt_id)) {
+      cell.reasons.add('retry_chain_invalid');
+    }
+    if (
+      attempt.outcome === 'retrying'
+      && attempt.attempt_role === 'main'
+      && attempt.dispatch_status !== 'not_dispatched'
+    ) {
+      cell.reasons.add('retry_not_provably_pre_dispatch');
+    }
     const normalizedUsage = normalizeProviderUsage(attempt.usage.provider_usage);
     if (normalizedUsage.source !== undefined
       && normalizedUsage.source !== expected.caseEntry.cache_read_source) {
@@ -324,24 +350,29 @@ function scoreRound(
     ].join('\0');
     const order = taskCallOrder.get(orderKey) ?? { cells: new Set<CellAccumulator>() };
     order.cells.add(cell);
-    if (attempt.attempt_role === 'memory_branch') order.lastMemoryBranchIndex = attemptIndex;
-    else if (order.firstMainIndex === undefined) order.firstMainIndex = attemptIndex;
+    if (attempt.request_kind === 'memory_branch_inference') order.lastMemoryBranchIndex = attemptIndex;
+    else if (
+      attempt.request_kind === 'main_inference'
+      && order.firstMainInferenceIndex === undefined
+    ) order.firstMainInferenceIndex = attemptIndex;
     taskCallOrder.set(orderKey, order);
     scoreAttempt(attempt, cell, expected.caseEntry);
-    const stablePrefix = attempt.attestation.stable_prefix_fingerprint;
-    const previousStablePrefix = stablePrefixByRun.get(key);
-    if (previousStablePrefix !== undefined && previousStablePrefix !== stablePrefix) {
-      cell.reasons.add('stable_prefix_drift');
-    } else {
-      stablePrefixByRun.set(key, stablePrefix);
+    if (attempt.request_kind === 'main_inference') {
+      const stablePrefix = attempt.attestation.stable_prefix_fingerprint;
+      const previousStablePrefix = stablePrefixByRun.get(key);
+      if (previousStablePrefix !== undefined && previousStablePrefix !== stablePrefix) {
+        cell.reasons.add('stable_prefix_drift');
+      } else {
+        stablePrefixByRun.set(key, stablePrefix);
+      }
     }
   }
 
   for (const order of taskCallOrder.values()) {
     if (
-      order.firstMainIndex !== undefined
+      order.firstMainInferenceIndex !== undefined
       && order.lastMemoryBranchIndex !== undefined
-      && order.lastMemoryBranchIndex > order.firstMainIndex
+      && order.lastMemoryBranchIndex > order.firstMainInferenceIndex
     ) {
       for (const cell of order.cells) cell.reasons.add('attempt_order_mismatch');
     }
@@ -384,8 +415,26 @@ function scoreRound(
       if (group.some(attempt => attempt.cache_class !== expectedClass)) {
         cell.reasons.add('metadata_mismatch');
       }
-      if (expected.caseEntry.execution_role === 'main' && group.length !== 1) {
-        cell.reasons.add('unexpected_attempt_count');
+      if (expected.caseEntry.execution_role === 'main') {
+        if (new Set(group
+          .filter(attempt => attempt.request_kind === 'main_inference')
+          .map(attempt => attempt.call_id)).size !== 1) {
+          cell.reasons.add('unexpected_attempt_count');
+        }
+        if (group.some(attempt => (
+          attempt.request_kind !== 'main_inference'
+          && attempt.request_kind !== 'checkpoint_compaction'
+        ))) cell.reasons.add('metadata_mismatch');
+      } else {
+        if (
+          new Set(group
+            .filter(attempt => attempt.request_kind === 'memory_branch_inference')
+            .map(attempt => attempt.call_id)).size < 1
+          || group.some(attempt => (
+            attempt.request_kind !== 'memory_branch_inference'
+            && attempt.request_kind !== 'checkpoint_compaction'
+          ))
+        ) cell.reasons.add('metadata_mismatch');
       }
     }
     if ([...attemptsByLogicalCall.keys()].some(logicalCall => (
@@ -420,29 +469,37 @@ function scoreAttempt(
   expectedCase: CacheBenchmarkCase,
 ): void {
   const succeeded = attempt.outcome === 'succeeded';
-  if (attempt.outcome === 'incomplete' || attempt.outcome === 'retrying') {
+  if (
+    (expectedCase.provider_adapter === 'openai' && !attempt.cache_strategy.startsWith('openai-'))
+    || (expectedCase.provider_adapter === 'anthropic' && !attempt.cache_strategy.startsWith('anthropic-'))
+  ) cell.reasons.add('metadata_mismatch');
+  if (attempt.outcome === 'incomplete') {
     cell.reasons.add('non_terminal_attempt');
-  } else if (!succeeded) {
+  } else if (!succeeded && attempt.outcome !== 'retrying') {
     cell.reasons.add('non_succeeded_attempt');
   }
   const attestation = attempt.attestation;
-  if (attestation.quality_status === 'failed') cell.reasons.add('quality_gate_failed');
-  if (attestation.quality_status === 'unobservable') cell.reasons.add('quality_gate_unobservable');
   if (attestation.safety_status === 'failed') cell.reasons.add('safety_gate_failed');
   if (attestation.safety_status === 'unobservable') cell.reasons.add('safety_gate_unobservable');
-  if (attestation.oracle_contract_fingerprint !== expectedCase.oracle_contract_fingerprint) {
-    cell.reasons.add('oracle_contract_mismatch');
+  if (attempt.request_kind !== 'checkpoint_compaction') {
+    if (attestation.quality_status === 'failed') cell.reasons.add('quality_gate_failed');
+    if (attestation.quality_status === 'unobservable') cell.reasons.add('quality_gate_unobservable');
+    if (attestation.oracle_contract_fingerprint !== expectedCase.oracle_contract_fingerprint) {
+      cell.reasons.add('oracle_contract_mismatch');
+    }
+    if (attestation.execution_plan_fingerprint !== expectedCase.execution_plan_fingerprint) {
+      cell.reasons.add('execution_plan_mismatch');
+    }
+    const observed = new Set(attestation.observed_capabilities);
+    if (expectedCase.capabilities.some(capability => !observed.has(capability))) {
+      cell.reasons.add('capability_attestation_incomplete');
+    }
   }
-  if (attestation.execution_plan_fingerprint !== expectedCase.execution_plan_fingerprint) {
-    cell.reasons.add('execution_plan_mismatch');
-  }
-  const observed = new Set(attestation.observed_capabilities);
-  if (expectedCase.capabilities.some(capability => !observed.has(capability))) {
-    cell.reasons.add('capability_attestation_incomplete');
-  }
+  if (attempt.outcome === 'retrying') return;
   const usage = normalizeProviderUsage(attempt.usage.provider_usage);
+  const auxiliaryMemory = attempt.request_origin === 'memory_branch';
   if (usage.input === undefined) {
-    cell.reasons.add('missing_input_usage');
+    if (!auxiliaryMemory) cell.reasons.add('missing_input_usage');
     return;
   }
   if (usage.input <= 0) {
@@ -451,7 +508,7 @@ function scoreAttempt(
   }
   const read = usage.read;
   if (read === undefined) {
-    cell.reasons.add('cache_read_not_reported');
+    if (!auxiliaryMemory) cell.reasons.add('cache_read_not_reported');
     return;
   }
   if (read < 0) {
@@ -464,13 +521,22 @@ function scoreAttempt(
   }
   cell.allInput += usage.input;
   cell.allRead += read;
+  const kindTotals = cell.requestKinds.get(attempt.request_kind)
+    ?? emptyRequestKindTotals();
+  kindTotals.allInput += usage.input;
+  kindTotals.allRead += read;
+  cell.requestKinds.set(attempt.request_kind, kindTotals);
   if (attempt.cache_class === 'cold') {
     cell.coldInput += usage.input;
     cell.coldRead += read;
+    kindTotals.coldInput += usage.input;
+    kindTotals.coldRead += read;
     return;
   }
   cell.input += usage.input;
   cell.read += read;
+  kindTotals.input += usage.input;
+  kindTotals.read += read;
   const task = cell.tasks.get(attempt.metadata.task_id) ?? { input: 0, read: 0 };
   task.input += usage.input;
   task.read += read;
@@ -570,7 +636,29 @@ function finalizeCell(cell: CellAccumulator, manifest: CacheBenchmarkManifest): 
     all_input_tokens: allInput,
     all_cache_read_tokens: allRead,
     all_read_ratio: allRatio,
+    request_kind_usage: [...cell.requestKinds.entries()]
+      .map(([requestKind, usage]) => ({
+        request_kind: requestKind,
+        input_tokens: usage.input,
+        cache_read_tokens: usage.read,
+        cold_input_tokens: usage.coldInput,
+        cold_cache_read_tokens: usage.coldRead,
+        all_input_tokens: usage.allInput,
+        all_cache_read_tokens: usage.allRead,
+      }))
+      .sort((left, right) => compareStrings(left.request_kind, right.request_kind)),
     reasons: uniqueSorted([...reasons]),
+  };
+}
+
+function emptyRequestKindTotals(): RequestKindTotals {
+  return {
+    input: 0,
+    read: 0,
+    coldInput: 0,
+    coldRead: 0,
+    allInput: 0,
+    allRead: 0,
   };
 }
 
@@ -680,6 +768,10 @@ function buildCapabilityCoverage(
       traffic_class: trafficClass,
     });
     const scope = scopes.get(scopeFingerprint)!;
+    if (
+      attempt.request_kind !== 'main_inference'
+      && attempt.request_kind !== 'memory_branch_inference'
+    ) continue;
     for (const capability of attempt.attestation.observed_capabilities) {
       scope.observed.add(capability);
     }
@@ -697,6 +789,147 @@ function buildCapabilityCoverage(
       };
     })
     .sort((left, right) => compareStrings(left.scope_fingerprint, right.scope_fingerprint));
+}
+
+function requestKindMatchesRole(
+  attempt: CacheBenchmarkAttempt,
+  role: CacheBenchmarkCase['execution_role'],
+): boolean {
+  return role === 'main'
+    ? attempt.request_origin === 'main'
+      && (attempt.request_kind === 'main_inference'
+        || attempt.request_kind === 'checkpoint_compaction')
+    : attempt.request_origin === 'memory_branch'
+      && (attempt.request_kind === 'memory_branch_inference'
+        || attempt.request_kind === 'checkpoint_compaction');
+}
+
+function validateJournalLinkage(
+  attempts: readonly CacheBenchmarkAttempt[],
+): Set<string> {
+  const invalidAttemptIds = new Set<string>();
+  const groups = new Map<string, CacheBenchmarkAttempt[]>();
+  for (const attempt of attempts) {
+    const key = [
+      attempt.metadata.task_id,
+      attempt.run_id,
+      attempt.logical_call,
+    ].join('\0');
+    groups.set(key, [...(groups.get(key) ?? []), attempt]);
+  }
+  for (const group of groups.values()) {
+    let valid = true;
+    let previousStartedSequence = 0;
+    const sessionsByOrigin = new Map<string, string>();
+    const lifecycleFingerprints = new Set<string>();
+    const records: Array<{ sequence: number; previous: string; fingerprint: string }> = [];
+    for (const attempt of group) {
+      if (attempt.journal_started_sequence <= previousStartedSequence) valid = false;
+      previousStartedSequence = attempt.journal_started_sequence;
+      const priorSession = sessionsByOrigin.get(attempt.request_origin);
+      if (priorSession !== undefined && priorSession !== attempt.session_fingerprint) valid = false;
+      sessionsByOrigin.set(attempt.request_origin, attempt.session_fingerprint);
+      if (lifecycleFingerprints.has(attempt.journal_lifecycle_fingerprint)) valid = false;
+      lifecycleFingerprints.add(attempt.journal_lifecycle_fingerprint);
+      records.push({
+        sequence: attempt.journal_started_sequence,
+        previous: attempt.journal_started_previous_record_fingerprint,
+        fingerprint: attempt.journal_started_record_fingerprint,
+      });
+      if (attempt.journal_terminal_sequence !== undefined) {
+        if (
+          attempt.journal_terminal_previous_record_fingerprint === undefined
+          || attempt.journal_terminal_record_fingerprint === undefined
+        ) {
+          valid = false;
+        } else {
+          records.push({
+            sequence: attempt.journal_terminal_sequence,
+            previous: attempt.journal_terminal_previous_record_fingerprint,
+            fingerprint: attempt.journal_terminal_record_fingerprint,
+          });
+        }
+      }
+    }
+    records.sort((left, right) => left.sequence - right.sequence);
+    const recordFingerprints = new Set<string>();
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index];
+      const expectedPrevious = index === 0
+        ? `sha256:${'0'.repeat(64)}`
+        : records[index - 1].fingerprint;
+      if (
+        record.sequence !== index + 1
+        || record.previous !== expectedPrevious
+        || recordFingerprints.has(record.fingerprint)
+      ) valid = false;
+      recordFingerprints.add(record.fingerprint);
+    }
+    if (!valid) {
+      for (const attempt of group) invalidAttemptIds.add(attempt.attempt_id);
+    }
+  }
+  return invalidAttemptIds;
+}
+
+function validateTransparentRetryChains(
+  attempts: readonly CacheBenchmarkAttempt[],
+): Set<string> {
+  const invalidAttemptIds = new Set<string>();
+  const chains = new Map<string, CacheBenchmarkAttempt[]>();
+  for (const attempt of attempts) {
+    chains.set(attempt.call_id, [...(chains.get(attempt.call_id) ?? []), attempt]);
+  }
+  for (const chain of chains.values()) {
+    let valid = chain.length >= 1 && chain.length <= 2;
+    const immutable = retryRequestFingerprint(chain[0]);
+    for (let index = 0; index < chain.length; index += 1) {
+      const attempt = chain[index];
+      const final = index === chain.length - 1;
+      if (
+        attempt.provider_attempt_number !== index + 1
+        || retryRequestFingerprint(attempt) !== immutable
+      ) valid = false;
+      if (final) {
+        if (
+          attempt.outcome !== 'succeeded'
+          || attempt.retry_number !== undefined
+          || attempt.retry_stop_reason !== undefined
+          || attempt.retry_recovery_action !== undefined
+        ) valid = false;
+      } else if (
+        attempt.outcome !== 'retrying'
+        || attempt.retry_number !== attempt.provider_attempt_number
+        || attempt.retry_stop_reason !== undefined
+        || attempt.retry_recovery_action !== undefined
+        || attempt.usage.provider_usage !== undefined
+      ) valid = false;
+    }
+    if (!valid) {
+      for (const attempt of chain) invalidAttemptIds.add(attempt.attempt_id);
+    }
+  }
+  return invalidAttemptIds;
+}
+
+function retryRequestFingerprint(attempt: CacheBenchmarkAttempt): string {
+  return fingerprintCanonical({
+    suite_id: attempt.suite_id,
+    round: attempt.round,
+    attempt_role: attempt.attempt_role,
+    request_kind: attempt.request_kind,
+    request_origin: attempt.request_origin,
+    cache_strategy: attempt.cache_strategy,
+    tools_count: attempt.tools_count,
+    tools_fingerprint: attempt.tools_fingerprint,
+    session_fingerprint: attempt.session_fingerprint,
+    logical_call: attempt.logical_call,
+    case_id: attempt.case_id,
+    run_id: attempt.run_id,
+    metadata: attempt.metadata,
+    cache_class: attempt.cache_class,
+    attestation: attempt.attestation,
+  });
 }
 
 function trafficClassForRole(role: CacheBenchmarkCase['execution_role']): CacheBenchmarkTrafficClass {
@@ -751,6 +984,8 @@ function isInvalidReason(reason: BenchmarkReason): boolean {
     'duplicate_attempt',
     'attempt_order_mismatch',
     'unexpected_attempt_count',
+    'retry_chain_invalid',
+    'retry_not_provably_pre_dispatch',
     'unknown_case_or_run',
     'metadata_mismatch',
     'missing_required_run',

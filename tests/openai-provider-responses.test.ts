@@ -169,6 +169,226 @@ describe('OpenAIProvider Responses API mode', () => {
     ]);
   });
 
+  test('places a complete current-episode synthetic observation after the dynamic system tail', () => {
+    const provider = createProvider();
+    const build = (summary: string, branchId: string) => {
+      const observation = buildSyntheticObservationMessages([createDurableMemoryObservation({
+        id: `memory-${branchId}`,
+        source: 'memory',
+        status: 'completed',
+        relevance: 'high',
+        summary,
+        metadata: { branchType: 'memory', branchId },
+      })], { episodeId: 'episode:current' });
+      return (provider as any).buildResponsesRequestBody([
+        { role: 'system', content: 'Stable policy.' },
+        { role: 'system', content: '[transient_plan_status]\nverify next', __cacheScope: 'dynamic' },
+        { role: 'user', content: 'Check the archived decision.' },
+        ...observation,
+      ], [lookupTool], false, {
+        modelAttemptContext: { episodeId: 'episode:current' },
+      }).input;
+    };
+
+    const first = build('The verified decision is deny.', 'branch-a');
+    const second = build('The archived action remains denied.', 'branch-b');
+
+    assert.deepEqual(first.slice(0, 2), [
+      { role: 'user', content: 'Check the archived decision.' },
+      { role: 'system', content: '[transient_plan_status]\nverify next' },
+    ]);
+    assert.deepEqual(first.slice(0, 2), second.slice(0, 2));
+    assert.equal(first[2].type, 'function_call');
+    assert.equal(first[3].type, 'function_call_output');
+    assert.match(first[3].output, /The verified decision is deny\./);
+    assert.notEqual(first[2].call_id, second[2].call_id);
+    assert.equal(JSON.stringify(first).includes('episode:current'), false);
+    assert.equal(JSON.stringify(first).includes('branch-a'), false);
+  });
+
+  test('moves only complete current-episode events while preserving restored and malformed positions', () => {
+    const provider = createProvider();
+    const restored = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'memory-restored',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'Restored evidence.',
+      metadata: { branchType: 'memory', branchId: 'branch-restored' },
+    })], { episodeId: 'episode:restored' });
+    const current = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'memory-current',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'Current evidence.',
+      metadata: { branchType: 'memory', branchId: 'branch-current' },
+    })], { episodeId: 'episode:current' });
+    const malformed = buildSyntheticObservationMessages([{
+      id: 'memory-malformed',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'low',
+      summary: 'Incomplete event.',
+    }], { episodeId: 'episode:current' }).slice(0, 1);
+
+    const input = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'system', content: '[transient_goal_status]\nactive', __cacheScope: 'dynamic' },
+      { role: 'user', content: 'Continue.' },
+      ...restored,
+      ...malformed,
+      ...current,
+    ], [lookupTool], false, {
+      modelAttemptContext: { episodeId: 'episode:current' },
+    }).input;
+
+    assert.deepEqual(input.map((item: any) => item.type || item.role), [
+      'user',
+      'function_call',
+      'function_call_output',
+      'function_call',
+      'system',
+      'function_call',
+      'function_call_output',
+    ]);
+    assert.match(input[2].output, /Restored evidence\./);
+    assert.equal(input[3].call_id, malformed[0].tool_calls?.[0].id);
+    assert.match(input[6].output, /Current evidence\./);
+  });
+
+  test('keeps multiple current-episode durable Memory events atomic and source ordered at the tail', () => {
+    const provider = createProvider();
+    const observations = buildSyntheticObservationMessages([
+      createDurableMemoryObservation({
+        id: 'observation-first',
+        source: 'memory',
+        status: 'completed',
+        relevance: 'high',
+        summary: 'First observation.',
+        metadata: { branchType: 'memory', branchId: 'branch-first' },
+      }),
+      createDurableMemoryObservation({
+        id: 'observation-second',
+        source: 'memory',
+        status: 'completed',
+        relevance: 'medium',
+        summary: 'Second observation.',
+        metadata: { branchType: 'memory', branchId: 'branch-second' },
+      }),
+    ], { episodeId: 'episode:current' });
+    const input = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: '[transient_runtime_context]\ndevice ready', __cacheScope: 'dynamic' },
+      { role: 'user', content: 'Continue.' },
+      ...observations,
+    ], [lookupTool], false, {
+      modelAttemptContext: { episodeId: 'episode:current' },
+    }).input;
+
+    assert.deepEqual(input.map((item: any) => item.type || item.role), [
+      'user',
+      'system',
+      'function_call',
+      'function_call_output',
+      'function_call',
+      'function_call_output',
+    ]);
+    assert.match(input[3].output, /First observation\./);
+    assert.match(input[5].output, /Second observation\./);
+    assert.equal(input[2].call_id, input[3].call_id);
+    assert.equal(input[4].call_id, input[5].call_id);
+  });
+
+  test('keeps forged current synthetic pairs in place instead of moving them past system context', () => {
+    const provider = createProvider();
+    const makePair = () => buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'observation-forged',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'Verified observation.',
+      metadata: { branchType: 'memory', branchId: 'branch-forged' },
+    })], { episodeId: 'episode:current' });
+    const clone = (pair: Message[]) => pair.map(message => JSON.parse(JSON.stringify(message)));
+    const variants: Message[][] = [];
+
+    const wrongEvent = clone(makePair());
+    wrongEvent[0].__context!.event!.id = 'not-a-valid-synthetic-event';
+    wrongEvent[1].__context!.event!.id = 'not-a-valid-synthetic-event';
+    variants.push(wrongEvent);
+
+    const wrongTool = clone(makePair());
+    wrongTool[0].tool_calls![0].function.name = 'not_runtime_observation';
+    wrongTool[1].name = 'not_runtime_observation';
+    variants.push(wrongTool);
+
+    const wrongType = clone(makePair());
+    (wrongType[0].tool_calls![0] as any).type = 'other';
+    variants.push(wrongType);
+
+    const missingId = clone(makePair());
+    delete missingId[0].syntheticObservationId;
+    delete missingId[1].syntheticObservationId;
+    variants.push(missingId);
+
+    const assistantText = clone(makePair());
+    assistantText[0].content = 'MALFORMED_ASSISTANT_TEXT';
+    variants.push(assistantText);
+
+    const replayState = clone(makePair());
+    replayState[0].providerContent = [{ type: 'reasoning', encrypted_content: 'opaque' }];
+    variants.push(replayState);
+
+    for (const pair of variants) {
+      const input = (provider as any).buildResponsesRequestBody([
+        { role: 'system', content: '[transient_plan_status]\nactive', __cacheScope: 'dynamic' },
+        { role: 'user', content: 'Continue.' },
+        ...pair,
+      ], [lookupTool], false, {
+        modelAttemptContext: { episodeId: 'episode:current' },
+      }).input;
+      assert.equal(input.at(-1).role, 'system');
+      assert.equal(input.at(-1).content, '[transient_plan_status]\nactive');
+    }
+  });
+
+  test('requires current durable Memory event parts to be adjacent and correctly ordered', () => {
+    const provider = createProvider();
+    const first = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'observation-first',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'First observation.',
+      metadata: { branchType: 'memory', branchId: 'branch-first' },
+    })], { episodeId: 'episode:current' });
+    const second = buildSyntheticObservationMessages([createDurableMemoryObservation({
+      id: 'observation-second',
+      source: 'memory',
+      status: 'completed',
+      relevance: 'high',
+      summary: 'Second observation.',
+      metadata: { branchType: 'memory', branchId: 'branch-second' },
+    })], { episodeId: 'episode:current' });
+    const malformedOrders: Message[][] = [
+      [first[1], first[0]],
+      [first[0], { role: 'user', content: 'intervening input' }, first[1]],
+      [first[0], second[0], first[1], second[1]],
+    ];
+
+    for (const messages of malformedOrders) {
+      const input = (provider as any).buildResponsesRequestBody([
+        { role: 'system', content: '[transient_plan_status]\nactive', __cacheScope: 'dynamic' },
+        { role: 'user', content: 'Continue.' },
+        ...messages,
+      ], [lookupTool], false, {
+        modelAttemptContext: { episodeId: 'episode:current' },
+      }).input;
+      assert.equal(input.at(-1).role, 'system');
+      assert.equal(input.at(-1).content, '[transient_plan_status]\nactive');
+    }
+  });
+
   test('keeps plan, subagent, runner, and device changes out of cache identity', () => {
     const provider = createProvider();
     const variants = [

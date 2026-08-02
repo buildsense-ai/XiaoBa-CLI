@@ -91,6 +91,9 @@ export abstract class BranchSession {
       stream: false,
       enableCompression: true,
       cachePartitionKey: this.options.cachePartitionKey,
+      requestKind: this.options.type === 'memory'
+        ? 'memory_branch_inference'
+        : 'subagent_inference',
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
         sessionId: `branch:${this.options.type}:${this.options.id}`,

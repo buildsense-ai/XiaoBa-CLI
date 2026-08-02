@@ -15,6 +15,8 @@ import {
   CacheBenchmarkInputError,
   CacheBenchmarkManifest,
   CacheBenchmarkProfile,
+  CacheBenchmarkRequestKind,
+  CacheBenchmarkRequestOrigin,
   CacheBenchmarkRoundEvidence,
   CacheBenchmarkRoundHeader,
   CacheBenchmarkRun,
@@ -23,6 +25,7 @@ import {
   CacheReadSource,
   AttemptOutcome,
 } from './types';
+import { fingerprintCanonical } from './canonical';
 
 const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SAFE_MODEL_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$/;
@@ -133,7 +136,18 @@ export function parseAttempt(value: unknown): CacheBenchmarkAttempt {
     'suite_id',
     'round',
     'attempt_number',
+    'provider_attempt_number',
     'attempt_role',
+    'request_kind',
+    'request_origin',
+    'cache_strategy',
+    'tools_count',
+    'tools_fingerprint',
+    'session_fingerprint',
+    'journal_started_sequence',
+    'journal_started_previous_record_fingerprint',
+    'journal_started_record_fingerprint',
+    'journal_lifecycle_fingerprint',
     'logical_call',
     'case_id',
     'run_id',
@@ -144,25 +158,152 @@ export function parseAttempt(value: unknown): CacheBenchmarkAttempt {
     'outcome',
     'usage',
     'attestation',
+  ], [
+    'journal_terminal_sequence',
+    'journal_terminal_previous_record_fingerprint',
+    'journal_terminal_record_fingerprint',
+    'retry_number',
+    'retry_stop_reason',
+    'retry_recovery_action',
+    'dispatch_status',
   ]);
   if (record.schema !== CACHE_BENCHMARK_ATTEMPT_SCHEMA) invalid();
+  const attemptRole = enumeration(record.attempt_role, ['main', 'memory_branch'] as const);
+  const requestKind = parseRequestKind(record.request_kind);
+  const requestOrigin = parseRequestOrigin(record.request_origin);
+  const cacheStrategy = enumeration(record.cache_strategy, [
+    'anthropic-cache-bypassed',
+    'anthropic-compatible-no-markers',
+    'anthropic-explicit-stable-prefix',
+    'openai-cache-bypassed',
+    'openai-compatible-automatic-prefix',
+    'openai-prompt-cache-key',
+    'openai-explicit-stable-prefix',
+  ] as const);
+  const toolsCount = nonNegativeInteger(record.tools_count);
+  const startedSequence = positiveInteger(record.journal_started_sequence);
+  const terminalSequence = record.journal_terminal_sequence === undefined
+    ? undefined
+    : positiveInteger(record.journal_terminal_sequence);
+  const startedPreviousRecordFingerprint = fingerprint(
+    record.journal_started_previous_record_fingerprint,
+  );
+  const startedRecordFingerprint = fingerprint(record.journal_started_record_fingerprint);
+  const terminalPreviousRecordFingerprint = record.journal_terminal_previous_record_fingerprint === undefined
+    ? undefined
+    : fingerprint(record.journal_terminal_previous_record_fingerprint);
+  const terminalRecordFingerprint = record.journal_terminal_record_fingerprint === undefined
+    ? undefined
+    : fingerprint(record.journal_terminal_record_fingerprint);
+  const outcome = enumeration(
+    record.outcome,
+    ['succeeded', 'failed', 'cancelled', 'incomplete', 'retrying'] as const,
+  );
+  const retryNumber = record.retry_number === undefined
+    ? undefined
+    : nonNegativeInteger(record.retry_number);
+  const retryStopReason = record.retry_stop_reason === undefined
+    ? undefined
+    : enumeration(record.retry_stop_reason, [
+      'non_retryable',
+      'retry_limit_exhausted',
+      'retry_window_exhausted',
+      'stream_output_started',
+      'aborted',
+    ] as const);
+  const dispatchStatus = record.dispatch_status === undefined
+    ? undefined
+    : enumeration(record.dispatch_status, ['not_dispatched'] as const);
+  const retryRecoveryAction = record.retry_recovery_action === undefined
+    ? undefined
+    : enumeration(record.retry_recovery_action, [
+      'reasoning_replay_include',
+      'reasoning_replay_omit',
+      'reasoning_history_degrade',
+    ] as const);
+  const bypassed = cacheStrategy === 'openai-cache-bypassed'
+    || cacheStrategy === 'anthropic-cache-bypassed';
+  if (
+    requestKind === 'subagent_inference'
+    || requestOrigin === 'subagent'
+    || (attemptRole === 'main' && requestOrigin !== 'main')
+    || (attemptRole === 'memory_branch' && requestOrigin !== 'memory_branch')
+    || (requestKind === 'main_inference' && requestOrigin !== 'main')
+    || (requestKind === 'memory_branch_inference' && requestOrigin !== 'memory_branch')
+    || (requestKind === 'checkpoint_compaction' && (!bypassed || toolsCount !== 0))
+    || (requestKind === 'checkpoint_compaction'
+      && record.tools_fingerprint !== fingerprintCanonical([]))
+    || (requestKind !== 'checkpoint_compaction' && bypassed)
+    || (terminalSequence !== undefined && terminalSequence <= startedSequence)
+    || (outcome === 'incomplete') !== (terminalSequence === undefined)
+    || (outcome === 'retrying' && (retryNumber === undefined || retryNumber < 1))
+    || (outcome === 'retrying' && retryStopReason !== undefined)
+    || (dispatchStatus !== undefined && outcome !== 'retrying')
+    || (retryRecoveryAction !== undefined && outcome !== 'retrying')
+    || (outcome === 'succeeded' && (retryNumber !== undefined || retryStopReason !== undefined))
+    || (terminalSequence === undefined) !== (terminalPreviousRecordFingerprint === undefined)
+    || (terminalSequence === undefined) !== (terminalRecordFingerprint === undefined)
+    || record.journal_lifecycle_fingerprint !== fingerprintCanonical({
+      started_record_fingerprint: startedRecordFingerprint,
+      ...(terminalRecordFingerprint === undefined ? {} : {
+        terminal_record_fingerprint: terminalRecordFingerprint,
+      }),
+    })
+  ) invalid();
   return {
     schema: CACHE_BENCHMARK_ATTEMPT_SCHEMA,
     suite_id: identifier(record.suite_id),
     round: positiveInteger(record.round),
     attempt_number: positiveInteger(record.attempt_number),
-    attempt_role: enumeration(record.attempt_role, ['main', 'memory_branch'] as const),
+    provider_attempt_number: positiveInteger(record.provider_attempt_number),
+    attempt_role: attemptRole,
+    request_kind: requestKind,
+    request_origin: requestOrigin,
+    cache_strategy: cacheStrategy,
+    tools_count: toolsCount,
+    tools_fingerprint: fingerprint(record.tools_fingerprint),
+    session_fingerprint: fingerprint(record.session_fingerprint),
+    journal_started_sequence: startedSequence,
+    journal_started_previous_record_fingerprint: startedPreviousRecordFingerprint,
+    journal_started_record_fingerprint: startedRecordFingerprint,
+    ...(terminalSequence === undefined ? {} : { journal_terminal_sequence: terminalSequence }),
+    ...(terminalPreviousRecordFingerprint === undefined ? {} : {
+      journal_terminal_previous_record_fingerprint: terminalPreviousRecordFingerprint,
+    }),
+    ...(terminalRecordFingerprint === undefined ? {} : {
+      journal_terminal_record_fingerprint: terminalRecordFingerprint,
+    }),
+    journal_lifecycle_fingerprint: fingerprint(record.journal_lifecycle_fingerprint),
     logical_call: positiveInteger(record.logical_call),
     case_id: identifier(record.case_id),
     run_id: identifier(record.run_id),
     call_id: identifier(record.call_id),
     attempt_id: identifier(record.attempt_id),
+    ...(retryNumber === undefined ? {} : { retry_number: retryNumber }),
+    ...(retryStopReason === undefined ? {} : { retry_stop_reason: retryStopReason }),
+    ...(retryRecoveryAction === undefined ? {} : {
+      retry_recovery_action: retryRecoveryAction,
+    }),
+    ...(dispatchStatus === undefined ? {} : { dispatch_status: dispatchStatus }),
     metadata: parseMetadata(record.metadata),
     cache_class: enumeration(record.cache_class, ['cold', 'warm'] as const),
-    outcome: enumeration(record.outcome, ['succeeded', 'failed', 'cancelled', 'incomplete', 'retrying'] as const),
+    outcome,
     usage: parseUsage(record.usage),
     attestation: parseAttestation(record.attestation),
   };
+}
+
+function parseRequestKind(value: unknown): CacheBenchmarkRequestKind {
+  return enumeration(value, [
+    'main_inference',
+    'checkpoint_compaction',
+    'memory_branch_inference',
+    'subagent_inference',
+  ] as const);
+}
+
+function parseRequestOrigin(value: unknown): CacheBenchmarkRequestOrigin {
+  return enumeration(value, ['main', 'memory_branch', 'subagent'] as const);
 }
 
 function parseCriteria(value: unknown): CacheBenchmarkCriteria {
@@ -172,6 +313,7 @@ function parseCriteria(value: unknown): CacheBenchmarkCriteria {
     'maximum_task_weight',
     'include_cold_in_primary_ratio',
     'qualification_traffic_class',
+    'primary_accounting_request_kinds',
   ]);
   if (
     record.minimum_read_ratio !== 0.94
@@ -179,6 +321,10 @@ function parseCriteria(value: unknown): CacheBenchmarkCriteria {
     || record.maximum_task_weight !== 0.25
     || record.include_cold_in_primary_ratio !== false
     || record.qualification_traffic_class !== 'primary'
+    || !Array.isArray(record.primary_accounting_request_kinds)
+    || record.primary_accounting_request_kinds.length !== 2
+    || record.primary_accounting_request_kinds[0] !== 'main_inference'
+    || record.primary_accounting_request_kinds[1] !== 'checkpoint_compaction'
   ) invalid();
   return {
     minimum_read_ratio: 0.94,
@@ -186,6 +332,7 @@ function parseCriteria(value: unknown): CacheBenchmarkCriteria {
     maximum_task_weight: 0.25,
     include_cold_in_primary_ratio: false,
     qualification_traffic_class: 'primary',
+    primary_accounting_request_kinds: ['main_inference', 'checkpoint_compaction'],
   };
 }
 

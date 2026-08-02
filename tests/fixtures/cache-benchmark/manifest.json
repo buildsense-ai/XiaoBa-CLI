@@ -1,12 +1,13 @@
 {
-  "schema": "xiaoba.cache_benchmark_manifest.v6",
+  "schema": "xiaoba.cache_benchmark_manifest.v7",
   "suite_id": "cache-truth-v1",
   "criteria": {
     "minimum_read_ratio": 0.94,
     "consecutive_rounds": 3,
     "maximum_task_weight": 0.25,
     "include_cold_in_primary_ratio": false,
-    "qualification_traffic_class": "primary"
+    "qualification_traffic_class": "primary",
+    "primary_accounting_request_kinds": ["main_inference", "checkpoint_compaction"]
   },
   "cases": [
     {

@@ -18,6 +18,7 @@ import {
   resolveOpenAICachePlan,
 } from './openai-cache-policy';
 import { resolveContextCacheScope } from '../core/context-lifecycle';
+import { isValidDurableSyntheticObservationEvent } from '../core/context-event-watermarks';
 
 function hasOwnField(value: unknown, key: string): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, key));
@@ -461,7 +462,10 @@ export class OpenAIProvider implements AIProvider {
       cacheMode: options?.cacheMode,
       compatiblePromptCaching: this.compatiblePromptCaching,
     });
-    const input = this.buildResponsesInput(messages);
+    const input = this.buildResponsesInput(
+      messages,
+      options?.modelAttemptContext?.episodeId,
+    );
     if (cachePlan.explicitBreakpoints > 0 && instructions) {
       input.unshift({
         role: 'system',
@@ -500,19 +504,27 @@ export class OpenAIProvider implements AIProvider {
     }
   }
 
-  private buildResponsesInput(messages: Message[]): any[] {
+  private buildResponsesInput(messages: Message[], currentEpisodeId?: string): any[] {
     const input: any[] = [];
+    const currentObservationInput: any[] = [];
     const dynamicSystemMessages: Message[] = [];
+    const currentObservationTail = this.collectCurrentSyntheticObservationTail(
+      messages,
+      currentEpisodeId,
+    );
 
     for (const message of messages) {
       if (message.role === 'system') {
         if (this.isDynamicCacheMessage(message)) dynamicSystemMessages.push(message);
         continue;
       }
+      const target = currentObservationTail.has(message)
+        ? currentObservationInput
+        : input;
 
       if (message.role === 'tool') {
         if (!message.tool_call_id) continue;
-        input.push({
+        target.push({
           type: 'function_call_output',
           call_id: message.tool_call_id,
           output: this.responsesFunctionOutput(message.content),
@@ -527,14 +539,14 @@ export class OpenAIProvider implements AIProvider {
           .filter(item => this.isResponsesReplayItem(item))
           .map(item => JSON.parse(JSON.stringify(item)));
         if (replayItems.length > 0) {
-          input.push(...replayItems);
+          target.push(...replayItems);
           continue;
         }
 
         const text = this.contentAsText(message.content);
-        if (text) input.push({ role: 'assistant', content: text });
+        if (text) target.push({ role: 'assistant', content: text });
         for (const toolCall of message.tool_calls) {
-          input.push({
+          target.push({
             type: 'function_call',
             call_id: toolCall.id,
             name: toolCall.function.name,
@@ -544,7 +556,7 @@ export class OpenAIProvider implements AIProvider {
         continue;
       }
 
-      input.push({
+      target.push({
         role: message.role,
         content: this.responsesMessageContent(message.content),
       });
@@ -556,8 +568,57 @@ export class OpenAIProvider implements AIProvider {
         content: this.responsesMessageContent(message.content),
       });
     }
+    input.push(...currentObservationInput);
 
     return input;
+  }
+
+  /**
+   * Current-episode durable Memory observations are already transcript events,
+   * but a Responses request serializes dynamic system context at the input
+   * tail. Keep each fully attested, adjacent assistant/tool event atomic and
+   * place it after that system tail so a variable observation cannot hide
+   * otherwise reusable runtime context behind the provider's first differing
+   * cache block.
+   *
+   * Restored observations and malformed/incomplete events deliberately remain
+   * in their original transcript position.
+   */
+  private collectCurrentSyntheticObservationTail(
+    messages: readonly Message[],
+    currentEpisodeId?: string,
+  ): Set<Message> {
+    const selected = new Set<Message>();
+    if (!currentEpisodeId) return selected;
+    const events = new Map<string, Array<{ index: number; message: Message }>>();
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      const event = message.__context?.event;
+      if (
+        !message.__syntheticObservation
+        || message.__episodeId !== currentEpisodeId
+        || message.__context?.source !== 'synthetic_observation'
+        || event?.parts !== 2
+        || (event.part !== 0 && event.part !== 1)
+      ) continue;
+      events.set(event.id, [...(events.get(event.id) ?? []), { index, message }]);
+    }
+    for (const entries of events.values()) {
+      if (entries.length !== 2) continue;
+      const [assistantEntry, toolEntry] = entries;
+      if (
+        assistantEntry.index + 1 !== toolEntry.index
+        || assistantEntry.message.__context?.event?.part !== 0
+        || toolEntry.message.__context?.event?.part !== 1
+        || !isValidDurableSyntheticObservationEvent([
+          assistantEntry.message,
+          toolEntry.message,
+        ])
+      ) continue;
+      selected.add(assistantEntry.message);
+      selected.add(toolEntry.message);
+    }
+    return selected;
   }
 
   private isDynamicCacheMessage(message: Message): boolean {

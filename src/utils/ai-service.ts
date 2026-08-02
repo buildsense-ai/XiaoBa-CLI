@@ -80,6 +80,7 @@ interface ModelAttemptRun {
   callId: string;
   sink?: ModelAttemptSink;
   requestKind: ModelAttemptEvent['requestKind'];
+  requestOrigin: ModelAttemptEvent['requestOrigin'];
   context?: AIRequestOptions['modelAttemptContext'];
   messages: readonly Message[];
   tools: readonly ToolDefinition[];
@@ -647,6 +648,22 @@ export class AIService {
     options: AIRequestOptions,
     preflight?: ProviderRequestPreflightSummary,
   ): ModelAttemptRun | undefined {
+    const requestKind = options.requestKind || 'main_inference';
+    if (requestKind === 'checkpoint_compaction' && options.requestOrigin === undefined) {
+      throw new Error('model_request_origin_missing');
+    }
+    const requestOrigin = options.requestOrigin ?? (
+      requestKind === 'memory_branch_inference'
+        ? 'memory_branch'
+        : requestKind === 'subagent_inference'
+          ? 'subagent'
+          : 'main'
+    );
+    if (
+      (requestKind === 'main_inference' && requestOrigin !== 'main')
+      || (requestKind === 'memory_branch_inference' && requestOrigin !== 'memory_branch')
+      || (requestKind === 'subagent_inference' && requestOrigin !== 'subagent')
+    ) throw new Error('model_request_origin_mismatch');
     const sink = resolveModelAttemptSink(options.modelAttemptSink);
     if (!sink) return undefined;
     modelAttemptCallSequence = (modelAttemptCallSequence + 1) % Number.MAX_SAFE_INTEGER;
@@ -679,7 +696,8 @@ export class AIService {
     return {
       callId: `${Date.now().toString(36)}-${process.pid.toString(36)}-${modelAttemptCallSequence.toString(36)}`,
       sink,
-      requestKind: options.requestKind || 'main_inference',
+      requestKind,
+      requestOrigin,
       context: options.modelAttemptContext ? { ...options.modelAttemptContext } : undefined,
       messages,
       tools: tools || [],
@@ -698,7 +716,7 @@ export class AIService {
   ): void {
     if (!run?.sink) return;
     const event: ModelAttemptEvent = {
-      schema: 'xiaoba.model_attempt.v1',
+      schema: 'xiaoba.model_attempt.v2',
       callId: run.callId,
       attemptId: `${run.callId}:${attemptNumber}`,
       attemptNumber,
@@ -713,6 +731,7 @@ export class AIService {
           : 'openai-chat-completions',
       stream: run.stream,
       requestKind: run.requestKind,
+      requestOrigin: run.requestOrigin,
       ...(run.context ? { context: run.context } : {}),
       request: {
         messages: run.messages,
