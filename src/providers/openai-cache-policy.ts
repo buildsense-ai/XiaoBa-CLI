@@ -2,6 +2,10 @@ import { createHash } from 'crypto';
 import { estimateMessagesTokens, estimateToolsTokens } from '../core/token-estimator';
 import type { Message } from '../types';
 import type { ToolDefinition } from '../types/tool';
+import {
+  canonicalizeProviderCacheValue,
+  type ProviderCachePlanSummary,
+} from './provider-cache-policy';
 
 export type OpenAICacheApiType = 'openai-chat-completions' | 'openai-responses';
 export type OpenAICacheStrategy =
@@ -9,12 +13,8 @@ export type OpenAICacheStrategy =
   | 'openai-prompt-cache-key'
   | 'openai-explicit-stable-prefix';
 
-export interface OpenAICachePlanSummary {
+export interface OpenAICachePlanSummary extends ProviderCachePlanSummary {
   strategy: OpenAICacheStrategy;
-  stablePrefixEstimatedTokens: number;
-  stableSystemMessages: number;
-  explicitBreakpoints: number;
-  promptCacheKeyFingerprint?: string;
 }
 
 export interface OpenAICachePlan extends OpenAICachePlanSummary {
@@ -117,16 +117,7 @@ export function supportsOpenAIExplicitPromptCaching(model: string): boolean {
 }
 
 export function canonicalizeOpenAICacheValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(item => canonicalizeOpenAICacheValue(item));
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.keys(value as Record<string, unknown>)
-      .sort()
-      .map(key => [
-        key,
-        canonicalizeOpenAICacheValue((value as Record<string, unknown>)[key]),
-      ]),
-  );
+  return canonicalizeProviderCacheValue(value);
 }
 
 interface StableSystemMessages {

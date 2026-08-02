@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AnthropicProvider } from '../src/providers/anthropic-provider';
 import { Message } from '../src/types';
+import type { ToolDefinition } from '../src/types/tool';
 
 function createProvider(apiUrl = 'https://api.anthropic.com/v1/messages'): AnthropicProvider {
   return new AnthropicProvider({
@@ -169,6 +170,39 @@ describe('AnthropicProvider prompt caching', () => {
     });
   });
 
+  test('canonicalizes tools and places a separate breakpoint on the stable tool prefix', async () => {
+    const provider = createProvider();
+    let nativeParams: any;
+    (provider as any).client.beta.promptCaching.messages.create = async (params: any) => {
+      nativeParams = params;
+      return {
+        content: [{ type: 'text', text: 'ok' }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+    const tools: ToolDefinition[] = [
+      {
+        name: 'zeta',
+        description: 'z',
+        parameters: { properties: { b: { type: 'string' }, a: { type: 'number' } }, type: 'object' },
+      },
+      {
+        name: 'alpha',
+        description: 'a',
+        parameters: { type: 'object', properties: {} },
+      },
+    ];
+
+    await provider.chat(nativeMessages('[transient_plan_status]\nrunning'), tools);
+
+    assert.deepEqual(nativeParams.tools.map((tool: any) => tool.name), ['alpha', 'zeta']);
+    assert.equal(nativeParams.tools[0].cache_control, undefined);
+    assert.deepEqual(nativeParams.tools[1].cache_control, { type: 'ephemeral' });
+    assert.deepEqual(Object.keys(nativeParams.tools[1].input_schema), ['properties', 'type']);
+    assert.deepEqual(Object.keys(nativeParams.tools[1].input_schema.properties), ['a', 'b']);
+    assert.deepEqual(nativeParams.system[0].cache_control, { type: 'ephemeral' });
+  });
+
   test('uses the standard create path for compatible endpoints', async () => {
     const provider = createProvider('https://relay.catsco.cc/anthropic');
     let seenParams: any;
@@ -186,10 +220,15 @@ describe('AnthropicProvider prompt caching', () => {
       throw new Error('beta create should not be used');
     };
 
-    await provider.chat(nativeMessages('[transient_plan_status]\nrunning'));
+    await provider.chat(nativeMessages('[transient_plan_status]\nrunning'), [{
+      name: 'lookup',
+      description: 'lookup',
+      parameters: { type: 'object', properties: {} },
+    }]);
 
     assert.equal(betaCalled, false);
     assert.equal(typeof seenParams.system, 'string');
+    assert.equal(seenParams.tools[0].cache_control, undefined);
   });
 
   test('uses the standard streaming path for compatible endpoints', async () => {

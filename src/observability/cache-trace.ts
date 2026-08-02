@@ -52,6 +52,8 @@ export interface CacheTraceEntryV4 {
     api_type: CacheTraceApiType;
     cache_strategy:
       | 'anthropic-explicit-prefix'
+      | 'anthropic-compatible-no-markers'
+      | 'anthropic-explicit-stable-prefix'
       | 'openai-automatic-prefix'
       | 'openai-compatible-automatic-prefix'
       | 'openai-prompt-cache-key'
