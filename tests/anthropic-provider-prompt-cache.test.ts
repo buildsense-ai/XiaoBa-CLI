@@ -181,6 +181,35 @@ describe('AnthropicProvider prompt caching', () => {
     });
   });
 
+  test('cache bypass uses the standard official path without any cache markers', async () => {
+    const provider = createProvider();
+    let seenParams: any;
+    let betaCalled = false;
+    (provider as any).client.messages.create = async (params: any) => {
+      seenParams = params;
+      return {
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 3, output_tokens: 1 },
+      };
+    };
+    (provider as any).client.beta.promptCaching.messages.create = async () => {
+      betaCalled = true;
+      throw new Error('beta create should not be used for cache bypass');
+    };
+
+    await provider.chat(nativeMessages('[transient_plan_status]\nrunning'), [{
+      name: 'lookup',
+      description: 'lookup',
+      parameters: { type: 'object', properties: {} },
+    }], { cacheMode: 'bypass' });
+
+    assert.equal(betaCalled, false);
+    assert.equal(typeof seenParams.system, 'string');
+    assert.equal(seenParams.tools[0].cache_control, undefined);
+    assert.equal(JSON.stringify(seenParams.messages).includes('cache_control'), false);
+  });
+
   test('canonicalizes tools and places a separate breakpoint on the stable tool prefix', async () => {
     const provider = createProvider();
     let nativeParams: any;

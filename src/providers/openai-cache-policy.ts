@@ -4,12 +4,14 @@ import type { Message } from '../types';
 import type { ToolDefinition } from '../types/tool';
 import {
   canonicalizeProviderCacheValue,
+  type ProviderCacheMode,
   type ProviderCachePlanSummary,
 } from './provider-cache-policy';
 import { resolveContextCacheScope } from '../core/context-lifecycle';
 
 export type OpenAICacheApiType = 'openai-chat-completions' | 'openai-responses';
 export type OpenAICacheStrategy =
+  | 'openai-cache-bypassed'
   | 'openai-compatible-automatic-prefix'
   | 'openai-prompt-cache-key'
   | 'openai-explicit-stable-prefix';
@@ -32,6 +34,7 @@ export interface OpenAICachePlanInput {
   tools: readonly ToolDefinition[];
   /** A stable, non-secret identity used only to shard routing keys. */
   partitionKey?: string;
+  cacheMode?: ProviderCacheMode;
 }
 
 const OPENAI_EXPLICIT_CACHE_MIN_TOKENS = 1024;
@@ -45,6 +48,14 @@ const PROMPT_CACHE_KEY_SHARDS = 16;
  * frequently implement only a subset of the wire schema.
  */
 export function resolveOpenAICachePlan(input: OpenAICachePlanInput): OpenAICachePlan {
+  if (input.cacheMode === 'bypass') {
+    return {
+      strategy: 'openai-cache-bypassed',
+      stablePrefixEstimatedTokens: 0,
+      stableSystemMessages: 0,
+      explicitBreakpoints: 0,
+    };
+  }
   const stable = input.apiType === 'openai-responses'
     ? collectResponsesStableSystemMessages(input.messages)
     : collectLeadingStableSystemMessages(input.messages);

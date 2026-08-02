@@ -106,6 +106,32 @@ test('attaches the provider cache plan to the exact observed attempt', async () 
   assert.equal(JSON.stringify(events[0].request.cache).includes('catsco-v3-'), false);
 });
 
+test('exact attempt telemetry distinguishes one-off cache bypass calls', async () => {
+  const service = createTestService({
+    apiUrl: 'https://api.openai.com/v1',
+    model: 'gpt-5.6-sol',
+    openaiApiMode: 'responses',
+  });
+  const events: ModelAttemptEvent[] = [];
+  (service as any).provider = {
+    chat: async () => ({ content: 'ok' }),
+    chatStream: async () => ({ content: 'unused' }),
+  };
+
+  await service.chat([
+    { role: 'system', content: 'One-off compaction instruction.' },
+    { role: 'user', content: 'summarize once' },
+  ], undefined, {
+    cacheMode: 'bypass',
+    cachePartitionKey: 'session:cache-plan',
+    modelAttemptSink: collectingSink(events),
+  });
+
+  assert.equal(events[0].request.cache?.strategy, 'openai-cache-bypassed');
+  assert.equal(events[0].request.cache?.explicitBreakpoints, 0);
+  assert.equal(events[0].request.cache?.promptCacheKeyFingerprint, undefined);
+});
+
 test('attaches the Anthropic stable-prefix plan to the exact observed attempt', async () => {
   const service = createTestService({
     provider: 'anthropic',

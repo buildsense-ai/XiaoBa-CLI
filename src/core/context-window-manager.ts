@@ -2,6 +2,8 @@ import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
 import { ContextCompressor } from './context-compressor';
+import type { AIRequestOptions } from '../providers/provider';
+import { isTransientContextMessage } from './context-lifecycle';
 
 export interface ContextWindowManagerOptions {
   maxContextTokens?: number;
@@ -13,6 +15,10 @@ export interface CompactIfNeededOptions {
   sessionKey: string;
   reason?: string;
   signal?: AbortSignal;
+  modelRequestOptions?: Pick<
+    AIRequestOptions,
+    'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'
+  >;
   onStatus?: (event: ContextCompactionStatusEvent) => void | Promise<void>;
 }
 
@@ -69,7 +75,10 @@ export class ContextWindowManager {
     });
 
     try {
-      const compacted = await this.compressor.compact(durable, { signal: options.signal });
+      const compacted = await this.compressor.compact(durable, {
+        signal: options.signal,
+        modelRequestOptions: options.modelRequestOptions,
+      });
       const result = [...compacted, ...transient];
       Logger.info(`[${options.sessionKey}] 压缩完成，当前消息数: ${result.length}`);
       await this.emitStatus(options, {
@@ -130,6 +139,7 @@ function splitDurableAndTransient(messages: Message[]): {
 }
 
 function isTransientMessage(message: Message): boolean {
+  if (isTransientContextMessage(message)) return true;
   if (message.__injected || message.__runtimeFeedback) return true;
   if (message.role !== 'system' || typeof message.content !== 'string') return false;
   return message.content.startsWith('[transient_');

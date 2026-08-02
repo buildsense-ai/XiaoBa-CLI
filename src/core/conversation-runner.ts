@@ -799,6 +799,21 @@ export class ConversationRunner {
       phase: 'mid_turn',
       toolTokens: estimateToolsTokens(tools),
       signal: this.toolExecutionContext?.abortSignal,
+      modelRequestOptions: {
+        cachePartitionKey: this.toolExecutionContext?.sessionId
+          || this.toolExecutionContext?.executionScope?.sessionKey
+          || this.sessionLabel.trim()
+          || 'runner',
+        ...(this.cacheTraceSink ? {
+          modelAttemptSink: this.cacheTraceSink,
+          modelAttemptContext: {
+            sessionId: this.toolExecutionContext?.sessionId,
+            surface: this.toolExecutionContext?.surface,
+            episodeId: this.episodeId,
+            episodeNumber: turns,
+          },
+        } : {}),
+      },
       onStatus: callbacks?.onThinking
         ? async event => {
           if (event.status === 'start') {

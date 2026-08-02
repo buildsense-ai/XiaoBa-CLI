@@ -78,8 +78,11 @@ export class AnthropicProvider implements AIProvider {
   /**
    * 转换消息为 Anthropic 格式
    */
-  private transformMessages(messages: Message[]): { system?: AnthropicSystemPrompt; messages: Anthropic.MessageParam[] } {
-    const systemPrompt = this.buildSystemPrompt(messages);
+  private transformMessages(
+    messages: Message[],
+    promptCachingEnabled = true,
+  ): { system?: AnthropicSystemPrompt; messages: Anthropic.MessageParam[] } {
+    const systemPrompt = this.buildSystemPrompt(messages, promptCachingEnabled);
     const nonSystemMessages = messages.filter(msg => msg.role !== 'system');
     const transformedMessages: Anthropic.MessageParam[] = [];
     let pendingToolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -193,7 +196,7 @@ export class AnthropicProvider implements AIProvider {
     flushToolResults();
 
     const providerMessages = this.coalesceAdjacentUserMessages(transformedMessages);
-    if (this.supportsNativePromptCaching()) {
+    if (promptCachingEnabled && this.supportsNativePromptCaching()) {
       this.applyConversationCacheBreakpoint(providerMessages);
     }
 
@@ -227,7 +230,10 @@ export class AnthropicProvider implements AIProvider {
     }
   }
 
-  private buildSystemPrompt(messages: Message[]): AnthropicSystemPrompt | undefined {
+  private buildSystemPrompt(
+    messages: Message[],
+    promptCachingEnabled = true,
+  ): AnthropicSystemPrompt | undefined {
     const systemMessages = messages.filter(message => (
       message.role === 'system'
       && typeof message.content === 'string'
@@ -235,7 +241,7 @@ export class AnthropicProvider implements AIProvider {
     ));
     if (systemMessages.length === 0) return undefined;
 
-    if (!this.supportsNativePromptCaching()) {
+    if (!promptCachingEnabled || !this.supportsNativePromptCaching()) {
       return systemMessages.map(message => message.content as string).join('\n\n');
     }
 
@@ -243,6 +249,7 @@ export class AnthropicProvider implements AIProvider {
       apiUrl: this.apiUrl,
       messages,
       tools: [],
+      cacheMode: promptCachingEnabled ? 'default' : 'bypass',
     });
     if (plan.stableSystemEnd === 0) {
       return [{
@@ -327,7 +334,10 @@ export class AnthropicProvider implements AIProvider {
   /**
    * 转换工具定义为 Anthropic 格式
    */
-  private transformTools(tools: ToolDefinition[]): AnthropicCacheableTool[] {
+  private transformTools(
+    tools: ToolDefinition[],
+    promptCachingEnabled = true,
+  ): AnthropicCacheableTool[] {
     const transformed = tools
       .map(tool => canonicalizeProviderCacheValue({
         name: tool.name,
@@ -335,7 +345,7 @@ export class AnthropicProvider implements AIProvider {
         input_schema: tool.parameters as Anthropic.Tool.InputSchema,
       }) as AnthropicCacheableTool)
       .sort((left, right) => left.name.localeCompare(right.name));
-    if (this.supportsNativePromptCaching() && transformed.length > 0) {
+    if (promptCachingEnabled && this.supportsNativePromptCaching() && transformed.length > 0) {
       transformed[transformed.length - 1].cache_control = { type: 'ephemeral' };
     }
     return transformed;
@@ -520,7 +530,7 @@ export class AnthropicProvider implements AIProvider {
 
   private createMessage(params: Anthropic.MessageCreateParamsNonStreaming, options?: AIRequestOptions): Promise<any> {
     const requestOptions = { signal: options?.signal } as any;
-    if (this.supportsNativePromptCaching()) {
+    if (options?.cacheMode !== 'bypass' && this.supportsNativePromptCaching()) {
       return this.client.beta.promptCaching.messages.create(params as any, requestOptions) as any;
     }
     return this.client.messages.create(params, requestOptions) as any;
@@ -528,7 +538,7 @@ export class AnthropicProvider implements AIProvider {
 
   private createMessageStream(params: Anthropic.MessageCreateParamsStreaming, options?: AIRequestOptions): any {
     const requestOptions = { signal: options?.signal } as any;
-    if (this.supportsNativePromptCaching()) {
+    if (options?.cacheMode !== 'bypass' && this.supportsNativePromptCaching()) {
       return this.client.beta.promptCaching.messages.stream(params as any, requestOptions);
     }
     return this.client.messages.stream(params, requestOptions);
@@ -538,7 +548,8 @@ export class AnthropicProvider implements AIProvider {
    * 普通调用
    */
   async chat(messages: Message[], tools?: ToolDefinition[], options?: AIRequestOptions): Promise<ChatResponse> {
-    const { system, messages: transformed } = this.transformMessages(messages);
+    const promptCachingEnabled = options?.cacheMode !== 'bypass';
+    const { system, messages: transformed } = this.transformMessages(messages, promptCachingEnabled);
 
     const params: Anthropic.MessageCreateParamsNonStreaming = {
       model: this.model,
@@ -548,7 +559,7 @@ export class AnthropicProvider implements AIProvider {
     };
 
     if (system) params.system = system;
-    if (tools && tools.length > 0) params.tools = this.transformTools(tools);
+    if (tools && tools.length > 0) params.tools = this.transformTools(tools, promptCachingEnabled);
     applyAnthropicReasoningOptions(params as any, {
       apiUrl: this.apiUrl,
       model: this.model,
@@ -578,7 +589,8 @@ export class AnthropicProvider implements AIProvider {
     callbacks?: StreamCallbacks,
     options?: AIRequestOptions,
   ): Promise<ChatResponse> {
-    const { system, messages: transformed } = this.transformMessages(messages);
+    const promptCachingEnabled = options?.cacheMode !== 'bypass';
+    const { system, messages: transformed } = this.transformMessages(messages, promptCachingEnabled);
 
     const params: Anthropic.MessageCreateParamsStreaming = {
       model: this.model,
@@ -589,7 +601,7 @@ export class AnthropicProvider implements AIProvider {
     };
 
     if (system) params.system = system;
-    if (tools && tools.length > 0) params.tools = this.transformTools(tools);
+    if (tools && tools.length > 0) params.tools = this.transformTools(tools, promptCachingEnabled);
     applyAnthropicReasoningOptions(params as any, {
       apiUrl: this.apiUrl,
       model: this.model,

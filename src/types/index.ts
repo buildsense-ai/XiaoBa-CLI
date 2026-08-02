@@ -21,6 +21,9 @@ export type ContextSource =
   | 'pending_user_input'
   | 'synthetic_observation'
   | 'compaction_boundary'
+  | 'compaction_instruction'
+  | 'compaction_summary'
+  | 'tool_result_prune'
   | 'provider_recovery';
 
 /** Internal context lifecycle metadata. Provider serializers never emit it. */

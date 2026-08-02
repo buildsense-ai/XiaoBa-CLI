@@ -4,6 +4,7 @@ import type { ProviderRequestPreflightSummary } from './request-preflight';
 import type { OpenAIReasoningReplayMode } from '../utils/reasoning-effort';
 import type { ReasoningReplayRecoveryAction } from './deepseek-reasoning-recovery';
 import type { ProviderCachePlanSummary } from './provider-cache-policy';
+import type { ProviderCacheMode } from './provider-cache-policy';
 import type { ContextLifecycleSummary } from '../core/context-lifecycle';
 
 /**
@@ -97,6 +98,8 @@ export interface ModelAttemptSink {
 
 export interface AIRequestOptions {
   signal?: AbortSignal;
+  /** Bypass provider cache routing and explicit markers for one-off internal calls. */
+  cacheMode?: ProviderCacheMode;
   /** Stable, non-secret identity used to shard provider cache routing keys. */
   cachePartitionKey?: string;
   /** Internal one-attempt override used by evidence-driven DeepSeek recovery. */

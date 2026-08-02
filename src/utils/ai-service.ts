@@ -649,12 +649,14 @@ export class AIService {
           messages,
           tools: tools || [],
           partitionKey: options.cachePartitionKey,
+          cacheMode: options.cacheMode,
         }))
       : this.config.provider === 'anthropic'
         ? summarizeAnthropicCachePlan(resolveAnthropicCachePlan({
             apiUrl: this.config.apiUrl || '',
             messages,
             tools: tools || [],
+            cacheMode: options.cacheMode,
           }))
         : undefined;
     const contextLifecycle = summarizeContextLifecycle(messages);

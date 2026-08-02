@@ -61,6 +61,25 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.deepEqual(first.include, ['reasoning.encrypted_content']);
   });
 
+  test('cache bypass emits no Responses cache key or explicit marker', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5.6-sol',
+      openaiApiMode: 'responses',
+    });
+    const stablePolicy = 'Stable policy and examples. '.repeat(180);
+    const body = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: stablePolicy },
+      { role: 'user', content: 'summarize once' },
+    ], [lookupTool], false, { cachePartitionKey: 'session-a', cacheMode: 'bypass' });
+
+    assert.equal(body.instructions, stablePolicy);
+    assert.equal(body.prompt_cache_key, undefined);
+    assert.equal(body.prompt_cache_options, undefined);
+    assert.equal(JSON.stringify(body.input).includes('prompt_cache_breakpoint'), false);
+  });
+
   test('keeps dynamic system context out of cache identity and appends it to input', () => {
     const provider = createProvider();
     const first = (provider as any).buildResponsesRequestBody([

@@ -1,11 +1,17 @@
 import { createHash } from 'node:crypto';
 import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
+import type { AIRequestOptions } from '../providers/provider';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { readRequiredBundledPromptFile } from '../utils/prompt-template';
 import { collectRemoteContextWatermarks } from './remote-context-watermarks';
 import { estimateMessagesTokens } from './token-estimator';
+import { annotateContextMessage, isTransientContextMessage } from './context-lifecycle';
+import {
+  pruneStaleToolResults,
+  type ToolResultPruningResult,
+} from './tool-result-pruning';
 
 export const CHECKPOINT_COMPACTION_BOUNDARY_PREFIX = '[checkpoint_compaction_boundary]';
 export const CHECKPOINT_SUMMARY_PREFIX = [
@@ -32,6 +38,10 @@ export interface CheckpointCompactionCoordinatorOptions {
   maxContextTokens: number;
   compactionThreshold?: number;
   retainedUserTokenBudget?: number;
+  toolResultPruningCountThreshold?: number;
+  toolResultPruningTokenThreshold?: number;
+  toolResultPruningTargetCount?: number;
+  toolResultPruningTargetTokens?: number;
 }
 
 export interface CheckpointCompactionRequest {
@@ -39,11 +49,17 @@ export interface CheckpointCompactionRequest {
   phase: CheckpointCompactionPhase;
   toolTokens?: number;
   signal?: AbortSignal;
+  /** Attempt telemetry stays attached to the real one-off provider request. */
+  modelRequestOptions?: Pick<
+    AIRequestOptions,
+    'cachePartitionKey' | 'modelAttemptSink' | 'modelAttemptContext'
+  >;
   onStatus?: (event: CheckpointCompactionStatusEvent) => void | Promise<void>;
 }
 
 export interface CheckpointCompactionStatusEvent {
   status: 'start' | 'complete' | 'error';
+  action?: 'tool_result_prune' | 'checkpoint';
   sessionKey: string;
   phase: CheckpointCompactionPhase;
   usedTokens: number;
@@ -57,6 +73,7 @@ export interface CheckpointCompactionStatusEvent {
 export interface CheckpointCompactionResult {
   messages: Message[];
   compacted: boolean;
+  action?: 'tool_result_prune' | 'checkpoint';
   usedTokens: number;
   toolTokens: number;
   maxTokens: number;
@@ -81,6 +98,13 @@ export class CheckpointCompactionCoordinator {
   private readonly maxContextTokens: number;
   private readonly compactionThreshold: number;
   private readonly retainedUserTokenBudget: number;
+  private readonly toolResultPruningOptions: Pick<
+    CheckpointCompactionCoordinatorOptions,
+    | 'toolResultPruningCountThreshold'
+    | 'toolResultPruningTokenThreshold'
+    | 'toolResultPruningTargetCount'
+    | 'toolResultPruningTargetTokens'
+  >;
 
   constructor(
     private readonly aiService: AIService,
@@ -98,6 +122,12 @@ export class CheckpointCompactionCoordinator {
         ?? defaultRetainedUserTokenBudget(this.maxContextTokens),
       ),
     );
+    this.toolResultPruningOptions = {
+      toolResultPruningCountThreshold: options.toolResultPruningCountThreshold,
+      toolResultPruningTokenThreshold: options.toolResultPruningTokenThreshold,
+      toolResultPruningTargetCount: options.toolResultPruningTargetCount,
+      toolResultPruningTargetTokens: options.toolResultPruningTargetTokens,
+    };
   }
 
   getUsageInfo(messages: Message[], toolTokens = 0): {
@@ -144,9 +174,42 @@ export class CheckpointCompactionCoordinator {
     );
 
     try {
-      const result = await this.compact(messages, request, usage);
+      const pruning = pruneStaleToolResults(messages, {
+        phase: request.phase,
+        countThreshold: this.toolResultPruningOptions.toolResultPruningCountThreshold,
+        tokenThreshold: this.toolResultPruningOptions.toolResultPruningTokenThreshold,
+        targetCount: this.toolResultPruningOptions.toolResultPruningTargetCount,
+        targetTokens: this.toolResultPruningOptions.toolResultPruningTargetTokens,
+      });
+      const candidateMessages = pruning.messages;
+      if (pruning.pruned && !this.needsCompaction(candidateMessages, request.toolTokens)) {
+        const candidateUsage = this.getUsageInfo(candidateMessages, request.toolTokens);
+        await this.emitStatus(request, {
+          status: 'complete',
+          action: 'tool_result_prune',
+          sessionKey: request.sessionKey,
+          phase: request.phase,
+          messageCount: candidateMessages.length,
+          ...candidateUsage,
+        });
+        this.recordToolResultPruning(request, pruning, usage.usedTokens, candidateUsage.usedTokens);
+        Logger.info(
+          `[${request.sessionKey}] stale tool result pruning complete `
+          + `phase=${request.phase}, results=${pruning.rawCountBefore}->${pruning.rawCountAfter}, `
+          + `tokens=${usage.usedTokens}->${candidateUsage.usedTokens}`,
+        );
+        return {
+          messages: candidateMessages,
+          compacted: true,
+          action: 'tool_result_prune',
+          ...usage,
+        };
+      }
+
+      const result = await this.compact(candidateMessages, request, usage);
       await this.emitStatus(request, {
         status: 'complete',
+        action: 'checkpoint',
         sessionKey: request.sessionKey,
         phase: request.phase,
         messageCount: result.length,
@@ -157,6 +220,14 @@ export class CheckpointCompactionCoordinator {
         + `phase=${request.phase}, messages=${messages.length}->${result.length}, `
         + `tokens=${usage.usedTokens}->${estimateMessagesTokens(result)}`,
       );
+      if (pruning.pruned) {
+        this.recordToolResultPruning(
+          request,
+          pruning,
+          usage.usedTokens,
+          estimateMessagesTokens(candidateMessages),
+        );
+      }
       const audit = buildCompactionAudit(result);
       Logger.runtimeEvent(
         'INFO',
@@ -179,7 +250,7 @@ export class CheckpointCompactionCoordinator {
           },
         },
       );
-      return { messages: result, compacted: true, ...usage };
+      return { messages: result, compacted: true, action: 'checkpoint', ...usage };
     } catch (error) {
       await this.emitStatus(request, {
         status: 'error',
@@ -217,6 +288,7 @@ export class CheckpointCompactionCoordinator {
       sessionMessages,
       request.phase,
       request.signal,
+      request.modelRequestOptions,
     );
     const retainedContext = selectRetainedContextMessages(
       sessionMessages,
@@ -227,7 +299,7 @@ export class CheckpointCompactionCoordinator {
     const activeEpisodeId = findLatestEpisodeId(sessionMessages);
     const stableBoundary = findLastStableBoundary(sessionMessages);
 
-    const boundary: Message = {
+    const boundary: Message = annotateContextMessage({
       role: 'system',
       content: [
         CHECKPOINT_COMPACTION_BOUNDARY_PREFIX,
@@ -238,8 +310,15 @@ export class CheckpointCompactionCoordinator {
       ].filter(Boolean).join(' '),
       __checkpointBoundary: true,
       __checkpointPhase: request.phase,
-    };
-    const summaryMessage: Message = {
+      ...(activeEpisodeId ? { __episodeId: activeEpisodeId } : {}),
+    }, {
+      source: 'compaction_boundary',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+      persistence: 'durable',
+      ...(activeEpisodeId ? { epoch: activeEpisodeId } : {}),
+    });
+    const summaryMessage: Message = annotateContextMessage({
       role: 'user',
       content: `${CHECKPOINT_SUMMARY_PREFIX}\n\n${summary}`,
       __checkpointSummary: true,
@@ -248,7 +327,13 @@ export class CheckpointCompactionCoordinator {
       ...(Object.keys(remoteContextWatermarks).length > 0
         ? { __remoteContextWatermarks: remoteContextWatermarks }
         : {}),
-    };
+    }, {
+      source: 'compaction_summary',
+      lifecycle: 'episode',
+      cacheScope: 'epoch',
+      persistence: 'durable',
+      ...(activeEpisodeId ? { epoch: activeEpisodeId } : {}),
+    });
 
     return [
       ...stableSystemMessages,
@@ -263,6 +348,7 @@ export class CheckpointCompactionCoordinator {
     sourceMessages: Message[],
     phase: CheckpointCompactionPhase,
     signal?: AbortSignal,
+    modelRequestOptions?: CheckpointCompactionRequest['modelRequestOptions'],
   ): Promise<string> {
     let attemptMessages = prepareSummarySourceMessages(sourceMessages);
     let omittedMessageCount = 0;
@@ -271,10 +357,15 @@ export class CheckpointCompactionCoordinator {
     for (let attempt = 0; attempt < MAX_CONTEXT_RETRY_ATTEMPTS; attempt++) {
       signal?.throwIfAborted();
       const promptMessages: Message[] = [
-        {
+        annotateContextMessage({
           role: 'system',
           content: buildCheckpointCompactionPrompt(phase, omittedMessageCount),
-        },
+        }, {
+          source: 'compaction_instruction',
+          lifecycle: 'call',
+          cacheScope: 'volatile',
+          persistence: 'transient',
+        }),
         ...attemptMessages,
       ];
       let streamed = '';
@@ -283,7 +374,11 @@ export class CheckpointCompactionCoordinator {
           promptMessages,
           undefined,
           { onText: text => { streamed += text; } },
-          { signal },
+          {
+            ...modelRequestOptions,
+            signal,
+            cacheMode: 'bypass',
+          },
         );
         if (response.usage) {
           Metrics.recordAICall('stream', response.usage);
@@ -322,6 +417,32 @@ export class CheckpointCompactionCoordinator {
         + describeError(error),
       );
     }
+  }
+
+  private recordToolResultPruning(
+    request: CheckpointCompactionRequest,
+    pruning: ToolResultPruningResult,
+    tokensBefore: number,
+    tokensAfter: number,
+  ): void {
+    Logger.runtimeEvent(
+      'INFO',
+      `[${request.sessionKey}] tool_result_pruning phase=${request.phase} `
+      + `results=${pruning.rawCountBefore}->${pruning.rawCountAfter} `
+      + `chars_removed=${pruning.charsRemoved}`,
+      {
+        type: 'tool_result_pruning',
+        payload: {
+          phase: request.phase,
+          tokens_before: tokensBefore,
+          tokens_after: tokensAfter,
+          raw_result_count_before: pruning.rawCountBefore,
+          raw_result_count_after: pruning.rawCountAfter,
+          pruned_count: pruning.prunedCount,
+          chars_removed: pruning.charsRemoved,
+        },
+      },
+    );
   }
 }
 
@@ -625,6 +746,7 @@ function isCompactionBoundary(message: Message): boolean {
 }
 
 function isTransientMessage(message: Message): boolean {
+  if (isTransientContextMessage(message)) return true;
   if (
     message.__injected
     || message.__runtimeFeedback
