@@ -15,6 +15,7 @@ import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../../types';
 import type { ToolDefinition } from '../../types/tool';
 import { AIService } from '../../utils/ai-service';
 import { createRuntimeConfigSnapshot } from '../../runtime/runtime-config-snapshot';
+import { resolveCodeRoot, resolveRuntimeIdentity } from '../../runtime/runtime-identity';
 import {
   CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
   calculatePromptBudgetTokens,
@@ -2225,6 +2226,9 @@ export function createApiRouter(
     const config = ConfigManager.getConfigReadonly();
     const contextWindow = resolveModelContextWindow(config);
     const services = serviceManager.getAll();
+    const codeRoot = typeof (serviceManager as any).getProjectRoot === 'function'
+      ? (serviceManager as any).getProjectRoot()
+      : resolveCodeRoot();
     res.json({
       version: APP_VERSION,
       hostname: os.hostname(),
@@ -2235,6 +2239,7 @@ export function createApiRouter(
       provider: config.provider,
       contextWindow,
       skillsPath: PathResolver.getSkillsPath(),
+      runtimeIdentity: resolveRuntimeIdentity({ codeRoot }),
       services,
       authStatus: options.getAuthStatus?.() || { enabled: false, configured: false },
     });

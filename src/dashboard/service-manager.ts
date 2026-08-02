@@ -75,6 +75,10 @@ export class ServiceManager extends EventEmitter {
     this.registerBuiltinServices();
   }
 
+  getProjectRoot(): string {
+    return this.projectRoot;
+  }
+
   private isPackaged(): boolean {
     // Electron 打包版会设置 XIAOBA_APP_ROOT
     if (process.env.XIAOBA_IS_PACKAGED !== undefined) {
