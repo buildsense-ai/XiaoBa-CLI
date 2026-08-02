@@ -71,9 +71,23 @@ export interface CatsThinToolRpcMessage {
   id?: string;
   type: 'request' | 'result';
   request_id: string;
+  authority_version?: string;
   target_owner_user_id?: string;
   target_device_id?: string;
+  grant_id?: string;
+  session_key?: string;
+  topic_id?: string;
+  topic_type?: string;
+  actor_user_id?: string;
+  owner_user_id?: string;
+  identity_source?: string;
+  agent_id?: string;
+  agent_body_id?: string;
+  operation?: string;
   device_id?: string;
+  device_display_name?: string;
+  device_body_id?: string;
+  device_installation_id?: string;
   tool_name?: string;
   payload?: Record<string, unknown>;
   result?: unknown;
@@ -217,7 +231,10 @@ export class CatsClient extends EventEmitter {
   private reconnectAttempts = 0;
   private subscribedTopics = new Set<string>();
   private supportsClientMessageDedupe = false;
+  public supportsDeviceRpc = false;
   public supportsThinToolRpc = false;
+  /** Server guarantee: routes authority-v1 requests only to targets advertising the same capability. */
+  public supportsThinToolRpcAuthorityV1 = false;
   private awaitingReady = false;
 
   public uid = '';
@@ -249,7 +266,9 @@ export class CatsClient extends EventEmitter {
 
     Logger.info(`[CatsCompany] 正在连接: ${this.config.serverUrl}, apiKey=${maskSecret(this.config.apiKey)}, bodyId=${bodyId}`);
     this.supportsClientMessageDedupe = false;
+    this.supportsDeviceRpc = false;
     this.supportsThinToolRpc = false;
+    this.supportsThinToolRpcAuthorityV1 = false;
     this.ws = new WebSocket(this.config.serverUrl, {
       headers: {
         'X-API-Key': this.config.apiKey,
@@ -327,13 +346,18 @@ export class CatsClient extends EventEmitter {
         if (this.supportsClientMessageDedupe) {
           Logger.info('[CatsCompany] 服务端支持 client_msg_id 幂等发送');
         }
-        if (Array.isArray(msg.ctrl.params?.features) && msg.ctrl.params.features.includes('device_rpc')) {
+        const features = Array.isArray(msg.ctrl.params?.features) ? msg.ctrl.params.features : [];
+        this.supportsDeviceRpc = features.includes('device_rpc');
+        if (this.supportsDeviceRpc) {
           Logger.info('[CatsCompany] 服务端支持 device_rpc 远程设备传输');
         }
-        this.supportsThinToolRpc = Array.isArray(msg.ctrl.params?.features)
-          && msg.ctrl.params.features.includes('thin_tool_rpc');
+        this.supportsThinToolRpc = features.includes('thin_tool_rpc');
         if (this.supportsThinToolRpc) {
           Logger.info('[CatsCompany] 服务端支持 thin_tool_rpc 轻量工具传输');
+        }
+        this.supportsThinToolRpcAuthorityV1 = features.includes('thin_tool_rpc_authority_v1');
+        if (this.supportsThinToolRpcAuthorityV1) {
+          Logger.info('[CatsCompany] 服务端支持 thin_tool_rpc_authority_v1 端到端授权协议');
         }
         this.emit('ready', { uid: this.uid, name: this.name });
         this.autoAcceptFriendRequests().catch(console.error);
@@ -1108,9 +1132,22 @@ function deviceRpcResultMatchesPending(result: CatsDeviceRpcMessage, request: Ca
 }
 
 function thinToolRpcResultMatchesPending(result: CatsThinToolRpcMessage, request: CatsThinToolRpcMessage): boolean {
-  return deviceRpcPresentFieldMatches(result.target_owner_user_id, request.target_owner_user_id)
+  return deviceRpcPresentFieldMatches(result.authority_version, request.authority_version)
+    && deviceRpcPresentFieldMatches(result.target_owner_user_id, request.target_owner_user_id)
     && deviceRpcPresentFieldMatches(result.target_device_id, request.target_device_id)
-    && deviceRpcPresentFieldMatches(result.device_id, request.target_device_id)
+    && deviceRpcPresentFieldMatches(result.grant_id, request.grant_id)
+    && deviceRpcPresentFieldMatches(result.session_key, request.session_key)
+    && deviceRpcPresentFieldMatches(result.topic_id, request.topic_id)
+    && deviceRpcPresentFieldMatches(result.topic_type, request.topic_type)
+    && deviceRpcPresentFieldMatches(result.actor_user_id, request.actor_user_id)
+    && deviceRpcPresentFieldMatches(result.owner_user_id, request.owner_user_id)
+    && deviceRpcPresentFieldMatches(result.identity_source, request.identity_source)
+    && deviceRpcPresentFieldMatches(result.agent_id, request.agent_id)
+    && deviceRpcPresentFieldMatches(result.agent_body_id, request.agent_body_id)
+    && deviceRpcPresentFieldMatches(result.operation, request.operation)
+    && deviceRpcPresentFieldMatches(result.device_id, request.device_id || request.target_device_id)
+    && deviceRpcPresentFieldMatches(result.device_body_id, request.device_body_id)
+    && deviceRpcPresentFieldMatches(result.device_installation_id, request.device_installation_id)
     && deviceRpcPresentFieldMatches(result.tool_name, request.tool_name);
 }
 

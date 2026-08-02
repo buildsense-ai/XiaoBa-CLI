@@ -56,6 +56,8 @@ describe('import_file remote routing', () => {
       workingDirectory: process.cwd(),
       conversationHistory: [],
       surface: 'catscompany',
+      executionScope: executionScope(),
+      deviceGrants: [deviceGrantFor(route)],
       targetRoutes: {
         routes: [route],
         byName: new Map([['lin', [route]]]),
@@ -112,16 +114,8 @@ describe('import_file remote routing', () => {
       workingDirectory: process.cwd(),
       conversationHistory: [],
       surface: 'catscompany',
-      executionScope: {
-        source: 'catscompany',
-        sessionKey: 'session-1',
-        topicId: 'p2p_7_43',
-        topicType: 'p2p',
-        actorUserId: 'usr7',
-        agentId: 'usr43',
-        identityTrust: 'server_canonical',
-        isTrusted: true,
-      },
+      executionScope: executionScope(),
+      deviceGrants: [deviceGrantFor(route)],
       targetRoutes: {
         routes: [route],
         byName: new Map([['lin', [route]]]),
@@ -165,7 +159,7 @@ describe('import_file remote routing', () => {
     assert.equal(rpcRequest.toolName, 'import_file');
     assert.equal(rpcRequest.targetOwnerUserId, 'usr7');
     assert.equal(rpcRequest.targetDeviceId, 'lin-laptop');
-    assert.equal(rpcRequest.timeoutMs, 300_000);
+    assert.ok(rpcRequest.timeoutMs > 0 && rpcRequest.timeoutMs <= 300_000);
     assert.deepEqual(rpcRequest.args, {
       file_path: 'C:\\Users\\Lin\\Desktop\\报价单.xlsx',
       file_name: '报价单.xlsx',
@@ -187,4 +181,40 @@ describe('import_file remote routing', () => {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function executionScope() {
+  return {
+    source: 'catscompany' as const,
+    sessionKey: 'session-1',
+    topicId: 'p2p_7_43',
+    topicType: 'p2p' as const,
+    actorUserId: 'usr7',
+    agentId: 'usr43',
+    identityTrust: 'server_canonical' as const,
+    isTrusted: true,
+  };
+}
+
+function deviceGrantFor(route: TargetRoute) {
+  const now = Date.now();
+  return {
+    kind: 'user_device_grant' as const,
+    source: 'catscompany' as const,
+    grantId: `grant:${route.deviceId}`,
+    status: 'active' as const,
+    identityTrust: 'server_canonical' as const,
+    identitySource: 'metadata.catsco_identity',
+    deviceId: route.deviceId,
+    deviceDisplayName: route.label,
+    ownerUserId: route.ownerUserId,
+    sessionKey: 'session-1',
+    topicId: 'p2p_7_43',
+    topicType: 'p2p' as const,
+    actorUserId: 'usr7',
+    agentId: 'usr43',
+    operations: ['send_file' as const],
+    createdAt: now,
+    expiresAt: now + 300_000,
+  };
 }

@@ -2,6 +2,7 @@ import { Message } from '../types';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
+  ScopedDeviceGrantSnapshot,
   ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
@@ -152,6 +153,8 @@ export interface HandleMessageOptions {
   localDeviceGrant?: ScopedLocalDeviceGrant;
   /** 当前 turn 已授权的用户设备资源。 */
   deviceGrants?: ScopedDeviceGrant[];
+  /** 当前 turn 显式携带的完整设备授权快照。 */
+  deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
   /** 服务端为当前 turn 选定的用户设备。 */
   deviceSelection?: ScopedDeviceSelection;
   /** 当前 turn 可用的远程设备 RPC 通道。 */
@@ -631,6 +634,7 @@ export class AgentSession {
       let executionScope: ExecutionScope | undefined;
       let localDeviceGrant: ScopedLocalDeviceGrant | undefined;
       let deviceGrants: ScopedDeviceGrant[] | undefined;
+      let deviceGrantSnapshot: ScopedDeviceGrantSnapshot | undefined;
       let deviceSelection: ScopedDeviceSelection | undefined;
       let deviceRpc: DeviceRpcTransport | undefined;
       let thinToolRpc: ThinToolRpcTransport | undefined;
@@ -646,6 +650,7 @@ export class AgentSession {
           || 'executionScope' in callbacksOrOptions
           || 'localDeviceGrant' in callbacksOrOptions
           || 'deviceGrants' in callbacksOrOptions
+          || 'deviceGrantSnapshot' in callbacksOrOptions
           || 'deviceSelection' in callbacksOrOptions
           || 'deviceRpc' in callbacksOrOptions
           || 'thinToolRpc' in callbacksOrOptions
@@ -663,6 +668,7 @@ export class AgentSession {
           executionScope = opts.executionScope;
           localDeviceGrant = opts.localDeviceGrant;
           deviceGrants = opts.deviceGrants;
+          deviceGrantSnapshot = opts.deviceGrantSnapshot;
           deviceSelection = opts.deviceSelection;
           deviceRpc = opts.deviceRpc;
           thinToolRpc = opts.thinToolRpc;
@@ -748,6 +754,7 @@ export class AgentSession {
           executionScope,
           localDeviceGrant,
           deviceGrants,
+          deviceGrantSnapshot,
           deviceSelection,
           deviceRpc,
           thinToolRpc,

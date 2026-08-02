@@ -2,11 +2,18 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import * as path from 'path';
 import { ConversationRunner } from '../src/core/conversation-runner';
+import { resolveDeviceGrant } from '../src/core/device-grants';
+import { extractCatsCoDeviceGrantSnapshot } from '../src/catscompany/device-grants';
 import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../src/core/runtime-context-builder';
 import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from '../src/core/pending-user-input-boundary';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
-import type { ExecutionScope, ScopedDeviceGrant, ScopedLocalFileGrant } from '../src/types/session-identity';
+import type {
+  ExecutionScope,
+  ScopedDeviceGrant,
+  ScopedDeviceGrantSnapshot,
+  ScopedLocalFileGrant,
+} from '../src/types/session-identity';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult } from '../src/types/tool';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
@@ -93,6 +100,23 @@ function deviceGrant(deviceId: string): ScopedDeviceGrant {
     operations: ['read_file'],
     createdAt: now,
     expiresAt: now + 60_000,
+  };
+}
+
+function deviceGrantSnapshot(revision: number, grants: ScopedDeviceGrant[]): ScopedDeviceGrantSnapshot {
+  const executionScope = scope();
+  return {
+    kind: 'user_device_grant_snapshot',
+    source: executionScope.source,
+    sessionKey: executionScope.sessionKey,
+    topicId: executionScope.topicId,
+    topicType: executionScope.topicType,
+    actorUserId: executionScope.actorUserId,
+    agentId: executionScope.agentId,
+    agentBodyId: executionScope.agentBodyId,
+    identityTrust: executionScope.identityTrust,
+    revision,
+    grants,
   };
 }
 
@@ -292,7 +316,7 @@ describe('ConversationRunner pending input', () => {
     assert.deepEqual(contexts[1]?.localFileGrants, [initialGrant, pendingGrant]);
   });
 
-  test('merges pending device grants into later tool execution context without clearing existing grants', async () => {
+  test('atomically replaces pending device grants instead of retaining stale authority', async () => {
     const requests: Message[][] = [];
     const aiService = {
       chat: async (messages: Message[]) => {
@@ -351,13 +375,14 @@ describe('ConversationRunner pending input', () => {
         surface: 'catscompany',
         executionScope: scope(),
         deviceGrants: [initialGrant],
+        deviceGrantSnapshot: deviceGrantSnapshot(10, [initialGrant]),
       },
       pendingUserInputProvider: () => {
         if (pendingUsed) return null;
         pendingUsed = true;
         return {
           content: 'new device grant while busy',
-          deviceGrants: [pendingGrant],
+          deviceGrantSnapshot: deviceGrantSnapshot(11, [pendingGrant]),
         };
       },
     });
@@ -367,7 +392,7 @@ describe('ConversationRunner pending input', () => {
     assert.equal(result.response, 'done');
     assert.equal(contexts.length, 2);
     assert.deepEqual(contexts[0]?.deviceGrants, [initialGrant]);
-    assert.deepEqual(contexts[1]?.deviceGrants, [initialGrant, pendingGrant]);
+    assert.deepEqual(contexts[1]?.deviceGrants, [pendingGrant]);
 
     const refreshedContext = requests[1].find(isRuntimeContextMessage);
     assert.ok(refreshedContext);
@@ -378,7 +403,164 @@ describe('ConversationRunner pending input', () => {
     assert.doesNotMatch(refreshedContext.content as string, /install:device-/);
     assert.doesNotMatch(refreshedContext.content as string, /body-main/);
   });
+
+  test('treats an explicit empty snapshot as immediate revocation', async () => {
+    const broad = { ...deviceGrant('device-main'), operations: ['read_file', 'execute_shell'] as const };
+    const contexts = await capturePendingDeviceGrantContexts(
+      deviceGrantSnapshot(20, [broad]),
+      deviceGrantSnapshot(21, []),
+    );
+
+    assert.deepEqual(contexts[0]?.deviceGrants, [broad]);
+    assert.deepEqual(contexts[1]?.deviceGrants, []);
+    assert.equal(resolveDeviceGrant({
+      executionScope: scope(),
+      deviceGrants: contexts[1]?.deviceGrants,
+    }, { operation: 'execute_shell', deviceId: 'device-main' }).ok, false);
+  });
+
+  test('treats a malformed canonical device_grants container as pending-loop revocation', async () => {
+    const broad = { ...deviceGrant('device-main'), operations: ['read_file', 'execute_shell'] as const };
+    const malformed = extractCatsCoDeviceGrantSnapshot({
+      catsco_identity: {
+        permissions: { source: 'server_canonical_message' },
+        device_grants: { unexpected: 'object' },
+      },
+    }, scope());
+    assert.ok(malformed);
+    assert.deepEqual(malformed.grants, []);
+
+    const contexts = await capturePendingDeviceGrantContexts(
+      deviceGrantSnapshot(22, [broad]),
+      malformed,
+    );
+    assert.deepEqual(contexts[1]?.deviceGrants, []);
+    assert.equal(resolveDeviceGrant({
+      executionScope: scope(),
+      deviceGrants: contexts[1]?.deviceGrants,
+    }, { operation: 'execute_shell', deviceId: 'device-main' }).ok, false);
+  });
+
+  test('downscopes atomically and ignores a delayed lower revision', async () => {
+    const broad = { ...deviceGrant('device-main'), operations: ['read_file', 'execute_shell'] as const };
+    const narrow = { ...broad, operations: ['read_file'] as const };
+    const downscoped = await capturePendingDeviceGrantContexts(
+      deviceGrantSnapshot(30, [broad]),
+      deviceGrantSnapshot(31, [narrow]),
+    );
+    assert.deepEqual(downscoped[1]?.deviceGrants, [narrow]);
+    assert.equal(resolveDeviceGrant({
+      executionScope: scope(),
+      deviceGrants: downscoped[1]?.deviceGrants,
+    }, { operation: 'execute_shell', deviceId: 'device-main' }).ok, false);
+    assert.equal(resolveDeviceGrant({
+      executionScope: scope(),
+      deviceGrants: downscoped[1]?.deviceGrants,
+    }, { operation: 'read_file', deviceId: 'device-main' }).ok, true);
+
+    const expired = { ...narrow, expiresAt: Date.now() - 1 };
+    const expiredReplacement = await capturePendingDeviceGrantContexts(
+      deviceGrantSnapshot(32, [broad]),
+      deviceGrantSnapshot(33, [expired]),
+    );
+    assert.deepEqual(expiredReplacement[1]?.deviceGrants, [expired]);
+    assert.equal(resolveDeviceGrant({
+      executionScope: scope(),
+      deviceGrants: expiredReplacement[1]?.deviceGrants,
+    }, { operation: 'read_file', deviceId: 'device-main' }).ok, false);
+
+    const delayed = await capturePendingDeviceGrantContexts(
+      deviceGrantSnapshot(40, [narrow]),
+      deviceGrantSnapshot(39, [broad]),
+    );
+    assert.deepEqual(delayed[1]?.deviceGrants, [narrow]);
+
+    const unversionedNarrow = deviceGrantSnapshot(41, [narrow]);
+    delete unversionedNarrow.revision;
+    const unknownOrder = await capturePendingDeviceGrantContexts(
+      deviceGrantSnapshot(41, [broad]),
+      unversionedNarrow,
+    );
+    assert.deepEqual(unknownOrder[1]?.deviceGrants, []);
+  });
+
+  test('fails closed when the same authorization revision carries conflicting grants', async () => {
+    const initial = deviceGrant('device-main');
+    const idempotentSnapshot = deviceGrantSnapshot(50, [initial]);
+    const idempotent = await capturePendingDeviceGrantContexts(
+      idempotentSnapshot,
+      { ...idempotentSnapshot, grants: [{ ...initial }] },
+    );
+    assert.deepEqual(idempotent[1]?.deviceGrants, [initial]);
+
+    const conflict = deviceGrant('device-other');
+    const contexts = await capturePendingDeviceGrantContexts(
+      deviceGrantSnapshot(51, [initial]),
+      deviceGrantSnapshot(51, [conflict]),
+    );
+    assert.deepEqual(contexts[1]?.deviceGrants, []);
+  });
 });
+
+async function capturePendingDeviceGrantContexts(
+  initialSnapshot: ScopedDeviceGrantSnapshot,
+  pendingSnapshot: ScopedDeviceGrantSnapshot,
+): Promise<Array<Partial<ToolExecutionContext> | undefined>> {
+  let requestCount = 0;
+  const aiService = {
+    chat: async () => {
+      requestCount += 1;
+      if (requestCount <= 2) {
+        return {
+          content: null,
+          toolCalls: [{
+            id: `call_${requestCount}`,
+            type: 'function',
+            function: { name: 'noop', arguments: '{}' },
+          }],
+          usage,
+        };
+      }
+      return { content: 'done', toolCalls: [], usage };
+    },
+  } as any;
+  const contexts: Array<Partial<ToolExecutionContext> | undefined> = [];
+  const executor: ToolExecutor = {
+    getToolDefinitions: () => [{
+      name: 'noop',
+      description: 'noop',
+      parameters: { type: 'object', properties: {} },
+    }],
+    executeTool: async (toolCall, _history, contextOverrides) => {
+      contexts.push(contextOverrides);
+      return {
+        tool_call_id: toolCall.id,
+        role: 'tool',
+        name: toolCall.function.name,
+        content: 'ok',
+        ok: true,
+      };
+    },
+  };
+  let pendingUsed = false;
+  const runner = new ConversationRunner(aiService, executor, {
+    stream: false,
+    toolExecutionContext: {
+      sessionId: 'cc_user:usr7',
+      surface: 'catscompany',
+      executionScope: scope(),
+      deviceGrants: [...initialSnapshot.grants],
+      deviceGrantSnapshot: initialSnapshot,
+    },
+    pendingUserInputProvider: () => {
+      if (pendingUsed) return null;
+      pendingUsed = true;
+      return { content: 'authorization changed while busy', deviceGrantSnapshot: pendingSnapshot };
+    },
+  });
+  await runner.run([{ role: 'user', content: 'run a tool' }]);
+  return contexts;
+}
 
 function isRuntimeContextMessage(message: Message): boolean {
   return message.role === 'system'

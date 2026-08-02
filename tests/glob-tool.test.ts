@@ -106,6 +106,16 @@ describe('GlobTool', () => {
     let forwardedRequest: DeviceRpcToolRequest | undefined;
     const ctx = context();
     ctx.surface = 'catscompany';
+    ctx.executionScope = {
+      source: 'catscompany',
+      sessionKey: 'session:v2:catscompany:p2p:topic:agent:agent-1',
+      topicId: 'topic',
+      topicType: 'p2p',
+      actorUserId: 'speaker-user',
+      agentId: 'agent-1',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    };
     ctx.deviceSelection = selectedDevice(['glob']);
     ctx.deviceGrants = [deviceGrant(['glob'])];
     ctx.deviceRpc = {

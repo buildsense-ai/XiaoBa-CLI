@@ -5,6 +5,7 @@ import type {
   ExecutionScope,
   MessageSource,
   ScopedDeviceGrant,
+  ScopedDeviceGrantSnapshot,
   UserDevice,
   UserDeviceStatus,
 } from '../types/session-identity';
@@ -53,6 +54,44 @@ export function isDelegatedDeviceGrant(grant: Pick<ScopedDeviceGrant, 'identityT
   return grant.identityTrust === 'server_canonical'
     && grant.ownerUserId !== grant.actorUserId
     && DELEGATED_DEVICE_GRANT_IDENTITY_SOURCES.has(String(grant.identitySource || ''));
+}
+
+/** Stable equality key for idempotence/conflict checks; grant and operation ordering is non-semantic. */
+export function deviceGrantSnapshotCanonicalValue(snapshot: ScopedDeviceGrantSnapshot): string {
+  const grants = snapshot.grants
+    .map(grant => [
+      grant.grantId,
+      grant.status,
+      grant.identityTrust,
+      grant.identitySource || '',
+      grant.deviceId,
+      grant.deviceDisplayName || '',
+      grant.deviceBodyId || '',
+      grant.deviceInstallationId || '',
+      grant.ownerUserId,
+      grant.sessionKey,
+      grant.topicId,
+      grant.topicType,
+      grant.actorUserId,
+      grant.agentId || '',
+      grant.agentBodyId || '',
+      [...grant.operations].sort(),
+      grant.createdAt,
+      grant.expiresAt,
+    ])
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return JSON.stringify([
+    snapshot.source,
+    snapshot.sessionKey,
+    snapshot.topicId,
+    snapshot.topicType,
+    snapshot.actorUserId,
+    snapshot.agentId || '',
+    snapshot.agentBodyId || '',
+    snapshot.identityTrust,
+    snapshot.revision ?? null,
+    grants,
+  ]);
 }
 
 export function createUserDevice(input: CreateUserDeviceInput): UserDevice | undefined {
