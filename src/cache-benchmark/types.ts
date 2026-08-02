@@ -29,6 +29,7 @@ export const REQUIRED_CACHE_BENCHMARK_CAPABILITIES = [
 
 export type CacheReadSource = typeof CACHE_READ_SOURCES[number];
 export type CacheBenchmarkCapability = typeof REQUIRED_CACHE_BENCHMARK_CAPABILITIES[number];
+export type CacheBenchmarkProfile = 'calibration' | 'acceptance';
 export type ProviderAdapter = 'openai' | 'anthropic';
 export type ApiType = 'openai-responses' | 'openai-chat-completions' | 'anthropic-messages';
 export type CacheClass = 'cold' | 'warm';
@@ -71,6 +72,12 @@ export interface CacheBenchmarkCase {
 export interface CacheBenchmarkManifest {
   schema: typeof CACHE_BENCHMARK_MANIFEST_SCHEMA;
   suite_id: string;
+  /**
+   * Legacy/offline fixtures may omit these two fields. Online evidence always
+   * seals them, and final multi-provider acceptance requires `acceptance`.
+   */
+  benchmark_profile?: CacheBenchmarkProfile;
+  workload_contract_fingerprint?: string;
   criteria: CacheBenchmarkCriteria;
   cases: CacheBenchmarkCase[];
 }
@@ -177,6 +184,7 @@ export type BenchmarkReason =
   | 'insufficient_positive_tasks'
   | 'minimum_read_ratio_not_met'
   | 'minimum_capped_task_ratio_not_met'
+  | 'calibration_only'
   | 'capability_coverage_incomplete'
   | 'insufficient_consecutive_rounds'
   | 'fingerprint_mismatch';

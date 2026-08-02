@@ -727,6 +727,27 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.equal(Object.prototype.hasOwnProperty.call(explicitZero, 'cachedWriteTokens'), true);
   });
 
+  test('keeps conflicting OpenAI and DeepSeek cache-read contracts unobservable', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.example.test/v1',
+      model: 'relay-model',
+    });
+    const usage = (provider as any).parseChatUsage({
+      prompt_tokens: 120,
+      completion_tokens: 2,
+      prompt_tokens_details: { cached_tokens: 80 },
+      prompt_cache_hit_tokens: 96,
+    });
+
+    assert.equal(usage.inputTokensReported, true);
+    assert.equal(Object.prototype.hasOwnProperty.call(usage, 'cachedReadTokens'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(usage, 'cacheReadSource'), false);
+    assert.equal(usage.providerUsage.contract, 'openai-chat-v1');
+    assert.equal(Object.prototype.hasOwnProperty.call(usage.providerUsage, 'cached_tokens'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(usage.providerUsage, 'prompt_cache_hit_tokens'), false);
+  });
+
   test('hides OpenAI-compatible reasoning fields and split think tags in stream responses', async () => {
     const originalPost = axios.post;
     (axios as any).post = async () => ({

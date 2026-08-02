@@ -693,7 +693,13 @@ export class OpenAIProvider implements AIProvider {
     const completionTokens = Number(usage.completion_tokens ?? 0);
     const standardCachedReadTokens = firstReportedUsageNumber(details, ['cached_tokens']);
     const hasStandardCacheRead = hasOwnField(details, 'cached_tokens');
-    const cachedReadTokens = hasStandardCacheRead
+    const hasDeepSeekCacheRead = hasOwnField(usage, 'prompt_cache_hit_tokens');
+    // A compatible gateway must expose one unambiguous cache-read contract.
+    // If both shapes are present, do not choose the more favorable value.
+    const hasConflictingCacheContracts = hasStandardCacheRead && hasDeepSeekCacheRead;
+    const cachedReadTokens = hasConflictingCacheContracts
+      ? undefined
+      : hasStandardCacheRead
       ? standardCachedReadTokens
       : firstReportedUsageNumber(usage, ['prompt_cache_hit_tokens']);
     const cachedWriteTokens = firstReportedUsageNumber(details, [
@@ -701,14 +707,20 @@ export class OpenAIProvider implements AIProvider {
       'cached_creation_tokens',
       'cache_creation_tokens',
     ]);
-    const providerUsage = hasStandardCacheRead
+    const providerUsage = hasConflictingCacheContracts
+      ? {
+          contract: 'openai-chat-v1' as const,
+          ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),
+          ...(cachedWriteTokens !== undefined ? { cache_write_tokens: cachedWriteTokens } : {}),
+        }
+      : hasStandardCacheRead
       ? {
           contract: 'openai-chat-v1' as const,
           ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),
           ...(standardCachedReadTokens !== undefined ? { cached_tokens: standardCachedReadTokens } : {}),
           ...(cachedWriteTokens !== undefined ? { cache_write_tokens: cachedWriteTokens } : {}),
         }
-      : hasOwnField(usage, 'prompt_cache_hit_tokens')
+      : hasDeepSeekCacheRead
         ? {
             contract: 'deepseek-chat-v1' as const,
             ...(reportedInputTokens !== undefined ? { prompt_tokens: reportedInputTokens } : {}),

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { afterEach, test } from 'node:test';
 import type { ModelAttemptEvent } from '../src/providers/provider';
@@ -17,6 +18,8 @@ import { AIService } from '../src/utils/ai-service';
 import { withModelAttemptSink } from '../src/observability/model-attempt-scope';
 import {
   AttemptCapabilityAttestor,
+  assertCleanOnlineBenchmarkInvocation,
+  assertSealedOnlineBenchmarkEnvironment,
   BENCHMARK_GOAL_MARKER,
   BENCHMARK_IDENTITY_MARKER,
   BENCHMARK_RECOVERY_MARKER,
@@ -31,13 +34,16 @@ import {
   fingerprintConfig,
   fingerprintManifest,
   fingerprintOnlineBenchmarkArtifact,
+  fingerprintOnlineBenchmarkRuntimeContract,
   loadOnlineProviderCredentials,
   OnlineBenchmarkRunLease,
   OnlineCredentialError,
+  onlineBenchmarkInheritedChildEnvKeys,
   REQUIRED_CACHE_BENCHMARK_CAPABILITIES,
   parseManifestJson,
   prepareFreshRuntimeDataDirectory,
   safeOnlineBenchmarkErrorCode,
+  sealOnlineBenchmarkEnvironment,
   StrictAttemptJournal,
 } from '../src/cache-benchmark';
 
@@ -79,11 +85,49 @@ test('strict credential loader accepts only the private non-shell provider contr
   }
 });
 
+test('DeepSeek cache usage contract is explicit and fail-closed per compatible endpoint', () => {
+  const topLevel = credentialFixture();
+  rewriteCredential(topLevel.file, line => line ===
+    'XIAOBA_BENCH_DEEPSEEK_CACHE_READ_SOURCE=openai.prompt_tokens_details.cached_tokens'
+    ? 'XIAOBA_BENCH_DEEPSEEK_CACHE_READ_SOURCE=deepseek.prompt_cache_hit_tokens'
+    : line);
+  assert.equal(
+    loadOnlineProviderCredentials(topLevel.file)[1].cacheReadSource,
+    'deepseek.prompt_cache_hit_tokens',
+  );
+
+  const missing = credentialFixture();
+  rewriteCredential(missing.file, line => line.startsWith('XIAOBA_BENCH_DEEPSEEK_CACHE_READ_SOURCE=')
+    ? null
+    : line);
+  assertCredentialError(
+    () => loadOnlineProviderCredentials(missing.file),
+    'credential_provider_incomplete',
+  );
+
+  const unknown = credentialFixture();
+  rewriteCredential(unknown.file, line => line.startsWith('XIAOBA_BENCH_DEEPSEEK_CACHE_READ_SOURCE=')
+    ? 'XIAOBA_BENCH_DEEPSEEK_CACHE_READ_SOURCE=unknown.field'
+    : line);
+  assertCredentialError(
+    () => loadOnlineProviderCredentials(unknown.file),
+    'credential_value_invalid',
+  );
+});
+
 test('online manifest counts the production memory branch for every capped task', () => {
   const { file } = credentialFixture();
-  const credential = loadOnlineProviderCredentials(file)[0];
+  const credentials = loadOnlineProviderCredentials(file);
+  const credential = credentials[0];
   const manifest = buildOnlineCacheBenchmarkManifest(credential, 24);
+  const deepSeekManifest = buildOnlineCacheBenchmarkManifest(credentials[1], 24);
 
+  assert.equal(manifest.benchmark_profile, 'calibration');
+  assert.match(manifest.workload_contract_fingerprint || '', /^sha256:[a-f0-9]{64}$/u);
+  assert.equal(
+    manifest.workload_contract_fingerprint,
+    deepSeekManifest.workload_contract_fingerprint,
+  );
   assert.equal(manifest.criteria.include_cold_in_primary_ratio, false);
   assert.equal(manifest.cases.length, 8);
   assert.equal(new Set(manifest.cases.map(entry => entry.task_id)).size, 4);
@@ -228,25 +272,83 @@ test('online benchmark gives every case and round an explicit cache-cold partiti
 test('online CLI error projection never emits arbitrary error text', () => {
   assert.equal(safeOnlineBenchmarkErrorCode(new Error('SECRET_PROMPT_BODY')), 'online_benchmark_failed');
   assert.equal(safeOnlineBenchmarkErrorCode(new Error('artifact_drift_before_run')), 'artifact_drift_before_run');
+  assert.equal(safeOnlineBenchmarkErrorCode(new Error('artifact_changed_during_scan')), 'artifact_changed_during_scan');
+  assert.equal(
+    safeOnlineBenchmarkErrorCode(new Error('benchmark_environment_override_forbidden')),
+    'benchmark_environment_override_forbidden',
+  );
+  assert.equal(
+    safeOnlineBenchmarkErrorCode(new Error('benchmark_node_invocation_forbidden')),
+    'benchmark_node_invocation_forbidden',
+  );
 });
 
-test('online artifact fingerprint covers executable code, prompts, and dependency metadata', () => {
+test('online artifact fingerprint covers executable code, prompts, installed dependencies, and metadata', () => {
   const root = makeTemporaryDirectory('cache-artifact-');
   fs.mkdirSync(path.join(root, 'dist'));
   fs.mkdirSync(path.join(root, 'prompts'));
+  fs.mkdirSync(path.join(root, 'node_modules', 'example'), { recursive: true });
   fs.writeFileSync(path.join(root, 'dist', 'main.js'), 'first');
   fs.writeFileSync(path.join(root, 'prompts', 'system.md'), 'policy');
   fs.writeFileSync(path.join(root, 'package.json'), '{}');
   fs.writeFileSync(path.join(root, 'package-lock.json'), '{}');
+  fs.writeFileSync(path.join(root, 'node_modules', 'example', 'package.json'), '{"version":"1.0.0"}');
+  fs.writeFileSync(path.join(root, 'node_modules', 'example', 'index.js'), 'module.exports = 1;');
 
   const first = fingerprintOnlineBenchmarkArtifact(root);
   assert.match(first, /^sha256:[a-f0-9]{64}$/);
   fs.writeFileSync(path.join(root, 'prompts', 'system.md'), 'changed policy');
   assert.notEqual(fingerprintOnlineBenchmarkArtifact(root), first);
+  const beforeInstalledMutation = fingerprintOnlineBenchmarkArtifact(root);
+  fs.writeFileSync(path.join(root, 'node_modules', 'example', 'index.js'), 'module.exports = 2;');
+  assert.notEqual(fingerprintOnlineBenchmarkArtifact(root), beforeInstalledMutation);
 
   const link = path.join(root, 'dist', 'linked.js');
   fs.symlinkSync(path.join(root, 'dist', 'main.js'), link);
   assert.throws(() => fingerprintOnlineBenchmarkArtifact(root), /artifact_symlink_invalid/);
+});
+
+test('online artifact fingerprint follows a repository-external node_modules root and rejects escaping links', () => {
+  const root = makeTemporaryDirectory('cache-artifact-root-');
+  const dependencies = makeTemporaryDirectory('cache-artifact-dependencies-');
+  fs.mkdirSync(path.join(root, 'dist'));
+  fs.mkdirSync(path.join(root, 'prompts'));
+  fs.mkdirSync(path.join(dependencies, 'example'));
+  fs.writeFileSync(path.join(root, 'dist', 'main.js'), 'first');
+  fs.writeFileSync(path.join(root, 'prompts', 'system.md'), 'policy');
+  fs.writeFileSync(path.join(root, 'package.json'), '{}');
+  fs.writeFileSync(path.join(root, 'package-lock.json'), '{}');
+  fs.writeFileSync(path.join(dependencies, 'example', 'index.js'), 'module.exports = 1;');
+  fs.symlinkSync(dependencies, path.join(root, 'node_modules'));
+
+  const first = fingerprintOnlineBenchmarkArtifact(root);
+  fs.writeFileSync(path.join(dependencies, 'example', 'index.js'), 'module.exports = 2;');
+  assert.notEqual(fingerprintOnlineBenchmarkArtifact(root), first);
+
+  const outside = path.join(root, 'outside.js');
+  fs.writeFileSync(outside, 'outside');
+  fs.symlinkSync(outside, path.join(dependencies, 'example', 'escape.js'));
+  assert.throws(() => fingerprintOnlineBenchmarkArtifact(root), /artifact_symlink_invalid/);
+});
+
+test('online runtime fingerprint binds Node engine and host architecture', () => {
+  const base = {
+    schema: 'xiaoba.online_benchmark_runtime.v1' as const,
+    platform: process.platform,
+    arch: process.arch,
+    release: { name: 'node', lts: null },
+    versions: { node: '24.0.0', v8: '13.0', openssl: '3.0' },
+  };
+  const first = fingerprintOnlineBenchmarkRuntimeContract(base);
+  assert.match(first, /^sha256:[a-f0-9]{64}$/);
+  assert.notEqual(fingerprintOnlineBenchmarkRuntimeContract({
+    ...base,
+    versions: { ...base.versions, node: '24.0.1' },
+  }), first);
+  assert.notEqual(fingerprintOnlineBenchmarkRuntimeContract({
+    ...base,
+    arch: `${base.arch}-other`,
+  }), first);
 });
 
 test('strict credential loader rejects weak modes, unknown keys, and symlinks', () => {
@@ -890,6 +992,179 @@ test('fresh runtime bootstrap is private and cannot reuse an existing session ro
   }
 });
 
+test('online benchmark seals prompts, dotenv, profile, config, identity, and runtime paths', () => {
+  const artifactRoot = makeTemporaryDirectory('cache-environment-artifact-');
+  fs.mkdirSync(path.join(artifactRoot, 'prompts'));
+  const runtime = path.join(makeTemporaryDirectory('cache-environment-runtime-parent-'), 'runtime');
+  prepareFreshRuntimeDataDirectory(runtime);
+  const env: NodeJS.ProcessEnv = {};
+  const paths = sealOnlineBenchmarkEnvironment(artifactRoot, runtime, env, []);
+
+  assert.equal(env.XIAOBA_PROMPTS_DIR, path.join(artifactRoot, 'prompts'));
+  assert.equal(env.CATSCO_PROMPTS_DIR, path.join(artifactRoot, 'prompts'));
+  assert.equal(env.XIAOBA_USER_DATA_DIR, runtime);
+  assert.equal(env.XIAOBA_SKILLS_DIR, path.join(runtime, 'skills'));
+  assert.equal(env.CURRENT_PLATFORM, 'CatsCo');
+  assert.equal(env.CURRENT_AGENT_DISPLAY_NAME, 'Cache Benchmark Agent');
+  assert.equal(fs.readFileSync(paths.dotenvPath, 'utf8'), '# sealed cache benchmark environment\n');
+  assert.equal(fs.readFileSync(paths.runtimeProfilePath, 'utf8'), '{"schemaVersion":1,"profile":{}}\n');
+  assert.equal(fs.readFileSync(paths.configPath, 'utf8'), '{}\n');
+  assertSealedOnlineBenchmarkEnvironment(paths, env, []);
+
+  env.XIAOBA_PROMPTS_DIR = path.join(runtime, 'unbound-prompts');
+  assert.throws(
+    () => assertSealedOnlineBenchmarkEnvironment(paths, env, []),
+    /benchmark_environment_invalid/,
+  );
+});
+
+test('online benchmark rejects inherited input overrides and Node startup hooks', () => {
+  assert.throws(
+    () => assertCleanOnlineBenchmarkInvocation({ XIAOBA_PROMPTS_DIR: '/tmp/unbound' }, []),
+    /benchmark_environment_override_forbidden/,
+  );
+  assert.throws(
+    () => assertCleanOnlineBenchmarkInvocation({ NODE_PATH: '/tmp/unbound' }, []),
+    /benchmark_node_invocation_forbidden/,
+  );
+  assert.throws(
+    () => assertCleanOnlineBenchmarkInvocation({}, ['--require', '/tmp/unbound.cjs']),
+    /benchmark_node_invocation_forbidden/,
+  );
+  for (const key of [
+    'NODE_PRESERVE_SYMLINKS',
+    'NODE_TLS_REJECT_UNAUTHORIZED',
+    'LD_AUDIT',
+    'OPENSSL_MODULES',
+    'SSL_CERT_FILE',
+  ]) {
+    assert.throws(
+      () => assertCleanOnlineBenchmarkInvocation({ [key]: '1' }, []),
+      /benchmark_node_invocation_forbidden/,
+      key,
+    );
+  }
+});
+
+test('compiled online CLI fails before creating evidence for prompt, profile, dotenv, and Node hooks', () => {
+  const executable = path.join(process.cwd(), 'dist', 'cache-benchmark', 'online-cli.js');
+  const external = makeTemporaryDirectory('cache-environment-external-');
+  const base = onlineCliFixtureArguments();
+  const cases = [
+    ['XIAOBA_PROMPTS_DIR', external, 'benchmark_environment_override_forbidden'],
+    ['XIAOBA_RUNTIME_PROFILE_PATH', path.join(external, 'profile.json'), 'benchmark_environment_override_forbidden'],
+    ['DOTENV_CONFIG_PATH', path.join(external, '.env'), 'benchmark_environment_override_forbidden'],
+    ['XIAOBA_TEST_RUNNER', '1', 'benchmark_environment_override_forbidden'],
+    ['XIAOBA_TEST_SANDBOX_ROOT', external, 'benchmark_environment_override_forbidden'],
+    ['XIAOBA_TEST_DEFAULT_DATA_DIR', base.runtimeDataDirectory, 'benchmark_environment_override_forbidden'],
+    ['XIAOBA_TARGET_ALIAS_SECRET', 'external-secret', 'benchmark_environment_override_forbidden'],
+    ['NODE_PATH', external, 'benchmark_node_invocation_forbidden'],
+    ['NODE_PRESERVE_SYMLINKS', '1', 'benchmark_node_invocation_forbidden'],
+    ['NODE_TLS_REJECT_UNAUTHORIZED', '0', 'benchmark_node_invocation_forbidden'],
+    ['LD_AUDIT', external, 'benchmark_node_invocation_forbidden'],
+    ['SSL_CERT_FILE', path.join(external, 'ca.pem'), 'benchmark_node_invocation_forbidden'],
+  ] as const;
+  for (const [key, value, code] of cases) {
+    const run = spawnSync(process.execPath, [executable, ...base.argv], {
+      encoding: 'utf8',
+      env: cleanOnlineSubprocessEnvironment({ [key]: value }),
+    });
+    assert.equal(run.status, 2, `${key}: ${run.stderr}`);
+    assert.equal(run.stdout, '');
+    assert.equal(run.stderr, `{"status":"failed","code":"${code}"}\n`);
+    assert.equal(fs.existsSync(base.outputDirectory), false);
+    assert.equal(fs.existsSync(base.runtimeDataDirectory), false);
+  }
+});
+
+test('compiled online CLI rejects environment and argv preloads before evidence creation', () => {
+  const executable = path.join(process.cwd(), 'dist', 'cache-benchmark', 'online-cli.js');
+  const fixture = onlineCliFixtureArguments();
+  const directory = makeTemporaryDirectory('cache-node-hook-');
+  const preload = path.join(directory, 'preload.cjs');
+  const marker = path.join(directory, 'preload.marker');
+  fs.writeFileSync(preload, "require('node:fs').writeFileSync(process.env.CACHE_HOOK_MARKER, 'ran');\n");
+
+  const fromEnvironment = spawnSync(process.execPath, [executable, ...fixture.argv], {
+    encoding: 'utf8',
+    env: cleanOnlineSubprocessEnvironment({
+      NODE_OPTIONS: `--require=${preload}`,
+      CACHE_HOOK_MARKER: marker,
+    }),
+  });
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'ran');
+  assert.equal(fromEnvironment.status, 2);
+  assert.equal(
+    fromEnvironment.stderr,
+    '{"status":"failed","code":"benchmark_node_invocation_forbidden"}\n',
+  );
+  fs.unlinkSync(marker);
+
+  const fromArgv = spawnSync(process.execPath, ['--require', preload, executable, ...fixture.argv], {
+    encoding: 'utf8',
+    env: cleanOnlineSubprocessEnvironment({ CACHE_HOOK_MARKER: marker }),
+  });
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'ran');
+  assert.equal(fromArgv.status, 2);
+  assert.equal(fromArgv.stderr, '{"status":"failed","code":"benchmark_node_invocation_forbidden"}\n');
+  assert.equal(fs.existsSync(fixture.outputDirectory), false);
+  assert.equal(fs.existsSync(fixture.runtimeDataDirectory), false);
+});
+
+test('self-erasing preload is confined to the bootstrap and cannot enter the sealed child', () => {
+  const executable = path.join(process.cwd(), 'dist', 'cache-benchmark', 'online-cli.js');
+  const fixture = onlineCliFixtureArguments();
+  const directory = makeTemporaryDirectory('cache-self-erasing-hook-');
+  const preload = path.join(directory, 'self-erasing.cjs');
+  const marker = path.join(directory, 'preload.pids');
+  fs.writeFileSync(preload, [
+    "require('node:fs').appendFileSync(process.env.CACHE_HOOK_MARKER, `${process.pid}\\n`);",
+    'delete process.env.NODE_OPTIONS;',
+    'process.execArgv.splice(0);',
+    '',
+  ].join('\n'));
+
+  const run = spawnSync(process.execPath, [executable, ...fixture.argv], {
+    encoding: 'utf8',
+    env: cleanOnlineSubprocessEnvironment({
+      NODE_OPTIONS: `--require=${preload}`,
+      CACHE_HOOK_MARKER: marker,
+    }),
+  });
+
+  assert.equal(run.status, 2, run.stderr);
+  assert.equal(run.stdout, '');
+  assert.equal(run.stderr, '{"status":"failed","code":"credential_path_invalid"}\n');
+  assert.equal(fs.readFileSync(marker, 'utf8').trim().split(/\r?\n/u).length, 1);
+  assert.equal(fs.existsSync(fixture.outputDirectory), false);
+  assert.equal(fs.existsSync(fixture.runtimeDataDirectory), true);
+});
+
+test('compiled online CLI reaches the sealed runner with no inherited overrides', () => {
+  const executable = path.join(process.cwd(), 'dist', 'cache-benchmark', 'online-cli.js');
+  const fixture = onlineCliFixtureArguments();
+  const run = spawnSync(process.execPath, [executable, ...fixture.argv], {
+    encoding: 'utf8',
+    env: cleanOnlineSubprocessEnvironment(),
+  });
+
+  assert.equal(run.status, 2, run.stderr);
+  assert.equal(run.stdout, '');
+  assert.equal(run.stderr, '{"status":"failed","code":"credential_path_invalid"}\n');
+  assert.equal(fs.existsSync(fixture.outputDirectory), false);
+  assert.equal(fs.existsSync(fixture.runtimeDataDirectory), true);
+  assert.equal(
+    fs.readFileSync(path.join(fixture.runtimeDataDirectory, '.cache-benchmark.env'), 'utf8'),
+    '# sealed cache benchmark environment\n',
+  );
+  if (process.platform !== 'win32') {
+    assert.equal(
+      fs.statSync(path.join(fixture.runtimeDataDirectory, '.cache-benchmark.env')).mode & 0o777,
+      0o400,
+    );
+  }
+});
+
 test('sealed memory fixture reads only its held source and detects in-place restoration', async () => {
   const workspace = makeTemporaryDirectory('sealed-memory-workspace-');
   if (process.platform !== 'win32') fs.chmodSync(workspace, 0o700);
@@ -1119,6 +1394,7 @@ function credentialFixture(extra = ''): { directory: string; file: string } {
     'XIAOBA_BENCH_DEEPSEEK_API_KEY=test-deepseek-key',
     'XIAOBA_BENCH_DEEPSEEK_BASE_URL=https://deepseek.example.test/v1',
     'XIAOBA_BENCH_DEEPSEEK_MODEL=model-deepseek',
+    'XIAOBA_BENCH_DEEPSEEK_CACHE_READ_SOURCE=openai.prompt_tokens_details.cached_tokens',
     extra.trimEnd(),
   ].filter(Boolean).join('\n') + '\n', { mode: 0o600 });
   fs.chmodSync(file, 0o600);
@@ -1129,6 +1405,47 @@ function assertCredentialError(operation: () => unknown, code: string): void {
   assert.throws(operation, (error: unknown) => (
     error instanceof OnlineCredentialError && error.code === code
   ));
+}
+
+function rewriteCredential(file: string, transform: (line: string) => string | null): void {
+  const lines = fs.readFileSync(file, 'utf8').trimEnd().split('\n')
+    .map(transform)
+    .filter((line): line is string => line !== null);
+  fs.writeFileSync(file, `${lines.join('\n')}\n`, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+}
+
+function onlineCliFixtureArguments(): {
+  argv: string[];
+  outputDirectory: string;
+  runtimeDataDirectory: string;
+} {
+  const parent = makeTemporaryDirectory('cache-online-cli-environment-');
+  const outputDirectory = path.join(parent, 'evidence');
+  const runtimeDataDirectory = path.join(parent, 'runtime');
+  return {
+    argv: [
+      '--credentials', path.join(parent, 'missing-credentials.env'),
+      '--output-dir', outputDirectory,
+      '--runtime-data-dir', runtimeDataDirectory,
+      '--provider', 'newcli',
+      '--round', '1',
+      '--warm-calls', '1',
+    ],
+    outputDirectory,
+    runtimeDataDirectory,
+  };
+}
+
+function cleanOnlineSubprocessEnvironment(
+  additions: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of onlineBenchmarkInheritedChildEnvKeys()) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return { ...env, ...additions };
 }
 
 function makeTemporaryDirectory(prefix: string): string {

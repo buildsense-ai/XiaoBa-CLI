@@ -1,8 +1,19 @@
 #!/usr/bin/env node
 
+import { randomBytes } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fingerprintOnlineBenchmarkArtifact } from './online-artifact';
+import {
+  assertCleanOnlineBenchmarkInvocation,
+  onlineBenchmarkInheritedChildEnvKeys,
+  sealOnlineBenchmarkEnvironment,
+} from './online-environment';
+
+const SEALED_CHILD_FLAG = '--cache-benchmark-sealed-child';
+const BOOTSTRAP_NONCE_ENV = 'XIAOBA_CACHE_BENCHMARK_BOOTSTRAP_NONCE';
+const BOOTSTRAP_PARENT_ENV = 'XIAOBA_CACHE_BENCHMARK_BOOTSTRAP_PARENT_PID';
 
 interface OnlineCliOptions {
   credentialPath: string;
@@ -14,19 +25,26 @@ interface OnlineCliOptions {
 }
 
 export async function runOnlineCacheBenchmarkCli(argv: string[]): Promise<0 | 1 | 2> {
+  if (argv[0] !== SEALED_CHILD_FLAG) {
+    return runOnlineCacheBenchmarkBootstrap(argv);
+  }
   try {
-    const options = parseArguments(argv);
+    const childArgv = validateSealedChildBootstrap(argv);
+    const options = parseArguments(childArgv);
+    assertCleanOnlineBenchmarkInvocation();
     const artifactRootDirectory = path.resolve(__dirname, '../..');
     const expectedArtifactFingerprint = fingerprintOnlineBenchmarkArtifact(artifactRootDirectory);
     prepareFreshRuntimeDataDirectory(options.runtimeDataDirectory);
-    process.env.XIAOBA_USER_DATA_DIR = options.runtimeDataDirectory;
-    process.env.XIAOBA_SKILLS_DIR = path.join(options.runtimeDataDirectory, 'skills');
+    const environment = sealOnlineBenchmarkEnvironment(
+      artifactRootDirectory,
+      options.runtimeDataDirectory,
+    );
     const { runOnlineCacheBenchmark } = await import('./online-runner');
     const result = await runOnlineCacheBenchmark({
       ...options,
       artifactRootDirectory,
       expectedArtifactFingerprint,
-      skillsDirectory: process.env.XIAOBA_SKILLS_DIR,
+      skillsDirectory: environment.skillsDirectory,
       onProgress: progress => {
         process.stdout.write(`${JSON.stringify({
           provider: progress.provider,
@@ -56,6 +74,51 @@ export async function runOnlineCacheBenchmarkCli(argv: string[]): Promise<0 | 1 
     })}\n`);
     return 2;
   }
+}
+
+function runOnlineCacheBenchmarkBootstrap(argv: string[]): 0 | 1 | 2 {
+  try {
+    assertCleanOnlineBenchmarkInvocation();
+    const nonce = randomBytes(32).toString('hex');
+    const env: NodeJS.ProcessEnv = {};
+    for (const key of onlineBenchmarkInheritedChildEnvKeys()) {
+      const value = process.env[key];
+      if (value !== undefined) env[key] = value;
+    }
+    env[BOOTSTRAP_NONCE_ENV] = nonce;
+    env[BOOTSTRAP_PARENT_ENV] = String(process.pid);
+    const child = spawnSync(
+      process.execPath,
+      [__filename, SEALED_CHILD_FLAG, nonce, ...argv],
+      { env, stdio: 'inherit', shell: false },
+    );
+    if (child.error || child.signal || (child.status !== 0 && child.status !== 1 && child.status !== 2)) {
+      throw new Error('benchmark_bootstrap_failed');
+    }
+    return child.status;
+  } catch (error: any) {
+    process.stderr.write(`${JSON.stringify({
+      status: 'failed',
+      code: safeOnlineBenchmarkErrorCode(error),
+    })}\n`);
+    return 2;
+  }
+}
+
+function validateSealedChildBootstrap(argv: string[]): string[] {
+  const nonce = argv[1];
+  const expectedNonce = String(process.env[BOOTSTRAP_NONCE_ENV] || '');
+  const expectedParent = Number(process.env[BOOTSTRAP_PARENT_ENV]);
+  if (
+    !/^[a-f0-9]{64}$/u.test(String(nonce || ''))
+    || nonce !== expectedNonce
+    || !Number.isSafeInteger(expectedParent)
+    || expectedParent < 1
+    || process.ppid !== expectedParent
+  ) throw new Error('benchmark_bootstrap_invalid');
+  delete process.env[BOOTSTRAP_NONCE_ENV];
+  delete process.env[BOOTSTRAP_PARENT_ENV];
+  return argv.slice(2);
 }
 
 function parseArguments(argv: string[]): OnlineCliOptions {
@@ -121,6 +184,7 @@ export function safeOnlineBenchmarkErrorCode(error: unknown): string {
 const SAFE_ERROR_CODES = new Set([
   'arguments_invalid',
   'artifact_directory_invalid',
+  'artifact_changed_during_scan',
   'artifact_drift_before_run',
   'artifact_drift_during_round',
   'artifact_empty',
@@ -131,6 +195,11 @@ const SAFE_ERROR_CODES = new Set([
   'benchmark_partition_case_invalid',
   'benchmark_partition_nonce_invalid',
   'benchmark_partition_round_invalid',
+  'benchmark_environment_invalid',
+  'benchmark_environment_override_forbidden',
+  'benchmark_node_invocation_forbidden',
+  'benchmark_bootstrap_failed',
+  'benchmark_bootstrap_invalid',
   'benchmark_memory_fixture_closed',
   'benchmark_memory_fixture_invalid',
   'benchmark_memory_fixture_path_invalid',

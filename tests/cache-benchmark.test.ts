@@ -55,6 +55,32 @@ describe('cache benchmark evidence scorer', () => {
     assert.equal(result.rounds[0].cells[0].all_read_ratio, 0.94);
   });
 
+  test('never promotes an explicit calibration profile to final acceptance', () => {
+    const manifest = fixtureManifest();
+    manifest.benchmark_profile = 'calibration';
+    manifest.workload_contract_fingerprint = `sha256:${'c'.repeat(64)}`;
+    const result = scoreRounds(manifest, [1, 2, 3].map(round => buildRound(manifest, round)));
+
+    assert.equal(result.status, 'incomplete');
+    assert.equal(result.exit_code, 1);
+    assert.deepEqual(result.qualifying_rounds, [1, 2, 3]);
+    assert.deepEqual(result.reasons, ['calibration_only']);
+  });
+
+  test('does not let calibration_only hide a real ratio failure', () => {
+    const manifest = fixtureManifest();
+    manifest.benchmark_profile = 'calibration';
+    manifest.workload_contract_fingerprint = `sha256:${'c'.repeat(64)}`;
+    const rounds = [1, 2, 3].map(round => buildRound(manifest, round));
+    setProviderUsage(rounds[2].attempts[rounds[2].attempts.length - 1], 250, 234);
+    const result = scoreRounds(manifest, rounds);
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.exit_code, 1);
+    assert.ok(result.reasons.includes('minimum_read_ratio_not_met'));
+    assert.equal(result.reasons.includes('calibration_only'), false);
+  });
+
   test('passes the exact 94% water-filled boundary across many uneven tasks', () => {
     const manifest = fixtureManifest();
     const templates = structuredClone(manifest.cases);

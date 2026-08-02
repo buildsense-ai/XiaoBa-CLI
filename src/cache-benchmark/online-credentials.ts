@@ -9,6 +9,7 @@ const ALLOWED_KEYS = new Set([
   'XIAOBA_BENCH_DEEPSEEK_API_KEY',
   'XIAOBA_BENCH_DEEPSEEK_BASE_URL',
   'XIAOBA_BENCH_DEEPSEEK_MODEL',
+  'XIAOBA_BENCH_DEEPSEEK_CACHE_READ_SOURCE',
 ]);
 
 export type OnlineProviderAlias = 'newcli' | 'deepseek';
@@ -56,12 +57,18 @@ export function loadOnlineProviderCredentials(filePath: string): OnlineProviderC
       alias: 'deepseek',
       prefix: 'XIAOBA_BENCH_DEEPSEEK_',
       apiType: 'openai-chat-completions',
-      // The supplied DeepSeek v4-compatible surface currently reports the
-      // standard nested OpenAI field. The provider parser still supports the
-      // documented top-level DeepSeek field when it is actually present.
-      cacheReadSource: 'openai.prompt_tokens_details.cached_tokens',
+      cacheReadSource: deepSeekCacheReadSource(values),
     }),
   ];
+}
+
+function deepSeekCacheReadSource(values: Map<string, string>): CacheReadSource {
+  const value = values.get('XIAOBA_BENCH_DEEPSEEK_CACHE_READ_SOURCE');
+  if (
+    value !== 'openai.prompt_tokens_details.cached_tokens'
+    && value !== 'deepseek.prompt_cache_hit_tokens'
+  ) fail(value === undefined ? 'credential_provider_incomplete' : 'credential_value_invalid');
+  return value;
 }
 
 function readPrivateCredentialFile(filePath: string): string {

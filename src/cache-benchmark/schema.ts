@@ -14,6 +14,7 @@ import {
   CacheBenchmarkCriteria,
   CacheBenchmarkInputError,
   CacheBenchmarkManifest,
+  CacheBenchmarkProfile,
   CacheBenchmarkRoundEvidence,
   CacheBenchmarkRoundHeader,
   CacheBenchmarkRun,
@@ -39,17 +40,30 @@ export function parseManifestJson(source: string): CacheBenchmarkManifest {
 }
 
 export function parseManifest(value: unknown): CacheBenchmarkManifest {
-  const record = exactRecord(value, ['schema', 'suite_id', 'criteria', 'cases']);
+  const record = exactRecord(
+    value,
+    ['schema', 'suite_id', 'criteria', 'cases'],
+    ['benchmark_profile', 'workload_contract_fingerprint'],
+  );
   if (record.schema !== CACHE_BENCHMARK_MANIFEST_SCHEMA) invalid();
   const suiteId = identifier(record.suite_id);
   const criteria = parseCriteria(record.criteria);
   if (!Array.isArray(record.cases) || record.cases.length === 0) invalid();
   const cases = record.cases.map(parseCase);
+  const benchmarkProfile = record.benchmark_profile === undefined
+    ? undefined
+    : enumeration(record.benchmark_profile, ['calibration', 'acceptance'] as const);
+  const workloadContractFingerprint = record.workload_contract_fingerprint === undefined
+    ? undefined
+    : fingerprint(record.workload_contract_fingerprint);
+  if ((benchmarkProfile === undefined) !== (workloadContractFingerprint === undefined)) invalid();
   assertUnique(cases.map(entry => entry.case_id));
   assertHomogeneousCells(cases);
   return {
     schema: CACHE_BENCHMARK_MANIFEST_SCHEMA,
     suite_id: suiteId,
+    ...(benchmarkProfile ? { benchmark_profile: benchmarkProfile } : {}),
+    ...(workloadContractFingerprint ? { workload_contract_fingerprint: workloadContractFingerprint } : {}),
     criteria,
     cases,
   };
@@ -477,6 +491,7 @@ function invalid(): never {
 
 export type {
   AttemptOutcome,
+  CacheBenchmarkProfile,
   CacheClass,
   CacheReadSource,
 };

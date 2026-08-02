@@ -27,7 +27,14 @@ export function fingerprintManifest(manifest: CacheBenchmarkManifest): string {
 }
 
 export function fingerprintConfig(manifest: CacheBenchmarkManifest): string {
-  return fingerprintCanonical(manifest.criteria);
+  if (!manifest.benchmark_profile || !manifest.workload_contract_fingerprint) {
+    return fingerprintCanonical(manifest.criteria);
+  }
+  return fingerprintCanonical({
+    benchmark_profile: manifest.benchmark_profile,
+    workload_contract_fingerprint: manifest.workload_contract_fingerprint,
+    criteria: manifest.criteria,
+  });
 }
 
 export function fingerprintLedger(ledger: CacheBenchmarkLedger): string {
@@ -36,6 +43,28 @@ export function fingerprintLedger(ledger: CacheBenchmarkLedger): string {
 
 export function fingerprintRoundEvidence(round: CacheBenchmarkRoundEvidence): string {
   return fingerprintCanonical({ header: round.header, attempts: round.attempts });
+}
+
+/** Recomputes the provider-neutral workload contract from concrete cases. */
+export function fingerprintBenchmarkWorkloadContract(
+  cases: readonly CacheBenchmarkCase[],
+): string {
+  const projections = cases.map(entry => ({
+    surface: entry.surface,
+    task_id: entry.task_id,
+    task_fixture_fingerprint: entry.task_fixture_fingerprint,
+    oracle_contract_fingerprint: entry.oracle_contract_fingerprint,
+    execution_plan_fingerprint: entry.execution_plan_fingerprint,
+    scenario_family: entry.scenario_family,
+    session_type: entry.session_type,
+    execution_role: entry.execution_role,
+    capabilities: [...entry.capabilities].sort(compareStrings),
+    runs: [...entry.runs].sort(compareRuns),
+  })).sort((left, right) => compareStrings(canonicalJson(left), canonicalJson(right)));
+  return fingerprintCanonical({
+    schema: 'xiaoba.cache_benchmark_workload_contract.v1',
+    cases: projections,
+  });
 }
 
 export function normalizeManifest(manifest: CacheBenchmarkManifest): CacheBenchmarkManifest {

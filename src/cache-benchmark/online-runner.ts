@@ -11,6 +11,7 @@ import type {
   StreamCallbacks,
 } from '../providers/provider';
 import { AIService } from '../utils/ai-service';
+import { PathResolver } from '../utils/path-resolver';
 import { ToolManager } from '../tools/tool-manager';
 import { createAdapterRuntime } from '../runtime/adapter-runtime';
 import { MessageSessionManager } from '../core/message-session-manager';
@@ -43,6 +44,7 @@ import {
   AttemptCapabilityAttestor,
 } from './capability-attestor';
 import {
+  fingerprintBenchmarkWorkloadContract,
   fingerprintCanonical,
   fingerprintConfig,
   fingerprintManifest,
@@ -54,6 +56,10 @@ import {
   type OnlineProviderCredential,
 } from './online-credentials';
 import { fingerprintOnlineBenchmarkArtifact } from './online-artifact';
+import {
+  assertSealedOnlineBenchmarkEnvironment,
+  resolveOnlineBenchmarkEnvironmentPaths,
+} from './online-environment';
 import { OnlineBenchmarkRunLease } from './online-run-lease';
 import {
   createSealedMemoryFixture,
@@ -174,6 +180,11 @@ export async function runOnlineCacheBenchmark(
   options: OnlineCacheBenchmarkOptions,
 ): Promise<OnlineCacheBenchmarkRunResult> {
   validateOptions(options);
+  const environment = resolveOnlineBenchmarkEnvironmentPaths(
+    options.artifactRootDirectory,
+    options.runtimeDataDirectory,
+  );
+  assertSealedOnlineBenchmarkEnvironment(environment);
   assertBootstrappedRuntimePaths(options);
   prepareBenchmarkSkill(options.skillsDirectory);
   const credential = loadOnlineProviderCredentials(options.credentialPath)
@@ -312,6 +323,7 @@ export async function runOnlineCacheBenchmark(
       }
     });
 
+    assertSealedOnlineBenchmarkEnvironment(environment);
     if (fingerprintOnlineBenchmarkArtifact(options.artifactRootDirectory) !== artifactFingerprint) {
       throw new Error('artifact_drift_during_round');
     }
@@ -385,7 +397,6 @@ export function buildOnlineCacheBenchmarkManifest(
         'AgentSession.handleRuntimeObservation',
       ],
       retries: 0,
-      maxOutputTokens: maxOutputTokensFor(credential.alias),
       reasoningMode: 'provider-default',
       cachePartition: 'case-round-and-reserved-run-nonce-system-prefix-v3',
     };
@@ -423,6 +434,8 @@ export function buildOnlineCacheBenchmarkManifest(
   return {
     schema: CACHE_BENCHMARK_MANIFEST_SCHEMA,
     suite_id: `xiaoba-online-${credential.alias}-v3`,
+    benchmark_profile: 'calibration',
+    workload_contract_fingerprint: fingerprintBenchmarkWorkloadContract(cases),
     criteria: {
       minimum_read_ratio: 0.94,
       consecutive_rounds: 3,
@@ -989,6 +1002,13 @@ function prepareBenchmarkSkill(skillsDirectory: string): void {
 function assertBootstrappedRuntimePaths(options: OnlineCacheBenchmarkOptions): void {
   const runtime = path.resolve(options.runtimeDataDirectory);
   const skills = path.resolve(options.skillsDirectory);
+  const resolution = PathResolver.resolveRuntimeDataRoot(process.env, process.cwd());
+  if (
+    path.resolve(resolution.path) !== runtime
+    || resolution.source !== 'XIAOBA_USER_DATA_DIR'
+  ) {
+    throw new Error('runtime_data_not_bootstrapped');
+  }
   if (path.resolve(process.env.XIAOBA_USER_DATA_DIR || '') !== runtime) {
     throw new Error('runtime_data_not_bootstrapped');
   }
@@ -998,6 +1018,25 @@ function assertBootstrappedRuntimePaths(options: OnlineCacheBenchmarkOptions): v
   if (skills !== path.join(runtime, 'skills')) {
     throw new Error('skills_path_outside_runtime');
   }
+  const derivedRoots = [
+    PathResolver.getRuntimeDataRoot(),
+    PathResolver.getDataPath(),
+    PathResolver.getLogsPath(),
+    PathResolver.getPromptOverridesPath(),
+    PathResolver.getSkillsPath(),
+    PathResolver.getUserDataSkillsPath(),
+    path.join(PathResolver.getRuntimeDataRoot(), 'state'),
+  ].map(value => path.resolve(value));
+  if (
+    derivedRoots[0] !== runtime
+    || derivedRoots[1] !== path.join(runtime, 'data')
+    || derivedRoots[2] !== path.join(runtime, 'logs')
+    || derivedRoots[3] !== path.join(runtime, 'prompt-overrides')
+    || derivedRoots[4] !== skills
+    || derivedRoots[5] !== skills
+    || derivedRoots[6] !== path.join(runtime, 'state')
+    || derivedRoots.some(value => !isPathInside(value, runtime))
+  ) throw new Error('runtime_data_not_bootstrapped');
   const marker = path.join(runtime, '.cache-benchmark-runtime-v1');
   const runtimeStat = fs.lstatSync(runtime);
   const skillsStat = fs.lstatSync(skills);
@@ -1012,6 +1051,11 @@ function assertBootstrappedRuntimePaths(options: OnlineCacheBenchmarkOptions): v
     || (skillsStat.mode & 0o777) !== 0o700
     || (markerStat.mode & 0o777) !== 0o600
   )) throw new Error('runtime_data_not_private');
+}
+
+function isPathInside(candidate: string, parent: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function prepareSyntheticWorkspace(runtimeDataDirectory: string): string {
