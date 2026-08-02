@@ -2,6 +2,7 @@ import { ContentBlock } from './index';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
+  ScopedDeviceGrantSnapshot,
   ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
@@ -125,6 +126,8 @@ export interface ThinToolRpcRequest {
   targetOwnerUserId: string;
   targetDeviceId: string;
   toolName: string;
+  operation: ScopedDeviceGrant['operations'][number];
+  grant: ScopedDeviceGrant;
   args: Record<string, unknown>;
   timeoutMs?: number;
 }
@@ -236,6 +239,8 @@ export interface ToolExecutionContext {
   localDeviceGrant?: ScopedLocalDeviceGrant;
   /** 当前 turn 已授权的用户设备资源，供未来远程设备工具校验。 */
   deviceGrants?: ScopedDeviceGrant[];
+  /** 当前 turn 的完整设备授权快照；仅用于同一 run 内的单调替换。 */
+  deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
   /** 服务端为当前 turn 选定的用户设备，或明确要求先选择设备。 */
   deviceSelection?: ScopedDeviceSelection;
   /** CatsCo 远程设备 RPC 通道。工具只能通过窄接口请求后端选定设备执行。 */

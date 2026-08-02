@@ -1,4 +1,10 @@
-import type { ExecutionScope, MessageEnvelope, ScopedDeviceGrant, ScopedDeviceSelection } from '../types/session-identity';
+import type {
+  ExecutionScope,
+  MessageEnvelope,
+  ScopedDeviceGrant,
+  ScopedDeviceGrantSnapshot,
+  ScopedDeviceSelection,
+} from '../types/session-identity';
 import type { TargetRoutes } from '../types/tool';
 
 /**
@@ -53,6 +59,8 @@ export interface ParsedCatsMessage {
   executionScope: ExecutionScope;
   /** 服务端签发的当前 turn 用户设备授权 */
   deviceGrants?: ScopedDeviceGrant[];
+  /** 显式存在的完整授权快照；空 grants 表示撤销旧授权。 */
+  deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
   /** 服务端为当前 turn 选择的用户设备，或要求先选择设备 */
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;

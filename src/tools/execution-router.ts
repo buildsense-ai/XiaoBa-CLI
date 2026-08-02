@@ -1,7 +1,8 @@
 import type { DeviceGrantOperation, ScopedDeviceGrant } from '../types/session-identity';
 import type { TargetRoute, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { normalizeTargetText } from '../catscompany/runtime-context';
-import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
+import { resolveDeviceGrant } from '../core/device-grants';
+import { executeRemoteDeviceRpcTool, isRemoteDeviceRpcTool } from './device-rpc-tool';
 import { TOOL_TARGET_CONTEXT_PREFIX, TOOL_TARGET_CONTEXT_SUFFIX } from './tool-target-context';
 
 export type ExecutionTargetId = 'agent_self' | string;
@@ -13,8 +14,8 @@ export type ExecutionRoute =
       mode: 'remote';
       target: ExecutionTargetId;
       label: string;
-      grant?: ScopedDeviceGrant;
-      targetOwnerUserId?: string;
+      grant: ScopedDeviceGrant;
+      targetOwnerUserId: string;
       targetDeviceId: string;
       targetDeviceDisplayName?: string;
       targetDeviceBodyId?: string;
@@ -66,11 +67,17 @@ export function resolveExecutionRoute(
 
   const runtimeRoute = findRuntimeTargetRoute(context, target);
   if (runtimeRoute.ok) {
-    if (!context.thinToolRpc) {
+    const authorization = authorizeRemoteTarget(context, {
+      operation: options.operation,
+      deviceId: runtimeRoute.route.deviceId,
+      ownerUserId: runtimeRoute.route.ownerUserId,
+    });
+    if (!authorization.ok) return authorization;
+    if (!context.thinToolRpc && !context.deviceRpc) {
       return {
         ok: false,
         errorCode: 'TARGET_UNAVAILABLE',
-        message: `Target "${target}" matched ${runtimeRoute.route.label}, but this runtime has no thin tool RPC transport.`,
+        message: `Target "${target}" matched ${runtimeRoute.route.label}, but this runtime has no negotiated authority-v1 Thin RPC or Device RPC transport.`,
       };
     }
     return {
@@ -78,9 +85,12 @@ export function resolveExecutionRoute(
       mode: 'remote',
       target,
       label: runtimeRoute.route.label,
-      targetOwnerUserId: runtimeRoute.route.ownerUserId,
-      targetDeviceId: runtimeRoute.route.deviceId,
+      grant: authorization.grant,
+      targetOwnerUserId: authorization.grant.ownerUserId,
+      targetDeviceId: authorization.grant.deviceId,
       targetDeviceDisplayName: runtimeRoute.route.label,
+      targetDeviceBodyId: authorization.grant.deviceBodyId,
+      targetDeviceInstallationId: authorization.grant.deviceInstallationId,
     };
   }
   if (runtimeRoute.reason === 'not_found' || runtimeRoute.reason === 'ambiguous') {
@@ -115,19 +125,26 @@ export function resolveExecutionRoute(
     };
   }
 
+  const authorization = authorizeRemoteTarget(context, {
+    operation: options.operation,
+    deviceId: remote.deviceId,
+    ownerUserId: remote.ownerUserId,
+  });
+  if (!authorization.ok) return authorization;
+
   if (!context.deviceRpc) {
-    if (context.thinToolRpc && remote.ownerUserId) {
+    if (context.thinToolRpc) {
       return {
         ok: true,
         mode: 'remote',
         target,
         label: remote.displayName || findTargetLabel(context, 'speaker_default') || 'current speaker device',
-        grant: remote.grant,
-        targetOwnerUserId: remote.ownerUserId,
-        targetDeviceId: remote.deviceId,
+        grant: authorization.grant,
+        targetOwnerUserId: authorization.grant.ownerUserId,
+        targetDeviceId: authorization.grant.deviceId,
         targetDeviceDisplayName: remote.displayName,
-        targetDeviceBodyId: remote.bodyId,
-        targetDeviceInstallationId: remote.installationId,
+        targetDeviceBodyId: authorization.grant.deviceBodyId,
+        targetDeviceInstallationId: authorization.grant.deviceInstallationId,
       };
     }
     return {
@@ -142,12 +159,12 @@ export function resolveExecutionRoute(
     mode: 'remote',
     target,
     label: remote.displayName || findTargetLabel(context, 'speaker_default') || 'current speaker device',
-    grant: remote.grant,
-    targetOwnerUserId: remote.ownerUserId,
-    targetDeviceId: remote.deviceId,
+    grant: authorization.grant,
+    targetOwnerUserId: authorization.grant.ownerUserId,
+    targetDeviceId: authorization.grant.deviceId,
     targetDeviceDisplayName: remote.displayName,
-    targetDeviceBodyId: remote.bodyId,
-    targetDeviceInstallationId: remote.installationId,
+    targetDeviceBodyId: authorization.grant.deviceBodyId,
+    targetDeviceInstallationId: authorization.grant.deviceInstallationId,
   };
 }
 
@@ -159,13 +176,38 @@ export async function executeRouteIfRemote(
   args: Record<string, unknown>,
 ): Promise<ToolExecutionResult | undefined> {
   if (!route.ok || route.mode !== 'remote') return undefined;
-  if (context.thinToolRpc && route.targetOwnerUserId) {
+  if (!isRemoteDeviceRpcTool(toolName, operation)) {
+    return {
+      ok: false,
+      errorCode: 'PERMISSION_DENIED',
+      message: `Remote route does not allow tool/operation pair ${toolName}/${operation}.`,
+    };
+  }
+  const authorization = authorizeRemoteTarget(context, {
+    operation,
+    deviceId: route.targetDeviceId,
+    ownerUserId: route.targetOwnerUserId,
+  });
+  if (!authorization.ok) {
+    return {
+      ok: false,
+      errorCode: authorization.errorCode,
+      message: authorization.message,
+    };
+  }
+  const grant = authorization.grant;
+  if (context.thinToolRpc) {
     const result = await context.thinToolRpc.executeTool({
-      targetOwnerUserId: route.targetOwnerUserId,
-      targetDeviceId: route.targetDeviceId,
+      targetOwnerUserId: grant.ownerUserId,
+      targetDeviceId: grant.deviceId,
       toolName,
+      operation,
+      grant,
       args: stripExecutionTargetArg(args),
-      timeoutMs: toolName === 'send_file' || toolName === 'import_file' ? 300_000 : undefined,
+      timeoutMs: remainingGrantTimeoutMs(
+        grant,
+        toolName === 'send_file' || toolName === 'import_file' ? 300_000 : undefined,
+      ),
     });
     return attachRouteTargetContext(
       stripRemoteToolTargetContext(result),
@@ -180,11 +222,11 @@ export async function executeRouteIfRemote(
   const result = await executeRemoteDeviceRpcTool(context, {
     ok: true,
     mode: 'remote',
-    grant: route.grant,
-    targetDeviceId: route.targetDeviceId,
+    grant,
+    targetDeviceId: grant.deviceId,
     targetDeviceDisplayName: route.targetDeviceDisplayName,
-    targetDeviceBodyId: route.targetDeviceBodyId,
-    targetDeviceInstallationId: route.targetDeviceInstallationId,
+    targetDeviceBodyId: grant.deviceBodyId,
+    targetDeviceInstallationId: grant.deviceInstallationId,
   }, toolName, operation, stripExecutionTargetArg(args));
   if (!result) return result;
   return attachRouteTargetContext(
@@ -278,6 +320,68 @@ function findTargetLabel(context: ToolExecutionContext, target: ExecutionTargetI
   }
   return targets.find(item => item.id === 'speaker_default')?.label
     || targets.find(item => item.kind === 'participant' && item.userId === context.executionContext?.conversation.currentSpeaker.id)?.label;
+}
+
+function authorizeRemoteTarget(
+  context: ToolExecutionContext,
+  options: {
+    operation: DeviceGrantOperation;
+    deviceId: string;
+    ownerUserId?: string;
+  },
+): ({ ok: true; grant: ScopedDeviceGrant } | Extract<ExecutionRoute, { ok: false }>) {
+  const scope = context.executionScope;
+  if (
+    context.surface !== 'catscompany'
+    || !scope
+    || scope.source !== 'catscompany'
+    || scope.identityTrust !== 'server_canonical'
+    || !scope.isTrusted
+  ) {
+    return {
+      ok: false,
+      errorCode: 'PERMISSION_DENIED',
+      message: 'Remote device routing requires the current server-canonical CatsCo execution scope.',
+    };
+  }
+  const decision = resolveDeviceGrant(context, {
+    operation: options.operation,
+    deviceId: options.deviceId,
+  });
+  if (!decision.ok) return decision;
+  if (decision.grant.identityTrust !== 'server_canonical') {
+    return {
+      ok: false,
+      errorCode: 'PERMISSION_DENIED',
+      message: 'Remote device routing requires a server-canonical device grant.',
+    };
+  }
+  if (options.ownerUserId && !sameCatsCoUserId(decision.grant.ownerUserId, options.ownerUserId)) {
+    return {
+      ok: false,
+      errorCode: 'PERMISSION_DENIED',
+      message: 'The current device grant owner does not match the requested runtime route owner.',
+    };
+  }
+  return { ok: true, grant: decision.grant };
+}
+
+function sameCatsCoUserId(left: string | undefined, right: string | undefined): boolean {
+  const normalize = (value: string | undefined) => String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^usr[_:-]?/, '');
+  const normalizedLeft = normalize(left);
+  const normalizedRight = normalize(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
+function remainingGrantTimeoutMs(grant: ScopedDeviceGrant, requested?: number): number {
+  const remaining = Math.max(1, grant.expiresAt - Date.now());
+  const requestedTimeout = typeof requested === 'number' && Number.isFinite(requested) && requested > 0
+    ? requested
+    : 60_000;
+  return Math.max(1, Math.min(remaining, requestedTimeout));
 }
 
 function findRuntimeTargetRoute(context: ToolExecutionContext, target: string): (

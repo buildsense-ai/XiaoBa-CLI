@@ -538,7 +538,6 @@ describe('CatsCompany client body identity', () => {
       client.once('ready', () => resolve());
       client.connect();
     });
-
     await assert.rejects(
       () => client.sendDeviceRpcRequest({
         request_id: 'rpc-early-result-nack',
@@ -671,6 +670,8 @@ describe('CatsCompany client body identity', () => {
       client.once('ready', () => resolve());
       client.connect();
     });
+    assert.equal(client.supportsThinToolRpc, true);
+    assert.equal(client.supportsThinToolRpcAuthorityV1, false);
 
     await assert.rejects(
       () => client.sendThinToolRpcRequest({
@@ -701,7 +702,7 @@ describe('CatsCompany client body identity', () => {
               params: {
                 build: 'catscompany',
                 ver: '0.1.0',
-                features: ['client_msg_id', 'thin_tool_rpc'],
+                features: ['client_msg_id', 'thin_tool_rpc', 'thin_tool_rpc_authority_v1'],
                 uid: 'usr42',
                 name: 'Agent',
               },
@@ -715,6 +716,10 @@ describe('CatsCompany client body identity', () => {
             thin_tool_rpc: {
               type: 'result',
               request_id: msg.thin_tool_rpc.request_id,
+              target_owner_user_id: msg.thin_tool_rpc.target_owner_user_id,
+              target_device_id: msg.thin_tool_rpc.target_device_id,
+              device_id: msg.thin_tool_rpc.device_id,
+              tool_name: msg.thin_tool_rpc.tool_name,
               result: { ok: true },
             },
           }));
@@ -734,12 +739,24 @@ describe('CatsCompany client body identity', () => {
       client.once('ready', () => resolve());
       client.connect();
     });
+    assert.equal(client.supportsThinToolRpcAuthorityV1, true);
 
     await assert.rejects(
       () => client.sendThinToolRpcRequest({
         request_id: 'thin-missing-scope',
+        authority_version: 'v1',
         target_owner_user_id: 'usr7',
         target_device_id: 'install-test',
+        grant_id: 'grant-1',
+        session_key: 'session:v2:catscompany:p2p:p2p_7_42:agent:usr42',
+        topic_id: 'p2p_7_42',
+        topic_type: 'p2p',
+        actor_user_id: 'usr7',
+        owner_user_id: 'usr7',
+        identity_source: 'catsco_identity.permissions.device_grants',
+        agent_id: 'usr42',
+        operation: 'read_file',
+        device_id: 'install-test',
         tool_name: 'read_file',
         payload: { args: { file_path: '/tmp/a.txt' } },
       }),

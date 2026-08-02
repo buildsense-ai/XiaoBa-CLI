@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
+  ScopedDeviceGrantSnapshot,
   ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
@@ -84,6 +85,7 @@ export interface RunAgentTurnParams {
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
   deviceGrants?: ScopedDeviceGrant[];
+  deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
   deviceSelection?: ScopedDeviceSelection;
   deviceRpc?: DeviceRpcTransport;
   thinToolRpc?: ThinToolRpcTransport;
@@ -212,6 +214,7 @@ export class AgentTurnController {
         executionScope: params.executionScope,
         localDeviceGrant: params.localDeviceGrant,
         deviceGrants: params.deviceGrants,
+        deviceGrantSnapshot: params.deviceGrantSnapshot,
         deviceSelection: params.deviceSelection,
         deviceRpc: params.deviceRpc,
         thinToolRpc: params.thinToolRpc,
@@ -304,6 +307,7 @@ export class AgentTurnController {
     executionScope?: ExecutionScope;
     localDeviceGrant?: ScopedLocalDeviceGrant;
     deviceGrants?: ScopedDeviceGrant[];
+    deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
     deviceSelection?: ScopedDeviceSelection;
     deviceRpc?: DeviceRpcTransport;
     thinToolRpc?: ThinToolRpcTransport;
@@ -351,6 +355,7 @@ export class AgentTurnController {
           executionScope: options.executionScope,
           localDeviceGrant: options.localDeviceGrant,
           deviceGrants: options.deviceGrants,
+          deviceGrantSnapshot: options.deviceGrantSnapshot,
           deviceSelection: options.deviceSelection,
           deviceRpc: options.deviceRpc,
           thinToolRpc: options.thinToolRpc,

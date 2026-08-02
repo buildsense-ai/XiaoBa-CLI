@@ -11,7 +11,8 @@ import { extractContentBlocks } from './content-blocks';
 import { createCatsCoMessageEnvelope, createExecutionScope } from './message-envelope';
 import { logCatsCoExecutionContextDiagnostics } from './execution-context-diagnostics';
 import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
-import { extractCatsCoDeviceGrants } from './device-grants';
+import { extractCatsCoDeviceGrantSnapshot } from './device-grants';
+import { deviceGrantSnapshotCanonicalValue } from '../core/device-grants';
 import { extractCatsCoDeviceSelection } from './device-selection';
 import { extractCatsCoRuntimeContext } from './runtime-context';
 import { MessageSessionManager } from '../core/message-session-manager';
@@ -30,9 +31,9 @@ import { ChannelCallbacks, DeviceRpcTransport, TargetRoutes, ThinToolRpcTranspor
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
 import type { StreamRetryInfo } from '../providers/provider';
-import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
+import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceGrantSnapshot, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { hostname, platform } from 'os';
 import { ConfigManager } from '../utils/config';
 import { resolvePrimaryModelVisionCapability } from '../utils/model-capabilities';
@@ -96,6 +97,7 @@ interface QueuedMessage {
   seq: number;
   executionScope: ParsedCatsMessage['executionScope'];
   deviceGrants?: ScopedDeviceGrant[];
+  deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
   localFileGrants?: ScopedLocalFileGrant[];
@@ -141,6 +143,13 @@ interface BackgroundSubAgentCompletionBatch {
   timer?: ReturnType<typeof setTimeout>;
 }
 
+interface ThinToolRpcReplayEntry {
+  fingerprint: string;
+  retainUntil: number;
+  settled: boolean;
+  execution: Promise<ToolExecutionResult>;
+}
+
 const TYPING_HEARTBEAT_INTERVAL_MS = 5_000;
 const BACKGROUND_SUBAGENT_COMPLETION_DEBOUNCE_MS = 1_500;
 const BACKGROUND_SUBAGENT_COMPLETION_MAX_DELAY_MS = 15_000;
@@ -149,6 +158,8 @@ const NATIVE_FEISHU_CONTEXT_PAGE_SIZE = 100;
 const BACKGROUND_SUBAGENT_COMPLETION_MAX_ITEMS = 6;
 const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
 const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
+const THIN_TOOL_RPC_REPLAY_CACHE_MAX = 512;
+export const CATSCOMPANY_THIN_TOOL_RPC_AUTHORITY_CAPABILITY = 'thin_tool_rpc_authority_v1';
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'send_text',
   'send_file',
@@ -204,6 +215,31 @@ function summarizeThinToolRpcArgs(args: any): string {
   } catch {
     return String(summary);
   }
+}
+
+function thinToolRpcRequestFingerprint(request: CatsThinToolRpcMessage): string {
+  const {
+    id: _id,
+    type: _type,
+    request_id: _requestID,
+    result: _result,
+    error: _error,
+    ...authorityAndPayload
+  } = request;
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalJsonValue(authorityAndPayload)))
+    .digest('hex');
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, canonicalJsonValue(item)]),
+  );
 }
 
 function speakerNameFromMetadata(msg: Pick<ParsedCatsMessage, 'metadata' | 'senderId'>): string {
@@ -262,6 +298,16 @@ function stringField(record: Record<string, unknown> | undefined, key: string): 
   if (typeof value !== 'string') return undefined;
   const text = value.trim();
   return text || undefined;
+}
+
+function sameCatsCoIdentityId(left: unknown, right: unknown): boolean {
+  const normalize = (value: unknown) => String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^usr[_:-]?/, '');
+  const normalizedLeft = normalize(left);
+  const normalizedRight = normalize(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 }
 
 function shouldHideCatsToolProgress(toolName: string): boolean {
@@ -430,6 +476,8 @@ export class CatsCompanyBot {
   private subAgentEventRoutes = new Map<string, SubAgentEventRoute>();
   /** no-wait 子 Agent 完成后的批量回流，避免逐条唤醒主模型刷屏 */
   private subAgentCompletionBatches = new Map<string, BackgroundSubAgentCompletionBatch>();
+  /** Bounded at-most-once execution state for authority-v1 delivery retries. */
+  private thinToolRpcReplayCache = new Map<string, ThinToolRpcReplayEntry>();
   /** Bot 自身的 uid，用于过滤自己发出的消息 */
   private botUid: string | null = null;
   private connectorReady = false;
@@ -460,7 +508,10 @@ export class CatsCompanyBot {
           owner_user_id: config.ownerUserId,
           os: currentRuntimeOS(),
           status: 'online' as const,
-          capabilities: [...CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES],
+          capabilities: [
+            ...CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES,
+            CATSCOMPANY_THIN_TOOL_RPC_AUTHORITY_CAPABILITY,
+          ],
         }
       : undefined;
 
@@ -675,12 +726,18 @@ export class CatsCompanyBot {
     };
   }
 
+  private maybeBuildDeviceRpcTransport(): DeviceRpcTransport | undefined {
+    return this.bot?.supportsDeviceRpc ? this.buildDeviceRpcTransport() : undefined;
+  }
+
   private buildThinToolRpcTransport(): ThinToolRpcTransport {
     return {
       executeTool: async ({
         targetOwnerUserId,
         targetDeviceId,
         toolName,
+        operation,
+        grant,
         args,
         timeoutMs = DEVICE_RPC_DEFAULT_TTL_MS,
       }) => {
@@ -693,14 +750,29 @@ export class CatsCompanyBot {
           };
         }
         const requestID = `thin_tool_rpc_${randomUUID()}`;
+        const expiresAt = Math.min(grant.expiresAt, Date.now() + timeoutMs);
         Logger.info(`[CatsCompany][thin_tool_rpc] executeTool request: request=${requestID}, tool=${toolName}, targetOwner=${targetOwnerUserId}, targetDevice=${targetDeviceId}, args=${summarizeThinToolRpcArgs(args)}`);
         const response = await this.bot.sendThinToolRpcRequest({
           request_id: requestID,
+          authority_version: 'v1',
           target_owner_user_id: targetOwnerUserId,
           target_device_id: targetDeviceId,
+          grant_id: grant.grantId,
+          session_key: grant.sessionKey,
+          topic_id: grant.topicId,
+          topic_type: grant.topicType,
+          actor_user_id: grant.actorUserId,
+          owner_user_id: grant.ownerUserId,
+          identity_source: grant.identitySource,
+          agent_id: grant.agentId,
+          agent_body_id: grant.agentBodyId,
+          operation,
+          device_id: grant.deviceId,
+          device_body_id: grant.deviceBodyId,
+          device_installation_id: grant.deviceInstallationId,
           tool_name: toolName,
           payload: { args },
-          expires_at: Date.now() + timeoutMs,
+          expires_at: expiresAt,
         }, timeoutMs);
         Logger.info(`[CatsCompany][thin_tool_rpc] executeTool response: request=${requestID}, tool=${toolName}, hasError=${Boolean(response.error)}, hasResult=${Boolean(response.result)}`);
 
@@ -718,7 +790,7 @@ export class CatsCompanyBot {
   }
 
   private maybeBuildThinToolRpcTransport(): ThinToolRpcTransport | undefined {
-    return this.bot?.supportsThinToolRpc ? this.buildThinToolRpcTransport() : undefined;
+    return this.bot?.supportsThinToolRpcAuthorityV1 ? this.buildThinToolRpcTransport() : undefined;
   }
 
   private async handleThinToolRpcRequest(request: CatsThinToolRpcMessage): Promise<void> {
@@ -727,17 +799,60 @@ export class CatsCompanyBot {
     Logger.info(`[CatsCompany][thin_tool_rpc] target received request: request=${requestID}, tool=${request.tool_name || ''}, targetOwner=${request.target_owner_user_id || ''}, targetDevice=${request.target_device_id || ''}, device=${request.device_id || ''}`);
 
     let result: ToolExecutionResult;
-    try {
-      result = await this.executeLocalThinToolRpcTool(request);
-      Logger.info(`[CatsCompany][thin_tool_rpc] target executed request: request=${requestID}, tool=${request.tool_name || ''}, ok=${result.ok}, errorCode=${result.ok ? '' : (result.errorCode || '')}`);
-    } catch (error: any) {
+    const validationError = this.validateThinToolRpcRequest(request);
+    if (validationError) {
       result = {
         ok: false,
-        errorCode: 'TOOL_EXECUTION_ERROR',
-        message: `Thin tool RPC execution error: ${error?.message || error || 'unknown error'}`,
-        retryable: false,
+        errorCode: this.mapDeviceRpcToolErrorCode(validationError.code),
+        message: validationError.message,
       };
-      Logger.warning(`[CatsCompany][thin_tool_rpc] target execution threw: request=${requestID}, tool=${request.tool_name || ''}, error=${error?.message || error}`);
+    } else {
+      const now = Date.now();
+      const cache = this.thinToolRpcReplayCache ??= new Map<string, ThinToolRpcReplayEntry>();
+      for (const [cachedID, entry] of cache) {
+        if (entry.settled && entry.retainUntil <= now) cache.delete(cachedID);
+      }
+      const fingerprint = thinToolRpcRequestFingerprint(request);
+      const existing = cache.get(requestID);
+      if (existing && existing.fingerprint !== fingerprint) {
+        result = {
+          ok: false,
+          errorCode: 'PERMISSION_DENIED',
+          message: 'Thin tool RPC request_id was replayed with a conflicting authority envelope or payload.',
+        };
+      } else {
+        let execution = existing?.execution;
+        if (!execution && cache.size >= THIN_TOOL_RPC_REPLAY_CACHE_MAX) {
+          result = {
+            ok: false,
+            errorCode: 'TOOL_EXECUTION_ERROR',
+            message: 'Thin tool RPC replay cache is at capacity; request was not executed.',
+            retryable: true,
+          };
+        } else {
+          if (!execution) {
+            execution = this.executeAuthorizedThinToolRpcOnce(request);
+            const entry: ThinToolRpcReplayEntry = {
+              fingerprint,
+              retainUntil: Math.max(request.expires_at as number, now + 300_000),
+              settled: false,
+              execution,
+            };
+            cache.set(requestID, entry);
+            const settleEntry = () => {
+              entry.retainUntil = Math.max(entry.retainUntil, Date.now() + 300_000);
+              entry.settled = true;
+            };
+            execution.then(
+              settleEntry,
+              settleEntry,
+            );
+          } else {
+            Logger.info(`[CatsCompany][thin_tool_rpc] replay reused cached execution: request=${requestID}`);
+          }
+          result = await execution;
+        }
+      }
     }
 
     const error = result.ok
@@ -750,9 +865,22 @@ export class CatsCompanyBot {
     try {
       await this.bot.sendThinToolRpcResult({
         request_id: requestID,
+        authority_version: request.authority_version,
         target_owner_user_id: request.target_owner_user_id,
         target_device_id: request.target_device_id,
+        grant_id: request.grant_id,
+        session_key: request.session_key,
+        topic_id: request.topic_id,
+        topic_type: request.topic_type,
+        actor_user_id: request.actor_user_id,
+        owner_user_id: request.owner_user_id,
+        identity_source: request.identity_source,
+        agent_id: request.agent_id,
+        agent_body_id: request.agent_body_id,
+        operation: request.operation,
         device_id: this.localDeviceGrant?.deviceId || request.device_id || request.target_device_id,
+        device_body_id: this.localDeviceGrant?.bodyId || request.device_body_id,
+        device_installation_id: this.localDeviceGrant?.installationId || request.device_installation_id,
         tool_name: request.tool_name,
         result: error ? undefined : normalizeDeviceRpcToolResultForTransport(result),
         error,
@@ -763,12 +891,29 @@ export class CatsCompanyBot {
     }
   }
 
+  private async executeAuthorizedThinToolRpcOnce(request: CatsThinToolRpcMessage): Promise<ToolExecutionResult> {
+    try {
+      const result = await this.executeLocalThinToolRpcTool(request);
+      Logger.info(`[CatsCompany][thin_tool_rpc] target executed request: request=${request.request_id}, tool=${request.tool_name || ''}, ok=${result.ok}, errorCode=${result.ok ? '' : (result.errorCode || '')}`);
+      return result;
+    } catch (error: any) {
+      Logger.warning(`[CatsCompany][thin_tool_rpc] target execution threw: request=${request.request_id}, tool=${request.tool_name || ''}, error=${error?.message || error}`);
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: `Thin tool RPC execution error: ${error?.message || error || 'unknown error'}`,
+        retryable: false,
+      };
+    }
+  }
+
   private async executeLocalThinToolRpcTool(request: CatsThinToolRpcMessage): Promise<ToolExecutionResult> {
     const toolName = String(request.tool_name || '').trim();
-    if (!toolName) {
-      return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: 'Thin tool RPC request missing tool_name.' };
+    const operation = this.normalizeDeviceRpcOperation(request.operation);
+    if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: 'Thin tool RPC tool/operation pair is not allowed.' };
     }
-    const context = this.buildThinToolRpcToolContext(request);
+    const context = this.buildDeviceRpcToolContext(request, operation);
     const args = this.extractDeviceRpcToolArgs(request.payload);
     let result: ToolExecutionResult;
     switch (toolName) {
@@ -805,38 +950,9 @@ export class CatsCompanyBot {
     }
     return annotateToolExecutionResultWithTargetContext(result, context, {
       toolName,
-      operation: this.normalizeDeviceRpcOperation(toolName) || 'read_file',
-      cwd: this.resolveDeviceRpcTargetContextCwd(this.normalizeDeviceRpcOperation(toolName) || 'read_file', args, context.workingDirectory),
+      operation,
+      cwd: this.resolveDeviceRpcTargetContextCwd(operation, args, context.workingDirectory),
     });
-  }
-
-  private buildThinToolRpcToolContext(request: CatsThinToolRpcMessage): ToolExecutionContext {
-    const workingDirectory = this.runtimeProfile?.workingDirectory || this.runtime?.profile?.workingDirectory || process.cwd();
-    return {
-      workingDirectory,
-      workspaceRoot: workingDirectory,
-      conversationHistory: [],
-      surface: 'catscompany',
-      permissionProfile: 'relaxed',
-      localDeviceGrant: this.localDeviceGrant,
-      deviceRpcReceiver: true,
-      executionContext: {
-        schema: 'xiaoba.execution_context.v1',
-        conversation: {
-          type: 'p2p',
-          currentSpeaker: { id: String(request.target_owner_user_id || 'remote_user'), role: 'user' },
-          participants: [],
-        },
-        executionTargets: [{
-          id: 'agent_self',
-          label: this.localDeviceGrant?.deviceId || this.localDeviceGrant?.bodyId || 'current thin tool RPC receiver',
-          kind: 'agent_self',
-          status: 'ready',
-          cwd: workingDirectory,
-        }],
-        defaultTarget: 'agent_self',
-      },
-    };
   }
 
   private async handleDeviceRpcRequest(request: CatsDeviceRpcMessage): Promise<void> {
@@ -1065,6 +1181,79 @@ export class CatsCompanyBot {
     }
     if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
       return { code: 'request_expired', message: 'Device RPC request has expired.' };
+    }
+    return undefined;
+  }
+
+  private validateThinToolRpcRequest(request: CatsThinToolRpcMessage): { code: string; message: string } | undefined {
+    if (!this.bot?.supportsThinToolRpcAuthorityV1) {
+      return { code: 'unsupported_operation', message: 'Thin tool RPC authority-v1 was not negotiated with the server.' };
+    }
+    if (!this.localDeviceGrant) {
+      return { code: 'device_not_bound', message: 'Current runtime is not bound to a CatsCo local device.' };
+    }
+    const operation = this.normalizeDeviceRpcOperation(request.operation);
+    const toolName = String(request.tool_name || '').trim();
+    if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
+      return { code: 'unsupported_operation', message: 'Thin tool RPC tool/operation pair is not allowed.' };
+    }
+    const requiredFields: Array<[keyof CatsThinToolRpcMessage, string]> = [
+      ['authority_version', 'authority_version'],
+      ['grant_id', 'grant_id'],
+      ['session_key', 'session_key'],
+      ['topic_id', 'topic_id'],
+      ['topic_type', 'topic_type'],
+      ['actor_user_id', 'actor_user_id'],
+      ['owner_user_id', 'owner_user_id'],
+      ['identity_source', 'identity_source'],
+      ['target_owner_user_id', 'target_owner_user_id'],
+      ['target_device_id', 'target_device_id'],
+      ['device_id', 'device_id'],
+      ['operation', 'operation'],
+      ['tool_name', 'tool_name'],
+    ];
+    for (const [field, label] of requiredFields) {
+      if (!String(request[field] || '').trim()) {
+        return { code: 'invalid_request', message: `Thin tool RPC request missing ${label}.` };
+      }
+    }
+    if (request.authority_version !== 'v1') {
+      return { code: 'invalid_request', message: 'Thin tool RPC request has an unsupported authority_version.' };
+    }
+    if (request.topic_type !== 'p2p' && request.topic_type !== 'group') {
+      return { code: 'invalid_request', message: 'Thin tool RPC request has an invalid topic_type.' };
+    }
+    if (
+      !sameCatsCoIdentityId(request.target_owner_user_id, request.owner_user_id)
+      || !sameCatsCoIdentityId(request.target_owner_user_id, this.localDeviceGrant.ownerUserId)
+    ) {
+      return { code: 'target_owner_mismatch', message: 'Thin tool RPC target owner does not match this local runtime.' };
+    }
+    if (
+      !sameCatsCoIdentityId(request.actor_user_id, request.owner_user_id)
+      && String(request.identity_source || '').trim() !== 'channel_identity_link'
+    ) {
+      return {
+        code: 'permission_denied',
+        message: 'Thin tool RPC cross-user authority requires a server-canonical channel identity link.',
+      };
+    }
+    if (String(request.target_device_id || '').trim() !== String(request.device_id || '').trim()) {
+      return { code: 'target_device_mismatch', message: 'Thin tool RPC target device does not match the authorized device.' };
+    }
+    const targetError = this.validateDeviceRpcTarget(request);
+    if (targetError) return targetError;
+
+    const expiresAt = request.expires_at;
+    const now = Date.now();
+    if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)) {
+      return { code: 'invalid_request', message: 'Thin tool RPC request missing a finite expires_at.' };
+    }
+    if (expiresAt <= now) {
+      return { code: 'request_expired', message: 'Thin tool RPC request has expired.' };
+    }
+    if (expiresAt > now + 300_000) {
+      return { code: 'invalid_request', message: 'Thin tool RPC request expiry exceeds the maximum forwarding window.' };
     }
     return undefined;
   }
@@ -1514,6 +1703,7 @@ export class CatsCompanyBot {
         seq: msg.seq,
         executionScope: msg.executionScope,
         deviceGrants: msg.deviceGrants,
+        deviceGrantSnapshot: msg.deviceGrantSnapshot,
         deviceSelection: msg.deviceSelection,
         targetRoutes: msg.targetRoutes,
         localFileGrants,
@@ -1557,9 +1747,10 @@ export class CatsCompanyBot {
           executionScope: msg.executionScope,
           localDeviceGrant: this.localDeviceGrant,
           deviceGrants: msg.deviceGrants,
+          deviceGrantSnapshot: msg.deviceGrantSnapshot,
           deviceSelection: msg.deviceSelection,
           targetRoutes: msg.targetRoutes,
-          deviceRpc: this.buildDeviceRpcTransport(),
+          deviceRpc: this.maybeBuildDeviceRpcTransport(),
           thinToolRpc: this.maybeBuildThinToolRpcTransport(),
           localFileGrants,
           runtimeFeedback,
@@ -1986,6 +2177,7 @@ export class CatsCompanyBot {
       botUid: this.botUid,
     });
     const executionScope = createExecutionScope(envelope);
+    const deviceGrantSnapshot = extractCatsCoDeviceGrantSnapshot(ctx.metadata, executionScope);
     const targetRoutes = extractCatsCoRuntimeContext(ctx.metadata);
     if (targetRoutes?.routes?.length) {
       Logger.info(`[CatsCompany][xiaoba_runtime] parsed target routes: topic=${ctx.topic}, sender=${ctx.senderId}, routes=${targetRoutes.routes.map(route => `${route.userName || route.userId || '?'}:${route.ownerUserId}/${route.deviceId}/${route.os}`).join(', ')}`);
@@ -2005,7 +2197,10 @@ export class CatsCompanyBot {
       metadata: ctx.metadata,
       envelope,
       executionScope,
-      deviceGrants: extractCatsCoDeviceGrants(ctx.metadata, executionScope),
+      deviceGrants: deviceGrantSnapshot && deviceGrantSnapshot.grants.length > 0
+        ? deviceGrantSnapshot.grants
+        : undefined,
+      deviceGrantSnapshot,
       deviceSelection: extractCatsCoDeviceSelection(ctx.metadata, executionScope),
       targetRoutes,
       file: files[0],
@@ -2077,7 +2272,7 @@ export class CatsCompanyBot {
         suppressFinalResponse,
         executionScope,
         localDeviceGrant: this.localDeviceGrant,
-        deviceRpc: this.buildDeviceRpcTransport(),
+        deviceRpc: this.maybeBuildDeviceRpcTransport(),
         thinToolRpc: this.maybeBuildThinToolRpcTransport(),
       });
       if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
@@ -2240,7 +2435,7 @@ export class CatsCompanyBot {
         suppressFinalResponse: false,
         executionScope: batch.executionScope,
         localDeviceGrant: this.localDeviceGrant,
-        deviceRpc: this.buildDeviceRpcTransport(),
+        deviceRpc: this.maybeBuildDeviceRpcTransport(),
         thinToolRpc: this.maybeBuildThinToolRpcTransport(),
       });
       if (batch.clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
@@ -2766,7 +2961,7 @@ export class CatsCompanyBot {
             localDeviceGrant: this.localDeviceGrant,
             deviceSelection: msg.deviceSelection,
             targetRoutes: msg.targetRoutes,
-            deviceRpc: this.buildDeviceRpcTransport(),
+            deviceRpc: this.maybeBuildDeviceRpcTransport(),
             thinToolRpc: this.maybeBuildThinToolRpcTransport(),
           })
           : await session.handleMessage(msg.userMessage, {
@@ -2774,9 +2969,10 @@ export class CatsCompanyBot {
             executionScope: msg.executionScope,
             localDeviceGrant: this.localDeviceGrant,
             deviceGrants: msg.deviceGrants,
+            deviceGrantSnapshot: msg.deviceGrantSnapshot,
             deviceSelection: msg.deviceSelection,
             targetRoutes: msg.targetRoutes,
-            deviceRpc: this.buildDeviceRpcTransport(),
+            deviceRpc: this.maybeBuildDeviceRpcTransport(),
             thinToolRpc: this.maybeBuildThinToolRpcTransport(),
             runtimeFeedback: msg.runtimeFeedback,
             localFileGrants: msg.localFileGrants,
@@ -2893,14 +3089,24 @@ export class CatsCompanyBot {
     Logger.info(`[${sessionKey}] 合并 ${messages.length} 条处理期间新到的用户消息`);
     const content = this.mergeQueuedMessages(messages);
     const localFileGrants = messages.flatMap(item => item.localFileGrants || []);
-    const deviceGrants = messages.flatMap(item => item.deviceGrants || []);
+    const deviceGrantSnapshot = this.selectNewestQueuedDeviceGrantSnapshot(messages);
+    const legacyDeviceGrants = deviceGrantSnapshot
+      ? undefined
+      : [...messages].reverse().find(item => item.deviceGrants !== undefined)?.deviceGrants;
     const deviceSelection = [...messages].reverse().find(item => item.deviceSelection)?.deviceSelection;
     const targetRoutes = [...messages].reverse().find(item => item.targetRoutes)?.targetRoutes;
-    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection && !targetRoutes) return content;
+    if (
+      localFileGrants.length === 0
+      && !deviceGrantSnapshot
+      && legacyDeviceGrants === undefined
+      && !deviceSelection
+      && !targetRoutes
+    ) return content;
     return {
       content,
       localFileGrants: localFileGrants.length > 0 ? localFileGrants : undefined,
-      deviceGrants: deviceGrants.length > 0 ? deviceGrants : undefined,
+      deviceGrants: legacyDeviceGrants,
+      deviceGrantSnapshot,
       deviceSelection,
       targetRoutes,
     };
@@ -2918,6 +3124,43 @@ export class CatsCompanyBot {
       && currentScope.agentId === queuedScope.agentId
       && currentScope.agentBodyId === queuedScope.agentBodyId
       && currentScope.identityTrust === queuedScope.identityTrust;
+  }
+
+  private selectNewestQueuedDeviceGrantSnapshot(
+    messages: QueuedMessage[],
+  ): ScopedDeviceGrantSnapshot | undefined {
+    let selected: ScopedDeviceGrantSnapshot | undefined;
+    for (const message of messages) {
+      const incoming = message.deviceGrantSnapshot;
+      if (!incoming) continue;
+      if (!selected) {
+        selected = incoming;
+        continue;
+      }
+      const currentRevision = selected.revision;
+      const incomingRevision = incoming.revision;
+      if (currentRevision !== undefined && incomingRevision !== undefined) {
+        if (incomingRevision < currentRevision) continue;
+        if (incomingRevision > currentRevision) {
+          selected = incoming;
+          continue;
+        }
+        if (deviceGrantSnapshotCanonicalValue(selected) !== deviceGrantSnapshotCanonicalValue(incoming)) {
+          selected = { ...incoming, grants: [] };
+        }
+        continue;
+      }
+      if (incomingRevision !== undefined) {
+        selected = incoming;
+        continue;
+      }
+      if (currentRevision !== undefined) {
+        selected = { ...incoming, revision: currentRevision, grants: [] };
+        continue;
+      }
+      selected = incoming;
+    }
+    return selected;
   }
 
   private mergeQueuedMessages(messages: QueuedMessage[]): string | ContentBlock[] {

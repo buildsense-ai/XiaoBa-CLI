@@ -1,10 +1,16 @@
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
-import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
+import type {
+  ScopedDeviceGrant,
+  ScopedDeviceGrantSnapshot,
+  ScopedDeviceSelection,
+  ScopedLocalFileGrant,
+} from '../types/session-identity';
 import type { TargetRoutes } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { AIRequestOptions, StreamCallbacks, StreamRetryInfo } from '../providers/provider';
 import { Logger } from '../utils/logger';
+import { deviceGrantSnapshotCanonicalValue } from './device-grants';
 import { isRateLimitErrorCode } from '../utils/rate-limit-error';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
@@ -141,6 +147,9 @@ export interface RunResult {
 
 export interface PendingUserInput {
   content: string | ContentBlock[];
+  /** Complete replacement snapshot. Empty grants explicitly revoke prior authority. */
+  deviceGrantSnapshot?: ScopedDeviceGrantSnapshot;
+  /** Legacy pending-input compatibility; treated as a complete replacement, never a union. */
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
@@ -733,15 +742,12 @@ export class ConversationRunner {
 
     const content = isPendingUserInput(pending) ? pending.content : pending;
     let shouldRefreshRuntimeContext = false;
-    if (isPendingUserInput(pending) && pending.deviceGrants?.length) {
-      this.toolExecutionContext = {
-        ...(this.toolExecutionContext || {}),
-        deviceGrants: [
-          ...(this.toolExecutionContext?.deviceGrants || []),
-          ...pending.deviceGrants,
-        ],
-      };
-      shouldRefreshRuntimeContext = true;
+    if (isPendingUserInput(pending)) {
+      const deviceGrantSnapshot = pending.deviceGrantSnapshot
+        ?? this.buildLegacyPendingDeviceGrantSnapshot(pending.deviceGrants);
+      if (deviceGrantSnapshot && this.applyPendingDeviceGrantSnapshot(deviceGrantSnapshot)) {
+        shouldRefreshRuntimeContext = true;
+      }
     }
     if (isPendingUserInput(pending) && pending.deviceSelection) {
       this.toolExecutionContext = {
@@ -884,6 +890,107 @@ export class ConversationRunner {
         epoch: this.episodeId,
       }));
     }
+  }
+
+  private buildLegacyPendingDeviceGrantSnapshot(
+    grants: ScopedDeviceGrant[] | undefined,
+  ): ScopedDeviceGrantSnapshot | undefined {
+    if (grants === undefined) return undefined;
+    const scope = this.toolExecutionContext?.executionScope;
+    if (!scope) return undefined;
+    return {
+      kind: 'user_device_grant_snapshot',
+      source: scope.source,
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      agentBodyId: scope.agentBodyId,
+      identityTrust: scope.identityTrust,
+      grants: [...grants],
+    };
+  }
+
+  private applyPendingDeviceGrantSnapshot(snapshot: ScopedDeviceGrantSnapshot): boolean {
+    const scope = this.toolExecutionContext?.executionScope;
+    if (!scope) return false;
+    const current = this.toolExecutionContext?.deviceGrantSnapshot;
+    const currentRevision = current?.revision;
+    const incomingRevision = snapshot.revision;
+
+    if (
+      currentRevision !== undefined
+      && incomingRevision !== undefined
+      && incomingRevision < currentRevision
+    ) {
+      Logger.warning(
+        `[${this.sessionLabel}] ignored stale device grant snapshot revision=${incomingRevision} current=${currentRevision}`,
+      );
+      return false;
+    }
+
+    const scopeMatches = snapshot.identityTrust === 'server_canonical'
+      && scope.identityTrust === 'server_canonical'
+      && scope.isTrusted
+      && snapshot.source === scope.source
+      && snapshot.sessionKey === scope.sessionKey
+      && snapshot.topicId === scope.topicId
+      && snapshot.topicType === scope.topicType
+      && snapshot.actorUserId === scope.actorUserId
+      && snapshot.agentId === scope.agentId
+      && snapshot.agentBodyId === scope.agentBodyId;
+    let nextSnapshot = scopeMatches
+      ? { ...snapshot, grants: [...snapshot.grants] }
+      : this.deviceGrantSnapshotForCurrentScope([], incomingRevision);
+
+    if (currentRevision !== undefined && incomingRevision === undefined) {
+      if (nextSnapshot.grants.length > 0) {
+        Logger.warning(
+          `[${this.sessionLabel}] unversioned device grant snapshot followed revision=${currentRevision}; cleared authority`,
+        );
+      }
+      nextSnapshot = this.deviceGrantSnapshotForCurrentScope([], currentRevision);
+    }
+
+    if (currentRevision !== undefined && incomingRevision === currentRevision && current) {
+      if (deviceGrantSnapshotCanonicalValue(current) === deviceGrantSnapshotCanonicalValue(nextSnapshot)) {
+        return false;
+      }
+      Logger.warning(
+        `[${this.sessionLabel}] conflicting device grant snapshot revision=${currentRevision}; cleared authority`,
+      );
+      nextSnapshot = this.deviceGrantSnapshotForCurrentScope([], currentRevision);
+    } else if (!scopeMatches) {
+      Logger.warning(`[${this.sessionLabel}] rejected device grant snapshot outside the current execution scope`);
+    }
+
+    this.toolExecutionContext = {
+      ...(this.toolExecutionContext || {}),
+      deviceGrants: [...nextSnapshot.grants],
+      deviceGrantSnapshot: nextSnapshot,
+    };
+    return true;
+  }
+
+  private deviceGrantSnapshotForCurrentScope(
+    grants: ScopedDeviceGrant[],
+    revision?: number,
+  ): ScopedDeviceGrantSnapshot {
+    const scope = this.toolExecutionContext!.executionScope!;
+    return {
+      kind: 'user_device_grant_snapshot',
+      source: scope.source,
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      agentBodyId: scope.agentBodyId,
+      identityTrust: scope.identityTrust,
+      revision,
+      grants,
+    };
   }
 
   private injectSyntheticObservations(messages: Message[], turn: number): void {

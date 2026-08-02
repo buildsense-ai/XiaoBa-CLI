@@ -7,7 +7,12 @@ import { CatsCompanyBot } from '../src/catscompany';
 import type { CatsDeviceRpcMessage, CatsThinToolRpcMessage } from '../src/catscompany/client';
 import type { ScopedDeviceGrant } from '../src/types/session-identity';
 
-function botWithDevice(captured: { result?: any; uploaded?: { path: string; type: string; bytes: Buffer } }): any {
+function botWithDevice(captured: {
+  result?: any;
+  thinResult?: any;
+  thinResults?: any[];
+  uploaded?: { path: string; type: string; bytes: Buffer };
+}): any {
   const bot = Object.create(CatsCompanyBot.prototype) as any;
   bot.localDeviceGrant = {
     kind: 'catscompany_body',
@@ -19,8 +24,15 @@ function botWithDevice(captured: { result?: any; uploaded?: { path: string; type
     createdAt: Date.now(),
   };
   bot.bot = {
+    supportsDeviceRpc: true,
+    supportsThinToolRpc: true,
+    supportsThinToolRpcAuthorityV1: true,
     sendDeviceRpcResult: async (result: any) => {
       captured.result = result;
+    },
+    sendThinToolRpcResult: async (result: any) => {
+      captured.thinResult = result;
+      captured.thinResults?.push(result);
     },
     uploadFile: async (filePath: string, type: string) => {
       const bytes = fs.readFileSync(filePath);
@@ -82,6 +94,33 @@ function serverGrant(overrides: Partial<ScopedDeviceGrant> = {}): ScopedDeviceGr
     operations: ['read_file', 'resolve_common_directory', 'glob', 'grep', 'execute_shell'],
     createdAt: Date.now(),
     expiresAt: Date.now() + 60_000,
+    ...overrides,
+  };
+}
+
+function thinRequest(overrides: Partial<CatsThinToolRpcMessage> = {}): CatsThinToolRpcMessage {
+  return {
+    type: 'request',
+    request_id: 'thin-import-file-1',
+    authority_version: 'v1',
+    target_owner_user_id: 'usr7',
+    target_device_id: 'install-device',
+    grant_id: 'grant-thin-1',
+    session_key: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+    topic_id: 'p2p_7_43',
+    topic_type: 'p2p',
+    actor_user_id: 'usr7',
+    owner_user_id: 'usr7',
+    identity_source: 'metadata.catsco_identity',
+    agent_id: 'usr43',
+    agent_body_id: 'body-agent',
+    operation: 'send_file',
+    device_id: 'install-device',
+    device_body_id: 'body-device',
+    device_installation_id: 'install-device',
+    tool_name: 'import_file',
+    expires_at: Date.now() + 60_000,
+    payload: {},
     ...overrides,
   };
 }
@@ -245,6 +284,38 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(captured[0].timeoutMs, 12_345);
   });
 
+  test('forwards the validated grant envelope through thin tool RPC', async () => {
+    let captured: any;
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.bot = {
+      sendThinToolRpcRequest: async (payload: any, timeoutMs: number) => {
+        captured = { payload, timeoutMs };
+        return { type: 'result', request_id: payload.request_id, result: { ok: true, content: 'ok' } };
+      },
+    };
+    const grant = serverGrant({ deviceId: 'install-device', deviceInstallationId: 'install-device' });
+    const result = await bot.buildThinToolRpcTransport().executeTool({
+      targetOwnerUserId: grant.ownerUserId,
+      targetDeviceId: grant.deviceId,
+      toolName: 'read_file',
+      operation: 'read_file',
+      grant,
+      args: { file_path: 'notes.txt' },
+      timeoutMs: 12_345,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(captured.payload.authority_version, 'v1');
+    assert.equal(captured.payload.grant_id, grant.grantId);
+    assert.equal(captured.payload.session_key, grant.sessionKey);
+    assert.equal(captured.payload.actor_user_id, grant.actorUserId);
+    assert.equal(captured.payload.owner_user_id, grant.ownerUserId);
+    assert.equal(captured.payload.operation, 'read_file');
+    assert.equal(captured.payload.device_id, grant.deviceId);
+    assert.ok(captured.payload.expires_at <= grant.expiresAt);
+    assert.equal(captured.timeoutMs, 12_345);
+  });
+
   test('executes resolve_common_directory on the target local device and returns a normalized result', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
@@ -295,15 +366,9 @@ describe('CatsCompany Device RPC file tools', () => {
     const filePath = path.join(dir, 'original.bin');
     const original = Buffer.from([0, 255, 1, 2, 3, 128]);
     fs.writeFileSync(filePath, original);
-    const request: CatsThinToolRpcMessage = {
-      type: 'request',
-      request_id: 'thin-import-file-1',
-      target_owner_user_id: 'usr7',
-      target_device_id: 'install-device',
-      device_id: 'install-device',
-      tool_name: 'import_file',
+    const request = thinRequest({
       payload: { args: { file_path: filePath, file_name: 'download.bin' } },
-    };
+    });
 
     const result = await bot.executeLocalThinToolRpcTool(request);
 
@@ -317,6 +382,156 @@ describe('CatsCompany Device RPC file tools', () => {
       size: original.length,
       type: 'file',
     });
+  });
+
+  test('fails closed for malformed, mismatched, expired, or unsupported thin RPC authority', () => {
+    const bot = botWithDevice({});
+    assert.equal(bot.validateThinToolRpcRequest(thinRequest()), undefined);
+
+    const cases: Array<[string, Partial<CatsThinToolRpcMessage>, RegExp]> = [
+      ['missing grant', { grant_id: undefined }, /grant_id/],
+      ['wrong owner', { target_owner_user_id: 'usr8' }, /owner/],
+      ['undelegated cross-user actor', { actor_user_id: 'usr8' }, /channel identity link/],
+      ['wrong device', { target_device_id: 'other-device' }, /device/],
+      ['expired', { expires_at: Date.now() - 1 }, /expired/],
+      ['long expiry', { expires_at: Date.now() + 600_000 }, /expiry/],
+      ['wrong operation', { operation: 'read_file' }, /pair/],
+      ['unsupported tool', { tool_name: 'spawn_subagent' }, /pair/],
+    ];
+    for (const [name, overrides, pattern] of cases) {
+      const result = bot.validateThinToolRpcRequest(thinRequest(overrides));
+      assert.ok(result, name);
+      assert.match(result.message, pattern, name);
+    }
+  });
+
+  test('accepts only channel-linked group delegation at the thin RPC receiver', async () => {
+    const captured: { thinResult?: any } = {};
+    const bot = botWithDevice(captured);
+    const groupDelegation = thinRequest({
+      request_id: 'thin-group-delegation',
+      session_key: 'session:v2:catscompany:group:room_7:agent:usr43',
+      topic_id: 'room_7',
+      topic_type: 'group',
+      actor_user_id: 'usr8',
+      identity_source: 'channel_identity_link',
+      operation: 'resolve_common_directory',
+      tool_name: 'resolve_common_directory',
+      payload: { args: { directory: 'home' } },
+    });
+
+    assert.equal(bot.validateThinToolRpcRequest(groupDelegation), undefined);
+    await bot.handleThinToolRpcRequest(groupDelegation);
+    assert.equal(captured.thinResult?.error, undefined);
+    assert.equal(captured.thinResult?.result?.ok, true);
+  });
+
+  test('does not expose or execute strict Thin RPC across an unnegotiated or stripped protocol', async () => {
+    const captured: { thinResults?: any[] } = { thinResults: [] };
+    const bot = botWithDevice(captured);
+    let executions = 0;
+    bot.executeLocalThinToolRpcTool = async () => {
+      executions += 1;
+      return { ok: true, content: 'must not execute' };
+    };
+
+    bot.bot.supportsThinToolRpcAuthorityV1 = false;
+    assert.equal(bot.maybeBuildThinToolRpcTransport(), undefined);
+    assert.ok(bot.maybeBuildDeviceRpcTransport());
+    await bot.handleThinToolRpcRequest(thinRequest({ request_id: 'thin-unnegotiated' }));
+
+    bot.bot.supportsThinToolRpcAuthorityV1 = true;
+    await bot.handleThinToolRpcRequest(thinRequest({
+      request_id: 'thin-legacy-source',
+      authority_version: undefined,
+    }));
+    await bot.handleThinToolRpcRequest(thinRequest({
+      request_id: 'thin-server-stripped',
+      grant_id: undefined,
+    }));
+
+    assert.equal(executions, 0);
+    assert.equal(captured.thinResults?.length, 3);
+    assert.ok(captured.thinResults?.every(item => item.error));
+  });
+
+  test('executes one Thin RPC request_id at most once and rejects conflicting replay', async () => {
+    const captured: { thinResults?: any[] } = { thinResults: [] };
+    const bot = botWithDevice(captured);
+    let executions = 0;
+    bot.executeLocalThinToolRpcTool = async () => {
+      executions += 1;
+      return { ok: true, content: 'executed once' };
+    };
+    const original = thinRequest({
+      request_id: 'thin-replay-once',
+      payload: { args: { directory: 'home' } },
+    });
+
+    await Promise.all([
+      bot.handleThinToolRpcRequest(original),
+      bot.handleThinToolRpcRequest({ ...original }),
+    ]);
+    await bot.handleThinToolRpcRequest({
+      ...original,
+      payload: { args: { directory: 'temp' } },
+    });
+
+    assert.equal(executions, 1);
+    assert.equal(captured.thinResults?.length, 3);
+    assert.equal(captured.thinResults?.[0]?.result?.ok, true);
+    assert.equal(captured.thinResults?.[1]?.result?.ok, true);
+    assert.match(String(captured.thinResults?.[2]?.error?.message), /conflicting/);
+  });
+
+  test('keeps Thin RPC replay protection in flight and for five minutes after a long execution settles', async () => {
+    const captured: { thinResults?: any[] } = { thinResults: [] };
+    const bot = botWithDevice(captured);
+    let executions = 0;
+    const realDateNow = Date.now;
+    let fakeNow = 1_000_000;
+    Date.now = () => fakeNow;
+    let finishExecution: (() => void) | undefined;
+    const executionGate = new Promise<void>(resolve => {
+      finishExecution = resolve;
+    });
+    bot.executeLocalThinToolRpcTool = async () => {
+      executions += 1;
+      await executionGate;
+      return { ok: true, content: 'long execution finished' };
+    };
+    const original = thinRequest({
+      request_id: 'thin-inflight-expiry',
+      expires_at: fakeNow + 100,
+      payload: { args: { command: 'long-running-operation' } },
+    });
+
+    try {
+      const firstDelivery = bot.handleThinToolRpcRequest(original);
+      fakeNow += 200;
+      await bot.handleThinToolRpcRequest({
+        ...original,
+        expires_at: fakeNow + 60_000,
+      });
+
+      fakeNow += 300_001;
+      finishExecution?.();
+      await firstDelivery;
+
+      await bot.handleThinToolRpcRequest({
+        ...original,
+        expires_at: fakeNow + 60_000,
+      });
+
+      assert.equal(executions, 1);
+      assert.equal(captured.thinResults?.length, 3);
+      assert.match(String(captured.thinResults?.[0]?.error?.message), /conflicting/);
+      assert.equal(captured.thinResults?.[1]?.result?.ok, true);
+      assert.match(String(captured.thinResults?.[2]?.error?.message), /conflicting/);
+    } finally {
+      Date.now = realDateNow;
+      finishExecution?.();
+    }
   });
 
   test('accepts import_file through authorized Device RPC and returns upload metadata', async () => {

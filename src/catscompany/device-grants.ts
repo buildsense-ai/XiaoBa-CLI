@@ -6,8 +6,10 @@ import type {
   MessageSource,
   MessageTopicType,
   ScopedDeviceGrant,
+  ScopedDeviceGrantSnapshot,
 } from '../types/session-identity';
 import { isDelegatedDeviceGrant } from '../core/device-grants';
+import { Logger } from '../utils/logger';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -15,21 +17,49 @@ export function extractCatsCoDeviceGrants(
   metadata: Record<string, unknown> | undefined,
   scope: ExecutionScope,
 ): ScopedDeviceGrant[] | undefined {
+  const snapshot = extractCatsCoDeviceGrantSnapshot(metadata, scope);
+  return snapshot && snapshot.grants.length > 0 ? snapshot.grants : undefined;
+}
+
+/** Preserve explicit empty/revoked/invalid lists as a fail-closed snapshot. */
+export function extractCatsCoDeviceGrantSnapshot(
+  metadata: Record<string, unknown> | undefined,
+  scope: ExecutionScope,
+): ScopedDeviceGrantSnapshot | undefined {
   if (scope.identityTrust !== 'server_canonical') return undefined;
   const identity = asRecord(metadata?.catsco_identity);
   const permissions = asRecord(identity?.permissions);
   if (stringField(permissions, 'source') !== 'server_canonical_message') return undefined;
 
-  const rawGrants = arrayField(identity, 'device_grants')
-    ?? arrayField(permissions, 'device_grants');
-  if (!rawGrants || rawGrants.length === 0) return undefined;
+  const identityHasGrants = hasOwn(identity, 'device_grants');
+  const permissionsHasGrants = hasOwn(permissions, 'device_grants');
+  if (!identityHasGrants && !permissionsHasGrants) return undefined;
+  const rawValue = identityHasGrants
+    ? identity!.device_grants
+    : permissions!.device_grants;
+  const rawGrants = Array.isArray(rawValue) ? rawValue : [];
+  if (!Array.isArray(rawValue)) {
+    Logger.warning('[CatsCompany] canonical device_grants is present but is not an array; cleared device authority');
+  }
 
   const grants = rawGrants
     .map(normalizeDeviceGrant)
     .filter((grant): grant is ScopedDeviceGrant => Boolean(grant))
     .filter(grant => grantMatchesScope(grant, scope));
 
-  return grants.length > 0 ? grants : undefined;
+  return pruneUndefined({
+    kind: 'user_device_grant_snapshot',
+    source: scope.source,
+    sessionKey: scope.sessionKey,
+    topicId: scope.topicId,
+    topicType: scope.topicType,
+    actorUserId: scope.actorUserId,
+    agentId: scope.agentId,
+    agentBodyId: scope.agentBodyId,
+    identityTrust: scope.identityTrust,
+    revision: normalizeRevision(scope.channelSeq),
+    grants,
+  }) as ScopedDeviceGrantSnapshot;
 }
 
 function normalizeDeviceGrant(value: unknown): ScopedDeviceGrant | undefined {
@@ -132,9 +162,8 @@ function asRecord(value: unknown): UnknownRecord | undefined {
   return value as UnknownRecord;
 }
 
-function arrayField(record: UnknownRecord | undefined, key: string): unknown[] | undefined {
-  const value = record?.[key];
-  return Array.isArray(value) ? value : undefined;
+function hasOwn(record: UnknownRecord | undefined, key: string): boolean {
+  return Boolean(record && Object.prototype.hasOwnProperty.call(record, key));
 }
 
 function stringField(record: UnknownRecord | undefined, key: string): string | undefined {
@@ -152,6 +181,11 @@ function numberField(record: UnknownRecord, key: string): number | undefined {
     if (Number.isFinite(parsed) && parsed >= 0) return parsed;
   }
   return undefined;
+}
+
+function normalizeRevision(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return undefined;
+  return value;
 }
 
 function pruneUndefined<T>(value: T): T {

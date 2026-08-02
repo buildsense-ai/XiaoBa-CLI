@@ -148,6 +148,26 @@ export interface ScopedDeviceGrant {
   expiresAt: number;
 }
 
+/**
+ * Complete device-authority state carried by one trusted channel message.
+ * Presence is significant: an empty grants array revokes every prior grant
+ * for this scope. The snapshot is runtime authority and is never restored
+ * from transcript history.
+ */
+export interface ScopedDeviceGrantSnapshot {
+  kind: 'user_device_grant_snapshot';
+  source: MessageSource;
+  sessionKey: string;
+  topicId: string;
+  topicType: MessageTopicType;
+  actorUserId: string;
+  agentId?: string;
+  agentBodyId?: string;
+  identityTrust: IdentityTrustLevel;
+  revision?: number;
+  grants: ScopedDeviceGrant[];
+}
+
 export interface DeviceSelectionCandidate {
   deviceId: string;
   displayName?: string;

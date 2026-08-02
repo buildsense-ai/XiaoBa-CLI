@@ -89,6 +89,7 @@ function createRemoteMediaContext(fileName: string): {
     status: 'ready',
   };
   const rpcCalls: Array<{ toolName: string; args: Record<string, unknown> }> = [];
+  const now = Date.now();
 
   return {
     importedPath,
@@ -98,6 +99,33 @@ function createRemoteMediaContext(fileName: string): {
       workspaceRoot: root,
       conversationHistory: [],
       surface: 'catscompany',
+      executionScope: {
+        source: 'catscompany',
+        sessionKey: 'session:remote-media',
+        topicId: 'p2p_alice_agent',
+        topicType: 'p2p',
+        actorUserId: 'usr-alice',
+        identityTrust: 'server_canonical',
+        isTrusted: true,
+      },
+      deviceGrants: [{
+        kind: 'user_device_grant',
+        source: 'catscompany',
+        grantId: 'grant:alice-device',
+        status: 'active',
+        identityTrust: 'server_canonical',
+        identitySource: 'metadata.catsco_identity',
+        deviceId: route.deviceId,
+        deviceDisplayName: route.label,
+        ownerUserId: route.ownerUserId,
+        sessionKey: 'session:remote-media',
+        topicId: 'p2p_alice_agent',
+        topicType: 'p2p',
+        actorUserId: 'usr-alice',
+        operations: ['read_file', 'send_file'],
+        createdAt: now,
+        expiresAt: now + 300_000,
+      }],
       targetRoutes: {
         routes: [route],
         byName: new Map([['alice', [route]]]),

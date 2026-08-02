@@ -1136,6 +1136,8 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.deviceGrants?.length, 1);
     assert.equal(handledTurns[0].options.deviceGrants[0].deviceId, 'alice-laptop');
     assert.deepEqual(handledTurns[0].options.deviceGrants[0].operations, ['read_file', 'send_file']);
+    assert.equal(handledTurns[0].options.deviceGrantSnapshot?.revision, 12);
+    assert.equal(handledTurns[0].options.deviceGrantSnapshot?.grants.length, 1);
   });
 
   test('passes group device grants into CatsCompany session turn', async () => {
@@ -1228,6 +1230,26 @@ describe('CatsCompany execution scope flow', () => {
 
     assert.equal(handledTurns.length, 1);
     assert.equal(handledTurns[0].options.deviceGrants, undefined);
+    assert.deepEqual(handledTurns[0].options.deviceGrantSnapshot?.grants, []);
+  });
+
+  test('preserves an explicit empty canonical device grant snapshot as revocation', async () => {
+    const { bot, handledTurns } = createHarness();
+
+    await (bot as any).onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '撤销设备授权',
+      content: '撤销设备授权',
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', []),
+      isGroup: false,
+      seq: 13,
+    });
+
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.deviceGrants, undefined);
+    assert.equal(handledTurns[0].options.deviceGrantSnapshot?.revision, 12);
+    assert.deepEqual(handledTurns[0].options.deviceGrantSnapshot?.grants, []);
   });
 
   test('does not merge queued CatsCo group input from another actor into the current actor scope', () => {
@@ -1295,6 +1317,177 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(pending.content, '补充读取文件');
     assert.equal(pending.deviceGrants.length, 1);
     assert.equal(pending.deviceGrants[0].deviceId, 'alice-laptop');
+  });
+
+  test('uses only the latest queued device grant snapshot and preserves empty revocation', () => {
+    const { bot } = createHarness();
+    const scope = createExecutionScope(createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'first',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      botUid: 'usr43',
+    }));
+    const snapshot = (revision: number, grants: unknown[]) => ({
+      kind: 'user_device_grant_snapshot',
+      source: scope.source,
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      agentBodyId: scope.agentBodyId,
+      identityTrust: scope.identityTrust,
+      revision,
+      grants,
+    });
+    bot.messageQueue.set(scope.sessionKey, [{
+      userMessage: '先授权',
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 13,
+      executionScope: scope,
+      deviceGrantSnapshot: snapshot(13, [deviceGrant()]),
+      receivedAt: Date.now(),
+      source: 'user',
+    }, {
+      userMessage: '再撤销',
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 14,
+      executionScope: scope,
+      deviceGrantSnapshot: snapshot(14, []),
+      receivedAt: Date.now() + 1,
+      source: 'user',
+    }, {
+      userMessage: '延迟到达的旧授权',
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 15,
+      executionScope: scope,
+      deviceGrantSnapshot: snapshot(12, [deviceGrant()]),
+      receivedAt: Date.now() + 2,
+      source: 'user',
+    }, {
+      userMessage: '同 revision 的冲突授权',
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 16,
+      executionScope: scope,
+      deviceGrantSnapshot: snapshot(14, [deviceGrant()]),
+      receivedAt: Date.now() + 3,
+      source: 'user',
+    }]);
+
+    const pending = (bot as any).consumeQueuedUserInput(scope.sessionKey, scope);
+    assert.equal(pending.deviceGrants, undefined);
+    assert.equal(pending.deviceGrantSnapshot.revision, 14);
+    assert.deepEqual(pending.deviceGrantSnapshot.grants, []);
+  });
+
+  test('keeps equal-revision queued snapshots idempotent across grant and operation ordering', () => {
+    const { bot } = createHarness();
+    const scope = createExecutionScope(createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'first',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      botUid: 'usr43',
+    }));
+    const first = deviceGrant();
+    const second = deviceGrant({
+      grantId: 'device-grant-2',
+      deviceId: 'alice-tablet',
+      operations: ['glob', 'read_file'],
+    });
+    const snapshot = (grants: unknown[]) => ({
+      kind: 'user_device_grant_snapshot',
+      source: scope.source,
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      agentBodyId: scope.agentBodyId,
+      identityTrust: scope.identityTrust,
+      revision: 20,
+      grants,
+    });
+    bot.messageQueue.set(scope.sessionKey, [{
+      userMessage: '第一个排序',
+      topic: scope.topicId,
+      senderId: scope.actorUserId,
+      seq: 20,
+      executionScope: scope,
+      deviceGrantSnapshot: snapshot([first, second]),
+      receivedAt: Date.now(),
+      source: 'user',
+    }, {
+      userMessage: '同义不同排序',
+      topic: scope.topicId,
+      senderId: scope.actorUserId,
+      seq: 21,
+      executionScope: scope,
+      deviceGrantSnapshot: snapshot([
+        { ...second, operations: [...second.operations].reverse() },
+        { ...first, operations: [...first.operations].reverse() },
+      ]),
+      receivedAt: Date.now() + 1,
+      source: 'user',
+    }]);
+
+    const pending = (bot as any).consumeQueuedUserInput(scope.sessionKey, scope);
+    assert.equal(pending.deviceGrantSnapshot.revision, 20);
+    assert.deepEqual(pending.deviceGrantSnapshot.grants, [first, second]);
+  });
+
+  test('clears queued authority when an unversioned snapshot follows versioned grants', () => {
+    const { bot } = createHarness();
+    const scope = createExecutionScope(createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'first',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      botUid: 'usr43',
+    }));
+    const snapshot = (revision: number | undefined, grants: unknown[]) => ({
+      kind: 'user_device_grant_snapshot',
+      source: scope.source,
+      sessionKey: scope.sessionKey,
+      topicId: scope.topicId,
+      topicType: scope.topicType,
+      actorUserId: scope.actorUserId,
+      agentId: scope.agentId,
+      agentBodyId: scope.agentBodyId,
+      identityTrust: scope.identityTrust,
+      revision,
+      grants,
+    });
+    const broad = deviceGrant({ operations: ['read_file', 'execute_shell'] });
+    const narrow = deviceGrant({ operations: ['read_file'] });
+    bot.messageQueue.set(scope.sessionKey, [{
+      userMessage: '有序的广授权',
+      topic: scope.topicId,
+      senderId: scope.actorUserId,
+      seq: 30,
+      executionScope: scope,
+      deviceGrantSnapshot: snapshot(30, [broad]),
+      receivedAt: Date.now(),
+      source: 'user',
+    }, {
+      userMessage: '无法证明顺序的缩权',
+      topic: scope.topicId,
+      senderId: scope.actorUserId,
+      seq: 31,
+      executionScope: scope,
+      deviceGrantSnapshot: snapshot(undefined, [narrow]),
+      receivedAt: Date.now() + 1,
+      source: 'user',
+    }]);
+
+    const pending = (bot as any).consumeQueuedUserInput(scope.sessionKey, scope);
+    assert.equal(pending.deviceGrantSnapshot.revision, 30);
+    assert.deepEqual(pending.deviceGrantSnapshot.grants, []);
   });
 
   test('preserves latest device selection when queued CatsCompany user input is merged', () => {

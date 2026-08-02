@@ -32,15 +32,17 @@ function catsContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecuti
       status: 'active',
       identityTrust: 'server_canonical',
       identitySource: 'lightweight_test',
-      deviceId: 'dev-user-85',
+      deviceId: 'dev-alice-win',
       deviceDisplayName: 'usr85 device',
+      deviceBodyId: 'body-alice-win',
+      deviceInstallationId: 'install-alice-win',
       ownerUserId: 'usr85',
       sessionKey: 'session:v2:catscompany:p2p:p2p_85_320:agent:usr320',
       topicId: 'p2p_85_320',
       topicType: 'p2p',
       actorUserId: 'usr85',
       agentId: 'usr320',
-      operations: ['glob'],
+      operations: ['read_file', 'send_file', 'glob', 'execute_shell'],
       createdAt: Date.now(),
       expiresAt: Date.now() + 60_000,
     }],
@@ -139,6 +141,158 @@ test('username target routes through Thin Tool RPC, strips target args, and owns
   assert.doesNotMatch(String(result?.ok && result.content), /target: agent_self/);
 });
 
+test('named runtime target falls back to negotiated Device RPC when authority-v1 Thin RPC is unavailable', async () => {
+  let deviceCalls = 0;
+  const context = catsContext({
+    thinToolRpc: undefined,
+    deviceRpc: {
+      executeTool: async request => {
+        deviceCalls += 1;
+        assert.equal(request.targetDeviceId, 'dev-alice-win');
+        return { ok: true, content: 'device fallback ok' };
+      },
+    },
+  });
+  const route = resolveExecutionRoute(context, {
+    toolName: 'glob',
+    operation: 'glob',
+    target: 'Alice',
+  });
+  assert.equal(route.ok, true);
+
+  const result = await executeRouteIfRemote(
+    context,
+    route,
+    'glob',
+    'glob',
+    { path: '.', pattern: '*' },
+  );
+  assert.equal(deviceCalls, 1);
+  assert.equal(result?.ok, true);
+  assert.equal(result?.ok && result.content, 'device fallback ok');
+});
+
+test('runtime target routes are discovery hints and cannot authorize a remote operation', () => {
+  const baseline = catsContext();
+  const baseGrant = baseline.deviceGrants![0];
+  const cases: Array<[string, Partial<ToolExecutionContext>]> = [
+    ['missing grant', { deviceGrants: [] }],
+    ['revoked grant', { deviceGrants: [{ ...baseGrant, status: 'revoked' }] }],
+    ['expired grant', { deviceGrants: [{ ...baseGrant, expiresAt: Date.now() - 1 }] }],
+    ['wrong operation', { deviceGrants: [{ ...baseGrant, operations: ['read_file'] }] }],
+    ['wrong actor', { deviceGrants: [{ ...baseGrant, actorUserId: 'usr-other', ownerUserId: 'usr-other' }] }],
+    ['legacy grant', { deviceGrants: [{ ...baseGrant, identityTrust: 'legacy_context' }] }],
+  ];
+
+  for (const [name, overrides] of cases) {
+    const route = resolveExecutionRoute(catsContext(overrides), {
+      toolName: 'glob',
+      operation: 'glob',
+      target: 'Alice',
+    });
+    assert.equal(route.ok, false, name);
+    if (!route.ok) assert.equal(route.errorCode, 'PERMISSION_DENIED', name);
+  }
+
+  const wrongOwnerRoute = buildTargetRoutes([{
+    userId: 'usr-other',
+    userName: 'Alice',
+    ownerUserId: 'usr-other',
+    deviceId: baseGrant.deviceId,
+    label: 'Alice 的电脑',
+    os: 'windows',
+    status: 'ready',
+  }]);
+  const wrongOwner = resolveExecutionRoute(catsContext({ targetRoutes: wrongOwnerRoute }), {
+    toolName: 'glob',
+    operation: 'glob',
+    target: 'Alice',
+  });
+  assert.equal(wrongOwner.ok, false);
+});
+
+test('server-canonical group delegation still authorizes the named participant device', () => {
+  const context = catsContext();
+  const delegatedGrant = {
+    ...context.deviceGrants![0],
+    identitySource: 'channel_identity_link',
+    ownerUserId: 'usr99',
+    sessionKey: 'session:v2:catscompany:group:room_7:agent:usr320',
+    topicId: 'room_7',
+    topicType: 'group' as const,
+  };
+  const groupContext = catsContext({
+    executionScope: {
+      ...context.executionScope!,
+      sessionKey: delegatedGrant.sessionKey,
+      topicId: delegatedGrant.topicId,
+      topicType: delegatedGrant.topicType,
+    },
+    deviceGrants: [delegatedGrant],
+    thinToolRpc: {
+      executeTool: async () => ({ ok: true, content: 'delegated remote ok' }),
+    },
+    targetRoutes: buildTargetRoutes([{
+      userId: 'usr99',
+      userName: 'Bob',
+      ownerUserId: 'usr99',
+      deviceId: delegatedGrant.deviceId,
+      label: 'Bob 的电脑',
+      os: 'windows',
+      status: 'ready',
+    }]),
+  });
+
+  const route = resolveExecutionRoute(groupContext, {
+    toolName: 'glob',
+    operation: 'glob',
+    target: 'Bob',
+  });
+
+  assert.equal(route.ok, true);
+  assert.equal(route.ok && route.mode, 'remote');
+  assert.equal(route.ok && route.mode === 'remote' && route.targetOwnerUserId, 'usr99');
+});
+
+test('remote dispatch revalidates authority and tool/operation pairing', async () => {
+  let rpcCalls = 0;
+  const authorized = catsContext({
+    thinToolRpc: {
+      executeTool: async () => {
+        rpcCalls += 1;
+        return { ok: true, content: 'unexpected' };
+      },
+    },
+  });
+  const resolved = resolveExecutionRoute(authorized, {
+    toolName: 'glob',
+    operation: 'glob',
+    target: 'Alice',
+  });
+  assert.equal(resolved.ok, true);
+
+  const mismatched = await executeRouteIfRemote(
+    authorized,
+    resolved,
+    'execute_shell',
+    'glob',
+    { command: 'echo no' },
+  );
+  assert.equal(mismatched?.ok, false);
+  assert.equal(rpcCalls, 0);
+
+  const forgedContext = { ...authorized, deviceGrants: [] };
+  const forged = await executeRouteIfRemote(
+    forgedContext,
+    resolved,
+    'glob',
+    'glob',
+    { path: '.', pattern: '*' },
+  );
+  assert.equal(forged?.ok, false);
+  assert.equal(rpcCalls, 0);
+});
+
 test('legacy speaker_default fallback still uses Device RPC when runtime routes are unavailable', async () => {
   let capturedArgs: Record<string, unknown> | undefined;
   const context = catsContext({
@@ -146,7 +300,7 @@ test('legacy speaker_default fallback still uses Device RPC when runtime routes 
     deviceRpc: {
       executeTool: async request => {
         capturedArgs = request.args;
-        assert.equal(request.targetDeviceId, 'dev-user-85');
+        assert.equal(request.targetDeviceId, 'dev-alice-win');
         return { ok: true, content: 'legacy remote ok' };
       },
     },
