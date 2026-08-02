@@ -20,6 +20,15 @@ const lookupTool: ToolDefinition = {
 function createProvider(): OpenAIProvider {
   return new OpenAIProvider({
     apiKey: 'test-key',
+    apiUrl: 'https://api.openai.com/v1',
+    model: 'gpt-5.5',
+    openaiApiMode: 'responses',
+  });
+}
+
+function createCompatibleProvider(): OpenAIProvider {
+  return new OpenAIProvider({
+    apiKey: 'test-key',
     apiUrl: 'https://example.test/v1/chat/completions',
     model: 'gpt-test',
     openaiApiMode: 'responses',
@@ -46,7 +55,7 @@ describe('OpenAIProvider Responses API mode', () => {
       description: 'Look up a value',
       parameters: lookupTool.parameters,
     }]);
-    assert.match(first.prompt_cache_key, /^catsco-[a-f0-9]{48}$/);
+    assert.match(first.prompt_cache_key, /^catsco-v3-rsp-[a-f0-9]{36}-s[0-9a-f]{2}$/);
     assert.equal(first.prompt_cache_key, second.prompt_cache_key);
     assert.equal(first.store, false);
     assert.deepEqual(first.include, ['reasoning.encrypted_content']);
@@ -165,6 +174,61 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.notEqual(first.prompt_cache_key, changed.prompt_cache_key);
   });
 
+  test('uses one explicit stable-prefix breakpoint for eligible GPT-5.6 Responses requests', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5.6-sol',
+      openaiApiMode: 'responses',
+    });
+    const stablePolicy = 'Stable reusable policy and examples. '.repeat(180);
+    const body = (provider as any).buildResponsesRequestBody([
+      { role: 'system', content: stablePolicy },
+      { role: 'system', content: '[transient_runtime_context]\ndevice-a', __cacheScope: 'dynamic' },
+      { role: 'user', content: 'current question' },
+    ], [lookupTool], false, { cachePartitionKey: 'session-a' });
+
+    assert.equal(body.instructions, undefined);
+    assert.deepEqual(body.prompt_cache_options, { mode: 'explicit' });
+    assert.match(body.prompt_cache_key, /^catsco-v3-rsp-[a-f0-9]{36}-s[0-9a-f]{2}$/);
+    assert.deepEqual(body.input[0], {
+      role: 'system',
+      content: [{
+        type: 'input_text',
+        text: stablePolicy,
+        prompt_cache_breakpoint: { mode: 'explicit' },
+      }],
+    });
+    assert.deepEqual(body.input.slice(1), [
+      { role: 'user', content: 'current question' },
+      { role: 'system', content: '[transient_runtime_context]\ndevice-a' },
+    ]);
+  });
+
+  test('keeps implicit caching for a short GPT-5.6 prefix and omits OpenAI-only cache fields on relays', () => {
+    const official = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5.6-sol',
+      openaiApiMode: 'responses',
+    });
+    const officialBody = (official as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Short stable policy.' },
+      { role: 'user', content: 'hello' },
+    ]);
+    const compatibleBody = (createCompatibleProvider() as any).buildResponsesRequestBody([
+      { role: 'system', content: 'Stable policy.' },
+      { role: 'user', content: 'hello' },
+    ]);
+
+    assert.equal(officialBody.instructions, 'Short stable policy.');
+    assert.equal(officialBody.prompt_cache_options, undefined);
+    assert.equal(officialBody.input[0].role, 'user');
+    assert.match(officialBody.prompt_cache_key, /^catsco-v3-rsp-/);
+    assert.equal(compatibleBody.prompt_cache_key, undefined);
+    assert.equal(compatibleBody.prompt_cache_options, undefined);
+  });
+
   test('applies configured reasoning only to endpoints known to support it', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
@@ -218,7 +282,7 @@ describe('OpenAIProvider Responses API mode', () => {
     };
 
     try {
-      const result = await createProvider().chat([{ role: 'user', content: 'hello' }]);
+      const result = await createCompatibleProvider().chat([{ role: 'user', content: 'hello' }]);
 
       assert.equal(seenUrl, 'https://example.test/v1/responses');
       assert.equal(seenBody.stream, false);
@@ -245,7 +309,7 @@ describe('OpenAIProvider Responses API mode', () => {
     });
 
     try {
-      const result = await createProvider().chat([{ role: 'user', content: 'hello' }]);
+      const result = await createCompatibleProvider().chat([{ role: 'user', content: 'hello' }]);
       assert.equal(result.content, 'I cannot help with that.');
     } finally {
       (axios as any).post = originalPost;
@@ -263,7 +327,7 @@ describe('OpenAIProvider Responses API mode', () => {
 
     try {
       await assert.rejects(
-        createProvider().chat([{ role: 'user', content: 'hello' }]),
+        createCompatibleProvider().chat([{ role: 'user', content: 'hello' }]),
         (error: any) => (
           error?.message === 'upstream unavailable'
           && error?.code === 'server_error'
@@ -348,7 +412,7 @@ describe('OpenAIProvider Responses API mode', () => {
     };
 
     try {
-      const provider = createProvider();
+      const provider = createCompatibleProvider();
       const first = await provider.chat([{ role: 'user', content: 'look it up' }], [lookupTool]);
       const messages: Message[] = [
         { role: 'user', content: 'look it up' },
@@ -382,7 +446,7 @@ describe('OpenAIProvider Responses API mode', () => {
   });
 
   test('falls back to canonical function calls when Responses replay state came from another endpoint', () => {
-    const source = createProvider();
+    const source = createCompatibleProvider();
     const target = new OpenAIProvider({
       apiKey: 'test-key',
       apiUrl: 'https://other.example.test/v1',
@@ -438,7 +502,7 @@ describe('OpenAIProvider Responses API mode', () => {
 
     try {
       const chunks: string[] = [];
-      const result = await createProvider().chatStream(
+      const result = await createCompatibleProvider().chatStream(
         [{ role: 'user', content: 'hello' }],
         undefined,
         { onText: value => chunks.push(value) },
@@ -475,7 +539,7 @@ describe('OpenAIProvider Responses API mode', () => {
 
     try {
       const chunks: string[] = [];
-      const result = await createProvider().chatStream(
+      const result = await createCompatibleProvider().chatStream(
         [{ role: 'user', content: 'hello' }],
         undefined,
         { onText: value => chunks.push(value) },
@@ -510,7 +574,7 @@ describe('OpenAIProvider Responses API mode', () => {
     });
 
     try {
-      const result = await createProvider().chatStream(
+      const result = await createCompatibleProvider().chatStream(
         [{ role: 'user', content: 'hello' }],
       );
 
@@ -539,7 +603,7 @@ describe('OpenAIProvider Responses API mode', () => {
 
     try {
       const chunks: string[] = [];
-      const result = await createProvider().chatStream(
+      const result = await createCompatibleProvider().chatStream(
         [{ role: 'user', content: 'hello' }],
         undefined,
         { onText: value => chunks.push(value) },
@@ -573,7 +637,7 @@ describe('OpenAIProvider Responses API mode', () => {
 
     try {
       const chunks: string[] = [];
-      const result = await createProvider().chatStream(
+      const result = await createCompatibleProvider().chatStream(
         [{ role: 'user', content: 'hello' }],
         undefined,
         { onText: value => chunks.push(value) },

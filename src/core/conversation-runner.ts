@@ -1452,6 +1452,10 @@ export class ConversationRunner {
   ) {
     const requestOptions: AIRequestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
+      cachePartitionKey: this.toolExecutionContext?.sessionId
+        || this.toolExecutionContext?.executionScope?.sessionKey
+        || this.sessionLabel.trim()
+        || 'runner',
       ...(this.cacheTraceSink ? {
         modelAttemptSink: this.cacheTraceSink,
         modelAttemptContext: {

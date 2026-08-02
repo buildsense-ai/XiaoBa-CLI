@@ -58,6 +58,45 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.equal(JSON.stringify(body.messages).includes('__episodeInputKind'), false);
     assert.equal(JSON.stringify(body.messages).includes('runtimeObservationSource'), false);
     assert.equal(JSON.stringify(body.messages).includes('must not leak'), false);
+    assert.equal(body.prompt_cache_key, undefined);
+    assert.equal(body.prompt_cache_options, undefined);
+  });
+
+  test('marks only the stable Chat Completions prefix for official GPT-5.6', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5.6-terra',
+    });
+    const stablePolicy = 'Stable tool policy and examples. '.repeat(180);
+    const body = (provider as any).buildRequestBody([
+      { role: 'system', content: stablePolicy },
+      { role: 'system', content: '[transient_plan_status]\nstep two', __cacheScope: 'dynamic' },
+      { role: 'user', content: 'current question' },
+    ], [
+      {
+        name: 'zeta',
+        description: 'Zeta tool',
+        parameters: { required: ['value'], properties: { value: { type: 'string' } }, type: 'object' },
+      },
+      {
+        name: 'alpha',
+        description: 'Alpha tool',
+        parameters: { type: 'object', properties: {} },
+      },
+    ], false, { cachePartitionKey: 'session-a' });
+
+    assert.deepEqual(body.prompt_cache_options, { mode: 'explicit' });
+    assert.match(body.prompt_cache_key, /^catsco-v3-chat-[a-f0-9]{36}-s[0-9a-f]{2}$/);
+    assert.deepEqual(body.messages[0].content, [{
+      type: 'text',
+      text: stablePolicy,
+      prompt_cache_breakpoint: { mode: 'explicit' },
+    }]);
+    assert.equal(body.messages[1].content, '[transient_plan_status]\nstep two');
+    assert.equal(body.messages[2].content, 'current question');
+    assert.deepEqual(body.tools.map((tool: any) => tool.function.name), ['alpha', 'zeta']);
+    assert.deepEqual(Object.keys(body.tools[1].function.parameters), ['properties', 'required', 'type']);
   });
 
   test('adds explicit DeepSeek reasoning effort only when configured', () => {
