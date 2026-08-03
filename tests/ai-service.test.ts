@@ -3,6 +3,7 @@ import * as assert from 'node:assert';
 import { AIService } from '../src/utils/ai-service';
 import type { ChatResponse } from '../src/types';
 import type { StreamCallbacks } from '../src/providers/provider';
+import { readModelErrorDiagnostics } from '../src/utils/model-error-observability';
 
 const originalStreamRetry = process.env.GAUZ_STREAM_RETRY;
 const originalRetryMaxRetries = process.env.CATSCO_MODEL_RETRY_MAX_RETRIES;
@@ -455,6 +456,113 @@ test('AIService cancels before provider call when signal is already aborted', as
     /请求已取消/,
   );
   assert.equal(called, false);
+});
+
+test('AIService preserves provider fields and non-retryable stop reason on wrapped errors', async () => {
+  const service = createTestService();
+  const rawError = Object.assign(new Error('Request failed with status code 422'), {
+    response: {
+      status: 422,
+      data: {
+        request_id: 'req_schema_1',
+        error: {
+          code: 'invalid_tool_schema',
+          type: 'invalid_request_error',
+          message: 'tool schema is invalid',
+        },
+      },
+    },
+  });
+  (service as any).provider = {
+    chat: async () => { throw rawError; },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+
+  let wrapped: unknown;
+  const attemptEvents: any[] = [];
+  try {
+    await service.chat([], undefined, {
+      modelAttemptSink: { observe: event => { attemptEvents.push(event); } },
+      modelAttemptContext: { episodeId: 'episode-ai-service' },
+    });
+  } catch (error) {
+    wrapped = error;
+  }
+
+  const diagnostics = readModelErrorDiagnostics(wrapped);
+  assert.equal((wrapped as any).status, 422);
+  assert.equal(diagnostics?.provider, 'openai');
+  assert.equal(diagnostics?.model, 'primary-model');
+  assert.equal(diagnostics?.phase, 'model_request');
+  assert.equal(diagnostics?.provider_code, 'invalid_tool_schema');
+  assert.equal(diagnostics?.provider_type, 'invalid_request_error');
+  assert.equal(diagnostics?.request_id, 'req_schema_1');
+  assert.equal(diagnostics?.retry?.attempt_count, 1);
+  assert.equal(diagnostics?.retry?.retry_count, 0);
+  assert.equal(diagnostics?.retry?.stop_reason, 'non_retryable');
+  assert.equal(diagnostics?.attempt?.call_id, attemptEvents[1].callId);
+  assert.equal(diagnostics?.attempt?.attempt_id, attemptEvents[1].attemptId);
+  assert.equal(diagnostics?.attempt?.attempt_number, 1);
+  assert.equal(diagnostics?.attempt?.episode_id, 'episode-ai-service');
+});
+
+test('AIService records retry exhaustion on the final wrapped error', async () => {
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '1';
+  const service = createTestService();
+  let attempts = 0;
+  (service as any).sleepWithAbort = async () => undefined;
+  (service as any).provider = {
+    chat: async () => {
+      attempts += 1;
+      throw Object.assign(new Error('temporary upstream failure'), {
+        response: {
+          status: 503,
+          headers: { 'retry-after': '0' },
+          data: { error: { type: 'overloaded_error', message: 'temporary upstream failure' } },
+        },
+      });
+    },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+
+  let wrapped: unknown;
+  try {
+    await service.chat([]);
+  } catch (error) {
+    wrapped = error;
+  }
+
+  const diagnostics = readModelErrorDiagnostics(wrapped);
+  assert.equal(attempts, 2);
+  assert.equal(diagnostics?.retry?.attempt_count, 2);
+  assert.equal(diagnostics?.retry?.retry_count, 1);
+  assert.equal(diagnostics?.retry?.max_retries, 1);
+  assert.equal(diagnostics?.retry?.stop_reason, 'retry_limit_exhausted');
+});
+
+test('AIService records when stream output prevents an otherwise retryable request', async () => {
+  const service = createTestService();
+  (service as any).provider = {
+    chat: async () => ({ content: 'unused' }),
+    chatStream: async (_messages: unknown, _tools: unknown, callbacks?: StreamCallbacks) => {
+      callbacks?.onText?.('partial response');
+      throw Object.assign(new Error('upstream disconnected'), {
+        response: { status: 503, data: { message: 'upstream disconnected' } },
+      });
+    },
+  };
+
+  let wrapped: unknown;
+  try {
+    await service.chatStream([], undefined, { onText: () => undefined });
+  } catch (error) {
+    wrapped = error;
+  }
+
+  const diagnostics = readModelErrorDiagnostics(wrapped);
+  assert.equal(diagnostics?.retry?.attempt_count, 1);
+  assert.equal(diagnostics?.retry?.retry_count, 0);
+  assert.equal(diagnostics?.retry?.stop_reason, 'stream_output_started');
 });
 
 function createTestService(): AIService {

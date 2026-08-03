@@ -1,12 +1,25 @@
 import { Message, ChatConfig, ChatResponse } from '../types';
 import { ConfigManager } from './config';
 import { ToolDefinition } from '../types/tool';
-import { AIProvider, AIRequestOptions, StreamCallbacks, StreamRetryInfo } from '../providers/provider';
+import {
+  AIProvider,
+  AIRequestOptions,
+  ModelAttemptEvent,
+  ModelAttemptSink,
+  ModelAttemptStopReason,
+  StreamCallbacks,
+  StreamRetryInfo,
+} from '../providers/provider';
 import { AnthropicProvider } from '../providers/anthropic-provider';
 import { OpenAIProvider } from '../providers/openai-provider';
 import { Logger } from './logger';
 import { isPrimaryModelToolCallingCapable } from './model-capabilities';
 import { resolveModelContextWindow } from './model-context-window';
+import {
+  attachModelErrorDiagnostics,
+  attachRetrySummary,
+  captureModelErrorDiagnostics,
+} from './model-error-observability';
 
 /**
  * AI 服务 - 统一的 AI 调用入口
@@ -28,6 +41,7 @@ const EMPTY_RESPONSE_ERROR_CODE = 'EMPTY_MODEL_RESPONSE';
 const EMPTY_RESPONSE_MAX_RETRIES = 2;
 const EMPTY_RESPONSE_MAX_ELAPSED_MS = 2 * 60 * 1000;
 const EMPTY_RESPONSE_MAX_DELAY_MS = 2000;
+let modelAttemptCallSequence = 0;
 
 type ProviderKind = 'openai' | 'anthropic';
 
@@ -36,6 +50,15 @@ interface RetryPolicy {
   maxElapsedMs: number;
   baseDelayMs: number;
   maxDelayMs: number;
+}
+
+interface ModelAttemptRun {
+  callId: string;
+  sink?: ModelAttemptSink;
+  context?: AIRequestOptions['modelAttemptContext'];
+  messages: readonly Message[];
+  tools: readonly ToolDefinition[];
+  stream: boolean;
 }
 
 export class AIService {
@@ -116,6 +139,8 @@ export class AIService {
         async () => this.requireUsableResponse(await this.provider.chat(messages, tools, options)),
         undefined,
         options.signal,
+        undefined,
+        this.createModelAttemptRun(messages, tools, false, options),
       );
     } catch (error: any) {
       throw this.wrapError(error);
@@ -151,6 +176,7 @@ export class AIService {
         callbacks,
         options.signal,
         () => allowStreamRetry || !hasStreamedText,
+        this.createModelAttemptRun(messages, tools, true, options),
       );
       callbacks?.onComplete?.(result);
       return result;
@@ -210,14 +236,32 @@ export class AIService {
 
     const status = this.extractStatus(error);
     const errorMessage = this.extractErrorMessage(error);
+    const diagnostics = captureModelErrorDiagnostics(error, {
+      provider,
+      model,
+      phase: 'model_request',
+    });
 
     const wrapped = status
       ? new Error(`API错误 (${status}): ${errorMessage}`)
       : new Error(`请求失败: ${errorMessage}`);
+    if (status) {
+      (wrapped as Error & { status?: number }).status = status;
+    }
     const code = this.extractErrorCode(error);
     if (code) {
       (wrapped as Error & { code?: string }).code = code;
     }
+    try {
+      Object.defineProperty(wrapped, 'cause', {
+        value: error,
+        configurable: true,
+        enumerable: false,
+      });
+    } catch {
+      // Older runtimes may expose a non-configurable cause property.
+    }
+    attachModelErrorDiagnostics(wrapped, diagnostics);
     return wrapped;
   }
 
@@ -341,39 +385,96 @@ export class AIService {
     callbacks?: StreamCallbacks,
     signal?: AbortSignal,
     shouldRetry?: (error: any, attempt: number) => boolean,
+    attemptRun?: ModelAttemptRun,
   ): Promise<T> {
-    let lastError: any;
-    const policy = this.resolveRetryPolicy();
     const startedAt = Date.now();
 
     for (let attempt = 0; ; attempt++) {
+      this.throwIfAborted(signal);
+      const attemptStartedAt = Date.now();
+      const attemptNumber = attempt + 1;
+      this.emitModelAttempt(attemptRun, attemptNumber, {
+        outcome: 'started',
+      });
       try {
-        this.throwIfAborted(signal);
-        return await fn();
+        const result = await fn();
+        this.emitModelAttempt(attemptRun, attemptNumber, {
+          outcome: 'succeeded',
+          durationMs: Date.now() - attemptStartedAt,
+          response: result as ChatResponse,
+        });
+        return result;
       } catch (error: any) {
-        lastError = error;
-
         if (this.isAbortError(error) || signal?.aborted) {
+          const policy = this.resolveRetryPolicy(error);
+          this.emitModelAttempt(attemptRun, attemptNumber, {
+            outcome: 'cancelled',
+            durationMs: Date.now() - attemptStartedAt,
+            error,
+            retry: {
+              retryNumber: attempt,
+              maxRetries: policy.maxRetries,
+              elapsedMs: Date.now() - startedAt,
+              maxElapsedMs: policy.maxElapsedMs,
+              stopReason: 'aborted',
+            },
+          });
           throw this.createAbortError();
         }
 
         const policy = this.resolveRetryPolicy(error);
         const retryAttempt = attempt + 1;
-        if (
-          retryAttempt > policy.maxRetries
-          || !this.isRetryable(error)
-          || shouldRetry?.(error, retryAttempt) === false
-        ) {
-          throw error;
-        }
-
         const elapsedMs = Date.now() - startedAt;
-        if (elapsedMs >= policy.maxElapsedMs) {
+        const stopReason = this.resolveRetryStopReason(
+          error,
+          retryAttempt,
+          policy,
+          elapsedMs,
+          shouldRetry,
+        );
+        if (stopReason) {
+          attachRetrySummary(error, {
+            attempt_count: attemptNumber,
+            retry_count: attempt,
+            max_retries: policy.maxRetries,
+            elapsed_ms: elapsedMs,
+            max_elapsed_ms: policy.maxElapsedMs,
+            stop_reason: stopReason,
+          }, {
+            call_id: attemptRun?.callId,
+            attempt_id: attemptRun ? `${attemptRun.callId}:${attemptNumber}` : undefined,
+            attempt_number: attemptRun ? attemptNumber : undefined,
+            episode_id: attemptRun?.context?.episodeId,
+          });
+          this.emitModelAttempt(attemptRun, attemptNumber, {
+            outcome: 'failed',
+            durationMs: Date.now() - attemptStartedAt,
+            error,
+            retry: {
+              retryNumber: attempt,
+              maxRetries: policy.maxRetries,
+              elapsedMs,
+              maxElapsedMs: policy.maxElapsedMs,
+              stopReason,
+            },
+          });
           throw error;
         }
 
         // 计算等待时间：优先用 Retry-After，否则指数退避
         const delay = this.resolveRetryDelayMs(error, retryAttempt, policy, elapsedMs);
+        this.emitModelAttempt(attemptRun, attemptNumber, {
+          outcome: 'retrying',
+          durationMs: Date.now() - attemptStartedAt,
+          error,
+          retry: {
+            retryNumber: retryAttempt,
+            maxRetries: policy.maxRetries,
+            delayMs: delay,
+            elapsedMs,
+            maxElapsedMs: policy.maxElapsedMs,
+          },
+        });
 
         const status = this.extractStatus(error) || this.extractErrorCode(error) || 'unknown';
         const retryInfo: StreamRetryInfo = {
@@ -395,8 +496,81 @@ export class AIService {
         await this.sleepWithAbort(delay, signal);
       }
     }
+  }
 
-    throw lastError;
+  private resolveRetryStopReason(
+    error: any,
+    retryAttempt: number,
+    policy: RetryPolicy,
+    elapsedMs: number,
+    shouldRetry?: (error: any, attempt: number) => boolean,
+  ): ModelAttemptStopReason | undefined {
+    if (!this.isRetryable(error)) return 'non_retryable';
+    if (shouldRetry?.(error, retryAttempt) === false) return 'stream_output_started';
+    if (retryAttempt > policy.maxRetries) return 'retry_limit_exhausted';
+    if (elapsedMs >= policy.maxElapsedMs) return 'retry_window_exhausted';
+    return undefined;
+  }
+
+  private createModelAttemptRun(
+    messages: readonly Message[],
+    tools: readonly ToolDefinition[] | undefined,
+    stream: boolean,
+    options: AIRequestOptions,
+  ): ModelAttemptRun | undefined {
+    if (!options.modelAttemptSink) return undefined;
+    modelAttemptCallSequence = (modelAttemptCallSequence + 1) % Number.MAX_SAFE_INTEGER;
+    return {
+      callId: `${Date.now().toString(36)}-${process.pid.toString(36)}-${modelAttemptCallSequence.toString(36)}`,
+      sink: options.modelAttemptSink,
+      context: options.modelAttemptContext ? { ...options.modelAttemptContext } : undefined,
+      messages,
+      tools: tools || [],
+      stream,
+    };
+  }
+
+  private emitModelAttempt(
+    run: ModelAttemptRun | undefined,
+    attemptNumber: number,
+    fields: Pick<ModelAttemptEvent, 'outcome'>
+      & Partial<Pick<ModelAttemptEvent, 'durationMs' | 'response' | 'error' | 'retry'>>,
+  ): void {
+    if (!run?.sink) return;
+    const event: ModelAttemptEvent = {
+      schema: 'xiaoba.model_attempt.v1',
+      callId: run.callId,
+      attemptId: `${run.callId}:${attemptNumber}`,
+      attemptNumber,
+      timestamp: new Date().toISOString(),
+      outcome: fields.outcome,
+      provider: this.config.provider as ProviderKind,
+      model: this.config.model || 'unknown',
+      apiType: this.config.provider === 'anthropic'
+        ? 'anthropic-messages'
+        : this.config.openaiApiMode === 'responses'
+          ? 'openai-responses'
+          : 'openai-chat-completions',
+      stream: run.stream,
+      ...(run.context ? { context: run.context } : {}),
+      request: {
+        messages: run.messages,
+        tools: run.tools,
+      },
+      ...(fields.durationMs === undefined ? {} : { durationMs: fields.durationMs }),
+      ...(fields.response === undefined ? {} : { response: fields.response }),
+      ...(fields.error === undefined ? {} : { error: fields.error }),
+      ...(fields.retry === undefined ? {} : { retry: fields.retry }),
+    };
+
+    try {
+      const result = run.sink.observe(event);
+      if (result && typeof (result as Promise<void>).then === 'function') {
+        Promise.resolve(result).catch(() => undefined);
+      }
+    } catch {
+      // Diagnostics about diagnostics must never affect the provider request.
+    }
   }
 
   private resolveRetryPolicy(error?: any): RetryPolicy {

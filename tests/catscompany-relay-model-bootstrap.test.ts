@@ -3,6 +3,7 @@ import * as assert from 'node:assert';
 import {
   provisionCatsRelayCatalogRuntime,
   refreshCatsRelayCatalogRuntimeCapabilities,
+  retargetCatsRelayCatalogRuntime,
 } from '../src/catscompany/relay-model-bootstrap';
 
 describe('CatsCo default relay model bootstrap', () => {
@@ -98,6 +99,73 @@ describe('CatsCo default relay model bootstrap', () => {
     assert.ok(runtime.capabilitiesCheckedAt);
   });
 
+  test('retargets an existing owner relay credential across provider protocols', () => {
+    const runtime = retargetCatsRelayCatalogRuntime({
+      schema: 'xiaoba.bot-catalog-model-runtime.v1',
+      botId: 'bot-1',
+      modelId: 'gpt-5.6-sol',
+      provider: 'openai',
+      apiBase: 'https://relay.example.test/v1',
+      apiKey: 'sk-existing-owner-key',
+      model: 'gpt-5.6-sol',
+      contextWindowTokens: 1_000_000,
+      openaiApiMode: 'responses',
+    }, 'deepseek-v4-flash', 'max');
+
+    assert.equal(runtime.modelId, 'deepseek-v4-flash');
+    assert.equal(runtime.provider, 'anthropic');
+    assert.equal(runtime.apiBase, 'https://relay.example.test/anthropic');
+    assert.equal(runtime.apiKey, 'sk-existing-owner-key');
+    assert.equal(runtime.model, 'deepseek-v4-flash');
+    assert.equal(runtime.reasoningEffort, 'max');
+    assert.equal(runtime.openaiApiMode, 'chat_completions');
+    assert.deepStrictEqual(runtime.capabilities, {
+      toolCalling: true,
+      vision: false,
+      streaming: true,
+    });
+    assert.equal(runtime.capabilitiesSource, 'static');
+  });
+
+  test('uses an existing owner relay credential when a long-running bot has no account login', async () => {
+    let requested = false;
+    const runtime = await provisionCatsRelayCatalogRuntime({
+      botId: 'bot-1',
+      modelId: 'gpt-5.6-terra',
+      reasoningEffort: 'xhigh',
+      auth: {
+        ownerUid: 'owner-1',
+        httpBaseUrl: 'https://cats.example.test',
+        serverUrl: 'wss://cats.example.test/v0/channels',
+        botUid: 'bot-1',
+        apiKey: 'bot-api-key',
+      },
+      existingRuntime: {
+        schema: 'xiaoba.bot-catalog-model-runtime.v1',
+        botId: 'bot-1',
+        ownerUid: 'owner-1',
+        modelId: 'minimax-m3',
+        provider: 'anthropic',
+        apiBase: 'https://relay.example.test/anthropic',
+        apiKey: 'sk-existing-owner-key',
+        model: 'MiniMax-M3',
+        contextWindowTokens: 1_000_000,
+      },
+      fetchImpl: (async (input: string | URL | Request) => {
+        requested = true;
+        assert.equal(new URL(String(input)).pathname, '/v1/models');
+        return Response.json({ data: [{ id: 'gpt-5.6-terra' }] });
+      }) as typeof fetch,
+    });
+
+    assert.equal(requested, true);
+    assert.equal(runtime.modelId, 'gpt-5.6-terra');
+    assert.equal(runtime.apiBase, 'https://relay.example.test/v1');
+    assert.equal(runtime.apiKey, 'sk-existing-owner-key');
+    assert.equal(runtime.openaiApiMode, 'responses');
+    assert.equal(runtime.reasoningEffort, 'xhigh');
+  });
+
   test('replaces legacy GPT vision=false from static catalog metadata when relay metadata is unavailable', async () => {
     const runtime = await refreshCatsRelayCatalogRuntimeCapabilities({
       schema: 'xiaoba.bot-catalog-model-runtime.v1',
@@ -152,4 +220,93 @@ describe('CatsCo default relay model bootstrap', () => {
     assert.equal(runtime.capabilitiesSource, 'models-dev');
     assert.ok(runtime.capabilitiesCheckedAt);
   });
+
+  test('rejects a cached relay credential owned by another account', async () => {
+    await assert.rejects(() => provisionCatsRelayCatalogRuntime({
+      botId: 'bot-1',
+      modelId: 'gpt-5.6-terra',
+      auth: {
+        ownerUid: 'owner-b',
+        httpBaseUrl: 'https://cats.example.test',
+        serverUrl: 'wss://cats.example.test/v0/channels',
+        botUid: 'bot-1',
+        apiKey: 'bot-api-key',
+      },
+      existingRuntime: {
+        schema: 'xiaoba.bot-catalog-model-runtime.v1',
+        botId: 'bot-1',
+        ownerUid: 'owner-a',
+        modelId: 'minimax-m3',
+        provider: 'anthropic',
+        apiBase: 'https://relay.example.test/anthropic',
+        apiKey: 'sk-owner-a',
+        model: 'MiniMax-M3',
+        contextWindowTokens: 1_000_000,
+      },
+      fetchImpl: (async () => Response.json({ data: [] })) as typeof fetch,
+    }), /unbound relay credential/);
+  });
+
+  test('rejects cross-protocol retargeting for a non-standard relay path', () => {
+    assert.throws(() => retargetCatsRelayCatalogRuntime({
+      schema: 'xiaoba.bot-catalog-model-runtime.v1',
+      botId: 'bot-1',
+      ownerUid: 'owner-1',
+      modelId: 'minimax-m3',
+      provider: 'anthropic',
+      apiBase: 'https://private-relay.example.test/proxy/models',
+      apiKey: 'sk-private-relay',
+      model: 'MiniMax-M3',
+      contextWindowTokens: 1_000_000,
+    }, 'gpt-5.6-terra'), /cannot be retargeted across protocols/);
+  });
+
+  test('rejects an invalid cached relay key before applying a retargeted model', async () => {
+    await assert.rejects(() => provisionCatsRelayCatalogRuntime({
+      botId: 'bot-1',
+      modelId: 'gpt-5.6-terra',
+      auth: {
+        ownerUid: 'owner-1',
+        httpBaseUrl: 'https://cats.example.test',
+        serverUrl: 'wss://cats.example.test/v0/channels',
+        botUid: 'bot-1',
+        apiKey: 'bot-api-key',
+      },
+      existingRuntime: {
+        schema: 'xiaoba.bot-catalog-model-runtime.v1',
+        botId: 'bot-1',
+        ownerUid: 'owner-1',
+        modelId: 'minimax-m3',
+        provider: 'anthropic',
+        apiBase: 'https://relay.example.test/anthropic',
+        apiKey: 'sk-revoked',
+        model: 'MiniMax-M3',
+        contextWindowTokens: 1_000_000,
+      },
+      fetchImpl: (async () => new Response('unauthorized', { status: 401 })) as typeof fetch,
+    }), /relay credential was rejected/);
+  });
+
+  test('retarget preserves discovered capabilities instead of resetting them to static', () => {
+    const runtime = retargetCatsRelayCatalogRuntime({
+      schema: 'xiaoba.bot-catalog-model-runtime.v1',
+      botId: 'bot-1',
+      modelId: 'gpt-5.6-sol',
+      provider: 'openai',
+      apiBase: 'https://relay.example.test/v1',
+      apiKey: 'sk-existing-owner-key',
+      model: 'gpt-5.6-sol',
+      contextWindowTokens: 1_000_000,
+      openaiApiMode: 'responses',
+      capabilities: { vision: true, toolCalling: true, streaming: false },
+      capabilitiesSource: 'relay-models',
+      capabilitiesCheckedAt: '2026-01-01T00:00:00.000Z',
+    }, 'deepseek-v4-flash', 'max');
+
+    assert.equal(runtime.modelId, 'deepseek-v4-flash');
+    assert.equal(runtime.capabilitiesSource, 'relay-models');
+    assert.deepStrictEqual(runtime.capabilities, { vision: true, toolCalling: true, streaming: false });
+    assert.equal(runtime.capabilitiesCheckedAt, '2026-01-01T00:00:00.000Z');
+  });
+
 });

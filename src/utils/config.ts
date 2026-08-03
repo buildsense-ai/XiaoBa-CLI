@@ -31,6 +31,10 @@ export class ConfigManager {
         ...(base.catscompany || {}),
         ...(override.catscompany || {}),
       },
+      visionFallback: {
+        ...(base.visionFallback || {}),
+        ...(override.visionFallback || {}),
+      },
       weixin: {
         ...(base.weixin || {}),
         ...(override.weixin || {}),

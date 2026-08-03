@@ -38,6 +38,6 @@ synthetic observations back to the parent runner. A concrete branch only needs t
 - a disposition function that decides whether to inject or suppress
 - a payload-to-`SyntheticObservation` formatter
 
-`MemorySearchBranchSession` is the first concrete implementation. Future branches, such as
-web search, should extend `ObservationBranchSession` instead of reimplementing publish,
-suppress, drop, and cancel bookkeeping.
+`MemorySearchBranchSession` is the first concrete implementation. Future observation-producing
+branches should extend `ObservationBranchSession` instead of reimplementing publish, suppress,
+drop, and cancel bookkeeping.

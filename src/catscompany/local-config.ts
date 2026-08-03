@@ -52,6 +52,7 @@ export interface CatsCoAuthSnapshot {
   httpBaseUrl: string;
   serverUrl: string;
   botUid?: string;
+  ownerUid?: string;
   apiKey?: string;
 }
 
@@ -296,6 +297,11 @@ export class CatsCoLocalConfigService {
         legacy.CATSCO_BOT_UID,
         this.env.CATSCOMPANY_BOT_UID,
         legacy.CATSCOMPANY_BOT_UID,
+      ),
+      ownerUid: firstNonEmpty(
+        overrides.ownerUid,
+        bot?.boundByUserUid,
+        account?.uid,
       ),
       apiKey: firstNonEmpty(
         overrides.apiKey,

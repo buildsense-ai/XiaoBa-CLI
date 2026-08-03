@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>对话中断监控 · CatsCo</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#151c31; --line:#28324b; --text:#edf2ff; --muted:#98a5c2; --accent:#72a7ff; --warn:#ffb55e; --bad:#ff7185; --good:#5bd3a5; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--text); background:radial-gradient(circle at 15% 0,#15264b 0,transparent 32%),var(--bg); }
+    main { width:min(1440px,calc(100% - 40px)); margin:0 auto; padding:34px 0 60px; }
+    header { display:flex; justify-content:space-between; gap:20px; align-items:flex-start; margin-bottom:24px; }
+    h1 { margin:0 0 6px; font-size:28px; }
+    p { margin:0; color:var(--muted); }
+    a { color:#9fc0ff; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    input,select,button { border:1px solid var(--line); border-radius:10px; background:#10172a; color:var(--text); padding:9px 11px; }
+    button { cursor:pointer; background:#245dba; border-color:#3573d5; font-weight:700; }
+    .cards { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
+    .card,.panel { background:color-mix(in srgb,var(--panel) 92%,transparent); border:1px solid var(--line); border-radius:16px; box-shadow:0 16px 46px #0004; }
+    .card { padding:16px; }
+    .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+    .value { font-size:30px; font-weight:800; margin-top:4px; }
+    .warn { color:var(--warn); } .bad { color:var(--bad); } .good { color:var(--good); }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px; }
+    .panel { padding:16px; overflow:hidden; }
+    .panel h2 { font-size:16px; margin:0 0 12px; }
+    .bars { display:grid; gap:8px; }
+    .bar { display:grid; grid-template-columns:minmax(110px,1fr) 3fr 44px; gap:10px; align-items:center; }
+    .bar-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#cad4ea; }
+    .bar-track { height:8px; background:#0c1324; border-radius:9px; overflow:hidden; }
+    .bar-fill { height:100%; background:linear-gradient(90deg,var(--accent),#8b7dff); border-radius:9px; }
+    .bar-count { text-align:right; font-variant-numeric:tabular-nums; }
+    .table-wrap { overflow:auto; max-height:620px; }
+    table { width:100%; border-collapse:collapse; min-width:1180px; }
+    th,td { padding:10px 9px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { position:sticky; top:0; background:var(--panel); color:var(--muted); font-size:12px; z-index:1; }
+    td { font-size:12px; }
+    code { color:#b9ceff; }
+    .summary { max-width:340px; white-space:normal; }
+    .pill { display:inline-block; padding:2px 7px; border-radius:99px; background:#27324b; }
+    .pill.low { color:#ffd09a; background:#4c3420; }
+    #status { margin:10px 0 16px; min-height:21px; color:var(--muted); }
+    @media(max-width:900px) { header{display:block}.controls{justify-content:flex-start;margin-top:16px}.cards{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>对话中断监控</h1>
+      <p>这里只统计最终让本轮返回 failed 的错误；中途重试后恢复的请求请到 <a href="cache-trace.html">Cache Trace</a> 查看。</p>
+    </div>
+    <div class="controls">
+      <select id="days"><option value="1">最近 1 天</option><option value="7" selected>最近 7 天</option><option value="30">最近 30 天</option><option value="90">最近 90 天</option></select>
+      <input id="apiKey" type="password" placeholder="Dashboard API Key（可选）">
+      <button id="refresh">刷新</button>
+    </div>
+  </header>
+  <div id="status">正在读取本地 session 日志…</div>
+  <section class="cards">
+    <div class="card"><div class="label">中断总数</div><div class="value" id="interruptions">–</div></div>
+    <div class="card"><div class="label">待进一步分析</div><div class="value bad" id="investigation">–</div></div>
+    <div class="card"><div class="label">重试后仍中断</div><div class="value warn" id="retried">–</div></div>
+    <div class="card"><div class="label">保留了部分进度</div><div class="value good" id="preserved">–</div></div>
+  </section>
+  <section class="grid">
+    <div class="panel"><h2>错误分类</h2><div class="bars" id="byCategory"></div></div>
+    <div class="panel"><h2>中断阶段</h2><div class="bars" id="byPhase"></div></div>
+    <div class="panel"><h2>错误来源</h2><div class="bars" id="byOrigin"></div></div>
+    <div class="panel"><h2>本地首个堆栈位置</h2><div class="bars" id="byTopFrame"></div></div>
+    <div class="panel"><h2>错误指纹（同类根因聚合）</h2><div class="bars" id="byFingerprint"></div></div>
+    <div class="panel"><h2>重试停止原因</h2><div class="bars" id="byRetry"></div></div>
+  </section>
+  <section class="panel">
+    <h2>最近中断记录</h2>
+    <div class="table-wrap"><table><thead><tr><th>时间</th><th>分类 / 置信度</th><th>模型</th><th>关联 Attempt</th><th>HTTP</th><th>来源 / 阶段</th><th>重试</th><th>恢复建议</th><th>错误 / 堆栈指纹</th><th>安全摘要 / 首帧</th><th>日志位置</th></tr></thead><tbody id="recent"></tbody></table></div>
+  </section>
+</main>
+<script>
+  const $ = id => document.getElementById(id);
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const storedKey = localStorage.getItem('catsco.turn-errors.api-key') || '';
+  $('apiKey').value = storedKey;
+
+  function renderBars(id, rows) {
+    const max = Math.max(1, ...(rows || []).map(row => row.count));
+    $(id).innerHTML = (rows || []).slice(0, 12).map(row => `
+      <div class="bar" title="最近：${esc(row.latest_at)}">
+        <div class="bar-name">${esc(row.key)}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, row.count / max * 100)}%"></div></div>
+        <div class="bar-count">${esc(row.count)}</div>
+      </div>`).join('') || '<p>暂无数据</p>';
+  }
+
+  async function load() {
+    const key = $('apiKey').value.trim();
+    localStorage.setItem('catsco.turn-errors.api-key', key);
+    $('status').textContent = '正在读取本地 session 日志…';
+    try {
+      const response = await fetch(`/api/observability/turn-errors?days=${encodeURIComponent($('days').value)}&limit=200`, {
+        headers: key ? {'X-API-Key': key} : {},
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status} ${await response.text()}`);
+      const report = await response.json();
+      $('interruptions').textContent = report.totals.interruptions;
+      $('investigation').textContent = report.totals.needs_investigation;
+      $('retried').textContent = report.totals.retried_before_interrupt;
+      $('preserved').textContent = report.totals.partial_progress_preserved;
+      renderBars('byCategory', report.by_category);
+      renderBars('byPhase', report.by_phase);
+      renderBars('byOrigin', report.by_origin);
+      renderBars('byTopFrame', report.by_top_frame);
+      renderBars('byFingerprint', report.by_fingerprint);
+      renderBars('byRetry', report.by_retry_stop_reason);
+      $('recent').innerHTML = report.recent.map(row => `<tr>
+        <td>${esc(new Date(row.timestamp).toLocaleString())}</td>
+        <td><span class="pill ${row.classification_confidence === 'low' ? 'low' : ''}">${esc(row.category)}</span><br>${esc(row.classification_confidence)}</td>
+        <td>${esc(row.provider || '–')}<br><code>${esc(row.model || '–')}</code></td>
+        <td><code>${esc(row.model_attempt_id || '–')}</code><br>${row.episode_id ? `<code>${esc(row.episode_id)}</code>` : ''}</td>
+        <td>${esc(row.http_status ?? '–')}<br>${esc(row.provider_code || row.provider_type || '')}</td>
+        <td>${esc(row.error_origin)}<br>${esc(row.phase)}</td>
+        <td>${esc(row.retry_count)}/${esc(row.attempt_count)}<br>${esc(row.retry_stop_reason)}</td>
+        <td>${esc(row.recovery_action)}</td>
+        <td><code>${esc(row.error_fingerprint || '–')}</code><br><code>${esc(row.stack_fingerprint || '')}</code></td>
+        <td class="summary">${esc(row.error_summary)}<br><code>${esc(row.top_frame || '')}</code></td>
+        <td><code>${esc(row.source_file)}:${esc(row.source_line)}</code></td>
+      </tr>`).join('') || '<tr><td colspan="11">所选时间范围内没有对话中断事件。</td></tr>';
+      $('status').textContent = `生成于 ${new Date(report.generated_at).toLocaleString()} · 扫描 ${report.totals.files_scanned} 个日志文件 · 跳过 ${report.totals.malformed_lines} 条损坏记录`;
+    } catch (error) {
+      $('status').textContent = `读取失败：${error.message}`;
+    }
+  }
+  $('refresh').addEventListener('click', load);
+  $('days').addEventListener('change', load);
+  load();
+</script>
+</body>
+</html>

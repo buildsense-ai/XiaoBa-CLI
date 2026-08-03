@@ -3,21 +3,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { ChatConfig } from '../types';
+import { buildConservativeImagePrompt } from './image-analysis-prompt';
 
 const DEFAULT_HTTP_BASE_URL = 'https://app.catsco.cc';
 const DEFAULT_READER_API_PATH = '/api/reader';
 const DEFAULT_TIMEOUT_MS = 300000;
 const RETRYABLE_STATUS_CODES = new Set([429, 502, 503, 504]);
 const RETRY_DELAYS_MS = [1500, 3000, 5000];
-
-const STRICT_GUARDRAIL_PROMPT = [
-  'Read this image conservatively and do not guess.',
-  'Only report text or structure that is directly visible.',
-  'If any text is blurry, cropped, tiny, or uncertain, write [unclear] instead of inferring.',
-  'Preserve the original visible language.',
-  'Do not infer document type, app name, business meaning, or context unless exact words are visible.',
-  'Output useful observations for the current user request.',
-].join(' ');
 
 export interface ReaderProxyOptions {
   filePath: string;
@@ -31,14 +23,6 @@ export interface ReaderProxyResult {
   error?: string;
   status?: number;
   attempts?: number;
-}
-
-function normalizePrompt(prompt?: string): string {
-  const cleaned = (prompt || '').trim();
-  if (!cleaned) {
-    return `${STRICT_GUARDRAIL_PROMPT} Primary task: extract all visible text from this image in reading order.`;
-  }
-  return `${STRICT_GUARDRAIL_PROMPT} Current user task: ${cleaned}`;
 }
 
 function guessContentType(filePath: string): string {
@@ -133,7 +117,7 @@ function sleep(ms: number): Promise<void> {
 export async function analyzeImageWithReaderProxy(options: ReaderProxyOptions): Promise<ReaderProxyResult> {
   const baseUrl = resolveReaderBaseUrl(options.config);
   const analyzeUrl = `${baseUrl}/analyze`;
-  const prompt = normalizePrompt(options.prompt);
+  const prompt = buildConservativeImagePrompt(options.prompt);
   const { body, boundary } = buildMultipartBody(options.filePath, { prompt });
   let authCandidates: Array<Record<string, string>>;
   try {

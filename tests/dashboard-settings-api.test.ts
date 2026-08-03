@@ -1706,6 +1706,105 @@ describe('dashboard typed settings API', () => {
     }
   });
 
+  test('POST /cats/relay/model-config/apply with a bound bot updates only local config and never pushes to the cloud', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    let cloudPatchCount = 0;
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [
+          { protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' },
+        ],
+        models: [
+          {
+            id: 'minimax-m3',
+            label: 'MiniMax M3',
+            model: 'MiniMax-M3',
+            provider: 'anthropic',
+            enabled: true,
+            default: true,
+          },
+        ],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({ configured: false });
+    });
+    catsApp.post('/api/relay/key', (_req, res) => {
+      res.json({
+        key: {
+          id: 'vk-local-only',
+          name: 'CatsCo user 38',
+          prefix: 'sk-bf-lo',
+          state: 'active',
+          key: 'sk-bf-local-only-secret',
+        },
+      });
+    });
+    catsApp.patch('/api/bots/definition/model', (_req, res) => {
+      cloudPatchCount += 1;
+      res.json({ revision: 99 });
+    });
+    const catsServer = await listen(catsApp);
+    const catsAddress = catsServer.address();
+    if (!catsAddress || typeof catsAddress === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_BOT_UID = '110';
+      process.env.CATSCO_API_KEY = 'cats_svc_test';
+      process.env.CATSCO_SERVER_URL = 'wss://app.catsco.cc/v0/channels';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${catsAddress.port}`;
+      createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+        version: 1,
+        endpoints: {
+          httpBaseUrl: `http://127.0.0.1:${catsAddress.port}`,
+          serverUrl: 'wss://app.catsco.cc/v0/channels',
+        },
+        account: { token: 'user-token', uid: '38' },
+        currentBot: {
+          uid: '110',
+          name: 'CatsCo',
+          username: 'catsco_38',
+          apiKey: 'cats_svc_test',
+          boundByUserUid: '38',
+          bindingSource: 'test',
+        },
+        device: {
+          deviceId: 'body-local-only',
+          bodyId: 'body-local-only',
+          installationId: 'body-local-only',
+        },
+      });
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId: 'minimax-m3' }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('110');
+      const definition = new FileBotDefinitionRepository({ runtimeRoot: testRoot }).readCache('110');
+
+      assert.equal(response.status, 200, text);
+      assert.equal(data.model, 'MiniMax-M3');
+      assert.equal(runtime?.modelId, 'minimax-m3');
+      assert.equal(runtime?.model, 'MiniMax-M3');
+      assert.equal(definition?.model.kind, 'catalog');
+      assert.equal(definition?.model.modelId, 'minimax-m3');
+      // 设备本地配置绝不允许覆盖云端：本地模型切换不得推送到云端（云端以 webapp 设置为权威）。
+      assert.equal(cloudPatchCount, 0);
+      assert.equal(text.includes('sk-bf-local-only-secret'), false);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
   test('POST /cats/relay/model-config/apply rejects unknown relay model ids before key changes', async () => {
     const catsApp = express();
     catsApp.use(express.json());

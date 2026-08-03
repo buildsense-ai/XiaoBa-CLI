@@ -5357,6 +5357,9 @@
       <a class="nav-item" onclick="switchPage('prompts')" data-page="prompts">
         <span class="nav-icon">#</span> <span>提示词</span>
       </a>
+      <a class="nav-item" href="cache-trace.html">
+        <span class="nav-icon">%</span> <span>缓存监控</span>
+      </a>
       <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
         <span class="nav-icon">*</span> <span>伙伴中心</span>
       </a>
@@ -9190,6 +9193,11 @@
         +'</div>';
     }
 
+    function isCloudOverrideActive(){
+      const cloud=catsState&&catsState.cloudModelOverride||null;
+      return Boolean(cloud && cloud.kind!=='local');
+    }
+
     function relayModelChoiceHtml(model, activeId, catsConnected, context='settings'){
       const id=String(model.id||model.model||'');
       const active=id===activeId;
@@ -9200,7 +9208,7 @@
         && typeof deepseekReasoningEffortLabel==='function'
         && typeof relayReasoningEffortValue==='function';
       const reasoningMeta=canShowReasoningMeta && modelSupportsReasoningSwitch(model)?' · 推理 '+deepseekReasoningEffortLabel(relayReasoningEffortValue()):'';
-      const disabled=relayActionBusy() || (context!=='chat' && !catsConnected);
+      const disabled=relayActionBusy() || (context!=='chat' && !catsConnected) || isCloudOverrideActive();
       const reasoningControl=typeof relayModelReasoningControlHtml==='function'?relayModelReasoningControlHtml(model, context):'';
       return '<div class="relay-model-choice'+(active?' active':'')+'">'
         +'<button class="relay-model-main" type="button" data-relay-model-id="'+escapeHtml(id)+'" data-relay-model-context="'+escapeHtml(context)+'" '+(disabled?'disabled':'')+' onclick="enableCatsRelayModelFromButton(this)">'
@@ -9226,7 +9234,7 @@
         ? '自定义配置 · 上下文 '+contextLabel+' · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')+apiModeMeta+reasoningMeta
         : '去设置填写 endpoint / key';
       return '<div class="relay-model-choice '+(active?' active':'')+(configured?'':' needs-config')+'">'
-        +'<button class="relay-model-main" type="button" data-custom-startup-action="true" data-custom-startup-context="'+escapeHtml(context)+'" '+(relayActionBusy()?'disabled':'')+' onclick="enableCustomStartupModelFromButton(this)">'
+        +'<button class="relay-model-main" type="button" data-custom-startup-action="true" data-custom-startup-context="'+escapeHtml(context)+'" '+(relayActionBusy() || isCloudOverrideActive()?'disabled':'')+' onclick="enableCustomStartupModelFromButton(this)">'
         +'<span class="relay-model-label">自定义模型</span>'
         +'<span class="relay-model-name">'+escapeHtml(model)+'</span>'
         +'<span class="relay-model-meta">'+escapeHtml(meta)+'</span>'
@@ -9603,6 +9611,10 @@
 
     function enableCatsRelayModelFromButton(button, options={}){
       const context=button?.dataset?.relayModelContext || 'settings';
+      if(isCloudOverrideActive()){
+        setRelayModelApplyStatus('当前由云端模型覆盖，切回 webapp 的“设备本地配置”后才能启用本地模型。','warning',context);
+        return;
+      }
       if(!isCatsLoggedIn() && context==='chat'){
         pendingStartupSource='relay';
         pendingRelayModelId=button?.dataset?.relayModelId || selectedRelayModelId();
@@ -9621,6 +9633,10 @@
 
     function enableCustomStartupModelFromButton(button, options={}){
       const context=button?.dataset?.customStartupContext || 'chat';
+      if(isCloudOverrideActive()){
+        setRelayModelApplyStatus('当前由云端模型覆盖，切回 webapp 的“设备本地配置”后才能启用本地模型。','warning',context);
+        return;
+      }
       if(!isCatsLoggedIn() && isCustomStartupConfigured()){
         pendingStartupSource='custom';
         pendingRelayModelId='';

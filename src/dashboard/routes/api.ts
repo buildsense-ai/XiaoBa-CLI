@@ -64,6 +64,7 @@ import {
   modelRuntimeToConfig,
   resolveActiveBotLLMConfig,
 } from '../../bot-definition/llm-config-resolver';
+import { pullCloudBotModelSelection } from '../../bot-definition/cloud-client';
 import {
   BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
   type BotCatalogModelRuntime,
@@ -75,6 +76,8 @@ import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { registerSkillHubRoutes } from './skillhub';
 import { registerPetRoutes } from './pet';
+import { registerTurnErrorRoutes } from './turn-errors';
+import { registerCacheTraceRoutes } from './cache-trace';
 import type { DashboardAuthStatus } from '../auth';
 import { SkillHubService } from '../../skillhub/service';
 import {
@@ -2208,6 +2211,11 @@ export function createApiRouter(
   const modelsDevFetch = options.modelsDevFetch ?? fetch;
   registerSkillHubRoutes(router, { getCatsCoAuth: getCatsCoAuthForSkillHub });
   registerPetRoutes(router);
+  registerTurnErrorRoutes(router);
+  registerCacheTraceRoutes(router, {
+    runtimeRoot: runtimeDataRoot(),
+    serviceManager,
+  });
 
   // ==================== 总览 ====================
 
@@ -3442,17 +3450,24 @@ export function createApiRouter(
     const bodyBlocking = bodyStatus.state === 'conflict' || bodyStatus.state === 'auth_error';
     const chatReady = connected && runtime.bodyConfigured && !bodyBlocking;
     const boundBotId = String(state.botUid || '').trim();
-    const cloudDefinition = boundBotId
-      ? createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() }).readCloudModelOverride(boundBotId)
-      : undefined;
-    const cloudModelOverride = cloudDefinition ? {
-      kind: cloudDefinition.model.kind,
-      modelId: cloudDefinition.model.kind === 'catalog' ? cloudDefinition.model.modelId : 'custom',
-      model: cloudDefinition.model.kind === 'catalog'
-        ? cloudDefinition.model.modelId
-        : cloudDefinition.model.model,
-      reasoningEffort: cloudDefinition.model.reasoningEffort || '',
-    } : null;
+    // 云端模型以 CatsCompany 服务端配置为权威。直接拉取云端当前选择，
+    // 而不是读取本地 override 文件（新契约下成功应用后本地 override 会被清除）。
+    let cloudModelOverride: Record<string, unknown> | null = null;
+    if (boundBotId && state.token) {
+      try {
+        const cloudSelection = await pullCloudBotModelSelection({ botId: boundBotId, auth: state });
+        if (cloudSelection && cloudSelection.kind !== 'local') {
+          cloudModelOverride = {
+            kind: cloudSelection.kind ?? 'catalog',
+            modelId: cloudSelection.modelId,
+            model: cloudSelection.modelId,
+            reasoningEffort: cloudSelection.reasoningEffort || '',
+          };
+        }
+      } catch (error) {
+        Logger.warning(`CatsCo 云端模型状态拉取失败，本地面板按无云端覆盖展示: ${sanitizeCatsErrorMessage(error instanceof Error ? error.message : String(error))}`);
+      }
+    }
 
     res.json({
       connected,
@@ -4121,11 +4136,14 @@ export function createApiRouter(
         definitionService.storeCatalogRuntime(
           selectedRelayCatalogRuntime(botId, selectedModel, ensured.plainKey, reasoningEffort),
         );
-        botDefinitionSync = await syncBoundBotModelToCloud(botId, {
+        // “启动模型”面板 = 设备本地配置：只更新本地 Definition，不推送云端。
+        // 云端模型以 webapp 设置为权威，设备不得用本地选择覆盖云端配置。
+        const localResult = definitionService.updateModel(botId, {
           kind: 'catalog',
           modelId: selectedModel.id,
           reasoningEffort,
         });
+        botDefinitionSync = toBotDefinitionSyncPayload(localResult) ?? undefined;
       }
       const restartInfo = activateCatsCompanyConnector(serviceManager, {
         startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,

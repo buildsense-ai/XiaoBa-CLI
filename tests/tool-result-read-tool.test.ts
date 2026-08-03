@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import { DEFAULT_PDF_IMAGE_FALLBACK_PAGES, DEFAULT_PDF_READ_PAGES, DEFAULT_TEXT_READ_LIMIT, ReadTool } from '../src/tools/read-tool';
 import { ToolExecutionContext } from '../src/types/tool';
+import { writeOnePixelBmp } from './helpers/image-fixtures';
 
 function writeVectorOnlyPdf(filePath: string): void {
   const stream = [
@@ -294,19 +295,24 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.ok(!content.includes('Trace-based Just-in-Time Type Specialization'));
   });
 
-  test('PDF 有文本层但用户关心视觉内容时会补读少量页面图片', async () => {
+  test('PDF 有文本层但用户关心视觉内容时会优先通过备用 Provider 补读页面', async () => {
     const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
     const previousReaderUrl = process.env.CATSCOMPANY_READER_API_URL;
-    const previousApiKey = process.env.CATSCOMPANY_API_KEY;
-    const observedRequests: Buffer[] = [];
+    const observedRequests: any[] = [];
 
-    const readerServer = http.createServer((req, res) => {
+    const providerServer = http.createServer((req, res) => {
       const chunks: Buffer[] = [];
       req.on('data', chunk => chunks.push(Buffer.from(chunk)));
       req.on('end', () => {
-        observedRequests.push(Buffer.concat(chunks));
+        observedRequests.push({
+          url: req.url,
+          authorization: req.headers.authorization,
+          body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+        });
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ analysis: `visual supplement ${observedRequests.length}` }));
+        res.end(JSON.stringify({
+          choices: [{ message: { content: `visual supplement ${observedRequests.length}` } }],
+        }));
       });
     });
 
@@ -315,19 +321,32 @@ describe('ReadTool - ToolExecutionResult', () => {
     try {
       await new Promise<void>((resolve, reject) => {
         const onError = (error: Error) => reject(error);
-        readerServer.once('error', onError);
-        readerServer.listen(0, '127.0.0.1', () => {
-          readerServer.off('error', onError);
+        providerServer.once('error', onError);
+        providerServer.listen(0, '127.0.0.1', () => {
+          providerServer.off('error', onError);
           serverListening = true;
           resolve();
         });
       });
-      const address = readerServer.address();
-      if (!address || typeof address === 'string') throw new Error('reader server did not bind');
+      const address = providerServer.address();
+      if (!address || typeof address === 'string') throw new Error('provider server did not bind');
 
-      process.env.XIAOBA_CONFIG_PATH = path.join(testRoot, 'missing-config.json');
-      process.env.CATSCOMPANY_READER_API_URL = `http://127.0.0.1:${address.port}`;
-      process.env.CATSCOMPANY_API_KEY = 'cats-reader-test-key';
+      const configPath = path.join(testRoot, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify({
+        apiUrl: 'https://text-only.example/v1',
+        apiKey: 'primary-key',
+        model: 'deepseek-chat',
+        provider: 'openai',
+        modelCapabilities: { vision: false },
+        visionFallback: {
+          enabled: true,
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+          apiKey: 'fallback-key',
+          model: 'fallback-vision',
+        },
+      }));
+      process.env.XIAOBA_CONFIG_PATH = configPath;
+      process.env.CATSCOMPANY_READER_API_URL = 'http://127.0.0.1:1/reader-must-not-run';
 
       const fixturePath = path.join(
         path.dirname(require.resolve('pdf-parse')),
@@ -346,7 +365,10 @@ describe('ReadTool - ToolExecutionResult', () => {
 
       assert.strictEqual(result.ok, true);
       assert.strictEqual(observedRequests.length, 1);
-      assert.ok(observedRequests[0].includes(Buffer.from('PDF 第 1 页')));
+      assert.equal(observedRequests[0].url, '/v1/chat/completions');
+      assert.equal(observedRequests[0].authorization, 'Bearer fallback-key');
+      assert.match(observedRequests[0].body.messages[1].content[0].text, /PDF 第 1 页/);
+      assert.match(observedRequests[0].body.messages[1].content[1].image_url.url, /^data:image\/jpeg;base64,/);
       const content = result.content as string;
       assert.ok(content.includes('文本内容:'));
       assert.ok(content.includes('PDF 文本层已提取'));
@@ -354,14 +376,12 @@ describe('ReadTool - ToolExecutionResult', () => {
       assert.ok(content.includes('visual supplement 1'));
     } finally {
       if (serverListening) {
-        await new Promise<void>(resolve => readerServer.close(() => resolve()));
+        await new Promise<void>(resolve => providerServer.close(() => resolve()));
       }
       if (previousConfigPath === undefined) delete process.env.XIAOBA_CONFIG_PATH;
       else process.env.XIAOBA_CONFIG_PATH = previousConfigPath;
       if (previousReaderUrl === undefined) delete process.env.CATSCOMPANY_READER_API_URL;
       else process.env.CATSCOMPANY_READER_API_URL = previousReaderUrl;
-      if (previousApiKey === undefined) delete process.env.CATSCOMPANY_API_KEY;
-      else process.env.CATSCOMPANY_API_KEY = previousApiKey;
     }
   });
 
@@ -522,5 +542,221 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.ok(content.includes('系统 pdftoppm 也不可用或执行失败'));
     assert.ok(content.includes('安装 Poppler(pdftoppm) 后重试'));
     assert.ok(!content.includes('paper-analysis'));
+  });
+
+  test('非视觉主模型优先通过备用多模态 Provider 读取图片', async () => {
+    const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
+    const previousReaderUrl = process.env.CATSCOMPANY_READER_API_URL;
+    let requestCount = 0;
+    const server = http.createServer((req, res) => {
+      requestCount += 1;
+      assert.equal(req.url, '/v1/chat/completions');
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        assert.equal(body.model, 'fallback-vision');
+        assert.match(body.messages[1].content[1].image_url.url, /^data:image\/jpeg;base64,/);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: 'fallback-analysis' } }] }));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const configPath = path.join(testRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      apiUrl: 'https://text-only.example/v1',
+      apiKey: 'primary-key',
+      model: 'deepseek-chat',
+      provider: 'openai',
+      modelCapabilities: { vision: false },
+      visionFallback: {
+        enabled: true,
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: 'fallback-key',
+        model: 'fallback-vision',
+      },
+    }));
+    process.env.XIAOBA_CONFIG_PATH = configPath;
+    process.env.CATSCOMPANY_READER_API_URL = 'http://127.0.0.1:1/reader-must-not-run';
+    const imagePath = path.join(testRoot, 'sample.png');
+    writeOnePixelBmp(imagePath);
+
+    try {
+      const result = await tool.execute({ file_path: imagePath, prompt: 'read it' }, context);
+      assert.equal(result.ok, true);
+      const content = result.content as string;
+      assert.match(content, /备用多模态 Provider/);
+      assert.match(content, /fallback-analysis/);
+      assert.equal(requestCount, 1);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      if (previousConfigPath === undefined) delete process.env.XIAOBA_CONFIG_PATH;
+      else process.env.XIAOBA_CONFIG_PATH = previousConfigPath;
+      if (previousReaderUrl === undefined) delete process.env.CATSCOMPANY_READER_API_URL;
+      else process.env.CATSCOMPANY_READER_API_URL = previousReaderUrl;
+    }
+  });
+
+  test('备用 Provider 失败后只调用一次 Cats reader 且不泄露密钥', async () => {
+    const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
+    const previousReaderUrl = process.env.CATSCOMPANY_READER_API_URL;
+    const previousReaderKey = process.env.CATSCOMPANY_API_KEY;
+    const requestOrder: string[] = [];
+    let readerRequestCount = 0;
+    const fallbackKey = 'fallback-secret-value';
+    const providerServer = http.createServer((_req, res) => {
+      requestOrder.push('provider');
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: { message: `Authorization: Bearer ${fallbackKey}` },
+      }));
+    });
+    const readerServer = http.createServer((_req, res) => {
+      requestOrder.push('cats-reader');
+      readerRequestCount += 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ analysis: 'cats-reader-analysis' }));
+    });
+    await Promise.all([
+      new Promise<void>((resolve, reject) => {
+        providerServer.once('error', reject);
+        providerServer.listen(0, '127.0.0.1', () => resolve());
+      }),
+      new Promise<void>((resolve, reject) => {
+        readerServer.once('error', reject);
+        readerServer.listen(0, '127.0.0.1', () => resolve());
+      }),
+    ]);
+    const providerAddress = providerServer.address();
+    const readerAddress = readerServer.address();
+    assert.ok(providerAddress && typeof providerAddress !== 'string');
+    assert.ok(readerAddress && typeof readerAddress !== 'string');
+    const configPath = path.join(testRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      apiUrl: 'https://text-only.example/v1',
+      apiKey: 'primary-key',
+      model: 'deepseek-chat',
+      provider: 'openai',
+      modelCapabilities: { vision: false },
+      visionFallback: {
+        enabled: true,
+        baseUrl: `http://127.0.0.1:${providerAddress.port}/v1`,
+        apiKey: fallbackKey,
+        model: 'fallback-vision',
+      },
+    }));
+    process.env.XIAOBA_CONFIG_PATH = configPath;
+    process.env.CATSCOMPANY_READER_API_URL = `http://127.0.0.1:${readerAddress.port}/reader`;
+    process.env.CATSCOMPANY_API_KEY = 'reader-key';
+    const imagePath = path.join(testRoot, 'sample.bmp');
+    writeOnePixelBmp(imagePath);
+
+    try {
+      const result = await tool.execute({ file_path: imagePath, prompt: 'read it' }, context);
+      assert.equal(result.ok, true);
+      assert.deepEqual(requestOrder, ['provider', 'cats-reader']);
+      assert.equal(readerRequestCount, 1);
+      const content = String(result.content);
+      assert.match(content, /cats-reader-analysis/);
+      assert.doesNotMatch(content, new RegExp(fallbackKey));
+    } finally {
+      providerServer.closeAllConnections();
+      readerServer.closeAllConnections();
+      await Promise.all([
+        new Promise<void>(resolve => providerServer.close(() => resolve())),
+        new Promise<void>(resolve => readerServer.close(() => resolve())),
+      ]);
+      if (previousConfigPath === undefined) delete process.env.XIAOBA_CONFIG_PATH;
+      else process.env.XIAOBA_CONFIG_PATH = previousConfigPath;
+      if (previousReaderUrl === undefined) delete process.env.CATSCOMPANY_READER_API_URL;
+      else process.env.CATSCOMPANY_READER_API_URL = previousReaderUrl;
+      if (previousReaderKey === undefined) delete process.env.CATSCOMPANY_API_KEY;
+      else process.env.CATSCOMPANY_API_KEY = previousReaderKey;
+    }
+  });
+
+  test('取消备用 Provider 请求后不会继续调用 Cats reader', async () => {
+    const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
+    const previousReaderUrl = process.env.CATSCOMPANY_READER_API_URL;
+    const previousReaderKey = process.env.CATSCOMPANY_API_KEY;
+    let readerRequestCount = 0;
+    let notifyProviderRequest!: () => void;
+    const providerRequestStarted = new Promise<void>(resolve => {
+      notifyProviderRequest = resolve;
+    });
+    const providerServer = http.createServer((_req, res) => {
+      notifyProviderRequest();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.write(' ');
+    });
+    const readerServer = http.createServer((_req, res) => {
+      readerRequestCount += 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ analysis: 'reader-should-not-run' }));
+    });
+    await Promise.all([
+      new Promise<void>((resolve, reject) => {
+        providerServer.once('error', reject);
+        providerServer.listen(0, '127.0.0.1', () => resolve());
+      }),
+      new Promise<void>((resolve, reject) => {
+        readerServer.once('error', reject);
+        readerServer.listen(0, '127.0.0.1', () => resolve());
+      }),
+    ]);
+    const providerAddress = providerServer.address();
+    const readerAddress = readerServer.address();
+    assert.ok(providerAddress && typeof providerAddress !== 'string');
+    assert.ok(readerAddress && typeof readerAddress !== 'string');
+    const configPath = path.join(testRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      apiUrl: 'https://text-only.example/v1',
+      apiKey: 'primary-key',
+      model: 'deepseek-chat',
+      provider: 'openai',
+      modelCapabilities: { vision: false },
+      visionFallback: {
+        enabled: true,
+        baseUrl: `http://127.0.0.1:${providerAddress.port}/v1`,
+        apiKey: 'fallback-key',
+        model: 'fallback-vision',
+        timeoutMs: 100,
+      },
+    }));
+    process.env.XIAOBA_CONFIG_PATH = configPath;
+    process.env.CATSCOMPANY_READER_API_URL = `http://127.0.0.1:${readerAddress.port}/reader`;
+    process.env.CATSCOMPANY_API_KEY = 'reader-key';
+    const imagePath = path.join(testRoot, 'sample.bmp');
+    writeOnePixelBmp(imagePath);
+    const controller = new AbortController();
+    const execution = tool.execute(
+      { file_path: imagePath, prompt: 'read it' },
+      { ...context, abortSignal: controller.signal },
+    );
+
+    try {
+      await providerRequestStarted;
+      controller.abort();
+      await assert.rejects(execution, /读取已取消/);
+      assert.equal(readerRequestCount, 0);
+    } finally {
+      providerServer.closeAllConnections();
+      readerServer.closeAllConnections();
+      await Promise.all([
+        new Promise<void>(resolve => providerServer.close(() => resolve())),
+        new Promise<void>(resolve => readerServer.close(() => resolve())),
+      ]);
+      if (previousConfigPath === undefined) delete process.env.XIAOBA_CONFIG_PATH;
+      else process.env.XIAOBA_CONFIG_PATH = previousConfigPath;
+      if (previousReaderUrl === undefined) delete process.env.CATSCOMPANY_READER_API_URL;
+      else process.env.CATSCOMPANY_READER_API_URL = previousReaderUrl;
+      if (previousReaderKey === undefined) delete process.env.CATSCOMPANY_API_KEY;
+      else process.env.CATSCOMPANY_API_KEY = previousReaderKey;
+    }
   });
 });
