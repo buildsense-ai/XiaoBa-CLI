@@ -101,6 +101,31 @@ test('preflight falls back from mismatched opaque replay without losing canonica
   assert.deepEqual(result.summary?.issueCodes, ['provider_replay_mismatch']);
 });
 
+test('reasoning-only replay remains compatible and leaves canonical call reconstruction to the provider', () => {
+  const messages: Message[] = [
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [toolCall('call_1')],
+      providerContent: [
+        { type: 'reasoning', id: 'rs_1', encrypted_content: 'opaque' },
+      ],
+      providerState: {
+        schema: 'xiaoba.provider_state.v1',
+        apiType: 'openai-responses',
+        model: 'gpt-test',
+        endpointFingerprint: '0123456789abcdef',
+      },
+    },
+    { role: 'tool', tool_call_id: 'call_1', content: 'ok' },
+  ];
+
+  const result = prepareProviderRequestMessages(messages);
+
+  assert.equal(result.messages, messages);
+  assert.equal(result.summary, undefined);
+});
+
 test('matching opaque replay survives normalized JSON argument comparison', () => {
   const messages: Message[] = [
     {

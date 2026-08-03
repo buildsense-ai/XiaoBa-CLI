@@ -433,6 +433,43 @@ describe('AgentSession lifecycle', () => {
     assert.doesNotMatch(raw, /private openai tool result/);
   });
 
+  test('session persistence strips Responses reasoning and provider state for model-portable restore', () => {
+    const { SessionStore } = loadSessionModules();
+    SessionStore.getInstance().saveContext('user:lifecycle-responses-reasoning', [
+      { role: 'user', content: 'first question' },
+      {
+        role: 'assistant',
+        content: 'public answer',
+        providerContent: [{
+          type: 'reasoning',
+          id: 'reasoning_1',
+          encrypted_content: 'private Responses reasoning',
+          summary: [],
+        }],
+        providerState: {
+          schema: 'xiaoba.provider_state.v1',
+          apiType: 'openai-responses',
+          model: 'secret-responses-model',
+          endpointFingerprint: 'fedcba9876543210',
+        },
+      },
+    ]);
+
+    const restored = SessionStore.getInstance().loadContext('user:lifecycle-responses-reasoning');
+    const raw = fs.readFileSync(
+      path.join(testRoot, 'data', 'sessions', 'user_lifecycle-responses-reasoning.jsonl'),
+      'utf-8',
+    );
+
+    assert.deepStrictEqual(restored.map((message: any) => message.content), [
+      'first question',
+      'public answer',
+    ]);
+    assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
+    assert.equal(restored.some((message: any) => message.providerState), false);
+    assert.doesNotMatch(raw, /private Responses reasoning|reasoning_1|secret-responses-model|providerState/);
+  });
+
   test('loading legacy sessions migrates provider replay hidden thinking off disk', async () => {
     const { SessionStore } = loadSessionModules();
     const sessionFile = path.join(testRoot, 'data', 'sessions', 'user_lifecycle-legacy-provider-replay.jsonl');

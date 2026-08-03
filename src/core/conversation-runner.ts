@@ -524,7 +524,16 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(visibleContent, 300)}`);
 
         if (visibleContent) {
-          const finalAssistantMessage: Message = { role: 'assistant', content: visibleContent };
+          const finalAssistantMessage: Message = {
+            role: 'assistant',
+            content: visibleContent,
+            ...(response.providerContent?.length
+              ? {
+                  providerContent: response.providerContent,
+                  providerState: response.providerState,
+                }
+              : {}),
+          };
           messages.push(finalAssistantMessage);
           newMessages.push(finalAssistantMessage);
         }
