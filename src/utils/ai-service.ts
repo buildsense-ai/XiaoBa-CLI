@@ -15,6 +15,11 @@ import { OpenAIProvider } from '../providers/openai-provider';
 import { Logger } from './logger';
 import { isPrimaryModelToolCallingCapable } from './model-capabilities';
 import { resolveModelContextWindow } from './model-context-window';
+import {
+  attachModelErrorDiagnostics,
+  attachRetrySummary,
+  captureModelErrorDiagnostics,
+} from './model-error-observability';
 
 /**
  * AI 服务 - 统一的 AI 调用入口
@@ -231,14 +236,32 @@ export class AIService {
 
     const status = this.extractStatus(error);
     const errorMessage = this.extractErrorMessage(error);
+    const diagnostics = captureModelErrorDiagnostics(error, {
+      provider,
+      model,
+      phase: 'model_request',
+    });
 
     const wrapped = status
       ? new Error(`API错误 (${status}): ${errorMessage}`)
       : new Error(`请求失败: ${errorMessage}`);
+    if (status) {
+      (wrapped as Error & { status?: number }).status = status;
+    }
     const code = this.extractErrorCode(error);
     if (code) {
       (wrapped as Error & { code?: string }).code = code;
     }
+    try {
+      Object.defineProperty(wrapped, 'cause', {
+        value: error,
+        configurable: true,
+        enumerable: false,
+      });
+    } catch {
+      // Older runtimes may expose a non-configurable cause property.
+    }
+    attachModelErrorDiagnostics(wrapped, diagnostics);
     return wrapped;
   }
 
@@ -410,6 +433,19 @@ export class AIService {
           shouldRetry,
         );
         if (stopReason) {
+          attachRetrySummary(error, {
+            attempt_count: attemptNumber,
+            retry_count: attempt,
+            max_retries: policy.maxRetries,
+            elapsed_ms: elapsedMs,
+            max_elapsed_ms: policy.maxElapsedMs,
+            stop_reason: stopReason,
+          }, {
+            call_id: attemptRun?.callId,
+            attempt_id: attemptRun ? `${attemptRun.callId}:${attemptNumber}` : undefined,
+            attempt_number: attemptRun ? attemptNumber : undefined,
+            episode_id: attemptRun?.context?.episodeId,
+          });
           this.emitModelAttempt(attemptRun, attemptNumber, {
             outcome: 'failed',
             durationMs: Date.now() - attemptStartedAt,

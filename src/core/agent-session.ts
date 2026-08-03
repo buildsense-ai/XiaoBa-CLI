@@ -43,7 +43,15 @@ import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
 import { resolveModelContextWindow } from '../utils/model-context-window';
 import { parseSessionKeyV2 } from './session-router';
-import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
+import {
+  classifyModelError,
+  MODEL_IMAGE_SAFETY_MESSAGE,
+  isModelImageSafetyError,
+} from '../utils/model-error-classifier';
+import {
+  readModelErrorDiagnostics,
+  type ModelErrorPhase,
+} from '../utils/model-error-observability';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import type { PromptTraceSnapshot } from '../utils/prompt-observability';
 import { toPromptTurnMetadata } from '../utils/prompt-observability';
@@ -60,6 +68,7 @@ import {
   isCheckpointCompactionEnabled,
 } from './checkpoint-compaction';
 import { estimateToolsTokens } from './token-estimator';
+import type { SessionRuntimeLogEvent, TurnErrorPayload } from '../utils/session-log-schema';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -633,6 +642,8 @@ export class AgentSession {
       this.interruptRequested = false;
       this.activeAbortController = new AbortController();
       this.lastActiveAt = Date.now();
+      const turnStartedAt = Date.now();
+      let failurePhase: ModelErrorPhase = 'pre_turn_compaction';
 
       try {
         await reconcileCurrentBotPromptBeforeTurn();
@@ -666,6 +677,7 @@ export class AgentSession {
           this.messages = compactionResult.messages;
         }
 
+        failurePhase = 'session_init';
         await this.init({
           callbacks,
           signal: this.activeAbortController.signal,
@@ -675,6 +687,7 @@ export class AgentSession {
           this.saveInterruptedContextIfCurrent(lifecycleGeneration);
           return { text: '已停止当前请求。', visibleToUser: true, taskOutcome: 'cancelled' };
         }
+        failurePhase = 'agent_turn';
         const result = await this.turnController.run({
           input: text,
           messages: this.messages,
@@ -703,6 +716,7 @@ export class AgentSession {
           return { text: '已停止当前请求。', visibleToUser: true, taskOutcome: 'cancelled' };
         }
         this.messages = result.messages;
+        failurePhase = 'result_persistence';
         this.lifecycleManager.saveContext(this.messages);
         return { ...result, taskOutcome: 'completed' };
       } catch (err: any) {
@@ -714,13 +728,12 @@ export class AgentSession {
         }
 
         const recoveredMessages = this.getPartialMessagesFromError(err);
+        const partialProgressPreserved = recoveredMessages
+          ? this.hasRecoverablePartialProgress(recoveredMessages)
+          : false;
         if (recoveredMessages) {
           this.messages = recoveredMessages;
         }
-
-        // 不删除用户消息，而是添加一个错误回复，保持上下文连贯
-        // 这样用户说"继续"时可以接上
-        Logger.error(`[会话 ${this.key}] 处理失败: ${err.message}`);
 
         // 识别多模态相关错误
         const errorMsg = err.message || String(err);
@@ -730,7 +743,63 @@ export class AgentSession {
         const isTransientProviderError = this.isTransientProviderError(err);
         const isEmptyModelResponseError = this.isEmptyModelResponseError(err);
         const relayBudgetErrorReply = this.formatRelayBudgetErrorReply(err);
+        const isRelayBudgetError = relayBudgetErrorReply !== null;
+        const closestDiagnostics = readModelErrorDiagnostics(err);
+        const classified = classifyModelError(err, {
+          isImageSafetyError,
+          isRelayBudgetError,
+          isVisionError: Boolean(isVisionError),
+          isTimeout: isModelTimeoutError,
+          isEmptyResponse: isEmptyModelResponseError,
+          isTransient: isTransientProviderError,
+        }, {
+          provider: this.currentProviderName() ?? undefined,
+          model: this.currentModelName() ?? undefined,
+          phase: closestDiagnostics?.phase ?? failurePhase,
+        });
+        const diagnostics = classified.diagnostics;
+        const retry = diagnostics.retry;
+        const errorPayload: TurnErrorPayload = {
+          error_code: classified.error_code,
+          category: classified.category,
+          classification_confidence: classified.confidence,
+          outcome: 'conversation_interrupted',
+          phase: diagnostics.phase ?? failurePhase,
+          error_origin: diagnostics.origin,
+          recovery_action: classified.recovery_action,
+          retry_strategy: classified.retry_strategy,
+          model: diagnostics.model ?? this.currentModelName(),
+          provider: diagnostics.provider ?? this.currentProviderName(),
+          http_status: diagnostics.http_status ?? this.extractErrorStatus(err),
+          provider_code: diagnostics.provider_code,
+          provider_type: diagnostics.provider_type,
+          provider_request_id: diagnostics.request_id,
+          error_fingerprint: diagnostics.fingerprint,
+          stack_fingerprint: diagnostics.stack_fingerprint,
+          top_frame: diagnostics.top_frame,
+          error_summary: diagnostics.error_summary,
+          attempt_count: retry?.attempt_count ?? 1,
+          retry_count: retry?.retry_count ?? 0,
+          retry_stop_reason: retry?.stop_reason ?? 'unknown',
+          retry_elapsed_ms: retry?.elapsed_ms ?? 0,
+          turn_elapsed_ms: Date.now() - turnStartedAt,
+          partial_progress_preserved: partialProgressPreserved,
+          episode_id: diagnostics.attempt?.episode_id,
+          model_call_id: diagnostics.attempt?.call_id,
+          model_attempt_id: diagnostics.attempt?.attempt_id,
+          model_attempt_number: diagnostics.attempt?.attempt_number,
+        };
 
+        // 只有真正退出本轮并返回 taskOutcome=failed 的路径才写 turn_error。
+        Logger.error(
+          `[会话 ${this.key}] 处理中断: ${diagnostics.error_summary}`,
+          {
+            type: 'turn_error',
+            payload: errorPayload as unknown as Record<string, unknown>,
+          } as SessionRuntimeLogEvent,
+        );
+
+        // This PR observes failures without changing the established user-facing behavior.
         let errorReply = ERROR_MESSAGE;
         if (isImageSafetyError) {
           errorReply = MODEL_IMAGE_SAFETY_MESSAGE;
@@ -1131,6 +1200,22 @@ export class AgentSession {
     return this.turnContextBuilder.removeTransientMessages(partialMessages);
   }
 
+  private hasRecoverablePartialProgress(messages: Message[]): boolean {
+    let rootIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (messages[index].__episodeInputKind === 'root') {
+        rootIndex = index;
+        break;
+      }
+    }
+    if (rootIndex < 0) return false;
+    const episodeId = messages[rootIndex].__episodeId;
+    return messages.slice(rootIndex + 1).some(message =>
+      (!episodeId || message.__episodeId === episodeId)
+      && (message.role === 'tool' || message.role === 'assistant')
+    );
+  }
+
   private isModelTimeoutError(error: any): boolean {
     const text = String(error?.message || error || '');
     return /API错误\s*\(504\)|request_timed_out|request timed out|default_request_timeout_in_seconds|upstream request timeout|gateway timeout/i.test(text);
@@ -1197,6 +1282,14 @@ export class AgentSession {
       : {};
     const model = String(config?.model || '').trim();
     return model || null;
+  }
+
+  private currentProviderName(): string | null {
+    const config = typeof (this.services.aiService as any).getConfig === 'function'
+      ? (this.services.aiService as any).getConfig()
+      : {};
+    const provider = String(config?.provider || '').trim();
+    return provider || null;
   }
 
   private formatTransientProviderErrorReply(): string {

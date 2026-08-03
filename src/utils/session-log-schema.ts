@@ -64,6 +64,39 @@ export interface SessionRuntimeLogEvent {
   payload?: Record<string, unknown>;
 }
 
+/** Structured diagnostics for a turn that actually exited with taskOutcome=failed. */
+export interface TurnErrorPayload {
+  error_code: string;
+  category: string;
+  classification_confidence?: 'high' | 'medium' | 'low';
+  outcome?: 'conversation_interrupted';
+  phase?: string;
+  error_origin?: 'provider' | 'transport' | 'runtime' | 'model_response';
+  recovery_action?: string;
+  retry_strategy?: string;
+  model?: string | null;
+  provider?: string | null;
+  http_status?: number | null;
+  provider_code?: string;
+  provider_type?: string;
+  provider_request_id?: string;
+  error_fingerprint?: string;
+  stack_fingerprint?: string;
+  top_frame?: string;
+  error_summary?: string;
+  attempt_count?: number;
+  retry_count?: number;
+  retry_stop_reason?: string;
+  retry_elapsed_ms?: number;
+  turn_elapsed_ms?: number;
+  partial_progress_preserved?: boolean;
+  episode_id?: string;
+  model_call_id?: string;
+  model_attempt_id?: string;
+  model_attempt_number?: number;
+  turn?: number;
+}
+
 export interface SessionSubAgentEventLogEntry {
   entry_type: 'subagent_event';
   timestamp: string;
