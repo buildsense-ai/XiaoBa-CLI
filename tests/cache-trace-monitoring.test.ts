@@ -142,8 +142,16 @@ test('observer writes retry recovery as two correlated attempts and preserves ca
       outcome: 'retrying',
       attemptNumber: 1,
       attemptId: 'call-1:1',
-      error: Object.assign(new Error('temporary 503'), { response: { status: 503 } }),
-      retry: { retryNumber: 1, maxRetries: 2, elapsedMs: 5, maxElapsedMs: 1000, delayMs: 10 },
+      error: Object.assign(new Error('Request failed with status code 400'), { response: { status: 400 } }),
+      retry: {
+        retryNumber: 1,
+        maxRetries: 2,
+        elapsedMs: 5,
+        maxElapsedMs: 1000,
+        maxDelayMs: 2000,
+        triggerReason: 'opaque_http_400',
+        delayMs: 10,
+      },
     }));
     observer.observe(attemptEvent({ outcome: 'started', attemptNumber: 2, attemptId: 'call-1:2' }));
     observer.observe(attemptEvent({
@@ -156,10 +164,13 @@ test('observer writes retry recovery as two correlated attempts and preserves ca
 
     const files = listTraceFiles(dir);
     assert.equal(files.length, 2);
-    assert.equal(fs.readFileSync(files[0], 'utf8').trim().split(/\r?\n/).length, 2);
+    const retryLines = fs.readFileSync(files[0], 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
+    assert.equal(retryLines.length, 2);
+    assert.equal(retryLines[1].lifecycle.retry_trigger_reason, 'opaque_http_400');
+    assert.equal(retryLines[1].lifecycle.retry_max_delay_ms, 2000);
     const store = await readCacheTraceStore(dir);
     assert.deepEqual(store.records.map(record => record.outcome), ['retrying', 'succeeded']);
-    assert.equal(store.records[0].httpStatus, 503);
+    assert.equal(store.records[0].httpStatus, 400);
     assert.equal(store.records[1].usage.cacheReadTokens, 4);
     assert.equal(store.sessions[0].calls, 1);
     assert.equal(store.sessions[0].retriedCalls, 1);

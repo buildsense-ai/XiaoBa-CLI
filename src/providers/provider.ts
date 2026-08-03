@@ -21,6 +21,8 @@ export interface StreamRetryInfo {
   delayMs: number;
   elapsedMs: number;
   maxElapsedMs: number;
+  maxDelayMs?: number;
+  triggerReason?: string;
   status?: string | number;
   message?: string;
 }
@@ -47,6 +49,8 @@ export interface ModelAttemptRetry {
   maxRetries: number;
   elapsedMs: number;
   maxElapsedMs: number;
+  maxDelayMs?: number;
+  triggerReason?: string;
   delayMs?: number;
   stopReason?: ModelAttemptStopReason;
 }
