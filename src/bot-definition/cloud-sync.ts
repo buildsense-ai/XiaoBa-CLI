@@ -60,7 +60,7 @@ export class BotDefinitionCloudSyncService {
       });
       if (!snapshot) return undefined;
       if (snapshot.configured && snapshot.definition) {
-        this.definitionService.acceptCanonical(snapshot.definition);
+        this.acceptCloudDefinition(snapshot.definition);
       }
       this.writeState({
         ...this.readState(botId),
@@ -276,13 +276,22 @@ export class BotDefinitionCloudSyncService {
     });
     if (!snapshot) return undefined;
     if (snapshot.configured && snapshot.definition) {
-      this.definitionService.acceptCanonical(snapshot.definition);
+      this.acceptCloudDefinition(snapshot.definition);
     }
     this.writeState({
       ...this.readState(botId),
       revision: snapshot.revision,
     });
     return snapshot;
+  }
+
+  private acceptCloudDefinition(definition: BotDefinition): void {
+    const local = this.definitionService.read(definition.botId);
+    const { skills: _cloudSkills, ...portableDefinition } = definition;
+    this.definitionService.acceptCanonical({
+      ...portableDefinition,
+      ...(local?.skills !== undefined ? { skills: local.skills } : {}),
+    });
   }
 
   private requireLocal(botId: string): BotDefinition {

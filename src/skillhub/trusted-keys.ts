@@ -12,10 +12,17 @@ export interface SkillHubTrustedRootKey {
  */
 export const CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS: SkillHubTrustedRootKey[] = [
   {
-    keyId: "catsco-root-prod-2026-01",
+    keyId: 'catsco-root-prod-2026-01',
     algorithm: 'ed25519',
     publicKeyPem: `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAJIkLx7f1l5/FZe54/gI7t/BJdMS3SqO7wBIAHQzZZSw=
+-----END PUBLIC KEY-----`,
+  },
+  {
+    keyId: 'catsco-root-prod-2026-07-30',
+    algorithm: 'ed25519',
+    publicKeyPem: `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAmfLW0ZhmgNwrNM57frtv4usUL8RKhhnLhr852hrB5Vg=
 -----END PUBLIC KEY-----`,
   },
 ];

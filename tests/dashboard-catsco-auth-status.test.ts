@@ -353,6 +353,7 @@ describe('dashboard CatsCo account status', () => {
         contextWindowTokens: 256_000,
       },
     });
+    fs.mkdirSync(path.join(testRoot, 'skills'), { recursive: true });
 
     const service = {
       name: 'catscompany',

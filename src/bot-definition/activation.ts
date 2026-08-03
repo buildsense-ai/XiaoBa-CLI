@@ -5,6 +5,7 @@ import {
 } from '../catscompany/relay-model-bootstrap';
 import { DEFAULT_CATSCO_RELAY_MODEL_ID } from '../utils/relay-model-profiles';
 import { Logger } from '../utils/logger';
+import { prepareBoundBotSkills, type PreparedBoundBotSkills } from '../bot-skills/runtime';
 import {
   catalogRuntimeMatchesModelId,
   createBotDefinitionSyncService,
@@ -30,6 +31,7 @@ export interface PrepareBoundBotDefinitionOptions extends BotDefinitionSyncServi
   fetchImpl?: typeof fetch;
   cloudSelection?: CloudBotModelSelection;
   acknowledgeCloudSelection?: boolean;
+  prepareSkills?: boolean;
 }
 
 export interface PreparedBoundBotDefinition {
@@ -41,6 +43,7 @@ export interface PreparedBoundBotDefinition {
   cloudRevision?: number;
   cloudSelection?: CloudBotModelSelection;
   cloudApplyError?: string;
+  skillSync?: PreparedBoundBotSkills;
 }
 
 /**
@@ -151,12 +154,27 @@ export async function prepareBoundBotDefinition(
           cloudSnapshot = await cloudDefinitionSync.pushPrompt(botId, auth, definition.prompt)
             ?? cloudSnapshot;
         }
+        const skillSync = options.prepareSkills === false
+          ? undefined
+          : await prepareBoundBotSkills({
+              runtimeRoot: options.runtimeRoot,
+              botId,
+              auth,
+              fetchImpl: options.fetchImpl,
+              definitionService,
+            });
+        definition = definitionService.read(botId) ?? definition;
+        const appliedRevision = skillSync?.sync?.cloudRevision ?? cloudSnapshot.revision;
         definitionService.clearLegacyModelConfigurationWhenReady(definition);
-        if (options.acknowledgeCloudSelection !== false && cloudSnapshot.configured) {
+        if (
+          options.acknowledgeCloudSelection !== false
+          && cloudSnapshot.configured
+          && !skillSync?.localPreservedAfterError
+        ) {
           try {
             await acknowledgeCloudBotDefinition(
               { botId, auth, fetchImpl: options.fetchImpl },
-              cloudSnapshot.revision,
+              appliedRevision,
             );
           } catch (error) {
             Logger.warning(`CatsCo BotDefinition apply acknowledgement failed: ${errorMessage(error)}`);
@@ -168,13 +186,14 @@ export async function prepareBoundBotDefinition(
           sync,
           initializedDefault: initializedDefaultFromEmpty,
           materializedCatalogRuntime,
-          cloudRevision: cloudSnapshot.revision,
+          cloudRevision: appliedRevision,
+          ...(skillSync ? { skillSync } : {}),
           cloudSelection: definition.model.kind === 'custom'
             ? {
               kind: 'custom',
               modelId: definition.model.model,
               customModel: definition.model,
-              revision: cloudSnapshot.revision,
+              revision: appliedRevision,
               definition,
             }
             : {
@@ -183,7 +202,7 @@ export async function prepareBoundBotDefinition(
               ...(definition.model.reasoningEffort
                 ? { reasoningEffort: definition.model.reasoningEffort }
                 : {}),
-              revision: cloudSnapshot.revision,
+              revision: appliedRevision,
               definition,
             },
         };
@@ -408,6 +427,26 @@ export async function prepareBoundBotDefinition(
     env: options.env,
     definitionService,
   }).activateBot(botId);
+  const skillSync = (
+    options.prepareSkills === false
+    || (cloudSelection && !cloudSelection.definition)
+  )
+    ? undefined
+    : await prepareBoundBotSkills({
+        runtimeRoot: options.runtimeRoot,
+        botId,
+        auth,
+        fetchImpl: options.fetchImpl,
+        definitionService,
+      });
+  const portableDefinition = definitionService.read(botId);
+  if (portableDefinition) {
+    definition = {
+      ...definition,
+      ...(portableDefinition.prompt ? { prompt: portableDefinition.prompt } : {}),
+      ...(portableDefinition.skills !== undefined ? { skills: portableDefinition.skills } : {}),
+    };
+  }
   return {
     botId,
     definition,
@@ -417,6 +456,7 @@ export async function prepareBoundBotDefinition(
     ...(cloudSelection ? { cloudSelection } : {}),
     ...(cloudApplyError ? { cloudApplyError } : {}),
     ...(cloudSelectionApplied && cloudSelection ? { cloudRevision: cloudSelection.revision } : {}),
+    ...(skillSync ? { skillSync } : {}),
   };
 }
 

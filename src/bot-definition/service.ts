@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
+import { canonicalizeBotSkillRefs } from '../bot-skills/canonical';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { normalizeOpenAIApiMode } from '../utils/openai-api-mode';
 import { normalizeReasoningEffort } from '../utils/reasoning-effort';
@@ -17,6 +18,7 @@ import {
   type BotCatalogModelRuntime,
   type BotDefinition,
   type BotDefinitionSyncResult,
+  type BotSkillRef,
   type BotModelDefinition,
   type BotPromptDefinition,
   type CustomBotModelDefinition,
@@ -301,9 +303,16 @@ function normalizeBotModelDefinition(model: BotModelDefinition): BotModelDefinit
 function normalizeBotDefinition(definition: BotDefinition): BotDefinition {
   const model = normalizeBotModelDefinition(definition.model);
   const prompt = definition.prompt && normalizePromptDefinition(definition.prompt);
-  return model === definition.model && prompt === definition.prompt
+  const skills = definition.skills === undefined ? undefined : canonicalizeBotSkillRefs(definition.skills);
+  const skillsChanged = skills !== undefined && JSON.stringify(skills) !== JSON.stringify(definition.skills);
+  return model === definition.model && prompt === definition.prompt && !skillsChanged
     ? definition
-    : { ...definition, model, ...(prompt ? { prompt } : {}) };
+    : {
+        ...definition,
+        model,
+        ...(prompt ? { prompt } : {}),
+        ...(skills !== undefined ? { skills } : {}),
+      };
 }
 
 function normalizePromptDefinition(prompt: BotPromptDefinition): BotPromptDefinition {
@@ -480,6 +489,27 @@ export class BotDefinitionSyncService {
         botId: normalized.botId,
         direction: 'cloud_to_local',
         definition: normalized,
+      };
+    });
+  }
+
+  updateSkills(botId: string, skills: readonly BotSkillRef[]): BotDefinitionSyncResult {
+    return this.withDefinitionWriteLock(botId, () => {
+      const previous = this.repository.readCache(botId) ?? this.repository.readCanonical(botId);
+      if (!previous) {
+        throw new Error(`BotDefinition does not exist for bot ${botId}`);
+      }
+      const definition: BotDefinition = {
+        ...previous,
+        schema: BOT_DEFINITION_SCHEMA,
+        botId,
+        skills: canonicalizeBotSkillRefs(skills),
+      };
+      this.repository.writeCache(definition);
+      return {
+        botId,
+        direction: 'local_cache_update',
+        definition,
       };
     });
   }

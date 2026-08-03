@@ -2,6 +2,10 @@ import type { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } 
 import { SkillHubService } from '../skillhub/service';
 import { SkillHubSubscriptionService } from '../skillhub/subscription-service';
 import type { SkillHubSearchResponse } from '../skillhub/types';
+import {
+  scheduleCurrentBotSkillSync,
+  withCurrentBotSkillWorkspaceWrite,
+} from '../bot-skills/runtime';
 import { isCatsCoToolGatewayContext } from './tool-gateway';
 
 export interface SkillHubCatalogGateway {
@@ -97,16 +101,22 @@ export class SkillHubTool implements Tool {
         if (denied) return denied;
         const skillId = required(args?.skillId, 'skillId');
         if (action === 'subscribe') {
-          const result = await this.subscriptions.subscribe(skillId);
+          const result = await withCurrentBotSkillWorkspaceWrite(
+            () => this.subscriptions.subscribe(skillId),
+          );
           await context.runtimeServices?.skillManager.loadSkills();
+          scheduleCurrentBotSkillSync();
           return {
             ok: true,
             content: JSON.stringify(result, null, 2),
           };
         }
 
-        const result = await this.subscriptions.unsubscribe(skillId);
+        const result = await withCurrentBotSkillWorkspaceWrite(
+          () => this.subscriptions.unsubscribe(skillId),
+        );
         await context.runtimeServices?.skillManager.loadSkills();
+        scheduleCurrentBotSkillSync();
         return {
           ok: true,
           content: JSON.stringify(result, null, 2),

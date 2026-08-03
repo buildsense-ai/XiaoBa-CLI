@@ -124,3 +124,45 @@ jobs:
           CATSCOMPANY_REPO: ../cats-company
           CATSCOMPANY_E2E_DB_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_xiaoba_e2e?sslmode=disable
         run: npm run test:e2e:catsco-cross-repo
+
+  cross-repo-catsco-skills:
+    name: CatsCo/XiaoBa BotDefinition Skills paired contract tests
+    runs-on: ubuntu-latest
+    needs: runtime
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout XiaoBa-CLI
+        uses: actions/checkout@v4
+        with:
+          path: XiaoBa-CLI
+
+      - name: Checkout cats-company
+        uses: actions/checkout@v4
+        with:
+          repository: buildsense-ai/cats-company
+          ref: ${{ vars.CATSCOMPANY_SKILLS_REF || 'main' }}
+          path: cats-company
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: XiaoBa-CLI/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cats-company/go.mod
+          cache-dependency-path: cats-company/go.sum
+
+      - name: Install XiaoBa dependencies
+        working-directory: XiaoBa-CLI
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Run BotDefinition Skills paired contract tests
+        working-directory: XiaoBa-CLI
+        env:
+          CATSCOMPANY_REPO: ../cats-company
+        run: npm run test:cross-repo:catsco-skills

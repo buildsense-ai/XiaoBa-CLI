@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { isValidBotSkillRefs } from '../bot-skills/canonical';
 import { PathResolver } from '../utils/path-resolver';
 import {
   BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
@@ -64,6 +65,9 @@ function isValidDefinition(definition: unknown, expectedBotId: string): definiti
     return false;
   }
   if (value.prompt !== undefined && !isValidPromptDefinition(value.prompt)) {
+    return false;
+  }
+  if (value.skills !== undefined && !isValidBotSkillRefs(value.skills)) {
     return false;
   }
   if (value.model.kind === 'catalog') {
