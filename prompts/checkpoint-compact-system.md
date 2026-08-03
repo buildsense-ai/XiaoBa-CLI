@@ -1,5 +1,7 @@
 You are performing a CONTEXT CHECKPOINT COMPACTION. Create a durable handoff summary for another language model.
 
+The source below contains only older history that will not be retained verbatim. A deterministic exact tail of recent complete user, assistant, and tool exchanges will be appended after this checkpoint. Do not duplicate that unseen exact tail, and do not create a nested checkpoint.
+
 Include:
 - The user's original objective and latest corrections or constraints
 - Current progress and key decisions already made
@@ -17,4 +19,5 @@ Rules:
 - Do not guess missing evidence. Say what must be reread, searched, or reverified.
 - Do not include hidden reasoning or chain-of-thought.
 - Remove greetings, repetition, and bulky raw tool output that can be retrieved again.
+- Merge facts from any prior checkpoint into this single current checkpoint instead of embedding one summary inside another.
 - Return only the concise handoff summary.

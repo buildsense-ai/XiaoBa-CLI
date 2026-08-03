@@ -18,7 +18,6 @@ const DEFAULT_COMPACTION_THRESHOLD = 0.8;
 const MIN_RETAINED_USER_TOKEN_BUDGET = 8_000;
 const MAX_RETAINED_USER_TOKEN_BUDGET = 32_000;
 const RETAINED_USER_CONTEXT_RATIO = 0.15;
-const DEFAULT_RETAINED_CONTEXT_MESSAGE_LIMIT = 8;
 const MAX_CONTEXT_RETRY_ATTEMPTS = 6;
 const MAX_SUMMARY_TOOL_RESULT_CHARS = 24_000;
 const SUMMARY_TOOL_RESULT_HEAD_CHARS = 16_000;
@@ -37,6 +36,7 @@ export interface CheckpointCompactionCoordinatorOptions {
 export interface CheckpointCompactionRequest {
   sessionKey: string;
   phase: CheckpointCompactionPhase;
+  episodeId?: string;
   toolTokens?: number;
   signal?: AbortSignal;
   onStatus?: (event: CheckpointCompactionStatusEvent) => void | Promise<void>;
@@ -92,10 +92,13 @@ export class CheckpointCompactionCoordinator {
       DEFAULT_COMPACTION_THRESHOLD,
     );
     this.retainedUserTokenBudget = Math.max(
-      1_000,
-      Math.floor(
-        options.retainedUserTokenBudget
-        ?? defaultRetainedUserTokenBudget(this.maxContextTokens),
+      256,
+      Math.min(
+        Math.floor(this.maxContextTokens * 0.5),
+        Math.floor(
+          options.retainedUserTokenBudget
+          ?? defaultRetainedUserTokenBudget(this.maxContextTokens),
+        ),
       ),
     );
   }
@@ -145,6 +148,9 @@ export class CheckpointCompactionCoordinator {
 
     try {
       const result = await this.compact(messages, request, usage);
+      if (result === messages) {
+        return { messages, compacted: false, ...usage };
+      }
       await this.emitStatus(request, {
         status: 'complete',
         sessionKey: request.sessionKey,
@@ -162,7 +168,7 @@ export class CheckpointCompactionCoordinator {
         'INFO',
         `[${request.sessionKey}] checkpoint_compaction phase=${request.phase} `
         + `summary_sha256=${audit.summarySha256} retained_root=${audit.retainedRootCount} `
-        + `retained_pending=${audit.retainedPendingCount}`,
+        + `retained_pending=${audit.retainedPendingCount} exact_tail_groups=${audit.exactTailGroupCount}`,
         {
           type: 'checkpoint_compaction',
           payload: {
@@ -176,6 +182,8 @@ export class CheckpointCompactionCoordinator {
             retained_root_count: audit.retainedRootCount,
             retained_pending_count: audit.retainedPendingCount,
             retained_user_evidence_count: audit.retainedUserEvidenceCount,
+            exact_tail_group_count: audit.exactTailGroupCount,
+            exact_tail_tokens: audit.exactTailTokens,
           },
         },
       );
@@ -213,32 +221,22 @@ export class CheckpointCompactionCoordinator {
       return messages;
     }
 
-    const summary = await this.generateContinuationSummary(
+    const activeEpisodeId = request.episodeId || findLatestEpisodeId(sessionMessages);
+    const exactTail = selectExactTail(
       sessionMessages,
+      activeEpisodeId,
+      this.retainedUserTokenBudget,
+    );
+    if (exactTail.summarySource.length === 0) {
+      return messages;
+    }
+
+    const summary = await this.generateContinuationSummary(
+      exactTail.summarySource,
       request.phase,
       request.signal,
     );
-    const retainedContext = selectRetainedContextMessages(
-      sessionMessages,
-      request.phase,
-      this.retainedUserTokenBudget,
-    );
     const remoteContextWatermarks = collectRemoteContextWatermarks(durable);
-    const activeEpisodeId = findLatestEpisodeId(sessionMessages);
-    const stableBoundary = findLastStableBoundary(sessionMessages);
-
-    const boundary: Message = {
-      role: 'system',
-      content: [
-        CHECKPOINT_COMPACTION_BOUNDARY_PREFIX,
-        `phase=${request.phase}`,
-        activeEpisodeId ? `episode=${activeEpisodeId}` : '',
-        stableBoundary ? `last_stable=${stableBoundary}` : '',
-        `tokens_before=${usage.usedTokens}`,
-      ].filter(Boolean).join(' '),
-      __checkpointBoundary: true,
-      __checkpointPhase: request.phase,
-    };
     const summaryMessage: Message = {
       role: 'user',
       content: `${CHECKPOINT_SUMMARY_PREFIX}\n\n${summary}`,
@@ -252,9 +250,8 @@ export class CheckpointCompactionCoordinator {
 
     return [
       ...stableSystemMessages,
-      boundary,
       summaryMessage,
-      ...retainedContext,
+      ...exactTail.retained,
       ...transient,
     ];
   }
@@ -413,92 +410,208 @@ export function splitDurableAndTransient(messages: Message[]): {
   return { durable, transient };
 }
 
-function selectRetainedContextMessages(
-  messages: Message[],
-  phase: CheckpointCompactionPhase,
-  tokenBudget: number,
-): Message[] {
-  const latestEpisodeId = findLatestEpisodeId(messages);
-  if (phase === 'mid_turn' && latestEpisodeId) {
-    return selectMidTurnUserMessages(messages, latestEpisodeId, tokenBudget);
-  }
-  const candidates = messages.filter(message => {
-    if (isCheckpointSummary(message)) return false;
-    if (message.role === 'user') return true;
-    return message.role === 'assistant'
-      && !message.tool_calls?.length
-      && typeof message.content === 'string'
-      && message.content.trim().length > 0;
-  });
-
-  const selected: Message[] = [];
-  let usedTokens = 0;
-  for (let index = candidates.length - 1; index >= 0; index--) {
-    if (selected.length >= DEFAULT_RETAINED_CONTEXT_MESSAGE_LIMIT) break;
-    const candidate = candidates[index];
-    const candidateTokens = estimateMessagesTokens([candidate]);
-    const remainingTokens = tokenBudget - usedTokens;
-    if (candidateTokens > remainingTokens) {
-      if (selected.length === 0 && candidate.role === 'user') {
-        const evidence = buildUserInputEvidence(candidate, remainingTokens);
-        if (evidence) {
-          selected.unshift(evidence);
-          usedTokens += estimateMessagesTokens([evidence]);
-        }
-      }
-      continue;
-    }
-    selected.unshift(candidate);
-    usedTokens += candidateTokens;
-  }
-  return selected;
+interface ExactTailGroup {
+  start: number;
+  end: number;
+  messages: Message[];
+  hasToolExchange: boolean;
+  hasUserInput: boolean;
+  belongsToActiveEpisode: boolean;
 }
 
-function selectMidTurnUserMessages(
-  messages: Message[],
-  episodeId: string,
-  tokenBudget: number,
-): Message[] {
-  const episodeInputs = messages.filter(message => (
-    !isCheckpointSummary(message)
-    && message.role === 'user'
-    && message.__episodeId === episodeId
-  ));
-  if (episodeInputs.length === 0) return [];
+interface ExactTailSelection {
+  retained: Message[];
+  summarySource: Message[];
+}
 
-  const root = episodeInputs.find(message => message.__episodeInputKind === 'root')
-    ?? episodeInputs[0];
-  const laterInputs = episodeInputs.filter(message => message !== root);
-  const retainedBySource = new Map<Message, Message>();
+interface SelectedExactTailGroup {
+  messages: Message[];
+  sourceIndexes: number[];
+}
+
+function selectExactTail(
+  messages: Message[],
+  activeEpisodeId: string | undefined,
+  tokenBudget: number,
+): ExactTailSelection {
+  const groups = buildExactTailGroups(messages, activeEpisodeId)
+    .filter(group => !group.messages.some(isCheckpointSummary));
+  const candidates = [...groups].sort((left, right) => {
+    const leftPriority = exactTailPriority(left);
+    const rightPriority = exactTailPriority(right);
+    return leftPriority - rightPriority || right.end - left.end;
+  });
+  const selected = new Map<ExactTailGroup, SelectedExactTailGroup>();
   let usedTokens = 0;
 
-  const add = (message: Message): void => {
-    const remainingTokens = tokenBudget - usedTokens;
-    if (remainingTokens < 128) return;
-    const messageTokens = estimateMessagesTokens([message]);
-    if (messageTokens <= remainingTokens) {
-      retainedBySource.set(message, message);
-      usedTokens += messageTokens;
-      return;
+  for (const group of candidates) {
+    const remaining = tokenBudget - usedTokens;
+    if (remaining < 128) break;
+    let retainedGroup = group.messages;
+    let groupTokens = estimateMessagesTokens(retainedGroup);
+    let sourceIndexes = indexesForGroup(group);
+    if (groupTokens > remaining) {
+      const recentAssistant = recentAssistantFromOversizedOrdinaryExchange(group);
+      if (recentAssistant && estimateMessagesTokens([recentAssistant]) <= remaining) {
+        retainedGroup = [recentAssistant];
+        groupTokens = estimateMessagesTokens(retainedGroup);
+        sourceIndexes = [group.end];
+      } else {
+        retainedGroup = buildBoundedExactGroup(group.messages, remaining);
+        groupTokens = estimateMessagesTokens(retainedGroup);
+      }
     }
-    const evidence = buildUserInputEvidence(message, remainingTokens);
-    if (!evidence) return;
-    retainedBySource.set(message, evidence);
-    usedTokens += estimateMessagesTokens([evidence]);
-  };
-
-  // The root objective always wins. Repeated short follow-ups must never evict it.
-  add(root);
-  // Prefer the latest corrections when the episode's user input itself exceeds
-  // the retained budget. The returned messages are restored to chronological order.
-  for (let index = laterInputs.length - 1; index >= 0; index--) {
-    add(laterInputs[index]);
+    if (retainedGroup.length === 0 || groupTokens > remaining) continue;
+    selected.set(group, { messages: retainedGroup, sourceIndexes });
+    usedTokens += groupTokens;
   }
 
-  return episodeInputs.flatMap(message => {
-    const retained = retainedBySource.get(message);
-    return retained ? [retained] : [];
+  // A checkpoint must summarize at least one older source group. If the exact
+  // tail swallowed the entire transcript, move the oldest retained group back
+  // into the summary source instead of reporting a no-op compaction.
+  const selectedSourceCount = [...selected.values()]
+    .reduce((total, value) => total + value.sourceIndexes.length, 0);
+  if (selectedSourceCount === messages.length && groups.length > 0) {
+    const oldestSelected = [...selected.keys()].sort((left, right) => left.start - right.start)[0];
+    selected.delete(oldestSelected);
+  }
+
+  const selectedIndexes = new Set<number>();
+  const retained: Message[] = [];
+  for (const group of [...selected.keys()].sort((left, right) => left.start - right.start)) {
+    const selection = selected.get(group)!;
+    for (const index of selection.sourceIndexes) selectedIndexes.add(index);
+    retained.push(...selection.messages);
+  }
+  return {
+    retained,
+    summarySource: messages.filter((_, index) => !selectedIndexes.has(index)),
+  };
+}
+
+function indexesForGroup(group: ExactTailGroup): number[] {
+  return Array.from({ length: group.end - group.start + 1 }, (_, offset) => group.start + offset);
+}
+
+function recentAssistantFromOversizedOrdinaryExchange(group: ExactTailGroup): Message | undefined {
+  if (group.messages.length !== 2) return undefined;
+  const [user, assistant] = group.messages;
+  if (user.role !== 'user' || assistant.role !== 'assistant' || assistant.tool_calls?.length) {
+    return undefined;
+  }
+  return assistant;
+}
+
+function buildExactTailGroups(
+  messages: Message[],
+  activeEpisodeId?: string,
+): ExactTailGroup[] {
+  const groups: ExactTailGroup[] = [];
+  for (let index = 0; index < messages.length;) {
+    const start = index;
+    const first = messages[index];
+    if (first.role === 'user') {
+      index++;
+      if (index < messages.length
+        && messages[index].role === 'assistant'
+        && !messages[index].tool_calls?.length) {
+        index++;
+      }
+    } else if (first.role === 'assistant' && first.tool_calls?.length) {
+      const expected = new Set(first.tool_calls.map(call => call.id));
+      index++;
+      while (index < messages.length && messages[index].role === 'tool') {
+        if (messages[index].tool_call_id) expected.delete(messages[index].tool_call_id!);
+        index++;
+        if (expected.size === 0) break;
+      }
+    } else {
+      index++;
+    }
+    const groupMessages = messages.slice(start, index);
+    groups.push({
+      start,
+      end: index - 1,
+      messages: groupMessages,
+      hasToolExchange: groupMessages.some(message => message.role === 'tool'),
+      hasUserInput: groupMessages.some(message => message.role === 'user'),
+      belongsToActiveEpisode: Boolean(
+        activeEpisodeId
+        && groupMessages.some(message => message.__episodeId === activeEpisodeId),
+      ),
+    });
+  }
+  return groups;
+}
+
+function exactTailPriority(group: ExactTailGroup): number {
+  if (group.belongsToActiveEpisode && group.hasToolExchange) return 0;
+  if (group.belongsToActiveEpisode && group.hasUserInput) return 1;
+  return 2;
+}
+
+function buildBoundedExactGroup(messages: Message[], maxTokens: number): Message[] {
+  if (maxTokens < 128) return [];
+  const perMessageBudget = Math.max(96, Math.floor(maxTokens / Math.max(1, messages.length)));
+  const bounded = messages.map(message => {
+    if (message.role === 'tool' && typeof message.content === 'string') {
+      return estimateMessagesTokens([message]) <= perMessageBudget
+        ? message
+        : buildToolResultEvidence(message, perMessageBudget);
+    }
+    if (message.role !== 'user') return message;
+    const messageTokens = estimateMessagesTokens([message]);
+    if (messageTokens <= perMessageBudget) {
+      return message;
+    }
+    return buildUserInputEvidence(
+      message,
+      perMessageBudget,
+    ) || message;
   });
+  return estimateMessagesTokens(bounded) <= maxTokens ? bounded : [];
+}
+
+function buildToolResultEvidence(message: Message, maxTokens: number): Message {
+  const raw = typeof message.content === 'string' ? message.content : '';
+  const hash = createHash('sha256').update(raw).digest('hex');
+  let materialChars = Math.min(raw.length, Math.max(64, Math.floor(maxTokens * 1.2)));
+
+  while (materialChars >= 32) {
+    const headChars = Math.max(24, Math.floor(materialChars * 0.75));
+    const tailChars = Math.max(8, materialChars - headChars);
+    const evidence: Message = {
+      ...message,
+      content: [
+        CHECKPOINT_TOOL_EVIDENCE_PREFIX,
+        message.name ? `tool_name: ${message.name}` : '',
+        message.tool_call_id ? `tool_call_id: ${message.tool_call_id}` : '',
+        `original_chars: ${raw.length}`,
+        `sha256: ${hash}`,
+        'omission: bounded exact-tail evidence; re-run the tool before relying on omitted details.',
+        '',
+        'head:',
+        raw.slice(0, headChars),
+        '',
+        'tail:',
+        raw.slice(-tailChars),
+      ].filter(part => part !== '').join('\n'),
+    };
+    if (estimateMessagesTokens([evidence]) <= maxTokens) return evidence;
+    materialChars = Math.floor(materialChars * 0.65);
+  }
+
+  return {
+    ...message,
+    content: [
+      CHECKPOINT_TOOL_EVIDENCE_PREFIX,
+      message.name ? `tool_name: ${message.name}` : '',
+      message.tool_call_id ? `tool_call_id: ${message.tool_call_id}` : '',
+      `original_chars: ${raw.length}`,
+      `sha256: ${hash}`,
+      'omission: tool output exceeded the exact-tail evidence budget; re-run before use.',
+    ].filter(part => part !== '').join('\n'),
+  };
 }
 
 function buildUserInputEvidence(message: Message, maxTokens: number): Message | undefined {
@@ -564,8 +677,14 @@ function buildCompactionAudit(
   retainedRootCount: number;
   retainedPendingCount: number;
   retainedUserEvidenceCount: number;
+  exactTailGroupCount: number;
+  exactTailTokens: number;
 } {
   const summary = messages.find(message => message.__checkpointSummary);
+  const summaryIndex = messages.findIndex(message => message.__checkpointSummary);
+  const exactTail = summaryIndex < 0
+    ? []
+    : messages.slice(summaryIndex + 1).filter(message => !isTransientMessage(message));
   const summaryText = typeof summary?.content === 'string' ? summary.content : '';
   return {
     summaryChars: summaryText.length,
@@ -576,24 +695,14 @@ function buildCompactionAudit(
       typeof message.content === 'string'
       && message.content.startsWith(CHECKPOINT_USER_INPUT_EVIDENCE_PREFIX)
     )).length,
+    exactTailGroupCount: buildExactTailGroups(exactTail).length,
+    exactTailTokens: estimateMessagesTokens(exactTail),
   };
 }
 
 function findLatestEpisodeId(messages: Message[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index--) {
     if (messages[index].__episodeId) return messages[index].__episodeId;
-  }
-  return undefined;
-}
-
-function findLastStableBoundary(messages: Message[]): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
-    if (message.role !== 'tool') continue;
-    return [
-      message.name ? `tool:${message.name}` : 'tool',
-      message.tool_call_id ? `call:${message.tool_call_id}` : '',
-    ].filter(Boolean).join(',');
   }
   return undefined;
 }

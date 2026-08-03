@@ -52,7 +52,7 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.deepEqual(first.include, ['reasoning.encrypted_content']);
   });
 
-  test('keeps dynamic system context out of cache identity and appends it to input', () => {
+  test('keeps dynamic system context out of cache identity and places it before the latest event', () => {
     const provider = createProvider();
     const first = (provider as any).buildResponsesRequestBody([
       { role: 'system', content: 'Stable policy.' },
@@ -69,12 +69,12 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.equal(second.instructions, 'Stable policy.');
     assert.equal(first.prompt_cache_key, second.prompt_cache_key);
     assert.deepEqual(first.input, [
-      { role: 'user', content: 'first question' },
       { role: 'system', content: '[transient_plan_status]\nstep one' },
+      { role: 'user', content: 'first question' },
     ]);
     assert.deepEqual(second.input, [
-      { role: 'user', content: 'another question' },
       { role: 'system', content: '[transient_plan_status]\nstep two' },
+      { role: 'user', content: 'another question' },
     ]);
   });
 
@@ -100,8 +100,8 @@ describe('OpenAIProvider Responses API mode', () => {
       ], [lookupTool]);
 
       assert.equal(first.prompt_cache_key, second.prompt_cache_key);
-      assert.equal(first.input.at(-1).role, 'system');
-      assert.equal(first.input.at(-1).content, firstDynamic);
+      assert.equal(first.input[0].role, 'system');
+      assert.equal(first.input[0].content, firstDynamic);
     }
 
     const changedStable = (provider as any).buildResponsesRequestBody([

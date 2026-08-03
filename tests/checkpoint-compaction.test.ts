@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Message } from '../src/types';
 import {
-  CHECKPOINT_COMPACTION_BOUNDARY_PREFIX,
   CHECKPOINT_SUMMARY_PREFIX,
   CheckpointCompactionCoordinator,
   buildCheckpointCompactionPrompt,
@@ -43,7 +42,6 @@ test('checkpoint compaction switch defaults on and supports explicit rollback', 
     XIAOBA_CHECKPOINT_COMPACTION_ENABLED: 'false',
   } as NodeJS.ProcessEnv), false);
 });
-
 test('checkpoint compaction preserves stable system and transient runtime messages', async () => {
   const { service } = createService(() => [
     'Objective: finish the active task.',
@@ -94,20 +92,15 @@ test('checkpoint compaction preserves stable system and transient runtime messag
 
   assert.equal(result.compacted, true);
   assert.equal(result.messages[0].content, 'stable system prompt');
-  assert.ok(result.messages.some(message =>
-    String(message.content).startsWith(CHECKPOINT_COMPACTION_BOUNDARY_PREFIX)));
+  assert.equal(result.messages.some(message => message.__checkpointBoundary), false);
   assert.ok(result.messages.some(message =>
     String(message.content).startsWith(CHECKPOINT_SUMMARY_PREFIX)));
   assert.ok(result.messages.some(message => message.content === transient.content));
-  assert.equal(result.messages.some(message => message.role === 'tool'), false);
-  assert.equal(
-    result.messages.some(message => String(message.content).includes('tool evidence')),
-    false,
-  );
+  assert.equal(result.messages.some(message => message.role === 'tool'), true);
+  assert.equal(result.messages.some(message => String(message.content).includes('tool evidence')), true);
   const summaryIndex = result.messages.findIndex(message => message.__checkpointSummary);
-  const retainedUserIndex = result.messages.findIndex(message =>
-    message.role === 'user' && String(message.content).includes('original objective'));
-  assert.ok(summaryIndex >= 0 && retainedUserIndex > summaryIndex);
+  assert.ok(summaryIndex >= 0);
+  assert.match(String(result.messages[summaryIndex].content), /finish the active task/i);
 });
 
 test('a later checkpoint summarizes the prior checkpoint instead of forgetting it', async () => {
@@ -207,7 +200,7 @@ test('checkpoint prompt distinguishes pre-turn, mid-turn, and restored history',
 });
 
 test('mid-turn checkpoint always retains the root before repeated short follow-ups', async () => {
-  const { service } = createService(() => 'continue from the root and latest corrections');
+  const { service, requests } = createService(() => 'continue from the root and latest corrections');
   const coordinator = new CheckpointCompactionCoordinator(service, {
     maxContextTokens: 1_000,
     compactionThreshold: 0.5,
@@ -256,17 +249,21 @@ test('mid-turn checkpoint always retains the root before repeated short follow-u
   const retainedInputs = result.messages.filter(message => (
     message.role === 'user' && !message.__checkpointSummary
   ));
-  assert.equal(retainedInputs[0]?.content, root.content);
+  assert.ok(requests[0].some(message => message.content === root.content));
+  assert.ok(result.messages.some(message => message.__checkpointSummary));
   assert.ok(retainedInputs.some(message => (
     String(message.content).includes('LATEST_CORRECTION')
   )));
   assert.equal(retainedInputs.filter(message => message.__episodeInputKind === 'pending').length, 7);
-  assert.equal(result.messages.some(message => message.role === 'tool'), false);
-  assert.equal(result.messages.some(message => message.tool_calls?.length), false);
+  assert.equal(result.messages.some(message => message.role === 'tool'), true);
+  assert.equal(result.messages.some(message => message.tool_calls?.length), true);
 });
 
-test('oversized episode root becomes explicit bounded evidence instead of disappearing', async () => {
-  const { service } = createService(() => 'summary includes the complete oversized objective');
+test('oversized episode root is summarized instead of silently disappearing', async () => {
+  const { service, requests } = createService(() => [
+    'Objective: inspect D:\\work\\project at port 18088.',
+    'Constraint: never delete the source directory.',
+  ].join('\n'));
   const coordinator = new CheckpointCompactionCoordinator(service, {
     maxContextTokens: 2_000,
     compactionThreshold: 0.5,
@@ -291,18 +288,14 @@ test('oversized episode root becomes explicit bounded evidence instead of disapp
   });
 
   assert.equal(result.compacted, true);
-  const retainedRoot = result.messages.find(message => (
-    message.__episodeInputKind === 'root' && !message.__checkpointSummary
-  ));
-  assert.ok(retainedRoot);
-  assert.match(String(retainedRoot.content), /\[checkpoint_user_input_evidence\]/);
-  assert.match(String(retainedRoot.content), /sha256: [a-f0-9]{64}/);
-  assert.match(String(retainedRoot.content), /ROOT_HEAD/);
-  assert.match(String(retainedRoot.content), /ROOT_TAIL/);
-  assert.ok(estimateRetainedTextLength(retainedRoot) < oversizedRoot.length);
+  assert.ok(requests[0].some(message => String(message.content).includes('ROOT_HEAD')));
+  const checkpoint = result.messages.find(message => message.__checkpointSummary);
+  assert.match(String(checkpoint?.content), /D:\\work\\project/);
+  assert.match(String(checkpoint?.content), /never delete/);
+  assert.equal(result.messages.some(message => message.__checkpointBoundary), false);
 });
 
-test('checkpoint summary bounds a giant tool result without mutating durable evidence', async () => {
+test('checkpoint exact tail bounds a giant tool result without duplicating it into the summary', async () => {
   const { service, requests } = createService(() => 'bounded tool evidence summary');
   const coordinator = new CheckpointCompactionCoordinator(service, {
     maxContextTokens: 1_000,
@@ -331,19 +324,14 @@ test('checkpoint summary bounds a giant tool result without mutating durable evi
   });
 
   assert.equal(result.compacted, true);
-  const summaryToolMessage = requests[0].find(message => message.role === 'tool');
-  assert.ok(summaryToolMessage);
-  assert.match(String(summaryToolMessage.content), /\[checkpoint_tool_evidence\]/);
-  assert.match(String(summaryToolMessage.content), /tool_call_id: call-giant/);
-  assert.match(String(summaryToolMessage.content), /HEAD_MARKER/);
-  assert.match(String(summaryToolMessage.content), /TAIL_MARKER/);
-  assert.ok(String(summaryToolMessage.content).length < rawToolResult.length);
+  assert.equal(requests[0].some(message => message.role === 'tool'), false);
+  const retainedToolMessage = result.messages.find(message => message.role === 'tool');
+  assert.ok(retainedToolMessage);
+  assert.match(String(retainedToolMessage.content), /\[checkpoint_tool_evidence\]/);
+  assert.match(String(retainedToolMessage.content), /tool_call_id: call-giant/);
+  assert.match(String(retainedToolMessage.content), /HEAD_MARKER/);
+  assert.match(String(retainedToolMessage.content), /TAIL_MARKER/);
+  assert.ok(String(retainedToolMessage.content).length < rawToolResult.length);
   assert.equal(toolMessage.content, rawToolResult);
   assert.equal(messages[1].content, rawToolResult);
 });
-
-function estimateRetainedTextLength(message: Message): number {
-  return typeof message.content === 'string'
-    ? message.content.length
-    : JSON.stringify(message.content).length;
-}

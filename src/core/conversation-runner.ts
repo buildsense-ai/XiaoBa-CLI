@@ -430,6 +430,7 @@ export class ConversationRunner {
           const assistantMessage: Message = {
             role: 'assistant',
             content: MODEL_IMAGE_SAFETY_MESSAGE,
+            ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
           };
           messages.push(assistantMessage);
           newMessages.push(assistantMessage);
@@ -517,7 +518,11 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(visibleContent, 300)}`);
 
         if (visibleContent) {
-          const finalAssistantMessage: Message = { role: 'assistant', content: visibleContent };
+          const finalAssistantMessage: Message = {
+            role: 'assistant',
+            content: visibleContent,
+            ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
+          };
           messages.push(finalAssistantMessage);
           newMessages.push(finalAssistantMessage);
         }
@@ -799,6 +804,7 @@ export class ConversationRunner {
     const result = await this.checkpointCompactionCoordinator.compactIfNeeded(messages, {
       sessionKey: this.toolExecutionContext?.sessionId || this.sessionLabel.trim() || 'runner',
       phase: 'mid_turn',
+      episodeId: this.episodeId,
       toolTokens: estimateToolsTokens(tools),
       signal: this.toolExecutionContext?.abortSignal,
       onStatus: callbacks?.onThinking
@@ -949,6 +955,7 @@ export class ConversationRunner {
       ...(providerContent?.length
         ? { providerContent }
         : {}),
+      ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
     };
 
     if (assistant.content || assistant.tool_calls?.length) {
@@ -983,6 +990,7 @@ export class ConversationRunner {
           ],
           tool_call_id: record.result.tool_call_id,
           name: record.result.name,
+          ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
         });
       } else {
         // 正常的 tool result
@@ -991,15 +999,24 @@ export class ConversationRunner {
           content: record.toolContent,
           tool_call_id: record.result.tool_call_id,
           name: record.result.name,
+          ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
         });
 
         // 插入额外消息（如图片）
         if (record.newMessages) {
-          messages.push(...record.newMessages);
+          messages.push(...record.newMessages.map(message => ({
+            ...message,
+            ...(message.__episodeId || !this.episodeId ? {} : { __episodeId: this.episodeId }),
+          })));
         }
       }
     }
 
+    if (this.episodeId) {
+      for (const message of messages) {
+        if (!message.__episodeId) message.__episodeId = this.episodeId;
+      }
+    }
     return messages;
   }
 
@@ -1458,6 +1475,12 @@ export class ConversationRunner {
   ) {
     const requestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
+      promptCacheContext: {
+        sessionKey: this.toolExecutionContext?.sessionId || 'unknown',
+        ...(this.episodeId ? { currentEpisodeId: this.episodeId } : {}),
+        phase: 'normal' as const,
+        explicitCaching: true,
+      },
     };
     try {
       if (this.stream) {

@@ -73,7 +73,7 @@ export class TurnContextBuilder {
       await params.skillRuntime.reloadSkills();
       const skillsListMsg = params.skillRuntime.buildSkillsListMessage();
       if (skillsListMsg) {
-        this.insertBeforeLastUser(contextMessages, { ...skillsListMsg, __cacheScope: 'dynamic' });
+        this.insertBeforeLastUser(contextMessages, { ...skillsListMsg, __cacheScope: 'stable' });
       }
     }
 
@@ -130,6 +130,7 @@ export class TurnContextBuilder {
         '如果 late_previous_turn 与当前用户输入冲突，以当前用户输入为准。',
         '如果它说明上一轮回答有遗漏且当前仍在同一话题，可以简短补充或修正；否则保持安静。',
       ].join('\n'),
+      __cacheScope: 'stable',
     });
   }
 
