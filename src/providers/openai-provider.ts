@@ -889,14 +889,8 @@ export class OpenAIProvider implements AIProvider {
       });
     } catch (error) {
       if (!this.shouldRetryWithoutExplicitCaching(error, body)) throw error;
-      this.responsesExplicitCacheSupported = false;
-      Logger.warning('Responses endpoint rejected explicit prompt caching; retrying stream once in compatibility mode.');
-      body = this.buildResponsesRequestBody(messages, tools, true, options, true);
-      response = await axios.post(this.responsesUrl, body, {
-        headers: this.headers,
-        responseType: 'stream',
-        signal: options?.signal,
-      });
+      Logger.warning('Responses stream rejected explicit prompt caching; retrying once as a non-stream explicit request.');
+      return this.retryResponsesStreamAsNonStream(messages, tools, callbacks, options);
     }
 
     return new Promise<ChatResponse>((resolve, reject) => {
@@ -924,10 +918,9 @@ export class OpenAIProvider implements AIProvider {
         ) {
           settled = true;
           options?.signal?.removeEventListener('abort', onAbort);
-          this.responsesExplicitCacheSupported = false;
-          Logger.warning('Responses stream rejected explicit prompt caching; retrying once in compatibility mode.');
+          Logger.warning('Responses stream rejected explicit prompt caching; retrying once as a non-stream explicit request.');
           stream.destroy();
-          void this.chatStreamResponses(messages, tools, callbacks, options).then(resolve, reject);
+          void this.retryResponsesStreamAsNonStream(messages, tools, callbacks, options).then(resolve, reject);
           return;
         }
         settled = true;
@@ -1015,6 +1008,23 @@ export class OpenAIProvider implements AIProvider {
         finishError(error);
       });
     });
+  }
+
+  private async retryResponsesStreamAsNonStream(
+    messages: Message[],
+    tools?: ToolDefinition[],
+    callbacks?: StreamCallbacks,
+    options?: AIRequestOptions,
+  ): Promise<ChatResponse> {
+    try {
+      const result = await this.chatResponses(messages, tools, options);
+      if (result.content) callbacks?.onText?.(result.content);
+      callbacks?.onComplete?.(result);
+      return result;
+    } catch (error: any) {
+      callbacks?.onError?.(error);
+      throw error;
+    }
   }
 
   private buildOpenAIProviderContent(message: any): Pick<ChatResponse, 'providerContent'> {

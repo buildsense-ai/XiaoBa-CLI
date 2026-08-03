@@ -222,13 +222,15 @@ test('unsupported explicit fields retry once and pin the provider to compatibili
   }
 });
 
-test('streamed unsupported explicit fields retry once in compatibility mode', async () => {
+test('streamed explicit rejection retries once as non-stream explicit and retries streaming next turn', async () => {
   const originalPost = axios.post;
   const bodies: any[] = [];
   const callbackErrors: Error[] = [];
+  const callbackText: string[] = [];
+  const callbackCompletions: any[] = [];
   (axios as any).post = async (_url: string, body: any) => {
     bodies.push(body);
-    if (bodies.length === 1) {
+    if (body.stream) {
       return {
         data: Readable.from([
           `data: ${JSON.stringify({
@@ -242,31 +244,102 @@ test('streamed unsupported explicit fields retry once in compatibility mode', as
       };
     }
     return {
-      data: Readable.from([
-        `data: ${JSON.stringify({
-          type: 'response.completed',
-          response: {
-            status: 'completed',
-            output: [{ type: 'message', content: [{ type: 'output_text', text: 'OK' }] }],
-          },
-        })}\n\n`,
-      ]),
+      data: {
+        status: 'completed',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: 'OK' }] }],
+      },
     };
   };
   try {
     const instance = provider();
+    const callbacks = {
+      onText: (text: string) => callbackText.push(text),
+      onComplete: (result: any) => callbackCompletions.push(result),
+      onError: (error: Error) => callbackErrors.push(error),
+    };
     const result = await instance.chatStream(
       [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }],
       [],
-      { onError: error => callbackErrors.push(error) },
+      callbacks,
       context,
     );
     assert.equal(result.content, 'OK');
     assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].stream, true);
+    assert.equal(bodies[1].stream, false);
     assert.deepEqual(bodies[0].prompt_cache_options, { mode: 'explicit' });
-    assert.equal(bodies[1].prompt_cache_options, undefined);
-    assert.equal(countBreakpoints(bodies[1].input), 0);
+    assert.deepEqual(bodies[1].prompt_cache_options, { mode: 'explicit' });
+    assert.equal(countBreakpoints(bodies[0].input), 1);
+    assert.equal(countBreakpoints(bodies[1].input), 1);
+    assert.deepEqual(callbackText, ['OK']);
+    assert.equal(callbackCompletions.length, 1);
     assert.deepEqual(callbackErrors, []);
+
+    await instance.chatStream(
+      [{ role: 'user', content: 'next', __episodeId: 'episode-2' }],
+      [],
+      undefined,
+      context,
+    );
+    assert.equal(bodies.length, 4);
+    assert.equal(bodies[2].stream, true);
+    assert.deepEqual(bodies[2].prompt_cache_options, { mode: 'explicit' });
+    assert.equal(countBreakpoints(bodies[2].input), 1);
+    assert.equal(bodies[3].stream, false);
+    assert.deepEqual(bodies[3].prompt_cache_options, { mode: 'explicit' });
+  } finally {
+    (axios as any).post = originalPost;
+  }
+});
+
+test('non-stream explicit fallback preserves tool calls for the existing tool loop', async () => {
+  const originalPost = axios.post;
+  const bodies: any[] = [];
+  const callbackText: string[] = [];
+  (axios as any).post = async (_url: string, body: any) => {
+    bodies.push(body);
+    if (body.stream) {
+      return {
+        data: Readable.from([
+          `data: ${JSON.stringify({
+            type: 'response.failed',
+            response: {
+              status: 'failed',
+              error: { message: 'prompt_cache_breakpoint is not supported on this model' },
+            },
+          })}\n\n`,
+        ]),
+      };
+    }
+    return {
+      data: {
+        status: 'completed',
+        output: [{
+          type: 'function_call',
+          call_id: 'call-fallback',
+          name: 'lookup',
+          arguments: '{"id":"one"}',
+        }],
+      },
+    };
+  };
+  try {
+    const result = await provider().chatStream(
+      [{ role: 'user', content: 'lookup one', __episodeId: 'episode-2' }],
+      [{ name: 'lookup', description: 'Lookup an item', parameters: { type: 'object' } }],
+      { onText: text => callbackText.push(text) },
+      context,
+    );
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[1].stream, false);
+    assert.deepEqual(bodies[1].prompt_cache_options, { mode: 'explicit' });
+    assert.equal(result.content, null);
+    assert.deepEqual(result.toolCalls, [{
+      id: 'call-fallback',
+      type: 'function',
+      function: { name: 'lookup', arguments: '{"id":"one"}' },
+    }]);
+    assert.deepEqual(callbackText, []);
   } finally {
     (axios as any).post = originalPost;
   }
