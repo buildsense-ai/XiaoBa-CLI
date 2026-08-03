@@ -225,6 +225,18 @@ describe('AgentRunStore', () => {
       'unknown event secret',
     ]) assert.equal(serialized.includes(secret), false);
   });
+  test('refreshes a stale instance before computing an update', () => {
+    const { filePath } = makeStoreRoot();
+    const staleStore = new AgentRunStore({ filePath, clock: () => new Date(NOW) });
+    const creator = new AgentRunStore({ filePath, clock: () => new Date(NOW) });
+    creator.create(makeRun());
+
+    const updated = staleStore.update('run-1', { status: 'queued' });
+
+    assert.equal(updated.status, 'queued');
+    assert.equal(new AgentRunStore(filePath).get('run-1')?.status, 'queued');
+  });
+
   test('rejects a stale functional update instead of overwriting a concurrent change', () => {
     const { filePath } = makeStoreRoot();
     const firstStore = new AgentRunStore({ filePath, clock: () => new Date(NOW) });

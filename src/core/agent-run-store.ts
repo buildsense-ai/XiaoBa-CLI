@@ -174,7 +174,7 @@ export class AgentRunStore {
 
   update(runId: string, update: AgentRunUpdate): AgentRunRecord {
     const normalizedRunId = requireNonEmptyString(runId, 'runId');
-    this.assertHealthy();
+    this.refresh();
     const snapshot = this.records.get(normalizedRunId);
     if (!snapshot) throw new Error(`agent run not found: ${normalizedRunId}`);
 
