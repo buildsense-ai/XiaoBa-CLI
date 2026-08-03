@@ -507,7 +507,7 @@ describe('OpenAIProvider Responses API mode', () => {
     ]);
   });
 
-  test('keeps implicit caching for a short GPT-5.6 prefix and omits OpenAI-only cache fields on relays', () => {
+  test('uses prompt_cache_key for short GPT-5.6 Responses requests on official and compatible endpoints', () => {
     const official = new OpenAIProvider({
       apiKey: 'test-key',
       apiUrl: 'https://api.openai.com/v1',
@@ -527,7 +527,7 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.equal(officialBody.prompt_cache_options, undefined);
     assert.equal(officialBody.input[0].role, 'user');
     assert.match(officialBody.prompt_cache_key, /^catsco-v3-rsp-/);
-    assert.equal(compatibleBody.prompt_cache_key, undefined);
+    assert.match(compatibleBody.prompt_cache_key, /^catsco-v3-rsp-/);
     assert.equal(compatibleBody.prompt_cache_options, undefined);
   });
 

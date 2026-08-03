@@ -11,7 +11,7 @@ const longStable: Message = {
   content: 'Stable reusable policy, examples, and tool instructions. '.repeat(140),
 };
 
-test('OpenAI cache policy gates provider-only fields by endpoint and model capability', () => {
+test('OpenAI cache policy always keys Responses while gating explicit and Chat fields', () => {
   const messages: Message[] = [longStable, { role: 'user', content: 'hello' }];
   const compatible = resolveOpenAICachePlan({
     apiUrl: 'https://relay.example.test/v1/responses',
@@ -51,8 +51,8 @@ test('OpenAI cache policy gates provider-only fields by endpoint and model capab
     tools: [],
   });
 
-  assert.equal(compatible.strategy, 'openai-compatible-automatic-prefix');
-  assert.equal(compatible.promptCacheKey, undefined);
+  assert.equal(compatible.strategy, 'openai-prompt-cache-key');
+  assert.match(compatible.promptCacheKey || '', /^catsco-v3-rsp-/);
   assert.equal(compatible.explicitBreakpoints, 0);
   assert.equal(declaredCompatible.strategy, 'openai-explicit-stable-prefix');
   assert.match(declaredCompatible.promptCacheKey || '', /^catsco-v3-rsp-/);

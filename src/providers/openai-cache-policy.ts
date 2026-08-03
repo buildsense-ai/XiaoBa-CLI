@@ -45,9 +45,9 @@ const PROMPT_CACHE_KEY_SHARDS = 16;
 /**
  * Resolve cache behavior before serializing either OpenAI wire dialect.
  *
- * Compatible endpoints keep their own automatic caching behavior. OpenAI-only
- * request fields are deliberately restricted to api.openai.com because relays
- * frequently implement only a subset of the wire schema.
+ * Responses requests always use prompt_cache_key routing, including compatible
+ * endpoints. Chat Completions keeps endpoint/capability gating because relays
+ * frequently implement only a subset of that wire schema.
  */
 export function resolveOpenAICachePlan(input: OpenAICachePlanInput): OpenAICachePlan {
   if (input.cacheMode === 'bypass') {
@@ -64,7 +64,9 @@ export function resolveOpenAICachePlan(input: OpenAICachePlanInput): OpenAICache
   const stablePrefixEstimatedTokens = estimateMessagesTokens(stable.messages)
     + estimateToolsTokens([...input.tools]);
   const official = isOfficialOpenAIEndpoint(input.apiUrl);
-  const supportsCacheKey = official || input.compatiblePromptCaching === 'key'
+  const supportsCacheKey = input.apiType === 'openai-responses'
+    || official
+    || input.compatiblePromptCaching === 'key'
     || input.compatiblePromptCaching === 'explicit';
   const supportsExplicitFields = official || input.compatiblePromptCaching === 'explicit';
   const promptCacheKey = supportsCacheKey
