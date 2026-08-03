@@ -75,6 +75,7 @@ import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { registerSkillHubRoutes } from './skillhub';
 import { registerPetRoutes } from './pet';
+import { registerCacheTraceRoutes } from './cache-trace';
 import type { DashboardAuthStatus } from '../auth';
 import { SkillHubService } from '../../skillhub/service';
 import {
@@ -2208,6 +2209,10 @@ export function createApiRouter(
   const modelsDevFetch = options.modelsDevFetch ?? fetch;
   registerSkillHubRoutes(router, { getCatsCoAuth: getCatsCoAuthForSkillHub });
   registerPetRoutes(router);
+  registerCacheTraceRoutes(router, {
+    runtimeRoot: runtimeDataRoot(),
+    serviceManager,
+  });
 
   // ==================== 总览 ====================
 
