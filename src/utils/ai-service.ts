@@ -65,6 +65,12 @@ const EMPTY_RESPONSE_ERROR_CODE = 'EMPTY_MODEL_RESPONSE';
 const EMPTY_RESPONSE_MAX_RETRIES = 2;
 const EMPTY_RESPONSE_MAX_ELAPSED_MS = 2 * 60 * 1000;
 const EMPTY_RESPONSE_MAX_DELAY_MS = 2000;
+const OPAQUE_400_MAX_RETRIES = 2;
+const OPAQUE_400_MAX_ELAPSED_MS = 15 * 1000;
+const OPAQUE_400_MAX_DELAY_MS = 2000;
+const OPAQUE_403_MAX_RETRIES = 1;
+const OPAQUE_403_MAX_ELAPSED_MS = 8 * 1000;
+const OPAQUE_403_MAX_DELAY_MS = 2000;
 let modelAttemptCallSequence = 0;
 
 type ProviderKind = 'openai' | 'anthropic';
@@ -74,6 +80,7 @@ interface RetryPolicy {
   maxElapsedMs: number;
   baseDelayMs: number;
   maxDelayMs: number;
+  triggerReason: string;
 }
 
 interface ModelAttemptRun {
@@ -395,6 +402,10 @@ export class AIService {
       return true;
     }
 
+    if (this.isOpaqueHttpError(error, 400) || this.isOpaqueHttpError(error, 403)) {
+      return true;
+    }
+
     // HTTP 状态码可重试
     const status = this.extractStatus(error);
     if (status && RETRYABLE_STATUS_CODES.has(status)) {
@@ -438,11 +449,38 @@ export class AIService {
 
   private isKnownNonRetryableProviderError(error: any): boolean {
     const status = this.extractStatus(error);
-    if (status && [400, 401, 403, 404, 413, 422].includes(status)) {
+    if (status && [401, 404, 413, 422].includes(status)) {
       return true;
     }
 
-    const message = [
+    const message = this.providerErrorText(error);
+    if (status === 400 && this.hasDiagnostic400Evidence(message)) return true;
+    if (status === 403 && this.hasDiagnostic403Evidence(message)) return true;
+
+    return /insufficient[_\s-]?quota|quota[_\s-]?exceeded|billing|(?:insufficient|low|exhausted)[_\s-]?(?:credit|balance)|(?:credit|balance)[_\s-]?(?:exhausted|insufficient|too low)|账户余额|余额不足|额度不足|额度已用尽|context length|maximum context|max(?:imum)? tokens?|prompt too long|invalid[_\s-]?request|invalid[_\s-]?api[_\s-]?key|unauthorized|forbidden|permission denied|model .*not found|model_not_found|tool schema|schema is invalid|content policy|safety/i
+      .test(message);
+  }
+
+  private isOpaqueHttpError(error: any, expectedStatus: 400 | 403): boolean {
+    if (this.extractStatus(error) !== expectedStatus) return false;
+    const message = this.providerErrorText(error);
+    return expectedStatus === 400
+      ? !this.hasDiagnostic400Evidence(message)
+      : !this.hasDiagnostic403Evidence(message);
+  }
+
+  private hasDiagnostic400Evidence(message: string): boolean {
+    return /invalid[_\s-]?(?:request|parameter|input|argument|payload|schema|json)|(?:request|parameter|input|argument|payload|schema|json)[_\s-]?invalid|bad[_\s-]?request|tool[_\s-]?schema|malformed|unexpected token|context length|maximum context|max(?:imum)? tokens?|prompt too long|content policy|safety|reasoning[_\s-]?(?:content|text).{0,80}(?:required|missing|must|expected|not passed back)|thinking mode.{0,80}reasoning/i
+      .test(message);
+  }
+
+  private hasDiagnostic403Evidence(message: string): boolean {
+    return /invalid[_\s-]?api[_\s-]?key|unauthorized|forbidden|(?:authentication|authorization|auth)[_\s-]?(?:error|failed|denied)|permission[_\s-]?denied|access[_\s-]?denied|not authorized|insufficient[_\s-]?(?:scope|permission)|model[_\s-]?access[_\s-]?(?:denied|forbidden)|(?:do not|does not|don't|doesn't|no) have access|model .{0,50}not (?:allowed|available|authorized|accessible)/i
+      .test(message);
+  }
+
+  private providerErrorText(error: any): string {
+    return [
       error?.response?.data?.error?.code,
       error?.response?.data?.error?.type,
       error?.response?.data?.error?.message,
@@ -452,9 +490,6 @@ export class AIService {
       error?.error?.message,
       error?.message,
     ].filter(Boolean).join(' ');
-
-    return /insufficient[_\s-]?quota|quota[_\s-]?exceeded|billing|(?:insufficient|low|exhausted)[_\s-]?(?:credit|balance)|(?:credit|balance)[_\s-]?(?:exhausted|insufficient|too low)|账户余额|余额不足|额度不足|额度已用尽|context length|maximum context|max(?:imum)? tokens?|prompt too long|invalid[_\s-]?request|invalid[_\s-]?api[_\s-]?key|unauthorized|forbidden|permission denied|model .*not found|model_not_found|tool schema|schema is invalid|content policy|safety/i
-      .test(message);
   }
 
   /**
@@ -532,6 +567,8 @@ export class AIService {
               maxRetries: policy.maxRetries,
               elapsedMs: Date.now() - startedAt,
               maxElapsedMs: policy.maxElapsedMs,
+              maxDelayMs: policy.maxDelayMs,
+              triggerReason: policy.triggerReason,
               stopReason: 'aborted',
             },
           });
@@ -547,6 +584,7 @@ export class AIService {
           maxElapsedMs: 30_000,
           baseDelayMs: 0,
           maxDelayMs: 0,
+          triggerReason: `reasoning_recovery:${recovery.action}`,
         } : this.resolveRetryPolicy(error);
         const stopReason = recovery
           ? undefined
@@ -560,6 +598,8 @@ export class AIService {
             max_retries: policy.maxRetries,
             elapsed_ms: elapsedMs,
             max_elapsed_ms: policy.maxElapsedMs,
+            max_delay_ms: policy.maxDelayMs,
+            trigger_reason: policy.triggerReason,
             stop_reason: stopReason,
           }, {
             call_id: attemptRun?.callId,
@@ -576,6 +616,8 @@ export class AIService {
               maxRetries: policy.maxRetries,
               elapsedMs,
               maxElapsedMs: policy.maxElapsedMs,
+              maxDelayMs: policy.maxDelayMs,
+              triggerReason: policy.triggerReason,
               stopReason,
             },
           });
@@ -594,6 +636,8 @@ export class AIService {
             delayMs: delay,
             elapsedMs,
             maxElapsedMs: policy.maxElapsedMs,
+            maxDelayMs: policy.maxDelayMs,
+            triggerReason: policy.triggerReason,
             ...(recovery ? { recoveryAction: recovery.action } : {}),
           },
         });
@@ -605,6 +649,8 @@ export class AIService {
           delayMs: delay,
           elapsedMs,
           maxElapsedMs: policy.maxElapsedMs,
+          maxDelayMs: policy.maxDelayMs,
+          triggerReason: policy.triggerReason,
           status,
           message: this.extractErrorMessage(error),
           ...(recovery ? { recoveryAction: recovery.action } : {}),
@@ -781,6 +827,7 @@ export class AIService {
         MAX_CONFIGURABLE_RETRY_DURATION_MS,
       ),
       baseDelayMs: BASE_DELAY_MS,
+      triggerReason: this.resolveRetryTriggerReason(error),
     };
 
     if (this.isEmptyModelResponseError(error)) {
@@ -789,6 +836,26 @@ export class AIService {
         maxRetries: Math.min(policy.maxRetries, EMPTY_RESPONSE_MAX_RETRIES),
         maxElapsedMs: Math.min(policy.maxElapsedMs, EMPTY_RESPONSE_MAX_ELAPSED_MS),
         maxDelayMs: Math.min(policy.maxDelayMs, EMPTY_RESPONSE_MAX_DELAY_MS),
+      };
+    }
+
+    if (this.isOpaqueHttpError(error, 400)) {
+      return {
+        ...policy,
+        maxRetries: Math.min(policy.maxRetries, OPAQUE_400_MAX_RETRIES),
+        maxElapsedMs: Math.min(policy.maxElapsedMs, OPAQUE_400_MAX_ELAPSED_MS),
+        maxDelayMs: Math.min(policy.maxDelayMs, OPAQUE_400_MAX_DELAY_MS),
+        triggerReason: 'opaque_http_400',
+      };
+    }
+
+    if (this.isOpaqueHttpError(error, 403)) {
+      return {
+        ...policy,
+        maxRetries: Math.min(policy.maxRetries, OPAQUE_403_MAX_RETRIES),
+        maxElapsedMs: Math.min(policy.maxElapsedMs, OPAQUE_403_MAX_ELAPSED_MS),
+        maxDelayMs: Math.min(policy.maxDelayMs, OPAQUE_403_MAX_DELAY_MS),
+        triggerReason: 'opaque_http_403',
       };
     }
 
@@ -802,6 +869,18 @@ export class AIService {
       maxElapsedMs: Math.min(policy.maxElapsedMs, SHORT_NETWORK_MAX_ELAPSED_MS),
       maxDelayMs: Math.min(policy.maxDelayMs, SHORT_NETWORK_MAX_DELAY_MS),
     };
+  }
+
+  private resolveRetryTriggerReason(error: any): string {
+    if (this.isAbortError(error)) return 'aborted';
+    if (this.isEmptyModelResponseError(error)) return 'empty_model_response';
+    const status = this.extractStatus(error);
+    if (status) return `http_${status}`;
+    const code = this.extractErrorCode(error);
+    if (code) return `transport_${code.toLowerCase()}`;
+    if (error?.error?.type === 'overloaded_error') return 'provider_overloaded';
+    if (/timeout|timed out/i.test(String(error?.message || ''))) return 'transport_timeout';
+    return this.isRetryable(error) ? 'retryable_transport' : 'provider_rejected';
   }
 
   private resolveRetryDelayMs(error: any, retryAttempt: number, policy: RetryPolicy, elapsedMs: number): number {

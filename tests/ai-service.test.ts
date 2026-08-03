@@ -87,6 +87,8 @@ test('AIService retries transient stream errors before any text is emitted', asy
   assert.deepStrictEqual(retries, [[1, 14]]);
   assert.equal(retryInfos[0].status, 503);
   assert.equal(retryInfos[0].maxElapsedMs, 5 * 60 * 1000);
+  assert.equal(retryInfos[0].maxDelayMs, 30_000);
+  assert.equal(retryInfos[0].triggerReason, 'http_503');
   assert.deepStrictEqual(chunks, ['ok']);
 });
 
@@ -339,6 +341,113 @@ test('AIService does not retry quota exhaustion even when provider uses HTTP 429
     () => service.chat([]),
     /API错误 \(429\): quota exceeded/,
   );
+  assert.equal(attempts, 1);
+});
+
+test('AIService retries an opaque 400 with a short bounded policy', async () => {
+  const service = createTestService();
+  let attempts = 0;
+  const retries: any[] = [];
+  const opaque400 = Object.assign(new Error('Request failed with status code 400'), {
+    response: { status: 400, headers: { 'retry-after': '0' } },
+  });
+  (service as any).sleepWithAbort = async () => undefined;
+  (service as any).provider = {
+    chat: async () => {
+      attempts += 1;
+      if (attempts === 1) throw opaque400;
+      return { content: 'recovered' };
+    },
+    chatStream: async () => ({ content: null }),
+  };
+
+  const result = await service.chat([], undefined, {
+    modelAttemptSink: {
+      observe: event => {
+        if (event.outcome === 'retrying') retries.push(event.retry);
+      },
+    },
+  });
+
+  assert.deepStrictEqual(result, { content: 'recovered' });
+  assert.equal(attempts, 2);
+  assert.equal(retries[0].maxRetries, 2);
+  assert.equal(retries[0].maxElapsedMs, 15_000);
+  assert.equal(retries[0].maxDelayMs, 2_000);
+  assert.equal(retries[0].triggerReason, 'opaque_http_400');
+});
+
+test('AIService does not retry a diagnostic invalid-request 400', async () => {
+  const service = createTestService();
+  let attempts = 0;
+  const invalidRequest = Object.assign(new Error('Request failed with status code 400'), {
+    response: {
+      status: 400,
+      data: { error: { type: 'invalid_request_error', message: 'tool schema is invalid' } },
+    },
+  });
+  (service as any).provider = {
+    chat: async () => {
+      attempts += 1;
+      throw invalidRequest;
+    },
+    chatStream: async () => ({ content: null }),
+  };
+
+  await assert.rejects(() => service.chat([]), /API错误 \(400\): tool schema is invalid/);
+  assert.equal(attempts, 1);
+});
+
+test('AIService retries an opaque 403 only once with a short budget', async () => {
+  const service = createTestService();
+  let attempts = 0;
+  const opaque403 = Object.assign(new Error('Request failed with status code 403'), {
+    response: { status: 403, headers: { 'retry-after': '0' } },
+  });
+  (service as any).sleepWithAbort = async () => undefined;
+  (service as any).provider = {
+    chat: async () => {
+      attempts += 1;
+      throw opaque403;
+    },
+    chatStream: async () => ({ content: null }),
+  };
+
+  let wrapped: unknown;
+  try {
+    await service.chat([]);
+  } catch (error) {
+    wrapped = error;
+  }
+
+  const diagnostics = readModelErrorDiagnostics(wrapped);
+  assert.equal(attempts, 2);
+  assert.equal(diagnostics?.retry?.retry_count, 1);
+  assert.equal(diagnostics?.retry?.max_retries, 1);
+  assert.equal(diagnostics?.retry?.max_elapsed_ms, 8_000);
+  assert.equal(diagnostics?.retry?.max_delay_ms, 2_000);
+  assert.equal(diagnostics?.retry?.trigger_reason, 'opaque_http_403');
+  assert.equal(diagnostics?.retry?.stop_reason, 'retry_limit_exhausted');
+});
+
+test('AIService does not retry a diagnostic permission 403', async () => {
+  const service = createTestService();
+  let attempts = 0;
+  const denied = Object.assign(new Error('Request failed with status code 403'), {
+    response: {
+      status: 403,
+      data: { error: { code: 'insufficient_scope' } },
+    },
+  });
+  (service as any).provider = {
+    chat: async () => {
+      attempts += 1;
+      throw denied;
+    },
+    chatStream: async () => ({ content: null }),
+  };
+
+  await assert.rejects(() => service.chat([]), /API错误 \(403\): Request failed with status code 403/);
   assert.equal(attempts, 1);
 });
 

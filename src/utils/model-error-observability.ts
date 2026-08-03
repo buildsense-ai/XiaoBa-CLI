@@ -23,6 +23,8 @@ export interface ModelRetrySummary {
   max_retries: number;
   elapsed_ms: number;
   max_elapsed_ms: number;
+  max_delay_ms?: number;
+  trigger_reason?: string;
   stop_reason: RetryStopReason;
 }
 
@@ -275,6 +277,8 @@ function normalizeRetrySummary(input: ModelRetrySummary): ModelRetrySummary {
     max_retries: nonNegativeInteger(input.max_retries),
     elapsed_ms: nonNegativeInteger(input.elapsed_ms),
     max_elapsed_ms: nonNegativeInteger(input.max_elapsed_ms),
+    ...(input.max_delay_ms === undefined ? {} : { max_delay_ms: nonNegativeInteger(input.max_delay_ms) }),
+    ...(safeText(input.trigger_reason) ? { trigger_reason: safeText(input.trigger_reason) } : {}),
     stop_reason: input.stop_reason || 'unknown',
   };
 }

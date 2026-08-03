@@ -43,6 +43,8 @@ export interface CacheTraceEntryV7 {
     retry_delay_ms?: number;
     retry_elapsed_ms?: number;
     retry_max_elapsed_ms?: number;
+    retry_max_delay_ms?: number;
+    retry_trigger_reason?: string;
     retry_stop_reason?: string;
     retry_recovery_action?: string;
   };
@@ -274,6 +276,8 @@ export class CacheTraceObserver implements CacheTraceSink {
           ...(retry.delayMs === undefined ? {} : { retry_delay_ms: retry.delayMs }),
           retry_elapsed_ms: retry.elapsedMs,
           retry_max_elapsed_ms: retry.maxElapsedMs,
+          ...(retry.maxDelayMs === undefined ? {} : { retry_max_delay_ms: retry.maxDelayMs }),
+          ...(retry.triggerReason ? { retry_trigger_reason: retry.triggerReason } : {}),
           ...(retry.stopReason ? { retry_stop_reason: retry.stopReason } : {}),
           ...(retry.recoveryAction ? { retry_recovery_action: retry.recoveryAction } : {}),
         } : {}),
