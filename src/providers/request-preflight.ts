@@ -126,7 +126,7 @@ export function prepareProviderRequestMessages(
       const callsChanged = retainedCalls.length !== message.tool_calls.length;
       const replayMismatch = Boolean(
         message.providerContent?.length
-        && !providerReplayMatchesToolCalls(message.providerContent, retainedCalls),
+        && !providerReplayMatchesToolCalls(message.providerContent, retainedCalls, message.providerState),
       );
       if (callsChanged || replayMismatch) {
         if (message.providerContent?.length || message.providerState) {
@@ -200,7 +200,9 @@ function hasVisibleContent(message: Message): boolean {
 function providerReplayMatchesToolCalls(
   blocks: NonNullable<Message['providerContent']>,
   toolCalls: ToolCall[],
+  providerState: Message['providerState'],
 ): boolean {
+  const allowMissingCalls = providerState?.apiType === 'openai-responses';
   const canonical = new Map(toolCalls.map(toolCall => [toolCall.id, {
     name: toolCall.function.name,
     arguments: stableArguments(toolCall.function.arguments),
@@ -216,7 +218,7 @@ function providerReplayMatchesToolCalls(
         ? safeString(block.call_id)
         : '';
     if (!id) continue;
-    if (replay.has(id)) return false;
+    if (replay.has(id) || !canonical.has(id)) return false;
     replay.set(id, {
       name: safeString(block.name),
       arguments: type === 'tool_use'
@@ -225,10 +227,10 @@ function providerReplayMatchesToolCalls(
     });
   }
 
-  if (replay.size !== canonical.size) return false;
-  for (const [id, call] of canonical) {
-    const item = replay.get(id);
-    if (!item || item.name !== call.name || item.arguments !== call.arguments) return false;
+  if (!allowMissingCalls && replay.size !== canonical.size) return false;
+  for (const [id, item] of replay) {
+    const call = canonical.get(id);
+    if (!call || item.name !== call.name || item.arguments !== call.arguments) return false;
   }
   return true;
 }
