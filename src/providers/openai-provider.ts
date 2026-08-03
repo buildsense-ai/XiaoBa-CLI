@@ -415,18 +415,32 @@ export class OpenAIProvider implements AIProvider {
         continue;
       }
 
-      if (message.role === 'assistant' && message.tool_calls?.length) {
+      if (message.role === 'assistant') {
         const replayItems = (message.providerContent || [])
           .filter(item => this.isResponsesReplayItem(item))
           .map(item => JSON.parse(JSON.stringify(item)));
         if (replayItems.length > 0) {
           input.push(...replayItems);
-          continue;
         }
 
+        const hasReplayedMessage = replayItems.some(item => item.type === 'message');
+        const replayedCallIds = new Set(
+          replayItems
+            .filter(item => item.type === 'function_call')
+            .map(item => String(item.call_id || ''))
+            .filter(Boolean),
+        );
+
+        // Responses reasoning is provider-native state. Pure-text assistant
+        // turns still need their visible message after the reasoning item.
+        // For tool turns with native replay items, preserve the previous exact
+        // replay behavior and only synthesize function calls that are missing.
         const text = this.contentAsText(message.content);
-        if (text) input.push({ role: 'assistant', content: text });
-        for (const toolCall of message.tool_calls) {
+        if (text && !hasReplayedMessage && (replayItems.length === 0 || !message.tool_calls?.length)) {
+          input.push({ role: 'assistant', content: text });
+        }
+        for (const toolCall of message.tool_calls ?? []) {
+          if (replayedCallIds.has(toolCall.id)) continue;
           input.push({
             type: 'function_call',
             call_id: toolCall.id,
@@ -616,8 +630,14 @@ export class OpenAIProvider implements AIProvider {
     const stopReason = response?.status === 'incomplete'
       ? incompleteReason === 'max_output_tokens' ? 'length' : incompleteReason || 'incomplete'
       : toolCalls.length > 0 ? 'tool_calls' : response?.status || undefined;
-    const providerContent = toolCalls.length > 0
-      ? output.filter((item: any) => this.isResponsesReplayItem(item)).map((item: any) => JSON.parse(JSON.stringify(item)))
+    // Keep reasoning independently from tool calls. Thinking-mode Responses
+    // providers require this item to be replayed on the next live request,
+    // including after a pure-text assistant response.
+    const replayItems = output.filter((item: any) =>
+      this.isResponsesReplayItem(item) && item?.type !== 'message',
+    );
+    const providerContent = replayItems.length > 0
+      ? replayItems.map((item: any) => JSON.parse(JSON.stringify(item)))
       : undefined;
 
     return {

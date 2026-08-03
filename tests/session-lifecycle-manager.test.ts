@@ -425,6 +425,36 @@ describe('AgentSession lifecycle', () => {
     assert.doesNotMatch(raw, /private openai tool result/);
   });
 
+  test('session persistence strips Responses reasoning text for model-portable restore', () => {
+    const { SessionStore } = loadSessionModules();
+    SessionStore.getInstance().saveContext('user:lifecycle-responses-reasoning', [
+      { role: 'user', content: 'first question' },
+      {
+        role: 'assistant',
+        content: 'public answer',
+        providerContent: [{
+          type: 'reasoning',
+          id: 'reasoning_1',
+          content: [{ type: 'reasoning_text', text: 'private Responses reasoning' }],
+          summary: [],
+        }],
+      },
+    ]);
+
+    const restored = SessionStore.getInstance().loadContext('user:lifecycle-responses-reasoning');
+    const raw = fs.readFileSync(
+      path.join(testRoot, 'data', 'sessions', 'user_lifecycle-responses-reasoning.jsonl'),
+      'utf-8',
+    );
+
+    assert.deepStrictEqual(restored.map((message: any) => message.content), [
+      'first question',
+      'public answer',
+    ]);
+    assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
+    assert.doesNotMatch(raw, /private Responses reasoning|reasoning_1/);
+  });
+
   test('loading legacy sessions migrates provider replay hidden thinking off disk', async () => {
     const { SessionStore } = loadSessionModules();
     const sessionFile = path.join(testRoot, 'data', 'sessions', 'user_lifecycle-legacy-provider-replay.jsonl');

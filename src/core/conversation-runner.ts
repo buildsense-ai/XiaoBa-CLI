@@ -523,7 +523,13 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(visibleContent, 300)}`);
 
         if (visibleContent) {
-          const finalAssistantMessage: Message = { role: 'assistant', content: visibleContent };
+          const finalAssistantMessage: Message = {
+            role: 'assistant',
+            content: visibleContent,
+            ...(response.providerContent?.length
+              ? { providerContent: response.providerContent }
+              : {}),
+          };
           messages.push(finalAssistantMessage);
           newMessages.push(finalAssistantMessage);
         }
@@ -1007,11 +1013,11 @@ export class ConversationRunner {
     assistantMsg: Message,
     transcriptToolCalls: Message['tool_calls'],
   ): Message['providerContent'] {
-    if (!Array.isArray(assistantMsg.providerContent) || !transcriptToolCalls?.length) {
+    if (!Array.isArray(assistantMsg.providerContent)) {
       return undefined;
     }
 
-    const transcriptToolCallIds = new Set(transcriptToolCalls.map(toolCall => toolCall.id));
+    const transcriptToolCallIds = new Set((transcriptToolCalls ?? []).map(toolCall => toolCall.id));
     const blocks: NonNullable<Message['providerContent']> = [];
     let hasMatchingToolCall = false;
 
@@ -1027,10 +1033,16 @@ export class ConversationRunner {
         if (!transcriptToolCallIds.has(callId)) continue;
         hasMatchingToolCall = true;
       }
+      if (block.type === 'reasoning') {
+        blocks.push(block);
+        continue;
+      }
       blocks.push(block);
     }
 
-    return hasMatchingToolCall ? blocks : undefined;
+    return hasMatchingToolCall || blocks.some(block => block?.type === 'reasoning')
+      ? blocks
+      : undefined;
   }
 
   private shouldKeepAssistantDraft(
@@ -1650,7 +1662,14 @@ export class ConversationRunner {
 
       const content = contentToString(message.content).trim();
       if (content) {
-        repaired.push({ ...message, tool_calls: undefined, providerContent: undefined });
+        const reasoningBlocks = Array.isArray(message.providerContent)
+          ? message.providerContent.filter(block => block && typeof block === 'object' && block.type === 'reasoning')
+          : undefined;
+        repaired.push({
+          ...message,
+          tool_calls: undefined,
+          providerContent: reasoningBlocks?.length ? reasoningBlocks : undefined,
+        });
       }
     }
 
