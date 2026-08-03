@@ -63,6 +63,7 @@ $script:BuilderResourceID = ""
 $script:BuilderIP = ""
 $script:BuilderCreateAttempted = $false
 $script:KeyPairName = ""
+$script:KeyPairID = ""
 $script:KeyPairCreateAttempted = $false
 $script:TemporaryRoot = ""
 $script:ImageID = ""
@@ -552,17 +553,12 @@ function Remove-FailedImage {
 function Remove-Builder {
     param([switch]$WaitForLate)
 
-    if (-not $script:BuilderCreateAttempted -and -not $script:BuilderID) {
+    if (-not $script:BuilderID -and -not $script:BuilderResourceID) {
+        Write-Warning "Skipping builder cleanup because no immutable builder identity was recorded"
         return
     }
 
-    $resolveWaitSeconds = if ($WaitForLate) {
-        $LateResourceWaitSeconds
-    } elseif ($script:BuilderID -or $script:BuilderResourceID) {
-        0
-    } else {
-        480
-    }
+    $resolveWaitSeconds = if ($WaitForLate) { $LateResourceWaitSeconds } else { 0 }
     $instance = Resolve-BuilderInstance -WaitSeconds $resolveWaitSeconds
     if (-not $instance) {
         Write-Host "No temporary builder record remains for $script:BuilderName"
@@ -596,7 +592,8 @@ function Remove-Builder {
 function Remove-KeyPair {
     param([switch]$WaitForLate)
 
-    if (-not $script:KeyPairName -or -not $script:KeyPairCreateAttempted) {
+    if (-not $script:KeyPairName -or -not $script:KeyPairID) {
+        Write-Warning "Skipping key pair cleanup because no immutable key pair identity was recorded"
         return
     }
 
@@ -627,8 +624,16 @@ function Remove-KeyPair {
         Write-Host "No temporary key pair record remains for $script:KeyPairName"
         return
     }
+    $ownedKeyPairs = @(
+        $existing | Where-Object {
+            [string](Get-PropertyValue -InputObject $_ -Name "keyPairID") -eq $script:KeyPairID
+        }
+    )
+    if ($ownedKeyPairs.Count -ne 1 -or $existing.Count -ne 1) {
+        throw "Refusing to delete key pair because name and immutable ID do not uniquely match this bake"
+    }
 
-    Write-Host "Deleting temporary key pair $script:KeyPairName"
+    Write-Host "Deleting temporary key pair $script:KeyPairName ($script:KeyPairID)"
     Invoke-Ctyun @(
         "ecs", "DeleteEcsKeypair",
         "--regionID", $RegionID,
@@ -720,7 +725,8 @@ function Complete-PendingPublishedImage {
     $script:BuilderID = [string]$PendingImage.sourceServerID
     $script:BuilderResourceID = ""
     $script:BuilderCreateAttempted = $true
-    $script:KeyPairCreateAttempted = $true
+    $script:KeyPairID = ""
+    $script:KeyPairCreateAttempted = $false
     $script:InCleanup = $true
     $script:CleanupDeadline = (Get-Date).AddMinutes($CleanupTimeoutMinutes)
 
@@ -746,55 +752,31 @@ function Invoke-ExactBakeCleanup {
     $discoveryDeadline = Get-BoundedDeadline `
         -RequestedSeconds $discoverySeconds `
         -Phase "exact bake resource discovery"
-    $builder = Resolve-BuilderInstance -WaitSeconds $discoverySeconds
-    if ($builder) {
-        Assert-TemporaryBuilder $builder
-        $script:BuilderID = [string]$builder.instanceID
-        $script:BuilderCreateAttempted = $true
-    }
-
     $candidateImage = $null
     do {
         $candidateImage = Find-ImageByName -Name $script:ImageWorkName
-        if ($candidateImage -or -not $WaitForLateResources) {
-            break
-        }
+        if ($candidateImage -or -not $WaitForLateResources) { break }
         Start-Sleep -Seconds 10
     } while ((Get-Date) -lt $discoveryDeadline)
 
-    $imageOwnershipFailure = ""
-    if ($candidateImage) {
-        if (
-            [string]$candidateImage.imageName -ne $script:ImageWorkName -or
-            -not $script:BuilderID -or
-            [string]$candidateImage.sourceServerID -ne $script:BuilderID -or
-            [string]$candidateImage.description -ne $script:BakeDescription
-        ) {
-            $imageOwnershipFailure = (
-                "Refusing exact cleanup because the temporary image ownership metadata does not match"
-            )
-        } else {
-            $script:ImageID = [string]$candidateImage.imageID
-            $script:ImageCreateAttempted = $true
+    $candidateBuilder = Resolve-BuilderInstance -WaitSeconds $discoverySeconds
+    if ($candidateImage -or $candidateBuilder) {
+        $details = @(
+            "Automatic historical cleanup refused because immutable creation IDs were not persisted."
+            "Review and remove only resources proven to belong to bake $script:BakeID."
+        )
+        if ($candidateImage) {
+            $details += "candidate imageID=$($candidateImage.imageID) name=$($candidateImage.imageName)"
         }
+        if ($candidateBuilder) {
+            $details += "candidate instanceID=$($candidateBuilder.instanceID) name=$($candidateBuilder.instanceName)"
+        }
+        throw ($details -join " ")
     }
-    $script:KeyPairCreateAttempted = $true
 
-    $cleanupFailure = ""
-    try {
-        Remove-TemporaryResources `
-            -Failure:$script:ImageCreateAttempted `
-            -WaitForLate:$WaitForLateResources
-    } catch {
-        $cleanupFailure = $_.Exception.Message
-    }
-    if ($imageOwnershipFailure -or $cleanupFailure) {
-        throw (@($imageOwnershipFailure, $cleanupFailure) |
-            Where-Object { $_ } |
-            ForEach-Object { $_ }) -join "`n"
-    }
+    Write-Warning "No provably owned historical resources found; key pair lookup was skipped because names are not ownership proof"
     return [ordered]@{
-        result = "cleaned"
+        result = "nothing-to-clean"
         bakeID = $script:BakeID
         temporaryImageName = $script:ImageWorkName
         builderName = $script:BuilderName
@@ -815,7 +797,9 @@ if ($Mode -in @("Create", "Cleanup")) {
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
-$commit = (Invoke-External -Command "git" -Arguments @("-C", $repoRoot, "rev-parse", "$SourceRef^{commit}") -Capture).Trim()
+$commit = (Invoke-External -Command "git" -Arguments @(
+    "-C", $repoRoot, "rev-list", "--max-count=1", $SourceRef
+) -Capture).Trim()
 if ($commit -notmatch "^[0-9a-f]{40}$") {
     throw "Could not resolve a full commit for $SourceRef"
 }
@@ -1003,7 +987,6 @@ try {
         throw "Temporary key pair name is already in use: $script:KeyPairName"
     }
 
-    $script:KeyPairCreateAttempted = $true
     Invoke-Ctyun @(
         "ecs", "ImportEcsKeypair",
         "--regionID", $RegionID,
@@ -1024,12 +1007,13 @@ try {
     $keyPair = @(Get-ResponseItems -Response $keyPairResponse -Name "results") |
         Where-Object { [string]$_.keyPairName -eq $script:KeyPairName } |
         Select-Object -First 1
-    $keyPairID = [string](
+    $script:KeyPairID = [string](
         Get-PropertyValue -InputObject $keyPair -Name "keyPairID"
     )
-    if (-not $keyPairID) {
+    if (-not $script:KeyPairID) {
         throw "Imported key pair could not be resolved"
     }
+    $script:KeyPairCreateAttempted = $true
 
     $existingBuilderResponse = Invoke-Ctyun @(
         "ecs", "ListEcsInstances",
@@ -1046,7 +1030,6 @@ try {
         throw "Temporary builder name is already in use: $script:BuilderName"
     }
 
-    $script:BuilderCreateAttempted = $true
     $createResponse = Invoke-Ctyun @(
         "ecs", "CreateEcsInstance",
         "--regionID", $RegionID,
@@ -1064,7 +1047,7 @@ try {
         "--vpcID", $VpcID,
         "--networkCardList", "[{`"isMaster`":true,`"subnetID`":`"$SubnetID`"}]",
         "--secGroupList", "[`"$SecurityGroupID`"]",
-        "--keyPairID", $keyPairID,
+        "--keyPairID", $script:KeyPairID,
         "--onDemand", "true",
         "--extIP", "1",
         "--bandwidth", "$BuilderBandwidth",
@@ -1085,6 +1068,7 @@ try {
     if (-not $script:BuilderResourceID) {
         throw "CreateEcsInstance did not return masterResourceID"
     }
+    $script:BuilderCreateAttempted = $true
 
     $builder = Resolve-BuilderInstance -WaitSeconds ($TimeoutMinutes * 60)
     if (-not $builder) {

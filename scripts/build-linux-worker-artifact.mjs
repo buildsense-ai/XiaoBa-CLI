@@ -13,12 +13,21 @@ const packageJson = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 );
 const version = options.version || packageJson.version;
-const commit = options.commit || git(root, ["rev-parse", "HEAD"]).trim();
+if (!/^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/.test(version)) {
+  throw new Error(`Invalid release version: ${version}`);
+}
+const headCommit = git(root, ["rev-parse", "HEAD"]).trim();
+const commit = options.commit || headCommit;
 if (!/^[0-9a-f]{40}$/i.test(commit)) {
   throw new Error(
     `Commit must be a full 40-character Git object ID: ${commit}`,
   );
 }
+if (commit.toLowerCase() !== headCommit.toLowerCase()) {
+  throw new Error(`Requested commit ${commit} does not match checked out HEAD ${headCommit}`);
+}
+assertCleanTrackedTree(root);
+
 const commitEpoch = Number.parseInt(
   git(root, ["show", "-s", "--format=%ct", commit]).trim(),
   10,
@@ -42,6 +51,8 @@ if (process.platform !== "linux" || process.arch !== "x64") {
   );
 }
 
+run("npm", ["run", "build"], { cwd: root });
+
 for (const required of ["dist", "package.json", "package-lock.json"]) {
   if (!fs.existsSync(path.join(root, required))) {
     throw new Error(`Missing required build input: ${required}`);
@@ -57,6 +68,7 @@ const appRoot = path.join(stagingRoot, "app");
 try {
   fs.mkdirSync(appRoot, { recursive: true });
   const stagedNode = stageNodeRuntime(appRoot);
+  assertSafeTree(path.join(root, "dist"), root);
   fs.cpSync(path.join(root, "dist"), path.join(appRoot, "dist"), {
     recursive: true,
     dereference: false,
@@ -179,6 +191,37 @@ function parseArgs(args) {
   return parsed;
 }
 
+function assertCleanTrackedTree(sourceRoot) {
+  for (const args of [
+    ["diff", "--quiet", "--ignore-submodules", "--"],
+    ["diff", "--cached", "--quiet", "--ignore-submodules", "--"],
+  ]) {
+    try {
+      execFileSync("git", args, { cwd: sourceRoot, stdio: "ignore" });
+    } catch {
+      throw new Error("Refusing to build an artifact from a dirty tracked tree");
+    }
+  }
+}
+
+function assertSafeTree(treeRoot, repositoryRoot) {
+  const visit = (entryPath) => {
+    const entryStat = fs.lstatSync(entryPath);
+    if (entryStat.isSymbolicLink()) {
+      const target = fs.readlinkSync(entryPath);
+      const resolved = path.resolve(path.dirname(entryPath), target);
+      const relative = path.relative(repositoryRoot, resolved);
+      if (path.isAbsolute(target) || relative.startsWith("..") || path.isAbsolute(relative)) {
+        throw new Error(`Refusing unsafe symbolic link in dist: ${entryPath} -> ${target}`);
+      }
+      throw new Error(`Refusing symbolic link in dist: ${entryPath} -> ${target}`);
+    }
+    if (!entryStat.isDirectory()) return;
+    for (const name of fs.readdirSync(entryPath)) visit(path.join(entryPath, name));
+  };
+  visit(treeRoot);
+}
+
 function copyTrackedFiles(
   sourceRoot,
   destinationRoot,
@@ -189,6 +232,7 @@ function copyTrackedFiles(
     for (const relativePath of pathspecs) {
       const source = path.join(sourceRoot, relativePath);
       if (!fs.existsSync(source)) continue;
+      assertSafeTree(source, sourceRoot);
       const destination = path.join(destinationRoot, relativePath);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.cpSync(source, destination, { recursive: true, dereference: false });
@@ -201,7 +245,11 @@ function copyTrackedFiles(
     .filter(Boolean);
   for (const relativePath of tracked) {
     const source = path.join(sourceRoot, relativePath);
-    if (!fs.statSync(source).isFile()) continue;
+    const sourceStat = fs.lstatSync(source);
+    if (sourceStat.isSymbolicLink()) {
+      throw new Error(`Refusing tracked symbolic link: ${relativePath}`);
+    }
+    if (!sourceStat.isFile()) continue;
     const destination = path.join(destinationRoot, relativePath);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(source, destination);

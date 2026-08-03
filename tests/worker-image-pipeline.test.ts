@@ -30,13 +30,23 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(artifactBuilder, /--mtime=@\$\{commitEpoch\}/);
     assert.match(artifactBuilder, /gzip["'], \[["']-n["']/);
     assert.match(artifactBuilder, /createdAt: new Date\(commitEpoch \* 1000\)/);
+    assert.match(artifactBuilder, /does not match checked out HEAD/);
+    assert.match(artifactBuilder, /dirty tracked tree/);
+    assert.match(artifactBuilder, /lstatSync\(source\)/);
+    assert.match(artifactBuilder, /Refusing tracked symbolic link/);
+    assert.match(artifactBuilder, /assertSafeTree\(source, sourceRoot\)/);
+    assert.match(artifactBuilder, /assertSafeTree\(path\.join\(root, "dist"\)/);
+    assert.match(artifactBuilder, /run\("npm", \["run", "build"\]/);
     assert.match(workflow, /NODE_VERSION: ["']22\.23\.1["']/);
     assert.match(artifactBuilder, /stageNodeRuntime\(appRoot\)/);
     assert.match(artifactBuilder, /npm["'], \[["']root["'], ["']--global["']\]/);
   });
 
   test("image keeps immutable application files separate from runtime data", () => {
-    assert.match(imagePreparer, /RELEASE_ROOT="\/opt\/catsco\/releases\//);
+    assert.match(imagePreparer, /RELEASES_ROOT="\/opt\/catsco\/releases"/);
+    assert.match(imagePreparer, /invalid version/);
+    assert.match(imagePreparer, /release path escapes/);
+    assert.match(imagePreparer, /jq -n/);
     assert.match(imagePreparer, /XIAOBA_USER_DATA_DIR=\/srv\/catsco-agent/);
     assert.match(imagePreparer, /WorkingDirectory=\/srv\/catsco-agent/);
     assert.match(
@@ -67,6 +77,9 @@ describe("Tianyi Cloud worker image pipeline", () => {
       /Refusing to operate on non-builder instance/,
     );
     assert.match(imageOrchestrator, /mutatesExistingWorkers = \$false/);
+    assert.match(imageOrchestrator, /no immutable builder identity was recorded/);
+    assert.match(imageOrchestrator, /name and immutable ID do not uniquely match/);
+    assert.match(imageOrchestrator, /Automatic historical cleanup refused/);
     assert.doesNotMatch(imageOrchestrator, /worker1|worker2|ck-work/);
   });
 
@@ -129,10 +142,11 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(workflow, /sha256sum --check --strict/);
     assert.match(
       workflow,
-      /ArtifactPath '\$\{\{ steps\.artifact_meta\.outputs\.path \}\}'/,
+      /WORKER_ARTIFACT_PATH: \$\{\{ steps\.artifact_meta\.outputs\.path \}\}/,
     );
-    assert.match(workflow, /BuildNumber '\$\{\{ github\.run_number \}\}'/);
-    assert.match(workflow, /BuildIdentity '\$\{\{ github\.run_id \}\}'/);
+    assert.match(workflow, /-ArtifactPath \$env:WORKER_ARTIFACT_PATH/);
+    assert.match(workflow, /-BuildNumber \$env:GITHUB_RUN_NUMBER/);
+    assert.match(workflow, /-BuildIdentity \$env:GITHUB_RUN_ID/);
     assert.match(workflow, /timeout-minutes: 420/);
     assert.match(workflow, /-BakeTimeoutMinutes 150/);
     assert.match(workflow, /-CleanupTimeoutMinutes 40/);
@@ -140,7 +154,9 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(workflow, /steps\.bake\.outcome != 'success'/);
     assert.match(workflow, /actions: read/);
     assert.match(workflow, /Find interrupted image runs/);
-    assert.match(workflow, /per_page=100/);
+    assert.match(workflow, /per_page=100&page=\$page/);
+    assert.match(workflow, /page=\$\(\(page \+ 1\)\)/);
+    assert.match(workflow, /jq -cs --arg current/);
     assert.match(workflow, /foreach \(\$run in \$runs\)/);
     assert.match(workflow, /foreach \(\$attempt in 1\.\.\$runAttempt\)/);
     assert.match(workflow, /foreach \(\$previousAttempt in 1\.\./);
@@ -186,6 +202,10 @@ describe("Tianyi Cloud worker image pipeline", () => {
       path.join(os.tmpdir(), "catsco-worker-image-test-"),
     );
     try {
+      fs.writeFileSync(
+        path.join(sandbox, "package.json"),
+        '{"type":"module"}\n',
+      );
       const statePath = path.join(sandbox, "state.json");
       const logPath = path.join(sandbox, "calls.log");
       const artifactPath = path.join(sandbox, "worker.tar.gz");
@@ -477,6 +497,10 @@ process.exit(result.status ?? 1);
         0,
         `expected the image error to fail the bake\n${result.stdout}\n${result.stderr}`,
       );
+      assert.ok(
+        fs.existsSync(logPath),
+        `expected fake cloud CLI to be invoked\n${result.stdout}\n${result.stderr}`,
+      );
       const calls = fs.readFileSync(logPath, "utf8");
       assert.match(
         calls,
@@ -635,17 +659,15 @@ process.exit(result.status ?? 1);
       assert.ok(
         (recoveryCalls.match(/ecs ListEcsInstances/g) || []).length >= 2,
       );
-      assert.ok(
-        (recoveryCalls.match(/ecs GetEcsKeypairDetails/g) || []).length >= 2,
-      );
+      assert.doesNotMatch(recoveryCalls, /ecs GetEcsKeypairDetails/);
       assert.match(recoveryCalls, /ecs DeleteEcsInstance/);
-      assert.match(recoveryCalls, /ecs DeleteEcsKeypair/);
+      assert.doesNotMatch(recoveryCalls, /ecs DeleteEcsKeypair/);
       assert.match(recoveryCalls, /ims UpdateImage/);
       const recoveryState = JSON.parse(fs.readFileSync(statePath, "utf8"));
       assert.equal(recoveryState.imageExists, true);
       assert.equal(recoveryState.imageDescription, releaseDescription);
       assert.equal(recoveryState.instanceExists, false);
-      assert.equal(recoveryState.keyExists, false);
+      assert.equal(recoveryState.keyExists, true);
 
       fs.writeFileSync(logPath, "");
       fs.writeFileSync(
@@ -678,7 +700,7 @@ process.exit(result.status ?? 1);
         reusedNameRecoveryCalls,
         /ecs DeleteEcsInstance/,
       );
-      assert.match(reusedNameRecoveryCalls, /ecs DeleteEcsKeypair/);
+      assert.doesNotMatch(reusedNameRecoveryCalls, /ecs DeleteEcsKeypair/);
       const reusedNameRecoveryState = JSON.parse(
         fs.readFileSync(statePath, "utf8"),
       );
@@ -757,20 +779,19 @@ process.exit(result.status ?? 1);
         cleanupBuildNumber,
         "catsco-worker-cleanup",
       );
-      assert.equal(
-        cleanupResult.status,
-        0,
+      assert.notEqual(cleanupResult.status, 0);
+      assert.match(
         `${cleanupResult.stdout}\n${cleanupResult.stderr}`,
+        /Automatic historical cleanup refused/,
       );
-      assert.match(cleanupResult.stdout, /"result":\s*"cleaned"/);
       const cleanupCalls = fs.readFileSync(logPath, "utf8");
-      assert.match(cleanupCalls, /ims DeleteImage/);
-      assert.match(cleanupCalls, /ecs DeleteEcsInstance/);
-      assert.match(cleanupCalls, /ecs DeleteEcsKeypair/);
+      assert.doesNotMatch(cleanupCalls, /ims DeleteImage/);
+      assert.doesNotMatch(cleanupCalls, /ecs DeleteEcsInstance/);
+      assert.doesNotMatch(cleanupCalls, /ecs DeleteEcsKeypair/);
       const cleanupState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-      assert.equal(cleanupState.imageExists, false);
-      assert.equal(cleanupState.instanceExists, false);
-      assert.equal(cleanupState.keyExists, false);
+      assert.equal(cleanupState.imageExists, true);
+      assert.equal(cleanupState.instanceExists, true);
+      assert.equal(cleanupState.keyExists, true);
 
       const foreignCleanupBuildNumber = "1007";
       const foreignCleanupBakeId = "001007-01";
@@ -804,18 +825,18 @@ process.exit(result.status ?? 1);
       assert.notEqual(foreignCleanupResult.status, 0);
       assert.match(
         `${foreignCleanupResult.stdout}\n${foreignCleanupResult.stderr}`,
-        /Refusing exact cleanup[\s\S]*does not match/,
+        /Automatic historical cleanup refused/,
       );
       const foreignCleanupCalls = fs.readFileSync(logPath, "utf8");
       assert.doesNotMatch(foreignCleanupCalls, /ims DeleteImage/);
-      assert.match(foreignCleanupCalls, /ecs DeleteEcsInstance/);
-      assert.match(foreignCleanupCalls, /ecs DeleteEcsKeypair/);
+      assert.doesNotMatch(foreignCleanupCalls, /ecs DeleteEcsInstance/);
+      assert.doesNotMatch(foreignCleanupCalls, /ecs DeleteEcsKeypair/);
       const foreignCleanupState = JSON.parse(
         fs.readFileSync(statePath, "utf8"),
       );
       assert.equal(foreignCleanupState.imageExists, true);
-      assert.equal(foreignCleanupState.instanceExists, false);
-      assert.equal(foreignCleanupState.keyExists, false);
+      assert.equal(foreignCleanupState.instanceExists, true);
+      assert.equal(foreignCleanupState.keyExists, true);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

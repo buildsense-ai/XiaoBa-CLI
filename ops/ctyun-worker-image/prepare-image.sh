@@ -66,7 +66,7 @@ fi
 [[ -f "$ARTIFACT" ]] || die "artifact not found"
 [[ "$SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || die "invalid SHA-256"
 [[ "$EXPECTED_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || die "commit must be a full SHA"
-[[ -n "$EXPECTED_VERSION" ]] || die "version is required"
+[[ "$EXPECTED_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || die "invalid version"
 
 ACTUAL_SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
 [[ "${ACTUAL_SHA256,,}" == "${SHA256,,}" ]] || die "artifact checksum mismatch"
@@ -92,9 +92,14 @@ id catsco-agent >/dev/null 2>&1 || useradd \
   catsco-agent
 
 RELEASE_ID="${EXPECTED_VERSION}-${EXPECTED_COMMIT:0:8}"
-RELEASE_ROOT="/opt/catsco/releases/$RELEASE_ID"
-rm -rf "$RELEASE_ROOT"
-mkdir -p "$RELEASE_ROOT" /opt/catsco/releases /srv/catsco-agent
+RELEASES_ROOT="/opt/catsco/releases"
+RELEASE_ROOT="$RELEASES_ROOT/$RELEASE_ID"
+case "$RELEASE_ROOT" in
+  "$RELEASES_ROOT"/*) ;;
+  *) die "release path escapes $RELEASES_ROOT" ;;
+esac
+rm -rf -- "$RELEASE_ROOT"
+mkdir -p -- "$RELEASE_ROOT" "$RELEASES_ROOT" /srv/catsco-agent
 
 TEMP_EXTRACT="$(mktemp -d /tmp/catsco-release.XXXXXX)"
 trap 'rm -rf "$TEMP_EXTRACT"' EXIT
@@ -167,15 +172,17 @@ sudo -u catsco-agent -- bash -c '
 dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort >/etc/catsco-image-packages.txt
 chmod 0644 /etc/catsco-image-packages.txt
 
-cat >/etc/catsco-image.json <<EOF
-{
-  "schemaVersion": 1,
-  "product": "catsco-worker",
-  "version": "$EXPECTED_VERSION",
-  "commit": "$EXPECTED_COMMIT",
-  "releaseId": "$RELEASE_ID"
-}
-EOF
+jq -n \
+  --arg version "$EXPECTED_VERSION" \
+  --arg commit "$EXPECTED_COMMIT" \
+  --arg releaseId "$RELEASE_ID" \
+  '{
+    schemaVersion: 1,
+    product: "catsco-worker",
+    version: $version,
+    commit: $commit,
+    releaseId: $releaseId
+  }' >/etc/catsco-image.json
 chmod 0644 /etc/catsco-image.json
 
 if find /opt/catsco -type f \( \
