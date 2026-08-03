@@ -53,6 +53,7 @@ import {
   reconcileCurrentBotPromptBeforeTurn,
   scheduleCurrentBotPromptReconcile,
 } from '../bot-definition/prompt-sync';
+import { scheduleCurrentBotSkillSync } from '../bot-skills/runtime';
 import { collectRemoteContextWatermarks } from './remote-context-watermarks';
 import {
   CheckpointCompactionCoordinator,
@@ -92,7 +93,8 @@ export interface AgentServices {
   };
   toolManager: ToolManager;
   skillManager: SkillManager;
-
+  /** Optional test seam for the after-turn Bot Skill workspace sync scheduler. */
+  afterTurnSkillSyncScheduler?: () => void;
 }
 
 export type SystemPromptProvider = () => Promise<string> | string;
@@ -767,6 +769,7 @@ export class AgentSession {
       } finally {
         this.planRuntime.clear();
         scheduleCurrentBotPromptReconcile();
+        (this.services.afterTurnSkillSyncScheduler ?? scheduleCurrentBotSkillSync)();
         this.busy = false;
         this.activeAbortController = null;
       }

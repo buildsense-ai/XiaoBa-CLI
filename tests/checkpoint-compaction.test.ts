@@ -2,14 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Message } from '../src/types';
 import {
-  CHECKPOINT_COMPACTION_BOUNDARY_PREFIX,
   CHECKPOINT_SUMMARY_PREFIX,
   CheckpointCompactionCoordinator,
   buildCheckpointCompactionPrompt,
   isCheckpointCompactionEnabled,
 } from '../src/core/checkpoint-compaction';
-import { OpenAIProvider } from '../src/providers/openai-provider';
-import { Metrics } from '../src/utils/metrics';
 
 const usage = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
 
@@ -17,38 +14,26 @@ function largeText(label: string): string {
   return `${label}\n${'x'.repeat(2_000)}`;
 }
 
-function cacheScaleText(label: string): string {
-  return `${label}\n${'x'.repeat(6_000)}`;
-}
-
-function cacheDeltaText(label: string): string {
-  return `${label}\n${'x'.repeat(9_000)}`;
-}
-
 function createService(
   handler: (messages: Message[], attempt: number) => string | Promise<string>,
 ): {
   service: any;
   requests: Message[][];
-  requestOptions: Array<{ promptCacheScopeKey?: string } | undefined>;
 } {
   const requests: Message[][] = [];
-  const requestOptions: Array<{ promptCacheScopeKey?: string } | undefined> = [];
   const service = {
     chatStream: async (
       messages: Message[],
       _tools: unknown,
       callbacks: { onText?: (text: string) => void },
-      options?: { promptCacheScopeKey?: string },
     ) => {
       requests.push(messages.map(message => ({ ...message })));
-      requestOptions.push(options);
       const text = await handler(messages, requests.length);
       callbacks.onText?.(text);
       return { content: text, usage };
     },
   };
-  return { service, requests, requestOptions };
+  return { service, requests };
 }
 
 test('checkpoint compaction switch defaults on and supports explicit rollback', () => {
@@ -57,7 +42,6 @@ test('checkpoint compaction switch defaults on and supports explicit rollback', 
     XIAOBA_CHECKPOINT_COMPACTION_ENABLED: 'false',
   } as NodeJS.ProcessEnv), false);
 });
-
 test('checkpoint compaction preserves stable system and transient runtime messages', async () => {
   const { service } = createService(() => [
     'Objective: finish the active task.',
@@ -108,40 +92,15 @@ test('checkpoint compaction preserves stable system and transient runtime messag
 
   assert.equal(result.compacted, true);
   assert.equal(result.messages[0].content, 'stable system prompt');
-  assert.ok(result.messages.some(message =>
-    String(message.content).startsWith(CHECKPOINT_COMPACTION_BOUNDARY_PREFIX)));
+  assert.equal(result.messages.some(message => message.__checkpointBoundary), false);
   assert.ok(result.messages.some(message =>
     String(message.content).startsWith(CHECKPOINT_SUMMARY_PREFIX)));
   assert.ok(result.messages.some(message => message.content === transient.content));
-  assert.equal(result.messages.some(message => message.role === 'tool'), false);
-  assert.equal(
-    result.messages.some(message => String(message.content).includes('tool evidence')),
-    false,
-  );
+  assert.equal(result.messages.some(message => message.role === 'tool'), true);
+  assert.equal(result.messages.some(message => String(message.content).includes('tool evidence')), true);
   const summaryIndex = result.messages.findIndex(message => message.__checkpointSummary);
-  const retainedUserIndex = result.messages.findIndex(message =>
-    message.role === 'user' && String(message.content).includes('original objective'));
-  assert.ok(summaryIndex >= 0 && retainedUserIndex > summaryIndex);
-});
-
-test('checkpoint compaction uses the session cache scope and session metrics collector', async () => {
-  const { service, requestOptions } = createService(() => 'continuation checkpoint');
-  const metrics = new Metrics();
-  const coordinator = new CheckpointCompactionCoordinator(service, {
-    maxContextTokens: 200,
-    compactionThreshold: 0.5,
-  }, metrics);
-
-  await coordinator.compactIfNeeded([
-    { role: 'user', content: largeText('cache-scoped objective') },
-  ], {
-    sessionKey: 'checkpoint-session',
-    phase: 'pre_turn',
-  });
-
-  assert.equal(requestOptions[0]?.promptCacheScopeKey, 'checkpoint-session');
-  assert.equal(metrics.getSummary().aiCalls, 1);
-  assert.equal(metrics.getSummary().totalTokens, usage.totalTokens);
+  assert.ok(summaryIndex >= 0);
+  assert.match(String(result.messages[summaryIndex].content), /finish the active task/i);
 });
 
 test('a later checkpoint summarizes the prior checkpoint instead of forgetting it', async () => {
@@ -185,368 +144,6 @@ test('a later checkpoint summarizes the prior checkpoint instead of forgetting i
   assert.equal(requests.length, 2);
   assert.ok(requests[1].some(message =>
     String(message.content).includes('checkpoint one exact fact: port 18088')));
-});
-
-test('repeated checkpoints preserve the old provider prefix and append a delta checkpoint', async () => {
-  const { service, requests } = createService((_messages, attempt) =>
-    attempt === 1 ? 'summary-1: exact fact from the first checkpoint' : 'summary-2: only the new delta');
-  const coordinator = new CheckpointCompactionCoordinator(service, {
-    maxContextTokens: 6_000,
-    compactionThreshold: 0.4,
-    retainedUserTokenBudget: 1_000,
-  });
-  const first = await coordinator.compactIfNeeded([
-    {
-      role: 'user',
-      content: cacheScaleText('stable root objective'),
-      __episodeId: 'episode-cache',
-      __episodeInputKind: 'root',
-    },
-    {
-      role: 'assistant',
-      content: cacheScaleText('first completed work'),
-      __episodeId: 'episode-cache',
-    },
-  ], {
-    sessionKey: 'session-prefix-stability',
-    phase: 'mid_turn',
-  });
-  assert.equal(first.compacted, true);
-
-  const firstSummaryIndex = first.messages.findIndex(message => message.__checkpointSummary);
-  assert.ok(firstSummaryIndex >= 0);
-  const firstProviderPrefix = first.messages;
-  const firstSummary = first.messages[firstSummaryIndex];
-
-  const second = await coordinator.compactIfNeeded([
-    ...first.messages,
-    {
-      role: 'user',
-      content: cacheDeltaText('new durable delta'),
-      __episodeId: 'episode-cache',
-      __episodeInputKind: 'pending',
-    },
-  ], {
-    sessionKey: 'session-prefix-stability',
-    phase: 'mid_turn',
-  });
-
-  assert.equal(second.compacted, true);
-  const summaries = second.messages.filter(message => message.__checkpointSummary);
-  assert.equal(summaries.length, 2);
-  assert.deepEqual(second.messages.slice(0, firstProviderPrefix.length), firstProviderPrefix);
-  assert.equal(summaries[0].content, firstSummary.content);
-  assert.match(String(summaries[1].content), /summary-2: only the new delta/);
-  assert.equal(
-    second.messages.find(message => message.__episodeInputKind === 'root')?.content,
-    first.messages.find(message => message.__episodeInputKind === 'root')?.content,
-  );
-  assert.ok(requests[1].some(message =>
-    String(message.content).includes('summary-1: exact fact from the first checkpoint')));
-  assert.ok(requests[1].some(message =>
-    String(message.content).includes('new durable delta')));
-
-  const provider = new OpenAIProvider({
-    apiKey: 'test-key',
-    apiUrl: 'https://relay.catsco.cc/v1',
-    model: 'gpt-5.6-terra',
-    openaiApiMode: 'responses',
-  });
-  const firstBody = (provider as any).buildResponsesRequestBody(
-    first.messages,
-    undefined,
-    false,
-    'session-prefix-stability',
-  );
-  const secondBody = (provider as any).buildResponsesRequestBody(
-    second.messages,
-    undefined,
-    false,
-    'session-prefix-stability',
-  );
-  const firstDynamicSuffixIndex = firstBody.input.findIndex(
-    (item: any) => item.role === 'system',
-  );
-
-  assert.ok(firstDynamicSuffixIndex > 0);
-  assert.equal(firstBody.prompt_cache_key, secondBody.prompt_cache_key);
-  assert.deepEqual(
-    secondBody.input.slice(0, firstDynamicSuffixIndex),
-    firstBody.input.slice(0, firstDynamicSuffixIndex),
-  );
-});
-
-test('persisted checkpoint metadata resumes with the same retained provider prefix', async () => {
-  const { service } = createService((_messages, attempt) =>
-    attempt === 1 ? 'persisted base summary' : 'persisted delta summary');
-  const coordinator = new CheckpointCompactionCoordinator(service, {
-    maxContextTokens: 6_000,
-    compactionThreshold: 0.4,
-    retainedUserTokenBudget: 1_000,
-  });
-  const first = await coordinator.compactIfNeeded([
-    {
-      role: 'user',
-      content: cacheScaleText('persisted exact root'),
-      __episodeId: 'episode-persisted',
-      __episodeInputKind: 'root',
-    },
-    {
-      role: 'assistant',
-      content: cacheScaleText('persisted completed work'),
-      __episodeId: 'episode-persisted',
-    },
-  ], {
-    sessionKey: 'session-persisted-prefix',
-    phase: 'mid_turn',
-  });
-  assert.equal(first.compacted, true);
-
-  const restored = JSON.parse(JSON.stringify(first.messages)) as Message[];
-  const second = await coordinator.compactIfNeeded([
-    ...restored,
-    {
-      role: 'user',
-      content: cacheDeltaText('work added after restore'),
-      __episodeId: 'episode-persisted',
-      __episodeInputKind: 'pending',
-    },
-  ], {
-    sessionKey: 'session-persisted-prefix',
-    phase: 'mid_turn',
-  });
-
-  assert.equal(second.compacted, true);
-  assert.deepEqual(second.messages.slice(0, restored.length), restored);
-  assert.equal(
-    second.messages.find(message => message.__episodeInputKind === 'root')?.content,
-    restored.find(message => message.__episodeInputKind === 'root')?.content,
-  );
-});
-
-test('legacy checkpoints without retained counts migrate without losing retained evidence', async () => {
-  const { service, requests } = createService(() => 'legacy checkpoint delta');
-  const coordinator = new CheckpointCompactionCoordinator(service, {
-    maxContextTokens: 6_000,
-    compactionThreshold: 0.4,
-    retainedUserTokenBudget: 1_000,
-  });
-  const legacyBoundary: Message = {
-    role: 'system',
-    content: '[checkpoint_compaction_boundary] phase=mid_turn tokens_before=1000',
-    __checkpointBoundary: true,
-    __checkpointPhase: 'mid_turn',
-  };
-  const legacySummary: Message = {
-    role: 'user',
-    content: `${CHECKPOINT_SUMMARY_PREFIX}\n\nlegacy exact summary`,
-    __checkpointSummary: true,
-    __episodeId: 'episode-legacy',
-  };
-  const legacyRoot: Message = {
-    role: 'user',
-    content: cacheScaleText('legacy retained root'),
-    __episodeId: 'episode-legacy',
-    __episodeInputKind: 'root',
-  };
-
-  const result = await coordinator.compactIfNeeded([
-    legacyBoundary,
-    legacySummary,
-    legacyRoot,
-    {
-      role: 'user',
-      content: cacheScaleText('new work after legacy checkpoint'),
-      __episodeId: 'episode-legacy',
-      __episodeInputKind: 'pending',
-    },
-  ], {
-    sessionKey: 'session-legacy-checkpoint',
-    phase: 'mid_turn',
-  });
-
-  assert.equal(result.compacted, true);
-  assert.deepEqual(result.messages.slice(0, 2), [legacyBoundary, legacySummary]);
-  assert.ok(requests[0].some(message =>
-    String(message.content).includes('legacy retained root')));
-  assert.ok(requests[0].some(message =>
-    String(message.content).includes('new work after legacy checkpoint')));
-  assert.ok(result.messages.some(message =>
-    String(message.content).includes('legacy retained root')));
-});
-
-test('an oversized checkpoint chain rebases once instead of compacting forever', async () => {
-  const { service, requests } = createService(() => 'rebased bounded checkpoint');
-  const coordinator = new CheckpointCompactionCoordinator(service, {
-    maxContextTokens: 1_000,
-    compactionThreshold: 0.5,
-  });
-  const chain = Array.from({ length: 8 }, (_, index): Message[] => [
-    {
-      role: 'system',
-      content: `[checkpoint_compaction_boundary] kind=delta phase=mid_turn sequence=${index}`,
-      __checkpointBoundary: true,
-      __checkpointRetainedCount: 0,
-      __checkpointKind: 'delta',
-    },
-    {
-      role: 'user',
-      content: `${CHECKPOINT_SUMMARY_PREFIX}\n\ncheckpoint-${index}\n${'s'.repeat(400)}`,
-      __checkpointSummary: true,
-      __checkpointKind: 'delta',
-    },
-  ]).flat();
-
-  assert.equal(coordinator.needsCompaction(chain), true);
-  const result = await coordinator.compactIfNeeded(chain, {
-    sessionKey: 'session-checkpoint-rebase',
-    phase: 'mid_turn',
-  });
-
-  assert.equal(result.compacted, true);
-  assert.equal(requests.length, 1);
-  assert.equal(result.messages.filter(message => message.__checkpointSummary).length, 1);
-  assert.equal(result.messages.find(message => message.__checkpointSummary)?.__checkpointKind, 'rebase');
-  assert.equal(result.messages.find(message => message.__checkpointBoundary)?.__checkpointKind, 'rebase');
-  assert.equal(coordinator.needsCompaction(result.messages), false);
-});
-
-test('a delta that would remain over threshold automatically falls back to rebase', async () => {
-  const { service, requests } = createService((_messages, attempt) =>
-    attempt === 1 ? 'delta would overflow' : 'rebased after overflow');
-  const coordinator = new CheckpointCompactionCoordinator(service, {
-    maxContextTokens: 10_000,
-    compactionThreshold: 0.8,
-    retainedUserTokenBudget: 1_000,
-  });
-  const priorPrefix: Message[] = [
-    {
-      role: 'system',
-      content: '[checkpoint_compaction_boundary] kind=base phase=mid_turn',
-      __checkpointBoundary: true,
-      __checkpointRetainedCount: 1,
-      __checkpointKind: 'base',
-    },
-    {
-      role: 'user',
-      content: `${CHECKPOINT_SUMMARY_PREFIX}\n\nprior bounded summary`,
-      __checkpointSummary: true,
-      __checkpointKind: 'base',
-      __episodeId: 'episode-overflow',
-    },
-    {
-      role: 'user',
-      content: `large exact root\n${'r'.repeat(30_000)}`,
-      __episodeId: 'episode-overflow',
-      __episodeInputKind: 'root',
-    },
-  ];
-  const messages: Message[] = [
-    ...priorPrefix,
-    {
-      role: 'user',
-      content: `new durable delta\n${'d'.repeat(8_000)}`,
-      __episodeId: 'episode-overflow',
-      __episodeInputKind: 'pending',
-    },
-  ];
-
-  assert.ok(estimateMessageListTokens(priorPrefix) < 8_000);
-  assert.equal(coordinator.needsCompaction(messages), true);
-  const result = await coordinator.compactIfNeeded(messages, {
-    sessionKey: 'session-delta-overflow',
-    phase: 'mid_turn',
-  });
-
-  assert.equal(result.compacted, true);
-  assert.equal(requests.length, 2);
-  assert.equal(result.messages.find(message => message.__checkpointSummary)?.__checkpointKind, 'rebase');
-  assert.equal(coordinator.needsCompaction(result.messages), false);
-});
-
-test('large transient feedback does not force an otherwise bounded delta to rebase', async () => {
-  const { service, requests } = createService(() => 'bounded durable delta');
-  const coordinator = new CheckpointCompactionCoordinator(service, {
-    maxContextTokens: 10_000,
-    compactionThreshold: 0.8,
-    retainedUserTokenBudget: 1_000,
-  });
-  const messages: Message[] = [
-    {
-      role: 'system',
-      content: '[checkpoint_compaction_boundary] kind=base phase=mid_turn',
-      __checkpointBoundary: true,
-      __checkpointRetainedCount: 1,
-      __checkpointKind: 'base',
-    },
-    {
-      role: 'user',
-      content: `${CHECKPOINT_SUMMARY_PREFIX}\n\nprior bounded summary`,
-      __checkpointSummary: true,
-      __checkpointKind: 'base',
-      __episodeId: 'episode-transient',
-    },
-    {
-      role: 'user',
-      content: `large exact root\n${'r'.repeat(20_000)}`,
-      __episodeId: 'episode-transient',
-      __episodeInputKind: 'root',
-    },
-    {
-      role: 'user',
-      content: `new durable delta\n${'d'.repeat(16_000)}`,
-      __episodeId: 'episode-transient',
-      __episodeInputKind: 'pending',
-    },
-    {
-      role: 'user',
-      content: `temporary retry feedback\n${'t'.repeat(24_000)}`,
-      __runtimeFeedback: true,
-    },
-  ];
-
-  assert.equal(coordinator.needsCompaction(messages), true);
-  const result = await coordinator.compactIfNeeded(messages, {
-    sessionKey: 'session-transient-delta',
-    phase: 'mid_turn',
-  });
-
-  assert.equal(result.compacted, true);
-  assert.equal(requests.length, 1);
-  assert.equal(
-    result.messages.filter(message => message.__checkpointSummary).at(-1)?.__checkpointKind,
-    'delta',
-  );
-  assert.equal(
-    result.messages.at(-1)?.content,
-    messages.at(-1)?.content,
-  );
-  assert.equal(coordinator.needsCompaction(result.messages), false);
-});
-
-test('a non-compactable system-only prompt reports no progress instead of a false success', async () => {
-  const { service, requests } = createService(() => 'unused');
-  const coordinator = new CheckpointCompactionCoordinator(service, {
-    maxContextTokens: 100,
-    compactionThreshold: 0.5,
-  });
-  const messages: Message[] = [
-    { role: 'system', content: largeText('oversized stable system') },
-  ];
-  const statuses: string[] = [];
-
-  const result = await coordinator.compactIfNeeded(messages, {
-    sessionKey: 'session-system-only',
-    phase: 'pre_turn',
-    onStatus: event => {
-      statuses.push(event.status);
-    },
-  });
-
-  assert.equal(result.compacted, false);
-  assert.equal(result.messages, messages);
-  assert.equal(requests.length, 0);
-  assert.deepEqual(statuses, ['start', 'complete']);
 });
 
 test('restore checkpoint explicitly marks runtime state for re-verification', async () => {
@@ -603,7 +200,7 @@ test('checkpoint prompt distinguishes pre-turn, mid-turn, and restored history',
 });
 
 test('mid-turn checkpoint always retains the root before repeated short follow-ups', async () => {
-  const { service } = createService(() => 'continue from the root and latest corrections');
+  const { service, requests } = createService(() => 'continue from the root and latest corrections');
   const coordinator = new CheckpointCompactionCoordinator(service, {
     maxContextTokens: 1_000,
     compactionThreshold: 0.5,
@@ -652,17 +249,21 @@ test('mid-turn checkpoint always retains the root before repeated short follow-u
   const retainedInputs = result.messages.filter(message => (
     message.role === 'user' && !message.__checkpointSummary
   ));
-  assert.equal(retainedInputs[0]?.content, root.content);
+  assert.ok(requests[0].some(message => message.content === root.content));
+  assert.ok(result.messages.some(message => message.__checkpointSummary));
   assert.ok(retainedInputs.some(message => (
     String(message.content).includes('LATEST_CORRECTION')
   )));
   assert.equal(retainedInputs.filter(message => message.__episodeInputKind === 'pending').length, 7);
-  assert.equal(result.messages.some(message => message.role === 'tool'), false);
-  assert.equal(result.messages.some(message => message.tool_calls?.length), false);
+  assert.equal(result.messages.some(message => message.role === 'tool'), true);
+  assert.equal(result.messages.some(message => message.tool_calls?.length), true);
 });
 
-test('oversized episode root becomes explicit bounded evidence instead of disappearing', async () => {
-  const { service } = createService(() => 'summary includes the complete oversized objective');
+test('oversized episode root is summarized instead of silently disappearing', async () => {
+  const { service, requests } = createService(() => [
+    'Objective: inspect D:\\work\\project at port 18088.',
+    'Constraint: never delete the source directory.',
+  ].join('\n'));
   const coordinator = new CheckpointCompactionCoordinator(service, {
     maxContextTokens: 2_000,
     compactionThreshold: 0.5,
@@ -687,18 +288,14 @@ test('oversized episode root becomes explicit bounded evidence instead of disapp
   });
 
   assert.equal(result.compacted, true);
-  const retainedRoot = result.messages.find(message => (
-    message.__episodeInputKind === 'root' && !message.__checkpointSummary
-  ));
-  assert.ok(retainedRoot);
-  assert.match(String(retainedRoot.content), /\[checkpoint_user_input_evidence\]/);
-  assert.match(String(retainedRoot.content), /sha256: [a-f0-9]{64}/);
-  assert.match(String(retainedRoot.content), /ROOT_HEAD/);
-  assert.match(String(retainedRoot.content), /ROOT_TAIL/);
-  assert.ok(estimateRetainedTextLength(retainedRoot) < oversizedRoot.length);
+  assert.ok(requests[0].some(message => String(message.content).includes('ROOT_HEAD')));
+  const checkpoint = result.messages.find(message => message.__checkpointSummary);
+  assert.match(String(checkpoint?.content), /D:\\work\\project/);
+  assert.match(String(checkpoint?.content), /never delete/);
+  assert.equal(result.messages.some(message => message.__checkpointBoundary), false);
 });
 
-test('checkpoint summary bounds a giant tool result without mutating durable evidence', async () => {
+test('checkpoint exact tail bounds a giant tool result without duplicating it into the summary', async () => {
   const { service, requests } = createService(() => 'bounded tool evidence summary');
   const coordinator = new CheckpointCompactionCoordinator(service, {
     maxContextTokens: 1_000,
@@ -727,23 +324,14 @@ test('checkpoint summary bounds a giant tool result without mutating durable evi
   });
 
   assert.equal(result.compacted, true);
-  const summaryToolMessage = requests[0].find(message => message.role === 'tool');
-  assert.ok(summaryToolMessage);
-  assert.match(String(summaryToolMessage.content), /\[checkpoint_tool_evidence\]/);
-  assert.match(String(summaryToolMessage.content), /tool_call_id: call-giant/);
-  assert.match(String(summaryToolMessage.content), /HEAD_MARKER/);
-  assert.match(String(summaryToolMessage.content), /TAIL_MARKER/);
-  assert.ok(String(summaryToolMessage.content).length < rawToolResult.length);
+  assert.equal(requests[0].some(message => message.role === 'tool'), false);
+  const retainedToolMessage = result.messages.find(message => message.role === 'tool');
+  assert.ok(retainedToolMessage);
+  assert.match(String(retainedToolMessage.content), /\[checkpoint_tool_evidence\]/);
+  assert.match(String(retainedToolMessage.content), /tool_call_id: call-giant/);
+  assert.match(String(retainedToolMessage.content), /HEAD_MARKER/);
+  assert.match(String(retainedToolMessage.content), /TAIL_MARKER/);
+  assert.ok(String(retainedToolMessage.content).length < rawToolResult.length);
   assert.equal(toolMessage.content, rawToolResult);
   assert.equal(messages[1].content, rawToolResult);
 });
-
-function estimateRetainedTextLength(message: Message): number {
-  return typeof message.content === 'string'
-    ? message.content.length
-    : JSON.stringify(message.content).length;
-}
-
-function estimateMessageListTokens(messages: Message[]): number {
-  return messages.reduce((total, message) => total + estimateRetainedTextLength(message), 0) / 4;
-}

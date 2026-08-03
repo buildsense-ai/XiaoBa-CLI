@@ -27,8 +27,14 @@ export interface StreamRetryInfo {
 
 export interface AIRequestOptions {
   signal?: AbortSignal;
-  /** Stable per-session/tenant shard for provider prompt-cache routing. */
-  promptCacheScopeKey?: string;
+  promptCacheContext?: PromptCacheContext;
+}
+
+export interface PromptCacheContext {
+  sessionKey: string;
+  currentEpisodeId?: string;
+  phase: 'normal' | 'pre_turn' | 'mid_turn' | 'restore';
+  explicitCaching: boolean;
 }
 
 /**

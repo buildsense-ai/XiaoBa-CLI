@@ -2,6 +2,26 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AgentSession } from '../src/core/agent-session';
 
+test('AgentSession schedules Bot Skill workspace sync after a completed turn', async () => {
+  let scheduledSyncs = 0;
+  const session = new AgentSession('user:after-turn-skill-sync', buildMockServices({
+    afterTurnSkillSyncScheduler() {
+      scheduledSyncs++;
+    },
+    aiService: {
+      async chatStream() {
+        return { content: 'done', toolCalls: [] };
+      },
+    },
+  }), 'catscompany');
+  session.setSystemPromptProvider(() => 'system prompt');
+
+  const result = await session.handleMessage('update the current Skill');
+
+  assert.equal(result.text, 'done');
+  assert.equal(scheduledSyncs, 1);
+});
+
 test('AgentSession requestInterrupt aborts an in-flight model request', async () => {
   let observedSignal: AbortSignal | undefined;
 
@@ -260,6 +280,7 @@ test('clear commands discard an initialized session prompt hot reload', async ()
 function buildMockServices(overrides: any = {}): any {
   return {
     aiService: overrides.aiService ?? {},
+    afterTurnSkillSyncScheduler: overrides.afterTurnSkillSyncScheduler,
     toolManager: overrides.toolManager ?? {
       getToolDefinitions() { return []; },
       executeTool() { throw new Error('not expected'); },

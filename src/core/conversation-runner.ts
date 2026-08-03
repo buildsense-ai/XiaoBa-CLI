@@ -10,23 +10,6 @@ import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
-import { foldHistoricalReadFileMessages, resolveReadFileMessageFoldingOptions } from './read-file-message-folder';
-import { foldHistoricalExecuteShellMessages, resolveExecuteShellMessageFoldingOptions } from './execute-shell-message-folder';
-import {
-  formatToolResultContextReport,
-  resolveToolResultContextReportOptions,
-  summarizeToolResultContext,
-} from './tool-result-context-report';
-import {
-  resolveCurrentRunToolResultFoldingOptions,
-  selectProtectedCurrentRunToolResultIndexes,
-} from './current-run-tool-result-folding';
-import {
-  foldToolResultsTowardPromptBudget,
-  resolveAdaptiveToolResultFoldingOptions,
-} from './adaptive-tool-result-folder';
-import { resolveToolResultArtifactStoreOptions } from './tool-result-artifact-store';
-import { stabilizeToolResultsForHistory } from './stable-tool-result-history';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -221,8 +204,6 @@ export interface RunnerOptions {
   checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   /** Persists a successful continuation checkpoint before execution resumes. */
   onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
-  /** Session-owned metrics collector; defaults to an isolated runner collector. */
-  metrics?: Metrics;
 }
 
 /**
@@ -248,7 +229,6 @@ export class ConversationRunner {
   private suppressFinalResponse: boolean;
   private checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   private onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
-  private metrics: Metrics;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -278,7 +258,6 @@ export class ConversationRunner {
     this.onCompactionCheckpoint = options?.onCompactionCheckpoint;
     this.maxTurns = options?.maxTurns;
     this.suppressFinalResponse = options?.suppressFinalResponse === true;
-    this.metrics = options?.metrics ?? new Metrics();
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -288,7 +267,7 @@ export class ConversationRunner {
       maxContextTokens: this.maxPromptTokens,
       compactionThreshold: 0.5,
       summaryContentBudget: calculateSummaryBudgetTokens(this.maxPromptTokens),
-    }, this.metrics);
+    });
     this.promptTraceLogger = new PromptTraceLogger({
       sessionId: this.toolExecutionContext?.sessionId,
       surface: this.toolExecutionContext?.surface,
@@ -335,7 +314,7 @@ export class ConversationRunner {
       if (this.maxTurns && turns >= this.maxTurns) {
         Logger.warning(`[${this.sessionLabel}] 已达到最大推理轮次 ${this.maxTurns}，正在收束`);
         maxTurnsReached = true;
-        return this.finalizeRunResult({
+        return {
           response: `已达到本次后台任务的轮次预算（${this.maxTurns} 轮），我先基于已完成的信息收束。`,
           finalResponseVisible: true,
           turnsUsed: turns,
@@ -343,7 +322,7 @@ export class ConversationRunner {
           maxTurns: this.maxTurns,
           messages,
           newMessages,
-        });
+        };
       }
       turns++;
       this.injectSyntheticObservations(messages, turns);
@@ -372,7 +351,6 @@ export class ConversationRunner {
           }
           const compacted = await this.compressor.compact(messages, {
             signal: this.toolExecutionContext?.abortSignal,
-            promptCacheScopeKey: this.toolExecutionContext?.sessionId,
           });
           messages.length = 0;
           messages.push(...compacted);
@@ -421,98 +399,10 @@ export class ConversationRunner {
         currentDirectory,
       });
       nextTurnTransientHints = [];
-      const toolResultContextReportOptions = resolveToolResultContextReportOptions();
-      const toolResultContextBeforeFolding = toolResultContextReportOptions.enabled
-        ? summarizeToolResultContext(requestMessages, toolResultContextReportOptions)
-        : null;
-      const currentRunToolResultFoldingOptions = resolveCurrentRunToolResultFoldingOptions();
-      const foldCurrentRunToolResults = !this.checkpointCompactionCoordinator
-        && currentRunToolResultFoldingOptions.enabled;
-      const protectedCurrentRunToolResultIndexes = selectProtectedCurrentRunToolResultIndexes(
-        requestMessages,
-        currentRunToolResultFoldingOptions,
-      );
-      const toolResultArtifactStoreOptions = this.resolveToolResultArtifactStoreOptions();
-      const readFileFoldingOptions = {
-        ...resolveReadFileMessageFoldingOptions(),
-        foldCurrentRun: foldCurrentRunToolResults,
-        protectedCurrentRunToolResultIndexes,
-        artifactStore: toolResultArtifactStoreOptions,
-      };
-      const executeShellFoldingOptions = {
-        ...resolveExecuteShellMessageFoldingOptions(),
-        foldCurrentRun: foldCurrentRunToolResults,
-        protectedCurrentRunToolResultIndexes,
-        artifactStore: toolResultArtifactStoreOptions,
-      };
-      const readFileFolding = foldHistoricalReadFileMessages(
-        requestMessages,
-        readFileFoldingOptions,
-      );
-      requestMessages = readFileFolding.messages;
-      if (readFileFolding.stats.folded_count > 0) {
-        Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] read_file truncation: `
-          + `truncated=${readFileFolding.stats.folded_count}, `
-          + `current=${readFileFolding.stats.folded_current_turn_count}, `
-          + `saved≈${readFileFolding.stats.saved_tokens_est} tokens`,
-        );
-      }
-      const executeShellFolding = foldHistoricalExecuteShellMessages(
-        requestMessages,
-        executeShellFoldingOptions,
-      );
-      requestMessages = executeShellFolding.messages;
-      if (executeShellFolding.stats.folded_count > 0) {
-        Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] execute_shell truncation: `
-          + `truncated=${executeShellFolding.stats.folded_count}, `
-          + `current=${executeShellFolding.stats.folded_current_turn_count}, `
-          + `saved≈${executeShellFolding.stats.saved_tokens_est} tokens`,
-        );
-      }
-      const adaptiveFolding = foldToolResultsTowardPromptBudget(
-        requestMessages,
-        requestTools,
-        readFileFoldingOptions,
-        executeShellFoldingOptions,
-        this.resolveAdaptiveToolResultFoldingOptions(),
-      );
-      requestMessages = adaptiveFolding.messages;
-      if (adaptiveFolding.stats.folded_count > 0) {
-        Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] adaptive tool_result truncation: `
-          + `passes=${adaptiveFolding.stats.passes}, `
-          + `truncated=${adaptiveFolding.stats.folded_count}, `
-          + `current=${adaptiveFolding.stats.folded_current_turn_count}, `
-          + `saved≈${adaptiveFolding.stats.saved_tokens_est} tokens, `
-          + `prompt≈${adaptiveFolding.stats.started_prompt_tokens_est}->${adaptiveFolding.stats.finished_prompt_tokens_est}, `
-          + `target=${adaptiveFolding.stats.target_prompt_tokens}, `
-          + `thresholds=${adaptiveFolding.stats.thresholds_tried.join('/')}`,
-        );
-      }
-      if (toolResultContextBeforeFolding && toolResultContextBeforeFolding.tool_result_count > 0) {
-        const toolResultContextAfterFolding = summarizeToolResultContext(
-          requestMessages,
-          toolResultContextReportOptions,
-        );
-        for (const line of formatToolResultContextReport(
-          toolResultContextBeforeFolding,
-          toolResultContextAfterFolding,
-        )) {
-          Logger.info(`[${this.sessionLabel}Turn ${turns}] ${line}`);
-        }
-      }
       const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
       if (promptTrimmed && callbacks?.onThinking) {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
       }
-      // Freeze the exact final provider representation before the call, then copy
-      // those immutable bytes back into caller-owned durable history. Provider
-      // failures therefore cannot persist raw or turn-dependent tool results.
-      this.stabilizeToolResultHistory(requestMessages, []);
-      this.syncStableToolResultsToHistory(requestMessages, messages, newMessages);
-      this.stabilizeToolResultHistory(messages, newMessages);
       this.logProviderMessagesForDebug(requestMessages, requestTools, turns);
       this.promptTraceLogger.recordRequest(turns, requestMessages, requestTools);
       const aiStartTime = Date.now();
@@ -540,11 +430,12 @@ export class ConversationRunner {
           const assistantMessage: Message = {
             role: 'assistant',
             content: MODEL_IMAGE_SAFETY_MESSAGE,
+            ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
           };
           messages.push(assistantMessage);
           newMessages.push(assistantMessage);
           Logger.warning(`[${this.sessionLabel}Turn ${turns}] 图片被模型安全策略拒绝，已发送可见收束提示: ${formatProviderErrorForLog(error)}`);
-          return this.finalizeRunResult({
+          return {
             response: MODEL_IMAGE_SAFETY_MESSAGE,
             finalResponseVisible: true,
             turnsUsed: turns,
@@ -552,11 +443,11 @@ export class ConversationRunner {
             maxTurns: this.maxTurns,
             messages,
             newMessages,
-          });
+          };
         }
         if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
           Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${formatProviderErrorForLog(error)}`);
-          return this.finalizeRunResult({
+          return {
             response: '',
             finalResponseVisible: false,
             turnsUsed: turns,
@@ -564,23 +455,14 @@ export class ConversationRunner {
             maxTurns: this.maxTurns,
             messages,
             newMessages,
-          });
+          };
         }
         throw error;
       }
 
       if (response.usage) {
-        this.metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
-        const cachedReadTokens = response.usage.cachedReadTokens ?? 0;
-        const cachedWriteTokens = response.usage.cachedWriteTokens ?? 0;
-        const cacheReadRatioPercent = response.usage.promptTokens > 0
-          ? Math.round((cachedReadTokens / response.usage.promptTokens) * 100)
-          : 0;
-        Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] AI返回 tokens: `
-          + `${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}, `
-          + `cache: read=${cachedReadTokens}, write=${cachedWriteTokens}, read_ratio=${cacheReadRatioPercent}%`,
-        );
+        Metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
       }
 
       if ((!response.toolCalls || response.toolCalls.length === 0) && response.content) {
@@ -636,7 +518,11 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(visibleContent, 300)}`);
 
         if (visibleContent) {
-          const finalAssistantMessage: Message = { role: 'assistant', content: visibleContent };
+          const finalAssistantMessage: Message = {
+            role: 'assistant',
+            content: visibleContent,
+            ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
+          };
           messages.push(finalAssistantMessage);
           newMessages.push(finalAssistantMessage);
         }
@@ -665,7 +551,7 @@ export class ConversationRunner {
             }
           }
 
-          return this.finalizeRunResult({
+          return {
             response: finalText,
             finalResponseVisible: true,
             turnsUsed: turns,
@@ -673,14 +559,14 @@ export class ConversationRunner {
             maxTurns: this.maxTurns,
             messages,
             newMessages,
-          });
+          };
         }
 
         let cleanedResponse = visibleContent;
         cleanedResponse = cleanedResponse.replace(/^\[已发送信息\]\s*/, '');
         cleanedResponse = cleanedResponse.replace(/^\[已发送文件\]\s*/, '');
 
-        return this.finalizeRunResult({
+        return {
           response: cleanedResponse,
           finalResponseVisible: true,
           turnsUsed: turns,
@@ -688,7 +574,7 @@ export class ConversationRunner {
           maxTurns: this.maxTurns,
           messages,
           newMessages,
-        });
+        };
       }
 
       if (response.content) {
@@ -749,7 +635,7 @@ export class ConversationRunner {
           hasRecordedDecision = true;
         }
         const toolDuration = Date.now() - toolStart;
-        this.metrics.recordToolCall(toolName, toolDuration);
+        Metrics.recordToolCall(toolName, toolDuration);
         this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
         callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
@@ -809,7 +695,7 @@ export class ConversationRunner {
 
       if (shouldPauseTurn) {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] pause_turn 已触发，本轮收束`);
-        return this.finalizeRunResult({
+        return {
           response: '',
           finalResponseVisible: false,
           turnsUsed: turns,
@@ -817,14 +703,14 @@ export class ConversationRunner {
           maxTurns: this.maxTurns,
           messages,
           newMessages,
-        });
+        };
       }
 
       await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
       await this.appendPendingUserInput(messages, newMessages, turns);
     }
 
-    return this.finalizeRunResult({
+    return {
       response: '',
       finalResponseVisible: false,
       turnsUsed: turns,
@@ -832,54 +718,7 @@ export class ConversationRunner {
       maxTurns: this.maxTurns,
       messages,
       newMessages,
-    });
-  }
-
-  private finalizeRunResult(result: RunResult): RunResult {
-    this.stabilizeToolResultHistory(result.messages, result.newMessages);
-    return result;
-  }
-
-  private stabilizeToolResultHistory(
-    messages: Message[],
-    newMessages: Message[],
-  ): void {
-    const artifactStore = this.resolveToolResultArtifactStoreOptions();
-    const stats = stabilizeToolResultsForHistory(
-      messages,
-      newMessages,
-      { ...resolveReadFileMessageFoldingOptions(), artifactStore },
-      { ...resolveExecuteShellMessageFoldingOptions(), artifactStore },
-    );
-    if (stats.stabilizedCount > 0) {
-      Logger.info(
-        `[${this.sessionLabel}] stable tool_result history: `
-        + `stabilized=${stats.stabilizedCount}, `
-        + `read_file_truncated=${stats.readFileFoldedCount}, `
-        + `execute_shell_truncated=${stats.executeShellFoldedCount}`,
-      );
-    }
-  }
-
-  private syncStableToolResultsToHistory(
-    providerMessages: Message[],
-    messages: Message[],
-    newMessages: Message[],
-  ): void {
-    const stableByCallId = new Map<string, Message>();
-    for (const message of providerMessages) {
-      if (message.role === 'tool' && message.tool_call_id && message.__toolResultStable) {
-        stableByCallId.set(message.tool_call_id, message);
-      }
-    }
-    const sync = (message: Message): Message => {
-      const stable = message.tool_call_id ? stableByCallId.get(message.tool_call_id) : undefined;
-      return stable
-        ? { ...message, content: stable.content, __toolResultStable: true }
-        : message;
     };
-    this.replaceMessages(messages, messages.map(sync));
-    this.replaceMessages(newMessages, newMessages.map(sync));
   }
 
   private async appendPendingUserInput(
@@ -965,6 +804,7 @@ export class ConversationRunner {
     const result = await this.checkpointCompactionCoordinator.compactIfNeeded(messages, {
       sessionKey: this.toolExecutionContext?.sessionId || this.sessionLabel.trim() || 'runner',
       phase: 'mid_turn',
+      episodeId: this.episodeId,
       toolTokens: estimateToolsTokens(tools),
       signal: this.toolExecutionContext?.abortSignal,
       onStatus: callbacks?.onThinking
@@ -1115,6 +955,7 @@ export class ConversationRunner {
       ...(providerContent?.length
         ? { providerContent }
         : {}),
+      ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
     };
 
     if (assistant.content || assistant.tool_calls?.length) {
@@ -1149,6 +990,7 @@ export class ConversationRunner {
           ],
           tool_call_id: record.result.tool_call_id,
           name: record.result.name,
+          ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
         });
       } else {
         // 正常的 tool result
@@ -1157,15 +999,24 @@ export class ConversationRunner {
           content: record.toolContent,
           tool_call_id: record.result.tool_call_id,
           name: record.result.name,
+          ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
         });
 
         // 插入额外消息（如图片）
         if (record.newMessages) {
-          messages.push(...record.newMessages);
+          messages.push(...record.newMessages.map(message => ({
+            ...message,
+            ...(message.__episodeId || !this.episodeId ? {} : { __episodeId: this.episodeId }),
+          })));
         }
       }
     }
 
+    if (this.episodeId) {
+      for (const message of messages) {
+        if (!message.__episodeId) message.__episodeId = this.episodeId;
+      }
+    }
     return messages;
   }
 
@@ -1338,34 +1189,14 @@ export class ConversationRunner {
   }
 
   private insertProviderTransientHints(messages: Message[], hints: Message[]): Message[] {
-    if (hints.length === 0) return this.dedupeTransientMessages(messages);
+    if (hints.length === 0) return messages;
 
     const insertIndex = this.findCurrentDirectoryHintInsertIndex(messages);
-    return this.dedupeTransientMessages([
+    return [
       ...messages.slice(0, insertIndex),
       ...hints,
       ...messages.slice(insertIndex),
-    ]);
-  }
-
-  private dedupeTransientMessages(messages: Message[]): Message[] {
-    const seen = new Set<string>();
-    const dedupedReversed: Message[] = [];
-    for (let index = messages.length - 1; index >= 0; index--) {
-      const message = messages[index];
-      const key = this.transientMessageKey(message);
-      if (key && seen.has(key)) continue;
-      if (key) seen.add(key);
-      dedupedReversed.push(message);
-    }
-    return dedupedReversed.reverse();
-  }
-
-  private transientMessageKey(message: Message): string | null {
-    if (message.role !== 'system' && !message.__injected) return null;
-    if (typeof message.content !== 'string') return null;
-    const firstLine = message.content.split('\n', 1)[0].trim();
-    return /^\[transient_[a-z0-9_-]+\]$/i.test(firstLine) ? firstLine.toLowerCase() : null;
+    ];
   }
 
   private findCurrentDirectoryHintInsertIndex(messages: Message[]): number {
@@ -1644,7 +1475,12 @@ export class ConversationRunner {
   ) {
     const requestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
-      promptCacheScopeKey: this.toolExecutionContext?.sessionId,
+      promptCacheContext: {
+        sessionKey: this.toolExecutionContext?.sessionId || 'unknown',
+        ...(this.episodeId ? { currentEpisodeId: this.episodeId } : {}),
+        phase: 'normal' as const,
+        explicitCaching: true,
+      },
     };
     try {
       if (this.stream) {
@@ -1708,31 +1544,6 @@ export class ConversationRunner {
       `[上下文守门] 裁剪后: messages=${messageTokens}, tools=${toolTokens}, budget=${this.maxPromptTokens}`
     );
     return true;
-  }
-
-  private resolveAdaptiveToolResultFoldingOptions() {
-    const promptBudget = Math.max(1, this.maxPromptTokens);
-    const options = resolveAdaptiveToolResultFoldingOptions(process.env, {
-      targetPromptTokens: promptBudget,
-    });
-    return {
-      ...options,
-      targetPromptTokens: Math.min(options.targetPromptTokens, promptBudget),
-    };
-  }
-
-  private resolveToolResultArtifactStoreOptions() {
-    const workspaceRoot = this.toolExecutionContext?.workspaceRoot
-      || this.toolExecutionContext?.workingDirectory;
-    const defaultRoot = workspaceRoot
-      ? path.join(workspaceRoot, '.xiaoba', 'tool-results')
-      : undefined;
-    return resolveToolResultArtifactStoreOptions(process.env, {
-      enabled: Boolean(defaultRoot),
-      rootDirectory: defaultRoot,
-      sessionId: this.toolExecutionContext?.sessionId
-        || this.toolExecutionContext?.executionScope?.sessionKey,
-    });
   }
 
   private fitToolsToPromptBudget(tools: ToolDefinition[]): ToolDefinition[] {

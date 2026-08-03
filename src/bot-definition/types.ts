@@ -40,11 +40,20 @@ export interface BotPromptDefinition {
 /**
  * The deliberately small, portable part of a bot.
  */
+
+export interface BotSkillRef {
+  source: 'skillhub';
+  skillId: string;
+  version: string;
+  contentHash: string;
+}
+
 export interface BotDefinition {
   schema: typeof BOT_DEFINITION_SCHEMA;
   botId: string;
   model: BotModelDefinition;
   prompt?: BotPromptDefinition;
+  skills?: BotSkillRef[];
 }
 
 export interface LocalModelProfile {

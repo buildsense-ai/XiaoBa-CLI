@@ -215,7 +215,7 @@ threshold = 65%
    - 重新运行或重读来源的指令。
 4. 摘要生成失败时，原始 transcript 原样返回给后续兜底。
 
-已有 `read_file` / `execute_shell` 历史折叠仍可把完整结果保存为 `tool-result://...` 产物。检查点链路不依赖这两种工具的私有格式。
+工具结果不会在正常 provider 请求前被重写或替换。只有生成 checkpoint 的临时副本会使用上述证据代理，原始 Session 和正常模型请求仍保留完整结果。
 
 ## 重复压缩
 
@@ -275,7 +275,7 @@ checkpoint 失败
 → 不替换原 transcript
 → 不推进检查点状态
 → ConversationRunner 继续原链路
-→ provider 请求前的历史工具折叠和机械预算裁剪作为最后兜底
+→ provider 请求前的机械预算裁剪作为最后兜底
 ```
 
 ### 检查点持久化失败
@@ -308,8 +308,9 @@ XIAOBA_CHECKPOINT_COMPACTION_ENABLED=false
 
 新链路启用时：
 
-- 当前 episode 的工具结果不再提前折叠，优先让 checkpoint 摘要读取完整结果；
-- 历史 `read_file` / `execute_shell` 折叠仍保留；
+- 当前 episode 和历史 episode 的工具结果都不再提前折叠；
+- `read_file`、`execute_shell`、adaptive folding 和 current-run folding 的旧环境变量不再影响运行；
+- 超大工具结果只在 checkpoint 生成副本中转换为带哈希和头尾内容的证据代理；
 - provider 请求前的 prompt budget guard 仍保留；
 - hard trim 只作为 checkpoint 失败或异常超限时的最后防线；
 - Runner 内旧 AI compressor 不重新启用。

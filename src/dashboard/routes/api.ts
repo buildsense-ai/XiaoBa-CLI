@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { PathResolver } from '../../utils/path-resolver';
+import { Logger } from '../../utils/logger';
 import { APP_VERSION } from '../../version';
 import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../../types';
 import type { ToolDefinition } from '../../types/tool';
@@ -57,6 +58,7 @@ import { catalogRuntimeMatchesModelId, createBotDefinitionSyncService } from '..
 import { prepareBoundBotDefinition } from '../../bot-definition/activation';
 import { createBotDefinitionCloudSyncService } from '../../bot-definition/cloud-sync';
 import { getPromptReconcileCoordinator } from '../../bot-definition/prompt-sync';
+import { rollbackPreparedBotSkills } from '../../bot-skills/runtime';
 import {
   customModelDefinitionToConfig,
   modelRuntimeToConfig,
@@ -877,10 +879,11 @@ async function commitCatsBotBindingAndStartConnector(
   const promptCoordinator = getPromptReconcileCoordinator({ runtimeRoot: runtimeDataRoot() });
   await promptCoordinator.prepareCurrentBotForSwitch();
   const promptSnapshot = promptCoordinator.captureActiveSnapshot();
+  let preparedBot: Awaited<ReturnType<typeof prepareBoundBotDefinition>>;
   try {
     const warnings = await ensureCatsFriendBinding(state, input.userUid, input.botUid, input.apiKey);
     const updated = writeCatsBotBinding(state, input);
-    const preparedBot = await prepareBoundBotDefinition({
+    preparedBot = await prepareBoundBotDefinition({
       runtimeRoot: runtimeDataRoot(),
       botId: input.botUid,
       selectedCatalogRuntime: input.selectedCatalogRuntime,
@@ -916,6 +919,11 @@ async function commitCatsBotBindingAndStartConnector(
       botDefinitionSync,
     };
   } catch (error) {
+    try {
+      await rollbackPreparedBotSkills(runtimeDataRoot(), preparedBot?.skillSync);
+    } catch (workspaceError) {
+      Logger.warning(`Bot Skill 工作区回滚失败: ${String((workspaceError as Error)?.message || workspaceError)}`);
+    }
     rollback();
     promptCoordinator.restoreActiveSnapshot(promptSnapshot);
     throw error;

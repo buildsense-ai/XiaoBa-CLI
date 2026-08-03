@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -22,10 +23,63 @@ or:
 }
 
 const publicKeyPem = fs.readFileSync(path.resolve(publicKeyPath), 'utf8').trim();
-const target = path.join(rootDir, 'src', 'skillhub', 'trusted-keys.ts');
-const escapedPem = publicKeyPem.replace(/`/g, '\\`');
+const target = path.resolve(
+  process.env.CATSCO_SKILLHUB_TRUSTED_KEYS_PATH
+    || path.join(rootDir, 'src', 'skillhub', 'trusted-keys.ts'),
+);
+const existingRoots = fs.existsSync(target) ? readExistingRoots(target) : [];
+const roots = new Map(existingRoots.map(root => [root.keyId, root]));
+roots.set(keyId, { keyId, publicKeyPem });
 
-const content = `export interface SkillHubTrustedRootKey {
+fs.writeFileSync(target, renderTrustedKeys([...roots.values()]), 'utf8');
+console.log(`Updated ${path.relative(rootDir, target)} with ${keyId}; trusted roots=${roots.size}`);
+
+function readExistingRoots(filePath) {
+  const sourceText = fs.readFileSync(filePath, 'utf8');
+  const source = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (declaration.name.getText(source) !== 'CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS') continue;
+      if (!declaration.initializer || !ts.isArrayLiteralExpression(declaration.initializer)) {
+        throw new Error('CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS must be an array literal.');
+      }
+      return declaration.initializer.elements.map((element, index) => readRoot(element, source, index));
+    }
+  }
+  throw new Error('CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS was not found.');
+}
+
+function readRoot(element, source, index) {
+  if (!ts.isObjectLiteralExpression(element)) {
+    throw new Error(`Trusted root at index ${index} must be an object literal.`);
+  }
+  const values = {};
+  for (const property of element.properties) {
+    if (!ts.isPropertyAssignment(property)) continue;
+    const name = property.name.getText(source).replace(/^['"]|['"]$/g, '');
+    if (name === 'keyId' || name === 'publicKeyPem') {
+      values[name] = readString(property.initializer, source, name);
+    }
+  }
+  if (!values.keyId || !values.publicKeyPem) {
+    throw new Error(`Trusted root at index ${index} is missing keyId or publicKeyPem.`);
+  }
+  return values;
+}
+
+function readString(node, source, label) {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  throw new Error(`${label} must be a string literal, received ${node.getText(source)}.`);
+}
+
+function renderTrustedKeys(roots) {
+  const entries = roots.map(root => `  {
+    keyId: ${JSON.stringify(root.keyId)},
+    algorithm: 'ed25519',
+    publicKeyPem: \`${root.publicKeyPem.replace(/`/g, '\\`')}\`,
+  },`).join('\n');
+  return `export interface SkillHubTrustedRootKey {
   keyId: string;
   algorithm: 'ed25519';
   publicKeyPem: string;
@@ -38,13 +92,7 @@ const content = `export interface SkillHubTrustedRootKey {
  * key must stay on the SkillHub cloud side and must not be bundled in Agent.
  */
 export const CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS: SkillHubTrustedRootKey[] = [
-  {
-    keyId: ${JSON.stringify(keyId)},
-    algorithm: 'ed25519',
-    publicKeyPem: \`${escapedPem}\`,
-  },
+${entries}
 ];
 `;
-
-fs.writeFileSync(target, content, 'utf8');
-console.log(`Updated ${path.relative(rootDir, target)} with ${keyId}`);
+}

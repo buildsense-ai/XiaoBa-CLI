@@ -70,6 +70,78 @@ describe('BotDefinition cloud synchronization', () => {
     });
   });
 
+  test('preserves cached Skills when an older cloud Definition omits the field', async () => {
+    const runtimeRoot = makeRoot();
+    const definitionService = createBotDefinitionSyncService({ runtimeRoot, env: {} });
+    definitionService.publish('43', definition('minimax-m3').model);
+    definitionService.updateSkills('43', [{
+      source: 'skillhub',
+      skillId: 'local-skill',
+      version: '1',
+      contentHash: 'a'.repeat(64),
+    }]);
+    const sync = new BotDefinitionCloudSyncService({
+      runtimeRoot,
+      env: {},
+      definitionService,
+      fetchImpl: (async () => response(5, definition('gpt-5.6-sol'))) as typeof fetch,
+    });
+
+    const snapshot = await sync.pull('43', auth);
+
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(snapshot?.definition ?? {}, 'skills'),
+      false,
+    );
+    assert.deepStrictEqual(definitionService.read('43')?.skills, [{
+      source: 'skillhub',
+      skillId: 'local-skill',
+      version: '1',
+      contentHash: 'a'.repeat(64),
+    }]);
+    assert.deepStrictEqual(definitionService.read('43')?.model, {
+      kind: 'catalog',
+      modelId: 'gpt-5.6-sol',
+    });
+  });
+
+  test('does not commit cloud Skills before the workspace sync succeeds', async () => {
+    const runtimeRoot = makeRoot();
+    const definitionService = createBotDefinitionSyncService({ runtimeRoot, env: {} });
+    const localSkills = [{
+      source: 'skillhub' as const,
+      skillId: 'local-skill',
+      version: '1',
+      contentHash: 'a'.repeat(64),
+    }];
+    const cloudSkills = [{
+      source: 'skillhub' as const,
+      skillId: 'cloud-skill',
+      version: '2',
+      contentHash: 'b'.repeat(64),
+    }];
+    definitionService.publish('43', definition('minimax-m3').model);
+    definitionService.updateSkills('43', localSkills);
+    const sync = new BotDefinitionCloudSyncService({
+      runtimeRoot,
+      env: {},
+      definitionService,
+      fetchImpl: (async () => response(6, {
+        ...definition('gpt-5.6-sol'),
+        skills: cloudSkills,
+      })) as typeof fetch,
+    });
+
+    const snapshot = await sync.pull('43', auth);
+
+    assert.deepStrictEqual(snapshot?.definition?.skills, cloudSkills);
+    assert.deepStrictEqual(definitionService.read('43')?.skills, localSkills);
+    assert.deepStrictEqual(definitionService.read('43')?.model, {
+      kind: 'catalog',
+      modelId: 'gpt-5.6-sol',
+    });
+  });
+
   test('keeps a failed local update pending and retries it later', async () => {
     const runtimeRoot = makeRoot();
     const definitionService = createBotDefinitionSyncService({ runtimeRoot, env: {} });
