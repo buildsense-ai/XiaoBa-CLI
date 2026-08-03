@@ -75,7 +75,41 @@ test('records every provider retry as a correlated attempt lifecycle', async () 
   assert.equal(events[0].context?.episodeNumber, 4);
   assert.equal(events[1].retry?.retryNumber, 1);
   assert.equal(events[1].retry?.delayMs, 0);
+  assert.equal(events[1].retry?.triggerReason, 'http_503');
+  assert.equal(events[1].retry?.maxDelayMs, 30_000);
   assert.equal(events[3].response?.usage?.cachedReadTokens, 60);
+});
+
+test('records an opaque provider rejection retry as a new physical attempt', async () => {
+  const service = createTestService();
+  const events: ModelAttemptEvent[] = [];
+  let calls = 0;
+  (service as any).sleepWithAbort = async () => undefined;
+  (service as any).provider = {
+    chat: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error('Request failed with status code 400'), {
+          response: { status: 400, headers: { 'retry-after': '0' } },
+        });
+      }
+      return { content: 'recovered' };
+    },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+
+  await service.chat([], undefined, { modelAttemptSink: collectingSink(events) });
+
+  assert.deepEqual(events.map(event => event.outcome), ['started', 'retrying', 'started', 'succeeded']);
+  assert.equal(new Set(events.map(event => event.callId)).size, 1);
+  assert.deepEqual(events.map(event => event.attemptNumber), [1, 1, 2, 2]);
+  assert.equal(events[0].attemptId, events[1].attemptId);
+  assert.equal(events[2].attemptId, events[3].attemptId);
+  assert.notEqual(events[0].attemptId, events[2].attemptId);
+  assert.equal(events[1].retry?.triggerReason, 'opaque_http_400');
+  assert.equal(events[1].retry?.maxRetries, 2);
+  assert.equal(events[1].retry?.maxElapsedMs, 15_000);
+  assert.equal(events[1].retry?.maxDelayMs, 2_000);
 });
 
 test('records a non-retryable provider rejection as the terminal attempt', async () => {
