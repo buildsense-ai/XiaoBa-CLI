@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pdf-author-editor edit plan",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["mode", "user_intent", "recommended_route", "routes_considered", "execution"],
+  "properties": {
+    "mode": {
+      "const": "semantic"
+    },
+    "source_pdf": {
+      "type": "string"
+    },
+    "user_intent": {
+      "type": "string"
+    },
+    "document_assessment": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pdf_type": { "type": "string" },
+        "layout_complexity": { "type": "string" },
+        "requires_read_pdf": { "type": "boolean" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "kind"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string" },
+          "target_text": { "type": "string" },
+          "replacement_text": { "type": "string" },
+          "pages": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 1 }
+          },
+          "page": { "type": ["integer", "null"], "minimum": 1 },
+          "rect": {
+            "type": ["array", "null"],
+            "minItems": 4,
+            "maxItems": 4,
+            "items": { "type": "number" }
+          },
+          "occurrence": {
+            "oneOf": [
+              { "type": "integer", "minimum": 1 },
+              { "type": "string", "enum": ["all"] },
+              { "type": "null" }
+            ]
+          },
+          "match_index": { "type": ["integer", "null"], "minimum": 1 },
+          "match_mode": {
+            "type": "string",
+            "enum": ["auto", "exact", "normalized", "normalized_words"]
+          },
+          "allow_multiple": { "type": "boolean" },
+          "complexity": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "recommended_route": {
+      "type": "string",
+      "enum": ["short_text_edit", "overlay_edit", "rebuild", "blocked"]
+    },
+    "routes_considered": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["route", "allowed", "reason"],
+        "properties": {
+          "route": {
+            "type": "string",
+            "enum": ["short_text_edit", "overlay_edit", "rebuild", "blocked"]
+          },
+          "allowed": { "type": "boolean" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["plan_required", "auto_execute"],
+      "properties": {
+        "plan_required": { "type": "boolean" },
+        "auto_execute": { "type": "boolean" },
+        "fallback": { "type": "string" }
+      }
+    }
+  }
+}

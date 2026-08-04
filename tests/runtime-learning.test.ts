@@ -277,8 +277,12 @@ async function wakeUntil(
     const result = await env.runtimeLearning.wake('manual');
     onWake?.(result);
     const after = durableQuantumProgress(env);
-    assert.ok(after - before >= 0 && after - before <= 1,
-      `one heartbeat may advance at most one Quantum; observed progress delta ${after - before}`);
+    const maxQuantaPerWake = Math.max(
+      1,
+      Math.floor(env.runtimeLearning.getConfig().skillEvolutionReviewMaxQuantaPerWake),
+    );
+    assert.ok(after - before >= 0 && after - before <= maxQuantaPerWake,
+      `one heartbeat may advance at most ${maxQuantaPerWake} Quanta; observed progress delta ${after - before}`);
     if (done()) return result;
   }
   throw new Error(`Durable review did not converge after ${maxWakes} wakes.`);
@@ -437,6 +441,7 @@ function setupEnv(
     CATSCO_USER_DATA_DIR: process.env.CATSCO_USER_DATA_DIR,
     XIAOBA_ELECTRON_USER_DATA_DIR: process.env.XIAOBA_ELECTRON_USER_DATA_DIR,
     XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE: process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE,
+    XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE: process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE,
     XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED,
     XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS: process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS,
     XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER,
@@ -456,6 +461,7 @@ function setupEnv(
   delete process.env.XIAOBA_ELECTRON_USER_DATA_DIR;
   process.env.XIAOBA_RUNTIME_ROOT = root;
   process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE = reassessmentManifestPath;
+  process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE = '1';
   process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'false';
   delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_ENABLED_PROVIDERS;
   delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER;
@@ -628,6 +634,29 @@ describe('RuntimeLearning — test environment isolation', () => {
         else process.env[key] = value;
       }
       fs.rmSync(hostileRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds the per-wake review Quantum batch configuration', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-config-'));
+    try {
+      assert.equal(getDistillationHeartbeatConfig(root, {
+        XIAOBA_RUNTIME_ROOT: root,
+      }).skillEvolutionReviewMaxQuantaPerWake, 4);
+      assert.equal(getDistillationHeartbeatConfig(root, {
+        XIAOBA_RUNTIME_ROOT: root,
+        XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE: '16',
+      }).skillEvolutionReviewMaxQuantaPerWake, 16);
+      assert.equal(getDistillationHeartbeatConfig(root, {
+        XIAOBA_RUNTIME_ROOT: root,
+        XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE: '1',
+      }).skillEvolutionReviewMaxQuantaPerWake, 1);
+      assert.equal(getDistillationHeartbeatConfig(root, {
+        XIAOBA_RUNTIME_ROOT: root,
+        XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE: '17',
+      }).skillEvolutionReviewMaxQuantaPerWake, 4);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });
@@ -1471,6 +1500,35 @@ describe('RuntimeLearning — AC3: Due Review', () => {
 
     assert.equal(result.review.status, 'succeeded');
     assert.ok(result.review.operationalRetries >= 0);
+  });
+
+  test('one wake advances a bounded serial batch across Jobs and at most one Quantum per Job', async () => {
+    const engine = env.skillEvolution.getEvidenceReviewEngine();
+    const jobIds = Array.from({ length: 6 }, (_, index) => {
+      const bundle = runtimeReviewBundle(`v3:batch-${index}.jsonl:0:20:batch-review-${index}`);
+      return engine.ensureJob({
+        bundle,
+        candidate: bundle.episode as DistilledKnowledgeCandidate,
+        workClass: 'live_learning',
+      }).jobId;
+    });
+    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxQuantaPerWake = 4;
+    seedDueReviewContinuation(env.episodeStorePath);
+
+    const before = engine.loadStore();
+    await env.runtimeLearning.wake('manual');
+    const after = engine.loadStore();
+
+    const progressByJob = jobIds.map(jobId => {
+      const succeededBefore = Object.values(before.jobs[jobId]!.quanta)
+        .filter(quantum => quantum.state === 'succeeded').length;
+      const succeededAfter = Object.values(after.jobs[jobId]!.quanta)
+        .filter(quantum => quantum.state === 'succeeded').length;
+      return succeededAfter - succeededBefore;
+    });
+    assert.equal(progressByJob.reduce((sum, value) => sum + value, 0), 4);
+    assert.equal(progressByJob.filter(value => value === 1).length, 4);
+    assert.equal(progressByJob.every(value => value >= 0 && value <= 1), true);
   });
 
   test('candidate cap persists a restart-safe continuation and schedules it', async () => {

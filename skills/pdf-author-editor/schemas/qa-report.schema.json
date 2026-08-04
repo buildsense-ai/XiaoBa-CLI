@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pdf-author-editor QA report",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["skill", "version", "status", "ok", "route", "execution", "summary", "artifacts", "checks", "warnings"],
+  "properties": {
+    "skill": {
+      "const": "pdf-author-editor"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "route": {
+      "type": "object"
+    },
+    "execution": {
+      "type": "object"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "errors", "warnings"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["pass", "fail"] },
+          "detail": {},
+          "errors": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "warnings": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

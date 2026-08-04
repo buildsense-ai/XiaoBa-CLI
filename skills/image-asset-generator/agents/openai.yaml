@@ -1,0 +1,4 @@
+interface:
+  display_name: "Image Asset Generator"
+  short_description: "Generate one image from text and optional references."
+  default_prompt: "Use $image-asset-generator to turn this request and any reference images into one project-ready raster asset with traceable inputs and review."

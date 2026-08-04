@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en" data-delivery-type="report">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="generator" content="pdf-author-editor">
+  <title>{{TITLE}}</title>
+  <style>
+    {{CSS}}
+    @page {
+      size: {{PAGE_SIZE}} {{PAGE_ORIENTATION}};
+      margin: {{PAGE_MARGIN}};
+    }
+    body {
+      background: #f4f7fb;
+      color: #172033;
+      font-family: "Segoe UI", Arial, sans-serif;
+      line-height: 1.55;
+      margin: 0;
+    }
+    .page-shell {
+      box-sizing: border-box;
+      max-width: 940px;
+      margin: 0 auto;
+      padding: 40px 32px;
+    }
+    .doc-header {
+      border-bottom: 2px solid #dde5ef;
+      margin-bottom: 28px;
+      padding-bottom: 22px;
+    }
+    .doc-title {
+      font-size: 34px;
+      line-height: 1.15;
+      margin: 0 0 10px;
+    }
+    .doc-subtitle {
+      color: #526174;
+      font-size: 17px;
+      margin: 0;
+    }
+    .doc-meta {
+      color: #69778a;
+      font-size: 12px;
+      margin-top: 14px;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, h4 {
+      color: #142033;
+      line-height: 1.24;
+      margin: 1.35em 0 0.45em;
+      break-after: avoid;
+    }
+    h1 { font-size: 28px; }
+    h2 { font-size: 22px; }
+    h3 { font-size: 18px; }
+    h4 { font-size: 15px; }
+    p {
+      margin: 0.65em 0;
+    }
+    .content-block {
+      break-inside: avoid;
+    }
+    table {
+      border-collapse: collapse;
+      font-size: 13px;
+      margin: 18px 0;
+      width: 100%;
+      break-inside: avoid;
+    }
+    th, td {
+      border: 1px solid #d9e1ec;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eef4fa;
+      color: #22334a;
+      font-weight: 650;
+    }
+    figcaption, .table-caption {
+      color: #66758a;
+      font-size: 12px;
+      margin-top: 6px;
+    }
+    .callout {
+      background: #eef7ff;
+      border-left: 4px solid #2f80ed;
+      border-radius: 6px;
+      margin: 16px 0;
+      padding: 12px 14px;
+      break-inside: avoid;
+    }
+    .callout.warning {
+      background: #fff7e8;
+      border-left-color: #d9822b;
+    }
+    .callout.success {
+      background: #edf8f2;
+      border-left-color: #2f9e62;
+    }
+    .callout-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .divider {
+      border: 0;
+      border-top: 1px solid #dfe7f0;
+      margin: 24px 0;
+    }
+    img {
+      display: block;
+      height: auto;
+      max-width: 100%;
+    }
+    @media print {
+      body {
+        background: #fff;
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+      .page-shell {
+        max-width: none;
+        padding: 0;
+      }
+      .no-print {
+        display: none !important;
+      }
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page-shell">
+    <header class="doc-header">
+      <h1 class="doc-title">{{TITLE}}</h1>
+      <p class="doc-subtitle">{{SUBTITLE}}</p>
+      <div class="doc-meta">{{META}}</div>
+    </header>
+    {{CONTENT}}
+  </main>
+  <script>window.__RENDER_READY__ = true;</script>
+</body>
+</html>

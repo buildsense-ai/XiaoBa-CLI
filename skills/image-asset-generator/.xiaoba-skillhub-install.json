@@ -1,0 +1,16 @@
+{
+  "source": "skillhub",
+  "skillId": "atridaisuki/image-asset-generator",
+  "name": "Image Asset Generator",
+  "installName": "image-asset-generator",
+  "version": "1.0.13",
+  "packageChecksumSha256": "71d260e5615426d813444cfa90dbe88ec6d3ab67f49a523161b4fa8efee952ef",
+  "signature": {
+    "keyId": "catsco-skillhub-prod-2026-01",
+    "signedAt": "2026-07-21T08:51:33.779Z",
+    "algorithm": "ed25519",
+    "signature": "8Vp5bQCPPQNkMpytHmMJUaXMjr9EY6++HcVG+3X4xbJ7Im3ppNGCUJ0FgNXV47Wdv8MBMUPEs2x43KS0ZAABAQ=="
+  },
+  "packageUrl": "https://logs.catsco.fun:9000/packages/atridaisuki/image-asset-generator/1.0.13/image-asset-generator-1.0.13-71d260e56154.skillpkg",
+  "installedAt": "2026-07-27T03:29:38.905Z"
+}

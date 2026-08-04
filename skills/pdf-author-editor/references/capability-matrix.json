@@ -1,0 +1,98 @@
+{
+  "skill": "pdf-author-editor",
+  "version": "1.2.5",
+  "default_output_root": "work/pdf-author-editor-runs/",
+  "routes": [
+    {
+      "kind": "author",
+      "name": "author",
+      "purpose": "Create a new PDF from known content.",
+      "input_types": ["markdown", "json", "html"],
+      "operations": ["author"],
+      "required_inputs": ["input.path"],
+      "optional_inputs": ["delivery_type", "template", "page", "theme", "options.name", "options.delivery_type", "options.template"],
+      "outputs": ["capabilityReport", "sourceHtml", "pdf", "htmlQa", "pdfQa", "preview", "qaReport", "manifest"],
+      "execution": "direct",
+      "blocked_conditions": ["author_input_missing", "html_render_failed", "pdf_export_failed"],
+      "boundaries": ["does_not_read_existing_pdf", "does_not_modify_existing_pdf"]
+    },
+    {
+      "kind": "modify",
+      "name": "modify.page_ops",
+      "purpose": "Apply page-level operations to existing PDFs.",
+      "input_types": ["pdf"],
+      "operations": ["page_ops", "merge", "split", "delete", "delete_pages", "rotate", "rotate_pages", "reorder", "reorder_pages", "extract", "extract_pages"],
+      "required_inputs": ["input.path or inputs[]"],
+      "optional_inputs": ["actions", "pages", "output"],
+      "outputs": ["capabilityReport", "pdf", "pdfQa", "preview", "partChecks", "qaReport", "manifest"],
+      "execution": "direct",
+      "blocked_conditions": ["input_missing", "page_out_of_range", "operation_missing", "output_would_overwrite_input"],
+      "boundaries": ["does_not_interpret_document_meaning", "does_not_change_text_content"]
+    },
+    {
+      "kind": "modify",
+      "name": "modify.overlay",
+      "purpose": "Add visible marks to an existing PDF.",
+      "input_types": ["pdf"],
+      "operations": ["overlay", "watermark", "stamp", "page_number", "highlight", "note", "annotation", "cover_box"],
+      "required_inputs": ["input.path", "actions[]"],
+      "optional_inputs": ["pages", "rect", "target_text", "position", "opacity", "color"],
+      "outputs": ["capabilityReport", "pdf", "pdfQa", "preview", "qaReport", "manifest"],
+      "execution": "direct",
+      "blocked_conditions": ["input_missing", "action_missing", "target_text_not_found", "page_out_of_range", "output_would_overwrite_input"],
+      "boundaries": ["adds_visible_marks", "does_not_rebuild_document_content"]
+    },
+    {
+      "kind": "semantic",
+      "name": "semantic.short_text_edit",
+      "purpose": "Make a targeted visible text replacement when the replacement fits near the original target.",
+      "input_types": ["pdf"],
+      "operations": ["short_text_edit"],
+      "required_inputs": ["input.path", "changes[].target_text", "changes[].replacement_text"],
+      "optional_inputs": ["changes[].pages", "changes[].occurrence", "changes[].match_index", "changes[].match_mode", "changes[].rect"],
+      "outputs": ["capabilityReport", "editPlan", "pdf", "pdfQa", "preview", "semanticResult", "semanticVerification", "semanticVisualDiff", "qaReport", "manifest"],
+      "execution": "plan_then_execute",
+      "blocked_conditions": ["source_pdf_missing", "target_text_missing", "target_text_not_found", "target_text_not_unique", "occurrence_out_of_range", "replacement_too_long_for_short_text_edit"],
+      "boundaries": ["changes_rendered_appearance", "may_leave_original_text_extractable", "use_rebuild_for_regenerated_content"]
+    },
+    {
+      "kind": "semantic",
+      "name": "semantic.overlay_edit",
+      "purpose": "Make a targeted visible replacement with a larger overlay box.",
+      "input_types": ["pdf"],
+      "operations": ["overlay_edit"],
+      "required_inputs": ["input.path", "changes[].target_text", "changes[].replacement_text"],
+      "optional_inputs": ["changes[].pages", "changes[].occurrence", "changes[].match_index", "changes[].match_mode", "changes[].rect"],
+      "outputs": ["capabilityReport", "editPlan", "pdf", "pdfQa", "preview", "semanticResult", "semanticVerification", "semanticVisualDiff", "qaReport", "manifest"],
+      "execution": "plan_then_execute",
+      "blocked_conditions": ["source_pdf_missing", "target_text_missing", "target_text_not_found", "target_text_not_unique", "occurrence_out_of_range"],
+      "boundaries": ["changes_rendered_appearance", "may_leave_original_text_extractable", "use_rebuild_for_regenerated_content"]
+    },
+    {
+      "kind": "semantic",
+      "name": "semantic.rebuild",
+      "purpose": "Regenerate a revised PDF from structured content or read-pdf text.",
+      "input_types": ["read-pdf-json", "json"],
+      "operations": ["rebuild"],
+      "required_inputs": ["read_pdf_result or revised_content or structured_content or content"],
+      "optional_inputs": ["changes[]", "meta", "page", "delivery_type"],
+      "outputs": ["capabilityReport", "editPlan", "rebuildSource", "sourceHtml", "pdf", "htmlQa", "pdfQa", "preview", "semanticResult", "semanticVerification", "qaReport", "manifest"],
+      "execution": "plan_then_author",
+      "blocked_conditions": ["rebuild_content_missing", "read_pdf_result_missing", "author_render_failed", "pdf_export_failed"],
+      "boundaries": ["regenerates_layout_from_structured_content", "does_not_preserve_pdf_internal_objects"]
+    },
+    {
+      "kind": "blocked",
+      "name": "blocked",
+      "purpose": "Return a technical blocked result when no route can execute with current inputs.",
+      "input_types": ["unknown"],
+      "operations": ["blocked"],
+      "required_inputs": [],
+      "optional_inputs": [],
+      "outputs": ["capabilityReport", "editPlan", "qaReport", "manifest"],
+      "execution": "no_execution",
+      "blocked_conditions": ["input_missing", "unsupported_operation", "semantic_input_missing", "target_text_not_unique", "target_text_not_found"],
+      "boundaries": ["does_not_emit_partial_pdf"]
+    }
+  ]
+}

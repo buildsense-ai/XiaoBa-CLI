@@ -1,0 +1,23 @@
+{
+  "mode": "modify",
+  "intent": "Delete page 3 and rotate the first page.",
+  "operation": "page_ops",
+  "input": {
+    "path": "input.pdf",
+    "type": "pdf"
+  },
+  "actions": [
+    {
+      "type": "delete_pages",
+      "pages": [3]
+    },
+    {
+      "type": "rotate_pages",
+      "pages": [1],
+      "degrees": 90
+    }
+  ],
+  "options": {
+    "name": "modify-page-ops"
+  }
+}

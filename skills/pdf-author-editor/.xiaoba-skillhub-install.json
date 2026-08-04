@@ -1,0 +1,16 @@
+{
+  "source": "skillhub",
+  "skillId": "atridaisuki/pdf-author-editor",
+  "name": "pdf-author-editor",
+  "installName": "pdf-author-editor",
+  "version": "1.2.5",
+  "packageChecksumSha256": "62545241b6243eeac3202f85006ebce181e152977669737558d38d2ab93719c0",
+  "signature": {
+    "keyId": "catsco-skillhub-prod-2026-01",
+    "signedAt": "2026-07-09T08:00:59.811Z",
+    "algorithm": "ed25519",
+    "signature": "2a+cEuNAN0KLK3SJ1ceBE4G7YwXAMjxzVyFlGpr5uCuxQfE7cP5ipvCJFX1nPRcVGr94sNFxaR8RpUMVWGxfBg=="
+  },
+  "packageUrl": "https://logs.catsco.fun:9000/packages/atridaisuki/pdf-author-editor/1.2.5/pdf-author-editor-1.2.5-62545241b624.skillpkg",
+  "installedAt": "2026-07-27T03:29:38.765Z"
+}

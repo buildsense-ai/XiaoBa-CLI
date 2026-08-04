@@ -1,0 +1,11 @@
+{
+  "mode": "author",
+  "intent": "Render known report content as a polished PDF.",
+  "input": {
+    "path": "author-report-content.json",
+    "type": "json"
+  },
+  "options": {
+    "name": "author-report"
+  }
+}

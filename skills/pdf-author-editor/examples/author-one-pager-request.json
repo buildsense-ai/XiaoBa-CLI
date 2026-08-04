@@ -1,0 +1,13 @@
+{
+  "mode": "author",
+  "intent": "Render a strict one-page brief PDF from known structured content.",
+  "input": {
+    "path": "author-one-pager-content.json",
+    "type": "json"
+  },
+  "options": {
+    "name": "author-one-pager",
+    "template": "executive-brief",
+    "delivery_type": "one-pager"
+  }
+}

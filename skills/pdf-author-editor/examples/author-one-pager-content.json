@@ -1,0 +1,62 @@
+{
+  "delivery_type": "one-pager",
+  "template": "executive-brief",
+  "meta": {
+    "title": "Weekly Operations Brief",
+    "subtitle": "One-page status for document production, review, and follow-up work",
+    "author": "Operations Team",
+    "date": "2026-07-06"
+  },
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": "compact"
+  },
+  "content": [
+    {
+      "type": "callout",
+      "tone": "success",
+      "title": "Overall status",
+      "text": "The first draft is render-ready. Remaining work is focused on one approval, one asset check, and final PDF QA."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "This Week"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Confirm the content owner before final export.",
+        "Keep all assets local so the PDF remains self-contained.",
+        "Run PDF QA after every visible revision."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Open Items"
+    },
+    {
+      "type": "table",
+      "columns": ["Item", "Owner", "Due"],
+      "rows": [
+        ["Review approval", "Project lead", "Tue"],
+        ["Asset check", "Design", "Wed"],
+        ["Final export", "Operations", "Fri"]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Decision"
+    },
+    {
+      "type": "paragraph",
+      "text": "Use the current content for the first generation run, then handle page-level revisions through the modify flow."
+    }
+  ],
+  "export": {
+    "pdf": true
+  }
+}

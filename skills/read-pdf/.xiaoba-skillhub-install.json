@@ -1,0 +1,16 @@
+{
+  "source": "skillhub",
+  "skillId": "atridaisuki/read-pdf",
+  "name": "read-pdf",
+  "installName": "read-pdf",
+  "version": "1.0.15",
+  "packageChecksumSha256": "4bd23949ca3ea5f0366c9ee9024ab3fead31e51a11e2815cd994b48b98887653",
+  "signature": {
+    "keyId": "catsco-skillhub-prod-2026-01",
+    "signedAt": "2026-07-16T06:01:47.927Z",
+    "algorithm": "ed25519",
+    "signature": "8nQT2sqlpyjtM93nXg7MV9Obsk62AIOpRQVhq5zmj45xFVNtS+4zhyVsfUZpPquCmcRu50jt/fY2bh7FM9Y6Dw=="
+  },
+  "packageUrl": "https://logs.catsco.fun:9000/packages/atridaisuki/read-pdf/1.0.15/read-pdf-1.0.15-4bd23949ca3e.skillpkg",
+  "installedAt": "2026-07-27T03:29:38.630Z"
+}

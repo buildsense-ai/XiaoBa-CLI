@@ -1,0 +1,103 @@
+{
+  "delivery_type": "report",
+  "template": "tabler-report",
+  "meta": {
+    "title": "Document Production Dashboard",
+    "subtitle": "A Tabler-inspired PDF status report for readiness, review, and follow-up work",
+    "author": "Operations Team",
+    "date": "2026-07-06"
+  },
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": "normal"
+  },
+  "summary_metrics": [
+    {
+      "label": "Documents checked",
+      "value": "42",
+      "note": "All active inputs",
+      "tone": "success"
+    },
+    {
+      "label": "Open revisions",
+      "value": "3",
+      "note": "Need review",
+      "tone": "warning"
+    },
+    {
+      "label": "Asset issues",
+      "value": "1",
+      "note": "Needs replacement",
+      "tone": "warning"
+    },
+    {
+      "label": "Export status",
+      "value": "PDF",
+      "note": "Ready for review",
+      "tone": "success"
+    }
+  ],
+  "status_badges": [
+    {
+      "label": "Ready for first run",
+      "tone": "success"
+    },
+    {
+      "label": "Asset check needed",
+      "tone": "warning"
+    },
+    {
+      "label": "Template: tabler-report",
+      "tone": "info"
+    }
+  ],
+  "content": [
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Current Status"
+    },
+    {
+      "type": "paragraph",
+      "text": "The document package is ready for a first generated PDF. The remaining items are small enough to track as operational follow-ups instead of blocking PDF generation."
+    },
+    {
+      "type": "callout",
+      "tone": "success",
+      "title": "Render-ready",
+      "text": "This fixture checks a Tabler-inspired card, status, table, and callout layout while keeping all HTML and CSS local to the skill."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Open Follow-Ups"
+    },
+    {
+      "type": "table",
+      "columns": ["Item", "Owner", "Status", "Next step"],
+      "rows": [
+        ["Reviewer assignment", "Project lead", "In progress", "Confirm reviewer availability in the source data."],
+        ["Asset replacement", "Design", "Needs check", "Replace the missing image before final export."],
+        ["Final export", "Operations", "Ready", "Export PDF and share the preview image."]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Recommended Action"
+    },
+    {
+      "type": "list",
+      "style": "number",
+      "items": [
+        "Run the author route with template tabler-report for a polished dashboard-style PDF.",
+        "Use modify routes only for page-level changes after export.",
+        "Use semantic rebuild when the content itself changes substantially."
+      ]
+    }
+  ],
+  "export": {
+    "pdf": true
+  }
+}

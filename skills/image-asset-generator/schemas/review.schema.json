@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://catsco.local/skills/image-asset-generator/review.schema.json",
+  "title": "Image Asset Visual Review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "method", "summary", "checks", "issues"],
+  "properties": {
+    "status": {
+      "enum": ["passed", "passed_with_notes", "failed", "not_run"]
+    },
+    "method": {
+      "enum": ["multimodal_visual_inspection", "reader_proxy", "human_review", "not_run"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "reviewed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "checks": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "outcome", "note"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          },
+          "outcome": {
+            "enum": ["pass", "fail", "uncertain", "not_applicable"]
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "code", "message"],
+        "properties": {
+          "severity": {
+            "enum": ["info", "warning", "error"]
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "evidence": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        }
+      }
+    }
+  }
+}

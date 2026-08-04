@@ -1,7 +1,6 @@
 import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
-import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 
 export interface ContextWindowManagerOptions {
@@ -42,8 +41,8 @@ export interface ContextCompactionStatusEvent {
 export class ContextWindowManager {
   private compressor: ContextCompressor;
 
-  constructor(aiService: AIService, options?: ContextWindowManagerOptions, metrics = new Metrics()) {
-    this.compressor = new ContextCompressor(aiService, options, metrics);
+  constructor(aiService: AIService, options?: ContextWindowManagerOptions) {
+    this.compressor = new ContextCompressor(aiService, options);
   }
 
   async compactIfNeeded(
@@ -70,10 +69,7 @@ export class ContextWindowManager {
     });
 
     try {
-      const compacted = await this.compressor.compact(durable, {
-        signal: options.signal,
-        promptCacheScopeKey: options.sessionKey,
-      });
+      const compacted = await this.compressor.compact(durable, { signal: options.signal });
       const result = [...compacted, ...transient];
       Logger.info(`[${options.sessionKey}] 压缩完成，当前消息数: ${result.length}`);
       await this.emitStatus(options, {

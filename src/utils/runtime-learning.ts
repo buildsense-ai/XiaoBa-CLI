@@ -2759,14 +2759,20 @@ export class RuntimeLearning {
             this.skillEvolution.getEvidenceReviewEngine(),
             `wake-fair:${this.clock().getTime()}`,
             {
-              // One provider-backed Quantum is deliberate backpressure. The
-              // next durable wake continues it after live/historical get turns.
-              maxClaims: 1,
+              // Advance a bounded serial batch across Jobs. Per-Job progress
+              // remains capped at one Quantum so graph dependencies and durable
+              // commit fences keep the existing single-Job safety boundary.
+              maxClaims: this.config.skillEvolutionReviewMaxQuantaPerWake,
               maxClaimsPerJob: 1,
               signal: wakeSignal,
               now: this.clock(),
               quantumTimeoutMs: this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000,
-              shouldStopClaiming: () => this.shutdownDrainRequested,
+              batchDeadlineAtMs: reviewBudget.deadlineAt,
+              nowMs: () => this.clock().getTime(),
+              shouldStopClaiming: () => (
+                this.shutdownDrainRequested
+                || this.clock().getTime() >= reviewBudget.deadlineAt
+              ),
             },
           );
           fairJobIds = fair.jobIds;

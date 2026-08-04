@@ -1,0 +1,22 @@
+{
+  "mode": "semantic",
+  "operation": "short_text_edit",
+  "intent": "Replace the second occurrence of a repeated budget value.",
+  "input": {
+    "path": "source.pdf",
+    "type": "pdf"
+  },
+  "changes": [
+    {
+      "id": "chg-001",
+      "kind": "text_replace",
+      "target_text": "Budget: USD 10,000.",
+      "replacement_text": "Budget: USD 12,000.",
+      "pages": [1],
+      "occurrence": 2
+    }
+  ],
+  "options": {
+    "name": "semantic-occurrence"
+  }
+}

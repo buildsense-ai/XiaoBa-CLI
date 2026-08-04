@@ -1,0 +1,8 @@
+{
+  "schema": "xiaoba.bot-skill-local.v1",
+  "localSkillId": "a81b34d0-b855-403a-a198-ca993a5ac31c",
+  "origin": {
+    "skillId": "atridaisuki/image-asset-generator",
+    "version": "1.0.13"
+  }
+}

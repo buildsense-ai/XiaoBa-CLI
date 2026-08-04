@@ -47,6 +47,25 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 const MIN_NEXT_WAKE_BACKOFF_MS = 30 * 1000;
 const MAX_NEXT_WAKE_BACKOFF_MS = 10 * 60 * 1000;
 
+export function rotateOperationalRetryForDiscovery(
+  deadlineDeltaMs: number,
+  consecutiveOperationalRetries: number,
+): { delayMs: number; reason: 'operational-retry' | 'scheduled'; consecutiveOperationalRetries: number } {
+  const count = consecutiveOperationalRetries + 1;
+  if (count < 3) {
+    return {
+      delayMs: deadlineDeltaMs,
+      reason: 'operational-retry',
+      consecutiveOperationalRetries: count,
+    };
+  }
+  return {
+    delayMs: Math.max(deadlineDeltaMs, MIN_NEXT_WAKE_BACKOFF_MS),
+    reason: 'scheduled',
+    consecutiveOperationalRetries: 0,
+  };
+}
+
 function emptyWakeResult(ran = false): RuntimeLearningHeartbeatResult {
   return {
     unitsProcessed: 0,
@@ -99,7 +118,7 @@ export class DistillationHeartbeatScheduler {
    * A normal scheduled interval resets the counter to zero.
    */
   private consecutiveImmediateReschedules = 0;
-  /** Prevent an overdue operational retry from starving session discovery. */
+  /** Periodically run discovery without delaying an active operational backlog. */
   private consecutiveOperationalRetries = 0;
 
   /**
@@ -395,13 +414,14 @@ export class DistillationHeartbeatScheduler {
             isImmediateReschedule = true;
           }
           if (wakeReason === 'operational-retry') {
-            this.consecutiveOperationalRetries += 1;
-            if (this.consecutiveOperationalRetries >= 3) {
-              wakeReason = 'scheduled';
-              nextDelay = intervalDelay;
-              isImmediateReschedule = false;
-              this.consecutiveOperationalRetries = 0;
-            }
+            const rotation = rotateOperationalRetryForDiscovery(
+              deadlineDelta,
+              this.consecutiveOperationalRetries,
+            );
+            this.consecutiveOperationalRetries = rotation.consecutiveOperationalRetries;
+            wakeReason = rotation.reason;
+            nextDelay = rotation.delayMs;
+            isImmediateReschedule = nextDelay === 0;
           } else {
             this.consecutiveOperationalRetries = 0;
           }

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en" data-delivery-type="report" data-template-id="formal-report">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="generator" content="pdf-author-editor">
+  <title>{{TITLE}}</title>
+  <style>
+    {{CSS}}
+    @page {
+      size: {{PAGE_SIZE}} {{PAGE_ORIENTATION}};
+      margin: {{PAGE_MARGIN}};
+      @bottom-left {
+        content: "{{TITLE}}";
+        color: #6b7280;
+        font-size: 9px;
+      }
+      @bottom-right {
+        content: counter(page);
+        color: #6b7280;
+        font-size: 9px;
+      }
+    }
+    body {
+      background: #f3f5f7;
+      color: #1f2937;
+      font-family: "Segoe UI", Arial, sans-serif;
+      line-height: 1.58;
+      margin: 0;
+    }
+    .document {
+      background: #ffffff;
+      box-sizing: border-box;
+      margin: 0 auto;
+      max-width: 980px;
+      min-height: 100vh;
+      padding: 46px 54px 56px;
+    }
+    .cover {
+      border-bottom: 1px solid #d8dee8;
+      margin-bottom: 34px;
+      padding: 22px 0 28px;
+      position: relative;
+    }
+    .cover::before {
+      background: #1b365d;
+      content: "";
+      height: 5px;
+      left: 0;
+      position: absolute;
+      right: 72%;
+      top: 0;
+    }
+    .eyebrow {
+      color: #667085;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0;
+      margin: 0 0 18px;
+      text-transform: uppercase;
+    }
+    .doc-title {
+      color: #111827;
+      font-size: 38px;
+      line-height: 1.08;
+      margin: 0;
+      max-width: 760px;
+    }
+    .doc-subtitle {
+      color: #475467;
+      font-size: 17px;
+      line-height: 1.42;
+      margin: 14px 0 0;
+      max-width: 680px;
+    }
+    .doc-meta {
+      border-top: 1px solid #eceff3;
+      color: #667085;
+      font-size: 12px;
+      margin-top: 24px;
+      padding-top: 14px;
+    }
+    h1, h2, h3, h4 {
+      color: #182230;
+      line-height: 1.24;
+      margin: 1.35em 0 0.45em;
+      break-after: avoid;
+    }
+    h1 {
+      border-bottom: 1px solid #e5e7eb;
+      font-size: 27px;
+      padding-bottom: 8px;
+    }
+    h2 {
+      font-size: 21px;
+    }
+    h3 {
+      color: #344054;
+      font-size: 17px;
+    }
+    h4 {
+      color: #475467;
+      font-size: 14px;
+    }
+    p {
+      margin: 0.7em 0;
+    }
+    ul, ol {
+      margin: 10px 0 16px 22px;
+      padding: 0;
+    }
+    li {
+      margin: 4px 0;
+    }
+    .content-block {
+      break-inside: avoid;
+    }
+    table {
+      border-collapse: collapse;
+      font-size: 12px;
+      margin: 18px 0;
+      width: 100%;
+      break-inside: avoid;
+    }
+    th, td {
+      border-bottom: 1px solid #e4e7ec;
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f2f4f7;
+      color: #344054;
+      font-weight: 700;
+    }
+    tbody tr:nth-child(even) td {
+      background: #fafbfc;
+    }
+    figcaption, .table-caption {
+      color: #667085;
+      font-size: 11px;
+      margin-top: 6px;
+    }
+    .callout {
+      background: #f4f8fb;
+      border: 1px solid #d7e2ea;
+      border-left: 4px solid #1b365d;
+      border-radius: 4px;
+      margin: 18px 0;
+      padding: 12px 14px;
+      break-inside: avoid;
+    }
+    .callout.warning {
+      background: #fff8ed;
+      border-color: #f4d29c;
+      border-left-color: #b7791f;
+    }
+    .callout.success {
+      background: #eef8f2;
+      border-color: #c7ead3;
+      border-left-color: #2f855a;
+    }
+    .callout-title {
+      color: #182230;
+      font-weight: 750;
+      margin-bottom: 4px;
+    }
+    .divider {
+      border: 0;
+      border-top: 1px solid #d8dee8;
+      margin: 26px 0;
+    }
+    img {
+      display: block;
+      height: auto;
+      max-width: 100%;
+    }
+    @media print {
+      body {
+        background: #ffffff;
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+      .document {
+        max-width: none;
+        min-height: 0;
+        padding: 0;
+      }
+      .no-print {
+        display: none !important;
+      }
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="document">
+    <header class="cover">
+      <p class="eyebrow">PDF Author Editor</p>
+      <h1 class="doc-title">{{TITLE}}</h1>
+      <p class="doc-subtitle">{{SUBTITLE}}</p>
+      <div class="doc-meta">{{META}}</div>
+    </header>
+    {{CONTENT}}
+  </main>
+  <script>window.__RENDER_READY__ = true;</script>
+</body>
+</html>

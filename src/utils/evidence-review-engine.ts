@@ -1510,6 +1510,17 @@ export function resolveEvidenceReviewJobStorePath(
 
 export { allObligationsResolvedForCommit };
 
+export function reviewBatchQuantumTimeoutMs(
+  batchDeadlineAtMs: number | undefined,
+  quantumTimeoutMs: number | undefined,
+  nowMs: number,
+): number | undefined | null {
+  if (batchDeadlineAtMs === undefined) return quantumTimeoutMs;
+  const remainingMs = batchDeadlineAtMs - nowMs;
+  if (remainingMs <= 0) return null;
+  return Math.min(quantumTimeoutMs ?? remainingMs, remainingMs);
+}
+
 /**
  * Fair multi-job advance for one wake (#108).
  * Claims a bounded set of quanta across jobs using Fair Review Quantum Rotation.
@@ -1524,6 +1535,9 @@ export async function advanceJobsFairly(
     now?: Date;
     /** Independent hard deadline for each claimed Quantum. */
     quantumTimeoutMs?: number;
+    /** Shared wall-clock deadline for the whole serial claim batch. */
+    batchDeadlineAtMs?: number;
+    nowMs?: () => number;
     shouldStopClaiming?: () => boolean;
   },
 ): Promise<{ claims: number; jobIds: string[] }> {
@@ -1541,6 +1555,12 @@ export async function advanceJobsFairly(
   let executedClaims = 0;
   for (const claim of plan.claims) {
     if (options.signal?.aborted || options.shouldStopClaiming?.()) break;
+    const quantumTimeoutMs = reviewBatchQuantumTimeoutMs(
+      options.batchDeadlineAtMs,
+      options.quantumTimeoutMs,
+      options.nowMs?.() ?? Date.now(),
+    );
+    if (quantumTimeoutMs === null) break;
     const advanced = await engine.advanceJob(
       claim.jobId,
       `${wakeId}:${claim.jobId}:${claim.quantumId}`,
@@ -1548,7 +1568,7 @@ export async function advanceJobsFairly(
       {
         quantumId: claim.quantumId,
         maxQuanta: 1,
-        quantumTimeoutMs: options.quantumTimeoutMs,
+        quantumTimeoutMs,
         shouldStopClaiming: options.shouldStopClaiming,
       },
     );

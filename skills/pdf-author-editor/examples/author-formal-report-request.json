@@ -1,0 +1,12 @@
+{
+  "mode": "author",
+  "intent": "Render a formal report PDF from known structured content.",
+  "input": {
+    "path": "author-formal-report-content.json",
+    "type": "json"
+  },
+  "options": {
+    "name": "author-formal-report",
+    "template": "formal-report"
+  }
+}

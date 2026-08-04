@@ -1,0 +1,12 @@
+{
+  "mode": "author",
+  "intent": "Render a Tabler-inspired dashboard report PDF from known structured content.",
+  "input": {
+    "path": "author-tabler-report-content.json",
+    "type": "json"
+  },
+  "options": {
+    "name": "author-tabler-report",
+    "template": "tabler-report"
+  }
+}

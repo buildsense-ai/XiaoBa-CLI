@@ -1,0 +1,4 @@
+pdfplumber==0.11.10
+pdf2image==1.17.0
+pillow==12.3.0
+pymupdf>=1.24.0,<2

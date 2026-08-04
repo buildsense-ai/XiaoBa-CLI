@@ -1,0 +1,12 @@
+{
+  "mode": "author",
+  "intent": "Render a briefing note PDF from known structured content.",
+  "input": {
+    "path": "author-briefing-note-content.json",
+    "type": "json"
+  },
+  "options": {
+    "name": "author-briefing-note",
+    "template": "briefing-note"
+  }
+}

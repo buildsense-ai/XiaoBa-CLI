@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://catsco.local/skills/image-asset-generator/request.schema.json",
+  "title": "Image Asset Generator Request",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "operation": { "const": "generate", "default": "generate" },
+    "prompt": { "type": "string", "minLength": 1, "maxLength": 12000 },
+    "source_prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
+      },
+      "required": ["path", "sha256"]
+    },
+    "source_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
+      },
+      "required": ["path", "sha256"]
+    },
+    "source_brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
+      },
+      "required": ["path", "sha256"]
+    },
+    "reference_images": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+          "media_type": { "enum": ["image/png", "image/jpeg", "image/webp"] },
+          "bytes": { "type": "integer", "minimum": 1, "maximum": 8388608 },
+          "width": { "type": "integer", "minimum": 64, "maximum": 8192 },
+          "height": { "type": "integer", "minimum": 64, "maximum": 8192 },
+          "use_for": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "source_url": { "type": "string", "minLength": 1, "maxLength": 4000 },
+          "source_name": { "type": "string", "minLength": 1, "maxLength": 255 }
+        },
+        "required": ["path", "sha256", "media_type", "bytes", "width", "height", "use_for"]
+      }
+    },
+    "purpose": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "subject": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "scene": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "style": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "composition": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "lighting": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "palette": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "must_include": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "must_avoid": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "exact_text": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "creative_freedom": {
+      "enum": ["strict", "balanced", "open"]
+    },
+    "aspect_ratio": {
+      "type": "string",
+      "anyOf": [
+        { "enum": ["landscape", "portrait", "square"] },
+        { "pattern": "^[0-9]{1,4}:[0-9]{1,4}$" }
+      ],
+      "description": "Choose deliberately for new requests; square is not an implicit default."
+    },
+    "size": {
+      "type": "string",
+      "anyOf": [
+        { "const": "auto" },
+        { "pattern": "^[0-9]{3,4}x[0-9]{3,4}$" }
+      ],
+      "default": "auto"
+    },
+    "quality": { "enum": ["low", "medium", "high", "auto"], "default": "medium" },
+    "output_format": { "enum": ["png", "jpeg", "jpg", "webp"], "default": "png" },
+    "filename": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "count": { "const": 1, "default": 1 },
+    "background": { "const": "opaque", "default": "opaque" },
+    "model": { "type": "string", "minLength": 1, "maxLength": 200 }
+  },
+  "anyOf": [
+    { "required": ["prompt"] },
+    { "required": ["source_prompt"] },
+    { "required": ["source_brief"] },
+    { "required": ["subject"] }
+  ],
+  "allOf": [
+    { "not": { "required": ["prompt", "source_prompt"] } },
+    { "not": { "required": ["prompt", "source_brief"] } },
+    { "not": { "required": ["source_prompt", "source_brief"] } }
+  ]
+}
