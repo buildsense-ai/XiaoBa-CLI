@@ -592,8 +592,12 @@ function Remove-Builder {
 function Remove-KeyPair {
     param([switch]$WaitForLate)
 
-    if (-not $script:KeyPairName -or -not $script:KeyPairID) {
-        Write-Warning "Skipping key pair cleanup because no immutable key pair identity was recorded"
+    if (-not $script:KeyPairName -or -not $script:KeyPairCreateAttempted) {
+        Write-Warning "Skipping key pair cleanup because this bake did not create a temporary key pair"
+        return
+    }
+    if (-not $script:KeyPairName.StartsWith("catsco-img-key-")) {
+        Write-Warning "Skipping key pair cleanup because '$script:KeyPairName' is not a temporary bake key pair"
         return
     }
 
@@ -624,13 +628,22 @@ function Remove-KeyPair {
         Write-Host "No temporary key pair record remains for $script:KeyPairName"
         return
     }
-    $ownedKeyPairs = @(
-        $existing | Where-Object {
-            [string](Get-PropertyValue -InputObject $_ -Name "keyPairID") -eq $script:KeyPairID
+    if ($script:KeyPairID) {
+        $ownedKeyPairs = @(
+            $existing | Where-Object {
+                [string](Get-PropertyValue -InputObject $_ -Name "keyPairID") -eq $script:KeyPairID
+            }
+        )
+        if ($ownedKeyPairs.Count -ne 1 -or $existing.Count -ne 1) {
+            throw "Refusing to delete key pair because name and immutable ID do not uniquely match this bake"
         }
-    )
-    if ($ownedKeyPairs.Count -ne 1 -or $existing.Count -ne 1) {
-        throw "Refusing to delete key pair because name and immutable ID do not uniquely match this bake"
+    } else {
+        # The immutable ID was never resolved (e.g. create succeeded but the
+        # follow-up query failed). Fall back to the unique temporary name so a
+        # failed bake does not leave a billed key pair behind.
+        if ($existing.Count -ne 1) {
+            throw "Refusing to delete key pair because the temporary name does not uniquely match this bake"
+        }
     }
 
     Write-Host "Deleting temporary key pair $script:KeyPairName ($script:KeyPairID)"
