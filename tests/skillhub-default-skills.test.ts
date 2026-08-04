@@ -12,8 +12,7 @@ import {
   type DefaultSkillHubSkill,
 } from '../src/skillhub/default-skills';
 
-const ATRIDAISUKI_DEFAULTS = [
-  'atridaisuki/web-search@1.0.2',
+const EXPECTED_DEFAULTS = [
   'atridaisuki/read-pdf@1.0.15',
   'atridaisuki/pdf-author-editor@1.2.5',
   'atridaisuki/image-asset-generator@1.0.13',
@@ -39,12 +38,11 @@ describe('default SkillHub bootstrap', () => {
     if (fs.existsSync(testRoot)) fs.rmSync(testRoot, { recursive: true, force: true });
   });
 
-  test('ships the selected atridaisuki defaults without cloud HTML artifact', () => {
+  test('ships only the selected defaults without cloud HTML artifact', () => {
     const configured = DEFAULT_SKILLHUB_SKILLS
-      .filter(skill => skill.skillId.startsWith('atridaisuki/'))
       .map(skill => `${skill.skillId}@${skill.version}`);
 
-    assert.deepEqual(configured, ATRIDAISUKI_DEFAULTS);
+    assert.deepEqual(configured, EXPECTED_DEFAULTS);
     assert.equal(configured.some(skill => skill.includes('artifact')), false);
   });
 
@@ -56,7 +54,7 @@ describe('default SkillHub bootstrap', () => {
 
   test('installs a missing default skill once and records central state', async () => {
     const calls: string[] = [];
-    const skill = defaultSkill('agent-browser');
+    const skill = defaultSkill('starter');
     const service = fakeInstallService(calls);
 
     const first = await bootstrapDefaultSkillHubSkills({ skills: [skill], service });
@@ -64,11 +62,11 @@ describe('default SkillHub bootstrap', () => {
 
     assert.deepEqual(first.map(item => item.action), ['installed']);
     assert.deepEqual(second.map(item => item.reason), ['already_installed']);
-    assert.deepEqual(calls, ['catsco/agent-browser@1.0.0']);
+    assert.deepEqual(calls, ['catsco/starter@1.0.0']);
     const state = readState();
     assert.equal(state.items[skill.key].state, 'installed');
-    assert.equal(state.items[skill.key].relativePath, 'agent-browser');
-    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'agent-browser', 'SKILL.md')), true);
+    assert.equal(state.items[skill.key].relativePath, 'starter');
+    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'starter', 'SKILL.md')), true);
   });
 
   test('does not reinstall a default skill after the user removes it', async () => {
@@ -105,12 +103,12 @@ describe('default SkillHub bootstrap', () => {
 
   test('installs newly added defaults without reviving removed defaults', async () => {
     const calls: string[] = [];
-    const firstSkill = defaultSkill('agent-browser');
+    const firstSkill = defaultSkill('starter');
     const secondSkill = defaultSkill('officecli');
     const service = fakeInstallService(calls);
 
     await bootstrapDefaultSkillHubSkills({ skills: [firstSkill], service });
-    fs.rmSync(path.join(testRoot, 'skills', 'agent-browser'), { recursive: true, force: true });
+    fs.rmSync(path.join(testRoot, 'skills', 'starter'), { recursive: true, force: true });
     await bootstrapDefaultSkillHubSkills({ skills: [firstSkill], service });
 
     const result = await bootstrapDefaultSkillHubSkills({
@@ -120,7 +118,7 @@ describe('default SkillHub bootstrap', () => {
 
     assert.equal(result.find(item => item.key === firstSkill.key)?.state, 'user_removed');
     assert.equal(result.find(item => item.key === secondSkill.key)?.action, 'installed');
-    assert.deepEqual(calls, ['catsco/agent-browser@1.0.0', 'catsco/officecli@1.0.0']);
+    assert.deepEqual(calls, ['catsco/starter@1.0.0', 'catsco/officecli@1.0.0']);
   });
 });
 

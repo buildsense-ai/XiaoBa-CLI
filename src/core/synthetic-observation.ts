@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Message } from '../types';
 
-export type SyntheticObservationSource = 'memory' | 'web' | 'runtime' | 'subagent' | 'skill_context';
+export type SyntheticObservationSource = 'memory' | 'runtime' | 'subagent' | 'skill_context';
 export type SyntheticObservationStatus = 'completed' | 'partial' | 'failed' | 'cancelled';
 export type SyntheticObservationRelevance = 'high' | 'medium' | 'low';
 export type SyntheticObservationTiming = 'current_turn' | 'late_previous_turn';

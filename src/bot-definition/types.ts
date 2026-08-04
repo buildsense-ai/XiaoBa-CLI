@@ -84,6 +84,8 @@ export interface LocalModelProfile {
 export interface BotCatalogModelRuntime {
   schema: typeof BOT_CATALOG_MODEL_RUNTIME_SCHEMA;
   botId: string;
+  /** Owner binding for relay credentials. Legacy records may omit it and must not be reused without login. */
+  ownerUid?: string;
   modelId: string;
   provider: 'anthropic' | 'openai';
   apiBase: string;

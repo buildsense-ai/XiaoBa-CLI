@@ -4,6 +4,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createRequire } from 'node:module';
+import {
+  attachModelErrorDiagnostics,
+  attachRetrySummary,
+  captureModelErrorDiagnostics,
+} from '../src/utils/model-error-observability';
 
 const require = createRequire(import.meta.url);
 
@@ -387,6 +392,12 @@ describe('AgentSession lifecycle', () => {
           { type: 'thinking', thinking: 'hidden chain text', signature: 'sig_secret' },
           { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'notes.md' } },
         ],
+        providerState: {
+          schema: 'xiaoba.provider_state.v1',
+          apiType: 'anthropic-messages',
+          model: 'secret-model-scope',
+          endpointFingerprint: 'abcdef1234567890',
+        },
       },
       { role: 'tool', content: 'private tool result', tool_call_id: 'toolu_1', name: 'read_file' },
       { role: 'assistant', content: '读完了' },
@@ -403,6 +414,7 @@ describe('AgentSession lifecycle', () => {
       ['需要读文件', null, '[历史工具结果已省略；read_file 已完成。]', '读完了'],
     );
     assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
+    assert.equal(restored.some((message: any) => message.providerState), false);
     assert.equal(restored.some((message: any) => message.role === 'tool'), true);
     assert.equal(restored.some((message: any) => message.tool_calls?.length), true);
     assert.equal(
@@ -413,6 +425,7 @@ describe('AgentSession lifecycle', () => {
     assert.equal(restored.some((message: any) => String(message.content || '').includes('private tool result')), false);
     assert.doesNotMatch(raw, /hidden chain text/);
     assert.doesNotMatch(raw, /sig_secret/);
+    assert.doesNotMatch(raw, /secret-model-scope|providerState/);
     assert.doesNotMatch(raw, /provider replay 隐藏内容/);
     assert.doesNotMatch(raw, /private tool result/);
   });
@@ -891,6 +904,70 @@ describe('AgentSession lifecycle', () => {
 
     assert.match(result.text, /当前模型 gpt-5\.5 的服务临时异常/);
     assert.doesNotMatch(result.text, /API错误|状态码|503/);
+  });
+
+  test('handleMessage logs one structured event only when an error interrupts the conversation', async () => {
+    const { AgentSession, ERROR_MESSAGE } = loadSessionModules();
+    const providerError = Object.assign(new Error('Request failed with status code 400'), {
+      status: 400,
+    });
+    const diagnostics = captureModelErrorDiagnostics(providerError, {
+      provider: 'openai',
+      model: 'deepseek-v4-flash',
+      phase: 'model_request',
+    });
+    attachModelErrorDiagnostics(providerError, diagnostics);
+    attachRetrySummary(providerError, {
+      attempt_count: 3,
+      retry_count: 2,
+      max_retries: 2,
+      elapsed_ms: 3100,
+      max_elapsed_ms: 15000,
+      stop_reason: 'retry_limit_exhausted',
+    }, {
+      call_id: 'call-interrupted',
+      attempt_id: 'call-interrupted:3',
+      attempt_number: 3,
+      episode_id: 'episode-interrupted',
+    });
+    const session = new AgentSession('catscompany:lifecycle-turn-error-event', buildMockServices({
+      aiService: {
+        getConfig() {
+          return { provider: 'openai', model: 'deepseek-v4-flash' };
+        },
+        async chatStream() {
+          throw providerError;
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleMessage('继续');
+
+    assert.equal(result.taskOutcome, 'failed');
+    assert.equal(result.text, ERROR_MESSAGE);
+    const logPath = (session as any).sessionTurnLogger.getLogFilePath();
+    const entries = fs.readFileSync(logPath, 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map(line => JSON.parse(line));
+    const turnErrors = entries.filter(entry => entry?.event?.type === 'turn_error');
+    assert.equal(turnErrors.length, 1);
+    assert.equal(turnErrors[0].event.payload.outcome, 'conversation_interrupted');
+    assert.equal(turnErrors[0].event.payload.category, 'provider_rejected');
+    assert.equal(turnErrors[0].event.payload.classification_confidence, 'low');
+    assert.equal(turnErrors[0].event.payload.http_status, 400);
+    assert.equal(turnErrors[0].event.payload.error_origin, 'provider');
+    assert.equal(turnErrors[0].event.payload.phase, 'model_request');
+    assert.equal(turnErrors[0].event.payload.retry_count, 2);
+    assert.equal(turnErrors[0].event.payload.attempt_count, 3);
+    assert.equal(turnErrors[0].event.payload.retry_stop_reason, 'retry_limit_exhausted');
+    assert.equal(turnErrors[0].event.payload.model_call_id, 'call-interrupted');
+    assert.equal(turnErrors[0].event.payload.model_attempt_id, 'call-interrupted:3');
+    assert.equal(turnErrors[0].event.payload.model_attempt_number, 3);
+    assert.equal(turnErrors[0].event.payload.episode_id, 'episode-interrupted');
+    assert.match(turnErrors[0].event.payload.error_fingerprint, /^[a-f0-9]{16}$/);
+    assert.equal(typeof turnErrors[0].event.payload.partial_progress_preserved, 'boolean');
   });
 
   test('cleanup persists without invoking hidden AI wakeup checks', async () => {

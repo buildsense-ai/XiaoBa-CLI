@@ -73,12 +73,13 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
         ...message,
         content: summarizeHiddenReplayToolResult(message),
         providerContent: undefined,
+        providerState: undefined,
       });
       continue;
     }
 
     if (message.role !== 'assistant') {
-      durable.push({ ...message, providerContent: undefined });
+      durable.push({ ...message, providerContent: undefined, providerState: undefined });
       continue;
     }
 
@@ -91,6 +92,7 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
         ...message,
         content: publicText || null,
         providerContent: undefined,
+        providerState: undefined,
       });
       continue;
     }
@@ -102,11 +104,12 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
           ...message,
           content: cleanedText,
           providerContent: undefined,
+          providerState: undefined,
         });
         continue;
       }
     } else if (message.content !== null) {
-      durable.push({ ...message, providerContent: undefined });
+      durable.push({ ...message, providerContent: undefined, providerState: undefined });
       continue;
     }
 
@@ -115,6 +118,7 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
         ...message,
         content: null,
         providerContent: undefined,
+        providerState: undefined,
       });
     }
   }

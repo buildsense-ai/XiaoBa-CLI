@@ -290,6 +290,7 @@ test('relay model cards render SDK labels from model payloads', () => {
       .replace(/'/g, '&#039;'),
     formatModelContextLabel: (tokens: unknown, fallback: unknown) => fallback || `${tokens} tokens`,
     relayActionBusy: () => false,
+    isCloudOverrideActive: () => false,
     String,
   }) as (
     model: Record<string, unknown>,

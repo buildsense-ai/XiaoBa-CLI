@@ -2,6 +2,9 @@ import { createCatsCoLocalConfigService, type CatsCoAuthSnapshot } from '../cats
 import {
   provisionCatsRelayCatalogRuntime,
   refreshCatsRelayCatalogRuntimeCapabilities,
+  validateCatsRelayCatalogRuntimeCredential,
+  RelayCredentialRejectedError,
+  RelayCredentialUnreachableError,
 } from '../catscompany/relay-model-bootstrap';
 import { DEFAULT_CATSCO_RELAY_MODEL_ID } from '../utils/relay-model-profiles';
 import { Logger } from '../utils/logger';
@@ -53,7 +56,7 @@ export interface PreparedBoundBotDefinition {
 export async function prepareBoundBotDefinition(
   options: PrepareBoundBotDefinitionOptions,
 ): Promise<PreparedBoundBotDefinition | undefined> {
-  const localConfig = createCatsCoLocalConfigService({ runtimeRoot: options.runtimeRoot }).load();
+  const localConfig = createCatsCoLocalConfigService({ runtimeRoot: options.runtimeRoot, env: options.env }).load();
   const botId = String(options.botId || localConfig.currentBot?.uid || '').trim();
   if (!botId) return undefined;
 
@@ -65,7 +68,7 @@ export async function prepareBoundBotDefinition(
   let sync = definitionService.pullOrBootstrap(botId);
   let localDefinition = sync?.definition;
   let initializedDefaultFromEmpty = false;
-  const auth = options.auth ?? createCatsCoLocalConfigService({ runtimeRoot: options.runtimeRoot }).getAuthState();
+  const auth = options.auth ?? createCatsCoLocalConfigService({ runtimeRoot: options.runtimeRoot, env: options.env }).getAuthState();
   const cloudDefinitionSync = createBotDefinitionCloudSyncService({
     runtimeRoot: options.runtimeRoot,
     env: options.env,
@@ -132,6 +135,7 @@ export async function prepareBoundBotDefinition(
               botId,
               modelId: definition.model.modelId,
               reasoningEffort: definition.model.reasoningEffort,
+              existingRuntime: runtime,
               auth,
               fetchImpl: options.fetchImpl,
             });
@@ -270,6 +274,7 @@ export async function prepareBoundBotDefinition(
             const materialized = await provisionCatsRelayCatalogRuntime({
               botId,
               modelId: localDefinition.model.modelId,
+              existingRuntime: runtime,
               auth,
               fetchImpl: options.fetchImpl,
             });
@@ -297,19 +302,48 @@ export async function prepareBoundBotDefinition(
             botId,
             modelId: cloudSelection.modelId,
             reasoningEffort: cloudSelection.reasoningEffort,
+            existingRuntime: runtime ?? definitionService.readCatalogRuntime(botId),
             auth,
             fetchImpl: options.fetchImpl,
           });
           definitionService.storeCloudCatalogRuntime(materialized);
           materializedCatalogRuntime = true;
-        } else if (
-          cloudSelection.reasoningEffort
-          && runtime.reasoningEffort !== cloudSelection.reasoningEffort
-        ) {
-          definitionService.storeCloudCatalogRuntime({
-            ...runtime,
-            reasoningEffort: cloudSelection.reasoningEffort,
-          });
+        } else {
+          let effectiveRuntime = runtime;
+          try {
+            await validateCatsRelayCatalogRuntimeCredential(runtime, options.fetchImpl ?? fetch);
+          } catch (error) {
+            if (error instanceof RelayCredentialRejectedError) {
+              // 凭据确实被吊销：有登录态则重新物化，否则交由外层回滚
+              if (!auth?.token) throw error;
+              effectiveRuntime = await provisionCatsRelayCatalogRuntime({
+                botId,
+                modelId: cloudSelection.modelId,
+                reasoningEffort: cloudSelection.reasoningEffort,
+                existingRuntime: runtime,
+                auth,
+                fetchImpl: options.fetchImpl,
+              });
+              definitionService.storeCloudCatalogRuntime(effectiveRuntime);
+              materializedCatalogRuntime = true;
+            } else if (error instanceof RelayCredentialUnreachableError) {
+              // 暂时不可达（5xx/超时/网络）：不阻断，继续使用当前 runtime
+              Logger.warning(
+                `CatsCo relay 凭据暂时无法验证，继续使用当前模型: ${errorMessage(error)}`,
+              );
+            } else {
+              throw error;
+            }
+          }
+          if (
+            cloudSelection.reasoningEffort
+            && effectiveRuntime.reasoningEffort !== cloudSelection.reasoningEffort
+          ) {
+            definitionService.storeCloudCatalogRuntime({
+              ...effectiveRuntime,
+              reasoningEffort: cloudSelection.reasoningEffort,
+            });
+          }
         }
         sync = definitionService.acceptCloud(botId, cloudModel);
         definition = sync.definition;
@@ -400,6 +434,7 @@ export async function prepareBoundBotDefinition(
       const materialized = await provisionCatsRelayCatalogRuntime({
         botId,
         modelId: definition.model.modelId,
+        existingRuntime: runtime,
         auth,
         fetchImpl: options.fetchImpl,
       });

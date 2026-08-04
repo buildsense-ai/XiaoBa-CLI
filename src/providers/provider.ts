@@ -1,5 +1,6 @@
 import { Message, ChatResponse } from '../types';
 import { ToolDefinition } from '../types/tool';
+import type { ProviderRequestPreflightSummary } from './request-preflight';
 
 /**
  * Streaming 回调
@@ -25,8 +26,72 @@ export interface StreamRetryInfo {
   message?: string;
 }
 
+export type ModelAttemptApiType = 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses';
+export type ModelAttemptOutcome = 'started' | 'succeeded' | 'retrying' | 'failed' | 'cancelled';
+export type ModelAttemptStopReason =
+  | 'non_retryable'
+  | 'retry_limit_exhausted'
+  | 'retry_window_exhausted'
+  | 'stream_output_started'
+  | 'aborted';
+
+export interface ModelAttemptContext {
+  sessionId?: string;
+  sessionType?: string;
+  surface?: string;
+  episodeId?: string;
+  episodeNumber?: number;
+}
+
+export interface ModelAttemptRetry {
+  retryNumber: number;
+  maxRetries: number;
+  elapsedMs: number;
+  maxElapsedMs: number;
+  delayMs?: number;
+  stopReason?: ModelAttemptStopReason;
+}
+
+/**
+ * One event in the lifecycle of an actual provider invocation.
+ *
+ * A started event is followed by exactly one terminal event for the same
+ * attemptId: succeeded, retrying, failed, or cancelled. Request values are
+ * live in-memory references; sinks that persist them must snapshot and redact
+ * synchronously inside observe().
+ */
+export interface ModelAttemptEvent {
+  schema: 'xiaoba.model_attempt.v1';
+  callId: string;
+  attemptId: string;
+  attemptNumber: number;
+  timestamp: string;
+  outcome: ModelAttemptOutcome;
+  provider: 'openai' | 'anthropic';
+  model: string;
+  apiType: ModelAttemptApiType;
+  stream: boolean;
+  context?: ModelAttemptContext;
+  request: {
+    messages: readonly Message[];
+    tools: readonly ToolDefinition[];
+    preflight?: ProviderRequestPreflightSummary;
+  };
+  durationMs?: number;
+  response?: ChatResponse;
+  error?: unknown;
+  retry?: ModelAttemptRetry;
+}
+
+export interface ModelAttemptSink {
+  observe(event: ModelAttemptEvent): void | Promise<void>;
+}
+
 export interface AIRequestOptions {
   signal?: AbortSignal;
+  /** Optional best-effort observer; it can never alter request control flow. */
+  modelAttemptSink?: ModelAttemptSink;
+  modelAttemptContext?: ModelAttemptContext;
   promptCacheContext?: PromptCacheContext;
 }
 

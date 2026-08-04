@@ -80,7 +80,7 @@ const SELF_EVOLUTION_SIGNAL =
   /创建.*skill|新建.*skill|自我进化|扩展能力|写.*工具|新增.*工具|self[-_ ]?evolution/i;
 
 const SKILL_SIGNAL =
-  /skill|技能|能力列表|工具列表|会什么|能做什么|调用.*工具|使用.*工具|agent-browser|coding-context|memory-search|officecli|self-evolution/i;
+  /skill|技能|能力列表|工具列表|会什么|能做什么|调用.*工具|使用.*工具|coding-context|memory-search|officecli|self-evolution/i;
 
 const COMPLEX_WORK_SIGNAL =
   /完整|全面|系统性|评估|优化|重构|方案|策略|架构|多阶段|长期|端到端|测试覆盖|上线|发布|梳理|审查|review|comprehensive|end-to-end|architecture|strategy/i;

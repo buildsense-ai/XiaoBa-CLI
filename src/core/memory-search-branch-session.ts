@@ -147,7 +147,7 @@ function buildMemorySearchSystemPrompt(): string {
     '- 不要把多个中文词或多个概念用空格拼进同一个 keyword；那会被当成一个完整字符串，导致大量漏召回。',
     '- 好例子：["生日", "包间", "蛋糕", "低预算", "6-8人", "安静"]。',
     '- 坏例子：["生日 包间 蛋糕 低预算 6-8人 安静"]。',
-    '- 例外：固定名称、工具名、文件名、项目名可以作为完整 keyword，例如 "agent-browser"、"MemorySearchBranchSession"。',
+    '- 例外：固定名称、工具名、文件名、项目名可以作为完整 keyword，例如 "XiaoBa-CLI"、"MemorySearchBranchSession"。',
     '',
     '工具结果约定：memory tools 都返回紧凑 JSON 字符串。你需要解析 JSON 后继续判断。',
     'canonical refs 可以手动调整：如果看到 ...#42，你可以读取 ...#41 或 ...#43 来查看相邻 episode。',

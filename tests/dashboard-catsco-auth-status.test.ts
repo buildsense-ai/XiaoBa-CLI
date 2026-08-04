@@ -432,13 +432,28 @@ describe('dashboard CatsCo account status', () => {
 
   test('GET /cats/status reports ready chat only after a confirmed local body binding', async () => {
     await startCatsServer((req, res) => {
-      assert.equal(req.header('authorization'), 'Bearer valid-user-token');
       if (req.path === '/api/me') {
+        assert.equal(req.header('authorization'), 'Bearer valid-user-token');
         return res.json({ uid: 42, username: 'webuser', display_name: 'Web User' });
       }
       if (req.path === '/api/bots/body-status') {
+        assert.equal(req.header('authorization'), 'Bearer valid-user-token');
         assert.equal(req.query.uid, '110');
         return res.json({ body_id: 'body-local', active: true });
+      }
+      if (req.path === '/api/bot/definition') {
+        assert.equal(req.header('authorization'), 'ApiKey agent-api-key');
+        return res.json({
+          configured: true,
+          revision: 3,
+          definition: {
+            schema: 'xiaoba.bot-definition.v1',
+            botId: '110',
+            model: { kind: 'catalog', modelId: 'gpt-5.6-sol', reasoningEffort: 'high' },
+            prompt: { selected: 'default' },
+            skills: [],
+          },
+        });
       }
       return res.status(404).json({ error: 'not found' });
     });
@@ -467,11 +482,6 @@ describe('dashboard CatsCo account status', () => {
         bodyId: 'body-local',
         installationId: 'body-local',
       },
-    });
-    createBotDefinitionSyncService({ runtimeRoot: testRoot }).acceptCloud('110', {
-      kind: 'catalog',
-      modelId: 'gpt-5.6-sol',
-      reasoningEffort: 'high',
     });
 
     const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);

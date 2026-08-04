@@ -293,6 +293,7 @@ describe('OpenAIProvider runtime feedback boundary', () => {
         content: null,
         tool_calls: result.toolCalls,
         providerContent: result.providerContent,
+        providerState: result.providerState,
       }]);
 
       assert.equal(replayBody.messages[0].reasoning_content, 'private chain for replay');
@@ -321,6 +322,7 @@ describe('OpenAIProvider runtime feedback boundary', () => {
         { type: 'openai_reasoning', reasoning_content: 'private deepseek chain' },
         { type: 'tool_use', id: 'call_1', name: 'lookup', input: { query: 'cats' } },
       ],
+      providerState: (provider as any).providerStateReference('openai-chat-completions'),
     }]);
 
     assert.equal(body.messages[0].reasoning_content, undefined);
@@ -345,9 +347,41 @@ describe('OpenAIProvider runtime feedback boundary', () => {
         { type: 'openai_reasoning', reasoning_content: 'private deepseek chain' },
         { type: 'tool_use', id: 'call_1', name: 'lookup', input: { query: 'cats' } },
       ],
+      providerState: (provider as any).providerStateReference('openai-chat-completions'),
     }]);
 
     assert.equal(body.messages[0].reasoning_content, 'private deepseek chain');
+  });
+
+  test('does not replay DeepSeek reasoning content from another model scope', () => {
+    const source = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-pro',
+    });
+    const target = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-flash',
+    });
+
+    const body = (target as any).buildRequestBody([{
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'lookup', arguments: '{"query":"cats"}' },
+      }],
+      providerContent: [
+        { type: 'openai_reasoning', reasoning_content: 'model-scoped chain' },
+        { type: 'tool_use', id: 'call_1', name: 'lookup', input: { query: 'cats' } },
+      ],
+      providerState: (source as any).providerStateReference('openai-chat-completions'),
+    }]);
+
+    assert.equal(body.messages[0].reasoning_content, undefined);
+    assert.equal(body.messages[0].tool_calls[0].id, 'call_1');
   });
 
   test('preserves finish reason for stream responses', async () => {
@@ -463,6 +497,7 @@ describe('OpenAIProvider runtime feedback boundary', () => {
         content: null,
         tool_calls: result.toolCalls,
         providerContent: result.providerContent,
+        providerState: result.providerState,
       }]);
 
       assert.equal(replayBody.messages[0].reasoning_content, 'private stream chain');
