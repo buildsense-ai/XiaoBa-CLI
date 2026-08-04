@@ -319,6 +319,196 @@ describe('OpenAIProvider Responses API mode', () => {
     }
   });
 
+  test('replays reasoning from a provider-compatible pure-text assistant turn', async () => {
+    const originalPost = axios.post;
+    const bodies: any[] = [];
+    const reasoning = {
+      type: 'reasoning',
+      id: 'reasoning_text_1',
+      status: 'completed',
+      encrypted_content: 'opaque-pure-text-state',
+      summary: [],
+    };
+    (axios as any).post = async (_url: string, body: any) => {
+      bodies.push(body);
+      return {
+        data: bodies.length === 1
+          ? {
+              status: 'completed',
+              output: [
+                reasoning,
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: 'first answer' }],
+                },
+              ],
+            }
+          : {
+              status: 'completed',
+              output: [{
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'second answer' }],
+              }],
+            },
+      };
+    };
+
+    try {
+      const provider = createProvider();
+      const first = await provider.chat([{ role: 'user', content: 'first question' }]);
+      await provider.chat([
+        { role: 'user', content: 'first question' },
+        {
+          role: 'assistant',
+          content: first.content,
+          providerContent: first.providerContent,
+          providerState: first.providerState,
+        },
+        { role: 'user', content: 'follow up' },
+      ]);
+
+      assert.deepEqual(first.providerContent, [reasoning]);
+      assert.deepEqual(bodies[1].input, [
+        { role: 'user', content: 'first question' },
+        reasoning,
+        { role: 'assistant', content: 'first answer' },
+        { role: 'user', content: 'follow up' },
+      ]);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('isolates pure-text Responses replay across models', () => {
+    const source = createProvider();
+    const target = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.openai.com/v1',
+      model: 'gpt-other',
+      openaiApiMode: 'responses',
+    });
+    const body = (target as any).buildResponsesRequestBody([
+      {
+        role: 'assistant',
+        content: 'portable answer',
+        providerContent: [{ type: 'reasoning', id: 'rs_foreign', encrypted_content: 'opaque' }],
+        providerState: (source as any).providerStateReference('openai-responses'),
+      },
+    ]);
+
+    assert.deepEqual(body.input, [{ role: 'assistant', content: 'portable answer' }]);
+  });
+
+  test('preserves native item order when a Responses turn has visible text and a tool call', async () => {
+    const originalPost = axios.post;
+    const bodies: any[] = [];
+    const reasoning = {
+      type: 'reasoning',
+      id: 'reasoning_mixed_1',
+      status: 'completed',
+      encrypted_content: 'opaque-mixed-state',
+      summary: [],
+    };
+    const message = {
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'I will look that up.' }],
+    };
+    const functionCall = {
+      type: 'function_call',
+      id: 'fc_mixed_1',
+      call_id: 'call_1',
+      name: 'lookup',
+      arguments: '{"query":"cats"}',
+    };
+    (axios as any).post = async (_url: string, body: any) => {
+      bodies.push(body);
+      return {
+        data: bodies.length === 1
+          ? { status: 'completed', output: [reasoning, message, functionCall] }
+          : {
+              status: 'completed',
+              output: [{
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'The result is ready.' }],
+              }],
+            },
+      };
+    };
+
+    try {
+      const provider = createProvider();
+      const first = await provider.chat([{ role: 'user', content: 'look it up' }], [lookupTool]);
+      assert.equal(first.content, 'I will look that up.');
+      assert.deepEqual(first.toolCalls, [{
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'lookup', arguments: '{"query":"cats"}' },
+      }]);
+
+      await provider.chat([
+        { role: 'user', content: 'look it up' },
+        {
+          role: 'assistant',
+          content: first.content,
+          tool_calls: first.toolCalls,
+          providerContent: first.providerContent,
+          providerState: first.providerState,
+        },
+        { role: 'tool', tool_call_id: 'call_1', content: 'found cats' },
+      ], [lookupTool]);
+
+      assert.deepEqual(bodies[1].input, [
+        { role: 'user', content: 'look it up' },
+        reasoning,
+        message,
+        functionCall,
+        { type: 'function_call_output', call_id: 'call_1', output: 'found cats' },
+      ]);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('reconstructs canonical function calls when compatible replay only contains reasoning', () => {
+    const provider = createProvider();
+    const reasoning = {
+      type: 'reasoning',
+      id: 'reasoning_tool_1',
+      status: 'completed',
+      encrypted_content: 'opaque-tool-state',
+      summary: [],
+    };
+    const body = (provider as any).buildResponsesRequestBody([
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'lookup', arguments: '{"query":"cats"}' },
+        }],
+        providerContent: [reasoning],
+        providerState: (provider as any).providerStateReference('openai-responses'),
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: 'found cats' },
+    ], [lookupTool]);
+
+    assert.deepEqual(body.input, [
+      reasoning,
+      {
+        type: 'function_call',
+        call_id: 'call_1',
+        name: 'lookup',
+        arguments: '{"query":"cats"}',
+      },
+      { type: 'function_call_output', call_id: 'call_1', output: 'found cats' },
+    ]);
+  });
+
   test('replays provider function calls and CatsCo tool results', async () => {
     const originalPost = axios.post;
     const bodies: any[] = [];

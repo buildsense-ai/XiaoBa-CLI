@@ -468,6 +468,48 @@ test('runner keeps Responses reasoning and matching function calls in the tool t
   assert.deepEqual(secondRequestAssistant?.providerState, providerState);
 });
 
+test('runner keeps pure-text Responses reasoning and state for the next live request', async () => {
+  const reasoning = {
+    type: 'reasoning',
+    id: 'rs_text_1',
+    encrypted_content: 'opaque-pure-text-state',
+    summary: [],
+  };
+  const providerState = {
+    schema: 'xiaoba.provider_state.v1' as const,
+    apiType: 'openai-responses' as const,
+    model: 'gpt-test',
+    endpointFingerprint: '0123456789abcdef',
+  };
+  const mock = createMockAI([
+    {
+      ...makeFinalResponse('first answer'),
+      providerContent: [reasoning],
+      providerState,
+    },
+    makeFinalResponse('second answer'),
+  ]);
+  const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([], {}), {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const first = await runner.run([{ role: 'user', content: 'first question' }]);
+  const firstAssistant = first.messages.find(message => message.role === 'assistant');
+  assert.deepEqual(firstAssistant?.providerContent, [reasoning]);
+  assert.deepEqual(firstAssistant?.providerState, providerState);
+
+  await runner.run([
+    ...first.messages,
+    { role: 'user', content: 'follow up' },
+  ]);
+  const secondRequestAssistant = mock.getReceivedMessages()[1]
+    .find(message => message.role === 'assistant');
+
+  assert.deepEqual(secondRequestAssistant?.providerContent, [reasoning]);
+  assert.deepEqual(secondRequestAssistant?.providerState, providerState);
+});
+
 test('runner injects tool target context into provider transcript only', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_1', 'execute_shell', { command: 'echo ok' })),
