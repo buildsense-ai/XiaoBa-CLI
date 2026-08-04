@@ -220,6 +220,47 @@ test('observer stores request content only on the started line when explicitly e
   }
 });
 
+test('observer records provider request preflight repairs without storing message content', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-preflight-'));
+  try {
+    const observer = new CacheTraceObserver({
+      sessionId: 'cache:preflight',
+      traceDir: dir,
+      env: { XIAOBA_CACHE_TRACE: 'true' },
+    });
+    observer.observe(attemptEvent({
+      outcome: 'started',
+      request: {
+        messages: [{ role: 'user', content: 'secret content' }],
+        tools: [],
+        preflight: {
+          repaired: true,
+          issueCodes: ['missing_tool_result', 'provider_replay_mismatch'],
+          droppedMessages: 1,
+          droppedToolCalls: 2,
+          droppedToolResults: 1,
+          providerReplayFallbacks: 1,
+        },
+      },
+    }));
+    await observer.drain();
+
+    const entry = JSON.parse(fs.readFileSync(listTraceFiles(dir)[0], 'utf8').trim());
+    assert.deepEqual(entry.request.preflight, {
+      repaired: true,
+      issue_codes: ['missing_tool_result', 'provider_replay_mismatch'],
+      dropped_messages: 1,
+      dropped_tool_calls: 2,
+      dropped_tool_results: 1,
+      provider_replay_fallbacks: 1,
+    });
+    assert.equal(entry.request.request_snapshot, undefined);
+    assert.doesNotMatch(JSON.stringify(entry), /secret content/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('one attempt keeps one JSONL file when it crosses midnight', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-midnight-'));
   try {

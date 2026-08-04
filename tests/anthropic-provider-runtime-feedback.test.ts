@@ -366,6 +366,7 @@ describe('AnthropicProvider runtime feedback boundary', () => {
           { type: 'thinking', thinking: 'hidden chain', signature: 'sig_123' },
           { type: 'tool_use', id: 'call_1', name: 'execute_shell', input: { command: 'git status' } },
         ],
+        providerState: (provider as any).providerStateReference(),
       },
       {
         role: 'tool',
@@ -382,6 +383,47 @@ describe('AnthropicProvider runtime feedback boundary', () => {
         { type: 'thinking', thinking: 'hidden chain', signature: 'sig_123' },
         { type: 'tool_use', id: 'call_1', name: 'execute_shell', input: { command: 'git status' } },
       ],
+    });
+  });
+
+  test('falls back to canonical tool calls after an Anthropic model switch', () => {
+    const source = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic/v1/messages',
+      model: 'MiniMax-M3',
+    });
+    const target = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic/v1/messages',
+      model: 'claude-sonnet-compatible',
+    });
+    const transformed = (target as any).transformMessages([
+      { role: 'user', content: 'clean repo' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'execute_shell', arguments: '{"command":"git status"}' },
+        }],
+        providerContent: [
+          { type: 'thinking', thinking: 'hidden chain', signature: 'sig_123' },
+          { type: 'tool_use', id: 'call_1', name: 'execute_shell', input: { command: 'git status' } },
+        ],
+        providerState: (source as any).providerStateReference(),
+      },
+      { role: 'tool', tool_call_id: 'call_1', name: 'execute_shell', content: 'clean' },
+    ]);
+
+    assert.deepStrictEqual(transformed.messages[1], {
+      role: 'assistant',
+      content: [{
+        type: 'tool_use',
+        id: 'call_1',
+        name: 'execute_shell',
+        input: { command: 'git status' },
+      }],
     });
   });
 });

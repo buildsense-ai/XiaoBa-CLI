@@ -1,10 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { Message, ChatConfig, ChatResponse, ContentBlock } from '../types';
+import { Message, ChatConfig, ChatResponse, ContentBlock, type ProviderStateReference } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
 import { resolveMaxTokens } from './output-limits';
 import { applyAnthropicReasoningOptions } from '../utils/reasoning-effort';
+import { createProviderStateReference, isProviderStateCompatible } from './provider-state';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -55,6 +56,14 @@ export class AnthropicProvider implements AIProvider {
    */
   private normalizeBaseURL(url: string): string {
     return url.replace(/\/+$/, '').replace(/\/v1\/messages$/, '').replace(/\/v1$/, '');
+  }
+
+  private providerStateReference(): ProviderStateReference {
+    return createProviderStateReference({
+      apiType: 'anthropic-messages',
+      endpoint: this.normalizeBaseURL(this.apiUrl),
+      model: this.model,
+    });
   }
 
   /**
@@ -331,6 +340,9 @@ export class AnthropicProvider implements AIProvider {
     if (!Array.isArray(msg.providerContent) || msg.providerContent.length === 0) {
       return undefined;
     }
+    if (!isProviderStateCompatible(msg.providerState, this.providerStateReference())) {
+      return undefined;
+    }
 
     const retainedToolCallIds = new Set((msg.tool_calls || []).map(toolCall => toolCall.id));
     const blocks: any[] = [];
@@ -431,6 +443,7 @@ export class AnthropicProvider implements AIProvider {
       usage,
       stopReason: (response as any)?.stop_reason || undefined,
       ...(providerContent.length > 0 ? { providerContent } : {}),
+      ...(providerContent.length > 0 ? { providerState: this.providerStateReference() } : {}),
     };
   }
 

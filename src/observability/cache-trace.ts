@@ -65,6 +65,14 @@ export interface CacheTraceEntryV4 {
     tools_count: number;
     tools_sha256: string;
     request_sha256: string;
+    preflight?: {
+      repaired: true;
+      issue_codes: string[];
+      dropped_messages: number;
+      dropped_tool_calls: number;
+      dropped_tool_results: number;
+      provider_replay_fallbacks: number;
+    };
     request_snapshot?: {
       kind: 'wire-input';
       messages: Array<Record<string, unknown>>;
@@ -239,6 +247,16 @@ export class CacheTraceObserver implements CacheTraceSink {
         tools_count: event.request.tools.length,
         tools_sha256: toolsSha256,
         request_sha256: requestSha256,
+        ...(event.request.preflight ? {
+          preflight: {
+            repaired: true as const,
+            issue_codes: [...event.request.preflight.issueCodes],
+            dropped_messages: event.request.preflight.droppedMessages,
+            dropped_tool_calls: event.request.preflight.droppedToolCalls,
+            dropped_tool_results: event.request.preflight.droppedToolResults,
+            provider_replay_fallbacks: event.request.preflight.providerReplayFallbacks,
+          },
+        } : {}),
         ...(includeContent ? {
           request_snapshot: {
             kind: 'wire-input' as const,

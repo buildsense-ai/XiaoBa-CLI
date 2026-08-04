@@ -421,11 +421,18 @@ test('runner keeps Responses reasoning and matching function calls in the tool t
       arguments: '{"command":"echo ok"}',
     },
   ];
+  const providerState = {
+    schema: 'xiaoba.provider_state.v1' as const,
+    apiType: 'openai-responses' as const,
+    model: 'gpt-test',
+    endpointFingerprint: '0123456789abcdef',
+  };
   const mock = createMockAI([
     {
       content: null,
       toolCalls: [toolCall],
       providerContent,
+      providerState,
       usage: {
         promptTokens: 100,
         completionTokens: 20,
@@ -457,6 +464,8 @@ test('runner keeps Responses reasoning and matching function calls in the tool t
   assert.equal(result.response, 'done');
   assert.deepEqual(assistantWithTool?.providerContent, providerContent);
   assert.deepEqual(secondRequestAssistant?.providerContent, providerContent);
+  assert.deepEqual(assistantWithTool?.providerState, providerState);
+  assert.deepEqual(secondRequestAssistant?.providerState, providerState);
 });
 
 test('runner injects tool target context into provider transcript only', async () => {

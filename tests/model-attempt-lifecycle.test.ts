@@ -100,6 +100,51 @@ test('records a non-retryable provider rejection as the terminal attempt', async
   assert.equal(events[1].error instanceof Error, true);
 });
 
+test('repairs malformed tool exchanges before invocation and records the preflight summary', async () => {
+  const service = createTestService();
+  const events: ModelAttemptEvent[] = [];
+  let providerMessages: Message[] | undefined;
+  (service as any).provider = {
+    chat: async (messages: Message[]) => {
+      providerMessages = messages;
+      return { content: 'recovered locally' };
+    },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+  const messages: Message[] = [
+    { role: 'user', content: 'first' },
+    {
+      role: 'assistant',
+      content: 'tool attempt',
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'lookup', arguments: '{}' },
+      }],
+    },
+    { role: 'user', content: 'continue without a result' },
+    { role: 'tool', tool_call_id: 'call_1', content: 'late' },
+  ];
+
+  const result = await service.chat(messages, undefined, {
+    modelAttemptSink: collectingSink(events),
+  });
+
+  assert.equal(result.content, 'recovered locally');
+  assert.deepEqual(providerMessages?.map(message => message.role), ['user', 'assistant', 'user']);
+  assert.equal(providerMessages?.[1].tool_calls, undefined);
+  assert.deepEqual(events.map(event => event.outcome), ['started', 'succeeded']);
+  assert.equal(events[0].request.messages, providerMessages);
+  assert.deepEqual(events[0].request.preflight, {
+    repaired: true,
+    issueCodes: ['missing_tool_result', 'orphan_tool_result'],
+    droppedMessages: 1,
+    droppedToolCalls: 1,
+    droppedToolResults: 1,
+    providerReplayFallbacks: 0,
+  });
+});
+
 test('distinguishes a stream failure after visible output from a retryable failure', async () => {
   const service = createTestService();
   const events: ModelAttemptEvent[] = [];

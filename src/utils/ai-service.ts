@@ -12,6 +12,10 @@ import {
 } from '../providers/provider';
 import { AnthropicProvider } from '../providers/anthropic-provider';
 import { OpenAIProvider } from '../providers/openai-provider';
+import {
+  prepareProviderRequestMessages,
+  type ProviderRequestPreflightSummary,
+} from '../providers/request-preflight';
 import { Logger } from './logger';
 import { isPrimaryModelToolCallingCapable } from './model-capabilities';
 import { resolveModelContextWindow } from './model-context-window';
@@ -59,6 +63,7 @@ interface ModelAttemptRun {
   messages: readonly Message[];
   tools: readonly ToolDefinition[];
   stream: boolean;
+  preflight?: ProviderRequestPreflightSummary;
 }
 
 export class AIService {
@@ -134,13 +139,14 @@ export class AIService {
       throw new Error('API密钥未配置。请先运行: catsco config');
     }
 
+    const prepared = this.prepareProviderRequest(messages);
     try {
       return await this.withRetry(
-        async () => this.requireUsableResponse(await this.provider.chat(messages, tools, options)),
+        async () => this.requireUsableResponse(await this.provider.chat(prepared.messages, tools, options)),
         undefined,
         options.signal,
         undefined,
-        this.createModelAttemptRun(messages, tools, false, options),
+        this.createModelAttemptRun(prepared.messages, tools, false, options, prepared.summary),
       );
     } catch (error: any) {
       throw this.wrapError(error);
@@ -163,6 +169,7 @@ export class AIService {
     }
 
     const allowStreamRetry = process.env.GAUZ_STREAM_RETRY === 'true';
+    const prepared = this.prepareProviderRequest(messages);
     let hasStreamedText = false;
     const providerCallbacks = this.createProviderStreamCallbacks(callbacks, () => {
       hasStreamedText = true;
@@ -171,12 +178,12 @@ export class AIService {
     try {
       const result = await this.withRetry(
         async () => this.requireUsableResponse(
-          await this.provider.chatStream(messages, tools, providerCallbacks, options),
+          await this.provider.chatStream(prepared.messages, tools, providerCallbacks, options),
         ),
         callbacks,
         options.signal,
         () => allowStreamRetry || !hasStreamedText,
-        this.createModelAttemptRun(messages, tools, true, options),
+        this.createModelAttemptRun(prepared.messages, tools, true, options, prepared.summary),
       );
       callbacks?.onComplete?.(result);
       return result;
@@ -198,6 +205,20 @@ export class AIService {
         callbacks.onText?.(text);
       },
     };
+  }
+
+  private prepareProviderRequest(messages: Message[]): ReturnType<typeof prepareProviderRequestMessages> {
+    const prepared = prepareProviderRequestMessages(messages);
+    if (prepared.summary) {
+      Logger.warning(
+        `Provider request preflight repaired message structure: issues=${prepared.summary.issueCodes.join(',')}`
+        + ` dropped_messages=${prepared.summary.droppedMessages}`
+        + ` dropped_tool_calls=${prepared.summary.droppedToolCalls}`
+        + ` dropped_tool_results=${prepared.summary.droppedToolResults}`
+        + ` replay_fallbacks=${prepared.summary.providerReplayFallbacks}`,
+      );
+    }
+    return prepared;
   }
 
   private requireUsableResponse(response: ChatResponse): ChatResponse {
@@ -517,6 +538,7 @@ export class AIService {
     tools: readonly ToolDefinition[] | undefined,
     stream: boolean,
     options: AIRequestOptions,
+    preflight?: ProviderRequestPreflightSummary,
   ): ModelAttemptRun | undefined {
     if (!options.modelAttemptSink) return undefined;
     modelAttemptCallSequence = (modelAttemptCallSequence + 1) % Number.MAX_SAFE_INTEGER;
@@ -527,6 +549,7 @@ export class AIService {
       messages,
       tools: tools || [],
       stream,
+      ...(preflight ? { preflight } : {}),
     };
   }
 
@@ -556,6 +579,7 @@ export class AIService {
       request: {
         messages: run.messages,
         tools: run.tools,
+        ...(run.preflight ? { preflight: run.preflight } : {}),
       },
       ...(fields.durationMs === undefined ? {} : { durationMs: fields.durationMs }),
       ...(fields.response === undefined ? {} : { response: fields.response }),

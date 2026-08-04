@@ -3,6 +3,15 @@ export type ContentBlock =
   | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } };
 
 export type ProviderContentBlock = Record<string, unknown> & { type: string };
+export type ProviderApiType = 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses';
+
+/** Opaque scope that prevents provider-only replay state crossing model/API boundaries. */
+export interface ProviderStateReference {
+  schema: 'xiaoba.provider_state.v1';
+  apiType: ProviderApiType;
+  model: string;
+  endpointFingerprint: string;
+}
 export type ReasoningEffort = 'default' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'disabled';
 export type OpenAIApiMode = 'chat_completions' | 'responses';
 
@@ -53,6 +62,8 @@ export interface Message {
   __remoteContextWatermarks?: Record<string, number>;
   /** Provider 原始 assistant content blocks，仅用于下次请求回放，不展示给用户。 */
   providerContent?: ProviderContentBlock[];
+  /** Identity of the provider boundary that produced providerContent. Never sent verbatim. */
+  providerState?: ProviderStateReference;
 }
 
 export interface ChatConfig {
@@ -132,6 +143,8 @@ export interface ChatResponse {
   stopReason?: string;
   /** Provider 原始 assistant content blocks，仅用于下次请求回放，不展示给用户。 */
   providerContent?: ProviderContentBlock[];
+  /** Identity of the provider boundary that produced providerContent. Never sent verbatim. */
+  providerState?: ProviderStateReference;
 }
 
 export interface CommandOptions {

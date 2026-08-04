@@ -360,6 +360,12 @@ describe('AgentSession lifecycle', () => {
           { type: 'thinking', thinking: 'hidden chain text', signature: 'sig_secret' },
           { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'notes.md' } },
         ],
+        providerState: {
+          schema: 'xiaoba.provider_state.v1',
+          apiType: 'anthropic-messages',
+          model: 'secret-model-scope',
+          endpointFingerprint: 'abcdef1234567890',
+        },
       },
       { role: 'tool', content: 'private tool result', tool_call_id: 'toolu_1', name: 'read_file' },
       { role: 'assistant', content: '读完了' },
@@ -376,6 +382,7 @@ describe('AgentSession lifecycle', () => {
       ['需要读文件', null, '[历史工具结果已省略；read_file 已完成。]', '读完了'],
     );
     assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
+    assert.equal(restored.some((message: any) => message.providerState), false);
     assert.equal(restored.some((message: any) => message.role === 'tool'), true);
     assert.equal(restored.some((message: any) => message.tool_calls?.length), true);
     assert.equal(
@@ -386,6 +393,7 @@ describe('AgentSession lifecycle', () => {
     assert.equal(restored.some((message: any) => String(message.content || '').includes('private tool result')), false);
     assert.doesNotMatch(raw, /hidden chain text/);
     assert.doesNotMatch(raw, /sig_secret/);
+    assert.doesNotMatch(raw, /secret-model-scope|providerState/);
     assert.doesNotMatch(raw, /provider replay 隐藏内容/);
     assert.doesNotMatch(raw, /private tool result/);
   });

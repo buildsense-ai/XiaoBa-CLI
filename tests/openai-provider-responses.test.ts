@@ -357,6 +357,7 @@ describe('OpenAIProvider Responses API mode', () => {
           content: first.content,
           tool_calls: first.toolCalls,
           providerContent: first.providerContent,
+          providerState: first.providerState,
         },
         { role: 'tool', tool_call_id: 'call_1', content: 'found cats' },
       ];
@@ -378,6 +379,38 @@ describe('OpenAIProvider Responses API mode', () => {
     } finally {
       (axios as any).post = originalPost;
     }
+  });
+
+  test('falls back to canonical function calls when Responses replay state came from another endpoint', () => {
+    const source = createProvider();
+    const target = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://other.example.test/v1',
+      model: 'gpt-test',
+      provider: 'openai',
+      openaiApiMode: 'responses',
+    });
+    const body = (target as any).buildResponsesRequestBody([{
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'lookup', arguments: '{"query":"cats"}' },
+      }],
+      providerContent: [
+        { type: 'reasoning', id: 'rs_1', encrypted_content: 'opaque' },
+        { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"query":"cats"}' },
+      ],
+      providerState: (source as any).providerStateReference('openai-responses'),
+    }]);
+
+    assert.deepEqual(body.input, [{
+      type: 'function_call',
+      call_id: 'call_1',
+      name: 'lookup',
+      arguments: '{"query":"cats"}',
+    }]);
   });
 
   test('streams visible text and resolves from the terminal Responses event', async () => {

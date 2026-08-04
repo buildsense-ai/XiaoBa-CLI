@@ -1,5 +1,6 @@
 import { Message, ChatResponse } from '../types';
 import { ToolDefinition } from '../types/tool';
+import type { ProviderRequestPreflightSummary } from './request-preflight';
 
 /**
  * Streaming 回调
@@ -74,6 +75,7 @@ export interface ModelAttemptEvent {
   request: {
     messages: readonly Message[];
     tools: readonly ToolDefinition[];
+    preflight?: ProviderRequestPreflightSummary;
   };
   durationMs?: number;
   response?: ChatResponse;
