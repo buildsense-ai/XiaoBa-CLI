@@ -156,6 +156,7 @@ export function foldHistoricalReadFileMessages(
   const foldedByIndex = new Map<number, string>();
   for (const candidate of candidatesToFold) {
     const folded = buildFoldedReadFileContent(candidate, resolved);
+    if (folded === undefined) continue;
     foldedByIndex.set(candidate.index, folded);
     stats.folded_count++;
     if (candidate.currentRun) stats.folded_current_turn_count++;
@@ -197,7 +198,7 @@ function emptyStats(options: ReadFileMessageFoldingOptions): ReadFileMessageFold
 function buildFoldedReadFileContent(
   candidate: FoldCandidate,
   options: ReadFileMessageFoldingOptions,
-): string {
+): string | undefined {
   const metadata = extractReadFileMetadata(candidate.rawText, candidate.toolCall);
   const lines = extractNumberedLines(candidate.rawText);
   const previewLines = selectPreviewLines(lines, options.maxPreviewLines);
@@ -214,13 +215,13 @@ function buildFoldedReadFileContent(
     rawText: candidate.rawText,
     store: options.artifactStore,
   });
+  if (!artifact.persisted) return undefined;
   const foldedParts = [
     TRUNCATED_READ_FILE_PREFIX,
     `artifact_id: ${artifact.artifactId}`,
     artifact.ref ? `full_output_ref: ${artifact.ref}` : '',
     artifact.filePath ? `full_output_path: ${artifact.filePath}` : '',
     artifact.fileUri ? `full_output_link: ${artifact.fileUri}` : '',
-    artifact.writeError ? `full_output_store_error: ${oneLine(artifact.writeError, 300)}` : '',
     metadata.file ? `file: ${metadata.file}` : '',
     metadata.path ? `path: ${metadata.path}` : '',
     metadata.display ? `range: ${metadata.display}` : '',

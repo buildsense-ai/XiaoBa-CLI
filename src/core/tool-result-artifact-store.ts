@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 
 export interface ToolResultArtifactStoreOptions {
   enabled: boolean;
@@ -11,6 +12,8 @@ export interface ToolResultArtifactStoreOptions {
 
 export interface ToolResultArtifactReference {
   artifactId: string;
+  /** Whether the complete raw tool result was durably written to an artifact. */
+  persisted: boolean;
   ref?: string;
   filePath?: string;
   fileUri?: string;
@@ -51,7 +54,7 @@ export function persistToolResultArtifact(
   const resolved = { ...DEFAULT_STORE_OPTIONS, ...params.store };
   const artifactId = sanitizeFileSegment(params.artifactId);
   if (!resolved.enabled || !resolved.rootDirectory) {
-    return { artifactId };
+    return { artifactId, persisted: false };
   }
 
   const sessionSegment = sanitizeFileSegment(resolved.sessionId || 'unknown-session');
@@ -61,14 +64,19 @@ export function persistToolResultArtifact(
   const directory = path.resolve(resolved.rootDirectory, sessionSegment);
   const filePath = path.join(directory, `${artifactId}.txt`);
   const ref = `tool-result://${sessionSegment}/${artifactId}`;
+  const payload = buildArtifactPayload(params);
 
   try {
     fs.mkdirSync(directory, { recursive: true });
-    if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, buildArtifactPayload(params), 'utf8');
+    if (!hasArtifactPayload(filePath, payload)) {
+      writeArtifactPayloadAtomically(filePath, payload);
+    }
+    if (!hasArtifactPayload(filePath, payload)) {
+      throw new Error(`Tool result artifact verification failed: ${filePath}`);
     }
     return {
       artifactId,
+      persisted: true,
       ref,
       filePath,
       fileUri: toFileUri(filePath),
@@ -76,9 +84,42 @@ export function persistToolResultArtifact(
   } catch (error: any) {
     return {
       artifactId,
+      persisted: false,
       ref,
       writeError: error?.message || String(error),
     };
+  }
+}
+
+function hasArtifactPayload(filePath: string, payload: string): boolean {
+  try {
+    if (!fs.lstatSync(filePath).isFile()) return false;
+    return fs.readFileSync(filePath, 'utf8') === payload;
+  } catch {
+    return false;
+  }
+}
+
+function writeArtifactPayloadAtomically(filePath: string, payload: string): void {
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${randomUUID()}.tmp`,
+  );
+  try {
+    const descriptor = fs.openSync(temporaryPath, 'wx');
+    try {
+      fs.writeFileSync(descriptor, payload, 'utf8');
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.renameSync(temporaryPath, filePath);
+  } finally {
+    try {
+      fs.unlinkSync(temporaryPath);
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
   }
 }
 

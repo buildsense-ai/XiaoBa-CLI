@@ -172,6 +172,7 @@ export function foldHistoricalExecuteShellMessages(
   const foldedByIndex = new Map<number, string>();
   for (const candidate of candidatesToFold) {
     const folded = buildFoldedExecuteShellContent(candidate, resolved);
+    if (folded === undefined) continue;
     foldedByIndex.set(candidate.index, folded);
     stats.folded_count++;
     if (candidate.currentRun) stats.folded_current_turn_count++;
@@ -213,7 +214,7 @@ function emptyStats(options: ExecuteShellMessageFoldingOptions): ExecuteShellMes
 function buildFoldedExecuteShellContent(
   candidate: FoldCandidate,
   options: ExecuteShellMessageFoldingOptions,
-): string {
+): string | undefined {
   const metadata = extractShellMetadata(candidate.rawText, candidate.toolCall);
   const lines = candidate.rawText.split(/\r?\n/);
   const headLines = selectHeadLines(lines, options.maxHeadLines);
@@ -231,6 +232,7 @@ function buildFoldedExecuteShellContent(
     rawText: candidate.rawText,
     store: options.artifactStore,
   });
+  if (!artifact.persisted) return undefined;
 
   const foldedParts = [
     TRUNCATED_EXECUTE_SHELL_PREFIX,
@@ -238,7 +240,6 @@ function buildFoldedExecuteShellContent(
     artifact.ref ? `full_output_ref: ${artifact.ref}` : '',
     artifact.filePath ? `full_output_path: ${artifact.filePath}` : '',
     artifact.fileUri ? `full_output_link: ${artifact.fileUri}` : '',
-    artifact.writeError ? `full_output_store_error: ${oneLine(artifact.writeError, 300)}` : '',
     metadata.command ? `command: ${oneLine(metadata.command, 1600)}` : '',
     metadata.description ? `description: ${oneLine(metadata.description, 400)}` : '',
     metadata.cwd ? `cwd: ${metadata.cwd}` : '',

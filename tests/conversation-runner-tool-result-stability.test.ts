@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -111,6 +112,131 @@ test('stabilizes caller-owned partial history before a provider failure', async 
     assert.equal(persisted.__toolResultStable, true);
     assert.ok(String(persisted.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
     assert.match(String(persisted.content), /full_output_ref:/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('keeps the full tool result when no artifact root is available', async () => {
+  let calls = 0;
+  const aiService = {
+    chat: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { content: null, toolCalls: [toolCall('read_1')], usage };
+      }
+      throw new Error('provider unavailable');
+    },
+  } as any;
+  const messages: Message[] = [{ role: 'user', content: 'inspect it' }];
+  const runner = new ConversationRunner(aiService, new ReadExecutor(), {
+    stream: false,
+    enableCompression: false,
+    // Mirrors BaseAgent: it has a session identity but no workspace root.
+    toolExecutionContext: { sessionId: 'base-agent-without-workspace' } as any,
+  });
+
+  await assert.rejects(runner.run(messages), /provider unavailable/);
+
+  const persisted = stableRead(messages);
+  assert.equal(persisted.__toolResultStable, true);
+  assert.equal(persisted.content, longReadOutput);
+});
+
+test('keeps the full tool result when artifact persistence fails', async () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-artifact-write-failure-'));
+  const artifactRoot = path.join(tempDirectory, 'not-a-directory');
+  const previousArtifactDirectory = process.env.XIAOBA_TOOL_RESULT_ARTIFACT_DIR;
+  const previousArtifactsEnabled = process.env.XIAOBA_TOOL_RESULT_ARTIFACTS;
+  fs.writeFileSync(artifactRoot, 'not a directory');
+  let calls = 0;
+  const aiService = {
+    chat: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { content: null, toolCalls: [toolCall('read_1')], usage };
+      }
+      throw new Error('provider unavailable');
+    },
+  } as any;
+  const messages: Message[] = [{ role: 'user', content: 'inspect it' }];
+  const runner = new ConversationRunner(aiService, new ReadExecutor(), {
+    stream: false,
+    enableCompression: false,
+    toolExecutionContext: { sessionId: 'artifact-write-failure' } as any,
+  });
+
+  try {
+    process.env.XIAOBA_TOOL_RESULT_ARTIFACTS = 'true';
+    process.env.XIAOBA_TOOL_RESULT_ARTIFACT_DIR = artifactRoot;
+
+    await assert.rejects(runner.run(messages), /provider unavailable/);
+
+    const persisted = stableRead(messages);
+    assert.equal(persisted.__toolResultStable, true);
+    assert.equal(persisted.content, longReadOutput);
+  } finally {
+    if (previousArtifactDirectory === undefined) {
+      delete process.env.XIAOBA_TOOL_RESULT_ARTIFACT_DIR;
+    } else {
+      process.env.XIAOBA_TOOL_RESULT_ARTIFACT_DIR = previousArtifactDirectory;
+    }
+    if (previousArtifactsEnabled === undefined) {
+      delete process.env.XIAOBA_TOOL_RESULT_ARTIFACTS;
+    } else {
+      process.env.XIAOBA_TOOL_RESULT_ARTIFACTS = previousArtifactsEnabled;
+    }
+    fs.rmSync(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test('replaces a corrupt artifact before folding a tool result', async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-corrupt-artifact-'));
+  const sessionId = 'corrupt-artifact';
+  const hash = createHash('sha256')
+    .update('/repo/a.ts')
+    .update('\0')
+    .update(longReadOutput)
+    .digest('hex');
+  const artifactPath = path.join(
+    workspace,
+    '.xiaoba',
+    'tool-results',
+    sessionId,
+    `rf_${hash.slice(0, 16)}.txt`,
+  );
+  fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+  fs.writeFileSync(artifactPath, 'partial artifact');
+  let calls = 0;
+  const aiService = {
+    chat: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { content: null, toolCalls: [toolCall('read_1')], usage };
+      }
+      throw new Error('provider unavailable');
+    },
+  } as any;
+  const messages: Message[] = [{ role: 'user', content: 'inspect it' }];
+  const runner = new ConversationRunner(aiService, new ReadExecutor(), {
+    stream: false,
+    enableCompression: false,
+    toolExecutionContext: {
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      sessionId,
+    } as any,
+  });
+
+  try {
+    await assert.rejects(runner.run(messages), /provider unavailable/);
+
+    const persisted = stableRead(messages);
+    assert.ok(String(persisted.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
+    assert.equal(
+      fs.readFileSync(artifactPath, 'utf8'),
+      ['tool_name: read_file', `sha256: ${hash}`, longReadOutput].join('\n'),
+    );
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
