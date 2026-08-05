@@ -128,6 +128,8 @@ export async function runModelBackedReaderLane(
   }
 
   let rawContent = '';
+  let responseStopReason: string | undefined;
+  let responseUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined;
   try {
     // Responses-compatible relays may stream visible output but omit the final
     // message from their terminal response. AIService.chatStream aggregates the
@@ -135,6 +137,8 @@ export async function runModelBackedReaderLane(
     const response = await options.aiService.chatStream(messages, undefined, undefined, {
       signal: signal ?? options.signal,
     });
+    responseStopReason = response?.stopReason;
+    responseUsage = response?.usage;
     rawContent = extractChatText(response?.content);
     messages.push({ role: 'assistant', content: rawContent });
   } catch (error) {
@@ -159,6 +163,11 @@ export async function runModelBackedReaderLane(
 
   let findingSet: ShardFindingSet;
   try {
+    if (!rawContent.trim() && isTokenLimitStopReason(responseStopReason)) {
+      throw new Error(
+        `invalid_completion_schema: reader exhausted output budget before returning JSON (stopReason=${responseStopReason})`,
+      );
+    }
     findingSet = parseAndValidateReaderCompletion(rawContent, shard, lane, job);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -168,6 +177,8 @@ export async function runModelBackedReaderLane(
       terminal_abort_reason: null,
       failure_outcome: 'branch_failure',
       raw_preview: rawContent.slice(0, 500),
+      stop_reason: responseStopReason ?? null,
+      usage: responseUsage ?? null,
     });
     logger.write('transcript', { messages });
     logger.write('failed', { message });
@@ -398,6 +409,13 @@ function extractJsonObject(raw: string): string {
     throw new Error('invalid_completion_schema: reader returned no JSON object');
   }
   return candidate.slice(start, end + 1);
+}
+
+function isTokenLimitStopReason(stopReason: string | undefined): boolean {
+  const normalized = String(stopReason ?? '').trim().toLowerCase();
+  return normalized === 'length'
+    || normalized === 'max_tokens'
+    || normalized === 'max_output_tokens';
 }
 
 function extractChatText(content: unknown): string {

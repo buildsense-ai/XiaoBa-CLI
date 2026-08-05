@@ -59,6 +59,40 @@ function fixtureJob() {
 }
 
 describe('model-backed evidence reader', () => {
+  test('records token-limit diagnostics when the reader exhausts output before JSON', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-reader-length-'));
+    const job = fixtureJob();
+    const shard = Object.values(job.shards)[0]!;
+    const branchRoot = path.join(root, 'branches');
+    const aiService = {
+      async chatStream() {
+        return {
+          content: null,
+          stopReason: 'length',
+          usage: { promptTokens: 120, completionTokens: 64, totalTokens: 184 },
+        };
+      },
+    } as unknown as AIService;
+
+    try {
+      await assert.rejects(
+        () => runModelBackedReaderLane(
+          { shard, lane: 'author', job },
+          { aiService, workingDirectory: root, branchLogRoot: branchRoot },
+        ),
+        /reader exhausted output budget before returning JSON \(stopReason=length\)/,
+      );
+      const transcriptFile = fs.readdirSync(path.join(branchRoot, 'evidence-author-reader'))
+        .flatMap(day => fs.readdirSync(path.join(branchRoot, 'evidence-author-reader', day))
+          .map(file => path.join(branchRoot, 'evidence-author-reader', day, file)))[0]!;
+      const log = fs.readFileSync(transcriptFile, 'utf8');
+      assert.match(log, /"stop_reason":"length"/);
+      assert.match(log, /"completionTokens":64/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('uses the streaming aggregation path so terminal responses cannot erase visible output', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-reader-stream-'));
     const job = fixtureJob();

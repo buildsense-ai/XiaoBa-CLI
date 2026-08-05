@@ -642,7 +642,7 @@ describe('RuntimeLearning — test environment isolation', () => {
     try {
       assert.equal(getDistillationHeartbeatConfig(root, {
         XIAOBA_RUNTIME_ROOT: root,
-      }).skillEvolutionReviewMaxQuantaPerWake, 4);
+      }).skillEvolutionReviewMaxQuantaPerWake, 8);
       assert.equal(getDistillationHeartbeatConfig(root, {
         XIAOBA_RUNTIME_ROOT: root,
         XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE: '16',
@@ -654,7 +654,7 @@ describe('RuntimeLearning — test environment isolation', () => {
       assert.equal(getDistillationHeartbeatConfig(root, {
         XIAOBA_RUNTIME_ROOT: root,
         XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE: '17',
-      }).skillEvolutionReviewMaxQuantaPerWake, 4);
+      }).skillEvolutionReviewMaxQuantaPerWake, 8);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -1504,7 +1504,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
 
   test('one wake advances a bounded serial batch across Jobs and at most one Quantum per Job', async () => {
     const engine = env.skillEvolution.getEvidenceReviewEngine();
-    const jobIds = Array.from({ length: 6 }, (_, index) => {
+    const jobIds = Array.from({ length: 10 }, (_, index) => {
       const bundle = runtimeReviewBundle(`v3:batch-${index}.jsonl:0:20:batch-review-${index}`);
       return engine.ensureJob({
         bundle,
@@ -1512,7 +1512,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
         workClass: 'live_learning',
       }).jobId;
     });
-    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxQuantaPerWake = 4;
+    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxQuantaPerWake = 8;
     seedDueReviewContinuation(env.episodeStorePath);
 
     const before = engine.loadStore();
@@ -1526,8 +1526,8 @@ describe('RuntimeLearning — AC3: Due Review', () => {
         .filter(quantum => quantum.state === 'succeeded').length;
       return succeededAfter - succeededBefore;
     });
-    assert.equal(progressByJob.reduce((sum, value) => sum + value, 0), 4);
-    assert.equal(progressByJob.filter(value => value === 1).length, 4);
+    assert.equal(progressByJob.reduce((sum, value) => sum + value, 0), 8);
+    assert.equal(progressByJob.filter(value => value === 1).length, 8);
     assert.equal(progressByJob.every(value => value >= 0 && value <= 1), true);
   });
 

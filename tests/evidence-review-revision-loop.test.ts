@@ -243,6 +243,59 @@ function createAndAdvance(
 
 describe('Evidence Review revision loop (durable graph)', () => {
 
+  test('terminal schema failure propagates from a Reader quantum to the whole Job', async () => {
+    const dir = setupEngineDir();
+    let nowMs = Date.parse('2026-08-04T00:00:00.000Z');
+    try {
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+        retryBaseMs: 1,
+        retryMaxMs: 1,
+        now: () => new Date(nowMs),
+      });
+      (engine as any).options.runReaderLane = async () => {
+        throw Object.assign(
+          new Error('invalid_completion_schema: reader returned empty completion'),
+          {
+            kind: 'invalid_completion_schema',
+            reviewFailureReason: 'schema-validation-error',
+          },
+        );
+      };
+
+      const bundle = fixtureBundle(`schema-terminal-${crypto.randomUUID().slice(0, 8)}`);
+      const job = engine.createJob({
+        bundle,
+        candidate: fixtureCandidate(),
+        workClass: 'live_learning',
+      });
+      const reader = Object.values(job.quanta).find(q => q.kind === 'author_reader')!;
+
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        await engine.advanceJob(job.jobId, `wake:schema:${attempt}`, undefined, {
+          quantumId: reader.quantumId,
+          maxQuanta: 1,
+        });
+        nowMs += 2;
+      }
+
+      const failedJob = engine.loadStore().jobs[job.jobId]!;
+      assert.equal(failedJob.quanta[reader.quantumId]?.state, 'terminal_failed');
+      assert.equal(failedJob.quanta[reader.quantumId]?.attempts, 5);
+      assert.equal(failedJob.disposition, 'terminal_failed');
+      assert.equal(failedJob.nextDueAt, undefined);
+      assert.match(failedJob.terminalReason ?? '', /reader returned empty completion/);
+      assert.equal(
+        Object.values(failedJob.quanta).filter(q => q.state === 'succeeded').length,
+        0,
+        'downstream quanta must not execute after the Reader fails',
+      );
+    } finally {
+      dir.cleanup();
+    }
+  });
+
   test('RED: round-1 revise triggers round-2 Author/Verifier before commit', async () => {
     const dir = setupEngineDir();
     try {

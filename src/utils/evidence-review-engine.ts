@@ -681,7 +681,14 @@ export class EvidenceReviewEngine {
             now: nowFn(),
             retryBaseMs,
             retryMaxMs,
-            ...(operationalKind ? { maxAttempts: Number.MAX_SAFE_INTEGER } : {}),
+            // Provider/execution failures are operationally recoverable forever.
+            // A deterministic reader/schema failure must reach the normal attempt
+            // cap; otherwise an empty/non-JSON completion can occupy the queue
+            // indefinitely while every retry repeats the same request.
+            ...((operationalKind !== 'invalid_completion_schema'
+              && !/^invalid_completion_schema:/i.test(message))
+              ? { maxAttempts: Number.MAX_SAFE_INTEGER }
+              : {}),
             terminal,
           });
           if (!failed.ok) return { live, changed: false };
@@ -698,13 +705,25 @@ export class EvidenceReviewEngine {
             live.workClass = 'operational_recovery';
           }
           live.disposition = deriveJobDisposition(live);
-          if (live.disposition === 'terminal_failed') live.terminalReason = message;
+          // A terminal schema failure blocks every downstream path that depends
+          // on this quantum. Promote it to a durable Job failure instead of
+          // leaving an active Job with no runnable work and no next deadline.
+          if (
+            failedQuantum.state === 'terminal_failed'
+            && (operationalKind === 'invalid_completion_schema'
+              || /^invalid_completion_schema:/i.test(message))
+          ) {
+            live.disposition = 'terminal_failed';
+            live.terminalReason = message;
+          } else if (live.disposition === 'terminal_failed') {
+            live.terminalReason = message;
+          }
           live.updatedAt = nowFn().toISOString();
           const retrying = Object.values(live.quanta)
             .filter(q => q.state === 'retry_wait' && q.nextRetryAt)
             .map(q => q.nextRetryAt!)
             .sort();
-          live.nextDueAt = retrying[0];
+          live.nextDueAt = live.disposition === 'active' ? retrying[0] : undefined;
           upsertEvidenceReviewJob(after, live);
           return { live, changed: true };
         });

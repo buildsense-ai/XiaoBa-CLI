@@ -406,7 +406,7 @@ export function getDistillationHeartbeatConfig(
   const skillEvolutionReviewMaxQuantaPerWake = readNumberInRange(
     runtimeEnv,
     'XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE',
-    4,
+    8,
     1,
     16,
   );

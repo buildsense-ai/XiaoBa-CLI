@@ -10,7 +10,7 @@ import {
   BranchReviewAttemptMetadata,
   SharedReviewTurnBudget,
 } from '../core/branch-session';
-import { Message } from '../types';
+import { Message, type ChatConfig } from '../types';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { AIService } from './ai-service';
 import { PathResolver } from './path-resolver';
@@ -1007,7 +1007,10 @@ export class SkillEvolutionRuntime {
       ?? (input.lane === 'author' ? this.options.authorModel : this.options.verifierModel);
     try {
       return await runModelBackedReaderLane(input, {
-        aiService: this.createBranchAIService(laneModel),
+        // Reader extraction is a bounded schema task. Keep it on low reasoning
+        // so Responses models do not consume the output budget before emitting
+        // the required JSON; Author/Verifier branches retain their configured effort.
+        aiService: this.createBranchAIService(laneModel, { reasoningEffort: 'low' }),
         workingDirectory: this.options.workingDirectory,
         branchLogRoot: this.options.branchLogRoot,
         model: laneModel,
@@ -2298,10 +2301,17 @@ export class SkillEvolutionRuntime {
     return this.options.verifierFactory?.(options) ?? new SkillVerifierBranchSession(options);
   }
 
-  private createBranchAIService(model?: string): AIService {
+  private createBranchAIService(model?: string, overrides: Partial<ChatConfig> = {}): AIService {
     const service = requireAIService(this.options.aiService);
-    if (!model?.trim() || typeof service.getConfig !== 'function') return service;
-    return new AIService({ ...service.getConfig(), model: model.trim() });
+    const normalizedModel = model?.trim();
+    const hasOverrides = Object.keys(overrides).length > 0;
+    if (!normalizedModel && !hasOverrides) return service;
+    if (typeof service.getConfig !== 'function') return service;
+    return new AIService({
+      ...service.getConfig(),
+      ...(normalizedModel ? { model: normalizedModel } : {}),
+      ...overrides,
+    });
   }
 
   private async applyReviewedTransition(
