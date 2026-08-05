@@ -42,6 +42,7 @@ describe('OpenAIProvider runtime feedback boundary', () => {
         name: 'send_text',
         content: 'ok',
         __runtimeFeedback: true,
+        __toolExecutionSucceeded: true,
       } as any,
     ];
 
@@ -53,6 +54,7 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.equal(JSON.stringify(body.messages).includes('__injected'), false);
     assert.equal(JSON.stringify(body.messages).includes('__cacheScope'), false);
     assert.equal(JSON.stringify(body.messages).includes('__runtimeFeedback'), false);
+    assert.equal(JSON.stringify(body.messages).includes('__toolExecutionSucceeded'), false);
     assert.equal(JSON.stringify(body.messages).includes('__runtimeObservation'), false);
     assert.equal(JSON.stringify(body.messages).includes('__episodeId'), false);
     assert.equal(JSON.stringify(body.messages).includes('__episodeInputKind'), false);

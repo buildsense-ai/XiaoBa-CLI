@@ -54,7 +54,8 @@ describe('model error observability', () => {
     assert.equal(diagnostics.http_status, 400);
     assert.equal(diagnostics.provider_code, 'invalid_request_error');
     assert.equal(diagnostics.provider_type, 'invalid_request_error');
-    assert.equal(diagnostics.request_id, 'req_body_123');
+    assert.match(diagnostics.request_id || '', /^request_[a-f0-9]{12}$/);
+    assert.notEqual(diagnostics.request_id, 'req_body_123');
     assert.equal(diagnostics.origin, 'provider');
     assert.equal(diagnostics.retry?.attempt_count, 3);
     assert.equal(diagnostics.retry?.retry_count, 2);
@@ -65,8 +66,8 @@ describe('model error observability', () => {
       attempt_number: 3,
       episode_id: 'episode-456',
     });
-    assert.match(diagnostics.error_summary, /sk-\[redacted\]/);
-    assert.doesNotMatch(diagnostics.error_summary, /secret-value/);
+    assert.match(diagnostics.error_summary, /signal_request_invalid/);
+    assert.doesNotMatch(diagnostics.error_summary, /secret-value|tool schema invalid/);
     assert.match(diagnostics.fingerprint, /^[a-f0-9]{16}$/);
   });
 
@@ -116,4 +117,51 @@ describe('model error observability', () => {
     assert.equal(replay.retry_strategy, 'fix_and_retry_once');
     assert.equal(replay.recovery_action, 'repair_session');
   });
+  test('does not log free-form provider fields, request ids, credentials, or echoed user text', () => {
+    const diagnostics = captureModelErrorDiagnostics(Object.assign(new Error('echoed user text: my private medical note'), {
+      response: {
+        status: 400,
+        data: {
+          request_id: 'req-private-user-123',
+          error: {
+            code: 'sk-secret-value-123456 echoed user text',
+            type: 'credential=super-secret echoed user text',
+            message: 'invalid request: echoed user text: my private medical note',
+          },
+        },
+      },
+    }));
+    assert.equal(diagnostics.provider_code, undefined);
+    assert.equal(diagnostics.provider_type, undefined);
+    assert.match(diagnostics.request_id || '', /^request_[a-f0-9]{12}$/);
+    assert.match(diagnostics.error_summary, /http_400/);
+    assert.match(diagnostics.error_summary, /signal_request_invalid/);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /private medical note|super-secret|sk-secret-value|req-private-user-123/);
+  });
+
+  test('does not execute throwing error getters while capturing diagnostics', () => {
+    const hostile = new Proxy(Object.freeze({}), {
+      get(_target, property) {
+        if (property === 'message' || property === 'response' || property === 'cause') {
+          throw new Error('getter should not escape diagnostics');
+        }
+        return undefined;
+      },
+      getPrototypeOf() { throw new Error('prototype access should not escape diagnostics'); },
+    });
+    const diagnostics = captureModelErrorDiagnostics(hostile, { phase: 'agent_turn' });
+    assert.equal(diagnostics.origin, 'runtime');
+    assert.equal(typeof diagnostics.error_summary, 'string');
+    assert.match(diagnostics.fingerprint, /^[a-f0-9]{16}$/);
+  });
+
+  test('classifies the safe cause carried by a partial-turn wrapper', () => {
+    const cause = Object.assign(new Error('API错误 (504): request timed out'), { status: 504 });
+    const wrapped = new Error(cause.message);
+    Object.defineProperty(wrapped, 'cause', { value: cause, enumerable: false });
+    const classified = classifyModelError(wrapped, { ...noKnownFlags, isTimeout: true });
+    assert.equal(classified.category, 'timeout');
+    assert.equal(classified.diagnostics.http_status, 504);
+  });
+
 });
