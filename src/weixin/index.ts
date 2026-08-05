@@ -286,7 +286,21 @@ export class WeixinBot {
       executionScope: createExecutionScopeFromRoute(route),
       runtimeFeedback,
     });
-    if (result.text === BUSY_MESSAGE || result.taskOutcome === 'failed') {
+    if (result.text === BUSY_MESSAGE) {
+      const queue = this.messageQueue.get(sessionKey) ?? [];
+      queue.unshift({
+        userText,
+        chatId: route.topicId,
+        userId,
+        sessionRoute: route,
+        source: 'user',
+        runtimeFeedback,
+      });
+      this.messageQueue.set(sessionKey, queue);
+      Logger.info(`[${sessionKey}] 主消息处理遇到竞态忙碌，已重新入队`);
+      return;
+    }
+    if (result.visibleToUser && (result.taskOutcome === 'failed' || result.taskOutcome === 'cancelled')) {
       await channel.reply(route.topicId, result.text);
     }
     await this.drainMessageQueue(sessionKey);
@@ -320,7 +334,7 @@ export class WeixinBot {
       this.enqueueSubAgentFeedback(sessionKey, chatId, userId, text, route);
       return;
     }
-    if (result.taskOutcome === 'failed') {
+    if (result.visibleToUser && (result.taskOutcome === 'failed' || result.taskOutcome === 'cancelled')) {
       await channel.reply(chatId, result.text);
     }
     await this.drainMessageQueue(sessionKey);
@@ -378,7 +392,14 @@ export class WeixinBot {
         runtimeFeedback: msg.runtimeFeedback,
       });
 
-    if (result.taskOutcome === 'failed') {
+    if (result.text === BUSY_MESSAGE) {
+      const pending = this.messageQueue.get(sessionKey) ?? [];
+      pending.unshift(msg);
+      this.messageQueue.set(sessionKey, pending);
+      Logger.info(`[${sessionKey}] 排队消息处理遇到竞态忙碌，已重新入队`);
+      return;
+    }
+    if (result.visibleToUser && (result.taskOutcome === 'failed' || result.taskOutcome === 'cancelled')) {
       await channel.reply(msg.chatId, result.text);
     }
     await this.drainMessageQueue(sessionKey);

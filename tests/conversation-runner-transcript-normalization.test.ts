@@ -1262,6 +1262,7 @@ test('runner records outbound file sends as normal tool_result transcript for la
       content: sentFileResult,
       tool_call_id: 'call_file',
       name: 'send_file',
+      __toolExecutionSucceeded: true,
     },
     'the model should see send_file as a normal tool_result immediately after its assistant tool_call',
   );
@@ -1372,12 +1373,14 @@ test('runner keeps repeated send_file calls in the same assistant response as le
         content: sentFileResult,
         tool_call_id: 'call_file_1',
         name: 'send_file',
+        __toolExecutionSucceeded: true,
       },
       {
         role: 'tool',
         content: sentFileResult,
         tool_call_id: 'call_file_2',
         name: 'send_file',
+        __toolExecutionSucceeded: true,
       },
     ],
     'each send_file result should immediately follow the assistant message that requested it',

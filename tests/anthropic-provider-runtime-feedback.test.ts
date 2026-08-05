@@ -23,6 +23,12 @@ describe('AnthropicProvider runtime feedback boundary', () => {
         __injected: true,
       } as any,
       {
+        role: 'tool',
+        content: 'successful internal tool result',
+        tool_call_id: 'call-internal',
+        __toolExecutionSucceeded: true,
+      } as any,
+      {
         role: 'user',
         content: '[运行时反馈] weixin.media_download\n错误: 媒体下载不完整',
         __injected: true,
@@ -40,10 +46,18 @@ describe('AnthropicProvider runtime feedback boundary', () => {
     assert.equal(transformed.system, 'system');
     assert.deepStrictEqual(transformed.messages, [{
       role: 'user',
-      content: '[运行时反馈] weixin.media_download\n错误: 媒体下载不完整',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'call-internal',
+        content: 'successful internal tool result',
+      }, {
+        type: 'text',
+        text: '[运行时反馈] weixin.media_download\n错误: 媒体下载不完整',
+      }],
     }]);
     assert.equal(JSON.stringify(transformed).includes('__injected'), false);
     assert.equal(JSON.stringify(transformed).includes('__runtimeFeedback'), false);
+    assert.equal(JSON.stringify(transformed).includes('__toolExecutionSucceeded'), false);
     assert.equal(JSON.stringify(transformed).includes('__runtimeObservation'), false);
     assert.equal(JSON.stringify(transformed).includes('__episodeId'), false);
     assert.equal(JSON.stringify(transformed).includes('__episodeInputKind'), false);
