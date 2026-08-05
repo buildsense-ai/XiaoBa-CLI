@@ -34,6 +34,16 @@ test('relay catalog models resolve to their official context windows', () => {
     model: 'deepseek-v4-flash',
     provider: 'anthropic',
   }, { CATSCO_MODEL_SOURCE: 'relay' } as NodeJS.ProcessEnv).contextWindowTokens, 1_000_000);
+
+  // GPT-5.6 family follows the cloud catalog's 256k window as the device-local
+  // fallback (the cloud ships the authoritative value when available).
+  for (const model of ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna']) {
+    assert.equal(resolveModelContextWindow({
+      apiUrl: 'https://relay.catsco.cc/openai',
+      model,
+      provider: 'openai',
+    }, { CATSCO_MODEL_SOURCE: 'relay' } as NodeJS.ProcessEnv).contextWindowTokens, 256_000);
+  }
 });
 
 test('custom models keep the safe default even if the model name resembles a known relay model', () => {

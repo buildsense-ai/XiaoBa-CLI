@@ -73,8 +73,49 @@ describe('CatsCo default relay model bootstrap', () => {
     ]);
   });
 
-  test('replaces stale GPT vision=false runtime metadata from the relay catalog', async () => {
-    const fetchImpl = (async () => Response.json({
+  test('cloud context window wins over the local profile for catalog models', async () => {
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/relay/config') {
+        return Response.json({
+          base_url: 'https://relay.example.test',
+          self_service_enabled: true,
+          endpoints: [{ protocol: 'OpenAI-compatible', base_url: 'https://relay.example.test/v1' }],
+        });
+      }
+      if (url.pathname === '/api/relay/key') {
+        return Response.json({ key: { key: 'sk-relay-key' } });
+      }
+      if (url.pathname === '/v1/models') {
+        return Response.json({
+          data: [{ id: 'gpt-5.6-sol', capabilities: { vision: true, tool_calling: true, streaming: true } }],
+        });
+      }
+      return new Response(JSON.stringify({ error: 'unexpected request' }), { status: 500 });
+    }) as typeof fetch;
+
+    const runtime = await provisionCatsRelayCatalogRuntime({
+      botId: 'bot-1',
+      modelId: 'gpt-5.6-sol',
+      // 模拟服务器下发权威 context window（200k），必须覆盖本地 profile 的 256k。
+      contextWindowTokens: 200_000,
+      auth: {
+        token: 'user-token',
+        uid: 'user-1',
+        displayName: 'Alice',
+        httpBaseUrl: 'https://cats.example.test',
+        serverUrl: 'wss://cats.example.test/v0/channels',
+      },
+      fetchImpl,
+    });
+
+    assert.equal(runtime.modelId, 'gpt-5.6-sol');
+    assert.equal(runtime.provider, 'openai');
+    assert.equal(runtime.apiBase, 'https://relay.example.test/v1');
+    assert.equal(runtime.contextWindowTokens, 200_000);
+  });
+
+  test('replaces stale GPT vision=false runtime metadata from the relay catalog', async () => {    const fetchImpl = (async () => Response.json({
       data: [{
         id: 'gpt-5.6-terra',
         capabilities: { vision: true, tool_calling: true, streaming: true },

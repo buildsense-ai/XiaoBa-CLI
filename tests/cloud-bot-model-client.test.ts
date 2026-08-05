@@ -205,4 +205,55 @@ describe('cloud bot model client local handoff', () => {
       reasoning_effort: '',
     });
   });
+
+  test('reads cloud context window for catalog selections from BotDefinition', async () => {
+    const selection = await pullCloudBotModelSelection({
+      botId: '43',
+      auth,
+      fetchImpl: (async () => Response.json({
+        uid: 43,
+        configured: true,
+        revision: 9,
+        definition: {
+          schema: 'xiaoba.bot-definition.v1',
+          botId: '43',
+          model: { kind: 'catalog', modelId: 'gpt-5.6-sol', contextWindowTokens: 256000 },
+        },
+      })) as typeof fetch,
+    });
+
+    assert.deepStrictEqual(selection, {
+      kind: 'catalog',
+      modelId: 'gpt-5.6-sol',
+      contextWindowTokens: 256000,
+      revision: 9,
+      definition: {
+        schema: 'xiaoba.bot-definition.v1',
+        botId: '43',
+        model: { kind: 'catalog', modelId: 'gpt-5.6-sol', contextWindowTokens: 256000 },
+      },
+    });
+  });
+
+  test('reads cloud context window from the legacy model-config contract', async () => {
+    const selection = await pullCloudBotModelSelection({
+      botId: '43',
+      auth,
+      fetchImpl: (async () => Response.json({
+        uid: 43,
+        configured: true,
+        desired: {
+          kind: 'catalog', model_id: 'gpt-5.6-sol', revision: 10,
+          context_window_tokens: 256000,
+        },
+      })) as typeof fetch,
+    });
+
+    assert.deepStrictEqual(selection, {
+      kind: 'catalog',
+      modelId: 'gpt-5.6-sol',
+      contextWindowTokens: 256000,
+      revision: 10,
+    });
+  });
 });

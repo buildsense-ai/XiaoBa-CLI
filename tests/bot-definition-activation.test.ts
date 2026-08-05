@@ -112,6 +112,77 @@ describe('BotDefinition activation', () => {
     ]);
   });
 
+  test('cloud context window updates an existing catalog runtime without re-materializing', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-cloud-ctx-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-cloud-ctx-cloud-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = { CATSCO_MODEL_SOURCE: 'relay' } as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://cats.example.test',
+        serverUrl: 'wss://cats.example.test/v0/channels',
+      },
+      account: { token: 'owner-token', uid: '7', displayName: 'Alice' },
+      currentBot: {
+        uid: '43',
+        apiKey: 'bot-api-key',
+        boundByUserUid: '7',
+        bindingSource: 'test',
+      },
+      device: { deviceId: 'device-1', bodyId: 'body-1', installationId: 'install-1' },
+    });
+
+    // 模拟旧设备：持久化的 cloud catalog runtime 是 100 万（历史漂移值）。
+    new FileBotCloudCatalogModelRuntimeRepository({ runtimeRoot }).write({
+      schema: 'xiaoba.bot-catalog-model-runtime.v1',
+      botId: '43',
+      modelId: 'gpt-5.6-sol',
+      provider: 'openai',
+      apiBase: 'https://relay.example.test/v1',
+      apiKey: 'sk-existing-relay-key',
+      model: 'gpt-5.6-sol',
+      contextWindowTokens: 1_000_000,
+      reasoningEffort: 'xhigh',
+      openaiApiMode: 'responses',
+      capabilities: { vision: true, toolCalling: true, streaming: true },
+      capabilitiesSource: 'relay-models',
+    });
+
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/v1/models' || url.pathname.endsWith('/models')) {
+        return Response.json({
+          data: [{ id: 'gpt-5.6-sol', capabilities: { vision: true, tool_calling: true, streaming: true } }],
+        });
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 });
+    }) as typeof fetch;
+
+    // 直接走 cloudSelection 分支（不重新拉云端 definition）：
+    // 云端已下发权威 context window 256000，而设备持久化的旧 runtime 是 100 万。
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      simulatedCloudRoot,
+      env,
+      fetchImpl,
+      cloudSelection: {
+        kind: 'catalog',
+        modelId: 'gpt-5.6-sol',
+        contextWindowTokens: 256000,
+        reasoningEffort: 'xhigh',
+        revision: 12,
+      },
+    });
+    assert.equal(prepared?.botId, '43');
+
+    const runtime = new FileBotCloudCatalogModelRuntimeRepository({ runtimeRoot }).read('43');
+    assert.equal(runtime?.modelId, 'gpt-5.6-sol');
+    assert.equal(runtime?.contextWindowTokens, 256_000);
+    assert.equal(runtime?.apiKey, 'sk-existing-relay-key');
+    assert.equal(runtime?.apiBase, 'https://relay.example.test/v1');
+  });
+
   test('uploads a local legacy Definition when the cloud bot is not configured yet', async () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-cloud-bootstrap-runtime-'));
     const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-cloud-bootstrap-legacy-'));

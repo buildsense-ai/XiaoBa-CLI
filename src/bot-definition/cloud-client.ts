@@ -18,6 +18,12 @@ export interface CloudBotModelSelection {
   kind?: 'catalog' | 'custom' | 'local';
   modelId: string;
   reasoningEffort?: ReasoningEffort;
+  /**
+   * Cloud-authoritative context window for catalog selections. Optional so
+   * older servers (or custom models) continue to work; when present the
+   * device-local profile must not override it.
+   */
+  contextWindowTokens?: number;
   revision: number;
   customModel?: CustomBotModelDefinition;
   definition?: BotDefinition;
@@ -57,6 +63,9 @@ export async function pullCloudBotModelSelection(
         modelId: model.modelId,
         revision: definitionSnapshot.revision,
         definition: definitionSnapshot.definition,
+        ...(model.kind === 'catalog' && model.contextWindowTokens
+          ? { contextWindowTokens: model.contextWindowTokens }
+          : {}),
         ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
       };
   }
@@ -101,7 +110,15 @@ export async function pullLegacyCloudBotModelSelection(
       ...(reasoningEffort ? { reasoningEffort } : {}),
     };
   }
-  return { kind: 'catalog', modelId, revision, ...(reasoningEffort ? { reasoningEffort } : {}) };
+  return {
+    kind: 'catalog',
+    modelId,
+    revision,
+    ...(parseCloudContextWindowTokens(response?.desired?.context_window_tokens) !== undefined
+      ? { contextWindowTokens: parseCloudContextWindowTokens(response?.desired?.context_window_tokens) }
+      : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  };
 }
 
 export async function pullCloudBotDefinition(
@@ -282,12 +299,14 @@ function parseCloudBotDefinitionSnapshot(
     const modelId = String(rawModel?.modelId || '').trim();
     const rawReasoning = String(rawModel?.reasoningEffort || '').trim();
     const reasoningEffort = rawReasoning ? normalizeReasoningEffort(rawReasoning) : undefined;
+    const contextWindowTokens = parseCloudContextWindowTokens(rawModel?.contextWindowTokens);
     if (!modelId || (rawReasoning && !reasoningEffort)) {
       throw new Error('CatsCo cloud returned an invalid catalog BotDefinition.');
     }
     model = {
       kind: 'catalog',
       modelId,
+      ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
     };
   } else {
@@ -315,6 +334,11 @@ function parseCloudBotDefinitionSnapshot(
       ? { runtime: response.runtime as Record<string, unknown> }
       : {}),
   };
+}
+
+function parseCloudContextWindowTokens(value: unknown): number | undefined {
+  const tokens = Number(value);
+  return Number.isInteger(tokens) && tokens > 0 ? tokens : undefined;
 }
 
 function parseCloudPromptDefinition(value: unknown): BotPromptDefinition | undefined {
