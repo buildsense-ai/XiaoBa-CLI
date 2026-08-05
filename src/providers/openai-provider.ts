@@ -258,11 +258,12 @@ export class OpenAIProvider implements AIProvider {
       body,
     });
 
-    const response = await axios.post(this.chatCompletionsUrl, body, {
-      headers: this.headers,
-      responseType: 'stream',
-      signal: options?.signal,
-    });
+    const response = await this.postProviderRequest(
+      this.chatCompletionsUrl,
+      body,
+      true,
+      options,
+    );
 
     return new Promise<ChatResponse>((resolve, reject) => {
       let fullContent = '';
@@ -871,13 +872,13 @@ export class OpenAIProvider implements AIProvider {
     });
     let response;
     try {
-      response = await this.postResponsesRequest(body, false, options);
+      response = await this.postProviderRequest(this.responsesUrl, body, false, options);
     } catch (error) {
       if (!this.shouldRetryWithoutExplicitCaching(error, body)) throw error;
       this.responsesExplicitCacheSupported = false;
       Logger.warning('Responses endpoint rejected explicit prompt caching; retrying once in compatibility mode.');
       body = this.buildResponsesRequestBody(messages, tools, false, options, true);
-      response = await this.postResponsesRequest(body, false, options);
+      response = await this.postProviderRequest(this.responsesUrl, body, false, options);
     }
     ContextDebugLogger.dumpSdkBoundary('after', undefined, { response: response.data });
     const failure = this.responsesFailureError(response.data);
@@ -900,13 +901,13 @@ export class OpenAIProvider implements AIProvider {
     });
     let response;
     try {
-      response = await this.postResponsesRequest(body, true, options);
+      response = await this.postProviderRequest(this.responsesUrl, body, true, options);
     } catch (error) {
       if (!this.shouldRetryWithoutExplicitCaching(error, body)) throw error;
       this.responsesExplicitCacheSupported = false;
       Logger.warning('Responses endpoint rejected explicit prompt caching; retrying stream once in compatibility mode.');
       body = this.buildResponsesRequestBody(messages, tools, true, options, true);
-      response = await this.postResponsesRequest(body, true, options);
+      response = await this.postProviderRequest(this.responsesUrl, body, true, options);
     }
 
     return new Promise<ChatResponse>((resolve, reject) => {
@@ -1039,13 +1040,14 @@ export class OpenAIProvider implements AIProvider {
     };
   }
 
-  private async postResponsesRequest(
+  private async postProviderRequest(
+    url: string,
     body: any,
     stream: boolean,
     options?: AIRequestOptions,
   ): Promise<any> {
     try {
-      return await axios.post(this.responsesUrl, body, {
+      return await axios.post(url, body, {
         headers: this.headers,
         ...(stream ? { responseType: 'stream' as const } : {}),
         signal: options?.signal,
@@ -1133,6 +1135,11 @@ function readProviderErrorStream(stream: ReadableErrorStream): Promise<string> {
     const finish = (destroy = false) => {
       if (settled) return;
       settled = true;
+      if (destroy && !stream.destroyed && typeof stream.destroy === 'function') {
+        // Keep a listener attached while destroy settles: a socket may emit a
+        // delayed error after the normal read listeners have been removed.
+        stream.once('error', () => undefined);
+      }
       cleanup();
       if (destroy && !stream.destroyed) {
         try {

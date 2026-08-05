@@ -360,11 +360,51 @@ test('non-cache HTTP stream errors preserve the original status and parsed provi
   }
 });
 
+test('Chat Completions HTTP stream errors use the same normalized provider body', async () => {
+  const originalPost = axios.post;
+  (axios as any).post = async () => {
+    throw Object.assign(new Error('Request failed with status code 503'), {
+      response: {
+        status: 503,
+        headers: { 'x-request-id': 'req-chat-stream' },
+        data: circularErrorStream({
+          error: { type: 'service_unavailable', message: 'chat upstream unavailable' },
+        }),
+      },
+    });
+  };
+  try {
+    const instance = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.example/v1',
+      model: 'chat-model',
+      openaiApiMode: 'chat_completions',
+    });
+    await assert.rejects(
+      instance.chatStream([{ role: 'user', content: 'hello' }]),
+      (error: any) => {
+        assert.equal(error.response?.status, 503);
+        assert.equal(error.response?.headers?.['x-request-id'], 'req-chat-stream');
+        assert.equal(error.response?.data?.error?.message, 'chat upstream unavailable');
+        return true;
+      },
+    );
+  } finally {
+    (axios as any).post = originalPost;
+  }
+});
+
 test('plain-text HTTP stream errors are preserved as bounded provider messages', async () => {
   const originalPost = axios.post;
   const oversizedMessage = 'upstream failure '.repeat(8_000);
+  let hadErrorListenerAtDestroy = false;
   (axios as any).post = async () => {
     const stream = Readable.from([Buffer.from(oversizedMessage, 'utf8')]);
+    const originalDestroy = stream.destroy.bind(stream);
+    (stream as any).destroy = (error?: Error) => {
+      hadErrorListenerAtDestroy = stream.listenerCount('error') > 0;
+      return originalDestroy(error);
+    };
     (stream as any).socket = { _httpMessage: stream };
     throw Object.assign(new Error('Request failed with status code 502'), {
       response: { status: 502, data: stream },
@@ -386,6 +426,7 @@ test('plain-text HTTP stream errors are preserved as bounded provider messages',
         return true;
       },
     );
+    assert.equal(hadErrorListenerAtDestroy, true);
   } finally {
     (axios as any).post = originalPost;
   }
