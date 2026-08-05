@@ -444,7 +444,7 @@ test('HTTP stream errors are read before explicit cache compatibility is evaluat
     };
   };
   try {
-    const instance = provider();
+    const instance = explicitProvider();
     const result = await instance.chatStream(
       [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }],
       [],
@@ -453,8 +453,9 @@ test('HTTP stream errors are read before explicit cache compatibility is evaluat
     );
     assert.equal(result.content, 'OK');
     assert.equal(bodies.length, 2);
-    assert.deepEqual(bodies[0].prompt_cache_options, { mode: 'explicit' });
+    assert.equal(countBreakpoints(bodies[0].input), 1);
     assert.equal(bodies[1].prompt_cache_options, undefined);
+    assert.equal(countBreakpoints(bodies[1].input), 0);
   } finally {
     (axios as any).post = originalPost;
   }

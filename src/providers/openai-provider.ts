@@ -985,6 +985,62 @@ export class OpenAIProvider implements AIProvider {
     });
   }
 
+  /**
+   * Responses-only upload-boundary diagnostics.
+   *
+   * This is intentionally hash/metadata based: it records the exact logical
+   * body immediately before axios serializes and uploads it, without writing
+   * Authorization or full prompt contents to the normal session log.
+   */
+  private logResponsesWireRequest(
+    body: any,
+    options: AIRequestOptions | undefined,
+    stream: boolean,
+    headers: Record<string, string>,
+  ): void {
+    if (String(process.env.XIAOBA_RESPONSES_WIRE_DEBUG || '').trim().toLowerCase() !== 'true') {
+      return;
+    }
+    const input = Array.isArray(body?.input) ? body.input : [];
+    const itemDiagnostics = input.map((item: any, index: number) => ({
+      index,
+      type: typeof item?.type === 'string' ? item.type : undefined,
+      role: typeof item?.role === 'string' ? item.role : undefined,
+      call_id: typeof item?.call_id === 'string' ? this.hashWirePrefix(item.call_id) : undefined,
+      hash: this.hashWirePrefix(item),
+      token_estimate: estimateJsonTokens(item),
+    }));
+    const sessionKey = options?.promptCacheContext?.sessionKey || 'unscoped';
+    const affinityHeader = headers['x-client-request-id'] || headers.session_id || '';
+    Logger.runtimeEvent('INFO', 'responses_wire_request before_upload', {
+      type: 'responses_wire_request',
+      payload: {
+        stage: 'before_upload',
+        request_trace_id: this.responsesTraceId(body),
+        stream,
+        transport: stream ? 'sse' : 'json',
+        phase: options?.promptCacheContext?.phase || 'normal',
+        api_mode: 'responses',
+        session_hash: this.hashWirePrefix(sessionKey),
+        session_affinity_enabled: Boolean(
+          sessionKey !== 'unknown'
+          && sessionKey !== 'unscoped'
+          && this.isResponsesSessionAffinityEnabled(),
+        ),
+        session_affinity_header_hash: affinityHeader ? this.hashWirePrefix(affinityHeader) : undefined,
+        client_request_id_hash: headers['x-client-request-id']
+          ? this.hashWirePrefix(headers['x-client-request-id'])
+          : undefined,
+        session_id_hash: headers.session_id ? this.hashWirePrefix(headers.session_id) : undefined,
+        prompt_cache_key_hash: this.hashWirePrefix(body?.prompt_cache_key || ''),
+        wire_body_hash: this.hashWirePrefix(body || {}),
+        input_items: input.length,
+        input_hash: this.hashWirePrefix(input),
+        input_item_diagnostics: itemDiagnostics,
+      },
+    });
+  }
+
   private applyResponsesReasoningOptions(body: any): void {
     const effort = this.reasoningEffort;
     if (!effort || effort === 'default') return;
@@ -1099,18 +1155,22 @@ export class OpenAIProvider implements AIProvider {
       apiUrl: this.responsesUrl,
       body,
     });
+    const requestHeaders = this.responsesHeaders(options);
+    this.logResponsesWireRequest(body, options, false, requestHeaders);
     let response;
     try {
       response = await this.postProviderRequest(
-        this.responsesUrl, body, false, options, this.responsesHeaders(options),
+        this.responsesUrl, body, false, options, requestHeaders,
       );
     } catch (error) {
       if (!this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
       this.responsesExplicitAnchorSupported = false;
       Logger.warning('Responses endpoint rejected the explicit S cache anchor; retrying once without it.');
       body = this.buildResponsesRequestBody(messages, tools, false, options, true);
+      const retryHeaders = this.responsesHeaders(options);
+      this.logResponsesWireRequest(body, options, false, retryHeaders);
       response = await this.postProviderRequest(
-        this.responsesUrl, body, false, options, this.responsesHeaders(options),
+        this.responsesUrl, body, false, options, retryHeaders,
       );
     }
     ContextDebugLogger.dumpSdkBoundary('after', undefined, { response: response.data });
@@ -1139,18 +1199,22 @@ export class OpenAIProvider implements AIProvider {
       apiUrl: this.responsesUrl,
       body,
     });
+    const requestHeaders = this.responsesHeaders(options);
+    this.logResponsesWireRequest(body, options, true, requestHeaders);
     let response;
     try {
       response = await this.postProviderRequest(
-        this.responsesUrl, body, true, options, this.responsesHeaders(options),
+        this.responsesUrl, body, true, options, requestHeaders,
       );
     } catch (error) {
       if (!this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
       this.responsesExplicitAnchorSupported = false;
       Logger.warning('Responses endpoint rejected the explicit S cache anchor; retrying stream once without it.');
       body = this.buildResponsesRequestBody(messages, tools, true, options, true);
+      const retryHeaders = this.responsesHeaders(options);
+      this.logResponsesWireRequest(body, options, true, retryHeaders);
       response = await this.postProviderRequest(
-        this.responsesUrl, body, true, options, this.responsesHeaders(options),
+        this.responsesUrl, body, true, options, retryHeaders,
       );
     }
 

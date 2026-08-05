@@ -234,6 +234,7 @@ export class CheckpointCompactionCoordinator {
     const summary = await this.generateContinuationSummary(
       exactTail.summarySource,
       request.phase,
+      request.sessionKey,
       request.signal,
     );
     const remoteContextWatermarks = collectRemoteContextWatermarks(durable);
@@ -259,6 +260,7 @@ export class CheckpointCompactionCoordinator {
   private async generateContinuationSummary(
     sourceMessages: Message[],
     phase: CheckpointCompactionPhase,
+    sessionKey: string,
     signal?: AbortSignal,
   ): Promise<string> {
     let attemptMessages = prepareSummarySourceMessages(sourceMessages);
@@ -280,7 +282,14 @@ export class CheckpointCompactionCoordinator {
           promptMessages,
           undefined,
           { onText: text => { streamed += text; } },
-          { signal },
+          {
+            signal,
+            promptCacheContext: {
+              sessionKey,
+              phase,
+              explicitCaching: false,
+            },
+          },
         );
         if (response.usage) {
           Metrics.recordAICall('stream', response.usage);
