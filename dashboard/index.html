@@ -5306,7 +5306,7 @@
       <a class="nav-item" onclick="switchPage('prompts')" data-page="prompts">
         <span class="nav-icon">#</span> <span>提示词</span>
       </a>
-      <a class="nav-item" href="cache-trace.html">
+      <a class="nav-item" onclick="switchPage('cache-trace')" data-page="cache-trace">
         <span class="nav-icon">%</span> <span>缓存监控</span>
       </a>
       <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
@@ -5554,6 +5554,23 @@
         <div class="prompt-workbench" id="prompt-workbench">
           <div class="loading">加载提示词...</div>
         </div>
+      </div>
+
+      <!-- Page: Cache Trace -->
+      <div class="page" id="page-cache-trace">
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">Diagnostics</div>
+            <div class="section-title" style="margin-bottom:0">缓存命中监控</div>
+            <div class="settings-meta">缓存命中率与重试诊断（内部工具）。</div>
+          </div>
+          <div class="settings-actions">
+            <button class="btn" onclick="switchPage('services')">← 返回</button>
+          </div>
+        </div>
+        <iframe id="cache-trace-frame" src="cache-trace.html"
+          style="width:100%;height:calc(100vh - 240px);min-height:520px;border:1px solid var(--border);border-radius:14px;background:#07101f"
+          title="缓存命中监控"></iframe>
       </div>
 
       <!-- Page: Chat -->
@@ -5892,7 +5909,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'Agent Hub', branches:'Branch Runtime', store:'SkillHub', prompts:'Prompt Lab', companion:'Companion Hub', chat:'CatsCo' };
+    const pageTitles = { services:'Agent Hub', branches:'Branch Runtime', store:'SkillHub', prompts:'Prompt Lab', companion:'Companion Hub', chat:'CatsCo', 'cache-trace':'缓存命中监控' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
