@@ -22,7 +22,7 @@ import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { SessionSkillRuntime } from '../skills/session-skill-runtime';
 import { Logger } from '../utils/logger';
-import { Metrics } from '../utils/metrics';
+import { Metrics, MetricsSummary } from '../utils/metrics';
 import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider } from './conversation-runner';
 import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
@@ -113,6 +113,8 @@ export interface AgentTurnControllerOptions {
   updateCurrentDirectory: (directory: string) => void;
   checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   persistCheckpoint?: (messages: Message[]) => void | Promise<void>;
+  /** Session-owned metrics collector shared with compaction and model calls. */
+  metrics?: Metrics;
 }
 
 interface MemoryBranchSlot {
@@ -128,8 +130,11 @@ interface MemoryBranchSlot {
 export class AgentTurnController {
   private turnSequence = 0;
   private memoryBranchCarryover: MemoryBranchSlot | null = null;
+  private metrics: Metrics;
 
-  constructor(private readonly options: AgentTurnControllerOptions) {}
+  constructor(private readonly options: AgentTurnControllerOptions) {
+    this.metrics = options.metrics ?? new Metrics();
+  }
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
     const turnNumber = ++this.turnSequence;
@@ -220,7 +225,7 @@ export class AgentTurnController {
     }
     const nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
 
-    const metrics = Metrics.getSummary();
+    const metrics = this.metrics.getSummary();
     this.logMetrics(metrics);
 
     this.replaceBase64Images(nextMessages);
@@ -293,6 +298,7 @@ export class AgentTurnController {
         episodeId: options.episodeId,
         checkpointCompactionCoordinator: this.options.checkpointCompactionCoordinator,
         onCompactionCheckpoint: this.options.persistCheckpoint,
+        metrics: this.metrics,
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,
@@ -466,7 +472,7 @@ export class AgentTurnController {
     };
   }
 
-  private logMetrics(metrics: ReturnType<typeof Metrics.getSummary>): void {
+  private logMetrics(metrics: MetricsSummary): void {
     if (metrics.aiCalls === 0 && metrics.toolCalls === 0) return;
     Logger.info(
       `[Metrics] AI调用: ${metrics.aiCalls}次, `

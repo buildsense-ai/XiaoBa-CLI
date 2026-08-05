@@ -90,6 +90,12 @@ export interface ModelAttemptSink {
 export interface AIRequestOptions {
   signal?: AbortSignal;
   /**
+   * Legacy stable cache shard retained for adapters and callers that have not
+   * yet moved to PromptCacheContext. New provider paths should also set
+   * promptCacheContext so phase-aware cache layout remains available.
+   */
+  promptCacheScopeKey?: string;
+  /**
    * A bounded durable workflow owns retry scheduling itself and must yield a
    * provider failure back to that workflow after one transport attempt.
    */
