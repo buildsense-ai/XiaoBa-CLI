@@ -84,12 +84,95 @@ apt-get install -y --no-install-recommends \
   unzip \
   zip
 
+# --- Platform hardening (encoded from deploy-catsco-linux-agent skill, 2026-08) ---
+# Every fault below was hit on live Tianyi workers provisioned from the same base
+# image. Encoding the fixes here means a freshly baked worker starts healthy and
+# no manual host surgery is needed after provisioning.
+
+# 1. Repair corrupted dpkg file lists ("missing final newline"). These images can
+#    ship broken /var/lib/dpkg/info/*.list files that abort later apt commands.
+for list in /var/lib/dpkg/info/*.list; do
+  [ -f "$list" ] && [ -s "$list" ] || continue
+  if ! tail -c1 "$list" | od -An -c | tr -d ' \n' | grep -q '\\n'; then
+    printf '\n' >> "$list"
+  fi
+done
+dpkg --configure -a >/dev/null 2>&1 || true
+
+# 2. Upgrade systemd + glibc to the known-safe combination
+#    (255.4-1ubuntu8.16 + 2.39-0ubuntu8.8). The original image shipped
+#    systemd 8.15 + glibc 8.7 which triggers a _dl_fini assert that freezes
+#    systemd ("Caught <ABRT> ... Freezing execution"); every systemctl call then
+#    times out. postinst may fail on a running older systemd (expected), so we
+#    tolerate it, finish dpkg configuration, and retry with the minimal set.
+if ! apt-get install --only-upgrade -y \
+  systemd \
+  systemd-sysv \
+  systemd-timesyncd \
+  systemd-dev \
+  libsystemd0 \
+  libsystemd-shared \
+  libpam-systemd \
+  libnss-systemd \
+  libc6 \
+  libc-bin \
+  libc6-dev \
+  libc-dev-bin \
+  openssh-client \
+  openssh-server \
+  openssh-sftp-server \
+  >/tmp/catsco-systemd-upgrade.log 2>&1; then
+  dpkg --configure -a >/dev/null 2>&1 || true
+  apt-get install --only-upgrade -y \
+    systemd systemd-timesyncd libsystemd0 libc6 libc-bin \
+    >/tmp/catsco-systemd-upgrade-retry.log 2>&1 || true
+fi
+dpkg --configure -a >/dev/null 2>&1 || true
+
+# 3. Upgrade the kernel and regenerate grub. A new kernel without update-grub can
+#    still boot the old one, and old kernels are retained for rollback.
+apt-get install --only-upgrade -y \
+  linux-generic linux-image-generic \
+  >/tmp/catsco-kernel-upgrade.log 2>&1 || true
+if command -v update-grub >/dev/null 2>&1; then
+  update-grub >/dev/null 2>&1 || true
+fi
+
+# 4. Mask fwupd so systemd cannot ABRT on firmware lifecycle events. Even on
+#    systemd 8.16, handling fwupd.service lifecycle can crash systemd itself
+#    ("Caught <ABRT>, from our own process" then "Freezing execution"). Worker
+#    servers do not need a firmware update daemon. The mask is a persistent
+#    symlink in /etc, so freshly provisioned workers stay immune.
+systemctl mask fwupd.service >/dev/null 2>&1 || true
+systemctl stop fwupd.service >/dev/null 2>&1 || true
+systemctl mask fwupd-refresh.service >/dev/null 2>&1 || true
+systemctl stop fwupd-refresh.service >/dev/null 2>&1 || true
+systemctl reset-failed fwupd-refresh.service >/dev/null 2>&1 || true
+
+SYSTEMD_VERSION="$(dpkg-query -W -f='${Version}' systemd 2>/dev/null || true)"
+GLIBC_VERSION="$(dpkg-query -W -f='${Version}' libc6 2>/dev/null || true)"
+KERNEL_VERSION="$(uname -r 2>/dev/null || true)"
+printf 'platform_systemd=%s glibc=%s kernel=%s\n' \
+  "$SYSTEMD_VERSION" "$GLIBC_VERSION" "$KERNEL_VERSION"
+
+# 5. Pre-configure the China-region npm mirror. Direct registry.npmjs.org from
+#    Tianyi/华南 hosts is slow and has produced truncated/corrupted tarballs
+#    (e.g. TS1127 from a truncated lib.es2017.string.d.ts). Set it for both the
+#    service user and root so the first npm ci/install never needs manual setup.
+printf 'registry=https://registry.npmmirror.com\n' >/root/.npmrc
+chmod 0644 /root/.npmrc
 id catsco-agent >/dev/null 2>&1 || useradd \
   --system \
   --create-home \
   --home-dir /srv/catsco-agent \
   --shell /bin/bash \
   catsco-agent
+
+# Service-user npm mirror config (survives finalize; the finalize cleanup list
+# deliberately keeps .npmrc so first-boot npm never needs manual setup).
+printf 'registry=https://registry.npmmirror.com\n' >/srv/catsco-agent/.npmrc
+chown catsco-agent:catsco-agent /srv/catsco-agent/.npmrc
+chmod 0644 /srv/catsco-agent/.npmrc
 
 RELEASE_ID="${EXPECTED_VERSION}-${EXPECTED_COMMIT:0:8}"
 RELEASES_ROOT="/opt/catsco/releases"
@@ -147,6 +230,7 @@ Environment=XIAOBA_APP_ROOT=/opt/catsco/current
 Environment=XIAOBA_USER_DATA_DIR=/srv/catsco-agent
 Environment=XIAOBA_RUNTIME_ROOT=/srv/catsco-agent
 Environment=XIAOBA_RUNTIME_SURFACE=catscompany
+Environment=NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
 EnvironmentFile=-/srv/catsco-agent/.env
 ExecStart=/opt/catsco/current/runtime/node/bin/node /opt/catsco/current/dist/index.js catsco
 Restart=always

@@ -69,6 +69,35 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(imagePreparer, /cloud-init clean --logs --seed/);
   });
 
+  test("platform hardening encodes known Tianyi worker faults", () => {
+    // fwupd masks prevent the systemd ABRT freeze on 8.16 hosts
+    assert.match(imagePreparer, /systemctl mask fwupd\.service/);
+    assert.match(imagePreparer, /systemctl mask fwupd-refresh\.service/);
+    assert.match(imagePreparer, /systemctl reset-failed fwupd-refresh\.service/);
+    // systemd + glibc upgrade to the known-safe 8.16/8.8 combo (_dl_fini freeze)
+    assert.match(
+      imagePreparer,
+      /apt-get install --only-upgrade -y \\\n\s+systemd \\\n\s+systemd-sysv \\\n\s+systemd-timesyncd/,
+    );
+    assert.match(imagePreparer, /libsystemd0 \\/);
+    assert.match(imagePreparer, /libc6 \\/);
+    assert.match(imagePreparer, /dpkg --configure -a/);
+    // corrupted dpkg file-list repair
+    assert.match(imagePreparer, /missing final newline/);
+    // kernel upgrade + grub regeneration
+    assert.match(imagePreparer, /linux-generic linux-image-generic/);
+    assert.match(imagePreparer, /update-grub/);
+    // china-region npm mirror pre-configuration for root and service user
+    assert.match(imagePreparer, /registry\.npmmirror\.com/);
+    assert.match(
+      imagePreparer,
+      /NPM_CONFIG_REGISTRY=https:\/\/registry\.npmmirror\.com/,
+    );
+    // observable platform versions in bake logs
+    assert.match(imagePreparer, /platform_systemd=/);
+    assert.match(imagePreparer, /platform_systemd=%s glibc=%s kernel=%s/);
+  });
+
   test("orchestrator only mutates the exact temporary builder for this bake", () => {
     assert.match(imageOrchestrator, /StartsWith\("catsco-img-"\)/);
     assert.match(imageOrchestrator, /instanceName -ne \$script:BuilderName/);
