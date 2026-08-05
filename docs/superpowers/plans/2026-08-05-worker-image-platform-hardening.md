@@ -2,9 +2,18 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
+## 当前状态（2026-08-05）
+
+- **分支/head：** `feat/ctyun-worker-image-pipeline` @ `5c83dc8`（已 rebase 到 `upstream/main` `dc22252` 之上，相对 main 22 commits）
+- **CI：** 最新一次全绿（Build and runtime tests + cross-repo smoke）
+- **Review：** 已完成 5 轮处理并回复（自查 / c3811yyds / Nobody-ly 4 项 / atridaisuki 4 项 / 子 agent 独立审核），当前**等复审**；合并前需用户确认
+- **测试：** `worker-image-pipeline.test.ts` 11/11、加固探针 7 场景、全量 `npm test`（唯一失败为已知 pre-existing flaky `logger.test.ts`，与改动无关）、`npm run build` 通过
+- **下一步：** reviewer 复审 → 合并 → workflow 真实 bake 验证（见步骤 10 验收标准）
+- **关联计划：** 应用制品更新 Part A 见 `2026-08-04-worker-artifact-update.md`（worker 更新通道与镜像烘焙并存，互为回退）
+
 **目标：** 把 `deploy-catsco-linux-agent` 部署 skill 在 2026-08 踩过的平台故障固化进 `ops/ctyun-worker-image/prepare-image.sh`，让新 bake 的 worker 镜像自带免疫——新 worker 从镜像启动即健康，手动部署不再需要逐台升级 systemd/glibc、mask fwupd、修复 dpkg、配置 npm 镜像、更新 grub。
 
-**架构：** bake 时（临时 builder 上、制作镜像捕获磁盘状态前）执行一段「平台加固」：dpkg 完整性修复 → systemd+glibc 升级到已知安全组合（255.4-1ubuntu8.16 + 2.39-0ubuntu8.8）→ 内核升级 + `update-grub` → `systemctl mask fwupd` + `fwupd-refresh` → 预配置 China region npm 镜像。所有修复都是落盘持久化状态（升级后的包、`/etc/systemd/system` mask symlink、`.npmrc`），新实例首次启动即生效；bake 环境无需 reboot（镜像捕获的是磁盘，不是内存态 systemd）。
+**架构：** bake 时（临时 builder 上、制作镜像捕获磁盘状态前）执行一段「平台加固」，**最终形态（含 4 轮 review 演进）**：dpkg 完整性修复（**前置到任何 apt 事务之前**）→ `mask_unit()` 验证 fwupd + fwupd-refresh + timer 的持久 symlink（失败 `die`）→ systemd+glibc 升级到已知安全组合（255.4-1ubuntu8.16 + 2.39-0ubuntu8.8）并做**最低版本断言**（不达标 `die`）→ 内核**安装**（非 only-upgrade）+ `update-grub` + `/boot` 最新 vmlinuz 校验 → 预配置 China region npm 镜像（`/root` + 服务用户 `.npmrc` + unit `NPM_CONFIG_REGISTRY`）。所有修复都是落盘持久化状态，新实例首次启动即生效；bake 环境无需 reboot（镜像捕获的是磁盘，不是内存态 systemd）。**fail-closed 原则**：任何无法达到已知安全平台状态的升级/掩码必须阻断 bake——产出坏镜像比 workflow 失败重试更糟。清理侧：builder/key pair 删除要求连续空读证明（发现 3 次、确认 2 次），Cleanup 模式保持 fail-closed（可证明归属才删）。
 
 **技术栈：** bash（`prepare-image.sh`，bake 时在 builder 上以 root 执行）、Node test runner + `tsx`（静态断言测试）、GitHub Actions（workflow 不变）。
 
@@ -23,6 +32,14 @@
 - **新增：** 本文档（方案/进度记录）
 
 **不做（运行时部署行为，镜像管不了）：** git fetch 超时、bundle 644 权限、`reboot -f` 清 /tmp、settle period、部署脚本本身——这些继续由 `deploy-catsco-linux-agent` skill 处理。
+
+## 后续改进项（Follow-ups，不阻塞合入）
+
+- **发现阶段 3 次空读无直接测试场景**：Remove-Builder/Remove-KeyPair 的连续空读发现逻辑只在确认阶段有测试覆盖；构造"builder ID 存在但查询为空"场景成本高，防御性逻辑，后续补。
+- **`/boot` 校验的 `NEWEST_KERNEL_IMG` 变量是死代码**：非空性已被前置 `ls -1 /boot/vmlinuz-*` 保证，可删除或改为与升级前内核版本做真实比较。
+- **`Invoke-ExactBakeCleanup` key pair 单次读**与 Remove-* 的 3 次空读不对称（最终一致性风险低，因 Cleanup 运行在中断后较久），后续可对齐。
+- **Cleanup 长期 fail-closed 的计费残留**（用户决策保持）：可后续做"持久化 immutable 资源 ID 后安全按 ID 删除"，替代纯 fail-closed。
+- **探针测试硬编码 Git Bash 路径**：无 Git Bash 的 Windows 环境会以难懂错误失败（Linux/macOS 回退 `bash` 正常），后续可探测更稳。
 
 ---
 
@@ -100,5 +117,13 @@
   git push origin feat/ctyun-worker-image-pipeline
   ```
 
-- [ ] **步骤 10：PR 等审核**
-  合并前需用户确认；真实 bake 验证在合并后的 workflow（`worker-image.yml`）执行。
+- [ ] **步骤 10：PR 等审核 + 真实 bake 验收**
+  合并前需用户确认。合并后触发 `worker-image.yml`（手动 `workflow_dispatch` 勾选 `bake_image` 或打 `vX.Y.Z` tag 且 `CTYUN_AUTO_BAKE_WORKER_IMAGE=true`）。
+
+  **验收标准（bake 日志 + 新 worker 实例）：**
+  1. bake 日志出现 `platform_systemd=255.4-1ubuntu8.16+ glibc=2.39-0ubuntu8.8+ kernel=...` 且最终 `image_prepared=yes`（任一版本不达标 bake 会失败）
+  2. 从镜像开一台临时 worker 验证：`readlink /etc/systemd/system/fwupd.service` = `/dev/null`（fwupd/refresh/timer 均 masked）、`systemctl is-system-running` = `running`（无 freeze）
+  3. `/srv/catsco-agent/.npmrc` 与 `/root/.npmrc` 存在且含 `registry.npmmirror.com`；`systemctl cat catsco-agent.service` 含 `NPM_CONFIG_REGISTRY`
+  4. `/etc/catsco-image-packages.txt` 记录 systemd/glibc/kernel 版本；`/boot/vmlinuz-*` 存在最新内核
+  5. 镜像内 `catsco-agent.service` 为 disabled（首次供给由控制面启用）；无临时 key pair/builder 残留（`ecs GetEcsKeypairDetails` 查询 `catsco-img-key-*` 为空）
+  6. 确认后删除验证用临时实例，避免计费残留
