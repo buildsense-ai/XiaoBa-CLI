@@ -775,7 +775,7 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('continue');
 
-    assert.match(result.text, /当前模型 MiniMax-M3 的中转额度已用完/);
+    assert.equal(result.text, '当前模型暂时无法继续调用，请切换模型或联系管理员。');
     assert.doesNotMatch(result.text, /model budget exceeded|API错误/i);
   });
 
@@ -792,12 +792,11 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('continue');
 
-    assert.match(result.text, /当前账号的中转额度已用完/);
-    assert.doesNotMatch(result.text, /当前模型 当前模型/);
+    assert.equal(result.text, '当前模型暂时无法继续调用，请切换模型或联系管理员。');
   });
 
   test('handleMessage does not treat unrelated 402 text as relay budget exhaustion', async () => {
-    const { AgentSession, ERROR_MESSAGE } = loadSessionModules();
+    const { AgentSession } = loadSessionModules();
     const session = new AgentSession('catscompany:lifecycle-nonbudget-402', buildMockServices({
       aiService: {
         async chatStream() {
@@ -809,7 +808,7 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('continue');
 
-    assert.equal(result.text, ERROR_MESSAGE);
+    assert.equal(result.text, '模型未能处理本次请求，请重新发送；持续失败时请联系管理员。');
   });
 
   test('handleMessage surfaces transient provider failures without leaking raw upstream payload', async () => {
@@ -828,8 +827,51 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('continue');
 
-    assert.match(result.text, /当前模型 MiniMax-M3 的服务临时异常/);
+    assert.equal(result.text, '模型服务暂时不可用，请稍后再试。');
     assert.doesNotMatch(result.text, /unknown error|request_id|API错误|520/);
+  });
+
+  test('handleMessage maps rate limits to a user-facing message without exposing status codes', async () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession('catscompany:lifecycle-rate-limit', buildMockServices({
+      aiService: {
+        async chatStream() {
+          throw Object.assign(new Error('Request failed with status code 429'), { status: 429 });
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleMessage('继续');
+
+    assert.equal(result.text, '当前请求较多，请稍等片刻再试。');
+    assert.doesNotMatch(result.text, /429|状态码|错误编号/);
+  });
+
+  test('handleMessage mentions an automatic retry only when retry metadata confirms one occurred', async () => {
+    const { AgentSession } = loadSessionModules();
+    const providerError = Object.assign(new Error('Request failed with status code 503'), { status: 503 });
+    attachRetrySummary(providerError, {
+      attempt_count: 2,
+      retry_count: 1,
+      max_retries: 2,
+      elapsed_ms: 1200,
+      max_elapsed_ms: 30000,
+      stop_reason: 'retry_limit_exhausted',
+    });
+    const session = new AgentSession('catscompany:lifecycle-transient-retried', buildMockServices({
+      aiService: {
+        async chatStream() {
+          throw providerError;
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleMessage('继续');
+
+    assert.equal(result.text, '模型服务暂时不可用，系统已自动重试，但仍未恢复，请稍后再试。');
+    assert.doesNotMatch(result.text, /503|状态码|错误编号/);
   });
 
   test('handleMessage tells the user how to recover after empty model responses are exhausted', async () => {
@@ -870,12 +912,12 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('继续');
 
-    assert.match(result.text, /当前模型 gpt-5\.5 的服务临时异常/);
+    assert.equal(result.text, '模型服务暂时不可用，请稍后再试。');
     assert.doesNotMatch(result.text, /API错误|状态码|503/);
   });
 
   test('handleMessage logs one structured event only when an error interrupts the conversation', async () => {
-    const { AgentSession, ERROR_MESSAGE } = loadSessionModules();
+    const { AgentSession } = loadSessionModules();
     const providerError = Object.assign(new Error('Request failed with status code 400'), {
       status: 400,
     });
@@ -913,7 +955,7 @@ describe('AgentSession lifecycle', () => {
     const result = await session.handleMessage('继续');
 
     assert.equal(result.taskOutcome, 'failed');
-    assert.equal(result.text, ERROR_MESSAGE);
+    assert.equal(result.text, '模型未能处理本次请求，请稍后再试。');
     const logPath = (session as any).sessionTurnLogger.getLogFilePath();
     const entries = fs.readFileSync(logPath, 'utf8')
       .split(/\r?\n/)

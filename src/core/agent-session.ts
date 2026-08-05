@@ -45,8 +45,8 @@ import { resolveModelContextWindow } from '../utils/model-context-window';
 import { parseSessionKeyV2 } from './session-router';
 import {
   classifyModelError,
-  MODEL_IMAGE_SAFETY_MESSAGE,
   isModelImageSafetyError,
+  type ModelErrorCategory,
 } from '../utils/model-error-classifier';
 import {
   readModelErrorDiagnostics,
@@ -80,10 +80,10 @@ export interface DurableRemoteContextEntry {
 }
 
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
-export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
-export const MODEL_TIMEOUT_MESSAGE = '模型中转请求超时了，我已经保留本轮已完成的工具结果和上下文。你可以直接说“继续”，我会从这里接上。';
-export const MODEL_TRANSIENT_ERROR_MESSAGE = '当前模型服务临时异常，刚才这次请求没有完成。我已经保留上下文；你可以稍后重试，或临时切换到其他模型继续。';
-export const EMPTY_MODEL_RESPONSE_MESSAGE = '模型本轮未返回有效内容，自动重试后仍未恢复。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
+export const ERROR_MESSAGE = '本次处理未能完成，请稍后再试。';
+export const MODEL_TIMEOUT_MESSAGE = '模型响应超时，本轮上下文已保留，请稍后继续。';
+export const MODEL_TRANSIENT_ERROR_MESSAGE = '模型服务暂时不可用，请稍后再试。';
+export const EMPTY_MODEL_RESPONSE_MESSAGE = '模型本轮未返回有效内容，请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
 export const CONTEXT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
 export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '上下文压缩完成，继续处理当前请求。';
 export const CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文继续处理。';
@@ -742,8 +742,7 @@ export class AgentSession {
         const isModelTimeoutError = this.isModelTimeoutError(err);
         const isTransientProviderError = this.isTransientProviderError(err);
         const isEmptyModelResponseError = this.isEmptyModelResponseError(err);
-        const relayBudgetErrorReply = this.formatRelayBudgetErrorReply(err);
-        const isRelayBudgetError = relayBudgetErrorReply !== null;
+        const isRelayBudgetError = this.isRelayBudgetError(err);
         const closestDiagnostics = readModelErrorDiagnostics(err);
         const classified = classifyModelError(err, {
           isImageSafetyError,
@@ -799,21 +798,11 @@ export class AgentSession {
           } as SessionRuntimeLogEvent,
         );
 
-        // This PR observes failures without changing the established user-facing behavior.
-        let errorReply = ERROR_MESSAGE;
-        if (isImageSafetyError) {
-          errorReply = MODEL_IMAGE_SAFETY_MESSAGE;
-        } else if (relayBudgetErrorReply) {
-          errorReply = relayBudgetErrorReply;
-        } else if (isVisionError) {
-          errorReply = '当前模型不支持图片识别。请使用支持多模态的模型（如 Claude 3.5 Sonnet 或 GPT-4V），或者用文字描述图片内容。';
-        } else if (isModelTimeoutError) {
-          errorReply = MODEL_TIMEOUT_MESSAGE;
-        } else if (isEmptyModelResponseError) {
-          errorReply = EMPTY_MODEL_RESPONSE_MESSAGE;
-        } else if (isTransientProviderError) {
-          errorReply = this.formatTransientProviderErrorReply();
-        }
+        const errorReply = this.formatClassifiedErrorReply(
+          classified.category,
+          classified.user_message,
+          retry?.retry_count ?? 0,
+        );
 
         // 添加错误回复到上下文，保持对话连贯性
         this.messages.push({
@@ -1239,30 +1228,15 @@ export class AgentSession {
     return /模型未返回有效内容|模型返回了空响应/i.test(String(error?.message || error || ''));
   }
 
-  private formatRelayBudgetErrorReply(error: any): string | null {
+  private isRelayBudgetError(error: any): boolean {
     const text = String(error?.message || error || '');
     const status = this.extractErrorStatus(error);
-    const isBudgetError =
+    return (
       status === 402
       || /api错误\s*\(402\)|status(?:\s*code)?\s*[:=]?\s*402\b|http(?:\s*status)?\s*[:=]?\s*402\b|payment[_\s-]?required/i.test(text)
       || /budget exceeded|quota exceeded|insufficient quota|insufficient balance|credits? exhausted|monthly budget|model budget|relay budget/i.test(text)
-      || /额度.{0,12}(不足|用完|耗尽|超限|达到上限|已用尽)|余额不足|已达.*额度上限/.test(text);
-
-    if (!isBudgetError) {
-      return null;
-    }
-
-    const model = this.currentModelName();
-    const modelLabel = model ? `当前模型 ${model} 的` : '当前模型的';
-    if (/model budget exceeded|model quota|模型.{0,8}额度/i.test(text)) {
-      return `${modelLabel}中转额度已用完，暂时不能继续调用。\n\n你可以切换到还有额度的模型，或到 CatsCompany 中转页面查看额度；如果这是学校/团队账号，请联系管理员调整额度。`;
-    }
-
-    if (/monthly budget exceeded|account budget|user budget|账号.{0,8}额度|本月.{0,8}额度/i.test(text)) {
-      return '当前账号的中转额度已用完，暂时不能继续调用模型。\n\n请到 CatsCompany 中转页面查看额度，或联系管理员调整额度。';
-    }
-
-    return `模型中转额度不足，当前请求没有继续调用${model ? ` ${model}` : ''}。\n\n你可以切换模型、稍后重试，或到 CatsCompany 中转页面查看额度并联系管理员调整。`;
+      || /额度.{0,12}(不足|用完|耗尽|超限|达到上限|已用尽)|余额不足|已达.*额度上限/.test(text)
+    );
   }
 
   private extractErrorStatus(error: any): number | null {
@@ -1292,11 +1266,24 @@ export class AgentSession {
     return provider || null;
   }
 
-  private formatTransientProviderErrorReply(): string {
-    const model = this.currentModelName();
-    return model
-      ? `当前模型 ${model} 的服务临时异常，刚才这次请求没有完成。我已经保留上下文；你可以稍后重试，或临时切换到其他模型继续。`
-      : MODEL_TRANSIENT_ERROR_MESSAGE;
+  private formatClassifiedErrorReply(
+    category: ModelErrorCategory,
+    fallback: string,
+    retryCount: number,
+  ): string {
+    if (retryCount <= 0) return fallback;
+    switch (category) {
+      case 'timeout':
+        return '模型响应超时，系统已自动重试，但仍未完成。本轮上下文已保留，请稍后继续。';
+      case 'transient':
+        return '模型服务暂时不可用，系统已自动重试，但仍未恢复，请稍后再试。';
+      case 'rate_limited':
+        return '当前请求较多，系统已自动重试，但仍未恢复，请稍等片刻再试。';
+      case 'empty_response':
+        return '模型本轮未返回有效内容，系统已自动重试但仍未恢复。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
+      default:
+        return fallback;
+    }
   }
 
   private formatErrorContextMessage(

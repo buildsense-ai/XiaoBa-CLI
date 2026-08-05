@@ -68,6 +68,35 @@ describe('Feishu SessionRoute V2', () => {
       SubAgentManager.getInstance().unregisterPlatformCallbacks('session:v2:feishu:group:oc_group');
     }
   });
+
+  test('delivers classified failed replies without relying on the legacy fallback text', async () => {
+    const bot = createHarness({
+      message: {
+        messageId: 'msg-error',
+        chatId: 'shared',
+        chatType: 'p2p',
+        senderId: 'shared',
+        text: '继续',
+        mentionBot: false,
+        msgType: 'text',
+      },
+    });
+    bot.sessionResult = {
+      visibleToUser: true,
+      text: '模型服务暂时不可用，请稍后再试。',
+      taskOutcome: 'failed',
+    };
+
+    try {
+      await (bot as any).onMessage({});
+
+      assert.deepEqual(bot.replies, [
+        { chatId: 'shared', text: '模型服务暂时不可用，请稍后再试。' },
+      ]);
+    } finally {
+      SubAgentManager.getInstance().unregisterPlatformCallbacks('session:v2:feishu:p2p:shared');
+    }
+  });
 });
 
 function createHarness(options: { busy?: boolean; message: any }): any {
@@ -75,6 +104,8 @@ function createHarness(options: { busy?: boolean; message: any }): any {
   bot.sessionBusy = options.busy ?? false;
   bot.createdSessions = [] as string[];
   bot.handledTurns = [] as any[];
+  bot.replies = [] as Array<{ chatId: string; text: string }>;
+  bot.sessionResult = { visibleToUser: false, text: '' };
   bot.processedMsgIds = new Set();
   bot.pendingAnswers = new Map();
   bot.pendingAnswerBySession = new Map();
@@ -90,7 +121,7 @@ function createHarness(options: { busy?: boolean; message: any }): any {
     handleCommand: async () => ({ handled: false }),
     handleMessage: async (userText: string, handleOptions: any) => {
       bot.handledTurns.push({ userText, options: handleOptions });
-      return { visibleToUser: false, text: '' };
+      return bot.sessionResult;
     },
     handleRuntimeObservation: async (userText: string, handleOptions: any) => {
       bot.handledTurns.push({ userText, options: handleOptions });
@@ -104,7 +135,9 @@ function createHarness(options: { busy?: boolean; message: any }): any {
     },
   };
   bot.sender = {
-    reply: async () => undefined,
+    reply: async (chatId: string, text: string) => {
+      bot.replies.push({ chatId, text });
+    },
     downloadFile: async () => null,
     fetchMergeForwardTexts: async () => '',
     sendFile: async () => undefined,

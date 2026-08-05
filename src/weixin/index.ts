@@ -3,7 +3,7 @@ import { WeixinConfig, WeixinMessage } from './types';
 import { MessageHandler } from './message-handler';
 import { MessageSender } from './message-sender';
 import { MessageSessionManager } from '../core/message-session-manager';
-import { AgentServices, BUSY_MESSAGE, ERROR_MESSAGE, RuntimeFeedbackInput } from '../core/agent-session';
+import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput } from '../core/agent-session';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
 import { Logger } from '../utils/logger';
@@ -286,7 +286,7 @@ export class WeixinBot {
       executionScope: createExecutionScopeFromRoute(route),
       runtimeFeedback,
     });
-    if (result.text === BUSY_MESSAGE || result.text === ERROR_MESSAGE) {
+    if (result.text === BUSY_MESSAGE || result.taskOutcome === 'failed') {
       await channel.reply(route.topicId, result.text);
     }
     await this.drainMessageQueue(sessionKey);
@@ -320,7 +320,7 @@ export class WeixinBot {
       this.enqueueSubAgentFeedback(sessionKey, chatId, userId, text, route);
       return;
     }
-    if (result.text === ERROR_MESSAGE) {
+    if (result.taskOutcome === 'failed') {
       await channel.reply(chatId, result.text);
     }
     await this.drainMessageQueue(sessionKey);
@@ -378,7 +378,7 @@ export class WeixinBot {
         runtimeFeedback: msg.runtimeFeedback,
       });
 
-    if (result.text === ERROR_MESSAGE) {
+    if (result.taskOutcome === 'failed') {
       await channel.reply(msg.chatId, result.text);
     }
     await this.drainMessageQueue(sessionKey);
