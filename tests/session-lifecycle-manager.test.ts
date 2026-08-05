@@ -592,6 +592,22 @@ describe('AgentSession lifecycle', () => {
     );
   });
 
+  test('does not report completion or emit completion events when completed-turn persistence fails', async () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession('catscompany:lifecycle-completed-save-failure', buildMockServices(), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+    let completionEvents = 0;
+    (session as any).recordCompletedTurnEvents = () => { completionEvents += 1; };
+    (session as any).lifecycleManager.saveContext = () => false;
+
+    const result = await session.handleMessage('autosave user');
+
+    assert.equal(result.taskOutcome, 'failed');
+    assert.equal(result.visibleToUser, true);
+    assert.match(result.text, /持久化失败/);
+    assert.equal(completionEvents, 0);
+  });
+
   test('handleMessage surfaces restored-history compaction as thinking status', async () => {
     const {
       AgentSession,
@@ -732,7 +748,9 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('read notes then continue');
 
-    assert.equal(result.text, '模型服务暂时不稳定，本次处理未能完成，请稍后继续。');
+    assert.match(result.text, new RegExp(`^${MODEL_TIMEOUT_MESSAGE}`));
+    assert.match(result.text, /本次未记录到自动重试/);
+    assert.match(result.text, /已完成的工具结果和上下文已保存/);
     assert.equal(aiCalls, 2);
 
     const retainedMessages = (session as any).messages as any[];
@@ -750,6 +768,13 @@ describe('AgentSession lifecycle', () => {
       typeof message.content === 'string'
       && message.content.includes('模型中转请求超时')
     ), false);
+
+    const logPath = (session as any).sessionTurnLogger.getLogFilePath();
+    const entries = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+    const turnError = entries.find(entry => entry?.event?.type === 'turn_error');
+    assert.equal(turnError?.event?.payload.context_persisted, true);
+    assert.equal(turnError?.event?.payload.recoverable_partial_progress, true);
+    assert.equal(turnError?.event?.payload.partial_progress_preserved, true);
 
     const restored = SessionStore.getInstance().loadContext('catscompany:lifecycle-timeout-recovery');
     assert.equal(restored.some(message => message.content === 'notes content'), true);
@@ -808,7 +833,8 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('continue');
 
-    assert.equal(result.text, '模型服务暂时不稳定，本次处理未能完成，请稍后继续。');
+    assert.match(result.text, /模型拒绝了本轮请求格式/);
+    assert.doesNotMatch(result.text, /额度不足|补充额度/);
   });
 
   test('handleMessage surfaces transient provider failures without leaking raw upstream payload', async () => {
@@ -890,7 +916,10 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('继续上一条');
 
-    assert.equal(result.text, '模型服务暂时不稳定，本次处理未能完成，请稍后继续。');
+    assert.match(result.text, new RegExp(`^${EMPTY_MODEL_RESPONSE_MESSAGE}`));
+    assert.match(result.text, /本次未记录到自动重试/);
+    assert.match(result.text, /重新发送上一条消息/);
+    assert.match(result.text, /切换模型或稍后再试/);
     assert.doesNotMatch(result.text, /EMPTY_MODEL_RESPONSE|请求失败/);
   });
 
@@ -953,7 +982,8 @@ describe('AgentSession lifecycle', () => {
     const result = await session.handleMessage('继续');
 
     assert.equal(result.taskOutcome, 'failed');
-    assert.equal(result.text, '模型服务暂时不稳定，系统已尝试自动恢复但仍未成功，请稍后继续。');
+    assert.match(result.text, /上游模型拒绝了本轮请求/);
+    assert.match(result.text, /已自动重试 2 次/);
     const logPath = (session as any).sessionTurnLogger.getLogFilePath();
     const entries = fs.readFileSync(logPath, 'utf8')
       .split(/\r?\n/)
@@ -975,7 +1005,119 @@ describe('AgentSession lifecycle', () => {
     assert.equal(turnErrors[0].event.payload.model_attempt_number, 3);
     assert.equal(turnErrors[0].event.payload.episode_id, 'episode-interrupted');
     assert.match(turnErrors[0].event.payload.error_fingerprint, /^[a-f0-9]{16}$/);
-    assert.equal(typeof turnErrors[0].event.payload.partial_progress_preserved, 'boolean');
+    assert.equal(turnErrors[0].event.payload.context_persisted, true);
+    assert.equal(turnErrors[0].event.payload.recoverable_partial_progress, false);
+    assert.equal(turnErrors[0].event.payload.partial_progress_preserved, false);
+  });
+
+
+  test('does not claim completed tool progress was preserved when persistence fails', async () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession(
+      'catscompany:lifecycle-persistence-failure',
+      buildMockServices(),
+      'catscompany',
+    );
+    session.setSystemPromptProvider(() => 'system prompt');
+    const episodeId = 'episode-persistence-failure';
+    const providerError = Object.assign(new Error('API错误 (504): request timed out'), {
+      status: 504,
+      partialMessages: [
+        { role: 'system', content: 'system prompt' },
+        {
+          role: 'user',
+          content: '继续',
+          __episodeId: episodeId,
+          __episodeInputKind: 'root',
+        },
+        {
+          role: 'assistant',
+          content: null,
+          __episodeId: episodeId,
+          tool_calls: [{
+            id: 'call-read',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{}' },
+          }],
+        },
+        {
+          role: 'tool',
+          content: 'tool result',
+          name: 'read_file',
+          tool_call_id: 'call-read',
+          __toolExecutionSucceeded: true,
+          __episodeId: episodeId,
+        },
+      ],
+    });
+    (session as any).turnController.run = async () => { throw providerError; };
+    (session as any).lifecycleManager.saveContext = () => false;
+
+    const result = await session.handleMessage('继续');
+    assert.match(result.text, /模型中转请求超时/);
+    assert.match(result.text, /本轮已有部分进度，但持久化失败/);
+    assert.doesNotMatch(result.text, /已经保留上下文|已保存，可直接说/);
+    const logPath = (session as any).sessionTurnLogger.getLogFilePath();
+    const entries = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+    const turnError = entries.find(entry => entry?.event?.type === 'turn_error');
+    assert.equal(turnError?.event?.payload.context_persisted, false);
+    assert.equal(turnError?.event?.payload.recoverable_partial_progress, true);
+    assert.equal(turnError?.event?.payload.partial_progress_preserved, false);
+  });
+
+  test('requires a paired successful tool result before reporting recoverable progress', () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession(
+      'catscompany:lifecycle-tool-progress-evidence',
+      buildMockServices(),
+      'catscompany',
+    );
+    const root = { role: 'user', content: '继续', __episodeId: 'episode-tool', __episodeInputKind: 'root' };
+    const assistant = {
+      role: 'assistant', content: null, __episodeId: 'episode-tool',
+      tool_calls: [{ id: 'call-ok', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
+    };
+    const successful = {
+      role: 'tool', content: 'ok', tool_call_id: 'call-ok', name: 'read_file',
+      __episodeId: 'episode-tool', __toolExecutionSucceeded: true,
+    };
+    const failed = { ...successful, __toolExecutionSucceeded: false };
+    const orphan = { ...successful, tool_call_id: 'call-orphan' };
+    assert.equal((session as any).hasRecoverablePartialProgress([root, assistant, successful]), true);
+    assert.equal((session as any).hasRecoverablePartialProgress([root, assistant, failed]), false);
+    assert.equal((session as any).hasRecoverablePartialProgress([root, assistant, orphan]), false);
+    assert.equal((session as any).hasRecoverablePartialProgress([root, successful]), false);
+  });
+
+  test('returns a classified failure when an error exposes throwing getters', async () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession(
+      'catscompany:lifecycle-hostile-error',
+      buildMockServices(),
+      'catscompany',
+    );
+    session.setSystemPromptProvider(() => 'system prompt');
+    const hostileError = new Proxy(Object.freeze({}), {
+      get(_target, property) {
+        if (property === 'message' || property === 'response' || property === 'cause' || property === 'partialMessages') {
+          throw new Error('hostile getter must not escape handleMessage');
+        }
+        if (property === 'code') {
+          return { toString() { throw new Error('hostile code conversion must not escape handleMessage'); } };
+        }
+        return undefined;
+      },
+      getPrototypeOf() {
+        throw new Error('hostile prototype must not escape handleMessage');
+      },
+    });
+    (session as any).turnController.run = async () => { throw hostileError; };
+
+    const result = await session.handleMessage('继续');
+    assert.equal(result.taskOutcome, 'failed');
+    assert.equal(result.visibleToUser, true);
+    assert.match(result.text, /未识别的异常/);
+    assert.doesNotMatch(result.text, /hostile getter must not escape/);
   });
 
   test('cleanup persists without invoking hidden AI wakeup checks', async () => {

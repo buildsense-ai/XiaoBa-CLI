@@ -1,5 +1,4 @@
 import { createHash } from 'crypto';
-import { sanitizeProviderErrorMessageForLog } from './provider-error-log-sanitizer';
 
 export type ModelErrorPhase =
   | 'pre_turn_compaction'
@@ -120,37 +119,51 @@ function captureModelErrorDiagnosticsUnsafe(
   error: any,
   context: Partial<Pick<ModelErrorDiagnostics, 'provider' | 'model' | 'phase'>>,
 ): ModelErrorDiagnostics {
-  const existing = readModelErrorDiagnostics(error);
-  const responseError = error?.response?.data?.error;
-  const nestedError = error?.error;
+  const wrapperDiagnostics = readModelErrorDiagnostics(error);
+  const cause = safeRead(error, 'cause');
+  const causeDiagnostics = readModelErrorDiagnostics(cause);
+  const existing = wrapperDiagnostics ?? causeDiagnostics;
+  const responseError = safePath(error, 'response', 'data', 'error');
+  const nestedError = safeRead(error, 'error');
   const httpStatus = firstNumber(
     existing?.http_status,
-    error?.response?.status,
-    error?.status,
-    nestedError?.status,
-    extractStatusFromText(error?.message),
+    safePath(error, 'response', 'status'),
+    safeRead(error, 'status'),
+    safeRead(nestedError, 'status'),
+    causeDiagnostics?.http_status,
+    safePath(cause, 'response', 'status'),
+    safeRead(cause, 'status'),
+    extractStatusFromText(safeRead(error, 'message')),
+    extractStatusFromText(safeRead(cause, 'message')),
   );
   const providerCode = firstText(
     existing?.provider_code,
-    responseError?.code,
-    error?.response?.data?.code,
-    nestedError?.code,
+    safeRead(responseError, 'code'),
+    safePath(error, 'response', 'data', 'code'),
+    safeRead(nestedError, 'code'),
+    causeDiagnostics?.provider_code,
+    safePath(cause, 'response', 'data', 'error', 'code'),
+    safeRead(cause, 'code'),
   );
-  const transportCode = firstText(error?.code, error?.cause?.code);
+  const transportCode = firstText(safeRead(error, 'code'), safeRead(cause, 'code'));
   const providerType = firstText(
     existing?.provider_type,
-    responseError?.type,
-    error?.response?.data?.type,
-    nestedError?.type,
+    safeRead(responseError, 'type'),
+    safePath(error, 'response', 'data', 'type'),
+    safeRead(nestedError, 'type'),
+    causeDiagnostics?.provider_type,
+    safePath(cause, 'response', 'data', 'error', 'type'),
   );
   const requestId = firstText(
     existing?.request_id,
-    error?.response?.data?.request_id,
-    responseError?.request_id,
-    error?.request_id,
-    error?.requestId,
-    error?.response?.headers?.['x-request-id'],
-    error?.headers?.['x-request-id'],
+    safePath(error, 'response', 'data', 'request_id'),
+    safeRead(responseError, 'request_id'),
+    safeRead(error, 'request_id'),
+    safeRead(error, 'requestId'),
+    safePath(error, 'response', 'headers', 'x-request-id'),
+    safePath(error, 'headers', 'x-request-id'),
+    causeDiagnostics?.request_id,
+    safePath(cause, 'response', 'headers', 'x-request-id'),
   );
   const responseId = firstText(
     existing?.response_id,
@@ -161,14 +174,27 @@ function captureModelErrorDiagnosticsUnsafe(
   const terminalEvent = firstText(existing?.terminal_event, error?.terminalEvent);
   const failurePhase = firstText(existing?.failure_phase, error?.failurePhase);
   const sourceMessage = firstText(
-    responseError?.message,
-    error?.response?.data?.message,
-    nestedError?.message,
-    error?.message,
+    safeRead(responseError, 'message'),
+    safePath(error, 'response', 'data', 'message'),
+    safeRead(nestedError, 'message'),
+    safeRead(error, 'message'),
+    causeDiagnostics?.error_summary,
+    safeRead(cause, 'message'),
     error,
   ) || 'unknown error';
-  const errorSummary = sanitizeProviderErrorMessageForLog(sourceMessage);
-  const errorName = firstText(existing?.error_name, error?.name);
+  const errorName = firstText(
+    wrapperDiagnostics?.error_name,
+    causeDiagnostics?.error_name,
+    safeRead(error, 'name'),
+    safeRead(cause, 'name'),
+  );
+  const errorSummary = buildSafeErrorSummary({
+    sourceMessage,
+    httpStatus,
+    providerCode: providerCode ?? transportCode,
+    providerType,
+    errorName,
+  });
   const stack = captureStackDiagnostics(error);
   const origin = existing?.origin ?? inferErrorOrigin({
     httpStatus,
@@ -247,29 +273,39 @@ export function buildModelErrorFingerprint(input: {
 }
 
 function normalizeDiagnostics(input: ModelErrorDiagnostics): ModelErrorDiagnostics {
+  const providerCode = canonicalDiagnosticToken(input.provider_code);
+  const providerType = canonicalDiagnosticToken(input.provider_type);
+  const errorName = canonicalDiagnosticToken(input.error_name);
+  const errorSummary = buildSafeErrorSummary({
+    sourceMessage: input.error_summary || 'unknown error',
+    httpStatus: input.http_status,
+    providerCode,
+    providerType,
+    errorName,
+  });
   return {
     ...(safeText(input.provider) && { provider: safeText(input.provider) }),
     ...(safeText(input.model) && { model: safeText(input.model) }),
     ...(input.phase && { phase: input.phase }),
     ...(input.origin && { origin: input.origin }),
     ...(typeof input.http_status === 'number' && { http_status: input.http_status }),
-    ...(safeText(input.provider_code) && { provider_code: safeText(input.provider_code) }),
-    ...(safeText(input.provider_type) && { provider_type: safeText(input.provider_type) }),
-    ...(safeText(input.request_id) && { request_id: safeText(input.request_id) }),
+    ...(providerCode && { provider_code: providerCode }),
+    ...(providerType && { provider_type: providerType }),
+    ...(hashedIdentifier(input.request_id, 'request') && { request_id: hashedIdentifier(input.request_id, 'request') }),
     ...(safeText(input.response_id) && { response_id: safeText(input.response_id) }),
     ...(safeText(input.terminal_event) && { terminal_event: safeText(input.terminal_event) }),
     ...(safeText(input.failure_phase) && { failure_phase: safeText(input.failure_phase) }),
-    ...(safeText(input.error_name) && { error_name: safeText(input.error_name) }),
+    ...(errorName && { error_name: errorName }),
     ...(safeText(input.top_frame) && { top_frame: safeText(input.top_frame) }),
     ...(safeText(input.stack_fingerprint) && { stack_fingerprint: safeText(input.stack_fingerprint) }),
-    error_summary: sanitizeProviderErrorMessageForLog(input.error_summary || 'unknown error'),
+    error_summary: errorSummary,
     fingerprint: safeText(input.fingerprint) || buildModelErrorFingerprint({
       provider: input.provider,
       model: input.model,
       http_status: input.http_status,
-      provider_code: input.provider_code,
-      provider_type: input.provider_type,
-      error_summary: input.error_summary || 'unknown error',
+      provider_code: providerCode,
+      provider_type: providerType,
+      error_summary: errorSummary,
     }),
     ...(input.retry && { retry: normalizeRetrySummary(input.retry) }),
     ...(input.attempt && { attempt: normalizeAttemptReference(input.attempt) }),
@@ -300,11 +336,33 @@ function nonNegativeInteger(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 }
 
+function safeRead(value: unknown, property: PropertyKey): any {
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
+  try {
+    return Reflect.get(value, property);
+  } catch {
+    return undefined;
+  }
+}
+
+function safePath(value: unknown, ...properties: PropertyKey[]): unknown {
+  let current = value;
+  for (const property of properties) {
+    current = safeRead(current, property);
+    if (current === undefined || current === null) return current;
+  }
+  return current;
+}
+
 function safeText(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
-  const normalized = String(value).replace(/\s+/g, ' ').trim();
-  if (!normalized) return undefined;
-  return normalized.slice(0, MAX_STRUCTURED_FIELD_LENGTH);
+  try {
+    const normalized = String(value).replace(/\s+/g, ' ').trim();
+    if (!normalized) return undefined;
+    return normalized.slice(0, MAX_STRUCTURED_FIELD_LENGTH);
+  } catch {
+    return undefined;
+  }
 }
 
 function firstText(...values: unknown[]): string | undefined {
@@ -323,19 +381,74 @@ function firstNumber(...values: unknown[]): number | undefined {
 }
 
 function extractStatusFromText(value: unknown): number | undefined {
-  const match = String(value || '').match(/(?:API错误|HTTP|status(?:\s*code)?)\s*[\(:= ]\s*(\d{3})\b/i);
+  const match = (safeText(value) || '').match(/(?:API错误|HTTP|status(?:\s*code)?)\s*[\(:= ]\s*(\d{3})\b/i);
   if (!match) return undefined;
   const parsed = Number(match[1]);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function canonicalDiagnosticToken(value: unknown): string | undefined {
+  const normalized = safeText(value)?.toLowerCase();
+  if (!normalized || !/^[a-z][a-z0-9._-]{0,63}$/.test(normalized)) return undefined;
+  if (/(?:secret|token|password|credential|api[_-]?key|authorization)/i.test(normalized)) return undefined;
+  return normalized;
+}
+
+function hashedIdentifier(value: unknown, prefix: string): string | undefined {
+  const normalized = safeText(value);
+  if (!normalized) return undefined;
+  const alreadyHashed = normalized.startsWith(`${prefix}_`)
+    && normalized.length === prefix.length + 13
+    && /^[a-f0-9]{12}$/.test(normalized.slice(prefix.length + 1));
+  if (alreadyHashed) return normalized;
+  return `${prefix}_${createHash('sha256').update(normalized).digest('hex').slice(0, 12)}`;
+}
+
+function buildSafeErrorSummary(input: {
+  sourceMessage: unknown;
+  httpStatus?: number;
+  providerCode?: string;
+  providerType?: string;
+  errorName?: string;
+}): string {
+  const source = safeText(input.sourceMessage)?.toLowerCase() || '';
+  const parts: string[] = [];
+  if (typeof input.httpStatus === 'number') parts.push(`http_${input.httpStatus}`);
+  for (const match of source.matchAll(/\bsignal_(reasoning_replay_required|auth_invalid|access_denied|model_or_endpoint_missing|input_too_large|rate_limited|request_invalid|timeout|transport_error|empty_response|image_safety)\b/g)) {
+    parts.push(`signal_${match[1]}`);
+  }
+  const code = canonicalDiagnosticToken(input.providerCode);
+  const type = canonicalDiagnosticToken(input.providerType);
+  const name = canonicalDiagnosticToken(input.errorName);
+  if (code) parts.push(`code_${code}`);
+  if (type) parts.push(`type_${type}`);
+  if (name && name !== 'error') parts.push(`name_${name}`);
+
+  const signals: Array<[RegExp, string]> = [
+    [/reasoning[_\s-]?(?:content|text).{0,80}(?:must be passed back|must be echoed|not passed back|required|expected)|thinking mode.{0,80}reasoning/i, 'reasoning_replay_required'],
+    [/invalid[_\s-]?api[_\s-]?key|unauthorized|authentication (?:failed|error)|invalid[_\s-]?token/i, 'auth_invalid'],
+    [/forbidden|permission denied|access denied|not authorized|insufficient[_\s-]?permissions?/i, 'access_denied'],
+    [/model[_\s-]?not[_\s-]?found|endpoint[_\s-]?not[_\s-]?found|unknown model|no such model/i, 'model_or_endpoint_missing'],
+    [/context length|maximum context|context window|prompt too long|token limit|too many tokens/i, 'input_too_large'],
+    [/rate limit|too many requests/i, 'rate_limited'],
+    [/invalid[_\s-]?request|tool schema|schema is invalid|invalid (?:parameter|input|argument)|malformed|invalid json/i, 'request_invalid'],
+    [/request_timed_out|request timed out|gateway timeout|etimedout|timeout/i, 'timeout'],
+    [/econnreset|econnrefused|enotfound|eai_again|connection error/i, 'transport_error'],
+    [/empty_model_response|未返回有效内容|没有正文或工具调用/i, 'empty_response'],
+    [/input[_\s-]*new[_\s-]*sensitive|image is sensitive/i, 'image_safety'],
+  ];
+  for (const [pattern, signal] of signals) {
+    if (pattern.test(source)) parts.push(`signal_${signal}`);
+  }
+  return Array.from(new Set(parts)).join(' ') || 'unknown_error';
+}
+
 function safeFallbackErrorSummary(error: unknown): string {
   try {
-    return sanitizeProviderErrorMessageForLog(
-      error instanceof Error ? error.message : String(error ?? 'unknown error'),
-    );
+    const sourceMessage = error instanceof Error ? error.message : String(error ?? 'unknown error');
+    return buildSafeErrorSummary({ sourceMessage });
   } catch {
-    return 'unknown error';
+    return 'unknown_error';
   }
 }
 

@@ -56,6 +56,37 @@ const TRANSIENT_PROVIDER_CODES = new Set([
 const RESPONSES_TRANSIENT_MAX_RETRIES = 2;
 const TRANSIENT_HTTP_MAX_RETRIES = 2;
 const GATEWAY_TIMEOUT_MAX_RETRIES = 1;
+
+
+function safeErrorProperty(value: unknown, property: PropertyKey): unknown {
+  if (value === null || value === undefined || (typeof value !== 'object' && typeof value !== 'function')) {
+    return undefined;
+  }
+  try {
+    return Reflect.get(value, property);
+  } catch {
+    return undefined;
+  }
+}
+
+function safeErrorPath(value: unknown, ...properties: PropertyKey[]): unknown {
+  let current = value;
+  for (const property of properties) {
+    current = safeErrorProperty(current, property);
+    if (current === undefined || current === null) return current;
+  }
+  return current;
+}
+
+function safeErrorString(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+  try {
+    return String(value ?? fallback);
+  } catch {
+    return fallback;
+  }
+}
 let modelAttemptCallSequence = 0;
 
 type ProviderKind = 'openai' | 'anthropic';
@@ -359,7 +390,7 @@ export class AIService {
       return true;
     }
 
-    const message = String(error?.message || '');
+    const message = safeErrorString(safeErrorProperty(error, 'message'));
     const hasRetryableStatusText =
       /(?:API错误|HTTP|status(?:\s*code)?|response status)\s*[\(:= ]\s*(?:408|429|500|502|503|504|520|524|529)\b/i.test(message)
       || /^\s*(?:408|429|500|502|503|504|520|524|529)\b/.test(message);
@@ -371,7 +402,7 @@ export class AIService {
     }
 
     // Anthropic SDK overloaded_error
-    if (error?.error?.type === 'overloaded_error') {
+    if (safeErrorPath(error, 'error', 'type') === 'overloaded_error') {
       return true;
     }
 
@@ -385,15 +416,15 @@ export class AIService {
     }
 
     const message = [
-      error?.response?.data?.error?.code,
-      error?.response?.data?.error?.type,
-      error?.response?.data?.error?.message,
-      error?.response?.data?.message,
-      error?.error?.code,
-      error?.error?.type,
-      error?.error?.message,
-      error?.message,
-    ].filter(Boolean).join(' ');
+      safeErrorPath(error, 'response', 'data', 'error', 'code'),
+      safeErrorPath(error, 'response', 'data', 'error', 'type'),
+      safeErrorPath(error, 'response', 'data', 'error', 'message'),
+      safeErrorPath(error, 'response', 'data', 'message'),
+      safeErrorPath(error, 'error', 'code'),
+      safeErrorPath(error, 'error', 'type'),
+      safeErrorPath(error, 'error', 'message'),
+      safeErrorProperty(error, 'message'),
+    ].filter(Boolean).map(value => safeErrorString(value)).join(' ');
 
     return /insufficient[_\s-]?quota|quota[_\s-]?exceeded|billing|(?:insufficient|low|exhausted)[_\s-]?(?:credit|balance)|(?:credit|balance)[_\s-]?(?:exhausted|insufficient|too low)|账户余额|余额不足|额度不足|额度已用尽|context length|maximum context|max(?:imum)? tokens?|prompt too long|invalid[_\s-]?request|invalid[_\s-]?api[_\s-]?key|unauthorized|forbidden|permission denied|model .*not found|model_not_found|tool schema|schema is invalid|content policy|safety/i
       .test(message);
@@ -425,7 +456,7 @@ export class AIService {
    * 从错误中提取 HTTP 状态码
    */
   private extractStatus(error: any): number | null {
-    const status = error?.response?.status || error?.status;
+    const status = safeErrorPath(error, 'response', 'status') || safeErrorProperty(error, 'status');
     if (typeof status === 'number') {
       return status;
     }
@@ -434,6 +465,7 @@ export class AIService {
       return Number.isFinite(parsed) ? parsed : null;
     }
     const text = String(error?.message || error || '');
+    const text = safeErrorString(safeErrorProperty(error, 'message'), safeErrorString(error));
     const match = text.match(/(?:API错误|HTTP|status(?:\s*code)?)\s*[\(:= ]\s*(\d{3})\b/i);
     if (match) {
       const parsed = Number(match[1]);
@@ -446,12 +478,14 @@ export class AIService {
    * 从错误中提取 Retry-After 头（秒）
    */
   private getRetryAfter(error: any): number | null {
-    const retryAfter = error?.response?.headers?.['retry-after'] || error?.headers?.['retry-after'];
+    const retryAfter = safeErrorPath(error, 'response', 'headers', 'retry-after')
+      || safeErrorPath(error, 'headers', 'retry-after');
     if (retryAfter) {
-      const seconds = parseInt(retryAfter, 10);
+      const retryAfterText = safeErrorString(retryAfter);
+      const seconds = parseInt(retryAfterText, 10);
       if (!isNaN(seconds)) return seconds;
 
-      const dateMs = Date.parse(String(retryAfter));
+      const dateMs = Date.parse(retryAfterText);
       if (Number.isFinite(dateMs)) {
         return Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
       }
@@ -754,15 +788,19 @@ export class AIService {
   }
 
   private extractErrorMessage(error: any): string {
-    return error?.response?.data?.error?.message
-      || error?.response?.data?.message
-      || error?.error?.message
-      || error?.message
-      || String(error);
+    return safeErrorString(
+      safeErrorPath(error, 'response', 'data', 'error', 'message')
+        || safeErrorPath(error, 'response', 'data', 'message')
+        || safeErrorPath(error, 'error', 'message')
+        || safeErrorProperty(error, 'message'),
+      safeErrorString(error, 'Unknown provider error'),
+    );
   }
 
   private extractErrorCode(error: any): string {
-    return String(error?.code || error?.cause?.code || '').toUpperCase();
+    return safeErrorString(
+      safeErrorProperty(error, 'code') || safeErrorPath(error, 'cause', 'code'),
+    ).toUpperCase();
   }
 
   private isEmptyModelResponseError(error: any): boolean {
@@ -794,7 +832,7 @@ export class AIService {
     try {
       await callbacks?.onRetry?.(attempt, maxRetries, info);
     } catch (error: any) {
-      Logger.warning(`重试提示回调失败: ${error?.message || error}`);
+      Logger.warning(`重试提示回调失败: ${safeErrorString(safeErrorProperty(error, 'message'), safeErrorString(error))}`);
     }
   }
 
@@ -823,9 +861,9 @@ export class AIService {
   }
 
   private isAbortError(error: any): boolean {
-    return error?.name === 'AbortError'
-      || error?.code === 'ERR_CANCELED'
-      || /aborted|aborterror|canceled|cancelled/i.test(String(error?.message || ''));
+    return safeErrorProperty(error, 'name') === 'AbortError'
+      || safeErrorProperty(error, 'code') === 'ERR_CANCELED'
+      || /aborted|aborterror|canceled|cancelled/i.test(safeErrorString(safeErrorProperty(error, 'message')));
   }
 
   private createAbortError(): Error {
