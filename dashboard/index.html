@@ -5568,7 +5568,7 @@
             <button class="btn" onclick="switchPage('services')">← 返回</button>
           </div>
         </div>
-        <iframe id="cache-trace-frame" src="cache-trace.html"
+        <iframe id="cache-trace-frame" data-src="cache-trace.html"
           style="width:100%;height:calc(100vh - 240px);min-height:520px;border:1px solid var(--border);border-radius:14px;background:#07101f"
           title="缓存命中监控"></iframe>
       </div>
@@ -6817,6 +6817,12 @@
       } else if (name === 'services') {
         fetchStatus();
         refreshSettingsPage();
+      } else if (name === 'cache-trace') {
+        const frame = document.getElementById('cache-trace-frame');
+        if (frame) {
+          if (!frame.getAttribute('src')) frame.src = frame.dataset.src;
+          else frame.contentWindow && frame.contentWindow.location.reload();
+        }
       }
     }
 
