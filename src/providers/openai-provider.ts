@@ -229,6 +229,35 @@ export class OpenAIProvider implements AIProvider {
   }
 
   /**
+   * Build Responses-only headers following Pi's OpenAI compatibility convention.
+   * The relay may use these stable values for session-affine routing. We keep
+   * the behavior off for the native OpenAI endpoint unless explicitly forced.
+   */
+  private responsesHeaders(options?: AIRequestOptions): Record<string, string> {
+    const headers: Record<string, string> = { ...this.headers };
+    const sessionKey = options?.promptCacheContext?.sessionKey;
+    if (!sessionKey || sessionKey === 'unknown' || sessionKey === 'unscoped' || !this.isResponsesSessionAffinityEnabled()) {
+      return headers;
+    }
+
+    const affinity = `xiaoba-${createHash('sha256').update(sessionKey).digest('hex').slice(0, 32)}`;
+    // Pi's OpenAI Responses compatibility mode uses the same stable session
+    // value for these two relay-recognized headers.
+    headers.session_id = affinity;
+    headers['x-client-request-id'] = affinity;
+    return headers;
+  }
+
+  private isResponsesSessionAffinityEnabled(): boolean {
+    const configured = String(process.env.XIAOBA_RESPONSES_SESSION_AFFINITY || 'auto')
+      .trim()
+      .toLowerCase();
+    if (configured === 'off' || configured === 'false' || configured === 'disabled') return false;
+    if (configured === 'on' || configured === 'force') return true;
+    return !this.isOfficialOpenAIResponsesEndpoint();
+  }
+
+  /**
    * 普通调用
    */
   async chat(messages: Message[], tools?: ToolDefinition[], options?: AIRequestOptions): Promise<ChatResponse> {
@@ -846,6 +875,15 @@ export class OpenAIProvider implements AIProvider {
         durable_input_hash: this.hashWirePrefix(durableInput),
         transient_input_hash: this.hashWirePrefix(transientInput),
         final_input_hash: this.hashWirePrefix(layout.input),
+        session_affinity_enabled: Boolean(
+          cacheContext?.sessionKey
+          && cacheContext.sessionKey !== 'unknown'
+          && cacheContext.sessionKey !== 'unscoped'
+          && this.isResponsesSessionAffinityEnabled(),
+        ),
+        session_affinity_hash: cacheContext?.sessionKey
+          ? this.hashWirePrefix(`xiaoba-${createHash('sha256').update(cacheContext.sessionKey).digest('hex').slice(0, 32)}`)
+          : undefined,
         input_item_diagnostics: itemDiagnostics,
         logical_body_hash: this.hashWirePrefix({ ...(logicalBody || {}), stream }),
       },
@@ -1063,13 +1101,17 @@ export class OpenAIProvider implements AIProvider {
     });
     let response;
     try {
-      response = await this.postProviderRequest(this.responsesUrl, body, false, options);
+      response = await this.postProviderRequest(
+        this.responsesUrl, body, false, options, this.responsesHeaders(options),
+      );
     } catch (error) {
       if (!this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
       this.responsesExplicitAnchorSupported = false;
       Logger.warning('Responses endpoint rejected the explicit S cache anchor; retrying once without it.');
       body = this.buildResponsesRequestBody(messages, tools, false, options, true);
-      response = await this.postProviderRequest(this.responsesUrl, body, false, options);
+      response = await this.postProviderRequest(
+        this.responsesUrl, body, false, options, this.responsesHeaders(options),
+      );
     }
     ContextDebugLogger.dumpSdkBoundary('after', undefined, { response: response.data });
     const failure = this.responsesFailureError(response.data);
@@ -1099,13 +1141,17 @@ export class OpenAIProvider implements AIProvider {
     });
     let response;
     try {
-      response = await this.postProviderRequest(this.responsesUrl, body, true, options);
+      response = await this.postProviderRequest(
+        this.responsesUrl, body, true, options, this.responsesHeaders(options),
+      );
     } catch (error) {
       if (!this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
       this.responsesExplicitAnchorSupported = false;
       Logger.warning('Responses endpoint rejected the explicit S cache anchor; retrying stream once without it.');
       body = this.buildResponsesRequestBody(messages, tools, true, options, true);
-      response = await this.postProviderRequest(this.responsesUrl, body, true, options);
+      response = await this.postProviderRequest(
+        this.responsesUrl, body, true, options, this.responsesHeaders(options),
+      );
     }
 
     return new Promise<ChatResponse>((resolve, reject) => {
@@ -1250,10 +1296,11 @@ export class OpenAIProvider implements AIProvider {
     body: any,
     stream: boolean,
     options?: AIRequestOptions,
+    headers: Record<string, string> = this.headers,
   ): Promise<any> {
     try {
       return await axios.post(url, body, {
-        headers: this.headers,
+        headers,
         ...(stream ? { responseType: 'stream' as const } : {}),
         signal: options?.signal,
       });

@@ -130,6 +130,37 @@ test('Responses cache key is isolated by session without exposing the session id
   assert.doesNotMatch(first.prompt_cache_key, /session-alpha/);
 });
 
+test('Responses relay uses Pi-style stable session affinity headers without exposing the session id', () => {
+  const original = process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
+  delete process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
+  try {
+    const headers = (provider() as any).responsesHeaders(context);
+    assert.match(headers.session_id, /^xiaoba-[a-f0-9]{32}$/);
+    assert.equal(headers['x-client-request-id'], headers.session_id);
+    assert.doesNotMatch(headers.session_id, /session-alpha/);
+
+    const officialHeaders = (explicitProvider() as any).responsesHeaders(context);
+    assert.equal(officialHeaders.session_id, undefined);
+    assert.equal(officialHeaders['x-client-request-id'], undefined);
+  } finally {
+    if (original === undefined) delete process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
+    else process.env.XIAOBA_RESPONSES_SESSION_AFFINITY = original;
+  }
+});
+
+test('Responses session affinity can be disabled without changing the cache body', () => {
+  const original = process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
+  process.env.XIAOBA_RESPONSES_SESSION_AFFINITY = 'off';
+  try {
+    const headers = (provider() as any).responsesHeaders(context);
+    assert.equal(headers.session_id, undefined);
+    assert.equal(headers['x-client-request-id'], undefined);
+  } finally {
+    if (original === undefined) delete process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
+    else process.env.XIAOBA_RESPONSES_SESSION_AFFINITY = original;
+  }
+});
+
 test('Responses streaming and non-streaming requests share the same logical cache body', () => {
   const messages: Message[] = [
     { role: 'system', content: 'stable system' },
