@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import axios from 'axios';
 import { OpenAIProvider } from '../src/providers/openai-provider';
 import { AIService } from '../src/utils/ai-service';
+import { Logger } from '../src/utils/logger';
 import type { Message } from '../src/types';
 import type { ToolDefinition } from '../src/types/tool';
 
@@ -52,7 +53,7 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.deepEqual(first.include, ['reasoning.encrypted_content']);
   });
 
-  test('keeps dynamic system context out of cache identity and places it before the latest event', () => {
+  test('keeps dynamic system context out of cache identity and appends it as developer context', () => {
     const provider = createProvider();
     const first = (provider as any).buildResponsesRequestBody([
       { role: 'system', content: 'Stable policy.' },
@@ -69,13 +70,83 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.equal(second.instructions, 'Stable policy.');
     assert.equal(first.prompt_cache_key, second.prompt_cache_key);
     assert.deepEqual(first.input, [
-      { role: 'system', content: '[transient_plan_status]\nstep one' },
       { role: 'user', content: 'first question' },
+      { role: 'developer', content: '[transient_plan_status]\nstep one' },
     ]);
     assert.deepEqual(second.input, [
-      { role: 'system', content: '[transient_plan_status]\nstep two' },
       { role: 'user', content: 'another question' },
+      { role: 'developer', content: '[transient_plan_status]\nstep two' },
     ]);
+  });
+
+  test('logs implicit user and tool breakpoint prefixes from the actual Responses input', () => {
+    const provider = createProvider();
+    const originalRuntimeEvent = Logger.runtimeEvent;
+    const events: any[] = [];
+    (Logger as any).runtimeEvent = (_level: string, _message: string, event: any) => events.push(event);
+    try {
+      const commonMessages: Message[] = [
+        { role: 'system', content: 'Stable policy.' },
+        { role: 'user', content: 'use the tool' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{"query":"one"}' },
+          }],
+        },
+        { role: 'tool', tool_call_id: 'call-1', content: 'first result' },
+      ];
+
+      (provider as any).buildResponsesRequestBody([
+        ...commonMessages,
+        { role: 'system', content: '[transient_plan_status]\nstep one', __cacheScope: 'dynamic' },
+      ], [lookupTool]);
+      (provider as any).buildResponsesRequestBody([
+        ...commonMessages,
+        { role: 'system', content: '[transient_plan_status]\nstep two', __cacheScope: 'dynamic' },
+      ], [lookupTool]);
+      (provider as any).buildResponsesRequestBody([
+        ...commonMessages,
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call-2',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{"query":"two"}' },
+          }],
+        },
+        { role: 'tool', tool_call_id: 'call-2', content: 'second result' },
+        { role: 'system', content: '[transient_plan_status]\nstep three', __cacheScope: 'dynamic' },
+      ], [lookupTool]);
+
+      const layouts = events.filter(event => event.type === 'responses_cache_layout');
+      assert.equal(layouts.length, 3);
+      assert.equal(layouts[0].payload.stream, false);
+      assert.equal(layouts[0].payload.transport, 'json');
+      assert.deepEqual(
+        layouts[0].payload.implicit_candidates.map((candidate: any) => candidate.kind),
+        ['user', 'tool'],
+      );
+      assert.equal(layouts[0].payload.implicit_trailing_items, 1);
+      assert.equal(
+        layouts[0].payload.implicit_latest_prefix_hash,
+        layouts[1].payload.implicit_latest_prefix_hash,
+      );
+      assert.equal(
+        layouts[2].payload.implicit_candidates.some((candidate: any) => (
+          candidate.prefixHash === layouts[1].payload.implicit_latest_prefix_hash
+        )),
+        true,
+      );
+      assert.equal(JSON.stringify(layouts).includes('first result'), false);
+      assert.equal(JSON.stringify(layouts).includes('step one'), false);
+    } finally {
+      (Logger as any).runtimeEvent = originalRuntimeEvent;
+    }
   });
 
   test('keeps plan, subagent, runner, and device changes out of cache identity', () => {
@@ -100,8 +171,8 @@ describe('OpenAIProvider Responses API mode', () => {
       ], [lookupTool]);
 
       assert.equal(first.prompt_cache_key, second.prompt_cache_key);
-      assert.equal(first.input[0].role, 'system');
-      assert.equal(first.input[0].content, firstDynamic);
+      assert.equal(first.input.at(-1).role, 'developer');
+      assert.equal(first.input.at(-1).content, firstDynamic);
     }
 
     const changedStable = (provider as any).buildResponsesRequestBody([
