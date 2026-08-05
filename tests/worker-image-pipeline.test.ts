@@ -149,7 +149,9 @@ describe("Tianyi Cloud worker image pipeline", () => {
         [
           "#!/usr/bin/env bash",
           `export PATH="${toMsys(bin)}:$PATH"`,
-          `exec "${toMsys(preparer)}" "$@"`,
+          // exec bash explicitly: the repo's prepare-image.sh may not carry the
+          // executable bit on a fresh Linux checkout, and CI runners enforce it.
+          `exec bash "${toMsys(preparer)}" "$@"`,
           "",
         ].join("\n"),
         "utf8",
@@ -211,7 +213,10 @@ describe("Tianyi Cloud worker image pipeline", () => {
         ].join("\n"),
       };
       for (const [name, body] of Object.entries(mocks)) {
-        fs.writeFileSync(path.join(bin, name), body, "utf8");
+        const mockPath = path.join(bin, name);
+        fs.writeFileSync(mockPath, body, "utf8");
+        // CI runners (Linux) enforce the executable bit; Windows does not.
+        fs.chmodSync(mockPath, 0o755);
       }
 
       const countPath = path.join(sandbox, "compare-count");
