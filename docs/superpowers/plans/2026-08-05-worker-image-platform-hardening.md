@@ -54,6 +54,13 @@
   - `systemctl daemon-reload` 加 `|| true`（freeze 场景下不再挂起中断 bake；unit 已落盘，新实例启动自动加载）。
   - 测试断言改为匹配实现而非注释（`od -An -c` / `printf '\n' >>`），并新增 `fwupd-refresh.timer` mask 断言。
 
+- [x] **步骤 5c：Nobody-ly 复核 4 项（2026-08-05 04:00，head 284662c）**
+  - **High 平台升级 fail-open → 已修**：systemd/glibc 升级最终失败不再静默——用 `dpkg --compare-versions` 做**最低版本断言**（systemd ≥ 255.4-1ubuntu8.16、glibc ≥ 2.39-0ubuntu8.8），不达标 `die`；kernel 升级、`update-grub` 失败也 `die`；`/boot/vmlinuz-*` 存在性检查。升级命令失败 → dpkg configure → 最小清单重试 → 版本断言裁决（postinst 失败 tolerated，版本达标即通过）。
+  - **Medium dpkg 修复顺序过晚 → 已修**：dpkg file-list 修复 + 首次 `dpkg --configure -a` **移到任何 apt/dpkg 事务之前**（`apt-get update` 前）。
+  - **High cleanup 不删除已发现资源 → 保持 fail-closed（用户决策）**：`Invoke-ExactBakeCleanup` 无 immutable ID 证明时抛错不删，避免误删；在 review 回复中说明这是有意的 fail-closed 权衡（rerun/reconcile 回收）。
+  - **Medium pending 恢复保留 key pair → 已修**：`Complete-PendingPublishedImage` 置 `KeyPairCreateAttempted=$true`，靠 pending bake marker + key pair 唯一临时名证明归属后按名清理；两个 pending 恢复场景断言更新为删除 key pair（`keyExists=false`）。Cleanup 模式仍 fail-closed（不删）。
+  - **测试证据补强（回应"测试不够充分"）**：新增**真实执行探针测试** `platform hardening fails closed and runs dpkg repair before apt`——隔离环境 mock `sha256sum/apt-get/dpkg/dpkg-query/systemctl/uname/update-grub`（Git Bash + MSYS 路径 + wrapper + `CATSCO_PREPARE_SKIP_ROOT_CHECK` 钩子），三个探针：①升级命令固定失败+版本旧 → 脚本非 0 退出含 `known-safe version`；②apt 成功但版本旧 → 非 0 退出；③全成功 → 首次 `dpkg --configure` 在 `apt-get update` 之前。验证 `bash -n` + 11/11 测试 + build 通过。
+
 - [x] **步骤 6：npm mirror 预配置**
   - `/root/.npmrc`：`registry=https://registry.npmmirror.com`（root 侧，先写，无需依赖 useradd）
   - `/srv/catsco-agent/.npmrc`：同上 + `chown catsco-agent:catsco-agent`（在 `useradd` 之后写，目录已由 `--create-home` 创建）

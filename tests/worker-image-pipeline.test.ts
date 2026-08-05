@@ -98,6 +98,190 @@ describe("Tianyi Cloud worker image pipeline", () => {
     // observable platform versions in bake logs
     assert.match(imagePreparer, /platform_systemd=/);
     assert.match(imagePreparer, /platform_systemd=%s glibc=%s kernel=%s/);
+    // fail-closed version assertions (review: required upgrades must block the bake)
+    assert.match(imagePreparer, /dpkg --compare-versions/);
+    assert.match(imagePreparer, /known-safe version/);
+    assert.ok(
+      imagePreparer.indexOf("od -An -c") < imagePreparer.indexOf("apt-get update"),
+      "dpkg list repair must precede the first apt transaction",
+    );
+  });
+
+  test("platform hardening fails closed and runs dpkg repair before apt", () => {
+    const sandbox = fs.mkdtempSync(
+      path.join(os.tmpdir(), "catsco-harden-probe-"),
+    );
+    try {
+      const bin = path.join(sandbox, "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      const mockLog = path.join(sandbox, "calls.log");
+      // Prefer Git Bash over the WSL bash (C:\Windows\system32\bash.exe) that
+      // would not understand Windows drive paths. All paths handed to bash are
+      // converted to MSYS form (/c/...), and a wrapper exports a Unix-style
+      // PATH so the mocked commands are found inside the script.
+      const bashCandidates = [
+        "C:\\Program Files\\Git\\bin\\bash.exe",
+        "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+        process.env.LOCALAPPDATA
+          ? path.join(
+              process.env.LOCALAPPDATA,
+              "Programs",
+              "Git",
+              "bin",
+              "bash.exe",
+            )
+          : "",
+      ].filter((p) => p && fs.existsSync(p));
+      const bashExe = bashCandidates[0] || "bash";
+      const toMsys = (p: string) =>
+        p
+          .replace(/\\/g, "/")
+          .replace(/^([A-Za-z]):/, (_m: string, d: string) => `/${d.toLowerCase()}`);
+      const preparer = path.join(
+        root,
+        "ops/ctyun-worker-image/prepare-image.sh",
+      );
+      const artifact = path.join(sandbox, "worker.tar.gz");
+      fs.writeFileSync(artifact, "");
+      const wrapper = path.join(sandbox, "run.sh");
+      fs.writeFileSync(
+        wrapper,
+        [
+          "#!/usr/bin/env bash",
+          `export PATH="${toMsys(bin)}:$PATH"`,
+          `exec "${toMsys(preparer)}" "$@"`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      const sha = "a".repeat(64);
+
+      const mocks: Record<string, string> = {
+        sha256sum: [
+          "#!/usr/bin/env bash",
+          'echo "$CATSCO_MOCK_SHA  $1"',
+        ].join("\n"),
+        "apt-get": [
+          "#!/usr/bin/env bash",
+          'echo "apt-get:$*" >> "$CATSCO_MOCK_LOG"',
+          'if [[ "$*" == *update* ]]; then exit "${CATSCO_MOCK_APT_UPDATE_RC:-0}"; fi',
+          'if [[ "$*" == *--only-upgrade* ]]; then exit "${CATSCO_MOCK_APT_ONLY_UPGRADE_RC:-0}"; fi',
+          "exit 0",
+        ].join("\n"),
+        dpkg: [
+          "#!/usr/bin/env bash",
+          'echo "dpkg:$*" >> "$CATSCO_MOCK_LOG"',
+          'if [[ "$*" == *"--compare-versions"* ]]; then exit "${CATSCO_MOCK_VERSION_OK:-0}"; fi',
+          'if [[ "$*" == *"--configure"* ]]; then exit "${CATSCO_MOCK_DPKG_CONFIGURE_RC:-0}"; fi',
+          "exit 0",
+        ].join("\n"),
+        "dpkg-query": [
+          "#!/usr/bin/env bash",
+          'echo "dpkg-query:$*" >> "$CATSCO_MOCK_LOG"',
+          '[[ "$*" == *systemd* ]] && echo "$CATSCO_MOCK_SYSTEMD_VER"',
+          '[[ "$*" == *libc6* ]] && echo "$CATSCO_MOCK_GLIBC_VER"',
+          "exit 0",
+        ].join("\n"),
+        systemctl: [
+          "#!/usr/bin/env bash",
+          'echo "systemctl:$*" >> "$CATSCO_MOCK_LOG"',
+          "exit 0",
+        ].join("\n"),
+        uname: [
+          "#!/usr/bin/env bash",
+          'echo "uname:$*" >> "$CATSCO_MOCK_LOG"',
+          'echo "6.8.0-136-generic"',
+          "exit 0",
+        ].join("\n"),
+        "update-grub": [
+          "#!/usr/bin/env bash",
+          'echo "update-grub:$*" >> "$CATSCO_MOCK_LOG"',
+          'exit "${CATSCO_MOCK_UPDATE_GRUB_RC:-0}"',
+        ].join("\n"),
+      };
+      for (const [name, body] of Object.entries(mocks)) {
+        fs.writeFileSync(path.join(bin, name), body, "utf8");
+      }
+
+      const runHardening = (extra: Record<string, string>) => {
+        const result = spawnSync(
+          bashExe,
+          [
+            toMsys(wrapper),
+            "--artifact", toMsys(artifact),
+            "--sha256", sha,
+            "--version", "1.4.7",
+            "--commit", "a".repeat(40),
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              PATH: `${bin}${path.delimiter}${process.env.PATH || ""}`,
+              CATSCO_MOCK_LOG: mockLog,
+              CATSCO_MOCK_SHA: sha,
+              CATSCO_PREPARE_SKIP_ROOT_CHECK: "1",
+              ...extra,
+            },
+          },
+        );
+        return result;
+      };
+
+      // Probe 1: every --only-upgrade attempt fails AND versions stay old ->
+      // the bake must fail closed with the known-safe version error.
+      fs.rmSync(mockLog, { force: true });
+      const failResult = runHardening({
+        CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "42",
+        CATSCO_MOCK_VERSION_OK: "1",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.15",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.7",
+      });
+      assert.notEqual(
+        failResult.status,
+        0,
+        `${failResult.stdout}\n${failResult.stderr}`,
+      );
+      assert.match(failResult.stderr, /known-safe version/);
+
+      // Probe 2: apt succeeds but versions still miss the floor -> fail closed
+      // (the silent broken-image risk the review reproduced).
+      fs.rmSync(mockLog, { force: true });
+      const staleResult = runHardening({
+        CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
+        CATSCO_MOCK_VERSION_OK: "1",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.15",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
+      });
+      assert.notEqual(
+        staleResult.status,
+        0,
+        `${staleResult.stdout}\n${staleResult.stderr}`,
+      );
+      assert.match(staleResult.stderr, /known-safe version/);
+
+      // Probe 3: with everything healthy the version gate passes, and the
+      // first dpkg --configure runs before the first apt-get transaction.
+      fs.rmSync(mockLog, { force: true });
+      const orderResult = runHardening({
+        CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
+        CATSCO_MOCK_VERSION_OK: "0",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.16",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
+      });
+      const orderCalls = fs.readFileSync(mockLog, "utf8");
+      const firstConfigure = orderCalls.indexOf("dpkg:--configure");
+      const firstAptUpdate = orderCalls.indexOf("apt-get:update");
+      assert.ok(firstConfigure >= 0, orderCalls);
+      assert.ok(firstAptUpdate >= 0, orderCalls);
+      assert.ok(
+        firstConfigure < firstAptUpdate,
+        `dpkg repair must run before the first apt transaction\n${orderCalls}`,
+      );
+      assert.doesNotMatch(orderResult.stderr, /known-safe version/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
   test("orchestrator only mutates the exact temporary builder for this bake", () => {
@@ -733,15 +917,15 @@ process.exit(result.status ?? 1);
       assert.ok(
         (recoveryCalls.match(/ecs ListEcsInstances/g) || []).length >= 2,
       );
-      assert.doesNotMatch(recoveryCalls, /ecs GetEcsKeypairDetails/);
+      assert.match(recoveryCalls, /ecs GetEcsKeypairDetails/);
       assert.match(recoveryCalls, /ecs DeleteEcsInstance/);
-      assert.doesNotMatch(recoveryCalls, /ecs DeleteEcsKeypair/);
+      assert.match(recoveryCalls, /ecs DeleteEcsKeypair/);
       assert.match(recoveryCalls, /ims UpdateImage/);
       const recoveryState = JSON.parse(fs.readFileSync(statePath, "utf8"));
       assert.equal(recoveryState.imageExists, true);
       assert.equal(recoveryState.imageDescription, releaseDescription);
       assert.equal(recoveryState.instanceExists, false);
-      assert.equal(recoveryState.keyExists, true);
+      assert.equal(recoveryState.keyExists, false);
 
       fs.writeFileSync(logPath, "");
       fs.writeFileSync(
@@ -774,12 +958,16 @@ process.exit(result.status ?? 1);
         reusedNameRecoveryCalls,
         /ecs DeleteEcsInstance/,
       );
-      assert.doesNotMatch(reusedNameRecoveryCalls, /ecs DeleteEcsKeypair/);
+      // The instance is protected (source ID mismatch), but the key pair's
+      // unique temporary name is proven by the pending bake marker, so the
+      // recovery deletes it instead of leaking a billed key pair.
+      assert.match(reusedNameRecoveryCalls, /ecs DeleteEcsKeypair/);
       const reusedNameRecoveryState = JSON.parse(
         fs.readFileSync(statePath, "utf8"),
       );
       assert.equal(reusedNameRecoveryState.instanceExists, true);
       assert.equal(reusedNameRecoveryState.instanceID, "instance-new");
+      assert.equal(reusedNameRecoveryState.keyExists, false);
       assert.equal(
         reusedNameRecoveryState.imageDescription,
         releaseDescription,

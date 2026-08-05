@@ -739,7 +739,11 @@ function Complete-PendingPublishedImage {
     $script:BuilderResourceID = ""
     $script:BuilderCreateAttempted = $true
     $script:KeyPairID = ""
-    $script:KeyPairCreateAttempted = $false
+    # The pending image's bake marker and the key pair's unique temporary name
+    # both carry this bake ID, so the key pair is proven to belong to this bake
+    # and can be cleaned up by its unique name during recovery (Remove-KeyPair
+    # only deletes when the temporary name uniquely matches).
+    $script:KeyPairCreateAttempted = $true
     $script:InCleanup = $true
     $script:CleanupDeadline = (Get-Date).AddMinutes($CleanupTimeoutMinutes)
 

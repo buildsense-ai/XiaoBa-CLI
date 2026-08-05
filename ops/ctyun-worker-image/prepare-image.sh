@@ -32,7 +32,9 @@ while (($#)); do
   esac
 done
 
-[[ $EUID -eq 0 ]] || die "run as root"
+if [[ -z "${CATSCO_PREPARE_SKIP_ROOT_CHECK:-}" ]]; then
+  [[ $EUID -eq 0 ]] || die "run as root"
+fi
 
 if [[ $FINALIZE -eq 1 ]]; then
   systemctl disable --now catsco-agent.service 2>/dev/null || true
@@ -72,7 +74,31 @@ ACTUAL_SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
 [[ "${ACTUAL_SHA256,,}" == "${SHA256,,}" ]] || die "artifact checksum mismatch"
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
+
+# --- Platform hardening (encoded from deploy-catsco-linux-agent skill, 2026-08) ---
+# Every fault below was hit on live Tianyi workers provisioned from the same base
+# image. Encoding the fixes here means a freshly baked worker starts healthy and
+# no manual host surgery is needed after provisioning.
+#
+# Fail-closed policy: an upgrade that cannot reach the known-safe platform state
+# must block the bake. Shipping an image that silently carries the buggy
+# systemd/glibc/kernel combo is worse than failing the workflow so it can retry.
+
+# 1. Repair corrupted dpkg file lists ("missing final newline") BEFORE any
+#    apt/dpkg transaction. These images can ship broken
+#    /var/lib/dpkg/info/*.list files that abort the very first apt or dpkg call
+#    (e.g. dpkg-query exits 2 while a list is missing its final newline).
+for list in /var/lib/dpkg/info/*.list; do
+  [ -f "$list" ] && [ -s "$list" ] || continue
+  if ! tail -c1 "$list" | od -An -c | tr -d ' \n' | grep -q '\\n'; then
+    printf '\n' >> "$list"
+  fi
+done
+if ! dpkg --configure -a >/tmp/catsco-dpkg-configure-first.log 2>&1; then
+  die "dpkg configuration failed after file-list repair; see /tmp/catsco-dpkg-configure-first.log"
+fi
+
+apt-get update || die "apt-get update failed"
 apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
@@ -82,22 +108,8 @@ apt-get install -y --no-install-recommends \
   ripgrep \
   sudo \
   unzip \
-  zip
-
-# --- Platform hardening (encoded from deploy-catsco-linux-agent skill, 2026-08) ---
-# Every fault below was hit on live Tianyi workers provisioned from the same base
-# image. Encoding the fixes here means a freshly baked worker starts healthy and
-# no manual host surgery is needed after provisioning.
-
-# 1. Repair corrupted dpkg file lists ("missing final newline"). These images can
-#    ship broken /var/lib/dpkg/info/*.list files that abort later apt commands.
-for list in /var/lib/dpkg/info/*.list; do
-  [ -f "$list" ] && [ -s "$list" ] || continue
-  if ! tail -c1 "$list" | od -An -c | tr -d ' \n' | grep -q '\\n'; then
-    printf '\n' >> "$list"
-  fi
-done
-dpkg --configure -a >/dev/null 2>&1 || true
+  zip \
+  || die "base package install failed"
 
 # 2. Mask fwupd BEFORE upgrading systemd. On systemd 8.16, handling fwupd
 #    lifecycle can crash systemd itself ("Caught <ABRT>, from our own process"
@@ -117,7 +129,9 @@ systemctl reset-failed fwupd-refresh.service >/dev/null 2>&1 || true
 #    systemd 8.15 + glibc 8.7 which triggers a _dl_fini assert that freezes
 #    systemd ("Caught <ABRT> ... Freezing execution"); every systemctl call then
 #    times out. postinst may fail on a running older systemd (expected), so we
-#    tolerate it, finish dpkg configuration, and retry with the minimal set.
+#    finish dpkg configuration, retry with the minimal set, and then VERIFY the
+#    installed versions with dpkg --compare-versions. Failing to reach the
+#    known-safe versions blocks the bake.
 if ! apt-get install --only-upgrade -y \
   systemd \
   systemd-sysv \
@@ -142,17 +156,30 @@ if ! apt-get install --only-upgrade -y \
 fi
 dpkg --configure -a >/dev/null 2>&1 || true
 
-# 4. Upgrade the kernel and regenerate grub. A new kernel without update-grub can
-#    still boot the old one, and old kernels are retained for rollback.
-apt-get install --only-upgrade -y \
-  linux-generic linux-image-generic \
-  >/tmp/catsco-kernel-upgrade.log 2>&1 || true
-if command -v update-grub >/dev/null 2>&1; then
-  update-grub >/dev/null 2>&1 || true
-fi
-
 SYSTEMD_VERSION="$(dpkg-query -W -f='${Version}' systemd 2>/dev/null || true)"
 GLIBC_VERSION="$(dpkg-query -W -f='${Version}' libc6 2>/dev/null || true)"
+if ! dpkg --compare-versions "$SYSTEMD_VERSION" ge "255.4-1ubuntu8.16"; then
+  die "systemd upgrade failed to reach known-safe version (have '$SYSTEMD_VERSION', need >= 255.4-1ubuntu8.16); see /tmp/catsco-systemd-upgrade.log"
+fi
+if ! dpkg --compare-versions "$GLIBC_VERSION" ge "2.39-0ubuntu8.8"; then
+  die "glibc upgrade failed to reach known-safe version (have '$GLIBC_VERSION', need >= 2.39-0ubuntu8.8); see /tmp/catsco-systemd-upgrade.log"
+fi
+
+# 4. Upgrade the kernel and regenerate grub. A new kernel without update-grub can
+#    still boot the old one, and old kernels are retained for rollback. Failures
+#    here block the bake so the image never ships a stale kernel or bootloader.
+if ! apt-get install --only-upgrade -y \
+  linux-generic linux-image-generic \
+  >/tmp/catsco-kernel-upgrade.log 2>&1; then
+  die "kernel upgrade failed; see /tmp/catsco-kernel-upgrade.log"
+fi
+if ! command -v update-grub >/dev/null 2>&1 || ! update-grub >/tmp/catsco-update-grub.log 2>&1; then
+  die "update-grub failed; see /tmp/catsco-update-grub.log"
+fi
+if ! ls /boot/vmlinuz-* >/dev/null 2>&1; then
+  die "no bootable kernel image found under /boot after kernel upgrade"
+fi
+
 KERNEL_VERSION="$(uname -r 2>/dev/null || true)"
 printf 'platform_systemd=%s glibc=%s kernel=%s\n' \
   "$SYSTEMD_VERSION" "$GLIBC_VERSION" "$KERNEL_VERSION"
