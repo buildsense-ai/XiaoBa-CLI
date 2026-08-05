@@ -61,6 +61,7 @@
   - **Medium pending 恢复保留 key pair → 已修**：`Complete-PendingPublishedImage` 置 `KeyPairCreateAttempted=$true`，靠 pending bake marker + key pair 唯一临时名证明归属后按名清理；两个 pending 恢复场景断言更新为删除 key pair（`keyExists=false`）。Cleanup 模式仍 fail-closed（不删）。
   - **测试证据补强（回应"测试不够充分"）**：新增**真实执行探针测试** `platform hardening fails closed and runs dpkg repair before apt`——隔离环境 mock `sha256sum/apt-get/dpkg/dpkg-query/systemctl/ls/uname/update-grub`（Git Bash + MSYS 路径 + wrapper + `CATSCO_PREPARE_SKIP_ROOT_CHECK` 钩子），六个探针：①systemd 升级失败+版本旧 → 非 0 退出含 `systemd upgrade failed to reach known-safe version`；②glibc 版本不达标 → 含 `glibc upgrade failed to reach known-safe version`（两个断言独立验证）；③全成功 → 首次 `dpkg --configure` 在 `apt-get update` 前且无任何加固错误；④kernel 升级失败 → `kernel upgrade failed`；⑤`update-grub` 失败 → `update-grub failed`；⑥`/boot/vmlinuz-*` 缺失 → `no bootable kernel image`。
   - **子代理全面核查（2026-08-05，独立复测）**：生产代码无 Critical/Important；发现并修复 2 个测试盲区——mock `dpkg` 计数器拆分 systemd/glibc 断言（避免 glibc 兜住 systemd 回归）、probe-3 mock `ls` 让 happy path 真跑通 + 补 kernel/grub/boot 三个失败探针（原来零行为覆盖）。全量 `npm test` **1383 tests / 0 fail**。
+  - **CI Linux 失败修复（2026-08-05，head 6dbada6）**：探针测试在 Linux runner 失败——wrapper `exec` 直接执行 `prepare-image.sh`，而 git 检出文件默认无 +x（Linux 严格执行 exec bit，Windows 忽略所以本地过了）。修复：wrapper 改 `exec bash <script>` + mock 命令 `chmod 755`。CI 重跑后应全绿。
 
 - [x] **步骤 6：npm mirror 预配置**
   - `/root/.npmrc`：`registry=https://registry.npmmirror.com`（root 侧，先写，无需依赖 useradd）
