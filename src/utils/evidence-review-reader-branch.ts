@@ -136,6 +136,10 @@ export async function runModelBackedReaderLane(
     // deltas and preserves that output; the non-streaming path cannot recover it.
     const response = await options.aiService.chatStream(messages, undefined, undefined, {
       signal: signal ?? options.signal,
+      // The durable Engine owns retry scheduling. Retrying a Reader request
+      // inside this claimed Quantum can otherwise consume the entire batch
+      // deadline on 429s instead of yielding a single durable retry.
+      retryMode: 'none',
     });
     responseStopReason = response?.stopReason;
     responseUsage = response?.usage;
@@ -147,6 +151,8 @@ export async function runModelBackedReaderLane(
     logger.write('run_result', {
       outcome: 'failed',
       message,
+      stop_reason: responseStopReason ?? null,
+      usage: responseUsage ?? null,
       terminal_abort_reason: abort?.terminalReason ?? null,
       failure_outcome: abort?.failureOutcome ?? 'branch_failure',
     });
@@ -196,6 +202,8 @@ export async function runModelBackedReaderLane(
     coverage: findingSet.coverage,
     findingCount: findingSet.findings.length,
     findingIds: findingSet.findings.map(f => f.findingId),
+    stop_reason: responseStopReason ?? null,
+    usage: responseUsage ?? null,
     terminal_abort_reason: null,
     failure_outcome: null,
   });

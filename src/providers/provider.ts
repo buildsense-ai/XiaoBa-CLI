@@ -89,6 +89,11 @@ export interface ModelAttemptSink {
 
 export interface AIRequestOptions {
   signal?: AbortSignal;
+  /**
+   * A bounded durable workflow owns retry scheduling itself and must yield a
+   * provider failure back to that workflow after one transport attempt.
+   */
+  retryMode?: 'default' | 'none';
   /** Optional best-effort observer; it can never alter request control flow. */
   modelAttemptSink?: ModelAttemptSink;
   modelAttemptContext?: ModelAttemptContext;

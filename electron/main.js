@@ -486,7 +486,8 @@ async function startServer() {
   }
 
   // 闂備礁鎲￠懝楣冨嫉椤掑嫷鏁嗛柣鎰惈缁€鍐煕濞戝崬鐏ｉ柡?skills 闂?userData闂備焦瀵х粙鎴︽偋閸涱垱宕叉慨妯垮煐閸嬧晜绻涢崱妯虹仸闁哄棗绻橀弻鐔煎级閹存繃些闂佷紮绲婚崝搴ㄥ箟濡ゅ懎宸濇い鏍ㄧ〒閺?skills闂?
-  // Skills are user-managed. New installs start empty; SkillHub installs populate this directory.
+  // Skills remain user-managed after bootstrapping. New installs receive
+  // bundled offline manual Skills; SkillHub installs populate additional ones.
   const promptsDest = path.join(userDataPath, 'prompts');
   const promptsSrc = path.join(appRoot, 'prompts');
   if (!fs.existsSync(promptsDest) && fs.existsSync(promptsSrc)) {

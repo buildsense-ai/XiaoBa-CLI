@@ -98,7 +98,7 @@ describe('dashboard runtime config snapshot', () => {
       snapshot.tools.enabled.find(tool => tool.name === 'import_file')?.transcriptMode,
       'default',
     );
-    assert.deepStrictEqual(snapshot.skills.items.map(skill => skill.name), ['snapshot-demo']);
+    assert.deepStrictEqual(snapshot.skills.items.map(skill => skill.name), ['mails', 'snapshot-demo']);
   });
 
   test('applies runtime profile file to dashboard snapshot with config metadata', async () => {

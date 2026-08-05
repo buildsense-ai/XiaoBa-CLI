@@ -24,7 +24,8 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
-import { EvidenceReviewEngine } from '../src/utils/evidence-review-engine';
+import { EvidenceReviewEngine, advanceJobsFairly } from '../src/utils/evidence-review-engine';
+import { SkillEvolutionRuntime } from '../src/utils/skill-evolution';
 import type {
   EvidenceReviewJob,
 } from '../src/utils/evidence-review-types';
@@ -243,6 +244,43 @@ function createAndAdvance(
 
 describe('Evidence Review revision loop (durable graph)', () => {
 
+  test('keeps a real Reader schema error classified through the Runtime callback', async () => {
+    const dir = setupEngineDir();
+    try {
+      const runtime = new SkillEvolutionRuntime({
+        workingDirectory: dir.root,
+        outputDir: path.join(dir.root, 'skills', 'generated-distilled'),
+        registryPath: path.join(dir.root, 'data', 'current-skill-registry.json'),
+        auditPath: path.join(dir.root, 'data', 'transition-audit.jsonl'),
+        journalPath: path.join(dir.root, 'data', 'transition-journal.json'),
+        reviewQueuePath: path.join(dir.root, 'data', 'review-queue.json'),
+        aiService: {
+          async chatStream() {
+            return { content: '' };
+          },
+        } as any,
+      });
+      const engine = runtime.getEvidenceReviewEngine();
+      const job = engine.createJob({
+        bundle: fixtureBundle(`runtime-schema-${crypto.randomUUID().slice(0, 8)}`),
+        candidate: fixtureCandidate(),
+        workClass: 'live_learning',
+      });
+      const reader = Object.values(job.quanta).find(q => q.kind === 'author_reader')!;
+
+      await assert.rejects(
+        () => (engine as any).options.runReaderLane({
+          job,
+          shard: job.shards[reader.shardId!]!,
+          lane: 'author',
+        }),
+        (error: any) => error?.kind === 'invalid_completion_schema',
+      );
+    } finally {
+      dir.cleanup();
+    }
+  });
+
   test('terminal schema failure propagates from a Reader quantum to the whole Job', async () => {
     const dir = setupEngineDir();
     let nowMs = Date.parse('2026-08-04T00:00:00.000Z');
@@ -256,7 +294,7 @@ describe('Evidence Review revision loop (durable graph)', () => {
       });
       (engine as any).options.runReaderLane = async () => {
         throw Object.assign(
-          new Error('invalid_completion_schema: reader returned empty completion'),
+          new Error('invalid_completion_schema: reader returned malformed completion'),
           {
             kind: 'invalid_completion_schema',
             reviewFailureReason: 'schema-validation-error',
@@ -285,12 +323,153 @@ describe('Evidence Review revision loop (durable graph)', () => {
       assert.equal(failedJob.quanta[reader.quantumId]?.attempts, 5);
       assert.equal(failedJob.disposition, 'terminal_failed');
       assert.equal(failedJob.nextDueAt, undefined);
-      assert.match(failedJob.terminalReason ?? '', /reader returned empty completion/);
+      assert.match(failedJob.terminalReason ?? '', /reader returned malformed completion/);
       assert.equal(
         Object.values(failedJob.quanta).filter(q => q.state === 'succeeded').length,
         0,
         'downstream quanta must not execute after the Reader fails',
       );
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  test('terminates a Job immediately for a real permanent Reader provider error', async () => {
+    const dir = setupEngineDir();
+    try {
+      const runtime = new SkillEvolutionRuntime({
+        workingDirectory: dir.root,
+        outputDir: path.join(dir.root, 'skills', 'generated-distilled'),
+        registryPath: path.join(dir.root, 'data', 'current-skill-registry.json'),
+        auditPath: path.join(dir.root, 'data', 'transition-audit.jsonl'),
+        journalPath: path.join(dir.root, 'data', 'transition-journal.json'),
+        reviewQueuePath: path.join(dir.root, 'data', 'review-queue.json'),
+        aiService: {
+          async chatStream() {
+            throw Object.assign(new Error('invalid API key'), { status: 401 });
+          },
+        } as any,
+      });
+      const engine = runtime.getEvidenceReviewEngine();
+      const job = engine.createJob({
+        bundle: fixtureBundle(`runtime-auth-${crypto.randomUUID().slice(0, 8)}`),
+        candidate: fixtureCandidate(),
+        workClass: 'live_learning',
+      });
+      const reader = Object.values(job.quanta).find(q => q.kind === 'author_reader')!;
+
+      await engine.advanceJob(job.jobId, 'wake:auth', undefined, {
+        quantumId: reader.quantumId,
+        maxQuanta: 1,
+      });
+
+      const failed = engine.loadStore().jobs[job.jobId]!;
+      assert.equal(failed.quanta[reader.quantumId]?.state, 'terminal_failed');
+      assert.equal(failed.quanta[reader.quantumId]?.attempts, 1);
+      assert.equal(failed.disposition, 'terminal_failed');
+      assert.equal(failed.nextDueAt, undefined);
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  test('never advances more than one Quantum for a sole runnable Job', async () => {
+    const dir = setupEngineDir();
+    try {
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+      });
+      (engine as any).options.runReaderLane = async ({ shard, lane }: any) => ({
+        findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane),
+      });
+      const job = engine.createJob({
+        bundle: fixtureBundle(`sole-job-${crypto.randomUUID().slice(0, 8)}`),
+        candidate: fixtureCandidate(),
+        workClass: 'live_learning',
+      });
+
+      const advanced = await advanceJobsFairly(engine, 'wake:sole', {
+        maxClaims: 8,
+        maxClaimsPerJob: 1,
+      });
+
+      assert.equal(advanced.claims, 1);
+      assert.deepEqual(advanced.jobIds, [job.jobId]);
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  test('distributes an eight-Quantum batch across Jobs before revisiting one', async () => {
+    const dir = setupEngineDir();
+    try {
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+      });
+      (engine as any).options.runReaderLane = async ({ shard, lane }: any) => ({
+        findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane),
+      });
+      const jobIds = Array.from({ length: 10 }, (_, index) => engine.createJob({
+        bundle: fixtureBundle(`batch-${index}`),
+        candidate: fixtureCandidate(),
+        workClass: 'live_learning',
+      }).jobId);
+
+      const first = await advanceJobsFairly(engine, 'wake:batch:first', {
+        maxClaims: 8,
+        maxClaimsPerJob: 1,
+      });
+      const second = await advanceJobsFairly(engine, 'wake:batch:second', {
+        maxClaims: 2,
+        maxClaimsPerJob: 1,
+      });
+
+      assert.equal(first.claims, 8);
+      assert.equal(new Set(first.jobIds).size, 8, 'each Job receives at most one Quantum per wake');
+      assert.equal(second.claims, 2);
+      assert.deepEqual(
+        [...second.jobIds].sort((left, right) => left.localeCompare(right, 'en')),
+        jobIds.filter(jobId => !first.jobIds.includes(jobId)).sort((left, right) => left.localeCompare(right, 'en')),
+        'the next wake serves the two Jobs left out by the capped batch before revisiting another Job',
+      );
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  test('advances fairness cursors only for Quanta that actually execute before a cutoff', async () => {
+    const dir = setupEngineDir();
+    try {
+      let executions = 0;
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+      });
+      (engine as any).options.runReaderLane = async ({ shard, lane }: any) => {
+        executions += 1;
+        return { findingSet: readShardStructurally(shard.shardId, shard.contentHash, shard.content, lane) };
+      };
+      const jobIds = Array.from({ length: 10 }, (_, index) => engine.createJob({
+        bundle: fixtureBundle(`cutoff-${index}`),
+        candidate: fixtureCandidate(),
+        workClass: 'live_learning',
+      }).jobId).sort((left, right) => left.localeCompare(right, 'en'));
+
+      const first = await advanceJobsFairly(engine, 'wake:cutoff', {
+        maxClaims: 8,
+        maxClaimsPerJob: 1,
+        shouldStopClaiming: () => executions >= 1,
+      });
+      const resumed = await advanceJobsFairly(engine, 'wake:resume', {
+        maxClaims: 1,
+        maxClaimsPerJob: 1,
+      });
+
+      const firstIndex = jobIds.indexOf(first.jobIds[0]!);
+      assert.ok(firstIndex >= 0);
+      assert.deepEqual(resumed.jobIds, [jobIds[(firstIndex + 1) % jobIds.length]]);
     } finally {
       dir.cleanup();
     }

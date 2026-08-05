@@ -653,7 +653,14 @@ export class EvidenceReviewEngine {
           quantumId: selected.quantumId,
           quantumKind: selected.kind,
         };
-        const terminal = /terminal|integrity|manifest/i.test(message);
+        // Completion-schema failures are an output-quality problem with a
+        // bounded retry budget, even when their message happens to contain a
+        // provider-like word such as "malformed". Preserve the durable kind as
+        // the authoritative classification before inspecting the error chain.
+        const terminalProviderFailure = operationalKind === 'invalid_completion_schema'
+          ? false
+          : isTerminalProviderFailure(error);
+        const terminal = /terminal|integrity|manifest/i.test(message) || terminalProviderFailure;
         const mutation = this.mutateStore(after => {
           const live = after.jobs[jobId]!;
           if (operationalReason === 'runtime-shutdown' || operationalReason === 'external-abort') {
@@ -681,14 +688,9 @@ export class EvidenceReviewEngine {
             now: nowFn(),
             retryBaseMs,
             retryMaxMs,
-            // Provider/execution failures are operationally recoverable forever.
-            // A deterministic reader/schema failure must reach the normal attempt
-            // cap; otherwise an empty/non-JSON completion can occupy the queue
-            // indefinitely while every retry repeats the same request.
-            ...((operationalKind !== 'invalid_completion_schema'
-              && !/^invalid_completion_schema:/i.test(message))
-              ? { maxAttempts: Number.MAX_SAFE_INTEGER }
-              : {}),
+            // Every durable failure has a bounded attempt budget. Known
+            // permanent provider failures stop immediately; transient and
+            // unknown failures use the normal bounded backoff budget.
             terminal,
           });
           if (!failed.ok) return { live, changed: false };
@@ -705,13 +707,15 @@ export class EvidenceReviewEngine {
             live.workClass = 'operational_recovery';
           }
           live.disposition = deriveJobDisposition(live);
-          // A terminal schema failure blocks every downstream path that depends
-          // on this quantum. Promote it to a durable Job failure instead of
-          // leaving an active Job with no runnable work and no next deadline.
+          // A terminal schema or permanent provider failure blocks every
+          // downstream path that depends on this Quantum. Promote it to a
+          // durable Job failure instead of leaving an active Job with no
+          // runnable work and no next deadline.
           if (
             failedQuantum.state === 'terminal_failed'
             && (operationalKind === 'invalid_completion_schema'
-              || /^invalid_completion_schema:/i.test(message))
+              || /^invalid_completion_schema:/i.test(message)
+              || terminalProviderFailure)
           ) {
             live.disposition = 'terminal_failed';
             live.terminalReason = message;
@@ -1501,6 +1505,49 @@ function extractOperationalTranscripts(error: unknown): string[] {
   return paths.filter((p): p is string => typeof p === 'string' && p.length > 0);
 }
 
+/**
+ * Keep automatic recovery for transport trouble, but fail closed for errors
+ * whose request/configuration cause cannot be repaired by waiting. Runtime
+ * wrappers retain their original provider error under sourceError.
+ */
+function isTerminalProviderFailure(error: unknown): boolean {
+  for (const candidate of errorChain(error)) {
+    const status = extractProviderStatus(candidate);
+    if (status === 401 || status === 403 || status === 404 || status === 413 || status === 422) {
+      return true;
+    }
+    const message = String((candidate as { message?: unknown })?.message ?? candidate ?? '').toLowerCase();
+    if (/invalid[_\s-]?api[_\s-]?key|unauthorized|authentication (?:failed|error)|invalid[_\s-]?token/.test(message)
+      || /forbidden|permission denied|access denied|not authorized|insufficient[_\s-]?permissions?/.test(message)
+      || /model[_\s-]?not[_\s-]?found|endpoint[_\s-]?not[_\s-]?found|unknown model|no such model/.test(message)
+      || /invalid[_\s-]?(?:request|parameter|input|argument)|tool schema|schema is invalid|malformed (?:request|input|parameter|argument)/.test(message)
+      || /context length|maximum context|max(?:imum)? tokens?|prompt too long|token limit/.test(message)
+      || /insufficient[_\s-]?quota|quota[_\s-]?exceeded|billing|(?:insufficient|low|exhausted)[_\s-]?(?:credit|balance)/.test(message)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function* errorChain(error: unknown): Generator<unknown> {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    yield current;
+    if (typeof current !== 'object') break;
+    const record = current as { sourceError?: unknown; cause?: unknown };
+    current = record.sourceError ?? record.cause;
+  }
+}
+
+function extractProviderStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const record = error as { status?: unknown; response?: { status?: unknown } };
+  const raw = record.response?.status ?? record.status;
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined;
+}
+
 export function selectNextQuantum(
   job: EvidenceReviewJob,
   runnable: readonly ReviewQuantumRecord[],
@@ -1560,20 +1607,25 @@ export async function advanceJobsFairly(
     shouldStopClaiming?: () => boolean;
   },
 ): Promise<{ claims: number; jobIds: string[] }> {
-  const plan = engine.mutateStore(state => {
-    const planned = planFairQuantumClaims(state, {
-      maxClaims: options.maxClaims,
-      maxClaimsPerJob: options.maxClaimsPerJob ?? 1,
-      now: options.now,
-    });
-    state.fairness = planned.fairness;
-    return planned;
-  });
-
   const touched = new Set<string>();
   let executedClaims = 0;
-  for (const claim of plan.claims) {
+  const attemptedJobIds = new Set<string>();
+  const maxClaims = Math.max(0, Math.floor(options.maxClaims));
+  const maxClaimsPerJob = Math.max(1, Math.floor(options.maxClaimsPerJob ?? 1));
+
+  for (let attempt = 0; attempt < maxClaims; attempt++) {
     if (options.signal?.aborted || options.shouldStopClaiming?.()) break;
+    // Plan one claim at a time and persist its cursor only after it actually
+    // executes. A shared deadline may stop this serial batch partway through;
+    // pre-advancing all cursors would skip unrun Jobs on the next wake.
+    const plan = engine.mutateStore(state => planFairQuantumClaims(state, {
+      maxClaims: 1,
+      maxClaimsPerJob,
+      excludeJobIds: attemptedJobIds,
+      now: options.now,
+    }));
+    const claim = plan.claims[0];
+    if (!claim) break;
     const quantumTimeoutMs = reviewBatchQuantumTimeoutMs(
       options.batchDeadlineAtMs,
       options.quantumTimeoutMs,
@@ -1591,7 +1643,11 @@ export async function advanceJobsFairly(
         shouldStopClaiming: options.shouldStopClaiming,
       },
     );
+    attemptedJobIds.add(claim.jobId);
     if (advanced.executedQuantumIds.length === 0) continue;
+    engine.mutateStore(state => {
+      state.fairness = plan.fairness;
+    });
     executedClaims += advanced.executedQuantumIds.length;
     touched.add(claim.jobId);
   }

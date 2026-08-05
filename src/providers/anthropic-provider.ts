@@ -493,7 +493,7 @@ export class AnthropicProvider implements AIProvider {
   }
 
   private createMessage(params: Anthropic.MessageCreateParamsNonStreaming, options?: AIRequestOptions): Promise<any> {
-    const requestOptions = { signal: options?.signal } as any;
+    const requestOptions = this.createRequestOptions(options);
     if (this.supportsNativePromptCaching()) {
       return this.client.beta.promptCaching.messages.create(params as any, requestOptions) as any;
     }
@@ -501,11 +501,23 @@ export class AnthropicProvider implements AIProvider {
   }
 
   private createMessageStream(params: Anthropic.MessageCreateParamsStreaming, options?: AIRequestOptions): any {
-    const requestOptions = { signal: options?.signal } as any;
+    const requestOptions = this.createRequestOptions(options);
     if (this.supportsNativePromptCaching()) {
       return this.client.beta.promptCaching.messages.stream(params as any, requestOptions);
     }
     return this.client.messages.stream(params, requestOptions);
+  }
+
+  /**
+   * The Anthropic SDK retries 429/5xx twice by default. A durable bounded
+   * workflow must receive that failure after one provider attempt so its
+   * persisted scheduler, rather than a hidden SDK delay, owns retry policy.
+   */
+  private createRequestOptions(options?: AIRequestOptions): { signal?: AbortSignal; maxRetries?: number } {
+    return {
+      ...(options?.signal ? { signal: options.signal } : {}),
+      ...(options?.retryMode === 'none' ? { maxRetries: 0 } : {}),
+    };
   }
 
   /**

@@ -93,6 +93,78 @@ describe('model-backed evidence reader', () => {
     }
   });
 
+  test('records response diagnostics for valid JSON and disables in-call retries', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-reader-success-diagnostics-'));
+    const job = fixtureJob();
+    const shard = Object.values(job.shards)[0]!;
+    const branchRoot = path.join(root, 'branches');
+    let requestOptions: any;
+    const aiService = {
+      async chatStream(_messages: unknown, _tools: unknown, _callbacks: unknown, options: unknown) {
+        requestOptions = options;
+        return {
+          content: JSON.stringify({
+            coverage: 'covered',
+            findings: [{
+              findingId: 'author:complete-at-token-boundary',
+              classification: 'fact',
+              summary: 'The completion is valid despite ending at the token boundary.',
+              spans: [{ start: 0, end: Math.min(1, shard.byteLength) }],
+            }],
+          }),
+          stopReason: 'length',
+          usage: { promptTokens: 120, completionTokens: 64, totalTokens: 184 },
+        };
+      },
+    } as unknown as AIService;
+
+    try {
+      await runModelBackedReaderLane(
+        { shard, lane: 'author', job },
+        { aiService, workingDirectory: root, branchLogRoot: branchRoot },
+      );
+      assert.equal(requestOptions?.retryMode, 'none');
+      const transcriptFile = fs.readdirSync(path.join(branchRoot, 'evidence-author-reader'))
+        .flatMap(day => fs.readdirSync(path.join(branchRoot, 'evidence-author-reader', day))
+          .map(file => path.join(branchRoot, 'evidence-author-reader', day, file)))[0]!;
+      const log = fs.readFileSync(transcriptFile, 'utf8');
+      assert.match(log, /"stop_reason":"length"/);
+      assert.match(log, /"completionTokens":64/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('records null response diagnostics when the model request fails', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-reader-transport-diagnostics-'));
+    const job = fixtureJob();
+    const shard = Object.values(job.shards)[0]!;
+    const branchRoot = path.join(root, 'branches');
+    const aiService = {
+      async chatStream() {
+        throw new Error('rate limited');
+      },
+    } as unknown as AIService;
+
+    try {
+      await assert.rejects(
+        () => runModelBackedReaderLane(
+          { shard, lane: 'author', job },
+          { aiService, workingDirectory: root, branchLogRoot: branchRoot },
+        ),
+        /rate limited/,
+      );
+      const transcriptFile = fs.readdirSync(path.join(branchRoot, 'evidence-author-reader'))
+        .flatMap(day => fs.readdirSync(path.join(branchRoot, 'evidence-author-reader', day))
+          .map(file => path.join(branchRoot, 'evidence-author-reader', day, file)))[0]!;
+      const log = fs.readFileSync(transcriptFile, 'utf8');
+      assert.match(log, /"stop_reason":null/);
+      assert.match(log, /"usage":null/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('uses the streaming aggregation path so terminal responses cannot erase visible output', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-reader-stream-'));
     const job = fixtureJob();

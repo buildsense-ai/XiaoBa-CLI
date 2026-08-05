@@ -646,7 +646,7 @@ describe('RuntimeLearning — test environment isolation', () => {
       assert.equal(getDistillationHeartbeatConfig(root, {
         XIAOBA_RUNTIME_ROOT: root,
         XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE: '16',
-      }).skillEvolutionReviewMaxQuantaPerWake, 16);
+      }).skillEvolutionReviewMaxQuantaPerWake, 8);
       assert.equal(getDistillationHeartbeatConfig(root, {
         XIAOBA_RUNTIME_ROOT: root,
         XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE: '1',

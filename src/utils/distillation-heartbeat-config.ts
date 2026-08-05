@@ -408,7 +408,7 @@ export function getDistillationHeartbeatConfig(
     'XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE',
     8,
     1,
-    16,
+    8,
   );
   const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
   const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');

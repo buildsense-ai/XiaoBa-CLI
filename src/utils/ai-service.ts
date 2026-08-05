@@ -145,7 +145,7 @@ export class AIService {
         async () => this.requireUsableResponse(await this.provider.chat(prepared.messages, tools, options)),
         undefined,
         options.signal,
-        undefined,
+        options.retryMode === 'none' ? () => false : undefined,
         this.createModelAttemptRun(prepared.messages, tools, false, options, prepared.summary),
       );
     } catch (error: any) {
@@ -182,7 +182,7 @@ export class AIService {
         ),
         callbacks,
         options.signal,
-        () => allowStreamRetry || !hasStreamedText,
+        () => options.retryMode !== 'none' && (allowStreamRetry || !hasStreamedText),
         this.createModelAttemptRun(prepared.messages, tools, true, options, prepared.summary),
       );
       callbacks?.onComplete?.(result);

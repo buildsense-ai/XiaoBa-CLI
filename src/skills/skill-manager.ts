@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { defaultDistilledOutputDir, PathResolver } from '../utils/path-resolver';
 import { SkillParser } from './skill-parser';
+import { seedBundledManualSkills } from './bundled-skill-seed';
 import { Logger } from '../utils/logger';
 import { withProcessExclusiveLock } from '../utils/process-exclusive-lock';
 import {
@@ -51,6 +52,10 @@ export class SkillManager {
     this.skills.clear();
 
     const skillsPath = PathResolver.getSkillsPath();
+    // Seed source-controlled manual Skills before discovery. This is a
+    // no-network, no-overwrite cold-start path; generated Skills remain
+    // registry-owned and are never copied from the application bundle.
+    seedBundledManualSkills();
     // Load the Registry before walking generated output so discovery can
     // treat it as the source of truth for active generated capabilities.
     this.refreshRegistrySnapshot();

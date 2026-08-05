@@ -1816,6 +1816,7 @@ export class SkillEvolutionRuntime {
         error.message,
         uniqueStrings([...transcriptPaths, ...error.transcriptPaths]),
         error.reviewFailureReason,
+        error.sourceError ?? error,
       );
     }
     if (error instanceof BranchSessionAbortError) {
@@ -1834,10 +1835,17 @@ export class SkillEvolutionRuntime {
 
     const message = String((error as { message?: unknown })?.message ?? error ?? 'Unknown branch failure');
     const lower = message.toLowerCase();
-    let kind: OperationalReviewFailureKind = 'branch_failure';
-    if (/completion schema/i.test(message) || /invalid schema/i.test(lower) || /missing required/i.test(lower)) {
+    const carriedKind = (error as { kind?: unknown })?.kind;
+    let kind: OperationalReviewFailureKind = carriedKind === 'branch_timeout'
+      || carriedKind === 'branch_failure'
+      || carriedKind === 'invalid_completion_schema'
+      ? carriedKind
+      : 'branch_failure';
+    if (kind === 'branch_failure'
+      && (/completion schema/i.test(message) || /invalid[_\s-]?completion[_\s-]?schema/i.test(lower)
+        || /invalid schema/i.test(lower) || /missing required/i.test(lower))) {
       kind = 'invalid_completion_schema';
-    } else if (/timeout|timed.?out|deadline/i.test(lower)) {
+    } else if (kind === 'branch_failure' && /timeout|timed.?out|deadline/i.test(lower)) {
       kind = 'branch_timeout';
     }
 
@@ -1849,6 +1857,7 @@ export class SkillEvolutionRuntime {
       typeof reviewFailureReason === 'string'
         ? reviewFailureReason as ReviewOperationalFailureReason
         : undefined,
+      error,
     );
   }
 
@@ -2847,6 +2856,8 @@ class OperationalReviewError extends Error {
     message: string,
     transcriptPaths: readonly string[] = [],
     public readonly reviewFailureReason?: ReviewOperationalFailureReason,
+    /** Preserve provider metadata for durable retry classification. */
+    public readonly sourceError?: unknown,
   ) {
     super(message);
     this.name = 'OperationalReviewError';

@@ -114,6 +114,7 @@
       "dashboard/**/*",
       "prompts/**/*",
       "skills/**/*",
+      "!skills/generated-distilled/**",
       "!skills/**/*.pyo",
       "!skills/**/*.pyc",
       "!skills/**/__pycache__/**",
