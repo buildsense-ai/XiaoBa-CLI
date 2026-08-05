@@ -32,6 +32,8 @@ while (($#)); do
   esac
 done
 
+# Root is required in production. CATSCO_PREPARE_SKIP_ROOT_CHECK is a
+# test-only hook used by the isolated probe tests (worker-image-pipeline.test.ts).
 if [[ -z "${CATSCO_PREPARE_SKIP_ROOT_CHECK:-}" ]]; then
   [[ $EUID -eq 0 ]] || die "run as root"
 fi
@@ -116,7 +118,9 @@ apt-get install -y --no-install-recommends \
 #    then "Freezing execution"). The mask is a persistent symlink in /etc, so
 #    masking first means the 8.16 daemon (if the upgrade re-execs it) never has
 #    to process fwupd lifecycle, and worker servers do not need a firmware
-#    update daemon.
+#    update daemon. The masks are best-effort: if the running systemd is
+#    already frozen they may fail, but a frozen host can never satisfy the
+#    systemd/glibc version assertions below, so the bake still fails closed.
 systemctl mask fwupd.service >/dev/null 2>&1 || true
 systemctl stop fwupd.service >/dev/null 2>&1 || true
 systemctl mask fwupd-refresh.service >/dev/null 2>&1 || true

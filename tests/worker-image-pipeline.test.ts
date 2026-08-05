@@ -165,15 +165,26 @@ describe("Tianyi Cloud worker image pipeline", () => {
           "#!/usr/bin/env bash",
           'echo "apt-get:$*" >> "$CATSCO_MOCK_LOG"',
           'if [[ "$*" == *update* ]]; then exit "${CATSCO_MOCK_APT_UPDATE_RC:-0}"; fi',
+          'if [[ "$*" == *linux-generic* ]]; then exit "${CATSCO_MOCK_KERNEL_UPGRADE_RC:-0}"; fi',
           'if [[ "$*" == *--only-upgrade* ]]; then exit "${CATSCO_MOCK_APT_ONLY_UPGRADE_RC:-0}"; fi',
           "exit 0",
         ].join("\n"),
         dpkg: [
           "#!/usr/bin/env bash",
           'echo "dpkg:$*" >> "$CATSCO_MOCK_LOG"',
-          'if [[ "$*" == *"--compare-versions"* ]]; then exit "${CATSCO_MOCK_VERSION_OK:-0}"; fi',
+          'if [[ "$*" == *"--compare-versions"* ]]; then',
+          '  n=$(cat "$CATSCO_MOCK_COUNT" 2>/dev/null || echo 0)',
+          '  echo $((n + 1)) > "$CATSCO_MOCK_COUNT"',
+          '  if [[ $n -eq 0 ]]; then exit "${CATSCO_MOCK_VERSION_SYSTEMD_OK:-0}"; fi',
+          '  exit "${CATSCO_MOCK_VERSION_GLIBC_OK:-0}"',
+          'fi',
           'if [[ "$*" == *"--configure"* ]]; then exit "${CATSCO_MOCK_DPKG_CONFIGURE_RC:-0}"; fi',
           "exit 0",
+        ].join("\n"),
+        ls: [
+          "#!/usr/bin/env bash",
+          'echo "ls:$*" >> "$CATSCO_MOCK_LOG"',
+          'exit "${CATSCO_MOCK_LS_RC:-0}"',
         ].join("\n"),
         "dpkg-query": [
           "#!/usr/bin/env bash",
@@ -203,7 +214,9 @@ describe("Tianyi Cloud worker image pipeline", () => {
         fs.writeFileSync(path.join(bin, name), body, "utf8");
       }
 
+      const countPath = path.join(sandbox, "compare-count");
       const runHardening = (extra: Record<string, string>) => {
+        fs.rmSync(countPath, { force: true });
         const result = spawnSync(
           bashExe,
           [
@@ -220,6 +233,7 @@ describe("Tianyi Cloud worker image pipeline", () => {
               PATH: `${bin}${path.delimiter}${process.env.PATH || ""}`,
               CATSCO_MOCK_LOG: mockLog,
               CATSCO_MOCK_SHA: sha,
+              CATSCO_MOCK_COUNT: countPath,
               CATSCO_PREPARE_SKIP_ROOT_CHECK: "1",
               ...extra,
             },
@@ -228,44 +242,54 @@ describe("Tianyi Cloud worker image pipeline", () => {
         return result;
       };
 
-      // Probe 1: every --only-upgrade attempt fails AND versions stay old ->
-      // the bake must fail closed with the known-safe version error.
+      // Probe 1: every --only-upgrade attempt fails AND systemd stays old ->
+      // the bake must fail closed naming systemd.
       fs.rmSync(mockLog, { force: true });
       const failResult = runHardening({
         CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "42",
-        CATSCO_MOCK_VERSION_OK: "1",
+        CATSCO_MOCK_VERSION_SYSTEMD_OK: "1",
+        CATSCO_MOCK_VERSION_GLIBC_OK: "0",
         CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.15",
-        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.7",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
       });
       assert.notEqual(
         failResult.status,
         0,
         `${failResult.stdout}\n${failResult.stderr}`,
       );
-      assert.match(failResult.stderr, /known-safe version/);
+      assert.match(
+        failResult.stderr,
+        /systemd upgrade failed to reach known-safe version/,
+      );
 
-      // Probe 2: apt succeeds but versions still miss the floor -> fail closed
-      // (the silent broken-image risk the review reproduced).
+      // Probe 2: apt succeeds but glibc still misses the floor -> fail closed
+      // naming glibc (proves both assertions are enforced independently).
       fs.rmSync(mockLog, { force: true });
       const staleResult = runHardening({
         CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
-        CATSCO_MOCK_VERSION_OK: "1",
-        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.15",
-        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
+        CATSCO_MOCK_VERSION_SYSTEMD_OK: "0",
+        CATSCO_MOCK_VERSION_GLIBC_OK: "1",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.16",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.7",
       });
       assert.notEqual(
         staleResult.status,
         0,
         `${staleResult.stdout}\n${staleResult.stderr}`,
       );
-      assert.match(staleResult.stderr, /known-safe version/);
+      assert.match(
+        staleResult.stderr,
+        /glibc upgrade failed to reach known-safe version/,
+      );
 
-      // Probe 3: with everything healthy the version gate passes, and the
-      // first dpkg --configure runs before the first apt-get transaction.
+      // Probe 3: everything healthy -> version gates pass, no hardening error
+      // (ls is mocked so the /boot check is satisfied), and the first dpkg
+      // --configure runs before the first apt-get transaction.
       fs.rmSync(mockLog, { force: true });
       const orderResult = runHardening({
         CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
-        CATSCO_MOCK_VERSION_OK: "0",
+        CATSCO_MOCK_VERSION_SYSTEMD_OK: "0",
+        CATSCO_MOCK_VERSION_GLIBC_OK: "0",
         CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.16",
         CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
       });
@@ -278,7 +302,61 @@ describe("Tianyi Cloud worker image pipeline", () => {
         firstConfigure < firstAptUpdate,
         `dpkg repair must run before the first apt transaction\n${orderCalls}`,
       );
-      assert.doesNotMatch(orderResult.stderr, /known-safe version/);
+      assert.doesNotMatch(
+        orderResult.stderr,
+        /known-safe version|kernel upgrade failed|update-grub failed|no bootable kernel image/,
+      );
+
+      // Probe 4: kernel upgrade failure blocks the bake.
+      fs.rmSync(mockLog, { force: true });
+      const kernelResult = runHardening({
+        CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
+        CATSCO_MOCK_KERNEL_UPGRADE_RC: "1",
+        CATSCO_MOCK_VERSION_SYSTEMD_OK: "0",
+        CATSCO_MOCK_VERSION_GLIBC_OK: "0",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.16",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
+      });
+      assert.notEqual(
+        kernelResult.status,
+        0,
+        `${kernelResult.stdout}\n${kernelResult.stderr}`,
+      );
+      assert.match(kernelResult.stderr, /kernel upgrade failed/);
+
+      // Probe 5: update-grub failure blocks the bake.
+      fs.rmSync(mockLog, { force: true });
+      const grubResult = runHardening({
+        CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
+        CATSCO_MOCK_UPDATE_GRUB_RC: "1",
+        CATSCO_MOCK_VERSION_SYSTEMD_OK: "0",
+        CATSCO_MOCK_VERSION_GLIBC_OK: "0",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.16",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
+      });
+      assert.notEqual(
+        grubResult.status,
+        0,
+        `${grubResult.stdout}\n${grubResult.stderr}`,
+      );
+      assert.match(grubResult.stderr, /update-grub failed/);
+
+      // Probe 6: missing /boot kernel image blocks the bake.
+      fs.rmSync(mockLog, { force: true });
+      const bootResult = runHardening({
+        CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
+        CATSCO_MOCK_LS_RC: "2",
+        CATSCO_MOCK_VERSION_SYSTEMD_OK: "0",
+        CATSCO_MOCK_VERSION_GLIBC_OK: "0",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.16",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
+      });
+      assert.notEqual(
+        bootResult.status,
+        0,
+        `${bootResult.stdout}\n${bootResult.stderr}`,
+      );
+      assert.match(bootResult.stderr, /no bootable kernel image/);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
