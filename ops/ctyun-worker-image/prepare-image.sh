@@ -99,7 +99,20 @@ for list in /var/lib/dpkg/info/*.list; do
 done
 dpkg --configure -a >/dev/null 2>&1 || true
 
-# 2. Upgrade systemd + glibc to the known-safe combination
+# 2. Mask fwupd BEFORE upgrading systemd. On systemd 8.16, handling fwupd
+#    lifecycle can crash systemd itself ("Caught <ABRT>, from our own process"
+#    then "Freezing execution"). The mask is a persistent symlink in /etc, so
+#    masking first means the 8.16 daemon (if the upgrade re-execs it) never has
+#    to process fwupd lifecycle, and worker servers do not need a firmware
+#    update daemon.
+systemctl mask fwupd.service >/dev/null 2>&1 || true
+systemctl stop fwupd.service >/dev/null 2>&1 || true
+systemctl mask fwupd-refresh.service >/dev/null 2>&1 || true
+systemctl stop fwupd-refresh.service >/dev/null 2>&1 || true
+systemctl mask fwupd-refresh.timer >/dev/null 2>&1 || true
+systemctl reset-failed fwupd-refresh.service >/dev/null 2>&1 || true
+
+# 3. Upgrade systemd + glibc to the known-safe combination
 #    (255.4-1ubuntu8.16 + 2.39-0ubuntu8.8). The original image shipped
 #    systemd 8.15 + glibc 8.7 which triggers a _dl_fini assert that freezes
 #    systemd ("Caught <ABRT> ... Freezing execution"); every systemctl call then
@@ -129,7 +142,7 @@ if ! apt-get install --only-upgrade -y \
 fi
 dpkg --configure -a >/dev/null 2>&1 || true
 
-# 3. Upgrade the kernel and regenerate grub. A new kernel without update-grub can
+# 4. Upgrade the kernel and regenerate grub. A new kernel without update-grub can
 #    still boot the old one, and old kernels are retained for rollback.
 apt-get install --only-upgrade -y \
   linux-generic linux-image-generic \
@@ -137,17 +150,6 @@ apt-get install --only-upgrade -y \
 if command -v update-grub >/dev/null 2>&1; then
   update-grub >/dev/null 2>&1 || true
 fi
-
-# 4. Mask fwupd so systemd cannot ABRT on firmware lifecycle events. Even on
-#    systemd 8.16, handling fwupd.service lifecycle can crash systemd itself
-#    ("Caught <ABRT>, from our own process" then "Freezing execution"). Worker
-#    servers do not need a firmware update daemon. The mask is a persistent
-#    symlink in /etc, so freshly provisioned workers stay immune.
-systemctl mask fwupd.service >/dev/null 2>&1 || true
-systemctl stop fwupd.service >/dev/null 2>&1 || true
-systemctl mask fwupd-refresh.service >/dev/null 2>&1 || true
-systemctl stop fwupd-refresh.service >/dev/null 2>&1 || true
-systemctl reset-failed fwupd-refresh.service >/dev/null 2>&1 || true
 
 SYSTEMD_VERSION="$(dpkg-query -W -f='${Version}' systemd 2>/dev/null || true)"
 GLIBC_VERSION="$(dpkg-query -W -f='${Version}' libc6 2>/dev/null || true)"
@@ -170,6 +172,7 @@ id catsco-agent >/dev/null 2>&1 || useradd \
 
 # Service-user npm mirror config (survives finalize; the finalize cleanup list
 # deliberately keeps .npmrc so first-boot npm never needs manual setup).
+mkdir -p /srv/catsco-agent
 printf 'registry=https://registry.npmmirror.com\n' >/srv/catsco-agent/.npmrc
 chown catsco-agent:catsco-agent /srv/catsco-agent/.npmrc
 chmod 0644 /srv/catsco-agent/.npmrc
@@ -243,7 +246,7 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
+systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl disable --now catsco-agent.service 2>/dev/null || true
 
 sudo -u catsco-agent -- bash -c '

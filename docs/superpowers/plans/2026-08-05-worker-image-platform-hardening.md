@@ -47,6 +47,13 @@
 - [x] **步骤 5：平台版本 echo（bake 日志审计）**
   `platform_systemd=<ver> glibc=<ver> kernel=<uname -r>` 打到 bake 日志（被 ps1 捕获到 CI 输出，不落盘）。
 
+- [x] **步骤 5b：review 修复（2026-08-05，requesting-code-review 自查）**
+  - fwupd mask 段**前置到 systemd 升级之前**：mask 是落盘 symlink 不依赖版本；若 systemd 升级 postinst 把 daemon re-exec 到 8.16，先 mask 可保证 8.16 daemon 无需处理 fwupd lifecycle（避免 ABRT freeze 路径）。
+  - 额外 `systemctl mask fwupd-refresh.timer`（防止 timer 周期性触发已 mask 的 service 留下 failed 记录）。
+  - `/srv/catsco-agent/.npmrc` 写入前加 `mkdir -p /srv/catsco-agent`（防御 base 镜像预建用户而 home 缺失时 `set -e` 中断 bake）。
+  - `systemctl daemon-reload` 加 `|| true`（freeze 场景下不再挂起中断 bake；unit 已落盘，新实例启动自动加载）。
+  - 测试断言改为匹配实现而非注释（`od -An -c` / `printf '\n' >>`），并新增 `fwupd-refresh.timer` mask 断言。
+
 - [x] **步骤 6：npm mirror 预配置**
   - `/root/.npmrc`：`registry=https://registry.npmmirror.com`（root 侧，先写，无需依赖 useradd）
   - `/srv/catsco-agent/.npmrc`：同上 + `chown catsco-agent:catsco-agent`（在 `useradd` 之后写，目录已由 `--create-home` 创建）
@@ -61,7 +68,7 @@
 ### 任务 3：验证与提交
 
 - [x] **步骤 8：`bash -n` + 单测 + build**
-  运行：`bash -n ops/ctyun-worker-image/prepare-image.sh`（通过）、`npx tsx --test tests/worker-image-pipeline.test.ts`（10/10 通过）、`npm run build`（通过，无回归）。
+  运行：`bash -n ops/ctyun-worker-image/prepare-image.sh`（通过）、`npx tsx --test tests/worker-image-pipeline.test.ts`（10/10 通过，含 review 修复后的断言）、`npm run build`（通过，无回归）。
 
 - [x] **步骤 9：Commit 并推送 fork**
   在 `feat/ctyun-worker-image-pipeline` 分支：

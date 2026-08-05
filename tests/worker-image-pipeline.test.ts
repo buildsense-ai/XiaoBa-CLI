@@ -73,6 +73,7 @@ describe("Tianyi Cloud worker image pipeline", () => {
     // fwupd masks prevent the systemd ABRT freeze on 8.16 hosts
     assert.match(imagePreparer, /systemctl mask fwupd\.service/);
     assert.match(imagePreparer, /systemctl mask fwupd-refresh\.service/);
+    assert.match(imagePreparer, /systemctl mask fwupd-refresh\.timer/);
     assert.match(imagePreparer, /systemctl reset-failed fwupd-refresh\.service/);
     // systemd + glibc upgrade to the known-safe 8.16/8.8 combo (_dl_fini freeze)
     assert.match(
@@ -82,8 +83,9 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(imagePreparer, /libsystemd0 \\/);
     assert.match(imagePreparer, /libc6 \\/);
     assert.match(imagePreparer, /dpkg --configure -a/);
-    // corrupted dpkg file-list repair
-    assert.match(imagePreparer, /missing final newline/);
+    // corrupted dpkg file-list repair (assert the implementation, not the comment)
+    assert.match(imagePreparer, /od -An -c/);
+    assert.match(imagePreparer, /printf '\\n' >>/);
     // kernel upgrade + grub regeneration
     assert.match(imagePreparer, /linux-generic linux-image-generic/);
     assert.match(imagePreparer, /update-grub/);
