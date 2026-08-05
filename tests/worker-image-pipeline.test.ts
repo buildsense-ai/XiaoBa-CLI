@@ -1222,6 +1222,49 @@ process.exit(result.status ?? 1);
       assert.equal(foreignCleanupState.imageExists, true);
       assert.equal(foreignCleanupState.instanceExists, true);
       assert.equal(foreignCleanupState.keyExists, true);
+
+      // Cleanup must detect a bake interrupted right after ImportEcsKeypair:
+      // only the temporary key pair exists (no image, no builder). It must
+      // fail closed with the key pair identity instead of silently reporting
+      // nothing-to-clean.
+      const keyOnlyCleanupBuildNumber = "1010";
+      const keyOnlyCleanupBakeId = "001010-01";
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: false,
+          keyExists: true,
+          keyPairName: `catsco-img-key-${keyOnlyCleanupBakeId}`,
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: "",
+          instanceStatus: "stopped",
+        }),
+      );
+      const keyOnlyCleanupResult = runCleanup(
+        keyOnlyCleanupBuildNumber,
+        "catsco-worker-cleanup-keyonly",
+      );
+      assert.notEqual(keyOnlyCleanupResult.status, 0);
+      assert.match(
+        `${keyOnlyCleanupResult.stdout}\n${keyOnlyCleanupResult.stderr}`,
+        /Automatic historical cleanup refused/,
+      );
+      assert.match(
+        `${keyOnlyCleanupResult.stdout}\n${keyOnlyCleanupResult.stderr}`,
+        /candidate keyPairName=catsco-img-key-001010-01/,
+      );
+      const keyOnlyCleanupCalls = fs.readFileSync(logPath, "utf8");
+      assert.match(keyOnlyCleanupCalls, /ecs GetEcsKeypairDetails/);
+      assert.doesNotMatch(keyOnlyCleanupCalls, /ecs DeleteEcsKeypair/);
+      const keyOnlyCleanupState = JSON.parse(
+        fs.readFileSync(statePath, "utf8"),
+      );
+      assert.equal(keyOnlyCleanupState.keyExists, true);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

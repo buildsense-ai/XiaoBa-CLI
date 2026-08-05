@@ -70,6 +70,12 @@
   - **P2 单次空响应不能证明删除 → 已修**：`Remove-Builder`/`Remove-KeyPair` 发现阶段要求**连续 3 次空读**才认为资源不存在（非 WaitForLate），删除确认阶段要求**连续 2 次空读**才返回成功（最终一致性防护）。
   - 验证：7 个探针全过、`worker-image-pipeline.test.ts` **11/11 通过**（集成测试 timeout 提到 120s 容纳新增等待）、build 通过。中途遇到本地 `node_modules` 不完整（切分支后 `.bin` 空 + 缺包），`npm ci` 恢复后复测通过。
 
+- [x] **步骤 5e：复测 + 子 agent 独立审核（2026-08-05）**
+  - 全量 `npm test`：唯一失败为**已知 pre-existing flaky** `logger.test.ts`（单独跑 1/1 通过，与 #290/#291 同源，与本次改动无关）。
+  - 子 agent 独立审核 `d5cd34e`：**可合入**，无 Critical/Important。突变验证确认 probe 7（mask）与 kernel 静态断言真实覆盖回归；`mask_unit` timeout+readlink 设计（冻结 manager 不挂起、持久 symlink 校验独立于运行中 manager）与连续空读终止性均验证无误。
+  - 补测（Minor #4a）：新增 **key-pair-only Cleanup 场景**（进程在 `ImportEcsKeypair` 后被 kill、只剩 key pair）——断言 `Automatic historical cleanup refused` + `candidate keyPairName=...` 且不删除。消除修复③无直接测试覆盖的盲区。
+  - 记录的后续项：发现阶段 3 次空读无直接场景覆盖（防御性逻辑，确认阶段已有覆盖）；`/boot` 校验的 `NEWEST_KERNEL_IMG` 变量为死代码（非空性已被前置 `ls` 保证）。
+
 - [x] **步骤 6：npm mirror 预配置**
   - `/root/.npmrc`：`registry=https://registry.npmmirror.com`（root 侧，先写，无需依赖 useradd）
   - `/srv/catsco-agent/.npmrc`：同上 + `chown catsco-agent:catsco-agent`（在 `useradd` 之后写，目录已由 `--create-home` 创建）
