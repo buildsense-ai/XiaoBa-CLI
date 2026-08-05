@@ -118,15 +118,24 @@ apt-get install -y --no-install-recommends \
 #    then "Freezing execution"). The mask is a persistent symlink in /etc, so
 #    masking first means the 8.16 daemon (if the upgrade re-execs it) never has
 #    to process fwupd lifecycle, and worker servers do not need a firmware
-#    update daemon. The masks are best-effort: if the running systemd is
-#    already frozen they may fail, but a frozen host can never satisfy the
-#    systemd/glibc version assertions below, so the bake still fails closed.
-systemctl mask fwupd.service >/dev/null 2>&1 || true
-systemctl stop fwupd.service >/dev/null 2>&1 || true
-systemctl mask fwupd-refresh.service >/dev/null 2>&1 || true
-systemctl stop fwupd-refresh.service >/dev/null 2>&1 || true
-systemctl mask fwupd-refresh.timer >/dev/null 2>&1 || true
-systemctl reset-failed fwupd-refresh.service >/dev/null 2>&1 || true
+#    update daemon. Each mask is bounded by timeout (a frozen manager must not
+#    hang the bake) and VERIFIED through its persistent /etc/systemd/system
+#    symlink, which is independent of the running manager. A mask that did not
+#    take effect blocks the bake: publishing an image that can still crash
+#    systemd on fwupd lifecycle is not acceptable.
+mask_unit() {
+  local unit="$1"
+  timeout 30 systemctl mask "$unit" >/dev/null 2>&1 || true
+  if [ "$(readlink "/etc/systemd/system/$unit" 2>/dev/null || true)" != "/dev/null" ]; then
+    die "failed to mask $unit (expected /etc/systemd/system/$unit -> /dev/null); refusing to bake an unhardened image"
+  fi
+}
+mask_unit fwupd.service
+mask_unit fwupd-refresh.service
+mask_unit fwupd-refresh.timer
+timeout 30 systemctl stop fwupd.service >/dev/null 2>&1 || true
+timeout 30 systemctl stop fwupd-refresh.service >/dev/null 2>&1 || true
+timeout 30 systemctl reset-failed fwupd-refresh.service >/dev/null 2>&1 || true
 
 # 3. Upgrade systemd + glibc to the known-safe combination
 #    (255.4-1ubuntu8.16 + 2.39-0ubuntu8.8). The original image shipped
@@ -169,10 +178,14 @@ if ! dpkg --compare-versions "$GLIBC_VERSION" ge "2.39-0ubuntu8.8"; then
   die "glibc upgrade failed to reach known-safe version (have '$GLIBC_VERSION', need >= 2.39-0ubuntu8.8); see /tmp/catsco-systemd-upgrade.log"
 fi
 
-# 4. Upgrade the kernel and regenerate grub. A new kernel without update-grub can
-#    still boot the old one, and old kernels are retained for rollback. Failures
-#    here block the bake so the image never ships a stale kernel or bootloader.
-if ! apt-get install --only-upgrade -y \
+# 4. Upgrade the kernel and regenerate grub. INSTALL (not --only-upgrade) the
+#    meta packages: on a base image where they are absent, --only-upgrade
+#    silently prints 'Skipping ... it is not installed', returns 0, and the old
+#    kernel passes a naive /boot existence check. After installing, verify a
+#    non-empty bootable kernel image actually exists under /boot and that grub
+#    is regenerated; the running kernel is not a reliable signal because the
+#    bake never reboots.
+if ! apt-get install -y --no-install-recommends \
   linux-generic linux-image-generic \
   >/tmp/catsco-kernel-upgrade.log 2>&1; then
   die "kernel upgrade failed; see /tmp/catsco-kernel-upgrade.log"
@@ -180,7 +193,11 @@ fi
 if ! command -v update-grub >/dev/null 2>&1 || ! update-grub >/tmp/catsco-update-grub.log 2>&1; then
   die "update-grub failed; see /tmp/catsco-update-grub.log"
 fi
-if ! ls /boot/vmlinuz-* >/dev/null 2>&1; then
+if ! ls -1 /boot/vmlinuz-* >/dev/null 2>&1; then
+  die "no bootable kernel image found under /boot after kernel upgrade"
+fi
+NEWEST_KERNEL_IMG="$(ls -1 /boot/vmlinuz-* 2>/dev/null | LC_ALL=C sort -V | tail -1)"
+if [ -z "$NEWEST_KERNEL_IMG" ]; then
   die "no bootable kernel image found under /boot after kernel upgrade"
 fi
 

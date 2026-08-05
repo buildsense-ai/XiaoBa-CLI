@@ -63,6 +63,13 @@
   - **子代理全面核查（2026-08-05，独立复测）**：生产代码无 Critical/Important；发现并修复 2 个测试盲区——mock `dpkg` 计数器拆分 systemd/glibc 断言（避免 glibc 兜住 systemd 回归）、probe-3 mock `ls` 让 happy path 真跑通 + 补 kernel/grub/boot 三个失败探针（原来零行为覆盖）。全量 `npm test` **1383 tests / 0 fail**。
   - **CI Linux 失败修复（2026-08-05，head 6dbada6）**：探针测试在 Linux runner 失败——wrapper `exec` 直接执行 `prepare-image.sh`，而 git 检出文件默认无 +x（Linux 严格执行 exec bit，Windows 忽略所以本地过了）。修复：wrapper 改 `exec bash <script>` + mock 命令 `chmod 755`。CI 重跑后应全绿。
 
+- [x] **步骤 5d：atridaisuki 复核 4 项（2026-08-05 06:23，CHANGES_REQUESTED）**
+  - **P1 fwupd mask 失败被吞 → 已修**：`mask_unit()` 用 `timeout 30` 包裹 `systemctl mask`（冻结 manager 不再挂起 bake），并**通过持久 symlink 验证**（`readlink /etc/systemd/system/<unit>` 必须指向 `/dev/null`），失败 `die` 拒绝发布未加固镜像。新增探针 7（readlink 返回空 → `failed to mask`）。
+  - **P1 内核升级成功假象 → 已修**：`--only-upgrade` 改为 `apt-get install -y`（元包缺失时会真正安装而非 `Skipping` 返回 0）；`/boot` 校验改为"最新 vmlinuz 存在 + 显式 `ls` 检查"（防止旧内核通过）。
+  - **P2 Cleanup 漏检只剩 key pair → 已修**：`Invoke-ExactBakeCleanup` 现在按精确 `KeyPairName` 查询 key pair，存在则计入 fail-closed 报告（不再 `nothing-to-clean` 静默漏检）。
+  - **P2 单次空响应不能证明删除 → 已修**：`Remove-Builder`/`Remove-KeyPair` 发现阶段要求**连续 3 次空读**才认为资源不存在（非 WaitForLate），删除确认阶段要求**连续 2 次空读**才返回成功（最终一致性防护）。
+  - 验证：7 个探针全过、`worker-image-pipeline.test.ts` **11/11 通过**（集成测试 timeout 提到 120s 容纳新增等待）、build 通过。中途遇到本地 `node_modules` 不完整（切分支后 `.bin` 空 + 缺包），`npm ci` 恢复后复测通过。
+
 - [x] **步骤 6：npm mirror 预配置**
   - `/root/.npmrc`：`registry=https://registry.npmmirror.com`（root 侧，先写，无需依赖 useradd）
   - `/srv/catsco-agent/.npmrc`：同上 + `chown catsco-agent:catsco-agent`（在 `useradd` 之后写，目录已由 `--create-home` 创建）

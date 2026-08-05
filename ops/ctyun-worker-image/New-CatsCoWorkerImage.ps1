@@ -560,6 +560,18 @@ function Remove-Builder {
 
     $resolveWaitSeconds = if ($WaitForLate) { $LateResourceWaitSeconds } else { 0 }
     $instance = Resolve-BuilderInstance -WaitSeconds $resolveWaitSeconds
+    if (-not $instance -and -not $WaitForLate) {
+        # A single empty read can be an eventually-consistent response. Require
+        # several consecutive empty reads before concluding the builder is gone,
+        # otherwise a billed ECS could be left behind after the image is ready.
+        $emptyReads = 1
+        while ($emptyReads -lt 3) {
+            Start-Sleep -Seconds 5
+            $instance = Resolve-BuilderInstance
+            if ($instance) { break }
+            $emptyReads++
+        }
+    }
     if (-not $instance) {
         Write-Host "No temporary builder record remains for $script:BuilderName"
         return
@@ -578,12 +590,18 @@ function Remove-Builder {
     $deadline = Get-BoundedDeadline `
         -RequestedSeconds (8 * 60) `
         -Phase "temporary builder deletion confirmation"
+    $confirmEmptyReads = 0
     while ((Get-Date) -lt $deadline) {
         $remaining = Resolve-BuilderInstance
         if (-not $remaining) {
-            return
+            $confirmEmptyReads++
+            if ($confirmEmptyReads -ge 2) {
+                return
+            }
+        } else {
+            $confirmEmptyReads = 0
+            Assert-TemporaryBuilder $remaining
         }
-        Assert-TemporaryBuilder $remaining
         Start-Sleep -Seconds 8
     }
     throw "Could not confirm deletion of temporary builder $script:BuilderID"
@@ -606,6 +624,7 @@ function Remove-KeyPair {
         -RequestedSeconds $keyDiscoverySeconds `
         -Phase "temporary key pair discovery"
     $existing = @()
+    $emptyReads = 0
     do {
         $details = Invoke-Ctyun @(
             "ecs", "GetEcsKeypairDetails",
@@ -619,11 +638,18 @@ function Remove-KeyPair {
             @(Get-ResponseItems -Response $details -Name "results") |
                 Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
         )
-        if ($existing.Count -gt 0 -or -not $WaitForLate) {
+        if ($existing.Count -gt 0) {
+            break
+        }
+        $emptyReads++
+        if (-not $WaitForLate -and $emptyReads -ge 3) {
+            break
+        }
+        if ($WaitForLate -and (Get-Date) -ge $keyDiscoveryDeadline) {
             break
         }
         Start-Sleep -Seconds 5
-    } while ((Get-Date) -lt $keyDiscoveryDeadline)
+    } while ($true)
     if ($existing.Count -eq 0) {
         Write-Host "No temporary key pair record remains for $script:KeyPairName"
         return
@@ -656,6 +682,7 @@ function Remove-KeyPair {
     $deadline = Get-BoundedDeadline `
         -RequestedSeconds (2 * 60) `
         -Phase "temporary key pair deletion confirmation"
+    $confirmEmptyReads = 0
     while ((Get-Date) -lt $deadline) {
         $details = Invoke-Ctyun @(
             "ecs", "GetEcsKeypairDetails",
@@ -670,7 +697,12 @@ function Remove-KeyPair {
                 Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
         )
         if ($remaining.Count -eq 0) {
-            return
+            $confirmEmptyReads++
+            if ($confirmEmptyReads -ge 2) {
+                return
+            }
+        } else {
+            $confirmEmptyReads = 0
         }
         Start-Sleep -Seconds 5
     }
@@ -777,7 +809,26 @@ function Invoke-ExactBakeCleanup {
     } while ((Get-Date) -lt $discoveryDeadline)
 
     $candidateBuilder = Resolve-BuilderInstance -WaitSeconds $discoverySeconds
-    if ($candidateImage -or $candidateBuilder) {
+    # Also look up the exact temporary key pair name this bake would have used.
+    # A process killed right after ImportEcsKeypair (before CreateEcsInstance)
+    # leaves only the key pair behind; without this check that leak is never
+    # discovered and reconcile reports nothing-to-clean.
+    $candidateKeyPair = @()
+    if ($script:KeyPairName) {
+        $keyDetails = Invoke-Ctyun @(
+            "ecs", "GetEcsKeypairDetails",
+            "--regionID", $RegionID,
+            "--projectID", $ProjectID,
+            "--keyPairName", $script:KeyPairName,
+            "--pageNo", "1",
+            "--pageSize", "10"
+        )
+        $candidateKeyPair = @(
+            @(Get-ResponseItems -Response $keyDetails -Name "results") |
+                Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
+        )
+    }
+    if ($candidateImage -or $candidateBuilder -or $candidateKeyPair.Count -gt 0) {
         $details = @(
             "Automatic historical cleanup refused because immutable creation IDs were not persisted."
             "Review and remove only resources proven to belong to bake $script:BakeID."
@@ -788,10 +839,13 @@ function Invoke-ExactBakeCleanup {
         if ($candidateBuilder) {
             $details += "candidate instanceID=$($candidateBuilder.instanceID) name=$($candidateBuilder.instanceName)"
         }
+        if ($candidateKeyPair.Count -gt 0) {
+            $details += "candidate keyPairName=$script:KeyPairName"
+        }
         throw ($details -join " ")
     }
 
-    Write-Warning "No provably owned historical resources found; key pair lookup was skipped because names are not ownership proof"
+    Write-Warning "No provably owned historical resources found for bake $script:BakeID"
     return [ordered]@{
         result = "nothing-to-clean"
         bakeID = $script:BakeID

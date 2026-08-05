@@ -70,10 +70,11 @@ describe("Tianyi Cloud worker image pipeline", () => {
   });
 
   test("platform hardening encodes known Tianyi worker faults", () => {
-    // fwupd masks prevent the systemd ABRT freeze on 8.16 hosts
-    assert.match(imagePreparer, /systemctl mask fwupd\.service/);
-    assert.match(imagePreparer, /systemctl mask fwupd-refresh\.service/);
-    assert.match(imagePreparer, /systemctl mask fwupd-refresh\.timer/);
+    // fwupd masks prevent the systemd ABRT freeze on 8.16 hosts (mask_unit
+    // creates and verifies the persistent /etc/systemd/system symlink)
+    assert.match(imagePreparer, /mask_unit fwupd\.service/);
+    assert.match(imagePreparer, /mask_unit fwupd-refresh\.service/);
+    assert.match(imagePreparer, /mask_unit fwupd-refresh\.timer/);
     assert.match(imagePreparer, /systemctl reset-failed fwupd-refresh\.service/);
     // systemd + glibc upgrade to the known-safe 8.16/8.8 combo (_dl_fini freeze)
     assert.match(
@@ -101,6 +102,16 @@ describe("Tianyi Cloud worker image pipeline", () => {
     // fail-closed version assertions (review: required upgrades must block the bake)
     assert.match(imagePreparer, /dpkg --compare-versions/);
     assert.match(imagePreparer, /known-safe version/);
+    // fwupd masks are verified through their persistent /etc symlink and a
+    // failed mask blocks the bake (review: swallowed mask failures)
+    assert.match(imagePreparer, /readlink/);
+    assert.match(imagePreparer, /failed to mask/);
+    // kernel meta packages are INSTALLED (not --only-upgrade) so a base image
+    // without them cannot silently skip to an old-kernel pass (review)
+    assert.match(
+      imagePreparer,
+      /apt-get install -y --no-install-recommends \\\n\s+linux-generic linux-image-generic/,
+    );
     assert.ok(
       imagePreparer.indexOf("od -An -c") < imagePreparer.indexOf("apt-get update"),
       "dpkg list repair must precede the first apt transaction",
@@ -186,7 +197,9 @@ describe("Tianyi Cloud worker image pipeline", () => {
         ls: [
           "#!/usr/bin/env bash",
           'echo "ls:$*" >> "$CATSCO_MOCK_LOG"',
-          'exit "${CATSCO_MOCK_LS_RC:-0}"',
+          'if [[ "${CATSCO_MOCK_LS_RC:-0}" != "0" ]]; then exit "${CATSCO_MOCK_LS_RC}"; fi',
+          'echo "/boot/vmlinuz-6.8.0-136-generic"',
+          "exit 0",
         ].join("\n"),
         "dpkg-query": [
           "#!/usr/bin/env bash",
@@ -205,6 +218,13 @@ describe("Tianyi Cloud worker image pipeline", () => {
           'echo "uname:$*" >> "$CATSCO_MOCK_LOG"',
           'echo "6.8.0-136-generic"',
           "exit 0",
+        ].join("\n"),
+        readlink: [
+          "#!/usr/bin/env bash",
+          'echo "readlink:$*" >> "$CATSCO_MOCK_LOG"',
+          // ${VAR-default} (no colon): only fall back when unset, so an empty
+          // override simulates a missing mask symlink for the probe.
+          'echo "${CATSCO_MOCK_READLINK_TARGET-/dev/null}"',
         ].join("\n"),
         "update-grub": [
           "#!/usr/bin/env bash",
@@ -362,6 +382,24 @@ describe("Tianyi Cloud worker image pipeline", () => {
         `${bootResult.stdout}\n${bootResult.stderr}`,
       );
       assert.match(bootResult.stderr, /no bootable kernel image/);
+
+      // Probe 7: a fwupd mask that did not take effect (persistent symlink
+      // missing) blocks the bake even when versions are otherwise healthy.
+      fs.rmSync(mockLog, { force: true });
+      const maskResult = runHardening({
+        CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
+        CATSCO_MOCK_VERSION_SYSTEMD_OK: "0",
+        CATSCO_MOCK_VERSION_GLIBC_OK: "0",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.16",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
+        CATSCO_MOCK_READLINK_TARGET: "",
+      });
+      assert.notEqual(
+        maskResult.status,
+        0,
+        `${maskResult.stdout}\n${maskResult.stderr}`,
+      );
+      assert.match(maskResult.stderr, /failed to mask/);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -731,7 +769,9 @@ process.exit(result.status ?? 1);
           {
             cwd: root,
             encoding: "utf8",
-            timeout: 30_000,
+            // Consecutive-empty deletion confirmation adds bounded waits; keep
+            // plenty of headroom above the orchestrator's own deadlines.
+            timeout: 120_000,
             env: {
               ...process.env,
               PATH: `${sandbox}${path.delimiter}${process.env.PATH || ""}`,
@@ -778,7 +818,7 @@ process.exit(result.status ?? 1);
           {
             cwd: root,
             encoding: "utf8",
-            timeout: 30_000,
+            timeout: 120_000,
             env: {
               ...process.env,
               PATH: `${sandbox}${path.delimiter}${process.env.PATH || ""}`,
