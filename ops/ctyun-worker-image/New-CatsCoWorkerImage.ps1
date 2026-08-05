@@ -1008,6 +1008,10 @@ try {
         "--keyPairDescription", "Temporary CatsCo image builder",
         "--publicKey", $publicKey
     ) | Out-Null
+    # Mark the key pair as created right after a successful import so a failure
+    # in the follow-up identity resolution (KeyPairID empty) still allows
+    # name-based cleanup instead of leaking the cloud key pair.
+    $script:KeyPairCreateAttempted = $true
 
     $keyPairResponse = Invoke-Ctyun @(
         "ecs", "GetEcsKeypairDetails",
@@ -1026,7 +1030,6 @@ try {
     if (-not $script:KeyPairID) {
         throw "Imported key pair could not be resolved"
     }
-    $script:KeyPairCreateAttempted = $true
 
     $existingBuilderResponse = Invoke-Ctyun @(
         "ecs", "ListEcsInstances",

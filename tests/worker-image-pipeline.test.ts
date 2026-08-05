@@ -595,6 +595,49 @@ process.exit(result.status ?? 1);
       assert.match(foreignIdCalls, /ecs DeleteEcsInstance/);
       assert.match(foreignIdCalls, /ecs DeleteEcsKeypair/);
 
+      // Key pair identity resolution failure: ImportEcsKeypair succeeds on the
+      // cloud, but the follow-up GetEcsKeypairDetails returns nothing, so
+      // KeyPairID stays empty. The failed bake must still clean up the created
+      // key pair by its unique name (KeyPairCreateAttempted is set right after
+      // the import, before the resolution read).
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: false,
+          keyExists: false,
+          keyPairName: "",
+          keyHiddenReads: 2, // hide the existing-check and the ID-resolution reads
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: "",
+          instanceStatus: "running",
+        }),
+      );
+      const keyResolutionFailResult = runBake(
+        "1012",
+        "catsco-worker-test-1012",
+      );
+      assert.notEqual(
+        keyResolutionFailResult.status,
+        0,
+        `${keyResolutionFailResult.stdout}\n${keyResolutionFailResult.stderr}`,
+      );
+      assert.match(
+        `${keyResolutionFailResult.stdout}\n${keyResolutionFailResult.stderr}`,
+        /Imported key pair could not be resolved/,
+      );
+      const keyResolutionFailCalls = fs.readFileSync(logPath, "utf8");
+      assert.match(keyResolutionFailCalls, /ecs ImportEcsKeypair/);
+      assert.match(keyResolutionFailCalls, /ecs DeleteEcsKeypair/);
+      const keyResolutionFailState = JSON.parse(
+        fs.readFileSync(statePath, "utf8"),
+      );
+      assert.equal(keyResolutionFailState.keyExists, false);
+
       const commit = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: root,
         encoding: "utf8",
