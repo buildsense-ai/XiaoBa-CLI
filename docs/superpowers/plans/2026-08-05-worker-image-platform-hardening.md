@@ -60,10 +60,10 @@
 
 ### 任务 3：验证与提交
 
-- [ ] **步骤 8：`bash -n` + 单测 + build**
-  运行：`bash -n ops/ctyun-worker-image/prepare-image.sh` 与 `npx tsx --test tests/worker-image-pipeline.test.ts`（预期 10/10）；再 `npm run build` 确认无回归。
+- [x] **步骤 8：`bash -n` + 单测 + build**
+  运行：`bash -n ops/ctyun-worker-image/prepare-image.sh`（通过）、`npx tsx --test tests/worker-image-pipeline.test.ts`（10/10 通过）、`npm run build`（通过，无回归）。
 
-- [ ] **步骤 9：Commit 并推送 fork**
+- [x] **步骤 9：Commit 并推送 fork**
   在 `feat/ctyun-worker-image-pipeline` 分支：
   ```bash
   git add ops/ctyun-worker-image/prepare-image.sh tests/worker-image-pipeline.test.ts docs/superpowers/plans/2026-08-05-worker-image-platform-hardening.md
