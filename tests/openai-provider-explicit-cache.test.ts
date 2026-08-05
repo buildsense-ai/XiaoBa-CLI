@@ -646,13 +646,15 @@ test('Responses cache usage is recorded without prompt content', async () => {
     await provider().chat([{ role: 'user', content: 'hello', __episodeId: 'episode-2' }], [], context);
     const usage = events.find(event => event.type === 'responses_cache_usage');
     assert.ok(usage);
-    assert.deepEqual(usage.payload, {
-      mode: 'implicit',
-      cache_key_hash: usage.payload.cache_key_hash,
-      input_tokens: 1200,
-      cached_tokens: 900,
-      cache_write_tokens: 200,
-    });
+    assert.equal(usage.payload.mode, 'implicit');
+    assert.equal(typeof usage.payload.request_trace_id, 'string');
+    assert.equal(typeof usage.payload.cache_key_hash, 'string');
+    assert.equal(typeof usage.payload.logical_body_hash, 'string');
+    assert.equal(usage.payload.input_tokens, 1200);
+    assert.equal(usage.payload.cached_tokens, 900);
+    assert.equal(usage.payload.cache_write_tokens, 200);
+    assert.deepEqual(usage.payload.usage_input_detail_keys, ['cache_write_tokens', 'cached_tokens']);
+    assert.equal(usage.payload.cache_write_tokens_present, true);
     assert.equal(JSON.stringify(usage).includes('hello'), false);
   } finally {
     (axios as any).post = originalPost;
