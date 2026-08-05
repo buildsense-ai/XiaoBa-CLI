@@ -79,6 +79,7 @@ function normalizeToolName(name: string): string {
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
 const MAX_EMPTY_MAX_TOKEN_RECOVERIES = 1;
+const PARTIAL_STREAM_TEXT = Symbol.for('xiaoba.partial-stream-text');
 const EMPTY_MAX_TOKENS_MESSAGE = '模型这轮输出达到了 max_tokens 上限，但没有生成可见回复或工具调用。已保留当前上下文；请回复“继续”，我会从刚才的位置继续推进。';
 const REPLAY_ARTIFACT_ONLY_MESSAGE = '模型工具调用回放异常，这轮没有生成可见回复。上下文已保留；你可以直接说“继续”，我会从这里接上。';
 export const PROMPT_BUDGET_TRIM_MESSAGE = '当前上下文超过模型窗口，已裁剪较早的历史内容以继续处理。';
@@ -423,6 +424,16 @@ export class ConversationRunner {
       try {
         response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks);
       } catch (error: any) {
+        const partialStreamText = this.readPartialStreamText(error);
+        if (partialStreamText) {
+          const assistantDraft: Message = {
+            role: 'assistant',
+            content: partialStreamText,
+            ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
+          };
+          messages.push(assistantDraft);
+          newMessages.push(assistantDraft);
+        }
         this.runObservation(() => this.promptTraceLogger.recordError(turns, error));
         if (this.isMessageSurface() && isModelImageSafetyError(error)) {
           if (!this.suppressFinalResponse && this.toolExecutionContext?.channel && this.toolExecutionContext?.surface !== 'catscompany') {
@@ -1467,6 +1478,31 @@ export class ConversationRunner {
     episodeNumber: number,
     callbacks?: RunnerCallbacks,
   ) {
+    let partialStreamText = '';
+    const streamCallbacks = (): StreamCallbacks => ({
+      onText: (text) => {
+        partialStreamText += text;
+        callbacks?.onText?.(text);
+      },
+      onRetry: (attempt, maxRetries, info) => {
+        // A retry starts a new replay attempt. Never persist output from an
+        // abandoned attempt as if it belonged to the final interrupted one.
+        partialStreamText = '';
+        return callbacks?.onRetry?.(attempt, maxRetries, info);
+      },
+    });
+    const preservePartialStreamText = (error: unknown): void => {
+      if (!partialStreamText || !error || (typeof error !== 'object' && typeof error !== 'function')) return;
+      try {
+        Object.defineProperty(error, PARTIAL_STREAM_TEXT, {
+          value: partialStreamText,
+          configurable: true,
+          enumerable: false,
+        });
+      } catch {
+        // Partial progress is best-effort and must never replace the provider error.
+      }
+    };
     const requestOptions: AIRequestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
       ...(this.cacheTraceSink ? {
@@ -1487,15 +1523,12 @@ export class ConversationRunner {
     };
     try {
       if (this.stream) {
-        const streamCallbacks: StreamCallbacks = {
-          onText: (text) => callbacks?.onText?.(text),
-          onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
-        };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
+        return await this.aiService.chatStream(messages, activeTools, streamCallbacks(), requestOptions);
       }
       return await this.aiService.chat(messages, activeTools, requestOptions);
     } catch (error: any) {
-      if (!this.isPromptTooLongError(error)) {
+      if (!this.isPromptTooLongError(error) || partialStreamText) {
+        preservePartialStreamText(error);
         throw error;
       }
 
@@ -1506,14 +1539,25 @@ export class ConversationRunner {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
       }
 
-      if (this.stream) {
-        const streamCallbacks: StreamCallbacks = {
-          onText: (text) => callbacks?.onText?.(text),
-          onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
-        };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
+      try {
+        if (this.stream) {
+          return await this.aiService.chatStream(messages, activeTools, streamCallbacks(), requestOptions);
+        }
+        return await this.aiService.chat(messages, activeTools, requestOptions);
+      } catch (retryError) {
+        preservePartialStreamText(retryError);
+        throw retryError;
       }
-      return await this.aiService.chat(messages, activeTools, requestOptions);
+    }
+  }
+
+  private readPartialStreamText(error: unknown): string {
+    if (!error || (typeof error !== 'object' && typeof error !== 'function')) return '';
+    try {
+      const value = (error as Record<symbol, unknown>)[PARTIAL_STREAM_TEXT];
+      return typeof value === 'string' ? value : '';
+    } catch {
+      return '';
     }
   }
 

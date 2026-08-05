@@ -90,6 +90,39 @@ test('AIService retries transient stream errors before any text is emitted', asy
   assert.deepStrictEqual(chunks, ['ok']);
 });
 
+test('AIService retries a 504 before text and records the final attempt counts', async () => {
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '1';
+  const service = createTestService();
+  let attempts = 0;
+  (service as any).sleepWithAbort = async () => undefined;
+  (service as any).provider = {
+    chat: async () => ({ content: 'unused' }),
+    chatStream: async (_messages: unknown, _tools: unknown, callbacks?: StreamCallbacks) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error('gateway timeout'), {
+          response: { status: 504, headers: { 'retry-after': '0' }, data: { message: 'gateway timeout' } },
+        });
+      }
+      callbacks?.onText?.('recovered');
+      return { content: 'recovered' };
+    },
+  };
+
+  const attemptEvents: any[] = [];
+  const result = await service.chatStream([], undefined, undefined, {
+    modelAttemptSink: { observe: event => { attemptEvents.push(event); } },
+  });
+
+  assert.equal(result.content, 'recovered');
+  assert.equal(attempts, 2);
+  assert.deepStrictEqual(
+    attemptEvents.map(event => [event.attemptNumber, event.outcome]),
+    [[1, 'started'], [1, 'retrying'], [2, 'started'], [2, 'succeeded']],
+  );
+  assert.equal(attemptEvents[1].retry.retryNumber, 1);
+});
+
 test('AIService can keep retrying transient stream failures beyond the old short cap', async () => {
   process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '5';
   const service = createTestService();
@@ -538,6 +571,44 @@ test('AIService records retry exhaustion on the final wrapped error', async () =
   assert.equal(diagnostics?.retry?.retry_count, 1);
   assert.equal(diagnostics?.retry?.max_retries, 1);
   assert.equal(diagnostics?.retry?.stop_reason, 'retry_limit_exhausted');
+});
+
+test('AIService preserves a circular 504 error while emitting cycle-safe diagnostics', async () => {
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '0';
+  const service = createTestService();
+  const request: any = {};
+  const socket: any = { request };
+  request.socket = socket;
+  const rawError = Object.assign(new Error('gateway timeout'), {
+    response: {
+      status: 504,
+      headers: { 'x-request-id': 'req-circular-504' },
+      data: { error: { type: 'gateway_timeout', message: 'gateway timeout' } },
+    },
+    request,
+  });
+  (service as any).provider = {
+    chat: async () => { throw rawError; },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+
+  let wrapped: unknown;
+  try {
+    await service.chat([]);
+  } catch (error) {
+    wrapped = error;
+  }
+
+  const diagnostics = readModelErrorDiagnostics(wrapped);
+  assert.equal((wrapped as any).status, 504);
+  assert.equal((wrapped as any).cause, rawError);
+  assert.equal(diagnostics?.http_status, 504);
+  assert.equal(diagnostics?.request_id, 'req-circular-504');
+  assert.equal(diagnostics?.retry?.attempt_count, 1);
+  assert.equal(diagnostics?.retry?.retry_count, 0);
+  assert.equal(diagnostics?.retry?.max_retries, 0);
+  assert.equal(diagnostics?.retry?.stop_reason, 'retry_limit_exhausted');
+  assert.doesNotThrow(() => JSON.stringify(diagnostics));
 });
 
 test('AIService records when stream output prevents an otherwise retryable request', async () => {

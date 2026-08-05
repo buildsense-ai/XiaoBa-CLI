@@ -89,7 +89,10 @@ export interface TurnErrorPayload {
   retry_stop_reason?: string;
   retry_elapsed_ms?: number;
   turn_elapsed_ms?: number;
+  /** True when recoverable progress remains available in the current process. */
   partial_progress_preserved?: boolean;
+  /** Whether that progress also survived the durable session write. */
+  partial_progress_persistence?: 'none' | 'memory_only' | 'durable';
   episode_id?: string;
   model_call_id?: string;
   model_attempt_id?: string;
