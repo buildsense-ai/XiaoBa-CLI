@@ -483,4 +483,168 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(captured.result.result, undefined);
     assert.equal(captured.result.error.code, 'target_device_mismatch');
   });
+
+  test('rejects new Device RPC requests once shutdown has started (P1 regression)', async () => {
+    // Review 2026-08-06: shuttingDown=true must fence both the listener and the
+    // handler so a remote request cannot execute write_file/edit_file/execute_shell
+    // on the machine during the destroy window.
+    const captured: { result?: any } = {};
+    let executed = 0;
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.shuttingDown = true;
+    bot.localDeviceGrant = {
+      kind: 'catscompany_body',
+      source: 'catscompany',
+      ownerUserId: 'usr7',
+      bodyId: 'body-device',
+      installationId: 'install-device',
+      deviceId: 'install-device',
+      createdAt: Date.now(),
+    };
+    bot.bot = {
+      sendDeviceRpcResult: async (result: any) => {
+        captured.result = result;
+      },
+    };
+    bot.executeLocalDeviceRpcTool = async () => {
+      executed += 1;
+      return { ok: true, content: 'should-not-run' };
+    };
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-shutdown-1',
+      operation: 'write_file',
+      tool_name: 'write_file',
+      payload: { args: { file_path: path.join(testRoot, 'tmp', 'shutdown-write.txt'), content: 'nope' } },
+    }));
+
+    assert.equal(executed, 0, 'device RPC tool must not execute after shutdown started');
+    assert.equal(captured.result, undefined, 'device RPC result must not be sent after shutdown started');
+  });
+
+  test('rejects new thin-tool RPC requests once shutdown has started (P1 regression)', async () => {
+    const captured: { result?: any } = {};
+    let executed = 0;
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.shuttingDown = true;
+    bot.bot = {
+      sendThinToolRpcResult: async (result: any) => {
+        captured.result = result;
+      },
+    };
+    bot.executeLocalThinToolRpcTool = async () => {
+      executed += 1;
+      return { ok: true, content: 'should-not-run' };
+    };
+
+    await bot.handleThinToolRpcRequest({
+      type: 'request',
+      request_id: 'rpc-shutdown-t1',
+      tool_name: 'write_file',
+      target_owner_user_id: 'usr7',
+      target_device_id: 'install-remote',
+      device_id: 'install-device',
+      payload: { args: { file_path: 'x', content: 'nope' } },
+      created_at: Date.now(),
+      expires_at: Date.now() + 60_000,
+    } as any);
+
+    assert.equal(executed, 0, 'thin-tool RPC tool must not execute after shutdown started');
+    assert.equal(captured.result, undefined, 'thin-tool RPC result must not be sent after shutdown started');
+  });
+
+  test('drops a late Device RPC result when shutdown starts during execution', async () => {
+    const captured: { result?: any } = {};
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.shuttingDown = false;
+    bot.localDeviceGrant = {
+      kind: 'catscompany_body',
+      source: 'catscompany',
+      ownerUserId: 'usr7',
+      bodyId: 'body-device',
+      installationId: 'install-device',
+      deviceId: 'install-device',
+      createdAt: Date.now(),
+    };
+    bot.bot = {
+      sendDeviceRpcResult: async (result: any) => {
+        captured.result = result;
+      },
+    };
+    bot.executeLocalDeviceRpcTool = async () => {
+      // destroy() 在工具执行期间开始（quiesce 超时后继续）。
+      bot.shuttingDown = true;
+      return { ok: true, content: 'executed' };
+    };
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-late-1',
+      operation: 'read_file',
+      tool_name: 'read_file',
+    }));
+
+    assert.equal(captured.result, undefined, 'late device RPC result must not be sent after shutdown started');
+  });
+
+  test('drops a late thin-tool RPC result when shutdown starts during execution', async () => {
+    const captured: { result?: any } = {};
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.shuttingDown = false;
+    bot.bot = {
+      sendThinToolRpcResult: async (result: any) => {
+        captured.result = result;
+      },
+    };
+    bot.skillHubThinRpc = { supports: () => false };
+    bot.executeLocalThinToolRpcTool = async () => {
+      bot.shuttingDown = true;
+      return { ok: true, content: 'executed' };
+    };
+
+    await bot.handleThinToolRpcRequest({
+      type: 'request',
+      request_id: 'rpc-late-t1',
+      tool_name: 'read_file',
+      target_owner_user_id: 'usr7',
+      target_device_id: 'install-remote',
+      device_id: 'install-device',
+      payload: { args: { file_path: 'x' } },
+      created_at: Date.now(),
+      expires_at: Date.now() + 60_000,
+    } as any);
+
+    assert.equal(captured.result, undefined, 'late thin-tool RPC result must not be sent after shutdown started');
+  });
+
+  test('drops a late SkillHub thin-tool RPC result when shutdown starts during execution', async () => {
+    const captured: { result?: any } = {};
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.shuttingDown = false;
+    bot.bot = {
+      sendThinToolRpcResult: async (result: any) => {
+        captured.result = result;
+      },
+    };
+    bot.skillHubThinRpc = {
+      supports: () => true,
+      execute: async () => {
+        bot.shuttingDown = true;
+        return { bot_uid: '42' };
+      },
+    };
+
+    await bot.handleThinToolRpcRequest({
+      type: 'request',
+      request_id: 'rpc-late-skillhub-1',
+      tool_name: 'skillhub.localWorkspace.get',
+      target_owner_user_id: 'usr7',
+      target_device_id: 'install-remote',
+      device_id: 'install-device',
+      payload: { bot_uid: '42' },
+      created_at: Date.now(),
+      expires_at: Date.now() + 60_000,
+    } as any);
+
+    assert.equal(captured.result, undefined, 'late SkillHub RPC result must not be sent after shutdown started');
+  });
 });

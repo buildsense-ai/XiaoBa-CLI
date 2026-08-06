@@ -33,6 +33,7 @@ export async function startDashboard(
   const app = express();
   const envPackaged = /^(1|true|yes)$/i.test(process.env.XIAOBA_IS_PACKAGED || '');
   const projectRoot = controllers.projectRoot || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined) || process.cwd();
+  process.env.XIAOBA_DASHBOARD_PORT = String(port);
   const serviceManager = new ServiceManager(projectRoot);
   // The dashboard is the stable Runtime owner. Connectors may still win the
   // cross-process election when launched independently, but a dashboard-only

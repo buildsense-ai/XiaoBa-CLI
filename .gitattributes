@@ -1,0 +1,4 @@
+ops/ctyun-worker-image/*.sh text eol=lf
+ops/ctyun-worker-image/*.ps1 text eol=lf
+scripts/build-linux-worker-artifact.mjs text eol=lf
+.github/workflows/worker-image.yml text eol=lf

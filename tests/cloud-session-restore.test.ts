@@ -515,15 +515,24 @@ test('summary timeout persists the bounded fallback instead of failing every ret
     }),
   } as any;
   const restorer = new CatsCompanyCloudSessionRestorer(client, timedOutAIService, store);
+  const timeoutController = new AbortController();
+  const timeoutError = new Error('summary timed out');
+  timeoutError.name = 'TimeoutError';
+  const timeout = setTimeout(() => timeoutController.abort(timeoutError), 10);
 
-  const result = await restorer.restoreIfMissing({
-    sessionKey: 'summary-timeout-session',
-    topicId: 'p2p_7_42',
-    topicType: 'p2p',
-    agentId: 'usr42',
-    currentSeq: 2,
-    signal: AbortSignal.timeout(10),
-  });
+  let result;
+  try {
+    result = await restorer.restoreIfMissing({
+      sessionKey: 'summary-timeout-session',
+      topicId: 'p2p_7_42',
+      topicType: 'p2p',
+      agentId: 'usr42',
+      currentSeq: 2,
+      signal: timeoutController.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   assert.equal(result.status, 'restored');
   assert.equal(result.compressed, true);

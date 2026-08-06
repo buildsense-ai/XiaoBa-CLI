@@ -98,7 +98,11 @@ export type DeviceGrantOperation =
   | 'grep'
   | 'external_history'
   | 'browser_control'
-  | 'desktop_control';
+  | 'desktop_control'
+  | 'skillhub.localWorkspace.get'
+  | 'skillhub.localSkill.share'
+  | 'skillhub.localSkill.finalize'
+  | 'skillhub.localBot.switch';
 
 export interface ScopedLocalDeviceGrant {
   kind: 'catscompany_body';

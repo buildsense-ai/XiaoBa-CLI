@@ -13,6 +13,8 @@ import { withBotSkillWorkspaceLock } from './lock';
 import {
   BotSkillCloudRestoreError,
   BotSkillSyncService,
+  type FinalizePublicBotSkillInput,
+  type FinalizePublicBotSkillOptions,
   type BotSkillSyncResult,
 } from './sync-service';
 import {
@@ -143,39 +145,12 @@ export function scheduleCurrentBotSkillSync(): void {
   currentBotSyncPending = true;
   if (currentBotSyncRunning) return;
   currentBotSyncRunning = true;
-  const run = async (): Promise<void> => {
-    const runtimeRoot = path.resolve(PathResolver.getRuntimeDataRoot());
-    await withBotSkillWorkspaceLock(runtimeRoot, async () => {
-      const configService = createCatsCoLocalConfigService({ runtimeRoot });
-      const localConfig = configService.load();
-      const botId = String(localConfig.currentBot?.uid || '').trim();
-      if (!botId) return;
-
-      const activeRoot = PathResolver.getRuntimeDataRoot() === runtimeRoot
-        ? PathResolver.getSkillsPath()
-        : path.join(runtimeRoot, 'skills');
-      const workspace = new BotSkillWorkspaceService(runtimeRoot, activeRoot);
-      if (workspace.getActiveBotId() !== botId) return;
-      BotSkillSyncService.recoverInterruptedRestore(runtimeRoot, botId, activeRoot);
-
-      const definitionService = createBotDefinitionSyncService({ runtimeRoot });
-      await new BotSkillSyncService({
-        runtimeRoot,
-        botId,
-        auth: configService.getAuthState(),
-        skillsRoot: workspace.getActivePath(),
-        workspaceExisted: true,
-        definitionService,
-      }).sync();
-    });
-  };
-
   void (async () => {
     try {
       while (currentBotSyncPending) {
         currentBotSyncPending = false;
         try {
-          await run();
+          await syncCurrentBotSkillsNow();
         } catch (error) {
           Logger.warning(`Bot Skill cloud sync failed; local workspace is preserved: ${errorMessage(error)}`);
         }
@@ -185,6 +160,63 @@ export function scheduleCurrentBotSkillSync(): void {
       if (currentBotSyncPending) scheduleCurrentBotSkillSync();
     }
   })();
+}
+
+export async function syncCurrentBotSkillsNow(): Promise<BotSkillSyncResult | undefined> {
+  const runtimeRoot = path.resolve(PathResolver.getRuntimeDataRoot());
+  return withBotSkillWorkspaceLock(runtimeRoot, async () => {
+    const configService = createCatsCoLocalConfigService({ runtimeRoot });
+    const localConfig = configService.load();
+    const botId = String(localConfig.currentBot?.uid || '').trim();
+    if (!botId) return undefined;
+
+    const activeRoot = PathResolver.getRuntimeDataRoot() === runtimeRoot
+      ? PathResolver.getSkillsPath()
+      : path.join(runtimeRoot, 'skills');
+    const workspace = new BotSkillWorkspaceService(runtimeRoot, activeRoot);
+    if (workspace.getActiveBotId() !== botId) return undefined;
+    BotSkillSyncService.recoverInterruptedRestore(runtimeRoot, botId, activeRoot);
+
+    const definitionService = createBotDefinitionSyncService({ runtimeRoot });
+    return new BotSkillSyncService({
+      runtimeRoot,
+      botId,
+      auth: configService.getAuthState(),
+      skillsRoot: workspace.getActivePath(),
+      workspaceExisted: true,
+      definitionService,
+    }).sync();
+  });
+}
+
+export interface FinalizeCurrentBotPublicSkillOptions
+  extends FinalizePublicBotSkillOptions, CurrentBotSkillWorkspaceWriteOptions {}
+
+export async function finalizeCurrentBotPublicSkillNow(
+  botId: string,
+  input: FinalizePublicBotSkillInput,
+  options: FinalizeCurrentBotPublicSkillOptions = {},
+): Promise<BotSkillSyncResult> {
+  const runtimeRoot = path.resolve(options.runtimeRoot ?? PathResolver.getRuntimeDataRoot());
+  return withCurrentBotSkillWorkspaceWrite(async (context) => {
+    if (context.botId !== botId || context.activeBotId !== botId) {
+      throw new Error('The selected Bot workspace is not active on this device.');
+    }
+    await options.validateScope?.();
+    const configService = createCatsCoLocalConfigService({ runtimeRoot });
+    const definitionService = createBotDefinitionSyncService({ runtimeRoot });
+    return new BotSkillSyncService({
+      runtimeRoot,
+      botId,
+      auth: configService.getAuthState(),
+      skillsRoot: context.skillsRoot,
+      workspaceExisted: true,
+      definitionService,
+    }).finalizePublicSkill(input, options);
+  }, {
+    runtimeRoot,
+    lockWaitMs: options.lockWaitMs,
+  });
 }
 
 function errorMessage(error: unknown): string {

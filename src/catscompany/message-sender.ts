@@ -10,7 +10,7 @@ const MAX_REPLY_SEGMENT_LENGTH = 1200;
 
 type CatsMessageType = 'thinking' | 'tool_use' | 'tool_result' | 'runtime_plan' | 'task_status' | 'text' | 'image' | 'file';
 
-export type ConversationTaskState = 'running' | 'completed' | 'failed' | 'cancelled';
+export type ConversationTaskState = 'running' | 'completed' | 'failed' | 'cancelled' | 'stale';
 
 export interface ConversationTaskStatusInput {
   run_id: string;

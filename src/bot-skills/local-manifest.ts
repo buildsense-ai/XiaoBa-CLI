@@ -13,6 +13,14 @@ import type {
 } from './types';
 
 export const BOT_SKILL_LOCAL_MARKER_FILE = '.xiaoba-bot-skill.json';
+
+export class BotSkillPackageValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BotSkillPackageValidationError';
+  }
+}
+
 const BOT_SKILL_LOCAL_MARKER_SCHEMA = 'xiaoba.bot-skill-local.v1';
 const SKIP_DIRECTORIES = new Set(['.git', 'node_modules']);
 const FORBIDDEN_CREDENTIAL_DIRECTORIES = new Set(['.ssh', '.aws', '.kube', '.gnupg']);
@@ -110,7 +118,7 @@ export function scanLocalBotSkill(
   }
   assertRealPathContained(fs.realpathSync(root), skillFile);
   const marker = ensureBotSkillLocalMarker(root);
-  const files = collectPackageFiles(root);
+  const files = collectBotSkillPackageFiles(root);
   const contentHash = computeBotSkillPackageHash(files);
   const reference = marker.reference?.contentHash === contentHash
     ? marker.reference
@@ -192,7 +200,7 @@ function ensureBotSkillLocalMarker(skillDir: string): BotSkillLocalMarker {
   return marker;
 }
 
-function collectPackageFiles(root: string): BotSkillPackageFile[] {
+export function collectBotSkillPackageFiles(root: string): BotSkillPackageFile[] {
   const realRoot = fs.realpathSync(root);
   const files: BotSkillPackageFile[] = [];
   let totalBytes = 0;
@@ -205,7 +213,7 @@ function collectPackageFiles(root: string): BotSkillPackageFile[] {
       assertRealPathContained(realRoot, fullPath);
       if (entry.isDirectory()) {
         if (FORBIDDEN_CREDENTIAL_DIRECTORIES.has(entry.name.toLowerCase())) {
-          throw new Error(`Skill contains a forbidden credential directory: ${entry.name}`);
+          throw new BotSkillPackageValidationError(`Skill contains a forbidden credential directory: ${entry.name}`);
         }
         if (
           !SKIP_DIRECTORIES.has(entry.name)
@@ -218,22 +226,26 @@ function collectPackageFiles(root: string): BotSkillPackageFile[] {
       if (!entry.isFile() || SKIP_FILES.has(entry.name)) continue;
       const relativePath = path.relative(root, fullPath).replace(/\\/g, '/');
       if (!isPortablePackagePath(relativePath)) {
-        throw new Error(`Skill contains an unsafe path: ${relativePath}`);
+        throw new BotSkillPackageValidationError(`Skill contains an unsafe path: ${relativePath}`);
       }
       const bytes = fs.readFileSync(fullPath);
       rejectSensitiveMaterial(relativePath, bytes);
       if (bytes.length > MAX_SINGLE_FILE_BYTES) {
-        throw new Error(`Skill file is too large: ${relativePath}`);
+        throw new BotSkillPackageValidationError(`Skill file is too large: ${relativePath}`);
       }
       totalBytes += bytes.length;
-      if (totalBytes > MAX_TOTAL_BYTES) throw new Error('Skill package is too large');
+      if (totalBytes > MAX_TOTAL_BYTES) {
+        throw new BotSkillPackageValidationError('Skill package is too large');
+      }
       files.push({
         path: relativePath,
         size: bytes.length,
         sha256: sha256(bytes),
         contentBase64: bytes.toString('base64'),
       });
-      if (files.length > MAX_FILES) throw new Error('Skill package contains too many files');
+      if (files.length > MAX_FILES) {
+        throw new BotSkillPackageValidationError('Skill package contains too many files');
+      }
     }
   };
   visit(root);
@@ -243,7 +255,9 @@ function collectPackageFiles(root: string): BotSkillPackageFile[] {
 function rejectSensitiveMaterial(filePath: string, bytes: Buffer): void {
   const name = path.posix.basename(filePath).toLowerCase();
   if (isArchiveFile(name, bytes)) {
-    throw new Error(`Skill contains an archive file and cannot be uploaded automatically: ${filePath}`);
+    throw new BotSkillPackageValidationError(
+      `Skill contains an archive file and cannot be uploaded automatically: ${filePath}`,
+    );
   }
   if (
     name === '.env'
@@ -253,7 +267,9 @@ function rejectSensitiveMaterial(filePath: string, bytes: Buffer): void {
     || /\.(?:exe|dll|so|dylib|msi|apk|appimage)$/i.test(name)
     || containsHighConfidenceSecret(bytes)
   ) {
-    throw new Error(`Skill contains sensitive material and cannot be uploaded: ${filePath}`);
+    throw new BotSkillPackageValidationError(
+      `Skill contains sensitive material and cannot be uploaded: ${filePath}`,
+    );
   }
 }
 
@@ -372,7 +388,7 @@ export function isPortablePackagePath(value: string): boolean {
 function assertRealPathContained(realRoot: string, candidate: string): void {
   const realCandidate = fs.realpathSync(candidate);
   if (realCandidate !== realRoot && !realCandidate.startsWith(`${realRoot}${path.sep}`)) {
-    throw new Error(`Skill path escaped its workspace: ${candidate}`);
+    throw new BotSkillPackageValidationError('Skill path escaped its workspace.');
   }
 }
 

@@ -176,4 +176,16 @@ export class MessageSessionManager {
     this.sessions.clear();
     MessageSessionManager.managers.delete(this.sessionType);
   }
+
+  /**
+   * 中断所有会话当前在飞的模型回合（requestInterrupt 会 abort 会话的
+   * activeAbortController，让 handleMessage / handleRuntimeObservation 尽快
+   * 返回取消结果）。用于 connector shutdown：quiesce 之前显式中断，避免在飞
+   * 模型回合跨越销毁边界继续落地结果。
+   */
+  interruptAll(reason = 'connector shutdown'): void {
+    for (const session of this.sessions.values()) {
+      session.requestInterrupt();
+    }
+  }
 }

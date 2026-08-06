@@ -1,6 +1,6 @@
 {
   "name": "xiaoba-cli",
-  "version": "1.4.7",
+  "version": "1.4.8",
   "description": "CatsCo - local agent runtime and dashboard",
   "main": "electron/main.js",
   "bin": {
@@ -8,7 +8,7 @@
     "xiaoba": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "start:cli": "node dist/index.js",
@@ -34,6 +34,7 @@
     "electron:build:mac:arm64": "npm run build && node scripts/prepare-runtime.mjs darwin arm64 && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --mac --arm64 --publish never",
     "release:check": "node scripts/check-release-branding.mjs",
     "release:verify-version": "node scripts/verify-release-version.js",
+    "worker:artifact": "node scripts/build-linux-worker-artifact.mjs",
     "skillhub:trust-root": "node scripts/update-skillhub-root-key.mjs",
     "version:sync": "node scripts/inject-version.js"
   },

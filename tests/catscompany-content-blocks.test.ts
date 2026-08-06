@@ -170,6 +170,41 @@ describe('CatsCo content blocks', () => {
     assert.equal(sentThinking[0].metadata.delay_ms, 8000);
   });
 
+  test('session callbacks do not emit progress after destroy', async () => {
+    // 回归：destroy() 已开始时，模型流式/进度回调（assistant text、thinking、
+    // tool start/end、retry）不得再向外部发送任何内容（review 2026-08-05）。
+    const { bot, replies, sentThinking, sentTexts, toolUses, toolResults } = createProcessHarness();
+    const callbacks = (bot as any).buildSessionCallbacks('p2p_shutdown');
+
+    // 正常路径先验证一次能发送（确认 callbacks 本身可用）。
+    await callbacks.onAssistantText('正常流式文本');
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].topic, 'p2p_shutdown');
+    assert.equal(replies[0].text, '正常流式文本');
+
+    // destroy 已开始：所有回调必须静默。
+    bot.shuttingDown = true;
+    await callbacks.onAssistantText('destroy 后不应出现的流式文本');
+    await callbacks.onThinking('destroy 后不应出现的思考');
+    await callbacks.onRetry(1, 2, {
+      attempt: 1,
+      maxRetries: 2,
+      delayMs: 1000,
+      elapsedMs: 1000,
+      maxElapsedMs: 60000,
+      status: 500,
+      message: 'upstream error',
+    });
+    await callbacks.onToolStart('execute_shell', 'tool-1', { command: 'echo hi' });
+    await callbacks.onToolEnd('execute_shell', 'tool-1', 'done');
+
+    assert.equal(replies.length, 1, 'destroy 后不得发送 assistant text');
+    assert.equal(sentThinking.length, 0, 'destroy 后不得发送 thinking');
+    assert.equal(sentTexts.length, 0);
+    assert.equal(toolUses.length, 0, 'destroy 后不得发送 tool use');
+    assert.equal(toolResults.length, 0, 'destroy 后不得发送 tool result');
+  });
+
   test('parses text and multiple attachments from one CatsCompany message', () => {
     const bot = Object.create(CatsCompanyBot.prototype);
 
@@ -358,6 +393,158 @@ describe('CatsCo content blocks', () => {
       ],
     );
     assert.strictEqual(taskStatuses[0].status.run_id, taskStatuses[1].status.run_id);
+  });
+
+  test('finishes active task status before disconnecting during shutdown', async () => {
+    const { bot, taskStatuses } = createProcessHarness();
+    const order: string[] = [];
+    bot.shuttingDown = false;
+    bot.connectorReady = true;
+    bot.activeConversationTasks = new Map([
+      ['cc_user:usr1', {
+        runID: 'run-shutdown',
+        topic: 'p2p_1_2',
+        finished: false,
+      }],
+    ]);
+    bot.taskStatusTasks = new Map();
+    bot.sender.sendTaskStatus = async (topic: string, status: any) => {
+      order.push(`status:${status.state}`);
+      taskStatuses.push({ topic, status });
+    };
+    bot.sessionManager = {
+      destroy: async () => {
+        order.push('sessions-destroyed');
+      },
+    };
+    bot.bot = {
+      disconnect: () => {
+        order.push('socket-disconnected');
+      },
+    };
+
+    await bot.destroy();
+
+    assert.deepStrictEqual(order, [
+      'sessions-destroyed',
+      'status:stale',
+      'socket-disconnected',
+    ]);
+    assert.deepStrictEqual(
+      taskStatuses.map(({ topic, status }) => ({
+        topic,
+        runID: status.run_id,
+        state: status.state,
+      })),
+      [{ topic: 'p2p_1_2', runID: 'run-shutdown', state: 'stale' }],
+    );
+    assert.strictEqual(bot.activeConversationTasks.size, 0);
+  });
+
+  test('queued work must not start after the shutdown snapshot (delayed status send)', async () => {
+    const { bot, taskStatuses, handledTurns } = createProcessHarness();
+    const order: string[] = [];
+    const releaseStatuses: Array<() => void> = [];
+
+    bot.shuttingDown = false;
+    bot.connectorReady = true;
+    // 1 个 active task（会进入 shutdown snapshot，被标 stale）
+    bot.activeConversationTasks = new Map([
+      ['cc_user:usr1', { runID: 'run-active', topic: 'p2p_1_2', finished: false }],
+    ]);
+    bot.taskStatusTasks = new Map();
+    // 1 个排队用户消息（shutdown 开始后不得启动）
+    bot.messageQueue.set('cc_user:usr1', [{
+      userMessage: '关闭后不应启动的排队消息',
+      topic: 'p2p_1_2',
+      senderId: 'usr1',
+      seq: 11,
+      receivedAt: Date.now(),
+      source: 'user',
+      runtimeFeedback: [],
+    }]);
+
+    // 延迟 sendTaskStatus：阻塞 stale 投递让 destroy() 卡在 wait，
+    // 给在飞 turn 的 tail drain 留出执行窗口。
+    bot.sender.sendTaskStatus = async (topic: string, status: any) => {
+      order.push(`status:${status.state}`);
+      taskStatuses.push({ topic, status });
+      await new Promise<void>((resolve) => { releaseStatuses.push(resolve); });
+    };
+    bot.sessionManager = { destroy: async () => { order.push('sessions-destroyed'); } };
+    bot.bot = { disconnect: () => { order.push('socket-disconnected'); } };
+
+    const destroyPromise = bot.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // 模拟在飞 turn 返回后的 finally/tail drain：此时 shutdown 已开始
+    await (bot as any).drainMessageQueue('cc_user:usr1');
+    releaseStatuses.forEach((resolve) => resolve());
+    await destroyPromise;
+
+    // shutdown 开始后不得再出现 running / completed 状态
+    assert.deepStrictEqual(
+      taskStatuses.map(({ status }) => status.state),
+      ['stale'],
+    );
+    // 排队消息不得被实际处理
+    assert.strictEqual(handledTurns.length, 0);
+    // 排队工作被显式清除
+    assert.strictEqual(bot.messageQueue.has('cc_user:usr1'), false);
+    // activeConversationTasks 保持为空
+    assert.strictEqual(bot.activeConversationTasks.size, 0);
+    // destroy 顺序保持
+    assert.deepStrictEqual(order, [
+      'sessions-destroyed',
+      'status:stale',
+      'socket-disconnected',
+    ]);
+  });
+
+  test('in-flight pre-turn download does not start the model after destroy', async () => {
+    const { bot, session, taskStatuses, handledTurns } = createProcessHarness();
+    bot.shuttingDown = false;
+    bot.connectorReady = true;
+    bot.activeConversationTasks = new Map();
+    bot.taskStatusTasks = new Map();
+    bot.activeMessageHandlers = 1; // 模拟一个 in-flight handler
+
+    // 附件下载是 pre-turn await：handler 会暂停在 downloadFile 上
+    let releaseDownload: (() => void) | undefined;
+    const downloadGate = new Promise<void>((resolve) => { releaseDownload = resolve; });
+    bot.sender.downloadFile = async () => {
+      await downloadGate;
+      return 'C:\\tmp\\catsco-test\\a.png';
+    };
+    bot.sessionManager = { getOrCreate: () => session, get: () => session };
+
+    const turnPromise = (bot as any).processParsedMessage({
+      topic: 'p2p_1_2',
+      chatType: 'p2p',
+      senderId: 'usr1',
+      seq: 12,
+      text: '看看附件',
+      rawContent: '看看附件',
+      files: [{ url: '/uploads/images/a.png', fileName: 'a.png', type: 'image' }],
+    }, 'cc_user:usr1');
+    // handler 进入下载暂停
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // shutdown 在下载期间开始
+    bot.bot = { disconnect: () => {} };
+    bot.sessionManager.destroy = async () => {};
+    const destroyPromise = bot.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // 释放下载 → 旧 handler 恢复，但不得进入模型路径
+    releaseDownload?.();
+    await turnPromise;
+    bot.activeMessageHandlers = 0; // handler 完成
+    await destroyPromise;
+
+    // 模型从未被调用，也没有任何 running/terminal 状态
+    assert.strictEqual(handledTurns.length, 0);
+    assert.deepStrictEqual(taskStatuses.map(({ status }) => status.state), []);
+    assert.strictEqual(bot.activeConversationTasks.size, 0);
   });
 
   test('marks the task as failed when the final CatsCo reply cannot be delivered', async () => {
@@ -1471,6 +1658,200 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(runtimeObservations[0].options.source, 'subagent_result_batch');
     assert.strictEqual(replies.length, 1);
     assert.match(replies[0].text, /子 agent 结果处理失败/);
+  });
+
+  test('subagent completion feedback does not start the model after destroy', async () => {
+    const { bot, runtimeObservations, session } = createProcessHarness();
+    const manager = SubAgentManager.getInstance();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_38_110:agent:usr43';
+    const subAgentId = 'sub-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    // notify 场景：observation 带 ID 且 resultNotifyOnObservation 命中，必然走
+    // handleRuntimeObservation 模型分支。若 fence 失效，本测试必然失败。
+    const observation = `[子agent1 已完成]\nID：${subAgentId}\n结果摘要：审查完成`;
+    session.handleRuntimeObservation = async (text: string, options: any) => {
+      runtimeObservations.push({ text, options });
+      return { visibleToUser: true, text: '不应出现在 destroy 之后' };
+    };
+    bot.shuttingDown = true;
+    bot.activeMessageHandlers = 0;
+    bot.sessionExecutionReservations = new Set();
+    bot.taskStatusTasks = new Map();
+
+    (manager as any).parentMap.set(subAgentId, sessionKey);
+    (manager as any).resultNotifyOnObservation.add(subAgentId);
+    try {
+      await (bot as any).handleSubAgentFeedback(
+        sessionKey,
+        'p2p_38_110',
+        'usr38',
+        observation,
+      );
+
+      assert.deepStrictEqual(runtimeObservations, []);
+      assert.strictEqual(bot.activeMessageHandlers, 0);
+    } finally {
+      (manager as any).parentMap.delete(subAgentId);
+      (manager as any).resultNotifyOnObservation.delete(subAgentId);
+    }
+  });
+
+  test('subagent completion batch flush does not start the model after destroy', async () => {
+    const { bot, runtimeObservations, session } = createProcessHarness();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_38_110:agent:usr43';
+    session.handleRuntimeObservation = async (text: string, options: any) => {
+      runtimeObservations.push({ text, options });
+      return { visibleToUser: true, text: '不应出现在 destroy 之后' };
+    };
+    bot.shuttingDown = true;
+    bot.activeMessageHandlers = 0;
+    bot.sessionExecutionReservations = new Set();
+    bot.taskStatusTasks = new Map();
+    // 预置一个 completion batch（模拟 destroy 开始前已积累的批量回流）
+    bot.subAgentCompletionBatches.set(sessionKey, {
+      topic: 'p2p_38_110',
+      senderId: 'usr38',
+      channelSource: undefined,
+      executionScope: undefined,
+      firstAt: Date.now(),
+      clearGeneration: 0,
+      items: new Map([['item-1', {
+        id: 'item-1',
+        displayName: '子agent1',
+        task: '审查',
+        observation: '[子agent1 已完成]\n结果摘要：审查完成',
+        status: 'completed',
+      }]]),
+    });
+
+    await (bot as any).flushSubAgentCompletionBatch(sessionKey, true);
+
+    assert.deepStrictEqual(runtimeObservations, []);
+    assert.strictEqual(bot.activeMessageHandlers, 0);
+    // destroy 开始后 batch 未被消费，仍留在 map 中由 destroy 统一清理
+    assert.ok(bot.subAgentCompletionBatches.has(sessionKey));
+  });
+
+  test('destroy waits for in-flight subagent completion feedback before finalizing', async () => {
+    const { bot, runtimeObservations, session } = createProcessHarness();
+    const manager = SubAgentManager.getInstance();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_38_110:agent:usr43';
+    const subAgentId = 'sub-cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const observation = `[子agent1 已完成]\nID：${subAgentId}\n结果摘要：审查完成`;
+    const order: string[] = [];
+    let releaseObservation: (() => void) | undefined;
+    const observationGate = new Promise<void>((resolve) => { releaseObservation = resolve; });
+    session.handleRuntimeObservation = async (text: string, options: any) => {
+      runtimeObservations.push({ text, options });
+      await observationGate;
+      return { visibleToUser: true, text: '回流完成' };
+    };
+    bot.shuttingDown = false;
+    bot.activeMessageHandlers = 0;
+    bot.sessionExecutionReservations = new Set();
+    bot.taskStatusTasks = new Map();
+    bot.activeConversationTasks = new Map();
+    bot.sessionManager = {
+      getOrCreate: () => session,
+      get: () => session,
+      destroy: async () => { order.push('sessions-destroyed'); },
+    };
+    bot.bot = { disconnect: () => { order.push('socket-disconnected'); } };
+
+    (manager as any).parentMap.set(subAgentId, sessionKey);
+    (manager as any).resultNotifyOnObservation.add(subAgentId);
+    try {
+      // 子智能体回流在 destroy 之前已进入（暂停在 handleRuntimeObservation）
+      const feedbackPromise = (bot as any).handleSubAgentFeedback(
+        sessionKey,
+        'p2p_38_110',
+        'usr38',
+        observation,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.strictEqual(bot.activeMessageHandlers, 1);
+
+      // destroy 开始：必须等待 in-flight 回流完成后再 disconnect。
+      const destroyPromise = bot.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // 在释放回流之前，destroy 必须仍在 quiesce 等待，不得提前 disconnect /
+      // 销毁 session（否则等待语义不成立）。
+      assert.deepStrictEqual(order, [], `destroy finalized before in-flight subagent feedback: ${order.join(',')}`);
+      releaseObservation?.();
+      await Promise.all([feedbackPromise, destroyPromise]);
+
+      assert.strictEqual(runtimeObservations.length, 1);
+      assert.deepStrictEqual(order, ['sessions-destroyed', 'socket-disconnected']);
+      assert.strictEqual(bot.activeMessageHandlers, 0);
+    } finally {
+      (manager as any).parentMap.delete(subAgentId);
+      (manager as any).resultNotifyOnObservation.delete(subAgentId);
+    }
+  });
+
+  test('destroy drops a subagent feedback result that lands after the quiesce timeout', async () => {
+    // 回归：模型回合超过 quiesce 3s 预算时，destroy() 超时返回；随后模型结果
+    // 落地时必须被 shutdown fence 丢弃（不 reply、不入队、不 mark handled），
+    // 不能越过销毁边界继续产生副作用。
+    const { bot, runtimeObservations, replies, session } = createProcessHarness();
+    const manager = SubAgentManager.getInstance();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_38_110:agent:usr43';
+    const subAgentId = 'sub-dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const observation = `[子agent1 已完成]\nID：${subAgentId}\n结果摘要：审查完成`;
+    const order: string[] = [];
+    let releaseObservation: (() => void) | undefined;
+    const observationGate = new Promise<void>((resolve) => { releaseObservation = resolve; });
+    session.handleRuntimeObservation = async (text: string, options: any) => {
+      runtimeObservations.push({ text, options });
+      await observationGate;
+      return { visibleToUser: true, text: '不应在 destroy 返回后落地的回流结果' };
+    };
+    bot.shuttingDown = false;
+    bot.activeMessageHandlers = 0;
+    bot.sessionExecutionReservations = new Set();
+    bot.taskStatusTasks = new Map();
+    bot.activeConversationTasks = new Map();
+    bot.sessionManager = {
+      getOrCreate: () => session,
+      get: () => session,
+      interruptAll: () => { order.push('interrupt-all'); },
+      destroy: async () => { order.push('sessions-destroyed'); },
+    };
+    bot.bot = { disconnect: () => { order.push('socket-disconnected'); } };
+    // 模拟 quiesce 预算耗尽：destroy 不再等待 in-flight handler，直接收尾返回。
+    (bot as any).waitForActiveHandlersToQuiesce = async () => {};
+
+    (manager as any).parentMap.set(subAgentId, sessionKey);
+    (manager as any).resultNotifyOnObservation.add(subAgentId);
+    try {
+      // 子智能体回流在 destroy 之前进入模型回合并挂起。
+      const feedbackPromise = (bot as any).handleSubAgentFeedback(
+        sessionKey,
+        'p2p_38_110',
+        'usr38',
+        observation,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.strictEqual(bot.activeMessageHandlers, 1);
+
+      // destroy 超时返回（quiesce 被 mock 为立即结束），connector 已断开。
+      const destroyPromise = bot.destroy();
+      await destroyPromise;
+      assert.deepStrictEqual(order, ['interrupt-all', 'sessions-destroyed', 'socket-disconnected']);
+      assert.strictEqual(bot.activeMessageHandlers, 1, 'in-flight handler 仍在跑');
+
+      // 模型回合随后返回：结果必须被 shutdown fence 丢弃。
+      releaseObservation?.();
+      await feedbackPromise;
+
+      assert.strictEqual(runtimeObservations.length, 1);
+      assert.deepStrictEqual(replies, [], 'destroy 返回后不得发送回复');
+      assert.strictEqual(bot.activeMessageHandlers, 0);
+      // 未 mark handled：sub-agent 结果没有在 shutdown 后被标记为已消费。
+      assert.equal((manager as any).resultNotifyOnObservation.has(subAgentId), true);
+    } finally {
+      (manager as any).parentMap.delete(subAgentId);
+      (manager as any).resultNotifyOnObservation.delete(subAgentId);
+    }
   });
 });
 

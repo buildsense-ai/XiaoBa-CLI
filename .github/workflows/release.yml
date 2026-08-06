@@ -36,6 +36,13 @@ jobs:
       matrix:
         arch: [x64, arm64]
     env:
+      # Job-level override of the global NPM_INSTALL_FLAGS: force npm to install
+      # optionalDependencies for the TARGET architecture, not the runner's. The
+      # mac matrix builds on Apple Silicon runners for both x64 and arm64, so
+      # without this npm ci only fetched arm64 prebuilt natives (e.g.
+      # @img/sharp-darwin-arm64, @napi-rs/canvas-darwin-arm64), which were then
+      # packed into the x64 artifact and crashed Intel Macs on launch.
+      NPM_INSTALL_FLAGS: '--prefer-offline --no-audit --fund=false --os=darwin --cpu=${{ matrix.arch }}'
       XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update/macos-${{ matrix.arch }}
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}

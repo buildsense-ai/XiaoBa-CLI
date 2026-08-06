@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import matter from 'gray-matter';
 import type { CatsCoAuthSnapshot } from '../catscompany/local-config';
 import {
   createBotDefinitionSyncService,
@@ -17,6 +18,8 @@ import {
 } from './cloud-client';
 import { BotSkillBaseStore } from './base-store';
 import {
+  BOT_SKILL_LOCAL_MARKER_FILE,
+  computeBotSkillPackageHash,
   readBotSkillLocalMarker,
   scanBotSkillWorkspace,
   writeBotSkillLocalMarker,
@@ -24,10 +27,12 @@ import {
 import { BotPrivateSkillClient } from './private-package-client';
 import type {
   BotSkillPackage,
+  BotSkillPackageFile,
   BotSkillSyncBase,
   BotSkillSyncBaseEntry,
   LocalBotSkillManifestEntry,
 } from './types';
+import { applySkillHubLocalMetadata } from '../skillhub/local-skill-metadata';
 
 export type BotSkillSyncDirection =
   | 'none'
@@ -55,6 +60,19 @@ export interface BotSkillSyncServiceOptions {
   privateClient?: BotPrivateSkillClient;
 }
 
+export interface FinalizePublicBotSkillInput {
+  localSkillId: string;
+  skillName: string;
+  reference: BotSkillRef;
+}
+
+export interface FinalizePublicBotSkillOptions {
+  publicationWaitMs?: number;
+  pollDelayMs?: number;
+  sleep?: (delayMs: number) => Promise<void>;
+  validateScope?: () => Promise<void> | void;
+}
+
 export class BotSkillCloudRestoreError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message);
@@ -78,6 +96,21 @@ interface BotSkillRestoreJournal {
     | 'committed';
 }
 
+interface BotSkillFinalizeJournal {
+  schema: 'xiaoba.bot-skill-finalize-journal.v1';
+  botId: string;
+  skillsRoot: string;
+  skillPath: string;
+  localSkillId: string;
+  skillName: string;
+  previousContentHash: string;
+  nextContentHash: string;
+  reference: BotSkillRef;
+  previousSkill: string;
+  nextSkill: string;
+  previousMarker: string;
+}
+
 export class BotSkillSyncService {
   private readonly runtimeRoot: string;
   private readonly botId: string;
@@ -91,7 +124,7 @@ export class BotSkillSyncService {
   constructor(options: BotSkillSyncServiceOptions) {
     this.runtimeRoot = path.resolve(options.runtimeRoot);
     this.botId = String(options.botId || '').trim();
-    if (!/^[A-Za-z0-9_.-]+$/.test(this.botId)) throw new Error('Invalid Bot ID for Skill sync');
+    if (!/^[A-Za-z0-9_.-]{1,160}$/.test(this.botId)) throw new Error('Invalid Bot ID for Skill sync');
     this.skillsRoot = path.resolve(options.skillsRoot ?? path.join(this.runtimeRoot, 'skills'));
     this.workspaceExisted = options.workspaceExisted;
     this.cloudOptions = {
@@ -156,7 +189,7 @@ export class BotSkillSyncService {
       this.skillsRoot,
     );
     const base = this.baseStore.read(this.botId);
-    const local = this.readLocalManifest();
+    let local = this.readLocalManifest();
     let cloud: CloudBotSkills | undefined;
     try {
       cloud = await pullCloudBotSkills(this.cloudOptions);
@@ -168,6 +201,9 @@ export class BotSkillSyncService {
       if (!fs.existsSync(this.skillsRoot)) fs.mkdirSync(this.skillsRoot, { recursive: true });
       return this.featureUnavailable();
     }
+
+    this.recoverInterruptedFinalizes(cloud);
+    local = this.readLocalManifest();
 
     if (!cloud.definition) {
       if (!this.workspaceExisted && base?.skills.length) {
@@ -219,6 +255,239 @@ export class BotSkillSyncService {
     };
   }
 
+  /**
+   * Completes the second phase of sharing a local Skill. CatsCo has already
+   * bound the public reference to BotDefinition; this method proves that the
+   * published package is downloadable and still matches the selected local
+   * Skill before making local/Base agree with that public reference.
+   */
+  async finalizePublicSkill(
+    input: FinalizePublicBotSkillInput,
+    options: FinalizePublicBotSkillOptions = {},
+  ): Promise<BotSkillSyncResult> {
+    const localSkillId = String(input.localSkillId || '').trim();
+    const skillName = String(input.skillName || '').trim();
+    const reference = input.reference;
+    if (!/^[A-Za-z0-9._:-]{1,160}$/.test(localSkillId)) {
+      throw new Error('A valid local Skill ID is required for public finalization.');
+    }
+    if (
+      reference?.source !== 'skillhub'
+      || !String(reference.skillId || '').trim()
+      || isPrivateSkillReference(reference.skillId)
+      || !String(reference.version || '').trim()
+      || !/^[a-f0-9]{64}$/.test(String(reference.contentHash || ''))
+    ) {
+      throw new Error('A valid public SkillHub reference is required for finalization.');
+    }
+
+    BotSkillSyncService.recoverInterruptedRestore(
+      this.runtimeRoot,
+      this.botId,
+      this.skillsRoot,
+    );
+    const initialCloud = await pullCloudBotSkills(this.cloudOptions);
+    if (!initialCloud) throw new Error('Bot Skill cloud sync is unavailable for public finalization.');
+    await options.validateScope?.();
+    this.recoverInterruptedFinalizes(initialCloud);
+    const base = this.baseStore.read(this.botId);
+    const local = this.readLocalManifest();
+    const selected = local.find(entry => (
+      entry.localSkillId === localSkillId && entry.name === skillName
+    ));
+    if (!selected) throw new Error('The selected local Skill no longer exists or changed identity.');
+    if (!initialCloud.definition || !initialCloud.skills.some(item => botSkillRefEqual(item, reference))) {
+      throw new Error('The public Skill reference is not present in the current BotDefinition.');
+    }
+
+    const packageValue = await this.waitForPublicPackage(reference, options);
+    const refreshed = this.readLocalManifest().find(entry => (
+      entry.localSkillId === localSkillId && entry.name === skillName
+    ));
+    if (!refreshed || refreshed.contentHash !== selected.contentHash) {
+      throw new Error('The selected local Skill changed while its public package was being published.');
+    }
+    const nextSkillMarkdown = publishedSkillMarkdown(refreshed, packageValue);
+    await options.validateScope?.();
+    const currentCloud = await pullCloudBotSkills(this.cloudOptions);
+    if (!currentCloud?.definition || !currentCloud.skills.some(item => botSkillRefEqual(item, reference))) {
+      throw new Error('The public Skill reference was removed from BotDefinition during finalization.');
+    }
+    const readyToWrite = this.readLocalManifest().find(entry => (
+      entry.localSkillId === localSkillId && entry.name === skillName
+    ));
+    if (!readyToWrite || readyToWrite.contentHash !== refreshed.contentHash) {
+      throw new Error('The selected local Skill changed before public finalization could be committed.');
+    }
+
+    // Keep the final local journal/file write behind the same lifecycle fence as
+    // the cloud checks. Once this synchronous block starts, no JS shutdown hook
+    // can interleave between its individual filesystem writes.
+    await options.validateScope?.();
+    const skillFile = path.join(readyToWrite.path, 'SKILL.md');
+    const markerFile = path.join(readyToWrite.path, BOT_SKILL_LOCAL_MARKER_FILE);
+    const previousSkill = fs.readFileSync(skillFile, 'utf8');
+    const previousMarker = fs.readFileSync(markerFile, 'utf8');
+    const previousMarkerValue = readBotSkillLocalMarker(readyToWrite.path);
+    const journal: BotSkillFinalizeJournal = {
+      schema: 'xiaoba.bot-skill-finalize-journal.v1',
+      botId: this.botId,
+      skillsRoot: this.skillsRoot,
+      skillPath: readyToWrite.path,
+      localSkillId,
+      skillName,
+      previousContentHash: readyToWrite.contentHash,
+      nextContentHash: reference.contentHash,
+      reference,
+      previousSkill,
+      nextSkill: nextSkillMarkdown,
+      previousMarker,
+    };
+    try {
+      this.writeFinalizeJournal(journal);
+      writeTextFileAtomically(skillFile, nextSkillMarkdown);
+      writeBotSkillLocalMarker(readyToWrite.path, {
+        schema: 'xiaoba.bot-skill-local.v1',
+        localSkillId,
+        reference,
+        origin: previousMarkerValue?.origin ?? readyToWrite.origin ?? {
+          skillId: reference.skillId,
+          version: reference.version,
+        },
+      });
+
+      const updatedLocal = this.readLocalManifest();
+      const updated = updatedLocal.find(entry => entry.localSkillId === localSkillId);
+      if (
+        !updated
+        || updated.contentHash !== reference.contentHash
+        || !updated.reference
+        || !botSkillRefEqual(updated.reference, reference)
+      ) {
+        throw new Error('The local Skill does not match the published SkillHub package.');
+      }
+      await options.validateScope?.();
+      const result = await this.pushLocal(updatedLocal, currentCloud, base, {
+        requiredCloudReference: reference,
+        validateScope: options.validateScope,
+      });
+      try {
+        this.removeFinalizeJournal(localSkillId);
+      } catch {
+        // A committed journal safely rolls forward and will be removed on next sync.
+      }
+      return result;
+    } catch (error) {
+      try {
+        writeTextFileAtomically(skillFile, previousSkill);
+        writeTextFileAtomically(markerFile, previousMarker);
+        this.removeFinalizeJournal(localSkillId);
+      } catch (rollbackError) {
+        throw new Error(
+          `The public Skill failed local verification and rollback failed: ${errorMessage(rollbackError)}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private recoverInterruptedFinalizes(cloud: CloudBotSkills): void {
+    const directory = finalizeJournalDirectory(this.runtimeRoot, this.botId);
+    if (!fs.existsSync(directory)) return;
+    const journals = fs.readdirSync(directory, { withFileTypes: true })
+      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+      .map(entry => readFinalizeJournal(
+        path.join(directory, entry.name),
+        this.runtimeRoot,
+        this.botId,
+        this.skillsRoot,
+      ));
+    for (const journal of journals) {
+      const current = this.readLocalManifest().find(entry => (
+        entry.localSkillId === journal.localSkillId
+      ));
+      if (!current) {
+        // A deletion after the interruption is a local user decision. Let the
+        // regular Base rules decide whether it propagates or is restored.
+        this.removeFinalizeJournal(journal.localSkillId);
+        continue;
+      }
+      const markerFile = path.join(current.path, BOT_SKILL_LOCAL_MARKER_FILE);
+      const cloudHasReference = cloud.skills.some(item => botSkillRefEqual(item, journal.reference));
+      const identityChanged = current.name !== journal.skillName
+        || path.resolve(current.path) !== journal.skillPath;
+      const writePublicMarker = (): void => {
+        const previousMarker = JSON.parse(journal.previousMarker) as {
+          origin?: { skillId: string; version: string };
+        };
+        writeBotSkillLocalMarker(current.path, {
+          schema: 'xiaoba.bot-skill-local.v1',
+          localSkillId: journal.localSkillId,
+          reference: journal.reference,
+          origin: previousMarker.origin ?? current.origin ?? {
+            skillId: journal.reference.skillId,
+            version: journal.reference.version,
+          },
+        });
+      };
+      if (identityChanged) {
+        // A rename or move after the interruption wins over the pending finalize.
+        writeTextFileAtomically(markerFile, journal.previousMarker);
+      } else if (current.contentHash === journal.nextContentHash && cloudHasReference) {
+        writePublicMarker();
+      } else if (current.contentHash === journal.previousContentHash) {
+        if (cloudHasReference) {
+          writeTextFileAtomically(path.join(current.path, 'SKILL.md'), journal.nextSkill);
+          const rolledForward = this.readLocalManifest().find(entry => (
+            entry.localSkillId === journal.localSkillId && entry.name === journal.skillName
+          ));
+          if (!rolledForward || rolledForward.contentHash !== journal.nextContentHash) {
+            writeTextFileAtomically(path.join(current.path, 'SKILL.md'), journal.previousSkill);
+            writeTextFileAtomically(markerFile, journal.previousMarker);
+            this.removeFinalizeJournal(journal.localSkillId);
+            throw new Error('Interrupted public Skill finalization could not be rolled forward safely.');
+          }
+          writePublicMarker();
+        } else {
+          writeTextFileAtomically(markerFile, journal.previousMarker);
+        }
+      } else if (current.contentHash === journal.nextContentHash) {
+        writeTextFileAtomically(path.join(current.path, 'SKILL.md'), journal.previousSkill);
+        writeTextFileAtomically(markerFile, journal.previousMarker);
+        const rolledBack = this.readLocalManifest().find(entry => (
+          entry.localSkillId === journal.localSkillId && entry.name === journal.skillName
+        ));
+        if (!rolledBack || rolledBack.contentHash !== journal.previousContentHash) {
+          throw new Error('Interrupted public Skill finalization could not be rolled back safely.');
+        }
+      } else {
+        // A user edit after the interruption wins. Restore only the internal marker
+        // so the edited workspace is uploaded as a new private snapshot normally.
+        writeTextFileAtomically(markerFile, journal.previousMarker);
+      }
+      this.removeFinalizeJournal(journal.localSkillId);
+    }
+  }
+
+  private writeFinalizeJournal(journal: BotSkillFinalizeJournal): void {
+    const filePath = finalizeJournalPath(this.runtimeRoot, this.botId, journal.localSkillId);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    writeTextFileAtomically(filePath, `${JSON.stringify(journal, null, 2)}\n`);
+  }
+
+  private removeFinalizeJournal(localSkillId: string): void {
+    const filePath = finalizeJournalPath(this.runtimeRoot, this.botId, localSkillId);
+    fs.rmSync(filePath, { force: true });
+    const directory = path.dirname(filePath);
+    try {
+      if (fs.existsSync(directory) && fs.readdirSync(directory).length === 0) {
+        fs.rmdirSync(directory);
+      }
+    } catch {
+      // An empty journal directory is harmless, and another finalization may use it.
+    }
+  }
+
   private featureUnavailable(): BotSkillSyncResult {
     return {
       botId: this.botId,
@@ -241,23 +510,46 @@ export class BotSkillSyncService {
     local: LocalBotSkillManifestEntry[],
     initialCloud: CloudBotSkills,
     base: BotSkillSyncBase | undefined,
+    options: {
+      requiredCloudReference?: BotSkillRef;
+      validateScope?: () => Promise<void> | void;
+    } = {},
   ): Promise<BotSkillSyncResult> {
+    if (
+      options.requiredCloudReference
+      && !initialCloud.skills.some(item => botSkillRefEqual(item, options.requiredCloudReference!))
+    ) {
+      throw new Error('The public Skill reference is no longer present in BotDefinition.');
+    }
     const previousByLocalID = new Map(base?.skills.map(entry => [entry.localSkillId, entry]) ?? []);
     const nextEntries: BotSkillSyncBaseEntry[] = [];
+    const pendingMarkers: Array<{
+      path: string;
+      marker: Parameters<typeof writeBotSkillLocalMarker>[1];
+    }> = [];
     for (const entry of local) {
       const previous = previousByLocalID.get(entry.localSkillId);
       let reference: BotSkillRef | undefined;
-      if (previous?.contentHash === entry.contentHash) {
-        reference = previous.reference;
-      } else if (entry.reference) {
+      const markerChanged = Boolean(
+        entry.reference
+        && (!previous || !botSkillRefEqual(entry.reference, previous.reference)),
+      );
+      if (entry.reference && markerChanged) {
         try {
           const existing = await this.privateClient.download(entry.reference);
           if (existing.contentHash === entry.contentHash) reference = entry.reference;
         } catch (error: any) {
           if (![400, 404].includes(Number(error?.status))) throw error;
+          if (!isPrivateSkillReference(entry.reference.skillId)) throw error;
         }
       }
+      if (!reference && previous?.contentHash === entry.contentHash) {
+        reference = previous.reference;
+      } else if (!reference && entry.reference && !markerChanged) {
+        reference = entry.reference;
+      }
       if (!reference) {
+        await options.validateScope?.();
         const uploaded = await this.privateClient.upsert(entry);
         if (uploaded.contentHash !== entry.contentHash) {
           throw new Error(`SkillHub returned a mismatched content hash for ${entry.name}`);
@@ -269,13 +561,16 @@ export class BotSkillSyncService {
         };
       }
       const marker = readBotSkillLocalMarker(entry.path);
-      writeBotSkillLocalMarker(entry.path, {
-        schema: 'xiaoba.bot-skill-local.v1',
-        localSkillId: entry.localSkillId,
-        reference,
-        origin: marker?.origin ?? entry.origin ?? {
-          skillId: reference.skillId,
-          version: reference.version,
+      pendingMarkers.push({
+        path: entry.path,
+        marker: {
+          schema: 'xiaoba.bot-skill-local.v1',
+          localSkillId: entry.localSkillId,
+          reference,
+          origin: marker?.origin ?? entry.origin ?? {
+            skillId: reference.skillId,
+            version: reference.version,
+          },
         },
       });
       nextEntries.push({
@@ -287,25 +582,40 @@ export class BotSkillSyncService {
         ...(entry.origin ? { origin: entry.origin } : {}),
       });
     }
+    await options.validateScope?.();
     const refs = canonicalizeBotSkillRefs(nextEntries.map(entry => entry.reference));
     if (
       base
       && !botSkillRefsEqual(initialCloud.skills, base.skills.map(entry => entry.reference))
     ) {
+      await options.validateScope?.();
       this.writeConflictSnapshot(initialCloud, refs);
     }
     let cloud = initialCloud;
     try {
+      await options.validateScope?.();
       cloud = await replaceCloudBotSkills(this.cloudOptions, cloud, refs);
     } catch (error) {
       if (!(error instanceof BotSkillsCloudConflictError)) throw error;
       const latest = await pullCloudBotSkills(this.cloudOptions);
       if (!latest) throw error;
+      if (
+        options.requiredCloudReference
+        && !latest.skills.some(item => botSkillRefEqual(item, options.requiredCloudReference!))
+      ) {
+        throw new Error('The public Skill reference was removed from BotDefinition during finalization.');
+      }
       if (!base || !botSkillRefsEqual(latest.skills, base.skills.map(entry => entry.reference))) {
+        await options.validateScope?.();
         this.writeConflictSnapshot(latest, refs);
       }
       // The current single-device contract explicitly protects local changes.
+      await options.validateScope?.();
       cloud = await replaceCloudBotSkills(this.cloudOptions, latest, refs);
+    }
+    await options.validateScope?.();
+    for (const item of pendingMarkers) {
+      writeBotSkillLocalMarker(item.path, item.marker);
     }
     this.acceptCloudDefinition(cloud);
     this.writeBase(cloud, nextEntries);
@@ -315,6 +625,49 @@ export class BotSkillSyncService {
       cloudRevision: cloud.revision,
       skills: cloud.skills,
     };
+  }
+
+  private async waitForPublicPackage(
+    reference: BotSkillRef,
+    options: FinalizePublicBotSkillOptions,
+  ): Promise<BotSkillPackage> {
+    const publicationWaitMs = Math.max(0, Math.min(
+      Number(options.publicationWaitMs ?? 45_000),
+      120_000,
+    ));
+    const pollDelayMs = Math.max(25, Math.min(Number(options.pollDelayMs ?? 500), 5_000));
+    const sleep = options.sleep ?? (delayMs => new Promise(resolve => setTimeout(resolve, delayMs)));
+    const deadline = Date.now() + publicationWaitMs;
+    let lastError: unknown;
+    let firstAttempt = true;
+    while (true) {
+      await options.validateScope?.();
+      const remainingMs = deadline - Date.now();
+      if (!firstAttempt && remainingMs <= 0) break;
+      firstAttempt = false;
+      try {
+        const packageValue = await this.privateClient.download(reference, {
+          timeoutMs: Math.max(1, Math.min(10_000, remainingMs > 0 ? remainingMs : 1)),
+        });
+        if (
+          packageValue.source !== 'public'
+          || packageValue.contentHash !== reference.contentHash
+        ) {
+          throw new Error('SkillHub returned a package that does not match the public reference.');
+        }
+        return packageValue;
+      } catch (error: any) {
+        lastError = error;
+        if (Number(error?.status) !== 404) throw error;
+        if (Date.now() >= deadline) break;
+      }
+      await sleep(Math.min(pollDelayMs, Math.max(0, deadline - Date.now())));
+    }
+    const error = new Error('The public Skill package is not ready yet. Please retry finalization.');
+    (error as Error & { code?: string; status?: number; cause?: unknown }).code = 'PUBLIC_SKILL_NOT_READY';
+    (error as Error & { code?: string; status?: number; cause?: unknown }).status = 409;
+    (error as Error & { code?: string; status?: number; cause?: unknown }).cause = lastError;
+    throw error;
   }
 
   private async restoreCloud(cloud: CloudBotSkills): Promise<BotSkillSyncResult> {
@@ -508,6 +861,72 @@ export class BotSkillSyncService {
   }
 }
 
+function publishedSkillMarkdown(
+  local: LocalBotSkillManifestEntry,
+  packageValue: BotSkillPackage,
+): string {
+  const publishedSkillFile = packageValue.files.find(file => file.path === 'SKILL.md');
+  const localSkillFile = local.files.find(file => file.path === 'SKILL.md');
+  if (!publishedSkillFile || !localSkillFile) {
+    throw new Error('The public or local Skill package is missing SKILL.md.');
+  }
+  const publishedMarkdown = Buffer.from(publishedSkillFile.contentBase64, 'base64').toString('utf8');
+  const metadata = matter(publishedMarkdown).data;
+  const author = String(metadata?.skillhub_author || '').trim();
+  const version = String(metadata?.skillhub_version || '').trim();
+  const uploadedAt = String(metadata?.skillhub_uploaded_at || '').trim();
+  if (!author || !version || !uploadedAt) {
+    throw new Error('The public Skill package is missing SkillHub publication metadata.');
+  }
+
+  const localMarkdown = Buffer.from(localSkillFile.contentBase64, 'base64').toString('utf8');
+  const nextMarkdown = applySkillHubLocalMetadata(localMarkdown, {
+    author,
+    version,
+    uploadedAt,
+  });
+  const nextBytes = Buffer.from(nextMarkdown.replace(/\r\n/g, '\n'), 'utf8');
+  const candidateFiles: BotSkillPackageFile[] = local.files.map(file => {
+    if (file.path !== 'SKILL.md') return file;
+    return {
+      path: file.path,
+      size: nextBytes.length,
+      sha256: crypto.createHash('sha256').update(nextBytes).digest('hex'),
+      contentBase64: nextBytes.toString('base64'),
+    };
+  });
+  const expected = [...packageValue.files].sort(comparePackageFiles);
+  const candidate = [...candidateFiles].sort(comparePackageFiles);
+  if (
+    candidate.length !== expected.length
+    || candidate.some((file, index) => (
+      file.path !== expected[index]?.path
+      || file.size !== expected[index]?.size
+      || file.sha256 !== expected[index]?.sha256
+    ))
+    || computeBotSkillPackageHash(candidate) !== packageValue.contentHash
+  ) {
+    throw new Error('The selected local Skill changed after it was shared.');
+  }
+  return nextBytes.toString('utf8');
+}
+
+function botSkillRefEqual(left: BotSkillRef, right: BotSkillRef): boolean {
+  return left.source === right.source
+    && left.skillId === right.skillId
+    && left.version === right.version
+    && left.contentHash === right.contentHash;
+}
+
+function isPrivateSkillReference(skillId: string): boolean {
+  const value = String(skillId || '');
+  return value.startsWith('priv_') || value.startsWith('private/');
+}
+
+function comparePackageFiles(left: BotSkillPackageFile, right: BotSkillPackageFile): number {
+  return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
+}
+
 function localMatchesBase(
   local: LocalBotSkillManifestEntry[],
   base: BotSkillSyncBase,
@@ -523,6 +942,101 @@ function localMatchesBase(
       && previous.installName === entry.installName
     );
   });
+}
+
+function finalizeJournalDirectory(runtimeRoot: string, botId: string): string {
+  return path.join(
+    path.resolve(runtimeRoot),
+    'data',
+    'bot-skills',
+    'finalize-journal',
+    String(botId).trim(),
+  );
+}
+
+function finalizeJournalPath(runtimeRoot: string, botId: string, localSkillId: string): string {
+  return path.join(
+    finalizeJournalDirectory(runtimeRoot, botId),
+    `${String(localSkillId).trim()}.json`,
+  );
+}
+
+function readFinalizeJournal(
+  filePath: string,
+  runtimeRoot: string,
+  botId: string,
+  skillsRoot: string,
+): BotSkillFinalizeJournal {
+  let value: BotSkillFinalizeJournal;
+  try {
+    value = JSON.parse(fs.readFileSync(filePath, 'utf8')) as BotSkillFinalizeJournal;
+  } catch {
+    throw new Error('Bot Skill finalize journal cannot be read safely');
+  }
+  const expectedRoot = path.resolve(skillsRoot);
+  const skillPath = path.resolve(String(value.skillPath || ''));
+  const relativeSkillPath = path.relative(expectedRoot, skillPath);
+  let previousMarker: any;
+  try {
+    previousMarker = JSON.parse(String(value.previousMarker || ''));
+  } catch {
+    throw new Error('Bot Skill finalize journal contains an invalid previous marker');
+  }
+  if (
+    value.schema !== 'xiaoba.bot-skill-finalize-journal.v1'
+    || value.botId !== String(botId).trim()
+    || path.resolve(value.skillsRoot || '') !== expectedRoot
+    || !/^[A-Za-z0-9._:-]{1,160}$/.test(String(value.localSkillId || ''))
+    || String(value.skillName || '').trim().length === 0
+    || String(value.skillName || '').length > 256
+    || relativeSkillPath === ''
+    || relativeSkillPath.startsWith(`..${path.sep}`)
+    || relativeSkillPath === '..'
+    || path.isAbsolute(relativeSkillPath)
+    || !/^[a-f0-9]{64}$/.test(String(value.previousContentHash || ''))
+    || !/^[a-f0-9]{64}$/.test(String(value.nextContentHash || ''))
+    || !validFinalizeReference(value.reference)
+    || typeof value.previousSkill !== 'string'
+    || value.previousSkill.length > 2 * 1024 * 1024
+    || typeof value.nextSkill !== 'string'
+    || value.nextSkill.length > 2 * 1024 * 1024
+    || typeof value.previousMarker !== 'string'
+    || value.previousMarker.length > 64 * 1024
+    || previousMarker?.schema !== 'xiaoba.bot-skill-local.v1'
+    || previousMarker?.localSkillId !== value.localSkillId
+    || path.resolve(filePath) !== finalizeJournalPath(runtimeRoot, botId, value.localSkillId)
+  ) {
+    throw new Error('Bot Skill finalize journal is invalid');
+  }
+  return {
+    ...value,
+    skillsRoot: expectedRoot,
+    skillPath,
+  };
+}
+
+function validFinalizeReference(reference: BotSkillRef | undefined): reference is BotSkillRef {
+  return Boolean(
+    reference
+    && reference.source === 'skillhub'
+    && String(reference.skillId || '').length > 0
+    && String(reference.skillId || '').length <= 256
+    && !isPrivateSkillReference(reference.skillId)
+    && String(reference.version || '').length > 0
+    && String(reference.version || '').length <= 128
+    && /^[a-f0-9]{64}$/.test(String(reference.contentHash || '')),
+  );
+}
+
+function writeTextFileAtomically(filePath: string, content: string): void {
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(temporary, content, 'utf8');
+    fs.renameSync(temporary, filePath);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    throw error;
+  }
 }
 
 function restoreJournalPath(runtimeRoot: string, botId: string): string {

@@ -14,6 +14,10 @@ describe('CatsCompany runtime device capabilities', () => {
       'send_file',
       'execute_shell',
       'external_history',
+      'skillhub.localWorkspace.get',
+      'skillhub.localSkill.share',
+      'skillhub.localSkill.finalize',
+      'skillhub.localBot.switch',
     ]);
   });
 });

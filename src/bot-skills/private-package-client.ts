@@ -81,13 +81,18 @@ export class BotPrivateSkillClient {
     };
   }
 
-  async download(reference: BotSkillRef): Promise<BotSkillPackage> {
+  async download(
+    reference: BotSkillRef,
+    options: { timeoutMs?: number } = {},
+  ): Promise<BotSkillPackage> {
     const expected = parsePackageReference(reference);
     const skillId = encodeReferencePath(expected.skillId);
     const version = encodeURIComponent(expected.version);
     const response = await this.request(
       'GET',
       `/api/bot/skill-packages/${skillId}/versions/${version}`,
+      undefined,
+      options,
     );
     const packageValue = validateDownloadedPackage(response, expected);
     if (packageValue.contentHash !== reference.contentHash) {
@@ -148,11 +153,20 @@ export class BotPrivateSkillClient {
     return target;
   }
 
-  private async request(method: string, apiPath: string, body?: unknown): Promise<any> {
+  private async request(
+    method: string,
+    apiPath: string,
+    body?: unknown,
+    options: { timeoutMs?: number } = {},
+  ): Promise<any> {
     const apiKey = String(this.auth.apiKey || '').trim();
     if (!apiKey) throw new Error('CatsCo Bot API key is required for private Skill sync.');
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), PRIVATE_PACKAGE_TIMEOUT_MS);
+    const timeoutMs = Math.max(1, Math.min(
+      Number(options.timeoutMs ?? PRIVATE_PACKAGE_TIMEOUT_MS),
+      PRIVATE_PACKAGE_TIMEOUT_MS,
+    ));
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await this.fetchImpl(`${this.baseUrl}${apiPath}`, {
         method,
