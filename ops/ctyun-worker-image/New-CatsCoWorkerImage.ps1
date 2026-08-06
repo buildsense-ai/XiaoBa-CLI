@@ -801,13 +801,26 @@ function Invoke-ExactBakeCleanup {
     $discoveryDeadline = Get-BoundedDeadline `
         -RequestedSeconds $discoverySeconds `
         -Phase "exact bake resource discovery"
+
+    # Resolve the builder FIRST: its immutable instance ID is the ownership
+    # proof the image deletion depends on (sourceServerID match). The builder
+    # itself is deleted LAST so it stays as evidence while the image is being
+    # removed — the same ordering as the in-process finally path. Deleting the
+    # builder first would strand a genuinely owned image if image deletion
+    # cannot complete (un-deletable state, delete failure, or confirmation
+    # timeout), turning a recoverable leak into a permanent one.
+    $candidateBuilder = Resolve-BuilderInstance -WaitSeconds $discoverySeconds
+    if ($candidateBuilder) {
+        $script:BuilderID = [string]$candidateBuilder.instanceID
+        $script:BuilderName = [string]$candidateBuilder.instanceName
+    }
+
     $candidateImage = $null
     do {
         $candidateImage = Find-ImageByName -Name $script:ImageWorkName
         if ($candidateImage -or -not $WaitForLateResources) { break }
         Start-Sleep -Seconds 10
     } while ((Get-Date) -lt $discoveryDeadline)
-    $candidateBuilder = Resolve-BuilderInstance -WaitSeconds $discoverySeconds
 
     # Reconcile resources that can be uniquely proven to belong to this bake;
     # anything that cannot be proven stays fail-closed and is reported. A
@@ -817,22 +830,10 @@ function Invoke-ExactBakeCleanup {
     $errors = [Collections.Generic.List[string]]::new()
     $reconciled = [Collections.Generic.List[string]]::new()
 
-    # --- Builder: resolve first, because the image's sourceServerID proof and
-    # the builder deletion both depend on the resolved immutable instance ID. ---
-    if ($candidateBuilder) {
-        $script:BuilderID = [string]$candidateBuilder.instanceID
-        $script:BuilderName = [string]$candidateBuilder.instanceName
-        try {
-            Remove-Builder -WaitForLate:$WaitForLateResources
-            $reconciled.Add("builder=$script:BuilderID")
-        } catch {
-            $errors.Add("builder cleanup (name=$script:BuilderName): $($_.Exception.Message)")
-        }
-    }
-
-    # --- Image: only deletable when sourceServerID matches the resolved builder
-    # (same ownership proof as the in-process finally path). Without a builder
-    # the image's source identity cannot be proven, so it stays fail-closed. ---
+    # --- Image first: deletable only when sourceServerID matches the resolved
+    # builder (same ownership proof as the in-process finally path). Without a
+    # builder the image's source identity cannot be proven, so it stays
+    # fail-closed. ---
     if ($candidateImage) {
         $script:ImageCreateAttempted = $true
         $script:ImageID = ""
@@ -845,39 +846,53 @@ function Invoke-ExactBakeCleanup {
         }
     }
 
+    # --- Builder: deleted only after the image is gone, so it remains as
+    # ownership evidence if image deletion could not complete. ---
+    if ($candidateBuilder) {
+        try {
+            Remove-Builder -WaitForLate:$WaitForLateResources
+            $reconciled.Add("builder=$script:BuilderID")
+        } catch {
+            $errors.Add("builder cleanup (name=$script:BuilderName): $($_.Exception.Message)")
+        }
+    }
+
     # --- Key pair: the unique temporary name (derived from the deterministic
-    # bake token) is the ownership proof; delete only when it uniquely matches. ---
+    # bake token) is the ownership proof; delete only when it uniquely matches.
+    # The lookup is inside the try so API errors/deadlines join the aggregate
+    # instead of aborting it. ---
     if ($script:KeyPairName) {
-        $keyDetails = Invoke-Ctyun @(
-            "ecs", "GetEcsKeypairDetails",
-            "--regionID", $RegionID,
-            "--projectID", $ProjectID,
-            "--keyPairName", $script:KeyPairName,
-            "--pageNo", "1",
-            "--pageSize", "10"
-        )
-        $candidateKeyPair = @(
-            @(Get-ResponseItems -Response $keyDetails -Name "results") |
-                Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
-        )
-        if ($candidateKeyPair.Count -eq 1) {
-            $script:KeyPairCreateAttempted = $true
-            try {
+        try {
+            $keyDetails = Invoke-Ctyun @(
+                "ecs", "GetEcsKeypairDetails",
+                "--regionID", $RegionID,
+                "--projectID", $ProjectID,
+                "--keyPairName", $script:KeyPairName,
+                "--pageNo", "1",
+                "--pageSize", "10"
+            )
+            $candidateKeyPair = @(
+                @(Get-ResponseItems -Response $keyDetails -Name "results") |
+                    Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
+            )
+            if ($candidateKeyPair.Count -eq 1) {
+                $script:KeyPairCreateAttempted = $true
                 Remove-KeyPair -WaitForLate:$WaitForLateResources
                 $reconciled.Add("keyPair=$script:KeyPairName")
-            } catch {
-                $errors.Add("key pair cleanup (name=$script:KeyPairName): $($_.Exception.Message)")
+            } elseif ($candidateKeyPair.Count -gt 1) {
+                $errors.Add("key pair name '$script:KeyPairName' is not unique; refusing to delete")
             }
-        } elseif ($candidateKeyPair.Count -gt 1) {
-            $errors.Add("key pair name '$script:KeyPairName' is not unique; refusing to delete")
+        } catch {
+            $errors.Add("key pair cleanup (name=$script:KeyPairName): $($_.Exception.Message)")
         }
     }
 
     if ($errors.Count -gt 0) {
-        throw (
-            "Temporary cloud resource cleanup failed during reconciliation:`n" +
-            ($errors -join "`n")
-        )
+        $summary = "Temporary cloud resource cleanup failed during reconciliation"
+        if ($reconciled.Count -gt 0) {
+            $summary += " (reconciled: $($reconciled -join ', '))"
+        }
+        throw ($summary + "`n" + ($errors -join "`n"))
     }
 
     if ($reconciled.Count -gt 0) {

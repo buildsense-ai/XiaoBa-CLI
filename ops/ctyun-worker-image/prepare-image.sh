@@ -170,9 +170,13 @@ fi
 # The final dpkg configuration must actually succeed. A version string alone is
 # not enough: a half-configured package can still report the new Version while
 # the image ships a broken dpkg database (review: version gate masked configure
-# failures). Fail closed here.
+# failures). Fail closed here. Note this also means a CLEAN postinst failure
+# (as opposed to a timeout) on the running older systemd now blocks the bake
+# instead of being silently tolerated — producing an image with an unconfigured
+# dpkg database is not acceptable, and a hung manager is already bounded by the
+# outer timeouts.
 if ! dpkg --configure -a >/tmp/catsco-dpkg-configure-final.log 2>&1; then
-  die "dpkg configuration did not complete after systemd/glibc upgrade; see /tmp/catsco-dpkg-configure-final.log"
+  die "dpkg database not fully configured after platform upgrade; see /tmp/catsco-dpkg-configure-final.log"
 fi
 
 SYSTEMD_VERSION="$(dpkg-query -W -f='${Version}' systemd 2>/dev/null || true)"

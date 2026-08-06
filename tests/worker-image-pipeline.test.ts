@@ -106,7 +106,7 @@ describe("Tianyi Cloud worker image pipeline", () => {
     // version gate masked configure failures)
     assert.match(imagePreparer, /db:Status-Abbrev/);
     assert.match(imagePreparer, /not fully configured/);
-    assert.match(imagePreparer, /dpkg configuration did not complete/);
+    assert.match(imagePreparer, /dpkg database not fully configured/);
     // fwupd masks are verified through their persistent /etc symlink and a
     // failed mask blocks the bake (review: swallowed mask failures)
     assert.match(imagePreparer, /readlink/);
@@ -438,7 +438,7 @@ describe("Tianyi Cloud worker image pipeline", () => {
       );
       assert.match(
         dpkgResult.stderr,
-        /dpkg configuration did not complete/,
+        /dpkg database not fully configured/,
       );
 
       // Probe 9: a half-configured package (status not 'ii') blocks the bake

@@ -96,6 +96,12 @@
 - [x] **步骤 5f：Nobody-ly 复审 3 项（2026-08-05 09:12，head fb9b9f6）**
   - **High dpkg configure 失败被版本门掩盖 → 已修**：最终 `dpkg --configure -a` 失败 `die`（不再 `|| true`）；版本断言前校验包状态 `dpkg-query -W -f='${db:Status-Abbrev}'` 必须 `ii`（install ok installed）。新增探针 8（configure 返回 43 + 版本达标 → `dpkg configuration did not complete`）与探针 9（status=`iU` → `not fully configured`）。
   - **High Cleanup 只发现不回收 → 已修**：`Invoke-ExactBakeCleanup` 改为"**可确权则删除、无法确权才报告**"——builder（唯一名 + `Assert-TemporaryBuilder`）、image（名字 + description + `sourceServerID` 与解析出的 builder 匹配）、key pair（唯一临时名）分别复用 `Remove-Builder`/`Remove-FailedImage`/`Remove-KeyPair`（含连续空读确认）；builder 无法解析时 image 无法证明归属 → 保持 fail-closed。测试更新：全资源场景 → `reconciled` 全删、source 不匹配场景 → builder/key 删 + image 报告、key-only 场景 → key 删。
+  - **子 agent 深度代码链路审查（08-06，纯静态，不跑测试）**：
+    - **Critical C1（已修）**：原实现先删 builder 再删 image——若 image 删除无法完成（不可删状态/失败/确认超时），builder 已删 → 下一轮 image 无法确权 → 镜像永久搁浅 + 计费泄漏。修复：**builder 移到 image 删除之后**（先解析拿 immutable ID → 删 image → 删 builder），与 finally 顺序一致，builder 全程作归属证据。
+    - **Important I1（已处理）**：最终 `dpkg --configure -a` die 与"postinst 失败 expected"注释矛盾——clean postinst 失败现在会阻断 bake（有意 fail-closed）。更新注释说明 + die 消息中性化（`dpkg database not fully configured`）；真实 base image 上的 postinst 行为留待合并后真实 bake 验证。
+    - **Important I2（记录为后续项）**：无 builder 时 image 无法回收（image 与 key pair 证明标准不一致）——修 C1 后此场景仅剩跨轮竞态；name+description 兜底确权涉及与 key pair 按名确权同类的争议，不强改，列入 Follow-ups。
+    - **Important I3（已修）**：key pair 查询原在 try/catch 外，API 错误/超时会破坏错误聚合——已包进 try 聚合。
+    - **Minor M1/M2/M3（已修）**：die 消息中性化、throw 附已回收清单（`reconciled`）、builder 先解析再发现镜像（避免镜像发现过期静默跳过）。
   - **High pending 按名删 key pair 证明不足 → 接受风险并说明**：唯一临时名 + bake marker 是当前最强可用证明；同名重建需同 bakeID 并发操作（被 pending 恢复流程排除），接受理论竞态并在 review 回复中说明。
 
 - [x] **步骤 6：npm mirror 预配置**
