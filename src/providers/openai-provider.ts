@@ -21,18 +21,48 @@ const MAX_PROVIDER_ERROR_BODY_BYTES = 64 * 1024;
 const PROVIDER_ERROR_BODY_READ_TIMEOUT_MS = 2_000;
 
 interface ResponsesBreakpointDiagnostic {
-  label: 'S' | 'A' | 'B';
+  label: 'S';
   prefixHash: string;
   inputItems: number;
   inputTokenEstimate: number;
 }
 
+interface ResponsesImplicitBreakpointDiagnostic {
+  kind: 'user' | 'tool';
+  itemType: string;
+  inputItems: number;
+  prefixHash: string;
+  prefixTokenEstimate: number;
+}
+
 interface ResponsesInputLayout {
   input: any[];
-  breakpoints: Array<'S' | 'A' | 'B'>;
-  prefixHashes: Partial<Record<'S' | 'A' | 'B', string>>;
+  breakpoints: Array<'S'>;
+  prefixHashes: Partial<Record<'S', string>>;
   breakpointDiagnostics: ResponsesBreakpointDiagnostic[];
+  durableItems: number;
+  transientItems: number;
+  transientReplayItems: number;
+  transientDeveloperItems: number;
 }
+
+interface ResponsesWireItemDiagnostic {
+  index: number;
+  segment: 'anchor' | 'durable' | 'transient_replay' | 'transient_developer';
+  role?: string;
+  type?: string;
+  marker?: string;
+  hash: string;
+  tokenEstimate: number;
+}
+
+const RESPONSES_SESSION_ANCHOR = [
+  '[session_protocol]',
+  'The following input replays the durable XiaoBa session in chronological order.',
+  'Tool calls and tool results must remain paired and ordered.',
+  'Request-local context, when present, is appended after the durable session.',
+  '[/session_protocol]',
+].join('\n');
 
 /**
  * OpenAI Provider
@@ -49,7 +79,8 @@ export class OpenAIProvider implements AIProvider {
   private maxTokens: number;
   private reasoningEffort: ChatConfig['reasoningEffort'];
   private openaiApiMode: ChatConfig['openaiApiMode'];
-  private responsesExplicitCacheSupported: boolean | undefined;
+  private responsesExplicitAnchorSupported: boolean | undefined;
+  private responsesTraceSequence = 0;
 
   constructor(config: ChatConfig) {
     this.apiUrl = config.apiUrl!;
@@ -195,6 +226,35 @@ export class OpenAIProvider implements AIProvider {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${this.apiKey}`,
     };
+  }
+
+  /**
+   * Build Responses-only headers following Pi's OpenAI compatibility convention.
+   * The relay may use these stable values for session-affine routing. We keep
+   * the behavior off for the native OpenAI endpoint unless explicitly forced.
+   */
+  private responsesHeaders(options?: AIRequestOptions): Record<string, string> {
+    const headers: Record<string, string> = { ...this.headers };
+    const sessionKey = options?.promptCacheContext?.sessionKey;
+    if (!sessionKey || sessionKey === 'unknown' || sessionKey === 'unscoped' || !this.isResponsesSessionAffinityEnabled()) {
+      return headers;
+    }
+
+    const affinity = `xiaoba-${createHash('sha256').update(sessionKey).digest('hex').slice(0, 32)}`;
+    // Pi's OpenAI Responses compatibility mode uses the same stable session
+    // value for these two relay-recognized headers.
+    headers.session_id = affinity;
+    headers['x-client-request-id'] = affinity;
+    return headers;
+  }
+
+  private isResponsesSessionAffinityEnabled(): boolean {
+    const configured = String(process.env.XIAOBA_RESPONSES_SESSION_AFFINITY || 'auto')
+      .trim()
+      .toLowerCase();
+    if (configured === 'off' || configured === 'false' || configured === 'disabled') return false;
+    if (configured === 'on' || configured === 'force') return true;
+    return !this.isOfficialOpenAIResponsesEndpoint();
   }
 
   /**
@@ -409,6 +469,34 @@ export class OpenAIProvider implements AIProvider {
     options?: AIRequestOptions,
     forceCompatibility = false,
   ): any {
+    const requestTraceId = this.nextResponsesTraceId();
+    const logicalBody = this.buildResponsesLogicalRequestBody(
+      messages,
+      tools,
+      options,
+      forceCompatibility,
+      stream,
+      requestTraceId,
+    );
+    const body = {
+      ...logicalBody,
+      stream,
+    };
+    Object.defineProperty(body, '__xiaobaResponsesTraceId', {
+      value: requestTraceId,
+      enumerable: false,
+    });
+    return body;
+  }
+
+  private buildResponsesLogicalRequestBody(
+    messages: Message[],
+    tools?: ToolDefinition[],
+    options?: AIRequestOptions,
+    forceCompatibility = false,
+    stream = false,
+    requestTraceId?: string,
+  ): any {
     const instructions = messages
       .filter(message => message.role === 'system' && !this.isDynamicCacheMessage(message))
       .filter(message => !this.isLegacyCheckpointBoundary(message))
@@ -416,20 +504,18 @@ export class OpenAIProvider implements AIProvider {
       .filter(Boolean)
       .join('\n\n');
     const responseTools = this.buildCanonicalResponsesTools(tools ?? []);
-    const explicitCaching = !forceCompatibility
-      && this.responsesExplicitCacheSupported !== false
+    const explicitAnchor = !forceCompatibility
+      && this.responsesExplicitAnchorSupported !== false
       && options?.promptCacheContext?.explicitCaching === true
       && this.supportsExplicitPromptCaching();
     const layout = this.buildResponsesInput(
       messages,
-      options?.promptCacheContext,
-      explicitCaching,
+      explicitAnchor,
     );
     const body: any = {
       model: this.model,
       input: layout.input,
       max_output_tokens: this.maxTokens,
-      stream,
       store: false,
       prompt_cache_key: this.buildPromptCacheKey(
         instructions,
@@ -441,7 +527,6 @@ export class OpenAIProvider implements AIProvider {
     if (instructions) body.instructions = instructions;
     if (Number.isFinite(this.temperature)) body.temperature = this.temperature;
     if (responseTools.length > 0) body.tools = responseTools;
-    if (explicitCaching) body.prompt_cache_options = { mode: 'explicit' };
     body.include = ['reasoning.encrypted_content'];
     this.applyResponsesReasoningOptions(body);
     this.logResponsesCacheLayout(
@@ -449,8 +534,11 @@ export class OpenAIProvider implements AIProvider {
       instructions,
       responseTools,
       layout,
-      explicitCaching,
+      explicitAnchor,
       options?.promptCacheContext,
+      body,
+      stream,
+      requestTraceId,
     );
     return body;
   }
@@ -465,38 +553,24 @@ export class OpenAIProvider implements AIProvider {
 
   private buildResponsesInput(
     messages: Message[],
-    cacheContext?: AIRequestOptions['promptCacheContext'],
-    explicitCaching = false,
+    explicitAnchor = false,
   ): ResponsesInputLayout {
     const requestMessages = messages.filter(message => (
       !this.isLegacyCheckpointBoundary(message)
       && !(message.role === 'system' && !this.isDynamicCacheMessage(message))
     ));
-    const currentEpisodeId = cacheContext?.currentEpisodeId;
     const transientMessages = requestMessages.filter(message => this.isTurnDeltaMessage(message));
+    const transientReplayMessages = transientMessages.filter(message => message.__syntheticObservation === true);
+    const transientDeveloperMessages = transientMessages.filter(message => message.__syntheticObservation !== true);
     const durableMessages = requestMessages.filter(message => !this.isTurnDeltaMessage(message));
     const checkpointMessages = durableMessages.filter(message => message.__checkpointSummary === true);
     const chronologicalMessages = durableMessages.filter(message => message.__checkpointSummary !== true);
-    const inferredGroups = currentEpisodeId
-      ? []
-      : this.groupResponsesExchanges(chronologicalMessages);
-    const completedEpisodeMessages = currentEpisodeId
-      ? chronologicalMessages.filter(message => message.__episodeId !== currentEpisodeId)
-      : inferredGroups.slice(0, -1).flat();
-    const currentEpisodeMessages = currentEpisodeId
-      ? chronologicalMessages.filter(message => message.__episodeId === currentEpisodeId)
-      : [];
-    const currentGroups = this.groupResponsesExchanges(currentEpisodeMessages);
-    const latestGroup = currentEpisodeId
-      ? (currentGroups[currentGroups.length - 1] || [])
-      : (inferredGroups[inferredGroups.length - 1] || []);
-    const completedCurrentGroups = currentEpisodeId ? currentGroups.slice(0, -1) : [];
     const input: any[] = [];
-    const breakpoints: Array<'S' | 'A' | 'B'> = [];
-    const prefixHashes: Partial<Record<'S' | 'A' | 'B', string>> = {};
+    const breakpoints: Array<'S'> = [];
+    const prefixHashes: Partial<Record<'S', string>> = {};
     const breakpointDiagnostics: ResponsesBreakpointDiagnostic[] = [];
 
-    const recordBreakpoint = (label: 'S' | 'A' | 'B') => {
+    const recordBreakpoint = (label: 'S') => {
       const prefixHash = this.hashWirePrefix(input);
       breakpoints.push(label);
       prefixHashes[label] = prefixHash;
@@ -508,36 +582,39 @@ export class OpenAIProvider implements AIProvider {
       });
     };
 
-    if (explicitCaching) {
-      input.push(this.buildBreakpointCarrier());
+    if (explicitAnchor) {
+      input.push(this.buildResponsesSessionAnchor());
       recordBreakpoint('S');
     }
 
     input.push(...this.convertResponsesMessages(checkpointMessages));
-    input.push(...this.convertResponsesMessages(completedEpisodeMessages));
-    if (explicitCaching && completedEpisodeMessages.length > 0) {
-      input.push(this.buildBreakpointCarrier());
-      recordBreakpoint('A');
-    }
-
-    for (const group of completedCurrentGroups) {
-      input.push(...this.convertResponsesMessages(group));
-    }
-    if (explicitCaching && completedCurrentGroups.length > 0) {
-      input.push(this.buildBreakpointCarrier());
-      recordBreakpoint('B');
-    }
-
-    input.push(...this.convertResponsesMessages(transientMessages));
-    input.push(...this.convertResponsesMessages(latestGroup));
-    return { input, breakpoints, prefixHashes, breakpointDiagnostics };
+    input.push(...this.convertResponsesMessages(chronologicalMessages));
+    const stableInputItems = input.length;
+    const durableItems = stableInputItems - (explicitAnchor ? 1 : 0);
+    const transientReplayInput = this.convertResponsesMessages(transientReplayMessages);
+    const transientDeveloperInput = this.convertResponsesMessages(transientDeveloperMessages, true);
+    input.push(...transientReplayInput);
+    input.push(...transientDeveloperInput);
+    return {
+      input,
+      breakpoints,
+      prefixHashes,
+      breakpointDiagnostics,
+      durableItems,
+      transientItems: input.length - stableInputItems,
+      transientReplayItems: transientReplayInput.length,
+      transientDeveloperItems: transientDeveloperInput.length,
+    };
   }
 
-  private convertResponsesMessages(messages: Message[]): any[] {
+  private convertResponsesMessages(messages: Message[], transientProjection = false): any[] {
     const input: any[] = [];
     for (const message of messages) {
       if (message.role === 'system') {
-        input.push({ role: 'system', content: this.responsesMessageContent(message.content) });
+        input.push({
+          role: transientProjection ? 'developer' : 'system',
+          content: this.responsesMessageContent(message.content),
+        });
         continue;
       }
       if (message.role === 'tool') {
@@ -571,33 +648,12 @@ export class OpenAIProvider implements AIProvider {
         }
         continue;
       }
-      input.push({ role: message.role, content: this.responsesMessageContent(message.content) });
+      input.push({
+        role: transientProjection ? 'developer' : message.role,
+        content: this.responsesMessageContent(message.content),
+      });
     }
     return input;
-  }
-
-  private groupResponsesExchanges(messages: Message[]): Message[][] {
-    const groups: Message[][] = [];
-    for (let index = 0; index < messages.length;) {
-      const message = messages[index];
-      if (message.role === 'assistant' && message.tool_calls?.length) {
-        const expected = new Set(message.tool_calls.map(call => call.id));
-        const group = [message];
-        index++;
-        while (index < messages.length && messages[index].role === 'tool') {
-          const tool = messages[index];
-          group.push(tool);
-          if (tool.tool_call_id) expected.delete(tool.tool_call_id);
-          index++;
-          if (expected.size === 0) break;
-        }
-        groups.push(group);
-        continue;
-      }
-      groups.push([message]);
-      index++;
-    }
-    return groups;
   }
 
   private isTurnDeltaMessage(message: Message): boolean {
@@ -607,12 +663,12 @@ export class OpenAIProvider implements AIProvider {
       || message.__syntheticObservation === true;
   }
 
-  private buildBreakpointCarrier(): any {
+  private buildResponsesSessionAnchor(): any {
     return {
-      role: 'system',
+      role: 'developer',
       content: [{
         type: 'input_text',
-        text: '\n',
+        text: RESPONSES_SESSION_ANCHOR,
         prompt_cache_breakpoint: { mode: 'explicit' },
       }],
     };
@@ -701,15 +757,73 @@ export class OpenAIProvider implements AIProvider {
   }
 
   private supportsExplicitPromptCaching(): boolean {
+    const configuredMode = String(process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE || 'off')
+      .trim()
+      .toLowerCase();
+    if (['0', 'false', 'off', 'no', 'disabled'].includes(configuredMode)) return false;
+
     const match = this.model.trim().toLowerCase().match(/^gpt-(\d+)(?:\.(\d+))?(?:[-_:]|$)/);
     if (!match) return false;
     const major = Number(match[1]);
     const minor = Number(match[2] || 0);
-    return major > 5 || (major === 5 && minor >= 6);
+    const supportedModel = major > 5 || (major === 5 && minor >= 6);
+    if (!supportedModel) return false;
+
+    if (['1', 'true', 'on', 'yes', 'force', 'enabled'].includes(configuredMode)) return true;
+    return configuredMode === 'auto' && this.isOfficialOpenAIResponsesEndpoint();
   }
 
   private hashWirePrefix(value: unknown): string {
     return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
+  }
+
+  private nextResponsesTraceId(): string {
+    this.responsesTraceSequence++;
+    return `${Date.now().toString(36)}-${this.responsesTraceSequence.toString(36)}`;
+  }
+
+  private responsesTraceId(body: any): string | undefined {
+    const value = body?.__xiaobaResponsesTraceId;
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  private responsesWireItemMarker(item: any): string | undefined {
+    const content = item?.content ?? item?.output;
+    const text = typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content.find(block => block?.type === 'input_text' && typeof block?.text === 'string')?.text
+        : undefined;
+    const marker = typeof text === 'string' ? text.match(/^\[[^\]\r\n]{1,80}\]/)?.[0] : undefined;
+    return marker;
+  }
+
+  private buildResponsesWireItemDiagnostics(
+    layout: ResponsesInputLayout,
+    explicit: boolean,
+  ): ResponsesWireItemDiagnostic[] {
+    const anchorItems = explicit ? 1 : 0;
+    const durableEnd = anchorItems + layout.durableItems;
+    const replayEnd = durableEnd + layout.transientReplayItems;
+    return layout.input.map((item, index) => {
+      const segment: ResponsesWireItemDiagnostic['segment'] = index < anchorItems
+        ? 'anchor'
+        : index < durableEnd
+          ? 'durable'
+          : index < replayEnd
+            ? 'transient_replay'
+            : 'transient_developer';
+      const marker = segment === 'durable' ? undefined : this.responsesWireItemMarker(item);
+      return {
+        index,
+        segment,
+        ...(item?.role ? { role: String(item.role) } : {}),
+        ...(item?.type ? { type: String(item.type) } : {}),
+        ...(marker ? { marker } : {}),
+        hash: this.hashWirePrefix(item),
+        tokenEstimate: estimateJsonTokens(item),
+      };
+    });
   }
 
   private logResponsesCacheLayout(
@@ -719,11 +833,27 @@ export class OpenAIProvider implements AIProvider {
     layout: ResponsesInputLayout,
     explicit: boolean,
     cacheContext?: AIRequestOptions['promptCacheContext'],
+    logicalBody?: any,
+    stream = false,
+    requestTraceId?: string,
   ): void {
-    Logger.runtimeEvent('INFO', `responses_cache_layout mode=${explicit ? 'explicit' : 'compatibility'} breakpoints=${layout.breakpoints.join(',') || 'none'}`, {
+    const mode = explicit ? 'implicit_with_explicit_s' : 'implicit';
+    const implicitDiagnostics = this.buildResponsesImplicitBreakpointDiagnostics(
+      instructions,
+      tools,
+      layout.input,
+    );
+    const itemDiagnostics = this.buildResponsesWireItemDiagnostics(layout, explicit);
+    const stableInputItems = (explicit ? 1 : 0) + layout.durableItems;
+    const durableInput = layout.input.slice(0, stableInputItems);
+    const transientInput = layout.input.slice(stableInputItems);
+    Logger.runtimeEvent('INFO', `responses_cache_layout mode=${mode} breakpoints=${layout.breakpoints.join(',') || 'none'}`, {
       type: 'responses_cache_layout',
       payload: {
-        mode: explicit ? 'explicit' : 'compatibility',
+        mode,
+        request_trace_id: requestTraceId,
+        stream,
+        transport: stream ? 'sse' : 'json',
         phase: cacheContext?.phase || 'normal',
         session_hash: this.hashWirePrefix(cacheContext?.sessionKey || 'unscoped'),
         cache_key_hash: this.hashWirePrefix(cacheKey),
@@ -733,25 +863,180 @@ export class OpenAIProvider implements AIProvider {
         breakpoint_sequence: layout.breakpoints,
         prefix_hashes: layout.prefixHashes,
         breakpoint_diagnostics: layout.breakpointDiagnostics,
+        implicit_candidate_count: implicitDiagnostics.candidateCount,
+        implicit_candidates: implicitDiagnostics.candidates,
+        implicit_latest_prefix_hash: implicitDiagnostics.latestPrefixHash,
+        implicit_trailing_items: implicitDiagnostics.trailingItems,
         input_items: layout.input.length,
+        durable_items: layout.durableItems,
+        transient_items: layout.transientItems,
+        transient_replay_items: layout.transientReplayItems,
+        transient_developer_items: layout.transientDeveloperItems,
+        durable_input_hash: this.hashWirePrefix(durableInput),
+        transient_input_hash: this.hashWirePrefix(transientInput),
+        final_input_hash: this.hashWirePrefix(layout.input),
+        session_affinity_enabled: Boolean(
+          cacheContext?.sessionKey
+          && cacheContext.sessionKey !== 'unknown'
+          && cacheContext.sessionKey !== 'unscoped'
+          && this.isResponsesSessionAffinityEnabled(),
+        ),
+        session_affinity_hash: cacheContext?.sessionKey
+          ? this.hashWirePrefix(`xiaoba-${createHash('sha256').update(cacheContext.sessionKey).digest('hex').slice(0, 32)}`)
+          : undefined,
+        input_item_diagnostics: itemDiagnostics,
+        logical_body_hash: this.hashWirePrefix({ ...(logicalBody || {}), stream }),
       },
     });
   }
 
+  private buildResponsesImplicitBreakpointDiagnostics(
+    instructions: string,
+    tools: any[],
+    input: any[],
+  ): {
+      candidateCount: number;
+      candidates: ResponsesImplicitBreakpointDiagnostic[];
+      latestPrefixHash?: string;
+      trailingItems: number;
+    } {
+    const prefixHash = createHash('sha256');
+    prefixHash.update(JSON.stringify({
+      model: this.model,
+      instructions,
+      tools,
+    }));
+    let prefixTokenEstimate = estimateJsonTokens({ instructions, tools });
+    const candidates: ResponsesImplicitBreakpointDiagnostic[] = [];
+    let candidateCount = 0;
+
+    for (let index = 0; index < input.length; index++) {
+      const item = input[index];
+      prefixHash.update('\u0000');
+      prefixHash.update(JSON.stringify(item));
+      prefixTokenEstimate += estimateJsonTokens(item);
+      const kind = this.responsesImplicitBreakpointKind(item);
+      if (!kind) continue;
+      candidateCount++;
+      candidates.push({
+        kind,
+        itemType: String(item?.type || item?.role || 'unknown'),
+        inputItems: index + 1,
+        prefixHash: prefixHash.copy().digest('hex').slice(0, 16),
+        prefixTokenEstimate,
+      });
+      if (candidates.length > 80) candidates.shift();
+    }
+
+    const latest = candidates.at(-1);
+    return {
+      candidateCount,
+      candidates,
+      ...(latest ? { latestPrefixHash: latest.prefixHash } : {}),
+      trailingItems: latest ? input.length - latest.inputItems : input.length,
+    };
+  }
+
+  private responsesImplicitBreakpointKind(item: any): 'user' | 'tool' | undefined {
+    if (item?.role === 'user') return 'user';
+    const type = String(item?.type || '');
+    if (type.endsWith('_call_output') || type === 'tool_search_output') return 'tool';
+    return undefined;
+  }
+
   private logResponsesCacheUsage(
-    cacheKey: string,
+    body: any,
     usage: ChatResponse['usage'],
     explicit: boolean,
+    rawUsage?: any,
+    response?: any,
+    headers?: any,
   ): void {
     if (!usage) return;
-    Logger.runtimeEvent('INFO', `responses_cache_usage mode=${explicit ? 'explicit' : 'compatibility'} cached=${usage.cachedReadTokens ?? 0} written=${usage.cachedWriteTokens ?? 0}`, {
+    const mode = explicit ? 'implicit_with_explicit_s' : 'implicit';
+    const details = rawUsage?.input_tokens_details;
+    const detailKeys = details && typeof details === 'object' ? Object.keys(details).sort() : [];
+    const headerValue = (name: string): string | undefined => {
+      const value = headers?.get?.(name) ?? headers?.[name] ?? headers?.[name.toLowerCase()];
+      return typeof value === 'string' && value ? value : undefined;
+    };
+    Logger.runtimeEvent('INFO', `responses_cache_usage mode=${mode} cached=${usage.cachedReadTokens ?? 0} written=${usage.cachedWriteTokens ?? 0}`, {
       type: 'responses_cache_usage',
       payload: {
-        mode: explicit ? 'explicit' : 'compatibility',
-        cache_key_hash: this.hashWirePrefix(cacheKey),
+        mode,
+        request_trace_id: this.responsesTraceId(body),
+        cache_key_hash: this.hashWirePrefix(body?.prompt_cache_key || ''),
+        logical_body_hash: this.hashWirePrefix(body || {}),
         input_tokens: usage.promptTokens,
         cached_tokens: usage.cachedReadTokens ?? 0,
         cache_write_tokens: usage.cachedWriteTokens ?? 0,
+        usage_input_detail_keys: detailKeys,
+        cache_write_tokens_present: detailKeys.includes('cache_write_tokens'),
+        response_id_hash: response?.id ? this.hashWirePrefix(response.id) : undefined,
+        response_model: typeof response?.model === 'string' ? response.model : undefined,
+        service_tier: typeof response?.service_tier === 'string' ? response.service_tier : undefined,
+        upstream_request_id_hash: (() => {
+          const requestId = headerValue('x-request-id')
+            || headerValue('openai-request-id')
+            || headerValue('x-openai-request-id');
+          return requestId ? this.hashWirePrefix(requestId) : undefined;
+        })(),
+      },
+    });
+  }
+
+  /**
+   * Responses-only upload-boundary diagnostics.
+   *
+   * This is intentionally hash/metadata based: it records the exact logical
+   * body immediately before axios serializes and uploads it, without writing
+   * Authorization or full prompt contents to the normal session log.
+   */
+  private logResponsesWireRequest(
+    body: any,
+    options: AIRequestOptions | undefined,
+    stream: boolean,
+    headers: Record<string, string>,
+  ): void {
+    if (String(process.env.XIAOBA_RESPONSES_WIRE_DEBUG || '').trim().toLowerCase() !== 'true') {
+      return;
+    }
+    const input = Array.isArray(body?.input) ? body.input : [];
+    const itemDiagnostics = input.map((item: any, index: number) => ({
+      index,
+      type: typeof item?.type === 'string' ? item.type : undefined,
+      role: typeof item?.role === 'string' ? item.role : undefined,
+      call_id: typeof item?.call_id === 'string' ? this.hashWirePrefix(item.call_id) : undefined,
+      hash: this.hashWirePrefix(item),
+      token_estimate: estimateJsonTokens(item),
+    }));
+    const sessionKey = options?.promptCacheContext?.sessionKey || 'unscoped';
+    const affinityHeader = headers['x-client-request-id'] || headers.session_id || '';
+    Logger.runtimeEvent('INFO', 'responses_wire_request before_upload', {
+      type: 'responses_wire_request',
+      payload: {
+        stage: 'before_upload',
+        request_trace_id: this.responsesTraceId(body),
+        stream,
+        transport: stream ? 'sse' : 'json',
+        phase: options?.promptCacheContext?.phase || 'normal',
+        api_mode: 'responses',
+        session_hash: this.hashWirePrefix(sessionKey),
+        session_affinity_enabled: Boolean(
+          sessionKey !== 'unknown'
+          && sessionKey !== 'unscoped'
+          && this.isResponsesSessionAffinityEnabled(),
+        ),
+        session_affinity_header_hash: affinityHeader ? this.hashWirePrefix(affinityHeader) : undefined,
+        client_request_id_hash: headers['x-client-request-id']
+          ? this.hashWirePrefix(headers['x-client-request-id'])
+          : undefined,
+        session_id_hash: headers.session_id ? this.hashWirePrefix(headers.session_id) : undefined,
+        prompt_cache_key_hash: this.hashWirePrefix(body?.prompt_cache_key || ''),
+        wire_body_hash: this.hashWirePrefix(body || {}),
+        input_items: input.length,
+        input_hash: this.hashWirePrefix(input),
+        input_item_diagnostics: itemDiagnostics,
       },
     });
   }
@@ -870,21 +1155,36 @@ export class OpenAIProvider implements AIProvider {
       apiUrl: this.responsesUrl,
       body,
     });
+    const requestHeaders = this.responsesHeaders(options);
+    this.logResponsesWireRequest(body, options, false, requestHeaders);
     let response;
     try {
-      response = await this.postProviderRequest(this.responsesUrl, body, false, options);
+      response = await this.postProviderRequest(
+        this.responsesUrl, body, false, options, requestHeaders,
+      );
     } catch (error) {
-      if (!this.shouldRetryWithoutExplicitCaching(error, body)) throw error;
-      this.responsesExplicitCacheSupported = false;
-      Logger.warning('Responses endpoint rejected explicit prompt caching; retrying once in compatibility mode.');
+      if (!this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
+      this.responsesExplicitAnchorSupported = false;
+      Logger.warning('Responses endpoint rejected the explicit S cache anchor; retrying once without it.');
       body = this.buildResponsesRequestBody(messages, tools, false, options, true);
-      response = await this.postProviderRequest(this.responsesUrl, body, false, options);
+      const retryHeaders = this.responsesHeaders(options);
+      this.logResponsesWireRequest(body, options, false, retryHeaders);
+      response = await this.postProviderRequest(
+        this.responsesUrl, body, false, options, retryHeaders,
+      );
     }
     ContextDebugLogger.dumpSdkBoundary('after', undefined, { response: response.data });
     const failure = this.responsesFailureError(response.data);
     if (failure) throw failure;
     const result = this.parseResponsesResponse(response.data);
-    this.logResponsesCacheUsage(body.prompt_cache_key, result.usage, Boolean(body.prompt_cache_options));
+    this.logResponsesCacheUsage(
+      body,
+      result.usage,
+      this.hasResponsesExplicitAnchor(body),
+      response.data?.usage,
+      response.data,
+      response.headers,
+    );
     return result;
   }
 
@@ -899,15 +1199,23 @@ export class OpenAIProvider implements AIProvider {
       apiUrl: this.responsesUrl,
       body,
     });
+    const requestHeaders = this.responsesHeaders(options);
+    this.logResponsesWireRequest(body, options, true, requestHeaders);
     let response;
     try {
-      response = await this.postProviderRequest(this.responsesUrl, body, true, options);
+      response = await this.postProviderRequest(
+        this.responsesUrl, body, true, options, requestHeaders,
+      );
     } catch (error) {
-      if (!this.shouldRetryWithoutExplicitCaching(error, body)) throw error;
-      this.responsesExplicitCacheSupported = false;
-      Logger.warning('Responses endpoint rejected explicit prompt caching; retrying stream once in compatibility mode.');
+      if (!this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
+      this.responsesExplicitAnchorSupported = false;
+      Logger.warning('Responses endpoint rejected the explicit S cache anchor; retrying stream once without it.');
       body = this.buildResponsesRequestBody(messages, tools, true, options, true);
-      response = await this.postProviderRequest(this.responsesUrl, body, true, options);
+      const retryHeaders = this.responsesHeaders(options);
+      this.logResponsesWireRequest(body, options, true, retryHeaders);
+      response = await this.postProviderRequest(
+        this.responsesUrl, body, true, options, retryHeaders,
+      );
     }
 
     return new Promise<ChatResponse>((resolve, reject) => {
@@ -931,12 +1239,12 @@ export class OpenAIProvider implements AIProvider {
         if (
           !streamedVisibleText
           && !outputItems.some(Boolean)
-          && this.shouldRetryWithoutExplicitCaching(error, body)
+          && this.shouldRetryWithoutExplicitAnchor(error, body)
         ) {
           settled = true;
           options?.signal?.removeEventListener('abort', onAbort);
-          this.responsesExplicitCacheSupported = false;
-          Logger.warning('Responses stream rejected explicit prompt caching; retrying once in compatibility mode.');
+          this.responsesExplicitAnchorSupported = false;
+          Logger.warning('Responses stream rejected the explicit S cache anchor; retrying once without it.');
           stream.destroy();
           void this.chatStreamResponses(messages, tools, callbacks, options).then(resolve, reject);
           return;
@@ -1015,7 +1323,14 @@ export class OpenAIProvider implements AIProvider {
           result.content = this.visibleMessageContent({ content: streamedVisibleText });
         }
         ContextDebugLogger.dumpSdkBoundary('after', undefined, { response: finalResponse });
-        this.logResponsesCacheUsage(body.prompt_cache_key, result.usage, Boolean(body.prompt_cache_options));
+        this.logResponsesCacheUsage(
+          body,
+          result.usage,
+          this.hasResponsesExplicitAnchor(body),
+          finalResponse?.usage,
+          finalResponse,
+          response.headers,
+        );
         settled = true;
         callbacks?.onComplete?.(result);
         resolve(result);
@@ -1045,10 +1360,11 @@ export class OpenAIProvider implements AIProvider {
     body: any,
     stream: boolean,
     options?: AIRequestOptions,
+    headers: Record<string, string> = this.headers,
   ): Promise<any> {
     try {
       return await axios.post(url, body, {
-        headers: this.headers,
+        headers,
         ...(stream ? { responseType: 'stream' as const } : {}),
         signal: options?.signal,
       });
@@ -1082,8 +1398,8 @@ export class OpenAIProvider implements AIProvider {
     return error;
   }
 
-  private shouldRetryWithoutExplicitCaching(error: unknown, body: any): boolean {
-    if (!body?.prompt_cache_options) return false;
+  private shouldRetryWithoutExplicitAnchor(error: unknown, body: any): boolean {
+    if (!this.hasResponsesExplicitAnchor(body)) return false;
     if (/^(?:1|true|yes|on)$/i.test(String(process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE_STRICT || '').trim())) {
       return false;
     }
@@ -1097,6 +1413,18 @@ export class OpenAIProvider implements AIProvider {
       && detail.includes('prompt cache')
       && /unsupported|not supported|unknown|invalid|extra|unrecognized/.test(detail);
   }
+
+  private hasResponsesExplicitAnchor(body: any): boolean {
+    return countPromptCacheBreakpoints(body) > 0;
+  }
+}
+
+function countPromptCacheBreakpoints(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  if (Array.isArray(value)) return value.reduce((sum, item) => sum + countPromptCacheBreakpoints(item), 0);
+  const record = value as Record<string, unknown>;
+  return (record.prompt_cache_breakpoint ? 1 : 0)
+    + Object.values(record).reduce<number>((sum, item) => sum + countPromptCacheBreakpoints(item), 0);
 }
 
 type ReadableErrorStream = {

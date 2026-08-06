@@ -15,6 +15,15 @@ function provider(): OpenAIProvider {
   });
 }
 
+function explicitProvider(): OpenAIProvider {
+  return new OpenAIProvider({
+    apiKey: 'test-key',
+    apiUrl: 'https://api.openai.com/v1',
+    model: 'gpt-5.6-sol',
+    openaiApiMode: 'responses',
+  });
+}
+
 const context = {
   promptCacheContext: {
     sessionKey: 'session-alpha',
@@ -38,7 +47,7 @@ function circularErrorStream(payload: unknown): Readable {
   return stream;
 }
 
-test('Responses explicit cache emits one S, A, and latest B without persisting markers', () => {
+test('Responses cache omits the S carrier on custom endpoints and appends transient developer context', () => {
   const messages: Message[] = [
     { role: 'system', content: 'stable system' },
     { role: 'system', content: '[transient_skills_list]\n- lookup', __cacheScope: 'stable' },
@@ -59,16 +68,17 @@ test('Responses explicit cache emits one S, A, and latest B without persisting m
   ];
 
   const body = (provider() as any).buildResponsesRequestBody(messages, [], false, context);
-  assert.deepEqual(body.prompt_cache_options, { mode: 'explicit' });
+  assert.equal(body.prompt_cache_options, undefined);
   assert.match(body.instructions, /stable system/);
   assert.match(body.instructions, /transient_skills_list/);
   assert.doesNotMatch(body.instructions, /transient_plan_status/);
-  assert.equal(countBreakpoints(body.input), 3);
-  assert.equal(body.input[0].role, 'system');
-  assert.equal(body.input.at(-3).role, 'system');
-  assert.match(String(body.input.at(-3).content), /transient_plan_status/);
-  assert.equal(body.input.at(-2).type, 'function_call');
-  assert.equal(body.input.at(-1).type, 'function_call_output');
+  assert.equal(countBreakpoints(body.input), 0);
+  assert.equal(body.input[0].role, 'user');
+  assert.equal(body.input[0].content, 'old task');
+  assert.equal(body.input.at(-1).role, 'developer');
+  assert.match(String(body.input.at(-1).content), /transient_plan_status/);
+  assert.equal(body.input.at(-3).type, 'function_call');
+  assert.equal(body.input.at(-2).type, 'function_call_output');
   assert.equal(messages.some(message => (message as any).prompt_cache_breakpoint), false);
 });
 
@@ -102,14 +112,12 @@ test('Responses keeps a continuation checkpoint before its retained historical e
     .map((item: any, index: number) => countBreakpoints(item) > 0 ? index : -1)
     .filter((index: number) => index >= 0);
 
-  assert.equal(breakpointIndexes.length, 3);
-  assert.ok(breakpointIndexes[0] < checkpointIndex);
+  assert.equal(breakpointIndexes.length, 0);
   assert.ok(checkpointIndex < oldEvidenceIndex);
-  assert.ok(oldEvidenceIndex < breakpointIndexes[1]);
-  assert.ok(breakpointIndexes[1] < rootIndex);
-  assert.ok(rootIndex < breakpointIndexes[2]);
-  assert.ok(breakpointIndexes[2] < planIndex);
-  assert.ok(planIndex < callIndex);
+  assert.ok(oldEvidenceIndex < rootIndex);
+  assert.ok(rootIndex < callIndex);
+  assert.ok(callIndex < planIndex);
+  assert.equal(body.input[planIndex].role, 'developer');
 });
 
 test('Responses cache key is isolated by session without exposing the session id', () => {
@@ -120,6 +128,88 @@ test('Responses cache key is isolated by session without exposing the session id
   });
   assert.notEqual(first.prompt_cache_key, second.prompt_cache_key);
   assert.doesNotMatch(first.prompt_cache_key, /session-alpha/);
+});
+
+test('Responses relay uses Pi-style stable session affinity headers without exposing the session id', () => {
+  const original = process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
+  delete process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
+  try {
+    const headers = (provider() as any).responsesHeaders(context);
+    assert.match(headers.session_id, /^xiaoba-[a-f0-9]{32}$/);
+    assert.equal(headers['x-client-request-id'], headers.session_id);
+    assert.doesNotMatch(headers.session_id, /session-alpha/);
+
+    const officialHeaders = (explicitProvider() as any).responsesHeaders(context);
+    assert.equal(officialHeaders.session_id, undefined);
+    assert.equal(officialHeaders['x-client-request-id'], undefined);
+  } finally {
+    if (original === undefined) delete process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
+    else process.env.XIAOBA_RESPONSES_SESSION_AFFINITY = original;
+  }
+});
+
+test('Responses session affinity can be disabled without changing the cache body', () => {
+  const original = process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
+  process.env.XIAOBA_RESPONSES_SESSION_AFFINITY = 'off';
+  try {
+    const headers = (provider() as any).responsesHeaders(context);
+    assert.equal(headers.session_id, undefined);
+    assert.equal(headers['x-client-request-id'], undefined);
+  } finally {
+    if (original === undefined) delete process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
+    else process.env.XIAOBA_RESPONSES_SESSION_AFFINITY = original;
+  }
+});
+
+test('Responses streaming and non-streaming requests share the same logical cache body', () => {
+  const messages: Message[] = [
+    { role: 'system', content: 'stable system' },
+    { role: 'user', content: 'current request', __episodeId: 'episode-2' },
+    { role: 'system', content: '[transient_plan_status]\nstep two', __cacheScope: 'dynamic' },
+  ];
+  const nonStreaming = (provider() as any).buildResponsesRequestBody(messages, [], false, context);
+  const streaming = (provider() as any).buildResponsesRequestBody(messages, [], true, context);
+  const { stream: nonStreamingFlag, ...nonStreamingLogicalBody } = nonStreaming;
+  const { stream: streamingFlag, ...streamingLogicalBody } = streaming;
+
+  assert.equal(nonStreamingFlag, false);
+  assert.equal(streamingFlag, true);
+  assert.deepEqual(streamingLogicalBody, nonStreamingLogicalBody);
+});
+
+test('Responses keeps synthetic observation calls paired after durable history', () => {
+  const messages: Message[] = [
+    { role: 'system', content: 'stable system' },
+    { role: 'system', content: '[transient_plan_status]\nstep two', __cacheScope: 'dynamic' },
+    { role: 'user', content: 'current request', __episodeId: 'episode-2' },
+    {
+      role: 'assistant',
+      content: null,
+      __syntheticObservation: true,
+      tool_calls: [{
+        id: 'synthetic-observation-1',
+        type: 'function',
+        function: { name: 'runtime_observation', arguments: '{"source":"subagent"}' },
+      }],
+    },
+    {
+      role: 'tool',
+      content: 'late observation',
+      tool_call_id: 'synthetic-observation-1',
+      __syntheticObservation: true,
+    },
+  ];
+
+  const body = (provider() as any).buildResponsesRequestBody(messages, [], false, context);
+  const durableUserIndex = body.input.findIndex((item: any) => item.content === 'current request');
+  const callIndex = body.input.findIndex((item: any) => item.type === 'function_call');
+  const outputIndex = body.input.findIndex((item: any) => item.type === 'function_call_output');
+  const planIndex = body.input.findIndex((item: any) => String(item.content).includes('transient_plan_status'));
+
+  assert.ok(durableUserIndex < callIndex);
+  assert.ok(callIndex < outputIndex);
+  assert.ok(outputIndex < planIndex);
+  assert.equal(body.input[planIndex].role, 'developer');
 });
 
 test('Responses breakpoints never rewrite parallel function calls or outputs', () => {
@@ -148,13 +238,13 @@ test('Responses breakpoints never rewrite parallel function calls or outputs', (
   ));
 
   assert.ok(callA < callB && callB < outputA && outputA < outputB);
-  assert.ok(outputB < boundaryAfterTools);
+  assert.equal(boundaryAfterTools, -1);
   assert.equal(body.input[outputA].output, 'result-a');
   assert.equal(body.input[outputB].output, 'result-b');
   assert.equal(JSON.stringify(messages).includes('prompt_cache_breakpoint'), false);
 });
 
-test('Responses emits only the latest completed-turn breakpoint', () => {
+test('Responses custom endpoints do not inject a fixed session breakpoint', () => {
   const messages: Message[] = [
     { role: 'system', content: 'stable system' },
     { role: 'user', content: 'root task', __episodeId: 'episode-2', __episodeInputKind: 'root' },
@@ -171,9 +261,53 @@ test('Responses emits only the latest completed-turn breakpoint', () => {
   const secondTurnIndex = body.input.findIndex((item: any) => item.content === 'second turn');
   const latestEventIndex = body.input.findIndex((item: any) => item.content === 'latest event');
 
-  assert.equal(breakpointIndexes.length, 2);
-  assert.ok(secondTurnIndex < breakpointIndexes[1]);
-  assert.ok(breakpointIndexes[1] < latestEventIndex);
+  assert.equal(breakpointIndexes.length, 0);
+  assert.ok(secondTurnIndex < latestEventIndex);
+});
+
+test('Responses explicit cache is disabled by default on custom and official endpoints', () => {
+  const messages: Message[] = [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }];
+  const customBody = (provider() as any).buildResponsesRequestBody(messages, [], false, context);
+  const officialBody = (explicitProvider() as any).buildResponsesRequestBody(messages, [], false, context);
+
+  assert.equal(countBreakpoints(customBody.input), 0);
+  assert.equal(countBreakpoints(officialBody.input), 0);
+  assert.equal(customBody.input[0].content, 'hello');
+  assert.equal(officialBody.input[0].content, 'hello');
+});
+
+test('Responses explicit cache auto mode remains an opt-in for the official OpenAI endpoint', () => {
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'auto';
+  try {
+    const messages: Message[] = [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }];
+    const customBody = (provider() as any).buildResponsesRequestBody(messages, [], false, context);
+    const officialBody = (explicitProvider() as any).buildResponsesRequestBody(messages, [], false, context);
+
+    assert.equal(countBreakpoints(customBody.input), 0);
+    assert.equal(countBreakpoints(officialBody.input), 1);
+    assert.equal(officialBody.input[0].role, 'developer');
+  } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
+  }
+});
+
+test('Responses explicit cache can be forced on a custom endpoint', () => {
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'force';
+  try {
+    const body = (provider() as any).buildResponsesRequestBody(
+      [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }],
+      [],
+      false,
+      context,
+    );
+    assert.equal(countBreakpoints(body.input), 1);
+  } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
+  }
 });
 
 test('Responses explicit cache is not sent to older models', () => {
@@ -193,6 +327,22 @@ test('Responses explicit cache is not sent to older models', () => {
   assert.equal(countBreakpoints(body.input), 0);
 });
 
+test('Responses-only projection does not change Chat Completions roles', () => {
+  const chatProvider = new OpenAIProvider({
+    apiKey: 'test-key',
+    apiUrl: 'https://relay.example/v1',
+    model: 'gpt-5.6-sol',
+    openaiApiMode: 'chat_completions',
+  });
+  const body = (chatProvider as any).buildRequestBody([
+    { role: 'system', content: '[transient_plan_status]\nstep two', __cacheScope: 'dynamic' },
+    { role: 'user', content: 'hello', __injected: true },
+  ], [], false);
+
+  assert.deepEqual(body.messages.map((message: any) => message.role), ['system', 'user']);
+  assert.equal(JSON.stringify(body.messages).includes('developer'), false);
+});
+
 test('legacy checkpoint boundary is filtered but ordinary discussion is preserved', () => {
   const messages: Message[] = [
     { role: 'system', content: '[checkpoint_compaction_boundary]\nphase=mid_turn' },
@@ -206,7 +356,9 @@ test('legacy checkpoint boundary is filtered but ordinary discussion is preserve
 
 test('unsupported explicit fields retry once and pin the provider to compatibility mode', async () => {
   const originalPost = axios.post;
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
   const bodies: any[] = [];
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'on';
   (axios as any).post = async (_url: string, body: any) => {
     bodies.push(body);
     if (bodies.length === 1) {
@@ -217,21 +369,29 @@ test('unsupported explicit fields retry once and pin the provider to compatibili
     return { data: { status: 'completed', output: [] } };
   };
   try {
-    const instance = provider();
+    const instance = explicitProvider();
     await instance.chat([{ role: 'user', content: 'hello', __episodeId: 'episode-2' }], [], context);
     assert.equal(bodies.length, 2);
-    assert.deepEqual(bodies[0].prompt_cache_options, { mode: 'explicit' });
+    assert.equal(countBreakpoints(bodies[0].input), 1);
     assert.equal(bodies[1].prompt_cache_options, undefined);
     assert.equal(countBreakpoints(bodies[1].input), 0);
+    assert.deepEqual(bodies[0].input.slice(1), bodies[1].input);
+    const { input: _firstInput, ...firstTransportBody } = bodies[0];
+    const { input: _secondInput, ...secondTransportBody } = bodies[1];
+    assert.deepEqual(firstTransportBody, secondTransportBody);
   } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
     (axios as any).post = originalPost;
   }
 });
 
 test('streamed unsupported explicit fields retry once in compatibility mode', async () => {
   const originalPost = axios.post;
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
   const bodies: any[] = [];
   const callbackErrors: Error[] = [];
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'on';
   (axios as any).post = async (_url: string, body: any) => {
     bodies.push(body);
     if (bodies.length === 1) {
@@ -260,7 +420,7 @@ test('streamed unsupported explicit fields retry once in compatibility mode', as
     };
   };
   try {
-    const instance = provider();
+    const instance = explicitProvider();
     const result = await instance.chatStream(
       [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }],
       [],
@@ -269,18 +429,22 @@ test('streamed unsupported explicit fields retry once in compatibility mode', as
     );
     assert.equal(result.content, 'OK');
     assert.equal(bodies.length, 2);
-    assert.deepEqual(bodies[0].prompt_cache_options, { mode: 'explicit' });
+    assert.equal(countBreakpoints(bodies[0].input), 1);
     assert.equal(bodies[1].prompt_cache_options, undefined);
     assert.equal(countBreakpoints(bodies[1].input), 0);
     assert.deepEqual(callbackErrors, []);
   } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
     (axios as any).post = originalPost;
   }
 });
 
 test('HTTP stream errors are read before explicit cache compatibility is evaluated', async () => {
   const originalPost = axios.post;
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
   const bodies: any[] = [];
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'on';
   (axios as any).post = async (_url: string, body: any) => {
     bodies.push(body);
     if (bodies.length === 1) {
@@ -307,7 +471,7 @@ test('HTTP stream errors are read before explicit cache compatibility is evaluat
     };
   };
   try {
-    const instance = provider();
+    const instance = explicitProvider();
     const result = await instance.chatStream(
       [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }],
       [],
@@ -316,9 +480,12 @@ test('HTTP stream errors are read before explicit cache compatibility is evaluat
     );
     assert.equal(result.content, 'OK');
     assert.equal(bodies.length, 2);
-    assert.deepEqual(bodies[0].prompt_cache_options, { mode: 'explicit' });
+    assert.equal(countBreakpoints(bodies[0].input), 1);
     assert.equal(bodies[1].prompt_cache_options, undefined);
+    assert.equal(countBreakpoints(bodies[1].input), 0);
   } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
     (axios as any).post = originalPost;
   }
 });
@@ -466,18 +633,27 @@ test('explicit cache retry inspection never throws for circular non-stream error
   data.self = data;
   const instance = provider();
   assert.doesNotThrow(() => {
-    assert.equal((instance as any).shouldRetryWithoutExplicitCaching({
+    assert.equal((instance as any).shouldRetryWithoutExplicitAnchor({
       response: { status: 500, data },
     }, {
-      prompt_cache_options: { mode: 'explicit' },
+      input: [{
+        role: 'developer',
+        content: [{
+          type: 'input_text',
+          text: 'anchor',
+          prompt_cache_breakpoint: { mode: 'explicit' },
+        }],
+      }],
     }), false);
   });
 });
 
 test('strict explicit cache mode surfaces streamed rejection without fallback', async () => {
   const originalPost = axios.post;
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
   const originalStrict = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE_STRICT;
   const bodies: any[] = [];
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'on';
   process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE_STRICT = '1';
   (axios as any).post = async (_url: string, body: any) => {
     bodies.push(body);
@@ -494,7 +670,7 @@ test('strict explicit cache mode surfaces streamed rejection without fallback', 
     };
   };
   try {
-    const instance = provider();
+    const instance = explicitProvider();
     await assert.rejects(
       instance.chatStream(
         [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }],
@@ -505,8 +681,10 @@ test('strict explicit cache mode surfaces streamed rejection without fallback', 
       /prompt_cache_breakpoint is not supported/i,
     );
     assert.equal(bodies.length, 1);
-    assert.deepEqual(bodies[0].prompt_cache_options, { mode: 'explicit' });
+    assert.equal(countBreakpoints(bodies[0].input), 1);
   } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
     if (originalStrict === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE_STRICT;
     else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE_STRICT = originalStrict;
     (axios as any).post = originalPost;
@@ -533,13 +711,15 @@ test('Responses cache usage is recorded without prompt content', async () => {
     await provider().chat([{ role: 'user', content: 'hello', __episodeId: 'episode-2' }], [], context);
     const usage = events.find(event => event.type === 'responses_cache_usage');
     assert.ok(usage);
-    assert.deepEqual(usage.payload, {
-      mode: 'explicit',
-      cache_key_hash: usage.payload.cache_key_hash,
-      input_tokens: 1200,
-      cached_tokens: 900,
-      cache_write_tokens: 200,
-    });
+    assert.equal(usage.payload.mode, 'implicit');
+    assert.equal(typeof usage.payload.request_trace_id, 'string');
+    assert.equal(typeof usage.payload.cache_key_hash, 'string');
+    assert.equal(typeof usage.payload.logical_body_hash, 'string');
+    assert.equal(usage.payload.input_tokens, 1200);
+    assert.equal(usage.payload.cached_tokens, 900);
+    assert.equal(usage.payload.cache_write_tokens, 200);
+    assert.deepEqual(usage.payload.usage_input_detail_keys, ['cache_write_tokens', 'cached_tokens']);
+    assert.equal(usage.payload.cache_write_tokens_present, true);
     assert.equal(JSON.stringify(usage).includes('hello'), false);
   } finally {
     (axios as any).post = originalPost;

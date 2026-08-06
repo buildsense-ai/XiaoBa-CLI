@@ -289,7 +289,7 @@ export class CheckpointCompactionCoordinator {
             promptCacheContext: {
               sessionKey: promptCacheScopeKey,
               phase,
-              explicitCaching: true,
+              explicitCaching: false,
             },
           },
         );

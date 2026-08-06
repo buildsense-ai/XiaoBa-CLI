@@ -10,6 +10,11 @@ import { Logger } from '../utils/logger';
 import { SubAgentEventType, SubAgentRuntimeEvent } from './sub-agent-events';
 import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext } from '../types/tool';
+import { resolveModelContextWindow } from '../utils/model-context-window';
+import {
+  CheckpointCompactionCoordinator,
+  isCheckpointCompactionEnabled,
+} from './checkpoint-compaction';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -284,10 +289,26 @@ export class SubAgentSession {
       enabledToolNames: this.allowedTools,
     });
 
+    const modelConfig = typeof (this.aiService as any).getConfig === 'function'
+      ? (this.aiService as any).getConfig()
+      : {};
+    const contextWindow = resolveModelContextWindow(modelConfig);
+    const useCheckpointCompaction = isCheckpointCompactionEnabled();
+    const checkpointCompactionCoordinator = useCheckpointCompaction
+      ? new CheckpointCompactionCoordinator(
+        this.aiService,
+        { maxContextTokens: contextWindow.promptBudgetTokens },
+      )
+      : undefined;
+
     // 创建独立的 ConversationRunner（不注入 channel，子智能体不直接和用户通信）
     const runner = new ConversationRunner(this.aiService, toolManager, {
       maxTurns: this.options.maxTurns,
-      enableCompression: true,
+      // Match the main-session rollout switch: checkpoint compaction is the
+      // default, while the explicit rollback flag restores the legacy runner
+      // compressor for both main agents and subagents.
+      enableCompression: !useCheckpointCompaction,
+      checkpointCompactionCoordinator,
       shouldContinue: () => !this.stopped,
       toolExecutionContext: {
         ...delegatedToolContext,
