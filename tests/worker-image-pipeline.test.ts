@@ -102,6 +102,11 @@ describe("Tianyi Cloud worker image pipeline", () => {
     // fail-closed version assertions (review: required upgrades must block the bake)
     assert.match(imagePreparer, /dpkg --compare-versions/);
     assert.match(imagePreparer, /known-safe version/);
+    // dpkg configuration must complete and packages must be 'ii' (review:
+    // version gate masked configure failures)
+    assert.match(imagePreparer, /db:Status-Abbrev/);
+    assert.match(imagePreparer, /not fully configured/);
+    assert.match(imagePreparer, /dpkg configuration did not complete/);
     // fwupd masks are verified through their persistent /etc symlink and a
     // failed mask blocks the bake (review: swallowed mask failures)
     assert.match(imagePreparer, /readlink/);
@@ -191,7 +196,24 @@ describe("Tianyi Cloud worker image pipeline", () => {
           '  if [[ $n -eq 0 ]]; then exit "${CATSCO_MOCK_VERSION_SYSTEMD_OK:-0}"; fi',
           '  exit "${CATSCO_MOCK_VERSION_GLIBC_OK:-0}"',
           'fi',
-          'if [[ "$*" == *"--configure"* ]]; then exit "${CATSCO_MOCK_DPKG_CONFIGURE_RC:-0}"; fi',
+          'if [[ "$*" == *"--configure"* ]]; then',
+          '  n=$(cat "$CATSCO_MOCK_CONFIG_COUNT" 2>/dev/null || echo 0)',
+          '  echo $((n + 1)) > "$CATSCO_MOCK_CONFIG_COUNT"',
+          '  if [[ $n -eq 0 ]]; then exit "${CATSCO_MOCK_DPKG_CONFIGURE_FIRST_RC:-0}"; fi',
+          '  exit "${CATSCO_MOCK_DPKG_CONFIGURE_FINAL_RC:-0}"',
+          'fi',
+          "exit 0",
+        ].join("\n"),
+        "dpkg-query": [
+          "#!/usr/bin/env bash",
+          'echo "dpkg-query:$*" >> "$CATSCO_MOCK_LOG"',
+          'if [[ "$*" == *Status* ]]; then',
+          '  [[ "$*" == *systemd* ]] && echo "${CATSCO_MOCK_SYSTEMD_STATUS:-ii}"',
+          '  [[ "$*" == *libc6* ]] && echo "${CATSCO_MOCK_GLIBC_STATUS:-ii}"',
+          '  exit 0',
+          'fi',
+          '[[ "$*" == *systemd* ]] && echo "$CATSCO_MOCK_SYSTEMD_VER"',
+          '[[ "$*" == *libc6* ]] && echo "$CATSCO_MOCK_GLIBC_VER"',
           "exit 0",
         ].join("\n"),
         ls: [
@@ -199,13 +221,6 @@ describe("Tianyi Cloud worker image pipeline", () => {
           'echo "ls:$*" >> "$CATSCO_MOCK_LOG"',
           'if [[ "${CATSCO_MOCK_LS_RC:-0}" != "0" ]]; then exit "${CATSCO_MOCK_LS_RC}"; fi',
           'echo "/boot/vmlinuz-6.8.0-136-generic"',
-          "exit 0",
-        ].join("\n"),
-        "dpkg-query": [
-          "#!/usr/bin/env bash",
-          'echo "dpkg-query:$*" >> "$CATSCO_MOCK_LOG"',
-          '[[ "$*" == *systemd* ]] && echo "$CATSCO_MOCK_SYSTEMD_VER"',
-          '[[ "$*" == *libc6* ]] && echo "$CATSCO_MOCK_GLIBC_VER"',
           "exit 0",
         ].join("\n"),
         systemctl: [
@@ -240,8 +255,10 @@ describe("Tianyi Cloud worker image pipeline", () => {
       }
 
       const countPath = path.join(sandbox, "compare-count");
+      const configCountPath = path.join(sandbox, "config-count");
       const runHardening = (extra: Record<string, string>) => {
         fs.rmSync(countPath, { force: true });
+        fs.rmSync(configCountPath, { force: true });
         const result = spawnSync(
           bashExe,
           [
@@ -259,6 +276,7 @@ describe("Tianyi Cloud worker image pipeline", () => {
               CATSCO_MOCK_LOG: mockLog,
               CATSCO_MOCK_SHA: sha,
               CATSCO_MOCK_COUNT: countPath,
+              CATSCO_MOCK_CONFIG_COUNT: configCountPath,
               CATSCO_PREPARE_SKIP_ROOT_CHECK: "1",
               ...extra,
             },
@@ -400,6 +418,46 @@ describe("Tianyi Cloud worker image pipeline", () => {
         `${maskResult.stdout}\n${maskResult.stderr}`,
       );
       assert.match(maskResult.stderr, /failed to mask/);
+
+      // Probe 8: the final dpkg configuration must complete even when the
+      // versions are fine (a half-configured package still reports the new
+      // version; review: version gate masked configure failures).
+      fs.rmSync(mockLog, { force: true });
+      const dpkgResult = runHardening({
+        CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
+        CATSCO_MOCK_DPKG_CONFIGURE_FINAL_RC: "43",
+        CATSCO_MOCK_VERSION_SYSTEMD_OK: "0",
+        CATSCO_MOCK_VERSION_GLIBC_OK: "0",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.16",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
+      });
+      assert.notEqual(
+        dpkgResult.status,
+        0,
+        `${dpkgResult.stdout}\n${dpkgResult.stderr}`,
+      );
+      assert.match(
+        dpkgResult.stderr,
+        /dpkg configuration did not complete/,
+      );
+
+      // Probe 9: a half-configured package (status not 'ii') blocks the bake
+      // even when the version gate would pass.
+      fs.rmSync(mockLog, { force: true });
+      const statusResult = runHardening({
+        CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
+        CATSCO_MOCK_VERSION_SYSTEMD_OK: "0",
+        CATSCO_MOCK_VERSION_GLIBC_OK: "0",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.16",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
+        CATSCO_MOCK_SYSTEMD_STATUS: "iU",
+      });
+      assert.notEqual(
+        statusResult.status,
+        0,
+        `${statusResult.stdout}\n${statusResult.stderr}`,
+      );
+      assert.match(statusResult.stderr, /not fully configured/);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

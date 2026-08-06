@@ -167,15 +167,26 @@ if ! apt-get install --only-upgrade -y \
     systemd systemd-timesyncd libsystemd0 libc6 libc-bin \
     >/tmp/catsco-systemd-upgrade-retry.log 2>&1 || true
 fi
-dpkg --configure -a >/dev/null 2>&1 || true
+# The final dpkg configuration must actually succeed. A version string alone is
+# not enough: a half-configured package can still report the new Version while
+# the image ships a broken dpkg database (review: version gate masked configure
+# failures). Fail closed here.
+if ! dpkg --configure -a >/tmp/catsco-dpkg-configure-final.log 2>&1; then
+  die "dpkg configuration did not complete after systemd/glibc upgrade; see /tmp/catsco-dpkg-configure-final.log"
+fi
 
 SYSTEMD_VERSION="$(dpkg-query -W -f='${Version}' systemd 2>/dev/null || true)"
 GLIBC_VERSION="$(dpkg-query -W -f='${Version}' libc6 2>/dev/null || true)"
+SYSTEMD_STATUS="$(dpkg-query -W -f='${db:Status-Abbrev}' systemd 2>/dev/null || true)"
+GLIBC_STATUS="$(dpkg-query -W -f='${db:Status-Abbrev}' libc6 2>/dev/null || true)"
 if ! dpkg --compare-versions "$SYSTEMD_VERSION" ge "255.4-1ubuntu8.16"; then
   die "systemd upgrade failed to reach known-safe version (have '$SYSTEMD_VERSION', need >= 255.4-1ubuntu8.16); see /tmp/catsco-systemd-upgrade.log"
 fi
 if ! dpkg --compare-versions "$GLIBC_VERSION" ge "2.39-0ubuntu8.8"; then
   die "glibc upgrade failed to reach known-safe version (have '$GLIBC_VERSION', need >= 2.39-0ubuntu8.8); see /tmp/catsco-systemd-upgrade.log"
+fi
+if [ "$SYSTEMD_STATUS" != "ii" ] || [ "$GLIBC_STATUS" != "ii" ]; then
+  die "systemd/glibc are not fully configured (systemd='$SYSTEMD_STATUS' glibc='$GLIBC_STATUS'); refusing to bake an image with a broken dpkg database"
 fi
 
 # 4. Upgrade the kernel and regenerate grub. INSTALL (not --only-upgrade) the

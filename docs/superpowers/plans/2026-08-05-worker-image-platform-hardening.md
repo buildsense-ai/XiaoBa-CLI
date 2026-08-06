@@ -93,6 +93,11 @@
   - 补测（Minor #4a）：新增 **key-pair-only Cleanup 场景**（进程在 `ImportEcsKeypair` 后被 kill、只剩 key pair）——断言 `Automatic historical cleanup refused` + `candidate keyPairName=...` 且不删除。消除修复③无直接测试覆盖的盲区。
   - 记录的后续项：发现阶段 3 次空读无直接场景覆盖（防御性逻辑，确认阶段已有覆盖）；`/boot` 校验的 `NEWEST_KERNEL_IMG` 变量为死代码（非空性已被前置 `ls` 保证）。
 
+- [x] **步骤 5f：Nobody-ly 复审 3 项（2026-08-05 09:12，head fb9b9f6）**
+  - **High dpkg configure 失败被版本门掩盖 → 已修**：最终 `dpkg --configure -a` 失败 `die`（不再 `|| true`）；版本断言前校验包状态 `dpkg-query -W -f='${db:Status-Abbrev}'` 必须 `ii`（install ok installed）。新增探针 8（configure 返回 43 + 版本达标 → `dpkg configuration did not complete`）与探针 9（status=`iU` → `not fully configured`）。
+  - **High Cleanup 只发现不回收 → 用户决策：实现按 immutable ID 删**（进行中，替代纯 fail-closed；见实现方案）。
+  - **High pending 按名删 key pair 证明不足 → 接受风险并说明**：唯一临时名 + bake marker 是当前最强可用证明；同名重建需同 bakeID 并发操作（被 pending 恢复流程排除），接受理论竞态并在 review 回复中说明。
+
 - [x] **步骤 6：npm mirror 预配置**
   - `/root/.npmrc`：`registry=https://registry.npmmirror.com`（root 侧，先写，无需依赖 useradd）
   - `/srv/catsco-agent/.npmrc`：同上 + `chown catsco-agent:catsco-agent`（在 `useradd` 之后写，目录已由 `--create-home` 创建）
