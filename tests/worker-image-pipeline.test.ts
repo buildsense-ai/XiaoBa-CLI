@@ -721,6 +721,12 @@ if (operation === "ims ListImage") {
   const instanceVisible =
     state.instanceExists && !(state.instanceHiddenReads > 0);
   if (state.instanceHiddenReads > 0) state.instanceHiddenReads -= 1;
+  // A just-created instance is returned with an empty instanceID for the
+  // first reads (eventual consistency), mirroring the real Tianyi API where
+  // Find-BuilderInstance must skip such candidates and retry instead of
+  // recording an empty BuilderID.
+  const instanceIDEmpty = state.instanceIDEmptyReads > 0;
+  if (state.instanceIDEmptyReads > 0) state.instanceIDEmptyReads -= 1;
   returnObj = {
     results:
       instanceVisible &&
@@ -728,7 +734,7 @@ if (operation === "ims ListImage") {
       (!requestedID || requestedID === instanceID) &&
       (!requestedName || requestedName === state.instanceName)
       ? [{
-          instanceID,
+          instanceID: instanceIDEmpty ? "" : instanceID,
           resourceID: "resource-1",
           instanceName: state.instanceName,
           instanceStatus: state.instanceStatus,
@@ -785,6 +791,20 @@ if (operation === "ims ListImage") {
     state.imageExists = false;
   }
 } else if (operation === "ecs DeleteEcsInstance") {
+  if (args.includes("--deleteEip") && state.deleteEipNotSupported) {
+    // Multi-AZ pools (e.g. cn-huanan2) reject releasing associated resources
+    // at delete time (Ecs.Region.NotSupport). The orchestrator must retry the
+    // plain delete instead of leaking the billed ECS.
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    process.stdout.write(JSON.stringify({
+      statusCode: 900,
+      message: "ERROR",
+      description: "The region does not support unsubscribing/deleting instance to release associated resources",
+      errorCode: "Ecs.Region.NotSupport",
+      returnObj: {},
+    }));
+    process.exit(0);
+  }
   state.instanceExists = false;
 } else if (operation === "ecs DeleteEcsKeypair") {
   state.keyExists = false;
@@ -1604,6 +1624,93 @@ process.exit(result.status ?? 1);
         fs.readFileSync(statePath, "utf8"),
       );
       assert.equal(discoveryErrorState.keyExists, false);
+
+      // A just-created builder is returned with an empty instanceID for the
+      // first reads (Tianyi eventual consistency, reproduced against the real
+      // API). Find-BuilderInstance must skip the empty-ID candidate and retry;
+      // recording an empty BuilderID would make Assert-TemporaryBuilder reject
+      // the bake with 'outside this bake'.
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: false,
+          keyExists: false,
+          keyPairName: "",
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: "",
+          instanceStatus: "running",
+          instanceIDEmptyReads: 2, // first 2 ListEcsInstances reads: empty ID
+        }),
+      );
+      const emptyIdResult = runBake(
+        "1016",
+        "catsco-worker-emptyid",
+        "success",
+      );
+      assert.equal(
+        emptyIdResult.status,
+        0,
+        `${emptyIdResult.stdout}\n${emptyIdResult.stderr}`,
+      );
+      assert.match(emptyIdResult.stdout, /"result":\s*"created"/);
+      const emptyIdCalls = fs.readFileSync(logPath, "utf8");
+      assert.ok(
+        (emptyIdCalls.match(/ecs ListEcsInstances/g) || []).length >= 3,
+        `expected Find-BuilderInstance to retry past empty-ID reads\n${emptyIdCalls}`,
+      );
+      const emptyIdState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(emptyIdState.imageExists, true);
+      assert.equal(emptyIdState.instanceExists, false);
+      assert.equal(emptyIdState.keyExists, false);
+
+      // Multi-AZ pools reject deleting an ECS while releasing associated
+      // resources (Ecs.Region.NotSupport, reproduced against cn-huanan2).
+      // Remove-Builder must fall back to a plain delete so the failed-bake
+      // path still cleans up the billed builder.
+      const notSupportBuildNumber = "1017";
+      const notSupportBakeId = "001017-01";
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: false,
+          keyExists: false,
+          keyPairName: "",
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: "",
+          instanceStatus: "running",
+          deleteEipNotSupported: true,
+        }),
+      );
+      const notSupportResult = runBake(
+        notSupportBuildNumber,
+        "catsco-worker-notsupport",
+      );
+      // Image creation fails by design (default scenario); the point is that
+      // cleanup still succeeds despite the Region.NotSupport delete error.
+      assert.notEqual(notSupportResult.status, 0);
+      const notSupportCalls = fs.readFileSync(logPath, "utf8");
+      assert.ok(
+        (notSupportCalls.match(/ecs DeleteEcsInstance/g) || []).length >= 2,
+        `expected DeleteEcsInstance fallback after NotSupport\n${notSupportCalls}`,
+      );
+      const notSupportState = JSON.parse(
+        fs.readFileSync(statePath, "utf8"),
+      );
+      assert.equal(notSupportState.instanceExists, false);
+      assert.equal(notSupportState.keyExists, false);
+      // The error-status image is removed by Remove-FailedImage on the failed
+      // bake path, just like the instance and key pair.
+      assert.equal(notSupportState.imageExists, false);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
