@@ -189,7 +189,9 @@ fi
 if ! dpkg --compare-versions "$GLIBC_VERSION" ge "2.39-0ubuntu8.8"; then
   die "glibc upgrade failed to reach known-safe version (have '$GLIBC_VERSION', need >= 2.39-0ubuntu8.8); see /tmp/catsco-systemd-upgrade.log"
 fi
-if [ "$SYSTEMD_STATUS" != "ii" ] || [ "$GLIBC_STATUS" != "ii" ]; then
+# dpkg-query prints '${db:Status-Abbrev}' with a trailing space for a healthy
+# package (e.g. 'ii '), so compare whitespace-normalized values.
+if [ "${SYSTEMD_STATUS//[[:space:]]/}" != "ii" ] || [ "${GLIBC_STATUS//[[:space:]]/}" != "ii" ]; then
   die "systemd/glibc are not fully configured (systemd='$SYSTEMD_STATUS' glibc='$GLIBC_STATUS'); refusing to bake an image with a broken dpkg database"
 fi
 

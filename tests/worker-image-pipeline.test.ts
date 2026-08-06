@@ -458,6 +458,35 @@ describe("Tianyi Cloud worker image pipeline", () => {
         `${statusResult.stdout}\n${statusResult.stderr}`,
       );
       assert.match(statusResult.stderr, /not fully configured/);
+
+      // Probe 10: real dpkg-query prints '${db:Status-Abbrev}' with a trailing
+      // space for a healthy package (e.g. 'ii '). The whitespace-normalized
+      // comparison must accept it, otherwise every healthy bake is rejected.
+      fs.rmSync(mockLog, { force: true });
+      const trailingSpaceResult = runHardening({
+        CATSCO_MOCK_APT_ONLY_UPGRADE_RC: "0",
+        CATSCO_MOCK_VERSION_SYSTEMD_OK: "0",
+        CATSCO_MOCK_VERSION_GLIBC_OK: "0",
+        CATSCO_MOCK_SYSTEMD_VER: "255.4-1ubuntu8.16",
+        CATSCO_MOCK_GLIBC_VER: "2.39-0ubuntu8.8",
+        CATSCO_MOCK_SYSTEMD_STATUS: "ii ",
+        CATSCO_MOCK_GLIBC_STATUS: "ii ",
+      });
+      assert.doesNotMatch(
+        trailingSpaceResult.stderr,
+        /not fully configured/,
+        `${trailingSpaceResult.stdout}\n${trailingSpaceResult.stderr}`,
+      );
+      // The status gate is passed (execution continues past it and prints the
+      // platform line). The script then configures /root/.npmrc, which does
+      // not exist in the non-root test sandbox, so the overall exit code is
+      // not asserted here (the healthy-status probe is about the gate, not
+      // about the sandbox's missing /root).
+      assert.match(
+        trailingSpaceResult.stdout,
+        /platform_systemd=255\.4-1ubuntu8\.16/,
+        `${trailingSpaceResult.stdout}\n${trailingSpaceResult.stderr}`,
+      );
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -672,6 +701,19 @@ if (operation === "ims ListImage") {
   state.instanceName = value("--instanceName");
   returnObj = { masterResourceID: "resource-1" };
 } else if (operation === "ecs ListEcsInstances") {
+  if (state.listInstancesFailures > 0) {
+    // Single-shot discovery API failure: this call errors but later calls
+    // succeed, so a discovery failure must not be mistaken for "gone".
+    state.listInstancesFailures -= 1;
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    process.stdout.write(JSON.stringify({
+      statusCode: 900,
+      message: "ERROR",
+      description: "fake discovery error",
+      returnObj: {},
+    }));
+    process.exit(0);
+  }
   const instanceID = state.instanceID || "instance-1";
   const requestedID = value("--instanceIDList");
   const requestedName = value("--instanceName");
@@ -1439,6 +1481,129 @@ process.exit(result.status ?? 1);
       const stickyState = JSON.parse(fs.readFileSync(statePath, "utf8"));
       assert.equal(stickyState.imageExists, true);
       assert.equal(stickyState.instanceExists, true);
+
+      // Cleanup discovery must not trust a single empty read: the key pair is
+      // hidden for the first reads (eventual consistency), so discovery must
+      // retry with consecutive-empty reads before concluding it is gone.
+      const hiddenKeyBuildNumber = "1013";
+      const hiddenKeyBakeId = "001013-01";
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: false,
+          keyExists: true,
+          keyHiddenReads: 2, // hide the discovery reads; visible on the 3rd
+          keyPairName: `catsco-img-key-${hiddenKeyBakeId}`,
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: "",
+          instanceStatus: "stopped",
+        }),
+      );
+      const hiddenKeyResult = runCleanup(
+        hiddenKeyBuildNumber,
+        "catsco-worker-cleanup-hiddenkey",
+      );
+      assert.equal(
+        hiddenKeyResult.status,
+        0,
+        `${hiddenKeyResult.stdout}\n${hiddenKeyResult.stderr}`,
+      );
+      assert.match(hiddenKeyResult.stdout, /"result":\s*"reconciled"/);
+      const hiddenKeyCalls = fs.readFileSync(logPath, "utf8");
+      assert.ok(
+        (hiddenKeyCalls.match(/ecs GetEcsKeypairDetails/g) || []).length >= 3,
+        `expected consecutive-empty key discovery reads\n${hiddenKeyCalls}`,
+      );
+      assert.match(hiddenKeyCalls, /ecs DeleteEcsKeypair/);
+      const hiddenKeyState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(hiddenKeyState.keyExists, false);
+
+      // Cleanup builder discovery must also survive eventually-consistent
+      // empty reads: the builder is hidden for the first reads, then found by
+      // its unique temporary name and reconciled.
+      const hiddenBuilderBuildNumber = "1014";
+      const hiddenBuilderBakeId = "001014-01";
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: true,
+          instanceHiddenReads: 2,
+          keyExists: false,
+          keyPairName: "",
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: `catsco-img-${hiddenBuilderBakeId}`,
+          instanceStatus: "stopped",
+        }),
+      );
+      const hiddenBuilderResult = runCleanup(
+        hiddenBuilderBuildNumber,
+        "catsco-worker-cleanup-hbuilder",
+      );
+      assert.equal(
+        hiddenBuilderResult.status,
+        0,
+        `${hiddenBuilderResult.stdout}\n${hiddenBuilderResult.stderr}`,
+      );
+      assert.match(hiddenBuilderResult.stdout, /"result":\s*"reconciled"/);
+      const hiddenBuilderCalls = fs.readFileSync(logPath, "utf8");
+      assert.ok(
+        (hiddenBuilderCalls.match(/ecs ListEcsInstances/g) || []).length >= 3,
+        `expected consecutive-empty builder discovery reads\n${hiddenBuilderCalls}`,
+      );
+      assert.match(hiddenBuilderCalls, /ecs DeleteEcsInstance/);
+      const hiddenBuilderState = JSON.parse(
+        fs.readFileSync(statePath, "utf8"),
+      );
+      assert.equal(hiddenBuilderState.instanceExists, false);
+
+      // A builder-discovery API failure must not skip the other resources:
+      // the key pair is still reconciled even though the builder query
+      // errored. The error joins the aggregate and the run fails closed
+      // naming it, instead of aborting before the key pair is touched.
+      const discoveryErrorBuildNumber = "1015";
+      const discoveryErrorBakeId = "001015-01";
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: true,
+          listInstancesFailures: 1, // first ListEcsInstances call errors
+          keyExists: true,
+          keyPairName: `catsco-img-key-${discoveryErrorBakeId}`,
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: `catsco-img-${discoveryErrorBakeId}`,
+          instanceStatus: "stopped",
+        }),
+      );
+      const discoveryErrorResult = runCleanup(
+        discoveryErrorBuildNumber,
+        "catsco-worker-cleanup-discerr",
+      );
+      assert.notEqual(discoveryErrorResult.status, 0);
+      assert.match(
+        `${discoveryErrorResult.stdout}\n${discoveryErrorResult.stderr}`,
+        /builder discovery/,
+      );
+      const discoveryErrorCalls = fs.readFileSync(logPath, "utf8");
+      assert.match(discoveryErrorCalls, /ecs DeleteEcsKeypair/);
+      const discoveryErrorState = JSON.parse(
+        fs.readFileSync(statePath, "utf8"),
+      );
+      assert.equal(discoveryErrorState.keyExists, false);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

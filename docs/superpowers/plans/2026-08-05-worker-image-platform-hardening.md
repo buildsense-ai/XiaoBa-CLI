@@ -6,7 +6,7 @@
 
 - **分支/head：** `feat/ctyun-worker-image-pipeline` @ `5c83dc8`（已 rebase 到 `upstream/main` `dc22252` 之上，相对 main 22 commits）
 - **CI：** 最新一次全绿（Build and runtime tests + cross-repo smoke）
-- **Review：** 已完成 5 轮处理并回复（自查 / c3811yyds / Nobody-ly 4 项 / atridaisuki 4 项 / 子 agent 独立审核），当前**等复审**；合并前需用户确认
+- **Review：** 已完成 6 轮处理并回复（自查 / c3811yyds / Nobody-ly 4 项 / atridaisuki 4 项 / 子 agent 独立审核 / Nobody-ly 复审 fc49cc0 3 项），当前**等复审**；合并前需用户确认
 - **测试：** `worker-image-pipeline.test.ts` 11/11、加固探针 7 场景、全量 `npm test`（唯一失败为已知 pre-existing flaky `logger.test.ts`，与改动无关）、`npm run build` 通过
 - **下一步：** reviewer 复审 → 合并 → workflow 真实 bake 验证（见步骤 10 验收标准）
 - **关联计划：** 应用制品更新 Part A 见 `2026-08-04-worker-artifact-update.md`（worker 更新通道与镜像烘焙并存，互为回退）
@@ -105,6 +105,12 @@
   - **外部审核报告 H1（2026-08-06，Saturday 的 PDF 报告 head 9a642e4）→ 已修**：C1 修复只调整了顺序、没落实条件门控——`Remove-FailedImage` 失败（DeleteImage API 失败 / 状态不可删 / 确认超时）时 `PreserveBuilderForImageRecovery` 保持 true，但 `Invoke-ExactBakeCleanup` catch 后仍无条件删 builder → 镜像失去 sourceServerID 证据永久搁浅。修复：builder 删除阶段复用 `PreserveBuilderForImageRecovery` 门控（true 时 deferred 并聚合错误），与 in-process finally 一致。
   - **H1 回归测试（按报告 5.1 补）**：fake 支持 `deleteImageFails`（DeleteImage 返回 API 错误）与 `deleteImageSticky`（删除后镜像不消失）——场景 A（DeleteImage 失败 → 镜像+builder 保留、`builder cleanup deferred`）、场景 B（确认超时 → builder 保留）、场景 C（source 不匹配 → 删 builder/key、镜像报告，已有）、场景 D（删除顺序 DeleteImage 先于 DeleteEcsInstance + 全空）。ps1 新增 `-ImageDeleteConfirmMinutes`（默认 8）供场景 B 缩短确认窗口。
   - **High pending 按名删 key pair 证明不足 → 接受风险并说明**：唯一临时名 + bake marker 是当前最强可用证明；同名重建需同 bakeID 并发操作（被 pending 恢复流程排除），接受理论竞态并在 review 回复中说明。
+
+- [x] **步骤 5g：Nobody-ly 复审 3 项（2026-08-06 04:10，head fc49cc0）**
+  - **High 健康 dpkg 状态被误判未配置 → 已修**：真实 `dpkg-query -f='${db:Status-Abbrev}'` 对健康包返回 `ii `（**末尾带空格**），shell 命令替换不去空格 → 旧严格比较 `"ii"` 会把所有正常 bake 判为未配置而拒绝。修复：比较前空白归一化 `${SYSTEMD_STATUS//[[:space:]]/}`（bash 参数扩展字符类）。新增探针 10：mock 返回 `"ii "`（带尾空格）→ 脚本越过 status 门（stdout 出现 `platform_systemd=...`）、stderr 不含 `not fully configured`。
+  - **High Cleanup 初始查询异常短路后续清理 → 已修**：`Invoke-ExactBakeCleanup` 的 builder/image discovery 原在 errors 聚合初始化和 try/catch 之前，任一 API 查询异常直接退出、跳过 key pair 清理。修复：先初始化 `$errors`/`$reconciled`，builder/image/key-pair discovery 各自独立 try/catch，异常聚合进 `$errors` 且不跳过其它资源补偿。
+  - **Medium/High Cleanup 初始发现接受单次空响应 → 已修**：builder 的 `Resolve-BuilderInstance`、image 非 late 分支、key pair `GetEcsKeypairDetails` 初始查询都可能一次空响应即停 → 瞬时最终一致性空响应造成 `nothing-to-clean` 漏报。修复：初始发现也采用 bounded 连续空读（builder 3 次×5s、image 3 次×10s、key 3 次×5s，非 late 截止；late 分支沿用 discoveryDeadline）。
+  - **5g 回归测试**：fake 新增单次 discovery API 失败注入（`listInstancesFailures`，仅当次调用 900、后续正常）——场景 1015（builder discovery 报错 → key pair 仍被回收、错误聚合抛出 `builder discovery`）；场景 1013（key-only + `keyHiddenReads:2` → discovery 连续空读后第 3 读可见 → 删除 key，断言 `GetEcsKeypairDetails ≥ 3`）；场景 1014（builder-only + `instanceHiddenReads:2` → discovery 连续空读后可见 → 删除 builder，断言 `ListEcsInstances ≥ 3`）。探针 1-10 + 集成 11/11 全过、`npm run build` 通过。
 
 - [x] **步骤 6：npm mirror 预配置**
   - `/root/.npmrc`：`registry=https://registry.npmmirror.com`（root 侧，先写，无需依赖 useradd）

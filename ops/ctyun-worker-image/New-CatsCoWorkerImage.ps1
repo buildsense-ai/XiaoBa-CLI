@@ -804,33 +804,56 @@ function Invoke-ExactBakeCleanup {
         -RequestedSeconds $discoverySeconds `
         -Phase "exact bake resource discovery"
 
-    # Resolve the builder FIRST: its immutable instance ID is the ownership
-    # proof the image deletion depends on (sourceServerID match). The builder
-    # itself is deleted LAST so it stays as evidence while the image is being
-    # removed — the same ordering as the in-process finally path. Deleting the
-    # builder first would strand a genuinely owned image if image deletion
-    # cannot complete (un-deletable state, delete failure, or confirmation
-    # timeout), turning a recoverable leak into a permanent one.
-    $candidateBuilder = Resolve-BuilderInstance -WaitSeconds $discoverySeconds
+    # Aggregate first: a discovery API error must not skip the other resources.
+    $errors = [Collections.Generic.List[string]]::new()
+    $reconciled = [Collections.Generic.List[string]]::new()
+
+    # --- Builder discovery (independent try/catch + consecutive-empty reads).
+    # Its immutable instance ID is the ownership proof the image deletion
+    # depends on (sourceServerID match); the builder itself is deleted LAST so
+    # it stays as evidence while the image is being removed — the same ordering
+    # as the in-process finally path. ---
+    $candidateBuilder = $null
+    try {
+        $candidateBuilder = Resolve-BuilderInstance -WaitSeconds $discoverySeconds
+        if (-not $candidateBuilder -and -not $WaitForLateResources) {
+            $emptyReads = 1
+            while ($emptyReads -lt 3) {
+                Start-Sleep -Seconds 5
+                $candidateBuilder = Resolve-BuilderInstance
+                if ($candidateBuilder) { break }
+                $emptyReads++
+            }
+        }
+    } catch {
+        $errors.Add("builder discovery: $($_.Exception.Message)")
+    }
     if ($candidateBuilder) {
         $script:BuilderID = [string]$candidateBuilder.instanceID
         $script:BuilderName = [string]$candidateBuilder.instanceName
     }
 
+    # --- Image discovery (independent try/catch + consecutive-empty reads). ---
     $candidateImage = $null
-    do {
-        $candidateImage = Find-ImageByName -Name $script:ImageWorkName
-        if ($candidateImage -or -not $WaitForLateResources) { break }
-        Start-Sleep -Seconds 10
-    } while ((Get-Date) -lt $discoveryDeadline)
+    try {
+        $imageEmptyReads = 0
+        do {
+            $candidateImage = Find-ImageByName -Name $script:ImageWorkName
+            if ($candidateImage) { break }
+            $imageEmptyReads++
+            if (-not $WaitForLateResources -and $imageEmptyReads -ge 3) { break }
+            if ($WaitForLateResources -and (Get-Date) -ge $discoveryDeadline) { break }
+            Start-Sleep -Seconds 10
+        } while ($true)
+    } catch {
+        $errors.Add("image discovery: $($_.Exception.Message)")
+    }
 
     # Reconcile resources that can be uniquely proven to belong to this bake;
     # anything that cannot be proven stays fail-closed and is reported. A
     # process hard-killed at any creation boundary (key-only, builder-only,
     # image-only, published-pending) is recovered here instead of only being
     # discovered.
-    $errors = [Collections.Generic.List[string]]::new()
-    $reconciled = [Collections.Generic.List[string]]::new()
 
     # --- Image first: deletable only when sourceServerID matches the resolved
     # builder (same ownership proof as the in-process finally path). Without a
@@ -875,18 +898,27 @@ function Invoke-ExactBakeCleanup {
     # instead of aborting it. ---
     if ($script:KeyPairName) {
         try {
-            $keyDetails = Invoke-Ctyun @(
-                "ecs", "GetEcsKeypairDetails",
-                "--regionID", $RegionID,
-                "--projectID", $ProjectID,
-                "--keyPairName", $script:KeyPairName,
-                "--pageNo", "1",
-                "--pageSize", "10"
-            )
-            $candidateKeyPair = @(
-                @(Get-ResponseItems -Response $keyDetails -Name "results") |
-                    Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
-            )
+            $candidateKeyPair = @()
+            $keyEmptyReads = 0
+            do {
+                $keyDetails = Invoke-Ctyun @(
+                    "ecs", "GetEcsKeypairDetails",
+                    "--regionID", $RegionID,
+                    "--projectID", $ProjectID,
+                    "--keyPairName", $script:KeyPairName,
+                    "--pageNo", "1",
+                    "--pageSize", "10"
+                )
+                $candidateKeyPair = @(
+                    @(Get-ResponseItems -Response $keyDetails -Name "results") |
+                        Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
+                )
+                if ($candidateKeyPair.Count -gt 0) { break }
+                $keyEmptyReads++
+                if (-not $WaitForLateResources -and $keyEmptyReads -ge 3) { break }
+                if ($WaitForLateResources -and (Get-Date) -ge $discoveryDeadline) { break }
+                Start-Sleep -Seconds 5
+            } while ($true)
             if ($candidateKeyPair.Count -eq 1) {
                 $script:KeyPairCreateAttempted = $true
                 Remove-KeyPair -WaitForLate:$WaitForLateResources
