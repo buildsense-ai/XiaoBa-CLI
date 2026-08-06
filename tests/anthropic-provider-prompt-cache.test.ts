@@ -76,31 +76,6 @@ describe('AnthropicProvider prompt caching', () => {
     assert.equal(transformed.system[1].text, 'Runtime snapshot without a transient prefix');
   });
 
-  test('keeps checkpoint boundaries after the stable cached system prefix', () => {
-    const provider = createProvider();
-    const transformed = (provider as any).transformMessages([
-      { role: 'system', content: 'Stable policy.' },
-      {
-        role: 'system',
-        content: '[checkpoint_compaction_boundary] kind=delta tokens_before=200',
-        __checkpointBoundary: true,
-      },
-      { role: 'user', content: 'continuation summary', __checkpointSummary: true },
-    ] as Message[]);
-
-    assert.deepEqual(transformed.system, [
-      {
-        type: 'text',
-        text: 'Stable policy.',
-        cache_control: { type: 'ephemeral' },
-      },
-      {
-        type: 'text',
-        text: '[checkpoint_compaction_boundary] kind=delta tokens_before=200',
-      },
-    ]);
-  });
-
   test('does not reorder system content and skips a cache breakpoint when dynamic content comes first', () => {
     const provider = createProvider();
     const transformed = (provider as any).transformMessages([

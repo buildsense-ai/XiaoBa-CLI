@@ -10,10 +10,6 @@ import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
-import { resolveReadFileMessageFoldingOptions } from './read-file-message-folder';
-import { resolveExecuteShellMessageFoldingOptions } from './execute-shell-message-folder';
-import { stabilizeToolResultsForHistory } from './stable-tool-result-history';
-import { resolveToolResultArtifactStoreOptions } from './tool-result-artifact-store';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -209,8 +205,6 @@ export interface RunnerOptions {
   checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   /** Persists a successful continuation checkpoint before execution resumes. */
   onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
-  /** Session-owned metrics collector; defaults to an isolated runner collector. */
-  metrics?: Metrics;
   /** Best-effort observer. Its result never participates in reply control flow. */
   cacheTraceSink?: CacheTraceSink;
 }
@@ -239,7 +233,6 @@ export class ConversationRunner {
   private suppressFinalResponse: boolean;
   private checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   private onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
-  private metrics: Metrics;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -269,7 +262,6 @@ export class ConversationRunner {
     this.onCompactionCheckpoint = options?.onCompactionCheckpoint;
     this.maxTurns = options?.maxTurns;
     this.suppressFinalResponse = options?.suppressFinalResponse === true;
-    this.metrics = options?.metrics ?? new Metrics();
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -279,7 +271,7 @@ export class ConversationRunner {
       maxContextTokens: this.maxPromptTokens,
       compactionThreshold: 0.5,
       summaryContentBudget: calculateSummaryBudgetTokens(this.maxPromptTokens),
-    }, this.metrics);
+    });
     this.promptTraceLogger = new PromptTraceLogger({
       sessionId: this.toolExecutionContext?.sessionId,
       surface: this.toolExecutionContext?.surface,
@@ -320,7 +312,6 @@ export class ConversationRunner {
     }
     const toolDefinitions = new Map(allTools.map(tool => [tool.name, tool]));
     const newMessages: Message[] = [];
-    this.stabilizeToolResultHistory(messages, newMessages);
     let nextTurnTransientHints: Message[] = [];
     let hasDeliveredMessageOutThisRun = false;
     let lastOutboundContent: string | null = null;
@@ -382,7 +373,6 @@ export class ConversationRunner {
           }
           const compacted = await this.compressor.compact(messages, {
             signal: this.toolExecutionContext?.abortSignal,
-            promptCacheScopeKey: this.toolExecutionContext?.sessionId,
           });
           messages.length = 0;
           messages.push(...compacted);
@@ -494,7 +484,7 @@ export class ConversationRunner {
       Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
 
       if (response.usage) {
-        this.metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
+        Metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
       }
 
@@ -670,7 +660,7 @@ export class ConversationRunner {
           hasRecordedDecision = true;
         }
         const toolDuration = Date.now() - toolStart;
-        this.metrics.recordToolCall(toolName, toolDuration);
+        Metrics.recordToolCall(toolName, toolDuration);
         this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
         callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
@@ -707,7 +697,6 @@ export class ConversationRunner {
       );
       messages.push(...turnMessages);
       newMessages.push(...turnMessages);
-      this.stabilizeToolResultHistory(messages, newMessages);
 
       for (const record of executionRecords) {
         const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
@@ -1105,43 +1094,6 @@ export class ConversationRunner {
     return !outboundMessages.some(message => message.content === assistantMsg.content);
   }
 
-  /**
-   * Freeze supported tool outputs as soon as they become durable history.
-   * Later provider calls and error recovery then observe the same compact,
-   * content-addressed representation instead of a turn-dependent raw payload.
-   */
-  private stabilizeToolResultHistory(messages: Message[], newMessages: Message[]): void {
-    const artifactStore = this.resolveToolResultArtifactStoreOptions();
-    const stats = stabilizeToolResultsForHistory(
-      messages,
-      newMessages,
-      { ...resolveReadFileMessageFoldingOptions(), artifactStore },
-      { ...resolveExecuteShellMessageFoldingOptions(), artifactStore },
-    );
-    if (stats.stabilizedCount > 0) {
-      Logger.info(
-        `[${this.sessionLabel}] stable tool_result history: `
-        + `stabilized=${stats.stabilizedCount}, `
-        + `read_file_truncated=${stats.readFileFoldedCount}, `
-        + `execute_shell_truncated=${stats.executeShellFoldedCount}`,
-      );
-    }
-  }
-
-  private resolveToolResultArtifactStoreOptions() {
-    const workspaceRoot = this.toolExecutionContext?.workspaceRoot
-      || this.toolExecutionContext?.workingDirectory;
-    const defaultRoot = workspaceRoot
-      ? path.join(workspaceRoot, '.xiaoba', 'tool-results')
-      : undefined;
-    return resolveToolResultArtifactStoreOptions(process.env, {
-      enabled: Boolean(defaultRoot),
-      rootDirectory: defaultRoot,
-      sessionId: this.toolExecutionContext?.sessionId
-        || this.toolExecutionContext?.executionScope?.sessionKey,
-    });
-  }
-
   private buildProviderInputMessages(
     messages: Message[],
     transientHints: Message[],
@@ -1262,34 +1214,14 @@ export class ConversationRunner {
   }
 
   private insertProviderTransientHints(messages: Message[], hints: Message[]): Message[] {
-    if (hints.length === 0) return this.dedupeTransientMessages(messages);
+    if (hints.length === 0) return messages;
 
     const insertIndex = this.findCurrentDirectoryHintInsertIndex(messages);
-    return this.dedupeTransientMessages([
+    return [
       ...messages.slice(0, insertIndex),
       ...hints,
       ...messages.slice(insertIndex),
-    ]);
-  }
-
-  private dedupeTransientMessages(messages: Message[]): Message[] {
-    const seen = new Set<string>();
-    const dedupedReversed: Message[] = [];
-    for (let index = messages.length - 1; index >= 0; index--) {
-      const message = messages[index];
-      const key = this.transientMessageKey(message);
-      if (key && seen.has(key)) continue;
-      if (key) seen.add(key);
-      dedupedReversed.push(message);
-    }
-    return dedupedReversed.reverse();
-  }
-
-  private transientMessageKey(message: Message): string | null {
-    if (message.role !== 'system' && !message.__injected) return null;
-    if (typeof message.content !== 'string') return null;
-    const firstLine = message.content.split('\n', 1)[0].trim();
-    return /^\[transient_[a-z0-9_-]+\]$/i.test(firstLine) ? firstLine.toLowerCase() : null;
+    ];
   }
 
   private findCurrentDirectoryHintInsertIndex(messages: Message[]): number {
@@ -1569,9 +1501,6 @@ export class ConversationRunner {
   ) {
     const requestOptions: AIRequestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
-      ...(this.toolExecutionContext?.sessionId
-        ? { promptCacheScopeKey: this.toolExecutionContext.sessionId }
-        : {}),
       ...(this.cacheTraceSink ? {
         modelAttemptSink: this.cacheTraceSink,
         modelAttemptContext: {

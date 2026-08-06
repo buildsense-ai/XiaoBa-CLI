@@ -40,21 +40,15 @@ function mockAIService(summaryText: string): AIService {
   } as unknown as AIService;
 }
 
-function mockAIServiceWithCapture(summaryText: string): {
-  service: AIService;
-  requests: Message[][];
-  requestOptions: any[];
-} {
+function mockAIServiceWithCapture(summaryText: string): { service: AIService; requests: Message[][] } {
   const requests: Message[][] = [];
-  const requestOptions: any[] = [];
   const service = {
     chat: async () => ({
       content: `<summary>\n${summaryText}\n</summary>`,
       usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
     }),
-    chatStream: async (_messages: Message[], _tools?: any, callbacks?: any, options?: any) => {
+    chatStream: async (_messages: Message[], _tools?: any, callbacks?: any) => {
       requests.push(_messages.map(message => ({ ...message })));
-      requestOptions.push(options);
       const content = `<summary>\n${summaryText}\n</summary>`;
       callbacks?.onText?.(content);
       return {
@@ -63,7 +57,7 @@ function mockAIServiceWithCapture(summaryText: string): {
       };
     },
   } as unknown as AIService;
-  return { service, requests, requestOptions };
+  return { service, requests };
 }
 
 // ─── contentToString ─────────────────────────────────────
@@ -237,19 +231,6 @@ describe('ContextCompressor.compact', () => {
     const roles = result.map(m => m.role);
     assert.ok(!roles.includes('assistant'), 'assistant 不应在结果中');
     assert.ok(!roles.includes('tool'), 'tool 不应在结果中');
-  });
-
-  test('passes a stable prompt cache scope to the summary request', async () => {
-    const capture = mockAIServiceWithCapture('summary-body');
-    const compressor = new ContextCompressor(capture.service, { preserveRecentEpisodes: 0 });
-
-    await compressor.compact([
-      system('base'),
-      user('old request'),
-      assistant('old answer'),
-    ], { promptCacheScopeKey: 'session-compaction-a' });
-
-    assert.equal(capture.requestOptions[0]?.promptCacheScopeKey, 'session-compaction-a');
   });
 
   test('全量压缩：结果中无任何 tool_call_id 引用', async () => {

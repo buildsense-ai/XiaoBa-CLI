@@ -28,8 +28,6 @@ export interface Message {
   }>;
   tool_call_id?: string;
   name?: string;
-  /** Historical tool result was normalized once and must not be rewritten by later prompt-budget passes. */
-  __toolResultStable?: boolean;
   /** 标记由 injectContext 注入的消息，用于滑动窗口清理 */
   __injected?: boolean;
   /**
@@ -55,10 +53,6 @@ export interface Message {
   __checkpointSummary?: boolean;
   /** Durable marker for a continuation checkpoint boundary. */
   __checkpointBoundary?: boolean;
-  /** Number of verbatim messages retained immediately after this checkpoint. */
-  __checkpointRetainedCount?: number;
-  /** Distinguishes the first checkpoint from an appended delta checkpoint. */
-  __checkpointKind?: 'base' | 'delta' | 'rebase';
   /** Internal compaction phase. Never sent to providers. */
   __checkpointPhase?: 'pre_turn' | 'mid_turn' | 'restore';
   /** 远端耐久上下文来源和消息序号，用于游标写盘失败后的幂等补拉。 */

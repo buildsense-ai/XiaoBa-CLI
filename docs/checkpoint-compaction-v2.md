@@ -219,38 +219,17 @@ threshold = 65%
 
 ## 重复压缩
 
-旧 checkpoint 的 provider-visible 字节不会被重写。
+旧 checkpoint 不会被永久原样堆叠。
 
 下一次触发时：
 
 ```text
-稳定 system + 旧 boundary + 旧 summary
-+ 新增 durable 消息
-→ 追加新的 delta boundary + delta summary
+旧 checkpoint summary
++ 新增消息
+→ 生成一份新的 checkpoint summary
 ```
 
-旧 boundary 和旧 summary 原样保留，旧 summary 只作为 delta 摘要模型的只读证据。
-上一个 checkpoint 后已经保留的 root/近期原文也原样留在旧前缀中，但不会再次送入
-delta 摘要；boundary 中的 retained count 用于识别真正新增的 durable 消息。这样 Responses
-API 的 `prompt_cache_key` 和旧 checkpoint 前缀都保持稳定，新增内容只形成可写的缓存后缀。
-
-首次升级到该链路的旧 checkpoint 如果没有 retained count，会安全地把 summary
-之后的消息作为一次性 delta 输入；完成后写入 retained count，后续压缩不再重写旧前缀。
-
-checkpoint boundary 属于动态运行元数据，不进入 provider 的稳定 `instructions`；它仍会随
-checkpoint 一起持久化，供恢复和审计使用。普通 system prompt 仍不会写入 Session。
-
-delta 链不是无限增长的。如果旧 checkpoint + retained tail 本身已经超过压缩阈值，
-继续追加 delta 已无法恢复 headroom，此时执行一次显式 `rebase`：
-
-```text
-旧 checkpoint 链
-→ 单个 rebase checkpoint
-→ 后续重新进入 append-only delta
-```
-
-`rebase` 会产生一次预期的冷缓存边界，但避免长寿命会话陷入“每轮都触发、每轮都不缩小”
-的无效压缩循环。只有不可变旧前缀本身超过预算时才允许 rebase。
+旧 boundary 被移除，旧 summary 作为证据重新摘要。远端上下文水位继续带入新 checkpoint，避免恢复后重复拉取。
 
 ## 断线、进程重启与恢复
 

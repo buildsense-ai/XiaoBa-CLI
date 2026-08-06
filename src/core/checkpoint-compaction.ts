@@ -85,7 +85,6 @@ export class CheckpointCompactionCoordinator {
   constructor(
     private readonly aiService: AIService,
     options: CheckpointCompactionCoordinatorOptions,
-    private readonly metrics = new Metrics(),
   ) {
     this.maxContextTokens = Math.max(1, Math.floor(options.maxContextTokens));
     this.compactionThreshold = readRatio(
@@ -261,7 +260,7 @@ export class CheckpointCompactionCoordinator {
   private async generateContinuationSummary(
     sourceMessages: Message[],
     phase: CheckpointCompactionPhase,
-    promptCacheScopeKey: string,
+    sessionKey: string,
     signal?: AbortSignal,
   ): Promise<string> {
     let attemptMessages = prepareSummarySourceMessages(sourceMessages);
@@ -285,16 +284,15 @@ export class CheckpointCompactionCoordinator {
           { onText: text => { streamed += text; } },
           {
             signal,
-            promptCacheScopeKey,
             promptCacheContext: {
-              sessionKey: promptCacheScopeKey,
+              sessionKey,
               phase,
               explicitCaching: false,
             },
           },
         );
         if (response.usage) {
-          this.metrics.recordAICall('stream', response.usage);
+          Metrics.recordAICall('stream', response.usage);
         }
         const summary = (streamed || response.content || '').trim();
         if (!summary) {

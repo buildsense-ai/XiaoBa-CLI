@@ -213,7 +213,6 @@ export class AgentSession {
   private skillRuntime: SessionSkillRuntime;
   private runtimeFeedbackInbox = new RuntimeFeedbackInbox();
   private planRuntime = new PlanRuntime();
-  private metrics = new Metrics();
   private lifecycleManager: SessionLifecycleManager;
   private readonly defaultDirectory: string;
   private currentDirectory: string;
@@ -237,11 +236,10 @@ export class AgentSession {
     this.contextWindowManager = new ContextWindowManager(services.aiService, {
       maxContextTokens: contextWindow.promptBudgetTokens,
       summaryContentBudget: contextWindow.summaryBudgetTokens,
-    }, this.metrics);
+    });
     this.checkpointCompactionCoordinator = new CheckpointCompactionCoordinator(
       services.aiService,
       { maxContextTokens: contextWindow.promptBudgetTokens },
-      this.metrics,
     );
     this.useCheckpointCompaction = isCheckpointCompactionEnabled();
     this.skillRuntime = new SessionSkillRuntime(services.skillManager, key);
@@ -276,7 +274,6 @@ export class AgentSession {
           throw new Error('Failed to persist continuation checkpoint');
         }
       },
-      metrics: this.metrics,
     });
 
     const runtimeFeedbackInbox = this.runtimeFeedbackInbox;
@@ -641,7 +638,7 @@ export class AgentSession {
       const runtimeFeedback = this.consumeRuntimeFeedback(runtimeFeedbackInputs);
 
       // 按"单次消息"统计 metrics，避免跨轮次累积导致定位困难
-      this.metrics.reset();
+      Metrics.reset();
 
       this.busy = true;
       this.interruptRequested = false;
