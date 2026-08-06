@@ -11,7 +11,10 @@ import { SubAgentEventType, SubAgentRuntimeEvent } from './sub-agent-events';
 import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext } from '../types/tool';
 import { resolveModelContextWindow } from '../utils/model-context-window';
-import { CheckpointCompactionCoordinator } from './checkpoint-compaction';
+import {
+  CheckpointCompactionCoordinator,
+  isCheckpointCompactionEnabled,
+} from './checkpoint-compaction';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -290,18 +293,21 @@ export class SubAgentSession {
       ? (this.aiService as any).getConfig()
       : {};
     const contextWindow = resolveModelContextWindow(modelConfig);
-    const checkpointCompactionCoordinator = new CheckpointCompactionCoordinator(
-      this.aiService,
-      { maxContextTokens: contextWindow.promptBudgetTokens },
-    );
+    const useCheckpointCompaction = isCheckpointCompactionEnabled();
+    const checkpointCompactionCoordinator = useCheckpointCompaction
+      ? new CheckpointCompactionCoordinator(
+        this.aiService,
+        { maxContextTokens: contextWindow.promptBudgetTokens },
+      )
+      : undefined;
 
     // 创建独立的 ConversationRunner（不注入 channel，子智能体不直接和用户通信）
     const runner = new ConversationRunner(this.aiService, toolManager, {
       maxTurns: this.options.maxTurns,
-      // Keep subagents on the same durable checkpoint compaction path as the
-      // main agent. The legacy runner compressor did not carry sessionKey into
-      // its summary request and created an unscoped Responses cache namespace.
-      enableCompression: false,
+      // Match the main-session rollout switch: checkpoint compaction is the
+      // default, while the explicit rollback flag restores the legacy runner
+      // compressor for both main agents and subagents.
+      enableCompression: !useCheckpointCompaction,
       checkpointCompactionCoordinator,
       shouldContinue: () => !this.stopped,
       toolExecutionContext: {

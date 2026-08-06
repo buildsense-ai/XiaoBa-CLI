@@ -757,7 +757,7 @@ export class OpenAIProvider implements AIProvider {
   }
 
   private supportsExplicitPromptCaching(): boolean {
-    const configuredMode = String(process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE || 'auto')
+    const configuredMode = String(process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE || 'off')
       .trim()
       .toLowerCase();
     if (['0', 'false', 'off', 'no', 'disabled'].includes(configuredMode)) return false;
@@ -770,7 +770,7 @@ export class OpenAIProvider implements AIProvider {
     if (!supportedModel) return false;
 
     if (['1', 'true', 'on', 'yes', 'force', 'enabled'].includes(configuredMode)) return true;
-    return this.isOfficialOpenAIResponsesEndpoint();
+    return configuredMode === 'auto' && this.isOfficialOpenAIResponsesEndpoint();
   }
 
   private hashWirePrefix(value: unknown): string {

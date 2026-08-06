@@ -265,15 +265,32 @@ test('Responses custom endpoints do not inject a fixed session breakpoint', () =
   assert.ok(secondTurnIndex < latestEventIndex);
 });
 
-test('Responses auto mode only emits the explicit S anchor for the official OpenAI endpoint', () => {
+test('Responses explicit cache is disabled by default on custom and official endpoints', () => {
   const messages: Message[] = [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }];
   const customBody = (provider() as any).buildResponsesRequestBody(messages, [], false, context);
   const officialBody = (explicitProvider() as any).buildResponsesRequestBody(messages, [], false, context);
 
   assert.equal(countBreakpoints(customBody.input), 0);
-  assert.equal(countBreakpoints(officialBody.input), 1);
+  assert.equal(countBreakpoints(officialBody.input), 0);
   assert.equal(customBody.input[0].content, 'hello');
-  assert.equal(officialBody.input[0].role, 'developer');
+  assert.equal(officialBody.input[0].content, 'hello');
+});
+
+test('Responses explicit cache auto mode remains an opt-in for the official OpenAI endpoint', () => {
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'auto';
+  try {
+    const messages: Message[] = [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }];
+    const customBody = (provider() as any).buildResponsesRequestBody(messages, [], false, context);
+    const officialBody = (explicitProvider() as any).buildResponsesRequestBody(messages, [], false, context);
+
+    assert.equal(countBreakpoints(customBody.input), 0);
+    assert.equal(countBreakpoints(officialBody.input), 1);
+    assert.equal(officialBody.input[0].role, 'developer');
+  } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
+  }
 });
 
 test('Responses explicit cache can be forced on a custom endpoint', () => {
@@ -339,7 +356,9 @@ test('legacy checkpoint boundary is filtered but ordinary discussion is preserve
 
 test('unsupported explicit fields retry once and pin the provider to compatibility mode', async () => {
   const originalPost = axios.post;
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
   const bodies: any[] = [];
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'on';
   (axios as any).post = async (_url: string, body: any) => {
     bodies.push(body);
     if (bodies.length === 1) {
@@ -361,14 +380,18 @@ test('unsupported explicit fields retry once and pin the provider to compatibili
     const { input: _secondInput, ...secondTransportBody } = bodies[1];
     assert.deepEqual(firstTransportBody, secondTransportBody);
   } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
     (axios as any).post = originalPost;
   }
 });
 
 test('streamed unsupported explicit fields retry once in compatibility mode', async () => {
   const originalPost = axios.post;
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
   const bodies: any[] = [];
   const callbackErrors: Error[] = [];
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'on';
   (axios as any).post = async (_url: string, body: any) => {
     bodies.push(body);
     if (bodies.length === 1) {
@@ -411,13 +434,17 @@ test('streamed unsupported explicit fields retry once in compatibility mode', as
     assert.equal(countBreakpoints(bodies[1].input), 0);
     assert.deepEqual(callbackErrors, []);
   } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
     (axios as any).post = originalPost;
   }
 });
 
 test('HTTP stream errors are read before explicit cache compatibility is evaluated', async () => {
   const originalPost = axios.post;
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
   const bodies: any[] = [];
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'on';
   (axios as any).post = async (_url: string, body: any) => {
     bodies.push(body);
     if (bodies.length === 1) {
@@ -457,6 +484,8 @@ test('HTTP stream errors are read before explicit cache compatibility is evaluat
     assert.equal(bodies[1].prompt_cache_options, undefined);
     assert.equal(countBreakpoints(bodies[1].input), 0);
   } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
     (axios as any).post = originalPost;
   }
 });
@@ -621,8 +650,10 @@ test('explicit cache retry inspection never throws for circular non-stream error
 
 test('strict explicit cache mode surfaces streamed rejection without fallback', async () => {
   const originalPost = axios.post;
+  const originalMode = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
   const originalStrict = process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE_STRICT;
   const bodies: any[] = [];
+  process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = 'on';
   process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE_STRICT = '1';
   (axios as any).post = async (_url: string, body: any) => {
     bodies.push(body);
@@ -652,6 +683,8 @@ test('strict explicit cache mode surfaces streamed rejection without fallback', 
     assert.equal(bodies.length, 1);
     assert.equal(countBreakpoints(bodies[0].input), 1);
   } finally {
+    if (originalMode === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE;
+    else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE = originalMode;
     if (originalStrict === undefined) delete process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE_STRICT;
     else process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE_STRICT = originalStrict;
     (axios as any).post = originalPost;
