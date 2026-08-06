@@ -83,6 +83,8 @@ export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '本次处理未能完成，请稍后再试。';
 export const MODEL_TIMEOUT_MESSAGE = '模型响应超时，本轮上下文已保留，请稍后继续。';
 export const MODEL_TRANSIENT_ERROR_MESSAGE = '模型服务暂时不可用，请稍后再试。';
+export const MODEL_STREAM_INTERRUPTED_MESSAGE = '模型服务在输出过程中中断，已持久化保存已完成内容和工具结果。你可以直接说“继续”，我会从当前进度接上。';
+export const MODEL_STREAM_INTERRUPTED_MEMORY_ONLY_MESSAGE = '模型服务在输出过程中中断。当前进程仍保留已完成内容和工具结果，但未能写入持久存储；请在当前会话直接说“继续”，重启后可能无法恢复。';
 export const EMPTY_MODEL_RESPONSE_MESSAGE = '模型本轮未返回有效内容，请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
 export const CONTEXT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
 export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '上下文压缩完成，继续处理当前请求。';
@@ -728,7 +730,7 @@ export class AgentSession {
         }
 
         const recoveredMessages = this.getPartialMessagesFromError(err);
-        const partialProgressPreserved = recoveredMessages
+        const partialProgressInMemory = recoveredMessages
           ? this.hasRecoverablePartialProgress(recoveredMessages)
           : false;
         if (recoveredMessages) {
@@ -758,6 +760,25 @@ export class AgentSession {
         });
         const diagnostics = classified.diagnostics;
         const retry = diagnostics.retry;
+
+        // Persist the recovered draft before reporting whether it survives a restart.
+        // The in-memory draft remains usable even when the durable write fails.
+        this.messages.push({
+          role: 'assistant',
+          content: this.formatErrorContextMessage(err, {
+            isModelTimeoutError,
+            isImageSafetyError,
+            isTransientProviderError,
+            isEmptyModelResponseError,
+          }),
+          __internalErrorArtifact: true,
+        });
+        this.messages = stripAssistantArtifactsFromMessages(this.turnContextBuilder.removeTransientMessages(this.messages));
+        const contextPersisted = this.lifecycleManager.saveContext(this.messages);
+        const partialProgressPersistence: 'none' | 'memory_only' | 'durable' = partialProgressInMemory
+          ? contextPersisted ? 'durable' : 'memory_only'
+          : 'none';
+
         const errorPayload: TurnErrorPayload = {
           error_code: classified.error_code,
           category: classified.category,
@@ -782,7 +803,8 @@ export class AgentSession {
           retry_stop_reason: retry?.stop_reason ?? 'unknown',
           retry_elapsed_ms: retry?.elapsed_ms ?? 0,
           turn_elapsed_ms: Date.now() - turnStartedAt,
-          partial_progress_preserved: partialProgressPreserved,
+          partial_progress_preserved: partialProgressInMemory,
+          partial_progress_persistence: partialProgressPersistence,
           episode_id: diagnostics.attempt?.episode_id,
           model_call_id: diagnostics.attempt?.call_id,
           model_attempt_id: diagnostics.attempt?.attempt_id,
@@ -801,22 +823,13 @@ export class AgentSession {
         const errorReply = this.formatClassifiedErrorReply(
           classified.category,
           classified.user_message,
-          retry?.retry_count ?? 0,
+          {
+            retryCount: retry?.retry_count ?? 0,
+            maxRetries: retry?.max_retries,
+            stopReason: retry?.stop_reason ?? 'unknown',
+            partialProgressPersistence,
+          },
         );
-
-        // 添加错误回复到上下文，保持对话连贯性
-        this.messages.push({
-          role: 'assistant',
-          content: this.formatErrorContextMessage(err, {
-            isModelTimeoutError,
-            isImageSafetyError,
-            isTransientProviderError,
-            isEmptyModelResponseError,
-          }),
-          __internalErrorArtifact: true,
-        });
-        this.messages = stripAssistantArtifactsFromMessages(this.turnContextBuilder.removeTransientMessages(this.messages));
-        this.lifecycleManager.saveContext(this.messages);
 
         return { text: errorReply, visibleToUser: true, taskOutcome: 'failed' };
       } finally {
@@ -1269,21 +1282,50 @@ export class AgentSession {
   private formatClassifiedErrorReply(
     category: ModelErrorCategory,
     fallback: string,
-    retryCount: number,
+    retry: {
+      retryCount: number;
+      maxRetries?: number;
+      stopReason: string;
+      partialProgressPersistence: 'none' | 'memory_only' | 'durable';
+    },
   ): string {
-    if (retryCount <= 0) return fallback;
-    switch (category) {
-      case 'timeout':
-        return '模型响应超时，系统已自动重试，但仍未完成。本轮上下文已保留，请稍后继续。';
-      case 'transient':
-        return '模型服务暂时不可用，系统已自动重试，但仍未恢复，请稍后再试。';
-      case 'rate_limited':
-        return '当前请求较多，系统已自动重试，但仍未恢复，请稍等片刻再试。';
-      case 'empty_response':
-        return '模型本轮未返回有效内容，系统已自动重试但仍未恢复。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
-      default:
-        return fallback;
+    if (retry.stopReason === 'stream_output_started' && retry.partialProgressPersistence !== 'none') {
+      return retry.partialProgressPersistence === 'durable'
+        ? MODEL_STREAM_INTERRUPTED_MESSAGE
+        : MODEL_STREAM_INTERRUPTED_MEMORY_ONLY_MESSAGE;
     }
+
+    if (retry.retryCount > 0) {
+      switch (category) {
+        case 'timeout':
+          return '模型响应超时，系统已自动重试，但仍未完成。本轮上下文已保留，请稍后继续。';
+        case 'transient':
+          return '模型服务暂时不可用，系统已自动重试，但仍未恢复，请稍后再试。';
+        case 'rate_limited':
+          return '当前请求较多，系统已自动重试，但仍未恢复，请稍等片刻再试。';
+        case 'empty_response':
+          return '模型本轮未返回有效内容，系统已自动重试但仍未恢复。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
+        default:
+          return fallback;
+      }
+    }
+
+    if (retry.maxRetries === 0 && retry.stopReason === 'retry_limit_exhausted') {
+      switch (category) {
+        case 'timeout':
+          return '模型响应超时；当前自动重试上限为 0，因此未执行自动重试。请稍后继续。';
+        case 'transient':
+          return '模型服务暂时不可用；当前自动重试上限为 0，因此未执行自动重试。请稍后再试。';
+        case 'rate_limited':
+          return '当前请求较多；当前自动重试上限为 0，因此未执行自动重试。请稍等片刻再试。';
+        default:
+          return fallback;
+      }
+    }
+
+    // non_retryable, retry_window_exhausted and unknown do not prove that a
+    // retry occurred, so retain the classifier's safe fallback message.
+    return fallback;
   }
 
   private formatErrorContextMessage(

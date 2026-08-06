@@ -30,6 +30,7 @@ export interface TurnErrorRecord {
   retry_elapsed_ms: number;
   turn_elapsed_ms: number;
   partial_progress_preserved: boolean;
+  partial_progress_persistence: 'none' | 'memory_only' | 'durable';
   episode_id: string;
   model_call_id: string;
   model_attempt_id: string;
@@ -174,6 +175,7 @@ function toTurnErrorRecord(entry: any, sourceFile: string, sourceLine: number): 
     retry_elapsed_ms: safeInteger(payload.retry_elapsed_ms, 0),
     turn_elapsed_ms: safeInteger(payload.turn_elapsed_ms, 0),
     partial_progress_preserved: payload.partial_progress_preserved === true,
+    partial_progress_persistence: normalizePartialProgressPersistence(payload),
     episode_id: safeText(payload.episode_id),
     model_call_id: safeText(payload.model_call_id),
     model_attempt_id: safeText(payload.model_attempt_id),
@@ -181,6 +183,12 @@ function toTurnErrorRecord(entry: any, sourceFile: string, sourceLine: number): 
     source_file: sourceFile,
     source_line: sourceLine,
   };
+}
+
+function normalizePartialProgressPersistence(payload: any): TurnErrorRecord['partial_progress_persistence'] {
+  const value = safeText(payload?.partial_progress_persistence);
+  if (value === 'durable' || value === 'memory_only' || value === 'none') return value;
+  return payload?.partial_progress_preserved === true ? 'memory_only' : 'none';
 }
 
 function aggregate(records: TurnErrorRecord[], keyOf: (record: TurnErrorRecord) => string): TurnErrorAggregate[] {

@@ -39,6 +39,7 @@ describe('turn error reader', () => {
         retry_count: 2,
         retry_stop_reason: 'retry_limit_exhausted',
         partial_progress_preserved: true,
+        partial_progress_persistence: 'durable',
         episode_id: 'episode-reader',
         model_call_id: 'call-reader',
         model_attempt_id: 'call-reader:3',
@@ -98,10 +99,32 @@ describe('turn error reader', () => {
     assert.equal(report.recent[0].source_line, 2);
     assert.equal(report.recent[0].model_attempt_id, '');
     assert.equal(report.recent[0].model_attempt_number, 0);
+    assert.equal(report.recent[0].partial_progress_persistence, 'none');
+    assert.equal(report.recent[1].partial_progress_persistence, 'durable');
     assert.equal(report.recent[1].model_call_id, 'call-reader');
     assert.equal(report.recent[1].model_attempt_id, 'call-reader:3');
     assert.equal(report.recent[1].model_attempt_number, 3);
     assert.equal(report.recent[1].episode_id, 'episode-reader');
+  });
+
+  test('treats legacy preserved progress as memory-only rather than durable', () => {
+    fs.writeFileSync(path.join(root, 'legacy-progress.jsonl'), `${runtimeEntry(
+      '2026-08-02T10:00:00.000Z',
+      {
+        category: 'transient',
+        error_code: 'transient_provider_error',
+        partial_progress_preserved: true,
+      },
+    )}\n`);
+
+    const report = readTurnErrorReport({
+      logsRoot: root,
+      days: 7,
+      now: new Date('2026-08-03T00:00:00.000Z'),
+    });
+
+    assert.equal(report.recent[0].partial_progress_preserved, true);
+    assert.equal(report.recent[0].partial_progress_persistence, 'memory_only');
   });
 
   test('returns an empty report when the log root does not exist', () => {
