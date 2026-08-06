@@ -807,13 +807,46 @@ function Invoke-ExactBakeCleanup {
         if ($candidateImage -or -not $WaitForLateResources) { break }
         Start-Sleep -Seconds 10
     } while ((Get-Date) -lt $discoveryDeadline)
-
     $candidateBuilder = Resolve-BuilderInstance -WaitSeconds $discoverySeconds
-    # Also look up the exact temporary key pair name this bake would have used.
-    # A process killed right after ImportEcsKeypair (before CreateEcsInstance)
-    # leaves only the key pair behind; without this check that leak is never
-    # discovered and reconcile reports nothing-to-clean.
-    $candidateKeyPair = @()
+
+    # Reconcile resources that can be uniquely proven to belong to this bake;
+    # anything that cannot be proven stays fail-closed and is reported. A
+    # process hard-killed at any creation boundary (key-only, builder-only,
+    # image-only, published-pending) is recovered here instead of only being
+    # discovered.
+    $errors = [Collections.Generic.List[string]]::new()
+    $reconciled = [Collections.Generic.List[string]]::new()
+
+    # --- Builder: resolve first, because the image's sourceServerID proof and
+    # the builder deletion both depend on the resolved immutable instance ID. ---
+    if ($candidateBuilder) {
+        $script:BuilderID = [string]$candidateBuilder.instanceID
+        $script:BuilderName = [string]$candidateBuilder.instanceName
+        try {
+            Remove-Builder -WaitForLate:$WaitForLateResources
+            $reconciled.Add("builder=$script:BuilderID")
+        } catch {
+            $errors.Add("builder cleanup (name=$script:BuilderName): $($_.Exception.Message)")
+        }
+    }
+
+    # --- Image: only deletable when sourceServerID matches the resolved builder
+    # (same ownership proof as the in-process finally path). Without a builder
+    # the image's source identity cannot be proven, so it stays fail-closed. ---
+    if ($candidateImage) {
+        $script:ImageCreateAttempted = $true
+        $script:ImageID = ""
+        $script:ImageActive = $false
+        try {
+            Remove-FailedImage
+            $reconciled.Add("image=$script:ImageWorkName")
+        } catch {
+            $errors.Add("image cleanup (name=$script:ImageWorkName): $($_.Exception.Message)")
+        }
+    }
+
+    # --- Key pair: the unique temporary name (derived from the deterministic
+    # bake token) is the ownership proof; delete only when it uniquely matches. ---
     if ($script:KeyPairName) {
         $keyDetails = Invoke-Ctyun @(
             "ecs", "GetEcsKeypairDetails",
@@ -827,25 +860,37 @@ function Invoke-ExactBakeCleanup {
             @(Get-ResponseItems -Response $keyDetails -Name "results") |
                 Where-Object { [string]$_.keyPairName -eq $script:KeyPairName }
         )
-    }
-    if ($candidateImage -or $candidateBuilder -or $candidateKeyPair.Count -gt 0) {
-        $details = @(
-            "Automatic historical cleanup refused because immutable creation IDs were not persisted."
-            "Review and remove only resources proven to belong to bake $script:BakeID."
-        )
-        if ($candidateImage) {
-            $details += "candidate imageID=$($candidateImage.imageID) name=$($candidateImage.imageName)"
+        if ($candidateKeyPair.Count -eq 1) {
+            $script:KeyPairCreateAttempted = $true
+            try {
+                Remove-KeyPair -WaitForLate:$WaitForLateResources
+                $reconciled.Add("keyPair=$script:KeyPairName")
+            } catch {
+                $errors.Add("key pair cleanup (name=$script:KeyPairName): $($_.Exception.Message)")
+            }
+        } elseif ($candidateKeyPair.Count -gt 1) {
+            $errors.Add("key pair name '$script:KeyPairName' is not unique; refusing to delete")
         }
-        if ($candidateBuilder) {
-            $details += "candidate instanceID=$($candidateBuilder.instanceID) name=$($candidateBuilder.instanceName)"
-        }
-        if ($candidateKeyPair.Count -gt 0) {
-            $details += "candidate keyPairName=$script:KeyPairName"
-        }
-        throw ($details -join " ")
     }
 
-    Write-Warning "No provably owned historical resources found for bake $script:BakeID"
+    if ($errors.Count -gt 0) {
+        throw (
+            "Temporary cloud resource cleanup failed during reconciliation:`n" +
+            ($errors -join "`n")
+        )
+    }
+
+    if ($reconciled.Count -gt 0) {
+        Write-Host "Reconciled bake resources: $($reconciled -join ', ')"
+        return [ordered]@{
+            result = "reconciled"
+            bakeID = $script:BakeID
+            reconciled = $reconciled
+            regionID = $RegionID
+        }
+    }
+
+    Write-Host "No provably owned historical resources found for bake $script:BakeID"
     return [ordered]@{
         result = "nothing-to-clean"
         bakeID = $script:BakeID

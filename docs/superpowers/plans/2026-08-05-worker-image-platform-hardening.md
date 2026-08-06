@@ -95,7 +95,7 @@
 
 - [x] **步骤 5f：Nobody-ly 复审 3 项（2026-08-05 09:12，head fb9b9f6）**
   - **High dpkg configure 失败被版本门掩盖 → 已修**：最终 `dpkg --configure -a` 失败 `die`（不再 `|| true`）；版本断言前校验包状态 `dpkg-query -W -f='${db:Status-Abbrev}'` 必须 `ii`（install ok installed）。新增探针 8（configure 返回 43 + 版本达标 → `dpkg configuration did not complete`）与探针 9（status=`iU` → `not fully configured`）。
-  - **High Cleanup 只发现不回收 → 用户决策：实现按 immutable ID 删**（进行中，替代纯 fail-closed；见实现方案）。
+  - **High Cleanup 只发现不回收 → 已修**：`Invoke-ExactBakeCleanup` 改为"**可确权则删除、无法确权才报告**"——builder（唯一名 + `Assert-TemporaryBuilder`）、image（名字 + description + `sourceServerID` 与解析出的 builder 匹配）、key pair（唯一临时名）分别复用 `Remove-Builder`/`Remove-FailedImage`/`Remove-KeyPair`（含连续空读确认）；builder 无法解析时 image 无法证明归属 → 保持 fail-closed。测试更新：全资源场景 → `reconciled` 全删、source 不匹配场景 → builder/key 删 + image 报告、key-only 场景 → key 删。
   - **High pending 按名删 key pair 证明不足 → 接受风险并说明**：唯一临时名 + bake marker 是当前最强可用证明；同名重建需同 bakeID 并发操作（被 pending 恢复流程排除），接受理论竞态并在 review 回复中说明。
 
 - [x] **步骤 6：npm mirror 预配置**

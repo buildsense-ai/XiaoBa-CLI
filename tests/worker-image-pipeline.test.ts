@@ -473,7 +473,10 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(imageOrchestrator, /mutatesExistingWorkers = \$false/);
     assert.match(imageOrchestrator, /no immutable builder identity was recorded/);
     assert.match(imageOrchestrator, /name and immutable ID do not uniquely match/);
-    assert.match(imageOrchestrator, /Automatic historical cleanup refused/);
+    assert.match(
+      imageOrchestrator,
+      /Temporary cloud resource cleanup failed during reconciliation/,
+    );
     assert.doesNotMatch(imageOrchestrator, /worker1|worker2|ck-work/);
   });
 
@@ -1222,19 +1225,22 @@ process.exit(result.status ?? 1);
         cleanupBuildNumber,
         "catsco-worker-cleanup",
       );
-      assert.notEqual(cleanupResult.status, 0);
-      assert.match(
+      // All three resources are uniquely owned by this bake, so reconcile
+      // deletes them (review: cleanup must actually recover, not only report).
+      assert.equal(
+        cleanupResult.status,
+        0,
         `${cleanupResult.stdout}\n${cleanupResult.stderr}`,
-        /Automatic historical cleanup refused/,
       );
+      assert.match(cleanupResult.stdout, /"result":\s*"reconciled"/);
       const cleanupCalls = fs.readFileSync(logPath, "utf8");
-      assert.doesNotMatch(cleanupCalls, /ims DeleteImage/);
-      assert.doesNotMatch(cleanupCalls, /ecs DeleteEcsInstance/);
-      assert.doesNotMatch(cleanupCalls, /ecs DeleteEcsKeypair/);
+      assert.match(cleanupCalls, /ims DeleteImage/);
+      assert.match(cleanupCalls, /ecs DeleteEcsInstance/);
+      assert.match(cleanupCalls, /ecs DeleteEcsKeypair/);
       const cleanupState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-      assert.equal(cleanupState.imageExists, true);
-      assert.equal(cleanupState.instanceExists, true);
-      assert.equal(cleanupState.keyExists, true);
+      assert.equal(cleanupState.imageExists, false);
+      assert.equal(cleanupState.instanceExists, false);
+      assert.equal(cleanupState.keyExists, false);
 
       const foreignCleanupBuildNumber = "1007";
       const foreignCleanupBakeId = "001007-01";
@@ -1265,21 +1271,24 @@ process.exit(result.status ?? 1);
         foreignCleanupBuildNumber,
         "catsco-worker-cleanup-foreign",
       );
+      // The builder (unique name) and key pair are reconciled, but the image's
+      // sourceServerID does not match the resolved builder, so it cannot be
+      // proven and stays fail-closed.
       assert.notEqual(foreignCleanupResult.status, 0);
       assert.match(
         `${foreignCleanupResult.stdout}\n${foreignCleanupResult.stderr}`,
-        /Automatic historical cleanup refused/,
+        /Temporary cloud resource cleanup failed during reconciliation/,
       );
       const foreignCleanupCalls = fs.readFileSync(logPath, "utf8");
       assert.doesNotMatch(foreignCleanupCalls, /ims DeleteImage/);
-      assert.doesNotMatch(foreignCleanupCalls, /ecs DeleteEcsInstance/);
-      assert.doesNotMatch(foreignCleanupCalls, /ecs DeleteEcsKeypair/);
+      assert.match(foreignCleanupCalls, /ecs DeleteEcsInstance/);
+      assert.match(foreignCleanupCalls, /ecs DeleteEcsKeypair/);
       const foreignCleanupState = JSON.parse(
         fs.readFileSync(statePath, "utf8"),
       );
       assert.equal(foreignCleanupState.imageExists, true);
-      assert.equal(foreignCleanupState.instanceExists, true);
-      assert.equal(foreignCleanupState.keyExists, true);
+      assert.equal(foreignCleanupState.instanceExists, false);
+      assert.equal(foreignCleanupState.keyExists, false);
 
       // Cleanup must detect a bake interrupted right after ImportEcsKeypair:
       // only the temporary key pair exists (no image, no builder). It must
@@ -1307,22 +1316,21 @@ process.exit(result.status ?? 1);
         keyOnlyCleanupBuildNumber,
         "catsco-worker-cleanup-keyonly",
       );
-      assert.notEqual(keyOnlyCleanupResult.status, 0);
-      assert.match(
+      // The key pair's unique temporary name is owned by this bake, so reconcile
+      // deletes it instead of only reporting it.
+      assert.equal(
+        keyOnlyCleanupResult.status,
+        0,
         `${keyOnlyCleanupResult.stdout}\n${keyOnlyCleanupResult.stderr}`,
-        /Automatic historical cleanup refused/,
       );
-      assert.match(
-        `${keyOnlyCleanupResult.stdout}\n${keyOnlyCleanupResult.stderr}`,
-        /candidate keyPairName=catsco-img-key-001010-01/,
-      );
+      assert.match(keyOnlyCleanupResult.stdout, /"result":\s*"reconciled"/);
       const keyOnlyCleanupCalls = fs.readFileSync(logPath, "utf8");
       assert.match(keyOnlyCleanupCalls, /ecs GetEcsKeypairDetails/);
-      assert.doesNotMatch(keyOnlyCleanupCalls, /ecs DeleteEcsKeypair/);
+      assert.match(keyOnlyCleanupCalls, /ecs DeleteEcsKeypair/);
       const keyOnlyCleanupState = JSON.parse(
         fs.readFileSync(statePath, "utf8"),
       );
-      assert.equal(keyOnlyCleanupState.keyExists, true);
+      assert.equal(keyOnlyCleanupState.keyExists, false);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
