@@ -2601,6 +2601,17 @@ export class RuntimeLearning {
     dueWork: DueWork,
     wakeSignal?: AbortSignal,
   ): Promise<RuntimeLearningReviewReport> {
+    // Reconcile before the due-work gate. The planner intentionally schedules
+    // only operational recovery retries, while a legacy stranded Job can be
+    // any work class and has no runnable Quantum to make itself due.
+    try {
+      if (!this.shutdownDrainRequested) {
+        this.skillEvolution.getEvidenceReviewEngine().reconcileStrandedJobs(this.clock());
+      }
+    } catch {
+      // Job store optional during early construction / V3-disabled paths.
+    }
+
     const reviewAttempted = dueWork.settlementDue || dueWork.operationalRetryDue;
     if (!reviewAttempted) return skippedReviewReport();
 

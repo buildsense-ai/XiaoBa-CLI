@@ -1502,6 +1502,64 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     assert.ok(result.review.operationalRetries >= 0);
   });
 
+  test('a targeted wake reconciles a stranded non-operational Job before review is due', async () => {
+    const bundle: EvidenceBundle = {
+      ...runtimeReviewBundle('test-stranded-entry'),
+      sourceEvidence: [
+        {
+          ref: 'session.jsonl#12',
+          role: 'problem-action',
+          content: 'The bounded workflow was requested and completed.',
+        },
+        {
+          ref: 'session.jsonl#13',
+          role: 'verification',
+          content: 'The bounded result was accepted.',
+        },
+      ],
+    };
+    const engine = env.skillEvolution.getEvidenceReviewEngine();
+    const job = engine.createJob({
+      bundle,
+      candidate: bundle.episode as DistilledKnowledgeCandidate,
+      workClass: 'live_learning',
+    });
+    const state = engine.loadStore();
+    const stranded = state.jobs[job.jobId]!;
+    const roots = Object.values(stranded.quanta)
+      .filter(quantum => quantum.dependencyQuantumIds.length === 0);
+    assert.ok(roots.length >= 2);
+    for (const quantum of roots) {
+      quantum.state = 'succeeded';
+      quantum.updatedAt = new Date(0).toISOString();
+    }
+    const failedRoot = roots[0]!;
+    failedRoot.state = 'terminal_failed';
+    failedRoot.attempts = 5;
+    failedRoot.failureKind = 'invalid_completion_schema';
+    failedRoot.failureReason = 'schema-validation-error';
+    failedRoot.failureMessage = 'invalid_completion_schema: reader returned empty completion';
+    for (const quantum of Object.values(stranded.quanta)) {
+      if (quantum.state !== 'pending') continue;
+      (quantum as { dependencyQuantumIds: readonly string[] }).dependencyQuantumIds = [failedRoot.quantumId];
+    }
+    stranded.disposition = 'active';
+    stranded.nextDueAt = undefined;
+    engine.saveStore(state);
+
+    const result = await env.runtimeLearning.wake('operational-retry');
+    const repaired = engine.loadStore().jobs[job.jobId]!;
+
+    assert.equal(result.review.status, 'skipped');
+    assert.equal(repaired.disposition, 'terminal_failed');
+    assert.equal(repaired.nextDueAt, undefined);
+    assert.match(repaired.terminalReason ?? '', /review_job_stranded/);
+    assert.equal(
+      fs.existsSync(`${evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath)}.before-stranded-job-reconcile-v1`),
+      true,
+    );
+  });
+
   test('one wake advances a bounded serial batch across Jobs and at most one Quantum per Job', async () => {
     const engine = env.skillEvolution.getEvidenceReviewEngine();
     const jobIds = Array.from({ length: 10 }, (_, index) => {

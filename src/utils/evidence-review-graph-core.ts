@@ -407,6 +407,18 @@ export function convergeStrandedJob(
   now: Date = new Date(),
 ): boolean {
   if (job.disposition !== 'active') return false;
+
+  // A succeeded commit is a terminal graph fact even when an older writer
+  // left the top-level disposition stale. Domain layers restore any
+  // outcome-specific metadata, such as semantic-defer state.
+  const derivedDisposition = deriveJobDisposition(job);
+  if (derivedDisposition === 'completed') {
+    job.disposition = 'completed';
+    job.terminalReason = undefined;
+    job.nextDueAt = undefined;
+    job.updatedAt = now.toISOString();
+    return true;
+  }
   if (listRunnableQuanta(job, now).length > 0) return false;
 
   const hasFutureProgress = Object.values(job.quanta).some(quantum => {
