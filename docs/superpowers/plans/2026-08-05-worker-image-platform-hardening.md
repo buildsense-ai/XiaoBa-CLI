@@ -102,6 +102,8 @@
     - **Important I2（记录为后续项）**：无 builder 时 image 无法回收（image 与 key pair 证明标准不一致）——修 C1 后此场景仅剩跨轮竞态；name+description 兜底确权涉及与 key pair 按名确权同类的争议，不强改，列入 Follow-ups。
     - **Important I3（已修）**：key pair 查询原在 try/catch 外，API 错误/超时会破坏错误聚合——已包进 try 聚合。
     - **Minor M1/M2/M3（已修）**：die 消息中性化、throw 附已回收清单（`reconciled`）、builder 先解析再发现镜像（避免镜像发现过期静默跳过）。
+  - **外部审核报告 H1（2026-08-06，Saturday 的 PDF 报告 head 9a642e4）→ 已修**：C1 修复只调整了顺序、没落实条件门控——`Remove-FailedImage` 失败（DeleteImage API 失败 / 状态不可删 / 确认超时）时 `PreserveBuilderForImageRecovery` 保持 true，但 `Invoke-ExactBakeCleanup` catch 后仍无条件删 builder → 镜像失去 sourceServerID 证据永久搁浅。修复：builder 删除阶段复用 `PreserveBuilderForImageRecovery` 门控（true 时 deferred 并聚合错误），与 in-process finally 一致。
+  - **H1 回归测试（按报告 5.1 补）**：fake 支持 `deleteImageFails`（DeleteImage 返回 API 错误）与 `deleteImageSticky`（删除后镜像不消失）——场景 A（DeleteImage 失败 → 镜像+builder 保留、`builder cleanup deferred`）、场景 B（确认超时 → builder 保留）、场景 C（source 不匹配 → 删 builder/key、镜像报告，已有）、场景 D（删除顺序 DeleteImage 先于 DeleteEcsInstance + 全空）。ps1 新增 `-ImageDeleteConfirmMinutes`（默认 8）供场景 B 缩短确认窗口。
   - **High pending 按名删 key pair 证明不足 → 接受风险并说明**：唯一临时名 + bake marker 是当前最强可用证明；同名重建需同 bakeID 并发操作（被 pending 恢复流程排除），接受理论竞态并在 review 回复中说明。
 
 - [x] **步骤 6：npm mirror 预配置**

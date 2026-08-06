@@ -732,7 +732,16 @@ if (operation === "ims ListImage") {
   state.imageDescription = value("--description");
   state.imageStatus = "active";
 } else if (operation === "ims DeleteImage") {
-  state.imageExists = false;
+  if (state.deleteImageFails) {
+    // Simulate a DeleteImage API failure: the image stays and the call errors.
+    state.imageExists = true;
+    state.fakeApiError = true;
+  } else if (state.deleteImageSticky) {
+    // Simulate a delete that never becomes visible (confirmation timeout).
+    state.imageExists = true;
+  } else {
+    state.imageExists = false;
+  }
 } else if (operation === "ecs DeleteEcsInstance") {
   state.instanceExists = false;
 } else if (operation === "ecs DeleteEcsKeypair") {
@@ -743,9 +752,9 @@ if (operation === "ims ListImage") {
 }
 fs.writeFileSync(statePath, JSON.stringify(state));
 process.stdout.write(JSON.stringify({
-  statusCode: 800,
-  message: "SUCCESS",
-  description: "success",
+  statusCode: state.fakeApiError ? 900 : 800,
+  message: state.fakeApiError ? "ERROR" : "SUCCESS",
+  description: state.fakeApiError ? "fake api error" : "success",
   returnObj,
 }));
 `,
@@ -843,7 +852,11 @@ process.exit(result.status ?? 1);
           },
         );
 
-      const runCleanup = (buildNumber: string, imageName: string) =>
+      const runCleanup = (
+        buildNumber: string,
+        imageName: string,
+        extraArgs: string[] = [],
+      ) =>
         spawnSync(
           "pwsh",
           [
@@ -875,6 +888,7 @@ process.exit(result.status ?? 1);
             "subnet-test",
             "-SecurityGroupID",
             "security-group-test",
+            ...extraArgs,
           ],
           {
             cwd: root,
@@ -1237,6 +1251,13 @@ process.exit(result.status ?? 1);
       assert.match(cleanupCalls, /ims DeleteImage/);
       assert.match(cleanupCalls, /ecs DeleteEcsInstance/);
       assert.match(cleanupCalls, /ecs DeleteEcsKeypair/);
+      // The image must be deleted before the builder, which stays as the
+      // sourceServerID ownership evidence until the image is gone.
+      assert.ok(
+        cleanupCalls.indexOf("ims DeleteImage") <
+          cleanupCalls.indexOf("ecs DeleteEcsInstance"),
+        "image must be deleted before the builder (ownership evidence)",
+      );
       const cleanupState = JSON.parse(fs.readFileSync(statePath, "utf8"));
       assert.equal(cleanupState.imageExists, false);
       assert.equal(cleanupState.instanceExists, false);
@@ -1331,6 +1352,93 @@ process.exit(result.status ?? 1);
         fs.readFileSync(statePath, "utf8"),
       );
       assert.equal(keyOnlyCleanupState.keyExists, false);
+
+      // Scenario A: DeleteImage fails -> the image stays and the builder must
+      // be retained as ownership evidence for the next reconciliation.
+      const failImageBuildNumber = "1011";
+      const failImageBakeId = "001011-01";
+      const failImageToken = crypto
+        .createHash("sha256")
+        .update(`${failImageBuildNumber}/1/${commit}`)
+        .digest("hex")
+        .slice(0, 8);
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: true,
+          keyExists: true,
+          keyPairName: `catsco-img-key-${failImageBakeId}`,
+          imageExists: true,
+          imageName: `catsco-bake-${commit.slice(0, 8)}-${failImageToken}`,
+          imageDescription: `${releaseIdentity} bake ${failImageBakeId}`,
+          imageSourceServerID: "instance-1",
+          imageStatus: "error",
+          deleteImageFails: true,
+          instanceName: `catsco-img-${failImageBakeId}`,
+          instanceStatus: "stopped",
+        }),
+      );
+      const failImageResult = runCleanup(
+        failImageBuildNumber,
+        "catsco-worker-cleanup-failimage",
+      );
+      assert.notEqual(failImageResult.status, 0);
+      assert.match(
+        `${failImageResult.stdout}\n${failImageResult.stderr}`,
+        /builder cleanup deferred/,
+      );
+      const failImageCalls = fs.readFileSync(logPath, "utf8");
+      assert.match(failImageCalls, /ims DeleteImage/);
+      assert.doesNotMatch(failImageCalls, /ecs DeleteEcsInstance/);
+      const failImageState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(failImageState.imageExists, true);
+      assert.equal(failImageState.instanceExists, true);
+
+      // Scenario B: DeleteImage succeeds but the image never disappears until
+      // the confirmation window times out -> the builder must be retained.
+      // CleanupTimeoutMinutes is reduced so the bounded confirmation window
+      // fits inside the test timeout.
+      const stickyBuildNumber = "1012";
+      const stickyBakeId = "001012-01";
+      const stickyToken = crypto
+        .createHash("sha256")
+        .update(`${stickyBuildNumber}/1/${commit}`)
+        .digest("hex")
+        .slice(0, 8);
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: true,
+          keyExists: true,
+          keyPairName: `catsco-img-key-${stickyBakeId}`,
+          imageExists: true,
+          imageName: `catsco-bake-${commit.slice(0, 8)}-${stickyToken}`,
+          imageDescription: `${releaseIdentity} bake ${stickyBakeId}`,
+          imageSourceServerID: "instance-1",
+          imageStatus: "error",
+          deleteImageSticky: true,
+          instanceName: `catsco-img-${stickyBakeId}`,
+          instanceStatus: "stopped",
+        }),
+      );
+      const stickyResult = runCleanup(
+        stickyBuildNumber,
+        "catsco-worker-cleanup-sticky",
+        ["-ImageDeleteConfirmMinutes", "1"],
+      );
+      assert.notEqual(stickyResult.status, 0);
+      assert.match(
+        `${stickyResult.stdout}\n${stickyResult.stderr}`,
+        /builder cleanup deferred/,
+      );
+      const stickyCalls = fs.readFileSync(logPath, "utf8");
+      assert.match(stickyCalls, /ims DeleteImage/);
+      assert.doesNotMatch(stickyCalls, /ecs DeleteEcsInstance/);
+      const stickyState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(stickyState.imageExists, true);
+      assert.equal(stickyState.instanceExists, true);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

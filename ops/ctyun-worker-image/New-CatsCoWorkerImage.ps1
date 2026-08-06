@@ -47,6 +47,8 @@ param(
     [int]$BakeTimeoutMinutes = 240,
     [ValidateRange(10, 90)]
     [int]$CleanupTimeoutMinutes = 45,
+    [ValidateRange(1, 120)]
+    [int]$ImageDeleteConfirmMinutes = 8,
     [ValidateRange(15, 300)]
     [int]$ApiTimeoutSeconds = 90,
     [ValidateRange(5, 300)]
@@ -537,7 +539,7 @@ function Remove-FailedImage {
     }
 
     $deleteDeadline = Get-BoundedDeadline `
-        -RequestedSeconds (8 * 60) `
+        -RequestedSeconds ($ImageDeleteConfirmMinutes * 60) `
         -Phase "incomplete image deletion confirmation"
     while ((Get-Date) -lt $deleteDeadline) {
         $remaining = Get-Image -ImageID $script:ImageID
@@ -846,14 +848,24 @@ function Invoke-ExactBakeCleanup {
         }
     }
 
-    # --- Builder: deleted only after the image is gone, so it remains as
-    # ownership evidence if image deletion could not complete. ---
+    # --- Builder: deleted only after the image is confirmed gone. If image
+    # deletion failed or could not be confirmed, Remove-FailedImage keeps
+    # PreserveBuilderForImageRecovery set, and the builder must be retained as
+    # the sourceServerID ownership evidence for the next reconciliation
+    # (same gating as the in-process finally path). ---
     if ($candidateBuilder) {
-        try {
-            Remove-Builder -WaitForLate:$WaitForLateResources
-            $reconciled.Add("builder=$script:BuilderID")
-        } catch {
-            $errors.Add("builder cleanup (name=$script:BuilderName): $($_.Exception.Message)")
+        if ($script:PreserveBuilderForImageRecovery) {
+            $errors.Add(
+                "builder cleanup deferred because the source builder is still " +
+                "required to prove incomplete image ownership"
+            )
+        } else {
+            try {
+                Remove-Builder -WaitForLate:$WaitForLateResources
+                $reconciled.Add("builder=$script:BuilderID")
+            } catch {
+                $errors.Add("builder cleanup (name=$script:BuilderName): $($_.Exception.Message)")
+            }
         }
     }
 
