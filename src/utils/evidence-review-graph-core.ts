@@ -392,6 +392,47 @@ export function listRunnableQuanta(
       || a.quantumId.localeCompare(b.quantumId, 'en'));
 }
 
+export const STRANDED_JOB_TERMINAL_REASON =
+  'review_job_stranded: active Job has no runnable Quantum, retry deadline, or valid lease';
+
+/**
+ * Fail closed when an active graph has no current or future progress path.
+ * Expired leases must be reclaimed before calling this helper. A future retry
+ * or an unexpired lease is progress, while dependency-blocked pending nodes
+ * alone are not. This also repairs legacy Jobs whose upstream Reader is
+ * terminal_failed but whose downstream nodes were left pending.
+ */
+export function convergeStrandedJob(
+  job: GraphJobView,
+  now: Date = new Date(),
+): boolean {
+  if (job.disposition !== 'active') return false;
+  if (listRunnableQuanta(job, now).length > 0) return false;
+
+  const hasFutureProgress = Object.values(job.quanta).some(quantum => {
+    if (quantum.state === 'retry_wait') {
+      if (!quantum.nextRetryAt) return false;
+      const retryAt = Date.parse(quantum.nextRetryAt);
+      return Number.isFinite(retryAt) && retryAt > now.getTime();
+    }
+    return quantum.state === 'leased'
+      && quantum.lease !== undefined
+      && !isLeaseExpired(quantum.lease, now);
+  });
+  if (hasFutureProgress) return false;
+
+  const failedQuantum = Object.values(job.quanta)
+    .filter(quantum => quantum.state === 'terminal_failed')
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt, 'en'))[0];
+  job.disposition = 'terminal_failed';
+  job.terminalReason = failedQuantum?.failureMessage
+    ? `${STRANDED_JOB_TERMINAL_REASON}: ${failedQuantum.failureMessage}`
+    : STRANDED_JOB_TERMINAL_REASON;
+  job.nextDueAt = undefined;
+  job.updatedAt = now.toISOString();
+  return true;
+}
+
 /**
  * Derive disposition from quanta unless an explicit terminal/deferred outcome
  * is already recorded. Linear phase flags are never consulted.
