@@ -41,6 +41,7 @@ import { createEvidenceReviewJob } from './evidence-review-graph';
 import {
   loadEvidenceReviewJobStore,
   mutateEvidenceReviewJobStore,
+  reconcileEvidenceReviewJobStore,
   upsertEvidenceReviewJob,
   evidenceReviewJobStorePathForReviewQueue,
 } from './evidence-review-job-store';
@@ -53,6 +54,7 @@ import {
   reclaimExpiredLeases,
   createReviewQuantum,
   deriveJobDisposition,
+  convergeStrandedJob,
   listRunnableQuanta,
   stableStringify,
 } from './evidence-review-graph-core';
@@ -295,6 +297,17 @@ export class EvidenceReviewEngine {
     return mutateEvidenceReviewJobStore(this.options.jobStorePath, mutation);
   }
 
+  /**
+   * Repair legacy active Jobs that have no current or future progress path.
+   * The store helper preserves the original bytes before the first repair.
+   */
+  reconcileStrandedJobs(now: Date = this.options.now?.() ?? new Date()) {
+    return reconcileEvidenceReviewJobStore(this.options.jobStorePath, job => {
+      reclaimExpiredLeases(job, now);
+      return convergeStrandedJob(job, now);
+    });
+  }
+
   /** Test/bootstrap replacement only; production read-modify-write must use mutateStore. */
   saveStore(state: ReturnType<typeof loadEvidenceReviewJobStore>): void {
     this.mutateStore(live => {
@@ -416,6 +429,9 @@ export class EvidenceReviewEngine {
         ));
         if (runnable.length === 0) {
           job.disposition = deriveJobDisposition(job);
+          // Only converge from the unfiltered graph. A caller may deliberately
+          // restrict allowedKinds/quantumId while other work remains runnable.
+          if (listRunnableQuanta(job, now).length === 0) convergeStrandedJob(job, now);
           job.updatedAt = now.toISOString();
           upsertEvidenceReviewJob(state, job);
           return { job, selected: undefined, claim: undefined, remainingRunnable: 0 };
@@ -1612,6 +1628,10 @@ export async function advanceJobsFairly(
   const attemptedJobIds = new Set<string>();
   const maxClaims = Math.max(0, Math.floor(options.maxClaims));
   const maxClaimsPerJob = Math.max(1, Math.floor(options.maxClaimsPerJob ?? 1));
+
+  // Repair legacy active-but-unrunnable Jobs before planning. This is a locked,
+  // idempotent migration and preserves the original store on first change.
+  engine.reconcileStrandedJobs(options.now);
 
   for (let attempt = 0; attempt < maxClaims; attempt++) {
     if (options.signal?.aborted || options.shouldStopClaiming?.()) break;

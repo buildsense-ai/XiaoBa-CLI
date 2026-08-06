@@ -373,6 +373,128 @@ describe('Evidence Review revision loop (durable graph)', () => {
     }
   });
 
+  test('reconciles a legacy active stranded Job once and preserves the original store', async () => {
+    const dir = setupEngineDir();
+    const now = new Date('2026-08-06T00:00:00.000Z');
+    try {
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+        now: () => now,
+      });
+      const job = engine.createJob({
+        bundle: fixtureBundle(`legacy-stranded-${crypto.randomUUID().slice(0, 8)}`),
+        candidate: fixtureCandidate(),
+        workClass: 'operational_recovery',
+      });
+      const state = engine.loadStore();
+      const legacy = state.jobs[job.jobId]!;
+      const roots = Object.values(legacy.quanta)
+        .filter(quantum => quantum.dependencyQuantumIds.length === 0);
+      assert.ok(roots.length >= 2);
+      for (const quantum of roots) {
+        quantum.state = 'succeeded';
+        quantum.updatedAt = new Date(now.getTime() - 1_000).toISOString();
+      }
+      roots[0]!.state = 'terminal_failed';
+      roots[0]!.attempts = 5;
+      roots[0]!.failureKind = 'invalid_completion_schema';
+      roots[0]!.failureReason = 'schema-validation-error';
+      roots[0]!.failureMessage = 'invalid_completion_schema: reader returned empty completion';
+      for (const quantum of Object.values(legacy.quanta)) {
+        if (quantum.state !== 'pending') continue;
+        (quantum as { dependencyQuantumIds: readonly string[] }).dependencyQuantumIds = [roots[0]!.quantumId];
+      }
+      legacy.disposition = 'active';
+      legacy.nextDueAt = undefined;
+      engine.saveStore(state);
+
+      const advanced = await advanceJobsFairly(engine, 'wake:legacy-reconcile', {
+        maxClaims: 1,
+        maxClaimsPerJob: 1,
+        now,
+      });
+      const backupPath = `${dir.jobStorePath}.before-stranded-job-reconcile-v1`;
+      const repaired = engine.loadStore().jobs[job.jobId]!;
+      const original = JSON.parse(fs.readFileSync(backupPath, 'utf8')) as {
+        jobs: Record<string, EvidenceReviewJob>;
+      };
+
+      assert.equal(advanced.claims, 0);
+      assert.deepEqual(advanced.jobIds, []);
+      assert.equal(repaired.disposition, 'terminal_failed');
+      assert.equal(repaired.nextDueAt, undefined);
+      assert.match(repaired.terminalReason ?? '', /review_job_stranded/);
+      assert.match(repaired.terminalReason ?? '', /reader returned empty completion/);
+      assert.equal(original.jobs[job.jobId]?.disposition, 'active');
+
+      const backupBefore = fs.readFileSync(backupPath);
+      const second = engine.reconcileStrandedJobs(new Date(now.getTime() + 1_000));
+      assert.deepEqual(second.repairedJobIds, []);
+      assert.deepEqual(fs.readFileSync(backupPath), backupBefore);
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  test('does not converge active Jobs that still have a future retry or valid lease', () => {
+    const dir = setupEngineDir();
+    const now = new Date('2026-08-06T00:00:00.000Z');
+    try {
+      const engine = new EvidenceReviewEngine({
+        jobStorePath: dir.jobStorePath,
+        workingDirectory: dir.root,
+        now: () => now,
+      });
+      const makeWaitingJob = (suffix: string) => engine.createJob({
+        bundle: fixtureBundle(`not-stranded-${suffix}-${crypto.randomUUID().slice(0, 8)}`),
+        candidate: fixtureCandidate(),
+        workClass: 'operational_recovery',
+      });
+      const retryJob = makeWaitingJob('retry');
+      const leasedJob = makeWaitingJob('lease');
+      const state = engine.loadStore();
+
+      for (const [jobId, mode] of [[retryJob.jobId, 'retry'], [leasedJob.jobId, 'lease']] as const) {
+        const live = state.jobs[jobId]!;
+        const roots = Object.values(live.quanta)
+          .filter(quantum => quantum.dependencyQuantumIds.length === 0);
+        for (const quantum of roots) {
+          quantum.state = 'succeeded';
+          quantum.updatedAt = now.toISOString();
+        }
+        const waiting = roots[0]!;
+        if (mode === 'retry') {
+          waiting.state = 'retry_wait';
+          waiting.nextRetryAt = new Date(now.getTime() + 60_000).toISOString();
+        } else {
+          waiting.state = 'leased';
+          waiting.lease = {
+            leaseId: 'lease:test',
+            ownerWakeId: 'wake:test',
+            leasedAt: now.toISOString(),
+            expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+          };
+        }
+        for (const quantum of Object.values(live.quanta)) {
+          if (quantum.state !== 'pending') continue;
+          (quantum as { dependencyQuantumIds: readonly string[] }).dependencyQuantumIds = [waiting.quantumId];
+        }
+        live.disposition = 'active';
+      }
+      engine.saveStore(state);
+
+      const result = engine.reconcileStrandedJobs(now);
+      const after = engine.loadStore();
+      assert.deepEqual(result.repairedJobIds, []);
+      assert.equal(after.jobs[retryJob.jobId]?.disposition, 'active');
+      assert.equal(after.jobs[leasedJob.jobId]?.disposition, 'active');
+      assert.equal(fs.existsSync(`${dir.jobStorePath}.before-stranded-job-reconcile-v1`), false);
+    } finally {
+      dir.cleanup();
+    }
+  });
+
   test('never advances more than one Quantum for a sole runnable Job', async () => {
     const dir = setupEngineDir();
     try {

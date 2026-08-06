@@ -158,6 +158,52 @@ function storeLockPath(filePath: string): string {
  * spans asynchronous Quantum execution; it protects only a short read/modify/
  * rename transaction and safely reclaims claims left by dead processes.
  */
+export interface EvidenceReviewStoreReconcileResult {
+  repairedJobIds: string[];
+  backupPath?: string;
+}
+
+/**
+ * Reconcile semantic invariants under the same whole-store lock used by normal
+ * mutations. The original bytes are preserved once before the first repair so
+ * operators can audit or restore legacy state. Repeated calls are idempotent.
+ */
+export function reconcileEvidenceReviewJobStore(
+  filePath: string,
+  reconcileJob: (job: EvidenceReviewJob) => boolean,
+): EvidenceReviewStoreReconcileResult {
+  const backupPath = `${filePath}.before-stranded-job-reconcile-v1`;
+  try {
+    return withProcessExclusiveLock(storeLockPath(filePath), () => {
+      const state = loadEvidenceReviewJobStore(filePath);
+      const repairedJobIds = Object.values(state.jobs)
+        .filter(job => reconcileJob(job))
+        .map(job => job.jobId)
+        .sort((left, right) => left.localeCompare(right, 'en'));
+      if (repairedJobIds.length === 0) return { repairedJobIds };
+
+      let preservedPath: string | undefined;
+      if (fs.existsSync(filePath) && !fs.existsSync(backupPath)) {
+        fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL);
+        fs.chmodSync(backupPath, 0o600);
+        preservedPath = backupPath;
+      } else if (fs.existsSync(backupPath)) {
+        preservedPath = backupPath;
+      }
+      saveEvidenceReviewJobStore(filePath, state);
+      return { repairedJobIds, backupPath: preservedPath };
+    }, {
+      retryAttempts: STORE_LOCK_RETRY_ATTEMPTS,
+      retryDelayMs: STORE_LOCK_RETRY_DELAY_MS,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Process-exclusive lock is busy:')) {
+      throw new Error(`Evidence Review Job store is busy: ${filePath}`);
+    }
+    throw error;
+  }
+}
+
 export function mutateEvidenceReviewJobStore<T>(
   filePath: string,
   mutation: (state: EvidenceReviewJobStoreState) => T,
