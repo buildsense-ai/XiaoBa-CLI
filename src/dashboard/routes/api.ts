@@ -3277,7 +3277,7 @@ export function createApiRouter(
     try {
       const localSkillManager = new SkillManager();
       await localSkillManager.loadSkills();
-      const activeSkills = localSkillManager.getAllSkills().map(skillToDashboardPayload);
+      const activeSkills = await Promise.all(localSkillManager.getAllSkills().map(skillToDashboardPayload));
       const disabledSkills = findAllDisabledSkills(PathResolver.getSkillsPath());
       res.json([...activeSkills, ...disabledSkills]);
     } catch (e: any) {

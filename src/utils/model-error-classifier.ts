@@ -76,20 +76,20 @@ export interface ModelErrorClassificationContext {
 
 const USER_MESSAGES: Record<ModelErrorCategory, string> = {
   image_safety: MODEL_IMAGE_SAFETY_MESSAGE,
-  budget: '当前模型的额度不足，暂时无法继续调用。请补充额度或切换到其他模型后再试。',
+  budget: '当前模型暂时无法继续调用，请切换模型或联系管理员。',
   vision_unsupported: '当前模型不支持图片识别。请使用支持多模态的模型，或者用文字描述图片内容。',
-  timeout: '模型中转请求超时了，我已经保留本轮已完成的工具结果和上下文。你可以直接说“继续”，我会从这里接上。',
-  empty_response: '模型本轮未返回有效内容，自动重试后仍未恢复。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。',
-  transient: '当前模型服务临时异常，刚才这次请求没有完成。我已经保留上下文；你可以稍后重试，或临时切换到其他模型继续。',
-  rate_limited: '当前模型请求过于频繁，暂时无法继续。请稍后重试，或临时切换到其他模型。',
-  auth_invalid: '当前模型的访问凭证无效或已过期。请更新模型配置后重试。',
-  access_denied: '当前账号没有调用这个模型的权限。请检查账号权限或切换到已授权模型。',
-  model_or_endpoint_missing: '当前模型或接口配置不存在。请检查模型名称和接口地址，或切换模型。',
-  input_too_large: '这轮内容超过当前模型可接受的大小。请缩小请求范围、清理较早上下文，或切换上下文更大的模型。',
-  request_invalid: '模型拒绝了本轮请求格式。问题已记录；原样重试通常无法解决，请重新发送或切换模型。',
-  reasoning_replay_required: '模型的推理上下文结构不完整。问题已记录，请重新发送；如果持续出现，请切换模型。',
-  provider_rejected: '上游模型拒绝了本轮请求，但没有返回足够的原因。问题已记录；你可以再试一次，持续失败时请切换模型。',
-  unexpected: '当前请求遇到未识别的异常，我已保留上下文并记录诊断信息。你可以再试一次；持续失败时请切换模型。',
+  timeout: '模型响应超时，本轮上下文已保留，请稍后继续。',
+  empty_response: '模型本轮未返回有效内容，请重新发送上一条消息；若仍失败，请切换模型或稍后再试。',
+  transient: '模型服务暂时不可用，请稍后再试。',
+  rate_limited: '当前请求较多，请稍等片刻再试。',
+  auth_invalid: '模型服务配置异常，请联系管理员处理。',
+  access_denied: '模型服务配置异常，请联系管理员处理。',
+  model_or_endpoint_missing: '模型服务配置异常，请联系管理员处理。',
+  input_too_large: '当前对话内容较多，需要整理上下文后继续。',
+  request_invalid: '模型未能处理本次请求，请重新发送；持续失败时请联系管理员。',
+  reasoning_replay_required: '模型请求所需的上下文结构不完整，请重新发送；持续失败时请切换模型或联系管理员。',
+  provider_rejected: '模型未能处理本次请求，请稍后再试。',
+  unexpected: '本次处理未能完成，请稍后再试。',
 };
 
 /**

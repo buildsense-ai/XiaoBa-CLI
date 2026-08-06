@@ -32,6 +32,12 @@ function countBreakpoints(value: unknown): number {
     + Object.values(record).reduce((sum, item) => sum + countBreakpoints(item), 0);
 }
 
+function circularErrorStream(payload: unknown): Readable {
+  const stream = Readable.from([Buffer.from(JSON.stringify(payload), 'utf8')]);
+  (stream as any).socket = { _httpMessage: stream };
+  return stream;
+}
+
 test('Responses explicit cache emits one S, A, and latest B without persisting markers', () => {
   const messages: Message[] = [
     { role: 'system', content: 'stable system' },
@@ -270,6 +276,202 @@ test('streamed unsupported explicit fields retry once in compatibility mode', as
   } finally {
     (axios as any).post = originalPost;
   }
+});
+
+test('HTTP stream errors are read before explicit cache compatibility is evaluated', async () => {
+  const originalPost = axios.post;
+  const bodies: any[] = [];
+  (axios as any).post = async (_url: string, body: any) => {
+    bodies.push(body);
+    if (bodies.length === 1) {
+      throw Object.assign(new Error('Request failed with status code 400'), {
+        response: {
+          status: 400,
+          headers: { 'x-request-id': 'req-cache-stream' },
+          data: circularErrorStream({
+            error: { message: 'prompt_cache_options is not supported on this endpoint' },
+          }),
+        },
+      });
+    }
+    return {
+      data: Readable.from([
+        `data: ${JSON.stringify({
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            output: [{ type: 'message', content: [{ type: 'output_text', text: 'OK' }] }],
+          },
+        })}\n\n`,
+      ]),
+    };
+  };
+  try {
+    const instance = provider();
+    const result = await instance.chatStream(
+      [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }],
+      [],
+      undefined,
+      context,
+    );
+    assert.equal(result.content, 'OK');
+    assert.equal(bodies.length, 2);
+    assert.deepEqual(bodies[0].prompt_cache_options, { mode: 'explicit' });
+    assert.equal(bodies[1].prompt_cache_options, undefined);
+  } finally {
+    (axios as any).post = originalPost;
+  }
+});
+
+test('non-cache HTTP stream errors preserve the original status and parsed provider body', async () => {
+  const originalPost = axios.post;
+  let calls = 0;
+  (axios as any).post = async () => {
+    calls++;
+    throw Object.assign(new Error('Request failed with status code 502'), {
+      response: {
+        status: 502,
+        headers: { 'x-request-id': 'req-upstream-stream' },
+        data: circularErrorStream({
+          error: { type: 'upstream_error', message: 'upstream service unavailable' },
+        }),
+      },
+    });
+  };
+  try {
+    const instance = provider();
+    await assert.rejects(
+      instance.chatStream(
+        [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }],
+        [],
+        undefined,
+        context,
+      ),
+      (error: any) => {
+        assert.equal(error.response?.status, 502);
+        assert.equal(error.response?.headers?.['x-request-id'], 'req-upstream-stream');
+        assert.equal(error.response?.data?.error?.message, 'upstream service unavailable');
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
+  } finally {
+    (axios as any).post = originalPost;
+  }
+});
+
+test('Chat Completions HTTP stream errors use the same normalized provider body', async () => {
+  const originalPost = axios.post;
+  (axios as any).post = async () => {
+    throw Object.assign(new Error('Request failed with status code 503'), {
+      response: {
+        status: 503,
+        headers: { 'x-request-id': 'req-chat-stream' },
+        data: circularErrorStream({
+          error: { type: 'service_unavailable', message: 'chat upstream unavailable' },
+        }),
+      },
+    });
+  };
+  try {
+    const instance = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.example/v1',
+      model: 'chat-model',
+      openaiApiMode: 'chat_completions',
+    });
+    await assert.rejects(
+      instance.chatStream([{ role: 'user', content: 'hello' }]),
+      (error: any) => {
+        assert.equal(error.response?.status, 503);
+        assert.equal(error.response?.headers?.['x-request-id'], 'req-chat-stream');
+        assert.equal(error.response?.data?.error?.message, 'chat upstream unavailable');
+        return true;
+      },
+    );
+  } finally {
+    (axios as any).post = originalPost;
+  }
+});
+
+test('plain-text HTTP stream errors are preserved as bounded provider messages', async () => {
+  const originalPost = axios.post;
+  const oversizedMessage = 'upstream failure '.repeat(8_000);
+  let hadErrorListenerAtDestroy = false;
+  (axios as any).post = async () => {
+    const stream = Readable.from([Buffer.from(oversizedMessage, 'utf8')]);
+    const originalDestroy = stream.destroy.bind(stream);
+    (stream as any).destroy = (error?: Error) => {
+      hadErrorListenerAtDestroy = stream.listenerCount('error') > 0;
+      return originalDestroy(error);
+    };
+    (stream as any).socket = { _httpMessage: stream };
+    throw Object.assign(new Error('Request failed with status code 502'), {
+      response: { status: 502, data: stream },
+    });
+  };
+  try {
+    await assert.rejects(
+      provider().chatStream(
+        [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }],
+        [],
+        undefined,
+        context,
+      ),
+      (error: any) => {
+        assert.equal(error.response?.status, 502);
+        assert.equal(typeof error.response?.data?.message, 'string');
+        assert.match(error.response.data.message, /\[truncated\]$/);
+        assert.ok(Buffer.byteLength(error.response.data.message, 'utf8') < 66 * 1024);
+        return true;
+      },
+    );
+    assert.equal(hadErrorListenerAtDestroy, true);
+  } finally {
+    (axios as any).post = originalPost;
+  }
+});
+
+test('cancelled Responses requests do not wait for provider error stream normalization', async () => {
+  const originalPost = axios.post;
+  const controller = new AbortController();
+  controller.abort();
+  (axios as any).post = async () => {
+    const stream = new Readable({ read() {} });
+    throw Object.assign(new Error('canceled'), {
+      name: 'CanceledError',
+      code: 'ERR_CANCELED',
+      response: { status: 499, data: stream },
+    });
+  };
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      provider().chatStream(
+        [{ role: 'user', content: 'hello', __episodeId: 'episode-2' }],
+        [],
+        undefined,
+        { ...context, signal: controller.signal },
+      ),
+      /canceled/,
+    );
+    assert.ok(Date.now() - startedAt < 500);
+  } finally {
+    (axios as any).post = originalPost;
+  }
+});
+
+test('explicit cache retry inspection never throws for circular non-stream error data', () => {
+  const data: any = { error: { message: 'unrelated failure' } };
+  data.self = data;
+  const instance = provider();
+  assert.doesNotThrow(() => {
+    assert.equal((instance as any).shouldRetryWithoutExplicitCaching({
+      response: { status: 500, data },
+    }, {
+      prompt_cache_options: { mode: 'explicit' },
+    }), false);
+  });
 });
 
 test('strict explicit cache mode surfaces streamed rejection without fallback', async () => {

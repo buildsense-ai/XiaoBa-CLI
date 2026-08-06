@@ -17,6 +17,9 @@ import { Logger } from '../utils/logger';
 import { estimateJsonTokens } from '../core/token-estimator';
 import { createProviderStateReference, isProviderStateCompatible } from './provider-state';
 
+const MAX_PROVIDER_ERROR_BODY_BYTES = 64 * 1024;
+const PROVIDER_ERROR_BODY_READ_TIMEOUT_MS = 2_000;
+
 interface ResponsesBreakpointDiagnostic {
   label: 'S' | 'A' | 'B';
   prefixHash: string;
@@ -255,11 +258,12 @@ export class OpenAIProvider implements AIProvider {
       body,
     });
 
-    const response = await axios.post(this.chatCompletionsUrl, body, {
-      headers: this.headers,
-      responseType: 'stream',
-      signal: options?.signal,
-    });
+    const response = await this.postProviderRequest(
+      this.chatCompletionsUrl,
+      body,
+      true,
+      options,
+    );
 
     return new Promise<ChatResponse>((resolve, reject) => {
       let fullContent = '';
@@ -868,19 +872,13 @@ export class OpenAIProvider implements AIProvider {
     });
     let response;
     try {
-      response = await axios.post(this.responsesUrl, body, {
-        headers: this.headers,
-        signal: options?.signal,
-      });
+      response = await this.postProviderRequest(this.responsesUrl, body, false, options);
     } catch (error) {
       if (!this.shouldRetryWithoutExplicitCaching(error, body)) throw error;
       this.responsesExplicitCacheSupported = false;
       Logger.warning('Responses endpoint rejected explicit prompt caching; retrying once in compatibility mode.');
       body = this.buildResponsesRequestBody(messages, tools, false, options, true);
-      response = await axios.post(this.responsesUrl, body, {
-        headers: this.headers,
-        signal: options?.signal,
-      });
+      response = await this.postProviderRequest(this.responsesUrl, body, false, options);
     }
     ContextDebugLogger.dumpSdkBoundary('after', undefined, { response: response.data });
     const failure = this.responsesFailureError(response.data);
@@ -903,21 +901,13 @@ export class OpenAIProvider implements AIProvider {
     });
     let response;
     try {
-      response = await axios.post(this.responsesUrl, body, {
-        headers: this.headers,
-        responseType: 'stream',
-        signal: options?.signal,
-      });
+      response = await this.postProviderRequest(this.responsesUrl, body, true, options);
     } catch (error) {
       if (!this.shouldRetryWithoutExplicitCaching(error, body)) throw error;
       this.responsesExplicitCacheSupported = false;
       Logger.warning('Responses endpoint rejected explicit prompt caching; retrying stream once in compatibility mode.');
       body = this.buildResponsesRequestBody(messages, tools, true, options, true);
-      response = await axios.post(this.responsesUrl, body, {
-        headers: this.headers,
-        responseType: 'stream',
-        signal: options?.signal,
-      });
+      response = await this.postProviderRequest(this.responsesUrl, body, true, options);
     }
 
     return new Promise<ChatResponse>((resolve, reject) => {
@@ -1050,6 +1040,48 @@ export class OpenAIProvider implements AIProvider {
     };
   }
 
+  private async postProviderRequest(
+    url: string,
+    body: any,
+    stream: boolean,
+    options?: AIRequestOptions,
+  ): Promise<any> {
+    try {
+      return await axios.post(url, body, {
+        headers: this.headers,
+        ...(stream ? { responseType: 'stream' as const } : {}),
+        signal: options?.signal,
+      });
+    } catch (error) {
+      if (options?.signal?.aborted || isProviderAbortError(error)) throw error;
+      const normalizedError = await this.normalizeProviderErrorResponse(error);
+      throw normalizedError;
+    }
+  }
+
+  private async normalizeProviderErrorResponse(error: unknown): Promise<unknown> {
+    const response = (error as any)?.response;
+    const data = response?.data;
+    if (!response || !isReadableErrorStream(data)) return error;
+
+    const text = await readProviderErrorStream(data);
+    const normalizedData = parseProviderErrorBody(text);
+    try {
+      response.data = normalizedData;
+    } catch {
+      try {
+        Object.defineProperty(error as object, 'response', {
+          value: { ...response, data: normalizedData },
+          configurable: true,
+          writable: true,
+        });
+      } catch {
+        // Error normalization is best-effort and must never replace the provider failure.
+      }
+    }
+    return error;
+  }
+
   private shouldRetryWithoutExplicitCaching(error: unknown, body: any): boolean {
     if (!body?.prompt_cache_options) return false;
     if (/^(?:1|true|yes|on)$/i.test(String(process.env.XIAOBA_RESPONSES_EXPLICIT_CACHE_STRICT || '').trim())) {
@@ -1057,13 +1089,133 @@ export class OpenAIProvider implements AIProvider {
     }
     const status = Number((error as any)?.response?.status ?? (error as any)?.status);
     const data = (error as any)?.response?.data;
-    const detail = `${(error as any)?.message || ''} ${typeof data === 'string' ? data : JSON.stringify(data || {})}`.toLowerCase();
+    const detail = `${(error as any)?.message || ''} ${safeProviderErrorDetail(data)}`.toLowerCase();
     if (detail.includes('prompt_cache_breakpoint') || detail.includes('prompt_cache_options')) {
       return /unsupported|not supported|unknown|invalid|extra|unrecognized/.test(detail);
     }
     return (status === 400 || status === 422)
       && detail.includes('prompt cache')
       && /unsupported|not supported|unknown|invalid|extra|unrecognized/.test(detail);
+  }
+}
+
+type ReadableErrorStream = {
+  on: (event: string, listener: (...args: any[]) => void) => unknown;
+  once: (event: string, listener: (...args: any[]) => void) => unknown;
+  removeListener: (event: string, listener: (...args: any[]) => void) => unknown;
+  destroy?: () => void;
+  destroyed?: boolean;
+  pipe: (...args: any[]) => unknown;
+};
+
+function isReadableErrorStream(value: unknown): value is ReadableErrorStream {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && typeof (value as any).on === 'function'
+    && typeof (value as any).once === 'function'
+    && typeof (value as any).pipe === 'function',
+  );
+}
+
+function readProviderErrorStream(stream: ReadableErrorStream): Promise<string> {
+  return new Promise(resolve => {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let settled = false;
+    let truncated = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      stream.removeListener('data', onData);
+      stream.removeListener('end', onEnd);
+      stream.removeListener('error', onError);
+      stream.removeListener('close', onClose);
+    };
+    const finish = (destroy = false) => {
+      if (settled) return;
+      settled = true;
+      if (destroy && !stream.destroyed && typeof stream.destroy === 'function') {
+        // Keep a listener attached while destroy settles: a socket may emit a
+        // delayed error after the normal read listeners have been removed.
+        stream.once('error', () => undefined);
+      }
+      cleanup();
+      if (destroy && !stream.destroyed) {
+        try {
+          stream.destroy?.();
+        } catch {
+          // Releasing a broken response stream is best-effort.
+        }
+      }
+      const body = Buffer.concat(chunks, totalBytes).toString('utf8').trim();
+      resolve(truncated && body ? `${body}\n[truncated]` : body);
+    };
+    const onData = (chunk: unknown) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+      const remaining = MAX_PROVIDER_ERROR_BODY_BYTES - totalBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        finish(true);
+        return;
+      }
+      if (buffer.length > remaining) {
+        chunks.push(buffer.subarray(0, remaining));
+        totalBytes += remaining;
+        truncated = true;
+        finish(true);
+        return;
+      }
+      chunks.push(buffer);
+      totalBytes += buffer.length;
+      if (totalBytes >= MAX_PROVIDER_ERROR_BODY_BYTES) {
+        truncated = true;
+        finish(true);
+      }
+    };
+    const onEnd = () => finish();
+    const onError = () => finish();
+    const onClose = () => finish();
+    const timer = setTimeout(() => finish(true), PROVIDER_ERROR_BODY_READ_TIMEOUT_MS);
+
+    stream.on('data', onData);
+    stream.once('end', onEnd);
+    stream.once('error', onError);
+    stream.once('close', onClose);
+  });
+}
+
+function parseProviderErrorBody(text: string): unknown {
+  if (!text) return '';
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
+}
+
+function isProviderAbortError(error: unknown): boolean {
+  const code = String((error as any)?.code || '').toUpperCase();
+  const name = String((error as any)?.name || '');
+  return code === 'ERR_CANCELED' || name === 'CanceledError' || name === 'AbortError';
+}
+
+function safeProviderErrorDetail(data: unknown): string {
+  if (typeof data === 'string') return data.slice(0, MAX_PROVIDER_ERROR_BODY_BYTES);
+  if (Buffer.isBuffer(data)) {
+    return data.subarray(0, MAX_PROVIDER_ERROR_BODY_BYTES).toString('utf8');
+  }
+  if (!data || isReadableErrorStream(data)) return '';
+  const seen = new WeakSet<object>();
+  try {
+    return JSON.stringify(data, (_key, value) => {
+      if (!value || typeof value !== 'object') return value;
+      if (seen.has(value)) return '[Circular]';
+      seen.add(value);
+      return value;
+    }).slice(0, MAX_PROVIDER_ERROR_BODY_BYTES);
+  } catch {
+    return '';
   }
 }
 

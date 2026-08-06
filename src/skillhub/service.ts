@@ -29,7 +29,7 @@ import type {
 export class SkillHubService {
   private readonly client: SkillHubClient;
 
-  constructor(options: { baseUrl?: string } = {}) {
+  constructor(options: { baseUrl?: string; sessionScope?: 'persistent' | 'memory' } = {}) {
     this.client = new SkillHubClient(options);
   }
 

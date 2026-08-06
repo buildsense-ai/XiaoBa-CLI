@@ -147,7 +147,7 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
 
   router.post('/skillhub/developer/share-local-skill', async (req, res) => {
     try {
-      res.status(201).json(await serviceFrom(req.body).shareLocalSkill(req.body || {}));
+      res.status(201).json(await shareLocalSkill(req.body || {}, options));
     } catch (error: any) {
       sendSkillHubError(res, error);
     }
@@ -155,7 +155,7 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
 
   router.post('/skillhub/share-local-skill', async (req, res) => {
     try {
-      res.status(201).json(await serviceFrom(req.body).shareLocalSkill(req.body || {}));
+      res.status(201).json(await shareLocalSkill(req.body || {}, options));
     } catch (error: any) {
       sendSkillHubError(res, error);
     }
@@ -194,8 +194,86 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
   });
 }
 
-function serviceFrom(_input?: any): SkillHubService {
-  return new SkillHubService();
+async function shareLocalSkill(input: any, options: SkillHubRouteOptions): Promise<any> {
+  const expectedBotUid = String(input?.expectedBotUid || '').trim();
+  const expectedUserUid = String(input?.expectedUserUid || '').trim();
+  if (Boolean(expectedBotUid) !== Boolean(expectedUserUid)) {
+    throw skillHubConflict(
+      'expectedBotUid and expectedUserUid must be provided together.',
+      'skillhub.share_scope_incomplete',
+    );
+  }
+
+  // Preserve the existing Dashboard flow when no explicit WebApp scope is
+  // supplied. The WebApp bridge always sends both values and gets the stricter
+  // account/workspace checks below.
+  if (!expectedBotUid) return serviceFrom(input).shareLocalSkill(input);
+  if (!options.getCatsCoAuth) {
+    const error: any = new Error('CatsCo SkillHub login is not configured');
+    error.status = 501;
+    error.code = 'skillhub.catsco_exchange_unavailable';
+    throw error;
+  }
+
+  // Keep the existing fast-fail behavior for an already changed CatsCo
+  // account. This check is only a preflight; the identity is exchanged and
+  // checked again inside the workspace lock immediately before upload.
+  const preflightCats = await options.getCatsCoAuth();
+  if (String(preflightCats.user?.uid || '').trim() !== expectedUserUid) {
+    throw skillHubConflict(
+      'The local CatsCo account changed before the Skill was shared.',
+      'skillhub.share_user_changed',
+    );
+  }
+
+  return withCurrentBotSkillWorkspaceWrite(async (context) => {
+    assertExpectedLocalSkillShareScope(expectedBotUid, context.botId, context.activeBotId);
+    // WebApp shares must not reuse the process-wide SkillHub cookie. Re-exchange
+    // the current CatsCo identity inside the workspace lock and keep the
+    // resulting SkillHub session in memory for this request only.
+    const cats = await options.getCatsCoAuth!();
+    const service = serviceFrom(input, { sessionScope: 'memory' });
+    const skillHubAuth = await service.loginWithCatsCo(cats);
+    const actualUserUid = String(skillHubAuth.catsCo?.uid || '').trim();
+    if (!actualUserUid) {
+      throw skillHubConflict(
+        'SkillHub did not return the CatsCo identity for the exchanged session.',
+        'skillhub.share_identity_unavailable',
+      );
+    }
+    if (actualUserUid !== expectedUserUid) {
+      throw skillHubConflict(
+        'The local CatsCo account changed before the Skill was shared.',
+        'skillhub.share_user_changed',
+      );
+    }
+    const result = await service.shareLocalSkill(input);
+    return { ...result, botUid: expectedBotUid };
+  });
+}
+
+export function assertExpectedLocalSkillShareScope(
+  expectedBotUid: string,
+  configuredBotUid?: string,
+  activeBotUid?: string,
+): void {
+  if (configuredBotUid !== expectedBotUid || activeBotUid !== expectedBotUid) {
+    throw skillHubConflict(
+      'The active Bot Skill workspace changed before the Skill was shared.',
+      'skillhub.share_bot_changed',
+    );
+  }
+}
+
+function skillHubConflict(message: string, code: string): Error {
+  const error: any = new Error(message);
+  error.status = 409;
+  error.code = code;
+  return error;
+}
+
+function serviceFrom(_input?: any, options: { sessionScope?: 'persistent' | 'memory' } = {}): SkillHubService {
+  return new SkillHubService(options);
 }
 
 function sendSkillHubError(res: any, error: any): void {

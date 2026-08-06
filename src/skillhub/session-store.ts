@@ -17,7 +17,16 @@ interface StoredSkillHubSession {
 }
 
 export class SkillHubSessionStore {
-  constructor(private readonly config: SkillHubConfig) {}
+  private memorySession: StoredSkillHubSession | null = null;
+
+  constructor(
+    private readonly config: SkillHubConfig,
+    private readonly options: { sessionFile?: string | null } = {},
+  ) {}
+
+  static memory(config: SkillHubConfig): SkillHubSessionStore {
+    return new SkillHubSessionStore(config, { sessionFile: null });
+  }
 
   getBaseUrl(): string {
     return this.read()?.baseUrl || this.config.baseUrl;
@@ -59,15 +68,22 @@ export class SkillHubSessionStore {
   }
 
   clear(): void {
-    if (fs.existsSync(this.config.sessionFile)) {
-      fs.rmSync(this.config.sessionFile, { force: true });
+    if (this.options.sessionFile === null) {
+      this.memorySession = null;
+      return;
+    }
+    const sessionFile = this.options.sessionFile || this.config.sessionFile;
+    if (fs.existsSync(sessionFile)) {
+      fs.rmSync(sessionFile, { force: true });
     }
   }
 
   private read(): StoredSkillHubSession | null {
-    if (!fs.existsSync(this.config.sessionFile)) return null;
+    if (this.options.sessionFile === null) return this.memorySession;
+    const sessionFile = this.options.sessionFile || this.config.sessionFile;
+    if (!fs.existsSync(sessionFile)) return null;
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.config.sessionFile, 'utf-8')) as StoredSkillHubSession;
+      const parsed = JSON.parse(fs.readFileSync(sessionFile, 'utf-8')) as StoredSkillHubSession;
       if (!parsed || !Array.isArray(parsed.cookies)) return null;
       return parsed;
     } catch {
@@ -76,8 +92,13 @@ export class SkillHubSessionStore {
   }
 
   private write(session: StoredSkillHubSession): void {
-    fs.mkdirSync(path.dirname(this.config.sessionFile), { recursive: true });
-    fs.writeFileSync(this.config.sessionFile, `${JSON.stringify(session, null, 2)}\n`, 'utf-8');
+    if (this.options.sessionFile === null) {
+      this.memorySession = session;
+      return;
+    }
+    const sessionFile = this.options.sessionFile || this.config.sessionFile;
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    fs.writeFileSync(sessionFile, `${JSON.stringify(session, null, 2)}\n`, 'utf-8');
   }
 }
 

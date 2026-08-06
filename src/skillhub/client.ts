@@ -12,6 +12,7 @@ import type {
 export interface SkillHubClientOptions {
   baseUrl?: string;
   timeoutMs?: number;
+  sessionScope?: 'persistent' | 'memory';
 }
 
 export interface SkillHubRegisterInput {
@@ -46,7 +47,9 @@ export class SkillHubClient {
 
   constructor(options: SkillHubClientOptions = {}) {
     this.config = loadSkillHubConfig({ baseUrl: options.baseUrl });
-    this.sessionStore = new SkillHubSessionStore(this.config);
+    this.sessionStore = options.sessionScope === 'memory'
+      ? SkillHubSessionStore.memory(this.config)
+      : new SkillHubSessionStore(this.config);
     this.timeoutMs = options.timeoutMs ?? 15_000;
   }
 
@@ -85,8 +88,12 @@ export class SkillHubClient {
   }
 
   async loginWithCatsCo(input: SkillHubCatsCoExchangeInput): Promise<SkillHubAuthState> {
-    await this.request('POST', '/api/auth/catsco-exchange', input);
-    return this.status();
+    const exchange = await this.request<any>('POST', '/api/auth/catsco-exchange', input);
+    const auth = await this.status();
+    return {
+      ...auth,
+      catsCo: exchange?.catsCo,
+    };
   }
 
   async logout(): Promise<{ ok: true }> {

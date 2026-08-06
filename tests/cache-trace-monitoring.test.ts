@@ -285,7 +285,10 @@ test('dashboard exposes a discoverable cache trace page', () => {
   const root = path.resolve(__dirname, '..');
   const index = fs.readFileSync(path.join(root, 'dashboard', 'index.html'), 'utf8');
   const page = fs.readFileSync(path.join(root, 'dashboard', 'cache-trace.html'), 'utf8');
-  assert.match(index, /href="cache-trace\.html"/);
+  assert.match(index, /onclick="switchPage\('cache-trace'\)" data-page="cache-trace"/);
+  assert.match(index, /id="page-cache-trace"/);
+  assert.match(index, /id="cache-trace-frame"/);
+  assert.match(index, /data-src="cache-trace\.html"/);
   assert.match(page, /缓存命中监控/);
   assert.match(page, /catsco\.dashboardApiKey/);
   assert.match(page, /采集 Cache Trace/);

@@ -7,6 +7,9 @@ import * as path from 'path';
 import express from 'express';
 import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
+import { assertExpectedLocalSkillShareScope } from '../src/dashboard/routes/skillhub';
+import { BotSkillWorkspaceService } from '../src/bot-skills/workspace';
+import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 import { loadSkillHubConfig } from '../src/skillhub/config';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS, SkillHubTrustedRootKey } from '../src/skillhub/trusted-keys';
 
@@ -21,6 +24,7 @@ describe('dashboard connected SkillHub API', () => {
   let maliciousServer: Server | undefined;
   let dashboardBaseUrl: string;
   let cloudBaseUrl: string;
+  let lastShareCookie = '';
 
   beforeEach(async () => {
     originalCwd = process.cwd();
@@ -30,6 +34,7 @@ describe('dashboard connected SkillHub API', () => {
     process.chdir(testRoot);
     process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
     fs.mkdirSync(path.join(testRoot, 'skills'), { recursive: true });
+    lastShareCookie = '';
   });
 
   afterEach(async () => {
@@ -182,9 +187,106 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(fs.existsSync(path.join(testRoot, 'data/skillhub/session.json')), true);
   });
 
+  test('rejects a WebApp share when the local CatsCo account changed', async () => {
+    await startCatsCo();
+    process.env.CATSCO_HTTP_BASE_URL = serverBaseUrl(catsServer!);
+    process.env.CATSCO_USER_TOKEN = 'cats-token';
+    process.env.CATSCO_USER_UID = '116';
+    process.env.CATSCO_USER_NAME = 'lin';
+    process.env.CATSCO_USER_DISPLAY_NAME = 'Lin';
+    await startDashboard();
+
+    const share = await post('/api/skillhub/share-local-skill', {
+      skillName: 'quick-demo',
+      expectedBotUid: '218',
+      expectedUserUid: '999',
+    });
+    assert.equal(share.status, 409);
+    assert.equal(share.body.code, 'skillhub.share_user_changed');
+  });
+
+  test('uses a request-scoped CatsCo SkillHub session when a persisted cookie belongs to another account', async () => {
+    const skillRoot = path.join(testRoot, 'skills', 'scoped-demo');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+      '---',
+      'name: scoped-demo',
+      'description: Request scoped share demo',
+      '---',
+      '',
+      '# Scoped Demo',
+      '',
+    ].join('\n'));
+
+    const fixture = createFixture();
+    await startCatsCo();
+    await startCloud(fixture);
+    process.env.CATSCO_SKILLHUB_BASE_URL = cloudBaseUrl;
+    process.env.CATSCO_HTTP_BASE_URL = serverBaseUrl(catsServer!);
+    process.env.CATSCO_USER_TOKEN = 'cats-token';
+    process.env.CATSCO_USER_UID = '116';
+    process.env.CATSCO_USER_NAME = 'lin';
+    process.env.CATSCO_USER_DISPLAY_NAME = 'Lin';
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot, env: process.env }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: serverBaseUrl(catsServer!),
+        serverUrl: 'ws://127.0.0.1/unused',
+      },
+      account: {
+        token: 'cats-token',
+        uid: '116',
+        username: 'lin',
+        displayName: 'Lin',
+      },
+      currentBot: {
+        uid: '218',
+        apiKey: 'bot-key',
+        boundByUserUid: '116',
+        bindingSource: 'test',
+      },
+    });
+    new BotSkillWorkspaceService(testRoot, path.join(testRoot, 'skills')).activate('218');
+    await startDashboard();
+
+    // Simulate another Dashboard tab switching the persisted SkillHub session.
+    const login = await post('/api/skillhub/auth/login', {
+      email: 'demo@example.com',
+      password: 'passw0rd!!',
+    });
+    assert.equal(login.status, 200);
+    const sessionPath = path.join(testRoot, 'data/skillhub/session.json');
+    const persistedBefore = fs.readFileSync(sessionPath, 'utf8');
+    assert.match(persistedBefore, /dashboard-session/);
+
+    const share = await post('/api/skillhub/share-local-skill', {
+      skillName: 'scoped-demo',
+      expectedBotUid: '218',
+      expectedUserUid: '116',
+    });
+    assert.equal(share.status, 201);
+    assert.equal(share.body.ok, true);
+    assert.equal(share.body.botUid, '218');
+    assert.match(lastShareCookie, /catsco_session=catsco-exchange-session/);
+    assert.doesNotMatch(lastShareCookie, /dashboard-session/);
+    assert.equal(fs.readFileSync(sessionPath, 'utf8'), persistedBefore);
+  });
+
   test('uses the official SkillHub cloud by default', () => {
     delete process.env.CATSCO_SKILLHUB_BASE_URL;
     assert.equal(loadSkillHubConfig().baseUrl, 'https://skillhub.catsco.fun:19990');
+  });
+
+  test('rejects a WebApp share when the configured or active Bot changed', () => {
+    assert.doesNotThrow(() => assertExpectedLocalSkillShareScope('218', '218', '218'));
+    assert.throws(
+      () => assertExpectedLocalSkillShareScope('218', '573', '573'),
+      (error: any) => error?.status === 409 && error?.code === 'skillhub.share_bot_changed',
+    );
+    assert.throws(
+      () => assertExpectedLocalSkillShareScope('218', '218', '573'),
+      (error: any) => error?.status === 409 && error?.code === 'skillhub.share_bot_changed',
+    );
   });
 
   test('ignores request-supplied SkillHub baseUrl overrides', async () => {
@@ -255,6 +357,7 @@ describe('dashboard connected SkillHub API', () => {
         roles: ['user', 'developer'],
         permissions: ['submission.create'],
         developerProfile: { namespace: 'lin' },
+        catsCo: { uid: '116', username: 'lin', displayName: 'Lin' },
       });
     });
     app.get('/api/auth/me', (req, res) => {
@@ -286,6 +389,7 @@ describe('dashboard connected SkillHub API', () => {
       });
     });
     app.post('/api/skills/share', (req, res) => {
+      lastShareCookie = req.header('cookie') || '';
       const manifest = {
         ...req.body.manifest,
         id: `lin/${req.body.manifest.name}`,
