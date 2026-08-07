@@ -13,6 +13,76 @@ const managePath = path.join(
   "Manage-WorkerImages.ps1",
 );
 
+// Shared fake ctyun-cli. Supports real pagination (--pageNo/--pageSize with
+// totalPage), delayed deletes (deleteDelayRounds: image stays visible for N
+// more ListImage reads), and delete failures (deleteFailures).
+const FAKE_CTYUN_CLI = `
+import fs from "node:fs";
+const statePath = process.env.FAKE_IMG_STATE;
+const logPath = process.env.FAKE_IMG_LOG;
+const args = process.argv.slice(2);
+const operation = args.slice(0, 2).join(" ");
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const value = flag => {
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] : "";
+};
+fs.appendFileSync(logPath, operation + "\\n");
+let returnObj = {};
+if (operation === "ims ListImage") {
+  if (state.deletePending) {
+    for (const id of Object.keys(state.deletePending)) {
+      const rounds = state.deletePending[id];
+      if (rounds <= 1) {
+        state.images = state.images.filter(img => img.imageID !== id);
+        delete state.deletePending[id];
+      } else {
+        state.deletePending[id] = rounds - 1;
+      }
+    }
+  }
+  const requestedName = value("--imageName");
+  const pageNo = parseInt(value("--pageNo") || "1", 10);
+  const pageSize = parseInt(value("--pageSize") || "200", 10);
+  let list = state.images.filter(img => !requestedName || img.imageName === requestedName);
+  const total = list.length;
+  const start = (pageNo - 1) * pageSize;
+  returnObj = {
+    images: list.slice(start, start + pageSize).map(img => JSON.parse(JSON.stringify(img))),
+    totalPage: Math.ceil(total / pageSize),
+  };
+} else if (operation === "ims DeleteImage") {
+  const id = value("--imageID");
+  if (state.deleteFailures && state.deleteFailures.includes(id)) {
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    process.stdout.write(JSON.stringify({
+      statusCode: 900,
+      message: "ERROR",
+      description: "fake delete error",
+      errorCode: "ims.DeleteImage.Failed",
+      returnObj: {},
+    }));
+    process.exit(0);
+  }
+  if (state.deleteDelayRounds && state.deleteDelayRounds[id] > 0) {
+    state.deletePending = state.deletePending || {};
+    state.deletePending[id] = state.deleteDelayRounds[id];
+  } else {
+    state.images = state.images.filter(img => img.imageID !== id);
+  }
+} else {
+  process.stderr.write("unexpected fake operation: " + operation + "\\n");
+  process.exit(2);
+}
+fs.writeFileSync(statePath, JSON.stringify(state));
+process.stdout.write(JSON.stringify({
+  statusCode: 800,
+  message: "SUCCESS",
+  description: "success",
+  returnObj,
+}));
+`;
+
 test("worker image lifecycle: list, latest, and prune keeps N (default 6)", () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-img-mgmt-"));
   try {
@@ -52,53 +122,7 @@ test("worker image lifecycle: list, latest, and prune keeps N (default 6)", () =
       fs.writeFileSync(`${p}.cmd`, `@echo off\r\nnode "%~dp0${name}" %*\r\n`);
     };
 
-    writeCommand("ctyun-cli", `
-import fs from "node:fs";
-const statePath = process.env.FAKE_IMG_STATE;
-const logPath = process.env.FAKE_IMG_LOG;
-const args = process.argv.slice(2);
-const operation = args.slice(0, 2).join(" ");
-const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
-const value = flag => {
-  const index = args.indexOf(flag);
-  return index >= 0 ? args[index + 1] : "";
-};
-fs.appendFileSync(logPath, operation + "\\n");
-let returnObj = {};
-if (operation === "ims ListImage") {
-  const requestedName = value("--imageName");
-  returnObj = {
-    images: state.images
-      .filter(img => !requestedName || img.imageName === requestedName)
-      .map(img => JSON.parse(JSON.stringify(img))),
-    totalPage: 1,
-  };
-} else if (operation === "ims DeleteImage") {
-  const id = value("--imageID");
-  if (state.deleteFailures && state.deleteFailures.includes(id)) {
-    fs.writeFileSync(statePath, JSON.stringify(state));
-    process.stdout.write(JSON.stringify({
-      statusCode: 900,
-      message: "ERROR",
-      description: "fake delete error",
-      errorCode: "ims.DeleteImage.Failed",
-      returnObj: {},
-    }));
-    process.exit(0);
-  }
-  state.images = state.images.filter(img => img.imageID !== id);
-} else {
-  process.stderr.write("unexpected fake operation: " + operation + "\\n");
-  process.exit(2);
-}
-fs.writeFileSync(statePath, JSON.stringify(state));
-process.stdout.write(JSON.stringify({
-  statusCode: 800,
-  message: "SUCCESS",
-  description: "success",
-  returnObj,
-}));
-`);
+    writeCommand("ctyun-cli", FAKE_CTYUN_CLI);
 
     writeCommand("timeout", `
 import { spawnSync } from "node:child_process";
@@ -116,7 +140,7 @@ const result = spawnSync(
 process.exit(result.status ?? 1);
 `);
 
-    const runScript = (action: string, extra: string[] = []) =>
+    const runScript = (action: string, extra: string[] = [], timeoutMs = 60_000) =>
       spawnSync(
         "pwsh",
         [
@@ -132,7 +156,7 @@ process.exit(result.status ?? 1);
         {
           cwd: root,
           encoding: "utf8",
-          timeout: 60_000,
+          timeout: timeoutMs,
           env: {
             ...process.env,
             PATH: `${bin}${path.delimiter}${process.env.PATH || ""}`,
@@ -221,5 +245,145 @@ process.exit(result.status ?? 1);
     assert.ok(!failState.images.some((i: any) => i.imageID === "img-02"));
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+function buildSandbox(prefix: string) {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const statePath = path.join(sandbox, "state.json");
+  const logPath = path.join(sandbox, "calls.log");
+  const bin = path.join(sandbox, "bin");
+  fs.mkdirSync(bin);
+
+  const writeCommand = (name: string, body: string) => {
+    const p = path.join(bin, name);
+    fs.writeFileSync(p, `#!/usr/bin/env node\n${body.trim()}\n`);
+    fs.chmodSync(p, 0o755);
+    fs.writeFileSync(`${p}.cmd`, `@echo off\r\nnode "%~dp0${name}" %*\r\n`);
+  };
+  writeCommand("ctyun-cli", FAKE_CTYUN_CLI);
+  writeCommand("timeout", `
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+const args = process.argv.slice(2);
+const durationIndex = args.findIndex(arg => !arg.startsWith("-"));
+if (durationIndex < 0 || !args[durationIndex + 1]) process.exit(2);
+const command = args[durationIndex + 1];
+const commandPath = path.join(path.dirname(process.argv[1]), command);
+const result = spawnSync(
+  process.execPath,
+  [commandPath, ...args.slice(durationIndex + 2)],
+  { stdio: "inherit" },
+);
+process.exit(result.status ?? 1);
+`);
+
+  const writeState = (images: any[], overrides: Record<string, unknown> = {}) => {
+    fs.writeFileSync(statePath, JSON.stringify({ images, ...overrides }));
+  };
+  const runScript = (action: string, extra: string[] = [], timeoutMs = 60_000) =>
+    spawnSync(
+      "pwsh",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        managePath,
+        "-RegionID",
+        "region-test",
+        ...(action ? ["-Action", action] : []),
+        ...extra,
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: timeoutMs,
+        env: {
+          ...process.env,
+          PATH: `${bin}${path.delimiter}${process.env.PATH || ""}`,
+          FAKE_IMG_STATE: statePath,
+          FAKE_IMG_LOG: logPath,
+        },
+      },
+    );
+  return { sandbox, statePath, logPath, writeState, runScript };
+}
+
+test("worker image lifecycle: multi-round confirm, pagination, and confirm timeout", () => {
+  const sb = buildSandbox("catsco-img-mgmt2-");
+  try {
+    const workerImages = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        imageID: `img-${String(i + 1).padStart(3, "0")}`,
+        imageName: `catsco-worker-1-0-${i}`,
+        imageStatus: "active",
+        createdTime: 1000000 + i,
+        labels: [{ labelKey: "bake", labelValue: `b${i}` }],
+      }));
+
+    // --- Pagination: 205 images span 2 pages (pageSize 200) ---
+    sb.writeState(workerImages(205));
+    const listRes = sb.runScript("List");
+    assert.equal(listRes.status, 0, `${listRes.stdout}\n${listRes.stderr}`);
+    const listed = JSON.parse(listRes.stdout);
+    assert.equal(listed.length, 205, "List must paginate through all images");
+
+    // --- Multi-round confirm: img-01 stays visible for 2 more reads ---
+    const eight = workerImages(8);
+    sb.writeState(eight, { deleteDelayRounds: { "img-001": 3 } });
+    fs.rmSync(sb.logPath, { force: true });
+    const pruneRes = sb.runScript("Prune", ["-Keep", "6"]);
+    assert.equal(pruneRes.status, 0, `${pruneRes.stdout}\n${pruneRes.stderr}`);
+    const pruned = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+    assert.ok(!pruned.images.some((i: any) => i.imageID === "img-001"), "delayed image must still be removed");
+    assert.ok(!pruned.images.some((i: any) => i.imageID === "img-002"));
+    const calls = fs.readFileSync(sb.logPath, "utf8");
+    assert.ok(
+      (calls.match(/ims ListImage/g) || []).length >= 4,
+      `expected several confirmation reads, got:\n${calls}`,
+    );
+
+    // --- Confirm timeout: image never disappears -> fail closed ---
+    sb.writeState(eight, { deleteDelayRounds: { "img-001": 100 } });
+    fs.rmSync(sb.logPath, { force: true });
+    const timeoutRes = sb.runScript("Prune", ["-Keep", "6", "-ConfirmTimeoutMinutes", "1"], 120_000);
+    assert.notEqual(timeoutRes.status, 0, `expected failure:\n${timeoutRes.stdout}\n${timeoutRes.stderr}`);
+    // PowerShell wraps long error lines (CRLF + ANSI codes), so match the
+    // stable substrings instead of the full "Could not confirm deletion" text.
+    assert.match(timeoutRes.stderr, /confirm deletion/);
+    assert.match(timeoutRes.stderr, /img-001/);
+    const afterTimeout = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+    assert.ok(afterTimeout.images.some((i: any) => i.imageID === "img-001"), "unconfirmed image must be kept");
+  } finally {
+    fs.rmSync(sb.sandbox, { recursive: true, force: true });
+  }
+});
+
+test("worker image lifecycle: empty list and missing labels are safe", () => {
+  const sb = buildSandbox("catsco-img-mgmt3-");
+  try {
+    // Empty list prints a valid empty JSON array.
+    sb.writeState([]);
+    const emptyRes = sb.runScript("List");
+    assert.equal(emptyRes.status, 0, `${emptyRes.stdout}\n${emptyRes.stderr}`);
+    assert.equal(emptyRes.stdout.trim(), "[]");
+
+    // A worker-prefixed image without any labels must not crash under
+    // StrictMode; it is simply not part of the bake channel.
+    sb.writeState([
+      { imageID: "img-nolabels", imageName: "catsco-worker-manual", imageStatus: "active", createdTime: 100 },
+      { imageID: "img-ok", imageName: "catsco-worker-1-4-8-a", imageStatus: "active", createdTime: 200, labels: [{ labelKey: "bake", labelValue: "b" }] },
+    ]);
+    const listRes = sb.runScript("List");
+    assert.equal(listRes.status, 0, `${listRes.stdout}\n${listRes.stderr}`);
+    const listed = JSON.parse(listRes.stdout);
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].imageID, "img-ok");
+
+    // Prune also survives missing labels (nothing to delete here).
+    const pruneRes = sb.runScript("Prune", ["-Keep", "1"]);
+    assert.equal(pruneRes.status, 0, `${pruneRes.stdout}\n${pruneRes.stderr}`);
+  } finally {
+    fs.rmSync(sb.sandbox, { recursive: true, force: true });
   }
 });

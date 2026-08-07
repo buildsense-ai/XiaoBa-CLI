@@ -5,7 +5,9 @@ Worker 私有镜像生命周期管理（与 New-CatsCoWorkerImage.ps1 配套）�
   -List   : 列出全部 catsco-worker-* 私有镜像（imageID/name/version/commit/createdTime）
   -Latest : 输出最新 bake 的 worker 镜像 imageID（供部署/控制面取最新镜像）
   -Prune  : 保留最新 N 个（默认 6），删除更旧的（带 bake label 的 catsco-worker-*），
-            删除需连续空读确认，失败 fail-closed 聚合报告
+            删除需连续空读确认（按 --imageName 精确过滤，避免 >200 张时最旧镜像
+            不在第 1 页导致的误判），确认超时可配（-ConfirmTimeoutMinutes），
+            失败 fail-closed 聚合报告
 
 凭据：复用 ctyun-cli（环境变量 CTYUN_AK/CTYUN_SK 或 ~/.ctyun-cli.yaml），与 bake 一致。
 #>
@@ -20,27 +22,37 @@ param(
     [string]$Action = "List",
 
     [ValidateRange(1, 50)]
-    [int]$Keep = 6
+    [int]$Keep = 6,
+
+    [ValidateRange(1, 30)]
+    [int]$ConfirmTimeoutMinutes = 3
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+# Do not turn stderr writes from a successful external command into a thrown
+# ErrorRecord under $ErrorActionPreference = 'Stop'.
+$PSNativeCommandUseErrorActionPreference = $false
 
 function Invoke-Ctyun {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
-    $raw = & timeout '--signal=TERM' '--kill-after=15s' '90s' ctyun-cli @Arguments '--output' 'json' 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "ctyun-cli failed with exit code $LASTEXITCODE`n$($raw -join "`n")"
+    try {
+        $raw = & timeout '--signal=TERM' '--kill-after=15s' '90s' ctyun-cli @Arguments '--output' 'json' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "ctyun-cli failed with exit code $LASTEXITCODE`n$($raw -join "`n")"
+        }
+        $response = $raw | ConvertFrom-Json
+        if ([string]$response.statusCode -ne "800") {
+            throw (
+                "Tianyi Cloud API failed: $([string]$response.errorCode) " +
+                "$([string]$response.message) $([string]$response.description)"
+            )
+        }
+        return $response
+    } catch {
+        throw "ctyun-cli call failed ($($Arguments -join ' ')): $($_.Exception.Message)"
     }
-    $response = $raw | ConvertFrom-Json
-    if ([string]$response.statusCode -ne "800") {
-        throw (
-            "Tianyi Cloud API failed: $([string]$response.errorCode) " +
-            "$([string]$response.message) $([string]$response.description)"
-        )
-    }
-    return $response
 }
 
 function Get-ImageItems {
@@ -48,11 +60,28 @@ function Get-ImageItems {
     return @($Response.returnObj.images)
 }
 
+# Defensive property access: returns "" when the object or property is absent,
+# which keeps StrictMode from crashing on hand-made / unlabeled images.
+function Get-Prop {
+    param($Obj, [string]$Name)
+    if ($null -eq $Obj) { return "" }
+    $prop = $Obj.PSObject.Properties[$Name]
+    if ($null -eq $prop) { return "" }
+    return $prop.Value
+}
+
+function Get-PropLong {
+    param($Obj, [string]$Name)
+    $raw = Get-Prop -Obj $Obj -Name $Name
+    if ($raw -is [string] -and $raw.Trim() -eq "") { return [long]0 }
+    return [long]$raw
+}
+
 function Get-LabelValue {
     param($Labels, [string]$Key)
-    $match = @($Labels | Where-Object { [string]$_.labelKey -eq $Key }) | Select-Object -First 1
+    $match = @($Labels | Where-Object { [string](Get-Prop -Obj $_ -Name "labelKey") -eq $Key }) | Select-Object -First 1
     if (-not $match) { return "" }
-    return [string]$match.labelValue
+    return [string](Get-Prop -Obj $match -Name "labelValue")
 }
 
 # --- 分页拉取全部私有镜像 ---
@@ -76,30 +105,30 @@ do {
 # --- 过滤本 bake 通道的 worker 镜像：名称前缀 + bake label ---
 $workerImages = @(
     $all | Where-Object {
-        [string]$_.imageName -like "catsco-worker-*" -and
-        (Get-LabelValue -Labels $_.labels -Key "bake") -ne ""
+        [string](Get-Prop -Obj $_ -Name "imageName") -like "catsco-worker-*" -and
+        (Get-LabelValue -Labels (Get-Prop -Obj $_ -Name "labels") -Key "bake") -ne ""
     }
 )
 
 # --- 最新在前（createdTime 降序，id 兜底） ---
 $sorted = @(
     $workerImages | Sort-Object `
-        @{ Expression = { [long]$_.createdTime }; Descending = $true }, `
-        @{ Expression = { [string]$_.imageID }; Descending = $true }
+        @{ Expression = { Get-PropLong -Obj $_ -Name "createdTime" }; Descending = $true }, `
+        @{ Expression = { [string](Get-Prop -Obj $_ -Name "imageID") }; Descending = $true }
 )
 
 if ($Action -eq "List") {
     $rows = foreach ($img in $sorted) {
         [pscustomobject]@{
-            imageID     = [string]$img.imageID
-            name        = [string]$img.imageName
-            version     = Get-LabelValue -Labels $img.labels -Key "version"
-            commit      = Get-LabelValue -Labels $img.labels -Key "commit"
-            createdTime = [long]$img.createdTime
-            status      = [string]$img.imageStatus
+            imageID     = [string](Get-Prop -Obj $img -Name "imageID")
+            name        = [string](Get-Prop -Obj $img -Name "imageName")
+            version     = Get-LabelValue -Labels (Get-Prop -Obj $img -Name "labels") -Key "version"
+            commit      = Get-LabelValue -Labels (Get-Prop -Obj $img -Name "labels") -Key "commit"
+            createdTime = Get-PropLong -Obj $img -Name "createdTime"
+            status      = [string](Get-Prop -Obj $img -Name "imageStatus")
         }
     }
-    $rows | ConvertTo-Json
+    ConvertTo-Json -InputObject @($rows)
     exit 0
 }
 
@@ -121,8 +150,8 @@ $toDelete = @($sorted | Select-Object -Skip $Keep)
 Write-Host "Pruning $($toDelete.Count) old worker image(s), keeping latest $Keep"
 $failures = [Collections.Generic.List[string]]::new()
 foreach ($img in $toDelete) {
-    $imageID = [string]$img.imageID
-    $imageName = [string]$img.imageName
+    $imageID = [string](Get-Prop -Obj $img -Name "imageID")
+    $imageName = [string](Get-Prop -Obj $img -Name "imageName")
     try {
         Write-Host "Deleting old worker image $imageID ($imageName)"
         Invoke-Ctyun @(
@@ -131,9 +160,10 @@ foreach ($img in $toDelete) {
             "--imageID", $imageID
         ) | Out-Null
 
-        # 删除确认：连续空读（ListImage 全量过滤，不用 GetImageDetail——
-        # 实测 GetImageDetail 对私有镜像偶发 NotFound 而 ListImage 可靠）
-        $deleteDeadline = (Get-Date).AddMinutes(3)
+        # 删除确认：按 --imageName 精确过滤（不用 GetImageDetail——实测对私有
+        # 镜像偶发 NotFound 而 ListImage 可靠）。按名称过滤而不是第 1 页全量，
+        # 避免私有镜像总数 > 200 时最旧镜像不在第 1 页导致的误判"已删除"。
+        $deleteDeadline = (Get-Date).AddMinutes($ConfirmTimeoutMinutes)
         $confirmed = $false
         while ((Get-Date) -lt $deleteDeadline) {
             $checkResp = Invoke-Ctyun @(
@@ -141,12 +171,13 @@ foreach ($img in $toDelete) {
                 "--regionID", $RegionID,
                 "--projectID", $ProjectID,
                 "--imageVisibilityCode", "0",
+                "--imageName", $imageName,
                 "--pageNo", "1",
                 "--pageSize", "200"
             )
             $still = @(
                 @(Get-ImageItems $checkResp) |
-                    Where-Object { [string]$_.imageID -eq $imageID }
+                    Where-Object { [string](Get-Prop -Obj $_ -Name "imageID") -eq $imageID }
             )
             if (@($still).Count -eq 0) {
                 $confirmed = $true
@@ -155,7 +186,7 @@ foreach ($img in $toDelete) {
             Start-Sleep -Seconds 10
         }
         if (-not $confirmed) {
-            throw "Could not confirm deletion of $imageID"
+            throw "Could not confirm deletion of $imageID within $ConfirmTimeoutMinutes minute(s)"
         }
     } catch {
         $failures.Add("image $imageID ($imageName): $($_.Exception.Message)")
