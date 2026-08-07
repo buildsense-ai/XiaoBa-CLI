@@ -2726,10 +2726,20 @@ export class RuntimeLearning {
     const selectionClassCursors = { ...classCursors };
     let selectionNextClass = nextClass;
     const maxCandidates = Math.max(0, Math.floor(this.config.skillEvolutionReviewMaxCandidates));
-    const admittedEpisodeTasks: Array<{
-      episode: LearningEpisode;
-      bundle: ReturnType<typeof buildEpisodeEvidenceBundle>;
-    }> = [];
+    const buildBundleForEpisode = (episode: LearningEpisode): EvidenceBundle => (
+      buildEpisodeEvidenceBundle(
+        episode,
+        buildLearningEpisodeCandidate(episode),
+        this.skillEvolution,
+        this.evidenceCapsuleStore,
+        this.isEpisodeFromExternalSource.bind(this),
+        this.listSkillLoadFactsForEpisode(episode),
+      )
+    );
+    // Keep only the original Episode record until dispatch. A materialized
+    // bundle adds copied source evidence and current-skill snapshots for every
+    // selected candidate, which need not stay live while earlier jobs enqueue.
+    const admittedEpisodeTasks: LearningEpisode[] = [];
     let settlementError: unknown;
     while (reviewBudget.candidates < maxCandidates) {
       const availableClasses = new Set(
@@ -2793,70 +2803,59 @@ export class RuntimeLearning {
         }
         continue;
       }
-      try {
-        const bundle = buildEpisodeEvidenceBundle(
-          selected.episode,
-          buildLearningEpisodeCandidate(selected.episode),
-          this.skillEvolution,
-          this.evidenceCapsuleStore,
-          this.isEpisodeFromExternalSource.bind(this),
-          this.listSkillLoadFactsForEpisode(selected.episode),
-        );
-        if (!this.canAdmitReviewWork(reviewBudget)) continue;
-        classCursors[selected.workClass] = taskId(selected);
-        nextClass = REVIEW_WORK_CLASS_ORDER[
-          (REVIEW_WORK_CLASS_ORDER.indexOf(selected.workClass) + 1) % REVIEW_WORK_CLASS_ORDER.length
-        ]!;
-        admittedEpisodeTasks.push({ episode: selected.episode, bundle });
-      } catch (error) {
-        // Pre-snapshot local Episodes cannot be safely reconstructed. Do not
-        // turn that immutable-data gap into a forever retry continuation;
-        // leave the Episode untouched for explicit migration/inspection.
-        if (error instanceof MissingLearningEpisodeSourceEvidenceError) {
-          pendingEpisodeIds.delete(selected.episode.episodeId);
-          Logger.warning(`[RuntimeLearning] review skipped for legacy Episode ${selected.episode.episodeId}: ${error.message}`);
-          continue;
-        }
-        settlementError = settlementError ?? error;
-      }
+      if (!this.canAdmitReviewWork(reviewBudget)) continue;
+      classCursors[selected.workClass] = taskId(selected);
+      nextClass = REVIEW_WORK_CLASS_ORDER[
+        (REVIEW_WORK_CLASS_ORDER.indexOf(selected.workClass) + 1) % REVIEW_WORK_CLASS_ORDER.length
+      ]!;
+      admittedEpisodeTasks.push(selected.episode);
     }
 
     let episodeReviewFailures = 0;
     let episodeReviewTimeouts = 0;
     let episodeOperationalFailures = 0;
+    // Yield between bundle constructions so a standard 100-candidate batch
+    // does not monopolize the dashboard event loop for one uninterrupted turn.
+    const yieldReviewAdmission = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+    const recordEpisodeAdmissionError = (episode: LearningEpisode, error: unknown): void => {
+      // Pre-snapshot local Episodes cannot be safely reconstructed. Do not
+      // turn that immutable-data gap into a forever retry continuation;
+      // leave the Episode untouched for explicit migration/inspection.
+      if (error instanceof MissingLearningEpisodeSourceEvidenceError) {
+        pendingEpisodeIds.delete(episode.episodeId);
+        Logger.warning(`[RuntimeLearning] review skipped for legacy Episode ${episode.episodeId}: ${error.message}`);
+        return;
+      }
+      episodeReviewFailures++;
+      settlementError = settlementError ?? error;
+      Logger.warning(`[RuntimeLearning] review admission failed for ${episode.episodeId}: ${toErrorMessage(error)}`);
+    };
 
-    const externalEpisodeTasks = admittedEpisodeTasks.filter(({ episode }) =>
+    const externalEpisodeTasks = admittedEpisodeTasks.filter(episode =>
       this.isEpisodeFromExternalSource(episode.episodeId));
-    const localEpisodeTasks = admittedEpisodeTasks.filter(({ episode }) =>
+    const localEpisodeTasks = admittedEpisodeTasks.filter(episode =>
       !this.isEpisodeFromExternalSource(episode.episodeId));
 
     // External/Pi learning is maintenance work with an unreliable provider in
-    // its path. Admit it durably and let fair background wakes advance it;
-    // never hold external ingestion open while waiting for model review.
-    for (const { episode, bundle } of externalEpisodeTasks) {
+    // its path, so keep its durable admission ahead of local work. Fair
+    // background wakes advance every admitted job; this loop never waits for a
+    // model review.
+    const admissionOrder = [...externalEpisodeTasks, ...localEpisodeTasks];
+    for (const [index, episode] of admissionOrder.entries()) {
+      if (index > 0) await yieldReviewAdmission();
+      if (
+        wakeSignal?.aborted
+        || this.shutdownDrainRequested
+        || this.clock().getTime() >= reviewBudget.deadlineAt
+      ) break;
       try {
+        const bundle = buildBundleForEpisode(episode);
         this.skillEvolution.enqueueReview(bundle);
         // Admission is complete. The durable job, not this heartbeat, now owns
         // the episode until a fair background wake reaches a disposition.
         pendingEpisodeIds.delete(episode.episodeId);
       } catch (error) {
-        episodeReviewFailures++;
-        settlementError = settlementError ?? error;
-        Logger.warning(`[RuntimeLearning] review admission failed for ${episode.episodeId}: ${toErrorMessage(error)}`);
-      }
-    }
-
-    // Local work follows the same durable admission contract as external work.
-    // Newly admitted jobs are not drained synchronously; fair background wakes
-    // claim one Quantum per job and resume from the persisted graph.
-    for (const { episode, bundle } of localEpisodeTasks) {
-      try {
-        this.skillEvolution.enqueueReview(bundle);
-        pendingEpisodeIds.delete(episode.episodeId);
-      } catch (error) {
-        episodeReviewFailures++;
-        settlementError = settlementError ?? error;
-        Logger.warning(`[RuntimeLearning] review admission failed for ${episode.episodeId}: ${toErrorMessage(error)}`);
+        recordEpisodeAdmissionError(episode, error);
       }
     }
 
