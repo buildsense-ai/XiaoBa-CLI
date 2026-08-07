@@ -546,13 +546,18 @@ describe("Tianyi Cloud worker image pipeline", () => {
     );
     assert.match(imageOrchestrator, /ServerAliveInterval=15/);
     assert.match(imageOrchestrator, /--kill-after=120s/);
+    // Wait-ForSsh must probe via the reported status text, not the exit code
+    // of `cloud-init status --wait` (Tianyi Ubuntu images return exit code 2
+    // from --wait even when status is done).
     assert.match(
       imageOrchestrator,
-      /cloud-init status --wait[^"\r\n]+&& printf ready/,
+      /cloud-init status 2>\/dev\/null \| grep -q '\^status: done'/,
     );
+    // The probe must not invoke `cloud-init status --wait` as the remote
+    // command (only the explanatory comment may mention it).
     assert.doesNotMatch(
       imageOrchestrator,
-      /cloud-init status --wait[^"\r\n]+; printf ready/,
+      /"root@\$IP"[^"]*cloud-init status --wait/,
     );
   });
 
@@ -832,9 +837,28 @@ fs.writeFileSync(output, "private");
 fs.writeFileSync(output + ".pub", "ssh-rsa AAAA catsco-test");
 `,
       );
-      for (const command of ["ssh", "scp"]) {
-        writeCommand(sandbox, command, "process.exit(0);");
-      }
+      writeCommand(
+        sandbox,
+        "ssh",
+        `
+import fs from "node:fs";
+const args = process.argv.slice(2);
+const probeFile = process.env.FAKE_SSH_PROBE;
+if (probeFile && args.includes("cloud-init")) {
+  // Simulate Tianyi Ubuntu images where 'cloud-init status --wait' returns
+  // exit 2 (module error) while the system is usable; Wait-ForSsh must probe
+  // via 'cloud-init status | grep done' and succeed on the last read.
+  let n = 0;
+  try { n = Number(fs.readFileSync(probeFile, "utf8") || "0"); } catch {}
+  if (n > 0) {
+    fs.writeFileSync(probeFile, String(n - 1));
+    process.exit(2);
+  }
+}
+process.exit(0);
+`,
+      );
+      writeCommand(sandbox, "scp", "process.exit(0);");
       writeCommand(
         sandbox,
         "timeout",
@@ -910,6 +934,9 @@ process.exit(result.status ?? 1);
               FAKE_CTYUN_STATE: statePath,
               FAKE_CTYUN_LOG: logPath,
               FAKE_CTYUN_SCENARIO: scenario,
+              // Optional SSH cloud-init probe failure counter (absent file =
+              // no failures). Scenarios write an initial count to it.
+              FAKE_SSH_PROBE: path.join(sandbox, "ssh-probe"),
             },
           },
         );
@@ -1711,6 +1738,44 @@ process.exit(result.status ?? 1);
       // The error-status image is removed by Remove-FailedImage on the failed
       // bake path, just like the instance and key pair.
       assert.equal(notSupportState.imageExists, false);
+
+      // Tianyi Ubuntu images finish cloud-init in a 'done' state but
+      // 'cloud-init status --wait' returns exit code 2 (module error), which
+      // used to fail every Wait-ForSsh probe and time out the bake. Wait-ForSsh
+      // now greps the reported status text instead, so the bake proceeds as
+      // soon as SSH + root key auth work.
+      fs.writeFileSync(path.join(sandbox, "ssh-probe"), "2");
+      fs.writeFileSync(logPath, "");
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          instanceExists: false,
+          keyExists: false,
+          keyPairName: "",
+          imageExists: false,
+          imageName: "",
+          imageDescription: "",
+          imageSourceServerID: "",
+          imageStatus: "error",
+          instanceName: "",
+          instanceStatus: "running",
+        }),
+      );
+      const sshProbeResult = runBake(
+        "1018",
+        "catsco-worker-sshprobe",
+        "success",
+      );
+      assert.equal(
+        sshProbeResult.status,
+        0,
+        `${sshProbeResult.stdout}\n${sshProbeResult.stderr}`,
+      );
+      assert.match(sshProbeResult.stdout, /"result":\s*"created"/);
+      const sshProbeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(sshProbeState.imageExists, true);
+      assert.equal(sshProbeState.instanceExists, false);
+      assert.equal(sshProbeState.keyExists, false);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

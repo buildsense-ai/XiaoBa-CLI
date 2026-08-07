@@ -380,6 +380,12 @@ function Wait-ForSsh {
         -RequestedSeconds (12 * 60) `
         -Phase "temporary builder SSH wait"
     while ((Get-Date) -lt $deadline) {
+        # Match the reported status text instead of the exit code of
+        # `cloud-init status --wait`: Tianyi's Ubuntu images finish
+        # cloud-init in a done state yet return exit code 2 (module error)
+        # from --wait, which would fail every SSH probe even though the system
+        # is fully usable. `cloud-init status` prints 'status: done' in that
+        # case, so grep on it; still requires SSH + root key auth to succeed.
         & ssh `
             -i $PrivateKey `
             -o BatchMode=yes `
@@ -388,7 +394,7 @@ function Wait-ForSsh {
             -o ServerAliveCountMax=3 `
             -o StrictHostKeyChecking=accept-new `
             -o "UserKnownHostsFile=$KnownHosts" `
-            "root@$IP" "timeout --signal=TERM --kill-after=15s 90s cloud-init status --wait >/dev/null 2>&1 && printf ready" 2>$null
+            "root@$IP" "cloud-init status 2>/dev/null | grep -q '^status: done'" 2>$null
         if ($LASTEXITCODE -eq 0) {
             return
         }
