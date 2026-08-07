@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import {
+  BRANCH_AGENT_CONFIG_SCHEMA,
   BRANCH_AGENT_CONFIG_FILE,
   loadBranchAgentConfig,
   resolveMemoryBranchModelOverride,
@@ -29,20 +30,20 @@ function tempRoot(): string {
 }
 
 describe('Branch agent device config', () => {
-  test('defaults Memory Search to enabled and following the primary model', () => {
+  test('defaults Memory Search to disabled and following the primary model', () => {
     const root = tempRoot();
     const config = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
-    assert.equal(config.branches.memorySearch.enabled, true);
+    assert.equal(config.branches.memorySearch.enabled, false);
     assert.deepEqual(config.branches.memorySearch.model, { kind: 'inherit' });
     assert.equal(resolveMemoryBranchModelOverride(config), undefined);
     assert.equal(fs.existsSync(path.join(root, BRANCH_AGENT_CONFIG_FILE)), false);
   });
 
-  test('migrates the legacy Branch switch only when the device config is first created', () => {
+  test('disables the legacy Branch switch when the device config is first created', () => {
     const root = tempRoot();
     const migrated = loadBranchAgentConfig({
       runtimeRoot: root,
-      env: { XIAOBA_BRANCH_AGENTS_ENABLED: 'false' },
+      env: { XIAOBA_BRANCH_AGENTS_ENABLED: 'true' },
     });
     assert.equal(migrated.branches.memorySearch.enabled, false);
     const reloaded = loadBranchAgentConfig({
@@ -50,6 +51,79 @@ describe('Branch agent device config', () => {
       env: { XIAOBA_BRANCH_AGENTS_ENABLED: 'true' },
     });
     assert.equal(reloaded.branches.memorySearch.enabled, false);
+  });
+
+  test('concurrent v1 readers do not write or overwrite later manual enablement', async () => {
+    const root = tempRoot();
+    const configPath = path.join(root, BRANCH_AGENT_CONFIG_FILE);
+    const legacyFile = JSON.stringify({
+      schema: 'xiaoba.branch-agents.v1',
+      branches: {
+        memorySearch: {
+          enabled: true,
+          model: {
+            kind: 'custom',
+            provider: 'openai',
+            apiBase: 'https://models.example.test/v1',
+            apiKey: 'branch-secret',
+            model: 'branch-model',
+            contextWindowTokens: 256_000,
+            capabilities: { toolCalling: true },
+          },
+          customDraft: {
+            kind: 'custom',
+            provider: 'anthropic',
+            apiBase: 'https://draft.example.test/v1',
+            apiKey: 'draft-secret',
+            model: 'draft-model',
+            contextWindowTokens: 128_000,
+            capabilities: { toolCalling: true },
+          },
+        },
+      },
+    });
+    fs.writeFileSync(configPath, legacyFile, 'utf-8');
+
+    const moduleUrl = pathToFileURL(path.join(process.cwd(), 'src/core/branch-agent-config.ts')).href;
+    const script = [
+      `const imported = await import(${JSON.stringify(moduleUrl)});`,
+      'const branchConfig = imported.default ?? imported;',
+      'const config = branchConfig.loadBranchAgentConfig({ runtimeRoot: process.env.BRANCH_TEST_ROOT, env: {} });',
+      'process.stdout.write(String(config.branches.memorySearch.enabled));',
+    ].join('\n');
+    const childOptions = {
+      cwd: process.cwd(),
+      env: { ...process.env, BRANCH_TEST_ROOT: root },
+    };
+    const readers = await Promise.all(Array.from({ length: 6 }, () => execFileAsync(
+      process.execPath,
+      ['--import', 'tsx', '--input-type=module', '--eval', script],
+      childOptions,
+    )));
+    assert.deepEqual(readers.map(result => result.stdout), Array(6).fill('false'));
+    assert.equal(fs.readFileSync(configPath, 'utf-8'), legacyFile);
+
+    const migrated = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+    assert.equal(migrated.schema, BRANCH_AGENT_CONFIG_SCHEMA);
+    assert.equal(migrated.branches.memorySearch.enabled, false);
+    const model = migrated.branches.memorySearch.model;
+    assert.equal(model.kind, 'custom');
+    assert.ok(model.kind === 'custom');
+    assert.equal(model.apiKey, 'branch-secret');
+    assert.equal(migrated.branches.memorySearch.customDraft?.apiKey, 'draft-secret');
+
+    migrated.branches.memorySearch.enabled = true;
+    saveBranchAgentConfig(migrated, { runtimeRoot: root });
+    const reloaded = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+    assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf-8')).schema, BRANCH_AGENT_CONFIG_SCHEMA);
+    assert.equal(reloaded.branches.memorySearch.enabled, true);
+    assert.equal(reloaded.branches.memorySearch.customDraft?.apiKey, 'draft-secret');
+    const postSaveReader = await execFileAsync(
+      process.execPath,
+      ['--import', 'tsx', '--input-type=module', '--eval', script],
+      childOptions,
+    );
+    assert.equal(postSaveReader.stdout, 'true');
   });
 
   test('migrates the old Memory sidecar switch and then ignores both legacy switches', () => {
@@ -138,7 +212,7 @@ describe('Branch agent device config', () => {
         XIAOBA_MEMORY_SIDECAR_ENABLED: 'false',
       },
     });
-    assert.equal(config.branches.memorySearch.enabled, true);
+    assert.equal(config.branches.memorySearch.enabled, false);
     assert.equal(config.branches.memorySearch.model.kind, 'inherit');
   });
 

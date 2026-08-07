@@ -1263,6 +1263,181 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     );
   });
 
+  test('allows runtime credential expressions without weakening literal secret detection', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-credential-skill-'));
+    roots.push(root);
+    writeSkill(root, 'safe', 'safe', 'local only');
+    fs.writeFileSync(path.join(root, 'safe', 'runtime.mjs'), [
+      'const token = argv[index];',
+      'const accessToken = process.env.CATSCO_TOKEN;',
+      'const clientSecret = loadClientSecret();',
+      'const commentedToken = process.env.CATSCO_TOKEN // from "environment"',
+      'const blockCommentedToken = process.env.CATSCO_TOKEN /* loaded',
+      '  from runtime */;',
+      'const assertedToken = process.env.CATSCO_TOKEN as string;',
+      'const aliasedToken = process.env.CATSCO_TOKEN, label = "production";',
+      'const chainedToken = process.env.CATSCO_TOKEN || process.env.CATSCOMPANY_USER_TOKEN;',
+      'const undefinedToken = process.env.CATSCO_TOKEN ?? void 0;',
+      'const nullToken = process.env.CATSCO_TOKEN ?? null;',
+      'const emptyToken = process.env.CATSCO_TOKEN ?? "";',
+      "const emptyFallbackToken = process.env.CATSCO_TOKEN || '';",
+      'const selectedToken = useCatsCo',
+      '  ? process.env.CATSCO_TOKEN',
+      '  : process.env.CATSCO_USER_TOKEN || process.env.CATSCOMPANY_USER_TOKEN;',
+      'const compactToken = useCatsCo?process.env.CATSCO_TOKEN:process.env.CATSCO_USER_TOKEN;',
+      'interface RuntimeConfig { token: string | undefined; }',
+      'if (token === "--help") args.help = true;',
+      'const smokeEnv = { IMAGE_GEN_API_KEY: "smoke-key" };',
+      'const gatewayEnv = { CATSCO_USER_TOKEN: "catsco-user-token" };',
+      'const referenceEnv = { IMAGE_GEN_API_KEY: "reference-smoke-secret" };',
+      'const smokeSecretEnv = { IMAGE_GEN_API_KEY: "smoke-secret" };',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(root, 'safe', 'runtime.py'), [
+      'token = part.strip()',
+      'if not token:',
+      '    continue',
+      'headers = {"X-API-Key": value}',
+      'api_key = os.environ.get(args.api_key_env, "") if args.api_key_env else ""',
+      'auth_token = os.environ.get("CATSCO_USER_TOKEN", "")  # optional',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(root, 'safe', 'provider-smoke-test.mjs'), [
+      'const auth = {',
+      '  CATSCO_USER_TOKEN: "catsco-user-login",',
+      '  CATSCO_API_KEY: "catsco-stale-bot-key",',
+      '};',
+      '',
+    ].join('\n'));
+
+    assert.doesNotThrow(() => scanLocalBotSkill(path.join(root, 'safe')));
+
+    const unsafeAssignments = [
+      'const token = "a-real-secret-value-that-must-not-leave-device";',
+      'private apiKey = "a-real-secret-value-that-must-not-leave-device";',
+      'private final String apiKey = "a-real-secret-value-that-must-not-leave-device";',
+      'export const API_KEY = "a-real-secret-value-that-must-not-leave-device";',
+      'doWork(); const token = "a-real-secret-value-that-must-not-leave-device";',
+      'set API_TOKEN=live-production-secret-value-12345',
+      'set "API_TOKEN=live-production-secret-value-12345"',
+      'setx API_TOKEN "live-production-secret-value-12345"',
+      'setx /M API_TOKEN "live-production-secret-value-12345"',
+      'ENV API_TOKEN=live-production-secret-value-12345',
+      'ENV API_TOKEN live-production-secret-value-12345',
+      'prepare && export API_TOKEN=live-production-secret-value-12345',
+      '$env:API_TOKEN = "live-production-secret-value-12345"',
+      '$apiToken = "live-production-secret-value-12345"',
+      'const token = process.env.CATSCO_TOKEN || "a-real-secret-value-that-must-not-leave-device";',
+      'const token = argv[index] ?? "a-real-secret-value-that-must-not-leave-device";',
+      'const token = process.env.CATSCO_TOKEN || `a-real-secret-value-that-must-not-leave-device`;',
+      'const auth = { token: process.env.CATSCO_TOKEN ?? "a-real-secret-value-that-must-not-leave-device" };',
+      'const token = process.env.CATSCO_TOKEN || "a-real;secret-value-that-must-not-leave-device";',
+      'const auth = { token: process.env.CATSCO_TOKEN ?? "a-real,secret-value-that-must-not-leave-device" };',
+      [
+        'const token = process.env.CATSCO_TOKEN',
+        '  || "a-real-secret-value-that-must-not-leave-device";',
+      ].join('\n'),
+      [
+        'const auth = { token: process.env.CATSCO_TOKEN',
+        '  ?? "a-real-secret-value-that-must-not-leave-device" };',
+      ].join('\n'),
+      [
+        'const token = process.env.CATSCO_TOKEN',
+        '',
+        '  || "a-real-secret-value-that-must-not-leave-device";',
+      ].join('\n'),
+      [
+        'const token = process.env.CATSCO_TOKEN',
+        '  == null ? "a-real-secret-value-that-must-not-leave-device" : process.env.CATSCO_TOKEN;',
+      ].join('\n'),
+      [
+        'const token = process.env.CATSCO_TOKEN',
+        '  as string || "a-real-secret-value-that-must-not-leave-device";',
+      ].join('\n'),
+      [
+        'const token = identity',
+        '  `a-real-secret-value-that-must-not-leave-device`;',
+      ].join('\n'),
+      [
+        'const apiKey = os.environ.get(args.api_key_env, "")',
+        '  || "a-real-secret-value-that-must-not-leave-device";',
+      ].join('\n'),
+      [
+        'const token =',
+        '  "a-real-secret-value-that-must-not-leave-device";',
+      ].join('\n'),
+      [
+        'const auth = { token:',
+        '  process.env.CATSCO_TOKEN ?? "a-real-secret-value-that-must-not-leave-device" };',
+      ].join('\n'),
+      'let token /* resolved later */ = "a-real-secret-value-that-must-not-leave-device";',
+      'token ||= "a-real-secret-value-that-must-not-leave-device";',
+      'token ??= "a-real-secret-value-that-must-not-leave-device";',
+      'token &&= "a-real-secret-value-that-must-not-leave-device";',
+      [
+        'const fallbackValue = "a-real-secret-value-that-must-not-leave-device";',
+        'const token = process.env.CATSCO_TOKEN || fallbackValue;',
+      ].join('\n'),
+      [
+        'const undefined = "a-real-secret-value-that-must-not-leave-device";',
+        'const token = process.env.CATSCO_TOKEN ?? undefined;',
+      ].join('\n'),
+      [
+        'function run(undefined = "a-real-secret-value-that-must-not-leave-device") {',
+        '  const token = process.env.CATSCO_TOKEN ?? undefined;',
+        '}',
+      ].join('\n'),
+    ];
+    for (const unsafeAssignment of unsafeAssignments) {
+      fs.writeFileSync(path.join(root, 'safe', 'runtime.mjs'), `${unsafeAssignment}\n`);
+      assert.throws(
+        () => scanLocalBotSkill(path.join(root, 'safe')),
+        /sensitive material/i,
+        unsafeAssignment,
+      );
+    }
+
+    fs.writeFileSync(path.join(root, 'safe', 'unsafe.py'), [
+      'api_key = os.environ.get(',
+      '    args.api_key_env,',
+      '    "a-real-secret-value-that-must-not-leave-device",',
+      ')',
+      '',
+    ].join('\n'));
+    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    fs.rmSync(path.join(root, 'safe', 'unsafe.py'));
+
+    fs.writeFileSync(
+      path.join(root, 'safe', 'unsafe.py'),
+      'auth_token = os.environ.get("CATSCO_USER_TOKEN"), "a-real-secret-value-that-must-not-leave-device"\n',
+    );
+    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    fs.rmSync(path.join(root, 'safe', 'unsafe.py'));
+
+    fs.writeFileSync(path.join(root, 'safe', 'unsafe.json'), [
+      '{',
+      '  "token"',
+      '    :',
+      '    "a-real-secret-value-that-must-not-leave-device"',
+      '}',
+      '',
+    ].join('\n'));
+    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    fs.rmSync(path.join(root, 'safe', 'unsafe.json'));
+
+    fs.rmSync(path.join(root, 'safe', 'runtime.mjs'));
+    fs.writeFileSync(path.join(root, 'safe', 'config.yaml'), 'password: password\n');
+    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    fs.writeFileSync(path.join(root, 'safe', 'config.yaml'), '- password: smoke-secret\n');
+    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    fs.rmSync(path.join(root, 'safe', 'config.yaml'));
+    fs.writeFileSync(
+      path.join(root, 'safe', 'auth.test.ts'),
+      'const password = "summer-2026-admin";\n',
+    );
+    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+  });
+
   test('restores a missing nested workspace from Cloud instead of uploading an empty list', async () => {
     const fixture = createFixture(roots);
     writeSkill(fixture.skillsRoot, 'group/nested', 'nested', 'nested local');

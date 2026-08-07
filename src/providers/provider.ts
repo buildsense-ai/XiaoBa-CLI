@@ -94,6 +94,12 @@ export interface AIRequestOptions {
    * provider failure back to that workflow after one transport attempt.
    */
   retryMode?: 'default' | 'none';
+  /**
+   * Live mode forwards text immediately and disables transparent replay once
+   * the caller has observed output. Buffered mode publishes text only after a
+   * provider attempt completes, so a failed attempt can be retried safely.
+   */
+  streamOutputMode?: 'live' | 'buffered';
   /** Optional best-effort observer; it can never alter request control flow. */
   modelAttemptSink?: ModelAttemptSink;
   modelAttemptContext?: ModelAttemptContext;

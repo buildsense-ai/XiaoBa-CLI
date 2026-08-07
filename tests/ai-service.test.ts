@@ -129,7 +129,7 @@ test('AIService can keep retrying transient stream failures beyond the old short
       if (attempts <= 4) {
         throw Object.assign(new Error(`temporary stream failure ${attempts}`), {
           response: {
-            status: 503,
+            status: 500,
             headers: { 'retry-after': '0' },
             data: { message: 'temporary stream failure' },
           },
@@ -187,6 +187,43 @@ test('AIService does not retry stream errors after visible text is emitted', asy
   assert.equal(errors.length, 1);
   assert.deepStrictEqual(retries, []);
   assert.deepStrictEqual(chunks, ['partial']);
+});
+
+test('AIService retries buffered stream failures without publishing abandoned text', async () => {
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '1';
+  const service = createTestService();
+  (service as any).config.openaiApiMode = 'responses';
+  let attempts = 0;
+  const finalResponse: ChatResponse = { content: 'recovered' };
+  (service as any).provider = {
+    chat: async () => ({ content: null }),
+    chatStream: async (_messages: unknown, _tools: unknown, callbacks?: StreamCallbacks) => {
+      attempts += 1;
+      callbacks?.onText?.(attempts === 1 ? 'abandoned draft' : 'recovered');
+      if (attempts === 1) {
+        throw Object.assign(new Error('stream interrupted'), {
+          code: 'stream_read_error',
+          error: { code: 'stream_read_error', type: 'stream_error' },
+        });
+      }
+      return finalResponse;
+    },
+  };
+  (service as any).sleepWithAbort = async () => {};
+
+  const chunks: string[] = [];
+  const retries: number[] = [];
+  const result = await service.chatStream([], undefined, {
+    onText: text => chunks.push(text),
+    onRetry: attempt => retries.push(attempt),
+  }, {
+    streamOutputMode: 'buffered',
+  });
+
+  assert.equal(result, finalResponse);
+  assert.equal(attempts, 2);
+  assert.deepStrictEqual(chunks, ['recovered']);
+  assert.deepStrictEqual(retries, [1]);
 });
 
 test('AIService still honors explicit full stream retry opt-in', async () => {
@@ -393,6 +430,72 @@ test('AIService still retries transient load balancer failures', async () => {
 
   assert.deepStrictEqual(result, { content: 'ok' });
   assert.equal(attempts, 2);
+});
+
+test('AIService retries Responses semantic transient codes and types', async () => {
+  const semanticFailures = [
+    { code: 'stream_read_error' },
+    { code: 'upstream_error' },
+    { type: 'server_is_overloaded' },
+    { type: 'service_unavailable_error' },
+  ];
+
+  for (const semantic of semanticFailures) {
+    process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '1';
+    const service = createTestService();
+    (service as any).config.openaiApiMode = 'responses';
+    let attempts = 0;
+    (service as any).provider = {
+      chat: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw Object.assign(new Error('semantic provider failure'), {
+            ...semantic,
+            error: { ...semantic, message: 'semantic provider failure' },
+          });
+        }
+        return { content: 'ok' };
+      },
+      chatStream: async () => ({ content: null }),
+    };
+    (service as any).sleepWithAbort = async () => {};
+
+    const result = await service.chat([]);
+    assert.equal(result.content, 'ok');
+    assert.equal(attempts, 2, JSON.stringify(semantic));
+  }
+});
+
+test('AIService guarantees one recovery attempt after a first 504 exhausts the retry window', () => {
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '14';
+  process.env.CATSCO_MODEL_RETRY_MAX_MS = '1000';
+  const service = createTestService();
+  (service as any).config.openaiApiMode = 'responses';
+  const gatewayTimeout = Object.assign(new Error('gateway timeout'), { status: 504 });
+  const policy = (service as any).resolveRetryPolicy(gatewayTimeout);
+
+  assert.equal(policy.maxRetries, 1);
+  assert.equal(policy.guaranteedRetries, 1);
+  assert.equal(
+    (service as any).resolveRetryStopReason(gatewayTimeout, 1, policy, 300_000),
+    undefined,
+  );
+  assert.equal(
+    (service as any).resolveRetryStopReason(gatewayTimeout, 2, policy, 301_000),
+    'retry_limit_exhausted',
+  );
+  assert.ok((service as any).resolveRetryDelayMs(gatewayTimeout, 1, policy, 300_000) > 0);
+});
+
+test('AIService bounds Responses gateway retries without changing other API modes', () => {
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '14';
+  const responsesService = createTestService();
+  (responsesService as any).config.openaiApiMode = 'responses';
+  const chatCompletionsService = createTestService();
+  const unavailable = Object.assign(new Error('service unavailable'), { status: 503 });
+
+  assert.equal((responsesService as any).resolveRetryPolicy(unavailable).maxRetries, 2);
+  assert.equal((chatCompletionsService as any).resolveRetryPolicy(unavailable).maxRetries, 14);
 });
 
 test('AIService uses a short retry policy for likely custom endpoint configuration errors', () => {

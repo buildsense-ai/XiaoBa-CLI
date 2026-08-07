@@ -426,7 +426,7 @@ export class ContextCompressor {
         {
           onText: (text) => { fullContent += text; },
         },
-        { signal: options.signal },
+        { signal: options.signal, streamOutputMode: 'buffered' },
       );
       const rawSummary = fullContent;
 

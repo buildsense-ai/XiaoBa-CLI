@@ -42,6 +42,9 @@ export interface ModelErrorDiagnostics {
   provider_code?: string;
   provider_type?: string;
   request_id?: string;
+  response_id?: string;
+  terminal_event?: string;
+  failure_phase?: string;
   error_name?: string;
   top_frame?: string;
   stack_fingerprint?: string;
@@ -149,6 +152,14 @@ function captureModelErrorDiagnosticsUnsafe(
     error?.response?.headers?.['x-request-id'],
     error?.headers?.['x-request-id'],
   );
+  const responseId = firstText(
+    existing?.response_id,
+    error?.responseId,
+    error?.response_id,
+    responseError?.response_id,
+  );
+  const terminalEvent = firstText(existing?.terminal_event, error?.terminalEvent);
+  const failurePhase = firstText(existing?.failure_phase, error?.failurePhase);
   const sourceMessage = firstText(
     responseError?.message,
     error?.response?.data?.message,
@@ -175,6 +186,9 @@ function captureModelErrorDiagnosticsUnsafe(
     provider_code: providerCode ?? transportCode,
     provider_type: providerType,
     request_id: requestId,
+    response_id: responseId,
+    terminal_event: terminalEvent,
+    failure_phase: failurePhase,
     error_name: errorName,
     top_frame: existing?.top_frame ?? stack.topFrame,
     stack_fingerprint: existing?.stack_fingerprint ?? stack.fingerprint,
@@ -242,6 +256,9 @@ function normalizeDiagnostics(input: ModelErrorDiagnostics): ModelErrorDiagnosti
     ...(safeText(input.provider_code) && { provider_code: safeText(input.provider_code) }),
     ...(safeText(input.provider_type) && { provider_type: safeText(input.provider_type) }),
     ...(safeText(input.request_id) && { request_id: safeText(input.request_id) }),
+    ...(safeText(input.response_id) && { response_id: safeText(input.response_id) }),
+    ...(safeText(input.terminal_event) && { terminal_event: safeText(input.terminal_event) }),
+    ...(safeText(input.failure_phase) && { failure_phase: safeText(input.failure_phase) }),
     ...(safeText(input.error_name) && { error_name: safeText(input.error_name) }),
     ...(safeText(input.top_frame) && { top_frame: safeText(input.top_frame) }),
     ...(safeText(input.stack_fingerprint) && { stack_fingerprint: safeText(input.stack_fingerprint) }),

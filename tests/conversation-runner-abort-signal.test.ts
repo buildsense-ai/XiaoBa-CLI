@@ -41,6 +41,34 @@ test('ConversationRunner passes AbortSignal to streamed model requests', async (
   assert.equal(observedSignal?.aborted, true);
 });
 
+test('ConversationRunner marks non-live surfaces as buffered without creating a no-op text callback', async () => {
+  const observations: Array<{ callbacks: any; options: any }> = [];
+  const aiService = {
+    async chatStream(_messages: Message[], _tools: ToolDefinition[], callbacks: any, options: any = {}) {
+      observations.push({ callbacks, options });
+      return { content: 'done', toolCalls: [] };
+    },
+  };
+
+  const bufferedRunner = new ConversationRunner(aiService as any, new EmptyToolExecutor(), {
+    enableCompression: false,
+  });
+  await bufferedRunner.run([{ role: 'user', content: 'buffered' }]);
+
+  const liveRunner = new ConversationRunner(aiService as any, new EmptyToolExecutor(), {
+    enableCompression: false,
+  });
+  await liveRunner.run(
+    [{ role: 'user', content: 'live' }],
+    { onText: () => undefined },
+  );
+
+  assert.equal(observations[0].options.streamOutputMode, 'buffered');
+  assert.equal(observations[0].callbacks.onText, undefined);
+  assert.equal(observations[1].options.streamOutputMode, 'live');
+  assert.equal(typeof observations[1].callbacks.onText, 'function');
+});
+
 test('ConversationRunner reuses AbortSignal after prompt-too-long trim retry', async () => {
   const controller = new AbortController();
   const observedSignals: Array<AbortSignal | undefined> = [];

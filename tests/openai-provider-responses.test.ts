@@ -5,6 +5,7 @@ import axios from 'axios';
 import { OpenAIProvider } from '../src/providers/openai-provider';
 import { AIService } from '../src/utils/ai-service';
 import { Logger } from '../src/utils/logger';
+import { captureModelErrorDiagnostics } from '../src/utils/model-error-observability';
 import type { Message } from '../src/types';
 import type { ToolDefinition } from '../src/types/tool';
 
@@ -327,9 +328,16 @@ describe('OpenAIProvider Responses API mode', () => {
     const originalPost = axios.post;
     (axios as any).post = async () => ({
       data: {
+        id: 'resp_failed_1',
         status: 'failed',
-        error: { code: 'server_error', message: 'upstream unavailable' },
+        error: {
+          code: 'upstream_error',
+          type: 'server_error',
+          message: 'upstream unavailable',
+          request_id: 'req_failed_1',
+        },
       },
+      headers: { 'X-Request-Id': 'req_header_fallback' },
     });
 
     try {
@@ -337,8 +345,12 @@ describe('OpenAIProvider Responses API mode', () => {
         createProvider().chat([{ role: 'user', content: 'hello' }]),
         (error: any) => (
           error?.message === 'upstream unavailable'
-          && error?.code === 'server_error'
-          && error?.status === 500
+          && error?.code === 'upstream_error'
+          && error?.providerCode === 'upstream_error'
+          && error?.providerType === 'server_error'
+          && error?.status === 502
+          && error?.responseId === 'resp_failed_1'
+          && error?.request_id === 'req_failed_1'
         ),
       );
     } finally {
@@ -520,6 +532,413 @@ describe('OpenAIProvider Responses API mode', () => {
       assert.equal(result.usage?.cachedReadTokens, 8);
     } finally {
       (axios as any).post = originalPost;
+    }
+  });
+
+  test('preserves structured metadata from a terminal response.failed event', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        sse({
+          type: 'response.failed',
+          response: {
+            id: 'resp_stream_failed',
+            status: 'failed',
+            error: {
+              code: 'stream_read_error',
+              type: 'upstream_error',
+              message: 'relay stream failed',
+              request_id: 'req_stream_failed',
+            },
+          },
+        }),
+      ]),
+      headers: { 'x-request-id': 'req_header_fallback' },
+    });
+
+    try {
+      await assert.rejects(
+        createProvider().chatStream([{ role: 'user', content: 'hello' }]),
+        (error: any) => (
+          error?.code === 'stream_read_error'
+          && error?.providerCode === 'stream_read_error'
+          && error?.providerType === 'upstream_error'
+          && error?.responseId === 'resp_stream_failed'
+          && error?.request_id === 'req_stream_failed'
+          && error?.terminalEvent === 'response.failed'
+          && error?.failurePhase === 'terminal_event'
+        ),
+      );
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('preserves the response header request ID when a terminal failure has none', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        sse({
+          type: 'response.failed',
+          response: {
+            id: 'resp_header_only',
+            status: 'failed',
+            error: {
+              code: 'upstream_error',
+              type: 'server_error',
+              message: 'upstream unavailable',
+            },
+          },
+        }),
+      ]),
+      headers: {
+        get: (name: string) => name === 'x-request-id' ? 'req_header_only' : undefined,
+      },
+    });
+
+    try {
+      await assert.rejects(
+        createProvider().chatStream([{ role: 'user', content: 'hello' }]),
+        (error: any) => (
+          error?.request_id === 'req_header_only'
+          && captureModelErrorDiagnostics(error).request_id === 'req_header_only'
+        ),
+      );
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('treats a terminal error event as a structured Responses failure', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        sse({
+          type: 'error',
+          code: 'service_unavailable_error',
+          message: 'temporarily unavailable',
+        }),
+      ]),
+    });
+
+    try {
+      await assert.rejects(
+        createProvider().chatStream([{ role: 'user', content: 'hello' }]),
+        (error: any) => (
+          error?.code === 'service_unavailable_error'
+          && error?.status === 503
+          && error?.terminalEvent === 'error'
+          && error?.failurePhase === 'terminal_event'
+        ),
+      );
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('normalizes an unstructured Readable error with its cause and header request ID', async () => {
+    const originalPost = axios.post;
+    const sourceError = new Error('socket stream interrupted');
+    (axios as any).post = async () => ({
+      data: Readable.from((async function* () {
+        throw sourceError;
+      })()),
+      headers: { 'x-request-id': 'req_stream_error' },
+    });
+
+    try {
+      await assert.rejects(
+        createProvider().chatStream([{ role: 'user', content: 'hello' }]),
+        (error: any) => (
+          error?.code === 'stream_read_error'
+          && error?.providerCode === 'stream_read_error'
+          && error?.providerType === 'stream_error'
+          && error?.status === 502
+          && error?.cause === sourceError
+          && error?.request_id === 'req_stream_error'
+          && error?.failurePhase === 'stream'
+          && error?.terminalEvent === 'stream.error'
+        ),
+      );
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('preserves structured Readable transport errors while adding stream metadata', async () => {
+    const originalPost = axios.post;
+    const sourceError = Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+    (axios as any).post = async () => ({
+      data: Readable.from((async function* () {
+        throw sourceError;
+      })()),
+      headers: { 'x-request-id': 'req_structured_stream_error' },
+    });
+
+    try {
+      await assert.rejects(
+        createProvider().chatStream([{ role: 'user', content: 'hello' }]),
+        (error: any) => (
+          error === sourceError
+          && error?.code === 'ECONNRESET'
+          && error?.request_id === 'req_structured_stream_error'
+          && error?.failurePhase === 'stream'
+          && error?.terminalEvent === 'stream.error'
+        ),
+      );
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('retries the same streaming Responses request after a transient terminal failure', async () => {
+    const originalPost = axios.post;
+    const originalRetries = process.env.CATSCO_MODEL_RETRY_MAX_RETRIES;
+    const bodies: any[] = [];
+    const requestHeaders: any[] = [];
+    (axios as any).post = async (_url: string, body: any, config: any) => {
+      bodies.push(body);
+      requestHeaders.push(config.headers);
+      return {
+        data: bodies.length === 1
+          ? Readable.from([sse({
+              type: 'response.failed',
+              response: {
+                status: 'failed',
+                error: { code: 'upstream_error', message: 'try again' },
+              },
+            })])
+          : Readable.from([sse({
+              type: 'response.completed',
+              response: {
+                status: 'completed',
+                output: [{
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: 'recovered' }],
+                }],
+              },
+            })]),
+      };
+    };
+    process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '1';
+
+    try {
+      const service = new AIService({
+        apiKey: 'test-key',
+        apiUrl: 'https://example.test/v1',
+        model: 'gpt-test',
+        provider: 'openai',
+        openaiApiMode: 'responses',
+      });
+      (service as any).sleepWithAbort = async () => {};
+      const result = await service.chatStream(
+        [{ role: 'user', content: 'hello' }],
+        undefined,
+        undefined,
+        {
+          promptCacheContext: {
+            sessionKey: 'catscompany:test-session',
+            phase: 'normal',
+            explicitCaching: false,
+          },
+        },
+      );
+
+      assert.equal(result.content, 'recovered');
+      assert.equal(bodies.length, 2);
+      assert.equal(bodies[0].stream, true);
+      assert.equal(bodies[1].stream, true);
+      assert.equal(bodies[0].prompt_cache_key, bodies[1].prompt_cache_key);
+      assert.equal(requestHeaders[0].session_id, requestHeaders[1].session_id);
+      assert.equal(requestHeaders[0]['x-client-request-id'], requestHeaders[1]['x-client-request-id']);
+    } finally {
+      (axios as any).post = originalPost;
+      if (originalRetries === undefined) delete process.env.CATSCO_MODEL_RETRY_MAX_RETRIES;
+      else process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = originalRetries;
+    }
+  });
+
+  test('retries an unstructured Readable error without publishing abandoned text', async () => {
+    const originalPost = axios.post;
+    const originalRetries = process.env.CATSCO_MODEL_RETRY_MAX_RETRIES;
+    let attempts = 0;
+    (axios as any).post = async () => {
+      attempts += 1;
+      return {
+        data: attempts === 1
+          ? Readable.from((async function* () {
+              yield sse({ type: 'response.output_text.delta', delta: 'abandoned' });
+              throw new Error('socket stream interrupted');
+            })())
+          : Readable.from([
+              sse({ type: 'response.output_text.delta', delta: 'recovered' }),
+              sse({
+                type: 'response.completed',
+                response: {
+                  status: 'completed',
+                  output: [{
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'recovered' }],
+                  }],
+                },
+              }),
+            ]),
+        headers: { 'x-request-id': `req_attempt_${attempts}` },
+      };
+    };
+    process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '1';
+
+    try {
+      const service = new AIService({
+        apiKey: 'test-key',
+        apiUrl: 'https://example.test/v1',
+        model: 'gpt-test',
+        provider: 'openai',
+        openaiApiMode: 'responses',
+      });
+      (service as any).sleepWithAbort = async () => {};
+      const delivered: string[] = [];
+      const result = await service.chatStream(
+        [{ role: 'user', content: 'hello' }],
+        undefined,
+        { onText: text => delivered.push(text) },
+        { streamOutputMode: 'buffered' },
+      );
+
+      assert.equal(attempts, 2);
+      assert.equal(result.content, 'recovered');
+      assert.deepEqual(delivered, ['recovered']);
+    } finally {
+      (axios as any).post = originalPost;
+      if (originalRetries === undefined) delete process.env.CATSCO_MODEL_RETRY_MAX_RETRIES;
+      else process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = originalRetries;
+    }
+  });
+
+  test('does not expose abandoned function calls when a stream ends before its terminal event', async () => {
+    const originalPost = axios.post;
+    const originalRetries = process.env.CATSCO_MODEL_RETRY_MAX_RETRIES;
+    let attempts = 0;
+    (axios as any).post = async () => {
+      attempts += 1;
+      return {
+        data: attempts === 1
+          ? Readable.from([sse({
+              type: 'response.output_item.done',
+              output_index: 0,
+              item: {
+                type: 'function_call',
+                call_id: 'abandoned_call',
+                name: 'lookup',
+                arguments: '{"query":"abandoned"}',
+              },
+            })])
+          : Readable.from([sse({
+              type: 'response.completed',
+              response: {
+                status: 'completed',
+                output: [{
+                  type: 'function_call',
+                  call_id: 'recovered_call',
+                  name: 'lookup',
+                  arguments: '{"query":"recovered"}',
+                }],
+              },
+            })]),
+      };
+    };
+    process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '1';
+
+    try {
+      const service = new AIService({
+        apiKey: 'test-key',
+        apiUrl: 'https://example.test/v1',
+        model: 'gpt-test',
+        provider: 'openai',
+        openaiApiMode: 'responses',
+      });
+      (service as any).sleepWithAbort = async () => {};
+      const result = await service.chatStream(
+        [{ role: 'user', content: 'use a tool' }],
+        [lookupTool],
+        undefined,
+        { streamOutputMode: 'buffered' },
+      );
+
+      assert.equal(attempts, 2);
+      assert.deepEqual(result.toolCalls?.map(call => call.id), ['recovered_call']);
+      assert.equal(JSON.stringify(result.providerContent).includes('abandoned_call'), false);
+    } finally {
+      (axios as any).post = originalPost;
+      if (originalRetries === undefined) delete process.env.CATSCO_MODEL_RETRY_MAX_RETRIES;
+      else process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = originalRetries;
+    }
+  });
+
+  test('aborts a Responses attempt when response headers exceed the watchdog', async () => {
+    const originalPost = axios.post;
+    const originalTimeout = process.env.XIAOBA_RESPONSES_HEADERS_TIMEOUT_MS;
+    let capturedSignal: AbortSignal | undefined;
+    (axios as any).post = async (_url: string, _body: any, config: any) => {
+      capturedSignal = config.signal;
+      return await new Promise((_resolve, reject) => {
+        config.signal.addEventListener('abort', () => {
+          reject(Object.assign(new Error('canceled'), { name: 'CanceledError', code: 'ERR_CANCELED' }));
+        }, { once: true });
+      });
+    };
+    process.env.XIAOBA_RESPONSES_HEADERS_TIMEOUT_MS = '5';
+
+    try {
+      await assert.rejects(
+        createProvider().chatStream([{ role: 'user', content: 'hello' }]),
+        (error: any) => (
+          error?.code === 'XIAOBA_RESPONSES_HEADERS_TIMEOUT'
+          && error?.status === 504
+          && error?.failurePhase === 'headers'
+        ),
+      );
+      assert.equal(capturedSignal?.aborted, true);
+    } finally {
+      (axios as any).post = originalPost;
+      if (originalTimeout === undefined) delete process.env.XIAOBA_RESPONSES_HEADERS_TIMEOUT_MS;
+      else process.env.XIAOBA_RESPONSES_HEADERS_TIMEOUT_MS = originalTimeout;
+    }
+  });
+
+  test('cleans up the Responses header watchdog after headers arrive', async () => {
+    const originalPost = axios.post;
+    const originalTimeout = process.env.XIAOBA_RESPONSES_HEADERS_TIMEOUT_MS;
+    let capturedSignal: AbortSignal | undefined;
+    (axios as any).post = async (_url: string, _body: any, config: any) => {
+      capturedSignal = config.signal;
+      return {
+        data: Readable.from([sse({
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            output: [{
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'ok' }],
+            }],
+          },
+        })]),
+      };
+    };
+    process.env.XIAOBA_RESPONSES_HEADERS_TIMEOUT_MS = '5';
+
+    try {
+      const result = await createProvider().chatStream([{ role: 'user', content: 'hello' }]);
+      await new Promise(resolve => setTimeout(resolve, 15));
+      assert.equal(result.content, 'ok');
+      assert.equal(capturedSignal?.aborted, false);
+    } finally {
+      (axios as any).post = originalPost;
+      if (originalTimeout === undefined) delete process.env.XIAOBA_RESPONSES_HEADERS_TIMEOUT_MS;
+      else process.env.XIAOBA_RESPONSES_HEADERS_TIMEOUT_MS = originalTimeout;
     }
   });
 

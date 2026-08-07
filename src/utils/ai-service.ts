@@ -45,6 +45,15 @@ const EMPTY_RESPONSE_ERROR_CODE = 'EMPTY_MODEL_RESPONSE';
 const EMPTY_RESPONSE_MAX_RETRIES = 2;
 const EMPTY_RESPONSE_MAX_ELAPSED_MS = 2 * 60 * 1000;
 const EMPTY_RESPONSE_MAX_DELAY_MS = 2000;
+const TRANSIENT_PROVIDER_CODES = new Set([
+  'stream_read_error',
+  'upstream_error',
+  'server_is_overloaded',
+  'service_unavailable_error',
+]);
+const RESPONSES_TRANSIENT_MAX_RETRIES = 2;
+const TRANSIENT_HTTP_MAX_RETRIES = 2;
+const GATEWAY_TIMEOUT_MAX_RETRIES = 1;
 let modelAttemptCallSequence = 0;
 
 type ProviderKind = 'openai' | 'anthropic';
@@ -54,6 +63,7 @@ interface RetryPolicy {
   maxElapsedMs: number;
   baseDelayMs: number;
   maxDelayMs: number;
+  guaranteedRetries: number;
 }
 
 interface ModelAttemptRun {
@@ -170,19 +180,40 @@ export class AIService {
 
     const allowStreamRetry = process.env.GAUZ_STREAM_RETRY === 'true';
     const prepared = this.prepareProviderRequest(messages);
-    let hasStreamedText = false;
-    const providerCallbacks = this.createProviderStreamCallbacks(callbacks, () => {
-      hasStreamedText = true;
-    });
+    const supportsBufferedRecovery = this.isResponsesMode();
+    const streamOutputMode = supportsBufferedRecovery
+      ? options.streamOutputMode ?? (callbacks?.onText ? 'live' : 'buffered')
+      : 'live';
+    let hasObservedText = false;
+    let hasDeliveredText = false;
 
     try {
       const result = await this.withRetry(
-        async () => this.requireUsableResponse(
-          await this.provider.chatStream(prepared.messages, tools, providerCallbacks, options),
-        ),
+        async () => {
+          const bufferedChunks: string[] = [];
+          const providerCallbacks = this.createProviderStreamCallbacks(text => {
+            hasObservedText = true;
+            if (streamOutputMode === 'buffered') {
+              bufferedChunks.push(text);
+              return;
+            }
+            if (callbacks?.onText) {
+              callbacks.onText(text);
+              hasDeliveredText = true;
+            }
+          });
+          const response = this.requireUsableResponse(
+            await this.provider.chatStream(prepared.messages, tools, providerCallbacks, options),
+          );
+          if (streamOutputMode === 'buffered' && bufferedChunks.length > 0) {
+            callbacks?.onText?.(bufferedChunks.join(''));
+          }
+          return response;
+        },
         callbacks,
         options.signal,
-        () => options.retryMode !== 'none' && (allowStreamRetry || !hasStreamedText),
+        () => options.retryMode !== 'none'
+          && (allowStreamRetry || (supportsBufferedRecovery ? !hasDeliveredText : !hasObservedText)),
         this.createModelAttemptRun(prepared.messages, tools, true, options, prepared.summary),
       );
       callbacks?.onComplete?.(result);
@@ -194,15 +225,14 @@ export class AIService {
     }
   }
 
-  private createProviderStreamCallbacks(callbacks?: StreamCallbacks, onTextObserved?: () => void): StreamCallbacks | undefined {
-    if (!callbacks) {
+  private createProviderStreamCallbacks(onText?: (text: string) => void): StreamCallbacks | undefined {
+    if (!onText) {
       return undefined;
     }
 
     return {
       onText: (text: string) => {
-        if (text) onTextObserved?.();
-        callbacks.onText?.(text);
+        if (text) onText(text);
       },
     };
   }
@@ -294,6 +324,10 @@ export class AIService {
       return false;
     }
 
+    if (this.isResponsesMode() && this.isSemanticTransientProviderError(error)) {
+      return true;
+    }
+
     if (this.isKnownNonRetryableProviderError(error)) {
       return false;
     }
@@ -362,6 +396,28 @@ export class AIService {
 
     return /insufficient[_\s-]?quota|quota[_\s-]?exceeded|billing|(?:insufficient|low|exhausted)[_\s-]?(?:credit|balance)|(?:credit|balance)[_\s-]?(?:exhausted|insufficient|too low)|账户余额|余额不足|额度不足|额度已用尽|context length|maximum context|max(?:imum)? tokens?|prompt too long|invalid[_\s-]?request|invalid[_\s-]?api[_\s-]?key|unauthorized|forbidden|permission denied|model .*not found|model_not_found|tool schema|schema is invalid|content policy|safety/i
       .test(message);
+  }
+
+  private isSemanticTransientProviderError(error: any): boolean {
+    return this.extractProviderSemanticCodes(error)
+      .some(code => TRANSIENT_PROVIDER_CODES.has(code));
+  }
+
+  private extractProviderSemanticCodes(error: any): string[] {
+    return [
+      error?.providerCode,
+      error?.providerType,
+      error?.response?.data?.error?.code,
+      error?.response?.data?.error?.type,
+      error?.response?.data?.code,
+      error?.response?.data?.type,
+      error?.error?.code,
+      error?.error?.type,
+      error?.code,
+      error?.type,
+    ]
+      .filter(value => typeof value === 'string' && value.trim())
+      .map(value => String(value).trim().toLowerCase());
   }
 
   /**
@@ -497,7 +553,10 @@ export class AIService {
           },
         });
 
-        const status = this.extractStatus(error) || this.extractErrorCode(error) || 'unknown';
+        const status = this.extractStatus(error)
+          || this.extractErrorCode(error)
+          || this.extractProviderSemanticCodes(error)[0]
+          || 'unknown';
         const retryInfo: StreamRetryInfo = {
           attempt: retryAttempt,
           maxRetries: policy.maxRetries,
@@ -529,7 +588,9 @@ export class AIService {
     if (!this.isRetryable(error)) return 'non_retryable';
     if (shouldRetry?.(error, retryAttempt) === false) return 'stream_output_started';
     if (retryAttempt > policy.maxRetries) return 'retry_limit_exhausted';
-    if (elapsedMs >= policy.maxElapsedMs) return 'retry_window_exhausted';
+    if (elapsedMs >= policy.maxElapsedMs && retryAttempt > policy.guaranteedRetries) {
+      return 'retry_window_exhausted';
+    }
     return undefined;
   }
 
@@ -618,6 +679,7 @@ export class AIService {
         MAX_CONFIGURABLE_RETRY_DURATION_MS,
       ),
       baseDelayMs: BASE_DELAY_MS,
+      guaranteedRetries: 0,
     };
 
     if (this.isEmptyModelResponseError(error)) {
@@ -626,6 +688,28 @@ export class AIService {
         maxRetries: Math.min(policy.maxRetries, EMPTY_RESPONSE_MAX_RETRIES),
         maxElapsedMs: Math.min(policy.maxElapsedMs, EMPTY_RESPONSE_MAX_ELAPSED_MS),
         maxDelayMs: Math.min(policy.maxDelayMs, EMPTY_RESPONSE_MAX_DELAY_MS),
+      };
+    }
+
+    if (this.isResponsesMode() && this.isGatewayTimeoutError(error)) {
+      return {
+        ...policy,
+        maxRetries: Math.min(policy.maxRetries, GATEWAY_TIMEOUT_MAX_RETRIES),
+        guaranteedRetries: Math.min(policy.maxRetries, GATEWAY_TIMEOUT_MAX_RETRIES),
+      };
+    }
+
+    if (this.isResponsesMode() && this.isSemanticTransientProviderError(error)) {
+      return {
+        ...policy,
+        maxRetries: Math.min(policy.maxRetries, RESPONSES_TRANSIENT_MAX_RETRIES),
+      };
+    }
+
+    if (this.isResponsesMode() && [502, 503, 529].includes(this.extractStatus(error) ?? 0)) {
+      return {
+        ...policy,
+        maxRetries: Math.min(policy.maxRetries, TRANSIENT_HTTP_MAX_RETRIES),
       };
     }
 
@@ -646,7 +730,9 @@ export class AIService {
     const rawDelay = retryAfter !== null
       ? retryAfter * 1000
       : Math.min(policy.maxDelayMs, policy.baseDelayMs * Math.pow(2, retryAttempt - 1)) + Math.random() * 500;
-    const remainingMs = Math.max(0, policy.maxElapsedMs - elapsedMs);
+    const remainingMs = elapsedMs >= policy.maxElapsedMs && retryAttempt <= policy.guaranteedRetries
+      ? policy.maxDelayMs
+      : Math.max(0, policy.maxElapsedMs - elapsedMs);
     return Math.max(0, Math.min(rawDelay, remainingMs));
   }
 
@@ -680,6 +766,18 @@ export class AIService {
 
   private isShortNetworkRetryError(error: any): boolean {
     return SHORT_NETWORK_RETRY_CODES.has(this.extractErrorCode(error));
+  }
+
+  private isGatewayTimeoutError(error: any): boolean {
+    const code = this.extractErrorCode(error);
+    return this.extractStatus(error) === 504
+      || code === 'XIAOBA_RESPONSES_HEADERS_TIMEOUT'
+      || code === 'UND_ERR_HEADERS_TIMEOUT';
+  }
+
+  private isResponsesMode(): boolean {
+    return this.config.provider === 'openai'
+      && this.config.openaiApiMode === 'responses';
   }
 
   private async notifyRetry(

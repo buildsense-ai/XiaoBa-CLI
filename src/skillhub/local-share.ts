@@ -65,7 +65,9 @@ export async function shareLocalSkillForCatsCo(
     assertExpectedLocalSkillShareScope(expectedBotUid, context.botId, context.activeBotId);
     await options.validateScope?.(context);
     const selectedSkill = expectedLocalSkillId
-      ? scanBotSkillWorkspace(context.skillsRoot).find((candidate) => (
+      ? scanBotSkillWorkspace(context.skillsRoot, {
+        onValidationFailure: () => {},
+      }).find((candidate) => (
         candidate.localSkillId === expectedLocalSkillId && candidate.name === skillName
       ))
       : undefined;
@@ -99,7 +101,9 @@ export async function shareLocalSkillForCatsCo(
     });
     let revalidatedSkill = selectedSkill;
     if (selectedSkill) {
-      const currentSkill = scanBotSkillWorkspace(context.skillsRoot).find((candidate) => (
+      const currentSkill = scanBotSkillWorkspace(context.skillsRoot, {
+        onValidationFailure: () => {},
+      }).find((candidate) => (
         candidate.localSkillId === selectedSkill.localSkillId
         && candidate.name === selectedSkill.name
       ));

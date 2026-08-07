@@ -9,7 +9,9 @@
 - **版本：** bump `1.4.7 → 1.4.8`（`inject-version.js v1.4.8`，commit `fbb919e` 直接推送 main；`verify-release-version` 要求三处同步已确认）
 - **发布：** 设置 repo var `CTYUN_AUTO_BAKE_WORKER_IMAGE=true`（tag 触发 bake 的前提）→ 打 `v1.4.8` tag 推送 → **Desktop Release CD**（run=25）已触发；**首次 bake**（run=1）**失败**
 - **⚠️ 首次 bake 失败根因（2026-08-06，天翼云配置前置条件）**：`ImportEcsKeypair` 报 `Ecs.OrderCheck.InvalidProjectID`——**不是代码/AK 问题**，而是子账号**缺少企业项目管理（EPS）权限**。天翼云 key pair 创建 API 的 OrderCheck **强制校验企业项目权限**，而 `CreateEcsInstance`/查询 API 不强制（所以实例创建正常、key pair 卡住）。排查链：本地同 AK 复现 → 排除 AK/节点类型/参数 → 控制台确认 default 项目 ID=0 → 发现 `ListRosProject` 403 → 子账号用户组 `catsco-cli-provisioner` 关联策略数 0 → 补加企业项目（EPS）策略后 `ImportEcsKeypair` 本地验证 **SUCCESS**。**前置条件：bake 用的天翼云子账号必须被"用户授权"关联到 default 企业项目并授予企业项目（EPS）权限**；`ros:project:list`（ListRosProject）仍 403 但不影响 bake。
-- **重试：** workflow_dispatch 重新触发 bake（run `31079403507`，2026-08-06 07:02，main + bake_image=true）运行中
+- **第二次 bake 失败（2026-08-06，run `31079403507`）→ 已定位并修复**：EPS 权限修复后 key pair 创建成功、builder 创建成功，但主流程抛 `Refusing to operate on an instance outside this bake`。**根因（已对真实 API 复现）**：天翼云实例创建后数秒内 `ListEcsInstances` 返回实例但 **`instanceID` 字段为空**（最终一致性延迟填充），`Find-BuilderInstance` 把空 ID 记为 `BuilderID` → `Assert-TemporaryBuilder` 拒绝。修复：`Find-BuilderInstance` 匹配时要求 `instanceID` 非空（为空则跳过、`Resolve-BuilderInstance` 重试）。**同时修复清理**：`Remove-Builder` 的 `--deleteEip/--deleteVolume` 在华南2（多可用区）报 `Ecs.Region.NotSupport`（已实测该区域删除实例后 EIP 自动释放）→ 改为 NotSupport 时 fallback 不带关联参数删除。新增回归场景 1016（instanceID 延迟填充 → bake 仍成功）、1017（Region.NotSupport → 删除 fallback）。
+- **第三次 bake 失败（2026-08-06，run `31084153514`）→ 已定位并修复**：instanceID + NotSupport 修复生效（builder 创建成功、`state=running ip=...`、清理成功），但 **`Timed out waiting for SSH`**（12 分钟）。**根因（本地实测复现）**：天翼云 Ubuntu 镜像的 `cloud-init status --wait` **返回 exit 2**（module error，即使 `status: done` 系统可用）→ `&& printf ready` 永不执行 → `Wait-ForSsh` 每 8s 探测全失败。SSH 本身（key 认证、22 端口、root 登录）实测全部正常。修复：`Wait-ForSsh` 改为 `cloud-init status 2>/dev/null | grep -q '^status: done'`（匹配状态文本而非退出码）。新增回归场景 1018（fake ssh 前 2 次 cloud-init 探测返回 exit 2 → bake 仍成功）。
+- **重试：** 待修复合并到 main 后重新触发 bake（workflow_dispatch）
 - **测试：** `worker-image-pipeline.test.ts` 11/11、`npm run build` 通过（rebase 后本地已验证）
 - **下一步：** 等待 bake 完成 → 按下方步骤 10 验收标准在云端验收（platform 版本、fwupd mask、npm mirror、残留清理）→ 确认后删除验证用临时实例
 - **关联计划：** 应用制品更新 Part A 见 `2026-08-04-worker-artifact-update.md`（worker 更新通道与镜像烘焙并存，互为回退）
@@ -38,6 +40,7 @@
 
 ## 后续改进项（Follow-ups，不阻塞合入）
 
+- **▶ 镜像生命周期 + 云端控制（下一步主方向）**：见 `2026-08-07-worker-cloud-control-image-lifecycle.md`——私有 `catsco-worker-*` 镜像保留 6 个、bake 后自动清理；控制面 web（「云托管」入口）统一云虚拟员工创建（带配额）/版本展示/镜像回滚/单 worker 重置；Part A 制品更新（有数据回滚）为后续项。
 - **发现阶段 3 次空读无直接测试场景**：Remove-Builder/Remove-KeyPair 的连续空读发现逻辑只在确认阶段有测试覆盖；构造"builder ID 存在但查询为空"场景成本高，防御性逻辑，后续补。
 - **`/boot` 校验的 `NEWEST_KERNEL_IMG` 变量是死代码**：非空性已被前置 `ls -1 /boot/vmlinuz-*` 保证，可删除或改为与升级前内核版本做真实比较。
 - **`Invoke-ExactBakeCleanup` key pair 单次读**与 Remove-* 的 3 次空读不对称（最终一致性风险低，因 Cleanup 运行在中断后较久），后续可对齐。
@@ -139,13 +142,22 @@
   git push origin feat/ctyun-worker-image-pipeline
   ```
 
-- [ ] **步骤 10：PR 等审核 + 真实 bake 验收**
-  合并前需用户确认。合并后触发 `worker-image.yml`（手动 `workflow_dispatch` 勾选 `bake_image` 或打 `vX.Y.Z` tag 且 `CTYUN_AUTO_BAKE_WORKER_IMAGE=true`）。
+- [x] **步骤 10：PR 等审核 + 真实 bake 验收（2026-08-07 全部通过）**
+  **前置条件（首次 bake 失败后补齐）**：① 天翼云子账号需被"用户授权"关联到 default 企业项目并授予企业项目（EPS）权限（否则 `ImportEcsKeypair` 报 `OrderCheck.InvalidProjectID`）；② repo var `CTYUN_AUTO_BAKE_WORKER_IMAGE=true`。触发：workflow_dispatch `bake_image=true`。
+  **三次失败→成功**：① EPS 权限（#271 后配置）；② `instanceID` 延迟填充导致 `Find-BuilderInstance` 记空 ID → `outside this bake`（PR #340）；③ `cloud-init status --wait` 返回 exit 2 → SSH 探测全失败（PR #343）。第四次 bake（run `31137245566`）**成功**，镜像 `catsco-worker-1-4-8-f3f1f3e6`（imageID `79f5b7f4-...`，active，私有，Ubuntu 24.04，labels 含 version/commit/bake）。
 
-  **验收标准（bake 日志 + 新 worker 实例）：**
+  **验收标准（bake 日志 + 新 worker 实例）：**（2026-08-07 实测全部 ✅）
   1. bake 日志出现 `platform_systemd=255.4-1ubuntu8.16+ glibc=2.39-0ubuntu8.8+ kernel=...` 且最终 `image_prepared=yes`（任一版本不达标 bake 会失败）
   2. 从镜像开一台临时 worker 验证：`readlink /etc/systemd/system/fwupd.service` = `/dev/null`（fwupd/refresh/timer 均 masked）、`systemctl is-system-running` = `running`（无 freeze）
   3. `/srv/catsco-agent/.npmrc` 与 `/root/.npmrc` 存在且含 `registry.npmmirror.com`；`systemctl cat catsco-agent.service` 含 `NPM_CONFIG_REGISTRY`
   4. `/etc/catsco-image-packages.txt` 记录 systemd/glibc/kernel 版本；`/boot/vmlinuz-*` 存在最新内核
   5. 镜像内 `catsco-agent.service` 为 disabled（首次供给由控制面启用）；无临时 key pair/builder 残留（`ecs GetEcsKeypairDetails` 查询 `catsco-img-key-*` 为空）
   6. 确认后删除验证用临时实例，避免计费残留
+
+  **验收结果（2026-08-07 实测，验证实例 IP 203.32.69.72）：**
+  1. ✅ bake 日志 `platform_systemd=255.4-1ubuntu8.16 glibc=2.39-0ubuntu8.8 kernel=6.8.0-90-generic` + `image_prepared=yes` + `finalized=yes` + `result: created`
+  2. ✅ `readlink fwupd.service/fwupd-refresh.service/fwupd-refresh.timer` 均 = `/dev/null`；`systemctl is-system-running` = `running`
+  3. ✅ `/root/.npmrc` 与 `/srv/catsco-agent/.npmrc` = `registry=https://registry.npmmirror.com`；`systemctl cat catsco-agent.service` 含 `NPM_CONFIG_REGISTRY=https://registry.npmmirror.com`
+  4. ✅ `/etc/catsco-image-packages.txt` 存在（含全部包版本）；`/boot/vmlinuz-6.8.0-137-generic`（运行内核 6.8.0-137）
+  5. ✅ `catsco-agent.service` = disabled；云上 key pair/builder 残留均为 0
+  6. ✅ 验证实例 + key pair 已删除（验证私有镜像创建实例需 `--imageType 0`，`1` 报 `Image.ImageCheck.NotFound`）

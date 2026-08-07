@@ -1516,12 +1516,13 @@ export class ConversationRunner {
         phase: 'normal' as const,
         explicitCaching: true,
       },
+      streamOutputMode: callbacks?.onText ? 'live' as const : 'buffered' as const,
     };
     try {
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
-          onText: (text) => callbacks?.onText?.(text),
           onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
+          ...(callbacks?.onText ? { onText: callbacks.onText } : {}),
         };
         return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }
@@ -1540,8 +1541,8 @@ export class ConversationRunner {
 
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
-          onText: (text) => callbacks?.onText?.(text),
           onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
+          ...(callbacks?.onText ? { onText: callbacks.onText } : {}),
         };
         return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }

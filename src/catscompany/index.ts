@@ -299,10 +299,7 @@ function formatModelRetryThinking(attempt: number, maxRetries: number, info?: St
   const retryIn = info && info.delayMs >= 1000
     ? `，约 ${Math.ceil(info.delayMs / 1000)} 秒后继续`
     : '';
-  const status = info?.status && info.status !== 'unknown'
-    ? `（${info.status}）`
-    : '';
-  return `模型连接异常${status}，正在重试 ${attempt}/${maxRetries}${retryIn}...`;
+  return `模型连接不稳定，正在自动恢复 ${attempt}/${maxRetries}${retryIn}...`;
 }
 
 function isActiveSubAgentStatusForUi(status?: SubAgentInfo['status']): boolean {

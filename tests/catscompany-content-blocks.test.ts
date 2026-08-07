@@ -165,7 +165,7 @@ describe('CatsCo content blocks', () => {
     assert.equal(replies.length, 0);
     assert.equal(sentThinking.length, 1);
     assert.equal(sentThinking[0].topic, 'p2p_retry');
-    assert.equal(sentThinking[0].text, '模型连接异常（503），正在重试 3/14，约 8 秒后继续...');
+    assert.equal(sentThinking[0].text, '模型连接不稳定，正在自动恢复 3/14，约 8 秒后继续...');
     assert.equal(sentThinking[0].metadata.model_retry, true);
     assert.equal(sentThinking[0].metadata.delay_ms, 8000);
   });

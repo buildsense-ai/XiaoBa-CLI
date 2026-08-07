@@ -20,6 +20,9 @@ export interface TurnErrorRecord {
   provider_code: string;
   provider_type: string;
   provider_request_id: string;
+  provider_response_id: string;
+  terminal_event: string;
+  provider_failure_phase: string;
   error_fingerprint: string;
   stack_fingerprint: string;
   top_frame: string;
@@ -164,6 +167,9 @@ function toTurnErrorRecord(entry: any, sourceFile: string, sourceLine: number): 
     provider_code: safeText(payload.provider_code),
     provider_type: safeText(payload.provider_type),
     provider_request_id: safeText(payload.provider_request_id),
+    provider_response_id: safeText(payload.provider_response_id),
+    terminal_event: safeText(payload.terminal_event),
+    provider_failure_phase: safeText(payload.provider_failure_phase),
     error_fingerprint: safeText(payload.error_fingerprint),
     stack_fingerprint: safeText(payload.stack_fingerprint),
     top_frame: safeText(payload.top_frame),

@@ -259,7 +259,15 @@ function Find-BuilderInstance {
     foreach ($query in $queries) {
         $response = Invoke-Ctyun $query
         foreach ($candidate in @(Get-ResponseItems -Response $response -Name "results")) {
+            # A just-created instance is returned by the provider with a valid
+            # name and resourceID but an EMPTY instanceID for a few seconds
+            # (eventual consistency). Claiming it would record an empty
+            # BuilderID and immediately fail Assert-TemporaryBuilder with
+            # 'outside this bake', so only accept candidates whose immutable
+            # instanceID is already populated; Resolve-BuilderInstance retries
+            # until it appears.
             if (
+                [string]$candidate.instanceID -and
                 [string]$candidate.instanceName -eq $script:BuilderName -and
                 (
                     -not $script:BuilderResourceID -or
@@ -372,6 +380,12 @@ function Wait-ForSsh {
         -RequestedSeconds (12 * 60) `
         -Phase "temporary builder SSH wait"
     while ((Get-Date) -lt $deadline) {
+        # Match the reported status text instead of the exit code of
+        # `cloud-init status --wait`: Tianyi's Ubuntu images finish
+        # cloud-init in a done state yet return exit code 2 (module error)
+        # from --wait, which would fail every SSH probe even though the system
+        # is fully usable. `cloud-init status` prints 'status: done' in that
+        # case, so grep on it; still requires SSH + root key auth to succeed.
         & ssh `
             -i $PrivateKey `
             -o BatchMode=yes `
@@ -380,7 +394,7 @@ function Wait-ForSsh {
             -o ServerAliveCountMax=3 `
             -o StrictHostKeyChecking=accept-new `
             -o "UserKnownHostsFile=$KnownHosts" `
-            "root@$IP" "timeout --signal=TERM --kill-after=15s 90s cloud-init status --wait >/dev/null 2>&1 && printf ready" 2>$null
+            "root@$IP" "cloud-init status 2>/dev/null | grep -q '^status: done'" 2>$null
         if ($LASTEXITCODE -eq 0) {
             return
         }
@@ -580,14 +594,30 @@ function Remove-Builder {
     }
     Assert-TemporaryBuilder $instance
     Write-Host "Deleting temporary builder $script:BuilderID"
-    Invoke-Ctyun @(
-        "ecs", "DeleteEcsInstance",
-        "--regionID", $RegionID,
-        "--instanceID", $script:BuilderID,
-        "--clientToken", ([guid]::NewGuid().ToString()),
-        "--deleteEip", "true",
-        "--deleteVolume", "true"
-    ) | Out-Null
+    try {
+        Invoke-Ctyun @(
+            "ecs", "DeleteEcsInstance",
+            "--regionID", $RegionID,
+            "--instanceID", $script:BuilderID,
+            "--clientToken", ([guid]::NewGuid().ToString()),
+            "--deleteEip", "true",
+            "--deleteVolume", "true"
+        ) | Out-Null
+    } catch {
+        # Multi-AZ resource pools (e.g. cn-huanan2) reject releasing associated
+        # resources at delete time (Ecs.Region.NotSupport). In those pools the
+        # EIP is released automatically when the instance is unsubscribed, so
+        # retry the plain delete instead of leaking the billed ECS.
+        if ($_.Exception.Message -notmatch "NotSupport") {
+            throw
+        }
+        Invoke-Ctyun @(
+            "ecs", "DeleteEcsInstance",
+            "--regionID", $RegionID,
+            "--instanceID", $script:BuilderID,
+            "--clientToken", ([guid]::NewGuid().ToString())
+        ) | Out-Null
+    }
 
     $deadline = Get-BoundedDeadline `
         -RequestedSeconds (8 * 60) `

@@ -284,6 +284,7 @@ export class CheckpointCompactionCoordinator {
           { onText: text => { streamed += text; } },
           {
             signal,
+            streamOutputMode: 'buffered',
             promptCacheContext: {
               sessionKey,
               phase,

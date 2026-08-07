@@ -4,11 +4,11 @@ import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../types';
 import { PathResolver } from '../utils/path-resolver';
 import {
   hasLegacyBranchAgentSwitch,
-  resolveLegacyBranchAgentsEnabled,
 } from './branch-agent-settings';
 
-export const BRANCH_AGENT_CONFIG_SCHEMA = 'xiaoba.branch-agents.v1';
+export const BRANCH_AGENT_CONFIG_SCHEMA = 'xiaoba.branch-agents.v2';
 export const BRANCH_AGENT_CONFIG_FILE = 'branch-agents.json';
+const LEGACY_BRANCH_AGENT_CONFIG_SCHEMA = 'xiaoba.branch-agents.v1';
 
 export type BranchModelSource = 'inherit' | 'catalog' | 'custom';
 
@@ -58,7 +58,7 @@ export function loadBranchAgentConfig(options: BranchAgentConfigOptions = {}): B
   if (!fs.existsSync(configPath)) {
     const env = options.env ?? process.env;
     if (!hasLegacyBranchAgentSwitch(env)) return defaultBranchAgentConfig();
-    const migrated = defaultBranchAgentConfig(resolveLegacyBranchAgentsEnabled(env));
+    const migrated = defaultBranchAgentConfig();
     try {
       return saveInitialBranchAgentConfig(migrated, runtimeRoot);
     } catch (error: any) {
@@ -74,7 +74,12 @@ export function loadBranchAgentConfig(options: BranchAgentConfigOptions = {}): B
   const fallback = defaultBranchAgentConfig();
 
   try {
-    return readBranchAgentConfigFile(configPath, fallback);
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    const normalized = normalizeBranchAgentConfig(parsed, fallback);
+    if (parsed?.schema === LEGACY_BRANCH_AGENT_CONFIG_SCHEMA) {
+      normalized.branches.memorySearch.enabled = false;
+    }
+    return normalized;
   } catch {
     return fallback;
   }
@@ -116,7 +121,7 @@ export function resolveMemoryBranchModelOverride(config: BranchAgentConfig): Par
   };
 }
 
-function defaultBranchAgentConfig(enabled = true): BranchAgentConfig {
+function defaultBranchAgentConfig(enabled = false): BranchAgentConfig {
   return {
     schema: BRANCH_AGENT_CONFIG_SCHEMA,
     branches: {
@@ -179,6 +184,7 @@ function readBranchAgentConfigFile(configPath: string, fallback: BranchAgentConf
 
 function normalizeBranchAgentConfig(input: any, fallback: BranchAgentConfig): BranchAgentConfig {
   const memory = input?.schema === BRANCH_AGENT_CONFIG_SCHEMA
+    || input?.schema === LEGACY_BRANCH_AGENT_CONFIG_SCHEMA
     ? input?.branches?.memorySearch
     : undefined;
   const model = normalizeModel(memory?.model) ?? fallback.branches.memorySearch.model;

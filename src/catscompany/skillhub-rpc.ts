@@ -7,7 +7,10 @@ import {
   finalizeCurrentBotPublicSkillNow,
   withCurrentBotSkillWorkspaceWrite,
 } from '../bot-skills/runtime';
-import { scanBotSkillWorkspace } from '../bot-skills/local-manifest';
+import {
+  scanBotSkillWorkspace,
+  type BotSkillWorkspaceValidationFailure,
+} from '../bot-skills/local-manifest';
 import { readSkillHubLocalMetadata } from '../skillhub/local-skill-metadata';
 import { shareLocalSkillForCatsCo } from '../skillhub/local-share';
 import { PathResolver } from '../utils/path-resolver';
@@ -136,8 +139,34 @@ export class SkillHubThinRpcHandler {
       this.assertOperational(request);
       this.assertRequestScope(request, botUid, true);
       this.assertActiveWorkspace(botUid, context.botId, context.activeBotId);
-      const entries = scanBotSkillWorkspace(context.skillsRoot).slice(0, MAX_SKILLS);
-      const skills = entries.map((entry) => {
+      const rejected: BotSkillWorkspaceValidationFailure[] = [];
+      const entries = scanBotSkillWorkspace(context.skillsRoot, {
+        onValidationFailure: failure => rejected.push(failure),
+      });
+      const listed = [
+        ...entries.map(entry => ({ kind: 'valid' as const, entry })),
+        ...rejected.map(entry => ({ kind: 'rejected' as const, entry })),
+      ].sort((left, right) => compareText(left.entry.localSkillId, right.entry.localSkillId))
+        .slice(0, MAX_SKILLS);
+      const skills = listed.map((item) => {
+        if (item.kind === 'valid') {
+          const { entry } = item;
+          const parsed = matter(fs.readFileSync(path.join(entry.path, 'SKILL.md'), 'utf8'));
+          const metadata = readSkillHubLocalMetadata(path.join(entry.path, 'SKILL.md'));
+          return {
+            local_skill_id: limitText(entry.localSkillId, MAX_NAME_LENGTH),
+            name: limitText(entry.name, MAX_NAME_LENGTH),
+            description: limitText(String(parsed.data?.description || ''), MAX_DESCRIPTION_LENGTH),
+            relative_path: limitText(entry.installName, MAX_RELATIVE_PATH_LENGTH),
+            source: 'user',
+            can_share: !entry.reference || isPrivateSkillReference(entry.reference.skillId),
+            skill_hub: {
+              ...(metadata || {}),
+              ...(entry.reference ? { reference: entry.reference } : {}),
+            },
+          };
+        }
+        const { entry } = item;
         const parsed = matter(fs.readFileSync(path.join(entry.path, 'SKILL.md'), 'utf8'));
         const metadata = readSkillHubLocalMetadata(path.join(entry.path, 'SKILL.md'));
         return {
@@ -146,11 +175,9 @@ export class SkillHubThinRpcHandler {
           description: limitText(String(parsed.data?.description || ''), MAX_DESCRIPTION_LENGTH),
           relative_path: limitText(entry.installName, MAX_RELATIVE_PATH_LENGTH),
           source: 'user',
-          can_share: !entry.reference || isPrivateSkillReference(entry.reference.skillId),
-          skill_hub: {
-            ...(metadata || {}),
-            ...(entry.reference ? { reference: entry.reference } : {}),
-          },
+          can_share: false,
+          share_error: limitText(entry.error.message, MAX_DESCRIPTION_LENGTH),
+          skill_hub: metadata || {},
         };
       });
       return {
@@ -173,7 +200,9 @@ export class SkillHubThinRpcHandler {
     const skillName = requiredText(payload.skill_name, 'skill_name', MAX_NAME_LENGTH);
     await withCurrentBotSkillWorkspaceWrite((context) => {
       this.assertActiveWorkspace(botUid, context.botId, context.activeBotId);
-      const entry = scanBotSkillWorkspace(context.skillsRoot).find((candidate) => (
+      const entry = scanBotSkillWorkspace(context.skillsRoot, {
+        onValidationFailure: () => {},
+      }).find((candidate) => (
         candidate.localSkillId === localSkillId && candidate.name === skillName
       ));
       if (!entry) {
@@ -393,6 +422,10 @@ function requiredText(value: unknown, field: string, maxLength: number): string 
 function limitText(value: string, maxLength: number): string {
   const text = String(value || '');
   return text.length <= maxLength ? text : text.slice(0, maxLength);
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function normalizeUid(value: unknown): string {

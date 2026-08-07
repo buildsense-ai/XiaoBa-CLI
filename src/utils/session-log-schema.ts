@@ -82,6 +82,9 @@ export interface TurnErrorPayload {
   provider_code?: string;
   provider_type?: string;
   provider_request_id?: string;
+  provider_response_id?: string;
+  terminal_event?: string;
+  provider_failure_phase?: string;
   error_fingerprint?: string;
   stack_fingerprint?: string;
   top_frame?: string;

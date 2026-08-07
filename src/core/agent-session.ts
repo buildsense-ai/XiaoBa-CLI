@@ -85,6 +85,8 @@ export const ERROR_MESSAGE = '本次处理未能完成，请稍后再试。';
 export const MODEL_TIMEOUT_MESSAGE = '模型响应超时，本轮上下文已保留，请稍后继续。';
 export const MODEL_TRANSIENT_ERROR_MESSAGE = '模型服务暂时不可用，请稍后再试。';
 export const EMPTY_MODEL_RESPONSE_MESSAGE = '模型本轮未返回有效内容，请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
+export const MODEL_RECOVERY_FAILED_MESSAGE = '模型服务暂时不稳定，系统已尝试自动恢复但仍未成功，请稍后继续。';
+export const MODEL_REQUEST_FAILED_MESSAGE = '模型服务暂时不稳定，本次处理未能完成，请稍后继续。';
 export const CONTEXT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
 export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '上下文压缩完成，继续处理当前请求。';
 export const CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文继续处理。';
@@ -775,6 +777,9 @@ export class AgentSession {
           provider_code: diagnostics.provider_code,
           provider_type: diagnostics.provider_type,
           provider_request_id: diagnostics.request_id,
+          provider_response_id: diagnostics.response_id,
+          terminal_event: diagnostics.terminal_event,
+          provider_failure_phase: diagnostics.failure_phase,
           error_fingerprint: diagnostics.fingerprint,
           stack_fingerprint: diagnostics.stack_fingerprint,
           top_frame: diagnostics.top_frame,
@@ -1273,19 +1278,16 @@ export class AgentSession {
     fallback: string,
     retryCount: number,
   ): string {
-    if (retryCount <= 0) return fallback;
-    switch (category) {
-      case 'timeout':
-        return '模型响应超时，系统已自动重试，但仍未完成。本轮上下文已保留，请稍后继续。';
-      case 'transient':
-        return '模型服务暂时不可用，系统已自动重试，但仍未恢复，请稍后再试。';
-      case 'rate_limited':
-        return '当前请求较多，系统已自动重试，但仍未恢复，请稍等片刻再试。';
-      case 'empty_response':
-        return '模型本轮未返回有效内容，系统已自动重试但仍未恢复。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
-      default:
-        return fallback;
+    if (
+      category === 'image_safety'
+      || category === 'vision_unsupported'
+      || category === 'input_too_large'
+    ) {
+      return fallback;
     }
+    return retryCount > 0
+      ? MODEL_RECOVERY_FAILED_MESSAGE
+      : MODEL_REQUEST_FAILED_MESSAGE;
   }
 
   private formatErrorContextMessage(

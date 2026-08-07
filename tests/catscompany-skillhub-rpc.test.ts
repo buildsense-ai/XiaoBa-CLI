@@ -79,6 +79,73 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.equal(JSON.stringify(result).includes('# Local Demo'), false);
   });
 
+  test('keeps local Skills visible when one package cannot be shared', async () => {
+    const blockedRoot = path.join(runtimeRoot, 'skills', 'blocked-demo');
+    fs.mkdirSync(blockedRoot, { recursive: true });
+    fs.writeFileSync(path.join(blockedRoot, 'SKILL.md'), [
+      '---',
+      'name: blocked-demo',
+      'description: Local Skill with private material',
+      '---',
+      '',
+      '# Blocked Demo',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(blockedRoot, '.env'), 'API_KEY=not-a-real-secret\n');
+    const nestedRoot = path.join(blockedRoot, 'nested-demo');
+    fs.mkdirSync(nestedRoot, { recursive: true });
+    fs.writeFileSync(path.join(nestedRoot, 'SKILL.md'), [
+      '---',
+      'name: nested-demo',
+      'description: Valid nested Skill',
+      '---',
+      '',
+    ].join('\n'));
+
+    const result = await handler.execute(request({ request_id: 'workspace-with-blocked-skill' }));
+    const skills = result.skills as Array<Record<string, unknown>>;
+    assert.equal(skills.length, 3);
+    assert.equal(skills.find(skill => skill.name === 'local-demo')?.can_share, true);
+    assert.equal(skills.find(skill => skill.name === 'nested-demo')?.can_share, true);
+    const blocked = skills.find(skill => skill.name === 'blocked-demo');
+    assert.equal(blocked?.can_share, false);
+    assert.match(String(blocked?.share_error || ''), /sensitive material/i);
+  });
+
+  test('sorts valid and rejected local Skills by the complete canonical ID', async () => {
+    const skillsRoot = path.join(runtimeRoot, 'skills');
+    writeBotSkillLocalMarker(path.join(skillsRoot, 'local-demo'), {
+      schema: 'xiaoba.bot-skill-local.v1',
+      localSkillId: 'a',
+    });
+    const fixtures = [
+      { directory: 'upper', name: 'upper', localSkillId: 'A', blocked: false },
+      { directory: 'dash', name: 'dash', localSkillId: 'a-b', blocked: true },
+      { directory: 'underscore', name: 'underscore', localSkillId: 'a_b', blocked: false },
+    ];
+    for (const fixture of fixtures) {
+      const skillRoot = path.join(skillsRoot, fixture.directory);
+      fs.mkdirSync(skillRoot, { recursive: true });
+      fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+        '---',
+        `name: ${fixture.name}`,
+        'description: Ordering fixture',
+        '---',
+        '',
+      ].join('\n'));
+      writeBotSkillLocalMarker(skillRoot, {
+        schema: 'xiaoba.bot-skill-local.v1',
+        localSkillId: fixture.localSkillId,
+      });
+      if (fixture.blocked) fs.writeFileSync(path.join(skillRoot, '.env'), 'API_KEY=blocked\n');
+    }
+
+    const result = await handler.execute(request({ request_id: 'workspace-canonical-order' }));
+    const skills = result.skills as Array<Record<string, unknown>>;
+    assert.deepEqual(skills.map(skill => skill.local_skill_id), ['A', 'a', 'a-b', 'a_b']);
+    assert.equal(skills.find(skill => skill.local_skill_id === 'a-b')?.can_share, false);
+  });
+
   test('rejects another owner, device, inactive Bot, and expired requests', async () => {
     await assert.rejects(
       handler.execute(request({ request_id: 'owner', target_owner_user_id: 'usr8' })),
@@ -193,6 +260,16 @@ describe('CatsCompany SkillHub thin RPC', () => {
     const selected = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))
       .find(entry => entry.installName === 'second-demo');
     assert.ok(selected);
+    const blockedSibling = path.join(runtimeRoot, 'skills', 'blocked-sibling');
+    fs.mkdirSync(blockedSibling, { recursive: true });
+    fs.writeFileSync(path.join(blockedSibling, 'SKILL.md'), [
+      '---',
+      'name: blocked-sibling',
+      'description: Unrelated local-only Skill',
+      '---',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(blockedSibling, '.env'), 'API_KEY=local-only\n');
     const originalFetch = global.fetch;
     let uploadedSkill = '';
     let uploadedPaths: string[] = [];
