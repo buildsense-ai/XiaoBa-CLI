@@ -1,4 +1,10 @@
-import { Message, ChatConfig, ChatResponse } from '../types';
+import {
+  Message,
+  ChatConfig,
+  ChatResponse,
+  type ProviderIdentity,
+  type ProviderApiType,
+} from '../types';
 import { ConfigManager } from './config';
 import { ToolDefinition } from '../types/tool';
 import {
@@ -10,8 +16,11 @@ import {
   StreamCallbacks,
   StreamRetryInfo,
 } from '../providers/provider';
-import { AnthropicProvider } from '../providers/anthropic-provider';
-import { OpenAIProvider } from '../providers/openai-provider';
+import {
+  createDefaultProviderRegistry,
+  ProviderRegistry,
+  type ProviderConfig,
+} from '../providers/provider-registry';
 import {
   prepareProviderRequestMessages,
   type ProviderRequestPreflightSummary,
@@ -47,8 +56,6 @@ const EMPTY_RESPONSE_MAX_ELAPSED_MS = 2 * 60 * 1000;
 const EMPTY_RESPONSE_MAX_DELAY_MS = 2000;
 let modelAttemptCallSequence = 0;
 
-type ProviderKind = 'openai' | 'anthropic';
-
 interface RetryPolicy {
   maxRetries: number;
   maxElapsedMs: number;
@@ -67,68 +74,52 @@ interface ModelAttemptRun {
 }
 
 export class AIService {
-  private config: ChatConfig;
+  private config: ProviderConfig;
   private provider: AIProvider;
+  private providerRegistry: ProviderRegistry;
+  private providerIdentity: ProviderIdentity;
+  private providerApiType: ProviderApiType;
 
-  constructor(overrides?: Partial<ChatConfig>) {
+  constructor(
+    overrides?: Partial<ProviderConfig>,
+    providerRegistry: ProviderRegistry = createDefaultProviderRegistry(),
+  ) {
+    this.providerRegistry = providerRegistry;
     this.config = this.withResolvedContextWindow(this.withResolvedProvider({
       ...ConfigManager.getConfig(),
       ...(overrides || {})
     }));
-    this.provider = this.createProvider(this.config);
+    const selection = this.providerRegistry.create(this.config);
+    this.provider = selection.provider;
+    this.providerIdentity = selection.providerId;
+    this.providerApiType = selection.apiType;
   }
 
-  getConfig(): ChatConfig {
+  getConfig(): ProviderConfig {
     return { ...this.config };
   }
 
-  /**
-   * 根据配置创建对应的 Provider
-   */
-  private createProvider(config: ChatConfig): AIProvider {
-    if (config.provider === 'anthropic') {
-      return new AnthropicProvider(config);
-    } else {
-      return new OpenAIProvider(config);
-    }
-  }
-
   isToolCallingSupported(): boolean {
-    return isPrimaryModelToolCallingCapable(this.config);
+    return isPrimaryModelToolCallingCapable(this.config as ChatConfig);
   }
 
   /**
    * 自动补全 provider
    */
-  private withResolvedProvider(config: ChatConfig): ChatConfig {
+  private withResolvedProvider(config: ProviderConfig): ProviderConfig {
     return {
       ...config,
-      provider: this.resolveProvider(config),
+      provider: this.providerRegistry.resolveProviderId(config),
     };
   }
 
-  private withResolvedContextWindow(config: ChatConfig): ChatConfig {
+  private withResolvedContextWindow(config: ProviderConfig): ProviderConfig {
     const contextWindowTokens = config.contextWindowTokens
-      ?? resolveModelContextWindow(config).contextWindowTokens;
+      ?? resolveModelContextWindow(config as ChatConfig).contextWindowTokens;
     return {
       ...config,
       contextWindowTokens,
     };
-  }
-
-  private resolveProvider(config: Partial<ChatConfig>): ProviderKind {
-    if (config.provider === 'openai' || config.provider === 'anthropic') {
-      return config.provider;
-    }
-
-    const apiUrl = (config.apiUrl || '').toLowerCase();
-    const model = (config.model || '').toLowerCase();
-
-    if (apiUrl.includes('anthropic') || apiUrl.includes('claude') || model.includes('claude')) {
-      return 'anthropic';
-    }
-
-    return 'openai';
   }
 
   /**
@@ -567,13 +558,9 @@ export class AIService {
       attemptNumber,
       timestamp: new Date().toISOString(),
       outcome: fields.outcome,
-      provider: this.config.provider as ProviderKind,
+      provider: this.providerIdentity,
       model: this.config.model || 'unknown',
-      apiType: this.config.provider === 'anthropic'
-        ? 'anthropic-messages'
-        : this.config.openaiApiMode === 'responses'
-          ? 'openai-responses'
-          : 'openai-chat-completions',
+      apiType: this.providerApiType,
       stream: run.stream,
       ...(run.context ? { context: run.context } : {}),
       request: {
