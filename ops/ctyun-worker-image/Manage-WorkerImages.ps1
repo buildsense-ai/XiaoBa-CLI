@@ -33,6 +33,9 @@ Set-StrictMode -Version Latest
 # Do not turn stderr writes from a successful external command into a thrown
 # ErrorRecord under $ErrorActionPreference = 'Stop'.
 $PSNativeCommandUseErrorActionPreference = $false
+# ProjectID 空值兜底：显式传入空串（例如 workflow 里 var 未配置）时回退默认
+# "0"，保证与 bake 作用域（New-CatsCoWorkerImage.ps1 默认 ProjectID 0）一致。
+if ([string]::IsNullOrEmpty($ProjectID)) { $ProjectID = "0" }
 
 function Invoke-Ctyun {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
@@ -42,7 +45,10 @@ function Invoke-Ctyun {
         if ($LASTEXITCODE -ne 0) {
             throw "ctyun-cli failed with exit code $LASTEXITCODE`n$($raw -join "`n")"
         }
-        $response = $raw | ConvertFrom-Json
+        # Join lines before parsing: ConvertFrom-Json on a multi-line JSON
+        # array would otherwise parse line by line (same as bake's
+        # Invoke-External -Capture).
+        $response = ($raw -join "`n") | ConvertFrom-Json
         if ([string]$response.statusCode -ne "800") {
             throw (
                 "Tianyi Cloud API failed: $([string]$response.errorCode) " +

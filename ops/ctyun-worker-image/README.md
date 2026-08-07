@@ -19,11 +19,33 @@ session, skill installation, or runtime `.env`.
   changing it to `false` is the emergency cost and incident kill switch.
 - The application version and full Git commit are stored in both
   `/opt/catsco/current/worker-release.json` and `/etc/catsco-image.json`.
-- Keep the newest two active images plus the image currently referenced by the
-  production launch template. Deactivate older images before deleting them.
+- `Manage-WorkerImages.ps1` automates housekeeping: `-Action Prune` keeps the
+  newest 6 `catsco-worker-*` images (bake-labeled) and deletes older ones
+  (fail-closed, deletion confirmed by name-scoped reads). It does **not**
+  check the production launch template reference — if the provisioning
+  template still points at an image older than the newest 6, pin the template
+  to a recent image first or prune manually. As a manual safety rule keep the
+  newest two active images plus the image currently referenced by the
+  production launch template.
 
 This avoids rebuilding a large system disk for documentation-only or emergency
 application releases while still allowing new workers to start without GitHub.
+
+## Image Lifecycle Management
+
+`Manage-WorkerImages.ps1` manages the private `catsco-worker-*` image set
+(created by `New-CatsCoWorkerImage.ps1`):
+
+- `-Action List`   : list all bake-channel images
+  (`imageID/name/version/commit/createdTime/status`), newest first
+- `-Action Latest` : print the newest imageID (used by deployment / the cloud
+  control plane to pick the latest image)
+- `-Action Prune`  : keep the newest `-Keep` images (default 6) and delete
+  older bake-labeled `catsco-worker-*` images; each deletion is confirmed by a
+  name-scoped `ListImage` read, and failures fail closed
+
+CI runs `Prune -Keep 6` after every successful bake (`continue-on-error`,
+30-minute budget).
 
 ## Layout
 
