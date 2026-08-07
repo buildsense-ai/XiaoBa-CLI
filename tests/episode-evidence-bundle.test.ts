@@ -123,6 +123,55 @@ describe('episode-evidence-bundle (extracted responsibility)', () => {
     assert.equal(bundle.episode, candidate);
   });
 
+  test('uses a supplied referenced-skill snapshot without rescanning runtime state', () => {
+    const skillEvolution = {
+      getRegistry: () => ({ capabilities: {} }),
+      getReferencedSkillSnapshots: () => {
+        throw new Error('unexpected referenced-skill rescan');
+      },
+    } as unknown as SkillEvolutionRuntime;
+
+    const bundle = buildEpisodeEvidenceBundle(
+      makeEpisode(),
+      makeCandidate(),
+      skillEvolution,
+      undefined,
+      undefined,
+      undefined,
+      SAMPLE_REFERENCED_SKILLS,
+    );
+
+    assert.equal(bundle.bundleId, 'v3:learning-episode:episode-test-001');
+  });
+
+  test('uses one supplied catalog snapshot without rereading either side of the catalog', () => {
+    const registry = { capabilities: {} };
+    const skillEvolution = {
+      getRegistry: () => {
+        throw new Error('unexpected Registry reread');
+      },
+      getReferencedSkillSnapshots: () => {
+        throw new Error('unexpected referenced-skill reread');
+      },
+    } as unknown as SkillEvolutionRuntime;
+
+    const bundle = buildEpisodeEvidenceBundle(
+      makeEpisode(),
+      makeCandidate(),
+      skillEvolution,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        registry: registry as any,
+        referencedSkillSnapshots: SAMPLE_REFERENCED_SKILLS,
+      },
+    );
+
+    assert.equal(bundle.bundleId, 'v3:learning-episode:episode-test-001');
+  });
+
   test('completion evidence excludes contradictions and maps to SkillEvidenceRef', () => {
     const episode = makeEpisode();
     const skillEvolution = makeSkillEvolutionStub({ capabilities: {} });

@@ -69,7 +69,13 @@ export class SkillManager {
    */
   private async loadSkillsFromPath(basePath: string): Promise<void> {
     try {
-      const skillFiles = PathResolver.findSkillFiles(basePath);
+      const generatedOutputDir = path.resolve(defaultDistilledOutputDir(basePath));
+      const skillFiles = PathResolver.findSkillFiles(basePath, {
+        // Generated capabilities are loaded from the Registry below. Skipping
+        // this subtree before recursion prevents dashboard checks from walking
+        // every historical/generated artifact on each request.
+        shouldSkipDirectory: directoryPath => path.resolve(directoryPath) === generatedOutputDir,
+      });
 
       for (const filePath of skillFiles) {
         try {
@@ -80,8 +86,30 @@ export class SkillManager {
           Logger.warning(`Failed to load skill from ${filePath}: ${error.message}`);
         }
       }
+
+      this.loadActiveGeneratedSkills();
     } catch (error: any) {
       // 目录不存在或无法访问，静默处理
+    }
+  }
+
+  /** Load only the Registry-owned generated capabilities, without discovery traversal. */
+  private loadActiveGeneratedSkills(): void {
+    if (this.registryLoadFailed) return;
+
+    for (const record of Object.values(this.registry?.capabilities ?? {})) {
+      if (!isGeneratedSkillPath(record.skillFilePath)) continue;
+      try {
+        const skill = SkillParser.parse(record.skillFilePath);
+        if (skill.metadata.name !== record.routingName) {
+          throw new Error(
+            `Generated skill route does not match Registry: file=${skill.metadata.name} registry=${record.routingName}`,
+          );
+        }
+        this.skills.set(skill.metadata.name, skill);
+      } catch (error: any) {
+        Logger.warning(`Failed to load active generated skill ${record.handle}: ${error.message}`);
+      }
     }
   }
 

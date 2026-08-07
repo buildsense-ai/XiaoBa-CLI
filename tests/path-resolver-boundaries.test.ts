@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { PathResolver } from '../src/utils/path-resolver';
@@ -57,5 +58,24 @@ describe('PathResolver runtime data boundary', () => {
     } as NodeJS.ProcessEnv;
 
     assert.equal(PathResolver.getRuntimeDataRoot(env, testRoot), path.resolve(safeRoot));
+  });
+
+  test('skill discovery skips an excluded subtree before traversing it', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-discovery-'));
+    const generatedRoot = path.join(root, 'generated-distilled');
+    try {
+      fs.mkdirSync(path.join(root, 'manual'), { recursive: true });
+      fs.mkdirSync(path.join(generatedRoot, 'capability'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'manual', 'SKILL.md'), '---\nname: manual\n---\n');
+      fs.writeFileSync(path.join(generatedRoot, 'capability', 'SKILL.md'), '---\nname: generated\n---\n');
+
+      const discovered = PathResolver.findSkillFiles(root, {
+        shouldSkipDirectory: directoryPath => path.resolve(directoryPath) === path.resolve(generatedRoot),
+      }).map(filePath => path.relative(root, filePath));
+
+      assert.deepEqual(discovered, [path.join('manual', 'SKILL.md')]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -10,6 +10,11 @@ export function defaultDistilledOutputDir(skillsRoot: string): string {
   return path.join(skillsRoot, GENERATED_DISTILLED_DIR_NAME);
 }
 
+export interface FindSkillFilesOptions {
+  /** Skip a directory before probing it or traversing any of its descendants. */
+  shouldSkipDirectory?: (directoryPath: string) => boolean;
+}
+
 export class PathResolver {
   static getRuntimeDataRoot(
     env: NodeJS.ProcessEnv = process.env,
@@ -86,7 +91,7 @@ export class PathResolver {
     }
   }
 
-  static findSkillFiles(baseDir: string): string[] {
+  static findSkillFiles(baseDir: string, options: FindSkillFilesOptions = {}): string[] {
     const results: string[] = [];
 
     if (!fs.existsSync(baseDir)) {
@@ -99,11 +104,12 @@ export class PathResolver {
       const fullPath = path.join(baseDir, entry.name);
 
       if (entry.isDirectory()) {
+        if (options.shouldSkipDirectory?.(fullPath)) continue;
         const skillFile = path.join(fullPath, 'SKILL.md');
         if (fs.existsSync(skillFile)) {
           results.push(skillFile);
         }
-        results.push(...this.findSkillFiles(fullPath));
+        results.push(...this.findSkillFiles(fullPath, options));
       }
     }
 

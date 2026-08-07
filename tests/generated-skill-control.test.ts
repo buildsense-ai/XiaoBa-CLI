@@ -9,7 +9,7 @@ import { Command } from 'commander';
 import { registerSkillCommand } from '../src/commands/skill';
 import { SkillManager } from '../src/skills/skill-manager';
 import { Logger } from '../src/utils/logger';
-import { defaultDistilledOutputDir } from '../src/utils/path-resolver';
+import { defaultDistilledOutputDir, PathResolver } from '../src/utils/path-resolver';
 import {
   computeCurrentSkillRegistryHash,
   emptyCurrentSkillRegistryState,
@@ -107,6 +107,36 @@ async function runCli(args: string[]): Promise<void> {
   registerSkillCommand(program);
   await program.parseAsync(['node', 'test', ...args]);
 }
+
+test('loads an active generated Skill without traversing the generated output tree', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-generated-discovery-'));
+  try {
+    const seeded = seedGeneratedSkill(root, 'direct-registry-discovery');
+
+    await withEnv({
+      XIAOBA_USER_DATA_DIR: root,
+      XIAOBA_SKILLS_DIR: seeded.skillsRoot,
+    }, async () => {
+      const originalFindSkillFiles = PathResolver.findSkillFiles;
+      let discoveryOptions: Parameters<typeof PathResolver.findSkillFiles>[1] | undefined;
+      (PathResolver as any).findSkillFiles = ((basePath: string, options?: Parameters<typeof PathResolver.findSkillFiles>[1]) => {
+        if (path.resolve(basePath) === path.resolve(seeded.skillsRoot)) discoveryOptions = options;
+        return originalFindSkillFiles.call(PathResolver, basePath, options);
+      }) as typeof PathResolver.findSkillFiles;
+      try {
+        const manager = new SkillManager();
+        await manager.loadSkills();
+        assert.equal(manager.getSkill(seeded.record.routingName)?.filePath, seeded.record.skillFilePath);
+        assert.equal(typeof discoveryOptions?.shouldSkipDirectory, 'function');
+        assert.equal(discoveryOptions!.shouldSkipDirectory!(seeded.outputDir), true);
+      } finally {
+        (PathResolver as any).findSkillFiles = originalFindSkillFiles;
+      }
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('retiring a generated Current Skill removes discovery, preserves immutable history, and is idempotent', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-generated-control-'));

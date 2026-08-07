@@ -1111,7 +1111,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     assert.equal(config.skillEvolutionReviewMaxCandidates, 100);
   });
 
-  test('builds each admitted bundle once and yields between admissions', async () => {
+  test('builds each admission once, shares one skill snapshot, and yields between admissions', async () => {
     const episodeIds = [
       'episode-admission-a',
       'episode-admission-b',
@@ -1126,11 +1126,11 @@ describe('RuntimeLearning — AC3: Due Review', () => {
 
     const originalGetReferencedSkillSnapshots = env.skillEvolution.getReferencedSkillSnapshots;
     const originalEnqueueReview = env.skillEvolution.enqueueReview;
-    let bundleBuilds = 0;
+    let referencedSnapshotLoads = 0;
     let admissions = 0;
     let admissionsWhenEventLoopRegainedControl: number | undefined;
     env.skillEvolution.getReferencedSkillSnapshots = () => {
-      bundleBuilds++;
+      referencedSnapshotLoads++;
       return originalGetReferencedSkillSnapshots.call(env.skillEvolution);
     };
     env.skillEvolution.enqueueReview = (bundle: EvidenceBundle) => {
@@ -1147,11 +1147,112 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       await env.runtimeLearning.wake('startup');
       await new Promise<void>(resolve => setImmediate(resolve));
 
-      assert.equal(bundleBuilds, episodeIds.length);
+      assert.equal(referencedSnapshotLoads, 1);
       assert.equal(admissions, episodeIds.length);
       assert.equal(admissionsWhenEventLoopRegainedControl, 1);
     } finally {
       env.skillEvolution.getReferencedSkillSnapshots = originalGetReferencedSkillSnapshots;
+      env.skillEvolution.enqueueReview = originalEnqueueReview;
+    }
+  });
+
+  test('keeps a yielded admission batch on one coherent Skill catalog snapshot', async () => {
+    const capabilityHandle = 'cap_coherent_admission_snapshot';
+    const initialRoutingName = 'coherent-admission-snapshot';
+    const skillFilePath = path.join(env.outputDir, capabilityHandle, 'SKILL.md');
+    const writeSkill = (routingName: string): string => {
+      const content = [
+        '---',
+        `name: ${routingName}`,
+        'description: Keep the review catalog coherent.',
+        'user-invocable: true',
+        `x-xiaoba-capability-handle: ${capabilityHandle}`,
+        '---',
+        '',
+        'Keep the review catalog coherent.',
+        '',
+      ].join('\n');
+      fs.mkdirSync(path.dirname(skillFilePath), { recursive: true });
+      fs.writeFileSync(skillFilePath, content, 'utf8');
+      return crypto.createHash('sha256').update(content).digest('hex');
+    };
+    const initialGuidanceHash = writeSkill(initialRoutingName);
+    const initialRegistry = emptyCurrentSkillRegistryState();
+    initialRegistry.catalogRevision = 1;
+    initialRegistry.capabilities[capabilityHandle] = {
+      handle: capabilityHandle,
+      revision: 1,
+      routingName: initialRoutingName,
+      description: 'Keep the review catalog coherent.',
+      skillFilePath,
+      guidanceHash: initialGuidanceHash,
+      evidenceRefs: [],
+      referencedSkills: [],
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    };
+    saveCurrentSkillRegistry(env.registryPath, initialRegistry);
+
+    const episodeIds = ['episode-coherent-catalog-a', 'episode-coherent-catalog-b'];
+    const episodes: Record<string, LearningEpisode> = {};
+    const ledger = new SkillUsageLedger(path.join(env.root, 'data', 'skill-usage-ledger.jsonl'));
+    for (const episodeId of episodeIds) {
+      const agentTurnEpisodeId = `turn-${episodeId}`;
+      episodes[episodeId] = {
+        ...eligibleReviewEpisode(episodeId, 'runtime-coherent-catalog'),
+        agentTurnEpisodeId,
+      };
+      ledger.recordGeneratedSkillLoad({
+        runtimeSessionId: 'runtime-coherent-catalog',
+        episodeId: agentTurnEpisodeId,
+        skill: {
+          capabilityHandle,
+          routingName: initialRoutingName,
+          skillFilePath,
+          guidanceHash: initialGuidanceHash,
+        },
+      });
+    }
+    env.runtimeLearning.getEpisodeStore().save({ schemaVersion: 3, episodes });
+
+    const originalEnqueueReview = env.skillEvolution.enqueueReview;
+    const admittedBundles: EvidenceBundle[] = [];
+    let registryChanged = false;
+    env.skillEvolution.enqueueReview = (bundle: EvidenceBundle) => {
+      admittedBundles.push(bundle);
+      const result = originalEnqueueReview.call(env.skillEvolution, bundle);
+      if (admittedBundles.length === 1) {
+        setImmediate(() => {
+          const nextRoutingName = 'coherent-admission-snapshot-v2';
+          const nextGuidanceHash = writeSkill(nextRoutingName);
+          const nextRegistry = emptyCurrentSkillRegistryState();
+          nextRegistry.catalogRevision = 2;
+          nextRegistry.capabilities[capabilityHandle] = {
+            ...initialRegistry.capabilities[capabilityHandle]!,
+            revision: 2,
+            routingName: nextRoutingName,
+            guidanceHash: nextGuidanceHash,
+            updatedAt: new Date().toISOString(),
+          };
+          saveCurrentSkillRegistry(env.registryPath, nextRegistry);
+          registryChanged = true;
+        });
+      }
+      return result;
+    };
+
+    try {
+      await env.runtimeLearning.wake('startup');
+
+      assert.equal(registryChanged, true);
+      assert.equal(admittedBundles.length, episodeIds.length);
+      for (const bundle of admittedBundles) {
+        assert.equal(bundle.referencedSkills[0]?.name, initialRoutingName);
+        assert.equal(bundle.referencedSkills[0]?.guidanceHash, initialGuidanceHash);
+        assert.equal(bundle.relatedCurrentSkills[0]?.routingName, initialRoutingName);
+        assert.equal(bundle.relatedCurrentSkills[0]?.guidanceHash, initialGuidanceHash);
+      }
+    } finally {
       env.skillEvolution.enqueueReview = originalEnqueueReview;
     }
   });
@@ -1201,6 +1302,48 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       assert.deepEqual(continuation.episodeIds, [episodeIds[1]!]);
     } finally {
       env.skillEvolution.enqueueReview = originalEnqueueReview;
+      if (wake) await Promise.allSettled([wake]);
+      if (drainPromise) await Promise.allSettled([drainPromise]);
+    }
+  });
+
+  test('stops deferred bundle rebuilds when drain starts at a rebuild yield', async () => {
+    const episodeIds = ['episode-drain-deferred-a', 'episode-drain-deferred-b'];
+    const episodes: Record<string, LearningEpisode> = {};
+    for (const episodeId of episodeIds) {
+      episodes[episodeId] = eligibleReviewEpisode(episodeId, 'runtime-deferred-drain');
+    }
+    env.runtimeLearning.getEpisodeStore().save({ schemaVersion: 3, episodes });
+
+    const originalGetDeferredBundleIds = env.skillEvolution.getDeferredReviewBundleIds;
+    const originalReactivateDeferredReviews = env.skillEvolution.reactivateDeferredReviews;
+    const drainStarted = createDeferred<void>();
+    let drainPromise: Promise<boolean> | undefined;
+    let rebuiltBundles: readonly EvidenceBundle[] | undefined;
+    env.skillEvolution.getDeferredReviewBundleIds = () => {
+      setImmediate(() => {
+        drainPromise = env.runtimeLearning.drain(1_000);
+        drainStarted.resolve();
+      });
+      return episodeIds.map(episodeId => `v3:learning-episode:${episodeId}`);
+    };
+    env.skillEvolution.reactivateDeferredReviews = bundles => {
+      rebuiltBundles = bundles;
+      return [];
+    };
+
+    let wake: Promise<RuntimeLearningHeartbeatResult> | undefined;
+    try {
+      wake = env.runtimeLearning.wake('startup');
+      await drainStarted.promise;
+      await wake;
+
+      assert.equal(rebuiltBundles?.length, 1);
+      assert.ok(drainPromise);
+      assert.equal(await drainPromise, true);
+    } finally {
+      env.skillEvolution.getDeferredReviewBundleIds = originalGetDeferredBundleIds;
+      env.skillEvolution.reactivateDeferredReviews = originalReactivateDeferredReviews;
       if (wake) await Promise.allSettled([wake]);
       if (drainPromise) await Promise.allSettled([drainPromise]);
     }

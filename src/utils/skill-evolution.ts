@@ -1633,15 +1633,7 @@ export class SkillEvolutionRuntime {
       ));
     };
 
-    const activeJobIds = Object.values(engine.loadStore().jobs)
-      .filter(isDueRunnableActiveJob)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt, 'en')
-        || left.jobId.localeCompare(right.jobId, 'en'))
-      .map(job => job.jobId);
-
-    for (const jobId of activeJobIds) {
-      const current = engine.loadStore().jobs[jobId];
-      if (!current || !isDueRunnableActiveJob(current)) continue;
+    const planFenceMutation = (current: EvidenceReviewJob) => {
       const bundleAuthority = classifyEvidenceBundleAuthority(current.bundle);
       const migratedLegacyBundle = bundleAuthority.legacy
         ? migratePersistedEvidenceBundleAuthority(
@@ -1662,41 +1654,15 @@ export class SkillEvolutionRuntime {
         || bundleAuthority.malformedAuthority
         || (bundleAuthority.legacy && !migratedLegacyBundle)
       ) {
-        engine.mutateStore(state => {
-          const live = state.jobs[jobId];
-          if (!live || live.disposition !== 'active') return;
-          const reason = missingLearningSource
-            ? 'Learning Episode review basis has no complete frozen source evidence; explicit migration is required.'
-            : bundleAuthority.malformedAuthority
-              ? 'Evidence Bundle authority is malformed; explicit migration is required.'
-              : 'Persisted Evidence Bundle has no provable authority; explicit migration is required.';
-          live.disposition = 'deferred';
-          live.deferState = {
-            reviewerVersion: this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
-            reason,
-            deferredAt: now.toISOString(),
-          };
-          live.terminalReason = reason;
-          live.nextDueAt = undefined;
-          live.updatedAt = now.toISOString();
-          upsertEvidenceReviewJob(state, live);
-        });
-        continue;
+        const reason = missingLearningSource
+          ? 'Learning Episode review basis has no complete frozen source evidence; explicit migration is required.'
+          : bundleAuthority.malformedAuthority
+            ? 'Evidence Bundle authority is malformed; explicit migration is required.'
+            : 'Persisted Evidence Bundle has no provable authority; explicit migration is required.';
+        return { kind: 'defer' as const, reason };
       }
       if (migratedLegacyBundle) {
-        const candidate = this.extractCandidateFromBundle(migratedLegacyBundle);
-        this.supersedeStaleReviewJob(
-          engine,
-          current,
-          migratedLegacyBundle,
-          candidate,
-          'Persisted pre-authority Evidence Bundle migrated to an explicit authority successor.',
-          declaredRelevantRegistryReadSetFromBundle(migratedLegacyBundle),
-        );
-        supersededJobIds.push(current.jobId);
-        const successorJobId = engine.loadStore().jobs[current.jobId]?.successorJobId;
-        if (successorJobId) successorJobIds.push(successorJobId);
-        continue;
+        return { kind: 'migrate' as const, bundle: migratedLegacyBundle };
       }
       const preFence = this.decideLiveReviewFence(
         current,
@@ -1706,17 +1672,76 @@ export class SkillEvolutionRuntime {
         preFence.decision.kind !== 'stale_before_fence'
         && preFence.decision.kind !== 'corrupted_basis'
       ) {
+        return { kind: 'none' as const };
+      }
+      return {
+        kind: 'supersede' as const,
+        bundle: preFence.liveBundle,
+        reason: preFence.decision.reason,
+        registryReadSet: preFence.liveRegistryReadSet,
+      };
+    };
+
+    // Scan the durable store once, but retain only IDs whose state may need a
+    // mutation. The large parsed Job/Bundles snapshot falls out of scope before
+    // this loop. Each rare candidate is then re-read and re-planned from live
+    // state before a write, avoiding both per-job full-store parsing and batch
+    // heap retention.
+    const candidateJobIds = (() => {
+      const snapshot = engine.loadStore();
+      return Object.values(snapshot.jobs)
+        .filter(isDueRunnableActiveJob)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt, 'en')
+          || left.jobId.localeCompare(right.jobId, 'en'))
+        .filter(job => planFenceMutation(job).kind !== 'none')
+        .map(job => job.jobId);
+    })();
+
+    for (const jobId of candidateJobIds) {
+      const current = engine.loadStore().jobs[jobId];
+      if (!current || !isDueRunnableActiveJob(current)) continue;
+      const plan = planFenceMutation(current);
+      if (plan.kind === 'none') continue;
+
+      if (plan.kind === 'defer') {
+        engine.mutateStore(state => {
+          const live = state.jobs[jobId];
+          if (!live || !isDueRunnableActiveJob(live)) return;
+          live.disposition = 'deferred';
+          live.deferState = {
+            reviewerVersion: this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
+            reason: plan.reason,
+            deferredAt: now.toISOString(),
+          };
+          live.terminalReason = plan.reason;
+          live.nextDueAt = undefined;
+          live.updatedAt = now.toISOString();
+          upsertEvidenceReviewJob(state, live);
+        });
         continue;
       }
-      const candidate = this.extractCandidateFromBundle(current.bundle);
-      this.supersedeStaleReviewJob(
-        engine,
-        current,
-        preFence.liveBundle,
-        candidate,
-        preFence.decision.reason,
-        preFence.liveRegistryReadSet,
-      );
+
+      if (plan.kind === 'migrate') {
+        const candidate = this.extractCandidateFromBundle(plan.bundle);
+        this.supersedeStaleReviewJob(
+          engine,
+          current,
+          plan.bundle,
+          candidate,
+          'Persisted pre-authority Evidence Bundle migrated to an explicit authority successor.',
+          declaredRelevantRegistryReadSetFromBundle(plan.bundle),
+        );
+      } else {
+        const candidate = this.extractCandidateFromBundle(current.bundle);
+        this.supersedeStaleReviewJob(
+          engine,
+          current,
+          plan.bundle,
+          candidate,
+          plan.reason,
+          plan.registryReadSet,
+        );
+      }
       supersededJobIds.push(current.jobId);
       const successorJobId = engine.loadStore().jobs[current.jobId]?.successorJobId;
       if (successorJobId) successorJobIds.push(successorJobId);
@@ -2204,9 +2229,11 @@ export class SkillEvolutionRuntime {
   }
 
   /** Bounded snapshots used by the production Evidence Bundle constructor. */
-  getReferencedSkillSnapshots(): ReferencedSkillSnapshot[] {
+  getReferencedSkillSnapshots(
+    registry: CurrentSkillRegistryState = this.getRegistry(),
+  ): ReferencedSkillSnapshot[] {
     const manual = discoverManualSkillSnapshots(this.options.outputDir);
-    const generated = Object.values(this.getRegistry().capabilities).map(record => ({
+    const generated = Object.values(registry.capabilities).map(record => ({
       name: record.routingName,
       capabilityHandle: record.handle,
       guidanceHash: record.guidanceHash,
@@ -4598,7 +4625,11 @@ function discoverManualSkillSnapshots(outputDir: string): ReferencedSkillSnapsho
   const generatedRoot = path.resolve(outputDir);
   if (!fs.existsSync(skillsRoot)) return [];
 
-  return PathResolver.findSkillFiles(skillsRoot)
+  return PathResolver.findSkillFiles(skillsRoot, {
+    // Generated skills are registry-owned and excluded below. Skip their
+    // subtree up front instead of recursively traversing it on every bundle.
+    shouldSkipDirectory: directoryPath => isPathWithin(path.resolve(directoryPath), generatedRoot),
+  })
     .filter(filePath => !isPathWithin(path.resolve(filePath), generatedRoot))
     .flatMap(filePath => {
       try {

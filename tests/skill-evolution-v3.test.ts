@@ -3719,6 +3719,44 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
+  test('pre-claim fence reads one snapshot for unchanged active jobs', () => {
+    const env = setup();
+    try {
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const engine = runtime.getEvidenceReviewEngine();
+      for (const suffix of ['a', 'b', 'c']) {
+        const candidate = {
+          ...fixtureCandidate(),
+          capabilityId: `fence-snapshot-${suffix}`,
+        };
+        engine.createJob({
+          bundle: fixtureCandidateBundle(candidate, `fence-snapshot-${suffix}`),
+          candidate,
+          workClass: 'live_learning',
+        });
+      }
+
+      const originalLoadStore = engine.loadStore.bind(engine);
+      let loadCount = 0;
+      (engine as any).loadStore = () => {
+        loadCount += 1;
+        return originalLoadStore();
+      };
+      try {
+        assert.deepEqual(
+          runtime.fenceStaleActiveJobsBeforeFairAdvance(new Date('2026-07-10T00:00:01.000Z')),
+          { supersededJobIds: [], successorJobIds: [] },
+        );
+      } finally {
+        (engine as any).loadStore = originalLoadStore;
+      }
+
+      assert.equal(loadCount, 1);
+    } finally {
+      env.cleanup();
+    }
+  });
+
   test('commit audit validates and retains independent reader transcripts', async () => {
     const env = setup();
     try {
