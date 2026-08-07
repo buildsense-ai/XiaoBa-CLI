@@ -112,6 +112,55 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.match(String(blocked?.share_error || ''), /sensitive material/i);
   });
 
+  test('keeps invalid SKILL.md entries visible but disables sharing with an actionable error', async () => {
+    const invalidRoot = path.join(runtimeRoot, 'skills', 'test_8_7');
+    const malformedRoot = path.join(runtimeRoot, 'skills', 'broken_yaml');
+    fs.mkdirSync(invalidRoot, { recursive: true });
+    fs.mkdirSync(malformedRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(invalidRoot, 'SKILL.md'),
+      '# Test Skill\n\nThis file has no YAML name or description.\n',
+    );
+    fs.writeFileSync(
+      path.join(malformedRoot, 'SKILL.md'),
+      '---\nname: [unterminated\ndescription: Broken YAML\n---\n',
+    );
+
+    const compatibilityScan = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'));
+    assert.equal(compatibilityScan.length, 3);
+
+    const result = await handler.execute(request({ request_id: 'workspace-with-invalid-skill' }));
+    const skills = result.skills as Array<Record<string, unknown>>;
+    assert.equal(skills.length, 3);
+    assert.equal(skills.find(skill => skill.name === 'local-demo')?.can_share, true);
+    const invalid = skills.find(skill => skill.name === 'test_8_7');
+    assert.ok(invalid?.local_skill_id);
+    assert.equal(invalid?.can_share, false);
+    assert.match(String(invalid?.share_error || ''), /name.*description.*YAML frontmatter/i);
+    const malformed = skills.find(skill => skill.name === 'broken_yaml');
+    assert.ok(malformed?.local_skill_id);
+    assert.equal(malformed?.can_share, false);
+    assert.match(String(malformed?.share_error || ''), /SKILL\.md.*格式无效.*YAML frontmatter/i);
+
+    await assert.rejects(
+      handler.execute(request({
+        request_id: 'share-invalid-skill',
+        tool_name: SKILLHUB_THIN_RPC_TOOLS.share,
+        payload: {
+          bot_uid: '42',
+          local_skill_id: invalid?.local_skill_id,
+          skill_name: 'test_8_7',
+          confirm_publish: true,
+        },
+      })),
+      (error: any) => (
+        error instanceof SkillHubThinRpcError
+        && error.code === 'LOCAL_SKILL_INVALID'
+        && /name.*description.*YAML frontmatter/i.test(error.message)
+      ),
+    );
+  });
+
   test('sorts valid and rejected local Skills by the complete canonical ID', async () => {
     const skillsRoot = path.join(runtimeRoot, 'skills');
     writeBotSkillLocalMarker(path.join(skillsRoot, 'local-demo'), {

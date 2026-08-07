@@ -126,8 +126,7 @@ export function scanBotSkillWorkspace(
           }
           const marker = readBotSkillLocalMarker(skillDir);
           if (!marker) throw error;
-          const parsed = matter(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8'));
-          const name = String(parsed.data?.name || path.basename(skillDir)).trim() || path.basename(skillDir);
+          const name = readLocalSkillName(skillDir);
           if (localSkillIds.has(marker.localSkillId)) {
             throw new Error(`Bot Skill workspace contains a duplicate localSkillId: ${marker.localSkillId}`);
           }
@@ -179,8 +178,7 @@ export function scanLocalBotSkill(
   const reference = marker.reference?.contentHash === contentHash
     ? marker.reference
     : undefined;
-  const parsed = matter(fs.readFileSync(skillFile, 'utf8'));
-  const name = String(parsed.data?.name || path.basename(root)).trim() || path.basename(root);
+  const name = readLocalSkillName(root);
   return {
     localSkillId: marker.localSkillId,
     name,
@@ -193,6 +191,16 @@ export function scanLocalBotSkill(
     ...(reference ? { reference } : {}),
     ...(marker.origin ? { origin: marker.origin } : {}),
   };
+}
+
+function readLocalSkillName(skillDir: string): string {
+  const fallback = path.basename(skillDir);
+  try {
+    const parsed = matter(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8'), {});
+    return String(parsed.data?.name || fallback).trim() || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 export function readBotSkillLocalMarker(skillDir: string): BotSkillLocalMarker | undefined {
