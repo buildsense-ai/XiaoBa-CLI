@@ -9,6 +9,10 @@ Worker 私有镜像生命周期管理（与 New-CatsCoWorkerImage.ps1 配套）�
             不在第 1 页导致的误判），确认超时可配（-ConfirmTimeoutMinutes），
             失败 fail-closed 聚合报告
 
+  安全（Prune）：必须有 -ProtectedImageIDs（逗号分隔）声明生产 launch template
+  等仍引用的镜像，自动清理才会执行；受保护镜像即使超过保留数也绝不删除。
+  未配置保护列表但有需要删除的旧镜像时，Prune 拒绝执行（fail-closed）。
+
 凭据：复用 ctyun-cli（环境变量 CTYUN_AK/CTYUN_SK 或 ~/.ctyun-cli.yaml），与 bake 一致。
 #>
 [CmdletBinding()]
@@ -25,7 +29,9 @@ param(
     [int]$Keep = 6,
 
     [ValidateRange(1, 30)]
-    [int]$ConfirmTimeoutMinutes = 3
+    [int]$ConfirmTimeoutMinutes = 3,
+
+    [string]$ProtectedImageIDs = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -152,8 +158,31 @@ if ($sorted.Count -le $Keep) {
     exit 0
 }
 
-$toDelete = @($sorted | Select-Object -Skip $Keep)
-Write-Host "Pruning $($toDelete.Count) old worker image(s), keeping latest $Keep"
+# 受保护镜像：生产 launch template / 回滚 / 分批发布仍引用的镜像，绝不删除。
+# 有需要删除的旧镜像时必须显式声明保护列表（fail-closed），防止自动清理
+# 误删生产仍在使用的镜像。
+$protected = @(
+    $ProtectedImageIDs -split ',' |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -ne "" }
+)
+if ($protected.Count -eq 0) {
+    throw (
+        "Refusing to auto-prune: no protected image IDs configured. " +
+        "Set -ProtectedImageIDs to the production launch-template image(s) " +
+        "before enabling automatic cleanup."
+    )
+}
+
+$toDelete = @(
+    @($sorted | Select-Object -Skip $Keep) |
+        Where-Object { $protected -notcontains [string]$_.imageID }
+)
+if ($toDelete.Count -eq 0) {
+    Write-Host "All would-be-pruned images are protected; nothing to delete"
+    exit 0
+}
+Write-Host "Pruning $($toDelete.Count) old worker image(s), keeping latest $Keep ($($protected.Count) protected)"
 $failures = [Collections.Generic.List[string]]::new()
 foreach ($img in $toDelete) {
     $imageID = [string](Get-Prop -Obj $img -Name "imageID")

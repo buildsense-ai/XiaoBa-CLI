@@ -404,6 +404,12 @@ jobs:
         # blocks the freshly baked image (the primary deliverable). 30 minutes
         # covers the worst case where many stale images accumulated (each
         # delete can take up to a few minutes to confirm).
+        #
+        # SAFETY: Prune refuses to run without CTYUN_WORKER_PROTECTED_IMAGE_IDS —
+        # the image(s) still referenced by the production launch template (or
+        # a pinned rollback target) must be declared so auto-cleanup can never
+        # delete an image that new workers still need. Configure the repo var
+        # before relying on automatic cleanup.
         if: ${{ steps.bake.outcome == 'success' }}
         timeout-minutes: 30
         continue-on-error: true
@@ -413,12 +419,14 @@ jobs:
           CTYUN_SK: ${{ secrets.CTYUN_SK }}
           WORKER_REGION_ID: ${{ vars.CTYUN_WORKER_REGION_ID }}
           WORKER_PROJECT_ID: ${{ vars.CTYUN_WORKER_PROJECT_ID }}
+          WORKER_PROTECTED_IMAGE_IDS: ${{ vars.CTYUN_WORKER_PROTECTED_IMAGE_IDS }}
         run: |
           ./ops/ctyun-worker-image/Manage-WorkerImages.ps1 `
             -Action Prune `
             -Keep 6 `
             -RegionID $env:WORKER_REGION_ID `
-            -ProjectID $env:WORKER_PROJECT_ID
+            -ProjectID $env:WORKER_PROJECT_ID `
+            -ProtectedImageIDs $env:WORKER_PROTECTED_IMAGE_IDS
 
       - name: Reconcile this attempt after a failed bake
         if: ${{ always() && steps.bake.outcome != 'success' }}
