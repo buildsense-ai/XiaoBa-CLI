@@ -46,8 +46,13 @@ export class OpenAIProvider implements AIProvider {
   /**
    * 构建请求体
    */
-  private buildRequestBody(messages: Message[], tools?: ToolDefinition[], stream = false): any {
-    const sanitizedMessages = messages.map(message => this.sanitizeMessage(message));
+  private buildRequestBody(
+    messages: Message[],
+    tools?: ToolDefinition[],
+    stream = false,
+    options?: AIRequestOptions,
+  ): any {
+    const sanitizedMessages = messages.map(message => this.sanitizeMessage(message, options));
 
     const body: any = {
       model: this.model,
@@ -81,7 +86,7 @@ export class OpenAIProvider implements AIProvider {
     return body;
   }
 
-  private sanitizeMessage(message: Message): any {
+  private sanitizeMessage(message: Message, options?: AIRequestOptions): any {
     const sanitized: any = {
       role: message.role,
       content: this.sanitizeContent(message.content),
@@ -99,7 +104,7 @@ export class OpenAIProvider implements AIProvider {
           arguments: toolCall.function.arguments,
         },
       }));
-      const reasoningContent = this.extractOpenAIReasoningContent(message);
+      const reasoningContent = this.extractOpenAIReasoningContent(message, options?.reasoningReplayMode);
       if (reasoningContent) {
         sanitized.reasoning_content = reasoningContent;
       }
@@ -111,8 +116,11 @@ export class OpenAIProvider implements AIProvider {
     return sanitized;
   }
 
-  private extractOpenAIReasoningContent(message: Message): string | undefined {
-    if (!this.shouldReplayOpenAIReasoningContent()) return undefined;
+  private extractOpenAIReasoningContent(
+    message: Message,
+    replayMode?: AIRequestOptions['reasoningReplayMode'],
+  ): string | undefined {
+    if (!this.shouldReplayOpenAIReasoningContent(replayMode)) return undefined;
     if (!this.canReplayProviderContent(message, 'openai-chat-completions')) return undefined;
     if (!Array.isArray(message.providerContent) || !message.tool_calls?.length) return undefined;
     const block = message.providerContent.find(item =>
@@ -127,7 +135,8 @@ export class OpenAIProvider implements AIProvider {
     return reasoning || undefined;
   }
 
-  private shouldReplayOpenAIReasoningContent(): boolean {
+  private shouldReplayOpenAIReasoningContent(replayMode?: AIRequestOptions['reasoningReplayMode']): boolean {
+    if (replayMode) return replayMode === 'include';
     return supportsOpenAIReasoningReplay({
       apiUrl: this.apiUrl,
       model: this.model,
@@ -184,7 +193,7 @@ export class OpenAIProvider implements AIProvider {
     if (this.openaiApiMode === 'responses') {
       return this.chatResponses(messages, tools, options);
     }
-    const body = this.buildRequestBody(messages, tools, false);
+    const body = this.buildRequestBody(messages, tools, false, options);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.chatCompletionsUrl,
       body,
@@ -231,7 +240,7 @@ export class OpenAIProvider implements AIProvider {
     if (this.openaiApiMode === 'responses') {
       return this.chatStreamResponses(messages, tools, callbacks, options);
     }
-    const body = this.buildRequestBody(messages, tools, true);
+    const body = this.buildRequestBody(messages, tools, true, options);
 
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.chatCompletionsUrl,

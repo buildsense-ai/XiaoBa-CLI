@@ -275,6 +275,13 @@ function shouldSuppressStructuredToolProgress(channelSource?: string): boolean {
 }
 
 function formatModelRetryThinking(attempt: number, maxRetries: number, info?: StreamRetryInfo): string {
+  if (info?.recoveryAction === 'reasoning_history_degrade') {
+    return '检测到历史推理状态缺失，已安全降级旧工具记录，正在自动修复后重试 1/1...';
+  }
+  if (info?.recoveryAction === 'reasoning_replay_include'
+    || info?.recoveryAction === 'reasoning_replay_omit') {
+    return '检测到模型推理上下文方言不兼容，正在自动修复后重试 1/1...';
+  }
   const retryIn = info && info.delayMs >= 1000
     ? `，约 ${Math.ceil(info.delayMs / 1000)} 秒后继续`
     : '';
@@ -1228,6 +1235,7 @@ export class CatsCompanyBot {
             max_retries: maxRetries,
             delay_ms: info?.delayMs,
             status: info?.status,
+            recovery_action: info?.recoveryAction,
           });
         } catch (err: any) {
           Logger.warning(`重试提示发送失败: ${err.message}`);

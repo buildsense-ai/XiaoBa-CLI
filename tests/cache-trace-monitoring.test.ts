@@ -261,6 +261,41 @@ test('observer records provider request preflight repairs without storing messag
   }
 });
 
+test('observer records evidence-driven reasoning recovery on the exact retry attempt', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-reasoning-recovery-'));
+  try {
+    const observer = new CacheTraceObserver({
+      sessionId: 'cache:reasoning-recovery',
+      traceDir: dir,
+      env: { XIAOBA_CACHE_TRACE: 'true' },
+    });
+    observer.observe(attemptEvent({ outcome: 'started' }));
+    observer.observe(attemptEvent({
+      outcome: 'retrying',
+      error: Object.assign(new Error('reasoning_content is required'), { response: { status: 400 } }),
+      retry: {
+        retryNumber: 1,
+        maxRetries: 1,
+        elapsedMs: 3,
+        maxElapsedMs: 30_000,
+        delayMs: 0,
+        recoveryAction: 'reasoning_history_degrade',
+      },
+    }));
+    await observer.drain();
+
+    const lines = fs.readFileSync(listTraceFiles(dir)[0], 'utf8')
+      .trim()
+      .split(/\r?\n/)
+      .map(line => JSON.parse(line));
+    assert.equal(lines[0].lifecycle.retry_recovery_action, undefined);
+    assert.equal(lines[1].lifecycle.retry_recovery_action, 'reasoning_history_degrade');
+    assert.equal(lines[1].failure.http_status, 400);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('one attempt keeps one JSONL file when it crosses midnight', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-midnight-'));
   try {

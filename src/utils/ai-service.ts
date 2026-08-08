@@ -16,6 +16,11 @@ import {
   prepareProviderRequestMessages,
   type ProviderRequestPreflightSummary,
 } from '../providers/request-preflight';
+import {
+  planDeepSeekReasoningRecovery,
+  type ReasoningReplayRecoveryAction,
+} from '../providers/deepseek-reasoning-recovery';
+import type { OpenAIReasoningReplayMode } from './reasoning-effort';
 import { Logger } from './logger';
 import { isPrimaryModelToolCallingCapable } from './model-capabilities';
 import { resolveModelContextWindow } from './model-context-window';
@@ -64,6 +69,18 @@ interface ModelAttemptRun {
   tools: readonly ToolDefinition[];
   stream: boolean;
   preflight?: ProviderRequestPreflightSummary;
+}
+
+interface RetryRecoveryPlan {
+  action: ReasoningReplayRecoveryAction;
+  messages: Message[];
+  apply(): void;
+}
+
+interface ReasoningRecoveryRuntime {
+  getMessages(): Message[];
+  getOptions(): AIRequestOptions;
+  plan(error: unknown): RetryRecoveryPlan | undefined;
 }
 
 export class AIService {
@@ -140,13 +157,24 @@ export class AIService {
     }
 
     const prepared = this.prepareProviderRequest(messages);
+    const recovery = this.createReasoningRecoveryRuntime(prepared.messages, options);
+    const attemptRun = this.createModelAttemptRun(
+      recovery.getMessages(),
+      tools,
+      false,
+      options,
+      prepared.summary,
+    );
     try {
       return await this.withRetry(
-        async () => this.requireUsableResponse(await this.provider.chat(prepared.messages, tools, options)),
+        async () => this.requireUsableResponse(
+          await this.provider.chat(recovery.getMessages(), tools, recovery.getOptions()),
+        ),
         undefined,
         options.signal,
         undefined,
-        this.createModelAttemptRun(prepared.messages, tools, false, options, prepared.summary),
+        attemptRun,
+        error => recovery.plan(error),
       );
     } catch (error: any) {
       throw this.wrapError(error);
@@ -170,6 +198,7 @@ export class AIService {
 
     const allowStreamRetry = process.env.GAUZ_STREAM_RETRY === 'true';
     const prepared = this.prepareProviderRequest(messages);
+    const recovery = this.createReasoningRecoveryRuntime(prepared.messages, options);
     let hasStreamedText = false;
     const providerCallbacks = this.createProviderStreamCallbacks(callbacks, () => {
       hasStreamedText = true;
@@ -178,12 +207,18 @@ export class AIService {
     try {
       const result = await this.withRetry(
         async () => this.requireUsableResponse(
-          await this.provider.chatStream(prepared.messages, tools, providerCallbacks, options),
+          await this.provider.chatStream(
+            recovery.getMessages(),
+            tools,
+            providerCallbacks,
+            recovery.getOptions(),
+          ),
         ),
         callbacks,
         options.signal,
         () => allowStreamRetry || !hasStreamedText,
-        this.createModelAttemptRun(prepared.messages, tools, true, options, prepared.summary),
+        this.createModelAttemptRun(recovery.getMessages(), tools, true, options, prepared.summary),
+        error => recovery.plan(error),
       );
       callbacks?.onComplete?.(result);
       return result;
@@ -219,6 +254,39 @@ export class AIService {
       );
     }
     return prepared;
+  }
+
+  private createReasoningRecoveryRuntime(
+    initialMessages: Message[],
+    options: AIRequestOptions,
+  ): ReasoningRecoveryRuntime {
+    let messages = initialMessages;
+    let replayMode: OpenAIReasoningReplayMode | undefined;
+    let recoveryUsed = false;
+
+    return {
+      getMessages: () => messages,
+      getOptions: () => replayMode ? { ...options, reasoningReplayMode: replayMode } : options,
+      plan: (error: unknown) => {
+        if (recoveryUsed) return undefined;
+        const recovery = planDeepSeekReasoningRecovery({
+          error,
+          config: this.config,
+          messages,
+          currentMode: replayMode,
+        });
+        if (!recovery) return undefined;
+        return {
+          action: recovery.action,
+          messages: recovery.messages,
+          apply: () => {
+            recoveryUsed = true;
+            messages = recovery.messages;
+            replayMode = recovery.replayMode;
+          },
+        };
+      },
+    };
   }
 
   private requireUsableResponse(response: ChatResponse): ChatResponse {
@@ -407,6 +475,7 @@ export class AIService {
     signal?: AbortSignal,
     shouldRetry?: (error: any, attempt: number) => boolean,
     attemptRun?: ModelAttemptRun,
+    planRetryRecovery?: (error: unknown) => RetryRecoveryPlan | undefined,
   ): Promise<T> {
     const startedAt = Date.now();
 
@@ -443,16 +512,21 @@ export class AIService {
           throw this.createAbortError();
         }
 
-        const policy = this.resolveRetryPolicy(error);
         const retryAttempt = attempt + 1;
         const elapsedMs = Date.now() - startedAt;
-        const stopReason = this.resolveRetryStopReason(
-          error,
-          retryAttempt,
-          policy,
-          elapsedMs,
-          shouldRetry,
-        );
+        const streamAllowsRetry = shouldRetry?.(error, retryAttempt) !== false;
+        const recovery = streamAllowsRetry ? planRetryRecovery?.(error) : undefined;
+        const policy = recovery ? {
+          maxRetries: 1,
+          maxElapsedMs: 30_000,
+          baseDelayMs: 0,
+          maxDelayMs: 0,
+        } : this.resolveRetryPolicy(error);
+        const stopReason = recovery
+          ? undefined
+          : streamAllowsRetry
+            ? this.resolveRetryStopReason(error, retryAttempt, policy, elapsedMs)
+            : 'stream_output_started';
         if (stopReason) {
           attachRetrySummary(error, {
             attempt_count: attemptNumber,
@@ -483,7 +557,7 @@ export class AIService {
         }
 
         // 计算等待时间：优先用 Retry-After，否则指数退避
-        const delay = this.resolveRetryDelayMs(error, retryAttempt, policy, elapsedMs);
+        const delay = recovery ? 0 : this.resolveRetryDelayMs(error, retryAttempt, policy, elapsedMs);
         this.emitModelAttempt(attemptRun, attemptNumber, {
           outcome: 'retrying',
           durationMs: Date.now() - attemptStartedAt,
@@ -494,27 +568,37 @@ export class AIService {
             delayMs: delay,
             elapsedMs,
             maxElapsedMs: policy.maxElapsedMs,
+            ...(recovery ? { recoveryAction: recovery.action } : {}),
           },
         });
 
         const status = this.extractStatus(error) || this.extractErrorCode(error) || 'unknown';
         const retryInfo: StreamRetryInfo = {
-          attempt: retryAttempt,
+          attempt: recovery ? 1 : retryAttempt,
           maxRetries: policy.maxRetries,
           delayMs: delay,
           elapsedMs,
           maxElapsedMs: policy.maxElapsedMs,
           status,
           message: this.extractErrorMessage(error),
+          ...(recovery ? { recoveryAction: recovery.action } : {}),
         };
-        await this.notifyRetry(callbacks, retryAttempt, policy.maxRetries, retryInfo);
-
-        Logger.warning(
-          `API 调用失败 (${status})，${delay.toFixed(0)}ms 后重试 (${retryAttempt}/${policy.maxRetries})... `
-          + `[${this.config.provider}/${this.config.model || 'default'}]`
-        );
-
-        await this.sleepWithAbort(delay, signal);
+        if (recovery) {
+          recovery.apply();
+          if (attemptRun) attemptRun.messages = recovery.messages;
+          await this.notifyRetry(callbacks, 1, 1, retryInfo);
+          Logger.warning(
+            `Provider reasoning replay dialect repaired (${recovery.action}); retrying once `
+            + `[${this.config.provider}/${this.config.model || 'default'}]`,
+          );
+        } else {
+          await this.notifyRetry(callbacks, retryAttempt, policy.maxRetries, retryInfo);
+          Logger.warning(
+            `API 调用失败 (${status})，${delay.toFixed(0)}ms 后重试 (${retryAttempt}/${policy.maxRetries})... `
+            + `[${this.config.provider}/${this.config.model || 'default'}]`,
+          );
+          await this.sleepWithAbort(delay, signal);
+        }
       }
     }
   }
@@ -524,10 +608,8 @@ export class AIService {
     retryAttempt: number,
     policy: RetryPolicy,
     elapsedMs: number,
-    shouldRetry?: (error: any, attempt: number) => boolean,
   ): ModelAttemptStopReason | undefined {
     if (!this.isRetryable(error)) return 'non_retryable';
-    if (shouldRetry?.(error, retryAttempt) === false) return 'stream_output_started';
     if (retryAttempt > policy.maxRetries) return 'retry_limit_exhausted';
     if (elapsedMs >= policy.maxElapsedMs) return 'retry_window_exhausted';
     return undefined;

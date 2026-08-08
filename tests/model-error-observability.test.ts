@@ -115,5 +115,13 @@ describe('model error observability', () => {
     assert.equal(replay.category, 'reasoning_replay_required');
     assert.equal(replay.retry_strategy, 'fix_and_retry_once');
     assert.equal(replay.recovery_action, 'repair_session');
+
+    const incompatibleReplay = classifyModelError(
+      new Error('Unknown field reasoning_content: this parameter is not allowed'),
+      noKnownFlags,
+    );
+    assert.equal(incompatibleReplay.category, 'reasoning_replay_required');
+    assert.equal(incompatibleReplay.error_code, 'reasoning_replay_incompatible');
+    assert.equal(incompatibleReplay.confidence, 'high');
   });
 });
