@@ -1,4 +1,12 @@
-import { Message, ChatConfig, ChatResponse } from '../types';
+import {
+  Message,
+  ChatConfig,
+  ChatResponse,
+  type BuiltInProviderId,
+  type ProviderApiType,
+  type ProviderId,
+  type ProviderRuntimeConfig,
+} from '../types';
 import { ConfigManager } from './config';
 import { ToolDefinition } from '../types/tool';
 import {
@@ -10,8 +18,7 @@ import {
   StreamCallbacks,
   StreamRetryInfo,
 } from '../providers/provider';
-import { AnthropicProvider } from '../providers/anthropic-provider';
-import { OpenAIProvider } from '../providers/openai-provider';
+import { createDefaultProviderRegistry, type ProviderRegistry } from '../providers/provider-registry';
 import {
   prepareProviderRequestMessages,
   type ProviderRequestPreflightSummary,
@@ -56,7 +63,9 @@ const TRANSIENT_HTTP_MAX_RETRIES = 2;
 const GATEWAY_TIMEOUT_MAX_RETRIES = 1;
 let modelAttemptCallSequence = 0;
 
-type ProviderKind = 'openai' | 'anthropic';
+function isBuiltInProviderId(providerId: ProviderId | undefined): providerId is BuiltInProviderId {
+  return providerId === 'openai' || providerId === 'anthropic';
+}
 
 interface RetryPolicy {
   maxRetries: number;
@@ -76,69 +85,54 @@ interface ModelAttemptRun {
   preflight?: ProviderRequestPreflightSummary;
 }
 
+export interface AIServiceOptions {
+  providerRegistry?: ProviderRegistry;
+}
+
 export class AIService {
   private config: ChatConfig;
   private provider: AIProvider;
+  private providerId: ProviderId;
+  private providerApiType: ProviderApiType;
 
-  constructor(overrides?: Partial<ChatConfig>) {
-    this.config = this.withResolvedContextWindow(this.withResolvedProvider({
+  constructor(overrides?: Partial<ProviderRuntimeConfig>, options: AIServiceOptions = {}) {
+    const runtimeConfig = this.withResolvedContextWindow({
       ...ConfigManager.getConfig(),
-      ...(overrides || {})
-    }));
-    this.provider = this.createProvider(this.config);
+      ...(overrides || {}),
+    });
+    const resolved = (options.providerRegistry ?? createDefaultProviderRegistry()).create(runtimeConfig);
+    const {
+      provider: _runtimeProvider,
+      providerApiType: _providerApiType,
+      ...chatConfig
+    } = runtimeConfig;
+    this.config = {
+      ...chatConfig,
+      ...(isBuiltInProviderId(resolved.providerId) ? { provider: resolved.providerId } : {}),
+    };
+    this.provider = resolved.provider;
+    this.providerId = resolved.providerId;
+    this.providerApiType = resolved.apiType;
   }
 
   getConfig(): ChatConfig {
     return { ...this.config };
   }
 
-  /**
-   * 根据配置创建对应的 Provider
-   */
-  private createProvider(config: ChatConfig): AIProvider {
-    if (config.provider === 'anthropic') {
-      return new AnthropicProvider(config);
-    } else {
-      return new OpenAIProvider(config);
-    }
-  }
-
   isToolCallingSupported(): boolean {
     return isPrimaryModelToolCallingCapable(this.config);
   }
 
-  /**
-   * 自动补全 provider
-   */
-  private withResolvedProvider(config: ChatConfig): ChatConfig {
-    return {
-      ...config,
-      provider: this.resolveProvider(config),
-    };
-  }
-
-  private withResolvedContextWindow(config: ChatConfig): ChatConfig {
+  private withResolvedContextWindow(config: ProviderRuntimeConfig): ProviderRuntimeConfig {
     const contextWindowTokens = config.contextWindowTokens
-      ?? resolveModelContextWindow(config).contextWindowTokens;
+      ?? resolveModelContextWindow({
+        ...config,
+        provider: isBuiltInProviderId(config.provider) ? config.provider : undefined,
+      }).contextWindowTokens;
     return {
       ...config,
       contextWindowTokens,
     };
-  }
-
-  private resolveProvider(config: Partial<ChatConfig>): ProviderKind {
-    if (config.provider === 'openai' || config.provider === 'anthropic') {
-      return config.provider;
-    }
-
-    const apiUrl = (config.apiUrl || '').toLowerCase();
-    const model = (config.model || '').toLowerCase();
-
-    if (apiUrl.includes('anthropic') || apiUrl.includes('claude') || model.includes('claude')) {
-      return 'anthropic';
-    }
-
-    return 'openai';
   }
 
   /**
@@ -277,7 +271,7 @@ export class AIService {
       return this.createAbortError();
     }
 
-    const provider = this.config.provider;
+    const provider = this.providerId;
     const model = this.config.model;
 
     Logger.error(
@@ -569,7 +563,7 @@ export class AIService {
 
         Logger.warning(
           `API 调用失败 (${status})，${delay.toFixed(0)}ms 后重试 (${retryAttempt}/${policy.maxRetries})... `
-          + `[${this.config.provider}/${this.config.model || 'default'}]`
+          + `[${this.providerId}/${this.config.model || 'default'}]`
         );
 
         await this.sleepWithAbort(delay, signal);
@@ -627,13 +621,9 @@ export class AIService {
       attemptNumber,
       timestamp: new Date().toISOString(),
       outcome: fields.outcome,
-      provider: this.config.provider as ProviderKind,
+      provider: this.providerId,
       model: this.config.model || 'unknown',
-      apiType: this.config.provider === 'anthropic'
-        ? 'anthropic-messages'
-        : this.config.openaiApiMode === 'responses'
-          ? 'openai-responses'
-          : 'openai-chat-completions',
+      apiType: this.providerApiType,
       stream: run.stream,
       ...(run.context ? { context: run.context } : {}),
       request: {
@@ -775,8 +765,8 @@ export class AIService {
   }
 
   private isResponsesMode(): boolean {
-    return this.config.provider === 'openai'
-      && this.config.openaiApiMode === 'responses';
+    return this.providerId === 'openai'
+      && (this.config.openaiApiMode === 'responses' || this.providerApiType === 'openai-responses');
   }
 
   private async notifyRetry(
