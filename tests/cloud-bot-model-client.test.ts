@@ -173,6 +173,36 @@ describe('cloud bot model client local handoff', () => {
     assert.deepStrictEqual(selection, { kind: 'local', modelId: 'local', revision: 7 });
   });
 
+  test('reads a canonical local handoff without treating it as an invalid catalog model', async () => {
+    const selection = await pullCloudBotModelSelection({
+      botId: '43',
+      auth,
+      fetchImpl: (async () => Response.json({
+        uid: 43,
+        configured: true,
+        revision: 8,
+        definition: {
+          schema: 'xiaoba.bot-definition.v1',
+          botId: '43',
+          model: { kind: 'local', modelId: 'local' },
+          prompt: { selected: 'default' },
+        },
+      })) as typeof fetch,
+    });
+
+    assert.deepStrictEqual(selection, {
+      kind: 'local',
+      modelId: 'local',
+      revision: 8,
+      definition: {
+        schema: 'xiaoba.bot-definition.v1',
+        botId: '43',
+        model: { kind: 'local', modelId: 'local' },
+        prompt: { selected: 'default' },
+      },
+    });
+  });
+
   test('keeps an untouched revision zero configuration as local-only state', async () => {
     const selection = await pullCloudBotModelSelection({
       botId: '43',

@@ -17,6 +17,7 @@ import {
 } from '../bot-definition/cloud-client';
 import { CloudBotModelRuntimeReloadController } from '../bot-definition/runtime-reload';
 import { createBotDefinitionSyncService } from '../bot-definition/service';
+import { resolveRunnableCloudDefinition } from '../bot-definition/cloud-sync';
 import { getPromptReconcileCoordinator } from '../bot-definition/prompt-sync';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
@@ -370,8 +371,10 @@ async function applyCloudBotDefinitionSelection(
     definitionService,
   });
   const previousPrompt = promptCoordinator.captureActiveSnapshot();
+  const effectiveIncoming = resolveRunnableCloudDefinition(incoming, previousDefinition);
   const modelChanged = !previousDefinition
-    || JSON.stringify(previousDefinition.model) !== JSON.stringify(incoming.model);
+    || !effectiveIncoming
+    || JSON.stringify(previousDefinition.model) !== JSON.stringify(effectiveIncoming.model);
 
   if (modelChanged && (!options.canApply() || !options.currentBot().isIdleForRuntimeReload())) {
     return 'deferred';
@@ -403,7 +406,7 @@ async function applyCloudBotDefinitionSelection(
   let prepared: Awaited<ReturnType<typeof prepareBoundBotDefinition>>;
   let appliedSelection = options.selection;
   try {
-    definitionService.acceptCanonical(incoming);
+    if (effectiveIncoming) definitionService.acceptCanonical(effectiveIncoming);
     prepared = await prepareBoundBotDefinition({
       runtimeRoot: options.runtimeRoot,
       botId: options.botId,

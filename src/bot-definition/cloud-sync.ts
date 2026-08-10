@@ -10,7 +10,12 @@ import {
   type CloudBotDefinitionSnapshot,
 } from './cloud-client';
 import { createBotDefinitionSyncService, type BotDefinitionSyncService } from './service';
-import type { BotDefinition, BotModelDefinition, BotPromptDefinition } from './types';
+import type {
+  BotDefinition,
+  BotModelDefinition,
+  BotPromptDefinition,
+  CloudBotDefinition,
+} from './types';
 
 const CLOUD_SYNC_STATE_SCHEMA = 'xiaoba.bot-definition-cloud-sync.v1';
 
@@ -27,6 +32,14 @@ export interface BotDefinitionCloudSyncOptions {
   env?: NodeJS.ProcessEnv;
   definitionService?: BotDefinitionSyncService;
   fetchImpl?: typeof fetch;
+}
+
+export function resolveRunnableCloudDefinition(
+  definition: CloudBotDefinition,
+  local?: BotDefinition,
+): BotDefinition | undefined {
+  if (definition.model.kind !== 'local') return definition as BotDefinition;
+  return local ? { ...definition, model: local.model } : undefined;
 }
 
 /**
@@ -285,9 +298,11 @@ export class BotDefinitionCloudSyncService {
     return snapshot;
   }
 
-  private acceptCloudDefinition(definition: BotDefinition): void {
+  private acceptCloudDefinition(definition: CloudBotDefinition): void {
     const local = this.definitionService.read(definition.botId);
-    const { skills: _cloudSkills, ...portableDefinition } = definition;
+    const runnable = resolveRunnableCloudDefinition(definition, local);
+    if (!runnable) return;
+    const { skills: _cloudSkills, ...portableDefinition } = runnable;
     this.definitionService.acceptCanonical({
       ...portableDefinition,
       ...(local?.skills !== undefined ? { skills: local.skills } : {}),

@@ -124,6 +124,26 @@ export async function prepareBoundBotDefinition(
           cloudSnapshot = await cloudDefinitionSync.pull(botId, auth) ?? cloudSnapshot;
         }
 
+        if (
+          cloudSnapshot.definition?.model.kind === 'local'
+          && !definitionService.read(botId)
+        ) {
+          const runtime = await provisionCatsRelayCatalogRuntime({
+            botId,
+            modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
+            auth,
+            fetchImpl: options.fetchImpl,
+          });
+          definitionService.storeCatalogRuntime(runtime);
+          sync = definitionService.updateModel(botId, {
+            kind: 'catalog',
+            modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
+          });
+          localDefinition = sync.definition;
+          initializedDefaultFromEmpty = true;
+          cloudSnapshot = await cloudDefinitionSync.pull(botId, auth) ?? cloudSnapshot;
+        }
+
         let definition = definitionService.read(botId);
         if (!definition) throw new Error('CatsCo cloud BotDefinition did not produce a local cache.');
         definitionService.clearCloudModelOverride(botId);

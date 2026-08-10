@@ -38,6 +38,16 @@ export interface CustomBotModelDefinition {
 
 export type BotModelDefinition = CatalogBotModelDefinition | CustomBotModelDefinition;
 
+/**
+ * Cloud-only handoff marker. It means the device keeps its current runnable
+ * model while the remaining portable fields continue to sync from CatsCompany.
+ * It must never replace the runnable model in the local Definition cache.
+ */
+export interface LocalBotModelHandoffDefinition {
+  kind: 'local';
+  modelId: 'local';
+}
+
 export interface BotPromptDefinition {
   selected: 'default' | 'custom';
   customSystemPrompt?: string;
@@ -60,6 +70,10 @@ export interface BotDefinition {
   model: BotModelDefinition;
   prompt?: BotPromptDefinition;
   skills?: BotSkillRef[];
+}
+
+export interface CloudBotDefinition extends Omit<BotDefinition, 'model'> {
+  model: BotModelDefinition | LocalBotModelHandoffDefinition;
 }
 
 export interface LocalModelProfile {

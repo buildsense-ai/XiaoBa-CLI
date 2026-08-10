@@ -4,7 +4,7 @@ import type { ReasoningEffort } from '../types';
 import { canonicalizeBotSkillRefs } from '../bot-skills/canonical';
 import {
   BOT_DEFINITION_SCHEMA,
-  type BotDefinition,
+  type CloudBotDefinition,
   type BotModelDefinition,
   type BotPromptDefinition,
   type BotSkillRef,
@@ -26,13 +26,13 @@ export interface CloudBotModelSelection {
   contextWindowTokens?: number;
   revision: number;
   customModel?: CustomBotModelDefinition;
-  definition?: BotDefinition;
+  definition?: CloudBotDefinition;
 }
 
 export interface CloudBotDefinitionSnapshot {
   configured: boolean;
   revision: number;
-  definition?: BotDefinition;
+  definition?: CloudBotDefinition;
   runtime?: Record<string, unknown>;
 }
 
@@ -49,7 +49,14 @@ export async function pullCloudBotModelSelection(
   if (definitionSnapshot) {
     if (!definitionSnapshot.configured || !definitionSnapshot.definition) return undefined;
     const model = definitionSnapshot.definition.model;
-    return model.kind === 'custom'
+    return model.kind === 'local'
+      ? {
+        kind: 'local',
+        modelId: 'local',
+        revision: definitionSnapshot.revision,
+        definition: definitionSnapshot.definition,
+      }
+      : model.kind === 'custom'
       ? {
         kind: 'custom',
         modelId: model.model,
@@ -292,9 +299,15 @@ function parseCloudBotDefinitionSnapshot(
   }
   const rawModel = raw.model as Record<string, unknown> | undefined;
   const kind = String(rawModel?.kind || '').trim().toLowerCase();
-  let model: BotModelDefinition;
+  let model: CloudBotDefinition['model'];
   if (kind === 'custom') {
     model = parseCloudCustomModel(rawModel);
+  } else if (kind === 'local') {
+    const modelId = String(rawModel?.modelId || '').trim().toLowerCase();
+    if (modelId && modelId !== 'local') {
+      throw new Error('CatsCo cloud returned an invalid local BotDefinition.');
+    }
+    model = { kind: 'local', modelId: 'local' };
   } else if (!kind || kind === 'catalog') {
     const modelId = String(rawModel?.modelId || '').trim();
     const rawReasoning = String(rawModel?.reasoningEffort || '').trim();

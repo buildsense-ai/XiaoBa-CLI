@@ -7,7 +7,7 @@ import {
   createBotDefinitionSyncService,
   type BotDefinitionSyncService,
 } from '../bot-definition/service';
-import type { BotSkillRef } from '../bot-definition/types';
+import type { BotDefinition, BotSkillRef } from '../bot-definition/types';
 import { canonicalizeBotSkillRefs, botSkillRefsEqual } from './canonical';
 import {
   BotSkillsCloudConflictError,
@@ -857,7 +857,10 @@ export class BotSkillSyncService {
       this.definitionService.updateSkills(this.botId, cloud.skills);
       return;
     }
-    this.definitionService.acceptCanonical(cloud.definition);
+    if (cloud.definition.model.kind === 'local') {
+      throw new Error('CatsCo cloud local handoff requires an existing runnable local BotDefinition.');
+    }
+    this.definitionService.acceptCanonical(cloud.definition as BotDefinition);
   }
 }
 
