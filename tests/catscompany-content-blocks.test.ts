@@ -52,7 +52,7 @@ function createProcessHarness() {
   const handledTurns: Array<{ userMessage: any; options: any }> = [];
   const runtimeObservations: Array<{ text: string; options: any }> = [];
   const sentTexts: Array<{ topic: string; text: string }> = [];
-  const replies: Array<{ topic: string; text: string }> = [];
+  const replies: Array<{ topic: string; text: string; metadata?: any }> = [];
   const sentTyping: Array<{ topic: string }> = [];
   const sentThinking: Array<{ topic: string; text: string; metadata?: any }> = [];
   const toolUses: Array<{ topic: string; toolUseId: string; name: string; input: any; metadata?: any }> = [];
@@ -84,8 +84,8 @@ function createProcessHarness() {
     sendTyping: (topic: string) => {
       sentTyping.push({ topic });
     },
-    reply: async (topic: string, text: string) => {
-      replies.push({ topic, text });
+    reply: async (topic: string, text: string, metadata?: any) => {
+      replies.push(metadata ? { topic, text, metadata } : { topic, text });
     },
     sendFile: async () => undefined,
     sendText: async (topic: string, text: string) => {
@@ -709,6 +709,33 @@ describe('CatsCo content blocks', () => {
     ]);
   });
 
+  test('labels surfaced progress and the final reply within the same conversation run', async () => {
+    const { bot, replies, session, taskStatuses } = createProcessHarness();
+    session.handleMessage = async (_userMessage: any, options: any) => {
+      await options.callbacks.onAssistantText('我先检查一下现有实现。');
+      return { visibleToUser: true, text: '检查完成，这是最终结论。' };
+    };
+
+    await (bot as any).onMessage({
+      topic: 'p2p_1_43',
+      senderId: 'usr1',
+      text: '请检查通知逻辑',
+      content: '请检查通知逻辑',
+      metadata: canonicalMetadata('usr1', 'p2p_1_43'),
+      isGroup: false,
+      seq: 13,
+    });
+
+    assert.equal(replies.length, 2);
+    assert.equal(replies[0].text, '我先检查一下现有实现。');
+    assert.equal(replies[0].metadata.response_kind, 'progress');
+    assert.equal(replies[1].text, '检查完成，这是最终结论。');
+    assert.equal(replies[1].metadata.response_kind, 'final');
+    assert.ok(replies[0].metadata.run_id);
+    assert.equal(replies[1].metadata.run_id, replies[0].metadata.run_id);
+    assert.equal(taskStatuses[0].status.run_id, replies[0].metadata.run_id);
+  });
+
   test('passes scoped local file grants from canonical CatsCompany attachments into the session turn', async () => {
     const originalCwd = process.cwd();
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-content-grants-'));
@@ -968,7 +995,10 @@ describe('CatsCo content blocks', () => {
     assert.deepStrictEqual(toolResults, []);
     assert.deepStrictEqual(sentThinking, []);
     assert.deepStrictEqual(runtimePlans, []);
-    assert.deepStrictEqual(replies, [{ topic: 'p2p_1_2', text: '我先看一下桌面。' }]);
+    assert.deepStrictEqual(
+      replies.map(({ topic, text }) => ({ topic, text })),
+      [{ topic: 'p2p_1_2', text: '我先看一下桌面。' }],
+    );
   });
 
   test('suppresses structured progress for Weixin ClawBot bridge channels', async () => {
@@ -1033,7 +1063,10 @@ describe('CatsCo content blocks', () => {
     assert.deepStrictEqual(toolResults, []);
     assert.deepStrictEqual(sentThinking, []);
     assert.deepStrictEqual(runtimePlans, []);
-    assert.deepStrictEqual(replies, [{ topic: 'p2p_1_2', text: '我先看一下桌面。' }]);
+    assert.deepStrictEqual(
+      replies.map(({ topic, text }) => ({ topic, text })),
+      [{ topic: 'p2p_1_2', text: '我先看一下桌面。' }],
+    );
   });
 
   test('busy queued native message does not overwrite active mobile subagent event suppression', async () => {

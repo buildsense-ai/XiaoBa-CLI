@@ -1436,6 +1436,7 @@ export class CatsCompanyBot {
       senderId?: string;
       channelSource?: string;
       clearGeneration?: number;
+      runID?: string;
     },
   ): SessionCallbacks {
     const suppressToolProgress = shouldSuppressStructuredToolProgress(opts?.channelSource);
@@ -1467,7 +1468,10 @@ export class CatsCompanyBot {
       onAssistantText: async (text: string) => {
         if (isStaleCallback()) return;
         try {
-          await this.sender.reply(topic, text);
+          await this.sender.reply(topic, text, opts?.runID ? {
+            run_id: opts.runID,
+            response_kind: 'progress',
+          } : undefined);
         } catch (err: any) {
           Logger.warning(`前端通知发送失败 (assistant_text): ${err.message}`);
         }
@@ -1793,6 +1797,7 @@ export class CatsCompanyBot {
             senderId: msg.senderId,
             channelSource: msg.executionScope?.channelSource,
             clearGeneration: entryClearGeneration,
+            runID: task.runID,
           }),
         });
 
@@ -1808,7 +1813,10 @@ export class CatsCompanyBot {
           let replyDelivered = true;
           if (result.visibleToUser && result.text) {
             try {
-              await this.sender.reply(msg.topic, result.text);
+              await this.sender.reply(msg.topic, result.text, {
+                run_id: task.runID,
+                response_kind: 'final',
+              });
             } catch (err: any) {
               replyDelivered = false;
               Logger.warning(`前端通知发送失败 (text): ${err.message}`);

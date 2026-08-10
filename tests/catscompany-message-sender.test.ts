@@ -120,11 +120,23 @@ describe('CatsCompany MessageSender reply segmentation', () => {
       },
     } as any, 'https://app.example.test', 'cc_test');
 
-    await sender.reply('p2p_1_2', '1）测试 126/0 全绿。\n2）无产物溯源会让承诺看起来像已完成。');
+    await sender.reply(
+      'p2p_1_2',
+      '1）测试 126/0 全绿。\n2）无产物溯源会让承诺看起来像已完成。',
+      { run_id: 'run-1', response_kind: 'final' },
+    );
 
     assert.equal(sent.length, 2);
     assert.equal(sent[0].content, '1）测试 126/0 全绿。');
     assert.equal(sent[1].content, '2）无产物溯源会让承诺看起来像已完成。');
+    assert.equal(sent[0].metadata.run_id, 'run-1');
+    assert.equal(sent[0].metadata.response_kind, 'final');
+    assert.equal(sent[0].metadata.response_id, sent[1].metadata.response_id);
+    assert.match(sent[0].metadata.response_id, /^xiaoba-response-/);
+    assert.equal(sent[0].metadata.segment_index, 0);
+    assert.equal(sent[1].metadata.segment_index, 1);
+    assert.equal(sent[0].metadata.segment_count, 2);
+    assert.equal(sent[1].metadata.segment_count, 2);
   });
 
   test('splits inline ordered replies when the model keeps items on one line', async () => {

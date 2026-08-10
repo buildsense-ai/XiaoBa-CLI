@@ -1,6 +1,7 @@
 import { CatsClient, CatsSendError } from './client';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { Logger } from '../utils/logger';
 import { RuntimePlanSnapshot } from '../core/plan-runtime';
 
@@ -17,6 +18,14 @@ export interface ConversationTaskStatusInput {
   state: ConversationTaskState;
   summary: string;
   error?: string;
+}
+
+export type ReplyResponseKind = 'progress' | 'final';
+
+export interface ReplyMetadata {
+  run_id: string;
+  response_kind: ReplyResponseKind;
+  response_id?: string;
 }
 
 interface CatsSendBody {
@@ -224,15 +233,21 @@ export class MessageSender {
     Logger.info(`Task status 已发送: topic=${topic}, state=${status.state}, run=${status.run_id}`);
   }
 
-  async sendText(topic: string, text: string): Promise<void> {
-    await this.send(topic, 'text', text);
+  async sendText(topic: string, text: string, metadata?: any): Promise<void> {
+    await this.send(topic, 'text', text, metadata);
     Logger.info(`Text 已发送: ${text.slice(0, 50)}...`);
   }
 
-  async reply(topic: string, text: string): Promise<void> {
+  async reply(topic: string, text: string, metadata?: ReplyMetadata): Promise<void> {
     const segments = this.splitReplyText(text);
-    for (const seg of segments) {
-      await this.sendText(topic, seg);
+    const responseID = metadata?.response_id || `xiaoba-response-${randomUUID()}`;
+    for (const [index, seg] of segments.entries()) {
+      await this.sendText(topic, seg, metadata ? {
+        ...metadata,
+        response_id: responseID,
+        segment_index: index,
+        segment_count: segments.length,
+      } : undefined);
     }
   }
 
