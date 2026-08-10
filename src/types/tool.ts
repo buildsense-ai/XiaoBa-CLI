@@ -1,6 +1,7 @@
 import { ContentBlock } from './index';
 import type {
   ExecutionScope,
+  ScopedArtifactContext,
   ScopedDeviceGrant,
   ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
@@ -242,6 +243,8 @@ export interface ToolExecutionContext {
   deviceRpc?: DeviceRpcTransport;
   thinToolRpc?: ThinToolRpcTransport;
   targetRoutes?: TargetRoutes;
+  /** 当前 turn 的服务端确认 Artifact 共同焦点，仅用于 transient 模型上下文。 */
+  artifactContext?: ScopedArtifactContext;
   executionContext?: {
     schema: 'xiaoba.execution_context.v1';
     conversation: {

@@ -51,6 +51,63 @@ export interface ExecutionScope {
   isTrusted: boolean;
 }
 
+export interface ScopedArtifactContext {
+  kind: 'catsco_artifact_context';
+  source: 'catscompany';
+  contractVersion: 'catsco.artifact-context.v1';
+  artifactId: string;
+  title: string;
+  artifactKind: 'html' | 'mini_app';
+  url: string;
+  topicId: string;
+  agentId: string;
+  currentlyVisible: true;
+  displayedVersion?: number;
+  latestVersion?: number;
+  pageContext?: ScopedArtifactPageContext;
+  identityTrust: 'server_canonical';
+  observationTrust: 'untrusted_content';
+}
+
+export type ScopedArtifactPageControlType =
+  | 'checkbox'
+  | 'radio'
+  | 'select-one'
+  | 'select-multiple'
+  | 'text'
+  | 'search'
+  | 'number'
+  | 'range'
+  | 'textarea';
+
+export interface ScopedArtifactPageControl {
+  type: ScopedArtifactPageControlType;
+  name?: string;
+  ariaLabel?: string;
+  role?: string;
+  value?: string;
+  text?: string;
+  checked?: boolean;
+}
+
+export interface ScopedArtifactPageContext {
+  contractVersion: 'catsco.artifact-page-context.v1';
+  observedAt: string;
+  title?: string;
+  location?: {
+    pathname?: string;
+    hash?: string;
+  };
+  selectedText?: string;
+  lastInteraction?: {
+    tag?: string;
+    role?: string;
+    name?: string;
+    text?: string;
+  };
+  controls?: ScopedArtifactPageControl[];
+}
+
 export interface SessionIdentitySnapshot {
   source: MessageSource;
   topicId: string;

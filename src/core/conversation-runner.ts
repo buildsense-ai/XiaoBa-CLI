@@ -1,5 +1,5 @@
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
-import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
+import type { ScopedArtifactContext, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
 import type { TargetRoutes } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
@@ -26,7 +26,9 @@ import {
   TRANSIENT_RUNNER_HINT_PREFIX,
 } from './runner-orchestration-policy';
 import {
+  TRANSIENT_ARTIFACT_OBSERVATION_PREFIX,
   TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+  buildArtifactObservationMessage,
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
 import { buildPendingUserInputBoundaryMessage } from './pending-user-input-boundary';
@@ -140,6 +142,7 @@ export interface RunResult {
 
 export interface PendingUserInput {
   content: string | ContentBlock[];
+  artifactContext?: ScopedArtifactContext | null;
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
@@ -750,6 +753,13 @@ export class ConversationRunner {
       };
       shouldRefreshRuntimeContext = true;
     }
+    if (isPendingUserInput(pending) && Object.prototype.hasOwnProperty.call(pending, 'artifactContext')) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        artifactContext: pending.artifactContext || undefined,
+      };
+      shouldRefreshRuntimeContext = true;
+    }
     if (isPendingUserInput(pending) && pending.localFileGrants?.length) {
       this.toolExecutionContext = {
         ...(this.toolExecutionContext || {}),
@@ -839,9 +849,11 @@ export class ConversationRunner {
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i];
       if (
-        message.role === 'system'
-        && typeof message.content === 'string'
-        && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)
+        typeof message.content === 'string'
+        && (
+          (message.role === 'system' && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX))
+          || (message.__injected && message.content.startsWith(TRANSIENT_ARTIFACT_OBSERVATION_PREFIX))
+        )
       ) {
         messages.splice(i, 1);
       }
@@ -854,9 +866,12 @@ export class ConversationRunner {
       deviceGrants: this.toolExecutionContext?.deviceGrants,
       deviceSelection: this.toolExecutionContext?.deviceSelection,
       targetRoutes: this.toolExecutionContext?.targetRoutes,
+      artifactContext: this.toolExecutionContext?.artifactContext,
       localFileGrants: this.toolExecutionContext?.localFileGrants,
     });
     if (runtimeContext) messages.push(runtimeContext);
+    const artifactObservation = buildArtifactObservationMessage(this.toolExecutionContext?.artifactContext);
+    if (artifactObservation) messages.push(artifactObservation);
   }
 
   private injectSyntheticObservations(messages: Message[], turn: number): void {

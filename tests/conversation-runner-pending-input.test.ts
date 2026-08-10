@@ -2,11 +2,16 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import * as path from 'path';
 import { ConversationRunner } from '../src/core/conversation-runner';
-import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../src/core/runtime-context-builder';
+import {
+  buildArtifactObservationMessage,
+  buildRuntimeContextMessage,
+  TRANSIENT_ARTIFACT_OBSERVATION_PREFIX,
+  TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+} from '../src/core/runtime-context-builder';
 import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from '../src/core/pending-user-input-boundary';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
-import type { ExecutionScope, ScopedDeviceGrant, ScopedLocalFileGrant } from '../src/types/session-identity';
+import type { ExecutionScope, ScopedArtifactContext, ScopedDeviceGrant, ScopedLocalFileGrant } from '../src/types/session-identity';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult } from '../src/types/tool';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
@@ -378,12 +383,108 @@ describe('ConversationRunner pending input', () => {
     assert.doesNotMatch(refreshedContext.content as string, /install:device-/);
     assert.doesNotMatch(refreshedContext.content as string, /body-main/);
   });
+
+  test('uses the latest pending Artifact focus and clears an older focus when the latest message has none', async () => {
+    const requests: Message[][] = [];
+    const aiService = {
+      chat: async (messages: Message[]) => {
+        requests.push(messages.map(msg => ({ ...msg })));
+        if (requests.length <= 2) {
+          return {
+            content: null,
+            toolCalls: [{
+              id: `call_${requests.length}`,
+              type: 'function',
+              function: { name: 'noop', arguments: '{}' },
+            }],
+            usage,
+          };
+        }
+        return { content: 'done', toolCalls: [], usage };
+      },
+    } as any;
+
+    const pendingInputs = [
+      { content: '改新的页面', artifactContext: artifact('new-artifact') },
+      { content: '现在聊别的', artifactContext: null },
+    ];
+    const runner = new ConversationRunner(aiService, createNoopToolExecutor(), {
+      stream: false,
+      toolExecutionContext: {
+        sessionId: 'cc_user:usr7',
+        surface: 'catscompany',
+        executionScope: scope(),
+        artifactContext: artifact('old-artifact'),
+      },
+      pendingUserInputProvider: () => pendingInputs.shift() || null,
+    });
+
+    const initialRuntime = buildRuntimeContextMessage({
+      sessionKey: 'cc_user:usr7',
+      sessionType: 'catscompany',
+      executionScope: scope(),
+      artifactContext: artifact('old-artifact'),
+    });
+    assert.ok(initialRuntime);
+    const initialObservation = buildArtifactObservationMessage(artifact('old-artifact'));
+    assert.ok(initialObservation);
+
+    const result = await runner.run([
+      initialRuntime,
+      initialObservation,
+      { role: 'user', content: '先处理当前页面' },
+    ]);
+
+    assert.equal(result.response, 'done');
+    assert.equal(requests.length, 3);
+    assertArtifactContext(requests[0], 'old-artifact');
+    assertArtifactContext(requests[1], 'new-artifact');
+    const finalRuntime = requests[2].find(isRuntimeContextMessage);
+    assert.ok(finalRuntime, 'CatsCo runtime context should remain available after clearing Artifact focus');
+    assert.doesNotMatch(String(finalRuntime.content || ''), /old-artifact|new-artifact|当前共同 Artifact/);
+    assert.equal(requests[2].some(isArtifactObservationMessage), false);
+  });
 });
 
 function isRuntimeContextMessage(message: Message): boolean {
   return message.role === 'system'
     && typeof message.content === 'string'
     && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX);
+}
+
+function isArtifactObservationMessage(message: Message): boolean {
+  return message.role === 'user'
+    && message.__injected === true
+    && typeof message.content === 'string'
+    && message.content.startsWith(TRANSIENT_ARTIFACT_OBSERVATION_PREFIX);
+}
+
+function artifact(artifactId: string): ScopedArtifactContext {
+  return {
+    kind: 'catsco_artifact_context',
+    source: 'catscompany',
+    contractVersion: 'catsco.artifact-context.v1',
+    artifactId,
+    title: artifactId,
+    artifactKind: 'html',
+    url: `https://agent-43.artifacts.catsco.fun:19991/artifacts/${artifactId}/latest/`,
+    topicId: 'p2p_7_43',
+    agentId: 'usr43',
+    currentlyVisible: true,
+    displayedVersion: 1,
+    latestVersion: 1,
+    identityTrust: 'server_canonical',
+    observationTrust: 'untrusted_content',
+  };
+}
+
+function assertArtifactContext(messages: Message[], artifactId: string): void {
+  const runtime = messages.find(isRuntimeContextMessage);
+  assert.ok(runtime);
+  assert.match(String(runtime.content || ''), new RegExp(`"artifact_id":"${artifactId}"`));
+  const observation = messages.find(isArtifactObservationMessage);
+  assert.ok(observation);
+  assert.match(String(observation.content || ''), new RegExp(`"title":"${artifactId}"`));
 }
 
 function assertPendingBoundaryBeforeUser(messages: Message[], userContent: string): void {

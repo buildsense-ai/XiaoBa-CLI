@@ -57,6 +57,25 @@ function deviceGrant(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function artifactContext(artifactId = 'lesson-game') {
+  return {
+    kind: 'catsco_artifact_context',
+    source: 'catscompany',
+    contractVersion: 'catsco.artifact-context.v1',
+    artifactId,
+    title: artifactId,
+    artifactKind: 'html',
+    url: `https://agent-43.artifacts.catsco.fun:19991/artifacts/${artifactId}/latest/`,
+    topicId: 'p2p_7_43',
+    agentId: 'usr43',
+    currentlyVisible: true,
+    displayedVersion: 1,
+    latestVersion: 1,
+    identityTrust: 'server_canonical',
+    observationTrust: 'untrusted_content',
+  } as const;
+}
+
 function metadataWithDeviceGrants(actorUserId: string, topicId: string, grants: unknown[], agentId = 'usr43', bodyId = 'body-main') {
   const metadata = canonicalMetadata(actorUserId, topicId, agentId, bodyId);
   (metadata.catsco_identity as any).device_grants = grants;
@@ -1267,6 +1286,48 @@ describe('CatsCompany execution scope flow', () => {
     const pendingForBob = (bot as any).consumeQueuedUserInput(bobScope.sessionKey, bobScope);
     assert.equal(pendingForBob, 'bob follow-up');
     assert.equal(bot.messageQueue.has(bobScope.sessionKey), false);
+  });
+
+  test('keeps plain queued input compatible while explicitly switching or clearing Artifact focus', () => {
+    const { bot } = createHarness();
+    const executionScope = createExecutionScope(createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'first',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      botUid: 'usr43',
+    }));
+    const queued = (userMessage: string, artifact?: ReturnType<typeof artifactContext>) => ({
+      userMessage,
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 13,
+      executionScope,
+      artifactContext: artifact,
+      receivedAt: Date.now(),
+      source: 'user' as const,
+    });
+
+    bot.messageQueue.set(executionScope.sessionKey, [queued('普通补充')]);
+    assert.equal(
+      (bot as any).consumeQueuedUserInput(executionScope.sessionKey, executionScope),
+      '普通补充',
+    );
+
+    bot.messageQueue.set(executionScope.sessionKey, [queued('已经离开页面')]);
+    const cleared = (bot as any).consumeQueuedUserInput(
+      executionScope.sessionKey,
+      executionScope,
+      undefined,
+      artifactContext('old-artifact'),
+    );
+    assert.equal(cleared.content, '已经离开页面');
+    assert.equal(cleared.artifactContext, null);
+
+    bot.messageQueue.set(executionScope.sessionKey, [queued('改新页面', artifactContext('new-artifact'))]);
+    const switched = (bot as any).consumeQueuedUserInput(executionScope.sessionKey, executionScope);
+    assert.equal(switched.content, '改新页面');
+    assert.equal(switched.artifactContext?.artifactId, 'new-artifact');
   });
 
   test('preserves device grants when queued CatsCompany user input is merged', () => {
