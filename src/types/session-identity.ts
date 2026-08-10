@@ -90,6 +90,14 @@ export interface ScopedArtifactPageControl {
   checked?: boolean;
 }
 
+export type ScopedArtifactSemanticValue =
+  | null
+  | boolean
+  | number
+  | string
+  | ScopedArtifactSemanticValue[]
+  | { [key: string]: ScopedArtifactSemanticValue };
+
 export interface ScopedArtifactPageContext {
   contractVersion: 'catsco.artifact-page-context.v1';
   observedAt: string;
@@ -106,6 +114,7 @@ export interface ScopedArtifactPageContext {
     text?: string;
   };
   controls?: ScopedArtifactPageControl[];
+  semanticContext?: ScopedArtifactSemanticValue;
 }
 
 export interface SessionIdentitySnapshot {

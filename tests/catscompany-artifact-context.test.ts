@@ -100,6 +100,178 @@ describe('extractCatsCoArtifactContext', () => {
     assert.equal(result?.pageContext, undefined);
   });
 
+  test('accepts bounded semantic page state alongside generic observations', () => {
+    const metadata = canonicalMetadata({
+      page_context: {
+        contract_version: 'catsco.artifact-page-context.v1',
+        observed_at: '2026-08-07T12:00:00Z',
+        selected_text: '企业客户',
+        semantic_context: {
+          view: 'customer-comparison',
+          selection: ['c12', 'c18'],
+          filters: { region: '华东' },
+        },
+      },
+    });
+
+    assert.deepEqual(
+      extractCatsCoArtifactContext(metadata, canonicalEnvelope(metadata), 'usr43')?.pageContext,
+      {
+        contractVersion: 'catsco.artifact-page-context.v1',
+        observedAt: '2026-08-07T12:00:00Z',
+        selectedText: '企业客户',
+        semanticContext: {
+          filters: { region: '华东' },
+          selection: ['c12', 'c18'],
+          view: 'customer-comparison',
+        },
+      },
+    );
+  });
+
+  test('removes unsupported semantic values, cycles and unsafe keys', () => {
+    class PrivateState {
+      value = 'hidden';
+    }
+    const semantic: Record<string, unknown> = {
+      view: 'customer-comparison',
+      enabled: false,
+      count: 0,
+      invalidNumber: Number.NaN,
+      callback: () => 'ignore',
+      instance: new PrivateState(),
+      nested: { keep: true },
+    };
+    semantic.self = semantic;
+    Object.defineProperty(semantic, '__proto__', {
+      value: { polluted: true },
+      enumerable: true,
+    });
+    const metadata = canonicalMetadata({
+      page_context: {
+        contract_version: 'catsco.artifact-page-context.v1',
+        observed_at: '2026-08-07T12:00:00Z',
+        selected_text: 'generic state remains',
+        semantic_context: semantic,
+      },
+    });
+
+    const pageContext = extractCatsCoArtifactContext(metadata, canonicalEnvelope(metadata), 'usr43')?.pageContext;
+    assert.equal(pageContext?.selectedText, 'generic state remains');
+    assert.deepEqual(pageContext?.semanticContext, {
+      count: 0,
+      enabled: false,
+      nested: { keep: true },
+      view: 'customer-comparison',
+    });
+  });
+
+  test('bounds semantic arrays and strings', () => {
+    const metadata = canonicalMetadata({
+      page_context: {
+        contract_version: 'catsco.artifact-page-context.v1',
+        observed_at: '2026-08-07T12:00:00Z',
+        semantic_context: {
+          rows: Array.from({ length: 75 }, (_, index) => index),
+          note: `${'x'.repeat(999)}😀z`,
+        },
+      },
+    });
+
+    const semantic = extractCatsCoArtifactContext(
+      metadata,
+      canonicalEnvelope(metadata),
+      'usr43',
+    )?.pageContext?.semanticContext as Record<string, unknown>;
+    assert.equal((semantic.rows as unknown[]).length, 50);
+    assert.equal(Array.from(semantic.note as string).length, 1000);
+    assert.equal((semantic.note as string).endsWith('😀'), true);
+  });
+
+  test('contains sanitizer exceptions and bounds traversal work', () => {
+    const revoked = Proxy.revocable([], {});
+    revoked.revoke();
+    const hostileMetadata = canonicalMetadata({
+      page_context: {
+        contract_version: 'catsco.artifact-page-context.v1',
+        observed_at: '2026-08-07T12:00:00Z',
+        selected_text: 'generic state remains',
+        semantic_context: revoked.proxy,
+      },
+    });
+    const hostilePage = extractCatsCoArtifactContext(
+      hostileMetadata,
+      canonicalEnvelope(hostileMetadata),
+      'usr43',
+    )?.pageContext;
+    assert.equal(hostilePage?.selectedText, 'generic state remains');
+    assert.equal(hostilePage?.semanticContext, undefined);
+
+    let branching: unknown = { leaf: true };
+    for (let depth = 0; depth < 6; depth += 1) {
+      branching = Array.from({ length: 50 }, () => branching);
+    }
+    const branchingMetadata = canonicalMetadata({
+      page_context: {
+        contract_version: 'catsco.artifact-page-context.v1',
+        observed_at: '2026-08-07T12:00:00Z',
+        selected_text: 'generic state remains',
+        semantic_context: branching,
+      },
+    });
+    const branchingPage = extractCatsCoArtifactContext(
+      branchingMetadata,
+      canonicalEnvelope(branchingMetadata),
+      'usr43',
+    )?.pageContext;
+    assert.equal(branchingPage?.selectedText, 'generic state remains');
+    assert.equal(branchingPage?.semanticContext, undefined);
+  });
+
+  test('drops oversized semantic state without losing generic page state', () => {
+    const semantic = Object.fromEntries(
+      Array.from({ length: 20 }, (_, index) => [`field_${index}`, 'x'.repeat(1000)]),
+    );
+    const metadata = canonicalMetadata({
+      page_context: {
+        contract_version: 'catsco.artifact-page-context.v1',
+        observed_at: '2026-08-07T12:00:00Z',
+        selected_text: 'generic state remains',
+        semantic_context: semantic,
+      },
+    });
+
+    const pageContext = extractCatsCoArtifactContext(metadata, canonicalEnvelope(metadata), 'usr43')?.pageContext;
+    assert.equal(pageContext?.selectedText, 'generic state remains');
+    assert.equal(pageContext?.semanticContext, undefined);
+  });
+
+  test('drops only semantic state when the combined page context exceeds 16 KB', () => {
+    const controls = Array.from({ length: 20 }, (_, index) => ({
+      type: 'text',
+      name: `field_${index}`,
+      value: 'v'.repeat(512),
+      text: 't'.repeat(128),
+    }));
+    const semanticContext = Object.fromEntries(
+      Array.from({ length: 6 }, (_, index) => [`section_${index}`, 's'.repeat(1000)]),
+    );
+    const metadata = canonicalMetadata({
+      page_context: {
+        contract_version: 'catsco.artifact-page-context.v1',
+        observed_at: '2026-08-07T12:00:00Z',
+        selected_text: 'x'.repeat(1000),
+        controls,
+        semantic_context: semanticContext,
+      },
+    });
+
+    const pageContext = extractCatsCoArtifactContext(metadata, canonicalEnvelope(metadata), 'usr43')?.pageContext;
+    assert.equal(pageContext?.controls?.length, 20);
+    assert.equal(pageContext?.selectedText?.length, 1000);
+    assert.equal(pageContext?.semanticContext, undefined);
+  });
+
   test('rejects metadata when createCatsCoMessageEnvelope did not trust identity', () => {
     const metadata = canonicalMetadata();
     const identity = metadata.catsco_identity as Record<string, unknown>;

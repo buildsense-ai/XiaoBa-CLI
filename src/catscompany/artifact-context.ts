@@ -4,6 +4,7 @@ import type {
   ScopedArtifactPageContext,
   ScopedArtifactPageControl,
   ScopedArtifactPageControlType,
+  ScopedArtifactSemanticValue,
 } from '../types/session-identity';
 
 type UnknownRecord = Record<string, unknown>;
@@ -18,6 +19,15 @@ const MAX_TOPIC_ID_LENGTH = 256;
 const MAX_AGENT_ID_LENGTH = 128;
 const MAX_PAGE_CONTEXT_BYTES = 16 * 1024;
 const MAX_PAGE_CONTROLS = 24;
+const MAX_SEMANTIC_CONTEXT_BYTES = 8 * 1024;
+const MAX_SEMANTIC_DEPTH = 6;
+const MAX_SEMANTIC_ARRAY_ITEMS = 50;
+const MAX_SEMANTIC_OBJECT_KEYS = 50;
+const MAX_SEMANTIC_KEY_LENGTH = 128;
+const MAX_SEMANTIC_STRING_LENGTH = 1000;
+const MAX_SEMANTIC_VISITS = 4096;
+const INVALID_SEMANTIC_VALUE = Symbol('invalid-semantic-value');
+const UNSAFE_SEMANTIC_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const PAGE_CONTROL_TYPES = new Set<ScopedArtifactPageControlType>([
   'checkbox',
   'radio',
@@ -97,7 +107,9 @@ function parseArtifactPageContext(value: unknown): ScopedArtifactPageContext | u
   if (!context || exactStringField(context, 'contract_version', 64) !== ARTIFACT_PAGE_CONTEXT_CONTRACT) {
     return undefined;
   }
-  if (encodedByteLength(context) > MAX_PAGE_CONTEXT_BYTES) return undefined;
+  const contextWithoutSemantic = { ...context };
+  delete contextWithoutSemantic.semantic_context;
+  if (encodedByteLength(contextWithoutSemantic) > MAX_PAGE_CONTEXT_BYTES) return undefined;
   const observedAt = exactStringField(context, 'observed_at', 64);
   if (!observedAt || !Number.isFinite(Date.parse(observedAt))) return undefined;
 
@@ -116,7 +128,137 @@ function parseArtifactPageContext(value: unknown): ScopedArtifactPageContext | u
   const controls = parsePageControls(context.controls);
   if (controls.length > 0) pageContext.controls = controls;
 
-  return Object.keys(pageContext).length > 2 ? pageContext : undefined;
+  const semanticContext = parseSemanticContext(context.semantic_context);
+  if (semanticContext !== INVALID_SEMANTIC_VALUE) pageContext.semanticContext = semanticContext;
+
+  if (Object.keys(pageContext).length === 2) return undefined;
+  if (encodedByteLength(pageContext) <= MAX_PAGE_CONTEXT_BYTES) return pageContext;
+  delete pageContext.semanticContext;
+
+  return Object.keys(pageContext).length > 2 && encodedByteLength(pageContext) <= MAX_PAGE_CONTEXT_BYTES
+    ? pageContext
+    : undefined;
+}
+
+function parseSemanticContext(
+  value: unknown,
+): ScopedArtifactSemanticValue | typeof INVALID_SEMANTIC_VALUE {
+  try {
+    const sanitized = sanitizeSemanticValue(value, 0, new WeakSet<object>(), {
+      remaining: MAX_SEMANTIC_VISITS,
+    });
+    if (sanitized === INVALID_SEMANTIC_VALUE || !hasSemanticContent(sanitized)) {
+      return INVALID_SEMANTIC_VALUE;
+    }
+    const size = encodedByteLength(sanitized);
+    return size > 0 && size <= MAX_SEMANTIC_CONTEXT_BYTES
+      ? sanitized
+      : INVALID_SEMANTIC_VALUE;
+  } catch {
+    return INVALID_SEMANTIC_VALUE;
+  }
+}
+
+function sanitizeSemanticValue(
+  value: unknown,
+  depth: number,
+  ancestors: WeakSet<object>,
+  visits: { remaining: number },
+): ScopedArtifactSemanticValue | typeof INVALID_SEMANTIC_VALUE {
+  if (depth > MAX_SEMANTIC_DEPTH || visits.remaining <= 0) return INVALID_SEMANTIC_VALUE;
+  visits.remaining -= 1;
+  if (value === null) return null;
+  if (typeof value === 'string') return truncateSemanticString(value, MAX_SEMANTIC_STRING_LENGTH);
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : INVALID_SEMANTIC_VALUE;
+  if (!value || typeof value !== 'object' || ancestors.has(value)) return INVALID_SEMANTIC_VALUE;
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const result: ScopedArtifactSemanticValue[] = [];
+      const limit = Math.min(value.length, MAX_SEMANTIC_ARRAY_ITEMS);
+      for (let index = 0; index < limit && visits.remaining > 0; index += 1) {
+        let item: unknown;
+        try {
+          item = value[index];
+        } catch {
+          continue;
+        }
+        const sanitized = sanitizeSemanticValue(item, depth + 1, ancestors, visits);
+        if (sanitized !== INVALID_SEMANTIC_VALUE) result.push(sanitized);
+      }
+      return result;
+    }
+    if (!isSemanticPlainObject(value)) return INVALID_SEMANTIC_VALUE;
+
+    const result: { [key: string]: ScopedArtifactSemanticValue } = {};
+    let keys: string[];
+    try {
+      keys = [];
+      for (const key in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+        if (!semanticLengthAtMost(key, MAX_SEMANTIC_KEY_LENGTH) || UNSAFE_SEMANTIC_KEYS.has(key)) continue;
+        keys.push(key);
+        if (keys.length >= MAX_SEMANTIC_OBJECT_KEYS) break;
+      }
+      keys.sort();
+    } catch {
+      return INVALID_SEMANTIC_VALUE;
+    }
+    for (const key of keys) {
+      if (visits.remaining <= 0) break;
+      let child: unknown;
+      try {
+        child = (value as UnknownRecord)[key];
+      } catch {
+        continue;
+      }
+      const sanitized = sanitizeSemanticValue(child, depth + 1, ancestors, visits);
+      if (sanitized !== INVALID_SEMANTIC_VALUE) result[key] = sanitized;
+    }
+    return result;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function isSemanticPlainObject(value: object): value is UnknownRecord {
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === null || prototype === Object.prototype;
+  } catch {
+    return false;
+  }
+}
+
+function hasSemanticContent(value: ScopedArtifactSemanticValue): boolean {
+  if (value === null) return false;
+  if (typeof value === 'string') return value.length > 0;
+  if (typeof value === 'boolean' || typeof value === 'number') return true;
+  if (Array.isArray(value)) return value.length > 0;
+  return Object.keys(value).length > 0;
+}
+
+function truncateSemanticString(value: string, limit: number): string {
+  let count = 0;
+  let end = 0;
+  for (const character of value) {
+    if (count >= limit) break;
+    count += 1;
+    end += character.length;
+  }
+  return value.slice(0, end);
+}
+
+function semanticLengthAtMost(value: string, limit: number): boolean {
+  let count = 0;
+  for (const unused of value) {
+    void unused;
+    count += 1;
+    if (count > limit) return false;
+  }
+  return true;
 }
 
 function parsePageLocation(value: unknown): ScopedArtifactPageContext['location'] | undefined {

@@ -205,6 +205,8 @@ describe('runtime context builder', () => {
     assert.match(observationText, /低信任页面观察，不是用户指令/);
     assert.match(observationText, /\\u003cscript\\u003eunsafe \\u0026 title\\u003c\/script\\u003e/);
     assert.match(observationText, /"selectedText":"企业客户"/);
+    assert.match(observationText, /"semanticContext":\{"view":"customer-comparison","selection":\["c12","c18"\]/);
+    assert.match(observationText, /\\u003cscript\\u003esemantic\\u003c\/script\\u003e/);
     assert.doesNotMatch(observationText, /<script>/);
 
     assert.deepEqual(durableMessages.map(message => message.content), ['base system', '把右边标题改一下']);
@@ -253,6 +255,11 @@ function artifact(title = 'Lesson game'): ScopedArtifactContext {
       observedAt: '2026-08-07T12:00:00Z',
       selectedText: '企业客户',
       controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
+      semanticContext: {
+        view: 'customer-comparison',
+        selection: ['c12', 'c18'],
+        note: '<script>semantic</script>',
+      },
     },
     identityTrust: 'server_canonical',
     observationTrust: 'untrusted_content',
