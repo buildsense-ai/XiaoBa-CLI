@@ -139,7 +139,7 @@ describe('extractCatsCoArtifactContext', () => {
       { kind: 'pdf' },
       { currently_visible: false },
       { id: 'Bad Artifact ID' },
-      { id: `a${'b'.repeat(128)}` },
+      { id: `a${'b'.repeat(64)}` },
       { url: '/artifacts/lesson-game/latest/' },
       { url: 'ftp://example.com/artifact/' },
       { url: 'https://user:password@example.com/artifact/' },
@@ -153,6 +153,15 @@ describe('extractCatsCoArtifactContext', () => {
         JSON.stringify(overrides),
       );
     }
+  });
+
+  test('accepts a 64-character exact Artifact id', () => {
+    const id = `a${'b'.repeat(63)}`;
+    const metadata = canonicalMetadata({ id });
+    assert.equal(
+      extractCatsCoArtifactContext(metadata, canonicalEnvelope(metadata), 'usr43')?.artifactId,
+      id,
+    );
   });
 
   test('rejects structural fields beyond their length limits', () => {

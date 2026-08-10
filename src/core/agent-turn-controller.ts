@@ -187,6 +187,7 @@ export class AgentTurnController {
       deviceRpc: params.deviceRpc,
       thinToolRpc: params.thinToolRpc,
       targetRoutes: params.targetRoutes,
+      artifactContext: params.artifactContext,
       localFileGrants: params.localFileGrants,
       executionContext: turnContext.executionContext,
       pendingUserInputProvider: params.pendingUserInputProvider,
