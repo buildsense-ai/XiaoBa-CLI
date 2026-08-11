@@ -84,6 +84,14 @@ describe('prompt-template', () => {
       fs.rmSync(overrides, { recursive: true, force: true });
     }
   });
+
+  test('default delivery prompt standardizes newly generated Excel files on XLSX', () => {
+    const prompt = fs.readFileSync(path.join(process.cwd(), 'prompts', 'system-prompt.md'), 'utf-8');
+
+    assert.match(prompt, /新生成的 Excel 表格统一使用标准 \.xlsx/);
+    assert.match(prompt, /不新建旧版 \.xls/);
+    assert.match(prompt, /不把 HTML 或 CSV 文本伪装成 \.xls/);
+  });
 });
 
 function restoreEnv(previous: Record<string, string | undefined>): void {
