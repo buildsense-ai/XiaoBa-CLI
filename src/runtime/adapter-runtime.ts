@@ -56,14 +56,18 @@ function createSkillLoader(
   services: AgentServices,
   mode: AdapterSkillLoadMode,
 ): () => Promise<void> {
-  if (mode === 'fail-fast') {
-    return async () => {
+  return async () => {
+    if (mode === 'fail-fast') {
       await services.skillManager.loadSkills();
       Logger.info(`已加载 ${services.skillManager.getAllSkills().length} 个 skills`);
-    };
-  }
-
-  return () => RuntimeFactory.loadSkills(services.skillManager);
+    } else {
+      await RuntimeFactory.loadSkills(services.skillManager);
+    }
+    // Read the hook from the shared service object at call time. Adapters can
+    // attach lifecycle observers after constructing the runtime bundle, while
+    // every reload path still gets the same notification.
+    await services.onSkillsReloaded?.();
+  };
 }
 
 function createPromptProviderFactory(

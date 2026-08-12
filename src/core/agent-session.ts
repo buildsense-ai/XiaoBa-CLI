@@ -104,6 +104,8 @@ export interface AgentServices {
   };
   toolManager: ToolManager;
   skillManager: SkillManager;
+  /** Optional runtime hook invoked after SkillHub mutates and reloads Skills. */
+  onSkillsReloaded?: () => Promise<void> | void;
   /** Optional test seam for the after-turn Bot Skill workspace sync scheduler. */
   afterTurnSkillSyncScheduler?: () => void;
 }
