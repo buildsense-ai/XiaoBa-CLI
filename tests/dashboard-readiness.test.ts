@@ -179,6 +179,39 @@ describe('dashboard readiness and service preflight API', () => {
     assert.deepEqual(data.runtimeLearning.pendingWakeReasons, ['operational-retry', 'curator']);
   });
 
+  test('GET /readiness warns when distillation is suspended for memory pressure without blocking Dashboard', async () => {
+    const config = getDistillationHeartbeatConfig(testRoot, process.env);
+    fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });
+    fs.writeFileSync(config.heartbeatRecordPath, JSON.stringify({
+      schemaVersion: 1,
+      memoryPressure: {
+        mode: 'suspended',
+        level: 'hard',
+        transition: 'suspended',
+        recoverySamples: 0,
+        sample: {
+          sampledAt: '2026-08-12T00:00:00.000Z',
+          cgroupCurrentBytes: 1_900,
+          cgroupMaxBytes: 2_200,
+          cgroupPercent: 86.3,
+          hostMemAvailableBytes: 400,
+          nodeRssBytes: 100,
+          reasons: ['cgroup-hard', 'host-hard'],
+        },
+      },
+    }), { mode: 0o600 });
+
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
+    const data = await response.json() as any;
+    const runtimeLearning = data.sections.find((section: any) => section.id === 'runtimeLearning');
+
+    assert.equal(response.status, 200);
+    assert.equal(data.runtimeLearning.memoryPressure.mode, 'suspended');
+    assert.equal(runtimeLearning.status, 'warning');
+    assert.equal(runtimeLearning.checks[0]?.id, 'runtimeLearning.memoryPressure');
+    assert.equal(runtimeLearning.checks[0]?.severity, 'warning');
+  });
+
   test('GET /readiness gates a stuck Runtime Learning wake', async () => {
     const config = getDistillationHeartbeatConfig(testRoot, process.env);
     const ownerPath = path.join(testRoot, '.xiaoba', 'heartbeat-scheduler-owner', 'owner.json');

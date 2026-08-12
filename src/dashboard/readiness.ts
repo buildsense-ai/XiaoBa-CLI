@@ -92,6 +92,16 @@ export interface DashboardRuntimeLearningStatus {
   };
   cumulativeReviewTimeoutCount: number;
   cumulativeReviewFailureCount: number;
+  memoryPressure?: {
+    mode: 'normal' | 'degraded' | 'suspended';
+    level: 'normal' | 'soft' | 'hard';
+    transition: string;
+    sampledAt: string;
+    cgroupPercent: number | null;
+    hostMemAvailableBytes: number | null;
+    nodeRssBytes: number | null;
+    reasons: string[];
+  };
   sources: Array<{
     sourceId: string;
     category: string;
@@ -189,7 +199,15 @@ function buildRuntimeLearningSection(
   runtime: DashboardRuntimeLearningStatus,
 ): DashboardReadinessSection {
   let check: DashboardReadinessCheck;
-  switch (runtime.liveness) {
+  if (runtime.memoryPressure?.mode === 'suspended') {
+    check = failCheck(
+      'runtimeLearning.memoryPressure',
+      'Runtime Learning memory pressure',
+      'Runtime Learning 因内存压力暂停；Dashboard 交互服务保持可用，等待连续低压采样后自动恢复',
+      'warning',
+      { label: '查看诊断', target: 'diagnostics' },
+    );
+  } else switch (runtime.liveness) {
     case 'disabled':
       check = passCheck('runtimeLearning.owner', 'Runtime Learning', 'Runtime Learning 未启用');
       break;
@@ -297,6 +315,8 @@ function readRuntimeLearningStatus(
     if (isBacklogRecord(heartbeat.backlog)) base.backlog = heartbeat.backlog;
     base.cumulativeReviewTimeoutCount = toNonNegativeInteger(heartbeat.cumulativeReviewTimeoutCount);
     base.cumulativeReviewFailureCount = toNonNegativeInteger(heartbeat.cumulativeReviewFailureCount);
+    const memoryPressure = toMemoryPressureStatus(heartbeat.memoryPressure);
+    if (memoryPressure) base.memoryPressure = memoryPressure;
     if (Array.isArray(heartbeat.lastSourceReports)) {
       base.sources = heartbeat.lastSourceReports
         .filter(isRecord)
@@ -379,6 +399,37 @@ function isBacklogRecord(value: unknown): value is NonNullable<DashboardRuntimeL
     value.operationalReviews,
     value.lagMs,
   ].every(item => typeof item === 'number' && Number.isFinite(item) && item >= 0);
+}
+
+function toMemoryPressureStatus(
+  value: unknown,
+): DashboardRuntimeLearningStatus['memoryPressure'] | undefined {
+  if (!isRecord(value) || !isRecord(value.sample)) return undefined;
+  const mode = value.mode;
+  const level = value.level;
+  const sample = value.sample;
+  if (
+    (mode !== 'normal' && mode !== 'degraded' && mode !== 'suspended')
+    || (level !== 'normal' && level !== 'soft' && level !== 'hard')
+    || typeof value.transition !== 'string'
+    || typeof sample.sampledAt !== 'string'
+  ) return undefined;
+  return {
+    mode,
+    level,
+    transition: value.transition,
+    sampledAt: sample.sampledAt,
+    cgroupPercent: toNullableFiniteNumber(sample.cgroupPercent),
+    hostMemAvailableBytes: toNullableFiniteNumber(sample.hostMemAvailableBytes),
+    nodeRssBytes: toNullableFiniteNumber(sample.nodeRssBytes),
+    reasons: Array.isArray(sample.reasons)
+      ? sample.reasons.filter((item): item is string => typeof item === 'string')
+      : [],
+  };
+}
+
+function toNullableFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function isAccountingRecord(value: unknown): value is { events: number; bytes: number; elapsedMs: number } {

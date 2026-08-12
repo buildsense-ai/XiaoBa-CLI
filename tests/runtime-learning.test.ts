@@ -388,6 +388,7 @@ function setupEnv(
     DISTILLATION_HEARTBEAT_LOG_ROOT: process.env.DISTILLATION_HEARTBEAT_LOG_ROOT,
     DISTILLATION_HEARTBEAT_STATE_FILE: process.env.DISTILLATION_HEARTBEAT_STATE_FILE,
     DISTILLATION_HEARTBEAT_RECORD_FILE: process.env.DISTILLATION_HEARTBEAT_RECORD_FILE,
+    DISTILLATION_MEMORY_PRESSURE_ENABLED: process.env.DISTILLATION_MEMORY_PRESSURE_ENABLED,
     XIAOBA_ROLE: process.env.XIAOBA_ROLE,
     XIAOBA_SKILLS_DIR: process.env.XIAOBA_SKILLS_DIR,
     XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
@@ -404,6 +405,10 @@ function setupEnv(
   process.env.DISTILLATION_HEARTBEAT_LOG_ROOT = path.join(root, 'logs');
   process.env.DISTILLATION_HEARTBEAT_STATE_FILE = stateFile;
   process.env.DISTILLATION_HEARTBEAT_RECORD_FILE = heartbeatRecordFile;
+  // RuntimeLearning tests exercise scheduling semantics, not the host's
+  // ambient memory state. Keep the production default enabled while making
+  // this suite deterministic on small CI/agent containers.
+  process.env.DISTILLATION_MEMORY_PRESSURE_ENABLED = 'false';
   delete process.env.XIAOBA_ROLE;
   process.env.XIAOBA_SKILLS_DIR = skillsRoot;
   process.env.XIAOBA_RUNTIME_ROOT = root;
@@ -926,6 +931,13 @@ describe('RuntimeLearning — AC3: Due Review', () => {
 
   beforeEach(() => { env = setupEnv(0); }); // Immediate settlement
   afterEach(() => { env.restore(); env.teardown(); });
+
+  test('preserves the standard review limits', () => {
+    const config = env.runtimeLearning.getConfig();
+
+    assert.equal(config.skillEvolutionReviewerConcurrency, 3);
+    assert.equal(config.skillEvolutionReviewMaxCandidates, 100);
+  });
 
   test('an accepted single episode bootstraps a Current Skill without a prior Skill load', async () => {
     const [delivery, acceptance] = deliveryPair(-2); // 2 hours ago
@@ -2724,6 +2736,250 @@ describe('Issue 4 — Heartbeat single-write', () => {
     env.runtimeLearning.markHeartbeatStatus('quiet');
     record = env.runtimeLearning.loadHeartbeatRecord();
     assert.equal(record.externalSourceDiagnostics.overallReadiness, 'ready');
+  });
+
+  test('memory suspension preserves active and scheduled reasons and never retains a next wake', async () => {
+    env.runtimeLearning.markHeartbeatScheduled(
+      new Date('2026-08-12T00:01:00.000Z'),
+      'scheduled',
+    );
+    env.runtimeLearning.setMemoryPressureMode('suspended');
+
+    const result = await env.runtimeLearning.wake(['curator', 'operational-retry']);
+    let record = env.runtimeLearning.loadHeartbeatRecord();
+
+    assert.equal(result.ran, false);
+    assert.equal(record.lastRunStatus, 'memory_suspended');
+    assert.deepEqual(record.pendingWakeReasons, ['curator', 'operational-retry', 'scheduled']);
+    assert.equal(record.nextWakeAt, undefined);
+    assert.equal(record.nextWakeReason, undefined);
+
+    env.runtimeLearning.markHeartbeatScheduled(
+      new Date('2026-08-12T00:02:00.000Z'),
+      'scheduled',
+    );
+    record = env.runtimeLearning.loadHeartbeatRecord();
+    assert.equal(record.nextWakeAt, undefined);
+    assert.equal(record.nextWakeReason, undefined);
+  });
+
+  test('scheduler restores every durable pending reason after hard-pressure recovery', async () => {
+    process.env.DISTILLATION_MEMORY_PRESSURE_ENABLED = 'true';
+    const sample = (overrides: Partial<import('../src/utils/distillation-memory-pressure').MemoryPressureSample> = {}) => ({
+      sampledAt: new Date().toISOString(),
+      cgroupCurrentBytes: 500,
+      cgroupMaxBytes: 1_000,
+      cgroupPercent: 50,
+      hostMemAvailableBytes: 2 * 1024 * 1024 * 1024,
+      nodeRssBytes: 100,
+      reasons: [],
+      ...overrides,
+    });
+    let currentSample = sample();
+    const scheduler = new DistillationHeartbeatScheduler(
+      env.root,
+      env.runtimeLearning,
+      undefined,
+      { readMemoryPressureSample: () => currentSample },
+    );
+
+    env.runtimeLearning.markHeartbeatPending(['curator', 'operational-retry']);
+    currentSample = sample({ cgroupPercent: 90 });
+    assert.equal(
+      scheduler.observeMemoryPressureForTesting(currentSample).mode,
+      'suspended',
+    );
+
+    const suspended = await scheduler.runHeartbeat('manual');
+    assert.equal(suspended.ran, false);
+    assert.deepEqual(env.runtimeLearning.getPendingHeartbeatReasons(), [
+      'curator',
+      'manual',
+      'operational-retry',
+    ]);
+
+    currentSample = sample();
+    scheduler.observeMemoryPressureForTesting(currentSample);
+    scheduler.observeMemoryPressureForTesting(currentSample);
+    assert.equal(
+      scheduler.observeMemoryPressureForTesting(currentSample).transition,
+      'recovered-to-degraded',
+    );
+
+    const resumed = await scheduler.runHeartbeat('scheduled');
+    const record = env.runtimeLearning.loadHeartbeatRecord();
+    assert.equal(resumed.ran, true);
+    assert.deepEqual(record.lastPendingWakeReasons, [
+      'curator',
+      'manual',
+      'operational-retry',
+      'scheduled',
+    ]);
+    assert.deepEqual(record.pendingWakeReasons, []);
+  });
+
+  test('filters non-wake diagnostic values out of suspended pending work', () => {
+    const recordPath = env.runtimeLearning.getConfig().heartbeatRecordPath;
+    fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+    fs.writeFileSync(recordPath, JSON.stringify({
+      schemaVersion: 1,
+      pendingWakeReasons: ['curator', 'failed'],
+      nextWakeReason: 'failed',
+    }), { mode: 0o600 });
+
+    env.runtimeLearning.setMemoryPressureMode('suspended');
+    const record = env.runtimeLearning.loadHeartbeatRecord();
+    assert.deepEqual(record.pendingWakeReasons, ['curator']);
+    assert.equal(record.nextWakeAt, undefined);
+    assert.equal(record.nextWakeReason, undefined);
+  });
+
+  test('hard-pressure abort records an interrupted rejected wake as resumable work', async () => {
+    const originalRunReview = (env.runtimeLearning as any).runReview.bind(env.runtimeLearning);
+    const reviewStarted = createDeferred<void>();
+    const releaseReview = createDeferred<void>();
+    (env.runtimeLearning as any).runReview = async () => {
+      reviewStarted.resolve();
+      await releaseReview.promise;
+      throw new Error('review aborted by memory pressure');
+    };
+
+    try {
+      const wake = env.runtimeLearning.wake('manual');
+      await reviewStarted.promise;
+      env.runtimeLearning.setMemoryPressureMode('suspended');
+      releaseReview.resolve();
+
+      const result = await wake;
+      const record = env.runtimeLearning.loadHeartbeatRecord();
+      assert.equal(result.ran, false);
+      assert.equal(record.lastRunStatus, 'memory_suspended');
+      assert.deepEqual(record.pendingWakeReasons, ['manual']);
+      assert.equal(record.nextWakeAt, undefined);
+      assert.equal(record.nextWakeReason, undefined);
+    } finally {
+      (env.runtimeLearning as any).runReview = originalRunReview;
+    }
+  });
+
+  test('hard pressure aborts an active wake before curation and reassessment', async () => {
+    const originalRunReview = (env.runtimeLearning as any).runReview.bind(env.runtimeLearning);
+    const originalRunCuration = (env.runtimeLearning as any).runCuration.bind(env.runtimeLearning);
+    const originalRunReassessment = (env.runtimeLearning as any).runSemanticReassessment.bind(env.runtimeLearning);
+    const reviewStarted = createDeferred<void>();
+    const releaseReview = createDeferred<void>();
+    let curationCalls = 0;
+    let reassessmentCalls = 0;
+
+    (env.runtimeLearning as any).runReview = async () => {
+      reviewStarted.resolve();
+      await releaseReview.promise;
+      return {
+        status: 'skipped',
+        reviewedEpisodes: 0,
+        reviewedQueueEntries: 0,
+        deferredQueueReviews: 0,
+        operationalQueueReviews: 0,
+        deferredRetries: 0,
+        operationalRetries: 0,
+        reviewTimeoutCount: 0,
+        reviewFailureCount: 0,
+        transitionsByKind: {},
+      };
+    };
+    (env.runtimeLearning as any).runCuration = async (...args: any[]) => {
+      curationCalls += 1;
+      return originalRunCuration(...args);
+    };
+    (env.runtimeLearning as any).runSemanticReassessment = async (...args: any[]) => {
+      reassessmentCalls += 1;
+      return originalRunReassessment(...args);
+    };
+
+    try {
+      const wake = env.runtimeLearning.wake('manual');
+      await reviewStarted.promise;
+      env.runtimeLearning.setMemoryPressureMode('suspended');
+      releaseReview.resolve();
+
+      const result = await wake;
+      const record = env.runtimeLearning.loadHeartbeatRecord();
+      assert.equal(result.ran, false);
+      assert.equal(curationCalls, 0);
+      assert.equal(reassessmentCalls, 0);
+      assert.equal(record.lastRunStatus, 'memory_suspended');
+      assert.equal(record.nextWakeAt, undefined);
+    } finally {
+      (env.runtimeLearning as any).runReview = originalRunReview;
+      (env.runtimeLearning as any).runCuration = originalRunCuration;
+      (env.runtimeLearning as any).runSemanticReassessment = originalRunReassessment;
+    }
+  });
+
+  test('degraded pressure limits review to one worker and ten candidates without changing normal policy', async () => {
+    const makeEpisode = (episodeId: string): LearningEpisode => ({
+      schemaVersion: 3,
+      episodeId,
+      runtimeSessionId: 'runtime-memory-pressure-degraded',
+      sourceFilePath: `${episodeId}.jsonl`,
+      deliveryTurn: 1,
+      completionEvidence: [{
+        ref: `${episodeId}#1`,
+        sourceFilePath: `${episodeId}.jsonl`,
+        turn: 1,
+        kind: 'artifact-delivery',
+        detail: 'send_file: delivered',
+      }],
+      contradictionSignals: [],
+      sourceEvidence: [frozenEpisodeSource(`${episodeId}#1`, `${episodeId}.jsonl`, 1)],
+      semanticObservations: [{
+        kind: 'user-intent',
+        value: `Deliver ${episodeId}.`,
+        sourceRefs: [`${episodeId}#intent`],
+      }],
+      settlementDeadline: new Date(0).toISOString(),
+      status: 'eligible',
+    });
+    const episodes = Object.fromEntries(
+      Array.from({ length: 12 }, (_, index) => {
+        const episode = makeEpisode(`memory-pressure-${index + 1}`);
+        return [episode.episodeId, episode];
+      }),
+    );
+    env.runtimeLearning.getEpisodeStore().save({ schemaVersion: 3, episodes });
+
+    const originalReview = env.skillEvolution.reviewAndApply.bind(env.skillEvolution);
+    let activeReviews = 0;
+    let maxActiveReviews = 0;
+    let reviewCalls = 0;
+    env.skillEvolution.reviewAndApply = async () => {
+      reviewCalls += 1;
+      activeReviews += 1;
+      maxActiveReviews = Math.max(maxActiveReviews, activeReviews);
+      try {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        return {
+          transition: 'reject_candidate' as const,
+          verified: false,
+          rounds: 1,
+        };
+      } finally {
+        activeReviews -= 1;
+      }
+    };
+
+    try {
+      env.runtimeLearning.setMemoryPressureMode('degraded');
+      const result = await env.runtimeLearning.wake('manual');
+
+      assert.equal(env.runtimeLearning.getConfig().skillEvolutionReviewerConcurrency, 3);
+      assert.equal(env.runtimeLearning.getConfig().skillEvolutionReviewMaxCandidates, 100);
+      assert.equal(reviewCalls, 10);
+      assert.equal(maxActiveReviews, 1);
+      assert.equal(result.review.reviewedEpisodes, 10);
+    } finally {
+      env.skillEvolution.reviewAndApply = originalReview;
+    }
   });
 
   test('persists unconsumed wake reasons atomically without mutating learning state on restart inspection', () => {

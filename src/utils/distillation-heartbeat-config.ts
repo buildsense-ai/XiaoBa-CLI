@@ -1,6 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
+import {
+  getDistillationMemoryPressureConfig,
+  type MemoryPressureConfig,
+} from './distillation-memory-pressure';
 
 /**
  * Distillation Heartbeat runtime configuration.
@@ -72,6 +76,8 @@ export interface DistillationHeartbeatConfig {
   skillEvolutionReviewAttemptDeadlineMinutes: number;
   /** Maximum review candidates admitted by one wake (eligible + due queue). */
   skillEvolutionReviewMaxCandidates: number;
+  /** Runtime-only memory pressure fallback for the distillation lane. */
+  memoryPressure: MemoryPressureConfig;
   /** Optional Author model override. */
   skillEvolutionAuthorModel?: string;
   /** Optional independent Verifier model override. */
@@ -401,6 +407,7 @@ export function getDistillationHeartbeatConfig(
     1,
     10_000,
   );
+  const memoryPressure = getDistillationMemoryPressureConfig(runtimeEnv);
   const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
   const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');
   const evidenceCapsulePath = resolveContainedPath(
@@ -479,6 +486,7 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionOperationalRetryMaxHours,
     skillEvolutionReviewAttemptDeadlineMinutes,
     skillEvolutionReviewMaxCandidates,
+    memoryPressure,
     ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
     evidenceCapsulePath,
