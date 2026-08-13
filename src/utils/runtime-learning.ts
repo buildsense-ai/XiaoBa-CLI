@@ -808,7 +808,7 @@ export class RuntimeLearning {
   /** Cooperative explicit-backfill operation tracked for scheduler drain. */
   private activeBackfill: Promise<RuntimeLearningBackfillResult> | null = null;
   private backfillDrainRequested = false;
-  /** Shutdown drain stops new review admission without aborting already active review work. */
+  /** Shutdown drain stops new review admission and cancels active background wakes. */
   private shutdownDrainRequested = false;
   /** Operator pause for external reads only; internal discovery/review remains live. */
   private externalSourceDrainRequested = false;
@@ -1745,6 +1745,15 @@ export class RuntimeLearning {
     this.shutdownDrainRequested = true;
     this.backfillDrainRequested = true;
     this.externalReadAbortController?.abort();
+    // A dashboard shutdown must not leave a provider-backed Quantum running
+    // until the full review deadline. Each wake owns this controller and
+    // forwards its signal into Author/Verifier/Reader execution. The durable
+    // review engine treats runtime-shutdown as lifecycle cancellation: it
+    // releases the lease back to pending without consuming a retry attempt,
+    // so the next owner can resume the work safely.
+    for (const controller of this.activeWakeAbortControllers) {
+      controller.abort('runtime-shutdown');
+    }
     for (const source of this.sessionLogSources) source.close?.();
     const active = this.activeBackfill;
     const activeWakes = [...this.activeWakeResults];

@@ -2201,7 +2201,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     );
   });
 
-  test('drain leaves an in-flight review to the scheduler shared deadline', async () => {
+  test('drain cancels an in-flight review without consuming its attempt', async () => {
     const episodeId = 'episode-drain-cancel';
     env.runtimeLearning.getEpisodeStore().save({
       schemaVersion: 3,
@@ -2253,15 +2253,17 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       wake = env.runtimeLearning.wake('manual');
       await started.promise;
       assert.equal(await env.runtimeLearning.drain(20), false);
-      assert.equal(observedAbort, false);
+      assert.equal(observedAbort, true);
       release.resolve();
       const result = await wake;
-      assert.equal(observedAbort, false);
+      assert.equal(observedAbort, true);
       assert.equal(result.review.status, 'succeeded');
       const persisted = engine.loadStore().jobs[job.jobId]!;
-      assert.equal(Object.values(persisted.quanta).some(quantum => (
-        quantum.kind === 'skill_author' && quantum.state === 'succeeded'
-      )), true);
+      const author = Object.values(persisted.quanta).find(quantum => quantum.kind === 'skill_author')!;
+      assert.equal(author.state, 'pending');
+      assert.equal(author.failureReason, 'runtime-shutdown');
+      assert.equal(author.nextRetryAt, undefined);
+      assert.equal(author.attempts, 0);
     } finally {
       release.resolve();
       if (wake) await Promise.allSettled([wake]);
@@ -2336,7 +2338,7 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     }
   });
 
-  test('drain waits for a timing-out active review to durably queue operational retry before wake exit', async () => {
+  test('drain releases an in-flight review without creating an operational retry', async () => {
     const episodeId = 'episode-drain-review-timeout';
     env.runtimeLearning.getEpisodeStore().save({
       schemaVersion: 3,
@@ -2375,7 +2377,6 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     const engine = env.skillEvolution.getEvidenceReviewEngine();
     const originalAuthor = (engine as any).options.runSkillAuthor;
     const started = createDeferred<void>();
-    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewAttemptDeadlineMinutes = 0.0002;
     (engine as any).options.runSkillAuthor = ({ signal }: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
       started.resolve();
       const abort = () => reject(new Error('provider surfaced a generic timeout error'));
@@ -2391,10 +2392,10 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       assert.equal(result.review.reviewedEpisodes, 0);
       const persisted = engine.loadStore().jobs[job.jobId]!;
       const author = Object.values(persisted.quanta).find(quantum => quantum.kind === 'skill_author')!;
-      assert.equal(author.state, 'retry_wait');
-      assert.equal(author.failureKind, 'branch_timeout');
-      assert.equal(author.failureReason, 'quantum-timeout');
-      assert.equal(author.attempts, 1);
+      assert.equal(author.state, 'pending');
+      assert.equal(author.failureReason, 'runtime-shutdown');
+      assert.equal(author.nextRetryAt, undefined);
+      assert.equal(author.attempts, 0);
     } finally {
       (engine as any).options.runSkillAuthor = originalAuthor;
     }
@@ -2473,11 +2474,16 @@ describe('RuntimeLearning — AC3: Due Review', () => {
       );
       assert.equal(result.review.status, 'succeeded');
       const persisted = engine.loadStore().jobs[job.jobId]!;
-      assert.equal(Object.values(persisted.quanta).some(quantum => (
-        quantum.kind === 'skill_author' && quantum.state === 'succeeded'
-      )), true);
+      const author = Object.values(persisted.quanta).find(quantum => quantum.kind === 'skill_author')!;
+      assert.equal(author.state, 'pending');
+      assert.equal(author.failureReason, 'runtime-shutdown');
+      assert.equal(author.attempts, 0);
       assert.equal(Object.values(persisted.quanta).some(quantum => quantum.state === 'leased'), false);
-      assert.equal(listRunnableQuanta(persisted, new Date()).some(quantum => quantum.kind === 'skill_verifier'), true);
+      assert.equal(
+        listRunnableQuanta(persisted, new Date()).some(quantum => quantum.kind === 'skill_verifier'),
+        false,
+        'downstream verifier remains blocked while the cancelled author is pending',
+      );
     } finally {
       reviewGate.resolve();
       await Promise.allSettled([
