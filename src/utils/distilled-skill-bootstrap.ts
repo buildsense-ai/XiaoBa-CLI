@@ -20,6 +20,9 @@ export interface SemanticReassessmentBootstrapOptions {
   skillEvolution: SkillEvolutionRuntime;
   manifestPath: string;
   learningEpisodeStore?: LearningEpisodeStore;
+  /** Background wake cancellation: never begin another reassessment after it fires. */
+  signal?: AbortSignal;
+  shouldContinue?: () => boolean;
 }
 
 export interface SemanticReassessmentBootstrapResult {
@@ -43,6 +46,7 @@ export async function bootstrapSemanticReassessmentOnce(
   const registry = options.skillEvolution.getRegistry();
   const results: SemanticReassessmentBootstrapResult[] = [];
   const records = Object.values(registry.capabilities);
+  const shouldContinue = (): boolean => !options.signal?.aborted && options.shouldContinue?.() !== false;
 
   // First group stale references by dependent. The former implementation
   // accidentally used only staleDependents[0], silently leaving other
@@ -68,6 +72,7 @@ export async function bootstrapSemanticReassessmentOnce(
   // Route-only drift is metadata maintenance, but it must be applied once
   // for every affected dependent, not just the first one discovered.
   for (const group of dependentGroups.values()) {
+    if (!shouldContinue()) break;
     if (!group.references.every(item => referenceGuidanceContentHash(item.source, item.reference) === currentGuidanceContentHash(item.source))) continue;
     const refreshed = group.candidate.referencedSkills.map(reference => {
       const match = group.references.find(item => item.reference === reference);
@@ -96,6 +101,7 @@ export async function bootstrapSemanticReassessmentOnce(
   // Guidance drift requires a bounded Author/Verifier maintenance review for
   // each dependent. Route-only groups above never enter this path.
   for (const group of dependentGroups.values()) {
+    if (!shouldContinue()) break;
     if (group.references.every(item => referenceGuidanceContentHash(item.source, item.reference) === currentGuidanceContentHash(item.source))) continue;
     const references = group.candidate.referencedSkills.map(reference => {
       const match = group.references.find(item => item.reference === reference);
@@ -116,6 +122,7 @@ export async function bootstrapSemanticReassessmentOnce(
   // Finally process capabilities whose own route still needs semantic
   // reassessment. This is independent of dependent maintenance above.
   for (const record of records) {
+    if (!shouldContinue()) break;
     if (!shouldReassessCurrentSkill(record)) continue;
     const result = await reassessRecord(record, { ...options, manifest, registry });
     if (result) results.push(result);
@@ -208,6 +215,7 @@ async function reassessRecord(
   record: ReturnType<SkillEvolutionRuntime['getRegistry']>['capabilities'][string],
   options: ReassessRecordOptions,
 ): Promise<SemanticReassessmentBootstrapResult | undefined> {
+  if (options.signal?.aborted || options.shouldContinue?.() === false) return undefined;
   const observations = record.semanticObservations?.length
     ? record.semanticObservations
     : findEpisodeObservations(options.learningEpisodeStore, record.evidenceRefs.map(item => item.ref));
@@ -326,7 +334,7 @@ async function reassessRecord(
     };
   }
   try {
-    const result = await options.skillEvolution.reviewAndApply(bundle);
+    const result = await options.skillEvolution.reviewAndApply(bundle, options.signal);
     const queuedState = options.skillEvolution.getQueuedReviewState(bundle.bundleId);
     const state = options.manifest.load();
     const current = state.entries[entry.taskId];

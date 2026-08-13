@@ -654,8 +654,11 @@ export class SkillEvolutionRuntime {
    * Operational handoff still throws so the curator does not consume evidence
    * as though a semantic rejection had completed.
    */
-  async reviewUsageAndApply(bundle: EvidenceBundle): Promise<SkillEvolutionResult> {
-    const result = await this.reviewAndApplyViaEvidenceReviewJob(bundle, undefined, false);
+  async reviewUsageAndApply(
+    bundle: EvidenceBundle,
+    signal?: AbortSignal,
+  ): Promise<SkillEvolutionResult> {
+    const result = await this.reviewAndApplyViaEvidenceReviewJob(bundle, signal, false);
     if (result.queued === 'operational') {
       throw new OperationalReviewError(
         'branch_failure',

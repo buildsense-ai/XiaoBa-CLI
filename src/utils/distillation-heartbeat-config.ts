@@ -1,6 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
+import {
+  getDistillationMemoryPressureConfig,
+  type MemoryPressureConfig,
+} from './distillation-memory-pressure';
 
 /**
  * Distillation Heartbeat runtime configuration.
@@ -72,6 +76,8 @@ export interface DistillationHeartbeatConfig {
   skillEvolutionReviewAttemptDeadlineMinutes: number;
   /** Maximum review candidates admitted by one wake (eligible + due queue). */
   skillEvolutionReviewMaxCandidates: number;
+  /** Runtime-only memory-pressure fallback for background distillation. */
+  memoryPressure: MemoryPressureConfig;
   /** Maximum review Quanta advanced serially across Jobs by one wake. */
   skillEvolutionReviewMaxQuantaPerWake: number;
   /** Optional Author model override. */
@@ -403,6 +409,7 @@ export function getDistillationHeartbeatConfig(
     1,
     10_000,
   );
+  const memoryPressure = getDistillationMemoryPressureConfig(runtimeEnv);
   const skillEvolutionReviewMaxQuantaPerWake = readNumberInRange(
     runtimeEnv,
     'XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_QUANTA_PER_WAKE',
@@ -488,6 +495,7 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionOperationalRetryMaxHours,
     skillEvolutionReviewAttemptDeadlineMinutes,
     skillEvolutionReviewMaxCandidates,
+    memoryPressure,
     skillEvolutionReviewMaxQuantaPerWake,
     ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),

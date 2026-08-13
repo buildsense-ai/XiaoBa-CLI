@@ -41,6 +41,10 @@ import { emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src
 import { bootstrapSemanticReassessmentOnce } from '../src/utils/distilled-skill-bootstrap';
 import { DistillationHeartbeatScheduler } from '../src/utils/distillation-heartbeat-scheduler';
 import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
+import type {
+  MemoryPressureObservation,
+  MemoryPressureSample,
+} from '../src/utils/distillation-memory-pressure';
 import {
   loadEvidenceReviewJobStore,
   saveEvidenceReviewJobStore,
@@ -57,6 +61,7 @@ import {
 import { listRunnableQuanta } from '../src/utils/evidence-review-graph-core';
 import {
   ExternalSessionLogSourceAdapter,
+  type SessionLogSourceIdentity,
   type ExternalSourceReader,
   type SessionLogSourceResource,
 } from '../src/utils/session-log-source';
@@ -3446,6 +3451,172 @@ describe('Issue 4 — Heartbeat single-write', () => {
       firstCreate.branchTranscriptPaths,
       'transcript references should be preserved across restart',
     );
+  });
+});
+
+describe('RuntimeLearning — memory-pressure admission', () => {
+  let env: TestEnv;
+
+  beforeEach(() => { env = setupEnv(0); });
+  afterEach(() => { env.restore(); env.teardown(); });
+
+  test('hard pressure preserves durable demand and prevents another model Quantum', async () => {
+    const engine = env.skillEvolution.getEvidenceReviewEngine();
+    const bundle = runtimeReviewBundle('memory-pressure-hard-stop');
+    const jobId = await seedActiveJobReadyForSkillAuthor(env, bundle);
+    seedDueReviewContinuation(env.episodeStorePath);
+
+    let authorCalls = 0;
+    const originalAuthor = (engine as any).options.runSkillAuthor;
+    (engine as any).options.runSkillAuthor = async (...args: any[]) => {
+      authorCalls += 1;
+      return originalAuthor(...args);
+    };
+    try {
+      env.runtimeLearning.setMemoryPressureMode('suspended');
+      const result = await env.runtimeLearning.wake('manual');
+
+      assert.equal(result.ran, false);
+      assert.equal(authorCalls, 0);
+      assert.equal(env.runtimeLearning.loadHeartbeatRecord().lastRunStatus, 'memory_suspended');
+      assert.deepEqual(env.runtimeLearning.getPendingHeartbeatReasons(), ['manual']);
+      assert.equal(
+        Object.values(engine.loadStore().jobs[jobId]!.quanta)
+          .some(quantum => quantum.kind === 'skill_author' && quantum.attempts > 0),
+        false,
+      );
+    } finally {
+      (engine as any).options.runSkillAuthor = originalAuthor;
+    }
+  });
+
+  test('degraded mode caps live model Quanta to one without mutating normal config', async () => {
+    const engine = env.skillEvolution.getEvidenceReviewEngine();
+    const jobIds = Array.from({ length: 3 }, (_, index) => engine.ensureJob({
+      bundle: runtimeReviewBundle(`memory-pressure-degraded-${index}`),
+      candidate: runtimeReviewBundle(`memory-pressure-degraded-${index}`).episode as DistilledKnowledgeCandidate,
+      workClass: 'live_learning',
+    }).jobId);
+    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxQuantaPerWake = 8;
+    seedDueReviewContinuation(env.episodeStorePath);
+    env.runtimeLearning.setMemoryPressureMode('degraded');
+
+    const before = durableQuantumProgress(env);
+    await env.runtimeLearning.wake('manual');
+    const after = durableQuantumProgress(env);
+
+    assert.equal(after - before, 1);
+    assert.equal(env.runtimeLearning.getConfig().skillEvolutionReviewMaxQuantaPerWake, 8);
+    assert.equal(jobIds.length, 3);
+  });
+
+  test('persists memory observations for restart-safe suspended recovery', () => {
+    const observation: MemoryPressureObservation = {
+      mode: 'suspended',
+      level: 'hard',
+      transition: 'suspended',
+      recoverySamples: 0,
+      sample: {
+        sampledAt: '2026-08-13T00:00:00.000Z',
+        cgroupCurrentBytes: 900,
+        cgroupMaxBytes: 1000,
+        cgroupPercent: 90,
+        hostMemAvailableBytes: 100,
+        nodeRssBytes: 50,
+        reasons: ['cgroup-hard'],
+      },
+    };
+    env.runtimeLearning.markMemoryPressureObservation(observation);
+    const restarted = createRestartableRuntimeLearning(env.root);
+
+    assert.equal(restarted.loadHeartbeatRecord().memoryPressure?.mode, 'suspended');
+    restarted.setMemoryPressureMode('suspended');
+    assert.equal(restarted.getMemoryPressureMode(), 'suspended');
+  });
+
+  test('hard pressure does not reject an explicit bounded external backfill', async () => {
+    env.runtimeLearning.setMemoryPressureMode('suspended');
+    const identity: SessionLogSourceIdentity = {
+      sourceId: 'memory-pressure-backfill-source',
+      label: 'Memory pressure test backfill source',
+      category: 'external',
+      provider: 'fixture',
+      reader: 'fixture',
+    };
+    const resource: SessionLogSourceResource = {
+      resourceRef: 'fixture-thread',
+      firstEventIdentity: { eventId: 'fixture-event-1', position: 0 },
+    };
+    const source = {
+      identity,
+      discoverResources: () => [resource],
+      read: (_resource: SessionLogSourceResource) => ({
+        events: [],
+        status: 'stable' as const,
+        exhausted: true,
+        newCursor: { resourceRef: resource.resourceRef, position: 0, processedCount: 0 },
+      }),
+    };
+
+    const result = await env.runtimeLearning.runExternalBackfill({
+      operationId: 'memory-pressure-explicit-backfill',
+      triggeredBy: 'test-operator',
+      provider: identity.provider,
+      sourceId: identity.sourceId,
+      range: { startPosition: 0, endPosition: 0, resourceRefs: [resource.resourceRef] },
+      limits: { maxResources: 1, maxBytes: 1024, maxElapsedMs: 1_000 },
+    }, source);
+
+    assert.notEqual(result.backfill.status, 'source_failed');
+    assert.equal(env.runtimeLearning.getMemoryPressureMode(), 'suspended');
+  });
+
+  test('scheduler persists startup demand during hard pressure and resumes after staged recovery', async () => {
+    const lowPressureSample = (): MemoryPressureSample => ({
+      sampledAt: new Date().toISOString(),
+      cgroupCurrentBytes: 400 * 1024 * 1024,
+      cgroupMaxBytes: 1024 * 1024 * 1024,
+      cgroupPercent: 40,
+      hostMemAvailableBytes: 2 * 1024 * 1024 * 1024,
+      nodeRssBytes: 100 * 1024 * 1024,
+      reasons: [],
+    });
+    const hardPressureSample: MemoryPressureSample = {
+      ...lowPressureSample(),
+      cgroupCurrentBytes: 900 * 1024 * 1024,
+      cgroupPercent: 90,
+      hostMemAvailableBytes: 400 * 1024 * 1024,
+      reasons: ['fixture-hard-pressure'],
+    };
+    const scheduler = new DistillationHeartbeatScheduler(
+      env.root,
+      env.runtimeLearning,
+      null,
+      { readMemoryPressureSample: () => hardPressureSample },
+    );
+
+    try {
+      await scheduler.start();
+      const deferred = env.runtimeLearning.loadHeartbeatRecord();
+      assert.equal(env.runtimeLearning.getMemoryPressureMode(), 'suspended');
+      assert.deepEqual(deferred.pendingWakeReasons, ['startup']);
+      assert.equal(deferred.lastRunStatus, 'memory_suspended');
+
+      for (let sampleIndex = 0; sampleIndex < 3; sampleIndex++) {
+        const observation = scheduler.observeMemoryPressureForTesting(lowPressureSample());
+        assert.equal(observation.mode, sampleIndex === 2 ? 'degraded' : 'suspended');
+      }
+      assert.equal(env.runtimeLearning.getMemoryPressureMode(), 'degraded');
+
+      for (let sampleIndex = 0; sampleIndex < 3; sampleIndex++) {
+        const observation = scheduler.observeMemoryPressureForTesting(lowPressureSample());
+        assert.equal(observation.mode, sampleIndex === 2 ? 'normal' : 'degraded');
+      }
+      assert.equal(env.runtimeLearning.getMemoryPressureMode(), 'normal');
+      assert.deepEqual(env.runtimeLearning.loadHeartbeatRecord().pendingWakeReasons, ['startup']);
+    } finally {
+      await scheduler.stop();
+    }
   });
 });
 

@@ -26,7 +26,10 @@ export interface SkillUsageCuratorOptions {
   statePath: string;
   intervalMs: number;
   runtime?: SkillEvolutionRuntime;
-  reassess?: (request: CuratorReassessment) => Promise<CapabilityTransitionKind>;
+  reassess?: (
+    request: CuratorReassessment,
+    signal?: AbortSignal,
+  ) => Promise<CapabilityTransitionKind>;
   now?: () => Date;
 }
 
@@ -34,6 +37,13 @@ export interface CuratorRunResult {
   ran: boolean;
   expedited: boolean;
   transitions: Array<{ capabilityHandle: string; transition: CapabilityTransitionKind }>;
+}
+
+export interface CuratorRunOptions {
+  /** Cancels only the current background review attempt. */
+  signal?: AbortSignal;
+  /** Rechecked between durable selections before another model call starts. */
+  shouldStop?: () => boolean;
 }
 
 interface CuratorWake {
@@ -142,7 +152,7 @@ export class SkillUsageCurator {
     if (changed) this.saveState(state);
   }
 
-  async runDue(): Promise<CuratorRunResult> {
+  async runDue(options: CuratorRunOptions = {}): Promise<CuratorRunResult> {
     const state = this.loadState();
     const now = this.now();
     const expeditedHandles = new Set(Object.keys(state.expedited));
@@ -203,12 +213,13 @@ export class SkillUsageCurator {
 
     const transitions: CuratorRunResult['transitions'] = [];
     for (const [capabilityHandle, selection] of selected) {
+      if (options.signal?.aborted || options.shouldStop?.()) break;
       const request: CuratorReassessment = {
         skill: selection.skill,
         outcomeFacts: selection.outcomes,
         bundle: this.buildEvidenceBundle(selection.skill, selection.outcomes),
       };
-      const transition = await this.reassess(request);
+      const transition = await this.reassess(request, options.signal);
       transitions.push({ capabilityHandle, transition });
       state.reviewedOutcomeFactIds = [...new Set([...state.reviewedOutcomeFactIds, ...selection.outcomes.map(item => item.factId)])];
       delete state.expedited[capabilityHandle];
@@ -218,10 +229,13 @@ export class SkillUsageCurator {
     return { ran: true, expedited: expeditedHandles.size > 0, transitions };
   }
 
-  private async reassess(request: CuratorReassessment): Promise<CapabilityTransitionKind> {
-    if (this.options.reassess) return this.options.reassess(request);
+  private async reassess(
+    request: CuratorReassessment,
+    signal?: AbortSignal,
+  ): Promise<CapabilityTransitionKind> {
+    if (this.options.reassess) return this.options.reassess(request, signal);
     if (!this.options.runtime) return 'defer';
-    return (await this.options.runtime.reviewUsageAndApply(request.bundle)).transition;
+    return (await this.options.runtime.reviewUsageAndApply(request.bundle, signal)).transition;
   }
 
   private buildEvidenceBundle(skill: GeneratedCurrentSkillIdentity, outcomes: SkillUsageOutcomeFact[]): EvidenceBundle {

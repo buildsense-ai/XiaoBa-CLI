@@ -25,6 +25,11 @@ import {
 import { DistillationUnit } from './distillation-unit';
 import { getDistillationHeartbeatConfig, DistillationHeartbeatConfig } from './distillation-heartbeat-config';
 import type { ExternalHistoryMode } from './distillation-heartbeat-config';
+import {
+  isMemoryPressureObservation,
+  type MemoryPressureMode,
+  type MemoryPressureObservation,
+} from './distillation-memory-pressure';
 import { LearningEpisodeStore, LearningEpisode, buildLearningEpisodeCandidate } from './learning-episode';
 import { SkillEvolutionRuntime, CapabilityTransitionKind } from './skill-evolution';
 import { SkillUsageCurator } from './skill-usage-curator';
@@ -175,6 +180,26 @@ export type RuntimeLearningReason =
    */
   | 'external-continuation';
 
+const RUNTIME_LEARNING_REASONS = new Set<RuntimeLearningReason>([
+  'startup',
+  'scheduled',
+  'session-log-append',
+  'settlement-deadline',
+  'operational-retry',
+  'curator',
+  'semantic-reassessment',
+  'manual',
+  'external-continuation',
+]);
+
+export function isRuntimeLearningReason(value: unknown): value is RuntimeLearningReason {
+  return typeof value === 'string' && RUNTIME_LEARNING_REASONS.has(value as RuntimeLearningReason);
+}
+
+function normalizeRuntimeLearningReasons(reasons: readonly unknown[]): RuntimeLearningReason[] {
+  return Array.from(new Set(reasons.filter(isRuntimeLearningReason))).sort();
+}
+
 function yieldRuntimeTurn(): Promise<void> {
   return new Promise(resolve => setImmediate(resolve));
 }
@@ -188,6 +213,7 @@ export type RuntimeLearningHeartbeatRunStatus =
   | 'coalesced'
   | 'timed_out'
   | 'queued_operational_retry'
+  | 'memory_suspended'
   | 'drained';
 
 export interface RuntimeLearningHeartbeatOwner {
@@ -320,6 +346,8 @@ export interface RuntimeLearningHeartbeatRecord {
   backlog: RuntimeLearningBacklogSnapshot;
   lastSourceReports: readonly SessionLogSourceReport[];
   externalSourceDiagnostics: ExternalSourceDiagnosticSnapshot;
+  /** Latest pressure observation used to resume safely after a restart. */
+  memoryPressure?: MemoryPressureObservation;
 }
 
 export interface RuntimeLearningBackfillOperationPaths {
@@ -698,6 +726,7 @@ function emptyHeartbeatRecord(): RuntimeLearningHeartbeatRecord {
       activationBlockedCount: 0,
       failureCount: 0,
     },
+    memoryPressure: undefined,
   };
 }
 
@@ -721,6 +750,8 @@ export class RuntimeLearning {
   private readonly planner: DueWorkPlanner;
   private readonly clock: () => Date;
   private config: DistillationHeartbeatConfig;
+  /** Runtime-only admission mode; it never mutates normal operator config. */
+  private memoryPressureMode: MemoryPressureMode = 'normal';
   /**
    * Session log source adapters. The internal adapter is always first.
    * External adapters are built from the effective enabled provider set
@@ -787,6 +818,9 @@ export class RuntimeLearning {
   private externalReadAbortController: AbortController | null = null;
   /** Provider-scoped child signals let disable cancel only the affected lane. */
   private readonly activeExternalReadAbortControllers = new Map<string, AbortController>();
+  /** Throttle pressure-only heartbeat writes while retaining transitions. */
+  private lastMemoryPressurePersistedAtMs = 0;
+  private lastMemoryPressurePersistedMode: MemoryPressureMode | undefined;
 
   constructor(options: RuntimeLearningOptions) {
     this.workingDirectory = options.workingDirectory;
@@ -869,6 +903,61 @@ export class RuntimeLearning {
   /** Heartbeat config used by the thin scheduler for timer computation. */
   getConfig(): DistillationHeartbeatConfig {
     return this.config;
+  }
+
+  /** Current runtime-only memory-pressure mode for background wakes. */
+  getMemoryPressureMode(): MemoryPressureMode {
+    return this.memoryPressureMode;
+  }
+
+  /**
+   * Suspend only background heartbeat work. Normal 3/100 configuration is
+   * untouched, and explicit operator backfills keep their separate contract.
+   */
+  setMemoryPressureMode(mode: MemoryPressureMode): void {
+    const previousMode = this.memoryPressureMode;
+    this.memoryPressureMode = mode;
+    if (mode !== 'suspended' || previousMode === 'suspended') return;
+
+    this.abortActiveWakes('memory-pressure-hard');
+    const record = this.loadHeartbeatRecord();
+    record.pendingWakeReasons = normalizeRuntimeLearningReasons([
+      ...record.pendingWakeReasons,
+      ...(record.inProgress?.reasons ?? []),
+      ...(isRuntimeLearningReason(record.nextWakeReason) ? [record.nextWakeReason] : []),
+    ]);
+    delete record.nextWakeAt;
+    delete record.nextWakeReason;
+    this.writeHeartbeatRecord(record);
+  }
+
+  /** Persist memory diagnostics without turning every poll into a heartbeat run. */
+  markMemoryPressureObservation(observation: MemoryPressureObservation): void {
+    const sampledAtMs = Date.parse(observation.sample.sampledAt);
+    const nowMs = Number.isFinite(sampledAtMs) ? sampledAtMs : Date.now();
+    const shouldPersist = this.lastMemoryPressurePersistedAtMs === 0
+      || observation.transition !== 'none'
+      || observation.mode !== this.lastMemoryPressurePersistedMode
+      || nowMs - this.lastMemoryPressurePersistedAtMs >= 60_000;
+    if (!shouldPersist) return;
+    const record = this.loadHeartbeatRecord();
+    record.memoryPressure = observation;
+    this.writeHeartbeatRecord(record);
+    this.lastMemoryPressurePersistedAtMs = nowMs;
+    this.lastMemoryPressurePersistedMode = observation.mode;
+  }
+
+  /** Abort only model/source work owned by background heartbeat wakes. */
+  abortActiveWakes(reason = 'runtime-pressure'): void {
+    for (const controller of this.activeWakeAbortControllers) controller.abort(reason);
+  }
+
+  /** Clear a stale timer persisted before hard pressure invalidated admission. */
+  clearHeartbeatSchedule(): void {
+    const record = this.loadHeartbeatRecord();
+    delete record.nextWakeAt;
+    delete record.nextWakeReason;
+    this.writeHeartbeatRecord(record);
   }
 
   /** Learning Episode store for inspection/testing. */
@@ -2081,9 +2170,46 @@ export class RuntimeLearning {
     const reasons = this.normalizeReasons(reason);
     const orderedReasons = [...reasons].sort();
     const wakeStartMs = this.clock().getTime();
+    if (this.memoryPressureMode === 'suspended') {
+      this.markHeartbeatPending([...this.getPendingHeartbeatReasons(), ...orderedReasons]);
+      wake.ran = false;
+      this.recordHeartbeat(
+        this.formatReasons(reasons),
+        0,
+        0,
+        'memory_suspended',
+        orderedReasons,
+        0,
+        0,
+        0,
+      );
+      return wake;
+    }
     const isDiscoveryWake = this.isDiscoveryWake(reasons);
     const wakeAbortController = new AbortController();
     this.activeWakeAbortControllers.add(wakeAbortController);
+    const stopForMemoryPressure = (): RuntimeLearningHeartbeatResult | null => {
+      if (!wakeAbortController.signal.aborted || this.memoryPressureMode !== 'suspended') return null;
+      this.markHeartbeatPending([...this.getPendingHeartbeatReasons(), ...orderedReasons]);
+      wake.ran = false;
+      this.recordHeartbeat(
+        this.formatReasons(reasons),
+        wake.unitsProcessed,
+        wake.advancedFiles,
+        'memory_suspended',
+        orderedReasons,
+        Math.max(0, this.clock().getTime() - wakeStartMs),
+        0,
+        0,
+        true,
+        {
+          sources: wake.discovery.sources,
+          nextWakeTime: null,
+          nextWakeReason: 'memory-pressure',
+        },
+      );
+      return wake;
+    };
 
     try {
       // Durable provider controls can be changed by a separate CLI process.
@@ -2101,7 +2227,7 @@ export class RuntimeLearning {
         const discoveryResult = await this.runDiscovery({
           processCatchUp: allowNewCatchUpGeneration || reasons.has('external-continuation'),
           allowNewCatchUpGeneration,
-        });
+        }, wakeAbortController.signal);
         wake.discovery.scanned = discoveryResult.sourceReports.some(r => r.enabled);
         wake.discovery.filesScanned = discoveryResult.sourceReports.reduce((sum, r) => sum + r.resourcesDiscovered, 0);
         wake.discovery.unitsProcessed = discoveryResult.sourceReports.reduce((sum, r) => sum + r.unitsProcessed, 0);
@@ -2113,6 +2239,8 @@ export class RuntimeLearning {
 
       wake.unitsProcessed = wake.discovery.unitsProcessed;
       wake.advancedFiles = wake.discovery.advancedFiles;
+      const pressureStoppedAfterDiscovery = stopForMemoryPressure();
+      if (pressureStoppedAfterDiscovery) return pressureStoppedAfterDiscovery;
 
       if (wake.unitsProcessed > 0) {
         Logger.info(
@@ -2134,20 +2262,30 @@ export class RuntimeLearning {
       // ---- 3. Settlement (maturation) ----
       const maturation = await this.runMaturation(dueWork, reasons.has('settlement-deadline'));
       wake.maturation = maturation;
+      const pressureStoppedAfterMaturation = stopForMemoryPressure();
+      if (pressureStoppedAfterMaturation) return pressureStoppedAfterMaturation;
 
       // ---- 4. Curator observation (after settlement so episode status is final) ----
       await this.flushCuratorObservations();
+      const pressureStoppedAfterCuratorObservation = stopForMemoryPressure();
+      if (pressureStoppedAfterCuratorObservation) return pressureStoppedAfterCuratorObservation;
 
       // ---- 5. Review ----
       const review = await this.runReview(dueWork, wakeAbortController.signal);
       wake.review = review;
+      const pressureStoppedAfterReview = stopForMemoryPressure();
+      if (pressureStoppedAfterReview) return pressureStoppedAfterReview;
 
       // ---- 6. Curation ----
-      const curation = await this.runCuration(dueWork);
+      const curation = await this.runCuration(dueWork, wakeAbortController.signal);
       wake.curation = curation;
+      const pressureStoppedAfterCuration = stopForMemoryPressure();
+      if (pressureStoppedAfterCuration) return pressureStoppedAfterCuration;
 
       if (this.shouldRunReassessment(reasons, dueWork)) {
-        wake.reassessment = await this.runSemanticReassessment();
+        wake.reassessment = await this.runSemanticReassessment(wakeAbortController.signal);
+        const pressureStoppedAfterReassessment = stopForMemoryPressure();
+        if (pressureStoppedAfterReassessment) return pressureStoppedAfterReassessment;
       }
 
       // ---- 7. Retain only audit-linked active-capability transcripts ----
@@ -2186,6 +2324,8 @@ export class RuntimeLearning {
 
       return wake;
     } catch (error: any) {
+      const pressureStoppedAfterError = stopForMemoryPressure();
+      if (pressureStoppedAfterError) return pressureStoppedAfterError;
       Logger.warning(`[RuntimeLearning] wake cycle failed (${this.formatReasons(this.normalizeReasons(reason))}): ${error.message}`);
       const wakeDurationMs = Math.max(0, this.clock().getTime() - wakeStartMs);
       this.recordHeartbeat(
@@ -2244,7 +2384,7 @@ export class RuntimeLearning {
   /** Persist scheduler demand before the active wake can consume it. */
   public markHeartbeatPending(reasons: readonly RuntimeLearningReason[]): void {
     const record = this.loadHeartbeatRecord();
-    record.pendingWakeReasons = Array.from(new Set(reasons)).sort();
+    record.pendingWakeReasons = normalizeRuntimeLearningReasons(reasons);
     this.writeHeartbeatRecord(record);
   }
 
@@ -2260,7 +2400,7 @@ export class RuntimeLearning {
     const record = this.loadHeartbeatRecord();
     record.inProgress = {
       startedAt: this.clock().toISOString(),
-      reasons: Array.from(new Set(reasons)).sort(),
+      reasons: normalizeRuntimeLearningReasons(reasons),
     };
     if (owner) record.owner = owner;
     this.writeHeartbeatRecord(record);
@@ -2272,8 +2412,20 @@ export class RuntimeLearning {
     owner?: RuntimeLearningHeartbeatOwner,
   ): void {
     const record = this.loadHeartbeatRecord();
+    const safeReason = isRuntimeLearningReason(reason) ? reason : 'scheduled';
+    if (this.memoryPressureMode === 'suspended') {
+      record.pendingWakeReasons = normalizeRuntimeLearningReasons([
+        ...record.pendingWakeReasons,
+        safeReason,
+      ]);
+      delete record.nextWakeAt;
+      delete record.nextWakeReason;
+      if (owner) record.owner = owner;
+      this.writeHeartbeatRecord(record);
+      return;
+    }
     record.nextWakeAt = nextWakeAt.toISOString();
-    record.nextWakeReason = reason;
+    record.nextWakeReason = safeReason;
     if (owner) record.owner = owner;
     this.writeHeartbeatRecord(record);
   }
@@ -2284,6 +2436,7 @@ export class RuntimeLearning {
     wasCoalesced: boolean | undefined,
     hadDurableWork: boolean,
   ): RuntimeLearningHeartbeatRunStatus {
+    if (this.memoryPressureMode === 'suspended') return 'memory_suspended';
     if (reviewReport.status === 'failed') return 'failed';
     if (reviewReport.reviewTimeoutCount > 0) return 'timed_out';
     if (wasCoalesced) return 'coalesced';
@@ -2320,8 +2473,9 @@ export class RuntimeLearning {
   private normalizeReasons(
     reason: RuntimeLearningReason | readonly RuntimeLearningReason[],
   ): Set<RuntimeLearningReason> {
-    if (typeof reason === 'string') return new Set([reason]);
-    return new Set(reason);
+    return new Set(normalizeRuntimeLearningReasons(
+      typeof reason === 'string' ? [reason] : reason,
+    ));
   }
 
   private isDiscoveryWake(reasons: Set<RuntimeLearningReason>): boolean {
@@ -2481,12 +2635,19 @@ export class RuntimeLearning {
       || Boolean(dueWork.semanticReassessmentDue)
     );
   }
-  private async runSemanticReassessment(): Promise<RuntimeLearningReassessmentReport> {
+  private async runSemanticReassessment(wakeSignal?: AbortSignal): Promise<RuntimeLearningReassessmentReport> {
+    // Reassessment makes direct model review calls. Under soft pressure defer
+    // it durably; under hard pressure the wake signal stops it immediately.
+    if (this.memoryPressureMode !== 'normal' || wakeSignal?.aborted) {
+      return skippedReassessmentReport();
+    }
     try {
       const results = await bootstrapSemanticReassessmentOnce({
         skillEvolution: this.skillEvolution,
         manifestPath: this.config.skillEvolutionReassessmentManifestPath,
         learningEpisodeStore: this.episodeStore,
+        signal: wakeSignal,
+        shouldContinue: () => !wakeSignal?.aborted && this.memoryPressureMode === 'normal',
       });
       const transitionsByKind: Partial<Record<CapabilityTransitionKind, number>> = {};
       let completed = 0;
@@ -2606,6 +2767,11 @@ export class RuntimeLearning {
     dueWork: DueWork,
     wakeSignal?: AbortSignal,
   ): Promise<RuntimeLearningReviewReport> {
+    // Hard pressure must not perform any new review-stage work, including the
+    // local reconciliation scans that precede durable Quantum dispatch.
+    if (wakeSignal?.aborted || this.isMemoryPressureSuspended()) {
+      return skippedReviewReport();
+    }
     const createSkillCatalogSnapshot = (): EvidenceBundleSkillCatalogSnapshot => {
       const registry = this.skillEvolution.getRegistry();
       return {
@@ -2683,8 +2849,9 @@ export class RuntimeLearning {
     }
     this.skillEvolution.reactivateDeferredReviews(liveDeferredBundles);
 
+    const reviewLimits = this.getEffectiveReviewLimits();
     const reviewBudget = createReviewBudget({
-      maxCandidates: this.config.skillEvolutionReviewMaxCandidates,
+      maxCandidates: reviewLimits.maxCandidates,
       deadlineMs: this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000,
       now: () => this.clock().getTime(),
     });
@@ -2755,7 +2922,7 @@ export class RuntimeLearning {
 
     const selectionClassCursors = { ...classCursors };
     let selectionNextClass = nextClass;
-    const maxCandidates = Math.max(0, Math.floor(this.config.skillEvolutionReviewMaxCandidates));
+    const maxCandidates = Math.max(0, Math.floor(reviewLimits.maxCandidates));
     let admissionSkillCatalog: EvidenceBundleSkillCatalogSnapshot | undefined;
     const buildBundleForEpisode = (episode: LearningEpisode): EvidenceBundle => {
       if (!admissionSkillCatalog) {
@@ -2806,7 +2973,11 @@ export class RuntimeLearning {
       selectionNextClass = REVIEW_WORK_CLASS_ORDER[
         (REVIEW_WORK_CLASS_ORDER.indexOf(selectedClass) + 1) % REVIEW_WORK_CLASS_ORDER.length
       ]!;
-      if (wakeSignal?.aborted || this.shutdownDrainRequested) break;
+      if (
+        wakeSignal?.aborted
+        || this.shutdownDrainRequested
+        || this.isMemoryPressureSuspended()
+      ) break;
       if (selected.kind === 'retry') {
         if (!this.canAdmitReviewWork(reviewBudget)) continue;
         classCursors.retry = taskId(selected);
@@ -2819,7 +2990,7 @@ export class RuntimeLearning {
               // Advance a bounded serial batch across Jobs. Per-Job progress
               // remains capped at one Quantum so graph dependencies and durable
               // commit fences keep the existing single-Job safety boundary.
-              maxClaims: this.config.skillEvolutionReviewMaxQuantaPerWake,
+              maxClaims: reviewLimits.maxQuantaPerWake,
               maxClaimsPerJob: 1,
               signal: wakeSignal,
               now: this.clock(),
@@ -2828,6 +2999,8 @@ export class RuntimeLearning {
               nowMs: () => this.clock().getTime(),
               shouldStopClaiming: () => (
                 this.shutdownDrainRequested
+                || this.memoryPressureMode === 'suspended'
+                || wakeSignal?.aborted === true
                 || this.clock().getTime() >= reviewBudget.deadlineAt
               ),
             },
@@ -2881,6 +3054,7 @@ export class RuntimeLearning {
       if (
         wakeSignal?.aborted
         || this.shutdownDrainRequested
+        || this.isMemoryPressureSuspended()
         || this.clock().getTime() >= reviewBudget.deadlineAt
       ) break;
       try {
@@ -2914,7 +3088,11 @@ export class RuntimeLearning {
     };
     let reviewTimeoutCount = episodeReviewTimeouts;
     let reviewFailureCount = episodeOperationalFailures;
-    if (!this.shutdownDrainRequested && !wakeSignal?.aborted) {
+    if (
+      !this.shutdownDrainRequested
+      && !wakeSignal?.aborted
+      && !this.isMemoryPressureSuspended()
+    ) {
       queueResult = this.skillEvolution.collectFairReviewOutcomes(fairJobIds);
       this.reconcileReassessmentQueueOutcomes(queueResult.queueOutcomes);
     }
@@ -2971,8 +3149,58 @@ export class RuntimeLearning {
   }
 
   private canAdmitReviewWork(reviewBudget: ReviewBudget): boolean {
-    if (this.shutdownDrainRequested) return false;
+    if (this.shutdownDrainRequested || this.isMemoryPressureSuspended()) return false;
     return reviewBudget.admit();
+  }
+
+  /** Indirection keeps async-stage checks live when pressure changes mid-wake. */
+  private isMemoryPressureSuspended(): boolean {
+    return this.memoryPressureMode === 'suspended';
+  }
+
+  /**
+   * Pressure fallback is an admission-time override only. It never changes
+   * the operator's normal 3-reviewer / 100-candidate configuration.
+   *
+   * The current fair-review engine advances persisted Jobs serially, so the
+   * degraded one-reviewer target maps to one claimed Quantum per wake. That
+   * plus bounded candidate admission controls both queued and newly admitted
+   * work without changing the operator's normal 3/100 configuration.
+   */
+  private getEffectiveReviewLimits(): {
+    maxCandidates: number;
+    maxQuantaPerWake: number;
+  } {
+    const normal = {
+      maxCandidates: this.config.skillEvolutionReviewMaxCandidates,
+      maxQuantaPerWake: this.config.skillEvolutionReviewMaxQuantaPerWake,
+    };
+    if (this.memoryPressureMode !== 'degraded') return normal;
+    return {
+      // Fair review is serial. Cap the actual model-bearing Quantum budget,
+      // rather than merely changing the legacy construction-time setting.
+      maxQuantaPerWake: Math.min(
+        normal.maxQuantaPerWake,
+        this.config.memoryPressure.degradedReviewerConcurrency,
+      ),
+      maxCandidates: Math.min(
+        normal.maxCandidates,
+        this.config.memoryPressure.degradedMaxCandidates,
+      ),
+    };
+  }
+
+  /**
+   * Browser-backed external readers can be the largest short-lived memory
+   * source. Soft pressure preserves the normal configuration but permits only
+   * one concurrent reader lane until the guard recovers.
+   */
+  private getEffectiveExternalSourceConcurrency(): number {
+    if (this.memoryPressureMode !== 'degraded') return this.externalSourceMaxConcurrency;
+    return Math.min(
+      this.externalSourceMaxConcurrency,
+      this.config.memoryPressure.degradedReviewerConcurrency,
+    );
   }
 
   /**
@@ -3011,8 +3239,17 @@ export class RuntimeLearning {
   // Stage: curation
   // -----------------------------------------------------------------------
 
-  private async runCuration(dueWork: DueWork): Promise<RuntimeLearningCurationReport> {
+  private async runCuration(
+    dueWork: DueWork,
+    wakeSignal?: AbortSignal,
+  ): Promise<RuntimeLearningCurationReport> {
     if (!this.curator) return skippedCurationReport();
+
+    // Curation owns direct synchronous review work. Preserve pending durable
+    // state at soft/hard pressure instead of starting another model call.
+    if (this.memoryPressureMode !== 'normal' || wakeSignal?.aborted) {
+      return skippedCurationReport();
+    }
 
     // Check expedited wakes directly from the curator state file.
     // The planner may have been computed before observations, so the
@@ -3024,7 +3261,10 @@ export class RuntimeLearning {
     }
 
     try {
-      const result = await this.curator.runDue();
+      const result = await this.curator.runDue({
+        signal: wakeSignal,
+        shouldStop: () => wakeSignal?.aborted === true || this.memoryPressureMode !== 'normal',
+      });
       const transitionsByKind: Partial<Record<CapabilityTransitionKind, number>> = {};
       for (const transition of result.transitions) {
         incrementTransition(transitionsByKind, transition.transition);
@@ -3080,10 +3320,13 @@ export class RuntimeLearning {
    * On success the consecutive count resets to zero. Suspended sources are
    * skipped on subsequent wakes until the suspension deadline passes (AC3).
    */
-  private async runDiscovery(catchUpPolicy: {
-    processCatchUp: boolean;
-    allowNewCatchUpGeneration: boolean;
-  }): Promise<{
+  private async runDiscovery(
+    catchUpPolicy: {
+      processCatchUp: boolean;
+      allowNewCatchUpGeneration: boolean;
+    },
+    wakeSignal?: AbortSignal,
+  ): Promise<{
     sourceReports: readonly SessionLogSourceReport[];
     admittedEpisodes: number;
     contradictionSignals: number;
@@ -3110,15 +3353,23 @@ export class RuntimeLearning {
     const externalSources = orderedSources.filter(adapter => adapter.identity.category === 'external');
 
     for (const adapter of internalSources) {
-      if (shared.discoveryCapped) break;
-      const result = await this.processDiscoverySource(adapter, shared);
+      if (shared.discoveryCapped || wakeSignal?.aborted || this.memoryPressureMode === 'suspended') break;
+      const result = await this.processDiscoverySource(adapter, shared, { signal: wakeSignal });
       sourceReports.push(result.report);
       totalAdmittedEpisodes += result.admittedEpisodes;
       totalContradictionSignals += result.contradictionSignals;
     }
 
-    if (!shared.discoveryCapped && externalSources.length > 0) {
-      const { controller, cancelTimer } = this.createExternalDiscoveryAbortController(shared.discoveryStartMs);
+    if (
+      !shared.discoveryCapped
+      && !wakeSignal?.aborted
+      && this.memoryPressureMode !== 'suspended'
+      && externalSources.length > 0
+    ) {
+      const { controller, cancelTimer, detachParentAbort } = this.createExternalDiscoveryAbortController(
+        shared.discoveryStartMs,
+        wakeSignal,
+      );
       this.externalReadAbortController = controller;
       let continuousController: AbortController | null = null;
       let continuousCancelTimer: NodeJS.Timeout | null = null;
@@ -3239,7 +3490,7 @@ export class RuntimeLearning {
         ) => {
           await mapWithConcurrency(
             orderedContinuousSources.map(adapter => ({ adapter })),
-            this.externalSourceMaxConcurrency,
+            this.getEffectiveExternalSourceConcurrency(),
             async ({ adapter }) => {
               if (shared.discoveryCapped) return;
               const result = await this.processDiscoverySource(adapter, shared, {
@@ -3359,6 +3610,7 @@ export class RuntimeLearning {
         totalContradictionSignals += externalContradictionSignals;
       } finally {
         detachContinuousAbort?.();
+        detachParentAbort?.();
         if (continuousCancelTimer) clearTimeout(continuousCancelTimer);
         this.externalReadAbortController = null;
         if (cancelTimer) clearTimeout(cancelTimer);
@@ -3380,11 +3632,31 @@ export class RuntimeLearning {
 
   private createExternalDiscoveryAbortController(
     discoveryStartMs: number,
-  ): { controller: AbortController; cancelTimer: NodeJS.Timeout | null } {
+    parentSignal?: AbortSignal,
+  ): {
+    controller: AbortController;
+    cancelTimer: NodeJS.Timeout | null;
+    detachParentAbort: (() => void) | null;
+  } {
     const controller = new AbortController();
-    if (this.shutdownDrainRequested || this.externalSourceDrainRequested) {
+    let detachParentAbort: (() => void) | null = null;
+    const abortFromParent = () => controller.abort(parentSignal?.reason);
+    if (parentSignal?.aborted) {
+      abortFromParent();
+      return { controller, cancelTimer: null, detachParentAbort };
+    }
+    if (parentSignal) {
+      parentSignal.addEventListener('abort', abortFromParent, { once: true });
+      detachParentAbort = () => parentSignal.removeEventListener('abort', abortFromParent);
+    }
+    if (
+      this.shutdownDrainRequested
+      || this.externalSourceDrainRequested
+      || this.memoryPressureMode === 'suspended'
+    ) {
       controller.abort();
-      return { controller, cancelTimer: null };
+      detachParentAbort?.();
+      return { controller, cancelTimer: null, detachParentAbort: null };
     }
     const remainingMs = Math.max(
       0,
@@ -3392,11 +3664,12 @@ export class RuntimeLearning {
     );
     if (remainingMs === 0) {
       controller.abort();
-      return { controller, cancelTimer: null };
+      detachParentAbort?.();
+      return { controller, cancelTimer: null, detachParentAbort: null };
     }
     const cancelTimer = setTimeout(() => controller.abort(), remainingMs);
     cancelTimer.unref?.();
-    return { controller, cancelTimer };
+    return { controller, cancelTimer, detachParentAbort };
   }
 
   private reconcileCompletedHistoricalTargets(): void {
@@ -5306,10 +5579,10 @@ function normalizeHeartbeatRecord(
       ? Math.max(0, Math.floor(record.lastAdvancedFiles))
       : defaults.lastAdvancedFiles,
     lastPendingWakeReasons: Array.isArray(record.lastPendingWakeReasons)
-      ? Array.from(new Set(record.lastPendingWakeReasons.filter(value => typeof value === 'string'))) as RuntimeLearningReason[]
+      ? normalizeRuntimeLearningReasons(record.lastPendingWakeReasons)
       : defaults.lastPendingWakeReasons,
     pendingWakeReasons: Array.isArray(record.pendingWakeReasons)
-      ? Array.from(new Set(record.pendingWakeReasons.filter(value => typeof value === 'string'))) as RuntimeLearningReason[]
+      ? normalizeRuntimeLearningReasons(record.pendingWakeReasons)
       : defaults.pendingWakeReasons,
     lastReviewTimeoutCount: typeof record.lastReviewTimeoutCount === 'number' && Number.isFinite(record.lastReviewTimeoutCount)
       ? Math.max(0, Math.floor(record.lastReviewTimeoutCount))
@@ -5326,11 +5599,18 @@ function normalizeHeartbeatRecord(
       ? Math.max(0, Math.floor(record.cumulativeReviewFailureCount))
       : defaults.cumulativeReviewFailureCount,
     ...(isHeartbeatInProgress(record.inProgress)
-      ? { inProgress: record.inProgress }
+      ? {
+        inProgress: {
+          ...record.inProgress,
+          reasons: normalizeRuntimeLearningReasons(record.inProgress.reasons),
+        },
+      }
       : {}),
     ...(isHeartbeatOwner(record.owner) ? { owner: record.owner } : {}),
     ...(typeof record.nextWakeAt === 'string' ? { nextWakeAt: record.nextWakeAt } : {}),
-    ...(typeof record.nextWakeReason === 'string' ? { nextWakeReason: record.nextWakeReason } : {}),
+    ...(isRuntimeLearningReason(record.nextWakeReason)
+      ? { nextWakeReason: record.nextWakeReason }
+      : {}),
     backlog: isBacklogSnapshot(record.backlog) ? record.backlog : defaults.backlog,
     lastSourceReports: Array.isArray(record.lastSourceReports)
       ? record.lastSourceReports as SessionLogSourceReport[]
@@ -5338,13 +5618,18 @@ function normalizeHeartbeatRecord(
     externalSourceDiagnostics: isExternalSourceDiagnosticSnapshot(record.externalSourceDiagnostics)
       ? record.externalSourceDiagnostics
       : defaults.externalSourceDiagnostics,
+    ...(isMemoryPressureObservation(record.memoryPressure)
+      ? { memoryPressure: record.memoryPressure }
+      : {}),
   };
 }
 
 function isHeartbeatInProgress(value: unknown): value is NonNullable<RuntimeLearningHeartbeatRecord['inProgress']> {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as { startedAt?: unknown; reasons?: unknown };
-  return typeof candidate.startedAt === 'string' && Array.isArray(candidate.reasons);
+  return typeof candidate.startedAt === 'string'
+    && Array.isArray(candidate.reasons)
+    && candidate.reasons.some(isRuntimeLearningReason);
 }
 
 function isHeartbeatOwner(value: unknown): value is RuntimeLearningHeartbeatOwner {
@@ -5367,7 +5652,16 @@ function isBacklogSnapshot(value: unknown): value is RuntimeLearningBacklogSnaps
 }
 
 function normalizeHeartbeatRunStatus(value: unknown): RuntimeLearningHeartbeatRunStatus {
-  const valid: RuntimeLearningHeartbeatRunStatus[] = ['succeeded', 'failed', 'quiet', 'coalesced', 'timed_out', 'queued_operational_retry', 'drained'];
+  const valid: RuntimeLearningHeartbeatRunStatus[] = [
+    'succeeded',
+    'failed',
+    'quiet',
+    'coalesced',
+    'timed_out',
+    'queued_operational_retry',
+    'memory_suspended',
+    'drained',
+  ];
   return valid.includes(value as RuntimeLearningHeartbeatRunStatus) ? value as RuntimeLearningHeartbeatRunStatus : 'quiet';
 }
 

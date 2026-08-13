@@ -14,7 +14,6 @@ import {
 } from './heartbeat-scheduler-owner-lock';
 import { DistillationHeartbeatScheduler } from './distillation-heartbeat-scheduler';
 import { defaultDistilledOutputDir } from './path-resolver';
-import { bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
 import {
   getDistillationHeartbeatConfig,
   type DistillationHeartbeatConfig,
@@ -204,25 +203,10 @@ export async function startRuntimeCommandSupport(
           try {
             // The owner lease fences Journal recovery performed by this
             // constructor and every durable module built below it.
-            const {
-              runtimeLearning: builtRuntimeLearning,
-              skillEvolution,
-              learningEpisodeStore,
-            } = buildRuntimeLearningStack(workingDirectory, config, {
+            const { runtimeLearning: builtRuntimeLearning } = buildRuntimeLearningStack(workingDirectory, config, {
               clock: options.clock,
               skillEvolutionOptions: options.skillEvolutionOptions,
             });
-
-            try {
-              await bootstrapSemanticReassessmentOnce({
-                skillEvolution,
-                manifestPath: config.skillEvolutionReassessmentManifestPath,
-                learningEpisodeStore,
-              });
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              Logger.warning(`Semantic skill reassessment bootstrap failed: ${message}`);
-            }
 
             builtScheduler = new DistillationHeartbeatScheduler(
               workingDirectory,

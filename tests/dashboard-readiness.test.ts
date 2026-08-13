@@ -209,6 +209,75 @@ describe('dashboard readiness and service preflight API', () => {
     assert.equal(data.status, 'blocked');
   });
 
+  test('GET /readiness warns for suspended memory pressure without masking a stuck wake blocker', async () => {
+    const config = getDistillationHeartbeatConfig(testRoot, process.env);
+    const ownerPath = path.join(testRoot, '.xiaoba', 'heartbeat-scheduler-owner', 'owner.json');
+    fs.mkdirSync(path.dirname(ownerPath), { recursive: true });
+    fs.writeFileSync(ownerPath, JSON.stringify({
+      pid: process.pid,
+      generation: 'readiness-memory-pressure-generation',
+      startedAt: new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+    }));
+    fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });
+    fs.writeFileSync(config.heartbeatRecordPath, JSON.stringify({
+      schemaVersion: 1,
+      inProgress: {
+        startedAt: new Date(0).toISOString(),
+        reasons: ['scheduled'],
+      },
+      memoryPressure: {
+        mode: 'suspended',
+        level: 'hard',
+        transition: 'suspended',
+        recoverySamples: 0,
+        sample: {
+          sampledAt: new Date().toISOString(),
+          cgroupCurrentBytes: 900,
+          cgroupMaxBytes: 1000,
+          cgroupPercent: 90,
+          cgroupAnonBytes: 600,
+          cgroupFileBytes: 200,
+          cgroupKernelBytes: 100,
+          hostMemAvailableBytes: 100,
+          nodeRssBytes: 80,
+          dashboardCgroupProcessRss: {
+            processCount: 2,
+            totalRssBytes: 900,
+            nodeRssBytes: 100,
+            chromeRssBytes: 800,
+            otherRssBytes: 0,
+            topProcesses: [{ pid: 1, name: 'chrome', kind: 'chrome', rssBytes: 800 }],
+          },
+          openCliChromeServiceProcessRss: {
+            processCount: 1,
+            totalRssBytes: 700,
+            nodeRssBytes: 0,
+            chromeRssBytes: 700,
+            otherRssBytes: 0,
+            topProcesses: [{ pid: 2, name: 'chrome', kind: 'chrome', rssBytes: 700 }],
+          },
+          reasons: ['cgroup-hard'],
+        },
+      },
+    }), { mode: 0o600 });
+
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
+    const data = await response.json() as any;
+    const runtimeLearning = data.sections.find((section: any) => section.id === 'runtimeLearning');
+
+    assert.equal(data.runtimeLearning.liveness, 'wake_stuck');
+    assert.equal(data.runtimeLearning.memoryPressure.mode, 'suspended');
+    assert.equal(data.runtimeLearning.memoryPressure.dashboardCgroupProcessRss.chromeRssBytes, 800);
+    assert.equal(data.runtimeLearning.memoryPressure.openCliChromeServiceProcessRss.chromeRssBytes, 700);
+    assert.equal(runtimeLearning.status, 'blocked');
+    assert.equal(runtimeLearning.checks[0]?.severity, 'blocker');
+    assert.equal(runtimeLearning.checks.some((check: any) => (
+      check.id === 'runtimeLearning.memoryPressure' && check.severity === 'warning'
+    )), true);
+    assert.equal(data.status, 'blocked');
+  });
+
   test('GET /readiness exposes external source recovery diagnostics', async () => {
     const config = getDistillationHeartbeatConfig(testRoot, process.env);
     fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });

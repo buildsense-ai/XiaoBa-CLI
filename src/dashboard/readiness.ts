@@ -14,6 +14,10 @@ import {
   buildExternalSourceDiagnosticSnapshot,
   type ExternalSourceDiagnosticSnapshot,
 } from '../utils/external-source-diagnostics';
+import type {
+  MemoryPressureObservation,
+} from '../utils/distillation-memory-pressure';
+import { isMemoryPressureTransition } from '../utils/distillation-memory-pressure';
 import {
   ExternalProviderOverrideStore,
   resolveExternalProviderOverridePath,
@@ -92,6 +96,8 @@ export interface DashboardRuntimeLearningStatus {
   };
   cumulativeReviewTimeoutCount: number;
   cumulativeReviewFailureCount: number;
+  /** Latest persisted background-work pressure diagnostic, if sampling ran. */
+  memoryPressure?: DashboardMemoryPressureStatus;
   sources: Array<{
     sourceId: string;
     category: string;
@@ -132,6 +138,36 @@ export interface DashboardRuntimeLearningStatus {
     rebaselineRequestedAt?: string;
   }>;
   providerDiagnostics?: ExternalSourceDiagnosticSnapshot;
+}
+
+export interface DashboardMemoryPressureStatus {
+  mode: MemoryPressureObservation['mode'];
+  level: MemoryPressureObservation['level'];
+  transition: MemoryPressureObservation['transition'];
+  recoverySamples: number;
+  sampledAt: string;
+  cgroupCurrentBytes: number | null;
+  cgroupMaxBytes: number | null;
+  cgroupPercent: number | null;
+  cgroupAnonBytes: number | null;
+  cgroupFileBytes: number | null;
+  cgroupKernelBytes: number | null;
+  hostMemAvailableBytes: number | null;
+  nodeRssBytes: number | null;
+  dashboardCgroupProcessRss?: DashboardMemoryPressureProcessBreakdown;
+  openCliChromeServiceProcessRss?: DashboardMemoryPressureProcessBreakdown;
+  cgroupOomKills?: number;
+  cgroupHighEvents?: number;
+  reasons: string[];
+}
+
+export interface DashboardMemoryPressureProcessBreakdown {
+  processCount: number;
+  totalRssBytes: number;
+  nodeRssBytes: number;
+  chromeRssBytes: number;
+  otherRssBytes: number;
+  topProcesses: Array<{ name: string; kind: string; rssBytes: number }>;
 }
 
 export interface DashboardReadinessOptions {
@@ -224,12 +260,32 @@ function buildRuntimeLearningSection(
       );
       break;
   }
+  const checks = [check];
+  if (runtime.memoryPressure?.mode === 'suspended') {
+    checks.push(failCheck(
+      'runtimeLearning.memoryPressure',
+      'Runtime Learning memory pressure',
+      '后台蒸馏因内存压力已暂停，等待连续低压采样后自动分级恢复',
+      'warning',
+      { label: '查看诊断', target: 'diagnostics' },
+    ));
+  } else if (runtime.memoryPressure?.mode === 'degraded') {
+    checks.push(failCheck(
+      'runtimeLearning.memoryPressure',
+      'Runtime Learning memory pressure',
+      '后台蒸馏正在低内存降级模式运行（临时 1 / 10）',
+      'warning',
+      { label: '查看诊断', target: 'diagnostics' },
+    ));
+  }
   return {
     id: 'runtimeLearning',
     label: 'Runtime Learning',
-    status: statusFromChecks([check]),
-    summary: check.message,
-    checks: [check],
+    status: statusFromChecks(checks),
+    summary: checks.find(item => item.severity === 'blocker')?.message
+      ?? checks.find(item => item.status !== 'pass')?.message
+      ?? check.message,
+    checks,
     ...(check.action ? { action: check.action } : {}),
   };
 }
@@ -297,6 +353,8 @@ function readRuntimeLearningStatus(
     if (isBacklogRecord(heartbeat.backlog)) base.backlog = heartbeat.backlog;
     base.cumulativeReviewTimeoutCount = toNonNegativeInteger(heartbeat.cumulativeReviewTimeoutCount);
     base.cumulativeReviewFailureCount = toNonNegativeInteger(heartbeat.cumulativeReviewFailureCount);
+    const memoryPressure = sanitizeMemoryPressureObservation(heartbeat.memoryPressure);
+    if (memoryPressure) base.memoryPressure = memoryPressure;
     if (Array.isArray(heartbeat.lastSourceReports)) {
       base.sources = heartbeat.lastSourceReports
         .filter(isRecord)
@@ -400,6 +458,90 @@ function isCursorProgressRecord(value: unknown): value is {
     value.quarantinedEvents,
     value.tombstones,
   ].every(item => typeof item === 'number' && Number.isFinite(item));
+}
+
+function sanitizeMemoryPressureObservation(value: unknown): DashboardMemoryPressureStatus | undefined {
+  if (!isRecord(value) || !isRecord(value.sample)) return undefined;
+  const sample = value.sample;
+  const mode = value.mode;
+  const level = value.level;
+  if (
+    (mode !== 'normal' && mode !== 'degraded' && mode !== 'suspended')
+    || (level !== 'normal' && level !== 'soft' && level !== 'hard')
+    || !isMemoryPressureTransition(value.transition)
+    || typeof value.recoverySamples !== 'number'
+    || !Number.isFinite(value.recoverySamples)
+    || typeof sample.sampledAt !== 'string'
+    || !Array.isArray(sample.reasons)
+  ) return undefined;
+  const readNullableBytes = (candidate: unknown): number | null => (
+    typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0
+      ? candidate
+      : null
+  );
+  const toProcessBreakdown = (candidate: unknown): DashboardMemoryPressureProcessBreakdown | undefined => {
+    if (!isRecord(candidate)) return undefined;
+    const numericKeys = ['processCount', 'totalRssBytes', 'nodeRssBytes', 'chromeRssBytes', 'otherRssBytes'];
+    if (!numericKeys.every(key => (
+      typeof candidate[key] === 'number'
+      && Number.isFinite(candidate[key])
+      && candidate[key] >= 0
+    ))) return undefined;
+    return {
+      processCount: candidate.processCount as number,
+      totalRssBytes: candidate.totalRssBytes as number,
+      nodeRssBytes: candidate.nodeRssBytes as number,
+      chromeRssBytes: candidate.chromeRssBytes as number,
+      otherRssBytes: candidate.otherRssBytes as number,
+      topProcesses: Array.isArray(candidate.topProcesses)
+        ? candidate.topProcesses
+          .filter(isRecord)
+          .filter(process => (
+            typeof process.name === 'string'
+            && typeof process.kind === 'string'
+            && typeof process.rssBytes === 'number'
+            && Number.isFinite(process.rssBytes)
+            && process.rssBytes >= 0
+          ))
+          .slice(0, 12)
+          .map(process => ({
+            name: process.name as string,
+            kind: process.kind as string,
+            rssBytes: process.rssBytes as number,
+          }))
+        : [],
+    };
+  };
+  const dashboardCgroupProcessRss = toProcessBreakdown(sample.dashboardCgroupProcessRss);
+  const openCliChromeServiceProcessRss = toProcessBreakdown(sample.openCliChromeServiceProcessRss);
+  return {
+    mode,
+    level,
+    transition: value.transition,
+    recoverySamples: Math.max(0, Math.floor(value.recoverySamples)),
+    sampledAt: sample.sampledAt as string,
+    cgroupCurrentBytes: readNullableBytes(sample.cgroupCurrentBytes),
+    cgroupMaxBytes: readNullableBytes(sample.cgroupMaxBytes),
+    cgroupPercent: readNullableBytes(sample.cgroupPercent),
+    cgroupAnonBytes: readNullableBytes(sample.cgroupAnonBytes),
+    cgroupFileBytes: readNullableBytes(sample.cgroupFileBytes),
+    cgroupKernelBytes: readNullableBytes(sample.cgroupKernelBytes),
+    hostMemAvailableBytes: readNullableBytes(sample.hostMemAvailableBytes),
+    nodeRssBytes: readNullableBytes(sample.nodeRssBytes),
+    ...(dashboardCgroupProcessRss
+      ? { dashboardCgroupProcessRss }
+      : {}),
+    ...(openCliChromeServiceProcessRss
+      ? { openCliChromeServiceProcessRss }
+      : {}),
+    ...(typeof sample.cgroupOomKills === 'number' && Number.isFinite(sample.cgroupOomKills)
+      ? { cgroupOomKills: Math.max(0, Math.floor(sample.cgroupOomKills)) }
+      : {}),
+    ...(typeof sample.cgroupHighEvents === 'number' && Number.isFinite(sample.cgroupHighEvents)
+      ? { cgroupHighEvents: Math.max(0, Math.floor(sample.cgroupHighEvents)) }
+      : {}),
+    reasons: sample.reasons.filter((reason): reason is string => typeof reason === 'string').slice(0, 32),
+  };
 }
 
 export function getServicePreflight(

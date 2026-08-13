@@ -17,14 +17,21 @@
  */
 
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
+import {
+  MemoryPressureGuard,
+  readSystemMemoryPressureSample,
+  type MemoryPressureObservation,
+  type MemoryPressureSample,
+} from './distillation-memory-pressure';
 import type { DueWorkPlanner } from './due-work-planner';
 import { Logger } from './logger';
 import type { HeartbeatSchedulerOwnerLock } from './heartbeat-scheduler-owner-lock';
-import type { RuntimeLearning } from './runtime-learning';
 import type {
+  RuntimeLearning,
   RuntimeLearningReason,
   RuntimeLearningHeartbeatResult,
 } from './runtime-learning';
+import { isRuntimeLearningReason } from './runtime-learning';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -46,6 +53,17 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
  */
 const MIN_NEXT_WAKE_BACKOFF_MS = 30 * 1000;
 const MAX_NEXT_WAKE_BACKOFF_MS = 10 * 60 * 1000;
+
+function formatBytes(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return 'n/a';
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)}GiB`;
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)}MiB`;
+  return `${Math.round(value / 1024)}KiB`;
+}
+
+function formatPercent(value: number | null): string {
+  return value === null || !Number.isFinite(value) ? 'n/a' : `${value.toFixed(1)}%`;
+}
 
 export function rotateOperationalRetryForDiscovery(
   deadlineDeltaMs: number,
@@ -105,7 +123,11 @@ export class DistillationHeartbeatScheduler {
   private readonly workingDirectory: string;
   private readonly runtimeLearning: RuntimeLearning;
   private readonly ownerLock: HeartbeatSchedulerOwnerLock | null;
+  private readonly readMemoryPressureSample: () => MemoryPressureSample;
+  private readonly memoryPressureGuard: MemoryPressureGuard;
   private timer: NodeJS.Timeout | null = null;
+  /** Kept alive while suspended so only confirmed low pressure can resume work. */
+  private pressureTimer: NodeJS.Timeout | null = null;
   private started = false;
   private stopped = false;
   private readonly pendingWakeReasons = new Set<RuntimeLearningReason>();
@@ -131,10 +153,15 @@ export class DistillationHeartbeatScheduler {
     workingDirectory: string,
     runtimeLearning: RuntimeLearning,
     ownerLock?: HeartbeatSchedulerOwnerLock | null,
+    options: { readMemoryPressureSample?: () => MemoryPressureSample } = {},
   ) {
     this.workingDirectory = workingDirectory;
     this.runtimeLearning = runtimeLearning;
     this.ownerLock = ownerLock ?? null;
+    this.readMemoryPressureSample = options.readMemoryPressureSample ?? (() => readSystemMemoryPressureSample());
+    this.memoryPressureGuard = new MemoryPressureGuard(
+      getDistillationHeartbeatConfig(workingDirectory).memoryPressure,
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -174,10 +201,20 @@ export class DistillationHeartbeatScheduler {
 
     this.started = true;
     this.stopped = false;
+    this.memoryPressureGuard.restore(this.runtimeLearning.loadHeartbeatRecord().memoryPressure);
+    this.runtimeLearning.setMemoryPressureMode(this.memoryPressureGuard.mode);
     for (const reason of this.runtimeLearning?.getPendingHeartbeatReasons?.() ?? []) {
       this.pendingWakeReasons.add(reason);
     }
     Logger.info('[DistillationHeartbeat] scheduler started');
+
+    const initialPressure = this.observeMemoryPressure();
+    this.startMemoryPressurePolling();
+    if (initialPressure.mode === 'suspended') {
+      this.deferWakeForMemoryPressure('startup');
+      Logger.warning('[DistillationHeartbeat] startup wake deferred: memory pressure is hard');
+      return;
+    }
 
     const startupWake = (async () => {
       await this.runHeartbeat('startup');
@@ -203,6 +240,10 @@ export class DistillationHeartbeatScheduler {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
+    }
+    if (this.pressureTimer) {
+      clearInterval(this.pressureTimer);
+      this.pressureTimer = null;
     }
     if (this.activeWake) {
       let activeWakeCompleted = false;
@@ -330,6 +371,15 @@ export class DistillationHeartbeatScheduler {
       }
     }
 
+    // A hard-pressure abort can persist reasons after the scheduler cleared
+    // its in-memory Set. Restore all durable demand before taking another
+    // decision, not only the external-continuation lane.
+    this.restoreDurablePendingWakeReasons();
+    const pressure = this.observeMemoryPressure();
+    if (pressure.mode === 'suspended') {
+      return this.deferWakeForMemoryPressure(reason);
+    }
+
     if (this.activeWake) {
       this.pendingWakeReasons.add(reason);
       this.persistPendingWakeReasons();
@@ -342,6 +392,11 @@ export class DistillationHeartbeatScheduler {
       let lastResult = emptyWakeResult(true);
       let isCoalescedWake = false;
       while (!this.stopped && this.pendingWakeReasons.size > 0) {
+          const cyclePressure = this.observeMemoryPressure();
+          if (cyclePressure.mode === 'suspended') {
+            this.persistPendingWakeReasons();
+            break;
+          }
           const nextReasons = [...this.pendingWakeReasons];
           this.pendingWakeReasons.clear();
           this.persistPendingWakeReasons();
@@ -357,11 +412,7 @@ export class DistillationHeartbeatScheduler {
             );
             lastResult = await this.runtimeLearning.wake(nextReasons, { coalesced: isCoalescedWake });
             isCoalescedWake = true;
-            for (const pending of this.runtimeLearning.getPendingHeartbeatReasons?.() ?? []) {
-              if (pending === 'external-continuation') {
-                this.pendingWakeReasons.add(pending);
-              }
-            }
+            this.restoreDurablePendingWakeReasons();
           } catch (error: any) {
             Logger.warning(`[DistillationHeartbeat] runtime wake failed: ${error.message}`);
             return emptyWakeResult(false);
@@ -387,12 +438,84 @@ export class DistillationHeartbeatScheduler {
     );
   }
 
+  /** Preserve deferred background demand when hard pressure closes admission. */
+  private deferWakeForMemoryPressure(reason: RuntimeLearningReason): RuntimeLearningHeartbeatResult {
+    this.pendingWakeReasons.add(reason);
+    this.persistPendingWakeReasons();
+    this.runtimeLearning.markHeartbeatStatus('memory_suspended', {
+      reason,
+      pendingWakeReasons: Array.from(this.pendingWakeReasons).sort(),
+    });
+    return emptyWakeResult(false);
+  }
+
+  /** Merge restart-safe RuntimeLearning demand into this scheduler generation. */
+  private restoreDurablePendingWakeReasons(): void {
+    for (const reason of this.runtimeLearning.getPendingHeartbeatReasons?.() ?? []) {
+      this.pendingWakeReasons.add(reason);
+    }
+  }
+
+  private startMemoryPressurePolling(): void {
+    if (this.pressureTimer || this.stopped) return;
+    const { pollIntervalMs } = getDistillationHeartbeatConfig(this.workingDirectory).memoryPressure;
+    this.pressureTimer = setInterval(() => {
+      this.observeMemoryPressure();
+    }, pollIntervalMs);
+    this.pressureTimer.unref?.();
+  }
+
+  /** Deterministic seam for pressure state-machine regression tests. */
+  observeMemoryPressureForTesting(sample: MemoryPressureSample): MemoryPressureObservation {
+    return this.observeMemoryPressure(sample);
+  }
+
+  private observeMemoryPressure(sample?: MemoryPressureSample): MemoryPressureObservation {
+    const observation = this.memoryPressureGuard.observe(sample ?? this.readMemoryPressureSample());
+    this.runtimeLearning.setMemoryPressureMode(observation.mode);
+    this.runtimeLearning.markMemoryPressureObservation(observation);
+    if (observation.transition !== 'none') {
+      Logger.warning(
+        `[DistillationHeartbeat] memory pressure ${observation.transition} `
+        + `(cgroup=${formatPercent(observation.sample.cgroupPercent)}, `
+        + `hostAvailable=${formatBytes(observation.sample.hostMemAvailableBytes)}, `
+        + `nodeRss=${formatBytes(observation.sample.nodeRssBytes)})`,
+      );
+    }
+    if (observation.transition === 'suspended') {
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      // RuntimeLearning.setMemoryPressureMode is the single owner of active
+      // wake cancellation, durable pending-reason preservation, and record
+      // schedule clearing. The scheduler only owns its live timeout.
+    }
+    if (
+      !this.stopped
+      && (observation.transition === 'recovered-to-degraded'
+        || observation.transition === 'recovered-to-normal')
+    ) {
+      this.scheduleNextRun(0, 'scheduled');
+    }
+    return observation;
+  }
+
   // -----------------------------------------------------------------------
   // Scheduling
   // -----------------------------------------------------------------------
 
-  private scheduleNextRun(): void {
+  private scheduleNextRun(
+    forcedDelayMs?: number,
+    forcedReason?: RuntimeLearningReason,
+  ): void {
     if (this.stopped) return;
+    if (this.memoryPressureGuard.mode === 'suspended') return;
+
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
 
     const config = getDistillationHeartbeatConfig(this.workingDirectory);
     const intervalDelay = Math.min(
@@ -400,16 +523,18 @@ export class DistillationHeartbeatScheduler {
       Math.max(MIN_TIMEOUT_MS, config.intervalHours * 60 * 60 * 1000),
     );
 
-    let nextDelay: number;
-    let wakeReason: RuntimeLearningReason;
+    let nextDelay: number = forcedDelayMs ?? 0;
+    let wakeReason: RuntimeLearningReason = forcedReason ?? 'scheduled';
     let isImmediateReschedule = false;
-    try {
+    if (forcedDelayMs === undefined) try {
       const plan = this.getActivePlanner().plan();
       if (plan.nextWakeTime !== null) {
         const deadlineDelta = Math.max(0, plan.nextWakeTime - plan.now.getTime());
         if (deadlineDelta < intervalDelay) {
           nextDelay = deadlineDelta;
-          wakeReason = plan.nextWakeReason as RuntimeLearningReason;
+          wakeReason = isRuntimeLearningReason(plan.nextWakeReason)
+            ? plan.nextWakeReason
+            : 'scheduled';
           if (deadlineDelta === 0) {
             isImmediateReschedule = true;
           }
