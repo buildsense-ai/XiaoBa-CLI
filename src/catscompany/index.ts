@@ -82,6 +82,7 @@ import {
   createBotRuntimeSkillInventory,
   reportBotRuntimeSkillInventory,
 } from '../bot-skills/runtime-inventory';
+import type { BotRuntimeSkillInventory } from '../bot-skills/runtime-inventory';
 import {
   inferCatsCompanyHttpBaseUrl,
   resolveRuntimeSkillInventoryHttpBaseUrl,
@@ -467,7 +468,7 @@ export class CatsCompanyBot {
   private readonly runtimeSkillInventoryAuth: { apiKey: string; httpBaseUrl: string };
   private readonly runtimeSkillInventoryInstanceID = randomUUID();
   private runtimeSkillInventoryReportSequence = 0;
-  private runtimeSkillInventory?: ReturnType<typeof createBotRuntimeSkillInventory>;
+  private runtimeSkillInventory?: BotRuntimeSkillInventory;
   private runtimeSkillInventoryReportInFlight?: Promise<void>;
   private runtimeSkillInventoryReportPending = false;
   private runtimeSkillInventoryReportTimer?: ReturnType<typeof setTimeout>;
@@ -699,21 +700,27 @@ export class CatsCompanyBot {
     this.runtimeSkillInventoryReportTimer = undefined;
   }
 
-  private refreshRuntimeSkillInventory(): void {
+  private async refreshRuntimeSkillInventory(): Promise<BotRuntimeSkillInventory | undefined> {
     const botID = String(this.botUid || '').trim();
-    if (!botID) return;
+    if (!botID) return undefined;
     try {
-      this.runtimeSkillInventory = createBotRuntimeSkillInventory(
+      const inventory = await createBotRuntimeSkillInventory(
         botID,
         this.agentServices.skillManager.getAllSkills(),
+        () => new Date(),
+        {
+          runtimeInstanceId: this.runtimeSkillInventoryInstanceID,
+          reportSequence: this.runtimeSkillInventoryReportSequence + 1,
+        },
       );
-      this.runtimeSkillInventory.runtimeInstanceId = this.runtimeSkillInventoryInstanceID;
-      this.runtimeSkillInventory.reportSequence = this.runtimeSkillInventoryReportSequence + 1;
+      this.runtimeSkillInventory = inventory;
+      return inventory;
     } catch (error: any) {
       // Inventory is observability only. A broken registry or unreadable skill
       // must never prevent the Agent from starting or serving messages.
       this.runtimeSkillInventory = undefined;
       Logger.warning(`CatsCo runtime Skill inventory 刷新失败，继续运行 Agent: ${error?.message || error}`);
+      return undefined;
     }
   }
 
@@ -723,12 +730,11 @@ export class CatsCompanyBot {
       this.runtimeSkillInventoryReportPending = true;
       return this.runtimeSkillInventoryReportInFlight;
     }
-    this.refreshRuntimeSkillInventory();
-    if (!this.runtimeSkillInventory) return;
-    const inventory = this.runtimeSkillInventory;
-    this.runtimeSkillInventoryReportSequence = Number(inventory.reportSequence || 0);
     const report = (async () => {
       try {
+        const inventory = await this.refreshRuntimeSkillInventory();
+        if (this.shuttingDown || !inventory) return;
+        this.runtimeSkillInventoryReportSequence = Number(inventory.reportSequence || 0);
         const accepted = await reportBotRuntimeSkillInventory({
           botId: inventory.botId,
           auth: this.runtimeSkillInventoryAuth,
