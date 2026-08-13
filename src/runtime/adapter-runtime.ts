@@ -46,15 +46,19 @@ export function createAdapterRuntime(options: AdapterRuntimeOptions): AdapterRun
     sessionManagerOptions: {
       ttl: options.sessionTTL,
       systemPromptProviderFactory,
-      skillReloadHandler: createSkillLoader(services, options.skillLoadMode ?? 'warn'),
+      // A session refresh runs on every turn when the transient Skills list is
+      // injected. Keep the observer for explicit mutations/startup loads, but
+      // do not invoke it on this hot path.
+      skillReloadHandler: createSkillLoader(services, options.skillLoadMode ?? 'warn', false),
     },
-    loadSkills: createSkillLoader(services, options.skillLoadMode ?? 'warn'),
+    loadSkills: createSkillLoader(services, options.skillLoadMode ?? 'warn', true),
   };
 }
 
 function createSkillLoader(
   services: AgentServices,
   mode: AdapterSkillLoadMode,
+  notifyObserver: boolean,
 ): () => Promise<void> {
   return async () => {
     if (mode === 'fail-fast') {
@@ -64,9 +68,8 @@ function createSkillLoader(
       await RuntimeFactory.loadSkills(services.skillManager);
     }
     // Read the hook from the shared service object at call time. Adapters can
-    // attach lifecycle observers after constructing the runtime bundle, while
-    // every reload path still gets the same notification.
-    await services.onSkillsReloaded?.();
+    // attach lifecycle observers after constructing the runtime bundle.
+    if (notifyObserver) await services.onSkillsReloaded?.();
   };
 }
 

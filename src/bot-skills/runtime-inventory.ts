@@ -15,11 +15,13 @@ export interface BotRuntimeSkillInventoryEntry {
   description: string;
   relativePath: string;
   userInvocable: boolean;
-  contentHash?: string;
+  /** SHA-256 of this loaded SKILL.md file, not the SkillHub package checksum. */
+  fileHash?: string;
   skillHub?: {
     skillId: string;
     version: string;
-    contentHash?: string;
+    /** SHA-256 of the installed SkillHub package. */
+    packageChecksumSha256?: string;
   };
 }
 
@@ -27,6 +29,8 @@ export interface BotRuntimeSkillInventory {
   schema: typeof BOT_RUNTIME_SKILL_INVENTORY_SCHEMA;
   botId: string;
   observedAt: string;
+  runtimeInstanceId?: string;
+  reportSequence?: number;
   skills: BotRuntimeSkillInventoryEntry[];
   truncated?: boolean;
 }
@@ -103,7 +107,7 @@ function createRuntimeSkillInventoryEntry(skill: Skill, skillsRoot: string): Bot
     ? {
         skillId: marker.skillId,
         version: marker.version,
-        contentHash: marker.packageChecksumSha256.toLowerCase(),
+        packageChecksumSha256: marker.packageChecksumSha256.toLowerCase(),
       }
     : undefined;
   return {
@@ -111,7 +115,7 @@ function createRuntimeSkillInventoryEntry(skill: Skill, skillsRoot: string): Bot
     description: String(skill.metadata.description || '').trim(),
     relativePath,
     userInvocable: skill.metadata.userInvocable !== false,
-    ...(contentHash ? { contentHash } : {}),
+    ...(contentHash ? { fileHash: contentHash } : {}),
     ...(skillHubReference ? { skillHub: skillHubReference } : {}),
   };
 }

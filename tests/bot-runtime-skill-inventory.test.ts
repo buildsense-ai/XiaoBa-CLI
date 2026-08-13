@@ -8,7 +8,11 @@ import {
   createBotRuntimeSkillInventory,
   reportBotRuntimeSkillInventory,
 } from '../src/bot-skills/runtime-inventory';
-import { inferCatsCompanyHttpBaseUrl } from '../src/catscompany';
+import {
+  inferCatsCompanyHttpBaseUrl,
+  resolveRuntimeSkillInventoryHttpBaseUrl,
+} from '../src/catscompany';
+import { resolveCatsCoRuntimeConfig } from '../src/catscompany/runtime-config';
 import type { Skill } from '../src/types/skill';
 
 describe('Bot runtime Skill inventory', () => {
@@ -57,11 +61,11 @@ describe('Bot runtime Skill inventory', () => {
         description: 'Review code changes',
         relativePath: 'tools/review/SKILL.md',
         userInvocable: true,
-        contentHash: crypto.createHash('sha256').update(fs.readFileSync(skillPath)).digest('hex'),
+        fileHash: crypto.createHash('sha256').update(fs.readFileSync(skillPath)).digest('hex'),
         skillHub: {
           skillId: 'tools/review',
           version: '1.0.0',
-          contentHash: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          packageChecksumSha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         },
       }],
     });
@@ -120,5 +124,55 @@ describe('Bot runtime Skill inventory', () => {
 
     assert.equal(accepted, false);
     assert.deepEqual(requests, []);
+  });
+
+  test('does not send the Bot API key to a default or cross-origin HTTP endpoint', () => {
+    assert.equal(
+      resolveRuntimeSkillInventoryHttpBaseUrl(
+        'wss://self-hosted.example/v0/channels',
+        'https://app.catsco.cc',
+      ),
+      undefined,
+    );
+    assert.equal(
+      resolveRuntimeSkillInventoryHttpBaseUrl(
+        'wss://self-hosted.example/v0/channels',
+        'https://self-hosted.example/',
+      ),
+      'https://self-hosted.example',
+    );
+    assert.equal(
+      resolveRuntimeSkillInventoryHttpBaseUrl('ws://127.0.0.1:6061/v0/channels'),
+      'http://127.0.0.1:6061',
+    );
+    assert.equal(
+      resolveRuntimeSkillInventoryHttpBaseUrl('wss://user:password@cats.example.test/v0/channels'),
+      undefined,
+    );
+    assert.equal(
+      resolveRuntimeSkillInventoryHttpBaseUrl(
+        'wss://cats.example.test/v0/channels',
+        'https://user:password@cats.example.test',
+      ),
+      undefined,
+    );
+  });
+
+  test('derives a self-hosted HTTP API origin when only the WebSocket endpoint is configured', () => {
+    const resolved = resolveCatsCoRuntimeConfig({
+      runtimeRoot,
+      env: {
+        CATSCO_SERVER_URL: 'wss://self-hosted.example/v0/channels',
+        CATSCO_USER_TOKEN: 'user-token',
+        CATSCO_USER_UID: 'user-42',
+        CATSCO_BOT_UID: 'bot-42',
+        CATSCO_API_KEY: 'cc_test_key',
+      },
+      migrateLegacyEnvBinding: true,
+    });
+
+    assert.equal(resolved.connector?.serverUrl, 'wss://self-hosted.example/v0/channels');
+    assert.equal(resolved.connector?.httpBaseUrl, 'https://self-hosted.example');
+    assert.equal(resolved.auth.httpBaseUrl, 'https://self-hosted.example');
   });
 });

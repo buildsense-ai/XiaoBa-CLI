@@ -197,6 +197,20 @@ describe('adapter runtime', () => {
       /fail reload failure/,
     );
   });
+
+  test('does not notify observers on per-turn skill refreshes', async () => {
+    const runtime = createAdapterRuntime({ surface: 'catscompany' });
+    let notifications = 0;
+    runtime.services.onSkillsReloaded = () => {
+      notifications += 1;
+    };
+
+    await runtime.sessionManagerOptions.skillReloadHandler?.();
+    assert.equal(notifications, 0);
+
+    await runtime.loadSkills();
+    assert.equal(notifications, 1);
+  });
 });
 
 function writeTestSkill(name: string): void {
