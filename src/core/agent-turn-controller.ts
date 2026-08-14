@@ -2,6 +2,7 @@ import { ContentBlock, Message } from '../types';
 import { randomUUID } from 'crypto';
 import type {
   ExecutionScope,
+  ScopedArtifactContext,
   ScopedDeviceGrant,
   ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
@@ -81,6 +82,7 @@ export interface RunAgentTurnParams {
   deviceRpc?: DeviceRpcTransport;
   thinToolRpc?: ThinToolRpcTransport;
   targetRoutes?: TargetRoutes;
+  artifactContext?: ScopedArtifactContext;
   localFileGrants?: ScopedLocalFileGrant[];
   pendingUserInputProvider?: PendingUserInputProvider;
   abortSignal?: AbortSignal;
@@ -162,6 +164,7 @@ export class AgentTurnController {
       deviceGrants: params.deviceGrants,
       deviceSelection: params.deviceSelection,
       targetRoutes: params.targetRoutes,
+      artifactContext: params.artifactContext,
       localFileGrants: params.localFileGrants,
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
@@ -185,6 +188,7 @@ export class AgentTurnController {
       deviceRpc: params.deviceRpc,
       thinToolRpc: params.thinToolRpc,
       targetRoutes: params.targetRoutes,
+      artifactContext: params.artifactContext,
       localFileGrants: params.localFileGrants,
       executionContext: turnContext.executionContext,
       pendingUserInputProvider: params.pendingUserInputProvider,
@@ -272,6 +276,7 @@ export class AgentTurnController {
     deviceRpc?: DeviceRpcTransport;
     thinToolRpc?: ThinToolRpcTransport;
     targetRoutes?: TargetRoutes;
+    artifactContext?: ScopedArtifactContext;
     localFileGrants?: ScopedLocalFileGrant[];
     executionContext?: import('./runtime-context-builder').ExecutionContextSnapshot;
     pendingUserInputProvider?: PendingUserInputProvider;
@@ -320,6 +325,7 @@ export class AgentTurnController {
           deviceRpc: options.deviceRpc,
           thinToolRpc: options.thinToolRpc,
           targetRoutes: options.targetRoutes,
+          artifactContext: options.artifactContext,
           executionContext: options.executionContext,
           localFileGrants: options.localFileGrants,
           confirmToolExecution: options.confirmToolExecution,

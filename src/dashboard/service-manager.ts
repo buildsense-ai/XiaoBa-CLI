@@ -286,6 +286,11 @@ export class ServiceManager extends EventEmitter {
     }
 
     if (name === 'catscompany') {
+      // Electron explicitly marks both development and packaged desktop
+      // launches. A browser-only/server Dashboard remains fail-closed.
+      envVars.XIAOBA_RUNTIME_ROLE = process.env.XIAOBA_RUNTIME_ROLE === 'desktop'
+        ? 'desktop'
+        : 'server';
       const catsCoRuntime = resolveCatsCoRuntimeConfig({
         runtimeRoot: runtimeDataRoot,
         env: envVars,
@@ -426,13 +431,22 @@ export class ServiceManager extends EventEmitter {
     }
   }
 
-  private scheduleInteractiveForceKill(svc: ManagedService): void {
+  private scheduleInteractiveForceKill(
+    svc: ManagedService,
+    stoppingProcess: ChildProcess | undefined = svc.process,
+  ): void {
+    if (!stoppingProcess) return;
     if (svc.forceKillTimer) clearTimeout(svc.forceKillTimer);
-    svc.forceKillTimer = setTimeout(() => {
-      svc.forceKillTimer = undefined;
-      if (svc.process) this.killProcess(svc.process, true);
+    const forceKillTimer = setTimeout(() => {
+      if (svc.forceKillTimer === forceKillTimer) svc.forceKillTimer = undefined;
+      // The fallback belongs to the child that received the cooperative stop,
+      // never to a replacement that may have started meanwhile.
+      if (stoppingProcess.exitCode === null && stoppingProcess.signalCode === null) {
+        this.killProcess(stoppingProcess, true);
+      }
     }, this.serviceStopForceKillMs);
-    svc.forceKillTimer.unref?.();
+    svc.forceKillTimer = forceKillTimer;
+    forceKillTimer.unref?.();
   }
 
   stop(name: string): ServiceInfo {
@@ -443,12 +457,13 @@ export class ServiceManager extends EventEmitter {
     }
 
     svc.expectedExit = 'stop';
-    this.killProcess(svc.process);
+    const stoppingProcess = svc.process;
+    this.killProcess(stoppingProcess);
 
     // Interactive stop must stay responsive even if the connector cannot
     // cooperate. ChildProcess.killed only means a signal was sent; the exit
     // handler clears svc.process and remains the completion authority.
-    this.scheduleInteractiveForceKill(svc);
+    this.scheduleInteractiveForceKill(svc, stoppingProcess);
 
     return this.getService(name)!;
   }

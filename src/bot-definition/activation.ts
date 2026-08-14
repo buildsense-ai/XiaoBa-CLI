@@ -8,6 +8,11 @@ import {
 } from '../catscompany/relay-model-bootstrap';
 import { DEFAULT_CATSCO_RELAY_MODEL_ID } from '../utils/relay-model-profiles';
 import { Logger } from '../utils/logger';
+import { APP_VERSION } from '../version';
+import {
+  readRequiredBundledPromptFile,
+  SYSTEM_PROMPT_RELATIVE_PATH,
+} from '../utils/prompt-template';
 import { prepareBoundBotSkills, type PreparedBoundBotSkills } from '../bot-skills/runtime';
 import {
   catalogRuntimeMatchesModelId,
@@ -19,6 +24,7 @@ import { getPromptReconcileCoordinator } from './prompt-sync';
 import {
   acknowledgeCloudBotDefinition,
   acknowledgeCloudBotModelSelection,
+  reportCloudDefaultPromptSnapshot,
   pullLegacyCloudBotModelSelection,
   pullCloudBotModelSelection,
   redactCloudBotModelError,
@@ -124,6 +130,26 @@ export async function prepareBoundBotDefinition(
           cloudSnapshot = await cloudDefinitionSync.pull(botId, auth) ?? cloudSnapshot;
         }
 
+        if (
+          cloudSnapshot.definition?.model.kind === 'local'
+          && !definitionService.read(botId)
+        ) {
+          const runtime = await provisionCatsRelayCatalogRuntime({
+            botId,
+            modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
+            auth,
+            fetchImpl: options.fetchImpl,
+          });
+          definitionService.storeCatalogRuntime(runtime);
+          sync = definitionService.updateModel(botId, {
+            kind: 'catalog',
+            modelId: DEFAULT_CATSCO_RELAY_MODEL_ID,
+          });
+          localDefinition = sync.definition;
+          initializedDefaultFromEmpty = true;
+          cloudSnapshot = await cloudDefinitionSync.pull(botId, auth) ?? cloudSnapshot;
+        }
+
         let definition = definitionService.read(botId);
         if (!definition) throw new Error('CatsCo cloud BotDefinition did not produce a local cache.');
         definitionService.clearCloudModelOverride(botId);
@@ -172,6 +198,12 @@ export async function prepareBoundBotDefinition(
         });
         await promptCoordinator.activateBot(botId, { preferDefinition: true });
         definition = definitionService.read(botId)!;
+        scheduleBundledDefaultPromptSnapshot({
+          botId,
+          auth,
+          fetchImpl: options.fetchImpl,
+          env: options.env,
+        });
         if (!cloudSnapshot.definition?.prompt && definition.prompt) {
           cloudDefinitionSync.markPromptPending(botId);
           cloudSnapshot = await cloudDefinitionSync.pushPrompt(botId, auth, definition.prompt)
@@ -490,6 +522,12 @@ export async function prepareBoundBotDefinition(
     env: options.env,
     definitionService,
   }).activateBot(botId);
+  scheduleBundledDefaultPromptSnapshot({
+    botId,
+    auth,
+    fetchImpl: options.fetchImpl,
+    env: options.env,
+  });
   const skillSync = (
     options.prepareSkills === false
     || (cloudSelection && !cloudSelection.definition)
@@ -531,4 +569,38 @@ function catalogCapabilitiesNeedRefresh(runtime: BotCatalogModelRuntime): boolea
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function scheduleBundledDefaultPromptSnapshot(options: {
+  botId: string;
+  auth: CatsCoAuthSnapshot;
+  fetchImpl?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
+}): void {
+  let content: string;
+  try {
+    content = readRequiredBundledPromptFile(
+      SYSTEM_PROMPT_RELATIVE_PATH,
+      options.env,
+    );
+  } catch (error) {
+    Logger.warning(`CatsCo default system prompt snapshot deferred: ${errorMessage(error)}`);
+    return;
+  }
+
+  // Snapshot reporting is observational and must never wait on the network during startup.
+  void reportCloudDefaultPromptSnapshot(
+    {
+      botId: options.botId,
+      auth: options.auth,
+      fetchImpl: options.fetchImpl,
+    },
+    {
+      content,
+      xiaobaVersion: APP_VERSION,
+      runtimeVersion: process.version,
+    },
+  ).catch((error) => {
+    Logger.warning(`CatsCo default system prompt snapshot deferred: ${errorMessage(error)}`);
+  });
 }

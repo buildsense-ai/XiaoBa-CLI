@@ -57,6 +57,7 @@ describe('BotDefinition activation', () => {
     });
 
     const requests: string[] = [];
+    let resolveSnapshotRequest: ((response: Response) => void) | undefined;
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
       requests.push(`${init?.method || 'GET'} ${url.pathname}`);
@@ -82,6 +83,11 @@ describe('BotDefinition activation', () => {
       if (url.pathname === '/api/bot/definition/skills') {
         return Response.json({ error: 'not deployed' }, { status: 404 });
       }
+      if (url.pathname === '/api/bot/definition/default-prompt') {
+        return new Promise<Response>((resolve) => {
+          resolveSnapshotRequest = resolve;
+        });
+      }
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     }) as typeof fetch;
 
@@ -93,6 +99,8 @@ describe('BotDefinition activation', () => {
     });
 
     assert.equal(prepared?.botId, 'bot-bravo');
+    assert.ok(resolveSnapshotRequest, 'startup should schedule the default prompt snapshot upload');
+    resolveSnapshotRequest(Response.json({ status: 'stored' }));
     assert.equal(prepared?.materializedCatalogRuntime, true);
     const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot }).read('bot-bravo');
     assert.equal(runtime?.modelId, 'minimax-m3');
@@ -108,6 +116,7 @@ describe('BotDefinition activation', () => {
       'GET /api/relay/key',
       'GET /api.json',
       'GET /v1/models',
+      'PUT /api/bot/definition/default-prompt',
       'GET /api/bot/definition',
     ]);
   });
@@ -291,6 +300,76 @@ describe('BotDefinition activation', () => {
       requests.filter(item => item.path === '/api/bot/definition/ack').length,
       1,
     );
+  });
+
+  test('keeps cloud management local on a fresh device while preparing a runnable default', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-local-handoff-fresh-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-local-handoff-fresh-cloud-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'owner-token', uid: '7', displayName: 'Alice' },
+      currentBot: {
+        uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test',
+      },
+    });
+
+    const requests: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method || 'GET';
+      requests.push(`${method} ${url.pathname}`);
+      if (url.pathname === '/api/bot/definition' && method === 'GET') {
+        return Response.json({
+          uid: 43,
+          configured: true,
+          revision: 3,
+          definition: {
+            schema: BOT_DEFINITION_SCHEMA,
+            botId: '43',
+            model: { kind: 'local', modelId: 'local' },
+            prompt: { selected: 'custom', customSystemPrompt: 'Keep this cloud prompt.' },
+          },
+        });
+      }
+      if (url.pathname === '/api/relay/config') {
+        return Response.json({
+          self_service_enabled: true,
+          base_url: 'https://relay.example.test',
+          endpoints: [{ protocol: 'Anthropic-compatible', base_url: 'https://relay.example.test/anthropic' }],
+        });
+      }
+      if (url.pathname === '/api/relay/key') {
+        return Response.json({ key: { state: 'active', key: 'sk-local-device-relay' } });
+      }
+      if (url.pathname === '/v1/models') {
+        return Response.json({ data: [{ id: 'MiniMax-M3', capabilities: { vision: true } }] });
+      }
+      if (url.pathname === '/api/bot/definition/ack' && method === 'POST') {
+        return Response.json({ status: 'applied' });
+      }
+      return Response.json({ error: `unexpected ${method} ${url.pathname}` }, { status: 404 });
+    }) as typeof fetch;
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      simulatedCloudRoot,
+      env,
+      fetchImpl,
+      prepareSkills: false,
+    });
+
+    assert.deepStrictEqual(prepared?.definition.model, { kind: 'catalog', modelId: 'minimax-m3' });
+    assert.deepStrictEqual(prepared?.definition.prompt, {
+      selected: 'custom',
+      customSystemPrompt: 'Keep this cloud prompt.',
+    });
+    assert.equal(prepared?.initializedDefault, true);
+    assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'MiniMax-M3');
+    assert.equal(requests.some(item => item.includes('/api/bots/definition/model')), false);
+    assert.equal(requests.includes('POST /api/bot/definition/ack'), true);
   });
 
   test('applies and acknowledges a cloud-selected model after its local runtime is ready', async () => {

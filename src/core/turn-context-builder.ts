@@ -1,6 +1,7 @@
 import { Message } from '../types';
 import type {
   ExecutionScope,
+  ScopedArtifactContext,
   ScopedDeviceGrant,
   ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
@@ -20,7 +21,9 @@ import {
 } from './sub-agent-observation';
 import {
   type ExecutionContextSnapshot,
+  TRANSIENT_ARTIFACT_OBSERVATION_PREFIX,
   TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+  buildArtifactObservationMessage,
   buildRuntimeContextMessage,
   buildRuntimeContextSnapshot,
 } from './runtime-context-builder';
@@ -42,6 +45,7 @@ export interface BuildTurnContextParams {
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
+  artifactContext?: ScopedArtifactContext;
   localFileGrants?: ScopedLocalFileGrant[];
   durableMessages: Message[];
   runtimeFeedback: string[];
@@ -88,6 +92,11 @@ export class TurnContextBuilder {
     return messages.filter(msg => {
       if (msg.__syntheticObservation) return false;
       if (msg.__runtimeFeedback) return false;
+      if (
+        msg.__injected
+        && typeof msg.content === 'string'
+        && msg.content.startsWith(TRANSIENT_ARTIFACT_OBSERVATION_PREFIX)
+      ) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;
@@ -111,10 +120,15 @@ export class TurnContextBuilder {
       deviceGrants: params.deviceGrants,
       deviceSelection: params.deviceSelection,
       targetRoutes: params.targetRoutes,
+      artifactContext: params.artifactContext,
       localFileGrants: params.localFileGrants,
     });
-    if (!message) return;
-    this.insertBeforeLastUser(messages, { ...message, __cacheScope: 'dynamic' });
+    const artifactObservation = buildArtifactObservationMessage(params.artifactContext);
+    const injected = [
+      message ? { ...message, __cacheScope: 'dynamic' as const } : null,
+      artifactObservation,
+    ].filter((item): item is Message => Boolean(item));
+    if (injected.length > 0) this.insertBeforeLastUser(messages, ...injected);
   }
 
   private injectRuntimeObservationRules(messages: Message[]): void {

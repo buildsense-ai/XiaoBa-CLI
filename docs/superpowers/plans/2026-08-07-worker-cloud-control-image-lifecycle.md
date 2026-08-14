@@ -26,22 +26,22 @@
 **目标：** 私有 `catsco-worker-*` 镜像**最多保留 6 个**；bake 成功后自动清理更旧的；提供"取最新镜像"能力供部署/控制面使用；支持列出历史镜像供回滚选择。
 
 ### A1. 镜像保留与自动清理
-- [ ] **步骤 A1-1：清理逻辑设计**
-  - 在 bake **成功后**（result=created/reused/recovered 后）自动触发 `Invoke-CleanupOldWorkerImages`（幂等，可独立调用）。
+- [x] **步骤 A1-1：清理逻辑设计**（2026-08-07）
+  - 在 bake **成功后**自动触发清理（幂等，可独立调用）。
   - 规则：列出私有镜像 `catsco-worker-*`（`ims ListImage --imageVisibilityCode 0`），按 `createdTime` 排序，**保留最新 6 个**，删除更旧的。
-  - **安全（fail-closed）**：只删名称以 `catsco-worker-` 开头且带 `bake` label 的镜像；删除前连续空读确认；删除失败聚合报告（沿用 `Invoke-ExactBakeCleanup` 模式）。
-  - 触发：bake workflow 成功步骤后调用；也支持独立 `workflow_dispatch` / 本地命令。
-- [ ] **步骤 A1-2：测试**
-  - fake `ims ListImage/DeleteImage` 支持多镜像排序；场景：6 个内不删、第 7 个起删最旧、删除失败 fail-closed 报告。
-- [ ] **步骤 A1-3：实现 + 验证**
-  - `New-CatsCoWorkerImage.ps1` 新增 `Invoke-CleanupOldWorkerImages`（或独立 `ops/ctyun-worker-image/cleanup-old-images.ps1`）；`worker-image.yml` 成功路径接入；`npm run build` + 测试全绿。
+  - **安全（fail-closed）**：只删名称以 `catsco-worker-` 开头且带 `bake` label 的镜像；删除前连续空读确认（用 `ListImage` 全量过滤，不用 `GetImageDetail`——实测其对私有镜像偶发 NotFound）；删除失败聚合报告。
+  - 触发：`worker-image.yml` bake 成功步骤后自动调用（`continue-on-error`，清理失败仅告警不阻塞镜像产出）。
+- [x] **步骤 A1-2：测试**（`tests/manage-worker-images.test.ts`）
+  - fake `ims ListImage/DeleteImage` 支持多镜像排序；场景：List 只列带 bake label 的 `catsco-worker-*`、Latest 输出最新、Prune 6 删最旧 2、≤6 不删、删除失败 fail-closed 且其它照常删、非 worker/无 bake label 镜像永不删。
+- [x] **步骤 A1-3：实现 + 验证**
+  - 新建 `ops/ctyun-worker-image/Manage-WorkerImages.ps1`（`-Action List/Latest/Prune -Keep 6`）；`worker-image.yml` bake 成功后接入 `Prune -Keep 6`；`npm run build` + 测试 12/12 全绿。
 
 ### A2. 部署/控制面取最新镜像
-- [ ] **步骤 A2-1：`resolve-latest-worker-image` 脚本**
-  - 列出 `catsco-worker-*` 私有镜像，按 `labels.bake`/`createdTime` 取最新（即最后 bake 的），输出 `imageID`。
+- [x] **步骤 A2-1：`resolve-latest-worker-image`**（`Manage-WorkerImages.ps1 -Action Latest`）
+  - 列出 `catsco-worker-*` 私有镜像，按 `createdTime`（降序，id 兜底）取最新，输出 `imageID`。
   - 部署脚本 / 控制面（Part B）用它创建新 worker。
-- [ ] **步骤 A2-2：历史镜像列表（供回滚选择）**
-  - 提供 `list-worker-images` 输出 `imageID / version / commit / createdTime`，控制面据此展示"镜像回滚"可选列表（保留 6 个内的历史镜像）。
+- [x] **步骤 A2-2：历史镜像列表（供回滚选择）**（`Manage-WorkerImages.ps1 -Action List`）
+  - 输出 `imageID / name / version / commit / createdTime / status`，控制面据此展示"镜像回滚"可选列表（保留 6 个内的历史镜像）。
 
 ---
 
@@ -49,18 +49,18 @@
 
 **目标：** 在「云托管」入口提供云虚拟员工的统一管理界面：创建（带配额）、版本展示、镜像回滚、单个重置。
 
-- [ ] **步骤 B-1：云托管入口与员工列表**
+- [x] **步骤 B-1：云托管入口与员工列表**（2026-08-10，cats-company #158 合并）
   - 「AI 助手管理」对话框的「云托管」选项 → 云虚拟员工管理页：列出所有云虚拟员工（名称、状态、**版本**、镜像、创建时间）。
-- [ ] **步骤 B-2：创建配额（环境变量控制，初始 0）**
+- [x] **步骤 B-2：创建配额（环境变量控制，初始 0）**（2026-08-10，cats-company #158 合并）
   - 「可创建云虚拟员工次数」由**环境变量**控制（例如服务端 `CATSCO_WORKER_CREATE_QUOTA=<user>=<n>,...` 或按账号维度；具体变量名实现时定），**初始值 0**（未配置即不可创建）。
   - 配额展示在按钮上；有剩余 → 按钮可点，触发创建（后端调脚本：resolve 最新镜像 → 起实例 → 初始化供给）；无剩余 → 置灰并提示剩余 0。
   - 创建成功扣减次数；失败不扣（或扣减策略实现时明确）。
-- [ ] **步骤 B-3：版本展示**
+- [x] **步骤 B-3：版本展示**（2026-08-10，cats-company #158 合并）
   - 每个员工显示当前版本（来自镜像 label `version`/`commit` / 运行状态）。
-- [ ] **步骤 B-3a：「回滚」= 保留数据（制品切版本，走 Part A）**
+- [x] **步骤 B-3a：「回滚」= 保留数据（制品切版本，走 Part A）**（2026-08-10，UI 已随 #158 上线；当前走镜像内多版本切换 `rollback-worker.sh`，Part A 制品通道接入后扩展）
   - 语义：**数据保留**，把应用切回上一个/历史 release 版本（`update-worker-artifact.sh --rollback`，Part A）。
   - UI 明确标注「回滚（保留数据）」；仅当目标 worker 已接入制品通道时可用（否则置灰/提示）。
-- [ ] **步骤 B-3b：「重置 / 重装」= 丢弃数据（销毁重建到镜像）**
+- [x] **步骤 B-3b：「重置 / 重装」= 丢弃数据（销毁重建到镜像）**（2026-08-10，cats-company #158 合并）
   - 语义：**数据全部丢失**，销毁该 worker 云实例 → 从所选历史镜像（A2-2 列表）或最新镜像重建 → 初始化供给。
   - UI 明确标注「重置 / 重装（丢弃数据，不可恢复）」+ **强二次确认**（输入确认文案）。
   - 用户逐个操作单个 worker。

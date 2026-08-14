@@ -19,11 +19,58 @@ session, skill installation, or runtime `.env`.
   changing it to `false` is the emergency cost and incident kill switch.
 - The application version and full Git commit are stored in both
   `/opt/catsco/current/worker-release.json` and `/etc/catsco-image.json`.
-- Keep the newest two active images plus the image currently referenced by the
-  production launch template. Deactivate older images before deleting them.
+- `Manage-WorkerImages.ps1` automates housekeeping: `-Action Prune` keeps the
+  newest 6 `catsco-worker-*` images (bake-labeled) and deletes older ones
+  (fail-closed, deletion confirmed by name-scoped reads). **Prune protects
+  production references via `-ProtectedImageIDs`**: the image(s) still
+  referenced by the production launch template (or a pinned rollback target)
+  are never deleted even when older than `-Keep`, and if deletion is needed
+  but no protected list is provided Prune refuses to run (fail-closed). The
+  GitHub workflow passes the repo variable `CTYUN_WORKER_PROTECTED_IMAGE_IDS`
+  (see “Protected image list maintenance” below).
 
 This avoids rebuilding a large system disk for documentation-only or emergency
 application releases while still allowing new workers to start without GitHub.
+
+## Image Lifecycle Management
+
+`Manage-WorkerImages.ps1` manages the private `catsco-worker-*` image set
+(created by `New-CatsCoWorkerImage.ps1`):
+
+- `-Action List`   : list all bake-channel images
+  (`imageID/name/version/commit/createdTime/status`), newest first.
+  > **Contract note**: this PowerShell output (pretty JSON) is for CI / humans
+  > on the bake toolchain. The cats-company control plane (`/api/cloud-workers`)
+  > runs on a Linux image **without PowerShell**; its image contract is the
+  > bash `list-worker-images.sh` (TSV, one image per line) from the
+  > cats-company B4-1 scripts. Do not point `CATSCO_WORKER_IMAGES_SCRIPT` at
+  > this `.ps1`.
+- `-Action Latest` : print the newest imageID (used by deployment to pick the
+  latest image)
+- `-Action Prune`  : keep the newest `-Keep` images (default 6) and delete
+  older bake-labeled `catsco-worker-*` images; each deletion is confirmed by a
+  name-scoped `ListImage` read, and failures fail closed.
+  Requires `-ProtectedImageIDs` (comma-separated) when there are images to
+  delete — protected images are never deleted.
+
+CI runs `Prune -Keep 6` after every successful bake (`continue-on-error`,
+30-minute budget), passing `$env:WORKER_PROTECTED_IMAGE_IDS` (repo var
+`CTYUN_WORKER_PROTECTED_IMAGE_IDS`).
+
+### Protected image list maintenance
+
+- **What to put in it**: the `imageID` currently referenced by the production
+  launch template, plus any pinned rollback/staged-rollout target. The script
+  only verifies the list is non-empty; it does not auto-discover the template
+  reference, so keep it in sync when the template moves.
+- **Local invocation**: `./Manage-WorkerImages.ps1 -Action Prune -Keep 6
+  -RegionID <region> -ProjectID 0 -ProtectedImageIDs
+  "<imageID1>,<imageID2>"`.
+- **Rotating / emergency**: after a bake that becomes the new production
+  reference, update the repo var to the new `imageID` (Settings → Variables),
+  then the next bake’s Prune can safely clean older images. To disable
+  automatic pruning entirely, remove the variable — Prune will refuse to
+  delete (fail-closed) instead of guessing.
 
 ## Layout
 
@@ -155,3 +202,20 @@ Provisioning from this image must:
 
 Never place a long-lived account password, relay administrator key, or shared
 bot token in image metadata or Cloud-init user data.
+
+## Existing Worker Updates (Part A: Application Artifacts)
+
+- **New workers** get the full baked image (`catsco-worker-*`, provisioned via
+  the cloud control plane).
+- **Existing workers** are updated at the application layer with a deterministic
+  artifact (`npm run worker:artifact`) — no rebake, no system-disk change, and
+  `/srv/catsco-agent` data is never touched. See `docs/worker-artifact-update.md`.
+- The worker-side updater is `scripts/update-worker-artifact.sh` (checksum +
+  manifest verify, native-module smoke, symlink switch, restart, heartbeat
+  check, automatic rollback); the dispatcher is
+  `scripts/deploy-worker-artifact.mjs` (serial ssh/scp across targets).
+- CI trigger: stable tag + repo var `CTYUN_WORKER_APP_UPDATE=true`
+  (`.github/workflows/worker-app-update.yml`), or manual workflow_dispatch
+  with `update_workers` from `main`, or local dry-run via
+  `npm run worker:update:dry`.
+- Workers hold no cloud credentials: distribution goes over SSH only.

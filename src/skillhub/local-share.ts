@@ -1,4 +1,6 @@
+import * as fs from 'fs';
 import * as path from 'path';
+import matter from 'gray-matter';
 import {
   withCurrentBotSkillWorkspaceWrite,
   type CurrentBotSkillWorkspaceWriteContext,
@@ -19,6 +21,7 @@ export interface SkillHubCatsCoAuthPayload {
 
 export interface ShareLocalSkillForCatsCoOptions {
   getCatsCoAuth?: () => Promise<SkillHubCatsCoAuthPayload> | SkillHubCatsCoAuthPayload;
+  createSkillHubService?: () => Pick<SkillHubService, 'loginWithCatsCo' | 'shareLocalSkill'>;
   writeLocalMetadata?: boolean;
   runtimeRoot?: string;
   validateScope?: (
@@ -64,15 +67,44 @@ export async function shareLocalSkillForCatsCo(
   return withCurrentBotSkillWorkspaceWrite(async (context) => {
     assertExpectedLocalSkillShareScope(expectedBotUid, context.botId, context.activeBotId);
     await options.validateScope?.(context);
-    const selectedSkill = expectedLocalSkillId
-      ? scanBotSkillWorkspace(context.skillsRoot, {
-        onValidationFailure: () => {},
-      }).find((candidate) => (
-        candidate.localSkillId === expectedLocalSkillId && candidate.name === skillName
-      ))
-      : undefined;
+    const rejected: Array<{ localSkillId: string; error: Error }> = [];
+    let selectedSkill;
+    try {
+      selectedSkill = expectedLocalSkillId
+        ? scanBotSkillWorkspace(context.skillsRoot, {
+          onValidationFailure: failure => rejected.push(failure),
+        }).find(candidate => candidate.localSkillId === expectedLocalSkillId)
+        : undefined;
+    } catch {
+      throw skillHubConflict(
+        'The selected local Skill could not be validated safely.',
+        'skillhub.share_local_skill_invalid',
+      );
+    }
     if (expectedLocalSkillId) {
+      const rejectedSkill = rejected.find(candidate => (
+        candidate.localSkillId === expectedLocalSkillId
+      ));
+      if (rejectedSkill) {
+        throw skillHubConflict(
+          rejectedSkill.error.message,
+          'skillhub.share_local_skill_invalid',
+        );
+      }
       if (!selectedSkill) {
+        throw skillHubConflict(
+          'The selected local Skill changed before it could be shared.',
+          'skillhub.share_local_skill_changed',
+        );
+      }
+      const metadataError = validateSkillHubShareMetadata(selectedSkill.path);
+      if (metadataError) {
+        throw skillHubConflict(
+          metadataError.message,
+          'skillhub.share_local_skill_invalid',
+        );
+      }
+      if (selectedSkill.name !== skillName) {
         throw skillHubConflict(
           'The selected local Skill changed before it could be shared.',
           'skillhub.share_local_skill_changed',
@@ -80,7 +112,14 @@ export async function shareLocalSkillForCatsCo(
       }
     }
     const cats = await options.getCatsCoAuth!();
-    const service = new SkillHubService({ sessionScope: 'memory' });
+    if (String(cats.user?.uid || '').trim() !== expectedUserUid) {
+      throw skillHubConflict(
+        'The local CatsCo account changed before the Skill was shared.',
+        'skillhub.share_user_changed',
+      );
+    }
+    const service = options.createSkillHubService?.()
+      ?? new SkillHubService({ sessionScope: 'memory' });
     const skillHubAuth = await service.loginWithCatsCo(cats);
     const actualUserUid = String(skillHubAuth.catsCo?.uid || '').trim();
     if (!actualUserUid) {
@@ -101,12 +140,20 @@ export async function shareLocalSkillForCatsCo(
     });
     let revalidatedSkill = selectedSkill;
     if (selectedSkill) {
-      const currentSkill = scanBotSkillWorkspace(context.skillsRoot, {
-        onValidationFailure: () => {},
-      }).find((candidate) => (
-        candidate.localSkillId === selectedSkill.localSkillId
-        && candidate.name === selectedSkill.name
-      ));
+      let currentSkill;
+      try {
+        currentSkill = scanBotSkillWorkspace(context.skillsRoot, {
+          onValidationFailure: () => {},
+        }).find((candidate) => (
+          candidate.localSkillId === selectedSkill.localSkillId
+          && candidate.name === selectedSkill.name
+        ));
+      } catch {
+        throw skillHubConflict(
+          'The selected local Skill could not be validated safely.',
+          'skillhub.share_local_skill_invalid',
+        );
+      }
       if (!currentSkill || currentSkill.contentHash !== selectedSkill.contentHash) {
         throw skillHubConflict(
           'The selected local Skill changed while it was being shared.',
@@ -122,6 +169,31 @@ export async function shareLocalSkillForCatsCo(
     }
     return { ...result, botUid: expectedBotUid };
   }, { runtimeRoot: options.runtimeRoot });
+}
+
+export function validateSkillHubShareMetadata(skillDir: string): Error | undefined {
+  try {
+    const skillFile = path.join(skillDir, 'SKILL.md');
+    const parsed = matter(fs.readFileSync(skillFile, 'utf8'), {});
+    const name = parsed.data?.name;
+    const description = parsed.data?.description;
+    if (typeof name === 'string' && name.trim() && name !== name.trim()) {
+      return new Error('SKILL.md 的 name 不能包含首尾空格。请移除多余空格后重试。');
+    }
+    if (
+      typeof name !== 'string'
+      || !name.trim()
+      || typeof description !== 'string'
+      || !description.trim()
+    ) {
+      return new Error(
+        'SKILL.md 缺少有效的必填字段 name 或 description。请在文件顶部的 YAML frontmatter 中填写非空文本后重试。',
+      );
+    }
+    return undefined;
+  } catch {
+    return new Error('SKILL.md 格式无效。请检查文件顶部的 YAML frontmatter 后重试。');
+  }
 }
 
 export function assertExpectedLocalSkillShareScope(

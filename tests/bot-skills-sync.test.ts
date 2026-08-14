@@ -190,6 +190,100 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     assert.equal(fixture.uploads, uploadsBeforeFinalize + 1);
   });
 
+  test('finalizes a public Skill while preserving an unrelated rejected managed Skill', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'blocked-existing', 'blocked-existing', 'initial safe content');
+    await fixture.sync();
+
+    const baseBefore = new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId);
+    const blockedBefore = baseBefore?.skills.find(entry => entry.name === 'blocked-existing');
+    assert.ok(blockedBefore);
+    const blockedRoot = path.join(fixture.skillsRoot, 'blocked-existing');
+    const blockedSkillFile = path.join(blockedRoot, 'SKILL.md');
+    fs.writeFileSync(blockedSkillFile, '---\nname: [unterminated\ndescription: Broken YAML\n---\n');
+
+    writeSkill(fixture.skillsRoot, 'shared-new', 'shared-new', 'share this globally');
+    const target = scanLocalBotSkill(path.join(fixture.skillsRoot, 'shared-new'));
+    const metadata = {
+      author: 'alice',
+      version: '1.0.0',
+      uploadedAt: '2026-08-14T00:00:00.000Z',
+    };
+    const publicRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-public-package-'));
+    roots.push(publicRoot);
+    writeSkill(publicRoot, 'shared-new', 'shared-new', 'share this globally');
+    const publicSkillFile = path.join(publicRoot, 'shared-new', 'SKILL.md');
+    fs.writeFileSync(
+      publicSkillFile,
+      applySkillHubLocalMetadata(fs.readFileSync(publicSkillFile, 'utf8'), metadata),
+      'utf8',
+    );
+    const canonicalPublic = scanLocalBotSkill(path.join(publicRoot, 'shared-new'));
+    const publicReference = {
+      source: 'skillhub' as const,
+      skillId: 'alice/shared-new',
+      version: metadata.version,
+      contentHash: canonicalPublic.contentHash,
+    };
+    const publicPackage: BotSkillPackage = {
+      schema: 'catsco.private-skill-package.v1',
+      source: 'public',
+      reference: {
+        skillId: publicReference.skillId,
+        version: publicReference.version,
+      },
+      localSkillId: target.localSkillId,
+      name: target.name,
+      contentHash: canonicalPublic.contentHash,
+      createdAt: metadata.uploadedAt,
+      origin: {
+        skillId: publicReference.skillId,
+        version: publicReference.version,
+      },
+      files: canonicalPublic.files,
+    };
+    delete (publicPackage as Partial<BotSkillPackage>).schema;
+    fixture.packages.set(refKey(publicReference), publicPackage);
+    fixture.cloud = {
+      revision: fixture.cloud.revision + 1,
+      skills: [...fixture.cloud.skills, publicReference],
+    };
+
+    const uploadsBeforeFinalize = fixture.uploads;
+    const finalized = await fixture.finalize({
+      localSkillId: target.localSkillId,
+      skillName: target.name,
+      reference: publicReference,
+    });
+
+    assert.equal(finalized.direction, 'local_to_cloud');
+    assert.equal(fixture.uploads, uploadsBeforeFinalize);
+    assert.equal(fs.existsSync(blockedSkillFile), true);
+    assert.equal(fixture.cloud.skills.some(skill => (
+      skill.skillId === blockedBefore.reference.skillId
+      && skill.version === blockedBefore.reference.version
+      && skill.contentHash === blockedBefore.reference.contentHash
+    )), true);
+    assert.equal(fixture.cloud.skills.some(skill => (
+      skill.skillId === publicReference.skillId
+      && skill.version === publicReference.version
+      && skill.contentHash === publicReference.contentHash
+    )), true);
+    const baseAfter = new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId);
+    assert.deepEqual(
+      baseAfter?.skills.find(entry => entry.localSkillId === blockedBefore.localSkillId),
+      blockedBefore,
+    );
+    assert.deepEqual(
+      readBotSkillLocalMarker(path.join(fixture.skillsRoot, 'shared-new'))?.reference,
+      publicReference,
+    );
+    assert.deepEqual(
+      readSkillHubLocalMetadata(path.join(fixture.skillsRoot, 'shared-new', 'SKILL.md')),
+      metadata,
+    );
+  });
+
   test('rolls back Local and Base when the public ref disappears at the final cloud CAS', async () => {
     const fixture = createFixture(roots);
     writeSkill(fixture.skillsRoot, 'shared', 'shared', 'same canonical body');
@@ -1242,14 +1336,37 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     assert.deepStrictEqual(fixture.definitionService.read(fixture.botId)?.skills, previousSkills);
   });
 
-  test('rejects credential files and high-confidence secrets before any upload request is built', () => {
+  test('rejects malformed SKILL.md before private upload or BotDefinition update', async () => {
+    const fixture = createFixture(roots);
+    const skillRoot = path.join(fixture.skillsRoot, 'malformed');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+      '---',
+      'name: [unterminated',
+      'description: Broken YAML',
+      '---',
+      '',
+    ].join('\n'));
+
+    assert.throws(
+      () => scanBotSkillWorkspace(fixture.skillsRoot),
+      /SKILL\.md format is invalid/i,
+    );
+    await assert.rejects(fixture.sync(), /SKILL\.md format is invalid/i);
+    assert.equal(fixture.uploads, 0);
+    assert.equal(fixture.patches, 0);
+    assert.equal(fixture.definitionService.read(fixture.botId)?.skills, undefined);
+    assert.deepStrictEqual(fixture.cloud.skills, []);
+  });
+
+  test('packages credential files and secret-like text without content-policy blocking', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-sensitive-skill-'));
     roots.push(root);
     writeSkill(root, 'unsafe', 'unsafe', 'local only');
     fs.writeFileSync(path.join(root, 'unsafe', '.env'), 'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz');
-    assert.throws(
-      () => scanLocalBotSkill(path.join(root, 'unsafe')),
-      /sensitive material/i,
+    assert.equal(
+      scanLocalBotSkill(path.join(root, 'unsafe')).files.some(file => file.path === '.env'),
+      true,
     );
 
     fs.rmSync(path.join(root, 'unsafe', '.env'));
@@ -1257,13 +1374,13 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
       path.join(root, 'unsafe', 'config.txt'),
       'clientSecret: a-real-secret-value-that-must-not-leave-device',
     );
-    assert.throws(
-      () => scanLocalBotSkill(path.join(root, 'unsafe')),
-      /sensitive material/i,
+    assert.equal(
+      scanLocalBotSkill(path.join(root, 'unsafe')).files.some(file => file.path === 'config.txt'),
+      true,
     );
   });
 
-  test('allows runtime credential expressions without weakening literal secret detection', () => {
+  test('does not inspect source or configuration contents for secrets', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-credential-skill-'));
     roots.push(root);
     writeSkill(root, 'safe', 'safe', 'local only');
@@ -1390,9 +1507,8 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     ];
     for (const unsafeAssignment of unsafeAssignments) {
       fs.writeFileSync(path.join(root, 'safe', 'runtime.mjs'), `${unsafeAssignment}\n`);
-      assert.throws(
+      assert.doesNotThrow(
         () => scanLocalBotSkill(path.join(root, 'safe')),
-        /sensitive material/i,
         unsafeAssignment,
       );
     }
@@ -1404,14 +1520,14 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
       ')',
       '',
     ].join('\n'));
-    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    assert.doesNotThrow(() => scanLocalBotSkill(path.join(root, 'safe')));
     fs.rmSync(path.join(root, 'safe', 'unsafe.py'));
 
     fs.writeFileSync(
       path.join(root, 'safe', 'unsafe.py'),
       'auth_token = os.environ.get("CATSCO_USER_TOKEN"), "a-real-secret-value-that-must-not-leave-device"\n',
     );
-    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    assert.doesNotThrow(() => scanLocalBotSkill(path.join(root, 'safe')));
     fs.rmSync(path.join(root, 'safe', 'unsafe.py'));
 
     fs.writeFileSync(path.join(root, 'safe', 'unsafe.json'), [
@@ -1422,20 +1538,20 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
       '}',
       '',
     ].join('\n'));
-    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    assert.doesNotThrow(() => scanLocalBotSkill(path.join(root, 'safe')));
     fs.rmSync(path.join(root, 'safe', 'unsafe.json'));
 
     fs.rmSync(path.join(root, 'safe', 'runtime.mjs'));
     fs.writeFileSync(path.join(root, 'safe', 'config.yaml'), 'password: password\n');
-    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    assert.doesNotThrow(() => scanLocalBotSkill(path.join(root, 'safe')));
     fs.writeFileSync(path.join(root, 'safe', 'config.yaml'), '- password: smoke-secret\n');
-    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    assert.doesNotThrow(() => scanLocalBotSkill(path.join(root, 'safe')));
     fs.rmSync(path.join(root, 'safe', 'config.yaml'));
     fs.writeFileSync(
       path.join(root, 'safe', 'auth.test.ts'),
       'const password = "summer-2026-admin";\n',
     );
-    assert.throws(() => scanLocalBotSkill(path.join(root, 'safe')), /sensitive material/i);
+    assert.doesNotThrow(() => scanLocalBotSkill(path.join(root, 'safe')));
   });
 
   test('restores a missing nested workspace from Cloud instead of uploading an empty list', async () => {

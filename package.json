@@ -35,6 +35,7 @@
     "release:check": "node scripts/check-release-branding.mjs",
     "release:verify-version": "node scripts/verify-release-version.js",
     "worker:artifact": "node scripts/build-linux-worker-artifact.mjs",
+    "worker:update:dry": "node scripts/deploy-worker-artifact.mjs --dry-run --artifact release/worker/catsco-worker-example-linux-x64.tar.gz --sha256 0000000000000000000000000000000000000000000000000000000000000000 --version 0.0.0 --commit 0000000000000000000000000000000000000000",
     "skillhub:trust-root": "node scripts/update-skillhub-root-key.mjs",
     "version:sync": "node scripts/inject-version.js"
   },

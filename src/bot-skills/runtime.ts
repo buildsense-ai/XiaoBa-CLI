@@ -49,6 +49,18 @@ export interface CurrentBotSkillWorkspaceWriteOptions {
   lockWaitMs?: number;
 }
 
+export class BotSkillWorkspaceChangingError extends Error {
+  readonly code = 'WORKSPACE_SWITCHING';
+
+  constructor(
+    public readonly activeBotId: string,
+    public readonly targetBotId: string,
+  ) {
+    super(`Bot Skill workspace ownership is changing (${activeBotId} -> ${targetBotId}); retry the write.`);
+    this.name = 'BotSkillWorkspaceChangingError';
+  }
+}
+
 /**
  * Serializes every writer of the active Skill directory with Bot activation,
  * restore, rollback, and after-turn sync. The ownership snapshot is captured
@@ -244,8 +256,6 @@ function assertCurrentBotSkillWorkspaceIsWritable(
   context: CurrentBotSkillWorkspaceWriteContext,
 ): void {
   if (context.botId && context.activeBotId && context.botId !== context.activeBotId) {
-    throw new Error(
-      `Bot Skill workspace ownership is changing (${context.activeBotId} -> ${context.botId}); retry the write.`,
-    );
+    throw new BotSkillWorkspaceChangingError(context.activeBotId, context.botId);
   }
 }

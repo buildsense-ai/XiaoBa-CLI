@@ -3,14 +3,14 @@ import {
   patchCloudBotDefinitionSkills,
   pullCloudBotDefinition,
 } from '../bot-definition/cloud-client';
-import type { BotDefinition, BotSkillRef } from '../bot-definition/types';
+import type { BotSkillRef, CloudBotDefinition } from '../bot-definition/types';
 import { canonicalizeBotSkillRefs } from './canonical';
 
 export interface CloudBotSkills {
   botId: string;
   skills: BotSkillRef[];
   revision: number;
-  definition?: BotDefinition;
+  definition?: CloudBotDefinition;
   updatedAt?: string;
 }
 

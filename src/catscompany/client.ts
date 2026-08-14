@@ -28,6 +28,7 @@ export interface CatsDeviceRegistration {
   owner_user_id?: string;
   os?: 'windows' | 'macos' | 'linux' | 'unknown';
   status?: 'online' | 'offline';
+  runtime_role?: 'desktop' | 'server';
   capabilities?: string[];
   model_status?: {
     source?: 'relay' | 'custom';

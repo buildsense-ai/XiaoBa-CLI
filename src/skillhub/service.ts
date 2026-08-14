@@ -247,9 +247,17 @@ export class SkillHubService {
       throw error;
     }
 
-    const localSkill = options.localSkillPath
-      ? findLocalShareableSkillAtPath(options.localSkillPath, skillName)
-      : findLocalShareableSkill(skillName);
+    let localSkill;
+    try {
+      localSkill = options.localSkillPath
+        ? findLocalShareableSkillAtPath(options.localSkillPath, skillName)
+        : findLocalShareableSkill(skillName);
+    } catch (caught: any) {
+      if (caught?.code === 'skillhub.local_skill_ambiguous' && caught?.status === 409) {
+        throw caught;
+      }
+      throw localSkillValidationFailed();
+    }
     if (!localSkill) {
       const available = listLocalSkillNames().join(', ');
       const error: any = new Error(`Local skill not found: ${skillName}${available ? `. Available skills: ${available}` : ''}`);
@@ -267,11 +275,13 @@ export class SkillHubService {
         contentBase64,
       }));
     } catch (caught: any) {
-      if (!(caught instanceof BotSkillPackageValidationError)) throw caught;
-      const error: any = new Error(caught?.message || 'Local Skill package is unsafe to share.');
-      error.status = 400;
-      error.code = 'skillhub.local_skill_unsafe_package';
-      throw error;
+      if (caught instanceof BotSkillPackageValidationError) {
+        const error: any = new Error(caught?.message || 'Local Skill package is unsafe to share.');
+        error.status = 400;
+        error.code = 'skillhub.local_skill_unsafe_package';
+        throw error;
+      }
+      throw localSkillValidationFailed();
     }
     if (!files.length) {
       const error: any = new Error('Local skill package has no shareable files.');
@@ -350,6 +360,13 @@ export class SkillHubService {
     error.status = 404;
     throw error;
   }
+}
+
+function localSkillValidationFailed(): Error {
+  const error: any = new Error('The selected local Skill could not be validated safely.');
+  error.status = 400;
+  error.code = 'skillhub.local_skill_invalid';
+  return error;
 }
 
 function assertRegistryEntryMatchesRequest(

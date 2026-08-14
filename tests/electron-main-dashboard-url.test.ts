@@ -38,6 +38,22 @@ test('electron changes cwd to userData before reading close-to-tray menu prefere
   assert.match(electronMain, /close-to-tray preferences are read from process\.cwd\(\)\/\.xiaoba\/catsco\.json/);
 });
 
+test('packaged electron binds the runtime and active Skills directory to app userData', () => {
+  const userDataReadIndex = electronMain.indexOf("const userDataPath = app.getPath('userData')");
+  const runtimeBindingIndex = electronMain.indexOf('process.env.XIAOBA_USER_DATA_DIR = userDataPath');
+  const skillsBindingIndex = electronMain.indexOf("process.env.XIAOBA_SKILLS_DIR = skillsPath");
+  const chdirIndex = electronMain.indexOf('process.chdir(userDataPath)');
+
+  assert.notEqual(userDataReadIndex, -1);
+  assert.notEqual(runtimeBindingIndex, -1);
+  assert.notEqual(skillsBindingIndex, -1);
+  assert.notEqual(chdirIndex, -1);
+  assert.equal(userDataReadIndex < runtimeBindingIndex, true);
+  assert.equal(runtimeBindingIndex < skillsBindingIndex, true);
+  assert.equal(skillsBindingIndex < chdirIndex, true);
+  assert.match(electronMain, /const skillsPath = path\.join\(userDataPath, 'skills'\)/);
+});
+
 test('electron tray uses app icons and notifies after background hide', () => {
   assert.match(electronMain, /function createTrayIcon\(\)/);
   assert.match(electronMain, /build-resources\/icon\.ico/);

@@ -1,10 +1,11 @@
 import type { CatsCoAuthSnapshot } from '../catscompany/local-config';
+import { createHash } from 'crypto';
 import { normalizeReasoningEffort } from '../utils/reasoning-effort';
 import type { ReasoningEffort } from '../types';
 import { canonicalizeBotSkillRefs } from '../bot-skills/canonical';
 import {
   BOT_DEFINITION_SCHEMA,
-  type BotDefinition,
+  type CloudBotDefinition,
   type BotModelDefinition,
   type BotPromptDefinition,
   type BotSkillRef,
@@ -26,13 +27,13 @@ export interface CloudBotModelSelection {
   contextWindowTokens?: number;
   revision: number;
   customModel?: CustomBotModelDefinition;
-  definition?: BotDefinition;
+  definition?: CloudBotDefinition;
 }
 
 export interface CloudBotDefinitionSnapshot {
   configured: boolean;
   revision: number;
-  definition?: BotDefinition;
+  definition?: CloudBotDefinition;
   runtime?: Record<string, unknown>;
 }
 
@@ -42,6 +43,12 @@ export interface CloudBotModelClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+export interface DefaultPromptSnapshotInput {
+  content: string;
+  xiaobaVersion?: string;
+  runtimeVersion?: string;
+}
+
 export async function pullCloudBotModelSelection(
   options: CloudBotModelClientOptions,
 ): Promise<CloudBotModelSelection | undefined> {
@@ -49,7 +56,14 @@ export async function pullCloudBotModelSelection(
   if (definitionSnapshot) {
     if (!definitionSnapshot.configured || !definitionSnapshot.definition) return undefined;
     const model = definitionSnapshot.definition.model;
-    return model.kind === 'custom'
+    return model.kind === 'local'
+      ? {
+        kind: 'local',
+        modelId: 'local',
+        revision: definitionSnapshot.revision,
+        definition: definitionSnapshot.definition,
+      }
+      : model.kind === 'custom'
       ? {
         kind: 'custom',
         modelId: model.model,
@@ -198,6 +212,27 @@ export async function acknowledgeCloudBotDefinition(
   });
 }
 
+export async function reportCloudDefaultPromptSnapshot(
+  options: CloudBotModelClientOptions,
+  snapshot: DefaultPromptSnapshotInput,
+): Promise<boolean> {
+  const content = String(snapshot.content || '');
+  if (!content.trim()) throw new Error('Default system prompt snapshot cannot be empty.');
+  const response = await cloudDefinitionRequest(
+    options,
+    'bot',
+    'PUT',
+    '/api/bot/definition/default-prompt',
+    {
+      content,
+      contentHash: createHash('sha256').update(content, 'utf-8').digest('hex'),
+      ...(snapshot.xiaobaVersion ? { xiaobaVersion: snapshot.xiaobaVersion } : {}),
+      ...(snapshot.runtimeVersion ? { runtimeVersion: snapshot.runtimeVersion } : {}),
+    },
+  );
+  return response !== undefined;
+}
+
 export async function acknowledgeCloudBotModelSelection(
   options: CloudBotModelClientOptions,
   selection: CloudBotModelSelection,
@@ -292,9 +327,15 @@ function parseCloudBotDefinitionSnapshot(
   }
   const rawModel = raw.model as Record<string, unknown> | undefined;
   const kind = String(rawModel?.kind || '').trim().toLowerCase();
-  let model: BotModelDefinition;
+  let model: CloudBotDefinition['model'];
   if (kind === 'custom') {
     model = parseCloudCustomModel(rawModel);
+  } else if (kind === 'local') {
+    const modelId = String(rawModel?.modelId || '').trim().toLowerCase();
+    if (modelId && modelId !== 'local') {
+      throw new Error('CatsCo cloud returned an invalid local BotDefinition.');
+    }
+    model = { kind: 'local', modelId: 'local' };
   } else if (!kind || kind === 'catalog') {
     const modelId = String(rawModel?.modelId || '').trim();
     const rawReasoning = String(rawModel?.reasoningEffort || '').trim();

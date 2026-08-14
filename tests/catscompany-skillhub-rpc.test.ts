@@ -5,19 +5,24 @@ import * as os from 'os';
 import * as path from 'path';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 import {
+  DashboardBotSwitchScheduler,
   SkillHubThinRpcError,
   SkillHubThinRpcHandler,
   SKILLHUB_THIN_RPC_TOOLS,
   requestDashboardBotSwitch,
 } from '../src/catscompany/skillhub-rpc';
 import { BotSkillWorkspaceService } from '../src/bot-skills/workspace';
-import { shareLocalSkillForCatsCo } from '../src/skillhub/local-share';
+import {
+  shareLocalSkillForCatsCo,
+  validateSkillHubShareMetadata,
+} from '../src/skillhub/local-share';
 import { scanBotSkillWorkspace } from '../src/bot-skills/local-manifest';
 import { writeBotSkillLocalMarker } from '../src/bot-skills/local-manifest';
 import {
   applySkillHubLocalMetadata,
   readSkillHubLocalMetadata,
 } from '../src/skillhub/local-skill-metadata';
+import { SkillHubService } from '../src/skillhub/service';
 
 describe('CatsCompany SkillHub thin RPC', () => {
   let runtimeRoot = '';
@@ -63,6 +68,13 @@ describe('CatsCompany SkillHub thin RPC', () => {
     fs.rmSync(runtimeRoot, { recursive: true, force: true });
   });
 
+  test('can be disabled for server runtimes', () => {
+    const serverHandler = new SkillHubThinRpcHandler({ runtimeRoot, enabled: false });
+    for (const toolName of Object.values(SKILLHUB_THIN_RPC_TOOLS)) {
+      assert.equal(serverHandler.supports(toolName), false);
+    }
+  });
+
   test('returns only bounded metadata for the active Bot workspace', async () => {
     const result = await handler.execute(request({
       request_id: 'workspace-1',
@@ -79,7 +91,7 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.equal(JSON.stringify(result).includes('# Local Demo'), false);
   });
 
-  test('keeps local Skills visible when one package cannot be shared', async () => {
+  test('keeps credential-bearing local Skills visible and shareable', async () => {
     const blockedRoot = path.join(runtimeRoot, 'skills', 'blocked-demo');
     fs.mkdirSync(blockedRoot, { recursive: true });
     fs.writeFileSync(path.join(blockedRoot, 'SKILL.md'), [
@@ -108,8 +120,171 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.equal(skills.find(skill => skill.name === 'local-demo')?.can_share, true);
     assert.equal(skills.find(skill => skill.name === 'nested-demo')?.can_share, true);
     const blocked = skills.find(skill => skill.name === 'blocked-demo');
-    assert.equal(blocked?.can_share, false);
-    assert.match(String(blocked?.share_error || ''), /sensitive material/i);
+    assert.equal(blocked?.can_share, true);
+    assert.equal(Object.prototype.hasOwnProperty.call(blocked || {}, 'share_error'), false);
+  });
+
+  test('keeps invalid SKILL.md entries visible but disables sharing with an actionable error', async () => {
+    const invalidRoot = path.join(runtimeRoot, 'skills', 'test_8_7');
+    const malformedRoot = path.join(runtimeRoot, 'skills', 'broken_yaml');
+    fs.mkdirSync(invalidRoot, { recursive: true });
+    fs.mkdirSync(malformedRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(invalidRoot, 'SKILL.md'),
+      '# Test Skill\n\nThis file has no YAML name or description.\n',
+    );
+    fs.writeFileSync(
+      path.join(malformedRoot, 'SKILL.md'),
+      '---\nname: [unterminated\ndescription: Broken YAML\n---\n',
+    );
+
+    assert.throws(
+      () => scanBotSkillWorkspace(path.join(runtimeRoot, 'skills')),
+      /SKILL\.md format is invalid/i,
+    );
+
+    const result = await handler.execute(request({ request_id: 'workspace-with-invalid-skill' }));
+    const skills = result.skills as Array<Record<string, unknown>>;
+    assert.equal(skills.length, 3);
+    assert.equal(skills.find(skill => skill.name === 'local-demo')?.can_share, true);
+    const invalid = skills.find(skill => skill.name === 'test_8_7');
+    assert.ok(invalid?.local_skill_id);
+    assert.equal(invalid?.can_share, false);
+    assert.match(String(invalid?.share_error || ''), /name.*description.*YAML frontmatter/i);
+    const malformed = skills.find(skill => skill.name === 'broken_yaml');
+    assert.ok(malformed?.local_skill_id);
+    assert.equal(malformed?.can_share, false);
+    assert.match(String(malformed?.share_error || ''), /SKILL\.md format is invalid.*YAML frontmatter/i);
+
+    await assert.rejects(
+      handler.execute(request({
+        request_id: 'share-invalid-skill',
+        tool_name: SKILLHUB_THIN_RPC_TOOLS.share,
+        payload: {
+          bot_uid: '42',
+          local_skill_id: invalid?.local_skill_id,
+          skill_name: 'test_8_7',
+          confirm_publish: true,
+        },
+      })),
+      (error: any) => (
+        error instanceof SkillHubThinRpcError
+        && error.code === 'LOCAL_SKILL_INVALID'
+        && /name.*description.*YAML frontmatter/i.test(error.message)
+      ),
+    );
+  });
+
+  test('returns LOCAL_SKILL_INVALID for non-string or blank share metadata', async () => {
+    const skillRoot = path.join(runtimeRoot, 'skills', 'metadata-validation');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    const invalidValues = [
+      { label: 'blank', yaml: '"   "' },
+      { label: 'number', yaml: '123' },
+      { label: 'array', yaml: '[value]' },
+      { label: 'object', yaml: '{ value: text }' },
+    ];
+
+    for (const field of ['name', 'description'] as const) {
+      for (const invalid of invalidValues) {
+        const metadata = {
+          name: 'valid-name',
+          description: 'Valid description',
+          [field]: invalid.yaml,
+        };
+        fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+          '---',
+          `name: ${metadata.name}`,
+          `description: ${metadata.description}`,
+          '---',
+          '',
+        ].join('\n'));
+        const error = validateSkillHubShareMetadata(skillRoot);
+        assert.ok(error, `${field} accepted ${invalid.label}`);
+        assert.match(error.message, /name.*description.*非空文本/i);
+
+        const requestSuffix = `${field}-${invalid.label}`;
+        const workspace = await handler.execute(request({
+          request_id: `workspace-invalid-${requestSuffix}`,
+        }));
+        const entry = (workspace.skills as Array<Record<string, unknown>>)
+          .find(skill => skill.relative_path === 'metadata-validation');
+        assert.ok(entry?.local_skill_id);
+        assert.equal(entry?.can_share, false);
+        await assert.rejects(
+          handler.execute(request({
+            request_id: `share-invalid-${requestSuffix}`,
+            tool_name: SKILLHUB_THIN_RPC_TOOLS.share,
+            payload: {
+              bot_uid: '42',
+              local_skill_id: entry.local_skill_id,
+              skill_name: entry.name,
+              confirm_publish: true,
+            },
+          })),
+          (rpcError: any) => (
+            rpcError instanceof SkillHubThinRpcError
+            && rpcError.code === 'LOCAL_SKILL_INVALID'
+            && /name.*description.*非空文本/i.test(rpcError.message)
+          ),
+        );
+      }
+    }
+  });
+
+  test('rejects a Skill name with surrounding whitespace before CatsCo authentication', async () => {
+    const skillRoot = path.join(runtimeRoot, 'skills', 'whitespace-name');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+      '---',
+      'name: " demo "',
+      'description: Valid description',
+      '---',
+      '',
+    ].join('\n'));
+
+    const metadataError = validateSkillHubShareMetadata(skillRoot);
+    assert.ok(metadataError);
+    assert.match(metadataError.message, /name.*首尾空格/);
+    const workspace = await handler.execute(request({ request_id: 'workspace-whitespace-name' }));
+    const entry = (workspace.skills as Array<Record<string, unknown>>)
+      .find(skill => skill.relative_path === 'whitespace-name');
+    assert.ok(entry?.local_skill_id);
+    assert.equal(entry.name, 'demo');
+    assert.equal(entry.can_share, false);
+
+    const originalFetch = global.fetch;
+    let authExchangeCalls = 0;
+    let remoteRequestCount = 0;
+    global.fetch = async (input: string | URL | Request) => {
+      remoteRequestCount += 1;
+      if (new URL(String(input)).pathname === '/api/auth/catsco-exchange') {
+        authExchangeCalls += 1;
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 });
+    };
+    try {
+      await assert.rejects(
+        handler.execute(request({
+          request_id: 'share-whitespace-name',
+          tool_name: SKILLHUB_THIN_RPC_TOOLS.share,
+          payload: {
+            bot_uid: '42',
+            local_skill_id: entry.local_skill_id,
+            skill_name: entry.name,
+            confirm_publish: true,
+          },
+        })),
+        (error: any) => (
+          error instanceof SkillHubThinRpcError
+          && error.code === 'LOCAL_SKILL_INVALID'
+        ),
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
+    assert.equal(authExchangeCalls, 0);
+    assert.equal(remoteRequestCount, 0);
   });
 
   test('sorts valid and rejected local Skills by the complete canonical ID', async () => {
@@ -137,7 +312,12 @@ describe('CatsCompany SkillHub thin RPC', () => {
         schema: 'xiaoba.bot-skill-local.v1',
         localSkillId: fixture.localSkillId,
       });
-      if (fixture.blocked) fs.writeFileSync(path.join(skillRoot, '.env'), 'API_KEY=blocked\n');
+      if (fixture.blocked) {
+        fs.writeFileSync(
+          path.join(skillRoot, 'SKILL.md'),
+          '---\nname: [unterminated\ndescription: Broken YAML\n---\n',
+        );
+      }
     }
 
     const result = await handler.execute(request({ request_id: 'workspace-canonical-order' }));
@@ -176,6 +356,31 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.equal(first.switching, true);
     assert.deepEqual(second, first);
     assert.deepEqual(scheduledBotUIDs, ['44']);
+  });
+
+  test('reports an in-progress workspace handoff as a retryable RPC state', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot }).save({
+      version: 1,
+      account: { token: 'user-token', uid: '7', username: 'alice' },
+      currentBot: { uid: '44', apiKey: 'bot-44-key', boundByUserUid: '7' },
+      device: {
+        deviceId: 'alice-device',
+        bodyId: 'alice-device',
+        installationId: 'alice-device',
+      },
+    });
+
+    await assert.rejects(
+      handler.execute(request({
+        request_id: 'workspace-switching',
+        payload: { bot_uid: '44' },
+      })),
+      (error: unknown) => (
+        error instanceof SkillHubThinRpcError
+        && error.code === 'WORKSPACE_SWITCHING'
+        && /ownership is changing \(42 -> 44\)/i.test(error.message)
+      ),
+    );
   });
 
   test('rejects reuse of one request ID for a different operation', async () => {
@@ -350,6 +555,114 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { botUid: '44' });
   });
 
+  test('coalesces delayed Bot switch intents so the latest selection wins', async () => {
+    const calls: string[] = [];
+    const scheduler = new DashboardBotSwitchScheduler(async (botUid) => {
+      calls.push(botUid);
+    }, 5);
+
+    scheduler.schedule('575');
+    scheduler.schedule('412');
+    scheduler.schedule('412');
+    await delay(30);
+
+    assert.deepEqual(calls, ['412']);
+  });
+
+  test('serializes a newer Bot switch behind an in-flight switch', async () => {
+    const calls: string[] = [];
+    let releaseFirst!: () => void;
+    const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const scheduler = new DashboardBotSwitchScheduler(async (botUid) => {
+      calls.push(botUid);
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      if (botUid === '575') await first;
+      concurrent -= 1;
+    }, 5);
+
+    scheduler.schedule('575');
+    await delay(15);
+    scheduler.schedule('412');
+    releaseFirst();
+    await delay(40);
+
+    assert.deepEqual(calls, ['575', '412']);
+    assert.equal(maxConcurrent, 1);
+  });
+
+  test('cancels an opposite queued switch when the latest target is already in flight', async () => {
+    const calls: string[] = [];
+    let releaseFirst!: () => void;
+    const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const scheduler = new DashboardBotSwitchScheduler(async (botUid) => {
+      calls.push(botUid);
+      if (botUid === '575') await first;
+    }, 5);
+
+    scheduler.schedule('575');
+    await delay(15);
+    scheduler.schedule('412');
+    scheduler.schedule('575');
+    releaseFirst();
+    await delay(30);
+
+    assert.deepEqual(calls, ['575']);
+  });
+
+  test('refreshes a coalesced switch with the latest connector lifecycle', async () => {
+    const calls: string[] = [];
+    const scheduler = new DashboardBotSwitchScheduler(async (botUid) => {
+      calls.push(botUid);
+    }, 5);
+
+    let oldConnectorShuttingDown = false;
+    scheduler.schedule('575', () => oldConnectorShuttingDown);
+    oldConnectorShuttingDown = true;
+    scheduler.schedule('575', () => false);
+    await delay(30);
+
+    assert.deepEqual(calls, ['575']);
+  });
+
+  test('does not postpone a pending switch when the same target is repeated', async () => {
+    const calls: string[] = [];
+    const scheduler = new DashboardBotSwitchScheduler(async (botUid) => {
+      calls.push(botUid);
+    }, 20);
+
+    scheduler.schedule('575');
+    await delay(8);
+    scheduler.schedule('575');
+    await delay(8);
+    scheduler.schedule('575');
+    await delay(12);
+
+    assert.deepEqual(calls, ['575']);
+  });
+
+  test('does not drain a queued switch after application shutdown begins', async () => {
+    const calls: string[] = [];
+    let releaseFirst!: () => void;
+    const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let shuttingDown = false;
+    const scheduler = new DashboardBotSwitchScheduler(async (botUid) => {
+      calls.push(botUid);
+      if (botUid === '575') await first;
+    }, 5);
+
+    scheduler.schedule('575');
+    await delay(15);
+    scheduler.schedule('412', () => shuttingDown);
+    shuttingDown = true;
+    releaseFirst();
+    await delay(40);
+
+    assert.deepEqual(calls, ['575']);
+  });
+
   test('revalidates the local Skill identity while holding the upload lock', async () => {
     await assert.rejects(
       shareLocalSkillForCatsCo({
@@ -368,6 +681,180 @@ describe('CatsCompany SkillHub thin RPC', () => {
       }),
       (error: any) => error?.code === 'skillhub.share_local_skill_changed',
     );
+  });
+
+  test('revalidates malformed YAML under the upload lock before authentication', async () => {
+    const selected = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))[0];
+    await handler.execute(request({ request_id: 'metadata-first-lock' }));
+    fs.writeFileSync(path.join(selected.path, 'SKILL.md'), [
+      '---',
+      'name: [unterminated',
+      'description: Broken YAML',
+      '---',
+      '',
+    ].join('\n'));
+    let localAuthReads = 0;
+    let authExchangeCalls = 0;
+    let uploadCalls = 0;
+
+    await assert.rejects(
+      shareLocalSkillForCatsCo({
+        skillName: selected.name,
+        expectedLocalSkillId: selected.localSkillId,
+        expectedBotUid: '42',
+        expectedUserUid: '7',
+      }, {
+        writeLocalMetadata: false,
+        runtimeRoot,
+        getCatsCoAuth: () => {
+          localAuthReads += 1;
+          return {
+            token: 'user-token',
+            baseUrl: 'https://app.catsco.cc',
+            user: { uid: '7', username: 'alice' },
+          };
+        },
+        createSkillHubService: () => ({
+          loginWithCatsCo: async () => {
+            authExchangeCalls += 1;
+            throw new Error('remote authentication should not be reached');
+          },
+          shareLocalSkill: async () => {
+            uploadCalls += 1;
+            throw new Error('remote upload should not be reached');
+          },
+        }),
+      }),
+      (error: any) => (
+        error?.code === 'skillhub.share_local_skill_invalid'
+        && /SKILL\.md format is invalid.*YAML frontmatter/i.test(error.message)
+        && !error.message.includes(runtimeRoot)
+      ),
+    );
+    assert.equal(localAuthReads, 1);
+    assert.equal(authExchangeCalls, 0);
+    assert.equal(uploadCalls, 0);
+  });
+
+  test('redacts local paths when locked workspace scanning fails before authentication', async () => {
+    const selected = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))[0];
+    fs.writeFileSync(path.join(selected.path, '.xiaoba-bot-skill.json'), '{ invalid json');
+    let authExchangeCalls = 0;
+    let uploadCalls = 0;
+
+    await assert.rejects(
+      handler.execute(request({
+        request_id: 'share-invalid-marker',
+        tool_name: SKILLHUB_THIN_RPC_TOOLS.share,
+        payload: {
+          bot_uid: '42',
+          local_skill_id: selected.localSkillId,
+          skill_name: selected.name,
+          confirm_publish: true,
+        },
+      })),
+      (error: any) => (
+        error instanceof SkillHubThinRpcError
+        && error.code === 'LOCAL_SKILL_INVALID'
+        && error.message === 'The local Skill workspace could not be validated safely.'
+        && !error.message.includes(runtimeRoot)
+        && !error.message.includes(selected.path)
+      ),
+    );
+
+    await assert.rejects(
+      shareLocalSkillForCatsCo({
+        skillName: selected.name,
+        expectedLocalSkillId: selected.localSkillId,
+        expectedBotUid: '42',
+        expectedUserUid: '7',
+      }, {
+        writeLocalMetadata: false,
+        runtimeRoot,
+        getCatsCoAuth: () => ({
+          token: 'user-token',
+          baseUrl: 'https://app.catsco.cc',
+          user: { uid: '7', username: 'alice' },
+        }),
+        createSkillHubService: () => ({
+          loginWithCatsCo: async () => {
+            authExchangeCalls += 1;
+            throw new Error('remote authentication should not be reached');
+          },
+          shareLocalSkill: async () => {
+            uploadCalls += 1;
+            throw new Error('remote upload should not be reached');
+          },
+        }),
+      }),
+      (error: any) => (
+        error?.code === 'skillhub.share_local_skill_invalid'
+        && error.message === 'The selected local Skill could not be validated safely.'
+        && !error.message.includes(runtimeRoot)
+        && !error.message.includes(selected.path)
+      ),
+    );
+    assert.equal(authExchangeCalls, 0);
+    assert.equal(uploadCalls, 0);
+  });
+
+  test('redacts malformed YAML introduced during authentication before quick share', async () => {
+    const selected = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))[0];
+    const productionService = new SkillHubService({
+      baseUrl: 'http://127.0.0.1:1',
+      sessionScope: 'memory',
+    });
+    let authExchangeCalls = 0;
+    let localSharePreparations = 0;
+
+    await assert.rejects(
+      shareLocalSkillForCatsCo({
+        skillName: selected.name,
+        expectedLocalSkillId: selected.localSkillId,
+        expectedBotUid: '42',
+        expectedUserUid: '7',
+      }, {
+        writeLocalMetadata: false,
+        runtimeRoot,
+        getCatsCoAuth: () => ({
+          token: 'user-token',
+          baseUrl: 'https://app.catsco.cc',
+          user: { uid: '7', username: 'alice' },
+        }),
+        createSkillHubService: () => ({
+          loginWithCatsCo: async () => {
+            authExchangeCalls += 1;
+            fs.writeFileSync(path.join(selected.path, 'SKILL.md'), [
+              '---',
+              'name: [unterminated',
+              'description: Broken during authentication',
+              '---',
+              '',
+            ].join('\n'));
+            return {
+              authenticated: true,
+              baseUrl: 'https://skillhub.example.test',
+              roles: [],
+              permissions: [],
+              catsCo: { uid: '7', username: 'alice', displayName: 'Alice' },
+            };
+          },
+          shareLocalSkill: async (input, options) => {
+            localSharePreparations += 1;
+            return productionService.shareLocalSkill(input, options);
+          },
+        }),
+      }),
+      (error: any) => (
+        error?.code === 'skillhub.local_skill_invalid'
+        && error?.status === 400
+        && error.message === 'The selected local Skill could not be validated safely.'
+        && !error.message.includes(runtimeRoot)
+        && !error.message.includes(selected.path)
+      ),
+    );
+    assert.equal(authExchangeCalls, 1);
+    assert.equal(localSharePreparations, 1);
   });
 
   test('writes share metadata only after revalidating the selected local Skill and scope', async () => {
@@ -448,8 +935,7 @@ describe('CatsCompany SkillHub thin RPC', () => {
     );
   });
 
-  test('rejects sensitive files that appear after the initial share scope check', async () => {
-    const selected = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))[0];
+  test('uploads arbitrary files without content-policy blocking', async () => {
     const sensitiveFiles = [
       { name: '.env', content: 'API_KEY=not-a-real-secret\n' },
       { name: 'private.pem', content: '-----BEGIN PRIVATE KEY-----\nplaceholder\n' },
@@ -458,13 +944,17 @@ describe('CatsCompany SkillHub thin RPC', () => {
     ];
 
     for (const sensitiveFile of sensitiveFiles) {
-      const sensitivePath = path.join(selected.path, sensitiveFile.name);
+      const skillPath = path.join(runtimeRoot, 'skills', 'local-demo');
+      const sensitivePath = path.join(skillPath, sensitiveFile.name);
+      fs.writeFileSync(sensitivePath, sensitiveFile.content);
+      const selected = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))
+        .find(entry => entry.path === skillPath);
+      assert.ok(selected);
       const originalFetch = global.fetch;
       let shareCalls = 0;
       global.fetch = async (input: string | URL | Request, init?: RequestInit) => {
         const url = new URL(String(input));
         if (url.pathname === '/api/auth/catsco-exchange') {
-          fs.writeFileSync(sensitivePath, sensitiveFile.content);
           return Response.json({
             user: { id: 'skillhub-user' },
             roles: ['developer'],
@@ -481,13 +971,29 @@ describe('CatsCompany SkillHub thin RPC', () => {
         }
         if (url.pathname === '/api/skills/share') {
           shareCalls += 1;
-          return Response.json({ error: 'share should not be reached' }, { status: 500 });
+          const body = JSON.parse(String(init?.body || '{}'));
+          assert.equal(
+            body.source.files.some((file: any) => file.path === sensitiveFile.name),
+            true,
+          );
+          return Response.json({
+            skillId: 'alice/local-demo',
+            packageVersion: {
+              skillId: 'alice/local-demo',
+              version: '1.0.0',
+              contentHash: 'c'.repeat(64),
+            },
+            skillHub: {
+              author: 'alice',
+              version: '1.0.0',
+              uploadedAt: '2026-08-06T00:00:00.000Z',
+            },
+          }, { status: 201 });
         }
         return Response.json({ error: `unexpected request: ${url.pathname}` }, { status: 500 });
       };
       try {
-        await assert.rejects(
-          shareLocalSkillForCatsCo({
+        await shareLocalSkillForCatsCo({
             skillName: selected.name,
             expectedLocalSkillId: selected.localSkillId,
             expectedBotUid: '42',
@@ -500,14 +1006,12 @@ describe('CatsCompany SkillHub thin RPC', () => {
               baseUrl: 'https://app.catsco.cc',
               user: { uid: '7', username: 'alice' },
             }),
-          }),
-          /(?:sensitive material|archive file)/i,
-        );
+          });
       } finally {
         global.fetch = originalFetch;
         fs.rmSync(sensitivePath, { force: true });
       }
-      assert.equal(shareCalls, 0, `remote share was called for ${sensitiveFile.name}`);
+      assert.equal(shareCalls, 1, `remote share was called once for ${sensitiveFile.name}`);
     }
   });
 
@@ -654,6 +1158,10 @@ describe('CatsCompany SkillHub thin RPC', () => {
     );
     assert.equal(writes, 0);
   });
+
+  function delay(milliseconds: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
+  }
 
   function request(overrides: Record<string, any> = {}): any {
     return {

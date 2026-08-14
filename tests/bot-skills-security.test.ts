@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { canonicalizeBotSkillRefs } from '../src/bot-skills/canonical';
-import { scanLocalBotSkill } from '../src/bot-skills/local-manifest';
+import { isPortablePackagePath, scanLocalBotSkill } from '../src/bot-skills/local-manifest';
 import { BotPrivateSkillClient } from '../src/bot-skills/private-package-client';
 import type { BotSkillRef } from '../src/bot-definition/types';
 import type { BotSkillPackage } from '../src/bot-skills/types';
@@ -17,17 +17,48 @@ describe('Bot Skill sync security boundaries', () => {
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test('rejects archives by filename and by magic bytes before automatic upload', () => {
+  test('packages archives and binary-looking files without content-policy blocking', () => {
     const extensionRoot = createSkill(roots, 'archive-extension');
     fs.writeFileSync(path.join(extensionRoot, 'payload.tar.gz'), 'not even a real archive');
-    assert.throws(() => scanLocalBotSkill(extensionRoot), /archive file/i);
+    assert.equal(
+      scanLocalBotSkill(extensionRoot).files.some(file => file.path === 'payload.tar.gz'),
+      true,
+    );
 
     const magicRoot = createSkill(roots, 'archive-magic');
     fs.writeFileSync(
       path.join(magicRoot, 'payload.bin'),
       Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]),
     );
-    assert.throws(() => scanLocalBotSkill(magicRoot), /archive file/i);
+    assert.equal(
+      scanLocalBotSkill(magicRoot).files.some(file => file.path === 'payload.bin'),
+      true,
+    );
+
+    const credentialsRoot = createSkill(roots, 'credentials-and-executable');
+    fs.mkdirSync(path.join(credentialsRoot, '.ssh'), { recursive: true });
+    fs.writeFileSync(path.join(credentialsRoot, '.ssh', 'id_rsa'), 'private-key-placeholder');
+    fs.writeFileSync(path.join(credentialsRoot, 'runner.exe'), Buffer.from([0x4d, 0x5a, 0x00, 0x01]));
+    const packagedPaths = scanLocalBotSkill(credentialsRoot).files.map(file => file.path);
+    assert.equal(packagedPaths.includes('.ssh/id_rsa'), true);
+    assert.equal(packagedPaths.includes('runner.exe'), true);
+  });
+
+  test('keeps path and package-size boundaries after removing content inspection', () => {
+    for (const unsafePath of ['../outside', '/absolute', 'C:/absolute', 'nested/../outside', 'nested//file']) {
+      assert.equal(isPortablePackagePath(unsafePath), false, unsafePath);
+    }
+    assert.equal(isPortablePackagePath('scripts/publish.mjs'), true);
+
+    const oversizedRoot = createSkill(roots, 'oversized');
+    fs.writeFileSync(path.join(oversizedRoot, 'payload.bin'), Buffer.alloc(2 * 1024 * 1024 + 1));
+    assert.throws(() => scanLocalBotSkill(oversizedRoot), /file is too large/i);
+
+    const crowdedRoot = createSkill(roots, 'crowded');
+    for (let index = 0; index < 200; index += 1) {
+      fs.writeFileSync(path.join(crowdedRoot, `file-${index}.txt`), '');
+    }
+    assert.throws(() => scanLocalBotSkill(crowdedRoot), /too many files/i);
   });
 
   test('rejects unsafe reference segments and matches Go byte/control limits', async () => {

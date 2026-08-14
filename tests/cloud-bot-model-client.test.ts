@@ -7,6 +7,7 @@ import {
   patchCloudBotDefinitionPrompt,
   pullCloudBotDefinition,
   pullCloudBotModelSelection,
+  reportCloudDefaultPromptSnapshot,
 } from '../src/bot-definition/cloud-client';
 
 const auth = {
@@ -159,6 +160,50 @@ describe('cloud bot model client local handoff', () => {
     ]);
   });
 
+  test('reports a versioned default prompt snapshot with bot auth and a content hash', async () => {
+    let request: { url: string; method: string; authorization: string; body: any } | undefined;
+    const reported = await reportCloudDefaultPromptSnapshot({
+      botId: '43',
+      auth,
+      fetchImpl: (async (input, init) => {
+        request = {
+          url: String(input),
+          method: String(init?.method || 'GET'),
+          authorization: String((init?.headers as Record<string, string>)?.Authorization || ''),
+          body: JSON.parse(String(init?.body)),
+        };
+        return Response.json({ status: 'stored' });
+      }) as typeof fetch,
+    }, {
+      content: 'Bundled default prompt.\n',
+      xiaobaVersion: '1.4.8',
+      runtimeVersion: '1.4.8',
+    });
+
+    assert.equal(reported, true);
+    assert.deepStrictEqual(request, {
+      url: 'https://cats.example.test/api/bot/definition/default-prompt',
+      method: 'PUT',
+      authorization: 'ApiKey bot-api-key',
+      body: {
+        content: 'Bundled default prompt.\n',
+        contentHash: 'c5c98cb880e6f16e98753d5efa8e1daeac195b1c4a76ceffc30cb5a7853c3997',
+        xiaobaVersion: '1.4.8',
+        runtimeVersion: '1.4.8',
+      },
+    });
+  });
+
+  test('treats an older server without the snapshot endpoint as unsupported', async () => {
+    const reported = await reportCloudDefaultPromptSnapshot({
+      botId: '43',
+      auth,
+      fetchImpl: (async () => Response.json({ error: 'not deployed' }, { status: 404 })) as typeof fetch,
+    }, { content: 'Bundled default prompt.' });
+
+    assert.equal(reported, false);
+  });
+
   test('returns an explicit local revision after cloud management is disabled', async () => {
     const selection = await pullCloudBotModelSelection({
       botId: '43',
@@ -171,6 +216,36 @@ describe('cloud bot model client local handoff', () => {
     });
 
     assert.deepStrictEqual(selection, { kind: 'local', modelId: 'local', revision: 7 });
+  });
+
+  test('reads a canonical local handoff without treating it as an invalid catalog model', async () => {
+    const selection = await pullCloudBotModelSelection({
+      botId: '43',
+      auth,
+      fetchImpl: (async () => Response.json({
+        uid: 43,
+        configured: true,
+        revision: 8,
+        definition: {
+          schema: 'xiaoba.bot-definition.v1',
+          botId: '43',
+          model: { kind: 'local', modelId: 'local' },
+          prompt: { selected: 'default' },
+        },
+      })) as typeof fetch,
+    });
+
+    assert.deepStrictEqual(selection, {
+      kind: 'local',
+      modelId: 'local',
+      revision: 8,
+      definition: {
+        schema: 'xiaoba.bot-definition.v1',
+        botId: '43',
+        model: { kind: 'local', modelId: 'local' },
+        prompt: { selected: 'default' },
+      },
+    });
   });
 
   test('keeps an untouched revision zero configuration as local-only state', async () => {

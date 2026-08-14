@@ -173,24 +173,55 @@ describe('dashboard service manager', () => {
     assert.equal((service?.lastError || '').includes('sk-live-secret1234567890'), false);
   });
 
-  test('passes the dashboard owner pid to the CatsCo connector process', async () => {
+  test('marks dashboard-owned CatsCo connectors as desktop runtimes', async () => {
+    const previousRuntimeRole = process.env.XIAOBA_RUNTIME_ROLE;
+    process.env.XIAOBA_RUNTIME_ROLE = 'desktop';
     const manager = new ServiceManager(process.cwd());
     const serviceRecord = (manager as any).services.get('catscompany');
     serviceRecord.info.command = process.execPath;
     serviceRecord.info.args = [
       '-e',
-      "console.log('owner=' + process.env.CATSCO_CONNECTOR_OWNER_PID);",
+      "console.log('owner=' + process.env.CATSCO_CONNECTOR_OWNER_PID + ';role=' + process.env.XIAOBA_RUNTIME_ROLE);",
     ];
 
     const stopped = new Promise<void>(resolve => {
       manager.once('service-stopped', () => resolve());
     });
 
-    manager.start('catscompany');
-    await stopped;
+    try {
+      manager.start('catscompany');
+      await stopped;
 
-    assert.ok(manager.getLogs('catscompany').includes(`owner=${process.pid}`));
-    assert.equal(manager.getService('catscompany')?.status, 'stopped');
+      assert.ok(manager.getLogs('catscompany').includes(`owner=${process.pid};role=desktop`));
+      assert.equal(manager.getService('catscompany')?.status, 'stopped');
+    } finally {
+      if (previousRuntimeRole === undefined) delete process.env.XIAOBA_RUNTIME_ROLE;
+      else process.env.XIAOBA_RUNTIME_ROLE = previousRuntimeRole;
+    }
+  });
+
+  test('keeps browser-only or unknown Dashboard connectors in the server role', async () => {
+    const previousRuntimeRole = process.env.XIAOBA_RUNTIME_ROLE;
+    delete process.env.XIAOBA_RUNTIME_ROLE;
+    const manager = new ServiceManager(process.cwd());
+    const serviceRecord = (manager as any).services.get('catscompany');
+    serviceRecord.info.command = process.execPath;
+    serviceRecord.info.args = [
+      '-e',
+      "console.log('role=' + process.env.XIAOBA_RUNTIME_ROLE);",
+    ];
+    const stopped = new Promise<void>(resolve => {
+      manager.once('service-stopped', () => resolve());
+    });
+
+    try {
+      manager.start('catscompany');
+      await stopped;
+      assert.ok(manager.getLogs('catscompany').includes('role=server'));
+    } finally {
+      if (previousRuntimeRole === undefined) delete process.env.XIAOBA_RUNTIME_ROLE;
+      else process.env.XIAOBA_RUNTIME_ROLE = previousRuntimeRole;
+    }
   });
 
   test('passes separate runtime data and bundled executable directories to the child', async () => {
@@ -254,6 +285,28 @@ describe('dashboard service manager', () => {
     const service = manager.getService('weixin');
     assert.equal(service?.status, 'stopped');
     assert.equal(service?.lastError, undefined);
+  });
+
+  test('a delayed stop fallback cannot kill a replacement child', async () => {
+    const manager = new ServiceManager(process.cwd());
+    const serviceRecord = (manager as any).services.get('weixin');
+    serviceRecord.info.command = process.execPath;
+    serviceRecord.info.args = ['-e', "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000);"];
+
+    const firstStopped = new Promise<void>(resolve => manager.once('service-stopped', () => resolve()));
+    manager.start('weixin');
+    manager.stop('weixin');
+    await firstStopped;
+
+    serviceRecord.info.args = ['-e', "setInterval(() => {}, 1000);"];
+    manager.start('weixin');
+    const replacementPid = manager.getService('weixin')?.pid;
+    assert.ok(replacementPid);
+
+    await new Promise(resolve => setTimeout(resolve, 5_300));
+    assert.equal(manager.getService('weixin')?.status, 'running');
+    assert.equal(manager.getService('weixin')?.pid, replacementPid);
+    manager.stop('weixin');
   });
 });
 

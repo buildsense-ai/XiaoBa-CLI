@@ -222,6 +222,7 @@ describe('CatsCompany client body identity', () => {
         display_name: 'Test Device',
         body_id: 'body-test',
         installation_id: 'install-test',
+        runtime_role: 'desktop',
         status: 'online',
         capabilities: ['read_file'],
       },
@@ -237,6 +238,7 @@ describe('CatsCompany client body identity', () => {
       display_name: 'Test Device',
       body_id: 'body-test',
       installation_id: 'install-test',
+      runtime_role: 'desktop',
       status: 'online',
       capabilities: ['read_file'],
     });
@@ -270,6 +272,7 @@ describe('CatsCompany client body identity', () => {
             display_name: 'Test Device',
             body_id: 'body-test',
             installation_id: 'install-test',
+            runtime_role: 'server',
             status: 'online',
             capabilities: ['read_file', 'send_file'],
             model_status: {
@@ -292,6 +295,7 @@ describe('CatsCompany client body identity', () => {
       display_name: 'Test Device',
       body_id: 'body-test',
       installation_id: 'install-test',
+      runtime_role: 'server',
       status: 'online',
       capabilities: ['read_file', 'send_file'],
       model_status: {

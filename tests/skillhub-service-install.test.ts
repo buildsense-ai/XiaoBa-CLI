@@ -42,6 +42,43 @@ describe('SkillHub connected install service', () => {
     if (fs.existsSync(testRoot)) fs.rmSync(testRoot, { recursive: true, force: true });
   });
 
+  test('preserves the actionable ambiguity error for same-name local Skills', async () => {
+    let requestCount = 0;
+    const app = express();
+    app.use((_req, res) => {
+      requestCount += 1;
+      res.status(500).json({ error: 'unexpected request' });
+    });
+    server = await listen(app);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server did not bind');
+    process.env.CATSCO_SKILLHUB_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+    for (const directory of ['first-review', 'second-review']) {
+      const skillRoot = path.join(testRoot, 'skills', directory);
+      fs.mkdirSync(skillRoot, { recursive: true });
+      fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+        '---',
+        'name: review-pr',
+        `description: ${directory} review Skill`,
+        '---',
+        '',
+        '# Review PR',
+        '',
+      ].join('\n'));
+    }
+
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({ skillName: 'review-pr' }),
+      (error: any) => (
+        error?.code === 'skillhub.local_skill_ambiguous'
+        && error?.status === 409
+        && /Select one by its local Skill ID/i.test(error.message)
+      ),
+    );
+    assert.equal(requestCount, 0);
+  });
+
   test('logs in, persists session cookie, verifies package, and installs skill files', async () => {
     const fixture = createFixture();
     CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.push(fixture.rootTrust);

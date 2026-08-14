@@ -5,6 +5,11 @@ const { normalizeUpdateError } = require('./update-errors');
 const { shouldDisableHardwareAcceleration } = require('./gpu-compat');
 const { createRendererGoneGuard } = require('./renderer-gone');
 
+// The Electron host is the trust boundary for a real local desktop runtime.
+// Both development and packaged apps execute this entrypoint before starting
+// the embedded Dashboard and its CatsCo connector child.
+process.env.XIAOBA_RUNTIME_ROLE = 'desktop';
+
 // Compatibility: render with software (SwiftShader) on Intel Macs, where
 // OCLP-patched macOS with legacy NVIDIA GPUs (e.g. GTX 675MX in the Late-2012
 // iMac) crash the GPU process on launch. Other platforms keep hardware

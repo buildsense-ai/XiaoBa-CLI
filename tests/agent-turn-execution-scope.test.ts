@@ -35,6 +35,15 @@ test('AgentTurnController forwards executionScope into ToolExecutionContext', ()
   assert.match(agentTurnSource, /localFileGrants:\s*options\.localFileGrants/);
 });
 
+test('AgentTurnController forwards Artifact context into ConversationRunner', () => {
+  assert.match(agentTurnSource, /artifactContext\?:\s*ScopedArtifactContext/);
+  assert.match(
+    agentTurnSource,
+    /const runner = this\.createRunner\(\{[\s\S]*?artifactContext:\s*params\.artifactContext[\s\S]*?\}\);/,
+  );
+  assert.match(agentTurnSource, /artifactContext:\s*options\.artifactContext/);
+});
+
 test('ToolExecutionContext exposes executionScope for future ToolGateway checks', () => {
   assert.match(toolTypesSource, /executionScope\?:\s*ExecutionScope/);
   assert.match(toolTypesSource, /localDeviceGrant\?:\s*ScopedLocalDeviceGrant/);

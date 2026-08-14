@@ -23,7 +23,6 @@ export class BotSkillPackageValidationError extends Error {
 
 const BOT_SKILL_LOCAL_MARKER_SCHEMA = 'xiaoba.bot-skill-local.v1';
 const SKIP_DIRECTORIES = new Set(['.git', 'node_modules']);
-const FORBIDDEN_CREDENTIAL_DIRECTORIES = new Set(['.ssh', '.aws', '.kube', '.gnupg']);
 const SKIP_FILES = new Set([
   BOT_SKILL_LOCAL_MARKER_FILE,
   '.xiaoba-skillhub-install.json',
@@ -35,37 +34,15 @@ const SKIP_FILES = new Set([
 const MAX_FILES = 200;
 const MAX_SINGLE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+// The legacy content scanner is intentionally retained below as a reusable
+// detector, but package collection no longer calls it. SkillHub publication is
+// content-agnostic; only package structure and transport limits are enforced.
 const MAX_CREDENTIAL_ASSIGNMENTS = 512;
 const MAX_CREDENTIAL_EXPRESSION_CHARS = 16 * 1024;
 const ARCHIVE_FILE_EXTENSIONS = [
-  '.7z',
-  '.a',
-  '.apk',
-  '.ar',
-  '.bz2',
-  '.cab',
-  '.cpio',
-  '.deb',
-  '.dmg',
-  '.gz',
-  '.img',
-  '.iso',
-  '.jar',
-  '.lz',
-  '.lz4',
-  '.lzma',
-  '.rar',
-  '.rpm',
-  '.tar',
-  '.tbz',
-  '.tbz2',
-  '.tgz',
-  '.txz',
-  '.war',
-  '.whl',
-  '.xz',
-  '.zip',
-  '.zst',
+  '.7z', '.a', '.apk', '.ar', '.bz2', '.cab', '.cpio', '.deb', '.dmg', '.gz',
+  '.img', '.iso', '.jar', '.lz', '.lz4', '.lzma', '.rar', '.rpm', '.tar',
+  '.tbz', '.tbz2', '.tgz', '.txz', '.war', '.whl', '.xz', '.zip', '.zst',
 ] as const;
 const EXPLICIT_SAFE_CREDENTIAL_VALUES = new Set([
   'catsco-bot-key',
@@ -126,8 +103,7 @@ export function scanBotSkillWorkspace(
           }
           const marker = readBotSkillLocalMarker(skillDir);
           if (!marker) throw error;
-          const parsed = matter(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8'));
-          const name = String(parsed.data?.name || path.basename(skillDir)).trim() || path.basename(skillDir);
+          const name = readLocalSkillNameForValidationFailure(skillDir);
           if (localSkillIds.has(marker.localSkillId)) {
             throw new Error(`Bot Skill workspace contains a duplicate localSkillId: ${marker.localSkillId}`);
           }
@@ -179,8 +155,7 @@ export function scanLocalBotSkill(
   const reference = marker.reference?.contentHash === contentHash
     ? marker.reference
     : undefined;
-  const parsed = matter(fs.readFileSync(skillFile, 'utf8'));
-  const name = String(parsed.data?.name || path.basename(root)).trim() || path.basename(root);
+  const name = readLocalSkillName(root);
   return {
     localSkillId: marker.localSkillId,
     name,
@@ -193,6 +168,27 @@ export function scanLocalBotSkill(
     ...(reference ? { reference } : {}),
     ...(marker.origin ? { origin: marker.origin } : {}),
   };
+}
+
+function readLocalSkillName(skillDir: string): string {
+  const fallback = path.basename(skillDir);
+  try {
+    const parsed = matter(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8'), {});
+    return String(parsed.data?.name || fallback).trim() || fallback;
+  } catch {
+    throw new BotSkillPackageValidationError(
+      'SKILL.md format is invalid. Check its YAML frontmatter and try again.',
+    );
+  }
+}
+
+function readLocalSkillNameForValidationFailure(skillDir: string): string {
+  try {
+    return readLocalSkillName(skillDir);
+  } catch (error) {
+    if (!(error instanceof BotSkillPackageValidationError)) throw error;
+    return path.basename(skillDir);
+  }
 }
 
 export function readBotSkillLocalMarker(skillDir: string): BotSkillLocalMarker | undefined {
@@ -268,9 +264,6 @@ export function collectBotSkillPackageFiles(root: string): BotSkillPackageFile[]
       if (entryStat.isSymbolicLink()) continue;
       assertRealPathContained(realRoot, fullPath);
       if (entry.isDirectory()) {
-        if (FORBIDDEN_CREDENTIAL_DIRECTORIES.has(entry.name.toLowerCase())) {
-          throw new BotSkillPackageValidationError(`Skill contains a forbidden credential directory: ${entry.name}`);
-        }
         if (
           !SKIP_DIRECTORIES.has(entry.name)
           && !fs.existsSync(path.join(fullPath, 'SKILL.md'))
@@ -285,7 +278,6 @@ export function collectBotSkillPackageFiles(root: string): BotSkillPackageFile[]
         throw new BotSkillPackageValidationError(`Skill contains an unsafe path: ${relativePath}`);
       }
       const bytes = fs.readFileSync(fullPath);
-      rejectSensitiveMaterial(relativePath, bytes);
       if (bytes.length > MAX_SINGLE_FILE_BYTES) {
         throw new BotSkillPackageValidationError(`Skill file is too large: ${relativePath}`);
       }

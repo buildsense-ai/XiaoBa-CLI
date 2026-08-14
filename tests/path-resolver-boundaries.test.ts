@@ -27,6 +27,22 @@ describe('PathResolver runtime data boundary', () => {
     assert.equal(PathResolver.getRuntimeDataRoot(env, testRoot), userDataRoot);
   });
 
+  test('packaged Electron userData resolves to the active Skills directory', () => {
+    const previousUserData = process.env.XIAOBA_USER_DATA_DIR;
+    const previousSkills = process.env.XIAOBA_SKILLS_DIR;
+    const userDataRoot = path.join(testRoot, 'packaged-user-data');
+    try {
+      process.env.XIAOBA_USER_DATA_DIR = userDataRoot;
+      delete process.env.XIAOBA_SKILLS_DIR;
+      assert.equal(PathResolver.getSkillsPath(), path.join(userDataRoot, 'skills'));
+    } finally {
+      if (previousUserData === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previousUserData;
+      if (previousSkills === undefined) delete process.env.XIAOBA_SKILLS_DIR;
+      else process.env.XIAOBA_SKILLS_DIR = previousSkills;
+    }
+  });
+
   test('legacy runtime root remains a data-only compatibility input', () => {
     const legacyDataRoot = path.join(testRoot, 'legacy-data');
     const env = {

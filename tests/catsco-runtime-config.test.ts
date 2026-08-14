@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
-import { resolveCatsCoRuntimeConfig } from '../src/catscompany/runtime-config';
+import { resolveCatsCoRuntimeConfig, resolveCatsCoRuntimeRole } from '../src/catscompany/runtime-config';
 
 describe('CatsCo runtime config resolver', () => {
   let tempDir: string;
@@ -62,6 +62,7 @@ describe('CatsCo runtime config resolver', () => {
     assert.equal(resolved.connector?.apiKey, 'typed-api-key');
     assert.equal(resolved.connector?.bodyId, 'body-typed');
     assert.equal(resolved.connector?.installationId, 'install-typed');
+    assert.equal(resolved.connector?.runtimeRole, 'server');
     assert.equal(resolved.auth.token, 'env-user-token');
     assert.equal(resolved.auth.uid, 'user-typed');
     assert.equal(resolved.auth.botUid, 'bot-typed');
@@ -78,6 +79,14 @@ describe('CatsCo runtime config resolver', () => {
       assert.equal((fs.statSync(path.dirname(configPath)).mode & 0o777), 0o700);
       assert.equal((fs.statSync(configPath).mode & 0o777), 0o600);
     }
+  });
+
+  test('only an explicit desktop marker enables the desktop runtime role', () => {
+    assert.equal(resolveCatsCoRuntimeRole('desktop'), 'desktop');
+    assert.equal(resolveCatsCoRuntimeRole('DESKTOP'), 'desktop');
+    assert.equal(resolveCatsCoRuntimeRole('server'), 'server');
+    assert.equal(resolveCatsCoRuntimeRole(''), 'server');
+    assert.equal(resolveCatsCoRuntimeRole('legacy-unknown'), 'server');
   });
 
   test('ignores stale local bot binding when the active account uid changed', () => {

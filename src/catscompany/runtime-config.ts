@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { ChatConfig } from '../types';
-import { CatsCompanyConfig } from './types';
+import { CatsCompanyConfig, type CatsCompanyRuntimeRole } from './types';
 import {
   CatsCoAuthSnapshot,
   CatsCoLocalConfig,
@@ -49,6 +49,10 @@ function firstNonEmpty(...values: unknown[]): string | undefined {
     if (text) return text;
   }
   return undefined;
+}
+
+export function resolveCatsCoRuntimeRole(value: unknown): CatsCompanyRuntimeRole {
+  return String(value || '').trim().toLowerCase() === 'desktop' ? 'desktop' : 'server';
 }
 
 function normalizeBaseUrl(
@@ -124,6 +128,9 @@ export function resolveCatsCoRuntimeConfig(
   const bodyId = localConfig.device?.bodyId;
   const installationId = localConfig.device?.installationId || bodyId;
   const ownerUserId = firstNonEmpty(localConfig.currentBot?.boundByUserUid, auth.uid);
+  // Fail closed: only the Dashboard service manager explicitly marks a
+  // connector as desktop. Direct/remote CLI runtimes are server runtimes.
+  const runtimeRole = resolveCatsCoRuntimeRole(effectiveEnv.XIAOBA_RUNTIME_ROLE);
 
   const missing: CatsCoRuntimeMissingField[] = [];
   if (!serverUrl) missing.push('serverUrl');
@@ -141,6 +148,7 @@ export function resolveCatsCoRuntimeConfig(
       installationId,
       ownerUserId,
       deviceName: localConfig.device?.name,
+      runtimeRole,
       httpBaseUrl,
       sessionTTL: config.catscompany?.sessionTTL,
     }

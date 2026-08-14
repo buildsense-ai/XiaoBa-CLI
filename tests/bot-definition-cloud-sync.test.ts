@@ -142,6 +142,66 @@ describe('BotDefinition cloud synchronization', () => {
     });
   });
 
+  test('applies cloud prompt during a local handoff without replacing the runnable model', async () => {
+    const runtimeRoot = makeRoot();
+    const definitionService = createBotDefinitionSyncService({ runtimeRoot, env: {} });
+    definitionService.publish('43', definition('gpt-5.6-sol').model);
+    definitionService.updatePrompt('43', { selected: 'default' });
+    const sync = new BotDefinitionCloudSyncService({
+      runtimeRoot,
+      env: {},
+      definitionService,
+      fetchImpl: (async () => Response.json({
+        uid: 43,
+        configured: true,
+        revision: 7,
+        definition: {
+          schema: 'xiaoba.bot-definition.v1',
+          botId: '43',
+          model: { kind: 'local', modelId: 'local' },
+          prompt: { selected: 'custom', customSystemPrompt: 'Cloud prompt, local model.' },
+        },
+      })) as typeof fetch,
+    });
+
+    const snapshot = await sync.pull('43', auth);
+    const cached = definitionService.read('43');
+
+    assert.deepStrictEqual(snapshot?.definition?.model, { kind: 'local', modelId: 'local' });
+    assert.deepStrictEqual(cached?.model, { kind: 'catalog', modelId: 'gpt-5.6-sol' });
+    assert.deepStrictEqual(cached?.prompt, {
+      selected: 'custom',
+      customSystemPrompt: 'Cloud prompt, local model.',
+    });
+  });
+
+  test('does not persist a local handoff marker when this device has no runnable model yet', async () => {
+    const runtimeRoot = makeRoot();
+    const definitionService = createBotDefinitionSyncService({ runtimeRoot, env: {} });
+    const sync = new BotDefinitionCloudSyncService({
+      runtimeRoot,
+      env: {},
+      definitionService,
+      fetchImpl: (async () => Response.json({
+        uid: 43,
+        configured: true,
+        revision: 3,
+        definition: {
+          schema: 'xiaoba.bot-definition.v1',
+          botId: '43',
+          model: { kind: 'local', modelId: 'local' },
+          prompt: { selected: 'default' },
+        },
+      })) as typeof fetch,
+    });
+
+    const snapshot = await sync.pull('43', auth);
+
+    assert.deepStrictEqual(snapshot?.definition?.model, { kind: 'local', modelId: 'local' });
+    assert.equal(definitionService.read('43'), undefined);
+    assert.equal(sync.readState('43').revision, 3);
+  });
+
   test('keeps a failed local update pending and retries it later', async () => {
     const runtimeRoot = makeRoot();
     const definitionService = createBotDefinitionSyncService({ runtimeRoot, env: {} });

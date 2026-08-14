@@ -176,7 +176,7 @@ describe('dashboard connected SkillHub API', () => {
     assert.match(skillText, /skillhub_uploaded_at:/);
   });
 
-  test('rejects a sensitive local package before calling the SkillHub share endpoint', async () => {
+  test('shares a local package containing credential-like files', async () => {
     const skillRoot = path.join(testRoot, 'skills', 'unsafe-demo');
     fs.mkdirSync(skillRoot, { recursive: true });
     fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
@@ -197,9 +197,12 @@ describe('dashboard connected SkillHub API', () => {
 
     await post('/api/skillhub/auth/login', { email: 'demo@example.com', password: 'passw0rd!!' });
     const share = await post('/api/skillhub/share-local-skill', { skillName: 'unsafe-demo' });
-    assert.equal(share.status, 400);
-    assert.equal(share.body.code, 'skillhub.local_skill_unsafe_package');
-    assert.match(share.body.error, /sensitive material/i);
+    assert.equal(share.status, 201);
+    assert.equal(share.body.ok, true);
+    assert.equal(
+      share.body.submission.request.source.files.some((file: any) => file.path === '.env'),
+      true,
+    );
   });
 
   test('connects SkillHub with the current CatsCo login token', async () => {

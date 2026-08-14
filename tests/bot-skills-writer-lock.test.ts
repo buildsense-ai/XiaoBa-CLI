@@ -5,6 +5,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 import { withBotSkillWorkspaceLock } from '../src/bot-skills/lock';
+import {
+  BotSkillWorkspaceChangingError,
+  withCurrentBotSkillWorkspaceWrite,
+} from '../src/bot-skills/runtime';
 import { BotSkillWorkspaceService } from '../src/bot-skills/workspace';
 import { bootstrapDefaultSkillHubSkills } from '../src/skillhub/default-skill-bootstrap';
 import { SkillHubTool } from '../src/tools/skillhub-tool';
@@ -164,6 +168,17 @@ describe('Bot Skill workspace writer lock', () => {
       currentBot: { uid: 'bot-b', apiKey: 'bot-b-key' },
     });
     let called = false;
+
+    await assert.rejects(
+      withCurrentBotSkillWorkspaceWrite(() => undefined, { runtimeRoot }),
+      (error: unknown) => (
+        error instanceof BotSkillWorkspaceChangingError
+        && error.code === 'WORKSPACE_SWITCHING'
+        && error.activeBotId === 'bot-a'
+        && error.targetBotId === 'bot-b'
+      ),
+    );
+
     const tool = new SkillHubTool(
       { search: async () => ({ skills: [] }) },
       {

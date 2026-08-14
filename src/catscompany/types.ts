@@ -1,5 +1,7 @@
-import type { ExecutionScope, MessageEnvelope, ScopedDeviceGrant, ScopedDeviceSelection } from '../types/session-identity';
+import type { ExecutionScope, MessageEnvelope, ScopedArtifactContext, ScopedDeviceGrant, ScopedDeviceSelection } from '../types/session-identity';
 import type { TargetRoutes } from '../types/tool';
+
+export type CatsCompanyRuntimeRole = 'desktop' | 'server';
 
 /**
  * CatsCo agent 连接配置
@@ -19,6 +21,8 @@ export interface CatsCompanyConfig {
   ownerUserId?: string;
   /** 用户可见设备名，用于 Dashboard 展示和服务端设备选择 */
   deviceName?: string;
+  /** Runtime placement used to keep desktop-only local workspace APIs off server agents. */
+  runtimeRole?: CatsCompanyRuntimeRole;
   /** HTTP 基础地址（用于文件上传），默认从 serverUrl 推导 */
   httpBaseUrl?: string;
   /** 会话过期时间（毫秒），默认 30 分钟 */
@@ -51,6 +55,8 @@ export interface ParsedCatsMessage {
   envelope: MessageEnvelope;
   /** 当前 turn 的执行身份 */
   executionScope: ExecutionScope;
+  /** 服务端确认的当前共同 Artifact；页面内容仍按不可信观察处理。 */
+  artifactContext?: ScopedArtifactContext;
   /** 服务端签发的当前 turn 用户设备授权 */
   deviceGrants?: ScopedDeviceGrant[];
   /** 服务端为当前 turn 选择的用户设备，或要求先选择设备 */

@@ -7,7 +7,7 @@ import {
   createBotDefinitionSyncService,
   type BotDefinitionSyncService,
 } from '../bot-definition/service';
-import type { BotSkillRef } from '../bot-definition/types';
+import type { BotDefinition, BotSkillRef } from '../bot-definition/types';
 import { canonicalizeBotSkillRefs, botSkillRefsEqual } from './canonical';
 import {
   BotSkillsCloudConflictError,
@@ -22,6 +22,8 @@ import {
   computeBotSkillPackageHash,
   readBotSkillLocalMarker,
   scanBotSkillWorkspace,
+  type BotSkillWorkspaceValidationFailure,
+  type ScanBotSkillWorkspaceOptions,
   writeBotSkillLocalMarker,
 } from './local-manifest';
 import { BotPrivateSkillClient } from './private-package-client';
@@ -109,6 +111,11 @@ interface BotSkillFinalizeJournal {
   previousSkill: string;
   nextSkill: string;
   previousMarker: string;
+}
+
+interface PublicFinalizeLocalManifest {
+  entries: LocalBotSkillManifestEntry[];
+  rejectedLocalSkillIds: ReadonlySet<string>;
 }
 
 export class BotSkillSyncService {
@@ -291,7 +298,8 @@ export class BotSkillSyncService {
     await options.validateScope?.();
     this.recoverInterruptedFinalizes(initialCloud);
     const base = this.baseStore.read(this.botId);
-    const local = this.readLocalManifest();
+    const localSnapshot = this.readLocalManifestForPublicFinalize(localSkillId);
+    const local = localSnapshot.entries;
     const selected = local.find(entry => (
       entry.localSkillId === localSkillId && entry.name === skillName
     ));
@@ -301,7 +309,7 @@ export class BotSkillSyncService {
     }
 
     const packageValue = await this.waitForPublicPackage(reference, options);
-    const refreshed = this.readLocalManifest().find(entry => (
+    const refreshed = this.readLocalManifestForPublicFinalize(localSkillId).entries.find(entry => (
       entry.localSkillId === localSkillId && entry.name === skillName
     ));
     if (!refreshed || refreshed.contentHash !== selected.contentHash) {
@@ -313,7 +321,7 @@ export class BotSkillSyncService {
     if (!currentCloud?.definition || !currentCloud.skills.some(item => botSkillRefEqual(item, reference))) {
       throw new Error('The public Skill reference was removed from BotDefinition during finalization.');
     }
-    const readyToWrite = this.readLocalManifest().find(entry => (
+    const readyToWrite = this.readLocalManifestForPublicFinalize(localSkillId).entries.find(entry => (
       entry.localSkillId === localSkillId && entry.name === skillName
     ));
     if (!readyToWrite || readyToWrite.contentHash !== refreshed.contentHash) {
@@ -356,7 +364,8 @@ export class BotSkillSyncService {
         },
       });
 
-      const updatedLocal = this.readLocalManifest();
+      const updatedSnapshot = this.readLocalManifestForPublicFinalize(localSkillId);
+      const updatedLocal = updatedSnapshot.entries;
       const updated = updatedLocal.find(entry => entry.localSkillId === localSkillId);
       if (
         !updated
@@ -369,6 +378,7 @@ export class BotSkillSyncService {
       await options.validateScope?.();
       const result = await this.pushLocal(updatedLocal, currentCloud, base, {
         requiredCloudReference: reference,
+        preserveBaseLocalSkillIds: updatedSnapshot.rejectedLocalSkillIds,
         validateScope: options.validateScope,
       });
       try {
@@ -496,14 +506,31 @@ export class BotSkillSyncService {
     };
   }
 
-  private readLocalManifest(): LocalBotSkillManifestEntry[] {
+  private readLocalManifest(
+    options: ScanBotSkillWorkspaceOptions = {},
+  ): LocalBotSkillManifestEntry[] {
     if (!fs.existsSync(this.skillsRoot)) {
       if (this.workspaceExisted) {
         throw new Error('The active Bot Skill workspace disappeared unexpectedly.');
       }
       return [];
     }
-    return scanBotSkillWorkspace(this.skillsRoot);
+    return scanBotSkillWorkspace(this.skillsRoot, options);
+  }
+
+  private readLocalManifestForPublicFinalize(
+    selectedLocalSkillId: string,
+  ): PublicFinalizeLocalManifest {
+    const rejected: BotSkillWorkspaceValidationFailure[] = [];
+    const entries = this.readLocalManifest({
+      onValidationFailure: failure => rejected.push(failure),
+    });
+    const selectedFailure = rejected.find(entry => entry.localSkillId === selectedLocalSkillId);
+    if (selectedFailure) throw selectedFailure.error;
+    return {
+      entries,
+      rejectedLocalSkillIds: new Set(rejected.map(entry => entry.localSkillId)),
+    };
   }
 
   private async pushLocal(
@@ -511,6 +538,7 @@ export class BotSkillSyncService {
     initialCloud: CloudBotSkills,
     base: BotSkillSyncBase | undefined,
     options: {
+      preserveBaseLocalSkillIds?: ReadonlySet<string>;
       requiredCloudReference?: BotSkillRef;
       validateScope?: () => Promise<void> | void;
     } = {},
@@ -522,7 +550,10 @@ export class BotSkillSyncService {
       throw new Error('The public Skill reference is no longer present in BotDefinition.');
     }
     const previousByLocalID = new Map(base?.skills.map(entry => [entry.localSkillId, entry]) ?? []);
-    const nextEntries: BotSkillSyncBaseEntry[] = [];
+    const nextEntries: BotSkillSyncBaseEntry[] = (base?.skills ?? []).filter(entry => (
+      options.preserveBaseLocalSkillIds?.has(entry.localSkillId)
+      && initialCloud.skills.some(reference => botSkillRefEqual(reference, entry.reference))
+    ));
     const pendingMarkers: Array<{
       path: string;
       marker: Parameters<typeof writeBotSkillLocalMarker>[1];
@@ -582,6 +613,9 @@ export class BotSkillSyncService {
         ...(entry.origin ? { origin: entry.origin } : {}),
       });
     }
+    nextEntries.sort((left, right) => (
+      left.localSkillId < right.localSkillId ? -1 : left.localSkillId > right.localSkillId ? 1 : 0
+    ));
     await options.validateScope?.();
     const refs = canonicalizeBotSkillRefs(nextEntries.map(entry => entry.reference));
     if (
@@ -857,7 +891,10 @@ export class BotSkillSyncService {
       this.definitionService.updateSkills(this.botId, cloud.skills);
       return;
     }
-    this.definitionService.acceptCanonical(cloud.definition);
+    if (cloud.definition.model.kind === 'local') {
+      throw new Error('CatsCo cloud local handoff requires an existing runnable local BotDefinition.');
+    }
+    this.definitionService.acceptCanonical(cloud.definition as BotDefinition);
   }
 }
 
