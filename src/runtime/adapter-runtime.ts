@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   AgentServices,
   SystemPromptProvider,
@@ -10,6 +12,7 @@ import {
 } from './runtime-profile';
 import { resolveRuntimeProfileFromConfig } from './runtime-profile-config';
 import { RuntimeFactory } from './runtime-factory';
+import { SKILLHUB_INSTALL_MARKER_FILE } from '../skillhub/install-marker';
 
 export type AdapterPromptSnapshotMode = 'fixed' | 'mutable-identity';
 export type AdapterSkillLoadMode = 'warn' | 'fail-fast';
@@ -29,6 +32,12 @@ export interface AdapterRuntimeBundle {
   loadSkills: () => Promise<void>;
 }
 
+type SkillLoadNotificationMode = 'await-observer' | 'background-on-change';
+
+interface SkillLoadState {
+  signature?: string;
+}
+
 export function createAdapterRuntime(options: AdapterRuntimeOptions): AdapterRuntimeBundle {
   const { profile } = resolveRuntimeProfileFromConfig({
     surface: options.surface,
@@ -39,6 +48,7 @@ export function createAdapterRuntime(options: AdapterRuntimeOptions): AdapterRun
     profile,
     options.promptSnapshotMode ?? 'fixed',
   );
+  const skillLoadState: SkillLoadState = {};
 
   return {
     profile,
@@ -46,19 +56,30 @@ export function createAdapterRuntime(options: AdapterRuntimeOptions): AdapterRun
     sessionManagerOptions: {
       ttl: options.sessionTTL,
       systemPromptProviderFactory,
-      // A session refresh runs on every turn when the transient Skills list is
-      // injected. Keep the observer for explicit mutations/startup loads, but
-      // do not invoke it on this hot path.
-      skillReloadHandler: createSkillLoader(services, options.skillLoadMode ?? 'warn', false),
+      // Every turn reloads the transient Skills list. Only a real inventory
+      // change notifies the runtime, and that observer is never awaited on
+      // this chat-critical path.
+      skillReloadHandler: createSkillLoader(
+        services,
+        options.skillLoadMode ?? 'warn',
+        skillLoadState,
+        'background-on-change',
+      ),
     },
-    loadSkills: createSkillLoader(services, options.skillLoadMode ?? 'warn', true),
+    loadSkills: createSkillLoader(
+      services,
+      options.skillLoadMode ?? 'warn',
+      skillLoadState,
+      'await-observer',
+    ),
   };
 }
 
 function createSkillLoader(
   services: AgentServices,
   mode: AdapterSkillLoadMode,
-  notifyObserver: boolean,
+  state: SkillLoadState,
+  notificationMode: SkillLoadNotificationMode,
 ): () => Promise<void> {
   return async () => {
     if (mode === 'fail-fast') {
@@ -67,10 +88,61 @@ function createSkillLoader(
     } else {
       await RuntimeFactory.loadSkills(services.skillManager);
     }
+    const changed = updateSkillLoadSignature(services, state);
     // Read the hook from the shared service object at call time. Adapters can
     // attach lifecycle observers after constructing the runtime bundle.
-    if (notifyObserver) await services.onSkillsReloaded?.();
+    if (notificationMode === 'await-observer') {
+      await services.onSkillsReloaded?.();
+    } else if (changed) {
+      notifySkillsReloadedInBackground(services);
+    }
   };
+}
+
+function updateSkillLoadSignature(services: AgentServices, state: SkillLoadState): boolean {
+  const signature = JSON.stringify(
+    services.skillManager.getAllSkills().map((skill) => {
+      const filePath = String(skill.filePath || '');
+      return {
+        name: String(skill.metadata.name || '').trim(),
+        description: String(skill.metadata.description || '').trim(),
+        userInvocable: skill.metadata.userInvocable !== false,
+        filePath,
+        skillFileRevision: fileRevision(filePath),
+        skillHubMarkerRevision: filePath
+          ? fileRevision(path.join(path.dirname(filePath), SKILLHUB_INSTALL_MARKER_FILE))
+          : '',
+      };
+    }).sort((left, right) => (
+      `${left.name}\u0000${left.filePath}`.localeCompare(`${right.name}\u0000${right.filePath}`)
+    )),
+  );
+  const changed = state.signature !== signature;
+  state.signature = signature;
+  return changed;
+}
+
+// SkillManager has already synchronously parsed SKILL.md for this reload. The
+// cheap stat revisions also cover content and SkillHub package-marker updates
+// without adding file hashing or network work to the chat-critical path.
+function fileRevision(filePath: string): string {
+  if (!filePath) return '';
+  try {
+    const stat = fs.statSync(filePath);
+    return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  } catch {
+    return '';
+  }
+}
+
+function notifySkillsReloadedInBackground(services: AgentServices): void {
+  const observer = services.onSkillsReloaded;
+  if (!observer) return;
+  void Promise.resolve()
+    .then(() => observer())
+    .catch((error: unknown) => {
+    Logger.warning(`Skills 重新加载后的后台观察失败: ${error instanceof Error ? error.message : String(error)}`);
+    });
 }
 
 function createPromptProviderFactory(
