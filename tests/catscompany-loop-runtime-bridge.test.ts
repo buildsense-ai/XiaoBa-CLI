@@ -2,7 +2,7 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { LoopRuntimeBridge } from '../src/catscompany/loop-runtime-bridge';
 import { LOOP_ACTION_PACKET_SCHEMA, type LoopActionPacket } from '../src/catscompany/loop-evidence';
-import { buildLoopExecutionResult } from '../src/catscompany/loop-execution-result';
+import { buildLoopExecutionResult, parseLoopCandidateCompletion } from '../src/catscompany/loop-execution-result';
 
 const topic = 'grp_101';
 const session = 'session:v2:catscompany:group:grp_101:agent:559';
@@ -22,6 +22,9 @@ function packet(kind: LoopActionPacket['kind']): LoopActionPacket {
     evidenceTopicId: 'grp_102',
     attemptId: 'attempt-1',
     ownerUid: '602',
+    githubRepo: 'owner/repo',
+    proofMode: 'catsco-message',
+    contracts: { taskContractHash: 'a'.repeat(64), referenceSnapshotHash: 'b'.repeat(64), writeScopeHash: 'c'.repeat(64), acceptanceContractHash: 'd'.repeat(64) },
     generation: 1,
     runtimePrincipal: 'catsco-user:559',
     workerSessionId: session,
@@ -108,6 +111,56 @@ describe('CatsCo Loop runtime bridge', () => {
     await Promise.all([first, second]);
     assert.equal(executions, 1);
     assert.equal(results, 1);
+  });
+
+  test('submits only a completed, bound candidate result', async () => {
+    const action = packet('execute_attempt');
+    let submitted = 0;
+    const bridge = new LoopRuntimeBridge({
+      botUid: '559', controllerUid: '602',
+      evidenceSender: { runtimeStarted: async () => undefined, candidateSubmitted: async () => { submitted += 1; } } as any,
+      prepareSession: () => undefined,
+      execute: async value => buildLoopExecutionResult(value, 'completed', parseLoopCandidateCompletion(
+        '{"schema":"loop_candidate_v1","candidateId":"candidate-1","deliverable":{"kind":"github_pr","repository":"owner/repo","prNumber":1,"headSha":"head","baseSha":"base"}}',
+      )),
+    });
+    await bridge.handle(JSON.stringify(action), topic, '602');
+    assert.equal(submitted, 1);
+  });
+
+  test('rejects an injected candidate result before evidence submission', async () => {
+    let submitted = 0;
+    const bridge = new LoopRuntimeBridge({
+      botUid: '559', controllerUid: '602',
+      evidenceSender: { runtimeStarted: async () => undefined, candidateSubmitted: async () => { submitted += 1; } } as any,
+      prepareSession: () => undefined,
+      execute: async value => ({
+        ...buildLoopExecutionResult(value, 'completed'),
+        candidate: {
+          schema: 'loop_candidate_v1', candidateId: 'candidate-1',
+          deliverable: { kind: 'github_pr', repository: 'owner/repo', prNumber: 1, headSha: 'head', baseSha: 'base' },
+        } as any,
+      }),
+    });
+    await assert.rejects(() => bridge.handle(JSON.stringify(packet('execute_attempt')), topic, '602'), /terminal completion parser/);
+    assert.equal(submitted, 0);
+  });
+
+  test('does not submit a candidate on failed execution', async () => {
+    let submitted = 0;
+    const bridge = new LoopRuntimeBridge({
+      botUid: '559', controllerUid: '602',
+      evidenceSender: { runtimeStarted: async () => undefined, candidateSubmitted: async () => { submitted += 1; } } as any,
+      prepareSession: () => undefined,
+      execute: async value => ({
+        ...buildLoopExecutionResult(value, 'completed', parseLoopCandidateCompletion(
+          '{"schema":"loop_candidate_v1","candidateId":"candidate-1","deliverable":{"kind":"github_pr","repository":"owner/repo","prNumber":1,"headSha":"head","baseSha":"base"}}',
+        )),
+        outcome: 'failed',
+      }),
+    });
+    await assert.rejects(() => bridge.handle(JSON.stringify(packet('execute_attempt')), topic, '602'), /only permits a candidate/);
+    assert.equal(submitted, 0);
   });
 
   test('rejects an action packet owned by another Controller', async () => {

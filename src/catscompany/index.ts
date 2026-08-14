@@ -6,7 +6,7 @@ import {
   type CatsThinToolRpcMessage,
 } from './client';
 import { LoopEvidenceSender } from './loop-evidence';
-import { buildLoopExecutionResult } from './loop-execution-result';
+import { buildLoopExecutionResult, parseLoopCandidateCompletion } from './loop-execution-result';
 import { LoopRuntimeBridge } from './loop-runtime-bridge';
 import type { LoopActionPacket } from './loop-evidence';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
@@ -541,9 +541,9 @@ export class CatsCompanyBot {
       thinToolRpc: this.maybeBuildThinToolRpcTransport(),
     });
     Logger.info(`[CatsCompany Loop] execute_attempt ${result.taskOutcome || 'unknown'} for ${packet.attemptId}: ${result.text.slice(0, 160)}`);
-    // Agent text is untrusted presentation output. Do not derive a candidate or
-    // GitHub claim from it; only the lifecycle outcome crosses this boundary.
-    return buildLoopExecutionResult(packet, result.taskOutcome || 'failed');
+    // Only a terminal document that is exactly the strict completion envelope
+    // crosses this boundary; normal model prose remains presentation output.
+    return buildLoopExecutionResult(packet, result.taskOutcome || 'failed', parseLoopCandidateCompletion(result.text));
   }
 
   /**

@@ -3,9 +3,11 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { parseLoopCandidateCompletion } from '../src/catscompany/loop-execution-result';
 import {
   LOOP_ACTION_PACKET_SCHEMA,
   LoopEvidenceSender,
+  buildLoopCandidateSubmittedEvent,
   buildLoopEvidenceEvent,
   canonicalLoopEvidenceJson,
   resolveLoopEvidenceBotBinding,
@@ -36,6 +38,14 @@ function packet(overrides: Partial<LoopActionPacket> = {}): LoopActionPacket {
     evidenceTopicId: EVIDENCE_TOPIC,
     attemptId: 'attempt-1',
     ownerUid: '602',
+    githubRepo: 'owner/repo',
+    proofMode: 'catsco-message',
+    contracts: {
+      taskContractHash: 'a'.repeat(64),
+      referenceSnapshotHash: 'b'.repeat(64),
+      writeScopeHash: 'c'.repeat(64),
+      acceptanceContractHash: 'd'.repeat(64),
+    },
     generation: 1,
     runtimePrincipal: 'catsco-user:559',
     workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559',
@@ -136,6 +146,46 @@ describe('CatsCo Loop evidence sender', () => {
     const sender = new LoopEvidenceSender({ client, botUid: BOT_UID });
     await assert.rejects(() => sender.workerReady(packet(), EXECUTION_TOPIC), /UID does not match/);
     assert.equal(sent.length, 0);
+  });
+
+  test('builds deterministic candidate evidence with Controller contract bindings and a canonical deliverable digest', async () => {
+    const candidate = parseLoopCandidateCompletion('{"schema":"loop_candidate_v1","candidateId":"candidate-1","deliverable":{"kind":"github_pr","repository":"owner/repo","prNumber":12,"headSha":"head-sha","baseSha":"base-sha"}}')!;
+    const first = buildLoopCandidateSubmittedEvent({ ...packet(), kind: 'execute_attempt', actionKey: 'execute_attempt:attempt-1:1' }, EXECUTION_TOPIC, BOT_UID, candidate);
+    const second = buildLoopCandidateSubmittedEvent({ ...packet(), kind: 'execute_attempt', actionKey: 'execute_attempt:attempt-1:1' }, EXECUTION_TOPIC, BOT_UID, candidate);
+    assert.deepEqual(first, second);
+    assert.equal(first.type, 'candidate_submitted');
+    assert.equal(first.payload.proofMode, 'catsco-message');
+    assert.equal(first.payload.deliverable.digest, '5d028dca9e07fefff0d92a238cc06f31582cd6c3d3fd581edaef467548a81d66');
+    const { client, sent } = fakeClient();
+    const sender = new LoopEvidenceSender({ client, botUid: BOT_UID });
+    await sender.candidateSubmitted({ ...packet(), kind: 'execute_attempt', actionKey: 'execute_attempt:attempt-1:1' }, EXECUTION_TOPIC, candidate);
+    assert.equal(sent[0].topic_id, EVIDENCE_TOPIC);
+    assert.equal(sent[0].client_msg_id, first.idempotencyKey);
+  });
+
+  test('requires candidate-specific packet fields and matching repository', () => {
+    const action = { ...packet(), kind: 'execute_attempt' as const, actionKey: 'execute_attempt:attempt-1:1' };
+    const candidate = parseLoopCandidateCompletion('{"schema":"loop_candidate_v1","candidateId":"candidate-1","deliverable":{"kind":"github_pr","repository":"other/repo","prNumber":1,"headSha":"head","baseSha":"base"}}')!;
+    assert.throws(() => buildLoopCandidateSubmittedEvent(action, EXECUTION_TOPIC, BOT_UID, candidate), /repository/);
+    const matchingCandidate = parseLoopCandidateCompletion('{"schema":"loop_candidate_v1","candidateId":"candidate-1","deliverable":{"kind":"github_pr","repository":"owner/repo","prNumber":1,"headSha":"head","baseSha":"base"}}')!;
+    assert.throws(() => buildLoopCandidateSubmittedEvent(action, EXECUTION_TOPIC, BOT_UID, {
+      candidate: matchingCandidate.candidate,
+    } as any), /terminal completion parser/);
+    assert.throws(() => buildLoopCandidateSubmittedEvent({ ...action, proofMode: 'ed25519' as any }, EXECUTION_TOPIC, BOT_UID, matchingCandidate), /proofMode/);
+  });
+
+  test('requires every frozen contract hash to be a non-empty string of at least 8 characters', () => {
+    const hashFields = ['taskContractHash', 'referenceSnapshotHash', 'writeScopeHash', 'acceptanceContractHash'] as const;
+    for (const field of hashFields) {
+      for (const invalidHash of ['', 'short', 123, { value: 'abcdefgh' }]) {
+        const invalid = packet({ contracts: { ...packet().contracts, [field]: invalidHash } as any });
+        assert.throws(() => buildLoopEvidenceEvent(invalid, EXECUTION_TOPIC, BOT_UID, 'worker_ready'), /is required|at least 8 characters/);
+      }
+      for (const validHash of ['abcdefgh', 'not-a-sha256-contract-hash']) {
+        const valid = packet({ contracts: { ...packet().contracts, [field]: validHash } });
+        assert.doesNotThrow(() => buildLoopEvidenceEvent(valid, EXECUTION_TOPIC, BOT_UID, 'worker_ready'));
+      }
+    }
   });
 
   test('resolves Bot-only binding from local config without returning account credentials', () => {

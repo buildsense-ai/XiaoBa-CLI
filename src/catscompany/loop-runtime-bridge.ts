@@ -99,6 +99,9 @@ export class LoopRuntimeBridge {
     await this.options.evidenceSender.runtimeStarted(packet, receivedTopicId);
     const result = await this.options.execute(packet);
     validateLoopExecutionResult(packet, result);
+    if (result.outcome === 'completed' && result.candidate) {
+      await this.options.evidenceSender.candidateSubmitted(packet, receivedTopicId, result.candidate);
+    }
     await this.options.onExecutionResult?.(packet, result);
   }
 }
