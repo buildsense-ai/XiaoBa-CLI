@@ -38,6 +38,11 @@ function packet(overrides: Partial<LoopActionPacket> = {}): LoopActionPacket {
     generation: 1,
     runtimePrincipal: 'catsco-user:559',
     workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559',
+    workBundle: {
+      contractDigest: 'a'.repeat(64),
+      instructions: 'Make the requested change and report the result.',
+      deliverables: ['github-pr'],
+    },
   };
   return { ...base, ...overrides, action: { ...base.action, ...(overrides.action || {}) } };
 }

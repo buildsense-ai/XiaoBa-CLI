@@ -5,6 +5,9 @@ import {
   type CatsDeviceRpcMessage,
   type CatsThinToolRpcMessage,
 } from './client';
+import { LoopEvidenceSender } from './loop-evidence';
+import { LoopRuntimeBridge } from './loop-runtime-bridge';
+import type { LoopActionPacket } from './loop-evidence';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender, type ConversationTaskStatusInput } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
@@ -430,6 +433,8 @@ export class CatsCompanyBot {
   /** Bot 自身的 uid，用于过滤自己发出的消息 */
   private botUid: string | null = null;
   private connectorReady = false;
+  private controllerUid: string | null = null;
+  private loopRuntimeBridge?: LoopRuntimeBridge;
   private runtime: AdapterRuntimeBundle;
   private runtimeProfile: AdapterRuntimeBundle['profile'];
   private localDeviceGrant?: ScopedLocalDeviceGrant;
@@ -447,6 +452,7 @@ export class CatsCompanyBot {
 
   constructor(config: CatsCompanyConfig) {
     this.botUid = String(config.botUid || '').trim() || null;
+    this.controllerUid = String(config.ownerUserId || '').trim() || null;
     const localDeviceId = config.installationId || config.bodyId;
     const deviceRegistration = localDeviceId
       ? {
@@ -495,6 +501,45 @@ export class CatsCompanyBot {
       'catscompany',
       runtime.sessionManagerOptions,
     );
+    this.initializeLoopRuntimeBridge();
+  }
+
+  private initializeLoopRuntimeBridge(): void {
+    const botUid = this.botUid;
+    const controllerUid = this.controllerUid;
+    if (!botUid || !controllerUid) {
+      Logger.warning('[CatsCompany Loop] disabled: Bot UID and Controller owner UID are both required');
+      return;
+    }
+    this.loopRuntimeBridge = new LoopRuntimeBridge({
+      botUid,
+      controllerUid,
+      evidenceSender: new LoopEvidenceSender({ client: this.bot, botUid }),
+      prepareSession: workerSessionId => { this.sessionManager.getOrCreate(workerSessionId); },
+      execute: packet => this.executeLoopAction(packet),
+    });
+  }
+
+  private async executeLoopAction(packet: LoopActionPacket): Promise<void> {
+    const sessionKey = packet.workerSessionId;
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    const channel = this.buildChannel(packet.workerTopicId, {
+      sessionKey,
+      senderId: packet.runtimePrincipal,
+      channelSource: 'catsco-loop',
+    });
+    const result = await session.handleMessage(packet.workBundle.instructions, {
+      channel,
+      callbacks: this.buildSessionCallbacks(packet.workerTopicId, {
+        sessionKey,
+        senderId: packet.runtimePrincipal,
+        channelSource: 'catsco-loop',
+      }),
+      localDeviceGrant: this.localDeviceGrant,
+      deviceRpc: this.buildDeviceRpcTransport(),
+      thinToolRpc: this.maybeBuildThinToolRpcTransport(),
+    });
+    Logger.info(`[CatsCompany Loop] execute_attempt completed for ${packet.attemptId}: ${result.text.slice(0, 160)}`);
   }
 
   /**
@@ -1455,6 +1500,16 @@ export class CatsCompanyBot {
 
     // 过滤 bot 自己发出的消息，防止循环。
     if (this.botUid && normalizeCatsUid(ctx.senderId) === normalizeCatsUid(this.botUid)) return;
+
+    if (this.loopRuntimeBridge) {
+      try {
+        const loopResult = await this.loopRuntimeBridge.handle(ctx.text, ctx.topic, ctx.senderId);
+        if (loopResult.handled) return;
+      } catch (error: any) {
+        Logger.warning(`[CatsCompany Loop] rejected Action packet: ${error?.message || error}`);
+        return;
+      }
+    }
 
     // 群聊激活门控必须发生在 parse 后续的云恢复和 session 创建之前。
     if (!shouldActivateCatsCompanyMessage(ctx, this.botUid)) {

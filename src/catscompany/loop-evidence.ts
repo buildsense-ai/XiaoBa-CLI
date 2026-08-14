@@ -28,6 +28,11 @@ export interface LoopActionPacket {
   generation: number;
   runtimePrincipal: string;
   workerSessionId: string;
+  workBundle: {
+    contractDigest: string;
+    instructions: string;
+    deliverables: string[];
+  };
 }
 
 export interface LoopEvidenceEvent {
@@ -74,12 +79,23 @@ function requiredInteger(value: unknown, name: string): number {
   return Number(value);
 }
 
+function requiredPositiveInteger(value: unknown, name: string): number {
+  const number = requiredInteger(value, name);
+  if (number < 1) throw new Error(`Loop Action packet ${name} must be a positive integer`);
+  return number;
+}
+
 function expectedPrincipal(botUid: string): string {
   return `catsco-user:${requiredString(botUid, 'Bot UID')}`;
 }
 
 function expectedWorkerSessionId(topicId: string, botUid: string): string {
   return `session:v2:catscompany:group:${topicId}:agent:${botUid}`;
+}
+
+function requireLoopGroupTopic(value: string, name: string): string {
+  if (!/^grp_[A-Za-z0-9_-]+$/.test(value)) throw new Error(`Loop Action packet ${name} must be a Controller group topic`);
+  return value;
 }
 
 function validateWorkerSessionId(value: unknown, workerTopicId: string, botUid: string): void {
@@ -124,13 +140,13 @@ export function validateLoopActionPacket(
   }
   if (packet.action?.state !== 'ready') throw new Error('Loop Action packet is stale or non-actionable');
 
-  const targetTopicId = requiredString(packet.targetTopicId, 'targetTopicId');
-  const actionTargetTopicId = requiredString(packet.action?.targetTopicId, 'action.targetTopicId');
-  const workerTopicId = requiredString(packet.workerTopicId, 'workerTopicId');
+  const targetTopicId = requireLoopGroupTopic(requiredString(packet.targetTopicId, 'targetTopicId'), 'targetTopicId');
+  const actionTargetTopicId = requireLoopGroupTopic(requiredString(packet.action?.targetTopicId, 'action.targetTopicId'), 'action.targetTopicId');
+  const workerTopicId = requireLoopGroupTopic(requiredString(packet.workerTopicId, 'workerTopicId'), 'workerTopicId');
   if (targetTopicId !== actionTargetTopicId || targetTopicId !== workerTopicId || targetTopicId !== requiredString(receivedTopicId, 'received topic')) {
     throw new Error('Loop Action packet execution topic does not match the received topic');
   }
-  const evidenceTopicId = requiredString(packet.evidenceTopicId, 'evidenceTopicId');
+  const evidenceTopicId = requireLoopGroupTopic(requiredString(packet.evidenceTopicId, 'evidenceTopicId'), 'evidenceTopicId');
   if (evidenceTopicId === targetTopicId) throw new Error('Loop Action packet evidence topic must differ from execution topic');
 
   if (requiredString(packet.targetPrincipal, 'targetPrincipal') !== principal || requiredString(packet.action?.targetPrincipal, 'action.targetPrincipal') !== principal) {
@@ -139,7 +155,7 @@ export function validateLoopActionPacket(
   if (requiredString(packet.runtimePrincipal, 'runtimePrincipal') !== principal) {
     throw new Error('Loop Action packet runtime principal does not match Bot UID');
   }
-  if (requiredInteger(packet.workItemRevision, 'workItemRevision') !== requiredInteger(packet.action?.workItemRevision, 'action.workItemRevision')) {
+  if (requiredPositiveInteger(packet.workItemRevision, 'workItemRevision') !== requiredPositiveInteger(packet.action?.workItemRevision, 'action.workItemRevision')) {
     throw new Error('Loop Action packet revision does not match action revision');
   }
   requiredString(packet.actionId, 'actionId');
@@ -148,6 +164,10 @@ export function validateLoopActionPacket(
   requiredString(packet.attemptId, 'attemptId');
   requiredInteger(packet.generation, 'generation');
   validateWorkerSessionId(packet.workerSessionId, workerTopicId, botUid);
+  if (!packet.workBundle || typeof packet.workBundle !== 'object') throw new Error('Loop Action packet workBundle is required');
+  requiredString(packet.workBundle.contractDigest, 'workBundle.contractDigest');
+  requiredString(packet.workBundle.instructions, 'workBundle.instructions');
+  if (!Array.isArray(packet.workBundle.deliverables)) throw new Error('Loop Action packet workBundle.deliverables must be an array');
 }
 
 export function buildLoopEvidenceEvent(
