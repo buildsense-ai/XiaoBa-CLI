@@ -2235,11 +2235,22 @@ export class SkillEvolutionRuntime {
    */
   getCandidateLifecycleSnapshot(): SkillCandidateLifecycleSnapshot {
     try {
-      const store = this.getEvidenceReviewEngine().loadStore();
-      return projectSkillCandidateLifecycle(
-        store,
-        store.stateCorrupt ? [] : this.getAudit(),
-      );
+      const engine = this.getEvidenceReviewEngine();
+      const store = engine.loadStore();
+      if (store.stateCorrupt) return projectSkillCandidateLifecycle(store, []);
+
+      const auditEntries = this.getAudit();
+      if (
+        !fs.existsSync(engine.jobStorePath)
+        && auditEntries.some(entry => (
+          typeof entry.reviewCommitKey === 'string' && entry.reviewCommitKey.trim().length > 0
+        ))
+      ) {
+        // A Review commit receipt is durable proof that its Job Store was
+        // initialized. An absent store is therefore loss, not fresh startup.
+        return corruptSkillCandidateLifecycleSnapshot('evidence-review-job-store-missing');
+      }
+      return projectSkillCandidateLifecycle(store, auditEntries);
     } catch {
       // A lifecycle report must never infer successful Skill persistence from
       // an unreadable audit. The normal review path retains its own fail-closed

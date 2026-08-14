@@ -28,6 +28,7 @@ import { DueWorkPlanner, reviewContinuationPathForEpisodeStore } from '../src/ut
 import { DistilledKnowledgeCandidate } from '../src/utils/capability-distiller';
 import {
   EvidenceBundle,
+  SKILL_EVOLUTION_SCHEMA_VERSION,
   SkillEvolutionOptions,
   SkillEvolutionRuntime,
 } from '../src/utils/skill-evolution';
@@ -3410,6 +3411,34 @@ describe('Issue 4 — Heartbeat single-write', () => {
 
     const jobStorePath = evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath);
     fs.unlinkSync(jobStorePath);
+    env.runtimeLearning.markHeartbeatStatus('quiet');
+
+    const lifecycle = env.runtimeLearning.loadHeartbeatRecord().candidateLifecycle;
+    assert.equal(lifecycle.status, 'corrupt');
+    assert.equal(lifecycle.total, 0);
+    assert.equal(lifecycle.reason, 'evidence-review-job-store-missing');
+  });
+
+  test('uses a Review commit receipt to detect a missing Job Store without heartbeat history', () => {
+    fs.mkdirSync(path.dirname(env.auditPath), { recursive: true });
+    fs.writeFileSync(env.auditPath, `${JSON.stringify({
+      schemaVersion: SKILL_EVOLUTION_SCHEMA_VERSION,
+      transitionId: 'transition-missing-review-job-store',
+      transition: 'create_current_skill',
+      bundleId: 'bundle-missing-review-job-store',
+      reviewCommitKey: 'job-missing-review-job-store:commit',
+      occurredAt: '2026-08-14T00:00:00.000Z',
+      reviewerVersion: 'test-reviewer',
+      promptVersion: 'test-prompt',
+      evidenceRefs: [],
+      involvedCapabilityHandles: [],
+      registryReadSet: [],
+      priorGuidanceHash: null,
+      resultingGuidanceHash: null,
+      branchTranscriptPaths: [],
+      rationale: 'The audit proves an Evidence Review Job existed.',
+    })}\n`, 'utf8');
+
     env.runtimeLearning.markHeartbeatStatus('quiet');
 
     const lifecycle = env.runtimeLearning.loadHeartbeatRecord().candidateLifecycle;
