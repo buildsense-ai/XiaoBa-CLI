@@ -3366,6 +3366,76 @@ describe('Issue 4 — Heartbeat single-write', () => {
     assert.equal(env.runtimeLearning.loadHeartbeatRecord().backlog.operationalReviews, 1);
   });
 
+  test('projects retrying candidate lifecycle from durable review state and fails closed on corruption', () => {
+    seedOperationalFailure(
+      env.reviewQueuePath,
+      runtimeReviewBundle('heartbeat-candidate-lifecycle'),
+      'Pending operational recovery',
+      new Date('2099-01-01T00:00:00.000Z'),
+    );
+
+    env.runtimeLearning.markHeartbeatStatus('quiet');
+    const healthy = env.runtimeLearning.loadHeartbeatRecord().candidateLifecycle;
+    assert.deepEqual(healthy, {
+      status: 'healthy',
+      total: 1,
+      admitted: 0,
+      reviewing: 0,
+      retryWaiting: 1,
+      deferred: 0,
+      applied: 0,
+      rejected: 0,
+      superseded: 0,
+      failed: 0,
+    });
+
+    const jobStorePath = evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath);
+    fs.writeFileSync(jobStorePath, '{not-json', 'utf8');
+
+    env.runtimeLearning.markHeartbeatStatus('quiet');
+    const corrupt = env.runtimeLearning.loadHeartbeatRecord().candidateLifecycle;
+    assert.equal(corrupt.status, 'corrupt');
+    assert.equal(corrupt.total, 0);
+    assert.equal(corrupt.reason, 'evidence-review-job-store-corrupt');
+  });
+
+  test('marks candidate lifecycle corrupt when its transition audit is unreadable', () => {
+    fs.mkdirSync(path.dirname(env.auditPath), { recursive: true });
+    fs.writeFileSync(env.auditPath, '{not-json\n', 'utf8');
+
+    env.runtimeLearning.markHeartbeatStatus('quiet');
+
+    const lifecycle = env.runtimeLearning.loadHeartbeatRecord().candidateLifecycle;
+    assert.equal(lifecycle.status, 'corrupt');
+    assert.equal(lifecycle.total, 0);
+    assert.equal(lifecycle.reason, 'transition-audit-unavailable');
+  });
+
+  test('does not treat a malformed persisted candidate projection as a healthy empty queue', () => {
+    const heartbeatPath = getDistillationHeartbeatConfig(env.root).heartbeatRecordPath;
+    fs.mkdirSync(path.dirname(heartbeatPath), { recursive: true });
+    fs.writeFileSync(heartbeatPath, JSON.stringify({
+      schemaVersion: 1,
+      candidateLifecycle: {
+        status: 'healthy',
+        total: 1,
+        admitted: 0,
+        reviewing: 0,
+        retryWaiting: 0,
+        deferred: 0,
+        applied: 0,
+        rejected: 0,
+        superseded: 0,
+        failed: 0,
+      },
+    }), 'utf8');
+
+    const lifecycle = env.runtimeLearning.loadHeartbeatRecord().candidateLifecycle;
+    assert.equal(lifecycle.status, 'corrupt');
+    assert.equal(lifecycle.total, 0);
+    assert.equal(lifecycle.reason, 'heartbeat-projection-corrupt');
+  });
+
   test('failed heartbeat status persists not-ready diagnostics and later success recovers', () => {
     env.runtimeLearning.markHeartbeatStatus('failed');
     let record = env.runtimeLearning.loadHeartbeatRecord();

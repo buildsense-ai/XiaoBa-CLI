@@ -64,6 +64,11 @@ import {
 } from './evidence-bundle-authority';
 import { validateFrozenSourceEvidence } from './frozen-source-evidence';
 import { withProcessExclusiveLock } from './process-exclusive-lock';
+import {
+  corruptSkillCandidateLifecycleSnapshot,
+  projectSkillCandidateLifecycle,
+  type SkillCandidateLifecycleSnapshot,
+} from './skill-candidate-lifecycle';
 
 /**
  * V3's runtime-owned promotion seam.
@@ -2221,6 +2226,26 @@ export class SkillEvolutionRuntime {
 
   getAudit(): TransitionAuditEntry[] {
     return loadTransitionAudit(this.options.auditPath);
+  }
+
+  /**
+   * Read-only lifecycle view for Runtime Learning observability. Evidence
+   * Review Jobs and the Transition Audit remain the sole durable authorities;
+   * callers cannot use this view to advance or alter a candidate.
+   */
+  getCandidateLifecycleSnapshot(): SkillCandidateLifecycleSnapshot {
+    try {
+      const store = this.getEvidenceReviewEngine().loadStore();
+      return projectSkillCandidateLifecycle(
+        store,
+        store.stateCorrupt ? [] : this.getAudit(),
+      );
+    } catch {
+      // A lifecycle report must never infer successful Skill persistence from
+      // an unreadable audit. The normal review path retains its own fail-closed
+      // mutation fences; reporting exposes the same uncertainty explicitly.
+      return corruptSkillCandidateLifecycleSnapshot('transition-audit-unavailable');
+    }
   }
 
   /** Current manual skills are resolved at promotion time, not startup time. */

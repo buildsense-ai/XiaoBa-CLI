@@ -32,6 +32,12 @@ import {
 } from './distillation-memory-pressure';
 import { LearningEpisodeStore, LearningEpisode, buildLearningEpisodeCandidate } from './learning-episode';
 import { SkillEvolutionRuntime, CapabilityTransitionKind } from './skill-evolution';
+import {
+  corruptSkillCandidateLifecycleSnapshot,
+  emptySkillCandidateLifecycleSummary,
+  isSkillCandidateLifecycleSummary,
+  type SkillCandidateLifecycleSummary,
+} from './skill-candidate-lifecycle';
 import { SkillUsageCurator } from './skill-usage-curator';
 import type { GeneratedSkillLoadFact } from './skill-usage-ledger';
 import { Logger } from './logger';
@@ -344,6 +350,12 @@ export interface RuntimeLearningHeartbeatRecord {
   nextWakeAt?: string;
   nextWakeReason?: string;
   backlog: RuntimeLearningBacklogSnapshot;
+  /**
+   * Read-only aggregate over the durable Evidence Review Job store and
+   * Transition Audit. This is intentionally a projection, not a second
+   * candidate/retry state store.
+   */
+  candidateLifecycle: SkillCandidateLifecycleSummary;
   lastSourceReports: readonly SessionLogSourceReport[];
   externalSourceDiagnostics: ExternalSourceDiagnosticSnapshot;
   /** Latest pressure observation used to resume safely after a restart. */
@@ -713,6 +725,7 @@ function emptyHeartbeatRecord(): RuntimeLearningHeartbeatRecord {
       operationalReviews: 0,
       lagMs: 0,
     },
+    candidateLifecycle: emptySkillCandidateLifecycleSummary(),
     lastSourceReports: [],
     externalSourceDiagnostics: {
       schemaVersion: 1,
@@ -5490,6 +5503,7 @@ export class RuntimeLearning {
       internalReady: runStatus !== 'failed',
     });
     record.backlog = this.snapshotBacklog(record.nextWakeAt);
+    record.candidateLifecycle = this.skillEvolution.getCandidateLifecycleSnapshot().summary;
 
     this.writeHeartbeatRecord(record);
   }
@@ -5621,6 +5635,11 @@ function normalizeHeartbeatRecord(
       ? { nextWakeReason: record.nextWakeReason }
       : {}),
     backlog: isBacklogSnapshot(record.backlog) ? record.backlog : defaults.backlog,
+    candidateLifecycle: normalizeCandidateLifecycleSummary(
+      record.candidateLifecycle,
+      defaults.candidateLifecycle,
+      Object.prototype.hasOwnProperty.call(record, 'candidateLifecycle'),
+    ),
     lastSourceReports: Array.isArray(record.lastSourceReports)
       ? record.lastSourceReports as SessionLogSourceReport[]
       : defaults.lastSourceReports,
@@ -5658,6 +5677,18 @@ function isBacklogSnapshot(value: unknown): value is RuntimeLearningBacklogSnaps
     candidate.operationalReviews,
     candidate.lagMs,
   ].every(item => typeof item === 'number' && Number.isFinite(item) && item >= 0);
+}
+
+/** Old records legitimately omit this additive field; malformed new values do not. */
+function normalizeCandidateLifecycleSummary(
+  value: unknown,
+  defaults: SkillCandidateLifecycleSummary,
+  wasPersisted: boolean,
+): SkillCandidateLifecycleSummary {
+  if (isSkillCandidateLifecycleSummary(value)) return value;
+  return wasPersisted
+    ? corruptSkillCandidateLifecycleSnapshot('heartbeat-projection-corrupt').summary
+    : defaults;
 }
 
 function normalizeHeartbeatRunStatus(value: unknown): RuntimeLearningHeartbeatRunStatus {
