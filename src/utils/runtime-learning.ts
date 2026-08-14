@@ -5458,17 +5458,8 @@ export class RuntimeLearning {
       nextWakeReason: string;
     },
   ): void {
-    const recordPath = this.config.heartbeatRecordPath;
-    let record: RuntimeLearningHeartbeatRecord;
-    try {
-      if (fs.existsSync(recordPath)) {
-        record = JSON.parse(fs.readFileSync(recordPath, 'utf-8')) as RuntimeLearningHeartbeatRecord;
-      } else {
-        record = emptyHeartbeatRecord();
-      }
-    } catch {
-      record = emptyHeartbeatRecord();
-    }
+    const record = this.loadHeartbeatRecord();
+    const priorCandidateLifecycle = record.candidateLifecycle;
 
     record.lastRunAt = this.clock().toISOString();
     if (incrementRunCount) {
@@ -5502,8 +5493,16 @@ export class RuntimeLearning {
       generatedAt: record.lastRunAt,
       internalReady: runStatus !== 'failed',
     });
+    const jobStorePath = this.skillEvolution.getEvidenceReviewEngine().jobStorePath;
+    // Read this before backlog: a malformed store is quarantined by other
+    // projections, and must retain its more precise `corrupt` diagnosis
+    // rather than later appearing merely absent.
+    record.candidateLifecycle = (
+      !fs.existsSync(jobStorePath) && requiresCandidateJobStore(priorCandidateLifecycle)
+    )
+      ? corruptSkillCandidateLifecycleSnapshot('evidence-review-job-store-missing').summary
+      : this.skillEvolution.getCandidateLifecycleSnapshot().summary;
     record.backlog = this.snapshotBacklog(record.nextWakeAt);
-    record.candidateLifecycle = this.skillEvolution.getCandidateLifecycleSnapshot().summary;
 
     this.writeHeartbeatRecord(record);
   }
@@ -5575,9 +5574,27 @@ export class RuntimeLearning {
         JSON.parse(fs.readFileSync(recordPath, 'utf-8')) as Record<string, unknown>,
       );
     } catch {
-      return emptyHeartbeatRecord();
+      return corruptHeartbeatRecord();
     }
   }
+}
+
+function corruptHeartbeatRecord(): RuntimeLearningHeartbeatRecord {
+  return {
+    ...emptyHeartbeatRecord(),
+    candidateLifecycle: corruptSkillCandidateLifecycleSnapshot(
+      'heartbeat-projection-corrupt',
+    ).summary,
+  };
+}
+
+/**
+ * A fresh runtime has no Job Store until the first candidate is admitted.
+ * Once a heartbeat has observed candidate state (or has itself failed closed),
+ * a vanished store cannot truthfully be represented as a fresh empty queue.
+ */
+function requiresCandidateJobStore(summary: SkillCandidateLifecycleSummary): boolean {
+  return summary.status === 'corrupt' || summary.total > 0;
 }
 
 function normalizeHeartbeatRecord(

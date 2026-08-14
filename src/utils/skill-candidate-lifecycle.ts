@@ -36,6 +36,7 @@ export type SkillCandidateLifecycleStatus = 'healthy' | 'corrupt';
 
 export type SkillCandidateLifecycleCorruptionReason =
   | 'evidence-review-job-store-corrupt'
+  | 'evidence-review-job-store-missing'
   | 'transition-audit-unavailable'
   | 'heartbeat-projection-corrupt';
 
@@ -174,6 +175,7 @@ export function isSkillCandidateLifecycleSummary(
   ];
   const validReason = candidate.reason === undefined
     || candidate.reason === 'evidence-review-job-store-corrupt'
+    || candidate.reason === 'evidence-review-job-store-missing'
     || candidate.reason === 'transition-audit-unavailable'
     || candidate.reason === 'heartbeat-projection-corrupt';
   const validCounts = numericFields.every(

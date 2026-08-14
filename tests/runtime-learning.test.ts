@@ -3399,6 +3399,25 @@ describe('Issue 4 — Heartbeat single-write', () => {
     assert.equal(corrupt.reason, 'evidence-review-job-store-corrupt');
   });
 
+  test('does not project a previously observed Job Store disappearance as a fresh queue', () => {
+    seedOperationalFailure(
+      env.reviewQueuePath,
+      runtimeReviewBundle('heartbeat-candidate-store-deleted'),
+      'Pending operational recovery',
+      new Date('2099-01-01T00:00:00.000Z'),
+    );
+    env.runtimeLearning.markHeartbeatStatus('quiet');
+
+    const jobStorePath = evidenceReviewJobStorePathForReviewQueue(env.reviewQueuePath);
+    fs.unlinkSync(jobStorePath);
+    env.runtimeLearning.markHeartbeatStatus('quiet');
+
+    const lifecycle = env.runtimeLearning.loadHeartbeatRecord().candidateLifecycle;
+    assert.equal(lifecycle.status, 'corrupt');
+    assert.equal(lifecycle.total, 0);
+    assert.equal(lifecycle.reason, 'evidence-review-job-store-missing');
+  });
+
   test('marks candidate lifecycle corrupt when its transition audit is unreadable', () => {
     fs.mkdirSync(path.dirname(env.auditPath), { recursive: true });
     fs.writeFileSync(env.auditPath, '{not-json\n', 'utf8');
@@ -3429,6 +3448,17 @@ describe('Issue 4 — Heartbeat single-write', () => {
         failed: 0,
       },
     }), 'utf8');
+
+    const lifecycle = env.runtimeLearning.loadHeartbeatRecord().candidateLifecycle;
+    assert.equal(lifecycle.status, 'corrupt');
+    assert.equal(lifecycle.total, 0);
+    assert.equal(lifecycle.reason, 'heartbeat-projection-corrupt');
+  });
+
+  test('does not treat an unreadable heartbeat record as a healthy empty queue', () => {
+    const heartbeatPath = getDistillationHeartbeatConfig(env.root).heartbeatRecordPath;
+    fs.mkdirSync(path.dirname(heartbeatPath), { recursive: true });
+    fs.writeFileSync(heartbeatPath, '{not-json', 'utf8');
 
     const lifecycle = env.runtimeLearning.loadHeartbeatRecord().candidateLifecycle;
     assert.equal(lifecycle.status, 'corrupt');
