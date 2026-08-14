@@ -3,13 +3,18 @@ import {
   type LoopActionPacket,
   validateLoopActionPacket,
 } from './loop-evidence';
+import {
+  type LoopExecutionResult,
+  validateLoopExecutionResult,
+} from './loop-execution-result';
 
 export interface LoopRuntimeBridgeOptions {
   evidenceSender: LoopEvidenceSender;
   botUid: string;
   controllerUid: string;
   prepareSession: (workerSessionId: string) => Promise<void> | void;
-  execute: (packet: LoopActionPacket) => Promise<void>;
+  execute: (packet: LoopActionPacket) => Promise<LoopExecutionResult>;
+  onExecutionResult?: (packet: LoopActionPacket, result: LoopExecutionResult) => Promise<void> | void;
 }
 
 export interface LoopActionHandlingResult {
@@ -52,6 +57,9 @@ export class LoopRuntimeBridge {
     if (normalizeCatsUid(senderUid) !== normalizeCatsUid(this.options.controllerUid)) {
       throw new Error('Loop Action packet sender does not match configured Controller UID');
     }
+    if (normalizeCatsUid(packet.ownerUid) !== normalizeCatsUid(this.options.controllerUid)) {
+      throw new Error('Loop Action packet ownerUid does not match configured Controller UID');
+    }
     const previous = this.latestAttemptState.get(packet.attemptId);
     if (previous && (packet.generation < previous.generation ||
       (packet.generation === previous.generation && packet.workItemRevision < previous.revision))) {
@@ -89,6 +97,8 @@ export class LoopRuntimeBridge {
       return;
     }
     await this.options.evidenceSender.runtimeStarted(packet, receivedTopicId);
-    await this.options.execute(packet);
+    const result = await this.options.execute(packet);
+    validateLoopExecutionResult(packet, result);
+    await this.options.onExecutionResult?.(packet, result);
   }
 }

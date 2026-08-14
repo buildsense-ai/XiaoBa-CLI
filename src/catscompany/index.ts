@@ -6,6 +6,7 @@ import {
   type CatsThinToolRpcMessage,
 } from './client';
 import { LoopEvidenceSender } from './loop-evidence';
+import { buildLoopExecutionResult } from './loop-execution-result';
 import { LoopRuntimeBridge } from './loop-runtime-bridge';
 import type { LoopActionPacket } from './loop-evidence';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
@@ -520,7 +521,7 @@ export class CatsCompanyBot {
     });
   }
 
-  private async executeLoopAction(packet: LoopActionPacket): Promise<void> {
+  private async executeLoopAction(packet: LoopActionPacket) {
     const sessionKey = packet.workerSessionId;
     const session = this.sessionManager.getOrCreate(sessionKey);
     const channel = this.buildChannel(packet.workerTopicId, {
@@ -539,7 +540,10 @@ export class CatsCompanyBot {
       deviceRpc: this.buildDeviceRpcTransport(),
       thinToolRpc: this.maybeBuildThinToolRpcTransport(),
     });
-    Logger.info(`[CatsCompany Loop] execute_attempt completed for ${packet.attemptId}: ${result.text.slice(0, 160)}`);
+    Logger.info(`[CatsCompany Loop] execute_attempt ${result.taskOutcome || 'unknown'} for ${packet.attemptId}: ${result.text.slice(0, 160)}`);
+    // Agent text is untrusted presentation output. Do not derive a candidate or
+    // GitHub claim from it; only the lifecycle outcome crosses this boundary.
+    return buildLoopExecutionResult(packet, result.taskOutcome || 'failed');
   }
 
   /**

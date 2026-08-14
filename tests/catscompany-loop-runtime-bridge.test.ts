@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { LoopRuntimeBridge } from '../src/catscompany/loop-runtime-bridge';
 import { LOOP_ACTION_PACKET_SCHEMA, type LoopActionPacket } from '../src/catscompany/loop-evidence';
+import { buildLoopExecutionResult } from '../src/catscompany/loop-execution-result';
 
 const topic = 'grp_101';
 const session = 'session:v2:catscompany:group:grp_101:agent:559';
@@ -20,6 +21,7 @@ function packet(kind: LoopActionPacket['kind']): LoopActionPacket {
     workerTopicId: topic,
     evidenceTopicId: 'grp_102',
     attemptId: 'attempt-1',
+    ownerUid: '602',
     generation: 1,
     runtimePrincipal: 'catsco-user:559',
     workerSessionId: session,
@@ -34,7 +36,7 @@ describe('CatsCo Loop runtime bridge', () => {
       controllerUid: '602',
       evidenceSender: {} as any,
       prepareSession: () => { throw new Error('must not prepare'); },
-      execute: async () => { throw new Error('must not execute'); },
+      execute: async (value) => buildLoopExecutionResult(value, 'failed'),
     });
     assert.deepEqual(await bridge.handle('hello', topic, '602'), { handled: false });
   });
@@ -46,7 +48,7 @@ describe('CatsCo Loop runtime bridge', () => {
       controllerUid: '602',
       evidenceSender: { workerReady: async () => { calls.push('worker_ready'); } } as any,
       prepareSession: (id) => { calls.push(`session:${id}`); },
-      execute: async () => { calls.push('execute'); },
+      execute: async (value) => { calls.push('execute'); return buildLoopExecutionResult(value, 'completed'); },
     });
     const result = await bridge.handle(JSON.stringify(packet('preflight_attempt')), topic, '602');
     assert.deepEqual(result, { handled: true, kind: 'preflight_attempt' });
@@ -60,7 +62,7 @@ describe('CatsCo Loop runtime bridge', () => {
       controllerUid: '602',
       evidenceSender: { runtimeStarted: async () => { calls.push('runtime_started'); } } as any,
       prepareSession: (id) => { calls.push(`session:${id}`); },
-      execute: async (value) => { calls.push(`execute:${value.workBundle.instructions}`); },
+      execute: async (value) => { calls.push(`execute:${value.workBundle.instructions}`); return buildLoopExecutionResult(value, 'completed'); },
     });
     await bridge.handle(JSON.stringify(packet('execute_attempt')), topic, '602');
     assert.deepEqual(calls, [`session:${session}`, 'runtime_started', 'execute:do work']);
@@ -73,11 +75,53 @@ describe('CatsCo Loop runtime bridge', () => {
       controllerUid: '602',
       evidenceSender: { workerReady: async () => undefined } as any,
       prepareSession: async () => undefined,
-      execute: async () => { executions += 1; },
+      execute: async (value) => { executions += 1; return buildLoopExecutionResult(value, 'completed'); },
     });
     const text = JSON.stringify(packet('preflight_attempt'));
     await Promise.all([bridge.handle(text, topic, '602'), bridge.handle(text, topic, '602')]);
     assert.equal(executions, 0);
+  });
+
+  test('deduplicates concurrent execute delivery and reports its result once', async () => {
+    let executions = 0;
+    let results = 0;
+    let releaseExecution!: () => void;
+    const executionStarted = new Promise<void>(resolve => { releaseExecution = resolve; });
+    const bridge = new LoopRuntimeBridge({
+      botUid: '559',
+      controllerUid: '602',
+      evidenceSender: { runtimeStarted: async () => undefined } as any,
+      prepareSession: async () => undefined,
+      execute: async (value) => {
+        executions += 1;
+        await executionStarted;
+        return buildLoopExecutionResult(value, 'completed');
+      },
+      onExecutionResult: async () => { results += 1; },
+    });
+    const text = JSON.stringify(packet('execute_attempt'));
+    const first = bridge.handle(text, topic, '602');
+    const second = bridge.handle(text, topic, '602');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(executions, 1);
+    releaseExecution();
+    await Promise.all([first, second]);
+    assert.equal(executions, 1);
+    assert.equal(results, 1);
+  });
+
+  test('rejects an action packet owned by another Controller', async () => {
+    const bridge = new LoopRuntimeBridge({
+      botUid: '559',
+      controllerUid: '602',
+      evidenceSender: {} as any,
+      prepareSession: () => undefined,
+      execute: async value => buildLoopExecutionResult(value, 'failed'),
+    });
+    await assert.rejects(
+      () => bridge.handle(JSON.stringify({ ...packet('preflight_attempt'), ownerUid: '603' }), topic, '602'),
+      /ownerUid/,
+    );
   });
 
   test('accepts normalized Controller UID and rejects an unauthorized sender', async () => {
@@ -86,21 +130,21 @@ describe('CatsCo Loop runtime bridge', () => {
       controllerUid: '602',
       evidenceSender: { workerReady: async () => undefined } as any,
       prepareSession: async () => undefined,
-      execute: async () => undefined,
+      execute: async (value) => buildLoopExecutionResult(value, 'failed'),
     });
     await bridge.handle(JSON.stringify(packet('preflight_attempt')), topic, 'usr602');
     await assert.rejects(() => bridge.handle(JSON.stringify({ ...packet('execute_attempt'), actionId: 'action-2' }), topic, '603'), /Controller UID/);
   });
 
   test('rejects non-group topics and non-positive revisions', async () => {
-    const bridge = new LoopRuntimeBridge({ botUid: '559', controllerUid: '602', evidenceSender: {} as any, prepareSession: () => undefined, execute: async () => undefined });
+    const bridge = new LoopRuntimeBridge({ botUid: '559', controllerUid: '602', evidenceSender: {} as any, prepareSession: () => undefined, execute: async value => buildLoopExecutionResult(value, 'failed') });
     await assert.rejects(() => bridge.handle(JSON.stringify({ ...packet('preflight_attempt'), targetTopicId: 'p2p_559_602', workerTopicId: 'p2p_559_602', action: { ...packet('preflight_attempt').action, targetTopicId: 'p2p_559_602' }, workerSessionId: 'session:v2:catscompany:group:p2p_559_602:agent:559' }), 'p2p_559_602', '602'), /group topic/);
     await assert.rejects(() => bridge.handle(JSON.stringify({ ...packet('preflight_attempt'), workItemRevision: 0, action: { ...packet('preflight_attempt').action, workItemRevision: 0 } }), topic, '602'), /positive integer/);
   });
 
   test('rejects a packet whose session is bound to another topic', async () => {
     const invalid = { ...packet('preflight_attempt'), workerSessionId: 'session:v2:catscompany:group:grp_999:agent:559' };
-    const bridge = new LoopRuntimeBridge({ botUid: '559', controllerUid: '602', evidenceSender: {} as any, prepareSession: () => undefined, execute: async () => undefined });
+    const bridge = new LoopRuntimeBridge({ botUid: '559', controllerUid: '602', evidenceSender: {} as any, prepareSession: () => undefined, execute: async value => buildLoopExecutionResult(value, 'failed') });
     await assert.rejects(() => bridge.handle(JSON.stringify(invalid), topic, '602'), /workerSessionId/);
   });
 });

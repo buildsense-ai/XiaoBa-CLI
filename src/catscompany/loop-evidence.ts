@@ -25,6 +25,7 @@ export interface LoopActionPacket {
   workerTopicId: string;
   evidenceTopicId: string;
   attemptId: string;
+  ownerUid: string;
   generation: number;
   runtimePrincipal: string;
   workerSessionId: string;
@@ -67,9 +68,10 @@ export interface LoopEvidenceSenderOptions {
 }
 
 function requiredString(value: unknown, name: string): string {
-  const text = String(value || '').trim();
-  if (!text) throw new Error(`Loop Action packet ${name} is required`);
-  return text;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Loop Action packet ${name} is required`);
+  }
+  return value;
 }
 
 function requiredInteger(value: unknown, name: string): number {
@@ -162,6 +164,7 @@ export function validateLoopActionPacket(
   requiredString(packet.actionKey, 'actionKey');
   requiredString(packet.workItemId, 'workItemId');
   requiredString(packet.attemptId, 'attemptId');
+  requiredString(packet.ownerUid, 'ownerUid');
   requiredInteger(packet.generation, 'generation');
   validateWorkerSessionId(packet.workerSessionId, workerTopicId, botUid);
   if (!packet.workBundle || typeof packet.workBundle !== 'object') throw new Error('Loop Action packet workBundle is required');
