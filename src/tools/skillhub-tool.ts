@@ -105,6 +105,7 @@ export class SkillHubTool implements Tool {
             () => this.subscriptions.subscribe(skillId),
           );
           await context.runtimeServices?.skillManager.loadSkills();
+          await context.runtimeServices?.onSkillsReloaded?.();
           scheduleCurrentBotSkillSync();
           return {
             ok: true,
@@ -116,6 +117,7 @@ export class SkillHubTool implements Tool {
           () => this.subscriptions.unsubscribe(skillId),
         );
         await context.runtimeServices?.skillManager.loadSkills();
+        await context.runtimeServices?.onSkillsReloaded?.();
         scheduleCurrentBotSkillSync();
         return {
           ok: true,

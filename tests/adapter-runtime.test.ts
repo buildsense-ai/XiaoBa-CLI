@@ -197,6 +197,53 @@ describe('adapter runtime', () => {
       /fail reload failure/,
     );
   });
+
+  test('notifies at startup and only schedules a per-turn observer after Skills change', async () => {
+    writeTestSkill('adapter-runtime-demo');
+    const runtime = createAdapterRuntime({ surface: 'catscompany' });
+    let notifications = 0;
+    runtime.services.onSkillsReloaded = () => {
+      notifications += 1;
+    };
+
+    await runtime.loadSkills();
+    assert.equal(notifications, 1);
+
+    await runtime.sessionManagerOptions.skillReloadHandler?.();
+    assert.equal(notifications, 1);
+
+    fs.appendFileSync(
+      path.join(process.cwd(), 'skills', 'adapter-runtime-demo', 'SKILL.md'),
+      '\nUpdated runtime instructions.',
+      'utf-8',
+    );
+    runtime.services.onSkillsReloaded = () => {
+      notifications += 1;
+      return new Promise<void>(() => {});
+    };
+    await runtime.sessionManagerOptions.skillReloadHandler?.();
+    await Promise.resolve();
+    assert.equal(notifications, 2);
+
+    fs.writeFileSync(
+      path.join(process.cwd(), 'skills', 'adapter-runtime-demo', '.xiaoba-skillhub-install.json'),
+      JSON.stringify({
+        source: 'skillhub',
+        skillId: 'test/adapter-runtime-demo',
+        name: 'adapter-runtime-demo',
+        installName: 'adapter-runtime-demo',
+        version: '1.0.0',
+        packageChecksumSha256: '0'.repeat(64),
+      }),
+      'utf-8',
+    );
+    runtime.services.onSkillsReloaded = () => {
+      notifications += 1;
+    };
+    await runtime.sessionManagerOptions.skillReloadHandler?.();
+    await Promise.resolve();
+    assert.equal(notifications, 3);
+  });
 });
 
 function writeTestSkill(name: string): void {

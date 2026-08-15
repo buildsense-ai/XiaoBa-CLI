@@ -1,3 +1,4 @@
+import type { BotRuntimeSkillInventory } from '../bot-skills/runtime-inventory';
 import {
   CatsClient,
   MessageContext,
@@ -78,6 +79,19 @@ import {
   SkillHubThinRpcHandler,
   SKILLHUB_THIN_RPC_TOOLS,
 } from './skillhub-rpc';
+import {
+  createBotRuntimeSkillInventory,
+  reportBotRuntimeSkillInventory,
+} from '../bot-skills/runtime-inventory';
+import {
+  inferCatsCompanyHttpBaseUrl,
+  resolveRuntimeSkillInventoryHttpBaseUrl,
+} from './runtime-inventory-endpoint';
+
+export {
+  inferCatsCompanyHttpBaseUrl,
+  resolveRuntimeSkillInventoryHttpBaseUrl,
+} from './runtime-inventory-endpoint';
 
 interface PendingAttachment {
   fileName: string;
@@ -155,6 +169,7 @@ const SUBAGENT_FALLBACK_MAX_DELIVERY_ATTEMPTS = 3;
 const NATIVE_FEISHU_CONTEXT_PAGE_SIZE = 100;
 const BACKGROUND_SUBAGENT_COMPLETION_MAX_ITEMS = 6;
 const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
+const RUNTIME_SKILL_INVENTORY_HEARTBEAT_MS = 5 * 60_000;
 const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'send_text',
@@ -465,6 +480,13 @@ export class CatsCompanyBot {
     model_status?: ReturnType<typeof resolveCatsDeviceModelStatus>;
   };
   private readonly skillHubThinRpc: SkillHubThinRpcHandler;
+  private readonly runtimeSkillInventoryAuth: { apiKey: string; httpBaseUrl: string };
+  private readonly runtimeSkillInventoryInstanceID = randomUUID();
+  private runtimeSkillInventoryReportSequence = 0;
+  private runtimeSkillInventoryReportInFlight?: Promise<void>;
+  private runtimeSkillInventoryReportPending = false;
+  private runtimeSkillInventoryReportTimer?: ReturnType<typeof setTimeout>;
+  private runtimeSkillInventoryHeartbeatTimer?: ReturnType<typeof setInterval>;
 
   constructor(config: CatsCompanyConfig) {
     this.botUid = String(config.botUid || '').trim() || null;
@@ -507,11 +529,27 @@ export class CatsCompanyBot {
       isShuttingDown: () => this.shuttingDown,
       enabled: runtimeRole === 'desktop',
     });
+    this.runtimeSkillInventoryAuth = {
+      apiKey: config.apiKey,
+      // An empty value intentionally disables inventory reporting when the
+      // configured endpoint is not a valid same-origin HTTP counterpart of
+      // the connected WebSocket. Other connector traffic keeps its legacy
+      // endpoint resolution behavior.
+      httpBaseUrl: resolveRuntimeSkillInventoryHttpBaseUrl(
+        config.serverUrl,
+        config.httpBaseUrl,
+      ) || '',
+    };
 
     const runtime = createCatsCompanyRuntime(config.sessionTTL);
     this.runtime = runtime;
     this.runtimeProfile = runtime.profile;
     this.agentServices = runtime.services;
+    this.agentServices.onSkillsReloaded = () => {
+      // Inventory is observability only. Coalesce it onto a later event-loop
+      // turn, so a SkillHub mutation never waits for file hashing or network.
+      this.scheduleRuntimeSkillInventoryReport();
+    };
     this.cloudSessionRestorer = new CatsCompanyCloudSessionRestorer(this.bot, this.agentServices.aiService);
     const { toolManager } = this.agentServices;
 
@@ -549,6 +587,8 @@ export class CatsCompanyBot {
         Logger.warning(`CatsCo 设备注册失败，继续保持聊天连接: ${err?.message || err}`);
       });
       this.startDeviceRegistrationRefresh();
+      this.startRuntimeSkillInventoryHeartbeat();
+      this.scheduleRuntimeSkillInventoryReport();
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {
@@ -647,6 +687,91 @@ export class CatsCompanyBot {
     if (!this.deviceRegistrationTimer) return;
     clearInterval(this.deviceRegistrationTimer);
     this.deviceRegistrationTimer = undefined;
+  }
+
+  private startRuntimeSkillInventoryHeartbeat(): void {
+    this.stopRuntimeSkillInventoryHeartbeat();
+    this.runtimeSkillInventoryHeartbeatTimer = setInterval(() => {
+      this.scheduleRuntimeSkillInventoryReport();
+    }, RUNTIME_SKILL_INVENTORY_HEARTBEAT_MS);
+    (this.runtimeSkillInventoryHeartbeatTimer as any).unref?.();
+  }
+
+  private stopRuntimeSkillInventoryHeartbeat(): void {
+    if (!this.runtimeSkillInventoryHeartbeatTimer) return;
+    clearInterval(this.runtimeSkillInventoryHeartbeatTimer);
+    this.runtimeSkillInventoryHeartbeatTimer = undefined;
+  }
+
+  private scheduleRuntimeSkillInventoryReport(): void {
+    if (this.shuttingDown || this.runtimeSkillInventoryReportTimer) return;
+    this.runtimeSkillInventoryReportTimer = setTimeout(() => {
+      this.runtimeSkillInventoryReportTimer = undefined;
+      if (!this.shuttingDown) void this.reportRuntimeSkillInventory();
+    }, 0);
+    (this.runtimeSkillInventoryReportTimer as any).unref?.();
+  }
+
+  private stopScheduledRuntimeSkillInventoryReport(): void {
+    if (!this.runtimeSkillInventoryReportTimer) return;
+    clearTimeout(this.runtimeSkillInventoryReportTimer);
+    this.runtimeSkillInventoryReportTimer = undefined;
+  }
+
+  private async refreshRuntimeSkillInventory(): Promise<BotRuntimeSkillInventory | undefined> {
+    const botID = String(this.botUid || '').trim();
+    if (!botID) return undefined;
+    try {
+      const inventory = await createBotRuntimeSkillInventory(
+        botID,
+        this.agentServices.skillManager.getAllSkills(),
+        () => new Date(),
+        {
+          runtimeInstanceId: this.runtimeSkillInventoryInstanceID,
+          reportSequence: this.runtimeSkillInventoryReportSequence + 1,
+        },
+      );
+      return inventory;
+    } catch (error: any) {
+      // Inventory is observability only. A broken registry or unreadable skill
+      // must never prevent the Agent from starting or serving messages.
+      Logger.warning(`CatsCo runtime Skill inventory 刷新失败，继续运行 Agent: ${error?.message || error}`);
+      return undefined;
+    }
+  }
+
+  private async reportRuntimeSkillInventory(): Promise<void> {
+    if (this.shuttingDown) return;
+    if (this.runtimeSkillInventoryReportInFlight) {
+      this.runtimeSkillInventoryReportPending = true;
+      return this.runtimeSkillInventoryReportInFlight;
+    }
+    const report = (async () => {
+      try {
+        const inventory = await this.refreshRuntimeSkillInventory();
+        if (this.shuttingDown || !inventory) return;
+        this.runtimeSkillInventoryReportSequence = Number(inventory.reportSequence || 0);
+        const accepted = await reportBotRuntimeSkillInventory({
+          botId: inventory.botId,
+          auth: this.runtimeSkillInventoryAuth,
+          skills: [],
+          inventory,
+        });
+        void accepted;
+      } catch (error: any) {
+        // Inventory is observability only. A temporarily unavailable CatsCo
+        // API must never block an Agent from serving chat traffic.
+        Logger.warning(`CatsCo runtime Skill inventory 上报失败，稍后重试: ${error?.message || error}`);
+      } finally {
+        this.runtimeSkillInventoryReportInFlight = undefined;
+        if (this.runtimeSkillInventoryReportPending && !this.shuttingDown) {
+          this.runtimeSkillInventoryReportPending = false;
+          void this.reportRuntimeSkillInventory();
+        }
+      }
+    })();
+    this.runtimeSkillInventoryReportInFlight = report;
+    await report;
   }
 
   private buildDeviceRpcTransport(): DeviceRpcTransport {
@@ -3181,6 +3306,8 @@ export class CatsCompanyBot {
     this.shuttingDown = true;
     this.connectorReady = false;
     this.stopDeviceRegistrationRefresh();
+    this.stopRuntimeSkillInventoryHeartbeat();
+    this.stopScheduledRuntimeSkillInventoryReport();
     // 原子停止：在第一个 await 之前显式取消排队用户工作、子任务批量定时器与云恢复，
     // 保证 shutdown 开始后 drainMessageQueue / beginConversationTask 不再消费或新建任务。
     this.pendingAttachments.clear();

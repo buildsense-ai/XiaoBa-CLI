@@ -10,6 +10,7 @@ import {
   DEFAULT_CATSCO_WS_URL,
   createCatsCoLocalConfigService,
 } from './local-config';
+import { inferCatsCompanyHttpBaseUrl } from './runtime-inventory-endpoint';
 
 export type CatsCoRuntimeMissingField = 'serverUrl' | 'apiKey' | 'bodyId';
 
@@ -96,30 +97,41 @@ export function resolveCatsCoRuntimeConfig(
   const service = createCatsCoLocalConfigService({ runtimeRoot, env: effectiveEnv });
   let localConfig = service.load();
   let auth = service.getAuthState(options.overrides || {});
-  if (options.migrateLegacyEnvBinding && migrateLegacyEnvBinding(service, localConfig, auth)) {
+
+  const resolveEndpoints = (): { serverUrl: string | undefined; httpBaseUrl: string } => {
+    const explicitServerUrl = firstNonEmpty(
+      options.overrides?.serverUrl,
+      effectiveEnv.CATSCO_SERVER_URL,
+      effectiveEnv.CATSCOMPANY_SERVER_URL,
+      localConfig.endpoints?.serverUrl,
+    );
+    const explicitHttpBaseUrl = firstNonEmpty(
+      options.overrides?.httpBaseUrl,
+      effectiveEnv.CATSCO_HTTP_BASE_URL,
+      effectiveEnv.CATSCOMPANY_HTTP_BASE_URL,
+      localConfig.endpoints?.httpBaseUrl,
+    );
+    const serverUrl = firstNonEmpty(explicitServerUrl, config.catscompany?.serverUrl, auth.serverUrl);
+    const requestedHttpBaseUrl = firstNonEmpty(explicitHttpBaseUrl, config.catscompany?.httpBaseUrl);
+    const httpBaseUrl = normalizeBaseUrl(
+      requestedHttpBaseUrl || inferCatsCompanyHttpBaseUrl(serverUrl || '') || auth.httpBaseUrl,
+      DEFAULT_CATSCO_HTTP_BASE_URL,
+      { upgradeCatsCoHttp: true },
+    );
+    return { serverUrl, httpBaseUrl };
+  };
+
+  let { serverUrl, httpBaseUrl } = resolveEndpoints();
+  if (options.migrateLegacyEnvBinding && migrateLegacyEnvBinding(service, localConfig, {
+    ...auth,
+    serverUrl: serverUrl || auth.serverUrl,
+    httpBaseUrl,
+  })) {
     localConfig = service.load();
     auth = service.getAuthState(options.overrides || {});
+    ({ serverUrl, httpBaseUrl } = resolveEndpoints());
   }
-
-  const explicitServerUrl = firstNonEmpty(
-    options.overrides?.serverUrl,
-    effectiveEnv.CATSCO_SERVER_URL,
-    effectiveEnv.CATSCOMPANY_SERVER_URL,
-    localConfig.endpoints?.serverUrl,
-  );
-  const explicitHttpBaseUrl = firstNonEmpty(
-    options.overrides?.httpBaseUrl,
-    effectiveEnv.CATSCO_HTTP_BASE_URL,
-    effectiveEnv.CATSCOMPANY_HTTP_BASE_URL,
-    localConfig.endpoints?.httpBaseUrl,
-  );
-  const serverUrl = firstNonEmpty(explicitServerUrl, config.catscompany?.serverUrl, auth.serverUrl);
   const rawApiKey = firstNonEmpty(auth.apiKey, config.catscompany?.apiKey);
-  const httpBaseUrl = normalizeBaseUrl(
-    firstNonEmpty(explicitHttpBaseUrl, config.catscompany?.httpBaseUrl, auth.httpBaseUrl),
-    DEFAULT_CATSCO_HTTP_BASE_URL,
-    { upgradeCatsCoHttp: true },
-  );
   const proposedBotBinding = Boolean(options.overrides?.botUid && options.overrides?.apiKey);
   const confirmedLocalBotBinding = hasConfirmedLocalBotBinding(localConfig, auth.uid);
   const rawBotUid = auth.botUid;

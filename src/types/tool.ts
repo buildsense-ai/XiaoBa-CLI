@@ -188,6 +188,8 @@ export type FeishuChannelCallbacks = ChannelCallbacks;
 export interface RuntimeToolServices {
   aiService: AIService;
   skillManager: SkillManager;
+  /** Lets a connected runtime publish a fresh Skill inventory after a mutation reload. */
+  onSkillsReloaded?: () => Promise<void> | void;
 }
 
 export type ToolRiskLevel = 'low' | 'medium' | 'high';

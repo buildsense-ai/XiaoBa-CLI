@@ -53,6 +53,7 @@ export interface AgentTurnServices {
   };
   toolManager: ToolManager;
   skillManager: SkillManager;
+  onSkillsReloaded?: () => Promise<void> | void;
 }
 
 export interface AgentTurnCallbacks {
@@ -312,6 +313,9 @@ export class AgentTurnController {
           runtimeServices: {
             aiService: this.options.services.aiService,
             skillManager: this.options.services.skillManager,
+            ...(this.options.services.onSkillsReloaded
+              ? { onSkillsReloaded: this.options.services.onSkillsReloaded }
+              : {}),
           },
           abortSignal: options.abortSignal,
           channel: options.channel,
