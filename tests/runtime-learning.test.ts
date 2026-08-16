@@ -65,6 +65,7 @@ import {
   type SessionLogSourceIdentity,
   type ExternalSourceReader,
   type SessionLogSourceResource,
+  type SourceFailureState,
 } from '../src/utils/session-log-source';
 import { acceptReviewObligations } from './evidence-review-test-fixtures';
 
@@ -4230,5 +4231,97 @@ describe('RuntimeLearning — external provenance crash fallback', () => {
 
     assert.equal((env.runtimeLearning as any).isEpisodeFromExternalSource('episode-crash-fallback'), true);
     assert.equal((env.runtimeLearning as any).isEpisodeFromExternalSource('episode-internal'), false);
+  });
+});
+
+describe('RuntimeLearning — bounded external resource failure scheduling state', () => {
+  let env: TestEnv;
+
+  beforeEach(() => { env = setupEnv(0); });
+  afterEach(() => { env.restore(); env.teardown(); });
+
+  const resourceFailure = (resourceRef: string, ordinal: number): SourceFailureState => ({
+    consecutiveFailures: 1,
+    lastFailedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0, ordinal)).toISOString(),
+    lastError: `failure ${resourceRef}`,
+    suspendedUntil: null,
+    failureClass: 'quarantine',
+    nextRetryAt: null,
+    requiresOperatorAction: true,
+    resourceRef,
+    eventId: `event-${resourceRef}`,
+    lastAttemptedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0, ordinal)).toISOString(),
+    lastSuccessfulReadAt: null,
+  });
+
+  test('caps each provider/source in memory and persists only the newest failures', () => {
+    const runtime = env.runtimeLearning as any;
+    for (let ordinal = 0; ordinal < 105; ordinal++) {
+      const resourceRef = `resource-${String(ordinal).padStart(3, '0')}`;
+      runtime.setExternalResourceFailure('github', 'source-a', resourceRef, resourceFailure(resourceRef, ordinal));
+    }
+    runtime.setExternalResourceFailure('github', 'source-b', 'independent', resourceFailure('independent', 0));
+
+    const sourceA = env.runtimeLearning.getExternalResourceFailureState('github', 'source-a');
+    assert.equal(sourceA.size, 100);
+    assert.equal(sourceA.has('resource-004'), false);
+    assert.equal(sourceA.has('resource-005'), true);
+    assert.equal(sourceA.has('resource-104'), true);
+    assert.equal(env.runtimeLearning.getExternalResourceFailureState('github', 'source-b').size, 1);
+
+    runtime.saveExternalSourceSchedulingState();
+    const schedulingStatePath = path.join(path.dirname(env.episodeStorePath), 'external-source-scheduling-state.json');
+    const persisted = JSON.parse(fs.readFileSync(schedulingStatePath, 'utf-8')) as {
+      resourceLanes: Array<{ provider: string; sourceId: string; resourceRef: string }>;
+    };
+    assert.equal(persisted.resourceLanes.filter(lane => lane.provider === 'github' && lane.sourceId === 'source-a').length, 100);
+    assert.equal(persisted.resourceLanes.some(lane => lane.resourceRef === 'resource-004'), false);
+  });
+
+  test('compacts oversized restored scheduling state deterministically', () => {
+    const schedulingStatePath = path.join(path.dirname(env.episodeStorePath), 'external-source-scheduling-state.json');
+    const resourceLanes = Array.from({ length: 103 }, (_, ordinal) => {
+      const resourceRef = `restored-${String(ordinal).padStart(3, '0')}`;
+      return {
+        provider: 'github',
+        sourceId: 'restored-source',
+        resourceRef,
+        state: resourceFailure(resourceRef, ordinal),
+      };
+    });
+    fs.writeFileSync(schedulingStatePath, JSON.stringify({ schemaVersion: 3, lanes: [], resourceLanes }));
+
+    const restored = createRestartableRuntimeLearning(env.root);
+    const snapshot = restored.getExternalResourceFailureState('github', 'restored-source');
+    assert.equal(snapshot.size, 100);
+    assert.deepEqual([...snapshot.keys()].sort(), resourceLanes.slice(3).map(lane => lane.resourceRef));
+
+    (restored as any).saveExternalSourceSchedulingState();
+    const persisted = JSON.parse(fs.readFileSync(schedulingStatePath, 'utf-8')) as { resourceLanes: unknown[] };
+    assert.equal(persisted.resourceLanes.length, 100);
+  });
+
+  test('successful resources clear only their own retained failure', () => {
+    const runtime = env.runtimeLearning as any;
+    const identity = { provider: 'github', sourceId: 'success-source' };
+    runtime.setExternalResourceFailure('github', 'success-source', 'resource-a', resourceFailure('resource-a', 1));
+    runtime.setExternalResourceFailure('github', 'success-source', 'resource-b', resourceFailure('resource-b', 2));
+    runtime.setExternalSourceFailure('github', 'success-source', resourceFailure('resource-b', 2));
+
+    runtime.resetExternalSourceFailure(identity, 'resource-b');
+    const remaining = env.runtimeLearning.getExternalResourceFailureState('github', 'success-source');
+    assert.deepEqual([...remaining.keys()], ['resource-a']);
+    assert.equal(env.runtimeLearning.getExternalSourceFailure('github', 'success-source')?.resourceRef, 'resource-a');
+  });
+
+  test('source retry clears every retained resource failure', () => {
+    const runtime = env.runtimeLearning as any;
+    runtime.setExternalResourceFailure('github', 'retry-source', 'resource-a', resourceFailure('resource-a', 1));
+    runtime.setExternalResourceFailure('github', 'retry-source', 'resource-b', resourceFailure('resource-b', 2));
+    runtime.setExternalSourceFailure('github', 'retry-source', resourceFailure('resource-b', 2));
+
+    assert.equal(env.runtimeLearning.retryExternalSourceFailure('github', 'retry-source'), true);
+    assert.equal(env.runtimeLearning.getExternalResourceFailureState('github', 'retry-source').size, 0);
+    assert.equal(env.runtimeLearning.getExternalSourceFailure('github', 'retry-source')?.consecutiveFailures, 0);
   });
 });

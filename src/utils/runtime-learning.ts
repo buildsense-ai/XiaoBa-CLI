@@ -489,6 +489,7 @@ function normalizeDiscoveryQuota(value: number | undefined, fallback: number): n
 
 const EXTERNAL_BACKFILL_SLICE_RESOURCES = 10;
 const EXTERNAL_BACKFILL_SLICE_BYTES = 2 * 1024 * 1024;
+const MAX_EXTERNAL_RESOURCE_FAILURES_PER_SOURCE = 100;
 // A single xurl discovery/read pair is an external process boundary. Keep the
 // cooperative slice bounded, but leave enough room for normal child-process
 // startup and one bounded page under concurrent Runtime test/load conditions.
@@ -1548,6 +1549,36 @@ export class RuntimeLearning {
       sourceId,
       resourceRef,
     }), state);
+    this.compactExternalResourceFailures(provider, sourceId);
+  }
+
+  private compactExternalResourceFailures(provider?: string, sourceId?: string): void {
+    const groups = new Map<string, Array<{
+      key: string;
+      identity: ExternalResourceLaneIdentity;
+      state: SourceFailureState;
+    }>>();
+    for (const [key, state] of this.externalResourceFailureState) {
+      const identity = parseExternalResourceLaneKey(key);
+      if (!identity) continue;
+      if (provider !== undefined && identity.provider !== provider) continue;
+      if (sourceId !== undefined && identity.sourceId !== sourceId) continue;
+      const groupKey = externalSourceLaneKey(identity);
+      const entries = groups.get(groupKey) ?? [];
+      entries.push({ key, identity, state });
+      groups.set(groupKey, entries);
+    }
+    for (const entries of groups.values()) {
+      if (entries.length <= MAX_EXTERNAL_RESOURCE_FAILURES_PER_SOURCE) continue;
+      entries.sort((left, right) => (
+        (right.state.lastFailedAt ?? '').localeCompare(left.state.lastFailedAt ?? '', 'en')
+        || left.identity.resourceRef.localeCompare(right.identity.resourceRef, 'en')
+      ));
+      for (const entry of entries.slice(MAX_EXTERNAL_RESOURCE_FAILURES_PER_SOURCE)) {
+        this.externalResourceFailureState.delete(entry.key);
+        this.externalSourceSchedulingStateDirty = true;
+      }
+    }
   }
 
   private listExternalResourceFailures(
@@ -4623,6 +4654,7 @@ export class RuntimeLearning {
             resourceRef: lane.resourceRef,
           }), state);
         }
+        this.compactExternalResourceFailures();
         return;
       }
       if (!parsed.sources || typeof parsed.sources !== 'object') return;
@@ -4638,6 +4670,7 @@ export class RuntimeLearning {
   }
 
   private saveExternalSourceSchedulingState(): void {
+    this.compactExternalResourceFailures();
     if (!this.externalSourceSchedulingStateDirty) return;
     try {
       const lanes: Array<ExternalSourceLaneIdentity & { state: SourceFailureState }> = [];
