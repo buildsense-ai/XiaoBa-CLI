@@ -1,0 +1,1352 @@
+/**
+ * Issue #79 — explicit, bounded External Session Log Backfill.
+ *
+ * This module introduces an opt-in, operator-triggered backfill service that
+ * is deliberately separate from the normal RuntimeLearning wake/heartbeat path.
+ * It owns its own durable state and audit trail so historical external logs do
+ * not silently become ordinary continuous discovery progress.
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+import { DistillationUnit } from './distillation-unit';
+import {
+  SessionLogSourceIdentity,
+  SessionLogSourceResource,
+  SourceCursor,
+  SourceEventIdentity,
+} from './session-log-source';
+
+export interface ExternalSessionLogBackfillRange {
+  /** Inclusive monotonic start position inside the chosen source. */
+  readonly startPosition: number;
+  /** Inclusive monotonic end position inside the chosen source. */
+  readonly endPosition: number;
+  /** Optional explicit bounded resource selection (for example conversations). */
+  readonly resourceRefs?: readonly string[];
+}
+
+export interface ExternalSessionLogBackfillLimits {
+  readonly maxResources: number;
+  readonly maxBytes: number;
+  readonly maxElapsedMs: number;
+  /** Optional cooperative event/page cap used by Runtime-owned slicing. */
+  readonly maxEvents?: number;
+}
+
+export interface ExternalSessionLogBackfillRequest {
+  readonly operationId: string;
+  readonly triggeredBy: string;
+  readonly provider: string;
+  readonly sourceId: string;
+  readonly range: ExternalSessionLogBackfillRange;
+  readonly limits: ExternalSessionLogBackfillLimits;
+  /** Deliberate audited exception that reopens exactly one durable tombstone. */
+  readonly reopenTombstoneId?: string;
+}
+
+export interface ExternalSessionLogBackfillEvent {
+  readonly identity: SourceEventIdentity;
+  readonly distillationUnit: DistillationUnit | null;
+  readonly byteLength: number;
+}
+
+export interface ExternalSessionLogBackfillReadResult {
+  readonly events: readonly ExternalSessionLogBackfillEvent[];
+  readonly status: 'stable' | 'pending';
+  readonly exhausted: boolean;
+  readonly newCursor: SourceCursor;
+}
+
+export interface ExternalSessionLogBackfillSource {
+  readonly identity: SessionLogSourceIdentity;
+  discoverResources(): readonly SessionLogSourceResource[];
+  read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSessionLogBackfillReadResult;
+}
+
+export interface ExternalSessionLogBackfillIngestResult {
+  readonly admittedEpisodeIds: readonly string[];
+  /** Present when Runtime intentionally skipped this event due to a tombstone. */
+  readonly tombstoneId?: string;
+}
+
+export interface ExternalSessionLogBackfillIngestContext {
+  readonly operationId: string;
+  readonly provider: string;
+  readonly sourceId: string;
+  readonly triggeredBy: string;
+  readonly resource: SessionLogSourceResource;
+  readonly eventIdentity: SourceEventIdentity;
+}
+
+export type ExternalSessionLogBackfillIngestor = (
+  unit: DistillationUnit,
+  context: ExternalSessionLogBackfillIngestContext,
+) => ExternalSessionLogBackfillIngestResult;
+
+export type ExternalSessionLogBackfillStatus =
+  | 'pending'
+  | 'running'
+  | 'quota_reached'
+  | 'source_failed'
+  | 'completed'
+  | 'blocked_zero_progress';
+
+export type ExternalSessionLogBackfillResourceStateKind =
+  | 'processed'
+  | 'pending'
+  | 'failed'
+  | 'in_progress';
+
+export interface ExternalSessionLogBackfillFailure {
+  readonly resourceRef: string;
+  readonly eventId?: string;
+  readonly message: string;
+  readonly at: string;
+  /** Stable structured failure code (e.g. xurl_output_limit) when the underlying error carries one. */
+  readonly code?: string;
+  /** Structured failure details preserved from the underlying error (never parsed from messages). */
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+export interface ExternalSessionLogBackfillResourceState {
+  readonly status: ExternalSessionLogBackfillResourceStateKind;
+  readonly updatedAt: string;
+  readonly message?: string;
+  readonly eventId?: string;
+  /** Stable structured failure code when this resource failed with a structured error. */
+  readonly failureCode?: string;
+}
+
+export interface ExternalSessionLogBackfillMetrics {
+  readonly runsStarted: number;
+  readonly resourcesDiscovered: number;
+  /** Cumulative successful resource completions across runs. */
+  readonly resourcesProcessed: number;
+  /**
+   * Unique current resources in the pending state. Distinct from cumulative
+   * attempt counters so quota resume progress is observable.
+   */
+  readonly pendingResources: number;
+  /** Unique current resources in the failed state. */
+  readonly failedResources: number;
+  /** Cumulative resource-failure attempts (may exceed unique failedResources). */
+  readonly failedResourceAttempts: number;
+  /** Cumulative pending observations (may exceed unique pendingResources). */
+  readonly pendingResourceAttempts: number;
+  readonly ingestedEvents: number;
+  readonly duplicateEventsSkipped: number;
+  readonly tombstonedEventsSkipped: number;
+  readonly admittedEpisodes: number;
+  readonly bytesProcessed: number;
+  /** Consecutive runs that made no cursor/event progress under quota. */
+  readonly zeroProgressRuns: number;
+}
+
+export interface ExternalSessionLogBackfillState {
+  readonly schemaVersion: number;
+  readonly operationId: string;
+  readonly triggeredBy: string;
+  readonly provider: string;
+  readonly sourceId: string;
+  readonly range: ExternalSessionLogBackfillRange;
+  readonly reopenTombstoneId?: string;
+  readonly status: ExternalSessionLogBackfillStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly completedAt: string | null;
+  readonly resourceCursors: Record<string, SourceCursor>;
+  readonly processedEventIds: Record<string, string | null>;
+  /** Latest known status per resourceRef (unique current state). */
+  readonly resourceStates: Record<string, ExternalSessionLogBackfillResourceState>;
+  readonly failures: readonly ExternalSessionLogBackfillFailure[];
+  readonly metrics: ExternalSessionLogBackfillMetrics;
+}
+
+export type ExternalSessionLogBackfillAuditKind =
+  | 'started'
+  | 'resumed'
+  | 'resource_ingested'
+  | 'resource_pending'
+  | 'resource_duplicate'
+  | 'resource_tombstone'
+  | 'resource_failed'
+  | 'quota_reached'
+  | 'pending'
+  | 'source_failed'
+  | 'completed';
+
+export interface ExternalSessionLogBackfillAuditEntry {
+  readonly timestamp: string;
+  readonly kind: ExternalSessionLogBackfillAuditKind;
+  readonly operationId: string;
+  readonly provider: string;
+  readonly sourceId: string;
+  readonly triggeredBy: string;
+  readonly range: ExternalSessionLogBackfillRange;
+  readonly reopenTombstoneId?: string;
+  readonly status: ExternalSessionLogBackfillStatus;
+  readonly resourceRef?: string;
+  readonly eventId?: string;
+  readonly message?: string;
+  readonly metrics: ExternalSessionLogBackfillMetrics;
+}
+
+export interface ExternalSessionLogBackfillRunResult {
+  readonly status: ExternalSessionLogBackfillStatus;
+  readonly discoveredResources: number;
+  readonly processedResources: number;
+  readonly pendingResources: number;
+  readonly failedResources: number;
+  readonly ingestedEvents: number;
+  readonly duplicateEventsSkipped: number;
+  readonly tombstonedEventsSkipped: number;
+  readonly admittedEpisodes: number;
+  readonly bytesProcessed: number;
+  /** Stable structured failure code when status is source_failed (e.g. xurl_output_limit). */
+  readonly failureCode?: string;
+  /** Structured failure details when status is source_failed. */
+  readonly failureDetails?: Readonly<Record<string, unknown>>;
+  readonly state: ExternalSessionLogBackfillState;
+}
+
+export interface ExternalSessionLogBackfillServiceOptions {
+  readonly stateFilePath: string;
+  readonly auditFilePath: string;
+  readonly now?: () => Date;
+}
+
+export type ExternalHistoryProgressPhase =
+  | 'discovering'
+  | 'importing'
+  | 'complete'
+  | 'failed';
+
+/**
+ * Exact durable progress for external history import.
+ * `processed` counts only resources whose full durable acknowledgement completed
+ * (read + sanitize + Episode/Capsule + provenance + cursor ack + persisted state).
+ * `total` is null while the selected catalog is still being discovered.
+ */
+export interface ExternalHistoryProgressUpdate {
+  readonly processed: number;
+  readonly total: number | null;
+  readonly completed?: number;
+  readonly failed?: number;
+  readonly skipped?: number;
+  readonly remaining?: number | null;
+  readonly provider?: string;
+  readonly phase: ExternalHistoryProgressPhase;
+}
+
+export interface ExternalSessionLogBackfillRunOptions {
+  /** Runtime xURL reads may return a complete thread; admit only the named range. */
+  readonly filterOutOfRangeEvents?: boolean;
+  /**
+   * Reports snapshots only after the corresponding running, catalog, or
+   * processed-resource state is durable. A bare read success never advances it.
+   */
+  readonly onProgress?: (progress: ExternalHistoryProgressUpdate) => void;
+}
+
+export class ExternalSessionLogBackfillService {
+  private readonly now: () => Date;
+
+  constructor(private readonly options: ExternalSessionLogBackfillServiceOptions) {
+    this.now = options.now ?? (() => new Date());
+  }
+
+  run(
+    request: ExternalSessionLogBackfillRequest,
+    source: ExternalSessionLogBackfillSource,
+    ingest: ExternalSessionLogBackfillIngestor,
+    options: ExternalSessionLogBackfillRunOptions = {},
+  ): ExternalSessionLogBackfillRunResult {
+    validateBackfillRequest(request);
+    validateBackfillSource(request, source);
+
+    const startedAt = this.now();
+    let state = loadExternalSessionLogBackfillState(this.options.stateFilePath)
+      ?? createExternalSessionLogBackfillState(request, startedAt);
+    state = assertCompatibleState(state, request);
+    // blocked_zero_progress is operator-actionable and resumable. A later
+    // invocation after policy/limit correction must be able to progress; do
+    // not permanently latch the operation closed. Clear the consecutive
+    // zero-progress counter so this retry can re-evaluate under current bounds.
+    if (state.status === 'blocked_zero_progress') {
+      state = {
+        ...state,
+        status: 'running',
+        metrics: {
+          ...state.metrics,
+          zeroProgressRuns: 0,
+        },
+      };
+    }
+    const progressBefore = snapshotProgressFingerprint(state);
+
+    let metrics = {
+      ...state.metrics,
+      runsStarted: state.metrics.runsStarted + 1,
+      resourcesDiscovered: 0,
+    };
+    state = {
+      ...state,
+      status: 'running',
+      updatedAt: startedAt.toISOString(),
+      metrics,
+    };
+    saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+    appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+      timestamp: startedAt.toISOString(),
+      kind: state.metrics.runsStarted === 1 ? 'started' : 'resumed',
+      operationId: state.operationId,
+      provider: state.provider,
+      sourceId: state.sourceId,
+      triggeredBy: state.triggeredBy,
+      range: state.range,
+      reopenTombstoneId: state.reopenTombstoneId,
+      status: state.status,
+      metrics,
+    });
+
+    // Operation total: explicit requested resourceRefs count when provided,
+    // otherwise the stable matched catalog count discovered below. null while
+    // the catalog is still being discovered (indeterminate).
+    const explicitTotal = request.range.resourceRefs && request.range.resourceRefs.length > 0
+      ? request.range.resourceRefs.length
+      : null;
+    let determinateTotal: number | null = null;
+    const emitProgress = (
+      phase: ExternalHistoryProgressPhase,
+      overrides: Partial<ExternalHistoryProgressUpdate> = {},
+    ): void => {
+      const unique = recountUniqueResourceStates(state.resourceStates);
+      const completed = unique.processedResources;
+      const failed = unique.failedResources;
+      const total = overrides.total !== undefined ? overrides.total : determinateTotal;
+      const remaining = total !== null ? Math.max(0, total - completed - failed) : null;
+      const progress: ExternalHistoryProgressUpdate = {
+        processed: completed,
+        total,
+        completed,
+        failed,
+        skipped: 0,
+        remaining,
+        provider: request.provider,
+        phase,
+        ...overrides,
+      };
+      try {
+        options.onProgress?.(progress);
+      } catch {
+        // Progress reporter failures are nonfatal; never fail the durable import.
+      }
+    };
+    // Emit discovering with total=null after the durable running state exists
+    // and before catalog discovery. The catalog is indeterminate until matched.
+    emitProgress('discovering', { total: null });
+
+    let matchedResources: SessionLogSourceResource[];
+    try {
+      matchedResources = selectBackfillResources(source.discoverResources(), request.range);
+      metrics = {
+        ...state.metrics,
+        resourcesDiscovered: matchedResources.length,
+      };
+      state = {
+        ...state,
+        updatedAt: this.now().toISOString(),
+        metrics,
+      };
+      saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+    } catch (error) {
+      const failedAt = this.now();
+      state = recordBackfillFailure(state, '__discover__', undefined, error, failedAt);
+      state = {
+        ...state,
+        status: 'source_failed',
+        updatedAt: failedAt.toISOString(),
+        metrics: {
+          ...state.metrics,
+          failedResourceAttempts: (state.metrics.failedResourceAttempts ?? 0) + 1,
+        },
+      };
+      saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+      appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+        timestamp: failedAt.toISOString(),
+        kind: 'source_failed',
+        operationId: state.operationId,
+        provider: state.provider,
+        sourceId: state.sourceId,
+        triggeredBy: state.triggeredBy,
+        range: state.range,
+        reopenTombstoneId: state.reopenTombstoneId,
+        status: state.status,
+        message: toErrorMessage(error),
+        metrics: state.metrics,
+      });
+      // Discovery failed: catalog is indeterminate unless explicit refs were requested.
+      determinateTotal = explicitTotal;
+      emitProgress('failed', { total: explicitTotal });
+      const structured = extractStructuredFailure(error);
+      return {
+        status: 'source_failed',
+        discoveredResources: 0,
+        processedResources: 0,
+        pendingResources: state.metrics.pendingResources,
+        failedResources: state.metrics.failedResources,
+        ingestedEvents: 0,
+        duplicateEventsSkipped: 0,
+        tombstonedEventsSkipped: 0,
+        admittedEpisodes: 0,
+        bytesProcessed: 0,
+        ...(structured ? { failureCode: structured.code, failureDetails: structured.details } : {}),
+        state,
+      };
+    }
+
+    let processedResources = 0;
+    let ingestedEvents = 0;
+    let duplicateEventsSkipped = 0;
+    let tombstonedEventsSkipped = 0;
+    let admittedEpisodes = 0;
+    let bytesProcessed = 0;
+    let sawPending = false;
+    let sawFailure = false;
+    let quotaReached = false;
+    let eventsProcessed = 0;
+    // After durable catalog selection, the operation total is determinate:
+    // explicit requested resourceRefs count when provided, otherwise the
+    // stable matched catalog count. Do not fake page size as total.
+    determinateTotal = explicitTotal !== null ? explicitTotal : matchedResources.length;
+    // Catalog is selected and durably recorded — emit determinate importing.
+    emitProgress('importing');
+    const matchedResourceRefs = new Set(matchedResources.map(resource => resource.resourceRef));
+    const missingRequestedResourceRefs = (request.range.resourceRefs ?? [])
+      .filter(resourceRef => !matchedResourceRefs.has(resourceRef));
+
+    if (missingRequestedResourceRefs.length > 0) {
+      sawPending = true;
+      for (const resourceRef of missingRequestedResourceRefs) {
+        const nowMissing = this.now();
+        state = setBackfillResourceState(state, resourceRef, 'pending', nowMissing, {
+          message: 'requested resource was not discovered',
+          countAttempt: true,
+        });
+        state = {
+          ...state,
+          updatedAt: nowMissing.toISOString(),
+        };
+        metrics = state.metrics;
+        saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+        appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+          timestamp: nowMissing.toISOString(),
+          kind: 'resource_pending',
+          operationId: state.operationId,
+          provider: state.provider,
+          sourceId: state.sourceId,
+          triggeredBy: state.triggeredBy,
+          range: state.range,
+          reopenTombstoneId: state.reopenTombstoneId,
+          status: state.status,
+          resourceRef,
+          metrics: state.metrics,
+        });
+      }
+    }
+
+    for (const resource of matchedResources) {
+      const now = this.now();
+      if (processedResources >= request.limits.maxResources) {
+        quotaReached = true;
+        break;
+      }
+      if (now.getTime() - startedAt.getTime() >= request.limits.maxElapsedMs) {
+        quotaReached = true;
+        break;
+      }
+      if (
+        request.limits.maxEvents !== undefined
+        && eventsProcessed >= request.limits.maxEvents
+      ) {
+        quotaReached = true;
+        break;
+      }
+
+      // Completed resources must not re-import. Re-read for event-level
+      // dedup, but do not count them as new processed resources (no false
+      // progress). Do not invent skip behavior just for this fix.
+      const alreadyProcessed = state.resourceStates[resource.resourceRef]?.status === 'processed';
+
+      const cursor = state.resourceCursors[resource.resourceRef] ?? {
+        resourceRef: resource.resourceRef,
+        position: -1,
+        processedCount: 0,
+      };
+
+      let readResult: ExternalSessionLogBackfillReadResult;
+      try {
+        readResult = source.read(resource, cursor);
+      } catch (error) {
+        sawFailure = true;
+        state = recordBackfillFailure(state, resource.resourceRef, undefined, error, now);
+        metrics = state.metrics;
+        saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+        appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+          timestamp: now.toISOString(),
+          kind: 'resource_failed',
+          operationId: state.operationId,
+          provider: state.provider,
+          sourceId: state.sourceId,
+          triggeredBy: state.triggeredBy,
+          range: state.range,
+          reopenTombstoneId: state.reopenTombstoneId,
+          status: state.status,
+          resourceRef: resource.resourceRef,
+          message: toErrorMessage(error),
+          metrics: state.metrics,
+        });
+        continue;
+      }
+
+      if (readResult.status === 'pending') {
+        sawPending = true;
+        state = setBackfillResourceState(state, resource.resourceRef, 'pending', now, {
+          message: 'source reported pending',
+          countAttempt: true,
+        });
+        state = {
+          ...state,
+          updatedAt: now.toISOString(),
+        };
+        metrics = state.metrics;
+        saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+        appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+          timestamp: now.toISOString(),
+          kind: 'resource_pending',
+          operationId: state.operationId,
+          provider: state.provider,
+          sourceId: state.sourceId,
+          triggeredBy: state.triggeredBy,
+          range: state.range,
+          reopenTombstoneId: state.reopenTombstoneId,
+          status: state.status,
+          resourceRef: resource.resourceRef,
+          metrics: state.metrics,
+        });
+        continue;
+      }
+
+      const belowReopenedBoundary = request.reopenTombstoneId !== undefined
+        && readResult.newCursor.position < request.range.endPosition;
+      if (readResult.events.length === 0) {
+        if (request.reopenTombstoneId !== undefined) {
+          sawPending = true;
+          state = setBackfillResourceState(state, resource.resourceRef, 'pending', now, {
+            message: 'reopened range has no events yet',
+            countAttempt: true,
+          });
+          state = {
+            ...state,
+            updatedAt: now.toISOString(),
+            ...(belowReopenedBoundary
+              ? {
+                resourceCursors: {
+                  ...state.resourceCursors,
+                  [resource.resourceRef]: readResult.newCursor,
+                },
+              }
+              : {}),
+          };
+          metrics = state.metrics;
+          saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+          appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+            timestamp: now.toISOString(),
+            kind: 'resource_pending',
+            operationId: state.operationId,
+            provider: state.provider,
+            sourceId: state.sourceId,
+            triggeredBy: state.triggeredBy,
+            range: state.range,
+            reopenTombstoneId: state.reopenTombstoneId,
+            status: state.status,
+            resourceRef: resource.resourceRef,
+            metrics: state.metrics,
+          });
+        }
+        continue;
+      }
+
+      const hasOutOfRangeEvents = readResult.events.some(
+        event => !isBackfillEventInRange(event.identity, request.range),
+      );
+      if (hasOutOfRangeEvents && !options.filterOutOfRangeEvents) {
+        sawFailure = true;
+        state = recordBackfillFailure(
+          state,
+          resource.resourceRef,
+          readResult.events[0]?.identity.eventId,
+          new Error('resource returned events outside requested backfill range'),
+          now,
+        );
+        metrics = state.metrics;
+        saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+        appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+          timestamp: now.toISOString(),
+          kind: 'resource_failed',
+          operationId: state.operationId,
+          provider: state.provider,
+          sourceId: state.sourceId,
+          triggeredBy: state.triggeredBy,
+          range: state.range,
+          reopenTombstoneId: state.reopenTombstoneId,
+          status: state.status,
+          resourceRef: resource.resourceRef,
+          message: 'resource returned events outside requested backfill range',
+          metrics: state.metrics,
+        });
+        continue;
+      }
+      const eventsInRange = readResult.events.filter(
+        event => isBackfillEventInRange(event.identity, request.range),
+      );
+      if (request.reopenTombstoneId !== undefined && eventsInRange.length === 0) {
+        sawPending = true;
+        state = setBackfillResourceState(state, resource.resourceRef, 'pending', now, {
+          message: 'no in-range events for reopened tombstone',
+          countAttempt: true,
+        });
+        state = {
+          ...state,
+          updatedAt: now.toISOString(),
+        };
+        metrics = state.metrics;
+        saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+        appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+          timestamp: now.toISOString(),
+          kind: 'resource_pending',
+          operationId: state.operationId,
+          provider: state.provider,
+          sourceId: state.sourceId,
+          triggeredBy: state.triggeredBy,
+          range: state.range,
+          reopenTombstoneId: state.reopenTombstoneId,
+          status: state.status,
+          resourceRef: resource.resourceRef,
+          metrics: state.metrics,
+        });
+        continue;
+      }
+
+      let resourceFailed = false;
+      let resourceDuplicates = 0;
+      let resourceTombstones = 0;
+      let resourceIngested = 0;
+      let resourceAdmittedEpisodes = 0;
+      let resourceBytes = 0;
+      let lastProcessedEvent: ExternalSessionLogBackfillEvent | undefined;
+
+      for (const event of eventsInRange) {
+        if (
+          request.limits.maxEvents !== undefined
+          && eventsProcessed >= request.limits.maxEvents
+        ) {
+          quotaReached = true;
+          break;
+        }
+        if (bytesProcessed + resourceBytes + event.byteLength > request.limits.maxBytes) {
+          quotaReached = true;
+          break;
+        }
+
+        const nowInLoop = this.now();
+        if (nowInLoop.getTime() - startedAt.getTime() >= request.limits.maxElapsedMs) {
+          quotaReached = true;
+          break;
+        }
+
+        resourceBytes += event.byteLength;
+
+        if (isExactBackfillDuplicate(state, request.provider, request.sourceId, event.identity)) {
+          resourceDuplicates += 1;
+          eventsProcessed += 1;
+          lastProcessedEvent = event;
+          continue;
+        }
+
+        if (!event.distillationUnit) {
+          resourceFailed = true;
+          sawFailure = true;
+          state = recordBackfillFailure(
+            state,
+            resource.resourceRef,
+            event.identity.eventId,
+            new Error('stable backfill event is missing a verified DistillationUnit'),
+            nowInLoop,
+          );
+          metrics = state.metrics;
+          saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+          appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+            timestamp: nowInLoop.toISOString(),
+            kind: 'resource_failed',
+            operationId: state.operationId,
+            provider: state.provider,
+            sourceId: state.sourceId,
+            triggeredBy: state.triggeredBy,
+            range: state.range,
+            reopenTombstoneId: state.reopenTombstoneId,
+            status: state.status,
+            resourceRef: resource.resourceRef,
+            eventId: event.identity.eventId,
+            message: 'stable backfill event is missing a verified DistillationUnit',
+            metrics: state.metrics,
+          });
+          break;
+        }
+
+        try {
+          const ingestion = ingest(event.distillationUnit, {
+            operationId: request.operationId,
+            provider: request.provider,
+            sourceId: request.sourceId,
+            triggeredBy: request.triggeredBy,
+            resource,
+            eventIdentity: event.identity,
+          });
+          if (ingestion.tombstoneId) {
+            resourceTombstones += 1;
+          } else {
+            resourceIngested += 1;
+            resourceAdmittedEpisodes += ingestion.admittedEpisodeIds.length;
+          }
+          state = markBackfillEventProcessed(state, request.provider, request.sourceId, event.identity);
+          eventsProcessed += 1;
+          lastProcessedEvent = event;
+        } catch (error) {
+          resourceFailed = true;
+          sawFailure = true;
+          state = recordBackfillFailure(state, resource.resourceRef, event.identity.eventId, error, nowInLoop);
+          metrics = state.metrics;
+          saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+          appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+            timestamp: nowInLoop.toISOString(),
+            kind: 'resource_failed',
+            operationId: state.operationId,
+            provider: state.provider,
+            sourceId: state.sourceId,
+            triggeredBy: state.triggeredBy,
+            range: state.range,
+            reopenTombstoneId: state.reopenTombstoneId,
+            status: state.status,
+            resourceRef: resource.resourceRef,
+            eventId: event.identity.eventId,
+            message: toErrorMessage(error),
+            metrics: state.metrics,
+          });
+          break;
+        }
+      }
+
+      if (resourceFailed || (quotaReached && !lastProcessedEvent)) {
+        break;
+      }
+
+      const completedResource = !quotaReached;
+      if (completedResource && !alreadyProcessed) processedResources += 1;
+      if (completedResource && belowReopenedBoundary) {
+        sawPending = true;
+      }
+      ingestedEvents += resourceIngested;
+      duplicateEventsSkipped += resourceDuplicates;
+      tombstonedEventsSkipped += resourceTombstones;
+      admittedEpisodes += resourceAdmittedEpisodes;
+      bytesProcessed += resourceBytes;
+
+      const finishedAtResource = this.now();
+      state = {
+        ...state,
+        updatedAt: finishedAtResource.toISOString(),
+        resourceCursors: {
+          ...state.resourceCursors,
+          [resource.resourceRef]: completedResource || !lastProcessedEvent
+            ? readResult.newCursor
+            : {
+                resourceRef: resource.resourceRef,
+                position: lastProcessedEvent.identity.position,
+                processedCount: cursor.processedCount
+                  + resourceIngested
+                  + resourceDuplicates
+                  + resourceTombstones,
+              },
+        },
+        metrics: {
+          ...state.metrics,
+          ingestedEvents: state.metrics.ingestedEvents + resourceIngested,
+          duplicateEventsSkipped: state.metrics.duplicateEventsSkipped + resourceDuplicates,
+          tombstonedEventsSkipped: state.metrics.tombstonedEventsSkipped + resourceTombstones,
+          admittedEpisodes: state.metrics.admittedEpisodes + resourceAdmittedEpisodes,
+          bytesProcessed: state.metrics.bytesProcessed + resourceBytes,
+        },
+      };
+      if (completedResource && belowReopenedBoundary) {
+        state = setBackfillResourceState(state, resource.resourceRef, 'pending', finishedAtResource, {
+          message: 'reopened range still below end position',
+          countAttempt: true,
+        });
+      } else if (completedResource) {
+        state = setBackfillResourceState(state, resource.resourceRef, 'processed', finishedAtResource);
+      } else {
+        state = setBackfillResourceState(state, resource.resourceRef, 'in_progress', finishedAtResource, {
+          message: 'quota interrupted resource mid-page',
+        });
+      }
+      metrics = state.metrics;
+      saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+      // Emit progress only after the durable processed-resource state write.
+      // Never fire on bare read success.
+      if (completedResource && !belowReopenedBoundary) {
+        emitProgress('importing');
+      }
+
+      const auditKind: ExternalSessionLogBackfillAuditKind = belowReopenedBoundary
+        ? 'resource_pending'
+        : resourceTombstones > 0
+        ? 'resource_tombstone'
+        : resourceIngested > 0
+        ? 'resource_ingested'
+        : 'resource_duplicate';
+      appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+        timestamp: this.now().toISOString(),
+        kind: auditKind,
+        operationId: state.operationId,
+        provider: state.provider,
+        sourceId: state.sourceId,
+        triggeredBy: state.triggeredBy,
+        range: state.range,
+        reopenTombstoneId: state.reopenTombstoneId,
+        status: state.status,
+        resourceRef: resource.resourceRef,
+        eventId: readResult.events[0]?.identity.eventId,
+        metrics: state.metrics,
+      });
+      if (quotaReached) break;
+    }
+
+    const finishedAt = this.now();
+    const progressAfter = snapshotProgressFingerprint(state);
+    const madeProgress = progressAfter !== progressBefore;
+    let finalStatus: ExternalSessionLogBackfillStatus = quotaReached
+      ? 'quota_reached'
+      : (sawFailure ? 'source_failed' : (sawPending ? 'pending' : 'completed'));
+    let zeroProgressRuns = state.metrics.zeroProgressRuns ?? 0;
+    if (quotaReached && !madeProgress) {
+      zeroProgressRuns += 1;
+      // Two consecutive zero-progress quota runs mean the same blocker is
+      // spinning. Fail closed so operators can inspect failures/quarantine.
+      if (zeroProgressRuns >= 2) {
+        finalStatus = 'blocked_zero_progress';
+      }
+    } else if (madeProgress) {
+      zeroProgressRuns = 0;
+    }
+
+    metrics = {
+      ...state.metrics,
+      zeroProgressRuns,
+    };
+    state = {
+      ...state,
+      status: finalStatus,
+      updatedAt: finishedAt.toISOString(),
+      completedAt: finalStatus === 'completed' ? finishedAt.toISOString() : state.completedAt,
+      metrics,
+    };
+    saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+    // Terminal progress semantics: complete only when actually completed;
+    // quota/pending remain resumable/paused (importing phase) with true
+    // remaining; source_failed/blocked remain failed with true remaining.
+    // processed/failed/remaining reconcile with the determinate total.
+    if (finalStatus === 'completed') {
+      emitProgress('complete');
+    } else if (finalStatus === 'quota_reached' || finalStatus === 'pending') {
+      emitProgress('importing');
+    } else {
+      // source_failed or blocked_zero_progress
+      emitProgress('failed');
+    }
+
+    appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+      timestamp: finishedAt.toISOString(),
+      kind: finalStatus === 'quota_reached'
+        ? 'quota_reached'
+        : finalStatus === 'pending'
+          ? 'pending'
+          : finalStatus === 'source_failed' || finalStatus === 'blocked_zero_progress'
+            ? 'source_failed'
+            : 'completed',
+      operationId: state.operationId,
+      provider: state.provider,
+      sourceId: state.sourceId,
+      triggeredBy: state.triggeredBy,
+      range: state.range,
+      reopenTombstoneId: state.reopenTombstoneId,
+      status: state.status,
+      message: finalStatus === 'source_failed'
+        ? 'one or more resources failed; see state.failures'
+        : finalStatus === 'blocked_zero_progress'
+          ? 'backfill made no progress across consecutive quota runs; inspect failures or raise bounds, then retry the same operation (resumable)'
+        : undefined,
+      metrics,
+    });
+
+    // Preserve stable structured failure code/details in the run result so
+    // the control layer can map source_failed to the correct Device RPC error
+    // without parsing English messages.
+    const terminalStructured = finalStatus === 'source_failed' || finalStatus === 'blocked_zero_progress'
+      ? extractLatestStructuredFailure(state.failures)
+      : undefined;
+    return {
+      status: finalStatus,
+      discoveredResources: matchedResources.length,
+      processedResources,
+      pendingResources: state.metrics.pendingResources,
+      failedResources: state.metrics.failedResources,
+      ingestedEvents,
+      duplicateEventsSkipped,
+      tombstonedEventsSkipped,
+      admittedEpisodes,
+      bytesProcessed,
+      ...(terminalStructured ? { failureCode: terminalStructured.code, failureDetails: terminalStructured.details } : {}),
+      state,
+    };
+  }
+}
+
+export function loadExternalSessionLogBackfillState(
+  stateFilePath: string,
+): ExternalSessionLogBackfillState | null {
+  if (!fs.existsSync(stateFilePath)) return null;
+  const raw = fs.readFileSync(stateFilePath, 'utf8');
+  let parsed: ExternalSessionLogBackfillState;
+  try {
+    parsed = JSON.parse(raw) as ExternalSessionLogBackfillState;
+  } catch (error) {
+    throw new Error(`backfill state is corrupt: ${stateFilePath}: ${String(error)}`);
+  }
+  if (parsed.schemaVersion !== 1 || !parsed.resourceCursors || !parsed.processedEventIds) {
+    throw new Error(`backfill state schema is unsupported or malformed: ${stateFilePath}`);
+  }
+  return {
+    ...parsed,
+    schemaVersion: parsed.schemaVersion ?? 1,
+    completedAt: parsed.completedAt ?? null,
+    resourceCursors: parsed.resourceCursors ?? {},
+    processedEventIds: parsed.processedEventIds ?? {},
+    ...(typeof parsed.reopenTombstoneId === 'string'
+      ? { reopenTombstoneId: parsed.reopenTombstoneId }
+      : {}),
+    failures: parsed.failures ?? [],
+    resourceStates: isRecord(parsed.resourceStates)
+      ? parsed.resourceStates as Record<string, ExternalSessionLogBackfillResourceState>
+      : {},
+    metrics: {
+      runsStarted: parsed.metrics?.runsStarted ?? 0,
+      resourcesDiscovered: parsed.metrics?.resourcesDiscovered ?? 0,
+      resourcesProcessed: parsed.metrics?.resourcesProcessed ?? 0,
+      pendingResources: parsed.metrics?.pendingResources ?? 0,
+      failedResources: parsed.metrics?.failedResources ?? 0,
+      failedResourceAttempts: parsed.metrics?.failedResourceAttempts ?? 0,
+      pendingResourceAttempts: parsed.metrics?.pendingResourceAttempts ?? 0,
+      ingestedEvents: parsed.metrics?.ingestedEvents ?? 0,
+      duplicateEventsSkipped: parsed.metrics?.duplicateEventsSkipped ?? 0,
+      tombstonedEventsSkipped: parsed.metrics?.tombstonedEventsSkipped ?? 0,
+      admittedEpisodes: parsed.metrics?.admittedEpisodes ?? 0,
+      bytesProcessed: parsed.metrics?.bytesProcessed ?? 0,
+      zeroProgressRuns: parsed.metrics?.zeroProgressRuns ?? 0,
+    },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function saveExternalSessionLogBackfillState(
+  stateFilePath: string,
+  state: ExternalSessionLogBackfillState,
+): void {
+  fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
+  const tmpPath = `${stateFilePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    fs.chmodSync(tmpPath, 0o600);
+    fs.renameSync(tmpPath, stateFilePath);
+    fs.chmodSync(stateFilePath, 0o600);
+  } catch (error) {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {
+      // Best-effort cleanup only.
+    }
+    throw error;
+  }
+}
+
+export function appendExternalSessionLogBackfillAudit(
+  auditFilePath: string,
+  entry: ExternalSessionLogBackfillAuditEntry,
+): void {
+  fs.mkdirSync(path.dirname(auditFilePath), { recursive: true });
+  fs.appendFileSync(auditFilePath, `${JSON.stringify(entry)}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.chmodSync(auditFilePath, 0o600);
+}
+
+function createExternalSessionLogBackfillState(
+  request: ExternalSessionLogBackfillRequest,
+  now: Date,
+): ExternalSessionLogBackfillState {
+  return {
+    schemaVersion: 1,
+    operationId: request.operationId,
+    triggeredBy: request.triggeredBy,
+    provider: request.provider,
+    sourceId: request.sourceId,
+    range: cloneBackfillRange(request.range),
+    ...(request.reopenTombstoneId
+      ? { reopenTombstoneId: request.reopenTombstoneId }
+      : {}),
+    status: 'pending',
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    completedAt: null,
+    resourceCursors: {},
+    processedEventIds: {},
+    resourceStates: {},
+    failures: [],
+    metrics: emptyBackfillMetrics(),
+  };
+}
+
+function assertCompatibleState(
+  state: ExternalSessionLogBackfillState,
+  request: ExternalSessionLogBackfillRequest,
+): ExternalSessionLogBackfillState {
+  if (state.operationId !== request.operationId) {
+    throw new Error(`backfill state belongs to ${state.operationId}, not ${request.operationId}`);
+  }
+  if (state.provider !== request.provider || state.sourceId !== request.sourceId) {
+    throw new Error('backfill request source/provider does not match existing operation state');
+  }
+  if (
+    state.range.startPosition !== request.range.startPosition
+    || state.range.endPosition !== request.range.endPosition
+    || !sameResourceRefSet(state.range.resourceRefs, request.range.resourceRefs)
+  ) {
+    throw new Error('backfill request range does not match existing operation state');
+  }
+  if ((state.reopenTombstoneId ?? '') !== (request.reopenTombstoneId ?? '')) {
+    throw new Error('backfill request tombstone reopen does not match existing operation state');
+  }
+  return state;
+}
+
+function validateBackfillRequest(request: ExternalSessionLogBackfillRequest): void {
+  if (!request.operationId.trim()) throw new Error('backfill operationId is required');
+  if (!request.triggeredBy.trim()) throw new Error('backfill triggeredBy is required');
+  if (!request.provider.trim()) throw new Error('backfill provider is required');
+  if (!request.sourceId.trim()) throw new Error('backfill sourceId is required');
+  if (request.reopenTombstoneId !== undefined && !request.reopenTombstoneId.trim()) {
+    throw new Error('backfill reopenTombstoneId must not be empty');
+  }
+  if (request.range.startPosition < 0) throw new Error('backfill startPosition must be >= 0');
+  if (request.range.endPosition < request.range.startPosition) {
+    throw new Error('backfill endPosition must be >= startPosition');
+  }
+  if (request.limits.maxResources <= 0) throw new Error('backfill maxResources must be > 0');
+  if (request.limits.maxBytes <= 0) throw new Error('backfill maxBytes must be > 0');
+  if (request.limits.maxElapsedMs <= 0) throw new Error('backfill maxElapsedMs must be > 0');
+  if (request.limits.maxEvents !== undefined && request.limits.maxEvents <= 0) {
+    throw new Error('backfill maxEvents must be > 0 when provided');
+  }
+}
+
+function validateBackfillSource(
+  request: ExternalSessionLogBackfillRequest,
+  source: ExternalSessionLogBackfillSource,
+): void {
+  if (source.identity.category !== 'external') {
+    throw new Error(`backfill source ${source.identity.sourceId} must be external`);
+  }
+  if (source.identity.provider !== request.provider) {
+    throw new Error(`backfill provider mismatch: ${request.provider} != ${source.identity.provider}`);
+  }
+  if (source.identity.sourceId !== request.sourceId) {
+    throw new Error(`backfill source mismatch: ${request.sourceId} != ${source.identity.sourceId}`);
+  }
+}
+
+function selectBackfillResources(
+  resources: readonly SessionLogSourceResource[],
+  range: ExternalSessionLogBackfillRange,
+): SessionLogSourceResource[] {
+  const allowedRefs = range.resourceRefs ? new Set(range.resourceRefs) : null;
+  return [...resources]
+    .filter((resource) => {
+      if (!resource.firstEventIdentity) return false;
+      if (allowedRefs) return allowedRefs.has(resource.resourceRef);
+      const position = resource.firstEventIdentity.position;
+      return position >= range.startPosition && position <= range.endPosition;
+    })
+    .sort((left, right) => {
+      const leftPos = left.firstEventIdentity?.position ?? Number.MAX_SAFE_INTEGER;
+      const rightPos = right.firstEventIdentity?.position ?? Number.MAX_SAFE_INTEGER;
+      if (leftPos !== rightPos) return leftPos - rightPos;
+      return left.resourceRef.localeCompare(right.resourceRef);
+    });
+}
+
+function markBackfillEventProcessed(
+  state: ExternalSessionLogBackfillState,
+  provider: string,
+  sourceId: string,
+  identity: SourceEventIdentity,
+): ExternalSessionLogBackfillState {
+  return {
+    ...state,
+    processedEventIds: {
+      ...state.processedEventIds,
+      [backfillEventKey(provider, sourceId, identity)]: normalizeContentHash(identity.contentHash),
+    },
+  };
+}
+
+function isExactBackfillDuplicate(
+  state: ExternalSessionLogBackfillState,
+  provider: string,
+  sourceId: string,
+  identity: SourceEventIdentity,
+): boolean {
+  const key = backfillEventKey(provider, sourceId, identity);
+  const legacyRecord = state.processedEventIds[identity.eventId];
+  if (Object.prototype.hasOwnProperty.call(state.processedEventIds, key)) {
+    return state.processedEventIds[key] === normalizeContentHash(identity.contentHash);
+  }
+
+  // Backward compatibility for older persisted states.
+  if (!Object.prototype.hasOwnProperty.call(state.processedEventIds, identity.eventId)) {
+    return false;
+  }
+
+  return legacyRecord === normalizeContentHash(identity.contentHash);
+}
+
+function isBackfillEventInRange(identity: SourceEventIdentity, range: ExternalSessionLogBackfillRange): boolean {
+  return identity.position >= range.startPosition && identity.position <= range.endPosition;
+}
+
+function backfillEventKey(provider: string, sourceId: string, identity: SourceEventIdentity): string {
+  return [
+    provider,
+    sourceId,
+    identity.eventId,
+    identity.position,
+    identity.contentHash ?? '',
+    identity.conversationId ?? '',
+    identity.branchId ?? '',
+    identity.revision ?? '',
+  ].join('::');
+}
+
+function recordBackfillFailure(
+  state: ExternalSessionLogBackfillState,
+  resourceRef: string,
+  eventId: string | undefined,
+  error: unknown,
+  now: Date,
+): ExternalSessionLogBackfillState {
+  const message = toErrorMessage(error);
+  const structured = extractStructuredFailure(error);
+  const withFailure: ExternalSessionLogBackfillState = {
+    ...state,
+    updatedAt: now.toISOString(),
+    failures: [
+      ...state.failures,
+      {
+        resourceRef,
+        eventId,
+        message,
+        at: now.toISOString(),
+        ...(structured ? { code: structured.code, ...(structured.details ? { details: structured.details } : {}) } : {}),
+      },
+    ],
+  };
+  if (resourceRef === '__discover__') return withFailure;
+  return setBackfillResourceState(withFailure, resourceRef, 'failed', now, {
+    message,
+    eventId,
+    countAttempt: true,
+    ...(structured ? { failureCode: structured.code } : {}),
+  });
+}
+
+function emptyBackfillMetrics(): ExternalSessionLogBackfillMetrics {
+  return {
+    runsStarted: 0,
+    resourcesDiscovered: 0,
+    resourcesProcessed: 0,
+    pendingResources: 0,
+    failedResources: 0,
+    failedResourceAttempts: 0,
+    pendingResourceAttempts: 0,
+    ingestedEvents: 0,
+    duplicateEventsSkipped: 0,
+    tombstonedEventsSkipped: 0,
+    admittedEpisodes: 0,
+    bytesProcessed: 0,
+    zeroProgressRuns: 0,
+  };
+}
+
+function recountUniqueResourceStates(
+  resourceStates: Record<string, ExternalSessionLogBackfillResourceState>,
+): { pendingResources: number; failedResources: number; processedResources: number } {
+  let pendingResources = 0;
+  let failedResources = 0;
+  let processedResources = 0;
+  for (const entry of Object.values(resourceStates)) {
+    if (entry.status === 'pending' || entry.status === 'in_progress') pendingResources += 1;
+    else if (entry.status === 'failed') failedResources += 1;
+    else if (entry.status === 'processed') processedResources += 1;
+  }
+  return { pendingResources, failedResources, processedResources };
+}
+
+function setBackfillResourceState(
+  state: ExternalSessionLogBackfillState,
+  resourceRef: string,
+  status: ExternalSessionLogBackfillResourceStateKind,
+  now: Date,
+  options: {
+    message?: string;
+    eventId?: string;
+    countAttempt?: boolean;
+    failureCode?: string;
+  } = {},
+): ExternalSessionLogBackfillState {
+  const previous = state.resourceStates[resourceRef];
+  const nextStates = {
+    ...state.resourceStates,
+    [resourceRef]: {
+      status,
+      updatedAt: now.toISOString(),
+      ...(options.message ? { message: options.message } : {}),
+      ...(options.eventId ? { eventId: options.eventId } : {}),
+      ...(options.failureCode ? { failureCode: options.failureCode } : {}),
+    },
+  };
+  const unique = recountUniqueResourceStates(nextStates);
+  let failedResourceAttempts = state.metrics.failedResourceAttempts ?? 0;
+  let pendingResourceAttempts = state.metrics.pendingResourceAttempts ?? 0;
+  if (options.countAttempt) {
+    if (status === 'failed') failedResourceAttempts += 1;
+    if (status === 'pending' || status === 'in_progress') pendingResourceAttempts += 1;
+  }
+  // resourcesProcessed remains cumulative successful completions.
+  const resourcesProcessed = status === 'processed' && previous?.status !== 'processed'
+    ? state.metrics.resourcesProcessed + 1
+    : state.metrics.resourcesProcessed;
+  return {
+    ...state,
+    resourceStates: nextStates,
+    metrics: {
+      ...state.metrics,
+      resourcesProcessed,
+      pendingResources: unique.pendingResources,
+      failedResources: unique.failedResources,
+      failedResourceAttempts,
+      pendingResourceAttempts,
+    },
+  };
+}
+
+function snapshotProgressFingerprint(state: ExternalSessionLogBackfillState): string {
+  return JSON.stringify({
+    cursors: state.resourceCursors,
+    processedEventIds: state.processedEventIds,
+    admittedEpisodes: state.metrics.admittedEpisodes,
+    ingestedEvents: state.metrics.ingestedEvents,
+    resourcesProcessed: state.metrics.resourcesProcessed,
+  });
+}
+
+function cloneBackfillRange(range: ExternalSessionLogBackfillRange): ExternalSessionLogBackfillRange {
+  return {
+    startPosition: range.startPosition,
+    endPosition: range.endPosition,
+    resourceRefs: range.resourceRefs ? [...range.resourceRefs] : undefined,
+  };
+}
+
+function sameResourceRefSet(
+  left?: readonly string[],
+  right?: readonly string[],
+): boolean {
+  const a = [...(left ?? [])].sort();
+  const b = [...(right ?? [])].sort();
+  if (a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
+function normalizeContentHash(contentHash: string | undefined): string | null {
+  return contentHash ?? null;
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+/**
+ * Extract a stable structured failure code/details from an error without
+ * parsing English messages. Preserves known structured fields (code,
+ * commandKind, limitBytes) when the error carries them. Returns undefined for
+ * generic errors so the control layer can distinguish output-limit failures
+ * from generic source failures.
+ */
+function extractStructuredFailure(
+  error: unknown,
+): { code: string; details?: Readonly<Record<string, unknown>> } | undefined {
+  if (error == null || typeof error !== 'object') return undefined;
+  const candidate = error as {
+    code?: unknown;
+    commandKind?: unknown;
+    limitBytes?: unknown;
+  };
+  if (typeof candidate.code !== 'string' || !candidate.code.trim()) return undefined;
+  const details: Record<string, unknown> = {};
+  if (typeof candidate.commandKind === 'string') details.commandKind = candidate.commandKind;
+  if (typeof candidate.limitBytes === 'number' && Number.isFinite(candidate.limitBytes)) {
+    details.limitBytes = candidate.limitBytes;
+  }
+  return { code: candidate.code, ...(Object.keys(details).length > 0 ? { details } : {}) };
+}
+
+/**
+ * Extract the latest structured failure code/details from the durable
+ * failures list so the run result can surface it to the control layer.
+ */
+function extractLatestStructuredFailure(
+  failures: readonly ExternalSessionLogBackfillFailure[],
+): { code: string; details?: Readonly<Record<string, unknown>> } | undefined {
+  const failure = failures[failures.length - 1];
+  if (!failure?.code) return undefined;
+  return {
+    code: failure.code,
+    ...(failure.details ? { details: failure.details } : {}),
+  };
+}

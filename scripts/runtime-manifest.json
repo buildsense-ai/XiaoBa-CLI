@@ -164,6 +164,66 @@
           ]
         }
       }
+    },
+    "xurl": {
+      "version": "0.0.27",
+      "targets": {
+        "win32-x64": {
+          "archiveType": "tar.gz",
+          "targetSubdir": "xurl",
+          "packageRoot": "package/vendor/x86_64-pc-windows-msvc/xurl",
+          "sources": [
+            {
+              "url": "https://registry.npmjs.org/@xuanwo/xurl/-/xurl-0.0.27-win32-x64.tgz",
+              "sha256": "649d164f558db57fc55722633226ea954a32e2d86348885336fec831f97e54c8"
+            }
+          ]
+        },
+        "darwin-x64": {
+          "archiveType": "tar.gz",
+          "targetSubdir": "xurl",
+          "packageRoot": "package/vendor/x86_64-apple-darwin/xurl",
+          "sources": [
+            {
+              "url": "https://registry.npmjs.org/@xuanwo/xurl/-/xurl-0.0.27-darwin-x64.tgz",
+              "sha256": "b45495ad158321d5e3d9d92f8ae5b40249f53430777f5aa83052a7ff3ebe3eeb"
+            }
+          ]
+        },
+        "darwin-arm64": {
+          "archiveType": "tar.gz",
+          "targetSubdir": "xurl",
+          "packageRoot": "package/vendor/aarch64-apple-darwin/xurl",
+          "sources": [
+            {
+              "url": "https://registry.npmjs.org/@xuanwo/xurl/-/xurl-0.0.27-darwin-arm64.tgz",
+              "sha256": "f2e6022121e5432cee4c4254ed81ac56d69f05f489abc4007850b67166950ee8"
+            }
+          ]
+        },
+        "linux-x64": {
+          "archiveType": "tar.gz",
+          "targetSubdir": "xurl",
+          "packageRoot": "package/vendor/x86_64-unknown-linux-gnu/xurl",
+          "sources": [
+            {
+              "url": "https://registry.npmjs.org/@xuanwo/xurl/-/xurl-0.0.27-linux-x64.tgz",
+              "sha256": "ba2fbb2bb31c9d96e2fcea456caf3c44caa0c594d87c9a19eefff186120d82ed"
+            }
+          ]
+        },
+        "linux-arm64": {
+          "archiveType": "tar.gz",
+          "targetSubdir": "xurl",
+          "packageRoot": "package/vendor/aarch64-unknown-linux-gnu/xurl",
+          "sources": [
+            {
+              "url": "https://registry.npmjs.org/@xuanwo/xurl/-/xurl-0.0.27-linux-arm64.tgz",
+              "sha256": "311190d4884a75365abeb71d901d2f3e292e51ff826abcf4105d52f831000533"
+            }
+          ]
+        }
+      }
     }
   }
 }

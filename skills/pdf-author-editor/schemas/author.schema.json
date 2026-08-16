@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HTML/PDF Renderer Document",
+  "type": "object",
+  "required": ["delivery_type", "meta", "content"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "delivery_type": {
+      "type": "string",
+      "enum": ["report", "one-pager", "slides"]
+    },
+    "meta": {
+      "type": "object",
+      "required": ["title"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "subtitle": { "type": "string" },
+        "author": { "type": "string" },
+        "date": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "page": {
+      "type": "object",
+      "properties": {
+        "size": { "type": "string", "enum": ["A4", "Letter", "16:9"] },
+        "orientation": { "type": "string", "enum": ["portrait", "landscape"] },
+        "margins": { "type": "string", "enum": ["compact", "normal", "wide"] }
+      },
+      "additionalProperties": true
+    },
+    "template": {
+      "type": "string",
+      "description": "Template id from assets/templates/templates.json."
+    },
+    "theme": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "summary_metrics": {
+      "type": "array",
+      "description": "Optional dashboard-style KPI cards for report templates such as tabler-report.",
+      "items": { "$ref": "#/$defs/metric" }
+    },
+    "status_badges": {
+      "type": "array",
+      "description": "Optional status pills for report templates such as tabler-report.",
+      "items": { "$ref": "#/$defs/statusBadge" }
+    },
+    "content": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/block" }
+    },
+    "assets": {
+      "type": "array"
+    },
+    "export": {
+      "type": "object",
+      "properties": {
+        "html": { "type": "boolean" },
+        "pdf": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "block": {
+      "oneOf": [
+        { "$ref": "#/$defs/heading" },
+        { "$ref": "#/$defs/paragraph" },
+        { "$ref": "#/$defs/list" },
+        { "$ref": "#/$defs/table" },
+        { "$ref": "#/$defs/figure" },
+        { "$ref": "#/$defs/callout" },
+        { "$ref": "#/$defs/divider" },
+        { "$ref": "#/$defs/slide" },
+        { "$ref": "#/$defs/rawHtml" }
+      ]
+    },
+    "heading": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "heading" },
+        "level": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "text": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 }
+      },
+      "anyOf": [
+        { "required": ["text"] },
+        { "required": ["title"] }
+      ],
+      "additionalProperties": true
+    },
+    "paragraph": {
+      "type": "object",
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "paragraph" },
+        "text": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "list": {
+      "type": "object",
+      "required": ["type", "items"],
+      "properties": {
+        "type": { "const": "list" },
+        "style": { "type": "string", "enum": ["bullet", "number"] },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "table": {
+      "type": "object",
+      "required": ["type", "rows"],
+      "properties": {
+        "type": { "const": "table" },
+        "caption": { "type": "string" },
+        "columns": { "type": "array" },
+        "rows": {
+          "type": "array",
+          "minItems": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "figure": {
+      "type": "object",
+      "required": ["type", "src"],
+      "properties": {
+        "type": { "const": "figure" },
+        "src": { "type": "string", "minLength": 1 },
+        "alt": { "type": "string" },
+        "caption": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "callout": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "callout" },
+        "tone": { "type": "string" },
+        "title": { "type": "string" },
+        "text": { "type": "string" },
+        "preformatted": { "type": "boolean" }
+      },
+      "anyOf": [
+        { "required": ["text"] },
+        { "required": ["title"] }
+      ],
+      "additionalProperties": true
+    },
+    "divider": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "divider" }
+      },
+      "additionalProperties": true
+    },
+    "slide": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "slide" },
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "blocks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonSlideBlock" }
+        }
+      },
+      "anyOf": [
+        { "required": ["title"] },
+        { "required": ["blocks"] }
+      ],
+      "additionalProperties": true
+    },
+    "nonSlideBlock": {
+      "oneOf": [
+        { "$ref": "#/$defs/heading" },
+        { "$ref": "#/$defs/paragraph" },
+        { "$ref": "#/$defs/list" },
+        { "$ref": "#/$defs/table" },
+        { "$ref": "#/$defs/figure" },
+        { "$ref": "#/$defs/callout" },
+        { "$ref": "#/$defs/divider" },
+        { "$ref": "#/$defs/rawHtml" }
+      ]
+    },
+    "rawHtml": {
+      "type": "object",
+      "required": ["type", "html"],
+      "properties": {
+        "type": { "const": "raw_html" },
+        "html": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "metric": {
+      "type": "object",
+      "properties": {
+        "label": { "type": "string" },
+        "value": { "type": ["string", "number"] },
+        "note": { "type": "string" },
+        "tone": { "type": "string", "enum": ["success", "warning", "danger", "info", "default"] }
+      },
+      "anyOf": [
+        { "required": ["label"] },
+        { "required": ["value"] }
+      ],
+      "additionalProperties": true
+    },
+    "statusBadge": {
+      "type": "object",
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "tone": { "type": "string", "enum": ["success", "warning", "danger", "info", "default"] }
+      },
+      "additionalProperties": true
+    }
+  }
+}

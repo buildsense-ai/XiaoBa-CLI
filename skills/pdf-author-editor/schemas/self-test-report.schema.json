@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pdf-author-editor self-test report",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["skill", "version", "created_at", "out_dir", "ok", "summary", "artifacts", "steps", "assertions", "notes"],
+  "properties": {
+    "skill": {
+      "const": "pdf-author-editor"
+    },
+    "version": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "out_dir": {
+      "type": "string"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "summary": {
+      "type": "object",
+      "required": ["steps", "failed_steps", "assertions", "failed_assertions"],
+      "properties": {
+        "steps": { "type": "integer" },
+        "failed_steps": { "type": "integer" },
+        "assertions": { "type": "integer" },
+        "failed_assertions": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "command", "args", "exit_code", "ok", "duration_ms", "stdout", "stderr"],
+        "properties": {
+          "name": { "type": "string" },
+          "command": { "type": "string" },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "exit_code": { "type": "integer" },
+          "ok": { "type": "boolean" },
+          "duration_ms": { "type": "integer" },
+          "stdout": { "type": "string" },
+          "stderr": { "type": "string" },
+          "error": {
+            "type": ["string", "null"]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "ok", "detail"],
+        "properties": {
+          "name": { "type": "string" },
+          "ok": { "type": "boolean" },
+          "detail": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

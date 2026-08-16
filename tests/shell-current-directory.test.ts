@@ -73,8 +73,8 @@ describe('ShellTool current directory probe', () => {
     assert.strictEqual(result.ok, true);
     assert.ok(fs.existsSync(path.join(testRoot, 'sub', 'marker.txt')));
     assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
-    assert.ok((result.content as string).includes(`cwd_before: ${path.resolve(testRoot, 'sub')}`));
-    assert.ok((result.content as string).includes(`cwd_after: ${path.resolve(testRoot, 'sub')}`));
+    assertReportedDirectory(result.content as string, 'cwd_before', path.join(testRoot, 'sub'));
+    assertReportedDirectory(result.content as string, 'cwd_after', path.join(testRoot, 'sub'));
   });
 
   test('successful commands return both stdout and stderr', async () => {
@@ -120,7 +120,7 @@ describe('ShellTool current directory probe', () => {
     });
 
     assert.strictEqual(result.ok, false);
-    assert.strictEqual(currentDirectory, testRoot);
+    assertSameDirectory(currentDirectory, testRoot);
     assert.match(result.message, /^Command completed/);
     assert.match(result.message, /^status: failed$/m);
     assert.match(result.message, /^timed_out: false$/m);
@@ -274,6 +274,12 @@ describe('ShellTool current directory probe', () => {
 
 function assertSameDirectory(actual: string, expected: string): void {
   assert.strictEqual(fs.realpathSync(actual), fs.realpathSync(expected));
+}
+
+function assertReportedDirectory(content: string, field: string, expected: string): void {
+  const match = content.match(new RegExp(`^${field}: (.+)$`, 'm'));
+  assert.ok(match?.[1], `${field} is present in the shell result`);
+  assertSameDirectory(match[1], expected);
 }
 
 function quotePowerShellString(value: string): string {

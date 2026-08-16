@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en" data-delivery-type="report" data-template-id="briefing-note">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="generator" content="pdf-author-editor">
+  <title>{{TITLE}}</title>
+  <style>
+    {{CSS}}
+    @page {
+      size: {{PAGE_SIZE}} {{PAGE_ORIENTATION}};
+      margin: {{PAGE_MARGIN}};
+    }
+    body {
+      background: #f5f7fa;
+      color: #263238;
+      font-family: "Segoe UI", Arial, sans-serif;
+      line-height: 1.52;
+      margin: 0;
+    }
+    .briefing-note {
+      background: #ffffff;
+      box-sizing: border-box;
+      margin: 0 auto;
+      max-width: 940px;
+      min-height: 100vh;
+      padding: 42px 48px 54px;
+    }
+    .briefing-header {
+      background: #eef4ff;
+      border: 1px solid #cfddf5;
+      border-radius: 6px;
+      margin-bottom: 26px;
+      padding: 22px 24px;
+    }
+    .label-row {
+      color: #4b5f73;
+      display: flex;
+      flex-wrap: wrap;
+      font-size: 12px;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .label-row span {
+      background: #ffffff;
+      border: 1px solid #d8e3f3;
+      border-radius: 4px;
+      padding: 4px 8px;
+    }
+    .doc-title {
+      color: #18324a;
+      font-size: 34px;
+      line-height: 1.1;
+      margin: 0;
+    }
+    .doc-subtitle {
+      color: #526579;
+      font-size: 16px;
+      margin: 10px 0 0;
+    }
+    .doc-meta {
+      color: #66798a;
+      font-size: 12px;
+      margin-top: 12px;
+    }
+    h1, h2, h3, h4 {
+      color: #18324a;
+      line-height: 1.25;
+      margin: 1.2em 0 0.45em;
+      break-after: avoid;
+    }
+    h1 {
+      background: #f3f7ff;
+      border-left: 5px solid #3f6ea8;
+      font-size: 25px;
+      padding: 8px 12px;
+    }
+    h2 {
+      border-bottom: 1px solid #d8e2ec;
+      font-size: 20px;
+      padding-bottom: 5px;
+    }
+    h3 {
+      font-size: 17px;
+    }
+    h4 {
+      font-size: 14px;
+    }
+    p {
+      margin: 0.62em 0;
+    }
+    ul, ol {
+      margin: 8px 0 14px 24px;
+      padding: 0;
+    }
+    li {
+      margin: 4px 0;
+    }
+    .content-block {
+      break-inside: avoid;
+    }
+    table {
+      border-collapse: collapse;
+      font-size: 12px;
+      margin: 16px 0;
+      width: 100%;
+      break-inside: avoid;
+    }
+    th, td {
+      border: 1px solid #d8e2ec;
+      padding: 8px 9px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eef4ff;
+      color: #263e57;
+      font-weight: 750;
+    }
+    figcaption, .table-caption {
+      color: #657584;
+      font-size: 11px;
+      margin-top: 6px;
+    }
+    .callout {
+      background: #fff8e7;
+      border: 1px solid #ead393;
+      border-radius: 6px;
+      margin: 16px 0;
+      padding: 12px 14px;
+      break-inside: avoid;
+    }
+    .callout.warning {
+      background: #fff1ec;
+      border-color: #efc1ad;
+    }
+    .callout.success {
+      background: #edf8f1;
+      border-color: #bee6ca;
+    }
+    .callout-title {
+      color: #18324a;
+      font-weight: 750;
+      margin-bottom: 4px;
+    }
+    .divider {
+      border: 0;
+      border-top: 1px dashed #bdc9d5;
+      margin: 22px 0;
+    }
+    img {
+      display: block;
+      height: auto;
+      max-width: 100%;
+    }
+    @media print {
+      body {
+        background: #ffffff;
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+      .briefing-note {
+        background: #ffffff;
+        max-width: none;
+        min-height: 0;
+        padding: 0;
+      }
+      .no-print {
+        display: none !important;
+      }
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="briefing-note">
+    <header class="briefing-header">
+      <div class="label-row">
+        <span>Briefing note</span>
+        <span>{{META}}</span>
+      </div>
+      <h1 class="doc-title">{{TITLE}}</h1>
+      <p class="doc-subtitle">{{SUBTITLE}}</p>
+    </header>
+    {{CONTENT}}
+  </main>
+  <script>window.__RENDER_READY__ = true;</script>
+</body>
+</html>

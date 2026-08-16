@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pdf-author-editor manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["skill", "version", "status", "request", "route", "execution", "outputs", "warnings"],
+  "properties": {
+    "skill": {
+      "const": "pdf-author-editor"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["routed", "planned", "success", "blocked", "failed"]
+    },
+    "request": {
+      "type": "object"
+    },
+    "route": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["author", "modify", "semantic"]
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

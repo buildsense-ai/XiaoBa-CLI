@@ -79,8 +79,111 @@ function main() {
 
   program
     .command('runtime')
-    .description('Show the resolved node, python, and git runtimes')
+    .description('Show the resolved node, python, git, and xurl runtimes')
     .action(runtimeCommand);
+
+  const externalSource = program
+    .command('external-source')
+    .description('Manage durable external session log provider controls (issue #91)');
+
+  externalSource
+    .command('status')
+    .description('Show external source provider status')
+    .option('--json', 'Output as JSON')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'status', json: options.json, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('enable <provider>')
+    .description('Enable an external session log provider')
+    .option('--scope <scope>', 'Scope: global or path', 'global')
+    .option('--scope-path <path>', 'Project path when scope is path')
+    .option('--history <mode>', 'History mode: future-only or catch-up')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'enable', provider, scope: options.scope, scopePath: options.scopePath, history: options.history, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('history <provider> <mode>')
+    .description('Set an enabled provider history mode')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, mode: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'history', provider, history: mode, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('disable <provider>')
+    .description('Disable an external session log provider (preserves state)')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'disable', provider, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('reset <provider>')
+    .description('Reset a provider to its environment default')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'reset', provider, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('rebaseline <provider>')
+    .description('Explicit rebaseline: skip unread events to now')
+    .option('--skip-to-now', 'Skip to current stable timeline without admission')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'rebaseline', provider, skipToNow: options.skipToNow, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('backfill <provider>')
+    .description('Explicit bounded backfill of threads updated since a cutoff (dry-run by default)')
+    .requiredOption('--updated-since <duration-or-ISO>', 'Relative duration (7d) or canonical ISO cutoff')
+    .option('--execute', 'Run admission through RuntimeLearning (default: dry-run)')
+    .option('--operation-id <id>', 'Reusable operation id for quota-limited resume')
+    .option('--scope <scope>', 'Scope: global or path')
+    .option('--scope-path <path>', 'Project path when scope is path')
+    .option('--max-resources <n>', 'Maximum resources to process', (value) => Number(value))
+    .option('--max-events <n>', 'Maximum events to process', (value) => Number(value))
+    .option('--max-bytes <n>', 'Maximum bytes to process', (value) => Number(value))
+    .option('--max-elapsed <ms>', 'Maximum elapsed milliseconds', (value) => Number(value))
+    .option('--json', 'Output as JSON')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      try {
+        await externalSourceCommand({
+          subcommand: 'backfill',
+          provider,
+          updatedSince: options.updatedSince,
+          execute: options.execute === true,
+          operationId: options.operationId,
+          scope: options.scope,
+          scopePath: options.scopePath,
+          maxResources: options.maxResources,
+          maxEvents: options.maxEvents,
+          maxBytes: options.maxBytes,
+          maxElapsedMs: options.maxElapsed,
+          json: options.json,
+          workingDirectory: options.workingDirectory,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const { Logger } = await import('./utils/logger');
+        Logger.error(message);
+        process.exitCode = 1;
+      }
+    });
 
   registerSkillCommand(program);
 

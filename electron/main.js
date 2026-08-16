@@ -501,7 +501,8 @@ async function startServer() {
   }
 
   // 闂備礁鎲￠懝楣冨嫉椤掑嫷鏁嗛柣鎰惈缁€鍐煕濞戝崬鐏ｉ柡?skills 闂?userData闂備焦瀵х粙鎴︽偋閸涱垱宕叉慨妯垮煐閸嬧晜绻涢崱妯虹仸闁哄棗绻橀弻鐔煎级閹存繃些闂佷紮绲婚崝搴ㄥ箟濡ゅ懎宸濇い鏍ㄧ〒閺?skills闂?
-  // Skills are user-managed. New installs start empty; SkillHub installs populate this directory.
+  // Skills remain user-managed after bootstrapping. New installs receive
+  // bundled offline manual Skills; SkillHub installs populate additional ones.
   const promptsDest = path.join(userDataPath, 'prompts');
   const promptsSrc = path.join(appRoot, 'prompts');
   if (!fs.existsSync(promptsDest) && fs.existsSync(promptsSrc)) {
@@ -542,19 +543,22 @@ async function startServer() {
   console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.node));
   console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.python));
   console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.git));
+  console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.xurl));
 
   // 闂備胶鍎甸弲娑㈡偤閵娧勬殰闁圭虎鍠栭幑鍫曟煏婵炲灝鈧洟鎯佸鍫濈骇闁冲搫鍊婚妴鎺楁煃鐠囧眰鍋㈢€规洏鍎甸、娑橆潩椤戭偅顣筧shboard server
   const { startDashboard } = require(path.join(appRoot, 'dist', 'dashboard', 'server'));
   dashboardServerHandle = await startDashboard(DASHBOARD_PORT, { updateController, projectRoot: appRoot });
 }
 
-function stopDashboardServer() {
+async function stopDashboardServer() {
   if (!dashboardServerHandle) return;
   const handle = dashboardServerHandle;
   dashboardServerHandle = null;
-  handle.stop?.().catch((error) => {
+  try {
+    await handle.stop?.();
+  } catch (error) {
     console.warn('Failed to stop dashboard server:', error);
-  });
+  }
 }
 
 function createWindow() {
@@ -907,7 +911,18 @@ app.on('child-process-gone', (_event, details) => {
   console.error('[desktop] child process gone:', details?.type, details?.reason);
 });
 
-app.on('before-quit', () => {
+let isDrainingForQuit = false;
+app.on('before-quit', (event) => {
   app.isQuitting = true;
-  stopDashboardServer();
+  // Delay quit until the dashboard server (and its child services) have
+  // drained, so an active heartbeat wake can finish within the configured
+  // Review Deadline. The second before-quit (after drain completes) will
+  // proceed normally because isDrainingForQuit is already true.
+  if (!isDrainingForQuit && dashboardServerHandle) {
+    event.preventDefault();
+    isDrainingForQuit = true;
+    stopDashboardServer().finally(() => {
+      app.quit();
+    });
+  }
 });

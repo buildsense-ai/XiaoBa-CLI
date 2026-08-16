@@ -1,0 +1,35 @@
+{
+  "delivery_type": "report",
+  "meta": {
+    "title": "PDF Author Editor Shell Report",
+    "subtitle": "Author route fixture",
+    "author": "pdf-author-editor",
+    "date": "2026-07-06"
+  },
+  "page": {
+    "size": "A4",
+    "orientation": "portrait"
+  },
+  "content": [
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Shell route"
+    },
+    {
+      "type": "paragraph",
+      "text": "This fixture is used by the pdf-author-editor shell before the author module is attached."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Normalize request",
+        "Route to author",
+        "Write manifest"
+      ]
+    }
+  ],
+  "export": {
+    "pdf": true
+  }
+}

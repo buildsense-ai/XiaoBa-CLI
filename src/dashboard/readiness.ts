@@ -9,6 +9,20 @@ import { ServiceInfo, ServiceManager } from './service-manager';
 import { readDashboardEnvFile } from './settings';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { getWeixinChannelStatus } from './weixin-channel-binding';
+import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
+import {
+  buildExternalSourceDiagnosticSnapshot,
+  type ExternalSourceDiagnosticSnapshot,
+} from '../utils/external-source-diagnostics';
+import type {
+  MemoryPressureObservation,
+} from '../utils/distillation-memory-pressure';
+import { isMemoryPressureTransition } from '../utils/distillation-memory-pressure';
+import {
+  ExternalProviderOverrideStore,
+  resolveExternalProviderOverridePath,
+} from '../utils/external-provider-controls';
+import type { SessionLogSourceReport } from '../utils/session-log-source';
 import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
 
 export type DashboardReadinessStatus = 'ready' | 'warning' | 'blocked';
@@ -30,7 +44,7 @@ export interface DashboardReadinessCheck {
 }
 
 export interface DashboardReadinessSection {
-  id: 'model' | 'catsco' | 'runtimeProfile' | 'skills';
+  id: 'model' | 'catsco' | 'runtimeProfile' | 'skills' | 'runtimeLearning';
   label: string;
   status: DashboardReadinessStatus;
   summary: string;
@@ -57,6 +71,103 @@ export interface DashboardReadinessSnapshot {
     service: string;
     message: string;
   }>;
+  runtimeLearning: DashboardRuntimeLearningStatus;
+}
+
+export interface DashboardRuntimeLearningStatus {
+  enabled: boolean;
+  liveness: 'disabled' | 'healthy' | 'owner_missing' | 'owner_stale' | 'wake_stuck';
+  owner?: {
+    pid: number;
+    generation: string;
+    startedAt: string;
+    lastHeartbeatAt?: string;
+    heartbeatAgeMs: number;
+  };
+  inProgress?: { startedAt: string; reasons: string[] };
+  pendingWakeReasons: string[];
+  nextWakeAt?: string;
+  nextWakeReason?: string;
+  backlog?: {
+    eligibleEpisodes: number;
+    reviewContinuationEpisodes: number;
+    operationalReviews: number;
+    lagMs: number;
+  };
+  cumulativeReviewTimeoutCount: number;
+  cumulativeReviewFailureCount: number;
+  /** Latest persisted background-work pressure diagnostic, if sampling ran. */
+  memoryPressure?: DashboardMemoryPressureStatus;
+  sources: Array<{
+    sourceId: string;
+    category: string;
+    status?: string;
+    supportStatus?: string;
+    provider?: string;
+    reader?: string;
+    readerVersion?: string;
+    selectedProvider?: string;
+    resourcesDiscovered: number;
+    unitsProcessed: number;
+    accounting?: { events: number; bytes: number; elapsedMs: number };
+    cursorProgress?: {
+      maxPosition: number;
+      activeResources: number;
+      closedResources: number;
+      quarantinedEvents: number;
+      tombstones: number;
+    };
+    lastSuccessfulReadAt?: string;
+    nextRetryAt?: string;
+    lastError?: string;
+    failureClass?: string;
+    requiresOperatorAction?: boolean;
+    nextAction?: string;
+    drainState?: string;
+  }>;
+  /**
+   * Multi-provider override statuses (issue #91). Read-only diagnostics for
+   * the operator control surface.
+   */
+  providerStatuses?: Array<{
+    provider: string;
+    enabled: boolean;
+    source: string;
+    scope: string;
+    admissionGate: string;
+    rebaselineRequestedAt?: string;
+  }>;
+  providerDiagnostics?: ExternalSourceDiagnosticSnapshot;
+}
+
+export interface DashboardMemoryPressureStatus {
+  mode: MemoryPressureObservation['mode'];
+  level: MemoryPressureObservation['level'];
+  transition: MemoryPressureObservation['transition'];
+  recoverySamples: number;
+  sampledAt: string;
+  cgroupCurrentBytes: number | null;
+  cgroupMaxBytes: number | null;
+  cgroupPercent: number | null;
+  cgroupAnonBytes: number | null;
+  cgroupFileBytes: number | null;
+  cgroupKernelBytes: number | null;
+  hostMemAvailableBytes: number | null;
+  nodeRssBytes: number | null;
+  dashboardCgroupProcessRss?: DashboardMemoryPressureProcessBreakdown;
+  openCliChromeServiceProcessRss?: DashboardMemoryPressureProcessBreakdown;
+  cgroupOomKills?: number;
+  cgroupHighEvents?: number;
+  reasons: string[];
+}
+
+export interface DashboardMemoryPressureProcessBreakdown {
+  processCount: number;
+  totalRssBytes: number;
+  nodeRssBytes: number;
+  chromeRssBytes: number;
+  otherRssBytes: number;
+  topProcesses: Array<{ name: string; kind: string; rssBytes: number }>;
 }
 
 export interface DashboardReadinessOptions {
@@ -86,11 +197,13 @@ export async function getDashboardReadiness(
     service.name,
     { runtimeRoot, env, config, catsCoOverrides: options.catsCoOverrides, now: options.now },
   ));
+  const runtimeLearning = readRuntimeLearningStatus(runtimeRoot, env, options.now ?? new Date());
   const sections = [
     buildModelSection(modelInputs.env, modelInputs.config),
     buildCatsCoSection(serviceManager, env, config),
     buildRuntimeProfileSection(runtimeRoot, modelInputs.env, modelInputs.config),
     await buildSkillsSection(runtimeRoot),
+    buildRuntimeLearningSection(runtimeLearning),
   ];
 
   return {
@@ -104,6 +217,330 @@ export async function getDashboardReadiness(
         service: service.name,
         message: sanitizeRuntimeMessage(service.lastError || '', runtimeRoot),
       })),
+    runtimeLearning,
+  };
+}
+
+function buildRuntimeLearningSection(
+  runtime: DashboardRuntimeLearningStatus,
+): DashboardReadinessSection {
+  let check: DashboardReadinessCheck;
+  switch (runtime.liveness) {
+    case 'disabled':
+      check = passCheck('runtimeLearning.owner', 'Runtime Learning', 'Runtime Learning 未启用');
+      break;
+    case 'healthy':
+      check = passCheck('runtimeLearning.owner', 'Runtime Learning owner', 'Runtime Learning owner 正常');
+      break;
+    case 'owner_missing':
+      check = failCheck(
+        'runtimeLearning.owner',
+        'Runtime Learning owner',
+        'Runtime Learning 暂无 owner，启动或接管期间将自动重试',
+        'warning',
+        { label: '查看诊断', target: 'diagnostics' },
+      );
+      break;
+    case 'owner_stale':
+      check = failCheck(
+        'runtimeLearning.owner',
+        'Runtime Learning owner',
+        'Runtime Learning owner 心跳已过期，需要检查进程或等待接管',
+        'warning',
+        { label: '查看诊断', target: 'diagnostics' },
+      );
+      break;
+    case 'wake_stuck':
+      check = failCheck(
+        'runtimeLearning.owner',
+        'Runtime Learning wake',
+        'Runtime Learning wake 已超过 Review Deadline',
+        'blocker',
+        { label: '查看诊断', target: 'diagnostics' },
+      );
+      break;
+  }
+  const checks = [check];
+  if (runtime.memoryPressure?.mode === 'suspended') {
+    checks.push(failCheck(
+      'runtimeLearning.memoryPressure',
+      'Runtime Learning memory pressure',
+      '后台蒸馏因内存压力已暂停，等待连续低压采样后自动分级恢复',
+      'warning',
+      { label: '查看诊断', target: 'diagnostics' },
+    ));
+  } else if (runtime.memoryPressure?.mode === 'degraded') {
+    checks.push(failCheck(
+      'runtimeLearning.memoryPressure',
+      'Runtime Learning memory pressure',
+      '后台蒸馏正在低内存降级模式运行（临时 1 / 10）',
+      'warning',
+      { label: '查看诊断', target: 'diagnostics' },
+    ));
+  }
+  return {
+    id: 'runtimeLearning',
+    label: 'Runtime Learning',
+    status: statusFromChecks(checks),
+    summary: checks.find(item => item.severity === 'blocker')?.message
+      ?? checks.find(item => item.status !== 'pass')?.message
+      ?? check.message,
+    checks,
+    ...(check.action ? { action: check.action } : {}),
+  };
+}
+
+function readRuntimeLearningStatus(
+  runtimeRoot: string,
+  env: NodeJS.ProcessEnv,
+  now: Date,
+): DashboardRuntimeLearningStatus {
+  const config = getDistillationHeartbeatConfig(runtimeRoot, env);
+  const base: DashboardRuntimeLearningStatus = {
+    enabled: config.enabled && config.skillEvolutionEnabled,
+    liveness: config.enabled && config.skillEvolutionEnabled ? 'owner_missing' : 'disabled',
+    cumulativeReviewTimeoutCount: 0,
+    cumulativeReviewFailureCount: 0,
+    pendingWakeReasons: [],
+    sources: [],
+  };
+  if (!base.enabled) return base;
+
+  const configuredRoot = [
+    env.XIAOBA_USER_DATA_DIR,
+    env.CATSCO_USER_DATA_DIR,
+    env.XIAOBA_ELECTRON_USER_DATA_DIR,
+    env.XIAOBA_RUNTIME_ROOT,
+  ].map(value => String(value || '').trim()).find(Boolean);
+  const dataRoot = path.resolve(configuredRoot || runtimeRoot);
+  const ownerPath = path.join(dataRoot, '.xiaoba', 'heartbeat-scheduler-owner', 'owner.json');
+  const owner = readJsonRecord(ownerPath);
+  const heartbeat = readJsonRecord(config.heartbeatRecordPath);
+
+  if (owner && Number.isInteger(owner.pid) && typeof owner.generation === 'string' && typeof owner.startedAt === 'string') {
+    const heartbeatAt = typeof owner.lastHeartbeatAt === 'string' ? owner.lastHeartbeatAt : owner.startedAt;
+    const heartbeatMs = Date.parse(heartbeatAt);
+    const heartbeatAgeMs = Number.isFinite(heartbeatMs) ? Math.max(0, now.getTime() - heartbeatMs) : Number.MAX_SAFE_INTEGER;
+    base.owner = {
+      pid: owner.pid as number,
+      generation: owner.generation,
+      startedAt: owner.startedAt,
+      ...(typeof owner.lastHeartbeatAt === 'string' ? { lastHeartbeatAt: owner.lastHeartbeatAt } : {}),
+      heartbeatAgeMs,
+    };
+    base.liveness = heartbeatAgeMs > 90_000 ? 'owner_stale' : 'healthy';
+  }
+
+  const inProgress = heartbeat && isRecord(heartbeat.inProgress) ? heartbeat.inProgress : undefined;
+  if (inProgress && typeof inProgress.startedAt === 'string' && Array.isArray(inProgress.reasons)) {
+    base.inProgress = {
+      startedAt: inProgress.startedAt,
+      reasons: inProgress.reasons.filter((value): value is string => typeof value === 'string'),
+    };
+    const startedMs = Date.parse(inProgress.startedAt);
+    const stuckAfterMs = config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000 + 30_000;
+    if (Number.isFinite(startedMs) && now.getTime() - startedMs > stuckAfterMs) {
+      base.liveness = 'wake_stuck';
+    }
+  }
+  if (heartbeat) {
+    if (Array.isArray(heartbeat.pendingWakeReasons)) {
+      base.pendingWakeReasons = heartbeat.pendingWakeReasons
+        .filter((value): value is string => typeof value === 'string');
+    }
+    if (typeof heartbeat.nextWakeAt === 'string') base.nextWakeAt = heartbeat.nextWakeAt;
+    if (typeof heartbeat.nextWakeReason === 'string') base.nextWakeReason = heartbeat.nextWakeReason;
+    if (isBacklogRecord(heartbeat.backlog)) base.backlog = heartbeat.backlog;
+    base.cumulativeReviewTimeoutCount = toNonNegativeInteger(heartbeat.cumulativeReviewTimeoutCount);
+    base.cumulativeReviewFailureCount = toNonNegativeInteger(heartbeat.cumulativeReviewFailureCount);
+    const memoryPressure = sanitizeMemoryPressureObservation(heartbeat.memoryPressure);
+    if (memoryPressure) base.memoryPressure = memoryPressure;
+    if (Array.isArray(heartbeat.lastSourceReports)) {
+      base.sources = heartbeat.lastSourceReports
+        .filter(isRecord)
+        .map(report => ({
+          sourceId: typeof report.sourceId === 'string' ? report.sourceId : 'unknown',
+          category: typeof report.category === 'string' ? report.category : 'unknown',
+          ...(typeof report.status === 'string' ? { status: report.status } : {}),
+          ...(typeof report.supportStatus === 'string' ? { supportStatus: report.supportStatus } : {}),
+          ...(typeof report.provider === 'string' ? { provider: report.provider } : {}),
+          ...(typeof report.reader === 'string' ? { reader: report.reader } : {}),
+          ...(typeof report.readerVersion === 'string' ? { readerVersion: report.readerVersion } : {}),
+          ...(typeof report.selectedProvider === 'string' ? { selectedProvider: report.selectedProvider } : {}),
+          resourcesDiscovered: toNonNegativeInteger(report.resourcesDiscovered),
+          unitsProcessed: toNonNegativeInteger(report.unitsProcessed),
+          ...(isAccountingRecord(report.accounting) ? { accounting: report.accounting } : {}),
+          ...(isCursorProgressRecord(report.cursorProgress) ? { cursorProgress: report.cursorProgress } : {}),
+          ...(typeof report.lastSuccessfulReadAt === 'string' ? { lastSuccessfulReadAt: report.lastSuccessfulReadAt } : {}),
+          ...(typeof report.nextRetryAt === 'string' ? { nextRetryAt: report.nextRetryAt } : {}),
+          ...(typeof report.lastError === 'string' ? { lastError: report.lastError } : {}),
+          ...(typeof report.failureClass === 'string' ? { failureClass: report.failureClass } : {}),
+          ...(typeof report.requiresOperatorAction === 'boolean'
+            ? { requiresOperatorAction: report.requiresOperatorAction }
+            : {}),
+          ...(typeof report.nextAction === 'string' ? { nextAction: report.nextAction } : {}),
+          ...(typeof report.drainState === 'string' ? { drainState: report.drainState } : {}),
+        }));
+    }
+  }
+
+  // Multi-provider override statuses (issue #91) — read-only diagnostics.
+  try {
+    const overrideStore = new ExternalProviderOverrideStore({
+      stateFilePath: resolveExternalProviderOverridePath(config),
+    });
+    const statuses = overrideStore.getAllProviderStatuses(config);
+    base.providerStatuses = statuses.map(status => ({
+      provider: status.provider,
+      enabled: status.enabled,
+      source: status.source,
+      scope: status.scope,
+      admissionGate: status.admissionGate,
+      ...(status.rebaselineRequestedAt ? { rebaselineRequestedAt: status.rebaselineRequestedAt } : {}),
+    }));
+    base.providerDiagnostics = buildExternalSourceDiagnosticSnapshot({
+      config,
+      providerStatuses: statuses,
+      sourceReports: Array.isArray(heartbeat?.lastSourceReports)
+        ? heartbeat.lastSourceReports as SessionLogSourceReport[]
+        : [],
+      generatedAt: now.toISOString(),
+    });
+  } catch {
+    // Override store is diagnostic; fail silently.
+  }
+
+  return base;
+}
+
+function readJsonRecord(filePath: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function toNonNegativeInteger(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function isBacklogRecord(value: unknown): value is NonNullable<DashboardRuntimeLearningStatus['backlog']> {
+  return isRecord(value) && [
+    value.eligibleEpisodes,
+    value.reviewContinuationEpisodes,
+    value.operationalReviews,
+    value.lagMs,
+  ].every(item => typeof item === 'number' && Number.isFinite(item) && item >= 0);
+}
+
+function isAccountingRecord(value: unknown): value is { events: number; bytes: number; elapsedMs: number } {
+  return isRecord(value) && [value.events, value.bytes, value.elapsedMs]
+    .every(item => typeof item === 'number' && Number.isFinite(item) && item >= 0);
+}
+
+function isCursorProgressRecord(value: unknown): value is {
+  maxPosition: number;
+  activeResources: number;
+  closedResources: number;
+  quarantinedEvents: number;
+  tombstones: number;
+} {
+  return isRecord(value) && [
+    value.maxPosition,
+    value.activeResources,
+    value.closedResources,
+    value.quarantinedEvents,
+    value.tombstones,
+  ].every(item => typeof item === 'number' && Number.isFinite(item));
+}
+
+function sanitizeMemoryPressureObservation(value: unknown): DashboardMemoryPressureStatus | undefined {
+  if (!isRecord(value) || !isRecord(value.sample)) return undefined;
+  const sample = value.sample;
+  const mode = value.mode;
+  const level = value.level;
+  if (
+    (mode !== 'normal' && mode !== 'degraded' && mode !== 'suspended')
+    || (level !== 'normal' && level !== 'soft' && level !== 'hard')
+    || !isMemoryPressureTransition(value.transition)
+    || typeof value.recoverySamples !== 'number'
+    || !Number.isFinite(value.recoverySamples)
+    || typeof sample.sampledAt !== 'string'
+    || !Array.isArray(sample.reasons)
+  ) return undefined;
+  const readNullableBytes = (candidate: unknown): number | null => (
+    typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0
+      ? candidate
+      : null
+  );
+  const toProcessBreakdown = (candidate: unknown): DashboardMemoryPressureProcessBreakdown | undefined => {
+    if (!isRecord(candidate)) return undefined;
+    const numericKeys = ['processCount', 'totalRssBytes', 'nodeRssBytes', 'chromeRssBytes', 'otherRssBytes'];
+    if (!numericKeys.every(key => (
+      typeof candidate[key] === 'number'
+      && Number.isFinite(candidate[key])
+      && candidate[key] >= 0
+    ))) return undefined;
+    return {
+      processCount: candidate.processCount as number,
+      totalRssBytes: candidate.totalRssBytes as number,
+      nodeRssBytes: candidate.nodeRssBytes as number,
+      chromeRssBytes: candidate.chromeRssBytes as number,
+      otherRssBytes: candidate.otherRssBytes as number,
+      topProcesses: Array.isArray(candidate.topProcesses)
+        ? candidate.topProcesses
+          .filter(isRecord)
+          .filter(process => (
+            typeof process.name === 'string'
+            && typeof process.kind === 'string'
+            && typeof process.rssBytes === 'number'
+            && Number.isFinite(process.rssBytes)
+            && process.rssBytes >= 0
+          ))
+          .slice(0, 12)
+          .map(process => ({
+            name: process.name as string,
+            kind: process.kind as string,
+            rssBytes: process.rssBytes as number,
+          }))
+        : [],
+    };
+  };
+  const dashboardCgroupProcessRss = toProcessBreakdown(sample.dashboardCgroupProcessRss);
+  const openCliChromeServiceProcessRss = toProcessBreakdown(sample.openCliChromeServiceProcessRss);
+  return {
+    mode,
+    level,
+    transition: value.transition,
+    recoverySamples: Math.max(0, Math.floor(value.recoverySamples)),
+    sampledAt: sample.sampledAt as string,
+    cgroupCurrentBytes: readNullableBytes(sample.cgroupCurrentBytes),
+    cgroupMaxBytes: readNullableBytes(sample.cgroupMaxBytes),
+    cgroupPercent: readNullableBytes(sample.cgroupPercent),
+    cgroupAnonBytes: readNullableBytes(sample.cgroupAnonBytes),
+    cgroupFileBytes: readNullableBytes(sample.cgroupFileBytes),
+    cgroupKernelBytes: readNullableBytes(sample.cgroupKernelBytes),
+    hostMemAvailableBytes: readNullableBytes(sample.hostMemAvailableBytes),
+    nodeRssBytes: readNullableBytes(sample.nodeRssBytes),
+    ...(dashboardCgroupProcessRss
+      ? { dashboardCgroupProcessRss }
+      : {}),
+    ...(openCliChromeServiceProcessRss
+      ? { openCliChromeServiceProcessRss }
+      : {}),
+    ...(typeof sample.cgroupOomKills === 'number' && Number.isFinite(sample.cgroupOomKills)
+      ? { cgroupOomKills: Math.max(0, Math.floor(sample.cgroupOomKills)) }
+      : {}),
+    ...(typeof sample.cgroupHighEvents === 'number' && Number.isFinite(sample.cgroupHighEvents)
+      ? { cgroupHighEvents: Math.max(0, Math.floor(sample.cgroupHighEvents)) }
+      : {}),
+    reasons: sample.reasons.filter((reason): reason is string => typeof reason === 'string').slice(0, 32),
   };
 }
 

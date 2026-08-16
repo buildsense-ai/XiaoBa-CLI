@@ -1,0 +1,28 @@
+{
+  "mode": "modify",
+  "intent": "Add a visible confidential watermark and page numbers.",
+  "operation": "overlay",
+  "input": {
+    "path": "input.pdf",
+    "type": "pdf"
+  },
+  "actions": [
+    {
+      "type": "watermark",
+      "text": "CONFIDENTIAL",
+      "pages": "all",
+      "opacity": 0.16,
+      "position": "center",
+      "rotation": -35
+    },
+    {
+      "type": "page_number",
+      "pages": "all",
+      "position": "bottom-center",
+      "format": "{page} / {total}"
+    }
+  ],
+  "options": {
+    "name": "modify-watermark"
+  }
+}

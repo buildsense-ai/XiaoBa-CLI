@@ -9,6 +9,7 @@ export interface MemorySidecarBranchOptions {
   input: string | ContentBlock[];
   recentMessages: Message[];
   workingDirectory: string;
+  branchLogRoot?: string;
   aiService: AIService;
   queue: SyntheticObservationQueue;
   signal?: AbortSignal;

@@ -1,0 +1,63 @@
+{
+  "delivery_type": "report",
+  "template": "formal-report",
+  "meta": {
+    "title": "Document Readiness Report",
+    "subtitle": "A concise operational report rendered through the formal-report template",
+    "author": "pdf-author-editor",
+    "date": "2026-07-06"
+  },
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": "normal"
+  },
+  "content": [
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Summary"
+    },
+    {
+      "type": "paragraph",
+      "text": "The source package is complete enough for a first pass. Main sections, supporting tables, assets, and review notes are represented as structured content."
+    },
+    {
+      "type": "callout",
+      "tone": "success",
+      "title": "Ready for rendering",
+      "text": "This report fixture checks a multipage-friendly business report template with formal typography, table styling, callouts, and print footer rules."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Input Coverage"
+    },
+    {
+      "type": "table",
+      "columns": ["Area", "Status", "Notes"],
+      "rows": [
+        ["Sections", "Complete", "All major sections have titles and body content."],
+        ["Assets", "Partial", "One optional image still needs replacement."],
+        ["Review notes", "Complete", "Open comments are represented as structured follow-ups."]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Next Actions"
+    },
+    {
+      "type": "list",
+      "style": "number",
+      "items": [
+        "Run route preflight to choose the author path.",
+        "Render the structured content with the formal-report template.",
+        "Export PDF and check page count, blank pages, and preview image."
+      ]
+    }
+  ],
+  "export": {
+    "pdf": true
+  }
+}

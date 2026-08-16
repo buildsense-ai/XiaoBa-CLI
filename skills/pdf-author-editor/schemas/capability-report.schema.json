@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pdf-author-editor capability report",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["skill", "version", "matrix_version", "status", "will_execute", "route", "selected_capability", "expected_outputs", "required_inputs", "blocked_conditions", "boundaries"],
+  "properties": {
+    "skill": {
+      "const": "pdf-author-editor"
+    },
+    "version": {
+      "type": "string"
+    },
+    "matrix_version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "will_execute": {
+      "type": "boolean"
+    },
+    "route": {
+      "type": "object"
+    },
+    "selected_capability": {
+      "type": ["object", "null"]
+    },
+    "expected_outputs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "required_inputs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "optional_inputs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "blocked_conditions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "boundaries": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "edit_plan_summary": {
+      "type": ["object", "null"]
+    },
+    "request_digest": {
+      "type": "object"
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

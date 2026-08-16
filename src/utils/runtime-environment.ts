@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 
-export type RuntimeBinaryName = 'node' | 'python' | 'git';
+export type RuntimeBinaryName = 'node' | 'python' | 'git' | 'xurl';
 export type RuntimeBinarySource = 'bundled' | 'system' | 'missing';
 
 export interface RuntimeBinary {
@@ -22,6 +22,9 @@ export interface RuntimeEnvironmentOptions {
   bundledExecutablesDir?: string;
   /** @deprecated Use bundledExecutablesDir. Kept for internal call-site compatibility. */
   runtimeRoot?: string;
+  /** When true, the runtime is a packaged production build. Automatic xurl
+   *  discovery is bundled-only; an explicit command override is preserved
+   *  without probing or executing an unrelated binary from system PATH. */
   isPackaged?: boolean;
   includeSystemFallback?: boolean;
   probeVersion?: boolean;
@@ -55,18 +58,23 @@ const BUNDLED_RELATIVE_PATHS: Record<RuntimeBinaryName, string[]> = {
   git: IS_WINDOWS
     ? [path.join('git', 'cmd', 'git.exe'), path.join('git', 'bin', 'git.exe')]
     : [path.join('git', 'bin', 'git')],
+  xurl: IS_WINDOWS
+    ? [path.join('xurl', 'xurl.exe')]
+    : [path.join('xurl', 'xurl')],
 };
 
 const SYSTEM_COMMANDS: Record<RuntimeBinaryName, string[]> = {
   node: ['node'],
   python: IS_WINDOWS ? ['python', 'python3', 'py'] : ['python3', 'python'],
   git: ['git'],
+  xurl: ['xurl'],
 };
 
 const SHIM_COMMAND_NAMES: Record<RuntimeBinaryName, string[]> = {
   node: ['node'],
   python: ['python', 'python3'],
   git: ['git'],
+  xurl: ['xurl'],
 };
 
 export function resolveRuntimeEnvironment(options: RuntimeEnvironmentOptions = {}): RuntimeEnvironment {
@@ -75,12 +83,28 @@ export function resolveRuntimeEnvironment(options: RuntimeEnvironmentOptions = {
   const bundledExecutablesDir = resolveBundledExecutablesDir(env, options);
   const includeSystemFallback = options.includeSystemFallback !== false;
   const probeVersion = options.probeVersion !== false;
+  const isPackaged = options.isPackaged === true;
+
+  // Production fail-closed: when packaged, xurl must prefer the pinned bundled
+  // binary and must not fall back to system PATH. This prevents a tampered or
+  // untrusted system xurl from becoming the learning boundary in production.
+  // An explicit XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND is consumed directly
+  // by the external-source runtime below. It must not re-enable PATH discovery:
+  // doing so could execute a different PATH binary during the version probe
+  // before the explicit command is used. Development keeps the existing
+  // fallback behavior.
+  const xurlIncludeSystemFallback = isPackaged ? false : includeSystemFallback;
 
   const binaries: Record<RuntimeBinaryName, RuntimeBinary> = {
     node: resolveBinary('node', env, bundledExecutablesDir, includeSystemFallback, probeVersion),
     python: resolveBinary('python', env, bundledExecutablesDir, includeSystemFallback, probeVersion),
     git: resolveBinary('git', env, bundledExecutablesDir, includeSystemFallback, probeVersion),
+    xurl: resolveBinary('xurl', env, bundledExecutablesDir, xurlIncludeSystemFallback, probeVersion),
   };
+
+  if (!env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND?.trim() && binaries.xurl.executable) {
+    env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND = binaries.xurl.executable;
+  }
 
   const shimDirectory = ensureRuntimeShims(
     binaries,

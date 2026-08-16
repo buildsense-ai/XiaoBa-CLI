@@ -90,6 +90,33 @@ test('AIService retries transient stream errors before any text is emitted', asy
   assert.deepStrictEqual(chunks, ['ok']);
 });
 
+test('AIService can disable retries for a bounded stream request', async () => {
+  const service = createTestService();
+  let attempts = 0;
+  (service as any).provider = {
+    chat: async () => ({ content: null }),
+    chatStream: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error('rate limited'), {
+          response: {
+            status: 429,
+            headers: { 'retry-after': '0' },
+            data: { message: 'rate limited' },
+          },
+        });
+      }
+      return { content: 'would have retried' };
+    },
+  };
+
+  await assert.rejects(
+    () => service.chatStream([], undefined, undefined, { retryMode: 'none' }),
+    /429/,
+  );
+  assert.equal(attempts, 1);
+});
+
 test('AIService can keep retrying transient stream failures beyond the old short cap', async () => {
   process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '5';
   const service = createTestService();

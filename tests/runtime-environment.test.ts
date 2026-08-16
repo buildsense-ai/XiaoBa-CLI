@@ -117,6 +117,54 @@ describe('resolveRuntimeEnvironment', () => {
     assert.ok(fs.existsSync(path.join(shimRoot, shimName)));
   });
 
+  test('resolves bundled xurl and configures the external source command', () => {
+    const xurlFileName = process.platform === 'win32' ? 'xurl.exe' : 'xurl';
+    const xurlBinaryPath = path.join(testRoot, 'xurl', xurlFileName);
+
+    fs.mkdirSync(path.dirname(xurlBinaryPath), { recursive: true });
+    fs.writeFileSync(xurlBinaryPath, '');
+
+    const runtimeEnvironment = resolveRuntimeEnvironment({
+      runtimeRoot: testRoot,
+      env: { PATH: '' },
+      includeSystemFallback: false,
+      probeVersion: false,
+      shimDirectory: shimRoot,
+    });
+
+    assert.strictEqual(runtimeEnvironment.binaries.xurl.executable, xurlBinaryPath);
+    assert.strictEqual(runtimeEnvironment.binaries.xurl.source, 'bundled');
+    assert.strictEqual(
+      runtimeEnvironment.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND,
+      xurlBinaryPath,
+    );
+  });
+
+  test('preserves an explicit xurl command override', () => {
+    const xurlFileName = process.platform === 'win32' ? 'xurl.exe' : 'xurl';
+    const xurlBinaryPath = path.join(testRoot, 'xurl', xurlFileName);
+    const explicitCommand = path.join(testRoot, 'custom', xurlFileName);
+
+    fs.mkdirSync(path.dirname(xurlBinaryPath), { recursive: true });
+    fs.writeFileSync(xurlBinaryPath, '');
+
+    const runtimeEnvironment = resolveRuntimeEnvironment({
+      runtimeRoot: testRoot,
+      env: {
+        PATH: '',
+        XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND: explicitCommand,
+      },
+      includeSystemFallback: false,
+      probeVersion: false,
+      shimDirectory: shimRoot,
+    });
+
+    assert.strictEqual(
+      runtimeEnvironment.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND,
+      explicitCommand,
+    );
+  });
+
   test('does not overwrite a shim with a self-referential command', (t) => {
     if (process.platform !== 'win32') {
       t.skip('Windows .cmd shim recursion is platform-specific');

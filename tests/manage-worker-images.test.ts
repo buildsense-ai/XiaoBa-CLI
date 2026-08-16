@@ -12,6 +12,12 @@ const managePath = path.join(
   "ctyun-worker-image",
   "Manage-WorkerImages.ps1",
 );
+const hasPwsh =
+  spawnSync(
+    "pwsh",
+    ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"],
+    { encoding: "utf8" },
+  ).status === 0;
 
 // Shared fake ctyun-cli. Supports real pagination (--pageNo/--pageSize with
 // totalPage), delayed deletes (deleteDelayRounds: image stays visible for N
@@ -83,7 +89,7 @@ process.stdout.write(JSON.stringify({
 }));
 `;
 
-test("worker image lifecycle: list, latest, and prune keeps N (default 6)", () => {
+test("worker image lifecycle: list, latest, and prune keeps N (default 6)", { skip: !hasPwsh }, () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-img-mgmt-"));
   try {
     const statePath = path.join(sandbox, "state.json");
@@ -309,7 +315,7 @@ process.exit(result.status ?? 1);
   return { sandbox, statePath, logPath, writeState, runScript };
 }
 
-test("worker image lifecycle: multi-round confirm, pagination, and confirm timeout", () => {
+test("worker image lifecycle: multi-round confirm, pagination, and confirm timeout", { skip: !hasPwsh }, () => {
   const sb = buildSandbox("catsco-img-mgmt2-");
   try {
     const workerImages = (n: number) =>
@@ -359,7 +365,7 @@ test("worker image lifecycle: multi-round confirm, pagination, and confirm timeo
   }
 });
 
-test("worker image lifecycle: empty list and missing labels are safe", () => {
+test("worker image lifecycle: empty list and missing labels are safe", { skip: !hasPwsh }, () => {
   const sb = buildSandbox("catsco-img-mgmt3-");
   try {
     // Empty list prints a valid empty JSON array.
@@ -388,7 +394,7 @@ test("worker image lifecycle: empty list and missing labels are safe", () => {
   }
 });
 
-test("worker image lifecycle: prune protects production-referenced images", () => {
+test("worker image lifecycle: prune protects production-referenced images", { skip: !hasPwsh }, () => {
   const sb = buildSandbox("catsco-img-mgmt4-");
   try {
     const eight = Array.from({ length: 8 }, (_, i) => ({

@@ -107,8 +107,6 @@ function createHarness(options: { busy?: boolean; message: any }): any {
   bot.replies = [] as Array<{ chatId: string; text: string }>;
   bot.sessionResult = { visibleToUser: false, text: '' };
   bot.processedMsgIds = new Set();
-  bot.pendingAnswers = new Map();
-  bot.pendingAnswerBySession = new Map();
   bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
   bot.bridgeClient = null;

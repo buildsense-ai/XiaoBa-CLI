@@ -37,6 +37,23 @@ describe('SessionSkillRuntime', () => {
     assert.match(String(message.content), /本轮所有可用的 skills/);
   });
 
+  test('exposes generated distilled skill metadata in the transient list', () => {
+    const runtime = new SessionSkillRuntime(buildSkillManager({
+      userInvocableSkills: [
+        buildSkill('officecli', 'Office skill'),
+        buildSkill('distilled-abc123', 'Distilled memory skill', {}, '/tmp/skills/generated-distilled/cap-1/snap-1/SKILL.md'),
+      ],
+    }) as any, 'session-demo');
+
+    const message = runtime.buildSkillsListMessage();
+
+    assert.ok(message);
+    assert.match(String(message.content), /officecli: Office skill/);
+    assert.match(String(message.content), /distilled-abc123: Distilled memory skill/);
+    assert.doesNotMatch(String(message.content), /Skill prompt for distilled-abc123/);
+    assert.match(runtime.handleSkillsCommand().reply ?? '', /distilled-abc123/);
+  });
+
   test('lists skills as names only for slash skills command', () => {
     const runtime = new SessionSkillRuntime(buildSkillManager({
       skills: {
@@ -57,6 +74,7 @@ function buildSkill(
   name: string,
   description: string,
   metadata: Partial<Skill['metadata']> = {},
+  filePath?: string,
 ): Skill {
   return {
     metadata: {
@@ -66,7 +84,7 @@ function buildSkill(
       ...metadata,
     },
     content: `Skill prompt for ${name}`,
-    filePath: `/tmp/${name}/SKILL.md`,
+    filePath: filePath ?? `/tmp/${name}/SKILL.md`,
   };
 }
 

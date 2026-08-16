@@ -1,0 +1,121 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pdf-author-editor request",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["auto", "author", "modify", "semantic"],
+      "default": "auto"
+    },
+    "intent": {
+      "type": "string"
+    },
+    "input": {
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "path": { "type": "string" },
+            "type": {
+              "type": "string",
+              "enum": ["markdown", "json", "html", "pdf", "read-pdf-json", "unknown"]
+            }
+          }
+        }
+      ]
+    },
+    "operation": {
+      "type": "string",
+      "enum": [
+        "author",
+        "page_ops",
+        "overlay",
+        "semantic",
+        "short_text_edit",
+        "overlay_edit",
+        "rebuild"
+      ]
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["type"],
+        "properties": {
+          "type": { "type": "string" },
+          "pages": {}
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string" },
+          "target_text": { "type": "string" },
+          "replacement_text": { "type": "string" },
+          "pages": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 1 }
+          },
+          "page": { "type": "integer", "minimum": 1 },
+          "rect": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": { "type": "number" }
+          },
+          "occurrence": {
+            "oneOf": [
+              { "type": "integer", "minimum": 1 },
+              { "type": "string", "enum": ["all"] }
+            ]
+          },
+          "match_index": { "type": "integer", "minimum": 1 },
+          "match_mode": {
+            "type": "string",
+            "enum": ["auto", "exact", "normalized", "normalized_words"]
+          },
+          "allow_multiple": { "type": "boolean" }
+        }
+      }
+    },
+    "target_text": {
+      "type": "string"
+    },
+    "replacement_text": {
+      "type": "string"
+    },
+    "read_pdf_result": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "output": {
+      "type": "string"
+    },
+    "template": {
+      "type": "string"
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "output_dir": { "type": "string" },
+        "execution_policy": {
+          "type": "string",
+          "enum": ["auto", "direct", "plan-first"]
+        },
+        "name": { "type": "string" },
+        "template": { "type": "string" }
+      }
+    }
+  }
+}

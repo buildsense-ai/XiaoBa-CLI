@@ -1,0 +1,22 @@
+{
+  "mode": "semantic",
+  "operation": "overlay_edit",
+  "intent": "Replace text that may span line breaks by normalized word matching.",
+  "input": {
+    "path": "source.pdf",
+    "type": "pdf"
+  },
+  "changes": [
+    {
+      "id": "chg-001",
+      "kind": "text_replace",
+      "target_text": "Service plan: Basic. Seat count: 10.",
+      "replacement_text": "Service plan: Pro. Seat count: 12.",
+      "pages": [1],
+      "match_mode": "normalized"
+    }
+  ],
+  "options": {
+    "name": "semantic-normalized"
+  }
+}

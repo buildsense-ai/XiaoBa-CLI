@@ -2,6 +2,7 @@ import { Logger } from '../utils/logger';
 import { WeixinBot } from '../weixin';
 import { WeixinConfig } from '../weixin/types';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
+import { isRuntimeShutdownMessage } from '../utils/runtime-shutdown-message';
 
 const WEIXIN_SESSION_EXPIRED_EXIT_CODE = 78;
 
@@ -42,6 +43,10 @@ export async function weixinCommand(): Promise<void> {
 
   process.on('SIGINT', () => shutdown(0));
   process.on('SIGTERM', () => shutdown(0));
+  process.on('message', message => {
+    if (isRuntimeShutdownMessage(message)) shutdown(0);
+  });
+  process.on('disconnect', () => shutdown(0));
 
   await bot.start();
   await startRuntimeCommandSupport();

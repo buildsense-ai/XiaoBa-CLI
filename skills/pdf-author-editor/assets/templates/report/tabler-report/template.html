@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en" data-delivery-type="report" data-template-id="tabler-report">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="generator" content="pdf-author-editor">
+  <title>{{TITLE}}</title>
+  <style>
+    {{CSS}}
+    /*
+      Tabler-inspired PDF subset.
+      Adapted from @tabler/core component rhythm and CSS variable names.
+      Source: https://github.com/tabler/tabler, MIT license.
+    */
+    @page {
+      size: {{PAGE_SIZE}} {{PAGE_ORIENTATION}};
+      margin: {{PAGE_MARGIN}};
+    }
+    :root {
+      --tblr-primary: #206bc4;
+      --tblr-primary-rgb: 32, 107, 196;
+      --tblr-success: #2fb344;
+      --tblr-warning: #f59f00;
+      --tblr-danger: #d63939;
+      --tblr-info: #4299e1;
+      --tblr-body-bg: #f3f6fb;
+      --tblr-body-color: #1f2937;
+      --tblr-secondary: #667085;
+      --tblr-muted: #8a94a6;
+      --tblr-heading-color: #182433;
+      --tblr-bg-surface: #ffffff;
+      --tblr-bg-surface-secondary: #f8fafc;
+      --tblr-bg-surface-tertiary: #f3f6fb;
+      --tblr-border-color: #d9e2ec;
+      --tblr-border-color-translucent: rgba(98, 105, 118, 0.18);
+      --tblr-border-radius: 6px;
+      --tblr-border-radius-lg: 10px;
+      --tblr-shadow-card: 0 1px 2px rgba(24, 36, 51, 0.04), 0 8px 24px rgba(24, 36, 51, 0.07);
+      --tblr-font-sans-serif: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      --tblr-font-weight-medium: 600;
+      --tblr-font-weight-bold: 700;
+      --tblr-font-weight-headings: 760;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      background:
+        radial-gradient(circle at 20% 0%, rgba(var(--tblr-primary-rgb), 0.08), transparent 30%),
+        linear-gradient(180deg, #f8fafc 0%, var(--tblr-body-bg) 42%, #eef3f9 100%);
+      color: var(--tblr-body-color);
+      font-family: var(--tblr-font-sans-serif);
+      font-size: 13px;
+      line-height: 1.52;
+      margin: 0;
+    }
+    .page {
+      margin: 0 auto;
+      max-width: 980px;
+      padding: 28px 32px 42px;
+    }
+    .navbar-lite {
+      align-items: center;
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .brand {
+      align-items: center;
+      color: var(--tblr-heading-color);
+      display: flex;
+      font-size: 12px;
+      font-weight: 760;
+      gap: 10px;
+      letter-spacing: 0.02em;
+    }
+    .brand-logo {
+      align-items: center;
+      background: var(--tblr-primary);
+      border-radius: var(--tblr-border-radius);
+      box-shadow: 0 7px 18px rgba(var(--tblr-primary-rgb), 0.24);
+      color: #ffffff;
+      display: inline-flex;
+      font-size: 11px;
+      font-weight: 800;
+      height: 28px;
+      justify-content: center;
+      line-height: 1;
+      width: 28px;
+    }
+    .nav-meta {
+      align-items: center;
+      color: var(--tblr-secondary);
+      display: flex;
+      font-size: 11px;
+      gap: 8px;
+      justify-content: flex-end;
+      text-align: right;
+    }
+    .badge {
+      align-items: center;
+      background: rgba(var(--tblr-primary-rgb), 0.09);
+      border: 1px solid rgba(var(--tblr-primary-rgb), 0.18);
+      border-radius: 999px;
+      color: var(--tblr-primary);
+      display: inline-flex;
+      font-size: 10px;
+      font-weight: 700;
+      gap: 5px;
+      line-height: 1;
+      padding: 5px 9px;
+      white-space: nowrap;
+    }
+    .badge-dot {
+      background: currentColor;
+      border-radius: 999px;
+      display: inline-block;
+      height: 6px;
+      width: 6px;
+    }
+    .badge-success {
+      background: rgba(47, 179, 68, 0.10);
+      border-color: rgba(47, 179, 68, 0.22);
+      color: #1f8f38;
+    }
+    .badge-warning {
+      background: rgba(245, 159, 0, 0.12);
+      border-color: rgba(245, 159, 0, 0.24);
+      color: #b76e00;
+    }
+    .page-header {
+      align-items: flex-start;
+      display: grid;
+      gap: 22px;
+      grid-template-columns: minmax(0, 1fr) 220px;
+      margin-bottom: 18px;
+    }
+    .page-pretitle {
+      color: var(--tblr-primary);
+      font-size: 11px;
+      font-weight: 760;
+      letter-spacing: 0.075em;
+      line-height: 1rem;
+      margin: 0 0 8px;
+      text-transform: uppercase;
+    }
+    .page-title {
+      color: var(--tblr-heading-color);
+      font-size: 33px;
+      font-weight: 780;
+      letter-spacing: 0;
+      line-height: 1.06;
+      margin: 0;
+    }
+    .page-subtitle {
+      color: var(--tblr-secondary);
+      font-size: 14px;
+      line-height: 1.48;
+      margin: 12px 0 0;
+      max-width: 680px;
+    }
+    .meta-card {
+      background: rgba(255, 255, 255, 0.82);
+      border: 1px solid var(--tblr-border-color-translucent);
+      border-radius: var(--tblr-border-radius-lg);
+      box-shadow: var(--tblr-shadow-card);
+      padding: 14px 15px;
+    }
+    .meta-label {
+      color: var(--tblr-muted);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.065em;
+      margin: 0 0 5px;
+      text-transform: uppercase;
+    }
+    .meta-value {
+      color: var(--tblr-heading-color);
+      font-size: 12px;
+      font-weight: 650;
+      margin: 0;
+    }
+    .page-body {
+      display: grid;
+      gap: 16px;
+    }
+    .card,
+    .section-card {
+      --tblr-card-spacer-y: 18px;
+      --tblr-card-spacer-x: 20px;
+      --tblr-card-cap-padding-y: 13px;
+      --tblr-card-cap-padding-x: 20px;
+      background: var(--tblr-bg-surface);
+      border: 1px solid var(--tblr-border-color-translucent);
+      border-radius: var(--tblr-border-radius-lg);
+      box-shadow: var(--tblr-shadow-card);
+      color: var(--tblr-body-color);
+      overflow: hidden;
+      position: relative;
+      word-wrap: break-word;
+      break-inside: avoid;
+    }
+    .section-card {
+      break-inside: auto;
+    }
+    .card-accent::before,
+    .section-card::before {
+      background: linear-gradient(90deg, var(--tblr-primary), #4299e1 42%, #2fb344 100%);
+      content: "";
+      height: 3px;
+      left: 0;
+      position: absolute;
+      right: 0;
+      top: 0;
+    }
+    .card-header,
+    .section-card-header {
+      align-items: center;
+      background: var(--tblr-bg-surface-secondary);
+      border-bottom: 1px solid var(--tblr-border-color-translucent);
+      display: flex;
+      justify-content: space-between;
+      padding: var(--tblr-card-cap-padding-y) var(--tblr-card-cap-padding-x);
+      break-after: avoid;
+    }
+    .section-kicker {
+      color: var(--tblr-primary);
+      font-size: 10px;
+      font-weight: 760;
+      letter-spacing: 0.07em;
+      line-height: 1;
+      margin: 0 0 4px;
+      text-transform: uppercase;
+    }
+    .section-title {
+      color: var(--tblr-heading-color);
+      font-size: 17px;
+      font-weight: 780;
+      line-height: 1.22;
+      margin: 0;
+    }
+    .section-card-body {
+      padding: var(--tblr-card-spacer-y) var(--tblr-card-spacer-x) 20px;
+      break-before: avoid;
+    }
+    .section-card-body > :first-child {
+      margin-top: 0;
+    }
+    .section-card-body > :last-child {
+      margin-bottom: 0;
+    }
+    .card-title {
+      color: var(--tblr-heading-color);
+      font-size: 13px;
+      font-weight: 760;
+      margin: 0;
+    }
+    .card-subtitle {
+      color: var(--tblr-secondary);
+      font-size: 11px;
+      margin: 2px 0 0;
+    }
+    .card-body {
+      padding: var(--tblr-card-spacer-y) var(--tblr-card-spacer-x) 20px;
+    }
+    .report-content > :first-child {
+      margin-top: 0;
+    }
+    .report-content {
+      display: grid;
+      gap: 16px;
+    }
+    h1, h2, h3, h4 {
+      break-after: avoid;
+      color: var(--tblr-heading-color);
+      font-weight: var(--tblr-font-weight-headings);
+      letter-spacing: 0;
+      line-height: 1.24;
+      margin: 1.35em 0 0.55em;
+    }
+    h1 {
+      align-items: center;
+      border-bottom: 1px solid var(--tblr-border-color-translucent);
+      display: flex;
+      font-size: 21px;
+      gap: 10px;
+      padding-bottom: 9px;
+    }
+    h1::before {
+      background: rgba(var(--tblr-primary-rgb), 0.12);
+      border: 1px solid rgba(var(--tblr-primary-rgb), 0.24);
+      border-radius: 5px;
+      content: "";
+      display: inline-block;
+      flex: 0 0 auto;
+      height: 16px;
+      width: 16px;
+    }
+    h2 {
+      color: #24466f;
+      font-size: 17px;
+    }
+    h3 {
+      font-size: 14px;
+    }
+    h4 {
+      color: var(--tblr-secondary);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    p {
+      margin: 0.55em 0;
+    }
+    .content-block {
+      break-inside: avoid;
+    }
+    .section-card.content-block {
+      break-inside: auto;
+    }
+    ul, ol {
+      margin: 9px 0 15px 0;
+      padding: 0;
+    }
+    li {
+      margin: 0;
+      padding: 4px 0 4px 24px;
+      position: relative;
+    }
+    ul > li {
+      list-style: none;
+    }
+    ul > li::before {
+      background: rgba(var(--tblr-primary-rgb), 0.18);
+      border: 1px solid rgba(var(--tblr-primary-rgb), 0.28);
+      border-radius: 999px;
+      content: "";
+      height: 7px;
+      left: 4px;
+      position: absolute;
+      top: 12px;
+      width: 7px;
+    }
+    ol {
+      counter-reset: item;
+      list-style: none;
+    }
+    ol > li {
+      counter-increment: item;
+    }
+    ol > li::before {
+      background: var(--tblr-bg-surface-tertiary);
+      border: 1px solid var(--tblr-border-color-translucent);
+      border-radius: 999px;
+      color: var(--tblr-secondary);
+      content: counter(item);
+      font-size: 9px;
+      font-weight: 800;
+      height: 16px;
+      left: 0;
+      line-height: 15px;
+      position: absolute;
+      text-align: center;
+      top: 6px;
+      width: 16px;
+    }
+    .metric-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin: 2px 0 18px;
+    }
+    .metric-card {
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+      border: 1px solid var(--tblr-border-color-translucent);
+      border-radius: var(--tblr-border-radius-lg);
+      box-shadow: 0 1px 2px rgba(24, 36, 51, 0.04);
+      min-height: 90px;
+      padding: 13px 14px;
+      position: relative;
+    }
+    .metric-card::after {
+      background: rgba(var(--tblr-primary-rgb), 0.12);
+      border-radius: 999px;
+      content: "";
+      height: 32px;
+      position: absolute;
+      right: 12px;
+      top: 12px;
+      width: 32px;
+    }
+    .metric-card.tone-success::after {
+      background: rgba(47, 179, 68, 0.14);
+    }
+    .metric-card.tone-warning::after {
+      background: rgba(245, 159, 0, 0.16);
+    }
+    .metric-card.tone-danger::after {
+      background: rgba(214, 57, 57, 0.13);
+    }
+    .metric-label {
+      color: var(--tblr-secondary);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      margin: 0 0 8px;
+      text-transform: uppercase;
+    }
+    .metric-value {
+      color: var(--tblr-heading-color);
+      font-size: 25px;
+      font-weight: 800;
+      line-height: 1.05;
+      margin: 0;
+      padding-right: 32px;
+    }
+    .metric-note {
+      color: var(--tblr-muted);
+      font-size: 11px;
+      margin: 6px 0 0;
+    }
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin: 8px 0 16px;
+    }
+    .status-pill {
+      background: rgba(var(--tblr-primary-rgb), 0.09);
+      border: 1px solid rgba(var(--tblr-primary-rgb), 0.18);
+      border-radius: 999px;
+      color: var(--tblr-primary);
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 760;
+      padding: 5px 9px;
+    }
+    .status-pill.success {
+      background: rgba(47, 179, 68, 0.10);
+      border-color: rgba(47, 179, 68, 0.22);
+      color: #1f8f38;
+    }
+    .status-pill.warning {
+      background: rgba(245, 159, 0, 0.12);
+      border-color: rgba(245, 159, 0, 0.24);
+      color: #b76e00;
+    }
+    .status-pill.danger {
+      background: rgba(214, 57, 57, 0.10);
+      border-color: rgba(214, 57, 57, 0.22);
+      color: #b42318;
+    }
+    .status-pill.info {
+      background: rgba(66, 153, 225, 0.10);
+      border-color: rgba(66, 153, 225, 0.22);
+      color: #1f6aa5;
+    }
+    table {
+      background: var(--tblr-bg-surface);
+      border: 1px solid var(--tblr-border-color-translucent);
+      border-collapse: separate;
+      border-radius: var(--tblr-border-radius-lg);
+      border-spacing: 0;
+      font-size: 11.5px;
+      margin: 15px 0;
+      overflow: hidden;
+      width: 100%;
+      break-inside: avoid;
+    }
+    th, td {
+      border-bottom: 1px solid var(--tblr-border-color-translucent);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: var(--tblr-bg-surface-secondary);
+      color: var(--tblr-secondary);
+      font-size: 10px;
+      font-weight: 760;
+      letter-spacing: 0.045em;
+      text-transform: uppercase;
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+    tbody tr:nth-child(even) td {
+      background: #fbfcfe;
+    }
+    .table-caption, figcaption {
+      color: var(--tblr-muted);
+      font-size: 10.5px;
+      margin-top: 6px;
+    }
+    .callout {
+      background: #f8fbff;
+      border: 1px solid rgba(var(--tblr-primary-rgb), 0.18);
+      border-left: 4px solid var(--tblr-primary);
+      border-radius: var(--tblr-border-radius-lg);
+      margin: 15px 0;
+      padding: 13px 15px;
+      break-inside: avoid;
+    }
+    .callout-title {
+      color: var(--tblr-heading-color);
+      font-size: 12px;
+      font-weight: 780;
+      margin: 0 0 4px;
+    }
+    .callout.warning {
+      background: #fff8ed;
+      border-color: rgba(245, 159, 0, 0.24);
+      border-left-color: var(--tblr-warning);
+    }
+    .callout.success {
+      background: #effaf1;
+      border-color: rgba(47, 179, 68, 0.22);
+      border-left-color: var(--tblr-success);
+    }
+    pre {
+      background: #111827;
+      border-radius: var(--tblr-border-radius);
+      color: #e5e7eb;
+      font-size: 11px;
+      line-height: 1.45;
+      margin: 8px 0 0;
+      overflow: hidden;
+      padding: 12px;
+      white-space: pre-wrap;
+    }
+    .divider {
+      border: 0;
+      border-top: 1px solid var(--tblr-border-color-translucent);
+      margin: 22px 0;
+    }
+    figure {
+      margin: 16px 0;
+    }
+    img {
+      border-radius: var(--tblr-border-radius-lg);
+      display: block;
+      height: auto;
+      max-width: 100%;
+    }
+    .report-footer {
+      align-items: center;
+      color: var(--tblr-muted);
+      display: flex;
+      font-size: 10px;
+      justify-content: space-between;
+      margin-top: 14px;
+      padding: 0 2px;
+    }
+    @media print {
+      body {
+        background: #ffffff;
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+      .page {
+        max-width: none;
+        padding: 0;
+      }
+      .card,
+      .section-card,
+      .meta-card,
+      .metric-card {
+        box-shadow: none;
+      }
+      .navbar-lite {
+        margin-bottom: 12px;
+      }
+      .page-header {
+        gap: 18px;
+      }
+      .no-print {
+        display: none !important;
+      }
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="navbar-lite">
+      <div class="brand"><span class="brand-logo">PDF</span><span>pdf-author-editor</span></div>
+      <div class="nav-meta"><span class="badge badge-success"><span class="badge-dot"></span>Report</span></div>
+    </div>
+    <header class="page-header">
+      <div>
+        <p class="page-pretitle">Status report</p>
+        <h1 class="page-title">{{TITLE}}</h1>
+        <p class="page-subtitle">{{SUBTITLE}}</p>
+      </div>
+      <aside class="meta-card">
+        <p class="meta-label">Document meta</p>
+        <p class="meta-value">{{META}}</p>
+      </aside>
+    </header>
+    <section class="page-body">
+      {{SUMMARY_METRICS}}
+      {{STATUS_BADGES}}
+      <div class="report-content">{{CONTENT}}</div>
+    </section>
+    <footer class="report-footer">
+      <span>{{TITLE}}</span>
+      <span>Generated by pdf-author-editor</span>
+    </footer>
+  </main>
+  <script>window.__RENDER_READY__ = true;</script>
+</body>
+</html>

@@ -82,7 +82,7 @@ describe('CatsCompany SkillHub thin RPC', () => {
     }));
     assert.equal(result.schema, 'xiaoba.skillhub.local_workspace.v1');
     assert.equal(result.bot_uid, '42');
-    assert.equal(result.skills_path, path.join(runtimeRoot, 'skills'));
+    assert.equal(result.skills_path, fs.realpathSync(path.join(runtimeRoot, 'skills')));
     const skills = result.skills as Array<Record<string, unknown>>;
     assert.equal(skills.length, 1);
     assert.equal(skills[0].name, 'local-demo');

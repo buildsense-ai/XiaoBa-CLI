@@ -2,6 +2,19 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 
+/** Default sub-directory under the skills root for generated distilled skills. */
+export const GENERATED_DISTILLED_DIR_NAME = 'generated-distilled';
+
+/** Resolve the default generated-distilled output directory under a skills root. */
+export function defaultDistilledOutputDir(skillsRoot: string): string {
+  return path.join(skillsRoot, GENERATED_DISTILLED_DIR_NAME);
+}
+
+export interface FindSkillFilesOptions {
+  /** Skip a directory before probing it or traversing any of its descendants. */
+  shouldSkipDirectory?: (directoryPath: string) => boolean;
+}
+
 export class PathResolver {
   static getRuntimeDataRoot(
     env: NodeJS.ProcessEnv = process.env,
@@ -36,6 +49,10 @@ export class PathResolver {
     return path.join(this.getRuntimeDataRoot(), 'data', ...segments);
   }
 
+  static getSessionLogAppendSignalPath(runtimeRoot: string = process.cwd()): string {
+    return path.join(this.getRuntimeDataRoot(process.env, runtimeRoot), 'data', 'session-log-append.signal');
+  }
+
   static getLogsPath(...segments: string[]): string {
     return path.join(this.getRuntimeDataRoot(), 'logs', ...segments);
   }
@@ -54,6 +71,16 @@ export class PathResolver {
     return this.getUserDataSkillsPath();
   }
 
+  static getSkillEvolutionRegistryPath(): string {
+    const override = process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE?.trim();
+    return path.resolve(override || this.getDataPath('current-skill-registry.json'));
+  }
+
+  static getSkillEvolutionJournalPath(): string {
+    const override = process.env.XIAOBA_SKILL_EVOLUTION_JOURNAL_FILE?.trim();
+    return path.resolve(override || this.getDataPath('transition-journal.json'));
+  }
+
   static getUserDataSkillsPath(): string {
     return path.join(this.getRuntimeDataRoot(), 'skills');
   }
@@ -64,7 +91,7 @@ export class PathResolver {
     }
   }
 
-  static findSkillFiles(baseDir: string): string[] {
+  static findSkillFiles(baseDir: string, options: FindSkillFilesOptions = {}): string[] {
     const results: string[] = [];
 
     if (!fs.existsSync(baseDir)) {
@@ -73,14 +100,16 @@ export class PathResolver {
 
     const entries = fs.readdirSync(baseDir, { withFileTypes: true });
     for (const entry of entries) {
+      if (entry.isDirectory() && entry.name === 'history') continue;
       const fullPath = path.join(baseDir, entry.name);
 
       if (entry.isDirectory()) {
+        if (options.shouldSkipDirectory?.(fullPath)) continue;
         const skillFile = path.join(fullPath, 'SKILL.md');
         if (fs.existsSync(skillFile)) {
           results.push(skillFile);
         }
-        results.push(...this.findSkillFiles(fullPath));
+        results.push(...this.findSkillFiles(fullPath, options));
       }
     }
 

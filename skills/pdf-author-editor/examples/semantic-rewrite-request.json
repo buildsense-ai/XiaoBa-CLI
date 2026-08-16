@@ -1,0 +1,20 @@
+{
+  "mode": "semantic",
+  "intent": "Change the account owner name and regenerate a revised PDF.",
+  "input": {
+    "path": "semantic-read-pdf-result.json",
+    "type": "read-pdf-json"
+  },
+  "changes": [
+    {
+      "id": "chg-001",
+      "kind": "entity_replace",
+      "target_text": "Account owner: Shanghai Example Co., Ltd.",
+      "replacement_text": "Account owner: Hangzhou Sample Technology Co., Ltd.",
+      "pages": [1]
+    }
+  ],
+  "options": {
+    "name": "semantic-rewrite"
+  }
+}

@@ -8,6 +8,11 @@ import chalk from 'chalk';
 import * as path from 'path';
 import * as fs from 'fs';
 import inquirer from 'inquirer';
+import {
+  GeneratedSkillNotFoundError,
+  inspectGeneratedSkillRetirement,
+  retireGeneratedSkill,
+} from '../utils/generated-skill-control';
 
 /**
  * Skill 命令处理器
@@ -58,6 +63,16 @@ export function registerSkillCommand(program: Command): void {
     .option('--npm', '移除 npm 包形式的 skill')
     .action(async (name: string, options: { force?: boolean; npm?: boolean }) => {
       await removeSkill(name, options);
+    });
+
+  // skill retire - explicitly retire an auto-generated Current Skill while
+  // retaining its immutable history and transition audit.
+  skillCmd
+    .command('retire <name>')
+    .description('退役自动沉淀的 Current Skill（保留审计与不可变历史）')
+    .option('-f, --force', '强制退役，不询问确认')
+    .action(async (name: string, options: { force?: boolean }) => {
+      await retireGeneratedSkillCommand(name, options.force);
     });
 }
 
@@ -136,7 +151,7 @@ async function showSkillInfo(name: string): Promise<void> {
   const manager = new SkillManager();
   await manager.loadSkills();
 
-  const skill = manager.getSkill(name);
+  const skill = (await manager.resolveSkill(name))?.skill;
 
   if (!skill) {
     Logger.error(`未找到 skill: ${name}`);
@@ -285,12 +300,32 @@ async function removeNpmSkill(packageName: string, force?: boolean): Promise<voi
 async function removeLocalSkill(name: string, force?: boolean): Promise<void> {
   const manager = new SkillManager();
   await manager.loadSkills();
-  const skill = manager.getSkill(name);
+  const skill = (await manager.resolveSkill(name))?.skill;
 
   if (!skill) {
+    try {
+      const inspected = inspectGeneratedSkillRetirement(name);
+      if (inspected.state !== 'not-found') {
+        rejectGeneratedSkillRemoval(name);
+        return;
+      }
+    } catch (error: any) {
+      Logger.error(`无法读取 generated Current Skill Registry: ${error.message}`);
+      process.exit(1);
+      return;
+    }
     Logger.error(`未找到 skill: ${name}`);
     Logger.info('\n使用 catsco skill list 查看所有可用的 skills');
     process.exit(1);
+  }
+
+  // SkillManager normally excludes generated files that are not backed by
+  // the active Registry. Keep the ownership boundary local as well: if the
+  // Registry changes between discovery and inspection, a generated path must
+  // still never fall through to recursive manual-Skill deletion.
+  if (isGeneratedSkillFilePath(skill.filePath)) {
+    rejectGeneratedSkillRemoval(skill.metadata.name);
+    return;
   }
 
   const skillDir = path.dirname(skill.filePath);
@@ -322,6 +357,95 @@ async function removeLocalSkill(name: string, force?: boolean): Promise<void> {
     Logger.info(`已删除目录: ${skillDir}`);
   } catch (error: any) {
     Logger.error(`移除失败: ${error.message}`);
+    process.exit(1);
+  }
+}
+
+function rejectGeneratedSkillRemoval(name: string): void {
+  Logger.error(`自动沉淀的 Current Skill 不能通过 skill remove 删除: ${name}`);
+  Logger.info(`请使用 catsco skill retire ${name}，以保留审计与不可变历史。`);
+  process.exit(1);
+}
+
+function isGeneratedSkillFilePath(filePath: string): boolean {
+  return filePath.split(/[\\/]+/).includes('generated-distilled');
+}
+
+async function retireGeneratedSkillCommand(
+  name: string,
+  force?: boolean,
+): Promise<void> {
+  let inspected;
+  try {
+    inspected = inspectGeneratedSkillRetirement(name);
+  } catch (error: any) {
+    Logger.error(`无法读取 generated Current Skill Registry: ${error.message}`);
+    process.exit(1);
+    return;
+  }
+
+  if (inspected.state === 'not-found') {
+    // Keep an explicit retire command scoped to generated Current Skills. The
+    // remove command retains its existing manual-skill fallback.
+    Logger.error(`未找到自动沉淀的 Current Skill: ${name}`);
+    Logger.info('手工 skill 请使用 catsco skill remove <name>。');
+    process.exit(1);
+    return;
+  }
+
+  const displayName = inspected.state === 'active'
+    ? inspected.record.routingName
+    : inspected.routingName;
+  const description = inspected.state === 'active'
+    ? inspected.record.description
+    : inspected.state === 'pending-recovery'
+      ? '等待完成崩溃恢复的 generated Current Skill'
+      : '已退役的 generated Current Skill';
+  const skillPath = inspected.state === 'active'
+    ? inspected.record.skillFilePath
+    : inspected.historyPath;
+
+  Logger.title(`退役 Current Skill: ${displayName}`);
+  Logger.info(`\n${chalk.gray('名称:')} ${styles.highlight(displayName)}`);
+  Logger.info(`${chalk.gray('描述:')} ${description}`);
+  Logger.info(`${chalk.gray('路径:')} ${skillPath}`);
+
+  if (inspected.state === 'already-retired') {
+    Logger.info('\n该 generated Current Skill 已经退役。审计记录与不可变历史仍然保留。');
+    return;
+  }
+
+  if (!force) {
+    const { confirmed } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'confirmed',
+        message: '\n确定退役这个自动沉淀的 Current Skill 吗？（保留审计与不可变历史，不是彻底删除）',
+        default: false,
+      },
+    ]);
+
+    if (!confirmed) {
+      Logger.info('已取消退役');
+      return;
+    }
+  }
+
+  try {
+    const result = retireGeneratedSkill(name);
+    if (result.status === 'already-retired') {
+      Logger.info('\n该 generated Current Skill 已经退役。审计记录与不可变历史仍然保留。');
+      return;
+    }
+    Logger.success(`\n✓ Current Skill ${styles.highlight(result.routingName)} 已退役！`);
+    Logger.info(`不可变历史: ${result.historyPath}`);
+    Logger.info('审计记录已写入；这不是隐私意义上的彻底删除。');
+  } catch (error: any) {
+    if (error instanceof GeneratedSkillNotFoundError) {
+      Logger.error(`未找到自动沉淀的 Current Skill: ${name}`);
+    } else {
+      Logger.error(`退役失败: ${error.message}`);
+    }
     process.exit(1);
   }
 }

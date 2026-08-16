@@ -1,0 +1,12 @@
+{
+  "source_pdf": "source.pdf",
+  "pdf_type": "text_pdf",
+  "confidence": 0.86,
+  "pages": [
+    {
+      "page": 1,
+      "text": "Account owner: Shanghai Example Co., Ltd. Reviewer: Demo Team.",
+      "warnings": []
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "mode": "semantic",
+  "operation": "rebuild",
+  "intent": "Regenerate a revised PDF from structured read-pdf text.",
+  "read_pdf_result": {
+    "source_pdf": "source.pdf",
+    "pdf_type": "text_pdf",
+    "confidence": 0.86,
+    "pages": [
+      {
+        "page": 1,
+        "text": "Account owner: Old Co. Reviewer: Demo Team.",
+        "warnings": []
+      }
+    ]
+  },
+  "changes": [
+    {
+      "id": "chg-001",
+      "kind": "entity_replace",
+      "target_text": "Account owner: Old Co.",
+      "replacement_text": "Account owner: New Co.",
+      "pages": [1]
+    }
+  ],
+  "options": {
+    "name": "semantic-rebuild"
+  }
+}

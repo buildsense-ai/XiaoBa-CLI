@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "default_by_delivery_type": {
+    "report": "tabler-report",
+    "one-pager": "executive-brief",
+    "slides": "clean-deck"
+  },
+  "templates": [
+    {
+      "id": "classic-report",
+      "delivery_type": "report",
+      "path": "report/template.html",
+      "label": "Classic multipage report",
+      "supports": ["heading", "paragraph", "list", "table", "figure", "callout", "divider", "raw_html"],
+      "page": {
+        "size": "A4",
+        "orientation": "portrait"
+      }
+    },
+    {
+      "id": "formal-report",
+      "delivery_type": "report",
+      "path": "report/formal-report/template.html",
+      "label": "Formal report",
+      "supports": ["heading", "paragraph", "list", "table", "figure", "callout", "divider", "raw_html"],
+      "page": {
+        "size": "A4",
+        "orientation": "portrait"
+      }
+    },
+    {
+      "id": "briefing-note",
+      "delivery_type": "report",
+      "path": "report/briefing-note/template.html",
+      "label": "Briefing note",
+      "supports": ["heading", "paragraph", "list", "table", "figure", "callout", "divider", "raw_html"],
+      "page": {
+        "size": "A4",
+        "orientation": "portrait"
+      }
+    },
+    {
+      "id": "tabler-report",
+      "delivery_type": "report",
+      "path": "report/tabler-report/template.html",
+      "label": "Tabler-inspired status report",
+      "supports": ["heading", "paragraph", "list", "table", "figure", "callout", "divider", "raw_html"],
+      "page": {
+        "size": "A4",
+        "orientation": "portrait"
+      },
+      "inspiration": {
+        "name": "Tabler",
+        "url": "https://github.com/tabler/tabler",
+        "license": "MIT",
+        "note": "Template uses a small PDF-focused subset adapted from Tabler's CSS variable, page-header, card, badge, and table component rhythm. See references/third-party-notices.md."
+      }
+    },
+    {
+      "id": "one-pager-default",
+      "delivery_type": "one-pager",
+      "path": "one-pager/template.html",
+      "label": "Compact one-pager",
+      "supports": ["heading", "paragraph", "list", "table", "figure", "callout", "divider", "raw_html"],
+      "page": {
+        "size": "A4",
+        "orientation": "portrait",
+        "strict_pages": 1
+      }
+    },
+    {
+      "id": "executive-brief",
+      "delivery_type": "one-pager",
+      "path": "one-pager/executive-brief/template.html",
+      "label": "Executive one-page brief",
+      "supports": ["heading", "paragraph", "list", "table", "figure", "callout", "divider", "raw_html"],
+      "page": {
+        "size": "A4",
+        "orientation": "portrait",
+        "strict_pages": 1
+      }
+    },
+    {
+      "id": "clean-deck",
+      "delivery_type": "slides",
+      "path": "slides/template.html",
+      "label": "Clean 16:9 slide PDF",
+      "supports": ["slide", "heading", "paragraph", "list", "table", "figure", "callout", "divider", "raw_html"],
+      "page": {
+        "size": "16:9",
+        "orientation": "landscape"
+      }
+    }
+  ]
+}

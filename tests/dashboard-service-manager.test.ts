@@ -6,6 +6,30 @@ import * as path from 'node:path';
 import { ServiceManager } from '../src/dashboard/service-manager';
 
 describe('dashboard service manager', () => {
+  test('keeps interactive service stop fallback independent from the review drain deadline', () => {
+    const previousReviewDeadline = process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES;
+    const previousServiceStopDeadline = process.env.XIAOBA_SERVICE_STOP_FORCE_KILL_MS;
+    process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES = '60';
+    delete process.env.XIAOBA_SERVICE_STOP_FORCE_KILL_MS;
+
+    try {
+      const manager = new ServiceManager(process.cwd());
+      assert.equal((manager as any).serviceStopForceKillMs, 5_000);
+      assert.equal((manager as any).drainForceKillMs, 60 * 60 * 1_000 + 250);
+    } finally {
+      if (previousReviewDeadline === undefined) {
+        delete process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES;
+      } else {
+        process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES = previousReviewDeadline;
+      }
+      if (previousServiceStopDeadline === undefined) {
+        delete process.env.XIAOBA_SERVICE_STOP_FORCE_KILL_MS;
+      } else {
+        process.env.XIAOBA_SERVICE_STOP_FORCE_KILL_MS = previousServiceStopDeadline;
+      }
+    }
+  });
+
   test('uses node plus the tsx CLI entry in development', () => {
     const envKeys = [
       'XIAOBA_APP_ROOT',

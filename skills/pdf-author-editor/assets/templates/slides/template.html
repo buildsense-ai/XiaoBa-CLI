@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en" data-delivery-type="slides">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="generator" content="pdf-author-editor">
+  <title>{{TITLE}}</title>
+  <style>
+    {{CSS}}
+    @page {
+      size: 16in 9in;
+      margin: 0;
+    }
+    html, body {
+      background: #101624;
+      color: #f5f7fb;
+      font-family: "Segoe UI", Arial, sans-serif;
+      margin: 0;
+      min-height: 100%;
+    }
+    .deck {
+      margin: 0 auto;
+      max-width: 1600px;
+    }
+    .slide {
+      aspect-ratio: 16 / 9;
+      background: #f8fafc;
+      box-sizing: border-box;
+      color: #172033;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 900px;
+      overflow: hidden;
+      padding: 72px 92px;
+      page-break-after: always;
+      position: relative;
+      width: 1600px;
+    }
+    .slide::before {
+      background: #1f6feb;
+      content: "";
+      height: 8px;
+      left: 92px;
+      position: absolute;
+      right: 92px;
+      top: 54px;
+    }
+    .slide:last-child {
+      page-break-after: auto;
+    }
+    .slide-title {
+      font-size: 60px;
+      line-height: 1.05;
+      margin: 0 0 16px;
+      max-width: 1250px;
+    }
+    .slide-subtitle {
+      color: #536174;
+      font-size: 28px;
+      line-height: 1.24;
+      margin: 0 0 28px;
+      max-width: 1180px;
+    }
+    .slide-body {
+      display: grid;
+      gap: 18px;
+      max-width: 1260px;
+    }
+    .slide-body h1,
+    .slide-body h2,
+    .slide-body h3 {
+      margin: 0.35em 0 0.15em;
+    }
+    .slide-body p,
+    .slide-body li {
+      font-size: 28px;
+      line-height: 1.32;
+    }
+    .slide-body p {
+      margin: 0;
+    }
+    .slide-body ul,
+    .slide-body ol {
+      margin: 0;
+      padding-left: 1.2em;
+    }
+    .slide-body table {
+      border-collapse: collapse;
+      font-size: 22px;
+      width: 100%;
+    }
+    .slide-body th,
+    .slide-body td {
+      border: 1px solid #d6deea;
+      padding: 12px 14px;
+      text-align: left;
+    }
+    .slide-body th {
+      background: #eaf1fa;
+    }
+    .callout {
+      background: #eaf3ff;
+      border-left: 8px solid #1f6feb;
+      border-radius: 8px;
+      font-size: 26px;
+      padding: 18px 22px;
+    }
+    .callout-title {
+      font-weight: 750;
+      margin-bottom: 6px;
+    }
+    .divider {
+      border: 0;
+      border-top: 2px solid #dfe7f0;
+      margin: 16px 0;
+    }
+    img {
+      display: block;
+      height: auto;
+      max-height: 430px;
+      max-width: 100%;
+      object-fit: contain;
+    }
+    @media print {
+      html, body {
+        background: #fff;
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+      .deck {
+        max-width: none;
+      }
+      .slide {
+        height: 9in;
+        min-height: 0;
+        padding: 0.72in 0.92in;
+        width: 16in;
+      }
+      .slide::before {
+        left: 0.92in;
+        right: 0.92in;
+        top: 0.54in;
+      }
+      .no-print {
+        display: none !important;
+      }
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck">
+    {{CONTENT}}
+  </main>
+  <script>window.__RENDER_READY__ = true;</script>
+</body>
+</html>

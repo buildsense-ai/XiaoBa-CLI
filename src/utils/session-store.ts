@@ -61,7 +61,10 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
   const durable: Message[] = [];
 
   for (const message of messages) {
-    if ((message as any).__injected || message.role === 'system') {
+    if (
+      message.__injected
+      || (message.role === 'system' && !message.__checkpointBoundary)
+    ) {
       continue;
     }
 

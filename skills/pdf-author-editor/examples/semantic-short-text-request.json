@@ -1,0 +1,21 @@
+{
+  "mode": "semantic",
+  "operation": "short_text_edit",
+  "intent": "Replace one known short text span in the PDF.",
+  "input": {
+    "path": "source.pdf",
+    "type": "pdf"
+  },
+  "changes": [
+    {
+      "id": "chg-001",
+      "kind": "text_replace",
+      "target_text": "Account owner: Old Co.",
+      "replacement_text": "Account owner: New Co.",
+      "pages": [1]
+    }
+  ],
+  "options": {
+    "name": "semantic-short-text"
+  }
+}

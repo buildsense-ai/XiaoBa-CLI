@@ -1,0 +1,199 @@
+/**
+ * Engine-facing Evidence Review graph helpers.
+ *
+ * Composes pure graph-core APIs (#107) with #106 sharding and the Skill Evolution
+ * Evidence Bundle shape used by Runtime Learning.
+ */
+
+import type { EvidenceBundle, CapabilityReadSetEntry } from './skill-evolution';
+import type { DistilledKnowledgeCandidate } from './capability-distiller';
+import {
+  EVIDENCE_REVIEW_JOB_SCHEMA_VERSION,
+  EVIDENCE_REVIEW_POLICY_VERSION,
+  EVIDENCE_REVIEW_PROMPT_VERSION,
+  type EvidenceReviewJob,
+  type ReviewBasis,
+  type ReviewWorkClass,
+} from './evidence-review-types';
+import {
+  buildDualLaneCoverageQuanta,
+  buildReviewBasis as buildGraphReviewBasis,
+  createEvidenceReviewJob as createGraphJob,
+  reuseSucceededQuanta as reuseSucceededQuantaCore,
+  sha256Hex,
+  stableStringify,
+} from './evidence-review-graph-core';
+import {
+  hashEvidenceBundle,
+  shardEvidenceBundle,
+  type ShardingOptions,
+} from './evidence-review';
+
+export function fingerprintRegistryReadSet(
+  entries: readonly CapabilityReadSetEntry[] = [],
+): string[] {
+  return [...entries]
+    .map(entry => `${entry.handle}@${entry.revision}`)
+    .sort((a, b) => a.localeCompare(b, 'en'));
+}
+
+export function buildReviewBasis(input: {
+  bundle: EvidenceBundle;
+  manifestHash: string;
+  registryReadSet?: readonly CapabilityReadSetEntry[];
+  reviewPolicyVersion?: string;
+  promptVersion?: string;
+  /** Optional live target override (defaults to first relatedCurrentSkill). */
+  targetCapabilityHandle?: string;
+  targetCapabilityRevision?: number;
+}): ReviewBasis {
+  const registryReadSet = [...(input.registryReadSet ?? [])]
+    .map(entry => ({ handle: entry.handle, revision: entry.revision }))
+    .sort((a, b) => a.handle.localeCompare(b.handle, 'en'));
+  const registryReadSetFingerprints = fingerprintRegistryReadSet(registryReadSet);
+  const referencedSkillHashes = (input.bundle.referencedSkills ?? [])
+    .map(skill => sha256Hex(stableStringify(skill)))
+    .sort((a, b) => a.localeCompare(b, 'en'));
+  const evidenceBundleHash = hashEvidenceBundle(input.bundle);
+  const reviewPolicyVersion = input.reviewPolicyVersion ?? EVIDENCE_REVIEW_POLICY_VERSION;
+  const promptVersion = input.promptVersion ?? EVIDENCE_REVIEW_PROMPT_VERSION;
+  const bundleTarget = input.bundle.relatedCurrentSkills?.[0] as
+    | { handle?: string; revision?: number }
+    | undefined;
+  const targetHandle = input.targetCapabilityHandle ?? bundleTarget?.handle;
+  const targetRevision = input.targetCapabilityRevision ?? bundleTarget?.revision;
+
+  const graphBasis = buildGraphReviewBasis({
+    manifestHash: input.manifestHash,
+    evidenceBundleHash,
+    registryReadSet: registryReadSetFingerprints,
+    referencedSkillHashes,
+    reviewPolicyVersion,
+    promptVersion,
+    ...(typeof targetHandle === 'string' ? { targetCapabilityHandle: targetHandle } : {}),
+    ...(typeof targetRevision === 'number' ? { targetCapabilityRevision: targetRevision } : {}),
+  });
+
+  return {
+    basisHash: graphBasis.basisHash,
+    manifestHash: graphBasis.manifestHash,
+    evidenceBundleHash: graphBasis.evidenceBundleHash,
+    registryReadSet,
+    registryReadSetFingerprints: graphBasis.registryReadSet,
+    referencedSkillHashes: graphBasis.referencedSkillHashes,
+    reviewPolicyVersion: graphBasis.reviewPolicyVersion,
+    promptVersion: graphBasis.promptVersion,
+    ...(graphBasis.targetCapabilityHandle
+      ? { targetCapabilityHandle: graphBasis.targetCapabilityHandle }
+      : {}),
+    ...(typeof graphBasis.targetCapabilityRevision === 'number'
+      ? { targetCapabilityRevision: graphBasis.targetCapabilityRevision }
+      : {}),
+  };
+}
+
+export interface CreateEvidenceReviewJobInput {
+  bundle: EvidenceBundle;
+  candidate: DistilledKnowledgeCandidate;
+  workClass: ReviewWorkClass;
+  registryReadSet?: readonly CapabilityReadSetEntry[];
+  reviewPolicyVersion?: string;
+  promptVersion?: string;
+  parentJobId?: string;
+  now?: Date;
+  sharding?: ShardingOptions;
+  jobId?: string;
+}
+
+/**
+ * Create a durable dual-lane job for a frozen Evidence Bundle.
+ * Topology comes from pure graph-core; shards from the #106 package.
+ * Freezes every declared relevant dependency available from the bundle:
+ * Registry read set, referenced-skill hashes, target capability state, and
+ * policy/prompt versions.
+ */
+export function createEvidenceReviewJob(input: CreateEvidenceReviewJobInput): EvidenceReviewJob {
+  const now = input.now ?? new Date();
+  const nowIso = now.toISOString();
+  const { manifest, shards } = shardEvidenceBundle(input.bundle, input.sharding);
+  const basis = buildReviewBasis({
+    bundle: input.bundle,
+    manifestHash: manifest.manifestHash,
+    registryReadSet: input.registryReadSet,
+    reviewPolicyVersion: input.reviewPolicyVersion,
+    promptVersion: input.promptVersion,
+  });
+  const jobId = input.jobId
+    ?? `job:${basis.basisHash.slice(0, 20)}:${input.bundle.bundleId.slice(0, 24)}`;
+
+  const quantaList = buildDualLaneCoverageQuanta({
+    jobId,
+    shards: shards.map(s => ({ shardId: s.shardId, contentHash: s.contentHash })),
+    basisHash: basis.basisHash,
+    now,
+  });
+
+  // Attach manifest-scoped input hashes for dossier/diff/obligation/author nodes
+  // already produced by buildDualLaneCoverageQuanta; graph-core template is enough.
+  const graphJob = createGraphJob({
+    jobId,
+    workClass: input.workClass,
+    basis: {
+      basisHash: basis.basisHash,
+      manifestHash: basis.manifestHash,
+      evidenceBundleHash: basis.evidenceBundleHash,
+      registryReadSet: basis.registryReadSetFingerprints,
+      referencedSkillHashes: basis.referencedSkillHashes,
+      reviewPolicyVersion: basis.reviewPolicyVersion,
+      promptVersion: basis.promptVersion,
+      ...(basis.targetCapabilityHandle
+        ? { targetCapabilityHandle: basis.targetCapabilityHandle }
+        : {}),
+      ...(typeof basis.targetCapabilityRevision === 'number'
+        ? { targetCapabilityRevision: basis.targetCapabilityRevision }
+        : {}),
+    },
+    quanta: quantaList,
+    domain: {
+      bundleId: input.bundle.bundleId,
+      manifestId: manifest.manifestId,
+    },
+    parentJobId: input.parentJobId,
+    now,
+  });
+
+  const shardMap: Record<string, (typeof shards)[number]> = {};
+  for (const shard of shards) shardMap[shard.shardId] = shard;
+
+  return {
+    schemaVersion: EVIDENCE_REVIEW_JOB_SCHEMA_VERSION,
+    jobId: graphJob.jobId,
+    workClass: graphJob.workClass,
+    disposition: 'active',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    candidate: input.candidate,
+    bundle: input.bundle,
+    manifest: {
+      ...manifest,
+      createdAt: nowIso,
+    },
+    shards: shardMap,
+    basis,
+    quanta: graphJob.quanta,
+    parentJobId: input.parentJobId,
+    domain: graphJob.domain,
+  };
+}
+
+export function reuseSucceededQuanta(
+  successor: EvidenceReviewJob,
+  prior: EvidenceReviewJob,
+): EvidenceReviewJob {
+  const merged = reuseSucceededQuantaCore(successor, prior);
+  return {
+    ...successor,
+    quanta: merged.quanta,
+    updatedAt: merged.updatedAt,
+  };
+}

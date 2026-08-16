@@ -30,6 +30,10 @@
 | `runtime-context.md` | 普通主会话运行时模板：displayName、platform、date、当前目录说明。 | `PromptComposer.getRuntimeContextPrompt()` |
 | `compact-system.md` | 上下文压缩专用 system prompt。要求只输出文本、禁止工具、输出 `<analysis>` 和 `<summary>`。 | `ContextCompressor.buildCompactSystemPrompt()` |
 | `subagents/system.md` | 子 agent 通用运行规则。 | `SubAgentSession.buildSubAgentSystemPrompt()` |
+| `subagents/skill-author.md` | Skill Author 分支稳定系统提示词：角色、Evidence Bundle 使用约束、Envelope 字段、routingName 命名规则。 | `SkillAuthorBranchSession.buildInitialMessages()` |
+| `subagents/skill-verifier.md` | Skill Verifier 分支稳定系统提示词：独立校验规则、registryReadSet、obligationDispositions、decision/transition 枚举。 | `SkillVerifierBranchSession.buildInitialMessages()` |
+| `subagents/skill-author-finish-nudge.md` | Skill Author 分支未在单轮内完成时的稳定重试提示。 | `SkillAuthorBranchSession.run()` |
+| `subagents/skill-verifier-finish-nudge.md` | Skill Verifier 分支未在单轮内完成时的稳定重试提示。 | `SkillVerifierBranchSession.run()` |
 | `transient/*.md` | 每轮可丢弃的稳定注入模板，例如当前目录说明、计划状态说明、子 agent 状态说明、runner 恢复提示、编排 soft nudge。 | `TurnContextBuilder`、`ConversationRunner`、`runner-orchestration-policy` |
 | `sidecars/*.md` | 非主会话的侧路模型调用 system prompt，例如群聊插嘴判断、日报生成。 | `ChimeInJudge`、`DailyReportGenerator` |
 

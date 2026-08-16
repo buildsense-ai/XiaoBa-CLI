@@ -62,7 +62,7 @@ describe('skill tool direct content mode', () => {
     const result = await tool.execute({ skill: 'reload' }, {} as any);
 
     assert.equal(result.ok, true);
-    assert.match(String(result.content), /已重新加载 1 个 skills/);
+    assert.match(String(result.content), /已重新加载 2 个 skills/);
     assert.doesNotMatch(String(result.content), /__reload_skills__/);
   });
 });

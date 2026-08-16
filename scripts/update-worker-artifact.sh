@@ -58,12 +58,25 @@ validate_hex() { # $1=value $2=len $3=label
   [[ "$v" =~ ^[0-9a-fA-F]{$n}$ ]] || die "$label must be exactly $n hex characters"
 }
 
+resolve_existing_dir() {
+  local target="$1"
+  [[ -d "$target" ]] || return 1
+  (
+    cd -P "$target" || exit 1
+    pwd -P
+  )
+}
+
 # rollback_to switches current back to a previous release. With no valid
 # previous target (first deploy), it removes the dangling link so nothing
 # points at a broken release.
 rollback_to() {
-  local target="${1:-}"
-  if [[ -n "$target" && "$target" == "$RELEASES_ROOT"/* && -f "$target/worker-release.json" ]]; then
+  local target="${1:-}" resolved_target resolved_releases_root
+  resolved_target="$(resolve_existing_dir "$target" || true)"
+  resolved_releases_root="$(resolve_existing_dir "$RELEASES_ROOT" || true)"
+  if [[ -n "$resolved_target" && -n "$resolved_releases_root" \
+        && "$resolved_target" == "$resolved_releases_root"/* \
+        && -f "$resolved_target/worker-release.json" ]]; then
     ln -sfn "$target" "$CURRENT_LINK"
     systemctl restart "$SERVICE"
     return 0
@@ -74,7 +87,7 @@ rollback_to() {
 }
 
 if [[ "$MODE" == "status" ]]; then
-  CUR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+  CUR="$(resolve_existing_dir "$CURRENT_LINK" || true)"
   echo "root=$ROOT"
   echo "release_id=$(basename "$CUR")"
   echo "current=${CUR:-none}"
@@ -108,8 +121,9 @@ case "$RELEASE_ROOT" in
 esac
 
 # 幂等：current 已指向该 release 且 service active → skip（不重启）
-CURRENT_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
-if [[ "$CURRENT_TARGET" == "$RELEASE_ROOT" \
+CURRENT_TARGET="$(resolve_existing_dir "$CURRENT_LINK" || true)"
+RELEASE_ROOT_RESOLVED="$(resolve_existing_dir "$RELEASE_ROOT" || true)"
+if [[ -n "$RELEASE_ROOT_RESOLVED" && "$CURRENT_TARGET" == "$RELEASE_ROOT_RESOLVED" \
       && "$(systemctl is-active "$SERVICE" 2>/dev/null || true)" == "active" ]]; then
   echo "already up to date: $RELEASE_ID"
   exit 0
@@ -117,7 +131,9 @@ fi
 
 # 1) checksum
 ACTUAL_SHA="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
-[[ "${ACTUAL_SHA,,}" == "${EXPECTED_SHA,,}" ]] \
+ACTUAL_SHA_NORMALIZED="$(printf '%s' "$ACTUAL_SHA" | tr '[:upper:]' '[:lower:]')"
+EXPECTED_SHA_NORMALIZED="$(printf '%s' "$EXPECTED_SHA" | tr '[:upper:]' '[:lower:]')"
+[[ "$ACTUAL_SHA_NORMALIZED" == "$EXPECTED_SHA_NORMALIZED" ]] \
   || die "checksum mismatch (expected ${EXPECTED_SHA}, got ${ACTUAL_SHA})"
 
 # 2) 解压到临时目录 + manifest 校验（与 prepare-image.sh 同一布局约定）
@@ -150,7 +166,7 @@ if [[ "$SMOKE" == "1" ]]; then
 fi
 
 # 5) 记录旧 current（--rollback 读取），切换 symlink，重启
-OLD_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+OLD_TARGET="$(resolve_existing_dir "$CURRENT_LINK" || true)"
 mkdir -p "$(dirname "$PREV_FILE")"
 printf '%s\n' "$OLD_TARGET" > "$PREV_FILE"
 # 记录重启起始时间：心跳验证只接受本次重启之后的日志（避免命中旧连接日志）。

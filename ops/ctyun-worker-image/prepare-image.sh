@@ -73,7 +73,9 @@ fi
 [[ "$EXPECTED_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || die "invalid version"
 
 ACTUAL_SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
-[[ "${ACTUAL_SHA256,,}" == "${SHA256,,}" ]] || die "artifact checksum mismatch"
+NORMALIZED_ACTUAL_SHA256="$(printf '%s' "$ACTUAL_SHA256" | tr '[:upper:]' '[:lower:]')"
+NORMALIZED_EXPECTED_SHA256="$(printf '%s' "$SHA256" | tr '[:upper:]' '[:lower:]')"
+[[ "$NORMALIZED_ACTUAL_SHA256" == "$NORMALIZED_EXPECTED_SHA256" ]] || die "artifact checksum mismatch"
 
 export DEBIAN_FRONTEND=noninteractive
 

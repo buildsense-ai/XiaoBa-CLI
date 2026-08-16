@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en" data-delivery-type="one-pager" data-template-id="executive-brief">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="generator" content="pdf-author-editor">
+  <title>{{TITLE}}</title>
+  <style>
+    {{CSS}}
+    @page {
+      size: {{PAGE_SIZE}} {{PAGE_ORIENTATION}};
+      margin: {{PAGE_MARGIN}};
+    }
+    html, body {
+      min-height: 100%;
+    }
+    body {
+      background: #eef1f5;
+      color: #172033;
+      font-family: "Segoe UI", Arial, sans-serif;
+      line-height: 1.38;
+      margin: 0;
+    }
+    .brief {
+      background: #ffffff;
+      box-sizing: border-box;
+      margin: 22px auto;
+      max-width: 900px;
+      min-height: 1160px;
+      overflow: hidden;
+      padding: 30px 34px;
+      position: relative;
+    }
+    .brief::before {
+      background: #155e75;
+      content: "";
+      height: 100%;
+      left: 0;
+      position: absolute;
+      top: 0;
+      width: 9px;
+    }
+    .brief-header {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: minmax(0, 1fr) 210px;
+      margin-bottom: 20px;
+      padding-left: 8px;
+    }
+    .doc-title {
+      color: #111827;
+      font-size: 31px;
+      line-height: 1.08;
+      margin: 0;
+    }
+    .doc-subtitle {
+      color: #4b5563;
+      font-size: 15px;
+      line-height: 1.32;
+      margin: 8px 0 0;
+    }
+    .doc-meta {
+      align-self: start;
+      background: #f0fdfa;
+      border: 1px solid #b9ebe0;
+      border-radius: 6px;
+      color: #155e75;
+      font-size: 11px;
+      line-height: 1.35;
+      padding: 10px 12px;
+    }
+    .content-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      padding-left: 8px;
+    }
+    .content-grid > .wide,
+    .content-grid > table,
+    .content-grid > figure,
+    .content-grid > .divider {
+      grid-column: 1 / -1;
+    }
+    h1, h2, h3, h4 {
+      color: #172033;
+      line-height: 1.18;
+      margin: 0.82em 0 0.32em;
+      break-after: avoid;
+    }
+    h1 {
+      font-size: 22px;
+    }
+    h2 {
+      color: #155e75;
+      font-size: 18px;
+    }
+    h3 {
+      font-size: 15px;
+    }
+    h4 {
+      font-size: 13px;
+    }
+    p, li {
+      font-size: 12.5px;
+    }
+    p {
+      margin: 0.4em 0;
+    }
+    ul, ol {
+      margin: 6px 0 8px 18px;
+      padding: 0;
+    }
+    li {
+      margin: 3px 0;
+    }
+    .content-block {
+      break-inside: avoid;
+    }
+    table {
+      border-collapse: collapse;
+      font-size: 10.5px;
+      margin: 8px 0;
+      width: 100%;
+    }
+    th, td {
+      border-bottom: 1px solid #d7dde5;
+      padding: 5px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #e6f6f4;
+      color: #124e5f;
+      font-weight: 750;
+    }
+    .callout {
+      background: #f8fafc;
+      border: 1px solid #d8dee8;
+      border-radius: 6px;
+      padding: 9px 10px;
+    }
+    .callout.warning {
+      background: #fff7ed;
+      border-color: #fed7aa;
+    }
+    .callout.success {
+      background: #ecfdf5;
+      border-color: #bbf7d0;
+    }
+    .callout-title {
+      color: #124e5f;
+      font-size: 12.5px;
+      font-weight: 750;
+      margin-bottom: 3px;
+    }
+    figcaption, .table-caption {
+      color: #64748b;
+      font-size: 10px;
+      margin-top: 5px;
+    }
+    .divider {
+      border: 0;
+      border-top: 1px solid #d8dee8;
+      margin: 8px 0;
+    }
+    img {
+      display: block;
+      height: auto;
+      max-width: 100%;
+    }
+    @media print {
+      body {
+        background: #ffffff;
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+      .brief {
+        margin: 0;
+        max-width: none;
+        min-height: 0;
+        padding: 0 0 0 8px;
+      }
+      .brief::before {
+        width: 0;
+      }
+      .no-print {
+        display: none !important;
+      }
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="brief">
+    <header class="brief-header">
+      <div>
+        <h1 class="doc-title">{{TITLE}}</h1>
+        <p class="doc-subtitle">{{SUBTITLE}}</p>
+      </div>
+      <div class="doc-meta">{{META}}</div>
+    </header>
+    <section class="content-grid">
+      {{CONTENT}}
+    </section>
+  </main>
+  <script>window.__RENDER_READY__ = true;</script>
+</body>
+</html>

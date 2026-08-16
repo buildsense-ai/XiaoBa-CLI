@@ -176,7 +176,6 @@ function createHarness(options: {
     sendToolUse: async (_topic: string, toolUseId: string) => { progressEvents.push(`tool_start:${toolUseId}`); },
     sendToolResult: async (_topic: string, toolUseId: string) => { progressEvents.push(`tool_end:${toolUseId}`); },
   };
-  bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
   bot.sessionExecutionReservations = new Set();
   bot.sessionClearGenerations = new Map();

@@ -18,6 +18,7 @@ export interface MemorySearchBranchSessionOptions {
   input: string | ContentBlock[];
   recentMessages: Message[];
   workingDirectory: string;
+  branchLogRoot?: string;
   aiService: AIService;
   queue: SyntheticObservationQueue;
   signal?: AbortSignal;
@@ -33,6 +34,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       type: 'memory',
       aiService: memoryOptions.aiService,
       workingDirectory: memoryOptions.workingDirectory,
+      branchLogRoot: memoryOptions.branchLogRoot,
       queue: memoryOptions.queue,
       signal: memoryOptions.signal,
       logEnabled: memoryOptions.logEnabled,

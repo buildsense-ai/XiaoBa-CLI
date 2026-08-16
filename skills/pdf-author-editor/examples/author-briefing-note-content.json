@@ -1,0 +1,62 @@
+{
+  "delivery_type": "report",
+  "template": "briefing-note",
+  "meta": {
+    "title": "Operational Briefing Note",
+    "subtitle": "Key points, open decisions, and next actions",
+    "author": "pdf-author-editor",
+    "date": "2026-07-06"
+  },
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": "normal"
+  },
+  "content": [
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Purpose"
+    },
+    {
+      "type": "paragraph",
+      "text": "This note summarizes the current state of a document production request and lists the decisions needed before final export."
+    },
+    {
+      "type": "callout",
+      "title": "Current position",
+      "text": "The source content is ready for rendering. Remaining work is limited to layout review, PDF export, and final QA."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Decision Points"
+    },
+    {
+      "type": "table",
+      "columns": ["Topic", "Owner", "Status"],
+      "rows": [
+        ["Template choice", "Document owner", "Selected"],
+        ["Review deadline", "Project lead", "Open"],
+        ["Distribution format", "Operations", "PDF"]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Next Actions"
+    },
+    {
+      "type": "list",
+      "style": "number",
+      "items": [
+        "Render the source content with the briefing-note template.",
+        "Review the preview image for visible layout issues.",
+        "Export the final PDF and keep the manifest with the run output."
+      ]
+    }
+  ],
+  "export": {
+    "pdf": true
+  }
+}

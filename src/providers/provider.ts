@@ -90,6 +90,11 @@ export interface ModelAttemptSink {
 export interface AIRequestOptions {
   signal?: AbortSignal;
   /**
+   * A bounded durable workflow owns retry scheduling itself and must yield a
+   * provider failure back to that workflow after one transport attempt.
+   */
+  retryMode?: 'default' | 'none';
+  /**
    * Live mode forwards text immediately and disables transparent replay once
    * the caller has observed output. Buffered mode publishes text only after a
    * provider attempt completes, so a failed attempt can be retried safely.

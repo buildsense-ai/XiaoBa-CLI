@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pdf-author-editor capability matrix",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["skill", "version", "routes"],
+  "properties": {
+    "skill": {
+      "const": "pdf-author-editor"
+    },
+    "version": {
+      "type": "string"
+    },
+    "default_output_root": {
+      "type": "string"
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["kind", "name", "purpose", "input_types", "operations", "required_inputs", "outputs", "execution", "blocked_conditions", "boundaries"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["author", "modify", "semantic", "blocked"]
+          },
+          "name": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "input_types": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "operations": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "required_inputs": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "optional_inputs": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "outputs": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "execution": {
+            "type": "string",
+            "enum": ["direct", "plan_then_execute", "plan_then_author", "no_execution"]
+          },
+          "blocked_conditions": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "boundaries": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}
