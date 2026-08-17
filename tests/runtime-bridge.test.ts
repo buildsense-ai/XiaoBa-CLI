@@ -8,6 +8,11 @@ import {
 } from '../src/runtime-bridge';
 
 describe('runtime bridge', () => {
+  test('ships the bridge as an explicit public executable', () => {
+    const manifest = require('../package.json') as { bin?: Record<string, string> };
+    assert.equal(manifest.bin?.['xiaoba-runtime-bridge'], 'dist/runtime-bridge.js');
+  });
+
   test('publishes a small versioned host contract', () => {
     assert.deepEqual(describeRuntimeBridge(), {
       protocol_version: RUNTIME_BRIDGE_PROTOCOL_VERSION,

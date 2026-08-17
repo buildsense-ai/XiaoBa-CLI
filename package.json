@@ -5,7 +5,8 @@
   "main": "electron/main.js",
   "bin": {
     "catsco": "dist/index.js",
-    "xiaoba": "dist/index.js"
+    "xiaoba": "dist/index.js",
+    "xiaoba-runtime-bridge": "dist/runtime-bridge.js"
   },
   "scripts": {
     "build": "tsc",
