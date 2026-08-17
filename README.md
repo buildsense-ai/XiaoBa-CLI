@@ -128,7 +128,6 @@ npm run electron:build:linux # Linux
 - Skill 开发请参考内置 `skills/README.md` 与现有 Skill 示例
 - [API 文档](docs/API.md)
 - [配置说明](docs/CONFIG.md)
-- [Runtime host adapter contract](docs/RUNTIME_BRIDGE.md)
 
 ## 📄 License
 
