@@ -6,6 +6,9 @@ const DEFAULT_STABLE_MINUTES = 5;
 const DEFAULT_INTERVAL_MINUTES = 30;
 const DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_FILES_PER_CYCLE = 12;
+const DEFAULT_APPEND_CHUNK_BYTES = 1024 * 1024;
+const DEFAULT_MAX_APPEND_CHUNKS_PER_FILE = 4;
+const MAX_APPEND_CHUNK_BYTES = 4 * 1024 * 1024;
 const DEFAULT_API_BASE_URL = 'https://logs.catsco.fun:8000';
 
 export interface CatscoLogAgentConfig {
@@ -17,6 +20,8 @@ export interface CatscoLogAgentConfig {
   stableMinutes: number;
   maxFileBytes: number;
   maxFilesPerCycle: number;
+  appendChunkBytes: number;
+  maxAppendChunksPerFile: number;
   catscoUserToken?: string;
 }
 
@@ -127,6 +132,16 @@ export function getCatscoLogAgentConfig(
     stableMinutes: readNumber(runtimeEnv, 'CATSCO_LOG_STABLE_MINUTES', DEFAULT_STABLE_MINUTES, 0),
     maxFileBytes: readNumber(runtimeEnv, 'CATSCO_LOG_MAX_FILE_BYTES', DEFAULT_MAX_FILE_BYTES, 1),
     maxFilesPerCycle: readNumber(runtimeEnv, 'CATSCO_LOG_MAX_FILES_PER_CYCLE', DEFAULT_MAX_FILES_PER_CYCLE, 1),
+    appendChunkBytes: Math.min(
+      readNumber(runtimeEnv, 'CATSCO_LOG_APPEND_CHUNK_BYTES', DEFAULT_APPEND_CHUNK_BYTES, 1024),
+      MAX_APPEND_CHUNK_BYTES,
+    ),
+    maxAppendChunksPerFile: readNumber(
+      runtimeEnv,
+      'CATSCO_LOG_MAX_APPEND_CHUNKS_PER_FILE',
+      DEFAULT_MAX_APPEND_CHUNKS_PER_FILE,
+      1,
+    ),
     catscoUserToken: readEnv(runtimeEnv, 'CATSCO_USER_TOKEN', 'CATSCOMPANY_USER_TOKEN'),
   };
 }

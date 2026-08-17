@@ -21,6 +21,7 @@ describe('catsco log agent state', () => {
 
       state.token = 'secret-upload-token';
       state.tokenId = 'token-1';
+      state.tokenExpiresAt = '2026-05-14T01:00:00.000Z';
       state.userId = 'catsco_123';
       state.uploaded['logs/sessions/chat/2026-05-14/chat_cli.jsonl'] = {
         size: 12,
@@ -32,6 +33,7 @@ describe('catsco log agent state', () => {
       const loaded = loadCatscoLogAgentState(statePath);
       assert.equal(loaded.deviceId, deviceId);
       assert.equal(loaded.token, 'secret-upload-token');
+      assert.equal(loaded.tokenExpiresAt, '2026-05-14T01:00:00.000Z');
       assert.equal(Object.keys(loaded.uploaded).length, 1);
 
       clearCatscoLogToken(loaded);
@@ -39,6 +41,7 @@ describe('catsco log agent state', () => {
       assert.equal(Object.keys(loaded.uploaded).length, 1);
       assert.equal(loaded.token, undefined);
       assert.equal(loaded.tokenId, undefined);
+      assert.equal(loaded.tokenExpiresAt, undefined);
       assert.equal(loaded.userId, undefined);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

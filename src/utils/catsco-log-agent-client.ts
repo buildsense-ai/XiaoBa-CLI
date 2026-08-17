@@ -18,6 +18,9 @@ export interface CatscoBootstrapResponse {
   token: string;
   upload_url: string;
   issued_at: string;
+  expires_at?: string;
+  upload_protocol?: number;
+  append_url?: string;
 }
 
 export interface CatscoUploadResponse {
@@ -26,6 +29,14 @@ export interface CatscoUploadResponse {
   sha256?: string;
   parse_status?: string;
   status?: string;
+}
+
+export interface CatscoAppendResponse {
+  upload_id?: string;
+  sha256?: string;
+  status?: string;
+  accepted_offset: number;
+  revision: string;
 }
 
 export class CatscoLogAgentClient {
@@ -54,15 +65,17 @@ export class CatscoLogAgentClient {
     filePath: string;
     token: string;
     logDate: string;
+    content?: Uint8Array;
+    fileName?: string;
   }): Promise<CatscoUploadResponse> {
     const form = new FormData();
     form.append('log_date', input.logDate);
 
-    const fileBuffer = fs.readFileSync(input.filePath);
+    const fileBuffer = input.content || fs.readFileSync(input.filePath);
     form.append(
       'file',
       new Blob([fileBuffer], { type: 'application/x-ndjson' }),
-      path.basename(input.filePath),
+      input.fileName || path.basename(input.filePath),
     );
 
     const response = await fetch(this.buildUrl('/catsco/logs/upload'), {
@@ -74,6 +87,38 @@ export class CatscoLogAgentClient {
     });
 
     return this.parseJsonResponse<CatscoUploadResponse>(response, 'CatsLog upload failed');
+  }
+
+  async appendLog(input: {
+    token: string;
+    logDate: string;
+    content: Uint8Array;
+    fileName: string;
+    expectedOffset: number;
+    expectedRevision: string;
+    requestId: string;
+    appendUrl?: string;
+  }): Promise<CatscoAppendResponse> {
+    const form = new FormData();
+    form.append('log_date', input.logDate);
+    form.append(
+      'file',
+      new Blob([input.content], { type: 'application/x-ndjson' }),
+      input.fileName,
+    );
+
+    const response = await fetch(this.buildUrl(input.appendUrl || '/catsco/logs/append'), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${input.token}`,
+        'X-CatsLog-Expected-Offset': String(input.expectedOffset),
+        'X-CatsLog-Expected-Revision': input.expectedRevision,
+        'X-CatsLog-Request-ID': input.requestId,
+      },
+      body: form,
+    });
+
+    return this.parseJsonResponse<CatscoAppendResponse>(response, 'CatsLog append failed');
   }
 
   private buildUrl(requestPath: string): string {
@@ -98,6 +143,7 @@ export class CatscoLogAgentClient {
       const detail = data?.detail || data?.error || data?.message || data?.raw;
       const error = new Error(detail ? `${fallbackMessage}: ${detail}` : `${fallbackMessage}: HTTP ${response.status}`);
       (error as any).status = response.status;
+      (error as any).payload = data;
       throw error;
     }
 

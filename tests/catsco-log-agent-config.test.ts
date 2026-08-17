@@ -12,6 +12,8 @@ describe('catsco log agent config', () => {
       const defaults = getCatscoLogAgentConfig(root, {});
       assert.equal(defaults.enabled, true);
       assert.equal(defaults.apiBaseUrl, 'https://logs.catsco.fun:8000');
+      assert.equal(defaults.appendChunkBytes, 1024 * 1024);
+      assert.equal(defaults.maxAppendChunksPerFile, 4);
 
       assert.equal(getCatscoLogAgentConfig(root, {
         CATSCO_LOG_UPLOAD_ENABLED: 'false',
@@ -28,6 +30,13 @@ describe('catsco log agent config', () => {
         CATSCO_LOG_API_BASE_URL: 'http://logs.example.test',
       });
       assert.equal(insecure.apiBaseUrl, '');
+
+      const boundedAppend = getCatscoLogAgentConfig(root, {
+        CATSCO_LOG_APPEND_CHUNK_BYTES: String(10 * 1024 * 1024),
+        CATSCO_LOG_MAX_APPEND_CHUNKS_PER_FILE: '0',
+      });
+      assert.equal(boundedAppend.appendChunkBytes, 4 * 1024 * 1024);
+      assert.equal(boundedAppend.maxAppendChunksPerFile, 4);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
