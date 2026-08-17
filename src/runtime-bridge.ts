@@ -55,16 +55,36 @@ export function parseRuntimeBridgeCommand(args: readonly string[]): RuntimeBridg
 
 export async function wakeRuntimeBridge(runtimeRoot: string): Promise<RuntimeBridgeWakeResult> {
   const resolvedRoot = requiredRuntimeRoot(runtimeRoot);
-  // A bridge must never bootstrap CatsLog itself or let a tenant runtime read
-  // arbitrary configured external history while consuming canonical evidence.
-  process.env.CATSCO_LOG_UPLOAD_ENABLED = 'false';
-  process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'false';
-  process.env.DISTILLATION_HEARTBEAT_LOG_ROOT = 'logs';
+  configureRuntimeBridgeEnvironment(resolvedRoot);
 
   const config = getDistillationHeartbeatConfig(resolvedRoot);
   const stack = buildRuntimeLearningStack(resolvedRoot, config);
   const result = await stack.runtimeLearning.wake('session-log-append');
   return summarizeRuntimeBridgeWake(result, readHeartbeatRunStatus(config.heartbeatRecordPath));
+}
+
+// configureRuntimeBridgeEnvironment pins every data-root alias recognized by
+// the existing runtime to one already-resolved tenant directory. The bridge
+// must enforce this itself because it is also a public executable, not just a
+// child launched by CatsLog's already-sanitized NodeRunner environment.
+export function configureRuntimeBridgeEnvironment(
+  resolvedRuntimeRoot: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): void {
+  Object.assign(environment, {
+    CATSLOG_RUNTIME_ROOT: resolvedRuntimeRoot,
+    XIAOBA_RUNTIME_ROOT: resolvedRuntimeRoot,
+    XIAOBA_USER_DATA_DIR: resolvedRuntimeRoot,
+    CATSCO_USER_DATA_DIR: resolvedRuntimeRoot,
+    XIAOBA_ELECTRON_USER_DATA_DIR: resolvedRuntimeRoot,
+    XIAOBA_SKILLS_DIR: path.join(resolvedRuntimeRoot, 'skills'),
+    // A bridge must never bootstrap CatsLog itself or let a tenant runtime
+    // read arbitrary configured external history while consuming canonical
+    // evidence.
+    CATSCO_LOG_UPLOAD_ENABLED: 'false',
+    XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: 'false',
+    DISTILLATION_HEARTBEAT_LOG_ROOT: 'logs',
+  });
 }
 
 // RuntimeLearning records a caught cycle exception as a durable `failed`

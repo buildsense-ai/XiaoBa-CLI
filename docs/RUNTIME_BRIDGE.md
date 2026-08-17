@@ -13,7 +13,10 @@ return a small, versioned result.
 
 ```sh
 xiaoba-runtime-bridge describe
-CATSLOG_RUNTIME_ROOT=/srv/runtime/tenant-a xiaoba-runtime-bridge wake
+(
+  cd /srv/runtime/tenant-a
+  CATSLOG_RUNTIME_ROOT="$PWD" xiaoba-runtime-bridge wake
+)
 ```
 
 `describe` emits JSON with `protocol_version`, `xiaoba_version`, and the
