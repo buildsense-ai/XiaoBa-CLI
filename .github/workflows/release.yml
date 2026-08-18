@@ -395,6 +395,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Setup Node.js for release retention planner
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install release planner dependencies
+        run: npm ci --ignore-scripts ${{ env.NPM_INSTALL_FLAGS }}
+
       - name: Verify CDN publishing credentials
         shell: bash
         run: |
