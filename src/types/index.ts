@@ -3,6 +3,11 @@ export type ContentBlock =
   | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } };
 
 export type ProviderContentBlock = Record<string, unknown> & { type: string };
+/** Provider identities supported by persisted application configuration. */
+export type BuiltInProviderId = 'openai' | 'anthropic';
+/** Runtime provider identity. Registries may add identities without changing ChatConfig. */
+export type ProviderId = BuiltInProviderId | (string & {});
+/** Wire protocol identity, intentionally separate from the runtime provider identity. */
 export type ProviderApiType = 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses';
 
 /** Opaque scope that prevents provider-only replay state crossing model/API boundaries. */
@@ -91,7 +96,7 @@ export interface ChatConfig {
     timeoutMs?: number;
     maxTokens?: number;
   };
-  provider?: 'openai' | 'anthropic';
+  provider?: BuiltInProviderId;
   feishu?: {
     appId?: string;
     appSecret?: string;
@@ -119,6 +124,12 @@ export interface ChatConfig {
     intervalMinutes?: number;
   };
 }
+
+/** Injectable runtime selection config, separate from persisted ChatConfig identity. */
+export type ProviderRuntimeConfig = Omit<ChatConfig, 'provider'> & {
+  provider?: ProviderId;
+  providerApiType?: ProviderApiType;
+};
 
 export interface TokenUsage {
   promptTokens: number;
