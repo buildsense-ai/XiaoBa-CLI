@@ -130,6 +130,22 @@ test('Responses cache key is isolated by session without exposing the session id
   assert.doesNotMatch(first.prompt_cache_key, /session-alpha/);
 });
 
+test('Responses cache scope can be shared while relay affinity remains session-specific', () => {
+  const messages: Message[] = [{ role: 'system', content: 'stable' }, { role: 'user', content: 'hello' }];
+  const firstContext = {
+    promptCacheContext: { ...context.promptCacheContext, cacheScopeKey: 'employee:42:shard:3' },
+  };
+  const secondContext = {
+    promptCacheContext: { ...context.promptCacheContext, sessionKey: 'session-beta', cacheScopeKey: 'employee:42:shard:3' },
+  };
+  const first = (provider() as any).buildResponsesRequestBody(messages, [], false, firstContext);
+  const second = (provider() as any).buildResponsesRequestBody(messages, [], false, secondContext);
+  assert.equal(first.prompt_cache_key, second.prompt_cache_key);
+  const firstHeaders = (provider() as any).responsesHeaders(firstContext);
+  const secondHeaders = (provider() as any).responsesHeaders(secondContext);
+  assert.notEqual(firstHeaders.session_id, secondHeaders.session_id);
+});
+
 test('Responses relay uses Pi-style stable session affinity headers without exposing the session id', () => {
   const original = process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;
   delete process.env.XIAOBA_RESPONSES_SESSION_AFFINITY;

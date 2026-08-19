@@ -531,7 +531,7 @@ export class OpenAIProvider implements AIProvider {
       prompt_cache_key: this.buildPromptCacheKey(
         instructions,
         responseTools,
-        options?.promptCacheContext?.sessionKey,
+        options?.promptCacheContext?.cacheScopeKey || options?.promptCacheContext?.sessionKey,
       ),
     };
 
@@ -753,12 +753,12 @@ export class OpenAIProvider implements AIProvider {
     ].includes(String(item.type || '')));
   }
 
-  private buildPromptCacheKey(instructions: string, tools: any[], sessionKey?: string): string {
+  private buildPromptCacheKey(instructions: string, tools: any[], cacheScopeKey?: string): string {
     const digest = createHash('sha256')
       .update(JSON.stringify({
         identityVersion: 'responses-cache-v3',
         model: this.model,
-        session: createHash('sha256').update(sessionKey || 'unscoped').digest('hex').slice(0, 24),
+        scope: createHash('sha256').update(cacheScopeKey || 'unscoped').digest('hex').slice(0, 24),
         instructions,
         tools,
       }))

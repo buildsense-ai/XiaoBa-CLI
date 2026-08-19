@@ -103,6 +103,7 @@ export interface AIRequestOptions {
 
 export interface PromptCacheContext {
   sessionKey: string;
+  cacheScopeKey?: string;
   currentEpisodeId?: string;
   phase: 'normal' | 'pre_turn' | 'mid_turn' | 'restore';
   explicitCaching: boolean;

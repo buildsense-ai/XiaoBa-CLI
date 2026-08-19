@@ -4,6 +4,7 @@ import type { TargetRoutes } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { AIRequestOptions, StreamCallbacks, StreamRetryInfo } from '../providers/provider';
+import { buildPromptCacheScopeKey } from '../providers/prompt-cache-scope';
 import { Logger } from '../utils/logger';
 import { isRateLimitErrorCode } from '../utils/rate-limit-error';
 import { Metrics } from '../utils/metrics';
@@ -1495,6 +1496,10 @@ export class ConversationRunner {
       } : {}),
       promptCacheContext: {
         sessionKey: this.toolExecutionContext?.sessionId || 'unknown',
+        cacheScopeKey: buildPromptCacheScopeKey(
+          this.toolExecutionContext?.sessionId,
+          this.toolExecutionContext?.executionScope,
+        ),
         ...(this.episodeId ? { currentEpisodeId: this.episodeId } : {}),
         phase: 'normal' as const,
         explicitCaching: true,
