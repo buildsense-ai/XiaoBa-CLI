@@ -5,6 +5,7 @@ import type {
   SessionLogEntry,
   SessionPromptTraceLogEntry,
   SessionPromptTurnLog,
+  SessionLogAgentIdentity,
   SessionRuntimeLogEntry,
   SessionRuntimeLogEvent,
   SessionSubAgentEventLogEntry,
@@ -21,6 +22,7 @@ export type {
   ParsedSessionLogEntry,
   SessionLogEntry,
   SessionPromptTurnLog,
+  SessionLogAgentIdentity,
   SessionRuntimeLogEntry,
   SessionRuntimeLogEvent,
   SessionSubAgentEventLogEntry,
@@ -31,6 +33,7 @@ export type {
 const SESSION_LOG_DIR = PathResolver.getLogsPath('sessions');
 const MAX_TOOL_RESULT_LENGTH = parseOptionalLimit(process.env.XIAOBA_SESSION_TOOL_RESULT_LIMIT);
 const MAX_RUNTIME_FEEDBACK_LENGTH = Number(process.env.XIAOBA_SESSION_RUNTIME_FEEDBACK_LIMIT || 4000);
+const MAX_AGENT_IDENTITY_FIELD_LENGTH = 256;
 
 function parseOptionalLimit(raw: string | undefined): number | null {
   if (!raw || !raw.trim()) return null;
@@ -55,10 +58,12 @@ export class SessionTurnLogger {
   private sessionId: string;
   private logFilePath: string;
   private turnCounter = 0;
+  private readonly agentIdentity?: SessionLogAgentIdentity;
 
-  constructor(sessionType: string, sessionId: string) {
+  constructor(sessionType: string, sessionId: string, agentIdentity?: SessionLogAgentIdentity) {
     this.sessionType = sessionType;
     this.sessionId = sessionId;
+    this.agentIdentity = normalizeAgentIdentity(agentIdentity);
 
     const date = new Date();
     const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -97,6 +102,7 @@ export class SessionTurnLogger {
       timestamp: new Date().toISOString(),
       session_id: this.sessionId,
       session_type: this.sessionType,
+      ...this.agentIdentityFields(),
       user: {
         text: userText,
         ...(userImages.length > 0 && { images: userImages }),
@@ -123,6 +129,7 @@ export class SessionTurnLogger {
       timestamp: new Date().toISOString(),
       session_id: this.sessionId,
       session_type: this.sessionType,
+      ...this.agentIdentityFields(),
       prompt: snapshot,
     };
     this.appendLog(entry);
@@ -134,6 +141,7 @@ export class SessionTurnLogger {
       timestamp: new Date().toISOString(),
       session_id: this.sessionId,
       session_type: this.sessionType,
+      ...this.agentIdentityFields(),
       level,
       message,
       ...(event && { event }),
@@ -147,6 +155,7 @@ export class SessionTurnLogger {
       timestamp: new Date(event.timestamp).toISOString(),
       session_id: this.sessionId,
       session_type: this.sessionType,
+      ...this.agentIdentityFields(),
       subagent: {
         id: event.subAgentId,
         ...(event.subAgentName && { name: event.subAgentName }),
@@ -192,4 +201,37 @@ export class SessionTurnLogger {
       console.error('[SessionTurnLogger] Failed to write log:', error);
     }
   }
+
+  private agentIdentityFields(): Pick<SessionLogEntry, 'agent_identity'> {
+    if (!this.agentIdentity) return {};
+    return { agent_identity: { ...this.agentIdentity } };
+  }
+
+}
+
+function normalizeAgentIdentity(value: SessionLogAgentIdentity | undefined): SessionLogAgentIdentity | undefined {
+  const agentId = normalizeAgentIdentityField(value?.agent_id);
+  if (!agentId) return undefined;
+  const trust = value?.trust === 'server_canonical'
+    || value?.trust === 'legacy_context'
+    || value?.trust === 'untrusted'
+    ? value.trust
+    : 'legacy_context';
+  const agentBodyId = normalizeAgentIdentityField(value?.agent_body_id);
+  const source = normalizeAgentIdentityField(value?.source);
+  return {
+    agent_id: agentId,
+    ...(agentBodyId && { agent_body_id: agentBodyId }),
+    trust,
+    ...(source && { source }),
+  };
+}
+
+function normalizeAgentIdentityField(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > MAX_AGENT_IDENTITY_FIELD_LENGTH || /[\u0000-\u001F\u007F]/.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
 }

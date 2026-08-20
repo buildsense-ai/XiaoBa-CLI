@@ -84,6 +84,51 @@ describe('Logger', () => {
       ],
     );
   });
+  test('writes route-derived agent identity on every session-log entry', () => {
+    delete require.cache[require.resolve('../src/utils/session-turn-logger')];
+    const { SessionTurnLogger } = require('../src/utils/session-turn-logger');
+    const sessionLogger = new SessionTurnLogger(
+      'catscompany',
+      'cc_group:grp_80',
+      {
+        agent_id: 'usr407',
+        agent_body_id: 'body-main',
+        trust: 'server_canonical',
+        source: 'metadata.catsco_identity',
+      },
+    );
+
+    sessionLogger.logTurn('hello', 'world', [], { prompt: 1, completion: 1 });
+    sessionLogger.logRuntime('INFO', 'runtime event');
+    const entries = fs.readFileSync(sessionLogger.getLogFilePath(), 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line));
+
+    assert.equal(entries.length, 2);
+    for (const entry of entries) {
+      assert.deepEqual(entry.agent_identity, {
+        agent_id: 'usr407',
+        agent_body_id: 'body-main',
+        trust: 'server_canonical',
+        source: 'metadata.catsco_identity',
+      });
+    }
+  });
+
+  test('omits malformed agent identity rather than adding unbounded log metadata', () => {
+    delete require.cache[require.resolve('../src/utils/session-turn-logger')];
+    const { SessionTurnLogger } = require('../src/utils/session-turn-logger');
+    const sessionLogger = new SessionTurnLogger('catscompany', 'cc_group:grp_80', {
+      agent_id: `usr407\n${'x'.repeat(300)}`,
+      trust: 'server_canonical',
+    });
+    sessionLogger.logRuntime('INFO', 'runtime event');
+
+    const entry = JSON.parse(fs.readFileSync(sessionLogger.getLogFilePath(), 'utf8').trim());
+    assert.equal('agent_identity' in entry, false);
+  });
+
 });
 
 function waitForFlush(): Promise<void> {

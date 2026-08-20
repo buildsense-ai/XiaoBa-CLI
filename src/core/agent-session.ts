@@ -26,7 +26,7 @@ import {
 } from '../skills/session-skill-runtime';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
-import { SessionTurnLogger } from '../utils/session-turn-logger';
+import { SessionTurnLogger, type SessionLogAgentIdentity } from '../utils/session-turn-logger';
 import { Metrics } from '../utils/metrics';
 import { ContextWindowManager } from './context-window-manager';
 import {
@@ -224,7 +224,7 @@ export class AgentSession {
     private readonly sessionRoute?: SessionRoute,
   ) {
     const type = sessionType || this.extractSessionType(key);
-    this.sessionTurnLogger = new SessionTurnLogger(type, key);
+    this.sessionTurnLogger = new SessionTurnLogger(type, key, sessionLogAgentIdentity(sessionRoute));
     this.turnLogRecorder = new TurnLogRecorder(this.sessionTurnLogger);
     const modelConfig = typeof (services.aiService as any).getConfig === 'function'
       ? (services.aiService as any).getConfig()
@@ -1330,4 +1330,16 @@ export class AgentSession {
     return `${normalized.slice(0, maxLength)}...(已截断)`;
   }
 
+}
+
+function sessionLogAgentIdentity(route: SessionRoute | undefined): SessionLogAgentIdentity | undefined {
+  if (!route) return undefined;
+  const agentId = route.agentId?.trim();
+  if (!agentId) return undefined;
+  return {
+    agent_id: agentId,
+    ...(route.agentBodyId?.trim() && { agent_body_id: route.agentBodyId.trim() }),
+    trust: route.identityTrust,
+    ...(route.identitySource?.trim() && { source: route.identitySource.trim() }),
+  };
 }
