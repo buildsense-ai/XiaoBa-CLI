@@ -16,8 +16,15 @@ export interface CatscoBootstrapResponse {
   device_id: string;
   token_id: string;
   token: string;
+  skill_token_id?: string;
+  skill_token?: string;
+  skill_token_expires_at?: string;
+  skills_url?: string;
   upload_url: string;
+  upload_protocol?: number;
+  append_url?: string;
   issued_at: string;
+  expires_at?: string;
 }
 
 export interface CatscoUploadResponse {
@@ -26,6 +33,34 @@ export interface CatscoUploadResponse {
   sha256?: string;
   parse_status?: string;
   status?: string;
+}
+
+export interface CatscoAppendResponse {
+  upload_id?: string;
+  sha256?: string;
+  status?: string;
+  accepted_offset: number;
+  revision: string;
+}
+
+export interface CatscoSkillReadResponse {
+  content_trust?: 'untrusted_runtime_skill';
+  skills?: unknown[];
+  next_cursor?: string;
+  truncated?: boolean;
+  incomplete?: boolean;
+}
+
+export class CatscoAppendConflictError extends Error {
+  readonly status = 409;
+
+  constructor(
+    readonly acceptedOffset: number,
+    readonly revision: string,
+  ) {
+    super('CatsLog append conflict');
+    this.name = 'CatscoAppendConflictError';
+  }
 }
 
 export class CatscoLogAgentClient {
@@ -76,14 +111,89 @@ export class CatscoLogAgentClient {
     return this.parseJsonResponse<CatscoUploadResponse>(response, 'CatsLog upload failed');
   }
 
+  async appendLog(input: {
+    filePath: string;
+    token: string;
+    logDate: string;
+    appendUrl: string;
+    expectedOffset: number;
+    expectedRevision: string;
+    requestId: string;
+    content: Buffer;
+  }): Promise<CatscoAppendResponse> {
+    const form = new FormData();
+    form.append('log_date', input.logDate);
+    form.append(
+      'file',
+      new Blob([input.content], { type: 'application/x-ndjson' }),
+      path.basename(input.filePath),
+    );
+    const response = await fetch(this.buildUrl(input.appendUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${input.token}`,
+        'X-CatsLog-Expected-Offset': String(input.expectedOffset),
+        'X-CatsLog-Expected-Revision': input.expectedRevision,
+        'X-CatsLog-Request-ID': input.requestId,
+      },
+      body: form,
+    });
+    const data = await this.responseBody(response);
+    if (response.status === 409 && Number.isSafeInteger(data?.accepted_offset) && typeof data?.revision === 'string') {
+      throw new CatscoAppendConflictError(data.accepted_offset, data.revision);
+    }
+    if (!response.ok) {
+      throw this.responseError(response.status, data, 'CatsLog append failed');
+    }
+    if (!Number.isSafeInteger(data?.accepted_offset) || typeof data?.revision !== 'string') {
+      throw new Error('CatsLog append failed: invalid response');
+    }
+    return data as CatscoAppendResponse;
+  }
+
+  async readSkills(input: {
+    token: string;
+    skillsUrl: string;
+    handle?: string;
+    search?: string;
+    includeContent?: boolean;
+    includeTrace?: 'none' | 'summary' | 'full';
+    limit?: number;
+    cursor?: string;
+  }): Promise<CatscoSkillReadResponse> {
+    const params = new URLSearchParams();
+    if (input.handle) params.set('handle', input.handle);
+    if (input.search) params.set('search', input.search);
+    if (input.includeContent) params.set('include_content', 'true');
+    if (input.includeTrace) params.set('include_trace', input.includeTrace);
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    if (input.cursor) params.set('cursor', input.cursor);
+    const response = await fetch(`${this.buildUrl(input.skillsUrl)}${params.size ? `?${params}` : ''}`, {
+      headers: { Authorization: `Bearer ${input.token}` },
+    });
+    return this.parseJsonResponse<CatscoSkillReadResponse>(response, 'CatsLog Skill read failed');
+  }
+
   private buildUrl(requestPath: string): string {
     if (!this.apiBaseUrl) {
       throw new Error('CATSCO_LOG_API_BASE_URL is not configured');
     }
-    return `${this.apiBaseUrl}${requestPath.startsWith('/') ? requestPath : `/${requestPath}`}`;
+    const normalizedPath = requestPath.startsWith('/') ? requestPath : `/${requestPath}`;
+    if (!/^\/[A-Za-z0-9._~\/-]*$/.test(normalizedPath) || normalizedPath.startsWith('//')) {
+      throw new Error('CatsLog returned an unsafe endpoint path');
+    }
+    return `${this.apiBaseUrl}${normalizedPath}`;
   }
 
   private async parseJsonResponse<T>(response: Response, fallbackMessage: string): Promise<T> {
+    const data = await this.responseBody(response);
+    if (!response.ok) {
+      throw this.responseError(response.status, data, fallbackMessage);
+    }
+    return data as T;
+  }
+
+  private async responseBody(response: Response): Promise<any> {
     const text = await response.text();
     let data: any = {};
     if (text) {
@@ -94,13 +204,13 @@ export class CatscoLogAgentClient {
       }
     }
 
-    if (!response.ok) {
-      const detail = data?.detail || data?.error || data?.message || data?.raw;
-      const error = new Error(detail ? `${fallbackMessage}: ${detail}` : `${fallbackMessage}: HTTP ${response.status}`);
-      (error as any).status = response.status;
-      throw error;
-    }
+    return data;
+  }
 
-    return data as T;
+  private responseError(status: number, data: any, fallbackMessage: string): Error {
+    const detail = data?.detail || data?.error || data?.message || data?.raw;
+    const error = new Error(detail ? `${fallbackMessage}: ${detail}` : `${fallbackMessage}: HTTP ${status}`);
+    (error as any).status = status;
+    return error;
   }
 }

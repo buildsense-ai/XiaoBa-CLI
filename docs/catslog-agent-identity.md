@@ -34,6 +34,22 @@ CatsLog should consume this envelope only after validating the uploaded JSONL:
 3. persist the selected value and trust level with stream provenance; and
 4. leave historic streams without the envelope unlabelled rather than guessing.
 
-Until CatsLog implements that reader, this release is backward-compatible log
-provenance: it does not alter upload authentication, runtime session routing,
-or existing JSONL readers.
+## CatsLog v2 client behavior
+
+The client negotiates `upload_protocol: 2` only from bootstrap. It then sends
+newline-aligned JSONL chunks to the server-advertised `append_url`, with a
+persisted byte offset, opaque revision, and stable request ID. A lost response
+is retried with the identical request ID; an unprovable offset conflict falls
+back to the established v1 whole-snapshot upload instead of guessing that two
+prefixes are equal. One stream is always sequential, while independent stable
+files use up to three concurrent requests by default (`CATSCO_LOG_MAX_CONCURRENT_UPLOADS`, capped at 8).
+
+Bootstrap also retains the short-lived, device-bound Skill capability. A local
+operator can read only that bound principal's Skills through `catsco catslog
+skills`; no UID flag exists. Returned Skill content remains explicitly
+`untrusted_runtime_skill` and is printed as data rather than injected into a
+prompt.
+
+All of this remains independent from runtime session routing and existing JSONL
+readers. CatsLog still needs to implement the metadata reader above before its
+analysis index can use `agent_identity`.
