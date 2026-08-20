@@ -1231,20 +1231,31 @@ set -Eeuo pipefail
 exec > >(tee -a /var/log/catsco-image-build.log) 2>&1
 artifact_url="`$(printf '%s' '$artifactUrlBase64' | base64 -d)"
 prepare_script_url="`$(printf '%s' '$prepareScriptUrlBase64' | base64 -d)"
-curl --fail --silent --show-error --location --retry 8 --retry-all-errors \
+phase() {
+  printf '%s %s\n' "`$(date -Is)" "`$1" | tee /run/catsco-image-bootstrap-phase
+}
+curl_common=(--fail --silent --show-error --location --ipv4 \
+  --connect-timeout 20 --max-time 900 --retry 8 --retry-all-errors \
+  --retry-delay 5 --retry-max-time 1800)
+phase download-prepare-script
+curl "`${curl_common[@]}" \
   "`$prepare_script_url" --output /tmp/prepare-image.sh
 printf '%s  %s\n' '$($PrepareScriptSha256.ToLowerInvariant())' /tmp/prepare-image.sh | sha256sum --check --strict
 chmod 700 /tmp/prepare-image.sh
-curl --fail --silent --show-error --location --retry 8 --retry-all-errors \
+phase download-worker-artifact
+curl "`${curl_common[@]}" \
   "`$artifact_url" --output '/tmp/$artifactName'
+phase prepare-worker-artifact
 bash /tmp/prepare-image.sh \
   --artifact '/tmp/$artifactName' \
   --sha256 '$ArtifactSha256' \
   --version '$version' \
   --commit '$commit'
 rm -f '/tmp/$artifactName'
+phase finalize-worker-image
 bash /tmp/prepare-image.sh --finalize
 sync
+phase shutdown
 shutdown -h now
 "@
     # Tianyi's cloud-init images are more reliable when userData is an
