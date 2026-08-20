@@ -293,6 +293,37 @@ describe('memory sidecar branch', () => {
     assert.match(readBranchLogs(testRoot), /suppressed_observation/);
   });
 
+  test('passes repeated activation delta and treats prior refs as advisory context', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const aiService = new NoInjectMemoryBranchAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'test-session',
+      input: 'original task',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: aiService as any,
+      queue,
+      activationContext: {
+        taskAnchor: 'original task',
+        deltaSinceLastRun: [{ role: 'user', content: 'newer correction wins' }],
+        previousInjections: [{
+          summary: 'The earlier phase used the same evidence for another conclusion.',
+          refs: ['chat/2026-06-09/demo.jsonl#1'],
+        }],
+      },
+    });
+
+    await handle.done;
+
+    const system = String(aiService.calls[0].find(message => message.role === 'system')?.content || '');
+    const payload = JSON.parse(String(aiService.calls[0].find(message => message.role === 'user')?.content));
+    assert.equal(payload.current_user_input, 'original task');
+    assert.deepEqual(payload.delta_since_last_run, [{ role: 'user', content: 'newer correction wins' }]);
+    assert.deepEqual(payload.previous_injections[0].refs, ['chat/2026-06-09/demo.jsonl#1']);
+    assert.match(system, /refs 黑名单/);
+    assert.match(system, /最新用户内容为准/);
+  });
+
 
   test('returns recoverable feedback for malformed final arguments and exits after correction', async () => {
     const queue = new InMemorySyntheticObservationQueue();

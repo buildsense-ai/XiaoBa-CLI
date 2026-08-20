@@ -7,6 +7,11 @@ import { PathResolver } from '../utils/path-resolver';
 import { Tool } from '../types/tool';
 import { AgentToolExecutor } from '../agents/agent-tool-executor';
 import { ConversationRunner, RunResult, RunnerCallbacks } from './conversation-runner';
+import { resolveModelContextWindow } from '../utils/model-context-window';
+import {
+  CheckpointCompactionCoordinator,
+  isCheckpointCompactionEnabled,
+} from './checkpoint-compaction';
 
 export const BRANCH_LOG_MAX_BYTES = 1_000_000;
 
@@ -75,9 +80,25 @@ export abstract class BranchSession {
         abortSignal: this.abortController.signal,
       },
     );
+    const modelConfig = typeof (this.options.aiService as any).getConfig === 'function'
+      ? (this.options.aiService as any).getConfig()
+      : {};
+    const contextWindow = resolveModelContextWindow(modelConfig);
+    const useCheckpointCompaction = isCheckpointCompactionEnabled();
+    const checkpointCompactionCoordinator = useCheckpointCompaction
+      ? new CheckpointCompactionCoordinator(
+        this.options.aiService,
+        { maxContextTokens: contextWindow.promptBudgetTokens },
+      )
+      : undefined;
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
       stream: false,
-      enableCompression: true,
+      // Each branch owns an in-memory continuation checkpoint. It is never
+      // persisted into the main session, and the rollback flag restores the
+      // legacy runner compressor.
+      enableCompression: !useCheckpointCompaction,
+      episodeId: this.options.id,
+      checkpointCompactionCoordinator,
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
         sessionId: `branch:${this.options.type}:${this.options.id}`,

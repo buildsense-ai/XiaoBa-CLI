@@ -4,6 +4,17 @@ import { Logger } from '../utils/logger';
 import { SyntheticObservationQueue } from './synthetic-observation';
 import { MemorySearchBranchSession } from './memory-search-branch-session';
 
+export interface MemoryBranchPreviousInjection {
+  summary: string;
+  refs: string[];
+}
+
+export interface MemoryBranchActivationContext {
+  taskAnchor: string;
+  deltaSinceLastRun: Array<Record<string, unknown>>;
+  previousInjections: MemoryBranchPreviousInjection[];
+}
+
 export interface MemorySidecarBranchOptions {
   sessionKey: string;
   input: string | ContentBlock[];
@@ -13,6 +24,7 @@ export interface MemorySidecarBranchOptions {
   queue: SyntheticObservationQueue;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  activationContext?: MemoryBranchActivationContext;
 }
 
 export interface MemorySidecarBranchHandle {

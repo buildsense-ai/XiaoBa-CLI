@@ -81,11 +81,13 @@ describe('ConversationRunner synthetic observations', () => {
     } as any;
 
     let providerCalls = 0;
+    const progressSizes: number[] = [];
     const runner = new ConversationRunner(aiService, new NoopToolExecutor(), {
       stream: false,
       enableCompression: false,
-      syntheticObservationProvider: () => {
+      syntheticObservationProvider: progressMessages => {
         providerCalls += 1;
+        progressSizes.push(progressMessages.length);
         return providerCalls === 2 ? [makeObservation()] : [];
       },
     });
@@ -111,5 +113,6 @@ describe('ConversationRunner synthetic observations', () => {
       2,
       'matching synthetic pair is injected exactly once',
     );
+    assert.deepEqual(progressSizes, [0, 2], 'provider sees only newly produced runner messages');
   });
 });

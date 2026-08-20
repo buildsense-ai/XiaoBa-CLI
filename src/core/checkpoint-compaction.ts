@@ -70,7 +70,7 @@ export function isCheckpointCompactionEnabled(
 }
 
 /**
- * Codex-style continuation compaction for the main Agent.
+ * Codex-style continuation compaction for an opted-in conversation runner.
  *
  * The coordinator summarizes durable transcript only, retains the user inputs
  * needed to continue the active task, and leaves transient runtime facts out of
