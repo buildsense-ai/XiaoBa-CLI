@@ -545,10 +545,10 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(imageOrchestrator, /"--extIP", "0"/);
     assert.match(imageOrchestrator, /"--userData", \$userData/);
     assert.match(imageOrchestrator, /userData exceeds Tianyi Cloud's 16384-character limit/);
-    assert.match(imageOrchestrator, /curl_common=(--fail --silent --show-error --location --ipv4/);
+    assert.match(imageOrchestrator, /curl_common=`\(--fail --silent --show-error --location --ipv4/;
     assert.match(imageOrchestrator, /--connect-timeout 20 --max-time 900/);
     assert.match(imageOrchestrator, /--retry 8 --retry-all-errors/);
-    assert.match(imageOrchestrator, /phase(\) \{/);
+    assert.match(imageOrchestrator, /phase\(\) \{/);
     assert.match(imageOrchestrator, /phase download-prepare-script/);
     assert.match(imageOrchestrator, /phase shutdown/);
     assert.match(imageOrchestrator, /shutdown -h now/);
