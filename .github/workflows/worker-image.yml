@@ -114,7 +114,7 @@ jobs:
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "$artifact" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure staging lifecycle rules
+      - name: Ensure upload bucket, replication, and lifecycle rules
         timeout-minutes: 5
         shell: bash
         env:
@@ -129,9 +129,37 @@ jobs:
             upload_bucket="$TOS_WORKER_UPLOAD_BUCKET"
             upload_endpoint="https://tos-s3-${TOS_WORKER_UPLOAD_REGION}.volces.com"
           fi
-          # Idempotent PutBucketLifecycleConfiguration: bake staging objects on
-          # either bucket self-expire after 3 days, so abandoned runs never
-          # accumulate billing.
+
+          # --- 1. Idempotent upload-hop bucket creation (empty bucket costs nothing;
+          #        objects are single-use and deleted after each bake) ---
+          if ! aws s3api head-bucket --bucket "$upload_bucket" \
+              --endpoint-url "$upload_endpoint" >/dev/null 2>&1; then
+            aws s3api create-bucket --bucket "$upload_bucket" \
+              --endpoint-url "$upload_endpoint" \
+              --create-bucket-configuration "LocationConstraint=${TOS_WORKER_UPLOAD_REGION}"
+            echo "created upload bucket: $upload_bucket"
+          fi
+
+          # --- 2. Best-effort cross-region replication rule (HK -> GZ). When the
+          #        S3-compatible replication API is not enabled on the account,
+          #        configure the rule once in the TOS console; the staging wait
+          #        reports a clear timeout error if replication never runs. ---
+          if [[ "$upload_bucket" != "$TOS_WORKER_BUCKET" ]]; then
+            cat > /tmp/tos-bake-replication.json <<EOF
+{"Role":"","Rules":[{"ID":"replicate-bake-staging","Status":"Enabled","Priority":1,"Filter":{"Prefix":"update/worker/.bake/"},"Destination":{"Bucket":"arn:aws:s3:::$TOS_WORKER_BUCKET"}}]}
+EOF
+            if aws s3api put-bucket-replication \
+                --bucket "$upload_bucket" --endpoint-url "$upload_endpoint" \
+                --replication-configuration file:///tmp/tos-bake-replication.json >/dev/null 2>&1; then
+              echo "replication rule set: $upload_bucket -> $TOS_WORKER_BUCKET"
+            else
+              echo "warning: replication API rejected; ensure a cross-region replication rule ($upload_bucket -> $TOS_WORKER_BUCKET, prefix update/worker/.bake/) exists in the TOS console" >&2
+            fi
+          fi
+
+          # --- 3. Idempotent PutBucketLifecycleConfiguration: bake staging objects
+          #        on either bucket self-expire after 3 days, so abandoned runs
+          #        never accumulate billing. ---
           lifecycle='{"Rules":[{"ID":"expire-bake-staging","Filter":{"Prefix":"update/worker/.bake/"},"Status":"Enabled","Expiration":{"Days":3}}]}'
           printf '%s' "$lifecycle" > /tmp/tos-bake-lifecycle.json
           for spec in "$upload_bucket $upload_endpoint" "$TOS_WORKER_BUCKET $endpoint"; do
