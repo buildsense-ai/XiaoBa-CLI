@@ -126,6 +126,116 @@ describe('CatscoLogUploadScheduler', () => {
     assert.equal(requests.filter(item => item.url === '/catsco/logs/upload').length, 3);
   });
 
+  test('negotiates v2 append and resumes from the persisted byte cursor', async () => {
+    const first = '{"entry_type":"turn","session_id":"cli"}\n';
+    const second = '{"entry_type":"runtime","session_id":"cli","message":"next"}\n';
+    const logPath = 'logs/sessions/chat/2026-05-14/chat_cli.jsonl';
+    writeLog(logPath, first, true);
+    const appendRequests: Array<{ offset: string | undefined; revision: string | undefined; requestId: string | undefined; content: Buffer }> = [];
+
+    server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      req.on('end', () => {
+        if (req.url === '/catsco/agent/bootstrap') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            user_id: 'catsco_123', external_provider: 'catsco', external_user_id: '123',
+            device_id: 'device_test', token_id: 'token-1', token: 'log-upload-token',
+            upload_url: '/catsco/logs/upload', upload_protocol: 2, append_url: '/catsco/logs/append',
+            skill_token: 'catslog_skl_test', skills_url: '/catsco/agent/skills', issued_at: '2026-05-14T00:00:00.000Z',
+          }));
+          return;
+        }
+        if (req.url === '/catsco/logs/append') {
+          const body = Buffer.concat(chunks);
+          const content = multipartFileContent(body);
+          const offset = req.headers['x-catslog-expected-offset'];
+          const revision = req.headers['x-catslog-expected-revision'];
+          const requestId = req.headers['x-catslog-request-id'];
+          appendRequests.push({
+            offset: Array.isArray(offset) ? offset[0] : offset,
+            revision: Array.isArray(revision) ? revision[0] : revision,
+            requestId: Array.isArray(requestId) ? requestId[0] : requestId,
+            content,
+          });
+          const acceptedOffset = Number(offset) + content.length;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ accepted_offset: acceptedOffset, revision: `revision-${appendRequests.length}` }));
+          return;
+        }
+        res.writeHead(404).end();
+      });
+    });
+    await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    process.env.CATSCO_LOG_UPLOAD_ENABLED = 'true';
+    process.env.CATSCO_LOG_API_BASE_URL = `http://127.0.0.1:${address.port}`;
+    process.env.CATSCO_LOG_STATE_FILE = 'data/catsco-log-state.json';
+    process.env.CATSCO_LOG_STABLE_MINUTES = '0';
+    process.env.CATSCO_LOG_MAX_FILES_PER_CYCLE = '10';
+    process.env.CATSCO_USER_TOKEN = 'cats-user-token';
+
+    const scheduler = new CatscoLogUploadScheduler(testRoot);
+    await scheduler.runPendingUploadCycle('manual');
+    assert.equal(appendRequests.length, 1);
+    assert.equal(appendRequests[0].offset, '0');
+    assert.equal(appendRequests[0].revision, '');
+    assert.ok(appendRequests[0].requestId);
+    assert.deepEqual(appendRequests[0].content, Buffer.from(first));
+
+    const absolutePath = path.join(testRoot, logPath);
+    fs.appendFileSync(absolutePath, second, 'utf8');
+    markOld(absolutePath);
+    await scheduler.runPendingUploadCycle('manual');
+    assert.equal(appendRequests.length, 2);
+    assert.equal(appendRequests[1].offset, String(Buffer.byteLength(first)));
+    assert.equal(appendRequests[1].revision, 'revision-1');
+    assert.ok(appendRequests[1].requestId);
+    assert.deepEqual(appendRequests[1].content, Buffer.from(second));
+    const state = JSON.parse(fs.readFileSync(path.join(testRoot, 'data/catsco-log-state.json'), 'utf8'));
+    assert.equal(state.uploadProtocol, 2);
+    assert.equal(state.appendUrl, '/catsco/logs/append');
+    assert.equal(state.skillsUrl, '/catsco/agent/skills');
+    assert.equal(state.uploaded['logs/sessions/chat/2026-05-14/chat_cli.jsonl'].append.acceptedOffset, Buffer.byteLength(first + second));
+  });
+
+  test('reads only the bootstrapped device principal\'s Skills without a UID selector', async () => {
+    const requests: Array<{ url?: string; auth?: string }> = [];
+    server = http.createServer((req, res) => {
+      requests.push({ url: req.url, auth: req.headers.authorization });
+      if (req.url === '/catsco/agent/bootstrap') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          user_id: 'catsco_123', external_provider: 'catsco', external_user_id: '123',
+          device_id: 'device_test', token_id: 'token-1', token: 'log-upload-token',
+          skill_token: 'catslog_skl_test', skill_token_expires_at: '2099-01-01T00:00:00.000Z',
+          skills_url: '/catsco/agent/skills', upload_url: '/catsco/logs/upload', issued_at: '2026-05-14T00:00:00.000Z',
+        }));
+        return;
+      }
+      if (req.url === '/catsco/agent/skills?include_content=true&limit=2') {
+        assert.equal(req.headers.authorization, 'Bearer catslog_skl_test');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ content_trust: 'untrusted_runtime_skill', skills: [{ handle: 'safe-handle' }] }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    process.env.CATSCO_LOG_API_BASE_URL = `http://127.0.0.1:${address.port}`;
+    process.env.CATSCO_LOG_STATE_FILE = 'data/catsco-log-state.json';
+    process.env.CATSCO_USER_TOKEN = 'cats-user-token';
+
+    const result = await new CatscoLogUploadScheduler(testRoot).readSkills({ includeContent: true, limit: 2 });
+    assert.equal(result.content_trust, 'untrusted_runtime_skill');
+    assert.equal(requests.filter(item => item.url === '/catsco/agent/bootstrap').length, 1);
+    assert.equal(requests.filter(item => item.url?.startsWith('/catsco/agent/skills')).length, 1);
+  });
+
   function writeLog(relativePath: string, content: string, stable: boolean): void {
     const filePath = path.join(testRoot, relativePath);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -135,6 +245,14 @@ describe('CatscoLogUploadScheduler', () => {
     }
   }
 });
+
+function multipartFileContent(body: Buffer): Buffer {
+  const separator = Buffer.from('\r\n\r\n');
+  const start = body.lastIndexOf(separator);
+  const end = body.lastIndexOf(Buffer.from('\r\n--'));
+  assert.ok(start >= 0 && end > start);
+  return body.subarray(start + separator.length, end);
+}
 
 function markOld(filePath: string): void {
   const oldDate = new Date(Date.now() - 10 * 60 * 1000);
