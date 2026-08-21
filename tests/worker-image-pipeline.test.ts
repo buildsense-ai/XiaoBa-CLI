@@ -59,6 +59,12 @@ describe("Tianyi Cloud worker image pipeline", () => {
       /runtime\/node\/bin\/node .*dist\/index\.js catsco/,
     );
     assert.match(imagePreparer, /catsco-image-packages\.txt/);
+    assert.match(
+      imagePreparer,
+      /catsco-agent ALL=\(ALL:ALL\) NOPASSWD: ALL/,
+    );
+    assert.match(imagePreparer, /chmod 0440 \/etc\/sudoers\.d\/catsco-agent/);
+    assert.match(imagePreparer, /visudo -cf \/etc\/sudoers\.d\/catsco-agent/);
   });
 
   test("finalization removes worker identity and machine identity before imaging", () => {

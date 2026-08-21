@@ -87,6 +87,14 @@ The image ships with `catsco-agent.service` disabled. Provisioning must inject a
 short-lived bootstrap credential into the data root and enable the service only
 after the worker has claimed its bot identity.
 
+The current cloud image also installs `/etc/sudoers.d/catsco-agent` with
+`catsco-agent ALL=(ALL:ALL) NOPASSWD: ALL`, validated by `visudo`. This is an
+intentional broad first-stage capability for one-click cloud agents: any Agent
+tool execution can become root without a password. Treat the worker as a fully
+privileged dedicated VM and do not co-host unrelated workloads. A later
+hardening pass should replace this rule with the smallest command/service
+aliases that real workloads require.
+
 ## Local Bake
 
 `New-CatsCoWorkerImage.ps1` defaults to plan mode. Execute mode creates a new

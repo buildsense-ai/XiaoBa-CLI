@@ -269,6 +269,16 @@ id catsco-agent >/dev/null 2>&1 || useradd \
   --shell /bin/bash \
   catsco-agent
 
+# Cloud workers currently need unrestricted host administration from Agent
+# tool calls. Keep the grant explicit and independently removable so it can be
+# narrowed to command aliases later without changing the service identity.
+cat >/etc/sudoers.d/catsco-agent <<'EOF'
+catsco-agent ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+chmod 0440 /etc/sudoers.d/catsco-agent
+visudo -cf /etc/sudoers.d/catsco-agent >/dev/null || \
+  die "catsco-agent sudoers validation failed"
+
 # Service-user npm mirror config (survives finalize; the finalize cleanup list
 # deliberately keeps .npmrc so first-boot npm never needs manual setup).
 mkdir -p /srv/catsco-agent
