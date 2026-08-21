@@ -57,6 +57,10 @@ export interface CatscoLogAgentState {
   tokenExpiresAt?: string;
   uploadProtocol?: 1 | 2;
   appendUrl?: string;
+  skillTokenId?: string;
+  skillToken?: string;
+  skillTokenExpiresAt?: string;
+  skillsUrl?: string;
   stateCorrupt?: boolean;
   uploaded: Record<string, CatscoUploadedFileState>;
   conflicts?: Record<string, CatscoUploadConflictState>;
@@ -116,6 +120,10 @@ export function clearCatscoLogToken(state: CatscoLogAgentState): void {
   delete state.tokenExpiresAt;
   delete state.uploadProtocol;
   delete state.appendUrl;
+  delete state.skillTokenId;
+  delete state.skillToken;
+  delete state.skillTokenExpiresAt;
+  delete state.skillsUrl;
 }
 
 function quarantineCorruptState(stateFilePath: string): void {

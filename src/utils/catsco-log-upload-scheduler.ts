@@ -234,6 +234,19 @@ export class CatscoLogUploadScheduler {
     } else {
       delete state.appendUrl;
     }
+    // Older CatsLog deployments omit these fields. Persist them only when the
+    // server explicitly issued a separate device-bound capability.
+    if (response.skill_token?.trim() && response.skill_token_expires_at?.trim()) {
+      state.skillTokenId = response.skill_token_id;
+      state.skillToken = response.skill_token;
+      state.skillTokenExpiresAt = response.skill_token_expires_at;
+      state.skillsUrl = response.skills_url?.trim() || '/catsco/agent/skills';
+    } else {
+      delete state.skillTokenId;
+      delete state.skillToken;
+      delete state.skillTokenExpiresAt;
+      delete state.skillsUrl;
+    }
     state.uploaded ||= {};
     saveCatscoLogAgentState(config.stateFilePath, state);
 

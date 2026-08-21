@@ -7,6 +7,7 @@ import { configCommand } from './commands/config';
 import { registerSkillCommand } from './commands/skill';
 import { feishuCommand } from './commands/feishu';
 import { runtimeCommand } from './commands/runtime';
+import { registerCatslogCommand } from './commands/catslog';
 import { APP_VERSION } from './version';
 
 function main() {
@@ -81,6 +82,8 @@ function main() {
     .command('runtime')
     .description('Show the resolved node, python, git, and xurl runtimes')
     .action(runtimeCommand);
+
+  registerCatslogCommand(program);
 
   const externalSource = program
     .command('external-source')

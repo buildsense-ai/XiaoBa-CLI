@@ -21,6 +21,31 @@ export interface CatscoBootstrapResponse {
   expires_at?: string;
   upload_protocol?: number;
   append_url?: string;
+  skill_token_id?: string;
+  skill_token?: string;
+  skill_token_expires_at?: string;
+  skills_url?: string;
+}
+
+export interface CatscoSkill {
+  id: string;
+  handle: string;
+  revision: number;
+  routing_name?: string;
+  description?: string;
+  content_sha256: string;
+  updated_at?: string;
+  content?: string;
+}
+
+export interface CatscoSkillsResponse {
+  schema_version: number;
+  content_trust: string;
+  catalog_revision: number;
+  skills: CatscoSkill[];
+  next_cursor?: string;
+  truncated?: boolean;
+  incomplete?: boolean;
 }
 
 export interface CatscoUploadResponse {
@@ -119,6 +144,29 @@ export class CatscoLogAgentClient {
     });
 
     return this.parseJsonResponse<CatscoAppendResponse>(response, 'CatsLog append failed');
+  }
+
+  // Skills use a separate device-bound capability. This is intentionally not
+  // the upload token and never falls back to the CatsCompany user bearer.
+  async readSkills(input: { skillToken: string; includeContent?: boolean; limit?: number; skillsUrl?: string }): Promise<CatscoSkillsResponse> {
+    const query = new URLSearchParams();
+    if (input.includeContent) query.set('include_content', 'true');
+    if (input.limit) query.set('limit', String(input.limit));
+    const suffix = query.size ? `?${query.toString()}` : '';
+    const response = await fetch(this.buildUrl((input.skillsUrl || '/catsco/agent/skills') + suffix), {
+      headers: { Authorization: `Bearer ${input.skillToken}` },
+    });
+    return this.parseJsonResponse<CatscoSkillsResponse>(response, 'CatsLog Skills read failed');
+  }
+
+  async reportSkillOutcome(input: { skillToken: string; handle: string; revision: number; outcome: 'succeeded' | 'failed' | 'corrected'; skillsUrl?: string }): Promise<void> {
+    const base = input.skillsUrl || '/catsco/agent/skills';
+    const response = await fetch(this.buildUrl(`${base.replace(/\/$/, '')}/${encodeURIComponent(input.handle)}/outcomes`), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${input.skillToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ revision: input.revision, outcome: input.outcome }),
+    });
+    await this.parseJsonResponse<Record<string, never>>(response, 'CatsLog Skill outcome failed');
   }
 
   private buildUrl(requestPath: string): string {
