@@ -124,8 +124,10 @@ jobs:
           endpoint="https://tos-s3-${TOS_WORKER_REGION}.volces.com"
           key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$(basename "$WORKER_ARTIFACT_PATH")"
           script_key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/prepare-image.sh"
+          status_key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/bootstrap-status.json"
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "script_key=$script_key" >> "$GITHUB_OUTPUT"
+          echo "status_key=$status_key" >> "$GITHUB_OUTPUT"
           aws s3 cp "$WORKER_ARTIFACT_PATH" "s3://${TOS_WORKER_BUCKET}/${key}" \
             --endpoint-url "$endpoint" --acl private \
             --metadata "sha256=${WORKER_ARTIFACT_SHA256}" --only-show-errors
@@ -138,11 +140,69 @@ jobs:
             --endpoint-url "$endpoint" --expires-in 21600)"
           script_url="$(aws s3 presign "s3://${TOS_WORKER_BUCKET}/${script_key}" \
             --endpoint-url "$endpoint" --expires-in 21600)"
+          status_get_url="$(aws s3 presign "s3://${TOS_WORKER_BUCKET}/${status_key}" \
+            --endpoint-url "$endpoint" --expires-in 21600)"
+          status_put_url="$(python3 - "$status_key" <<'PY'
+          import datetime
+          import hashlib
+          import hmac
+          import os
+          import sys
+          import urllib.parse
+
+          key = sys.argv[1]
+          access_key = os.environ["AWS_ACCESS_KEY_ID"]
+          secret_key = os.environ["AWS_SECRET_ACCESS_KEY"]
+          region = os.environ["TOS_WORKER_REGION"]
+          bucket = os.environ["TOS_WORKER_BUCKET"]
+          service = "s3"
+          host = f"{bucket}.tos-s3-{region}.volces.com"
+          now = datetime.datetime.now(datetime.timezone.utc)
+          amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+          date_stamp = now.strftime("%Y%m%d")
+          scope = f"{date_stamp}/{region}/{service}/aws4_request"
+          credential = f"{access_key}/{scope}"
+          canonical_uri = "/" + "/".join(
+              urllib.parse.quote(part, safe="-_.~") for part in key.split("/")
+          )
+          params = {
+              "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+              "X-Amz-Credential": credential,
+              "X-Amz-Date": amz_date,
+              "X-Amz-Expires": "21600",
+              "X-Amz-SignedHeaders": "host",
+          }
+          canonical_query = urllib.parse.urlencode(sorted(params.items()), quote_via=urllib.parse.quote)
+          canonical_request = "\n".join([
+              "PUT", canonical_uri, canonical_query, f"host:{host}\n", "host", "UNSIGNED-PAYLOAD"
+          ])
+          string_to_sign = "\n".join([
+              "AWS4-HMAC-SHA256",
+              amz_date,
+              scope,
+              hashlib.sha256(canonical_request.encode()).hexdigest(),
+          ])
+
+          def sign(key_bytes, message):
+              return hmac.new(key_bytes, message.encode(), hashlib.sha256).digest()
+
+          signing_key = sign(
+              sign(sign(sign(("AWS4" + secret_key).encode(), date_stamp), region), service),
+              "aws4_request",
+          )
+          signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+          print(f"https://{host}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}")
+          PY
+          )"
           echo "::add-mask::$url"
           echo "::add-mask::$script_url"
+          echo "::add-mask::$status_get_url"
+          echo "::add-mask::$status_put_url"
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "script_url=$script_url" >> "$GITHUB_OUTPUT"
           echo "script_sha256=$script_sha" >> "$GITHUB_OUTPUT"
+          echo "status_get_url=$status_get_url" >> "$GITHUB_OUTPUT"
+          echo "status_put_url=$status_put_url" >> "$GITHUB_OUTPUT"
 
       - name: Install pinned Tianyi Cloud CLI package
         timeout-minutes: 3
@@ -449,6 +509,8 @@ jobs:
           WORKER_ARTIFACT_URL: ${{ steps.artifact_transport.outputs.url }}
           WORKER_PREPARE_SCRIPT_URL: ${{ steps.artifact_transport.outputs.script_url }}
           WORKER_PREPARE_SCRIPT_SHA256: ${{ steps.artifact_transport.outputs.script_sha256 }}
+          WORKER_BOOTSTRAP_STATUS_GET_URL: ${{ steps.artifact_transport.outputs.status_get_url }}
+          WORKER_BOOTSTRAP_STATUS_PUT_URL: ${{ steps.artifact_transport.outputs.status_put_url }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WORKER_PROJECT_ID)) {
             throw 'CTYUN_WORKER_PROJECT_ID is required for image bake'
@@ -464,6 +526,8 @@ jobs:
             -ArtifactUrl $env:WORKER_ARTIFACT_URL `
             -PrepareScriptUrl $env:WORKER_PREPARE_SCRIPT_URL `
             -PrepareScriptSha256 $env:WORKER_PREPARE_SCRIPT_SHA256 `
+            -BootstrapStatusGetUrl $env:WORKER_BOOTSTRAP_STATUS_GET_URL `
+            -BootstrapStatusPutUrl $env:WORKER_BOOTSTRAP_STATUS_PUT_URL `
             -BuildNumber $env:GITHUB_RUN_NUMBER `
             -BuildAttempt $env:GITHUB_RUN_ATTEMPT `
             -BuildIdentity $env:GITHUB_RUN_ID `
@@ -563,10 +627,11 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_SECRET_ACCESS_KEY || secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
           STAGED_ARTIFACT_KEY: ${{ steps.artifact_transport.outputs.key }}
           STAGED_SCRIPT_KEY: ${{ steps.artifact_transport.outputs.script_key }}
+          STAGED_STATUS_KEY: ${{ steps.artifact_transport.outputs.status_key }}
         run: |
           set -euo pipefail
           endpoint="https://tos-s3-${TOS_WORKER_REGION}.volces.com"
-          for key in "$STAGED_ARTIFACT_KEY" "$STAGED_SCRIPT_KEY"; do
+          for key in "$STAGED_ARTIFACT_KEY" "$STAGED_SCRIPT_KEY" "$STAGED_STATUS_KEY"; do
             aws s3 rm "s3://${TOS_WORKER_BUCKET}/${key}" \
               --endpoint-url "$endpoint" --only-show-errors
             if aws s3api head-object --bucket "$TOS_WORKER_BUCKET" \

@@ -560,9 +560,18 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(imageOrchestrator, /phase\(\) \{/);
     assert.match(imageOrchestrator, /phase download-prepare-script/);
     assert.match(imageOrchestrator, /phase shutdown/);
+    assert.match(imageOrchestrator, /publish_status failed/);
+    assert.match(imageOrchestrator, /heartbeat_age_s/);
+    assert.match(imageOrchestrator, /Builder bootstrap failed/);
+    assert.match(imageOrchestrator, /Builder bootstrap heartbeat is stale/);
+    assert.match(imageOrchestrator, /Builder bootstrap status is unreachable or stale/);
+    assert.match(imageOrchestrator, /-MonitorBootstrap/);
     assert.match(imageOrchestrator, /shutdown -h now/);
     assert.doesNotMatch(imageOrchestrator, /Wait-ForSsh|\bscp\b|"--extIP", "1"/);
     assert.match(imagePreparer, /platform_hardening=already-satisfied/);
+    assert.match(imagePreparer, /image_phase platform-upgrade/);
+    assert.match(imagePreparer, /image_phase kernel-upgrade/);
+    assert.match(imagePreparer, /image_phase worker-validate/);
     assert.match(workflow, /CTYUN_WORKER_BASE_IMAGE_HARDENED/);
   });
 
@@ -584,6 +593,8 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(workflow, /-ArtifactUrl \$env:WORKER_ARTIFACT_URL/);
     assert.match(workflow, /-PrepareScriptUrl \$env:WORKER_PREPARE_SCRIPT_URL/);
     assert.match(workflow, /-PrepareScriptSha256 \$env:WORKER_PREPARE_SCRIPT_SHA256/);
+    assert.match(workflow, /-BootstrapStatusGetUrl \$env:WORKER_BOOTSTRAP_STATUS_GET_URL/);
+    assert.match(workflow, /-BootstrapStatusPutUrl \$env:WORKER_BOOTSTRAP_STATUS_PUT_URL/);
     assert.match(workflow, /-BuildNumber \$env:GITHUB_RUN_NUMBER/);
     assert.match(workflow, /-BuildIdentity \$env:GITHUB_RUN_ID/);
     assert.match(workflow, /WORKER_PROJECT_ID: \$\{\{ vars\.CTYUN_WORKER_PROJECT_ID \}\}/);
@@ -619,9 +630,12 @@ describe("Tianyi Cloud worker image pipeline", () => {
     );
     assert.match(workflow, /Stage private artifact for the builder/);
     assert.match(workflow, /aws s3 presign/);
+    assert.match(workflow, /bootstrap-status\.json/);
+    assert.match(workflow, /X-Amz-SignedHeaders/);
     assert.match(workflow, /--acl private/);
     assert.match(workflow, /Remove staged private artifact/);
     assert.match(workflow, /aws s3 rm/);
+    assert.match(workflow, /STAGED_STATUS_KEY/);
     assert.doesNotMatch(workflow, /public-read|upload-artifact/);
     assert.doesNotMatch(workflow, /^    env:\s*\n\s+CTYUN_AK:/m);
     assert.match(
@@ -901,6 +915,10 @@ process.exit(result.status ?? 1);
             "https://example.test/prepare-image.sh?signature=test",
             "-PrepareScriptSha256",
             crypto.createHash("sha256").update("prepare-image").digest("hex"),
+            "-BootstrapStatusGetUrl",
+            "https://example.test/bootstrap-status.json?signature=get-test",
+            "-BootstrapStatusPutUrl",
+            "https://example.test/bootstrap-status.json?signature=put-test",
             "-BuildNumber",
             buildNumber,
             "-BuildAttempt",
@@ -1041,11 +1059,14 @@ process.exit(result.status ?? 1);
       assert.match(decodedBootstrap, /--max-time 900/);
       assert.match(decodedBootstrap, /phase download-prepare-script/);
       assert.match(decodedBootstrap, /phase shutdown/);
+      assert.match(decodedBootstrap, /publish_status failed/);
+      assert.match(decodedBootstrap, /heartbeat &/);
       assert.match(decodedBootstrap, /shutdown -h now/);
       assert.match(decodedBootstrap, new RegExp(artifactSha));
       assert.match(decodedBootstrap, /sha256sum --check --strict/);
       assert.doesNotMatch(bootstrap, /example\.test\/private-worker/);
       assert.doesNotMatch(bootstrap, /example\.test\/prepare-image/);
+      assert.doesNotMatch(bootstrap, /example\.test\/bootstrap-status/);
       assert.doesNotMatch(bootstrap, /\bscp\b|\bssh\b/);
       assert.equal(finalState.imageSourceServerID, "instance-1");
       assert.match(

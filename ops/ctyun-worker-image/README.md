@@ -10,11 +10,17 @@ session, skill installation, or runtime `.env`.
 - Only stable `vX.Y.Z` tags whose commit is contained in `main` may bake an
   image automatically. Manual runs are restricted to `main` and default to
   not baking until the operator explicitly checks the input.
-- The source-free worker artifact and pinned preparation script are staged as
+- The source-free worker artifact, pinned preparation script, and per-run
+  bootstrap status object are staged as
   private, per-run TOS objects with short-lived signed URLs. The private
-  builder downloads them through cloud-init, and the workflow deletes both
+  builder downloads them through cloud-init, and the workflow deletes all three
   objects after the bake. They are never public or retained as GitHub Actions
   artifacts.
+- The builder receives only short-lived signed URLs. It writes its current
+  bootstrap phase every 30 seconds to the per-run status object; the runner
+  prints phase changes live and fails early when bootstrap reports an error,
+  does not start, or stops heartbeating. No long-lived TOS credential is placed
+  on the builder.
 - A Tianyi Cloud private ECS image is baked only for a stable release selected
   for provisioning, or when the base OS/system dependencies change.
 - `CTYUN_AUTO_BAKE_WORKER_IMAGE=true` makes every stable tag bake an image;

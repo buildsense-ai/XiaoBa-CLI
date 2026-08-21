@@ -34,6 +34,8 @@ param(
     [string]$ArtifactUrl = "",
     [string]$PrepareScriptUrl = "",
     [string]$PrepareScriptSha256 = "",
+    [string]$BootstrapStatusPutUrl = "",
+    [string]$BootstrapStatusGetUrl = "",
     [string]$BuildNumber = "",
     [string]$BuildAttempt = "1",
     [string]$BuildIdentity = "",
@@ -58,6 +60,10 @@ param(
     [int]$PollIntervalSeconds = 0,
     [ValidateRange(5, 300)]
     [int]$ProgressIntervalSeconds = 30,
+    [ValidateRange(1, 30)]
+    [int]$BootstrapStartTimeoutMinutes = 5,
+    [ValidateRange(60, 1800)]
+    [int]$BootstrapStaleSeconds = 180,
     [switch]$BaseImageHardened,
     [switch]$WaitForLateResources
 )
@@ -86,6 +92,10 @@ $script:CleanupDeadline = $null
 $script:InCleanup = $false
 $script:StartedAt = Get-Date
 $script:LastProgressAt = $script:StartedAt
+$script:BootstrapMonitorStartedAt = $null
+$script:LastBootstrapPayload = ""
+$script:LastBootstrapUpdateAt = $null
+$script:LastBootstrapPhase = ""
 
 function Write-BakeProgress {
     param(
@@ -120,6 +130,74 @@ function Wait-PollInterval {
         $DefaultSeconds
     }
     Start-Sleep -Seconds $seconds
+}
+
+function Test-BootstrapStatus {
+    if ([string]::IsNullOrWhiteSpace($BootstrapStatusGetUrl)) {
+        return
+    }
+
+    $now = Get-Date
+    if (-not $script:BootstrapMonitorStartedAt) {
+        $script:BootstrapMonitorStartedAt = $now
+    }
+
+    $payload = ""
+    try {
+        $response = Invoke-WebRequest `
+            -Uri $BootstrapStatusGetUrl `
+            -Method Get `
+            -TimeoutSec 15 `
+            -Headers @{ "Cache-Control" = "no-cache" }
+        $payload = [string]$response.Content
+    } catch {
+        # A status object does not exist until cloud-init starts. Network and
+        # 404 failures are handled by the bounded missing/stale checks below.
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($payload)) {
+        if ($payload -ne $script:LastBootstrapPayload) {
+            $script:LastBootstrapPayload = $payload
+            $script:LastBootstrapUpdateAt = $now
+        }
+        try {
+            $status = $payload | ConvertFrom-Json
+        } catch {
+            throw "Builder bootstrap returned malformed status telemetry"
+        }
+        $state = ([string]$status.state).ToLowerInvariant()
+        $phase = [string]$status.phase
+        if ($state -notin @("running", "succeeded", "failed") -or [string]::IsNullOrWhiteSpace($phase)) {
+            throw "Builder bootstrap returned invalid status telemetry"
+        }
+        $age = [Math]::Max(0, [int](($now - $script:LastBootstrapUpdateAt).TotalSeconds))
+        if ($phase -ne $script:LastBootstrapPhase -or $state -ne "running") {
+            Write-BakeProgress -Phase "builder-bootstrap" -Detail ("state={0} phase={1} heartbeat_age_s={2}" -f $state, $phase, $age) -Force
+            $script:LastBootstrapPhase = $phase
+        }
+        if ($state -eq "failed") {
+            $exitCode = [string]$status.exit_code
+            $line = [string]$status.line
+            throw "Builder bootstrap failed: phase=$phase exit_code=$exitCode line=$line"
+        }
+        if ($age -gt $BootstrapStaleSeconds) {
+            throw "Builder bootstrap heartbeat is stale: phase=$phase age_seconds=$age"
+        }
+        return
+    }
+
+    if ($script:LastBootstrapUpdateAt) {
+        $staleSeconds = [int](($now - $script:LastBootstrapUpdateAt).TotalSeconds)
+        if ($staleSeconds -gt $BootstrapStaleSeconds) {
+            throw "Builder bootstrap status is unreachable or stale: phase=$script:LastBootstrapPhase age_seconds=$staleSeconds"
+        }
+        return
+    }
+
+    $missingSeconds = [int](($now - $script:BootstrapMonitorStartedAt).TotalSeconds)
+    if ($missingSeconds -gt ($BootstrapStartTimeoutMinutes * 60)) {
+        throw "Builder bootstrap did not publish initial status within $BootstrapStartTimeoutMinutes minutes"
+    }
 }
 
 function Invoke-External {
@@ -400,7 +478,8 @@ function Wait-ForInstance {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$States,
-        [switch]$RequireIP
+        [switch]$RequireIP,
+        [switch]$MonitorBootstrap
     )
 
     $deadline = Get-BoundedDeadline `
@@ -414,6 +493,9 @@ function Wait-ForInstance {
         Write-BakeProgress -Phase "builder-wait" -Detail ("state={0} ip_present={1}" -f $state, (-not [string]::IsNullOrWhiteSpace($ip))) -Force
         if ($States -contains $state -and (-not $RequireIP -or $ip)) {
             return $instance
+        }
+        if ($MonitorBootstrap) {
+            Test-BootstrapStatus
         }
         Wait-PollInterval -DefaultSeconds 8
     }
@@ -1122,6 +1204,17 @@ if ($Mode -eq "Create") {
     if ($PrepareScriptSha256 -notmatch "^[0-9a-fA-F]{64}$") {
         throw "PrepareScriptSha256 must be a SHA-256 hex digest in Create mode"
     }
+    if ([string]::IsNullOrWhiteSpace($BootstrapStatusPutUrl) -ne [string]::IsNullOrWhiteSpace($BootstrapStatusGetUrl)) {
+        throw "BootstrapStatusPutUrl and BootstrapStatusGetUrl must be supplied together"
+    }
+    foreach ($statusUrl in @($BootstrapStatusPutUrl, $BootstrapStatusGetUrl)) {
+        if (-not [string]::IsNullOrWhiteSpace($statusUrl)) {
+            $statusUri = $null
+            if (-not [Uri]::TryCreate($statusUrl, [UriKind]::Absolute, [ref]$statusUri) -or $statusUri.Scheme -ne "https") {
+                throw "Bootstrap status URLs must be absolute HTTPS URLs in Create mode"
+            }
+        }
+    }
 }
 
 $plan = [ordered]@{
@@ -1288,6 +1381,9 @@ try {
     $prepareScriptUrlBase64 = [Convert]::ToBase64String(
         [Text.Encoding]::UTF8.GetBytes($PrepareScriptUrl)
     )
+    $statusPutUrlBase64 = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes($BootstrapStatusPutUrl)
+    )
     $baseImageHardenedValue = $BaseImageHardened.IsPresent.ToString().ToLowerInvariant()
     $artifactName = "catsco-worker-$releaseId-linux-x64.tar.gz"
     $bootstrapScript = @"
@@ -1297,12 +1393,49 @@ export CATSCO_BASE_IMAGE_HARDENED='$baseImageHardenedValue'
 exec > >(tee -a /var/log/catsco-image-build.log) 2>&1
 artifact_url="`$(printf '%s' '$artifactUrlBase64' | base64 -d)"
 prepare_script_url="`$(printf '%s' '$prepareScriptUrlBase64' | base64 -d)"
-phase() {
-  printf '%s %s\n' "`$(date -Is)" "`$1" | tee /run/catsco-image-bootstrap-phase
+status_put_url="`$(printf '%s' '$statusPutUrlBase64' | base64 -d)"
+status_file=/run/catsco-image-bootstrap-phase
+heartbeat_pid=''
+publish_status() {
+  local state="`$1" phase_name="`$2" exit_code="`${3:-0}" line="`${4:-0}"
+  [[ -n "`$status_put_url" ]] || return 0
+  printf '{"state":"%s","phase":"%s","exit_code":%s,"line":%s,"epoch":%s}\n' \
+    "`$state" "`$phase_name" "`$exit_code" "`$line" "`$(date +%s)" >/run/catsco-image-bootstrap-status.json
+  curl --fail --silent --request PUT --connect-timeout 10 --max-time 20 \
+    --retry 2 --retry-all-errors --data-binary @/run/catsco-image-bootstrap-status.json \
+    "`$status_put_url" >/dev/null 2>&1 || true
 }
+phase() {
+  printf '%s\n' "`$1" | tee "`$status_file"
+  publish_status running "`$1"
+}
+heartbeat() {
+  while true; do
+    current_phase="`$(cat "`$status_file" 2>/dev/null || printf bootstrap-start)"
+    publish_status running "`$current_phase"
+    sleep 30
+  done
+}
+finish() {
+  rc=`$?
+  trap - EXIT
+  if [[ -n "`$heartbeat_pid" ]]; then
+    kill "`$heartbeat_pid" >/dev/null 2>&1 || true
+    wait "`$heartbeat_pid" 2>/dev/null || true
+  fi
+  if [[ `$rc -ne 0 ]]; then
+    current_phase="`$(cat "`$status_file" 2>/dev/null || printf bootstrap-start)"
+    publish_status failed "`$current_phase" "`$rc" "`${BASH_LINENO[0]:-0}"
+  fi
+  exit "`$rc"
+}
+trap finish EXIT
 curl_common=(--fail --silent --show-error --location --ipv4 \
   --connect-timeout 20 --max-time 900 --retry 8 --retry-all-errors \
   --retry-delay 5 --retry-max-time 1800)
+phase bootstrap-start
+heartbeat &
+heartbeat_pid=`$!
 phase download-prepare-script
 curl "`${curl_common[@]}" \
   "`$prepare_script_url" --output /tmp/prepare-image.sh
@@ -1312,6 +1445,7 @@ phase download-worker-artifact
 curl "`${curl_common[@]}" \
   "`$artifact_url" --output '/tmp/$artifactName'
 phase prepare-worker-artifact
+CATSCO_IMAGE_PHASE_FILE="`$status_file" \
 bash /tmp/prepare-image.sh \
   --artifact '/tmp/$artifactName' \
   --sha256 '$ArtifactSha256' \
@@ -1319,9 +1453,10 @@ bash /tmp/prepare-image.sh \
   --commit '$commit'
 rm -f '/tmp/$artifactName'
 phase finalize-worker-image
-bash /tmp/prepare-image.sh --finalize
+CATSCO_IMAGE_PHASE_FILE="`$status_file" bash /tmp/prepare-image.sh --finalize
 sync
 phase shutdown
+publish_status succeeded shutdown
 shutdown -h now
 "@
     # Tianyi's cloud-init images are more reliable when userData is an
@@ -1396,9 +1531,9 @@ runcmd:
     Write-BakeProgress -Phase "builder-resolved" -Detail "builder_id=$script:BuilderID" -Force
 
     # cloud-init powers off only after artifact verification, preparation and
-    # finalization all succeed. A failed bootstrap stays running, times out,
-    # and is removed by the existing compensating cleanup path.
-    Wait-ForInstance -States @("stopped", "shutoff") | Out-Null
+    # finalization all succeed. Failed or stale bootstrap telemetry aborts this
+    # wait early and enters the existing compensating cleanup path.
+    Wait-ForInstance -States @("stopped", "shutoff") -MonitorBootstrap | Out-Null
     Write-BakeProgress -Phase "builder-stopped" -Detail "cloud-init completed; starting image capture" -Force
 
     $script:ImageCreateAttempted = $true
