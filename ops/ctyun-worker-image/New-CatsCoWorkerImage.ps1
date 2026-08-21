@@ -1401,9 +1401,15 @@ publish_status() {
   [[ -n "`$status_put_url" ]] || return 0
   printf '{"state":"%s","phase":"%s","exit_code":%s,"line":%s,"epoch":%s}\n' \
     "`$state" "`$phase_name" "`$exit_code" "`$line" "`$(date +%s)" >/run/catsco-image-bootstrap-status.json
-  curl --fail --silent --request PUT --connect-timeout 10 --max-time 20 \
+  if curl --fail --silent --request PUT --connect-timeout 10 --max-time 20 \
     --retry 2 --retry-all-errors --data-binary @/run/catsco-image-bootstrap-status.json \
-    "`$status_put_url" >/dev/null 2>&1 || true
+    "`$status_put_url" >/dev/null 2>&1; then
+    : # ok
+  else
+    # Surface in the builder log so cleanup diagnostics can still see it even
+    # though the runner only observes the TOS object.
+    echo "status publish failed (phase=`$phase_name)" >&2
+  fi
 }
 phase() {
   printf '%s\n' "`$1" | tee "`$status_file"

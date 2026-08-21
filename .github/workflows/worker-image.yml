@@ -26,6 +26,15 @@ env:
   CTYUN_CLI_PACKAGE_SHA256: 93272c3fd377a6f642a89cb326fa2f4a3d2fab7dfc9587e49906527230b767fa
   TOS_WORKER_BUCKET: catsco-worker-release
   TOS_WORKER_REGION: cn-guangzhou
+  # Dual-bucket staging: the GitHub runner uploads to an upload-near bucket
+  # (Hong Kong) so the cross-Pacific leg is short, and TOS cross-region
+  # replication carries it into the builder-consumed Guangzhou bucket.
+  # UPLOAD_BUCKET empty or equal to TOS_WORKER_BUCKET disables the hop.
+  TOS_WORKER_UPLOAD_BUCKET: catsco-worker-release-hk
+  TOS_WORKER_UPLOAD_REGION: cn-hongkong
+  # Seconds to wait for cross-region replication to surface objects in the
+  # consumption bucket before failing the bake.
+  TOS_WORKER_REPLICATION_TIMEOUT_SECONDS: "900"
   # Set this repository variable only after WORKER_BASE_IMAGE_ID points at a
   # previously baked image that passed the platform hardening gates. The
   # preparer still verifies the contract and falls back to a full upgrade when
@@ -105,9 +114,36 @@ jobs:
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "$artifact" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
+      - name: Ensure staging lifecycle rules
+        timeout-minutes: 5
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_ACCESS_KEY_ID || secrets.VOLC_TOS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_SECRET_ACCESS_KEY || secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          endpoint="https://tos-s3-${TOS_WORKER_REGION}.volces.com"
+          upload_bucket="$TOS_WORKER_BUCKET"
+          upload_endpoint="$endpoint"
+          if [[ -n "${TOS_WORKER_UPLOAD_BUCKET}" && "${TOS_WORKER_UPLOAD_BUCKET}" != "${TOS_WORKER_BUCKET}" ]]; then
+            upload_bucket="$TOS_WORKER_UPLOAD_BUCKET"
+            upload_endpoint="https://tos-s3-${TOS_WORKER_UPLOAD_REGION}.volces.com"
+          fi
+          # Idempotent PutBucketLifecycleConfiguration: bake staging objects on
+          # either bucket self-expire after 3 days, so abandoned runs never
+          # accumulate billing.
+          lifecycle='{"Rules":[{"ID":"expire-bake-staging","Filter":{"Prefix":"update/worker/.bake/"},"Status":"Enabled","Expiration":{"Days":3}}]}'
+          printf '%s' "$lifecycle" > /tmp/tos-bake-lifecycle.json
+          for spec in "$upload_bucket $upload_endpoint" "$TOS_WORKER_BUCKET $endpoint"; do
+            read -r bucket bucket_endpoint <<<"$spec"
+            aws s3api put-bucket-lifecycle-configuration \
+              --bucket "$bucket" --endpoint-url "$bucket_endpoint" \
+              --lifecycle-configuration file:///tmp/tos-bake-lifecycle.json
+          done
+
       - name: Stage private artifact for the builder
         id: artifact_transport
-        timeout-minutes: 15
+        timeout-minutes: 30
         shell: bash
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_ACCESS_KEY_ID || secrets.VOLC_TOS_ACCESS_KEY_ID }}
@@ -122,76 +158,152 @@ jobs:
           fi
           aws configure set default.s3.addressing_style virtual
           endpoint="https://tos-s3-${TOS_WORKER_REGION}.volces.com"
+          upload_endpoint="$endpoint"
+          upload_bucket="$TOS_WORKER_BUCKET"
+          if [[ -n "${TOS_WORKER_UPLOAD_BUCKET}" && "${TOS_WORKER_UPLOAD_BUCKET}" != "${TOS_WORKER_BUCKET}" ]]; then
+            upload_bucket="$TOS_WORKER_UPLOAD_BUCKET"
+            upload_endpoint="https://tos-s3-${TOS_WORKER_UPLOAD_REGION}.volces.com"
+          fi
           key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$(basename "$WORKER_ARTIFACT_PATH")"
           script_key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/prepare-image.sh"
           status_key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/bootstrap-status.json"
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "script_key=$script_key" >> "$GITHUB_OUTPUT"
           echo "status_key=$status_key" >> "$GITHUB_OUTPUT"
-          aws s3 cp "$WORKER_ARTIFACT_PATH" "s3://${TOS_WORKER_BUCKET}/${key}" \
-            --endpoint-url "$endpoint" --acl private \
+
+          # --- 1. Upload to the upload-near bucket (US runner -> Hong Kong) ---
+          aws s3 cp "$WORKER_ARTIFACT_PATH" "s3://${upload_bucket}/${key}" \
+            --endpoint-url "$upload_endpoint" --acl private \
             --metadata "sha256=${WORKER_ARTIFACT_SHA256}" --only-show-errors
           script_sha="$(sha256sum ops/ctyun-worker-image/prepare-image.sh | awk '{print $1}')"
           aws s3 cp ops/ctyun-worker-image/prepare-image.sh \
-            "s3://${TOS_WORKER_BUCKET}/${script_key}" \
-            --endpoint-url "$endpoint" --acl private \
+            "s3://${upload_bucket}/${script_key}" \
+            --endpoint-url "$upload_endpoint" --acl private \
             --metadata "sha256=${script_sha}" --only-show-errors
+
+          # --- 2. Wait for cross-region replication into the consumption bucket ---
+          # TOS replicates upload bucket -> worker bucket server-side; the
+          # builder downloads from the worker bucket, so block until visible.
+          if [[ "$upload_bucket" != "$TOS_WORKER_BUCKET" ]]; then
+            deadline=$(( $(date +%s) + ${TOS_WORKER_REPLICATION_TIMEOUT_SECONDS} ))
+            pending=1
+            while (( $(date +%s) < deadline )); do
+              if aws s3api head-object --bucket "$TOS_WORKER_BUCKET" --key "$key" \
+                  --endpoint-url "$endpoint" >/dev/null 2>&1 \
+                && aws s3api head-object --bucket "$TOS_WORKER_BUCKET" --key "$script_key" \
+                  --endpoint-url "$endpoint" >/dev/null 2>&1; then
+                pending=0; break
+              fi
+              echo "waiting for cross-region replication: $key"
+              sleep 15
+            done
+            if [[ $pending -ne 0 ]]; then
+              echo "error: cross-region replication did not surface staged objects in $TOS_WORKER_BUCKET within ${TOS_WORKER_REPLICATION_TIMEOUT_SECONDS}s; check the TOS replication rule ($upload_bucket -> $TOS_WORKER_BUCKET)" >&2
+              exit 1
+            fi
+            # Upload-time metadata is replicated along with the object.
+            # Staging is single-use: the upload hop object is now redundant,
+            # drop it immediately (the final cleanup step still sweeps both
+            # buckets, and the 3-day lifecycle rule is the safety net).
+            aws s3 rm "s3://${upload_bucket}/${key}" \
+              --endpoint-url "$upload_endpoint" --only-show-errors || true
+            aws s3 rm "s3://${upload_bucket}/${script_key}" \
+              --endpoint-url "$upload_endpoint" --only-show-errors || true
+          fi
+
+          # --- 3. Presigned URLs against the consumption bucket (builder side) ---
           url="$(aws s3 presign "s3://${TOS_WORKER_BUCKET}/${key}" \
             --endpoint-url "$endpoint" --expires-in 21600)"
           script_url="$(aws s3 presign "s3://${TOS_WORKER_BUCKET}/${script_key}" \
             --endpoint-url "$endpoint" --expires-in 21600)"
           status_get_url="$(aws s3 presign "s3://${TOS_WORKER_BUCKET}/${status_key}" \
             --endpoint-url "$endpoint" --expires-in 21600)"
+
+          # --- 4. Presigned PUT URL via botocore (RFC3986-correct signing) ---
+          # The previous hand-rolled AWS4 signer left '/' unescaped in
+          # X-Amz-Credential and TOS rejected every bootstrap status PUT,
+          # which surfaced as "did not publish initial status within 5 minutes".
           status_put_url="$(python3 - "$status_key" <<'PY'
-          import datetime
-          import hashlib
-          import hmac
           import os
           import sys
-          import urllib.parse
 
+          try:
+              import boto3
+          except ImportError:
+              boto3 = None
           key = sys.argv[1]
-          access_key = os.environ["AWS_ACCESS_KEY_ID"]
-          secret_key = os.environ["AWS_SECRET_ACCESS_KEY"]
           region = os.environ["TOS_WORKER_REGION"]
           bucket = os.environ["TOS_WORKER_BUCKET"]
-          service = "s3"
-          host = f"{bucket}.tos-s3-{region}.volces.com"
-          now = datetime.datetime.now(datetime.timezone.utc)
-          amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-          date_stamp = now.strftime("%Y%m%d")
-          scope = f"{date_stamp}/{region}/{service}/aws4_request"
-          credential = f"{access_key}/{scope}"
-          canonical_uri = "/" + "/".join(
-              urllib.parse.quote(part, safe="-_.~") for part in key.split("/")
-          )
-          params = {
-              "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
-              "X-Amz-Credential": credential,
-              "X-Amz-Date": amz_date,
-              "X-Amz-Expires": "21600",
-              "X-Amz-SignedHeaders": "host",
-          }
-          canonical_query = urllib.parse.urlencode(sorted(params.items()), quote_via=urllib.parse.quote)
-          canonical_request = "\n".join([
-              "PUT", canonical_uri, canonical_query, f"host:{host}\n", "host", "UNSIGNED-PAYLOAD"
-          ])
-          string_to_sign = "\n".join([
-              "AWS4-HMAC-SHA256",
-              amz_date,
-              scope,
-              hashlib.sha256(canonical_request.encode()).hexdigest(),
-          ])
+          access_key = os.environ["AWS_ACCESS_KEY_ID"]
+          secret_key = os.environ["AWS_SECRET_ACCESS_KEY"]
+          endpoint = f"https://tos-s3-{region}.volces.com"
+          if boto3 is None:
+              # Fallback: corrected hand-rolled signer (all query values
+              # percent-encoded per RFC3986, '/' included).
+              import datetime
+              import hashlib
+              import hmac
+              import urllib.parse
 
-          def sign(key_bytes, message):
-              return hmac.new(key_bytes, message.encode(), hashlib.sha256).digest()
+              host = f"{bucket}.tos-s3-{region}.volces.com"
+              now = datetime.datetime.now(datetime.timezone.utc)
+              amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+              date_stamp = now.strftime("%Y%m%d")
+              scope = f"{date_stamp}/{region}/s3/aws4_request"
+              credential = f"{access_key}/{scope}"
+              canonical_uri = "/" + "/".join(
+                  urllib.parse.quote(part, safe="-_.~") for part in key.split("/")
+              )
+              params = {
+                  "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+                  "X-Amz-Credential": credential,
+                  "X-Amz-Date": amz_date,
+                  "X-Amz-Expires": "21600",
+                  "X-Amz-SignedHeaders": "host",
+              }
+              canonical_query = "&".join(
+                  f"{urllib.parse.quote(k, safe='')}={urllib.parse.quote(v, safe='')}"
+                  for k, v in sorted(params.items())
+              )
+              canonical_request = "\n".join([
+                  "PUT", canonical_uri, canonical_query, f"host:{host}\n", "host", "UNSIGNED-PAYLOAD"
+              ])
+              string_to_sign = "\n".join([
+                  "AWS4-HMAC-SHA256",
+                  amz_date,
+                  scope,
+                  hashlib.sha256(canonical_request.encode()).hexdigest(),
+              ])
 
-          signing_key = sign(
-              sign(sign(sign(("AWS4" + secret_key).encode(), date_stamp), region), service),
-              "aws4_request",
-          )
-          signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
-          print(f"https://{host}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}")
+              def sign(key_bytes, message):
+                  return hmac.new(key_bytes, message.encode(), hashlib.sha256).digest()
+
+              signing_key = sign(
+                  sign(sign(sign(("AWS4" + secret_key).encode(), date_stamp), region), "s3"),
+                  "aws4_request",
+              )
+              signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+              print(f"https://{host}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}")
+          else:
+              from botocore.client import Config as BotoConfig
+              client = boto3.client(
+                  "s3",
+                  endpoint_url=endpoint,
+                  aws_access_key_id=access_key,
+                  aws_secret_access_key=secret_key,
+                  region_name=region,
+                  config=BotoConfig(
+                      signature_version="s3v4",
+                      s3={"addressing_style": "virtual"},
+                  ),
+              )
+              print(
+                  client.generate_presigned_url(
+                      "put_object",
+                      Params={"Bucket": bucket, "Key": key},
+                      ExpiresIn=21600,
+                  )
+              )
           PY
           )"
           echo "::add-mask::$url"
@@ -631,12 +743,24 @@ jobs:
         run: |
           set -euo pipefail
           endpoint="https://tos-s3-${TOS_WORKER_REGION}.volces.com"
-          for key in "$STAGED_ARTIFACT_KEY" "$STAGED_SCRIPT_KEY" "$STAGED_STATUS_KEY"; do
-            aws s3 rm "s3://${TOS_WORKER_BUCKET}/${key}" \
-              --endpoint-url "$endpoint" --only-show-errors
-            if aws s3api head-object --bucket "$TOS_WORKER_BUCKET" \
-              --key "$key" --endpoint-url "$endpoint" >/dev/null 2>&1; then
-              echo "staged bake object still exists after cleanup: $key" >&2
-              exit 1
-            fi
+          upload_bucket="$TOS_WORKER_BUCKET"
+          upload_endpoint="$endpoint"
+          if [[ -n "${TOS_WORKER_UPLOAD_BUCKET}" && "${TOS_WORKER_UPLOAD_BUCKET}" != "${TOS_WORKER_BUCKET}" ]]; then
+            upload_bucket="$TOS_WORKER_UPLOAD_BUCKET"
+            upload_endpoint="https://tos-s3-${TOS_WORKER_UPLOAD_REGION}.volces.com"
+          fi
+          # Clean both buckets: the upload hop and the replication target.
+          # Lifecycle rules expire any leftovers older than 3 days as a
+          # second line of defense.
+          for spec in "$upload_bucket $upload_endpoint" "$TOS_WORKER_BUCKET $endpoint"; do
+            read -r bucket bucket_endpoint <<<"$spec"
+            for key in "$STAGED_ARTIFACT_KEY" "$STAGED_SCRIPT_KEY" "$STAGED_STATUS_KEY"; do
+              aws s3 rm "s3://${bucket}/${key}" \
+                --endpoint-url "$bucket_endpoint" --only-show-errors
+              if aws s3api head-object --bucket "$bucket" \
+                --key "$key" --endpoint-url "$bucket_endpoint" >/dev/null 2>&1; then
+                echo "staged bake object still exists after cleanup: $bucket/$key" >&2
+                exit 1
+              fi
+            done
           done
