@@ -42,6 +42,13 @@ const skillHubPhase1Tests = [
 const args = process.argv.slice(2);
 const suite = args.find(arg => !arg.startsWith('--')) || 'runtime';
 const listOnly = args.includes('--list');
+const requestedConcurrency = Number.parseInt(
+  String(process.env.XIAOBA_TEST_CONCURRENCY || ''),
+  10,
+);
+const testConcurrency = Number.isInteger(requestedConcurrency) && requestedConcurrency > 0
+  ? requestedConcurrency
+  : null;
 
 const allTests = (await glob('tests/**/*.test.ts', {
   cwd: rootDir,
@@ -85,7 +92,13 @@ fs.mkdirSync(testHome, { recursive: true });
 fs.mkdirSync(testTemp, { recursive: true });
 fs.writeFileSync(testDotenv, '', 'utf8');
 
-const child = spawn(process.execPath, [tsxCli, '--test', ...selectedTests], {
+const testArgs = [tsxCli, '--test'];
+if (testConcurrency !== null) {
+  testArgs.push(`--test-concurrency=${testConcurrency}`);
+}
+testArgs.push(...selectedTests);
+
+const child = spawn(process.execPath, testArgs, {
   cwd: rootDir,
   env: buildIsolatedTestEnvironment(process.env, {
     homeDir: testHome,

@@ -150,6 +150,8 @@ process.exit(result.status ?? 1);
           managePath,
           "-RegionID",
           "region-test",
+          "-PollIntervalSeconds",
+          "1",
           ...(action ? ["-Action", action] : []),
           ...extra,
         ],
@@ -291,6 +293,8 @@ process.exit(result.status ?? 1);
         managePath,
         "-RegionID",
         "region-test",
+        "-PollIntervalSeconds",
+        "1",
         ...(action ? ["-Action", action] : []),
         ...extra,
       ],
@@ -346,7 +350,7 @@ test("worker image lifecycle: multi-round confirm, pagination, and confirm timeo
     // --- Confirm timeout: image never disappears -> fail closed ---
     sb.writeState(eight, { deleteDelayRounds: { "img-001": 100 } });
     fs.rmSync(sb.logPath, { force: true });
-    const timeoutRes = sb.runScript("Prune", ["-Keep", "6", "-ConfirmTimeoutMinutes", "1", "-ProtectedImageIDs", "img-000"], 120_000);
+    const timeoutRes = sb.runScript("Prune", ["-Keep", "6", "-ConfirmTimeoutSeconds", "2", "-ProtectedImageIDs", "img-000"], 120_000);
     assert.notEqual(timeoutRes.status, 0, `expected failure:\n${timeoutRes.stdout}\n${timeoutRes.stderr}`);
     // PowerShell wraps long error lines (CRLF + ANSI codes), so match the
     // stable substrings instead of the full "Could not confirm deletion" text.

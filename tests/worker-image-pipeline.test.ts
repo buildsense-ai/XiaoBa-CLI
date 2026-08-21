@@ -893,6 +893,8 @@ process.exit(result.status ?? 1);
             "1",
             "-LateResourceWaitSeconds",
             "10",
+            "-PollIntervalSeconds",
+            "1",
             "-ImageName",
             imageName,
             "-RegionID",
@@ -945,6 +947,8 @@ process.exit(result.status ?? 1);
             "-BuildNumber",
             buildNumber,
             "-BuildAttempt",
+            "1",
+            "-PollIntervalSeconds",
             "1",
             "-ImageName",
             imageName,
@@ -1523,7 +1527,7 @@ process.exit(result.status ?? 1);
       const stickyResult = runCleanup(
         stickyBuildNumber,
         "catsco-worker-cleanup-sticky",
-        ["-ImageDeleteConfirmMinutes", "1"],
+        ["-ImageDeleteConfirmSeconds", "2"],
       );
       assert.notEqual(stickyResult.status, 0);
       assert.match(

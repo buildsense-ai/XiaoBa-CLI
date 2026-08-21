@@ -31,6 +31,12 @@ param(
     [ValidateRange(1, 30)]
     [int]$ConfirmTimeoutMinutes = 3,
 
+    [ValidateRange(0, 300)]
+    [int]$ConfirmTimeoutSeconds = 0,
+
+    [ValidateRange(0, 60)]
+    [int]$PollIntervalSeconds = 0,
+
     [string]$ProtectedImageIDs = ""
 )
 
@@ -240,7 +246,12 @@ foreach ($img in $toDelete) {
         # 删除确认：按 --imageName 精确过滤（不用 GetImageDetail——实测对私有
         # 镜像偶发 NotFound 而 ListImage 可靠）。按名称过滤而不是第 1 页全量，
         # 避免私有镜像总数 > 200 时最旧镜像不在第 1 页导致的误判"已删除"。
-        $deleteDeadline = (Get-Date).AddMinutes($ConfirmTimeoutMinutes)
+        $confirmSeconds = if ($ConfirmTimeoutSeconds -gt 0) {
+            $ConfirmTimeoutSeconds
+        } else {
+            $ConfirmTimeoutMinutes * 60
+        }
+        $deleteDeadline = (Get-Date).AddSeconds($confirmSeconds)
         $confirmed = $false
         while ((Get-Date) -lt $deleteDeadline) {
             $checkResp = Invoke-Ctyun @(
@@ -260,10 +271,20 @@ foreach ($img in $toDelete) {
                 $confirmed = $true
                 break
             }
-            Start-Sleep -Seconds 10
+            $sleepSeconds = if ($PollIntervalSeconds -gt 0) {
+                [Math]::Max(1, [Math]::Min(10, $PollIntervalSeconds))
+            } else {
+                10
+            }
+            Start-Sleep -Seconds $sleepSeconds
         }
         if (-not $confirmed) {
-            throw "Could not confirm deletion of $imageID within $ConfirmTimeoutMinutes minute(s)"
+            $timeoutDescription = if ($ConfirmTimeoutSeconds -gt 0) {
+                "$ConfirmTimeoutSeconds second(s)"
+            } else {
+                "$ConfirmTimeoutMinutes minute(s)"
+            }
+            throw "Could not confirm deletion of $imageID within $timeoutDescription"
         }
     } catch {
         $failures.Add("image $imageID ($imageName): $($_.Exception.Message)")

@@ -46,10 +46,14 @@ param(
     [int]$CleanupTimeoutMinutes = 45,
     [ValidateRange(1, 120)]
     [int]$ImageDeleteConfirmMinutes = 8,
+    [ValidateRange(0, 120)]
+    [int]$ImageDeleteConfirmSeconds = 0,
     [ValidateRange(15, 300)]
     [int]$ApiTimeoutSeconds = 90,
     [ValidateRange(5, 300)]
     [int]$LateResourceWaitSeconds = 120,
+    [ValidateRange(0, 60)]
+    [int]$PollIntervalSeconds = 0,
     [switch]$WaitForLateResources
 )
 
@@ -75,6 +79,17 @@ $script:BakeDescription = ""
 $script:OperationDeadline = $null
 $script:CleanupDeadline = $null
 $script:InCleanup = $false
+
+function Wait-PollInterval {
+    param([Parameter(Mandatory = $true)][int]$DefaultSeconds)
+
+    $seconds = if ($PollIntervalSeconds -gt 0) {
+        [Math]::Max(1, [Math]::Min($DefaultSeconds, $PollIntervalSeconds))
+    } else {
+        $DefaultSeconds
+    }
+    Start-Sleep -Seconds $seconds
+}
 
 function Invoke-External {
     param(
@@ -307,7 +322,7 @@ function Resolve-BuilderInstance {
                 1,
                 [Math]::Min(8, [int][Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
             )
-            Start-Sleep -Seconds $sleepSeconds
+            Wait-PollInterval -DefaultSeconds $sleepSeconds
             continue
         }
 
@@ -318,7 +333,7 @@ function Resolve-BuilderInstance {
         if ((Get-Date) -ge $deadline) {
             break
         }
-        Start-Sleep -Seconds 8
+        Wait-PollInterval -DefaultSeconds 8
     } while ($true)
 
     return $null
@@ -360,7 +375,7 @@ function Wait-ForInstance {
         if ($States -contains $state -and (-not $RequireIP -or $ip)) {
             return $instance
         }
-        Start-Sleep -Seconds 8
+        Wait-PollInterval -DefaultSeconds 8
     }
     throw "Timed out waiting for builder state: $($States -join ', ')"
 }
@@ -422,7 +437,7 @@ function Wait-ForPublishedImageIdentity {
         ) {
             return $candidate
         }
-        Start-Sleep -Seconds 5
+        Wait-PollInterval -DefaultSeconds 5
     } while ((Get-Date) -lt $publishDeadline)
 
     throw "Could not verify the published private image identity"
@@ -456,7 +471,7 @@ function Remove-FailedImage {
                 $script:ImageID = [string]$candidate.imageID
                 break
             }
-            Start-Sleep -Seconds 10
+            Wait-PollInterval -DefaultSeconds 10
         }
         if (-not $script:ImageID) {
             throw "Could not prove absence of incomplete image $script:ImageWorkName"
@@ -511,11 +526,16 @@ function Remove-FailedImage {
             }
             break
         }
-        Start-Sleep -Seconds 15
+        Wait-PollInterval -DefaultSeconds 15
     }
 
+    $confirmSeconds = if ($ImageDeleteConfirmSeconds -gt 0) {
+        $ImageDeleteConfirmSeconds
+    } else {
+        $ImageDeleteConfirmMinutes * 60
+    }
     $deleteDeadline = Get-BoundedDeadline `
-        -RequestedSeconds ($ImageDeleteConfirmMinutes * 60) `
+        -RequestedSeconds $confirmSeconds `
         -Phase "incomplete image deletion confirmation"
     while ((Get-Date) -lt $deleteDeadline) {
         $remaining = Get-Image -ImageID $script:ImageID
@@ -523,7 +543,7 @@ function Remove-FailedImage {
             $script:PreserveBuilderForImageRecovery = $false
             return
         }
-        Start-Sleep -Seconds 10
+        Wait-PollInterval -DefaultSeconds 10
     }
     throw "Could not confirm deletion of incomplete image $script:ImageID"
 }
@@ -544,7 +564,7 @@ function Remove-Builder {
         # otherwise a billed ECS could be left behind after the image is ready.
         $emptyReads = 1
         while ($emptyReads -lt 3) {
-            Start-Sleep -Seconds 5
+            Wait-PollInterval -DefaultSeconds 5
             $instance = Resolve-BuilderInstance
             if ($instance) { break }
             $emptyReads++
@@ -596,7 +616,7 @@ function Remove-Builder {
             $confirmEmptyReads = 0
             Assert-TemporaryBuilder $remaining
         }
-        Start-Sleep -Seconds 8
+        Wait-PollInterval -DefaultSeconds 8
     }
     throw "Could not confirm deletion of temporary builder $script:BuilderID"
 }
@@ -642,7 +662,7 @@ function Remove-KeyPair {
         if ($WaitForLate -and (Get-Date) -ge $keyDiscoveryDeadline) {
             break
         }
-        Start-Sleep -Seconds 5
+        Wait-PollInterval -DefaultSeconds 5
     } while ($true)
     if ($existing.Count -eq 0) {
         Write-Host "No temporary key pair record remains for $script:KeyPairName"
@@ -698,7 +718,7 @@ function Remove-KeyPair {
         } else {
             $confirmEmptyReads = 0
         }
-        Start-Sleep -Seconds 5
+        Wait-PollInterval -DefaultSeconds 5
     }
     throw "Could not confirm deletion of temporary key pair $script:KeyPairName"
 }
@@ -811,7 +831,7 @@ function Invoke-ExactBakeCleanup {
         if (-not $candidateBuilder -and -not $WaitForLateResources) {
             $emptyReads = 1
             while ($emptyReads -lt 3) {
-                Start-Sleep -Seconds 5
+                Wait-PollInterval -DefaultSeconds 5
                 $candidateBuilder = Resolve-BuilderInstance
                 if ($candidateBuilder) { break }
                 $emptyReads++
@@ -835,7 +855,7 @@ function Invoke-ExactBakeCleanup {
             $imageEmptyReads++
             if (-not $WaitForLateResources -and $imageEmptyReads -ge 3) { break }
             if ($WaitForLateResources -and (Get-Date) -ge $discoveryDeadline) { break }
-            Start-Sleep -Seconds 10
+            Wait-PollInterval -DefaultSeconds 10
         } while ($true)
     } catch {
         $errors.Add("image discovery: $($_.Exception.Message)")
@@ -909,7 +929,7 @@ function Invoke-ExactBakeCleanup {
                 $keyEmptyReads++
                 if (-not $WaitForLateResources -and $keyEmptyReads -ge 3) { break }
                 if ($WaitForLateResources -and (Get-Date) -ge $discoveryDeadline) { break }
-                Start-Sleep -Seconds 5
+                Wait-PollInterval -DefaultSeconds 5
             } while ($true)
             if ($candidateKeyPair.Count -eq 1) {
                 $script:KeyPairCreateAttempted = $true
@@ -1396,7 +1416,7 @@ runcmd:
         if ($status -in @("error", "killed", "deleted")) {
             throw "Image creation entered terminal failure state: $status"
         }
-        Start-Sleep -Seconds 15
+        Wait-PollInterval -DefaultSeconds 15
     }
     if (-not $script:Completed) {
         throw "Timed out waiting for private image creation"
