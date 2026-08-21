@@ -9,7 +9,7 @@ import { feishuCommand } from './commands/feishu';
 import { runtimeCommand } from './commands/runtime';
 import { APP_VERSION } from './version';
 
-function main() {
+async function main(): Promise<void> {
   const program = new Command();
 
   Logger.brand();
@@ -88,7 +88,10 @@ function main() {
     chatCommand({ interactive: true });
   });
 
-  program.parse();
+  await program.parseAsync();
 }
 
-main();
+void main().catch(error => {
+  Logger.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});

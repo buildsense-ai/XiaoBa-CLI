@@ -617,7 +617,7 @@ export class ConversationRunner {
 
         const toolName = toolCall.function.name;
         const toolUseId = toolCall.id;
-        const toolInput = JSON.parse(toolCall.function.arguments);
+        const toolInput = safeParseToolInput(toolCall.function.arguments);
         const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
         callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
@@ -1827,5 +1827,13 @@ export class ConversationRunner {
     }
 
     return lastResult;
+  }
+}
+
+function safeParseToolInput(argumentsJson: string): unknown {
+  try {
+    return JSON.parse(argumentsJson);
+  } catch {
+    return { __invalid_json: true, raw: argumentsJson };
   }
 }

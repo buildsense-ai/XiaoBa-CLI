@@ -69,15 +69,16 @@ export class AgentToolExecutor implements ToolExecutor {
       try {
         args = JSON.parse(toolCall.function.arguments);
       } catch (error: any) {
-        return {
-          tool_call_id: toolCall.id,
-          role: 'tool',
-          name: requestedName,
-          content: `工具参数解析错误: ${error.message}`,
-          ok: false,
-          errorCode: 'INVALID_TOOL_ARGUMENTS',
-          retryable: false,
-        };
+        const parseMessage = `工具参数解析错误: ${error.message}`;
+        const output = tool.handleInvalidArguments
+          ? await tool.handleInvalidArguments(parseMessage, context)
+          : {
+            ok: false as const,
+            errorCode: 'INVALID_TOOL_ARGUMENTS',
+            message: parseMessage,
+            retryable: false,
+          };
+        return toolExecutionResultToToolResult(output, tool, toolCall, requestedName);
       }
 
       const confirmation = await confirmLocalToolExecution(name, args, context);
@@ -95,26 +96,7 @@ export class AgentToolExecutor implements ToolExecutor {
 
       const output = await tool.execute(args, context);
 
-      if (!output.ok) {
-        return {
-          tool_call_id: toolCall.id,
-          role: 'tool',
-          name: requestedName,
-          content: output.message,
-          ok: false,
-          errorCode: output.errorCode,
-          retryable: output.retryable,
-        };
-      }
-
-      return {
-        tool_call_id: toolCall.id,
-        role: 'tool',
-        name: requestedName,
-        content: output.content,
-        ok: true,
-        controlSignal: tool.definition.controlMode,
-      };
+      return toolExecutionResultToToolResult(output, tool, toolCall, requestedName);
     } catch (error: any) {
       const message = String(error?.message || error || '');
       const rateLimitErrorCode = getStructuredRateLimitErrorCode(error);
@@ -129,4 +111,31 @@ export class AgentToolExecutor implements ToolExecutor {
       };
     }
   }
+}
+
+function toolExecutionResultToToolResult(
+  output: ToolExecutionResult,
+  tool: Tool,
+  toolCall: ToolCall,
+  requestedName: string,
+): ToolResult {
+  if (!output.ok) {
+    return {
+      tool_call_id: toolCall.id,
+      role: 'tool',
+      name: requestedName,
+      content: output.message,
+      ok: false,
+      errorCode: output.errorCode,
+      retryable: output.retryable,
+    };
+  }
+  return {
+    tool_call_id: toolCall.id,
+    role: 'tool',
+    name: requestedName,
+    content: output.content,
+    ok: true,
+    controlSignal: tool.definition.controlMode,
+  };
 }

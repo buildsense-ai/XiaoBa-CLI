@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import { AnthropicProvider } from '../src/providers/anthropic-provider';
 import { Message } from '../src/types';
+import type { ToolDefinition } from '../src/types/tool';
 import {
   buildSyntheticObservationMessages,
   SYNTHETIC_OBSERVATION_TOOL_NAME,
@@ -9,6 +10,30 @@ import {
 } from '../src/core/synthetic-observation';
 
 describe('AnthropicProvider runtime feedback boundary', () => {
+  test('preserves required finish fields in Anthropic tool schemas', () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://example.test/v1/messages',
+      model: 'claude-sonnet-4-20250514',
+    });
+    const finishTool: ToolDefinition = {
+      name: 'finish_memory_search',
+      description: 'Finish memory search',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string' },
+          refs: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['summary', 'refs'],
+      },
+    };
+
+    const transformed = (provider as any).transformTools([finishTool]);
+
+    assert.deepStrictEqual(transformed[0].input_schema.required, ['summary', 'refs']);
+  });
+
   test('transforms runtime feedback without leaking internal message fields', () => {
     const provider = new AnthropicProvider({
       apiKey: 'test-key',
