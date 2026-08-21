@@ -204,6 +204,12 @@ export class CatscoLogUploadScheduler {
     }
   }
 
+  async reportSkillOutcome(handle: string, revision: number, outcome: 'succeeded' | 'failed' | 'corrected'): Promise<void> {
+    const state = loadCatscoLogAgentState(getCatscoLogAgentConfig(this.workingDirectory).stateFilePath);
+    if (!hasUsableSkillCapability(state)) throw new Error('CatsLog Skill capability is unavailable');
+    await new CatscoLogAgentClient(getCatscoLogAgentConfig(this.workingDirectory).apiBaseUrl).reportSkillOutcome({ token: state.skillToken!, skillsUrl: state.skillsUrl!, handle, revision, outcome });
+  }
+
   private async ensureUploadSession(state: CatscoLogAgentState): Promise<UploadSession | null> {
     if (state.token) {
       return {

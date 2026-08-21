@@ -114,6 +114,15 @@ function main() {
       });
     });
 
+  catslog.command('outcome <handle> <revision> <outcome>')
+    .description('Explicitly report use of one immutable CatsLog Skill revision')
+    .action(async (handle: string, revision: string, outcome: string) => {
+      const parsed = Number(revision);
+      if (!Number.isInteger(parsed) || parsed < 1 || !['succeeded', 'failed', 'corrected'].includes(outcome)) throw new Error('revision or outcome is invalid');
+      const { catslogSkillOutcomeCommand } = await import('./commands/catslog');
+      await catslogSkillOutcomeCommand(handle, parsed, outcome as 'succeeded' | 'failed' | 'corrected');
+    });
+
   registerSkillCommand(program);
 
   program.action(() => {

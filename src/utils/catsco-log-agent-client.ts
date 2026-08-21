@@ -174,6 +174,14 @@ export class CatscoLogAgentClient {
     return this.parseJsonResponse<CatscoSkillReadResponse>(response, 'CatsLog Skill read failed');
   }
 
+  async reportSkillOutcome(input: { token: string; skillsUrl: string; handle: string; revision: number; outcome: 'succeeded' | 'failed' | 'corrected' }): Promise<void> {
+    const response = await fetch(this.buildUrl(`${input.skillsUrl.replace(/\/$/, '')}/${encodeURIComponent(input.handle)}/outcomes`), {
+      method: 'POST', headers: { Authorization: `Bearer ${input.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ revision: input.revision, outcome: input.outcome }),
+    });
+    await this.parseJsonResponse<Record<string, never>>(response, 'CatsLog Skill outcome failed');
+  }
+
   private buildUrl(requestPath: string): string {
     if (!this.apiBaseUrl) {
       throw new Error('CATSCO_LOG_API_BASE_URL is not configured');
