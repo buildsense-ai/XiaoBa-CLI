@@ -146,8 +146,8 @@ jobs:
           #        reports a clear timeout error if replication never runs. ---
           if [[ "$upload_bucket" != "$TOS_WORKER_BUCKET" ]]; then
             cat > /tmp/tos-bake-replication.json <<EOF
-{"Role":"","Rules":[{"ID":"replicate-bake-staging","Status":"Enabled","Priority":1,"Filter":{"Prefix":"update/worker/.bake/"},"Destination":{"Bucket":"arn:aws:s3:::$TOS_WORKER_BUCKET"}}]}
-EOF
+          {"Role":"","Rules":[{"ID":"replicate-bake-staging","Status":"Enabled","Priority":1,"Filter":{"Prefix":"update/worker/.bake/"},"Destination":{"Bucket":"arn:aws:s3:::$TOS_WORKER_BUCKET"}}]}
+          EOF
             if aws s3api put-bucket-replication \
                 --bucket "$upload_bucket" --endpoint-url "$upload_endpoint" \
                 --replication-configuration file:///tmp/tos-bake-replication.json >/dev/null 2>&1; then
