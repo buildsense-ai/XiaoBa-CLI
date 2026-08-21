@@ -86,6 +86,39 @@ export DEBIAN_FRONTEND=noninteractive
 # must block the bake. Shipping an image that silently carries the buggy
 # systemd/glibc/kernel combo is worse than failing the workflow so it can retry.
 
+# A hardened base image can be reused for many worker releases. Avoid running
+# apt/dpkg and kernel package work on every bake when the base already carries
+# the exact platform contract below. The checks are deliberately conservative:
+# any missing package, mask, version, or bootable kernel falls back to the full
+# fail-closed hardening path.
+platform_hardening_ready() {
+  local systemd_version glibc_version systemd_status glibc_status package
+  systemd_version="$(dpkg-query -W -f='${Version}' systemd 2>/dev/null || true)"
+  glibc_version="$(dpkg-query -W -f='${Version}' libc6 2>/dev/null || true)"
+  systemd_status="$(dpkg-query -W -f='${db:Status-Abbrev}' systemd 2>/dev/null || true)"
+  glibc_status="$(dpkg-query -W -f='${db:Status-Abbrev}' libc6 2>/dev/null || true)"
+  dpkg --compare-versions "$systemd_version" ge "255.4-1ubuntu8.16" || return 1
+  dpkg --compare-versions "$glibc_version" ge "2.39-0ubuntu8.8" || return 1
+  [[ "${systemd_status//[[:space:]]/}" == "ii" ]] || return 1
+  [[ "${glibc_status//[[:space:]]/}" == "ii" ]] || return 1
+  for package in \
+    ca-certificates curl git jq poppler-utils ripgrep sudo unzip zip \
+    linux-generic linux-image-generic; do
+    [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null || true)" == ii* ]] || return 1
+  done
+  command -v update-grub >/dev/null 2>&1 || return 1
+  ls -1 /boot/vmlinuz-* >/dev/null 2>&1 || return 1
+  for unit in fwupd.service fwupd-refresh.service fwupd-refresh.timer; do
+    [[ "$(readlink "/etc/systemd/system/$unit" 2>/dev/null || true)" == "/dev/null" ]] || return 1
+  done
+  return 0
+}
+
+if [[ "${CATSCO_BASE_IMAGE_HARDENED:-false}" == "true" ]] && platform_hardening_ready; then
+  printf 'platform_hardening=already-satisfied\n'
+else
+  printf 'platform_hardening=upgrade-required\n'
+
 # 1. Repair corrupted dpkg file lists ("missing final newline") BEFORE any
 #    apt/dpkg transaction. These images can ship broken
 #    /var/lib/dpkg/info/*.list files that abort the very first apt or dpkg call
@@ -221,6 +254,7 @@ fi
 KERNEL_VERSION="$(uname -r 2>/dev/null || true)"
 printf 'platform_systemd=%s glibc=%s kernel=%s\n' \
   "$SYSTEMD_VERSION" "$GLIBC_VERSION" "$KERNEL_VERSION"
+fi
 
 # 5. Pre-configure the China-region npm mirror. Direct registry.npmjs.org from
 #    Tianyi/华南 hosts is slow and has produced truncated/corrupted tarballs

@@ -26,6 +26,11 @@ env:
   CTYUN_CLI_PACKAGE_SHA256: 93272c3fd377a6f642a89cb326fa2f4a3d2fab7dfc9587e49906527230b767fa
   TOS_WORKER_BUCKET: catsco-worker-release
   TOS_WORKER_REGION: cn-guangzhou
+  # Set this repository variable only after WORKER_BASE_IMAGE_ID points at a
+  # previously baked image that passed the platform hardening gates. The
+  # preparer still verifies the contract and falls back to a full upgrade when
+  # the claim is stale.
+  WORKER_BASE_IMAGE_HARDENED: ${{ vars.CTYUN_WORKER_BASE_IMAGE_HARDENED || 'false' }}
 
 jobs:
   image:
@@ -465,6 +470,7 @@ jobs:
             -BakeTimeoutMinutes 150 `
             -CleanupTimeoutMinutes 40 `
             -ApiTimeoutSeconds 90 `
+            -BaseImageHardened:($env:WORKER_BASE_IMAGE_HARDENED -eq 'true') `
             -RegionID $env:WORKER_REGION_ID `
             -BuilderProjectID $env:WORKER_PROJECT_ID `
             -ImageProjectID $env:WORKER_IMAGE_PROJECT_ID `

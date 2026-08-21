@@ -56,6 +56,9 @@ param(
     [int]$LateResourceWaitSeconds = 120,
     [ValidateRange(0, 60)]
     [int]$PollIntervalSeconds = 0,
+    [ValidateRange(5, 300)]
+    [int]$ProgressIntervalSeconds = 30,
+    [switch]$BaseImageHardened,
     [switch]$WaitForLateResources
 )
 
@@ -81,6 +84,32 @@ $script:BakeDescription = ""
 $script:OperationDeadline = $null
 $script:CleanupDeadline = $null
 $script:InCleanup = $false
+$script:StartedAt = Get-Date
+$script:LastProgressAt = $script:StartedAt
+
+function Write-BakeProgress {
+    param(
+        [Parameter(Mandatory = $true)][string]$Phase,
+        [string]$Detail = "",
+        [switch]$Force
+    )
+
+    $now = Get-Date
+    if (-not $Force -and (($now - $script:LastProgressAt).TotalSeconds -lt $ProgressIntervalSeconds)) {
+        return
+    }
+    $script:LastProgressAt = $now
+    $elapsed = [int][Math]::Floor(($now - $script:StartedAt).TotalSeconds)
+    $deadline = Get-ActiveDeadline
+    $remaining = if ($deadline) {
+        [Math]::Max(0, [int][Math]::Floor(($deadline - $now).TotalSeconds))
+    } else {
+        -1
+    }
+    $suffix = if ([string]::IsNullOrWhiteSpace($Detail)) { "" } else { " $Detail" }
+    Write-Host ("{0} bake-progress phase={1} elapsed_s={2} remaining_s={3}{4}" -f `
+        $now.ToUniversalTime().ToString("o"), $Phase, $elapsed, $remaining, $suffix)
+}
 
 function Wait-PollInterval {
     param([Parameter(Mandatory = $true)][int]$DefaultSeconds)
@@ -153,6 +182,13 @@ function Get-ResponseItems {
 function Invoke-Ctyun {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
+    $operation = if ($Arguments.Count -ge 2) {
+        "$($Arguments[0])/$($Arguments[1])"
+    } else {
+        ($Arguments -join "/")
+    }
+    Write-BakeProgress -Phase "api-start" -Detail "operation=$operation" -Force
+    $apiStartedAt = Get-Date
     $timeoutSeconds = Get-BoundedTimeoutSeconds `
         -RequestedSeconds $ApiTimeoutSeconds `
         -Phase "Tianyi Cloud API call"
@@ -174,6 +210,8 @@ function Invoke-Ctyun {
         $description = Get-PropertyValue -InputObject $response -Name "description"
         throw "Tianyi Cloud API failed: $errorCode $message $description"
     }
+    Write-BakeProgress -Phase "api-ok" -Detail ("operation={0} duration_ms={1}" -f `
+        $operation, [int][Math]::Round(((Get-Date) - $apiStartedAt).TotalMilliseconds)) -Force
     return $response
 }
 
@@ -373,7 +411,7 @@ function Wait-ForInstance {
         Assert-TemporaryBuilder $instance
         $state = ([string]$instance.instanceStatus).ToLowerInvariant()
         $ip = [string]$instance.floatingIP
-        Write-Host "builder state=$state ip=$ip"
+        Write-BakeProgress -Phase "builder-wait" -Detail ("state={0} ip_present={1}" -f $state, (-not [string]::IsNullOrWhiteSpace($ip))) -Force
         if ($States -contains $state -and (-not $RequireIP -or $ip)) {
             return $instance
         }
@@ -1173,6 +1211,7 @@ $cleanupFailure = $null
 $result = $null
 
 try {
+    Write-BakeProgress -Phase "prepare" -Detail "creating temporary key pair and builder" -Force
     Invoke-External -Command "ssh-keygen" -Arguments @(
         "-q", "-t", "rsa", "-b", "3072",
         "-N", "",
@@ -1226,6 +1265,7 @@ try {
     if (-not $script:KeyPairID) {
         throw "Imported key pair could not be resolved"
     }
+    Write-BakeProgress -Phase "keypair-imported" -Detail "key_pair_id=$script:KeyPairID" -Force
 
     $existingBuilderResponse = Invoke-Ctyun @(
         "ecs", "ListEcsInstances",
@@ -1248,10 +1288,12 @@ try {
     $prepareScriptUrlBase64 = [Convert]::ToBase64String(
         [Text.Encoding]::UTF8.GetBytes($PrepareScriptUrl)
     )
+    $baseImageHardenedValue = $BaseImageHardened.IsPresent.ToString().ToLowerInvariant()
     $artifactName = "catsco-worker-$releaseId-linux-x64.tar.gz"
     $bootstrapScript = @"
 #!/usr/bin/env bash
 set -Eeuo pipefail
+export CATSCO_BASE_IMAGE_HARDENED='$baseImageHardenedValue'
 exec > >(tee -a /var/log/catsco-image-build.log) 2>&1
 artifact_url="`$(printf '%s' '$artifactUrlBase64' | base64 -d)"
 prepare_script_url="`$(printf '%s' '$prepareScriptUrlBase64' | base64 -d)"
@@ -1344,17 +1386,20 @@ runcmd:
         throw "CreateEcsInstance did not return masterResourceID"
     }
     $script:BuilderCreateAttempted = $true
+    Write-BakeProgress -Phase "builder-created" -Detail "builder_name=$script:BuilderName resource_id=$script:BuilderResourceID" -Force
 
     $builder = Resolve-BuilderInstance -WaitSeconds ($TimeoutMinutes * 60)
     if (-not $builder) {
         throw "Timed out resolving the temporary builder instance"
     }
     Assert-TemporaryBuilder $builder
+    Write-BakeProgress -Phase "builder-resolved" -Detail "builder_id=$script:BuilderID" -Force
 
     # cloud-init powers off only after artifact verification, preparation and
     # finalization all succeed. A failed bootstrap stays running, times out,
     # and is removed by the existing compensating cleanup path.
     Wait-ForInstance -States @("stopped", "shutoff") | Out-Null
+    Write-BakeProgress -Phase "builder-stopped" -Detail "cloud-init completed; starting image capture" -Force
 
     $script:ImageCreateAttempted = $true
     $imageResponse = Invoke-Ctyun @(
@@ -1375,6 +1420,7 @@ runcmd:
     if (-not $script:ImageID) {
         throw "CreateImage did not return an image ID"
     }
+    Write-BakeProgress -Phase "image-capture-started" -Detail "image_id=$script:ImageID" -Force
 
     $deadline = Get-BoundedDeadline `
         -RequestedSeconds ($TimeoutMinutes * 60) `
@@ -1385,7 +1431,7 @@ runcmd:
             throw "Private image disappeared during creation"
         }
         $status = ([string]$currentImage.imageStatus).ToLowerInvariant()
-        Write-Host "image state=$status progress=$($currentImage.taskProgress)"
+        Write-BakeProgress -Phase "image-capture" -Detail ("state={0} progress={1}" -f $status, $currentImage.taskProgress) -Force
         if ($status -eq "active") {
             if ([string]$currentImage.sourceServerID -ne $script:BuilderID) {
                 throw (
@@ -1406,6 +1452,7 @@ runcmd:
                 -PublishedDescription $bakeDescription
             $script:ImageActive = $true
             $script:Completed = $true
+            Write-BakeProgress -Phase "image-capture-active" -Detail "image_id=$script:ImageID" -Force
             $result = [ordered]@{
                 result = "created"
                 imageID = $script:ImageID
@@ -1427,10 +1474,12 @@ runcmd:
     }
 } catch {
     $primaryFailure = $_.Exception.Message
+    Write-BakeProgress -Phase "failed" -Detail $primaryFailure -Force
 } finally {
     $script:InCleanup = $true
     $script:CleanupDeadline = (Get-Date).AddMinutes($CleanupTimeoutMinutes)
     try {
+        Write-BakeProgress -Phase "cleanup-start" -Detail "failure=$(-not $script:Completed)" -Force
         Remove-TemporaryResources `
             -Failure:(-not $script:Completed) `
             -WaitForLate:$WaitForLateResources

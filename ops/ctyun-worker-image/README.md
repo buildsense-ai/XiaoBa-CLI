@@ -178,6 +178,28 @@ Installed Debian package versions are recorded in
 The resulting system image is not a TOS object. `CreateImage` writes it to the
 Tianyi Cloud private image repository for the configured region and account.
 
+### Progress monitoring and bake speed
+
+The orchestrator emits timestamped `bake-progress` lines to the GitHub Actions
+log. They include the current phase, elapsed seconds, remaining deadline, API
+operation latency, builder state, and image capture progress. This makes a
+stalled API call or a builder that never shuts down distinguishable from a
+slow image capture while the run is still active. The builder has no public IP,
+so its private cloud-init log is intentionally not exposed to the internet;
+the phase and output files remain inside the temporary builder and are erased
+when the image is finalized.
+
+The expensive part of a cold bake is the platform hardening in
+`prepare-image.sh` (apt, systemd/glibc, and kernel updates). For faster repeat
+bakes, first publish a worker image that has passed those gates, point
+`CTYUN_WORKER_BASE_IMAGE_ID` at that image, and set the repository variable
+`CTYUN_WORKER_BASE_IMAGE_HARDENED=true`. The workflow passes that claim to the
+builder, which still verifies package versions, masks, and a bootable kernel;
+if any check fails it automatically performs the full hardening path. Leave the
+variable unset/`false` for a stock Ubuntu base. This turns later application
+release bakes into a short artifact/install plus image-capture operation without
+weakening the fail-closed safety check.
+
 ## Managed Worker Updates
 
 Workers must not receive Tianyi Cloud account credentials. CatsCompany's
