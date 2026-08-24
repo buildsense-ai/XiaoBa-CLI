@@ -28,7 +28,6 @@ import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
-import { getPetService } from '../pet/pet-service';
 import {
   buildSyntheticObservationLifecycleEvent,
   describeSyntheticObservationForLog,
@@ -97,6 +96,46 @@ export interface RunAgentTurnResult {
 
 export interface AgentTurnRunError extends Error {
   partialMessages?: Message[];
+}
+
+/**
+ * Carries recoverable turn messages without mutating a provider-owned error.
+ * Provider errors may be frozen, proxied, or expose throwing property setters.
+ */
+export class AgentTurnExecutionError extends Error implements AgentTurnRunError {
+  readonly partialMessages: Message[];
+
+  constructor(cause: unknown, partialMessages: Message[]) {
+    super(safeErrorMessage(cause));
+    this.name = 'AgentTurnExecutionError';
+    try {
+      Object.defineProperty(this, 'cause', {
+        value: cause,
+        configurable: true,
+        writable: false,
+        enumerable: false,
+      });
+    } catch {
+      // The wrapper remains useful even if cause cannot be attached.
+    }
+    this.partialMessages = partialMessages;
+  }
+}
+
+function safeErrorMessage(error: unknown): string {
+  try {
+    if (error instanceof Error && typeof error.message === 'string' && error.message) {
+      return error.message;
+    }
+  } catch {
+    // Fall through to a stable message.
+  }
+  try {
+    const text = String(error ?? '');
+    return text || 'Agent turn failed';
+  } catch {
+    return 'Agent turn failed';
+  }
 }
 
 export interface AgentTurnControllerOptions {
@@ -208,7 +247,7 @@ export class AgentTurnController {
       const partialMessages = this.options.turnContextBuilder.removeTransientMessages(turnContext.messages);
       this.replaceBase64Images(partialMessages);
       if (partialMessages.length > 0) {
-        (error as AgentTurnRunError).partialMessages = partialMessages;
+        throw new AgentTurnExecutionError(error, partialMessages);
       }
       throw error;
     } finally {
@@ -237,11 +276,6 @@ export class AgentTurnController {
     const finalResponseVisible = result.finalResponseVisible && params.suppressFinalResponse !== true;
     if (result.finalResponseVisible && params.suppressFinalResponse === true) {
       Logger.info(`[${this.options.sessionKey}] runtime observation final response suppressed: ${params.runtimeObservationSource || 'unknown'}`);
-    }
-
-    if (finalResponseVisible) {
-      this.recordPetTurnCompletion('message_completed');
-      this.recordPetTurnCompletion('task_completed');
     }
 
     return {
@@ -488,13 +522,4 @@ export class AgentTurnController {
     }
   }
 
-  private recordPetTurnCompletion(eventType: 'message_completed' | 'task_completed'): void {
-    getPetService().recordEvent({
-      event_type: eventType,
-      session_id: this.options.sessionKey,
-      metadata: {
-        surface: resolveSessionSurface(this.options.sessionKey, this.options.sessionType),
-      },
-    });
-  }
 }

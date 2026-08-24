@@ -383,18 +383,21 @@ export class FeishuBot {
       isGroup,
     });
 
-    try {
-      const result = await session.handleMessage(userText, {
-        channel,
-        sessionRoute: route,
-        executionScope: createExecutionScopeFromRoute(route),
-        runtimeFeedback,
-      });
-      if (result.text === BUSY_MESSAGE || result.taskOutcome === 'failed') {
-        await this.sender.reply(msg.chatId, result.text);
-      }
-    } finally {
-      this.clearPendingAnswerBySession(key);
+    const result = await session.handleMessage(userText, {
+      channel,
+      sessionRoute: route,
+      executionScope: createExecutionScopeFromRoute(route),
+      runtimeFeedback,
+    });
+    if (result.text === BUSY_MESSAGE) {
+      const queue = this.messageQueue.get(key) ?? [];
+      queue.unshift({ userText, chatId: msg.chatId, senderId: msg.senderId, sessionRoute: route, source: 'user', runtimeFeedback });
+      this.messageQueue.set(key, queue);
+      Logger.info(`[${key}] 主消息处理遇到竞态忙碌，已重新入队`);
+      return;
+    }
+    if (result.visibleToUser && (result.taskOutcome === 'failed' || result.taskOutcome === 'cancelled')) {
+      await this.sender.reply(msg.chatId, result.text);
     }
 
     // 处理忙时排队的消息
@@ -439,7 +442,7 @@ export class FeishuBot {
         Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
         return;
       }
-      if (result.taskOutcome === 'failed') {
+      if (result.visibleToUser && (result.taskOutcome === 'failed' || result.taskOutcome === 'cancelled')) {
         await this.sender.reply(chatId, result.text);
       }
       await this.drainMessageQueue(sessionKey);
@@ -487,26 +490,29 @@ export class FeishuBot {
     });
     const executionScope = createExecutionScopeFromRoute(msg.sessionRoute);
 
-    try {
-      const result = msg.source === 'subagent_feedback'
-        ? await session.handleRuntimeObservation(msg.userText, {
-          channel,
-          sessionRoute: msg.sessionRoute,
-          executionScope,
-          source: 'subagent_result',
-          suppressFinalResponse: shouldSuppressSubAgentObservationReply(msg.userText),
-        })
-        : await session.handleMessage(msg.userText, {
-          channel,
-          sessionRoute: msg.sessionRoute,
-          executionScope,
-          runtimeFeedback: msg.runtimeFeedback,
-        });
-      if (result.taskOutcome === 'failed') {
-        await this.sender.reply(msg.chatId, result.text);
-      }
-    } finally {
-      this.clearPendingAnswerBySession(sessionKey);
+    const result = msg.source === 'subagent_feedback'
+      ? await session.handleRuntimeObservation(msg.userText, {
+        channel,
+        sessionRoute: msg.sessionRoute,
+        executionScope,
+        source: 'subagent_result',
+        suppressFinalResponse: shouldSuppressSubAgentObservationReply(msg.userText),
+      })
+      : await session.handleMessage(msg.userText, {
+        channel,
+        sessionRoute: msg.sessionRoute,
+        executionScope,
+        runtimeFeedback: msg.runtimeFeedback,
+      });
+    if (result.text === BUSY_MESSAGE) {
+      const pending = this.messageQueue.get(sessionKey) ?? [];
+      pending.unshift(msg);
+      this.messageQueue.set(sessionKey, pending);
+      Logger.info(`[${sessionKey}] 排队消息处理遇到竞态忙碌，已重新入队`);
+      return;
+    }
+    if (result.visibleToUser && (result.taskOutcome === 'failed' || result.taskOutcome === 'cancelled')) {
+      await this.sender.reply(msg.chatId, result.text);
     }
 
     // 处理期间可能又有新消息入队，递归排空

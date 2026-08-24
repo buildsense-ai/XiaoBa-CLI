@@ -601,7 +601,8 @@ test('AIService preserves provider fields and non-retryable stop reason on wrapp
   assert.equal(diagnostics?.phase, 'model_request');
   assert.equal(diagnostics?.provider_code, 'invalid_tool_schema');
   assert.equal(diagnostics?.provider_type, 'invalid_request_error');
-  assert.equal(diagnostics?.request_id, 'req_schema_1');
+  assert.match(diagnostics?.request_id || '', /^request_[a-f0-9]{12}$/);
+  assert.notEqual(diagnostics?.request_id, 'req_schema_1');
   assert.equal(diagnostics?.retry?.attempt_count, 1);
   assert.equal(diagnostics?.retry?.retry_count, 0);
   assert.equal(diagnostics?.retry?.stop_reason, 'non_retryable');
@@ -668,6 +669,39 @@ test('AIService records when stream output prevents an otherwise retryable reque
   assert.equal(diagnostics?.retry?.attempt_count, 1);
   assert.equal(diagnostics?.retry?.retry_count, 0);
   assert.equal(diagnostics?.retry?.stop_reason, 'stream_output_started');
+});
+
+
+test('AIService safely wraps a provider error with hostile getters', async () => {
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '0';
+  const service = createTestService();
+  const hostile = new Proxy(Object.freeze({}), {
+    get(_target, property) {
+      if (property === 'message' || property === 'response' || property === 'error'
+        || property === 'cause' || property === 'code' || property === 'name'
+        || property === 'status' || property === 'headers') {
+        throw new Error(`hostile getter: ${String(property)}`);
+      }
+      return undefined;
+    },
+    getPrototypeOf() {
+      throw new Error('hostile prototype');
+    },
+  });
+  (service as any).provider = {
+    chat: async () => { throw hostile; },
+    chatStream: async () => { throw hostile; },
+  };
+
+  await assert.rejects(
+    () => service.chat([]),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /^请求失败:/);
+      assert.doesNotMatch(error.message, /hostile getter|hostile prototype/);
+      return true;
+    },
+  );
 });
 
 function createTestService(): AIService {
