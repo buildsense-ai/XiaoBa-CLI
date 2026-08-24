@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "1.0",
+  "routes": [
+    {
+      "gap": "locate source evidence",
+      "means": "tools",
+      "binding": [
+        "glob",
+        "grep",
+        "read_file"
+      ],
+      "output": "source citations"
+    },
+    {
+      "gap": "derive counts or clusters",
+      "means": "finding-specific script",
+      "binding": [
+        "python read-only collector"
+      ],
+      "output": "collector + JSON/CSV + run log + hashes"
+    },
+    {
+      "gap": "understand cross-component runtime path",
+      "means": "skill",
+      "binding": [
+        "build-code-graph"
+      ],
+      "output": "evidence-backed code graph"
+    },
+    {
+      "gap": "verify local semantics",
+      "means": "tools/scripts",
+      "binding": [
+        "focused test runner"
+      ],
+      "output": "test selection + runtime + TAP/log"
+    },
+    {
+      "gap": "reproduce behavior",
+      "means": "finding-specific script or sub-skill",
+      "binding": [
+        "controlled reproduction"
+      ],
+      "output": "fidelity statement + samples + assertions"
+    },
+    {
+      "gap": "discriminate natural production behavior",
+      "means": "authorized finding-specific script",
+      "binding": [
+        "redacted bounded sampler"
+      ],
+      "output": "shape-only samples + privacy check + stop condition"
+    },
+    {
+      "gap": "challenge completeness",
+      "means": "subagent",
+      "binding": [
+        "independent reviewer"
+      ],
+      "output": "material objections and omitted hypotheses"
+    },
+    {
+      "gap": "create human report",
+      "means": "skill/tool",
+      "binding": [
+        "create-html-report or image PDF renderer"
+      ],
+      "output": "visually accepted PDF"
+    }
+  ]
+}

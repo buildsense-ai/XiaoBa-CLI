@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1.0",
+  "evidence": [
+    {
+      "id": "E-001",
+      "type": "DIRECT",
+      "title": "",
+      "source": "",
+      "acquisitionMethod": "",
+      "collectedAt": "",
+      "hash": null,
+      "redaction": "",
+      "limitations": []
+    }
+  ]
+}

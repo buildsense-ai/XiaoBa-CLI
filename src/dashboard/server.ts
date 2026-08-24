@@ -7,6 +7,10 @@ import { ServiceManager } from './service-manager';
 import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 import { createDashboardAuth } from './auth';
 import { CatsConnectorAutoStart } from './cats-connector-autostart';
+import {
+  startReviewOwnerLifecycle,
+  type ReviewOwnerLifecycle,
+} from '../review/review-owner-lifecycle';
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -20,6 +24,7 @@ export interface UpdateController {
 export interface DashboardControllers {
   updateController?: UpdateController;
   projectRoot?: string;
+  startReviewOwners?: (projectRoot: string) => Promise<ReviewOwnerLifecycle>;
 }
 
 export interface DashboardServerHandle {
@@ -35,6 +40,8 @@ export async function startDashboard(
   const projectRoot = controllers.projectRoot || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined) || process.cwd();
   process.env.XIAOBA_DASHBOARD_PORT = String(port);
   const serviceManager = new ServiceManager(projectRoot);
+  const reviewOwners = await (controllers.startReviewOwners
+    ?? (root => startReviewOwnerLifecycle({ projectRoot: root })))(projectRoot);
 
   app.use(express.json({ limit: '25mb' }));
 
@@ -72,16 +79,6 @@ export async function startDashboard(
     res.sendFile(path.join(frontendPath, 'connector.html'));
   });
 
-  // 优雅退出
-  process.on('SIGINT', () => {
-    serviceManager.stopAll();
-    process.exit(0);
-  });
-  process.on('SIGTERM', () => {
-    serviceManager.stopAll();
-    process.exit(0);
-  });
-
   const server = app.listen(port, '127.0.0.1', () => {
     Logger.success(`\nCatsCo Connector started`);
     if (dashboardApiKey) {
@@ -98,11 +95,20 @@ export async function startDashboard(
   });
   activeServers.push(localhostIpv6Server);
 
+  let stopPromise: Promise<void> | undefined;
   return {
-    async stop(): Promise<void> {
-      catsConnectorAutoStart.stop();
-      serviceManager.stopAll();
-      await Promise.all(activeServers.splice(0).map(closeServer));
+    stop(): Promise<void> {
+      if (!stopPromise) {
+        stopPromise = (async () => {
+          catsConnectorAutoStart.stop();
+          serviceManager.stopAll();
+          await Promise.allSettled([
+            reviewOwners.stop(),
+            ...activeServers.splice(0).map(closeServer),
+          ]);
+        })();
+      }
+      return stopPromise;
     },
   };
 }

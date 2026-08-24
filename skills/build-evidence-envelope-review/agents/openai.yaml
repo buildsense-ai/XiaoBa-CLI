@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build Evidence Envelope Review"
+  short_description: "Drive a Finding to a complete Evidence Envelope and recommend Issue or Close."
+  default_prompt: "Build or continue the Evidence Envelope for this Finding, judge completeness, and recommend Issue or Close only when complete."

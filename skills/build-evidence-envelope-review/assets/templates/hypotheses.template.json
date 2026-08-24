@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0",
+  "hypotheses": [
+    {
+      "id": "H-001",
+      "mechanism": "",
+      "layer": "",
+      "predictions": [],
+      "supportingEvidenceIds": [],
+      "counterEvidenceIds": [],
+      "missingEvidence": [],
+      "status": "UNRESOLVED",
+      "materialToDecision": true,
+      "nextAction": "",
+      "stopCondition": ""
+    }
+  ]
+}
