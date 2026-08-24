@@ -167,12 +167,12 @@ function captureModelErrorDiagnosticsUnsafe(
   );
   const responseId = firstText(
     existing?.response_id,
-    error?.responseId,
-    error?.response_id,
-    responseError?.response_id,
+    safeRead(error, 'responseId'),
+    safeRead(error, 'response_id'),
+    safeRead(responseError, 'response_id'),
   );
-  const terminalEvent = firstText(existing?.terminal_event, error?.terminalEvent);
-  const failurePhase = firstText(existing?.failure_phase, error?.failurePhase);
+  const terminalEvent = firstText(existing?.terminal_event, safeRead(error, 'terminalEvent'));
+  const failurePhase = firstText(existing?.failure_phase, safeRead(error, 'failurePhase'));
   const sourceMessage = firstText(
     safeRead(responseError, 'message'),
     safePath(error, 'response', 'data', 'message'),

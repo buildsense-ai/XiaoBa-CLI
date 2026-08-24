@@ -442,17 +442,13 @@ export class FeishuBot {
         Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
         return;
       }
-      if (result.taskOutcome === 'failed') {
+      if (result.visibleToUser && (result.taskOutcome === 'failed' || result.taskOutcome === 'cancelled')) {
         await this.sender.reply(chatId, result.text);
       }
       await this.drainMessageQueue(sessionKey);
     } finally {
       this.clearPendingAnswerBySession(sessionKey);
     }
-    if (result.visibleToUser && (result.taskOutcome === 'failed' || result.taskOutcome === 'cancelled')) {
-      await this.sender.reply(chatId, result.text);
-    }
-    await this.drainMessageQueue(sessionKey);
   }
 
   private enqueueSubAgentFeedback(

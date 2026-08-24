@@ -695,7 +695,7 @@ describe('AgentSession lifecycle', () => {
   });
 
   test('handleMessage preserves completed tool context when model relay times out', async () => {
-    const { AgentSession, SessionStore } = loadSessionModules();
+    const { AgentSession, SessionStore, MODEL_TIMEOUT_MESSAGE } = loadSessionModules();
     let aiCalls = 0;
     const toolCall = {
       id: 'call_read',
@@ -800,7 +800,8 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('continue');
 
-    assert.equal(result.text, '模型服务暂时不稳定，本次处理未能完成，请稍后继续。');
+    assert.match(result.text, /当前模型额度不足/);
+    assert.match(result.text, /检查模型额度或切换模型/);
     assert.doesNotMatch(result.text, /model budget exceeded|API错误/i);
   });
 
@@ -817,7 +818,8 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('continue');
 
-    assert.equal(result.text, '模型服务暂时不稳定，本次处理未能完成，请稍后继续。');
+    assert.match(result.text, /当前模型额度不足/);
+    assert.match(result.text, /检查模型额度或切换模型/);
   });
 
   test('handleMessage does not treat unrelated 402 text as relay budget exhaustion', async () => {
@@ -833,7 +835,7 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('continue');
 
-    assert.match(result.text, /模型拒绝了本轮请求格式/);
+    assert.match(result.text, /模型未能处理本次请求/);
     assert.doesNotMatch(result.text, /额度不足|补充额度/);
   });
 
@@ -853,7 +855,8 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('continue');
 
-    assert.equal(result.text, '模型服务暂时不稳定，本次处理未能完成，请稍后继续。');
+    assert.match(result.text, /当前模型 MiniMax-M3 的服务临时异常/);
+    assert.match(result.text, /稍后重试|切换到其他模型/);
     assert.doesNotMatch(result.text, /unknown error|request_id|API错误|520/);
   });
 
@@ -870,7 +873,7 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('继续');
 
-    assert.equal(result.text, '模型服务暂时不稳定，本次处理未能完成，请稍后继续。');
+    assert.match(result.text, /当前请求较多，请稍等片刻再试/);
     assert.doesNotMatch(result.text, /429|状态码|错误编号/);
   });
 
@@ -896,12 +899,13 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('继续');
 
-    assert.equal(result.text, '模型服务暂时不稳定，系统已尝试自动恢复但仍未成功，请稍后继续。');
+    assert.match(result.text, /模型服务暂时不可用/);
+    assert.match(result.text, /已自动重试 1 次/);
     assert.doesNotMatch(result.text, /503|状态码|错误编号/);
   });
 
   test('handleMessage tells the user how to recover after empty model responses are exhausted', async () => {
-    const { AgentSession } = loadSessionModules();
+    const { AgentSession, EMPTY_MODEL_RESPONSE_MESSAGE } = loadSessionModules();
     const session = new AgentSession('catscompany:lifecycle-empty-model-response', buildMockServices({
       aiService: {
         async chatStream() {
@@ -939,7 +943,8 @@ describe('AgentSession lifecycle', () => {
 
     const result = await session.handleMessage('继续');
 
-    assert.equal(result.text, '模型服务暂时不稳定，本次处理未能完成，请稍后继续。');
+    assert.match(result.text, /当前模型 gpt-5\.5 的服务临时异常/);
+    assert.match(result.text, /稍后重试|切换到其他模型/);
     assert.doesNotMatch(result.text, /API错误|状态码|503/);
   });
 
@@ -982,7 +987,7 @@ describe('AgentSession lifecycle', () => {
     const result = await session.handleMessage('继续');
 
     assert.equal(result.taskOutcome, 'failed');
-    assert.match(result.text, /上游模型拒绝了本轮请求/);
+    assert.match(result.text, /模型未能处理本次请求/);
     assert.match(result.text, /已自动重试 2 次/);
     const logPath = (session as any).sessionTurnLogger.getLogFilePath();
     const entries = fs.readFileSync(logPath, 'utf8')
@@ -1054,7 +1059,7 @@ describe('AgentSession lifecycle', () => {
     (session as any).lifecycleManager.saveContext = () => false;
 
     const result = await session.handleMessage('继续');
-    assert.match(result.text, /模型中转请求超时/);
+    assert.match(result.text, /模型响应超时/);
     assert.match(result.text, /本轮已有部分进度，但持久化失败/);
     assert.doesNotMatch(result.text, /已经保留上下文|已保存，可直接说/);
     const logPath = (session as any).sessionTurnLogger.getLogFilePath();
@@ -1116,7 +1121,7 @@ describe('AgentSession lifecycle', () => {
     const result = await session.handleMessage('继续');
     assert.equal(result.taskOutcome, 'failed');
     assert.equal(result.visibleToUser, true);
-    assert.match(result.text, /未识别的异常/);
+    assert.match(result.text, /本次处理未能完成，请稍后再试/);
     assert.doesNotMatch(result.text, /hostile getter must not escape/);
   });
 

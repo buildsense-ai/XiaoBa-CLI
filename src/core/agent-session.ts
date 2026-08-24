@@ -46,7 +46,6 @@ import { parseSessionKeyV2 } from './session-router';
 import {
   classifyModelError,
   isModelImageSafetyError,
-  type ModelErrorCategory,
 } from '../utils/model-error-classifier';
 import {
   readModelErrorDiagnostics,
@@ -1350,12 +1349,11 @@ export class AgentSession {
   private formatRelayBudgetErrorReply(error: any): string | null {
     const text = safeErrorText(error);
     const status = this.extractErrorStatus(error);
-    return (
-      status === 402
+    const isBudgetError = status === 402
       || /api错误\s*\(402\)|status(?:\s*code)?\s*[:=]?\s*402\b|http(?:\s*status)?\s*[:=]?\s*402\b|payment[_\s-]?required/i.test(text)
       || /budget exceeded|quota exceeded|insufficient quota|insufficient balance|credits? exhausted|monthly budget|model budget|relay budget/i.test(text)
-      || /额度.{0,12}(不足|用完|耗尽|超限|达到上限|已用尽)|余额不足|已达.*额度上限/.test(text)
-    );
+      || /额度.{0,12}(不足|用完|耗尽|超限|达到上限|已用尽)|余额不足|已达.*额度上限/.test(text);
+    return isBudgetError ? '当前模型额度不足，请检查模型额度或切换模型后重试。' : null;
   }
 
   private extractErrorStatus(error: any): number | null {

@@ -464,7 +464,6 @@ export class AIService {
       const parsed = Number(status);
       return Number.isFinite(parsed) ? parsed : null;
     }
-    const text = String(error?.message || error || '');
     const text = safeErrorString(safeErrorProperty(error, 'message'), safeErrorString(error));
     const match = text.match(/(?:API错误|HTTP|status(?:\s*code)?)\s*[\(:= ]\s*(\d{3})\b/i);
     if (match) {
