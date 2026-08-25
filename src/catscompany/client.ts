@@ -4,6 +4,7 @@ import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import { Logger } from '../utils/logger';
 import { uploadCatsLocalFile, type UploadResult } from './upload';
+import { fallbackCatsCoHttpBaseUrl, fallbackCatsCoServerUrl, isCatsCoNetworkFailure } from './endpoint-failover';
 
 export type { UploadResult } from './upload';
 
@@ -280,6 +281,7 @@ export class CatsClient extends EventEmitter {
   private supportsClientMessageDedupe = false;
   public supportsThinToolRpc = false;
   private awaitingReady = false;
+  private endpointFailoverApplied = false;
 
   public uid = '';
   public name = '';
@@ -368,6 +370,7 @@ export class CatsClient extends EventEmitter {
     this.ws.on('error', (err: Error) => {
       const errorCode = String((err as any)?.code || (err as any)?.cause?.code || '').trim();
       this.lastTransportError = oneLine(errorCode ? `${errorCode}: ${err.message}` : err.message);
+      this.applyEndpointFailover(err);
       this.emit('error', err);
     });
     this.ws.on('close', (code: number, reason: Buffer) => {
@@ -383,6 +386,9 @@ export class CatsClient extends EventEmitter {
       );
       this.clearConnectTimeout();
       this.clearReadyTimeout();
+      if (this.disconnectCause === 'connect_timeout' || this.disconnectCause === 'heartbeat_timeout') {
+        this.applyEndpointFailover(Object.assign(new Error(this.disconnectCause), { code: 'ETIMEDOUT' }));
+      }
       this.awaitingReady = false;
       this.stopHeartbeat();
       this.ws = null;
@@ -647,7 +653,7 @@ export class CatsClient extends EventEmitter {
       url.searchParams.set('before_id', String(options.beforeId));
     }
 
-    const res = await fetch(url, {
+    const res = await this.fetchHttp(url.pathname + url.search, {
       headers: {
         Authorization: `ApiKey ${this.config.apiKey}`,
         'User-Agent': CATSCOMPANY_CLIENT_UA,
@@ -994,8 +1000,7 @@ export class CatsClient extends EventEmitter {
   }
 
   private async acceptFriendRequest(userId: number): Promise<void> {
-    const httpBaseUrl = this.config.httpBaseUrl || 'https://app.catsco.cc';
-    const res = await fetch(`${httpBaseUrl}/api/friends/accept`, {
+    const res = await this.fetchHttp('/api/friends/accept', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1024,7 +1029,7 @@ export class CatsClient extends EventEmitter {
   }
 
   async registerDevice(registration: CatsDeviceRegistration): Promise<unknown> {
-    const res = await fetch(`${this.httpBaseUrl()}/api/devices/register`, {
+    const res = await this.fetchHttp('/api/devices/register', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1215,6 +1220,17 @@ export class CatsClient extends EventEmitter {
     }, delay);
   }
 
+  private applyEndpointFailover(error: unknown): void {
+    if (this.endpointFailoverApplied || !isCatsCoNetworkFailure(error)) return;
+    const fallbackServerUrl = fallbackCatsCoServerUrl(this.config.serverUrl);
+    const fallbackHttpBaseUrl = fallbackCatsCoHttpBaseUrl(this.config.httpBaseUrl || inferHttpBaseUrl(this.config.serverUrl));
+    if (!fallbackServerUrl && !fallbackHttpBaseUrl) return;
+    if (fallbackServerUrl) this.config.serverUrl = fallbackServerUrl;
+    if (fallbackHttpBaseUrl) this.config.httpBaseUrl = fallbackHttpBaseUrl;
+    this.endpointFailoverApplied = true;
+    Logger.warning('[CatsCompany] app.catsco.cc 网络不可用，已切换备用 app.catsco.cn endpoint');
+  }
+
   private resubscribeTopics(): void {
     if (this.subscribedTopics.size > 0) {
       Logger.info(`[CatsCompany] 重新订阅 ${this.subscribedTopics.size} 个会话`);
@@ -1226,6 +1242,24 @@ export class CatsClient extends EventEmitter {
 
   private httpBaseUrl(): string {
     return this.config.httpBaseUrl || inferHttpBaseUrl(this.config.serverUrl) || 'https://app.catsco.cc';
+  }
+
+  private async fetchHttp(pathname: string, init: RequestInit): Promise<Response> {
+    const candidates = [this.httpBaseUrl(), fallbackCatsCoHttpBaseUrl(this.httpBaseUrl())].filter(
+      (value, index, all): value is string => Boolean(value) && all.indexOf(value) === index,
+    );
+    let lastError: any;
+    for (const candidate of candidates) {
+      try {
+        return await fetch(`${candidate.replace(/\/+$/, '')}${pathname}`, init);
+      } catch (error: any) {
+        lastError = error;
+        if (!isCatsCoNetworkFailure(error) || candidate === candidates[candidates.length - 1]) throw error;
+        this.config.httpBaseUrl = candidate.replace('app.catsco.cc', 'app.catsco.cn');
+        Logger.warning('[CatsCompany] HTTP 请求切换备用 app.catsco.cn endpoint');
+      }
+    }
+    throw lastError || new Error('CatsCo HTTP endpoint unavailable');
   }
 
   disconnect(): void {

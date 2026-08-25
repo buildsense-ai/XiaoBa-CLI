@@ -137,6 +137,13 @@
     if (node) node.textContent = value == null || value === '' ? '—' : String(value);
   };
 
+  function getCatsCoWebAppUrl() {
+    const configured = String(state.cats?.httpBaseUrl || '').trim().replace(/\/+$/, '');
+    return configured === 'https://app.catsco.cn' || configured === 'https://app.catsco.cc'
+      ? configured
+      : 'https://app.catsco.cc';
+  }
+
   async function request(path, init = {}) {
     const headers = new Headers(init.headers || {});
     headers.set('Accept', 'application/json');
@@ -265,6 +272,8 @@
     $('progress-list').hidden = view.key !== 'connecting';
     $('error-card').hidden = view.key !== 'error';
     $('webapp-button').hidden = view.key !== 'ready';
+    $('webapp-button').href = getCatsCoWebAppUrl();
+    $('webapp-login-link').href = getCatsCoWebAppUrl();
     $('logout-button').hidden = view.key === 'auth' || (!cats.connected && !cats.tokenPresent);
     $('retry-button').hidden = view.key !== 'error';
     $('close-hint').hidden = view.key !== 'ready';
@@ -289,9 +298,9 @@
   async function openWebAppFromDashboard() {
     try {
       if (window.catscoDesktop?.openWebApp) {
-        await window.catscoDesktop.openWebApp();
+        await window.catscoDesktop.openWebApp(getCatsCoWebAppUrl());
       } else {
-        window.open('https://app.catsco.cc', '_blank', 'noopener,noreferrer');
+        window.open(getCatsCoWebAppUrl(), '_blank', 'noopener,noreferrer');
       }
     } finally {
       await window.catscoDesktop?.hideWindow?.();

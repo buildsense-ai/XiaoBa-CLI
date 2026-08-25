@@ -105,13 +105,26 @@ import {
   bindWeixinChannelToCurrentAgent,
   getWeixinChannelStatus,
 } from '../weixin-channel-binding';
+import {
+  FALLBACK_CATSCO_HTTP_BASE_URL,
+  FALLBACK_CATSCO_WS_URL,
+  catsCoHttpBaseUrlCandidates,
+  isCatsCoNetworkFailure,
+} from '../../catscompany/endpoint-failover';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
 const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
 const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
-const TRUSTED_CATSCO_HTTP_ORIGINS = new Set([new URL(DEFAULT_CATSCO_HTTP_BASE_URL).origin]);
+const TRUSTED_CATSCO_HTTP_ORIGINS = new Set([
+  new URL(DEFAULT_CATSCO_HTTP_BASE_URL).origin,
+  new URL(FALLBACK_CATSCO_HTTP_BASE_URL).origin,
+]);
 const TRUSTED_CATSCO_WS_URL = new URL(DEFAULT_CATSCO_WS_URL);
+const TRUSTED_CATSCO_WS_ORIGINS = new Set([
+  TRUSTED_CATSCO_WS_URL.origin,
+  new URL(FALLBACK_CATSCO_WS_URL).origin,
+]);
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
 const PROMPT_EDITOR_SKILL_NAME = 'catsco-prompt-editor';
@@ -327,7 +340,7 @@ function normalizeTrustedCatsServerUrl(value: unknown): string {
   }
 
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
-  if (url.origin === TRUSTED_CATSCO_WS_URL.origin && pathname === TRUSTED_CATSCO_WS_URL.pathname) {
+  if (TRUSTED_CATSCO_WS_ORIGINS.has(url.origin) && pathname === TRUSTED_CATSCO_WS_URL.pathname) {
     return `${url.protocol}//${url.host}${pathname}`;
   }
   if (canUseLocalCatsCoEndpoint() && isLoopbackHost(url.hostname)) {
@@ -553,29 +566,36 @@ async function catsRequest(
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const controller = options.timeoutMs ? new AbortController() : undefined;
-  const timeout = controller
-    ? setTimeout(() => controller.abort(), options.timeoutMs)
-    : undefined;
-  let response: Response;
-
-  try {
-    response = await fetch(`${httpBaseUrl}${apiPath}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: controller?.signal,
-    });
-  } catch (error: any) {
-    if (error?.name === 'AbortError') {
-      const timeoutError = new Error(`连接 CatsCo/CatsCompany 服务 ${hostLabel(httpBaseUrl)} 超时`);
-      (timeoutError as any).status = 408;
-      throw timeoutError;
+  const candidates = catsCoHttpBaseUrlCandidates(httpBaseUrl);
+  let response: Response | undefined;
+  let lastNetworkError: Error | undefined;
+  for (const candidate of candidates) {
+    const controller = options.timeoutMs ? new AbortController() : undefined;
+    const timeout = controller
+      ? setTimeout(() => controller.abort(), options.timeoutMs)
+      : undefined;
+    try {
+      response = await fetch(`${candidate}${apiPath}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller?.signal,
+      });
+      break;
+    } catch (error: any) {
+      const normalized = error?.name === 'AbortError'
+        ? Object.assign(new Error(`连接 CatsCo/CatsCompany 服务 ${hostLabel(candidate)} 超时`), { status: 408 })
+        : createCatsNetworkError(error, candidate);
+      if (!isCatsCoNetworkFailure(error) || candidate === candidates[candidates.length - 1]) {
+        throw normalized;
+      }
+      lastNetworkError = normalized;
+      Logger.warning(`[CatsCo] ${hostLabel(candidate)} 不可用，切换备用域名 app.catsco.cn`);
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
-    throw createCatsNetworkError(error, httpBaseUrl);
-  } finally {
-    if (timeout) clearTimeout(timeout);
   }
+  if (!response) throw lastNetworkError || createCatsNetworkError(new Error('no endpoint'), httpBaseUrl);
 
   const text = await response.text();
   let data: any = {};
@@ -644,14 +664,27 @@ async function catsApiKeyRequest(
   apiKey: string,
   body?: unknown,
 ): Promise<any> {
-  const response = await fetch(`${httpBaseUrl}${apiPath}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `ApiKey ${apiKey}`,
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let response: Response | undefined;
+  let lastError: Error | undefined;
+  const candidates = catsCoHttpBaseUrlCandidates(httpBaseUrl);
+  for (const candidate of candidates) {
+    try {
+      response = await fetch(`${candidate}${apiPath}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `ApiKey ${apiKey}`,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      break;
+    } catch (error: any) {
+      lastError = createCatsNetworkError(error, candidate);
+      if (!isCatsCoNetworkFailure(error) || candidate === candidates[candidates.length - 1]) throw lastError;
+      Logger.warning(`[CatsCo] ${hostLabel(candidate)} 不可用，切换备用域名 app.catsco.cn`);
+    }
+  }
+  if (!response) throw lastError || createCatsNetworkError(new Error('no endpoint'), httpBaseUrl);
 
   const text = await response.text();
   let data: any = {};

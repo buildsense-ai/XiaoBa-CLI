@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../utils/logger';
 import { RuntimePlanSnapshot } from '../core/plan-runtime';
+import { catsCoHttpBaseUrlCandidates, isCatsCoNetworkFailure } from './endpoint-failover';
 
 const MAX_MSG_LENGTH = 4000;
 const IDEAL_REPLY_SEGMENT_LENGTH = 520;
@@ -153,16 +154,26 @@ export class MessageSender {
 
   private async sendViaHttp(body: CatsSendBody): Promise<{ seq_id: number }> {
     try {
-      const url = `${this.baseUrl}/api/messages/send`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `ApiKey ${this.apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(10000),
-      });
+      let res: Response | undefined;
+      const bases = catsCoHttpBaseUrlCandidates(this.baseUrl);
+      for (const base of bases) {
+        try {
+          res = await fetch(`${base}/api/messages/send`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `ApiKey ${this.apiKey}`,
+            },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(10000),
+          });
+          break;
+        } catch (error: any) {
+          if (!isCatsCoNetworkFailure(error) || base === bases[bases.length - 1]) throw error;
+          Logger.warning('[CatsCompany] HTTP 消息兜底切换备用 app.catsco.cn endpoint');
+        }
+      }
+      if (!res) throw new Error('CatsCo HTTP endpoint unavailable');
 
       if (!res.ok) {
         const errText = await res.text();

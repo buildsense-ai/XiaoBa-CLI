@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Readable } from 'stream';
 import { Logger } from '../utils/logger';
+import { catsCoHttpBaseUrlCandidates, isCatsCoNetworkFailure } from './endpoint-failover';
 
 export type CatsUploadType = 'image' | 'file';
 
@@ -58,9 +59,8 @@ export async function uploadCatsLocalFile(options: {
     throw new Error(`不是可上传的文件: ${resolvedPath}`);
   }
 
-  const httpBaseUrl = options.httpBaseUrl.replace(/\/$/, '');
+  const httpBaseUrls = catsCoHttpBaseUrlCandidates(options.httpBaseUrl.replace(/\/$/, ''));
   const uploadType = options.type || inferCatsUploadType(resolvedPath);
-  const url = `${httpBaseUrl}/api/upload?type=${uploadType}`;
   const filename = path.basename(resolvedPath);
   const mimeType = MIME_BY_EXT[path.extname(filename).toLowerCase()] || 'application/octet-stream';
   const boundary = `----CatsCoFormBoundary${crypto.randomBytes(16).toString('hex')}`;
@@ -88,18 +88,30 @@ export async function uploadCatsLocalFile(options: {
   try {
     Logger.info(`[CatsCompany] 开始上传文件: ${filename}, type=${uploadType}, size=${stat.size} bytes, mime=${mimeType}`);
 
-    const requestInit: RequestInit & { duplex?: 'half' } = {
-      method: 'POST',
-      headers: {
-        Authorization: options.authHeader,
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'Content-Length': String(contentLength),
-      },
-      body: Readable.from(multipartBody()) as any,
-      duplex: 'half',
-      signal: AbortSignal.timeout(options.timeoutMs || uploadTimeoutMs(stat.size)),
-    };
-    const res = await fetch(url, requestInit);
+    let res: Response | undefined;
+    let lastError: any;
+    for (const baseUrl of httpBaseUrls) {
+      const requestInit: RequestInit & { duplex?: 'half' } = {
+        method: 'POST',
+        headers: {
+          Authorization: options.authHeader,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': String(contentLength),
+        },
+        body: Readable.from(multipartBody()) as any,
+        duplex: 'half',
+        signal: AbortSignal.timeout(options.timeoutMs || uploadTimeoutMs(stat.size)),
+      };
+      try {
+        res = await fetch(`${baseUrl}/api/upload?type=${uploadType}`, requestInit);
+        break;
+      } catch (error: any) {
+        lastError = error;
+        if (!isCatsCoNetworkFailure(error) || baseUrl === httpBaseUrls[httpBaseUrls.length - 1]) throw error;
+        Logger.warning(`[CatsCompany] ${baseUrl} 上传链路不可用，切换备用域名 app.catsco.cn`);
+      }
+    }
+    if (!res) throw lastError || new Error('upload endpoint unavailable');
 
     if (!res.ok) {
       const errorText = await res.text();

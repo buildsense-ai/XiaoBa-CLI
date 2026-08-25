@@ -20,8 +20,11 @@ if (shouldDisableHardwareAcceleration()) {
 
 const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
 const DEEP_LINK_PROTOCOL = 'catsco';
-const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set(['https://app.catsco.cc']);
-const CATSCO_WEBAPP_URL = 'https://app.catsco.cc';
+const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set(['https://app.catsco.cc', 'https://app.catsco.cn']);
+// Keep .cc canonical. CATSCO_WEBAPP_URL is an explicit operator override for
+// migration/testing; endpoint failover for API and WebSocket traffic happens
+// inside the runtime client.
+const CATSCO_WEBAPP_URL = normalizeCatsCoWebAppUrl(process.env.CATSCO_WEBAPP_URL);
 let mainWindow = null;
 let tray = null;
 let autoUpdater = null;
@@ -59,6 +62,12 @@ function resolveDashboardPort(value) {
   const port = Number.parseInt(text, 10);
   if (port < 1 || port > 65535) return 3800;
   return port;
+}
+
+function normalizeCatsCoWebAppUrl(value) {
+  const text = String(value || '').trim().replace(/\/+$/, '');
+  if (text === 'https://app.catsco.cn' || text === 'https://app.catsco.cc') return text;
+  return 'https://app.catsco.cc';
 }
 
 function applyConfiguredUserDataPath() {
@@ -646,7 +655,7 @@ function createWindow() {
     }
     try {
       const target = new URL(url);
-      if (target.protocol === 'https:' && target.origin === 'https://app.catsco.cc') {
+      if (target.protocol === 'https:' && TRUSTED_DEEP_LINK_BASE_ORIGINS.has(target.origin)) {
         void shell.openExternal(target.toString());
       }
     } catch (_error) {
@@ -746,10 +755,10 @@ ipcMain.handle('catsco:hide-window', async (event) => {
   return true;
 });
 
-ipcMain.handle('catsco:open-webapp', async (event) => {
+ipcMain.handle('catsco:open-webapp', async (event, requestedUrl) => {
   const owner = BrowserWindow.fromWebContents(event.sender);
   if (owner !== mainWindow) return false;
-  await shell.openExternal(CATSCO_WEBAPP_URL);
+  await shell.openExternal(normalizeCatsCoWebAppUrl(requestedUrl || CATSCO_WEBAPP_URL));
   return true;
 });
 

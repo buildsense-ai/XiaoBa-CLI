@@ -11,6 +11,7 @@ import {
   type BotSkillRef,
   type CustomBotModelDefinition,
 } from './types';
+import { catsCoHttpBaseUrlCandidates, isCatsCoNetworkFailure } from '../catscompany/endpoint-failover';
 
 const CLOUD_MODEL_REQUEST_TIMEOUT_MS = 10_000;
 
@@ -425,18 +426,32 @@ async function cloudDefinitionRequest(
   const httpBaseUrl = String(options.auth.httpBaseUrl || '').trim().replace(/\/+$/, '');
   if (!credential || !httpBaseUrl) return undefined;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), CLOUD_MODEL_REQUEST_TIMEOUT_MS);
+  const candidates = catsCoHttpBaseUrlCandidates(httpBaseUrl);
+  let response: Response | undefined;
+  let lastError: unknown;
   try {
-    const response = await (options.fetchImpl ?? fetch)(`${httpBaseUrl}${apiPath}`, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: authMode === 'owner' ? `Bearer ${credential}` : `ApiKey ${credential}`,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: controller.signal,
-    });
+    for (const candidate of candidates) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), CLOUD_MODEL_REQUEST_TIMEOUT_MS);
+      try {
+        response = await (options.fetchImpl ?? fetch)(`${candidate}${apiPath}`, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: authMode === 'owner' ? `Bearer ${credential}` : `ApiKey ${credential}`,
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: controller.signal,
+        });
+        break;
+      } catch (error) {
+        lastError = error;
+        if (!isCatsCoNetworkFailure(error) || candidate === candidates[candidates.length - 1]) throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    if (!response) throw lastError || new Error('CatsCo cloud endpoint unavailable');
     if ([404, 405, 501].includes(response.status)) return undefined;
     const text = await response.text();
     let data: any = {};
@@ -453,9 +468,7 @@ async function cloudDefinitionRequest(
       throw error;
     }
     return data;
-  } finally {
-    clearTimeout(timeout);
-  }
+  } finally {}
 }
 
 async function cloudModelRequest(
@@ -468,18 +481,32 @@ async function cloudModelRequest(
   const httpBaseUrl = String(options.auth.httpBaseUrl || '').trim().replace(/\/+$/, '');
   if (!apiKey || !httpBaseUrl) return undefined;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), CLOUD_MODEL_REQUEST_TIMEOUT_MS);
+  const candidates = catsCoHttpBaseUrlCandidates(httpBaseUrl);
+  let response: Response | undefined;
+  let lastError: unknown;
   try {
-    const response = await (options.fetchImpl ?? fetch)(`${httpBaseUrl}${apiPath}`, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `ApiKey ${apiKey}`,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: controller.signal,
-    });
+    for (const candidate of candidates) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), CLOUD_MODEL_REQUEST_TIMEOUT_MS);
+      try {
+        response = await (options.fetchImpl ?? fetch)(`${candidate}${apiPath}`, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `ApiKey ${apiKey}`,
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: controller.signal,
+        });
+        break;
+      } catch (error) {
+        lastError = error;
+        if (!isCatsCoNetworkFailure(error) || candidate === candidates[candidates.length - 1]) throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    if (!response) throw lastError || new Error('CatsCo cloud endpoint unavailable');
     if ([404, 405, 501].includes(response.status)) return undefined;
     const text = await response.text();
     let data: any = {};
@@ -494,7 +521,5 @@ async function cloudModelRequest(
       throw new Error(String(data?.error || data?.message || `CatsCo cloud model request failed: ${response.status}`));
     }
     return data;
-  } finally {
-    clearTimeout(timeout);
-  }
+  } finally {}
 }

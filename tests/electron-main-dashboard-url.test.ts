@@ -89,7 +89,7 @@ test('electron registers catsco deep links and forwards connect codes to the loc
 
 test('electron sends trusted CatsCo links to the system browser', () => {
   assert.match(electronMain, /setWindowOpenHandler/);
-  assert.match(electronMain, /target\.origin === 'https:\/\/app\.catsco\.cc'/);
+  assert.match(electronMain, /TRUSTED_DEEP_LINK_BASE_ORIGINS\.has\(target\.origin\)/);
   assert.match(electronMain, /shell\.openExternal\(target\.toString\(\)\)/);
   assert.match(electronMain, /ipcMain\.handle\('catsco:open-webapp'/);
   assert.match(electronMain, /label: '打开 CatsCo WebApp'/);
