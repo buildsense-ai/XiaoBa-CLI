@@ -114,7 +114,6 @@ interface QueuedMessage {
   runtimeFeedback?: RuntimeFeedbackInput[];
   nativeFeishuContext?: NativeFeishuContextHydration;
   clearGeneration?: number;
-  attempts?: number;
   deliveryOnly?: boolean;
   /** Immutable text produced by an already-completed model turn. */
   deliveryText?: string;
@@ -2324,7 +2323,7 @@ export class CatsCompanyBot {
     }
 
     if (!this.tryReserveSessionExecution(sessionKey, session)) {
-      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 0, clearGeneration);
+      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, clearGeneration);
       Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
       return;
     }
@@ -2361,7 +2360,7 @@ export class CatsCompanyBot {
         // flight. Do not deliver a reply, do not requeue, do not mark handled.
         Logger.info(`[${sessionKey}] destroy 已开始，丢弃迟到的子智能体反馈结果`);
       } else if (result.text === BUSY_MESSAGE) {
-        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 0, clearGeneration);
+        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, clearGeneration);
         Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
       } else {
         subAgentManager.markResultObservationHandledForParent(sessionKey, text);
@@ -2417,7 +2416,6 @@ export class CatsCompanyBot {
     senderId: string,
     text: string,
     executionScope?: ParsedCatsMessage['executionScope'],
-    attempts = 0,
     clearGeneration = this.getSessionClearGeneration(sessionKey),
   ): void {
     const queue = this.messageQueue.get(sessionKey) ?? [];
@@ -2434,7 +2432,6 @@ export class CatsCompanyBot {
       receivedAt: Date.now(),
       source: 'subagent_feedback',
       clearGeneration,
-      attempts,
     });
     this.messageQueue.set(sessionKey, queue);
   }
@@ -3243,7 +3240,6 @@ export class CatsCompanyBot {
         }
       }
     } catch (err: any) {
-      const attempts = (msg.attempts ?? 0) + 1;
       if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
         Logger.info(`[${sessionKey}] clear 后不再重试已出队的旧消息`);
       } else if (this.shuttingDown) {
@@ -3263,19 +3259,16 @@ export class CatsCompanyBot {
           executionScope: msg.executionScope,
           clearGeneration,
         });
-      } else if (attempts <= 2) {
-        const pending = this.messageQueue.get(sessionKey) ?? [];
-        pending.unshift({ ...msg, attempts });
-        this.messageQueue.set(sessionKey, pending);
-        retryLater = true;
-        Logger.warning(`[${sessionKey}] 队列消息执行异常，保留等待重试: ${err?.message || err}`);
       } else {
-          this.finishConversationTask(sessionKey, task, {
-            state: 'failed',
-            summary: '任务执行失败',
-            error: '任务执行失败',
-          });
-          Logger.error(`[${sessionKey}] 队列消息连续执行失败，停止重试: ${err?.message || err}`);
+        // Once a queued user turn has entered handleMessage(), the model work
+        // is never recreated by the business queue. AIService owns bounded
+        // retries inside that one request; this layer only closes the task.
+        this.finishConversationTask(sessionKey, task, {
+          state: 'failed',
+          summary: '任务执行失败',
+          error: '任务执行失败',
+        });
+        Logger.error(`[${sessionKey}] 队列消息执行失败，不重新进入模型: ${err?.message || err}`);
         if (clearGeneration === this.getSessionClearGeneration(sessionKey)) {
           await this.sender.reply(msg.topic, '处理消息时出错，请稍后重试。').catch(() => undefined);
         }
