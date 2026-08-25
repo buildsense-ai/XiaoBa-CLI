@@ -1,6 +1,7 @@
 import {
   CatsClient,
   MessageContext,
+  type GroupLifecycleEvent,
   type CatsAgentContextMessage,
   type CatsDeviceRpcMessage,
   type CatsSkillMutationGrantMessage,
@@ -20,6 +21,7 @@ import { MessageSessionManager } from '../core/message-session-manager';
 import {
   AgentServices,
   BUSY_MESSAGE,
+  type HandleMessageResult,
   type DurableRemoteContextEntry,
   RuntimeFeedbackInput,
   SessionCallbacks,
@@ -38,7 +40,7 @@ import { randomUUID } from 'crypto';
 import { hostname, platform } from 'os';
 import { ConfigManager } from '../utils/config';
 import { resolvePrimaryModelVisionCapability } from '../utils/model-capabilities';
-import { createCatsCoSessionRoute } from '../core/session-router';
+import { buildLegacyCatsCoSessionKey, createCatsCoSessionRoute } from '../core/session-router';
 import { ReadTool } from '../tools/read-tool';
 import { GlobTool } from '../tools/glob-tool';
 import { GrepTool } from '../tools/grep-tool';
@@ -114,7 +116,21 @@ interface QueuedMessage {
   clearGeneration?: number;
   attempts?: number;
   deliveryOnly?: boolean;
+  /** Immutable text produced by an already-completed model turn. */
+  deliveryText?: string;
+  /** Original observations represented by deliveryText; never processed by the model again. */
+  deliveryObservations?: string[];
   deliveryAttempts?: number;
+}
+
+interface DeliveryEnvelope {
+  sessionKey: string;
+  topic: string;
+  senderId: string;
+  text: string;
+  observations: string[];
+  executionScope?: ParsedCatsMessage['executionScope'];
+  clearGeneration: number;
 }
 
 interface ActiveConversationTask {
@@ -124,6 +140,7 @@ interface ActiveConversationTask {
 }
 
 interface SubAgentEventRoute {
+  sessionKey?: string;
   topic: string;
   channelSource?: string;
 }
@@ -148,6 +165,12 @@ interface BackgroundSubAgentCompletionBatch {
   items: Map<string, BackgroundSubAgentCompletionItem>;
   timer?: ReturnType<typeof setTimeout>;
 }
+
+export type TopicTerminationReason =
+  | 'access_revoked'
+  | 'group_disbanded'
+  | 'topic_forbidden'
+  | 'topic_not_found';
 
 const TYPING_HEARTBEAT_INTERVAL_MS = 5_000;
 const BACKGROUND_SUBAGENT_COMPLETION_DEBOUNCE_MS = 1_500;
@@ -432,6 +455,8 @@ export class CatsCompanyBot {
   private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
   private messageQueue = new Map<string, QueuedMessage[]>();
+  /** Retry timers that may wake one message queue after a delivery failure. */
+  private messageQueueDrainTimers = new Map<string, Set<ReturnType<typeof setTimeout>>>();
   /** Serializes history hydration and all model turns for one CatsCo session. */
   private sessionExecutionReservations = new Set<string>();
   /** Serializes auxiliary status events so a terminal state cannot overtake its running state. */
@@ -448,6 +473,10 @@ export class CatsCompanyBot {
   private subAgentEventRoutes = new Map<string, SubAgentEventRoute>();
   /** no-wait 子 Agent 完成后的批量回流，避免逐条唤醒主模型刷屏 */
   private subAgentCompletionBatches = new Map<string, BackgroundSubAgentCompletionBatch>();
+  /** Serializes idempotent per-topic termination and fences immediate re-invites. */
+  private topicTerminationTasks = new Map<string, Promise<void>>();
+  /** Remains set after cleanup so duplicate revoke/disband events are no-ops. */
+  private terminatedTopicKeys = new Set<string>();
   /** Bot 自身的 uid，用于过滤自己发出的消息 */
   private botUid: string | null = null;
   private connectorReady = false;
@@ -499,7 +528,12 @@ export class CatsCompanyBot {
       httpBaseUrl: config.httpBaseUrl,
     });
 
-    this.sender = new MessageSender(this.bot, config.httpBaseUrl, config.apiKey);
+    this.sender = new MessageSender(this.bot, config.httpBaseUrl, config.apiKey, {
+      onTopicAccessRevoked: (topic, status) => this.terminateTopic(
+        topic,
+        status === 404 ? 'topic_not_found' : 'topic_forbidden',
+      ),
+    });
     this.localDeviceGrant = createCatsCoLocalDeviceGrant({
       bodyId: config.bodyId,
       installationId: config.installationId,
@@ -561,6 +595,14 @@ export class CatsCompanyBot {
       await this.onMessage(ctx);
     });
 
+    this.bot.on('group_lifecycle', async (event: GroupLifecycleEvent) => {
+      if (this.shuttingDown) return;
+      await this.terminateTopic(
+        event.topic,
+        event.kind === 'disbanded' ? 'group_disbanded' : 'access_revoked',
+      );
+    });
+
     this.bot.on('device_rpc_request', async (request: CatsDeviceRpcMessage) => {
       // Shutdown fence: destroy() 开始后拒绝新的设备 RPC，避免在销毁窗口内
       // 继续执行本地 write_file/edit_file/execute_shell 等副作用工具。
@@ -607,6 +649,7 @@ export class CatsCompanyBot {
       && Array.from(this.messageQueue.values()).every(queue => queue.length === 0)
       && this.cloudSessionRestorePromises.size === 0
       && this.subAgentCompletionBatches.size === 0
+      && (this.topicTerminationTasks?.size ?? 0) === 0
       && this.sessionManager.isIdle();
   }
 
@@ -1439,6 +1482,12 @@ export class CatsCompanyBot {
     if (!msg) return;
 
     const key = msg.envelope.sessionKey;
+    const pendingTermination = this.topicTerminationTasks?.get(key);
+    if (pendingTermination) await pendingTermination;
+    // A server-delivered message after termination is authoritative evidence
+    // that this bot was re-invited. It starts a fresh generation; no old work
+    // survives because terminateTopic already advanced the generation fence.
+    this.terminatedTopicKeys?.delete(key);
 
     this.activeMessageHandlers += 1;
     try {
@@ -1892,6 +1941,63 @@ export class CatsCompanyBot {
     });
   }
 
+  /**
+   * Owns every runtime side effect associated with one CatsCompany group.
+   * The generation is bumped synchronously before any await so late model,
+   * queue and child-agent callbacks become inert immediately.
+   */
+  private terminateTopic(topic: string, reason: TopicTerminationReason): Promise<void> {
+    const normalizedTopic = String(topic || '').trim();
+    if (!normalizedTopic.startsWith('grp_')) return Promise.resolve();
+    const sessionKey = buildLegacyCatsCoSessionKey('group', normalizedTopic, '');
+    const terminationTasks = this.topicTerminationTasks ??= new Map<string, Promise<void>>();
+    const existing = terminationTasks.get(sessionKey);
+    if (existing) return existing;
+    const terminatedTopicKeys = this.terminatedTopicKeys ??= new Set<string>();
+    if (terminatedTopicKeys.has(sessionKey)) return Promise.resolve();
+    terminatedTopicKeys.add(sessionKey);
+
+    this.bumpSessionClearGeneration(sessionKey);
+    this.pendingAttachments.delete(sessionKey);
+    this.messageQueue.delete(sessionKey);
+    this.clearMessageQueueDrainTimers(sessionKey);
+    this.sessionExecutionReservations.delete(sessionKey);
+
+    const restoreController = this.cloudSessionRestoreAbortControllers.get(sessionKey);
+    restoreController?.abort();
+    this.cloudSessionRestoreAbortControllers.delete(sessionKey);
+    this.cloudSessionRestorePromises.delete(sessionKey);
+
+    const batch = this.subAgentCompletionBatches.get(sessionKey);
+    if (batch?.timer) clearTimeout(batch.timer);
+    this.subAgentCompletionBatches.delete(sessionKey);
+
+    const subAgentManager = SubAgentManager.getInstance();
+    for (const [subAgentID, route] of this.subAgentEventRoutes) {
+      if (route.sessionKey === sessionKey || route.topic === normalizedTopic) {
+        this.subAgentEventRoutes.delete(subAgentID);
+      }
+    }
+    subAgentManager.stopAllForParent(sessionKey, `CatsCompany Topic 已终止: ${reason}`);
+
+    this.sessionManager.get(sessionKey)?.requestInterrupt();
+    this.cancelConversationTask(sessionKey, 'Topic 权限已结束，任务已停止');
+
+    const termination = this.sessionManager
+      .terminate(sessionKey, `CatsCompany Topic 已终止: ${reason}`)
+      .catch((error: any) => {
+        Logger.warning(`[${sessionKey}] Topic 终止清理失败: ${error?.message || error}`);
+      })
+      .finally(() => {
+        if (terminationTasks.get(sessionKey) === termination) {
+          terminationTasks.delete(sessionKey);
+        }
+      });
+    terminationTasks.set(sessionKey, termination);
+    Logger.warning(`[${sessionKey}] Topic 生命周期已终止: reason=${reason}`);
+    return termination;
+  }
+
   private enqueueConversationTaskStatus(
     task: ActiveConversationTask,
     status: Omit<ConversationTaskStatusInput, 'run_id'>,
@@ -2232,7 +2338,7 @@ export class CatsCompanyBot {
     };
 
     try {
-      const result = await session.handleRuntimeObservation(text, {
+      const result = await this.processObservationOnce(() => session.handleRuntimeObservation(text, {
         channel,
         callbacks: suppressFinalResponse ? undefined : this.buildSessionCallbacks(topic, {
           sessionKey,
@@ -2246,7 +2352,7 @@ export class CatsCompanyBot {
         localDeviceGrant: this.localDeviceGrant,
         deviceRpc: this.buildDeviceRpcTransport(),
         thinToolRpc: this.maybeBuildThinToolRpcTransport(),
-      });
+      }));
       if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
         Logger.info(`[${sessionKey}] clear 后忽略旧子智能体反馈结果`);
       } else if (this.shuttingDown) {
@@ -2259,18 +2365,21 @@ export class CatsCompanyBot {
         Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
       } else {
         subAgentManager.markResultObservationHandledForParent(sessionKey, text);
-        if (result.text.startsWith('处理消息时出错:')) {
-          try {
-            await this.sender.reply(topic, result.text);
-          } catch (err: any) {
-            Logger.warning(`错误消息发送失败: ${err.message}`);
-          }
-        } else if (result.visibleToUser && result.text) {
-          try {
-            await this.sender.reply(topic, result.text);
-          } catch (err: any) {
-            Logger.warning(`子智能体结果回复发送失败: ${err.message}`);
-          }
+        const deliveryText = result.text.startsWith('处理消息时出错:')
+          ? result.text
+          : result.visibleToUser && result.text
+            ? result.text
+            : '';
+        if (deliveryText) {
+          await this.deliverEnvelope({
+            sessionKey,
+            topic,
+            senderId,
+            text: deliveryText,
+            observations: [text],
+            executionScope,
+            clearGeneration,
+          });
         }
       }
     } catch (err: any) {
@@ -2280,8 +2389,17 @@ export class CatsCompanyBot {
         if (this.shuttingDown) {
           Logger.info(`[${sessionKey}] destroy 已开始，跳过子智能体反馈失败重试`);
         } else {
-          this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 1, clearGeneration);
-          Logger.warning(`[${sessionKey}] 子智能体反馈执行异常，已入队重试: ${err?.message || err}`);
+          subAgentManager.markResultObservationHandledForParent(sessionKey, text);
+          Logger.warning(`[${sessionKey}] 子智能体反馈整合失败，改为固化结果投递: ${err?.message || err}`);
+          await this.deliverEnvelope({
+            sessionKey,
+            topic,
+            senderId,
+            text: `后台子任务已完成，但结果整合失败。原始结果仍可通过 check_subagent 查看。`,
+            observations: [text],
+            executionScope,
+            clearGeneration,
+          });
         }
       }
 
@@ -2319,6 +2437,61 @@ export class CatsCompanyBot {
       attempts,
     });
     this.messageQueue.set(sessionKey, queue);
+  }
+
+  /**
+   * The computation half of sub-agent result handling. Keeping this as an
+   * explicit boundary makes it impossible for delivery retries to accidentally
+   * call the model again.
+   */
+  private async processObservationOnce(
+    run: () => Promise<HandleMessageResult>,
+  ): Promise<HandleMessageResult> {
+    return run();
+  }
+
+  /**
+   * Deliver immutable output from an already-completed model turn. A failed
+   * network send queues this exact envelope; the queue is delivery-only and
+   * therefore cannot re-enter handleRuntimeObservation().
+   */
+  private async deliverEnvelope(envelope: DeliveryEnvelope): Promise<void> {
+    if (this.shuttingDown
+      || envelope.clearGeneration !== this.getSessionClearGeneration(envelope.sessionKey)) {
+      return;
+    }
+
+    try {
+      await this.sender.reply(envelope.topic, envelope.text);
+      return;
+    } catch (err: any) {
+      if (this.shuttingDown
+        || envelope.clearGeneration !== this.getSessionClearGeneration(envelope.sessionKey)) {
+        return;
+      }
+      Logger.warning(`[${envelope.sessionKey}] 固化结果投递失败，改为仅投递重试: ${err?.message || err}`);
+    }
+
+    const queue = this.messageQueue.get(envelope.sessionKey) ?? [];
+    queue.push({
+      userMessage: envelope.observations.join('\n\n'),
+      topic: envelope.topic,
+      senderId: envelope.senderId,
+      seq: 0,
+      executionScope: envelope.executionScope ?? createExecutionScope(createCatsCoMessageEnvelope({
+        topic: envelope.topic,
+        senderId: envelope.senderId,
+        text: envelope.text,
+      })),
+      receivedAt: Date.now(),
+      source: 'subagent_feedback',
+      clearGeneration: envelope.clearGeneration,
+      deliveryOnly: true,
+      deliveryText: envelope.text,
+      deliveryObservations: envelope.observations,
+      deliveryAttempts: 1,
+    });
+    this.messageQueue.set(envelope.sessionKey, queue);
   }
 
   private scheduleSubAgentCompletionBatch(
@@ -2416,7 +2589,7 @@ export class CatsCompanyBot {
       });
       stopTypingHeartbeat = this.startTypingHeartbeat(batch.topic);
 
-      const result = await session.handleRuntimeObservation(observation, {
+      const result = await this.processObservationOnce(() => session.handleRuntimeObservation(observation, {
         channel,
         callbacks: this.buildSessionCallbacks(batch.topic, {
           sessionKey,
@@ -2430,7 +2603,7 @@ export class CatsCompanyBot {
         localDeviceGrant: this.localDeviceGrant,
         deviceRpc: this.buildDeviceRpcTransport(),
         thinToolRpc: this.maybeBuildThinToolRpcTransport(),
-      });
+      }));
       if (batch.clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
         Logger.info(`[${sessionKey}] clear 后忽略旧批量子任务回流结果`);
       } else if (this.shuttingDown) {
@@ -2453,10 +2626,22 @@ export class CatsCompanyBot {
           manager.markResultObservationHandledForParent(sessionKey, item.observation);
         }
 
+        let deliveryText = '';
         if (result.text.startsWith('处理消息时出错:')) {
-          await this.sender.reply(batch.topic, result.text);
+          deliveryText = result.text;
         } else if (result.visibleToUser && result.text) {
-          await this.sender.reply(batch.topic, result.text);
+          deliveryText = result.text;
+        }
+        if (deliveryText) {
+          await this.deliverEnvelope({
+            sessionKey,
+            topic: batch.topic,
+            senderId: batch.senderId,
+            text: deliveryText,
+            observations: items.map(item => item.observation),
+            executionScope: batch.executionScope,
+            clearGeneration: batch.clearGeneration,
+          });
         }
       }
     } catch (err: any) {
@@ -2469,28 +2654,22 @@ export class CatsCompanyBot {
         return;
       }
       const fallback = this.formatSubAgentCompletionNotice(items, activeSubAgents.length);
-      let fallbackDelivered = false;
-      if (fallback) {
-        try {
-          await this.sender.reply(batch.topic, fallback);
-          for (const item of items) {
-            manager.markResultObservationHandledForParent(sessionKey, item.observation);
-          }
-          fallbackDelivered = true;
-        } catch (sendErr: any) {
-          Logger.warning(`后台子任务兜底通知发送失败: ${sendErr.message}`);
-        }
+      // The observation turn already failed once. Freeze a deterministic
+      // envelope and never recreate the batch: delivery retries must not call
+      // the model again.
+      for (const item of items) {
+        manager.markResultObservationHandledForParent(sessionKey, item.observation);
       }
-      if (!fallbackDelivered && batch.clearGeneration === this.getSessionClearGeneration(sessionKey)) {
-        const pendingBatch = this.subAgentCompletionBatches.get(sessionKey);
-        if (pendingBatch && pendingBatch !== batch) {
-          for (const [itemKey, item] of batch.items) pendingBatch.items.set(itemKey, item);
-          pendingBatch.firstAt = Math.min(pendingBatch.firstAt, batch.firstAt);
-          this.rescheduleSubAgentCompletionBatch(sessionKey, pendingBatch);
-        } else {
-          this.subAgentCompletionBatches.set(sessionKey, batch);
-          this.rescheduleSubAgentCompletionBatch(sessionKey, batch);
-        }
+      if (fallback) {
+        await this.deliverEnvelope({
+          sessionKey,
+          topic: batch.topic,
+          senderId: batch.senderId,
+          text: fallback,
+          observations: items.map(item => item.observation),
+          executionScope: batch.executionScope,
+          clearGeneration: batch.clearGeneration,
+        });
       }
     } finally {
       this.releaseSessionExecution(sessionKey);
@@ -2703,7 +2882,7 @@ export class CatsCompanyBot {
 
     const eventType = String(event?.type || '');
     if (eventType === 'agent_spawned') {
-      this.subAgentEventRoutes.set(subAgentId, { topic, channelSource });
+      this.subAgentEventRoutes.set(subAgentId, { sessionKey, topic, channelSource });
     }
     const route = this.subAgentEventRoutes.get(subAgentId);
     const eventTopic = route?.topic || topic;
@@ -2851,6 +3030,27 @@ export class CatsCompanyBot {
     };
   }
 
+  private scheduleMessageQueueDrain(sessionKey: string, delayMs: number): void {
+    const timerRegistry = this.messageQueueDrainTimers ??= new Map<string, Set<ReturnType<typeof setTimeout>>>();
+    const timers = timerRegistry.get(sessionKey) ?? new Set<ReturnType<typeof setTimeout>>();
+    let timer: ReturnType<typeof setTimeout>;
+    timer = setTimeout(() => {
+      timers.delete(timer);
+      if (timers.size === 0) timerRegistry.delete(sessionKey);
+      void this.drainMessageQueue(sessionKey);
+    }, delayMs);
+    timer.unref?.();
+    timers.add(timer);
+    timerRegistry.set(sessionKey, timers);
+  }
+
+  private clearMessageQueueDrainTimers(sessionKey: string): void {
+    const timers = this.messageQueueDrainTimers?.get(sessionKey);
+    if (!timers) return;
+    for (const timer of timers) clearTimeout(timer);
+    this.messageQueueDrainTimers.delete(sessionKey);
+  }
+
   /**
    * 排空消息队列：将忙时积压的消息合并为一条，一次性处理
    */
@@ -2871,7 +3071,7 @@ export class CatsCompanyBot {
     }
 
     const subAgentManager = SubAgentManager.getInstance();
-    const queuedResultObservationHandling = msg.source === 'subagent_feedback'
+    const queuedResultObservationHandling = msg.source === 'subagent_feedback' && !msg.deliveryOnly
       ? subAgentManager.getResultObservationHandlingForParent(sessionKey, msg.userMessage as string)
       : 'silent';
     if (queuedResultObservationHandling === 'drop') {
@@ -2884,6 +3084,7 @@ export class CatsCompanyBot {
 
     const session = this.sessionManager.getOrCreate(sessionKey);
     const suppressSubAgentFinalResponse = msg.source === 'subagent_feedback'
+      && !msg.deliveryOnly
       && queuedResultObservationHandling !== 'notify'
       && shouldSuppressSubAgentObservationReply(msg.userMessage as string);
     if (suppressSubAgentFinalResponse) {
@@ -2903,10 +3104,13 @@ export class CatsCompanyBot {
     if (msg.source === 'subagent_feedback' && msg.deliveryOnly) {
       queue.shift();
       if (queue.length === 0) this.messageQueue.delete(sessionKey);
-      const fallback = `后台子任务已完成，但暂时无法写入主会话上下文：\n\n${String(msg.userMessage)}`;
+      const fallback = msg.deliveryText
+        ?? `后台子任务已完成，但暂时无法写入主会话上下文：\n\n${String(msg.userMessage)}`;
       try {
         await this.sender.reply(msg.topic, fallback);
-        subAgentManager.markResultObservationHandledForParent(sessionKey, msg.userMessage as string);
+        for (const observation of msg.deliveryObservations ?? [String(msg.userMessage)]) {
+          subAgentManager.markResultObservationHandledForParent(sessionKey, observation);
+        }
         await this.drainMessageQueue(sessionKey);
       } catch (err: any) {
         const deliveryAttempts = (msg.deliveryAttempts ?? 0) + 1;
@@ -2917,8 +3121,7 @@ export class CatsCompanyBot {
           this.messageQueue.set(sessionKey, pending);
           const retryDelay = BACKGROUND_SUBAGENT_COMPLETION_DEBOUNCE_MS * (2 ** (deliveryAttempts - 1));
           Logger.warning(`[${sessionKey}] 子智能体结果兜底通知发送失败，将在 ${retryDelay}ms 后重试: ${err?.message || err}`);
-          const timer = setTimeout(() => void this.drainMessageQueue(sessionKey), retryDelay);
-          timer.unref?.();
+          this.scheduleMessageQueueDrain(sessionKey, retryDelay);
         } else {
           Logger.error(`[${sessionKey}] 子智能体结果兜底通知连续失败 ${deliveryAttempts} 次，已停止重试: ${err?.message || err}`);
         }
@@ -2958,7 +3161,7 @@ export class CatsCompanyBot {
           if (!task) return;
         }
         const result = msg.source === 'subagent_feedback'
-          ? await session.handleRuntimeObservation(msg.userMessage as string, {
+          ? await this.processObservationOnce(() => session.handleRuntimeObservation(msg.userMessage as string, {
             channel,
             callbacks: suppressSubAgentFinalResponse ? undefined : this.buildSessionCallbacks(msg.topic, {
               sessionKey,
@@ -2974,7 +3177,7 @@ export class CatsCompanyBot {
             targetRoutes: msg.targetRoutes,
             deviceRpc: this.buildDeviceRpcTransport(),
             thinToolRpc: this.maybeBuildThinToolRpcTransport(),
-          })
+          }))
           : await session.handleMessage(msg.userMessage, {
             channel,
             executionScope: msg.executionScope,
@@ -3010,25 +3213,33 @@ export class CatsCompanyBot {
           Logger.info(`[${sessionKey}] 队列执行遇到竞态忙碌，消息保留等待重试`);
         } else {
           let replyDelivered = true;
-          if (result.text.startsWith('处理消息时出错:')) {
+          const deliveryText = result.text.startsWith('处理消息时出错:')
+            ? result.text
+            : result.visibleToUser && result.text
+              ? result.text
+              : '';
+          if (msg.source === 'subagent_feedback') {
+            subAgentManager.markResultObservationHandledForParent(sessionKey, msg.userMessage as string);
+          }
+          if (deliveryText && msg.source === 'subagent_feedback') {
+            await this.deliverEnvelope({
+              sessionKey,
+              topic: msg.topic,
+              senderId: msg.senderId,
+              text: deliveryText,
+              observations: [String(msg.userMessage)],
+              executionScope: msg.executionScope,
+              clearGeneration,
+            });
+          } else if (deliveryText) {
             try {
-              await this.sender.reply(msg.topic, result.text);
-            } catch (err: any) {
-              replyDelivered = false;
-              Logger.warning(`错误消息发送失败: ${err.message}`);
-            }
-          } else if (result.visibleToUser && result.text) {
-            try {
-              await this.sender.reply(msg.topic, result.text);
+              await this.sender.reply(msg.topic, deliveryText);
             } catch (err: any) {
               replyDelivered = false;
               Logger.warning(`队列消息回复发送失败: ${err.message}`);
             }
           }
           this.finishConversationTask(sessionKey, task, this.taskStatusForResult(result, replyDelivered));
-          if (msg.source === 'subagent_feedback') {
-            subAgentManager.markResultObservationHandledForParent(sessionKey, msg.userMessage as string);
-          }
         }
       }
     } catch (err: any) {
@@ -3039,6 +3250,19 @@ export class CatsCompanyBot {
         // Shutdown fence: destroy() 已开始时不再重试或发送错误提示，避免越过
         // 销毁边界继续产生副作用。
         Logger.info(`[${sessionKey}] destroy 已开始，跳过队列消息失败重试`);
+      } else if (msg.source === 'subagent_feedback') {
+        // A sub-agent observation is computed at most once. If computation
+        // fails, freeze a deterministic notice and retry only its delivery.
+        subAgentManager.markResultObservationHandledForParent(sessionKey, msg.userMessage as string);
+        await this.deliverEnvelope({
+          sessionKey,
+          topic: msg.topic,
+          senderId: msg.senderId,
+          text: `后台子任务已完成，但结果整合失败。原始结果仍可通过 check_subagent 查看。`,
+          observations: [String(msg.userMessage)],
+          executionScope: msg.executionScope,
+          clearGeneration,
+        });
       } else if (attempts <= 2) {
         const pending = this.messageQueue.get(sessionKey) ?? [];
         pending.unshift({ ...msg, attempts });
@@ -3052,12 +3276,7 @@ export class CatsCompanyBot {
             error: '任务执行失败',
           });
           Logger.error(`[${sessionKey}] 队列消息连续执行失败，停止重试: ${err?.message || err}`);
-        if (msg.source === 'subagent_feedback') {
-          const pending = this.messageQueue.get(sessionKey) ?? [];
-          pending.unshift({ ...msg, attempts, deliveryOnly: true });
-          this.messageQueue.set(sessionKey, pending);
-          retryLater = true;
-        } else if (clearGeneration === this.getSessionClearGeneration(sessionKey)) {
+        if (clearGeneration === this.getSessionClearGeneration(sessionKey)) {
           await this.sender.reply(msg.topic, '处理消息时出错，请稍后重试。').catch(() => undefined);
         }
       }
@@ -3067,8 +3286,7 @@ export class CatsCompanyBot {
     }
 
     if (retryLater) {
-      const timer = setTimeout(() => void this.drainMessageQueue(sessionKey), 100);
-      timer.unref?.();
+      this.scheduleMessageQueueDrain(sessionKey, 100);
       return;
     }
     await this.drainMessageQueue(sessionKey);
@@ -3186,8 +3404,12 @@ export class CatsCompanyBot {
     // 保证 shutdown 开始后 drainMessageQueue / beginConversationTask 不再消费或新建任务。
     this.pendingAttachments.clear();
     this.messageQueue.clear();
+    for (const sessionKey of this.messageQueueDrainTimers?.keys() ?? []) {
+      this.clearMessageQueueDrainTimers(sessionKey);
+    }
     this.sessionExecutionReservations?.clear();
     this.sessionClearGenerations?.clear();
+    this.terminatedTopicKeys?.clear();
     for (const controller of this.cloudSessionRestoreAbortControllers?.values() ?? []) controller.abort();
     this.cloudSessionRestoreAbortControllers?.clear();
     this.subAgentEventRoutes.clear();
@@ -3205,6 +3427,8 @@ export class CatsCompanyBot {
     // cloud restore / hydration) that resume after shutdown cannot start the
     // model (review 2026-08-05).
     await this.waitForActiveHandlersToQuiesce();
+    await Promise.allSettled([...(this.topicTerminationTasks?.values() ?? [])]);
+    this.topicTerminationTasks?.clear();
     // Stop any still-running sub-agents up front. Their own model turns do not
     // pass through runTrackedConversationWork (they run inside the agent
     // session), so an active sub-agent could otherwise keep calling the model

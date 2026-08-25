@@ -24,6 +24,7 @@ import {
   attachRetrySummary,
   captureModelErrorDiagnostics,
 } from './model-error-observability';
+import { createHash } from 'crypto';
 
 /**
  * AI 服务 - 统一的 AI 调用入口
@@ -79,6 +80,8 @@ interface ModelAttemptRun {
 }
 
 export class AIService {
+  /** Process-wide: one rejected credential must stop every runtime using it. */
+  private static readonly openAuthCircuits = new Set<string>();
   private config: ChatConfig;
   private provider: AIProvider;
 
@@ -150,6 +153,7 @@ export class AIService {
     if (!this.config.apiKey) {
       throw new Error('API密钥未配置。请先运行: catsco config');
     }
+    this.assertAuthCircuitClosed();
 
     const prepared = this.prepareProviderRequest(messages);
     try {
@@ -161,6 +165,7 @@ export class AIService {
         this.createModelAttemptRun(prepared.messages, tools, false, options, prepared.summary),
       );
     } catch (error: any) {
+      this.openAuthCircuitIfRejected(error);
       throw this.wrapError(error);
     }
   }
@@ -179,6 +184,7 @@ export class AIService {
     if (!this.config.apiKey) {
       throw new Error('API密钥未配置。请先运行: catsco config');
     }
+    this.assertAuthCircuitClosed();
 
     const allowStreamRetry = process.env.GAUZ_STREAM_RETRY === 'true';
     const prepared = this.prepareProviderRequest(messages);
@@ -220,6 +226,7 @@ export class AIService {
       callbacks?.onComplete?.(result);
       return result;
     } catch (error: any) {
+      this.openAuthCircuitIfRejected(error);
       const wrapped = this.wrapError(error);
       callbacks?.onError?.(wrapped);
       throw wrapped;
@@ -236,6 +243,44 @@ export class AIService {
         if (text) onText(text);
       },
     };
+  }
+
+  private authCircuitKey(): string {
+    return createHash('sha256')
+      .update(`${this.config.provider ?? ''}\0${this.config.apiUrl ?? ''}\0${this.config.apiKey ?? ''}`)
+      .digest('hex');
+  }
+
+  private assertAuthCircuitClosed(): void {
+    if (!AIService.openAuthCircuits.has(this.authCircuitKey())) return;
+    const error = new Error('模型认证已被上游拒绝；认证熔断已打开，请更新凭据并重建运行时。');
+    (error as Error & { status?: number; code?: string }).status = 401;
+    (error as Error & { status?: number; code?: string }).code = 'AUTH_CIRCUIT_OPEN';
+    throw error;
+  }
+
+  private openAuthCircuitIfRejected(error: any): void {
+    const status = this.extractStatus(error);
+    if (status !== null) {
+      if (status !== 401) return;
+    } else {
+      const message = [
+        error?.response?.data?.error?.code,
+        error?.response?.data?.error?.type,
+        error?.response?.data?.error?.message,
+        error?.error?.code,
+        error?.error?.type,
+        error?.error?.message,
+        error?.code,
+        error?.message,
+      ].filter(Boolean).join(' ');
+      if (!/auth(?:entication)?[_\s-]?(?:invalid|error|failed)|invalid[_\s-]?api[_\s-]?key|unauthorized/i.test(message)) {
+        return;
+      }
+    }
+
+    AIService.openAuthCircuits.add(this.authCircuitKey());
+    Logger.error(`模型认证熔断已打开 | Provider: ${this.config.provider} | Model: ${this.config.model}`);
   }
 
   private prepareProviderRequest(messages: Message[]): ReturnType<typeof prepareProviderRequestMessages> {

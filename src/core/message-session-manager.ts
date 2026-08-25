@@ -29,6 +29,7 @@ export class MessageSessionManager {
   private static managers = new Map<string, MessageSessionManager>();
   private sessions = new Map<string, AgentSession>();
   private destroying = new Set<string>();
+  private terminationTasks = new Map<string, Promise<void>>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private ttl: number;
   private contextInjector: ((session: AgentSession) => void) | null = null;
@@ -115,6 +116,39 @@ export class MessageSessionManager {
     return true;
   }
 
+  /**
+   * Terminates one live session without deleting its persisted history.
+   * The caller owns platform queues/timers; this method owns the AgentSession
+   * and its child-agent cleanup.
+   */
+  async terminate(input: SessionKeyInput, reason = '会话生命周期结束'): Promise<void> {
+    const { key } = this.normalizeSessionInput(input);
+    const existing = this.terminationTasks.get(key);
+    if (existing) return existing;
+    if (this.destroying.has(key)) return;
+
+    const session = this.sessions.get(key);
+    this.destroying.add(key);
+    this.sessions.delete(key);
+    const task = Promise.resolve().then(async () => {
+      try {
+        SubAgentManager.getInstance().stopAllForParent(key, reason);
+        if (!session) return;
+        session.requestInterrupt();
+        await session.cleanup({
+          stopSubAgents: true,
+          subAgentStopReason: reason,
+        });
+        session.runWithLogContext(() => Logger.info(`会话已终止: ${key}, reason=${reason}`));
+      } finally {
+        this.destroying.delete(key);
+        this.terminationTasks.delete(key);
+      }
+    });
+    this.terminationTasks.set(key, task);
+    return task;
+  }
+
   private normalizeSessionInput(input: SessionKeyInput): { key: string; route?: SessionRoute } {
     if (isSessionRoute(input)) {
       return { key: input.sessionKey, route: input };
@@ -161,6 +195,8 @@ export class MessageSessionManager {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
+
+    await Promise.allSettled(this.terminationTasks.values());
 
     // 保存所有活跃会话
     const cleanupPromises = Array.from(this.sessions.values()).map(session =>

@@ -1491,10 +1491,12 @@ describe('CatsCo content blocks', () => {
     assert.deepStrictEqual(replies, []);
   });
 
-  test('keeps a completion batch when both model回流 and fallback delivery fail', async () => {
+  test('freezes one delivery envelope when model integration and delivery fail', async () => {
     const { bot, session } = createProcessHarness();
     const sessionKey = 'session:v2:catscompany:p2p:p2p_38_110:agent:usr43';
+    let modelCalls = 0;
     session.handleRuntimeObservation = async () => {
+      modelCalls += 1;
       throw new Error('model observation failed');
     };
     bot.sender.reply = async () => {
@@ -1509,11 +1511,41 @@ describe('CatsCo content blocks', () => {
     );
     await (bot as any).flushSubAgentCompletionBatch(sessionKey, true);
 
-    const retained = bot.subAgentCompletionBatches.get(sessionKey);
-    assert.ok(retained);
-    assert.equal(retained.items.size, 1);
-    if (retained.timer) clearTimeout(retained.timer);
-    bot.subAgentCompletionBatches.delete(sessionKey);
+    assert.equal(modelCalls, 1, 'delivery failure must never recreate the model observation');
+    assert.equal(bot.subAgentCompletionBatches.has(sessionKey), false);
+    const retained = bot.messageQueue.get(sessionKey);
+    assert.equal(retained?.length, 1);
+    assert.equal(retained?.[0].deliveryOnly, true);
+    assert.match(retained?.[0].deliveryText ?? '', /后台子任务已回传/);
+  });
+
+  test('delivery-only subagent envelopes stop after three total send attempts', async () => {
+    const { bot, session } = createProcessHarness();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_38_110:agent:usr43';
+    let modelCalls = 0;
+    let deliveryCalls = 0;
+    session.handleRuntimeObservation = async () => {
+      modelCalls += 1;
+      return { visibleToUser: true, text: '固化后的结果' };
+    };
+    bot.sender.reply = async () => {
+      deliveryCalls += 1;
+      throw new Error('network unavailable');
+    };
+
+    await bot.handleSubAgentFeedback(
+      sessionKey,
+      'p2p_38_110',
+      'usr38',
+      '[子agent1 已完成]\n任务：审查\n结果摘要：审查完成',
+    );
+    await bot.flushSubAgentCompletionBatch(sessionKey, true);
+    await bot.drainMessageQueue(sessionKey);
+
+    assert.equal(modelCalls, 1);
+    assert.equal(deliveryCalls, 3);
+    assert.equal(bot.messageQueue.has(sessionKey), false);
+    assert.equal(bot.subAgentCompletionBatches.has(sessionKey), false);
   });
 
   test('drops an in-flight completion batch result when clear advances its generation', async () => {

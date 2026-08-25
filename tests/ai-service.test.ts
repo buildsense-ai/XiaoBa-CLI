@@ -670,6 +670,56 @@ test('AIService records when stream output prevents an otherwise retryable reque
   assert.equal(diagnostics?.retry?.stop_reason, 'stream_output_started');
 });
 
+test('AIService opens a process-wide auth circuit after the first 401', async () => {
+  const config = {
+    provider: 'openai' as const,
+    apiUrl: 'https://auth-circuit.example.test/v1',
+    apiKey: 'auth-circuit-unique-key',
+    model: 'auth-circuit-model',
+  };
+  let providerCalls = 0;
+  const rejectedProvider = {
+    chat: async () => {
+      providerCalls += 1;
+      throw Object.assign(new Error('invalid api key'), { status: 401 });
+    },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+
+  const first = new AIService(config);
+  (first as any).provider = rejectedProvider;
+  await assert.rejects(() => first.chat([]), /API错误 \(401\)/);
+
+  const second = new AIService(config);
+  (second as any).provider = rejectedProvider;
+  await assert.rejects(() => second.chat([]), /认证熔断已打开/);
+  assert.equal(providerCalls, 1, 'open circuit must reject locally without another provider call');
+});
+
+test('AIService does not open the auth circuit for transient 502 failures', async () => {
+  const service = new AIService({
+    provider: 'openai',
+    apiUrl: 'https://transient-circuit.example.test/v1',
+    apiKey: 'transient-circuit-unique-key',
+    model: 'transient-circuit-model',
+  });
+  let providerCalls = 0;
+  (service as any).provider = {
+    chat: async () => {
+      providerCalls += 1;
+      if (providerCalls <= 3) {
+        throw Object.assign(new Error('bad gateway'), { status: 502 });
+      }
+      return { content: 'recovered' };
+    },
+    chatStream: async () => ({ content: 'unused' }),
+  };
+
+  const result = await service.chat([]);
+  assert.equal(result.content, 'recovered');
+  assert.ok(providerCalls > 1, 'transient failures should keep the bounded provider retry path');
+});
+
 function createTestService(): AIService {
   return new AIService({
     provider: 'openai',
