@@ -211,7 +211,13 @@ export class CatscoLogUploadScheduler {
   }
 
   private async ensureUploadSession(state: CatscoLogAgentState): Promise<UploadSession | null> {
-    if (state.token) {
+    // Legacy state files only contain the v1 token. Re-bootstrap those once so
+    // an upgraded runtime can negotiate the server's v2 append capability
+    // instead of silently continuing to reject large files.
+    if (
+      state.token
+      && (state.uploadProtocol === 1 || (state.uploadProtocol === 2 && isSafeServerPath(state.appendUrl)))
+    ) {
       return {
         token: state.token,
         ...(state.uploadProtocol === 2 && isSafeServerPath(state.appendUrl) && { appendUrl: state.appendUrl }),
@@ -241,10 +247,9 @@ export class CatscoLogUploadScheduler {
     state.tokenId = response.token_id;
     state.token = response.token;
     state.tokenIssuedAt = response.issued_at;
-    state.uploadProtocol = response.upload_protocol === 2 ? 2 : 1;
-    state.appendUrl = state.uploadProtocol === 2 && isSafeServerPath(response.append_url)
-      ? response.append_url
-      : undefined;
+    const appendUrl = isSafeServerPath(response.append_url) ? response.append_url : undefined;
+    state.uploadProtocol = response.upload_protocol === 2 && appendUrl ? 2 : 1;
+    state.appendUrl = state.uploadProtocol === 2 ? appendUrl : undefined;
     state.skillTokenId = response.skill_token_id;
     state.skillToken = response.skill_token;
     state.skillTokenExpiresAt = response.skill_token_expires_at;
@@ -488,7 +493,8 @@ export class CatscoLogUploadScheduler {
     }
     const config = getCatscoLogAgentConfig(this.workingDirectory);
     const stats = lstat;
-    if (stats.size <= 0 || stats.size > config.maxFileBytes) {
+    const appendProtocol = state.uploadProtocol === 2 && isSafeServerPath(state.appendUrl);
+    if (stats.size <= 0 || (!appendProtocol && stats.size > config.maxFileBytes)) {
       return false;
     }
     if (stats.mtimeMs > stableBefore) {
