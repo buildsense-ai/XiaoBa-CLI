@@ -211,12 +211,19 @@ export class CatscoLogUploadScheduler {
   }
 
   private async ensureUploadSession(state: CatscoLogAgentState): Promise<UploadSession | null> {
+    const config = getCatscoLogAgentConfig(this.workingDirectory);
     // Legacy state files only contain the v1 token. Re-bootstrap those once so
     // an upgraded runtime can negotiate the server's v2 append capability
     // instead of silently continuing to reject large files.
     if (
       state.token
-      && (state.uploadProtocol === 1 || (state.uploadProtocol === 2 && isSafeServerPath(state.appendUrl)))
+      && (
+        state.uploadProtocol === 1
+        || (state.uploadProtocol === 2 && isSafeServerPath(state.appendUrl))
+        // Preserve the legacy token-only path when bootstrap credentials are
+        // unavailable; this still supports v1-sized uploads.
+        || !config.catscoUserToken
+      )
     ) {
       return {
         token: state.token,
@@ -224,7 +231,6 @@ export class CatscoLogUploadScheduler {
       };
     }
 
-    const config = getCatscoLogAgentConfig(this.workingDirectory);
     if (!config.catscoUserToken) {
       return null;
     }
