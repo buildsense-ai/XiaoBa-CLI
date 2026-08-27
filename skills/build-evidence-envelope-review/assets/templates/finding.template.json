@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1.0",
+  "findingId": "F-YYYY-NNN",
+  "title": "",
+  "observation": "",
+  "expectedBehavior": "",
+  "actualBehavior": "",
+  "impact": "",
+  "scope": {
+    "actors": [],
+    "environments": [],
+    "timeWindow": {
+      "start": null,
+      "end": null
+    }
+  },
+  "decisionQuestion": "Should this Finding become an Issue or be closed?",
+  "constraints": {
+    "productionMutationAllowed": false,
+    "sensitiveFieldsForbidden": []
+  },
+  "reviewState": "INCOMPLETE"
+}

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0",
+  "claims": [
+    {
+      "id": "C-001",
+      "statement": "",
+      "kind": "OBSERVATION",
+      "material": true,
+      "confidence": "UNKNOWN",
+      "evidenceIds": [],
+      "limitations": []
+    }
+  ]
+}

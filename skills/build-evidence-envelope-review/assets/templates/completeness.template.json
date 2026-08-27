@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "1.0",
+  "gates": [
+    {
+      "id": "G1",
+      "name": "Scope",
+      "status": "FAIL",
+      "evidenceIds": [],
+      "notes": ""
+    },
+    {
+      "id": "G2",
+      "name": "Source",
+      "status": "FAIL",
+      "evidenceIds": [],
+      "notes": ""
+    },
+    {
+      "id": "G3",
+      "name": "Claim",
+      "status": "FAIL",
+      "evidenceIds": [],
+      "notes": ""
+    },
+    {
+      "id": "G4",
+      "name": "Coverage",
+      "status": "FAIL",
+      "evidenceIds": [],
+      "notes": ""
+    },
+    {
+      "id": "G5",
+      "name": "Discrimination",
+      "status": "FAIL",
+      "evidenceIds": [],
+      "notes": ""
+    },
+    {
+      "id": "G6",
+      "name": "Reproduction",
+      "status": "N/A",
+      "evidenceIds": [],
+      "notes": ""
+    },
+    {
+      "id": "G7",
+      "name": "Negative evidence",
+      "status": "N/A",
+      "evidenceIds": [],
+      "notes": ""
+    },
+    {
+      "id": "G8",
+      "name": "Integrity and privacy",
+      "status": "FAIL",
+      "evidenceIds": [],
+      "notes": ""
+    },
+    {
+      "id": "G9",
+      "name": "Challenge",
+      "status": "FAIL",
+      "evidenceIds": [],
+      "notes": ""
+    },
+    {
+      "id": "G10",
+      "name": "Decision",
+      "status": "FAIL",
+      "evidenceIds": [],
+      "notes": ""
+    }
+  ],
+  "materialUnresolvedHypothesisIds": [],
+  "reviewState": "INCOMPLETE"
+}
