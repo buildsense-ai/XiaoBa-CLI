@@ -61,6 +61,7 @@ describe('dashboard CatsCo account status', () => {
     'CATSCOMPANY_DEVICE_ID',
     'CATSCOMPANY_BODY_ID',
     'CATSCOMPANY_INSTALLATION_ID',
+    'XIAOBA_RUNTIME_ROLE',
     'CATSCO_ALLOW_LOCAL_ENDPOINTS',
     'CATSCOMPANY_ALLOW_LOCAL_ENDPOINTS',
     'WEIXIN_TOKEN',
@@ -763,9 +764,25 @@ describe('dashboard CatsCo account status', () => {
   });
 
   test('POST /cats/desktop-connect exchanges a web login code and persists CatsCo account aliases', async () => {
+    process.env.XIAOBA_RUNTIME_ROLE = 'desktop';
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      device: {
+        deviceId: 'device-local',
+        bodyId: 'body-local',
+        installationId: 'install-local',
+        name: 'CK123',
+      },
+    });
     await startCatsServer((req, res) => {
       if (req.path === '/api/desktop-connect/exchange') {
-        assert.deepStrictEqual(req.body, { code: 'one-time-code' });
+        assert.deepStrictEqual(req.body, {
+          code: 'one-time-code',
+          device_id: 'device-local',
+          installation_id: 'install-local',
+          display_name: 'CK123',
+          runtime_role: 'desktop',
+        });
         return res.json({
           token: 'desktop-user-token',
           uid: 91,

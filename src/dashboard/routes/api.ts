@@ -3612,7 +3612,16 @@ export function createApiRouter(
       if (!code) return res.status(400).json({ error: 'code is required' });
 
       const state = trustCatsAuthStateEndpoints(getCatsAuthState(req.body || {}));
-      const login = await catsRequest('POST', state.httpBaseUrl, '/api/desktop-connect/exchange', { code }, undefined, { timeoutMs: 8000 });
+      const localConfigService = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() });
+      const localDevice = localConfigService.load().device;
+      const runtimeRole = process.env.XIAOBA_RUNTIME_ROLE === 'desktop' ? 'desktop' : 'server';
+      const login = await catsRequest('POST', state.httpBaseUrl, '/api/desktop-connect/exchange', {
+        code,
+        device_id: localDevice?.deviceId || '',
+        installation_id: localDevice?.installationId || localDevice?.deviceId || '',
+        display_name: localDevice?.name || os.hostname(),
+        runtime_role: runtimeRole,
+      }, undefined, { timeoutMs: 8000 });
       const httpBaseUrl = normalizeTrustedCatsHttpBaseUrl(login.http_base_url || login.httpBaseUrl || state.httpBaseUrl || DEFAULT_CATSCO_HTTP_BASE_URL);
       const serverUrl = normalizeTrustedCatsServerUrl(login.server_url || login.serverUrl || state.serverUrl || DEFAULT_CATSCO_WS_URL);
       const nextState: CatsAuthState = {
