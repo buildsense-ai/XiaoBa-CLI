@@ -27,6 +27,7 @@ SERVICE="${CATSCO_UWA_SERVICE:-catsco-agent.service}"
 SETTLE_SECONDS="${CATSCO_UWA_SETTLE_SECONDS:-5}"
 SMOKE="${CATSCO_UWA_SMOKE:-1}"
 JQ_BIN="${JQ_BIN:-jq}"
+FREE_MARGIN_BYTES="${CATSCO_UWA_FREE_MARGIN_BYTES:-67108864}"
 
 ARTIFACT=""
 EXPECTED_SHA=""
@@ -102,14 +103,20 @@ validate_hex "$EXPECTED_COMMIT" 40 "commit"
 
 RELEASE_ID="${EXPECTED_VERSION}-${EXPECTED_COMMIT:0:8}"
 RELEASE_ROOT="$RELEASES_ROOT/$RELEASE_ID"
+COMPLETE_MARKER="$RELEASE_ROOT/.catsco-release-complete"
 case "$RELEASE_ROOT" in
   "$RELEASES_ROOT"/*) ;;
   *) die "release path escapes $RELEASES_ROOT" ;;
 esac
 
-# 幂等：current 已指向该 release 且 service active → skip（不重启）
+# 幂等：只有带完整安装标记的 release 才允许复用。旧安装中断时可能已经
+# 写入 worker-release.json，但目录里的其他文件仍是截断或缺失状态。
 CURRENT_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
 if [[ "$CURRENT_TARGET" == "$RELEASE_ROOT" \
+      && -f "$COMPLETE_MARKER" \
+      && "$("$JQ_BIN" -r '.version // ""' "$COMPLETE_MARKER" 2>/dev/null || true)" == "$EXPECTED_VERSION" \
+      && "$("$JQ_BIN" -r '.commit // ""' "$COMPLETE_MARKER" 2>/dev/null || true)" == "$EXPECTED_COMMIT" \
+      && "$("$JQ_BIN" -r '.sha256 // ""' "$COMPLETE_MARKER" 2>/dev/null || true)" == "${EXPECTED_SHA,,}" \
       && "$(systemctl is-active "$SERVICE" 2>/dev/null || true)" == "active" ]]; then
   echo "already up to date: $RELEASE_ID"
   exit 0
@@ -120,9 +127,35 @@ ACTUAL_SHA="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
 [[ "${ACTUAL_SHA,,}" == "${EXPECTED_SHA,,}" ]] \
   || die "checksum mismatch (expected ${EXPECTED_SHA}, got ${ACTUAL_SHA})"
 
-# 2) 解压到临时目录 + manifest 校验（与 prepare-image.sh 同一布局约定）
-TEMP="$(mktemp -d "${TMPDIR:-/tmp}/catsco-uwa.XXXXXX")"
-trap 'rm -rf "$TEMP"' EXIT
+# 2) 在 releases 同一文件系统中预检空间并解压到 staging。这样最终发布只需
+# 原子 rename，不会再把一个半写入目录暴露成可复用 release。
+[[ "$FREE_MARGIN_BYTES" =~ ^[0-9]+$ ]] || die "CATSCO_UWA_FREE_MARGIN_BYTES must be a non-negative integer"
+mkdir -p -- "$RELEASES_ROOT"
+ARCHIVE_BYTES="$(gzip -l "$ARTIFACT" | awk 'END {print $2}')"
+[[ "$ARCHIVE_BYTES" =~ ^[0-9]+$ && "$ARCHIVE_BYTES" -gt 0 ]] \
+  || die "cannot determine uncompressed artifact size"
+AVAILABLE_KIB="$(df -Pk "$RELEASES_ROOT" | awk 'END {print $4}')"
+[[ "$AVAILABLE_KIB" =~ ^[0-9]+$ ]] || die "cannot determine release filesystem free space"
+AVAILABLE_BYTES=$((AVAILABLE_KIB * 1024))
+REQUIRED_BYTES=$((ARCHIVE_BYTES + FREE_MARGIN_BYTES))
+(( AVAILABLE_BYTES >= REQUIRED_BYTES )) \
+  || die "insufficient disk space for atomic update (required=${REQUIRED_BYTES}, available=${AVAILABLE_BYTES})"
+
+TEMP="$(mktemp -d "$RELEASES_ROOT/.staging-${RELEASE_ID}.XXXXXX")"
+REPLACED_ROOT="$RELEASES_ROOT/.replaced-${RELEASE_ID}.$$"
+cleanup_update() {
+  # If interruption happens between moving an old release aside and exposing
+  # the validated tree, put the old path back. Once the new complete tree is
+  # present, the replaced (normally incomplete) tree is safe to discard.
+  if [[ -e "$REPLACED_ROOT" && ! -e "$RELEASE_ROOT" ]]; then
+    mv -- "$REPLACED_ROOT" "$RELEASE_ROOT" || true
+  fi
+  rm -rf -- "$TEMP"
+  if [[ -e "$REPLACED_ROOT" && -f "$RELEASE_ROOT/.catsco-release-complete" ]]; then
+    rm -rf -- "$REPLACED_ROOT"
+  fi
+}
+trap cleanup_update EXIT
 tar -xzf "$ARTIFACT" -C "$TEMP"
 [[ -f "$TEMP/app/worker-release.json" ]] || die "worker-release.json missing"
 MANIFEST_VERSION="$("$JQ_BIN" -r '.version' "$TEMP/app/worker-release.json")"
@@ -132,22 +165,44 @@ MANIFEST_COMMIT="$("$JQ_BIN" -r '.commit' "$TEMP/app/worker-release.json")"
 [[ "$MANIFEST_COMMIT" == "$EXPECTED_COMMIT" ]] \
   || die "artifact commit mismatch (manifest ${MANIFEST_COMMIT:0:8}, expected ${EXPECTED_COMMIT:0:8})"
 
-# 3) 部署到 release 目录
-rm -rf -- "$RELEASE_ROOT"
-mkdir -p -- "$RELEASES_ROOT"
-cp -a "$TEMP/app/." "$RELEASE_ROOT/"
-[[ -x "$RELEASE_ROOT/runtime/node/bin/node" ]] || die "bundled Node.js runtime missing"
-[[ -x "$RELEASE_ROOT/runtime/node/bin/npm" ]] || die "bundled npm runtime missing"
+# 3) 验证 staging。应用以 catsco-agent 用户运行，发布树内的普通文件和目录
+# 必须允许非 root 用户读取/遍历；否则 root 下的冒烟会产生假阳性。
+STAGED_ROOT="$TEMP/app"
+[[ -x "$STAGED_ROOT/runtime/node/bin/node" ]] || die "bundled Node.js runtime missing"
+[[ -x "$STAGED_ROOT/runtime/node/bin/npm" ]] || die "bundled npm runtime missing"
+UNREADABLE_FILE="$(find "$STAGED_ROOT" -type f ! -perm -004 -print -quit)"
+[[ -z "$UNREADABLE_FILE" ]] || die "release contains a file unreadable by the service user: ${UNREADABLE_FILE#$STAGED_ROOT/}"
+UNTRAVERSABLE_DIR="$(find "$STAGED_ROOT" -type d ! -perm -001 -print -quit)"
+[[ -z "$UNTRAVERSABLE_DIR" ]] || die "release contains a directory not traversable by the service user: ${UNTRAVERSABLE_DIR#$STAGED_ROOT/}"
 
 # 4) 原生模块冒烟（切换前）：失败则丢弃新 release，不碰 current。
 # 必须在 $RELEASE_ROOT 下运行——node -e 按 cwd 解析 node_modules，
 # ssh 执行时 cwd 是登录用户目录（参考 prepare-image.sh 先 cd /opt/catsco/current）。
 if [[ "$SMOKE" == "1" ]]; then
-  if ! (cd "$RELEASE_ROOT" && "$RELEASE_ROOT/runtime/node/bin/node" -e 'require("sharp"); require("@napi-rs/canvas")') >/dev/null 2>&1; then
-    rm -rf -- "$RELEASE_ROOT"
+  if ! (cd "$STAGED_ROOT" && "$STAGED_ROOT/runtime/node/bin/node" -e 'require("sharp"); require("@napi-rs/canvas")') >/dev/null 2>&1; then
     die "smoke test failed; release discarded"
   fi
 fi
+
+# 完成标记是控制面复用本地 release 的唯一凭据。先在 staging 内落盘，再
+# 将完整目录换入最终路径；任何更早的失败都只会留下可安全清理的 .staging。
+printf '{"schemaVersion":1,"version":"%s","commit":"%s","sha256":"%s"}\n' \
+  "$EXPECTED_VERSION" "$EXPECTED_COMMIT" "${EXPECTED_SHA,,}" > "$STAGED_ROOT/.catsco-release-complete"
+
+if [[ -e "$RELEASE_ROOT" ]]; then
+  mv -- "$RELEASE_ROOT" "$REPLACED_ROOT"
+fi
+# STAGED_ROOT and RELEASE_ROOT are on the same filesystem. A directory rename
+# keeps the validated tree intact and ensures current can never resolve into
+# the temporary staging hierarchy. If the rename fails, restore the old tree.
+if ! mv -- "$STAGED_ROOT" "$RELEASE_ROOT"; then
+  if [[ -e "$RELEASE_ROOT" ]]; then rm -rf -- "$RELEASE_ROOT"; fi
+  if [[ -e "$REPLACED_ROOT" ]]; then
+    mv -- "$REPLACED_ROOT" "$RELEASE_ROOT" || true
+  fi
+  die "failed to install release files"
+fi
+rm -rf -- "$REPLACED_ROOT"
 
 # 5) 记录旧 current（--rollback 读取），切换 symlink，重启
 OLD_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
@@ -157,7 +212,11 @@ printf '%s\n' "$OLD_TARGET" > "$PREV_FILE"
 # 用 epoch 秒（@...）而非本地时间字符串——journalctl --since 解析 @epoch 无
 # 时区歧义（非 UTC 主机也不会把 UTC 当本地时间）。
 SINCE="@$(date +%s)"
-ln -sfn "$RELEASE_ROOT" "$CURRENT_LINK"
+# Keep the link relative to ROOT so it can never retain a staging path if the
+# release tree is moved or the host's path translation rules normalize it.
+ln -sfn "releases/$RELEASE_ID" "$CURRENT_LINK"
+[[ "$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)" == "$RELEASE_ROOT" ]] \
+  || { rm -f "$CURRENT_LINK"; die "current link does not resolve to installed release"; }
 systemctl restart "$SERVICE"
 
 # 6) settle + active 验证 + 心跳验证（--since 只认本次重启后），失败自动切回
