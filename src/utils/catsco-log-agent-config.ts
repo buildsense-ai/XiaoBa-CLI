@@ -18,6 +18,11 @@ export interface CatscoLogAgentConfig {
   maxFileBytes: number;
   maxFilesPerCycle: number;
   catscoUserToken?: string;
+  /** Optional override for exposing the branch's remote memory capability. */
+  memoryEnabled?: boolean;
+  /** Explicit opt-ins for Agent-facing remote write capabilities. */
+  skillOutcomesEnabled?: boolean;
+  memoryWriteEnabled?: boolean;
 }
 
 function readEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
@@ -104,6 +109,7 @@ export function getCatscoLogAgentConfig(
   const apiBaseUrl = normalizeBaseUrl(
     readEnv(runtimeEnv, 'CATSCO_LOG_API_BASE_URL', 'CATSLOG_API_BASE_URL') || DEFAULT_API_BASE_URL,
   );
+  const memoryEnabledValue = readEnv(runtimeEnv, 'CATSLOG_MEMORY_ENABLED');
   const enabled = readBoolean(runtimeEnv, 'CATSCO_LOG_UPLOAD_ENABLED', true);
   const stateFilePath = resolveContainedPath(
     workingDirectory,
@@ -128,5 +134,10 @@ export function getCatscoLogAgentConfig(
     maxFileBytes: readNumber(runtimeEnv, 'CATSCO_LOG_MAX_FILE_BYTES', DEFAULT_MAX_FILE_BYTES, 1),
     maxFilesPerCycle: readNumber(runtimeEnv, 'CATSCO_LOG_MAX_FILES_PER_CYCLE', DEFAULT_MAX_FILES_PER_CYCLE, 1),
     catscoUserToken: readEnv(runtimeEnv, 'CATSCO_USER_TOKEN', 'CATSCOMPANY_USER_TOKEN'),
+    ...(memoryEnabledValue !== undefined
+      ? { memoryEnabled: readBoolean(runtimeEnv, 'CATSLOG_MEMORY_ENABLED', false) }
+      : {}),
+    skillOutcomesEnabled: readBoolean(runtimeEnv, 'CATSLOG_SKILL_OUTCOMES_ENABLED', false),
+    memoryWriteEnabled: readBoolean(runtimeEnv, 'CATSLOG_MEMORY_WRITE_ENABLED', false),
   };
 }

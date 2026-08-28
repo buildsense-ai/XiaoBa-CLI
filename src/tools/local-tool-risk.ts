@@ -25,6 +25,18 @@ const LOW_RISK_TOOLS = new Set([
   'memory_search',
   'memory_read_turn',
   'memory_neighbors',
+  // Device-bound CatsLog reads are authenticated and scoped by the provider;
+  // they do not mutate the local machine or send an external side effect.
+  'catslog_skill_memory',
+  'catslog_skill_catalog',
+  'catslog_skill_graph',
+  'catslog_session_query',
+  'catslog_session_recall',
+  // These two remote writes are never exposed unless an explicit
+  // CATSLOG_*_ENABLED switch authorizes the provider. Outcome writes are
+  // receipt-bound/idempotent; note writes are scope-bound and token-separated.
+  'catslog_skill_outcome',
+  'catslog_memory_note',
   'finish_memory_search',
 ]);
 
