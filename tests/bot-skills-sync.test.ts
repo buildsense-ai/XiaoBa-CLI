@@ -1212,11 +1212,21 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     fixture.cloud = { revision: 1, skills: [reference] };
     fixture.publicDownloadMisses = 1;
 
+    const sleepDelays: number[] = [];
     const ready = await fixture.finalize({
       localSkillId: target.localSkillId,
       skillName: target.name,
       reference,
-    }, { publicationWaitMs: 100, pollDelayMs: 25 });
+    }, {
+      publicationWaitMs: 1_000,
+      pollDelayMs: 25,
+      // The retry contract is about observing a later package, not whether a
+      // loaded CI worker schedules a 25 ms timer before a 100 ms wall-clock deadline.
+      sleep: async delayMs => { sleepDelays.push(delayMs); },
+    });
+    assert.deepEqual(sleepDelays, [25]);
+    assert.ok(fixture.packageDownloads >= 2);
+    assert.equal(fixture.publicDownloadMisses, 0);
     assert.equal(ready.direction, 'local_to_cloud');
     assert.deepEqual(readBotSkillLocalMarker(target.path)?.reference, reference);
 
@@ -2309,6 +2319,7 @@ function createFixture(
       validateScope?: () => Promise<void> | void;
       publicationWaitMs?: number;
       pollDelayMs?: number;
+      sleep?: (delayMs: number) => Promise<void>;
     } = {}) => new BotSkillSyncService({
       runtimeRoot,
       skillsRoot,
