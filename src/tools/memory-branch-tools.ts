@@ -5,9 +5,16 @@ export interface MemorySearchFinishPayload {
   summary: string;
   refs: string[];
   inject: boolean;
+  terminalReason?: 'invalid_finalization_exhausted';
 }
 
 export type MemorySearchFinishHandler = (payload: MemorySearchFinishPayload) => void;
+
+export const MEMORY_FINISH_MAX_INVALID_ATTEMPTS = 3;
+
+export interface MemorySearchFinishAttemptState {
+  invalidAttempts: number;
+}
 
 const CANONICAL_REF_PATTERN = /^[^/\\#]+\/\d{4}-\d{2}-\d{2}\/[^/\\#]+\.jsonl#\d+$/;
 
@@ -160,8 +167,10 @@ export class FinishMemorySearchTool implements Tool {
     description: [
       '结束 memory search branch。',
       '当你已经拿到足够的记忆证据，或确认没有有用记忆时，调用这个工具。',
-      '正常找到有新增价值的记忆时不需要设置 inject，并必须提供支撑 summary 的 refs。',
-      '如果只找到 recent context 已覆盖的信息，或没有值得注入给主 agent 的额外记忆，设置 inject:false 并传空 refs。',
+      '找到有新增价值的记忆时，必须提供支撑 summary 的非空 refs 数组；refs 非空表示发布并注入主 agent。',
+      '如果只找到 recent context 已覆盖的信息，或没有值得注入的额外记忆，传空数组 refs:[]；refs 为空表示正常结束且不注入。',
+      '字段名必须是复数 refs，不要输出 ref 或 inject，不要为了避免空数组而填写弱相关引用。',
+      '示例：有证据时 {"summary":"...","refs":["chat/2026-08-13/demo.jsonl#1"]}；无新增记忆时 {"summary":"No useful memory.","refs":[]}。',
       '调用成功后 branch 会立刻结束。',
     ].join(' '),
     controlMode: 'pause_turn',
@@ -174,34 +183,67 @@ export class FinishMemorySearchTool implements Tool {
         },
         refs: {
           type: 'array',
-          description: '支撑 summary 的 canonical refs。inject:true 时至少一个；inject:false 时传空数组。',
+          description: '支撑 summary 的 canonical refs。非空时发布并注入；空数组表示正常结束且不注入。',
           items: { type: 'string' },
-        },
-        inject: {
-          type: 'boolean',
-          description: '可选。默认 true。只有确认没有新增价值、只重复 recent context、或没有值得注入的额外记忆时设置为 false；此时 refs 必须为空。',
         },
       },
       required: ['summary', 'refs'],
     },
   };
 
-  constructor(private readonly onFinish: MemorySearchFinishHandler) {}
+  constructor(
+    private readonly onFinish: MemorySearchFinishHandler,
+    private readonly attemptState: MemorySearchFinishAttemptState = { invalidAttempts: 0 },
+  ) {}
 
   async execute(args: any): Promise<ToolExecutionResult> {
     const validation = validateFinishArgs(args);
     if (!validation.ok) {
-      return {
-        ok: false,
-        errorCode: 'INVALID_TOOL_ARGUMENTS',
-        message: jsonToolError(validation.error),
-        retryable: false,
-      };
+      return this.invalidResult(validation.error);
     }
+    this.attemptState.invalidAttempts = 0;
     this.onFinish(validation.payload);
     return {
       ok: true,
       content: jsonToolResult({ ok: true }),
+    };
+  }
+
+  async handleInvalidArguments(message: string): Promise<ToolExecutionResult> {
+    return this.invalidResult(message);
+  }
+
+  private invalidResult(error: string): ToolExecutionResult {
+    this.attemptState.invalidAttempts += 1;
+    if (this.attemptState.invalidAttempts >= MEMORY_FINISH_MAX_INVALID_ATTEMPTS) {
+      this.onFinish({
+        summary: 'Memory search stopped after repeated invalid finalization calls; no observation was injected.',
+        refs: [],
+        inject: false,
+        terminalReason: 'invalid_finalization_exhausted',
+      });
+      return {
+        ok: true,
+        content: jsonToolResult({
+          ok: false,
+          terminal: true,
+          reason: 'invalid_finalization_exhausted',
+          invalid_attempts: this.attemptState.invalidAttempts,
+        }),
+      };
+    }
+    return {
+      ok: false,
+      errorCode: 'INVALID_TOOL_ARGUMENTS',
+      message: jsonToolError([
+        error,
+        `Attempt ${this.attemptState.invalidAttempts}/${MEMORY_FINISH_MAX_INVALID_ATTEMPTS}. Correct format:`,
+        'Use exactly summary and refs. The field name is plural refs and refs must be an array. Do not output ref or inject.',
+        'publish={"summary":"...","refs":["chat/2026-08-13/demo.jsonl#1"]}',
+        'suppress={"summary":"No useful memory.","refs":[]}',
+        'Empty refs means finish normally without injecting an observation. Do not add weak refs merely to avoid an empty array.',
+      ].join(' ')),
+      retryable: true,
     };
   }
 }
@@ -213,34 +255,77 @@ function validateFinishArgs(args: any):
   if (!summary) {
     return { ok: false, error: 'summary must be a non-empty string' };
   }
-  if (!Array.isArray(args?.refs)) {
-    return { ok: false, error: 'refs must be an array of canonical memory refs' };
+  const normalized = normalizeFinishRefs(args);
+  if (!normalized.ok) {
+    return normalized;
   }
-  if (typeof args?.inject !== 'undefined' && typeof args.inject !== 'boolean') {
-    return { ok: false, error: 'inject must be a boolean when provided' };
-  }
-  const inject = args?.inject !== false;
-  const refs: string[] = args.refs.map((ref: unknown) => String(ref || '').trim()).filter(Boolean);
+  const refs = normalized.refs;
   for (const ref of refs) {
     if (!CANONICAL_REF_PATTERN.test(ref)) {
       return { ok: false, error: `invalid canonical ref: ${ref}` };
     }
   }
   const uniqueRefs: string[] = Array.from(new Set(refs));
-  if (inject && uniqueRefs.length === 0) {
-    return { ok: false, error: 'refs must include at least one canonical memory ref unless inject is false' };
-  }
-  if (!inject && uniqueRefs.length > 0) {
-    return { ok: false, error: 'refs must be empty when inject is false' };
-  }
   return {
     ok: true,
     payload: {
       summary,
       refs: uniqueRefs,
-      inject,
+      inject: uniqueRefs.length > 0,
     },
   };
+}
+
+function normalizeFinishRefs(args: any):
+  | { ok: true; refs: string[] }
+  | { ok: false; error: string } {
+  // Preserve explicit suppression from the legacy contract. New calls derive
+  // publication solely from whether the normalized refs array is empty.
+  if (args?.inject === false) {
+    return { ok: true, refs: [] };
+  }
+
+  const hasRefs = Object.prototype.hasOwnProperty.call(args || {}, 'refs');
+  const hasRef = Object.prototype.hasOwnProperty.call(args || {}, 'ref');
+  if (!hasRefs && !hasRef) {
+    return { ok: false, error: 'refs must be provided as an array of canonical memory refs' };
+  }
+
+  const values: unknown[] = [];
+  if (hasRefs) values.push(args.refs);
+  if (hasRef) values.push(args.ref);
+
+  const refs: string[] = [];
+  for (const value of values) {
+    const parsed = parseRefValue(value);
+    if (!parsed.ok) return parsed;
+    refs.push(...parsed.refs);
+  }
+  return { ok: true, refs };
+}
+
+function parseRefValue(value: unknown):
+  | { ok: true; refs: string[] }
+  | { ok: false; error: string } {
+  if (Array.isArray(value)) {
+    return {
+      ok: true,
+      refs: value.map(item => String(item || '').trim()).filter(Boolean),
+    };
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return { ok: true, refs: [] };
+    if (trimmed.startsWith('[')) {
+      try {
+        return parseRefValue(JSON.parse(trimmed));
+      } catch {
+        return { ok: false, error: 'refs string looks like JSON but is not a valid array' };
+      }
+    }
+    return { ok: true, refs: [trimmed] };
+  }
+  return { ok: false, error: 'refs must be an array (legacy ref strings are accepted)' };
 }
 
 function toolError(error: any): ToolExecutionResult {

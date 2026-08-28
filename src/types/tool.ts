@@ -281,6 +281,8 @@ export interface ToolExecutionContext {
 export interface Tool {
   definition: ToolDefinition;
   execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult>;
+  /** Optional tool-owned recovery for arguments that cannot be parsed as JSON. */
+  handleInvalidArguments?(message: string, context: ToolExecutionContext): Promise<ToolExecutionResult>;
 }
 
 /**

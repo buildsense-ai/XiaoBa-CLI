@@ -68,7 +68,89 @@ class NoInjectMemoryBranchAI {
       toolCalls: [makeToolCall('finish_1', 'finish_memory_search', {
         summary: 'No extra memory worth injecting.',
         refs: [],
-        inject: false,
+      })],
+      usage,
+    };
+  }
+}
+
+
+class InvalidThenRecoveringMemoryBranchAI {
+  calls: Message[][] = [];
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls.push(JSON.parse(JSON.stringify(messages)));
+    const finishDefinition = tools?.find(tool => tool.name === 'finish_memory_search');
+    assert.deepEqual(finishDefinition?.parameters.required, ['summary', 'refs']);
+    if (this.calls.length === 1) {
+      return {
+        content: null,
+        toolCalls: [{
+          id: 'finish_bad_json',
+          type: 'function',
+          function: { name: 'finish_memory_search', arguments: '{bad json' },
+        }],
+        usage,
+      };
+    }
+    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
+    assert.match(String(lastTool?.content || ''), /Correct format/);
+    return {
+      content: null,
+      toolCalls: [makeToolCall('finish_recovered', 'finish_memory_search', {
+        summary: 'No extra memory worth injecting.',
+        refs: [],
+      })],
+      usage,
+    };
+  }
+}
+
+class RepeatedInvalidFinishMemoryBranchAI {
+  calls: Message[][] = [];
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(messages: Message[]): Promise<ChatResponse> {
+    this.calls.push(JSON.parse(JSON.stringify(messages)));
+    return {
+      content: null,
+      toolCalls: [makeToolCall(`finish_invalid_${this.calls.length}`, 'finish_memory_search', {
+        summary: 'No useful memory.',
+        refs: { invalid: true },
+      })],
+      usage,
+    };
+  }
+}
+
+class InvalidFinishWithStrayTextMemoryBranchAI {
+  calls: Message[][] = [];
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(messages: Message[]): Promise<ChatResponse> {
+    this.calls.push(JSON.parse(JSON.stringify(messages)));
+    if (this.calls.length === 3) {
+      return {
+        content: 'I am done.',
+        toolCalls: [],
+        usage,
+      };
+    }
+    return {
+      content: null,
+      toolCalls: [makeToolCall(`finish_invalid_${this.calls.length}`, 'finish_memory_search', {
+        summary: 'No useful memory.',
+        refs: { invalid: true },
       })],
       usage,
     };
@@ -192,7 +274,7 @@ describe('memory sidecar branch', () => {
     assert.equal(aiService.calls.length, 2);
   });
 
-  test('suppresses observations when branch finishes with inject false', async () => {
+  test('suppresses observations when branch finishes with empty refs', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const aiService = new NoInjectMemoryBranchAI();
     const handle = startMemorySidecarBranch({
@@ -209,6 +291,75 @@ describe('memory sidecar branch', () => {
     assert.equal(queue.drain().length, 0);
     assert.equal(aiService.calls.length, 1);
     assert.match(readBranchLogs(testRoot), /suppressed_observation/);
+  });
+
+
+  test('returns recoverable feedback for malformed final arguments and exits after correction', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const aiService = new InvalidThenRecoveringMemoryBranchAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'test-session',
+      input: 'recover malformed final tool call',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: aiService as any,
+      queue,
+    });
+
+    await handle.done;
+
+    assert.equal(aiService.calls.length, 2);
+    assert.equal(queue.drain().length, 0);
+    const secondCall = aiService.calls[1];
+    const failedCall = secondCall.find(message => message.role === 'assistant')?.tool_calls?.[0];
+    const failedResult = secondCall.find(message => message.role === 'tool');
+    assert.equal(failedCall?.id, failedResult?.tool_call_id);
+    assert.match(readBranchLogs(testRoot), /suppressed_observation/);
+  });
+
+  test('bounds repeated invalid finalization and logs an explicit terminal state', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const aiService = new RepeatedInvalidFinishMemoryBranchAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'test-session',
+      input: 'repeat invalid final tool calls',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: aiService as any,
+      queue,
+    });
+
+    await handle.done;
+
+    assert.equal(aiService.calls.length, 3);
+    assert.deepEqual(aiService.calls.map(messages => messages.length), [2, 4, 6]);
+    assert.equal(queue.drain().length, 0);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /invalid_finalization_exhausted/);
+    assert.ok(Buffer.byteLength(logs, 'utf8') < 100_000);
+  });
+
+  test('keeps invalid finalization budget across stray-output reminder restarts', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const aiService = new InvalidFinishWithStrayTextMemoryBranchAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'test-session',
+      input: 'bound invalid finalization across reminder restarts',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: aiService as any,
+      queue,
+    });
+
+    await handle.done;
+
+    assert.equal(aiService.calls.length, 4);
+    assert.deepEqual(aiService.calls.map(messages => messages.length), [2, 4, 6, 8]);
+    assert.equal(queue.drain().length, 0);
+    const logs = readBranchLogs(testRoot);
+    assert.equal(countLogEvents(logs, 'invalid_finalization_exhausted'), 1);
+    assert.equal(countLogEvents(logs, 'suppressed_observation'), 1);
+    assert.equal(countLogEvents(logs, 'cancelled_before_finish'), 0);
   });
 
   test('treats historical log text as untrusted evidence', async () => {
@@ -290,6 +441,15 @@ describe('memory sidecar branch', () => {
     assert.equal(queue.drain().length, 0);
   });
 });
+
+function countLogEvents(logs: string, eventType: string): number {
+  return logs
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+    .filter(entry => entry.event_type === eventType)
+    .length;
+}
 
 function readBranchLogs(root: string): string {
   const branchRoot = path.join(root, 'logs', 'branches', 'memory');

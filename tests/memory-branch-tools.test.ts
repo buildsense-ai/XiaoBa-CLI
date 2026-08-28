@@ -104,13 +104,14 @@ describe('memory branch tools', () => {
     );
   });
 
-  test('finish validates canonical refs and has pause control mode', async () => {
+  test('finish infers injection from refs and has pause control mode', async () => {
     let captured: any = null;
     const tool = new FinishMemorySearchTool(payload => {
       captured = payload;
     });
 
     assert.equal(tool.definition.controlMode, 'pause_turn');
+    assert.deepEqual(tool.definition.parameters.required, ['summary', 'refs']);
 
     const invalid = await tool.execute({
       summary: 'done',
@@ -119,12 +120,16 @@ describe('memory branch tools', () => {
     assert.equal(invalid.ok, false);
     assert.match(JSON.parse(String(invalid.message)).error, /invalid canonical ref/);
 
-    const emptyDefaultInject = await tool.execute({
+    const emptyRefs = await tool.execute({
       summary: 'No useful memory.',
       refs: [],
     }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.equal(emptyDefaultInject.ok, false);
-    assert.match(JSON.parse(String(emptyDefaultInject.message)).error, /unless inject is false/);
+    assert.equal(emptyRefs.ok, true);
+    assert.deepEqual(captured, {
+      summary: 'No useful memory.',
+      refs: [],
+      inject: false,
+    });
 
     const valid = await tool.execute({
       summary: 'Prior decision found.',
@@ -141,7 +146,6 @@ describe('memory branch tools', () => {
     const suppressed = await tool.execute({
       summary: 'No extra memory worth injecting.',
       refs: [],
-      inject: false,
     }, { workingDirectory: testRoot, conversationHistory: [] });
     assert.equal(suppressed.ok, true);
     assert.deepEqual(captured, {
@@ -150,13 +154,76 @@ describe('memory branch tools', () => {
       inject: false,
     });
 
-    const contradictory = await tool.execute({
-      summary: 'Found something but asked not to inject.',
+    const legacySuppression = await tool.execute({
+      summary: 'Legacy caller explicitly asked not to inject.',
       refs: ['chat/2026-06-16/demo.jsonl#2'],
       inject: false,
     }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.equal(contradictory.ok, false);
-    assert.match(JSON.parse(String(contradictory.message)).error, /refs must be empty/);
+    assert.equal(legacySuppression.ok, true);
+    assert.deepEqual(captured, {
+      summary: 'Legacy caller explicitly asked not to inject.',
+      refs: [],
+      inject: false,
+    });
+  });
+
+  test('finish normalizes legacy ref aliases and string arrays', async () => {
+    const captured: any[] = [];
+    const tool = new FinishMemorySearchTool(payload => captured.push(payload));
+
+    const singular = await tool.execute({
+      summary: 'Singular legacy ref.',
+      ref: 'chat/2026-06-16/demo.jsonl#2',
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(singular.ok, true);
+    assert.deepEqual(captured.at(-1), {
+      summary: 'Singular legacy ref.',
+      refs: ['chat/2026-06-16/demo.jsonl#2'],
+      inject: true,
+    });
+
+    const singularArray = await tool.execute({
+      summary: 'Singular field containing an array.',
+      ref: ['chat/2026-06-16/demo.jsonl#3'],
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(singularArray.ok, true);
+    assert.deepEqual(captured.at(-1)?.refs, ['chat/2026-06-16/demo.jsonl#3']);
+
+    const encodedArray = await tool.execute({
+      summary: 'JSON-encoded refs array.',
+      refs: '["chat/2026-06-16/demo.jsonl#2"]',
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(encodedArray.ok, true);
+    assert.deepEqual(captured.at(-1)?.refs, ['chat/2026-06-16/demo.jsonl#2']);
+
+    const merged = await tool.execute({
+      summary: 'Both legacy and current fields.',
+      refs: ['chat/2026-06-16/demo.jsonl#2'],
+      ref: ['chat/2026-06-16/demo.jsonl#3'],
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(merged.ok, true);
+    assert.deepEqual(captured.at(-1)?.refs, [
+      'chat/2026-06-16/demo.jsonl#2',
+      'chat/2026-06-16/demo.jsonl#3',
+    ]);
+
+    const malformed = await tool.execute({
+      summary: 'Malformed refs remain retryable.',
+      refs: { value: 'chat/2026-06-16/demo.jsonl#2' },
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(malformed.ok, false);
+    assert.match(JSON.parse(String(malformed.message)).error, /refs must be an array/);
+
+    const missingLegacySuppression = await tool.execute({
+      summary: 'Legacy suppression omitted refs.',
+      inject: false,
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(missingLegacySuppression.ok, true);
+    assert.deepEqual(captured.at(-1), {
+      summary: 'Legacy suppression omitted refs.',
+      refs: [],
+      inject: false,
+    });
   });
 
   test('read applies field-level truncation for oversized single episodes', async () => {

@@ -4,8 +4,41 @@ import { Readable } from 'node:stream';
 import axios from 'axios';
 import { OpenAIProvider } from '../src/providers/openai-provider';
 import { Message } from '../src/types';
+import type { ToolDefinition } from '../src/types/tool';
 
 describe('OpenAIProvider runtime feedback boundary', () => {
+  test('preserves required finish fields in Chat Completions and Responses tool schemas', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://example.test/v1/chat/completions',
+      model: 'test-model',
+    });
+    const finishTool: ToolDefinition = {
+      name: 'finish_memory_search',
+      description: 'Finish memory search',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string' },
+          refs: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['summary', 'refs'],
+      },
+    };
+
+    const chatBody = (provider as any).buildRequestBody(
+      [{ role: 'user', content: 'finish' }],
+      [finishTool],
+    );
+    const responsesBody = (provider as any).buildResponsesRequestBody(
+      [{ role: 'user', content: 'finish' }],
+      [finishTool],
+    );
+
+    assert.deepStrictEqual(chatBody.tools[0].function.parameters.required, ['summary', 'refs']);
+    assert.deepStrictEqual(responsesBody.tools[0].parameters.required, ['summary', 'refs']);
+  });
+
   test('strips internal injected fields before building SDK messages', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',
