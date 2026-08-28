@@ -3,10 +3,11 @@ import * as os from 'os';
 import * as path from 'path';
 import { glob } from 'glob';
 import { APP_VERSION } from '../version';
-import { CatscoLogAgentClient } from './catsco-log-agent-client';
+import { CatscoLogAgentClient, isSafeCatsLogPath } from './catsco-log-agent-client';
 import { getCatscoLogAgentConfig } from './catsco-log-agent-config';
 import {
   CatscoLogAgentState,
+  clearCatscoSkillToken,
   clearCatscoLogToken,
   ensureCatscoDeviceId,
   loadCatscoLogAgentState,
@@ -18,6 +19,113 @@ type UploadReason = 'startup' | 'scheduled' | 'manual';
 
 const ALLOWED_SESSION_TYPES = new Set(['chat', 'cli', 'catscompany', 'feishu', 'weixin']);
 const SESSION_LOG_PATH_RE = /^sessions\/([^/]+)\/(\d{4}-\d{2}-\d{2})\/([^/]+\.jsonl)$/;
+
+function copyCatscoReadCapability(
+  target: CatscoLogAgentState,
+  source: CatscoLogAgentState,
+): void {
+  target.skillTokenId = source.skillTokenId;
+  target.skillToken = source.skillToken;
+  target.skillTokenExpiresAt = source.skillTokenExpiresAt;
+  target.skillsUrl = source.skillsUrl;
+  target.skillGraphUrl = source.skillGraphUrl;
+  target.memoryUrl = source.memoryUrl;
+  target.memoryRecallUrl = source.memoryRecallUrl;
+  target.sessionsUrl = source.sessionsUrl;
+}
+
+function copyCatscoWriteCapability(
+  target: CatscoLogAgentState,
+  source: CatscoLogAgentState,
+): void {
+  target.memoryNotesUrl = source.memoryNotesUrl;
+  target.memoryWriteTokenId = source.memoryWriteTokenId;
+  target.memoryWriteToken = source.memoryWriteToken;
+  target.memoryWriteTokenExpiresAt = source.memoryWriteTokenExpiresAt;
+}
+
+function responseHasReadCapabilityFields(response: Record<string, unknown>): boolean {
+  return [
+    'skill_token_id', 'skill_token', 'skill_token_expires_at', 'skills_url',
+    'skill_graph_url', 'sessions_url', 'memory_url', 'memory_recall_url',
+  ].some(key => response[key] !== undefined);
+}
+
+function responseHasWriteCapabilityFields(response: Record<string, unknown>): boolean {
+  return [
+    'memory_notes_url', 'memory_write_token_id', 'memory_write_token',
+    'memory_write_token_expires_at',
+  ].some(key => response[key] !== undefined);
+}
+
+function cleanResponseText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  return text || undefined;
+}
+
+function applyReadCapabilityResponse(
+  state: CatscoLogAgentState,
+  response: Record<string, unknown>,
+): void {
+  if (!hasUsableReadCapability(response)) {
+    clearCatscoSkillToken(state);
+    return;
+  }
+  const skillToken = cleanResponseText(response.skill_token)!;
+  const skillTokenExpiresAt = cleanResponseText(response.skill_token_expires_at)!;
+  state.skillTokenId = cleanResponseText(response.skill_token_id);
+  state.skillToken = skillToken;
+  state.skillTokenExpiresAt = skillTokenExpiresAt;
+  state.skillsUrl = isSafeCatsLogPath(typeof response.skills_url === 'string' ? response.skills_url : undefined)
+    ? response.skills_url as string : undefined;
+  state.skillGraphUrl = isSafeCatsLogPath(typeof response.skill_graph_url === 'string' ? response.skill_graph_url : undefined)
+    ? response.skill_graph_url as string : undefined;
+  state.sessionsUrl = isSafeCatsLogPath(typeof response.sessions_url === 'string' ? response.sessions_url : undefined)
+    ? response.sessions_url as string : undefined;
+  state.memoryUrl = isSafeCatsLogPath(typeof response.memory_url === 'string' ? response.memory_url : undefined)
+    ? response.memory_url as string : undefined;
+  state.memoryRecallUrl = isSafeCatsLogPath(typeof response.memory_recall_url === 'string' ? response.memory_recall_url : undefined)
+    ? response.memory_recall_url as string : undefined;
+}
+
+function applyWriteCapabilityResponse(
+  state: CatscoLogAgentState,
+  response: Record<string, unknown>,
+): void {
+  if (!hasUsableWriteCapability(response)) {
+    delete state.memoryWriteTokenId;
+    delete state.memoryWriteToken;
+    delete state.memoryWriteTokenExpiresAt;
+    delete state.memoryNotesUrl;
+    return;
+  }
+  const token = cleanResponseText(response.memory_write_token)!;
+  const expiresAt = cleanResponseText(response.memory_write_token_expires_at)!;
+  state.memoryWriteTokenId = cleanResponseText(response.memory_write_token_id);
+  state.memoryWriteToken = token;
+  state.memoryWriteTokenExpiresAt = expiresAt;
+  state.memoryNotesUrl = isSafeCatsLogPath(typeof response.memory_notes_url === 'string' ? response.memory_notes_url : undefined)
+    ? response.memory_notes_url as string : undefined;
+}
+
+function hasUsableReadCapability(response: Record<string, unknown>): boolean {
+  const skillToken = cleanResponseText(response.skill_token);
+  const skillTokenExpiresAt = cleanResponseText(response.skill_token_expires_at);
+  const uploadToken = cleanResponseText(response.token);
+  const writeToken = cleanResponseText(response.memory_write_token);
+  return Boolean(skillToken && skillToken !== uploadToken && skillToken !== writeToken
+    && skillTokenExpiresAt && Date.parse(skillTokenExpiresAt) > Date.now());
+}
+
+function hasUsableWriteCapability(response: Record<string, unknown>): boolean {
+  const token = cleanResponseText(response.memory_write_token);
+  const expiresAt = cleanResponseText(response.memory_write_token_expires_at);
+  const uploadToken = cleanResponseText(response.token);
+  const skillToken = cleanResponseText(response.skill_token);
+  return Boolean(token && token !== uploadToken && token !== skillToken
+    && expiresAt && Date.parse(expiresAt) > Date.now());
+}
 
 export class CatscoLogUploadScheduler {
   private readonly workingDirectory: string;
@@ -154,7 +262,7 @@ export class CatscoLogUploadScheduler {
       return null;
     }
 
-    const deviceId = ensureCatscoDeviceId(state);
+    const deviceId = ensureCatscoDeviceId(state, config.stateFilePath);
     const client = new CatscoLogAgentClient(config.apiBaseUrl);
     const response = await client.bootstrap({
       deviceId,
@@ -165,13 +273,46 @@ export class CatscoLogUploadScheduler {
       catscoUserToken: config.catscoUserToken,
     });
 
+    // The memory provider can finish a parallel bootstrap while this upload
+    // handshake is in flight. Snapshot its latest read capability before
+    // saving upload state so an older scheduler object cannot erase it.
+    const latestState = loadCatscoLogAgentState(config.stateFilePath);
+    const previousSkillToken = cleanResponseText(state.skillToken);
+    const previousMemoryWriteToken = cleanResponseText(state.memoryWriteToken);
+
     state.userId = response.user_id;
     state.externalProvider = response.external_provider;
     state.externalUserId = response.external_user_id;
     state.deviceId = response.device_id;
+    ensureCatscoDeviceId(state, config.stateFilePath);
     state.tokenId = response.token_id;
     state.token = response.token;
     state.tokenIssuedAt = response.issued_at;
+    // Keep read and write capabilities independent from upload state. Older
+    // CatsLog servers omit one or both capability groups; in that case preserve
+    // a newer concurrent bootstrap rather than erasing it. Conversely, when a
+    // response explicitly contains a malformed/expired group, clear only that
+    // group so a revoked read token cannot leave stale URLs in use and a write
+    // refresh cannot invalidate reads.
+    const responseRecord = response as unknown as Record<string, unknown>;
+    if (responseHasReadCapabilityFields(responseRecord)) {
+      if (!hasUsableReadCapability(responseRecord) && !latestState.stateCorrupt && cleanResponseText(latestState.skillToken) !== previousSkillToken) {
+        copyCatscoReadCapability(state, latestState);
+      } else {
+        applyReadCapabilityResponse(state, responseRecord);
+      }
+    } else if (!latestState.stateCorrupt) {
+      copyCatscoReadCapability(state, latestState);
+    }
+    if (responseHasWriteCapabilityFields(responseRecord)) {
+      if (!hasUsableWriteCapability(responseRecord) && !latestState.stateCorrupt && cleanResponseText(latestState.memoryWriteToken) !== previousMemoryWriteToken) {
+        copyCatscoWriteCapability(state, latestState);
+      } else {
+        applyWriteCapabilityResponse(state, responseRecord);
+      }
+    } else if (!latestState.stateCorrupt) {
+      copyCatscoWriteCapability(state, latestState);
+    }
     state.uploaded ||= {};
     saveCatscoLogAgentState(config.stateFilePath, state);
 

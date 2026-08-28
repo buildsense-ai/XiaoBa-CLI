@@ -4,7 +4,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  clearCatscoMemoryWriteToken,
   clearCatscoLogToken,
+  clearCatscoSkillToken,
   ensureCatscoDeviceId,
   loadCatscoLogAgentState,
   saveCatscoLogAgentState,
@@ -43,6 +45,24 @@ describe('catsco log agent state', () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test('clears read and write capabilities independently', () => {
+    const state = {
+      uploaded: {},
+      skillToken: 'read-token',
+      skillTokenExpiresAt: '2099-01-01T00:00:00.000Z',
+      memoryWriteToken: 'write-token',
+      memoryWriteTokenExpiresAt: '2099-01-01T00:00:00.000Z',
+      memoryNotesUrl: '/catsco/agent/memory/notes',
+    };
+    clearCatscoSkillToken(state);
+    assert.equal(state.skillToken, undefined);
+    assert.equal(state.memoryWriteToken, 'write-token');
+    assert.equal(state.memoryNotesUrl, '/catsco/agent/memory/notes');
+    clearCatscoMemoryWriteToken(state);
+    assert.equal(state.memoryWriteToken, undefined);
+    assert.equal(state.memoryNotesUrl, undefined);
   });
 
   test('quarantines corrupt state and marks upload as paused', () => {

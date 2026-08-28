@@ -10,6 +10,7 @@ import { PromptManager } from '../utils/prompt-manager';
 import { PromptComposer } from './prompt-composer';
 import { composeSessionSystemPromptProvider } from '../core/session-system-prompt';
 import { PathResolver } from '../utils/path-resolver';
+import { CatsLogMemoryProvider } from '../utils/catslog-memory-provider';
 import {
   RuntimeProfile,
   assertValidRuntimeProfile,
@@ -76,6 +77,10 @@ export class RuntimeFactory {
     const branchConfig = loadBranchAgentConfig();
     const memoryBranchOverride = resolveMemoryBranchModelOverride(branchConfig);
     const memoryBranchModelSource = branchConfig.branches.memorySearch.model.kind;
+    const catslogMemory = branchConfig.branches.memorySearch.enabled
+      && CatsLogMemoryProvider.shouldExpose(profile.workingDirectory)
+      ? new CatsLogMemoryProvider(profile.workingDirectory)
+      : undefined;
 
     return {
       aiService,
@@ -84,6 +89,7 @@ export class RuntimeFactory {
         modelSource: memoryBranchModelSource,
         aiService: memoryBranchOverride ? new AIService(memoryBranchOverride) : aiService,
       },
+      ...(catslogMemory ? { catslogMemory } : {}),
       toolManager: new ToolManager(profile.workingDirectory, {}, {
         enabledToolNames: profile.tools.enabled,
       }),
