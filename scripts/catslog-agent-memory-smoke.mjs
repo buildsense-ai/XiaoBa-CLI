@@ -114,7 +114,10 @@ if (typeof recall.session_available !== 'boolean') {
 if (!isRecord(recall.session)) fail('memory recall returned an invalid session envelope');
 requireContentTrust('memory recall session', recall.session, 'untrusted_log_data');
 requireArray('memory recall session', recall.session.records, 'records');
-requireArray('memory recall', recall.notes, 'notes');
+// CatsLog omits an empty notes collection because the response field is
+// `omitempty`; normalize that valid envelope shape for the smoke assertion.
+const recallNotes = recall.notes === undefined ? [] : recall.notes;
+requireArray('memory recall', recallNotes, 'notes');
 requireETag('memory recall', recall);
 results.push({ name: 'memory recall', status: recall.status });
 

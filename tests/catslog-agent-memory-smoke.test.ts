@@ -80,7 +80,6 @@ describe('CatsLog Agent Memory staging smoke', () => {
           content_trust: 'untrusted_agent_memory',
           session_available: true,
           session: { content_trust: 'untrusted_log_data', records: [] },
-          notes: [],
         });
       }
       return writeJSON(response, 404, { code: 'not_found' });
