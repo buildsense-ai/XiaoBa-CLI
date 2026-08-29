@@ -123,6 +123,21 @@ export function clearCatscoMemoryWriteToken(state: CatscoLogAgentState): void {
   delete state.memoryNotesUrl;
 }
 
+/**
+ * Clear all CatsLog credentials when the owning CatsCompany account logs out.
+ * Keep the device identity, uploaded-file ledger, and local logs intact so a
+ * later login can safely reuse the installation without re-uploading history.
+ */
+export function clearCatscoLogAgentCredentials(stateFilePath: string): void {
+  if (!fs.existsSync(stateFilePath)) return;
+  const state = loadCatscoLogAgentState(stateFilePath);
+  if (state.stateCorrupt) return;
+  clearCatscoLogToken(state);
+  clearCatscoSkillToken(state);
+  clearCatscoMemoryWriteToken(state);
+  saveCatscoLogAgentState(stateFilePath, state);
+}
+
 function quarantineCorruptState(stateFilePath: string): void {
   try {
     if (!fs.existsSync(stateFilePath)) return;

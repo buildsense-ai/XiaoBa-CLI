@@ -54,7 +54,15 @@ export abstract class BranchSession {
   protected abstract buildInitialMessages(): Promise<Message[]>;
   protected abstract buildTools(): Tool[];
 
+  /**
+   * Hook for branches whose tool surface depends on turn-scoped capability
+   * state. It runs immediately before the initial prompt and before every
+   * subsequent conversation pass, keeping prompt and tools on one snapshot.
+   */
+  protected prepareConversationTurn(): void {}
+
   protected async runConversation(): Promise<BranchRunOutcome> {
+    this.prepareConversationTurn();
     if (!this.initialized) {
       this.messages.push(...await this.buildInitialMessages());
       this.initialized = true;

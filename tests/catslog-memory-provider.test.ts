@@ -14,6 +14,7 @@ import {
   CatsLogMemoryUnavailableError,
 } from '../src/utils/catslog-memory-provider';
 import { getCatscoLogAgentConfig } from '../src/utils/catsco-log-agent-config';
+import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 
 describe('CatsLog memory provider', () => {
   let root: string;
@@ -111,8 +112,72 @@ describe('CatsLog memory provider', () => {
     await assert.rejects(
       provider.recallMemory({ search: 'anything' }),
       (error: any) => error instanceof CatsLogMemoryUnavailableError
-        && error.code === 'CATSLOG_MEMORY_UNAVAILABLE',
+      && error.code === 'CATSLOG_MEMORY_UNAVAILABLE',
     );
+  });
+
+  test('re-evaluates availability so a long-lived runtime sees a later login or revocation', () => {
+    const dynamicEnv = { ...env };
+    delete dynamicEnv.CATSCO_USER_TOKEN;
+    const provider = new CatsLogMemoryProvider(root, { env: dynamicEnv });
+
+    assert.equal(provider.isAvailable(), false);
+
+    dynamicEnv.CATSLOG_MEMORY_ENABLED = 'true';
+    assert.equal(provider.isAvailable(), false);
+
+    dynamicEnv.CATSCO_USER_TOKEN = 'catscompany-user-token';
+    assert.equal(provider.isAvailable(), true);
+
+    dynamicEnv.CATSLOG_MEMORY_ENABLED = 'false';
+    assert.equal(provider.isAvailable(), false);
+  });
+
+  test('logout clears persisted CatsLog capabilities before the next branch turn', async () => {
+    const client = fakeClient([], 'skill-token-logout');
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => client,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+
+    await provider.retrieveSkillMemory({ task: 'release' });
+    assert.equal(provider.isAvailable(), true);
+
+    createCatsCoLocalConfigService({ runtimeRoot: root, env }).clearAccount();
+    assert.equal(provider.isAvailable(), false);
+    const state = JSON.parse(fs.readFileSync(getCatscoLogAgentConfig(root, env).stateFilePath, 'utf8'));
+    assert.equal(state.skillToken, undefined);
+    assert.equal(state.memoryWriteToken, undefined);
+    assert.equal(state.deviceId !== undefined, true);
+  });
+
+  test('account switches clear the previous device capability before reuse', async () => {
+    const localConfig = createCatsCoLocalConfigService({ runtimeRoot: root, env });
+    localConfig.persistAccountSession({
+      token: 'catscompany-user-old',
+      uid: 'user-old',
+      httpBaseUrl: 'https://app.catsco.cc',
+      serverUrl: 'wss://app.catsco.cc/v0/channels',
+    }, { uid: 'user-old', token: 'catscompany-user-old' });
+
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => fakeClient([], 'skill-token-old'),
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+    await provider.retrieveSkillMemory({ task: 'release' });
+
+    localConfig.persistAccountSession({
+      token: 'catscompany-user-new',
+      uid: 'user-new',
+      httpBaseUrl: 'https://app.catsco.cc',
+      serverUrl: 'wss://app.catsco.cc/v0/channels',
+    }, { uid: 'user-new', token: 'catscompany-user-new' });
+
+    const state = JSON.parse(fs.readFileSync(getCatscoLogAgentConfig(root, env).stateFilePath, 'utf8'));
+    assert.equal(state.skillToken, undefined);
+    assert.equal(state.deviceId !== undefined, true);
   });
 
   test('keeps Skill outcome opt-in independent from note-write opt-in', () => {
