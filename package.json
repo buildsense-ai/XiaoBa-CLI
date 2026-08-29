@@ -22,6 +22,7 @@
     "test:runtime": "node scripts/run-tests.mjs runtime",
     "test:skillhub-phase1": "node scripts/run-tests.mjs skillhub-phase1",
     "test:cross-repo:catsco-skills": "node scripts/cross-repo-catsco-skills-smoke.mjs",
+    "test:cross-repo:catslog-memory": "node scripts/catslog-agent-memory-smoke.mjs",
     "test:legacy": "node scripts/run-tests.mjs legacy",
     "test:all": "node scripts/run-tests.mjs all",
     "test:list": "node scripts/run-tests.mjs runtime --list",

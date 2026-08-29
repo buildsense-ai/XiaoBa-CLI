@@ -45,6 +45,11 @@ const MAX_RECEIPTS = 128;
  * complete device-bound Agent API.
  */
 export interface CatsLogMemoryBackend {
+  /**
+   * Whether the remote capability should be advertised for a new branch turn.
+   * Optional to keep lightweight embedders and test fakes source-compatible.
+   */
+  isAvailable?(): boolean;
   retrieveSkillMemory(
     query: CatscoSkillMemoryQuery,
     signal?: AbortSignal,
@@ -129,9 +134,20 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     private readonly options: CatsLogMemoryProviderOptions = {},
   ) {}
 
+  /**
+   * Runtime adapters can live longer than the login/token state they were
+   * created with. Re-read the current config/state at branch construction
+   * time so a later login (or an explicit revocation/disable) takes effect
+   * without rebuilding the whole adapter runtime.
+   */
+  isAvailable(): boolean {
+    return CatsLogMemoryProvider.shouldExpose(this.workingDirectory, this.runtimeEnv(), this.now());
+  }
+
   static shouldExpose(
     workingDirectory: string,
     env: NodeJS.ProcessEnv = process.env,
+    now = Date.now(),
   ): boolean {
     const role = String(env.XIAOBA_ROLE || '')
       .trim()
@@ -143,14 +159,13 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     }
     const config = getCatscoLogAgentConfig(workingDirectory, env);
     if (!config.apiBaseUrl) return false;
+    // The feature flag only permits the capability; a live login or persisted
+    // device read token is still required before the branch may advertise it.
     if (config.memoryEnabled === false) return false;
-    if (config.memoryEnabled === true) {
-      return true;
-    }
     if (config.catscoUserToken) return true;
     const state = loadCatscoLogAgentState(config.stateFilePath);
     if (state.stateCorrupt) return false;
-    return Boolean(readCapabilityFromState(state, Date.now()));
+    return Boolean(readCapabilityFromState(state, now));
   }
 
   /** Outcome feedback is a write and is opt-in for an autonomous branch. */

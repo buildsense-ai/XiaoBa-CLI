@@ -69,6 +69,72 @@ class FakeRemoteMemory implements CatsLogMemoryBackend {
   }
 }
 
+class ToggleRemoteMemory extends FakeRemoteMemory {
+  available = false;
+
+  isAvailable(): boolean {
+    return this.available;
+  }
+}
+
+class ThrowingAvailabilityMemory extends FakeRemoteMemory {
+  isAvailable(): boolean {
+    throw new Error('corrupt capability state');
+  }
+}
+
+class FinishOnlyBranchAI {
+  toolNames: string[] = [];
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(_messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.toolNames = tools?.map(tool => tool.name) || [];
+    return {
+      content: null,
+      toolCalls: [call('finish-1', 'finish_memory_search', {
+        summary: 'no additional memory',
+        refs: [],
+        inject: false,
+      })],
+      usage,
+    };
+  }
+}
+
+class ToggleDuringBranchAI {
+  calls: Array<{ toolNames: string[]; messages: Message[] }> = [];
+  private turn = 0;
+
+  constructor(private readonly backend: ToggleRemoteMemory) {}
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls.push({
+      toolNames: tools?.map(tool => tool.name) || [],
+      messages: JSON.parse(JSON.stringify(messages)),
+    });
+    if (this.turn++ === 0) {
+      this.backend.available = true;
+      return { content: 'capability changed while this branch was running', toolCalls: [], usage };
+    }
+    return {
+      content: null,
+      toolCalls: [call('finish-1', 'finish_memory_search', {
+        summary: 'remote capability was refreshed',
+        refs: [],
+        inject: false,
+      })],
+      usage,
+    };
+  }
+}
+
 describe('CatsLog memory branch integration', () => {
   test('adds remote Skill Memory tools only to the branch and publishes a citation', async () => {
     const queue = new InMemorySyntheticObservationQueue();
@@ -100,5 +166,126 @@ describe('CatsLog memory branch integration', () => {
     ]);
     assert.match(ai.calls[0].find(message => message.role === 'system')?.content as string, /catslog_skill_memory/);
     assert.equal(JSON.parse(observations[0].formattedContent || '').refs[0], 'catslog:skill:release-playbook@3');
+  });
+
+  test('re-checks remote capability per branch turn without leaking unavailable tools', async () => {
+    const backend = new ToggleRemoteMemory();
+    const firstAI = new FinishOnlyBranchAI();
+    const firstQueue = new InMemorySyntheticObservationQueue();
+    const first = startMemorySidecarBranch({
+      sessionKey: 'remote-memory-unavailable',
+      input: 'find prior release notes',
+      recentMessages: [],
+      workingDirectory: '/tmp/xiaoba-catslog-memory-branch',
+      aiService: firstAI as any,
+      queue: firstQueue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+    await first.done;
+    assert.deepEqual(firstAI.toolNames, [
+      'memory_search', 'memory_read_turn', 'memory_neighbors', 'finish_memory_search',
+    ]);
+
+    backend.available = true;
+    const secondAI = new FinishOnlyBranchAI();
+    const secondQueue = new InMemorySyntheticObservationQueue();
+    const second = startMemorySidecarBranch({
+      sessionKey: 'remote-memory-available',
+      input: 'find prior release notes',
+      recentMessages: [],
+      workingDirectory: '/tmp/xiaoba-catslog-memory-branch',
+      aiService: secondAI as any,
+      queue: secondQueue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+    await second.done;
+    assert.deepEqual(secondAI.toolNames, [
+      'memory_search', 'memory_read_turn', 'memory_neighbors',
+      'catslog_skill_catalog', 'catslog_skill_graph', 'catslog_skill_memory',
+      'catslog_session_query', 'catslog_session_recall', 'finish_memory_search',
+    ]);
+  });
+
+  test('fails closed when remote capability discovery throws', async () => {
+    const ai = new FinishOnlyBranchAI();
+    const queue = new InMemorySyntheticObservationQueue();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'remote-memory-discovery-error',
+      input: 'find prior release notes',
+      recentMessages: [],
+      workingDirectory: '/tmp/xiaoba-catslog-memory-branch',
+      aiService: ai as any,
+      queue,
+      catslogMemory: new ThrowingAvailabilityMemory(),
+      logEnabled: false,
+    });
+
+    await handle.done;
+    assert.deepEqual(ai.toolNames, [
+      'memory_search', 'memory_read_turn', 'memory_neighbors', 'finish_memory_search',
+    ]);
+  });
+
+  test('keeps the prompt and tool surface aligned when capability appears mid-branch', async () => {
+    const backend = new ToggleRemoteMemory();
+    const ai = new ToggleDuringBranchAI(backend);
+    const queue = new InMemorySyntheticObservationQueue();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'remote-memory-mid-branch-login',
+      input: 'find prior release notes',
+      recentMessages: [],
+      workingDirectory: '/tmp/xiaoba-catslog-memory-branch',
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+
+    await handle.done;
+    assert.deepEqual(ai.calls.map(call => call.toolNames), [
+      ['memory_search', 'memory_read_turn', 'memory_neighbors', 'finish_memory_search'],
+      [
+        'memory_search', 'memory_read_turn', 'memory_neighbors',
+        'catslog_skill_catalog', 'catslog_skill_graph', 'catslog_skill_memory',
+        'catslog_session_query', 'catslog_session_recall', 'finish_memory_search',
+      ],
+    ]);
+    assert.equal(ai.calls[1].messages.some(message => (
+      message.role === 'system' && message.content.includes('在本轮已可用')
+    )), true);
+  });
+
+  test('removes remote tools and tells the branch when capability is revoked mid-branch', async () => {
+    const backend = new ToggleRemoteMemory();
+    backend.available = true;
+    const ai = new ToggleDuringBranchAI(backend);
+    const originalChat = ai.chat.bind(ai);
+    ai.chat = async (messages, tools) => {
+      const result = await originalChat(messages, tools);
+      if (ai.calls.length === 1) backend.available = false;
+      return result;
+    };
+    const queue = new InMemorySyntheticObservationQueue();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'remote-memory-mid-branch-revocation',
+      input: 'find prior release notes',
+      recentMessages: [],
+      workingDirectory: '/tmp/xiaoba-catslog-memory-branch',
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+
+    await handle.done;
+    assert.equal(ai.calls[0].toolNames.includes('catslog_skill_memory'), true);
+    assert.deepEqual(ai.calls[1].toolNames, [
+      'memory_search', 'memory_read_turn', 'memory_neighbors', 'finish_memory_search',
+    ]);
+    assert.equal(ai.calls[1].messages.some(message => (
+      message.role === 'system' && message.content.includes('不可用')
+    )), true);
   });
 });
