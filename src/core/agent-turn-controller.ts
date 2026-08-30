@@ -517,8 +517,8 @@ export class AgentTurnController {
         .filter(block => block.type === 'text')
         .map(block => block.text)
         .join('\n');
-    if (!/\bcatslog\b/i.test(text)) return false;
-    if (/\bcatslog-[A-Za-z0-9._:@#-]+\b/i.test(text)) return true;
+    if (!/(?:^|[^a-z0-9])catslog(?:$|[^a-z0-9])/i.test(text)) return false;
+    if (/(?:^|[^a-z0-9])catslog[-_:][a-z0-9._:@#-]+(?:$|[^a-z0-9._:@#-])/i.test(text)) return true;
     return /\bskill\b|技能|远端|remote|\bmemory\b|记忆|\bsession\b|会话|catalog|图谱|\bgraph\b/i.test(text);
   }
 

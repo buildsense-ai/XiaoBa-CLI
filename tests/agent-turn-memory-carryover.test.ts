@@ -205,6 +205,15 @@ describe('AgentTurnController memory branch carryover', () => {
       return slot;
     };
 
+    assert.equal(
+      (controller as any).isExplicitCatsLogSkillRequest('请调用 catslog_skill_memory 读取该 Skill。'),
+      true,
+    );
+    assert.equal(
+      (controller as any).isExplicitCatsLogSkillRequest('请检查 CatsLog 服务状态。'),
+      false,
+    );
+
     await controller.run({
       input: '请先读取 CatsLog 的远端 Skill，再给出结论。',
       messages: [],
