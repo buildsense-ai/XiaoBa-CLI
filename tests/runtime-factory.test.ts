@@ -298,6 +298,35 @@ describe('RuntimeFactory', () => {
     }
   });
 
+  test('propagates the persisted autonomous branch budget into runtime services', () => {
+    const previousRuntimeRoot = process.env.XIAOBA_USER_DATA_DIR;
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
+    try {
+      const config = loadBranchAgentConfig({ runtimeRoot: testRoot, env: {} });
+      config.branches.memorySearch.enabled = true;
+      config.branches.memorySearch.budget = {
+        maxTurnsPerPass: 6,
+        maxPasses: 4,
+        deadlineMs: 30_000,
+        maxContextTokens: 12_000,
+      };
+      saveBranchAgentConfig(config, { runtimeRoot: testRoot, env: {} });
+
+      const profile = resolveDefaultRuntimeProfile({ surface: 'cli', workingDirectory: testRoot });
+      const services = RuntimeFactory.createServicesSync(profile);
+
+      assert.deepStrictEqual(services.memoryBranch?.budget, {
+        maxTurnsPerPass: 6,
+        maxPasses: 4,
+        deadlineMs: 30_000,
+        maxContextTokens: 12_000,
+      });
+    } finally {
+      if (previousRuntimeRoot === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previousRuntimeRoot;
+    }
+  });
+
   test('resolves CatsLog capability state from the runtime data root', () => {
     const previousRuntimeRoot = process.env.XIAOBA_USER_DATA_DIR;
     const previousMemoryEnabled = process.env.CATSLOG_MEMORY_ENABLED;

@@ -5,6 +5,11 @@ import { PathResolver } from '../utils/path-resolver';
 import {
   hasLegacyBranchAgentSwitch,
 } from './branch-agent-settings';
+import {
+  DEFAULT_MEMORY_BRANCH_BUDGET,
+  normalizeMemoryBranchBudget,
+  type MemoryBranchBudget,
+} from './branch-budget';
 
 export const BRANCH_AGENT_CONFIG_SCHEMA = 'xiaoba.branch-agents.v2';
 export const BRANCH_AGENT_CONFIG_FILE = 'branch-agents.json';
@@ -33,6 +38,7 @@ export interface MemoryBranchConfig {
   enabled: boolean;
   model: { kind: 'inherit' } | BranchModelRuntime;
   customDraft?: BranchModelRuntime;
+  budget: MemoryBranchBudget;
 }
 
 export interface BranchAgentConfig {
@@ -128,6 +134,7 @@ function defaultBranchAgentConfig(enabled = false): BranchAgentConfig {
       memorySearch: {
         enabled,
         model: { kind: 'inherit' },
+        budget: { ...DEFAULT_MEMORY_BRANCH_BUDGET },
       },
     },
   };
@@ -189,12 +196,14 @@ function normalizeBranchAgentConfig(input: any, fallback: BranchAgentConfig): Br
     : undefined;
   const model = normalizeModel(memory?.model) ?? fallback.branches.memorySearch.model;
   const customDraft = normalizeModel(memory?.customDraft);
+  const budget = normalizeMemoryBranchBudget(memory?.budget, fallback.branches.memorySearch.budget);
   return {
     schema: BRANCH_AGENT_CONFIG_SCHEMA,
     branches: {
       memorySearch: {
         enabled: typeof memory?.enabled === 'boolean' ? memory.enabled : fallback.branches.memorySearch.enabled,
         model,
+        budget,
         ...(customDraft?.kind === 'custom' ? { customDraft } : {}),
       },
     },

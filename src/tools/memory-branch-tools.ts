@@ -6,6 +6,8 @@ export interface MemorySearchFinishPayload {
   summary: string;
   refs: string[];
   inject: boolean;
+  /** Explicitly separates parent-context delivery from audit-only retention. */
+  delivery?: 'context' | 'audit' | 'discard';
 }
 
 export type MemorySearchFinishHandler = (payload: MemorySearchFinishPayload) => void;
@@ -179,7 +181,8 @@ export class FinishMemorySearchTool implements Tool {
       '结束 memory search branch。',
       '当你已经拿到足够的记忆证据，或确认没有有用记忆时，调用这个工具。',
       '正常找到有新增价值的记忆时不需要设置 inject，并必须提供支撑 summary 的 refs。',
-      '如果只找到 recent context 已覆盖的信息，或没有值得注入给主 agent 的额外记忆，设置 inject:false 并传空 refs。',
+      '如果证据只需要留在 branch 审计日志、不应注入主 agent，可设置 delivery:"audit"、inject:false，并保留 refs。',
+      '如果完全没有可保留的价值，设置 delivery:"discard"、inject:false，并传空 refs。',
       '调用成功后 branch 会立刻结束。',
     ].join(' '),
     controlMode: 'pause_turn',
@@ -192,12 +195,17 @@ export class FinishMemorySearchTool implements Tool {
         },
         refs: {
           type: 'array',
-          description: '支撑 summary 的 canonical refs。inject:true 时至少一个；inject:false 时传空数组。',
+          description: '支撑 summary 的 canonical refs。context/audit 至少一个；discard 必须为空。',
           items: { type: 'string' },
         },
         inject: {
           type: 'boolean',
-          description: '可选。默认 true。只有确认没有新增价值、只重复 recent context、或没有值得注入的额外记忆时设置为 false；此时 refs 必须为空。',
+          description: '可选，兼容旧调用。默认根据 delivery 推导；audit/discard 必须为 false，context 为 true。',
+        },
+        delivery: {
+          type: 'string',
+          enum: ['context', 'audit', 'discard'],
+          description: '可选。context 注入主 agent，audit 只留审计证据，discard 完全丢弃；省略时沿用 inject 兼容语义。',
         },
       },
       required: ['summary', 'refs'],
@@ -237,7 +245,16 @@ function validateFinishArgs(args: any):
   if (typeof args?.inject !== 'undefined' && typeof args.inject !== 'boolean') {
     return { ok: false, error: 'inject must be a boolean when provided' };
   }
-  const inject = args?.inject !== false;
+  const rawDelivery = args?.delivery;
+  if (rawDelivery !== undefined && rawDelivery !== 'context' && rawDelivery !== 'audit' && rawDelivery !== 'discard') {
+    return { ok: false, error: 'delivery must be context, audit, or discard when provided' };
+  }
+  const hasExplicitInject = typeof args?.inject !== 'undefined';
+  const inject = hasExplicitInject
+    ? args.inject === true
+    : rawDelivery === undefined || rawDelivery === 'context';
+  const delivery: MemorySearchFinishPayload['delivery'] = rawDelivery
+    || (inject ? 'context' : 'discard');
   const refs: string[] = args.refs.map((ref: unknown) => String(ref || '').trim()).filter(Boolean);
   for (const ref of refs) {
     if (!isMemoryCitationRef(ref)) {
@@ -245,11 +262,30 @@ function validateFinishArgs(args: any):
     }
   }
   const uniqueRefs: string[] = Array.from(new Set(refs));
-  if (inject && uniqueRefs.length === 0) {
-    return { ok: false, error: 'refs must include at least one canonical memory ref unless inject is false' };
+  if (delivery === 'context' && !inject) {
+    return { ok: false, error: 'inject must be true when delivery is context' };
   }
-  if (!inject && uniqueRefs.length > 0) {
-    return { ok: false, error: 'refs must be empty when inject is false' };
+  if (delivery !== 'context' && inject) {
+    return { ok: false, error: `inject must be false when delivery is ${delivery}` };
+  }
+  if (delivery === 'context' && uniqueRefs.length === 0) {
+    return {
+      ok: false,
+      error: rawDelivery === undefined
+        ? 'refs must include at least one canonical memory ref unless inject is false'
+        : 'refs must include at least one canonical memory ref for context delivery',
+    };
+  }
+  if (delivery === 'discard' && uniqueRefs.length > 0) {
+    return {
+      ok: false,
+      error: rawDelivery === undefined
+        ? 'refs must be empty when inject is false'
+        : 'refs must be empty when delivery is discard',
+    };
+  }
+  if (delivery === 'audit' && uniqueRefs.length === 0) {
+    return { ok: false, error: 'refs must include at least one canonical memory ref for audit delivery' };
   }
   return {
     ok: true,
@@ -257,6 +293,7 @@ function validateFinishArgs(args: any):
       summary,
       refs: uniqueRefs,
       inject,
+      ...(rawDelivery !== undefined ? { delivery } : {}),
     },
   };
 }

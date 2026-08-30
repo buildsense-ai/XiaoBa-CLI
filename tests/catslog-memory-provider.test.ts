@@ -219,7 +219,7 @@ describe('CatsLog memory provider', () => {
       retrieveSkillMemory: async input => {
         calls.push({ kind: 'retrieve', token: input.token, query: stripCapability(input) });
         return {
-          items: [{ handle: 'release-playbook', revision: 3, retrieval_receipt: 'receipt-1' }],
+          items: [{ handle: 'release-playbook', revision: 3, content: 'body', retrieval_receipt: 'receipt-1' }],
         };
       },
       reportSkillOutcome: async input => {
@@ -253,6 +253,142 @@ describe('CatsLog memory provider', () => {
     const state = JSON.parse(fs.readFileSync(getCatscoLogAgentConfig(root, writeEnabledEnv).stateFilePath, 'utf8'));
     assert.equal(state.memoryWriteToken, 'write-token');
     assert.equal(state.token, undefined);
+  });
+
+  test('inherits request route attribution when a server omits it from the receipt response', async () => {
+    const calls: Array<{ kind: string; query?: any }> = [];
+    const client: Partial<CatscoLogAgentClient> = {
+      bootstrap: async () => bootstrapResponse('skill-route'),
+      retrieveSkillMemory: async input => {
+        calls.push({ kind: 'retrieve', query: stripCapability(input) });
+        return {
+          items: [{ handle: 'release-playbook', revision: 3, content: 'body', retrieval_receipt: 'receipt-route' }],
+        };
+      },
+      reportSkillOutcome: async input => {
+        calls.push({ kind: 'outcome', query: { ...input, token: undefined } });
+      },
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env: { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true' },
+      clientFactory: () => client as CatscoLogAgentClient,
+    });
+
+    await provider.retrieveSkillMemory({
+      handle: 'release-playbook',
+      includeContent: true,
+      routeId: 'branch-route',
+      hop: 1,
+      edgeKey: 'edge-1',
+    });
+    await provider.reportSkillOutcome({
+      handle: 'release-playbook',
+      revision: 3,
+      outcome: 'succeeded',
+      routeId: 'branch-route',
+      hop: 1,
+      edgeKey: 'edge-1',
+      requireReceipt: true,
+    });
+
+    assert.equal(calls[0].query.routeId, 'branch-route');
+    assert.equal(calls[1].query.retrievalReceipt, 'receipt-route');
+  });
+
+  test('does not cross-bind receipts for concurrent branch routes', async () => {
+    const outcomes: any[] = [];
+    const client: Partial<CatscoLogAgentClient> = {
+      bootstrap: async () => bootstrapResponse('skill-concurrent'),
+      retrieveSkillMemory: async input => ({
+        items: [{
+          handle: 'release-playbook',
+          revision: 3,
+          content: 'body',
+          retrieval_receipt: `receipt-${input.routeId}`,
+        }],
+      }),
+      reportSkillOutcome: async input => outcomes.push(input),
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env: { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true' },
+      clientFactory: () => client as CatscoLogAgentClient,
+    });
+
+    await provider.retrieveSkillMemory({ handle: 'release-playbook', includeContent: true, routeId: 'branch-a' });
+    await provider.retrieveSkillMemory({ handle: 'release-playbook', includeContent: true, routeId: 'branch-b' });
+    await provider.reportSkillOutcome({
+      handle: 'release-playbook', revision: 3, outcome: 'succeeded', routeId: 'branch-a', requireReceipt: true,
+    });
+    await provider.reportSkillOutcome({
+      handle: 'release-playbook', revision: 3, outcome: 'succeeded', routeId: 'branch-b', requireReceipt: true,
+    });
+
+    assert.equal(outcomes[0].retrievalReceipt, 'receipt-branch-a');
+    assert.equal(outcomes[1].retrievalReceipt, 'receipt-branch-b');
+  });
+
+  test('fails closed when a multi-item receipt needs an omitted edge key', async () => {
+    const client: Partial<CatscoLogAgentClient> = {
+      bootstrap: async () => bootstrapResponse('skill-ambiguous'),
+      retrieveSkillMemory: async () => ({
+        items: [
+          {
+            handle: 'release-playbook',
+            revision: 3,
+            content: 'body-a',
+            retrieval_receipt: 'receipt-item-a',
+            route: { route_id: 'branch-route', hop: 1, edge_key: 'item-a' },
+          },
+          {
+            handle: 'release-playbook',
+            revision: 3,
+            content: 'body-b',
+            retrieval_receipt: 'receipt-item-b',
+            route: { route_id: 'branch-route', hop: 1, edge_key: 'item-b' },
+          },
+        ],
+      }),
+      reportSkillOutcome: async () => undefined,
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env: { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true' },
+      clientFactory: () => client as CatscoLogAgentClient,
+    });
+
+    await provider.retrieveSkillMemory({ handle: 'release-playbook', includeContent: true, routeId: 'branch-route', hop: 1 });
+    await assert.rejects(
+      provider.reportSkillOutcome({
+        handle: 'release-playbook', revision: 3, outcome: 'succeeded',
+        routeId: 'branch-route', hop: 1, requireReceipt: true,
+      }),
+      /live retrieval receipt/,
+    );
+    await provider.reportSkillOutcome({
+      handle: 'release-playbook', revision: 3, outcome: 'succeeded',
+      routeId: 'branch-route', hop: 1, edgeKey: 'item-b', requireReceipt: true,
+    });
+  });
+
+  test('does not retain a receipt from a metadata-only response', async () => {
+    const client: Partial<CatscoLogAgentClient> = {
+      bootstrap: async () => bootstrapResponse('skill-metadata-receipt'),
+      retrieveSkillMemory: async () => ({
+        items: [{ handle: 'release-playbook', revision: 3, retrieval_receipt: 'receipt-for-metadata' }],
+      }),
+      reportSkillOutcome: async () => undefined,
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env: { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true' },
+      clientFactory: () => client as CatscoLogAgentClient,
+    });
+
+    await provider.retrieveSkillMemory({ handle: 'release-playbook', includeContent: false });
+    await assert.rejects(
+      provider.reportSkillOutcome({
+        handle: 'release-playbook', revision: 3, outcome: 'succeeded', requireReceipt: true,
+      }),
+      /No live retrieval receipt/,
+    );
   });
 
   test('refreshes a revoked write token without clearing the read token', async () => {

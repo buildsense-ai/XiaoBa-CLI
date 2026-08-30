@@ -96,6 +96,7 @@ export class RuntimeFactory {
         enabled: branchConfig.branches.memorySearch.enabled,
         modelSource: memoryBranchModelSource,
         aiService: memoryBranchOverride ? new AIService(memoryBranchOverride) : aiService,
+        budget: { ...branchConfig.branches.memorySearch.budget },
       },
       ...(catslogMemory ? { catslogMemory } : {}),
       toolManager: new ToolManager(profile.workingDirectory, {}, {

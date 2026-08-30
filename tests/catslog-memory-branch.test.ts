@@ -61,6 +61,11 @@ class FakeRemoteMemory implements CatsLogMemoryBackend {
     return {
       content_trust: 'untrusted_runtime_memory',
       items: [{ handle: 'release-playbook', revision: 3, content: 'untrusted body' }],
+      graph: {
+        catalog_revision: 1,
+        nodes: [{ handle: 'release-playbook', revision: 3, active: true, status: 'published' }],
+        edges: [],
+      },
     };
   }
 
@@ -165,7 +170,12 @@ describe('CatsLog memory branch integration', () => {
       'finish_memory_search',
     ]);
     assert.match(ai.calls[0].find(message => message.role === 'system')?.content as string, /catslog_skill_memory/);
-    assert.equal(JSON.parse(observations[0].formattedContent || '').refs[0], 'catslog:skill:release-playbook@3');
+    const injected = JSON.parse(observations[0].formattedContent || '');
+    assert.equal(injected.refs[0], 'catslog:skill:release-playbook@3');
+    assert.equal(injected.provenance.bodyReadCount, 1);
+    assert.equal(injected.provenance.receiptState, 'inferred_from_body_read');
+    assert.equal(injected.provenance.toolsUsed.includes('catslog_skill_memory'), true);
+    assert.equal(JSON.stringify(injected).includes('retrieval_receipt'), false);
   });
 
   test('re-checks remote capability per branch turn without leaking unavailable tools', async () => {
