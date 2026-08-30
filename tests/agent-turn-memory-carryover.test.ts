@@ -117,6 +117,108 @@ describe('AgentTurnController memory branch carryover', () => {
     assert.equal(slot, null);
   });
 
+  test('signals a regular sidecar slot as soon as it publishes an observation', async () => {
+    const controller = createMemoryBranchController(true);
+    let branchQueue: InMemorySyntheticObservationQueue | undefined;
+    let resolveDone!: () => void;
+    const done = new Promise<void>(resolve => {
+      resolveDone = resolve;
+    });
+    (controller as any).createMemorySidecarHandle = (options: { queue: InMemorySyntheticObservationQueue }) => {
+      branchQueue = options.queue;
+      return {
+        cancel: () => undefined,
+        done,
+      };
+    };
+
+    const slot = (controller as any).startMemorySidecarIfEnabled({
+      turnNumber: 1,
+      input: 'hello',
+      messages: [],
+    });
+    assert.ok(slot);
+    assert.ok(branchQueue);
+    assert.equal(branchQueue.push(memoryObservation('sidecar-published')), true);
+
+    await slot.ready;
+    assert.equal(slot.done, false, 'publication wakes the parent before branch completion');
+
+    resolveDone();
+    await done;
+  });
+
+  test('waits for an explicit CatsLog Skill observation before the main agent starts', async () => {
+    const aiService = new CapturingAIService();
+    const controller = new AgentTurnController({
+      sessionKey: 'session:v2:catscompany:group:grp_test:agent:usr1',
+      sessionType: 'catscompany',
+      services: {
+        aiService: aiService as any,
+        catslogMemory: {
+          retrieveSkillMemory: async () => ({ items: [] }),
+          recallMemory: async () => ({ session_available: false }),
+        } as any,
+        toolManager: {
+          getToolDefinitions: () => [],
+          executeTool: async () => {
+            throw new Error('not expected');
+          },
+        } as any,
+        skillManager: {} as any,
+      },
+      skillRuntime: {
+        reloadSkills: async () => undefined,
+        buildSkillsListMessage: () => null,
+      } as any,
+      planRuntime: undefined as any,
+      turnContextBuilder: new TurnContextBuilder(),
+      turnLogRecorder: {
+        recordTurn: () => undefined,
+      } as any,
+      workspaceRoot: process.cwd(),
+      getCurrentDirectory: () => process.cwd(),
+      updateCurrentDirectory: () => undefined,
+    });
+
+    (controller as any).startMemorySidecarIfEnabled = (options: { turnNumber: number }) => {
+      const queue = new InMemorySyntheticObservationQueue();
+      let resolveReady!: () => void;
+      const ready = new Promise<void>(resolve => {
+        resolveReady = resolve;
+      });
+      const slot: any = {
+        queue,
+        originTurn: options.turnNumber,
+        done: false,
+        ready,
+        handle: {
+          cancel: () => undefined,
+          done: ready,
+        },
+      };
+      queueMicrotask(() => {
+        queue.push(memoryObservation('remote-skill-ready'));
+        slot.done = true;
+        resolveReady();
+      });
+      return slot;
+    };
+
+    await controller.run({
+      input: '请先读取 CatsLog 的远端 Skill，再给出结论。',
+      messages: [],
+      runtimeFeedback: [],
+      shouldContinue: () => true,
+    });
+
+    assert.equal(aiService.requests.length, 1);
+    const synthetic = aiService.requests[0].filter(message => message.__syntheticObservation);
+    assert.equal(synthetic.length, 2);
+    const args = JSON.parse(synthetic[0].tool_calls?.[0].function.arguments || '{}');
+    assert.equal(args.timing, 'current_turn');
+  });
+
   test('injects previous-turn memory as a legal late synthetic tool pair and expires it after one turn', async () => {
     const aiService = new CapturingAIService();
     const queues: InMemorySyntheticObservationQueue[] = [];

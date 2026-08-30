@@ -47,6 +47,7 @@ import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 
 const EMPTY_FINAL_RESPONSE_MESSAGE = '模型本轮未返回有效内容。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
+const EXPLICIT_CATSLOG_MEMORY_WAIT_MS = 90_000;
 
 export interface AgentTurnServices {
   aiService: AIService;
@@ -129,6 +130,8 @@ interface MemoryBranchSlot {
   handle: MemorySidecarBranchHandle;
   originTurn: number;
   done: boolean;
+  /** Resolves when the branch publishes an observation or reaches completion. */
+  ready?: Promise<void>;
 }
 
 /**
@@ -186,6 +189,12 @@ export class AgentTurnController {
         messages: params.messages,
         abortSignal: params.abortSignal,
       });
+
+      await this.waitForExplicitCatsLogMemoryObservation(
+        currentMemoryBranch,
+        params.input,
+        params.abortSignal,
+      );
 
       const runner = this.createRunner({
         channel: params.channel,
@@ -415,11 +424,16 @@ export class AgentTurnController {
     if (!(memoryBranchAiService instanceof AIService) || !memoryBranchAiService.isToolCallingSupported()) {
       return null;
     }
-    const queue = new InMemorySyntheticObservationQueue();
+    let resolveReady!: () => void;
+    const ready = new Promise<void>(resolve => {
+      resolveReady = resolve;
+    });
+    const queue = new InMemorySyntheticObservationQueue(resolveReady);
     const slot: MemoryBranchSlot = {
       queue,
       originTurn: options.turnNumber,
       done: false,
+      ready,
       handle: this.createMemorySidecarHandle({
         input: options.input,
         messages: options.messages,
@@ -429,8 +443,83 @@ export class AgentTurnController {
     };
     slot.handle.done.finally(() => {
       slot.done = true;
+      resolveReady();
     });
     return slot;
+  }
+
+  /**
+   * Memory normally remains a non-blocking sidecar. A user who explicitly
+   * asks for CatsLog/remote Skill evidence, however, expects that evidence to
+   * inform this reply rather than a later carryover turn. Keep the remote
+   * capability branch-local and only wait for its first bounded observation.
+   */
+  private async waitForExplicitCatsLogMemoryObservation(
+    slot: MemoryBranchSlot | null,
+    input: string | ContentBlock[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!slot || slot.done || slot.queue.size() > 0 || !this.isExplicitCatsLogSkillRequest(input)) {
+      return;
+    }
+    if (!this.hasAvailableCatsLogMemory()) return;
+
+    const outcome = await this.waitForMemoryBranchSignal(slot, signal);
+    if (outcome === 'timeout') {
+      Logger.info(
+        `[${this.options.sessionKey}] explicit CatsLog memory branch did not publish within `
+        + `${EXPLICIT_CATSLOG_MEMORY_WAIT_MS}ms; continuing with normal sidecar carryover`,
+      );
+    }
+  }
+
+  private hasAvailableCatsLogMemory(): boolean {
+    const backend = this.options.services.catslogMemory;
+    if (!backend) return false;
+    try {
+      return backend.isAvailable?.() !== false;
+    } catch {
+      return false;
+    }
+  }
+
+  private async waitForMemoryBranchSignal(
+    slot: MemoryBranchSlot,
+    signal?: AbortSignal,
+  ): Promise<'ready' | 'timeout' | 'aborted'> {
+    if (slot.done || slot.queue.size() > 0) return 'ready';
+    if (signal?.aborted) return 'aborted';
+
+    return new Promise(resolve => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (outcome: 'ready' | 'timeout' | 'aborted') => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        resolve(outcome);
+      };
+      const onAbort = () => finish('aborted');
+      const onReady = () => finish('ready');
+
+      timer = setTimeout(() => finish('timeout'), EXPLICIT_CATSLOG_MEMORY_WAIT_MS);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      slot.ready?.then(onReady, onReady);
+      slot.handle.done.then(onReady, onReady);
+    });
+  }
+
+  private isExplicitCatsLogSkillRequest(input: string | ContentBlock[]): boolean {
+    const text = typeof input === 'string'
+      ? input
+      : input
+        .filter(block => block.type === 'text')
+        .map(block => block.text)
+        .join('\n');
+    if (!/\bcatslog\b/i.test(text)) return false;
+    if (/\bcatslog-[A-Za-z0-9._:@#-]+\b/i.test(text)) return true;
+    return /\bskill\b|技能|远端|remote|\bmemory\b|记忆|\bsession\b|会话|catalog|图谱|\bgraph\b/i.test(text);
   }
 
   private drainMemoryObservations(
