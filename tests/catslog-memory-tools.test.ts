@@ -243,6 +243,27 @@ describe('CatsLog branch memory tools', () => {
     assert.equal(String(result.content).includes('receipt'), false);
   });
 
+  test('preserves an uncategorized outcome summary as other feedback', async () => {
+    const backend = new FakeCatsLogMemory();
+    const result = await new CatsLogSkillOutcomeTool(backend).execute({
+      ref: 'catslog:skill:release-playbook@3',
+      outcome: 'succeeded',
+      feedback_summary: 'Validated the remote Skill in a read-only task.',
+    }, context);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(backend.outcomes, [{
+      handle: 'release-playbook',
+      revision: 3,
+      outcome: 'succeeded',
+      feedback: {
+        code: 'other',
+        summary: 'Validated the remote Skill in a read-only task.',
+      },
+      requireReceipt: true,
+    }]);
+  });
+
   test('writes a bounded note through the narrow write seam and ignores malformed arrays', async () => {
     const backend = new FakeCatsLogMemory();
     const result = await new CatsLogMemoryNoteTool(backend).execute({
