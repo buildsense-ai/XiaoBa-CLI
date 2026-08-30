@@ -41,3 +41,33 @@ synthetic observations back to the parent runner. A concrete branch only needs t
 `MemorySearchBranchSession` is the first concrete implementation. Future observation-producing
 branches should extend `ObservationBranchSession` instead of reimplementing publish, suppress,
 drop, and cancel bookkeeping.
+
+## Autonomous branch and CatsLog seam
+
+The memory branch is an autonomous cerebellum, not a synchronous subroutine of the main agent.
+The main runner starts it and may consume a queued observation on a later turn; it does not pass
+CatsLog tokens or wait for a remote result. CatsLog catalog, graph, memory, session, and optional
+write tools are constructed only in the branch's tool surface.
+
+`CatsLogSkillEvidenceTracker` is an internal seam between that tool surface and observation
+delivery. It observes projected tool results (never raw receipts) and emits bounded provenance:
+candidate refs, active-head checks, body-read/receipt eligibility, route metadata, lineage, and
+outcome status. A Skill citation that was not observed, points at a stale revision, or lacks an
+active-head check cannot enter parent context; it is retained as audit evidence instead.
+
+If the model does not choose `delivery:audit` before the finite branch budget expires, a
+previously deferred unsafe citation is automatically retained as audit-only; it is never
+promoted to parent context. Branch audit logs also redact capability tokens, receipts, and
+tenant selectors at the logging boundary.
+
+Delivery is explicit:
+
+- `context` queues a synthetic observation for asynchronous carryover;
+- `audit` writes the observation details to the branch audit log only;
+- `discard` records the branch's intentional suppression.
+
+When receipt-bound outcome writes are enabled, a body-read Skill citation must report its real
+`succeeded`, `failed`, or `corrected` outcome before `context` delivery. The runtime never
+guesses success. Every branch also has finite turn, pass, deadline, and prompt-token budgets;
+the defaults and bounded Dashboard update seam are documented in
+`docs/memory-branch-evaluation-notes.md`.

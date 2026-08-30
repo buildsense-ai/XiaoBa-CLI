@@ -72,7 +72,51 @@ describe('Dashboard Branch agent API', () => {
     assert.equal(data.modelSource, 'inherit');
     assert.equal(typeof data.primary.model, 'string');
     assert.equal(data.custom.apiKeyPresent, false);
+    assert.deepEqual(data.budget, {
+      maxTurnsPerPass: 8,
+      maxPasses: 3,
+      deadlineMs: 45_000,
+      maxContextTokens: 16_000,
+    });
     assert.equal(text.includes('apiKey"'), false);
+  });
+
+  test('persists bounded autonomous branch budgets and rejects unsafe values', async () => {
+    const response = await fetch(`${baseUrl}/api/branch-agents/memory/budget`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        budget: {
+          maxTurnsPerPass: 12,
+          maxPasses: 3,
+          deadlineMs: 60_000,
+          maxContextTokens: 24_000,
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(loadBranchAgentConfig({ runtimeRoot: root }).branches.memorySearch.budget, {
+      maxTurnsPerPass: 12,
+      maxPasses: 3,
+      deadlineMs: 60_000,
+      maxContextTokens: 24_000,
+    });
+    assert.deepEqual(restartCalls, ['catscompany']);
+
+    const invalid = await fetch(`${baseUrl}/api/branch-agents/memory/budget`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxPasses: 99 }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(loadBranchAgentConfig({ runtimeRoot: root }).branches.memorySearch.budget.maxPasses, 3);
+
+    const nullBudget = await fetch(`${baseUrl}/api/branch-agents/memory/budget`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ budget: null }),
+    });
+    assert.equal(nullBudget.status, 400);
   });
 
   test('saves a custom model, preserves the primary model env, and requests one connector restart', async () => {

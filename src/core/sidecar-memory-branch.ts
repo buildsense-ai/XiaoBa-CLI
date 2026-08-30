@@ -16,6 +16,11 @@ export interface MemorySidecarBranchOptions {
   logEnabled?: boolean;
   /** Optional device-bound CatsLog read capability for remote skill/session recall. */
   catslogMemory?: CatsLogMemoryBackend;
+  /** Autonomous branch resource budgets; omitted values use conservative defaults. */
+  maxTurnsPerPass?: number;
+  maxPasses?: number;
+  deadlineMs?: number;
+  maxContextTokens?: number;
 }
 
 export interface MemorySidecarBranchHandle {

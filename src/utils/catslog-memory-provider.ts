@@ -196,7 +196,7 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       }),
       signal,
     );
-    this.rememberReceipts(response);
+    this.rememberReceipts(response, query);
     return response;
   }
 
@@ -552,12 +552,25 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     return this.options.now?.() ?? Date.now();
   }
 
-  private rememberReceipts(response: CatscoSkillMemoryResponse): void {
+  private rememberReceipts(response: CatscoSkillMemoryResponse, request?: CatscoSkillMemoryQuery): void {
     const items = Array.isArray(response?.items) ? response.items : [];
     const now = this.now();
     const responseRoute = isRecord(response?.route) ? response.route : undefined;
+    const requestRoute = request && (
+      request.routeId !== undefined
+      || request.hop !== undefined
+      || request.edgeKey !== undefined
+    ) ? {
+      ...(request.routeId !== undefined ? { route_id: request.routeId } : {}),
+      ...(request.hop !== undefined ? { hop: request.hop } : {}),
+      ...(request.edgeKey !== undefined ? { edge_key: request.edgeKey } : {}),
+    } : undefined;
     for (const raw of items) {
       if (!isRecord(raw)) continue;
+      // CatsLog only issues a receipt for an explicit, non-empty body read.
+      // Enforce that contract locally as well, so a malformed/legacy server
+      // response cannot make a metadata-only lookup eligible for feedback.
+      if (request?.includeContent !== true || typeof raw.content !== 'string' || raw.content.length === 0) continue;
       const receipt = clean(raw.retrieval_receipt);
       const handle = clean(raw.handle);
       const revision = positiveInteger(raw.revision);
@@ -565,7 +578,15 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       // A receipt may inherit the request-level route when the server omits
       // an item-specific copy. Keep that context so a later outcome can
       // repeat the same attribution without exposing the receipt itself.
-      const route = isRecord(raw.route) ? raw.route : responseRoute;
+      // Merge route scopes so a partial server-level route (for example only
+      // `hop`) cannot erase the request's branch-owned route ID. Item fields
+      // take precedence over response fields, which take precedence over the
+      // original request.
+      const route = {
+        ...(requestRoute || {}),
+        ...(responseRoute || {}),
+        ...(isRecord(raw.route) ? raw.route : {}),
+      };
       const entry: StoredReceipt = {
         receipt,
         handle,
@@ -593,6 +614,17 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       .filter(entry => input.hop === undefined || entry.hop === input.hop)
       .filter(entry => input.edgeKey === undefined || entry.edgeKey === edgeKey)
       .sort((left, right) => right.touchedAt - left.touchedAt);
+    // A page-level body read can issue several receipts for the same
+    // handle/revision (for example across visible memory scopes). If the
+    // caller omitted an attribution component, choosing the newest receipt
+    // would silently bind feedback to an arbitrary item. Fail closed and let
+    // the branch report audit-only evidence instead.
+    if (candidates.length > 1 && (input.routeId === undefined || input.hop === undefined || input.edgeKey === undefined)) {
+      const distinct = (selector: (entry: StoredReceipt) => unknown) => new Set(candidates.map(selector)).size;
+      if (input.routeId === undefined && distinct(entry => entry.routeId || '') > 1) return undefined;
+      if (input.hop === undefined && distinct(entry => entry.hop ?? '') > 1) return undefined;
+      if (input.edgeKey === undefined && distinct(entry => entry.edgeKey || '') > 1) return undefined;
+    }
     const found = candidates[0];
     if (found) {
       found.touchedAt = now;

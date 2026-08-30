@@ -5,18 +5,54 @@ evaluation checks used while tuning the branch-session memory search flow.
 
 ## Lifecycle Terms
 
-- `published`: the memory branch finished with `inject:true` and pushed a
-  synthetic observation into the main runner queue.
+- `published`: the memory branch finished with `delivery:context` and pushed a
+  synthetic observation into the main runner queue. The parent still observes
+  it asynchronously through the existing one-late-turn carryover; it never
+  waits for the branch.
+- `audited`: the branch finished with `delivery:audit`; the evidence is kept in
+  the branch JSONL audit log and is not put into the parent prompt.
 - `injected`: the main runner drained a queued observation before a provider
   call and inserted the synthetic tool pair into the model-visible messages.
-- `suppressed`: the memory branch deliberately finished with `inject:false`
-  because it judged that no extra memory was worth showing to the main agent.
+- `suppressed`: the memory branch deliberately finished with
+  `delivery:discard` because it judged that no extra memory was worth keeping.
 - `dropped`: an observation was already published, but no provider call drained
   it before the observation lifecycle expired.
 - `cancelled`: the branch was stopped before it produced a finish payload.
+- `budget_exhausted`: the branch reached its bounded pass/deadline budget before
+  a valid finish payload. No partial context observation is published; if the
+  branch had already submitted evidence that was explicitly deferred for a
+  version/outcome guard, it is retained as an `audited_observation` only.
 
-`dropped` is a lifecycle outcome, not a branch judgment. Branch self-suppression
-is represented by `finish_memory_search({ inject:false, refs: [] })`.
+`dropped` is a lifecycle outcome, not a branch judgment. The legacy
+`inject` flag remains accepted for compatibility, but new callers should use
+the explicit `delivery` field.
+
+## CatsLog evidence contract
+
+The branch records a bounded `catslog.branch.provenance.v1` projection from the
+actual tool seam. It contains candidate/active/body-read Skill refs, route
+metadata, graph lineage, catalog revision, receipt eligibility, and outcome
+status. Raw bearer values and retrieval receipts never enter branch messages,
+observations, or logs.
+
+When a branch cites a Skill for parent context:
+
+1. the cited ref must have been observed in a CatsLog result;
+2. a concrete adapter must expose an active-head graph observation, and every
+   cited revision must match that head;
+3. when outcome writes are enabled and the body was read, the branch must send a
+   receipt-bound `catslog_skill_outcome` before publishing. A rejected outcome
+   is retained as audit-only evidence.
+
+Stale, unseen, or unverified Skill citations fail closed to `delivery:audit`.
+
+## Resource budget
+
+The autonomous memory branch defaults to 8 model turns per pass, 3 passes,
+45 seconds wall-clock, and a 16,000-token prompt budget. Dashboard clients can
+read and update these bounded values through `/api/branch-agents/memory` and
+`PUT /api/branch-agents/memory/budget`; persisted values are normalized to safe
+limits on load.
 
 ## Observed Issues
 
