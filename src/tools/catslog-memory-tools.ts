@@ -351,9 +351,13 @@ export class CatsLogSkillOutcomeTool implements Tool {
         handle: { type: 'string', description: '也可直接提供 Skill handle。' },
         revision: { type: 'number', description: 'Skill revision，正整数。' },
         outcome: { type: 'string', enum: ['succeeded', 'failed', 'corrected'] },
-        feedback_code: { type: 'string', enum: [...FEEDBACK_CODES] },
-        feedback_summary: { type: 'string', description: '最多 2 KiB 的简短原因。' },
-        feedback_tags: { type: 'array', items: { type: 'string' }, description: '最多 8 个短标签。' },
+        feedback_code: {
+          type: 'string',
+          enum: [...FEEDBACK_CODES],
+          description: '可选反馈分类；若仅提供 feedback_summary 或 feedback_tags，会自动归类为 other。',
+        },
+        feedback_summary: { type: 'string', description: '最多 2 KiB 的简短原因；未给 feedback_code 时自动归类为 other。' },
+        feedback_tags: { type: 'array', items: { type: 'string' }, description: '最多 8 个短标签；未给 feedback_code 时自动归类为 other。' },
         route_id: { type: 'string', description: '可选 route attribution。' },
         hop: { type: 'number', description: '可选 route hop，0-2。' },
         edge_key: { type: 'string', description: '可选 route edge key。' },
@@ -956,7 +960,11 @@ function parseFeedbackArguments(args: any): { value?: CatscoSkillOutcomeFeedback
   if (codeValue === undefined && summaryValue === undefined && tagsValue === undefined) return {};
   const code = optionalString(codeValue, 'feedback_code', 128);
   if (code.error) return { error: code.error };
-  const normalizedCode = code.value?.toLowerCase();
+  // Feedback is optional, but a free-form summary or tags are still useful
+  // audit evidence. The remote contract requires a category, so map an
+  // otherwise uncategorized model-generated note to the explicit `other`
+  // bucket rather than rejecting the whole receipt-bound outcome.
+  const normalizedCode = code.value?.toLowerCase() ?? (codeValue === undefined ? 'other' : '');
   if (!normalizedCode || !FEEDBACK_CODES.has(normalizedCode)) return { error: 'feedback_code is not allowed' };
   const summary = optionalString(summaryValue, 'feedback_summary', MAX_OUTCOME_SUMMARY_CHARS);
   if (summary.error) return { error: summary.error };
