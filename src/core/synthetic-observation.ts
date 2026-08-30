@@ -68,8 +68,6 @@ export class InMemorySyntheticObservationQueue implements SyntheticObservationQu
   private seen = new Set<string>();
   private cancelled = false;
 
-  constructor(private readonly onObservationPushed?: () => void) {}
-
   push(observation: SyntheticObservation): boolean {
     if (this.cancelled) return false;
     const id = observation.id || stableObservationId(observation);
@@ -80,12 +78,6 @@ export class InMemorySyntheticObservationQueue implements SyntheticObservationQu
       id,
       createdAt: observation.createdAt ?? Date.now(),
     });
-    try {
-      this.onObservationPushed?.();
-    } catch {
-      // Queue notification is only a latency optimization. A consumer can
-      // still drain the observation normally if its notifier fails.
-    }
     return true;
   }
 
