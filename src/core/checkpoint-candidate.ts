@@ -7,7 +7,7 @@ import type {
 } from './checkpoint-compaction';
 import { estimateMessagesTokens } from './token-estimator';
 
-export const CHECKPOINT_SUMMARY_START_RATIO = 0.70;
+export const CHECKPOINT_SUMMARY_START_RATIO = 0.75;
 export const CHECKPOINT_SUMMARY_STOP_RATIO = 0.85;
 export const CHECKPOINT_CANDIDATE_DEADLINE_MS = 15 * 60 * 1000;
 const CHECKPOINT_CANDIDATE_MAX_ATTEMPTS = 3;

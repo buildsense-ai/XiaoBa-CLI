@@ -7,10 +7,10 @@ Branch Summary 只负责压缩当前 Episode 的 durable transcript。它不搜�
 
 只有两个上下文水位：
 
-- **70% 启动点**：在 pre-turn、模型请求前或完整 tool batch 后，精确计算
-  `message tokens + tool tokens`。达到 70% 且没有候选时，复制不可变快照，
+- **75% 启动点**：在 pre-turn、模型请求前或完整 tool batch 后，精确计算
+  `message tokens + tool tokens`。达到 75% 且没有候选时，复制不可变快照，
   使用主 Session 相同的 `AIService`、Provider、模型和凭据异步生成摘要。
-- **85% 停止点**：不再发起新的主模型请求。若 70% 启动的摘要仍在运行，
+- **85% 停止点**：不再发起新的主模型请求。若 75% 启动的摘要仍在运行，
   主 Agent 等待同一个摘要，不取消也不重建。
 
 摘要完成后只在安全边界提交：模型请求前、完整 tool batch 后、Episode 结束时。

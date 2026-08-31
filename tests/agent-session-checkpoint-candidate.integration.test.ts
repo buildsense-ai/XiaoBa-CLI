@@ -95,13 +95,13 @@ test('candidate trigger uses exact token usage instead of rounded percentage', a
       async chatStream() { return { content: 'unused', toolCalls: [], usage }; },
     });
     (session as any).messages.push({ role: 'user', content: 'history root' });
-    let usedTokens = 699;
+    let usedTokens = 749;
     (session as any).getContextUsageInfo = () => ({
       usedTokens,
       toolTokens: 0,
       maxTokens: 1000,
-      // 69.9% rounds to 70, which must not start a summary.
-      usagePercent: 70,
+      // 74.9% rounds to 75, which must not start a summary.
+      usagePercent: 75,
     });
     (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => ({
       compacted: true,
@@ -115,7 +115,7 @@ test('candidate trigger uses exact token usage instead of rounded percentage', a
     );
     assert.equal((session as any).checkpointCandidate, null);
 
-    usedTokens = 700;
+    usedTokens = 750;
     (session as any).startCheckpointCandidateIfEligible(
       (session as any).lifecycleGeneration,
       (session as any).messages,

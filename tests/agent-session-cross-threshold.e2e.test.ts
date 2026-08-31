@@ -78,11 +78,11 @@ test('AgentSession commits one candidate after a later complete tool batch', asy
         return { usedTokens: 20, toolTokens: 0, maxTokens: 100, usagePercent: 20 };
       }
       const crossedTrigger = messages.some(message => message.role === 'tool' && message.tool_call_id === 'call-1');
-      const percent = crossedTrigger ? 70 : 50;
+      const percent = crossedTrigger ? 75 : 50;
       // The trigger uses exact used+tool tokens. Keep the message share below
       // the 85% stop point after the real request tool definitions are added.
       const usedTokens = crossedTrigger ? 45 : 25;
-      const toolTokens = crossedTrigger ? 25 : 0;
+      const toolTokens = crossedTrigger ? 30 : 0;
       return { usedTokens, toolTokens, maxTokens: 100, usagePercent: percent };
     };
     (session as any).checkpointCompactionCoordinator.compactIfNeeded = async (messages: Message[]) => ({ compacted: false, messages });
