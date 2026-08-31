@@ -15,6 +15,10 @@ const packageJson = JSON.parse(
   };
 };
 
+const builderConfig = require('../electron-builder.config.cjs') as {
+  afterPack?: unknown;
+};
+
 function extraNodeModulesFilter(): string[] {
   const resource = packageJson.build?.extraResources?.find(item => item.from === 'node_modules');
   assert.ok(resource, 'Electron build must define a node_modules extra resource');
@@ -27,6 +31,7 @@ test('desktop package keeps production channel dependencies while filtering buil
   assert.ok(packageJson.dependencies?.dotenv);
 
   assert.equal(packageJson.build?.npmRebuild, false);
+  assert.equal(typeof builderConfig.afterPack, 'function');
 
   const filter = extraNodeModulesFilter();
   for (const pattern of ['!electron-builder/**', '!electron-packager/**', '!playwright/**', '!tsx/**', '!typescript/**', '!@types/**', '!deasync/**']) {
