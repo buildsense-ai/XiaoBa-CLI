@@ -63,7 +63,7 @@ export class SessionTurnLogger {
   constructor(sessionType: string, sessionId: string, agentIdentity?: SessionLogAgentIdentity) {
     this.sessionType = sessionType;
     this.sessionId = sessionId;
-    this.agentIdentity = normalizeAgentIdentity(agentIdentity);
+    this.agentIdentity = normalizeAgentIdentity(agentIdentity, sessionType);
 
     const date = new Date();
     const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -80,7 +80,7 @@ export class SessionTurnLogger {
    * Agents; equal IDs may, however, upgrade trust metadata on later turns.
    */
   setAgentIdentity(agentIdentity?: SessionLogAgentIdentity): boolean {
-    const normalized = normalizeAgentIdentity(agentIdentity);
+    const normalized = normalizeAgentIdentity(agentIdentity, this.sessionType);
     if (!normalized) return true;
     if (this.agentIdentity && this.agentIdentity.agent_id !== normalized.agent_id) {
       return false;
@@ -226,16 +226,19 @@ export class SessionTurnLogger {
 
 }
 
-function normalizeAgentIdentity(value: SessionLogAgentIdentity | undefined): SessionLogAgentIdentity | undefined {
-  const agentId = normalizeAgentIdentityField(value?.agent_id);
+function normalizeAgentIdentity(value: SessionLogAgentIdentity | undefined, sessionType: string): SessionLogAgentIdentity | undefined {
+  const rawAgentId = normalizeAgentIdentityField(value?.agent_id);
+  const agentId = rawAgentId && sessionType.trim().toLowerCase() === 'catscompany' && /^\d+$/.test(rawAgentId)
+    ? `usr${rawAgentId}`
+    : rawAgentId;
   if (!agentId) return undefined;
   const trust = value?.trust === 'server_canonical'
     || value?.trust === 'legacy_context'
     || value?.trust === 'untrusted'
     ? value.trust
     : 'legacy_context';
-  const agentBodyId = normalizeAgentIdentityField(value?.agent_body_id);
-  const source = normalizeAgentIdentityField(value?.source);
+	const agentBodyId = normalizeAgentIdentityField(value?.agent_body_id);
+	const source = normalizeAgentIdentityField(value?.source);
   return {
     agent_id: agentId,
     ...(agentBodyId && { agent_body_id: agentBodyId }),
@@ -253,21 +256,24 @@ function mergeAgentIdentity(
     legacy_context: 1,
     server_canonical: 2,
   };
-  const trust = trustRank[incoming.trust] > trustRank[current.trust] ? incoming.trust : current.trust;
+  const incomingWins = trustRank[incoming.trust] > trustRank[current.trust];
+  const trust = incomingWins ? incoming.trust : current.trust;
+  const winner = incomingWins ? incoming : current;
+  const fallback = incomingWins ? current : incoming;
   return {
     agent_id: current.agent_id,
-    ...(incoming.agent_body_id || current.agent_body_id
-      ? { agent_body_id: incoming.agent_body_id || current.agent_body_id }
+    ...(winner.agent_body_id || fallback.agent_body_id
+      ? { agent_body_id: winner.agent_body_id || fallback.agent_body_id }
       : {}),
     trust,
-    ...(incoming.source || current.source ? { source: incoming.source || current.source } : {}),
+    ...(winner.source || fallback.source ? { source: winner.source || fallback.source } : {}),
   };
 }
 
 function normalizeAgentIdentityField(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const normalized = value.trim();
-  if (!normalized || normalized.length > MAX_AGENT_IDENTITY_FIELD_LENGTH || /[\u0000-\u001F\u007F]/.test(normalized)) {
+  if (!normalized || Buffer.byteLength(normalized, 'utf8') > MAX_AGENT_IDENTITY_FIELD_LENGTH || /[\u0000-\u001F\u007F]/.test(normalized)) {
     return undefined;
   }
   return normalized;

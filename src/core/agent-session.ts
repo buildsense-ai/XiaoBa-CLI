@@ -1355,7 +1355,10 @@ export class AgentSession {
 
 function sessionLogAgentIdentity(route: SessionRoute | undefined): SessionLogAgentIdentity | undefined {
   if (!route) return undefined;
-  const agentId = route.agentId?.trim();
+  const rawAgentId = route.agentId?.trim();
+  const agentId = rawAgentId && route.source === 'catscompany' && /^\d+$/.test(rawAgentId)
+    ? `usr${rawAgentId}`
+    : rawAgentId;
   if (!agentId) return undefined;
   return {
     agent_id: agentId,
