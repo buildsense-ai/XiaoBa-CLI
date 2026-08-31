@@ -158,7 +158,7 @@ class NeedsActiveHeadAI {
   }
 }
 
-class OutcomeRequiredAI {
+class RetrievalOnlyAI {
   calls = 0;
 
   isToolCallingSupported(): boolean {
@@ -188,28 +188,15 @@ class OutcomeRequiredAI {
       return {
         content: null,
         toolCalls: [call('finish-1', 'finish_memory_search', {
-          summary: 'The body was read, but outcome is intentionally omitted once.',
+          summary: 'The body was read; the main task will determine whether the Skill was used.',
           refs: ['catslog:skill:review-checklist@2'],
-        })],
-        usage,
-      };
-    }
-    if (this.calls === 4) {
-      return {
-        content: null,
-        toolCalls: [call('outcome-1', 'catslog_skill_outcome', {
-          ref: 'catslog:skill:review-checklist@2',
-          outcome: 'succeeded',
         })],
         usage,
       };
     }
     return {
       content: null,
-      toolCalls: [call('finish-2', 'finish_memory_search', {
-        summary: 'Outcome is now receipt-bound.',
-        refs: ['catslog:skill:review-checklist@2'],
-      })],
+      toolCalls: [],
       usage,
     };
   }
@@ -557,12 +544,12 @@ describe('branch CatsLog lifecycle', () => {
     assert.equal(ai.calls, 4);
   });
 
-  test('requires a receipt-bound outcome before publishing Skill context', async () => {
+  test('publishes Skill evidence without making the retrieval branch claim task outcome', async () => {
     const queue = new InMemorySyntheticObservationQueue();
-    const ai = new OutcomeRequiredAI();
+    const ai = new RetrievalOnlyAI();
     const backend = new OutcomeLifecycleMemory();
     const handle = startMemorySidecarBranch({
-      sessionKey: 'outcome-required-lifecycle',
+      sessionKey: 'retrieval-only-lifecycle',
       input: 'check the review checklist',
       recentMessages: [],
       workingDirectory: testRoot,
@@ -577,14 +564,10 @@ describe('branch CatsLog lifecycle', () => {
     const observations = queue.drain();
     assert.equal(observations.length, 1);
     const injected = JSON.parse(observations[0].formattedContent || '');
-    assert.equal(injected.lifecycle.outcome, 'accepted');
-    assert.deepEqual(backend.outcomes, [{
-      handle: 'review-checklist',
-      revision: 2,
-      outcome: 'succeeded',
-    }]);
-    assert.match(readBranchLogs(testRoot), /skill_outcome_required/);
-    assert.equal(ai.calls, 5);
+    assert.equal(injected.lifecycle.feedback, 'unsettled');
+    assert.deepEqual(backend.outcomes, []);
+    assert.doesNotMatch(readBranchLogs(testRoot), /skill_outcome_required/);
+    assert.equal(ai.calls, 3);
   });
 });
 

@@ -21,7 +21,7 @@ evaluation checks used while tuning the branch-session memory search flow.
 - `budget_exhausted`: the branch reached its bounded pass/deadline budget before
   a valid finish payload. No partial context observation is published; if the
   branch had already submitted evidence that was explicitly deferred for a
-  version/outcome guard, it is retained as an `audited_observation` only.
+  version guard, it is retained as an `audited_observation` only.
 
 `dropped` is a lifecycle outcome, not a branch judgment. The legacy
 `inject` flag remains accepted for compatibility, but new callers should use
@@ -40,9 +40,9 @@ When a branch cites a Skill for parent context:
 1. the cited ref must have been observed in a CatsLog result;
 2. a concrete adapter must expose an active-head graph observation, and every
    cited revision must match that head;
-3. when outcome writes are enabled and the body was read, the branch must send a
-   receipt-bound `catslog_skill_outcome` before publishing. A rejected outcome
-   is retained as audit-only evidence.
+3. a body read marks the cited Skill as receipt-eligible, but does not imply that
+   the main agent adopted or executed it. The branch never emits
+   `catslog_skill_outcome`; the main turn runtime owns task outcome settlement.
 
 Stale, unseen, or unverified Skill citations fail closed to `delivery:audit`.
 

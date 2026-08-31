@@ -56,8 +56,11 @@ CATSLOG_SKILL_OUTCOMES_ENABLED=false
 CATSLOG_MEMORY_WRITE_ENABLED=false
 ```
 
-Outcome feedback in the branch is receipt-bound. Legacy no-receipt outcomes are
-kept on the explicit CLI command path, not exposed to the autonomous branch.
+The autonomous branch does not emit outcome feedback: a receipt means only that
+Skill content was read. Receipt-bound outcome settlement belongs to the main
+turn runtime, which will know whether the Skill was adopted and how the task ended once the
+outcome finalizer is introduced.
+Legacy no-receipt outcomes remain on the explicit CLI command path.
 
 ## Branch lifecycle smoke
 
@@ -69,8 +72,9 @@ pnpm exec tsx --test tests/catslog-branch-lifecycle.test.ts
 ```
 
 The suite exercises audit-only delivery, bounded non-finishing loops, active
-Skill-head verification, stale/unseen citation suppression, and the optional
-receipt-bound outcome gate. In a live run, inspect
+Skill-head verification, stale/unseen citation suppression, and retrieval-only
+Skill evidence delivery. The branch does not claim task outcomes; those are
+owned by the main turn runtime. In a live run, inspect
 `logs/branches/memory/<date>/*.jsonl` for `published_observation`,
 `audited_observation`, `finish_deferred`, and `budget_exhausted`; a raw
 `retrieval_receipt` must never appear there.
