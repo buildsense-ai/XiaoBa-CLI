@@ -9,6 +9,7 @@ const packageJson = JSON.parse(
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   build?: {
+    npmRebuild?: boolean;
     files?: string[];
     extraResources?: Array<{ from?: string; filter?: string[] }>;
   };
@@ -25,8 +26,10 @@ test('desktop package keeps production channel dependencies while filtering buil
   assert.ok(packageJson.dependencies?.axios);
   assert.ok(packageJson.dependencies?.dotenv);
 
+  assert.equal(packageJson.build?.npmRebuild, false);
+
   const filter = extraNodeModulesFilter();
-  for (const pattern of ['!electron-builder/**', '!electron-packager/**', '!playwright/**', '!tsx/**', '!typescript/**', '!@types/**']) {
+  for (const pattern of ['!electron-builder/**', '!electron-packager/**', '!playwright/**', '!tsx/**', '!typescript/**', '!@types/**', '!deasync/**']) {
     assert.ok(filter.includes(pattern), `missing Electron package exclusion: ${pattern}`);
   }
   for (const pattern of ['!**/docs/**', '!**/tests/**', '!**/examples/**', '!**/*.md']) {

@@ -105,6 +105,7 @@
       "output": "release"
     },
     "asar": false,
+    "npmRebuild": false,
     "publish": {
       "provider": "github",
       "owner": "buildsense-ai",
@@ -153,7 +154,8 @@
           "!playwright/**",
           "!tsx/**",
           "!typescript/**",
-          "!@types/**"
+          "!@types/**",
+          "!deasync/**"
         ]
       }
     ],
