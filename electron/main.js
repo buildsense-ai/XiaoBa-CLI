@@ -521,12 +521,12 @@ function getRuntimeRoot() {
 
 
 
-/**
- * 闂備礁鍚嬮崕鎶藉床閼艰翰浜?node_modules 闂佽崵濮崇拃锕傚垂閹殿喗顐介柣鎰劋閺咁剟鏌涢銈呮瀻闁愁亞鏁婚弻娑㈠冀瑜庨崳钘夘熆瑜庨〃濠傜暦?extraResources 濠电偞鍨堕幖鈺呭矗韫囨洘顫?
- */
+// Electron Builder places production dependencies next to the packaged app.
+// Keep one canonical module tree instead of copying a second tree through
+// extraResources; the Dashboard child process receives this path via NODE_PATH.
 function getNodeModulesPath() {
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'node_modules');
+    return path.join(getAppRoot(), 'node_modules');
   }
   return path.join(__dirname, '..', 'node_modules');
 }

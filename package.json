@@ -127,38 +127,6 @@
       ".env.example",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "node_modules",
-        "to": "node_modules",
-        "filter": [
-          "**/*.node",
-          "**/*.js",
-          "**/*.mjs",
-          "**/*.wasm",
-          "**/*.json",
-          "!**/.bin/**",
-          "!**/test/**",
-          "!**/tests/**",
-          "!**/example/**",
-          "!**/examples/**",
-          "!**/docs/**",
-          "!**/*.md",
-          "!**/*.markdown",
-          "!**/CHANGELOG*",
-          "!**/HISTORY*",
-          "!**/README*",
-          "!electron/**",
-          "!electron-builder/**",
-          "!electron-packager/**",
-          "!playwright/**",
-          "!tsx/**",
-          "!typescript/**",
-          "!@types/**",
-          "!deasync/**"
-        ]
-      }
-    ],
     "extraFiles": [
       {
         "from": "build-resources/runtime",

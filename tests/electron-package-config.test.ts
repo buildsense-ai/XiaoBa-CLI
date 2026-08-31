@@ -7,39 +7,29 @@ const packageJson = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
 ) as {
   dependencies?: Record<string, string>;
-  devDependencies?: Record<string, string>;
   build?: {
     npmRebuild?: boolean;
     files?: string[];
-    extraResources?: Array<{ from?: string; filter?: string[] }>;
+    extraResources?: unknown[];
   };
 };
 
+const electronMain = fs.readFileSync(path.join(process.cwd(), 'electron', 'main.js'), 'utf8');
 const builderConfig = require('../electron-builder.config.cjs') as {
   afterPack?: unknown;
 };
 
-function extraNodeModulesFilter(): string[] {
-  const resource = packageJson.build?.extraResources?.find(item => item.from === 'node_modules');
-  assert.ok(resource, 'Electron build must define a node_modules extra resource');
-  return resource.filter || [];
-}
-
-test('desktop package keeps production channel dependencies while filtering build-only packages', () => {
+test('desktop package keeps production dependencies without a duplicate node_modules resource', () => {
   assert.ok(packageJson.dependencies?.['@larksuiteoapi/node-sdk']);
   assert.ok(packageJson.dependencies?.axios);
   assert.ok(packageJson.dependencies?.dotenv);
+  assert.ok(packageJson.dependencies?.deasync);
 
   assert.equal(packageJson.build?.npmRebuild, false);
   assert.equal(typeof builderConfig.afterPack, 'function');
-
-  const filter = extraNodeModulesFilter();
-  for (const pattern of ['!electron-builder/**', '!electron-packager/**', '!playwright/**', '!tsx/**', '!typescript/**', '!@types/**', '!deasync/**']) {
-    assert.ok(filter.includes(pattern), `missing Electron package exclusion: ${pattern}`);
-  }
-  for (const pattern of ['!**/docs/**', '!**/tests/**', '!**/examples/**', '!**/*.md']) {
-    assert.ok(filter.includes(pattern), `missing dependency artifact exclusion: ${pattern}`);
-  }
+  assert.equal(packageJson.build?.extraResources, undefined);
+  assert.match(electronMain, /path\.join\(getAppRoot\(\), 'node_modules'\)/);
+  assert.doesNotMatch(electronMain, /path\.join\(process\.resourcesPath, 'node_modules'\)/);
 });
 
 test('desktop package keeps all compiled JavaScript entrypoints for the low-risk phase', () => {
