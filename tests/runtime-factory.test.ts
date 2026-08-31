@@ -10,6 +10,9 @@ import { ToolManager } from '../src/tools/tool-manager';
 import { AIService } from '../src/utils/ai-service';
 import { RuntimeFactory } from '../src/runtime/runtime-factory';
 import { resolveDefaultRuntimeProfile } from '../src/runtime/runtime-profile';
+import { loadBranchAgentConfig, saveBranchAgentConfig } from '../src/core/branch-agent-config';
+import { getCatscoLogAgentConfig } from '../src/utils/catsco-log-agent-config';
+import { saveCatscoLogAgentState } from '../src/utils/catsco-log-agent-state';
 
 describe('RuntimeFactory', () => {
   let testRoot: string;
@@ -271,6 +274,97 @@ describe('RuntimeFactory', () => {
     assert.ok(services.skillManager instanceof SkillManager);
     assert.equal((services.toolManager as any).workingDirectory, path.resolve(testRoot));
     assert.deepStrictEqual(services.skillManager.getAllSkills(), []);
+  });
+
+  test('keeps a lazy CatsLog provider attached for capability changes after adapter startup', () => {
+    const previousRuntimeRoot = process.env.XIAOBA_USER_DATA_DIR;
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
+    try {
+      const config = loadBranchAgentConfig({ runtimeRoot: testRoot, env: {} });
+      config.branches.memorySearch.enabled = true;
+      saveBranchAgentConfig(config, { runtimeRoot: testRoot, env: {} });
+
+      const profile = resolveDefaultRuntimeProfile({
+        surface: 'feishu',
+        workingDirectory: testRoot,
+      });
+      const services = RuntimeFactory.createServicesSync(profile);
+
+      assert.ok(services.catslogMemory);
+      assert.equal(services.catslogMemory?.isAvailable?.(), false);
+    } finally {
+      if (previousRuntimeRoot === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previousRuntimeRoot;
+    }
+  });
+
+  test('propagates the persisted autonomous branch budget into runtime services', () => {
+    const previousRuntimeRoot = process.env.XIAOBA_USER_DATA_DIR;
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
+    try {
+      const config = loadBranchAgentConfig({ runtimeRoot: testRoot, env: {} });
+      config.branches.memorySearch.enabled = true;
+      config.branches.memorySearch.budget = {
+        maxTurnsPerPass: 6,
+        maxPasses: 4,
+        deadlineMs: 30_000,
+        maxContextTokens: 12_000,
+      };
+      saveBranchAgentConfig(config, { runtimeRoot: testRoot, env: {} });
+
+      const profile = resolveDefaultRuntimeProfile({ surface: 'cli', workingDirectory: testRoot });
+      const services = RuntimeFactory.createServicesSync(profile);
+
+      assert.deepStrictEqual(services.memoryBranch?.budget, {
+        maxTurnsPerPass: 6,
+        maxPasses: 4,
+        deadlineMs: 30_000,
+        maxContextTokens: 12_000,
+      });
+    } finally {
+      if (previousRuntimeRoot === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previousRuntimeRoot;
+    }
+  });
+
+  test('resolves CatsLog capability state from the runtime data root', () => {
+    const previousRuntimeRoot = process.env.XIAOBA_USER_DATA_DIR;
+    const previousMemoryEnabled = process.env.CATSLOG_MEMORY_ENABLED;
+    const previousUserToken = process.env.CATSCO_USER_TOKEN;
+    const profileWorkingDirectory = path.join(testRoot, 'profile-workspace');
+    fs.mkdirSync(profileWorkingDirectory);
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
+    process.env.CATSLOG_MEMORY_ENABLED = 'true';
+    delete process.env.CATSCO_USER_TOKEN;
+
+    try {
+      const statePath = getCatscoLogAgentConfig(testRoot).stateFilePath;
+      saveCatscoLogAgentState(statePath, {
+        deviceId: 'device-runtime-root',
+        skillTokenId: 'skill-id',
+        skillToken: 'skill-token',
+        skillTokenExpiresAt: '2099-08-28T00:00:00.000Z',
+        uploaded: {},
+      });
+      const config = loadBranchAgentConfig({ runtimeRoot: testRoot, env: {} });
+      config.branches.memorySearch.enabled = true;
+      saveBranchAgentConfig(config, { runtimeRoot: testRoot, env: {} });
+
+      const profile = resolveDefaultRuntimeProfile({
+        surface: 'feishu',
+        workingDirectory: profileWorkingDirectory,
+      });
+      const services = RuntimeFactory.createServicesSync(profile);
+
+      assert.equal(services.catslogMemory?.isAvailable?.(), true);
+    } finally {
+      if (previousRuntimeRoot === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previousRuntimeRoot;
+      if (previousMemoryEnabled === undefined) delete process.env.CATSLOG_MEMORY_ENABLED;
+      else process.env.CATSLOG_MEMORY_ENABLED = previousMemoryEnabled;
+      if (previousUserToken === undefined) delete process.env.CATSCO_USER_TOKEN;
+      else process.env.CATSCO_USER_TOKEN = previousUserToken;
+    }
   });
 
   test('keeps turn Skill snapshots off by default and enables them only for an explicit canary', () => {

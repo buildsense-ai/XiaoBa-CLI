@@ -150,6 +150,20 @@ describe('memory branch tools', () => {
       inject: false,
     });
 
+    const audit = await tool.execute({
+      summary: 'Retain this evidence for branch audit only.',
+      refs: ['chat/2026-06-16/demo.jsonl#2'],
+      inject: false,
+      delivery: 'audit',
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(audit.ok, true);
+    assert.deepEqual(captured, {
+      summary: 'Retain this evidence for branch audit only.',
+      refs: ['chat/2026-06-16/demo.jsonl#2'],
+      inject: false,
+      delivery: 'audit',
+    });
+
     const contradictory = await tool.execute({
       summary: 'Found something but asked not to inject.',
       refs: ['chat/2026-06-16/demo.jsonl#2'],

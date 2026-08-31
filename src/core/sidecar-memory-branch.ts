@@ -3,6 +3,7 @@ import { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
 import { SyntheticObservationQueue } from './synthetic-observation';
 import { MemorySearchBranchSession } from './memory-search-branch-session';
+import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 
 export interface MemorySidecarBranchOptions {
   sessionKey: string;
@@ -13,6 +14,13 @@ export interface MemorySidecarBranchOptions {
   queue: SyntheticObservationQueue;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  /** Optional device-bound CatsLog read capability for remote skill/session recall. */
+  catslogMemory?: CatsLogMemoryBackend;
+  /** Autonomous branch resource budgets; omitted values use conservative defaults. */
+  maxTurnsPerPass?: number;
+  maxPasses?: number;
+  deadlineMs?: number;
+  maxContextTokens?: number;
 }
 
 export interface MemorySidecarBranchHandle {

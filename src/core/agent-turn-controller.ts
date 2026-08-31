@@ -43,7 +43,9 @@ import {
   withSyntheticObservationTiming,
 } from './synthetic-observation';
 import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-memory-branch';
+import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
+import type { MemoryBranchBudget } from './branch-budget';
 
 const EMPTY_FINAL_RESPONSE_MESSAGE = '模型本轮未返回有效内容。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
 
@@ -53,7 +55,10 @@ export interface AgentTurnServices {
     enabled: boolean;
     modelSource: 'inherit' | 'catalog' | 'custom';
     aiService: AIService;
+    budget?: MemoryBranchBudget;
   };
+  /** Device-bound CatsLog read capability, scoped to the memory branch. */
+  catslogMemory?: CatsLogMemoryBackend;
   toolManager: ToolManager;
   skillManager: SkillManager;
   turnSkillSnapshotStore?: TurnSkillSnapshotStore;
@@ -502,6 +507,8 @@ export class AgentTurnController {
       aiService: this.options.services.memoryBranch?.aiService ?? this.options.services.aiService,
       queue: options.queue,
       signal: options.abortSignal,
+      catslogMemory: this.options.services.catslogMemory,
+      ...this.options.services.memoryBranch?.budget,
     });
   }
 

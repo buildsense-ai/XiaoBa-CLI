@@ -6,8 +6,18 @@ export interface ObservationBranchSessionOptions extends BranchSessionOptions {
   queue: SyntheticObservationQueue;
 }
 
+export type ObservationDelivery = 'context' | 'audit' | 'discard';
+
 export interface ObservationBranchDisposition {
+  /** Legacy flag retained for callers that have not adopted delivery yet. */
   inject: boolean;
+  /**
+   * Where the completed observation goes:
+   * - context: enqueue it for the parent agent;
+   * - audit: retain it in the branch audit log only;
+   * - discard: do not retain or enqueue it.
+   */
+  delivery?: ObservationDelivery;
   logPayload?: Record<string, unknown>;
 }
 
@@ -26,6 +36,7 @@ export abstract class ObservationBranchSession<TFinishPayload> extends BranchSes
     try {
       while (this.shouldContinue() && !this.finishPayload) {
         const outcome = await this.runConversation();
+        if (this.isBudgetExhausted()) break;
         if (this.finishPayload || !this.shouldContinue()) break;
 
         this.handleStrayOutput(outcome);
@@ -33,6 +44,7 @@ export abstract class ObservationBranchSession<TFinishPayload> extends BranchSes
       }
 
       if (!this.finishPayload) {
+        if (this.isBudgetExhausted()) return;
         if (!this.shouldContinue()) {
           this.logCancelledBeforeFinish(false);
         }
@@ -44,36 +56,56 @@ export abstract class ObservationBranchSession<TFinishPayload> extends BranchSes
       }
 
       const disposition = this.getObservationDisposition(this.finishPayload);
-      if (!disposition.inject) {
+      const delivery = disposition.delivery || (disposition.inject ? 'context' : 'discard');
+      if (delivery === 'discard') {
         this.logger.write('suppressed_observation', {
-          reason: 'inject_false',
+          reason: 'delivery_discard',
+          delivery,
           ...(disposition.logPayload || {}),
         });
         return;
       }
 
       const observation = this.buildObservation(this.finishPayload);
-      const pushed = this.observationOptions.queue.push(observation);
       const logPayload = this.buildPublishedObservationLogPayload(this.finishPayload, observation);
+      if (delivery === 'audit') {
+        this.logger.write('audited_observation', {
+          ...logPayload,
+          delivery,
+        });
+        return;
+      }
+
+      const pushed = this.observationOptions.queue.push(observation);
       if (pushed) {
-        this.logger.write('published_observation', logPayload);
+        this.logger.write('published_observation', { ...logPayload, delivery });
       } else {
         this.logger.write('discarded_observation', {
           ...logPayload,
+          delivery,
           reason: 'queue_closed_or_duplicate',
         });
       }
     } catch (error: any) {
+      if (this.isBudgetExhausted()) {
+        return;
+      }
       if (this.isAbortError(error) || !this.shouldContinue()) {
         this.logCancelledBeforeFinish(true);
       } else {
         this.logFailure(error);
       }
+    } finally {
+      this.clearBudgetTimer();
     }
   }
 
   protected complete(payload: TFinishPayload): void {
     this.finishPayload = payload;
+    // Once the finish tool has produced a valid payload, the deadline should
+    // no longer race the short publication/audit step below. The branch still
+    // honours external cancellation through shouldContinue().
+    this.clearBudgetTimer();
   }
 
   protected hasFinishPayload(): boolean {
@@ -106,6 +138,7 @@ export abstract class ObservationBranchSession<TFinishPayload> extends BranchSes
     const disposition = this.getObservationDisposition(payload);
     return {
       inject: disposition.inject,
+      ...(disposition.delivery ? { delivery: disposition.delivery } : {}),
       ...(disposition.logPayload || {}),
     };
   }

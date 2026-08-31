@@ -35,6 +35,12 @@ describe('Branch agent device config', () => {
     const config = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
     assert.equal(config.branches.memorySearch.enabled, false);
     assert.deepEqual(config.branches.memorySearch.model, { kind: 'inherit' });
+    assert.deepEqual(config.branches.memorySearch.budget, {
+      maxTurnsPerPass: 8,
+      maxPasses: 3,
+      deadlineMs: 45_000,
+      maxContextTokens: 16_000,
+    });
     assert.equal(resolveMemoryBranchModelOverride(config), undefined);
     assert.equal(fs.existsSync(path.join(root, BRANCH_AGENT_CONFIG_FILE)), false);
   });
@@ -244,6 +250,32 @@ describe('Branch agent device config', () => {
       }), 'utf-8');
       assert.equal(loadBranchAgentConfig({ runtimeRoot: root, env: {} }).branches.memorySearch.model.kind, 'inherit');
     }
+  });
+
+  test('normalizes persisted branch budgets to finite safe bounds', () => {
+    const root = tempRoot();
+    fs.writeFileSync(path.join(root, BRANCH_AGENT_CONFIG_FILE), JSON.stringify({
+      schema: BRANCH_AGENT_CONFIG_SCHEMA,
+      branches: {
+        memorySearch: {
+          enabled: true,
+          model: { kind: 'inherit' },
+          budget: {
+            maxTurnsPerPass: 10_000,
+            maxPasses: 0,
+            deadlineMs: 'not-a-number',
+            maxContextTokens: 12_345,
+          },
+        },
+      },
+    }), 'utf-8');
+
+    assert.deepEqual(loadBranchAgentConfig({ runtimeRoot: root, env: {} }).branches.memorySearch.budget, {
+      maxTurnsPerPass: 64,
+      maxPasses: 3,
+      deadlineMs: 45_000,
+      maxContextTokens: 12_345,
+    });
   });
 
   test('RuntimeFactory isolates the Memory Branch model while keeping the primary service unchanged', () => {

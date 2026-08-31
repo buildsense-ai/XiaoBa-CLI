@@ -226,6 +226,7 @@ Platform 服务端、WebApp 与部署配置就在本仓库。当前尚未提供�
 - [Branch Session Architecture](docs/branch-session-architecture.md)
 - [CatsCompany Thin Runtime Routing](docs/catscompany-thin-runtime-routing.md)
 - [Memory Branch Evaluation Notes](docs/memory-branch-evaluation-notes.md)
+- [CatsLog Agent Memory staging smoke](docs/catslog-agent-memory-smoke.md)
 - [Skills](skills/README.md)
 
 ---

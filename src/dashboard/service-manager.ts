@@ -88,6 +88,29 @@ export class ServiceManager extends EventEmitter {
     return process.env.XIAOBA_APP_ROOT || this.projectRoot;
   }
 
+  /**
+   * A Linux Dashboard can be launched directly from an immutable release while
+   * retaining a mutable checkout as XIAOBA_APP_ROOT for data, skills, and
+   * node_modules.  Managed channel processes must still execute the same
+   * release as their Dashboard parent; otherwise a release can expose new
+   * Dashboard controls while its Connector silently runs an older dist tree.
+   */
+  private getManagedServiceAppRoot(): string {
+    if (!this.isPackaged()) return this.getAppRoot();
+
+    const entry = process.argv[1];
+    if (typeof entry !== 'string' || !entry.trim()) return this.getAppRoot();
+
+    const resolvedEntry = path.resolve(entry);
+    if (path.basename(resolvedEntry) !== 'index.js' || path.basename(path.dirname(resolvedEntry)) !== 'dist') {
+      return this.getAppRoot();
+    }
+
+    const releaseRoot = path.dirname(path.dirname(resolvedEntry));
+    if (!fs.existsSync(path.join(releaseRoot, 'dist', 'index.js'))) return this.getAppRoot();
+    return releaseRoot;
+  }
+
   private resolveNodeExecutable(runtimeEnvironment: ReturnType<typeof resolveRuntimeEnvironment>): string {
     const candidates = [
       process.env.XIAOBA_NODE_EXECUTABLE,
@@ -136,7 +159,7 @@ export class ServiceManager extends EventEmitter {
 
   private registerBuiltinServices() {
     const packaged = this.isPackaged();
-    const appRoot = this.getAppRoot();
+    const appRoot = this.getManagedServiceAppRoot();
     const runtimeEnvironment = resolveRuntimeEnvironment({
       env: process.env,
       appRoot,
@@ -277,7 +300,7 @@ export class ServiceManager extends EventEmitter {
 
     const runtimeEnvironment = resolveRuntimeEnvironment({
       env: envVars,
-      appRoot: this.getAppRoot(),
+      appRoot: this.getManagedServiceAppRoot(),
       bundledExecutablesDir: envVars.XIAOBA_BUNDLED_EXECUTABLES_DIR,
       isPackaged: this.isPackaged(),
       probeVersion: false,

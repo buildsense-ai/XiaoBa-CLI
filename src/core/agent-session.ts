@@ -10,6 +10,8 @@ import type {
 import * as fs from 'fs';
 import * as path from 'path';
 import { AIService } from '../utils/ai-service';
+import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
+import type { MemoryBranchBudget } from './branch-budget';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import type { TurnSkillSnapshotStore } from '../skills/turn-skill-snapshot';
@@ -100,7 +102,10 @@ export interface AgentServices {
     enabled: boolean;
     modelSource: 'inherit' | 'catalog' | 'custom';
     aiService: AIService;
+    budget?: MemoryBranchBudget;
   };
+  /** Device-bound CatsLog read capability used only by the memory branch. */
+  catslogMemory?: CatsLogMemoryBackend;
   toolManager: ToolManager;
   skillManager: SkillManager;
   /** Optional so tests and embedded legacy runtimes keep their existing path. */
