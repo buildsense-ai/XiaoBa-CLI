@@ -65,6 +65,15 @@ function readEnvFile(root: string): Record<string, string> {
   return dotenv.parse(fs.readFileSync(envPath, 'utf-8'));
 }
 
+function resolvePackagedNodeExecutable(appRoot: string): string {
+  const bundledRoot = process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR || path.join(appRoot, 'build-resources', 'runtime');
+  const bundledNode = isWindows
+    ? path.join(bundledRoot, 'node', 'node.exe')
+    : path.join(bundledRoot, 'node', 'bin', 'node');
+  if (fs.existsSync(bundledNode)) return bundledNode;
+  return process.env.XIAOBA_NODE_EXECUTABLE || 'node';
+}
+
 export class ServiceManager extends EventEmitter {
   private services: Map<string, ManagedService> = new Map();
   private projectRoot: string;
@@ -137,24 +146,34 @@ export class ServiceManager extends EventEmitter {
   private registerBuiltinServices() {
     const packaged = this.isPackaged();
     const appRoot = this.getAppRoot();
-    const runtimeEnvironment = resolveRuntimeEnvironment({
-      env: process.env,
-      appRoot,
-      bundledExecutablesDir: process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
-      isPackaged: packaged,
-      probeVersion: false,
-    });
+    const runtimeEnvironment = packaged
+      ? { binaries: { node: { executable: resolvePackagedNodeExecutable(appRoot) } } } as ReturnType<typeof resolveRuntimeEnvironment>
+      : resolveRuntimeEnvironment({
+        env: process.env,
+        appRoot,
+        bundledExecutablesDir: process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
+        isPackaged: packaged,
+        probeVersion: false,
+      });
 
     let command: string;
     let args: (name: string) => string[];
 
+    // Connector Lite is a packaged-desktop concern. Development mode keeps
+    // the original source entry so `xiaoba-cli` and desktop development retain
+    // the complete Runtime behavior while the packaged executable exercises the
+    // independent execution-only process.
+    const useConnectorLite = packaged
+      && process.env.XIAOBA_CONNECTOR_PACKAGE === 'connector-lite';
     if (packaged) {
       // 打包版：优先使用内嵌的 node.exe，否则回退系统 node
       command = runtimeEnvironment.binaries.node.executable || 'node';
-      const distEntry = path.join(appRoot, 'dist', 'index.js');
-      args = (name) => [distEntry, name];
+      const entry = (name: string) => name === 'catscompany' && useConnectorLite
+        ? path.join(appRoot, 'dist', 'connector', 'index.js')
+        : path.join(appRoot, 'dist', 'index.js');
+      args = (name) => [entry(name), ...(name === 'catscompany' ? [useConnectorLite ? '' : name].filter(Boolean) : [name])];
     } else {
-      // 开发版：用 tsx 跑 ts 源码
+      // 开发版：用 tsx 跑 ts 源码；默认始终保留完整 Runtime。
       const runner = this.resolveDevTsxRunner(this.resolveNodeExecutable(runtimeEnvironment));
       command = runner.command;
       const entry = path.join(this.projectRoot, 'src', 'index.ts');
@@ -245,6 +264,8 @@ export class ServiceManager extends EventEmitter {
     }
 
     if (name === 'catscompany') {
+      // Connector Lite is a dedicated execution-only process. It still uses
+      // the same Dashboard-resolved binding and owner lifecycle fence.
       // Electron explicitly marks both development and packaged desktop
       // launches. A browser-only/server Dashboard remains fail-closed.
       envVars.XIAOBA_RUNTIME_ROLE = process.env.XIAOBA_RUNTIME_ROLE === 'desktop'
@@ -275,14 +296,16 @@ export class ServiceManager extends EventEmitter {
       };
     }
 
-    const runtimeEnvironment = resolveRuntimeEnvironment({
-      env: envVars,
-      appRoot: this.getAppRoot(),
-      bundledExecutablesDir: envVars.XIAOBA_BUNDLED_EXECUTABLES_DIR,
-      isPackaged: this.isPackaged(),
-      probeVersion: false,
-    });
-    envVars = runtimeEnvironment.env;
+    if (!this.isPackaged()) {
+      const runtimeEnvironment = resolveRuntimeEnvironment({
+        env: envVars,
+        appRoot: this.getAppRoot(),
+        bundledExecutablesDir: envVars.XIAOBA_BUNDLED_EXECUTABLES_DIR,
+        isPackaged: false,
+        probeVersion: false,
+      });
+      envVars = runtimeEnvironment.env;
+    }
 
     let child: ChildProcess;
     try {

@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { ServiceManager } from '../src/dashboard/service-manager';
 
 describe('dashboard service manager', () => {
-  test('uses node plus the tsx CLI entry in development', () => {
+  test('keeps the complete Runtime entry in development', () => {
     const envKeys = [
       'XIAOBA_APP_ROOT',
       'XIAOBA_IS_PACKAGED',
@@ -41,13 +41,14 @@ describe('dashboard service manager', () => {
     }
   });
 
-  test('uses bundled node and dist entry in packaged mode', () => {
+  test('uses the standalone Connector Lite entry in packaged mode', () => {
     const envKeys = [
       'XIAOBA_APP_ROOT',
       'XIAOBA_IS_PACKAGED',
       'XIAOBA_NODE_EXECUTABLE',
       'XIAOBA_BUNDLED_EXECUTABLES_DIR',
       'XIAOBA_RUNTIME_ROOT',
+      'XIAOBA_CONNECTOR_PACKAGE',
       'npm_node_execpath',
     ];
     const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
@@ -60,6 +61,7 @@ describe('dashboard service manager', () => {
 
     process.env.XIAOBA_APP_ROOT = appRoot;
     process.env.XIAOBA_IS_PACKAGED = '1';
+    process.env.XIAOBA_CONNECTOR_PACKAGE = 'connector-lite';
     delete process.env.XIAOBA_RUNTIME_ROOT;
     delete process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR;
     process.env.npm_node_execpath = process.execPath;
@@ -70,8 +72,8 @@ describe('dashboard service manager', () => {
 
       assert.ok(service);
       assert.equal(service.command, bundledNode);
-      assert.match(normalize(service.args[0]), /dist\/index\.js$/);
-      assert.equal(service.args[1], 'catscompany');
+      assert.match(normalize(service.args[0]), /dist\/connector\/index\.js$/);
+      assert.equal(service.args.length, 1);
     } finally {
       for (const key of envKeys) {
         const value = previousEnv.get(key);

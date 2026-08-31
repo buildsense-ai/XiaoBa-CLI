@@ -531,8 +531,22 @@ function getNodeModulesPath() {
   return path.join(__dirname, '..', 'node_modules');
 }
 
+function isConnectorLitePackage(appRoot = getAppRoot()) {
+  if (!app.isPackaged) return false;
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(appRoot, 'package.json'), 'utf8'));
+    return packageJson?.catscoPackage === 'connector-lite';
+  } catch (_error) {
+    return false;
+  }
+}
+
 async function startServer() {
   const appRoot = getAppRoot();
+  const connectorLitePackage = isConnectorLitePackage(appRoot);
+  if (connectorLitePackage) {
+    process.env.XIAOBA_CONNECTOR_PACKAGE = 'connector-lite';
+  }
 
   // 闂佽崵濮崇粈浣规櫠娴犲鍋柛鈩冾殢閸熷懘鏌曟径鍫濃偓妤冪矙婵犲洦鐓熼柍鍝勶工閺嬫稓绱撳鍛ч柡浣哥Ч瀹曞ジ鎮㈢亸浣稿緧闂備礁鎲￠悧鏇㈠箠鎼淬劌绠栨俊銈呮噺閸嬨劑鏌嶉搹瑙勭erData闂佽瀛╃粙鎺曟懌闂佸搫鍊风欢姘跺箖娴犲惟闁挎洍鍋撻柣鎾存礋閺屸剝鎷呴崫鍕垫毉閻庤鎸风欢姘跺极?
   const userDataPath = app.getPath('userData');
@@ -581,24 +595,32 @@ async function startServer() {
     require('module').Module._initPaths();
   }
 
-  const runtimeEnvironmentModulePath = path.join(appRoot, 'dist', 'utils', 'runtime-environment');
-  const { resolveRuntimeEnvironment, formatRuntimeSummary } = require(runtimeEnvironmentModulePath);
-  const runtimeEnvironment = resolveRuntimeEnvironment({
-    env: process.env,
-    appRoot,
-    bundledExecutablesDir: process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
-    isPackaged: app.isPackaged,
-  });
-  if (runtimeEnvironment.binaries.node.executable) {
-    runtimeEnvironment.env.XIAOBA_NODE_EXECUTABLE = runtimeEnvironment.binaries.node.executable;
+  if (!connectorLitePackage) {
+    const runtimeEnvironmentModulePath = path.join(appRoot, 'dist', 'utils', 'runtime-environment');
+    const { resolveRuntimeEnvironment, formatRuntimeSummary } = require(runtimeEnvironmentModulePath);
+    const runtimeEnvironment = resolveRuntimeEnvironment({
+      env: process.env,
+      appRoot,
+      bundledExecutablesDir: process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
+      isPackaged: app.isPackaged,
+    });
+    if (runtimeEnvironment.binaries.node.executable) {
+      runtimeEnvironment.env.XIAOBA_NODE_EXECUTABLE = runtimeEnvironment.binaries.node.executable;
+    }
+    Object.assign(process.env, runtimeEnvironment.env);
+    console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.node));
+    console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.python));
+    console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.git));
   }
-  Object.assign(process.env, runtimeEnvironment.env);
-  console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.node));
-  console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.python));
-  console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.git));
 
   // 闂備胶鍎甸弲娑㈡偤閵娧勬殰闁圭虎鍠栭幑鍫曟煏婵炲灝鈧洟鎯佸鍫濈骇闁冲搫鍊婚妴鎺楁煃鐠囧眰鍋㈢€规洏鍎甸、娑橆潩椤戭偅顣筧shboard server
-  const { startDashboard } = require(path.join(appRoot, 'dist', 'dashboard', 'server'));
+  const dashboardServerEntry = connectorLitePackage
+    ? path.join(appRoot, 'dist', 'connector-dashboard', 'server.js')
+    : path.join(appRoot, 'dist', 'dashboard', 'server');
+  const dashboardModule = require(dashboardServerEntry);
+  const startDashboard = connectorLitePackage
+    ? dashboardModule.startConnectorLiteDashboard
+    : dashboardModule.startDashboard;
   dashboardServerHandle = await startDashboard(DASHBOARD_PORT, { updateController, projectRoot: appRoot });
 }
 
@@ -719,7 +741,10 @@ ipcMain.handle('catsco:select-files', async (event) => {
   const result = await dialog.showOpenDialog(owner, options);
   if (result.canceled) return [];
 
-  const { createLocalFileGrant } = require(path.join(getAppRoot(), 'dist', 'dashboard', 'local-file-grants'));
+  const localFileGrantEntry = isConnectorLitePackage()
+    ? path.join(getAppRoot(), 'dist', 'connector-dashboard', 'local-file-grants.js')
+    : path.join(getAppRoot(), 'dist', 'dashboard', 'local-file-grants');
+  const { createLocalFileGrant } = require(localFileGrantEntry);
   return result.filePaths
     .map((filePath, index) => {
       try {

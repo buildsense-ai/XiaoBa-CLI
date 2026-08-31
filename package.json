@@ -8,12 +8,14 @@
     "xiaoba": "dist/index.js"
   },
   "scripts": {
-    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc && npm run build:connector",
+    "build:connector": "node scripts/build-connector.mjs && node scripts/build-connector-dashboard.mjs",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "start:cli": "node dist/index.js",
     "electron:dev": "npm run build && node scripts/start-electron-dev.mjs",
     "electron:build": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --publish never",
+    "electron:build:connector": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.connector.config.cjs --publish never",
     "electron:build:mac": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --mac --publish never",
     "electron:build:win": "npm run build && node scripts/prepare-runtime.mjs win32 x64 && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --win --publish never",
     "electron:build:linux": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --linux --publish never",
@@ -76,7 +78,8 @@
     "ora": "^5.4.1",
     "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^4.6.82",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/deasync": "^0.1.5",
@@ -89,6 +92,7 @@
     "electron": "^33.4.11",
     "electron-builder": "^26.8.1",
     "electron-packager": "^17.1.2",
+    "esbuild": "^0.27.2",
     "js-yaml": "^4.1.0",
     "playwright": "^1.58.2",
     "tsx": "^4.7.0",
