@@ -1283,6 +1283,65 @@ describe('CatsCompany execution scope flow', () => {
     assert.doesNotMatch(JSON.stringify(handledTurns[0].userMessage), /atr_[A-Za-z0-9_-]{43}/);
   });
 
+  test('executes a replayed Artifact task ref only once', async () => {
+    const { bot, handledTurns } = createHarness();
+    const ref = `atr_${'r'.repeat(43)}`;
+    const message = {
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '来自「项目风险台账」：分析选中的风险',
+      content: '来自「项目风险台账」：分析选中的风险',
+      metadata: {
+        ...canonicalMetadata('usr7', 'p2p_7_43'),
+        artifact_task_ref: ref,
+      },
+      isGroup: false,
+      seq: 12,
+    };
+
+    await (bot as any).onMessage(message);
+    await (bot as any).onMessage({ ...message, seq: 12 });
+
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.artifactTaskRef, ref);
+  });
+
+  test('deduplicates an Artifact task replay while its first turn is still running', async () => {
+    const harness = createHarness();
+    const ref = `atr_${'s'.repeat(43)}`;
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const turnStartedPromise = new Promise<void>(resolve => { turnStarted = resolve; });
+    const turnGate = new Promise<void>(resolve => { releaseTurn = resolve; });
+    harness.session.handleMessage = async (userMessage: unknown, options: any) => {
+      harness.handledTurns.push({ userMessage, options });
+      turnStarted();
+      await turnGate;
+      return { visibleToUser: false, text: '' };
+    };
+    const message = {
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '来自「项目风险台账」：分析选中的风险',
+      content: '来自「项目风险台账」：分析选中的风险',
+      metadata: {
+        ...canonicalMetadata('usr7', 'p2p_7_43'),
+        artifact_task_ref: ref,
+      },
+      isGroup: false,
+      seq: 12,
+    };
+
+    const first = (harness.bot as any).onMessage(message);
+    await turnStartedPromise;
+    await (harness.bot as any).onMessage({ ...message, seq: 12 });
+    assert.equal(harness.handledTurns.length, 1);
+
+    releaseTurn();
+    await first;
+    assert.equal(harness.handledTurns.length, 1);
+  });
+
   test('keeps ordinary queued input out of an active Artifact task turn', async () => {
     const harness = createHarness();
     const taskRef = `atr_${'u'.repeat(43)}`;

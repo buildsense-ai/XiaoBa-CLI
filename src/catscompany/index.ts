@@ -159,6 +159,8 @@ const NATIVE_FEISHU_CONTEXT_PAGE_SIZE = 100;
 const BACKGROUND_SUBAGENT_COMPLETION_MAX_ITEMS = 6;
 const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
 const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
+const ARTIFACT_TASK_RECEIPT_TTL_MS = 24 * 60 * 60 * 1_000;
+const ARTIFACT_TASK_RECEIPT_MAX_ENTRIES = 4_096;
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'send_text',
   'send_file',
@@ -440,6 +442,8 @@ export class CatsCompanyBot {
   private taskStatusTasks = new Map<string, Promise<void>>();
   /** Tracks the visible user turn for cancellation and retry handling. */
   private activeConversationTasks = new Map<string, ActiveConversationTask>();
+  /** Bounds one-shot Artifact task receipts so server recovery can safely replay a turn. */
+  private artifactTaskReceipts = new Map<string, number>();
   /** Covers message parsing, cloud restore, attachment download, commands, and the model turn. */
   private activeMessageHandlers = 0;
   /** Invalidates queued or in-flight pre-turn hydration after /clear. */
@@ -1440,6 +1444,11 @@ export class CatsCompanyBot {
     const msg = this.parseMessage(ctx);
     if (!msg) return;
 
+    if (!this.acceptArtifactTaskReceipt(msg.artifactTaskRef)) {
+      Logger.info(`[CatsCompany] 忽略重复 Artifact task 投递: topic=${msg.topic}, seq=${msg.seq || 0}`);
+      return;
+    }
+
     const key = msg.envelope.sessionKey;
 
     this.activeMessageHandlers += 1;
@@ -1448,6 +1457,25 @@ export class CatsCompanyBot {
     } finally {
       this.activeMessageHandlers = Math.max(0, this.activeMessageHandlers - 1);
     }
+  }
+
+  private acceptArtifactTaskReceipt(taskRef?: string, now = Date.now()): boolean {
+    if (!taskRef) return true;
+    const receipts = this.artifactTaskReceipts ??= new Map<string, number>();
+    const receivedAt = receipts.get(taskRef);
+    if (receivedAt !== undefined && now - receivedAt < ARTIFACT_TASK_RECEIPT_TTL_MS) {
+      return false;
+    }
+    for (const [ref, seenAt] of receipts) {
+      if (now - seenAt >= ARTIFACT_TASK_RECEIPT_TTL_MS) receipts.delete(ref);
+    }
+    receipts.set(taskRef, now);
+    while (receipts.size > ARTIFACT_TASK_RECEIPT_MAX_ENTRIES) {
+      const oldest = receipts.keys().next().value as string | undefined;
+      if (!oldest) break;
+      receipts.delete(oldest);
+    }
+    return true;
   }
 
   private registerSubAgentPlatformCallbacks(
