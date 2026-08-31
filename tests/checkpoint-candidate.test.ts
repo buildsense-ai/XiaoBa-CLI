@@ -112,6 +112,29 @@ test('candidate retries transient generation failures within one logical budget'
   assert.equal(candidate.status, 'ready');
 });
 
+test('candidate retries a stream that ends without a terminal response', async () => {
+  const candidate = new CheckpointCandidate('candidate-terminal-retry', createCheckpointSnapshot([user('root')], {
+    revision: 1,
+  }));
+  let attempts = 0;
+  const coordinator = {
+    compactIfNeeded: async () => {
+      attempts++;
+      if (attempts === 1) {
+        throw new Error('Responses API stream ended without a terminal response');
+      }
+      return { messages: [user('summary')], compacted: true };
+    },
+  } as any;
+
+  assert.equal(await candidate.generate(coordinator, {
+    sessionKey: 'candidate-session',
+    phase: 'mid_turn',
+  }), true);
+  assert.equal(attempts, 2);
+  assert.equal(candidate.status, 'ready');
+});
+
 test('candidate shares one provider request budget across logical attempts', async () => {
   const candidate = new CheckpointCandidate('candidate-request-budget', createCheckpointSnapshot([user('root')], {
     revision: 1,

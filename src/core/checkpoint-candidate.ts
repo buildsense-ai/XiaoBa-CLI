@@ -7,7 +7,9 @@ import type {
 } from './checkpoint-compaction';
 import { estimateMessagesTokens } from './token-estimator';
 
-const CHECKPOINT_CANDIDATE_DEADLINE_MS = 5 * 60 * 1000;
+export const CHECKPOINT_SUMMARY_START_RATIO = 0.70;
+export const CHECKPOINT_SUMMARY_STOP_RATIO = 0.85;
+export const CHECKPOINT_CANDIDATE_DEADLINE_MS = 15 * 60 * 1000;
 const CHECKPOINT_CANDIDATE_MAX_ATTEMPTS = 3;
 
 export type CheckpointCandidateFailureReason = 'authentication' | 'transient' | 'invalid' | 'deadline';
@@ -242,7 +244,7 @@ function isRetryableCandidateError(error: unknown): boolean {
   const status = readErrorStatus(error);
   if (status && [408, 429, 500, 502, 503, 504, 520, 524, 529].includes(status)) return true;
   const text = String((error as any)?.message || error || '');
-  return /timeout|timed out|temporar|network|ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up|empty summary|empty response|returned an empty summary|checkpoint compaction returned an empty summary/i.test(text);
+  return /timeout|timed out|temporar|network|ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up|stream ended without a terminal response|missing terminal response|empty summary|empty response|returned an empty summary|checkpoint compaction returned an empty summary/i.test(text);
 }
 
 function readErrorStatus(error: unknown): number | undefined {

@@ -21,6 +21,7 @@ const OWNED_SESSION_KEYS = [
   'user:candidate-interrupted',
   'user:candidate-cleanup',
   'user:candidate-authentication',
+  'user:candidate-exact-trigger',
 ];
 
 before(cleanOwnedSessionArtifacts);
@@ -86,6 +87,45 @@ test('disabling candidates falls back to legacy synchronous compaction', async (
     if (previousCheckpoint === undefined) delete process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED;
     else process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED = previousCheckpoint;
   }
+});
+
+test('candidate trigger uses exact token usage instead of rounded percentage', async () => {
+  await withCandidateMode(async () => {
+    const session = createInitializedSession('user:candidate-exact-trigger', {
+      async chatStream() { return { content: 'unused', toolCalls: [], usage }; },
+    });
+    (session as any).messages.push({ role: 'user', content: 'history root' });
+    let usedTokens = 699;
+    (session as any).getContextUsageInfo = () => ({
+      usedTokens,
+      toolTokens: 0,
+      maxTokens: 1000,
+      // 69.9% rounds to 70, which must not start a summary.
+      usagePercent: 70,
+    });
+    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => ({
+      compacted: true,
+      messages: [{ role: 'user', content: 'candidate summary' }],
+    });
+
+    (session as any).startCheckpointCandidateIfEligible(
+      (session as any).lifecycleGeneration,
+      (session as any).messages,
+      'pre_turn',
+    );
+    assert.equal((session as any).checkpointCandidate, null);
+
+    usedTokens = 700;
+    (session as any).startCheckpointCandidateIfEligible(
+      (session as any).lifecycleGeneration,
+      (session as any).messages,
+      'pre_turn',
+    );
+    assert.ok((session as any).checkpointCandidate);
+    await (session as any).checkpointCandidatePromise;
+    assert.equal((session as any).checkpointCandidate.status, 'ready');
+    (session as any).cancelCheckpointCandidate();
+  });
 });
 
 test('candidate persistence keeps memory aligned with the persisted projection', async () => {
@@ -324,22 +364,19 @@ test('candidate failure at 85 percent falls back once with the latest transcript
       return { usedTokens: currentPercent, toolTokens: 0, maxTokens: 100, usagePercent: currentPercent };
     };
     const fallbackInputs: Message[][] = [];
-    (session as any).checkpointCompactionCoordinator.compactIfNeeded = async (messages: Message[]) => {
-      if (usagePercent !== 85
-        || messages.some(message => message.content === 'serial fallback summary')) {
-        return noCompaction(messages);
+    (session as any).checkpointCompactionCoordinator.compactIfNeeded = noCompaction;
+    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async (messages: Message[], request: any) => {
+      if (String(request.metricsContext?.candidateId || '').includes(':serial:')) {
+        fallbackInputs.push(messages.map(message => ({ ...message })));
+        return {
+          messages: [{ role: 'user', content: 'serial fallback summary' }],
+          compacted: true,
+          usedTokens: 85,
+          toolTokens: 0,
+          maxTokens: 100,
+          usagePercent: 85,
+        };
       }
-      fallbackInputs.push(messages.map(message => ({ ...message })));
-      return {
-        messages: [{ role: 'user', content: 'serial fallback summary' }],
-        compacted: true,
-        usedTokens: 85,
-        toolTokens: 0,
-        maxTokens: 100,
-        usagePercent: 85,
-      };
-    };
-    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => {
       await failureGate;
       throw new Error('candidate failed');
     };
@@ -359,7 +396,7 @@ test('candidate failure at 85 percent falls back once with the latest transcript
   });
 });
 
-test('candidate failure before 85 percent still falls back at the stop point', async () => {
+test('candidate failure before 85 percent retries one serial fallback at the stop point', async () => {
   await withCandidateMode(async () => {
     let usagePercent = 75;
     const session = createInitializedSession('user:candidate-early-failure-fallback', {
@@ -373,22 +410,24 @@ test('candidate failure before 85 percent still falls back at the stop point', a
       usagePercent: messages.some(message => message.content === 'serial fallback summary') ? 20 : usagePercent,
     });
     let fallbackCalls = 0;
-    (session as any).checkpointCompactionCoordinator.compactIfNeeded = async (messages: Message[]) => {
-      if (
-        usagePercent < 85
-        || messages.some(message => message.content === 'serial fallback summary')
-      ) return noCompaction(messages);
-      fallbackCalls++;
-      return {
-        messages: [{ role: 'user', content: 'serial fallback summary' }],
-        compacted: true,
-        usedTokens: 20,
-        toolTokens: 0,
-        maxTokens: 100,
-        usagePercent: 20,
-      };
-    };
-    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => {
+    (session as any).checkpointCompactionCoordinator.compactIfNeeded = noCompaction;
+    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async (_messages: Message[], request: any) => {
+      if (String(request.metricsContext?.candidateId || '').includes(':serial:')) {
+        fallbackCalls++;
+        if (fallbackCalls < 3) {
+          const error: any = new Error('Responses API stream ended without a terminal response');
+          error.status = 502;
+          throw error;
+        }
+        return {
+          messages: [{ role: 'user', content: 'serial fallback summary' }],
+          compacted: true,
+          usedTokens: 20,
+          toolTokens: 0,
+          maxTokens: 100,
+          usagePercent: 20,
+        };
+      }
       throw new Error('candidate failed early');
     };
 
@@ -397,7 +436,7 @@ test('candidate failure before 85 percent still falls back at the stop point', a
     const result = await session.handleMessage('reach stop point');
 
     assert.equal(result.taskOutcome, 'completed');
-    assert.equal(fallbackCalls, 1);
+    assert.equal(fallbackCalls, 3);
     assert.ok((session as any).messages.some((message: Message) => message.content === 'serial fallback summary'));
   });
 });
@@ -416,22 +455,16 @@ test('candidate persistence failure still falls back at the stop point', async (
       usagePercent: messages.some(message => message.content === 'serial fallback summary') ? 20 : usagePercent,
     });
     let fallbackCalls = 0;
-    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => ({
-      messages: [{ role: 'user', content: 'candidate summary' }],
-      compacted: true,
-    });
-    (session as any).persistCheckpoint = (messages: Message[]) => !messages.some(message => message.content === 'candidate summary');
-    (session as any).checkpointCompactionCoordinator.compactIfNeeded = async (messages: Message[]) => {
-      if (!messages.some(message => message.content === 'serial fallback summary')) fallbackCalls++;
+    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async (_messages: Message[], request: any) => {
+      const serial = String(request.metricsContext?.candidateId || '').includes(':serial:');
+      if (serial) fallbackCalls++;
       return {
-        messages: [{ role: 'user', content: 'serial fallback summary' }],
+        messages: [{ role: 'user', content: serial ? 'serial fallback summary' : 'candidate summary' }],
         compacted: true,
-        usedTokens: 20,
-        toolTokens: 0,
-        maxTokens: 100,
-        usagePercent: 20,
       };
     };
+    (session as any).persistCheckpoint = (messages: Message[]) => !messages.some(message => message.content === 'candidate summary');
+    (session as any).checkpointCompactionCoordinator.compactIfNeeded = noCompaction;
 
     await session.handleMessage('start candidate');
     usagePercent = 85;

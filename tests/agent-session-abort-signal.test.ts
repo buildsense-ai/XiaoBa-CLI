@@ -22,14 +22,14 @@ test('AgentSession does not implicitly sync the Bot Skill workspace after a comp
   assert.equal(scheduledSyncs, 0);
 });
 
-test('AgentSession checkpoint candidate defaults on with an 85 percent serial threshold', () => {
+test('AgentSession checkpoint candidate defaults to a 70 percent start and 85 percent stop', () => {
   const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
   delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
   try {
     const session = new AgentSession('user:candidate-default', buildMockServices({}), 'catscompany');
     assert.equal((session as any).useCheckpointCandidates, true);
     assert.equal((session as any).checkpointCompactionCoordinator.compactionThreshold, 0.85);
-    assert.equal((session as any).checkpointCandidateCoordinator.compactionThreshold, 0.75);
+    assert.equal((session as any).checkpointCandidateCoordinator.compactionThreshold, 0.70);
   } finally {
     if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
     else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
