@@ -15,6 +15,7 @@ import {
 } from '../src/bot-definition/repository';
 import { resolveActiveBotLLMConfig } from '../src/bot-definition/llm-config-resolver';
 import { BOT_DEFINITION_SCHEMA } from '../src/bot-definition/types';
+import { BotSkillBaseStore } from '../src/bot-skills/base-store';
 
 describe('BotDefinition activation', () => {
   const roots: string[] = [];
@@ -373,6 +374,212 @@ describe('BotDefinition activation', () => {
     assert.equal(requests.includes('POST /api/bot/definition/ack'), true);
   });
 
+  test('reports a deferred Definition apply instead of success when an unverified local Skill workspace is preserved', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-deferred-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-deferred-cloud-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'owner-token', uid: '7', displayName: 'Alice' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    const localSkillRoot = path.join(runtimeRoot, 'skills', 'local-preserve');
+    fs.mkdirSync(localSkillRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(localSkillRoot, 'SKILL.md'),
+      '---\nname: local-preserve\ndescription: Preserve this local Skill during activation.\n---\n',
+    );
+    const cloudDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: {
+        kind: 'custom' as const,
+        protocol: 'openai-responses' as const,
+        apiBase: 'https://models.example.test/v1',
+        apiKey: 'sk-cloud-model',
+        model: 'cloud-model',
+        contextWindowTokens: 256_000,
+        maxTokens: 8192,
+      },
+      prompt: { selected: 'custom' as const, customSystemPrompt: 'Cloud prompt.' },
+      skills: [],
+    };
+    let ackBody: any;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method || 'GET';
+      if (url.pathname === '/api/bot/definition' && method === 'GET') {
+        return Response.json({ configured: true, revision: 7, definition: cloudDefinition });
+      }
+      if (url.pathname === '/api/bot/definition/ack' && method === 'POST') {
+        ackBody = JSON.parse(String(init?.body));
+        return Response.json({ status: 'failed' });
+      }
+      if (url.pathname === '/api/bot/definition/default-prompt' && method === 'PUT') {
+        return Response.json({ status: 'stored' });
+      }
+      return Response.json({ error: `unexpected ${method} ${url.pathname}` }, { status: 500 });
+    }) as typeof fetch;
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      simulatedCloudRoot,
+      env,
+      fetchImpl,
+    });
+
+    assert.equal(prepared?.observedCloudRevision, 7);
+    assert.equal(prepared?.desiredCloudRevision, 7);
+    assert.equal(prepared?.appliedCloudRevision, undefined);
+    assert.equal(prepared?.cloudRevision, undefined);
+    assert.match(prepared?.cloudApplyError || '', /local_workspace_unverified/);
+    assert.equal(prepared?.skillSync?.sync?.applyStatus, 'deferred');
+    assert.equal(prepared?.skillSync?.sync?.appliedRevision, undefined);
+    assert.deepStrictEqual(ackBody, {
+      revision: 7,
+      error: 'Bot Skill activation was deferred (local_workspace_unverified).',
+    });
+    assert.equal(fs.existsSync(path.join(localSkillRoot, 'SKILL.md')), true);
+  });
+
+  test('success-acks a unified Definition only after its complete Skill revision is verified locally', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-applied-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-applied-cloud-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'owner-token', uid: '7', displayName: 'Alice' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    const cloudDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: {
+        kind: 'custom' as const,
+        protocol: 'openai-responses' as const,
+        apiBase: 'https://models.example.test/v1',
+        apiKey: 'sk-cloud-model',
+        model: 'cloud-model',
+        contextWindowTokens: 256_000,
+        maxTokens: 8192,
+      },
+      prompt: { selected: 'custom' as const, customSystemPrompt: 'Cloud prompt.' },
+      skills: [],
+    };
+    let ackBody: any;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method || 'GET';
+      if (url.pathname === '/api/bot/definition' && method === 'GET') {
+        return Response.json({ configured: true, revision: 7, definition: cloudDefinition });
+      }
+      if (url.pathname === '/api/bot/definition/ack' && method === 'POST') {
+        ackBody = JSON.parse(String(init?.body));
+        return Response.json({ status: 'applied' });
+      }
+      if (url.pathname === '/api/bot/definition/default-prompt' && method === 'PUT') {
+        return Response.json({ status: 'stored' });
+      }
+      return Response.json({ error: `unexpected ${method} ${url.pathname}` }, { status: 500 });
+    }) as typeof fetch;
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      simulatedCloudRoot,
+      env,
+      fetchImpl,
+    });
+
+    assert.equal(prepared?.observedCloudRevision, 7);
+    assert.equal(prepared?.desiredCloudRevision, 7);
+    assert.equal(prepared?.appliedCloudRevision, 7);
+    assert.equal(prepared?.cloudRevision, 7);
+    assert.equal(prepared?.cloudApplyError, undefined);
+    assert.equal(prepared?.skillSync?.sync?.applyStatus, 'applied');
+    assert.equal(prepared?.skillSync?.sync?.appliedRevision, 7);
+    assert.deepStrictEqual(ackBody, { revision: 7 });
+  });
+
+  test('does not success-ack when the activation Skill recheck loses Cloud after a verified local Base', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-recheck-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-recheck-cloud-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'owner-token', uid: '7', displayName: 'Alice' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    fs.mkdirSync(path.join(runtimeRoot, 'skills'), { recursive: true });
+    new BotSkillBaseStore(runtimeRoot).write({
+      schema: 'xiaoba.bot-skill-sync-base.v2',
+      botId: '43',
+      definitionRevision: 7,
+      skills: [],
+      updatedAt: new Date().toISOString(),
+    });
+    const cloudDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: {
+        kind: 'custom' as const,
+        protocol: 'openai-responses' as const,
+        apiBase: 'https://models.example.test/v1',
+        apiKey: 'sk-cloud-model',
+        model: 'cloud-model',
+        contextWindowTokens: 256_000,
+        maxTokens: 8192,
+      },
+      prompt: { selected: 'custom' as const, customSystemPrompt: 'Cloud prompt.' },
+      skills: [],
+    };
+    let definitionReads = 0;
+    let ackBody: any;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method || 'GET';
+      if (url.pathname === '/api/bot/definition' && method === 'GET') {
+        definitionReads += 1;
+        if (definitionReads === 1) {
+          return Response.json({ configured: true, revision: 7, definition: cloudDefinition });
+        }
+        return Response.json({ error: 'temporary outage' }, { status: 503 });
+      }
+      if (url.pathname === '/api/bot/definition/ack' && method === 'POST') {
+        ackBody = JSON.parse(String(init?.body));
+        return Response.json({ status: 'failed' });
+      }
+      if (url.pathname === '/api/bot/definition/default-prompt' && method === 'PUT') {
+        return Response.json({ status: 'stored' });
+      }
+      return Response.json({ error: `unexpected ${method} ${url.pathname}` }, { status: 500 });
+    }) as typeof fetch;
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      simulatedCloudRoot,
+      env,
+      fetchImpl,
+    });
+
+    assert.equal(prepared?.observedCloudRevision, 7);
+    assert.equal(prepared?.desiredCloudRevision, 7);
+    assert.equal(prepared?.appliedCloudRevision, undefined);
+    assert.equal(prepared?.cloudRevision, undefined);
+    assert.match(prepared?.cloudApplyError || '', /cloud_unavailable/);
+    assert.equal(prepared?.skillSync?.sync?.applyStatus, 'deferred');
+    assert.equal(prepared?.skillSync?.sync?.appliedRevision, 7);
+    assert.deepStrictEqual(ackBody, {
+      revision: 7,
+      error: 'Bot Skill activation was deferred (cloud_unavailable).',
+    });
+  });
+
   test('applies and acknowledges a cloud-selected model after its local runtime is ready', async () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cloud-model-runtime-'));
     const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cloud-model-canonical-'));
@@ -586,8 +793,8 @@ describe('BotDefinition activation', () => {
     assert.equal(prepared?.cloudApplyError, undefined);
     assert.equal(prepared?.cloudRevision, 12);
     assert.equal(runtime?.modelId, 'deepseek-v4-flash');
-    assert.equal(runtime?.provider, 'anthropic');
-    assert.equal(runtime?.apiBase, 'https://relay.example.test/anthropic');
+    assert.equal(runtime?.provider, 'openai');
+    assert.equal(runtime?.apiBase, 'https://relay.example.test/v1');
     assert.equal(runtime?.apiKey, 'sk-existing-owner-key');
     assert.equal(runtime?.reasoningEffort, 'max');
     assert.equal(requests.some(item => item.path === '/api/relay/config'), false);

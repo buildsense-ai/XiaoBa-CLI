@@ -18,3 +18,13 @@ export function writeBmpHeader(filePath: string, width: number, height: number):
 export function writeOnePixelBmp(filePath: string): void {
   writeBmpHeader(filePath, 1, 1);
 }
+
+export function writeOnePixelPng(filePath: string): void {
+  fs.writeFileSync(
+    filePath,
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  );
+}

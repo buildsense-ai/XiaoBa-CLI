@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AgentSession } from '../src/core/agent-session';
 import { SkillManager } from '../src/skills/skill-manager';
+import { TurnSkillSnapshotStore } from '../src/skills/turn-skill-snapshot';
 import { ToolManager } from '../src/tools/tool-manager';
 import { AIService } from '../src/utils/ai-service';
 import { RuntimeFactory } from '../src/runtime/runtime-factory';
@@ -270,6 +271,32 @@ describe('RuntimeFactory', () => {
     assert.ok(services.skillManager instanceof SkillManager);
     assert.equal((services.toolManager as any).workingDirectory, path.resolve(testRoot));
     assert.deepStrictEqual(services.skillManager.getAllSkills(), []);
+  });
+
+  test('keeps turn Skill snapshots off by default and enables them only for an explicit canary', () => {
+    const previousEnabled = process.env.XIAOBA_TURN_SKILL_SNAPSHOT_ENABLED;
+    const previousUserData = process.env.XIAOBA_USER_DATA_DIR;
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
+    const profile = resolveDefaultRuntimeProfile({ surface: 'cli', workingDirectory: testRoot });
+
+    try {
+      delete process.env.XIAOBA_TURN_SKILL_SNAPSHOT_ENABLED;
+      const compatible = RuntimeFactory.createServicesSync(profile);
+      assert.equal(compatible.turnSkillSnapshotStore, undefined);
+
+      process.env.XIAOBA_TURN_SKILL_SNAPSHOT_ENABLED = '1';
+      const canary = RuntimeFactory.createServicesSync(profile);
+      assert.ok(canary.turnSkillSnapshotStore instanceof TurnSkillSnapshotStore);
+      assert.deepEqual(
+        canary.toolManager.getToolDefinitions().map(definition => definition.name),
+        compatible.toolManager.getToolDefinitions().map(definition => definition.name),
+      );
+    } finally {
+      if (previousEnabled === undefined) delete process.env.XIAOBA_TURN_SKILL_SNAPSHOT_ENABLED;
+      else process.env.XIAOBA_TURN_SKILL_SNAPSHOT_ENABLED = previousEnabled;
+      if (previousUserData === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previousUserData;
+    }
   });
 
   test('creates reusable system prompt providers from a profile snapshot', async () => {

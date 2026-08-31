@@ -103,6 +103,7 @@ interface QueuedMessage {
   seq: number;
   executionScope: ParsedCatsMessage['executionScope'];
   artifactContextRef?: string;
+  artifactTaskRef?: string;
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
@@ -120,6 +121,7 @@ interface QueuedMessage {
 interface ActiveConversationTask {
   runID: string;
   topic: string;
+  artifactTaskRef?: string;
   finished: boolean;
 }
 
@@ -181,14 +183,14 @@ export const CATSCOMPANY_SERVER_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperatio
   'edit_file',
   'send_file',
   'execute_shell',
-];
-
-export const CATSCOMPANY_DESKTOP_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[] = [
-  ...CATSCOMPANY_SERVER_RUNTIME_DEVICE_CAPABILITIES,
   SKILLHUB_THIN_RPC_TOOLS.workspace,
   SKILLHUB_THIN_RPC_TOOLS.share,
   SKILLHUB_THIN_RPC_TOOLS.finalize,
   SKILLHUB_THIN_RPC_TOOLS.delete,
+];
+
+export const CATSCOMPANY_DESKTOP_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[] = [
+  ...CATSCOMPANY_SERVER_RUNTIME_DEVICE_CAPABILITIES,
   SKILLHUB_THIN_RPC_TOOLS.switchBot,
 ];
 
@@ -510,7 +512,7 @@ export class CatsCompanyBot {
     this.deviceRegistration = deviceRegistration;
     this.skillHubThinRpc = new SkillHubThinRpcHandler({
       isShuttingDown: () => this.shuttingDown,
-      enabled: runtimeRole === 'desktop',
+      allowBotSwitch: runtimeRole === 'desktop',
     });
 
     const runtime = createCatsCompanyRuntime(config.sessionTTL);
@@ -1624,6 +1626,7 @@ export class CatsCompanyBot {
         seq: msg.seq,
         executionScope: msg.executionScope,
         artifactContextRef: msg.artifactContextRef,
+        artifactTaskRef: msg.artifactTaskRef,
         deviceGrants: msg.deviceGrants,
         deviceSelection: msg.deviceSelection,
         targetRoutes: msg.targetRoutes,
@@ -1661,7 +1664,7 @@ export class CatsCompanyBot {
         );
       }
       if (shouldProcess) {
-        task = this.beginConversationTask(key, msg.topic);
+        task = this.beginConversationTask(key, msg.topic, msg.artifactTaskRef);
         if (!task) {
           // Shutdown barrier at the call site: never start the model after
           // destroy() even when a pre-turn await resumed afterwards.
@@ -1672,6 +1675,7 @@ export class CatsCompanyBot {
           sessionRoute,
           executionScope: msg.executionScope,
           artifactContextRef: msg.artifactContextRef,
+          artifactTaskRef: msg.artifactTaskRef,
           localDeviceGrant: this.localDeviceGrant,
           deviceGrants: msg.deviceGrants,
           deviceSelection: msg.deviceSelection,
@@ -1680,7 +1684,12 @@ export class CatsCompanyBot {
           thinToolRpc: this.maybeBuildThinToolRpcTransport(),
           localFileGrants,
           runtimeFeedback,
-          pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope, entryClearGeneration),
+          pendingUserInputProvider: () => this.consumeQueuedUserInput(
+            key,
+            msg.executionScope,
+            entryClearGeneration,
+            msg.artifactTaskRef,
+          ),
           callbacks: this.buildSessionCallbacks(msg.topic, {
             sessionKey: key,
             senderId: msg.senderId,
@@ -1850,7 +1859,11 @@ export class CatsCompanyBot {
     return true;
   }
 
-  private beginConversationTask(sessionKey: string, topic: string): ActiveConversationTask | undefined {
+  private beginConversationTask(
+    sessionKey: string,
+    topic: string,
+    artifactTaskRef?: string,
+  ): ActiveConversationTask | undefined {
     // Shutdown barrier: shutdown 开始后禁止创建新任务（不发 running），
     // 避免 shutdown snapshot 之后出现孤儿任务（排队消息在 drain 中被丢弃而非留下无终态任务）。
     if (this.shuttingDown) return undefined;
@@ -1861,6 +1874,7 @@ export class CatsCompanyBot {
     const task: ActiveConversationTask = {
       runID: `xiaoba-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
       topic,
+      artifactTaskRef,
       finished: false,
     };
     tasks.set(sessionKey, task);
@@ -1896,7 +1910,11 @@ export class CatsCompanyBot {
     task: ActiveConversationTask,
     status: Omit<ConversationTaskStatusInput, 'run_id'>,
   ): void {
-    const payload: ConversationTaskStatusInput = { run_id: task.runID, ...status };
+    const payload: ConversationTaskStatusInput = {
+      run_id: task.runID,
+      ...(task.artifactTaskRef ? { artifact_task_ref: task.artifactTaskRef } : {}),
+      ...status,
+    };
     const statusTasks = this.taskStatusTasks ??= new Map<string, Promise<void>>();
     const previous = statusTasks.get(task.topic) ?? Promise.resolve();
     const next = previous
@@ -2156,6 +2174,7 @@ export class CatsCompanyBot {
       envelope,
       executionScope,
       artifactContextRef: envelope.artifactContextRef,
+      artifactTaskRef: envelope.artifactTaskRef,
       deviceGrants: extractCatsCoDeviceGrants(ctx.metadata, executionScope),
       deviceSelection: extractCatsCoDeviceSelection(ctx.metadata, executionScope),
       targetRoutes,
@@ -2954,7 +2973,7 @@ export class CatsCompanyBot {
         // Shutdown barrier: destroy() may have started while queued work ran.
         if (this.shuttingDown) return;
         if (msg.source === 'user') {
-          task = this.beginConversationTask(sessionKey, msg.topic);
+          task = this.beginConversationTask(sessionKey, msg.topic, msg.artifactTaskRef);
           if (!task) return;
         }
         const result = msg.source === 'subagent_feedback'
@@ -2979,6 +2998,7 @@ export class CatsCompanyBot {
             channel,
             executionScope: msg.executionScope,
             artifactContextRef: msg.artifactContextRef,
+            artifactTaskRef: msg.artifactTaskRef,
             localDeviceGrant: this.localDeviceGrant,
             deviceGrants: msg.deviceGrants,
             deviceSelection: msg.deviceSelection,
@@ -2987,7 +3007,12 @@ export class CatsCompanyBot {
             thinToolRpc: this.maybeBuildThinToolRpcTransport(),
             runtimeFeedback: msg.runtimeFeedback,
             localFileGrants: msg.localFileGrants,
-            pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey, msg.executionScope, clearGeneration),
+            pendingUserInputProvider: () => this.consumeQueuedUserInput(
+              sessionKey,
+              msg.executionScope,
+              clearGeneration,
+              msg.artifactTaskRef,
+            ),
             callbacks: this.buildSessionCallbacks(msg.topic, {
               sessionKey,
               senderId: msg.senderId,
@@ -3078,11 +3103,15 @@ export class CatsCompanyBot {
     sessionKey: string,
     currentScope?: ParsedCatsMessage['executionScope'],
     expectedClearGeneration = this.getSessionClearGeneration(sessionKey),
+    currentArtifactTaskRef?: string,
   ): string | ContentBlock[] | PendingUserInput | null {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return null;
 
     if (expectedClearGeneration !== this.getSessionClearGeneration(sessionKey)) return null;
+    // Artifact tasks own a one-shot ToolExecutionContext. Ordinary input must
+    // remain queued until that task turn releases its run/task correlation.
+    if (currentArtifactTaskRef) return null;
     const userMessages: QueuedMessage[] = [];
     let firstRemainingIndex = 0;
     for (; firstRemainingIndex < queue.length; firstRemainingIndex++) {
@@ -3090,6 +3119,9 @@ export class CatsCompanyBot {
       if ((item.clearGeneration ?? expectedClearGeneration) !== expectedClearGeneration) break;
       if (item.source === 'subagent_feedback') break;
       if (item.nativeFeishuContext) break;
+      // An Artifact task owns a distinct run/task correlation. Do not fold it
+      // into the currently executing turn as ordinary follow-up text.
+      if (item.artifactTaskRef) break;
       if (!this.canMergeQueuedMessage(currentScope, item.executionScope)) break;
       userMessages.push(item);
     }

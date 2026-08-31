@@ -120,6 +120,7 @@ export class SpawnSubagentTool implements Tool {
         subAgentPrompt,
         allowParentQuestions,
         delegatedToolContext: buildDelegatedSubAgentToolContext(context),
+        turnSkillSnapshot: context.turnSkillSnapshot,
         allowedTools: allowedToolsResult.value,
         maxTurns: maxTurnsResult.value,
         taskDescription,

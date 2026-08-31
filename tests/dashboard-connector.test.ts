@@ -35,8 +35,12 @@ test('Connector lets an authenticated user switch the Agent bound to this comput
   assert.doesNotMatch(script, /\/cats\/create-bot/);
   assert.match(styles, /\.agent-switch-dialog/);
   assert.match(html, /id="logout-dialog"/);
+  assert.match(html, /hero-actions[\s\S]*id="webapp-button"[\s\S]*id="logout-button"/);
+  assert.doesNotMatch(html, /class="danger-zone"/);
   assert.doesNotMatch(script, /window\.confirm\(/);
   assert.match(script, /login-account'\)\?\.focus/);
+  assert.match(script, /当前账号无权使用原 Agent（not your bot）/);
+  assert.match(script, /setNotice\(`\$\{title\}：\$\{detail\}`/);
 });
 
 test('Connector local management restores channels and gives logs a full workspace', () => {
@@ -52,6 +56,26 @@ test('Connector local management restores channels and gives logs a full workspa
   assert.match(script, /sanitizeLogLine/);
   assert.match(styles, /\.log-viewer\s*\{[\s\S]*flex: 1 1 auto/);
   assert.doesNotMatch(html, /<details class="diagnostics-panel"/);
+});
+
+test('Connector restores visible desktop update progress and explicit install confirmation', () => {
+  assert.match(html, /id="update-dialog"/);
+  assert.match(html, /role="progressbar"/);
+  assert.match(html, /id="update-current-version"/);
+  assert.match(html, /id="update-available-version"/);
+  assert.match(html, /id="update-speed"/);
+  assert.match(html, /id="update-remaining"/);
+  assert.match(script, /安装并重启/);
+  assert.match(styles, /\.update-dialog::backdrop/);
+  assert.match(styles, /\.update-progress-track\.indeterminate/);
+  assert.match(styles, /\.compact-card \.button\.update-active/);
+  assert.match(script, /下载 \$\{Math\.round\(percent\)\}%/);
+  assert.match(script, /settled\('\/update\/status'\)/);
+  assert.match(script, /setInterval\(\(\) => \{ void refreshUpdateStatus\(\); \}, 1000\)/);
+  assert.match(script, /request\('\/update\/download'/);
+  assert.match(script, /request\('\/update\/install'/);
+  assert.match(script, /previousStage === 'downloading'[\s\S]*\['downloaded', 'error'\]/);
+  assert.match(script, /update-primary-action.*handleUpdatePrimaryAction/s);
 });
 
 test('Connector client uses real lifecycle APIs and remains syntax-valid', () => {
@@ -370,6 +394,32 @@ test('loopback bootstrap requests include the configured Dashboard API key', asy
     await controller.run('startup');
     assert.equal(headers.length, 1);
     assert.equal(headers[0].get('X-API-Key'), 'dashboard-test-key');
+  } finally {
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test('account or Agent transition clears a stale bootstrap error immediately', async () => {
+  const runtimeRoot = createRuntimeConfig('catsco-connector-transition-', {
+    version: 1,
+    account: { token: 'test-user-token', uid: 'usr-test' },
+    preferences: { autoConnect: true },
+  });
+  try {
+    const controller = new CatsConnectorAutoStart({
+      port: 3800,
+      runtimeRoot,
+      fetchImpl: async () => jsonResponse({ error: 'not your bot' }, 403),
+    });
+    const failed = await controller.run('login');
+    assert.equal(failed.stage, 'error');
+    assert.equal(failed.error, 'not your bot');
+
+    const transition = controller.invalidateAndSchedule('switch-bot', 10_000, { force: true });
+    assert.equal(transition.stage, 'connecting');
+    assert.equal(transition.trigger, 'switch-bot');
+    assert.equal(transition.error, undefined);
+    controller.stop();
   } finally {
     rmSync(runtimeRoot, { recursive: true, force: true });
   }

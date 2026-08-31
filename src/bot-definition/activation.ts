@@ -49,7 +49,11 @@ export interface PreparedBoundBotDefinition {
   sync?: BotDefinitionSyncResult;
   initializedDefault: boolean;
   materializedCatalogRuntime: boolean;
+  /** @deprecated Use appliedCloudRevision for new activation decisions. */
   cloudRevision?: number;
+  observedCloudRevision?: number;
+  desiredCloudRevision?: number;
+  appliedCloudRevision?: number;
   cloudSelection?: CloudBotModelSelection;
   cloudApplyError?: string;
   skillSync?: PreparedBoundBotSkills;
@@ -219,7 +223,24 @@ export async function prepareBoundBotDefinition(
               definitionService,
             });
         definition = definitionService.read(botId) ?? definition;
-        const appliedRevision = skillSync?.sync?.cloudRevision ?? cloudSnapshot.revision;
+        const desiredRevision = cloudSnapshot.revision;
+        const observedRevision = skillSync?.sync?.observedRevision ?? desiredRevision;
+        const skillApplyStatus = skillSync?.sync?.applyStatus;
+        const skippedSkillsAreAbsent = (
+          options.prepareSkills === false
+          && cloudSnapshot.definition?.skills === undefined
+        );
+        const targetRevisionApplied = skippedSkillsAreAbsent || Boolean(
+          skillSync
+          && (skillApplyStatus === 'applied' || skillApplyStatus === 'already_applied')
+          && skillSync.sync?.desiredRevision === desiredRevision
+          && skillSync.sync?.observedRevision === desiredRevision
+          && skillSync.sync?.appliedRevision === desiredRevision
+        );
+        const appliedRevision = targetRevisionApplied ? desiredRevision : undefined;
+        const cloudApplyError = targetRevisionApplied
+          ? undefined
+          : botSkillActivationDeferredError(skillSync?.sync?.errorCode);
         definitionService.clearLegacyModelConfigurationWhenReady(definition);
         if (
           options.acknowledgeCloudSelection !== false
@@ -228,7 +249,8 @@ export async function prepareBoundBotDefinition(
           try {
             await acknowledgeCloudBotDefinition(
               { botId, auth, fetchImpl: options.fetchImpl },
-              appliedRevision,
+              desiredRevision,
+              cloudApplyError,
             );
           } catch (error) {
             Logger.warning(`CatsCo BotDefinition apply acknowledgement failed: ${errorMessage(error)}`);
@@ -240,14 +262,19 @@ export async function prepareBoundBotDefinition(
           sync,
           initializedDefault: initializedDefaultFromEmpty,
           materializedCatalogRuntime,
-          cloudRevision: appliedRevision,
+          observedCloudRevision: observedRevision,
+          desiredCloudRevision: desiredRevision,
+          ...(appliedRevision !== undefined
+            ? { cloudRevision: appliedRevision, appliedCloudRevision: appliedRevision }
+            : {}),
+          ...(cloudApplyError ? { cloudApplyError } : {}),
           ...(skillSync ? { skillSync } : {}),
           cloudSelection: definition.model.kind === 'custom'
             ? {
               kind: 'custom',
               modelId: definition.model.model,
               customModel: definition.model,
-              revision: appliedRevision,
+              revision: desiredRevision,
               definition,
             }
             : {
@@ -256,7 +283,7 @@ export async function prepareBoundBotDefinition(
               ...(definition.model.reasoningEffort
                 ? { reasoningEffort: definition.model.reasoningEffort }
                 : {}),
-              revision: appliedRevision,
+              revision: desiredRevision,
               definition,
             },
         };
@@ -344,15 +371,17 @@ export async function prepareBoundBotDefinition(
         const cloudModel = {
           kind: 'catalog' as const,
           modelId: cloudSelection.modelId,
+          ...(cloudSelection.catalogRuntime ? { catalogRuntime: cloudSelection.catalogRuntime } : {}),
           ...(cloudSelection.reasoningEffort ? { reasoningEffort: cloudSelection.reasoningEffort } : {}),
         };
         const runtime = definitionService.readCloudCatalogRuntime(botId);
-        if (!runtime || !catalogRuntimeMatchesModelId(runtime, cloudSelection.modelId)) {
+        if (!runtime || !catalogRuntimeMatchesModelId(runtime, cloudSelection.modelId, cloudSelection.catalogRuntime)) {
           const materialized = await provisionCatsRelayCatalogRuntime({
             botId,
             modelId: cloudSelection.modelId,
             reasoningEffort: cloudSelection.reasoningEffort,
             contextWindowTokens: cloudSelection.contextWindowTokens,
+            catalogRuntime: cloudSelection.catalogRuntime,
             existingRuntime: runtime ?? definitionService.readCatalogRuntime(botId),
             auth,
             fetchImpl: options.fetchImpl,
@@ -372,6 +401,7 @@ export async function prepareBoundBotDefinition(
                 modelId: cloudSelection.modelId,
                 reasoningEffort: cloudSelection.reasoningEffort,
                 contextWindowTokens: cloudSelection.contextWindowTokens,
+                catalogRuntime: cloudSelection.catalogRuntime,
                 existingRuntime: runtime,
                 auth,
                 fetchImpl: options.fetchImpl,
@@ -401,6 +431,7 @@ export async function prepareBoundBotDefinition(
               ...(cloudSelection.contextWindowTokens !== undefined
                 ? { contextWindowTokens: cloudSelection.contextWindowTokens }
                 : {}),
+              ...(cloudSelection.catalogRuntime ? { catalogRuntime: cloudSelection.catalogRuntime } : {}),
             });
           }
         }
@@ -554,8 +585,19 @@ export async function prepareBoundBotDefinition(
     initializedDefault,
     materializedCatalogRuntime,
     ...(cloudSelection ? { cloudSelection } : {}),
+    ...(cloudSelection
+      ? {
+          observedCloudRevision: cloudSelection.revision,
+          desiredCloudRevision: cloudSelection.revision,
+        }
+      : {}),
     ...(cloudApplyError ? { cloudApplyError } : {}),
-    ...(cloudSelectionApplied && cloudSelection ? { cloudRevision: cloudSelection.revision } : {}),
+    ...(cloudSelectionApplied && cloudSelection
+      ? {
+          cloudRevision: cloudSelection.revision,
+          appliedCloudRevision: cloudSelection.revision,
+        }
+      : {}),
     ...(skillSync ? { skillSync } : {}),
   };
 }
@@ -568,6 +610,11 @@ function catalogCapabilitiesNeedRefresh(runtime: BotCatalogModelRuntime): boolea
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function botSkillActivationDeferredError(errorCode?: string): string {
+  const code = String(errorCode || 'skill_revision_not_applied').trim();
+  return `Bot Skill activation was deferred (${code}).`;
 }
 
 function scheduleBundledDefaultPromptSnapshot(options: {

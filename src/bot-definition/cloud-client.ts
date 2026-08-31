@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { normalizeReasoningEffort } from '../utils/reasoning-effort';
 import type { ReasoningEffort } from '../types';
 import { canonicalizeBotSkillRefs } from '../bot-skills/canonical';
+import type { RelayModelRuntimeDescriptor } from '../utils/relay-model-profiles';
 import {
   BOT_DEFINITION_SCHEMA,
   type CloudBotDefinition,
@@ -25,6 +26,7 @@ export interface CloudBotModelSelection {
    * device-local profile must not override it.
    */
   contextWindowTokens?: number;
+  catalogRuntime?: RelayModelRuntimeDescriptor;
   revision: number;
   customModel?: CustomBotModelDefinition;
   definition?: CloudBotDefinition;
@@ -79,6 +81,9 @@ export async function pullCloudBotModelSelection(
         definition: definitionSnapshot.definition,
         ...(model.kind === 'catalog' && model.contextWindowTokens
           ? { contextWindowTokens: model.contextWindowTokens }
+          : {}),
+        ...(model.kind === 'catalog' && model.catalogRuntime
+          ? { catalogRuntime: model.catalogRuntime }
           : {}),
         ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
       };
@@ -341,6 +346,7 @@ function parseCloudBotDefinitionSnapshot(
     const rawReasoning = String(rawModel?.reasoningEffort || '').trim();
     const reasoningEffort = rawReasoning ? normalizeReasoningEffort(rawReasoning) : undefined;
     const contextWindowTokens = parseCloudContextWindowTokens(rawModel?.contextWindowTokens);
+    const catalogRuntime = parseCloudCatalogRuntime(rawModel?.catalogRuntime);
     if (!modelId || (rawReasoning && !reasoningEffort)) {
       throw new Error('CatsCo cloud returned an invalid catalog BotDefinition.');
     }
@@ -348,6 +354,7 @@ function parseCloudBotDefinitionSnapshot(
       kind: 'catalog',
       modelId,
       ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+      ...(catalogRuntime ? { catalogRuntime } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
     };
   } else {
@@ -374,6 +381,38 @@ function parseCloudBotDefinitionSnapshot(
     ...(response?.runtime && typeof response.runtime === 'object'
       ? { runtime: response.runtime as Record<string, unknown> }
       : {}),
+  };
+}
+
+function parseCloudCatalogRuntime(value: unknown): RelayModelRuntimeDescriptor | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Record<string, unknown>;
+  const provider = input.provider === 'anthropic' || input.provider === 'openai' ? input.provider : undefined;
+  const model = String(input.model || '').trim();
+  const contextWindowTokens = Number(input.contextWindowTokens);
+  const rawCapabilities = input.capabilities;
+  if (!provider || !model || !Number.isInteger(contextWindowTokens)
+    || contextWindowTokens < 1_024 || contextWindowTokens > 4_000_000
+    || !rawCapabilities || typeof rawCapabilities !== 'object') return undefined;
+  const capabilities = rawCapabilities as Record<string, unknown>;
+  if (typeof capabilities.vision !== 'boolean'
+    || typeof capabilities.toolCalling !== 'boolean'
+    || typeof capabilities.streaming !== 'boolean') return undefined;
+  const openaiApiMode = input.openaiApiMode === 'responses' || input.openaiApiMode === 'chat_completions'
+    ? input.openaiApiMode
+    : undefined;
+  if (provider === 'openai' && !openaiApiMode) return undefined;
+  return {
+    ...(String(input.catalogModelId || '').trim() ? { catalogModelId: String(input.catalogModelId).trim() } : {}),
+    model,
+    provider,
+    contextWindowTokens,
+    ...(provider === 'openai' ? { openaiApiMode } : {}),
+    capabilities: {
+      vision: capabilities.vision,
+      toolCalling: capabilities.toolCalling,
+      streaming: capabilities.streaming,
+    },
   };
 }
 

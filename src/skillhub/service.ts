@@ -4,6 +4,7 @@ import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import {
   BotSkillPackageValidationError,
   collectBotSkillPackageFiles,
+  isEphemeralSkillDirectory,
 } from '../bot-skills/local-manifest';
 import { SkillParser } from '../skills/skill-parser';
 import type { Skill } from '../types/skill';
@@ -470,6 +471,7 @@ function walk(dir: string): string[] {
       if (entry.isDirectory()) {
         if (
           !SOURCE_SKIP_DIRS.has(entry.name)
+          && !isEphemeralSkillDirectory(entry.name)
           && !fs.existsSync(path.join(fullPath, 'SKILL.md'))
         ) {
           visit(fullPath);

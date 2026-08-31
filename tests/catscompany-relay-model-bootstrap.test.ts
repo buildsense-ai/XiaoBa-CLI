@@ -5,8 +5,69 @@ import {
   refreshCatsRelayCatalogRuntimeCapabilities,
   retargetCatsRelayCatalogRuntime,
 } from '../src/catscompany/relay-model-bootstrap';
+import { relayModelProfileFromRuntimeDescriptor } from '../src/utils/relay-model-profiles';
 
 describe('CatsCo default relay model bootstrap', () => {
+  test('accepts a new cloud catalog model without a shipped local profile', () => {
+    const profile = relayModelProfileFromRuntimeDescriptor('new-model-2026', {
+      catalogModelId: 'new-model-2026',
+      model: 'provider-new-model',
+      provider: 'anthropic',
+      contextWindowTokens: 128_000,
+      capabilities: { vision: false, toolCalling: true, streaming: true },
+    });
+    assert.equal(profile?.id, 'new-model-2026');
+    assert.equal(profile?.preferredProvider, 'anthropic');
+    assert.equal(profile?.contextWindowTokens, 128_000);
+    assert.equal(profile?.model, 'provider-new-model');
+  });
+
+  test('materializes GLM 5.3 Flash from the cloud catalog with max reasoning', async () => {
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/relay/config') {
+        return Response.json({
+          base_url: 'https://relay.example.test',
+          self_service_enabled: true,
+          endpoints: [{ protocol: 'Anthropic-compatible', base_url: 'https://relay.example.test/anthropic' }],
+          models: [{ id: 'glm-5.3-flash', enabled: true }],
+        });
+      }
+      if (url.pathname === '/api/relay/key' && init?.method === 'GET') {
+        return Response.json({ key: { key: 'sk-glm-test-key', state: 'active' } });
+      }
+      if (url.pathname === '/v1/models') {
+        return Response.json({ data: [{
+          id: 'glm-5.3-flash',
+          capabilities: { vision: true, tool_calling: true, streaming: true },
+        }] });
+      }
+      return new Response(JSON.stringify({ error: 'unexpected request' }), { status: 500 });
+    }) as typeof fetch;
+
+    const runtime = await provisionCatsRelayCatalogRuntime({
+      botId: 'bot-glm',
+      modelId: 'glm-5.3-flash',
+      reasoningEffort: 'max',
+      auth: {
+        token: 'user-token',
+        uid: 'user-1',
+        displayName: 'Alice',
+        httpBaseUrl: 'https://cats.example.test',
+        serverUrl: 'wss://cats.example.test/v0/channels',
+      },
+      fetchImpl,
+    });
+
+    assert.equal(runtime.modelId, 'glm-5.3-flash');
+    assert.equal(runtime.model, 'glm-5.3-flash');
+    assert.equal(runtime.provider, 'anthropic');
+    assert.equal(runtime.apiBase, 'https://relay.example.test/anthropic');
+    assert.equal(runtime.reasoningEffort, 'max');
+    assert.equal(runtime.contextWindowTokens, 1_000_000);
+    assert.deepStrictEqual(runtime.capabilities, { vision: true, toolCalling: true, streaming: true });
+  });
+
   test('materializes MiniMax M3 and creates a relay key for a fresh device', async () => {
     const requests: Array<{ path: string; method?: string }> = [];
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -154,15 +215,15 @@ describe('CatsCo default relay model bootstrap', () => {
     }, 'deepseek-v4-flash', 'max');
 
     assert.equal(runtime.modelId, 'deepseek-v4-flash');
-    assert.equal(runtime.provider, 'anthropic');
-    assert.equal(runtime.apiBase, 'https://relay.example.test/anthropic');
+    assert.equal(runtime.provider, 'openai');
+    assert.equal(runtime.apiBase, 'https://relay.example.test/v1');
     assert.equal(runtime.apiKey, 'sk-existing-owner-key');
     assert.equal(runtime.model, 'deepseek-v4-flash');
     assert.equal(runtime.reasoningEffort, 'max');
-    assert.equal(runtime.openaiApiMode, 'chat_completions');
+    assert.equal(runtime.openaiApiMode, 'responses');
     assert.deepStrictEqual(runtime.capabilities, {
       toolCalling: true,
-      vision: false,
+      vision: true,
       streaming: true,
     });
     assert.equal(runtime.capabilitiesSource, 'static');

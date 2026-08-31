@@ -595,6 +595,49 @@ describe('subagent runtime events', () => {
     }
   });
 
+  test('spawn_subagent forwards the opaque parent turn Skill snapshot lease to the manager', async () => {
+    const originalGetInstance = SubAgentManager.getInstance;
+    const snapshotLease = { marker: 'turn-snapshot-lease' };
+    let capturedRequest: any;
+    (SubAgentManager as any).getInstance = () => ({
+      spawn(_parentSessionKey: string, request: any) {
+        capturedRequest = request;
+        return {
+          id: 'sub-snapshot',
+          agentType: 'worker',
+          skillName: 'worker',
+          toolScope: 'read_only',
+          allowedTools: request.allowedTools,
+          taskDescription: request.taskDescription,
+          status: 'running',
+          createdAt: Date.now(),
+          progressLog: [],
+          outputFiles: [],
+        };
+      },
+    });
+
+    try {
+      const result = await new SpawnSubagentTool().execute({
+        agent_type: 'worker',
+        allowed_tools: ['read_file'],
+        task: 'inspect snapshot',
+        context: 'inspect snapshot',
+      }, {
+        workingDirectory: process.cwd(),
+        conversationHistory: [],
+        sessionId: 'cc_user:snapshot',
+        runtimeServices: { aiService: {} as any, skillManager: {} as any },
+        turnSkillSnapshot: snapshotLease as any,
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(capturedRequest.turnSkillSnapshot, snapshotLease);
+    } finally {
+      (SubAgentManager as any).getInstance = originalGetInstance;
+    }
+  });
+
   test('CatsCo device-scoped spawn_subagent does not add a channel-specific tool whitelist', async () => {
     const originalGetInstance = SubAgentManager.getInstance;
     let capturedAllowedTools: unknown;
@@ -633,6 +676,7 @@ describe('subagent runtime events', () => {
         sessionId: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
         surface: 'catscompany',
         artifactContextRef: `acr_${'a'.repeat(43)}`,
+        artifactTaskRef: `atr_${'t'.repeat(43)}`,
         executionScope: {
           source: 'catscompany',
           sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
@@ -662,6 +706,7 @@ describe('subagent runtime events', () => {
       assert.equal(capturedDelegatedContext.executionScope?.sessionKey, 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43');
       assert.equal(capturedDelegatedContext.localDeviceGrant?.bodyId, 'body-main');
       assert.equal('artifactContextRef' in capturedDelegatedContext, false);
+      assert.equal('artifactTaskRef' in capturedDelegatedContext, false);
     } finally {
       (SubAgentManager as any).getInstance = originalGetInstance;
     }
@@ -1273,6 +1318,79 @@ describe('subagent runtime events', () => {
       assert.equal(manager.listByParent(parentSessionKey).filter(info => info.status === 'running').length, 4);
     } finally {
       for (const finishRun of finishRuns) finishRun();
+      SubAgentSession.prototype.run = originalRun;
+      for (const info of manager.listByParent(parentSessionKey)) {
+        (manager as any).subAgents.delete(info.id);
+        (manager as any).completedSubAgents.delete(info.id);
+        (manager as any).parentMap.delete(info.id);
+        (manager as any).displayNameByAgent.delete(info.id);
+        (manager as any).dedupeKeyByAgent.delete(info.id);
+      }
+      manager.unregisterPlatformCallbacks(parentSessionKey);
+    }
+  });
+
+  test('manager retains one child Skill snapshot lease and releases it after background completion', async () => {
+    const manager = SubAgentManager.getInstance();
+    const parentSessionKey = `test-parent:${Date.now()}:snapshot-lease`;
+    let finishRun: (() => void) | undefined;
+    let retainCount = 0;
+    let releaseCount = 0;
+    const childLease = {
+      release: async () => { releaseCount += 1; },
+    };
+    const parentLease = {
+      retain: async () => {
+        retainCount += 1;
+        return childLease;
+      },
+    };
+    manager.registerPlatformCallbacks(parentSessionKey, {
+      injectMessage: async () => undefined,
+      onSubAgentEvent: async () => undefined,
+    });
+    const originalRun = SubAgentSession.prototype.run;
+    (SubAgentSession.prototype as any).run = async function runMock() {
+      await new Promise<void>(resolve => { finishRun = resolve; });
+      this.status = 'completed';
+      this.completedAt = Date.now();
+      this.resultSummary = 'done';
+    };
+
+    try {
+      const request = {
+        agentType: 'worker' as const,
+        taskDescription: 'snapshot background task',
+        userMessage: 'snapshot background task',
+        turnSkillSnapshot: parentLease as any,
+      };
+      const first = await manager.spawn(
+        parentSessionKey,
+        request,
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in first));
+      assert.equal(retainCount, 1);
+      assert.equal(releaseCount, 0);
+
+      const duplicate = await manager.spawn(
+        parentSessionKey,
+        request,
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in duplicate));
+      assert.equal(duplicate.reusedExisting, true);
+      assert.equal(retainCount, 1, 'deduplicated spawns must not retain another lease');
+
+      assert.ok(finishRun);
+      finishRun();
+      await waitFor(() => releaseCount === 1);
+    } finally {
+      finishRun?.();
       SubAgentSession.prototype.run = originalRun;
       for (const info of manager.listByParent(parentSessionKey)) {
         (manager as any).subAgents.delete(info.id);

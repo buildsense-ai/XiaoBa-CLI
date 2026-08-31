@@ -96,10 +96,13 @@ test('electron sends trusted CatsCo links to the system browser', () => {
   assert.match(electronMain, /return \{ action: 'deny' \}/);
 });
 
-test('electron keeps authenticated startup in the tray and shows the Dashboard when login is required', () => {
+test('electron opens the default WebApp for authenticated launches and shows Dashboard when login is required', () => {
   assert.match(electronMain, /async function shouldShowDashboardAtStartup\(\)/);
   assert.match(electronMain, /if \(!readStoredCatsCoSession\(\)\) return true/);
-  assert.match(electronMain, /if \(await shouldShowDashboardAtStartup\(\)\) createWindow\(\)/);
+  assert.match(electronMain, /async function handleDesktopLaunch\(\)/);
+  assert.match(electronMain, /await shell\.openExternal\(CATSCO_WEBAPP_URL\)/);
+  assert.match(electronMain, /await handleDesktopLaunch\(\)/);
+  assert.match(electronMain, /else void handleDesktopLaunch\(\)/);
   assert.match(electronMain, /ipcMain\.handle\('catsco:hide-window'/);
 });
 

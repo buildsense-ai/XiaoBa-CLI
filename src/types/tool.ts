@@ -9,6 +9,7 @@ import type {
 import type { PlanRuntime, RuntimePlanSnapshot } from '../core/plan-runtime';
 import type { AIService } from '../utils/ai-service';
 import type { SkillManager } from '../skills/skill-manager';
+import type { TurnSkillSnapshotLease } from '../skills/turn-skill-snapshot';
 
 /**
  * 工具参数定义
@@ -228,6 +229,12 @@ export interface ToolExecutionContext {
   confirmToolExecution?: (request: ToolExecutionConfirmationRequest) => Promise<ToolExecutionConfirmationResult>;
   /** 当前 runtime 已创建的共享服务，供调度类工具复用，避免重复初始化 */
   runtimeServices?: RuntimeToolServices;
+  /**
+   * Runtime-generated lease for the immutable Skill tree bound to this turn.
+   * This is internal execution state: it is never accepted from model tool
+   * arguments or a remote device request.
+   */
+  turnSkillSnapshot?: TurnSkillSnapshotLease;
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
   channel?: ChannelCallbacks;
   /** 当前 turn 的可信执行身份；后续 ToolGateway/设备授权会基于它做权限判断。 */
@@ -264,6 +271,8 @@ export interface ToolExecutionContext {
   localFileGrants?: ScopedLocalFileGrant[];
   /** 当前 turn 的短期 Artifact context ref；只供本机工具子进程临时读取。 */
   artifactContextRef?: string;
+  /** 当前 turn 的短期 Artifact task ref；只供本机工具子进程临时读取。 */
+  artifactTaskRef?: string;
 }
 
 /**

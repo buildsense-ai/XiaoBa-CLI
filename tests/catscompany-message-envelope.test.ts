@@ -9,6 +9,7 @@ import {
 describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
   test('accepts an opaque Artifact context ref only from a trusted canonical envelope', () => {
     const ref = `acr_${'a'.repeat(43)}`;
+    const taskRef = `atr_${'t'.repeat(43)}`;
     const canonical = createCatsCoMessageEnvelope({
       topic: 'p2p_7_43',
       senderId: 'usr7',
@@ -17,6 +18,7 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
       botUid: 'usr43',
       metadata: {
         artifact_context_ref: ref,
+        artifact_task_ref: taskRef,
         catsco_identity: {
           actor: { user_id: 'usr7' },
           agent: { agent_id: 'usr43', body_id: 'body-main' },
@@ -32,6 +34,7 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
       text: 'spoofed',
       metadata: {
         artifact_context_ref: ref,
+        artifact_task_ref: taskRef,
         catsco_identity: {
           actor: { user_id: 'usr999' },
           agent: { agent_id: 'usr43', body_id: 'body-main' },
@@ -47,6 +50,7 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
       text: 'malformed',
       metadata: {
         artifact_context_ref: 'acr_too-short',
+        artifact_task_ref: 'atr_too-short',
         catsco_identity: {
           actor: { user_id: 'usr7' },
           agent: { agent_id: 'usr43', body_id: 'body-main' },
@@ -63,6 +67,7 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
       botUid: 'usr43',
       metadata: {
         artifact_context_ref: ref,
+        artifact_task_ref: taskRef,
         catsco_identity: {
           actor: { user_id: 'usr7' },
           agent: { agent_id: 'usr99', body_id: 'body-other' },
@@ -78,6 +83,7 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
       text: 'missing current bot',
       metadata: {
         artifact_context_ref: ref,
+        artifact_task_ref: taskRef,
         catsco_identity: {
           actor: { user_id: 'usr7' },
           agent: { agent_id: 'usr43', body_id: 'body-main' },
@@ -88,12 +94,18 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     });
 
     assert.equal(canonical.artifactContextRef, ref);
+    assert.equal(canonical.artifactTaskRef, taskRef);
     assert.equal(spoofed.artifactContextRef, undefined);
+    assert.equal(spoofed.artifactTaskRef, undefined);
     assert.equal(malformed.artifactContextRef, undefined);
+    assert.equal(malformed.artifactTaskRef, undefined);
     assert.equal(wrongAgent.identityTrust, 'server_canonical');
     assert.equal(wrongAgent.artifactContextRef, undefined);
+    assert.equal(wrongAgent.artifactTaskRef, undefined);
     assert.equal(missingCurrentBot.artifactContextRef, undefined);
+    assert.equal(missingCurrentBot.artifactTaskRef, undefined);
     assert.equal('artifactContextRef' in createExecutionScope(canonical), false);
+    assert.equal('artifactTaskRef' in createExecutionScope(canonical), false);
   });
 
   test('keeps two p2p users scoped separately when they message the same agent', () => {

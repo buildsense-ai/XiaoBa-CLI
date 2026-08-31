@@ -16,6 +16,12 @@ import { openAIApiModeOrDefault } from '../utils/openai-api-mode';
 import { Logger } from '../utils/logger';
 import { estimateJsonTokens } from '../core/token-estimator';
 import { createProviderStateReference, isProviderStateCompatible } from './provider-state';
+import {
+  applyDeepSeekResponsesRequestPolicy,
+  isDeepSeekResponses,
+  isDeepSeekResponsesReplayItem,
+  sanitizeDeepSeekResponsesReplayItem,
+} from './deepseek/responses-policy';
 
 const MAX_PROVIDER_ERROR_BODY_BYTES = 64 * 1024;
 const PROVIDER_ERROR_BODY_READ_TIMEOUT_MS = 2_000;
@@ -202,6 +208,10 @@ export class OpenAIProvider implements AIProvider {
       endpoint: apiType === 'openai-responses' ? this.responsesUrl : this.chatCompletionsUrl,
       model: this.model,
     });
+  }
+
+  private usesDeepSeekResponsesPolicy(): boolean {
+    return isDeepSeekResponses(this.openaiApiMode, this.model);
   }
 
   private canReplayProviderContent(message: Message, apiType: ProviderApiType): boolean {
@@ -527,21 +537,25 @@ export class OpenAIProvider implements AIProvider {
       model: this.model,
       input: layout.input,
       max_output_tokens: this.maxTokens,
-      store: false,
-      prompt_cache_key: this.buildPromptCacheKey(
-        instructions,
-        responseTools,
-        options?.promptCacheContext?.sessionKey,
-      ),
     };
+    body.store = false;
+    body.prompt_cache_key = this.buildPromptCacheKey(
+      instructions,
+      responseTools,
+      options?.promptCacheContext?.sessionKey,
+    );
 
     if (instructions) body.instructions = instructions;
     if (Number.isFinite(this.temperature)) body.temperature = this.temperature;
     if (responseTools.length > 0) body.tools = responseTools;
     body.include = ['reasoning.encrypted_content'];
-    this.applyResponsesReasoningOptions(body);
+    if (this.usesDeepSeekResponsesPolicy()) {
+      applyDeepSeekResponsesRequestPolicy(body, this.reasoningEffort);
+    } else {
+      this.applyResponsesReasoningOptions(body);
+    }
     this.logResponsesCacheLayout(
-      body.prompt_cache_key,
+      body.prompt_cache_key || '',
       instructions,
       responseTools,
       layout,
@@ -746,11 +760,10 @@ export class OpenAIProvider implements AIProvider {
   }
 
   private isResponsesReplayItem(item: any): boolean {
-    return Boolean(item && typeof item === 'object' && [
-      'message',
-      'function_call',
-      'reasoning',
-    ].includes(String(item.type || '')));
+    if (!item || typeof item !== 'object') return false;
+    const type = String(item.type || '');
+    if (this.usesDeepSeekResponsesPolicy()) return isDeepSeekResponsesReplayItem(item);
+    return ['message', 'function_call', 'reasoning'].includes(type);
   }
 
   private buildPromptCacheKey(instructions: string, tools: any[], sessionKey?: string): string {
@@ -1226,7 +1239,10 @@ export class OpenAIProvider implements AIProvider {
       ? incompleteReason === 'max_output_tokens' ? 'length' : incompleteReason || 'incomplete'
       : toolCalls.length > 0 ? 'tool_calls' : response?.status || undefined;
     const providerContent = toolCalls.length > 0
-      ? output.filter((item: any) => this.isResponsesReplayItem(item)).map((item: any) => JSON.parse(JSON.stringify(item)))
+      ? output
+        .filter((item: any) => this.isResponsesReplayItem(item))
+        .map((item: any) => this.responsesReplayItem(item))
+        .filter(Boolean)
       : undefined;
 
     return {
@@ -1237,6 +1253,11 @@ export class OpenAIProvider implements AIProvider {
       ...(providerContent?.length ? { providerContent } : {}),
       ...(providerContent?.length ? { providerState: this.providerStateReference('openai-responses') } : {}),
     };
+  }
+
+  private responsesReplayItem(item: any): any | undefined {
+    if (this.usesDeepSeekResponsesPolicy()) return sanitizeDeepSeekResponsesReplayItem(item);
+    return JSON.parse(JSON.stringify(item));
   }
 
   private async chatResponses(

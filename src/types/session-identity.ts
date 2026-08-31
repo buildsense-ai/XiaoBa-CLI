@@ -31,6 +31,8 @@ export interface MessageEnvelope {
   warnings?: string[];
   /** Opaque, short-lived Artifact context reference from a trusted live envelope. */
   artifactContextRef?: string;
+  /** Opaque, short-lived Artifact task reference from a trusted live envelope. */
+  artifactTaskRef?: string;
 }
 
 export interface ExecutionScope {

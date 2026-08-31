@@ -17,6 +17,16 @@ describe("Tianyi Cloud worker image pipeline", () => {
   );
   const imageOrchestrator = fs.readFileSync(imageOrchestratorPath, "utf8");
   const workflow = read(".github/workflows/worker-image.yml");
+  const hardeningPlan = read(
+    "docs/superpowers/plans/2026-08-05-worker-image-platform-hardening.md",
+  );
+
+  test("public operations notes do not contain a real routable IPv4 address", () => {
+    assert.doesNotMatch(
+      hardeningPlan,
+      /\b(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])(?:\.\d{1,3}){3}\b/,
+    );
+  });
 
   test("artifact is source-free and reproducible for one commit", () => {
     assert.match(artifactBuilder, /git\(sourceRoot, \[["']ls-files["']/);
@@ -59,6 +69,12 @@ describe("Tianyi Cloud worker image pipeline", () => {
       /runtime\/node\/bin\/node .*dist\/index\.js catsco/,
     );
     assert.match(imagePreparer, /catsco-image-packages\.txt/);
+    assert.match(
+      imagePreparer,
+      /catsco-agent ALL=\(ALL:ALL\) NOPASSWD: ALL/,
+    );
+    assert.match(imagePreparer, /chmod 0440 \/etc\/sudoers\.d\/catsco-agent/);
+    assert.match(imagePreparer, /visudo -cf \/etc\/sudoers\.d\/catsco-agent/);
   });
 
   test("finalization removes worker identity and machine identity before imaging", () => {
@@ -538,6 +554,9 @@ describe("Tianyi Cloud worker image pipeline", () => {
 
   test("private builder bootstrap is bounded and does not require inbound SSH", () => {
     assert.match(imageOrchestrator, /ApiTimeoutSeconds/);
+    assert.match(imageOrchestrator, /ProgressIntervalSeconds/);
+    assert.match(imageOrchestrator, /bake-progress/);
+    assert.match(imageOrchestrator, /CATSCO_BASE_IMAGE_HARDENED/);
     assert.match(
       imageOrchestrator,
       /"timeout"[\s\S]*?"ctyun-cli"/,
@@ -545,9 +564,121 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(imageOrchestrator, /"--extIP", "0"/);
     assert.match(imageOrchestrator, /"--userData", \$userData/);
     assert.match(imageOrchestrator, /userData exceeds Tianyi Cloud's 16384-character limit/);
-    assert.match(imageOrchestrator, /curl --fail --silent --show-error/);
+    assert.match(imageOrchestrator, /curl_common=[(]--fail --silent --show-error --location --ipv4/);
+    assert.match(imageOrchestrator, /--connect-timeout 20 --max-time 900/);
+    assert.match(imageOrchestrator, /--retry 8 --retry-all-errors/);
+    assert.match(imageOrchestrator, /phase\(\) \{/);
+    assert.match(imageOrchestrator, /phase download-prepare-script/);
+    assert.match(imageOrchestrator, /phase shutdown/);
+    assert.match(imageOrchestrator, /publish_status failed/);
+    assert.match(imageOrchestrator, /heartbeat_age_s/);
+    assert.match(imageOrchestrator, /Builder bootstrap failed/);
+    assert.match(imageOrchestrator, /Builder bootstrap heartbeat is stale/);
+    assert.match(imageOrchestrator, /Builder bootstrap status is unreachable or stale/);
+    assert.match(imageOrchestrator, /Convert-BootstrapResponseContent/);
+    assert.match(imageOrchestrator, /UTF8\.GetString\(\[byte\[\]\]\$Content\)/);
+    assert.match(imageOrchestrator, /TrimStart\(\[char\]0xFEFF\)/);
+    assert.match(imageOrchestrator, /parse_attempt=/);
+    assert.match(imageOrchestrator, /prefix_hex=/);
+    assert.match(imageOrchestrator, /for \(\$attempt = 1; \$attempt -le 3; \$attempt\+\+\)/);
+    assert.match(imageOrchestrator, /Start-Sleep -Seconds 1/);
+    assert.match(imageOrchestrator, /-MonitorBootstrap/);
     assert.match(imageOrchestrator, /shutdown -h now/);
     assert.doesNotMatch(imageOrchestrator, /Wait-ForSsh|\bscp\b|"--extIP", "1"/);
+    assert.match(imagePreparer, /platform_hardening=already-satisfied/);
+    assert.match(imagePreparer, /image_phase platform-upgrade/);
+    assert.match(imagePreparer, /image_phase kernel-upgrade/);
+    assert.match(imagePreparer, /image_phase worker-validate/);
+    assert.match(workflow, /CTYUN_WORKER_BASE_IMAGE_HARDENED/);
+  });
+
+  test("bootstrap telemetry decodes UTF-8 content and retries transient malformed reads", () => {
+    const helperStart = imageOrchestrator.indexOf(
+      "function Convert-BootstrapResponseContent",
+    );
+    const helperEnd = imageOrchestrator.indexOf(
+      "function Invoke-External",
+      helperStart,
+    );
+    assert.ok(helperStart >= 0 && helperEnd > helperStart);
+
+    const sandbox = fs.mkdtempSync(
+      path.join(os.tmpdir(), "catsco-bootstrap-telemetry-"),
+    );
+    try {
+      const harnessPath = path.join(sandbox, "telemetry-test.ps1");
+      fs.writeFileSync(
+        harnessPath,
+        `${imageOrchestrator.slice(helperStart, helperEnd)}
+function Write-BakeProgress {
+    param([string]$Phase, [string]$Detail = "", [switch]$Force)
+    $script:Diagnostics.Add("$Phase $Detail")
+}
+function Start-Sleep { param([int]$Seconds) }
+function Invoke-WebRequest {
+    $index = [Math]::Min($script:RequestCount, $script:Responses.Count - 1)
+    $content = $script:Responses[$index]
+    $script:RequestCount++
+    return [pscustomobject]@{ Content = $content }
+}
+function Reset-Monitor([object[]]$Responses) {
+    $script:Responses = $Responses
+    $script:RequestCount = 0
+    $script:Diagnostics = [Collections.Generic.List[string]]::new()
+    $script:BootstrapMonitorStartedAt = $null
+    $script:LastBootstrapPayload = ""
+    $script:LastBootstrapUpdateAt = $null
+    $script:LastBootstrapPhase = ""
+    $script:StartedAt = Get-Date
+    $script:LastProgressAt = [DateTime]::MinValue
+    $script:OperationDeadline = $null
+    $script:CleanupDeadline = $null
+    $script:InCleanup = $false
+    $global:BootstrapStatusGetUrl = "https://example.test/status"
+    $global:BootstrapStaleSeconds = 60
+    $global:BootstrapStartTimeoutMinutes = 5
+}
+
+$valid = '{"state":"running","phase":"download-worker-artifact","exit_code":0,"line":0}'
+if ((Convert-BootstrapResponseContent -Content $valid) -ne $valid) {
+    throw "string telemetry changed during decoding"
+}
+$withBom = [byte[]]([Text.Encoding]::UTF8.GetPreamble() + [Text.Encoding]::UTF8.GetBytes($valid))
+if ((Convert-BootstrapResponseContent -Content $withBom) -ne $valid) {
+    throw "byte telemetry or BOM was not decoded"
+}
+
+Reset-Monitor -Responses @('{"state":', [Text.Encoding]::UTF8.GetBytes($valid))
+Test-BootstrapStatus
+if ($script:RequestCount -ne 2 -or $script:LastBootstrapPhase -ne 'download-worker-artifact') {
+    throw "transient malformed telemetry did not recover"
+}
+if (-not ($script:Diagnostics -match 'content_type=System.String')) {
+    throw "malformed telemetry diagnostic was not emitted"
+}
+
+Reset-Monitor -Responses @('{"state":')
+$failure = $null
+try { Test-BootstrapStatus } catch { $failure = $_.Exception.Message }
+if ($script:RequestCount -ne 3 -or $failure -ne 'Builder bootstrap returned malformed status telemetry') {
+    throw "persistent malformed telemetry was not bounded to three reads"
+}
+`,
+        "utf8",
+      );
+      const result = spawnSync(
+        "pwsh",
+        ["-NoProfile", "-NonInteractive", "-File", harnessPath],
+        { cwd: root, encoding: "utf8", timeout: 30_000 },
+      );
+      assert.equal(
+        result.status,
+        0,
+        `telemetry harness failed\n${result.stdout}\n${result.stderr}`,
+      );
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
   test("workflow is restricted and stages only a temporary private artifact", () => {
@@ -568,6 +699,8 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(workflow, /-ArtifactUrl \$env:WORKER_ARTIFACT_URL/);
     assert.match(workflow, /-PrepareScriptUrl \$env:WORKER_PREPARE_SCRIPT_URL/);
     assert.match(workflow, /-PrepareScriptSha256 \$env:WORKER_PREPARE_SCRIPT_SHA256/);
+    assert.match(workflow, /-BootstrapStatusGetUrl \$env:WORKER_BOOTSTRAP_STATUS_GET_URL/);
+    assert.match(workflow, /-BootstrapStatusPutUrl \$env:WORKER_BOOTSTRAP_STATUS_PUT_URL/);
     assert.match(workflow, /-BuildNumber \$env:GITHUB_RUN_NUMBER/);
     assert.match(workflow, /-BuildIdentity \$env:GITHUB_RUN_ID/);
     assert.match(workflow, /WORKER_PROJECT_ID: \$\{\{ vars\.CTYUN_WORKER_PROJECT_ID \}\}/);
@@ -580,14 +713,34 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(workflow, /-BakeTimeoutMinutes 150/);
     assert.match(workflow, /-CleanupTimeoutMinutes 40/);
     assert.match(workflow, /-Mode Cleanup/);
-    assert.match(workflow, /steps\.bake\.outcome != 'success'/);
+    assert.match(workflow, /steps\.bake\.outcome == 'failure'/);
+    assert.match(workflow, /steps\.bake\.outcome == 'cancelled'/);
+    assert.doesNotMatch(workflow, /steps\.bake\.outcome != 'success'/);
     assert.match(workflow, /actions: read/);
     assert.match(workflow, /Find interrupted image runs/);
+    assert.match(workflow, /reconcile_history:/);
+    assert.match(workflow, /RECONCILE_HISTORICAL_RUNS/);
+    assert.match(workflow, /date -u -d '24 hours ago'/);
+    assert.match(workflow, /skip historical cloud cleanup:/);
     assert.match(workflow, /per_page=100&page=\$page/);
     assert.match(workflow, /page=\$\(\(page \+ 1\)\)/);
     assert.match(workflow, /jq -cs --arg current/);
     assert.match(workflow, /foreach \(\$run in \$runs\)/);
-    assert.match(workflow, /foreach \(\$attempt in 1\.\.\$runAttempt\)/);
+    assert.match(workflow, /actions\/runs\/\$run_id\/attempts\/\$attempt\/jobs/);
+    assert.match(workflow, /select\(\.name == "Bake private ECS image"\)/);
+    assert.match(
+      workflow,
+      /select\(\.name == "Reconcile this attempt after a failed bake"\)/,
+    );
+    assert.match(workflow, /cleanup_conclusion/);
+    assert.match(workflow, /reconciliation_step=success/);
+    assert.match(workflow, /retain cloud cleanup:/);
+    assert.match(workflow, /failure\|cancelled\|timed_out\|unknown/);
+    assert.match(workflow, /success\|skipped/);
+    assert.match(workflow, /retaining fail-safe cleanup/);
+    assert.match(workflow, /bake_attempts/);
+    assert.match(workflow, /filtered="\$\(jq -c --argjson run/);
+    assert.match(workflow, /foreach \(\$attempt in \$bakeAttempts\)/);
     assert.match(workflow, /foreach \(\$previousAttempt in 1\.\./);
     assert.match(workflow, /Historical image cleanup needs manual attention/);
     assert.match(workflow, /GITHUB_STEP_SUMMARY/);
@@ -602,10 +755,64 @@ describe("Tianyi Cloud worker image pipeline", () => {
       /steps\.prior_runs\.outputs\.runs[\s\S]*INTERRUPTED_RUNS_JSON/,
     );
     assert.match(workflow, /Stage private artifact for the builder/);
-    assert.match(workflow, /aws s3 presign/);
-    assert.match(workflow, /--acl private/);
+    assert.match(workflow, /TOS_WORKER_BUCKET: catsco-worker-image-bake-gz/);
+    assert.match(
+      workflow,
+      /TOS_WORKER_UPLOAD_BUCKET: catsco-worker-image-bake-hk/,
+    );
+    assert.doesNotMatch(workflow, /Validate dedicated bake buckets/);
+    assert.doesNotMatch(workflow, /TOS_WORKER_BUCKET: catsco-worker-release\s/);
+    assert.doesNotMatch(workflow, /create-bucket|delete-bucket/);
+    assert.doesNotMatch(workflow, /put-bucket-lifecycle-configuration/);
+    assert.match(workflow, /TOSUTIL_VERSION: v4\.1\.2/);
+    assert.match(
+      workflow,
+      /TOSUTIL_LINUX_AMD64_SHA256: 40bbb4636b0182715b9832310463be7ba58f9b1db26a7aa008cd2e873e5c9310/,
+    );
+    assert.match(workflow, /TOS_JS_SDK_VERSION: 2\.9\.1/);
+    assert.match(workflow, /Install pinned cloud CLIs/);
+    assert.match(
+      workflow,
+      /find "\$package_dir\/tosutil" -type f -name tosutil \| head -n 1/,
+    );
+    assert.doesNotMatch(workflow, /-name tosutil -perm -u\+x/);
+    assert.match(workflow, /timeout --signal=TERM --kill-after=30s 20m[\s\S]*?tosutil cp "\$WORKER_ARTIFACT_PATH"/);
+    assert.match(workflow, /timeout --signal=TERM --kill-after=30s 3m[\s\S]*?tosutil cp ops\/ctyun-worker-image\/prepare-image\.sh/);
+    assert.match(workflow, /timeout --signal=TERM --kill-after=5s 20s[\s\S]*?tosutil stat "tos:\/\/\$\{TOS_WORKER_BUCKET\}\/\$\{key\}"/);
+    assert.match(workflow, /tosutil cp "\$WORKER_ARTIFACT_PATH"/);
+    assert.match(workflow, /artifact upload start: bytes=/);
+    assert.match(workflow, /artifact upload complete: seconds=/);
+    assert.match(workflow, /cross-region replication complete: seconds=/);
+    assert.match(workflow, /-threshold=52428800 -p=8 -ps=16777216/);
+    assert.match(workflow, /tosutil presign/);
+    assert.match(workflow, /method: "PUT"/);
+    assert.match(workflow, /TOS SDK did not return a valid presigned PUT URL/);
+    assert.match(workflow, /runner-status-preflight/);
+    assert.match(workflow, /heartbeat PUT\/GET preflight/);
+    assert.match(workflow, /probe_readback/);
+    assert.match(workflow, /tosutil rm "tos:\/\/\$\{TOS_WORKER_BUCKET\}\/\$\{status_key\}"/);
+    assert.match(workflow, /bootstrap-status\.json/);
+    assert.match(workflow, /-acl=private/);
     assert.match(workflow, /Remove staged private artifact/);
-    assert.match(workflow, /aws s3 rm/);
+    assert.match(workflow, /tosutil rm/);
+    assert.match(workflow, /tosutil stat/);
+    assert.match(workflow, /STAGED_STATUS_KEY/);
+    assert.match(
+      workflow,
+      /for spec in "\$upload_bucket \$upload_config" "\$TOS_WORKER_BUCKET \$TOSUTIL_GZ_CONFIG"/,
+    );
+    assert.doesNotMatch(workflow, /\baws\s/);
+    assert.doesNotMatch(workflow, /boto3|botocore/);
+    assert.ok(
+      workflow.indexOf("Install pinned cloud CLIs") <
+        workflow.indexOf("Stage private artifact for the builder"),
+      "cloud CLIs must be installed before artifact staging",
+    );
+    assert.ok(
+      workflow.indexOf("Install pinned cloud CLIs") <
+        workflow.indexOf("Remove staged private artifact"),
+      "cloud CLIs must be installed before cleanup",
+    );
     assert.doesNotMatch(workflow, /public-read|upload-artifact/);
     assert.doesNotMatch(workflow, /^    env:\s*\n\s+CTYUN_AK:/m);
     assert.match(
@@ -885,12 +1092,18 @@ process.exit(result.status ?? 1);
             "https://example.test/prepare-image.sh?signature=test",
             "-PrepareScriptSha256",
             crypto.createHash("sha256").update("prepare-image").digest("hex"),
+            "-BootstrapStatusGetUrl",
+            "https://example.test/bootstrap-status.json?signature=get-test",
+            "-BootstrapStatusPutUrl",
+            "https://example.test/bootstrap-status.json?signature=put-test",
             "-BuildNumber",
             buildNumber,
             "-BuildAttempt",
             "1",
             "-LateResourceWaitSeconds",
             "10",
+            "-PollIntervalSeconds",
+            "1",
             "-ImageName",
             imageName,
             "-RegionID",
@@ -943,6 +1156,8 @@ process.exit(result.status ?? 1);
             "-BuildNumber",
             buildNumber,
             "-BuildAttempt",
+            "1",
+            "-PollIntervalSeconds",
             "1",
             "-ImageName",
             imageName,
@@ -1007,21 +1222,30 @@ process.exit(result.status ?? 1);
       assert.equal(finalState.createExtIP, "0");
       assert.equal(finalState.createHadBandwidth, false);
       assert.ok(finalState.createUserData.length <= 16384);
-      const bootstrap = Buffer.from(finalState.createUserData, "base64").toString("utf8");
-      assert.match(bootstrap, /#cloud-config/);
-      assert.match(bootstrap, /write_files:/);
-      assert.match(bootstrap, /runcmd:/);
-      assert.match(bootstrap, /catsco-image-bootstrap\.sh/);
-      const contentMatch = bootstrap.match(/    content: ([A-Za-z0-9+/=]+)\n/);
-      assert.ok(contentMatch, "cloud-config must contain base64 bootstrap content");
-      const decodedBootstrap = Buffer.from(contentMatch[1], "base64").toString("utf8");
-      assert.match(decodedBootstrap, /curl --fail --silent --show-error/);
+      const decodedBootstrap = Buffer.from(
+        finalState.createUserData,
+        "base64",
+      ).toString("utf8");
+      assert.match(decodedBootstrap, /^#!\/usr\/bin\/env bash/);
+      assert.doesNotMatch(decodedBootstrap, /#cloud-config/);
+      assert.match(decodedBootstrap, /catsco-image-bootstrap-started/);
+      assert.match(decodedBootstrap, /curl_common=\(--fail --silent --show-error/);
+      assert.match(decodedBootstrap, /--ipv4/);
+      assert.match(decodedBootstrap, /--connect-timeout 20/);
+      assert.match(decodedBootstrap, /--max-time 900/);
+      assert.match(decodedBootstrap, /phase download-prepare-script/);
+      assert.match(decodedBootstrap, /phase shutdown/);
+      assert.match(decodedBootstrap, /publish_status failed/);
+      assert.match(decodedBootstrap, /heartbeat &/);
+      assert.match(decodedBootstrap, /status_lock=\/run\/catsco-image-bootstrap-status\.lock/);
+      assert.match(decodedBootstrap, /acquire_status_lock\(\)/);
       assert.match(decodedBootstrap, /shutdown -h now/);
       assert.match(decodedBootstrap, new RegExp(artifactSha));
       assert.match(decodedBootstrap, /sha256sum --check --strict/);
-      assert.doesNotMatch(bootstrap, /example\.test\/private-worker/);
-      assert.doesNotMatch(bootstrap, /example\.test\/prepare-image/);
-      assert.doesNotMatch(bootstrap, /\bscp\b|\bssh\b/);
+      assert.doesNotMatch(decodedBootstrap, /example\.test\/private-worker/);
+      assert.doesNotMatch(decodedBootstrap, /example\.test\/prepare-image/);
+      assert.doesNotMatch(decodedBootstrap, /example\.test\/bootstrap-status/);
+      assert.doesNotMatch(decodedBootstrap, /\bscp\b|\bssh\b/);
       assert.equal(finalState.imageSourceServerID, "instance-1");
       assert.match(
         finalState.imageName,
@@ -1516,7 +1740,7 @@ process.exit(result.status ?? 1);
       const stickyResult = runCleanup(
         stickyBuildNumber,
         "catsco-worker-cleanup-sticky",
-        ["-ImageDeleteConfirmMinutes", "1"],
+        ["-ImageDeleteConfirmSeconds", "2"],
       );
       assert.notEqual(stickyResult.status, 0);
       assert.match(

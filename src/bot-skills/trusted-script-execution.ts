@@ -5,7 +5,12 @@ import type { BotSkillRef } from '../bot-definition/types';
 import { readSkillHubInstallMarker } from '../skillhub/install-marker';
 import type { ToolExecutionContext } from '../types/tool';
 import { PathResolver } from '../utils/path-resolver';
-import { readBotSkillLocalMarker, scanLocalBotSkill } from './local-manifest';
+import { TurnSkillSnapshotLease } from '../skills/turn-skill-snapshot';
+import {
+  collectBotSkillPackageFiles,
+  computeBotSkillPackageHash,
+  readBotSkillLocalMarker,
+} from './local-manifest';
 
 export interface TrustedBotSkillScriptInvocation {
   scriptPath: string;
@@ -50,7 +55,11 @@ export function resolveTrustedBotSkillScriptInvocation(
     return denied('The requested entrypoint is not a JavaScript file.');
   }
 
-  const skillsRoot = path.resolve(PathResolver.getSkillsPath());
+  const skillsRoot = path.resolve(
+    context.turnSkillSnapshot instanceof TurnSkillSnapshotLease
+      ? context.turnSkillSnapshot.snapshot.rootPath
+      : PathResolver.getSkillsPath(),
+  );
   const relative = path.relative(skillsRoot, scriptPath);
   const segments = relative.split(path.sep).filter(Boolean);
   if (
@@ -74,14 +83,16 @@ export function resolveTrustedBotSkillScriptInvocation(
     return denied('The Skill is not a verified SkillHub package materialized for the current Bot.');
   }
 
-  let scanned;
+  let contentHash: string;
   try {
-    scanned = scanLocalBotSkill(skillDir, skillsRoot);
+    // Snapshot trees are immutable. Validate the copied package without the
+    // legacy scanner's marker-creation side effect.
+    contentHash = computeBotSkillPackageHash(collectBotSkillPackageFiles(skillDir));
   } catch {
     return denied('The installed Skill package failed local integrity validation.');
   }
-  const reference = scanned.reference;
-  if (!reference || !sameSkillReference(reference, localMarker.reference)) {
+  const reference = localMarker.reference;
+  if (reference.contentHash !== contentHash) {
     return denied('The installed Skill package no longer matches its cloud-bound content hash.');
   }
   if (

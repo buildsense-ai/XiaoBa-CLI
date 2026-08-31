@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import matter from 'gray-matter';
+import { isEphemeralSkillDirectory } from '../bot-skills/local-manifest';
 
 export interface SkillHubLocalMetadata {
   author?: string;
@@ -95,7 +96,10 @@ function walkSkillFiles(root: string): string[] {
       if (entry.isSymbolicLink()) continue;
       const fullPath = path.join(current, entry.name);
       if (entry.isDirectory()) {
-        if (!SOURCE_SKIP_DIRS.has(entry.name)) visit(fullPath);
+        if (
+          !SOURCE_SKIP_DIRS.has(entry.name)
+          && !isEphemeralSkillDirectory(entry.name)
+        ) visit(fullPath);
       } else if (entry.isFile() && !GENERATED_PACKAGE_FILES.has(entry.name)) {
         result.push(fullPath);
       }

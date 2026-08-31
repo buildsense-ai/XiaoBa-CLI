@@ -1,7 +1,8 @@
 import type { CatsCompanyConfig } from './types';
 import type { CatsCoAuthSnapshot } from './local-config';
 
-const RUNTIME_CREDENTIAL_SCOPE = 'skill_mutation:grant';
+export const CATSCO_RUNTIME_MUTATION_GRANT_SCOPE = 'skill_mutation:grant';
+export const CATSCO_RUNTIME_ACTIVATION_ACK_SCOPE = 'skill_mutation:activation_ack';
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
 export interface CatsCoRuntimeCredential {
@@ -19,6 +20,7 @@ export interface IssueCatsCoRuntimeCredentialOptions {
   botUid: string;
   bodyId: string;
   installationId: string;
+  scopes?: string[];
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }
@@ -31,6 +33,7 @@ export async function issueCatsCoRuntimeCredential(
   const botUid = String(options.botUid || '').trim();
   const bodyId = String(options.bodyId || '').trim();
   const installationId = String(options.installationId || '').trim();
+  const requestedScopes = normalizeRequestedScopes(options.scopes);
   if (!userToken || !/^\d+$/.test(botUid) || Number(botUid) <= 0 || !bodyId || !installationId) {
     throw new Error('CatsCo Runtime credential request is missing a trusted owner or Runtime binding.');
   }
@@ -50,6 +53,7 @@ export async function issueCatsCoRuntimeCredential(
       bot_uid: Number(botUid),
       body_id: bodyId,
       installation_id: installationId,
+      ...(options.scopes ? { scopes: requestedScopes } : {}),
     }),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -73,7 +77,11 @@ export async function issueCatsCoRuntimeCredential(
     || !credential
     || !Number.isFinite(expiresAt)
     || expiresAt <= Date.now()
-    || !scopes.includes(RUNTIME_CREDENTIAL_SCOPE)
+    || !requestedScopes.every(scope => scopes.includes(scope))
+    || scopes.some(scope => (
+      scope !== CATSCO_RUNTIME_MUTATION_GRANT_SCOPE
+      && scope !== CATSCO_RUNTIME_ACTIVATION_ACK_SCOPE
+    ))
   ) {
     throw new Error('CatsCo returned an invalid Runtime credential binding.');
   }
@@ -83,9 +91,17 @@ export async function issueCatsCoRuntimeCredential(
 export async function provisionCatsCoRuntimeCredential(
   config: CatsCompanyConfig,
   auth: CatsCoAuthSnapshot,
-  options: Pick<IssueCatsCoRuntimeCredentialOptions, 'fetchImpl' | 'timeoutMs'> = {},
+  options: Pick<IssueCatsCoRuntimeCredentialOptions, 'fetchImpl' | 'timeoutMs' | 'scopes'> = {},
 ): Promise<CatsCompanyConfig> {
-  if (String(config.runtimeCredential || '').trim()) return config;
+  const requestedScopes = normalizeRequestedScopes(options.scopes);
+  const needsActivationAck = requestedScopes.includes(CATSCO_RUNTIME_ACTIVATION_ACK_SCOPE);
+  const existingGrantCredential = String(config.runtimeCredential || '').trim();
+  if (
+    (!needsActivationAck && existingGrantCredential)
+    || (needsActivationAck && getUsableCatsCoRuntimeActivationAckCredential(config))
+  ) {
+    return config;
+  }
   const userToken = String(auth.token || '').trim();
   const actorUid = String(auth.uid || '').trim();
   const ownerUid = String(config.ownerUserId || '').trim();
@@ -93,8 +109,9 @@ export async function provisionCatsCoRuntimeCredential(
   const bodyId = String(config.bodyId || '').trim();
   const installationId = String(config.installationId || config.bodyId || '').trim();
   // Automatic provisioning is deliberately owner-only. Server runtimes that
-  // do not keep a human session use the explicit CATSCO_RUNTIME_CREDENTIAL
-  // configuration path instead.
+  // do not keep a human session use the explicit credential configuration
+  // paths instead. In particular, an old grant-only credential is never
+  // guessed to contain the activation ACK scope.
   if (!userToken || !actorUid || !ownerUid || actorUid !== ownerUid || !botUid || !bodyId || !installationId) {
     return config;
   }
@@ -108,7 +125,50 @@ export async function provisionCatsCoRuntimeCredential(
   });
   return {
     ...config,
-    runtimeCredential: issued.credential,
-    runtimeCredentialExpiresAt: issued.expiresAt,
+    ...(!existingGrantCredential ? {
+      runtimeCredential: issued.credential,
+      runtimeCredentialExpiresAt: issued.expiresAt,
+    } : {}),
+    ...(needsActivationAck ? {
+      runtimeActivationAckCredential: issued.credential,
+      runtimeActivationAckCredentialExpiresAt: issued.expiresAt,
+    } : {}),
   };
+}
+
+export function getUsableCatsCoRuntimeActivationAckCredential(
+  config: Pick<
+    CatsCompanyConfig,
+    'runtimeActivationAckCredential' | 'runtimeActivationAckCredentialExpiresAt'
+  >,
+  now = Date.now(),
+): string | undefined {
+  const credential = String(config.runtimeActivationAckCredential || '').trim();
+  if (!credential) return undefined;
+  const expiresAt = Number(config.runtimeActivationAckCredentialExpiresAt);
+  if (Number.isFinite(expiresAt) && expiresAt <= now) return undefined;
+  return credential;
+}
+
+function normalizeRequestedScopes(input: string[] | undefined): string[] {
+  if (input === undefined) return [CATSCO_RUNTIME_MUTATION_GRANT_SCOPE];
+  const scopes = input.map(value => String(value || '').trim());
+  const allowed = new Set([
+    CATSCO_RUNTIME_MUTATION_GRANT_SCOPE,
+    CATSCO_RUNTIME_ACTIVATION_ACK_SCOPE,
+  ]);
+  if (
+    scopes.length === 0
+    || !scopes.includes(CATSCO_RUNTIME_MUTATION_GRANT_SCOPE)
+    || new Set(scopes).size !== scopes.length
+    || scopes.some(scope => !allowed.has(scope))
+  ) {
+    throw new Error('CatsCo Runtime credential request contains invalid scopes.');
+  }
+  return [
+    CATSCO_RUNTIME_MUTATION_GRANT_SCOPE,
+    ...(scopes.includes(CATSCO_RUNTIME_ACTIVATION_ACK_SCOPE)
+      ? [CATSCO_RUNTIME_ACTIVATION_ACK_SCOPE]
+      : []),
+  ];
 }

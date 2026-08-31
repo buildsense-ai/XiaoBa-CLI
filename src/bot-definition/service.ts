@@ -6,6 +6,7 @@ import { canonicalizeBotSkillRefs } from '../bot-skills/canonical';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { normalizeOpenAIApiMode } from '../utils/openai-api-mode';
 import { normalizeReasoningEffort } from '../utils/reasoning-effort';
+import { relayModelProfileFromRuntimeDescriptor, type RelayModelRuntimeDescriptor } from '../utils/relay-model-profiles';
 import {
   canonicalRelayModelId,
   findRelayModelProfile,
@@ -288,9 +289,11 @@ export function catalogRuntimeFromLocalProfile(
 export function catalogRuntimeMatchesModelId(
   runtime: Pick<BotCatalogModelRuntime, 'modelId' | 'model'>,
   modelId: string,
+  descriptor?: RelayModelRuntimeDescriptor,
 ): boolean {
   if (!relayModelIdsMatch(runtime.modelId, modelId)) return false;
-  const profile = findRelayModelProfile(modelId);
+  const profile = relayModelProfileFromRuntimeDescriptor(modelId, descriptor)
+    ?? findRelayModelProfile(modelId);
   return !profile || relayModelIdsMatch(runtime.model, profile.id);
 }
 

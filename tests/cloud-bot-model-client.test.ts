@@ -53,6 +53,37 @@ describe('cloud bot model client local handoff', () => {
     });
   });
 
+  test('reads non-secret runtime metadata for a cloud-added catalog model', async () => {
+    const snapshot = await pullCloudBotDefinition({
+      botId: '43',
+      auth,
+      fetchImpl: (async () => Response.json({
+        uid: 43,
+        configured: true,
+        revision: 8,
+        definition: {
+          schema: 'xiaoba.bot-definition.v1',
+          botId: '43',
+          model: {
+            kind: 'catalog',
+            modelId: 'new-model-2026',
+            catalogRuntime: {
+              model: 'new-model-2026',
+              provider: 'anthropic',
+              contextWindowTokens: 128000,
+              capabilities: { vision: false, toolCalling: true, streaming: true },
+            },
+          },
+        },
+      })) as typeof fetch,
+    });
+
+    assert.equal(snapshot?.definition?.model.kind, 'catalog');
+    if (snapshot?.definition?.model.kind !== 'catalog') throw new Error('expected catalog model');
+    assert.equal(snapshot.definition.model.catalogRuntime?.model, 'new-model-2026');
+    assert.equal(snapshot.definition.model.catalogRuntime?.provider, 'anthropic');
+  });
+
   test('restores a cloud custom model and preserves custom prompt text exactly', async () => {
     const snapshot = await pullCloudBotDefinition({
       botId: '43',

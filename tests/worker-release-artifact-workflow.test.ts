@@ -13,6 +13,11 @@ const artifactBuilder = fs.readFileSync(
   'utf8',
 );
 
+test('release automation has no fixed-host SSH worker CD', () => {
+  assert.equal(fs.existsSync(path.join(root, '.github', 'workflows', 'worker-app-update.yml')), false);
+  assert.doesNotMatch(releaseWorkflow, /WORKER_SSH_TARGETS|WORKER_SSH_KEY|ssh\s|scp\s/);
+});
+
 test('stable releases publish a versioned worker artifact and manifest', () => {
   assert.match(releaseWorkflow, /build-worker:/);
   assert.match(releaseWorkflow, /npm run --silent worker:artifact -- --manifest-output "\$raw_manifest"/);

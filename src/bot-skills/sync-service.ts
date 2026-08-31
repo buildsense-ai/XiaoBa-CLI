@@ -27,6 +27,7 @@ import {
   writeBotSkillLocalMarker,
 } from './local-manifest';
 import { BotPrivateSkillClient } from './private-package-client';
+import { renameBotSkillWorkspaceSync } from './workspace-fs';
 import type {
   BotSkillPackage,
   BotSkillPackageFile,
@@ -43,10 +44,22 @@ export type BotSkillSyncDirection =
   | 'cloud_to_local'
   | 'feature_unavailable';
 
+export type BotSkillApplyStatus =
+  | 'applied'
+  | 'already_applied'
+  | 'deferred'
+  | 'failed';
+
 export interface BotSkillSyncResult {
   botId: string;
   direction: BotSkillSyncDirection;
+  /** @deprecated Use observedRevision for new activation decisions. */
   cloudRevision?: number;
+  observedRevision?: number;
+  desiredRevision?: number;
+  appliedRevision?: number;
+  applyStatus: BotSkillApplyStatus;
+  errorCode?: string;
   skills: BotSkillRef[];
   localPendingEvidence?: {
     path: string;
@@ -189,7 +202,7 @@ export class BotSkillSyncService {
       throw new Error('Interrupted Bot Skill restore has ambiguous active and backup workspaces');
     }
     if (!fs.existsSync(journal.skillsRoot) && fs.existsSync(journal.backup)) {
-      fs.renameSync(journal.backup, journal.skillsRoot);
+      renameBotSkillWorkspaceSync(journal.backup, journal.skillsRoot);
     }
     if (fs.existsSync(journal.stage)) fs.rmSync(journal.stage, { recursive: true, force: true });
     fs.rmSync(journalPath, { force: true });
@@ -248,6 +261,10 @@ export class BotSkillSyncService {
           botId: this.botId,
           direction: 'none',
           cloudRevision: cloud.revision,
+          observedRevision: cloud.revision,
+          desiredRevision: cloud.revision,
+          appliedRevision: cloud.revision,
+          applyStatus: 'already_applied',
           skills: cloud.skills,
         };
       }
@@ -264,6 +281,10 @@ export class BotSkillSyncService {
       botId: this.botId,
       direction: 'none',
       cloudRevision: cloud.revision,
+      observedRevision: cloud.revision,
+      desiredRevision: cloud.revision,
+      appliedRevision: cloud.revision,
+      applyStatus: 'already_applied',
       skills: cloud.skills,
     };
   }
@@ -300,14 +321,25 @@ export class BotSkillSyncService {
       try {
         cloud = await pullCloudBotSkills(this.cloudOptions);
       } catch (error) {
-        if (verifiedExisting) return this.featureUnavailable();
+        if (verifiedExisting) {
+          return this.featureUnavailable({
+            appliedRevision: base!.definitionRevision,
+            errorCode: 'cloud_unavailable',
+          });
+        }
         throw new BotSkillCloudRestoreError(
           `Bot Skill activation requires Cloud or a verified local workspace: ${errorMessage(error)}`,
           { cause: error },
         );
       }
       if (!cloud?.definition) {
-        if (verifiedExisting) return this.featureUnavailable();
+        if (verifiedExisting) {
+          return this.featureUnavailable({
+            ...(cloud ? { observedRevision: cloud.revision } : {}),
+            appliedRevision: base!.definitionRevision,
+            errorCode: 'cloud_definition_unavailable',
+          });
+        }
         throw new BotSkillCloudRestoreError(
           'Bot Skill activation requires a canonical Cloud BotDefinition.',
         );
@@ -321,9 +353,45 @@ export class BotSkillSyncService {
           localReadable = false;
         }
       }
+      const workspaceHasEvidence = fs.existsSync(this.skillsRoot)
+        && (!localReadable || local.length > 0 || hasWorkspaceEntries(this.skillsRoot));
       const localChanged = !localReadable || (base
         ? !localMatchesBase(local, base)
-        : this.workspaceExisted && fs.existsSync(this.skillsRoot));
+        : workspaceHasEvidence);
+
+      // An explicit empty Cloud Definition is a valid deletion only when the
+      // active workspace still matches its verified Base. Without a Base, or
+      // after Local changed, replacing a non-empty workspace with an empty
+      // stage would turn a first migration / unresolved edit into silent data
+      // removal. Keep Local active and record recoverable evidence instead.
+      if (
+        cloud.skills.length === 0
+        && workspaceHasEvidence
+        && (!base || localChanged)
+      ) {
+        const snapshot = snapshotPendingBotSkillWorkspace({
+          runtimeRoot: this.runtimeRoot,
+          botId: this.botId,
+          sourcePath: this.skillsRoot,
+          recordedSourcePath: this.skillsRoot,
+          reason: base ? 'activation_local_changed' : 'activation_without_base',
+          ...(base ? { baseRevision: base.definitionRevision } : {}),
+          cloudRevision: cloud.revision,
+        });
+        return {
+          ...this.featureUnavailable({
+            observedRevision: cloud.revision,
+            desiredRevision: cloud.revision,
+            errorCode: 'local_workspace_unverified',
+          }),
+          cloudRevision: cloud.revision,
+          localPendingEvidence: {
+            path: snapshot.path,
+            fingerprint: snapshot.fingerprint,
+            fileCount: snapshot.fileCount,
+          },
+        };
+      }
 
       if (
         verifiedExisting
@@ -337,6 +405,10 @@ export class BotSkillSyncService {
           botId: this.botId,
           direction: 'none',
           cloudRevision: cloud.revision,
+          observedRevision: cloud.revision,
+          desiredRevision: cloud.revision,
+          appliedRevision: cloud.revision,
+          applyStatus: 'already_applied',
           skills: cloud.skills,
         };
       }
@@ -595,10 +667,20 @@ export class BotSkillSyncService {
     }
   }
 
-  private featureUnavailable(): BotSkillSyncResult {
+  private featureUnavailable(options: {
+    observedRevision?: number;
+    desiredRevision?: number;
+    appliedRevision?: number;
+    errorCode?: string;
+  } = {}): BotSkillSyncResult {
     return {
       botId: this.botId,
       direction: 'feature_unavailable',
+      applyStatus: 'deferred',
+      ...(options.observedRevision !== undefined
+        ? { cloudRevision: options.observedRevision }
+        : {}),
+      ...options,
       skills: this.definitionService.read(this.botId)?.skills ?? [],
     };
   }
@@ -772,6 +854,10 @@ export class BotSkillSyncService {
       botId: this.botId,
       direction: 'local_to_cloud',
       cloudRevision: cloud.revision,
+      observedRevision: cloud.revision,
+      desiredRevision: cloud.revision,
+      appliedRevision: cloud.revision,
+      applyStatus: 'applied',
       skills: cloud.skills,
     };
   }
@@ -921,9 +1007,9 @@ export class BotSkillSyncService {
       if (fs.existsSync(this.skillsRoot)) {
         await options.validateScope?.();
         this.writeRestoreJournal({ stage, backup, phase: 'backup_pending' });
-        fs.renameSync(this.skillsRoot, backup);
+        renameBotSkillWorkspaceSync(this.skillsRoot, backup);
         backedUp = true;
-        if (options.pendingSnapshot) {
+        if (options.pendingSnapshot && hasWorkspaceEntries(backup)) {
           const snapshot = snapshotPendingBotSkillWorkspace({
             runtimeRoot: this.runtimeRoot,
             botId: this.botId,
@@ -941,7 +1027,7 @@ export class BotSkillSyncService {
       }
       this.writeRestoreJournal({ stage, backup, phase: 'backed_up' });
       this.writeRestoreJournal({ stage, backup, phase: 'activation_pending' });
-      fs.renameSync(stage, this.skillsRoot);
+      renameBotSkillWorkspaceSync(stage, this.skillsRoot);
       activatedStage = true;
       this.writeRestoreJournal({ stage, backup, phase: 'activated' });
       this.acceptCloudDefinition(cloud);
@@ -970,7 +1056,7 @@ export class BotSkillSyncService {
         fs.rmSync(this.skillsRoot, { recursive: true, force: true });
       }
       if (backedUp && fs.existsSync(backup) && !fs.existsSync(this.skillsRoot)) {
-        fs.renameSync(backup, this.skillsRoot);
+        renameBotSkillWorkspaceSync(backup, this.skillsRoot);
       }
       if (activatedStage) {
         try {
@@ -987,6 +1073,10 @@ export class BotSkillSyncService {
       botId: this.botId,
       direction: 'cloud_to_local',
       cloudRevision: cloud.revision,
+      observedRevision: cloud.revision,
+      desiredRevision: cloud.revision,
+      appliedRevision: cloud.revision,
+      applyStatus: 'applied',
       skills: cloud.skills,
       ...(localPendingEvidence ? { localPendingEvidence } : {}),
     };
@@ -1116,6 +1206,16 @@ function botSkillRefEqual(left: BotSkillRef, right: BotSkillRef): boolean {
 function isPrivateSkillReference(skillId: string): boolean {
   const value = String(skillId || '');
   return value.startsWith('priv_') || value.startsWith('private/');
+}
+
+function hasWorkspaceEntries(workspaceRoot: string): boolean {
+  try {
+    return fs.readdirSync(workspaceRoot).length > 0;
+  } catch {
+    // If the workspace cannot be inspected, keep the conservative
+    // data-preserving behavior and treat it as containing evidence.
+    return true;
+  }
 }
 
 function comparePackageFiles(left: BotSkillPackageFile, right: BotSkillPackageFile): number {

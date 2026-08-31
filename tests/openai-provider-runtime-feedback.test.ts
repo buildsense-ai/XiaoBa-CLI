@@ -116,6 +116,23 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.deepStrictEqual(responsesBody.reasoning, { effort: 'xhigh' });
   });
 
+  test('uses DeepSeek Responses reasoning values without OpenAI-only state', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'max',
+      openaiApiMode: 'responses',
+    });
+
+    const body = (provider as any).buildResponsesRequestBody([{ role: 'user', content: 'hello' }]);
+
+    assert.deepStrictEqual(body.reasoning, { effort: 'max' });
+    assert.equal(body.include, undefined);
+    assert.equal(body.prompt_cache_key, undefined);
+    assert.equal(body.store, undefined);
+  });
+
   test('sends explicit OpenAI-compatible reasoning disable', () => {
     const provider = new OpenAIProvider({
       apiKey: 'test-key',

@@ -65,6 +65,12 @@ export const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
 export const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
 
 const CONFIG_VERSION = 1;
+const BOT_BINDING_ENV_KEYS = [
+  'CATSCO_BOT_UID',
+  'CATSCO_API_KEY',
+  'CATSCOMPANY_BOT_UID',
+  'CATSCOMPANY_API_KEY',
+];
 
 function firstNonEmpty(...values: unknown[]): string | undefined {
   for (const value of values) {
@@ -320,6 +326,11 @@ export class CatsCoLocalConfigService {
     const displayName = String(login.display_name || login.username || state.displayName || username || '').trim();
     const token = String(login.token || state.token || '').trim();
     const config = this.load();
+    const bindingOwnerUid = firstNonEmpty(config.currentBot?.boundByUserUid, config.account?.uid);
+    const accountChanged = Boolean(uid && bindingOwnerUid && bindingOwnerUid !== uid);
+    const removedBindingKeys = accountChanged
+      ? removeEnvKeys(this.runtimeRoot, this.env, BOT_BINDING_ENV_KEYS)
+      : [];
     this.save({
       ...config,
       endpoints: {
@@ -333,9 +344,10 @@ export class CatsCoLocalConfigService {
         username,
         displayName,
       } : config.account,
+      currentBot: accountChanged ? undefined : config.currentBot,
     });
 
-    return writeEnvUpdates(this.runtimeRoot, this.env, {
+    const updatedAccountKeys = writeEnvUpdates(this.runtimeRoot, this.env, {
       CATSCO_HTTP_BASE_URL: state.httpBaseUrl,
       CATSCO_SERVER_URL: state.serverUrl,
       CATSCO_USER_TOKEN: token,
@@ -349,6 +361,7 @@ export class CatsCoLocalConfigService {
       CATSCOMPANY_USER_NAME: username,
       CATSCOMPANY_USER_DISPLAY_NAME: displayName,
     });
+    return Array.from(new Set([...removedBindingKeys, ...updatedAccountKeys]));
   }
 
   ensureDeviceId(): string {

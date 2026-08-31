@@ -29,7 +29,7 @@ describe('CatsCompany runtime device capabilities', () => {
     );
   });
 
-  test('server runtime never advertises desktop SkillHub workspace capabilities', () => {
+  test('server runtime advertises its own SkillHub workspace but cannot switch Bots', () => {
     assert.deepEqual(CATSCOMPANY_SERVER_RUNTIME_DEVICE_CAPABILITIES, [
       'read_file',
       'resolve_common_directory',
@@ -39,9 +39,13 @@ describe('CatsCompany runtime device capabilities', () => {
       'edit_file',
       'send_file',
       'execute_shell',
+      'skillhub.localWorkspace.get',
+      'skillhub.localSkill.share',
+      'skillhub.localSkill.finalize',
+      'skillhub.localSkill.delete',
     ]);
     assert.equal(
-      capabilitiesForCatsCompanyRuntimeRole('server').some(capability => capability.startsWith('skillhub.')),
+      capabilitiesForCatsCompanyRuntimeRole('server').includes('skillhub.localBot.switch'),
       false,
     );
   });

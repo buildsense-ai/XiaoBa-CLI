@@ -110,11 +110,16 @@ export class BotPrivateSkillClient {
       ? safeSkillDirectoryName(packageValue.name)
       : normalizePreferredInstallName(preferredInstallName);
     let target = safeJoin(skillsRoot, installName);
-    if (fs.existsSync(target) && !preferredInstallName) {
-      installName = `${installName.slice(0, 60)}-${packageValue.localSkillId.slice(-12)}`;
+    if (portableInstallPathOccupied(skillsRoot, installName)) {
+      const fallbackName = safeSkillDirectoryName(packageValue.name);
+      const suffix = crypto.createHash('sha256')
+        .update(packageValue.localSkillId, 'utf8')
+        .digest('hex')
+        .slice(0, 12);
+      installName = `${fallbackName.slice(0, 60)}-${suffix}`;
       target = safeJoin(skillsRoot, installName);
     }
-    if (fs.existsSync(target)) {
+    if (portableInstallPathOccupied(skillsRoot, installName)) {
       throw new Error(`Duplicate Skill install directory in cloud workspace: ${installName}`);
     }
     fs.mkdirSync(target, { recursive: true });
@@ -332,6 +337,22 @@ function safeJoin(root: string, relative: string): string {
     throw new Error(`Skill package path escaped its target: ${relative}`);
   }
   return target;
+}
+
+function portableInstallPathOccupied(root: string, relative: string): boolean {
+  let current = path.resolve(root);
+  const segments = relative.replace(/\\/g, '/').normalize('NFC').split('/');
+  for (let index = 0; index < segments.length; index += 1) {
+    if (!fs.existsSync(current) || !fs.lstatSync(current).isDirectory()) return false;
+    const key = segments[index].normalize('NFC').toLowerCase();
+    const match = fs.readdirSync(current, { withFileTypes: true }).find(entry => (
+      entry.name.normalize('NFC').toLowerCase() === key
+    ));
+    if (!match) return false;
+    if (index < segments.length - 1 && !match.isDirectory()) return true;
+    current = path.join(current, match.name);
+  }
+  return true;
 }
 
 function sha256(value: Buffer): string {

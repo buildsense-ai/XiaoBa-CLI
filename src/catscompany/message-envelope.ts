@@ -5,6 +5,7 @@ import {
   createSessionRoute,
 } from '../core/session-router';
 import { normalizeArtifactContextRef } from '../utils/artifact-context-ref';
+import { normalizeArtifactTaskRef } from '../utils/artifact-task-ref';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -93,6 +94,10 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     && sameCatsCoUserId(canonicalAgentId, safeString(input.botUid))
     ? normalizeArtifactContextRef(metadata?.artifact_context_ref)
     : undefined;
+  const artifactTaskRef = isCanonicalTrusted
+    && sameCatsCoUserId(canonicalAgentId, safeString(input.botUid))
+    ? normalizeArtifactTaskRef(metadata?.artifact_task_ref)
+    : undefined;
   const legacyCleanupKey = buildCatsCoSessionKey(resolvedTopicType, topicId, actorUserId);
   const legacyRestoreKey = legacyCleanupKey;
   const route = createSessionRoute({
@@ -137,6 +142,7 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     identitySource: isCanonicalTrusted ? 'metadata.catsco_identity' : undefined,
     warnings: warnings.length > 0 ? warnings : undefined,
     artifactContextRef,
+    artifactTaskRef,
   };
 }
 

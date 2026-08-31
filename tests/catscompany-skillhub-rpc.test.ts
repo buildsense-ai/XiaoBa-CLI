@@ -23,6 +23,7 @@ import {
   readSkillHubLocalMetadata,
 } from '../src/skillhub/local-skill-metadata';
 import { SkillHubService } from '../src/skillhub/service';
+import { trashBotSkill } from '../src/bot-skills/deleted-skill-trash';
 
 describe('CatsCompany SkillHub thin RPC', () => {
   let runtimeRoot = '';
@@ -61,6 +62,7 @@ describe('CatsCompany SkillHub thin RPC', () => {
     handler = new SkillHubThinRpcHandler({
       runtimeRoot,
       scheduleBotSwitch: (botUid) => scheduledBotUIDs.push(botUid),
+      now: () => new Date('2026-08-24T00:00:00.000Z'),
     });
   });
 
@@ -73,6 +75,27 @@ describe('CatsCompany SkillHub thin RPC', () => {
     for (const toolName of Object.values(SKILLHUB_THIN_RPC_TOOLS)) {
       assert.equal(serverHandler.supports(toolName), false);
     }
+  });
+
+  test('server runtime supports workspace operations but never Bot switching', async () => {
+    const serverHandler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      allowBotSwitch: false,
+    });
+    assert.equal(serverHandler.supports(SKILLHUB_THIN_RPC_TOOLS.workspace), true);
+    assert.equal(serverHandler.supports(SKILLHUB_THIN_RPC_TOOLS.delete), true);
+    assert.equal(serverHandler.supports(SKILLHUB_THIN_RPC_TOOLS.switchBot), false);
+    await assert.rejects(
+      serverHandler.execute(request({
+        request_id: 'server-switch-denied',
+        tool_name: SKILLHUB_THIN_RPC_TOOLS.switchBot,
+        payload: { bot_uid: '44' },
+      })),
+      (error: unknown) => (
+        error instanceof SkillHubThinRpcError
+        && error.code === 'TOOL_NOT_FOUND'
+      ),
+    );
   });
 
   test('returns only bounded metadata for the active Bot workspace', async () => {
@@ -89,6 +112,142 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.equal(skills[0].relative_path, 'local-demo');
     assert.equal(Object.prototype.hasOwnProperty.call(skills[0], 'path'), false);
     assert.equal(JSON.stringify(result).includes('# Local Demo'), false);
+    assert.match(String(result.workspace_revision), /^[0-9a-f]{64}$/);
+    assert.equal(result.total_skills, 1);
+    assert.equal(result.page_offset, 0);
+    assert.equal(result.page_limit, 200);
+    assert.equal(result.next_offset, null);
+    assert.equal(result.truncated, false);
+  });
+
+  test('paginates more than 200 workspace Skills without hiding the remainder', async () => {
+    const skillsRoot = path.join(runtimeRoot, 'skills');
+    for (let index = 0; index < 205; index += 1) {
+      const name = `bulk-${String(index).padStart(3, '0')}`;
+      const skillRoot = path.join(skillsRoot, name);
+      fs.mkdirSync(skillRoot, { recursive: true });
+      fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+        '---',
+        `name: ${name}`,
+        `description: Pagination fixture ${index}`,
+        '---',
+        '',
+      ].join('\n'));
+    }
+
+    const first = await handler.execute(request({
+      request_id: 'workspace-page-1',
+      payload: { bot_uid: '42', limit: 75 },
+    }));
+    assert.equal((first.skills as unknown[]).length, 75);
+    assert.equal(first.total_skills, 206);
+    assert.equal(first.page_offset, 0);
+    assert.equal(first.next_offset, 75);
+    assert.equal(first.truncated, true);
+
+    const second = await handler.execute(request({
+      request_id: 'workspace-page-2',
+      payload: {
+        bot_uid: '42',
+        offset: first.next_offset,
+        limit: 200,
+        workspace_revision: first.workspace_revision,
+      },
+    }));
+    assert.equal(second.workspace_revision, first.workspace_revision);
+    assert.equal((second.skills as unknown[]).length, 131);
+    assert.equal(second.page_offset, 75);
+    assert.equal(second.next_offset, null);
+    assert.equal(second.truncated, false);
+
+    const combined = [
+      ...(first.skills as Array<Record<string, unknown>>),
+      ...(second.skills as Array<Record<string, unknown>>),
+    ];
+    assert.equal(combined.length, 206);
+    assert.equal(new Set(combined.map(skill => skill.local_skill_id)).size, 206);
+    assert.deepEqual(
+      combined.map(skill => String(skill.local_skill_id)),
+      [...combined.map(skill => String(skill.local_skill_id))].sort(),
+    );
+  });
+
+  test('serves later pages from one cached snapshot and refreshes only on a new listing', async () => {
+    const first = await handler.execute(request({ request_id: 'workspace-revision-before-edit' }));
+    fs.writeFileSync(path.join(runtimeRoot, 'skills', 'local-demo', 'SKILL.md'), [
+      '---',
+      'name: [unterminated',
+      'description: Still the old validation class',
+      '---',
+      '',
+    ].join('\n'));
+
+    const cached = await handler.execute(request({
+      request_id: 'workspace-revision-cached-after-edit',
+      payload: {
+        bot_uid: '42',
+        offset: 0,
+        workspace_revision: first.workspace_revision,
+      },
+    }));
+    assert.deepEqual(cached.skills, first.skills);
+    assert.equal(cached.workspace_revision, first.workspace_revision);
+
+    const refreshed = await handler.execute(request({ request_id: 'workspace-revision-new-listing' }));
+    assert.notEqual(refreshed.workspace_revision, first.workspace_revision);
+    assert.equal((refreshed.skills as Array<Record<string, unknown>>)[0]?.can_share, false);
+
+    const restartedHandler = new SkillHubThinRpcHandler({ runtimeRoot });
+    await assert.rejects(
+      restartedHandler.execute(request({
+        request_id: 'workspace-revision-evicted',
+        payload: {
+          bot_uid: '42',
+          workspace_revision: first.workspace_revision,
+        },
+      })),
+      (error: unknown) => error instanceof SkillHubThinRpcError && error.code === 'WORKSPACE_CHANGED',
+    );
+  });
+
+  test('fingerprints rejected Skill bytes even when the visible validation error is unchanged', async () => {
+    const skillRoot = path.join(runtimeRoot, 'skills', 'broken-revision');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    writeBotSkillLocalMarker(skillRoot, {
+      schema: 'xiaoba.bot-skill-local.v1',
+      localSkillId: 'broken-revision',
+    });
+    const writeBroken = (description: string) => fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+      '---',
+      'name: [unterminated',
+      `description: ${description}`,
+      '---',
+      '',
+    ].join('\n'));
+    writeBroken('first rejected bytes');
+    const first = await handler.execute(request({ request_id: 'rejected-revision-first' }));
+    writeBroken('later rejected byte');
+    const second = await handler.execute(request({ request_id: 'rejected-revision-second' }));
+    assert.notEqual(second.workspace_revision, first.workspace_revision);
+    const firstRejected = (first.skills as Array<Record<string, unknown>>)
+      .find(skill => skill.local_skill_id === 'broken-revision');
+    const secondRejected = (second.skills as Array<Record<string, unknown>>)
+      .find(skill => skill.local_skill_id === 'broken-revision');
+    assert.equal(firstRejected?.share_error, secondRejected?.share_error);
+  });
+
+  test('rejects invalid pagination input', async () => {
+    for (const [requestID, payload] of [
+      ['workspace-invalid-limit', { bot_uid: '42', limit: 201 }],
+      ['workspace-invalid-offset', { bot_uid: '42', offset: -1 }],
+      ['workspace-outside-offset', { bot_uid: '42', offset: 2 }],
+      ['workspace-invalid-revision', { bot_uid: '42', workspace_revision: 'not-a-hash' }],
+    ] as const) {
+      await assert.rejects(
+        handler.execute(request({ request_id: requestID, payload })),
+        (error: unknown) => error instanceof SkillHubThinRpcError && error.code === 'INVALID_REQUEST',
+      );
+    }
   });
 
   test('deletes only the exact local Skill selected by local_skill_id', async () => {
@@ -119,8 +278,103 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.equal(result.schema, 'xiaoba.skillhub.local_delete.v1');
     assert.equal(result.deleted, true);
     assert.equal(result.local_skill_id, selected.localSkillId);
+    assert.equal(result.deleted_at, '2026-08-24T00:00:00.000Z');
+    assert.equal(result.backup_expires_at, '2026-09-23T00:00:00.000Z');
     assert.equal(fs.existsSync(selected.path), false);
     assert.equal(fs.existsSync(sibling.path), true);
+    const backupRoot = path.join(
+      runtimeRoot,
+      'data',
+      'bot-skills',
+      'trash',
+      '42',
+      String(result.backup_id),
+    );
+    assert.equal(
+      fs.readFileSync(path.join(backupRoot, 'package', 'SKILL.md'), 'utf8').includes('# Local Demo'),
+      true,
+    );
+    const deletion = JSON.parse(fs.readFileSync(path.join(backupRoot, 'deletion.json'), 'utf8'));
+    assert.equal(deletion.deletedByOwnerUid, '7');
+    assert.equal(deletion.localSkillId, selected.localSkillId);
+  });
+
+  test('removes only verified expired trash while keeping the active Skill delete recoverable', async () => {
+    const first = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))[0];
+    const firstResult = await handler.execute(request({
+      request_id: 'delete-retention-first',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.delete,
+      payload: { bot_uid: '42', local_skill_id: first.localSkillId },
+    }));
+    const firstBackup = path.join(
+      runtimeRoot,
+      'data',
+      'bot-skills',
+      'trash',
+      '42',
+      String(firstResult.backup_id),
+    );
+    assert.equal(fs.existsSync(firstBackup), true);
+
+    const secondRoot = path.join(runtimeRoot, 'skills', 'second-delete');
+    fs.mkdirSync(secondRoot, { recursive: true });
+    fs.writeFileSync(path.join(secondRoot, 'SKILL.md'), [
+      '---',
+      'name: second-delete',
+      'description: Second recoverable delete',
+      '---',
+      '',
+    ].join('\n'));
+    const second = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))[0];
+    const laterHandler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      now: () => new Date('2026-09-24T00:00:00.000Z'),
+    });
+    const secondResult = await laterHandler.execute(request({
+      request_id: 'delete-retention-second',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.delete,
+      payload: { bot_uid: '42', local_skill_id: second.localSkillId },
+    }));
+
+    assert.equal(fs.existsSync(firstBackup), false);
+    assert.equal(fs.existsSync(path.join(
+      runtimeRoot,
+      'data',
+      'bot-skills',
+      'trash',
+      '42',
+      String(secondResult.backup_id),
+    )), true);
+    assert.equal(fs.existsSync(secondRoot), false);
+  });
+
+  test('restores the active Skill when a file appears after the deletion snapshot', () => {
+    const sourcePath = path.join(runtimeRoot, 'skills', 'concurrent-delete');
+    fs.mkdirSync(sourcePath, { recursive: true });
+    fs.writeFileSync(path.join(sourcePath, 'SKILL.md'), [
+      '---',
+      'name: concurrent-delete',
+      'description: Concurrent deletion regression',
+      '---',
+      '',
+    ].join('\n'));
+
+    assert.throws(() => trashBotSkill({
+      runtimeRoot,
+      botId: '42',
+      sourcePath,
+      localSkillId: 'concurrent-delete-id',
+      name: 'concurrent-delete',
+      installName: 'concurrent-delete',
+      deletedByOwnerUid: '7',
+      now: () => new Date('2026-08-24T00:00:00.000Z'),
+      beforeMove: () => {
+        fs.writeFileSync(path.join(sourcePath, 'created-during-delete.txt'), 'preserve me');
+      },
+    }), /changed while deletion was being prepared/i);
+
+    assert.equal(fs.existsSync(path.join(sourcePath, 'SKILL.md')), true);
+    assert.equal(fs.readFileSync(path.join(sourcePath, 'created-during-delete.txt'), 'utf8'), 'preserve me');
   });
 
   test('deletes an invalid local Skill by its existing marker identity', async () => {

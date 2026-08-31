@@ -10,11 +10,21 @@ session, skill installation, or runtime `.env`.
 - Only stable `vX.Y.Z` tags whose commit is contained in `main` may bake an
   image automatically. Manual runs are restricted to `main` and default to
   not baking until the operator explicitly checks the input.
-- The source-free worker artifact and pinned preparation script are staged as
+- The source-free worker artifact, pinned preparation script, and per-run
+  bootstrap status object are staged as
   private, per-run TOS objects with short-lived signed URLs. The private
-  builder downloads them through cloud-init, and the workflow deletes both
+  builder downloads them through cloud-init, and the workflow deletes all three
   objects after the bake. They are never public or retained as GitHub Actions
   artifacts.
+- The builder receives only short-lived signed URLs. Tianyi's Ubuntu 24.04
+  image is given a Base64-encoded raw `#!/usr/bin/env bash` userData script; a
+  live no-public-IP probe confirmed this path executes and powers off, while
+  the same bootstrap wrapped as `#cloud-config` was stored by the API but never
+  executed. The script writes its current bootstrap phase every 30 seconds to
+  the per-run status object; the runner
+  prints phase changes live and fails early when bootstrap reports an error,
+  does not start, or stops heartbeating. No long-lived TOS credential is placed
+  on the builder.
 - A Tianyi Cloud private ECS image is baked only for a stable release selected
   for provisioning, or when the base OS/system dependencies change.
 - `CTYUN_AUTO_BAKE_WORKER_IMAGE=true` makes every stable tag bake an image;
@@ -87,6 +97,14 @@ The image ships with `catsco-agent.service` disabled. Provisioning must inject a
 short-lived bootstrap credential into the data root and enable the service only
 after the worker has claimed its bot identity.
 
+The current cloud image also installs `/etc/sudoers.d/catsco-agent` with
+`catsco-agent ALL=(ALL:ALL) NOPASSWD: ALL`, validated by `visudo`. This is an
+intentional broad first-stage capability for one-click cloud agents: any Agent
+tool execution can become root without a password. Treat the worker as a fully
+privileged dedicated VM and do not co-host unrelated workloads. A later
+hardening pass should replace this rule with the smallest command/service
+aliases that real workloads require.
+
 ## Local Bake
 
 `New-CatsCoWorkerImage.ps1` defaults to plan mode. Execute mode creates a new
@@ -104,8 +122,8 @@ recognizable while preventing a rerun from colliding with an uncertain prior
 attempt.
 
 The script refuses to stop or delete any instance whose name does not begin
-with `catsco-img-`. Existing `worker1`, `worker2`, and `ck-work` instances are
-therefore outside its mutation boundary.
+with `catsco-img-`. Existing production instances are therefore outside its
+mutation boundary.
 
 ```powershell
 pwsh ops/ctyun-worker-image/New-CatsCoWorkerImage.ps1 `
@@ -162,10 +180,15 @@ before PowerShell can enter `finally`, including failures that would otherwise
 be hidden behind a later unsuccessful reconciliation run. Cleanup failures
 from runs updated in the last 30 minutes block a new bake, with a bounded
 45-minute strict-recovery budget. A rerun applies the same bounded strict policy
-to all of its previous attempts. Older conflicts are attempted independently
-with a 120-second per-attempt cap and a 10-minute total budget, surfaced as
-workflow warnings and in the job summary, and left for manual reconciliation
-instead of permanently blocking all future image releases.
+to all of its previous attempts. Failed runs from the preceding 24 hours are
+attempted independently with a 120-second per-attempt cap and a 10-minute total
+budget, surfaced as workflow warnings and in the job summary, and left for
+manual reconciliation instead of permanently blocking all future image
+releases. Older runs are not rescanned on every release; use the manual
+`reconcile_history` workflow input for an explicit full-history audit. Attempts
+whose failed bake was already followed by a successful compensating cleanup are
+also skipped, so a known-clean run cannot add the same discovery wait to every
+later bake.
 
 The workflow also pins both GitHub Actions by commit and verifies the exact
 Tianyi CLI package SHA-256 before installing it; it does not execute a remote
@@ -177,6 +200,28 @@ Installed Debian package versions are recorded in
 
 The resulting system image is not a TOS object. `CreateImage` writes it to the
 Tianyi Cloud private image repository for the configured region and account.
+
+### Progress monitoring and bake speed
+
+The orchestrator emits timestamped `bake-progress` lines to the GitHub Actions
+log. They include the current phase, elapsed seconds, remaining deadline, API
+operation latency, builder state, and image capture progress. This makes a
+stalled API call or a builder that never shuts down distinguishable from a
+slow image capture while the run is still active. The builder has no public IP,
+so its private cloud-init log is intentionally not exposed to the internet;
+the phase and output files remain inside the temporary builder and are erased
+when the image is finalized.
+
+The expensive part of a cold bake is the platform hardening in
+`prepare-image.sh` (apt, systemd/glibc, and kernel updates). For faster repeat
+bakes, first publish a worker image that has passed those gates, point
+`CTYUN_WORKER_BASE_IMAGE_ID` at that image, and set the repository variable
+`CTYUN_WORKER_BASE_IMAGE_HARDENED=true`. The workflow passes that claim to the
+builder, which still verifies package versions, masks, and a bootable kernel;
+if any check fails it automatically performs the full hardening path. Leave the
+variable unset/`false` for a stock Ubuntu base. This turns later application
+release bakes into a short artifact/install plus image-capture operation without
+weakening the fail-closed safety check.
 
 ## Managed Worker Updates
 
@@ -216,7 +261,7 @@ Provisioning from this image must:
 Never place a long-lived account password, relay administrator key, or shared
 bot token in image metadata or Cloud-init user data.
 
-## Existing Worker Updates (Part A: Application Artifacts)
+## Existing Worker Updates (Application Artifacts)
 
 - **New workers** get the full baked image (`catsco-worker-*`, provisioned via
   the cloud control plane).
@@ -225,10 +270,10 @@ bot token in image metadata or Cloud-init user data.
   `/srv/catsco-agent` data is never touched. See `docs/worker-artifact-update.md`.
 - The worker-side updater is `scripts/update-worker-artifact.sh` (checksum +
   manifest verify, native-module smoke, symlink switch, restart, heartbeat
-  check, automatic rollback); the dispatcher is
-  `scripts/deploy-worker-artifact.mjs` (serial ssh/scp across targets).
-- CI trigger: stable tag + repo var `CTYUN_WORKER_APP_UPDATE=true`
-  (`.github/workflows/worker-app-update.yml`), or manual workflow_dispatch
-  with `update_workers` from `main`, or local dry-run via
-  `npm run worker:update:dry`.
-- Workers hold no cloud credentials: distribution goes over SSH only.
+  check, automatic rollback).
+- Every stable `vX.Y.Z` tag publishes the private artifact through
+  `.github/workflows/release.yml` and automatically starts this image bake.
+- Existing workers obtain artifacts through the cloud control plane. This
+  repository does not keep a customer host list and GitHub Actions does not
+  SSH-deploy to worker instances.
+- Workers hold no TOS or Tianyi Cloud account credentials.

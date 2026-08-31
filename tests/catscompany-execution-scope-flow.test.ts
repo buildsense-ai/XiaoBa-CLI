@@ -1259,6 +1259,104 @@ describe('CatsCompany execution scope flow', () => {
     assert.doesNotMatch(JSON.stringify(handledTurns[0].userMessage), /acr_[A-Za-z0-9_-]{43}/);
   });
 
+  test('forwards a trusted Artifact task ref only through current turn options', async () => {
+    const { bot, handledTurns } = createHarness();
+    const ref = `atr_${'t'.repeat(43)}`;
+    const metadata = {
+      ...canonicalMetadata('usr7', 'p2p_7_43'),
+      artifact_task_ref: ref,
+    };
+
+    await (bot as any).onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '来自「项目风险台账」：分析选中的风险',
+      content: '来自「项目风险台账」：分析选中的风险',
+      metadata,
+      isGroup: false,
+      seq: 12,
+    });
+
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.artifactTaskRef, ref);
+    assert.equal('artifactTaskRef' in handledTurns[0].options.executionScope, false);
+    assert.doesNotMatch(JSON.stringify(handledTurns[0].userMessage), /atr_[A-Za-z0-9_-]{43}/);
+  });
+
+  test('keeps ordinary queued input out of an active Artifact task turn', async () => {
+    const harness = createHarness();
+    const taskRef = `atr_${'u'.repeat(43)}`;
+    const taskStatuses: any[] = [];
+    let releaseTaskTurn!: () => void;
+    let taskTurnStarted!: () => void;
+    const taskTurnStartedPromise = new Promise<void>(resolve => { taskTurnStarted = resolve; });
+    const taskTurnGate = new Promise<void>(resolve => { releaseTaskTurn = resolve; });
+    let pendingInputProvider: (() => unknown) | undefined;
+
+    harness.bot.sender.sendTaskStatus = async (_topic: string, status: any) => {
+      taskStatuses.push(status);
+    };
+    harness.session.handleMessage = async (userMessage: unknown, options: any) => {
+      harness.handledTurns.push({ userMessage, options });
+      if (harness.handledTurns.length === 1) {
+        pendingInputProvider = options.pendingUserInputProvider;
+        taskTurnStarted();
+        await taskTurnGate;
+      }
+      return { visibleToUser: false, text: '' };
+    };
+
+    const taskTurn = harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '来自「项目风险台账」：分析选中的风险',
+      content: '来自「项目风险台账」：分析选中的风险',
+      metadata: {
+        ...canonicalMetadata('usr7', 'p2p_7_43'),
+        artifact_task_ref: taskRef,
+      },
+      isGroup: false,
+      seq: 12,
+    });
+    await taskTurnStartedPromise;
+
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '顺便再检查一下普通风险项',
+      content: '顺便再检查一下普通风险项',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      isGroup: false,
+      seq: 13,
+    });
+
+    assert.equal(pendingInputProvider?.(), null);
+    const queued = harness.bot.messageQueue.get(expectedCatsCoSessionKey('usr7', 'p2p_7_43'));
+    assert.equal(queued?.length, 1);
+    assert.equal(queued?.[0].artifactTaskRef, undefined);
+
+    releaseTaskTurn();
+    await taskTurn;
+    await Promise.all(Array.from(harness.bot.taskStatusTasks?.values?.() || []));
+
+    assert.equal(harness.handledTurns.length, 2);
+    assert.equal(harness.handledTurns[0].options.artifactTaskRef, taskRef);
+    assert.equal(harness.handledTurns[1].options.artifactTaskRef, undefined);
+    assert.equal('artifactTaskRef' in harness.handledTurns[1].options.executionScope, false);
+    assert.match(String(harness.handledTurns[1].userMessage), /普通风险项/);
+    assert.equal(harness.bot.messageQueue.has(expectedCatsCoSessionKey('usr7', 'p2p_7_43')), false);
+
+    const taskRunIDs = new Set(taskStatuses
+      .filter(status => status.artifact_task_ref === taskRef)
+      .map(status => status.run_id));
+    const ordinaryRunIDs = new Set(taskStatuses
+      .filter(status => !status.artifact_task_ref)
+      .map(status => status.run_id));
+    assert.equal(taskRunIDs.size, 1);
+    assert.equal(ordinaryRunIDs.size, 1);
+    assert.notEqual([...taskRunIDs][0], [...ordinaryRunIDs][0]);
+  });
+
   test('does not merge queued CatsCo group input from another actor into the current actor scope', () => {
     const { bot } = createHarness();
     const aliceScope = createExecutionScope(createCatsCoMessageEnvelope({
@@ -1296,6 +1394,32 @@ describe('CatsCompany execution scope flow', () => {
     const pendingForBob = (bot as any).consumeQueuedUserInput(bobScope.sessionKey, bobScope);
     assert.equal(pendingForBob, 'bob follow-up');
     assert.equal(bot.messageQueue.has(bobScope.sessionKey), false);
+  });
+
+  test('keeps a queued Artifact task for its own run instead of merging it into active input', () => {
+    const { bot } = createHarness();
+    const scope = createExecutionScope(createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'first',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      botUid: 'usr43',
+    }));
+    const taskRef = `atr_${'q'.repeat(43)}`;
+
+    bot.messageQueue.set(scope.sessionKey, [{
+      userMessage: '来自「项目风险台账」：生成处理方案',
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 13,
+      executionScope: scope,
+      artifactTaskRef: taskRef,
+      receivedAt: Date.now(),
+      source: 'user',
+    }]);
+
+    assert.equal((bot as any).consumeQueuedUserInput(scope.sessionKey, scope), null);
+    assert.equal(bot.messageQueue.get(scope.sessionKey)?.[0].artifactTaskRef, taskRef);
   });
 
   test('preserves device grants when queued CatsCompany user input is merged', () => {

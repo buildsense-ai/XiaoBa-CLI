@@ -103,6 +103,8 @@ export interface ChatConfig {
     serverUrl?: string;
     apiKey?: string;
     runtimeCredential?: string;
+    runtimeActivationAckCredential?: string;
+    runtimeActivationAckCredentialExpiresAt?: number;
     httpBaseUrl?: string;
     sessionTTL?: number;
   };

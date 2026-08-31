@@ -312,6 +312,126 @@ h1 {
 .agent-switch-error { border: 1px solid #efc7c3; background: var(--red-soft); color: #a33a35; }
 .agent-switch-footer { padding: 15px 24px 20px; display: flex; align-items: center; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--line); }
 
+.update-dialog {
+  width: min(530px, calc(100vw - 40px));
+  max-height: min(620px, calc(100vh - 40px));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 24px 70px rgba(18, 31, 52, .24);
+}
+.update-dialog::backdrop { background: rgba(24, 32, 51, .34); }
+.update-dialog-shell { min-height: 0; max-height: inherit; display: flex; flex-direction: column; }
+.update-dialog-header {
+  padding: 21px 24px 17px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.update-dialog-header h2 { margin: 0; font-size: 22px; line-height: 1.25; }
+.update-dialog-header p { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.update-dialog-body { min-height: 0; padding: 20px 24px 22px; overflow: auto; }
+.update-stage-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.update-stage-copy { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.update-stage-copy strong { overflow: hidden; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.update-stage-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--blue);
+  box-shadow: 0 0 0 5px var(--blue-soft);
+}
+.update-stage-dot.success { background: var(--green); box-shadow: 0 0 0 5px var(--green-soft); }
+.update-stage-dot.error { background: var(--red); box-shadow: 0 0 0 5px var(--red-soft); }
+.update-stage-percent {
+  flex: 0 0 auto;
+  color: #245fc7;
+  font-size: 22px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+.update-stage-percent.success { color: var(--green); }
+.update-stage-percent.error { color: var(--red); }
+.update-version-flow {
+  margin-top: 18px;
+  padding: 13px 15px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fbfcfe;
+}
+.update-version-item span { display: block; color: var(--muted); font-size: 11px; }
+.update-version-item strong { display: block; margin-top: 3px; font-size: 15px; }
+.update-version-item:last-child { text-align: right; }
+.update-version-arrow { color: #9aa5b7; font-size: 18px; }
+.update-progress-section { margin-top: 20px; }
+.update-progress-track {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8edf4;
+}
+.update-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--blue);
+  transition: width 220ms ease;
+}
+.update-progress-bar.success { background: var(--green); }
+.update-progress-bar.error { background: var(--red); }
+.update-progress-track.indeterminate .update-progress-bar { width: 38% !important; animation: update-progress-scan 1.4s ease-in-out infinite; }
+@keyframes update-progress-scan {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(280%); }
+}
+.update-progress-meta {
+  min-height: 32px;
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.update-progress-meta span:nth-child(2) { text-align: center; }
+.update-progress-meta span:last-child { text-align: right; }
+.update-note { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.update-error-box {
+  margin-top: 16px;
+  padding: 11px 12px;
+  border: 1px solid #efc7c3;
+  border-radius: 8px;
+  background: var(--red-soft);
+  color: #983b36;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.update-dialog-footer {
+  padding: 15px 24px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+}
+.update-footer-hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.update-dialog-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 9px; }
+.compact-card .button.update-active { color: #245fc7; border-color: #b7cef8; background: var(--blue-soft); }
+.compact-card .button.update-error { color: var(--red); border-color: #efc7c3; background: var(--red-soft); }
+
 .login-card {
   width: min(620px, 100%);
   padding: 18px;
@@ -423,8 +543,8 @@ h1 {
 .management-page[hidden] { display: none; }
 .management-page.active { display: flex; flex-direction: column; }
 .section-heading { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.section-heading strong, .recovery-row strong, .danger-zone strong { display: block; font-size: 15px; }
-.section-heading small, .recovery-row small, .danger-zone small { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.section-heading strong, .recovery-row strong { display: block; font-size: 15px; }
+.section-heading small, .recovery-row small { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.45; }
 
 .channel-list { margin-top: 13px; display: grid; gap: 10px; }
 .channel-card { padding: 14px 15px; border: 1px solid var(--line); border-radius: 9px; background: #fbfcfe; }
@@ -491,7 +611,6 @@ h1 {
 
 .recovery-list { display: grid; border-top: 1px solid var(--line); }
 .recovery-row { min-height: 68px; padding: 11px 0; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid var(--line); }
-.danger-zone { margin-top: 22px; padding: 14px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border: 1px solid #efc7c3; border-radius: 9px; background: var(--red-soft); }
 
 .toast { position: fixed; right: 20px; bottom: 18px; max-width: 360px; padding: 11px 14px; border-radius: 8px; background: #1b2433; color: white; box-shadow: 0 8px 24px rgba(19, 29, 45, .2); font-size: 13px; }
 
@@ -530,7 +649,7 @@ h1 {
   }
   .primary-panel { overflow: auto; }
   .management-view { min-height: 430px; flex: 0 0 auto; }
-  .channel-main, .recovery-row, .danger-zone { align-items: flex-start; }
+  .channel-main, .recovery-row { align-items: flex-start; }
 }
 
 /* Connecting is transient, so it should read as a compact progress state and

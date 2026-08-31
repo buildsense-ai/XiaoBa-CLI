@@ -11,6 +11,11 @@ on:
         required: false
         type: boolean
         default: false
+      reconcile_history:
+        description: Also audit failed image runs older than 24 hours before baking
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,8 +29,27 @@ env:
   NODE_VERSION: "22.23.1"
   CTYUN_CLI_VERSION: v0.1.1
   CTYUN_CLI_PACKAGE_SHA256: 93272c3fd377a6f642a89cb326fa2f4a3d2fab7dfc9587e49906527230b767fa
-  TOS_WORKER_BUCKET: catsco-worker-release
+  TOSUTIL_VERSION: v4.1.2
+  TOSUTIL_LINUX_AMD64_SHA256: 40bbb4636b0182715b9832310463be7ba58f9b1db26a7aa008cd2e873e5c9310
+  TOS_JS_SDK_VERSION: 2.9.1
+  # Image-bake staging is isolated from versioned worker releases. These
+  # buckets stay empty between runs; only run-scoped .bake objects are removed.
+  TOS_WORKER_BUCKET: catsco-worker-image-bake-gz
   TOS_WORKER_REGION: cn-guangzhou
+  # Dual-bucket staging: the GitHub runner uploads to an upload-near bucket
+  # (Hong Kong) so the cross-Pacific leg is short, and TOS cross-region
+  # replication carries it into the builder-consumed Guangzhou bucket.
+  # UPLOAD_BUCKET empty or equal to TOS_WORKER_BUCKET disables the hop.
+  TOS_WORKER_UPLOAD_BUCKET: catsco-worker-image-bake-hk
+  TOS_WORKER_UPLOAD_REGION: cn-hongkong
+  # Seconds to wait for cross-region replication to surface objects in the
+  # consumption bucket before failing the bake.
+  TOS_WORKER_REPLICATION_TIMEOUT_SECONDS: "900"
+  # Set this repository variable only after WORKER_BASE_IMAGE_ID points at a
+  # previously baked image that passed the platform hardening gates. The
+  # preparer still verifies the contract and falls back to a full upgrade when
+  # the claim is stale.
+  WORKER_BASE_IMAGE_HARDENED: ${{ vars.CTYUN_WORKER_BASE_IMAGE_HARDENED || 'false' }}
 
 jobs:
   image:
@@ -80,6 +104,68 @@ jobs:
         timeout-minutes: 20
         run: npm ci --prefer-offline --no-audit --fund=false
 
+      - name: Install pinned cloud CLIs
+        timeout-minutes: 5
+        shell: bash
+        env:
+          TOS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_ACCESS_KEY_ID || secrets.VOLC_TOS_ACCESS_KEY_ID }}
+          TOS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_SECRET_ACCESS_KEY || secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          package_dir="$(mktemp -d)"
+          trap 'rm -rf "$package_dir"' EXIT
+
+          tosutil_zip="$package_dir/tosutil-linux-amd64.zip"
+          curl --fail --silent --show-error --location \
+            --retry 4 --retry-all-errors \
+            "https://github.com/volcengine/tosutil/releases/download/${TOSUTIL_VERSION}/tosutil-linux-amd64.zip" \
+            --output "$tosutil_zip"
+          echo "${TOSUTIL_LINUX_AMD64_SHA256}  $tosutil_zip" | sha256sum --check --strict
+          unzip -q "$tosutil_zip" -d "$package_dir/tosutil"
+          # GitHub's release ZIP does not preserve the executable bit.
+          tosutil_bin="$(find "$package_dir/tosutil" -type f -name tosutil | head -n 1)"
+          test -n "$tosutil_bin"
+
+          ctyun_package="$package_dir/ctyun-cli.tar.gz"
+          curl --fail --silent --show-error --location \
+            --retry 4 --retry-all-errors \
+            "https://huabei-2.zos.ctyun.cn/ctyun-cli/${CTYUN_CLI_VERSION}/ctyun-cli-${CTYUN_CLI_VERSION}-linux-amd64-setup.tar.gz" \
+            --output "$ctyun_package"
+          echo "${CTYUN_CLI_PACKAGE_SHA256}  $ctyun_package" | sha256sum --check --strict
+          tar -xzf "$ctyun_package" -C "$package_dir"
+          test -x "$package_dir/ctyun-cli"
+
+          install -d "$HOME/.local/bin"
+          install -m 0755 "$tosutil_bin" "$HOME/.local/bin/tosutil"
+          install -m 0755 "$package_dir/ctyun-cli" "$HOME/.local/bin/ctyun-cli"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+          tosutil_hk_config="$RUNNER_TEMP/tosutil-worker-bake-hk.conf"
+          tosutil_gz_config="$RUNNER_TEMP/tosutil-worker-bake-gz.conf"
+          : > "$tosutil_hk_config"
+          : > "$tosutil_gz_config"
+          "$HOME/.local/bin/tosutil" config \
+            -e "tos-${TOS_WORKER_UPLOAD_REGION}.volces.com" \
+            -re "$TOS_WORKER_UPLOAD_REGION" \
+            -i "$TOS_ACCESS_KEY_ID" -k "$TOS_SECRET_ACCESS_KEY" \
+            -conf="$tosutil_hk_config" >/dev/null
+          "$HOME/.local/bin/tosutil" config \
+            -e "tos-${TOS_WORKER_REGION}.volces.com" \
+            -re "$TOS_WORKER_REGION" \
+            -i "$TOS_ACCESS_KEY_ID" -k "$TOS_SECRET_ACCESS_KEY" \
+            -conf="$tosutil_gz_config" >/dev/null
+          echo "TOSUTIL_HK_CONFIG=$tosutil_hk_config" >> "$GITHUB_ENV"
+          echo "TOSUTIL_GZ_CONFIG=$tosutil_gz_config" >> "$GITHUB_ENV"
+
+          tos_sdk_dir="$RUNNER_TEMP/tos-js-sdk"
+          npm install --prefix "$tos_sdk_dir" --no-save --ignore-scripts \
+            "@volcengine/tos-sdk@${TOS_JS_SDK_VERSION}" \
+            --no-audit --fund=false >/dev/null
+          echo "TOS_JS_SDK_DIR=$tos_sdk_dir" >> "$GITHUB_ENV"
+
+          "$HOME/.local/bin/tosutil" version
+          "$HOME/.local/bin/ctyun-cli" version
+
       - name: Build CatsCo
         timeout-minutes: 8
         run: npm run build
@@ -102,62 +188,146 @@ jobs:
 
       - name: Stage private artifact for the builder
         id: artifact_transport
-        timeout-minutes: 15
+        timeout-minutes: 30
         shell: bash
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_ACCESS_KEY_ID || secrets.VOLC_TOS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_SECRET_ACCESS_KEY || secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+          TOS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_ACCESS_KEY_ID || secrets.VOLC_TOS_ACCESS_KEY_ID }}
+          TOS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_SECRET_ACCESS_KEY || secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
           WORKER_ARTIFACT_PATH: ${{ steps.artifact_meta.outputs.path }}
           WORKER_ARTIFACT_SHA256: ${{ steps.artifact_meta.outputs.sha256 }}
         run: |
           set -euo pipefail
-          if ! command -v aws >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y awscli
+          upload_bucket="$TOS_WORKER_BUCKET"
+          upload_config="$TOSUTIL_GZ_CONFIG"
+          if [[ -n "${TOS_WORKER_UPLOAD_BUCKET}" && "${TOS_WORKER_UPLOAD_BUCKET}" != "${TOS_WORKER_BUCKET}" ]]; then
+            upload_bucket="$TOS_WORKER_UPLOAD_BUCKET"
+            upload_config="$TOSUTIL_HK_CONFIG"
           fi
-          aws configure set default.s3.addressing_style virtual
-          endpoint="https://tos-s3-${TOS_WORKER_REGION}.volces.com"
           key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$(basename "$WORKER_ARTIFACT_PATH")"
           script_key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/prepare-image.sh"
+          status_key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/bootstrap-status.json"
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "script_key=$script_key" >> "$GITHUB_OUTPUT"
-          aws s3 cp "$WORKER_ARTIFACT_PATH" "s3://${TOS_WORKER_BUCKET}/${key}" \
-            --endpoint-url "$endpoint" --acl private \
-            --metadata "sha256=${WORKER_ARTIFACT_SHA256}" --only-show-errors
+          echo "status_key=$status_key" >> "$GITHUB_OUTPUT"
+
+          # --- 1. Upload to the upload-near bucket (US runner -> Hong Kong) ---
+          artifact_size="$(stat --format='%s' "$WORKER_ARTIFACT_PATH")"
+          echo "artifact upload start: bytes=$artifact_size bucket=$upload_bucket key=$key"
+          upload_started="$(date +%s)"
+          timeout --signal=TERM --kill-after=30s 20m \
+            tosutil cp "$WORKER_ARTIFACT_PATH" "tos://${upload_bucket}/${key}" \
+            -acl=private -meta="sha256:${WORKER_ARTIFACT_SHA256}" \
+            -vchecksum -threshold=52428800 -p=8 -ps=16777216 \
+            -conf="$upload_config"
+          echo "artifact upload complete: seconds=$(( $(date +%s) - upload_started ))"
           script_sha="$(sha256sum ops/ctyun-worker-image/prepare-image.sh | awk '{print $1}')"
-          aws s3 cp ops/ctyun-worker-image/prepare-image.sh \
-            "s3://${TOS_WORKER_BUCKET}/${script_key}" \
-            --endpoint-url "$endpoint" --acl private \
-            --metadata "sha256=${script_sha}" --only-show-errors
-          url="$(aws s3 presign "s3://${TOS_WORKER_BUCKET}/${key}" \
-            --endpoint-url "$endpoint" --expires-in 21600)"
-          script_url="$(aws s3 presign "s3://${TOS_WORKER_BUCKET}/${script_key}" \
-            --endpoint-url "$endpoint" --expires-in 21600)"
+          timeout --signal=TERM --kill-after=30s 3m \
+            tosutil cp ops/ctyun-worker-image/prepare-image.sh \
+            "tos://${upload_bucket}/${script_key}" \
+            -acl=private -meta="sha256:${script_sha}" -vchecksum \
+            -conf="$upload_config"
+
+          # --- 2. Wait for cross-region replication into the consumption bucket ---
+          # TOS replicates upload bucket -> worker bucket server-side; the
+          # builder downloads from the worker bucket, so block until visible.
+          if [[ "$upload_bucket" != "$TOS_WORKER_BUCKET" ]]; then
+            deadline=$(( $(date +%s) + ${TOS_WORKER_REPLICATION_TIMEOUT_SECONDS} ))
+            replication_started="$(date +%s)"
+            pending=1
+            while (( $(date +%s) < deadline )); do
+              if timeout --signal=TERM --kill-after=5s 20s \
+                  tosutil stat "tos://${TOS_WORKER_BUCKET}/${key}" \
+                  -conf="$TOSUTIL_GZ_CONFIG" >/dev/null 2>&1 \
+                && timeout --signal=TERM --kill-after=5s 20s \
+                  tosutil stat "tos://${TOS_WORKER_BUCKET}/${script_key}" \
+                  -conf="$TOSUTIL_GZ_CONFIG" >/dev/null 2>&1; then
+                pending=0; break
+              fi
+              echo "waiting for cross-region replication: $key"
+              sleep 15
+            done
+            if [[ $pending -ne 0 ]]; then
+              echo "error: cross-region replication did not surface staged objects in $TOS_WORKER_BUCKET within ${TOS_WORKER_REPLICATION_TIMEOUT_SECONDS}s; check the TOS replication rule ($upload_bucket -> $TOS_WORKER_BUCKET)" >&2
+              exit 1
+            fi
+            echo "cross-region replication complete: seconds=$(( $(date +%s) - replication_started ))"
+            # Upload-time metadata is replicated along with the object.
+            # Staging is single-use: the upload hop object is now redundant,
+            # drop it immediately (the final cleanup step still sweeps both
+            # buckets, and the 3-day lifecycle rule is the safety net).
+            tosutil rm "tos://${upload_bucket}/${key}" -f -conf="$upload_config" || true
+            tosutil rm "tos://${upload_bucket}/${script_key}" -f -conf="$upload_config" || true
+          fi
+
+          # --- 3. Presigned URLs against the consumption bucket (builder side) ---
+          presign_get() {
+            tosutil presign "tos://${TOS_WORKER_BUCKET}/$1" \
+              -vp=6h -conf="$TOSUTIL_GZ_CONFIG" | awk '/^https?:/{print; exit}'
+          }
+          url="$(presign_get "$key")"
+          script_url="$(presign_get "$script_key")"
+          status_get_url="$(presign_get "$status_key")"
+          for signed_url in "$url" "$script_url" "$status_get_url"; do
+            if [[ "$signed_url" != https://* ]]; then
+              echo "error: tosutil did not return a valid presigned GET URL" >&2
+              exit 1
+            fi
+          done
+
+          # --- 4. Presigned PUT URL via the official TOS JavaScript SDK. ---
+          status_put_url="$(node - "$status_key" <<'NODE'
+          const path = require("node:path");
+          const { TosClient } = require(path.join(
+            process.env.TOS_JS_SDK_DIR,
+            "node_modules",
+            "@volcengine",
+            "tos-sdk",
+          ));
+          const key = process.argv[2];
+          const client = new TosClient({
+            accessKeyId: process.env.TOS_ACCESS_KEY_ID,
+            accessKeySecret: process.env.TOS_SECRET_ACCESS_KEY,
+            region: process.env.TOS_WORKER_REGION,
+            endpoint: `tos-${process.env.TOS_WORKER_REGION}.volces.com`,
+          });
+          process.stdout.write(client.getPreSignedUrl({
+            bucket: process.env.TOS_WORKER_BUCKET,
+            key,
+            method: "PUT",
+            expires: 21600,
+          }));
+          NODE
+          )"
+          if [[ "$status_put_url" != https://* ]]; then
+            echo "error: TOS SDK did not return a valid presigned PUT URL" >&2
+            exit 1
+          fi
+          # Exercise the exact heartbeat PUT/GET path before creating a billed
+          # builder. This turns a bad signature, endpoint, or permission into
+          # a fast staging failure instead of a five-minute bootstrap timeout.
+          probe_payload='{"state":"probe","phase":"runner-status-preflight","exit_code":0,"line":0}'
+          curl --fail --silent --show-error --request PUT \
+            --connect-timeout 10 --max-time 20 --retry 2 --retry-all-errors \
+            --data-binary "$probe_payload" "$status_put_url" >/dev/null
+          probe_readback="$(curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 20 --retry 2 --retry-all-errors \
+            --header 'Cache-Control: no-cache' "$status_get_url")"
+          if ! jq -e '.state == "probe" and .phase == "runner-status-preflight"' \
+              <<<"$probe_readback" >/dev/null; then
+            echo "error: heartbeat PUT/GET preflight returned unexpected payload" >&2
+            exit 1
+          fi
+          tosutil rm "tos://${TOS_WORKER_BUCKET}/${status_key}" -f \
+            -conf="$TOSUTIL_GZ_CONFIG"
           echo "::add-mask::$url"
           echo "::add-mask::$script_url"
+          echo "::add-mask::$status_get_url"
+          echo "::add-mask::$status_put_url"
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "script_url=$script_url" >> "$GITHUB_OUTPUT"
           echo "script_sha256=$script_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Install pinned Tianyi Cloud CLI package
-        timeout-minutes: 3
-        shell: bash
-        run: |
-          set -euo pipefail
-          package_dir="$(mktemp -d)"
-          trap 'rm -rf "$package_dir"' EXIT
-          package="$package_dir/ctyun-cli.tar.gz"
-          curl --fail --silent --show-error --location \
-            --retry 4 --retry-all-errors \
-            "https://huabei-2.zos.ctyun.cn/ctyun-cli/${CTYUN_CLI_VERSION}/ctyun-cli-${CTYUN_CLI_VERSION}-linux-amd64-setup.tar.gz" \
-            --output "$package"
-          echo "${CTYUN_CLI_PACKAGE_SHA256}  $package" | sha256sum --check --strict
-          tar -xzf "$package" -C "$package_dir"
-          test -x "$package_dir/ctyun-cli"
-          install -d "$HOME/.local/bin"
-          install -m 0755 "$package_dir/ctyun-cli" "$HOME/.local/bin/ctyun-cli"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/ctyun-cli" version
+          echo "status_get_url=$status_get_url" >> "$GITHUB_OUTPUT"
+          echo "status_put_url=$status_put_url" >> "$GITHUB_OUTPUT"
 
       - name: Find interrupted image runs
         id: prior_runs
@@ -165,10 +335,12 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RECONCILE_HISTORICAL_RUNS: ${{ inputs.reconcile_history || false }}
         run: |
           set -euo pipefail
           responses="$(mktemp)"
           trap 'rm -f "$responses"' EXIT
+          historical_cutoff_epoch="$(date -u -d '24 hours ago' +%s)"
           page=1
           while :; do
             response="$(curl --fail --silent --show-error --location \
@@ -203,6 +375,70 @@ jobs:
                 }
             ]
           ' "$responses")"
+          filtered='[]'
+          while IFS= read -r run; do
+            run_id="$(jq -r '.run_id' <<<"$run")"
+            run_attempt="$(jq -r '.attempt' <<<"$run")"
+            run_updated_at="$(jq -r '.updated_at' <<<"$run")"
+            run_updated_epoch="$(date -u -d "$run_updated_at" +%s)"
+            if [[ "$RECONCILE_HISTORICAL_RUNS" != "true" ]] &&
+                (( run_updated_epoch < historical_cutoff_epoch )); then
+              echo "skip historical cloud cleanup: run=$run_id updated_at=$run_updated_at (use reconcile_history for an explicit audit)"
+              continue
+            fi
+            bake_attempts='[]'
+            for attempt in $(seq 1 "$run_attempt"); do
+              jobs_url="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/attempts/$attempt/jobs?per_page=100"
+              if ! jobs="$(curl --fail --silent --show-error --location \
+                  --retry 4 --retry-all-errors \
+                  --header 'Accept: application/vnd.github+json' \
+                  --header "Authorization: Bearer $GITHUB_TOKEN" \
+                  --header 'X-GitHub-Api-Version: 2022-11-28' \
+                  "$jobs_url")"; then
+                echo "warning: could not inspect bake step for run=$run_id attempt=$attempt; retaining fail-safe cleanup" >&2
+                bake_attempts="$(jq --argjson attempt "$attempt" '. + [$attempt]' <<<"$bake_attempts")"
+                continue
+              fi
+              bake_conclusion="$(jq -r '
+                [
+                  .jobs[]?.steps[]?
+                  | select(.name == "Bake private ECS image")
+                  | .conclusion
+                ]
+                | first // "unknown"
+              ' <<<"$jobs")"
+              cleanup_conclusion="$(jq -r '
+                [
+                  .jobs[]?.steps[]?
+                  | select(.name == "Reconcile this attempt after a failed bake")
+                  | .conclusion
+                ]
+                | first // "unknown"
+              ' <<<"$jobs")"
+              case "$bake_conclusion" in
+                failure|cancelled|timed_out|unknown)
+                  if [[ "$cleanup_conclusion" == "success" ]]; then
+                    echo "skip cloud cleanup: run=$run_id attempt=$attempt bake_step=$bake_conclusion reconciliation_step=success"
+                    continue
+                  fi
+                  echo "retain cloud cleanup: run=$run_id attempt=$attempt bake_step=$bake_conclusion reconciliation_step=$cleanup_conclusion"
+                  bake_attempts="$(jq --argjson attempt "$attempt" '. + [$attempt]' <<<"$bake_attempts")"
+                  ;;
+                success|skipped)
+                  echo "skip cloud cleanup: run=$run_id attempt=$attempt bake_step=$bake_conclusion"
+                  ;;
+                *)
+                  echo "warning: unexpected bake step conclusion '$bake_conclusion' for run=$run_id attempt=$attempt; retaining fail-safe cleanup" >&2
+                  bake_attempts="$(jq --argjson attempt "$attempt" '. + [$attempt]' <<<"$bake_attempts")"
+                  ;;
+              esac
+            done
+            if [[ "$(jq 'length' <<<"$bake_attempts")" -gt 0 ]]; then
+              filtered="$(jq -c --argjson run "$run" --argjson attempts "$bake_attempts" \
+                '. + [$run + {bake_attempts: $attempts}]' <<<"$filtered")"
+            fi
+          done < <(jq -c '.[]' <<<"$interrupted")
+          interrupted="$filtered"
           if [[ "$(jq 'length' <<<"$interrupted")" -eq 0 ]]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -293,23 +529,24 @@ jobs:
 
           $recentDeadline = [DateTimeOffset]::UtcNow.AddMinutes(45)
           :recentRunLoop foreach ($run in $recentRuns) {
-            $runAttempt = [Math]::Max(1, [int]$run.attempt)
-            foreach ($attempt in 1..$runAttempt) {
+            $bakeAttempts = @($run.bake_attempts | ForEach-Object { [int]$_ })
+            $lastBakeAttempt = ($bakeAttempts | Measure-Object -Maximum).Maximum
+            foreach ($attempt in $bakeAttempts) {
               if ([DateTimeOffset]::UtcNow -ge $recentDeadline) {
                 $blockingFailures.Add(
-                  "Recent cleanup budget exhausted before run=$($run.run_id) attempt=$attempt/$runAttempt"
+                  "Recent cleanup budget exhausted before run=$($run.run_id) attempt=$attempt"
                 )
                 break recentRunLoop
               }
-              Write-Host "Reconciling run $($run.run_id) attempt $attempt/$runAttempt ($($run.conclusion))"
+              Write-Host "Reconciling run $($run.run_id) bake attempt $attempt ($($run.conclusion))"
               $exitCode = Invoke-InterruptedRunCleanup `
                 -Run $run `
                 -Attempt $attempt `
-                -WaitForLate:($attempt -eq $runAttempt) `
+                -WaitForLate:($attempt -eq $lastBakeAttempt) `
                 -Historical:$false
               if ($exitCode -ne 0) {
                 $blockingFailures.Add(
-                  "run=$($run.run_id) attempt=$attempt/$runAttempt conclusion=$($run.conclusion) exit=$exitCode"
+                  "run=$($run.run_id) attempt=$attempt conclusion=$($run.conclusion) exit=$exitCode"
                 )
               }
             }
@@ -317,15 +554,15 @@ jobs:
 
           $historicalDeadline = [DateTimeOffset]::UtcNow.AddMinutes(10)
           :historicalRunLoop foreach ($run in $historicalRuns) {
-            $runAttempt = [Math]::Max(1, [int]$run.attempt)
-            foreach ($attempt in 1..$runAttempt) {
+            $bakeAttempts = @($run.bake_attempts | ForEach-Object { [int]$_ })
+            foreach ($attempt in $bakeAttempts) {
               if ([DateTimeOffset]::UtcNow -ge $historicalDeadline) {
                 $historicalWarnings.Add(
                   "Historical cleanup budget exhausted; remaining attempts require a later run or manual reconciliation"
                 )
                 break historicalRunLoop
               }
-              Write-Host "Reconciling historical run $($run.run_id) attempt $attempt/$runAttempt ($($run.conclusion))"
+              Write-Host "Reconciling historical run $($run.run_id) bake attempt $attempt ($($run.conclusion))"
               $exitCode = Invoke-InterruptedRunCleanup `
                 -Run $run `
                 -Attempt $attempt `
@@ -333,7 +570,7 @@ jobs:
                 -Historical:$true
               if ($exitCode -ne 0) {
                 $message = (
-                  "run=$($run.run_id) attempt=$attempt/$runAttempt " +
+                  "run=$($run.run_id) attempt=$attempt " +
                   "conclusion=$($run.conclusion) exit=$exitCode"
                 )
                 $historicalWarnings.Add($message)
@@ -444,6 +681,8 @@ jobs:
           WORKER_ARTIFACT_URL: ${{ steps.artifact_transport.outputs.url }}
           WORKER_PREPARE_SCRIPT_URL: ${{ steps.artifact_transport.outputs.script_url }}
           WORKER_PREPARE_SCRIPT_SHA256: ${{ steps.artifact_transport.outputs.script_sha256 }}
+          WORKER_BOOTSTRAP_STATUS_GET_URL: ${{ steps.artifact_transport.outputs.status_get_url }}
+          WORKER_BOOTSTRAP_STATUS_PUT_URL: ${{ steps.artifact_transport.outputs.status_put_url }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WORKER_PROJECT_ID)) {
             throw 'CTYUN_WORKER_PROJECT_ID is required for image bake'
@@ -459,12 +698,15 @@ jobs:
             -ArtifactUrl $env:WORKER_ARTIFACT_URL `
             -PrepareScriptUrl $env:WORKER_PREPARE_SCRIPT_URL `
             -PrepareScriptSha256 $env:WORKER_PREPARE_SCRIPT_SHA256 `
+            -BootstrapStatusGetUrl $env:WORKER_BOOTSTRAP_STATUS_GET_URL `
+            -BootstrapStatusPutUrl $env:WORKER_BOOTSTRAP_STATUS_PUT_URL `
             -BuildNumber $env:GITHUB_RUN_NUMBER `
             -BuildAttempt $env:GITHUB_RUN_ATTEMPT `
             -BuildIdentity $env:GITHUB_RUN_ID `
             -BakeTimeoutMinutes 150 `
             -CleanupTimeoutMinutes 40 `
             -ApiTimeoutSeconds 90 `
+            -BaseImageHardened:($env:WORKER_BASE_IMAGE_HARDENED -eq 'true') `
             -RegionID $env:WORKER_REGION_ID `
             -BuilderProjectID $env:WORKER_PROJECT_ID `
             -ImageProjectID $env:WORKER_IMAGE_PROJECT_ID `
@@ -506,7 +748,10 @@ jobs:
             -ProtectedImageIDs $env:WORKER_PROTECTED_IMAGE_IDS
 
       - name: Reconcile this attempt after a failed bake
-        if: ${{ always() && steps.bake.outcome != 'success' }}
+        if: >-
+          ${{ always() &&
+              (steps.bake.outcome == 'failure' ||
+               steps.bake.outcome == 'cancelled') }}
         timeout-minutes: 45
         shell: pwsh
         env:
@@ -553,19 +798,28 @@ jobs:
         timeout-minutes: 10
         shell: bash
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_ACCESS_KEY_ID || secrets.VOLC_TOS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_WORKER_PUBLISH_SECRET_ACCESS_KEY || secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
           STAGED_ARTIFACT_KEY: ${{ steps.artifact_transport.outputs.key }}
           STAGED_SCRIPT_KEY: ${{ steps.artifact_transport.outputs.script_key }}
+          STAGED_STATUS_KEY: ${{ steps.artifact_transport.outputs.status_key }}
         run: |
           set -euo pipefail
-          endpoint="https://tos-s3-${TOS_WORKER_REGION}.volces.com"
-          for key in "$STAGED_ARTIFACT_KEY" "$STAGED_SCRIPT_KEY"; do
-            aws s3 rm "s3://${TOS_WORKER_BUCKET}/${key}" \
-              --endpoint-url "$endpoint" --only-show-errors
-            if aws s3api head-object --bucket "$TOS_WORKER_BUCKET" \
-              --key "$key" --endpoint-url "$endpoint" >/dev/null 2>&1; then
-              echo "staged bake object still exists after cleanup: $key" >&2
-              exit 1
-            fi
+          upload_bucket="$TOS_WORKER_BUCKET"
+          upload_config="$TOSUTIL_GZ_CONFIG"
+          if [[ -n "${TOS_WORKER_UPLOAD_BUCKET}" && "${TOS_WORKER_UPLOAD_BUCKET}" != "${TOS_WORKER_BUCKET}" ]]; then
+            upload_bucket="$TOS_WORKER_UPLOAD_BUCKET"
+            upload_config="$TOSUTIL_HK_CONFIG"
+          fi
+          # Clean both buckets: the upload hop and the replication target.
+          # Lifecycle rules expire any leftovers older than 3 days as a
+          # second line of defense.
+          for spec in "$upload_bucket $upload_config" "$TOS_WORKER_BUCKET $TOSUTIL_GZ_CONFIG"; do
+            read -r bucket bucket_config <<<"$spec"
+            for key in "$STAGED_ARTIFACT_KEY" "$STAGED_SCRIPT_KEY" "$STAGED_STATUS_KEY"; do
+              tosutil rm "tos://${bucket}/${key}" -f -conf="$bucket_config" || true
+              if tosutil stat "tos://${bucket}/${key}" \
+                  -conf="$bucket_config" >/dev/null 2>&1; then
+                echo "staged bake object still exists after cleanup: $bucket/$key" >&2
+                exit 1
+              fi
+            done
           done

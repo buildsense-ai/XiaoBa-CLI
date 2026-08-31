@@ -19,7 +19,17 @@ import { CloudBotModelRuntimeReloadController } from '../bot-definition/runtime-
 import { createBotDefinitionSyncService } from '../bot-definition/service';
 import { resolveRunnableCloudDefinition } from '../bot-definition/cloud-sync';
 import { getPromptReconcileCoordinator } from '../bot-definition/prompt-sync';
-import { provisionCatsCoRuntimeCredential } from '../catscompany/runtime-credential';
+import {
+  CATSCO_RUNTIME_ACTIVATION_ACK_SCOPE,
+  CATSCO_RUNTIME_MUTATION_GRANT_SCOPE,
+  getUsableCatsCoRuntimeActivationAckCredential,
+  provisionCatsCoRuntimeCredential,
+} from '../catscompany/runtime-credential';
+import {
+  BotSkillActivationAckWorker,
+  isBotSkillActivationAckWorkerEnabled,
+  type BotSkillActivationAckWarningCode,
+} from '../bot-skills/activation-ack-worker';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
 const CLOUD_MODEL_POLL_MS = 5000;
@@ -63,6 +73,7 @@ export async function catscompanyCommand(): Promise<void> {
     missing: resolvedRuntime.missing,
     config: resolvedRuntime.connector,
   };
+  const activationAckWorkerEnabled = isBotSkillActivationAckWorkerEnabled(process.env);
 
   let connectorConfig = resolved.config;
   if (!connectorConfig) {
@@ -97,8 +108,22 @@ export async function catscompanyCommand(): Promise<void> {
   }
 
   try {
-    const provisioned = await provisionCatsCoRuntimeCredential(connectorConfig, resolvedRuntime.auth);
-    if (provisioned.runtimeCredential && !connectorConfig.runtimeCredential) {
+    const hadGrantCredential = Boolean(String(connectorConfig.runtimeCredential || '').trim());
+    const hadActivationAckCredential = Boolean(
+      getUsableCatsCoRuntimeActivationAckCredential(connectorConfig),
+    );
+    const provisioned = await provisionCatsCoRuntimeCredential(connectorConfig, resolvedRuntime.auth, {
+      ...(activationAckWorkerEnabled ? {
+        scopes: [CATSCO_RUNTIME_MUTATION_GRANT_SCOPE, CATSCO_RUNTIME_ACTIVATION_ACK_SCOPE],
+      } : {}),
+    });
+    if (
+      activationAckWorkerEnabled
+      && !hadActivationAckCredential
+      && getUsableCatsCoRuntimeActivationAckCredential(provisioned)
+    ) {
+      Logger.info('CatsCo Runtime 已取得独立的 Skill activation ACK 凭证。');
+    } else if (!hadGrantCredential && provisioned.runtimeCredential) {
       Logger.info('CatsCo Runtime 已取得受限 Skill mutation grant 凭证。');
     }
     connectorConfig = provisioned;
@@ -115,6 +140,7 @@ export async function catscompanyCommand(): Promise<void> {
   let cloudModelWatchTimer: NodeJS.Timeout | null = null;
   let cloudModelReloadPromise: Promise<void> | null = null;
   let pendingCloudModelAck: PendingCloudModelAck | null = null;
+  let skillActivationAckWorker: BotSkillActivationAckWorker | null = null;
   let shuttingDown = false;
 
   // 优雅退出
@@ -131,6 +157,7 @@ export async function catscompanyCommand(): Promise<void> {
     }
     try {
       await cloudModelReloadPromise;
+      await skillActivationAckWorker?.stop();
       await stopRuntimeCommandSupport();
       await bot.destroy();
     } finally {
@@ -159,6 +186,34 @@ export async function catscompanyCommand(): Promise<void> {
     await startRuntimeCommandSupport();
     const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
     const modelBotId = String(preparedBot?.botId || connectorConfig.botUid || '').trim();
+    if (activationAckWorkerEnabled) {
+      const activationAckCredential = getUsableCatsCoRuntimeActivationAckCredential(connectorConfig);
+      const connectorBotId = String(connectorConfig.botUid || '').trim();
+      const installationId = String(connectorConfig.installationId || connectorConfig.bodyId || '').trim();
+      if (!activationAckCredential) {
+        Logger.warning('Skill activation ACK worker 未启动：当前 Runtime 没有可用的专用 ACK 凭据；不会复用旧 grant-only 凭据，普通聊天继续可用。');
+      } else if (!connectorBotId || (modelBotId && modelBotId !== connectorBotId)) {
+        Logger.warning('Skill activation ACK worker 未启动：本地 BotDefinition 与连接 Bot 身份不一致；普通聊天继续可用。');
+      } else {
+        try {
+          skillActivationAckWorker = new BotSkillActivationAckWorker({
+            runtimeRoot,
+            skillsRoot: PathResolver.getSkillsPath(),
+            botId: connectorBotId,
+            bodyId: connectorConfig.bodyId || '',
+            installationId,
+            activationAckCredential,
+            httpBaseUrl: connectorConfig.httpBaseUrl || resolvedRuntime.auth.httpBaseUrl,
+            onWarning: code => Logger.warning(skillActivationAckWarning(code)),
+          });
+          skillActivationAckWorker.start();
+          Logger.info('Skill activation ACK worker 已按灰度开关启动；仅处理 E1 locally_applied journal。');
+        } catch {
+          skillActivationAckWorker = null;
+          Logger.warning('Skill activation ACK worker 配置无效，已保持关闭；普通聊天继续可用。');
+        }
+      }
+    }
     if (preparedBot?.cloudSelection) {
       const initialApplyError = preparedBot.cloudApplyError || '';
       try {
@@ -272,6 +327,27 @@ interface PendingCloudModelAck {
   selection: CloudBotModelSelection;
   applyError: string;
   attempts: number;
+}
+
+function skillActivationAckWarning(code: BotSkillActivationAckWarningCode): string {
+  switch (code) {
+  case 'CREDENTIAL_REJECTED':
+    return 'Skill activation ACK 凭据未被 CatsCo 接受，将退避重试；普通聊天不受影响。';
+  case 'ACK_NOT_AVAILABLE':
+    return 'CatsCo 尚未为当前 Bot 开放 Skill activation ACK，将退避重试；普通聊天不受影响。';
+  case 'ACK_RETRYABLE':
+    return 'Skill activation ACK 暂时无法送达，将退避重试；本地已应用能力保持不变。';
+  case 'ACTIVATION_FACT_CONFLICT':
+    return 'Skill activation ACK 与服务端 mutation 事实冲突，已停止快速重试并保留 journal。';
+  case 'RUNTIME_IDENTITY_MISMATCH':
+    return 'Skill activation journal 不属于当前 Runtime body，已拒绝上报并保留证据。';
+  case 'MUTATION_ID_INVALID':
+    return 'Skill activation journal 缺少有效 MutationID，已拒绝上报并保留证据。';
+  case 'STATE_INVALID':
+    return 'Skill activation journal、applied marker 或正式工作区验证失败，已拒绝上报并保留证据。';
+  case 'ACK_RESPONSE_INVALID':
+    return 'Skill activation ACK 响应与本地事实不一致，已拒绝确认并保留 journal。';
+  }
 }
 
 async function applyCloudModelRuntimeSelection(

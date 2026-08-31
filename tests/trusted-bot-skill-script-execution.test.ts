@@ -11,6 +11,7 @@ import {
 } from '../src/bot-skills/local-manifest';
 import { resolveTrustedBotSkillScriptInvocation } from '../src/bot-skills/trusted-script-execution';
 import { writeSkillHubInstallMarker } from '../src/skillhub/install-marker';
+import { TurnSkillSnapshotStore } from '../src/skills/turn-skill-snapshot';
 import { ShellTool } from '../src/tools/bash-tool';
 import type { ToolExecutionContext } from '../src/types/tool';
 
@@ -159,6 +160,38 @@ describe('trusted Bot Skill script execution', () => {
     }));
     assert.equal(decision.ok, false);
     assert.match(decision.ok ? '' : decision.reason, /current Bot definition/);
+  });
+
+  test('keeps trusted script resolution on the turn snapshot after the live package changes', async () => {
+    const store = new TurnSkillSnapshotStore({
+      runtimeRoot,
+      skillsRoot: path.join(runtimeRoot, 'skills'),
+    });
+    const lease = await store.acquire();
+    const snapshotScript = path.join(
+      lease.snapshot.rootPath,
+      'verified-image-skill',
+      'scripts',
+      'run.mjs',
+    );
+    fs.appendFileSync(scriptPath, '// changed after turn start\n', 'utf8');
+
+    try {
+      const snapshotDecision = resolveTrustedBotSkillScriptInvocation(
+        `node "${snapshotScript}" "${path.join(workspaceRoot, 'snapshot.json')}"`,
+        catsContext({ turnSkillSnapshot: lease }),
+      );
+      const liveDecision = resolveTrustedBotSkillScriptInvocation(
+        `node "${scriptPath}" "${path.join(workspaceRoot, 'live-changed.json')}"`,
+        catsContext(),
+      );
+
+      assert.equal(snapshotDecision.ok, true);
+      assert.equal(liveDecision.ok, false);
+      assert.match(liveDecision.ok ? '' : liveDecision.reason, /content hash/);
+    } finally {
+      await lease.release();
+    }
   });
 
   test('falls back to the ordinary shell after an installed Skill script is modified locally', async () => {

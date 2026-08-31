@@ -40,6 +40,8 @@ jobs:
         run: npm run build
 
       - name: Runtime tests
+        env:
+          XIAOBA_TEST_CONCURRENCY: 4
         run: npm test
 
   skillhub-phase1-regression:

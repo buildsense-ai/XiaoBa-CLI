@@ -21,6 +21,10 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { SessionSkillRuntime } from '../skills/session-skill-runtime';
+import {
+  TurnSkillSnapshotLease,
+  TurnSkillSnapshotStore,
+} from '../skills/turn-skill-snapshot';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider } from './conversation-runner';
@@ -52,6 +56,7 @@ export interface AgentTurnServices {
   };
   toolManager: ToolManager;
   skillManager: SkillManager;
+  turnSkillSnapshotStore?: TurnSkillSnapshotStore;
 }
 
 export interface AgentTurnCallbacks {
@@ -76,6 +81,7 @@ export interface RunAgentTurnParams {
   sessionRoute?: SessionRoute;
   executionScope?: ExecutionScope;
   artifactContextRef?: string;
+  artifactTaskRef?: string;
   localDeviceGrant?: ScopedLocalDeviceGrant;
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
@@ -142,114 +148,173 @@ export class AgentTurnController {
       this.expireMemoryBranch(previousCarryoverMemoryBranch, 'branch_agents_disabled');
     }
 
-    params.messages.push({
-      role: 'user',
-      content: params.input,
-      __episodeId: episodeId,
-      __episodeInputKind: 'root',
-      ...(params.runtimeObservationSource && {
-        __runtimeObservation: true,
-        runtimeObservationSource: params.runtimeObservationSource,
-      }),
-    });
-
-    const turnContext = await this.options.turnContextBuilder.build({
-      sessionKey: this.options.sessionKey,
-      sessionType: this.options.sessionType,
-      sessionRoute: params.sessionRoute ?? this.options.sessionRoute,
-      executionScope: params.executionScope,
-      localDeviceGrant: params.localDeviceGrant,
-      deviceGrants: params.deviceGrants,
-      deviceSelection: params.deviceSelection,
-      targetRoutes: params.targetRoutes,
-      localFileGrants: params.localFileGrants,
-      durableMessages: params.messages,
-      runtimeFeedback: params.runtimeFeedback,
-      skillRuntime: this.options.skillRuntime,
-      planRuntime: this.options.planRuntime,
-    });
-
-    const currentMemoryBranch = this.startMemorySidecarIfEnabled({
-      turnNumber,
-      input: params.input,
-      messages: params.messages,
-      abortSignal: params.abortSignal,
-    });
-
-    const runner = this.createRunner({
-      channel: params.channel,
-      executionScope: params.executionScope,
-      artifactContextRef: params.artifactContextRef,
-      localDeviceGrant: params.localDeviceGrant,
-      deviceGrants: params.deviceGrants,
-      deviceSelection: params.deviceSelection,
-      deviceRpc: params.deviceRpc,
-      thinToolRpc: params.thinToolRpc,
-      targetRoutes: params.targetRoutes,
-      localFileGrants: params.localFileGrants,
-      executionContext: turnContext.executionContext,
-      pendingUserInputProvider: params.pendingUserInputProvider,
-      confirmToolExecution: params.callbacks?.confirmToolExecution,
-      episodeId,
-      syntheticObservationProvider: () => this.drainMemoryObservations(
-        carryoverMemoryBranch,
-        currentMemoryBranch,
-      ),
-      abortSignal: params.abortSignal,
-      suppressFinalResponse: params.suppressFinalResponse,
-      shouldContinue: params.shouldContinue,
-    });
-
-    let result;
+    const turnSkills = await this.prepareTurnSkills();
     try {
-      result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks));
-      this.markEpisodeMessages(result.newMessages, episodeId);
-    } catch (error: any) {
-      const partialMessages = this.options.turnContextBuilder.removeTransientMessages(turnContext.messages);
-      this.replaceBase64Images(partialMessages);
-      if (partialMessages.length > 0) {
-        (error as AgentTurnRunError).partialMessages = partialMessages;
+      params.messages.push({
+        role: 'user',
+        content: params.input,
+        __episodeId: episodeId,
+        __episodeInputKind: 'root',
+        ...(params.runtimeObservationSource && {
+          __runtimeObservation: true,
+          runtimeObservationSource: params.runtimeObservationSource,
+        }),
+      });
+
+      const turnContext = await this.options.turnContextBuilder.build({
+        sessionKey: this.options.sessionKey,
+        sessionType: this.options.sessionType,
+        sessionRoute: params.sessionRoute ?? this.options.sessionRoute,
+        executionScope: params.executionScope,
+        localDeviceGrant: params.localDeviceGrant,
+        deviceGrants: params.deviceGrants,
+        deviceSelection: params.deviceSelection,
+        targetRoutes: params.targetRoutes,
+        localFileGrants: params.localFileGrants,
+        durableMessages: params.messages,
+        runtimeFeedback: params.runtimeFeedback,
+        skillRuntime: turnSkills.skillRuntime,
+        planRuntime: this.options.planRuntime,
+      });
+
+      const currentMemoryBranch = this.startMemorySidecarIfEnabled({
+        turnNumber,
+        input: params.input,
+        messages: params.messages,
+        abortSignal: params.abortSignal,
+      });
+
+      const runner = this.createRunner({
+        channel: params.channel,
+        executionScope: params.executionScope,
+        artifactContextRef: params.artifactContextRef,
+        artifactTaskRef: params.artifactTaskRef,
+        localDeviceGrant: params.localDeviceGrant,
+        deviceGrants: params.deviceGrants,
+        deviceSelection: params.deviceSelection,
+        deviceRpc: params.deviceRpc,
+        thinToolRpc: params.thinToolRpc,
+        targetRoutes: params.targetRoutes,
+        localFileGrants: params.localFileGrants,
+        executionContext: turnContext.executionContext,
+        pendingUserInputProvider: params.pendingUserInputProvider,
+        confirmToolExecution: params.callbacks?.confirmToolExecution,
+        episodeId,
+        syntheticObservationProvider: () => this.drainMemoryObservations(
+          carryoverMemoryBranch,
+          currentMemoryBranch,
+        ),
+        abortSignal: params.abortSignal,
+        suppressFinalResponse: params.suppressFinalResponse,
+        shouldContinue: params.shouldContinue,
+        skillManager: turnSkills.skillManager,
+        turnSkillSnapshot: turnSkills.snapshotLease,
+      });
+
+      let result;
+      try {
+        result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks));
+        this.markEpisodeMessages(result.newMessages, episodeId);
+      } catch (error: any) {
+        const partialMessages = this.options.turnContextBuilder.removeTransientMessages(turnContext.messages);
+        this.replaceBase64Images(partialMessages);
+        if (partialMessages.length > 0) {
+          (error as AgentTurnRunError).partialMessages = partialMessages;
+        }
+        throw error;
+      } finally {
+        this.expireMemoryBranch(carryoverMemoryBranch, 'carryover_ttl_expired');
+        if (result && currentMemoryBranch && this.shouldCarryMemoryBranch(currentMemoryBranch)) {
+          this.memoryBranchCarryover = currentMemoryBranch;
+        } else {
+          this.expireMemoryBranch(currentMemoryBranch, result ? 'current_branch_consumed' : 'turn_failed');
+        }
       }
-      throw error;
+      const nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
+
+      const metrics = Metrics.getSummary();
+      this.logMetrics(metrics);
+
+      this.replaceBase64Images(nextMessages);
+
+      this.options.turnLogRecorder.recordTurn({
+        userInput: params.input,
+        result,
+        tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
+        runtimeFeedback: turnContext.runtimeFeedbackForLog,
+        runtimeObservationSource: params.runtimeObservationSource,
+      });
+
+      const finalResponseVisible = result.finalResponseVisible && params.suppressFinalResponse !== true;
+      if (result.finalResponseVisible && params.suppressFinalResponse === true) {
+        Logger.info(`[${this.options.sessionKey}] runtime observation final response suppressed: ${params.runtimeObservationSource || 'unknown'}`);
+      }
+
+      if (finalResponseVisible) {
+        this.recordPetTurnCompletion('message_completed');
+        this.recordPetTurnCompletion('task_completed');
+      }
+
+      return {
+        text: finalResponseVisible ? (result.response || EMPTY_FINAL_RESPONSE_MESSAGE) : '',
+        visibleToUser: finalResponseVisible,
+        newMessages: result.newMessages,
+        messages: nextMessages,
+      };
     } finally {
-      this.expireMemoryBranch(carryoverMemoryBranch, 'carryover_ttl_expired');
-      if (result && currentMemoryBranch && this.shouldCarryMemoryBranch(currentMemoryBranch)) {
-        this.memoryBranchCarryover = currentMemoryBranch;
-      } else {
-        this.expireMemoryBranch(currentMemoryBranch, result ? 'current_branch_consumed' : 'turn_failed');
+      if (turnSkills.snapshotLease) {
+        try {
+          await turnSkills.snapshotLease.release();
+        } catch (error: any) {
+          Logger.warning(`[${this.options.sessionKey}] Turn Skill 快照租约释放失败: ${error.message}`);
+        }
       }
     }
-    const nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
+  }
 
-    const metrics = Metrics.getSummary();
-    this.logMetrics(metrics);
-
-    this.replaceBase64Images(nextMessages);
-
-    this.options.turnLogRecorder.recordTurn({
-      userInput: params.input,
-      result,
-      tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
-      runtimeFeedback: turnContext.runtimeFeedbackForLog,
-      runtimeObservationSource: params.runtimeObservationSource,
-    });
-
-    const finalResponseVisible = result.finalResponseVisible && params.suppressFinalResponse !== true;
-    if (result.finalResponseVisible && params.suppressFinalResponse === true) {
-      Logger.info(`[${this.options.sessionKey}] runtime observation final response suppressed: ${params.runtimeObservationSource || 'unknown'}`);
+  private async prepareTurnSkills(): Promise<{
+    skillManager: SkillManager;
+    skillRuntime: SessionSkillRuntime;
+    snapshotLease?: TurnSkillSnapshotLease;
+  }> {
+    const store = this.options.services.turnSkillSnapshotStore;
+    if (!store) {
+      return {
+        skillManager: this.options.services.skillManager,
+        skillRuntime: this.options.skillRuntime,
+      };
     }
 
-    if (finalResponseVisible) {
-      this.recordPetTurnCompletion('message_completed');
-      this.recordPetTurnCompletion('task_completed');
+    let snapshotLease: TurnSkillSnapshotLease | undefined;
+    try {
+      snapshotLease = await store.acquire();
+      const skillManager = new SkillManager(snapshotLease.snapshot.rootPath);
+      await skillManager.loadSkills();
+      Logger.info(
+        `[${this.options.sessionKey}] Turn Skill 快照已绑定: ${snapshotLease.snapshot.revision.slice(0, 12)}`,
+      );
+      return {
+        skillManager,
+        skillRuntime: new SessionSkillRuntime(skillManager, this.options.sessionKey),
+        snapshotLease,
+      };
+    } catch (error: any) {
+      if (snapshotLease) {
+        try {
+          await snapshotLease.release();
+        } catch (releaseError: any) {
+          Logger.warning(`[${this.options.sessionKey}] 无效 Turn Skill 快照租约释放失败: ${releaseError.message}`);
+        }
+      }
+      // Preserve all existing runtime capabilities if snapshot preparation is
+      // unavailable. Successful snapshot turns remain revision-stable; this
+      // exceptional path deliberately matches the pre-snapshot behaviour.
+      Logger.warning(`[${this.options.sessionKey}] Turn Skill 快照准备失败，继续使用兼容路径: ${error.message}`);
+      return {
+        skillManager: this.options.services.skillManager,
+        skillRuntime: this.options.skillRuntime,
+      };
     }
-
-    return {
-      text: finalResponseVisible ? (result.response || EMPTY_FINAL_RESPONSE_MESSAGE) : '',
-      visibleToUser: finalResponseVisible,
-      newMessages: result.newMessages,
-      messages: nextMessages,
-    };
   }
 
   private createEpisodeId(turnNumber: number): string {
@@ -267,6 +332,7 @@ export class AgentTurnController {
     channel?: ChannelCallbacks;
     executionScope?: ExecutionScope;
     artifactContextRef?: string;
+    artifactTaskRef?: string;
     localDeviceGrant?: ScopedLocalDeviceGrant;
     deviceGrants?: ScopedDeviceGrant[];
     deviceSelection?: ScopedDeviceSelection;
@@ -282,6 +348,8 @@ export class AgentTurnController {
     abortSignal?: AbortSignal;
     suppressFinalResponse?: boolean;
     shouldContinue: () => boolean;
+    skillManager: SkillManager;
+    turnSkillSnapshot?: TurnSkillSnapshotLease;
   }): ConversationRunner {
     const surface = resolveSessionSurface(this.options.sessionKey, this.options.sessionType);
     return new ConversationRunner(
@@ -309,12 +377,14 @@ export class AgentTurnController {
           planRuntime: this.options.planRuntime,
           runtimeServices: {
             aiService: this.options.services.aiService,
-            skillManager: this.options.services.skillManager,
+            skillManager: options.skillManager,
           },
+          turnSkillSnapshot: options.turnSkillSnapshot,
           abortSignal: options.abortSignal,
           channel: options.channel,
           executionScope: options.executionScope,
           artifactContextRef: options.artifactContextRef,
+          artifactTaskRef: options.artifactTaskRef,
           localDeviceGrant: options.localDeviceGrant,
           deviceGrants: options.deviceGrants,
           deviceSelection: options.deviceSelection,

@@ -1286,11 +1286,11 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-openai-compatible');
       assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
       assert.equal(parsed.CATSCO_RELAY_LLM_REASONING_EFFORT, 'max');
-      assert.equal(parsed.CATSCO_RELAY_LLM_VISION_CAPABLE, 'false');
+      assert.equal(parsed.CATSCO_RELAY_LLM_VISION_CAPABLE, 'true');
       assert.equal(parsed.CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE, 'true');
       assert.equal(data.selectedModel.context_window_tokens, 1000000);
       assert.equal(data.selectedModel.context_label, '1M');
-      assert.equal(data.selectedModel.capabilities.vision, false);
+      assert.equal(data.selectedModel.capabilities.vision, true);
       assert.equal(data.selectedModel.capabilities.tool_calling, true);
       assert.equal(text.includes('sk-bf-openai-compatible'), false);
     } finally {

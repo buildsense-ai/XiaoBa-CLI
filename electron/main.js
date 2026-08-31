@@ -38,8 +38,12 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
+    const hasDeepLink = (argv || []).some(isCatsCoDeepLink);
     enqueueDeepLinkFromArgv(argv);
-    showMainWindow();
+    if (hasDeepLink) showMainWindow();
+    else void handleDesktopLaunch().catch((error) => {
+      console.error('[Electron] Failed to handle desktop launch:', error);
+    });
   });
 }
 
@@ -145,6 +149,17 @@ async function shouldShowDashboardAtStartup() {
     // Fail open to the Dashboard if the local status check cannot complete.
     return true;
   }
+}
+
+async function handleDesktopLaunch() {
+  if (!dashboardServerReady || await shouldShowDashboardAtStartup()) {
+    showMainWindow();
+    return 'dashboard';
+  }
+  // Electron delegates HTTPS URLs to the operating system, so this opens the
+  // user's configured default browser rather than an embedded app window.
+  await shell.openExternal(CATSCO_WEBAPP_URL);
+  return 'webapp';
 }
 
 function isCatsCoDeepLink(value) {
@@ -953,7 +968,7 @@ app.whenReady().then(async () => {
     dashboardServerReady = true;
     createApplicationMenu();
     createTray();
-    if (await shouldShowDashboardAtStartup()) createWindow();
+    await handleDesktopLaunch();
     enqueueDeepLinkFromArgv(process.argv);
     scheduleDeepLinkDrain();
     

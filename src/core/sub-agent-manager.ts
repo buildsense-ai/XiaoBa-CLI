@@ -15,6 +15,7 @@ import {
   SubAgentRuntimeEvent,
 } from './sub-agent-events';
 import { randomUUID } from 'crypto';
+import type { TurnSkillSnapshotLease } from '../skills/turn-skill-snapshot';
 
 // ─── 平台回调注册 ───────────────────────────────────────
 
@@ -41,6 +42,8 @@ export interface SpawnSubAgentRequest {
   subAgentPrompt?: string;
   allowParentQuestions?: boolean;
   delegatedToolContext?: SubAgentSpawnOptions['delegatedToolContext'];
+  /** Parent turn lease; manager retains an independent child claim on spawn. */
+  turnSkillSnapshot?: TurnSkillSnapshotLease;
   allowedTools?: readonly string[];
   maxTurns?: number;
   taskDescription: string;
@@ -163,7 +166,7 @@ export class SubAgentManager {
     const toolScope = request.toolScope;
     const subAgentPrompt = request.subAgentPrompt?.trim();
     const allowParentQuestions = request.allowParentQuestions;
-    const delegatedToolContext = request.delegatedToolContext;
+    const baseDelegatedToolContext = request.delegatedToolContext;
     const allowedTools = request.allowedTools;
     const maxTurns = request.maxTurns;
     const taskDescription = request.taskDescription.trim();
@@ -205,6 +208,16 @@ export class SubAgentManager {
       return { error: '平台回调未注册，无法派遣子智能体' };
     }
 
+    let childSnapshotLease: TurnSkillSnapshotLease | undefined;
+    try {
+      childSnapshotLease = await request.turnSkillSnapshot?.retain();
+    } catch (error: any) {
+      return { error: `无法为子智能体保留当前 Turn Skill 快照: ${error.message}` };
+    }
+    const delegatedToolContext = childSnapshotLease
+      ? { ...baseDelegatedToolContext, turnSkillSnapshot: childSnapshotLease }
+      : baseDelegatedToolContext;
+
     const options: SubAgentSpawnOptions = {
       displayName,
       agentType: requestedAgentType,
@@ -228,7 +241,13 @@ export class SubAgentManager {
       },
     };
 
-    const session = new SubAgentSession(id, aiService, skillManager, options);
+    let session: SubAgentSession;
+    try {
+      session = new SubAgentSession(id, aiService, skillManager, options);
+    } catch (error: any) {
+      await releaseTurnSkillSnapshotLease(childSnapshotLease, id);
+      return { error: `子智能体初始化失败: ${error.message}` };
+    }
     this.subAgents.set(id, session);
     this.parentMap.set(id, parentSessionKey);
     this.dedupeKeyByAgent.set(id, dedupeKey);
@@ -250,8 +269,12 @@ export class SubAgentManager {
         session.resultSummary = `执行失败: ${err?.message || err}`;
         Logger.error(`[SubAgentManager] ${id} 未捕获失败: ${err?.message || err}`);
       })
-      .finally(() => {
-        void this.finalizeSession(parentSessionKey, id, session, platform, taskDescription);
+      .finally(async () => {
+        await releaseTurnSkillSnapshotLease(childSnapshotLease, id);
+        await this.finalizeSession(parentSessionKey, id, session, platform, taskDescription);
+      })
+      .catch(error => {
+        Logger.error(`[SubAgentManager] ${id} 收尾失败: ${error?.message || error}`);
       });
 
     Logger.info(`[SubAgentManager] 派遣 ${id} 执行 "${skillName || displayAgentType}" (父会话: ${parentSessionKey})`);
@@ -866,6 +889,18 @@ function normalizeDedupeValue(value: unknown): unknown {
     output[key] = normalizeDedupeValue((value as Record<string, unknown>)[key]);
   }
   return output;
+}
+
+async function releaseTurnSkillSnapshotLease(
+  lease: TurnSkillSnapshotLease | undefined,
+  subAgentId: string,
+): Promise<void> {
+  if (!lease) return;
+  try {
+    await lease.release();
+  } catch (error: any) {
+    Logger.warning(`[SubAgentManager] ${subAgentId} Turn Skill 快照租约释放失败: ${error.message}`);
+  }
 }
 
 function normalizeDedupeTools(tools?: readonly string[]): string[] {

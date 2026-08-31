@@ -1,5 +1,6 @@
 import { AgentServices, AgentSession, SystemPromptProvider } from '../core/agent-session';
 import { SkillManager } from '../skills/skill-manager';
+import { TurnSkillSnapshotStore } from '../skills/turn-skill-snapshot';
 import { ToolManager } from '../tools/tool-manager';
 import { AIService } from '../utils/ai-service';
 import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
@@ -8,6 +9,7 @@ import { Logger } from '../utils/logger';
 import { PromptManager } from '../utils/prompt-manager';
 import { PromptComposer } from './prompt-composer';
 import { composeSessionSystemPromptProvider } from '../core/session-system-prompt';
+import { PathResolver } from '../utils/path-resolver';
 import {
   RuntimeProfile,
   assertValidRuntimeProfile,
@@ -86,6 +88,7 @@ export class RuntimeFactory {
         enabledToolNames: profile.tools.enabled,
       }),
       skillManager: new SkillManager(),
+      turnSkillSnapshotStore: this.createTurnSkillSnapshotStore(),
     };
   }
 
@@ -117,6 +120,24 @@ export class RuntimeFactory {
       }
     } catch (error: any) {
       Logger.warning(`Skills 加载失败: ${error.message}`);
+    }
+  }
+
+  private static createTurnSkillSnapshotStore(): TurnSkillSnapshotStore | undefined {
+    // Keep the new consistency boundary unreachable by default until the
+    // staged Skill write/activation path has completed canary verification.
+    // This avoids changing any existing Skill editing or tool permission flow.
+    if (process.env.XIAOBA_TURN_SKILL_SNAPSHOT_ENABLED !== '1') return undefined;
+    try {
+      return new TurnSkillSnapshotStore({
+        runtimeRoot: PathResolver.getRuntimeDataRoot(),
+        skillsRoot: PathResolver.getSkillsPath(),
+      });
+    } catch (error: any) {
+      // Snapshotting is a consistency enhancement. A damaged or unusual legacy
+      // data root must not disable chat, tools, or the existing live Skill path.
+      Logger.warning(`Turn Skill 快照初始化失败，继续使用兼容路径: ${error.message}`);
+      return undefined;
     }
   }
 

@@ -126,6 +126,9 @@
     serviceActionBusy: new Set(),
     logPollTimer: null,
     weixinPollTimer: null,
+    updatePollTimer: null,
+    updateStatusInFlight: null,
+    updateActionBusy: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -262,6 +265,7 @@
     $('progress-list').hidden = view.key !== 'connecting';
     $('error-card').hidden = view.key !== 'error';
     $('webapp-button').hidden = view.key !== 'ready';
+    $('logout-button').hidden = view.key === 'auth' || (!cats.connected && !cats.tokenPresent);
     $('retry-button').hidden = view.key !== 'error';
     $('close-hint').hidden = view.key !== 'ready';
 
@@ -323,12 +327,14 @@
   }
 
   function renderError(view) {
+    const title = view.title || '自动连接未完成';
+    const detail = humanError(view.error || '请重新连接，或打开本地管理查看日志。');
     setText('status-label', 'Connector 需要处理');
     setText('hero-title', '连接未完成');
     setText('hero-copy', '本地资料没有被删除。处理下面的问题后可以继续重试。');
-    setText('error-title', view.title || '自动连接未完成');
-    setText('error-copy', view.error || '请重新连接，或展开高级诊断查看日志。');
-    setNotice(view.title || 'Connector 连接异常', 'error');
+    setText('error-title', title);
+    setText('error-copy', detail);
+    setNotice(`${title}：${detail}`, 'error');
   }
 
   function markStep(name, status) {
@@ -349,12 +355,267 @@
     const button = $('update-button');
     const update = state.update || {};
     if (!button) return;
-    button.disabled = update.stage === 'checking' || update.stage === 'downloading';
-    if (update.stage === 'available') button.textContent = `下载 ${update.availableVersion || '新版本'}`;
-    else if (update.stage === 'downloaded') button.textContent = '安装更新';
-    else if (update.stage === 'checking') button.textContent = '检查中…';
+    const stage = update.stage || 'idle';
+    const percent = clampUpdatePercent(update.percent);
+    button.classList.toggle('update-active', stage === 'checking' || stage === 'downloading');
+    button.classList.toggle('update-error', stage === 'error');
+    button.disabled = update.enabled === false || stage === 'installing';
+    if (stage === 'available') button.textContent = `下载 ${update.availableVersion || '新版本'}`;
+    else if (stage === 'downloaded') button.textContent = '安装更新';
+    else if (stage === 'checking') button.textContent = '检查中…';
+    else if (stage === 'downloading') button.textContent = `下载 ${Math.round(percent)}%`;
+    else if (stage === 'installing') button.textContent = '安装中…';
+    else if (stage === 'error') button.textContent = '重试更新';
     else if (update.enabled === false) button.textContent = '开发版本';
     else button.textContent = '检查更新';
+    button.setAttribute('aria-label', updateButtonAriaLabel(update, percent));
+    renderUpdateDialog();
+    syncUpdatePolling();
+  }
+
+  function updateButtonAriaLabel(update, percent) {
+    if (update.stage === 'downloading') return `更新下载进度 ${Math.round(percent)}%`;
+    if (update.stage === 'available') return `下载 CatsCo ${update.availableVersion || '新版本'}`;
+    if (update.stage === 'downloaded') return '更新已下载，打开安装确认';
+    if (update.stage === 'error') return '更新失败，打开详情并重试';
+    return $('update-button')?.textContent || '检查更新';
+  }
+
+  function clampUpdatePercent(value) {
+    const percent = Number(value || 0);
+    if (!Number.isFinite(percent)) return 0;
+    return Math.max(0, Math.min(100, percent));
+  }
+
+  function formatUpdateBytes(value) {
+    const bytes = Number(value || 0);
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let size = bytes;
+    let unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit += 1;
+    }
+    const digits = size >= 100 ? 0 : size >= 10 ? 1 : 2;
+    return `${size.toFixed(digits)} ${units[unit]}`;
+  }
+
+  function formatUpdateRemaining(update) {
+    const total = Number(update.total || 0);
+    const transferred = Number(update.transferred || 0);
+    const speed = Number(update.bytesPerSecond || 0);
+    if (!(total > transferred) || !(speed > 0)) return '正在计算剩余时间';
+    const seconds = Math.max(1, Math.ceil((total - transferred) / speed));
+    if (seconds < 60) return `预计还需 ${seconds} 秒`;
+    const minutes = Math.ceil(seconds / 60);
+    return `预计还需 ${minutes} 分钟`;
+  }
+
+  function updateDialogMeta(update) {
+    const version = update.availableVersion || '新版本';
+    switch (update.stage) {
+      case 'checking':
+        return {
+          title: '检查更新',
+          subtitle: '正在连接更新服务，请稍候。',
+          label: '正在检查可用版本',
+          note: '通常只需要几秒钟。如果网络异常，会在这里显示明确的失败原因。',
+          footer: `当前版本 ${update.currentVersion || state.app.version || '—'}`,
+          secondary: '隐藏到后台',
+          primary: '检查中…',
+          primaryDisabled: true,
+          tone: 'active',
+        };
+      case 'available':
+        return {
+          title: '发现 CatsCo 更新',
+          subtitle: `${version} 已可以下载。`,
+          label: `可以更新到 ${version}`,
+          note: '下载期间可以继续使用 CatsCo，Connector 会保持连接。',
+          footer: '下载完成后将提示你安装',
+          secondary: '稍后',
+          primary: '下载更新',
+          primaryDisabled: false,
+          tone: 'active',
+        };
+      case 'downloading':
+        return {
+          title: '正在更新 CatsCo',
+          subtitle: '更新包正在后台下载，Connector 会保持连接。',
+          label: '正在下载更新包',
+          note: '下载期间可以继续使用 CatsCo。请不要退出应用；关闭此弹窗后，可在右下角继续查看进度。',
+          footer: '校验完成后将提示你安装',
+          secondary: '隐藏到后台',
+          primary: '下载中…',
+          primaryDisabled: true,
+          tone: 'active',
+        };
+      case 'downloaded':
+        return {
+          title: '更新已准备好',
+          subtitle: `${version} 已下载并通过完整性校验。`,
+          label: '下载完成',
+          note: '安装会关闭并重新启动 CatsCo，Connector 将在重启后自动恢复连接。',
+          footer: '建议保存正在进行的工作',
+          secondary: '稍后安装',
+          primary: '安装并重启',
+          primaryDisabled: false,
+          tone: 'success',
+        };
+      case 'installing':
+        return {
+          title: '正在安装更新',
+          subtitle: 'CatsCo 即将退出并重新启动。',
+          label: '正在准备安装',
+          note: '请稍候，不要手动结束 CatsCo 进程。',
+          footer: 'Connector 会在重启后自动恢复',
+          secondary: '隐藏到后台',
+          primary: '安装中…',
+          primaryDisabled: true,
+          tone: 'active',
+        };
+      case 'error':
+        return {
+          title: '更新没有完成',
+          subtitle: '当前版本没有受到影响，你可以直接重试。',
+          label: '更新失败',
+          note: '失败不会影响当前版本，Connector 会继续正常运行。',
+          footer: `错误代码：${update.lastError?.reason || update.reason || 'UPDATE_ERROR'}`,
+          secondary: '关闭',
+          primary: '重新检查',
+          primaryDisabled: false,
+          tone: 'error',
+        };
+      case 'disabled':
+        return {
+          title: '当前环境不支持自动更新',
+          subtitle: '开发环境或当前安装方式没有启用更新器。',
+          label: '自动更新不可用',
+          note: '打包安装版会在这里显示可用更新与下载进度。',
+          footer: '无需进行任何操作',
+          secondary: '关闭',
+          primary: '不可用',
+          primaryDisabled: true,
+          tone: 'error',
+        };
+      default:
+        return {
+          title: 'CatsCo 已是最新版本',
+          subtitle: '当前没有需要安装的更新。',
+          label: '已经是最新版本',
+          note: 'CatsCo 仍会在启动后自动检查更新。',
+          footer: `当前版本 ${update.currentVersion || state.app.version || '—'}`,
+          secondary: '关闭',
+          primary: '再次检查',
+          primaryDisabled: false,
+          tone: 'success',
+        };
+    }
+  }
+
+  function renderUpdateDialog() {
+    const dialog = $('update-dialog');
+    if (!dialog) return;
+    const update = state.update || {};
+    const stage = update.stage || (update.enabled === false ? 'disabled' : 'idle');
+    const normalized = { ...update, stage };
+    const meta = updateDialogMeta(normalized);
+    const percent = stage === 'downloaded' || stage === 'installing' ? 100 : clampUpdatePercent(update.percent);
+    const progressVisible = ['checking', 'downloading', 'downloaded', 'installing'].includes(stage)
+      || (stage === 'error' && Number(update.transferred || 0) > 0);
+    const versionVisible = Boolean(update.availableVersion) || ['available', 'downloading', 'downloaded', 'installing'].includes(stage);
+
+    setText('update-title', meta.title);
+    setText('update-subtitle', meta.subtitle);
+    setText('update-stage-label', meta.label);
+    setText('update-current-version', update.currentVersion || state.app.version || '—');
+    setText('update-available-version', update.availableVersion || '—');
+    setText('update-note', meta.note);
+    setText('update-footer-hint', meta.footer);
+    $('update-version-flow').hidden = !versionVisible;
+    $('update-progress-section').hidden = !progressVisible;
+
+    const dot = $('update-stage-dot');
+    const percentNode = $('update-stage-percent');
+    const bar = $('update-progress-bar');
+    dot.className = `update-stage-dot${meta.tone === 'success' ? ' success' : meta.tone === 'error' ? ' error' : ''}`;
+    percentNode.className = `update-stage-percent${meta.tone === 'success' ? ' success' : meta.tone === 'error' ? ' error' : ''}`;
+    percentNode.textContent = progressVisible && stage !== 'checking' ? `${Math.round(percent)}%` : '';
+    bar.className = `update-progress-bar${meta.tone === 'success' ? ' success' : meta.tone === 'error' ? ' error' : ''}`;
+    bar.style.width = `${percent}%`;
+    const track = $('update-progress-track');
+    track.classList.toggle('indeterminate', stage === 'checking');
+    track.setAttribute('aria-valuenow', String(Math.round(percent)));
+
+    if (stage === 'checking') {
+      $('update-size').textContent = '正在获取版本信息';
+      $('update-speed').textContent = '';
+      $('update-remaining').textContent = '';
+    } else {
+      const transferred = Number(update.transferred || 0);
+      const total = Number(update.total || 0);
+      $('update-size').textContent = total > 0 ? `${formatUpdateBytes(transferred)} / ${formatUpdateBytes(total)}` : '等待下载信息';
+      $('update-speed').textContent = Number(update.bytesPerSecond || 0) > 0 ? `${formatUpdateBytes(update.bytesPerSecond)}/s` : '';
+      $('update-remaining').textContent = stage === 'downloading' ? formatUpdateRemaining(update) : stage === 'downloaded' ? '可以安装' : '';
+    }
+
+    const error = $('update-error-box');
+    const errorMessage = update.lastError?.message || update.error || '';
+    error.hidden = stage !== 'error';
+    error.textContent = stage === 'error'
+      ? [update.lastError?.reason || update.reason || 'UPDATE_ERROR', errorMessage].filter(Boolean).join('\n')
+      : '';
+
+    $('update-secondary-action').textContent = meta.secondary;
+    $('update-primary-action').textContent = meta.primary;
+    $('update-primary-action').disabled = meta.primaryDisabled || state.updateActionBusy;
+  }
+
+  function openUpdateDialog() {
+    const dialog = $('update-dialog');
+    renderUpdateDialog();
+    if (!dialog.open) dialog.showModal();
+  }
+
+  function closeUpdateDialog() {
+    const dialog = $('update-dialog');
+    if (dialog.open) dialog.close();
+  }
+
+  function isUpdatePollingStage(stage) {
+    return stage === 'checking' || stage === 'downloading' || stage === 'installing';
+  }
+
+  function syncUpdatePolling() {
+    if (isUpdatePollingStage(state.update?.stage)) {
+      if (!state.updatePollTimer) {
+        state.updatePollTimer = setInterval(() => { void refreshUpdateStatus(); }, 1000);
+      }
+      return;
+    }
+    if (state.updatePollTimer) clearInterval(state.updatePollTimer);
+    state.updatePollTimer = null;
+  }
+
+  async function refreshUpdateStatus() {
+    if (state.updateStatusInFlight) return state.updateStatusInFlight;
+    const previousStage = state.update?.stage;
+    const run = (async () => {
+      const result = await settled('/update/status');
+      if (!result.ok) return;
+      state.update = result.value || {};
+      renderUpdate();
+      if (!($('update-dialog')?.open) && previousStage === 'downloading' && ['downloaded', 'error'].includes(state.update.stage)) {
+        openUpdateDialog();
+      }
+    })();
+    state.updateStatusInFlight = run;
+    try {
+      await run;
+    } finally {
+      if (state.updateStatusInFlight === run) state.updateStatusInFlight = null;
+    }
   }
 
   function syncPolling(view) {
@@ -791,17 +1052,95 @@
     }
   }
 
-  async function checkUpdate() {
-    const stage = state.update?.stage;
+  function setUpdateActionError(error, fallbackReason) {
+    state.update = {
+      ...(state.update || {}),
+      stage: 'error',
+      message: humanError(error),
+      lastError: {
+        reason: error?.data?.reason || fallbackReason,
+        message: humanError(error),
+      },
+    };
+    renderUpdate();
+    openUpdateDialog();
+  }
+
+  async function startUpdateCheck() {
+    if (state.updateActionBusy) return;
+    state.updateActionBusy = true;
+    state.update = {
+      ...(state.update || {}),
+      stage: 'checking',
+      message: 'Checking for updates...',
+      lastError: null,
+    };
+    renderUpdate();
+    openUpdateDialog();
     try {
-      if (stage === 'available') state.update = await request('/update/download', { method: 'POST', body: '{}' });
-      else if (stage === 'downloaded') await request('/update/install', { method: 'POST', body: '{}' });
-      else state.update = await request('/update/check', { method: 'POST', body: '{}' });
+      state.update = await request('/update/check', { method: 'POST', body: '{}' });
       renderUpdate();
-      showToast(state.update?.message || '更新状态已刷新');
     } catch (error) {
-      showToast(`检查更新失败：${humanError(error)}`);
+      setUpdateActionError(error, 'UPDATE_CHECK_FAILED');
+    } finally {
+      state.updateActionBusy = false;
+      renderUpdate();
     }
+  }
+
+  async function startUpdateDownload() {
+    if (state.updateActionBusy) return;
+    state.updateActionBusy = true;
+    state.update = {
+      ...(state.update || {}),
+      stage: 'downloading',
+      message: 'Starting update download...',
+      percent: Number(state.update?.percent || 0),
+      bytesPerSecond: 0,
+      transferred: Number(state.update?.transferred || 0),
+      total: Number(state.update?.total || 0),
+      lastError: null,
+    };
+    renderUpdate();
+    openUpdateDialog();
+    try {
+      state.update = await request('/update/download', { method: 'POST', body: '{}' });
+      renderUpdate();
+      openUpdateDialog();
+    } catch (error) {
+      setUpdateActionError(error, 'UPDATE_DOWNLOAD_FAILED');
+    } finally {
+      state.updateActionBusy = false;
+      renderUpdate();
+    }
+  }
+
+  async function installUpdate() {
+    if (state.updateActionBusy || state.update?.stage !== 'downloaded') return;
+    state.updateActionBusy = true;
+    state.update = { ...(state.update || {}), stage: 'installing', message: 'Quitting and installing update...' };
+    renderUpdate();
+    try {
+      await request('/update/install', { method: 'POST', body: '{}' });
+    } catch (error) {
+      setUpdateActionError(error, 'UPDATE_INSTALL_FAILED');
+      state.updateActionBusy = false;
+      renderUpdate();
+    }
+  }
+
+  function handleUpdateButton() {
+    const stage = state.update?.stage || 'idle';
+    openUpdateDialog();
+    if (stage === 'available') void startUpdateDownload();
+    else if (stage === 'idle' || stage === 'error') void startUpdateCheck();
+  }
+
+  function handleUpdatePrimaryAction() {
+    const stage = state.update?.stage || 'idle';
+    if (stage === 'available') void startUpdateDownload();
+    else if (stage === 'downloaded') void installUpdate();
+    else if (stage === 'idle' || stage === 'error') void startUpdateCheck();
   }
 
   function setBusyButtons(busy) {
@@ -812,6 +1151,7 @@
     const message = String(error?.message || error || '未知错误');
     if (/password mismatch/i.test(message)) return '账号或密码错误，请重试。';
     if (/user not found/i.test(message)) return '没有找到这个 CatsCo 账号。';
+    if (/not your bot/i.test(message)) return '当前账号无权使用原 Agent（not your bot），请切换到当前账号拥有的 Agent。';
     if (/failed to fetch|network/i.test(message)) return '暂时无法连接 CatsCo，请检查网络。';
     return message;
   }
@@ -853,7 +1193,13 @@
   $('logout-dialog').addEventListener('cancel', (event) => {
     if (state.logoutBusy) event.preventDefault();
   });
-  $('update-button').addEventListener('click', checkUpdate);
+  $('update-button').addEventListener('click', handleUpdateButton);
+  $('update-close').addEventListener('click', closeUpdateDialog);
+  $('update-secondary-action').addEventListener('click', closeUpdateDialog);
+  $('update-primary-action').addEventListener('click', handleUpdatePrimaryAction);
+  $('update-dialog').addEventListener('cancel', (event) => {
+    if (state.update?.stage === 'installing') event.preventDefault();
+  });
   $('management-open').addEventListener('click', () => { void openManagement(); });
   $('agent-switch-open').addEventListener('click', () => { void openAgentSwitch(); });
   $('agent-switch-close').addEventListener('click', (event) => {

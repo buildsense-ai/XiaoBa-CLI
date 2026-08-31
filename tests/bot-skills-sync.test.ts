@@ -1,5 +1,6 @@
 import { afterEach, describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -101,6 +102,53 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     );
     assert.equal(readSkillHubInstallMarker(path.join(fixture.skillsRoot, 'cloud-b'))?.skillId, external.reference.skillId);
     assert.equal(new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.definitionRevision, 2);
+  });
+
+  test('restores all cloud Skills when a legacy preferred directory collides with a newer package', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'shared-name', 'shared-name', 'legacy private package');
+    await fixture.sync();
+
+    const privateReference = fixture.cloud.skills[0];
+    const privatePackage = fixture.packages.get(refKey(privateReference));
+    assert.ok(privatePackage);
+    const publicPackage = createPackage(
+      roots,
+      'published-copy',
+      'shared-name',
+      'new public package',
+    );
+    publicPackage.source = 'public';
+    publicPackage.reference = { skillId: 'alice/shared-name', version: '1.0.0' };
+    fixture.packages.set(refKey(publicPackage.reference), publicPackage);
+    fixture.cloud = {
+      revision: fixture.cloud.revision + 1,
+      skills: [definitionRef(publicPackage), privateReference],
+    };
+
+    const restored = await fixture.sync();
+
+    assert.equal(restored.direction, 'cloud_to_local');
+    assert.equal(scanBotSkillWorkspace(fixture.skillsRoot).length, 2);
+    assert.match(
+      fs.readFileSync(path.join(fixture.skillsRoot, 'shared-name', 'SKILL.md'), 'utf8'),
+      /new public package/,
+    );
+    const privateFallback = `shared-name-${crypto.createHash('sha256')
+      .update(privatePackage.localSkillId, 'utf8')
+      .digest('hex')
+      .slice(0, 12)}`;
+    assert.match(
+      fs.readFileSync(path.join(fixture.skillsRoot, privateFallback, 'SKILL.md'), 'utf8'),
+      /legacy private package/,
+    );
+    assert.deepEqual(
+      new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.skills
+        .map(entry => entry.reference.skillId)
+        .sort(),
+      fixture.cloud.skills.map(entry => entry.skillId).sort(),
+    );
+    assert.equal((await fixture.sync()).direction, 'none');
   });
 
   test('keeps a public reference after replacing the private sync copy of a local Skill', async () => {
@@ -1164,11 +1212,21 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     fixture.cloud = { revision: 1, skills: [reference] };
     fixture.publicDownloadMisses = 1;
 
+    const sleepDelays: number[] = [];
     const ready = await fixture.finalize({
       localSkillId: target.localSkillId,
       skillName: target.name,
       reference,
-    }, { publicationWaitMs: 100, pollDelayMs: 25 });
+    }, {
+      publicationWaitMs: 1_000,
+      pollDelayMs: 25,
+      // The retry contract is about observing a later package, not whether a
+      // loaded CI worker schedules a 25 ms timer before a 100 ms wall-clock deadline.
+      sleep: async delayMs => { sleepDelays.push(delayMs); },
+    });
+    assert.deepEqual(sleepDelays, [25]);
+    assert.ok(fixture.packageDownloads >= 2);
+    assert.equal(fixture.publicDownloadMisses, 0);
     assert.equal(ready.direction, 'local_to_cloud');
     assert.deepEqual(readBotSkillLocalMarker(target.path)?.reference, reference);
 
@@ -1823,6 +1881,132 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     assert.equal(snapshot.manifest.baseRevision, undefined);
   });
 
+  test('activation keeps a no-Base local workspace when the Cloud Definition is empty', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'legacy', 'legacy', 'legacy local only');
+    fixture.cloud = { revision: 1, skills: [] };
+
+    const result = await fixture.activate();
+
+    assert.equal(result.direction, 'feature_unavailable');
+    assert.equal(result.cloudRevision, 1);
+    assert.equal(result.observedRevision, 1);
+    assert.equal(result.desiredRevision, 1);
+    assert.equal(result.appliedRevision, undefined);
+    assert.equal(result.applyStatus, 'deferred');
+    assert.equal(result.errorCode, 'local_workspace_unverified');
+    assert.equal(fixture.uploads, 0);
+    assert.equal(fixture.patches, 0);
+    assert.match(
+      fs.readFileSync(path.join(fixture.skillsRoot, 'legacy', 'SKILL.md'), 'utf8'),
+      /legacy local only/,
+    );
+    const snapshot = readPendingSnapshot(fixture.runtimeRoot, fixture.botId);
+    assert.equal(result.localPendingEvidence?.path, snapshot.path);
+    assert.equal(snapshot.manifest.reason, 'activation_without_base');
+    assert.equal(snapshot.manifest.cloudRevision, 1);
+    assert.match(
+      fs.readFileSync(path.join(snapshot.path, 'package', 'legacy', 'SKILL.md'), 'utf8'),
+      /legacy local only/,
+    );
+  });
+
+  test('activation accepts an empty no-Base workspace when Cloud is empty', async () => {
+    const fixture = createFixture(roots);
+    fs.mkdirSync(fixture.skillsRoot, { recursive: true });
+    fixture.cloud = { revision: 1, skills: [] };
+
+    const result = await fixture.activate();
+
+    assert.notEqual(result.direction, 'feature_unavailable');
+    assert.equal(fixture.uploads, 0);
+    assert.deepStrictEqual(fixture.definitionService.read(fixture.botId)?.skills, []);
+    assert.deepStrictEqual(
+      new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.skills,
+      [],
+    );
+    assert.equal(readPendingSnapshotIfPresent(fixture.runtimeRoot, fixture.botId), undefined);
+  });
+
+  test('activation keeps a local Skill that appears after an initially absent workspace', async () => {
+    const fixture = createFixture(roots);
+    fs.rmSync(fixture.skillsRoot, { recursive: true, force: true });
+    fixture.cloud = { revision: 1, skills: [] };
+    fixture.onCloudRead = () => {
+      writeSkill(fixture.skillsRoot, 'late-local', 'late-local', 'created during activation');
+    };
+
+    const result = await fixture.activate(false);
+
+    assert.equal(result.direction, 'feature_unavailable');
+    assert.equal(result.cloudRevision, 1);
+    assert.equal(result.observedRevision, 1);
+    assert.equal(result.desiredRevision, 1);
+    assert.equal(result.appliedRevision, undefined);
+    assert.equal(result.applyStatus, 'deferred');
+    assert.match(
+      fs.readFileSync(path.join(fixture.skillsRoot, 'late-local', 'SKILL.md'), 'utf8'),
+      /created during activation/,
+    );
+    const snapshot = readPendingSnapshot(fixture.runtimeRoot, fixture.botId);
+    assert.equal(result.localPendingEvidence?.path, snapshot.path);
+    assert.equal(snapshot.manifest.reason, 'activation_without_base');
+    assert.match(
+      fs.readFileSync(path.join(snapshot.path, 'package', 'late-local', 'SKILL.md'), 'utf8'),
+      /created during activation/,
+    );
+  });
+
+  test('activation keeps dirty Local when Cloud explicitly becomes empty', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'local-a', 'local-a', 'approved local');
+    await fixture.sync();
+    fs.writeFileSync(
+      path.join(fixture.skillsRoot, 'local-a', 'SKILL.md'),
+      '---\nname: local-a\ndescription: unresolved local edit\n---\n',
+    );
+    fixture.cloud = { revision: fixture.cloud.revision + 1, skills: [] };
+    fixture.uploads = 0;
+    fixture.patches = 0;
+
+    const result = await fixture.activate();
+
+    assert.equal(result.direction, 'feature_unavailable');
+    assert.equal(result.applyStatus, 'deferred');
+    assert.equal(result.appliedRevision, undefined);
+    assert.equal(result.errorCode, 'local_workspace_unverified');
+    assert.equal(fixture.uploads, 0);
+    assert.equal(fixture.patches, 0);
+    assert.match(
+      fs.readFileSync(path.join(fixture.skillsRoot, 'local-a', 'SKILL.md'), 'utf8'),
+      /unresolved local edit/,
+    );
+    const snapshot = readPendingSnapshot(fixture.runtimeRoot, fixture.botId);
+    assert.equal(snapshot.manifest.reason, 'activation_local_changed');
+    assert.equal(snapshot.manifest.baseRevision, 1);
+  });
+
+  test('activation still honors an explicit empty Cloud Definition for verified Local', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'local-a', 'local-a', 'approved local');
+    await fixture.sync();
+    fixture.cloud = { revision: fixture.cloud.revision + 1, skills: [] };
+
+    const result = await fixture.activate();
+
+    assert.equal(result.direction, 'cloud_to_local');
+    assert.equal(result.applyStatus, 'applied');
+    assert.equal(result.observedRevision, 2);
+    assert.equal(result.desiredRevision, 2);
+    assert.equal(result.appliedRevision, 2);
+    assert.equal(fs.existsSync(path.join(fixture.skillsRoot, 'local-a')), false);
+    assert.deepStrictEqual(fixture.definitionService.read(fixture.botId)?.skills, []);
+    assert.deepStrictEqual(
+      new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.skills,
+      [],
+    );
+  });
+
   test('activation can use a verified workspace while Cloud is unavailable', async () => {
     const fixture = createFixture(roots);
     writeSkill(fixture.skillsRoot, 'local-a', 'local-a', 'approved local');
@@ -1834,6 +2018,9 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     const result = await fixture.activate();
 
     assert.equal(result.direction, 'feature_unavailable');
+    assert.equal(result.applyStatus, 'deferred');
+    assert.equal(result.appliedRevision, 1);
+    assert.equal(result.errorCode, 'cloud_unavailable');
     assert.equal(fixture.uploads, 0);
     assert.equal(fixture.patches, 0);
     assert.match(
@@ -2091,6 +2278,7 @@ function createFixture(
     patchStatus: 200,
     publicDownloadMisses: 0,
     packageDownloads: 0,
+    onCloudRead: undefined as undefined | (() => Promise<void> | void),
     onPackageDownload: undefined as undefined | (() => Promise<void> | void),
     omitSkillsField: false,
     cloudModel: { kind: 'catalog', modelId: 'minimax-m3' } as BotDefinition['model'],
@@ -2131,6 +2319,7 @@ function createFixture(
       validateScope?: () => Promise<void> | void;
       publicationWaitMs?: number;
       pollDelayMs?: number;
+      sleep?: (delayMs: number) => Promise<void>;
     } = {}) => new BotSkillSyncService({
       runtimeRoot,
       skillsRoot,
@@ -2151,6 +2340,7 @@ function createFixture(
     const url = new URL(String(input));
     const method = init?.method || 'GET';
     if (url.hostname === 'cats.test' && url.pathname === '/api/bot/definition' && method === 'GET') {
+      await fixture.onCloudRead?.();
       if (fixture.cloudReadStatus !== 200) {
         return Response.json({ error: 'cloud unavailable' }, { status: fixture.cloudReadStatus });
       }
@@ -2263,6 +2453,14 @@ function readPendingSnapshot(runtimeRoot: string, botId: string): {
     path: snapshotPath,
     manifest: JSON.parse(fs.readFileSync(path.join(snapshotPath, 'manifest.json'), 'utf8')),
   };
+}
+
+function readPendingSnapshotIfPresent(runtimeRoot: string, botId: string): unknown {
+  const root = path.join(runtimeRoot, 'data', 'bot-skills', 'local-pending', botId);
+  if (!fs.existsSync(root)) return undefined;
+  const directories = fs.readdirSync(root, { withFileTypes: true })
+    .filter(entry => entry.isDirectory() && !entry.name.startsWith('.tmp-'));
+  return directories.length > 0 ? readPendingSnapshot(runtimeRoot, botId) : undefined;
 }
 
 function writeFinalizeJournalFixture(input: {

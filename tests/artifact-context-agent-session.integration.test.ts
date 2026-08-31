@@ -13,14 +13,16 @@ import type { Message } from '../src/types';
 
 const ARTIFACT_REF = `acr_${'a'.repeat(43)}`;
 const ARTIFACT_REF_PATTERN = /acr_[A-Za-z0-9_-]{43}/;
+const ARTIFACT_TASK_REF = `atr_${'t'.repeat(43)}`;
+const ARTIFACT_TASK_REF_PATTERN = /atr_[A-Za-z0-9_-]{43}/;
 
-describe('Artifact context ref AgentSession integration', { concurrency: false }, () => {
-  test('scopes a canonical ref to the current local turn only', async () => {
+describe('Artifact refs AgentSession integration', { concurrency: false }, () => {
+  test('scopes canonical context and task refs to the current local turn only', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-artifact-ref-session-'));
     const originalCwd = process.cwd();
     process.chdir(workspace);
 
-    const firstEnvelope = envelopeForTurn(1, ARTIFACT_REF);
+    const firstEnvelope = envelopeForTurn(1, ARTIFACT_REF, ARTIFACT_TASK_REF);
     const firstRoute = routeForEnvelope(firstEnvelope);
     const providerRequests: Message[][] = [];
     const toolResults: string[] = [];
@@ -29,14 +31,16 @@ describe('Artifact context ref AgentSession integration', { concurrency: false }
 
     const localProbe = [
       'node -e "',
-      "const v=process.env.CATSCO_ARTIFACT_CONTEXT_REF||'';",
-      "process.stdout.write(v==='acr_'+'a'.repeat(43)?'active':v?'stale':'missing')",
+      "const c=process.env.CATSCO_ARTIFACT_CONTEXT_REF||'';",
+      "const t=process.env.CATSCO_ARTIFACT_TASK_REF||'';",
+      "process.stdout.write(c==='acr_'+'a'.repeat(43)&&t==='atr_'+'t'.repeat(43)?'active':c||t?'stale':'missing')",
       '"',
     ].join('');
     const missingProbe = [
       'node -e "',
-      "const v=process.env.CATSCO_ARTIFACT_CONTEXT_REF||'';",
-      "process.stdout.write(v?'unexpected':'missing')",
+      "const c=process.env.CATSCO_ARTIFACT_CONTEXT_REF||'';",
+      "const t=process.env.CATSCO_ARTIFACT_TASK_REF||'';",
+      "process.stdout.write(c||t?'unexpected':'missing')",
       '"',
     ].join('');
 
@@ -88,6 +92,7 @@ describe('Artifact context ref AgentSession integration', { concurrency: false }
         conversationHistory: [],
         surface: 'catscompany',
         artifactContextRef: ARTIFACT_REF,
+        artifactTaskRef: ARTIFACT_TASK_REF,
         targetRoutes: buildTargetRoutes([{
           userId: 'usr8',
           userName: 'Alice',
@@ -101,8 +106,11 @@ describe('Artifact context ref AgentSession integration', { concurrency: false }
           executeTool: async request => {
             remoteRequests.push(request);
             assert.doesNotMatch(JSON.stringify(request), ARTIFACT_REF_PATTERN);
+            assert.doesNotMatch(JSON.stringify(request), ARTIFACT_TASK_REF_PATTERN);
             assert.equal('artifactContextRef' in request.args, false);
+            assert.equal('artifactTaskRef' in request.args, false);
             assert.equal('CATSCO_ARTIFACT_CONTEXT_REF' in request.args, false);
+            assert.equal('CATSCO_ARTIFACT_TASK_REF' in request.args, false);
             return { ok: true, content: 'remote missing' };
           },
         },
@@ -116,8 +124,10 @@ describe('Artifact context ref AgentSession integration', { concurrency: false }
       assert.equal(providerRequests.length, 4);
       for (const request of providerRequests) {
         assert.doesNotMatch(JSON.stringify(request), ARTIFACT_REF_PATTERN);
+        assert.doesNotMatch(JSON.stringify(request), ARTIFACT_TASK_REF_PATTERN);
       }
       assert.doesNotMatch(JSON.stringify((session as any).messages), ARTIFACT_REF_PATTERN);
+      assert.doesNotMatch(JSON.stringify((session as any).messages), ARTIFACT_TASK_REF_PATTERN);
     } finally {
       await session.cleanup();
       process.chdir(originalCwd);
@@ -126,7 +136,11 @@ describe('Artifact context ref AgentSession integration', { concurrency: false }
   });
 });
 
-function envelopeForTurn(seq: number, artifactContextRef?: string): MessageEnvelope {
+function envelopeForTurn(
+  seq: number,
+  artifactContextRef?: string,
+  artifactTaskRef?: string,
+): MessageEnvelope {
   return createCatsCoMessageEnvelope({
     topic: 'p2p_701_743',
     senderId: 'usr701',
@@ -135,6 +149,7 @@ function envelopeForTurn(seq: number, artifactContextRef?: string): MessageEnvel
     botUid: 'usr743',
     metadata: {
       ...(artifactContextRef ? { artifact_context_ref: artifactContextRef } : {}),
+      ...(artifactTaskRef ? { artifact_task_ref: artifactTaskRef } : {}),
       catsco_identity: {
         actor: { user_id: 'usr701' },
         agent: { agent_id: 'usr743', body_id: 'body-main' },
@@ -168,6 +183,7 @@ function turnOptions(envelope: MessageEnvelope, overrides: Record<string, unknow
   return {
     sessionRoute: route,
     artifactContextRef: envelope.artifactContextRef,
+    artifactTaskRef: envelope.artifactTaskRef,
     localDeviceGrant: {
       kind: 'catscompany_body',
       source: 'catscompany',

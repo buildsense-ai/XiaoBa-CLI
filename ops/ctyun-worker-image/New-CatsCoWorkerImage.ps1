@@ -34,6 +34,8 @@ param(
     [string]$ArtifactUrl = "",
     [string]$PrepareScriptUrl = "",
     [string]$PrepareScriptSha256 = "",
+    [string]$BootstrapStatusPutUrl = "",
+    [string]$BootstrapStatusGetUrl = "",
     [string]$BuildNumber = "",
     [string]$BuildAttempt = "1",
     [string]$BuildIdentity = "",
@@ -48,10 +50,21 @@ param(
     [int]$CleanupTimeoutMinutes = 45,
     [ValidateRange(1, 120)]
     [int]$ImageDeleteConfirmMinutes = 8,
+    [ValidateRange(0, 120)]
+    [int]$ImageDeleteConfirmSeconds = 0,
     [ValidateRange(15, 300)]
     [int]$ApiTimeoutSeconds = 90,
     [ValidateRange(5, 300)]
     [int]$LateResourceWaitSeconds = 120,
+    [ValidateRange(0, 60)]
+    [int]$PollIntervalSeconds = 0,
+    [ValidateRange(5, 300)]
+    [int]$ProgressIntervalSeconds = 30,
+    [ValidateRange(1, 30)]
+    [int]$BootstrapStartTimeoutMinutes = 5,
+    [ValidateRange(60, 1800)]
+    [int]$BootstrapStaleSeconds = 180,
+    [switch]$BaseImageHardened,
     [switch]$WaitForLateResources
 )
 
@@ -77,6 +90,168 @@ $script:BakeDescription = ""
 $script:OperationDeadline = $null
 $script:CleanupDeadline = $null
 $script:InCleanup = $false
+$script:StartedAt = Get-Date
+$script:LastProgressAt = $script:StartedAt
+$script:BootstrapMonitorStartedAt = $null
+$script:LastBootstrapPayload = ""
+$script:LastBootstrapUpdateAt = $null
+$script:LastBootstrapPhase = ""
+
+function Write-BakeProgress {
+    param(
+        [Parameter(Mandatory = $true)][string]$Phase,
+        [string]$Detail = "",
+        [switch]$Force
+    )
+
+    $now = Get-Date
+    if (-not $Force -and (($now - $script:LastProgressAt).TotalSeconds -lt $ProgressIntervalSeconds)) {
+        return
+    }
+    $script:LastProgressAt = $now
+    $elapsed = [int][Math]::Floor(($now - $script:StartedAt).TotalSeconds)
+    $deadline = Get-ActiveDeadline
+    $remaining = if ($deadline) {
+        [Math]::Max(0, [int][Math]::Floor(($deadline - $now).TotalSeconds))
+    } else {
+        -1
+    }
+    $suffix = if ([string]::IsNullOrWhiteSpace($Detail)) { "" } else { " $Detail" }
+    Write-Host ("{0} bake-progress phase={1} elapsed_s={2} remaining_s={3}{4}" -f `
+        $now.ToUniversalTime().ToString("o"), $Phase, $elapsed, $remaining, $suffix)
+}
+
+function Wait-PollInterval {
+    param([Parameter(Mandatory = $true)][int]$DefaultSeconds)
+
+    $seconds = if ($PollIntervalSeconds -gt 0) {
+        [Math]::Max(1, [Math]::Min($DefaultSeconds, $PollIntervalSeconds))
+    } else {
+        $DefaultSeconds
+    }
+    Start-Sleep -Seconds $seconds
+}
+
+function Convert-BootstrapResponseContent {
+    param([AllowNull()][object]$Content)
+
+    if ($null -eq $Content) {
+        return ""
+    }
+    if ($Content -is [byte[]]) {
+        $payload = [Text.Encoding]::UTF8.GetString([byte[]]$Content)
+    } else {
+        $payload = [string]$Content
+    }
+    # Some object stores return a UTF-8 BOM even when the object was written
+    # without one. ConvertFrom-Json accepts whitespace, but not a BOM prefix.
+    return $payload.TrimStart([char]0xFEFF)
+}
+
+function Write-BootstrapPayloadDiagnostic {
+    param(
+        [AllowNull()][object]$Content,
+        [Parameter(Mandatory = $true)][int]$Attempt
+    )
+
+    $payload = Convert-BootstrapResponseContent -Content $Content
+    $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
+    $hash = ([Security.Cryptography.SHA256]::Create()).ComputeHash($bytes)
+    $hex = (-join ($bytes | Select-Object -First 32 | ForEach-Object { $_.ToString("x2") }))
+    $type = if ($null -eq $Content) { "null" } else { $Content.GetType().FullName }
+    Write-BakeProgress -Phase "builder-bootstrap-read" -Detail (
+        "parse_attempt={0} content_type={1} bytes={2} sha256={3} prefix_hex={4}" -f
+        $Attempt, $type, $bytes.Length, (-join ($hash | ForEach-Object { $_.ToString("x2") })), $hex
+    ) -Force
+}
+
+function Test-BootstrapStatus {
+    if ([string]::IsNullOrWhiteSpace($BootstrapStatusGetUrl)) {
+        return
+    }
+
+    $now = Get-Date
+    if (-not $script:BootstrapMonitorStartedAt) {
+        $script:BootstrapMonitorStartedAt = $now
+    }
+
+    $payload = ""
+    $status = $null
+    $responseContent = $null
+    $malformed = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $responseContent = $null
+        try {
+            $response = Invoke-WebRequest `
+                -Uri $BootstrapStatusGetUrl `
+                -Method Get `
+                -TimeoutSec 15 `
+                -Headers @{ "Cache-Control" = "no-cache" }
+            $responseContent = $response.Content
+            $payload = Convert-BootstrapResponseContent -Content $responseContent
+        } catch {
+            $payload = ""
+        }
+
+        if ([string]::IsNullOrWhiteSpace($payload)) {
+            $malformed = $false
+            break
+        }
+        try {
+            $status = $payload | ConvertFrom-Json
+            $malformed = $false
+            break
+        } catch {
+            $malformed = $true
+            Write-BootstrapPayloadDiagnostic -Content $responseContent -Attempt $attempt
+            if ($attempt -lt 3) {
+                Start-Sleep -Seconds 1
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($payload)) {
+        if ($payload -ne $script:LastBootstrapPayload) {
+            $script:LastBootstrapPayload = $payload
+            $script:LastBootstrapUpdateAt = $now
+        }
+        if ($malformed -or $null -eq $status) {
+            throw "Builder bootstrap returned malformed status telemetry"
+        }
+        $state = ([string]$status.state).ToLowerInvariant()
+        $phase = [string]$status.phase
+        if ($state -notin @("running", "succeeded", "failed") -or [string]::IsNullOrWhiteSpace($phase)) {
+            throw "Builder bootstrap returned invalid status telemetry"
+        }
+        $age = [Math]::Max(0, [int](($now - $script:LastBootstrapUpdateAt).TotalSeconds))
+        if ($phase -ne $script:LastBootstrapPhase -or $state -ne "running") {
+            Write-BakeProgress -Phase "builder-bootstrap" -Detail ("state={0} phase={1} heartbeat_age_s={2}" -f $state, $phase, $age) -Force
+            $script:LastBootstrapPhase = $phase
+        }
+        if ($state -eq "failed") {
+            $exitCode = [string]$status.exit_code
+            $line = [string]$status.line
+            throw "Builder bootstrap failed: phase=$phase exit_code=$exitCode line=$line"
+        }
+        if ($age -gt $BootstrapStaleSeconds) {
+            throw "Builder bootstrap heartbeat is stale: phase=$phase age_seconds=$age"
+        }
+        return
+    }
+
+    if ($script:LastBootstrapUpdateAt) {
+        $staleSeconds = [int](($now - $script:LastBootstrapUpdateAt).TotalSeconds)
+        if ($staleSeconds -gt $BootstrapStaleSeconds) {
+            throw "Builder bootstrap status is unreachable or stale: phase=$script:LastBootstrapPhase age_seconds=$staleSeconds"
+        }
+        return
+    }
+
+    $missingSeconds = [int](($now - $script:BootstrapMonitorStartedAt).TotalSeconds)
+    if ($missingSeconds -gt ($BootstrapStartTimeoutMinutes * 60)) {
+        throw "Builder bootstrap did not publish initial status within $BootstrapStartTimeoutMinutes minutes"
+    }
+}
 
 function Invoke-External {
     param(
@@ -138,6 +313,13 @@ function Get-ResponseItems {
 function Invoke-Ctyun {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
+    $operation = if ($Arguments.Count -ge 2) {
+        "$($Arguments[0])/$($Arguments[1])"
+    } else {
+        ($Arguments -join "/")
+    }
+    Write-BakeProgress -Phase "api-start" -Detail "operation=$operation" -Force
+    $apiStartedAt = Get-Date
     $timeoutSeconds = Get-BoundedTimeoutSeconds `
         -RequestedSeconds $ApiTimeoutSeconds `
         -Phase "Tianyi Cloud API call"
@@ -159,6 +341,8 @@ function Invoke-Ctyun {
         $description = Get-PropertyValue -InputObject $response -Name "description"
         throw "Tianyi Cloud API failed: $errorCode $message $description"
     }
+    Write-BakeProgress -Phase "api-ok" -Detail ("operation={0} duration_ms={1}" -f `
+        $operation, [int][Math]::Round(((Get-Date) - $apiStartedAt).TotalMilliseconds)) -Force
     return $response
 }
 
@@ -309,7 +493,7 @@ function Resolve-BuilderInstance {
                 1,
                 [Math]::Min(8, [int][Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
             )
-            Start-Sleep -Seconds $sleepSeconds
+            Wait-PollInterval -DefaultSeconds $sleepSeconds
             continue
         }
 
@@ -320,7 +504,7 @@ function Resolve-BuilderInstance {
         if ((Get-Date) -ge $deadline) {
             break
         }
-        Start-Sleep -Seconds 8
+        Wait-PollInterval -DefaultSeconds 8
     } while ($true)
 
     return $null
@@ -347,7 +531,8 @@ function Wait-ForInstance {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$States,
-        [switch]$RequireIP
+        [switch]$RequireIP,
+        [switch]$MonitorBootstrap
     )
 
     $deadline = Get-BoundedDeadline `
@@ -358,11 +543,14 @@ function Wait-ForInstance {
         Assert-TemporaryBuilder $instance
         $state = ([string]$instance.instanceStatus).ToLowerInvariant()
         $ip = [string]$instance.floatingIP
-        Write-Host "builder state=$state ip=$ip"
+        Write-BakeProgress -Phase "builder-wait" -Detail ("state={0} ip_present={1}" -f $state, (-not [string]::IsNullOrWhiteSpace($ip))) -Force
         if ($States -contains $state -and (-not $RequireIP -or $ip)) {
             return $instance
         }
-        Start-Sleep -Seconds 8
+        if ($MonitorBootstrap) {
+            Test-BootstrapStatus
+        }
+        Wait-PollInterval -DefaultSeconds 8
     }
     throw "Timed out waiting for builder state: $($States -join ', ')"
 }
@@ -424,7 +612,7 @@ function Wait-ForPublishedImageIdentity {
         ) {
             return $candidate
         }
-        Start-Sleep -Seconds 5
+        Wait-PollInterval -DefaultSeconds 5
     } while ((Get-Date) -lt $publishDeadline)
 
     throw "Could not verify the published private image identity"
@@ -458,7 +646,7 @@ function Remove-FailedImage {
                 $script:ImageID = [string]$candidate.imageID
                 break
             }
-            Start-Sleep -Seconds 10
+            Wait-PollInterval -DefaultSeconds 10
         }
         if (-not $script:ImageID) {
             throw "Could not prove absence of incomplete image $script:ImageWorkName"
@@ -513,11 +701,16 @@ function Remove-FailedImage {
             }
             break
         }
-        Start-Sleep -Seconds 15
+        Wait-PollInterval -DefaultSeconds 15
     }
 
+    $confirmSeconds = if ($ImageDeleteConfirmSeconds -gt 0) {
+        $ImageDeleteConfirmSeconds
+    } else {
+        $ImageDeleteConfirmMinutes * 60
+    }
     $deleteDeadline = Get-BoundedDeadline `
-        -RequestedSeconds ($ImageDeleteConfirmMinutes * 60) `
+        -RequestedSeconds $confirmSeconds `
         -Phase "incomplete image deletion confirmation"
     while ((Get-Date) -lt $deleteDeadline) {
         $remaining = Get-Image -ImageID $script:ImageID
@@ -525,7 +718,7 @@ function Remove-FailedImage {
             $script:PreserveBuilderForImageRecovery = $false
             return
         }
-        Start-Sleep -Seconds 10
+        Wait-PollInterval -DefaultSeconds 10
     }
     throw "Could not confirm deletion of incomplete image $script:ImageID"
 }
@@ -546,7 +739,7 @@ function Remove-Builder {
         # otherwise a billed ECS could be left behind after the image is ready.
         $emptyReads = 1
         while ($emptyReads -lt 3) {
-            Start-Sleep -Seconds 5
+            Wait-PollInterval -DefaultSeconds 5
             $instance = Resolve-BuilderInstance
             if ($instance) { break }
             $emptyReads++
@@ -598,7 +791,7 @@ function Remove-Builder {
             $confirmEmptyReads = 0
             Assert-TemporaryBuilder $remaining
         }
-        Start-Sleep -Seconds 8
+        Wait-PollInterval -DefaultSeconds 8
     }
     throw "Could not confirm deletion of temporary builder $script:BuilderID"
 }
@@ -644,7 +837,7 @@ function Remove-KeyPair {
         if ($WaitForLate -and (Get-Date) -ge $keyDiscoveryDeadline) {
             break
         }
-        Start-Sleep -Seconds 5
+        Wait-PollInterval -DefaultSeconds 5
     } while ($true)
     if ($existing.Count -eq 0) {
         Write-Host "No temporary key pair record remains for $script:KeyPairName"
@@ -700,7 +893,7 @@ function Remove-KeyPair {
         } else {
             $confirmEmptyReads = 0
         }
-        Start-Sleep -Seconds 5
+        Wait-PollInterval -DefaultSeconds 5
     }
     throw "Could not confirm deletion of temporary key pair $script:KeyPairName"
 }
@@ -813,7 +1006,7 @@ function Invoke-ExactBakeCleanup {
         if (-not $candidateBuilder -and -not $WaitForLateResources) {
             $emptyReads = 1
             while ($emptyReads -lt 3) {
-                Start-Sleep -Seconds 5
+                Wait-PollInterval -DefaultSeconds 5
                 $candidateBuilder = Resolve-BuilderInstance
                 if ($candidateBuilder) { break }
                 $emptyReads++
@@ -837,7 +1030,7 @@ function Invoke-ExactBakeCleanup {
             $imageEmptyReads++
             if (-not $WaitForLateResources -and $imageEmptyReads -ge 3) { break }
             if ($WaitForLateResources -and (Get-Date) -ge $discoveryDeadline) { break }
-            Start-Sleep -Seconds 10
+            Wait-PollInterval -DefaultSeconds 10
         } while ($true)
     } catch {
         $errors.Add("image discovery: $($_.Exception.Message)")
@@ -911,7 +1104,7 @@ function Invoke-ExactBakeCleanup {
                 $keyEmptyReads++
                 if (-not $WaitForLateResources -and $keyEmptyReads -ge 3) { break }
                 if ($WaitForLateResources -and (Get-Date) -ge $discoveryDeadline) { break }
-                Start-Sleep -Seconds 5
+                Wait-PollInterval -DefaultSeconds 5
             } while ($true)
             if ($candidateKeyPair.Count -eq 1) {
                 $script:KeyPairCreateAttempted = $true
@@ -1064,6 +1257,17 @@ if ($Mode -eq "Create") {
     if ($PrepareScriptSha256 -notmatch "^[0-9a-fA-F]{64}$") {
         throw "PrepareScriptSha256 must be a SHA-256 hex digest in Create mode"
     }
+    if ([string]::IsNullOrWhiteSpace($BootstrapStatusPutUrl) -ne [string]::IsNullOrWhiteSpace($BootstrapStatusGetUrl)) {
+        throw "BootstrapStatusPutUrl and BootstrapStatusGetUrl must be supplied together"
+    }
+    foreach ($statusUrl in @($BootstrapStatusPutUrl, $BootstrapStatusGetUrl)) {
+        if (-not [string]::IsNullOrWhiteSpace($statusUrl)) {
+            $statusUri = $null
+            if (-not [Uri]::TryCreate($statusUrl, [UriKind]::Absolute, [ref]$statusUri) -or $statusUri.Scheme -ne "https") {
+                throw "Bootstrap status URLs must be absolute HTTPS URLs in Create mode"
+            }
+        }
+    }
 }
 
 $plan = [ordered]@{
@@ -1153,6 +1357,7 @@ $cleanupFailure = $null
 $result = $null
 
 try {
+    Write-BakeProgress -Phase "prepare" -Detail "creating temporary key pair and builder" -Force
     Invoke-External -Command "ssh-keygen" -Arguments @(
         "-q", "-t", "rsa", "-b", "3072",
         "-N", "",
@@ -1206,6 +1411,7 @@ try {
     if (-not $script:KeyPairID) {
         throw "Imported key pair could not be resolved"
     }
+    Write-BakeProgress -Phase "keypair-imported" -Detail "key_pair_id=$script:KeyPairID" -Force
 
     $existingBuilderResponse = Invoke-Ctyun @(
         "ecs", "ListEcsInstances",
@@ -1228,51 +1434,107 @@ try {
     $prepareScriptUrlBase64 = [Convert]::ToBase64String(
         [Text.Encoding]::UTF8.GetBytes($PrepareScriptUrl)
     )
+    $statusPutUrlBase64 = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes($BootstrapStatusPutUrl)
+    )
+    $baseImageHardenedValue = $BaseImageHardened.IsPresent.ToString().ToLowerInvariant()
     $artifactName = "catsco-worker-$releaseId-linux-x64.tar.gz"
     $bootstrapScript = @"
 #!/usr/bin/env bash
 set -Eeuo pipefail
+export CATSCO_BASE_IMAGE_HARDENED='$baseImageHardenedValue'
 exec > >(tee -a /var/log/catsco-image-build.log) 2>&1
+date -Is > /run/catsco-image-bootstrap-started
 artifact_url="`$(printf '%s' '$artifactUrlBase64' | base64 -d)"
 prepare_script_url="`$(printf '%s' '$prepareScriptUrlBase64' | base64 -d)"
-curl --fail --silent --show-error --location --retry 8 --retry-all-errors \
+status_put_url="`$(printf '%s' '$statusPutUrlBase64' | base64 -d)"
+status_file=/run/catsco-image-bootstrap-phase
+status_lock=/run/catsco-image-bootstrap-status.lock
+heartbeat_pid=''
+acquire_status_lock() {
+  while ! mkdir "`$status_lock" 2>/dev/null; do
+    sleep 0.05
+  done
+}
+release_status_lock() {
+  rmdir "`$status_lock" 2>/dev/null || true
+}
+publish_status() {
+  local state="`$1" phase_name="`$2" exit_code="`${3:-0}" line="`${4:-0}"
+  [[ -n "`$status_put_url" ]] || return 0
+  acquire_status_lock
+  printf '{"state":"%s","phase":"%s","exit_code":%s,"line":%s,"epoch":%s}\n' \
+    "`$state" "`$phase_name" "`$exit_code" "`$line" "`$(date +%s)" >/run/catsco-image-bootstrap-status.json
+  if curl --fail --silent --request PUT --connect-timeout 10 --max-time 20 \
+    --retry 2 --retry-all-errors --data-binary @/run/catsco-image-bootstrap-status.json \
+    "`$status_put_url" >/dev/null 2>&1; then
+    : # ok
+  else
+    # Surface in the builder log so cleanup diagnostics can still see it even
+    # though the runner only observes the TOS object.
+    echo "status publish failed (phase=`$phase_name)" >&2
+  fi
+  release_status_lock
+}
+phase() {
+  printf '%s\n' "`$1" | tee "`$status_file"
+  publish_status running "`$1"
+}
+heartbeat() {
+  while true; do
+    current_phase="`$(cat "`$status_file" 2>/dev/null || printf bootstrap-start)"
+    publish_status running "`$current_phase"
+    sleep 30
+  done
+}
+finish() {
+  rc=`$?
+  trap - EXIT
+  if [[ -n "`$heartbeat_pid" ]]; then
+    kill "`$heartbeat_pid" >/dev/null 2>&1 || true
+    wait "`$heartbeat_pid" 2>/dev/null || true
+  fi
+  if [[ `$rc -ne 0 ]]; then
+    current_phase="`$(cat "`$status_file" 2>/dev/null || printf bootstrap-start)"
+    publish_status failed "`$current_phase" "`$rc" "`${BASH_LINENO[0]:-0}"
+  fi
+  exit "`$rc"
+}
+trap finish EXIT
+curl_common=(--fail --silent --show-error --location --ipv4 \
+  --connect-timeout 20 --max-time 900 --retry 8 --retry-all-errors \
+  --retry-delay 5 --retry-max-time 1800)
+phase bootstrap-start
+heartbeat &
+heartbeat_pid=`$!
+phase download-prepare-script
+curl "`${curl_common[@]}" \
   "`$prepare_script_url" --output /tmp/prepare-image.sh
 printf '%s  %s\n' '$($PrepareScriptSha256.ToLowerInvariant())' /tmp/prepare-image.sh | sha256sum --check --strict
 chmod 700 /tmp/prepare-image.sh
-curl --fail --silent --show-error --location --retry 8 --retry-all-errors \
+phase download-worker-artifact
+curl "`${curl_common[@]}" \
   "`$artifact_url" --output '/tmp/$artifactName'
+phase prepare-worker-artifact
+CATSCO_IMAGE_PHASE_FILE="`$status_file" \
 bash /tmp/prepare-image.sh \
   --artifact '/tmp/$artifactName' \
   --sha256 '$ArtifactSha256' \
   --version '$version' \
   --commit '$commit'
 rm -f '/tmp/$artifactName'
-bash /tmp/prepare-image.sh --finalize
+phase finalize-worker-image
+CATSCO_IMAGE_PHASE_FILE="`$status_file" bash /tmp/prepare-image.sh --finalize
 sync
+phase shutdown
+publish_status succeeded shutdown
 shutdown -h now
 "@
-    # Tianyi's cloud-init images are more reliable when userData is an
-    # explicit cloud-config document. Keep the actual bootstrap as a decoded
-    # file and invoke it through runcmd so a valid shell shebang is not left
-    # to provider-specific userData handling.
-    $bootstrapBase64 = [Convert]::ToBase64String(
-        [Text.Encoding]::UTF8.GetBytes($bootstrapScript)
-    )
-    $cloudConfig = @"
-#cloud-config
-output:
-  all: '| tee -a /var/log/catsco-image-cloud-init-output.log'
-bootcmd:
-  - [ /bin/sh, -c, "date -Is > /run/catsco-image-bootstrap-started" ]
-write_files:
-  - path: /usr/local/sbin/catsco-image-bootstrap.sh
-    encoding: b64
-    permissions: '0700'
-    content: $bootstrapBase64
-runcmd:
-  - [ /bin/bash, /usr/local/sbin/catsco-image-bootstrap.sh ]
-"@
-    $userData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cloudConfig))
+    # Tianyi's Ubuntu 24.04 public image executes raw shebang userData but did
+    # not execute an equivalent #cloud-config document in a live no-public-IP
+    # probe. Pass the bootstrap script directly so cloud-init's shell handler
+    # owns the execution path that the platform actually supports.
+    $userData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bootstrapScript))
     if ($userData.Length -gt 16384) {
         throw "Generated builder userData exceeds Tianyi Cloud's 16384-character limit"
     }
@@ -1313,17 +1575,20 @@ runcmd:
         throw "CreateEcsInstance did not return masterResourceID"
     }
     $script:BuilderCreateAttempted = $true
+    Write-BakeProgress -Phase "builder-created" -Detail "builder_name=$script:BuilderName resource_id=$script:BuilderResourceID" -Force
 
     $builder = Resolve-BuilderInstance -WaitSeconds ($TimeoutMinutes * 60)
     if (-not $builder) {
         throw "Timed out resolving the temporary builder instance"
     }
     Assert-TemporaryBuilder $builder
+    Write-BakeProgress -Phase "builder-resolved" -Detail "builder_id=$script:BuilderID" -Force
 
     # cloud-init powers off only after artifact verification, preparation and
-    # finalization all succeed. A failed bootstrap stays running, times out,
-    # and is removed by the existing compensating cleanup path.
-    Wait-ForInstance -States @("stopped", "shutoff") | Out-Null
+    # finalization all succeed. Failed or stale bootstrap telemetry aborts this
+    # wait early and enters the existing compensating cleanup path.
+    Wait-ForInstance -States @("stopped", "shutoff") -MonitorBootstrap | Out-Null
+    Write-BakeProgress -Phase "builder-stopped" -Detail "cloud-init completed; starting image capture" -Force
 
     $script:ImageCreateAttempted = $true
     $imageResponse = Invoke-Ctyun @(
@@ -1344,6 +1609,7 @@ runcmd:
     if (-not $script:ImageID) {
         throw "CreateImage did not return an image ID"
     }
+    Write-BakeProgress -Phase "image-capture-started" -Detail "image_id=$script:ImageID" -Force
 
     $deadline = Get-BoundedDeadline `
         -RequestedSeconds ($TimeoutMinutes * 60) `
@@ -1354,7 +1620,7 @@ runcmd:
             throw "Private image disappeared during creation"
         }
         $status = ([string]$currentImage.imageStatus).ToLowerInvariant()
-        Write-Host "image state=$status progress=$($currentImage.taskProgress)"
+        Write-BakeProgress -Phase "image-capture" -Detail ("state={0} progress={1}" -f $status, $currentImage.taskProgress) -Force
         if ($status -eq "active") {
             if ([string]$currentImage.sourceServerID -ne $script:BuilderID) {
                 throw (
@@ -1375,6 +1641,7 @@ runcmd:
                 -PublishedDescription $bakeDescription
             $script:ImageActive = $true
             $script:Completed = $true
+            Write-BakeProgress -Phase "image-capture-active" -Detail "image_id=$script:ImageID" -Force
             $result = [ordered]@{
                 result = "created"
                 imageID = $script:ImageID
@@ -1389,17 +1656,19 @@ runcmd:
         if ($status -in @("error", "killed", "deleted")) {
             throw "Image creation entered terminal failure state: $status"
         }
-        Start-Sleep -Seconds 15
+        Wait-PollInterval -DefaultSeconds 15
     }
     if (-not $script:Completed) {
         throw "Timed out waiting for private image creation"
     }
 } catch {
     $primaryFailure = $_.Exception.Message
+    Write-BakeProgress -Phase "failed" -Detail $primaryFailure -Force
 } finally {
     $script:InCleanup = $true
     $script:CleanupDeadline = (Get-Date).AddMinutes($CleanupTimeoutMinutes)
     try {
+        Write-BakeProgress -Phase "cleanup-start" -Detail "failure=$(-not $script:Completed)" -Force
         Remove-TemporaryResources `
             -Failure:(-not $script:Completed) `
             -WaitForLate:$WaitForLateResources

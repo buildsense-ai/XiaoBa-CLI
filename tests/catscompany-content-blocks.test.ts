@@ -373,6 +373,7 @@ describe('CatsCo content blocks', () => {
 
   test('publishes ordered running and completed states for a CatsCo user turn', async () => {
     const { bot, session, taskStatuses } = createProcessHarness();
+    const artifactTaskRef = `atr_${'s'.repeat(43)}`;
     session.handleMessage = async () => ({ visibleToUser: true, text: '处理完成' });
 
     await (bot as any).processParsedMessage({
@@ -382,6 +383,7 @@ describe('CatsCo content blocks', () => {
       seq: 10,
       text: '请完成这个任务',
       rawContent: '请完成这个任务',
+      artifactTaskRef,
     }, 'cc_user:usr1');
     await new Promise(resolve => setTimeout(resolve, 0));
 
@@ -393,6 +395,8 @@ describe('CatsCo content blocks', () => {
       ],
     );
     assert.strictEqual(taskStatuses[0].status.run_id, taskStatuses[1].status.run_id);
+    assert.strictEqual(taskStatuses[0].status.artifact_task_ref, artifactTaskRef);
+    assert.strictEqual(taskStatuses[1].status.artifact_task_ref, artifactTaskRef);
   });
 
   test('finishes active task status before disconnecting during shutdown', async () => {

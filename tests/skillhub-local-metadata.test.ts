@@ -89,4 +89,33 @@ describe('SkillHub local metadata', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('keeps local publication state stable when runtime caches change', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skillhub-cache-hash-'));
+    try {
+      const skillDir = path.join(root, 'demo');
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(skillDir, 'SKILL.md'),
+        '---\nname: demo\ndescription: Runtime cache hash test\n---\n',
+      );
+      const before = computeLocalSkillContentHash(skillDir);
+      for (const directory of [
+        '.cache',
+        '.mypy_cache',
+        '.pytest_cache',
+        '.ruff_cache',
+        '__pycache__',
+      ]) {
+        const cacheFile = path.join(skillDir, directory, 'runtime.bin');
+        fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+        fs.writeFileSync(cacheFile, Buffer.alloc(2 * 1024 * 1024 + 1));
+      }
+
+      assert.equal(computeLocalSkillContentHash(skillDir), before);
+      assert.equal(fs.existsSync(path.join(skillDir, '.cache', 'runtime.bin')), true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

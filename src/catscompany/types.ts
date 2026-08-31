@@ -19,12 +19,20 @@ export interface CatsCompanyConfig {
   installationId?: string;
   /**
    * Owner-provisioned credential for the concrete Runtime body/installation.
-   * This is separate from the Bot API key and currently grants only the right
-   * to request a candidate-bound Skill mutation grant.
+   * This is separate from the Bot API key and grants only the right to request
+   * a candidate-bound Skill mutation grant.
    */
   runtimeCredential?: string;
   /** Expiry of an automatically provisioned Runtime credential, in Unix milliseconds. */
   runtimeCredentialExpiresAt?: number;
+  /**
+   * Dedicated credential explicitly issued with the activation ACK scope.
+   * The ACK worker must never fall back to runtimeCredential because old
+   * Runtime credentials are grant-only and must not be silently upgraded.
+   */
+  runtimeActivationAckCredential?: string;
+  /** Expiry of an automatically provisioned activation ACK credential. */
+  runtimeActivationAckCredentialExpiresAt?: number;
   /** 当前本机设备归属的 CatsCo 用户 uid，用于区分本地自用与外部委托 */
   ownerUserId?: string;
   /** 用户可见设备名，用于 Dashboard 展示和服务端设备选择 */
@@ -65,6 +73,8 @@ export interface ParsedCatsMessage {
   executionScope: ExecutionScope;
   /** 仅当前 turn 有效的 opaque Artifact context ref。 */
   artifactContextRef?: string;
+  /** 仅当前 turn 有效的 opaque Artifact task ref。 */
+  artifactTaskRef?: string;
   /** 服务端签发的当前 turn 用户设备授权 */
   deviceGrants?: ScopedDeviceGrant[];
   /** 服务端为当前 turn 选择的用户设备，或要求先选择设备 */

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { renameBotSkillWorkspaceSync } from './workspace-fs';
 
 interface BotSkillWorkspaceState {
   schema: 'xiaoba.bot-skill-workspace.v1';
@@ -54,7 +55,7 @@ export class BotSkillWorkspaceService {
       }
       if (fs.existsSync(parked)) {
         fs.mkdirSync(path.dirname(this.activeRoot), { recursive: true });
-        fs.renameSync(parked, this.activeRoot);
+        renameBotSkillWorkspaceSync(parked, this.activeRoot);
         this.writeState({ schema: WORKSPACE_SCHEMA, activeBotId: targetBotId });
         return {
           botId: targetBotId,
@@ -96,7 +97,7 @@ export class BotSkillWorkspaceService {
     try {
       fs.mkdirSync(this.parkedRoot, { recursive: true });
       if (fs.existsSync(this.activeRoot)) {
-        fs.renameSync(this.activeRoot, previousParked);
+        renameBotSkillWorkspaceSync(this.activeRoot, previousParked);
         previousParkedNow = true;
       }
       this.writeState({
@@ -107,7 +108,7 @@ export class BotSkillWorkspaceService {
       });
       const targetExisted = fs.existsSync(targetParked);
       if (targetExisted) {
-        fs.renameSync(targetParked, this.activeRoot);
+        renameBotSkillWorkspaceSync(targetParked, this.activeRoot);
       }
       this.writeState({ schema: WORKSPACE_SCHEMA, activeBotId: targetBotId });
       return {
@@ -119,7 +120,7 @@ export class BotSkillWorkspaceService {
       };
     } catch (error) {
       if (!fs.existsSync(this.activeRoot) && previousParkedNow && fs.existsSync(previousParked)) {
-        fs.renameSync(previousParked, this.activeRoot);
+        renameBotSkillWorkspaceSync(previousParked, this.activeRoot);
       }
       this.writeState({ schema: WORKSPACE_SCHEMA, activeBotId: previousBotId });
       throw error;
@@ -137,12 +138,12 @@ export class BotSkillWorkspaceService {
     }
     if (fs.existsSync(this.activeRoot)) {
       fs.mkdirSync(this.parkedRoot, { recursive: true });
-      fs.renameSync(this.activeRoot, targetParked);
+      renameBotSkillWorkspaceSync(this.activeRoot, targetParked);
     }
     if (!fs.existsSync(previousParked)) {
       throw new Error(`Cannot rollback Bot Skill workspace because previous workspace is missing: ${previousParked}`);
     }
-    fs.renameSync(previousParked, this.activeRoot);
+    renameBotSkillWorkspaceSync(previousParked, this.activeRoot);
     this.writeState({ schema: WORKSPACE_SCHEMA, activeBotId: activation.previousBotId });
   }
 
@@ -160,7 +161,7 @@ export class BotSkillWorkspaceService {
         return;
       }
       if (fs.existsSync(previousParked)) {
-        fs.renameSync(previousParked, this.activeRoot);
+        renameBotSkillWorkspaceSync(previousParked, this.activeRoot);
         this.writeState({ schema: WORKSPACE_SCHEMA, activeBotId: previousBotId });
         return;
       }
@@ -174,12 +175,12 @@ export class BotSkillWorkspaceService {
       return;
     }
     if (fs.existsSync(targetParked)) {
-      fs.renameSync(targetParked, this.activeRoot);
+      renameBotSkillWorkspaceSync(targetParked, this.activeRoot);
       this.writeState({ schema: WORKSPACE_SCHEMA, activeBotId: targetBotId });
       return;
     }
     if (fs.existsSync(previousParked)) {
-      fs.renameSync(previousParked, this.activeRoot);
+      renameBotSkillWorkspaceSync(previousParked, this.activeRoot);
       this.writeState({ schema: WORKSPACE_SCHEMA, activeBotId: previousBotId });
       return;
     }

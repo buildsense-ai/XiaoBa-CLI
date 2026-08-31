@@ -1,4 +1,5 @@
 import type { OpenAIApiMode, ReasoningEffort } from '../types';
+import type { RelayModelRuntimeDescriptor } from '../utils/relay-model-profiles';
 
 export const BOT_DEFINITION_SCHEMA = 'xiaoba.bot-definition.v1';
 export const BOT_CATALOG_MODEL_RUNTIME_SCHEMA = 'xiaoba.bot-catalog-model-runtime.v1';
@@ -18,6 +19,8 @@ export interface CatalogBotModelDefinition {
    * the catalog cannot drift from what devices actually send upstream.
    */
   contextWindowTokens?: number;
+  /** Cloud-authoritative non-secret runtime metadata for dynamic catalog models. */
+  catalogRuntime?: RelayModelRuntimeDescriptor;
 }
 
 /**

@@ -7,6 +7,7 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { withArtifactContextRefEnvironment } from '../utils/artifact-context-ref';
+import { withArtifactTaskRefEnvironment } from '../utils/artifact-task-ref';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
@@ -167,9 +168,12 @@ export class ShellTool implements Tool {
       env: process.env,
       probeVersion: false,
     });
-    const commandEnvironment = withArtifactContextRefEnvironment(
-      runtimeEnvironment.env,
-      context.artifactContextRef,
+    const commandEnvironment = withArtifactTaskRefEnvironment(
+      withArtifactContextRefEnvironment(
+        runtimeEnvironment.env,
+        context.artifactContextRef,
+      ),
+      context.artifactTaskRef,
     );
     const scopedRuntimeEnvironment = {
       ...runtimeEnvironment,

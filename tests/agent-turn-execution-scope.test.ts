@@ -20,6 +20,8 @@ test('AgentSession accepts executionScope in HandleMessageOptions', () => {
   assert.match(agentSessionSource, /localFileGrants\s*=\s*opts\.localFileGrants/);
   assert.match(agentSessionSource, /artifactContextRef\?:\s*string/);
   assert.match(agentSessionSource, /artifactContextRef\s*=\s*opts\.artifactContextRef/);
+  assert.match(agentSessionSource, /artifactTaskRef\?:\s*string/);
+  assert.match(agentSessionSource, /artifactTaskRef\s*=\s*opts\.artifactTaskRef/);
 });
 
 test('AgentTurnController forwards executionScope into ToolExecutionContext', () => {
@@ -37,6 +39,8 @@ test('AgentTurnController forwards executionScope into ToolExecutionContext', ()
   assert.match(agentTurnSource, /localFileGrants:\s*options\.localFileGrants/);
   assert.match(agentTurnSource, /artifactContextRef:\s*params\.artifactContextRef/);
   assert.match(agentTurnSource, /artifactContextRef:\s*options\.artifactContextRef/);
+  assert.match(agentTurnSource, /artifactTaskRef:\s*params\.artifactTaskRef/);
+  assert.match(agentTurnSource, /artifactTaskRef:\s*options\.artifactTaskRef/);
 });
 
 test('ToolExecutionContext exposes executionScope for future ToolGateway checks', () => {
@@ -45,6 +49,7 @@ test('ToolExecutionContext exposes executionScope for future ToolGateway checks'
   assert.match(toolTypesSource, /deviceGrants\?:\s*ScopedDeviceGrant\[\]/);
   assert.match(toolTypesSource, /localFileGrants\?:\s*ScopedLocalFileGrant\[\]/);
   assert.match(toolTypesSource, /artifactContextRef\?:\s*string/);
+  assert.match(toolTypesSource, /artifactTaskRef\?:\s*string/);
 });
 
 test('AgentTurnController image history replacement can preserve opaque attachment references', () => {

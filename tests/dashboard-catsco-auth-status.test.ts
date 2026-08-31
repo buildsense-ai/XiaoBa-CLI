@@ -61,6 +61,7 @@ describe('dashboard CatsCo account status', () => {
     'CATSCOMPANY_DEVICE_ID',
     'CATSCOMPANY_BODY_ID',
     'CATSCOMPANY_INSTALLATION_ID',
+    'XIAOBA_RUNTIME_ROLE',
     'CATSCO_ALLOW_LOCAL_ENDPOINTS',
     'CATSCOMPANY_ALLOW_LOCAL_ENDPOINTS',
     'WEIXIN_TOKEN',
@@ -557,6 +558,24 @@ describe('dashboard CatsCo account status', () => {
   });
 
   test('POST /cats/auth/login writes both CatsCo and CatsCompany env aliases', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      account: { token: 'old-token', uid: '66', username: 'old-user', displayName: 'Old User' },
+      currentBot: {
+        uid: '166',
+        name: 'Old Agent',
+        username: 'old-agent',
+        apiKey: 'old-agent-key',
+        boundByUserUid: '66',
+        bindingSource: 'test',
+      },
+    });
+    writeEnv([
+      'CATSCO_BOT_UID=166',
+      'CATSCO_API_KEY=old-agent-key',
+      'CATSCOMPANY_BOT_UID=166',
+      'CATSCOMPANY_API_KEY=old-agent-key',
+    ]);
     await startCatsServer((req, res) => {
       if (req.path === '/api/auth/login') {
         assert.deepStrictEqual(req.body, {
@@ -598,6 +617,99 @@ describe('dashboard CatsCo account status', () => {
     const persisted = createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load();
     assert.equal(persisted.account?.token, 'new-user-token');
     assert.equal(persisted.account?.uid, '77');
+    assert.equal(persisted.currentBot, undefined);
+    assert.equal(env.CATSCO_BOT_UID, undefined);
+    assert.equal(env.CATSCO_API_KEY, undefined);
+    assert.equal(env.CATSCOMPANY_BOT_UID, undefined);
+    assert.equal(env.CATSCOMPANY_API_KEY, undefined);
+  });
+
+  test('GET /cats/status does not expose an Agent that belongs to the previous account', async () => {
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 88, username: 'arrowhaken', display_name: 'arrowhaken' });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({ body_id: '', active: false });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: catsBaseUrl, serverUrl: 'wss://app.catsco.cc/v0/channels' },
+      account: { token: 'arrow-token', uid: '88', username: 'arrowhaken', displayName: 'arrowhaken' },
+      currentBot: {
+        uid: '188',
+        name: 'David',
+        username: 'david',
+        apiKey: 'david-key',
+        boundByUserUid: '77',
+        bindingSource: 'old-account',
+      },
+    });
+    writeEnv([
+      `CATSCO_HTTP_BASE_URL=${catsBaseUrl}`,
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_USER_TOKEN=arrow-token',
+      'CATSCO_USER_UID=88',
+      'CATSCO_BOT_UID=188',
+      'CATSCO_API_KEY=david-key',
+    ]);
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.user.username, 'arrowhaken');
+    assert.equal(data.botUid, null);
+    assert.equal(data.bot, null);
+  });
+
+  test('GET /cats/bots only offers Agents owned by the current account', async () => {
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/bots') {
+        return res.json({
+          bots: [
+            {
+              uid: 188,
+              username: 'david',
+              display_name: 'David',
+              is_owner: false,
+              relation: 'friend',
+              owner_id: 77,
+            },
+            {
+              uid: 198,
+              username: 'unknown-owner',
+              display_name: 'Unknown Owner',
+            },
+            {
+              uid: 199,
+              username: 'laomocun',
+              display_name: '烙馍村村长',
+              is_owner: true,
+              relation: 'owner',
+              owner_id: 88,
+            },
+          ],
+        });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeEnv([
+      `CATSCO_HTTP_BASE_URL=${catsBaseUrl}`,
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_USER_TOKEN=arrow-token',
+      'CATSCO_USER_UID=88',
+      'CATSCO_BOT_UID=198',
+    ]);
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/bots`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.deepStrictEqual(data.bots.map((bot: any) => bot.uid), ['199']);
+    assert.equal(data.currentBotUid, '');
   });
 
   test('POST /cats/auth/register requests a persistent token after registration', async () => {
@@ -652,9 +764,25 @@ describe('dashboard CatsCo account status', () => {
   });
 
   test('POST /cats/desktop-connect exchanges a web login code and persists CatsCo account aliases', async () => {
+    process.env.XIAOBA_RUNTIME_ROLE = 'desktop';
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      device: {
+        deviceId: 'device-local',
+        bodyId: 'body-local',
+        installationId: 'install-local',
+        name: 'CK123',
+      },
+    });
     await startCatsServer((req, res) => {
       if (req.path === '/api/desktop-connect/exchange') {
-        assert.deepStrictEqual(req.body, { code: 'one-time-code' });
+        assert.deepStrictEqual(req.body, {
+          code: 'one-time-code',
+          device_id: 'device-local',
+          installation_id: 'install-local',
+          display_name: 'CK123',
+          runtime_role: 'desktop',
+        });
         return res.json({
           token: 'desktop-user-token',
           uid: 91,
@@ -873,7 +1001,7 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.service.status, 'running');
   });
 
-  test('POST /cats/setup reuses an existing owned bot instead of creating a default bot', async () => {
+  test('POST /cats/setup ignores stale friend and unknown-owner bots, then reuses an owned Agent', async () => {
     if (dashboardServer) {
       await close(dashboardServer);
       dashboardServer = undefined;
@@ -909,9 +1037,27 @@ describe('dashboard CatsCo account status', () => {
           bots: [{
             id: 188,
             uid: 188,
+            username: 'old-friend-agent',
+            display_name: 'Old Friend Agent',
+            api_key: 'old-friend-agent-key',
+            is_owner: false,
+            relation: 'friend',
+            owner_id: 77,
+          }, {
+            id: 198,
+            uid: 198,
+            username: 'unknown-owner-agent',
+            display_name: 'Unknown Owner Agent',
+            api_key: 'unknown-owner-agent-key',
+          }, {
+            id: 199,
+            uid: 199,
             username: 'existing-agent',
             display_name: 'Existing Agent',
             api_key: 'existing-agent-key',
+            is_owner: true,
+            relation: 'owner',
+            owner_id: 88,
           }],
         });
       }
@@ -935,12 +1081,14 @@ describe('dashboard CatsCo account status', () => {
       'CATSCO_USER_UID=88',
       'CATSCO_USER_NAME=fresh',
       'CATSCO_USER_DISPLAY_NAME=Fresh User',
+      'CATSCO_BOT_UID=198',
+      'CATSCO_API_KEY=unknown-owner-agent-key',
       'GAUZ_LLM_PROVIDER=anthropic',
       'GAUZ_LLM_API_BASE=https://model.example.test/v1/messages',
       'GAUZ_LLM_API_KEY=sk-test',
       'GAUZ_LLM_MODEL=test-model',
     ]);
-    seedVerifiedEmptyBotSkillWorkspace(testRoot, '188');
+    seedVerifiedEmptyBotSkillWorkspace(testRoot, '199');
 
     const response = await fetch(`${dashboardBaseUrl}/api/cats/setup`, {
       method: 'POST',
@@ -958,9 +1106,9 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(response.status, 200, text);
     assert.equal(data.ok, true);
     assert.equal(data.botSelectionSource, 'first-owned-bot');
-    assert.equal(data.bot.uid, '188');
+    assert.equal(data.bot.uid, '199');
     assert.equal(data.bot.display_name, 'Existing Agent');
-    assert.equal(env.CATSCO_BOT_UID, '188');
+    assert.equal(env.CATSCO_BOT_UID, '199');
     assert.equal(env.CATSCO_API_KEY, 'existing-agent-key');
     assert.equal(createBotCalls, 0);
   });
@@ -999,8 +1147,8 @@ describe('dashboard CatsCo account status', () => {
       if (req.path === '/api/bots' && req.method === 'GET') {
         return res.json({
           bots: [
-            { uid: 188, username: 'first-agent', display_name: 'First Agent', api_key: 'first-agent-key' },
-            { uid: 199, username: 'last-agent', display_name: 'Last Agent', api_key: 'last-agent-key' },
+            { uid: 188, username: 'first-agent', display_name: 'First Agent', api_key: 'first-agent-key', owner_id: 88 },
+            { uid: 199, username: 'last-agent', display_name: 'Last Agent', api_key: 'last-agent-key', owner_id: 88 },
           ],
         });
       }
@@ -1104,8 +1252,8 @@ describe('dashboard CatsCo account status', () => {
       if (req.path === '/api/bots' && req.method === 'GET') {
         return res.json({
           bots: [
-            { uid: 188, username: 'old-agent', display_name: 'Old Agent', api_key: 'old-agent-key' },
-            { uid: 199, username: 'new-agent', display_name: 'New Agent', api_key: 'new-agent-key' },
+            { uid: 188, username: 'old-agent', display_name: 'Old Agent', api_key: 'old-agent-key', owner_id: 88 },
+            { uid: 199, username: 'new-agent', display_name: 'New Agent', api_key: 'new-agent-key', owner_id: 88 },
           ],
         });
       }
@@ -1226,7 +1374,7 @@ describe('dashboard CatsCo account status', () => {
       }
       if (req.path === '/api/bots' && req.method === 'GET') {
         return res.json({
-          bots: [{ uid: 199, username: 'target-agent', display_name: 'Target Agent', api_key: 'target-agent-key' }],
+          bots: [{ uid: 199, username: 'target-agent', display_name: 'Target Agent', api_key: 'target-agent-key', owner_id: 88 }],
         });
       }
       if (req.path === '/api/friends/request' || req.path === '/api/friends/accept') {
@@ -1360,7 +1508,7 @@ describe('dashboard CatsCo account status', () => {
       }
       if (req.path === '/api/bots' && req.method === 'GET') {
         return res.json({
-          bots: [{ uid: 188, username: 'catsco_88', display_name: 'CatsCo Existing', api_key: 'cats-agent-key' }],
+          bots: [{ uid: 188, username: 'catsco_88', display_name: 'CatsCo Existing', api_key: 'cats-agent-key', owner_id: 88 }],
         });
       }
       if (req.path === '/api/friends/request' || req.path === '/api/friends/accept') {
@@ -1505,7 +1653,7 @@ describe('dashboard CatsCo account status', () => {
         return res.json({ uid: 88, username: 'fresh', display_name: 'Fresh User' });
       }
       if (req.path === '/api/bots' && req.method === 'GET') {
-        return res.json({ bots: [{ uid: 188, username: 'catsco_88', display_name: 'CatsCo', api_key: 'cats-agent-key' }] });
+        return res.json({ bots: [{ uid: 188, username: 'catsco_88', display_name: 'CatsCo', api_key: 'cats-agent-key', owner_id: 88 }] });
       }
       if (req.path === '/api/friends/request' || req.path === '/api/friends/accept') {
         return res.json({ ok: true });
@@ -1620,7 +1768,7 @@ describe('dashboard CatsCo account status', () => {
         return res.json({ uid: 88, username: 'fresh', display_name: 'Fresh User' });
       }
       if (req.path === '/api/bots' && req.method === 'GET') {
-        return res.json({ bots: [{ uid: 188, username: 'catsco_88', display_name: 'CatsCo', api_key: 'cats-agent-key' }] });
+        return res.json({ bots: [{ uid: 188, username: 'catsco_88', display_name: 'CatsCo', api_key: 'cats-agent-key', owner_id: 88 }] });
       }
       if (req.path === '/api/friends/request' || req.path === '/api/friends/accept') {
         return res.json({ ok: true });

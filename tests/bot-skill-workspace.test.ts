@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { BotSkillWorkspaceService } from '../src/bot-skills/workspace';
+import { renameBotSkillWorkspaceSync } from '../src/bot-skills/workspace-fs';
 import { withBotSkillWorkspaceLock } from '../src/bot-skills/lock';
 import { BotSkillSyncService } from '../src/bot-skills/sync-service';
 
@@ -38,6 +39,51 @@ describe('per-Bot Skill workspace switching', () => {
     assert.equal(fs.readFileSync(path.join(active, 'a.txt'), 'utf8'), 'bot a');
     service.activate('bot-b');
     assert.equal(fs.readFileSync(path.join(active, 'b.txt'), 'utf8'), 'bot b');
+  });
+
+  test('retries a transient Windows-style workspace rename with bounded backoff', () => {
+    const waits: number[] = [];
+    let attempts = 0;
+    renameBotSkillWorkspaceSync('source', 'target', {
+      maxRetries: 3,
+      retryDelayMs: 25,
+      renameSync: (() => {
+        attempts += 1;
+        if (attempts < 3) throw Object.assign(new Error('temporarily locked'), { code: 'EPERM' });
+      }) as typeof fs.renameSync,
+      waitSync: milliseconds => waits.push(milliseconds),
+    });
+
+    assert.equal(attempts, 3);
+    assert.deepEqual(waits, [25, 50]);
+  });
+
+  test('stops after bounded retries and preserves the original rename error', () => {
+    const original = Object.assign(new Error('still locked'), { code: 'EBUSY' });
+    let attempts = 0;
+    assert.throws(() => renameBotSkillWorkspaceSync('source', 'target', {
+      maxRetries: 2,
+      retryDelayMs: 0,
+      renameSync: (() => {
+        attempts += 1;
+        throw original;
+      }) as typeof fs.renameSync,
+      waitSync: () => {},
+    }), error => error === original);
+    assert.equal(attempts, 3);
+  });
+
+  test('does not retry a non-transient workspace rename failure', () => {
+    const original = Object.assign(new Error('source missing'), { code: 'ENOENT' });
+    let attempts = 0;
+    assert.throws(() => renameBotSkillWorkspaceSync('source', 'target', {
+      renameSync: (() => {
+        attempts += 1;
+        throw original;
+      }) as typeof fs.renameSync,
+      waitSync: () => assert.fail('non-transient failures must not wait'),
+    }), error => error === original);
+    assert.equal(attempts, 1);
   });
 
   test('recovers a crash before the previous workspace was parked without misattributing it', () => {

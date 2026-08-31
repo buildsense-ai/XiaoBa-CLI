@@ -4,6 +4,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { SkillTool } from '../src/tools/skill-tool';
+import { SkillManager } from '../src/skills/skill-manager';
+import { TurnSkillSnapshotStore } from '../src/skills/turn-skill-snapshot';
 
 describe('skill tool direct content mode', () => {
   let testRoot: string;
@@ -64,6 +66,46 @@ describe('skill tool direct content mode', () => {
     assert.equal(result.ok, true);
     assert.match(String(result.content), /已重新加载 1 个 skills/);
     assert.doesNotMatch(String(result.content), /__reload_skills__/);
+  });
+
+  test('uses one immutable Skill revision within a turn and observes edits on the next turn', async () => {
+    const skillsRoot = path.join(testRoot, 'skills');
+    const skillFile = path.join(skillsRoot, 'lin', 'demo', 'SKILL.md');
+    const store = new TurnSkillSnapshotStore({ runtimeRoot: testRoot, skillsRoot });
+    const firstLease = await store.acquire();
+    const firstManager = new SkillManager(firstLease.snapshot.rootPath);
+    await firstManager.loadSkills();
+    fs.writeFileSync(skillFile, fs.readFileSync(skillFile, 'utf8').replace('Use $0', 'Changed $0'), 'utf8');
+
+    const tool = new SkillTool();
+    const firstContext = {
+      workingDirectory: testRoot,
+      conversationHistory: [],
+      runtimeServices: { aiService: {} as any, skillManager: firstManager },
+      turnSkillSnapshot: firstLease,
+    };
+    const first = await tool.execute({ skill: 'demo' }, firstContext);
+    const reloaded = await tool.execute({ skill: 'reload' }, firstContext);
+    const stillFirst = await tool.execute({ skill: 'demo' }, firstContext);
+
+    assert.equal(first.ok, true);
+    assert.equal(reloaded.ok, true);
+    assert.match(String(first.content), /Use demo/);
+    assert.match(String(stillFirst.content), /Use demo/);
+    assert.doesNotMatch(String(stillFirst.content), /Changed demo/);
+    await firstLease.release();
+
+    const secondLease = await store.acquire();
+    const secondManager = new SkillManager(secondLease.snapshot.rootPath);
+    await secondManager.loadSkills();
+    const second = await tool.execute({ skill: 'demo' }, {
+      ...firstContext,
+      runtimeServices: { aiService: {} as any, skillManager: secondManager },
+      turnSkillSnapshot: secondLease,
+    });
+    assert.equal(second.ok, true);
+    assert.match(String(second.content), /Changed demo/);
+    await secondLease.release();
   });
 });
 

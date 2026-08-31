@@ -91,6 +91,15 @@ export class CatsConnectorAutoStart {
     options: { force?: boolean } = {},
   ): CatsConnectorBootstrapSnapshot {
     this.generation += 1;
+    if (trigger !== 'logout') {
+      this.setSnapshot({
+        stage: 'connecting',
+        trigger,
+        message: '正在应用新的账号或 Agent 并重新连接',
+        error: undefined,
+        startedAt: new Date().toISOString(),
+      });
+    }
     return this.schedule(trigger, delayMs, options);
   }
 

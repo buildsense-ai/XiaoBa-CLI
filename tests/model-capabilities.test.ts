@@ -61,7 +61,8 @@ describe('model capabilities', () => {
       [
         { model: 'MiniMax-M2.7', provider: 'anthropic', vision: false, context: 204_800 },
         { model: 'MiniMax-M3', provider: 'anthropic', vision: true, context: 1_000_000 },
-        { model: 'deepseek-v4-flash', provider: 'anthropic', vision: false, context: 1_000_000 },
+        { model: 'deepseek-v4-flash', provider: 'openai', vision: true, context: 1_000_000 },
+        { model: 'glm-5.3-flash', provider: 'anthropic', vision: true, context: 1_000_000 },
         { model: 'gpt-5.6-terra', provider: 'openai', vision: true, context: 256_000 },
         { model: 'gpt-5.6-sol', provider: 'openai', vision: true, context: 256_000 },
         { model: 'gpt-5.6-luna', provider: 'openai', vision: true, context: 256_000 },
@@ -70,13 +71,21 @@ describe('model capabilities', () => {
     assert.strictEqual(findRelayModelProfile('minimax-m3')?.capabilities.vision, true);
     assert.strictEqual(findRelayModelProfile('MiniMax-M2.7')?.capabilities.vision, false);
     assert.strictEqual(findRelayModelProfile('gpt-5.6-terra')?.openaiApiMode, 'responses');
+    assert.strictEqual(findRelayModelProfile('deepseek-v4-flash')?.preferredProvider, 'openai');
+    assert.strictEqual(findRelayModelProfile('deepseek-v4-flash')?.openaiApiMode, 'responses');
+    assert.strictEqual(findRelayModelProfile('GLM-5.3-FLASH')?.family, 'glm');
+    assert.deepStrictEqual(findRelayModelProfile('glm-5.3-flash')?.capabilities, {
+      toolCalling: true,
+      vision: true,
+      streaming: true,
+    });
   });
 
   test('keeps relay tool calling enabled for public MiniMax and DeepSeek models', () => {
     assert.strictEqual(
       isPrimaryModelToolCallingCapable({
-        provider: 'anthropic',
-        apiUrl: 'https://relay.catsco.cc/anthropic',
+        provider: 'openai',
+        apiUrl: 'https://relay.catsco.cc/v1',
         model: 'deepseek-v4-flash',
       }),
       true,

@@ -20,6 +20,13 @@ die() {
   exit 1
 }
 
+image_phase() {
+  if [[ -n "${CATSCO_IMAGE_PHASE_FILE:-}" ]]; then
+    printf '%s\n' "$1" >"$CATSCO_IMAGE_PHASE_FILE"
+  fi
+  printf 'image_phase=%s\n' "$1"
+}
+
 while (($#)); do
   case "$1" in
     --artifact) ARTIFACT="${2:-}"; shift 2 ;;
@@ -39,6 +46,7 @@ if [[ -z "${CATSCO_PREPARE_SKIP_ROOT_CHECK:-}" ]]; then
 fi
 
 if [[ $FINALIZE -eq 1 ]]; then
+  image_phase finalize-cleanup
   systemctl disable --now catsco-agent.service 2>/dev/null || true
   rm -rf \
     /srv/catsco-agent/.env \
@@ -76,6 +84,7 @@ ACTUAL_SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
 [[ "${ACTUAL_SHA256,,}" == "${SHA256,,}" ]] || die "artifact checksum mismatch"
 
 export DEBIAN_FRONTEND=noninteractive
+image_phase platform-check
 
 # --- Platform hardening (encoded from deploy-catsco-linux-agent skill, 2026-08) ---
 # Every fault below was hit on live Tianyi workers provisioned from the same base
@@ -85,6 +94,40 @@ export DEBIAN_FRONTEND=noninteractive
 # Fail-closed policy: an upgrade that cannot reach the known-safe platform state
 # must block the bake. Shipping an image that silently carries the buggy
 # systemd/glibc/kernel combo is worse than failing the workflow so it can retry.
+
+# A hardened base image can be reused for many worker releases. Avoid running
+# apt/dpkg and kernel package work on every bake when the base already carries
+# the exact platform contract below. The checks are deliberately conservative:
+# any missing package, mask, version, or bootable kernel falls back to the full
+# fail-closed hardening path.
+platform_hardening_ready() {
+  local systemd_version glibc_version systemd_status glibc_status package
+  systemd_version="$(dpkg-query -W -f='${Version}' systemd 2>/dev/null || true)"
+  glibc_version="$(dpkg-query -W -f='${Version}' libc6 2>/dev/null || true)"
+  systemd_status="$(dpkg-query -W -f='${db:Status-Abbrev}' systemd 2>/dev/null || true)"
+  glibc_status="$(dpkg-query -W -f='${db:Status-Abbrev}' libc6 2>/dev/null || true)"
+  dpkg --compare-versions "$systemd_version" ge "255.4-1ubuntu8.16" || return 1
+  dpkg --compare-versions "$glibc_version" ge "2.39-0ubuntu8.8" || return 1
+  [[ "${systemd_status//[[:space:]]/}" == "ii" ]] || return 1
+  [[ "${glibc_status//[[:space:]]/}" == "ii" ]] || return 1
+  for package in \
+    ca-certificates curl git jq poppler-utils ripgrep sudo unzip zip \
+    linux-generic linux-image-generic; do
+    [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null || true)" == ii* ]] || return 1
+  done
+  command -v update-grub >/dev/null 2>&1 || return 1
+  ls -1 /boot/vmlinuz-* >/dev/null 2>&1 || return 1
+  for unit in fwupd.service fwupd-refresh.service fwupd-refresh.timer; do
+    [[ "$(readlink "/etc/systemd/system/$unit" 2>/dev/null || true)" == "/dev/null" ]] || return 1
+  done
+  return 0
+}
+
+if [[ "${CATSCO_BASE_IMAGE_HARDENED:-false}" == "true" ]] && platform_hardening_ready; then
+  printf 'platform_hardening=already-satisfied\n'
+else
+  printf 'platform_hardening=upgrade-required\n'
+  image_phase platform-repair
 
 # 1. Repair corrupted dpkg file lists ("missing final newline") BEFORE any
 #    apt/dpkg transaction. These images can ship broken
@@ -100,7 +143,9 @@ if ! dpkg --configure -a >/tmp/catsco-dpkg-configure-first.log 2>&1; then
   die "dpkg configuration failed after file-list repair; see /tmp/catsco-dpkg-configure-first.log"
 fi
 
+image_phase apt-update
 apt-get update || die "apt-get update failed"
+image_phase base-packages
 apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
@@ -130,6 +175,7 @@ mask_unit() {
     die "failed to mask $unit (expected /etc/systemd/system/$unit -> /dev/null); refusing to bake an unhardened image"
   fi
 }
+image_phase systemd-preflight
 mask_unit fwupd.service
 mask_unit fwupd-refresh.service
 mask_unit fwupd-refresh.timer
@@ -145,6 +191,7 @@ timeout 30 systemctl reset-failed fwupd-refresh.service >/dev/null 2>&1 || true
 #    finish dpkg configuration, retry with the minimal set, and then VERIFY the
 #    installed versions with dpkg --compare-versions. Failing to reach the
 #    known-safe versions blocks the bake.
+image_phase platform-upgrade
 if ! apt-get install --only-upgrade -y \
   systemd \
   systemd-sysv \
@@ -175,6 +222,7 @@ fi
 # instead of being silently tolerated — producing an image with an unconfigured
 # dpkg database is not acceptable, and a hung manager is already bounded by the
 # outer timeouts.
+image_phase dpkg-finalize
 if ! dpkg --configure -a >/tmp/catsco-dpkg-configure-final.log 2>&1; then
   die "dpkg database not fully configured after platform upgrade; see /tmp/catsco-dpkg-configure-final.log"
 fi
@@ -202,6 +250,7 @@ fi
 #    non-empty bootable kernel image actually exists under /boot and that grub
 #    is regenerated; the running kernel is not a reliable signal because the
 #    bake never reboots.
+image_phase kernel-upgrade
 if ! apt-get install -y --no-install-recommends \
   linux-generic linux-image-generic \
   >/tmp/catsco-kernel-upgrade.log 2>&1; then
@@ -221,11 +270,13 @@ fi
 KERNEL_VERSION="$(uname -r 2>/dev/null || true)"
 printf 'platform_systemd=%s glibc=%s kernel=%s\n' \
   "$SYSTEMD_VERSION" "$GLIBC_VERSION" "$KERNEL_VERSION"
+fi
 
 # 5. Pre-configure the China-region npm mirror. Direct registry.npmjs.org from
 #    Tianyi/华南 hosts is slow and has produced truncated/corrupted tarballs
 #    (e.g. TS1127 from a truncated lib.es2017.string.d.ts). Set it for both the
 #    service user and root so the first npm ci/install never needs manual setup.
+image_phase worker-install
 printf 'registry=https://registry.npmmirror.com\n' >/root/.npmrc
 chmod 0644 /root/.npmrc
 id catsco-agent >/dev/null 2>&1 || useradd \
@@ -234,6 +285,16 @@ id catsco-agent >/dev/null 2>&1 || useradd \
   --home-dir /srv/catsco-agent \
   --shell /bin/bash \
   catsco-agent
+
+# Cloud workers currently need unrestricted host administration from Agent
+# tool calls. Keep the grant explicit and independently removable so it can be
+# narrowed to command aliases later without changing the service identity.
+cat >/etc/sudoers.d/catsco-agent <<'EOF'
+catsco-agent ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+chmod 0440 /etc/sudoers.d/catsco-agent
+visudo -cf /etc/sudoers.d/catsco-agent >/dev/null || \
+  die "catsco-agent sudoers validation failed"
 
 # Service-user npm mirror config (survives finalize; the finalize cleanup list
 # deliberately keeps .npmrc so first-boot npm never needs manual setup).
@@ -314,6 +375,7 @@ EOF
 systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl disable --now catsco-agent.service 2>/dev/null || true
 
+image_phase worker-validate
 sudo -u catsco-agent -- bash -c '
   cd /opt/catsco/current
   runtime/node/bin/node -e '\''require("sharp"); const canvas = require("@napi-rs/canvas"); canvas.createCanvas(2, 2); require("deasync")'\''
@@ -321,6 +383,7 @@ sudo -u catsco-agent -- bash -c '
   runtime/node/bin/npm --version >/dev/null
 '
 
+image_phase provenance
 dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort >/etc/catsco-image-packages.txt
 chmod 0644 /etc/catsco-image-packages.txt
 

@@ -1,6 +1,8 @@
 import type { CatsCoAuthSnapshot } from './local-config';
 import {
   findRelayModelProfile,
+  relayModelProfileFromRuntimeDescriptor,
+  type RelayModelRuntimeDescriptor,
   relayModelProviderBaseUrl,
   type RelayModelProvider,
 } from '../utils/relay-model-profiles';
@@ -23,6 +25,7 @@ export interface CatsRelayBootstrapOptions {
   contextWindowTokens?: number;
   existingRuntime?: BotCatalogModelRuntime;
   fetchImpl?: typeof fetch;
+  catalogRuntime?: RelayModelRuntimeDescriptor;
 }
 
 type RuntimeCapabilities = NonNullable<BotCatalogModelRuntime['capabilities']>;
@@ -40,7 +43,8 @@ export async function provisionCatsRelayCatalogRuntime(
   const token = String(options.auth.token || '').trim();
   const httpBaseUrl = String(options.auth.httpBaseUrl || '').trim().replace(/\/+$/, '');
   const ownerUid = relayOwnerUid(options.auth);
-  const profile = findRelayModelProfile(modelId);
+  const profile = relayModelProfileFromRuntimeDescriptor(modelId, options.catalogRuntime)
+    ?? findRelayModelProfile(modelId);
   if (!botId) throw new Error('Cannot initialize a catalog model without botId.');
   if (!profile) throw new Error(`Unknown CatsCo relay model: ${modelId}`);
   if (token && options.auth.uid && options.auth.ownerUid && options.auth.uid !== options.auth.ownerUid) {
@@ -121,8 +125,10 @@ export function retargetCatsRelayCatalogRuntime(
   reasoningEffort?: ReasoningEffort,
   contextWindowTokens?: number,
   ownerUid?: string,
+  catalogRuntime?: RelayModelRuntimeDescriptor,
 ): BotCatalogModelRuntime {
-  const profile = findRelayModelProfile(modelId);
+  const profile = relayModelProfileFromRuntimeDescriptor(modelId, catalogRuntime)
+    ?? findRelayModelProfile(modelId);
   if (!profile) throw new Error(`Unknown CatsCo relay model: ${modelId}`);
   const apiKey = String(existing.apiKey || '').trim();
   if (!apiKey) throw new Error('Existing CatsCo relay runtime does not contain a reusable credential.');

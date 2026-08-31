@@ -72,6 +72,7 @@
 
             <div class="hero-actions" id="hero-actions">
               <a class="button button-primary external-link" id="webapp-button" href="https://app.catsco.cc" target="_blank" rel="noopener noreferrer" hidden>打开 CatsCo WebApp</a>
+              <button class="button button-danger" id="logout-button" type="button" hidden>退出账号</button>
               <button class="button button-secondary" id="retry-button" type="button" hidden>重新连接</button>
             </div>
             <p class="close-hint" id="close-hint" hidden>可以直接关闭此窗口，Connector 会继续在后台运行。</p>
@@ -142,10 +143,6 @@
                     <a class="button button-quiet" href="/turn-errors.html" target="_blank" rel="noopener">打开</a>
                   </article>
                 </div>
-                <div class="danger-zone">
-                  <div><strong>退出本机 CatsCo 账号</strong><small>退出后会停止这台电脑上的 Connector。</small></div>
-                  <button class="button button-danger" id="logout-button" type="button">退出账号</button>
-                </div>
               </section>
             </div>
           </section>
@@ -203,6 +200,62 @@
         <button class="button button-primary" id="agent-switch-confirm" type="button" disabled>切换并重新连接</button>
       </footer>
     </form>
+  </dialog>
+
+  <dialog class="update-dialog" id="update-dialog" aria-labelledby="update-title">
+    <section class="update-dialog-shell">
+      <header class="update-dialog-header">
+        <div>
+          <h2 id="update-title">检查更新</h2>
+          <p id="update-subtitle">正在读取 CatsCo Desktop 的更新状态。</p>
+        </div>
+        <button class="dialog-close" id="update-close" type="button" aria-label="隐藏更新窗口">×</button>
+      </header>
+
+      <div class="update-dialog-body">
+        <div class="update-stage-row">
+          <div class="update-stage-copy">
+            <span class="update-stage-dot" id="update-stage-dot"></span>
+            <strong id="update-stage-label">正在检查可用版本</strong>
+          </div>
+          <span class="update-stage-percent" id="update-stage-percent"></span>
+        </div>
+
+        <div class="update-version-flow" id="update-version-flow">
+          <div class="update-version-item">
+            <span>当前版本</span>
+            <strong id="update-current-version">—</strong>
+          </div>
+          <span class="update-version-arrow" aria-hidden="true">→</span>
+          <div class="update-version-item">
+            <span>更新版本</span>
+            <strong id="update-available-version">—</strong>
+          </div>
+        </div>
+
+        <div class="update-progress-section" id="update-progress-section">
+          <div class="update-progress-track" id="update-progress-track" role="progressbar" aria-label="更新下载进度" aria-valuemin="0" aria-valuemax="100">
+            <div class="update-progress-bar" id="update-progress-bar"></div>
+          </div>
+          <div class="update-progress-meta">
+            <span id="update-size">等待下载信息</span>
+            <span id="update-speed"></span>
+            <span id="update-remaining"></span>
+          </div>
+        </div>
+
+        <p class="update-note" id="update-note">检查完成后会在这里显示更新详情。</p>
+        <div class="update-error-box" id="update-error-box" role="alert" hidden></div>
+      </div>
+
+      <footer class="update-dialog-footer">
+        <span class="update-footer-hint" id="update-footer-hint">当前版本不会受到影响</span>
+        <div class="update-dialog-actions">
+          <button class="button button-quiet" id="update-secondary-action" type="button">隐藏到后台</button>
+          <button class="button button-primary" id="update-primary-action" type="button" disabled>检查中…</button>
+        </div>
+      </footer>
+    </section>
   </dialog>
 
   <dialog class="agent-switch-dialog logout-dialog" id="logout-dialog" aria-labelledby="logout-title">

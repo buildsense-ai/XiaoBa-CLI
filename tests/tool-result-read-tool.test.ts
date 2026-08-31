@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import { DEFAULT_PDF_IMAGE_FALLBACK_PAGES, DEFAULT_PDF_READ_PAGES, DEFAULT_TEXT_READ_LIMIT, ReadTool } from '../src/tools/read-tool';
 import { ToolExecutionContext } from '../src/types/tool';
-import { writeOnePixelBmp } from './helpers/image-fixtures';
+import { writeOnePixelBmp, writeOnePixelPng } from './helpers/image-fixtures';
 
 function writeVectorOnlyPdf(filePath: string): void {
   const stream = [
@@ -108,6 +108,105 @@ function writeInlineImagePdf(filePath: string): void {
   ].join('\n');
 
   fs.writeFileSync(filePath, Buffer.concat([bodyBeforeXref, Buffer.from(xref, 'ascii')]));
+}
+
+function writeTextPdfFixture(filePath: string): void {
+  const pages = Array.from({ length: 14 }, (_, index) => {
+    if (index === 0) return 'Trace-based Just-in-Time Type Specialization';
+    if (index === 1) return 'Every compiled trace';
+    return `Fixture page ${index + 1}`;
+  });
+  const firstChar = 32;
+  const lastChar = 122;
+  const charCodes = Array.from({ length: lastChar - firstChar + 1 }, (_, index) => firstChar + index);
+  const pageObjectStart = 6;
+  const contentObjectStart = pageObjectStart + pages.length;
+  const glyphObjectStart = contentObjectStart + pages.length;
+  const glyphNames = new Map(charCodes.map(code => [code, `g${code}`]));
+  const toUnicodeLines = charCodes.map(code => `<${code.toString(16).padStart(2, '0')}> <${code.toString(16).padStart(4, '0')}>`);
+  const toUnicode = [
+    '/CIDInit /ProcSet findresource begin',
+    '12 dict begin',
+    'begincmap',
+    '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def',
+    '/CMapName /Adobe-Identity-UCS def',
+    '/CMapType 2 def',
+    '1 begincodespacerange',
+    `<${firstChar.toString(16).padStart(2, '0')}> <${lastChar.toString(16).padStart(2, '0')}>`,
+    'endcodespacerange',
+    `${toUnicodeLines.length} beginbfchar`,
+    ...toUnicodeLines,
+    'endbfchar',
+    'endcmap',
+    'CMapName currentdict /CMap defineresource pop',
+    'end',
+    'end',
+    '',
+  ].join('\n');
+  const objects: string[] = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${pages.map((_, index) => `${pageObjectStart + index} 0 R`).join(' ')}] /Count ${pages.length} >>`,
+    [
+      '<< /Type /Font',
+      '/Subtype /Type3',
+      '/Name /F1',
+      '/FontBBox [0 0 1000 1000]',
+      '/FontMatrix [0.001 0 0 0.001 0 0]',
+      '/CharProcs 4 0 R',
+      `/Encoding << /Type /Encoding /Differences [${firstChar} ${charCodes.map(code => `/${glyphNames.get(code)}`).join(' ')}] >>`,
+      `/FirstChar ${firstChar}`,
+      `/LastChar ${lastChar}`,
+      `/Widths [${charCodes.map(() => '600').join(' ')}]`,
+      '/Resources << >>',
+      '/ToUnicode 5 0 R >>',
+    ].join(' '),
+    `<< ${charCodes.map((code, index) => `/${glyphNames.get(code)} ${glyphObjectStart + index} 0 R`).join(' ')} >>`,
+    `<< /Length ${Buffer.byteLength(toUnicode, 'ascii')} >>\nstream\n${toUnicode}endstream`,
+  ];
+
+  for (let index = 0; index < pages.length; index += 1) {
+    objects.push([
+      '<< /Type /Page',
+      '/Parent 2 0 R',
+      '/MediaBox [0 0 612 792]',
+      '/Resources << /Font << /F1 3 0 R >> >>',
+      `/Contents ${contentObjectStart + index} 0 R >>`,
+    ].join(' '));
+  }
+
+  for (const page of pages) {
+    const escaped = page.replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)');
+    const stream = `BT\n/F1 18 Tf\n72 720 Td\n(${escaped}) Tj\nET\n`;
+    objects.push(`<< /Length ${Buffer.byteLength(stream, 'ascii')} >>\nstream\n${stream}endstream`);
+  }
+
+  for (const _code of charCodes) {
+    const stream = '600 0 d0\n';
+    objects.push(`<< /Length ${Buffer.byteLength(stream, 'ascii')} >>\nstream\n${stream}endstream`);
+  }
+
+  let body = '%PDF-1.4\n';
+  const offsets: number[] = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(body, 'ascii'));
+    body += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(body, 'ascii');
+  body += `xref\n0 ${objects.length + 1}\n`;
+  body += '0000000000 65535 f \n';
+  for (let index = 1; index < offsets.length; index += 1) {
+    body += `${String(offsets[index]).padStart(10, '0')} 00000 n \n`;
+  }
+  body += [
+    'trailer',
+    `<< /Size ${objects.length + 1} /Root 1 0 R >>`,
+    'startxref',
+    String(xrefOffset),
+    '%%EOF',
+    '',
+  ].join('\n');
+
+  fs.writeFileSync(filePath, body, 'ascii');
 }
 
 describe('ReadTool - ToolExecutionResult', () => {
@@ -231,14 +330,8 @@ describe('ReadTool - ToolExecutionResult', () => {
   });
 
   test('PDF 文件会提取正文文本', async () => {
-    const fixturePath = path.join(
-      path.dirname(require.resolve('pdf-parse')),
-      'test',
-      'data',
-      '01-valid.pdf',
-    );
     const filePath = path.join(testRoot, 'fixture.pdf');
-    fs.copyFileSync(fixturePath, filePath);
+    writeTextPdfFixture(filePath);
 
     const result = await tool.execute({ file_path: filePath, pages: '1' }, context);
 
@@ -253,14 +346,8 @@ describe('ReadTool - ToolExecutionResult', () => {
   });
 
   test('PDF 默认只读取前若干页并提示继续读取', async () => {
-    const fixturePath = path.join(
-      path.dirname(require.resolve('pdf-parse')),
-      'test',
-      'data',
-      '01-valid.pdf',
-    );
     const filePath = path.join(testRoot, 'fixture-default.pdf');
-    fs.copyFileSync(fixturePath, filePath);
+    writeTextPdfFixture(filePath);
 
     const result = await tool.execute({ file_path: filePath }, context);
 
@@ -275,14 +362,8 @@ describe('ReadTool - ToolExecutionResult', () => {
   });
 
   test('PDF pages 参数只返回指定页内容', async () => {
-    const fixturePath = path.join(
-      path.dirname(require.resolve('pdf-parse')),
-      'test',
-      'data',
-      '01-valid.pdf',
-    );
     const filePath = path.join(testRoot, 'fixture-page-filter.pdf');
-    fs.copyFileSync(fixturePath, filePath);
+    writeTextPdfFixture(filePath);
 
     const result = await tool.execute({ file_path: filePath, pages: '2' }, context);
 
@@ -299,6 +380,7 @@ describe('ReadTool - ToolExecutionResult', () => {
     const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
     const previousReaderUrl = process.env.CATSCOMPANY_READER_API_URL;
     const observedRequests: any[] = [];
+    const originalPdfRenderer = (tool as any).renderPdfPagesToImages;
 
     const providerServer = http.createServer((req, res) => {
       const chunks: Buffer[] = [];
@@ -348,14 +430,13 @@ describe('ReadTool - ToolExecutionResult', () => {
       process.env.XIAOBA_CONFIG_PATH = configPath;
       process.env.CATSCOMPANY_READER_API_URL = 'http://127.0.0.1:1/reader-must-not-run';
 
-      const fixturePath = path.join(
-        path.dirname(require.resolve('pdf-parse')),
-        'test',
-        'data',
-        '01-valid.pdf',
-      );
       const filePath = path.join(testRoot, 'fixture-visual-supplement.pdf');
-      fs.copyFileSync(fixturePath, filePath);
+      writeTextPdfFixture(filePath);
+      (tool as any).renderPdfPagesToImages = async (_absolutePath: string, pages: number[], tempDir: string) => {
+        const imagePath = path.join(tempDir, 'page-1.png');
+        writeOnePixelPng(imagePath);
+        return [{ pageNumber: pages[0], imagePath, renderer: 'pdftoppm' }];
+      };
       context = {
         ...context,
         conversationHistory: [{ role: 'user', content: '请读取这个 PDF，并检查有没有签名、印章和版式问题' }],
@@ -382,6 +463,7 @@ describe('ReadTool - ToolExecutionResult', () => {
       else process.env.XIAOBA_CONFIG_PATH = previousConfigPath;
       if (previousReaderUrl === undefined) delete process.env.CATSCOMPANY_READER_API_URL;
       else process.env.CATSCOMPANY_READER_API_URL = previousReaderUrl;
+      (tool as any).renderPdfPagesToImages = originalPdfRenderer;
     }
   });
 
@@ -415,6 +497,7 @@ describe('ReadTool - ToolExecutionResult', () => {
     const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
     const previousReaderUrl = process.env.CATSCOMPANY_READER_API_URL;
     const previousApiKey = process.env.CATSCOMPANY_API_KEY;
+    const originalPdfRenderer = (tool as any).renderPdfPagesToImages;
     let observedRequest:
       | { method?: string; url?: string; authorization?: string; body: Buffer }
       | undefined;
@@ -457,6 +540,11 @@ describe('ReadTool - ToolExecutionResult', () => {
 
       const filePath = path.join(testRoot, 'scan-like.pdf');
       writeInlineImagePdf(filePath);
+      (tool as any).renderPdfPagesToImages = async (_absolutePath: string, pages: number[], tempDir: string) => {
+        const imagePath = path.join(tempDir, 'page-1.png');
+        writeOnePixelPng(imagePath);
+        return [{ pageNumber: pages[0], imagePath, renderer: 'pdftoppm' }];
+      };
       context = {
         ...context,
         conversationHistory: [{ role: 'user', content: '请读取这个扫描版 PDF 的内容' }],
@@ -484,6 +572,7 @@ describe('ReadTool - ToolExecutionResult', () => {
       else process.env.CATSCOMPANY_READER_API_URL = previousReaderUrl;
       if (previousApiKey === undefined) delete process.env.CATSCOMPANY_API_KEY;
       else process.env.CATSCOMPANY_API_KEY = previousApiKey;
+      (tool as any).renderPdfPagesToImages = originalPdfRenderer;
     }
   });
 
@@ -494,6 +583,7 @@ describe('ReadTool - ToolExecutionResult', () => {
     const previousModel = process.env.GAUZ_LLM_MODEL;
     const previousReaderUrl = process.env.CATSCOMPANY_READER_API_URL;
     const previousApiKey = process.env.CATSCOMPANY_API_KEY;
+    const originalPdfRenderer = (tool as any).renderPdfPagesToImages;
 
     try {
       process.env.XIAOBA_CONFIG_PATH = path.join(testRoot, 'missing-config.json');
@@ -505,6 +595,11 @@ describe('ReadTool - ToolExecutionResult', () => {
 
       const filePath = path.join(testRoot, 'scan-like-vision.pdf');
       writeInlineImagePdf(filePath);
+      (tool as any).renderPdfPagesToImages = async (_absolutePath: string, pages: number[], tempDir: string) => {
+        const imagePath = path.join(tempDir, 'page-1.png');
+        writeOnePixelPng(imagePath);
+        return [{ pageNumber: pages[0], imagePath, renderer: 'pdftoppm' }];
+      };
       const result = await tool.execute({ file_path: filePath }, context);
 
       assert.strictEqual(result.ok, true);
@@ -526,6 +621,7 @@ describe('ReadTool - ToolExecutionResult', () => {
       else process.env.CATSCOMPANY_READER_API_URL = previousReaderUrl;
       if (previousApiKey === undefined) delete process.env.CATSCOMPANY_API_KEY;
       else process.env.CATSCOMPANY_API_KEY = previousApiKey;
+      (tool as any).renderPdfPagesToImages = originalPdfRenderer;
     }
   });
 

@@ -5,7 +5,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { canonicalizeBotSkillRefs } from '../src/bot-skills/canonical';
-import { isPortablePackagePath, scanLocalBotSkill } from '../src/bot-skills/local-manifest';
+import {
+  BotSkillWorkspaceScanLimitError,
+  isPortablePackagePath,
+  scanBotSkillWorkspace,
+  scanLocalBotSkill,
+} from '../src/bot-skills/local-manifest';
 import { BotPrivateSkillClient } from '../src/bot-skills/private-package-client';
 import type { BotSkillRef } from '../src/bot-definition/types';
 import type { BotSkillPackage } from '../src/bot-skills/types';
@@ -59,6 +64,50 @@ describe('Bot Skill sync security boundaries', () => {
       fs.writeFileSync(path.join(crowdedRoot, `file-${index}.txt`), '');
     }
     assert.throws(() => scanLocalBotSkill(crowdedRoot), /too many files/i);
+  });
+
+  test('bounds aggregate workspace listing work without retaining package bodies', () => {
+    const skillRoot = createSkill(roots, 'bounded-listing');
+    const workspaceRoot = path.dirname(skillRoot);
+    assert.throws(
+      () => scanBotSkillWorkspace(workspaceRoot, { maxSkillEntries: 0 }),
+      (error: unknown) => error instanceof BotSkillWorkspaceScanLimitError,
+    );
+    assert.throws(
+      () => scanBotSkillWorkspace(workspaceRoot, { maxTotalPackageBytes: 1 }),
+      (error: unknown) => error instanceof BotSkillWorkspaceScanLimitError,
+    );
+    const [entry] = scanBotSkillWorkspace(workspaceRoot, { retainPackageContents: false });
+    assert.ok(entry?.contentHash);
+    assert.deepEqual(entry.files, []);
+  });
+
+  test('excludes runtime cache directories without deleting or size-checking them', () => {
+    const skillRoot = createSkill(roots, 'runtime-cache');
+    const cachePaths = [
+      path.join(skillRoot, '.cache', 'quant_cache.db'),
+      path.join(skillRoot, '.mypy_cache', 'state.bin'),
+      path.join(skillRoot, '.ruff_cache', 'state.bin'),
+      path.join(skillRoot, '__pycache__', 'module.pyc'),
+      path.join(skillRoot, '.pytest_cache', 'state.bin'),
+    ];
+    for (const cachePath of cachePaths) {
+      fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+      fs.writeFileSync(cachePath, Buffer.alloc(2 * 1024 * 1024 + 1));
+    }
+    fs.writeFileSync(
+      path.join(skillRoot, '__pycache__', 'SKILL.md'),
+      '---\nname: cached-copy\ndescription: must not become a workspace Skill\n---\n',
+    );
+
+    const first = scanLocalBotSkill(skillRoot);
+    assert.deepEqual(first.files.map(file => file.path), ['SKILL.md']);
+    assert.equal(cachePaths.every(cachePath => fs.existsSync(cachePath)), true);
+    assert.equal(scanBotSkillWorkspace(path.dirname(skillRoot)).length, 1);
+
+    fs.writeFileSync(cachePaths[0], Buffer.from('runtime cache changed'));
+    const second = scanLocalBotSkill(skillRoot);
+    assert.equal(second.contentHash, first.contentHash);
   });
 
   test('rejects unsafe reference segments and matches Go byte/control limits', async () => {
@@ -120,6 +169,76 @@ describe('Bot Skill sync security boundaries', () => {
     const installed = await client.materialize(packageValue('CON'), skillsRoot);
     assert.match(path.basename(installed), /^skill-[a-f0-9]{16}$/);
     assert.equal(fs.existsSync(path.join(installed, 'SKILL.md')), true);
+  });
+
+  test('uses a deterministic suffix when a preferred install directory is already occupied', async () => {
+    const skillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-materialize-'));
+    roots.push(skillsRoot);
+    const client = createClient(async () => Response.json({}));
+    const firstPackage = packageValue('shared-name');
+    const secondPackage = {
+      ...packageValue('shared-name'),
+      reference: { skillId: 'private/shared-name-second', version: 'v1' },
+      localSkillId: 'local:shared-name-second',
+    };
+
+    const first = await client.materialize(firstPackage, skillsRoot, 'shared-name');
+    const second = await client.materialize(secondPackage, skillsRoot, 'shared-name');
+
+    assert.equal(first, path.join(skillsRoot, 'shared-name'));
+    const suffix = crypto.createHash('sha256')
+      .update(secondPackage.localSkillId, 'utf8')
+      .digest('hex')
+      .slice(0, 12);
+    assert.equal(second, path.join(skillsRoot, `shared-name-${suffix}`));
+    assert.equal(fs.existsSync(path.join(first, 'SKILL.md')), true);
+    assert.equal(fs.existsSync(path.join(second, 'SKILL.md')), true);
+  });
+
+  test('treats install directory names case-insensitively on every host platform', async () => {
+    const skillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-materialize-'));
+    roots.push(skillsRoot);
+    const client = createClient(async () => Response.json({}));
+    const firstPackage = packageValue('Shared-Name');
+    const secondPackage = {
+      ...packageValue('shared-name'),
+      reference: { skillId: 'private/shared-name-second', version: 'v1' },
+      localSkillId: 'local-shared-name-second',
+    };
+
+    const first = await client.materialize(firstPackage, skillsRoot, 'Shared-Name');
+    const second = await client.materialize(secondPackage, skillsRoot, 'shared-name');
+
+    assert.equal(first, path.join(skillsRoot, 'Shared-Name'));
+    assert.notEqual(second, path.join(skillsRoot, 'shared-name'));
+    assert.equal(fs.existsSync(path.join(first, 'SKILL.md')), true);
+    assert.equal(fs.existsSync(path.join(second, 'SKILL.md')), true);
+  });
+
+  test('treats canonically equivalent install directory names as occupied on every host platform', async () => {
+    const skillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-materialize-'));
+    roots.push(skillsRoot);
+    const client = createClient(async () => Response.json({}));
+    const composedName = 'caf\u00e9-skill';
+    const decomposedName = 'cafe\u0301-skill';
+    const firstPackage = {
+      ...packageValue(composedName),
+      reference: { skillId: 'private/cafe-skill-first', version: 'v1' },
+      localSkillId: 'local-cafe-skill-first',
+    };
+    const secondPackage = {
+      ...packageValue(decomposedName),
+      reference: { skillId: 'private/cafe-skill-second', version: 'v1' },
+      localSkillId: 'local-cafe-skill-second',
+    };
+
+    const first = await client.materialize(firstPackage, skillsRoot, composedName);
+    const second = await client.materialize(secondPackage, skillsRoot, decomposedName);
+
+    assert.equal(first, path.join(skillsRoot, composedName));
+    assert.notEqual(second, path.join(skillsRoot, decomposedName));
+    assert.equal(fs.existsSync(path.join(first, 'SKILL.md')), true);
+    assert.equal(fs.existsSync(path.join(second, 'SKILL.md')), true);
   });
 
   test('rejects a package whose verified hash differs from the Definition reference', async () => {

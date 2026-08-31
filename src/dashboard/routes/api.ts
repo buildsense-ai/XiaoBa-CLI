@@ -678,6 +678,17 @@ function sanitizeCatsUsernamePart(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
 }
 
+function isOwnedCatsBot(bot: any, userUid?: string): boolean {
+  if (!bot || typeof bot !== 'object') return false;
+  const expectedOwnerUid = String(userUid || '').trim();
+  if (!expectedOwnerUid) return false;
+  const relation = String(bot.relation || '').trim().toLowerCase();
+  if (bot.is_owner === false || relation === 'friend') return false;
+  const ownerUid = String(bot.owner_id || bot.owner_uid || '').trim();
+  if (ownerUid && ownerUid !== expectedOwnerUid) return false;
+  return ownerUid === expectedOwnerUid || bot.is_owner === true || relation === 'owner';
+}
+
 function ensureCatsDeviceId(): string {
   return createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).ensureDeviceId();
 }
@@ -3405,6 +3416,13 @@ export function createApiRouter(
       config: ConfigManager.getConfigReadonly(),
     });
     const state = runtime.auth;
+    const localBot = runtime.localConfig.currentBot;
+    const visibleBot = Boolean(
+      state.uid
+      && state.botUid
+      && localBot?.uid === state.botUid
+      && localBot.boundByUserUid === state.uid,
+    ) ? localBot : null;
     const service = serviceManager.getService('catscompany');
     const tokenPresent = Boolean(state.token);
     let connected = false;
@@ -3483,10 +3501,10 @@ export function createApiRouter(
       authError,
       user,
       botUid: state.botUid || null,
-      bot: runtime.localConfig.currentBot ? {
-        uid: runtime.localConfig.currentBot.uid,
-        name: runtime.localConfig.currentBot.name || '',
-        username: runtime.localConfig.currentBot.username || '',
+      bot: visibleBot ? {
+        uid: visibleBot.uid,
+        name: visibleBot.name || '',
+        username: visibleBot.username || '',
       } : null,
       device: runtime.localConfig.device || null,
       bodyStatus,
@@ -3594,7 +3612,16 @@ export function createApiRouter(
       if (!code) return res.status(400).json({ error: 'code is required' });
 
       const state = trustCatsAuthStateEndpoints(getCatsAuthState(req.body || {}));
-      const login = await catsRequest('POST', state.httpBaseUrl, '/api/desktop-connect/exchange', { code }, undefined, { timeoutMs: 8000 });
+      const localConfigService = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() });
+      const localDevice = localConfigService.load().device;
+      const runtimeRole = process.env.XIAOBA_RUNTIME_ROLE === 'desktop' ? 'desktop' : 'server';
+      const login = await catsRequest('POST', state.httpBaseUrl, '/api/desktop-connect/exchange', {
+        code,
+        device_id: localDevice?.deviceId || '',
+        installation_id: localDevice?.installationId || localDevice?.deviceId || '',
+        display_name: localDevice?.name || os.hostname(),
+        runtime_role: runtimeRole,
+      }, undefined, { timeoutMs: 8000 });
       const httpBaseUrl = normalizeTrustedCatsHttpBaseUrl(login.http_base_url || login.httpBaseUrl || state.httpBaseUrl || DEFAULT_CATSCO_HTTP_BASE_URL);
       const serverUrl = normalizeTrustedCatsServerUrl(login.server_url || login.serverUrl || state.serverUrl || DEFAULT_CATSCO_WS_URL);
       const nextState: CatsAuthState = {
@@ -3701,7 +3728,8 @@ export function createApiRouter(
       if (!userUid) return res.status(500).json({ error: 'CatsCo user uid missing' });
 
       const botsResponse = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
-      const bots = Array.isArray(botsResponse?.bots) ? botsResponse.bots : [];
+      const bots = (Array.isArray(botsResponse?.bots) ? botsResponse.bots : [])
+        .filter((bot: any) => isOwnedCatsBot(bot, userUid));
       const deviceId = ensureCatsDeviceId();
       const deviceName = String(req.body?.deviceName || os.hostname() || 'current-device').trim();
       const preferredUsername = sanitizeCatsUsernamePart(String(req.body?.botUsername || `catsco_${userUid}_${deviceId}`))
@@ -3836,8 +3864,12 @@ export function createApiRouter(
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
 
       const data = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
-      const bots = Array.isArray(data?.bots) ? data.bots : [];
-      const currentBotUid = state.botUid || '';
+      const userUid = String(state.uid || '').trim();
+      const bots = (Array.isArray(data?.bots) ? data.bots : [])
+        .filter((bot: any) => isOwnedCatsBot(bot, userUid));
+      const currentBotUid = bots.some((bot: any) => String(bot.id || bot.uid || '') === String(state.botUid || ''))
+        ? state.botUid || ''
+        : '';
       const formattedBots = bots.map((bot: any) => ({
         uid: String(bot.id || bot.uid || ''),
         username: String(bot.username || ''),
@@ -3905,6 +3937,9 @@ export function createApiRouter(
       const bots = Array.isArray(data?.bots) ? data.bots : [];
       const targetBot = bots.find((bot: any) => String(bot.id || bot.uid || '') === botUid);
       if (!targetBot) return res.status(404).json({ error: 'Bot not found' });
+      if (!isOwnedCatsBot(targetBot, userUid)) {
+        return res.status(403).json({ error: '当前账号只能将自己拥有的 Agent 绑定到本机 Connector' });
+      }
 
       const apiKey = await getCatsBotApiKey(state, botUid, targetBot);
       const relayState: CatsAuthState = {
@@ -4011,6 +4046,9 @@ export function createApiRouter(
       const bots = Array.isArray(data?.bots) ? data.bots : [];
       const targetBot = bots.find((bot: any) => String(bot.id || bot.uid || '') === botUid);
       if (!targetBot) return res.status(404).json({ error: 'Bot not found' });
+      if (!isOwnedCatsBot(targetBot, userUid)) {
+        return res.status(403).json({ error: '当前账号只能切换到自己拥有的 Agent' });
+      }
 
       const previousWeixinStatus = getWeixinChannelStatus({
         runtimeRoot: runtimeDataRoot(),
@@ -4041,6 +4079,8 @@ export function createApiRouter(
           result.warnings.push(`Agent 已切换，但微信服务停止失败：${String(error?.message || error)}`);
         }
       }
+
+      options.catsConnectorAutoStart?.invalidateAndSchedule('switch-bot', 0, { force: true });
 
       res.json({
         ok: true,

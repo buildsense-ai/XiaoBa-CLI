@@ -120,6 +120,19 @@ export function resolveCatsCoRuntimeConfig(
     effectiveEnv.CATSCOMPANY_RUNTIME_CREDENTIAL,
     config.catscompany?.runtimeCredential,
   );
+  const explicitRuntimeActivationAckCredential = firstNonEmpty(
+    effectiveEnv.CATSCO_RUNTIME_ACTIVATION_ACK_CREDENTIAL,
+    effectiveEnv.CATSCOMPANY_RUNTIME_ACTIVATION_ACK_CREDENTIAL,
+  );
+  const runtimeActivationAckCredential = firstNonEmpty(
+    explicitRuntimeActivationAckCredential,
+    config.catscompany?.runtimeActivationAckCredential,
+  );
+  // An explicitly managed server credential has its own server-side expiry.
+  // Only attach local expiry metadata to an automatically provisioned token.
+  const runtimeActivationAckCredentialExpiresAt = explicitRuntimeActivationAckCredential
+    ? undefined
+    : config.catscompany?.runtimeActivationAckCredentialExpiresAt;
   const httpBaseUrl = normalizeBaseUrl(
     firstNonEmpty(explicitHttpBaseUrl, config.catscompany?.httpBaseUrl, auth.httpBaseUrl),
     DEFAULT_CATSCO_HTTP_BASE_URL,
@@ -152,6 +165,8 @@ export function resolveCatsCoRuntimeConfig(
       bodyId,
       installationId,
       runtimeCredential,
+      runtimeActivationAckCredential,
+      runtimeActivationAckCredentialExpiresAt,
       ownerUserId,
       deviceName: localConfig.device?.name,
       runtimeRole,

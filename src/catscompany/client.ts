@@ -210,6 +210,21 @@ function firstNonEmpty(...values: Array<string | undefined>): string {
   return '';
 }
 
+function oneLine(value: unknown, fallback = '-'): string {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text ? text.slice(0, 240) : fallback;
+}
+
+function classifyDisconnectCause(forcedCause: string, transportError: string, closeCode: number): string {
+  if (forcedCause) return forcedCause;
+  const httpStatus = transportError.match(/Unexpected server response:\s*(\d{3})/i)?.[1];
+  if (httpStatus) return `upgrade_http_${httpStatus}`;
+  const networkCode = transportError.match(/\b(ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE)\b/i)?.[1];
+  if (networkCode) return networkCode.toLowerCase();
+  if (transportError) return 'transport_error';
+  return closeCode === 1000 ? 'normal_close' : 'abnormal_close';
+}
+
 export class CatsSendError extends Error {
   public readonly clientMsgID?: string;
   public readonly retryableWithHttp: boolean;
@@ -256,6 +271,11 @@ export class CatsClient extends EventEmitter {
   private readyTimer: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
+  private connectionOpenedAt = 0;
+  private readyAt = 0;
+  private lastActivityAt = 0;
+  private disconnectCause = '';
+  private lastTransportError = '';
   private subscribedTopics = new Set<string>();
   private supportsClientMessageDedupe = false;
   public supportsThinToolRpc = false;
@@ -301,6 +321,11 @@ export class CatsClient extends EventEmitter {
     Logger.info(`[CatsCompany] 正在连接: ${this.config.serverUrl}, apiKey=${maskSecret(this.config.apiKey)}, bodyId=${bodyId}`);
     this.supportsClientMessageDedupe = false;
     this.supportsThinToolRpc = false;
+    this.connectionOpenedAt = 0;
+    this.readyAt = 0;
+    this.lastActivityAt = 0;
+    this.disconnectCause = '';
+    this.lastTransportError = '';
     this.ws = new WebSocket(this.config.serverUrl, {
       headers: {
         'X-API-Key': this.config.apiKey,
@@ -312,6 +337,8 @@ export class CatsClient extends EventEmitter {
     this.startConnectTimeout(bodyId);
 
     this.ws.on('open', () => {
+      this.connectionOpenedAt = Date.now();
+      this.lastActivityAt = this.connectionOpenedAt;
       this.clearConnectTimeout();
       this.awaitingReady = true;
       this.startReadyTimeout();
@@ -327,23 +354,43 @@ export class CatsClient extends EventEmitter {
     });
 
     this.ws.on('message', (data: Buffer) => {
+      this.lastActivityAt = Date.now();
       this.resetPongTimer();
       const msg = JSON.parse(data.toString());
       this.handleMessage(msg);
     });
 
     this.ws.on('pong', () => {
+      this.lastActivityAt = Date.now();
       this.resetPongTimer();
     });
 
-    this.ws.on('error', (err: Error) => this.emit('error', err));
+    this.ws.on('error', (err: Error) => {
+      const errorCode = String((err as any)?.code || (err as any)?.cause?.code || '').trim();
+      this.lastTransportError = oneLine(errorCode ? `${errorCode}: ${err.message}` : err.message);
+      this.emit('error', err);
+    });
     this.ws.on('close', (code: number, reason: Buffer) => {
-      Logger.warning(`[CatsCompany] WebSocket 已关闭: code=${code}, reason=${reason.toString() || '-'}`);
+      const closedAt = Date.now();
+      const connectedAt = this.readyAt || this.connectionOpenedAt;
+      const connectedForMs = connectedAt ? Math.max(0, closedAt - connectedAt) : 0;
+      const lastActivityAgoMs = this.lastActivityAt ? Math.max(0, closedAt - this.lastActivityAt) : 0;
+      const cause = classifyDisconnectCause(this.disconnectCause, this.lastTransportError, code);
+      Logger.warning(
+        `[CatsCompany] WebSocket 已关闭: code=${code}, reason=${oneLine(reason.toString())}, ` +
+        `cause=${cause}, connectedForMs=${connectedForMs}, lastActivityAgoMs=${lastActivityAgoMs}, ` +
+        `error=${oneLine(this.lastTransportError)}`,
+      );
       this.clearConnectTimeout();
       this.clearReadyTimeout();
       this.awaitingReady = false;
       this.stopHeartbeat();
       this.ws = null;
+      this.connectionOpenedAt = 0;
+      this.readyAt = 0;
+      this.lastActivityAt = 0;
+      this.disconnectCause = '';
+      this.lastTransportError = '';
       this.rejectPendingAcks(new CatsSendError(
         'timeout',
         'WebSocket 在收到 CatsCompany 服务器确认前关闭',
@@ -372,6 +419,8 @@ export class CatsClient extends EventEmitter {
         this.awaitingReady = false;
         this.clearReadyTimeout();
         this.reconnectAttempts = 0;
+        this.readyAt = Date.now();
+        this.lastActivityAt = this.readyAt;
         this.uid = String(msg.ctrl.params?.uid || 'bot');
         this.name = String(msg.ctrl.params?.name || 'CatsCo');
         Logger.info(
@@ -1089,6 +1138,7 @@ export class CatsClient extends EventEmitter {
     this.connectTimer = setTimeout(() => {
       if (this.ws?.readyState !== WebSocket.CONNECTING) return;
       Logger.warning(`[CatsCompany] WebSocket 连接握手超时 ${timeoutMs}ms，主动重建连接: bodyId=${bodyId}`);
+      this.disconnectCause = 'connect_timeout';
       this.ws.terminate();
     }, timeoutMs);
     (this.connectTimer as any).unref?.();
@@ -1106,6 +1156,7 @@ export class CatsClient extends EventEmitter {
     this.readyTimer = setTimeout(() => {
       if (!this.awaitingReady || this.ws?.readyState !== WebSocket.OPEN) return;
       Logger.warning(`[CatsCompany] CatsCompany 握手确认超时 ${timeoutMs}ms，主动重建 WebSocket 连接`);
+      this.disconnectCause = 'ready_timeout';
       this.ws.terminate();
     }, timeoutMs);
     (this.readyTimer as any).unref?.();
@@ -1135,6 +1186,7 @@ export class CatsClient extends EventEmitter {
     if (this.pongTimer) clearTimeout(this.pongTimer);
     this.pongTimer = setTimeout(() => {
       Logger.warning('[CatsCompany] 心跳超时，断开连接');
+      this.disconnectCause = 'heartbeat_timeout';
       this.ws?.terminate();
     }, 90000);
   }
@@ -1178,6 +1230,7 @@ export class CatsClient extends EventEmitter {
 
   disconnect(): void {
     this.closed = true;
+    this.disconnectCause = 'client_shutdown';
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

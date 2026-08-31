@@ -43,21 +43,22 @@ export class SkillTool implements Tool {
     const { skill: skillName, args: skillArgs = '' } = args;
 
     try {
+      const skillManager = this.resolveSkillManager(context);
       // 特殊命令：reload
       if (skillName === 'reload' || skillName === '__reload__') {
-        await this.skillManager.loadSkills();
-        const count = this.skillManager.getAllSkills().length;
+        await skillManager.loadSkills();
+        const count = skillManager.getAllSkills().length;
         return { ok: true, content: `已重新加载 ${count} 个 skills` };
       }
 
       // 加载所有 skills
-      await this.skillManager.loadSkills();
+      await skillManager.loadSkills();
 
       // 获取指定的 skill
-      const skill = this.skillManager.getSkill(skillName);
+      const skill = skillManager.getSkill(skillName);
 
       if (!skill) {
-        const availableSkills = this.skillManager.getAllSkills()
+        const availableSkills = skillManager.getAllSkills()
           .map(s => s.metadata.name)
           .join(', ');
         this.recordPetEvent('skill_failed', skillName, context, {
@@ -110,6 +111,14 @@ export class SkillTool implements Tool {
       Logger.error(`Skill 执行失败: ${error.message}`);
       return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `Skill 执行失败: ${error.message}` };
     }
+  }
+
+  private resolveSkillManager(context: ToolExecutionContext): SkillManager {
+    if (!context.turnSkillSnapshot) return this.skillManager;
+    if (!context.runtimeServices?.skillManager) {
+      throw new Error('Turn Skill 快照缺少对应的运行时 SkillManager。');
+    }
+    return context.runtimeServices.skillManager;
   }
 
   private recordPetEvent(
