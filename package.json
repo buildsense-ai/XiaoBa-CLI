@@ -15,7 +15,7 @@
     "electron:dev": "npm run build && node scripts/start-electron-dev.mjs",
     "electron:build": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --publish never",
     "electron:build:mac": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --mac --publish never",
-    "electron:build:win": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --win --publish never",
+    "electron:build:win": "npm run build && node scripts/prepare-runtime.mjs win32 x64 && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --win --publish never",
     "electron:build:linux": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --linux --publish never",
     "watch": "tsc --watch",
     "test": "node scripts/run-tests.mjs runtime",
@@ -112,6 +112,9 @@
     },
     "files": [
       "dist/**/*",
+      "!dist/**/*.d.ts",
+      "!dist/**/*.d.ts.map",
+      "!dist/**/*.js.map",
       "electron/**/*",
       "dashboard/**/*",
       "prompts/**/*",
@@ -136,11 +139,21 @@
           "!**/.bin/**",
           "!**/test/**",
           "!**/tests/**",
+          "!**/example/**",
+          "!**/examples/**",
+          "!**/docs/**",
           "!**/*.md",
+          "!**/*.markdown",
+          "!**/CHANGELOG*",
+          "!**/HISTORY*",
+          "!**/README*",
           "!electron/**",
           "!electron-builder/**",
-          "@types/**",
-          "!typescript/**"
+          "!electron-packager/**",
+          "!playwright/**",
+          "!tsx/**",
+          "!typescript/**",
+          "!@types/**"
         ]
       }
     ],

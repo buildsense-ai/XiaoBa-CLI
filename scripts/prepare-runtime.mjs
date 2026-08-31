@@ -67,7 +67,7 @@ export async function main(options = {}) {
   );
 
   if (platform === 'win32') {
-    preparedRuntimes.push(prepareGitRuntime(runtimeRoot));
+    preparedRuntimes.push(prepareGitRuntime(runtimeRoot, platform));
   }
 
   fs.writeFileSync(
@@ -195,7 +195,20 @@ async function prepareDownloadedRuntime(manifest, runtimeName, platform, arch, r
   };
 }
 
-function prepareGitRuntime(runtimeRoot) {
+function prepareGitRuntime(runtimeRoot, targetPlatform = process.platform) {
+  // Cross-platform builds cannot copy a host Git installation: on WSL,
+  // resolving `git` yields /usr/bin/git and its parent is the entire Linux
+  // filesystem. The packaged runtime can fall back to system Git on Windows.
+  if (normalizePlatform(targetPlatform) !== normalizePlatform(process.platform)) {
+    console.log(`  git: skipped for cross-platform build (${process.platform} -> ${targetPlatform}); Windows runtime will use system git`);
+    return {
+      name: 'git',
+      source: 'system',
+      target: null,
+      skipped: true,
+    };
+  }
+
   const gitExecutable = resolveCommand('git');
   if (!gitExecutable) {
     throw new Error('git executable not found');
