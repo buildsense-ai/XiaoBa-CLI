@@ -45,4 +45,3 @@ suffix 原样保留，未完成的 tool exchange 不允许提交。
 - 不改变 Branch Memory 的历史搜索、周期激活或注入协议。
 - 不为摘要单独配置 MiniMax；摘要跟随主 Session 模型。
 - 不在不安全位置替换 transcript，不静默丢弃用户输入或工具结果。
-
