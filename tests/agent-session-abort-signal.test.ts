@@ -36,6 +36,16 @@ test('AgentSession checkpoint candidate defaults to a 75 percent start and 85 pe
   }
 });
 
+test('AgentSession checkpoint thresholds are strict boundaries', () => {
+  const session = new AgentSession('user:candidate-strict-boundaries', buildMockServices({}), 'catscompany');
+  const usage = (usedTokens: number) => ({ usedTokens, toolTokens: 0, maxTokens: 100 });
+
+  assert.equal((session as any).isCheckpointCandidateTriggerReached(usage(75)), false);
+  assert.equal((session as any).isCheckpointCandidateTriggerReached(usage(76)), true);
+  assert.equal((session as any).isCheckpointCandidateSerialThresholdReached(usage(85)), false);
+  assert.equal((session as any).isCheckpointCandidateSerialThresholdReached(usage(86)), true);
+});
+
 test('AgentSession candidate mode supports explicit false rollback', () => {
   const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
   process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'false';
@@ -56,10 +66,10 @@ test('AgentSession keeps one candidate slot and clear cancels it', async () => {
     let observedSignal: AbortSignal | undefined;
     const session = new AgentSession('user:candidate-slot', buildMockServices({}), 'catscompany');
     (session as any).getContextUsageInfo = () => ({
-      usedTokens: 75,
+      usedTokens: 76,
       toolTokens: 0,
       maxTokens: 100,
-      usagePercent: 75,
+      usagePercent: 76,
     });
     (session as any).checkpointCandidateCoordinator.compactIfNeeded = async (_messages: any[], options: any) => {
       observedSignal = options.signal;
@@ -89,7 +99,7 @@ test('AgentSession persists a ready candidate before returning replacement messa
   try {
     const session = new AgentSession('user:candidate-commit', buildMockServices({}), 'catscompany');
     const messages = [{ role: 'user', content: 'root', __episodeId: 'episode-1' }];
-    (session as any).getContextUsageInfo = () => ({ usedTokens: 75, toolTokens: 0, maxTokens: 100, usagePercent: 75 });
+    (session as any).getContextUsageInfo = () => ({ usedTokens: 76, toolTokens: 0, maxTokens: 100, usagePercent: 76 });
     (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => ({
       compacted: true,
       messages: [{ role: 'user', content: 'summary', __episodeId: 'episode-1' }],
@@ -124,7 +134,7 @@ test('AgentSession keeps original messages when candidate persistence fails', ()
   try {
     const session = new AgentSession('user:candidate-persist-failure', buildMockServices({}), 'catscompany');
     const messages = [{ role: 'user', content: 'root' }];
-    (session as any).getContextUsageInfo = () => ({ usedTokens: 75, toolTokens: 0, maxTokens: 100, usagePercent: 75 });
+    (session as any).getContextUsageInfo = () => ({ usedTokens: 76, toolTokens: 0, maxTokens: 100, usagePercent: 76 });
     (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => ({ compacted: true, messages: [] });
     (session as any).persistCheckpoint = () => false;
 
@@ -146,7 +156,7 @@ test('AgentSession keeps a running candidate through the serial compaction range
   const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
   process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'true';
   try {
-    let usagePercent = 75;
+    let usagePercent = 76;
     let observedSignal: AbortSignal | undefined;
     const session = new AgentSession('user:candidate-preempt', buildMockServices({}), 'catscompany');
     (session as any).getContextUsageInfo = () => ({
@@ -181,11 +191,11 @@ test('AgentSession keeps a running candidate through the serial compaction range
   }
 });
 
-test('a candidate result that arrives after 85 percent remains ready for safe commit', async () => {
+test('a candidate result that arrives above 85 percent remains ready for safe commit', async () => {
   const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
   process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'true';
   try {
-    let usagePercent = 75;
+    let usagePercent = 76;
     let releaseCandidate!: () => void;
     const gate = new Promise<void>(resolve => { releaseCandidate = resolve; });
     const session = new AgentSession('user:candidate-late-result', buildMockServices({}), 'catscompany');
@@ -203,7 +213,7 @@ test('a candidate result that arrives after 85 percent remains ready for safe co
 
     (session as any).startCheckpointCandidateIfEligible(0, messages);
     const candidate = (session as any).checkpointCandidate;
-    usagePercent = 85;
+    usagePercent = 86;
     (session as any).coordinateCheckpointCandidate(messages);
     releaseCandidate();
     await new Promise(resolve => setImmediate(resolve));

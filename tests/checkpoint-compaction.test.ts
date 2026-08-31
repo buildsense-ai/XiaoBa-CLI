@@ -59,6 +59,27 @@ test('default checkpoint threshold is 85 percent of the physical context window'
   assert.equal(coordinator.needsCompaction(above), true);
 });
 
+test('checkpoint compaction triggers only above the configured threshold', () => {
+  const coordinator = new CheckpointCompactionCoordinator({} as any, {
+    maxContextTokens: 100,
+    compactionThreshold: 0.85,
+  });
+  (coordinator as any).getUsageInfo = () => ({
+    usedTokens: 85,
+    toolTokens: 0,
+    maxTokens: 100,
+    usagePercent: 85,
+  });
+  assert.equal(coordinator.needsCompaction([]), false);
+  (coordinator as any).getUsageInfo = () => ({
+    usedTokens: 86,
+    toolTokens: 0,
+    maxTokens: 100,
+    usagePercent: 86,
+  });
+  assert.equal(coordinator.needsCompaction([]), true);
+});
+
 test('checkpoint input limit is 85 percent for supported 256K+ windows', () => {
   assert.equal(calculateCheckpointInputLimitTokens(256_000), 217_600);
   assert.equal(calculateCheckpointInputLimitTokens(1_000_000), 850_000);

@@ -342,7 +342,7 @@ export class AgentSession {
         }
         const usage = this.getContextUsageInfo(messages);
         const toolTokens = estimateToolsTokens(tools);
-        if (usage.usedTokens + toolTokens >= usage.maxTokens * CHECKPOINT_SUMMARY_STOP_RATIO) {
+        if (usage.usedTokens + toolTokens > usage.maxTokens * CHECKPOINT_SUMMARY_STOP_RATIO) {
           throw new Error(CONTEXT_CHECKPOINT_BLOCKED_ERROR);
         }
       },
@@ -1533,7 +1533,7 @@ export class AgentSession {
     maxTokens: number;
   }): boolean {
     return usage.usedTokens + (usage.toolTokens || 0)
-      >= usage.maxTokens * CHECKPOINT_SUMMARY_STOP_RATIO;
+      > usage.maxTokens * CHECKPOINT_SUMMARY_STOP_RATIO;
   }
 
   private isCheckpointCandidateTriggerReached(usage: {
@@ -1542,7 +1542,7 @@ export class AgentSession {
     maxTokens: number;
   }): boolean {
     return usage.usedTokens + (usage.toolTokens || 0)
-      >= usage.maxTokens * CHECKPOINT_SUMMARY_START_RATIO;
+      > usage.maxTokens * CHECKPOINT_SUMMARY_START_RATIO;
   }
 
   private logCheckpointCandidateEvent(

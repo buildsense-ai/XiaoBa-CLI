@@ -121,6 +121,14 @@ test('candidate trigger uses exact token usage instead of rounded percentage', a
       (session as any).messages,
       'pre_turn',
     );
+    assert.equal((session as any).checkpointCandidate, null);
+
+    usedTokens = 751;
+    (session as any).startCheckpointCandidateIfEligible(
+      (session as any).lifecycleGeneration,
+      (session as any).messages,
+      'pre_turn',
+    );
     assert.ok((session as any).checkpointCandidate);
     await (session as any).checkpointCandidatePromise;
     assert.equal((session as any).checkpointCandidate.status, 'ready');
@@ -138,7 +146,7 @@ test('candidate persistence keeps memory aligned with the persisted projection',
     (session as any).messages.push({ role: 'user', content: 'history root' });
     (session as any).getContextUsageInfo = (messages: Message[]) => {
       const compacted = messages.some(message => message.content === 'candidate summary');
-      const currentPercent = compacted ? 20 : 75;
+      const currentPercent = compacted ? 20 : 76;
       return {
         usedTokens: currentPercent,
         toolTokens: 0,
@@ -218,10 +226,10 @@ test('handleMessage commits a candidate at episode end with suffix intact', asyn
     (session as any).getContextUsageInfo = (messages: Message[]) => {
       const compacted = messages.some(message => message.content === 'candidate summary');
       return {
-        usedTokens: compacted ? 20 : 75,
+        usedTokens: compacted ? 20 : 76,
         toolTokens: 0,
         maxTokens: 100,
-        usagePercent: compacted ? 20 : 75,
+        usagePercent: compacted ? 20 : 76,
       };
     };
     (session as any).checkpointCompactionCoordinator.compactIfNeeded = noCompaction;
@@ -267,7 +275,7 @@ test('episode end commits a candidate that became ready during the model request
     (session as any).messages.push({ role: 'user', content: 'history root' });
     (session as any).getContextUsageInfo = (messages: Message[]) => {
       const compacted = messages.some(message => message.content === 'candidate summary');
-      const currentPercent = compacted ? 20 : 75;
+      const currentPercent = compacted ? 20 : 76;
       return {
         usedTokens: currentPercent,
         toolTokens: 0,
@@ -294,9 +302,9 @@ test('episode end commits a candidate that became ready during the model request
   });
 });
 
-test('handleMessage waits for a running candidate at 85 percent', async () => {
+test('handleMessage waits for a running candidate only above 85 percent', async () => {
   await withCandidateMode(async () => {
-    let usagePercent = 75;
+    let usagePercent = 76;
     let releaseCandidate!: () => void;
     const candidateGate = new Promise<void>(resolve => { releaseCandidate = resolve; });
     const session = createInitializedSession('user:candidate-preempt-integration', {
@@ -330,7 +338,7 @@ test('handleMessage waits for a running candidate at 85 percent', async () => {
     assert.equal(candidate.status, 'running');
     serialCalls = 0;
 
-    usagePercent = 85;
+    usagePercent = 86;
     const highWaterTurn = session.handleMessage('trigger high water');
     await new Promise(resolve => setImmediate(resolve));
     assert.equal((session as any).checkpointCandidate, candidate);
@@ -347,9 +355,9 @@ test('handleMessage waits for a running candidate at 85 percent', async () => {
   });
 });
 
-test('candidate failure at 85 percent falls back once with the latest transcript', async () => {
+test('candidate failure above 85 percent falls back once with the latest transcript', async () => {
   await withCandidateMode(async () => {
-    let usagePercent = 75;
+    let usagePercent = 76;
     let releaseFailure!: () => void;
     const failureGate = new Promise<void>(resolve => { releaseFailure = resolve; });
     const session = createInitializedSession('user:candidate-fallback-integration', {
@@ -382,7 +390,7 @@ test('candidate failure at 85 percent falls back once with the latest transcript
     };
 
     await session.handleMessage('start candidate');
-    usagePercent = 85;
+    usagePercent = 86;
     const highWaterTurn = session.handleMessage('latest suffix');
     await new Promise(resolve => setImmediate(resolve));
     releaseFailure();
@@ -396,9 +404,9 @@ test('candidate failure at 85 percent falls back once with the latest transcript
   });
 });
 
-test('candidate failure before 85 percent retries one serial fallback at the stop point', async () => {
+test('candidate failure before 85 percent retries one serial fallback above the stop point', async () => {
   await withCandidateMode(async () => {
-    let usagePercent = 75;
+    let usagePercent = 76;
     const session = createInitializedSession('user:candidate-early-failure-fallback', {
       async chatStream() { return { content: 'main answer', toolCalls: [], usage }; },
     });
@@ -432,7 +440,7 @@ test('candidate failure before 85 percent retries one serial fallback at the sto
     };
 
     await session.handleMessage('start candidate');
-    usagePercent = 85;
+    usagePercent = 86;
     const result = await session.handleMessage('reach stop point');
 
     assert.equal(result.taskOutcome, 'completed');
@@ -443,7 +451,7 @@ test('candidate failure before 85 percent retries one serial fallback at the sto
 
 test('candidate persistence failure still falls back at the stop point', async () => {
   await withCandidateMode(async () => {
-    let usagePercent = 75;
+    let usagePercent = 76;
     const session = createInitializedSession('user:candidate-persist-failure-fallback', {
       async chatStream() { return { content: 'main answer', toolCalls: [], usage }; },
     });
@@ -467,7 +475,7 @@ test('candidate persistence failure still falls back at the stop point', async (
     (session as any).checkpointCompactionCoordinator.compactIfNeeded = noCompaction;
 
     await session.handleMessage('start candidate');
-    usagePercent = 85;
+    usagePercent = 86;
     const result = await session.handleMessage('reach stop point');
 
     assert.equal(result.taskOutcome, 'completed');
@@ -487,10 +495,10 @@ test('oversized candidate and fallback fail closed before the next model request
     });
     (session as any).messages.push({ role: 'user', content: 'history root' });
     (session as any).getContextUsageInfo = () => ({
-      usedTokens: 85,
+      usedTokens: 86,
       toolTokens: 0,
       maxTokens: 100,
-      usagePercent: 85,
+      usagePercent: 86,
     });
     const candidate = new (await import('../src/core/checkpoint-candidate')).CheckpointCandidate(
       'oversized-ready',
@@ -504,10 +512,10 @@ test('oversized candidate and fallback fail closed before the next model request
     (session as any).checkpointCompactionCoordinator.compactIfNeeded = async (messages: Message[]) => ({
       messages,
       compacted: false,
-      usedTokens: 85,
+      usedTokens: 86,
       toolTokens: 0,
       maxTokens: 100,
-      usagePercent: 85,
+      usagePercent: 86,
     });
 
     const result = await session.handleMessage('blocked input');
@@ -530,7 +538,7 @@ test('interrupt discards a candidate result that returns late', async () => {
       async chatStream() { return { content: 'main answer', toolCalls: [], usage }; },
     });
     (session as any).messages.push({ role: 'user', content: 'history root' });
-    (session as any).getContextUsageInfo = () => ({ usedTokens: 75, toolTokens: 0, maxTokens: 100, usagePercent: 75 });
+    (session as any).getContextUsageInfo = () => ({ usedTokens: 76, toolTokens: 0, maxTokens: 100, usagePercent: 76 });
     (session as any).checkpointCompactionCoordinator.compactIfNeeded = noCompaction;
     (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => {
       await candidateGate;
@@ -560,7 +568,7 @@ test('cleanup discards a candidate result that returns late', async () => {
       async chatStream() { return { content: 'main answer', toolCalls: [], usage }; },
     });
     (session as any).messages.push({ role: 'user', content: 'history root' });
-    (session as any).getContextUsageInfo = () => ({ usedTokens: 75, toolTokens: 0, maxTokens: 100, usagePercent: 75 });
+    (session as any).getContextUsageInfo = () => ({ usedTokens: 76, toolTokens: 0, maxTokens: 100, usagePercent: 76 });
     (session as any).checkpointCompactionCoordinator.compactIfNeeded = noCompaction;
     (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => {
       await candidateGate;
@@ -589,7 +597,7 @@ test('cleanup discards a candidate result that returns late', async () => {
 
 test('authentication failure blocks the session without serial fallback', async () => {
   await withCandidateMode(async () => {
-    let usagePercent = 75;
+    let usagePercent = 76;
     let releaseAuthentication!: () => void;
     const authenticationGate = new Promise<void>(resolve => { releaseAuthentication = resolve; });
     let candidateCalls = 0;
@@ -620,7 +628,7 @@ test('authentication failure blocks the session without serial fallback', async 
 
     await session.handleMessage('start candidate');
     fallbackCalls = 0;
-    usagePercent = 85;
+    usagePercent = 86;
     const blockedTurn = session.handleMessage('must not reach model');
     await new Promise(resolve => setImmediate(resolve));
     releaseAuthentication();
@@ -650,7 +658,7 @@ test('cleared parent session discards a candidate result that returns after dele
     (session as any).messages.push({ role: 'user', content: 'history root' });
     (session as any).getContextUsageInfo = (messages: Message[]) => {
       const compacted = messages.some(message => message.content === 'candidate summary');
-      const currentPercent = compacted ? 20 : 75;
+      const currentPercent = compacted ? 20 : 76;
       return {
         usedTokens: currentPercent,
         toolTokens: 0,
