@@ -66,8 +66,11 @@ Delivery is explicit:
 - `audit` writes the observation details to the branch audit log only;
 - `discard` records the branch's intentional suppression.
 
-When receipt-bound outcome writes are enabled, a body-read Skill citation must report its real
-`succeeded`, `failed`, or `corrected` outcome before `context` delivery. The runtime never
-guesses success. Every branch also has finite turn, pass, deadline, and prompt-token budgets;
+The memory branch is retrieval-only: a body-read Skill citation proves only that the branch
+observed a receipt-eligible body, not that the main agent adopted or executed the Skill. It
+therefore never exposes `catslog_skill_outcome`, blocks `context` delivery, or guesses task
+success. Outcome settlement is intentionally not wired in this retrieval-only branch yet;
+the future main-turn runtime must own any receipt-bound feedback event. Every branch also has
+finite turn, pass, deadline, and prompt-token budgets;
 the defaults and bounded Dashboard update seam are documented in
 `docs/memory-branch-evaluation-notes.md`.
