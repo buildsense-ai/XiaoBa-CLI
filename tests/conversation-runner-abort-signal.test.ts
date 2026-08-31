@@ -102,6 +102,27 @@ test('ConversationRunner reuses AbortSignal after prompt-too-long trim retry', a
   assert.deepEqual(observedSignals, [controller.signal, controller.signal]);
 });
 
+test('ConversationRunner checkpoint guard does not trim and retry a provider context error', async () => {
+  let calls = 0;
+  const aiService = {
+    async chat() {
+      calls++;
+      throw new Error('maximum context length exceeded');
+    },
+  };
+  const runner = new ConversationRunner(aiService as any, new EmptyToolExecutor(), {
+    stream: false,
+    enableCompression: false,
+    beforeModelRequest: () => undefined,
+  });
+
+  await assert.rejects(
+    () => runner.run([{ role: 'user', content: 'durable history' }]),
+    /CONTEXT_CHECKPOINT_BLOCKED/,
+  );
+  assert.equal(calls, 1);
+});
+
 test('ConversationRunner omits tool definitions when the model config disables tools', async () => {
   let observedTools: ToolDefinition[] | undefined;
   const tool: ToolDefinition = {

@@ -1,20 +1,21 @@
 import { TokenUsage } from '../types';
 
-/** 单次 AI 调用记录 */
-interface AICallRecord {
-  model: string;
-  usage: TokenUsage;
-  timestamp: number;
+export interface MetricsRecordContext {
+  sessionKey?: string;
+  candidateId?: string;
+  episodeId?: string;
+  phase?: string;
+  attempt?: number;
+  providerRequest?: number;
 }
 
-/** 单次工具调用记录 */
-interface ToolCallRecord {
-  name: string;
-  durationMs: number;
-  timestamp: number;
-}
+export interface MetricsAICallRecord { model: string; usage: TokenUsage; timestamp: number; context?: MetricsRecordContext; }
+export interface MetricsToolCallRecord { name: string; durationMs: number; timestamp: number; }
+export type MetricsRecord = MetricsAICallRecord | MetricsToolCallRecord;
 
-/** Session 级别的汇总 */
+interface AICallRecord extends MetricsAICallRecord {}
+interface ToolCallRecord extends MetricsToolCallRecord {}
+
 export interface MetricsSummary {
   aiCalls: number;
   totalPromptTokens: number;
@@ -22,78 +23,73 @@ export interface MetricsSummary {
   totalTokens: number;
   totalCachedReadTokens: number;
   totalCachedWriteTokens: number;
-  /** cached read / prompt tokens; omitted when no prompt tokens were recorded. */
   cacheReadRatio?: number;
   toolCalls: number;
   toolDurationMs: number;
-  /** 按工具名分组的调用次数和总耗时 */
   toolBreakdown: Record<string, { count: number; totalMs: number }>;
 }
 
-/**
- * Metrics - 轻量 metrics 收集器（静态单例）
- *
- * 三层数据：Provider 层（token）→ 工具层（耗时）→ 会话层（汇总）
- */
+function summarizeMetrics(aiCalls: AICallRecord[], toolCalls: ToolCallRecord[]): MetricsSummary {
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
+  let totalTokens = 0;
+  let totalCachedReadTokens = 0;
+  let totalCachedWriteTokens = 0;
+  for (const call of aiCalls) {
+    totalPromptTokens += call.usage.promptTokens;
+    totalCompletionTokens += call.usage.completionTokens;
+    totalTokens += call.usage.totalTokens;
+    totalCachedReadTokens += call.usage.cachedReadTokens ?? 0;
+    totalCachedWriteTokens += call.usage.cachedWriteTokens ?? 0;
+  }
+  let toolDurationMs = 0;
+  const toolBreakdown: Record<string, { count: number; totalMs: number }> = {};
+  for (const call of toolCalls) {
+    toolDurationMs += call.durationMs;
+    toolBreakdown[call.name] ??= { count: 0, totalMs: 0 };
+    toolBreakdown[call.name].count++;
+    toolBreakdown[call.name].totalMs += call.durationMs;
+  }
+  return {
+    aiCalls: aiCalls.length,
+    totalPromptTokens,
+    totalCompletionTokens,
+    totalTokens,
+    totalCachedReadTokens,
+    totalCachedWriteTokens,
+    cacheReadRatio: totalPromptTokens > 0 ? totalCachedReadTokens / totalPromptTokens : undefined,
+    toolCalls: toolCalls.length,
+    toolDurationMs,
+    toolBreakdown,
+  };
+}
+
+/** Per-session collector: turn reset never removes background usage. */
+export class MetricsCollector {
+  private aiCalls: AICallRecord[] = [];
+  private backgroundAICalls: AICallRecord[] = [];
+  private toolCalls: ToolCallRecord[] = [];
+  recordAICall(model: string, usage: TokenUsage): void { this.aiCalls.push({ model, usage, timestamp: Date.now() }); }
+  recordBackgroundAICall(model: string, usage: TokenUsage, context?: MetricsRecordContext): void { this.backgroundAICalls.push({ model, usage, timestamp: Date.now(), context }); }
+  getBackgroundRecords(): ReadonlyArray<Readonly<AICallRecord>> { return this.backgroundAICalls.map(record => ({ ...record, context: record.context && { ...record.context } })); }
+  recordToolCall(name: string, durationMs: number): void { this.toolCalls.push({ name, durationMs, timestamp: Date.now() }); }
+  getSummary(): MetricsSummary { return summarizeMetrics(this.aiCalls, this.toolCalls); }
+  getBackgroundSummary(): MetricsSummary { return summarizeMetrics(this.backgroundAICalls, []); }
+  getTotalSummary(): MetricsSummary {
+    return summarizeMetrics([...this.aiCalls, ...this.backgroundAICalls], this.toolCalls);
+  }
+  /** Clear the active turn while preserving background usage already emitted as checkpoint_summary events. */
+  reset(): void { this.aiCalls = []; this.toolCalls = []; }
+}
+
+/** Backwards-compatible process collector. New code should use MetricsCollector. */
 export class Metrics {
-  private static aiCalls: AICallRecord[] = [];
-  private static toolCalls: ToolCallRecord[] = [];
-
-  /** 记录一次 AI 调用 */
-  static recordAICall(model: string, usage: TokenUsage): void {
-    this.aiCalls.push({ model, usage, timestamp: Date.now() });
-  }
-
-  /** 记录一次工具执行 */
-  static recordToolCall(name: string, durationMs: number): void {
-    this.toolCalls.push({ name, durationMs, timestamp: Date.now() });
-  }
-
-  /** 获取当前 session 汇总 */
-  static getSummary(): MetricsSummary {
-    let totalPromptTokens = 0;
-    let totalCompletionTokens = 0;
-    let totalTokens = 0;
-    let totalCachedReadTokens = 0;
-    let totalCachedWriteTokens = 0;
-
-    for (const call of this.aiCalls) {
-      totalPromptTokens += call.usage.promptTokens;
-      totalCompletionTokens += call.usage.completionTokens;
-      totalTokens += call.usage.totalTokens;
-      totalCachedReadTokens += call.usage.cachedReadTokens ?? 0;
-      totalCachedWriteTokens += call.usage.cachedWriteTokens ?? 0;
-    }
-
-    let toolDurationMs = 0;
-    const toolBreakdown: Record<string, { count: number; totalMs: number }> = {};
-
-    for (const call of this.toolCalls) {
-      toolDurationMs += call.durationMs;
-      if (!toolBreakdown[call.name]) {
-        toolBreakdown[call.name] = { count: 0, totalMs: 0 };
-      }
-      toolBreakdown[call.name].count++;
-      toolBreakdown[call.name].totalMs += call.durationMs;
-    }
-
-    return {
-      aiCalls: this.aiCalls.length,
-      totalPromptTokens,
-      totalCompletionTokens,
-      totalTokens,
-      totalCachedReadTokens,
-      totalCachedWriteTokens,
-      cacheReadRatio: totalPromptTokens > 0 ? totalCachedReadTokens / totalPromptTokens : undefined,
-      toolCalls: this.toolCalls.length,
-      toolDurationMs,
-      toolBreakdown,
-    };
-  }
-
-  /** 重置（session 结束时） */
-  static reset(): void {
-    this.aiCalls = [];
-    this.toolCalls = [];
-  }
+  private static collector = new MetricsCollector();
+  static recordAICall(model: string, usage: TokenUsage): void { this.collector.recordAICall(model, usage); }
+  static recordBackgroundAICall(model: string, usage: TokenUsage, context?: MetricsRecordContext): void { this.collector.recordBackgroundAICall(model, usage, context); }
+  static recordToolCall(name: string, durationMs: number): void { this.collector.recordToolCall(name, durationMs); }
+  static getSummary(): MetricsSummary { return this.collector.getSummary(); }
+  static getBackgroundSummary(): MetricsSummary { return this.collector.getBackgroundSummary(); }
+  static getTotalSummary(): MetricsSummary { return this.collector.getTotalSummary(); }
+  static reset(): void { this.collector.reset(); }
 }
