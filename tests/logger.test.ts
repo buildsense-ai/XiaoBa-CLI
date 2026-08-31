@@ -129,6 +129,29 @@ describe('Logger', () => {
     assert.equal('agent_identity' in entry, false);
   });
 
+  test('late route identity enriches a legacy logger without allowing a relabel', () => {
+    delete require.cache[require.resolve('../src/utils/session-turn-logger')];
+    const { SessionTurnLogger } = require('../src/utils/session-turn-logger');
+    const sessionLogger = new SessionTurnLogger('catscompany', 'cc_group:grp_81');
+    assert.equal(sessionLogger.setAgentIdentity({
+      agent_id: 'bot-bot-3332', trust: 'legacy_context', source: 'legacy.route',
+    }), true);
+    assert.equal(sessionLogger.setAgentIdentity({
+      agent_id: 'bot-bot-3332', trust: 'server_canonical', agent_body_id: 'body-1', source: 'metadata.catsco_identity',
+    }), true);
+    assert.equal(sessionLogger.setAgentIdentity({
+      agent_id: 'other-agent', trust: 'server_canonical',
+    }), false);
+    sessionLogger.logRuntime('INFO', 'late identity');
+    const entry = JSON.parse(fs.readFileSync(sessionLogger.getLogFilePath(), 'utf8').trim());
+    assert.deepEqual(entry.agent_identity, {
+      agent_id: 'bot-bot-3332',
+      agent_body_id: 'body-1',
+      trust: 'server_canonical',
+      source: 'metadata.catsco_identity',
+    });
+  });
+
 });
 
 function waitForFlush(): Promise<void> {

@@ -58,7 +58,7 @@ export class SessionTurnLogger {
   private sessionId: string;
   private logFilePath: string;
   private turnCounter = 0;
-  private readonly agentIdentity?: SessionLogAgentIdentity;
+  private agentIdentity?: SessionLogAgentIdentity;
 
   constructor(sessionType: string, sessionId: string, agentIdentity?: SessionLogAgentIdentity) {
     this.sessionType = sessionType;
@@ -72,6 +72,23 @@ export class SessionTurnLogger {
     fs.mkdirSync(dir, { recursive: true });
     const safeSessionId = sessionId.replace(/[:<>"|?*]/g, '_');
     this.logFilePath = path.join(dir, `${sessionType}_${safeSessionId}.jsonl`);
+  }
+
+  /**
+   * Attach route identity when a legacy session was created before the
+   * adapter had a route snapshot. A session key must not silently switch
+   * Agents; equal IDs may, however, upgrade trust metadata on later turns.
+   */
+  setAgentIdentity(agentIdentity?: SessionLogAgentIdentity): boolean {
+    const normalized = normalizeAgentIdentity(agentIdentity);
+    if (!normalized) return true;
+    if (this.agentIdentity && this.agentIdentity.agent_id !== normalized.agent_id) {
+      return false;
+    }
+    this.agentIdentity = this.agentIdentity
+      ? mergeAgentIdentity(this.agentIdentity, normalized)
+      : normalized;
+    return true;
   }
 
   getLogFilePath(): string {
@@ -224,6 +241,26 @@ function normalizeAgentIdentity(value: SessionLogAgentIdentity | undefined): Ses
     ...(agentBodyId && { agent_body_id: agentBodyId }),
     trust,
     ...(source && { source }),
+  };
+}
+
+function mergeAgentIdentity(
+  current: SessionLogAgentIdentity,
+  incoming: SessionLogAgentIdentity,
+): SessionLogAgentIdentity {
+  const trustRank: Record<SessionLogAgentIdentity['trust'], number> = {
+    untrusted: 0,
+    legacy_context: 1,
+    server_canonical: 2,
+  };
+  const trust = trustRank[incoming.trust] > trustRank[current.trust] ? incoming.trust : current.trust;
+  return {
+    agent_id: current.agent_id,
+    ...(incoming.agent_body_id || current.agent_body_id
+      ? { agent_body_id: incoming.agent_body_id || current.agent_body_id }
+      : {}),
+    trust,
+    ...(incoming.source || current.source ? { source: incoming.source || current.source } : {}),
   };
 }
 

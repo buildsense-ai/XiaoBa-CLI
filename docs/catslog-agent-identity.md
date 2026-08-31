@@ -51,5 +51,12 @@ skills`; no UID flag exists. Returned Skill content remains explicitly
 prompt.
 
 All of this remains independent from runtime session routing and existing JSONL
-readers. CatsLog still needs to implement the metadata reader above before its
-analysis index can use `agent_identity`.
+readers. CatsLog now implements the metadata reader and keeps the upload
+capability as the authorization boundary. A legacy group session can be created
+before its first route snapshot; the logger accepts a later same-Agent route and
+enriches subsequent records without relabeling an existing stream to a different
+Agent. Historic records that predate this envelope remain unlabeled by default.
+An operator who has independently confirmed a one-Agent-per-device invariant may
+run the CatsLog `agents backfill` command for one exact UID/device pair; it is a
+dry-run unless `--apply` is supplied, updates only mutable query projections, and
+records an append-only audit row without rewriting JSONL or evidence scope.

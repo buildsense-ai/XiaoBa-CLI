@@ -632,6 +632,18 @@ export class AgentSession {
         }
       }
 
+      // A few compatibility paths create a session from a legacy string key
+      // before the first routed message arrives. Enrich the logger at the
+      // turn boundary so those sessions still emit the PR391 envelope; a
+      // conflicting route is retained as a warning and never relabels the
+      // existing stream.
+      if (sessionRoute) {
+        const accepted = this.sessionTurnLogger.setAgentIdentity(sessionLogAgentIdentity(sessionRoute));
+        if (!accepted) {
+          Logger.warning(`[会话 ${this.key}] 忽略与既有日志流冲突的 Agent identity`);
+        }
+      }
+
       if (this.busy) {
         return { text: BUSY_MESSAGE, visibleToUser: true };
       }
