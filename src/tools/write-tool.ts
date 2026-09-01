@@ -3,6 +3,7 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
+import { validateWriteToolArgs } from '../utils/input-validation';
 import { formatCatsCoVisiblePath } from './tool-gateway';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
@@ -36,6 +37,12 @@ export class WriteTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { file_path, content } = args;
+
+    // Validate input arguments
+    const validation = validateWriteToolArgs(args);
+    if (!validation.valid) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: `输入验证失败: ${validation.error}` };
+    }
 
     const toolPermission = isToolAllowed(this.definition.name);
     if (!toolPermission.allowed) {

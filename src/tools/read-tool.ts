@@ -6,6 +6,7 @@ import { execFileSync } from 'child_process';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { ContentBlock } from '../types';
 import { isReadPathAllowed } from '../utils/safety';
+import { validateReadToolArgs } from '../utils/input-validation';
 import { createImageBlock } from '../utils/image-utils';
 import { ConfigManager } from '../utils/config';
 import { resolvePrimaryModelVisionCapability } from '../utils/model-capabilities';
@@ -176,6 +177,12 @@ export class ReadTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { file_path, offset, limit, pages, prompt, analysis_prompt } = args;
+
+    // Validate input arguments
+    const validation = validateReadToolArgs(args);
+    if (!validation.valid) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: `输入验证失败: ${validation.error}` };
+    }
 
     if (!file_path || typeof file_path !== 'string') {
       return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '文件路径不能为空' };

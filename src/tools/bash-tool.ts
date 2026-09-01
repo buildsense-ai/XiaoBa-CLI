@@ -10,6 +10,7 @@ import { withArtifactContextRefEnvironment } from '../utils/artifact-context-ref
 import { withArtifactTaskRefEnvironment } from '../utils/artifact-task-ref';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
+import { validateShellToolArgs } from '../utils/input-validation';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 const execAsync = promisify(exec);
@@ -102,6 +103,11 @@ export class ShellTool implements Tool {
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    // Validate input arguments
+    const validation = validateShellToolArgs(args);
+    if (!validation.valid) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: `输入验证失败: ${validation.error}` };
+    }
     const { command, description, timeout = 30000, confirm_dangerous = false, cwd } = args;
     let cwdBefore = context.workingDirectory;
 
