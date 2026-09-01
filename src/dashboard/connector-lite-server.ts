@@ -1,5 +1,4 @@
 import express from 'express';
-import * as fs from 'fs';
 import * as path from 'path';
 import type { Server } from 'http';
 import { Logger } from '../utils/logger';
@@ -40,7 +39,7 @@ export async function startConnectorLiteDashboard(
   const app = express();
   const projectRoot = options.projectRoot || process.env.XIAOBA_APP_ROOT || process.cwd();
   process.env.XIAOBA_DASHBOARD_PORT = String(port);
-  const serviceManager = new ServiceManager(projectRoot);
+  const serviceManager = new ServiceManager(projectRoot, { connectorOnly: true });
   app.use(express.json({ limit: '25mb' }));
 
   const dashboardApiKey = (process.env.DASHBOARD_API_KEY || '').trim();
@@ -147,39 +146,6 @@ function createConnectorLiteRouter(
   router.get('/cats/bootstrap/status', (_req, res) => res.json(autoStart.getSnapshot()));
   router.post('/cats/bootstrap', (req, res) => res.status(202).json({ ok: true, ...autoStart.schedule(String(req.body?.trigger || 'manual'), 0, { force: true }) }));
 
-  router.get('/config', (_req, res) => {
-    const env = process.env;
-    res.json({
-      FEISHU_APP_ID: env.FEISHU_APP_ID || '',
-      FEISHU_APP_SECRET: env.FEISHU_APP_SECRET || '',
-      FEISHU_BOT_OPEN_ID: env.FEISHU_BOT_OPEN_ID || '',
-      FEISHU_BOT_ALIASES: env.FEISHU_BOT_ALIASES || '',
-      WEIXIN_TOKEN: env.WEIXIN_TOKEN || '',
-    });
-  });
-
-  router.put('/config', (req, res) => {
-    const allowed = ['FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_BOT_OPEN_ID', 'FEISHU_BOT_ALIASES', 'WEIXIN_TOKEN'];
-    const updates: Record<string, string> = {};
-    for (const key of allowed) {
-      if (typeof req.body?.[key] === 'string') updates[key] = req.body[key].trim();
-    }
-    try {
-      const root = runtimeRoot();
-      const filePath = path.join(root, '.env');
-      let content = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
-      for (const [key, value] of Object.entries(updates)) {
-        const line = `${key}=${value.replace(/\\n/g, '\\\\n')}`;
-        const pattern = new RegExp(`^${key}=.*$`, 'm');
-        content = pattern.test(content) ? content.replace(pattern, line) : `${content}${content.endsWith('\\n') || !content ? '' : '\\n'}${line}\\n`;
-        process.env[key] = value;
-      }
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, content, { mode: 0o600 });
-      res.json({ ok: true, updated: Object.keys(updates), cleared: [] });
-    } catch (error: any) { sendError(res, error); }
-  });
-
   router.post('/cats/auth/login', async (req, res) => {
     try {
       const state = createCatsCoLocalConfigService({ runtimeRoot: runtimeRoot() }).getAuthState(req.body || {});
@@ -262,10 +228,7 @@ function createConnectorLiteRouter(
     } catch (error: any) { sendError(res, error); }
   });
 
-  router.get('/weixin/channel-binding', (_req, res) => res.json({ configured: false, binding: null, reason: '微信通道管理不属于 Connector Lite' }));
-  router.get('/weixin/qrcode', (_req, res) => res.status(501).json({ error: '微信通道管理不属于 Connector Lite' }));
-  router.get('/weixin/qrcode-status', (_req, res) => res.status(501).json({ error: '微信通道管理不属于 Connector Lite' }));
-  router.get('/services', (_req, res) => res.json(serviceManager.getAll().filter(service => service.name === 'catscompany')));
+  router.get('/services', (_req, res) => res.json(serviceManager.getAll()));
   router.post('/services/:name/:action', (req, res) => {
     if (req.params.name !== 'catscompany' || !['start', 'stop', 'restart'].includes(req.params.action)) return res.status(404).json({ error: 'service or action not found' });
     try {

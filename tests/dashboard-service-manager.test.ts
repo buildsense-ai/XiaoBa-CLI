@@ -84,6 +84,20 @@ describe('dashboard service manager', () => {
     }
   });
 
+  test('Connector Lite registers only the CatsCo service', () => {
+    const previous = process.env.XIAOBA_CONNECTOR_PACKAGE;
+    process.env.XIAOBA_CONNECTOR_PACKAGE = 'connector-lite';
+    try {
+      const manager = new ServiceManager(process.cwd(), { connectorOnly: true });
+      assert.deepEqual(manager.getAll().map(service => service.name), ['catscompany']);
+      assert.equal(manager.getService('feishu'), undefined);
+      assert.equal(manager.getService('weixin'), undefined);
+    } finally {
+      if (previous === undefined) delete process.env.XIAOBA_CONNECTOR_PACKAGE;
+      else process.env.XIAOBA_CONNECTOR_PACKAGE = previous;
+    }
+  });
+
   test('development prefers the pinned real node executable over polluted PATH shims', () => {
     const envKeys = [
       'XIAOBA_APP_ROOT',

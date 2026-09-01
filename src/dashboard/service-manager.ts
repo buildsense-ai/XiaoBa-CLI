@@ -74,13 +74,20 @@ function resolvePackagedNodeExecutable(appRoot: string): string {
   return process.env.XIAOBA_NODE_EXECUTABLE || 'node';
 }
 
+export interface ServiceManagerOptions {
+  /** Register only the CatsCo Connector service for Connector Lite. */
+  connectorOnly?: boolean;
+}
+
 export class ServiceManager extends EventEmitter {
   private services: Map<string, ManagedService> = new Map();
   private projectRoot: string;
+  private readonly connectorOnly: boolean;
 
-  constructor(projectRoot: string) {
+  constructor(projectRoot: string, options: ServiceManagerOptions = {}) {
     super();
     this.projectRoot = projectRoot;
+    this.connectorOnly = options.connectorOnly === true;
     this.registerBuiltinServices();
   }
 
@@ -183,7 +190,7 @@ export class ServiceManager extends EventEmitter {
     this.services.set('catscompany', {
       info: {
         name: 'catscompany',
-        label: 'CatsCo agent',
+        label: 'CatsCo Connector',
         command,
         args: args('catscompany'),
         status: 'stopped',
@@ -191,6 +198,10 @@ export class ServiceManager extends EventEmitter {
       logs: [],
     });
 
+    if (this.connectorOnly) return;
+
+    // Full Runtime Dashboard only: the bundled Connector Lite profile never
+    // registers or starts these legacy channel services.
     this.services.set('feishu', {
       info: {
         name: 'feishu',

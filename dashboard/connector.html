@@ -79,7 +79,7 @@
           </div>
 
           <button class="management-entry" id="management-open" type="button">
-            <span><strong>本地管理</strong><small>飞书、微信、日志与故障恢复</small></span>
+            <span><strong>本地管理</strong><small>Connector 服务、日志与故障恢复</small></span>
             <span class="summary-arrow" aria-hidden="true">›</span>
           </button>
 
@@ -88,12 +88,12 @@
               <button class="back-button" id="management-back" type="button" aria-label="返回连接状态">‹</button>
               <div>
                 <h2>本地管理</h2>
-                <p>管理这台电脑上的消息通道、运行日志和故障恢复。</p>
+                <p>管理 Connector、运行日志和故障恢复。</p>
               </div>
             </header>
 
             <nav class="management-tabs" aria-label="本地管理">
-              <button class="management-tab active" type="button" data-management-tab="services" aria-selected="true">通道与服务</button>
+              <button class="management-tab active" type="button" data-management-tab="services" aria-selected="true">Connector 服务</button>
               <button class="management-tab" type="button" data-management-tab="logs" aria-selected="false">运行日志</button>
               <button class="management-tab" type="button" data-management-tab="recovery" aria-selected="false">故障恢复</button>
             </nav>
@@ -101,7 +101,7 @@
             <div class="management-content">
               <section class="management-page active" data-management-page="services">
                 <div class="section-heading">
-                  <div><strong>消息通道</strong><small>飞书和微信会把消息转交给当前 CatsCo Agent。</small></div>
+                  <div><strong>本地 Connector</strong><small>让云端 CatsCo Agent 使用这台电脑上的本地工具和文件。</small></div>
                   <button class="button button-small button-quiet" id="services-refresh" type="button">刷新状态</button>
                 </div>
                 <div class="channel-list" id="channel-list">
@@ -115,8 +115,6 @@
                     <span>日志来源</span>
                     <select id="log-service-select">
                       <option value="catscompany">Connector</option>
-                      <option value="feishu">飞书</option>
-                      <option value="weixin">微信</option>
                     </select>
                   </label>
                   <div class="toolbar-actions">

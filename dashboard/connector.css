@@ -560,32 +560,6 @@ h1 {
 .channel-error { margin: 10px 0 0 20px; color: var(--red); font-size: 12px; }
 .empty-state { padding: 38px 16px; border: 1px dashed #d3dae5; border-radius: 9px; color: var(--muted); text-align: center; font-size: 13px; }
 
-.channel-config { margin-top: 12px; border-top: 1px solid var(--line); }
-.channel-config summary { min-height: 38px; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; font-weight: 650; cursor: pointer; list-style: none; }
-.channel-config summary::-webkit-details-marker { display: none; }
-.channel-config summary::after { content: '›'; font-size: 17px; transition: transform 120ms ease; }
-.channel-config[open] summary::after { transform: rotate(90deg); }
-.channel-config-body { padding: 3px 0 2px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.channel-config label span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 600; }
-.channel-config input { width: 100%; height: 36px; padding: 0 9px; border: 1px solid #d4dbe6; border-radius: 7px; background: #fff; font-size: 12px; }
-.channel-config-actions { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.channel-config-note { color: var(--muted); font-size: 11px; }
-.weixin-authorize {
-  grid-column: 1 / -1;
-  min-height: 82px;
-  padding: 10px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  border: 1px solid #cbd9ee;
-  border-radius: 8px;
-  background: var(--blue-soft);
-  font-size: 12px;
-}
-.weixin-authorize[hidden] { display: none; }
-.weixin-authorize img { width: 76px; height: 76px; flex: 0 0 auto; object-fit: contain; border: 5px solid #fff; border-radius: 5px; background: #fff; }
-.weixin-authorize strong, .weixin-authorize small { display: block; }
-.weixin-authorize small { margin-top: 4px; color: var(--muted); }
 
 .logs-page { overflow: hidden; }
 .log-toolbar label > span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 650; }
