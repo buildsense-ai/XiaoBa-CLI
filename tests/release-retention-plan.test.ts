@@ -28,7 +28,7 @@ test('semantic versions sort numerically', () => {
   assert.equal(compareReleaseVersions('1.4.8', '1.4.8-beta.1') > 0, true);
 });
 
-test('protects current metadata and the newest three complete releases', () => {
+test('protects current metadata and the newest two complete releases', () => {
   const plan = buildReleaseRetentionPlan({
     objects: [
       ...release('1.0.1'),
@@ -40,26 +40,26 @@ test('protects current metadata and the newest three complete releases', () => {
       object('update/worker/1.4.8/manifest.json'),
     ],
     metadataDocuments: ['version: 1.4.8\npath: CatsCo-1.4.8-win.exe\n'],
-    keepVersions: 3,
+    keepVersions: 2,
     minAgeDays: 30,
     maxDeleteObjects: 80,
     now,
   });
 
-  assert.deepEqual(plan.protectedVersions, ['1.4.8', '1.4.7', '1.4.6']);
-  assert.deepEqual(plan.deleteVersions, ['1.0.1', '1.1.0']);
-  assert.equal(plan.deleteObjects.length, 10);
+  assert.deepEqual(plan.protectedVersions, ['1.4.8', '1.4.7']);
+  assert.deepEqual(plan.deleteVersions, ['1.0.1', '1.1.0', '1.4.6']);
+  assert.equal(plan.deleteObjects.length, 15);
   assert.equal(plan.deleteObjects.some((row) => row.key.includes('1.4.8')), false);
   assert.deepEqual(plan.ignoredKeys.sort(), ['update/latest.yml', 'update/worker/1.4.8/manifest.json']);
 });
 
 test('does not delete a release with any recently republished artifact', () => {
-  const rows = release('1.0.1');
+  const rows = release('1.4.6');
   rows[2] = object(rows[2].Key, '2026-08-10T00:00:00Z');
   const plan = buildReleaseRetentionPlan({
-    objects: [...rows, ...release('1.4.6'), ...release('1.4.7'), ...release('1.4.8')],
+    objects: [...rows, ...release('1.4.7'), ...release('1.4.8')],
     metadataDocuments: ['version: 1.4.8\n'],
-    keepVersions: 3,
+    keepVersions: 2,
     minAgeDays: 30,
     maxDeleteObjects: 80,
     now,

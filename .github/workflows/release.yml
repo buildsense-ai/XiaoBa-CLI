@@ -832,12 +832,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
 
-      - name: Prune old Guangzhou desktop releases
+      - name: Prune old desktop releases in both TOS buckets
         shell: bash
         run: |
           set -euo pipefail
 
-          TARGET_ENDPOINT_URL="https://tos-s3-${TOS_TARGET_REGION}.volces.com"
           RETENTION_DIR="$(mktemp -d)"
           trap 'rm -rf "$RETENTION_DIR"' EXIT
 
@@ -854,59 +853,73 @@ jobs:
             done
           }
 
-          list_releases() {
-            aws s3api list-objects-v2 \
-              --bucket "$TOS_TARGET_BUCKET" \
-              --prefix update/ \
-              --endpoint-url "$TARGET_ENDPOINT_URL" \
-              --output json > "$1"
+          prune_bucket() {
+            local bucket="$1"
+            local region="$2"
+            local label="$3"
+            local endpoint_url="https://tos-s3-${region}.volces.com"
+            local bucket_dir="$RETENTION_DIR/$label"
+            mkdir -p "$bucket_dir"
+
+            list_releases() {
+              local output="$1"
+              aws s3api list-objects-v2 \
+                --bucket "$bucket" \
+                --prefix update/ \
+                --endpoint-url "$endpoint_url" \
+                --output json > "$output"
+            }
+
+            retry 4 list_releases "$bucket_dir/before.json"
+            node scripts/plan-release-retention.mjs \
+              --listing "$bucket_dir/before.json" \
+              --metadata release-win/latest.yml \
+              --metadata release-linux/latest-linux.yml \
+              --metadata release-mac/x64/latest-mac.yml \
+              --metadata release-mac/arm64/latest-mac.yml \
+              --keep-versions 2 \
+              --min-age-days 30 \
+              --max-delete-objects 80 \
+              > "$bucket_dir/plan.json"
+
+            jq --arg bucket "$bucket" '{bucket: $bucket, policy, protectedVersions, deleteVersions, deferredVersions, totals}' "$bucket_dir/plan.json"
+            local delete_count
+            delete_count="$(jq -r '.totals.deleteObjects' "$bucket_dir/plan.json")"
+            if [ "$delete_count" -eq 0 ]; then
+              echo "No old $label desktop release objects are eligible for deletion"
+              return 0
+            fi
+
+            jq '{Objects: [.deleteObjects[] | {Key: .key}], Quiet: false}' \
+              "$bucket_dir/plan.json" > "$bucket_dir/delete.json"
+
+            delete_batch() {
+              aws s3api delete-objects \
+                --bucket "$bucket" \
+                --delete "file://$bucket_dir/delete.json" \
+                --endpoint-url "$endpoint_url" \
+                --output json > "$bucket_dir/delete-result.json" \
+                && jq -e '(.Errors // []) | length == 0' "$bucket_dir/delete-result.json" >/dev/null
+            }
+            retry 3 delete_batch
+
+            verify_deleted() {
+              list_releases "$bucket_dir/after.json" || return 1
+              jq -n -e \
+                --slurpfile plan "$bucket_dir/plan.json" \
+                --slurpfile after "$bucket_dir/after.json" '
+                  ($plan[0].deleteObjects | map(.key)) as $deleted
+                  | ($after[0].Contents // [] | map(.Key)) as $remaining
+                  | [$deleted[] | select(. as $key | $remaining | index($key))] | length == 0
+                ' >/dev/null
+            }
+            retry 4 verify_deleted || {
+              echo "One or more old $label release objects still exist after the delete request"
+              return 1
+            }
+
+            echo "Deleted $delete_count old $label desktop release objects; metadata and newest two versions were preserved"
           }
 
-          retry 4 list_releases "$RETENTION_DIR/before.json"
-          node scripts/plan-release-retention.mjs \
-            --listing "$RETENTION_DIR/before.json" \
-            --metadata release-win/latest.yml \
-            --metadata release-linux/latest-linux.yml \
-            --metadata release-mac/x64/latest-mac.yml \
-            --metadata release-mac/arm64/latest-mac.yml \
-            --keep-versions 3 \
-            --min-age-days 30 \
-            --max-delete-objects 80 \
-            > "$RETENTION_DIR/plan.json"
-
-          jq '{policy, protectedVersions, deleteVersions, deferredVersions, totals}' "$RETENTION_DIR/plan.json"
-          delete_count="$(jq -r '.totals.deleteObjects' "$RETENTION_DIR/plan.json")"
-          if [ "$delete_count" -eq 0 ]; then
-            echo "No old Guangzhou desktop release objects are eligible for deletion"
-            exit 0
-          fi
-
-          jq '{Objects: [.deleteObjects[] | {Key: .key}], Quiet: false}' \
-            "$RETENTION_DIR/plan.json" > "$RETENTION_DIR/delete.json"
-
-          delete_batch() {
-            aws s3api delete-objects \
-              --bucket "$TOS_TARGET_BUCKET" \
-              --delete "file://$RETENTION_DIR/delete.json" \
-              --endpoint-url "$TARGET_ENDPOINT_URL" \
-              --output json > "$RETENTION_DIR/delete-result.json" \
-              && jq -e '(.Errors // []) | length == 0' "$RETENTION_DIR/delete-result.json" >/dev/null
-          }
-          retry 3 delete_batch
-
-          verify_deleted() {
-            list_releases "$RETENTION_DIR/after.json" || return 1
-            jq -n -e \
-              --slurpfile plan "$RETENTION_DIR/plan.json" \
-              --slurpfile after "$RETENTION_DIR/after.json" '
-                ($plan[0].deleteObjects | map(.key)) as $deleted
-                | ($after[0].Contents // [] | map(.Key)) as $remaining
-                | [$deleted[] | select(. as $key | $remaining | index($key))] | length == 0
-              ' >/dev/null
-          }
-          retry 4 verify_deleted || {
-            echo "One or more old release objects still exist after the delete request"
-            exit 1
-          }
-
-          echo "Deleted $delete_count old release objects; current metadata and the newest three versions were preserved"
+          prune_bucket "$TOS_TARGET_BUCKET" "$TOS_TARGET_REGION" guangzhou
+          prune_bucket "$TOS_SOURCE_BUCKET" "$TOS_SOURCE_REGION" hong-kong

@@ -49,17 +49,19 @@ test('desktop releases are pruned only after publication with bounded retention'
   );
   assert.ok(
     releaseJob.indexOf('Checkout release retention scripts')
-      < releaseJob.indexOf('Prune old Guangzhou desktop releases'),
+      < releaseJob.indexOf('Prune old desktop releases in both TOS buckets'),
     'release checkout must run before the retention planner',
   );
   assert.match(releaseWorkflow, /group: desktop-release-\$\{\{ github\.ref \}\}/);
-  assert.match(releaseWorkflow, /- name: Publish GitHub Release[\s\S]*?- name: Prune old Guangzhou desktop releases/);
-  assert.match(releaseWorkflow, /--keep-versions 3/);
+  assert.match(releaseWorkflow, /- name: Publish GitHub Release[\s\S]*?- name: Prune old desktop releases in both TOS buckets/);
+  assert.match(releaseWorkflow, /--keep-versions 2/);
   assert.match(releaseWorkflow, /--min-age-days 30/);
   assert.match(releaseWorkflow, /--max-delete-objects 80/);
   assert.match(releaseWorkflow, /scripts\/plan-release-retention\.mjs/);
+  assert.match(releaseWorkflow, /prune_bucket "\$TOS_TARGET_BUCKET" "\$TOS_TARGET_REGION" guangzhou/);
+  assert.match(releaseWorkflow, /prune_bucket "\$TOS_SOURCE_BUCKET" "\$TOS_SOURCE_REGION" hong-kong/);
   assert.match(releaseWorkflow, /delete-objects/);
-  assert.match(releaseWorkflow, /One or more old release objects still exist/);
+  assert.match(releaseWorkflow, /One or more old \$label release objects still exist/);
 });
 
 test('worker artifacts never enter the public release paths', () => {

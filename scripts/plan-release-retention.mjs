@@ -79,7 +79,7 @@ function groupReleaseObjects(objects) {
 export function buildReleaseRetentionPlan({
   objects,
   metadataDocuments = [],
-  keepVersions = 3,
+  keepVersions = 2,
   minAgeDays = 30,
   maxDeleteObjects = 80,
   now = Date.now(),
@@ -159,7 +159,7 @@ function main() {
   const plan = buildReleaseRetentionPlan({
     objects: listing.Contents || [],
     metadataDocuments,
-    keepVersions: options.keepVersions ?? 3,
+    keepVersions: options.keepVersions ?? 2,
     minAgeDays: options.minAgeDays ?? 30,
     maxDeleteObjects: options.maxDeleteObjects ?? 80,
   });
