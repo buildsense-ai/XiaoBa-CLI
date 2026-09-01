@@ -6,6 +6,7 @@ import { ContextDebugLogger } from '../utils/context-debug-logger';
 import { resolveMaxTokens } from './output-limits';
 import { applyAnthropicReasoningOptions } from '../utils/reasoning-effort';
 import { createProviderStateReference, isProviderStateCompatible } from './provider-state';
+import { Logger } from '../utils/logger';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -14,6 +15,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 type AnthropicSystemBlock = Anthropic.TextBlockParam & {
   cache_control?: { type: 'ephemeral' };
 };
+
+/** Timeout configuration constants (in milliseconds) */
+const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const MIN_TIMEOUT_MS = 30 * 1000; // 30 seconds
+const MAX_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 type AnthropicSystemPrompt = string | AnthropicSystemBlock[];
 
@@ -65,7 +71,7 @@ export class AnthropicProvider implements AIProvider {
    */
   private resolveTimeout(): number {
     const envTimeout = process.env.ANTHROPIC_TIMEOUT_MS;
-    const defaultTimeout = 10 * 60 * 1000; // 10 分钟
+    const defaultTimeout = DEFAULT_TIMEOUT_MS;
     
     if (!envTimeout) {
       return defaultTimeout;
@@ -78,8 +84,8 @@ export class AnthropicProvider implements AIProvider {
     }
     
     // 限制范围：30秒 - 30分钟
-    const minTimeout = 30 * 1000;
-    const maxTimeout = 30 * 60 * 1000;
+    const minTimeout = MIN_TIMEOUT_MS;
+    const maxTimeout = MAX_TIMEOUT_MS;
     const clamped = Math.max(minTimeout, Math.min(maxTimeout, parsed));
     
     if (clamped !== parsed) {

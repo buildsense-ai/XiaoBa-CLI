@@ -36,10 +36,29 @@ function catsCoGroupIdFromLegacyKey(key: string): string | undefined {
   return match?.[1]?.trim() || undefined;
 }
 
+/**
+ * Find the newest existing file from a list of paths.
+ * Uses try/catch to handle race conditions where files may be deleted between
+ * existence check and stat call.
+ */
 function newestExistingFile(files: string[]): string | undefined {
-  return files
-    .filter(file => fs.existsSync(file))
-    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+  let newestFile: string | undefined;
+  let newestTime = 0;
+
+  for (const file of files) {
+    try {
+      const stat = fs.statSync(file);
+      if (stat.mtimeMs > newestTime) {
+        newestTime = stat.mtimeMs;
+        newestFile = file;
+      }
+    } catch {
+      // File doesn't exist or was deleted between check and stat (race condition)
+      // Silently skip this file
+    }
+  }
+
+  return newestFile;
 }
 
 function hasHiddenProviderReplay(message: Message): boolean {
@@ -151,7 +170,8 @@ export class SessionStore {
       fs.writeFileSync(fp, lines.join('\n') + '\n', 'utf-8');
       return true;
     } catch (err) {
-      Logger.error(`保存 context 失败 [${sessionKey}]: ${err}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      Logger.error(`保存 context 失败 [${sessionKey}]: ${errorMessage}`);
       return false;
     }
   }
@@ -176,7 +196,8 @@ export class SessionStore {
       }
       return sanitized;
     } catch (err) {
-      Logger.error(`加载 context 失败 [${sessionKey}]: ${err}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      Logger.error(`加载 context 失败 [${sessionKey}]: ${errorMessage}`);
       return [];
     }
   }
@@ -195,7 +216,8 @@ export class SessionStore {
       Logger.info(`会话已删除: ${sessionKey}`);
       return true;
     } catch (err) {
-      Logger.error(`删除会话失败 [${sessionKey}]: ${err}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      Logger.error(`删除会话失败 [${sessionKey}]: ${errorMessage}`);
       return false;
     }
   }
@@ -208,7 +230,8 @@ export class SessionStore {
       const parsed = JSON.parse(fs.readFileSync(fp, 'utf-8')) as SessionRuntimeState;
       return parsed && typeof parsed === 'object' ? parsed : {};
     } catch (err) {
-      Logger.error(`Failed to load session state [${sessionKey}]: ${err}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      Logger.error(`Failed to load session state [${sessionKey}]: ${errorMessage}`);
       return {};
     }
   }
@@ -222,7 +245,8 @@ export class SessionStore {
       }, null, 2), 'utf-8');
       return true;
     } catch (err) {
-      Logger.error(`Failed to save session state [${sessionKey}]: ${err}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      Logger.error(`Failed to save session state [${sessionKey}]: ${errorMessage}`);
       return false;
     }
   }
@@ -233,7 +257,8 @@ export class SessionStore {
       if (fs.existsSync(fp)) fs.unlinkSync(fp);
       return true;
     } catch (err) {
-      Logger.error(`Failed to delete session state [${sessionKey}]: ${err}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      Logger.error(`Failed to delete session state [${sessionKey}]: ${errorMessage}`);
       return false;
     }
   }
@@ -261,7 +286,8 @@ export class SessionStore {
       fs.copyFileSync(source, target);
       Logger.info(`CatsCo group session migrated to legacy key: ${path.basename(source)} -> ${path.basename(target)}`);
     } catch (err) {
-      Logger.error(`Failed to migrate CatsCo group session [${sessionKey}]: ${err}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      Logger.error(`Failed to migrate CatsCo group session [${sessionKey}]: ${errorMessage}`);
     }
   }
 
