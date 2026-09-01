@@ -311,4 +311,69 @@ export class SessionStore {
       .filter(name => topicV2.test(name))
       .map(name => path.join(dir, name)));
   }
+
+  /**
+   * Clean up old session files.
+   * Useful for periodic maintenance of the sessions directory.
+   * 
+   * @param maxAgeMs - Maximum age in milliseconds. Sessions older than this will be deleted.
+   *                  Defaults to 30 days.
+   * @returns Object with counts of deleted sessions and states
+   */
+  cleanup(maxAgeMs: number = 30 * 24 * 60 * 60 * 1000): { sessionsDeleted: number; statesDeleted: number } {
+    const now = Date.now();
+    let sessionsDeleted = 0;
+    let statesDeleted = 0;
+
+    try {
+      ensureDir();
+      
+      // Clean up old session files
+      if (fs.existsSync(SESSIONS_DIR)) {
+        const sessionFiles = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+          .filter(entry => entry.isFile() && entry.name.endsWith('.jsonl'));
+        
+        for (const file of sessionFiles) {
+          const filePath = path.join(SESSIONS_DIR, file.name);
+          try {
+            const stat = fs.statSync(filePath);
+            if (stat.mtimeMs < now - maxAgeMs) {
+              fs.unlinkSync(filePath);
+              sessionsDeleted++;
+            }
+          } catch {
+            // Skip files that can't be accessed
+          }
+        }
+      }
+
+      // Clean up old state files
+      if (fs.existsSync(SESSION_STATE_DIR)) {
+        const stateFiles = fs.readdirSync(SESSION_STATE_DIR, { withFileTypes: true })
+          .filter(entry => entry.isFile() && entry.name.endsWith('.json'));
+        
+        for (const file of stateFiles) {
+          const filePath = path.join(SESSION_STATE_DIR, file.name);
+          try {
+            const stat = fs.statSync(filePath);
+            if (stat.mtimeMs < now - maxAgeMs) {
+              fs.unlinkSync(filePath);
+              statesDeleted++;
+            }
+          } catch {
+            // Skip files that can't be accessed
+          }
+        }
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      Logger.error(`Session cleanup failed: ${errorMessage}`);
+    }
+
+    if (sessionsDeleted > 0 || statesDeleted > 0) {
+      Logger.info(`Session cleanup completed: ${sessionsDeleted} sessions, ${statesDeleted} states deleted`);
+    }
+
+    return { sessionsDeleted, statesDeleted };
+  }
 }

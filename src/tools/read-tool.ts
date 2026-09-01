@@ -53,7 +53,32 @@ interface PdfParseResult {
 }
 
 type PdfParse = (dataBuffer: Buffer, options?: PdfParseOptions) => Promise<PdfParseResult>;
-const pdfParse: PdfParse = require('pdf-parse');
+
+/**
+ * Lazy-loaded pdf-parse module with graceful fallback.
+ * This function loads the pdf-parse module on first use and caches it.
+ * If the module fails to load, it returns a fallback function that indicates
+ * PDF parsing is not available.
+ */
+let pdfParseModule: PdfParse | null = null;
+
+function getPdfParse(): PdfParse {
+  if (pdfParseModule === null) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      pdfParseModule = require('pdf-parse') as PdfParse;
+      Logger.info('[ReadTool] pdf-parse loaded successfully');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      Logger.warning(`[ReadTool] pdf-parse not available: ${errorMessage}`);
+      // Return a fallback function that always fails
+      pdfParseModule = async () => {
+        throw new Error('pdf-parse module not loaded. Install it with: npm install pdf-parse');
+      };
+    }
+  }
+  return pdfParseModule;
+}
 
 interface TextReadOptions {
   offset?: unknown;
@@ -126,8 +151,24 @@ interface PdfRenderedImageReadOptions {
  * 3. Provide clear logging when module loading fails
  */
 type DynamicImport = (specifier: string) => Promise<any>;
+const moduleCache = new Map<string, any>();
+
 async function dynamicImportModule(specifier: string): Promise<any> {
-  return import(specifier);
+  // Check cache first
+  if (moduleCache.has(specifier)) {
+    return moduleCache.get(specifier);
+  }
+  
+  try {
+    const module = await import(specifier);
+    moduleCache.set(specifier, module);
+    Logger.info(`[ReadTool] Module loaded: ${specifier}`);
+    return module;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    Logger.warning(`[ReadTool] Failed to load module ${specifier}: ${errorMessage}`);
+    throw error;
+  }
 }
 const dynamicImport: DynamicImport = dynamicImportModule;
 
@@ -621,7 +662,7 @@ export class ReadTool implements Tool {
         options.max = selection.maxPageToRender;
       }
 
-      return await pdfParse(dataBuffer, options);
+      return await getPdfParse()(dataBuffer, options);
     } catch (error) {
       return { text: '', numpages: 0 };
     }

@@ -62,6 +62,27 @@ class SessionContextRegistry {
   }
 
   /**
+   * Clean up session contexts older than the specified max age.
+   * Useful for forcing cleanup of stale sessions.
+   * 
+   * @param maxAgeMs - Maximum age in milliseconds. Sessions older than this will be removed.
+   */
+  cleanupStale(maxAgeMs: number): number {
+    const now = Date.now();
+    const cutoff = now - maxAgeMs;
+    let removed = 0;
+    
+    for (const [sessionId, lastAccess] of this.sessions) {
+      if (lastAccess < cutoff) {
+        this.sessions.delete(sessionId);
+        removed++;
+      }
+    }
+    
+    return removed;
+  }
+
+  /**
    * Get the number of tracked sessions.
    */
   size(): number {
@@ -165,6 +186,18 @@ export class Logger {
    */
   static clearSessionContext(sessionId: string): void {
     sessionRegistry.untrack(sessionId);
+  }
+
+  /**
+   * Force cleanup of stale session contexts.
+   * Useful for memory management in long-running processes.
+   * 
+   * @param maxAgeMs - Maximum age in milliseconds. Sessions older than this will be removed.
+   *                  Defaults to 5 minutes.
+   * @returns Number of sessions removed
+   */
+  static cleanupStaleSessions(maxAgeMs: number = SESSION_CLEANUP_INTERVAL_MS): number {
+    return sessionRegistry.cleanupStale(maxAgeMs);
   }
 
   /**
