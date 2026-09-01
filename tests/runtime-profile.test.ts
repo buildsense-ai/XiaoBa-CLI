@@ -48,6 +48,7 @@ describe('RuntimeProfile', () => {
     assert.deepStrictEqual(profile.tools.enabled, getCurrentToolManagerNames());
     assert.equal(profile.skills.enabled, true);
     assert.equal(profile.logging.sessionEvents, true);
+    assert.equal(profile.logging.uploadEnabled, true);
   });
 
   test('uses runtime identity and surface from env without mutating process env', () => {
