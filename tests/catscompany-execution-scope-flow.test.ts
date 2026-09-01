@@ -512,14 +512,12 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.artifactContextRef, ref);
   });
 
-  test('keeps a drained user message queued when the session call rejects once', async () => {
+  test('does not re-enter the model when a drained user turn rejects', async () => {
     const harness = createHarness({ busy: true });
     let calls = 0;
-    harness.session.handleMessage = async (userMessage: unknown, options: any) => {
+    harness.session.handleMessage = async () => {
       calls++;
-      if (calls === 1) throw new Error('transient session failure');
-      harness.handledTurns.push({ userMessage, options });
-      return { visibleToUser: false, text: '' };
+      throw new Error('session failure after model entry');
     };
 
     await harness.bot.onMessage({
@@ -534,21 +532,19 @@ describe('CatsCompany execution scope flow', () => {
     harness.session.setBusy(false);
     const sessionKey = 'session:v2:catscompany:p2p:p2p_8_43:agent:usr43';
     await harness.bot.drainMessageQueue(sessionKey);
-    assert.equal(harness.bot.messageQueue.get(sessionKey)?.length, 1);
-
     await harness.bot.drainMessageQueue(sessionKey);
-    assert.equal(calls, 2);
-    assert.equal(harness.handledTurns.length, 1);
+
+    assert.equal(calls, 1);
     assert.equal(harness.bot.messageQueue.has(sessionKey), false);
+    assert.match(harness.replies.at(-1) || '', /处理消息时出错/);
   });
 
-  test('retries direct subagent feedback through the queue after a rejected call', async () => {
+  test('does not re-enter the model after a rejected direct subagent observation', async () => {
     const harness = createHarness();
     let calls = 0;
     harness.session.handleRuntimeObservation = async () => {
       calls++;
-      if (calls === 1) throw new Error('transient observation failure');
-      return { visibleToUser: false, text: '' };
+      throw new Error('transient observation failure');
     };
 
     await harness.bot.handleSubAgentFeedback(
@@ -559,11 +555,12 @@ describe('CatsCompany execution scope flow', () => {
       createExecutionScope(createCatsCoMessageEnvelope({ topic: 'grp_80', senderId: 'usr8', text: 'observation' })),
     );
 
-    assert.equal(calls, 2);
+    assert.equal(calls, 1);
+    assert.match(harness.replies.at(-1) || '', /check_subagent/);
     assert.equal(harness.bot.messageQueue.has('cc_group:grp_80'), false);
   });
 
-  test('falls back to a user-visible subagent result after model injection retries are exhausted', async () => {
+  test('falls back to a user-visible envelope after one failed model integration', async () => {
     const harness = createHarness();
     let calls = 0;
     harness.session.handleRuntimeObservation = async () => {
@@ -582,8 +579,8 @@ describe('CatsCompany execution scope flow', () => {
     await harness.bot.drainMessageQueue(sessionKey);
     await harness.bot.drainMessageQueue(sessionKey);
 
-    assert.equal(calls, 3);
-    assert.match(harness.replies.at(-1) || '', /需要保留的普通 observation/);
+    assert.equal(calls, 1);
+    assert.match(harness.replies.at(-1) || '', /check_subagent/);
     assert.equal(harness.bot.messageQueue.has(sessionKey), false);
   });
 

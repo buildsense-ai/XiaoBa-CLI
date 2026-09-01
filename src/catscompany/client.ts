@@ -139,6 +139,13 @@ export interface MessageContext {
   memberCount?: number; // 群成员数；用于运行时在创建 session 前兜底门控
 }
 
+export type GroupLifecycleKind = 'access_revoked' | 'disbanded';
+
+export interface GroupLifecycleEvent {
+  topic: string;
+  kind: GroupLifecycleKind;
+}
+
 export interface CatsAgentContextMessage {
   id: number;
   seq_id: number;
@@ -440,9 +447,7 @@ export class CatsClient extends EventEmitter {
         if (this.supportsThinToolRpc) {
           Logger.info('[CatsCompany] 服务端支持 thin_tool_rpc 轻量工具传输');
         }
-        this.emit('ready', { uid: this.uid, name: this.name });
-        this.autoAcceptFriendRequests().catch(console.error);
-        this.resubscribeTopics();
+        void this.finishReadyHandshake();
       } else if (msg.ctrl.id) {
         const pending = this.pendingAcks.get(msg.ctrl.id);
         if (pending) {
@@ -500,9 +505,59 @@ export class CatsClient extends EventEmitter {
         if (fromUserId) {
           this.acceptFriendRequest(fromUserId).catch(console.error);
         }
+      } else if (msg.pres.what === 'group_access_revoked' || msg.pres.what === 'group_disbanded') {
+        const topic = String(msg.pres.topic || msg.pres.src || '').trim();
+        if (topic.startsWith('grp_')) {
+          this.subscribedTopics.delete(topic);
+          this.emit('group_lifecycle', {
+            topic,
+            kind: msg.pres.what === 'group_disbanded' ? 'disbanded' : 'access_revoked',
+          } satisfies GroupLifecycleEvent);
+        }
       } else if (msg.pres.what && msg.pres.what !== 'on' && msg.pres.what !== 'off') {
         Logger.info(`[CatsCompany] 收到 presence: what=${msg.pres.what}, src=${msg.pres.src || '-'}`);
       }
+    }
+  }
+
+  private async finishReadyHandshake(): Promise<void> {
+    if ([...this.subscribedTopics].some(topic => topic.startsWith('grp_'))) {
+      await this.reconcileAccessibleGroupTopics();
+    }
+    this.emit('ready', { uid: this.uid, name: this.name });
+    this.autoAcceptFriendRequests().catch(console.error);
+    this.resubscribeTopics();
+  }
+
+  /**
+   * Reconciles only tracked group topics. A failed list request is fail-open:
+   * transient network errors must never terminate healthy local work.
+   */
+  async reconcileAccessibleGroupTopics(): Promise<void> {
+    try {
+      const res = await fetch(`${this.httpBaseUrl()}/api/conversations`, {
+        headers: { Authorization: `ApiKey ${this.config.apiKey}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) {
+        throw new Error(`CatsCompany conversation reconciliation failed: HTTP ${res.status}`);
+      }
+      const payload = await res.json() as { conversations?: Array<{ id?: string; is_group?: boolean }> };
+      const accessibleGroups = new Set(
+        (payload.conversations || [])
+          .filter(item => item?.is_group === true && String(item.id || '').startsWith('grp_'))
+          .map(item => String(item.id)),
+      );
+      for (const topic of [...this.subscribedTopics]) {
+        if (!topic.startsWith('grp_') || accessibleGroups.has(topic)) continue;
+        this.subscribedTopics.delete(topic);
+        this.emit('group_lifecycle', {
+          topic,
+          kind: 'access_revoked',
+        } satisfies GroupLifecycleEvent);
+      }
+    } catch (error: any) {
+      Logger.warning(`CatsCompany 群会话权限核对失败，保留当前订阅: ${error?.message || error}`);
     }
   }
 

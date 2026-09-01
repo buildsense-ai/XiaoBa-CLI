@@ -238,6 +238,33 @@ describe('MessageSessionManager', () => {
     }
   });
 
+  test('terminates one session idempotently without deleting its persisted history', async () => {
+    const { MessageSessionManager, SessionStore } = loadSessionManagerModules();
+    const manager = new MessageSessionManager(buildMockServices(), 'terminate-one-test');
+    const key = 'cc_group:grp_termination_test';
+    const session = manager.getOrCreate(key);
+    let interruptCalls = 0;
+    let cleanupCalls = 0;
+    (session as any).requestInterrupt = () => { interruptCalls += 1; };
+    (session as any).cleanup = async () => { cleanupCalls += 1; };
+    SessionStore.getInstance().saveContext(key, [{ role: 'user', content: '保留的历史' }]);
+
+    try {
+      await Promise.all([
+        manager.terminate(key, 'group access revoked'),
+        manager.terminate(key, 'duplicate event'),
+      ]);
+
+      assert.equal(interruptCalls, 1);
+      assert.equal(cleanupCalls, 1);
+      assert.equal(manager.get(key), null);
+      assert.equal(SessionStore.getInstance().loadContext(key)[0]?.content, '保留的历史');
+      assert.notEqual(manager.getOrCreate(key), session, 'a re-invite creates a fresh runtime');
+    } finally {
+      await manager.destroy();
+    }
+  });
+
   test('ttl cleanup saves expired sessions without hidden AI wakeup', async () => {
     const { MessageSessionManager, SessionStore } = loadSessionManagerModules();
     let aiCalls = 0;

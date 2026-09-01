@@ -110,6 +110,51 @@ describe('CatsCompany MessageSender retry behavior', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test('terminates the topic immediately on a websocket 403 without HTTP retry', async () => {
+    const revoked: Array<{ topic: string; status: number }> = [];
+    let fetchCalled = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      throw new Error('must not use HTTP fallback');
+    }) as any;
+    try {
+      const sender = new MessageSender({
+        sendStructuredMessage: async () => {
+          throw new CatsSendError('ack', 'forbidden', 403);
+        },
+      } as any, 'https://app.example.test', 'cc_test', {
+        onTopicAccessRevoked: async (topic, status) => revoked.push({ topic, status }),
+      });
+
+      await assert.rejects(() => sender.sendText('grp_revoked', 'hello'), /forbidden/);
+      assert.deepEqual(revoked, [{ topic: 'grp_revoked', status: 403 }]);
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('terminates the topic when HTTP fallback returns 404', async () => {
+    const revoked: Array<{ topic: string; status: number }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('missing', { status: 404 })) as any;
+    try {
+      const sender = new MessageSender({
+        sendStructuredMessage: async () => {
+          throw new CatsSendError('transport', 'socket not open');
+        },
+      } as any, 'https://app.example.test', 'cc_test', {
+        onTopicAccessRevoked: async (topic, status) => revoked.push({ topic, status }),
+      });
+
+      await assert.rejects(() => sender.sendText('grp_missing', 'hello'), /目标会话或接口不存在/);
+      assert.deepEqual(revoked, [{ topic: 'grp_missing', status: 404 }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe('CatsCompany MessageSender reply length handling', () => {

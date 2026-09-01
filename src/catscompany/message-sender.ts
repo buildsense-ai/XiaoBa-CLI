@@ -18,6 +18,10 @@ export interface ConversationTaskStatusInput {
   error?: string;
 }
 
+export interface MessageSenderOptions {
+  onTopicAccessRevoked?: (topic: string, status: 403 | 404) => void | Promise<void>;
+}
+
 interface CatsSendBody {
   topic_id: string;
   client_msg_id?: string;
@@ -106,7 +110,12 @@ export class MessageSender {
   private readonly baseUrl: string;
   private readonly apiKey: string;
 
-  constructor(private bot: CatsClient, baseUrl?: string, apiKey?: string) {
+  constructor(
+    private bot: CatsClient,
+    baseUrl?: string,
+    apiKey?: string,
+    private readonly options: MessageSenderOptions = {},
+  ) {
     this.baseUrl = baseUrl || 'https://app.catsco.cc';
     this.apiKey = apiKey || '';
   }
@@ -132,6 +141,9 @@ export class MessageSender {
       const seq = await this.bot.sendStructuredMessage(body);
       return { seq_id: seq };
     } catch (err: any) {
+      if (err instanceof CatsSendError && err.kind === 'ack' && (err.code === 403 || err.code === 404)) {
+        await this.notifyTopicAccessRevoked(topic, err.code);
+      }
       if (err instanceof CatsSendError && (err.kind === 'transport' || err.retryableWithHttp)) {
         if (err.clientMsgID) {
           body.client_msg_id = err.clientMsgID;
@@ -165,6 +177,9 @@ export class MessageSender {
 
       if (!res.ok) {
         const errText = await res.text();
+        if (res.status === 403 || res.status === 404) {
+          await this.notifyTopicAccessRevoked(body.topic_id, res.status);
+        }
         throw new Error(describeHttpFailure(res.status, errText));
       }
 
@@ -173,6 +188,14 @@ export class MessageSender {
     } catch (err: any) {
       Logger.error(`HTTP 兜底发送失败（${describeMessage(body)}）：${describeHttpException(err)}`);
       throw err;
+    }
+  }
+
+  private async notifyTopicAccessRevoked(topic: string, status: 403 | 404): Promise<void> {
+    try {
+      await this.options.onTopicAccessRevoked?.(topic, status);
+    } catch (error: any) {
+      Logger.warning(`[${topic}] Topic 权限终止回调失败: ${error?.message || error}`);
     }
   }
 
