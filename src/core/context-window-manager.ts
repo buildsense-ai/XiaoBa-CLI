@@ -48,10 +48,10 @@ export class ContextWindowManager {
   async compactIfNeeded(
     messages: Message[],
     options: CompactIfNeededOptions,
-  ): Promise<Message[]> {
+  ): Promise<{ messages: Message[]; compacted: boolean }> {
     const { durable, transient } = splitDurableAndTransient(messages);
     if (!this.compressor.needsCompaction(durable)) {
-      return messages;
+      return { messages, compacted: false };
     }
 
     const usage = this.compressor.getUsageInfo(durable);
@@ -70,6 +70,9 @@ export class ContextWindowManager {
 
     try {
       const compacted = await this.compressor.compact(durable, { signal: options.signal });
+      if (compacted === durable) {
+        return { messages, compacted: false };
+      }
       const result = [...compacted, ...transient];
       Logger.info(`[${options.sessionKey}] 压缩完成，当前消息数: ${result.length}`);
       await this.emitStatus(options, {
@@ -79,7 +82,7 @@ export class ContextWindowManager {
         messageCount: result.length,
         ...usage,
       });
-      return result;
+      return { messages: result, compacted: true };
     } catch (err) {
       Logger.error(`[${options.sessionKey}] 压缩失败: ${err}`);
       await this.emitStatus(options, {
@@ -89,7 +92,7 @@ export class ContextWindowManager {
         error: err,
         ...usage,
       });
-      return messages;
+      return { messages, compacted: false };
     }
   }
 

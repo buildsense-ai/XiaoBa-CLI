@@ -488,6 +488,31 @@ test('AIService uses a short retry policy for likely custom endpoint configurati
   assert.equal(policy.maxDelayMs, 5000);
 });
 
+test('AIService enforces a shared provider request budget across internal retries', async () => {
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '14';
+  const service = createTestService();
+  let providerCalls = 0;
+  (service as any).sleepWithAbort = async () => {};
+  (service as any).provider = {
+    chat: async () => ({ content: null }),
+    chatStream: async () => {
+      providerCalls++;
+      throw Object.assign(new Error('service unavailable'), { status: 503 });
+    },
+  };
+  const budget = { maxRequests: 2, usedRequests: 0 };
+
+  await assert.rejects(
+    () => service.chatStream([], undefined, undefined, {
+      streamOutputMode: 'buffered',
+      providerRequestBudget: budget,
+    }),
+    /Provider request budget exhausted/,
+  );
+  assert.equal(providerCalls, 2);
+  assert.deepEqual(budget, { maxRequests: 2, usedRequests: 2 });
+});
+
 test('AIService waits for async retry callbacks before the next provider attempt', async () => {
   process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '1';
   const service = createTestService();

@@ -59,23 +59,24 @@ describe('ContextWindowManager', () => {
     assert.doesNotMatch(capturedSummaryInput, /SKILL_LIST_SHOULD_NOT_BE_SUMMARIZED/);
     assert.doesNotMatch(capturedSummaryInput, /SUBAGENT_STATUS_SHOULD_NOT_BE_SUMMARIZED/);
 
-    assert.equal(result.some(message => message.content === 'INJECTED_CONTEXT_SHOULD_NOT_BE_SUMMARIZED'), true);
-    assert.equal(result.some(message =>
+    assert.equal(result.compacted, true);
+    assert.equal(result.messages.some(message => message.content === 'INJECTED_CONTEXT_SHOULD_NOT_BE_SUMMARIZED'), true);
+    assert.equal(result.messages.some(message =>
       typeof message.content === 'string'
       && message.content.includes('RUNTIME_FEEDBACK_SHOULD_NOT_BE_SUMMARIZED')
     ), true);
-    assert.equal(result.some(message =>
+    assert.equal(result.messages.some(message =>
       typeof message.content === 'string'
       && message.content.includes('SKILL_LIST_SHOULD_NOT_BE_SUMMARIZED')
     ), true);
-    assert.equal(result.some(message =>
+    assert.equal(result.messages.some(message =>
       typeof message.content === 'string'
       && message.content.includes('[以下是之前')
     ), true);
     assert.deepStrictEqual(statusEvents.map(event => event.status), ['start', 'complete']);
     assert.equal(statusEvents[0].sessionKey, 'test-session');
     assert.equal(statusEvents[0].usedTokens > 0, true);
-    assert.equal(statusEvents[1].messageCount, result.length);
+    assert.equal(statusEvents[1].messageCount, result.messages.length);
   });
 
   test('does not compact when only transient context is large', async () => {
@@ -98,8 +99,35 @@ describe('ContextWindowManager', () => {
 
     const result = await manager.compactIfNeeded(messages, { sessionKey: 'test-session' });
 
-    assert.equal(result, messages);
+    assert.equal(result.compacted, false);
+    assert.equal(result.messages, messages);
     assert.equal(aiCalls, 0);
+  });
+
+  test('does not report compaction when only system context exceeds the threshold', async () => {
+    let aiCalls = 0;
+    const statusEvents: any[] = [];
+    const aiService = {
+      chatStream: async () => {
+        aiCalls++;
+        return { content: '<summary>unexpected</summary>' };
+      },
+    } as unknown as AIService;
+    const manager = new ContextWindowManager(aiService, {
+      maxContextTokens: 100,
+      compactionThreshold: 0.5,
+    });
+    const messages: Message[] = [system('中'.repeat(1000))];
+
+    const result = await manager.compactIfNeeded(messages, {
+      sessionKey: 'system-only-session',
+      onStatus: event => statusEvents.push(event),
+    });
+
+    assert.equal(result.compacted, false);
+    assert.equal(result.messages, messages);
+    assert.equal(aiCalls, 0);
+    assert.deepStrictEqual(statusEvents.map(event => event.status), ['start']);
   });
 
   test('emits a visible error status and keeps messages when compaction fails', async () => {
@@ -126,7 +154,8 @@ describe('ContextWindowManager', () => {
       },
     });
 
-    assert.equal(result, messages);
+    assert.equal(result.compacted, false);
+    assert.equal(result.messages, messages);
     assert.deepStrictEqual(statusEvents.map(event => event.status), ['start', 'error']);
     assert.match(String(statusEvents[1].error), /summary failed/);
   });

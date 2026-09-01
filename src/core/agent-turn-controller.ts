@@ -15,6 +15,7 @@ import {
   ThinToolRpcTransport,
   ToolExecutionConfirmationRequest,
   ToolExecutionConfirmationResult,
+  ToolDefinition,
 } from '../types/tool';
 import type { StreamRetryInfo } from '../providers/provider';
 import { AIService } from '../utils/ai-service';
@@ -26,7 +27,7 @@ import {
   TurnSkillSnapshotStore,
 } from '../skills/turn-skill-snapshot';
 import { Logger } from '../utils/logger';
-import { Metrics } from '../utils/metrics';
+import { MetricsCollector } from '../utils/metrics';
 import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider } from './conversation-runner';
 import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
@@ -118,7 +119,10 @@ export interface AgentTurnControllerOptions {
   getCurrentDirectory: () => string;
   updateCurrentDirectory: (directory: string) => void;
   checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
+  metrics?: MetricsCollector;
   persistCheckpoint?: (messages: Message[]) => void | Promise<void>;
+  checkpointCandidateBoundary?: (messages: Message[]) => Message[] | Promise<Message[]>;
+  beforeModelRequest?: (messages: Message[], tools: ToolDefinition[]) => void | Promise<void>;
 }
 
 interface MemoryBranchSlot {
@@ -230,9 +234,15 @@ export class AgentTurnController {
           this.expireMemoryBranch(currentMemoryBranch, result ? 'current_branch_consumed' : 'turn_failed');
         }
       }
+
+      if (this.options.checkpointCandidateBoundary) {
+        result.messages = await this.options.checkpointCandidateBoundary(result.messages);
+      }
       const nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
 
-      const metrics = Metrics.getSummary();
+      // User-facing turn reports intentionally remain main-turn scoped; the
+      // total ledger is reserved for aggregate billing/observability callers.
+      const metrics = (this.options.metrics ?? new MetricsCollector()).getSummary();
       this.logMetrics(metrics);
 
       this.replaceBase64Images(nextMessages);
@@ -361,7 +371,10 @@ export class AgentTurnController {
         syntheticObservationProvider: options.syntheticObservationProvider,
         episodeId: options.episodeId,
         checkpointCompactionCoordinator: this.options.checkpointCompactionCoordinator,
+        metrics: this.options.metrics,
         onCompactionCheckpoint: this.options.persistCheckpoint,
+        onCheckpointCandidateBoundary: this.options.checkpointCandidateBoundary,
+        beforeModelRequest: this.options.beforeModelRequest,
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,
@@ -536,7 +549,7 @@ export class AgentTurnController {
     };
   }
 
-  private logMetrics(metrics: ReturnType<typeof Metrics.getSummary>): void {
+  private logMetrics(metrics: ReturnType<MetricsCollector['getSummary']>): void {
     if (metrics.aiCalls === 0 && metrics.toolCalls === 0) return;
     Logger.info(
       `[Metrics] AI调用: ${metrics.aiCalls}次, `

@@ -22,6 +22,201 @@ test('AgentSession does not implicitly sync the Bot Skill workspace after a comp
   assert.equal(scheduledSyncs, 0);
 });
 
+test('AgentSession checkpoint candidate defaults on with an 85 percent serial threshold', () => {
+  const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+  delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+  try {
+    const session = new AgentSession('user:candidate-default', buildMockServices({}), 'catscompany');
+    assert.equal((session as any).useCheckpointCandidates, true);
+    assert.equal((session as any).checkpointCompactionCoordinator.compactionThreshold, 0.85);
+    assert.equal((session as any).checkpointCandidateCoordinator.compactionThreshold, 0.75);
+  } finally {
+    if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+    else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
+  }
+});
+
+test('AgentSession candidate mode supports explicit false rollback', () => {
+  const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+  process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'false';
+  try {
+    const session = new AgentSession('user:candidate-disabled', buildMockServices({}), 'catscompany');
+    assert.equal((session as any).useCheckpointCandidates, false);
+    assert.equal((session as any).checkpointCompactionCoordinator.compactionThreshold, 0.8);
+  } finally {
+    if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+    else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
+  }
+});
+
+test('AgentSession keeps one candidate slot and clear cancels it', async () => {
+  const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+  process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'true';
+  try {
+    let observedSignal: AbortSignal | undefined;
+    const session = new AgentSession('user:candidate-slot', buildMockServices({}), 'catscompany');
+    (session as any).getContextUsageInfo = () => ({
+      usedTokens: 75,
+      toolTokens: 0,
+      maxTokens: 100,
+      usagePercent: 75,
+    });
+    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async (_messages: any[], options: any) => {
+      observedSignal = options.signal;
+      return await new Promise(() => {});
+    };
+
+    (session as any).startCheckpointCandidateIfEligible(0, [{ role: 'user', content: 'root' }]);
+    const firstCandidate = (session as any).checkpointCandidate;
+    (session as any).startCheckpointCandidateIfEligible(0, [{ role: 'user', content: 'root' }]);
+
+    assert.ok(firstCandidate);
+    assert.equal((session as any).checkpointCandidate, firstCandidate);
+    await waitFor(() => Boolean(observedSignal));
+    session.clear();
+    assert.equal(observedSignal?.aborted, true);
+    assert.equal(firstCandidate.status, 'cancelled');
+    assert.equal((session as any).checkpointCandidate, null);
+  } finally {
+    if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+    else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
+  }
+});
+
+test('AgentSession persists a ready candidate before returning replacement messages', () => {
+  const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+  process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'true';
+  try {
+    const session = new AgentSession('user:candidate-commit', buildMockServices({}), 'catscompany');
+    const messages = [{ role: 'user', content: 'root', __episodeId: 'episode-1' }];
+    (session as any).getContextUsageInfo = () => ({ usedTokens: 75, toolTokens: 0, maxTokens: 100, usagePercent: 75 });
+    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => ({
+      compacted: true,
+      messages: [{ role: 'user', content: 'summary', __episodeId: 'episode-1' }],
+    });
+    let persisted: any[] | undefined;
+    (session as any).persistCheckpoint = (candidateMessages: any[]) => {
+      persisted = candidateMessages;
+      return true;
+    };
+
+    (session as any).startCheckpointCandidateIfEligible(0, messages);
+    const candidate = (session as any).checkpointCandidate;
+    candidate.complete([{ role: 'user', content: 'summary', __episodeId: 'episode-1' }]);
+    const committed = (session as any).commitReadyCheckpointCandidate([
+      ...messages,
+      { role: 'assistant', content: 'tail', __episodeId: 'episode-2' },
+    ]);
+
+    assert.deepEqual(committed.map((message: any) => message.content), ['summary', 'tail']);
+    assert.deepEqual(persisted?.map(message => message.content), ['summary', 'tail']);
+    assert.equal(candidate.status, 'committed');
+    assert.equal((session as any).checkpointCandidate, null);
+  } finally {
+    if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+    else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
+  }
+});
+
+test('AgentSession keeps original messages when candidate persistence fails', () => {
+  const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+  process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'true';
+  try {
+    const session = new AgentSession('user:candidate-persist-failure', buildMockServices({}), 'catscompany');
+    const messages = [{ role: 'user', content: 'root' }];
+    (session as any).getContextUsageInfo = () => ({ usedTokens: 75, toolTokens: 0, maxTokens: 100, usagePercent: 75 });
+    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => ({ compacted: true, messages: [] });
+    (session as any).persistCheckpoint = () => false;
+
+    (session as any).startCheckpointCandidateIfEligible(0, messages);
+    const candidate = (session as any).checkpointCandidate;
+    candidate.complete([{ role: 'user', content: 'summary' }]);
+    const committed = (session as any).commitReadyCheckpointCandidate(messages);
+
+    assert.equal(committed, null);
+    assert.equal(candidate.status, 'cancelled');
+    assert.equal((session as any).checkpointCandidate, null);
+  } finally {
+    if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+    else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
+  }
+});
+
+test('AgentSession keeps a running candidate through the serial compaction range', async () => {
+  const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+  process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'true';
+  try {
+    let usagePercent = 75;
+    let observedSignal: AbortSignal | undefined;
+    const session = new AgentSession('user:candidate-preempt', buildMockServices({}), 'catscompany');
+    (session as any).getContextUsageInfo = () => ({
+      usedTokens: usagePercent,
+      toolTokens: 0,
+      maxTokens: 100,
+      usagePercent,
+    });
+    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async (_messages: any[], options: any) => {
+      observedSignal = options.signal;
+      return await new Promise(() => {});
+    };
+
+    const messages = [{ role: 'user', content: 'root' }];
+    (session as any).startCheckpointCandidateIfEligible(0, messages);
+    const candidate = (session as any).checkpointCandidate;
+    await waitFor(() => Boolean(observedSignal));
+    usagePercent = 84;
+    (session as any).coordinateCheckpointCandidate(messages);
+    assert.equal(observedSignal?.aborted, false);
+    assert.equal((session as any).checkpointCandidate, candidate);
+
+    usagePercent = 85;
+    (session as any).coordinateCheckpointCandidate(messages);
+
+    assert.equal(observedSignal?.aborted, false);
+    assert.equal(candidate.status, 'running');
+    assert.equal((session as any).checkpointCandidate, candidate);
+  } finally {
+    if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+    else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
+  }
+});
+
+test('a candidate result that arrives after 85 percent remains ready for safe commit', async () => {
+  const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+  process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'true';
+  try {
+    let usagePercent = 75;
+    let releaseCandidate!: () => void;
+    const gate = new Promise<void>(resolve => { releaseCandidate = resolve; });
+    const session = new AgentSession('user:candidate-late-result', buildMockServices({}), 'catscompany');
+    (session as any).getContextUsageInfo = () => ({
+      usedTokens: usagePercent,
+      toolTokens: 0,
+      maxTokens: 100,
+      usagePercent,
+    });
+    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => {
+      await gate;
+      return { compacted: true, messages: [{ role: 'user', content: 'late summary' }] };
+    };
+    const messages = [{ role: 'user', content: 'root' }];
+
+    (session as any).startCheckpointCandidateIfEligible(0, messages);
+    const candidate = (session as any).checkpointCandidate;
+    usagePercent = 85;
+    (session as any).coordinateCheckpointCandidate(messages);
+    releaseCandidate();
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(candidate.status, 'ready');
+    assert.ok(candidate.result);
+    assert.equal((session as any).checkpointCandidate, candidate);
+  } finally {
+    if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+    else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
+  }
+});
+
 test('AgentSession requestInterrupt aborts an in-flight model request', async () => {
   let observedSignal: AbortSignal | undefined;
 

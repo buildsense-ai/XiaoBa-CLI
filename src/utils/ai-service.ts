@@ -76,6 +76,7 @@ interface ModelAttemptRun {
   tools: readonly ToolDefinition[];
   stream: boolean;
   preflight?: ProviderRequestPreflightSummary;
+  providerRequestBudget?: AIRequestOptions['providerRequestBudget'];
 }
 
 export class AIService {
@@ -475,6 +476,7 @@ export class AIService {
       this.throwIfAborted(signal);
       const attemptStartedAt = Date.now();
       const attemptNumber = attempt + 1;
+      this.consumeProviderRequestBudget(attemptRun);
       this.emitModelAttempt(attemptRun, attemptNumber, {
         outcome: 'started',
       });
@@ -606,7 +608,7 @@ export class AIService {
     options: AIRequestOptions,
     preflight?: ProviderRequestPreflightSummary,
   ): ModelAttemptRun | undefined {
-    if (!options.modelAttemptSink) return undefined;
+    if (!options.modelAttemptSink && !options.providerRequestBudget) return undefined;
     modelAttemptCallSequence = (modelAttemptCallSequence + 1) % Number.MAX_SAFE_INTEGER;
     return {
       callId: `${Date.now().toString(36)}-${process.pid.toString(36)}-${modelAttemptCallSequence.toString(36)}`,
@@ -616,7 +618,26 @@ export class AIService {
       tools: tools || [],
       stream,
       ...(preflight ? { preflight } : {}),
+      ...(options.providerRequestBudget
+        ? { providerRequestBudget: options.providerRequestBudget }
+        : {}),
     };
+  }
+
+  private consumeProviderRequestBudget(run?: ModelAttemptRun): void {
+    const budget = run?.providerRequestBudget;
+    if (!budget) return;
+    const maxRequests = Math.max(0, Math.floor(budget.maxRequests));
+    const usedRequests = Math.max(0, Math.floor(budget.usedRequests));
+    if (usedRequests >= maxRequests) {
+      const error = Object.assign(new Error('Provider request budget exhausted'), {
+        code: 'PROVIDER_REQUEST_BUDGET_EXHAUSTED',
+        providerRequestBudget: { maxRequests, usedRequests },
+      });
+      throw error;
+    }
+    budget.maxRequests = maxRequests;
+    budget.usedRequests = usedRequests + 1;
   }
 
   private emitModelAttempt(

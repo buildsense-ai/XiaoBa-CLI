@@ -6,7 +6,7 @@ import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResul
 import { AIRequestOptions, StreamCallbacks, StreamRetryInfo } from '../providers/provider';
 import { Logger } from '../utils/logger';
 import { isRateLimitErrorCode } from '../utils/rate-limit-error';
-import { Metrics } from '../utils/metrics';
+import { Metrics, MetricsCollector } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
@@ -202,8 +202,13 @@ export interface RunnerOptions {
   checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   /** Persists a successful continuation checkpoint before execution resumes. */
   onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
+  /** Coordinates an asynchronous checkpoint only after a complete tool batch. */
+  onCheckpointCandidateBoundary?: (messages: Message[]) => Message[] | Promise<Message[]>;
+  /** Rejects a provider request when the durable transcript remains over budget. */
+  beforeModelRequest?: (messages: Message[], tools: ToolDefinition[]) => void | Promise<void>;
   /** Best-effort observer. Its result never participates in reply control flow. */
   cacheTraceSink?: CacheTraceSink;
+  metrics?: MetricsCollector;
 }
 
 /**
@@ -230,6 +235,9 @@ export class ConversationRunner {
   private suppressFinalResponse: boolean;
   private checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   private onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
+  private onCheckpointCandidateBoundary?: (messages: Message[]) => Message[] | Promise<Message[]>;
+  private beforeModelRequest?: (messages: Message[], tools: ToolDefinition[]) => void | Promise<void>;
+  private metrics: MetricsCollector;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -257,8 +265,11 @@ export class ConversationRunner {
     this.episodeId = options?.episodeId;
     this.checkpointCompactionCoordinator = options?.checkpointCompactionCoordinator;
     this.onCompactionCheckpoint = options?.onCompactionCheckpoint;
+    this.onCheckpointCandidateBoundary = options?.onCheckpointCandidateBoundary;
+    this.beforeModelRequest = options?.beforeModelRequest;
     this.maxTurns = options?.maxTurns;
     this.suppressFinalResponse = options?.suppressFinalResponse === true;
+    this.metrics = options?.metrics ?? new MetricsCollector();
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -342,6 +353,13 @@ export class ConversationRunner {
       }
       this.injectSyntheticObservations(messages, turns);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
+      if (this.onCheckpointCandidateBoundary) {
+        const nextMessages = await this.onCheckpointCandidateBoundary(messages);
+        if (nextMessages !== messages) {
+          messages.splice(0, messages.length, ...nextMessages);
+          this.refreshRuntimeContextForPendingInput(messages);
+        }
+      }
       const requestTools = this.fitToolsToPromptBudget(activeTools);
       if (requestTools.length < activeTools.length && !notifiedToolBudgetDisabled) {
         notifiedToolBudgetDisabled = true;
@@ -414,6 +432,11 @@ export class ConversationRunner {
         currentDirectory,
       });
       nextTurnTransientHints = [];
+      await this.beforeModelRequest?.(messages, requestTools);
+      if (this.beforeModelRequest
+        && estimateMessagesTokens(requestMessages) + estimateToolsTokens(requestTools) > this.maxPromptTokens) {
+        throw new Error('CONTEXT_CHECKPOINT_BLOCKED');
+      }
       const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
       if (promptTrimmed && callbacks?.onThinking) {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
@@ -471,7 +494,7 @@ export class ConversationRunner {
       Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
 
       if (response.usage) {
-        Metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
+        this.metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
       }
 
@@ -638,7 +661,7 @@ export class ConversationRunner {
           hasRecordedDecision = true;
         }
         const toolDuration = Date.now() - toolStart;
-        Metrics.recordToolCall(toolName, toolDuration);
+        this.metrics.recordToolCall(toolName, toolDuration);
         this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
         callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
@@ -706,6 +729,7 @@ export class ConversationRunner {
         };
       }
 
+      await this.coordinateCheckpointCandidateAtBoundary(messages);
       await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
       await this.appendPendingUserInput(messages, newMessages, turns);
     }
@@ -797,6 +821,14 @@ export class ConversationRunner {
     return true;
   }
 
+  private async coordinateCheckpointCandidateAtBoundary(messages: Message[]): Promise<void> {
+    if (!this.onCheckpointCandidateBoundary) return;
+    const nextMessages = await this.onCheckpointCandidateBoundary(messages);
+    if (nextMessages === messages) return;
+    messages.splice(0, messages.length, ...nextMessages);
+    this.refreshRuntimeContextForPendingInput(messages);
+  }
+
   private async compactMidTurnIfNeeded(
     messages: Message[],
     tools: ToolDefinition[],
@@ -822,7 +854,20 @@ export class ConversationRunner {
         }
         : undefined,
     });
-    if (!result.compacted) return;
+    if (!result.compacted) {
+      const getUsageInfo = this.checkpointCompactionCoordinator.getUsageInfo;
+      if (typeof getUsageInfo === 'function') {
+        const usage = getUsageInfo.call(
+          this.checkpointCompactionCoordinator,
+          messages,
+          estimateToolsTokens(tools),
+        );
+        if (usage.usedTokens + usage.toolTokens >= usage.maxTokens * 0.85) {
+          throw new Error('CONTEXT_CHECKPOINT_BLOCKED');
+        }
+      }
+      return;
+    }
 
     try {
       await this.onCompactionCheckpoint?.(result.messages);
@@ -831,7 +876,20 @@ export class ConversationRunner {
         `[${this.sessionLabel}Turn ${turns}] continuation checkpoint persistence failed; `
         + `keeping original transcript: ${error instanceof Error ? error.message : String(error)}`,
       );
-      return;
+      throw error;
+    }
+
+    const getUsageInfo = this.checkpointCompactionCoordinator.getUsageInfo;
+    if (typeof getUsageInfo === 'function') {
+      const postCheckpointUsage = getUsageInfo.call(
+        this.checkpointCompactionCoordinator,
+        result.messages,
+        estimateToolsTokens(tools),
+      );
+      if (postCheckpointUsage.usedTokens + postCheckpointUsage.toolTokens
+        >= postCheckpointUsage.maxTokens * 0.85) {
+        throw new Error('CONTEXT_CHECKPOINT_BLOCKED');
+      }
     }
 
     messages.splice(0, messages.length, ...result.messages);
@@ -1517,6 +1575,11 @@ export class ConversationRunner {
     } catch (error: any) {
       if (!this.isPromptTooLongError(error)) {
         throw error;
+      }
+      if (this.beforeModelRequest) {
+        const guardedError = new Error('CONTEXT_CHECKPOINT_BLOCKED');
+        (guardedError as Error & { cause?: unknown }).cause = error;
+        throw guardedError;
       }
 
       Logger.warning('检测到提示词超长，执行紧急上下文裁剪后重试一次');
