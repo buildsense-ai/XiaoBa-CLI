@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Express } from 'express';
 import * as path from 'path';
 import type { Server } from 'http';
 import { Logger } from '../utils/logger';
@@ -7,6 +7,70 @@ import { ServiceManager } from './service-manager';
 import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 import { createDashboardAuth } from './auth';
 import { CatsConnectorAutoStart } from './cats-connector-autostart';
+
+/** Environment variable for CORS allowed origins (comma-separated) */
+const CORS_ORIGINS_ENV = 'DASHBOARD_CORS_ORIGINS';
+
+/**
+ * Configure CORS for the dashboard server.
+ * By default, only localhost origins are allowed for security.
+ * Set DASHBOARD_CORS_ORIGINS to allow specific origins (comma-separated).
+ */
+function setupCors(app: Express): void {
+  const allowedOrigins = process.env[CORS_ORIGINS_ENV];
+  
+  if (!allowedOrigins) {
+    // Default: only allow localhost for security
+    app.use((req, res, next) => {
+      const origin = req.headers.origin;
+      const localhostOrigins = [
+        'http://127.0.0.1',
+        'http://localhost',
+        'https://localhost',
+        'http://[::1]'
+      ];
+      
+      if (origin && localhostOrigins.some(allowed => origin.startsWith(allowed))) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+      }
+      
+      // Always set these headers for preflight
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+      res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
+      
+      next();
+    });
+  } else {
+    // Custom origins configured
+    const origins = allowedOrigins.split(',').map(o => o.trim()).filter(Boolean);
+    
+    if (origins.length === 1 && origins[0] === '*') {
+      // Wildcard - allow all origins (not recommended for production)
+      Logger.warning('[Dashboard] CORS 配置为允许所有来源 (*)，不建议在生产环境中使用');
+      app.use((req, res, next) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+        next();
+      });
+    } else {
+      // Specific origins
+      Logger.info(`[Dashboard] CORS 已配置，允许来源: ${origins.join(', ')}`);
+      app.use((req, res, next) => {
+        const origin = req.headers.origin;
+        if (origin && origins.includes(origin)) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+          res.setHeader('Access-Control-Allow-Credentials', 'true');
+        }
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+        next();
+      });
+    }
+  }
+}
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -35,6 +99,14 @@ export async function startDashboard(
   const projectRoot = controllers.projectRoot || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined) || process.cwd();
   process.env.XIAOBA_DASHBOARD_PORT = String(port);
   const serviceManager = new ServiceManager(projectRoot);
+
+  // Setup CORS before other middleware
+  setupCors(app);
+  
+  // Handle preflight requests
+  app.options('*', (req, res) => {
+    res.sendStatus(200);
+  });
 
   app.use(express.json({ limit: '25mb' }));
 

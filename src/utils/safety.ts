@@ -161,6 +161,12 @@ export function isBashCommandAllowed(
  * Check if a path is outside the working directory (path traversal check).
  * This handles symbolic links and normalizes paths properly.
  */
+/**
+ * Check if a path is outside the working directory (path traversal check).
+ * This handles symbolic links and normalizes paths properly.
+ * 
+ * Uses robust comparison that normalizes path separators and checks for traversal patterns.
+ */
 function isOutsideWorkingDirectory(targetPath: string, workingDirectory: string): boolean {
   const resolvedTarget = path.resolve(targetPath);
   const resolvedCwd = path.resolve(workingDirectory);
@@ -170,10 +176,34 @@ function isOutsideWorkingDirectory(targetPath: string, workingDirectory: string)
     return false;
   }
 
-  const normalizedTarget = resolvedTarget.toLowerCase();
-  const normalizedCwd = resolvedCwd.toLowerCase();
-  const cwdWithSep = normalizedCwd.endsWith(path.sep) ? normalizedCwd : normalizedCwd + path.sep;
-  return !normalizedTarget.startsWith(cwdWithSep);
+  // Normalize path separators to forward slash for consistent cross-platform comparison
+  const normalizedTarget = resolvedTarget.replace(/[\\/]/g, '/');
+  const normalizedCwd = resolvedCwd.replace(/[\\/]/g, '/');
+  
+  // Ensure cwd ends with separator for proper prefix matching
+  const cwdWithSep = normalizedCwd.endsWith('/') ? normalizedCwd : normalizedCwd + '/';
+  
+  // Target must start with cwd prefix
+  if (!normalizedTarget.startsWith(cwdWithSep)) {
+    return true;
+  }
+  
+  // Additional validation: check for path traversal patterns like /path/../outside
+  const relativePath = normalizedTarget.substring(cwdWithSep.length);
+  const parts = relativePath.split('/').filter(p => p !== '');
+  
+  for (const part of parts) {
+    // '..' would traverse outside the working directory
+    if (part === '..') {
+      return true;
+    }
+    // Reject paths with null bytes or other suspicious characters
+    if (/[\x00-\x1f]/.test(part)) {
+      return true;
+    }
+  }
+  
+  return false;
 }
 
 /**

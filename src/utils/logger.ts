@@ -12,6 +12,86 @@ interface LoggerContextStore {
   sessionLogger?: SessionTurnLogger;
 }
 
+/** Maximum number of session contexts to keep before cleanup */
+const MAX_SESSION_CONTEXTS = 1000;
+/** Interval for cleaning up expired session contexts (in ms) */
+const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Session context registry for cleanup tracking.
+ * Uses a simple ring buffer approach to avoid memory leaks in long-running processes.
+ */
+class SessionContextRegistry {
+  private sessions: Map<string, number> = new Map();
+  private lastCleanup = Date.now();
+
+  /**
+   * Track a session context.
+   */
+  track(sessionId: string): void {
+    this.sessions.set(sessionId, Date.now());
+    
+    // Trigger cleanup if we have too many sessions
+    if (this.sessions.size > MAX_SESSION_CONTEXTS) {
+      this.cleanup();
+    }
+  }
+
+  /**
+   * Remove a session context.
+   */
+  untrack(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
+
+  /**
+   * Clean up old session contexts.
+   * Called periodically or when the registry is full.
+   */
+  cleanup(): void {
+    const now = Date.now();
+    const cutoff = now - SESSION_CLEANUP_INTERVAL_MS;
+    
+    for (const [sessionId, lastAccess] of this.sessions) {
+      if (lastAccess < cutoff) {
+        this.sessions.delete(sessionId);
+      }
+    }
+    
+    this.lastCleanup = now;
+  }
+
+  /**
+   * Get the number of tracked sessions.
+   */
+  size(): number {
+    return this.sessions.size;
+  }
+}
+
+const sessionRegistry = new SessionContextRegistry();
+
+// Set up periodic cleanup
+let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+function startPeriodicCleanup(): void {
+  if (cleanupTimer) return;
+  
+  cleanupTimer = setInterval(() => {
+    sessionRegistry.cleanup();
+  }, SESSION_CLEANUP_INTERVAL_MS);
+  
+  // Don't prevent the process from exiting
+  cleanupTimer.unref();
+}
+
+function stopPeriodicCleanup(): void {
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer);
+    cleanupTimer = null;
+  }
+}
+
 export class Logger {
   private static spinner: Ora | null = null;
   private static logStream: fs.WriteStream | null = null;
@@ -62,11 +142,45 @@ export class Logger {
     if (!normalizedSessionId) {
       return fn();
     }
-    return this.logContext.run({ sessionId: normalizedSessionId, sessionLogger }, fn);
+    
+    // Track the session for cleanup
+    sessionRegistry.track(normalizedSessionId);
+    
+    // Wrap the function to untrack when it completes
+    const wrappedFn = () => {
+      try {
+        return fn();
+      } finally {
+        // Note: We don't untrack here because the same session might be reused
+        // The periodic cleanup handles actual removal
+      }
+    };
+    
+    return this.logContext.run({ sessionId: normalizedSessionId, sessionLogger }, wrappedFn);
+  }
+
+  /**
+   * Clear a session context.
+   * Call this when a session is fully terminated.
+   */
+  static clearSessionContext(sessionId: string): void {
+    sessionRegistry.untrack(sessionId);
+  }
+
+  /**
+   * Get the number of active session contexts.
+   * Useful for monitoring memory usage.
+   */
+  static getActiveSessionCount(): number {
+    return sessionRegistry.size();
   }
 
   static openLogFile(sessionType: string, sessionKey?: string, silent: boolean = false): void {
     this.silentMode = silent;
+    
+    // Start periodic cleanup for long-running processes
+    startPeriodicCleanup();
+    
     const now = new Date();
     const dateDir = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const hh = String(now.getHours()).padStart(2, '0');
@@ -87,6 +201,10 @@ export class Logger {
       this.logStream = null;
       this.logFilePath = null;
     }
+    
+    // Optionally stop cleanup when no longer logging
+    // Note: Keeping cleanup running is generally safe and prevents issues
+    // if new log files are opened later
   }
 
   static getLogFilePath(): string | null {
@@ -250,21 +368,11 @@ export class Logger {
 
       // 核心逻辑：先用空格填满左侧宽度，再上色
       const leftPadded = leftText.padEnd(CAT_WIDTH, ' ');
-
-      // --- 左侧上色 ---
-      let leftFinal = styles.brandDeep(leftPadded);
-      if (i === 1 || i === 2) leftFinal = styles.brand(leftPadded); // 头顶亮色
-      if (i >= 3 && i <= 5)   leftFinal = styles.brandDark(leftPadded); // 眼睛深色
-
-      // --- 右侧上色 ---
-      let rightFinal = styles.brandDeep(rightText);
-      if (i >= 1 && i <= 6) rightFinal = styles.brand(rightText);   // XIAO BA 亮色
-      if (i === 8)          rightFinal = styles.subtitle(rightText); // Slogan 灰色
-
-      // 输出
-      console.log(leftFinal + GAP + rightFinal);
+      console.log(styles.title(leftPadded) + GAP + styles.title(rightText));
     }
 
     console.log('\n'); // 底部留白
   }
 }
+
+export default Logger;
