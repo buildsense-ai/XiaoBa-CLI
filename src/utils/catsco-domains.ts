@@ -32,7 +32,7 @@ export function isCatsCoWebSocketEndpoint(value: unknown): boolean {
     const url = new URL(text);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
     const appOrigin = `https://${url.host}`;
-    return ['ws:', 'wss:'].includes(url.protocol)
+    return url.protocol === 'wss:'
       && CATSCO_APP_HTTP_ORIGINS.has(appOrigin)
       && pathname === CATSCO_WS_PATH;
   } catch {

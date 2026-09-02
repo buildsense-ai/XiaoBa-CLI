@@ -16,6 +16,7 @@ test('accepts both CatsCo app domains while rejecting lookalikes', () => {
 test('accepts both production websocket endpoints with the canonical path', () => {
   assert.equal(isCatsCoWebSocketEndpoint('wss://app.catsco.cc/v0/channels'), true);
   assert.equal(isCatsCoWebSocketEndpoint('wss://app.catsco.cn/v0/channels/'), true);
+  assert.equal(isCatsCoWebSocketEndpoint('ws://app.catsco.cn/v0/channels'), false);
   assert.equal(isCatsCoWebSocketEndpoint('wss://app.catsco.cn/v1/channels'), false);
   assert.equal(isCatsCoWebSocketEndpoint('wss://evil.catsco.cn/v0/channels'), false);
 });
