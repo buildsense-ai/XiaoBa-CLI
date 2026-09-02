@@ -6,6 +6,7 @@ import { canonicalizeBotSkillRefs } from '../bot-skills/canonical';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { normalizeOpenAIApiMode } from '../utils/openai-api-mode';
 import { normalizeReasoningEffort } from '../utils/reasoning-effort';
+import { isCatsRelayApiBase } from '../utils/catsco-domains';
 import { relayModelProfileFromRuntimeDescriptor, type RelayModelRuntimeDescriptor } from '../utils/relay-model-profiles';
 import {
   canonicalRelayModelId,
@@ -130,7 +131,7 @@ function isRelayProfile(profile: Record<string, string | undefined>): boolean {
   if (profile.CATSCO_MODEL_SOURCE === 'relay') return true;
   if (profile.CATSCO_MODEL_SOURCE === 'custom') return false;
   const apiBase = firstNonEmpty(profile.CATSCO_RELAY_LLM_API_BASE, profile.GAUZ_LLM_API_BASE) || '';
-  return apiBase.toLowerCase().includes('relay.catsco.cc');
+  return isCatsRelayApiBase(apiBase);
 }
 
 /**

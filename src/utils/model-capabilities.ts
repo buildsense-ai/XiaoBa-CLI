@@ -1,6 +1,7 @@
 import { ChatConfig } from '../types';
 import { findRelayModelProfile } from './relay-model-profiles';
 import { probeVisionCapability, type VisionCapabilityState, type VisionProbeOptions } from './model-vision-probe';
+import { isCatsRelayApiBase } from './catsco-domains';
 
 const KNOWN_TEXT_ONLY_MODEL_PATTERNS = [
   /^deepseek-(?:chat|reasoner|v4-flash)$/i,
@@ -38,7 +39,7 @@ export function isPrimaryModelVisionCapable(config: Pick<ChatConfig, 'apiUrl' | 
   const apiUrl = (config.apiUrl || '').toLowerCase();
   const model = (config.model || '').trim();
   const modelKey = model.toLowerCase();
-  const isRelay = apiUrl.includes('relay.catsco.cc');
+  const isRelay = isCatsRelayApiBase(apiUrl);
   if (isRelay) {
     const relayProfile = findRelayModelProfile(model);
     if (relayProfile?.capabilities.vision !== undefined) {
@@ -74,7 +75,7 @@ export async function resolvePrimaryModelVisionCapability(
   const apiUrl = (config.apiUrl || '').toLowerCase();
   const model = (config.model || '').trim();
   const modelKey = model.toLowerCase();
-  if (apiUrl.includes('relay.catsco.cc')) {
+  if (isCatsRelayApiBase(apiUrl)) {
     const relayProfile = findRelayModelProfile(model);
     if (relayProfile?.capabilities.vision !== undefined) {
       return relayProfile.capabilities.vision ? 'supported' : 'unsupported';
@@ -102,7 +103,7 @@ export async function resolvePrimaryModelVisionCapability(
 export function isPrimaryModelToolCallingCapable(config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'modelCapabilities'>): boolean {
   if (config.modelCapabilities?.toolCalling !== undefined) return config.modelCapabilities.toolCalling;
   const apiUrl = (config.apiUrl || '').toLowerCase();
-  if (apiUrl.includes('relay.catsco.cc')) {
+  if (isCatsRelayApiBase(apiUrl)) {
     const relayProfile = findRelayModelProfile(config.model);
     if (relayProfile) {
       return relayProfile.capabilities.toolCalling;

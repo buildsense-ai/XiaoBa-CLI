@@ -10,6 +10,7 @@ import {
   DEFAULT_CATSCO_WS_URL,
   createCatsCoLocalConfigService,
 } from './local-config';
+import { CATSCO_APP_HTTP_ORIGINS } from '../utils/catsco-domains';
 
 export type CatsCoRuntimeMissingField = 'serverUrl' | 'apiKey' | 'bodyId';
 
@@ -65,7 +66,7 @@ function normalizeBaseUrl(
   if (options.upgradeCatsCoHttp) {
     try {
       const url = new URL(text);
-      if (url.protocol === 'http:' && url.hostname === 'app.catsco.cc') {
+      if (url.protocol === 'http:' && CATSCO_APP_HTTP_ORIGINS.has(`https://${url.hostname}`)) {
         url.protocol = 'https:';
         return url.toString().replace(/\/+$/, '');
       }

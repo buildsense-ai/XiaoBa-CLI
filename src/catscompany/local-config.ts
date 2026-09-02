@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { randomUUID } from 'crypto';
+import { CATSCO_APP_HTTP_ORIGINS } from '../utils/catsco-domains';
 
 export interface CatsCoLocalAccount {
   token: string;
@@ -90,7 +91,7 @@ function normalizeBaseUrl(
   if (options.upgradeCatsCoHttp) {
     try {
       const url = new URL(text);
-      if (url.protocol === 'http:' && url.hostname === 'app.catsco.cc') {
+      if (url.protocol === 'http:' && CATSCO_APP_HTTP_ORIGINS.has(`https://${url.hostname}`)) {
         url.protocol = 'https:';
         return url.toString().replace(/\/+$/, '');
       }

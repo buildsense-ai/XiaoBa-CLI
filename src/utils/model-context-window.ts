@@ -1,6 +1,7 @@
 import { ChatConfig } from '../types';
 import { resolveMaxTokens } from '../providers/output-limits';
 import { RELAY_MODEL_PROFILES } from './relay-model-profiles';
+import { isCatsRelayApiBase } from './catsco-domains';
 
 export interface ModelContextWindowSpec {
   id: string;
@@ -89,7 +90,7 @@ export function isCatsRelayModelConfig(
 ): boolean {
   const apiUrl = String(config.apiUrl || '').trim().toLowerCase();
   if (apiUrl) {
-    return apiUrl.includes('relay.catsco.cc');
+    return isCatsRelayApiBase(apiUrl);
   }
   const source = String(env.CATSCO_MODEL_SOURCE || '').trim().toLowerCase();
   if (source === 'relay') return true;

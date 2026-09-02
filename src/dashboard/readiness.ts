@@ -10,6 +10,7 @@ import { readDashboardEnvFile } from './settings';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { getWeixinChannelStatus } from './weixin-channel-binding';
 import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
+import { isCatsRelayApiBase } from '../utils/catsco-domains';
 
 export type DashboardReadinessStatus = 'ready' | 'warning' | 'blocked';
 export type DashboardReadinessCheckStatus = 'pass' | 'warning' | 'fail';
@@ -599,10 +600,9 @@ function isCatsRelayModelConfigured(
   if (provider !== 'anthropic' && provider !== 'openai') return false;
 
   try {
-    const parsed = new URL(apiBase);
-    return parsed.hostname.toLowerCase() === 'relay.catsco.cc';
+    return isCatsRelayApiBase(apiBase);
   } catch {
-    return apiBase.toLowerCase().includes('relay.catsco.cc');
+    return false;
   }
 }
 

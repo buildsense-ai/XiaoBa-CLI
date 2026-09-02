@@ -4,6 +4,7 @@ import * as dotenv from 'dotenv';
 import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../types';
 import { REASONING_EFFORT_OPTIONS, normalizeReasoningEffort, reasoningEffortOrDefault } from '../utils/reasoning-effort';
 import { OPENAI_API_MODE_OPTIONS, openAIApiModeOrDefault } from '../utils/openai-api-mode';
+import { isCatsRelayApiBase } from '../utils/catsco-domains';
 
 export type DashboardSettingType = 'enum' | 'string' | 'url' | 'secret';
 export type SecretSettingAction = 'keep' | 'replace' | 'clear';
@@ -239,16 +240,6 @@ const MODEL_SOURCE_ENV_KEY = 'CATSCO_MODEL_SOURCE';
 
 function isModelSetting(id: string): boolean {
   return id.startsWith('model.');
-}
-
-function isCatsRelayApiBase(value: unknown): boolean {
-  const text = String(value || '').trim();
-  if (!text) return false;
-  try {
-    return new URL(text).hostname.toLowerCase() === 'relay.catsco.cc';
-  } catch {
-    return text.toLowerCase().includes('relay.catsco.cc');
-  }
 }
 
 function modelSettingDisplayValue(

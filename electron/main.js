@@ -20,7 +20,10 @@ if (shouldDisableHardwareAcceleration()) {
 
 const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
 const DEEP_LINK_PROTOCOL = 'catsco';
-const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set(['https://app.catsco.cc']);
+const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set([
+  'https://app.catsco.cc',
+  'https://app.catsco.cn',
+]);
 const CATSCO_WEBAPP_URL = 'https://app.catsco.cc';
 let mainWindow = null;
 let tray = null;
@@ -646,7 +649,7 @@ function createWindow() {
     }
     try {
       const target = new URL(url);
-      if (target.protocol === 'https:' && target.origin === 'https://app.catsco.cc') {
+      if (target.protocol === 'https:' && TRUSTED_DEEP_LINK_BASE_ORIGINS.has(target.origin)) {
         void shell.openExternal(target.toString());
       }
     } catch (_error) {

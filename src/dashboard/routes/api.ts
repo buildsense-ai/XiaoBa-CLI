@@ -54,6 +54,7 @@ import {
 } from '../../runtime/runtime-profile-editor';
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
 import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
+import { CATSCO_APP_HTTP_ORIGINS, isCatsRelayApiBase, isCatsCoWebSocketEndpoint } from '../../utils/catsco-domains';
 import { catalogRuntimeMatchesModelId, createBotDefinitionSyncService } from '../../bot-definition/service';
 import { prepareBoundBotDefinition } from '../../bot-definition/activation';
 import { createBotDefinitionCloudSyncService } from '../../bot-definition/cloud-sync';
@@ -110,8 +111,7 @@ import {
 
 const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
 const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
-const TRUSTED_CATSCO_HTTP_ORIGINS = new Set([new URL(DEFAULT_CATSCO_HTTP_BASE_URL).origin]);
-const TRUSTED_CATSCO_WS_URL = new URL(DEFAULT_CATSCO_WS_URL);
+const TRUSTED_CATSCO_HTTP_ORIGINS = CATSCO_APP_HTTP_ORIGINS;
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
 const PROMPT_EDITOR_SKILL_NAME = 'catsco-prompt-editor';
@@ -327,7 +327,7 @@ function normalizeTrustedCatsServerUrl(value: unknown): string {
   }
 
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
-  if (url.origin === TRUSTED_CATSCO_WS_URL.origin && pathname === TRUSTED_CATSCO_WS_URL.pathname) {
+  if (isCatsCoWebSocketEndpoint(url.toString()) && pathname === '/v0/channels') {
     return `${url.protocol}//${url.host}${pathname}`;
   }
   if (canUseLocalCatsCoEndpoint() && isLoopbackHost(url.hostname)) {
@@ -1220,16 +1220,6 @@ function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
     context_label: model.contextWindowTokens ? formatContextWindowTokens(model.contextWindowTokens) : undefined,
     capabilities: model.capabilities,
   };
-}
-
-function isCatsRelayApiBase(value: unknown): boolean {
-  const text = String(value || '').trim();
-  if (!text) return false;
-  try {
-    return new URL(text).hostname.toLowerCase() === 'relay.catsco.cc';
-  } catch {
-    return text.toLowerCase().includes('relay.catsco.cc');
-  }
 }
 
 function writeDashboardEnvAndProcess(updates: Record<string, string | undefined>): { updated: string[]; cleared: string[] } {
