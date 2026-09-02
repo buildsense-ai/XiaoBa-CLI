@@ -19,6 +19,7 @@ const MIN_RETAINED_USER_TOKEN_BUDGET = 8_000;
 const MAX_RETAINED_USER_TOKEN_BUDGET = 32_000;
 const RETAINED_USER_CONTEXT_RATIO = 0.15;
 const MAX_CONTEXT_RETRY_ATTEMPTS = 6;
+const CHECKPOINT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const MAX_SUMMARY_TOOL_RESULT_CHARS = 24_000;
 const SUMMARY_TOOL_RESULT_HEAD_CHARS = 16_000;
 const SUMMARY_TOOL_RESULT_TAIL_CHARS = 4_000;
@@ -306,6 +307,8 @@ export class CheckpointCompactionCoordinator {
           { onText: text => { streamed += text; } },
           {
             signal,
+            retryProfile: 'checkpoint_summary',
+            streamIdleTimeoutMs: CHECKPOINT_STREAM_IDLE_TIMEOUT_MS,
             streamOutputMode: 'buffered',
             promptCacheContext: {
               sessionKey,

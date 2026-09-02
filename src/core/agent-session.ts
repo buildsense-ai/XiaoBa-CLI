@@ -88,8 +88,10 @@ export const EMPTY_MODEL_RESPONSE_MESSAGE = '模型本轮未返回有效内容�
 export const MODEL_RECOVERY_FAILED_MESSAGE = '模型服务暂时不稳定，系统已尝试自动恢复但仍未成功，请稍后继续。';
 export const MODEL_REQUEST_FAILED_MESSAGE = '模型服务暂时不稳定，本次处理未能完成，请稍后继续。';
 export const CONTEXT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
-export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '上下文压缩完成，继续处理当前请求。';
+export const CONTEXT_COMPACTION_GENERATED_MESSAGE = '上下文摘要已生成，正在保存检查点。';
+export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '检查点已保存，继续处理当前请求。';
 export const CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文并安全停止本轮。';
+export const LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文继续处理。';
 
 // ─── 接口定义 ───────────────────────────────────────────
 
@@ -430,9 +432,11 @@ export class AgentSession {
       if (compactionResult.compacted) {
         if (this.persistCheckpoint(compactionResult.messages)) {
           this.messages = compactionResult.messages;
+          await this.notifyContextCompaction(options.callbacks, CONTEXT_COMPACTION_COMPLETE_MESSAGE);
         } else {
           Logger.error(`[会话 ${this.key}] 恢复检查点持久化失败，停止初始化以保留原始上下文`);
           this.messages = messagesBeforeRestoreCompaction;
+          await this.notifyContextCompaction(options.callbacks, CONTEXT_COMPACTION_ERROR_MESSAGE);
           throw new CheckpointPersistenceError();
         }
       } else {
@@ -683,9 +687,11 @@ export class AgentSession {
         if (compactionResult.compacted) {
           if (this.persistCheckpoint(compactionResult.messages)) {
             this.messages = compactionResult.messages;
+            await this.notifyContextCompaction(callbacks, CONTEXT_COMPACTION_COMPLETE_MESSAGE);
           } else {
             Logger.error(`[会话 ${this.key}] 处理前检查点持久化失败，停止本轮以保留原始上下文`);
             this.messages = messagesBeforeCompaction;
+            await this.notifyContextCompaction(callbacks, CONTEXT_COMPACTION_ERROR_MESSAGE);
             throw new CheckpointPersistenceError();
           }
         } else {
@@ -1123,7 +1129,7 @@ export class AgentSession {
         sessionKey: this.key,
         reason,
         signal,
-        onStatus: this.createContextCompactionNotifier(callbacks),
+        onStatus: this.createContextCompactionNotifier(callbacks, false),
       });
       return {
         messages: compactedMessages,
@@ -1135,7 +1141,7 @@ export class AgentSession {
       phase,
       toolTokens: this.getToolDefinitionTokens(),
       signal,
-      onStatus: this.createContextCompactionNotifier(callbacks),
+      onStatus: this.createContextCompactionNotifier(callbacks, true),
     });
   }
 
@@ -1150,33 +1156,47 @@ export class AgentSession {
     return this.lifecycleManager.saveContext(durable);
   }
 
-  private createContextCompactionNotifier(callbacks?: SessionCallbacks): ((event: {
+  private createContextCompactionNotifier(
+    callbacks: SessionCallbacks | undefined,
+    stopsOnError: boolean,
+  ): ((event: {
     status: 'start' | 'complete' | 'error';
   }) => Promise<void>) | undefined {
     if (!callbacks?.onThinking) return undefined;
     return async (event) => {
-      const message = this.formatContextCompactionStatus(event);
+      const message = this.formatContextCompactionStatus(event, stopsOnError);
       if (!message) return;
-      try {
-        await callbacks.onThinking?.(message);
-      } catch (err) {
-        Logger.warning(`[会话 ${this.key}] 上下文压缩提示发送失败: ${err}`);
-      }
+      await this.notifyContextCompaction(callbacks, message);
     };
   }
 
   private formatContextCompactionStatus(event: {
     status: 'start' | 'complete' | 'error';
-  }): string {
+  }, stopsOnError: boolean): string {
     switch (event.status) {
       case 'start':
         return CONTEXT_COMPACTION_START_MESSAGE;
       case 'complete':
-        return CONTEXT_COMPACTION_COMPLETE_MESSAGE;
+        return stopsOnError
+          ? CONTEXT_COMPACTION_GENERATED_MESSAGE
+          : CONTEXT_COMPACTION_COMPLETE_MESSAGE;
       case 'error':
-        return CONTEXT_COMPACTION_ERROR_MESSAGE;
+        return stopsOnError
+          ? CONTEXT_COMPACTION_ERROR_MESSAGE
+          : LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE;
       default:
         return '';
+    }
+  }
+
+  private async notifyContextCompaction(
+    callbacks: SessionCallbacks | undefined,
+    message: string,
+  ): Promise<void> {
+    try {
+      await callbacks?.onThinking?.(message);
+    } catch (err) {
+      Logger.warning(`[会话 ${this.key}] 上下文压缩提示发送失败: ${err}`);
     }
   }
 

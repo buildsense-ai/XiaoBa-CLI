@@ -119,6 +119,7 @@ test('runner checkpoints only after a complete tool result and resumes the same 
 
 test('runner stops before another model request when checkpoint persistence fails', async () => {
   const modelRequests: Message[][] = [];
+  const thinking: string[] = [];
   const aiService = {
     chat: async (messages: Message[]) => {
       modelRequests.push(messages.map(message => ({ ...message })));
@@ -180,11 +181,18 @@ test('runner stops before another model request when checkpoint persistence fail
       role: 'user',
       content: 'inspect and continue',
       __episodeId: 'episode-main',
-    }]),
+    }], {
+      onThinking: message => {
+        thinking.push(message);
+      },
+    }),
     error => error instanceof Error && error.name === 'CheckpointPersistenceError',
   );
 
   assert.equal(modelRequests.length, 1);
+  assert.deepEqual(thinking, [
+    'Checkpoint could not be saved. Stopping this turn with the original context preserved.',
+  ]);
 });
 
 test('runner does not create a fresh checkpoint retry budget after a terminal 502', async () => {

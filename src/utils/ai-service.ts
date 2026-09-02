@@ -56,6 +56,8 @@ const TRANSIENT_PROVIDER_CODES = new Set([
 const RESPONSES_TRANSIENT_MAX_RETRIES = 2;
 const TRANSIENT_HTTP_MAX_RETRIES = 2;
 const GATEWAY_TIMEOUT_MAX_RETRIES = 1;
+const CHECKPOINT_SUMMARY_MAX_RETRIES = 3;
+const CHECKPOINT_SUMMARY_GUARANTEED_RETRIES = 1;
 let modelAttemptCallSequence = 0;
 
 type ProviderKind = 'openai' | 'anthropic';
@@ -159,6 +161,7 @@ export class AIService {
         options.signal,
         undefined,
         this.createModelAttemptRun(prepared.messages, tools, false, options, prepared.summary),
+        options.retryProfile,
       );
     } catch (error: any) {
       throw this.wrapError(error);
@@ -216,6 +219,7 @@ export class AIService {
         options.signal,
         () => allowStreamRetry || (supportsBufferedRecovery ? !hasDeliveredText : !hasObservedText),
         this.createModelAttemptRun(prepared.messages, tools, true, options, prepared.summary),
+        options.retryProfile,
       );
       callbacks?.onComplete?.(result);
       return result;
@@ -468,6 +472,7 @@ export class AIService {
     signal?: AbortSignal,
     shouldRetry?: (error: any, attempt: number) => boolean,
     attemptRun?: ModelAttemptRun,
+    retryProfile?: AIRequestOptions['retryProfile'],
   ): Promise<T> {
     const startedAt = Date.now();
 
@@ -488,7 +493,7 @@ export class AIService {
         return result;
       } catch (error: any) {
         if (this.isAbortError(error) || signal?.aborted) {
-          const policy = this.resolveRetryPolicy(error);
+          const policy = this.resolveRetryPolicy(error, retryProfile);
           this.emitModelAttempt(attemptRun, attemptNumber, {
             outcome: 'cancelled',
             durationMs: Date.now() - attemptStartedAt,
@@ -504,7 +509,7 @@ export class AIService {
           throw this.createAbortError();
         }
 
-        const policy = this.resolveRetryPolicy(error);
+        const policy = this.resolveRetryPolicy(error, retryProfile);
         const retryAttempt = attempt + 1;
         const elapsedMs = Date.now() - startedAt;
         const stopReason = this.resolveRetryStopReason(
@@ -663,7 +668,10 @@ export class AIService {
     }
   }
 
-  private resolveRetryPolicy(error?: any): RetryPolicy {
+  private resolveRetryPolicy(
+    error?: any,
+    retryProfile?: AIRequestOptions['retryProfile'],
+  ): RetryPolicy {
     const policy: RetryPolicy = {
       maxElapsedMs: this.readNumberEnv(
         ['CATSCO_MODEL_RETRY_MAX_MS', 'GAUZ_MODEL_RETRY_MAX_MS'],
@@ -686,6 +694,18 @@ export class AIService {
       baseDelayMs: BASE_DELAY_MS,
       guaranteedRetries: 0,
     };
+
+    if (retryProfile === 'checkpoint_summary') {
+      const maxRetries = Math.min(policy.maxRetries, CHECKPOINT_SUMMARY_MAX_RETRIES);
+      return {
+        ...policy,
+        maxRetries,
+        // A slow first stream may consume the ordinary elapsed-time window.
+        // Checkpoints still receive one recovery attempt, while later retries
+        // remain bounded by the shared wall-clock policy.
+        guaranteedRetries: Math.min(maxRetries, CHECKPOINT_SUMMARY_GUARANTEED_RETRIES),
+      };
+    }
 
     if (this.isEmptyModelResponseError(error)) {
       return {

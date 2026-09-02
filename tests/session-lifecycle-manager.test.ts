@@ -597,6 +597,7 @@ describe('AgentSession lifecycle', () => {
       AgentSession,
       SessionStore,
       CONTEXT_COMPACTION_START_MESSAGE,
+      CONTEXT_COMPACTION_GENERATED_MESSAGE,
       CONTEXT_COMPACTION_COMPLETE_MESSAGE,
     } = loadSessionModules();
     SessionStore.getInstance().saveContext('catscompany:lifecycle-compact-status', [
@@ -648,8 +649,23 @@ describe('AgentSession lifecycle', () => {
     assert.deepStrictEqual(compactReasons, ['pre_turn', 'restore']);
     assert.deepStrictEqual(thinking, [
       CONTEXT_COMPACTION_START_MESSAGE,
+      CONTEXT_COMPACTION_GENERATED_MESSAGE,
       CONTEXT_COMPACTION_COMPLETE_MESSAGE,
     ]);
+  });
+
+  test('legacy compaction failure status does not claim the turn was stopped', () => {
+    const {
+      AgentSession,
+      LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE,
+    } = loadSessionModules();
+    const session = new AgentSession('catscompany:lifecycle-legacy-compact-status', buildMockServices(), 'catscompany');
+
+    assert.equal(
+      (session as any).formatContextCompactionStatus({ status: 'error' }, false),
+      LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE,
+    );
+    assert.doesNotMatch(LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE, /停止本轮/);
   });
 
   test('handleMessage strips internal error artifacts before context compaction sees them', async () => {
@@ -1206,7 +1222,9 @@ function loadSessionModules(): any {
     MODEL_TRANSIENT_ERROR_MESSAGE: require('../src/core/agent-session').MODEL_TRANSIENT_ERROR_MESSAGE,
     EMPTY_MODEL_RESPONSE_MESSAGE: require('../src/core/agent-session').EMPTY_MODEL_RESPONSE_MESSAGE,
     CONTEXT_COMPACTION_START_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_START_MESSAGE,
+    CONTEXT_COMPACTION_GENERATED_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_GENERATED_MESSAGE,
     CONTEXT_COMPACTION_COMPLETE_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_COMPLETE_MESSAGE,
+    LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE: require('../src/core/agent-session').LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE,
     SessionStore: require('../src/utils/session-store').SessionStore,
     createSessionRoute: require('../src/core/session-router').createSessionRoute,
     createCatsCoSessionRoute: require('../src/core/session-router').createCatsCoSessionRoute,

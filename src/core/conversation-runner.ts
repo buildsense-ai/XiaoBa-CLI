@@ -818,7 +818,7 @@ export class ConversationRunner {
           if (event.status === 'start') {
             await callbacks.onThinking?.('Context is full. Creating a continuation checkpoint.');
           } else if (event.status === 'complete') {
-            await callbacks.onThinking?.('Continuation checkpoint created. Preparing to resume the same task.');
+            await callbacks.onThinking?.('Continuation summary generated. Saving the checkpoint.');
           } else {
             await callbacks.onThinking?.('Checkpoint creation failed. Stopping this turn with the original context preserved.');
           }
@@ -834,11 +834,21 @@ export class ConversationRunner {
         `[${this.sessionLabel}Turn ${turns}] continuation checkpoint persistence failed; `
         + `stopping before another model turn: ${error instanceof Error ? error.message : String(error)}`,
       );
+      try {
+        await callbacks?.onThinking?.('Checkpoint could not be saved. Stopping this turn with the original context preserved.');
+      } catch {
+        // Thinking callbacks are observational and must not replace the persistence error.
+      }
       throw new CheckpointPersistenceError(error);
     }
 
     messages.splice(0, messages.length, ...result.messages);
     this.refreshRuntimeContextForPendingInput(messages);
+    try {
+      await callbacks?.onThinking?.('Continuation checkpoint saved. Continuing the same task.');
+    } catch {
+      // Thinking callbacks are best-effort after durable persistence.
+    }
     Logger.info(
       `[${this.sessionLabel}Turn ${turns}] durable mid-turn checkpoint persisted; continuing same episode`,
     );

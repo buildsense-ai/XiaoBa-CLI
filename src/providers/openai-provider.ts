@@ -27,6 +27,7 @@ const MAX_PROVIDER_ERROR_BODY_BYTES = 64 * 1024;
 const PROVIDER_ERROR_BODY_READ_TIMEOUT_MS = 2_000;
 const DEFAULT_RESPONSES_HEADERS_TIMEOUT_MS = 120_000;
 const MAX_RESPONSES_HEADERS_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_RESPONSES_STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
 type ResponsesFailurePhase = 'headers' | 'stream' | 'terminal_event';
 
@@ -1350,6 +1351,19 @@ export class OpenAIProvider implements AIProvider {
       const decoder = new StringDecoder('utf8');
       let finalResponse: any;
       let settled = false;
+      let idleTimer: NodeJS.Timeout | undefined;
+      const streamIdleTimeoutMs = this.responsesStreamIdleTimeoutMs(options);
+
+      const clearIdleTimer = () => {
+        if (!idleTimer) return;
+        clearTimeout(idleTimer);
+        idleTimer = undefined;
+      };
+
+      const cleanup = () => {
+        clearIdleTimer();
+        options?.signal?.removeEventListener('abort', onAbort);
+      };
 
       const emitVisibleText = (text: string) => {
         if (!text) return;
@@ -1359,13 +1373,13 @@ export class OpenAIProvider implements AIProvider {
 
       const finishError = (error: Error) => {
         if (settled) return;
+        cleanup();
         if (
           !streamedVisibleText
           && !outputItems.some(Boolean)
           && this.shouldRetryWithoutExplicitAnchor(error, body)
         ) {
           settled = true;
-          options?.signal?.removeEventListener('abort', onAbort);
           this.responsesExplicitAnchorSupported = false;
           Logger.warning('Responses stream rejected the explicit S cache anchor; retrying once without it.');
           stream.destroy();
@@ -1377,6 +1391,31 @@ export class OpenAIProvider implements AIProvider {
         reject(error);
       };
       const onAbort = () => stream.destroy(createAbortError());
+
+      const armIdleWatchdog = () => {
+        if (streamIdleTimeoutMs <= 0 || settled) return;
+        clearIdleTimer();
+        idleTimer = setTimeout(() => {
+          if (settled) return;
+          const error = this.responsesStreamError(
+            `Responses API stream produced no data for ${streamIdleTimeoutMs}ms`,
+            {
+              failurePhase: 'stream',
+              terminalEvent: 'stream.idle_timeout',
+              requestId: responseRequestId,
+            },
+          );
+          Object.assign(error, {
+            name: 'ResponsesStreamIdleTimeoutError',
+            code: 'XIAOBA_RESPONSES_STREAM_IDLE_TIMEOUT',
+            providerCode: 'stream_idle_timeout',
+            status: 504,
+          });
+          stream.destroy();
+          finishError(error);
+        }, streamIdleTimeoutMs);
+      };
+
       if (options?.signal?.aborted) onAbort();
       else options?.signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -1416,6 +1455,7 @@ export class OpenAIProvider implements AIProvider {
       };
 
       stream.on('data', (chunk: Buffer) => {
+        armIdleWatchdog();
         buffer += decoder.write(chunk);
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
@@ -1433,7 +1473,7 @@ export class OpenAIProvider implements AIProvider {
       });
 
       stream.on('end', () => {
-        options?.signal?.removeEventListener('abort', onAbort);
+        cleanup();
         buffer += decoder.end();
         if (settled) return;
         const tail = contentStripper.flush();
@@ -1481,7 +1521,6 @@ export class OpenAIProvider implements AIProvider {
       });
 
       stream.on('error', (error: Error) => {
-        options?.signal?.removeEventListener('abort', onAbort);
         if (isProviderAbortError(error) || options?.signal?.aborted) {
           finishError(error);
           return;
@@ -1514,6 +1553,8 @@ export class OpenAIProvider implements AIProvider {
           error,
         ));
       });
+
+      armIdleWatchdog();
     });
   }
 
@@ -1590,6 +1631,12 @@ export class OpenAIProvider implements AIProvider {
     if (!Number.isFinite(parsed)) return DEFAULT_RESPONSES_HEADERS_TIMEOUT_MS;
     if (parsed <= 0) return 0;
     return Math.min(MAX_RESPONSES_HEADERS_TIMEOUT_MS, Math.max(1, Math.floor(parsed)));
+  }
+
+  private responsesStreamIdleTimeoutMs(options?: AIRequestOptions): number {
+    const value = Number(options?.streamIdleTimeoutMs);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    return Math.min(MAX_RESPONSES_STREAM_IDLE_TIMEOUT_MS, Math.max(1, Math.floor(value)));
   }
 
   private async normalizeProviderErrorResponse(error: unknown): Promise<unknown> {

@@ -90,6 +90,54 @@ test('AIService retries transient stream errors before any text is emitted', asy
   assert.deepStrictEqual(chunks, ['ok']);
 });
 
+test('AIService gives buffered checkpoint summaries up to three recovery retries', async () => {
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '10';
+  const service = createTestService();
+  let attempts = 0;
+  const retries: Array<[number, number]> = [];
+  (service as any).provider = {
+    chat: async () => ({ content: null }),
+    chatStream: async () => {
+      attempts += 1;
+      if (attempts <= 3) {
+        throw Object.assign(new Error(`checkpoint upstream failure ${attempts}`), {
+          status: 503,
+        });
+      }
+      return { content: 'checkpoint ready' };
+    },
+  };
+  (service as any).sleepWithAbort = async () => {};
+
+  const result = await service.chatStream([], undefined, {
+    onRetry: (attempt, maxRetries) => retries.push([attempt, maxRetries]),
+  }, {
+    retryProfile: 'checkpoint_summary',
+    streamOutputMode: 'buffered',
+  });
+
+  assert.equal(result.content, 'checkpoint ready');
+  assert.equal(attempts, 4);
+  assert.deepStrictEqual(retries, [[1, 3], [2, 3], [3, 3]]);
+});
+
+test('checkpoint summary guarantees one recovery after a slow first failure', () => {
+  process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '10';
+  process.env.CATSCO_MODEL_RETRY_MAX_MS = '1000';
+  const service = createTestService();
+  (service as any).config.openaiApiMode = 'responses';
+  const error = Object.assign(new Error('stream idle timeout'), { status: 504 });
+  const policy = (service as any).resolveRetryPolicy(error, 'checkpoint_summary');
+
+  assert.equal(policy.maxRetries, 3);
+  assert.equal(policy.guaranteedRetries, 1);
+  assert.equal((service as any).resolveRetryStopReason(error, 1, policy, 300_000), undefined);
+  assert.equal(
+    (service as any).resolveRetryStopReason(error, 2, policy, 300_001),
+    'retry_window_exhausted',
+  );
+});
+
 test('AIService can keep retrying transient stream failures beyond the old short cap', async () => {
   process.env.CATSCO_MODEL_RETRY_MAX_RETRIES = '5';
   const service = createTestService();

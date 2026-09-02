@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import axios from 'axios';
 import { OpenAIProvider } from '../src/providers/openai-provider';
 import { AIService } from '../src/utils/ai-service';
@@ -52,6 +52,67 @@ describe('OpenAIProvider Responses API mode', () => {
     assert.equal(first.prompt_cache_key, second.prompt_cache_key);
     assert.equal(first.store, false);
     assert.deepEqual(first.include, ['reasoning.encrypted_content']);
+  });
+
+  test('fails a buffered Responses stream after its request-scoped idle deadline', async () => {
+    const originalPost = axios.post;
+    const stream = new PassThrough();
+    (axios as any).post = async () => ({ data: stream, headers: {} });
+
+    try {
+      await assert.rejects(
+        createProvider().chatStream(
+          [{ role: 'user', content: 'summarize' }],
+          undefined,
+          undefined,
+          { streamIdleTimeoutMs: 20 },
+        ),
+        (error: any) => (
+          error?.code === 'XIAOBA_RESPONSES_STREAM_IDLE_TIMEOUT'
+          && error?.status === 504
+          && error?.terminalEvent === 'stream.idle_timeout'
+        ),
+      );
+      assert.equal(stream.destroyed, true);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('resets the Responses idle deadline whenever stream bytes arrive', async () => {
+    const originalPost = axios.post;
+    const stream = new PassThrough();
+    (axios as any).post = async () => ({ data: stream, headers: {} });
+
+    const heartbeat = setTimeout(() => stream.write(': heartbeat\n\n'), 60);
+    const completion = setTimeout(() => {
+      stream.end(sse({
+        type: 'response.completed',
+        response: {
+          status: 'completed',
+          output: [{
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'ready' }],
+          }],
+        },
+      }));
+    }, 120);
+
+    try {
+      const result = await createProvider().chatStream(
+        [{ role: 'user', content: 'summarize' }],
+        undefined,
+        undefined,
+        { streamIdleTimeoutMs: 100 },
+      );
+      assert.equal(result.content, 'ready');
+    } finally {
+      clearTimeout(heartbeat);
+      clearTimeout(completion);
+      stream.destroy();
+      (axios as any).post = originalPost;
+    }
   });
 
   test('keeps dynamic system context out of cache identity and appends it as developer context', () => {

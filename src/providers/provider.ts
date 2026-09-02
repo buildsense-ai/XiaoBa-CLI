@@ -89,6 +89,10 @@ export interface ModelAttemptSink {
 
 export interface AIRequestOptions {
   signal?: AbortSignal;
+  /** Internal retry contract for requests that must complete before the main Agent can continue. */
+  retryProfile?: 'checkpoint_summary';
+  /** Abort a Responses stream after this many milliseconds without receiving any bytes. */
+  streamIdleTimeoutMs?: number;
   /**
    * Live mode forwards text immediately and disables transparent replay once
    * the caller has observed output. Buffered mode publishes text only after a
