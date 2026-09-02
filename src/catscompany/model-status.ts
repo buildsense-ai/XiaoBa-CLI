@@ -1,4 +1,5 @@
 import { ConfigManager } from '../utils/config';
+import { isCatsRelayApiBase } from '../utils/catsco-domains';
 
 export interface CatsDeviceModelStatus {
   source: 'relay' | 'custom';
@@ -24,14 +25,6 @@ function firstNonEmpty(...values: Array<string | undefined>): string {
     if (text) return text;
   }
   return '';
-}
-
-function isCatsRelayApiBase(value: string): boolean {
-  try {
-    return new URL(value).hostname.toLowerCase() === 'relay.catsco.cc';
-  } catch {
-    return value.toLowerCase().includes('relay.catsco.cc');
-  }
 }
 
 export function resolveCatsDeviceModelStatus(options: ModelStatusOptions = {}): CatsDeviceModelStatus | undefined {
