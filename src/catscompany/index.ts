@@ -94,6 +94,7 @@ interface NativeFeishuContextHydration {
   message: NativeFeishuGroupTriggerMessage;
   cloudRestoreStatus?: CloudSessionRestoreResult['status'];
   clearGeneration: number;
+  stopGeneration?: number;
 }
 
 interface QueuedMessage {
@@ -113,6 +114,8 @@ interface QueuedMessage {
   runtimeFeedback?: RuntimeFeedbackInput[];
   nativeFeishuContext?: NativeFeishuContextHydration;
   clearGeneration?: number;
+  /** Invalidated when the user presses stop; prevents pre-stop work from being drained. */
+  stopGeneration?: number;
   attempts?: number;
   deliveryOnly?: boolean;
   deliveryAttempts?: number;
@@ -147,6 +150,7 @@ interface BackgroundSubAgentCompletionBatch {
   executionScope?: ParsedCatsMessage['executionScope'];
   firstAt: number;
   clearGeneration: number;
+  stopGeneration: number;
   items: Map<string, BackgroundSubAgentCompletionItem>;
   timer?: ReturnType<typeof setTimeout>;
 }
@@ -448,6 +452,8 @@ export class CatsCompanyBot {
   private activeMessageHandlers = 0;
   /** Invalidates queued or in-flight pre-turn hydration after /clear. */
   private sessionClearGenerations = new Map<string, number>();
+  /** Separately invalidates queued work on stop without clearing durable history. */
+  private sessionStopGenerations = new Map<string, number>();
   /** Lets /clear cancel an initial cloud restore before it can recreate old history. */
   private cloudSessionRestoreAbortControllers = new Map<string, AbortController>();
   /** 子 Agent 事件应沿用 spawn 时的通道能力，不能被同 session 后续消息覆盖 */
@@ -1484,11 +1490,13 @@ export class CatsCompanyBot {
     senderId: string,
     executionScope?: ParsedCatsMessage['executionScope'],
     clearGeneration = this.getSessionClearGeneration(sessionKey),
+    stopGeneration = this.getSessionStopGeneration(sessionKey),
   ): void {
     SubAgentManager.getInstance().registerPlatformCallbacks(sessionKey, {
       injectMessage: async (text: string) => {
-        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return;
-        await this.handleSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, clearGeneration);
+        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
+          || stopGeneration !== this.getSessionStopGeneration(sessionKey)) return;
+        await this.handleSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, clearGeneration, stopGeneration);
       },
       onSubAgentEvent: async (event: any, info?: SubAgentInfo) => {
         if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return;
@@ -1499,12 +1507,14 @@ export class CatsCompanyBot {
 
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
     const entryClearGeneration = this.getSessionClearGeneration(key);
+    const entryStopGeneration = this.getSessionStopGeneration(key);
     const nativeFeishuTrigger = shouldHydrateCatsCompanyGroupContext(msg);
     const sessionRoute = msg.envelope ? createCatsCoSessionRoute(msg.envelope) : undefined;
     let cloudRestoreResult: CloudSessionRestoreResult | undefined;
     if (sessionRoute && !isClearCommand(msg.text)) {
       cloudRestoreResult = await this.ensureCloudSessionRestored(msg, sessionRoute);
-      if (entryClearGeneration !== this.getSessionClearGeneration(key)) return;
+      if (entryClearGeneration !== this.getSessionClearGeneration(key)
+        || entryStopGeneration !== this.getSessionStopGeneration(key)) return;
       if (cloudRestoreResult.status === 'failed' || cloudRestoreResult.status === 'skipped') {
         await this.sender.reply(
           msg.topic,
@@ -1623,7 +1633,8 @@ export class CatsCompanyBot {
     }
 
     // 并发保护：忙时消息静默入队，空闲后自动处理
-    if (entryClearGeneration !== this.getSessionClearGeneration(key)) return;
+    if (entryClearGeneration !== this.getSessionClearGeneration(key)
+      || entryStopGeneration !== this.getSessionStopGeneration(key)) return;
     userMessage = prefixCatsUserMessage(speakerNameFromMetadata(msg), userMessage);
     const nativeFeishuContext: NativeFeishuContextHydration | undefined = nativeFeishuTrigger
       ? {
@@ -1637,6 +1648,7 @@ export class CatsCompanyBot {
         },
         cloudRestoreStatus: cloudRestoreResult?.status,
         clearGeneration: entryClearGeneration,
+        stopGeneration: entryStopGeneration,
       }
       : undefined;
 
@@ -1670,7 +1682,7 @@ export class CatsCompanyBot {
       return;
     }
 
-    this.registerSubAgentPlatformCallbacks(key, msg.topic, msg.senderId, msg.executionScope, entryClearGeneration);
+    this.registerSubAgentPlatformCallbacks(key, msg.topic, msg.senderId, msg.executionScope, entryClearGeneration, entryStopGeneration);
 
     // 构建通道回调，通过 context 传递给工具（替代 bind/unbind）
     const channel = this.buildChannel(msg.topic, {
@@ -1717,6 +1729,7 @@ export class CatsCompanyBot {
             msg.executionScope,
             entryClearGeneration,
             msg.artifactTaskRef,
+            entryStopGeneration,
           ),
           callbacks: this.buildSessionCallbacks(msg.topic, {
             sessionKey: key,
@@ -2014,6 +2027,17 @@ export class CatsCompanyBot {
     generations.set(sessionKey, this.getSessionClearGeneration(sessionKey) + 1);
   }
 
+  private getSessionStopGeneration(sessionKey: string): number {
+    return this.sessionStopGenerations?.get(sessionKey) ?? 0;
+  }
+
+  private bumpSessionStopGeneration(sessionKey: string): number {
+    const next = this.getSessionStopGeneration(sessionKey) + 1;
+    const generations = this.sessionStopGenerations ??= new Map<string, number>();
+    generations.set(sessionKey, next);
+    return next;
+  }
+
   private async ensureCloudSessionRestored(
     msg: ParsedCatsMessage,
     sessionRoute: ReturnType<typeof createCatsCoSessionRoute>,
@@ -2225,9 +2249,10 @@ export class CatsCompanyBot {
     text: string,
     executionScope?: ParsedCatsMessage['executionScope'],
     clearGeneration = this.getSessionClearGeneration(sessionKey),
+    stopGeneration = this.getSessionStopGeneration(sessionKey),
   ): Promise<void> {
     await this.runTrackedConversationWork(() =>
-      this.handleSubAgentFeedbackInner(sessionKey, topic, senderId, text, executionScope, clearGeneration));
+      this.handleSubAgentFeedbackInner(sessionKey, topic, senderId, text, executionScope, clearGeneration, stopGeneration));
   }
 
   private async handleSubAgentFeedbackInner(
@@ -2237,8 +2262,10 @@ export class CatsCompanyBot {
     text: string,
     executionScope?: ParsedCatsMessage['executionScope'],
     clearGeneration = this.getSessionClearGeneration(sessionKey),
+    stopGeneration = this.getSessionStopGeneration(sessionKey),
   ): Promise<void> {
-    if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return;
+    if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
+      || stopGeneration !== this.getSessionStopGeneration(sessionKey)) return;
     const subAgentManager = SubAgentManager.getInstance();
     const resultObservationHandling = subAgentManager.getResultObservationHandlingForParent(sessionKey, text);
     if (resultObservationHandling === 'drop') {
@@ -2248,7 +2275,7 @@ export class CatsCompanyBot {
 
     const session = this.sessionManager.getOrCreate(sessionKey);
 
-    this.registerSubAgentPlatformCallbacks(sessionKey, topic, senderId, executionScope, clearGeneration);
+    this.registerSubAgentPlatformCallbacks(sessionKey, topic, senderId, executionScope, clearGeneration, stopGeneration);
 
     const channel = this.buildChannel(topic, {
       sessionKey,
@@ -2265,7 +2292,7 @@ export class CatsCompanyBot {
     }
 
     if (!this.tryReserveSessionExecution(sessionKey, session)) {
-      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 0, clearGeneration);
+      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 0, clearGeneration, stopGeneration);
       Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
       return;
     }
@@ -2302,7 +2329,7 @@ export class CatsCompanyBot {
         // flight. Do not deliver a reply, do not requeue, do not mark handled.
         Logger.info(`[${sessionKey}] destroy 已开始，丢弃迟到的子智能体反馈结果`);
       } else if (result.text === BUSY_MESSAGE) {
-        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 0, clearGeneration);
+        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 0, clearGeneration, stopGeneration);
         Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
       } else {
         subAgentManager.markResultObservationHandledForParent(sessionKey, text);
@@ -2327,7 +2354,7 @@ export class CatsCompanyBot {
         if (this.shuttingDown) {
           Logger.info(`[${sessionKey}] destroy 已开始，跳过子智能体反馈失败重试`);
         } else {
-          this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 1, clearGeneration);
+          this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 1, clearGeneration, stopGeneration);
           Logger.warning(`[${sessionKey}] 子智能体反馈执行异常，已入队重试: ${err?.message || err}`);
         }
       }
@@ -2348,6 +2375,7 @@ export class CatsCompanyBot {
     executionScope?: ParsedCatsMessage['executionScope'],
     attempts = 0,
     clearGeneration = this.getSessionClearGeneration(sessionKey),
+    stopGeneration = this.getSessionStopGeneration(sessionKey),
   ): void {
     const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
@@ -2363,6 +2391,7 @@ export class CatsCompanyBot {
       receivedAt: Date.now(),
       source: 'subagent_feedback',
       clearGeneration,
+      stopGeneration,
       attempts,
     });
     this.messageQueue.set(sessionKey, queue);
@@ -2380,6 +2409,7 @@ export class CatsCompanyBot {
 
     const now = Date.now();
     const clearGeneration = this.getSessionClearGeneration(sessionKey);
+    const stopGeneration = this.getSessionStopGeneration(sessionKey);
     let existing = this.subAgentCompletionBatches.get(sessionKey);
     if (existing && existing.clearGeneration !== clearGeneration) {
       if (existing.timer) clearTimeout(existing.timer);
@@ -2393,12 +2423,14 @@ export class CatsCompanyBot {
       executionScope,
       firstAt: now,
       clearGeneration,
+      stopGeneration,
       items: new Map(),
     };
     batch.topic = topic;
     batch.senderId = senderId;
     batch.channelSource = executionScope?.channelSource ?? batch.channelSource;
     batch.executionScope = executionScope ?? batch.executionScope;
+    batch.stopGeneration = stopGeneration;
     batch.items.set(item.id || `${item.displayName}:${item.task}:${batch.items.size}`, item);
 
     if (batch.timer) clearTimeout(batch.timer);
@@ -2423,6 +2455,11 @@ export class CatsCompanyBot {
     const batch = this.subAgentCompletionBatches.get(sessionKey);
     if (!batch || batch.items.size === 0) return;
     if (batch.clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
+      if (batch.timer) clearTimeout(batch.timer);
+      this.subAgentCompletionBatches.delete(sessionKey);
+      return;
+    }
+    if ((batch.stopGeneration ?? this.getSessionStopGeneration(sessionKey)) !== this.getSessionStopGeneration(sessionKey)) {
       if (batch.timer) clearTimeout(batch.timer);
       this.subAgentCompletionBatches.delete(sessionKey);
       return;
@@ -2869,6 +2906,14 @@ export class CatsCompanyBot {
       botUid: this.botUid,
     });
     const key = envelope.sessionKey;
+    const stopGeneration = this.bumpSessionStopGeneration(key);
+    // Stop is a boundary for queued input. Messages received afterwards get
+    // the new generation and can start a fresh turn normally.
+    this.messageQueue?.delete(key);
+    const completionBatch = this.subAgentCompletionBatches?.get(key);
+    if (completionBatch?.timer) clearTimeout(completionBatch.timer);
+    this.subAgentCompletionBatches?.delete(key);
+    Logger.info(`[${key}] 停止边界已推进至 ${stopGeneration}，丢弃停止前排队消息`);
     const session = (this.sessionManager as any).get?.(key) ?? null;
     if (!session) {
       Logger.info(`[${key}] 收到取消事件，但会话不存在`);
@@ -2909,6 +2954,14 @@ export class CatsCompanyBot {
 
     const msg = queue[0];
     const clearGeneration = msg.clearGeneration ?? this.getSessionClearGeneration(sessionKey);
+    const stopGeneration = msg.stopGeneration ?? this.getSessionStopGeneration(sessionKey);
+    if (stopGeneration !== this.getSessionStopGeneration(sessionKey)) {
+      queue.shift();
+      if (queue.length === 0) this.messageQueue.delete(sessionKey);
+      Logger.info(`[${sessionKey}] 丢弃 stop 前已入队的旧消息`);
+      await this.drainMessageQueue(sessionKey);
+      return;
+    }
     if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
       queue.shift();
       if (queue.length === 0) this.messageQueue.delete(sessionKey);
@@ -2978,7 +3031,7 @@ export class CatsCompanyBot {
     queue.shift();
     if (queue.length === 0) this.messageQueue.delete(sessionKey);
 
-    this.registerSubAgentPlatformCallbacks(sessionKey, msg.topic, msg.senderId, msg.executionScope, clearGeneration);
+    this.registerSubAgentPlatformCallbacks(sessionKey, msg.topic, msg.senderId, msg.executionScope, clearGeneration, stopGeneration);
     const channel = this.buildChannel(msg.topic, {
       sessionKey,
       senderId: msg.senderId,
@@ -2997,6 +3050,7 @@ export class CatsCompanyBot {
           sessionKey,
         );
       }
+      if (stopGeneration !== this.getSessionStopGeneration(sessionKey)) return;
       if (shouldProcess) {
         // Shutdown barrier: destroy() may have started while queued work ran.
         if (this.shuttingDown) return;
@@ -3040,6 +3094,7 @@ export class CatsCompanyBot {
               msg.executionScope,
               clearGeneration,
               msg.artifactTaskRef,
+              stopGeneration,
             ),
             callbacks: this.buildSessionCallbacks(msg.topic, {
               sessionKey,
@@ -3132,11 +3187,13 @@ export class CatsCompanyBot {
     currentScope?: ParsedCatsMessage['executionScope'],
     expectedClearGeneration = this.getSessionClearGeneration(sessionKey),
     currentArtifactTaskRef?: string,
+    expectedStopGeneration = this.getSessionStopGeneration(sessionKey),
   ): string | ContentBlock[] | PendingUserInput | null {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return null;
 
     if (expectedClearGeneration !== this.getSessionClearGeneration(sessionKey)) return null;
+    if (expectedStopGeneration !== this.getSessionStopGeneration(sessionKey)) return null;
     // Artifact tasks own a one-shot ToolExecutionContext. Ordinary input must
     // remain queued until that task turn releases its run/task correlation.
     if (currentArtifactTaskRef) return null;

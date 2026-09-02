@@ -600,6 +600,14 @@ describe('CatsCo content blocks', () => {
     let interrupted = false;
     session.requestInterrupt = () => { interrupted = true; };
     (bot as any).beginConversationTask('session:v2:catscompany:p2p:p2p_1_2:agent:usr43', 'p2p_1_2');
+    bot.messageQueue.set('session:v2:catscompany:p2p:p2p_1_2:agent:usr43', [{
+      userMessage: 'queued before stop',
+      topic: 'p2p_1_2',
+      senderId: 'usr1',
+      seq: 12,
+      executionScope: undefined,
+      receivedAt: Date.now(),
+    }]);
 
     (bot as any).handleCancelMessage({
       topic: 'p2p_1_2',
@@ -612,6 +620,7 @@ describe('CatsCo content blocks', () => {
 
     assert.strictEqual(interrupted, true);
     assert.deepStrictEqual(taskStatuses.map(({ status }) => status.state), ['running', 'cancelled']);
+    assert.equal(bot.messageQueue.has('session:v2:catscompany:p2p:p2p_1_2:agent:usr43'), false);
   });
 
   test('builds direct image blocks for MiniMax M3 relay model', async () => {
