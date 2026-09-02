@@ -1499,7 +1499,8 @@ export class CatsCompanyBot {
         await this.handleSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, clearGeneration, stopGeneration);
       },
       onSubAgentEvent: async (event: any, info?: SubAgentInfo) => {
-        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) return;
+        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
+          || stopGeneration !== this.getSessionStopGeneration(sessionKey)) return;
         await this.handleSubAgentRuntimeEvent(topic, event, info, executionScope?.channelSource, sessionKey);
       },
     } as any);
@@ -3011,7 +3012,8 @@ export class CatsCompanyBot {
       } catch (err: any) {
         const deliveryAttempts = (msg.deliveryAttempts ?? 0) + 1;
         if (deliveryAttempts < SUBAGENT_FALLBACK_MAX_DELIVERY_ATTEMPTS
-          && clearGeneration === this.getSessionClearGeneration(sessionKey)) {
+          && clearGeneration === this.getSessionClearGeneration(sessionKey)
+          && stopGeneration === this.getSessionStopGeneration(sessionKey)) {
           const pending = this.messageQueue.get(sessionKey) ?? [];
           pending.unshift({ ...msg, deliveryAttempts });
           this.messageQueue.set(sessionKey, pending);
@@ -3103,8 +3105,9 @@ export class CatsCompanyBot {
               clearGeneration,
             }),
           });
-        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
-          Logger.info(`[${sessionKey}] clear 后忽略已出队旧消息的返回`);
+        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
+          || stopGeneration !== this.getSessionStopGeneration(sessionKey)) {
+          Logger.info(`[${sessionKey}] clear/stop 后忽略已出队旧消息的返回`);
         } else if (this.shuttingDown) {
           // Shutdown fence: destroy() may have timed out its quiesce wait and
           // returned while this queued model turn was still in flight. Do not
@@ -3141,8 +3144,9 @@ export class CatsCompanyBot {
       }
     } catch (err: any) {
       const attempts = (msg.attempts ?? 0) + 1;
-      if (clearGeneration !== this.getSessionClearGeneration(sessionKey)) {
-        Logger.info(`[${sessionKey}] clear 后不再重试已出队的旧消息`);
+      if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
+        || stopGeneration !== this.getSessionStopGeneration(sessionKey)) {
+        Logger.info(`[${sessionKey}] clear/stop 后不再重试已出队的旧消息`);
       } else if (this.shuttingDown) {
         // Shutdown fence: destroy() 已开始时不再重试或发送错误提示，避免越过
         // 销毁边界继续产生副作用。
@@ -3165,7 +3169,8 @@ export class CatsCompanyBot {
           pending.unshift({ ...msg, attempts, deliveryOnly: true });
           this.messageQueue.set(sessionKey, pending);
           retryLater = true;
-        } else if (clearGeneration === this.getSessionClearGeneration(sessionKey)) {
+        } else if (clearGeneration === this.getSessionClearGeneration(sessionKey)
+          && stopGeneration === this.getSessionStopGeneration(sessionKey)) {
           await this.sender.reply(msg.topic, '处理消息时出错，请稍后重试。').catch(() => undefined);
         }
       }
