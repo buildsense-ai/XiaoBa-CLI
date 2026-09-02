@@ -189,6 +189,25 @@ describe('ConversationRunner pending input', () => {
     assertPendingBoundaryBeforeUser(requests[1], 'follow-up while busy');
   });
 
+  test('does not consume pending input after the run has been cancelled', async () => {
+    let providerCalls = 0;
+    const runner = new ConversationRunner({
+      chat: async () => ({ content: 'done', toolCalls: [], usage }),
+    } as any, createNoopToolExecutor(), {
+      stream: false,
+      shouldContinue: () => false,
+      pendingUserInputProvider: () => {
+        providerCalls++;
+        return 'must not be injected';
+      },
+    });
+
+    const result = await runner.run([{ role: 'user', content: 'cancelled question' }]);
+
+    assert.equal(providerCalls, 0);
+    assert.equal(result.response, '');
+  });
+
   test('marks pending input with the active episode metadata', async () => {
     const requests: Message[][] = [];
     const aiService = {

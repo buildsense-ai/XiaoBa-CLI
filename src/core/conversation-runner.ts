@@ -727,9 +727,15 @@ export class ConversationRunner {
     turns: number,
   ): Promise<boolean> {
     if (!this.pendingUserInputProvider) return false;
+    if (this.shouldContinue && !this.shouldContinue()) return false;
+    if (this.toolExecutionContext?.abortSignal?.aborted) return false;
 
     const pending = await this.pendingUserInputProvider();
     if (!pending) return false;
+    // The provider may await queue/IPC state. Re-check cancellation before
+    // mutating the episode so a stop cannot be followed by a synthetic turn.
+    if (this.shouldContinue && !this.shouldContinue()) return false;
+    if (this.toolExecutionContext?.abortSignal?.aborted) return false;
 
     const content = isPendingUserInput(pending) ? pending.content : pending;
     let shouldRefreshRuntimeContext = false;
