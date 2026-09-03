@@ -1,5 +1,21 @@
 import * as fs from 'fs';
 
+/**
+ * Stable, route-derived agent provenance for a session-log stream. It is
+ * separate from session_id so legacy group session keys can remain compatible
+ * while CatsLog can index the target agent without inspecting log text.
+ */
+export interface SessionLogAgentIdentity {
+  agent_id: string;
+  agent_body_id?: string;
+  trust: 'server_canonical' | 'legacy_context' | 'untrusted';
+  source?: string;
+}
+
+interface SessionLogIdentityFields {
+  agent_identity?: SessionLogAgentIdentity;
+}
+
 export interface SessionToolCallLog {
   id: string;
   name: string;
@@ -26,7 +42,7 @@ export interface SessionPromptTurnLog {
   bundle_file_count: number;
 }
 
-export interface SessionTurnLogEntry {
+export interface SessionTurnLogEntry extends SessionLogIdentityFields {
   entry_type: 'turn';
   turn: number;
   timestamp: string;
@@ -49,7 +65,7 @@ export interface SessionTurnLogEntry {
   prompt?: SessionPromptTurnLog;
 }
 
-export interface SessionRuntimeLogEntry {
+export interface SessionRuntimeLogEntry extends SessionLogIdentityFields {
   entry_type: 'runtime';
   timestamp: string;
   session_id: string;
@@ -100,7 +116,7 @@ export interface TurnErrorPayload {
   turn?: number;
 }
 
-export interface SessionSubAgentEventLogEntry {
+export interface SessionSubAgentEventLogEntry extends SessionLogIdentityFields {
   entry_type: 'subagent_event';
   timestamp: string;
   session_id: string;
@@ -119,7 +135,7 @@ export interface SessionSubAgentEventLogEntry {
   };
 }
 
-export interface SessionPromptTraceLogEntry {
+export interface SessionPromptTraceLogEntry extends SessionLogIdentityFields {
   entry_type: 'prompt_trace';
   timestamp: string;
   session_id: string;
