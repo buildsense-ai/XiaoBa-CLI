@@ -1,231 +1,96 @@
 #!/bin/bash
 set -euo pipefail
 
-# ============================================
-#  CatsCo 一键安装脚本 (macOS / Linux)
-# ============================================
-
+# CatsCo Connector lightweight installer (macOS / Linux)
 REPO_URL="https://github.com/buildsense-ai/XiaoBa-CLI.git"
-INSTALL_DIR="$HOME/catsco"
+INSTALL_DIR="${CATSCO_INSTALL_DIR:-$HOME/catsco}"
+BUILD_DIR="${TMPDIR:-/tmp}/catsco-connector-build"
 DASHBOARD_PORT=3800
 
-# 颜色
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-print_banner() {
-  echo ""
-  echo -e "${CYAN}"
-  echo "  CatsCo"
-  echo -e "${NC}"
-  echo "  一键安装程序"
-  echo ""
-}
-
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 log() { echo -e "${GREEN}[✓]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
+has() { command -v "$1" >/dev/null 2>&1; }
 
-# 检查命令是否存在
-has() { command -v "$1" &>/dev/null; }
+print_banner() {
+  echo ""; echo -e "${CYAN}  CatsCo Connector${NC}"; echo "  轻量安装程序"; echo ""
+}
 
-# ---- 检查 Git ----
 check_git() {
-  if has git; then
-    log "Git 已安装: $(git --version)"
-  else
-    warn "未检测到 Git，正在安装..."
-    if has brew; then
-      brew install git
-    elif has apt-get; then
-      sudo apt-get update && sudo apt-get install -y git
-    elif has yum; then
-      sudo yum install -y git
-    else
-      err "无法自动安装 Git，请手动安装后重试"
-    fi
-    log "Git 安装完成"
-  fi
+  has git && { log "Git 已安装: $(git --version)"; return; }
+  warn "未检测到 Git，正在安装..."
+  if has brew; then brew install git
+  elif has apt-get; then sudo apt-get update && sudo apt-get install -y git
+  elif has yum; then sudo yum install -y git
+  else err "无法自动安装 Git，请手动安装后重试"; fi
 }
 
-# ---- 检查 Node.js ----
 check_node() {
-  if has node; then
-    NODE_VER=$(node -v | sed 's/v//' | cut -d. -f1)
-    if [ "$NODE_VER" -ge 18 ]; then
-      log "Node.js 已安装: $(node -v)"
-      return
-    else
-      warn "Node.js 版本过低 ($(node -v))，需要 >= 18"
-    fi
-  else
-    warn "未检测到 Node.js"
+  if has node && [ "$(node -p 'Number(process.versions.node.split(`.`)[0])')" -ge 18 ]; then
+    log "Node.js 已安装: $(node -v)"; return
   fi
-
-  echo ""
-  echo "正在安装 Node.js 20..."
-
-  if has brew; then
-    brew install node@20
-    brew link --overwrite node@20 2>/dev/null || true
-  elif has apt-get; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-    sudo apt-get install -y nodejs
-  else
-    # 使用 nvm
-    if ! has nvm; then
-      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-      export NVM_DIR="$HOME/.nvm"
-      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    fi
-    nvm install 20
-    nvm use 20
-  fi
-
-  log "Node.js 安装完成: $(node -v)"
+  warn "需要 Node.js >= 18，正在安装 Node.js 20..."
+  if has brew; then brew install node@20; brew link --overwrite node@20 2>/dev/null || true
+  elif has apt-get; then curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -; sudo apt-get install -y nodejs
+  else err "无法自动安装 Node.js，请安装 Node.js >= 18 后重试"; fi
 }
 
-# ---- 检查 Python3 (可选，用于 skill 的 python 依赖) ----
-check_python() {
-  if has python3; then
-    log "Python3 已安装: $(python3 --version)"
-  else
-    warn "未检测到 Python3（部分 skill 需要），建议稍后安装"
-  fi
+build_connector() {
+  rm -rf "$BUILD_DIR"
+  log "正在获取最新版 Connector 源码..."
+  git clone --depth 1 --single-branch "$REPO_URL" "$BUILD_DIR"
+  cd "$BUILD_DIR"
+  log "正在准备临时构建环境..."
+  npm ci --include=dev --no-audit --no-fund --prefer-offline --progress=false
+  npm run build:connector
 }
 
-# ---- 克隆/更新仓库 ----
-REPO_CHANGED=1
-BUILD_NEEDED=1
-setup_repo() {
-  if [ -d "$INSTALL_DIR/.git" ]; then
-    log "检测到已有安装，正在检查更新..."
-    cd "$INSTALL_DIR"
-    local before after
-    before=$(git rev-parse HEAD 2>/dev/null || true)
-    if git pull --ff-only >/dev/null 2>&1; then
-      after=$(git rev-parse HEAD 2>/dev/null || true)
-      if [ -n "$before" ] && [ "$before" = "$after" ]; then
-        REPO_CHANGED=0
-        log "代码已是最新版本"
-      else
-        log "代码已更新"
-      fi
-    else
-      warn "更新失败，使用现有版本继续"
-    fi
-  else
-    log "正在下载 CatsCo（仅获取最新版本）..."
-    mkdir -p "$(dirname "$INSTALL_DIR")"
-    git clone --depth 1 --single-branch "$REPO_URL" "$INSTALL_DIR"
-    cd "$INSTALL_DIR"
+deploy_connector() {
+  log "正在部署轻量 Connector..."
+  local data_backup=""
+  if [ -d "$INSTALL_DIR/.xiaoba" ]; then
+    data_backup=$(mktemp -d)
+    cp -R "$INSTALL_DIR/.xiaoba" "$data_backup/.xiaoba"
   fi
+  rm -rf "$INSTALL_DIR"
+  mkdir -p "$INSTALL_DIR/dist/connector" "$INSTALL_DIR/dist/connector-dashboard" "$INSTALL_DIR/dashboard"
+  cp "$BUILD_DIR/dist/connector/index.js" "$INSTALL_DIR/dist/connector/index.js"
+  cp "$BUILD_DIR/dist/connector-dashboard/server.js" "$INSTALL_DIR/dist/connector-dashboard/server.js"
+  cp "$BUILD_DIR/dashboard/connector.html" "$BUILD_DIR/dashboard/connector.css" "$BUILD_DIR/dashboard/connector.js" "$BUILD_DIR/dashboard/cat-icon.png" "$INSTALL_DIR/dashboard/"
+  cp "$BUILD_DIR/connector-package.json" "$INSTALL_DIR/package.json"
+  if [ -n "$data_backup" ]; then cp -R "$data_backup/.xiaoba" "$INSTALL_DIR/.xiaoba"; rm -rf "$data_backup"; else mkdir -p "$INSTALL_DIR/.xiaoba"; fi
+  rm -rf "$BUILD_DIR"
 }
 
-# ---- 安装依赖 ----
-# npm ci 保证依赖与 package-lock.json 一致；prefer-offline 能复用本机缓存。
-# 构建完成后会 prune 掉 devDependencies，所以代码未更新时可以完全跳过 npm。
-install_deps() {
-  local lock_hash marker
-  marker="$INSTALL_DIR/.catsco-package-lock.sha256"
-  lock_hash=$(hash_file "$INSTALL_DIR/package-lock.json")
-
-  if [ "$REPO_CHANGED" -eq 0 ] && [ -d "$INSTALL_DIR/node_modules" ] && [ -f "$marker" ] && [ "$(cat "$marker")" = "$lock_hash" ] && [ -f "$INSTALL_DIR/dist/index.js" ]; then
-    BUILD_NEEDED=0
-    log "依赖和构建产物均已就绪，跳过重复处理"
-    return
-  fi
-
-  log "正在安装依赖（首次安装可能需要一些时间）..."
-  if [ -d "$INSTALL_DIR/node_modules" ] && [ -f "$marker" ] && [ "$(cat "$marker")" = "$lock_hash" ]; then
-    npm install --include=dev --no-audit --no-fund --prefer-offline --progress=false
-  else
-    npm ci --include=dev --no-audit --no-fund --prefer-offline --progress=false
-  fi
-  log "依赖安装完成"
-}
-
-hash_file() {
-  if has sha256sum; then
-    sha256sum "$1" | awk '{print $1}'
-  else
-    shasum -a 256 "$1" | awk '{print $1}'
-  fi
-}
-
-# ---- 构建 ----
-build_project() {
-  if [ "$BUILD_NEEDED" -eq 0 ]; then
-    return
-  fi
-
-  log "正在构建..."
-  npm run build
-  npm prune --omit=dev --no-audit --no-fund --prefer-offline --progress=false
-  printf '%s\n' "$(hash_file "$INSTALL_DIR/package-lock.json")" > "$INSTALL_DIR/.catsco-package-lock.sha256"
-  log "构建完成（已移除开发依赖）"
-}
-
-# ---- 初始化配置 ----
-init_config() {
-  if [ ! -f "$INSTALL_DIR/.env" ]; then
-    cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
-    log "已创建 .env 配置文件（请在 Dashboard 中配置 API Key）"
-  else
-    log ".env 配置文件已存在"
-  fi
-}
-
-# ---- 创建启动脚本 ----
 create_launcher() {
-  LAUNCHER="$INSTALL_DIR/start.sh"
-  cat > "$LAUNCHER" << 'EOF'
+  cat > "$INSTALL_DIR/start.sh" <<EOF
 #!/bin/bash
-cd "$(dirname "$0")"
+set -e
+cd "\$(dirname "\$0")"
 echo "正在启动 CatsCo Connector..."
-node dist/index.js dashboard &
+export XIAOBA_CONNECTOR_PACKAGE=connector-lite
+export XIAOBA_APP_ROOT="$INSTALL_DIR"
+export XIAOBA_USER_DATA_DIR="$INSTALL_DIR"
+export XIAOBA_DASHBOARD_PORT="$DASHBOARD_PORT"
+node dist/connector-dashboard/server.js &
+server_pid=\$!
+trap 'kill \$server_pid 2>/dev/null || true' EXIT INT TERM
 sleep 2
-open "http://localhost:3800" 2>/dev/null || xdg-open "http://localhost:3800" 2>/dev/null || echo "请打开浏览器访问 http://localhost:3800"
-wait
+open "http://127.0.0.1:$DASHBOARD_PORT" 2>/dev/null || xdg-open "http://127.0.0.1:$DASHBOARD_PORT" 2>/dev/null || echo "请打开 http://127.0.0.1:$DASHBOARD_PORT"
+wait \$server_pid
 EOF
-  chmod +x "$LAUNCHER"
-  log "启动脚本已创建: $LAUNCHER"
+  chmod +x "$INSTALL_DIR/start.sh"
 }
 
-# ---- 主流程 ----
 main() {
-  print_banner
-
-  check_git
-  check_node
-  check_python
-  echo ""
-
-  setup_repo
-  install_deps
-  build_project
-  init_config
-  create_launcher
-
-  echo ""
-  echo -e "${GREEN}════════════════════════════════════════${NC}"
-  echo -e "${GREEN}  CatsCo 安装完成！${NC}"
-  echo -e "${GREEN}════════════════════════════════════════${NC}"
-  echo ""
+  print_banner; check_git; check_node
+  build_connector; deploy_connector; create_launcher
+  log "安装完成；运行目录仅包含 Connector bundle 和页面"
   echo "  安装目录: $INSTALL_DIR"
   echo "  启动命令: $INSTALL_DIR/start.sh"
-  echo "  Dashboard: http://localhost:$DASHBOARD_PORT"
-  echo ""
-
-  read -p "是否现在启动 Dashboard？[Y/n] " -n 1 -r
-  echo ""
-  if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-    cd "$INSTALL_DIR"
-    bash start.sh
-  fi
+  read -r -p "是否现在启动 Connector？[Y/n] " reply
+  if [[ ! ${reply:-} =~ ^[Nn]$ ]]; then "$INSTALL_DIR/start.sh"; fi
 }
 
 main

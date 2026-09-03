@@ -6,7 +6,7 @@ import * as path from 'node:path';
 const source = fs.readFileSync(path.join(process.cwd(), 'src', 'connector', 'index.ts'), 'utf8');
 const buildScript = fs.readFileSync(path.join(process.cwd(), 'scripts', 'build-connector.mjs'), 'utf8');
 const serviceManager = fs.readFileSync(path.join(process.cwd(), 'src', 'dashboard', 'service-manager.ts'), 'utf8');
-const electronMain = fs.readFileSync(path.join(process.cwd(), 'electron', 'main.js'), 'utf8');
+const connectorElectronMain = fs.readFileSync(path.join(process.cwd(), 'electron', 'connector-main.js'), 'utf8');
 const liteDashboard = fs.readFileSync(path.join(process.cwd(), 'src', 'dashboard', 'connector-lite-server.ts'), 'utf8');
 const liteFrontend = fs.readFileSync(path.join(process.cwd(), 'dashboard', 'connector.js'), 'utf8');
 const liteHtml = fs.readFileSync(path.join(process.cwd(), 'dashboard', 'connector.html'), 'utf8');
@@ -14,11 +14,11 @@ const liteHtml = fs.readFileSync(path.join(process.cwd(), 'dashboard', 'connecto
 describe('standalone Connector Lite', () => {
   test('has a dedicated bundled entrypoint and does not import CatsCompanyBot', () => {
     assert.match(buildScript, /src.*connector.*index\.ts/);
-    assert.match(serviceManager, /useConnectorLite = packaged/);
+    assert.match(serviceManager, /useConnectorLite = process\.env\.XIAOBA_CONNECTOR_PACKAGE/);
     assert.doesNotMatch(serviceManager, /XIAOBA_CONNECTOR_LITE/);
     assert.match(serviceManager, /path\.join\(appRoot, 'dist', 'index\.js'\)/);
-    assert.match(electronMain, /connector-lite/);
-    assert.match(electronMain, /connector-dashboard/);
+    assert.match(connectorElectronMain, /connector-lite/);
+    assert.match(connectorElectronMain, /connector-dashboard/);
     assert.match(liteDashboard, /connectorOnly: true/);
     assert.match(liteDashboard, /status\(404\)\.json\(\{ error: 'api_not_found' \}\)/);
     assert.doesNotMatch(liteDashboard, /registerCacheTraceRoutes|registerTurnErrorRoutes|cache-trace|turn-errors/);

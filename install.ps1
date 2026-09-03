@@ -1,196 +1,87 @@
-# ============================================
-#  CatsCo 一键安装脚本 (Windows PowerShell)
-#  用法: 右键以管理员身份运行，或在 PowerShell 中执行:
-#  irm https://raw.githubusercontent.com/buildsense-ai/XiaoBa-CLI/main/install.ps1 | iex
-# ============================================
-
+# CatsCo Connector lightweight installer (Windows PowerShell)
 $ErrorActionPreference = "Stop"
 $RepoUrl = "https://github.com/buildsense-ai/XiaoBa-CLI.git"
-$InstallDir = "$env:USERPROFILE\catsco"
+$InstallDir = if ($env:CATSCO_INSTALL_DIR) { $env:CATSCO_INSTALL_DIR } else { "$env:USERPROFILE\catsco" }
+$BuildDir = "$env:TEMP\catsco-connector-build"
 $DashboardPort = 3800
 
-function Write-Banner {
-    Write-Host ""
-    Write-Host "  CatsCo" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "  一键安装程序 (Windows)" -ForegroundColor White
-    Write-Host ""
-}
+function Log($message) { Write-Host "[✓] $message" -ForegroundColor Green }
+function Warn($message) { Write-Host "[!] $message" -ForegroundColor Yellow }
+function Fail($message) { Write-Host "[✗] $message" -ForegroundColor Red; exit 1 }
+function Test-Command($command) { return [bool](Get-Command $command -ErrorAction SilentlyContinue) }
 
-function Log($msg) { Write-Host "[✓] $msg" -ForegroundColor Green }
-function Warn($msg) { Write-Host "[!] $msg" -ForegroundColor Yellow }
-function Err($msg) { Write-Host "[✗] $msg" -ForegroundColor Red; exit 1 }
-
-function Test-Command($cmd) {
-    try { Get-Command $cmd -ErrorAction Stop | Out-Null; return $true }
-    catch { return $false }
-}
-
-# ---- 检查 Git ----
 function Check-Git {
-    if (Test-Command "git") {
-        Log "Git 已安装: $(git --version)"
-    } else {
-        Warn "未检测到 Git，正在下载安装..."
-        $gitInstaller = "$env:TEMP\git-installer.exe"
-        Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.43.0.windows.1/Git-2.43.0-64-bit.exe" -OutFile $gitInstaller
-        Start-Process -FilePath $gitInstaller -Args "/VERYSILENT /NORESTART" -Wait
-        $env:PATH = "$env:PATH;C:\Program Files\Git\bin"
-        Log "Git 安装完成"
-    }
+    if (Test-Command "git") { Log "Git 已安装: $(git --version)"; return }
+    Fail "未检测到 Git，请安装 Git for Windows 后重试"
 }
 
-# ---- 检查 Node.js ----
 function Check-Node {
     if (Test-Command "node") {
-        $ver = (node -v) -replace 'v','' -split '\.' | Select-Object -First 1
-        if ([int]$ver -ge 18) {
-            Log "Node.js 已安装: $(node -v)"
-            return
-        }
-        Warn "Node.js 版本过低 ($(node -v))，需要 >= 18"
-    } else {
-        Warn "未检测到 Node.js"
+        $major = [int]((node -p "process.versions.node.split('.')[0]"))
+        if ($major -ge 18) { Log "Node.js 已安装: $(node -v)"; return }
     }
-
-    Write-Host "正在下载 Node.js 20..."
-    $nodeInstaller = "$env:TEMP\node-installer.msi"
-    Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.11.0/node-v20.11.0-x64.msi" -OutFile $nodeInstaller
-    Start-Process msiexec.exe -Args "/i `"$nodeInstaller`" /quiet /norestart" -Wait
-    $env:PATH = "$env:PATH;C:\Program Files\nodejs"
-    Log "Node.js 安装完成: $(node -v)"
+    Fail "需要 Node.js >= 18，请安装新版 Node.js 后重试"
 }
 
-# ---- 克隆/更新仓库 ----
-$RepoChanged = $true
-$BuildNeeded = $true
-function Setup-Repo {
-    if (Test-Path "$InstallDir\.git") {
-        Log "检测到已有安装，正在检查更新..."
-        Set-Location $InstallDir
-        $before = (git rev-parse HEAD 2>$null)
-        git pull --ff-only *> $null
-        if ($LASTEXITCODE -ne 0) {
-            Warn "更新失败，使用现有版本继续"
-        } else {
-            $after = (git rev-parse HEAD 2>$null)
-            if ($before -and $before -eq $after) {
-                $script:RepoChanged = $false
-                Log "代码已是最新版本"
-            } else {
-                Log "代码已更新"
-            }
-        }
-    } else {
-        Log "正在下载 CatsCo（仅获取最新版本）..."
-        $parent = Split-Path -Parent $InstallDir
-        if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-        git clone --depth 1 --single-branch $RepoUrl $InstallDir
-        Set-Location $InstallDir
+function Build-Connector {
+    if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
+    Log "正在获取最新版 Connector 源码..."
+    git clone --depth 1 --single-branch $RepoUrl $BuildDir
+    Set-Location $BuildDir
+    Log "正在准备临时构建环境..."
+    npm ci --include=dev --no-audit --no-fund --prefer-offline --progress=false
+    npm run build:connector
+}
+
+function Deploy-Connector {
+    Log "正在部署轻量 Connector..."
+    $backup = $null
+    if (Test-Path "$InstallDir\.xiaoba") {
+        $backup = "$env:TEMP\catsco-config-$([guid]::NewGuid())"
+        Copy-Item -Recurse "$InstallDir\.xiaoba" $backup
     }
+    if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
+    New-Item -ItemType Directory -Force "$InstallDir\dist\connector", "$InstallDir\dist\connector-dashboard", "$InstallDir\dashboard" | Out-Null
+    Copy-Item "$BuildDir\dist\connector\index.js" "$InstallDir\dist\connector\index.js"
+    Copy-Item "$BuildDir\dist\connector-dashboard\server.js" "$InstallDir\dist\connector-dashboard\server.js"
+    Copy-Item "$BuildDir\dashboard\connector.html", "$BuildDir\dashboard\connector.css", "$BuildDir\dashboard\connector.js", "$BuildDir\dashboard\cat-icon.png" "$InstallDir\dashboard\"
+    Copy-Item "$BuildDir\connector-package.json" "$InstallDir\package.json"
+    if ($backup) { Copy-Item -Recurse $backup "$InstallDir\.xiaoba"; Remove-Item -Recurse -Force $backup }
+    else { New-Item -ItemType Directory -Force "$InstallDir\.xiaoba" | Out-Null }
+    Remove-Item -Recurse -Force $BuildDir
 }
 
-function Get-LockHash {
-    return (Get-FileHash -Algorithm SHA256 -Path "$InstallDir\package-lock.json").Hash.ToLowerInvariant()
-}
-
-# ---- 安装依赖 ----
-function Install-Deps {
-    $marker = "$InstallDir\.catsco-package-lock.sha256"
-    $lockHash = Get-LockHash
-    $ready = (-not $RepoChanged) -and (Test-Path "$InstallDir\node_modules") -and
-        (Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $lockHash) -and
-        (Test-Path "$InstallDir\dist\index.js")
-    if ($ready) {
-        $script:BuildNeeded = $false
-        Log "依赖和构建产物均已就绪，跳过重复处理"
-        return
-    }
-
-    Log "正在安装依赖（首次安装可能需要一些时间）..."
-    $sameLock = (Test-Path "$InstallDir\node_modules") -and (Test-Path $marker) -and
-        ((Get-Content $marker -Raw).Trim() -eq $lockHash)
-    if ($sameLock) {
-        npm install --include=dev --no-audit --no-fund --prefer-offline --progress=false
-    } else {
-        npm ci --include=dev --no-audit --no-fund --prefer-offline --progress=false
-    }
-    Log "依赖安装完成"
-}
-
-# ---- 构建 ----
-function Build-Project {
-    if (-not $BuildNeeded) { return }
-
-    Log "正在构建..."
-    npm run build
-    npm prune --omit=dev --no-audit --no-fund --prefer-offline --progress=false
-    $finalLockHash = Get-LockHash
-    Set-Content -Path "$InstallDir\.catsco-package-lock.sha256" -Value $finalLockHash -NoNewline
-    Log "构建完成（已移除开发依赖）"
-}
-
-# ---- 初始化配置 ----
-function Init-Config {
-    if (-not (Test-Path "$InstallDir\.env")) {
-        Copy-Item "$InstallDir\.env.example" "$InstallDir\.env"
-        Log "已创建 .env 配置文件（请在 Dashboard 中配置 API Key）"
-    } else {
-        Log ".env 配置文件已存在"
-    }
-}
-
-# ---- 创建启动脚本 ----
 function Create-Launcher {
     $launcher = "$InstallDir\start.bat"
 @"
 @echo off
 cd /d "%~dp0"
 echo 正在启动 CatsCo Connector...
-start http://localhost:$DashboardPort
-node dist\index.js dashboard
-"@ | Out-File -FilePath $launcher -Encoding ASCII
-    Log "启动脚本已创建: $launcher"
-
-    # 创建桌面快捷方式
+set XIAOBA_CONNECTOR_PACKAGE=connector-lite
+set XIAOBA_APP_ROOT=$InstallDir
+set XIAOBA_USER_DATA_DIR=$InstallDir
+set XIAOBA_DASHBOARD_PORT=$DashboardPort
+start http://127.0.0.1:$DashboardPort
+node dist\connector-dashboard\server.js
+"@ | Out-File -FilePath $launcher -Encoding ascii
     try {
         $desktop = [Environment]::GetFolderPath("Desktop")
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut("$desktop\CatsCo Connector.lnk")
         $shortcut.TargetPath = $launcher
         $shortcut.WorkingDirectory = $InstallDir
-        $shortcut.IconLocation = "shell32.dll,21"
         $shortcut.Save()
-        Log "桌面快捷方式已创建"
-    } catch {
-        Warn "桌面快捷方式创建失败（不影响使用）"
-    }
+    } catch { Warn "桌面快捷方式创建失败，可直接运行 $launcher" }
 }
 
-# ---- 主流程 ----
-Write-Banner
+Write-Host "`n  CatsCo Connector`n  轻量安装程序`n" -ForegroundColor Cyan
 Check-Git
 Check-Node
-Write-Host ""
-Setup-Repo
-Install-Deps
-Build-Project
-Init-Config
+Build-Connector
+Deploy-Connector
 Create-Launcher
-
-Write-Host ""
-Write-Host "════════════════════════════════════════" -ForegroundColor Green
-Write-Host "  CatsCo 安装完成！" -ForegroundColor Green
-Write-Host "════════════════════════════════════════" -ForegroundColor Green
-Write-Host ""
+Log "安装完成；运行目录仅包含 Connector bundle 和页面"
 Write-Host "  安装目录: $InstallDir"
-Write-Host "  启动方式: 双击桌面 'CatsCo Connector' 快捷方式"
-Write-Host "  或运行:   $InstallDir\start.bat"
-Write-Host "  Dashboard: http://localhost:$DashboardPort"
-Write-Host ""
-
-$reply = Read-Host "是否现在启动 Dashboard？[Y/n]"
-if ($reply -ne "n" -and $reply -ne "N") {
-    Set-Location $InstallDir
-    & "$InstallDir\start.bat"
-}
+Write-Host "  启动方式: $InstallDir\start.bat"
+$reply = Read-Host "是否现在启动 Connector？[Y/n]"
+if ($reply -notmatch '^[Nn]$') { & "$InstallDir\start.bat" }

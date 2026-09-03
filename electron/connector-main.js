@@ -5,6 +5,9 @@ const { normalizeUpdateError } = require('./update-errors');
 const { shouldDisableHardwareAcceleration } = require('./gpu-compat');
 const { createRendererGoneGuard } = require('./renderer-gone');
 
+// Dedicated Connector host: never activate full xiaoba-cli desktop behavior.
+process.env.XIAOBA_CONNECTOR_PACKAGE = 'connector-lite';
+
 // The Electron host is the trust boundary for a real local desktop runtime.
 // Both development and packaged apps execute this entrypoint before starting
 // the embedded Dashboard and its CatsCo connector child.
@@ -509,21 +512,9 @@ function getAppRoot() {
   return path.join(__dirname, '..');
 }
 
-function getRuntimeRoot() {
-  if (app.isPackaged) {
-    const contentsDir = process.platform === 'darwin'
-      ? path.join(path.dirname(process.execPath), '..')
-      : path.dirname(process.execPath);
-    return path.join(contentsDir, 'runtime');
-  }
-  return path.join(getAppRoot(), 'build-resources', 'runtime');
-}
-
-
-
-/**
- * 闂備礁鍚嬮崕鎶藉床閼艰翰浜?node_modules 闂佽崵濮崇拃锕傚垂閹殿喗顐介柣鎰劋閺咁剟鏌涢銈呮瀻闁愁亞鏁婚弻娑㈠冀瑜庨崳钘夘熆瑜庨〃濠傜暦?extraResources 濠电偞鍨堕幖鈺呭矗韫囨洘顫?
- */
+// Electron Builder places production dependencies next to the packaged app.
+// Keep one canonical module tree instead of copying a second tree through
+// extraResources; the Dashboard child process receives this path via NODE_PATH.
 function getNodeModulesPath() {
   if (app.isPackaged) {
     return path.join(getAppRoot(), 'node_modules');
@@ -533,47 +524,15 @@ function getNodeModulesPath() {
 
 async function startServer() {
   const appRoot = getAppRoot();
-
-  // 闂佽崵濮崇粈浣规櫠娴犲鍋柛鈩冾殢閸熷懘鏌曟径鍫濃偓妤冪矙婵犲洦鐓熼柍鍝勶工閺嬫稓绱撳鍛ч柡浣哥Ч瀹曞ジ鎮㈢亸浣稿緧闂備礁鎲￠悧鏇㈠箠鎼淬劌绠栨俊銈呮噺閸嬨劑鏌嶉搹瑙勭erData闂佽瀛╃粙鎺曟懌闂佸搫鍊风欢姘跺箖娴犲惟闁挎洍鍋撻柣鎾存礋閺屸剝鎷呴崫鍕垫毉閻庤鎸风欢姘跺极?
   const userDataPath = app.getPath('userData');
+  process.env.XIAOBA_CONNECTOR_PACKAGE = 'connector-lite';
   process.env.XIAOBA_USER_DATA_DIR = userDataPath;
-  const skillsPath = path.join(userDataPath, 'skills');
-  if (!String(process.env.XIAOBA_SKILLS_DIR || '').trim()) {
-    process.env.XIAOBA_SKILLS_DIR = skillsPath;
-  }
-  fs.mkdirSync(process.env.XIAOBA_SKILLS_DIR, { recursive: true });
-  // Keep this before createApplicationMenu(): close-to-tray preferences are read from process.cwd()/.xiaoba/catsco.json.
   process.chdir(userDataPath);
 
-  // 濠电姷顣介埀顒€鍟块埀顒€缍婇幃妯荤箙缁茬尃rData闂傚倷鐒﹁ぐ鍐嫉椤掑嫭鍎夐柛娑欐綑鐎?env闂備焦瀵х粙鎴炵附閺冨倸鍨濋柣鏇犵％p闂傚倷鐒﹁ぐ鍐嚐椤栫倛鍥蓟閵夈儳顦?env.example
-  const envPath = path.join(userDataPath, '.env');
-  if (!fs.existsSync(envPath)) {
-    const examplePath = path.join(appRoot, '.env.example');
-    if (fs.existsSync(examplePath)) {
-      fs.copyFileSync(examplePath, envPath);
-    }
-  }
-
-  // 闂備礁鎲￠懝楣冨嫉椤掑嫷鏁嗛柣鎰惈缁€鍐煕濞戝崬鐏ｉ柡?skills 闂?userData闂備焦瀵х粙鎴︽偋閸涱垱宕叉慨妯垮煐閸嬧晜绻涢崱妯虹仸闁哄棗绻橀弻鐔煎级閹存繃些闂佷紮绲婚崝搴ㄥ箟濡ゅ懎宸濇い鏍ㄧ〒閺?skills闂?
-  // Skills are user-managed. New installs start empty; SkillHub installs populate this directory.
-  const promptsDest = path.join(userDataPath, 'prompts');
-  const promptsSrc = path.join(appRoot, 'prompts');
-  if (!fs.existsSync(promptsDest) && fs.existsSync(promptsSrc)) {
-    fs.cpSync(promptsSrc, promptsDest, { recursive: true });
-  }
-
-  // 闂備礁鎲″缁樻叏閹灐褰掑床缁跺env
-  require('dotenv').config({ path: envPath, quiet: true });
-
-  // 闂備礁鎲＄粙鎴︽晝閵娾晜鍎?dashboard server app 闂備焦鐪归崝宀€鈧凹鍓熼幃鍧楀礋椤栨稈鎸冮梺鍛婁緱閸撴稓绮旂€靛摜纾介柛鎰劤濞呮瑧绱掓潏銊у磼sar 闂備礁鎲￠崝鏇㈠箯閹寸姵顫?
+  require('dotenv').config({ path: path.join(userDataPath, '.env'), quiet: true });
   process.env.XIAOBA_APP_ROOT = appRoot;
   process.env.XIAOBA_IS_PACKAGED = app.isPackaged ? '1' : '0';
-  process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR = getRuntimeRoot();
-  if (!String(process.env.XIAOBA_PROMPT_OVERRIDES_DIR || '').trim()) {
-    process.env.XIAOBA_PROMPT_OVERRIDES_DIR = path.join(userDataPath, 'prompt-overrides');
-  }
 
-  // 闂備胶鎳撻悘姘跺箰閸濄儮鍋撻崹顐€块柟顔ㄥ洤閱囨い鎺戝€婚悰銉╂煟閻樿京顦﹀褌绮欓幃?NODE_PATH 闂佽崵濮崇拋鏌ュ疾濞戙垺鍋ゆ繛鍡樺姈娴溿倖绻涢幋鐐茬劰闁哄被鍊濋弻銈団偓鍦Т琚氭繝銏ｎ潐閿曘垹鐣?node_modules
   const nodeModulesPath = getNodeModulesPath();
   process.env.XIAOBA_NODE_MODULES = nodeModulesPath;
   if (app.isPackaged) {
@@ -581,25 +540,8 @@ async function startServer() {
     require('module').Module._initPaths();
   }
 
-  const runtimeEnvironmentModulePath = path.join(appRoot, 'dist', 'utils', 'runtime-environment');
-  const { resolveRuntimeEnvironment, formatRuntimeSummary } = require(runtimeEnvironmentModulePath);
-  const runtimeEnvironment = resolveRuntimeEnvironment({
-    env: process.env,
-    appRoot,
-    bundledExecutablesDir: process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
-    isPackaged: app.isPackaged,
-  });
-  if (runtimeEnvironment.binaries.node.executable) {
-    runtimeEnvironment.env.XIAOBA_NODE_EXECUTABLE = runtimeEnvironment.binaries.node.executable;
-  }
-  Object.assign(process.env, runtimeEnvironment.env);
-  console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.node));
-  console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.python));
-  console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.git));
-
-  // 闂備胶鍎甸弲娑㈡偤閵娧勬殰闁圭虎鍠栭幑鍫曟煏婵炲灝鈧洟鎯佸鍫濈骇闁冲搫鍊婚妴鎺楁煃鐠囧眰鍋㈢€规洏鍎甸、娑橆潩椤戭偅顣筧shboard server
-  const { startDashboard } = require(path.join(appRoot, 'dist', 'dashboard', 'server'));
-  dashboardServerHandle = await startDashboard(DASHBOARD_PORT, { updateController, projectRoot: appRoot });
+  const { startConnectorLiteDashboard } = require(path.join(appRoot, 'dist', 'connector-dashboard', 'server.js'));
+  dashboardServerHandle = await startConnectorLiteDashboard(DASHBOARD_PORT, { updateController, projectRoot: appRoot });
 }
 
 function stopDashboardServer() {
@@ -623,7 +565,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'connector-preload.js'),
     },
   });
 
@@ -706,42 +648,6 @@ function isTrustedDashboardUrl(value) {
   }
 }
 
-const CATSCOMPANY_FILE_SELECTION_LIMIT = 6;
-
-ipcMain.handle('catsco:select-files', async (event) => {
-  const owner = BrowserWindow.fromWebContents(event.sender) || mainWindow || undefined;
-  const frameUrl = event.senderFrame?.url || event.sender.getURL();
-  if (owner !== mainWindow || !isTrustedDashboardUrl(frameUrl)) return [];
-
-  const options = {
-    properties: ['openFile', 'multiSelections'],
-  };
-  const result = await dialog.showOpenDialog(owner, options);
-  if (result.canceled) return [];
-
-  const { createLocalFileGrant } = require(path.join(getAppRoot(), 'dist', 'dashboard', 'local-file-grants'));
-  return result.filePaths
-    .map((filePath, index) => {
-      try {
-        if (index >= CATSCOMPANY_FILE_SELECTION_LIMIT) {
-          return {
-            name: path.basename(filePath),
-            size: 0,
-            error: `一次最多选择 ${CATSCOMPANY_FILE_SELECTION_LIMIT} 个文件。`,
-          };
-        }
-        return createLocalFileGrant(filePath);
-      } catch (error) {
-        return {
-          name: path.basename(filePath),
-          size: 0,
-          error: error?.message || '文件无法授权，请重新选择。',
-        };
-      }
-    })
-    .filter(Boolean);
-});
-
 ipcMain.handle('catsco:hide-window', async (event) => {
   const owner = BrowserWindow.fromWebContents(event.sender);
   if (owner !== mainWindow) return false;
@@ -755,27 +661,6 @@ ipcMain.handle('catsco:open-webapp', async (event) => {
   await shell.openExternal(CATSCO_WEBAPP_URL);
   return true;
 });
-
-function getRuntimeDataRootForMenu() {
-  return process.env.XIAOBA_USER_DATA_DIR
-    || process.env.CATSCO_USER_DATA_DIR
-    || process.env.XIAOBA_ELECTRON_USER_DATA_DIR
-    || app.getPath('userData');
-}
-
-function openAttachmentCacheDirectory() {
-  const dir = path.join(getRuntimeDataRootForMenu(), 'data', 'attachments');
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch (error) {
-    console.error('Failed to create attachment cache directory:', error);
-  }
-  shell.openPath(dir).then((error) => {
-    if (error) {
-      console.error('Failed to open attachment cache directory:', error);
-    }
-  });
-}
 
 function createApplicationMenu() {
   const quit = () => {
@@ -817,12 +702,6 @@ function createApplicationMenu() {
     {
       label: '编辑',
       submenu: editMenu,
-    },
-    {
-      label: '设置',
-      submenu: [
-        { label: '打开本地缓存文件位置', click: openAttachmentCacheDirectory },
-      ],
     },
     {
       label: '视图',

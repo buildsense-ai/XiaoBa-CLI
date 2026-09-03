@@ -166,22 +166,19 @@ export class ServiceManager extends EventEmitter {
     let command: string;
     let args: (name: string) => string[];
 
-    // Connector Lite is a packaged-desktop concern. Development mode keeps
-    // the original source entry so `xiaoba-cli` and desktop development retain
-    // the complete Runtime behavior while the packaged executable exercises the
-    // independent execution-only process.
-    const useConnectorLite = packaged
-      && process.env.XIAOBA_CONNECTOR_PACKAGE === 'connector-lite';
-    if (packaged) {
-      // Connector Lite reuses Electron's embedded Node runtime. The full
-      // desktop package keeps its standalone Node/Python/Git runtime contract.
-      command = useConnectorLite
-        ? process.execPath
-        : runtimeEnvironment.binaries.node.executable || 'node';
-      const entry = (name: string) => name === 'catscompany' && useConnectorLite
-        ? path.join(appRoot, 'dist', 'connector', 'index.js')
-        : path.join(appRoot, 'dist', 'index.js');
-      args = (name) => [entry(name), ...(name === 'catscompany' ? [useConnectorLite ? '' : name].filter(Boolean) : [name])];
+    // Connector Lite is used by both the Electron package and the standalone
+    // lightweight installer. Development keeps the original source entry unless
+    // the caller explicitly selects the Lite package contract.
+    const useConnectorLite = process.env.XIAOBA_CONNECTOR_PACKAGE === 'connector-lite';
+    if (useConnectorLite) {
+      // Packaged Electron children reuse Electron's embedded Node. Standalone
+      // Connector installs run the same bundle with the system Node executable.
+      command = process.execPath;
+      args = () => [path.join(appRoot, 'dist', 'connector', 'index.js')];
+    } else if (packaged) {
+      command = runtimeEnvironment.binaries.node.executable || 'node';
+      const entry = () => path.join(appRoot, 'dist', 'index.js');
+      args = (name) => [entry(), name];
     } else {
       // 开发版：用 tsx 跑 ts 源码；默认始终保留完整 Runtime。
       const runner = this.resolveDevTsxRunner(this.resolveNodeExecutable(runtimeEnvironment));

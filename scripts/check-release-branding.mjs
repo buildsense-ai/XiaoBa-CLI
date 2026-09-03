@@ -68,6 +68,8 @@ function assertLine(name, text, expected) {
 assertIncludes('connector title', readText('dashboard/connector.html'), '<title>CatsCo Connector</title>');
 assertIncludes('electron window title', readText('electron/main.js'), "title: 'CatsCo Connector'");
 assertIncludes('electron tray tooltip', readText('electron/main.js'), "tray.setToolTip('CatsCo Connector')");
+assertIncludes('connector electron window title', readText('electron/connector-main.js'), "title: 'CatsCo Connector'");
+assertIncludes('connector electron tray tooltip', readText('electron/connector-main.js'), "tray.setToolTip('CatsCo Connector')");
 const releaseWorkflow = readText('.github/workflows/release.yml');
 assertIncludes('GitHub release title', releaseWorkflow, 'name: CatsCo ${{ github.ref_name }}');
 assertLine('macOS build ZIP artifact upload', releaseWorkflow, 'release/*.zip');

@@ -285,3 +285,25 @@ async function startConnector(serviceManager: ServiceManager): Promise<Record<st
 function sendError(res: express.Response, error: any): void { res.status(Number(error?.status) || 500).json({ error: error?.message || String(error), data: error?.data }); }
 
 function closeServer(server: Server): Promise<void> { return new Promise(resolve => server.close(() => resolve())); }
+
+// The same bundle is required by Electron and can also be launched directly by
+// the lightweight source installer. Keep direct-start behavior in this entry
+// so the installed runtime never needs dist/index.js or the full Dashboard.
+if (typeof require !== 'undefined' && require.main === module) {
+  process.env.XIAOBA_CONNECTOR_PACKAGE = 'connector-lite';
+  process.env.XIAOBA_APP_ROOT ||= path.resolve(__dirname, '../..');
+  process.env.XIAOBA_USER_DATA_DIR ||= process.cwd();
+  startConnectorLiteDashboard(Number(process.env.XIAOBA_DASHBOARD_PORT || DEFAULT_PORT)).then(handle => {
+    let stopping = false;
+    const stop = async () => {
+      if (stopping) return;
+      stopping = true;
+      await handle.stop();
+    };
+    process.once('SIGINT', () => { void stop(); });
+    process.once('SIGTERM', () => { void stop(); });
+  }).catch(error => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

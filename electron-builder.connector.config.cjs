@@ -6,11 +6,14 @@ const baseConfig = require('./electron-builder.config.cjs');
 // third-party dependencies are bundled into their isolated artifacts.
 const CONNECTOR_LITE_RUNTIME_DEPENDENCIES = ['dotenv', 'electron-updater'];
 
-function markConnectorLitePackage(context) {
+function writeConnectorPackageManifest(context) {
   const packagePath = path.join(context.appOutDir, 'resources', 'app', 'package.json');
-  const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
-  packageJson.catscoPackage = 'connector-lite';
-  fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
+  const rootPackage = require('./package.json');
+  const connectorPackage = require('./connector-package.json');
+  fs.writeFileSync(packagePath, `${JSON.stringify({
+    ...connectorPackage,
+    version: rootPackage.version,
+  }, null, 2)}\n`, 'utf8');
 }
 
 function collectRuntimeDependencies(appNodeModules) {
@@ -61,6 +64,11 @@ module.exports = {
   ...baseConfig,
   appId: 'com.catcompany.xiaoba.connector',
   productName: 'CatsCo Connector',
+  extraMetadata: {
+    name: 'catsco-connector',
+    main: 'electron/connector-main.js',
+    catscoPackage: 'connector-lite',
+  },
   artifactName: '${productName}-${version}-${os}-${arch}.${ext}',
   // Keep the installer extraction path fast. Maximum compression saves little
   // for an installer dominated by Electron, but makes NSIS packing/installing
@@ -71,8 +79,8 @@ module.exports = {
   files: [
     'dist/connector/index.js',
     'dist/connector-dashboard/server.js',
-    'electron/main.js',
-    'electron/preload.js',
+    'electron/connector-main.js',
+    'electron/connector-preload.js',
     'electron/gpu-compat.js',
     'electron/renderer-gone.js',
     'electron/update-errors.js',
@@ -88,7 +96,7 @@ module.exports = {
   extraResources: undefined,
   afterPack: context => {
     pruneConnectorDependencies(context);
-    markConnectorLitePackage(context);
+    writeConnectorPackageManifest(context);
   },
   publish: baseConfig.publish,
 };

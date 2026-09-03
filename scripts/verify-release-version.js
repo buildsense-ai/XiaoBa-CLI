@@ -59,10 +59,15 @@ if (!version) {
 }
 
 const packageJson = readJson('package.json');
+const connectorPackage = readJson('connector-package.json');
 const packageLock = readJson('package-lock.json');
 
 if (packageJson.version !== version) {
   fail(`package.json version ${packageJson.version} does not match ${tag}.`, version, tag);
+}
+
+if (connectorPackage.version !== version) {
+  fail(`connector-package.json version ${connectorPackage.version} does not match ${tag}.`, version, tag);
 }
 
 if (packageLock.version && packageLock.version !== version) {
