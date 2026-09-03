@@ -2,6 +2,7 @@
 
 const MAX_PUBLIC_UPDATE_ERROR_LENGTH = 800;
 const MISSING_MACOS_ZIP_MESSAGE = 'macOS 自动更新包缺少 ZIP 文件，请手动下载安装包，或等待维护者重新发布。';
+const UPDATE_CACHE_MOVE_MESSAGE = '更新包已下载，但无法写入安装缓存。请重启 CatsCo 后重试，或手动下载安装包。';
 
 function limitMessage(message) {
   if (message.length <= MAX_PUBLIC_UPDATE_ERROR_LENGTH) return message;
@@ -16,6 +17,13 @@ function normalizeUpdateError(error, fallbackReason = 'UPDATE_ERROR') {
     return {
       reason: 'MACOS_UPDATE_ZIP_MISSING',
       message: MISSING_MACOS_ZIP_MESSAGE,
+    };
+  }
+
+  if (errorCode === 'EXDEV' || /EXDEV|cross-device link not permitted/i.test(rawMessage)) {
+    return {
+      reason: 'UPDATE_CACHE_MOVE_FAILED',
+      message: UPDATE_CACHE_MOVE_MESSAGE,
     };
   }
 
@@ -40,5 +48,6 @@ function normalizeUpdateError(error, fallbackReason = 'UPDATE_ERROR') {
 module.exports = {
   MAX_PUBLIC_UPDATE_ERROR_LENGTH,
   MISSING_MACOS_ZIP_MESSAGE,
+  UPDATE_CACHE_MOVE_MESSAGE,
   normalizeUpdateError,
 };
