@@ -147,6 +147,10 @@ function createUpdateController(options) {
 
   if (updater) {
     on(updater, 'checking-for-update', () => {
+      if (DOWNLOAD_COMPLETE_STAGES.has(state.stage)) {
+        logger.info?.(`ignored checking-for-update event while state is ${state.stage}`);
+        return;
+      }
       setState({
         stage: 'checking',
         message: 'Checking for updates...',
@@ -156,6 +160,10 @@ function createUpdateController(options) {
     }, updaterListeners);
 
     on(updater, 'update-available', (info = {}) => {
+      if (DOWNLOAD_COMPLETE_STAGES.has(state.stage)) {
+        logger.info?.(`ignored update-available event while state is ${state.stage}`);
+        return;
+      }
       nativeInstallReady = platform !== 'darwin';
       setState({
         stage: 'available',
@@ -250,6 +258,10 @@ function createUpdateController(options) {
 
     async checkForUpdates(manual = false) {
       if (!updater) return snapshot();
+      if (DOWNLOAD_COMPLETE_STAGES.has(state.stage)) {
+        logger.info?.(`ignored update check while state is ${state.stage}`);
+        return snapshot();
+      }
       if (checkInFlight) return checkInFlight;
 
       setState({

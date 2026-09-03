@@ -5,10 +5,13 @@ import test from 'node:test';
 const { createUpdateController } = require('../electron/update-controller');
 
 class FakeUpdater extends EventEmitter {
+  checkCalls = 0;
   downloadCalls = 0;
   installCalls = 0;
 
-  async checkForUpdates() {}
+  async checkForUpdates() {
+    this.checkCalls += 1;
+  }
 
   async downloadUpdate() {
     this.downloadCalls += 1;
@@ -74,6 +77,43 @@ test('a repeated download request preserves a completed update', async () => {
     assert.equal(updater.downloadCalls, 0);
   } finally {
     controller.dispose();
+  }
+});
+
+test('a repeated update check cannot discard a downloaded update', async () => {
+  const { updater, controller } = createController();
+  try {
+    updater.emit('update-downloaded', { version: '1.5.5' });
+
+    const result = await controller.checkForUpdates(true);
+    updater.emit('checking-for-update');
+    updater.emit('update-available', { version: '1.5.5' });
+    updater.emit('update-not-available');
+
+    assert.equal(result.stage, 'downloaded');
+    assert.equal(updater.checkCalls, 0);
+    assert.equal(controller.getStatus().stage, 'downloaded');
+    assert.equal(controller.getStatus().availableVersion, '1.5.5');
+  } finally {
+    controller.dispose();
+  }
+});
+
+test('update checks preserve macOS preparation and installer handoff states', async () => {
+  const mac = createController('darwin');
+  const win = createController();
+  try {
+    mac.updater.emit('update-downloaded', { version: '1.5.5' });
+    assert.equal((await mac.controller.checkForUpdates(true)).stage, 'preparing_install');
+    assert.equal(mac.updater.checkCalls, 0);
+
+    win.updater.emit('update-downloaded', { version: '1.5.5' });
+    win.controller.installUpdate();
+    assert.equal((await win.controller.checkForUpdates(true)).stage, 'installing');
+    assert.equal(win.updater.checkCalls, 0);
+  } finally {
+    mac.controller.dispose();
+    win.controller.dispose();
   }
 });
 
