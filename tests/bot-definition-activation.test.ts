@@ -1462,6 +1462,59 @@ describe('BotDefinition activation', () => {
     assert.equal(resolveActiveBotLLMConfig({ runtimeRoot, env })?.config.model, 'MiniMax-M3');
   });
 
+  test('repairs a legacy CatsCo catalog runtime that persisted OpenAI Chat mode', () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-legacy-relay-mode-runtime-'));
+    roots.push(runtimeRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      account: { token: 'user-token', uid: '7' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    new FileBotDefinitionRepository({ runtimeRoot }).writeCache({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: { kind: 'catalog', modelId: 'gpt-5.6-sol' },
+    });
+    new FileBotCatalogModelRuntimeRepository({ runtimeRoot }).write({
+      schema: 'xiaoba.bot-catalog-model-runtime.v1',
+      botId: '43',
+      modelId: 'gpt-5.6-sol',
+      provider: 'openai',
+      apiBase: 'https://relay.catsco.cc/v1',
+      apiKey: 'sk-legacy-relay',
+      model: 'gpt-5.6-sol',
+      contextWindowTokens: 256000,
+      openaiApiMode: 'chat_completions',
+    });
+
+    const resolved = resolveActiveBotLLMConfig({ runtimeRoot, env });
+    assert.equal(resolved?.source, 'catalog_runtime');
+    assert.equal(resolved?.config.openaiApiMode, 'responses');
+  });
+
+  test('keeps explicit Chat mode for custom models on the CatsCo Relay endpoint', () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-custom-relay-chat-runtime-'));
+    roots.push(runtimeRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      currentBot: { uid: '44', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    new FileBotDefinitionRepository({ runtimeRoot }).writeCache({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '44',
+      model: {
+        kind: 'custom', protocol: 'openai-chat-completions', apiBase: 'https://relay.catsco.cc/v1',
+        model: 'manual-model', apiKey: 'sk-custom', contextWindowTokens: 128000,
+      },
+    });
+
+    const resolved = resolveActiveBotLLMConfig({ runtimeRoot, env });
+    assert.equal(resolved?.source, 'custom_definition');
+    assert.equal(resolved?.config.openaiApiMode, 'chat_completions');
+  });
+
   test('re-materializes the cloud catalog runtime when the cached credential is rejected but a login token exists', async () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-steady-rejected-runtime-'));
     const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-steady-rejected-canonical-'));

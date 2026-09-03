@@ -295,7 +295,11 @@ export function catalogRuntimeMatchesModelId(
   if (!relayModelIdsMatch(runtime.modelId, modelId)) return false;
   const profile = relayModelProfileFromRuntimeDescriptor(modelId, descriptor)
     ?? findRelayModelProfile(modelId);
-  return !profile || relayModelIdsMatch(runtime.model, profile.id);
+  // A cloud descriptor may intentionally use a relay-facing model name that
+  // has no local profile. Compare against that authoritative name rather than
+  // the catalog id, otherwise dynamic models are needlessly re-materialized.
+  const expectedModel = descriptor?.model ?? profile?.model ?? profile?.id;
+  return !expectedModel || relayModelIdsMatch(runtime.model, expectedModel);
 }
 
 function normalizeBotModelDefinition(model: BotModelDefinition): BotModelDefinition {

@@ -2,6 +2,8 @@ import * as path from 'path';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import type { ChatConfig } from '../types';
 import { PathResolver } from '../utils/path-resolver';
+import { isCatsRelayApiBase } from '../utils/catsco-domains';
+import { findRelayModelProfile } from '../utils/relay-model-profiles';
 import {
   FileBotCatalogModelRuntimeRepository,
   FileBotCloudCatalogModelRuntimeRepository,
@@ -9,7 +11,7 @@ import {
   FileBotDefinitionRepository,
 } from './repository';
 import { catalogRuntimeMatchesModelId } from './service';
-import type { CustomBotModelDefinition } from './types';
+import type { BotCatalogModelRuntime, CustomBotModelDefinition } from './types';
 
 export type BotLLMConfigSource = 'custom_definition' | 'catalog_runtime';
 
@@ -66,6 +68,19 @@ export function customModelDefinitionToConfig(
   });
 }
 
+function catalogRuntimeToConfig(runtime: BotCatalogModelRuntime): ResolvedBotLLMConfig['config'] {
+  const profile = isCatsRelayApiBase(runtime.apiBase)
+    ? findRelayModelProfile(runtime.modelId ?? runtime.model)
+    : undefined;
+  const openaiApiMode = runtime.provider === 'openai'
+    ? profile?.openaiApiMode ?? runtime.openaiApiMode
+    : runtime.openaiApiMode;
+  return modelRuntimeToConfig({
+    ...runtime,
+    ...(openaiApiMode ? { openaiApiMode } : {}),
+  });
+}
+
 /**
  * Resolves the effective model for a bound bot without consulting legacy .env
  * as the decision source. Legacy values are used once only to migrate missing
@@ -105,6 +120,6 @@ export function resolveActiveBotLLMConfig(
   return {
     botId,
     source: 'catalog_runtime',
-    config: modelRuntimeToConfig(runtime),
+    config: catalogRuntimeToConfig(runtime),
   };
 }

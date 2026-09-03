@@ -38,6 +38,7 @@ import {
   DEFAULT_CATSCO_RELAY_MODEL_ID,
   RELAY_MODEL_PROFILES,
   findRelayModelProfile,
+  relayModelProfileFromRuntimeDescriptor,
   relayModelProviderBaseUrl,
   relayModelProviderProtocolLabel,
   relayModelProviderSdkLabel,
@@ -217,6 +218,8 @@ interface RelayModelConfig {
   model: string;
   family?: string;
   provider: RelayModelProvider;
+  /** Cloud catalog authority for OpenAI-compatible models. */
+  openaiApiMode?: OpenAIApiMode;
   protocol: string;
   baseUrl: string;
   sdkLabel: string;
@@ -1024,16 +1027,29 @@ function optionalBoolean(value: unknown): boolean | undefined {
 }
 
 function normalizeRelayModelConfig(item: any, config: any, index: number): RelayModelConfig | null {
-  const rawModel = canonicalRelayModelName(item?.model);
+  const cloudProfile = relayModelProfileFromRuntimeDescriptor(item?.id, item?.runtime);
+  const rawModel = canonicalRelayModelName(item?.runtime?.model ?? item?.model ?? item?.id);
   if (!rawModel) return null;
-  const profile = findRelayModelProfile(rawModel);
+  const profile = cloudProfile ?? findRelayModelProfile(rawModel) ?? findRelayModelProfile(item?.id);
   const model = profile?.model || rawModel;
-  const provider = explicitRelayProvider(item)
+  const provider = cloudProfile?.preferredProvider
+    ?? explicitRelayProvider(item)
     ?? profile?.preferredProvider
     ?? normalizeRelayProvider(item?.provider ?? item?.protocol);
+  const rawOpenAIApiMode = item?.runtime?.openaiApiMode
+    ?? item?.runtime?.openai_api_mode
+    ?? item?.openai_api_mode
+    ?? item?.openaiApiMode;
+  const openaiApiMode = provider === 'openai'
+    ? (rawOpenAIApiMode === 'responses' || rawOpenAIApiMode === 'chat_completions'
+      ? rawOpenAIApiMode
+      : profile?.openaiApiMode ?? 'responses')
+    : undefined;
   const protocol = relayModelProviderProtocolLabel(provider);
   const baseUrl = relayEndpointForProtocol(config, provider);
-  const contextWindowTokens = parsePositiveInteger(item?.context_window_tokens)
+  const contextWindowTokens = parsePositiveInteger(item?.runtime?.contextWindowTokens)
+    ?? parsePositiveInteger(item?.runtime?.context_window_tokens)
+    ?? parsePositiveInteger(item?.context_window_tokens)
     ?? parsePositiveInteger(item?.contextWindowTokens)
     ?? profile?.contextWindowTokens
     ?? resolveKnownModelContextWindowTokens(model);
@@ -1043,6 +1059,7 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
     model,
     family: String(item?.family || profile?.family || '').trim() || undefined,
     provider,
+    openaiApiMode,
     protocol,
     baseUrl,
     sdkLabel: relayModelProviderSdkLabel(provider),
@@ -1061,6 +1078,9 @@ function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
     model: profile.model,
     family: profile.family,
     provider: profile.preferredProvider,
+    openaiApiMode: profile.preferredProvider === 'openai'
+      ? profile.openaiApiMode ?? 'responses'
+      : undefined,
     protocol: relayModelProviderProtocolLabel(profile.preferredProvider),
     baseUrl: relayEndpointForProtocol(config, profile.preferredProvider),
     sdkLabel: relayModelProviderSdkLabel(profile.preferredProvider),
@@ -1209,6 +1229,7 @@ function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
     model: model.model,
     family: model.family,
     provider: model.provider,
+    openai_api_mode: model.openaiApiMode,
     protocol: model.protocol,
     base_url: model.baseUrl,
     sdk_label: model.sdkLabel,
@@ -1767,7 +1788,9 @@ function writeRelayModelStartupConfig(
     apiKey,
     contextWindowTokens: model.contextWindowTokens ?? resolveKnownModelContextWindowTokens(model.model),
     reasoningEffort: relayReasoningEffortOrHigh(options.reasoningEffort ?? currentRelayReasoningEffort()),
-    openaiApiMode: 'chat_completions',
+    openaiApiMode: model.provider === 'openai'
+      ? model.openaiApiMode ?? 'responses'
+      : 'chat_completions',
   };
   const result = writeDashboardEnvAndProcess({
     ...modelProfileUpdates(RELAY_MODEL_ENV_KEYS, profile),
@@ -1798,7 +1821,9 @@ function selectedRelayCatalogRuntime(
     model: model.model,
     contextWindowTokens: model.contextWindowTokens ?? resolveKnownModelContextWindowTokens(model.model) ?? 200_000,
     reasoningEffort,
-    openaiApiMode: 'chat_completions',
+    openaiApiMode: model.provider === 'openai'
+      ? model.openaiApiMode ?? 'responses'
+      : 'chat_completions',
     capabilities: model.capabilities ? {
       ...(model.capabilities.vision !== undefined ? { vision: model.capabilities.vision } : {}),
       ...(model.capabilities.tool_calling !== undefined ? { toolCalling: model.capabilities.tool_calling } : {}),
@@ -2451,7 +2476,9 @@ export function createApiRouter(
         model: selected.model,
         contextWindowTokens: selected.contextWindowTokens ?? 200_000,
         reasoningEffort,
-        openaiApiMode: 'chat_completions',
+        openaiApiMode: selected.provider === 'openai'
+          ? selected.openaiApiMode ?? 'responses'
+          : 'chat_completions',
         capabilities: {
           toolCalling: true,
           ...(selected.capabilities?.vision !== undefined ? { vision: selected.capabilities.vision } : {}),
