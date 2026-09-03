@@ -20,6 +20,7 @@ type UploadReason = 'startup' | 'scheduled' | 'manual';
 const ALLOWED_SESSION_TYPES = new Set(['chat', 'cli', 'catscompany', 'feishu', 'weixin']);
 const SESSION_LOG_PATH_RE = /^sessions\/([^/]+)\/(\d{4}-\d{2}-\d{2})\/([^/]+\.jsonl)$/;
 const MAX_APPEND_CHUNK_BYTES = 4 * 1024 * 1024;
+const APPEND_NEWLINE_SCAN_BYTES = 64 * 1024;
 
 interface UploadSession {
   token: string;
@@ -531,14 +532,43 @@ export class CatscoLogUploadScheduler {
 function readCompleteJSONLChunk(filePath: string, offset: number, maxBytes: number): Buffer | null {
   const stats = fs.statSync(filePath);
   if (offset >= stats.size) return null;
-  const length = Math.min(maxBytes, stats.size - offset);
-  const buffer = Buffer.allocUnsafe(length);
   const descriptor = fs.openSync(filePath, 'r');
   try {
-    const bytesRead = fs.readSync(descriptor, buffer, 0, length, offset);
-    const content = buffer.subarray(0, bytesRead);
-    const lastNewline = content.lastIndexOf(0x0a);
-    return lastNewline < 0 ? null : Buffer.from(content.subarray(0, lastNewline + 1));
+    const initialLength = Math.min(maxBytes, stats.size - offset);
+    const initialBuffer = Buffer.allocUnsafe(initialLength);
+    const initialBytesRead = fs.readSync(descriptor, initialBuffer, 0, initialLength, offset);
+    if (initialBytesRead <= 0) return null;
+
+    const initialContent = initialBuffer.subarray(0, initialBytesRead);
+    const lastInitialNewline = initialContent.lastIndexOf(0x0a);
+    if (lastInitialNewline >= 0) {
+      return Buffer.from(initialContent.subarray(0, lastInitialNewline + 1));
+    }
+
+    // Every accepted offset is a JSONL record boundary. With no newline in the
+    // normal chunk, the record at that boundary is larger than the ordinary
+    // chunk limit. Scan only until its first terminating newline so regular
+    // records keep the 4 MiB cap while oversized records remain atomic.
+    const parts = [initialContent];
+    let nextOffset = offset + initialBytesRead;
+    while (nextOffset < stats.size) {
+      const scanLength = Math.min(APPEND_NEWLINE_SCAN_BYTES, stats.size - nextOffset);
+      const scanBuffer = Buffer.allocUnsafe(scanLength);
+      const bytesRead = fs.readSync(descriptor, scanBuffer, 0, scanLength, nextOffset);
+      if (bytesRead <= 0) return null;
+
+      const scannedContent = scanBuffer.subarray(0, bytesRead);
+      const firstNewline = scannedContent.indexOf(0x0a);
+      if (firstNewline >= 0) {
+        parts.push(scannedContent.subarray(0, firstNewline + 1));
+        return Buffer.concat(parts);
+      }
+
+      parts.push(scannedContent);
+      nextOffset += bytesRead;
+    }
+
+    return null;
   } finally {
     fs.closeSync(descriptor);
   }

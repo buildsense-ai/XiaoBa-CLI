@@ -286,6 +286,75 @@ describe('CatscoLogUploadScheduler', () => {
     assert.equal(appendRequests.length, appendRequestCount);
   });
 
+  test('extends a v2 append past 4 MiB to preserve an oversized newline-terminated JSONL record', async () => {
+    const oversizedRecord = `{"entry_type":"runtime","message":"${'x'.repeat(4 * 1024 * 1024)}"}\n`;
+    const trailingRecord = '{"entry_type":"turn","session_id":"after-large-record"}\n';
+    const content = oversizedRecord + trailingRecord;
+    const logPath = 'logs/sessions/catscompany/2026-07-31/oversized-record.jsonl';
+    writeLog(logPath, content, true);
+
+    const appendRequests: Array<{ offset: number; content: Buffer }> = [];
+    server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      req.on('end', () => {
+        if (req.url === '/catsco/agent/bootstrap') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            user_id: 'catsco_123', external_provider: 'catsco', external_user_id: '123',
+            device_id: 'device_test', token_id: 'token-oversized', token: 'v2-upload-token',
+            upload_url: '/catsco/logs/upload', upload_protocol: 2, append_url: '/catsco/logs/append',
+            issued_at: '2026-05-14T00:00:00.000Z',
+          }));
+          return;
+        }
+        if (req.url === '/catsco/logs/append') {
+          const appendContent = multipartFileContent(Buffer.concat(chunks));
+          assert.ok(appendContent.subarray(-1).equals(Buffer.from('\n')));
+          const expectedOffset = Number(req.headers['x-catslog-expected-offset']);
+          appendRequests.push({ offset: expectedOffset, content: appendContent });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            accepted_offset: expectedOffset + appendContent.length,
+            revision: `revision-${appendRequests.length}`,
+          }));
+          return;
+        }
+        res.writeHead(404).end();
+      });
+    });
+    await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    process.env.CATSCO_LOG_UPLOAD_ENABLED = 'true';
+    process.env.CATSCO_LOG_API_BASE_URL = `http://127.0.0.1:${address.port}`;
+    process.env.CATSCO_LOG_STATE_FILE = 'data/catsco-log-state.json';
+    process.env.CATSCO_LOG_STABLE_MINUTES = '0';
+    process.env.CATSCO_LOG_MAX_FILE_BYTES = '1024';
+    process.env.CATSCO_LOG_MAX_FILES_PER_CYCLE = '10';
+    process.env.CATSCO_USER_TOKEN = 'cats-user-token';
+
+    const scheduler = new CatscoLogUploadScheduler(testRoot);
+    await scheduler.runPendingUploadCycle('manual');
+
+    const expectedBytes = Buffer.byteLength(content);
+    assert.equal(appendRequests.length, 2);
+    assert.deepEqual(appendRequests[0], {
+      offset: 0,
+      content: Buffer.from(oversizedRecord),
+    });
+    assert.deepEqual(appendRequests[1], {
+      offset: Buffer.byteLength(oversizedRecord),
+      content: Buffer.from(trailingRecord),
+    });
+    const state = JSON.parse(fs.readFileSync(path.join(testRoot, 'data/catsco-log-state.json'), 'utf8'));
+    assert.equal(state.uploaded[logPath].append.acceptedOffset, expectedBytes);
+
+    const appendRequestCount = appendRequests.length;
+    await scheduler.runPendingUploadCycle('manual');
+    assert.equal(appendRequests.length, appendRequestCount);
+  });
+
   test('reads only the bootstrapped device principal\'s Skills without a UID selector', async () => {
     const requests: Array<{ url?: string; auth?: string }> = [];
     server = http.createServer((req, res) => {
