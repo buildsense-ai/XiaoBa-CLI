@@ -659,6 +659,155 @@ body[data-view="connecting"] .management-entry { min-height: 39px; margin-top: 8
 body[data-view="connecting"] .management-entry strong { font-size: 13px; }
 body[data-view="connecting"] .management-entry small { font-size: 11px; }
 
+/* Connector Lite is a single-purpose desktop companion. Keep connection state
+   visually dominant and collapse identity details into one compact strip. */
+.desktop-state {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.main-grid,
+body[data-view="ready"] .main-grid,
+body[data-view="connecting"] .main-grid {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 12px 16px 16px;
+}
+
+.primary-panel,
+body[data-view="ready"] .primary-panel,
+body[data-view="connecting"] .primary-panel {
+  padding: 22px 28px 14px;
+  border-radius: 12px;
+}
+
+.primary-content,
+body[data-view="connecting"] .primary-content {
+  justify-content: center;
+  overflow: auto;
+}
+
+body[data-view="ready"] h1,
+body[data-view="connecting"] h1 {
+  margin-top: 14px;
+  font-size: 34px;
+  line-height: 1.18;
+}
+
+body[data-view="ready"] .hero-copy,
+body[data-view="connecting"] .hero-copy {
+  margin: 8px 0 16px;
+  font-size: 14px;
+}
+
+body[data-view="connecting"] .progress-list {
+  width: min(640px, 100%);
+}
+
+.summary-panel,
+body[data-view="ready"] .summary-panel,
+body[data-view="connecting"] .summary-panel {
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(180px, .9fr);
+  align-self: auto;
+  overflow: hidden;
+  border-radius: 12px;
+}
+
+.summary-card,
+body[data-view="ready"] .summary-card,
+body[data-view="connecting"] .summary-card {
+  min-width: 0;
+  padding: 11px 15px;
+  border-right: 1px solid var(--line);
+  border-bottom: 0;
+}
+
+.summary-card:last-child { border-right: 0; }
+.summary-card > span,
+.summary-card div > span,
+.summary-card-heading > span,
+body[data-view="ready"] .summary-card > span,
+body[data-view="ready"] .summary-card div > span,
+body[data-view="ready"] .summary-card-heading > span,
+body[data-view="connecting"] .summary-card > span,
+body[data-view="connecting"] .summary-card div > span,
+body[data-view="connecting"] .summary-card-heading > span { font-size: 11px; }
+
+.summary-card > strong,
+.summary-card div > strong,
+body[data-view="ready"] .summary-card > strong,
+body[data-view="ready"] .summary-card div > strong,
+body[data-view="connecting"] .summary-card > strong,
+body[data-view="connecting"] .summary-card div > strong {
+  margin-top: 3px;
+  font-size: 15px;
+}
+
+.summary-card > small,
+body[data-view="ready"] .summary-card > small,
+body[data-view="connecting"] .summary-card > small {
+  margin-top: 2px;
+  font-size: 10px;
+}
+
+.compact-card { gap: 8px; }
+.compact-card .button { min-height: 30px; padding: 0 9px; font-size: 11px; white-space: nowrap; }
+
+.management-entry,
+body[data-view="ready"] .management-entry,
+body[data-view="connecting"] .management-entry {
+  min-height: 42px;
+  margin-top: 9px;
+  justify-content: flex-start;
+}
+.management-entry-icon {
+  width: 27px;
+  height: 27px;
+  margin-right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: #f0f3f8;
+  color: #6f7c91;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+.management-entry > span:nth-child(2) { min-width: 0; flex: 1 1 auto; }
+
+.primary-panel.management-open {
+  grid-row: 1 / -1;
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+.primary-panel.management-open + .summary-panel { display: none; }
+
+@media (max-width: 720px) {
+  .desktop-state { display: none; }
+  .summary-panel,
+  body[data-view="ready"] .summary-panel,
+  body[data-view="connecting"] .summary-panel {
+    grid-template-columns: repeat(4, minmax(155px, 1fr));
+    overflow-x: auto;
+  }
+  .primary-panel,
+  body[data-view="ready"] .primary-panel,
+  body[data-view="connecting"] .primary-panel { padding-inline: 20px; }
+}
+
+@media (max-height: 560px) {
+  .summary-panel,
+  body[data-view="ready"] .summary-panel,
+  body[data-view="connecting"] .summary-panel { display: none; }
+  .main-grid,
+  body[data-view="ready"] .main-grid,
+  body[data-view="connecting"] .main-grid { grid-template-rows: minmax(0, 1fr); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

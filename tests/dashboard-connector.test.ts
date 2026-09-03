@@ -103,6 +103,10 @@ test('Connector Dashboard is the real root and uses a viewport-bound desktop lay
   assert.match(styles, /@media \(max-height: 700px\)/);
   assert.match(styles, /body\[data-view="connecting"\] \.primary-panel[\s\S]*overflow: hidden/);
   assert.match(styles, /body\[data-view="connecting"\] \.progress-list[\s\S]*width: 100%/);
+  assert.match(styles, /\.main-grid,[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(styles, /\.summary-panel,[\s\S]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /\.primary-panel\.management-open \+ \.summary-panel \{ display: none; \}/);
+  assert.match(html, /<aside class="summary-panel" aria-label="当前连接信息">/);
 });
 
 test('background bootstrap waits for login without making network requests', async () => {

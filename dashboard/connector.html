@@ -20,7 +20,8 @@
           </div>
         </div>
         <div class="top-actions">
-          <button class="button button-quiet" id="refresh-button" type="button">刷新</button>
+          <span class="desktop-state">在这台电脑上运行</span>
+          <button class="button button-quiet" id="refresh-button" type="button">刷新状态</button>
         </div>
       </header>
 
@@ -79,7 +80,8 @@
           </div>
 
           <button class="management-entry" id="management-open" type="button">
-            <span><strong>本地管理</strong><small>Connector 服务、日志与故障恢复</small></span>
+            <span class="management-entry-icon" aria-hidden="true">•••</span>
+            <span><strong>连接器设置</strong><small>服务状态、运行日志与故障恢复</small></span>
             <span class="summary-arrow" aria-hidden="true">›</span>
           </button>
 
@@ -138,27 +140,27 @@
           </section>
         </section>
 
-        <aside class="summary-panel">
+        <aside class="summary-panel" aria-label="当前连接信息">
           <article class="summary-card">
-            <span>CatsCo 账号</span>
+            <span>账号</span>
             <strong id="account-name">—</strong>
             <small id="account-meta">等待登录</small>
           </article>
           <article class="summary-card agent-summary-card">
             <div class="summary-card-heading">
-              <span>当前 Agent</span>
+              <span>Agent</span>
               <button class="summary-action" id="agent-switch-open" type="button" disabled>切换</button>
             </div>
             <strong id="agent-name">—</strong>
             <small id="agent-meta">登录后自动准备</small>
           </article>
           <article class="summary-card">
-            <span>当前设备</span>
+            <span>这台电脑</span>
             <strong id="device-name">—</strong>
             <small id="device-meta">本地工具与文件</small>
           </article>
           <article class="summary-card compact-card">
-            <div><span>桌面版本</span><strong id="app-version">—</strong></div>
+            <div><span>Connector 版本</span><strong id="app-version">—</strong></div>
             <button class="button button-small" id="update-button" type="button">检查更新</button>
           </article>
         </aside>
