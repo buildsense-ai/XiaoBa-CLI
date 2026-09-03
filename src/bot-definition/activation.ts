@@ -1,6 +1,7 @@
 import { createCatsCoLocalConfigService, type CatsCoAuthSnapshot } from '../catscompany/local-config';
 import {
   provisionCatsRelayCatalogRuntime,
+  retargetCatsRelayCatalogRuntime,
   refreshCatsRelayCatalogRuntimeCapabilities,
   validateCatsRelayCatalogRuntimeCredential,
   RelayCredentialRejectedError,
@@ -161,38 +162,39 @@ export async function prepareBoundBotDefinition(
         if (definition.model.kind === 'catalog') {
           const runtime = definitionService.readCatalogRuntime(botId);
           const cloudContextWindowTokens = definition.model.contextWindowTokens;
-          if (!runtime || !catalogRuntimeMatchesModelId(runtime, definition.model.modelId)) {
+          const cloudCatalogRuntime = definition.model.catalogRuntime;
+          if (!runtime || !catalogRuntimeMatchesModelId(runtime, definition.model.modelId, cloudCatalogRuntime)) {
             const materialized = await provisionCatsRelayCatalogRuntime({
               botId,
               modelId: definition.model.modelId,
               reasoningEffort: definition.model.reasoningEffort,
               contextWindowTokens: cloudContextWindowTokens,
+              catalogRuntime: cloudCatalogRuntime,
               existingRuntime: runtime,
               auth,
               fetchImpl: options.fetchImpl,
             });
             definitionService.storeCatalogRuntime(materialized);
             materializedCatalogRuntime = true;
-          } else if (
-            (cloudContextWindowTokens !== undefined
-              && runtime.contextWindowTokens !== cloudContextWindowTokens)
-            || (definition.model.reasoningEffort
-              && runtime.reasoningEffort !== definition.model.reasoningEffort)
-          ) {
-            // 云端配置权威：已匹配的 runtime 只更新窗口/推理强度，
-            // 不重新物化凭据（对齐旧协议 cloudSelection 分支的行为）。
-            definitionService.storeCatalogRuntime({
-              ...runtime,
-              ...(cloudContextWindowTokens !== undefined
-                ? { contextWindowTokens: cloudContextWindowTokens }
-                : {}),
-              ...(definition.model.reasoningEffort
-                ? { reasoningEffort: definition.model.reasoningEffort }
-                : {}),
-            });
-          } else if (catalogCapabilitiesNeedRefresh(runtime)) {
-            const refreshed = await refreshCatsRelayCatalogRuntimeCapabilities(runtime, options.fetchImpl ?? fetch);
-            if (refreshed !== runtime) definitionService.storeCatalogRuntime(refreshed);
+          } else {
+            // Keep the credential, but reconcile all non-secret catalog
+            // metadata from CatsCompany. This repairs older runtimes that
+            // persisted OpenAI Chat mode and prevents local metadata drift.
+            const reconciled = retargetCatsRelayCatalogRuntime(
+              runtime,
+              definition.model.modelId,
+              definition.model.reasoningEffort ?? runtime.reasoningEffort,
+              cloudContextWindowTokens ?? runtime.contextWindowTokens,
+              runtime.ownerUid,
+              cloudCatalogRuntime,
+            );
+            if (JSON.stringify(reconciled) !== JSON.stringify(runtime)) {
+              definitionService.storeCatalogRuntime(reconciled);
+            }
+            if (catalogCapabilitiesNeedRefresh(reconciled)) {
+              const refreshed = await refreshCatsRelayCatalogRuntimeCapabilities(reconciled, options.fetchImpl ?? fetch);
+              if (refreshed !== reconciled) definitionService.storeCatalogRuntime(refreshed);
+            }
           }
         }
         const promptCoordinator = getPromptReconcileCoordinator({
@@ -417,22 +419,16 @@ export async function prepareBoundBotDefinition(
               throw error;
             }
           }
-          if (
-            (cloudSelection.reasoningEffort
-              && effectiveRuntime.reasoningEffort !== cloudSelection.reasoningEffort)
-            || (cloudSelection.contextWindowTokens !== undefined
-              && effectiveRuntime.contextWindowTokens !== cloudSelection.contextWindowTokens)
-          ) {
-            definitionService.storeCloudCatalogRuntime({
-              ...effectiveRuntime,
-              ...(cloudSelection.reasoningEffort
-                ? { reasoningEffort: cloudSelection.reasoningEffort }
-                : {}),
-              ...(cloudSelection.contextWindowTokens !== undefined
-                ? { contextWindowTokens: cloudSelection.contextWindowTokens }
-                : {}),
-              ...(cloudSelection.catalogRuntime ? { catalogRuntime: cloudSelection.catalogRuntime } : {}),
-            });
+          const reconciledRuntime = retargetCatsRelayCatalogRuntime(
+            effectiveRuntime,
+            cloudSelection.modelId,
+            cloudSelection.reasoningEffort ?? effectiveRuntime.reasoningEffort,
+            cloudSelection.contextWindowTokens ?? effectiveRuntime.contextWindowTokens,
+            effectiveRuntime.ownerUid,
+            cloudSelection.catalogRuntime,
+          );
+          if (JSON.stringify(reconciledRuntime) !== JSON.stringify(effectiveRuntime)) {
+            definitionService.storeCloudCatalogRuntime(reconciledRuntime);
           }
         }
         sync = definitionService.acceptCloud(botId, cloudModel);

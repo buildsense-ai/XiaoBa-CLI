@@ -69,6 +69,7 @@ export async function provisionCatsRelayCatalogRuntime(
         options.reasoningEffort,
         options.contextWindowTokens,
         ownerUid,
+        options.catalogRuntime,
       );
       await validateCatsRelayCatalogRuntimeCredential(retargeted, fetchImpl);
       return retargeted;
@@ -146,10 +147,15 @@ export function retargetCatsRelayCatalogRuntime(
     // 带进新模型。云端下发优先，否则使用新模型 profile 的标准窗口。
     contextWindowTokens: contextWindowTokens ?? profile.contextWindowTokens,
     reasoningEffort: reasoningEffort ?? 'high',
+    // A cloud runtime descriptor is authoritative. Without one, retain the
+    // discovered local capabilities while still correcting known catalog
+    // protocol metadata (for example old GPT/DeepSeek Chat runtimes).
     openaiApiMode: profile.openaiApiMode ?? 'chat_completions',
-    capabilities: existing.capabilities ?? { ...profile.capabilities },
-    capabilitiesSource: existing.capabilitiesSource ?? 'static',
-    ...(existing.capabilitiesCheckedAt ? { capabilitiesCheckedAt: existing.capabilitiesCheckedAt } : {}),
+    capabilities: catalogRuntime ? { ...profile.capabilities } : existing.capabilities ?? { ...profile.capabilities },
+    capabilitiesSource: catalogRuntime ? 'relay-models' : existing.capabilitiesSource ?? 'static',
+    ...(catalogRuntime
+      ? { capabilitiesCheckedAt: new Date().toISOString() }
+      : existing.capabilitiesCheckedAt ? { capabilitiesCheckedAt: existing.capabilitiesCheckedAt } : {}),
   };
 }
 

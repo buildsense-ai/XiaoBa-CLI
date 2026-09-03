@@ -1201,7 +1201,7 @@ describe('dashboard typed settings API', () => {
     }
   });
 
-  test('POST /cats/relay/model-config/apply writes selected relay model with CatsCo Anthropic settings', async () => {
+  test('POST /cats/relay/model-config/apply uses cloud-authoritative Responses metadata for a relay catalog model', async () => {
     const catsApp = express();
     catsApp.use(express.json());
     catsApp.get('/api/relay/config', (req, res) => {
@@ -1232,6 +1232,14 @@ describe('dashboard typed settings API', () => {
             provider: 'openai',
             protocol: 'OpenAI-compatible',
             base_url: 'https://relay.catsco.cc/v1',
+            runtime: {
+              catalogModelId: 'deepseek-v4-flash',
+              model: 'deepseek-v4-flash',
+              provider: 'openai',
+              contextWindowTokens: 1000000,
+              openaiApiMode: 'responses',
+              capabilities: { vision: true, toolCalling: true, streaming: true },
+            },
             enabled: true,
             quota_class: 'flash-low',
           },
@@ -1278,14 +1286,17 @@ describe('dashboard typed settings API', () => {
       assert.equal(data.selectedModel.id, 'deepseek-v4-flash');
       assert.equal(data.selectedModel.base_url, 'https://relay.catsco.cc/v1');
       assert.equal(data.selectedModel.sdk_label, 'OpenAI SDK');
+      assert.equal(data.selectedModel.openai_api_mode, 'responses');
       assert.equal(parsed.GAUZ_LLM_PROVIDER, 'openai');
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/v1');
       assert.equal(parsed.GAUZ_LLM_MODEL, 'deepseek-v4-flash');
       assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
       assert.equal(parsed.GAUZ_LLM_REASONING_EFFORT, 'max');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-openai-compatible');
+      assert.equal(parsed.GAUZ_LLM_OPENAI_API_MODE, 'responses');
       assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
       assert.equal(parsed.CATSCO_RELAY_LLM_REASONING_EFFORT, 'max');
+      assert.equal(parsed.CATSCO_RELAY_LLM_OPENAI_API_MODE, 'responses');
       assert.equal(parsed.CATSCO_RELAY_LLM_VISION_CAPABLE, 'true');
       assert.equal(parsed.CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE, 'true');
       assert.equal(data.selectedModel.context_window_tokens, 1000000);
