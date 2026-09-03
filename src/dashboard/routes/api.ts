@@ -2784,8 +2784,8 @@ export function createApiRouter(
       });
     }
     try {
-      updateController.installUpdate();
-      return res.json({ ok: true });
+      const status = updateController.installUpdate();
+      return res.json({ ok: true, ...status });
     } catch (e: any) {
       return res.status(500).json({
         error: e?.message || String(e),
