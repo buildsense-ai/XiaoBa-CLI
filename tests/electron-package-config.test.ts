@@ -22,6 +22,10 @@ const connectorBuilderConfig = require('../electron-builder.connector.config.cjs
   files?: string[];
   afterPack?: unknown;
   appId?: string;
+  compression?: string;
+  removePackageScripts?: boolean;
+  electronLanguages?: string[];
+  extraFiles?: unknown[];
 };
 
 test('desktop package keeps production dependencies without a duplicate node_modules resource', () => {
@@ -44,16 +48,29 @@ test('Connector Lite package has an isolated release profile', () => {
   assert.match(electronMain, /const connectorLitePackage = isConnectorLitePackage\(appRoot\)/);
   assert.match(electronMain, /dashboardModule\.startConnectorLiteDashboard/);
   assert.match(electronMain, /if \(!connectorLitePackage\) \{\s+const runtimeEnvironmentModulePath/);
+  assert.deepEqual(connectorBuilderConfig.extraFiles, []);
+  assert.match(electronMain, /process\.env\.XIAOBA_CONNECTOR_PACKAGE = 'connector-lite'/);
+  assert.equal(connectorBuilderConfig.compression, 'normal');
+  assert.equal(connectorBuilderConfig.removePackageScripts, true);
+  assert.deepEqual(connectorBuilderConfig.electronLanguages, ['en-US', 'zh-CN']);
   assert.deepEqual(connectorBuilderConfig.files, [
     'dist/connector/index.js',
     'dist/connector-dashboard/server.js',
-    'dist/connector-dashboard/local-file-grants.js',
-    'electron/**/*',
-    'dashboard/**/*',
-    'prompts/**/*',
-    '.env.example',
+    'electron/main.js',
+    'electron/preload.js',
+    'electron/gpu-compat.js',
+    'electron/renderer-gone.js',
+    'electron/update-errors.js',
+    'dashboard/connector.html',
+    'dashboard/connector.css',
+    'dashboard/connector.js',
+    'dashboard/cat-icon.png',
     'package.json',
   ]);
+  assert.doesNotMatch(electronMain, /if \(!fs\.existsSync\(envPath\)\) \{/);
+  assert.match(electronMain, /if \(!connectorLitePackage && !fs\.existsSync\(envPath\)\) \{/);
+  assert.match(electronMain, /if \(!connectorLitePackage\) \{\s+const promptsDest/);
+  assert.doesNotMatch(JSON.stringify(connectorBuilderConfig.files), /cache-trace|turn-errors|prompts|\.env\.example/);
 });
 
 test('desktop package keeps all compiled JavaScript entrypoints for the low-risk phase', () => {

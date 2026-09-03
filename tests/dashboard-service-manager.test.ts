@@ -53,11 +53,6 @@ describe('dashboard service manager', () => {
     ];
     const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
     const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-packaged-app-'));
-    const bundledNode = process.platform === 'win32'
-      ? path.join(appRoot, 'build-resources', 'runtime', 'node', 'node.exe')
-      : path.join(appRoot, 'build-resources', 'runtime', 'node', 'bin', 'node');
-    fs.mkdirSync(path.dirname(bundledNode), { recursive: true });
-    fs.writeFileSync(bundledNode, '');
 
     process.env.XIAOBA_APP_ROOT = appRoot;
     process.env.XIAOBA_IS_PACKAGED = '1';
@@ -71,7 +66,7 @@ describe('dashboard service manager', () => {
       const service = manager.getService('catscompany');
 
       assert.ok(service);
-      assert.equal(service.command, bundledNode);
+      assert.equal(service.command, process.execPath);
       assert.match(normalize(service.args[0]), /dist\/connector\/index\.js$/);
       assert.equal(service.args.length, 1);
     } finally {

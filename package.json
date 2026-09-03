@@ -15,7 +15,7 @@
     "start:cli": "node dist/index.js",
     "electron:dev": "npm run build && node scripts/start-electron-dev.mjs",
     "electron:build": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --publish never",
-    "electron:build:connector": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.connector.config.cjs --publish never",
+    "electron:build:connector": "npm run build && npm run prune:electron-optionals && electron-builder --config electron-builder.connector.config.cjs --publish never",
     "electron:build:mac": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --mac --publish never",
     "electron:build:win": "npm run build && node scripts/prepare-runtime.mjs win32 x64 && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --win --publish never",
     "electron:build:linux": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --linux --publish never",

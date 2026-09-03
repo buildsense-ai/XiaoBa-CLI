@@ -11,19 +11,10 @@ await build({
   platform: 'node',
   format: 'cjs',
   target: 'node18',
-  packages: 'external',
-  external: [
-    'ws',
-    'glob',
-    'sharp',
-    'pdf-parse',
-    '@napi-rs/canvas',
-    'axios',
-    'chalk',
-    'dotenv',
-    'gray-matter',
-    'ora',
-  ],
+  // Bundle third-party packages into the isolated Connector artifact. This
+  // avoids shipping the full CLI dependency tree; native optional ws addons
+  // remain optional and ws falls back to its built-in JavaScript path.
+  external: ['bufferutil', 'utf-8-validate'],
   sourcemap: false,
   minify: false,
   legalComments: 'none',

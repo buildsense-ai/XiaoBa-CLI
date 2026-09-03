@@ -32,6 +32,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
     platform: defaultPlatform,
     arch: defaultArch,
     refresh: cliOptions.refresh,
+    runtimeNames: cliOptions.runtimeNames,
   }).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
@@ -45,6 +46,8 @@ export async function main(options = {}) {
   const platform = normalizePlatform(options.platform || defaultPlatform);
   const arch = normalizeArch(options.arch || defaultArch);
   const refresh = options.refresh === true;
+  const runtimeNames = options.runtimeNames || ['node', 'python'];
+  const selectiveRuntimeBuild = Array.isArray(options.runtimeNames);
   const runtimeRoot = options.runtimeRoot || defaultRuntimeRoot;
   const downloadCacheRoot = path.resolve(
     projectRoot,
@@ -59,14 +62,19 @@ export async function main(options = {}) {
 
   const preparedRuntimes = [];
 
-  preparedRuntimes.push(
-    await prepareDownloadedRuntime(manifest, 'node', platform, arch, runtimeRoot, downloadCacheRoot, refresh),
-  );
-  preparedRuntimes.push(
-    await prepareDownloadedRuntime(manifest, 'python', platform, arch, runtimeRoot, downloadCacheRoot, refresh),
-  );
+  for (const runtimeName of runtimeNames) {
+    if (runtimeName !== 'node' && runtimeName !== 'python') {
+      throw new Error(`Unsupported runtime selection: ${runtimeName}`);
+    }
+    preparedRuntimes.push(
+      await prepareDownloadedRuntime(manifest, runtimeName, platform, arch, runtimeRoot, downloadCacheRoot, refresh),
+    );
+  }
 
-  if (platform === 'win32') {
+  // Preserve the full desktop build's historical bundled Git. A selective
+  // Connector build (for example --only=node) deliberately omits it and uses
+  // the normal system fallback instead.
+  if (platform === 'win32' && !selectiveRuntimeBuild) {
     preparedRuntimes.push(prepareGitRuntime(runtimeRoot, platform));
   }
 
@@ -532,7 +540,7 @@ function escapePowerShellPath(value) {
   return value.replace(/`/g, '``').replace(/"/g, '`"');
 }
 
-function parseArgs(args) {
+export function parseArgs(args) {
   const options = {
     refresh: false,
   };
@@ -541,6 +549,10 @@ function parseArgs(args) {
   for (const argument of args) {
     if (argument === '--refresh') {
       options.refresh = true;
+      continue;
+    }
+    if (argument.startsWith('--only=')) {
+      options.runtimeNames = argument.slice('--only='.length).split(',').map(value => value.trim()).filter(Boolean);
       continue;
     }
     positionals.push(argument);

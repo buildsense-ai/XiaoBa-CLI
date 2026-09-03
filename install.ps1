@@ -62,31 +62,72 @@ function Check-Node {
 }
 
 # ---- 克隆/更新仓库 ----
+$RepoChanged = $true
+$BuildNeeded = $true
 function Setup-Repo {
     if (Test-Path "$InstallDir\.git") {
-        Log "检测到已有安装，正在更新..."
+        Log "检测到已有安装，正在检查更新..."
         Set-Location $InstallDir
-        git pull --ff-only 2>$null
-        if ($LASTEXITCODE -ne 0) { Warn "更新失败，使用现有版本继续" }
+        $before = (git rev-parse HEAD 2>$null)
+        git pull --ff-only *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Warn "更新失败，使用现有版本继续"
+        } else {
+            $after = (git rev-parse HEAD 2>$null)
+            if ($before -and $before -eq $after) {
+                $script:RepoChanged = $false
+                Log "代码已是最新版本"
+            } else {
+                Log "代码已更新"
+            }
+        }
     } else {
-        Log "正在下载 CatsCo..."
-        git clone $RepoUrl $InstallDir
+        Log "正在下载 CatsCo（仅获取最新版本）..."
+        $parent = Split-Path -Parent $InstallDir
+        if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+        git clone --depth 1 --single-branch $RepoUrl $InstallDir
         Set-Location $InstallDir
     }
 }
 
+function Get-LockHash {
+    return (Get-FileHash -Algorithm SHA256 -Path "$InstallDir\package-lock.json").Hash.ToLowerInvariant()
+}
+
 # ---- 安装依赖 ----
 function Install-Deps {
-    Log "正在安装依赖..."
-    npm install --no-audit --no-fund 2>$null
+    $marker = "$InstallDir\.catsco-package-lock.sha256"
+    $lockHash = Get-LockHash
+    $ready = (-not $RepoChanged) -and (Test-Path "$InstallDir\node_modules") -and
+        (Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $lockHash) -and
+        (Test-Path "$InstallDir\dist\index.js")
+    if ($ready) {
+        $script:BuildNeeded = $false
+        Log "依赖和构建产物均已就绪，跳过重复处理"
+        return
+    }
+
+    Log "正在安装依赖（首次安装可能需要一些时间）..."
+    $sameLock = (Test-Path "$InstallDir\node_modules") -and (Test-Path $marker) -and
+        ((Get-Content $marker -Raw).Trim() -eq $lockHash)
+    if ($sameLock) {
+        npm install --include=dev --no-audit --no-fund --prefer-offline --progress=false
+    } else {
+        npm ci --include=dev --no-audit --no-fund --prefer-offline --progress=false
+    }
     Log "依赖安装完成"
 }
 
 # ---- 构建 ----
 function Build-Project {
+    if (-not $BuildNeeded) { return }
+
     Log "正在构建..."
-    npm run build 2>$null
-    Log "构建完成"
+    npm run build
+    npm prune --omit=dev --no-audit --no-fund --prefer-offline --progress=false
+    $finalLockHash = Get-LockHash
+    Set-Content -Path "$InstallDir\.catsco-package-lock.sha256" -Value $finalLockHash -NoNewline
+    Log "构建完成（已移除开发依赖）"
 }
 
 # ---- 初始化配置 ----
@@ -107,7 +148,7 @@ function Create-Launcher {
 cd /d "%~dp0"
 echo 正在启动 CatsCo Connector...
 start http://localhost:$DashboardPort
-npx tsx src/index.ts dashboard
+node dist\index.js dashboard
 "@ | Out-File -FilePath $launcher -Encoding ASCII
     Log "启动脚本已创建: $launcher"
 

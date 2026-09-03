@@ -551,29 +551,33 @@ async function startServer() {
   // 闂佽崵濮崇粈浣规櫠娴犲鍋柛鈩冾殢閸熷懘鏌曟径鍫濃偓妤冪矙婵犲洦鐓熼柍鍝勶工閺嬫稓绱撳鍛ч柡浣哥Ч瀹曞ジ鎮㈢亸浣稿緧闂備礁鎲￠悧鏇㈠箠鎼淬劌绠栨俊銈呮噺閸嬨劑鏌嶉搹瑙勭erData闂佽瀛╃粙鎺曟懌闂佸搫鍊风欢姘跺箖娴犲惟闁挎洍鍋撻柣鎾存礋閺屸剝鎷呴崫鍕垫毉閻庤鎸风欢姘跺极?
   const userDataPath = app.getPath('userData');
   process.env.XIAOBA_USER_DATA_DIR = userDataPath;
-  const skillsPath = path.join(userDataPath, 'skills');
-  if (!String(process.env.XIAOBA_SKILLS_DIR || '').trim()) {
-    process.env.XIAOBA_SKILLS_DIR = skillsPath;
+  if (!connectorLitePackage) {
+    const skillsPath = path.join(userDataPath, 'skills');
+    if (!String(process.env.XIAOBA_SKILLS_DIR || '').trim()) {
+      process.env.XIAOBA_SKILLS_DIR = skillsPath;
+    }
+    fs.mkdirSync(process.env.XIAOBA_SKILLS_DIR, { recursive: true });
   }
-  fs.mkdirSync(process.env.XIAOBA_SKILLS_DIR, { recursive: true });
   // Keep this before createApplicationMenu(): close-to-tray preferences are read from process.cwd()/.xiaoba/catsco.json.
   process.chdir(userDataPath);
 
   // 濠电姷顣介埀顒€鍟块埀顒€缍婇幃妯荤箙缁茬尃rData闂傚倷鐒﹁ぐ鍐嫉椤掑嫭鍎夐柛娑欐綑鐎?env闂備焦瀵х粙鎴炵附閺冨倸鍨濋柣鏇犵％p闂傚倷鐒﹁ぐ鍐嚐椤栫倛鍥蓟閵夈儳顦?env.example
   const envPath = path.join(userDataPath, '.env');
-  if (!fs.existsSync(envPath)) {
+  if (!connectorLitePackage && !fs.existsSync(envPath)) {
     const examplePath = path.join(appRoot, '.env.example');
     if (fs.existsSync(examplePath)) {
       fs.copyFileSync(examplePath, envPath);
     }
   }
 
-  // 闂備礁鎲￠懝楣冨嫉椤掑嫷鏁嗛柣鎰惈缁€鍐煕濞戝崬鐏ｉ柡?skills 闂?userData闂備焦瀵х粙鎴︽偋閸涱垱宕叉慨妯垮煐閸嬧晜绻涢崱妯虹仸闁哄棗绻橀弻鐔煎级閹存繃些闂佷紮绲婚崝搴ㄥ箟濡ゅ懎宸濇い鏍ㄧ〒閺?skills闂?
-  // Skills are user-managed. New installs start empty; SkillHub installs populate this directory.
-  const promptsDest = path.join(userDataPath, 'prompts');
-  const promptsSrc = path.join(appRoot, 'prompts');
-  if (!fs.existsSync(promptsDest) && fs.existsSync(promptsSrc)) {
-    fs.cpSync(promptsSrc, promptsDest, { recursive: true });
+  // Full Runtime only: Connector Lite neither evaluates prompts nor manages
+  // local skills, so it must not copy prompt assets into user data.
+  if (!connectorLitePackage) {
+    const promptsDest = path.join(userDataPath, 'prompts');
+    const promptsSrc = path.join(appRoot, 'prompts');
+    if (!fs.existsSync(promptsDest) && fs.existsSync(promptsSrc)) {
+      fs.cpSync(promptsSrc, promptsDest, { recursive: true });
+    }
   }
 
   // 闂備礁鎲″缁樻叏閹灐褰掑床缁跺env
@@ -582,8 +586,10 @@ async function startServer() {
   // 闂備礁鎲＄粙鎴︽晝閵娾晜鍎?dashboard server app 闂備焦鐪归崝宀€鈧凹鍓熼幃鍧楀礋椤栨稈鎸冮梺鍛婁緱閸撴稓绮旂€靛摜纾介柛鎰劤濞呮瑧绱掓潏銊у磼sar 闂備礁鎲￠崝鏇㈠箯閹寸姵顫?
   process.env.XIAOBA_APP_ROOT = appRoot;
   process.env.XIAOBA_IS_PACKAGED = app.isPackaged ? '1' : '0';
-  process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR = getRuntimeRoot();
-  if (!String(process.env.XIAOBA_PROMPT_OVERRIDES_DIR || '').trim()) {
+  if (!connectorLitePackage) {
+    process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR = getRuntimeRoot();
+  }
+  if (!connectorLitePackage && !String(process.env.XIAOBA_PROMPT_OVERRIDES_DIR || '').trim()) {
     process.env.XIAOBA_PROMPT_OVERRIDES_DIR = path.join(userDataPath, 'prompt-overrides');
   }
 
@@ -731,6 +737,7 @@ function isTrustedDashboardUrl(value) {
 const CATSCOMPANY_FILE_SELECTION_LIMIT = 6;
 
 ipcMain.handle('catsco:select-files', async (event) => {
+  if (isConnectorLitePackage()) return [];
   const owner = BrowserWindow.fromWebContents(event.sender) || mainWindow || undefined;
   const frameUrl = event.senderFrame?.url || event.sender.getURL();
   if (owner !== mainWindow || !isTrustedDashboardUrl(frameUrl)) return [];
@@ -741,9 +748,7 @@ ipcMain.handle('catsco:select-files', async (event) => {
   const result = await dialog.showOpenDialog(owner, options);
   if (result.canceled) return [];
 
-  const localFileGrantEntry = isConnectorLitePackage()
-    ? path.join(getAppRoot(), 'dist', 'connector-dashboard', 'local-file-grants.js')
-    : path.join(getAppRoot(), 'dist', 'dashboard', 'local-file-grants');
+  const localFileGrantEntry = path.join(getAppRoot(), 'dist', 'dashboard', 'local-file-grants');
   const { createLocalFileGrant } = require(localFileGrantEntry);
   return result.filePaths
     .map((filePath, index) => {

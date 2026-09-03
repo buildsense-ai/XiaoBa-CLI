@@ -20,10 +20,16 @@ describe('standalone Connector Lite', () => {
     assert.match(electronMain, /connector-lite/);
     assert.match(electronMain, /connector-dashboard/);
     assert.match(liteDashboard, /connectorOnly: true/);
+    assert.match(liteDashboard, /status\(404\)\.json\(\{ error: 'api_not_found' \}\)/);
+    assert.doesNotMatch(liteDashboard, /registerCacheTraceRoutes|registerTurnErrorRoutes|cache-trace|turn-errors/);
     assert.doesNotMatch(liteDashboard, /weixin\/qrcode|weixin\/channel-binding/);
     assert.doesNotMatch(liteFrontend, /feishu|weixin|微信|飞书/);
     assert.doesNotMatch(liteHtml, /feishu|weixin|微信|飞书/);
+    assert.doesNotMatch(liteHtml, /Cache Trace|Turn Errors|cache-trace|turn-errors/);
+    assert.doesNotMatch(liteFrontend, /cache-trace|turn-errors/);
+    assert.match(liteHtml, /获取 Connector 凭证并绑定这台电脑/);
     assert.match(buildScript, /bundle:\s*true/);
+    assert.match(serviceManager, /ELECTRON_RUN_AS_NODE/);
     assert.doesNotMatch(source, /CatsCompanyBot/);
     assert.doesNotMatch(source, /MessageSessionManager/);
     assert.doesNotMatch(source, /createAdapterRuntime/);

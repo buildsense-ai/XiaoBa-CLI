@@ -50,6 +50,9 @@ export async function startConnectorLiteDashboard(
   });
 
   app.use('/api', dashboardAuth.middleware, createConnectorLiteRouter(serviceManager, options.updateController, autoStart));
+  // Never let an unknown API request fall through to the HTML SPA. Clients
+  // should always receive JSON from /api, including for removed Lite features.
+  app.use('/api', (_req, res) => res.status(404).json({ error: 'api_not_found' }));
 
   const frontendPath = path.join(__dirname, '../../dashboard');
   app.get('/', (_req, res) => res.sendFile(path.join(frontendPath, 'connector.html')));

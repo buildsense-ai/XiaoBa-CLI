@@ -61,7 +61,7 @@
 
             <ol class="progress-list" id="progress-list" hidden>
               <li data-step="account"><span></span><div><strong>验证 CatsCo 账号</strong><small>使用本机保存的登录状态</small></div></li>
-              <li data-step="agent"><span></span><div><strong>准备本机 Agent</strong><small>同步云端模型、Prompt 和 Skills</small></div></li>
+              <li data-step="agent"><span></span><div><strong>绑定当前 Agent</strong><small>获取 Connector 凭证并绑定这台电脑</small></div></li>
               <li data-step="connector"><span></span><div><strong>启动 Connector</strong><small>让 WebApp 可以调用这台电脑</small></div></li>
             </ol>
 
@@ -132,14 +132,6 @@
                     <div><strong>重新连接 Connector</strong><small>重新检查本机 Agent、设备绑定和后台服务。</small></div>
                     <button class="button button-secondary" id="diagnostic-retry" type="button">重新连接</button>
                   </article>
-                  <article class="recovery-row">
-                    <div><strong>Cache Trace</strong><small>查看缓存命中、写入与上下文复用情况。</small></div>
-                    <a class="button button-quiet" href="/cache-trace.html" target="_blank" rel="noopener">打开</a>
-                  </article>
-                  <article class="recovery-row">
-                    <div><strong>Turn Errors</strong><small>查看最近的回合错误和失败原因。</small></div>
-                    <a class="button button-quiet" href="/turn-errors.html" target="_blank" rel="noopener">打开</a>
-                  </article>
                 </div>
               </section>
             </div>
@@ -185,7 +177,7 @@
       </header>
 
       <div class="agent-switch-body">
-        <p class="agent-switch-intro">一台电脑同一时间连接一个 Agent。切换时 Connector 会短暂重启，云端模型、Prompt 和 Skills 会同步到本机。</p>
+        <p class="agent-switch-intro">一台电脑同一时间连接一个 Agent。切换后 Connector 会短暂重启，这台电脑将提供给所选 Agent 使用。</p>
         <div class="agent-list" id="agent-list" role="radiogroup" aria-label="可用 Agent">
           <div class="agent-list-state">正在读取 Agent……</div>
         </div>

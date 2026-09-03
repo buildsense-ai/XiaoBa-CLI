@@ -8,11 +8,9 @@ const common = {
   platform: 'node',
   format: 'cjs',
   target: 'node18',
-  packages: 'external',
-  external: [
-    'express',
-    'ws',
-  ],
+  // Bundle the small HTTP stack so Connector Lite has no production
+  // node_modules tree. Native optional ws addons are not used by Dashboard.
+  external: ['bufferutil', 'utf-8-validate'],
   sourcemap: false,
   minify: false,
   legalComments: 'none',
@@ -25,10 +23,4 @@ await build({
   outfile: path.join(outdir, 'server.js'),
 });
 
-await build({
-  ...common,
-  entryPoints: [path.join(projectRoot, 'src', 'dashboard', 'local-file-grants.ts')],
-  outfile: path.join(outdir, 'local-file-grants.js'),
-});
-
-console.log('Built standalone Connector Lite Dashboard entrypoints.');
+console.log('Built standalone Connector Lite Dashboard entrypoint.');

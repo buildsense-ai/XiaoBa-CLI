@@ -8,6 +8,7 @@ const electronPreload = readFileSync(join(process.cwd(), 'electron/preload.js'),
 
 test('Electron exposes a safe CatsCo file picker bridge', () => {
   assert.match(electronMain, /ipcMain\.handle\('catsco:select-files'/);
+  assert.match(electronMain, /if \(isConnectorLitePackage\(\)\) return \[\];/);
   assert.match(electronMain, /dialog\.showOpenDialog/);
   assert.match(electronMain, /function isTrustedDashboardUrl\(value\)/);
   assert.match(electronMain, /owner !== mainWindow \|\| !isTrustedDashboardUrl\(frameUrl\)/);

@@ -173,8 +173,11 @@ export class ServiceManager extends EventEmitter {
     const useConnectorLite = packaged
       && process.env.XIAOBA_CONNECTOR_PACKAGE === 'connector-lite';
     if (packaged) {
-      // 打包版：优先使用内嵌的 node.exe，否则回退系统 node
-      command = runtimeEnvironment.binaries.node.executable || 'node';
+      // Connector Lite reuses Electron's embedded Node runtime. The full
+      // desktop package keeps its standalone Node/Python/Git runtime contract.
+      command = useConnectorLite
+        ? process.execPath
+        : runtimeEnvironment.binaries.node.executable || 'node';
       const entry = (name: string) => name === 'catscompany' && useConnectorLite
         ? path.join(appRoot, 'dist', 'connector', 'index.js')
         : path.join(appRoot, 'dist', 'index.js');
@@ -272,6 +275,14 @@ export class ServiceManager extends EventEmitter {
     // 打包版：确保子进程能找到 node_modules
     if (this.isPackaged() && process.env.XIAOBA_NODE_MODULES) {
       envVars.NODE_PATH = process.env.XIAOBA_NODE_MODULES;
+    }
+
+    if (
+      name === 'catscompany'
+      && this.isPackaged()
+      && process.env.XIAOBA_CONNECTOR_PACKAGE === 'connector-lite'
+    ) {
+      envVars.ELECTRON_RUN_AS_NODE = '1';
     }
 
     if (name === 'catscompany') {

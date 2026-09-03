@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # ============================================
 #  CatsCo 一键安装脚本 (macOS / Linux)
@@ -98,30 +98,75 @@ check_python() {
 }
 
 # ---- 克隆/更新仓库 ----
+REPO_CHANGED=1
+BUILD_NEEDED=1
 setup_repo() {
   if [ -d "$INSTALL_DIR/.git" ]; then
-    log "检测到已有安装，正在更新..."
+    log "检测到已有安装，正在检查更新..."
     cd "$INSTALL_DIR"
-    git pull --ff-only || warn "更新失败，使用现有版本继续"
+    local before after
+    before=$(git rev-parse HEAD 2>/dev/null || true)
+    if git pull --ff-only >/dev/null 2>&1; then
+      after=$(git rev-parse HEAD 2>/dev/null || true)
+      if [ -n "$before" ] && [ "$before" = "$after" ]; then
+        REPO_CHANGED=0
+        log "代码已是最新版本"
+      else
+        log "代码已更新"
+      fi
+    else
+      warn "更新失败，使用现有版本继续"
+    fi
   else
-    log "正在下载 CatsCo..."
-    git clone "$REPO_URL" "$INSTALL_DIR"
+    log "正在下载 CatsCo（仅获取最新版本）..."
+    mkdir -p "$(dirname "$INSTALL_DIR")"
+    git clone --depth 1 --single-branch "$REPO_URL" "$INSTALL_DIR"
     cd "$INSTALL_DIR"
   fi
 }
 
 # ---- 安装依赖 ----
+# npm ci 保证依赖与 package-lock.json 一致；prefer-offline 能复用本机缓存。
+# 构建完成后会 prune 掉 devDependencies，所以代码未更新时可以完全跳过 npm。
 install_deps() {
-  log "正在安装依赖..."
-  npm install --no-audit --no-fund 2>&1 | tail -1
+  local lock_hash marker
+  marker="$INSTALL_DIR/.catsco-package-lock.sha256"
+  lock_hash=$(hash_file "$INSTALL_DIR/package-lock.json")
+
+  if [ "$REPO_CHANGED" -eq 0 ] && [ -d "$INSTALL_DIR/node_modules" ] && [ -f "$marker" ] && [ "$(cat "$marker")" = "$lock_hash" ] && [ -f "$INSTALL_DIR/dist/index.js" ]; then
+    BUILD_NEEDED=0
+    log "依赖和构建产物均已就绪，跳过重复处理"
+    return
+  fi
+
+  log "正在安装依赖（首次安装可能需要一些时间）..."
+  if [ -d "$INSTALL_DIR/node_modules" ] && [ -f "$marker" ] && [ "$(cat "$marker")" = "$lock_hash" ]; then
+    npm install --include=dev --no-audit --no-fund --prefer-offline --progress=false
+  else
+    npm ci --include=dev --no-audit --no-fund --prefer-offline --progress=false
+  fi
   log "依赖安装完成"
+}
+
+hash_file() {
+  if has sha256sum; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
 }
 
 # ---- 构建 ----
 build_project() {
+  if [ "$BUILD_NEEDED" -eq 0 ]; then
+    return
+  fi
+
   log "正在构建..."
-  npm run build 2>&1 | tail -1
-  log "构建完成"
+  npm run build
+  npm prune --omit=dev --no-audit --no-fund --prefer-offline --progress=false
+  printf '%s\n' "$(hash_file "$INSTALL_DIR/package-lock.json")" > "$INSTALL_DIR/.catsco-package-lock.sha256"
+  log "构建完成（已移除开发依赖）"
 }
 
 # ---- 初始化配置 ----
@@ -141,7 +186,7 @@ create_launcher() {
 #!/bin/bash
 cd "$(dirname "$0")"
 echo "正在启动 CatsCo Connector..."
-npx tsx src/index.ts dashboard &
+node dist/index.js dashboard &
 sleep 2
 open "http://localhost:3800" 2>/dev/null || xdg-open "http://localhost:3800" 2>/dev/null || echo "请打开浏览器访问 http://localhost:3800"
 wait

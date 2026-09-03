@@ -29,9 +29,11 @@ test('Connector lets an authenticated user switch the Agent bound to this comput
   assert.match(html, /id="agent-switch-open"[^>]*>切换/);
   assert.match(html, /切换 Agent/);
   assert.match(html, /一台电脑同一时间连接一个 Agent/);
+  assert.match(html, /这台电脑将提供给所选 Agent 使用/);
+  assert.match(html, /获取 Connector 凭证并绑定这台电脑/);
+  assert.doesNotMatch(html, /同步云端模型、Prompt 和 Skills/);
   assert.match(script, /settled\('\/cats\/bots'\)/);
   assert.match(script, /request\('\/cats\/switch-bot'/);
-  assert.match(script, /微信服务会停止/);
   assert.doesNotMatch(script, /\/cats\/create-bot/);
   assert.match(styles, /\.agent-switch-dialog/);
   assert.match(html, /id="logout-dialog"/);
@@ -43,18 +45,17 @@ test('Connector lets an authenticated user switch the Agent bound to this comput
   assert.match(script, /setNotice\(`\$\{title\}：\$\{detail\}`/);
 });
 
-test('Connector local management restores channels and gives logs a full workspace', () => {
+test('Connector Lite local management keeps only Connector service, logs, and recovery', () => {
   assert.match(html, /本地管理/);
-  assert.match(html, /通道与服务/);
+  assert.match(html, /Connector 服务/);
   assert.match(html, /运行日志/);
   assert.match(html, /故障恢复/);
-  assert.match(html, /飞书/);
-  assert.match(html, /微信/);
   assert.match(html, /service-logs/);
   assert.match(script, /\/services\/\$\{encodeURIComponent\(name\)\}\/\$\{action\}/);
-  assert.match(script, /\/weixin\/qrcode/);
   assert.match(script, /sanitizeLogLine/);
   assert.match(styles, /\.log-viewer\s*\{[\s\S]*flex: 1 1 auto/);
+  assert.doesNotMatch(html, /飞书|微信|Cache Trace|Turn Errors|cache-trace|turn-errors/);
+  assert.doesNotMatch(script, /\/weixin\/qrcode/);
   assert.doesNotMatch(html, /<details class="diagnostics-panel"/);
 });
 
