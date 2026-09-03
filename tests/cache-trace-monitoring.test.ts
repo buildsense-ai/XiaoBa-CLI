@@ -281,12 +281,12 @@ test('one attempt keeps one JSONL file when it crosses midnight', async () => {
   }
 });
 
-test('standalone cache trace diagnostics remain available after Dashboard reduction', () => {
+test('standalone cache trace diagnostics remain available outside Connector Lite', () => {
   const root = path.resolve(__dirname, '..');
   const connector = fs.readFileSync(path.join(root, 'dashboard', 'connector.html'), 'utf8');
   const page = fs.readFileSync(path.join(root, 'dashboard', 'cache-trace.html'), 'utf8');
-  assert.match(connector, /本地管理/);
-  assert.match(connector, /Cache Trace/);
+  assert.match(connector, /连接器设置/);
+  assert.doesNotMatch(connector, /Cache Trace|cache-trace\.html/);
   assert.doesNotMatch(connector, /模型选择|SkillHub Skills|System Prompt|聊天输入/);
   assert.match(page, /缓存命中监控/);
   assert.match(page, /catsco\.dashboardApiKey/);

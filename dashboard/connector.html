@@ -20,7 +20,8 @@
           </div>
         </div>
         <div class="top-actions">
-          <button class="button button-quiet" id="refresh-button" type="button">刷新</button>
+          <span class="desktop-state">在这台电脑上运行</span>
+          <button class="button button-quiet" id="refresh-button" type="button">刷新状态</button>
         </div>
       </header>
 
@@ -61,7 +62,7 @@
 
             <ol class="progress-list" id="progress-list" hidden>
               <li data-step="account"><span></span><div><strong>验证 CatsCo 账号</strong><small>使用本机保存的登录状态</small></div></li>
-              <li data-step="agent"><span></span><div><strong>准备本机 Agent</strong><small>同步云端模型、Prompt 和 Skills</small></div></li>
+              <li data-step="agent"><span></span><div><strong>绑定当前 Agent</strong><small>获取 Connector 凭证并绑定这台电脑</small></div></li>
               <li data-step="connector"><span></span><div><strong>启动 Connector</strong><small>让 WebApp 可以调用这台电脑</small></div></li>
             </ol>
 
@@ -79,7 +80,8 @@
           </div>
 
           <button class="management-entry" id="management-open" type="button">
-            <span><strong>本地管理</strong><small>飞书、微信、日志与故障恢复</small></span>
+            <span class="management-entry-icon" aria-hidden="true">•••</span>
+            <span><strong>连接器设置</strong><small>服务状态、运行日志与故障恢复</small></span>
             <span class="summary-arrow" aria-hidden="true">›</span>
           </button>
 
@@ -88,12 +90,12 @@
               <button class="back-button" id="management-back" type="button" aria-label="返回连接状态">‹</button>
               <div>
                 <h2>本地管理</h2>
-                <p>管理这台电脑上的消息通道、运行日志和故障恢复。</p>
+                <p>管理 Connector、运行日志和故障恢复。</p>
               </div>
             </header>
 
             <nav class="management-tabs" aria-label="本地管理">
-              <button class="management-tab active" type="button" data-management-tab="services" aria-selected="true">通道与服务</button>
+              <button class="management-tab active" type="button" data-management-tab="services" aria-selected="true">Connector 服务</button>
               <button class="management-tab" type="button" data-management-tab="logs" aria-selected="false">运行日志</button>
               <button class="management-tab" type="button" data-management-tab="recovery" aria-selected="false">故障恢复</button>
             </nav>
@@ -101,7 +103,7 @@
             <div class="management-content">
               <section class="management-page active" data-management-page="services">
                 <div class="section-heading">
-                  <div><strong>消息通道</strong><small>飞书和微信会把消息转交给当前 CatsCo Agent。</small></div>
+                  <div><strong>本地 Connector</strong><small>让云端 CatsCo Agent 使用这台电脑上的本地工具和文件。</small></div>
                   <button class="button button-small button-quiet" id="services-refresh" type="button">刷新状态</button>
                 </div>
                 <div class="channel-list" id="channel-list">
@@ -115,8 +117,6 @@
                     <span>日志来源</span>
                     <select id="log-service-select">
                       <option value="catscompany">Connector</option>
-                      <option value="feishu">飞书</option>
-                      <option value="weixin">微信</option>
                     </select>
                   </label>
                   <div class="toolbar-actions">
@@ -134,41 +134,33 @@
                     <div><strong>重新连接 Connector</strong><small>重新检查本机 Agent、设备绑定和后台服务。</small></div>
                     <button class="button button-secondary" id="diagnostic-retry" type="button">重新连接</button>
                   </article>
-                  <article class="recovery-row">
-                    <div><strong>Cache Trace</strong><small>查看缓存命中、写入与上下文复用情况。</small></div>
-                    <a class="button button-quiet" href="/cache-trace.html" target="_blank" rel="noopener">打开</a>
-                  </article>
-                  <article class="recovery-row">
-                    <div><strong>Turn Errors</strong><small>查看最近的回合错误和失败原因。</small></div>
-                    <a class="button button-quiet" href="/turn-errors.html" target="_blank" rel="noopener">打开</a>
-                  </article>
                 </div>
               </section>
             </div>
           </section>
         </section>
 
-        <aside class="summary-panel">
+        <aside class="summary-panel" aria-label="当前连接信息">
           <article class="summary-card">
-            <span>CatsCo 账号</span>
+            <span>账号</span>
             <strong id="account-name">—</strong>
             <small id="account-meta">等待登录</small>
           </article>
           <article class="summary-card agent-summary-card">
             <div class="summary-card-heading">
-              <span>当前 Agent</span>
+              <span>Agent</span>
               <button class="summary-action" id="agent-switch-open" type="button" disabled>切换</button>
             </div>
             <strong id="agent-name">—</strong>
             <small id="agent-meta">登录后自动准备</small>
           </article>
           <article class="summary-card">
-            <span>当前设备</span>
+            <span>这台电脑</span>
             <strong id="device-name">—</strong>
             <small id="device-meta">本地工具与文件</small>
           </article>
           <article class="summary-card compact-card">
-            <div><span>桌面版本</span><strong id="app-version">—</strong></div>
+            <div><span>Connector 版本</span><strong id="app-version">—</strong></div>
             <button class="button button-small" id="update-button" type="button">检查更新</button>
           </article>
         </aside>
@@ -187,7 +179,7 @@
       </header>
 
       <div class="agent-switch-body">
-        <p class="agent-switch-intro">一台电脑同一时间连接一个 Agent。切换时 Connector 会短暂重启，云端模型、Prompt 和 Skills 会同步到本机。</p>
+        <p class="agent-switch-intro">一台电脑同一时间连接一个 Agent。切换后 Connector 会短暂重启，这台电脑将提供给所选 Agent 使用。</p>
         <div class="agent-list" id="agent-list" role="radiogroup" aria-label="可用 Agent">
           <div class="agent-list-state">正在读取 Agent……</div>
         </div>

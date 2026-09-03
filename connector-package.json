@@ -1,0 +1,13 @@
+{
+  "name": "catsco-connector",
+  "version": "1.5.4",
+  "description": "CatsCo local computer connector",
+  "main": "electron/connector-main.js",
+  "private": true,
+  "catscoPackage": "connector-lite",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "electron-updater": "^6.8.3"
+  }
+}

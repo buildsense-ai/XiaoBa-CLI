@@ -67,6 +67,9 @@ console.log(`Injecting version: ${version}`);
 updateJsonVersion(path.join(rootDir, 'package.json'), version);
 console.log('Updated package.json');
 
+updateJsonVersion(path.join(rootDir, 'connector-package.json'), version);
+console.log('Updated connector-package.json');
+
 updateJsonVersion(path.join(rootDir, 'package-lock.json'), version);
 console.log('Updated package-lock.json');
 

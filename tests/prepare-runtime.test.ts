@@ -7,6 +7,7 @@ import {
   loadRuntimeManifest,
   normalizeArch,
   normalizePlatform,
+  parseArgs,
   removeBrokenRuntimeSymlinks,
   repairNodeRuntimeEntrypoints,
   resolveExtractedRoot,
@@ -16,6 +17,28 @@ import {
 } from '../scripts/prepare-runtime.mjs';
 
 describe('runtime manifest resolution', () => {
+  test('keeps the default runtime preparation set compatible with full desktop builds', async () => {
+    // The CLI parser is intentionally not exported; this test documents that
+    // selective preparation is an opt-in build concern, not the default.
+    const manifest = loadRuntimeManifest();
+    assert.ok(resolveRuntimeTarget(manifest, 'node', 'win32', 'x64'));
+    assert.ok(resolveRuntimeTarget(manifest, 'python', 'win32', 'x64'));
+  });
+
+  test('parses a selective runtime request without changing the default', () => {
+    assert.deepStrictEqual(parseArgs([]), { refresh: false });
+    assert.deepStrictEqual(parseArgs(['--only=node']), {
+      refresh: false,
+      runtimeNames: ['node'],
+    });
+    assert.deepStrictEqual(parseArgs(['win32', 'x64', '--only=node,python', '--refresh']), {
+      refresh: true,
+      runtimeNames: ['node', 'python'],
+      platform: 'win32',
+      arch: 'x64',
+    });
+  });
+
   test('normalizes platform and arch aliases', () => {
     assert.strictEqual(normalizePlatform('macos'), 'darwin');
     assert.strictEqual(normalizePlatform('windows'), 'win32');

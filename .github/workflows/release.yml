@@ -147,8 +147,8 @@ jobs:
       - name: Inject version into source
         run: node scripts/inject-version.js
 
-      - name: Build Electron app (macOS ${{ matrix.arch }})
-        run: npm run electron:build:mac:${{ matrix.arch }}
+      - name: Build Connector app (macOS ${{ matrix.arch }})
+        run: npm run electron:build:connector:mac:${{ matrix.arch }}
 
       - name: Verify macOS auto-update artifacts
         run: >-
@@ -224,8 +224,8 @@ jobs:
       - name: Inject version into source
         run: node scripts/inject-version.js
 
-      - name: Build Electron app (Windows)
-        run: npm run electron:build:win
+      - name: Build Connector app (Windows)
+        run: npm run electron:build:connector:win
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -311,8 +311,8 @@ jobs:
             libgbm1 \
             libasound2t64
 
-      - name: Build Electron app (Linux)
-        run: npm run electron:build:linux
+      - name: Build Connector app (Linux)
+        run: npm run electron:build:connector:linux
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4

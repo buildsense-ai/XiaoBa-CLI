@@ -65,13 +65,29 @@ function readEnvFile(root: string): Record<string, string> {
   return dotenv.parse(fs.readFileSync(envPath, 'utf-8'));
 }
 
+function resolvePackagedNodeExecutable(appRoot: string): string {
+  const bundledRoot = process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR || path.join(appRoot, 'build-resources', 'runtime');
+  const bundledNode = isWindows
+    ? path.join(bundledRoot, 'node', 'node.exe')
+    : path.join(bundledRoot, 'node', 'bin', 'node');
+  if (fs.existsSync(bundledNode)) return bundledNode;
+  return process.env.XIAOBA_NODE_EXECUTABLE || 'node';
+}
+
+export interface ServiceManagerOptions {
+  /** Register only the CatsCo Connector service for Connector Lite. */
+  connectorOnly?: boolean;
+}
+
 export class ServiceManager extends EventEmitter {
   private services: Map<string, ManagedService> = new Map();
   private projectRoot: string;
+  private readonly connectorOnly: boolean;
 
-  constructor(projectRoot: string) {
+  constructor(projectRoot: string, options: ServiceManagerOptions = {}) {
     super();
     this.projectRoot = projectRoot;
+    this.connectorOnly = options.connectorOnly === true;
     this.registerBuiltinServices();
   }
 
@@ -137,24 +153,34 @@ export class ServiceManager extends EventEmitter {
   private registerBuiltinServices() {
     const packaged = this.isPackaged();
     const appRoot = this.getAppRoot();
-    const runtimeEnvironment = resolveRuntimeEnvironment({
-      env: process.env,
-      appRoot,
-      bundledExecutablesDir: process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
-      isPackaged: packaged,
-      probeVersion: false,
-    });
+    const runtimeEnvironment = packaged
+      ? { binaries: { node: { executable: resolvePackagedNodeExecutable(appRoot) } } } as ReturnType<typeof resolveRuntimeEnvironment>
+      : resolveRuntimeEnvironment({
+        env: process.env,
+        appRoot,
+        bundledExecutablesDir: process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR,
+        isPackaged: packaged,
+        probeVersion: false,
+      });
 
     let command: string;
     let args: (name: string) => string[];
 
-    if (packaged) {
-      // 打包版：优先使用内嵌的 node.exe，否则回退系统 node
+    // Connector Lite is used by both the Electron package and the standalone
+    // lightweight installer. Development keeps the original source entry unless
+    // the caller explicitly selects the Lite package contract.
+    const useConnectorLite = process.env.XIAOBA_CONNECTOR_PACKAGE === 'connector-lite';
+    if (useConnectorLite) {
+      // Packaged Electron children reuse Electron's embedded Node. Standalone
+      // Connector installs run the same bundle with the system Node executable.
+      command = process.execPath;
+      args = () => [path.join(appRoot, 'dist', 'connector', 'index.js')];
+    } else if (packaged) {
       command = runtimeEnvironment.binaries.node.executable || 'node';
-      const distEntry = path.join(appRoot, 'dist', 'index.js');
-      args = (name) => [distEntry, name];
+      const entry = () => path.join(appRoot, 'dist', 'index.js');
+      args = (name) => [entry(), name];
     } else {
-      // 开发版：用 tsx 跑 ts 源码
+      // 开发版：用 tsx 跑 ts 源码；默认始终保留完整 Runtime。
       const runner = this.resolveDevTsxRunner(this.resolveNodeExecutable(runtimeEnvironment));
       command = runner.command;
       const entry = path.join(this.projectRoot, 'src', 'index.ts');
@@ -164,7 +190,7 @@ export class ServiceManager extends EventEmitter {
     this.services.set('catscompany', {
       info: {
         name: 'catscompany',
-        label: 'CatsCo agent',
+        label: 'CatsCo Connector',
         command,
         args: args('catscompany'),
         status: 'stopped',
@@ -172,6 +198,10 @@ export class ServiceManager extends EventEmitter {
       logs: [],
     });
 
+    if (this.connectorOnly) return;
+
+    // Full Runtime Dashboard only: the bundled Connector Lite profile never
+    // registers or starts these legacy channel services.
     this.services.set('feishu', {
       info: {
         name: 'feishu',
@@ -244,7 +274,17 @@ export class ServiceManager extends EventEmitter {
       envVars.NODE_PATH = process.env.XIAOBA_NODE_MODULES;
     }
 
+    if (
+      name === 'catscompany'
+      && this.isPackaged()
+      && process.env.XIAOBA_CONNECTOR_PACKAGE === 'connector-lite'
+    ) {
+      envVars.ELECTRON_RUN_AS_NODE = '1';
+    }
+
     if (name === 'catscompany') {
+      // Connector Lite is a dedicated execution-only process. It still uses
+      // the same Dashboard-resolved binding and owner lifecycle fence.
       // Electron explicitly marks both development and packaged desktop
       // launches. A browser-only/server Dashboard remains fail-closed.
       envVars.XIAOBA_RUNTIME_ROLE = process.env.XIAOBA_RUNTIME_ROLE === 'desktop'
@@ -275,14 +315,16 @@ export class ServiceManager extends EventEmitter {
       };
     }
 
-    const runtimeEnvironment = resolveRuntimeEnvironment({
-      env: envVars,
-      appRoot: this.getAppRoot(),
-      bundledExecutablesDir: envVars.XIAOBA_BUNDLED_EXECUTABLES_DIR,
-      isPackaged: this.isPackaged(),
-      probeVersion: false,
-    });
-    envVars = runtimeEnvironment.env;
+    if (!this.isPackaged()) {
+      const runtimeEnvironment = resolveRuntimeEnvironment({
+        env: envVars,
+        appRoot: this.getAppRoot(),
+        bundledExecutablesDir: envVars.XIAOBA_BUNDLED_EXECUTABLES_DIR,
+        isPackaged: false,
+        probeVersion: false,
+      });
+      envVars = runtimeEnvironment.env;
+    }
 
     let child: ChildProcess;
     try {

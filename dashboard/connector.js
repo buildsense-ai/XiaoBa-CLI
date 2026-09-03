@@ -116,8 +116,6 @@
     bootstrapPollTimer: null,
     managementOpen: false,
     managementTab: 'services',
-    config: {},
-    weixinBinding: {},
     agents: [],
     selectedAgentUid: '',
     agentListLoading: false,
@@ -125,7 +123,6 @@
     agentSwitchError: '',
     serviceActionBusy: new Set(),
     logPollTimer: null,
-    weixinPollTimer: null,
     updatePollTimer: null,
     updateStatusInFlight: null,
     updateActionBusy: false,
@@ -682,10 +679,7 @@
     state.selectedAgentUid = state.cats.botUid || '';
     renderAgentSwitch();
     dialog.showModal();
-    const [agents, binding] = await Promise.all([
-      settled('/cats/bots'),
-      settled('/weixin/channel-binding'),
-    ]);
+    const agents = await settled('/cats/bots');
     state.agentListLoading = false;
     if (agents.ok) {
       state.agents = Array.isArray(agents.value?.bots) ? agents.value.bots : [];
@@ -693,7 +687,6 @@
     } else {
       state.agentSwitchError = `无法读取 Agent：${humanError(agents.error)}`;
     }
-    if (binding.ok) state.weixinBinding = binding.value || {};
     renderAgentSwitch();
   }
 
@@ -727,15 +720,6 @@
     }
 
     const selected = state.agents.find((agent) => String(agent.uid || '') === state.selectedAgentUid);
-    const selectedName = selected?.display_name || selected?.username || '所选 Agent';
-    const boundWeixinUid = String(state.weixinBinding?.binding?.agentUid || '');
-    const needsWeixinRebind = Boolean(boundWeixinUid && state.selectedAgentUid && boundWeixinUid !== state.selectedAgentUid);
-    const warning = $('agent-switch-warning');
-    warning.hidden = !needsWeixinRebind;
-    if (needsWeixinRebind) {
-      warning.textContent = `微信当前绑定在其他 Agent。切换到“${selectedName}”后，微信服务会停止；如需使用微信，请为新 Agent 重新扫码。`;
-    }
-
     const error = $('agent-switch-error');
     error.hidden = !state.agentSwitchError;
     error.textContent = state.agentSwitchError;
@@ -764,7 +748,7 @@
       render();
       await new Promise((resolve) => setTimeout(resolve, 700));
       await refresh({ force: true });
-      showToast(result.weixinStopped ? 'Agent 已切换；微信服务已停止，请重新扫码后启动' : 'Agent 已切换并重新连接');
+      showToast('Agent 已切换并重新连接');
     } catch (error) {
       state.agentSwitchError = `切换失败：${humanError(error)}`;
       renderAgentSwitch();
@@ -776,20 +760,10 @@
   }
 
   const channelDefinitions = {
-    feishu: {
-      label: '飞书',
-      copy: '使用飞书 App 接入当前 CatsCo Agent。',
-      fields: [
-        ['FEISHU_APP_ID', 'App ID', false],
-        ['FEISHU_APP_SECRET', 'App Secret', true],
-        ['FEISHU_BOT_OPEN_ID', 'Bot Open ID', false],
-        ['FEISHU_BOT_ALIASES', '唤醒别名', false],
-      ],
-    },
-    weixin: {
-      label: '微信',
-      copy: '扫码授权后，将微信消息转交给当前 CatsCo Agent。',
-      fields: [['WEIXIN_TOKEN', 'Token', true]],
+    catscompany: {
+      label: 'CatsCo Connector',
+      copy: '让云端 Agent 使用这台电脑上的本地工具和文件。',
+      fields: [],
     },
   };
 
@@ -810,7 +784,6 @@
     $('management-open').hidden = false;
     $('management-view').closest('.primary-panel')?.classList.remove('management-open');
     stopLogPolling();
-    stopWeixinPolling();
   }
 
   function switchManagementTab(tab) {
@@ -835,13 +808,7 @@
   }
 
   async function refreshManagementData() {
-    const [config, binding, services] = await Promise.all([
-      settled('/config'),
-      settled('/weixin/channel-binding'),
-      settled('/services'),
-    ]);
-    if (config.ok) state.config = config.value || {};
-    if (binding.ok) state.weixinBinding = binding.value || {};
+    const services = await settled('/services');
     if (services.ok) state.services = Array.isArray(services.value) ? services.value : [];
     renderChannels({ force: true });
   }
@@ -849,9 +816,8 @@
   function renderChannels(options = {}) {
     const root = $('channel-list');
     if (!root) return;
-    const editing = document.activeElement?.closest?.('.channel-config') || root.querySelector('.channel-config.dirty');
-    if (editing && !options.force) return;
-    const services = ['feishu', 'weixin'].map((name) => {
+    if (!options.force && document.activeElement?.closest?.('.channel-card')) return;
+    const services = ['catscompany'].map((name) => {
       return state.services.find((service) => service.name === name) || { name, label: channelDefinitions[name].label, status: 'stopped' };
     });
     root.innerHTML = services.map(renderChannelCard).join('');
@@ -862,9 +828,7 @@
     const running = service.status === 'running';
     const busy = state.serviceActionBusy.has(service.name);
     const statusText = running ? '运行中' : service.status === 'error' ? '异常' : '未运行';
-    const binding = service.name === 'weixin' && state.weixinBinding?.configured
-      ? `已绑定 ${state.weixinBinding.agentName || state.weixinBinding.agentUid || '当前 Agent'}`
-      : definition.copy;
+    const binding = definition.copy;
     const primaryAction = running ? 'stop' : 'start';
     const primaryLabel = running ? '停止' : '启动';
     return `<article class="channel-card ${escapeHtml(service.status || 'stopped')}" data-channel="${service.name}">
@@ -880,31 +844,9 @@
         </div>
       </div>
       ${service.lastError ? `<p class="channel-error">${escapeHtml(service.lastError)}</p>` : ''}
-      ${renderChannelConfig(service.name)}
     </article>`;
   }
 
-  function renderChannelConfig(name) {
-    const definition = channelDefinitions[name];
-    const fields = definition.fields.map(([key, label, sensitive]) => {
-      const value = state.config?.[key] || '';
-      return `<label><span>${escapeHtml(label)}</span><input data-config-key="${key}" type="${sensitive ? 'password' : 'text'}" value="${escapeHtml(value)}" autocomplete="off"></label>`;
-    }).join('');
-    return `<details class="channel-config">
-      <summary>连接配置</summary>
-      <div class="channel-config-body">
-        ${fields}
-        ${name === 'weixin' ? '<div class="weixin-authorize" id="weixin-authorize" hidden></div>' : ''}
-        <div class="channel-config-actions">
-          <span class="channel-config-note">凭证仅保存在本机</span>
-          <div class="channel-actions">
-            ${name === 'weixin' ? '<button class="button button-small button-secondary" type="button" data-weixin-authorize>微信扫码授权</button>' : ''}
-            <button class="button button-small button-secondary" type="button" data-config-save="${name}">保存配置</button>
-          </div>
-        </div>
-      </div>
-    </details>`;
-  }
 
   async function serviceAction(name, action) {
     if (!channelDefinitions[name] || state.serviceActionBusy.has(name)) return;
@@ -921,65 +863,6 @@
       state.serviceActionBusy.delete(name);
       await refreshManagementData();
     }
-  }
-
-  async function saveChannelConfig(name, button) {
-    const card = document.querySelector(`[data-channel="${name}"]`);
-    if (!card) return;
-    const updates = {};
-    card.querySelectorAll('[data-config-key]').forEach((input) => { updates[input.dataset.configKey] = input.value.trim(); });
-    button.disabled = true;
-    button.textContent = '保存中…';
-    try {
-      await request('/config', { method: 'PUT', body: JSON.stringify(updates) });
-      showToast(`${channelDefinitions[name].label}配置已保存到本机`);
-      await refreshManagementData();
-    } catch (error) {
-      showToast(`保存失败：${humanError(error)}`);
-    } finally {
-      button.disabled = false;
-      button.textContent = '保存配置';
-    }
-  }
-
-  async function beginWeixinAuthorization() {
-    stopWeixinPolling();
-    const panel = $('weixin-authorize');
-    if (!panel) return;
-    panel.hidden = false;
-    panel.innerHTML = '<span>正在获取微信二维码……</span>';
-    try {
-      const data = await request('/weixin/qrcode');
-      const imageUrl = String(data.qrcode_img_content || '');
-      panel.innerHTML = `${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="微信授权二维码">` : ''}<div><strong>请使用微信扫码授权</strong><small>授权将绑定到 ${escapeHtml(data.agent?.name || data.agent?.username || data.agent_uid || '当前 Agent')}</small></div>`;
-      state.weixinPollTimer = setInterval(() => pollWeixinAuthorization(data.qrcode, data.agent_uid), 2000);
-    } catch (error) {
-      panel.innerHTML = `<span class="channel-error">获取二维码失败：${escapeHtml(humanError(error))}</span>`;
-    }
-  }
-
-  async function pollWeixinAuthorization(qrcode, agentUid) {
-    try {
-      const data = await request(`/weixin/qrcode-status?qrcode=${encodeURIComponent(qrcode)}&agent_uid=${encodeURIComponent(agentUid || '')}`);
-      if (data.status === 'confirmed' && data.token_saved) {
-        stopWeixinPolling();
-        showToast('微信授权成功');
-        await refreshManagementData();
-      } else if (data.status === 'expired') {
-        stopWeixinPolling();
-        const panel = $('weixin-authorize');
-        if (panel) panel.innerHTML = '<span class="channel-error">二维码已过期，请重新获取。</span>';
-      }
-    } catch (error) {
-      stopWeixinPolling();
-      const panel = $('weixin-authorize');
-      if (panel) panel.innerHTML = `<span class="channel-error">微信授权失败：${escapeHtml(humanError(error))}</span>`;
-    }
-  }
-
-  function stopWeixinPolling() {
-    if (state.weixinPollTimer) clearInterval(state.weixinPollTimer);
-    state.weixinPollTimer = null;
   }
 
   async function loadLogs() {
@@ -1236,15 +1119,7 @@
       switchManagementTab('logs');
       return;
     }
-    const saveButton = event.target.closest('[data-config-save]');
-    if (saveButton) {
-      void saveChannelConfig(saveButton.dataset.configSave, saveButton);
-      return;
-    }
-    if (event.target.closest('[data-weixin-authorize]')) void beginWeixinAuthorization();
-  });
-  $('channel-list').addEventListener('input', (event) => {
-    event.target.closest('.channel-config')?.classList.add('dirty');
+
   });
 
   void refresh({ force: true });
