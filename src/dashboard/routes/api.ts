@@ -2195,10 +2195,19 @@ function activateCatsCompanyConnector(
   }
 }
 
-function persistCatsUserSession(state: CatsAuthState, login: any, previousUidOverride?: string): void {
+function persistCatsUserSession(
+  serviceManager: ServiceManager,
+  state: CatsAuthState,
+  login: any,
+  previousUidOverride?: string,
+): void {
   const previousUid = String(previousUidOverride ?? state.uid ?? '').trim();
   const nextUid = String(login.uid || '').trim();
   if (previousUid && nextUid && previousUid !== nextUid) {
+    const weixin = serviceManager.getService('weixin');
+    if (weixin?.status === 'running') {
+      serviceManager.stop('weixin');
+    }
     clearWeixinChannelBinding(runtimeDataRoot(), process.env);
   }
   createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).persistAccountSession(state, login);
@@ -3575,7 +3584,7 @@ export function createApiRouter(
         password,
         persistent: true,
       }, undefined, { timeoutMs: 10000 });
-      persistCatsUserSession(state, login);
+      persistCatsUserSession(serviceManager, state, login);
       options.catsConnectorAutoStart?.invalidateAndSchedule('register', 0, { force: true });
       res.json({
         ok: true,
@@ -3605,7 +3614,7 @@ export function createApiRouter(
         undefined,
         { timeoutMs: 10000 },
       );
-      persistCatsUserSession(state, login);
+      persistCatsUserSession(serviceManager, state, login);
       options.catsConnectorAutoStart?.invalidateAndSchedule('login', 0, { force: true });
       res.json({
         ok: true,
@@ -3662,7 +3671,7 @@ export function createApiRouter(
         httpBaseUrl,
         serverUrl,
       };
-      persistCatsUserSession(nextState, login, state.uid);
+      persistCatsUserSession(serviceManager, nextState, login, state.uid);
       // Electron also requests an immediate bootstrap. The delayed safety run
       // covers other deep-link clients and is coalesced by the controller.
       options.catsConnectorAutoStart?.invalidateAndSchedule('desktop-connect', 1000);

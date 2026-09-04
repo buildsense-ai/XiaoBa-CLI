@@ -115,6 +115,35 @@ describe('dashboard CatsCo account status', () => {
     }
   });
 
+  async function useRunningWeixinService(): Promise<{ stopCalls: string[] }> {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+    const service = {
+      name: 'weixin',
+      label: 'Weixin service',
+      command: process.execPath,
+      args: [],
+      status: 'running',
+    };
+    const stopCalls: string[] = [];
+    const app = express();
+    app.use(express.json());
+    app.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'weixin' ? service : undefined),
+      stop: (name: string) => {
+        stopCalls.push(name);
+        service.status = 'stopped';
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(app);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+    return { stopCalls };
+  }
+
   test('GET /cats/status treats rejected CatsCompany token as logged out', async () => {
     await startCatsServer((req, res) => {
       if (req.path === '/api/me') {
@@ -558,6 +587,7 @@ describe('dashboard CatsCo account status', () => {
   });
 
   test('POST /cats/auth/login writes both CatsCo and CatsCompany env aliases', async () => {
+    const { stopCalls } = await useRunningWeixinService();
     createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
       version: 1,
       account: { token: 'old-token', uid: '66', username: 'old-user', displayName: 'Old User' },
@@ -622,6 +652,7 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(env.CATSCO_API_KEY, undefined);
     assert.equal(env.CATSCOMPANY_BOT_UID, undefined);
     assert.equal(env.CATSCOMPANY_API_KEY, undefined);
+    assert.deepStrictEqual(stopCalls, ['weixin']);
   });
 
   test('GET /cats/status does not expose an Agent that belongs to the previous account', async () => {
@@ -764,9 +795,11 @@ describe('dashboard CatsCo account status', () => {
   });
 
   test('POST /cats/desktop-connect exchanges a web login code and persists CatsCo account aliases', async () => {
+    const { stopCalls } = await useRunningWeixinService();
     process.env.XIAOBA_RUNTIME_ROLE = 'desktop';
     createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
       version: 1,
+      account: { token: 'old-token', uid: '66', username: 'old-user', displayName: 'Old User' },
       device: {
         deviceId: 'device-local',
         bodyId: 'body-local',
@@ -813,6 +846,7 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(env.CATSCOMPANY_USER_TOKEN, 'desktop-user-token');
     assert.equal(env.CATSCO_USER_UID, '91');
     assert.equal(env.CATSCOMPANY_USER_DISPLAY_NAME, 'Desktop User');
+    assert.deepStrictEqual(stopCalls, ['weixin']);
   });
 
   test('POST /cats/desktop-connect rejects an untrusted requested base before exchange', async () => {
