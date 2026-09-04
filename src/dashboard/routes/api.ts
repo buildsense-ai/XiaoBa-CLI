@@ -105,6 +105,7 @@ import {
   BindWeixinChannelResult,
   WeixinChannelStatus,
   bindWeixinChannelToCurrentAgent,
+  clearWeixinChannelBinding,
   getWeixinChannelStatus,
 } from '../weixin-channel-binding';
 // import { ReportGenerator } from '../../utils/report-generator';
@@ -117,6 +118,7 @@ const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
 const PROMPT_EDITOR_SKILL_NAME = 'catsco-prompt-editor';
 const MODELS_DEV_DASHBOARD_WAIT_MS = 250;
+const DEFAULT_LOCAL_CONNECTOR_AGENT_NAME = '本机 Connector';
 
 function runtimeDataRoot(): string {
   return PathResolver.getRuntimeDataRoot();
@@ -2193,7 +2195,21 @@ function activateCatsCompanyConnector(
   }
 }
 
-function persistCatsUserSession(state: CatsAuthState, login: any): void {
+function persistCatsUserSession(
+  serviceManager: ServiceManager,
+  state: CatsAuthState,
+  login: any,
+  previousUidOverride?: string,
+): void {
+  const previousUid = String(previousUidOverride ?? state.uid ?? '').trim();
+  const nextUid = String(login.uid || '').trim();
+  if (previousUid && nextUid && previousUid !== nextUid) {
+    const weixin = serviceManager.getService('weixin');
+    if (weixin?.status === 'running') {
+      serviceManager.stop('weixin');
+    }
+    clearWeixinChannelBinding(runtimeDataRoot(), process.env);
+  }
   createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).persistAccountSession(state, login);
 }
 
@@ -3568,7 +3584,7 @@ export function createApiRouter(
         password,
         persistent: true,
       }, undefined, { timeoutMs: 10000 });
-      persistCatsUserSession(state, login);
+      persistCatsUserSession(serviceManager, state, login);
       options.catsConnectorAutoStart?.invalidateAndSchedule('register', 0, { force: true });
       res.json({
         ok: true,
@@ -3598,7 +3614,7 @@ export function createApiRouter(
         undefined,
         { timeoutMs: 10000 },
       );
-      persistCatsUserSession(state, login);
+      persistCatsUserSession(serviceManager, state, login);
       options.catsConnectorAutoStart?.invalidateAndSchedule('login', 0, { force: true });
       res.json({
         ok: true,
@@ -3618,6 +3634,11 @@ export function createApiRouter(
     if (connector?.status === 'running') {
       serviceManager.stop('catscompany');
     }
+    const weixin = serviceManager.getService('weixin');
+    if (weixin?.status === 'running') {
+      serviceManager.stop('weixin');
+    }
+    clearWeixinChannelBinding(runtimeDataRoot(), process.env);
     const removed = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).clearAccount();
     options.catsConnectorAutoStart?.invalidateAndSchedule('logout');
     res.json({ ok: true, removed });
@@ -3650,7 +3671,7 @@ export function createApiRouter(
         httpBaseUrl,
         serverUrl,
       };
-      persistCatsUserSession(nextState, login);
+      persistCatsUserSession(serviceManager, nextState, login, state.uid);
       // Electron also requests an immediate bootstrap. The delayed safety run
       // covers other deep-link clients and is coalesced by the controller.
       options.catsConnectorAutoStart?.invalidateAndSchedule('desktop-connect', 1000);
@@ -3748,10 +3769,9 @@ export function createApiRouter(
       const bots = (Array.isArray(botsResponse?.bots) ? botsResponse.bots : [])
         .filter((bot: any) => isOwnedCatsBot(bot, userUid));
       const deviceId = ensureCatsDeviceId();
-      const deviceName = String(req.body?.deviceName || os.hostname() || 'current-device').trim();
       const preferredUsername = sanitizeCatsUsernamePart(String(req.body?.botUsername || `catsco_${userUid}_${deviceId}`))
         || `catsco_${userUid}_${deviceId.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-      const preferredName = String(req.body?.botDisplayName || `CatsCo (${deviceName})`).trim() || `CatsCo (${deviceName})`;
+      const preferredName = String(req.body?.botDisplayName || DEFAULT_LOCAL_CONNECTOR_AGENT_NAME).trim() || DEFAULT_LOCAL_CONNECTOR_AGENT_NAME;
       let botSelectionSource: 'last-used' | 'first-owned-bot' | 'created-default' = 'first-owned-bot';
       let bot = state.botUid
         ? bots.find((item: any) => String(item.id || item.uid || '') === String(state.botUid))
@@ -3912,8 +3932,7 @@ export function createApiRouter(
       if (!userUid) return res.status(500).json({ error: 'CatsCo user uid missing' });
 
       const deviceId = ensureCatsDeviceId();
-      const deviceName = String(req.body?.deviceName || os.hostname() || 'current-device').trim();
-      const displayName = String(req.body?.botDisplayName || `CatsCo (${deviceName})`).trim() || `CatsCo (${deviceName})`;
+      const displayName = String(req.body?.botDisplayName || DEFAULT_LOCAL_CONNECTOR_AGENT_NAME).trim() || DEFAULT_LOCAL_CONNECTOR_AGENT_NAME;
       const usernameBase = String(req.body?.botUsername || `catsco_${userUid}_${deviceId}`).trim();
       const username = sanitizeCatsUsernamePart(usernameBase) || `catsco_${userUid}_${deviceId.replace(/[^a-zA-Z0-9_]/g, '_')}`;
 

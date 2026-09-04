@@ -82,6 +82,45 @@ export function saveChannelBindings(runtimeRoot: string, data: ChannelBindingsFi
   chmodOwnerOnly(bindingPath);
 }
 
+const WEIXIN_BINDING_ENV_KEYS = [
+  'WEIXIN_TOKEN',
+  'WEIXIN_BOUND_AGENT_UID',
+  'WEIXIN_BOUND_AGENT_NAME',
+  'WEIXIN_BOUND_BODY_ID',
+  'WEIXIN_BOUND_BY_USER_UID',
+] as const;
+
+/**
+ * Remove the account-scoped Weixin binding from the local runtime. A binding
+ * must not survive CatsCo logout: otherwise the next account can see a stale
+ * Agent-mismatch warning and the old token may be reused accidentally.
+ */
+export function clearWeixinChannelBinding(
+  runtimeRoot = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const existing = loadChannelBindings(runtimeRoot);
+  if (existing.weixin) {
+    const next = { ...existing };
+    delete next.weixin;
+    saveChannelBindings(runtimeRoot, next);
+  }
+
+  const envPath = path.join(runtimeRoot, '.env');
+  const envUpdates = Object.fromEntries(WEIXIN_BINDING_ENV_KEYS.map(key => [key, undefined])) as Record<string, undefined>;
+  const envResult = fs.existsSync(envPath)
+    ? writeDashboardEnvUpdates(runtimeRoot, envUpdates)
+    : { updated: [], cleared: [] };
+  for (const key of WEIXIN_BINDING_ENV_KEYS) {
+    delete env[key];
+  }
+
+  return Array.from(new Set([
+    ...(existing.weixin ? [resolveChannelBindingsPath(runtimeRoot)] : []),
+    ...envResult.cleared,
+  ]));
+}
+
 export function currentWeixinAgent(runtime: CatsCoRuntimeConfigResolution): WeixinCurrentAgentSnapshot | undefined {
   const bot = runtime.localConfig.currentBot;
   if (!runtime.bodyConfigured || !bot?.uid) return undefined;

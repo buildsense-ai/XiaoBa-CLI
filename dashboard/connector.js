@@ -758,7 +758,17 @@
     const selected = state.agents.find((agent) => String(agent.uid || '') === state.selectedAgentUid);
     const selectedName = selected?.display_name || selected?.username || '所选 Agent';
     const boundWeixinUid = String(state.weixinBinding?.binding?.agentUid || '');
-    const needsWeixinRebind = Boolean(boundWeixinUid && state.selectedAgentUid && boundWeixinUid !== state.selectedAgentUid);
+    const currentAccountUid = String(state.cats?.user?.uid || '');
+    const boundWeixinOwnerUid = String(state.weixinBinding?.binding?.boundByUserUid || '');
+    const bindingBelongsToCurrentAccount = !boundWeixinOwnerUid
+      || !currentAccountUid
+      || boundWeixinOwnerUid === currentAccountUid;
+    const needsWeixinRebind = Boolean(
+      bindingBelongsToCurrentAccount
+      && boundWeixinUid
+      && state.selectedAgentUid
+      && boundWeixinUid !== state.selectedAgentUid,
+    );
     const warning = $('agent-switch-warning');
     warning.hidden = !needsWeixinRebind;
     if (needsWeixinRebind) {
