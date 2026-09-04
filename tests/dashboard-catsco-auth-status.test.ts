@@ -890,6 +890,7 @@ describe('dashboard CatsCo account status', () => {
     dashboardServer = await listen(dashboardApp);
     dashboardBaseUrl = serverBaseUrl(dashboardServer);
 
+    let createdBotDisplayName = '';
     await startCatsServer((req, res) => {
       if (req.path === '/api/me') {
         assert.equal(req.header('authorization'), 'Bearer user-token');
@@ -899,6 +900,7 @@ describe('dashboard CatsCo account status', () => {
         return res.json({ bots: [] });
       }
       if (req.path === '/api/bots' && req.method === 'POST') {
+        createdBotDisplayName = String(req.body.display_name || '');
         return res.json({
           uid: 188,
           username: req.body.username,
@@ -984,6 +986,7 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(response.status, 200, text);
     assert.equal(data.ok, true);
     assert.equal(data.botSelectionSource, 'created-default');
+    assert.equal(createdBotDisplayName, '本机 Connector');
     assert.equal(data.relayModelSetup.ok, true);
     assert.equal(data.relayModelSetup.model, 'MiniMax-M3');
     assert.equal(data.relayModelSetup.reasoningEffort, 'high');

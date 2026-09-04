@@ -7,6 +7,7 @@ import * as dotenv from 'dotenv';
 import express from 'express';
 import type { Server } from 'node:http';
 import { createApiRouter } from '../src/dashboard/routes/api';
+import { clearWeixinChannelBinding, loadChannelBindings, saveChannelBindings } from '../src/dashboard/weixin-channel-binding';
 
 describe('dashboard weixin agent channel binding', () => {
   let testRoot: string;
@@ -79,6 +80,45 @@ describe('dashboard weixin agent channel binding', () => {
     assert.equal(response.status, 409);
     assert.match(data.error, /agent/);
     assert.equal(data.channelStatus.configured, false);
+  });
+
+  test('clears the persisted Weixin binding and environment on account cleanup', () => {
+    saveChannelBindings(testRoot, {
+      version: 1,
+      weixin: {
+        channel: 'weixin',
+        agentUid: 'old-agent',
+        agentName: 'Old Agent',
+        boundByUserUid: 'old-user',
+        tokenHash: 'hash',
+        tokenLast4: '1234',
+        legacyEnvKey: 'WEIXIN_TOKEN',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    fs.writeFileSync(path.join(testRoot, '.env'), [
+      'WEIXIN_TOKEN=secret-token',
+      'WEIXIN_BOUND_AGENT_UID=old-agent',
+      'WEIXIN_BOUND_AGENT_NAME=Old Agent',
+      'WEIXIN_BOUND_BODY_ID=old-body',
+      'WEIXIN_BOUND_BY_USER_UID=old-user',
+      'CATSCO_USER_UID=next-user',
+    ].join('\n'), 'utf-8');
+    process.env.WEIXIN_TOKEN = 'secret-token';
+    process.env.WEIXIN_BOUND_AGENT_UID = 'old-agent';
+
+    const cleared = clearWeixinChannelBinding(testRoot, process.env);
+
+    assert.equal(loadChannelBindings(testRoot).weixin, undefined);
+    const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+    for (const key of ['WEIXIN_TOKEN', 'WEIXIN_BOUND_AGENT_UID', 'WEIXIN_BOUND_AGENT_NAME', 'WEIXIN_BOUND_BODY_ID', 'WEIXIN_BOUND_BY_USER_UID']) {
+      assert.equal(env[key], undefined, `${key} should be removed from .env`);
+      assert.equal(process.env[key], undefined, `${key} should be removed from process.env`);
+    }
+    assert.equal(env.CATSCO_USER_UID, 'next-user');
+    assert.ok(cleared.some(item => item.endsWith('channel-bindings.json')));
+    assert.ok(cleared.includes('WEIXIN_TOKEN'));
   });
 
   test('confirmed qrcode binds Weixin channel to the current agent without returning token', async () => {

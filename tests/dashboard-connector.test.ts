@@ -16,6 +16,7 @@ const serverSource = readFileSync(join(process.cwd(), 'src/dashboard/server.ts')
 test('real Connector Dashboard exposes four runtime states without local Bot creation', () => {
   assert.match(html, /CatsCo Connector/);
   assert.match(html, /登录并连接/);
+  assert.match(html, /placeholder="请用邮箱登录"/);
   assert.match(html, /正在连接这台电脑/);
   assert.match(script, /这台电脑已连接/);
   assert.match(html, /自动连接未完成/);
@@ -40,6 +41,7 @@ test('Connector lets an authenticated user switch the Agent bound to this comput
   assert.doesNotMatch(script, /window\.confirm\(/);
   assert.match(script, /login-account'\)\?\.focus/);
   assert.match(script, /当前账号无权使用原 Agent（not your bot）/);
+  assert.match(script, /bindingBelongsToCurrentAccount/);
   assert.match(script, /setNotice\(`\$\{title\}：\$\{detail\}`/);
 });
 
