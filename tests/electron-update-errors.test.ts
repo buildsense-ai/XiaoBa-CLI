@@ -4,6 +4,7 @@ import test from 'node:test';
 const {
   MAX_PUBLIC_UPDATE_ERROR_LENGTH,
   MISSING_MACOS_ZIP_MESSAGE,
+  UPDATE_CACHE_MOVE_MESSAGE,
   normalizeUpdateError,
 } = require('../electron/update-errors');
 
@@ -27,6 +28,18 @@ test('actual checksum failures retain package validation classification', () => 
       message: 'sha512 checksum mismatch',
     },
   );
+});
+
+test('Windows cross-volume updater cache failures get an actionable classification', () => {
+  const error = Object.assign(
+    new Error("EXDEV: cross-device link not permitted, rename 'temp.exe' -> 'update.exe'"),
+    { code: 'EXDEV' },
+  );
+
+  assert.deepEqual(normalizeUpdateError(error, 'UPDATE_RUNTIME_ERROR'), {
+    reason: 'UPDATE_CACHE_MOVE_FAILED',
+    message: UPDATE_CACHE_MOVE_MESSAGE,
+  });
 });
 
 test('public updater errors are capped to a readable size', () => {

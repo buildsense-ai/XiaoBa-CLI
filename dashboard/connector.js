@@ -357,13 +357,14 @@
     if (!button) return;
     const stage = update.stage || 'idle';
     const percent = clampUpdatePercent(update.percent);
-    button.classList.toggle('update-active', stage === 'checking' || stage === 'downloading');
+    button.classList.toggle('update-active', ['checking', 'downloading', 'preparing_install'].includes(stage));
     button.classList.toggle('update-error', stage === 'error');
-    button.disabled = update.enabled === false || stage === 'installing';
+    button.disabled = update.enabled === false || stage === 'preparing_install' || stage === 'installing';
     if (stage === 'available') button.textContent = `下载 ${update.availableVersion || '新版本'}`;
     else if (stage === 'downloaded') button.textContent = '安装更新';
     else if (stage === 'checking') button.textContent = '检查中…';
     else if (stage === 'downloading') button.textContent = `下载 ${Math.round(percent)}%`;
+    else if (stage === 'preparing_install') button.textContent = '准备安装…';
     else if (stage === 'installing') button.textContent = '安装中…';
     else if (stage === 'error') button.textContent = '重试更新';
     else if (update.enabled === false) button.textContent = '开发版本';
@@ -375,6 +376,7 @@
 
   function updateButtonAriaLabel(update, percent) {
     if (update.stage === 'downloading') return `更新下载进度 ${Math.round(percent)}%`;
+    if (update.stage === 'preparing_install') return '更新已下载，macOS 正在准备安装';
     if (update.stage === 'available') return `下载 CatsCo ${update.availableVersion || '新版本'}`;
     if (update.stage === 'downloaded') return '更新已下载，打开安装确认';
     if (update.stage === 'error') return '更新失败，打开详情并重试';
@@ -463,6 +465,18 @@
           primaryDisabled: false,
           tone: 'success',
         };
+      case 'preparing_install':
+        return {
+          title: '正在准备安装',
+          subtitle: `${version} 已下载，macOS 正在准备安装程序。`,
+          label: '下载完成，正在准备安装',
+          note: '这一步由 macOS 更新服务完成，通常只需要片刻。准备完成后，安装按钮会自动出现。',
+          footer: 'Connector 会继续运行，请稍候',
+          secondary: '隐藏到后台',
+          primary: '准备中…',
+          primaryDisabled: true,
+          tone: 'active',
+        };
       case 'installing':
         return {
           title: '正在安装更新',
@@ -521,10 +535,10 @@
     const stage = update.stage || (update.enabled === false ? 'disabled' : 'idle');
     const normalized = { ...update, stage };
     const meta = updateDialogMeta(normalized);
-    const percent = stage === 'downloaded' || stage === 'installing' ? 100 : clampUpdatePercent(update.percent);
-    const progressVisible = ['checking', 'downloading', 'downloaded', 'installing'].includes(stage)
+    const percent = ['preparing_install', 'downloaded', 'installing'].includes(stage) ? 100 : clampUpdatePercent(update.percent);
+    const progressVisible = ['checking', 'downloading', 'preparing_install', 'downloaded', 'installing'].includes(stage)
       || (stage === 'error' && Number(update.transferred || 0) > 0);
-    const versionVisible = Boolean(update.availableVersion) || ['available', 'downloading', 'downloaded', 'installing'].includes(stage);
+    const versionVisible = Boolean(update.availableVersion) || ['available', 'downloading', 'preparing_install', 'downloaded', 'installing'].includes(stage);
 
     setText('update-title', meta.title);
     setText('update-subtitle', meta.subtitle);
@@ -557,7 +571,15 @@
       const total = Number(update.total || 0);
       $('update-size').textContent = total > 0 ? `${formatUpdateBytes(transferred)} / ${formatUpdateBytes(total)}` : '等待下载信息';
       $('update-speed').textContent = Number(update.bytesPerSecond || 0) > 0 ? `${formatUpdateBytes(update.bytesPerSecond)}/s` : '';
-      $('update-remaining').textContent = stage === 'downloading' ? formatUpdateRemaining(update) : stage === 'downloaded' ? '可以安装' : '';
+      $('update-remaining').textContent = stage === 'downloading'
+        ? formatUpdateRemaining(update)
+        : stage === 'preparing_install'
+          ? '正在准备安装'
+          : stage === 'downloaded'
+            ? '可以安装'
+            : stage === 'installing'
+              ? '正在启动安装'
+              : '';
     }
 
     const error = $('update-error-box');
@@ -566,6 +588,11 @@
     error.textContent = stage === 'error'
       ? [update.lastError?.reason || update.reason || 'UPDATE_ERROR', errorMessage].filter(Boolean).join('\n')
       : '';
+
+    const manualLink = $('update-manual-link');
+    const manualLinkVisible = Boolean(update.releasePageUrl) && ['preparing_install', 'error'].includes(stage);
+    manualLink.hidden = !manualLinkVisible;
+    manualLink.textContent = stage === 'preparing_install' ? '准备时间较长？手动下载' : '前往发布页手动下载';
 
     $('update-secondary-action').textContent = meta.secondary;
     $('update-primary-action').textContent = meta.primary;
@@ -584,7 +611,7 @@
   }
 
   function isUpdatePollingStage(stage) {
-    return stage === 'checking' || stage === 'downloading' || stage === 'installing';
+    return stage === 'checking' || stage === 'downloading' || stage === 'preparing_install' || stage === 'installing';
   }
 
   function syncUpdatePolling() {
@@ -606,7 +633,9 @@
       if (!result.ok) return;
       state.update = result.value || {};
       renderUpdate();
-      if (!($('update-dialog')?.open) && previousStage === 'downloading' && ['downloaded', 'error'].includes(state.update.stage)) {
+      if (!($('update-dialog')?.open)
+        && ['downloading', 'preparing_install', 'installing'].includes(previousStage)
+        && ['downloaded', 'error'].includes(state.update.stage)) {
         openUpdateDialog();
       }
     })();
@@ -1121,11 +1150,27 @@
     state.update = { ...(state.update || {}), stage: 'installing', message: 'Quitting and installing update...' };
     renderUpdate();
     try {
-      await request('/update/install', { method: 'POST', body: '{}' });
+      const result = await request('/update/install', { method: 'POST', body: '{}' });
+      state.update = { ...(state.update || {}), ...(result || {}) };
+      renderUpdate();
     } catch (error) {
       setUpdateActionError(error, 'UPDATE_INSTALL_FAILED');
+    } finally {
       state.updateActionBusy = false;
       renderUpdate();
+    }
+  }
+
+  async function openManualUpdatePage() {
+    if (!state.update?.releasePageUrl) return;
+    try {
+      if (window.catscoDesktop?.openReleasePage) {
+        await window.catscoDesktop.openReleasePage();
+      } else {
+        window.open(state.update.releasePageUrl, '_blank', 'noopener,noreferrer');
+      }
+    } catch (error) {
+      showToast(`无法打开发布页：${humanError(error)}`);
     }
   }
 
@@ -1197,6 +1242,7 @@
   $('update-close').addEventListener('click', closeUpdateDialog);
   $('update-secondary-action').addEventListener('click', closeUpdateDialog);
   $('update-primary-action').addEventListener('click', handleUpdatePrimaryAction);
+  $('update-manual-link').addEventListener('click', () => { void openManualUpdatePage(); });
   $('update-dialog').addEventListener('cancel', (event) => {
     if (state.update?.stage === 'installing') event.preventDefault();
   });

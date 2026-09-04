@@ -1,7 +1,18 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, shell } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  Tray,
+  Menu,
+  nativeImage,
+  ipcMain,
+  dialog,
+  shell,
+  autoUpdater: nativeAutoUpdater,
+} = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { normalizeUpdateError } = require('./update-errors');
+const { createUpdateController } = require('./update-controller');
+const { createUpdateLogger } = require('./update-log');
 const { shouldDisableHardwareAcceleration } = require('./gpu-compat');
 const { createRendererGoneGuard } = require('./renderer-gone');
 
@@ -25,6 +36,7 @@ const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set([
   'https://app.catsco.cn',
 ]);
 const CATSCO_WEBAPP_URL = 'https://app.catsco.cc';
+const DEFAULT_RELEASE_PAGE_URL = 'https://github.com/buildsense-ai/XiaoBa-CLI/releases/latest';
 let mainWindow = null;
 let tray = null;
 let autoUpdater = null;
@@ -340,10 +352,11 @@ function resolveReleasePageUrl() {
       return `https://github.com/${publishConfig.owner}/${publishConfig.repo}/releases/latest`;
     }
   } catch (_error) {
-    return null;
+    // Packaged builds can omit the full publish section. The stable release
+    // page still provides a safe manual fallback when automatic install fails.
   }
 
-  return null;
+  return DEFAULT_RELEASE_PAGE_URL;
 }
 
 function readPackagedUpdateBaseUrl() {
@@ -367,141 +380,21 @@ function resolveUpdateBaseUrl() {
   return normalizeUrl(process.env.XIAOBA_UPDATE_BASE_URL) || readPackagedUpdateBaseUrl();
 }
 
-const updateState = {
-  enabled: Boolean(autoUpdater),
-  stage: autoUpdater ? 'idle' : 'disabled',
-  message: autoUpdater ? 'Updater is ready' : 'Updater is unavailable',
-  currentVersion: app.getVersion(),
-  availableVersion: null,
-  releaseNotes: null,
+const updateLogger = createUpdateLogger({
+  logPath: path.join(app.getPath('userData'), 'logs', 'updater.log'),
+});
+if (autoUpdater) autoUpdater.logger = updateLogger;
+
+const updateController = createUpdateController({
+  updater: autoUpdater,
+  nativeUpdater: nativeAutoUpdater,
+  app,
+  platform: process.platform,
+  currentVersion: () => app.getVersion(),
   releasePageUrl: resolveReleasePageUrl(),
   updateBaseUrl: resolveUpdateBaseUrl(),
-  percent: 0,
-  bytesPerSecond: 0,
-  transferred: 0,
-  total: 0,
-  checkedAt: null,
-  updatedAt: Date.now(),
-  isManualCheck: false,
-  lastError: null,
-};
-
-let checkInFlight = null;
-let downloadInFlight = null;
-
-function getUpdateStatusSnapshot() {
-  return { ...updateState };
-}
-
-function setUpdateState(patch) {
-  Object.assign(updateState, patch, {
-    currentVersion: app.getVersion(),
-    updatedAt: Date.now(),
-  });
-}
-
-function markUpdateError(error, fallbackReason = 'UPDATE_ERROR') {
-  const normalized = normalizeUpdateError(error, fallbackReason);
-  console.error(`[auto-update] ${normalized.reason}:`, error);
-  setUpdateState({
-    stage: 'error',
-    message: 'Update failed: ' + normalized.reason,
-    lastError: normalized,
-  });
-
-  const wrapped = new Error(normalized.message);
-  wrapped.reason = normalized.reason;
-  return wrapped;
-}
-
-const updateController = {
-  getStatus() {
-    return getUpdateStatusSnapshot();
-  },
-
-  async checkForUpdates(manual = false) {
-    if (!autoUpdater) {
-      return getUpdateStatusSnapshot();
-    }
-
-    if (checkInFlight) {
-      return checkInFlight;
-    }
-
-    setUpdateState({
-      stage: 'checking',
-      message: manual ? 'Checking for updates...' : 'Checking for updates in background...',
-      isManualCheck: Boolean(manual),
-      checkedAt: Date.now(),
-      lastError: null,
-    });
-
-    checkInFlight = autoUpdater
-      .checkForUpdates()
-      .then(() => getUpdateStatusSnapshot())
-      .catch((error) => {
-        throw markUpdateError(error, 'UPDATE_CHECK_FAILED');
-      })
-      .finally(() => {
-        checkInFlight = null;
-      });
-
-    return checkInFlight;
-  },
-
-  async downloadUpdate() {
-    if (!autoUpdater) {
-      throw markUpdateError(new Error('Updater is unavailable'), 'UPDATER_UNAVAILABLE');
-    }
-
-    if (downloadInFlight) {
-      return downloadInFlight;
-    }
-
-    if (updateState.stage !== 'available' && updateState.stage !== 'downloading') {
-      throw markUpdateError(new Error('No available update to download'), 'UPDATE_NOT_AVAILABLE');
-    }
-
-    setUpdateState({
-      stage: 'downloading',
-      message: 'Starting update download...',
-      percent: 0,
-      bytesPerSecond: 0,
-      transferred: 0,
-      total: 0,
-      lastError: null,
-    });
-
-    downloadInFlight = autoUpdater
-      .downloadUpdate()
-      .then(() => getUpdateStatusSnapshot())
-      .catch((error) => {
-        throw markUpdateError(error, 'UPDATE_DOWNLOAD_FAILED');
-      })
-      .finally(() => {
-        downloadInFlight = null;
-      });
-
-    return downloadInFlight;
-  },
-
-  installUpdate() {
-    if (!autoUpdater) {
-      throw markUpdateError(new Error('Updater is unavailable'), 'UPDATER_UNAVAILABLE');
-    }
-
-    if (updateState.stage !== 'downloaded') {
-      throw markUpdateError(new Error('Update package is not downloaded yet'), 'UPDATE_NOT_READY');
-    }
-
-    setUpdateState({
-      stage: 'installing',
-      message: 'Quitting and installing update...',
-    });
-
-    autoUpdater.quitAndInstall();
-  },
-};
+  logger: updateLogger,
+});
 function getAppRoot() {
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'app');
@@ -756,6 +649,15 @@ ipcMain.handle('catsco:open-webapp', async (event) => {
   return true;
 });
 
+ipcMain.handle('catsco:open-release-page', async (event) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  if (owner !== mainWindow) return false;
+  const releasePageUrl = updateController.getStatus().releasePageUrl;
+  if (!releasePageUrl) return false;
+  await shell.openExternal(releasePageUrl);
+  return true;
+});
+
 function getRuntimeDataRootForMenu() {
   return process.env.XIAOBA_USER_DATA_DIR
     || process.env.CATSCO_USER_DATA_DIR
@@ -868,7 +770,7 @@ function createApplicationMenu() {
         {
           label: '打开发布页',
           click: () => {
-            const url = updateState.releasePageUrl;
+            const url = updateController.getStatus().releasePageUrl;
             if (url) shell.openExternal(url);
           },
         },
@@ -893,74 +795,6 @@ function createTray() {
   tray.setContextMenu(contextMenu);
   tray.on('click', () => {
     showMainWindow();
-  });
-}
-
-// 闂備礁鎼ú銈夋偤閵娾晛钃熷┑鐘插暟椤╂煡鎮楅敐鍌涙珕妞ゆ劒绮欓弻锝夊煛閸屾氨浠撮梺?
-if (autoUpdater) {
-  autoUpdater.on('checking-for-update', () => {
-    setUpdateState({
-      stage: 'checking',
-      message: 'Checking for updates...',
-      checkedAt: Date.now(),
-      lastError: null,
-    });
-  });
-
-  autoUpdater.on('update-available', (info) => {
-    setUpdateState({
-      stage: 'available',
-      message: 'Update ' + (info.version || '') + ' is available',
-      availableVersion: info.version || null,
-      releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : null,
-      percent: 0,
-      bytesPerSecond: 0,
-      transferred: 0,
-      total: 0,
-      lastError: null,
-    });
-  });
-
-  autoUpdater.on('update-not-available', () => {
-    setUpdateState({
-      stage: 'idle',
-      message: 'Already on the latest version',
-      availableVersion: null,
-      releaseNotes: null,
-      percent: 0,
-      bytesPerSecond: 0,
-      transferred: 0,
-      total: 0,
-      lastError: null,
-    });
-  });
-
-  autoUpdater.on('download-progress', (progress) => {
-    setUpdateState({
-      stage: 'downloading',
-      message: 'Downloading update...',
-      percent: Number(progress?.percent || 0),
-      bytesPerSecond: Number(progress?.bytesPerSecond || 0),
-      transferred: Number(progress?.transferred || 0),
-      total: Number(progress?.total || 0),
-    });
-  });
-
-  autoUpdater.on('update-downloaded', (info) => {
-    setUpdateState({
-      stage: 'downloaded',
-      message: 'Update ' + (info.version || '') + ' downloaded',
-      availableVersion: info.version || updateState.availableVersion,
-      percent: 100,
-      bytesPerSecond: 0,
-      transferred: updateState.total || updateState.transferred,
-      total: updateState.total || updateState.transferred,
-      lastError: null,
-    });
-  });
-
-  autoUpdater.on('error', (error) => {
-    markUpdateError(error, 'UPDATE_RUNTIME_ERROR');
   });
 }
 
@@ -1004,5 +838,6 @@ app.on('child-process-gone', (_event, details) => {
 
 app.on('before-quit', () => {
   app.isQuitting = true;
+  updateController.dispose();
   stopDashboardServer();
 });

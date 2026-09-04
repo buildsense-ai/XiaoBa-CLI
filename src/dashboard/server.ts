@@ -14,7 +14,7 @@ export interface UpdateController {
   getStatus: () => any;
   checkForUpdates: (manual?: boolean) => Promise<any>;
   downloadUpdate: () => Promise<any>;
-  installUpdate: () => void;
+  installUpdate: () => any;
 }
 
 export interface DashboardControllers {

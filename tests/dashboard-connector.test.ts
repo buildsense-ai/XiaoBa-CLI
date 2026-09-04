@@ -65,7 +65,10 @@ test('Connector restores visible desktop update progress and explicit install co
   assert.match(html, /id="update-available-version"/);
   assert.match(html, /id="update-speed"/);
   assert.match(html, /id="update-remaining"/);
+  assert.match(html, /id="update-manual-link"/);
   assert.match(script, /安装并重启/);
+  assert.match(script, /case 'preparing_install'/);
+  assert.match(script, /openReleasePage/);
   assert.match(styles, /\.update-dialog::backdrop/);
   assert.match(styles, /\.update-progress-track\.indeterminate/);
   assert.match(styles, /\.compact-card \.button\.update-active/);
@@ -74,7 +77,7 @@ test('Connector restores visible desktop update progress and explicit install co
   assert.match(script, /setInterval\(\(\) => \{ void refreshUpdateStatus\(\); \}, 1000\)/);
   assert.match(script, /request\('\/update\/download'/);
   assert.match(script, /request\('\/update\/install'/);
-  assert.match(script, /previousStage === 'downloading'[\s\S]*\['downloaded', 'error'\]/);
+  assert.match(script, /\['downloading', 'preparing_install', 'installing'\]\.includes\(previousStage\)/);
   assert.match(script, /update-primary-action.*handleUpdatePrimaryAction/s);
 });
 
