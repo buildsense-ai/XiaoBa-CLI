@@ -58,7 +58,10 @@ export class ConfigManager {
     try {
       const content = fs.readFileSync(configFile, 'utf-8');
       return JSON.parse(content);
-    } catch {
+    } catch (err) {
+      // Improved error handling: log a warning with helpful details
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      console.warn(`[Config] 配置文件解析失败 [${configFile}]: ${errorMessage} - 将使用默认配置`);
       return {};
     }
   }
