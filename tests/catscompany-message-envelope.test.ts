@@ -219,6 +219,19 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     assert.ok(!envelope.warnings?.some(warning => warning.includes('actor.user_id')));
   });
 
+  test('normalizes numeric CatsCompany bot UIDs to the canonical agent namespace', () => {
+    const envelope = createCatsCoMessageEnvelope({
+      topic: 'grp_535',
+      isGroup: true,
+      senderId: 'usr7',
+      text: 'numeric bot uid',
+      botUid: '535',
+    });
+
+    assert.equal(envelope.agentId, 'usr535');
+    assert.equal(createExecutionScope(envelope).agentId, 'usr535');
+  });
+
   test('does not trust spoofed catsco_identity when it conflicts with sender', () => {
     const envelope = createCatsCoMessageEnvelope({
       topic: 'p2p_7_43',

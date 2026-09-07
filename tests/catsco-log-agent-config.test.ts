@@ -12,6 +12,7 @@ describe('catsco log agent config', () => {
       const defaults = getCatscoLogAgentConfig(root, {});
       assert.equal(defaults.enabled, true);
       assert.equal(defaults.apiBaseUrl, 'https://logs.catsco.fun:8000');
+      assert.equal(defaults.maxConcurrentUploads, 3);
 
       assert.equal(getCatscoLogAgentConfig(root, {
         CATSCO_LOG_UPLOAD_ENABLED: 'false',
@@ -52,6 +53,7 @@ describe('catsco log agent config', () => {
         CATSCO_LOG_ROOT: '../outside-logs',
         CATSCO_LOG_UPLOAD_INTERVAL_MINUTES: '-1',
         CATSCO_LOG_MAX_FILES_PER_CYCLE: '0',
+        CATSCO_LOG_MAX_CONCURRENT_UPLOADS: '99',
       });
 
       assert.equal(config.catscoUserToken, 'dotenv-token');
@@ -61,6 +63,7 @@ describe('catsco log agent config', () => {
       assert.equal(config.logsRoot, path.join(root, 'logs'));
       assert.equal(config.uploadIntervalMinutes, 30);
       assert.equal(config.maxFilesPerCycle, 12);
+      assert.equal(config.maxConcurrentUploads, 8);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -215,6 +215,40 @@ describe('AgentSession lifecycle', () => {
     assert.equal(store.hasSession('cc_group:grp_80'), false);
   });
 
+  test('CatsCo route writes agent provenance without changing its legacy group key', () => {
+    const { AgentSession, createCatsCoSessionRoute } = loadSessionModules();
+    const route = createCatsCoSessionRoute({
+      source: 'catscompany',
+      sessionKey: 'cc_group:grp_80',
+      topicType: 'group',
+      topicId: 'grp_80',
+      rawText: 'hello',
+      actorUserId: 'alice',
+      agentId: 'usr407',
+      agentBodyId: 'body-main',
+      identityTrust: 'server_canonical',
+      identitySource: 'metadata.catsco_identity',
+      legacyRestoreKey: 'cc_group:grp_80',
+      legacyCleanupKey: 'cc_group:grp_80',
+    });
+    const session = new AgentSession(route.sessionKey, buildMockServices(), 'catscompany', route);
+    const sessionLogger = (session as any).sessionTurnLogger;
+    sessionLogger.logRuntime('INFO', 'identity test');
+
+    const entry = fs.readFileSync(sessionLogger.getLogFilePath(), 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line))
+      .at(-1);
+    assert.equal(route.sessionKey, 'cc_group:grp_80');
+    assert.deepEqual(entry.agent_identity, {
+      agent_id: 'usr407',
+      agent_body_id: 'body-main',
+      trust: 'server_canonical',
+      source: 'metadata.catsco_identity',
+    });
+  });
+
   test('CatsCo group migrates actor-v2 and topic-v2 session files to the legacy key', async () => {
     const { SessionStore } = loadSessionModules();
     const sessionsDir = path.join(testRoot, 'data', 'sessions');

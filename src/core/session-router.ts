@@ -42,7 +42,7 @@ export function createSessionRoute(input: CreateSessionRouteInput): SessionRoute
   const actorUserId = normalizeId(input.actorUserId) || 'unknown_actor';
   const topicId = normalizeId(input.topicId) || actorUserId;
   const sessionTopicId = normalizeId(input.sessionTopicId) || topicId;
-  const agentId = normalizeOptionalId(input.agentId);
+  const agentId = normalizeAgentId(input.source, input.agentId);
   const agentBodyId = normalizeOptionalId(input.agentBodyId);
   const identityTrust = input.identityTrust || 'legacy_context';
   const identitySource = normalizeOptionalId(input.identitySource);
@@ -214,7 +214,7 @@ export function buildSessionKeyV2(input: {
     encodeKeyPart(normalizeTopicType(input.topicType)),
     encodeKeyPart(normalizeId(input.topicId) || 'unknown_topic'),
   ];
-  const agentId = normalizeOptionalId(input.agentId);
+  const agentId = normalizeAgentId(input.source, input.agentId);
   if (agentId) {
     parts.push('agent', encodeKeyPart(agentId));
   }
@@ -230,7 +230,7 @@ export function parseSessionKeyV2(sessionKey: string): ParsedSessionKeyV2 | unde
   if (!topicId) return undefined;
   let agentId: string | undefined;
   if (parts[5] === 'agent' && parts[6]) {
-    agentId = normalizeOptionalId(decodeKeyPart(parts[6]));
+    agentId = normalizeAgentId(source, decodeKeyPart(parts[6]));
   }
   return {
     version: 2,
@@ -292,6 +292,12 @@ function normalizeId(value: unknown): string | undefined {
 
 function normalizeOptionalId(value: unknown): string | undefined {
   return normalizeId(value);
+}
+
+function normalizeAgentId(source: MessageSource, value: unknown): string | undefined {
+  const normalized = normalizeOptionalId(value);
+  if (!normalized) return undefined;
+  return source === 'catscompany' && /^\d+$/.test(normalized) ? `usr${normalized}` : normalized;
 }
 
 function normalizeSeq(value: unknown): number | undefined {
