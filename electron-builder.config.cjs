@@ -16,6 +16,10 @@ function getPublishConfig() {
       {
         provider: "generic",
         url: updateBaseUrl,
+        // Volcengine TOS supports single byte-range requests, but responds to
+        // a multi-range request with the complete object. electron-updater
+        // otherwise downloads the full installer while attempting a delta.
+        useMultipleRangeRequest: false,
       },
       {
         provider: "github",

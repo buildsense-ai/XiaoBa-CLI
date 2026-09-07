@@ -105,6 +105,7 @@
       "output": "release"
     },
     "asar": false,
+    "npmRebuild": false,
     "publish": {
       "provider": "github",
       "owner": "buildsense-ai",
@@ -112,6 +113,9 @@
     },
     "files": [
       "dist/**/*",
+      "!dist/**/*.d.ts",
+      "!dist/**/*.d.ts.map",
+      "!dist/**/*.js.map",
       "electron/**/*",
       "dashboard/**/*",
       "prompts/**/*",
@@ -122,27 +126,6 @@
       "skills/README.md",
       ".env.example",
       "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "node_modules",
-        "to": "node_modules",
-        "filter": [
-          "**/*.node",
-          "**/*.js",
-          "**/*.mjs",
-          "**/*.wasm",
-          "**/*.json",
-          "!**/.bin/**",
-          "!**/test/**",
-          "!**/tests/**",
-          "!**/*.md",
-          "!electron/**",
-          "!electron-builder/**",
-          "@types/**",
-          "!typescript/**"
-        ]
-      }
     ],
     "extraFiles": [
       {
@@ -177,7 +160,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "CatsCo"
+      "shortcutName": "CatsCo",
+      "differentialPackage": true
     },
     "linux": {
       "target": [

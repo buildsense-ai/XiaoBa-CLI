@@ -47,6 +47,8 @@ function walk(relativeDir, results = []) {
 const packageJson = JSON.parse(readText('package.json'));
 assertEqual('build.productName', packageJson.build?.productName, 'CatsCo');
 assertEqual('build.nsis.shortcutName', packageJson.build?.nsis?.shortcutName, 'CatsCo');
+assertEqual('build.nsis.differentialPackage', packageJson.build?.nsis?.differentialPackage, true);
+assertEqual('build.npmRebuild', packageJson.build?.npmRebuild, false);
 assertEqual('build.dmg.title', packageJson.build?.dmg?.title, 'CatsCo');
 
 const macTargets = Array.isArray(packageJson.build?.mac?.target)

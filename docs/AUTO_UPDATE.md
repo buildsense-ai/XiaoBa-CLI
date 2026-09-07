@@ -22,6 +22,28 @@
 
 只有当这套 tag 驱动的 CD 成功完成后，客户端自动更新链路才是完整可用的。
 
+## Windows 差分更新
+
+Windows NSIS 产物显式启用 `differentialPackage`，发布时必须同时保留
+`latest.yml`、当前和上一版本的 `.exe.blockmap` 以及对应安装包。
+
+正式更新源是火山引擎 TOS。该对象存储支持单段 HTTP Range，但多段 Range
+请求会返回整个对象，因此 generic provider 必须设置
+`useMultipleRangeRequest: false`。这样 electron-updater 会按变化块发起单段
+Range 请求，避免差分更新退化为下载完整安装包。
+
+差分下载会在本地重建并校验完整 NSIS 安装器；NSIS 随后仍会更新应用目录。
+当前打包只保留 electron-builder 收集的生产依赖树，不再通过
+`extraResources` 复制第二套 `node_modules`，以减少安装阶段的文件展开和扫描。
+这些依赖由内置 Node 子进程加载，因此打包时关闭 Electron ABI 原生模块重编译；
+发布验收仍需从打包目录使用内置 Node 加载实际原生模块。
+
+发布验收必须检查应用 `userData` 目录下的 `logs/updater.log`：
+
+- 出现 `Differential download`，且实际传输量明显小于完整安装包，才算命中差分下载。
+- 出现 `fallback to full download` 时，记录具体错误并按完整包下载处理，不能把它标记为差分成功。
+- 下载完成后继续验证退出、安装器接管、重新启动和版本号，不能只看下载进度到 100%。
+
 ## macOS 的额外要求
 
 macOS 发布必须同时生成 `.dmg` 和 `.zip`：
