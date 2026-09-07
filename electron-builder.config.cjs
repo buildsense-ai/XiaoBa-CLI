@@ -1,4 +1,24 @@
+const fs = require("node:fs");
+const path = require("node:path");
 const packageJson = require("./package.json");
+
+const DESKTOP_EXCLUDED_PRODUCTION_DEPENDENCIES = ["deasync"];
+
+function removeDesktopExcludedDependencies(context) {
+  const resourcesDir = context.packager.getResourcesDir(context.appOutDir);
+  const appNodeModules = path.join(resourcesDir, "app", "node_modules");
+  const nodeModulesRoot = path.resolve(appNodeModules) + path.sep;
+
+  for (const packageName of DESKTOP_EXCLUDED_PRODUCTION_DEPENDENCIES) {
+    const packagePath = path.resolve(appNodeModules, packageName);
+    if (!packagePath.startsWith(nodeModulesRoot)) {
+      throw new Error(`Refusing to remove a desktop dependency outside node_modules: ${packagePath}`);
+    }
+    if (!fs.existsSync(packagePath)) continue;
+    fs.rmSync(packagePath, { recursive: true, force: true });
+    console.log(`Removed desktop-excluded production dependency: ${packageName}`);
+  }
+}
 
 function normalizeBaseUrl(value) {
   if (!value) {
@@ -40,4 +60,5 @@ function getPublishConfig() {
 module.exports = {
   ...packageJson.build,
   publish: getPublishConfig(),
+  afterPack: removeDesktopExcludedDependencies,
 };

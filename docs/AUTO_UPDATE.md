@@ -35,6 +35,7 @@ Range 请求，避免差分更新退化为下载完整安装包。
 差分下载会在本地重建并校验完整 NSIS 安装器；NSIS 随后仍会更新应用目录。
 当前打包只保留 electron-builder 收集的生产依赖树，不再通过
 `extraResources` 复制第二套 `node_modules`，以减少安装阶段的文件展开和扫描。
+桌面源码未使用、仅供 Worker 制品验收的 `deasync` 会在 `afterPack` 阶段移除。
 这些依赖由内置 Node 子进程加载，因此打包时关闭 Electron ABI 原生模块重编译；
 发布验收仍需从打包目录使用内置 Node 加载实际原生模块。
 
