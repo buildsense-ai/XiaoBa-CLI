@@ -47,6 +47,25 @@ describe('CloudBotModelRuntimeReloadController', () => {
     assert.deepStrictEqual(applied, [selection]);
   });
 
+  test('retries the same revision after a transient apply deferral', async () => {
+    const selection: CloudBotModelSelection = { modelId: 'glm-5.3-flash', revision: 4 };
+    let attempts = 0;
+    const controller = new CloudBotModelRuntimeReloadController({
+      pullSelection: async () => selection,
+      isIdle: () => true,
+      applySelection: async () => {
+        attempts += 1;
+        return attempts === 1 ? 'deferred' : 'applied';
+      },
+    });
+
+    await controller.pollOnce();
+    await controller.pollOnce();
+    await controller.pollOnce();
+
+    assert.equal(attempts, 2);
+  });
+
   test('does not loop a failed revision and allows a newer retry revision', async () => {
     let selection: CloudBotModelSelection = { modelId: 'gpt-5.6-luna', revision: 4 };
     const attempts: number[] = [];

@@ -435,6 +435,7 @@ describe('BotDefinition activation', () => {
     assert.equal(prepared?.appliedCloudRevision, undefined);
     assert.equal(prepared?.cloudRevision, undefined);
     assert.match(prepared?.cloudApplyError || '', /local_workspace_unverified/);
+    assert.equal(prepared?.cloudApplyRetryable, undefined);
     assert.equal(prepared?.skillSync?.sync?.applyStatus, 'deferred');
     assert.equal(prepared?.skillSync?.sync?.appliedRevision, undefined);
     assert.deepStrictEqual(ackBody, {
@@ -572,12 +573,10 @@ describe('BotDefinition activation', () => {
     assert.equal(prepared?.appliedCloudRevision, undefined);
     assert.equal(prepared?.cloudRevision, undefined);
     assert.match(prepared?.cloudApplyError || '', /cloud_unavailable/);
+    assert.equal(prepared?.cloudApplyRetryable, true);
     assert.equal(prepared?.skillSync?.sync?.applyStatus, 'deferred');
     assert.equal(prepared?.skillSync?.sync?.appliedRevision, 7);
-    assert.deepStrictEqual(ackBody, {
-      revision: 7,
-      error: 'Bot Skill activation was deferred (cloud_unavailable).',
-    });
+    assert.equal(ackBody, undefined, 'a retryable outage must leave the revision pending');
   });
 
   test('applies and acknowledges a cloud-selected model after its local runtime is ready', async () => {

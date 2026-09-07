@@ -57,6 +57,8 @@ export interface PreparedBoundBotDefinition {
   appliedCloudRevision?: number;
   cloudSelection?: CloudBotModelSelection;
   cloudApplyError?: string;
+  /** The desired revision was not applied because a cloud dependency can be retried. */
+  cloudApplyRetryable?: boolean;
   skillSync?: PreparedBoundBotSkills;
 }
 
@@ -243,10 +245,13 @@ export async function prepareBoundBotDefinition(
         const cloudApplyError = targetRevisionApplied
           ? undefined
           : botSkillActivationDeferredError(skillSync?.sync?.errorCode);
+        const cloudApplyRetryable = !targetRevisionApplied
+          && botSkillActivationErrorIsRetryable(skillSync?.sync?.errorCode);
         definitionService.clearLegacyModelConfigurationWhenReady(definition);
         if (
           options.acknowledgeCloudSelection !== false
           && cloudSnapshot.configured
+          && !cloudApplyRetryable
         ) {
           try {
             await acknowledgeCloudBotDefinition(
@@ -270,6 +275,7 @@ export async function prepareBoundBotDefinition(
             ? { cloudRevision: appliedRevision, appliedCloudRevision: appliedRevision }
             : {}),
           ...(cloudApplyError ? { cloudApplyError } : {}),
+          ...(cloudApplyRetryable ? { cloudApplyRetryable: true } : {}),
           ...(skillSync ? { skillSync } : {}),
           cloudSelection: definition.model.kind === 'custom'
             ? {
@@ -611,6 +617,10 @@ function errorMessage(error: unknown): string {
 function botSkillActivationDeferredError(errorCode?: string): string {
   const code = String(errorCode || 'skill_revision_not_applied').trim();
   return `Bot Skill activation was deferred (${code}).`;
+}
+
+function botSkillActivationErrorIsRetryable(errorCode?: string): boolean {
+  return errorCode === 'cloud_unavailable' || errorCode === 'cloud_definition_unavailable';
 }
 
 function scheduleBundledDefaultPromptSnapshot(options: {

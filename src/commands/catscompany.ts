@@ -214,7 +214,7 @@ export async function catscompanyCommand(): Promise<void> {
         }
       }
     }
-    if (preparedBot?.cloudSelection) {
+    if (preparedBot?.cloudSelection && !preparedBot.cloudApplyRetryable) {
       const initialApplyError = preparedBot.cloudApplyError || '';
       try {
         await acknowledgeCloudBotModelSelection(
@@ -230,10 +230,16 @@ export async function catscompanyCommand(): Promise<void> {
         };
         Logger.warning(`CatsCo 启动模型状态回报失败，将自动重试: ${errorMessage(error)}`);
       }
+    } else if (preparedBot?.cloudSelection) {
+      Logger.warning(
+        `CatsCo BotDefinition revision=${preparedBot.cloudSelection.revision} preparation is temporarily unavailable; will retry automatically.`,
+      );
     }
     let lastCloudPollWarningAt = 0;
     const reloadController = new CloudBotModelRuntimeReloadController({
-      initialRevision: preparedBot?.cloudSelection?.revision,
+      initialRevision: preparedBot?.cloudApplyRetryable
+        ? undefined
+        : preparedBot?.cloudSelection?.revision,
       pullSelection: async () => {
         const selection = await pullCloudBotModelSelection({ botId: modelBotId, auth });
         if (
@@ -350,7 +356,7 @@ function skillActivationAckWarning(code: BotSkillActivationAckWarningCode): stri
   }
 }
 
-async function applyCloudModelRuntimeSelection(
+export async function applyCloudModelRuntimeSelection(
   options: ApplyCloudModelRuntimeSelectionOptions,
 ): Promise<'applied' | 'deferred'> {
   const botId = options.botId;
@@ -518,6 +524,12 @@ async function applyCloudBotDefinitionSelection(
   ) {
     const message = prepared?.cloudApplyError || 'Cloud BotDefinition runtime preparation did not complete.';
     restorePreviousRuntime();
+    if (prepared?.cloudApplyRetryable) {
+      Logger.warning(
+        `CatsCo BotDefinition revision=${options.selection.revision} preparation is temporarily unavailable; will retry automatically.`,
+      );
+      return 'deferred';
+    }
     await acknowledgeCloudModelApply(options, message);
     throw new Error(message);
   }
