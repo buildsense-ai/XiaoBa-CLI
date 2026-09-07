@@ -9,7 +9,8 @@ import { Logger } from '../utils/logger';
 import { withArtifactContextRefEnvironment } from '../utils/artifact-context-ref';
 import { withArtifactTaskRefEnvironment } from '../utils/artifact-task-ref';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
-import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
+import { isToolAllowed, isBashCommandAllowed, isOutsideWorkingDirectory } from '../utils/safety';
+import { validateShellToolArgs } from '../utils/input-validation';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 const execAsync = promisify(exec);
@@ -102,6 +103,11 @@ export class ShellTool implements Tool {
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    // Validate input arguments
+    const validation = validateShellToolArgs(args);
+    if (!validation.valid) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: `输入验证失败: ${validation.error}` };
+    }
     const { command, description, timeout = 30000, confirm_dangerous = false, cwd } = args;
     let cwdBefore = context.workingDirectory;
 
@@ -900,6 +906,14 @@ export class ShellTool implements Tool {
   ): string | undefined {
     if (!directory) return undefined;
     const resolved = path.resolve(directory);
+    
+    // SECURITY: Validate the resolved path is within the working directory
+    // This prevents path traversal attacks via shell command output injection
+    if (isOutsideWorkingDirectory(resolved, context.workingDirectory)) {
+      Logger.warning(`Blocked directory traversal attempt: ${directory} -> ${resolved} (outside ${context.workingDirectory})`);
+      return undefined;
+    }
+    
     try {
       if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return undefined;
       // macOS commonly reports /private/var from $PWD for a command that was

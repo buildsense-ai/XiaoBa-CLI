@@ -1,6 +1,17 @@
 import * as http from 'http';
 import { Logger } from '../utils/logger';
 
+/** Environment variable to control bridge security enforcement */
+const BRIDGE_STRICT_MODE_ENV = 'BRIDGE_STRICT_MODE';
+
+/**
+ * Check if the application is running in production mode.
+ * Production is detected when NODE_ENV is explicitly set to 'production'.
+ */
+function isProduction(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
+
 export interface BridgeMessage {
   /** 发送方 bot 名称 */
   from: string;
@@ -41,6 +52,13 @@ export interface AsyncTaskMeta {
 
 export type BridgeResultHandler = (result: BridgeResult, meta: AsyncTaskMeta) => Promise<void>;
 
+export class BridgeSecurityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BridgeSecurityError';
+  }
+}
+
 /**
  * Bot-to-Bot HTTP Bridge Server
  * 接收其他 bot 发来的任务请求
@@ -58,8 +76,38 @@ export class BridgeServer {
 
   constructor(private port: number) {
     this.secret = process.env.BRIDGE_SECRET;
+    this.validateSecurityConfig();
+  }
+
+  /**
+   * Validate security configuration.
+   * In production or strict mode, BRIDGE_SECRET is required.
+   */
+  private validateSecurityConfig(): void {
+    const isStrictMode = process.env[BRIDGE_STRICT_MODE_ENV] === 'true';
+    const strictEnforcement = isStrictMode || isProduction();
+
     if (!this.secret) {
-      Logger.warning('[Bridge] 未配置 BRIDGE_SECRET，任何人都能发送消息。建议设置环境变量 BRIDGE_SECRET');
+      const errorMsg = '[Bridge] 未配置 BRIDGE_SECRET，任何人都能发送消息！建议设置环境变量 BRIDGE_SECRET';
+      
+      if (strictEnforcement) {
+        // In production/strict mode, throw an error instead of just warning
+        throw new BridgeSecurityError(
+          `${errorMsg}\n` +
+          `提示: 在生产环境或启用 ${BRIDGE_STRICT_MODE_ENV}=true 时，必须配置 BRIDGE_SECRET。\n` +
+          `要临时禁用此检查，请设置 NODE_ENV != production 或 ${BRIDGE_STRICT_MODE_ENV}=false`
+        );
+      } else {
+        // In development mode, just log a warning
+        Logger.warning(errorMsg);
+        Logger.warning(`[Bridge] 如需强制要求认证，请设置 ${BRIDGE_STRICT_MODE_ENV}=true 或使用生产模式`);
+      }
+    } else {
+      // Secret is configured - validate its strength
+      if (this.secret.length < 32) {
+        Logger.warning('[Bridge] BRIDGE_SECRET 长度过短（建议至少 32 字符），可能存在安全风险');
+      }
+      Logger.info('[Bridge] BRIDGE_SECRET 已配置，Bridge API 将进行身份验证');
     }
   }
 
@@ -93,6 +141,7 @@ export class BridgeServer {
           res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
           return;
         }
+        // If no secret is configured, all requests are allowed (development mode)
         if (req.method === 'POST' && req.url === '/bot-message') {
           await this.handleRequest(req, res);
         } else if (req.method === 'POST' && req.url === '/bot-result') {

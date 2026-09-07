@@ -230,17 +230,52 @@ function parsePackageObject(packageBytes: Buffer): SkillHubPackageObject {
   }
 }
 
+/**
+ * Maximum total package size (100 MB)
+ * Protects against memory exhaustion when decoding base64 packages
+ */
+const MAX_PACKAGE_TOTAL_SIZE = 100 * 1024 * 1024;
+
+/**
+ * Maximum individual file size (50 MB)
+ * Prevents single large files from overwhelming the system
+ */
+const MAX_PACKAGE_FILE_SIZE = 50 * 1024 * 1024;
+
 function verifyPackageFiles(files: SkillHubPackageFile[]): void {
   if (!Array.isArray(files) || files.length === 0) {
     throw new SkillHubVerificationError('SkillHub package has no files.', 'PACKAGE_FILES_MISSING');
   }
+  
+  let totalPackageSize = 0;
   const seen = new Set<string>();
+  
   for (const file of files) {
     const safePath = normalizePackagePath(file.path);
     if (seen.has(safePath)) {
       throw new SkillHubVerificationError(`Duplicate package file path: ${safePath}`, 'PACKAGE_FILE_DUPLICATE');
     }
     seen.add(safePath);
+    
+    // Check individual file size before decoding
+    if (file.size > MAX_PACKAGE_FILE_SIZE) {
+      throw new SkillHubVerificationError(
+        `Package file exceeds maximum size (${MAX_PACKAGE_FILE_SIZE / 1024 / 1024}MB): ${safePath}`,
+        'PACKAGE_FILE_TOO_LARGE'
+      );
+    }
+    
+    // Accumulate total size
+    totalPackageSize += file.size;
+    
+    // Check total package size before processing
+    if (totalPackageSize > MAX_PACKAGE_TOTAL_SIZE) {
+      throw new SkillHubVerificationError(
+        `Package total size exceeds maximum (${MAX_PACKAGE_TOTAL_SIZE / 1024 / 1024}MB)`,
+        'PACKAGE_TOTAL_SIZE_EXCEEDED'
+      );
+    }
+    
     const content = Buffer.from(file.contentBase64, 'base64');
     if (content.length !== file.size) {
       throw new SkillHubVerificationError(`Package file size mismatch: ${safePath}`, 'PACKAGE_FILE_SIZE_MISMATCH');

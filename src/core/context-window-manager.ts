@@ -81,7 +81,7 @@ export class ContextWindowManager {
       });
       return result;
     } catch (err) {
-      Logger.error(`[${options.sessionKey}] 压缩失败: ${err}`);
+      Logger.error(`[${options.sessionKey}] 压缩失败: ${err instanceof Error ? err.message : String(err)}`);
       await this.emitStatus(options, {
         status: 'error',
         sessionKey: options.sessionKey,

@@ -185,15 +185,87 @@ function nextState(
   };
 }
 
+/**
+ * Validate a single item state object
+ */
+function isValidItemState(obj: unknown): obj is DefaultSkillBootstrapItemState {
+  if (!obj || typeof obj !== 'object') return false;
+  const item = obj as Record<string, unknown>;
+  
+  const validStates = ['installed', 'user_removed', 'user_disabled', 'name_conflict', 'failed'];
+  
+  return (
+    typeof item.state === 'string' && validStates.includes(item.state) &&
+    typeof item.skillId === 'string' &&
+    typeof item.version === 'string' &&
+    typeof item.installName === 'string' &&
+    typeof item.updatedAt === 'string'
+  );
+}
+
+/**
+ * Validate state file schema and sanitize data
+ */
+function validateAndSanitizeState(raw: unknown): DefaultSkillBootstrapStateFile {
+  if (!raw || typeof raw !== 'object') {
+    return { schema: STATE_SCHEMA, items: {} };
+  }
+  
+  const obj = raw as Record<string, unknown>;
+  
+  // Validate schema version
+  if (obj.schema !== STATE_SCHEMA) {
+    Logger.warning(`State file schema mismatch: expected ${STATE_SCHEMA}, got ${obj.schema}`);
+    return { schema: STATE_SCHEMA, items: {} };
+  }
+  
+  // Validate items
+  if (!obj.items || typeof obj.items !== 'object') {
+    return { schema: STATE_SCHEMA, items: {} };
+  }
+  
+  const items: Record<string, DefaultSkillBootstrapItemState> = {};
+  
+  for (const [key, item] of Object.entries(obj.items)) {
+    // Validate key is safe
+    if (typeof key !== 'string' || key.length === 0 || key.length > 256) {
+      Logger.warning(`Invalid state item key, skipping: ${key}`);
+      continue;
+    }
+    
+    // Validate item state
+    if (!isValidItemState(item)) {
+      Logger.warning(`Invalid state item for key "${key}", skipping`);
+      continue;
+    }
+    
+    items[key] = item;
+  }
+  
+  return { schema: STATE_SCHEMA, items };
+}
+
 function readStateFile(filePath: string): DefaultSkillBootstrapStateFile {
   try {
     if (!fs.existsSync(filePath)) return { schema: STATE_SCHEMA, items: {} };
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as DefaultSkillBootstrapStateFile;
-    if (parsed?.schema === STATE_SCHEMA && parsed.items && typeof parsed.items === 'object') {
-      return { schema: STATE_SCHEMA, items: parsed.items };
+    
+    const rawContent = fs.readFileSync(filePath, 'utf-8');
+    
+    // Basic size check to prevent DoS
+    if (rawContent.length > 1024 * 1024) { // 1MB max
+      Logger.warning(`State file too large (${rawContent.length} bytes), resetting`);
+      return { schema: STATE_SCHEMA, items: {} };
     }
+    
+    const parsed = JSON.parse(rawContent);
+    return validateAndSanitizeState(parsed);
   } catch (error: any) {
-    Logger.warning(`Failed to read default SkillHub state: ${error?.message || String(error)}`);
+    // Log parsing errors specifically
+    if (error instanceof SyntaxError) {
+      Logger.warning(`State file contains invalid JSON, resetting: ${error.message}`);
+    } else {
+      Logger.warning(`Failed to read default SkillHub state: ${error?.message || String(error)}`);
+    }
   }
   return { schema: STATE_SCHEMA, items: {} };
 }

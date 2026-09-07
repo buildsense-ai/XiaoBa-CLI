@@ -84,7 +84,7 @@ export class WeixinBot {
         this.contextTokens = new Map(Object.entries(tokens));
       } catch {}
     } catch (err) {
-      Logger.error(`[微信] 加载状态失败: ${err}`);
+      Logger.error(`[微信] 加载状态失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -95,7 +95,7 @@ export class WeixinBot {
       await fs.writeFile(bufPath, this.getUpdatesBuf);
       await fs.writeFile(tokensPath, JSON.stringify(Object.fromEntries(this.contextTokens)));
     } catch (err) {
-      Logger.error(`[微信] 保存状态失败: ${err}`);
+      Logger.error(`[微信] 保存状态失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -114,7 +114,7 @@ export class WeixinBot {
       await fs.rm(bufPath, { force: true });
       await fs.rm(tokensPath, { force: true });
     } catch (err) {
-      Logger.error(`[微信] 清理过期状态失败: ${err}`);
+      Logger.error(`[微信] 清理过期状态失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -125,7 +125,7 @@ export class WeixinBot {
     try {
       await this.config.onSessionExpired?.();
     } catch (err) {
-      Logger.error(`[微信] 会话过期收束失败: ${err}`);
+      Logger.error(`[微信] 会话过期收束失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

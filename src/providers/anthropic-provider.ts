@@ -6,6 +6,7 @@ import { ContextDebugLogger } from '../utils/context-debug-logger';
 import { resolveMaxTokens } from './output-limits';
 import { applyAnthropicReasoningOptions } from '../utils/reasoning-effort';
 import { createProviderStateReference, isProviderStateCompatible } from './provider-state';
+import { Logger } from '../utils/logger';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -14,6 +15,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 type AnthropicSystemBlock = Anthropic.TextBlockParam & {
   cache_control?: { type: 'ephemeral' };
 };
+
+/** Timeout configuration constants (in milliseconds) */
+const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const MIN_TIMEOUT_MS = 30 * 1000; // 30 seconds
+const MAX_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 type AnthropicSystemPrompt = string | AnthropicSystemBlock[];
 
@@ -34,7 +40,7 @@ export class AnthropicProvider implements AIProvider {
     this.client = new Anthropic({
       apiKey: config.apiKey!,
       baseURL: this.normalizeBaseURL(this.apiUrl),
-      timeout: 10 * 60 * 1000, // 10 分钟，Opus 长输出需要足够时间
+      timeout: this.resolveTimeout(), // 可通过 ANTHROPIC_TIMEOUT_MS 环境变量配置（默认 10 分钟）
       defaultHeaders: {
         'User-Agent': 'CatsCo',
         'x-stainless-lang': undefined as any,
@@ -56,6 +62,37 @@ export class AnthropicProvider implements AIProvider {
    */
   private normalizeBaseURL(url: string): string {
     return url.replace(/\/+$/, '').replace(/\/v1\/messages$/, '').replace(/\/v1$/, '');
+  }
+
+  /**
+   * 解析超时配置
+   * 支持通过环境变量 ANTHROPIC_TIMEOUT_MS 配置超时时间（毫秒）
+   * 最小超时时间为 30 秒，最大为 30 分钟
+   */
+  private resolveTimeout(): number {
+    const envTimeout = process.env.ANTHROPIC_TIMEOUT_MS;
+    const defaultTimeout = DEFAULT_TIMEOUT_MS;
+    
+    if (!envTimeout) {
+      return defaultTimeout;
+    }
+    
+    const parsed = parseInt(envTimeout, 10);
+    if (isNaN(parsed) || parsed <= 0) {
+      Logger.warning(`[Anthropic] ANTHROPIC_TIMEOUT_MS 无效，使用默认值: ${defaultTimeout}ms`);
+      return defaultTimeout;
+    }
+    
+    // 限制范围：30秒 - 30分钟
+    const minTimeout = MIN_TIMEOUT_MS;
+    const maxTimeout = MAX_TIMEOUT_MS;
+    const clamped = Math.max(minTimeout, Math.min(maxTimeout, parsed));
+    
+    if (clamped !== parsed) {
+      Logger.info(`[Anthropic] ANTHROPIC_TIMEOUT_MS 已限制在 ${minTimeout / 1000}s - ${maxTimeout / 1000 / 60}min 范围内`);
+    }
+    
+    return clamped;
   }
 
   private providerStateReference(): ProviderStateReference {
