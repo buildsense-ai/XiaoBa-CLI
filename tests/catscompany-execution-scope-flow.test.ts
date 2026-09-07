@@ -203,6 +203,102 @@ function createHarness(options: {
 }
 
 describe('CatsCompany execution scope flow', () => {
+  test('/stop discards queued follow-ups and permits only new work afterwards', async () => {
+    const harness = createHarness({ busy: true });
+    const topic = 'p2p_7_43';
+    const key = expectedCatsCoSessionKey('usr7', topic);
+    const message = (text: string, seq: number) => ({
+      topic, senderId: 'usr7', text, content: text, isGroup: false, seq,
+      metadata: canonicalMetadata('usr7', topic),
+    });
+    let interrupts = 0;
+    (harness.session as any).requestInterrupt = () => { interrupts++; };
+    harness.session.handleCommand = async () => {
+      (harness.session as any).requestInterrupt();
+      return { handled: true, reply: '正在停止当前请求...' };
+    };
+    await harness.bot.onMessage(message('follow-up before stop', 20));
+    assert.equal(harness.bot.messageQueue.get(key)?.length, 1);
+    await harness.bot.onMessage(message('/stop', 21));
+    harness.session.setBusy(false);
+    await harness.bot.drainMessageQueue(key);
+    assert.equal(interrupts, 1);
+    assert.equal(harness.handledTurns.length, 0);
+    assert.equal(harness.bot.messageQueue.has(key), false);
+    await harness.bot.onMessage(message('fresh request after stop', 22));
+    assert.equal(harness.handledTurns.length, 1);
+    assert.match(String(harness.handledTurns[0].userMessage), /fresh request/);
+  });
+
+  test('/stop interrupts without waiting for cloud history restoration', async () => {
+    const harness = createHarness({ busy: true });
+    let interrupts = 0;
+    (harness.session as any).requestInterrupt = () => { interrupts++; };
+    harness.bot.ensureCloudSessionRestored = async () => {
+      throw new Error('stop must not restore history');
+    };
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43', senderId: 'usr7', text: '/stop', content: '/stop',
+      isGroup: false, seq: 21, metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+    });
+    assert.equal(interrupts, 1);
+    assert.equal(harness.handledTurns.length, 0);
+  });
+
+  test('stop fences late text and progress callbacks but allows fresh callbacks', async () => {
+    const harness = createHarness();
+    const topic = 'p2p_7_43';
+    const key = expectedCatsCoSessionKey('usr7', topic);
+    (harness.session as any).requestInterrupt = () => {};
+    const callbacks = harness.bot.buildSessionCallbacks(topic, { sessionKey: key });
+    harness.bot.handleCancelMessage({ topic, senderId: 'usr7', isGroup: false });
+    await callbacks.onAssistantText('stale reply after stop');
+    await callbacks.onThinking('stale thinking after stop');
+    await callbacks.onToolStart('read_file', 'old-tool', {});
+    await callbacks.onToolEnd('read_file', 'old-tool', 'old result');
+    assert.deepEqual(harness.replies, []);
+    assert.deepEqual(harness.progressEvents, []);
+    const fresh = harness.bot.buildSessionCallbacks(topic, { sessionKey: key });
+    await fresh.onAssistantText('fresh reply');
+    assert.deepEqual(harness.replies, ['fresh reply']);
+  });
+
+  test('cancelled root work cannot deliver a late final reply or consume post-stop input', async () => {
+    const harness = createHarness();
+    const topic = 'p2p_7_43';
+    let started!: () => void;
+    let release!: () => void;
+    const startedPromise = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let oldPending: (() => unknown) | undefined;
+    harness.session.handleMessage = async (userMessage: unknown, options: any) => {
+      harness.handledTurns.push({ userMessage, options });
+      if (harness.handledTurns.length === 1) {
+        oldPending = options.pendingUserInputProvider;
+        started();
+        await gate;
+        return { visibleToUser: true, text: 'late old final reply' };
+      }
+      return { visibleToUser: true, text: 'fresh final reply' };
+    };
+    (harness.session as any).requestInterrupt = () => {};
+    const message = (text: string, seq: number) => ({
+      topic, senderId: 'usr7', text, content: text, isGroup: false, seq,
+      metadata: canonicalMetadata('usr7', topic),
+    });
+    const original = harness.bot.onMessage(message('original task', 20));
+    await startedPromise;
+    await harness.bot.onMessage(message('old queued input', 21));
+    await harness.bot.onMessage({ ...message('', 0), type: 'stream_cancel' });
+    await harness.bot.onMessage(message('new input after stop', 22));
+    assert.equal(oldPending?.(), null);
+    release();
+    await original;
+    assert.equal(harness.handledTurns.length, 2);
+    assert.match(String(harness.handledTurns[1].userMessage), /new input after stop/);
+    assert.deepEqual(harness.replies, ['fresh final reply']);
+  });
+
   test('drops an unmentioned large-group message before cloud restore or session creation', async () => {
     const { bot, handledTurns, sessionKeys } = createHarness();
     let restoreCalls = 0;

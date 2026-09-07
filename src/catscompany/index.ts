@@ -1336,10 +1336,14 @@ export class CatsCompanyBot {
     const callbackGeneration = opts?.sessionKey
       ? opts.clearGeneration ?? this.getSessionClearGeneration(opts.sessionKey)
       : undefined;
+    const callbackStopGeneration = opts?.sessionKey
+      ? this.getSessionStopGeneration(opts.sessionKey)
+      : undefined;
     const isStaleCallback = (): boolean => Boolean(
       this.shuttingDown
       || (opts?.sessionKey
-        && callbackGeneration !== this.getSessionClearGeneration(opts.sessionKey)),
+        && (callbackGeneration !== this.getSessionClearGeneration(opts.sessionKey)
+          || callbackStopGeneration !== this.getSessionStopGeneration(opts.sessionKey))),
     );
     return {
       onRetry: async (attempt, maxRetries, info) => {
@@ -1507,6 +1511,15 @@ export class CatsCompanyBot {
   }
 
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
+    // Stop is control input: it must reach the same boundary as the web button
+    // before any asynchronous history restore or ordinary message queueing.
+    if (/^\/stop(?:\s|$)/i.test(msg.text)) {
+      this.stopSessionExecution(key);
+      await this.sender.reply(msg.topic, '正在停止当前请求...').catch((err: any) => {
+        Logger.warning(`停止提示发送失败: ${err?.message || err}`);
+      });
+      return;
+    }
     const entryClearGeneration = this.getSessionClearGeneration(key);
     const entryStopGeneration = this.getSessionStopGeneration(key);
     const nativeFeishuTrigger = shouldHydrateCatsCompanyGroupContext(msg);
@@ -1677,6 +1690,7 @@ export class CatsCompanyBot {
         runtimeFeedback,
         nativeFeishuContext,
         clearGeneration: entryClearGeneration,
+        stopGeneration: entryStopGeneration,
       });
       this.messageQueue.set(key, queue);
       Logger.info(`[${key}] 主会话忙，消息已入队 (队列长度: ${queue.length})`);
@@ -1704,7 +1718,7 @@ export class CatsCompanyBot {
           key,
         );
       }
-      if (shouldProcess) {
+      if (shouldProcess && entryStopGeneration === this.getSessionStopGeneration(key)) {
         task = this.beginConversationTask(key, msg.topic, msg.artifactTaskRef);
         if (!task) {
           // Shutdown barrier at the call site: never start the model after
@@ -1740,7 +1754,8 @@ export class CatsCompanyBot {
           }),
         });
 
-        if (entryClearGeneration === this.getSessionClearGeneration(key)) {
+        if (entryClearGeneration === this.getSessionClearGeneration(key)
+          && entryStopGeneration === this.getSessionStopGeneration(key)) {
           // Shutdown fence: destroy() may have timed out its quiesce wait and
           // returned while this model turn was still in flight. Never deliver a
           // late user reply after the connector is gone.
@@ -1760,11 +1775,12 @@ export class CatsCompanyBot {
           }
           this.finishConversationTask(key, task, this.taskStatusForResult(result, replyDelivered));
         } else {
-          Logger.info(`[${key}] clear 后忽略旧 turn 的返回`);
+          Logger.info(`[${key}] clear/stop 后忽略旧 turn 的返回`);
         }
       }
     } catch (err: any) {
-      if (entryClearGeneration === this.getSessionClearGeneration(key)) {
+      if (entryClearGeneration === this.getSessionClearGeneration(key)
+        && entryStopGeneration === this.getSessionStopGeneration(key)) {
         this.finishConversationTask(key, task, {
           state: 'failed',
           summary: '任务执行失败',
@@ -1772,7 +1788,7 @@ export class CatsCompanyBot {
         });
         throw err;
       }
-      Logger.info(`[${key}] clear 后忽略旧 turn 的异常`);
+      Logger.info(`[${key}] clear/stop 后忽略旧 turn 的异常`);
     } finally {
       this.releaseSessionExecution(key);
       stopTypingHeartbeat();
@@ -2907,6 +2923,10 @@ export class CatsCompanyBot {
       botUid: this.botUid,
     });
     const key = envelope.sessionKey;
+    this.stopSessionExecution(key);
+  }
+
+  private stopSessionExecution(key: string): void {
     const stopGeneration = this.bumpSessionStopGeneration(key);
     // Stop is a boundary for queued input. Messages received afterwards get
     // the new generation and can start a fresh turn normally.
@@ -3207,6 +3227,7 @@ export class CatsCompanyBot {
     for (; firstRemainingIndex < queue.length; firstRemainingIndex++) {
       const item = queue[firstRemainingIndex];
       if ((item.clearGeneration ?? expectedClearGeneration) !== expectedClearGeneration) break;
+      if ((item.stopGeneration ?? expectedStopGeneration) !== expectedStopGeneration) break;
       if (item.source === 'subagent_feedback') break;
       if (item.nativeFeishuContext) break;
       // An Artifact task owns a distinct run/task correlation. Do not fold it
