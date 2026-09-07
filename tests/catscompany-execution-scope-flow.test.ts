@@ -203,6 +203,72 @@ function createHarness(options: {
 }
 
 describe('CatsCompany execution scope flow', () => {
+  test('feeds a two-member web task follow-up into the active pending-input provider', async () => {
+    const harness = createHarness();
+    const topic = 'grp_80';
+    let started!: () => void;
+    let release!: () => void;
+    const startedPromise = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let consume!: () => unknown;
+    harness.session.handleMessage = async (userMessage: unknown, options: any) => {
+      harness.handledTurns.push({userMessage, options});
+      consume = options.pendingUserInputProvider;
+      started();
+      await gate;
+      return {visibleToUser: false, text: ''};
+    };
+    const message = (text: string, seq: number) => ({
+      topic, senderId: 'usr7', text, content: text, isGroup: true, memberCount: 2, seq,
+      metadata: canonicalMetadata('usr7', topic),
+    });
+    const original = harness.bot.onMessage(message('original task', 20));
+    await startedPromise;
+    try {
+      await harness.bot.onMessage(message('web task follow-up', 21));
+      const pending: any = consume();
+      assert.match(String(pending?.content ?? pending), /web task follow-up/);
+      assert.equal(harness.session.getRemoteContextCursor(), 21);
+      assert.equal(harness.bot.messageQueue.has(expectedCatsCoSessionKey('usr7',topic)), false);
+    } finally {
+      release();
+      await original;
+    }
+    assert.equal(harness.handledTurns.length, 1);
+  });
+
+  test('retains pending web task input when its context cursor cannot be saved', async () => {
+    const harness = createHarness({busy: true});
+    const topic = 'grp_80';
+    const key = expectedCatsCoSessionKey('usr7',topic);
+    await harness.bot.onMessage({
+      topic, senderId: 'usr7', text: 'queued follow-up', content: 'queued follow-up',
+      isGroup: true, memberCount: 2, seq: 21, metadata: canonicalMetadata('usr7', topic),
+    });
+    harness.session.saveRemoteContextCursor = () => false;
+    const queued = harness.bot.messageQueue.get(key)[0];
+    assert.equal(harness.bot.consumeQueuedUserInput(key, queued.executionScope), null);
+    assert.equal(harness.bot.messageQueue.get(key).length, 1);
+    harness.session.saveRemoteContextCursor = () => true;
+    const pending = harness.bot.consumeQueuedUserInput(key, queued.executionScope);
+    assert.match(String(pending?.content ?? pending), /queued follow-up/);
+  });
+
+  test('keeps web groups with other or unknown members behind history hydration', async () => {
+    for (const memberCount of [3, undefined]) {
+      const harness = createHarness({busy: true});
+      const topic = 'grp_80';
+      const key = expectedCatsCoSessionKey('usr7',topic);
+      await harness.bot.onMessage({
+        topic, senderId: 'usr7', text: 'group follow-up', content: 'group follow-up',
+        isGroup: true, memberCount, mentions: ['usr43'], seq: 21, metadata: canonicalMetadata('usr7', topic),
+      });
+      const queued = harness.bot.messageQueue.get(key)[0];
+      assert.equal(harness.bot.consumeQueuedUserInput(key, queued.executionScope), null);
+      assert.equal(harness.bot.messageQueue.get(key).length, 1);
+    }
+  });
+
   test('/stop discards queued follow-ups and permits only new work afterwards', async () => {
     const harness = createHarness({ busy: true });
     const topic = 'p2p_7_43';

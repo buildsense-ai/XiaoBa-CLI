@@ -423,6 +423,13 @@ function shouldHydrateCatsCompanyGroupContext(
   return !sourceChannel || isNativeFeishuGroupTrigger(message);
 }
 
+function isTwoMemberWebGroup(message: Pick<ParsedCatsMessage, 'chatType' | 'metadata' | 'memberCount'>): boolean {
+  const memberCount = Number(message.memberCount);
+  return message.chatType === 'group'
+    && !String(message.metadata?.source_channel || '').trim()
+    && Number.isSafeInteger(memberCount) && memberCount > 0 && memberCount <= 2;
+}
+
 /**
  * CatsCompanyBot 主类
  * 初始化官方 SDK，注册事件，编排消息处理流程
@@ -1818,11 +1825,7 @@ export class CatsCompanyBot {
       const previousCursor = session.getRemoteContextCursor(cursorKey);
       const nextCursor = Math.max(previousCursor, msg.seq);
       const cursorUpdate = { source: cursorKey, cursor: nextCursor };
-      const memberCount = Number(msg.memberCount);
-      const sourceChannel = typeof msg.metadata?.source_channel === 'string'
-        ? msg.metadata.source_channel.trim()
-        : '';
-      if (!sourceChannel && Number.isFinite(memberCount) && memberCount > 0 && memberCount <= 2) {
+      if (isTwoMemberWebGroup(msg)) {
         if (!session.saveRemoteContextCursor(cursorKey, nextCursor)) {
           throw new Error('remote context cursor could not be persisted');
         }
@@ -3229,12 +3232,26 @@ export class CatsCompanyBot {
       if ((item.clearGeneration ?? expectedClearGeneration) !== expectedClearGeneration) break;
       if ((item.stopGeneration ?? expectedStopGeneration) !== expectedStopGeneration) break;
       if (item.source === 'subagent_feedback') break;
-      if (item.nativeFeishuContext) break;
+      // A one-user/one-bot web task has no external group history to hydrate.
+      // Keep its follow-ups in the active episode, while native/large groups
+      // still wait for the separate durable-context hydration boundary.
+      if (item.nativeFeishuContext && !isTwoMemberWebGroup(item.nativeFeishuContext.message)) break;
       // An Artifact task owns a distinct run/task correlation. Do not fold it
       // into the currently executing turn as ordinary follow-up text.
       if (item.artifactTaskRef) break;
       if (!this.canMergeQueuedMessage(currentScope, item.executionScope)) break;
       userMessages.push(item);
+    }
+    const pendingGroupMessages = userMessages.filter(item => item.nativeFeishuContext);
+    if (pendingGroupMessages.length > 0) {
+      const session = this.sessionManager.get(sessionKey);
+      const cursorKey = 'catscompany.agent_context';
+      const nextCursor = Math.max(session?.getRemoteContextCursor(cursorKey) || 0,
+        ...pendingGroupMessages.map(item => item.seq));
+      if (!session?.saveRemoteContextCursor(cursorKey, nextCursor)) {
+        Logger.warning(`[${sessionKey}] 追加消息的群上下文游标未能持久化，保留排队输入`);
+        return null;
+      }
     }
     const remainingMessages = queue.slice(firstRemainingIndex);
     if (remainingMessages.length > 0) {
