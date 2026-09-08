@@ -1,0 +1,59 @@
+name: Desktop package smoke
+on:
+  pull_request:
+    paths:
+      - 'electron/**'
+      - 'electron-builder.config.cjs'
+      - 'package*.json'
+      - 'scripts/*runtime*'
+      - 'scripts/*electron*'
+      - 'scripts/desktop-*'
+      - '.github/workflows/desktop-package-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: desktop-smoke-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  package:
+    name: Packaged runtime (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, macos-15-intel, macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: .cache/runtime-downloads
+          key: smoke-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/runtime-manifest.json') }}
+      - run: npm ci --prefer-offline --no-audit --fund=false
+      - run: npm run build
+      - run: npm run prepare:runtime
+      - run: npm run prune:electron-optionals
+      - name: Linux display and packaging dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libasound2t64 rpm
+      - name: Exercise final packages
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a node scripts/desktop-package-smoke.mjs
+          else
+            node scripts/desktop-package-smoke.mjs
+          fi
+      - name: Upload package acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-smoke-${{ matrix.os }}
+          path: ${{ runner.temp }}/catsco-desktop-smoke/reports
+          retention-days: 7
+          if-no-files-found: warn

@@ -338,7 +338,7 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.strictEqual(result.ok, true);
     const content = result.content as string;
     assert.ok(content.includes('类型: PDF'));
-    assert.ok(content.includes('总页数:'));
+    assert.ok(content.includes('总页数:'), content);
     assert.ok(content.includes('已解析页: 1'));
     assert.ok(content.includes('文本内容:'));
     assert.ok(content.includes('Trace-based'));
