@@ -16,6 +16,8 @@ import {
   type CloudBotModelSelection,
 } from '../bot-definition/cloud-client';
 import { CloudBotModelRuntimeReloadController } from '../bot-definition/runtime-reload';
+import { isTransientCloudError } from '../bot-definition/transient-error';
+import { CloudBotModelAckRetry } from '../bot-definition/ack-retry';
 import { createBotDefinitionSyncService } from '../bot-definition/service';
 import { resolveRunnableCloudDefinition } from '../bot-definition/cloud-sync';
 import { getPromptReconcileCoordinator } from '../bot-definition/prompt-sync';
@@ -139,7 +141,6 @@ export async function catscompanyCommand(): Promise<void> {
   let ownerWatchTimer: NodeJS.Timeout | null = null;
   let cloudModelWatchTimer: NodeJS.Timeout | null = null;
   let cloudModelReloadPromise: Promise<void> | null = null;
-  let pendingCloudModelAck: PendingCloudModelAck | null = null;
   let skillActivationAckWorker: BotSkillActivationAckWorker | null = null;
   let shuttingDown = false;
 
@@ -186,6 +187,13 @@ export async function catscompanyCommand(): Promise<void> {
     await startRuntimeCommandSupport();
     const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
     const modelBotId = String(preparedBot?.botId || connectorConfig.botUid || '').trim();
+    const ackRetry = new CloudBotModelAckRetry({
+      isActive: () => !shuttingDown,
+      send: (selection, applyError) => acknowledgeCloudBotModelSelection({ botId: modelBotId, auth }, selection, applyError),
+      onError: (error, selection) => Logger.warning(
+        `CatsCo 云端模型 revision=${selection.revision} 状态回报仍在重试: ${errorMessage(error)}`,
+      ),
+    });
     if (activationAckWorkerEnabled) {
       const activationAckCredential = getUsableCatsCoRuntimeActivationAckCredential(connectorConfig);
       const connectorBotId = String(connectorConfig.botUid || '').trim();
@@ -214,7 +222,7 @@ export async function catscompanyCommand(): Promise<void> {
         }
       }
     }
-    if (preparedBot?.cloudSelection) {
+    if (preparedBot?.cloudSelection && !preparedBot.cloudApplyRetryable) {
       const initialApplyError = preparedBot.cloudApplyError || '';
       try {
         await acknowledgeCloudBotModelSelection(
@@ -223,25 +231,26 @@ export async function catscompanyCommand(): Promise<void> {
           initialApplyError,
         );
       } catch (error) {
-        pendingCloudModelAck = {
-          selection: preparedBot.cloudSelection,
-          applyError: initialApplyError,
-          attempts: 0,
-        };
+        ackRetry.schedule(preparedBot.cloudSelection, initialApplyError);
         Logger.warning(`CatsCo 启动模型状态回报失败，将自动重试: ${errorMessage(error)}`);
       }
+    } else if (preparedBot?.cloudSelection) {
+      Logger.warning(
+        `CatsCo BotDefinition revision=${preparedBot.cloudSelection.revision} preparation is temporarily unavailable; will retry automatically.`,
+      );
     }
     let lastCloudPollWarningAt = 0;
     const reloadController = new CloudBotModelRuntimeReloadController({
-      initialRevision: preparedBot?.cloudSelection?.revision,
+      initialRevision: preparedBot?.cloudApplyRetryable
+        ? preparedBot.appliedCloudRevision
+        : preparedBot?.cloudSelection?.revision,
+      initialPendingRevision: preparedBot?.cloudApplyRetryable ? preparedBot.cloudSelection?.revision : undefined,
+      isActive: () => !shuttingDown,
       pullSelection: async () => {
         const selection = await pullCloudBotModelSelection({ botId: modelBotId, auth });
-        if (
-          pendingCloudModelAck
-          && (!selection || selection.revision > pendingCloudModelAck.selection.revision)
-        ) {
-          pendingCloudModelAck = null;
-        }
+        if (shuttingDown) return undefined;
+        ackRetry.observe(selection);
+        await ackRetry.retry();
         return selection;
       },
       isIdle: () => !shuttingDown && bot.isIdleForRuntimeReload(),
@@ -253,12 +262,10 @@ export async function catscompanyCommand(): Promise<void> {
         botId: modelBotId,
         canApply: () => !shuttingDown,
         scheduleAckRetry: (selection, applyError) => {
-          pendingCloudModelAck = { selection, applyError, attempts: 0 };
+          ackRetry.schedule(selection, applyError);
         },
         clearAckRetry: selection => {
-          if (pendingCloudModelAck?.selection.revision === selection.revision) {
-            pendingCloudModelAck = null;
-          }
+          ackRetry.clear(selection);
         },
         selection,
         auth,
@@ -277,23 +284,7 @@ export async function catscompanyCommand(): Promise<void> {
     });
     cloudModelWatchTimer = setInterval(() => {
       if (cloudModelReloadPromise) return;
-      const run = (async () => {
-        if (pendingCloudModelAck) {
-          const pending = pendingCloudModelAck;
-          try {
-            await acknowledgeCloudBotModelSelection({ botId: modelBotId, auth }, pending.selection, pending.applyError);
-            if (pendingCloudModelAck === pending) pendingCloudModelAck = null;
-          } catch (error) {
-            pending.attempts += 1;
-            if (pending.attempts % 12 === 0 && pendingCloudModelAck === pending) {
-              Logger.warning(
-                `CatsCo 云端模型 revision=${pending.selection.revision} 状态回报仍在重试: ${errorMessage(error)}`,
-              );
-            }
-          }
-        }
-        await reloadController.pollOnce();
-      })();
+      const run = reloadController.pollOnce();
       cloudModelReloadPromise = run;
       void run.finally(() => {
         if (cloudModelReloadPromise === run) cloudModelReloadPromise = null;
@@ -323,12 +314,6 @@ interface ApplyCloudModelRuntimeSelectionOptions {
   auth: CatsCoAuthSnapshot;
 }
 
-interface PendingCloudModelAck {
-  selection: CloudBotModelSelection;
-  applyError: string;
-  attempts: number;
-}
-
 function skillActivationAckWarning(code: BotSkillActivationAckWarningCode): string {
   switch (code) {
   case 'CREDENTIAL_REJECTED':
@@ -350,7 +335,7 @@ function skillActivationAckWarning(code: BotSkillActivationAckWarningCode): stri
   }
 }
 
-async function applyCloudModelRuntimeSelection(
+export async function applyCloudModelRuntimeSelection(
   options: ApplyCloudModelRuntimeSelectionOptions,
 ): Promise<'applied' | 'deferred'> {
   const botId = options.botId;
@@ -418,9 +403,15 @@ async function applyCloudModelRuntimeSelection(
   let nextBot: CatsCompanyBot | undefined;
   try {
     await previousBot.destroy();
+    if (!options.canApply()) { restorePreviousModelFiles(); return 'deferred'; }
     nextBot = new CatsCompanyBot(options.connectorConfig);
     await nextBot.start();
     await nextBot.waitUntilReady();
+    if (!options.canApply()) {
+      await nextBot.destroy();
+      restorePreviousModelFiles();
+      return 'deferred';
+    }
     options.replaceBot(nextBot);
   } catch (error) {
     if (nextBot) {
@@ -495,6 +486,7 @@ async function applyCloudBotDefinitionSelection(
 
   let prepared: Awaited<ReturnType<typeof prepareBoundBotDefinition>>;
   let appliedSelection = options.selection;
+  if (!options.canApply()) return 'deferred';
   try {
     if (effectiveIncoming) definitionService.acceptCanonical(effectiveIncoming);
     prepared = await prepareBoundBotDefinition({
@@ -502,12 +494,19 @@ async function applyCloudBotDefinitionSelection(
       botId: options.botId,
       auth: options.auth,
       acknowledgeCloudSelection: false,
+      requireCloud: true,
     });
   } catch (error) {
     restorePreviousRuntime();
+    if (!options.canApply() || isTransientCloudError(error)) return 'deferred';
     const message = redactCloudBotModelError(error, options.selection);
     await acknowledgeCloudModelApply(options, message);
     throw new Error(message);
+  }
+
+  if (!options.canApply()) {
+    restorePreviousRuntime();
+    return 'deferred';
   }
 
   if (
@@ -518,6 +517,12 @@ async function applyCloudBotDefinitionSelection(
   ) {
     const message = prepared?.cloudApplyError || 'Cloud BotDefinition runtime preparation did not complete.';
     restorePreviousRuntime();
+    if (prepared?.cloudApplyRetryable) {
+      Logger.warning(
+        `CatsCo BotDefinition revision=${options.selection.revision} preparation is temporarily unavailable; will retry automatically.`,
+      );
+      return 'deferred';
+    }
     await acknowledgeCloudModelApply(options, message);
     throw new Error(message);
   }
@@ -537,9 +542,15 @@ async function applyCloudBotDefinitionSelection(
   let nextBot: CatsCompanyBot | undefined;
   try {
     await previousBot.destroy();
+    if (!options.canApply()) { restorePreviousRuntime(); return 'deferred'; }
     nextBot = new CatsCompanyBot(options.connectorConfig);
     await nextBot.start();
     await nextBot.waitUntilReady();
+    if (!options.canApply()) {
+      await nextBot.destroy();
+      restorePreviousRuntime();
+      return 'deferred';
+    }
     options.replaceBot(nextBot);
   } catch (error) {
     if (nextBot) {
@@ -608,13 +619,15 @@ async function acknowledgeCloudModelApply(
   applyError = '',
   selection: CloudBotModelSelection = options.selection,
 ): Promise<void> {
+  if (!options.canApply()) return;
   try {
     await acknowledgeCloudBotModelSelection({
       botId: options.botId,
       auth: options.auth,
     }, selection, applyError);
-    options.clearAckRetry(selection);
+    if (options.canApply()) options.clearAckRetry(selection);
   } catch (error) {
+    if (!options.canApply()) return;
     options.scheduleAckRetry(selection, applyError);
     Logger.warning(`CatsCo 云端模型应用状态回报失败: ${errorMessage(error)}`);
   }
