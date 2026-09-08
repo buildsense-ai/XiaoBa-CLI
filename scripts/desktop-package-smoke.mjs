@@ -58,11 +58,7 @@ async function run(exe, args, options = {}) {
 }
 async function packageVersion(version) {
   fs.writeFileSync(configFile, JSON.stringify(smokeConfig));
-  return build({
-    targets: platform.createTarget(win ? ['nsis'] : mac ? ['dmg', 'zip'] : ['AppImage', 'deb'], arch),
-    publish: 'never',
-    config: {
-      ...base,
+  const overrides = {
       appId: 'com.catcompany.desktop-smoke', productName: 'CatsCoSmoke',
       directories: { output: path.join(scratch, version) },
       extraMetadata: { name: 'catsco-desktop-smoke', version, main: 'electron/desktop-smoke-bootstrap.cjs' },
@@ -71,7 +67,14 @@ async function packageVersion(version) {
       nsis: { ...base.nsis, createDesktopShortcut: false, createStartMenuShortcut: false, runAfterFinish: false },
       mac: { ...base.mac, identity: null },
       afterSign: undefined,
-    },
+  };
+  // Pass one config file: programmatic overrides concatenate extraFiles with
+  // the auto-discovered config and attempt to copy runtime symlinks twice.
+  const builderConfig = path.join(scratch, 'electron-builder-smoke.cjs');
+  fs.writeFileSync(builderConfig, `module.exports = { ...require(${JSON.stringify(path.join(root, 'electron-builder.config.cjs'))}), ...${JSON.stringify(overrides)} };`);
+  return build({
+    targets: platform.createTarget(win ? ['nsis'] : mac ? ['dmg', 'zip'] : ['AppImage', 'deb'], arch),
+    publish: 'never', config: builderConfig,
   });
 }
 async function waitForReport(version) {
