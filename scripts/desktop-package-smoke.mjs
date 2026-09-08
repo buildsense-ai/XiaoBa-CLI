@@ -72,7 +72,8 @@ async function packageVersion(version) {
   };
   // Pass one config file: programmatic overrides concatenate extraFiles with
   // the auto-discovered config and attempt to copy runtime symlinks twice.
-  const builderConfig = path.join(scratch, 'electron-builder-smoke.cjs');
+  // CommonJS configs are cached by filename inside electron-builder.
+  const builderConfig = path.join(scratch, `electron-builder-smoke-${version}.cjs`);
   fs.writeFileSync(builderConfig, `module.exports = { ...require(${JSON.stringify(path.join(root, 'electron-builder.config.cjs'))}), ...${JSON.stringify(overrides)} };`);
   return build({
     targets: platform.createTarget(win ? ['nsis'] : mac ? ['dmg', 'zip'] : ['AppImage', 'deb'], arch),

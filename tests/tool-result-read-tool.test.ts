@@ -329,9 +329,26 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.ok(result.message.includes('文件不存在'));
   });
 
-  test('PDF 文件会提取正文文本', async () => {
+  test('PDF 文件会提取正文文本，即使文件 Buffer 存在非零偏移', async t => {
     const filePath = path.join(testRoot, 'fixture.pdf');
     writeTextPdfFixture(filePath);
+    // Legacy PDF.js clones Buffers with their constructor. A larger pool makes
+    // that clone a slice too, deterministically reproducing the full-suite bug.
+    const previousPoolSize = Buffer.poolSize;
+    Buffer.poolSize = 65536;
+    Buffer.allocUnsafe(32767);
+    t.after(() => { Buffer.poolSize = previousPoolSize; });
+    const originalRead = fs.readFileSync;
+    let offsetBufferRead = false;
+    t.mock.method(require('fs'), 'readFileSync', (file: any, ...args: any[]) => {
+      const data = (originalRead as any)(file, ...args);
+      if (String(file) !== filePath || !Buffer.isBuffer(data)) return data;
+      const allocation = Buffer.allocUnsafeSlow(data.length + 128);
+      allocation.fill(0);
+      data.copy(allocation, 128);
+      offsetBufferRead = true;
+      return allocation.subarray(128);
+    });
 
     const result = await tool.execute({ file_path: filePath, pages: '1' }, context);
 
@@ -343,6 +360,7 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.ok(content.includes('文本内容:'));
     assert.ok(content.includes('Trace-based'));
     assert.ok(!content.includes('不再做 PDF 全文解析'));
+    assert.equal(offsetBufferRead, true);
   });
 
   test('PDF 默认只读取前若干页并提示继续读取', async () => {

@@ -51,7 +51,7 @@ interface PdfParseResult {
   info?: Record<string, unknown>;
 }
 
-type PdfParse = (dataBuffer: Buffer, options?: PdfParseOptions) => Promise<PdfParseResult>;
+type PdfParse = (dataBuffer: Uint8Array, options?: PdfParseOptions) => Promise<PdfParseResult>;
 const pdfParse: PdfParse = require('pdf-parse');
 
 interface TextReadOptions {
@@ -557,7 +557,10 @@ export class ReadTool implements Tool {
   }
 
   private async extractPdfText(absolutePath: string, selection: PdfPageSelection): Promise<PdfParseResult> {
-    const data = fs.readFileSync(absolutePath);
+    // Legacy PDF.js creates substreams from .buffer without accounting for a
+    // Buffer's byteOffset. Its fake-worker clone can also allocate from the
+    // Buffer pool. A plain owned Uint8Array keeps both paths zero-offset.
+    const data = Uint8Array.from(fs.readFileSync(absolutePath));
     const selectedPages = selection.selectedPages;
     const options: PdfParseOptions = {
       max: selection.maxPageToRender,
