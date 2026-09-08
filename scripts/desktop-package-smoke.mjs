@@ -74,7 +74,9 @@ async function packageVersion(version) {
   // the auto-discovered config and attempt to copy runtime symlinks twice.
   // CommonJS configs are cached by filename inside electron-builder.
   const builderConfig = path.join(scratch, `electron-builder-smoke-${version}.cjs`);
-  fs.writeFileSync(builderConfig, `module.exports = { ...require(${JSON.stringify(path.join(root, 'electron-builder.config.cjs'))}), ...${JSON.stringify(overrides)} };`);
+  // Builder normalizes arrays in place. Each build needs independent data as
+  // well as its own filename; preserve the afterPack function separately.
+  fs.writeFileSync(builderConfig, `const base = require(${JSON.stringify(path.join(root, 'electron-builder.config.cjs'))}); module.exports = { ...JSON.parse(JSON.stringify(base)), afterPack: base.afterPack, ...${JSON.stringify(overrides)} };`);
   return build({
     targets: platform.createTarget(win ? ['nsis'] : mac ? ['dmg', 'zip'] : ['AppImage', 'deb'], arch),
     publish: 'never', config: builderConfig,
