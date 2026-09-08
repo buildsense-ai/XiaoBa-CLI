@@ -63,7 +63,7 @@ app.whenReady().then(async () => {
   });
   assert.equal(child.status, 0, child.stderr);
   const nodeNative = JSON.parse(child.stdout.trim());
-  assert.equal(fs.existsSync(path.join(process.resourcesPath, 'runtime', 'node_modules')), false, 'No duplicate dependencies');
+  assert.equal(fs.existsSync(path.join(process.resourcesPath, 'node_modules')), false, 'No duplicate dependencies');
   const result = { ok: true, version: app.getVersion(), renderer, electronNative, nodeNative, nativeLoads };
   if (config.update && app.getVersion() === config.oldVersion) {
     const { autoUpdater } = require('electron-updater');
