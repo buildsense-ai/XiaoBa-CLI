@@ -42,6 +42,8 @@ export interface PrepareBoundBotDefinitionOptions extends BotDefinitionSyncServi
   cloudSelection?: CloudBotModelSelection;
   acknowledgeCloudSelection?: boolean;
   prepareSkills?: boolean;
+  /** Hot reload must not silently fall back to legacy/local startup after a failed cloud read. */
+  requireCloud?: boolean;
 }
 
 export interface PreparedBoundBotDefinition {
@@ -297,6 +299,7 @@ export async function prepareBoundBotDefinition(
         };
       }
     } catch (error) {
+      if (options.requireCloud) throw error;
       Logger.warning(`CatsCo BotDefinition cloud sync is temporarily unavailable; using local cache: ${errorMessage(error)}`);
     }
   }

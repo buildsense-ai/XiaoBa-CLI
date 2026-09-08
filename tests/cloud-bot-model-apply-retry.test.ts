@@ -12,7 +12,9 @@ import { createBotDefinitionSyncService } from '../src/bot-definition/service';
 import { BOT_DEFINITION_SCHEMA, type BotDefinition } from '../src/bot-definition/types';
 import { BotSkillBaseStore } from '../src/bot-skills/base-store';
 
-test('a cloud Skill recheck outage preserves the old connector and retries the same model revision', async t => {
+for (const failure of [502, 503, 504, 429, 'timeout', 'reset', 'shutdown'] as const) {
+for (const failureRead of [3, 4]) {
+test(`cloud recheck ${failure} at read ${failureRead} preserves the old connector`, async t => {
   const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'model-apply-retry-'));
   t.after(() => fs.rmSync(runtimeRoot, { recursive: true, force: true }));
   const configService = createCatsCoLocalConfigService({ runtimeRoot });
@@ -42,6 +44,7 @@ test('a cloud Skill recheck outage preserves the old connector and retries the s
 
   let reads = 0;
   let failedOnce = false;
+  let active = true;
   const acks: unknown[] = [];
   t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -49,9 +52,12 @@ test('a cloud Skill recheck outage preserves the old connector and retries the s
     if (url.pathname === '/api/bot/definition' && method === 'GET') {
       reads += 1;
       // Poll, revision check, startup reconciliation, then Skill recheck.
-      if (reads === 4) {
+      if (reads === failureRead) {
         failedOnce = true;
-        return Response.json({ error: 'temporary outage' }, { status: 503 });
+        if (failure === 'shutdown') active = false;
+        else if (failure === 'timeout') throw new DOMException('Test timeout', 'TimeoutError');
+        else if (failure === 'reset') throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } });
+        else return Response.json({ error: 'temporary outage' }, { status: failure });
       }
       return Response.json({ configured: true, revision: 7, definition: desired });
     }
@@ -74,12 +80,14 @@ test('a cloud Skill recheck outage preserves the old connector and retries the s
   t.mock.method(CatsCompanyBot.prototype, 'waitUntilReady', async () => { ready += 1; });
   t.mock.method(CatsCompanyBot.prototype, 'isIdleForRuntimeReload', () => true);
   const errors: unknown[] = [];
+  let now = 0;
   const controller = new CloudBotModelRuntimeReloadController({
+    now: () => now, random: () => 0,
     initialRevision: 6,
     pullSelection: () => pullCloudBotModelSelection({ botId: '43', auth }),
     isIdle: () => true,
     applySelection: selection => applyCloudModelRuntimeSelection({
-      runtimeRoot, botId: '43', auth, selection, canApply: () => true,
+      runtimeRoot, botId: '43', auth, selection, canApply: () => active,
       connectorConfig: { serverUrl: 'wss://cats.example.test/v0/channels', apiKey: 'test-bot-key', botUid: '43' },
       currentBot: () => bot, replaceBot: next => { bot = next; },
       scheduleAckRetry: () => assert.fail('ACK should succeed'), clearAckRetry: () => {},
@@ -93,6 +101,14 @@ test('a cloud Skill recheck outage preserves the old connector and retries the s
   assert.equal(stopped, 0);
   assert.deepEqual(definitions.read('43')?.model, previous.model);
 
+  if (failure === 'shutdown') {
+    await controller.pollOnce();
+    assert.equal(started, 0);
+    assert.deepEqual(acks, []);
+    assert.deepEqual(errors, []);
+    return;
+  }
+  now = 5000;
   await controller.pollOnce();
   assert.notEqual(bot, oldBot);
   assert.equal(stopped, 1);
@@ -104,3 +120,6 @@ test('a cloud Skill recheck outage preserves the old connector and retries the s
   assert.equal(started, 1);
   assert.deepEqual(errors, []);
 });
+
+}
+}

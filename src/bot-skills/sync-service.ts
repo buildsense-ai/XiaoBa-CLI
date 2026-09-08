@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { isTransientCloudError } from '../bot-definition/transient-error';
 import * as fs from 'fs';
 import * as path from 'path';
 import matter from 'gray-matter';
@@ -324,7 +325,7 @@ export class BotSkillSyncService {
         if (verifiedExisting) {
           return this.featureUnavailable({
             appliedRevision: base!.definitionRevision,
-            errorCode: 'cloud_unavailable',
+            errorCode: isTransientCloudError(error) ? 'cloud_unavailable' : 'cloud_request_rejected',
           });
         }
         throw new BotSkillCloudRestoreError(
