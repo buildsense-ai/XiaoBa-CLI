@@ -57,3 +57,17 @@ jobs:
           path: ${{ runner.temp }}/catsco-desktop-smoke/reports
           retention-days: 7
           if-no-files-found: warn
+      - name: Upload Windows update fixture installers and blockmaps
+        if: success() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-update-fixtures
+          compression-level: 0
+          retention-days: 2
+          path: |
+            ${{ runner.temp }}/catsco-desktop-smoke/0.0.1/*.exe
+            ${{ runner.temp }}/catsco-desktop-smoke/0.0.1/*.blockmap
+            ${{ runner.temp }}/catsco-desktop-smoke/0.0.1/latest.yml
+            ${{ runner.temp }}/catsco-desktop-smoke/0.0.2/*.exe
+            ${{ runner.temp }}/catsco-desktop-smoke/0.0.2/*.blockmap
+            ${{ runner.temp }}/catsco-desktop-smoke/0.0.2/latest.yml

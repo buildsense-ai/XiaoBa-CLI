@@ -12,6 +12,9 @@ assert.equal(process.env.GITHUB_ACTIONS, 'true', 'This installs an isolated smok
 const scratch = path.join(process.env.RUNNER_TEMP, 'catsco-desktop-smoke');
 const reports = path.join(scratch, 'reports');
 fs.mkdirSync(reports, { recursive: true });
+const bootstrap = path.join(root, 'electron', 'desktop-smoke-bootstrap.cjs');
+assert.equal(fs.existsSync(bootstrap), false, 'Refuse to overwrite an existing app entry');
+fs.copyFileSync(path.join(root, 'scripts', 'desktop-smoke-bootstrap.cjs'), bootstrap);
 const win = process.platform === 'win32';
 const mac = process.platform === 'darwin';
 const oldVersion = '0.0.1';
@@ -62,7 +65,6 @@ async function packageVersion(version) {
       appId: 'com.catcompany.desktop-smoke', productName: 'CatsCoSmoke',
       directories: { output: path.join(scratch, version) },
       extraMetadata: { name: 'catsco-desktop-smoke', version, main: 'electron/desktop-smoke-bootstrap.cjs' },
-      files: [...base.files, { from: 'scripts/desktop-smoke-bootstrap.cjs', to: 'electron/desktop-smoke-bootstrap.cjs' }],
       extraResources: [{ from: configFile, to: 'desktop-smoke.json' }],
       nsis: { ...base.nsis, createDesktopShortcut: false, createStartMenuShortcut: false, runAfterFinish: false },
       mac: { ...base.mac, identity: null },
@@ -138,5 +140,6 @@ try {
 } finally {
   server.close();
   if (child && child.exitCode === null) child.kill();
+  fs.unlinkSync(bootstrap);
   // Runner disposal removes installation/cache; reports survive via artifact upload.
 }
