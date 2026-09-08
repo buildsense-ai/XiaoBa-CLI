@@ -88,6 +88,9 @@ async function waitForReport(version) {
       assert.equal(report.ok, true, JSON.stringify(report));
       return report;
     }
+    if ((!win || version === oldVersion) && child?.exitCode !== null && child?.exitCode !== undefined) {
+      throw new Error(`Packaged process exited ${child.exitCode} before reporting ${version}; see app.log`);
+    }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error(`No successful startup report for ${version}`);
@@ -134,7 +137,10 @@ try {
       executable = path.join(scratch, 'squashfs-root', 'AppRun');
     }
     const log = fs.openSync(path.join(reports, 'app.log'), 'w');
-    child = spawn(executable, ['--no-sandbox'], { cwd: scratch, stdio: ['ignore', log, log] });
+    child = spawn(executable, ['--no-sandbox'], {
+      cwd: scratch, stdio: ['ignore', log, log],
+      env: { ...process.env, ...(!mac ? { APPDIR: path.join(scratch, 'squashfs-root') } : {}) },
+    });
     await waitForReport(newVersion);
     console.log(fs.readFileSync(path.join(reports, `${newVersion}.json`), 'utf8'));
   }
