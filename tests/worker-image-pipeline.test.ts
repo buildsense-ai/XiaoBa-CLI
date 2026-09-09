@@ -776,11 +776,7 @@ if ($failure -ne 'Builder stopped before verified bootstrap completion') {
     assert.match(workflow, /jq -cs --arg current/);
     assert.match(workflow, /foreach \(\$run in \$runs\)/);
     assert.match(workflow, /actions\/runs\/\$run_id\/attempts\/\$attempt\/jobs/);
-    assert.match(workflow, /select\(\.name == "Bake private ECS image"\)/);
-    assert.match(
-      workflow,
-      /select\(\.name == "Reconcile this attempt after a failed bake"\)/,
-    );
+    assert.match(workflow, /node ops\/ctyun-worker-image\/bake-run-results\.mjs "\$WORKER_DEPLOYMENT_PROFILE"/);
     assert.match(workflow, /cleanup_conclusion/);
     assert.match(workflow, /reconciliation_step=success/);
     assert.match(workflow, /retain cloud cleanup:/);
@@ -1115,6 +1111,11 @@ process.exit(result.status ?? 1);
 `,
       );
 
+      // Lifecycle fixtures explicitly confirm preparation; production must no
+      // longer infer successful preparation merely from a stopped VM.
+      const bakeHarness = path.join(sandbox, "run-bake.ps1");
+      fs.writeFileSync(bakeHarness,
+        `function global:Invoke-WebRequest { return [pscustomobject]@{ Content='{"state":"succeeded","phase":"shutdown","exit_code":0}'; StatusCode=200 } }\n& '${imageOrchestratorPath.replace(/'/g, "''")}' @args\n`, "utf8");
       const runBake = (
         buildNumber: string,
         imageName: string,
@@ -1127,7 +1128,7 @@ process.exit(result.status ?? 1);
             "-NoProfile",
             "-NonInteractive",
             "-File",
-            imageOrchestratorPath,
+            bakeHarness,
             "-Mode",
             "Create",
             "-SourceRef",
