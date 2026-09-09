@@ -2,7 +2,7 @@
 
 ## 仓库资源与运行时工作区
 
-项目根目录的 `skills/` 是跟随代码发布的 seed/template Skill 资源目录，不是
+项目根目录的 `skills/` 是跟随代码发布的内置/seed/template Skill 资源目录，不是
 Electron 开发版或打包版默认使用的用户 Skill 工作区。
 
 当前生效目录由运行时 userData 决定：
@@ -14,6 +14,11 @@ Electron 开发版或打包版默认使用的用户 Skill 工作区。
 
 不要在运行 Electron 版时通过编辑仓库根目录 `skills/` 来判断当前 Agent 的
 Skill 状态。WebApp 的“本地工作区”会显示真正生效的绝对路径。
+
+当前资源包括 `catsco-prompt-editor/`（按需复制安装到 bot 工作区）和
+`xiaoba-knowledge/`（实例内置回退，工作区无同名 Skill 时可用）。知识库 Skill
+不在云端 BotDefinition 清单中，不能通过删除 bot 的云端 Skill 关闭；知识正文
+单独保存在 `<userData>/knowledge/`。详见 `docs/shared-local-knowledge.md`。
 
 ## 按 Bot 隔离
 
@@ -28,11 +33,9 @@ Skill 状态。WebApp 的“本地工作区”会显示真正生效的绝对路�
 
 ```
 skills/
-├── paper-analysis/
+├── catsco-prompt-editor/
 │   └── SKILL.md
-├── sci-paper-writing/
-│   └── SKILL.md
-├── xhs-vibe-write/
+├── xiaoba-knowledge/
 │   └── SKILL.md
 └── your-custom-skill/
     └── SKILL.md
@@ -103,7 +106,7 @@ invocable: user
 
 ## 注意事项
 
-- ✅ 当前 Bot 的 Skills 统一从当前运行时 `skills/` 工作区加载
+- ✅ 当前 Bot 安装的 Skills 从当前运行时 `skills/` 工作区加载；知识库另有安装包内置回退
 - ✅ 每个 Skill 一个独立文件夹
 - ✅ 必须包含 `SKILL.md` 文件
 - ✅ 支持从 GitHub 直接安装

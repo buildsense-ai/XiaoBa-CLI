@@ -14,6 +14,8 @@ Include:
 Rules:
 - Follow the phase-specific continuation instructions appended below.
 - Preserve exact identifiers and values. Do not paraphrase paths, IDs, URLs, or commands.
+- Do not pad, normalize, or infer identifiers/checksums. For large collections of exact fields, preserve their source locations and require rereading them instead of reconstructing a table from memory.
+- Keep source-by-source verification among the remaining steps for generated reports. Counts and uniqueness checks do not prove that the report matches the original fields.
 - Distinguish verified facts, superseded facts, and unknown state.
 - Never claim an incomplete tool call succeeded.
 - Do not guess missing evidence. Say what must be reread, searched, or reverified.

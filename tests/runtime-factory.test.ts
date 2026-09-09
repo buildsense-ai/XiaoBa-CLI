@@ -76,7 +76,7 @@ describe('RuntimeFactory', () => {
 
     assert.deepStrictEqual(
       runtime.services.skillManager.getAllSkills().map(skill => skill.metadata.name),
-      ['factory-demo'],
+      ['factory-demo', 'xiaoba-knowledge'],
     );
   });
 

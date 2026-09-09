@@ -183,7 +183,7 @@ describe('turn Skill snapshot store', () => {
       process.env.XIAOBA_SKILLS_DIR = secondRoot;
       await manager.reload();
 
-      assert.deepEqual(manager.getAllSkills().map(skill => skill.metadata.name), ['first-skill']);
+      assert.deepEqual(manager.getAllSkills().map(skill => skill.metadata.name), ['first-skill', 'xiaoba-knowledge']);
     } finally {
       if (previousSkillsDirectory === undefined) delete process.env.XIAOBA_SKILLS_DIR;
       else process.env.XIAOBA_SKILLS_DIR = previousSkillsDirectory;

@@ -100,7 +100,7 @@ describe('SkillManager atomic loading', () => {
     assert.deepEqual(skillNames(manager), ['stable-skill']);
   });
 
-  test('publishes an empty map when the Skill directory is successfully empty', async () => {
+  test('removes local Skills when the directory is successfully empty, preserving bundled guidance', async () => {
     writeSkill(skillsPath, 'removed-skill', 'Removed skill');
     const manager = new SkillManager();
     await manager.loadSkills();
@@ -134,5 +134,6 @@ function writeInvalidSkill(skillsPath: string, name: string): void {
 }
 
 function skillNames(manager: SkillManager): string[] {
-  return manager.getAllSkills().map(skill => skill.metadata.name).sort();
+  assert.ok(manager.getSkill('xiaoba-knowledge'));
+  return manager.getAllSkills().map(skill => skill.metadata.name).filter(name => name !== 'xiaoba-knowledge').sort();
 }

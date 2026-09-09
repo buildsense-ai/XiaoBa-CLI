@@ -5,6 +5,7 @@ import { Logger } from '../utils/logger';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
 import { formatCatsCoVisiblePath } from './tool-gateway';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
+import { isManagedKnowledgePath, KNOWLEDGE_WRITE_GUIDANCE } from '../skills/knowledge-write-guard';
 
 /**
  * Write 工具 - 写入文件内容
@@ -59,6 +60,9 @@ export class WriteTool implements Tool {
       : path.join(context.workingDirectory, file_path);
 
     const pathPermission = isPathAllowed(absolutePath, context.workingDirectory);
+    if (isManagedKnowledgePath(absolutePath)) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: KNOWLEDGE_WRITE_GUIDANCE };
+    }
     if (!pathPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }

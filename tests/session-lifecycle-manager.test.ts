@@ -22,10 +22,10 @@ describe('AgentSession lifecycle', () => {
     process.chdir(testRoot);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     process.chdir(originalCwd);
     if (testRoot && fs.existsSync(testRoot)) {
-      fs.rmSync(testRoot, { recursive: true, force: true });
+      await fs.promises.rm(testRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
     }
   });
 
@@ -592,6 +592,182 @@ describe('AgentSession lifecycle', () => {
     );
   });
 
+  test('stop after a persisted mid-turn checkpoint cannot overwrite it with pre-turn memory', async () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const key = 'user:lifecycle-stop-checkpoint';
+    let session: any;
+    session = new AgentSession(key, buildMockServices({ aiService: {
+      async chatStream() {
+        session.requestInterrupt();
+        throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
+      },
+    } }), 'cli');
+    session.setSystemPromptProvider(() => 'system prompt');
+    session.checkpointCompactionCoordinator.compactIfNeeded = async (messages: any[], options: any) => ({
+      compacted: options.phase === 'mid_turn',
+      messages: options.phase === 'mid_turn'
+        ? [{ role: 'user', content: 'VERIFIED_CHECKPOINT: files 1 through 80 complete; audit.md still required.', __checkpointSummary: true }]
+        : messages,
+    });
+    const result = await session.handleMessage('Read all 160 files and create audit.md.');
+    assert.equal(result.taskOutcome, 'cancelled');
+    const saved = SessionStore.getInstance().loadContext(key);
+    assert.ok(saved.some(message => message.__checkpointSummary && String(message.content).includes('VERIFIED_CHECKPOINT')));
+    const fresh = new AgentSession(key, buildMockServices(), 'cli');
+    fresh.setSystemPromptProvider(() => 'system prompt');
+    assert.equal(fresh.restoreFromStore(), true);
+    await fresh.init();
+    assert.ok((fresh as any).messages.some((message: any) => message.__checkpointSummary));
+  });
+
+  test('reset during checkpoint generation rejects a late summary instead of restoring cleared history', async () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const key = 'user:lifecycle-late-checkpoint';
+    const session: any = new AgentSession(key, buildMockServices(), 'cli');
+    session.setSystemPromptProvider(() => 'system prompt');
+    session.checkpointCompactionCoordinator.compactIfNeeded = async (messages: any[], options: any) => {
+      if (options.phase !== 'mid_turn') return { compacted: false, messages };
+      session.reset();
+      return { compacted: true, messages: [{ role: 'user', content: 'LATE_CHECKPOINT', __checkpointSummary: true }] };
+    };
+    await session.handleMessage('Start an old task.');
+    assert.equal(SessionStore.getInstance().loadContext(key).some(message => String(message.content).includes('LATE_CHECKPOINT')), false);
+    assert.equal(session.messages.some((message: any) => String(message.content).includes('LATE_CHECKPOINT')), false);
+  });
+
+  for (const action of ['continue', 'stop', 'reset', 'clear', 'timeout'] as const) {
+    for (const boundary of ['summary_pending', 'checkpoint_persisted'] as const) {
+      test(`real checkpoint lifecycle: ${action} at ${boundary}`, { timeout: 15000 }, async () => {
+        const { AgentSession, SessionStore } = loadSessionModules();
+        const key = `user:real-checkpoint-${action}-${boundary}`;
+        let enter!: () => void;
+        let release!: () => void;
+        const entered = new Promise<void>(resolve => { enter = resolve; });
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        let mainCalls = 0;
+        let summaries = 0;
+        let toolExecutions = 0;
+        const requests: any[][] = [];
+        const services = buildMockServices({
+          aiService: {
+            getConfig() { return { contextWindowTokens: 32000, maxTokens: 1024 }; },
+            async chatStream(messages: any[], _tools: any, callbacks: any, options: any) {
+              if (options?.retryProfile === 'checkpoint_summary') {
+                summaries++;
+                if (boundary === 'summary_pending') { enter(); await gate; }
+                if (action === 'timeout' && boundary === 'summary_pending') {
+                  throw Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT', status: 504 });
+                }
+                callbacks?.onText?.('VERIFIED_CHECKPOINT: the effect already ran once; report its result without repeating it.');
+                return { content: 'VERIFIED_CHECKPOINT: effect completed once.', toolCalls: [] };
+              }
+              requests.push(messages.map(message => ({ ...message })));
+              if (++mainCalls === 1) return { content: '', toolCalls: [{
+                id: 'effect-once', type: 'function', function: { name: 'inspect_once', arguments: '{}' },
+              }] };
+              if (boundary === 'checkpoint_persisted') { enter(); await gate; }
+              if (action === 'timeout') throw Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT', status: 504 });
+              // Even an uncooperative provider returning a late tool call must not execute after cancellation.
+              if (action !== 'continue') return { content: '', toolCalls: [{
+                id: 'late-effect', type: 'function', function: { name: 'inspect_once', arguments: '{}' },
+              }] };
+              return { content: 'Verified effect complete.', toolCalls: [] };
+            },
+          },
+          toolManager: {
+            getToolDefinitions() { return [{ name: 'inspect_once', description: 'Inspect once', parameters: { type: 'object', properties: {} } }]; },
+            async executeTool(call: any) {
+              toolExecutions++;
+              return { role: 'tool', tool_call_id: call.id, name: 'inspect_once', ok: true, content: 'Verified evidence. '.repeat(20000) };
+            },
+          },
+        });
+        const session: any = new AgentSession(key, services, 'cli');
+        session.setSystemPromptProvider(() => 'Follow the task and do not repeat completed effects.');
+        const pending = session.handleMessage('Inspect once, then report the verified result.');
+        try {
+          await Promise.race([entered, pending.then(() => { throw new Error('turn ended before checkpoint barrier'); })]);
+          if (boundary === 'checkpoint_persisted') {
+            assert.ok(SessionStore.getInstance().loadContext(key).some((message: any) => message.__checkpointSummary));
+          }
+          if (action === 'stop') session.requestInterrupt();
+          if (action === 'reset') session.reset();
+          if (action === 'clear') session.clear();
+        } finally { release(); }
+        const result = await pending;
+        assert.equal(summaries, 1);
+        assert.equal(toolExecutions, 1);
+        assert.equal(result.taskOutcome, action === 'continue' ? 'completed' : action === 'timeout' ? 'failed' : 'cancelled');
+        await session.cleanup();
+        const saved = SessionStore.getInstance().loadContext(key);
+        const hasCheckpoint = saved.some((message: any) => message.__checkpointSummary);
+        if (action === 'clear') assert.equal(saved.length, 0);
+        if (boundary === 'summary_pending' && action !== 'continue') assert.equal(hasCheckpoint, false);
+        if (boundary === 'checkpoint_persisted' && action !== 'clear' || action === 'continue') assert.equal(hasCheckpoint, true);
+        if (action === 'reset' || action === 'clear') assert.equal(session.messages.length, 0);
+        if (action === 'continue') {
+          assert.equal(mainCalls, 2);
+          const rootEpisode = requests[0].find(message => message.role === 'user' && message.__episodeId)?.__episodeId;
+          assert.ok(rootEpisode);
+          assert.ok(requests[1].some(message => message.__checkpointSummary && message.__episodeId === rootEpisode));
+          const fresh: any = new AgentSession(key, buildMockServices(), 'cli');
+          fresh.setSystemPromptProvider(() => 'system prompt');
+          assert.equal(fresh.restoreFromStore(), true);
+          await fresh.init();
+          assert.ok(fresh.messages.some((message: any) => message.__checkpointSummary));
+        }
+      });
+    }
+  }
+
+  for (const boundary of ['between_tools', 'rate_limit_backoff', 'tool_abort'] as const) {
+    test(`stop preserves completed tool evidence at ${boundary}`, { timeout: 10000 }, async () => {
+      const { AgentSession, SessionStore } = loadSessionModules();
+      const key = `user:completed-effect-${boundary}`;
+      let session: any;
+      let firstCalls = 0;
+      let secondCalls = 0;
+      let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+      session = new AgentSession(key, buildMockServices({
+        aiService: { async chatStream() { return { content: '', toolCalls: ['first', 'second'].map(name => ({
+          id: name, type: 'function', function: { name, arguments: '{}' },
+        })) }; } },
+        toolManager: {
+          getToolDefinitions() { return ['first', 'second'].map(name => ({ name, description: name, parameters: { type: 'object', properties: {} } })); },
+          async executeTool(call: any) {
+            if (call.id === 'first') {
+              firstCalls++;
+              if (boundary === 'between_tools') session.requestInterrupt();
+              return { role: 'tool', tool_call_id: call.id, name: 'first', content: 'FIRST_SIDE_EFFECT_COMPLETED', ok: true };
+            }
+            secondCalls++;
+            if (boundary === 'tool_abort') {
+              session.requestInterrupt();
+              throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
+            }
+            cancelTimer = setTimeout(() => session.requestInterrupt(), 50);
+            return { role: 'tool', tool_call_id: call.id, name: 'second', content: 'rate limited', ok: false, errorCode: 'HTTP_429' };
+          },
+        },
+      }), 'cli');
+      session.setSystemPromptProvider(() => 'Follow the task.');
+      try {
+        const result = await session.handleMessage('Run first, then second.');
+        assert.equal(result.taskOutcome, 'cancelled');
+        assert.equal(firstCalls, 1);
+        assert.equal(secondCalls, boundary === 'between_tools' ? 0 : 1);
+        await session.cleanup();
+        const saved = SessionStore.getInstance().loadContext(key);
+        assert.ok(saved.some((message: any) => message.role === 'tool' && message.tool_call_id === 'first' && message.content.includes('FIRST_SIDE_EFFECT_COMPLETED')));
+        const fresh: any = new AgentSession(key, buildMockServices(), 'cli');
+        fresh.setSystemPromptProvider(() => 'Follow the task.');
+        assert.equal(fresh.restoreFromStore(), true);
+        await fresh.init();
+        assert.ok(JSON.stringify(fresh.messages).includes('FIRST_SIDE_EFFECT_COMPLETED'));
+      } finally { clearTimeout(cancelTimer); }
+    });
+  }
+
   test('handleMessage surfaces restored-history compaction as thinking status', async () => {
     const {
       AgentSession,
@@ -646,7 +822,7 @@ describe('AgentSession lifecycle', () => {
       },
     });
 
-    assert.deepStrictEqual(compactReasons, ['pre_turn', 'restore']);
+    assert.deepStrictEqual(compactReasons, ['pre_turn', 'restore', 'mid_turn']);
     assert.deepStrictEqual(thinking, [
       CONTEXT_COMPACTION_START_MESSAGE,
       CONTEXT_COMPACTION_GENERATED_MESSAGE,

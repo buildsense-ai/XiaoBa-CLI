@@ -64,6 +64,13 @@ describe('dashboard skills API', () => {
     const byName = new Map(skills.map(skill => [skill.name, skill]));
 
     assert.equal(response.status, 200);
+    assert.deepEqual(pickManagement(byName.get('xiaoba-knowledge')), {
+      source: 'system',
+      protected: true,
+      canDisable: false,
+      canDelete: false,
+      canShare: false,
+    });
     assert.deepEqual(pickManagement(byName.get('user-tool')), {
       source: 'user',
       protected: false,

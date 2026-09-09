@@ -734,6 +734,7 @@ export class AgentSession {
         });
         if (this.interruptRequested || this.activeAbortController.signal.aborted) {
           Logger.info(`[会话 ${this.key}] 当前请求已取消，忽略模型在中断后的返回`);
+          if (lifecycleGeneration === this.lifecycleGeneration) this.messages = result.messages;
           this.messages = this.turnContextBuilder.removeTransientMessages(this.messages);
           this.saveInterruptedContextIfCurrent(lifecycleGeneration);
           return { text: '已停止当前请求。', visibleToUser: true, taskOutcome: 'cancelled' };
@@ -745,6 +746,9 @@ export class AgentSession {
       } catch (err: any) {
         if (this.isAbortError(err) || this.interruptRequested || this.activeAbortController.signal.aborted) {
           Logger.info(`[会话 ${this.key}] 当前请求已取消`);
+          if (lifecycleGeneration === this.lifecycleGeneration) {
+            this.messages = this.getPartialMessagesFromError(err) ?? this.messages;
+          }
           this.messages = this.turnContextBuilder.removeTransientMessages(this.messages);
           this.saveInterruptedContextIfCurrent(lifecycleGeneration);
           return { text: '已停止当前请求。', visibleToUser: true, taskOutcome: 'cancelled' };
@@ -916,6 +920,7 @@ export class AgentSession {
   /** 重置会话状态（仅清内存，保留历史文件） */
   reset(): void {
     this.lifecycleGeneration++;
+    this.activeAbortController?.abort();
     this.planRuntime.clear();
     this.stopSubAgents('父会话 reset');
     this.messages = [];
@@ -930,6 +935,7 @@ export class AgentSession {
   /** 清空历史（同时删除文件），返回本地文件与状态是否都删除成功。 */
   clear(): boolean {
     this.lifecycleGeneration++;
+    this.activeAbortController?.abort();
     this.planRuntime.clear();
     this.stopSubAgents('父会话 clear');
     this.messages = [];
@@ -1153,14 +1159,18 @@ export class AgentSession {
     const durable = this.turnContextBuilder.removeTransientMessages(
       stripAssistantArtifactsFromMessages(messages),
     );
-    return this.lifecycleManager.saveContext(durable);
+    if (!this.lifecycleManager.saveContext(durable)) return false;
+    // Cancellation/error cleanup saves session-owned memory. Publish a saved
+    // mid-turn checkpoint here so cleanup cannot overwrite it with pre-turn data.
+    this.messages = durable;
+    return true;
   }
 
   private createContextCompactionNotifier(
     callbacks: SessionCallbacks | undefined,
     stopsOnError: boolean,
   ): ((event: {
-    status: 'start' | 'complete' | 'error';
+    status: 'start' | 'complete' | 'skipped' | 'error';
   }) => Promise<void>) | undefined {
     if (!callbacks?.onThinking) return undefined;
     return async (event) => {
@@ -1171,9 +1181,11 @@ export class AgentSession {
   }
 
   private formatContextCompactionStatus(event: {
-    status: 'start' | 'complete' | 'error';
+    status: 'start' | 'complete' | 'skipped' | 'error';
   }, stopsOnError: boolean): string {
     switch (event.status) {
+      case 'skipped':
+        return '摘要未缩减上下文，继续保留原始记录。';
       case 'start':
         return CONTEXT_COMPACTION_START_MESSAGE;
       case 'complete':

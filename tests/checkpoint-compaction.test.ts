@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Message } from '../src/types';
+import { estimateMessagesTokens } from '../src/core/token-estimator';
 import {
   CHECKPOINT_SUMMARY_PREFIX,
   CheckpointCompactionCoordinator,
@@ -42,6 +43,50 @@ test('checkpoint compaction switch defaults on and supports explicit rollback', 
     XIAOBA_CHECKPOINT_COMPACTION_ENABLED: 'false',
   } as NodeJS.ProcessEnv), false);
 });
+
+test('tool-heavy context with only active inputs never calls the summary model repeatedly', async () => {
+  const { service, requests } = createService(() => 'unused summary');
+  const coordinator = new CheckpointCompactionCoordinator(service, { maxContextTokens: 2000 });
+  const messages: Message[] = [
+    { role: 'system', content: 'Stable system prompt' },
+    { role: 'user', content: 'Inspect the repository', __episodeId: 'active', __episodeInputKind: 'root' },
+    { role: 'user', content: 'Preserve configuration', __episodeId: 'active', __episodeInputKind: 'pending' },
+  ];
+  const request = { sessionKey: 'active-only', episodeId: 'active', phase: 'mid_turn' as const, toolTokens: 1700 };
+  const first = await coordinator.compactIfNeeded(messages, request);
+  const second = await coordinator.compactIfNeeded(first.messages, request);
+  assert.equal(first.compacted, false);
+  assert.equal(second.compacted, false);
+  assert.equal(first.messages, messages);
+  assert.equal(requests.length, 0);
+});
+
+test('rejects expanding summaries and retries only when durable source changes', async () => {
+  const { service, requests } = createService(() => 'Summary text. '.repeat(400));
+  const coordinator = new CheckpointCompactionCoordinator(service, { maxContextTokens: 2000 });
+  const messages: Message[] = [
+    { role: 'system', content: 'Stable system prompt' },
+    { role: 'user', content: 'Earlier task', __episodeId: 'old' },
+    { role: 'assistant', content: 'Earlier result', __episodeId: 'old' },
+    { role: 'user', content: 'Current task', __episodeId: 'active', __episodeInputKind: 'root' },
+  ];
+  const request = { sessionKey: 'no-reduction', episodeId: 'active', phase: 'mid_turn' as const, toolTokens: 1700 };
+  const statuses: string[] = [];
+  const first = await coordinator.compactIfNeeded(messages, { ...request, onStatus: event => { statuses.push(event.status); } });
+  assert.equal(first.compacted, false);
+  assert.equal(first.messages, messages);
+  assert.deepEqual(statuses, ['start', 'skipped']);
+  const repeated = await coordinator.compactIfNeeded(structuredClone(first.messages), { ...request, phase: 'pre_turn', toolTokens: 1800 });
+  assert.equal(repeated.compacted, false);
+  assert.equal(requests.length, 1);
+  const aborted = AbortSignal.abort();
+  await assert.rejects(coordinator.compactIfNeeded(messages, { ...request, signal: aborted }), { name: 'AbortError' });
+  const changed = [...messages, { role: 'assistant' as const, content: 'New tool evidence '.repeat(2000), __episodeId: 'active' }];
+  const next = await coordinator.compactIfNeeded(changed, request);
+  assert.equal(requests.length, 2);
+  assert.equal(next.compacted, true);
+  assert.ok(estimateMessagesTokens(next.messages) < estimateMessagesTokens(changed));
+});
 test('checkpoint compaction preserves stable system and transient runtime messages', async () => {
   const { service } = createService(() => [
     'Objective: finish the active task.',
@@ -49,8 +94,8 @@ test('checkpoint compaction preserves stable system and transient runtime messag
     'Next: edit the target file.',
   ].join('\n'));
   const coordinator = new CheckpointCompactionCoordinator(service, {
-    maxContextTokens: 200,
-    compactionThreshold: 0.5,
+    maxContextTokens: 2_000,
+    compactionThreshold: 0.3,
   });
   const transient: Message = {
     role: 'system',
@@ -258,7 +303,7 @@ test('mid-turn checkpoint always retains the root before repeated short follow-u
   const retainedInputs = result.messages.filter(message => (
     message.role === 'user' && !message.__checkpointSummary
   ));
-  assert.ok(requests[0].some(message => message.content === root.content));
+  assert.ok(result.messages.some(message => message.content === root.content));
   assert.ok(result.messages.some(message => message.__checkpointSummary));
   assert.ok(retainedInputs.some(message => (
     String(message.content).includes('LATEST_CORRECTION')
@@ -304,7 +349,7 @@ test('oversized episode root is summarized instead of silently disappearing', as
   assert.equal(result.messages.some(message => message.__checkpointBoundary), false);
 });
 
-test('checkpoint exact tail bounds a giant tool result without duplicating it into the summary', async () => {
+test('checkpoint exact tail bounds a giant tool result while keeping summary evidence', async () => {
   const { service, requests } = createService(() => 'bounded tool evidence summary');
   const coordinator = new CheckpointCompactionCoordinator(service, {
     maxContextTokens: 1_000,
@@ -334,6 +379,7 @@ test('checkpoint exact tail bounds a giant tool result without duplicating it in
 
   assert.equal(result.compacted, true);
   assert.equal(requests[0].some(message => message.role === 'tool'), false);
+  assert.ok(JSON.stringify(requests[0]).includes('HEAD_MARKER'));
   const retainedToolMessage = result.messages.find(message => message.role === 'tool');
   assert.ok(retainedToolMessage);
   assert.match(String(retainedToolMessage.content), /\[checkpoint_tool_evidence\]/);
@@ -343,4 +389,65 @@ test('checkpoint exact tail bounds a giant tool result without duplicating it in
   assert.ok(String(retainedToolMessage.content).length < rawToolResult.length);
   assert.equal(toolMessage.content, rawToolResult);
   assert.equal(messages[1].content, rawToolResult);
+});
+
+test('summary input quotes historical tools and ends with a new summarization request', async () => {
+  const { service, requests } = createService(() => 'Objective and verified progress; next: inspect remaining files.');
+  const coordinator = new CheckpointCompactionCoordinator(service, { maxContextTokens: 200 });
+  const messages: Message[] = [{ role: 'assistant', content: largeText('old tool continuation'), tool_calls: [
+    { id: 'old-call', type: 'function', function: { name: 'execute_shell', arguments: '{"command":"do not execute"}' } },
+  ] }];
+  await coordinator.compactIfNeeded(messages, { sessionKey: 'quoted-summary', phase: 'mid_turn' });
+  assert.ok(requests[0].slice(1).every(m => m.role === 'user' && !m.tool_calls && !m.providerContent));
+  assert.match(String(requests[0].at(-1)?.content), /Produce the continuation checkpoint/);
+  assert.match(String(requests[0][1].content), /historicalRole.*assistant/);
+  assert.equal(messages[0].tool_calls?.[0].id, 'old-call');
+});
+
+test('invalid tool-call summaries retry once and never replace the transcript', async () => {
+  const { service, requests } = createService(() => '<minimax:tool_call><invoke name="read_file">fake</invoke></minimax:tool_call>');
+  const coordinator = new CheckpointCompactionCoordinator(service, { maxContextTokens: 200 });
+  const messages: Message[] = [{ role: 'user', content: largeText('must survive') }];
+  await assert.rejects(coordinator.compactIfNeeded(messages, { sessionKey: 'invalid-summary', phase: 'pre_turn' }), /invalid summary/);
+  assert.equal(requests.length, 2);
+  assert.equal(messages.length, 1);
+  assert.match(String(messages[0].content), /must survive/);
+});
+
+test('quoted summary history preserves vision blocks without embedding base64 in text', async () => {
+  const { service, requests } = createService(() => 'Inspect the historical image again before relying on details.');
+  const coordinator = new CheckpointCompactionCoordinator(service, { maxContextTokens: 200 });
+  const image = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'aGVsbG8=' } };
+  await coordinator.compactIfNeeded([{ role: 'user', content: [
+    { type: 'text', text: largeText('historical image request') }, image,
+  ] }], { sessionKey: 'image-summary', phase: 'pre_turn' });
+  const evidence = requests[0].flatMap(message => Array.isArray(message.content) ? message.content : []);
+  assert.ok(evidence.some(block => block.type === 'image' && block.source.data === image.source.data));
+  assert.ok(evidence.filter(block => block.type === 'text').every(block => !block.text.includes(image.source.data)));
+});
+
+test('oversized ordinary exchanges cannot replace the active root with its assistant reply', async () => {
+  for (const oversized of ['user', 'assistant']) {
+    const { service, requests } = createService(() => 'Continue the original audit task.');
+    const coordinator = new CheckpointCompactionCoordinator(service, { maxContextTokens: 2000 });
+    const result = await coordinator.compactIfNeeded([
+      { role: 'user', content: 'ROOT_REQUIREMENT audit.md ' + (oversized === 'user' ? largeText('evidence').repeat(5) : ''), __episodeId: 'active', __episodeInputKind: 'root' },
+      { role: 'assistant', content: oversized === 'assistant' ? largeText('prior answer').repeat(5) : 'acknowledged', __episodeId: 'active' },
+    ], { sessionKey: 'root-pair', phase: 'mid_turn', episodeId: 'active' });
+    assert.ok(result.messages.some(message => message.__episodeInputKind === 'root'
+      && String(message.content).includes('ROOT_REQUIREMENT')), oversized);
+    assert.ok(JSON.stringify(requests[0]).includes('ROOT_REQUIREMENT'));
+  }
+});
+
+test('summary generator can see output constraints in the separately retained root', async () => {
+  const { service, requests } = createService(() => 'Complete audit.md in the specified output directory.');
+  const coordinator = new CheckpointCompactionCoordinator(service, { maxContextTokens: 2000 });
+  const root: Message = { role: 'user', content: 'Write audit.md into D:/work/exact-output, not the materials directory.', __episodeId: 'active', __episodeInputKind: 'root' };
+  const result = await coordinator.compactIfNeeded([
+    { role: 'assistant', content: largeText('old work').repeat(5), __episodeId: 'old' }, root,
+  ], { sessionKey: 'root-reference', phase: 'mid_turn', episodeId: 'active' });
+  assert.ok(result.messages.includes(root));
+  assert.ok(JSON.stringify(requests[0]).includes('D:/work/exact-output'));
+  assert.ok(JSON.stringify(requests[0]).includes('Reference only'));
 });

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { SkillManager } from '../../skills/skill-manager';
+import { isBuiltinKnowledgeSkillFile } from '../../skills/builtin-knowledge-skill';
 import type { Skill } from '../../types/skill';
 import { ConfigManager } from '../../utils/config';
 import { ServiceManager } from '../service-manager';
@@ -4647,6 +4648,9 @@ async function getSkillHubInstallInfo(skill: Skill): Promise<any> {
 }
 
 function getSkillManagementInfo(skillFilePath: string): SkillManagementInfo {
+  if (isBuiltinKnowledgeSkillFile(skillFilePath)) {
+    return { source: 'system', protected: true, canDisable: false, canDelete: false, canShare: false };
+  }
   const dir = path.dirname(skillFilePath);
   const skillsRoot = PathResolver.getSkillsPath();
   const relative = path.relative(skillsRoot, dir);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Message } from '../src/types';
-import { CHECKPOINT_SUMMARY_PREFIX } from '../src/core/checkpoint-compaction';
+import { CHECKPOINT_SUMMARY_PREFIX, CheckpointCompactionCoordinator } from '../src/core/checkpoint-compaction';
 import { ConversationRunner } from '../src/core/conversation-runner';
 import type {
   ToolCall,
@@ -19,6 +19,32 @@ const legacyArtifactObservation: Message = {
   __runtimeObservation: true,
   runtimeObservationSource: 'catsco_artifact',
 };
+
+const unchanged = (messages: Message[]) => ({
+  messages, compacted: false, usedTokens: 10, toolTokens: 10,
+  maxTokens: 100, usagePercent: 20,
+});
+
+test('cancellation during a tool rate-limit backoff prevents another execution', { timeout: 5000 }, async () => {
+  const controller = new AbortController();
+  let executions = 0;
+  let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+  const runner = new ConversationRunner({
+    chat: async () => ({ content: '', toolCalls: [{ id: 'limited', type: 'function', function: { name: 'inspect', arguments: '{}' } }] }),
+  } as any, {
+    getToolDefinitions: () => [{ name: 'inspect', description: 'inspect', parameters: { type: 'object', properties: {} } }],
+    executeTool: async call => {
+      executions++;
+      cancelTimer = setTimeout(() => controller.abort(), 50);
+      return { role: 'tool', tool_call_id: call.id, name: 'inspect', content: 'rate limited', ok: false, errorCode: 'HTTP_429' };
+    },
+  }, { stream: false, toolExecutionContext: { abortSignal: controller.signal } });
+  try {
+    const result = await runner.run([{ role: 'user', content: 'inspect once' }]);
+    assert.equal(executions, 1);
+    assert.ok(result.messages.some(message => message.role === 'tool' && message.tool_call_id === 'limited'));
+  } finally { clearTimeout(cancelTimer); }
+});
 
 test('runner checkpoints only after a complete tool result and resumes the same episode', async () => {
   const events: string[] = [];
@@ -63,6 +89,7 @@ test('runner checkpoints only after a complete tool result and resumes the same 
   let checkpointRequest: any;
   const coordinator = {
     compactIfNeeded: async (messages: Message[], request: any) => {
+      if (!messages.some(message => message.role === 'tool')) return unchanged(messages);
       checkpointRequest = request;
       events.push('checkpoint');
       assert.equal(JSON.stringify(messages).includes(legacyArtifactSentinel), false);
@@ -153,7 +180,7 @@ test('runner stops before another model request when checkpoint persistence fail
     }),
   };
   const coordinator = {
-    compactIfNeeded: async () => ({
+    compactIfNeeded: async (messages: Message[]) => messages.some(message => message.role === 'tool') ? ({
       messages: [{
         role: 'user',
         content: `${CHECKPOINT_SUMMARY_PREFIX}\n\nThis checkpoint must not be used.`,
@@ -164,7 +191,7 @@ test('runner stops before another model request when checkpoint persistence fail
       toolTokens: 10,
       maxTokens: 100,
       usagePercent: 110,
-    }),
+    }) : unchanged(messages),
   } as any;
 
   const runner = new ConversationRunner(aiService, executor, {
@@ -236,7 +263,8 @@ test('runner does not create a fresh checkpoint retry budget after a terminal 50
     { status: 502 },
   );
   const coordinator = {
-    compactIfNeeded: async () => {
+    compactIfNeeded: async (messages: Message[]) => {
+      if (!messages.some(message => message.role === 'tool')) return unchanged(messages);
       checkpointRequests++;
       throw terminalError;
     },
@@ -260,4 +288,31 @@ test('runner does not create a fresh checkpoint retry budget after a terminal 50
   assert.equal(modelRequests, 1);
   assert.equal(toolExecutions, 1);
   assert.equal(checkpointRequests, 1);
+});
+
+test('runner checkpoints a newly appended oversized root before the first agent request', async () => {
+  const events: string[] = [];
+  const incoming = `Inspect this complete evidence and produce audit.md.\n${'log evidence '.repeat(4000)}\nEND_OF_INCOMING_EVIDENCE`;
+  const coordinator = new CheckpointCompactionCoordinator({
+    chatStream: async (messages: Message[]) => {
+      events.push('summary');
+      assert.ok(JSON.stringify(messages).includes('END_OF_INCOMING_EVIDENCE'));
+      return { content: 'Task: inspect the incoming evidence and produce audit.md. No work has been completed.', usage };
+    },
+  } as any, { maxContextTokens: 4000 });
+  const runner = new ConversationRunner({
+    chat: async (messages: Message[]) => {
+      events.push('agent');
+      assert.ok(messages.some(message => message.__checkpointSummary));
+      assert.ok(JSON.stringify(messages).includes('audit.md'));
+      return { content: 'Ready to continue from the checkpoint.', toolCalls: [], usage };
+    },
+  } as any, { getToolDefinitions: () => [], executeTool: async () => { throw new Error('Unexpected tool'); } }, {
+    stream: false,
+    episodeId: 'incoming-episode',
+    checkpointCompactionCoordinator: coordinator,
+    onCompactionCheckpoint: async () => { events.push('persist'); },
+  });
+  await runner.run([{ role: 'user', content: incoming, __episodeId: 'incoming-episode', __episodeInputKind: 'root' }]);
+  assert.deepEqual(events, ['summary', 'persist', 'agent']);
 });

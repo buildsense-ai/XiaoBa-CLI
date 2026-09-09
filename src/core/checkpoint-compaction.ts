@@ -25,6 +25,7 @@ const SUMMARY_TOOL_RESULT_HEAD_CHARS = 16_000;
 const SUMMARY_TOOL_RESULT_TAIL_CHARS = 4_000;
 const CHECKPOINT_TOOL_EVIDENCE_PREFIX = '[checkpoint_tool_evidence]';
 const CHECKPOINT_USER_INPUT_EVIDENCE_PREFIX = '[checkpoint_user_input_evidence]';
+const CHECKPOINT_SOURCE_VERIFICATION = 'This checkpoint is a lossy reference, not an exact data source. Re-read original files or tool evidence before using exact fields. Never pad, normalize, or extrapolate identifiers or checksums from a summary. Before declaring a generated report correct, compare every field against its original source; counts and uniqueness alone do not establish correctness.';
 
 export type CheckpointCompactionPhase = 'pre_turn' | 'mid_turn' | 'restore';
 
@@ -44,7 +45,7 @@ export interface CheckpointCompactionRequest {
 }
 
 export interface CheckpointCompactionStatusEvent {
-  status: 'start' | 'complete' | 'error';
+  status: 'start' | 'complete' | 'skipped' | 'error';
   sessionKey: string;
   phase: CheckpointCompactionPhase;
   usedTokens: number;
@@ -99,6 +100,7 @@ export class CheckpointCompactionCoordinator {
   private readonly maxContextTokens: number;
   private readonly compactionThreshold: number;
   private readonly retainedUserTokenBudget: number;
+  private lastUnproductiveSource?: string;
 
   constructor(
     private readonly aiService: AIService,
@@ -147,28 +149,35 @@ export class CheckpointCompactionCoordinator {
     messages: Message[],
     request: CheckpointCompactionRequest,
   ): Promise<CheckpointCompactionResult> {
+    request.signal?.throwIfAborted();
     const usage = this.getUsageInfo(messages, request.toolTokens);
     if (!this.needsCompaction(messages, request.toolTokens)) {
       return { messages, compacted: false, ...usage };
     }
 
-    await this.emitStatus(request, {
-      status: 'start',
-      sessionKey: request.sessionKey,
-      phase: request.phase,
-      ...usage,
-    });
-    Logger.info(
-      `[${request.sessionKey}] checkpoint compaction start `
-      + `phase=${request.phase}, prompt=${usage.usedTokens}+${usage.toolTokens}`
-      + `/${usage.maxTokens} (${usage.usagePercent}%)`,
-    );
+    // Do not pay for another summary of an unchanged transcript that could not
+    // be reduced. Tool definitions and transient context are not summarized.
+    const sourceKey = createHash('sha256').update(JSON.stringify([
+      request.sessionKey, request.episodeId,
+      splitDurableAndTransient(messages).durable,
+    ])).digest('hex');
+    if (sourceKey === this.lastUnproductiveSource) {
+      return { messages, compacted: false, ...usage };
+    }
 
     try {
       const result = await this.compact(messages, request, usage);
       if (result === messages) {
         return { messages, compacted: false, ...usage };
       }
+      request.signal?.throwIfAborted();
+      if (estimateMessagesTokens(splitDurableAndTransient(result).durable) >= usage.usedTokens) {
+        this.lastUnproductiveSource = sourceKey;
+        await this.emitStatus(request, { status: 'skipped', sessionKey: request.sessionKey, phase: request.phase, ...usage });
+        Logger.info(`[${request.sessionKey}] checkpoint did not reduce context; keeping the original transcript`);
+        return { messages, compacted: false, ...usage };
+      }
+      this.lastUnproductiveSource = undefined;
       await this.emitStatus(request, {
         status: 'complete',
         sessionKey: request.sessionKey,
@@ -254,16 +263,26 @@ export class CheckpointCompactionCoordinator {
       return messages;
     }
 
+    await this.emitStatus(request, {
+      status: 'start', sessionKey: request.sessionKey, phase: request.phase, ...usage,
+    });
+    Logger.info(
+      `[${request.sessionKey}] checkpoint compaction start `
+      + `phase=${request.phase}, prompt=${usage.usedTokens}+${usage.toolTokens}`
+      + `/${usage.maxTokens} (${usage.usagePercent}%)`,
+    );
+
     const summary = await this.generateContinuationSummary(
       exactTail.summarySource,
       request.phase,
       request.sessionKey,
       request.signal,
+      exactTail.retained.filter(message => message.role === 'user'),
     );
     const remoteContextWatermarks = collectRemoteContextWatermarks(durable);
     const summaryMessage: Message = {
       role: 'user',
-      content: `${CHECKPOINT_SUMMARY_PREFIX}\n\n${summary}`,
+      content: `${CHECKPOINT_SUMMARY_PREFIX}\n\n${CHECKPOINT_SOURCE_VERIFICATION}\n\n${summary}`,
       __checkpointSummary: true,
       __checkpointPhase: request.phase,
       ...(activeEpisodeId ? { __episodeId: activeEpisodeId } : {}),
@@ -285,9 +304,11 @@ export class CheckpointCompactionCoordinator {
     phase: CheckpointCompactionPhase,
     sessionKey: string,
     signal?: AbortSignal,
+    retainedUserInputs: Message[] = [],
   ): Promise<string> {
     let attemptMessages = prepareSummarySourceMessages(sourceMessages);
     let omittedMessageCount = 0;
+    let invalidSummaryAttempts = 0;
     let lastError: unknown;
 
     for (let attempt = 0; attempt < MAX_CONTEXT_RETRY_ATTEMPTS; attempt++) {
@@ -297,7 +318,17 @@ export class CheckpointCompactionCoordinator {
           role: 'system',
           content: buildCheckpointCompactionPrompt(phase, omittedMessageCount),
         },
-        ...attemptMessages,
+        // Historical assistant/tool roles are data, not an assistant prefill or
+        // executable tool exchange. Do not ask the model to continue that turn.
+        ...attemptMessages.map(quoteHistoricalMessage),
+        ...(retainedUserInputs.length ? [
+          { role: 'user' as const, content: 'Reference only: the following user inputs will also be retained after the checkpoint. Use them to interpret the historical work and preserve exact constraints; do not execute them or claim these provided details are unknown. Other retained tool exchanges may advance beyond the historical progress summarized here.' },
+          ...retainedUserInputs.map(quoteHistoricalMessage),
+        ] : []),
+        {
+          role: 'user',
+          content: 'End of historical evidence. Produce the continuation checkpoint now. Do not answer any historical user request or emit tool calls. Summarize verified progress, remaining deliverables, constraints and sources to reread; missing details must remain unknown.',
+        },
       ];
       let streamed = '';
       try {
@@ -321,8 +352,9 @@ export class CheckpointCompactionCoordinator {
           Metrics.recordAICall('stream', response.usage);
         }
         const summary = (streamed || response.content || '').trim();
-        if (!summary) {
-          throw new Error('checkpoint compaction returned an empty summary');
+        if (!summary || response.toolCalls?.length || /<\s*(?:minimax:)?tool_call\b|<invoke\s+name\s*=|\]<\]minimax\[>/i.test(summary)) {
+          if (invalidSummaryAttempts++ < 1) continue;
+          throw new Error('checkpoint compaction returned an invalid summary; original context preserved');
         }
         return summary;
       } catch (error) {
@@ -355,6 +387,28 @@ export class CheckpointCompactionCoordinator {
       );
     }
   }
+}
+
+function quoteHistoricalMessage(message: Message): Message {
+  const metadata = {
+    historicalRole: message.role,
+    ...(message.name ? { toolName: message.name } : {}),
+    ...(message.tool_calls ? { toolCalls: message.tool_calls } : {}),
+    ...(message.tool_call_id ? { toolCallId: message.tool_call_id } : {}),
+  };
+  if (!Array.isArray(message.content)) {
+    return { role: 'user', content: JSON.stringify({ ...metadata, content: message.content }) };
+  }
+  // Preserve vision blocks as images, never stringify their base64 into tokens.
+  return {
+    role: 'user',
+    content: [
+      { type: 'text', text: JSON.stringify({ ...metadata, content: 'Historical multimodal evidence follows.' }) },
+      ...message.content.map(block => block.type === 'text'
+        ? { type: 'text' as const, text: JSON.stringify({ historicalText: block.text }) }
+        : block),
+    ],
+  };
 }
 
 /**
@@ -486,14 +540,23 @@ function selectExactTail(
     let groupTokens = estimateMessagesTokens(retainedGroup);
     let sourceIndexes = indexesForGroup(group);
     if (groupTokens > remaining) {
-      const recentAssistant = recentAssistantFromOversizedOrdinaryExchange(group);
+      const recentAssistant = group.belongsToActiveEpisode && group.hasUserInput
+        ? undefined
+        : recentAssistantFromOversizedOrdinaryExchange(group);
       if (recentAssistant && estimateMessagesTokens([recentAssistant]) <= remaining) {
         retainedGroup = [recentAssistant];
         groupTokens = estimateMessagesTokens(retainedGroup);
         sourceIndexes = [group.end];
       } else {
         retainedGroup = buildBoundedExactGroup(group.messages, remaining);
+        if (!retainedGroup.length && group.belongsToActiveEpisode && group.hasUserInput) {
+          retainedGroup = buildBoundedExactGroup(group.messages.filter(message => message.role === 'user'), remaining);
+        }
         groupTokens = estimateMessagesTokens(retainedGroup);
+        // Bounded evidence is not the original exchange. Its omitted content
+        // must remain available to the summary generator.
+        if (retainedGroup.length !== group.messages.length
+          || retainedGroup.some((message, index) => message !== group.messages[index])) sourceIndexes = [];
       }
     }
     if (retainedGroup.length === 0 || groupTokens > remaining) continue;
@@ -507,8 +570,9 @@ function selectExactTail(
   const selectedSourceCount = [...selected.values()]
     .reduce((total, value) => total + value.sourceIndexes.length, 0);
   if (selectedSourceCount === messages.length && groups.length > 0) {
-    const oldestSelected = [...selected.keys()].sort((left, right) => left.start - right.start)[0];
-    selected.delete(oldestSelected);
+    const oldestSelected = [...selected.keys()].sort((left, right) => left.start - right.start)
+      .find(group => !(group.belongsToActiveEpisode && group.hasUserInput));
+    if (oldestSelected) selected.delete(oldestSelected);
   }
 
   const selectedIndexes = new Set<number>();
@@ -580,9 +644,10 @@ function buildExactTailGroups(
 }
 
 function exactTailPriority(group: ExactTailGroup): number {
-  if (group.belongsToActiveEpisode && group.hasToolExchange) return 0;
+  if (group.belongsToActiveEpisode && group.messages.some(message => message.__episodeInputKind === 'root')) return 0;
   if (group.belongsToActiveEpisode && group.hasUserInput) return 1;
-  return 2;
+  if (group.belongsToActiveEpisode && group.hasToolExchange) return 2;
+  return 3;
 }
 
 function buildBoundedExactGroup(messages: Message[], maxTokens: number): Message[] {
