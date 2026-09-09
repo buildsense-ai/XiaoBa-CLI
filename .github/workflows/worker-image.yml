@@ -1,5 +1,5 @@
 name: Bake Tianyi Cloud Worker Image
-run-name: Worker image [${{ inputs.deployment_profile || 'private_nat' }}] ${{ github.ref_name }}
+run-name: Worker image [${{ inputs.deployment_profile || 'all' }}] ${{ github.ref_name }}
 
 on:
   push:
@@ -11,8 +11,8 @@ on:
         description: Target worker resource pool
         type: choice
         required: true
-        default: private_nat
-        options: [private_nat, public_ip]
+        default: all
+        options: [all, private_nat, public_ip]
       bake_image:
         description: Bake a private worker image from the current main commit
         required: false
@@ -59,7 +59,11 @@ env:
 
 jobs:
   image:
-    name: Build artifact and bake private image
+    name: Build artifact and bake private image [${{ matrix.deployment_profile }}]
+    strategy:
+      fail-fast: false
+      matrix:
+        deployment_profile: ${{ fromJSON((github.event_name != 'workflow_dispatch' || inputs.deployment_profile == 'all') && '["private_nat","public_ip"]' || format('["{0}"]', inputs.deployment_profile)) }}
     if: >-
       (github.event_name == 'workflow_dispatch' &&
        inputs.bake_image &&
@@ -110,7 +114,7 @@ jobs:
         id: deployment
         shell: bash
         env:
-          DEPLOYMENT_PROFILE: ${{ inputs.deployment_profile || 'private_nat' }}
+          DEPLOYMENT_PROFILE: ${{ matrix.deployment_profile }}
           CTYUN_PUBLIC_WORKER_PROFILE_JSON: ${{ vars.CTYUN_PUBLIC_WORKER_PROFILE_JSON }}
           WORKER_REGION_ID: ${{ vars.CTYUN_WORKER_REGION_ID }}
           WORKER_PROJECT_ID: ${{ vars.CTYUN_WORKER_PROJECT_ID }}
@@ -228,9 +232,9 @@ jobs:
             upload_bucket="$TOS_WORKER_UPLOAD_BUCKET"
             upload_config="$TOSUTIL_HK_CONFIG"
           fi
-          key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$(basename "$WORKER_ARTIFACT_PATH")"
-          script_key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/prepare-image.sh"
-          status_key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/bootstrap-status.json"
+          key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${WORKER_DEPLOYMENT_PROFILE}/$(basename "$WORKER_ARTIFACT_PATH")"
+          script_key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${WORKER_DEPLOYMENT_PROFILE}/prepare-image.sh"
+          status_key="update/worker/.bake/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${WORKER_DEPLOYMENT_PROFILE}/bootstrap-status.json"
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "script_key=$script_key" >> "$GITHUB_OUTPUT"
           echo "status_key=$status_key" >> "$GITHUB_OUTPUT"
@@ -383,7 +387,8 @@ jobs:
             | [
               .[]
               | select((.id | tostring) != $current)
-              | select(if $profile == "public_ip" then (.display_title | startswith("Worker image [public_ip]"))
+              | select(if (.display_title | startswith("Worker image [all]")) then true
+                       elif $profile == "public_ip" then (.display_title | startswith("Worker image [public_ip]"))
                        else ((.display_title | startswith("Worker image [public_ip]")) | not) end)
               | select(
                   .conclusion == "failure" or
@@ -426,22 +431,9 @@ jobs:
                 bake_attempts="$(jq --argjson attempt "$attempt" '. + [$attempt]' <<<"$bake_attempts")"
                 continue
               fi
-              bake_conclusion="$(jq -r '
-                [
-                  .jobs[]?.steps[]?
-                  | select(.name == "Bake private ECS image")
-                  | .conclusion
-                ]
-                | first // "unknown"
-              ' <<<"$jobs")"
-              cleanup_conclusion="$(jq -r '
-                [
-                  .jobs[]?.steps[]?
-                  | select(.name == "Reconcile this attempt after a failed bake")
-                  | .conclusion
-                ]
-                | first // "unknown"
-              ' <<<"$jobs")"
+              conclusions="$(node ops/ctyun-worker-image/bake-run-results.mjs "$WORKER_DEPLOYMENT_PROFILE" <<<"$jobs")"
+              bake_conclusion="$(jq -r '.bake' <<<"$conclusions")"
+              cleanup_conclusion="$(jq -r '.cleanup' <<<"$conclusions")"
               case "$bake_conclusion" in
                 failure|cancelled|timed_out|unknown)
                   if [[ "$cleanup_conclusion" == "success" ]]; then

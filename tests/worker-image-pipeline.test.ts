@@ -629,6 +629,8 @@ function Reset-Monitor([object[]]$Responses) {
     $script:LastBootstrapPayload = ""
     $script:LastBootstrapUpdateAt = $null
     $script:LastBootstrapPhase = ""
+    $script:BootstrapCompleted = $false
+    $script:BootstrapStopRequested = $false
     $script:StartedAt = Get-Date
     $script:LastProgressAt = [DateTime]::MinValue
     $script:OperationDeadline = $null
@@ -662,6 +664,53 @@ $failure = $null
 try { Test-BootstrapStatus } catch { $failure = $_.Exception.Message }
 if ($script:RequestCount -ne 3 -or $failure -ne 'Builder bootstrap returned malformed status telemetry') {
     throw "persistent malformed telemetry was not bounded to three reads"
+}
+
+$complete = '{"state":"succeeded","phase":"shutdown","exit_code":0,"line":0}'
+Reset-Monitor -Responses @($complete)
+Test-BootstrapStatus
+$script:LastBootstrapUpdateAt = (Get-Date).AddHours(-1)
+Test-BootstrapStatus
+if (-not $script:BootstrapCompleted -or $script:RequestCount -ne 1) {
+    throw "terminal bootstrap completion was treated as stale telemetry"
+}
+Reset-Monitor -Responses @('{"state":"succeeded","phase":"worker-install","exit_code":0}')
+$failure = $null
+try { Test-BootstrapStatus } catch { $failure = $_.Exception.Message }
+if ($failure -ne 'Builder bootstrap returned invalid completion telemetry') {
+    throw "incomplete image preparation was accepted as final success"
+}
+
+${imageOrchestrator.slice(imageOrchestrator.indexOf('function Wait-ForInstance {'), imageOrchestrator.indexOf('function Get-Image {'))}
+function Get-BoundedDeadline { return (Get-Date).AddSeconds(5) }
+function Wait-PollInterval { }
+function Assert-TemporaryBuilder { }
+function Resolve-BuilderInstance {
+    $script:InstanceReads++
+    $state = if ($script:PrematureStop -or $script:InstanceReads -ge 3) { 'stopped' } else { 'running' }
+    return [pscustomobject]@{ instanceID='owned-builder'; instanceStatus=$state; floatingIP='' }
+}
+function Invoke-Ctyun { param([string[]]$Arguments) $script:StopCalls++; $script:StopArguments = $Arguments; return @{statusCode=800} }
+$TimeoutMinutes = 1
+$RegionID = 'foshan'
+$script:BuilderID = 'owned-builder'
+$script:InstanceReads = 0
+$script:StopCalls = 0
+$script:PrematureStop = $false
+Reset-Monitor -Responses @($complete)
+$result = Wait-ForInstance -States @('stopped','shutoff') -MonitorBootstrap
+if ($result.instanceStatus -ne 'stopped' -or $script:InstanceReads -ne 3 -or $script:StopCalls -ne 1) {
+    throw "provider stop was not issued once and then confirmed"
+}
+if (($script:StopArguments -join ' ') -ne 'ecs StopEcsInstance --regionID foshan --instanceID owned-builder --force false') {
+    throw "builder stop used unexpected scope or forced shutdown"
+}
+Reset-Monitor -Responses @($valid)
+$script:PrematureStop = $true
+$failure = $null
+try { Wait-ForInstance -States @('stopped') -MonitorBootstrap } catch { $failure = $_.Exception.Message }
+if ($failure -ne 'Builder stopped before verified bootstrap completion') {
+    throw "unprepared stopped builder was accepted for image capture"
 }
 `,
         "utf8",

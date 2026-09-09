@@ -97,6 +97,8 @@ $script:BootstrapMonitorStartedAt = $null
 $script:LastBootstrapPayload = ""
 $script:LastBootstrapUpdateAt = $null
 $script:LastBootstrapPhase = ""
+$script:BootstrapCompleted = $false
+$script:BootstrapStopRequested = $false
 
 function Write-BakeProgress {
     param(
@@ -167,6 +169,8 @@ function Write-BootstrapPayloadDiagnostic {
 }
 
 function Test-BootstrapStatus {
+    # Final success is immutable: a powered-off guest cannot keep heartbeating.
+    if ($script:BootstrapCompleted) { return }
     if ([string]::IsNullOrWhiteSpace($BootstrapStatusGetUrl)) {
         return
     }
@@ -233,6 +237,13 @@ function Test-BootstrapStatus {
             $exitCode = [string]$status.exit_code
             $line = [string]$status.line
             throw "Builder bootstrap failed: phase=$phase exit_code=$exitCode line=$line"
+        }
+        if ($state -eq "succeeded") {
+            if ($phase -ne "shutdown" -or [string]$status.exit_code -ne "0") {
+                throw "Builder bootstrap returned invalid completion telemetry"
+            }
+            $script:BootstrapCompleted = $true
+            return
         }
         if ($age -gt $BootstrapStaleSeconds) {
             throw "Builder bootstrap heartbeat is stale: phase=$phase age_seconds=$age"
@@ -545,11 +556,21 @@ function Wait-ForInstance {
         $state = ([string]$instance.instanceStatus).ToLowerInvariant()
         $ip = [string]$instance.floatingIP
         Write-BakeProgress -Phase "builder-wait" -Detail ("state={0} ip_present={1}" -f $state, (-not [string]::IsNullOrWhiteSpace($ip))) -Force
+        if ($MonitorBootstrap) { Test-BootstrapStatus }
         if ($States -contains $state -and (-not $RequireIP -or $ip)) {
+            if ($MonitorBootstrap -and $BootstrapStatusGetUrl -and -not $script:BootstrapCompleted) {
+                throw "Builder stopped before verified bootstrap completion"
+            }
             return $instance
         }
-        if ($MonitorBootstrap) {
-            Test-BootstrapStatus
+        if ($MonitorBootstrap -and $script:BootstrapCompleted -and
+            -not $script:BootstrapStopRequested -and $state -in @("running", "active")) {
+            # Foshan can keep reporting running after guest shutdown. Request a
+            # normal provider stop only after verified finalization and sync.
+            # Never force-stop or infer that an accepted request is completion.
+            Invoke-Ctyun @("ecs", "StopEcsInstance", "--regionID", $RegionID,
+                "--instanceID", $script:BuilderID, "--force", "false") | Out-Null
+            $script:BootstrapStopRequested = $true
         }
         Wait-PollInterval -DefaultSeconds 8
     }
