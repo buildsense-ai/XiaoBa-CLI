@@ -65,6 +65,7 @@ param(
     [ValidateRange(60, 1800)]
     [int]$BootstrapStaleSeconds = 180,
     [switch]$BaseImageHardened,
+    [switch]$PublicIP,
     [switch]$WaitForLateResources
 )
 
@@ -1539,7 +1540,7 @@ shutdown -h now
         throw "Generated builder userData exceeds Tianyi Cloud's 16384-character limit"
     }
 
-    $createResponse = Invoke-Ctyun @(
+    $createArgs = @(
         "ecs", "CreateEcsInstance",
         "--regionID", $RegionID,
         "--projectID", $BuilderProjectID,
@@ -1559,12 +1560,16 @@ shutdown -h now
         "--keyPairID", $script:KeyPairID,
         "--userData", $userData,
         "--onDemand", "true",
-        "--extIP", "0",
+        "--extIP", $(if ($PublicIP) { "1" } else { "0" }),
         "--monitorService", "false",
         "--securityProduct", "false",
         "--trustInstance", "false",
         "--labelList", "[{`"labelKey`":`"purpose`",`"labelValue`":`"catsco-image-builder`"},{`"labelKey`":`"commit`",`"labelValue`":`"$shortCommit`"}]"
     )
+    if ($PublicIP) {
+        $createArgs += @("--bandwidth", "10", "--ipVersion", "ipv4", "--lineType", "standalone", "--demandBillingType", "upflowc")
+    }
+    $createResponse = Invoke-Ctyun $createArgs
     $createReturnObject = Get-PropertyValue `
         -InputObject $createResponse `
         -Name "returnObj"

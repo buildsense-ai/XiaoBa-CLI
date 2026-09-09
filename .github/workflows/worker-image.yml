@@ -1,4 +1,5 @@
 name: Bake Tianyi Cloud Worker Image
+run-name: Worker image [${{ inputs.deployment_profile || 'private_nat' }}] ${{ github.ref_name }}
 
 on:
   push:
@@ -6,6 +7,12 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
+      deployment_profile:
+        description: Target worker resource pool
+        type: choice
+        required: true
+        default: private_nat
+        options: [private_nat, public_ip]
       bake_image:
         description: Bake a private worker image from the current main commit
         required: false
@@ -49,7 +56,6 @@ env:
   # previously baked image that passed the platform hardening gates. The
   # preparer still verifies the contract and falls back to a full upgrade when
   # the claim is stale.
-  WORKER_BASE_IMAGE_HARDENED: ${{ vars.CTYUN_WORKER_BASE_IMAGE_HARDENED || 'false' }}
 
 jobs:
   image:
@@ -99,6 +105,25 @@ jobs:
             echo "Manual image baking is restricted to main"
             exit 1
           fi
+
+      - name: Select worker deployment profile
+        id: deployment
+        shell: bash
+        env:
+          DEPLOYMENT_PROFILE: ${{ inputs.deployment_profile || 'private_nat' }}
+          CTYUN_PUBLIC_WORKER_PROFILE_JSON: ${{ vars.CTYUN_PUBLIC_WORKER_PROFILE_JSON }}
+          WORKER_REGION_ID: ${{ vars.CTYUN_WORKER_REGION_ID }}
+          WORKER_PROJECT_ID: ${{ vars.CTYUN_WORKER_PROJECT_ID }}
+          WORKER_IMAGE_PROJECT_ID: ${{ vars.CTYUN_IMAGE_PROJECT_ID || '0' }}
+          WORKER_AZ_NAME: ${{ vars.CTYUN_WORKER_AZ_NAME }}
+          WORKER_BASE_IMAGE_ID: ${{ vars.CTYUN_WORKER_BASE_IMAGE_ID }}
+          WORKER_FLAVOR_ID: ${{ vars.CTYUN_WORKER_FLAVOR_ID }}
+          WORKER_VPC_ID: ${{ vars.CTYUN_WORKER_VPC_ID }}
+          WORKER_SUBNET_ID: ${{ vars.CTYUN_WORKER_SUBNET_ID }}
+          WORKER_SECURITY_GROUP_ID: ${{ vars.CTYUN_WORKER_SECURITY_GROUP_ID }}
+          WORKER_PROTECTED_IMAGE_IDS: ${{ vars.CTYUN_WORKER_PROTECTED_IMAGE_IDS }}
+          WORKER_BASE_IMAGE_HARDENED: ${{ vars.CTYUN_WORKER_BASE_IMAGE_HARDENED || 'false' }}
+        run: node ops/ctyun-worker-image/deployment-profile.mjs
 
       - name: Install dependencies
         timeout-minutes: 20
@@ -353,11 +378,13 @@ jobs:
             [[ "$(jq '.workflow_runs | length' <<<"$response")" -lt 100 ]] && break
             page=$((page + 1))
           done
-          interrupted="$(jq -cs --arg current "$GITHUB_RUN_ID" '
+          interrupted="$(jq -cs --arg current "$GITHUB_RUN_ID" --arg profile "$WORKER_DEPLOYMENT_PROFILE" '
             add
             | [
               .[]
               | select((.id | tostring) != $current)
+              | select(if $profile == "public_ip" then (.display_title | startswith("Worker image [public_ip]"))
+                       else ((.display_title | startswith("Worker image [public_ip]")) | not) end)
               | select(
                   .conclusion == "failure" or
                   .conclusion == "cancelled" or
@@ -454,15 +481,6 @@ jobs:
           CTYUN_AK: ${{ secrets.CTYUN_AK }}
           CTYUN_SK: ${{ secrets.CTYUN_SK }}
           INTERRUPTED_RUNS_JSON: ${{ steps.prior_runs.outputs.runs }}
-          WORKER_REGION_ID: ${{ vars.CTYUN_WORKER_REGION_ID }}
-          WORKER_PROJECT_ID: ${{ vars.CTYUN_WORKER_PROJECT_ID }}
-          WORKER_IMAGE_PROJECT_ID: ${{ vars.CTYUN_IMAGE_PROJECT_ID || '0' }}
-          WORKER_AZ_NAME: ${{ vars.CTYUN_WORKER_AZ_NAME }}
-          WORKER_BASE_IMAGE_ID: ${{ vars.CTYUN_WORKER_BASE_IMAGE_ID }}
-          WORKER_FLAVOR_ID: ${{ vars.CTYUN_WORKER_FLAVOR_ID }}
-          WORKER_VPC_ID: ${{ vars.CTYUN_WORKER_VPC_ID }}
-          WORKER_SUBNET_ID: ${{ vars.CTYUN_WORKER_SUBNET_ID }}
-          WORKER_SECURITY_GROUP_ID: ${{ vars.CTYUN_WORKER_SECURITY_GROUP_ID }}
         run: |
           $runs = @($env:INTERRUPTED_RUNS_JSON | ConvertFrom-Json)
           if ([string]::IsNullOrWhiteSpace($env:WORKER_PROJECT_ID)) {
@@ -596,15 +614,6 @@ jobs:
         env:
           CTYUN_AK: ${{ secrets.CTYUN_AK }}
           CTYUN_SK: ${{ secrets.CTYUN_SK }}
-          WORKER_REGION_ID: ${{ vars.CTYUN_WORKER_REGION_ID }}
-          WORKER_PROJECT_ID: ${{ vars.CTYUN_WORKER_PROJECT_ID }}
-          WORKER_IMAGE_PROJECT_ID: ${{ vars.CTYUN_IMAGE_PROJECT_ID || '0' }}
-          WORKER_AZ_NAME: ${{ vars.CTYUN_WORKER_AZ_NAME }}
-          WORKER_BASE_IMAGE_ID: ${{ vars.CTYUN_WORKER_BASE_IMAGE_ID }}
-          WORKER_FLAVOR_ID: ${{ vars.CTYUN_WORKER_FLAVOR_ID }}
-          WORKER_VPC_ID: ${{ vars.CTYUN_WORKER_VPC_ID }}
-          WORKER_SUBNET_ID: ${{ vars.CTYUN_WORKER_SUBNET_ID }}
-          WORKER_SECURITY_GROUP_ID: ${{ vars.CTYUN_WORKER_SECURITY_GROUP_ID }}
         run: |
           $currentAttempt = [int]$env:GITHUB_RUN_ATTEMPT
           if ([string]::IsNullOrWhiteSpace($env:WORKER_PROJECT_ID)) {
@@ -667,15 +676,6 @@ jobs:
         env:
           CTYUN_AK: ${{ secrets.CTYUN_AK }}
           CTYUN_SK: ${{ secrets.CTYUN_SK }}
-          WORKER_REGION_ID: ${{ vars.CTYUN_WORKER_REGION_ID }}
-          WORKER_PROJECT_ID: ${{ vars.CTYUN_WORKER_PROJECT_ID }}
-          WORKER_IMAGE_PROJECT_ID: ${{ vars.CTYUN_IMAGE_PROJECT_ID || '0' }}
-          WORKER_AZ_NAME: ${{ vars.CTYUN_WORKER_AZ_NAME }}
-          WORKER_BASE_IMAGE_ID: ${{ vars.CTYUN_WORKER_BASE_IMAGE_ID }}
-          WORKER_FLAVOR_ID: ${{ vars.CTYUN_WORKER_FLAVOR_ID }}
-          WORKER_VPC_ID: ${{ vars.CTYUN_WORKER_VPC_ID }}
-          WORKER_SUBNET_ID: ${{ vars.CTYUN_WORKER_SUBNET_ID }}
-          WORKER_SECURITY_GROUP_ID: ${{ vars.CTYUN_WORKER_SECURITY_GROUP_ID }}
           WORKER_ARTIFACT_PATH: ${{ steps.artifact_meta.outputs.path }}
           WORKER_ARTIFACT_SHA256: ${{ steps.artifact_meta.outputs.sha256 }}
           WORKER_ARTIFACT_URL: ${{ steps.artifact_transport.outputs.url }}
@@ -707,6 +707,7 @@ jobs:
             -CleanupTimeoutMinutes 40 `
             -ApiTimeoutSeconds 90 `
             -BaseImageHardened:($env:WORKER_BASE_IMAGE_HARDENED -eq 'true') `
+            -PublicIP:($env:WORKER_PUBLIC_IP -eq 'true') `
             -RegionID $env:WORKER_REGION_ID `
             -BuilderProjectID $env:WORKER_PROJECT_ID `
             -ImageProjectID $env:WORKER_IMAGE_PROJECT_ID `
@@ -736,9 +737,6 @@ jobs:
         env:
           CTYUN_AK: ${{ secrets.CTYUN_AK }}
           CTYUN_SK: ${{ secrets.CTYUN_SK }}
-          WORKER_REGION_ID: ${{ vars.CTYUN_WORKER_REGION_ID }}
-          WORKER_IMAGE_PROJECT_ID: ${{ vars.CTYUN_IMAGE_PROJECT_ID || '0' }}
-          WORKER_PROTECTED_IMAGE_IDS: ${{ vars.CTYUN_WORKER_PROTECTED_IMAGE_IDS }}
         run: |
           ./ops/ctyun-worker-image/Manage-WorkerImages.ps1 `
             -Action Prune `
@@ -757,15 +755,6 @@ jobs:
         env:
           CTYUN_AK: ${{ secrets.CTYUN_AK }}
           CTYUN_SK: ${{ secrets.CTYUN_SK }}
-          WORKER_REGION_ID: ${{ vars.CTYUN_WORKER_REGION_ID }}
-          WORKER_PROJECT_ID: ${{ vars.CTYUN_WORKER_PROJECT_ID }}
-          WORKER_IMAGE_PROJECT_ID: ${{ vars.CTYUN_IMAGE_PROJECT_ID || '0' }}
-          WORKER_AZ_NAME: ${{ vars.CTYUN_WORKER_AZ_NAME }}
-          WORKER_BASE_IMAGE_ID: ${{ vars.CTYUN_WORKER_BASE_IMAGE_ID }}
-          WORKER_FLAVOR_ID: ${{ vars.CTYUN_WORKER_FLAVOR_ID }}
-          WORKER_VPC_ID: ${{ vars.CTYUN_WORKER_VPC_ID }}
-          WORKER_SUBNET_ID: ${{ vars.CTYUN_WORKER_SUBNET_ID }}
-          WORKER_SECURITY_GROUP_ID: ${{ vars.CTYUN_WORKER_SECURITY_GROUP_ID }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WORKER_PROJECT_ID)) {
             throw 'CTYUN_WORKER_PROJECT_ID is required for failed-bake cleanup'

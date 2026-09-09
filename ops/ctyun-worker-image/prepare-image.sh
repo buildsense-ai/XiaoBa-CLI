@@ -277,6 +277,21 @@ fi
 #    (e.g. TS1127 from a truncated lib.es2017.string.d.ts). Set it for both the
 #    service user and root so the first npm ci/install never needs manual setup.
 image_phase worker-install
+# Every worker receives its own provider key pair. Public SSH must never
+# inherit password authentication from a base image or cloud-init defaults.
+mkdir -p /etc/ssh/sshd_config.d /run/sshd
+cat >/etc/ssh/sshd_config.d/00-catsco-key-auth.conf <<'EOF'
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+EOF
+chmod 0644 /etc/ssh/sshd_config.d/00-catsco-key-auth.conf
+sshd -t || die "SSH key authentication configuration invalid"
+SSH_EFFECTIVE="$(sshd -T)"
+for setting in 'pubkeyauthentication yes' 'passwordauthentication no' 'kbdinteractiveauthentication no'; do
+  grep -Fxq "$setting" <<<"$SSH_EFFECTIVE" || die "SSH key authentication setting overridden: $setting"
+done
 printf 'registry=https://registry.npmmirror.com\n' >/root/.npmrc
 chmod 0644 /root/.npmrc
 id catsco-agent >/dev/null 2>&1 || useradd \

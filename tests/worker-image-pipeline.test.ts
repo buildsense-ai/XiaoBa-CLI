@@ -561,7 +561,7 @@ describe("Tianyi Cloud worker image pipeline", () => {
       imageOrchestrator,
       /"timeout"[\s\S]*?"ctyun-cli"/,
     );
-    assert.match(imageOrchestrator, /"--extIP", "0"/);
+    assert.match(imageOrchestrator, /"--extIP", \$\(if \([\$]PublicIP\)/);
     assert.match(imageOrchestrator, /"--userData", \$userData/);
     assert.match(imageOrchestrator, /userData exceeds Tianyi Cloud's 16384-character limit/);
     assert.match(imageOrchestrator, /curl_common=[(]--fail --silent --show-error --location --ipv4/);
@@ -1070,6 +1070,7 @@ process.exit(result.status ?? 1);
         buildNumber: string,
         imageName: string,
         scenario = "",
+        extraArgs: string[] = [],
       ) =>
         spawnSync(
           "pwsh",
@@ -1120,6 +1121,7 @@ process.exit(result.status ?? 1);
             "subnet-test",
             "-SecurityGroupID",
             "security-group-test",
+            ...extraArgs,
           ],
           {
             cwd: root,
@@ -1276,6 +1278,7 @@ process.exit(result.status ?? 1);
         "1000",
         "catsco-worker-test-1000",
         "foreign-image",
+        ["-PublicIP"],
       );
       assert.notEqual(foreignResult.status, 0);
       assert.match(
@@ -1287,6 +1290,8 @@ process.exit(result.status ?? 1);
       assert.match(foreignCalls, /ecs DeleteEcsInstance/);
       assert.match(foreignCalls, /ecs DeleteEcsKeypair/);
       const foreignState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      assert.equal(foreignState.createExtIP, "1");
+      assert.equal(foreignState.createHadBandwidth, true);
       assert.equal(foreignState.imageExists, true);
       assert.equal(foreignState.instanceExists, false);
       assert.equal(foreignState.keyExists, false);
