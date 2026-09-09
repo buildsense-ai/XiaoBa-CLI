@@ -7,6 +7,7 @@ import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
 import { normalizeOpenAIChatCompletionsUrl, normalizeOpenAIResponsesUrl } from './openai-url';
 import { resolveMaxTokens } from './output-limits';
+import { isCatsRelayApiBase } from '../utils/catsco-domains';
 import {
   applyOpenAIReasoningOptions,
   supportsOpenAIReasoningReplay,
@@ -27,6 +28,9 @@ const MAX_PROVIDER_ERROR_BODY_BYTES = 64 * 1024;
 const PROVIDER_ERROR_BODY_READ_TIMEOUT_MS = 2_000;
 const DEFAULT_RESPONSES_HEADERS_TIMEOUT_MS = 120_000;
 const MAX_RESPONSES_HEADERS_TIMEOUT_MS = 10 * 60 * 1000;
+// Relay owns a bounded 600s queue + failover + generation budget. Its gateway
+// gets 630s; the client must leave room for the final response/error to arrive.
+const CATS_RELAY_RESPONSES_TIMEOUT_MS = 660_000;
 const MAX_RESPONSES_STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
 type ResponsesFailurePhase = 'headers' | 'stream' | 'terminal_event';
@@ -1577,7 +1581,7 @@ export class OpenAIProvider implements AIProvider {
     options?: AIRequestOptions,
     headers: Record<string, string> = this.headers,
   ): Promise<any> {
-    const headersTimeoutMs = stream && url === this.responsesUrl
+    const headersTimeoutMs = url === this.responsesUrl && (stream || isCatsRelayApiBase(url))
       ? this.responsesHeadersTimeoutMs()
       : 0;
     const watchdogController = headersTimeoutMs > 0 ? new AbortController() : undefined;
@@ -1625,12 +1629,17 @@ export class OpenAIProvider implements AIProvider {
   }
 
   private responsesHeadersTimeoutMs(): number {
+    const relay = isCatsRelayApiBase(this.responsesUrl);
+    const defaultTimeout = relay
+      ? CATS_RELAY_RESPONSES_TIMEOUT_MS
+      : DEFAULT_RESPONSES_HEADERS_TIMEOUT_MS;
     const raw = String(process.env.XIAOBA_RESPONSES_HEADERS_TIMEOUT_MS || '').trim();
-    if (!raw) return DEFAULT_RESPONSES_HEADERS_TIMEOUT_MS;
+    if (!raw) return defaultTimeout;
     const parsed = Number(raw);
-    if (!Number.isFinite(parsed)) return DEFAULT_RESPONSES_HEADERS_TIMEOUT_MS;
+    if (!Number.isFinite(parsed)) return defaultTimeout;
     if (parsed <= 0) return 0;
-    return Math.min(MAX_RESPONSES_HEADERS_TIMEOUT_MS, Math.max(1, Math.floor(parsed)));
+    const maximum = relay ? CATS_RELAY_RESPONSES_TIMEOUT_MS : MAX_RESPONSES_HEADERS_TIMEOUT_MS;
+    return Math.min(maximum, Math.max(1, Math.floor(parsed)));
   }
 
   private responsesStreamIdleTimeoutMs(options?: AIRequestOptions): number {
