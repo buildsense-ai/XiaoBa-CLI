@@ -773,29 +773,31 @@ function Remove-Builder {
     }
     Assert-TemporaryBuilder $instance
     Write-Host "Deleting temporary builder $script:BuilderID"
-    try {
-        Invoke-Ctyun @(
-            "ecs", "DeleteEcsInstance",
-            "--regionID", $RegionID,
-            "--instanceID", $script:BuilderID,
-            "--clientToken", ([guid]::NewGuid().ToString()),
-            "--deleteEip", "true",
-            "--deleteVolume", "true"
-        ) | Out-Null
-    } catch {
-        # Multi-AZ resource pools (e.g. cn-huanan2) reject releasing associated
-        # resources at delete time (Ecs.Region.NotSupport). In those pools the
-        # EIP is released automatically when the instance is unsubscribed, so
-        # retry the plain delete instead of leaking the billed ECS.
-        if ($_.Exception.Message -notmatch "NotSupport") {
-            throw
+    # Image availability can precede disk unlock in Foshan. Keep one token
+    # across the bounded retry and recheck immutable ownership before each call.
+    $deleteToken = [guid]::NewGuid().ToString()
+    $deleteAssociated = $true
+    for ($attempt = 1; $attempt -le 9; $attempt++) {
+        $current = if ($attempt -eq 1) { $instance } else { Resolve-BuilderInstance }
+        if (-not $current) { break }
+        Assert-TemporaryBuilder $current
+        $deleteArgs = @(
+            "ecs", "DeleteEcsInstance", "--regionID", $RegionID,
+            "--instanceID", $script:BuilderID, "--clientToken", $deleteToken
+        )
+        if ($deleteAssociated) { $deleteArgs += @("--deleteEip", "true", "--deleteVolume", "true") }
+        try {
+            Invoke-Ctyun $deleteArgs | Out-Null
+            break
+        } catch {
+            if ($deleteAssociated -and $_.Exception.Message -match "NotSupport") {
+                $deleteAssociated = $false
+                continue
+            }
+            if ($_.Exception.Message -notmatch "Ecs\.Instance\.DiskStatusNotValid" -or $attempt -ge 9) { throw }
+            Write-BakeProgress -Phase "cleanup-disk-busy" -Detail "attempt=$attempt; waiting for captured disk to unlock" -Force
+            Wait-PollInterval -DefaultSeconds 15
         }
-        Invoke-Ctyun @(
-            "ecs", "DeleteEcsInstance",
-            "--regionID", $RegionID,
-            "--instanceID", $script:BuilderID,
-            "--clientToken", ([guid]::NewGuid().ToString())
-        ) | Out-Null
     }
 
     $deadline = Get-BoundedDeadline `
