@@ -76,6 +76,42 @@ test('runner reports provider prompt usage to checkpoint accounting', async () =
   assert.ok(observations[0].toolTokens > 0);
 });
 
+test('runner gives summary guards the actual tools and transient prompt overhead', async () => {
+  const boundaryCalls: Array<{ toolNames: string[]; promptOverheadTokens: number }> = [];
+  const requestGuards: Array<{ toolNames: string[]; promptOverheadTokens: number }> = [];
+  const tool: ToolDefinition = {
+    name: 'inspect',
+    description: 'inspect',
+    parameters: { type: 'object', properties: {} },
+  };
+  const runner = new ConversationRunner({
+    chat: async () => ({ content: 'done', toolCalls: [], usage }),
+  } as any, {
+    getToolDefinitions: () => [tool],
+    executeTool: async () => { throw new Error('Unexpected tool'); },
+  }, {
+    stream: false,
+    onCheckpointCandidateBoundary: async (messages, tools = [], promptOverheadTokens = 0) => {
+      boundaryCalls.push({ toolNames: tools.map(item => item.name), promptOverheadTokens });
+      return messages;
+    },
+    beforeModelRequest: async (_messages, tools, promptOverheadTokens = 0) => {
+      requestGuards.push({ toolNames: tools.map(item => item.name), promptOverheadTokens });
+    },
+  });
+
+  await runner.run([
+    { role: 'user', content: 'inspect once' },
+    { role: 'system', content: `[transient_runtime]\n${'x'.repeat(200)}`, __injected: true },
+  ]);
+
+  assert.ok(boundaryCalls.some(call => call.promptOverheadTokens > 0));
+  assert.ok(boundaryCalls.every(call => call.toolNames.join(',') === 'inspect'));
+  assert.equal(requestGuards.length, 1);
+  assert.deepEqual(requestGuards[0].toolNames, ['inspect']);
+  assert.ok(requestGuards[0].promptOverheadTokens > 0);
+});
+
 test('runner checkpoints durable history before a large one-shot transient prompt is sent', async () => {
   const events: string[] = [];
   const coordinator = new CheckpointCompactionCoordinator({

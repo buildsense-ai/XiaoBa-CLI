@@ -26,10 +26,19 @@ test('AgentSession checkpoint candidate defaults to a 75 percent start and 85 pe
   const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
   delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
   try {
-    const session = new AgentSession('user:candidate-default', buildMockServices({}), 'catscompany');
+    const session = new AgentSession('user:candidate-default', buildMockServices({
+      aiService: {
+        getConfig() {
+          return { provider: 'openai', model: 'test-256k', contextWindowTokens: 256_000, maxTokens: 32_000 };
+        },
+      },
+    }), 'catscompany');
     assert.equal((session as any).useCheckpointCandidates, true);
-    assert.equal((session as any).checkpointCompactionCoordinator.compactionThreshold, 0.85);
-    assert.equal((session as any).checkpointCandidateCoordinator.compactionThreshold, 0.75);
+    assert.equal((session as any).checkpointSummaryStartRatio, 0.75);
+    assert.equal((session as any).checkpointSummaryStopRatio, 0.85);
+    assert.equal((session as any).checkpointCompactionCoordinator.compactionTriggerTokens, 217_600);
+    assert.equal((session as any).checkpointCandidateCoordinator.maxContextTokens, 256_000);
+    assert.equal((session as any).checkpointCandidateCoordinator.compactionTriggerTokens, 1);
   } finally {
     if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
     else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
@@ -37,7 +46,13 @@ test('AgentSession checkpoint candidate defaults to a 75 percent start and 85 pe
 });
 
 test('AgentSession checkpoint thresholds are strict boundaries', () => {
-  const session = new AgentSession('user:candidate-strict-boundaries', buildMockServices({}), 'catscompany');
+  const session = new AgentSession('user:candidate-strict-boundaries', buildMockServices({
+    aiService: {
+      getConfig() {
+        return { provider: 'openai', model: 'test-256k', contextWindowTokens: 256_000, maxTokens: 32_000 };
+      },
+    },
+  }), 'catscompany');
   const usage = (usedTokens: number) => ({ usedTokens, toolTokens: 0, maxTokens: 100 });
 
   assert.equal((session as any).isCheckpointCandidateTriggerReached(usage(75)), false);
@@ -52,10 +67,38 @@ test('AgentSession candidate mode supports explicit false rollback', () => {
   try {
     const session = new AgentSession('user:candidate-disabled', buildMockServices({}), 'catscompany');
     assert.equal((session as any).useCheckpointCandidates, false);
-    assert.equal((session as any).checkpointCompactionCoordinator.compactionThreshold, 0.8);
+    assert.equal((session as any).checkpointCompactionCoordinator.compactionTriggerTokens, 108_032);
   } finally {
     if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
     else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
+  }
+});
+
+test('AgentSession checkpoint rollback removes new summary guards entirely', () => {
+  const previousCheckpoint = process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED;
+  const previousCandidates = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+  process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED = 'false';
+  process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'true';
+  try {
+    const session = new AgentSession('user:checkpoint-disabled', buildMockServices({
+      aiService: {
+        getConfig() {
+          return { provider: 'openai', model: 'test-256k', contextWindowTokens: 256_000, maxTokens: 32_000 };
+        },
+      },
+    }), 'catscompany');
+    const turnOptions = (session as any).turnController.options;
+
+    assert.equal((session as any).useCheckpointCompaction, false);
+    assert.equal(turnOptions.checkpointCompactionCoordinator, undefined);
+    assert.equal(turnOptions.checkpointCandidateBoundary, undefined);
+    assert.equal(turnOptions.beforeModelRequest, undefined);
+    assert.equal(turnOptions.maxPromptTokens, 204_544);
+  } finally {
+    if (previousCheckpoint === undefined) delete process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED;
+    else process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED = previousCheckpoint;
+    if (previousCandidates === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+    else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previousCandidates;
   }
 });
 
@@ -225,6 +268,81 @@ test('a candidate result that arrives above 85 percent remains ready for safe co
     if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
     else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
   }
+});
+
+test('transient prompt crossing the stop point waits for the existing candidate', async () => {
+  const previous = process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+  process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = 'true';
+  try {
+    let releaseCandidate!: () => void;
+    const gate = new Promise<void>(resolve => { releaseCandidate = resolve; });
+    const session = new AgentSession('user:candidate-transient-stop', buildMockServices({}), 'catscompany');
+    (session as any).getContextUsageInfo = (
+      messages: any[],
+      _toolTokens: number,
+      promptOverheadTokens: number,
+    ) => {
+      const summarized = messages.some(message => message.content === 'transient-safe summary');
+      const usedTokens = summarized ? 20 : 80 + (promptOverheadTokens || 0);
+      return { usedTokens, toolTokens: 0, maxTokens: 100, usagePercent: usedTokens };
+    };
+    (session as any).checkpointCandidateCoordinator.compactIfNeeded = async () => {
+      await gate;
+      return { compacted: true, messages: [{ role: 'user', content: 'transient-safe summary' }] };
+    };
+    (session as any).persistCheckpoint = () => true;
+    let serialFallbackCalls = 0;
+    (session as any).runSerialCheckpointFallback = async () => {
+      serialFallbackCalls++;
+      return null;
+    };
+    const messages = [{ role: 'user', content: 'root' }];
+
+    (session as any).startCheckpointCandidateIfEligible(0, messages);
+    const candidate = (session as any).checkpointCandidate;
+    const boundary = (session as any).handleCheckpointCandidateBoundary(
+      messages,
+      0,
+      'mid_turn',
+      0,
+      6,
+    );
+    await waitFor(() => candidate.stopReachedAt !== undefined);
+    releaseCandidate();
+    const result = await boundary;
+
+    assert.deepEqual(result.map((message: any) => message.content), ['transient-safe summary']);
+    assert.equal(serialFallbackCalls, 0);
+    assert.equal(candidate.status, 'committed');
+  } finally {
+    if (previous === undefined) delete process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED;
+    else process.env.XIAOBA_CHECKPOINT_CANDIDATES_ENABLED = previous;
+  }
+});
+
+test('episode finalization never starts or waits for a new summary', async () => {
+  const session = new AgentSession('user:candidate-finalize-only', buildMockServices({}), 'catscompany');
+  (session as any).getContextUsageInfo = () => ({
+    usedTokens: 90,
+    toolTokens: 0,
+    maxTokens: 100,
+    usagePercent: 90,
+  });
+  let serialFallbackCalls = 0;
+  (session as any).runSerialCheckpointFallback = async () => {
+    serialFallbackCalls++;
+    return null;
+  };
+  (session as any).checkpointBlockedReason = 'checkpoint_authentication';
+  const messages = [{ role: 'user', content: 'completed episode' }];
+  const boundary = (session as any).turnController.options.checkpointCandidateBoundary;
+
+  const result = await boundary(messages, [], 0, true);
+
+  assert.deepEqual(result, messages);
+  assert.equal(serialFallbackCalls, 0);
+  assert.equal((session as any).checkpointCandidate, null);
+  assert.equal((session as any).checkpointBlockedReason, 'checkpoint_authentication');
 });
 
 test('AgentSession requestInterrupt aborts an in-flight model request', async () => {

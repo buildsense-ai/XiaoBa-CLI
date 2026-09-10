@@ -5,11 +5,34 @@ import {
   CheckpointCandidate,
   createCheckpointSnapshot,
   hasCompleteToolExchanges,
+  resolveCheckpointSummaryThresholds,
 } from '../src/core/checkpoint-candidate';
 
 function user(content: string): Message {
   return { role: 'user', content };
 }
+
+test('normal 256K+ models use physical 75/85 summary thresholds', () => {
+  assert.deepEqual(
+    resolveCheckpointSummaryThresholds(256_000, 217_600),
+    { startTokens: 192_000, stopTokens: 217_600 },
+  );
+  assert.deepEqual(
+    resolveCheckpointSummaryThresholds(1_000_000, 850_000),
+    { startTokens: 750_000, stopTokens: 850_000 },
+  );
+});
+
+test('a lower safe input limit disables the async runway without exceeding it', () => {
+  assert.deepEqual(
+    resolveCheckpointSummaryThresholds(256_000, 172_544),
+    { startTokens: 172_544, stopTokens: 172_544 },
+  );
+  assert.deepEqual(
+    resolveCheckpointSummaryThresholds(204_800, 155_648),
+    { startTokens: 153_600, stopTokens: 155_648 },
+  );
+});
 
 test('snapshot is an immutable copy of the parent boundary', () => {
   const messages = [user('root'), user('before branch')];

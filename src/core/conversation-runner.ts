@@ -208,9 +208,18 @@ export interface RunnerOptions {
   /** Persists a successful continuation checkpoint before execution resumes. */
   onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
   /** Coordinates an asynchronous checkpoint only after a complete tool batch. */
-  onCheckpointCandidateBoundary?: (messages: Message[]) => Message[] | Promise<Message[]>;
-  /** Rejects a provider request when the durable transcript remains over budget. */
-  beforeModelRequest?: (messages: Message[], tools: ToolDefinition[]) => void | Promise<void>;
+  onCheckpointCandidateBoundary?: (
+    messages: Message[],
+    tools?: ToolDefinition[],
+    promptOverheadTokens?: number,
+    finalizeOnly?: boolean,
+  ) => Message[] | Promise<Message[]>;
+  /** Rejects a provider request when the complete provider prompt remains over budget. */
+  beforeModelRequest?: (
+    messages: Message[],
+    tools: ToolDefinition[],
+    promptOverheadTokens?: number,
+  ) => void | Promise<void>;
   /** Best-effort observer. Its result never participates in reply control flow. */
   cacheTraceSink?: CacheTraceSink;
   metrics?: MetricsCollector;
@@ -240,8 +249,17 @@ export class ConversationRunner {
   private suppressFinalResponse: boolean;
   private checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   private onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
-  private onCheckpointCandidateBoundary?: (messages: Message[]) => Message[] | Promise<Message[]>;
-  private beforeModelRequest?: (messages: Message[], tools: ToolDefinition[]) => void | Promise<void>;
+  private onCheckpointCandidateBoundary?: (
+    messages: Message[],
+    tools?: ToolDefinition[],
+    promptOverheadTokens?: number,
+    finalizeOnly?: boolean,
+  ) => Message[] | Promise<Message[]>;
+  private beforeModelRequest?: (
+    messages: Message[],
+    tools: ToolDefinition[],
+    promptOverheadTokens?: number,
+  ) => void | Promise<void>;
   private metrics: MetricsCollector;
 
   /** 截断字符串用于日志输出，避免日志过大 */
@@ -359,14 +377,14 @@ export class ConversationRunner {
       }
       this.injectSyntheticObservations(messages, turns);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
+      const requestTools = this.fitToolsToPromptBudget(activeTools);
       if (this.onCheckpointCandidateBoundary) {
-        const nextMessages = await this.onCheckpointCandidateBoundary(messages);
+        const nextMessages = await this.onCheckpointCandidateBoundary(messages, requestTools, 0);
         if (nextMessages !== messages) {
           messages.splice(0, messages.length, ...nextMessages);
           this.refreshRuntimeContextForPendingInput(messages);
         }
       }
-      const requestTools = this.fitToolsToPromptBudget(activeTools);
       // Includes the incoming root/pending input, which was not yet present in
       // AgentSession's pre-turn check. Compact before mechanical budget trimming.
       await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
@@ -442,9 +460,27 @@ export class ConversationRunner {
         currentDirectory,
       });
       nextTurnTransientHints = [];
-      const promptOverheadTokens = estimateMessagesTokens(
+      let promptOverheadTokens = estimateMessagesTokens(
         splitDurableAndTransient(requestMessages).transient,
       );
+      if (this.onCheckpointCandidateBoundary) {
+        const nextMessages = await this.onCheckpointCandidateBoundary(
+          messages,
+          requestTools,
+          promptOverheadTokens,
+        );
+        if (nextMessages !== messages) {
+          messages.splice(0, messages.length, ...nextMessages);
+          this.refreshRuntimeContextForPendingInput(messages);
+          requestMessages = this.buildProviderInputMessages(messages, providerTransientHints, {
+            includeCurrentDirectoryHint: transientPolicy.injectEnvironment,
+            currentDirectory,
+          });
+          promptOverheadTokens = estimateMessagesTokens(
+            splitDurableAndTransient(requestMessages).transient,
+          );
+        }
+      }
       const needsPromptOverheadCompaction = this.checkpointCompactionCoordinator
         ?.needsCompaction;
       if (
@@ -471,7 +507,7 @@ export class ConversationRunner {
           });
         }
       }
-      await this.beforeModelRequest?.(messages, requestTools);
+      await this.beforeModelRequest?.(messages, requestTools, promptOverheadTokens);
       if (this.beforeModelRequest
         && estimateMessagesTokens(requestMessages) + estimateToolsTokens(requestTools) > this.maxPromptTokens) {
         throw new Error('CONTEXT_CHECKPOINT_BLOCKED');
@@ -793,7 +829,7 @@ export class ConversationRunner {
         };
       }
 
-      await this.coordinateCheckpointCandidateAtBoundary(messages);
+      await this.coordinateCheckpointCandidateAtBoundary(messages, requestTools);
       await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
       await this.appendPendingUserInput(messages, newMessages, turns);
     }
@@ -891,9 +927,12 @@ export class ConversationRunner {
     return true;
   }
 
-  private async coordinateCheckpointCandidateAtBoundary(messages: Message[]): Promise<void> {
+  private async coordinateCheckpointCandidateAtBoundary(
+    messages: Message[],
+    tools?: ToolDefinition[],
+  ): Promise<void> {
     if (!this.onCheckpointCandidateBoundary) return;
-    const nextMessages = await this.onCheckpointCandidateBoundary(messages);
+    const nextMessages = await this.onCheckpointCandidateBoundary(messages, tools, 0);
     if (nextMessages === messages) return;
     messages.splice(0, messages.length, ...nextMessages);
     this.refreshRuntimeContextForPendingInput(messages);

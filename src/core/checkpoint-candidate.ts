@@ -12,6 +12,40 @@ export const CHECKPOINT_SUMMARY_STOP_RATIO = 0.85;
 export const CHECKPOINT_CANDIDATE_DEADLINE_MS = 15 * 60 * 1000;
 const CHECKPOINT_CANDIDATE_MAX_ATTEMPTS = 3;
 
+export interface CheckpointSummaryThresholds {
+  /** Start the background summary only after this many physical-window tokens. */
+  startTokens: number;
+  /** Do not start another parent-model request after this many tokens. */
+  stopTokens: number;
+}
+
+/**
+ * Resolve one pair of absolute thresholds so safety reserve is applied once.
+ *
+ * The normal 256K+ path starts at 75% of the physical window and stops at the
+ * 85% checkpoint input limit. For a small/high-output model whose safe input
+ * limit is below 75%, both values collapse to that safe limit; it therefore
+ * uses the existing synchronous checkpoint path instead of unsafe async work.
+ */
+export function resolveCheckpointSummaryThresholds(
+  contextWindowTokens: number,
+  checkpointInputLimitTokens: number,
+): CheckpointSummaryThresholds {
+  const physicalWindow = Math.max(1, Math.floor(contextWindowTokens));
+  const stopTokens = Math.min(
+    physicalWindow,
+    Math.max(1, Math.floor(checkpointInputLimitTokens)),
+  );
+  const physicalStartTokens = Math.max(
+    1,
+    Math.floor(physicalWindow * CHECKPOINT_SUMMARY_START_RATIO),
+  );
+  return {
+    startTokens: Math.min(physicalStartTokens, stopTokens),
+    stopTokens,
+  };
+}
+
 export type CheckpointCandidateFailureReason = 'authentication' | 'transient' | 'invalid' | 'deadline';
 
 export type CheckpointCandidateStatus =
