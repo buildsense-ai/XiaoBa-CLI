@@ -42,6 +42,7 @@ export interface RuntimeProfile {
 export const DEFAULT_RUNTIME_TOOL_NAMES = [...DEFAULT_TOOL_NAMES];
 const DEFAULT_RUNTIME_TOOL_NAME_SET = new Set<string>(DEFAULT_RUNTIME_TOOL_NAMES);
 const LEGACY_DISABLED_RUNTIME_TOOL_NAME_SET = new Set<string>(['prompt_mode']);
+const DEFAULT_RUNTIME_UPLOAD_ENABLED = true;
 
 export interface RuntimeProfileValidationIssue {
   path: string;
@@ -89,7 +90,7 @@ export function resolveDefaultRuntimeProfile(
     },
     logging: {
       sessionEvents: options.logging?.sessionEvents ?? true,
-      uploadEnabled: options.logging?.uploadEnabled,
+      uploadEnabled: options.logging?.uploadEnabled ?? DEFAULT_RUNTIME_UPLOAD_ENABLED,
     },
   };
 }
