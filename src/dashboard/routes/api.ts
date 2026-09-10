@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { SkillManager } from '../../skills/skill-manager';
 import { isBuiltinKnowledgeSkillFile } from '../../skills/builtin-knowledge-skill';
+import { PROMPT_EDITOR_SKILL_FILE } from '../../skills/builtin-prompt-editor-skill';
 import type { Skill } from '../../types/skill';
 import { ConfigManager } from '../../utils/config';
 import { ServiceManager } from '../service-manager';
@@ -4572,52 +4573,14 @@ function sanitizeServerUrl(serverUrl?: string): string | undefined {
   }
 }
 
-function installPromptEditorSeedSkill(options: { overwrite?: boolean } = {}): any {
-  const sourceDir = resolvePromptEditorSeedSkillDir();
-  const sourceSkillFile = path.join(sourceDir, 'SKILL.md');
-  if (!fs.existsSync(sourceSkillFile)) {
-    throw new Error('Prompt editor seed skill is missing from this build.');
-  }
-
-  const skillsRoot = PathResolver.getSkillsPath();
-  PathResolver.ensureDir(skillsRoot);
-  const targetDir = resolveChildDirectory(skillsRoot, PROMPT_EDITOR_SKILL_NAME);
-  const targetSkillFile = path.join(targetDir, 'SKILL.md');
-  const disabledSkillFile = targetSkillFile + '.disabled';
-  const targetDirExists = fs.existsSync(targetDir);
-  const existing = targetDirExists || fs.existsSync(targetSkillFile) || fs.existsSync(disabledSkillFile);
-
-  if (existing && !options.overwrite) {
-    return {
-      ok: true,
-      installed: false,
-      existing: true,
-      name: PROMPT_EDITOR_SKILL_NAME,
-      path: fs.existsSync(targetSkillFile)
-        ? targetSkillFile
-        : (fs.existsSync(disabledSkillFile) ? disabledSkillFile : targetDir),
-      disabled: !fs.existsSync(targetSkillFile),
-    };
-  }
-
-  if (targetDirExists) {
-    fs.rmSync(targetDir, { recursive: true, force: true });
-  }
-  fs.mkdirSync(path.dirname(targetSkillFile), { recursive: true });
-  fs.cpSync(sourceDir, targetDir, {
-    recursive: true,
-    filter: source => {
-      const name = path.basename(source).toLowerCase();
-      return name !== '.git' && name !== 'node_modules' && name !== '__pycache__';
-    },
-  });
-
+function installPromptEditorSeedSkill(_options: { overwrite?: boolean } = {}): any {
+  // Compatibility endpoint: the editor is now bundled and always discoverable.
+  // Do not copy package-relative helpers into user data or erase user overrides.
+  const target = path.join(PathResolver.getSkillsPath(), PROMPT_EDITOR_SKILL_NAME, 'SKILL.md');
   return {
-    ok: true,
-    installed: true,
-    existing: false,
+    ok: true, installed: false, existing: true, available: true,
     name: PROMPT_EDITOR_SKILL_NAME,
-    path: targetSkillFile,
+    path: fs.existsSync(target) ? target : PROMPT_EDITOR_SKILL_FILE,
   };
 }
 
@@ -4627,32 +4590,6 @@ function requireJsonWrite(req: any, res: any): boolean {
   return false;
 }
 
-function resolvePromptEditorSeedSkillDir(): string {
-  const candidates = [
-    process.env.XIAOBA_APP_ROOT,
-    process.cwd(),
-    path.resolve(__dirname, '../../..'),
-  ].filter((value): value is string => Boolean(value));
-
-  for (const candidate of candidates) {
-    const skillDir = path.join(path.resolve(candidate), 'skills', PROMPT_EDITOR_SKILL_NAME);
-    if (fs.existsSync(path.join(skillDir, 'SKILL.md'))) {
-      return skillDir;
-    }
-  }
-
-  return path.join(path.resolve(candidates[0] || process.cwd()), 'skills', PROMPT_EDITOR_SKILL_NAME);
-}
-
-function resolveChildDirectory(rootDir: string, childName: string): string {
-  const root = path.resolve(rootDir);
-  const target = path.resolve(root, childName);
-  const relative = path.relative(root, target);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`Unsafe target path: ${childName}`);
-  }
-  return target;
-}
 
 // ==================== Helpers ====================
 
@@ -4722,7 +4659,7 @@ async function getSkillHubInstallInfo(skill: Skill): Promise<any> {
 }
 
 function getSkillManagementInfo(skillFilePath: string): SkillManagementInfo {
-  if (isBuiltinKnowledgeSkillFile(skillFilePath)) {
+  if (isBuiltinKnowledgeSkillFile(skillFilePath) || path.resolve(skillFilePath) === PROMPT_EDITOR_SKILL_FILE) {
     return { source: 'system', protected: true, canDisable: false, canDelete: false, canShare: false };
   }
   const dir = path.dirname(skillFilePath);

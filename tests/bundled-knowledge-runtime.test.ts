@@ -29,6 +29,7 @@ test('compiled knowledge runtime works from isolated CLI, desktop and Worker res
         fs.mkdirSync(data);
         fs.cpSync(path.join(repo, 'dist'), path.join(app, 'dist'), { recursive: true });
         fs.cpSync(path.join(repo, 'skills/xiaoba-knowledge'), path.join(app, 'skills/xiaoba-knowledge'), { recursive: true });
+        fs.cpSync(path.join(repo, 'skills/catsco-prompt-editor'), path.join(app, 'skills/catsco-prompt-editor'), { recursive: true });
         const env = { ...process.env, NODE_PATH: path.join(repo, 'node_modules'), XIAOBA_USER_DATA_DIR: data,
           XIAOBA_SKILLS_DIR: path.join(data, 'skills'), XIAOBA_NODE_EXECUTABLE: process.execPath };
         const program = `

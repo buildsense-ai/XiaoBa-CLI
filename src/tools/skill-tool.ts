@@ -3,6 +3,7 @@ import { SkillManager } from '../skills/skill-manager';
 import { SkillInvocationContext } from '../types/skill';
 import { SkillExecutor } from '../skills/skill-executor';
 import { renderKnowledgePaths } from '../skills/builtin-knowledge-skill';
+import { renderPromptEditorPaths } from '../skills/builtin-prompt-editor-skill';
 import { Logger } from '../utils/logger';
 import { getPetService } from '../pet/pet-service';
 import { PetEventType } from '../pet/pet-types';
@@ -99,7 +100,7 @@ export class SkillTool implements Tool {
       this.recordPetEvent('skill_started', skillName, context);
 
       // 直接返回渲染后的 SKILL.md 内容，由 tool_result 并入上下文
-      const result = SkillExecutor.execute(renderKnowledgePaths(skill, context), invocationContext);
+      const result = SkillExecutor.execute(renderPromptEditorPaths(renderKnowledgePaths(skill, context)), invocationContext);
 
       this.recordPetEvent('skill_succeeded', skillName, context);
       return { ok: true, content: result };

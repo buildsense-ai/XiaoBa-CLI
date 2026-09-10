@@ -135,5 +135,7 @@ function writeInvalidSkill(skillsPath: string, name: string): void {
 
 function skillNames(manager: SkillManager): string[] {
   assert.ok(manager.getSkill('xiaoba-knowledge'));
-  return manager.getAllSkills().map(skill => skill.metadata.name).filter(name => name !== 'xiaoba-knowledge').sort();
+  assert.ok(manager.getSkill('catsco-prompt-editor'));
+  return manager.getAllSkills().map(skill => skill.metadata.name)
+    .filter(name => !['xiaoba-knowledge', 'catsco-prompt-editor'].includes(name)).sort();
 }

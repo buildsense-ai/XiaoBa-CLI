@@ -64,6 +64,9 @@ describe('dashboard skills API', () => {
     const byName = new Map(skills.map(skill => [skill.name, skill]));
 
     assert.equal(response.status, 200);
+    assert.deepEqual(pickManagement(byName.get('catsco-prompt-editor')), {
+      source: 'system', protected: true, canDisable: false, canDelete: false, canShare: false,
+    });
     assert.deepEqual(pickManagement(byName.get('xiaoba-knowledge')), {
       source: 'system',
       protected: true,
@@ -126,8 +129,9 @@ describe('dashboard skills API', () => {
 
     assert.equal(install.status, 200);
     assert.equal(data.ok, true);
-    assert.equal(data.installed, true);
-    assert.equal(fs.existsSync(targetFile), true);
+    assert.equal(data.installed, false);
+    assert.equal(data.available, true);
+    assert.equal(fs.existsSync(targetFile), false);
 
     const secondInstall = await fetch(`${baseUrl}/api/prompts/editor-skill/install`, {
       method: 'POST',
@@ -164,9 +168,9 @@ describe('dashboard skills API', () => {
     });
     const overwriteData = await overwrite.json() as any;
     assert.equal(overwrite.status, 200);
-    assert.equal(overwriteData.installed, true);
-    assert.equal(fs.existsSync(path.join(targetDir, 'SKILL.md')), true);
-    assert.equal(fs.existsSync(path.join(targetDir, 'notes.txt')), false);
+    assert.equal(overwriteData.installed, false);
+    assert.equal(fs.existsSync(path.join(targetDir, 'SKILL.md')), false);
+    assert.equal(fs.readFileSync(path.join(targetDir, 'notes.txt'), 'utf8'), 'keep me');
   });
 
   test('prompt write endpoints require JSON requests', async () => {

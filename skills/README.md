@@ -15,10 +15,17 @@ Electron 开发版或打包版默认使用的用户 Skill 工作区。
 不要在运行 Electron 版时通过编辑仓库根目录 `skills/` 来判断当前 Agent 的
 Skill 状态。WebApp 的“本地工作区”会显示真正生效的绝对路径。
 
-当前资源包括 `catsco-prompt-editor/`（按需复制安装到 bot 工作区）和
-`xiaoba-knowledge/`（实例内置回退，工作区无同名 Skill 时可用）。知识库 Skill
-不在云端 BotDefinition 清单中，不能通过删除 bot 的云端 Skill 关闭；知识正文
+当前资源包括 `catsco-prompt-editor/` 和 `xiaoba-knowledge/`，两者都由运行时
+从安装包加载，工作区无同名 Skill 时自动可用，不需要复制安装。已有同名用户
+Skill 保留优先级，不自动覆盖。两者不在云端 BotDefinition 的 Skill 清单中，
+不能通过删除 bot 的云端 Skill 关闭；知识正文
 单独保存在 `<userData>/knowledge/`。详见 `docs/shared-local-knowledge.md`。
+
+提示词编辑 Skill 的 helper 支持 `show/set/reset`，无 Dashboard 也可执行。
+绑定员工使用所有者认证和版本前置条件保存云端提示词，再读回并应用本机；
+离线或冲突不降级成未同步的本地写入。恢复默认选择 `default` 并保留自定义草稿。
+实际生效在下一用户轮，不能把落盘或技能加载成功当作模型行为验收。
+旧 Dashboard 安装入口仅确认可用性，不再复制技能或覆盖用户目录。
 
 ## 按 Bot 隔离
 
@@ -106,7 +113,7 @@ invocable: user
 
 ## 注意事项
 
-- ✅ 当前 Bot 安装的 Skills 从当前运行时 `skills/` 工作区加载；知识库另有安装包内置回退
+- ✅ 当前 Bot 安装的 Skills 从当前运行时 `skills/` 工作区加载；知识库和提示词编辑器另有安装包内置回退
 - ✅ 每个 Skill 一个独立文件夹
 - ✅ 必须包含 `SKILL.md` 文件
 - ✅ 支持从 GitHub 直接安装

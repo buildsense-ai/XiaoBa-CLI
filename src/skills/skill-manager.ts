@@ -4,6 +4,7 @@ import { PathResolver } from '../utils/path-resolver';
 import { SkillParser } from './skill-parser';
 import { Logger } from '../utils/logger';
 import { loadBuiltinKnowledgeSkill } from './builtin-knowledge-skill';
+import { loadBuiltinPromptEditorSkill } from './builtin-prompt-editor-skill';
 
 /**
  * Skills 管理器
@@ -18,7 +19,7 @@ export class SkillManager {
   }
 
   /**
-   * 加载用户 Skill 工作区和随应用分发的知识库指导。
+   * 加载用户 Skill 工作区和随应用分发的内置指导。
    */
   async loadSkills(): Promise<void> {
     const skillsPath = this.fixedSkillsPath ?? PathResolver.getSkillsPath();
@@ -28,8 +29,9 @@ export class SkillManager {
     const nextSkills = loadedSkills ?? new Map(this.skills);
     // Bundled guidance stays outside the mutable/synced bot Skill workspace.
     // A local Skill with the same name remains an explicit user override.
-    const builtin = loadBuiltinKnowledgeSkill();
-    if (!nextSkills.has(builtin.metadata.name)) nextSkills.set(builtin.metadata.name, builtin);
+    for (const builtin of [loadBuiltinKnowledgeSkill(), loadBuiltinPromptEditorSkill()]) {
+      if (!nextSkills.has(builtin.metadata.name)) nextSkills.set(builtin.metadata.name, builtin);
+    }
     // Readers keep seeing the previous complete snapshot while files are
     // enumerated and parsed. Publish the new snapshot in one assignment.
     this.skills = nextSkills;

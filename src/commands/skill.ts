@@ -3,6 +3,7 @@ import { Logger } from '../utils/logger';
 import { styles } from '../theme/colors';
 import { SkillManager } from '../skills/skill-manager';
 import { isBuiltinKnowledgeSkillFile } from '../skills/builtin-knowledge-skill';
+import { PROMPT_EDITOR_SKILL_FILE } from '../skills/builtin-prompt-editor-skill';
 import { PathResolver } from '../utils/path-resolver';
 import { execSync } from 'child_process';
 import chalk from 'chalk';
@@ -294,8 +295,8 @@ async function removeLocalSkill(name: string, force?: boolean): Promise<void> {
     process.exit(1);
   }
 
-  if (isBuiltinKnowledgeSkillFile(skill.filePath)) {
-    Logger.error('知识库 Skill 随应用分发，不能移除安装包中的文件；可在用户 Skill 目录安装同名 Skill 自定义流程。');
+  if (isBuiltinKnowledgeSkillFile(skill.filePath) || path.resolve(skill.filePath) === PROMPT_EDITOR_SKILL_FILE) {
+    Logger.error('内置 Skill 随应用分发，不能移除安装包中的文件；可在用户 Skill 目录安装同名 Skill 自定义流程。');
     process.exitCode = 1;
     return;
   }
