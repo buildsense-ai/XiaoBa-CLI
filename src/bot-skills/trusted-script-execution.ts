@@ -24,6 +24,43 @@ export type TrustedBotSkillScriptDecision =
   | { ok: true; invocation: TrustedBotSkillScriptInvocation }
   | { ok: false; reason: string };
 
+const CONNECTOR_ENV_NAMES = [
+  'CATSCO_SHIMO_CONNECTOR_URL',
+  'CATSCO_ACTOR_TOKEN',
+  'CATSCO_SKILL_ID',
+] as const;
+
+/**
+ * Removes connector capabilities from the shared Runtime environment and
+ * injects one only when the verified SkillHub package id matches the grant.
+ */
+export function withTrustedBotSkillConnectorEnvironment(
+  invocation: TrustedBotSkillScriptInvocation | undefined,
+  context: ToolExecutionContext,
+  environment: NodeJS.ProcessEnv,
+  now = Date.now(),
+): NodeJS.ProcessEnv {
+  const isolated = { ...environment };
+  for (const name of CONNECTOR_ENV_NAMES) delete isolated[name];
+  if (!invocation) return isolated;
+
+  const grant = [...(context.skillConnectorGrants || [])]
+    .filter(candidate => (
+      candidate.provider === 'shimo'
+      && candidate.skillId === invocation.skillId
+      && candidate.expiresAt > now
+      && safeConnectorURL(candidate.connectorUrl)
+      && Boolean(candidate.actorToken)
+    ))
+    .sort((left, right) => right.expiresAt - left.expiresAt)[0];
+  if (!grant) return isolated;
+
+  isolated.CATSCO_SHIMO_CONNECTOR_URL = grant.connectorUrl;
+  isolated.CATSCO_ACTOR_TOKEN = grant.actorToken;
+  isolated.CATSCO_SKILL_ID = grant.skillId;
+  return isolated;
+}
+
 /**
  * Resolve the deliberately narrow compatibility path for script-backed formal
  * Bot Skills. The model still calls execute_shell, but accepted commands never
@@ -261,6 +298,18 @@ function sameIdentity(left: unknown, right: unknown): boolean {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function safeConnectorURL(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
+    const hostname = parsed.hostname.toLowerCase();
+    return parsed.protocol === 'https:'
+      || (parsed.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1'].includes(hostname));
+  } catch {
+    return false;
+  }
 }
 
 function denied(reason: string): TrustedBotSkillScriptDecision {

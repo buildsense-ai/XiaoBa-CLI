@@ -148,6 +148,7 @@ export interface PendingUserInput {
   content: string | ContentBlock[];
   /** Replaces the current turn's short-lived Artifact context ref when present, including explicit undefined. */
   artifactContextRef?: string;
+  skillConnectorGrants?: import('../types/session-identity').SkillConnectorGrant[];
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
@@ -815,6 +816,12 @@ export class ConversationRunner {
         ],
       };
       shouldRefreshRuntimeContext = true;
+    }
+    if (isPendingUserInput(pending) && pending.skillConnectorGrants?.length) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        skillConnectorGrants: pending.skillConnectorGrants,
+      };
     }
     if (isPendingUserInput(pending) && pending.deviceSelection) {
       this.toolExecutionContext = {
