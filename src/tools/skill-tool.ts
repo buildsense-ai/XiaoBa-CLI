@@ -99,7 +99,7 @@ export class SkillTool implements Tool {
       this.recordPetEvent('skill_started', skillName, context);
 
       // 直接返回渲染后的 SKILL.md 内容，由 tool_result 并入上下文
-      const result = SkillExecutor.execute(renderKnowledgePaths(skill), invocationContext);
+      const result = SkillExecutor.execute(renderKnowledgePaths(skill, context), invocationContext);
 
       this.recordPetEvent('skill_succeeded', skillName, context);
       return { ok: true, content: result };

@@ -372,7 +372,10 @@ describe('instance shared knowledge', () => {
       const content = String((result as any).content);
       assert.ok(content.includes(path.join(temp, 'knowledge')));
       assert.ok(content.includes(process.execPath));
-      assert.doesNotMatch(content, /<KNOWLEDGE_ROOT>|<KNOWLEDGE_NODE>|<SKILL_DIR>/);
+      assert.ok(content.includes(path.join(temp, 'data')));
+      assert.ok(content.includes(path.join(temp, 'logs', 'sessions')));
+      assert.match(content, /当前会话 ID[^\n]*：null/);
+      assert.doesNotMatch(content, /<KNOWLEDGE_[A-Z_]+>|<SKILL_DIR>/);
       assert.equal(lease.snapshot.fileCount, 0);
     } finally { await lease.release(); }
   });
@@ -395,6 +398,12 @@ describe('instance shared knowledge', () => {
     });
     const loaded = await call(botA, 'skill', { skill: 'xiaoba-knowledge' });
     assert.equal(loaded.ok, true);
+    assert.ok(String(loaded.content).includes(JSON.stringify('knowledge-bot-A')));
+    const loadedB = await call(botB, 'skill', { skill: 'xiaoba-knowledge', sessionId: 'forged-session' });
+    assert.equal(loadedB.ok, true);
+    assert.ok(String(loadedB.content).includes(JSON.stringify('knowledge-bot-B')));
+    assert.ok(!String(loadedB.content).includes('knowledge-bot-A'));
+    assert.ok(!String(loadedB.content).includes('forged-session'));
     const sharedRoot = path.join(temp, 'knowledge');
     assert.ok(String(loaded.content).includes(sharedRoot));
     const input = path.join(temp, '工具链 请求.json');
