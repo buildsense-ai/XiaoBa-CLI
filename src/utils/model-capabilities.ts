@@ -4,7 +4,7 @@ import { probeVisionCapability, type VisionCapabilityState, type VisionProbeOpti
 import { isCatsRelayApiBase } from './catsco-domains';
 
 const KNOWN_TEXT_ONLY_MODEL_PATTERNS = [
-  /^deepseek-(?:chat|reasoner|v4-flash)$/i,
+  /^deepseek-(?:chat|reasoner)$/i,
   /gpt-3\.5/i,
   /text-/i,
   /embedding/i,
@@ -13,6 +13,7 @@ const KNOWN_TEXT_ONLY_MODEL_PATTERNS = [
 ];
 
 const KNOWN_VISION_MODEL_PATTERNS = [
+  /^deepseek-(?:flash|v4-flash(?:-vision-exp)?)$/i,
   /claude/i,
   /gpt-4o/i,
   /gpt-4\.1/i,
@@ -49,7 +50,7 @@ export function isPrimaryModelVisionCapable(config: Pick<ChatConfig, 'apiUrl' | 
 
   // Anthropic-compatible endpoints from text-only providers often reject image blocks.
   if (apiUrl.includes('deepseek.com') || apiUrl.includes('minimaxi.com')) {
-    return includesAny(modelKey, [/minimax-m3/i, /vision/i, /vl/i, /image/i, /multimodal/i, /omni/i]);
+    return includesAny(modelKey, [/^deepseek-(?:flash|v4-flash(?:-vision-exp)?)$/i, /minimax-m3/i, /vision/i, /vl/i, /image/i, /multimodal/i, /omni/i]);
   }
 
   if (includesAny(modelKey, KNOWN_TEXT_ONLY_MODEL_PATTERNS)) {
@@ -90,7 +91,7 @@ export async function resolvePrimaryModelVisionCapability(
   }
 
   if (apiUrl.includes('deepseek.com') || apiUrl.includes('minimaxi.com')) {
-    if (includesAny(modelKey, [/minimax-m3/i, /vision/i, /vl/i, /image/i, /multimodal/i, /omni/i])) {
+    if (includesAny(modelKey, [/^deepseek-(?:flash|v4-flash(?:-vision-exp)?)$/i, /minimax-m3/i, /vision/i, /vl/i, /image/i, /multimodal/i, /omni/i])) {
       return 'supported';
     }
     if (includesAny(modelKey, KNOWN_TEXT_ONLY_MODEL_PATTERNS)) return 'unsupported';

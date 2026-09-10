@@ -678,6 +678,14 @@ export class OpenAIProvider implements AIProvider {
         }
         continue;
       }
+      if (message.role === 'assistant' && this.usesDeepSeekResponsesPolicy()
+        && this.canReplayProviderContent(message, 'openai-responses')) {
+        // A tool-enabled conversation also needs reasoning from ordinary answers.
+        input.push(...(message.providerContent || [])
+          .filter(item => item.type === 'reasoning')
+          .map(item => this.responsesReplayItem(item))
+          .filter(Boolean));
+      }
       input.push({
         role: transientProjection ? 'developer' : message.role,
         content: this.responsesMessageContent(message.content),
@@ -1243,7 +1251,7 @@ export class OpenAIProvider implements AIProvider {
     const stopReason = response?.status === 'incomplete'
       ? incompleteReason === 'max_output_tokens' ? 'length' : incompleteReason || 'incomplete'
       : toolCalls.length > 0 ? 'tool_calls' : response?.status || undefined;
-    const providerContent = toolCalls.length > 0
+    const providerContent = toolCalls.length > 0 || this.usesDeepSeekResponsesPolicy()
       ? output
         .filter((item: any) => this.isResponsesReplayItem(item))
         .map((item: any) => this.responsesReplayItem(item))

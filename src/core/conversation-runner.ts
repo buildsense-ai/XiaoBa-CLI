@@ -585,6 +585,9 @@ export class ConversationRunner {
           const finalAssistantMessage: Message = {
             role: 'assistant',
             content: visibleContent,
+            // Private provider replay stays separate from user-visible content.
+            providerContent: response.providerContent,
+            providerState: response.providerState,
             ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
           };
           messages.push(finalAssistantMessage);

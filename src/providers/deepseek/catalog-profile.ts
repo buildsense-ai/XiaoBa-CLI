@@ -20,3 +20,11 @@ export const DEEPSEEK_RELAY_MODEL_PROFILE: RelayModelProfile = {
     streaming: true,
   },
 };
+
+export const DEEPSEEK_FLASH_RELAY_MODEL_PROFILE: RelayModelProfile = {
+  ...DEEPSEEK_RELAY_MODEL_PROFILE,
+  id: 'deepseek-flash',
+  model: 'deepseek-flash',
+  label: 'DeepSeek Flash',
+  modelsDevModel: 'deepseek-flash',
+};

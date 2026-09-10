@@ -1,4 +1,4 @@
-import { DEEPSEEK_RELAY_MODEL_PROFILE } from '../providers/deepseek/catalog-profile';
+import { DEEPSEEK_RELAY_MODEL_PROFILE, DEEPSEEK_FLASH_RELAY_MODEL_PROFILE } from '../providers/deepseek/catalog-profile';
 
 export type RelayModelFamily = 'catalog' | 'minimax' | 'deepseek' | 'glm' | 'gpt';
 export type RelayModelProvider = 'anthropic' | 'openai';
@@ -136,6 +136,7 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     },
   },
   DEEPSEEK_RELAY_MODEL_PROFILE,
+  DEEPSEEK_FLASH_RELAY_MODEL_PROFILE,
   {
     id: 'glm-5.3-flash',
     label: 'GLM 5.3 Flash',

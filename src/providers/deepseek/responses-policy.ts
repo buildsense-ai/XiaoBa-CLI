@@ -13,12 +13,17 @@ export const DEEPSEEK_RESPONSES_PROFILE = Object.freeze({
   reasoningEfforts: ['none', 'low', 'high', 'max'] as const,
 });
 
+// Protocol recognition only: these remain distinct model/catalog identities.
+export const DEEPSEEK_FLASH_MODEL_IDS = new Set([
+  'deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp',
+]);
+
 export function isDeepSeekResponses(
   apiMode: ChatConfig['openaiApiMode'],
   model: unknown,
 ): boolean {
   return apiMode === DEEPSEEK_RESPONSES_PROFILE.apiMode
-    && String(model || '').trim().toLowerCase() === DEEPSEEK_RESPONSES_PROFILE.publicModelId;
+    && DEEPSEEK_FLASH_MODEL_IDS.has(String(model || '').trim().toLowerCase());
 }
 
 export function normalizeDeepSeekReasoningEffort(
@@ -48,7 +53,10 @@ export function applyDeepSeekResponsesRequestPolicy(
   if (normalizedEffort) body.reasoning = { effort: normalizedEffort };
   else delete body.reasoning;
 
-  if (Array.isArray(body.tools)) {
+  // Native thinking mode still rejects required/named tool_choice in live API.
+  const nativeNonThinking = String(body.model || '').toLowerCase() === 'deepseek-flash'
+    && normalizedEffort === 'none';
+  if (!nativeNonThinking && Array.isArray(body.tools)) {
     const toolChoice = body.tool_choice;
     if (toolChoice !== undefined && !['auto', 'none'].includes(toolChoice)) {
       body.tool_choice = 'auto';

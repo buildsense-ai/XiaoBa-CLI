@@ -12,14 +12,14 @@ describe('model capabilities', () => {
     assert.strictEqual(isPrimaryModelVisionCapable({ provider: 'openai', model: 'gpt-4o' }), true);
   });
 
-  test('treats DeepSeek and MiniMax text models as non-vision even through compatible endpoints', () => {
+  test('recognizes native DeepSeek vision and keeps MiniMax M2 text-only', () => {
     assert.strictEqual(
       isPrimaryModelVisionCapable({
         provider: 'anthropic',
         apiUrl: 'https://api.deepseek.com/anthropic',
         model: 'deepseek-v4-flash',
       }),
-      false,
+      true,
     );
     assert.strictEqual(
       isPrimaryModelVisionCapable({
@@ -62,6 +62,7 @@ describe('model capabilities', () => {
         { model: 'MiniMax-M2.7', provider: 'anthropic', vision: false, context: 204_800 },
         { model: 'MiniMax-M3', provider: 'anthropic', vision: true, context: 1_000_000 },
         { model: 'deepseek-v4-flash', provider: 'openai', vision: true, context: 1_000_000 },
+        { model: 'deepseek-flash', provider: 'openai', vision: true, context: 1_000_000 },
         { model: 'glm-5.3-flash', provider: 'anthropic', vision: true, context: 1_000_000 },
         { model: 'gpt-5.6-terra', provider: 'openai', vision: true, context: 256_000 },
         { model: 'gpt-5.6-sol', provider: 'openai', vision: true, context: 256_000 },
