@@ -108,7 +108,9 @@ export type DeviceGrantOperation =
   | 'skillhub.localSkill.share'
   | 'skillhub.localSkill.finalize'
   | 'skillhub.localSkill.delete'
-  | 'skillhub.localBot.switch';
+  | 'skillhub.localBot.switch'
+  | 'knowledge.document.list'
+  | 'knowledge.document.read';
 
 export interface ScopedLocalDeviceGrant {
   kind: 'catscompany_body';

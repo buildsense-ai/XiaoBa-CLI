@@ -22,6 +22,10 @@ import {
   validateSkillHubShareMetadata,
 } from '../skillhub/local-share';
 import { PathResolver } from '../utils/path-resolver';
+// The Skill ships this dependency-free CommonJS helper unchanged; keep the
+// runtime import aligned with the packaged Skill rather than duplicating it.
+// @ts-expect-error CommonJS Skill asset intentionally has no generated types.
+import { KnowledgeStore } from '../../skills/xiaoba-knowledge/scripts/knowledge.cjs';
 import { Logger } from '../utils/logger';
 import {
   CatsCoBotSwitchGuardError,
@@ -35,6 +39,8 @@ export const SKILLHUB_THIN_RPC_TOOLS = {
   finalize: 'skillhub.localSkill.finalize',
   delete: 'skillhub.localSkill.delete',
   switchBot: 'skillhub.localBot.switch',
+  knowledgeList: 'knowledge.document.list',
+  knowledgeRead: 'knowledge.document.read',
 } as const;
 
 // Capability marker, not an invokable tool. Web clients require this marker
@@ -230,9 +236,33 @@ export class SkillHubThinRpcHandler {
         return this.finalizeSkill(botUid, payload, request);
       case SKILLHUB_THIN_RPC_TOOLS.delete:
         return this.deleteSkill(botUid, payload, request);
+      case SKILLHUB_THIN_RPC_TOOLS.knowledgeList:
+        return this.readKnowledgeIndex(botUid, payload);
+      case SKILLHUB_THIN_RPC_TOOLS.knowledgeRead:
+        return this.readKnowledgeDocument(botUid, payload);
       default:
         throw new SkillHubThinRpcError('TOOL_NOT_FOUND', 'Unsupported SkillHub device operation.');
     }
+  }
+
+  private knowledgeStore(): KnowledgeStore {
+    return new KnowledgeStore(path.join(this.runtimeRoot, 'knowledge'));
+  }
+
+  private readKnowledgeIndex(botUid: string, payload: Record<string, unknown>): Record<string, unknown> {
+    const offsetValue = typeof payload.offset === 'number' ? payload.offset : Number.NaN;
+    const offset = Number.isSafeInteger(offsetValue) ? offsetValue : 0;
+    const query = typeof payload.query === 'string' ? payload.query : '';
+    const result = this.knowledgeStore().index(query, Math.max(0, offset));
+    return { schema: 'xiaoba.knowledge.document.list.v1', bot_uid: botUid, ...result };
+  }
+
+  private readKnowledgeDocument(botUid: string, payload: Record<string, unknown>): Record<string, unknown> {
+    const id = requiredText(payload.id, 'id', 300);
+    const offsetValue = typeof payload.offset === 'number' ? payload.offset : Number.NaN;
+    const offset = Number.isSafeInteger(offsetValue) ? offsetValue : 0;
+    const result = this.knowledgeStore().read(id, Math.max(0, offset));
+    return { schema: 'xiaoba.knowledge.document.read.v1', bot_uid: botUid, ...result };
   }
 
   private async preflightBotSwitch(botUid: string): Promise<string> {
