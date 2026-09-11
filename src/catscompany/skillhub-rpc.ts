@@ -22,10 +22,8 @@ import {
   validateSkillHubShareMetadata,
 } from '../skillhub/local-share';
 import { PathResolver } from '../utils/path-resolver';
-// The Skill ships this dependency-free CommonJS helper unchanged; keep the
-// runtime import aligned with the packaged Skill rather than duplicating it.
-// @ts-expect-error CommonJS Skill asset intentionally has no generated types.
-import { KnowledgeStore } from '../../skills/xiaoba-knowledge/scripts/knowledge.cjs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { Logger } from '../utils/logger';
 import {
   CatsCoBotSwitchGuardError,
@@ -156,6 +154,7 @@ export class SkillHubThinRpcHandler {
 
   async execute(request: CatsThinToolRpcMessage): Promise<Record<string, unknown>> {
     this.assertOperational(request);
+    if (String(request.tool_name || '').startsWith('knowledge.')) return this.executeOnce(request);
     const requestID = String(request.request_id || '').trim();
     if (!requestID) throw new SkillHubThinRpcError('INVALID_REQUEST', 'request_id is required.');
     const fingerprint = requestFingerprint(request);
@@ -237,32 +236,35 @@ export class SkillHubThinRpcHandler {
       case SKILLHUB_THIN_RPC_TOOLS.delete:
         return this.deleteSkill(botUid, payload, request);
       case SKILLHUB_THIN_RPC_TOOLS.knowledgeList:
-        return this.readKnowledgeIndex(botUid, payload);
+        return this.readKnowledge(request, botUid, payload);
       case SKILLHUB_THIN_RPC_TOOLS.knowledgeRead:
-        return this.readKnowledgeDocument(botUid, payload);
+        return this.readKnowledge(request, botUid, payload);
       default:
         throw new SkillHubThinRpcError('TOOL_NOT_FOUND', 'Unsupported SkillHub device operation.');
     }
   }
 
-  private knowledgeStore(): KnowledgeStore {
-    return new KnowledgeStore(path.join(this.runtimeRoot, 'knowledge'));
-  }
+  private knowledgeRequests = 0;
 
-  private readKnowledgeIndex(botUid: string, payload: Record<string, unknown>): Record<string, unknown> {
-    const offsetValue = typeof payload.offset === 'number' ? payload.offset : Number.NaN;
-    const offset = Number.isSafeInteger(offsetValue) ? offsetValue : 0;
-    const query = typeof payload.query === 'string' ? payload.query : '';
-    const result = this.knowledgeStore().index(query, Math.max(0, offset));
-    return { schema: 'xiaoba.knowledge.document.list.v1', bot_uid: botUid, ...result };
-  }
-
-  private readKnowledgeDocument(botUid: string, payload: Record<string, unknown>): Record<string, unknown> {
-    const id = requiredText(payload.id, 'id', 300);
-    const offsetValue = typeof payload.offset === 'number' ? payload.offset : Number.NaN;
-    const offset = Number.isSafeInteger(offsetValue) ? offsetValue : 0;
-    const result = this.knowledgeStore().read(id, Math.max(0, offset));
-    return { schema: 'xiaoba.knowledge.document.read.v1', bot_uid: botUid, ...result };
+  private async readKnowledge(request: CatsThinToolRpcMessage, botUid: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.knowledgeRequests >= 2) throw new SkillHubThinRpcError('WIKI_BUSY', '知识库正在读取，请稍后重试。');
+    this.knowledgeRequests++;
+    try {
+      const { stdout } = await promisify(execFile)(
+        process.env.XIAOBA_NODE_EXECUTABLE?.trim() || process.execPath,
+        [path.resolve(__dirname, '../../skills/xiaoba-knowledge/scripts/wiki.cjs'),
+          path.join(this.runtimeRoot, 'knowledge'), String(request.tool_name), JSON.stringify(payload)],
+        { timeout: 10000, maxBuffer: 48 * 1024, windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } },
+      );
+      this.assertOperational(request);
+      this.assertRequestScope(request, botUid, true);
+      const result = JSON.parse(stdout);
+      if (result.ok !== true) throw new SkillHubThinRpcError(result.code || 'KNOWLEDGE_UNAVAILABLE', '知识库暂时无法读取，请刷新或通过 Agent 检查索引。');
+      return { ...result, bot_uid: botUid };
+    } catch (error) {
+      if (error instanceof SkillHubThinRpcError) throw error;
+      throw new SkillHubThinRpcError('KNOWLEDGE_UNAVAILABLE', '知识库读取超时或不可用，请稍后重试。');
+    } finally { this.knowledgeRequests--; }
   }
 
   private async preflightBotSwitch(botUid: string): Promise<string> {

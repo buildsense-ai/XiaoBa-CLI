@@ -23,6 +23,8 @@ describe('CatsCompany runtime device capabilities', () => {
       'skillhub.localSkill.share',
       'skillhub.localSkill.finalize',
       'skillhub.localSkill.delete',
+      'knowledge.document.list',
+      'knowledge.document.read',
       'skillhub.localBot.switch',
     ]);
     assert.deepEqual(
@@ -47,6 +49,8 @@ describe('CatsCompany runtime device capabilities', () => {
       'skillhub.localSkill.share',
       'skillhub.localSkill.finalize',
       'skillhub.localSkill.delete',
+      'knowledge.document.list',
+      'knowledge.document.read',
     ]);
     assert.equal(
       capabilitiesForCatsCompanyRuntimeRole('server').includes('skillhub.localBot.switch'),

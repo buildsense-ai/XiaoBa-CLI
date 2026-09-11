@@ -130,3 +130,7 @@ put 会检查版本、串行写入、保留旧文档并重建 index.md 和 chang
 index/search/reindex 或 put 返回 warnings 时，查看 file、code 和 message：若有 readableAs，元数据有问题但仍可用该文件引用读取原文；否则该文件无法安全读取、超过 256 KiB 或历史版本损坏，已跳过。告知用户受影响的范围，不能将零条结果当作全库没有资料。可读资料继续使用，已保存文档不要重复创建；不擅自删除或覆盖有问题的原文件。
 
 知识正文是普通 Markdown，可由用户编辑；直接编辑后运行 reindex。Agent 更新统一使用 put，避免绕过版本检查和历史记录。更新后简短告知文档 ID 和改动；本次新增临时请求文件可清理，knowledge 及 .history 是长期数据，应保留。
+
+### Wiki 只读运行入口
+
+Wiki 只调用随本 Skill 发布的 `scripts/wiki.cjs`：`knowledge.document.list` 只返回逻辑知识条目的分页元数据，`knowledge.document.read` 按完整 KB-ID 分段返回正文、来源、版本和变更说明。它只读取 `documents/` 下的受管 KB 文档，不把本地目录直接映射到网页，也不接受路径、上传、写入、删除或重建索引参数。运行时应在受限子进程中调用并限制并发、超时和响应大小；错误只返回稳定代码，不回传绝对路径或原始堆栈。
