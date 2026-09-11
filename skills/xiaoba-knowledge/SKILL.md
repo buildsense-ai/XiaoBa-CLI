@@ -30,6 +30,29 @@ node SCRIPT --root ROOT reindex
 
 脚本输出 JSON。read 返回 revision、元信息和正文，长文返回 nextOffset；继续读取时确认 revision 一致。index/search 分页参数为末尾可选偏移：index [offset]、search 关键词 [offset]。仅读取相关内容，不把整库塞进上下文。
 
+## Wiki 只读入口（第一阶段）
+
+Wiki 页面和聊天入口都使用本 Skill 的同一套只读语义；XiaoBa 运行时只提供本地存储、来源读取、session 上下文和实例状态，不在其他入口复制知识库业务规则。
+
+第一阶段只允许查看，不提供上传、编辑、确认、归档或删除按钮。资料仍由 Agent 按本 Skill 的“更新”流程处理；页面展示 Agent 实际保存的结果。
+
+对外的逻辑操作名固定为：
+
+```text
+knowledge.batch.review      # 查看一次入库批次的摘要和处理范围
+knowledge.document.list     # 按索引分页返回知识元数据
+knowledge.document.read     # 按完整 KB-ID、revision 和偏移读取正文
+knowledge.source.locate     # 读取来源登记和已核对的文件/消息位置
+```
+
+每个操作必须绑定当前 `account_id`、`agent_uid`、`instance_id` 和运行时会话；不能从用户参数接受本机绝对路径，也不能因为 URL 中换了 Agent ID 就切换知识库。操作由 AI 助手管理页的跳转会话触发时，Skill 仍按当前实例上下文读取；没有有效实例上下文时返回离线或无效会话，不返回空库。
+
+`knowledge.document.list` 只返回标题、摘要、分类、KB-ID、revision、更新时间、复查状态和来源摘要，不把全文放入列表。使用稳定游标/offset 分页；`next_offset` 为 null 才表示结束。`knowledge.document.read` 和 `knowledge.source.locate` 按需读取，长正文必须遵守 `nextOffset`，不为首屏预读全库。
+
+只读响应统一包含 `instance_id`、对象 ID、revision、分页信息和 warnings。至少区分 `INSTANCE_OFFLINE`、`WIKI_HANDOFF_INVALID`、`DOCUMENT_NOT_FOUND`、`SOURCE_UNAVAILABLE`、`INVALID_RANGE` 和 `INDEX_REBUILDING`；错误不能伪装成空知识库。当前版本不把 `review_status` 解读为用户已经确认，模型也不能在只读入口改变状态。
+
+页面只显示逻辑知识索引；本地 documents 目录和原始上传位置只作为来源视图。目录名不决定业务分类，未整理的原始文件不能伪装成正式知识。
+
 ## 查阅
 
 先按任务关键词搜索，或浏览 index，再读取相关文档。核对来源、日期和适用环境；缺失或过时就核验实际情况，不把旧知识当作已确认的当前状态。有精确来源引用时直接读取相关记录，避免反复全库搜索；回溯方法见下面的“来源与回溯”。
