@@ -6,7 +6,7 @@ import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../src/core/runtime-context-bu
 import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from '../src/core/pending-user-input-boundary';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
-import type { ExecutionScope, ScopedDeviceGrant, ScopedLocalFileGrant } from '../src/types/session-identity';
+import type { ExecutionScope, ScopedDeviceGrant, ScopedLocalFileGrant, SkillConnectorGrant } from '../src/types/session-identity';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult } from '../src/types/tool';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
@@ -93,6 +93,16 @@ function deviceGrant(deviceId: string): ScopedDeviceGrant {
     operations: ['read_file'],
     createdAt: now,
     expiresAt: now + 60_000,
+  };
+}
+
+function skillConnectorGrant(provider: string, skillId: string, actorToken: string): SkillConnectorGrant {
+  return {
+    provider,
+    skillId,
+    connectorUrl: 'https://app.catsco.cc',
+    actorToken,
+    expiresAt: Date.now() + 60_000,
   };
 }
 
@@ -459,6 +469,84 @@ describe('ConversationRunner pending input', () => {
     assert.doesNotMatch(refreshedContent, /device-pending/);
     assert.doesNotMatch(refreshedContext.content as string, /install:device-/);
     assert.doesNotMatch(refreshedContext.content as string, /body-main/);
+  });
+
+  test('unions pending Skill connector grants with the live turn and refreshes only the matching Skill', async () => {
+    const requests: Message[][] = [];
+    const aiService = {
+      chat: async (messages: Message[]) => {
+        requests.push(messages.map(msg => ({ ...msg })));
+        if (requests.length === 1) {
+          return {
+            content: null,
+            toolCalls: [{
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'noop', arguments: '{}' },
+            }],
+            usage,
+          };
+        }
+        if (requests.length === 2) {
+          return {
+            content: null,
+            toolCalls: [{
+              id: 'call_2',
+              type: 'function',
+              function: { name: 'noop', arguments: '{}' },
+            }],
+            usage,
+          };
+        }
+        return { content: 'done', toolCalls: [], usage };
+      },
+    } as any;
+    const contexts: Array<Partial<ToolExecutionContext> | undefined> = [];
+    const executor: ToolExecutor = {
+      getToolDefinitions: () => [{
+        name: 'noop',
+        description: 'noop',
+        parameters: { type: 'object', properties: {} },
+      }],
+      executeTool: async (toolCall, _history, contextOverrides) => {
+        contexts.push(contextOverrides);
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: toolCall.function.name,
+          content: 'ok',
+          ok: true,
+        };
+      },
+    };
+
+    let pendingUsed = false;
+    const liveShimo = skillConnectorGrant('shimo', 'catsco/shimo-reader', 'shimo-stale');
+    const liveTable = skillConnectorGrant('shimo', 'catsco/project-table', 'table-live');
+    const freshShimo = skillConnectorGrant('shimo', 'catsco/shimo-reader', 'shimo-fresh');
+    const runner = new ConversationRunner(aiService, executor, {
+      stream: false,
+      toolExecutionContext: {
+        skillConnectorGrants: [liveShimo, liveTable],
+      },
+      pendingUserInputProvider: () => {
+        if (pendingUsed) return null;
+        pendingUsed = true;
+        return {
+          content: 'refreshed connector grant while busy',
+          skillConnectorGrants: [freshShimo],
+        };
+      },
+    });
+
+    const result = await runner.run([{ role: 'user', content: 'run a tool' }]);
+
+    assert.equal(result.response, 'done');
+    assert.equal(contexts.length, 2);
+    assert.deepEqual(contexts[0]?.skillConnectorGrants, [liveShimo, liveTable]);
+    // The refreshed grant replaces the stale one for the same Skill; the
+    // unrelated Skill is still live for later tools in the turn.
+    assert.deepEqual(contexts[1]?.skillConnectorGrants, [freshShimo, liveTable]);
   });
 });
 

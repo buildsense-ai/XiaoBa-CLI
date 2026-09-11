@@ -7,6 +7,7 @@ import type {
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
   SessionRoute,
+  SkillConnectorGrant,
 } from '../types/session-identity';
 import {
   ChannelCallbacks,
@@ -82,6 +83,7 @@ export interface RunAgentTurnParams {
   executionScope?: ExecutionScope;
   artifactContextRef?: string;
   artifactTaskRef?: string;
+  skillConnectorGrants?: SkillConnectorGrant[];
   localDeviceGrant?: ScopedLocalDeviceGrant;
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
@@ -190,6 +192,7 @@ export class AgentTurnController {
         executionScope: params.executionScope,
         artifactContextRef: params.artifactContextRef,
         artifactTaskRef: params.artifactTaskRef,
+        skillConnectorGrants: params.skillConnectorGrants,
         localDeviceGrant: params.localDeviceGrant,
         deviceGrants: params.deviceGrants,
         deviceSelection: params.deviceSelection,
@@ -334,6 +337,7 @@ export class AgentTurnController {
     executionScope?: ExecutionScope;
     artifactContextRef?: string;
     artifactTaskRef?: string;
+    skillConnectorGrants?: SkillConnectorGrant[];
     localDeviceGrant?: ScopedLocalDeviceGrant;
     deviceGrants?: ScopedDeviceGrant[];
     deviceSelection?: ScopedDeviceSelection;
@@ -387,6 +391,7 @@ export class AgentTurnController {
           executionScope: options.executionScope,
           artifactContextRef: options.artifactContextRef,
           artifactTaskRef: options.artifactTaskRef,
+          skillConnectorGrants: options.skillConnectorGrants,
           localDeviceGrant: options.localDeviceGrant,
           deviceGrants: options.deviceGrants,
           deviceSelection: options.deviceSelection,

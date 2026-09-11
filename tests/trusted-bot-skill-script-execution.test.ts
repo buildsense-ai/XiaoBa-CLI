@@ -9,7 +9,10 @@ import {
   scanLocalBotSkill,
   writeBotSkillLocalMarker,
 } from '../src/bot-skills/local-manifest';
-import { resolveTrustedBotSkillScriptInvocation } from '../src/bot-skills/trusted-script-execution';
+import {
+  resolveTrustedBotSkillScriptInvocation,
+  withTrustedBotSkillConnectorEnvironment,
+} from '../src/bot-skills/trusted-script-execution';
 import { writeSkillHubInstallMarker } from '../src/skillhub/install-marker';
 import { TurnSkillSnapshotStore } from '../src/skills/turn-skill-snapshot';
 import { ShellTool } from '../src/tools/bash-tool';
@@ -45,7 +48,9 @@ describe('trusted Bot Skill script execution', () => {
     fs.writeFileSync(scriptPath, [
       "import fs from 'node:fs';",
       "const output = process.argv[2];",
-      "fs.writeFileSync(output, JSON.stringify(process.argv.slice(3)), 'utf8');",
+      "const input = process.argv.slice(3);",
+      "const value = input[0] === 'capture-env' ? { connector: process.env.CATSCO_SHIMO_CONNECTOR_URL, token: process.env.CATSCO_ACTOR_TOKEN, skillId: process.env.CATSCO_SKILL_ID } : input;",
+      "fs.writeFileSync(output, JSON.stringify(value), 'utf8');",
       "console.log('verified-skill-ok');",
       '',
     ].join('\n'), 'utf8');
@@ -148,6 +153,58 @@ describe('trusted Bot Skill script execution', () => {
     const result = await new ShellTool().execute({ command, target: 'Alice' }, catsContext());
     assert.equal(result.ok, false);
     assert.equal(result.ok ? '' : result.errorCode, 'TARGET_NOT_FOUND');
+  });
+
+  test('injects a live connector grant only into its exact verified SkillHub package', async () => {
+    const output = path.join(workspaceRoot, 'connector-env.json');
+    const context = catsContext({
+      skillConnectorGrants: [{
+        provider: 'shimo',
+        skillId: reference.skillId,
+        connectorUrl: 'https://app.catsco.test',
+        actorToken: 'turn-scoped-secret',
+        expiresAt: Date.now() + 60_000,
+      }],
+    });
+    const result = await new ShellTool().execute({
+      command: `node "${scriptPath}" "${output}" capture-env`,
+    }, context);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')), {
+      connector: 'https://app.catsco.test',
+      token: 'turn-scoped-secret',
+      skillId: reference.skillId,
+    });
+  });
+
+  test('strips connector secrets from ordinary commands and non-matching Skills', () => {
+    const environment = {
+      CATSCO_SHIMO_CONNECTOR_URL: 'https://stale.example',
+      CATSCO_ACTOR_TOKEN: 'stale-secret',
+      CATSCO_SKILL_ID: 'stale/skill',
+      SAFE_VALUE: 'kept',
+    };
+    const unrelated = withTrustedBotSkillConnectorEnvironment({
+      scriptPath,
+      args: [scriptPath],
+      skillId: 'another/skill',
+      skillName: 'Another skill',
+      version: '1.0.0',
+    }, catsContext({
+      skillConnectorGrants: [{
+        provider: 'shimo',
+        skillId: reference.skillId,
+        connectorUrl: 'https://app.catsco.test',
+        actorToken: 'turn-scoped-secret',
+        expiresAt: Date.now() + 60_000,
+      }],
+    }), environment);
+
+    assert.equal(unrelated.CATSCO_SHIMO_CONNECTOR_URL, undefined);
+    assert.equal(unrelated.CATSCO_ACTOR_TOKEN, undefined);
+    assert.equal(unrelated.CATSCO_SKILL_ID, undefined);
+    assert.equal(unrelated.SAFE_VALUE, 'kept');
   });
 
   test('rejects a verified package that is not enabled for the active Bot', async () => {

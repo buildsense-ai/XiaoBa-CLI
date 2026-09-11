@@ -57,6 +57,16 @@ function deviceGrant(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function skillConnectorGrant(provider: string, skillId: string, actorToken: string) {
+  return {
+    provider,
+    skillId,
+    connectorUrl: 'https://app.catsco.cc',
+    actorToken,
+    expiresAt: Date.now() + 60_000,
+  };
+}
+
 function metadataWithDeviceGrants(actorUserId: string, topicId: string, grants: unknown[], agentId = 'usr43', bodyId = 'body-main') {
   const metadata = canonicalMetadata(actorUserId, topicId, agentId, bodyId);
   (metadata.catsco_identity as any).device_grants = grants;
@@ -1669,6 +1679,49 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(pending.content, '补充读取文件');
     assert.equal(pending.deviceGrants.length, 1);
     assert.equal(pending.deviceGrants[0].deviceId, 'alice-laptop');
+  });
+
+  test('merges Skill connector grants across a queued CatsCompany batch', () => {
+    const { bot } = createHarness();
+    const scope = createExecutionScope(createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'first',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      botUid: 'usr43',
+    }));
+
+    bot.messageQueue.set(scope.sessionKey, [{
+      userMessage: '先读石墨',
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 13,
+      executionScope: scope,
+      skillConnectorGrants: [skillConnectorGrant('shimo', 'catsco/shimo-reader', 'token-1')],
+      receivedAt: Date.now(),
+      source: 'user',
+    }, {
+      userMessage: '再读第二张表',
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 14,
+      executionScope: scope,
+      skillConnectorGrants: [
+        skillConnectorGrant('shimo', 'catsco/shimo-reader', 'token-2'),
+        skillConnectorGrant('shimo', 'catsco/project-table', 'token-3'),
+      ],
+      receivedAt: Date.now() + 1,
+      source: 'user',
+    }]);
+
+    const pending = (bot as any).consumeQueuedUserInput(scope.sessionKey, scope);
+    assert.equal(typeof pending, 'object');
+    // The second message refreshes shimo-reader and adds project-table; the
+    // first message's grant must not win merely because it arrived earlier.
+    assert.deepEqual(
+      pending.skillConnectorGrants.map((grant: any) => [grant.skillId, grant.actorToken]),
+      [['catsco/shimo-reader', 'token-2'], ['catsco/project-table', 'token-3']],
+    );
   });
 
   test('uses the latest queued Artifact context ref and can explicitly clear the previous one', () => {

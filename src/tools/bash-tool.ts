@@ -11,6 +11,7 @@ import { withArtifactTaskRefEnvironment } from '../utils/artifact-task-ref';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
+import { withTrustedBotSkillConnectorEnvironment } from '../bot-skills/trusted-script-execution';
 
 const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
@@ -168,9 +169,14 @@ export class ShellTool implements Tool {
       env: process.env,
       probeVersion: false,
     });
+    const isolatedEnvironment = withTrustedBotSkillConnectorEnvironment(
+      trustedSkillScript,
+      context,
+      runtimeEnvironment.env,
+    );
     const commandEnvironment = withArtifactTaskRefEnvironment(
       withArtifactContextRefEnvironment(
-        runtimeEnvironment.env,
+        isolatedEnvironment,
         context.artifactContextRef,
       ),
       context.artifactTaskRef,

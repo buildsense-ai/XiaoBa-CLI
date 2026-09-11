@@ -1,4 +1,4 @@
-import type { ExecutionScope, MessageEnvelope, ScopedDeviceGrant, ScopedDeviceSelection } from '../types/session-identity';
+import type { ExecutionScope, MessageEnvelope, ScopedDeviceGrant, ScopedDeviceSelection, SkillConnectorGrant } from '../types/session-identity';
 import type { TargetRoutes } from '../types/tool';
 
 export type CatsCompanyRuntimeRole = 'desktop' | 'server';
@@ -75,6 +75,8 @@ export interface ParsedCatsMessage {
   artifactContextRef?: string;
   /** 仅当前 turn 有效的 opaque Artifact task ref。 */
   artifactTaskRef?: string;
+  /** Short-lived server-issued connector grants; never copied into model text or durable history. */
+  skillConnectorGrants?: SkillConnectorGrant[];
   /** 服务端签发的当前 turn 用户设备授权 */
   deviceGrants?: ScopedDeviceGrant[];
   /** 服务端为当前 turn 选择的用户设备，或要求先选择设备 */

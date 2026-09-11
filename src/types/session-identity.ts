@@ -55,6 +55,18 @@ export interface ExecutionScope {
   isTrusted: boolean;
 }
 
+/**
+ * Opaque, short-lived connector capability delivered only with one trusted
+ * CatsCo turn. It must never be rendered into model context or persisted.
+ */
+export interface SkillConnectorGrant {
+  provider: string;
+  skillId: string;
+  connectorUrl: string;
+  actorToken: string;
+  expiresAt: number;
+}
+
 export interface SessionIdentitySnapshot {
   source: MessageSource;
   topicId: string;

@@ -5,6 +5,7 @@ import type {
   ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
+  SkillConnectorGrant,
 } from './session-identity';
 import type { PlanRuntime, RuntimePlanSnapshot } from '../core/plan-runtime';
 import type { AIService } from '../utils/ai-service';
@@ -235,6 +236,8 @@ export interface ToolExecutionContext {
    * arguments or a remote device request.
    */
   turnSkillSnapshot?: TurnSkillSnapshotLease;
+  /** Trusted per-turn connector capabilities, scoped to exact SkillHub package ids. */
+  skillConnectorGrants?: SkillConnectorGrant[];
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
   channel?: ChannelCallbacks;
   /** 当前 turn 的可信执行身份；后续 ToolGateway/设备授权会基于它做权限判断。 */
