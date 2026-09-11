@@ -1,8 +1,27 @@
 import type { ExecutionScope, SkillConnectorGrant } from '../types/session-identity';
 
 const MAX_GRANTS = 4;
+// Scan more raw entries than we keep so a malformed leading entry cannot push
+// a valid grant past the cap. The bound keeps attacker-supplied metadata cheap.
+const MAX_SCANNED_GRANTS = 32;
 const MAX_TOKEN_LENGTH = 16 * 1024;
+// Must stay above the CatsCo issuer TTL (currently 10 minutes) so a freshly
+// issued grant is never dropped here; update both sides together.
 const MAX_FUTURE_MS = 11 * 60 * 1000;
+
+/**
+ * Deduplicate grants by provider + Skill id. A later grant for the same pair
+ * supersedes an earlier one, while grants for different Skills stay independent.
+ */
+export function mergeSkillConnectorGrants(
+  grants: readonly SkillConnectorGrant[],
+): SkillConnectorGrant[] {
+  const merged = new Map<string, SkillConnectorGrant>();
+  for (const grant of grants) {
+    merged.set(`${grant.provider}\u0000${grant.skillId}`, grant);
+  }
+  return [...merged.values()];
+}
 
 export function extractCatsCoSkillConnectorGrants(
   metadata: unknown,
@@ -21,7 +40,8 @@ export function extractCatsCoSkillConnectorGrants(
   if (container?.schema !== 'catsco.skill_connectors.v1' || !Array.isArray(container.grants)) return [];
 
   const grants: SkillConnectorGrant[] = [];
-  for (const raw of container.grants.slice(0, MAX_GRANTS)) {
+  // Validate every scanned entry before applying the keep-limit, then merge.
+  for (const raw of container.grants.slice(0, MAX_SCANNED_GRANTS)) {
     const grant = asRecord(raw);
     const provider = stringValue(grant?.provider).toLowerCase();
     const skillId = stringValue(grant?.skill_id);
@@ -40,7 +60,7 @@ export function extractCatsCoSkillConnectorGrants(
     ) continue;
     grants.push({ provider, skillId, connectorUrl, actorToken, expiresAt });
   }
-  return grants;
+  return mergeSkillConnectorGrants(grants).slice(0, MAX_GRANTS);
 }
 
 function normalizeConnectorUrl(value: unknown): string | undefined {

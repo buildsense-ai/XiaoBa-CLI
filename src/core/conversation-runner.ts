@@ -36,6 +36,7 @@ import {
   isLegacyArtifactObservationMessage,
 } from './runtime-context-builder';
 import { buildPendingUserInputBoundaryMessage } from './pending-user-input-boundary';
+import { mergeSkillConnectorGrants } from '../catscompany/skill-connector-grants';
 import {
   TRANSIENT_CURRENT_DIRECTORY_PREFIX,
   buildTransientEnvironmentHint,
@@ -818,9 +819,15 @@ export class ConversationRunner {
       shouldRefreshRuntimeContext = true;
     }
     if (isPendingUserInput(pending) && pending.skillConnectorGrants?.length) {
+      // Union with the live turn's grants so a mid-turn message for one Skill
+      // does not drop a still-valid grant for another; the fresher grant wins
+      // for the same provider + Skill.
       this.toolExecutionContext = {
         ...(this.toolExecutionContext || {}),
-        skillConnectorGrants: pending.skillConnectorGrants,
+        skillConnectorGrants: mergeSkillConnectorGrants([
+          ...(this.toolExecutionContext?.skillConnectorGrants || []),
+          ...pending.skillConnectorGrants,
+        ]),
       };
     }
     if (isPendingUserInput(pending) && pending.deviceSelection) {

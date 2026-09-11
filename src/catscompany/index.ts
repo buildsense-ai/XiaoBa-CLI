@@ -16,7 +16,7 @@ import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './loc
 import { extractCatsCoDeviceGrants } from './device-grants';
 import { extractCatsCoDeviceSelection } from './device-selection';
 import { extractCatsCoRuntimeContext } from './runtime-context';
-import { extractCatsCoSkillConnectorGrants } from './skill-connector-grants';
+import { extractCatsCoSkillConnectorGrants, mergeSkillConnectorGrants } from './skill-connector-grants';
 import { MessageSessionManager } from '../core/message-session-manager';
 import {
   AgentServices,
@@ -3281,7 +3281,11 @@ export class CatsCompanyBot {
     const deviceGrants = messages.flatMap(item => item.deviceGrants || []);
     const deviceSelection = [...messages].reverse().find(item => item.deviceSelection)?.deviceSelection;
     const targetRoutes = [...messages].reverse().find(item => item.targetRoutes)?.targetRoutes;
-    const skillConnectorGrants = [...messages].reverse().find(item => item.skillConnectorGrants?.length)?.skillConnectorGrants;
+    // Union the whole batch so two grants arriving together both survive; a
+    // later grant for the same provider + Skill still supersedes an earlier one.
+    const skillConnectorGrants = mergeSkillConnectorGrants(
+      messages.flatMap(item => item.skillConnectorGrants || []),
+    );
     const artifactContextMessage = [...messages]
       .reverse()
       .find(item => Object.prototype.hasOwnProperty.call(item, 'artifactContextRef'));
@@ -3293,7 +3297,7 @@ export class CatsCompanyBot {
       deviceSelection,
       targetRoutes,
       artifactContextRef: artifactContextMessage?.artifactContextRef,
-      skillConnectorGrants,
+      skillConnectorGrants: skillConnectorGrants.length > 0 ? skillConnectorGrants : undefined,
     };
   }
 

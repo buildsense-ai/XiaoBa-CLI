@@ -44,6 +44,9 @@ export function withTrustedBotSkillConnectorEnvironment(
   for (const name of CONNECTOR_ENV_NAMES) delete isolated[name];
   if (!invocation) return isolated;
 
+  // TODO(connectors): only the `shimo` provider has a value mapping today. When
+  // a second provider lands, map its grant to that provider's own env names
+  // instead of silently ignoring the grant.
   const grant = [...(context.skillConnectorGrants || [])]
     .filter(candidate => (
       candidate.provider === 'shimo'
