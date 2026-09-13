@@ -19,6 +19,17 @@ export interface BotSkillPackageFile {
   contentBase64: string;
 }
 
+export interface BotSkillHubInstallMetadata {
+  packageChecksumSha256: string;
+  signature: {
+    algorithm: 'ed25519';
+    keyId: string;
+    signature: string;
+    signedAt?: string;
+  };
+  packageUrl: string;
+}
+
 export interface LocalBotSkillManifestEntry {
   localSkillId: string;
   name: string;
@@ -38,6 +49,7 @@ export interface BotSkillPackage {
   name: string;
   contentHash: string;
   createdAt: string;
+  skillHubInstall?: BotSkillHubInstallMetadata;
   origin?: SkillHubPackageRef;
   files: BotSkillPackageFile[];
 }

@@ -2839,6 +2839,22 @@ function createFixture(
         url.pathname.includes(item.reference.version)
         && url.pathname.includes(item.reference.skillId.split('/').at(-1) || '')
       ));
+      if (url.pathname.startsWith('/api/skills/') && packageValue && packageValue.source !== 'private') {
+        return Response.json({
+          version: {
+            skillId: packageValue.reference.skillId,
+            latestVersion: packageValue.reference.version,
+            contentHash: packageValue.contentHash,
+            checksumSha256: 'a'.repeat(64),
+            packageUrl: 'https://hub.test/packages/public.skillpkg',
+            signature: {
+              algorithm: 'ed25519',
+              keyId: 'test-key',
+              signature: 'test-signature',
+            },
+          },
+        });
+      }
       if (packageValue?.source === 'public' && fixture.publicDownloadMisses > 0) {
         fixture.publicDownloadMisses -= 1;
         return Response.json({ error: 'not ready' }, { status: 404 });
