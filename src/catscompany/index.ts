@@ -124,6 +124,38 @@ interface QueuedMessage {
   deliveryAttempts?: number;
 }
 
+/**
+ * Keep the live Shimo capability handoff observable without ever logging the
+ * connector URL, actor token, or any other credential material. This is
+ * intentionally limited to messages that mention Shimo or carry the
+ * connector envelope, so ordinary CatsCo traffic is not noisy.
+ */
+function logCatsCoSkillConnectorMetadata(
+  context: MessageContext,
+  scope: ExecutionScope,
+  accepted: SkillConnectorGrant[],
+): void {
+  const metadata = context.metadata;
+  const container = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? (metadata as Record<string, unknown>).catsco_skill_connectors
+    : undefined;
+  const mentionsShimo = /石墨|shimo/i.test(String(context.text || ''));
+  if (container === undefined && !mentionsShimo) return;
+
+  const record = container && typeof container === 'object' && !Array.isArray(container)
+    ? container as Record<string, unknown>
+    : undefined;
+  const rawGrants = Array.isArray(record?.grants) ? record.grants.length : 0;
+  const schema = typeof record?.schema === 'string' ? record.schema : 'missing';
+  Logger.info(
+    `[CatsCompany][shimo_connector] grant handoff: topic=${context.topic || '-'} `
+      + `sender=${context.senderId || '-'} scope_trusted=${scope.isTrusted} `
+      + `identity_trust=${scope.identityTrust} agent=${scope.agentId || '-'} `
+      + `container=${container === undefined ? 'missing' : 'present'} schema=${schema} `
+      + `raw_grants=${rawGrants} accepted=${accepted.length}`,
+  );
+}
+
 interface ActiveConversationTask {
   runID: string;
   topic: string;
@@ -2242,6 +2274,9 @@ export class CatsCompanyBot {
       Logger.info(`[CatsCompany][xiaoba_runtime] no target routes parsed: topic=${ctx.topic}, sender=${ctx.senderId}`);
     }
 
+    const skillConnectorGrants = extractCatsCoSkillConnectorGrants(ctx.metadata, executionScope);
+    logCatsCoSkillConnectorMetadata(ctx, executionScope, skillConnectorGrants);
+
     return {
       topic: ctx.topic,
       chatType,
@@ -2256,7 +2291,7 @@ export class CatsCompanyBot {
       executionScope,
       artifactContextRef: envelope.artifactContextRef,
       artifactTaskRef: envelope.artifactTaskRef,
-      skillConnectorGrants: extractCatsCoSkillConnectorGrants(ctx.metadata, executionScope),
+      skillConnectorGrants,
       deviceGrants: extractCatsCoDeviceGrants(ctx.metadata, executionScope),
       deviceSelection: extractCatsCoDeviceSelection(ctx.metadata, executionScope),
       targetRoutes,
