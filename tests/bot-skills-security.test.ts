@@ -254,6 +254,62 @@ describe('Bot Skill sync security boundaries', () => {
       /BotDefinition contentHash/i,
     );
   });
+
+  test('restores a public package with the SkillHub signature instead of a placeholder marker', async () => {
+    const packageData = {
+      ...packageValue('public-restored'),
+      source: 'public' as const,
+    };
+    delete (packageData as Partial<typeof packageData>).schema;
+    const calls: string[] = [];
+    const client = createClient(async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes('/api/bot/skill-packages/')) return Response.json(packageData);
+      if (url.includes('/api/skills/')) {
+        return Response.json({
+          version: {
+            skillId: packageData.reference.skillId,
+            latestVersion: packageData.reference.version,
+            contentHash: packageData.contentHash,
+            checksumSha256: 'b'.repeat(64),
+            packageUrl: 'https://hub.test/packages/public-restored.skillpkg',
+            signature: {
+              algorithm: 'ed25519',
+              keyId: 'skillhub-test-key',
+              signature: 'skillhub-test-signature',
+            },
+          },
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const downloaded = await client.download({
+      source: 'skillhub',
+      ...packageData.reference,
+      contentHash: packageData.contentHash,
+    });
+    assert.deepStrictEqual(downloaded.skillHubInstall, {
+      packageChecksumSha256: 'b'.repeat(64),
+      signature: {
+        algorithm: 'ed25519',
+        keyId: 'skillhub-test-key',
+        signature: 'skillhub-test-signature',
+      },
+      packageUrl: 'https://hub.test/packages/public-restored.skillpkg',
+    });
+
+    const skillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-public-materialize-'));
+    roots.push(skillsRoot);
+    const installed = await client.materialize(downloaded, skillsRoot);
+    const marker = JSON.parse(fs.readFileSync(
+      path.join(installed, '.xiaoba-skillhub-install.json'),
+      'utf8',
+    ));
+    assert.equal(marker.packageChecksumSha256, 'b'.repeat(64));
+    assert.deepStrictEqual(marker.signature, downloaded.skillHubInstall?.signature);
+    assert.equal(calls.length, 2);
+  });
 });
 
 function ref(skillId: string, version: string, contentHash = 'a'.repeat(64)): BotSkillRef {

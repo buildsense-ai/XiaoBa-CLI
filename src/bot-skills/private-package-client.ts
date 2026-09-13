@@ -13,6 +13,7 @@ import {
 import type {
   BotSkillPackage,
   BotSkillPackageFile,
+  BotSkillHubInstallMetadata,
   LocalBotSkillManifestEntry,
   SkillHubPackageRef,
 } from './types';
@@ -98,6 +99,9 @@ export class BotPrivateSkillClient {
     if (packageValue.contentHash !== reference.contentHash) {
       throw new Error('SkillHub package does not match the BotDefinition contentHash.');
     }
+    if (packageValue.source === 'public') {
+      packageValue.skillHubInstall = await this.loadPublicInstallMetadata(expected, packageValue.contentHash);
+    }
     return packageValue;
   }
 
@@ -139,23 +143,68 @@ export class BotPrivateSkillClient {
       origin: packageValue.origin ?? packageValue.reference,
     });
     if (packageValue.source === 'public') {
+      if (!packageValue.skillHubInstall) {
+        throw new Error('Public SkillHub package is missing verified install metadata.');
+      }
       writeSkillHubInstallMarker(target, {
         source: 'skillhub',
         skillId: packageValue.reference.skillId,
         name: packageValue.name,
         installName,
         version: packageValue.reference.version,
-        packageChecksumSha256: packageValue.contentHash,
-        signature: {
-          algorithm: 'ed25519',
-          keyId: 'restored-via-skillhub',
-          signature: '',
-        },
-        packageUrl: '',
+        packageChecksumSha256: packageValue.skillHubInstall.packageChecksumSha256,
+        signature: packageValue.skillHubInstall.signature,
+        packageUrl: packageValue.skillHubInstall.packageUrl,
         installedAt: packageValue.createdAt || new Date().toISOString(),
       });
     }
     return target;
+  }
+
+  private async loadPublicInstallMetadata(
+    reference: SkillHubPackageRef,
+    contentHash: string,
+  ): Promise<BotSkillHubInstallMetadata> {
+    const skillID = encodeReferencePath(reference.skillId);
+    const version = encodeURIComponent(reference.version);
+    const response = await this.request(
+      'GET',
+      `/api/skills/${skillID}/versions/${version}`,
+      undefined,
+    );
+    const value = response?.version ?? response?.skill ?? response;
+    const returnedSkillID = String(value?.skillId || '').trim();
+    const returnedVersion = String(value?.version || value?.latestVersion || '').trim();
+    if (returnedSkillID !== reference.skillId || returnedVersion !== reference.version) {
+      throw new Error('SkillHub returned mismatched public Skill metadata.');
+    }
+    if (String(value?.contentHash || '').trim() !== contentHash) {
+      throw new Error('SkillHub public Skill metadata does not match package content.');
+    }
+    const packageChecksumSha256 = String(value?.checksumSha256 || '').trim().toLowerCase();
+    const packageURL = String(value?.packageUrl || '').trim();
+    const signature = value?.signature;
+    if (
+      !/^[a-f0-9]{64}$/.test(packageChecksumSha256)
+      || !safeHTTPSURL(packageURL)
+      || signature?.algorithm !== 'ed25519'
+      || !String(signature?.keyId || '').trim()
+      || !String(signature?.signature || '').trim()
+    ) {
+      throw new Error('SkillHub returned incomplete public Skill verification metadata.');
+    }
+    return {
+      packageChecksumSha256,
+      signature: {
+        algorithm: 'ed25519',
+        keyId: String(signature.keyId).trim(),
+        signature: String(signature.signature).trim(),
+        ...(String(signature.signedAt || '').trim()
+          ? { signedAt: String(signature.signedAt).trim() }
+          : {}),
+      },
+      packageUrl: packageURL,
+    };
   }
 
   private async request(
@@ -369,6 +418,19 @@ function assertPrivateSkillBaseUrl(value: string): void {
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
     throw new Error('SkillHub private sync requires HTTPS.');
+  }
+}
+
+function safeHTTPSURL(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:'
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash;
+  } catch {
+    return false;
   }
 }
 
