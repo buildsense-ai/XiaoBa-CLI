@@ -7,6 +7,7 @@ import {
   resolveTrustedBotSkillScriptInvocation,
   type TrustedBotSkillScriptInvocation,
 } from '../bot-skills/trusted-script-execution';
+import { Logger } from '../utils/logger';
 
 export type ExecutionTargetId = 'agent_self' | string;
 
@@ -67,6 +68,12 @@ export function resolveExecutionRoute(
       target: options.target,
     });
     if (decision.ok) trustedSkillScript = decision.invocation;
+    else if (looksLikeSkillScriptCommand(options.command) && context.executionScope?.source === 'catscompany') {
+      Logger.warning(
+        `[CatsCompany][shimo_connector] trusted script rejected: reason=${decision.reason} `
+          + `grant_count=${context.skillConnectorGrants?.length || 0}`,
+      );
+    }
   }
   if (context.deviceRpcReceiver) {
     return { ok: true, mode: 'local', target: 'speaker_default', label: 'current Device RPC receiver' };
@@ -170,6 +177,11 @@ export function resolveExecutionRoute(
     targetDeviceBodyId: remote.bodyId,
     targetDeviceInstallationId: remote.installationId,
   };
+}
+
+function looksLikeSkillScriptCommand(command: unknown): boolean {
+  if (typeof command !== 'string') return false;
+  return /(?:^|[\\/\s])scripts[\\/][^\s"']+\.(?:mjs|cjs|js)(?:$|[\s"'])/i.test(command);
 }
 
 export async function executeRouteIfRemote(

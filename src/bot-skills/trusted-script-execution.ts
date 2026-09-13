@@ -11,6 +11,7 @@ import {
   computeBotSkillPackageHash,
   readBotSkillLocalMarker,
 } from './local-manifest';
+import { Logger } from '../utils/logger';
 
 export interface TrustedBotSkillScriptInvocation {
   scriptPath: string;
@@ -56,7 +57,15 @@ export function withTrustedBotSkillConnectorEnvironment(
       && Boolean(candidate.actorToken)
     ))
     .sort((left, right) => right.expiresAt - left.expiresAt)[0];
-  if (!grant) return isolated;
+  if (!grant) {
+    if (invocation.skillId.includes('/shimo-') || invocation.skillName.toLowerCase().includes('shimo')) {
+      Logger.warning(
+        `[CatsCompany][shimo_connector] trusted script has no matching grant: `
+          + `skill=${invocation.skillId} grant_count=${context.skillConnectorGrants?.length || 0}`,
+      );
+    }
+    return isolated;
+  }
 
   isolated.CATSCO_SHIMO_CONNECTOR_URL = grant.connectorUrl;
   isolated.CATSCO_ACTOR_TOKEN = grant.actorToken;
