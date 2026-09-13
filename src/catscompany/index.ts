@@ -16,6 +16,7 @@ import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './loc
 import { extractCatsCoDeviceGrants } from './device-grants';
 import { extractCatsCoDeviceSelection } from './device-selection';
 import { extractCatsCoRuntimeContext } from './runtime-context';
+import { extractCatsCoSkillConnectorGrants, mergeSkillConnectorGrants } from './skill-connector-grants';
 import { MessageSessionManager } from '../core/message-session-manager';
 import {
   AgentServices,
@@ -32,7 +33,7 @@ import { ChannelCallbacks, DeviceRpcTransport, TargetRoutes, ThinToolRpcTranspor
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
 import type { StreamRetryInfo } from '../providers/provider';
-import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
+import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant, SkillConnectorGrant } from '../types/session-identity';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
 import { hostname, platform } from 'os';
@@ -106,6 +107,7 @@ interface QueuedMessage {
   executionScope: ParsedCatsMessage['executionScope'];
   artifactContextRef?: string;
   artifactTaskRef?: string;
+  skillConnectorGrants?: SkillConnectorGrant[];
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
@@ -1693,6 +1695,7 @@ export class CatsCompanyBot {
         executionScope: msg.executionScope,
         artifactContextRef: msg.artifactContextRef,
         artifactTaskRef: msg.artifactTaskRef,
+        skillConnectorGrants: msg.skillConnectorGrants,
         deviceGrants: msg.deviceGrants,
         deviceSelection: msg.deviceSelection,
         targetRoutes: msg.targetRoutes,
@@ -1743,6 +1746,7 @@ export class CatsCompanyBot {
           executionScope: msg.executionScope,
           artifactContextRef: msg.artifactContextRef,
           artifactTaskRef: msg.artifactTaskRef,
+          skillConnectorGrants: msg.skillConnectorGrants,
           localDeviceGrant: this.localDeviceGrant,
           deviceGrants: msg.deviceGrants,
           deviceSelection: msg.deviceSelection,
@@ -2252,6 +2256,7 @@ export class CatsCompanyBot {
       executionScope,
       artifactContextRef: envelope.artifactContextRef,
       artifactTaskRef: envelope.artifactTaskRef,
+      skillConnectorGrants: extractCatsCoSkillConnectorGrants(ctx.metadata, executionScope),
       deviceGrants: extractCatsCoDeviceGrants(ctx.metadata, executionScope),
       deviceSelection: extractCatsCoDeviceSelection(ctx.metadata, executionScope),
       targetRoutes,
@@ -3111,6 +3116,7 @@ export class CatsCompanyBot {
             executionScope: msg.executionScope,
             artifactContextRef: msg.artifactContextRef,
             artifactTaskRef: msg.artifactTaskRef,
+            skillConnectorGrants: msg.skillConnectorGrants,
             localDeviceGrant: this.localDeviceGrant,
             deviceGrants: msg.deviceGrants,
             deviceSelection: msg.deviceSelection,
@@ -3277,10 +3283,15 @@ export class CatsCompanyBot {
     const deviceGrants = messages.flatMap(item => item.deviceGrants || []);
     const deviceSelection = [...messages].reverse().find(item => item.deviceSelection)?.deviceSelection;
     const targetRoutes = [...messages].reverse().find(item => item.targetRoutes)?.targetRoutes;
+    // Union the whole batch so two grants arriving together both survive; a
+    // later grant for the same provider + Skill still supersedes an earlier one.
+    const skillConnectorGrants = mergeSkillConnectorGrants(
+      messages.flatMap(item => item.skillConnectorGrants || []),
+    );
     const artifactContextMessage = [...messages]
       .reverse()
       .find(item => Object.prototype.hasOwnProperty.call(item, 'artifactContextRef'));
-    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection && !targetRoutes && !artifactContextMessage) return content;
+    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection && !targetRoutes && !artifactContextMessage && !skillConnectorGrants?.length) return content;
     return {
       content,
       localFileGrants: localFileGrants.length > 0 ? localFileGrants : undefined,
@@ -3288,6 +3299,7 @@ export class CatsCompanyBot {
       deviceSelection,
       targetRoutes,
       artifactContextRef: artifactContextMessage?.artifactContextRef,
+      skillConnectorGrants: skillConnectorGrants.length > 0 ? skillConnectorGrants : undefined,
     };
   }
 

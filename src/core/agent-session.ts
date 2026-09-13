@@ -6,6 +6,7 @@ import type {
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
   SessionRoute,
+  SkillConnectorGrant,
 } from '../types/session-identity';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -143,6 +144,8 @@ export interface HandleMessageOptions {
   artifactContextRef?: string;
   /** 当前 turn 的短期 Artifact task ref；不进入模型消息或持久历史。 */
   artifactTaskRef?: string;
+  /** Current turn connector capabilities; private runtime state only. */
+  skillConnectorGrants?: SkillConnectorGrant[];
   /** 当前本机运行体授权，例如 CatsCo body/device 绑定。 */
   localDeviceGrant?: ScopedLocalDeviceGrant;
   /** 当前 turn 已授权的用户设备资源。 */
@@ -609,6 +612,7 @@ export class AgentSession {
       let executionScope: ExecutionScope | undefined;
       let artifactContextRef: string | undefined;
       let artifactTaskRef: string | undefined;
+      let skillConnectorGrants: SkillConnectorGrant[] | undefined;
       let localDeviceGrant: ScopedLocalDeviceGrant | undefined;
       let deviceGrants: ScopedDeviceGrant[] | undefined;
       let deviceSelection: ScopedDeviceSelection | undefined;
@@ -626,6 +630,7 @@ export class AgentSession {
           || 'executionScope' in callbacksOrOptions
           || 'artifactContextRef' in callbacksOrOptions
           || 'artifactTaskRef' in callbacksOrOptions
+          || 'skillConnectorGrants' in callbacksOrOptions
           || 'localDeviceGrant' in callbacksOrOptions
           || 'deviceGrants' in callbacksOrOptions
           || 'deviceSelection' in callbacksOrOptions
@@ -645,6 +650,7 @@ export class AgentSession {
           executionScope = opts.executionScope;
           artifactContextRef = opts.artifactContextRef;
           artifactTaskRef = opts.artifactTaskRef;
+          skillConnectorGrants = opts.skillConnectorGrants;
           localDeviceGrant = opts.localDeviceGrant;
           deviceGrants = opts.deviceGrants;
           deviceSelection = opts.deviceSelection;
@@ -735,6 +741,7 @@ export class AgentSession {
           executionScope,
           artifactContextRef,
           artifactTaskRef,
+          skillConnectorGrants,
           localDeviceGrant,
           deviceGrants,
           deviceSelection,
