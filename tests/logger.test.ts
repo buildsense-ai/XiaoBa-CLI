@@ -84,6 +84,74 @@ describe('Logger', () => {
       ],
     );
   });
+  test('writes route-derived agent identity on every session-log entry', () => {
+    delete require.cache[require.resolve('../src/utils/session-turn-logger')];
+    const { SessionTurnLogger } = require('../src/utils/session-turn-logger');
+    const sessionLogger = new SessionTurnLogger(
+      'catscompany',
+      'cc_group:grp_80',
+      {
+        agent_id: 'usr407',
+        agent_body_id: 'body-main',
+        trust: 'server_canonical',
+        source: 'metadata.catsco_identity',
+      },
+    );
+
+    sessionLogger.logTurn('hello', 'world', [], { prompt: 1, completion: 1 });
+    sessionLogger.logRuntime('INFO', 'runtime event');
+    const entries = fs.readFileSync(sessionLogger.getLogFilePath(), 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line));
+
+    assert.equal(entries.length, 2);
+    for (const entry of entries) {
+      assert.deepEqual(entry.agent_identity, {
+        agent_id: 'usr407',
+        agent_body_id: 'body-main',
+        trust: 'server_canonical',
+        source: 'metadata.catsco_identity',
+      });
+    }
+  });
+
+  test('omits malformed agent identity rather than adding unbounded log metadata', () => {
+    delete require.cache[require.resolve('../src/utils/session-turn-logger')];
+    const { SessionTurnLogger } = require('../src/utils/session-turn-logger');
+    const sessionLogger = new SessionTurnLogger('catscompany', 'cc_group:grp_80', {
+      agent_id: `usr407\n${'x'.repeat(300)}`,
+      trust: 'server_canonical',
+    });
+    sessionLogger.logRuntime('INFO', 'runtime event');
+
+    const entry = JSON.parse(fs.readFileSync(sessionLogger.getLogFilePath(), 'utf8').trim());
+    assert.equal('agent_identity' in entry, false);
+  });
+
+  test('late route identity enriches a legacy logger without allowing a relabel', () => {
+    delete require.cache[require.resolve('../src/utils/session-turn-logger')];
+    const { SessionTurnLogger } = require('../src/utils/session-turn-logger');
+    const sessionLogger = new SessionTurnLogger('catscompany', 'cc_group:grp_81');
+    assert.equal(sessionLogger.setAgentIdentity({
+      agent_id: 'bot-bot-3332', trust: 'legacy_context', source: 'legacy.route',
+    }), true);
+    assert.equal(sessionLogger.setAgentIdentity({
+      agent_id: 'bot-bot-3332', trust: 'server_canonical', agent_body_id: 'body-1', source: 'metadata.catsco_identity',
+    }), true);
+    assert.equal(sessionLogger.setAgentIdentity({
+      agent_id: 'other-agent', trust: 'server_canonical',
+    }), false);
+    sessionLogger.logRuntime('INFO', 'late identity');
+    const entry = JSON.parse(fs.readFileSync(sessionLogger.getLogFilePath(), 'utf8').trim());
+    assert.deepEqual(entry.agent_identity, {
+      agent_id: 'bot-bot-3332',
+      agent_body_id: 'body-1',
+      trust: 'server_canonical',
+      source: 'metadata.catsco_identity',
+    });
+  });
+
 });
 
 function waitForFlush(): Promise<void> {

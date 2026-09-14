@@ -82,6 +82,47 @@ function main() {
     .description('Show the resolved node, python, and git runtimes')
     .action(runtimeCommand);
 
+  const catslog = program
+    .command('catslog')
+    .description('Operate the CatsLog v2 device integration');
+
+  catslog
+    .command('skills')
+    .description('Read this device-bound agent\'s Runtime Learning Skills')
+    .option('--handle <handle>', 'Read one Skill handle')
+    .option('--search <terms>', 'Search Skill handles and descriptions')
+    .option('--content', 'Include Skill content (untrusted runtime data)')
+    .option('--trace <mode>', 'Trace mode: none, summary, or full')
+    .option('--limit <count>', 'Maximum Skills to return')
+    .option('--cursor <cursor>', 'Continue an authenticated CatsLog page')
+    .action(async (options) => {
+      const { catslogSkillsCommand } = await import('./commands/catslog');
+      const limit = options.limit === undefined ? undefined : Number(options.limit);
+      if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
+        throw new Error('--limit must be an integer from 1 to 100');
+      }
+      if (options.trace && !['none', 'summary', 'full'].includes(options.trace)) {
+        throw new Error('--trace must be one of: none, summary, full');
+      }
+      await catslogSkillsCommand({
+        handle: options.handle,
+        search: options.search,
+        includeContent: Boolean(options.content),
+        includeTrace: options.trace,
+        limit,
+        cursor: options.cursor,
+      });
+    });
+
+  catslog.command('outcome <handle> <revision> <outcome>')
+    .description('Explicitly report use of one immutable CatsLog Skill revision')
+    .action(async (handle: string, revision: string, outcome: string) => {
+      const parsed = Number(revision);
+      if (!Number.isInteger(parsed) || parsed < 1 || !['succeeded', 'failed', 'corrected'].includes(outcome)) throw new Error('revision or outcome is invalid');
+      const { catslogSkillOutcomeCommand } = await import('./commands/catslog');
+      await catslogSkillOutcomeCommand(handle, parsed, outcome as 'succeeded' | 'failed' | 'corrected');
+    });
+
   registerSkillCommand(program);
 
   program.action(() => {
