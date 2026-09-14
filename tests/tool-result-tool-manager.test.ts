@@ -500,6 +500,28 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
     assert.strictEqual(capturedScope, executionScope);
   });
 
+  test('forwards a per-invocation control signal from a tool result', async () => {
+    const scopedManager = new ToolManager(testRoot, {}, { enabledToolNames: [] });
+    scopedManager.registerTool({
+      definition: {
+        name: 'dynamic_pause',
+        description: 'dynamic pause',
+        parameters: { type: 'object', properties: {} },
+      },
+      async execute() {
+        return { ok: true, content: 'sent', controlSignal: 'pause_turn' };
+      },
+    });
+
+    const result = await scopedManager.executeTool(
+      { id: 't19_dynamic_pause', type: 'function', function: { name: 'dynamic_pause', arguments: '{}' } },
+      [],
+    );
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.controlSignal, 'pause_turn');
+  });
+
   test('Write 别名映射到 write_file 成功', async () => {
     const result = await manager.executeTool(
       { id: 't20', type: 'function', function: { name: 'Write', arguments: JSON.stringify({ file_path: 'alias.txt', content: 'via alias' }) } },

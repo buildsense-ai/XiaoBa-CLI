@@ -110,4 +110,51 @@ describe('SendTextTool outbound scope checks', () => {
       /ack timeout/,
     );
   });
+
+  test('pauses the turn after sending a Shimo authorization URL', async () => {
+    const tool = new SendTextTool();
+    const { context, sent } = contextWithChannel('p2p_7_43', scope());
+
+    const result = await tool.execute({
+      text: '请打开 https://app.catsco.cc/connect/shimo/one-time-token 完成石墨登录。',
+    }, context);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.controlSignal, 'pause_turn');
+    assert.equal(sent.length, 1);
+  });
+
+  test('pauses for .cn and self-hosted Shimo authorization URLs', async () => {
+    const tool = new SendTextTool();
+
+    for (const text of [
+      '请打开 https://app.catsco.cn/connect/shimo/token-cn。',
+      '请打开 http://127.0.0.1:6061/connect/shimo/token-local。',
+    ]) {
+      const { context } = contextWithChannel('p2p_7_43', scope());
+      const result = await tool.execute({ text }, context);
+      assert.equal(result.ok, true);
+      assert.equal(result.controlSignal, 'pause_turn');
+    }
+  });
+
+  test('does not pause ordinary outbound text', async () => {
+    const tool = new SendTextTool();
+    const { context } = contextWithChannel('p2p_7_43', scope());
+
+    const result = await tool.execute({ text: '石墨账号已连接。' }, context);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.controlSignal, undefined);
+  });
+
+  test('does not pause for an unrelated URL', async () => {
+    const tool = new SendTextTool();
+    const { context } = contextWithChannel('p2p_7_43', scope());
+
+    const result = await tool.execute({ text: '参考 https://example.com/help。' }, context);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.controlSignal, undefined);
+  });
 });

@@ -101,6 +101,8 @@ export type ToolExecutionResult = (
   | { ok: true; content: string | import('./index').ContentBlock[] }
   | { ok: false; errorCode: string; message: string; retryable?: boolean }
 ) & {
+  /** Optional per-invocation control signal. Overrides the static tool definition when set. */
+  controlSignal?: ToolControlMode;
   /** Route-aware context for the model-visible tool result. */
   targetContext?: string;
   /** Uploaded attachment metadata returned by a remote import_file execution. */
