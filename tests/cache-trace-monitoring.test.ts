@@ -129,6 +129,71 @@ test('reader accepts legacy JSON and v4 JSONL while resetting diff on a model sw
   }
 });
 
+test('observer keeps interleaved attempts isolated by attempt id and file', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-interleaved-'));
+  try {
+    const observer = new CacheTraceObserver({
+      sessionId: 'cache:interleaved',
+      traceDir: dir,
+      env: { XIAOBA_CACHE_TRACE: 'true', XIAOBA_CACHE_TRACE_CONTENT: 'true' },
+    });
+    observer.observe(attemptEvent({
+      outcome: 'started',
+      callId: 'call-A',
+      attemptId: 'call-A:1',
+      context: { sessionId: 'cache:interleaved', episodeId: 'episode-A', episodeNumber: 1 },
+      request: { messages: [{ role: 'user', content: 'marker-A' }], tools: [] },
+    }));
+    observer.observe(attemptEvent({
+      outcome: 'started',
+      callId: 'call-B',
+      attemptId: 'call-B:1',
+      context: { sessionId: 'cache:interleaved', episodeId: 'episode-B', episodeNumber: 2 },
+      request: { messages: [{ role: 'user', content: 'marker-B' }], tools: [] },
+    }));
+    observer.observe(attemptEvent({
+      outcome: 'succeeded',
+      callId: 'call-B',
+      attemptId: 'call-B:1',
+      context: { sessionId: 'cache:interleaved', episodeId: 'episode-B', episodeNumber: 2 },
+      request: { messages: [{ role: 'user', content: 'marker-B' }], tools: [] },
+      response: { content: 'response-B', usage: { promptTokens: 202, completionTokens: 2, totalTokens: 204, cachedReadTokens: 22 } },
+    }));
+    observer.observe(attemptEvent({
+      outcome: 'succeeded',
+      callId: 'call-A',
+      attemptId: 'call-A:1',
+      context: { sessionId: 'cache:interleaved', episodeId: 'episode-A', episodeNumber: 1 },
+      request: { messages: [{ role: 'user', content: 'marker-A' }], tools: [] },
+      response: { content: 'response-A', usage: { promptTokens: 101, completionTokens: 1, totalTokens: 102, cachedReadTokens: 11 } },
+    }));
+    await observer.drain();
+
+    const files = listTraceFiles(dir);
+    assert.equal(files.length, 2);
+    const observed = new Map<string, { callId: string; attemptId: string; cachedReadTokens: number }>();
+    for (const file of files) {
+      const lines = fs.readFileSync(file, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
+      assert.equal(lines.length, 2);
+      assert.deepEqual(lines.map(line => line.lifecycle.outcome), ['started', 'succeeded']);
+      assert.equal(new Set(lines.map(line => line.lifecycle.call_id)).size, 1);
+      assert.equal(new Set(lines.map(line => line.lifecycle.attempt_id)).size, 1);
+      assert.equal(lines[0].request.request_sha256, lines[1].request.request_sha256);
+      assert.equal(lines[1].request.request_snapshot, undefined);
+      const marker = String(lines[0].request.request_snapshot.messages[0].content);
+      observed.set(marker, {
+        callId: lines[0].lifecycle.call_id,
+        attemptId: lines[0].lifecycle.attempt_id,
+        cachedReadTokens: lines[1].response_usage.cache_read_tokens,
+      });
+    }
+    assert.deepEqual(observed.get('marker-A'), { callId: 'call-A', attemptId: 'call-A:1', cachedReadTokens: 11 });
+    assert.deepEqual(observed.get('marker-B'), { callId: 'call-B', attemptId: 'call-B:1', cachedReadTokens: 22 });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('observer writes retry recovery as two correlated attempts and preserves cache usage', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-cache-write-'));
   try {
