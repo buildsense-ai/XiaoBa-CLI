@@ -194,7 +194,19 @@ function readActiveBotDefinition(agentId: string) {
   if (!agentId) return undefined;
   try {
     const repository = new FileBotDefinitionRepository({ runtimeRoot: PathResolver.getRuntimeDataRoot() });
-    return repository.readCache(agentId) ?? repository.readCanonical(agentId);
+    // CatsCo envelopes identify a Bot as `usr<botId>` while the local
+    // BotDefinition repository is keyed by the BotDefinition's canonical
+    // `botId` (for example, `573`). Keep the compatibility mapping narrow:
+    // only strip the well-known `usr` prefix, then let the repository validate
+    // that the returned definition has the expected canonical id.
+    const candidates = [agentId];
+    const prefixed = /^usr([A-Za-z0-9_.-]+)$/i.exec(agentId);
+    if (prefixed?.[1]) candidates.push(prefixed[1]);
+    for (const candidate of candidates) {
+      const definition = repository.readCache(candidate) ?? repository.readCanonical(candidate);
+      if (definition) return definition;
+    }
+    return undefined;
   } catch {
     return undefined;
   }

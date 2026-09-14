@@ -219,6 +219,20 @@ describe('trusted Bot Skill script execution', () => {
     assert.match(decision.ok ? '' : decision.reason, /current Bot definition/);
   });
 
+  test('resolves the active Bot definition when CatsCo prefixes the Bot id with usr', () => {
+    const decision = resolveTrustedBotSkillScriptInvocation(
+      `node "${scriptPath}" "${path.join(workspaceRoot, 'prefixed-bot.json')}"`,
+      catsContext({
+        executionScope: {
+          ...catsContext().executionScope!,
+          agentId: 'usrbot-1',
+        },
+      }),
+    );
+
+    assert.equal(decision.ok, true);
+  });
+
   test('keeps trusted script resolution on the turn snapshot after the live package changes', async () => {
     const store = new TurnSkillSnapshotStore({
       runtimeRoot,
