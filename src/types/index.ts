@@ -3,6 +3,8 @@ export type ContentBlock =
   | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } };
 
 export type ProviderContentBlock = Record<string, unknown> & { type: string };
+export type BuiltInProviderIdentity = 'openai' | 'anthropic';
+export type ProviderIdentity = BuiltInProviderIdentity | (string & {});
 export type ProviderApiType = 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses';
 
 /** Opaque scope that prevents provider-only replay state crossing model/API boundaries. */
@@ -91,7 +93,7 @@ export interface ChatConfig {
     timeoutMs?: number;
     maxTokens?: number;
   };
-  provider?: 'openai' | 'anthropic';
+  provider?: BuiltInProviderIdentity;
   feishu?: {
     appId?: string;
     appSecret?: string;
