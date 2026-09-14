@@ -170,4 +170,72 @@ describe('CloudBotModelRuntimeReloadController', () => {
 
     assert.equal(applyCount, 0);
   });
+
+  test('reports an in-flight poll that has stopped making progress', async () => {
+    let now = 1_000;
+    let finish!: (value: CloudBotModelSelection | undefined) => void;
+    const controller = new CloudBotModelRuntimeReloadController({
+      now: () => now,
+      pullSelection: () => new Promise(resolve => { finish = resolve; }),
+      isIdle: () => true,
+      applySelection: async () => assert.fail('an unresolved poll must not apply'),
+    });
+
+    const pending = controller.pollOnce();
+    now = 51_000;
+    assert.deepStrictEqual(controller.getHealth(), {
+      polling: true,
+      createdAt: 1_000,
+      lastPollStartedAt: 1_000,
+      handledRevision: -1,
+      pollAgeMs: 50_000,
+    });
+
+    finish(undefined);
+    await pending;
+    assert.deepStrictEqual(controller.getHealth(), {
+      polling: false,
+      createdAt: 1_000,
+      lastPollStartedAt: 1_000,
+      lastPollCompletedAt: 51_000,
+      handledRevision: -1,
+      pollAgeMs: 0,
+    });
+  });
+
+  test('tracks the age of an unapplied revision and clears it after apply', async () => {
+    let now = 100;
+    let idle = false;
+    const controller = new CloudBotModelRuntimeReloadController({
+      now: () => now,
+      pullSelection: async () => ({ modelId: 'deepseek-flash', revision: 34 }),
+      isIdle: () => idle,
+      applySelection: async () => 'applied',
+    });
+
+    await controller.pollOnce();
+    now = 120_100;
+    assert.deepStrictEqual(controller.getHealth(), {
+      polling: false,
+      createdAt: 100,
+      lastPollStartedAt: 100,
+      lastPollCompletedAt: 100,
+      handledRevision: -1,
+      pendingRevision: 34,
+      pendingSince: 100,
+      pendingAgeMs: 120_000,
+      pollAgeMs: 120_000,
+    });
+
+    idle = true;
+    await controller.pollOnce();
+    assert.deepStrictEqual(controller.getHealth(), {
+      polling: false,
+      createdAt: 100,
+      lastPollStartedAt: 120_100,
+      lastPollCompletedAt: 120_100,
+      handledRevision: 34,
+      pollAgeMs: 0,
+    });
+  });
 });

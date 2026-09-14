@@ -40,6 +40,10 @@ import { botSkillRefsEqual } from '../bot-skills/canonical';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
 const CLOUD_MODEL_POLL_MS = 5000;
+const CLOUD_MODEL_HEALTHCHECK_MS = 30_000;
+const CLOUD_MODEL_POLL_STALE_MS = 45_000;
+const CLOUD_MODEL_PENDING_STALE_MS = 120_000;
+const CLOUD_MODEL_HEALTH_WARNING_REPEAT_MS = 300_000;
 
 export interface CatsCoCommandConfigResolution {
   config?: CatsCompanyConfig;
@@ -150,6 +154,7 @@ export async function catscompanyCommand(): Promise<void> {
   let lock: CatsCoConnectorLock | null = connectorLock;
   let ownerWatchTimer: NodeJS.Timeout | null = null;
   let cloudModelWatchTimer: NodeJS.Timeout | null = null;
+  let cloudModelHealthTimer: NodeJS.Timeout | null = null;
   let cloudModelReloadPromise: Promise<void> | null = null;
   let skillActivationAckWorker: BotSkillActivationAckWorker | null = null;
   let shuttingDown = false;
@@ -165,6 +170,10 @@ export async function catscompanyCommand(): Promise<void> {
     if (cloudModelWatchTimer) {
       clearInterval(cloudModelWatchTimer);
       cloudModelWatchTimer = null;
+    }
+    if (cloudModelHealthTimer) {
+      clearInterval(cloudModelHealthTimer);
+      cloudModelHealthTimer = null;
     }
     try {
       await cloudModelReloadPromise;
@@ -292,14 +301,61 @@ export async function catscompanyCommand(): Promise<void> {
         }
       },
     });
-    cloudModelWatchTimer = setInterval(() => {
-      if (cloudModelReloadPromise) return;
+    const triggerCloudModelPoll = (): boolean => {
+      if (cloudModelReloadPromise || shuttingDown) return false;
       const run = reloadController.pollOnce();
       cloudModelReloadPromise = run;
       void run.finally(() => {
         if (cloudModelReloadPromise === run) cloudModelReloadPromise = null;
       });
-    }, CLOUD_MODEL_POLL_MS);
+      return true;
+    };
+    cloudModelWatchTimer = setInterval(triggerCloudModelPoll, CLOUD_MODEL_POLL_MS);
+
+    let lastHealthWarningAt = 0;
+    let lastHealthWarningKey = '';
+    cloudModelHealthTimer = setInterval(() => {
+      if (shuttingDown) return;
+      const now = Date.now();
+      const health = reloadController.getHealth(now);
+      const pollStalled = health.pollAgeMs >= CLOUD_MODEL_POLL_STALE_MS;
+      const pendingStale = health.pendingAgeMs !== undefined
+        && health.pendingAgeMs >= CLOUD_MODEL_PENDING_STALE_MS;
+      if (!pollStalled && !pendingStale) {
+        lastHealthWarningKey = '';
+        return;
+      }
+
+      const warningKey = [
+        pollStalled ? 'poll' : '',
+        pendingStale ? `pending:${health.pendingRevision}` : '',
+        health.polling ? 'running' : 'idle',
+      ].join(':');
+      if (
+        warningKey !== lastHealthWarningKey
+        || now - lastHealthWarningAt >= CLOUD_MODEL_HEALTH_WARNING_REPEAT_MS
+      ) {
+        lastHealthWarningKey = warningKey;
+        lastHealthWarningAt = now;
+        if (health.polling) {
+          Logger.warning(
+            `CatsCo 模型同步健康检查发现轮询任务已持续 ${Math.round(health.pollAgeMs / 1000)} 秒；`
+              + '不会并发启动第二次切换，当前模型继续可用。',
+          );
+        } else if (pendingStale) {
+          Logger.warning(
+            `CatsCo 模型 revision=${health.pendingRevision} 已等待应用 ${Math.round((health.pendingAgeMs ?? 0) / 1000)} 秒；`
+              + '将在 Agent 空闲时继续重试，不会中断当前对话。',
+          );
+        } else {
+          Logger.warning(
+            `CatsCo 模型轮询已 ${Math.round(health.pollAgeMs / 1000)} 秒未完成；正在执行一次安全自愈轮询。`,
+          );
+        }
+      }
+
+      if (!health.polling) triggerCloudModelPoll();
+    }, CLOUD_MODEL_HEALTHCHECK_MS);
   } catch (error) {
     if (ownerWatchTimer) {
       clearInterval(ownerWatchTimer);
