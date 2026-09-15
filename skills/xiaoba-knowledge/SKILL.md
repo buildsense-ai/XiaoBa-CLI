@@ -12,12 +12,12 @@ Node 可执行文件：<KNOWLEDGE_NODE>
 历史会话日志目录：<KNOWLEDGE_SESSION_LOGS>
 当前会话 ID（运行时提供，null 表示未知）：<KNOWLEDGE_SESSION_ID>
 
-所有 bot 共享上述目录，不按 bot 划分。知识留在此持久化目录，不写入 Skill 目录、安装目录或当前项目，也不自动同步到其他 XiaoBa。配置事实放知识文档，真实密钥继续留在原配置，只记录配置位置和用途。
+所有 bot 共享上述目录，不按 bot 划分。`<KNOWLEDGE_ROOT>` 是唯一正式知识库根目录：只能使用 Skill 注入的绝对路径，不得把实例运行根目录、当前工作目录、安装目录、Skill 目录、`tmp`、`logs`、`sessions` 或 `<KNOWLEDGE_DATA_ROOT>` 当作知识库根目录，也不得因为发现这些目录中有 Markdown 就自行新建第二套知识库。知识留在此持久化目录，不写入 Skill 目录、安装目录或当前项目，也不自动同步到其他 XiaoBa。配置事实放知识文档，真实密钥继续留在原配置，只记录配置位置和用途。
 
 ## 调用方式
 
 使用本运行环境的 execute_shell（不带远程 target），运行 Node 脚本。将下面的 ROOT、SCRIPT 替换成上面的绝对路径，并按当前 shell 正确引用路径（包括空格、中文）；不要假设当前 cwd 就是用户数据目录。打包版 Node 使用运行环境提供的 Node 路径。
-脚本路径必须原样使用本次加载结果，不凭记忆重拼。MODULE_NOT_FOUND 或路径错误时，重新加载本 Skill，对照完整绝对路径重试；仍失败就报告阻碍，不能用 write_file、edit_file 或自行编写 shell 直接修改知识正文、索引、历史来绕过 put。临时 JSON 请求文件放知识目录外的临时目录。
+脚本路径必须原样使用本次加载结果，不凭记忆重拼。MODULE_NOT_FOUND 或路径错误时，重新加载本 Skill，对照完整绝对路径重试；仍失败就报告阻碍，不能用 write_file、edit_file 或自行编写 shell 直接修改知识正文、索引、历史来绕过 put。临时 JSON 请求文件放知识目录外的临时目录。`<KNOWLEDGE_ROOT>` 初始化后，先执行一次 `index` 或 `reindex` 获取正式库状态；如需辅助判断，可在同一实例范围内只读扫描 `<KNOWLEDGE_ROOT>`、`<KNOWLEDGE_DATA_ROOT>`、会话日志和临时目录，但扫描结果必须标明来源目录、managed 状态和扫描时间。扫描只能用于发现候选资料、核对遗漏和解释冲突，不能把旁路文件计入正式条数、不能自动移动/合并/删除、不能替代 `put`，也不能因扫描到 0 条就断言全库为空。发现疑似旧目录或重复库时，只报告候选路径及证据，等待用户或明确更新请求后再整理。
 
 ```text
 node SCRIPT --root ROOT index
@@ -51,7 +51,7 @@ knowledge.source.locate     # 读取来源登记和已核对的文件/消息位�
 
 只读响应统一包含 `instance_id`、对象 ID、revision、分页信息和 warnings。至少区分 `INSTANCE_OFFLINE`、`WIKI_HANDOFF_INVALID`、`DOCUMENT_NOT_FOUND`、`SOURCE_UNAVAILABLE`、`INVALID_RANGE` 和 `INDEX_REBUILDING`；错误不能伪装成空知识库。当前版本不把 `review_status` 解读为用户已经确认，模型也不能在只读入口改变状态。
 
-页面只显示逻辑知识索引；本地 documents 目录和原始上传位置只作为来源视图。目录名不决定业务分类，未整理的原始文件不能伪装成正式知识。
+页面只显示逻辑知识索引；本地 documents 目录和原始上传位置只作为来源视图。目录名不决定业务分类，未整理的原始文件不能伪装成正式知识。 辅助扫描可以覆盖同一实例的来源目录和会话日志来发现遗漏，但必须在结果中区分“正式知识库条目”和“待整理候选”，不得把候选数量汇报为知识库条数。
 
 ## 查阅
 
@@ -134,3 +134,4 @@ index/search/reindex 或 put 返回 warnings 时，查看 file、code 和 messag
 ### Wiki 只读运行入口
 
 Wiki 只调用随本 Skill 发布的 `scripts/wiki.cjs`：`knowledge.document.list` 只返回逻辑知识条目的分页元数据，`knowledge.document.read` 按完整 KB-ID 分段返回正文、来源、版本和变更说明。它只读取 `documents/` 下的受管 KB 文档，不把本地目录直接映射到网页，也不接受路径、上传、写入、删除或重建索引参数。运行时应在受限子进程中调用并限制并发、超时和响应大小；错误只返回稳定代码，不回传绝对路径或原始堆栈。
+

@@ -47,6 +47,26 @@ describe('instance shared knowledge', () => {
     assert.equal(new KnowledgeStore(path.join(temp, 'other')).index().total, 0);
   });
 
+  test('keeps the formal knowledge root separate from runtime, source and temporary directories', async () => {
+    const runtimeRoot = path.join(temp, 'srv', 'catsco-agent');
+    const formalRoot = path.join(runtimeRoot, 'knowledge');
+    const sourceRoot = path.join(runtimeRoot, 'knowledge_materials');
+    const tmpRoot = path.join(runtimeRoot, 'tmp');
+    fs.mkdirSync(path.join(formalRoot, 'documents'), { recursive: true });
+    fs.mkdirSync(sourceRoot, { recursive: true });
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    fs.writeFileSync(path.join(runtimeRoot, 'index.md'), '# runtime root');
+    fs.writeFileSync(path.join(sourceRoot, 'candidate.md'), '# 候选资料\n候选内容');
+    fs.writeFileSync(path.join(tmpRoot, 'report.md'), '# 临时报告');
+    const store = new KnowledgeStore(formalRoot);
+    const created = await store.put(request({ title: '正式资料' }));
+    assert.equal(store.index().total, 1);
+    assert.equal(store.index('候选内容').total, 0);
+    assert.equal(store.index('临时报告').total, 0);
+    assert.ok(fs.existsSync(path.join(formalRoot, 'documents', `${created.id}.md`)));
+    assert.ok(fs.existsSync(path.join(sourceRoot, 'candidate.md')));
+    assert.ok(fs.existsSync(path.join(tmpRoot, 'report.md')));
+  });
   test('preserves IDs and history, rejects stale writes, and skips unchanged content', async () => {
     const first = new KnowledgeStore(root);
     const second = new KnowledgeStore(root);
@@ -421,3 +441,4 @@ describe('instance shared knowledge', () => {
     assert.ok(String(read.content).includes('运行测试再发布'));
   });
 });
+
