@@ -500,6 +500,23 @@ export class CatsClient extends EventEmitter {
         if (fromUserId) {
           this.acceptFriendRequest(fromUserId).catch(console.error);
         }
+      } else if (msg.pres.what === 'member_kicked') {
+        // The server notifies remaining members and the kicked member itself
+        // (pres.user_id == the kicked uid). Surfacing this event lets the bot
+        // stop work bound to the group instead of looping on rejected sends.
+        Logger.warning(
+          `[CatsCompany] 收到成员被移出群通知: topic=${msg.pres.topic || '-'}, ` +
+          `user_id=${msg.pres.user_id ?? '-'}, src=${msg.pres.src || '-'}`
+        );
+        this.emit('member_kicked', {
+          topic: typeof msg.pres.topic === 'string' ? msg.pres.topic : '',
+          userId: msg.pres.user_id != null ? String(msg.pres.user_id) : '',
+        });
+      } else if (msg.pres.what === 'group_disbanded') {
+        Logger.warning(`[CatsCompany] 收到群解散通知: topic=${msg.pres.topic || '-'}`);
+        this.emit('group_disbanded', {
+          topic: typeof msg.pres.topic === 'string' ? msg.pres.topic : '',
+        });
       } else if (msg.pres.what && msg.pres.what !== 'on' && msg.pres.what !== 'off') {
         Logger.info(`[CatsCompany] 收到 presence: what=${msg.pres.what}, src=${msg.pres.src || '-'}`);
       }
