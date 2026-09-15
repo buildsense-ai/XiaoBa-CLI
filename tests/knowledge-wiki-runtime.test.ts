@@ -17,9 +17,9 @@ describe('readonly knowledge Wiki Skill entry', () => {
     fs.mkdirSync(path.join(root, 'documents'));
     fs.writeFileSync(path.join(root, 'documents', `${id}.md`), `---\n${JSON.stringify({ id, title: '合同', summary: '摘要', category: 'procedures', updatedAt: '2026-09-11T00:00:00Z', change: '导入', sources: ['S1'] })}\n---\n\n正文内容`);
     const list = JSON.parse(execFileSync(process.execPath, [script, root, 'knowledge.document.list', '{}'], { encoding: 'utf8' }));
-    assert.equal(list.ok, true); assert.equal(list.total, 1); assert.equal(list.items[0].id, id); assert.equal('file' in list.items[0], false);
+    assert.equal(list.ok, true); assert.equal(list.total, 1); assert.equal(list.review_pending, 1); assert.equal(list.items[0].id, id); assert.equal(list.items[0].review_status, 'unreviewed'); assert.equal('file' in list.items[0], false);
     const read = JSON.parse(execFileSync(process.execPath, [script, root, 'knowledge.document.read', JSON.stringify({ id })], { encoding: 'utf8' }));
-    assert.equal(read.ok, true); assert.match(read.body, /正文内容/); assert.deepEqual(read.sources, ['S1']);
+    assert.equal(read.ok, true); assert.match(read.body, /正文内容/); assert.equal(read.review_status, 'unreviewed'); assert.deepEqual(read.sources, ['S1']);
   });
 
   test('rejects a path and does not expose unqualified source files', () => {

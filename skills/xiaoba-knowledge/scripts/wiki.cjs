@@ -25,8 +25,9 @@ function metadata(store, name) {
     if (!match) fail('INVALID_DOCUMENT');
     const doc = JSON.parse(match[1]);
     if (doc.id !== name.slice(0, -3) || typeof doc.title !== 'string' || typeof doc.summary !== 'string') fail('INVALID_DOCUMENT');
+    const reviewStatus = String(doc.review_status || doc.reviewStatus || 'unreviewed').slice(0, 30);
     return { id: doc.id, title: doc.title.slice(0, 200), summary: doc.summary.slice(0, 600),
-      category: String(doc.category || '').slice(0, 50), updatedAt: doc.updatedAt };
+      category: String(doc.category || '').slice(0, 50), updatedAt: doc.updatedAt, review_status: reviewStatus };
   } finally { fs.closeSync(fd); }
 }
 
@@ -61,7 +62,7 @@ function call(root, operation, payload = {}) {
       if (bytes + size > 24000) break;
       items.push(doc); bytes += size;
     }
-    return { total: matches.length, items, nextOffset: offset + items.length < matches.length ? offset + items.length : null, warnings };
+    return { total: matches.length, review_pending: matches.filter(doc => String(doc.review_status || '') !== 'reviewed').length, items, nextOffset: offset + items.length < matches.length ? offset + items.length : null, warnings };
   }
   if (operation === 'knowledge.document.read') {
     if (typeof payload.id !== 'string' || !ID.test(payload.id)) fail('INVALID_ID');
@@ -69,6 +70,7 @@ function call(root, operation, payload = {}) {
     if (payload.revision && payload.revision !== doc.revision) fail('REVISION_CHANGED');
     const body = doc.body.slice(0, 3000);
     return { id: doc.id, title: doc.title, category: doc.category, summary: doc.summary,
+      review_status: String(doc.review_status || doc.reviewStatus || 'unreviewed').slice(0, 30),
       revision: doc.revision, updatedAt: doc.updatedAt, change: doc.change,
       sources: doc.sources, body, offset,
       nextOffset: body.length < doc.body.length || doc.nextOffset !== null ? offset + body.length : null };
