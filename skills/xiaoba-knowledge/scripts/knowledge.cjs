@@ -313,20 +313,21 @@ class KnowledgeStore {
   }
 
   async removeRaw(relativeFile, expectedHash, reason = 'malformed document cleanup') {
-    if (typeof relativeFile !== 'string' || !relativeFile.startsWith('documents/') || relativeFile.includes('\\')) fail('INVALID_PATH', 'Delete path must be a relative documents/ path.');
+    if (typeof relativeFile !== 'string' || !relativeFile.startsWith('documents/') || relativeFile.includes('\\') || relativeFile.split('/').some(part => !part || part === '.' || part === '..')) fail('INVALID_PATH', 'Delete path must be a normalized documents/ path.');
     if (!/^[a-f0-9]{64}$/.test(expectedHash || '')) fail('INVALID_INPUT', 'Raw delete requires the SHA-256 returned by inspection.');
     return this.withLock(() => {
       const file = this.safePath(...relativeFile.split('/'));
       const raw = fileStat(file) ? fs.readFileSync(file) : undefined;
-      if (!raw) fail('NOT_FOUND', 'Document file not found.');
+      if (raw === undefined) fail('NOT_FOUND', 'Document file not found.');
       const actualHash = hash(raw);
       if (actualHash !== expectedHash) fail('HASH_CONFLICT', 'Document changed. Inspect again before deleting.');
       const deletedDir = this.safePath('.history', '_deleted');
       fs.mkdirSync(deletedDir, { recursive: true });
-      const archive = this.safePath('.history', '_deleted', `${Date.now()}-${actualHash}.md`);
+      const archive = this.safePath('.history', '_deleted', `${Date.now()}-${crypto.randomUUID()}-${actualHash}.md`);
       this.atomicWrite(archive, raw);
       fs.unlinkSync(file);
-      const result = { file: relativeFile, deleted: true, archived: '.history/_deleted/' + path.basename(archive), reason: String(reason).slice(0, 600) };
+      const normalizedReason = String(reason || '').trim().slice(0, 600) || 'malformed document cleanup';
+      const result = { file: relativeFile, deleted: true, archived: '.history/_deleted/' + path.basename(archive), sha256: actualHash, reason: normalizedReason };
       const { warnings } = this.reindexLocked();
       if (warnings.length) result.warnings = warnings;
       return result;
