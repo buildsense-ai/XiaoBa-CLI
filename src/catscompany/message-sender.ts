@@ -6,6 +6,20 @@ import { RuntimePlanSnapshot } from '../core/plan-runtime';
 
 const MAX_MSG_LENGTH = 4000;
 
+/**
+ * A topic that rejects sends this many times in a row (without any successful
+ * send in between) is treated as unwritable, and onTopicSendBlocked fires.
+ * 403/404 are explicit server rejections (no longer in the group/session, or
+ * the target was deleted), so retrying them is pointless.
+ */
+const TOPIC_SEND_FAILURE_THRESHOLD = 5;
+
+function isPermanentTopicRejection(err: unknown): err is CatsSendError {
+  return err instanceof CatsSendError
+    && err.kind === 'ack'
+    && (err.code === 403 || err.code === 404);
+}
+
 type CatsMessageType = 'thinking' | 'tool_use' | 'tool_result' | 'runtime_plan' | 'task_status' | 'text' | 'image' | 'file';
 
 export type ConversationTaskState = 'running' | 'completed' | 'failed' | 'cancelled' | 'stale';
@@ -106,6 +120,16 @@ export class MessageSender {
   private readonly baseUrl: string;
   private readonly apiKey: string;
 
+  /**
+   * Optional hook for topics that keep rejecting sends (see
+   * TOPIC_SEND_FAILURE_THRESHOLD). Callers use it to stop work loops bound to
+   * the topic, e.g. a bot kicked from a group must not keep retrying sends on
+   * every turn. Fires once per consecutive-failure streak.
+   */
+  onTopicSendBlocked: ((topic: string, error: CatsSendError) => void) | null = null;
+
+  private readonly topicFailureStreak = new Map<string, number>();
+
   constructor(private bot: CatsClient, baseUrl?: string, apiKey?: string) {
     this.baseUrl = baseUrl || 'https://app.catsco.cc';
     this.apiKey = apiKey || '';
@@ -130,6 +154,7 @@ export class MessageSender {
 
     try {
       const seq = await this.bot.sendStructuredMessage(body);
+      this.topicFailureStreak.delete(topic);
       return { seq_id: seq };
     } catch (err: any) {
       if (err instanceof CatsSendError && (err.kind === 'transport' || err.retryableWithHttp)) {
@@ -141,12 +166,36 @@ export class MessageSender {
           };
         }
         Logger.warning(`WebSocket 链路不可用或确认超时，准备使用 HTTP 兜底发送（${describeMessage(body)}）：${describeCatsSendFailure(err)}`);
-        const result = await this.sendViaHttp(body);
-        Logger.info(`HTTP 兜底发送成功（${describeMessage(body)}, seq_id=${result.seq_id}）`);
-        return result;
+        try {
+          const result = await this.sendViaHttp(body);
+          this.topicFailureStreak.delete(topic);
+          Logger.info(`HTTP 兜底发送成功（${describeMessage(body)}, seq_id=${result.seq_id}）`);
+          return result;
+        } catch (httpErr: any) {
+          if (isPermanentTopicRejection(err)) this.recordTopicSendBlocked(topic, err);
+          throw httpErr;
+        }
       }
+      if (isPermanentTopicRejection(err)) this.recordTopicSendBlocked(topic, err);
       Logger.error(`WebSocket 消息发送失败，未使用 HTTP 兜底（${describeMessage(body)}）：${describeCatsSendFailure(err)}`);
       throw err;
+    }
+  }
+
+  private recordTopicSendBlocked(topic: string, error: CatsSendError): void {
+    const streak = (this.topicFailureStreak.get(topic) || 0) + 1;
+    if (streak < TOPIC_SEND_FAILURE_THRESHOLD) {
+      this.topicFailureStreak.set(topic, streak);
+      return;
+    }
+    this.topicFailureStreak.delete(topic);
+    Logger.warning(
+      `消息发送连续 ${streak} 次被服务器拒绝（HTTP ${error.code}，topic=${topic}），触发发送熔断`
+    );
+    try {
+      this.onTopicSendBlocked?.(topic, error);
+    } catch (hookError: any) {
+      Logger.warning(`发送熔断回调执行失败: ${hookError?.message || hookError}`);
     }
   }
 

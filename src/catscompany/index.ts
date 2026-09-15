@@ -10,7 +10,7 @@ import {
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo, type CatsCompanyRuntimeRole } from './types';
 import { MessageSender, type ConversationTaskStatusInput } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
-import { createCatsCoMessageEnvelope, createExecutionScope } from './message-envelope';
+import { createCatsCoMessageEnvelope, createExecutionScope, buildCatsCoSessionKey } from './message-envelope';
 import { logCatsCoExecutionContextDiagnostics } from './execution-context-diagnostics';
 import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
 import { extractCatsCoDeviceGrants } from './device-grants';
@@ -558,6 +558,19 @@ export class CatsCompanyBot {
     });
 
     this.sender = new MessageSender(this.bot, config.httpBaseUrl, config.apiKey);
+    // 服务器连续拒绝发送（403/404，例如已被移出群或群已删除）说明该会话
+    // 已不可写。触发熔断并停止对应会话的循环工作，避免消息发不出去时
+    // 仍持续空转（每轮全量推理、发送再被拒）。
+    this.sender.onTopicSendBlocked = (topic: string, error: { code?: number }) => {
+      Logger.warning(
+        `[CatsCompany] topic ${topic} 连续发送被拒（HTTP ${error?.code ?? '-'}），停止该会话的循环工作`
+      );
+      if (topic.startsWith('grp_')) {
+        this.stopSessionExecution(buildCatsCoSessionKey('group', topic, this.botUid || ''));
+      } else {
+        Logger.warning(`[CatsCompany] topic ${topic} 不是群会话，暂不自动停止，请检查账号权限或凭据`);
+      }
+    };
     this.localDeviceGrant = createCatsCoLocalDeviceGrant({
       bodyId: config.bodyId,
       installationId: config.installationId,
@@ -617,6 +630,14 @@ export class CatsCompanyBot {
     this.bot.on('message', async (ctx: MessageContext) => {
       if (this.shuttingDown) return;
       await this.onMessage(ctx);
+    });
+
+    this.bot.on('member_kicked', (payload: { topic?: string; userId?: string }) => {
+      this.handleMemberKickedNotice(payload);
+    });
+
+    this.bot.on('group_disbanded', (payload: { topic?: string }) => {
+      this.handleGroupDisbandedNotice(payload);
     });
 
     this.bot.on('device_rpc_request', async (request: CatsDeviceRpcMessage) => {
@@ -2958,6 +2979,39 @@ export class CatsCompanyBot {
     const streamEvent = String(ctx.metadata?.stream_event || '').trim();
     const control = String(ctx.metadata?.control || '').trim();
     return type === 'stream_cancel' || streamEvent === 'cancel' || control === 'interrupt';
+  }
+
+  /**
+   * 服务器把成员移出群时，会显式通知被踢者本人（pres.user_id 指向被踢
+   * 成员）。若被踢的是本机 bot，立即停止该群会话的所有循环工作；否则仅
+   * 记录日志。没有这一步的话，被踢后仍在跑的回合会不断尝试发送消息、
+   * 反复收到 403，却没有任何机制知道应该停下来。
+   */
+  private handleMemberKickedNotice(payload: { topic?: string; userId?: string }): void {
+    const topic = String(payload?.topic || '').trim();
+    const kickedUserId = String(payload?.userId || '').trim();
+    if (!topic) return;
+    const selfUid = String(this.botUid || this.bot?.uid || '').trim();
+    if (!kickedUserId || !selfUid || kickedUserId !== selfUid) {
+      Logger.info(
+        `[CatsCompany] 收到成员被移出群通知: topic=${topic}, user_id=${kickedUserId || '-'}（非本机 bot，忽略）`
+      );
+      return;
+    }
+    Logger.warning(
+      `[CatsCompany] 本机 bot (uid=${selfUid}) 已被移出群 ${topic}，停止该群会话循环`
+    );
+    this.stopSessionExecution(buildCatsCoSessionKey('group', topic, selfUid));
+  }
+
+  /**
+   * 群解散后该群所有在跑的工作都不再有意义，停止该群会话循环。
+   */
+  private handleGroupDisbandedNotice(payload: { topic?: string }): void {
+    const topic = String(payload?.topic || '').trim();
+    if (!topic) return;
+    Logger.warning(`[CatsCompany] 群 ${topic} 已解散，停止该群会话循环`);
+    this.stopSessionExecution(buildCatsCoSessionKey('group', topic, this.botUid || ''));
   }
 
   private handleCancelMessage(ctx: MessageContext): void {
