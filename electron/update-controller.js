@@ -17,6 +17,7 @@ function createUpdateController(options) {
     releasePageUrl = null,
     updateBaseUrl = null,
     logger = console,
+    beforeInstallHandoff = null,
     setTimeoutImpl = setTimeout,
     clearTimeoutImpl = clearTimeout,
     preparationTimeoutMs = DEFAULT_PREPARATION_TIMEOUT_MS,
@@ -331,6 +332,13 @@ function createUpdateController(options) {
         installDelayTimer = null;
         try {
           logger.info?.('requesting updater quit-and-install handoff');
+          // `autoUpdater.quitAndInstall()` closes every window first and only
+          // emits `before-quit` after they are all closed. A window close
+          // handler that hides the window instead of closing it (tray behaviour)
+          // therefore deadlocks the handoff: the app never quits, the installer
+          // waits on a process that never exits, and the update silently never
+          // lands. Let the caller drop that guard before requesting the handoff.
+          beforeInstallHandoff?.();
           updater.quitAndInstall();
         } catch (error) {
           markError(error, 'UPDATE_INSTALL_FAILED');

@@ -393,6 +393,15 @@ const updateController = createUpdateController({
   currentVersion: () => app.getVersion(),
   releasePageUrl: resolveReleasePageUrl(),
   updateBaseUrl: resolveUpdateBaseUrl(),
+  // `autoUpdater.quitAndInstall()` closes every window before it emits
+  // `before-quit`, but the window close handler in createWindow() hides the
+  // window instead of closing it unless the app is already quitting. Without
+  // this flag the handoff deadlocks: windows never close, so the app never
+  // quits, so Squirrel/ShipIt waits forever on an app that is still running and
+  // the update silently never installs. Mark the quit before the handoff.
+  beforeInstallHandoff: () => {
+    app.isQuitting = true;
+  },
   logger: updateLogger,
 });
 function getAppRoot() {

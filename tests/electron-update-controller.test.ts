@@ -46,7 +46,7 @@ function createScheduler() {
   };
 }
 
-function createController(platform = 'win32') {
+function createController(platform = 'win32', overrides: Record<string, unknown> = {}) {
   const updater = new FakeUpdater();
   const nativeUpdater = new EventEmitter();
   const app = new EventEmitter() as EventEmitter & { getVersion: () => string };
@@ -62,6 +62,7 @@ function createController(platform = 'win32') {
     logger: { info() {}, warn() {}, error() {}, debug() {} },
     setTimeoutImpl: scheduler.setTimeout,
     clearTimeoutImpl: scheduler.clearTimeout,
+    ...overrides,
   });
   return { updater, nativeUpdater, app, scheduler, controller };
 }
@@ -188,6 +189,60 @@ test('an installer handoff that does not quit reports a visible error', () => {
     const status = controller.getStatus();
     assert.equal(status.stage, 'error');
     assert.equal(status.lastError.reason, 'UPDATE_INSTALL_DID_NOT_START');
+  } finally {
+    controller.dispose();
+  }
+});
+
+test('the install handoff drops the close guard before quit-and-install runs', () => {
+  const order: string[] = [];
+  const { updater, scheduler, controller } = createController('win32', {
+    beforeInstallHandoff: () => {
+      order.push('beforeInstallHandoff');
+    },
+  });
+  updater.quitAndInstall = () => {
+    order.push('quitAndInstall');
+  };
+  try {
+    updater.emit('update-downloaded', { version: '1.5.5' });
+    controller.installUpdate();
+    scheduler.run(250);
+    assert.deepEqual(order, ['beforeInstallHandoff', 'quitAndInstall']);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test('a rejected install request never touches the close guard', () => {
+  let handoffs = 0;
+  const { controller } = createController('win32', {
+    beforeInstallHandoff: () => {
+      handoffs += 1;
+    },
+  });
+  try {
+    assert.throws(() => controller.installUpdate(), /not ready to install yet/i);
+    assert.equal(handoffs, 0);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test('a failing handoff hook surfaces as a visible install error', () => {
+  const { updater, scheduler, controller } = createController('win32', {
+    beforeInstallHandoff: () => {
+      throw new Error('close guard could not be released');
+    },
+  });
+  try {
+    updater.emit('update-downloaded', { version: '1.5.5' });
+    controller.installUpdate();
+    scheduler.run(250);
+    const status = controller.getStatus();
+    assert.equal(status.stage, 'error');
+    assert.equal(status.lastError.reason, 'UPDATE_INSTALL_FAILED');
+    assert.equal(updater.installCalls, 0);
   } finally {
     controller.dispose();
   }

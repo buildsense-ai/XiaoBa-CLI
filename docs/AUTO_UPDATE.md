@@ -58,4 +58,17 @@ macOS 发布必须同时生成 `.dmg` 和 `.zip`：
 
 当前 macOS 包沿用未签名分发方式，用户首次打开或安装时需要在系统中手动确认。发布流程不要求 Apple Developer 证书，也不能把缺少签名当作本次 ZIP 事故的根因。正式签名和 notarization 留作后续独立升级，并在启用前做真机迁移验证。
 
+### 安装交接必须允许应用退出
+
+macOS 上真正的安装由 Squirrel 的 `ShipIt` 在**应用完全退出后**执行。`autoUpdater.quitAndInstall()` 会先关闭所有窗口、窗口全部关闭后才触发 `before-quit` 并退出应用。
+
+因此窗口层必须配合：
+
+- 应用平时为了托盘常驻，会拦截窗口 `close` 并改成隐藏；这个拦截必须在这一刻放行，否则窗口永远关不掉、`before-quit` 永不触发、应用永不退出，`ShipIt` 会一直等待一个仍在运行的进程，表现为界面长期停在「安装中」而版本始终不更新。
+- 具体做法是先标记退出（`app.isQuitting = true`），再请求安装交接；`electron/update-controller.js` 的 `beforeInstallHandoff` 就是给这一步用的钩子。
+- `ShipIt` 拒绝安装时的措辞是 `App Still Running Error`（`SQRLInstallerErrorDomain Code=-9`），日志见 `~/Library/Caches/com.catcompany.xiaoba.ShipIt/ShipIt_stderr.log`。排查安装失败时先看这个文件。
+- 应用退出后不要在几十秒内马上重新打开：`ShipIt` 会重新检查实例数，检测到有实例在运行就会放弃本次安装。
+
+历史症状记录（2026-09-15，1.5.5 真机）：`/api/update/status` 长期停在 `stage: "installing"`，`ShipIt` 日志停在 `Detected this as an install request`，版本一直是 1.5.5，直到手工触发一次真正的退出才装上 1.5.8。
+
 2026-07-15 的缺失 ZIP 事故见 [事故复盘](./incidents/2026-07-15-macos-auto-update-missing-zip.md)。
