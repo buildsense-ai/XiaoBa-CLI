@@ -561,16 +561,7 @@ export class CatsCompanyBot {
     // 服务器连续拒绝发送（403/404，例如已被移出群或群已删除）说明该会话
     // 已不可写。触发熔断并停止对应会话的循环工作，避免消息发不出去时
     // 仍持续空转（每轮全量推理、发送再被拒）。
-    this.sender.onTopicSendBlocked = (topic: string, error: { code?: number }) => {
-      Logger.warning(
-        `[CatsCompany] topic ${topic} 连续发送被拒（HTTP ${error?.code ?? '-'}），停止该会话的循环工作`
-      );
-      if (topic.startsWith('grp_')) {
-        this.stopSessionExecution(buildCatsCoSessionKey('group', topic, this.botUid || ''));
-      } else {
-        Logger.warning(`[CatsCompany] topic ${topic} 不是群会话，暂不自动停止，请检查账号权限或凭据`);
-      }
-    };
+    this.sender.onTopicSendBlocked = (topic, code) => this.handleTopicSendBlockedNotice(topic, code);
     this.localDeviceGrant = createCatsCoLocalDeviceGrant({
       bodyId: config.bodyId,
       installationId: config.installationId,
@@ -2991,10 +2982,16 @@ export class CatsCompanyBot {
     const topic = String(payload?.topic || '').trim();
     const kickedUserId = String(payload?.userId || '').trim();
     if (!topic) return;
+    if (!kickedUserId) {
+      Logger.info(`[CatsCompany] 收到成员被移出群通知: topic=${topic}（事件未携带 user_id，忽略）`);
+      return;
+    }
+    // 服务器 pres.user_id 是裸数字（如 407），而握手 uid 是 "usr<N>" 形式
+    // （如 usr407）。两边归一化后再比较，避免格式差异导致漏判。
     const selfUid = String(this.botUid || this.bot?.uid || '').trim();
-    if (!kickedUserId || !selfUid || kickedUserId !== selfUid) {
+    if (!selfUid || normalizeCatsUid(kickedUserId) !== normalizeCatsUid(selfUid)) {
       Logger.info(
-        `[CatsCompany] 收到成员被移出群通知: topic=${topic}, user_id=${kickedUserId || '-'}（非本机 bot，忽略）`
+        `[CatsCompany] 收到成员被移出群通知: topic=${topic}, user_id=${kickedUserId}（非本机 bot ${selfUid || '-'}，忽略）`
       );
       return;
     }
@@ -3011,7 +3008,24 @@ export class CatsCompanyBot {
     const topic = String(payload?.topic || '').trim();
     if (!topic) return;
     Logger.warning(`[CatsCompany] 群 ${topic} 已解散，停止该群会话循环`);
-    this.stopSessionExecution(buildCatsCoSessionKey('group', topic, this.botUid || ''));
+    this.stopSessionExecution(
+      buildCatsCoSessionKey('group', topic, String(this.botUid || this.bot?.uid || ''))
+    );
+  }
+
+  /**
+   * 发送熔断回调：topic 连续被 403/404 拒绝后停止对应会话的循环。
+   * 群会话映射到 cc_group:<topic>；其它 topic 仅告警，避免误停私聊。
+   */
+  private handleTopicSendBlockedNotice(topic: string, code?: number): void {
+    Logger.warning(
+      `[CatsCompany] topic ${topic} 连续发送被拒（HTTP ${code ?? '-'}），停止该会话的循环工作`
+    );
+    if (topic.startsWith('grp_')) {
+      this.stopSessionExecution(buildCatsCoSessionKey('group', topic, this.botUid || ''));
+    } else {
+      Logger.warning(`[CatsCompany] topic ${topic} 不是群会话，暂不自动停止，请检查账号权限或凭据`);
+    }
   }
 
   private handleCancelMessage(ctx: MessageContext): void {

@@ -3,6 +3,7 @@ import * as assert from 'node:assert';
 import { CatsClient, CatsSendError } from '../src/catscompany/client';
 import { MessageSender } from '../src/catscompany/message-sender';
 import { buildCatsCoSessionKey } from '../src/catscompany/message-envelope';
+import { CatsCompanyBot } from '../src/catscompany';
 
 function createClient(): CatsClient {
   const client = new CatsClient({
@@ -64,7 +65,7 @@ describe('CatsCompany MessageSender send circuit breaker', () => {
     } as any, 'https://app.example.test', 'cc_test');
 
     const blocked: Array<{ topic: string; code?: number }> = [];
-    sender.onTopicSendBlocked = (topic, error) => blocked.push({ topic, code: error.code });
+    sender.onTopicSendBlocked = (topic, code) => blocked.push({ topic, code });
 
     for (let i = 0; i < 4; i += 1) {
       await assert.rejects(() => sender.sendText('grp_9', `turn-${i}`), /not a group member/);
@@ -126,11 +127,84 @@ describe('CatsCompany MessageSender send circuit breaker', () => {
     } as any, 'https://app.example.test', 'cc_test');
 
     const blocked: Array<{ code?: number }> = [];
-    sender.onTopicSendBlocked = (_topic, error) => blocked.push({ code: error.code });
+    sender.onTopicSendBlocked = (_topic, code) => blocked.push({ code });
 
     for (let i = 0; i < 5; i += 1) {
       await assert.rejects(() => sender.sendText('grp_11', 'gone'), /topic not found/);
     }
     assert.deepEqual(blocked, [{ code: 404 }]);
+  });
+
+  test('counts an HTTP fallback 403 toward the breaker (WS degraded while evicted)', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 403,
+      text: async () => 'not a group member',
+    })) as any;
+
+    try {
+      const sender = new MessageSender({
+        sendStructuredMessage: async () => {
+          throw new CatsSendError('transport', 'socket not open');
+        },
+      } as any, 'https://app.example.test', 'cc_test');
+
+      const blocked: Array<{ topic: string; code?: number }> = [];
+      sender.onTopicSendBlocked = (topic, code) => blocked.push({ topic, code });
+
+      for (let i = 0; i < 5; i += 1) {
+        await assert.rejects(() => sender.sendText('grp_12', 'evicted'));
+      }
+      assert.deepEqual(blocked, [{ topic: 'grp_12', code: 403 }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe('CatsCompany connector notice wiring', () => {
+  function createBot(selfUid: string | null): { bot: any; stopped: string[] } {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.botUid = selfUid;
+    const stopped: string[] = [];
+    bot.stopSessionExecution = (key: string) => {
+      stopped.push(key);
+    };
+    return { bot, stopped };
+  }
+
+  test('stops the group session when the bare numeric user_id matches the usr-prefixed bot uid', () => {
+    const { bot, stopped } = createBot('usr407');
+    bot.handleMemberKickedNotice({ topic: 'grp_3907', userId: '407' });
+    assert.deepEqual(stopped, ['cc_group:grp_3907']);
+  });
+
+  test('stops the group session when both sides carry the usr prefix', () => {
+    const { bot, stopped } = createBot('usr407');
+    bot.handleMemberKickedNotice({ topic: 'grp_3907', userId: 'usr407' });
+    assert.deepEqual(stopped, ['cc_group:grp_3907']);
+  });
+
+  test('ignores kicks of other members, events without user_id, and empty topics', () => {
+    const { bot, stopped } = createBot('usr407');
+    bot.handleMemberKickedNotice({ topic: 'grp_3907', userId: 'usr99' });
+    bot.handleMemberKickedNotice({ topic: 'grp_3907' });
+    bot.handleMemberKickedNotice({ topic: '', userId: '407' });
+    assert.deepEqual(stopped, []);
+  });
+
+  test('group_disbanded stops the group session', () => {
+    const { bot, stopped } = createBot('usr407');
+    bot.handleGroupDisbandedNotice({ topic: 'grp_99' });
+    assert.deepEqual(stopped, ['cc_group:grp_99']);
+  });
+
+  test('send-blocked notices stop group sessions but only warn for other topics', () => {
+    const { bot, stopped } = createBot('usr407');
+    bot.handleTopicSendBlockedNotice('grp_9', 403);
+    assert.deepEqual(stopped, ['cc_group:grp_9']);
+    bot.handleTopicSendBlockedNotice('p2p_1_2', 403);
+    assert.deepEqual(stopped, ['cc_group:grp_9']);
   });
 });
