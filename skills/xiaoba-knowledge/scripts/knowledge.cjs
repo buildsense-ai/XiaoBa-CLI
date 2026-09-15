@@ -311,6 +311,27 @@ class KnowledgeStore {
       return result;
     });
   }
+
+  async removeRaw(relativeFile, expectedHash, reason = 'malformed document cleanup') {
+    if (typeof relativeFile !== 'string' || !relativeFile.startsWith('documents/') || relativeFile.includes('\\')) fail('INVALID_PATH', 'Delete path must be a relative documents/ path.');
+    if (!/^[a-f0-9]{64}$/.test(expectedHash || '')) fail('INVALID_INPUT', 'Raw delete requires the SHA-256 returned by inspection.');
+    return this.withLock(() => {
+      const file = this.safePath(...relativeFile.split('/'));
+      const raw = fileStat(file) ? fs.readFileSync(file) : undefined;
+      if (!raw) fail('NOT_FOUND', 'Document file not found.');
+      const actualHash = hash(raw);
+      if (actualHash !== expectedHash) fail('HASH_CONFLICT', 'Document changed. Inspect again before deleting.');
+      const deletedDir = this.safePath('.history', '_deleted');
+      fs.mkdirSync(deletedDir, { recursive: true });
+      const archive = this.safePath('.history', '_deleted', `${Date.now()}-${actualHash}.md`);
+      this.atomicWrite(archive, raw);
+      fs.unlinkSync(file);
+      const result = { file: relativeFile, deleted: true, archived: '.history/_deleted/' + path.basename(archive), reason: String(reason).slice(0, 600) };
+      const { warnings } = this.reindexLocked();
+      if (warnings.length) result.warnings = warnings;
+      return result;
+    });
+  }
 }
 
 function hash(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
@@ -350,6 +371,7 @@ async function main(args) {
     return store.put(JSON.parse(fs.readFileSync(rest[0], 'utf8').replace(/^\uFEFF/, '')));
   }
   if (command === 'delete' && rest.length === 2) return store.remove(rest[0], rest[1]);
+  if (command === 'delete-raw' && (rest.length === 2 || rest.length === 3)) return store.removeRaw(rest[0], rest[1], rest[2]);
   fail('INVALID_INPUT', 'Unknown command or invalid arguments.');
 }
 

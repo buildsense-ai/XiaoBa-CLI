@@ -69,7 +69,7 @@ Skill 将首次转换作为整理入口：明确资料覆盖范围，复用本�
 
 当前明确采用人工崩溃恢复策略：时间超过某个 TTL 或 PID 查询失败均不能单独作为删锁依据（PID 可复用，权限不足也可能导致查询失败）。恢复前暂停该实例各 bot 的知识写入，确认持锁进程已退出、锁内容没有变化，再移除这个锁并执行 reindex；无法确认时保留锁。遗留锁会阻止后续写入，读取仍可使用，这是已知运维限制。锁记录包含随机归属 token；正常释放会核对文件身份及完整记录，保留已被替换的锁。这降低误删风险，不提供针对恶意本地进程的原子 compare-and-delete 或 OS 级隔离。
 
-用户可直接编辑 Markdown 正文，保留 frontmatter 和文档 ID；直接编辑不会自动生成历史版本，可运行 reindex 更新索引。Agent 更新和删除都必须使用 helper：删除先 read 获取完整 KB-ID 与 revision，再调用 Skill 的 delete，归档版本后重建索引；禁止用 execute_shell、write_file 或 edit_file 绕过版本检查直接删除正文、历史或索引。Wiki 只展示和发起请求，不提供直接删除入口。操作不支持知识根目录及其内部的符号链接/目录联接和硬链接文件。
+用户可直接编辑 Markdown 正文，保留 frontmatter 和文档 ID；直接编辑不会自动生成历史版本，可运行 reindex 更新索引。Agent 更新和删除都必须使用 helper：删除先 read 获取完整 KB-ID 与 revision，再调用 Skill 的 delete，归档版本后重建索引；禁止用 execute_shell、write_file 或 edit_file 绕过版本检查直接删除正文、历史或索引。格式损坏或缺少 KB-ID 的文档使用 Skill 的 delete-raw（documents/ 相对路径 + SHA-256），原始内容归档到 .history/_deleted 后再重建索引；哈希变化或路径越界时拒绝。Wiki 只展示和发起请求，不提供直接删除入口。操作不支持知识根目录及其内部的符号链接/目录联接和硬链接文件。
 
 客户可以直接把 UTF-8 Markdown 复制到 `documents/` 或其子目录，文件名不要求 KB-ID，也不要求 frontmatter。index/search 自动全文搜索这些资料，返回 `managed:false`、相对路径 `file` 和 `file:documents/...` 形式的引用；read 接受该引用并分页返回原文与内容 revision。标题取一级 Markdown 标题或文件名，不编造来源日期。引用随路径变化，文件移动后应重新搜索。这些资料只读接入，不自动改写、改名或生成历史版本；put 仍只更新合法 KB-ID。若要整理成受版本管理的新知识，须先读取原资料、查重，并引用其路径和 revision 创建整理文档，保留原件。PDF、Word 和图片不属于本 helper 的直接检索格式，需先沿现有读取工具处理为知识。
 
@@ -100,4 +100,5 @@ KB-ID 文档的 frontmatter 损坏或 ID 与文件名不一致时，仍可作为
 同一批工具在取消前已完成的结果会先写入会话记录；普通停止按当前生命周期保留这些证据，避免恢复时丢失完成状态。reset/clear 改变生命周期后，不会把旧批次重新写回。该机制不提供业务操作的 exactly-once 保证；本轮没有扩展为过滤所有忽略取消信号的 provider 流式回调，也不能撤回停止前已经发送的内容。
 
 审查补充回归：`tests/shared-knowledge.test.ts` 包含真实子进程持锁、强制退出后的遗留锁、明确恢复与替换锁保护；`tests/session-lifecycle-manager.test.ts` 使用真实 AgentSession/压缩协调器，在摘要生成中和落盘后分别覆盖继续、stop/reset/clear、timeout。模型回复由确定性 fixture 控制，非新增线上模型压力测试。`tests/checkpoint-provider-wire.test.ts` 通过本机 HTTP 服务捕获真实 OpenAI provider 的 Responses/Chat Completions 请求体，确认历史调用只作为被引用数据。`tests/bundled-knowledge-runtime.test.ts` 从隔离 CLI、桌面资源（含 macOS .app 路径结构）和 Worker 目录启动编译产物，验证资源定位及知识读写；它使用主机 Node 与依赖，不等于实际安装包或 macOS 真机验收。
+
 
