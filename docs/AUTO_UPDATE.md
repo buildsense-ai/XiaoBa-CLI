@@ -66,6 +66,7 @@ macOS 上真正的安装由 Squirrel 的 `ShipIt` 在**应用完全退出后**�
 
 - 应用平时为了托盘常驻，会拦截窗口 `close` 并改成隐藏；这个拦截必须在这一刻放行，否则窗口永远关不掉、`before-quit` 永不触发、应用永不退出，`ShipIt` 会一直等待一个仍在运行的进程，表现为界面长期停在「安装中」而版本始终不更新。
 - 具体做法是先标记退出（`app.isQuitting = true`），再请求安装交接；`electron/update-controller.js` 的 `beforeInstallHandoff` 就是给这一步用的钩子。
+- 退出标记是**单向闩锁**，而「请求了交接」不等于「应用会退出」：更新器可能直接拒绝安装（例如安装包缺失、Squirrel 没有接住更新），此时应用继续存活，闩锁却留在 true。因此交接必须有对称的复位钩子 `installHandoffAborted`，在交接抛错或看门狗判定 `UPDATE_INSTALL_DID_NOT_START` 时把标记放回去。否则用户下一次照常关窗口会直接退出应用（破坏托盘常驻），`render-process-gone` 的 `if (app.isQuitting) return;` 自愈分支也会被永久关闭。
 - `ShipIt` 拒绝安装时的措辞是 `App Still Running Error`（`SQRLInstallerErrorDomain Code=-9`），日志见 `~/Library/Caches/com.catcompany.xiaoba.ShipIt/ShipIt_stderr.log`。排查安装失败时先看这个文件。
 - 应用退出后不要在几十秒内马上重新打开：`ShipIt` 会重新检查实例数，检测到有实例在运行就会放弃本次安装。
 

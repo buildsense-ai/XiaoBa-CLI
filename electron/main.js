@@ -402,6 +402,15 @@ const updateController = createUpdateController({
   beforeInstallHandoff: () => {
     app.isQuitting = true;
   },
+  // Requesting the handoff does not guarantee that the app quits: the updater
+  // can reject the install (missing installer package, Squirrel never picking
+  // the update up), in which case the app keeps running. `isQuitting` is a
+  // one-way latch, so an aborted handoff has to put it back - otherwise the
+  // next ordinary window close would quit the tray-resident app instead of
+  // hiding it, and the renderer self-healing guard would stay disabled.
+  installHandoffAborted: () => {
+    app.isQuitting = false;
+  },
   logger: updateLogger,
 });
 function getAppRoot() {

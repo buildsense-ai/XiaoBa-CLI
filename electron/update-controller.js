@@ -18,6 +18,7 @@ function createUpdateController(options) {
     updateBaseUrl = null,
     logger = console,
     beforeInstallHandoff = null,
+    installHandoffAborted = null,
     setTimeoutImpl = setTimeout,
     clearTimeoutImpl = clearTimeout,
     preparationTimeoutMs = DEFAULT_PREPARATION_TIMEOUT_MS,
@@ -105,6 +106,21 @@ function createUpdateController(options) {
     const wrapped = new Error(normalized.message);
     wrapped.reason = normalized.reason;
     return wrapped;
+  }
+
+  /**
+   * Releases the caller's quit guard when a requested install handoff never
+   * turns into an actual application quit. Without this the guard is a one-way
+   * latch: the app keeps running in its normal tray-resident mode, but the next
+   * ordinary window close would quit it instead of hiding it.
+   */
+  function notifyInstallHandoffAborted(reason) {
+    if (!installHandoffAborted) return;
+    try {
+      installHandoffAborted(reason);
+    } catch (error) {
+      logger.warn?.(`install handoff abort hook failed: ${String(error?.message || error)}`);
+    }
   }
 
   function startPreparationTimeout() {
@@ -342,6 +358,9 @@ function createUpdateController(options) {
           updater.quitAndInstall();
         } catch (error) {
           markError(error, 'UPDATE_INSTALL_FAILED');
+          // The app is still running when the handoff itself threw, so undo the
+          // guard right away instead of waiting for the watchdog.
+          if (!appQuitObserved) notifyInstallHandoffAborted('install_handoff_failed');
           return;
         }
 
@@ -352,6 +371,7 @@ function createUpdateController(options) {
             new Error('The installer did not start after CatsCo requested the update handoff'),
             'UPDATE_INSTALL_DID_NOT_START',
           );
+          notifyInstallHandoffAborted('install_did_not_start');
         }, installTimeoutMs);
       }, installDelayMs);
 
