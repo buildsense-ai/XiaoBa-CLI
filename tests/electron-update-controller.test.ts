@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import test from 'node:test';
 
 const { createUpdateController } = require('../electron/update-controller');
@@ -46,7 +48,7 @@ function createScheduler() {
   };
 }
 
-function createController(platform = 'win32') {
+function createController(platform = 'win32', overrides: Record<string, unknown> = {}) {
   const updater = new FakeUpdater();
   const nativeUpdater = new EventEmitter();
   const app = new EventEmitter() as EventEmitter & { getVersion: () => string };
@@ -62,6 +64,7 @@ function createController(platform = 'win32') {
     logger: { info() {}, warn() {}, error() {}, debug() {} },
     setTimeoutImpl: scheduler.setTimeout,
     clearTimeoutImpl: scheduler.clearTimeout,
+    ...overrides,
   });
   return { updater, nativeUpdater, app, scheduler, controller };
 }
@@ -191,4 +194,147 @@ test('an installer handoff that does not quit reports a visible error', () => {
   } finally {
     controller.dispose();
   }
+});
+
+test('the install handoff drops the close guard before quit-and-install runs', () => {
+  const order: string[] = [];
+  const { updater, scheduler, controller } = createController('win32', {
+    beforeInstallHandoff: () => {
+      order.push('beforeInstallHandoff');
+    },
+  });
+  updater.quitAndInstall = () => {
+    order.push('quitAndInstall');
+  };
+  try {
+    updater.emit('update-downloaded', { version: '1.5.5' });
+    controller.installUpdate();
+    scheduler.run(250);
+    assert.deepEqual(order, ['beforeInstallHandoff', 'quitAndInstall']);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test('a rejected install request never touches the close guard', () => {
+  let handoffs = 0;
+  const { controller } = createController('win32', {
+    beforeInstallHandoff: () => {
+      handoffs += 1;
+    },
+  });
+  try {
+    assert.throws(() => controller.installUpdate(), /not ready to install yet/i);
+    assert.equal(handoffs, 0);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test('a failing handoff hook surfaces as a visible install error', () => {
+  const { updater, scheduler, controller } = createController('win32', {
+    beforeInstallHandoff: () => {
+      throw new Error('close guard could not be released');
+    },
+  });
+  try {
+    updater.emit('update-downloaded', { version: '1.5.5' });
+    controller.installUpdate();
+    scheduler.run(250);
+    const status = controller.getStatus();
+    assert.equal(status.stage, 'error');
+    assert.equal(status.lastError.reason, 'UPDATE_INSTALL_FAILED');
+    assert.equal(updater.installCalls, 0);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test('a handoff that never quits releases the quit guard again', () => {
+  let quitting = false;
+  const aborts: string[] = [];
+  const { updater, scheduler, controller } = createController('win32', {
+    beforeInstallHandoff: () => {
+      quitting = true;
+    },
+    installHandoffAborted: (reason: string) => {
+      aborts.push(reason);
+      quitting = false;
+    },
+  });
+  try {
+    updater.emit('update-downloaded', { version: '1.5.5' });
+    controller.installUpdate();
+    scheduler.run(250);
+    assert.equal(quitting, true);
+
+    scheduler.run(30_000);
+    assert.equal(quitting, false);
+    assert.deepEqual(aborts, ['install_did_not_start']);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test('a handoff that throws releases the quit guard again', () => {
+  let quitting = false;
+  const aborts: string[] = [];
+  const { updater, scheduler, controller } = createController('win32', {
+    beforeInstallHandoff: () => {
+      quitting = true;
+      throw new Error('close guard could not be released');
+    },
+    installHandoffAborted: (reason: string) => {
+      aborts.push(reason);
+      quitting = false;
+    },
+  });
+  try {
+    updater.emit('update-downloaded', { version: '1.5.5' });
+    controller.installUpdate();
+    scheduler.run(250);
+    assert.equal(quitting, false);
+    assert.deepEqual(aborts, ['install_handoff_failed']);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test('an observed application quit keeps the guard armed for the installer', () => {
+  let quitting = false;
+  const aborts: string[] = [];
+  const { updater, app, scheduler, controller } = createController('win32', {
+    beforeInstallHandoff: () => {
+      quitting = true;
+    },
+    installHandoffAborted: (reason: string) => {
+      aborts.push(reason);
+      quitting = false;
+    },
+  });
+  try {
+    updater.emit('update-downloaded', { version: '1.5.5' });
+    controller.installUpdate();
+    scheduler.run(250);
+    app.emit('before-quit');
+
+    assert.equal(scheduler.has(30_000), false);
+    assert.equal(quitting, true);
+    assert.deepEqual(aborts, []);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test('desktop main releases and restores the quit guard around the handoff', () => {
+  const source = readFileSync(join(process.cwd(), 'electron', 'main.js'), 'utf-8');
+  const start = source.indexOf('createUpdateController({');
+  assert.ok(start > -1, 'electron/main.js should create the update controller');
+
+  const end = source.indexOf('logger: updateLogger', start);
+  assert.ok(end > start, 'the update controller options block should end with the logger');
+  const stripped = source.slice(start, end).replace(/\/\/[^\n]*\n/g, ' ');
+
+  assert.match(stripped, /beforeInstallHandoff:\s*\(\)\s*=>\s*\{\s*app\.isQuitting = true;/);
+  assert.match(stripped, /installHandoffAborted:\s*\(\)\s*=>\s*\{\s*app\.isQuitting = false;/);
 });
