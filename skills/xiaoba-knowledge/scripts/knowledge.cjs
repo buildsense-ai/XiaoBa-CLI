@@ -290,6 +290,27 @@ class KnowledgeStore {
   }
 
   async reindex() { return this.withLock(() => this.reindexLocked()); }
+
+  async remove(id, expectedRevision) {
+    if (typeof id !== 'string' || !ID_PATTERN.test(id)) fail('INVALID_ID', 'Use the exact KB-ID returned by index or read.');
+    if (!/^[a-f0-9]{64}$/.test(expectedRevision || '')) fail('INVALID_INPUT', 'Delete requires the revision from read.');
+    return this.withLock(() => {
+      const file = this.documentPath(id);
+      const raw = fileStat(file) ? this.readRaw(file) : undefined;
+      if (raw === undefined) fail('NOT_FOUND', 'Document not found.');
+      const old = this.parse(raw, file);
+      if (old.revision !== expectedRevision) fail('REVISION_CONFLICT', 'Document changed. Read again before deleting.');
+      const history = this.safePath('.history', id);
+      fs.mkdirSync(history, { recursive: true });
+      const archive = this.safePath('.history', id, `${old.revision}.md`);
+      if (!fileStat(archive)) this.atomicWrite(archive, raw);
+      fs.unlinkSync(file);
+      const result = { id, deleted: true, archivedRevision: old.revision };
+      const { warnings } = this.reindexLocked();
+      if (warnings.length) result.warnings = warnings;
+      return result;
+    });
+  }
 }
 
 function hash(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
@@ -316,7 +337,7 @@ function offset(value) {
 }
 
 async function main(args) {
-  if (args[0] !== '--root') fail('INVALID_INPUT', 'Usage: knowledge.cjs --root ABSOLUTE_PATH index|search|read|put|reindex ...');
+  if (args[0] !== '--root') fail('INVALID_INPUT', 'Usage: knowledge.cjs --root ABSOLUTE_PATH index|search|read|put|delete|reindex ...');
   const store = new KnowledgeStore(args[1]);
   const [command, ...rest] = args.slice(2);
   if (command === 'index' && rest.length <= 1) return store.index('', offset(rest[0]));
@@ -328,6 +349,7 @@ async function main(args) {
     if (!input.isFile() || input.size > MAX_FILE_BYTES) fail('INVALID_INPUT', 'Input must be a JSON file up to 256 KiB.');
     return store.put(JSON.parse(fs.readFileSync(rest[0], 'utf8').replace(/^\uFEFF/, '')));
   }
+  if (command === 'delete' && rest.length === 2) return store.remove(rest[0], rest[1]);
   fail('INVALID_INPUT', 'Unknown command or invalid arguments.');
 }
 

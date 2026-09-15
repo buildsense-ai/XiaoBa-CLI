@@ -17,7 +17,7 @@ Node 可执行文件：<KNOWLEDGE_NODE>
 ## 调用方式
 
 使用本运行环境的 execute_shell（不带远程 target），运行 Node 脚本。将下面的 ROOT、SCRIPT 替换成上面的绝对路径，并按当前 shell 正确引用路径（包括空格、中文）；不要假设当前 cwd 就是用户数据目录。打包版 Node 使用运行环境提供的 Node 路径。
-脚本路径必须原样使用本次加载结果，不凭记忆重拼。MODULE_NOT_FOUND 或路径错误时，重新加载本 Skill，对照完整绝对路径重试；仍失败就报告阻碍，不能用 write_file、edit_file 或自行编写 shell 直接修改知识正文、索引、历史来绕过 put。临时 JSON 请求文件放知识目录外的临时目录。`<KNOWLEDGE_ROOT>` 初始化后，先执行一次 `index` 或 `reindex` 获取正式库状态；如需辅助判断，可在同一实例范围内只读扫描 `<KNOWLEDGE_ROOT>`、`<KNOWLEDGE_DATA_ROOT>`、会话日志和临时目录，但扫描结果必须标明来源目录、managed 状态和扫描时间。扫描只能用于发现候选资料、核对遗漏和解释冲突，不能把旁路文件计入正式条数、不能自动移动/合并/删除、不能替代 `put`，也不能因扫描到 0 条就断言全库为空。发现疑似旧目录或重复库时，只报告候选路径及证据，等待用户或明确更新请求后再整理。
+脚本路径必须原样使用本次加载结果，不凭记忆重拼。MODULE_NOT_FOUND 或路径错误时，重新加载本 Skill，对照完整绝对路径重试；仍失败就报告阻碍，不能用 write_file、edit_file 或自行编写 shell 直接修改知识正文、索引、历史来绕过 put/delete。临时 JSON 请求文件放知识目录外的临时目录。`<KNOWLEDGE_ROOT>` 初始化后，先执行一次 `index` 或 `reindex` 获取正式库状态；如需辅助判断，可在同一实例范围内只读扫描 `<KNOWLEDGE_ROOT>`、`<KNOWLEDGE_DATA_ROOT>`、会话日志和临时目录，但扫描结果必须标明来源目录、managed 状态和扫描时间。扫描只能用于发现候选资料、核对遗漏和解释冲突，不能把旁路文件计入正式条数、不能自动移动/合并/删除、不能替代 `put`，也不能因扫描到 0 条就断言全库为空。发现疑似旧目录或重复库时，只报告候选路径及证据，等待用户或明确更新请求后再整理。
 
 ```text
 node SCRIPT --root ROOT index
@@ -78,7 +78,7 @@ knowledge.source.locate     # 读取来源登记和已核对的文件/消息位�
 
 当前轮完整turn可能尚未落盘，此时记录已知会话及文件定位，未知日志路径、轮次或ref注明尚未取得，不按命名规则猜造。日志/附件失效、版本不符或读取被截断时说明缺口；哈希只能帮助识别版本，不能恢复已删除内容。不得用摘要补充未知原文或宣称证据永久可用。
 
-## 更新
+## 更新与删除
 
 用户明确要求记住、更新知识或流程时执行；也可以自主保存已验证且值得复用的事实、成功方法、决策及旧知识修正。不要求每轮或任务结束必写；停止/取消后不启动维护。临时猜测和聊天流水不直接写成确定知识。
 
@@ -123,7 +123,7 @@ category 可用 projects、environment、procedures、decisions、troubleshootin
 示例来源需替换为实际取得的值，只保留确有的来源类型；`sources` 最多20条、每条最多1000字符，较细的行/页映射写入正文。只保存相关定位和必要摘录，不复制整份会话、认证信息或带令牌的下载地址。
 提交前核对：每条新增事实是否有来源支持，用户仅修改某一步时是否保留其余已确认步骤；提交后重新 read，读完本次变更正文及来源映射（需要时跟随 nextOffset），确认保存内容与本次要求一致，再告知用户。金额汇总重新核对保存值与明细，不能仅看到“保存成功”或正文前几行就声称已校验。引用和更新使用 read 返回的完整 id 与 revision。
 
-put 会检查版本、串行写入、保留旧文档并重建 index.md 和 changes.md。冲突返回 REVISION_CONFLICT：重读后重新整合，不能仅换 revision 强推旧正文。没有内容变化则不写。
+put 会检查版本、串行写入、保留旧文档并重建 index.md 和 changes.md。删除必须使用 Skill 的 delete 命令，传入 read 返回的完整 KB-ID 与 revision；它会先归档当前版本到 .history，再移除正式条目并重建索引。revision 不匹配、ID 不完整或文档不存在时拒绝删除。不得用 execute_shell、write_file 或 edit_file 直接删除正文、历史或索引。冲突返回 REVISION_CONFLICT：重读后重新整合，不能仅换 revision 强推旧正文。没有内容变化则不写。
 
 若返回 saved:true 且 warning，正文已经保存，按提示运行 reindex 修复派生索引，不重复创建。LOCK_BUSY 表示其他写入或残留锁；先等待重试，仍失败时报告具体阻碍，不擅自删除可能仍在使用的锁。锁记录 PID，确认进程已结束后才可人工清理。
 
@@ -133,5 +133,6 @@ index/search/reindex 或 put 返回 warnings 时，查看 file、code 和 messag
 
 ### Wiki 只读运行入口
 
-Wiki 只调用随本 Skill 发布的 `scripts/wiki.cjs`：`knowledge.document.list` 只返回逻辑知识条目的分页元数据，`knowledge.document.read` 按完整 KB-ID 分段返回正文、来源、版本和变更说明。它只读取 `documents/` 下的受管 KB 文档，不把本地目录直接映射到网页，也不接受路径、上传、写入、删除或重建索引参数。运行时应在受限子进程中调用并限制并发、超时和响应大小；错误只返回稳定代码，不回传绝对路径或原始堆栈。
+Wiki 只调用随本 Skill 发布的 `scripts/wiki.cjs`：`knowledge.document.list` 只返回逻辑知识条目的分页元数据，`knowledge.document.read` 按完整 KB-ID 分段返回正文、来源、版本和变更说明。它只读取 `documents/` 下的受管 KB 文档，不把本地目录直接映射到网页；Wiki 不提供删除按钮，删除请求必须回到 Agent，由本 Skill 的 delete 命令执行并保留历史版本。运行时应在受限子进程中调用并限制并发、超时和响应大小；错误只返回稳定代码，不回传绝对路径或原始堆栈。
+
 
