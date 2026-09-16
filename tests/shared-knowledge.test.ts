@@ -84,6 +84,35 @@ describe('instance shared knowledge', () => {
     assert.equal(unchanged.revision, updated.revision);
   });
 
+  test('deletes only the exact managed document revision and preserves an audit archive', async () => {
+    const store = new KnowledgeStore(root);
+    const created = await store.put(request());
+    const removed = await store.remove(created.id, created.revision);
+    assert.equal(removed.deleted, true);
+    assert.equal(store.index().total, 0);
+    assert.ok(fs.existsSync(path.join(root, '.history', created.id, `${created.revision}.md`)));
+    await assert.rejects(store.remove(created.id, created.revision), { code: 'NOT_FOUND' });
+  });
+
+  test('rejects a malformed file whose frontmatter ID does not match its filename', async () => {
+    const store = new KnowledgeStore(root);
+    const created = await store.put(request());
+    const file = path.join(root, 'documents', `${created.id}.md`);
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(created.id, 'KB-11111111-1111-1111-1111-111111111111'));
+    await assert.rejects(store.remove(created.id, created.revision), { code: 'INVALID_DOCUMENT' });
+  });
+
+  test('raw deletion refuses unsafe, non-Markdown, and oversized files before reading them', async () => {
+    const store = new KnowledgeStore(root);
+    const directory = path.join(root, 'documents');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, 'large.md'), Buffer.alloc(256 * 1024 + 1, 'x'));
+    const digest = require('node:crypto').createHash('sha256').update(fs.readFileSync(path.join(directory, 'large.md'))).digest('hex');
+    await assert.rejects(store.removeRaw('documents/large.md', digest), { code: 'INVALID_DOCUMENT' });
+    await assert.rejects(store.removeRaw('documents/large.txt', digest), { code: 'INVALID_PATH' });
+    await assert.rejects(store.removeRaw('documents/../large.md', digest), { code: 'INVALID_PATH' });
+  });
+
   test('resolves short citations uniquely and searches full IDs and prefixes', async () => {
     const store = new KnowledgeStore(root);
     const created = await store.put(request());

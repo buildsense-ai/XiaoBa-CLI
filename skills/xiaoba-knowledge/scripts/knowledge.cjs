@@ -299,6 +299,7 @@ class KnowledgeStore {
       const raw = fileStat(file) ? this.readRaw(file) : undefined;
       if (raw === undefined) fail('NOT_FOUND', 'Document not found.');
       const old = this.parse(raw, file);
+      if (old.id !== id) fail('INVALID_DOCUMENT', 'Document ID differs from filename.');
       if (old.revision !== expectedRevision) fail('REVISION_CONFLICT', 'Document changed. Read again before deleting.');
       const history = this.safePath('.history', id);
       fs.mkdirSync(history, { recursive: true });
@@ -313,11 +314,13 @@ class KnowledgeStore {
   }
 
   async removeRaw(relativeFile, expectedHash, reason = 'malformed document cleanup') {
-    if (typeof relativeFile !== 'string' || !relativeFile.startsWith('documents/') || relativeFile.includes('\\') || relativeFile.split('/').some(part => !part || part === '.' || part === '..')) fail('INVALID_PATH', 'Delete path must be a normalized documents/ path.');
+    if (typeof relativeFile !== 'string' || !relativeFile.startsWith('documents/') || !/\.md$/i.test(relativeFile) || /[\\:\0]/.test(relativeFile) || relativeFile.split('/').some(part => !part || part === '.' || part === '..')) fail('INVALID_PATH', 'Delete path must be a normalized documents/ Markdown path.');
     if (!/^[a-f0-9]{64}$/.test(expectedHash || '')) fail('INVALID_INPUT', 'Raw delete requires the SHA-256 returned by inspection.');
     return this.withLock(() => {
       const file = this.safePath(...relativeFile.split('/'));
-      const raw = fileStat(file) ? fs.readFileSync(file) : undefined;
+      const stat = fileStat(file);
+      if (stat && (!stat.isFile() || stat.size > MAX_FILE_BYTES)) fail('INVALID_DOCUMENT', 'Raw delete only accepts a regular file up to 256 KiB.');
+      const raw = stat ? fs.readFileSync(file) : undefined;
       if (raw === undefined) fail('NOT_FOUND', 'Document file not found.');
       const actualHash = hash(raw);
       if (actualHash !== expectedHash) fail('HASH_CONFLICT', 'Document changed. Inspect again before deleting.');
