@@ -290,6 +290,52 @@ class KnowledgeStore {
   }
 
   async reindex() { return this.withLock(() => this.reindexLocked()); }
+
+  async remove(id, expectedRevision) {
+    if (typeof id !== 'string' || !ID_PATTERN.test(id)) fail('INVALID_ID', 'Use the exact KB-ID returned by index or read.');
+    if (!/^[a-f0-9]{64}$/.test(expectedRevision || '')) fail('INVALID_INPUT', 'Delete requires the revision from read.');
+    return this.withLock(() => {
+      const file = this.documentPath(id);
+      const raw = fileStat(file) ? this.readRaw(file) : undefined;
+      if (raw === undefined) fail('NOT_FOUND', 'Document not found.');
+      const old = this.parse(raw, file);
+      if (old.id !== id) fail('INVALID_DOCUMENT', 'Document ID differs from filename.');
+      if (old.revision !== expectedRevision) fail('REVISION_CONFLICT', 'Document changed. Read again before deleting.');
+      const history = this.safePath('.history', id);
+      fs.mkdirSync(history, { recursive: true });
+      const archive = this.safePath('.history', id, `${old.revision}.md`);
+      if (!fileStat(archive)) this.atomicWrite(archive, raw);
+      fs.unlinkSync(file);
+      const result = { id, deleted: true, archivedRevision: old.revision };
+      const { warnings } = this.reindexLocked();
+      if (warnings.length) result.warnings = warnings;
+      return result;
+    });
+  }
+
+  async removeRaw(relativeFile, expectedHash, reason = 'malformed document cleanup') {
+    if (typeof relativeFile !== 'string' || !relativeFile.startsWith('documents/') || !/\.md$/i.test(relativeFile) || /[\\:\0]/.test(relativeFile) || relativeFile.split('/').some(part => !part || part === '.' || part === '..')) fail('INVALID_PATH', 'Delete path must be a normalized documents/ Markdown path.');
+    if (!/^[a-f0-9]{64}$/.test(expectedHash || '')) fail('INVALID_INPUT', 'Raw delete requires the SHA-256 returned by inspection.');
+    return this.withLock(() => {
+      const file = this.safePath(...relativeFile.split('/'));
+      const stat = fileStat(file);
+      if (stat && (!stat.isFile() || stat.size > MAX_FILE_BYTES)) fail('INVALID_DOCUMENT', 'Raw delete only accepts a regular file up to 256 KiB.');
+      const raw = stat ? fs.readFileSync(file) : undefined;
+      if (raw === undefined) fail('NOT_FOUND', 'Document file not found.');
+      const actualHash = hash(raw);
+      if (actualHash !== expectedHash) fail('HASH_CONFLICT', 'Document changed. Inspect again before deleting.');
+      const deletedDir = this.safePath('.history', '_deleted');
+      fs.mkdirSync(deletedDir, { recursive: true });
+      const archive = this.safePath('.history', '_deleted', `${Date.now()}-${crypto.randomUUID()}-${actualHash}.md`);
+      this.atomicWrite(archive, raw);
+      fs.unlinkSync(file);
+      const normalizedReason = String(reason || '').trim().slice(0, 600) || 'malformed document cleanup';
+      const result = { file: relativeFile, deleted: true, archived: '.history/_deleted/' + path.basename(archive), sha256: actualHash, reason: normalizedReason };
+      const { warnings } = this.reindexLocked();
+      if (warnings.length) result.warnings = warnings;
+      return result;
+    });
+  }
 }
 
 function hash(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
@@ -316,7 +362,7 @@ function offset(value) {
 }
 
 async function main(args) {
-  if (args[0] !== '--root') fail('INVALID_INPUT', 'Usage: knowledge.cjs --root ABSOLUTE_PATH index|search|read|put|reindex ...');
+  if (args[0] !== '--root') fail('INVALID_INPUT', 'Usage: knowledge.cjs --root ABSOLUTE_PATH index|search|read|put|delete|reindex ...');
   const store = new KnowledgeStore(args[1]);
   const [command, ...rest] = args.slice(2);
   if (command === 'index' && rest.length <= 1) return store.index('', offset(rest[0]));
@@ -328,6 +374,8 @@ async function main(args) {
     if (!input.isFile() || input.size > MAX_FILE_BYTES) fail('INVALID_INPUT', 'Input must be a JSON file up to 256 KiB.');
     return store.put(JSON.parse(fs.readFileSync(rest[0], 'utf8').replace(/^\uFEFF/, '')));
   }
+  if (command === 'delete' && rest.length === 2) return store.remove(rest[0], rest[1]);
+  if (command === 'delete-raw' && (rest.length === 2 || rest.length === 3)) return store.removeRaw(rest[0], rest[1], rest[2]);
   fail('INVALID_INPUT', 'Unknown command or invalid arguments.');
 }
 
