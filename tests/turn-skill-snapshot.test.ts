@@ -153,6 +153,52 @@ describe('turn Skill snapshot store', () => {
     assert.equal(fs.existsSync(missingTarget), false);
   });
 
+  test('stores snapshots when the runtime data directory is a symlink', async () => {
+    // Release deployments share one data directory by linking `data` from the
+    // active release instead of copying it, so the store root has to resolve it.
+    const root = createRuntimeRoot(roots);
+    const skillsRoot = path.join(root, 'skills');
+    writeSkill(skillsRoot, 'linked-skill', 'linked');
+    const sharedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-shared-data-'));
+    roots.push(sharedRoot);
+    // `junction` keeps the fixture creatable on Windows; POSIX always creates a
+    // plain directory symlink and ignores the type argument.
+    fs.symlinkSync(sharedRoot, path.join(root, 'data'), 'junction');
+    const store = new TurnSkillSnapshotStore({ runtimeRoot: root, skillsRoot });
+
+    const lease = await store.acquire();
+    // The store keeps addressing the Runtime through its own release directory
+    // while the snapshot files themselves land in the shared data directory.
+    assert.equal(lease.snapshot.rootPath.startsWith(path.join(root, 'data')), true);
+    assert.equal(
+      fs.existsSync(path.join(sharedRoot, 'bot-skills', 'turn-snapshots', 'objects')),
+      true,
+    );
+    assert.equal(
+      fs.readFileSync(path.join(lease.snapshot.rootPath, 'linked-skill', 'body.txt'), 'utf8'),
+      'linked',
+    );
+    await lease.release();
+  });
+
+  test('still rejects a linked directory below the runtime data root', async () => {
+    // Only the shared `data` segment itself may be a link. Everything below it
+    // stays a real directory so a snapshot can never be published outside the
+    // store the Runtime validates.
+    const root = createRuntimeRoot(roots);
+    const skillsRoot = path.join(root, 'skills');
+    writeSkill(skillsRoot, 'safe-skill', 'one');
+    const sharedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-shared-data-'));
+    roots.push(sharedRoot);
+    const botSkillsRoot = path.join(root, 'data', 'bot-skills');
+    fs.mkdirSync(path.dirname(botSkillsRoot), { recursive: true });
+    fs.symlinkSync(sharedRoot, botSkillsRoot, 'junction');
+    const store = new TurnSkillSnapshotStore({ runtimeRoot: root, skillsRoot });
+
+    await assert.rejects(() => store.acquire(), /not a safe directory/i);
+    assert.deepEqual(fs.readdirSync(sharedRoot), []);
+  });
+
   test('detects snapshot tampering and preserves the evidence from GC', async () => {
     const root = createRuntimeRoot(roots);
     const skillsRoot = path.join(root, 'skills');

@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { withBotSkillWorkspaceLock } from '../bot-skills/lock';
+import { requireSafeRuntimeDataDirectory } from '../bot-skills/safe-directory';
 import { renameBotSkillWorkspaceSync } from '../bot-skills/workspace-fs';
 
 const SNAPSHOT_SCHEMA = 'xiaoba.turn-skill-snapshot.v1';
@@ -224,8 +225,13 @@ export class TurnSkillSnapshotStore {
   }
 
   private ensureStoreRoot(): string {
-    let current = this.runtimeRoot;
-    for (const segment of ['data', 'bot-skills', 'turn-snapshots']) {
+    // Release deployments share `data` by linking it into the active release,
+    // so only the segments below it may be required to be real directories.
+    let current = requireSafeRuntimeDataDirectory(
+      this.runtimeRoot,
+      'turn Skill snapshot store directory',
+    );
+    for (const segment of ['bot-skills', 'turn-snapshots']) {
       current = ensureSafeChildDirectory(current, segment);
     }
     for (const segment of ['objects', 'leases', 'usage']) {
@@ -578,7 +584,10 @@ function sameFiles(left: ScannedSnapshotFile[], right: SnapshotFileEntry[]): boo
 }
 
 function ensureSafeChildDirectory(parentValue: string, name: string): string {
-  const parent = requireSafeDirectory(parentValue, 'turn Skill snapshot parent directory');
+  // The parent is either the shared data directory that
+  // `requireSafeRuntimeDataDirectory` just validated or a child this helper
+  // validated on an earlier pass, so only the child is re-checked here.
+  const parent = path.resolve(parentValue);
   const child = path.join(parent, name);
   if (!fs.existsSync(child)) {
     try {

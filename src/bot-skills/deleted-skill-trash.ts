@@ -1,6 +1,10 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  requireSafeDirectory,
+  requireSafeRuntimeDataDirectory,
+} from './safe-directory';
 
 const TRASH_SCHEMA = 'xiaoba.bot-skill-trash.v1';
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -73,10 +77,23 @@ export function trashBotSkill(options: TrashBotSkillOptions): TrashBotSkillResul
   fs.mkdirSync(temporary, { recursive: false });
   try {
     options.beforeMove?.();
-    // sourcePath and trashRoot both live below the same Runtime root. Moving
-    // the directory removes it from discovery atomically without recursively
-    // deleting any file that was not captured by the verified manifest.
-    fs.renameSync(sourcePath, packageRoot);
+    // Moving the directory removes it from discovery atomically without
+    // recursively deleting any file that was not captured by the verified
+    // manifest. A release deployment may share `data` through a link, so the
+    // trash root is only guaranteed to be reachable through the Runtime root:
+    // the move still needs both sides on one filesystem, which `rename`
+    // reports as EXDEV.
+    try {
+      fs.renameSync(sourcePath, packageRoot);
+    } catch (error: any) {
+      if (error?.code === 'EXDEV') {
+        throw new Error(
+          'The shared Runtime data directory must stay on the same filesystem as the Skill '
+          + `workspace, because deletion moves the Skill into trash: ${error.message}`,
+        );
+      }
+      throw error;
+    }
     sourceMoved = true;
     const movedFiles = listFiles(packageRoot);
     if (!filesEqual(files, movedFiles) || fs.existsSync(sourcePath)) {
@@ -167,8 +184,8 @@ function validateManifest(
 }
 
 function ensureTrashBotRoot(runtimeRoot: string, botId: string): string {
-  let current = runtimeRoot;
-  for (const segment of ['data', 'bot-skills', 'trash', botId]) {
+  let current = requireSafeRuntimeDataDirectory(runtimeRoot, 'Skill trash directory');
+  for (const segment of ['bot-skills', 'trash', botId]) {
     const child = path.join(current, segment);
     if (!fs.existsSync(child)) {
       try {
@@ -210,16 +227,6 @@ function fileRecord(root: string, relative: string): TrashedSkillFile {
     size: bytes.length,
     sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
   };
-}
-
-function requireSafeDirectory(value: string, label: string): string {
-  const resolved = path.resolve(value);
-  if (!fs.existsSync(resolved)) throw new Error(`${label} does not exist: ${resolved}`);
-  const stat = fs.lstatSync(resolved);
-  if (stat.isSymbolicLink() || !stat.isDirectory()) {
-    throw new Error(`${label} is not a safe directory: ${resolved}`);
-  }
-  return resolved;
 }
 
 function normalizeScopedId(value: unknown, label: string): string {

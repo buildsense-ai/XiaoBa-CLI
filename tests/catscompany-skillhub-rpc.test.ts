@@ -466,6 +466,87 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.equal(deletion.localSkillId, selected.localSkillId);
   });
 
+  test('deletes a local Skill when the runtime data directory is a symlink', async () => {
+    // Release-based deployments share one data directory across builds by
+    // linking `data` into the active release. The trash-root guard used to
+    // reject that layout, so no local Skill could be deleted on those servers.
+    const sharedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-shared-data-'));
+    try {
+      const dataRoot = path.join(runtimeRoot, 'data');
+      fs.cpSync(dataRoot, sharedRoot, { recursive: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+      // `junction` keeps the fixture creatable on Windows; POSIX always creates
+      // a plain directory symlink and ignores the type argument.
+      fs.symlinkSync(sharedRoot, dataRoot, 'junction');
+
+      const entries = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'));
+      const selected = entries.find(entry => entry.installName === 'local-demo');
+      assert.ok(selected);
+
+      const result = await handler.execute(request({
+        request_id: 'delete-through-symlinked-data',
+        tool_name: SKILLHUB_THIN_RPC_TOOLS.delete,
+        payload: {
+          bot_uid: '42',
+          local_skill_id: selected.localSkillId,
+        },
+      }));
+
+      assert.equal(result.deleted, true);
+      assert.equal(fs.existsSync(selected.path), false);
+      const backupRoot = path.join(
+        sharedRoot,
+        'bot-skills',
+        'trash',
+        '42',
+        String(result.backup_id),
+      );
+      const deletion = JSON.parse(fs.readFileSync(path.join(backupRoot, 'deletion.json'), 'utf8'));
+      assert.equal(deletion.localSkillId, selected.localSkillId);
+      assert.equal(
+        fs.readFileSync(path.join(backupRoot, 'package', 'SKILL.md'), 'utf8').includes('# Local Demo'),
+        true,
+      );
+    } finally {
+      fs.rmSync(sharedRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('still refuses to delete a local Skill when a directory below data is a link', async () => {
+    // Relaxing the guard for the shared `data` segment must not relax the
+    // segments below it, otherwise trash could be written outside the Runtime.
+    const sharedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-shared-data-'));
+    try {
+      const botSkillsRoot = path.join(runtimeRoot, 'data', 'bot-skills');
+      fs.cpSync(botSkillsRoot, sharedRoot, { recursive: true });
+      fs.rmSync(botSkillsRoot, { recursive: true, force: true });
+      // `junction` keeps the fixture creatable on Windows; POSIX always creates
+      // a plain directory symlink and ignores the type argument.
+      fs.symlinkSync(sharedRoot, botSkillsRoot, 'junction');
+
+      const entries = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'));
+      const selected = entries.find(entry => entry.installName === 'local-demo');
+      assert.ok(selected);
+
+      await assert.rejects(
+        handler.execute(request({
+          request_id: 'delete-below-linked-data',
+          tool_name: SKILLHUB_THIN_RPC_TOOLS.delete,
+          payload: {
+            bot_uid: '42',
+            local_skill_id: selected.localSkillId,
+          },
+        })),
+        /not a safe directory/i,
+      );
+      assert.equal(fs.existsSync(selected.path), true);
+      // The rejection happens before any trash entry is created below the link.
+      assert.equal(fs.existsSync(path.join(sharedRoot, 'trash')), false);
+    } finally {
+      fs.rmSync(sharedRoot, { recursive: true, force: true });
+    }
+  });
+
   test('removes only verified expired trash while keeping the active Skill delete recoverable', async () => {
     const first = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))[0];
     const firstResult = await handler.execute(request({
