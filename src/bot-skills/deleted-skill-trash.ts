@@ -77,10 +77,23 @@ export function trashBotSkill(options: TrashBotSkillOptions): TrashBotSkillResul
   fs.mkdirSync(temporary, { recursive: false });
   try {
     options.beforeMove?.();
-    // sourcePath and trashRoot both live below the same Runtime root. Moving
-    // the directory removes it from discovery atomically without recursively
-    // deleting any file that was not captured by the verified manifest.
-    fs.renameSync(sourcePath, packageRoot);
+    // Moving the directory removes it from discovery atomically without
+    // recursively deleting any file that was not captured by the verified
+    // manifest. A release deployment may share `data` through a link, so the
+    // trash root is only guaranteed to be reachable through the Runtime root:
+    // the move still needs both sides on one filesystem, which `rename`
+    // reports as EXDEV.
+    try {
+      fs.renameSync(sourcePath, packageRoot);
+    } catch (error: any) {
+      if (error?.code === 'EXDEV') {
+        throw new Error(
+          'The shared Runtime data directory must stay on the same filesystem as the Skill '
+          + `workspace, because deletion moves the Skill into trash: ${error.message}`,
+        );
+      }
+      throw error;
+    }
     sourceMoved = true;
     const movedFiles = listFiles(packageRoot);
     if (!filesEqual(files, movedFiles) || fs.existsSync(sourcePath)) {

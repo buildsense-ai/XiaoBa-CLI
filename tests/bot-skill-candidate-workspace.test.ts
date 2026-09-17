@@ -261,6 +261,24 @@ describe('isolated Bot Skill candidate workspace', () => {
     );
     assert.equal(fs.existsSync(sharedCandidateRoot), false);
   });
+
+  test('still rejects a linked directory below the runtime data root', () => {
+    // Only the shared `data` segment itself may be a link. Everything below it
+    // stays a real directory so a candidate can never be redirected somewhere
+    // the Runtime never reconciled.
+    const root = createRuntimeRoot(roots);
+    const sharedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-shared-data-'));
+    roots.push(sharedRoot);
+    const source = createSkill(path.join(root, 'source'), 'draft-skill', 'blocked');
+    const botSkillsRoot = path.join(root, 'data', 'bot-skills');
+    fs.mkdirSync(path.dirname(botSkillsRoot), { recursive: true });
+    fs.symlinkSync(sharedRoot, botSkillsRoot, 'junction');
+
+    assert.throws(() => createBotSkillCandidate({
+      runtimeRoot: root, botId: 'bot-a', mutationId: 'blocked', sourceSkillPath: source,
+    }), /not a safe directory/i);
+    assert.deepEqual(fs.readdirSync(sharedRoot), []);
+  });
 });
 
 function createRuntimeRoot(roots: string[]): string {
