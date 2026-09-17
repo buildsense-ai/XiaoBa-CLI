@@ -11,6 +11,10 @@ import {
   writeBotSkillLocalMarker,
 } from './local-manifest';
 import type { BotSkillLocalMarker, LocalBotSkillManifestEntry } from './types';
+import {
+  requireSafeDirectory,
+  requireSafeRuntimeDataDirectory,
+} from './safe-directory';
 import { renameBotSkillWorkspaceSync } from './workspace-fs';
 
 const CANDIDATE_SCHEMA = 'xiaoba.bot-skill-candidate.v1';
@@ -332,8 +336,8 @@ function readCandidateManifest(
 }
 
 function ensureCandidateRoot(runtimeRoot: string): string {
-  let current = runtimeRoot;
-  for (const segment of ['data', 'bot-skills', 'candidates']) {
+  let current = requireSafeRuntimeDataDirectory(runtimeRoot, 'Bot Skill candidate directory');
+  for (const segment of ['bot-skills', 'candidates']) {
     current = ensureSafeChildDirectory(current, segment);
   }
   return current;
@@ -353,8 +357,8 @@ function ensureSafeChildDirectory(parent: string, name: string): string {
 }
 
 function requireCandidateBotRoot(runtimeRoot: string, botId: string): string {
-  let current = runtimeRoot;
-  for (const segment of ['data', 'bot-skills', 'candidates', botId]) {
+  let current = requireSafeRuntimeDataDirectory(runtimeRoot, 'Bot Skill candidate directory');
+  for (const segment of ['bot-skills', 'candidates', botId]) {
     current = path.join(current, segment);
     requireSafeDirectory(current, 'Bot Skill candidate directory');
   }
@@ -374,16 +378,6 @@ function candidatePathFor(runtimeRoot: string, botId: string, mutationId?: strin
 
 function runtimeRootFromCandidatePath(candidatePath: string): string {
   return path.resolve(candidatePath, '..', '..', '..', '..', '..');
-}
-
-function requireSafeDirectory(value: string, label: string): string {
-  const resolved = path.resolve(value);
-  if (!fs.existsSync(resolved)) throw new Error(`${label} does not exist: ${resolved}`);
-  const stat = fs.lstatSync(resolved);
-  if (stat.isSymbolicLink() || !stat.isDirectory()) {
-    throw new Error(`${label} is not a safe directory: ${resolved}`);
-  }
-  return resolved;
 }
 
 function assertSafeTree(root: string, label: string): void {

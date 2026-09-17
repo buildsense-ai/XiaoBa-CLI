@@ -466,6 +466,52 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.equal(deletion.localSkillId, selected.localSkillId);
   });
 
+  test('deletes a local Skill when the runtime data directory is a symlink', async () => {
+    // Release-based deployments share one data directory across builds by
+    // linking `data` into the active release. The trash-root guard used to
+    // reject that layout, so no local Skill could be deleted on those servers.
+    const sharedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-shared-data-'));
+    try {
+      const dataRoot = path.join(runtimeRoot, 'data');
+      fs.cpSync(dataRoot, sharedRoot, { recursive: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+      // `junction` keeps the fixture creatable on Windows; POSIX always creates
+      // a plain directory symlink and ignores the type argument.
+      fs.symlinkSync(sharedRoot, dataRoot, 'junction');
+
+      const entries = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'));
+      const selected = entries.find(entry => entry.installName === 'local-demo');
+      assert.ok(selected);
+
+      const result = await handler.execute(request({
+        request_id: 'delete-through-symlinked-data',
+        tool_name: SKILLHUB_THIN_RPC_TOOLS.delete,
+        payload: {
+          bot_uid: '42',
+          local_skill_id: selected.localSkillId,
+        },
+      }));
+
+      assert.equal(result.deleted, true);
+      assert.equal(fs.existsSync(selected.path), false);
+      const backupRoot = path.join(
+        sharedRoot,
+        'bot-skills',
+        'trash',
+        '42',
+        String(result.backup_id),
+      );
+      const deletion = JSON.parse(fs.readFileSync(path.join(backupRoot, 'deletion.json'), 'utf8'));
+      assert.equal(deletion.localSkillId, selected.localSkillId);
+      assert.equal(
+        fs.readFileSync(path.join(backupRoot, 'package', 'SKILL.md'), 'utf8').includes('# Local Demo'),
+        true,
+      );
+    } finally {
+      fs.rmSync(sharedRoot, { recursive: true, force: true });
+    }
+  });
+
   test('removes only verified expired trash while keeping the active Skill delete recoverable', async () => {
     const first = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))[0];
     const firstResult = await handler.execute(request({

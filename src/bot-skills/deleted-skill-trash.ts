@@ -1,6 +1,10 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  requireSafeDirectory,
+  requireSafeRuntimeDataDirectory,
+} from './safe-directory';
 
 const TRASH_SCHEMA = 'xiaoba.bot-skill-trash.v1';
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -167,8 +171,8 @@ function validateManifest(
 }
 
 function ensureTrashBotRoot(runtimeRoot: string, botId: string): string {
-  let current = runtimeRoot;
-  for (const segment of ['data', 'bot-skills', 'trash', botId]) {
+  let current = requireSafeRuntimeDataDirectory(runtimeRoot, 'Skill trash directory');
+  for (const segment of ['bot-skills', 'trash', botId]) {
     const child = path.join(current, segment);
     if (!fs.existsSync(child)) {
       try {
@@ -210,16 +214,6 @@ function fileRecord(root: string, relative: string): TrashedSkillFile {
     size: bytes.length,
     sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
   };
-}
-
-function requireSafeDirectory(value: string, label: string): string {
-  const resolved = path.resolve(value);
-  if (!fs.existsSync(resolved)) throw new Error(`${label} does not exist: ${resolved}`);
-  const stat = fs.lstatSync(resolved);
-  if (stat.isSymbolicLink() || !stat.isDirectory()) {
-    throw new Error(`${label} is not a safe directory: ${resolved}`);
-  }
-  return resolved;
 }
 
 function normalizeScopedId(value: unknown, label: string): string {

@@ -227,6 +227,40 @@ describe('isolated Bot Skill candidate workspace', () => {
     }), /source Skill local marker cannot be read safely/i);
     assert.equal(fs.readFileSync(markerPath, 'utf8'), '{broken');
   });
+
+  test('stores candidates when the runtime data directory is a symlink', () => {
+    // Release deployments share one data directory by linking `data` from the
+    // active release instead of copying it, so the guard has to resolve it.
+    const root = createRuntimeRoot(roots);
+    const sharedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-shared-data-'));
+    roots.push(sharedRoot);
+    const source = createSkill(path.join(root, 'source'), 'draft-skill', 'linked');
+    // `junction` keeps the fixture creatable on Windows; POSIX always creates a
+    // plain directory symlink and ignores the type argument.
+    fs.symlinkSync(sharedRoot, path.join(root, 'data'), 'junction');
+    const sharedCandidateRoot = path.join(sharedRoot, 'bot-skills', 'candidates', 'bot-a', 'linked');
+
+    const candidate = createBotSkillCandidate({
+      runtimeRoot: root, botId: 'bot-a', mutationId: 'linked', sourceSkillPath: source,
+    });
+    // Candidates keep addressing the Runtime through its own release directory
+    // while the files themselves land in the shared data directory.
+    assert.equal(candidate.path, path.join(root, 'data', 'bot-skills', 'candidates', 'bot-a', 'linked'));
+    assert.equal(fs.existsSync(path.join(sharedCandidateRoot, 'candidate.json')), true);
+    assert.equal(
+      inspectBotSkillCandidate({ runtimeRoot: root, botId: 'bot-a', mutationId: 'linked' }).path,
+      candidate.path,
+    );
+    assert.equal(
+      recoverBotSkillCandidates(root, 'bot-a').map(entry => entry.status).join(','),
+      'ready',
+    );
+    assert.equal(
+      discardBotSkillCandidate({ runtimeRoot: root, botId: 'bot-a', mutationId: 'linked' }),
+      true,
+    );
+    assert.equal(fs.existsSync(sharedCandidateRoot), false);
+  });
 });
 
 function createRuntimeRoot(roots: string[]): string {
