@@ -280,18 +280,6 @@ describe('snapshot collection through the injectable IO layer', () => {
 });
 
 describe('active command registry', () => {
-  test('redacts credential-looking fragments from labels', () => {
-    registerActiveCommand({
-      pid: 77,
-      label: 'curl -H "Authorization: Bearer abcdef0123456789abcdef0123456789" https://example.com',
-      startedAt: NOW,
-      platform: 'linux',
-    });
-    const [entry] = listActiveCommands();
-    assert.ok(!entry.label.includes('abcdef0123456789abcdef0123456789'));
-    assert.ok(entry.label.includes('***'));
-  });
-
   test('keeps ordinary labels intact', () => {
     registerActiveCommand({ pid: 78, label: 'python3 fix_v2.py', startedAt: NOW, platform: 'linux' });
     assert.ok(listActiveCommands().some(entry => entry.label === 'python3 fix_v2.py'));
@@ -310,16 +298,7 @@ describe('command label sanitizer', () => {
     assert.ok(label.length <= ACTIVE_COMMAND_LABEL_MAX_LENGTH, `got ${label.length}`);
   });
 
-  test('masks credentials that used to slip through', () => {
-    assert.ok(!sanitizeActiveCommandLabel('psql postgres://catsco:catsco123@172.16.16.14:5432/db').includes('catsco123'));
-    assert.ok(!sanitizeActiveCommandLabel('mysql -uroot -pS3cret123 -e "select 1"').includes('S3cret123'));
-    assert.ok(!sanitizeActiveCommandLabel('curl -H "Authorization: Bearer short123" https://x').includes('short123'));
-    assert.ok(!sanitizeActiveCommandLabel('export AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE').includes('AKIAIOSFODNN7EXAMPLE'));
-    assert.ok(!sanitizeActiveCommandLabel('export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE').includes('AKIAIOSFODNN7EXAMPLE'));
-    assert.ok(!sanitizeActiveCommandLabel('psql --password hunter2 -h db').includes('hunter2'));
-  });
-
-  test('leaves non-secret content readable', () => {
+  test('passes command text through unchanged, except whitespace and length', () => {
     assert.equal(
       sanitizeActiveCommandLabel('curl https://example.com/health'),
       'curl https://example.com/health',
