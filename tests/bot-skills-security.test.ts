@@ -55,8 +55,18 @@ describe('Bot Skill sync security boundaries', () => {
     }
     assert.equal(isPortablePackagePath('scripts/publish.mjs'), true);
 
+    // A page with embedded artwork still inside the package budget has to be
+    // publishable; the boundary sits at the SkillHub per-file limit.
+    const artworkRoot = createSkill(roots, 'packaged-artwork');
+    fs.mkdirSync(path.join(artworkRoot, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(artworkRoot, 'assets', 'template.html'), Buffer.alloc(3_470_090));
+    assert.equal(
+      scanLocalBotSkill(artworkRoot).files.some(file => file.path === 'assets/template.html'),
+      true,
+    );
+
     const oversizedRoot = createSkill(roots, 'oversized');
-    fs.writeFileSync(path.join(oversizedRoot, 'payload.bin'), Buffer.alloc(2 * 1024 * 1024 + 1));
+    fs.writeFileSync(path.join(oversizedRoot, 'payload.bin'), Buffer.alloc(5 * 1024 * 1024 + 1));
     assert.throws(() => scanLocalBotSkill(oversizedRoot), /file is too large/i);
 
     const crowdedRoot = createSkill(roots, 'crowded');

@@ -22,7 +22,9 @@ const PRIVATE_PACKAGE_SCHEMA = 'catsco.private-skill-package.v1';
 const PRIVATE_PACKAGE_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const MAX_FILES = 200;
-const MAX_SINGLE_FILE_BYTES = 2 * 1024 * 1024;
+// Matches the SkillHub package bound, so a package this device publishes is one
+// it can also verify when the same package is downloaded back.
+const MAX_SINGLE_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
 export interface BotPrivateSkillClientOptions {

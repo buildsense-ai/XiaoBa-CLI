@@ -415,7 +415,9 @@ const SOURCE_SKIP_FILES = new Set([
 ]);
 const MAX_SOURCE_FILES = 200;
 const MAX_SOURCE_TOTAL_BYTES = 20 * 1024 * 1024;
-const MAX_SOURCE_SINGLE_FILE_BYTES = 2 * 1024 * 1024;
+// The SkillHub public package limit is 5MiB per file; mirror it here so a local
+// page with embedded artwork can be shared instead of failing locally first.
+const MAX_SOURCE_SINGLE_FILE_BYTES = 5 * 1024 * 1024;
 
 function collectSkillSourceFiles(localPath: string): Array<{ path: string; contentBase64: string }> {
   const inputPath = String(localPath || '').trim();

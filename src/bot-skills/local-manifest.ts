@@ -57,7 +57,11 @@ const SKIP_FILES = new Set([
   'SBOM.json',
 ]);
 const MAX_FILES = 200;
-const MAX_SINGLE_FILE_BYTES = 2 * 1024 * 1024;
+// SkillHub stores a 5MiB single file in every package it accepts, and a Bot
+// publishes its whole local workspace as Bot-private packages. Mirroring that
+// bound keeps a locally valid Skill - one real approved HTML page with embedded
+// artwork is 3.4MiB - from being rejected here and never shared at all.
+const MAX_SINGLE_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 // The legacy content scanner is intentionally retained below as a reusable
 // detector, but package collection no longer calls it. SkillHub publication is
