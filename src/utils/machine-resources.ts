@@ -5,9 +5,9 @@
  * machine reports its real shape — small self-hosted workers, beefy dev boxes,
  * Windows laptops — and the rendered guidance adapts to what is actually there.
  *
- * The layer is advisory by design: it gives the model facts (memory pressure,
- * heavy commands already running) and soft guidance, and leaves the decision
- * to the model. Set `XIAOBA_MACHINE_RESOURCES=off` to disable injection.
+ * The layer stays factual by design: it gives the model raw resource facts
+ * (memory, swap, load, heavy commands already running) and nothing else — no
+ * advice, no limits. Set `XIAOBA_MACHINE_RESOURCES=off` to disable injection.
  */
 import * as fs from 'fs';
 import * as os from 'os';
@@ -48,8 +48,6 @@ const defaultIo: MachineResourceIo = {
   loadavg: () => os.loadavg(),
 };
 
-export const SMALL_MACHINE_TOTAL_BYTES = 8 * 1024 ** 3;
-export const LOW_AVAILABLE_RATIO = 0.2;
 export const COMMAND_NOTE_MIN_DURATION_MS = 30_000;
 export const COMMAND_NOTE_RSS_RATIO = 0.15;
 export const COMMAND_NOTE_MIN_RSS_BYTES = 256 * 1024 ** 2;
@@ -247,18 +245,6 @@ export function formatDurationCompact(ms: number): string {
 
 // ─── Prompt rendering ───────────────────────────────────
 
-export function buildMachineResourceGuidance(snapshot: MachineResourceSnapshot): string | undefined {
-  const total = snapshot.totalMemoryBytes;
-  const available = snapshot.availableMemoryBytes;
-  if (total !== undefined && available !== undefined && available <= total * LOW_AVAILABLE_RATIO) {
-    return '当前可用内存偏低：建议先等现有重活结束，再开始新的重活。';
-  }
-  if (total !== undefined && total < SMALL_MACHINE_TOTAL_BYTES) {
-    return '内存偏小机型：图像等重活先用缩略图定位、拿到坐标后再局部高清处理；同类重活建议一次只跑一个。';
-  }
-  return undefined;
-}
-
 export function buildMachineResourceLines(
   snapshot: MachineResourceSnapshot,
   commands: ActiveCommandEntry[],
@@ -298,9 +284,6 @@ export function buildMachineResourceLines(
     });
     lines.push(`本机正在运行 ${commands.length} 条命令：${rendered.join('；')}`);
   }
-
-  const guidance = buildMachineResourceGuidance(snapshot);
-  if (guidance) lines.push(guidance);
 
   return lines;
 }

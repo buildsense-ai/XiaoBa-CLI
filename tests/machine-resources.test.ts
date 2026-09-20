@@ -7,7 +7,6 @@ import {
   collectMachineResourceSnapshot,
   formatBytesCompact,
   formatDurationCompact,
-  buildMachineResourceGuidance,
   buildMachineResourceLines,
   buildCommandResourceNoteText,
   renderMachineResourcesForPrompt,
@@ -91,26 +90,6 @@ describe('machine resource formatting', () => {
   });
 });
 
-describe('machine resource guidance adapts to the actual machine', () => {
-  test('flags low available memory first', () => {
-    const guidance = buildMachineResourceGuidance(snapshotOf({ availableMemoryBytes: 0.5 * GIB }));
-    assert.ok(guidance && guidance.includes('可用内存偏低'));
-  });
-
-  test('marks small machines without complaining when there is headroom', () => {
-    const guidance = buildMachineResourceGuidance(snapshotOf());
-    assert.ok(guidance && guidance.includes('内存偏小机型'));
-  });
-
-  test('stays silent on a big machine with plenty of headroom', () => {
-    const guidance = buildMachineResourceGuidance(snapshotOf({
-      totalMemoryBytes: 32 * GIB,
-      availableMemoryBytes: 20 * GIB,
-    }));
-    assert.equal(guidance, undefined);
-  });
-});
-
 describe('machine resource rendering', () => {
   test('renders live totals and swap usage from the snapshot', () => {
     const lines = buildMachineResourceLines(snapshotOf(), [], NOW, () => undefined);
@@ -119,7 +98,6 @@ describe('machine resource rendering', () => {
     assert.ok(lines[0].includes('内存 3.6G（可用 1.2G）'));
     assert.ok(lines[0].includes('Swap 10G（已用 2G）'));
     assert.ok(lines[0].includes('负载 1.82'));
-    assert.ok(lines.some(line => line.includes('内存偏小机型')));
   });
 
   test('lists running commands with sampled RSS and age', () => {
