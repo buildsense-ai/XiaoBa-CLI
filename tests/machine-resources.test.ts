@@ -133,6 +133,12 @@ describe('machine resource rendering', () => {
     assert.ok(running.includes('12 分钟'));
     assert.ok(running.includes('RSS 1.8G'));
   });
+
+  test('does not render load on Windows where the OS never reports it', () => {
+    const lines = buildMachineResourceLines(snapshotOf({ platform: 'win32', load1: 0 }), [], NOW, () => undefined);
+    assert.ok(lines[0].includes('CPU 2 核'));
+    assert.ok(!lines[0].includes('负载'));
+  });
 });
 
 describe('command result resource note', () => {

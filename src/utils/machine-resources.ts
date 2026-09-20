@@ -267,7 +267,8 @@ export function buildMachineResourceLines(
     parts.push(swapUsedText ? `Swap ${swapTotalText}（已用 ${swapUsedText}）` : `Swap ${swapTotalText}`);
   }
 
-  if (typeof snapshot.load1 === 'number' && Number.isFinite(snapshot.load1)) {
+  // Node reports loadavg as [0, 0, 0] on Windows, where it is meaningless; skip it there.
+  if (snapshot.platform !== 'win32' && typeof snapshot.load1 === 'number' && Number.isFinite(snapshot.load1)) {
     parts.push(`负载 ${snapshot.load1.toFixed(2)}`);
   }
 
