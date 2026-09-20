@@ -35,7 +35,7 @@ const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set([
   'https://app.catsco.cc',
   'https://app.catsco.cn',
 ]);
-const CATSCO_WEBAPP_URL = 'https://app.catsco.cc';
+const CATSCO_WEBAPP_URL = 'https://app.catsco.cn';
 const DEFAULT_RELEASE_PAGE_URL = 'https://github.com/buildsense-ai/XiaoBa-CLI/releases/latest';
 let mainWindow = null;
 let tray = null;

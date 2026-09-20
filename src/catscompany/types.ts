@@ -1,5 +1,6 @@
 import type { ExecutionScope, MessageEnvelope, ScopedDeviceGrant, ScopedDeviceSelection, SkillConnectorGrant } from '../types/session-identity';
 import type { TargetRoutes } from '../types/tool';
+import type { CatsCoDomainFamily } from '../utils/catsco-domains';
 
 export type CatsCompanyRuntimeRole = 'desktop' | 'server';
 
@@ -41,6 +42,10 @@ export interface CatsCompanyConfig {
   runtimeRole?: CatsCompanyRuntimeRole;
   /** HTTP 基础地址（用于文件上传），默认从 serverUrl 推导 */
   httpBaseUrl?: string;
+  /** 最近一次成功连接的域名族（cc/cn），用于下次启动时优先选择 */
+  preferredDomainFamily?: CatsCoDomainFamily;
+  /** 完成握手时回调当前服务端地址（运行时用于持久化域名族偏好） */
+  onEndpointReady?: (serverUrl: string) => void;
   /** 会话过期时间（毫秒），默认 30 分钟 */
   sessionTTL?: number;
 }

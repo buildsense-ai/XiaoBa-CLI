@@ -418,7 +418,7 @@ function buildCatsCoChatChecks(
     env.CATSCOMPANY_HTTP_BASE_URL,
     config.catscompany?.httpBaseUrl,
   )
-    || 'https://app.catsco.cc';
+    || 'https://app.catsco.cn';
   const serverUrl = firstNonEmpty(
     env.CATSCO_SERVER_URL,
     env.CATSCOMPANY_SERVER_URL,

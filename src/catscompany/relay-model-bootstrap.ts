@@ -4,6 +4,8 @@ import {
   relayModelProfileFromRuntimeDescriptor,
   type RelayModelRuntimeDescriptor,
   relayModelProviderBaseUrl,
+  DEFAULT_RELAY_BASE_URL,
+  isOfficialRelayBaseUrl,
   type RelayModelProvider,
 } from '../utils/relay-model-profiles';
 import type { BotCatalogModelRuntime } from '../bot-definition/types';
@@ -360,8 +362,8 @@ function relayEndpointForProvider(config: any, provider: RelayModelProvider): st
     const protocol = String(item?.protocol || '').toLowerCase();
     return provider === 'openai' ? protocol.includes('openai') : protocol.includes('anthropic');
   });
-  const baseUrl = String(config?.base_url || 'https://relay.catsco.cc').trim().replace(/\/+$/, '');
-  const fallback = baseUrl === 'https://relay.catsco.cc'
+  const baseUrl = String(config?.base_url || DEFAULT_RELAY_BASE_URL).trim().replace(/\/+$/, '');
+  const fallback = isOfficialRelayBaseUrl(baseUrl)
     ? relayModelProviderBaseUrl(provider)
     : provider === 'openai' ? `${baseUrl}/v1` : `${baseUrl}/anthropic`;
   return String(endpoint?.base_url || fallback).trim().replace(/\/+$/, '');

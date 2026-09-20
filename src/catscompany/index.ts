@@ -555,9 +555,11 @@ export class CatsCompanyBot {
       runtimeCredentialExpiresAt: config.runtimeCredentialExpiresAt,
       deviceRegistration,
       httpBaseUrl: config.httpBaseUrl,
+      preferredDomainFamily: config.preferredDomainFamily,
+      onEndpointReady: config.onEndpointReady,
     });
 
-    this.sender = new MessageSender(this.bot, config.httpBaseUrl, config.apiKey);
+    this.sender = new MessageSender(this.bot, undefined, config.apiKey);
     // 服务器连续拒绝发送（403/404，例如已被移出群或群已删除）说明该会话
     // 已不可写。触发熔断并停止对应会话的循环工作，避免消息发不出去时
     // 仍持续空转（每轮全量推理、发送再被拒）。
