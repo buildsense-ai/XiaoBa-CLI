@@ -231,12 +231,16 @@ export class SubAgentSession {
 
     // 1. 构建独立的 system prompt
     const systemPrompt = await PromptManager.buildSystemPrompt();
+    // 与主运行路径同一门控：仅 CatsCompany 会话注入机器资源块（本地 CLI 不注入）。
+    const machineResources = this.options.delegatedToolContext?.executionScope?.source === 'catscompany'
+      ? renderMachineResourcesForPrompt()
+      : undefined;
     this.messages.push({
       role: 'system',
       content: [
         systemPrompt,
         buildSubAgentSystemPrompt(this.toolScope, this.temporaryDirectory, this.allowedTools, this.options.subAgentPrompt, this.options.maxTurns),
-        renderMachineResourcesForPrompt(),
+        machineResources,
       ].filter(Boolean).join('\n\n'),
     });
     await fs.promises.mkdir(this.temporaryDirectory, { recursive: true });

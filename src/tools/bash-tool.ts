@@ -81,13 +81,14 @@ export function normalizeShellTimeout(value: unknown, fallbackMs: number = DEFAU
 }
 
 /**
- * The OS-side watchdog script. It fires even when the runtime is dead, so it
- * must tolerate a pgid that no longer belongs to us: before signalling it
- * checks that the group leader still reports the start time captured at spawn.
- * A recycled leader (different start time) is left untouched; a missing leader
- * with a living group is still safe to kill because the pgid number stays
- * reserved while members hold it. An unverifiable leader (no expected start
- * time recorded) is skipped to avoid a wrong kill.
+ * The OS-side watchdog script, with three guard branches for the leader:
+ *  - leader alive and start time matches: the group is ours, signal it;
+ *  - leader alive but start time differs: the pid was recycled, skip;
+ *  - leader gone: the pgid number stays reserved while any member lives, so a
+ *    still-existing group can only be ours — signal it;
+ *  - unverifiable leader (no recorded start time): skip to avoid a wrong kill.
+ * On platforms without /proc (macOS) the guard cannot run at all and the
+ * deadline kill stays blind — accepted for dev machines.
  */
 export function buildTimeoutWatchdogScript(processGroupId: number, seconds: number, expectedStartTime?: number): string {
   const expected = Number.isInteger(expectedStartTime) ? String(expectedStartTime) : '';
@@ -104,6 +105,26 @@ export function buildTimeoutWatchdogScript(processGroupId: number, seconds: numb
     '  sleep 5',
     `  kill -KILL -${processGroupId} 2>/dev/null`,
     'fi',
+  ].join('\n');
+}
+
+/**
+ * OS-side SIGKILL escalation for a group that may ignore SIGTERM. It shares
+ * the watchdog's guard semantics and the same reason to exist: it can outlive
+ * the runtime, so a runtime crash inside the node-side TERM->KILL window (an
+ * OOM kill is exactly that) still gets the group reaped. Fires once and exits.
+ */
+export function buildKillEscalationScript(processGroupId: number, seconds: number, expectedStartTime?: number): string {
+  const expected = Number.isInteger(expectedStartTime) ? String(expectedStartTime) : '';
+  return [
+    `sleep ${seconds}`,
+    `expected='${expected}'`,
+    `statfile=/proc/${processGroupId}/stat`,
+    'if [ -r "$statfile" ]; then',
+    '  current=$(sed "s/.*) //" "$statfile" 2>/dev/null | cut -d" " -f20)',
+    '  if [ -z "$expected" ] || [ "$current" != "$expected" ]; then exit 0; fi',
+    'fi',
+    `kill -KILL -${processGroupId} 2>/dev/null`,
   ].join('\n');
 }
 
@@ -400,7 +421,7 @@ export class ShellTool implements Tool {
       env: runtimeEnvironment.env,
       timeoutMs: timeout,
       signal,
-      label: this.describeCommandLabel(label || args.join(' ')),
+      label: this.describeCommandLabel(label ? `${label} · ${args.join(' ')}` : args.join(' ')),
     });
   }
 
@@ -446,6 +467,25 @@ export class ShellTool implements Tool {
       return watchdog;
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * Death-proof escalation: even if this runtime dies before its own timer
+   * fires, the detached helper still delivers SIGKILL to the group; it
+   * verifies the group is still ours first and self-exits after firing.
+   */
+  private spawnKillEscalation(processGroupId: number, delayMs: number, expectedStartTime?: number): void {
+    if (process.platform === 'win32') return;
+    try {
+      const seconds = Math.max(1, Math.ceil(delayMs / 1000));
+      const killer = spawn('/bin/sh', ['-c', buildKillEscalationScript(processGroupId, seconds, expectedStartTime)], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      killer.unref();
+    } catch {
+      // Best effort: the node-side timer still covers the running-runtime case.
     }
   }
 
@@ -528,13 +568,18 @@ export class ShellTool implements Tool {
           peakRssBytes = rss;
         }
       };
-      const sampler = setInterval(sampleRss, 5000);
-      sampler.unref?.();
       // Memory bombs can rise in seconds (the production OOM pattern was a
-      // 1.5 GB spike inside ~2 s), which a 5 s cadence would miss entirely;
-      // take one early sample so short peaks still reach the result note.
-      const earlySampleTimer = setTimeout(sampleRss, 1500);
-      earlySampleTimer.unref?.();
+      // 1.5 GB spike inside ~2 s). Sample at 1.5 s, then once per second for
+      // the first 10 s so spikes anywhere in the 2-5 s window still reach the
+      // result note, and fall back to a 5 s cadence afterwards.
+      let samplerTimer: NodeJS.Timeout | undefined;
+      const scheduleSample = () => {
+        sampleRss();
+        samplerTimer = setTimeout(scheduleSample, Date.now() - startedAt < 10_000 ? 1000 : 5000);
+        samplerTimer.unref?.();
+      };
+      samplerTimer = setTimeout(scheduleSample, 1500);
+      samplerTimer.unref?.();
 
       const watchdog = processGroupId
         ? this.spawnTimeoutWatchdog(processGroupId, timeoutMs, groupStartTime)
@@ -560,8 +605,7 @@ export class ShellTool implements Tool {
       let stderrBytes = 0;
 
       const cleanup = () => {
-        clearInterval(sampler);
-        clearTimeout(earlySampleTimer);
+        if (samplerTimer) clearTimeout(samplerTimer);
         clearTimeout(fallbackTimer);
         if (killEscalationTimer) clearTimeout(killEscalationTimer);
         if (watchdog && typeof watchdog.pid === 'number'
@@ -586,9 +630,11 @@ export class ShellTool implements Tool {
         if (terminate && processGroupId) {
           // The command failed after spawning (e.g. maxBuffer overflow) but its
           // process group may still be running; take it down with the same
-          // TERM-then-KILL escalation used for aborts, verifying the group is
-          // still ours before any signal goes out.
+          // TERM-then-KILL escalation used for aborts. The KILL also runs
+          // OS-side so a runtime crash inside the window cannot leave the
+          // group behind; both kills verify the group is still ours first.
           this.killProcessGroup(processGroupId, 'SIGTERM', groupStartTime);
+          this.spawnKillEscalation(processGroupId, 5000, groupStartTime);
           setTimeout(() => this.killProcessGroup(processGroupId, 'SIGKILL', groupStartTime), 5000).unref?.();
         }
         error.stdout = Buffer.concat(stdoutChunks).toString('utf8');
@@ -600,9 +646,10 @@ export class ShellTool implements Tool {
       const abortHandler = () => {
         if (processGroupId) {
           this.killProcessGroup(processGroupId, 'SIGTERM', groupStartTime);
-          // Deliberately untracked: fires within 3s, verifies the group is
-          // still ours inside killProcessGroup, and is unref'd so it never
-          // holds the process open.
+          // The OS-side helper fires within 3s even if this runtime dies first;
+          // the node-side timer below is an untracked, unref'd duplicate.
+          // Both verify the group is still ours before signalling.
+          this.spawnKillEscalation(processGroupId, 3000, groupStartTime);
           setTimeout(() => this.killProcessGroup(processGroupId, 'SIGKILL', groupStartTime), 3000).unref?.();
         } else {
           try { child.kill('SIGTERM'); } catch { /* already gone */ }
@@ -647,23 +694,30 @@ export class ShellTool implements Tool {
 
         // The OS-side watchdog kills the process group at the deadline; map
         // that back to the timed_out contract even when the node-side fallback
-        // never fired (event loop starvation). SIGKILL covers a direct child
-        // that ignored SIGTERM. The 1 s floor keeps tiny timeouts from
-        // misclassifying an unrelated external signal as a timeout; an
-        // external SIGTERM inside the last seconds of the window would still
-        // be misattributed — accepted trade-off.
+        // never fired (event loop starvation). Deadline kills land at or after
+        // the timeout (the watchdog sleeps ceil((timeout+1200)/1000) seconds),
+        // so an earlier signal is an unrelated external kill and stays a plain
+        // failure; the 1 s floor keeps tiny timeouts usable.
         const killedByDeadline = !timedOut
           && (closeSignal === 'SIGTERM' || closeSignal === 'SIGKILL')
-          && elapsed >= Math.max(1000, timeoutMs - 2000);
+          && elapsed >= Math.max(1000, timeoutMs);
 
         settled = true;
+        if ((timedOut || killedByDeadline) && processGroupId) {
+          // Finish the TERM->KILL cycle OS-side: the watchdog may have died
+          // between its TERM and its KILL (or be released by cleanup below),
+          // and this runtime could die before any node-side escalation fires.
+          this.spawnKillEscalation(processGroupId, 5000, groupStartTime);
+        }
         cleanup();
         signal?.removeEventListener('abort', abortHandler);
 
         if (timedOut || killedByDeadline) {
           const error: any = new Error(`Command timed out after ${timeoutMs}ms`);
           error.killed = true;
-          error.signal = 'SIGTERM';
+          // Keep the real close signal: an OOM SIGKILL must stay visible
+          // instead of being flattened into SIGTERM.
+          error.signal = closeSignal ?? 'SIGTERM';
           error.stdout = stdout;
           error.stderr = stderr;
           error.peakRssBytes = peakRssBytes;
@@ -867,18 +921,18 @@ export class ShellTool implements Tool {
         env,
         timeoutMs: timeout,
         signal,
-        // The label ends up in every session's runtime context on this machine,
-        // so a free-form `description` goes through the same single-line,
-        // length-bounded shaping as the command text itself.
-        label: this.describeCommandLabel(label || wrapped.command),
+        // The label ends up in every session's runtime context on this machine:
+        // keep it single-line and bounded, and keep both the description and
+        // the actual command so other sessions can still tell what is running.
+        label: this.describeCommandLabel(label ? `${label} · ${wrapped.command}` : wrapped.command),
       });
     }
 
     try {
-      return await this.executeWindowsPowerShellScript(wrapped, cwd, env, timeout, signal);
+      return await this.executeWindowsPowerShellScript(wrapped, cwd, env, timeout, signal, label);
     } catch (error) {
       if (!this.isPowerShellLaunchFailure(error)) throw error;
-      return this.executeWindowsCmdFallback(wrapped, cwd, env, timeout);
+      return this.executeWindowsCmdFallback(wrapped, cwd, env, timeout, label);
     }
   }
 
@@ -888,6 +942,7 @@ export class ShellTool implements Tool {
     env: NodeJS.ProcessEnv,
     timeout: number,
     signal?: AbortSignal,
+    label?: string,
   ): Promise<ShellOutput> {
     const powershellScript = wrapped.powershellScript;
     if (!powershellScript) {
@@ -916,7 +971,7 @@ export class ShellTool implements Tool {
       if (childPid) {
         registerActiveCommand({
           pid: childPid,
-          label: this.describeCommandLabel(wrapped.command),
+          label: this.describeCommandLabel(label ? `${label} · ${wrapped.command}` : wrapped.command),
           startedAt: Date.now(),
           platform: process.platform,
         });
@@ -1009,6 +1064,7 @@ export class ShellTool implements Tool {
     cwd: string,
     env: NodeJS.ProcessEnv,
     timeout: number,
+    label?: string,
   ): Promise<ShellOutput> {
     const cmdScript = wrapped.cmdScript;
     if (!cmdScript) {
@@ -1027,7 +1083,7 @@ export class ShellTool implements Tool {
       if (childPid) {
         registerActiveCommand({
           pid: childPid,
-          label: this.describeCommandLabel(wrapped.command),
+          label: this.describeCommandLabel(label ? `${label} · ${wrapped.command}` : wrapped.command),
           startedAt: Date.now(),
           platform: process.platform,
         });

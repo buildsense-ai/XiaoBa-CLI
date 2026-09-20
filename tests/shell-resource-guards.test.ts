@@ -136,6 +136,20 @@ describe('ShellTool resource guards', () => {
     const result = await pending;
     assert.equal(result.ok, true);
     assert.equal(listActiveCommands().length, 0);
+
+    // A short description keeps the actual command visible next to it.
+    const second = tool.execute({
+      command,
+      description: 'probe-desc',
+      timeout: 30_000,
+    }, context);
+    const entry2 = await waitFor(() => listActiveCommands()[0], 6000);
+    assert.ok(entry2, 'second command should register');
+    assert.ok(entry2!.label.includes('probe-desc'), 'description must travel with the label');
+    assert.ok(entry2!.label.includes(' · '), 'description and command are composed');
+    assert.ok(entry2!.label.includes('node'), 'the command must stay visible next to the description');
+    const secondResult = await second;
+    assert.equal(secondResult.ok, true);
   });
 
   test('watchdog never kills a recycled pgid (start-time guard)', LINUX_ONLY, async () => {
@@ -167,6 +181,26 @@ describe('ShellTool resource guards', () => {
     }
   });
 
+  test('watchdog reaps the group when the leader is already gone', POSIX_ONLY, async () => {
+    const leader = spawn('setsid', ['sh', '-c', 'sleep 654329 &'], { stdio: 'ignore' });
+    try {
+      assert.equal(await waitForExit(leader, 4000), true, 'leader exits immediately');
+      await delay(300);
+      assert.equal(processCount('sleep 654329'), 1, 'member survives its leader');
+
+      // Leader gone => /proc/<pgid>/stat is unreadable, the guard is skipped, and
+      // the still-existing group (which cannot be a recycled pgid) is reaped.
+      const script = spawn('/bin/sh', ['-c', buildTimeoutWatchdogScript(leader.pid!, 1, 12345)], { stdio: 'ignore' });
+      const reaped = await waitFor(() => (processCount('sleep 654329') === 0 ? true : undefined), 8000);
+      assert.equal(reaped, true, 'group with a dead leader must still be reaped');
+      // Let the script finish its own TERM->KILL sequence on its own so no inner
+      // sleep leaks into the sleep-count test that runs later.
+      assert.equal(await waitForExit(script, 8000), true, 'watchdog script exits on its own');
+    } finally {
+      try { execSync("pkill -9 -f '65432[9]' 2>/dev/null || true"); } catch { /* best effort */ }
+    }
+  });
+
   test('captures a fast memory spike through the early RSS sample', LINUX_ONLY, async () => {
     setMachineResourceSnapshotForTest({
       platform: 'linux',
@@ -177,6 +211,23 @@ describe('ShellTool resource guards', () => {
     });
     const tool = new ShellTool();
     const command = `'${process.execPath}' -e "const b = Buffer.alloc(420 * 1024 * 1024, 1); console.log('balloon', b.length); setTimeout(() => {}, 3000)"`;
+    const result = await tool.execute({ command, timeout: 30_000 }, context);
+    assert.equal(result.ok, true);
+    const report = String(result.content || result.message || '');
+    assert.match(report, /resource_note:/);
+    assert.match(report, /峰值 RSS [3-5]\d\dM/);
+  });
+
+  test('captures a memory spike that lands mid-run (2-5 s window)', LINUX_ONLY, async () => {
+    setMachineResourceSnapshotForTest({
+      platform: 'linux',
+      cpuCount: 2,
+      totalMemoryBytes: 1024 ** 3,
+      availableMemoryBytes: 900 * 1024 ** 2,
+      sampledAt: Date.now(),
+    });
+    const tool = new ShellTool();
+    const command = `'${process.execPath}' -e "setTimeout(() => { global.b = Buffer.alloc(420 * 1024 * 1024, 1); }, 2500); setTimeout(() => {}, 4600)"`;
     const result = await tool.execute({ command, timeout: 30_000 }, context);
     assert.equal(result.ok, true);
     const report = String(result.content || result.message || '');
@@ -227,6 +278,34 @@ describe('ShellTool resource guards', () => {
     assert.equal(result.ok, false);
     await delay(500);
     assert.equal(processCount('sleep 654321'), 0, 'background child must die with the process group');
+  });
+
+  test('finishes the TERM->KILL escalation even after the direct child exits', { ...POSIX_ONLY, timeout: 25_000 }, async () => {
+    setMachineResourceSnapshotForTest({
+      platform: 'linux',
+      cpuCount: 2,
+      totalMemoryBytes: 1024 ** 3,
+      availableMemoryBytes: 100 * 1024 ** 2,
+      sampledAt: Date.now(),
+    });
+    const tool = new ShellTool();
+    try {
+      // The wrapper exits on SIGTERM, but the background member ignores TERM and
+      // keeps respawning sleeps in the same group — the OS-side escalation must
+      // still reap it, and the failure result must carry a resource note.
+      const result = await tool.execute({
+        command: `sh -c 'trap "" TERM; while :; do sleep 654328; done' & sleep 654327`,
+        timeout: 1500,
+      }, context);
+      assert.equal(result.ok, false);
+      assert.match(result.message, /timed_out: true/);
+      assert.match(result.message, /resource_note:/);
+
+      await delay(6500);
+      assert.equal(processCount('654328'), 0, 'TERM-immunized group member must be SIGKILLed by the escalation');
+    } finally {
+      try { execSync("pkill -9 -f '65432[8]' 2>/dev/null || true"); } catch { /* best effort */ }
+    }
   });
 
   test('terminates the process group when stdout overflows maxBuffer', POSIX_ONLY, async () => {

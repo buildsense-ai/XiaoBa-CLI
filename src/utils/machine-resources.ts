@@ -224,7 +224,9 @@ export function sampleProcessGroupRssByGroup(processGroupIds: number[]): Map<num
 /**
  * One pass over /proc even when several groups are requested; batching keeps
  * the synchronous scan off the hot path when multiple commands are rendered
- * at once.
+ * at once. Cost scales with the host's process count (one /proc/<pid>/stat
+ * read per process, plus /status for group members); callers run it only
+ * while at least one command is active, so idle machines pay nothing.
  */
 export function sampleProcessGroupRssBytes(processGroupId: number): number | undefined {
   return sampleProcessGroupRssByGroup([processGroupId]).get(processGroupId);
