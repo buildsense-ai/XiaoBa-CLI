@@ -21,9 +21,24 @@ export interface ActiveCommandEntry {
 
 const activeCommands = new Map<number, ActiveCommandEntry>();
 
+const SECRET_PATTERN = /(authorization|bearer|token|secret|password|passwd|api[_-]?key)(\s*[:=]\s*|\s+)([^\s'"]+)/gi;
+// Long credential-looking runs (hex/base64 style). Runs with hyphens are only
+// redacted past 52 chars so ordinary dated run names stay readable.
+const LONG_TOKEN_PATTERN = /[A-Za-z0-9_+=]{32,}|[A-Za-z0-9_=-]{52,}/g;
+
+/**
+ * Command labels are rendered into every session's runtime context on the same
+ * machine, so credential-looking fragments must not travel with them.
+ */
+export function sanitizeActiveCommandLabel(label: string): string {
+  return String(label || '')
+    .replace(SECRET_PATTERN, '$1$2***')
+    .replace(LONG_TOKEN_PATTERN, '***');
+}
+
 export function registerActiveCommand(entry: ActiveCommandEntry): void {
   if (!Number.isInteger(entry.pid) || entry.pid <= 0) return;
-  activeCommands.set(entry.pid, entry);
+  activeCommands.set(entry.pid, { ...entry, label: sanitizeActiveCommandLabel(entry.label) });
 }
 
 export function unregisterActiveCommand(pid: number | undefined): void {

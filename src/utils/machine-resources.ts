@@ -174,44 +174,55 @@ export function isMachineResourcesDisabled(): boolean {
 
 // ─── Process RSS sampling (POSIX) ───────────────────────
 
-export function sampleProcessGroupRssBytes(processGroupId: number): number | undefined {
-  if (process.platform !== 'linux' || !Number.isInteger(processGroupId) || processGroupId <= 0) return undefined;
+export function sampleProcessGroupRssByGroup(processGroupIds: number[]): Map<number, number> {
+  const totals = new Map<number, number>();
+  if (process.platform !== 'linux') return totals;
+  const wanted = new Set(processGroupIds.filter(id => Number.isInteger(id) && id > 0));
+  if (wanted.size === 0) return totals;
 
   let entries: string[];
   try {
     entries = fs.readdirSync('/proc');
   } catch {
-    return undefined;
+    return totals;
   }
 
-  let total: number | undefined;
   for (const name of entries) {
     if (!/^\d+$/.test(name)) continue;
-    const pid = Number.parseInt(name, 10);
     try {
-      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const stat = fs.readFileSync(`/proc/${name}/stat`, 'utf8');
       const closing = stat.lastIndexOf(')');
       if (closing < 0) continue;
       const fields = stat.slice(closing + 2).split(' ');
       const pgrp = Number.parseInt(fields[2], 10);
-      if (pgrp !== processGroupId) continue;
+      if (!wanted.has(pgrp)) continue;
 
-      const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+      const status = fs.readFileSync(`/proc/${name}/status`, 'utf8');
       const rss = /VmRSS:\s+(\d+)\s+kB/.exec(status);
       if (rss) {
-        total = (total ?? 0) + Number.parseInt(rss[1], 10) * 1024;
+        totals.set(pgrp, (totals.get(pgrp) ?? 0) + Number.parseInt(rss[1], 10) * 1024);
       }
     } catch {
       // Process vanished mid-scan; skip it.
     }
   }
-  return total;
+  return totals;
+}
+
+/**
+ * One pass over /proc even when several groups are requested; batching keeps
+ * the synchronous scan off the hot path when multiple commands are rendered
+ * at once.
+ */
+export function sampleProcessGroupRssBytes(processGroupId: number): number | undefined {
+  return sampleProcessGroupRssByGroup([processGroupId]).get(processGroupId);
 }
 
 // ─── Formatting ─────────────────────────────────────────
 
 export function formatBytesCompact(bytes: number | undefined): string | undefined {
   if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return undefined;
+  if (bytes === 0) return '0';
   const gib = bytes / 1024 ** 3;
   if (gib >= 1) return `${formatScaledValue(gib)}G`;
   const mib = bytes / 1024 ** 2;
@@ -263,7 +274,8 @@ export function buildMachineResourceLines(
 
   const swapTotalText = formatBytesCompact(snapshot.swapTotalBytes);
   if (swapTotalText && snapshot.swapTotalBytes !== undefined && snapshot.swapFreeBytes !== undefined) {
-    const swapUsedText = formatBytesCompact(snapshot.swapTotalBytes - snapshot.swapFreeBytes);
+    const swapUsedBytes = snapshot.swapTotalBytes - snapshot.swapFreeBytes;
+    const swapUsedText = swapUsedBytes > 0 ? formatBytesCompact(swapUsedBytes) : undefined;
     parts.push(swapUsedText ? `Swap ${swapTotalText}（已用 ${swapUsedText}）` : `Swap ${swapTotalText}`);
   }
 
@@ -297,7 +309,9 @@ export function renderMachineResourcesForPrompt(): string | undefined {
   if (isMachineResourcesDisabled()) return undefined;
   try {
     const snapshot = getMachineResourceSnapshot();
-    const lines = buildMachineResourceLines(snapshot, listActiveCommands());
+    const commands = listActiveCommands();
+    const rssByGroup = sampleProcessGroupRssByGroup(commands.map(command => command.pid));
+    const lines = buildMachineResourceLines(snapshot, commands, Date.now(), pid => rssByGroup.get(pid));
     return lines.length > 0 ? lines.join('\n') : undefined;
   } catch {
     return undefined;
@@ -338,7 +352,8 @@ export function buildCommandResourceNoteText(
   else if (availableText) parts.push(`本机可用 ${availableText}`);
 
   if (snapshot.swapTotalBytes !== undefined && snapshot.swapFreeBytes !== undefined) {
-    const usedText = formatBytesCompact(snapshot.swapTotalBytes - snapshot.swapFreeBytes);
+    const usedBytes = snapshot.swapTotalBytes - snapshot.swapFreeBytes;
+    const usedText = usedBytes > 0 ? formatBytesCompact(usedBytes) : undefined;
     const swapTotalText = formatBytesCompact(snapshot.swapTotalBytes);
     if (usedText && swapTotalText) parts.push(`Swap 已用 ${usedText}/${swapTotalText}`);
   }
@@ -363,7 +378,7 @@ export function buildCommandResourceNote(stats: CommandResourceStats): string | 
   }
 }
 
-// ─── Test hooks ─────────────────────────────────────────
+// ─── Test hooks (test-only; production paths never call these) ──
 
 export function setMachineResourceSnapshotForTest(snapshot: MachineResourceSnapshot | null): void {
   testOverride = snapshot;

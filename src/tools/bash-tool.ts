@@ -73,6 +73,7 @@ export class ShellTool implements Tool {
       'Windows 目标上 command 会作为 PowerShell 脚本执行，可直接写多行 PowerShell，无需再套一层 powershell -Command。',
       '命令从当前目录启动；每次调用都是新的 shell 进程，只有最终当前目录会保留到后续工具调用。',
       '环境变量、alias、函数和已激活虚拟环境不会自动跨调用保留；需要时在同一条 command 中显式设置。',
+      '命令超时或被中止时，命令及其子进程会被一并终止（Linux/macOS 按进程组整体终止）；不要用 execute_shell 保活常驻服务。',
       '当前 Bot 已启用且完整性校验通过的 SkillHub Node 脚本会优先以 shell=false 直接执行；其他命令继续走普通 execute_shell 路径，并遵守既有设备授权和危险命令策略。',
     ].join('\n'),
     parameters: {
@@ -375,8 +376,11 @@ export class ShellTool implements Tool {
   /**
    * Spawn an OS-side watchdog that enforces the deadline even when the Node
    * event loop is starved (the failure mode observed in production): the
-   * watchdog is its own process, so its timer fires regardless of the runtime.
-   * It kills the whole process group and is itself killed on normal completion.
+   * watchdog is its own process group, so its timer fires regardless of the
+   * runtime. On normal completion `cleanup()` kills the whole watchdog group —
+   * including its inner `sleep` child — so nothing is orphaned. If the runtime
+   * itself crashes, the watchdog still fires at the deadline; a pgid reused
+   * before that moment is a theoretical risk accepted here.
    */
   private spawnTimeoutWatchdog(processGroupId: number, timeoutMs: number): number | undefined {
     if (process.platform === 'win32') return undefined;
@@ -491,16 +495,31 @@ export class ShellTool implements Tool {
         clearTimeout(fallbackTimer);
         if (killEscalationTimer) clearTimeout(killEscalationTimer);
         if (watchdogPid !== undefined) {
-          try { process.kill(watchdogPid, 'SIGKILL'); } catch { /* already done */ }
+          // Kill the watchdog's entire process group: the watchdog shell holds a
+          // long-lived `sleep` child, and SIGKILLing only the shell would orphan
+          // that sleep until its timer elapses.
+          try {
+            process.kill(-watchdogPid, 'SIGKILL');
+          } catch {
+            try { process.kill(watchdogPid, 'SIGKILL'); } catch { /* already done */ }
+          }
         }
         unregisterActiveCommand(processGroupId);
       };
 
-      const fail = (error: any) => {
+      const fail = (error: any, terminate = false) => {
         if (settled) return;
         settled = true;
         cleanup();
         signal?.removeEventListener('abort', abortHandler);
+        if (terminate && processGroupId) {
+          // The command failed after spawning (e.g. maxBuffer overflow) but its
+          // process group may still be running; take it down with the same
+          // TERM-then-KILL escalation used for aborts. A pgid reused inside
+          // the escalation window is a theoretical risk we accept here.
+          this.killProcessGroup(processGroupId, 'SIGTERM');
+          setTimeout(() => this.killProcessGroup(processGroupId, 'SIGKILL'), 5000).unref?.();
+        }
         error.stdout = Buffer.concat(stdoutChunks).toString('utf8');
         error.stderr = Buffer.concat(stderrChunks).toString('utf8');
         error.peakRssBytes = peakRssBytes;
@@ -510,6 +529,8 @@ export class ShellTool implements Tool {
       const abortHandler = () => {
         if (processGroupId) {
           this.killProcessGroup(processGroupId, 'SIGTERM');
+          // Deliberately untracked: fires within 3s, guards on ESRCH inside
+          // killProcessGroup, and is unref'd so it never holds the process open.
           setTimeout(() => this.killProcessGroup(processGroupId, 'SIGKILL'), 3000).unref?.();
         } else {
           try { child.kill('SIGTERM'); } catch { /* already gone */ }
@@ -521,20 +542,22 @@ export class ShellTool implements Tool {
       signal?.addEventListener('abort', abortHandler, { once: true });
 
       child.stdout?.on('data', (chunk: Buffer) => {
+        if (settled) return;
         const buffer = Buffer.from(chunk);
         stdoutBytes += buffer.length;
         if (stdoutBytes > maxBuffer) {
-          fail(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
+          fail(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`), true);
           return;
         }
         stdoutChunks.push(buffer);
       });
 
       child.stderr?.on('data', (chunk: Buffer) => {
+        if (settled) return;
         const buffer = Buffer.from(chunk);
         stderrBytes += buffer.length;
         if (stderrBytes > maxBuffer) {
-          fail(new Error(`stderr maxBuffer exceeded (${maxBuffer} bytes)`));
+          fail(new Error(`stderr maxBuffer exceeded (${maxBuffer} bytes)`), true);
           return;
         }
         stderrChunks.push(buffer);
@@ -550,11 +573,13 @@ export class ShellTool implements Tool {
         const stdout = Buffer.concat(stdoutChunks).toString('utf8');
         const stderr = Buffer.concat(stderrChunks).toString('utf8');
 
-        // The OS-side watchdog kills the process group with SIGTERM at the
-        // deadline; map that back to the timed_out contract even when the
-        // node-side fallback never fired (event loop starvation).
+        // The OS-side watchdog kills the process group at the deadline; map
+        // that back to the timed_out contract even when the node-side fallback
+        // never fired (event loop starvation). SIGKILL covers a direct child
+        // that ignored SIGTERM; an external SIGTERM inside the last 2s of the
+        // window would be misattributed as a timeout — accepted trade-off.
         const killedByDeadline = !timedOut
-          && closeSignal === 'SIGTERM'
+          && (closeSignal === 'SIGTERM' || closeSignal === 'SIGKILL')
           && elapsed >= timeoutMs - 2000;
 
         settled = true;
@@ -633,15 +658,18 @@ export class ShellTool implements Tool {
       const fail = (error: any) => {
         finish(() => {
           try { child.kill(); } catch { /* already gone */ }
-          error.stdout = Buffer.concat(stdoutChunks).toString('utf8');
-          error.stderr = Buffer.concat(stderrChunks).toString('utf8');
+          error.stdout = this.decodeWindowsOutput(Buffer.concat(stdoutChunks));
+          error.stderr = this.decodeWindowsOutput(Buffer.concat(stderrChunks));
           reject(error);
         });
       };
 
       const timer = setTimeout(() => {
         timedOut = true;
-        fail(new Error(`Command timed out after ${timeoutMs}ms`));
+        const error: any = new Error(`Command timed out after ${timeoutMs}ms`);
+        error.killed = true;
+        error.signal = 'SIGTERM';
+        fail(error);
       }, timeoutMs);
       const abortHandler = () => fail(new Error('Command aborted by user'));
       signal?.addEventListener('abort', abortHandler, { once: true });
@@ -670,10 +698,10 @@ export class ShellTool implements Tool {
         fail(error);
       });
 
-      child.on('close', (code: number | null) => {
+      child.on('close', (code: number | null, closeSignal: NodeJS.Signals | null) => {
         if (settled || timedOut) return;
-        const stdout = Buffer.concat(stdoutChunks).toString('utf8');
-        const stderr = Buffer.concat(stderrChunks).toString('utf8');
+        const stdout = this.decodeWindowsOutput(Buffer.concat(stdoutChunks));
+        const stderr = this.decodeWindowsOutput(Buffer.concat(stderrChunks));
         finish(() => {
           if (code === 0) {
             resolve({ stdout, stderr });
@@ -681,6 +709,7 @@ export class ShellTool implements Tool {
           }
           const error: any = new Error(`Command failed with exit code ${code}`);
           error.code = code ?? undefined;
+          error.signal = closeSignal ?? undefined;
           error.stdout = stdout;
           error.stderr = stderr;
           reject(error);

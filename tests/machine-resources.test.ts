@@ -4,6 +4,7 @@ import {
   parseMeminfo,
   parseLoadavg,
   parseCgroupV2SelfPath,
+  collectMachineResourceSnapshot,
   formatBytesCompact,
   formatDurationCompact,
   buildMachineResourceGuidance,
@@ -77,6 +78,7 @@ describe('machine resource formatting', () => {
     assert.equal(formatBytesCompact(3.6 * GIB), '3.6G');
     assert.equal(formatBytesCompact(10 * GIB), '10G');
     assert.equal(formatBytesCompact(620 * 1024 ** 2), '620M');
+    assert.equal(formatBytesCompact(0), '0');
     assert.equal(formatBytesCompact(512), '1K');
     assert.equal(formatBytesCompact(undefined), undefined);
     assert.equal(formatBytesCompact(-5), undefined);
@@ -194,5 +196,66 @@ describe('prompt rendering entry point', () => {
 
     process.env.XIAOBA_MACHINE_RESOURCES = 'off';
     assert.equal(renderMachineResourcesForPrompt(), undefined);
+  });
+});
+
+describe('snapshot collection through the injectable IO layer', () => {
+  test('reads Linux sources and degrades to os totals when files are missing', () => {
+    const files: Record<string, string> = {
+      '/proc/meminfo': 'MemTotal: 4000000 kB\nMemAvailable: 1000000 kB\nSwapTotal: 2000000 kB\nSwapFree: 1500000 kB\n',
+      '/proc/self/cgroup': '0::/system.slice/catsco-agent.service\n',
+      '/sys/fs/cgroup/system.slice/catsco-agent.service/memory.current': '654321000\n',
+    };
+    const io = {
+      platform: 'linux' as NodeJS.Platform,
+      readFileSync: (file: string) => {
+        const content = files[file];
+        if (content === undefined) throw new Error(`ENOENT: ${file}`);
+        return content;
+      },
+      readdirSync: () => [],
+      totalmem: () => 8 * GIB,
+      freemem: () => 4 * GIB,
+      cpus: () => [1, 2, 3],
+      loadavg: () => [0.5, 0.4, 0.3],
+    };
+
+    const snapshot = collectMachineResourceSnapshot(io);
+    assert.equal(snapshot.totalMemoryBytes, 4000000 * 1024);
+    assert.equal(snapshot.availableMemoryBytes, 1000000 * 1024);
+    assert.equal(snapshot.swapTotalBytes, 2000000 * 1024);
+    assert.equal(snapshot.swapFreeBytes, 1500000 * 1024);
+    assert.equal(snapshot.cgroupCurrentBytes, 654321000);
+    assert.equal(snapshot.load1, 0.5);
+
+    const degraded = collectMachineResourceSnapshot({
+      ...io,
+      readFileSync: () => {
+        throw new Error('ENOENT');
+      },
+    });
+    assert.equal(degraded.totalMemoryBytes, 8 * GIB);
+    assert.equal(degraded.availableMemoryBytes, 4 * GIB);
+    assert.equal(degraded.swapTotalBytes, undefined);
+    assert.equal(degraded.cgroupCurrentBytes, undefined);
+  });
+});
+
+describe('active command registry', () => {
+  test('redacts credential-looking fragments from labels', () => {
+    registerActiveCommand({
+      pid: 77,
+      label: 'curl -H "Authorization: Bearer abcdef0123456789abcdef0123456789" https://example.com',
+      startedAt: NOW,
+      platform: 'linux',
+    });
+    const [entry] = listActiveCommands();
+    assert.ok(!entry.label.includes('abcdef0123456789abcdef0123456789'));
+    assert.ok(entry.label.includes('***'));
+  });
+
+  test('keeps ordinary labels intact', () => {
+    registerActiveCommand({ pid: 78, label: 'python3 fix_v2.py', startedAt: NOW, platform: 'linux' });
+    assert.ok(listActiveCommands().some(entry => entry.label === 'python3 fix_v2.py'));
   });
 });
