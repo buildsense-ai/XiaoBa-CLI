@@ -4,7 +4,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { canonicalizeBotSkillRefs } from '../src/bot-skills/canonical';
+import { MAX_BOT_SKILL_REFS, canonicalizeBotSkillRefs } from '../src/bot-skills/canonical';
 import {
   BotSkillWorkspaceScanLimitError,
   isPortablePackagePath,
@@ -138,6 +138,18 @@ describe('Bot Skill sync security boundaries', () => {
     });
     await assert.rejects(client.download(ref('owner/../skill', 'v1')), /invalid Skill reference/i);
     assert.equal(requested, false);
+  });
+
+  test('accepts a full owner workspace and rejects references past the shared cap', () => {
+    const refs = (count: number): BotSkillRef[] => Array.from(
+      { length: count },
+      (_value, index) => ref(`owner/skill-${index}`, `v${index}`),
+    );
+    assert.equal(canonicalizeBotSkillRefs(refs(MAX_BOT_SKILL_REFS)).length, MAX_BOT_SKILL_REFS);
+    assert.throws(
+      () => canonicalizeBotSkillRefs(refs(MAX_BOT_SKILL_REFS + 1)),
+      /too many skills/i,
+    );
   });
 
   test('normalizes preferred install names and rejects Windows reserved names', async () => {

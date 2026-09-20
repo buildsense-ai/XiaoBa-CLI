@@ -1,6 +1,16 @@
 import type { BotSkillRef } from '../bot-definition/types';
 
-export const MAX_BOT_SKILL_REFS = 256;
+/**
+ * Upper bound for one BotDefinition's Skill references.
+ *
+ * A Bot's workspace is published to its own BotDefinition as Bot-private
+ * packages, so this bound has to cover every Skill an operator accumulated
+ * locally, not just the ones installed from SkillHub. Real workspaces already
+ * exceed the previous 256: one Bot had 374 Skill entries (mostly distilled
+ * capabilities) while the friends-view page only rendered the ones that fit.
+ * The Go backend and the SkillHub metadata service enforce the same number.
+ */
+export const MAX_BOT_SKILL_REFS = 1024;
 export const MAX_BOT_SKILL_ID_BYTES = 240;
 export const MAX_BOT_SKILL_VERSION_BYTES = 120;
 
