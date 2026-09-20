@@ -5,6 +5,7 @@ import type { CatsCoAuthSnapshot } from '../catscompany/local-config';
 import type { BotSkillRef } from '../bot-definition/types';
 import { writeSkillHubInstallMarker } from '../skillhub/install-marker';
 import { loadSkillHubConfig } from '../skillhub/config';
+import { MAX_BOT_SKILL_FILE_BYTES } from './local-manifest';
 import {
   computeBotSkillPackageHash,
   isPortablePackagePath,
@@ -22,7 +23,6 @@ const PRIVATE_PACKAGE_SCHEMA = 'catsco.private-skill-package.v1';
 const PRIVATE_PACKAGE_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const MAX_FILES = 200;
-const MAX_SINGLE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
 export interface BotPrivateSkillClientOptions {
@@ -317,7 +317,7 @@ function validatePackageFile(value: BotSkillPackageFile): BotSkillPackageFile {
     !isPortablePackagePath(filePath)
     || !Number.isInteger(size)
     || size < 0
-    || size > MAX_SINGLE_FILE_BYTES
+    || size > MAX_BOT_SKILL_FILE_BYTES
     || !/^[a-f0-9]{64}$/.test(fileHash)
     || typeof value?.contentBase64 !== 'string'
   ) {

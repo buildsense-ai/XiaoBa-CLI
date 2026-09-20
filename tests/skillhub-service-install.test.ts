@@ -147,6 +147,43 @@ describe('SkillHub connected install service', () => {
     assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'contract-review')), false);
   });
 
+  test('shares a local page inside the single-file budget and refuses one past it', async () => {
+    const skillRoot = path.join(testRoot, 'skills', 'big-page');
+    fs.mkdirSync(path.join(skillRoot, 'assets'), { recursive: true });
+    fs.writeFileSync(
+      path.join(skillRoot, 'SKILL.md'),
+      '---\nname: big-page\ndescription: boundary\n---\n',
+    );
+    const artwork = path.join(skillRoot, 'assets', 'template.html');
+    fs.writeFileSync(artwork, Buffer.alloc(3_470_090, 7));
+
+    const bodies: any[] = [];
+    const app = express();
+    app.use(express.json({ limit: '32mb' }));
+    app.post('/api/developer/manifest-drafts', (req, res) => {
+      bodies.push(req.body);
+      res.json({ ok: true });
+    });
+    server = app.listen(0);
+    await new Promise<void>(resolve => server!.once('listening', () => resolve()));
+    const address = server.address();
+    baseUrl = typeof address === 'object' && address ? `http://127.0.0.1:${address.port}` : '';
+    process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
+
+    await new SkillHubService().createManifestDraft({ localPath: skillRoot, name: 'big-page' });
+    const files = bodies[0]?.source?.files || [];
+    assert.equal(
+      files.some((entry: any) => entry.path === 'assets/template.html'),
+      true,
+    );
+
+    fs.writeFileSync(artwork, Buffer.alloc(5 * 1024 * 1024 + 1, 7));
+    await assert.rejects(
+      new SkillHubService().createManifestDraft({ localPath: skillRoot, name: 'big-page' }),
+      (error: any) => error?.code === 'skillhub.local_skill_file_too_large',
+    );
+  });
+
   async function startFixtureServer(fixture: ReturnType<typeof createFixture>): Promise<void> {
     const app = express();
     app.use(express.json());

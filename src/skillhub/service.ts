@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
+import { MAX_BOT_SKILL_FILE_BYTES } from '../bot-skills/local-manifest';
 import {
   BotSkillPackageValidationError,
   collectBotSkillPackageFiles,
@@ -415,7 +416,8 @@ const SOURCE_SKIP_FILES = new Set([
 ]);
 const MAX_SOURCE_FILES = 200;
 const MAX_SOURCE_TOTAL_BYTES = 20 * 1024 * 1024;
-const MAX_SOURCE_SINGLE_FILE_BYTES = 2 * 1024 * 1024;
+// The single-file budget is shared with the workspace packager and the private
+// package client, so a page that is publishable locally is shareable here too.
 
 function collectSkillSourceFiles(localPath: string): Array<{ path: string; contentBase64: string }> {
   const inputPath = String(localPath || '').trim();
@@ -438,9 +440,9 @@ function collectSkillSourceFiles(localPath: string): Array<{ path: string; conte
   for (const filePath of files) {
     const fileStat = fs.lstatSync(filePath);
     if (fileStat.isSymbolicLink() || !fileStat.isFile()) continue;
-    if (fileStat.size > MAX_SOURCE_SINGLE_FILE_BYTES) {
+    if (fileStat.size > MAX_BOT_SKILL_FILE_BYTES) {
       throw skillSourceLimitError(
-        `Skill file exceeds the ${MAX_SOURCE_SINGLE_FILE_BYTES}-byte sharing limit.`,
+        `Skill file exceeds the ${MAX_BOT_SKILL_FILE_BYTES}-byte sharing limit.`,
         'skillhub.local_skill_file_too_large',
       );
     }

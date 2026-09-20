@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { MAX_BOT_SKILL_REFS, canonicalizeBotSkillRefs } from '../src/bot-skills/canonical';
 import {
   BotSkillWorkspaceScanLimitError,
+  computeBotSkillPackageHash,
   isPortablePackagePath,
   scanBotSkillWorkspace,
   scanLocalBotSkill,
@@ -55,8 +56,18 @@ describe('Bot Skill sync security boundaries', () => {
     }
     assert.equal(isPortablePackagePath('scripts/publish.mjs'), true);
 
+    // A page with embedded artwork still inside the package budget has to be
+    // publishable; the boundary sits at the SkillHub per-file limit.
+    const artworkRoot = createSkill(roots, 'packaged-artwork');
+    fs.mkdirSync(path.join(artworkRoot, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(artworkRoot, 'assets', 'template.html'), Buffer.alloc(3_470_090));
+    assert.equal(
+      scanLocalBotSkill(artworkRoot).files.some(file => file.path === 'assets/template.html'),
+      true,
+    );
+
     const oversizedRoot = createSkill(roots, 'oversized');
-    fs.writeFileSync(path.join(oversizedRoot, 'payload.bin'), Buffer.alloc(2 * 1024 * 1024 + 1));
+    fs.writeFileSync(path.join(oversizedRoot, 'payload.bin'), Buffer.alloc(5 * 1024 * 1024 + 1));
     assert.throws(() => scanLocalBotSkill(oversizedRoot), /file is too large/i);
 
     const crowdedRoot = createSkill(roots, 'crowded');
@@ -274,6 +285,36 @@ describe('Bot Skill sync security boundaries', () => {
     );
   });
 
+  test('accepts a downloaded package inside the single-file budget and rejects one past it', async () => {
+    const artwork = Buffer.alloc(3_470_090, 7);
+    const accepted = packageValueWithFiles('large-artwork', [
+      { path: 'assets/template.html', bytes: artwork },
+    ]);
+    const client = createClient(async () => Response.json(accepted));
+    const downloaded = await client.download({
+      source: 'skillhub',
+      ...accepted.reference,
+      contentHash: accepted.contentHash,
+    });
+    assert.deepEqual(
+      downloaded.files.map(file => file.path),
+      ['SKILL.md', 'assets/template.html'],
+    );
+
+    const oversized = packageValueWithFiles('oversized-artwork', [
+      { path: 'assets/too-big.bin', bytes: Buffer.alloc(5 * 1024 * 1024 + 1, 7) },
+    ]);
+    const rejected = createClient(async () => Response.json(oversized));
+    await assert.rejects(
+      rejected.download({
+        source: 'skillhub',
+        ...oversized.reference,
+        contentHash: oversized.contentHash,
+      }),
+      /invalid file/i,
+    );
+  });
+
   test('restores a public package with the SkillHub signature instead of a placeholder marker', async () => {
     const packageData = {
       ...packageValue('public-restored'),
@@ -383,4 +424,22 @@ function packageValue(name: string): BotSkillPackage {
     createdAt: '2026-07-28T00:00:00.000Z',
     files: [file],
   };
+}
+
+/** Adds real-world sized payloads to a package fixture for boundary tests. */
+function packageValueWithFiles(
+  name: string,
+  extraFiles: Array<{ path: string; bytes: Buffer }>,
+): BotSkillPackage {
+  const base = packageValue(name);
+  const files = [
+    ...base.files,
+    ...extraFiles.map(({ path: filePath, bytes }) => ({
+      path: filePath,
+      size: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      contentBase64: bytes.toString('base64'),
+    })),
+  ];
+  return { ...base, contentHash: computeBotSkillPackageHash(files), files };
 }

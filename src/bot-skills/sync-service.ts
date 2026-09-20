@@ -20,6 +20,7 @@ import {
 import { BotSkillBaseStore } from './base-store';
 import {
   BOT_SKILL_LOCAL_MARKER_FILE,
+  MAX_BOT_SKILL_FILE_BYTES,
   computeBotSkillPackageHash,
   isPortablePackagePath,
   readBotSkillLocalMarker,
@@ -1477,9 +1478,9 @@ function readFinalizeJournal(
     || !/^[a-f0-9]{64}$/.test(String(value.nextContentHash || ''))
     || !validFinalizeReference(value.reference)
     || typeof value.previousSkill !== 'string'
-    || value.previousSkill.length > 2 * 1024 * 1024
+    || value.previousSkill.length > MAX_BOT_SKILL_FILE_BYTES
     || typeof value.nextSkill !== 'string'
-    || value.nextSkill.length > 2 * 1024 * 1024
+    || value.nextSkill.length > MAX_BOT_SKILL_FILE_BYTES
     || typeof value.previousMarker !== 'string'
     || value.previousMarker.length > 64 * 1024
     || previousMarker?.schema !== 'xiaoba.bot-skill-local.v1'
