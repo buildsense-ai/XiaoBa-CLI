@@ -80,7 +80,7 @@
           </div>
 
           <button class="management-entry" id="management-open" type="button">
-            <span><strong>本地管理</strong><small>飞书、微信、日志与故障恢复</small></span>
+            <span><strong>运行日志</strong><small>查看 Connector 与本机服务的最近记录</small></span>
             <span class="summary-arrow" aria-hidden="true">›</span>
           </button>
 
@@ -88,62 +88,21 @@
             <header class="management-header">
               <button class="back-button" id="management-back" type="button" aria-label="返回连接状态">‹</button>
               <div>
-                <h2>本地管理</h2>
-                <p>管理这台电脑上的消息通道、运行日志和故障恢复。</p>
+                <h2>运行日志</h2>
+                <p>查看 Connector 与本机服务的最近运行记录。</p>
               </div>
             </header>
 
-            <nav class="management-tabs" aria-label="本地管理">
-              <button class="management-tab active" type="button" data-management-tab="services" aria-selected="true">通道与服务</button>
-              <button class="management-tab" type="button" data-management-tab="logs" aria-selected="false">运行日志</button>
-              <button class="management-tab" type="button" data-management-tab="recovery" aria-selected="false">故障恢复</button>
-            </nav>
-
             <div class="management-content">
-              <section class="management-page active" data-management-page="services">
-                <div class="section-heading">
-                  <div><strong>消息通道</strong><small>飞书和微信会把消息转交给当前 CatsCo Agent。</small></div>
-                  <button class="button button-small button-quiet" id="services-refresh" type="button">刷新状态</button>
-                </div>
-                <div class="channel-list" id="channel-list">
-                  <div class="empty-state">正在读取本地通道……</div>
-                </div>
-              </section>
-
-              <section class="management-page logs-page" data-management-page="logs" hidden>
+              <section class="management-page logs-page">
                 <div class="section-heading log-toolbar">
-                  <label>
-                    <span>日志来源</span>
-                    <select id="log-service-select">
-                      <option value="catscompany">Connector</option>
-                      <option value="feishu">飞书</option>
-                      <option value="weixin">微信</option>
-                    </select>
-                  </label>
                   <div class="toolbar-actions">
                     <label class="check-label"><input id="log-auto-scroll" type="checkbox" checked> 自动滚动</label>
                     <button class="button button-small button-quiet" id="logs-copy" type="button">复制</button>
                     <button class="button button-small button-secondary" id="logs-refresh" type="button">刷新日志</button>
                   </div>
                 </div>
-                <pre class="log-viewer" id="service-logs">选择日志来源后即可查看最近的运行记录。</pre>
-              </section>
-
-              <section class="management-page" data-management-page="recovery" hidden>
-                <div class="recovery-list">
-                  <article class="recovery-row">
-                    <div><strong>重新连接 Connector</strong><small>重新检查本机 Agent、设备绑定和后台服务。</small></div>
-                    <button class="button button-secondary" id="diagnostic-retry" type="button">重新连接</button>
-                  </article>
-                  <article class="recovery-row">
-                    <div><strong>Cache Trace</strong><small>查看缓存命中、写入与上下文复用情况。</small></div>
-                    <a class="button button-quiet" href="/cache-trace.html" target="_blank" rel="noopener">打开</a>
-                  </article>
-                  <article class="recovery-row">
-                    <div><strong>Turn Errors</strong><small>查看最近的回合错误和失败原因。</small></div>
-                    <a class="button button-quiet" href="/turn-errors.html" target="_blank" rel="noopener">打开</a>
-                  </article>
-                </div>
+                <pre class="log-viewer" id="service-logs">正在读取最近的 Connector 运行日志……</pre>
               </section>
             </div>
           </section>
@@ -192,7 +151,6 @@
         <div class="agent-list" id="agent-list" role="radiogroup" aria-label="可用 Agent">
           <div class="agent-list-state">正在读取 Agent……</div>
         </div>
-        <p class="agent-switch-warning" id="agent-switch-warning" hidden></p>
         <p class="agent-switch-error" id="agent-switch-error" role="alert" hidden></p>
       </div>
 

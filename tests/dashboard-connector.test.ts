@@ -32,8 +32,9 @@ test('Connector lets an authenticated user switch the Agent bound to this comput
   assert.match(html, /一台电脑同一时间连接一个 Agent/);
   assert.match(script, /settled\('\/cats\/bots'\)/);
   assert.match(script, /request\('\/cats\/switch-bot'/);
-  assert.match(script, /微信服务会停止/);
   assert.doesNotMatch(script, /\/cats\/create-bot/);
+  assert.doesNotMatch(html, /agent-switch-warning/);
+  assert.doesNotMatch(script, /weixinStopped|微信服务会停止/);
   assert.match(styles, /\.agent-switch-dialog/);
   assert.match(html, /id="logout-dialog"/);
   assert.match(html, /hero-actions[\s\S]*id="webapp-button"[\s\S]*id="logout-button"/);
@@ -41,23 +42,52 @@ test('Connector lets an authenticated user switch the Agent bound to this comput
   assert.doesNotMatch(script, /window\.confirm\(/);
   assert.match(script, /login-account'\)\?\.focus/);
   assert.match(script, /当前账号无权使用原 Agent（not your bot）/);
-  assert.match(script, /bindingBelongsToCurrentAccount/);
   assert.match(script, /setNotice\(`\$\{title\}：\$\{detail\}`/);
 });
 
-test('Connector local management restores channels and gives logs a full workspace', () => {
-  assert.match(html, /本地管理/);
-  assert.match(html, /通道与服务/);
-  assert.match(html, /运行日志/);
-  assert.match(html, /故障恢复/);
-  assert.match(html, /飞书/);
-  assert.match(html, /微信/);
+test('Connector local management keeps only the run log workspace', () => {
+  assert.match(html, /<strong>运行日志<\/strong>/);
+  assert.match(html, /查看 Connector 与本机服务的最近运行记录/);
   assert.match(html, /service-logs/);
-  assert.match(script, /\/services\/\$\{encodeURIComponent\(name\)\}\/\$\{action\}/);
-  assert.match(script, /\/weixin\/qrcode/);
+  assert.match(script, /services\/catscompany\/logs/);
   assert.match(script, /sanitizeLogLine/);
+  assert.match(script, /打开运行日志查看日志/);
+  assert.doesNotMatch(script, /本地管理/);
   assert.match(styles, /\.log-viewer\s*\{[\s\S]*flex: 1 1 auto/);
+  assert.doesNotMatch(html, /通道与服务|故障恢复|Cache Trace|Turn Errors|management-tabs|log-service-select|飞书|微信/);
+  assert.doesNotMatch(script, /weixin\/qrcode|renderChannels|serviceAction|log-service-select/);
+  assert.doesNotMatch(styles, /\.channel-card|\.recovery-row|\.management-tabs/);
   assert.doesNotMatch(html, /<details class="diagnostics-panel"/);
+});
+
+test('Connector log viewer drops the decorative startup banner', () => {
+  const filters = script.match(/const LOG_BANNER_ART = (.+?);[\s\S]*?const LOG_BANNER_SLOGAN = (.+?);/);
+  assert.ok(filters, 'connector.js declares the startup banner filters');
+  const isBanner = vm.runInNewContext(`(line) => ${filters[1]}.test(line) || ${filters[2]}.test(line)`);
+
+  const bannerLines = [
+    '       ▄████▄             ▄████▄',
+    '      ████████▄▄▄▄▄▄▄▄▄▄▄████████',
+    '      ▐██▀  ▀██▀  ▀██▀  ▀██▀  ██▌',
+    '   ██╗  ██╗██╗ █████╗  ██████╗     ██████╗  █████╗',
+    '        ██▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██            < Your AI Assistant !!! Meow Meow !!! >',
+  ];
+  for (const line of bannerLines) {
+    assert.equal(isBanner(line), true, `banner line should be hidden: ${line}`);
+  }
+
+  const runtimeLines = [
+    '[info] CatsCo bot 1156 已准备云端模型配置 revision=0。',
+    '[info] [CatsCompany] 正在连接: wss://app.catsco.cc/v0/channels, apiKey=cc_484...78b0, bodyId=device_1da48e7b0e65',
+    '[OK] CatsCo agent 已连接，uid=usr1156, name=CatsCo (Eason)',
+  ];
+  for (const line of runtimeLines) {
+    assert.equal(isBanner(line), false, `runtime log line should stay visible: ${line}`);
+  }
+
+  assert.match(script, /filter\(line => !isBrandBannerLine\(line\)\)/);
+  assert.match(script, /navigator\.clipboard\.writeText\(\$\('service-logs'\)\?\.textContent \|\| ''\)/);
+  assert.doesNotMatch(script, /renderLogLines|log-banner|logTextFromViewer/);
 });
 
 test('Connector restores visible desktop update progress and explicit install confirmation', () => {
@@ -89,14 +119,15 @@ test('Connector client uses real lifecycle APIs and remains syntax-valid', () =>
   assert.match(script, /\/cats\/auth\/login/);
   assert.match(script, /\/cats\/bootstrap/);
   assert.match(script, /\/cats\/auth\/logout/);
-  assert.match(script, /\/services\/\$\{encodeURIComponent\(service\)\}\/logs/);
+  assert.match(script, /\/services\/catscompany\/logs/);
   assert.match(script, /cats\.connected/);
   assert.match(script, /cats\.chatReady/);
   assert.match(script, /service\.status === 'running'/);
   assert.match(script, /bodyStatus\?\.state !== 'offline'/);
   assert.match(script, /webapp-button.*addEventListener\('click'/s);
   assert.match(script, /openWebAppFromDashboard/);
-  assert.match(styles, /\.channel-actions \.button[\s\S]*white-space: nowrap/);
+  assert.match(styles, /\.management-entry strong/);
+  assert.match(styles, /\.toolbar-actions/);
 });
 
 test('Connector Dashboard is the real root and uses a viewport-bound desktop layout', () => {
