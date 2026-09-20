@@ -145,6 +145,13 @@ describe('Bot Skill sync security boundaries', () => {
       { length: count },
       (_value, index) => ref(`owner/skill-${index}`, `v${index}`),
     );
+    // Pin the shared value: the Go backend and the SkillHub metadata service
+    // enforce the same number, and a silent rollback here is exactly how the
+    // friends view lost every Skill but the one installed from SkillHub.
+    assert.equal(MAX_BOT_SKILL_REFS, 1024);
+    // A real operator workspace already carries 374 entries, which the previous
+    // 256 rejected outright.
+    assert.equal(canonicalizeBotSkillRefs(refs(374)).length, 374);
     assert.equal(canonicalizeBotSkillRefs(refs(MAX_BOT_SKILL_REFS)).length, MAX_BOT_SKILL_REFS);
     assert.throws(
       () => canonicalizeBotSkillRefs(refs(MAX_BOT_SKILL_REFS + 1)),
