@@ -31,7 +31,13 @@ export const ACTIVE_COMMAND_LABEL_MAX_LENGTH = 120;
  * operator's own command text as-is; this guard is about the injection surface.
  */
 export function sanitizeActiveCommandLabel(label: string): string {
-  const collapsed = String(label || '').replace(/\s+/g, ' ').trim();
+  const collapsed = String(label || '')
+    .replace(/\s+/g, ' ')
+    // The rendered line quotes labels with 「」; dropping those characters keeps
+    // the quote framing intact so a label cannot close the slot early and fake
+    // neighbouring entries in other sessions' prompts.
+    .replace(/[「」]/g, '')
+    .trim();
   return collapsed.length > ACTIVE_COMMAND_LABEL_MAX_LENGTH
     ? `${collapsed.slice(0, ACTIVE_COMMAND_LABEL_MAX_LENGTH - 1)}…`
     : collapsed;

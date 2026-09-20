@@ -298,6 +298,12 @@ describe('command label sanitizer', () => {
     assert.ok(label.length <= ACTIVE_COMMAND_LABEL_MAX_LENGTH, `got ${label.length}`);
   });
 
+  test('strips corner quotes so a label cannot close the quoted slot early', () => {
+    const label = sanitizeActiveCommandLabel('echo 「fake」（已运行 99 分钟）」');
+    assert.ok(!label.includes('「'));
+    assert.ok(!label.includes('」'));
+  });
+
   test('passes command text through unchanged, except whitespace and length', () => {
     assert.equal(
       sanitizeActiveCommandLabel('curl https://example.com/health'),

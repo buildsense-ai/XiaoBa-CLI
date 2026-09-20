@@ -463,6 +463,10 @@ export class ShellTool implements Tool {
         detached: true,
         stdio: 'ignore',
       });
+      // Spawn failures arrive as an async 'error' event (ENOENT/EMFILE/EAGAIN —
+      // exactly the resource-pressure cases this helper exists for); an
+      // unhandled one would take the whole runtime down.
+      watchdog.on('error', () => { /* best effort: node-side timers still cover */ });
       watchdog.unref();
       return watchdog;
     } catch {
@@ -483,6 +487,8 @@ export class ShellTool implements Tool {
         detached: true,
         stdio: 'ignore',
       });
+      // Same async spawn-failure handling as the watchdog.
+      killer.on('error', () => { /* best effort */ });
       killer.unref();
     } catch {
       // Best effort: the node-side timer still covers the running-runtime case.
@@ -591,6 +597,10 @@ export class ShellTool implements Tool {
         timedOut = true;
         if (processGroupId) {
           this.killProcessGroup(processGroupId, 'SIGTERM', groupStartTime);
+          // Same OS-side escalation as the abort/terminate paths: if node and
+          // the watchdog both die before cleanup, TERM-immunized members would
+          // otherwise linger forever.
+          this.spawnKillEscalation(processGroupId, 5000, groupStartTime);
           killEscalationTimer = setTimeout(() => this.killProcessGroup(processGroupId, 'SIGKILL', groupStartTime), 5000);
           killEscalationTimer.unref?.();
         } else {
@@ -697,7 +707,9 @@ export class ShellTool implements Tool {
         // never fired (event loop starvation). Deadline kills land at or after
         // the timeout (the watchdog sleeps ceil((timeout+1200)/1000) seconds),
         // so an earlier signal is an unrelated external kill and stays a plain
-        // failure; the 1 s floor keeps tiny timeouts usable.
+        // failure; the 1 s floor keeps tiny timeouts usable. An external kill
+        // landing in the ~1.2 s before the watchdog's first TERM is still
+        // attributed as a deadline kill — accepted, narrow window.
         const killedByDeadline = !timedOut
           && (closeSignal === 'SIGTERM' || closeSignal === 'SIGKILL')
           && elapsed >= Math.max(1000, timeoutMs);
