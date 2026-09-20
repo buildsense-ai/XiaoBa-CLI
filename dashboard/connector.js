@@ -331,7 +331,7 @@
 
   function renderError(view) {
     const title = view.title || '自动连接未完成';
-    const detail = humanError(view.error || '请重新连接，或打开本地管理查看日志。');
+    const detail = humanError(view.error || '请重新连接，或打开运行日志查看日志。');
     setText('status-label', 'Connector 需要处理');
     setText('hero-title', '连接未完成');
     setText('hero-copy', '本地资料没有被删除。处理下面的问题后可以继续重试。');

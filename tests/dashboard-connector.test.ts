@@ -51,6 +51,8 @@ test('Connector local management keeps only the run log workspace', () => {
   assert.match(html, /service-logs/);
   assert.match(script, /services\/catscompany\/logs/);
   assert.match(script, /sanitizeLogLine/);
+  assert.match(script, /打开运行日志查看日志/);
+  assert.doesNotMatch(script, /本地管理/);
   assert.match(styles, /\.log-viewer\s*\{[\s\S]*flex: 1 1 auto/);
   assert.doesNotMatch(html, /通道与服务|故障恢复|Cache Trace|Turn Errors|management-tabs|log-service-select|飞书|微信/);
   assert.doesNotMatch(script, /weixin\/qrcode|renderChannels|serviceAction|log-service-select/);
