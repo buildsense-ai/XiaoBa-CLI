@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { canonicalizeBotSkillRefs } from '../src/bot-skills/canonical';
 import {
   BotSkillWorkspaceScanLimitError,
+  computeBotSkillPackageHash,
   isPortablePackagePath,
   scanBotSkillWorkspace,
   scanLocalBotSkill,
@@ -265,6 +266,36 @@ describe('Bot Skill sync security boundaries', () => {
     );
   });
 
+  test('accepts a downloaded package inside the single-file budget and rejects one past it', async () => {
+    const artwork = Buffer.alloc(3_470_090, 7);
+    const accepted = packageValueWithFiles('large-artwork', [
+      { path: 'assets/template.html', bytes: artwork },
+    ]);
+    const client = createClient(async () => Response.json(accepted));
+    const downloaded = await client.download({
+      source: 'skillhub',
+      ...accepted.reference,
+      contentHash: accepted.contentHash,
+    });
+    assert.deepEqual(
+      downloaded.files.map(file => file.path),
+      ['SKILL.md', 'assets/template.html'],
+    );
+
+    const oversized = packageValueWithFiles('oversized-artwork', [
+      { path: 'assets/too-big.bin', bytes: Buffer.alloc(5 * 1024 * 1024 + 1, 7) },
+    ]);
+    const rejected = createClient(async () => Response.json(oversized));
+    await assert.rejects(
+      rejected.download({
+        source: 'skillhub',
+        ...oversized.reference,
+        contentHash: oversized.contentHash,
+      }),
+      /invalid file/i,
+    );
+  });
+
   test('restores a public package with the SkillHub signature instead of a placeholder marker', async () => {
     const packageData = {
       ...packageValue('public-restored'),
@@ -374,4 +405,22 @@ function packageValue(name: string): BotSkillPackage {
     createdAt: '2026-07-28T00:00:00.000Z',
     files: [file],
   };
+}
+
+/** Adds real-world sized payloads to a package fixture for boundary tests. */
+function packageValueWithFiles(
+  name: string,
+  extraFiles: Array<{ path: string; bytes: Buffer }>,
+): BotSkillPackage {
+  const base = packageValue(name);
+  const files = [
+    ...base.files,
+    ...extraFiles.map(({ path: filePath, bytes }) => ({
+      path: filePath,
+      size: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      contentBase64: bytes.toString('base64'),
+    })),
+  ];
+  return { ...base, contentHash: computeBotSkillPackageHash(files), files };
 }
