@@ -12,6 +12,7 @@ import type {
 import type { TargetRoute, TargetRoutes } from '../types/tool';
 import { parseSessionKeyV2 } from './session-router';
 import { getCatsCoAttachmentCacheSessionRoot } from '../catscompany/attachment-cache';
+import { renderMachineResourcesForPrompt } from '../utils/machine-resources';
 
 export const TRANSIENT_RUNTIME_CONTEXT_PREFIX = '[transient_runtime_context]';
 
@@ -82,12 +83,17 @@ function shouldInjectRuntimeContext(params: BuildRuntimeContextParams): boolean 
   return source === 'catscompany';
 }
 
-function buildRuntimeContextText(targetRoutes?: TargetRoutes, attachmentDirectory?: string): string {
+export function buildRuntimeContextText(targetRoutes?: TargetRoutes, attachmentDirectory?: string): string {
   const routes = targetRoutes?.routes || [];
   const lines = [TRANSIENT_RUNTIME_CONTEXT_PREFIX];
   if (attachmentDirectory) {
     lines.push(`当前会话附件缓存目录（XiaoBa 本地运行体）：${attachmentDirectory}`);
     lines.push('需要查找本会话历史附件时，用不带 target 的 glob 查看该目录；找到具体文件后再传给 read_file、grep 或本机脚本。');
+    lines.push('');
+  }
+  const machineResources = renderMachineResourcesForPrompt();
+  if (machineResources) {
+    lines.push(machineResources);
     lines.push('');
   }
   if (routes.length > 0) {

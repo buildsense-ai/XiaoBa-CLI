@@ -9,6 +9,7 @@ import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { SubAgentEventType, SubAgentRuntimeEvent } from './sub-agent-events';
 import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
+import { renderMachineResourcesForPrompt } from '../utils/machine-resources';
 import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext } from '../types/tool';
 import { resolveModelContextWindow } from '../utils/model-context-window';
 import {
@@ -235,6 +236,7 @@ export class SubAgentSession {
       content: [
         systemPrompt,
         buildSubAgentSystemPrompt(this.toolScope, this.temporaryDirectory, this.allowedTools, this.options.subAgentPrompt, this.options.maxTurns),
+        renderMachineResourcesForPrompt(),
       ].filter(Boolean).join('\n\n'),
     });
     await fs.promises.mkdir(this.temporaryDirectory, { recursive: true });
