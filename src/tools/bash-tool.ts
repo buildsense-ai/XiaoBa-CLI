@@ -400,7 +400,7 @@ export class ShellTool implements Tool {
       env: runtimeEnvironment.env,
       timeoutMs: timeout,
       signal,
-      label: label || this.describeCommandLabel(args.join(' ')),
+      label: this.describeCommandLabel(label || args.join(' ')),
     });
   }
 
@@ -867,7 +867,10 @@ export class ShellTool implements Tool {
         env,
         timeoutMs: timeout,
         signal,
-        label: label || this.describeCommandLabel(wrapped.command),
+        // The label ends up in every session's runtime context on this machine,
+        // so a free-form `description` goes through the same single-line,
+        // length-bounded shaping as the command text itself.
+        label: this.describeCommandLabel(label || wrapped.command),
       });
     }
 

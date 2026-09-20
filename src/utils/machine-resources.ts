@@ -322,7 +322,9 @@ export function buildMachineResourceLines(
     const rendered = commands.slice(0, 3).map((command, index) => {
       const rssText = formatBytesCompact(sampleRss(command.pid));
       const ageText = formatDurationCompact(Math.max(0, now - command.startedAt));
-      return `${index + 1}) ${command.label}（已运行 ${ageText}${rssText ? `，RSS ${rssText}` : ''}）`;
+      // Quotes mark the label as data; labels are already single-line and
+      // bounded, so they cannot fake new lines inside the resource block.
+      return `${index + 1}) 「${command.label}」（已运行 ${ageText}${rssText ? `，RSS ${rssText}` : ''}）`;
     });
     lines.push(`本机正在运行 ${commands.length} 条命令：${rendered.join('；')}`);
   }

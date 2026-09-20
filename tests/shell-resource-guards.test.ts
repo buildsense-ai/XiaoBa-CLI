@@ -68,6 +68,16 @@ function waitForExit(proc: ChildProcess, ms: number): Promise<boolean> {
   });
 }
 
+async function waitFor<T>(probe: () => T | undefined, timeoutMs: number): Promise<T | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = probe();
+    if (value !== undefined) return value;
+    await delay(100);
+  }
+  return undefined;
+}
+
 describe('ShellTool resource guards', () => {
   let testRoot: string;
   let context: ToolExecutionContext;
@@ -101,6 +111,31 @@ describe('ShellTool resource guards', () => {
     assert.equal(normalizeShellTimeout(true), 30_000);
     assert.equal(normalizeShellTimeout(''), 30_000);
     assert.equal(normalizeShellTimeout(10 ** 12), MAX_SHELL_TIMEOUT_MS);
+  });
+
+  test('bounds a free-form description before it reaches the shared registry', async () => {
+    const tool = new ShellTool();
+    const description = `${'很长的命令说明'.repeat(16)}\n第二行不应出现`;
+    // PowerShell needs the call operator for a quoted executable path; POSIX
+    // shells take the quoted path directly.
+    const command = process.platform === 'win32'
+      ? `& "${process.execPath}" -e "setTimeout(() => {}, 2500)"`
+      : `'${process.execPath}' -e "setTimeout(() => {}, 2500)"`;
+    const pending = tool.execute({
+      command,
+      description,
+      timeout: 30_000,
+    }, context);
+
+    const entry = await waitFor(() => listActiveCommands()[0], 6000);
+    assert.ok(entry, 'command should register while it runs');
+    assert.ok(!entry!.label.includes('\n'), 'label must stay single-line');
+    assert.ok(!entry!.label.includes('第二行'), 'only the first line travels');
+    assert.ok(entry!.label.length <= 80, `label must be bounded, got ${entry!.label.length}`);
+
+    const result = await pending;
+    assert.equal(result.ok, true);
+    assert.equal(listActiveCommands().length, 0);
   });
 
   test('watchdog never kills a recycled pgid (start-time guard)', LINUX_ONLY, async () => {
