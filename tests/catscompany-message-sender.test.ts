@@ -110,6 +110,34 @@ describe('CatsCompany MessageSender retry behavior', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test('uses the client HTTP base (domain failover aware) when no explicit base URL is given', async () => {
+    const requests: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      requests.push(String(url));
+      return {
+        ok: true,
+        json: async () => ({ seq_id: 789 }),
+      } as any;
+    }) as any;
+
+    try {
+      const sender = new MessageSender({
+        sendStructuredMessage: async () => {
+          throw new CatsSendError('transport', 'socket not open');
+        },
+        getHttpBaseUrl: () => 'https://app.catsco.cn',
+      } as any, undefined, 'cc_test');
+
+      await sender.sendText('p2p_1_2', 'hello');
+
+      assert.strictEqual(requests.length, 1);
+      assert.strictEqual(requests[0], 'https://app.catsco.cn/api/messages/send');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe('CatsCompany MessageSender reply length handling', () => {

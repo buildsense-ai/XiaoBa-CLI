@@ -1,4 +1,4 @@
-const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
+const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cn';
 const DEFAULT_TIMEOUT_MS = 2_500;
 
 export type CatsCoBotSwitchGuardCode =

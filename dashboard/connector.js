@@ -294,7 +294,7 @@
       if (window.catscoDesktop?.openWebApp) {
         await window.catscoDesktop.openWebApp();
       } else {
-        window.open('https://app.catsco.cc', '_blank', 'noopener,noreferrer');
+        window.open('https://app.catsco.cn', '_blank', 'noopener,noreferrer');
       }
     } finally {
       await window.catscoDesktop?.hideWindow?.();

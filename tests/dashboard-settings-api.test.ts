@@ -1521,10 +1521,10 @@ describe('dashboard typed settings API', () => {
       const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
 
       assert.equal(response.status, 200, text);
-      assert.equal(data.apiBase, 'https://relay.catsco.cc/v1');
-      assert.equal(data.selectedModel.base_url, 'https://relay.catsco.cc/v1');
+      assert.equal(data.apiBase, 'https://relay.catsco.cn/v1');
+      assert.equal(data.selectedModel.base_url, 'https://relay.catsco.cn/v1');
       assert.equal(data.selectedModel.sdk_label, 'OpenAI SDK');
-      assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/v1');
+      assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cn/v1');
       assert.equal(text.includes('wrong.example.test'), false);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));

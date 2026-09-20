@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { randomUUID } from 'crypto';
-import { CATSCO_APP_HTTP_ORIGINS } from '../utils/catsco-domains';
+import { CATSCO_APP_HTTP_ORIGINS, type CatsCoDomainFamily } from '../utils/catsco-domains';
 
 export interface CatsCoLocalAccount {
   token: string;
@@ -33,6 +33,7 @@ export interface CatsCoLocalConfig {
   endpoints?: {
     httpBaseUrl?: string;
     serverUrl?: string;
+    preferredFamily?: CatsCoDomainFamily;
   };
   account?: CatsCoLocalAccount;
   currentBot?: CatsCoLocalBot;
@@ -62,8 +63,8 @@ export interface CatsCoLocalConfigServiceOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-export const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
-export const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
+export const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cn';
+export const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cn/v0/channels';
 
 const CONFIG_VERSION = 1;
 const BOT_BINDING_ENV_KEYS = [
@@ -512,6 +513,22 @@ export class CatsCoLocalConfigService {
       ? removeEnvKeys(this.runtimeRoot, this.env, clearKeys)
       : [];
     return [...updated, ...removed];
+  }
+
+  /**
+   * 记录最近一次成功连接的域名族（cc/cn）。只写本地状态文件，
+   * 不修改用户在 .env/配置里显式设置的 endpoints 值。
+   */
+  recordEndpointFamily(family: CatsCoDomainFamily): void {
+    const config = this.load();
+    if (config.endpoints?.preferredFamily === family) return;
+    this.save({
+      ...config,
+      endpoints: {
+        ...(config.endpoints || {}),
+        preferredFamily: family,
+      },
+    });
   }
 
   updatePreferences(preferences: Partial<NonNullable<CatsCoLocalConfig['preferences']>>): NonNullable<CatsCoLocalConfig['preferences']> {

@@ -3,6 +3,7 @@ import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import { Logger } from '../utils/logger';
+import { catsCoDomainFamily, catsCoEndpointCandidates, catsCoUrlForFamily, type CatsCoDomainFamily } from '../utils/catsco-domains';
 import { uploadCatsLocalFile, type UploadResult } from './upload';
 
 export type { UploadResult } from './upload';
@@ -21,6 +22,12 @@ export interface CatsClientConfig {
   readyTimeoutMs?: number;
   reconnectBaseDelayMs?: number;
   reconnectMaxDelayMs?: number;
+  /** 最近一次成功连接的域名族（cc/cn），用于下次启动时优先选择。 */
+  preferredDomainFamily?: CatsCoDomainFamily;
+  /** 显式端点候选列表（测试或高级用法）；提供时不再自动推导。 */
+  endpointCandidates?: string[];
+  /** 完成握手时回调当前服务端地址，供上层持久化域名族偏好。 */
+  onEndpointReady?: (serverUrl: string) => void;
 }
 
 export interface CatsDeviceRegistration {
@@ -271,6 +278,12 @@ export class CatsClient extends EventEmitter {
   private readyTimer: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
+  private endpointCandidates: string[] = [];
+  private endpointIndex = 0;
+  private pendingServerUrl: string | null = null;
+  private activeServerUrl: string | null = null;
+  private attemptReachedReady = false;
+  private lastReportedEndpoint = '';
   private connectionOpenedAt = 0;
   private readyAt = 0;
   private lastActivityAt = 0;
@@ -318,7 +331,10 @@ export class CatsClient extends EventEmitter {
       process.env.CATSCOMPANY_RUNTIME_CREDENTIAL,
     );
 
-    Logger.info(`[CatsCompany] 正在连接: ${this.config.serverUrl}, apiKey=${maskSecret(this.config.apiKey)}, bodyId=${bodyId}`);
+    const serverUrl = this.currentServerUrl();
+    this.pendingServerUrl = serverUrl;
+    this.attemptReachedReady = false;
+    Logger.info(`[CatsCompany] 正在连接: ${serverUrl}, apiKey=${maskSecret(this.config.apiKey)}, bodyId=${bodyId}`);
     this.supportsClientMessageDedupe = false;
     this.supportsThinToolRpc = false;
     this.connectionOpenedAt = 0;
@@ -326,7 +342,7 @@ export class CatsClient extends EventEmitter {
     this.lastActivityAt = 0;
     this.disconnectCause = '';
     this.lastTransportError = '';
-    this.ws = new WebSocket(this.config.serverUrl, {
+    this.ws = new WebSocket(serverUrl, {
       headers: {
         'X-API-Key': this.config.apiKey,
         'X-CatsCo-Body-ID': bodyId,
@@ -409,6 +425,15 @@ export class CatsClient extends EventEmitter {
         'timeout',
         'WebSocket closed before receiving a Skill mutation grant result'
       ));
+      // 业务层拒绝（就绪超时/鉴权 4xx）不切换端点：兄弟域名是同一后端，
+      // 切过去只会重复被拒。只有连接层失败（超时/网络/DNS 等）才轮换。
+      const endpointFailure = !this.attemptReachedReady
+        && cause !== 'ready_timeout'
+        && cause !== 'upgrade_http_401'
+        && cause !== 'upgrade_http_403';
+      if (!this.closed && endpointFailure) {
+        this.rotateEndpointAfterConnectFailure(cause);
+      }
       if (!this.closed) this.scheduleReconnect();
     });
   }
@@ -419,6 +444,9 @@ export class CatsClient extends EventEmitter {
         this.awaitingReady = false;
         this.clearReadyTimeout();
         this.reconnectAttempts = 0;
+        this.attemptReachedReady = true;
+        this.activeServerUrl = this.pendingServerUrl;
+        this.reportEndpointReady();
         this.readyAt = Date.now();
         this.lastActivityAt = this.readyAt;
         this.uid = String(msg.ctrl.params?.uid || 'bot');
@@ -1011,7 +1039,7 @@ export class CatsClient extends EventEmitter {
   }
 
   private async acceptFriendRequest(userId: number): Promise<void> {
-    const httpBaseUrl = this.config.httpBaseUrl || 'https://app.catsco.cc';
+    const httpBaseUrl = this.httpBaseUrl();
     const res = await fetch(`${httpBaseUrl}/api/friends/accept`, {
       method: 'POST',
       headers: {
@@ -1241,8 +1269,64 @@ export class CatsClient extends EventEmitter {
     }
   }
 
+  private resolveEndpointCandidates(): string[] {
+    const explicit = (this.config.endpointCandidates || [])
+      .map(value => String(value || '').trim())
+      .filter(Boolean);
+    if (explicit.length > 0) return explicit;
+    return catsCoEndpointCandidates(this.config.serverUrl, this.config.preferredDomainFamily);
+  }
+
+  private currentServerUrl(): string {
+    if (this.endpointCandidates.length === 0) {
+      this.endpointCandidates = this.resolveEndpointCandidates();
+    }
+    const index = Math.min(Math.max(this.endpointIndex, 0), this.endpointCandidates.length - 1);
+    return this.endpointCandidates[index] || this.config.serverUrl;
+  }
+
+  private rotateEndpointAfterConnectFailure(cause: string): void {
+    if (this.endpointCandidates.length <= 1) return;
+    const previous = this.currentServerUrl();
+    this.endpointIndex = (this.endpointIndex + 1) % this.endpointCandidates.length;
+    const next = this.currentServerUrl();
+    if (next === previous) return;
+    Logger.warning(`[CatsCompany] 连接失败（${cause || 'unknown'}），自动切换端点: ${previous} → ${next}`);
+  }
+
+  private reportEndpointReady(): void {
+    const url = this.activeServerUrl;
+    if (!url || url === this.lastReportedEndpoint) return;
+    this.lastReportedEndpoint = url;
+    try {
+      this.config.onEndpointReady?.(url);
+    } catch (error) {
+      Logger.warning(`[CatsCompany] 端点切换回调失败: ${(error as Error)?.message || error}`);
+    }
+  }
+
+  /** 当前生效的服务端地址（完成握手后可用）。 */
+  getActiveServerUrl(): string | null {
+    return this.activeServerUrl;
+  }
+
+  /** 端点候选列表（按优先级排序）——诊断与测试用。 */
+  getEndpointCandidates(): string[] {
+    if (this.endpointCandidates.length === 0) {
+      this.endpointCandidates = this.resolveEndpointCandidates();
+    }
+    return [...this.endpointCandidates];
+  }
+
+  /** 当前 HTTP 基地址；跟随已选中的域名族，避免 WS 与 HTTP 落在不同域名。 */
+  getHttpBaseUrl(): string {
+    return this.httpBaseUrl();
+  }
+
   private httpBaseUrl(): string {
-    return this.config.httpBaseUrl || inferHttpBaseUrl(this.config.serverUrl) || 'https://app.catsco.cc';
+    const configured = this.config.httpBaseUrl || inferHttpBaseUrl(this.config.serverUrl) || 'https://app.catsco.cn';
+    const activeFamily = catsCoDomainFamily(this.activeServerUrl || this.currentServerUrl());
+    return catsCoUrlForFamily(configured, activeFamily) ?? configured;
   }
 
   disconnect(): void {

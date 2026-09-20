@@ -4,9 +4,22 @@ export type RelayModelFamily = 'catalog' | 'minimax' | 'deepseek' | 'glm' | 'gpt
 export type RelayModelProvider = 'anthropic' | 'openai';
 
 export const RELAY_MODEL_BASE_URLS: Record<RelayModelProvider, string> = {
-  anthropic: 'https://relay.catsco.cc/anthropic',
-  openai: 'https://relay.catsco.cc/v1',
+  anthropic: 'https://relay.catsco.cn/anthropic',
+  openai: 'https://relay.catsco.cn/v1',
 };
+
+/** 官方 Relay 基地址集合（cc/cn 双域名并存期间的规范写法）。 */
+export const CATSCO_RELAY_BASE_URLS = new Set([
+  'https://relay.catsco.cc',
+  'https://relay.catsco.cn',
+]);
+
+/** 新安装默认使用的 Relay 基地址。 */
+export const DEFAULT_RELAY_BASE_URL = 'https://relay.catsco.cn';
+
+export function isOfficialRelayBaseUrl(value: unknown): boolean {
+  return CATSCO_RELAY_BASE_URLS.has(String(value || '').trim().replace(/\/+$/, ''));
+}
 
 export const RELAY_MODEL_PROTOCOL_LABELS: Record<RelayModelProvider, string> = {
   anthropic: 'Anthropic-compatible',

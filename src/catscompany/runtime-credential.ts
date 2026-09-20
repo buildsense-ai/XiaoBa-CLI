@@ -116,7 +116,7 @@ export async function provisionCatsCoRuntimeCredential(
     return config;
   }
   const issued = await issueCatsCoRuntimeCredential({
-    httpBaseUrl: config.httpBaseUrl || 'https://app.catsco.cc',
+    httpBaseUrl: config.httpBaseUrl || 'https://app.catsco.cn',
     userToken,
     botUid,
     bodyId,

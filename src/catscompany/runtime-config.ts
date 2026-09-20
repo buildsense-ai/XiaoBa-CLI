@@ -10,7 +10,7 @@ import {
   DEFAULT_CATSCO_WS_URL,
   createCatsCoLocalConfigService,
 } from './local-config';
-import { CATSCO_APP_HTTP_ORIGINS } from '../utils/catsco-domains';
+import { CATSCO_APP_HTTP_ORIGINS, catsCoDomainFamily } from '../utils/catsco-domains';
 
 export type CatsCoRuntimeMissingField = 'serverUrl' | 'apiKey' | 'bodyId';
 
@@ -150,7 +150,10 @@ export function resolveCatsCoRuntimeConfig(
   // Fail closed: only the Dashboard service manager explicitly marks a
   // connector as desktop. Direct/remote CLI runtimes are server runtimes.
   const runtimeRole = resolveCatsCoRuntimeRole(effectiveEnv.XIAOBA_RUNTIME_ROLE);
-
+  const preferredEndpointFamily = localConfig.endpoints?.preferredFamily === 'cc'
+    || localConfig.endpoints?.preferredFamily === 'cn'
+    ? localConfig.endpoints.preferredFamily
+    : undefined;
   const missing: CatsCoRuntimeMissingField[] = [];
   if (!serverUrl) missing.push('serverUrl');
   if (!apiKey) missing.push('apiKey');
@@ -172,6 +175,11 @@ export function resolveCatsCoRuntimeConfig(
       deviceName: localConfig.device?.name,
       runtimeRole,
       httpBaseUrl,
+      preferredDomainFamily: preferredEndpointFamily,
+      onEndpointReady: (serverUrl: string) => {
+        const family = catsCoDomainFamily(serverUrl);
+        if (family) service.recordEndpointFamily(family);
+      },
       sessionTTL: config.catscompany?.sessionTTL,
     }
     : undefined;

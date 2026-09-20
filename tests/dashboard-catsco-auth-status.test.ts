@@ -1028,7 +1028,7 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(text.includes('sk-bf-fresh-secret'), false);
     assert.equal(runtime?.modelId, 'minimax-m3');
     assert.equal(runtime?.provider, 'anthropic');
-    assert.equal(runtime?.apiBase, 'https://relay.catsco.cc/anthropic');
+    assert.equal(runtime?.apiBase, 'https://relay.catsco.cn/anthropic');
     assert.equal(runtime?.model, 'MiniMax-M3');
     assert.equal(runtime?.apiKey, 'sk-bf-fresh-secret');
     assert.equal(runtime?.reasoningEffort, 'high');
@@ -1662,7 +1662,7 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(text.includes('sk-bf-existing-bot-secret'), false);
     assert.equal(runtime?.modelId, 'minimax-m3');
     assert.equal(runtime?.provider, 'anthropic');
-    assert.equal(runtime?.apiBase, 'https://relay.catsco.cc/anthropic');
+    assert.equal(runtime?.apiBase, 'https://relay.catsco.cn/anthropic');
     assert.equal(runtime?.model, 'MiniMax-M3');
     assert.equal(runtime?.apiKey, 'sk-bf-existing-bot-secret');
     assert.equal(runtime?.reasoningEffort, 'high');

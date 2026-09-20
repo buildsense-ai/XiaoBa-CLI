@@ -141,8 +141,17 @@ export class MessageSender {
   private readonly topicFailureStreak = new Map<string, number>();
 
   constructor(private bot: CatsClient, baseUrl?: string, apiKey?: string) {
-    this.baseUrl = baseUrl || 'https://app.catsco.cc';
+    this.baseUrl = baseUrl || '';
     this.apiKey = apiKey || '';
+  }
+
+  /**
+   * HTTP 兑底地址跟随客户端当前生效的域名族（cc/cn）；未显式配置时
+   * 不再固定写死单一域名，避免 WS 已切到另一域名而 HTTP 仍打旧域名。
+   */
+  private resolveBaseUrl(): string {
+    if (this.baseUrl) return this.baseUrl;
+    return this.bot.getHttpBaseUrl?.() || 'https://app.catsco.cn';
   }
 
   private async send(
@@ -213,7 +222,7 @@ export class MessageSender {
 
   private async sendViaHttp(body: CatsSendBody): Promise<{ seq_id: number }> {
     try {
-      const url = `${this.baseUrl}/api/messages/send`;
+      const url = `${this.resolveBaseUrl()}/api/messages/send`;
       const res = await fetch(url, {
         method: 'POST',
         headers: {
@@ -369,7 +378,7 @@ export class MessageSender {
     let partPath: string | undefined;
     try {
 
-      const fullUrl = url.startsWith('http') ? url : `${this.baseUrl}${url}`;
+      const fullUrl = url.startsWith('http') ? url : `${this.resolveBaseUrl()}${url}`;
       const localPath = options.targetPath
         ? path.resolve(options.targetPath)
         : path.join(process.cwd(), 'tmp', 'downloads', `${Date.now()}_${path.basename(fileName)}`);

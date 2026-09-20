@@ -5,7 +5,7 @@ import * as crypto from 'crypto';
 import { ChatConfig } from '../types';
 import { buildConservativeImagePrompt } from './image-analysis-prompt';
 
-const DEFAULT_HTTP_BASE_URL = 'https://app.catsco.cc';
+const DEFAULT_HTTP_BASE_URL = 'https://app.catsco.cn';
 const DEFAULT_READER_API_PATH = '/api/reader';
 const DEFAULT_TIMEOUT_MS = 300000;
 const RETRYABLE_STATUS_CODES = new Set([429, 502, 503, 504]);

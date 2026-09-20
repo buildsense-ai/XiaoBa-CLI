@@ -43,6 +43,8 @@ import {
   relayModelProfileFromRuntimeDescriptor,
   relayModelProviderBaseUrl,
   relayModelProviderProtocolLabel,
+  DEFAULT_RELAY_BASE_URL,
+  isOfficialRelayBaseUrl,
   relayModelProviderSdkLabel,
   type RelayModelProfile,
   type RelayModelProvider,
@@ -121,8 +123,8 @@ import {
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
-const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
-const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
+const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cn';
+const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cn/v0/channels';
 const TRUSTED_CATSCO_HTTP_ORIGINS = CATSCO_APP_HTTP_ORIGINS;
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
@@ -1032,8 +1034,8 @@ function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): st
     const label = String(item?.protocol || '').toLowerCase();
     return protocol === 'openai' ? label.includes('openai') : label.includes('anthropic');
   });
-  const baseUrl = normalizeBaseUrl(config?.base_url, 'https://relay.catsco.cc');
-  const fallback = baseUrl === 'https://relay.catsco.cc'
+  const baseUrl = normalizeBaseUrl(config?.base_url, DEFAULT_RELAY_BASE_URL);
+  const fallback = isOfficialRelayBaseUrl(baseUrl)
     ? relayModelProviderBaseUrl(protocol)
     : protocol === 'openai' ? `${baseUrl}/v1` : `${baseUrl}/anthropic`;
   return normalizeBaseUrl(endpoint?.base_url, fallback);
