@@ -4,6 +4,7 @@ import {
   parseMeminfo,
   parseLoadavg,
   parseCgroupV2SelfPath,
+  parseProcessStatStartTime,
   collectMachineResourceSnapshot,
   formatBytesCompact,
   formatDurationCompact,
@@ -72,6 +73,18 @@ describe('machine resources parsing', () => {
   });
 });
 
+describe('process start-time parsing', () => {
+  test('extracts start time even when comm contains spaces and parentheses', () => {
+    const stat = '4321 (weird (name)) S 1 4321 4321 0 -1 4194560 123 0 0 0 5 6 0 0 20 0 1 0 987654 123456789 1700 18446744073709551615';
+    assert.equal(parseProcessStatStartTime(stat), 987654);
+  });
+
+  test('rejects malformed stat text', () => {
+    assert.equal(parseProcessStatStartTime('not-a-stat-line'), undefined);
+    assert.equal(parseProcessStatStartTime(''), undefined);
+  });
+});
+
 describe('machine resource formatting', () => {
   test('formats byte sizes compactly', () => {
     assert.equal(formatBytesCompact(3.6 * GIB), '3.6G');
@@ -118,6 +131,11 @@ describe('machine resource rendering', () => {
     const lines = buildMachineResourceLines(snapshotOf({ platform: 'win32', load1: 0 }), [], NOW, () => undefined);
     assert.ok(lines[0].includes('CPU 2 核'));
     assert.ok(!lines[0].includes('负载'));
+  });
+
+  test('omits the swap line on machines with no swap', () => {
+    const lines = buildMachineResourceLines(snapshotOf({ swapTotalBytes: 0, swapFreeBytes: 0 }), [], NOW, () => undefined);
+    assert.ok(!lines[0].includes('Swap'));
   });
 });
 
@@ -216,6 +234,32 @@ describe('snapshot collection through the injectable IO layer', () => {
     assert.equal(degraded.availableMemoryBytes, 4 * GIB);
     assert.equal(degraded.swapTotalBytes, undefined);
     assert.equal(degraded.cgroupCurrentBytes, undefined);
+  });
+
+  test('prefers the anonymous cgroup share and falls back to memory.current', () => {
+    const files: Record<string, string> = {
+      '/proc/meminfo': 'MemTotal: 1000000 kB\nMemAvailable: 500000 kB\n',
+      '/proc/self/cgroup': '0::/system.slice/catsco-agent.service\n',
+      '/sys/fs/cgroup/system.slice/catsco-agent.service/memory.current': '654321000\n',
+    };
+    const io = {
+      platform: 'linux' as NodeJS.Platform,
+      readFileSync: (file: string) => {
+        const content = files[file];
+        if (content === undefined) throw new Error(`ENOENT: ${file}`);
+        return content;
+      },
+      readdirSync: () => [],
+      totalmem: () => 8 * GIB,
+      freemem: () => 4 * GIB,
+      cpus: () => [1],
+      loadavg: () => [0, 0, 0],
+    };
+
+    assert.equal(collectMachineResourceSnapshot(io).cgroupCurrentBytes, 654321000);
+
+    files['/sys/fs/cgroup/system.slice/catsco-agent.service/memory.stat'] = 'anon 123000000\nfile 456000000\n';
+    assert.equal(collectMachineResourceSnapshot(io).cgroupCurrentBytes, 123000000);
   });
 });
 

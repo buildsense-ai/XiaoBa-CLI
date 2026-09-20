@@ -3,12 +3,19 @@ import * as assert from 'node:assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'node:child_process';
-import { ShellTool } from '../src/tools/bash-tool';
+import { execSync, spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
+import { ShellTool, buildTimeoutWatchdogScript, normalizeShellTimeout, MAX_SHELL_TIMEOUT_MS } from '../src/tools/bash-tool';
 import { ToolExecutionContext } from '../src/types/tool';
 import { clearActiveCommandsForTest, listActiveCommands } from '../src/utils/active-commands';
+import {
+  __resetMachineResourceCacheForTest,
+  readPosixProcessStartTime,
+  setMachineResourceSnapshotForTest,
+} from '../src/utils/machine-resources';
 
 const POSIX_ONLY = { skip: process.platform === 'win32' } as const;
+const LINUX_ONLY = { skip: process.platform !== 'linux' } as const;
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -38,6 +45,29 @@ function sleepProcessCount(): number {
   }
 }
 
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function waitForExit(proc: ChildProcess, ms: number): Promise<boolean> {
+  return new Promise(resolve => {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      resolve(true);
+      return;
+    }
+    const timer = setTimeout(() => resolve(false), ms);
+    proc.once('exit', () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
 describe('ShellTool resource guards', () => {
   let testRoot: string;
   let context: ToolExecutionContext;
@@ -55,9 +85,68 @@ describe('ShellTool resource guards', () => {
 
   afterEach(() => {
     clearActiveCommandsForTest();
+    __resetMachineResourceCacheForTest();
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
     }
+  });
+
+  test('normalizes hostile timeout values and caps at the ceiling', () => {
+    assert.equal(normalizeShellTimeout(undefined), 30_000);
+    assert.equal(normalizeShellTimeout(Number.NaN), 30_000);
+    assert.equal(normalizeShellTimeout(0), 30_000);
+    assert.equal(normalizeShellTimeout(-5), 30_000);
+    assert.equal(normalizeShellTimeout('5000'), 5000);
+    assert.equal(normalizeShellTimeout(2000.9), 2000);
+    assert.equal(normalizeShellTimeout(true), 30_000);
+    assert.equal(normalizeShellTimeout(''), 30_000);
+    assert.equal(normalizeShellTimeout(10 ** 12), MAX_SHELL_TIMEOUT_MS);
+  });
+
+  test('watchdog never kills a recycled pgid (start-time guard)', LINUX_ONLY, async () => {
+    const leader = spawn('sleep', ['654326'], { detached: true, stdio: 'ignore' });
+    try {
+      await delay(200);
+      const leaderPid = leader.pid!;
+      const startTime = readPosixProcessStartTime(leaderPid);
+      assert.ok(startTime !== undefined, 'live leader must expose a start time');
+
+      // A recycled pgid shows up with a different leader start time: skip.
+      const wrong = spawn('/bin/sh', ['-c', buildTimeoutWatchdogScript(leaderPid, 1, startTime! + 99_999)], { stdio: 'ignore' });
+      assert.equal(await waitForExit(wrong, 4000), true);
+      assert.equal(processAlive(leaderPid), true, 'recycled-pgid guard must skip the kill');
+
+      // Unverifiable leader (no recorded start time): skip as well.
+      const unverifiable = spawn('/bin/sh', ['-c', buildTimeoutWatchdogScript(leaderPid, 1, undefined)], { stdio: 'ignore' });
+      assert.equal(await waitForExit(unverifiable, 4000), true);
+      assert.equal(processAlive(leaderPid), true, 'unverifiable guard must skip the kill');
+
+      // Recorded start time matches the live leader: the group is ours — kill.
+      const matching = spawn('/bin/sh', ['-c', buildTimeoutWatchdogScript(leaderPid, 1, startTime!)], { stdio: 'ignore' });
+      assert.equal(await waitForExit(leader, 4000), true, 'matching guard must terminate the group');
+      try { matching.kill('SIGKILL'); } catch { /* already gone */ }
+    } finally {
+      if (leader.pid) {
+        try { process.kill(-leader.pid, 'SIGKILL'); } catch { /* already gone */ }
+      }
+    }
+  });
+
+  test('captures a fast memory spike through the early RSS sample', LINUX_ONLY, async () => {
+    setMachineResourceSnapshotForTest({
+      platform: 'linux',
+      cpuCount: 2,
+      totalMemoryBytes: 1024 ** 3,
+      availableMemoryBytes: 900 * 1024 ** 2,
+      sampledAt: Date.now(),
+    });
+    const tool = new ShellTool();
+    const command = `'${process.execPath}' -e "const b = Buffer.alloc(420 * 1024 * 1024, 1); console.log('balloon', b.length); setTimeout(() => {}, 3000)"`;
+    const result = await tool.execute({ command, timeout: 30_000 }, context);
+    assert.equal(result.ok, true);
+    const report = String(result.content || result.message || '');
+    assert.match(report, /resource_note:/);
+    assert.match(report, /峰值 RSS [3-5]\d\dM/);
   });
 
   test('registers the running command in the global registry while it runs', POSIX_ONLY, async () => {

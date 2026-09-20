@@ -23,7 +23,11 @@ export interface MachineResourceSnapshot {
   load1?: number;
   load5?: number;
   load15?: number;
-  /** Memory currently charged to the cgroup this runtime belongs to (cgroup v2). */
+  /**
+   * Memory charged to the runtime's cgroup (cgroup v2). Prefers the anonymous
+   * share from memory.stat (unreclaimable, i.e. what the runtime really holds)
+   * and falls back to memory.current, which also counts page cache.
+   */
   cgroupCurrentBytes?: number;
   sampledAt: number;
 }
@@ -126,11 +130,21 @@ export function collectMachineResourceSnapshot(io: MachineResourceIo = defaultIo
 
       const cgroupPath = parseCgroupV2SelfPath(io.readFileSync('/proc/self/cgroup', 'utf8'));
       if (cgroupPath) {
-        const current = Number.parseInt(
-          io.readFileSync(`/sys/fs/cgroup${cgroupPath}/memory.current`, 'utf8').trim(),
-          10,
-        );
-        if (Number.isFinite(current) && current >= 0) snapshot.cgroupCurrentBytes = current;
+        const cgroupRoot = `/sys/fs/cgroup${cgroupPath}`;
+        // memory.current includes reclaimable page cache, which would overstate
+        // "self usage"; read the anonymous share from memory.stat instead and
+        // only fall back to memory.current when memory.stat is unavailable.
+        let chargedBytes: number | undefined;
+        try {
+          const anon = /(?:^|\n)anon (\d+)(?:\n|$)/.exec(io.readFileSync(`${cgroupRoot}/memory.stat`, 'utf8'));
+          if (anon) chargedBytes = Number.parseInt(anon[1], 10);
+        } catch {
+          // Fall through to memory.current below.
+        }
+        if (chargedBytes === undefined) {
+          chargedBytes = Number.parseInt(io.readFileSync(`${cgroupRoot}/memory.current`, 'utf8').trim(), 10);
+        }
+        if (Number.isFinite(chargedBytes) && chargedBytes >= 0) snapshot.cgroupCurrentBytes = chargedBytes;
       }
     } catch {
       // Best-effort only: a missing /proc or cgroup file must never break the runtime.
@@ -216,6 +230,34 @@ export function sampleProcessGroupRssBytes(processGroupId: number): number | und
   return sampleProcessGroupRssByGroup([processGroupId]).get(processGroupId);
 }
 
+/**
+ * Start time of a process (field 22 of /proc/<pid>/stat, clock ticks since
+ * boot), parsed after the comm field — which may itself contain spaces and
+ * parentheses — so plain whitespace splitting on the full line stays safe.
+ */
+export function parseProcessStatStartTime(statText: string): number | undefined {
+  const closing = statText.lastIndexOf(')');
+  if (closing < 0) return undefined;
+  const fields = statText.slice(closing + 2).split(' ');
+  const startTime = Number.parseInt(fields[19], 10);
+  return Number.isFinite(startTime) ? startTime : undefined;
+}
+
+/**
+ * Reads a process' spawn identity. A recycled pid can never report the same
+ * start time, which is what makes this suitable for guarding kills against
+ * pid reuse.
+ */
+export function readPosixProcessStartTime(pid: number): number | undefined {
+  if (process.platform !== 'linux') return undefined;
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  try {
+    return parseProcessStatStartTime(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
 // ─── Formatting ─────────────────────────────────────────
 
 export function formatBytesCompact(bytes: number | undefined): string | undefined {
@@ -259,7 +301,7 @@ export function buildMachineResourceLines(
   if (totalText) parts.push(availableText ? `内存 ${totalText}（可用 ${availableText}）` : `内存 ${totalText}`);
 
   const swapTotalText = formatBytesCompact(snapshot.swapTotalBytes);
-  if (swapTotalText && snapshot.swapTotalBytes !== undefined && snapshot.swapFreeBytes !== undefined) {
+  if (swapTotalText && snapshot.swapTotalBytes !== undefined && snapshot.swapTotalBytes > 0 && snapshot.swapFreeBytes !== undefined) {
     const swapUsedBytes = snapshot.swapTotalBytes - snapshot.swapFreeBytes;
     const swapUsedText = swapUsedBytes > 0 ? formatBytesCompact(swapUsedBytes) : undefined;
     parts.push(swapUsedText ? `Swap ${swapTotalText}（已用 ${swapUsedText}）` : `Swap ${swapTotalText}`);
