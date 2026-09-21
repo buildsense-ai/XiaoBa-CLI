@@ -420,13 +420,21 @@ test("worker image lifecycle: prune protects production-referenced images", () =
     assert.equal(r2.status, 0, `${r2.stdout}\n${r2.stderr}`);
     assert.doesNotMatch(fs.readFileSync(sb.logPath, "utf8"), /ims DeleteImage/);
 
-    // --- no protected list configured -> refuse (fail closed) ---
+    // --- no protected list configured -> prunes anyway, with a warning ---
+    // Provisioning and resets always pick the newest image, so older images
+    // need no standing protection; the ::warning:: keeps the unset list
+    // visible in the Actions log instead of silently freezing cleanup.
     sb.writeState(eight, {});
     fs.rmSync(sb.logPath, { force: true });
     const r3 = sb.runScript("Prune", ["-Keep", "3"]);
-    assert.notEqual(r3.status, 0, `expected refusal:\n${r3.stdout}\n${r3.stderr}`);
-    assert.match(r3.stderr, /no protected image IDs configured/);
-    assert.doesNotMatch(fs.readFileSync(sb.logPath, "utf8"), /ims DeleteImage/);
+    assert.equal(r3.status, 0, `${r3.stdout}\n${r3.stderr}`);
+    assert.match(r3.stdout, /::warning::/);
+    assert.match(r3.stdout, /No protected image IDs configured/);
+    assert.match(fs.readFileSync(sb.logPath, "utf8"), /ims DeleteImage/);
+    const stateAfter = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+    const remainingAfter = stateAfter.images.filter((i: any) => i.labels?.some((l: any) => l.labelKey === "bake"));
+    assert.equal(remainingAfter.length, 3, "newest 3 must survive");
+    assert.ok(!remainingAfter.some((i: any) => i.imageID === "img-005"), "unprotected old image must be pruned");
   } finally {
     fs.rmSync(sb.sandbox, { recursive: true, force: true });
   }

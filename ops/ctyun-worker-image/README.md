@@ -32,14 +32,16 @@ session, skill installation, or runtime `.env`.
 - The application version and full Git commit are stored in both
   `/opt/catsco/current/worker-release.json` and `/etc/catsco-image.json`.
 - `Manage-WorkerImages.ps1` automates housekeeping: `-Action Prune` keeps the
-  newest 6 `catsco-worker-*` images (bake-labeled) and deletes older ones
-  (fail-closed, deletion confirmed by name-scoped reads). **Prune protects
-  production references via `-ProtectedImageIDs`**: the image(s) still
-  referenced by the production launch template (or a pinned rollback target)
-  are never deleted even when older than `-Keep`, and if deletion is needed
-  but no protected list is provided Prune refuses to run (fail-closed). The
-  GitHub workflow passes the repo variable `CTYUN_WORKER_PROTECTED_IMAGE_IDS`
-  (see “Protected image list maintenance” below).
+  newest `-Keep` `catsco-worker-*` images (bake-labeled; CI uses 3) and
+  deletes older ones (deletion confirmed by name-scoped reads). **Prune
+  protects production references via `-ProtectedImageIDs`**: the image(s)
+  pinned by a production launch template or rollback target are never deleted
+  even when older than `-Keep`. When the list is unset, pruning still runs
+  (keeping only the newest `-Keep`) and emits a `::warning::` — provisioning
+  and resets always pick the newest image (`-Action Latest`), so older images
+  need no standing protection. The GitHub workflow passes the repo variable
+  `CTYUN_WORKER_PROTECTED_IMAGE_IDS` (see “Protected image list maintenance”
+  below) when a pin is ever needed.
 
 This avoids rebuilding a large system disk for documentation-only or emergency
 application releases while still allowing new workers to start without GitHub.
@@ -62,8 +64,8 @@ application releases while still allowing new workers to start without GitHub.
 - `-Action Prune`  : keep the newest `-Keep` images (default 3) and delete
   older bake-labeled `catsco-worker-*` images; each deletion is confirmed by a
   name-scoped `ListImage` read, and failures fail closed.
-  Requires `-ProtectedImageIDs` (comma-separated) when there are images to
-  delete — protected images are never deleted.
+  `-ProtectedImageIDs` (comma-separated) is optional: listed images are never
+  deleted; when unset, pruning runs anyway and warns that no pin is declared.
 
 CI runs `Prune -Keep 3` after every successful bake (`continue-on-error`,
 30-minute budget), passing `$env:WORKER_PROTECTED_IMAGE_IDS` (repo var
@@ -71,18 +73,20 @@ CI runs `Prune -Keep 3` after every successful bake (`continue-on-error`,
 
 ### Protected image list maintenance
 
-- **What to put in it**: the `imageID` currently referenced by the production
-  launch template, plus any pinned rollback/staged-rollout target. The script
-  only verifies the list is non-empty; it does not auto-discover the template
-  reference, so keep it in sync when the template moves.
+- **What to put in it**: any `imageID` that a launch template or a pinned
+  rollback/staged-rollout flow deliberately keeps using across releases. With
+  nothing pinned, leave the list empty: pruning keeps the newest `-Keep`
+  images and provisioning picks the newest image, so no maintenance is
+  required. The script does not auto-discover template references, so add the
+  pin here whenever one is introduced.
 - **Local invocation**: `./Manage-WorkerImages.ps1 -Action Prune -Keep 3
   -RegionID <region> -ProjectID 0 -ProtectedImageIDs
   "<imageID1>,<imageID2>"`.
-- **Rotating / emergency**: after a bake that becomes the new production
-  reference, update the repo var to the new `imageID` (Settings → Variables),
-  then the next bake’s Prune can safely clean older images. To disable
-  automatic pruning entirely, remove the variable — Prune will refuse to
-  delete (fail-closed) instead of guessing.
+- **Rotating / emergency**: after a bake that must not be pruned (a pinned
+  rollback target, a staged rollout), add that `imageID` to the repo var
+  (Settings → Variables) before the next bake’s Prune runs. Removing the
+  variable does not disable pruning — Prune then keeps only the newest
+  `-Keep` images and emits a `::warning::` that no pin is declared.
 
 ## Layout
 

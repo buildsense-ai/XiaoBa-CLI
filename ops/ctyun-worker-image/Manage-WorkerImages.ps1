@@ -9,9 +9,10 @@ Worker 私有镜像生命周期管理（与 New-CatsCoWorkerImage.ps1 配套）�
             不在第 1 页导致的误判），确认超时可配（-ConfirmTimeoutMinutes），
             失败 fail-closed 聚合报告
 
-  安全（Prune）：必须有 -ProtectedImageIDs（逗号分隔）声明生产 launch template
-  等仍引用的镜像，自动清理才会执行；受保护镜像即使超过保留数也绝不删除。
-  未配置保护列表但有需要删除的旧镜像时，Prune 拒绝执行（fail-closed）。
+  安全（Prune）：-ProtectedImageIDs（逗号分隔，可选）声明生产 launch template
+  或回滚目标仍钉住的镜像，这些镜像即使超过保留数也绝不删除。未配置保护列表
+  时清理照常执行（仅保留最新 N 个）并输出 ::warning:: 提示——生产供给与重置
+  始终取最新镜像，旧镜像无需长期保护；确有钉住的旧镜像时再配置该列表。
 
 凭据：复用 ctyun-cli（环境变量 CTYUN_AK/CTYUN_SK 或 ~/.ctyun-cli.yaml），与 bake 一致。
 #>
@@ -206,19 +207,19 @@ if ($sorted.Count -le $Keep) {
     exit 0
 }
 
-# 受保护镜像：生产 launch template / 回滚 / 分批发布仍引用的镜像，绝不删除。
-# 有需要删除的旧镜像时必须显式声明保护列表（fail-closed），防止自动清理
-# 误删生产仍在使用的镜像。
+# 受保护镜像：生产 launch template / 回滚 / 分批发布钉住的镜像，绝不删除。
+# 未配置时不再 fail-closed 拒绝：生产供给与重置都取最新镜像（-Action Latest），
+# 旧镜像无需长期保护；输出 ::warning:: 让“未配置”在 Actions 里保持可见。
 $protected = @(
     $ProtectedImageIDs -split ',' |
         ForEach-Object { $_.Trim() } |
         Where-Object { $_ -ne "" }
 )
 if ($protected.Count -eq 0) {
-    throw (
-        "Refusing to auto-prune: no protected image IDs configured. " +
-        "Set -ProtectedImageIDs to the production launch-template image(s) " +
-        "before enabling automatic cleanup."
+    Write-Output (
+        "::warning::No protected image IDs configured; pruning keeps only " +
+        "the newest $Keep image(s). If a launch template or rollback target " +
+        "pins an older worker image, list it in -ProtectedImageIDs first."
     )
 }
 
