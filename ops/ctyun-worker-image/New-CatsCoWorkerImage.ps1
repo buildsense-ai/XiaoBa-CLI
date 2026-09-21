@@ -568,8 +568,20 @@ function Wait-ForInstance {
             # Foshan can keep reporting running after guest shutdown. Request a
             # normal provider stop only after verified finalization and sync.
             # Never force-stop or infer that an accepted request is completion.
-            Invoke-Ctyun @("ecs", "StopEcsInstance", "--regionID", $RegionID,
-                "--instanceID", $script:BuilderID, "--force", "false") | Out-Null
+            try {
+                Invoke-Ctyun @("ecs", "StopEcsInstance", "--regionID", $RegionID,
+                    "--instanceID", $script:BuilderID, "--force", "false") | Out-Null
+            } catch {
+                # The guest can finish its own cloud-init poweroff between the
+                # state read above and this call; Tianyi Cloud then rejects the
+                # stop because the instance already left 'running'. That is the
+                # state this request asked for, so keep waiting for stopped
+                # instead of failing the bake. Any other error stays fatal.
+                if ($_.Exception.Message -notmatch "Ecs\.Instance\.StatusNotValid") {
+                    throw
+                }
+                Write-BakeProgress -Phase "builder-stop-raced" -Detail "stop rejected because the guest already powered off; waiting for stopped" -Force
+            }
             $script:BootstrapStopRequested = $true
         }
         Wait-PollInterval -DefaultSeconds 8

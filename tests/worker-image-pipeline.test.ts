@@ -690,13 +690,25 @@ function Resolve-BuilderInstance {
     $state = if ($script:PrematureStop -or $script:InstanceReads -ge 3) { 'stopped' } else { 'running' }
     return [pscustomobject]@{ instanceID='owned-builder'; instanceStatus=$state; floatingIP='' }
 }
-function Invoke-Ctyun { param([string[]]$Arguments) $script:StopCalls++; $script:StopArguments = $Arguments; return @{statusCode=800} }
+function Invoke-Ctyun {
+    param([string[]]$Arguments)
+    $script:StopCalls++
+    $script:StopArguments = $Arguments
+    if ($script:StopRace -eq $true) {
+        throw "Tianyi Cloud API failed: Ecs.Instance.StatusNotValid instance ['owned-builder'] status not in ['running'], please check instance status again"
+    }
+    if ($script:StopRace -eq 'fatal') {
+        throw "Tianyi Cloud API failed: Ecs.CheckPermission.Denied permission denied"
+    }
+    return @{statusCode=800}
+}
 $TimeoutMinutes = 1
 $RegionID = 'foshan'
 $script:BuilderID = 'owned-builder'
 $script:InstanceReads = 0
 $script:StopCalls = 0
 $script:PrematureStop = $false
+$script:StopRace = $false
 Reset-Monitor -Responses @($complete)
 $result = Wait-ForInstance -States @('stopped','shutoff') -MonitorBootstrap
 if ($result.instanceStatus -ne 'stopped' -or $script:InstanceReads -ne 3 -or $script:StopCalls -ne 1) {
@@ -711,6 +723,34 @@ $failure = $null
 try { Wait-ForInstance -States @('stopped') -MonitorBootstrap } catch { $failure = $_.Exception.Message }
 if ($failure -ne 'Builder stopped before verified bootstrap completion') {
     throw "unprepared stopped builder was accepted for image capture"
+}
+
+# The guest can finish its cloud-init poweroff between the running-state read
+# and the provider stop call; the stop is then rejected because the instance
+# already left 'running'. The bake must keep waiting for stopped.
+$script:StopRace = $true
+$script:InstanceReads = 0
+$script:StopCalls = 0
+$script:PrematureStop = $false
+Reset-Monitor -Responses @($complete)
+$result = Wait-ForInstance -States @('stopped','shutoff') -MonitorBootstrap
+if ($result.instanceStatus -ne 'stopped' -or $script:StopCalls -ne 1) {
+    throw "raced provider stop was not tolerated"
+}
+if (-not ($script:Diagnostics -match 'builder-stop-raced')) {
+    throw "raced provider stop did not emit a diagnostic"
+}
+
+# Non-race stop failures stay fatal (fail-closed).
+$script:StopRace = 'fatal'
+$script:InstanceReads = 0
+$script:StopCalls = 0
+$script:PrematureStop = $false
+Reset-Monitor -Responses @($complete)
+$failure = $null
+try { Wait-ForInstance -States @('stopped','shutoff') -MonitorBootstrap } catch { $failure = $_.Exception.Message }
+if ($failure -notmatch 'permission denied') {
+    throw "non-race stop failure was swallowed: $failure"
 }
 `,
         "utf8",
