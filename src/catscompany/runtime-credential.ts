@@ -1,5 +1,6 @@
 import type { CatsCompanyConfig } from './types';
 import type { CatsCoAuthSnapshot } from './local-config';
+import { catsCoUrlForFamily } from '../utils/catsco-domains';
 
 export const CATSCO_RUNTIME_MUTATION_GRANT_SCOPE = 'skill_mutation:grant';
 export const CATSCO_RUNTIME_ACTIVATION_ACK_SCOPE = 'skill_mutation:activation_ack';
@@ -115,8 +116,11 @@ export async function provisionCatsCoRuntimeCredential(
   if (!userToken || !actorUid || !ownerUid || actorUid !== ownerUid || !botUid || !bodyId || !installationId) {
     return config;
   }
+  // Follow the last successful domain family so provisioning lands on the same
+  // cc/cn edge the runtime keeps using; unrelated hosts stay untouched.
+  const configuredBase = config.httpBaseUrl || 'https://app.catsco.cn';
   const issued = await issueCatsCoRuntimeCredential({
-    httpBaseUrl: config.httpBaseUrl || 'https://app.catsco.cn',
+    httpBaseUrl: catsCoUrlForFamily(configuredBase, config.preferredDomainFamily) ?? configuredBase,
     userToken,
     botUid,
     bodyId,

@@ -4,6 +4,9 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { ChatConfig } from '../types';
 import { buildConservativeImagePrompt } from './image-analysis-prompt';
+import { createCatsCoLocalConfigService } from '../catscompany/local-config';
+import { catsCoUrlForFamily, type CatsCoDomainFamily } from './catsco-domains';
+import { PathResolver } from './path-resolver';
 
 const DEFAULT_HTTP_BASE_URL = 'https://app.catsco.cn';
 const DEFAULT_READER_API_PATH = '/api/reader';
@@ -35,15 +38,30 @@ function guessContentType(filePath: string): string {
   return 'application/octet-stream';
 }
 
-function resolveReaderBaseUrl(config?: ChatConfig): string {
+function resolvePersistedPreferredFamily(): CatsCoDomainFamily | undefined {
+  try {
+    const family = createCatsCoLocalConfigService({
+      runtimeRoot: PathResolver.getRuntimeDataRoot(),
+    }).load().endpoints?.preferredFamily;
+    return family === 'cc' || family === 'cn' ? family : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function resolveReaderBaseUrl(config?: ChatConfig): string {
   const explicit = (process.env.CATSCOMPANY_READER_API_URL || process.env.READER_PROXY_URL || '').trim();
   if (explicit) return explicit.replace(/\/+$/, '');
 
-  const httpBaseUrl = (
+  const configured = (
     process.env.CATSCOMPANY_HTTP_BASE_URL
     || config?.catscompany?.httpBaseUrl
     || DEFAULT_HTTP_BASE_URL
   ).trim().replace(/\/+$/, '');
+
+  // Follow the last successful domain family (recorded by the live client) so
+  // the reader proxy keeps hitting the same cc/cn edge as the WebSocket.
+  const httpBaseUrl = catsCoUrlForFamily(configured, resolvePersistedPreferredFamily()) ?? configured;
 
   return `${httpBaseUrl}${DEFAULT_READER_API_PATH}`;
 }

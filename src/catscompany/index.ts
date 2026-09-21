@@ -573,6 +573,7 @@ export class CatsCompanyBot {
     });
     this.deviceRegistration = deviceRegistration;
     this.skillHubThinRpc = new SkillHubThinRpcHandler({
+      getHttpBaseUrl: () => this.bot.getHttpBaseUrl(),
       isShuttingDown: () => this.shuttingDown,
       allowBotSwitch: runtimeRole === 'desktop',
     });

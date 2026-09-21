@@ -1086,6 +1086,58 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.deepEqual(scheduledBotUIDs, []);
   });
 
+  test('prefers the running endpoint over the persisted local config for Bot switch preflight', async () => {
+    const configService = createCatsCoLocalConfigService({ runtimeRoot });
+    const config = configService.load();
+    configService.save({
+      ...config,
+      endpoints: { httpBaseUrl: 'https://app.catsco.cc' },
+    });
+
+    const captured: Array<string | undefined> = [];
+    const runningHandler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      scheduleBotSwitch: (botUid) => scheduledBotUIDs.push(botUid),
+      getHttpBaseUrl: () => 'https://app.catsco.cn',
+      verifyBotSwitchBinding: async ({ botUid, localBodyId, httpBaseUrl }) => {
+        captured.push(httpBaseUrl);
+        return {
+          botUid: String(botUid),
+          localBodyId: String(localBodyId),
+          platformBodyId: String(localBodyId),
+          bound: true,
+        };
+      },
+    });
+    const switched = await runningHandler.execute(request({
+      request_id: 'switch-running-endpoint',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.switchBot,
+      payload: { bot_uid: '44' },
+    }));
+    assert.equal(switched.switching, true);
+    assert.deepEqual(captured, ['https://app.catsco.cn']);
+
+    const fallbackHandler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      scheduleBotSwitch: (botUid) => scheduledBotUIDs.push(botUid),
+      verifyBotSwitchBinding: async ({ botUid, localBodyId, httpBaseUrl }) => {
+        captured.push(httpBaseUrl);
+        return {
+          botUid: String(botUid),
+          localBodyId: String(localBodyId),
+          platformBodyId: String(localBodyId),
+          bound: true,
+        };
+      },
+    });
+    await fallbackHandler.execute(request({
+      request_id: 'switch-configured-endpoint',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.switchBot,
+      payload: { bot_uid: '44' },
+    }));
+    assert.deepEqual(captured, ['https://app.catsco.cn', 'https://app.catsco.cc']);
+  });
+
   test('fails closed when CatsCo cannot verify the target Bot binding', async () => {
     await assert.rejects(
       verifyCatsCoBotSwitchBinding({

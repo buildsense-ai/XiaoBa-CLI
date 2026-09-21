@@ -102,6 +102,8 @@ export class SkillHubThinRpcError extends Error {
 export interface SkillHubThinRpcHandlerOptions {
   runtimeRoot?: string;
   scheduleBotSwitch?: (botUid: string, expectedCurrentBotUid: string) => void;
+  /** 运行中客户端当前生效的 HTTP 基地址（跟随 cc/cn 故障切换）。 */
+  getHttpBaseUrl?: () => string | undefined;
   verifyBotSwitchBinding?: typeof verifyCatsCoBotSwitchBinding;
   finalizeCurrentBotSkill?: typeof finalizeCurrentBotPublicSkillNow;
   pushCurrentBotSkillWorkspace?: typeof pushCurrentBotSkillWorkspaceToCloudNow;
@@ -114,6 +116,7 @@ export interface SkillHubThinRpcHandlerOptions {
 export class SkillHubThinRpcHandler {
   private readonly runtimeRoot: string;
   private readonly scheduleBotSwitch: (botUid: string, expectedCurrentBotUid: string) => void;
+  private readonly getHttpBaseUrl?: () => string | undefined;
   private readonly verifyBotSwitchBinding: typeof verifyCatsCoBotSwitchBinding;
   private readonly finalizeCurrentBotSkill: typeof finalizeCurrentBotPublicSkillNow;
   private readonly pushCurrentBotSkillWorkspace: typeof pushCurrentBotSkillWorkspaceToCloudNow;
@@ -136,6 +139,7 @@ export class SkillHubThinRpcHandler {
         expectedCurrentBotUid,
         this.isShuttingDown,
       ));
+    this.getHttpBaseUrl = options.getHttpBaseUrl;
     this.verifyBotSwitchBinding = options.verifyBotSwitchBinding ?? verifyCatsCoBotSwitchBinding;
     this.finalizeCurrentBotSkill = options.finalizeCurrentBotSkill
       ?? finalizeCurrentBotPublicSkillNow;
@@ -270,9 +274,12 @@ export class SkillHubThinRpcHandler {
   private async preflightBotSwitch(botUid: string): Promise<string> {
     const config = createCatsCoLocalConfigService({ runtimeRoot: this.runtimeRoot }).load();
     const expectedCurrentBotUid = String(config.currentBot?.uid || '').trim();
+    // Prefer the endpoint the running client actually selected; the persisted
+    // local config can lag behind a cc/cn failover.
+    const runningHttpBaseUrl = this.getHttpBaseUrl?.();
     try {
       await this.verifyBotSwitchBinding({
-        httpBaseUrl: config.endpoints?.httpBaseUrl,
+        httpBaseUrl: runningHttpBaseUrl || config.endpoints?.httpBaseUrl,
         token: config.account?.token,
         botUid,
         localBodyId: config.device?.bodyId,
