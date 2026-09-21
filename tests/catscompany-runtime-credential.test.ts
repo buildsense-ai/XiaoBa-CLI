@@ -256,5 +256,12 @@ describe('CatsCo Runtime credential provisioning', () => {
 
     await provisionCatsCoRuntimeCredential(config, auth, { fetchImpl });
     assert.equal(urls[2], 'https://app.catsco.cc/api/bots/runtime-credential');
+
+    await provisionCatsCoRuntimeCredential(
+      { ...config, httpBaseUrl: '', preferredDomainFamily: 'cn' },
+      auth,
+      { fetchImpl },
+    );
+    assert.equal(urls[3], 'https://app.catsco.cn/api/bots/runtime-credential');
   });
 });
