@@ -717,11 +717,12 @@ jobs:
         # covers the worst case where many stale images accumulated (each
         # delete can take up to a few minutes to confirm).
         #
-        # SAFETY: Prune refuses to run without CTYUN_WORKER_PROTECTED_IMAGE_IDS —
-        # the image(s) still referenced by the production launch template (or
-        # a pinned rollback target) must be declared so auto-cleanup can never
-        # delete an image that new workers still need. Configure the repo var
-        # before relying on automatic cleanup.
+        # SAFETY: CTYUN_WORKER_PROTECTED_IMAGE_IDS lists the image(s) a
+        # production launch template or rollback target pins; those are never
+        # deleted. An unset repo variable no longer blocks pruning: the script
+        # keeps the newest -Keep images and emits a warning that no pin is
+        # declared, so a forgotten variable can no longer silently freeze
+        # cleanup until the private-image quota fills up.
         if: ${{ steps.bake.outcome == 'success' }}
         timeout-minutes: 30
         continue-on-error: true
