@@ -229,4 +229,32 @@ describe('CatsCo Runtime credential provisioning', () => {
     assert.equal(result, explicit);
     assert.equal(requested, false);
   });
+
+  test('provisions against the persisted preferred domain family', async () => {
+    const urls: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({
+        bot_uid: 42,
+        body_id: 'body-prod-1',
+        installation_id: 'install-prod-1',
+        scopes: ['skill_mutation:grant'],
+        credential: 'runtime-credential',
+        expires_at: Date.now() + 86_400_000,
+      }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+
+    await provisionCatsCoRuntimeCredential({ ...config, preferredDomainFamily: 'cn' }, auth, { fetchImpl });
+    assert.equal(urls[0], 'https://app.catsco.cn/api/bots/runtime-credential');
+
+    await provisionCatsCoRuntimeCredential(
+      { ...config, httpBaseUrl: 'https://internal.example', preferredDomainFamily: 'cn' },
+      auth,
+      { fetchImpl },
+    );
+    assert.equal(urls[1], 'https://internal.example/api/bots/runtime-credential');
+
+    await provisionCatsCoRuntimeCredential(config, auth, { fetchImpl });
+    assert.equal(urls[2], 'https://app.catsco.cc/api/bots/runtime-credential');
+  });
 });
