@@ -56,6 +56,11 @@ describe('CatsCo runtime config resolver', () => {
         CATSCO_BOT_UID: 'bot-env',
         CATSCO_RUNTIME_CREDENTIAL: 'runtime-credential-env',
         CATSCO_RUNTIME_ACTIVATION_ACK_CREDENTIAL: 'activation-ack-credential-env',
+        XIAOBA_GROUP_ACTIVATION_JEV_ENABLED: 'true',
+        XIAOBA_GROUP_ACTIVATION_JEV_API_BASE: 'https://jev.example.test',
+        XIAOBA_GROUP_ACTIVATION_JEV_API_KEY: 'jev-secret',
+        XIAOBA_GROUP_ACTIVATION_JEV_MODEL: 'jev-test',
+        XIAOBA_GROUP_ACTIVATION_JEV_TIMEOUT_MS: '1750',
       },
     });
 
@@ -67,6 +72,14 @@ describe('CatsCo runtime config resolver', () => {
     assert.equal(resolved.connector?.runtimeRole, 'server');
     assert.equal(resolved.connector?.runtimeCredential, 'runtime-credential-env');
     assert.equal(resolved.connector?.runtimeActivationAckCredential, 'activation-ack-credential-env');
+    assert.deepEqual(resolved.connector?.groupActivationJev, {
+      enabled: true,
+      apiBase: 'https://jev.example.test',
+      apiKey: 'jev-secret',
+      model: 'jev-test',
+      timeoutMs: 1750,
+      signalFloor: 0.6,
+    });
     assert.equal(resolved.auth.token, 'env-user-token');
     assert.equal(resolved.auth.uid, 'user-typed');
     assert.equal(resolved.auth.botUid, 'bot-typed');

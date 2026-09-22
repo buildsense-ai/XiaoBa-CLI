@@ -400,6 +400,65 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(handledTurns, []);
   });
 
+  test('lets JEV activate a delivered unmentioned group message before the agent loop', async () => {
+    const { bot, handledTurns, sessionKeys } = createHarness();
+    let judgeCalls = 0;
+    bot.groupActivationJudge = {
+      judge: async (input: any) => {
+        judgeCalls++;
+        assert.equal(input.explicitlyMentioned, false);
+        return { decision: 'activate', confidence: 0.92 };
+      },
+    };
+    bot.ensureCloudSessionRestored = async () => ({
+      status: 'local_present', fetchedMessages: 0, restoredMessages: 0, compressed: false,
+    });
+
+    await bot.onMessage({
+      topic: 'grp_80',
+      senderId: 'usr7',
+      text: '请继续处理这个任务',
+      content: '请继续处理这个任务',
+      metadata: canonicalMetadata('usr7', 'grp_80'),
+      isGroup: true,
+      mentions: [],
+      memberCount: 4,
+      seq: 12,
+    });
+
+    assert.equal(judgeCalls, 1);
+    assert.deepEqual(sessionKeys, ['cc_group:grp_80']);
+    assert.equal(handledTurns.length, 1);
+  });
+
+  test('lets JEV keep an explicitly mentioned acknowledgement out of the agent loop', async () => {
+    const { bot, handledTurns, sessionKeys } = createHarness();
+    bot.groupActivationJudge = {
+      judge: async () => ({ decision: 'silent', confidence: 0.9 }),
+    };
+    let restoreCalls = 0;
+    bot.ensureCloudSessionRestored = async () => {
+      restoreCalls++;
+      return { status: 'local_present', fetchedMessages: 0, restoredMessages: 0, compressed: false };
+    };
+
+    await bot.onMessage({
+      topic: 'grp_80',
+      senderId: 'usr7',
+      text: '@AI 谢谢',
+      content: '@AI 谢谢',
+      metadata: canonicalMetadata('usr7', 'grp_80'),
+      isGroup: true,
+      mentions: ['usr43'],
+      memberCount: 4,
+      seq: 13,
+    });
+
+    assert.equal(restoreCalls, 0);
+    assert.deepEqual(sessionKeys, []);
+    assert.deepEqual(handledTurns, []);
+  });
+
   test('does not create a blank session when first cloud recovery fails', async () => {
     const { bot, handledTurns, sessionKeys, replies } = createHarness({
       existingSession: false,
