@@ -64,6 +64,32 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     assert.equal(fs.readFileSync(dirtyFile, 'utf8'), 'dirty local workspace');
   });
 
+  test('does not switch a different active workspace for a live Runtime apply', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-skill-runtime-active-fence-'));
+    roots.push(runtimeRoot);
+    const skillsRoot = path.join(runtimeRoot, 'skills');
+    fs.mkdirSync(skillsRoot, { recursive: true });
+    const workspace = new BotSkillWorkspaceService(runtimeRoot, skillsRoot);
+    workspace.activate('bot-other');
+
+    await assert.rejects(
+      prepareBoundBotSkills({
+        runtimeRoot,
+        botId: 'bot-target',
+        auth: {
+          httpBaseUrl: 'https://app.catsco.cc',
+          serverUrl: 'wss://app.catsco.cc/v0/channels',
+          botUid: 'bot-target',
+          apiKey: 'bot-api-key',
+        },
+        definitionService: createBotDefinitionSyncService({ runtimeRoot }),
+        requireActiveWorkspace: true,
+      }),
+      (error: any) => error?.code === 'WORKSPACE_SWITCHING',
+    );
+    assert.equal(workspace.getActiveBotId(), 'bot-other');
+  });
+
   test('uploads local edits, keeps the Base stable, and restores cloud-only changes atomically', async () => {
     const fixture = createFixture(roots);
     writeSkill(fixture.skillsRoot, 'local-a', 'local-a', 'local v1');

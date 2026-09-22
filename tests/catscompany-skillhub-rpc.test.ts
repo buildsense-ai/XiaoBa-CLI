@@ -90,6 +90,159 @@ describe('CatsCompany SkillHub thin RPC', () => {
     }
   });
 
+  test('applies the canonical Skill definition through an owner-scoped idle RPC', async () => {
+    let appliedBotUID = '';
+    const applyHandler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      applyCurrentBotDefinition: async botUid => {
+        appliedBotUID = botUid;
+        return { cloud_revision: 9, synced_skills: 2, apply_status: 'applied' };
+      },
+      isRuntimeIdle: () => true,
+      now: () => new Date('2026-08-24T00:00:00.000Z'),
+    });
+    const result = await applyHandler.execute({
+      request_id: 'apply-1',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.applyDefinition,
+      device_id: 'alice-device',
+      target_device_id: 'alice-device',
+      target_owner_user_id: '7',
+      expires_at: Date.now() + 60_000,
+      payload: { bot_uid: '42' },
+    } as any);
+    assert.equal(appliedBotUID, '42');
+    assert.deepEqual(result, {
+      schema: 'xiaoba.skillhub.local_workspace.apply_definition.v1',
+      bot_uid: '42',
+      applied: true,
+      cloud_revision: 9,
+      synced_skills: 2,
+      apply_status: 'applied',
+    });
+  });
+
+  test('does not replace the workspace while the Runtime is busy', async () => {
+    const busyHandler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      applyCurrentBotDefinition: async () => ({ cloud_revision: 9 }),
+      isRuntimeIdle: () => false,
+      now: () => new Date('2026-08-24T00:00:00.000Z'),
+    });
+    await assert.rejects(
+      busyHandler.execute({
+        request_id: 'apply-busy',
+        tool_name: SKILLHUB_THIN_RPC_TOOLS.applyDefinition,
+        device_id: 'alice-device',
+        target_device_id: 'alice-device',
+        target_owner_user_id: '7',
+        expires_at: Date.now() + 60_000,
+        payload: { bot_uid: '42' },
+      } as any),
+      (error: any) => error instanceof SkillHubThinRpcError && error.code === 'RUNTIME_BUSY',
+    );
+  });
+
+  test('waits for an in-flight turn before applying the workspace', async () => {
+    let waited = 0;
+    let applied = false;
+    const handler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      applyCurrentBotDefinition: async () => {
+        applied = true;
+        return { apply_status: 'already_applied' };
+      },
+      isRuntimeIdle: () => false,
+      waitForRuntimeIdle: async timeoutMs => {
+        assert.equal(timeoutMs, 110_000);
+        waited += 1;
+        return true;
+      },
+      now: () => new Date('2026-08-24T00:00:00.000Z'),
+    });
+    const result = await handler.execute({
+      request_id: 'apply-wait',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.applyDefinition,
+      device_id: 'alice-device',
+      target_device_id: 'alice-device',
+      target_owner_user_id: '7',
+      expires_at: Date.now() + 200_000,
+      payload: { bot_uid: '42' },
+    } as any);
+    assert.equal(waited, 1);
+    assert.equal(applied, true);
+    assert.equal(result.applied, true);
+  });
+
+  test('rejects a busy Runtime after the bounded idle wait expires', async () => {
+    let applied = false;
+    const handler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      applyCurrentBotDefinition: async () => {
+        applied = true;
+        return { apply_status: 'applied' };
+      },
+      waitForRuntimeIdle: async timeoutMs => {
+        assert.ok(timeoutMs > 0 && timeoutMs < 10_000);
+        return false;
+      },
+    });
+    await assert.rejects(
+      handler.execute({
+        request_id: 'apply-timeout',
+        tool_name: SKILLHUB_THIN_RPC_TOOLS.applyDefinition,
+        device_id: 'alice-device',
+        target_device_id: 'alice-device',
+        target_owner_user_id: '7',
+        expires_at: Date.now() + 5_000,
+        payload: { bot_uid: '42' },
+      } as any),
+      (error: any) => error instanceof SkillHubThinRpcError && error.code === 'RUNTIME_BUSY',
+    );
+    assert.equal(applied, false);
+  });
+
+  test('fails closed when applying Skills has no idle fence', async () => {
+    const handler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      applyCurrentBotDefinition: async () => ({ apply_status: 'applied' }),
+    });
+    await assert.rejects(
+      handler.execute({
+        request_id: 'apply-no-fence',
+        tool_name: SKILLHUB_THIN_RPC_TOOLS.applyDefinition,
+        device_id: 'alice-device',
+        target_device_id: 'alice-device',
+        target_owner_user_id: '7',
+        expires_at: Date.now() + 60_000,
+        payload: { bot_uid: '42' },
+      } as any),
+      (error: any) => error instanceof SkillHubThinRpcError && error.code === 'RUNTIME_UNSUPPORTED',
+    );
+  });
+
+  test('reports deferred synchronization instead of claiming Runtime application', async () => {
+    const handler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      applyCurrentBotDefinition: async () => ({
+        apply_status: 'deferred',
+        direction: 'feature_unavailable',
+      }),
+      isRuntimeIdle: () => true,
+      now: () => new Date('2026-08-24T00:00:00.000Z'),
+    });
+    const result = await handler.execute({
+      request_id: 'apply-pending',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.applyDefinition,
+      device_id: 'alice-device',
+      target_device_id: 'alice-device',
+      target_owner_user_id: '7',
+      expires_at: Date.now() + 60_000,
+      payload: { bot_uid: '42' },
+    } as any);
+    assert.equal(result.applied, false);
+    assert.equal(result.apply_status, 'deferred');
+  });
+
   test('server runtime supports workspace operations but never Bot switching', async () => {
     const serverHandler = new SkillHubThinRpcHandler({
       runtimeRoot,

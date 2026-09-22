@@ -32,6 +32,7 @@ import {
 
 export const SKILLHUB_THIN_RPC_TOOLS = {
   workspace: 'skillhub.localWorkspace.get',
+  applyDefinition: 'skillhub.localWorkspace.applyDefinition',
   syncWorkspace: 'skillhub.localWorkspace.syncToAgent',
   share: 'skillhub.localSkill.share',
   finalize: 'skillhub.localSkill.finalize',
@@ -107,6 +108,12 @@ export interface SkillHubThinRpcHandlerOptions {
   verifyBotSwitchBinding?: typeof verifyCatsCoBotSwitchBinding;
   finalizeCurrentBotSkill?: typeof finalizeCurrentBotPublicSkillNow;
   pushCurrentBotSkillWorkspace?: typeof pushCurrentBotSkillWorkspaceToCloudNow;
+  /** Applies the canonical BotDefinition Skill references to this Runtime's active workspace. */
+  applyCurrentBotDefinition?: (botUid: string) => Promise<Record<string, unknown>>;
+  /** Prevents replacing the active workspace while a message turn is running. */
+  isRuntimeIdle?: () => boolean;
+  /** Waits for an in-flight turn to finish before replacing the active workspace. */
+  waitForRuntimeIdle?: (timeoutMs: number, checkOperational?: () => void) => Promise<boolean>;
   isShuttingDown?: () => boolean;
   enabled?: boolean;
   allowBotSwitch?: boolean;
@@ -120,6 +127,10 @@ export class SkillHubThinRpcHandler {
   private readonly verifyBotSwitchBinding: typeof verifyCatsCoBotSwitchBinding;
   private readonly finalizeCurrentBotSkill: typeof finalizeCurrentBotPublicSkillNow;
   private readonly pushCurrentBotSkillWorkspace: typeof pushCurrentBotSkillWorkspaceToCloudNow;
+  private readonly applyCurrentBotDefinition?: (botUid: string) => Promise<Record<string, unknown>>;
+  private readonly isRuntimeIdle: () => boolean;
+  private readonly waitForRuntimeIdle?: (timeoutMs: number, checkOperational?: () => void) => Promise<boolean>;
+  private readonly hasRuntimeIdleFence: boolean;
   private readonly isShuttingDown: () => boolean;
   private readonly enabled: boolean;
   private readonly allowBotSwitch: boolean;
@@ -145,6 +156,10 @@ export class SkillHubThinRpcHandler {
       ?? finalizeCurrentBotPublicSkillNow;
     this.pushCurrentBotSkillWorkspace = options.pushCurrentBotSkillWorkspace
       ?? pushCurrentBotSkillWorkspaceToCloudNow;
+    this.applyCurrentBotDefinition = options.applyCurrentBotDefinition;
+    this.isRuntimeIdle = options.isRuntimeIdle ?? (() => true);
+    this.waitForRuntimeIdle = options.waitForRuntimeIdle;
+    this.hasRuntimeIdleFence = Boolean(options.isRuntimeIdle || options.waitForRuntimeIdle);
     this.enabled = options.enabled !== false;
     this.allowBotSwitch = options.allowBotSwitch !== false;
     this.now = options.now ?? (() => new Date());
@@ -231,6 +246,8 @@ export class SkillHubThinRpcHandler {
     switch (request.tool_name) {
       case SKILLHUB_THIN_RPC_TOOLS.workspace:
         return this.readWorkspace(botUid, payload, request);
+      case SKILLHUB_THIN_RPC_TOOLS.applyDefinition:
+        return this.applyDefinition(botUid, request);
       case SKILLHUB_THIN_RPC_TOOLS.syncWorkspace:
         return this.syncWorkspaceToAgent(botUid, payload, request);
       case SKILLHUB_THIN_RPC_TOOLS.share:
@@ -249,6 +266,50 @@ export class SkillHubThinRpcHandler {
   }
 
   private knowledgeRequests = 0;
+
+  private async applyDefinition(
+    botUid: string,
+    request: CatsThinToolRpcMessage,
+  ): Promise<Record<string, unknown>> {
+    this.assertOperational(request);
+    this.assertRequestScope(request, botUid, true);
+    if (!this.applyCurrentBotDefinition) {
+      throw new SkillHubThinRpcError(
+        'RUNTIME_UNSUPPORTED',
+        'This XiaoBa Runtime cannot apply BotDefinition Skills without restarting.',
+      );
+    }
+    if (!this.hasRuntimeIdleFence) {
+      throw new SkillHubThinRpcError(
+        'RUNTIME_UNSUPPORTED',
+        'This XiaoBa Runtime cannot safely apply Skills while turns may be running.',
+      );
+    }
+    const remainingLifetime = Number(request.expires_at) - Date.now();
+    const waitTimeoutMs = Math.max(0, Math.min(110_000, remainingLifetime - 1_000));
+    const idle = this.waitForRuntimeIdle
+      ? await this.waitForRuntimeIdle(waitTimeoutMs, () => this.assertOperational(request))
+      : this.isRuntimeIdle();
+    if (!idle) {
+      throw new SkillHubThinRpcError(
+        'RUNTIME_BUSY',
+        'The XiaoBa Runtime stayed busy; retry after it becomes idle.',
+      );
+    }
+    // The wait can consume most of the device request lifetime. Re-check
+    // shutdown and expiry immediately before mutating the active workspace.
+    this.assertOperational(request);
+    const result = await this.applyCurrentBotDefinition(botUid);
+    this.assertOperational(request);
+    const applyStatus = String(result?.apply_status ?? result?.applyStatus ?? '');
+    const applied = applyStatus === 'applied' || applyStatus === 'already_applied';
+    return {
+      schema: 'xiaoba.skillhub.local_workspace.apply_definition.v1',
+      bot_uid: botUid,
+      ...result,
+      applied,
+    };
+  }
 
   private async readKnowledge(request: CatsThinToolRpcMessage, botUid: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (this.knowledgeRequests >= 2) throw new SkillHubThinRpcError('WIKI_BUSY', '知识库正在读取，请稍后重试。');
