@@ -90,16 +90,17 @@ describe('AnthropicProvider prompt caching', () => {
     }]);
   });
 
-  test('keeps the legacy string system shape for Anthropic-compatible endpoints', () => {
+  test('keeps transient system blocks out of the compatible-endpoint system string', () => {
     const provider = createProvider('https://relay.catsco.cc/anthropic');
     const transformed = (provider as any).transformMessages(nativeMessages(
       '[transient_subagent_status]\nsub-1 is running',
     ));
 
-    assert.equal(
-      transformed.system,
-      'Stable policy.\n\n[transient_subagent_status]\nsub-1 is running',
-    );
+    assert.equal(transformed.system, 'Stable policy.');
+    assert.deepEqual(transformed.messages, [{
+      role: 'user',
+      content: 'Latest query\n\n[transient_subagent_status]\nsub-1 is running',
+    }]);
   });
 
   test('only enables native prompt caching for canonical Anthropic endpoints', () => {
