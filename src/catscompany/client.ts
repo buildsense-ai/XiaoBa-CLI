@@ -17,6 +17,8 @@ export interface CatsClientConfig {
   runtimeCredential?: string;
   runtimeCredentialExpiresAt?: number;
   deviceRegistration?: CatsDeviceRegistration;
+  /** Opt in this authenticated bot connection to passive unmentioned group delivery. */
+  semanticGroupActivation?: boolean;
   httpBaseUrl?: string;
   connectTimeoutMs?: number;
   readyTimeoutMs?: number;
@@ -363,6 +365,7 @@ export class CatsClient extends EventEmitter {
           id: '1',
           ver: CATSCOMPANY_PROTOCOL_VERSION,
           ua: CATSCOMPANY_CLIENT_UA,
+          ...(this.config.semanticGroupActivation ? { semantic_group_activation: true } : {}),
           device: this.config.deviceRegistration,
         },
       });

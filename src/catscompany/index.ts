@@ -579,6 +579,7 @@ export class CatsCompanyBot {
       runtimeCredential: config.runtimeCredential,
       runtimeCredentialExpiresAt: config.runtimeCredentialExpiresAt,
       deviceRegistration,
+      semanticGroupActivation: Boolean(this.groupActivationJudge),
       httpBaseUrl: config.httpBaseUrl,
       preferredDomainFamily: config.preferredDomainFamily,
       onEndpointReady: config.onEndpointReady,
