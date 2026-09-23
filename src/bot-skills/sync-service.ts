@@ -1164,7 +1164,8 @@ export class BotSkillSyncService {
         if (packageValue.publicMetadataUnavailable) {
           Logger.warning(
             `Bot Skill ${reference.skillId}@${reference.version} 的公开条目已撤下；`
-            + '已按 BotDefinition 的 contentHash 校验安装该 Bot 的私有副本（无公开签名元数据）。',
+            + '已按 BotDefinition 的 contentHash 校验安装该 Bot 的私有副本（无公开签名元数据）；'
+            + '该 Skill 的脚本入口将不被信任执行。',
           );
         }
         await this.privateClient.materialize(

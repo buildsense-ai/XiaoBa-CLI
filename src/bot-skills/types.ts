@@ -55,7 +55,8 @@ export interface BotSkillPackage {
    * withdrawn (SkillHub metadata 404) and the Bot-scoped package store still
    * served the exact contentHash the Definition requires. The restore installs
    * that copy without public signature metadata instead of failing forever;
-   * the caller records the degraded provenance.
+   * the caller logs the degradation and the public install marker stays
+   * absent, so trusted script entry points stay disabled for the Skill.
    */
   publicMetadataUnavailable?: true;
   origin?: SkillHubPackageRef;

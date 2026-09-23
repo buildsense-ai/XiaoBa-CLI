@@ -234,6 +234,30 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     );
   });
 
+  test('still fails the restore when the public metadata lookup fails for a non-404 reason', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'local-a', 'local-a', 'local v1');
+    await fixture.sync();
+
+    const external = createPackage(roots, 'flaky-public', 'flaky-public', 'flaky content');
+    external.source = 'public';
+    external.reference = { skillId: 'alice/flaky-public', version: '1.0.0' };
+    delete (external as Partial<BotSkillPackage>).schema;
+    fixture.packages.set(refKey(external.reference), external);
+    fixture.cloud = {
+      revision: fixture.cloud.revision + 1,
+      skills: [definitionRef(external)],
+    };
+    fixture.publicMetadataStatus = 500;
+
+    await assert.rejects(fixture.sync(), /public metadata unavailable/);
+    assert.equal(fs.existsSync(path.join(fixture.skillsRoot, 'local-a', 'SKILL.md')), true);
+    assert.equal(
+      new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.definitionRevision,
+      1,
+    );
+  });
+
   test('explicit owner sync pushes the Runtime workspace even when Cloud changed', async () => {
     const fixture = createFixture(roots);
     writeSkill(fixture.skillsRoot, 'local-a', 'local-a', 'local v1');
@@ -2973,7 +2997,9 @@ function createFixture(
       if (url.pathname.startsWith('/api/skills/') && packageValue && packageValue.source !== 'private') {
         if (fixture.publicMetadataStatus !== 200) {
           return Response.json(
-            { error: { code: 'version.not_found', message: '版本不存在或未发布' } },
+            fixture.publicMetadataStatus === 404
+              ? { error: { code: 'version.not_found', message: '版本不存在或未发布' } }
+              : { error: 'public metadata unavailable' },
             { status: fixture.publicMetadataStatus },
           );
         }

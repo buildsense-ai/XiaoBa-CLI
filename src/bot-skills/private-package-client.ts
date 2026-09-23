@@ -112,7 +112,7 @@ export class BotPrivateSkillClient {
          */
         if (
           options.allowMissingPublicMetadata !== true
-          || Number((error as { status?: unknown }).status) !== 404
+          || (error as { status?: unknown }).status !== 404
         ) {
           throw error;
         }
