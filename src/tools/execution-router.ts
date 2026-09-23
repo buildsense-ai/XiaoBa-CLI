@@ -4,6 +4,7 @@ import { normalizeTargetText } from '../catscompany/runtime-context';
 import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
 import { TOOL_TARGET_CONTEXT_PREFIX, TOOL_TARGET_CONTEXT_SUFFIX } from './tool-target-context';
 import {
+  isRevokedBotSkillSnapshotCommand,
   resolveTrustedBotSkillScriptInvocation,
   type TrustedBotSkillScriptInvocation,
 } from '../bot-skills/trusted-script-execution';
@@ -68,6 +69,16 @@ export function resolveExecutionRoute(
       target: options.target,
     });
     if (decision.ok) trustedSkillScript = decision.invocation;
+    else if (isRevokedBotSkillSnapshotCommand(options.command, context, {
+      cwd: options.cwd,
+      target: options.target,
+    })) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: 'The command points to a revoked Bot Skill snapshot. Restore or install the Skill again before running its scripts.',
+      };
+    }
     else if (looksLikeSkillScriptCommand(options.command) && context.executionScope?.source === 'catscompany') {
       Logger.warning(
         `[CatsCompany][shimo_connector] trusted script rejected: reason=${decision.reason} `
