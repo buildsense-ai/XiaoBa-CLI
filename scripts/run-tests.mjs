@@ -23,6 +23,7 @@ const skillHubPhase1Tests = [
   'tests/skillhub-phase1-compatibility.test.ts',
   'tests/dashboard-skillhub-connected-api.test.ts',
   'tests/catscompany-skillhub-rpc.test.ts',
+  'tests/bot-skill-trash-gc.test.ts',
   'tests/bot-definition-skills.test.ts',
   'tests/bot-skill-workspace.test.ts',
   'tests/bot-skill-preservation.test.ts',

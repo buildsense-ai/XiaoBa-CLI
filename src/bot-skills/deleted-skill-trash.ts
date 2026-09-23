@@ -5,9 +5,12 @@ import {
   requireSafeDirectory,
   requireSafeRuntimeDataDirectory,
 } from './safe-directory';
+import { withBotSkillWorkspaceLock } from './lock';
+import { Logger } from '../utils/logger';
 
 const TRASH_SCHEMA = 'xiaoba.bot-skill-trash.v1';
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+const DEFAULT_TRASH_GC_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 
 interface TrashedSkillFile {
   path: string;
@@ -45,6 +48,24 @@ export interface TrashBotSkillResult {
   backupId: string;
   deletedAt: string;
   expiresAt: string;
+}
+
+export interface SkillTrashCleanupResult {
+  scanned: number;
+  removed: number;
+  preserved: number;
+}
+
+export interface SkillTrashGarbageCollectorOptions {
+  runtimeRoot: string;
+  intervalMs?: number;
+  initialDelayMs?: number;
+  now?: () => Date;
+}
+
+export interface SkillTrashGarbageCollectorHandle {
+  runNow: () => Promise<SkillTrashCleanupResult>;
+  stop: () => void;
 }
 
 /**
@@ -141,18 +162,121 @@ function cleanupExpiredTrash(trashRoot: string, now: Date): void {
     if (!entry.isDirectory() || entry.isSymbolicLink() || entry.name.startsWith('.tmp-')) continue;
     const entryPath = path.join(trashRoot, entry.name);
     try {
-      const raw = JSON.parse(
-        fs.readFileSync(path.join(entryPath, 'deletion.json'), 'utf8'),
-      ) as Partial<TrashedSkillManifest>;
-      const manifest = validateManifest(raw, entry.name);
-      assertTrashEntry(entryPath, manifest);
-      if (Date.parse(manifest.expiresAt) <= now.getTime()) {
-        fs.rmSync(entryPath, { recursive: true, force: false });
-      }
+      removeExpiredTrashEntry(entryPath, path.basename(trashRoot), now);
     } catch {
       // Preserve incomplete or invalid evidence for manual recovery.
     }
   }
+}
+
+function removeExpiredTrashEntry(entryPath: string, botId: string, now: Date): boolean {
+  requireSafeDirectory(entryPath, 'Skill trash entry');
+  const children = fs.readdirSync(entryPath).sort();
+  if (children.length !== 2 || children[0] !== 'deletion.json' || children[1] !== 'package') {
+    throw new Error('Skill trash contains unrecorded recovery evidence.');
+  }
+  const manifestPath = path.join(entryPath, 'deletion.json');
+  const stat = fs.lstatSync(manifestPath);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Unsafe Skill trash manifest.');
+  const manifest = validateManifest(JSON.parse(fs.readFileSync(manifestPath, 'utf8')), path.basename(entryPath));
+  if (manifest.botId !== botId) throw new Error('Skill trash Bot scope does not match.');
+  if (Date.parse(manifest.expiresAt) > now.getTime()) return false;
+  assertTrashEntry(entryPath, manifest);
+  fs.rmSync(entryPath, { recursive: true, force: false });
+  return true;
+}
+
+function existingTrashRoot(runtimeRoot: string): string | undefined {
+  requireSafeDirectory(runtimeRoot, 'Runtime root');
+  if (!fs.existsSync(path.join(runtimeRoot, 'data'))) return undefined;
+  let current = requireSafeRuntimeDataDirectory(runtimeRoot, 'Skill trash directory');
+  for (const segment of ['bot-skills', 'trash']) {
+    current = path.join(current, segment);
+    if (!fs.existsSync(current)) return undefined;
+    requireSafeDirectory(current, 'Skill trash directory');
+  }
+  return current;
+}
+
+/**
+ * Removes only verified, expired Skill backups across every Bot trash scope.
+ * Invalid or incomplete entries are deliberately preserved for manual recovery.
+ */
+export function cleanupExpiredBotSkillTrash(options: {
+  runtimeRoot: string;
+  now?: () => Date;
+}): SkillTrashCleanupResult {
+  const runtimeRoot = requireSafeDirectory(options.runtimeRoot, 'Runtime root');
+  const now = options.now?.() ?? new Date();
+  if (!Number.isFinite(now.getTime())) throw new Error('Skill trash cleanup time is invalid.');
+  const safeTrashRoot = existingTrashRoot(runtimeRoot);
+  if (!safeTrashRoot) return { scanned: 0, removed: 0, preserved: 0 };
+  let scanned = 0;
+  let removed = 0;
+  let preserved = 0;
+  for (const botEntry of fs.readdirSync(safeTrashRoot, { withFileTypes: true })) {
+    if (!botEntry.isDirectory() || botEntry.isSymbolicLink()) continue;
+    const botRoot = requireSafeDirectory(path.join(safeTrashRoot, botEntry.name), 'Skill trash Bot scope');
+    for (const backupEntry of fs.readdirSync(botRoot, { withFileTypes: true })) {
+      if (!backupEntry.isDirectory() || backupEntry.isSymbolicLink() || backupEntry.name.startsWith('.tmp-')) continue;
+      scanned += 1;
+      const backupPath = path.join(botRoot, backupEntry.name);
+      try {
+        if (removeExpiredTrashEntry(backupPath, botEntry.name, now)) {
+          removed += 1;
+        } else {
+          preserved += 1;
+        }
+      } catch {
+        preserved += 1;
+      }
+    }
+  }
+  return { scanned, removed, preserved };
+}
+
+/** Schedules cleanup; a busy workspace defers it to the next interval. */
+export function startSkillTrashGarbageCollector(
+  options: SkillTrashGarbageCollectorOptions,
+): SkillTrashGarbageCollectorHandle {
+  const intervalMs = Number.isFinite(options.intervalMs) && Number(options.intervalMs) > 0
+    ? Number(options.intervalMs)
+    : DEFAULT_TRASH_GC_INTERVAL_MS;
+  let stopped = false;
+  let running: Promise<SkillTrashCleanupResult> | undefined;
+  const empty = (): SkillTrashCleanupResult => ({ scanned: 0, removed: 0, preserved: 0 });
+  const runNow = (): Promise<SkillTrashCleanupResult> => {
+    if (stopped) return Promise.resolve(empty());
+    if (running) return running;
+    running = (async () => {
+      // Validate every path segment before the lock helper touches the filesystem.
+      if (!existingTrashRoot(path.resolve(options.runtimeRoot))) return empty();
+      return withBotSkillWorkspaceLock(options.runtimeRoot, () => (
+        stopped ? empty() : cleanupExpiredBotSkillTrash(options)
+      ), { waitMs: 1_000 });
+    })().finally(() => { running = undefined; });
+    return running;
+  };
+  const tick = () => {
+    if (stopped) return;
+    void runNow().then(result => {
+      if (result.removed > 0) Logger.info(`[Skill trash GC] removed ${result.removed} expired backup(s)`);
+    }).catch(error => {
+      Logger.warning(`[Skill trash GC] cleanup deferred: ${error?.message || String(error)}`);
+    });
+  };
+  const timer = setInterval(tick, intervalMs);
+  timer.unref?.();
+  const initialTimer = setTimeout(tick, options.initialDelayMs ?? 60_000);
+  initialTimer.unref?.();
+  return {
+    runNow,
+    stop: () => {
+      stopped = true;
+      clearInterval(timer);
+      clearTimeout(initialTimer);
+    },
+  };
 }
 
 function assertTrashEntry(entryPath: string, expected: TrashedSkillManifest): void {
@@ -176,6 +300,7 @@ function validateManifest(
     || normalizeInstallName(value.installName) !== value.installName
     || !validIsoDate(value.deletedAt)
     || !validIsoDate(value.expiresAt)
+    || Date.parse(String(value.expiresAt)) - Date.parse(String(value.deletedAt)) < TRASH_RETENTION_MS
     || !Array.isArray(value.files)
   ) {
     throw new Error('Deleted Skill backup manifest is invalid.');
