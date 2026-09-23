@@ -85,7 +85,14 @@ export function recordPendingBotSkillRevocation(
   const filePath = revocationStatePath(runtimeRoot, botId, true);
   if (!filePath || !canonical) throw new Error('Bot Skill revocation state could not be prepared.');
   const current = readRevocationState(filePath, botId)?.references ?? [];
-  const references = canonicalizeBotSkillRefs([...current, canonical]);
+  // BotDefinition permits one reference per skillId. A newer deletion of the
+  // same Skill replaces an older pending version; an identical retry is a
+  // no-op. This keeps the deny-list idempotent without retaining impossible
+  // duplicate IDs.
+  const references = canonicalizeBotSkillRefs([
+    ...current.filter(item => item.skillId !== canonical.skillId),
+    canonical,
+  ]);
   writeRevocationState(filePath, { schema: REVOCATION_SCHEMA, botId, references });
 }
 

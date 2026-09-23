@@ -809,7 +809,16 @@ export class SkillHubThinRpcHandler {
       }
 
       const reference = readBotSkillLocalMarker(realEntry)?.reference;
-      if (reference) recordPendingBotSkillRevocation(botUid, reference, this.runtimeRoot);
+      if (reference) {
+        try {
+          recordPendingBotSkillRevocation(botUid, reference, this.runtimeRoot);
+        } catch (error: any) {
+          // The deny-list accelerates convergence, but must never turn an
+          // owner-confirmed local delete into a failed delete. Trash remains
+          // the recoverable evidence if durable revocation recording fails.
+          Logger.warning(`Skill revoke state could not be recorded; continuing deletion: ${error?.message || error}`);
+        }
+      }
       let backup: ReturnType<typeof trashBotSkill>;
       try {
         backup = trashBotSkill({
@@ -823,7 +832,13 @@ export class SkillHubThinRpcHandler {
           now: this.now,
         });
       } catch (error) {
-        if (reference) clearPendingBotSkillRevocation(botUid, reference, this.runtimeRoot);
+        if (reference) {
+          try {
+            clearPendingBotSkillRevocation(botUid, reference, this.runtimeRoot);
+          } catch (rollbackError: any) {
+            Logger.warning(`Skill revoke rollback failed after delete failure: ${rollbackError?.message || rollbackError}`);
+          }
+        }
         throw error;
       }
       return {

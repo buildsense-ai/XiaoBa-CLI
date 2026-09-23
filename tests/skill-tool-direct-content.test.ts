@@ -10,6 +10,7 @@ import { FileBotDefinitionRepository } from '../src/bot-definition/repository';
 import { writeBotSkillLocalMarker } from '../src/bot-skills/local-manifest';
 import {
   isBotSkillReferenceActive,
+  readPendingBotSkillRevocations,
   recordPendingBotSkillRevocation,
   reconcilePendingBotSkillRevocations,
 } from '../src/bot-skills/revocation';
@@ -188,6 +189,23 @@ describe('skill tool direct content mode', () => {
     assert.equal(isBotSkillReferenceActive('usrbot-123', reference), false);
     reconcilePendingBotSkillRevocations('bot-123', [], runtimeRoot);
     assert.equal(isBotSkillReferenceActive('usrbot-123', reference), true);
+  });
+
+  test('replaces an older pending version and treats repeated revocation as idempotent', () => {
+    const runtimeRoot = path.join(testRoot, 'revocation-idempotency-runtime');
+    fs.mkdirSync(runtimeRoot, { recursive: true });
+    const older = {
+      source: 'skillhub' as const,
+      skillId: 'artifact-legacy',
+      version: '1.0.0',
+      contentHash: 'a'.repeat(64),
+    };
+    const newer = { ...older, version: '1.1.0', contentHash: 'b'.repeat(64) };
+
+    recordPendingBotSkillRevocation('usrbot-idempotent', older, runtimeRoot);
+    assert.doesNotThrow(() => recordPendingBotSkillRevocation('usrbot-idempotent', older, runtimeRoot));
+    assert.doesNotThrow(() => recordPendingBotSkillRevocation('usrbot-idempotent', newer, runtimeRoot));
+    assert.deepEqual(readPendingBotSkillRevocations('bot-idempotent', runtimeRoot), [newer]);
   });
 });
 

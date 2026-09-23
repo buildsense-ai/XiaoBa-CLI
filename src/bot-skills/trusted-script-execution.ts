@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { readActiveBotDefinition } from './revocation';
+import { isBotSkillReferenceActive } from './revocation';
 import type { BotSkillRef } from '../bot-definition/types';
 import { readSkillHubInstallMarker } from '../skillhub/install-marker';
 import type { ToolExecutionContext } from '../types/tool';
@@ -48,8 +48,19 @@ export function isRevokedBotSkillSnapshotCommand(
   ];
   const executionDirectory = resolveExecutionDirectory(options.cwd, context.workingDirectory);
   if (!executionDirectory) return false;
-  return resolveShellScriptEntryPaths(String(command), executionDirectory)
-    .some(scriptPath => evidenceRoots.some(root => isPathInside(scriptPath, root)));
+  const scriptPaths = resolveShellScriptEntryPaths(String(command), executionDirectory);
+  if (scriptPaths.some(scriptPath => evidenceRoots.some(root => isPathInside(scriptPath, root)))) {
+    return true;
+  }
+
+  // A turn snapshot is a runnable-looking copy outside the legacy evidence
+  // roots. Walk each candidate script up to its Skill marker and consult the
+  // same durable deny-list used by SkillTool/trusted-entrypoint resolution.
+  const agentId = stringValue(context.executionScope?.agentId);
+  return scriptPaths.some(scriptPath => {
+    const reference = findLocalSkillReference(scriptPath, context);
+    return Boolean(reference && isBotSkillReferenceActive(agentId, reference) === false);
+  });
 }
 
 const CONNECTOR_ENV_NAMES = [
@@ -180,8 +191,7 @@ export function resolveTrustedBotSkillScriptInvocation(
   }
 
   const agentId = stringValue(context.executionScope?.agentId);
-  const definition = readActiveBotDefinition(agentId);
-  if (!definition?.skills?.some(candidate => sameSkillReference(candidate, reference))) {
+  if (isBotSkillReferenceActive(agentId, reference) !== true) {
     return denied('The verified Skill is not enabled in the current Bot definition.');
   }
 
@@ -620,6 +630,25 @@ function isCompleteVerifiedInstallMarker(value: ReturnType<typeof readSkillHubIn
     && stringValue(value.signature.keyId)
     && stringValue(value.signature.signature),
   );
+}
+
+function findLocalSkillReference(scriptPath: string, context: ToolExecutionContext): BotSkillRef | undefined {
+  const roots = [
+    path.resolve(
+      context.turnSkillSnapshot instanceof TurnSkillSnapshotLease
+        ? context.turnSkillSnapshot.snapshot.rootPath
+        : PathResolver.getSkillsPath(),
+    ),
+  ];
+  let current = path.dirname(scriptPath);
+  while (current && roots.some(root => isPathInside(current, root))) {
+    const marker = readBotSkillLocalMarker(current);
+    if (marker?.reference) return marker.reference;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return undefined;
 }
 
 function sameSkillReference(left: BotSkillRef, right: BotSkillRef): boolean {

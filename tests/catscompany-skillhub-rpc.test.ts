@@ -635,6 +635,50 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.equal(deletion.localSkillId, selected.localSkillId);
   });
 
+  test('continues owner deletion when the local revocation state cannot be written', async () => {
+    const skillRoot = path.join(runtimeRoot, 'skills', 'revocation-write-failure');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+      '---',
+      'name: revocation-write-failure',
+      'description: Fixture for a read-only revocation state failure',
+      '---',
+      '',
+    ].join('\n'));
+    const selected = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))
+      .find(entry => entry.installName === 'revocation-write-failure');
+    assert.ok(selected);
+    writeBotSkillLocalMarker(selected.path, {
+      schema: 'xiaoba.bot-skill-local.v1',
+      localSkillId: selected.localSkillId,
+      reference: {
+        source: 'skillhub',
+        skillId: 'publisher/revocation-write-failure',
+        version: '1.0.0',
+        contentHash: 'd'.repeat(64),
+      },
+    });
+
+    const botSkillsRoot = path.join(runtimeRoot, 'data', 'bot-skills');
+    fs.mkdirSync(botSkillsRoot, { recursive: true });
+    const revocationsPath = path.join(botSkillsRoot, 'revocations');
+    fs.rmSync(revocationsPath, { recursive: true, force: true });
+    fs.writeFileSync(revocationsPath, 'not a directory');
+
+    const result = await handler.execute(request({
+      request_id: 'delete-when-revocation-state-unavailable',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.delete,
+      payload: {
+        bot_uid: '42',
+        local_skill_id: selected.localSkillId,
+      },
+    }));
+
+    assert.equal(result.deleted, true);
+    assert.equal(fs.existsSync(selected.path), false);
+    assert.equal(fs.existsSync(path.join(botSkillsRoot, 'trash', '42')), true);
+  });
+
   test('deletes a local Skill when the runtime data directory is a symlink', async () => {
     // Release-based deployments share one data directory across builds by
     // linking `data` into the active release. The trash-root guard used to
