@@ -567,6 +567,8 @@ export class CatsCompanyBot {
     this.bot = new CatsClient({
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
+      connectorToken: config.connectorToken,
+      connectorTokenExpiresAt: config.connectorTokenExpiresAt,
       botUid: config.botUid,
       bodyId: config.bodyId,
       installationId: config.installationId,

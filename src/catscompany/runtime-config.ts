@@ -116,6 +116,19 @@ export function resolveCatsCoRuntimeConfig(
   );
   const serverUrl = firstNonEmpty(explicitServerUrl, config.catscompany?.serverUrl, auth.serverUrl);
   const rawApiKey = firstNonEmpty(auth.apiKey, config.catscompany?.apiKey);
+  const connectorToken = firstNonEmpty(
+    auth.connectorToken,
+    effectiveEnv.CATSCO_CONNECTOR_TOKEN,
+    effectiveEnv.CATSCOMPANY_CONNECTOR_TOKEN,
+    config.catscompany?.connectorToken,
+  );
+  const connectorTokenExpiresAt = Number(
+    auth.connectorTokenExpiresAt
+    || effectiveEnv.CATSCO_CONNECTOR_TOKEN_EXPIRES_AT
+    || effectiveEnv.CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT
+    || config.catscompany?.connectorTokenExpiresAt
+    || 0,
+  ) || undefined;
   const runtimeCredential = firstNonEmpty(
     effectiveEnv.CATSCO_RUNTIME_CREDENTIAL,
     effectiveEnv.CATSCOMPANY_RUNTIME_CREDENTIAL,
@@ -142,11 +155,20 @@ export function resolveCatsCoRuntimeConfig(
   const proposedBotBinding = Boolean(options.overrides?.botUid && options.overrides?.apiKey);
   const confirmedLocalBotBinding = hasConfirmedLocalBotBinding(localConfig, auth.uid);
   const rawBotUid = auth.botUid;
-  const botUid = proposedBotBinding || confirmedLocalBotBinding ? rawBotUid : undefined;
-  const apiKey = proposedBotBinding || confirmedLocalBotBinding ? rawApiKey : undefined;
+  // A device connector credential is the complete runtime identity. Keep the
+  // legacy Bot record on disk for migration, but never expose or select it in
+  // the active device-only runtime.
+  const botUid = connectorToken
+    ? undefined
+    : (proposedBotBinding || confirmedLocalBotBinding ? rawBotUid : undefined);
+  const apiKey = connectorToken
+    ? undefined
+    : (proposedBotBinding || confirmedLocalBotBinding ? rawApiKey : undefined);
   const bodyId = localConfig.device?.bodyId;
   const installationId = localConfig.device?.installationId || bodyId;
-  const ownerUserId = firstNonEmpty(localConfig.currentBot?.boundByUserUid, auth.uid);
+  const ownerUserId = connectorToken
+    ? firstNonEmpty(auth.uid)
+    : firstNonEmpty(localConfig.currentBot?.boundByUserUid, auth.uid);
   // Fail closed: only the Dashboard service manager explicitly marks a
   // connector as desktop. Direct/remote CLI runtimes are server runtimes.
   const runtimeRole = resolveCatsCoRuntimeRole(effectiveEnv.XIAOBA_RUNTIME_ROLE);
@@ -156,15 +178,22 @@ export function resolveCatsCoRuntimeConfig(
     : undefined;
   const missing: CatsCoRuntimeMissingField[] = [];
   if (!serverUrl) missing.push('serverUrl');
-  if (!apiKey) missing.push('apiKey');
+  if (!apiKey && !connectorToken) missing.push('apiKey');
   if (!bodyId) missing.push('bodyId');
 
   const accountConnected = Boolean(auth.token && auth.uid);
-  const bodyConfigured = Boolean(botUid && apiKey && serverUrl && bodyId);
-  const connector: CatsCompanyConfig | undefined = bodyConfigured && serverUrl && apiKey && bodyId
+  const deviceConnectorMode = Boolean(connectorToken);
+  const bodyConfigured = Boolean(
+    serverUrl
+      && bodyId
+      && ((botUid && apiKey) || deviceConnectorMode),
+  );
+  const connector: CatsCompanyConfig | undefined = bodyConfigured && serverUrl && bodyId
     ? {
       serverUrl,
       apiKey,
+      connectorToken,
+      connectorTokenExpiresAt,
       botUid,
       bodyId,
       installationId,
@@ -183,7 +212,7 @@ export function resolveCatsCoRuntimeConfig(
       sessionTTL: config.catscompany?.sessionTTL,
     }
     : undefined;
-  const connectorReady = Boolean(serverUrl && apiKey);
+  const connectorReady = Boolean(serverUrl && (apiKey || connectorToken));
   const chatReady = Boolean(accountConnected && bodyConfigured);
   const unconfirmedBotBinding = Boolean(rawBotUid && rawApiKey && serverUrl && !bodyConfigured);
 
@@ -195,6 +224,8 @@ export function resolveCatsCoRuntimeConfig(
       httpBaseUrl,
       apiKey,
       botUid,
+      connectorToken,
+      connectorTokenExpiresAt,
     },
     localConfig,
     connector,
@@ -211,6 +242,8 @@ export function resolveCatsCoRuntimeConfig(
       httpBaseUrl,
       apiKey,
       botUid,
+      connectorToken,
+      connectorTokenExpiresAt,
     }, localConfig),
   };
 }
@@ -265,6 +298,8 @@ export function buildCatsCoRuntimeEnvOverlay(
     ['CATSCO_USER_DISPLAY_NAME', auth.displayName],
     ['CATSCO_BOT_UID', auth.botUid],
     ['CATSCO_API_KEY', auth.apiKey],
+    ['CATSCO_CONNECTOR_TOKEN', auth.connectorToken],
+    ['CATSCO_CONNECTOR_TOKEN_EXPIRES_AT', auth.connectorTokenExpiresAt ? String(auth.connectorTokenExpiresAt) : undefined],
     ['CATSCO_DEVICE_ID', localConfig?.device?.deviceId],
     ['CATSCO_BODY_ID', localConfig?.device?.bodyId],
     ['CATSCO_INSTALLATION_ID', localConfig?.device?.installationId],
@@ -276,6 +311,8 @@ export function buildCatsCoRuntimeEnvOverlay(
     ['CATSCOMPANY_USER_DISPLAY_NAME', auth.displayName],
     ['CATSCOMPANY_BOT_UID', auth.botUid],
     ['CATSCOMPANY_API_KEY', auth.apiKey],
+    ['CATSCOMPANY_CONNECTOR_TOKEN', auth.connectorToken],
+    ['CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT', auth.connectorTokenExpiresAt ? String(auth.connectorTokenExpiresAt) : undefined],
     ['CATSCOMPANY_DEVICE_ID', localConfig?.device?.deviceId],
     ['CATSCOMPANY_BODY_ID', localConfig?.device?.bodyId],
     ['CATSCOMPANY_INSTALLATION_ID', localConfig?.device?.installationId],

@@ -102,6 +102,8 @@ export interface ChatConfig {
   catscompany?: {
     serverUrl?: string;
     apiKey?: string;
+    connectorToken?: string;
+    connectorTokenExpiresAt?: number;
     runtimeCredential?: string;
     runtimeActivationAckCredential?: string;
     runtimeActivationAckCredentialExpiresAt?: number;

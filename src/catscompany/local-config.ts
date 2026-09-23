@@ -26,6 +26,9 @@ export interface CatsCoLocalDevice {
   bodyId: string;
   installationId: string;
   name?: string;
+  /** Restricted user-scoped credential used by the device-only connector. */
+  connectorToken?: string;
+  connectorTokenExpiresAt?: number;
 }
 
 export interface CatsCoLocalConfig {
@@ -56,6 +59,8 @@ export interface CatsCoAuthSnapshot {
   botUid?: string;
   ownerUid?: string;
   apiKey?: string;
+  connectorToken?: string;
+  connectorTokenExpiresAt?: number;
 }
 
 export interface CatsCoLocalConfigServiceOptions {
@@ -319,6 +324,23 @@ export class CatsCoLocalConfigService {
         this.env.CATSCOMPANY_API_KEY,
         legacy.CATSCOMPANY_API_KEY,
       ),
+      connectorToken: firstNonEmpty(
+        overrides.connectorToken,
+        config.device?.connectorToken,
+        this.env.CATSCO_CONNECTOR_TOKEN,
+        legacy.CATSCO_CONNECTOR_TOKEN,
+        this.env.CATSCOMPANY_CONNECTOR_TOKEN,
+        legacy.CATSCOMPANY_CONNECTOR_TOKEN,
+      ),
+      connectorTokenExpiresAt: Number(
+        overrides.connectorTokenExpiresAt
+        || config.device?.connectorTokenExpiresAt
+        || this.env.CATSCO_CONNECTOR_TOKEN_EXPIRES_AT
+        || legacy.CATSCO_CONNECTOR_TOKEN_EXPIRES_AT
+        || this.env.CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT
+        || legacy.CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT
+        || 0,
+      ) || undefined,
     };
   }
 
@@ -333,6 +355,14 @@ export class CatsCoLocalConfigService {
     const removedBindingKeys = accountChanged
       ? removeEnvKeys(this.runtimeRoot, this.env, BOT_BINDING_ENV_KEYS)
       : [];
+    const removedConnectorKeys = accountChanged
+      ? removeEnvKeys(this.runtimeRoot, this.env, [
+        'CATSCO_CONNECTOR_TOKEN',
+        'CATSCO_CONNECTOR_TOKEN_EXPIRES_AT',
+        'CATSCOMPANY_CONNECTOR_TOKEN',
+        'CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT',
+      ])
+      : [];
     this.save({
       ...config,
       endpoints: {
@@ -346,7 +376,16 @@ export class CatsCoLocalConfigService {
         username,
         displayName,
       } : config.account,
-      currentBot: accountChanged ? undefined : config.currentBot,
+      // Keep the previous Bot record for migration/rollback audit. Runtime
+      // resolution ignores it when its owner does not match the active user.
+      currentBot: config.currentBot,
+      device: accountChanged && config.device
+        ? {
+          ...config.device,
+          connectorToken: undefined,
+          connectorTokenExpiresAt: undefined,
+        }
+        : config.device,
     });
 
     const updatedAccountKeys = writeEnvUpdates(this.runtimeRoot, this.env, {
@@ -362,8 +401,14 @@ export class CatsCoLocalConfigService {
       CATSCOMPANY_USER_UID: uid,
       CATSCOMPANY_USER_NAME: username,
       CATSCOMPANY_USER_DISPLAY_NAME: displayName,
+      CATSCO_CONNECTOR_TOKEN: accountChanged ? undefined : config.device?.connectorToken,
+      CATSCO_CONNECTOR_TOKEN_EXPIRES_AT: accountChanged && undefined
+        || (config.device?.connectorTokenExpiresAt ? String(config.device.connectorTokenExpiresAt) : undefined),
+      CATSCOMPANY_CONNECTOR_TOKEN: accountChanged ? undefined : config.device?.connectorToken,
+      CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT: accountChanged && undefined
+        || (config.device?.connectorTokenExpiresAt ? String(config.device.connectorTokenExpiresAt) : undefined),
     });
-    return Array.from(new Set([...removedBindingKeys, ...updatedAccountKeys]));
+    return Array.from(new Set([...removedBindingKeys, ...removedConnectorKeys, ...updatedAccountKeys]));
   }
 
   ensureDeviceId(): string {
@@ -389,6 +434,57 @@ export class CatsCoLocalConfigService {
       CATSCOMPANY_DEVICE_ID: deviceId,
     });
     return deviceId;
+  }
+
+  /**
+   * Persist a server-issued device connector credential without touching a
+   * legacy local Bot binding. The token is scoped to the current account and
+   * the stable device id, so switching accounts invalidates it locally.
+   */
+  writeDeviceConnector(input: {
+    state: CatsCoAuthSnapshot;
+    connectorToken: string;
+    expiresAt?: number;
+    device?: Partial<CatsCoLocalDevice>;
+  }): string[] {
+    const token = String(input.connectorToken || '').trim();
+    if (!token) throw new Error('connector token is required');
+    const deviceId = this.ensureDeviceId();
+    const config = this.load();
+    const nextDevice: CatsCoLocalDevice = {
+      ...(config.device || {}),
+      ...input.device,
+      deviceId: String(input.device?.deviceId || config.device?.deviceId || deviceId),
+      bodyId: String(input.device?.bodyId || config.device?.bodyId || deviceId),
+      installationId: String(input.device?.installationId || config.device?.installationId || deviceId),
+      connectorToken: token,
+      connectorTokenExpiresAt: Number(input.expiresAt || 0) || undefined,
+    };
+    this.save({
+      ...config,
+      endpoints: {
+        ...(config.endpoints || {}),
+        httpBaseUrl: input.state.httpBaseUrl,
+        serverUrl: input.state.serverUrl,
+      },
+      device: nextDevice,
+    });
+    return writeEnvUpdates(this.runtimeRoot, this.env, {
+      CATSCO_HTTP_BASE_URL: input.state.httpBaseUrl,
+      CATSCO_SERVER_URL: input.state.serverUrl,
+      CATSCO_CONNECTOR_TOKEN: token,
+      CATSCO_CONNECTOR_TOKEN_EXPIRES_AT: input.expiresAt ? String(input.expiresAt) : undefined,
+      CATSCO_DEVICE_ID: nextDevice.deviceId,
+      CATSCO_BODY_ID: nextDevice.bodyId,
+      CATSCO_INSTALLATION_ID: nextDevice.installationId,
+      CATSCOMPANY_HTTP_BASE_URL: input.state.httpBaseUrl,
+      CATSCOMPANY_SERVER_URL: input.state.serverUrl,
+      CATSCOMPANY_CONNECTOR_TOKEN: token,
+      CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT: input.expiresAt ? String(input.expiresAt) : undefined,
+      CATSCOMPANY_DEVICE_ID: nextDevice.deviceId,
+      CATSCOMPANY_BODY_ID: nextDevice.bodyId,
+      CATSCOMPANY_INSTALLATION_ID: nextDevice.installationId,
+    });
   }
 
   writeBotBinding(state: CatsCoAuthSnapshot, input: {
@@ -464,6 +560,9 @@ export class CatsCoLocalConfigService {
     this.save({
       ...config,
       account: undefined,
+      device: config.device
+        ? { ...config.device, connectorToken: undefined, connectorTokenExpiresAt: undefined }
+        : config.device,
     });
     return removeEnvKeys(this.runtimeRoot, this.env, [
       'CATSCO_USER_TOKEN',
@@ -474,6 +573,10 @@ export class CatsCoLocalConfigService {
       'CATSCOMPANY_USER_UID',
       'CATSCOMPANY_USER_NAME',
       'CATSCOMPANY_USER_DISPLAY_NAME',
+      'CATSCO_CONNECTOR_TOKEN',
+      'CATSCO_CONNECTOR_TOKEN_EXPIRES_AT',
+      'CATSCOMPANY_CONNECTOR_TOKEN',
+      'CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT',
     ]);
   }
 
@@ -578,6 +681,7 @@ export class CatsCoLocalConfigService {
           bodyId: config.device.bodyId,
           installationId: config.device.installationId,
           name: config.device.name || '',
+          connectorTokenExpiresAt: config.device.connectorTokenExpiresAt || 0,
         }
         : null,
       preferences: {

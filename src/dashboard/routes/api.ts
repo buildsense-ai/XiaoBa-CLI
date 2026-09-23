@@ -155,6 +155,8 @@ interface CatsAuthState {
   serverUrl: string;
   botUid?: string;
   apiKey?: string;
+  connectorToken?: string;
+  connectorTokenExpiresAt?: number;
 }
 
 interface CatsBotBindingInput {
@@ -176,6 +178,7 @@ interface CatsRelayModelSetupResult {
 
 interface CatsRequestOptions {
   timeoutMs?: number;
+  authorization?: string;
 }
 
 interface CatsUploadedLocalAttachment {
@@ -574,7 +577,8 @@ async function catsRequest(
   options: CatsRequestOptions = {},
 ): Promise<any> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (options.authorization) headers.Authorization = options.authorization;
+  else if (token) headers.Authorization = `Bearer ${token}`;
 
   const controller = options.timeoutMs ? new AbortController() : undefined;
   const timeout = controller
@@ -714,6 +718,84 @@ function isOwnedCatsBot(bot: any, userUid?: string): boolean {
 
 function ensureCatsDeviceId(): string {
   return createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).ensureDeviceId();
+}
+
+function deviceConnectorNeedsUploadMigration(token: string): boolean {
+  const payload = String(token || '').split('.')[1];
+  if (!payload) return true;
+  try {
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return !Array.isArray(claims?.scopes)
+      || !claims.scopes.includes('device:upload')
+      || !Array.isArray(claims?.capabilities)
+      || !claims.capabilities.includes('send_file');
+  } catch {
+    return true;
+  }
+}
+
+const DEVICE_CONNECTOR_CAPABILITIES = [
+  'read_file',
+  'resolve_common_directory',
+  'glob',
+  'grep',
+  'write_file',
+  'edit_file',
+  'send_file',
+  'execute_shell',
+];
+
+async function provisionCatsDeviceConnector(state: CatsAuthState): Promise<{
+  connectorToken: string;
+  expiresAt?: number;
+  device?: Record<string, unknown>;
+}> {
+  if (!state.token || !state.uid) throw new Error('CatsCo user login is required');
+  const localConfig = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() });
+  const config = localConfig.load();
+  const deviceId = localConfig.ensureDeviceId();
+  const deviceName = String(config.device?.name || os.hostname() || deviceId).trim();
+  const pairing = await catsRequest(
+    'POST',
+    state.httpBaseUrl,
+    '/api/device-connectors/pairings',
+    { device_name: deviceName, capabilities: DEVICE_CONNECTOR_CAPABILITIES },
+    state.token,
+    { timeoutMs: 8000 },
+  );
+  const pairingCode = String(pairing?.pairing_code || '').trim();
+  if (!pairingCode) throw new Error('CatsCo 未返回设备配对码');
+  const enrolled = await catsRequest(
+    'POST',
+    state.httpBaseUrl,
+    '/api/device-connectors/enroll',
+    {
+      pairing_code: pairingCode,
+      device_id: deviceId,
+      installation_id: config.device?.installationId || deviceId,
+      device_name: deviceName,
+      capabilities: DEVICE_CONNECTOR_CAPABILITIES,
+    },
+    undefined,
+    { timeoutMs: 8000 },
+  );
+  const connectorToken = String(enrolled?.connector_token || '').trim();
+  if (!connectorToken) throw new Error('CatsCo 未返回设备 Connector 凭证');
+  const expiresIn = Number(enrolled?.expires_in || 0);
+  const expiresAt = expiresIn > 0 ? Date.now() + expiresIn * 1000 : undefined;
+  localConfig.writeDeviceConnector({
+    state,
+    connectorToken,
+    expiresAt,
+    device: {
+      ...(enrolled?.device && typeof enrolled.device === 'object' ? enrolled.device : {}),
+      deviceId,
+      bodyId: deviceId,
+      installationId: config.device?.installationId || deviceId,
+      name: deviceName,
+    },
+  });
+  return { connectorToken, expiresAt, device: enrolled?.device };
 }
 
 function chmodOwnerOnly(filePath: string): void {
@@ -3509,6 +3591,83 @@ export function createApiRouter(
 
   // ==================== CatsCo webapp 本地连接器 ====================
 
+  router.post('/cats/device-connector/provision', async (_req, res) => {
+    try {
+      const state = trustCatsAuthStateEndpoints(getCatsAuthState());
+      if (!state.token || !state.uid) {
+        return res.status(401).json({ error: 'CatsCo user login is required' });
+      }
+      const existingExpiry = Number(state.connectorTokenExpiresAt || 0);
+      const needsUploadMigration = deviceConnectorNeedsUploadMigration(state.connectorToken || '');
+      if (state.connectorToken && (!existingExpiry || existingExpiry <= Date.now() + 5 * 60_000 || needsUploadMigration)) {
+        // Refresh existing credentials on startup so older device tokens gain
+        // newly introduced, explicitly scoped capabilities without forcing a
+        // user to unlink and pair the computer again.
+        try {
+          const refreshed = await catsRequest(
+            'POST',
+            state.httpBaseUrl,
+            '/api/device-connectors/token/refresh',
+            {},
+            undefined,
+            {
+              timeoutMs: 8000,
+              authorization: `DeviceConnector ${state.connectorToken}`,
+            },
+          );
+          const refreshedToken = String(refreshed?.connector_token || '').trim();
+          if (refreshedToken) {
+            const expiresIn = Number(refreshed?.expires_in || 0);
+            const expiresAt = expiresIn > 0 ? Date.now() + expiresIn * 1000 : undefined;
+            const service = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() });
+            service.writeDeviceConnector({ state, connectorToken: refreshedToken, expiresAt });
+            return res.json({
+              ok: true,
+              reused: true,
+              refreshed: true,
+              connectorTokenExpiresAt: expiresAt,
+              device: service.load().device || null,
+            });
+          }
+        } catch (error: any) {
+          const status = Number(error?.status || 0);
+          if (existingExpiry > Date.now() && status !== 401 && status !== 403 && status !== 409) {
+            return res.json({
+              ok: true,
+              reused: true,
+              refreshPending: true,
+              connectorTokenExpiresAt: existingExpiry,
+              device: createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load().device || null,
+              warning: '设备凭证暂时无法更新，当前连接凭证仍有效；部分新功能可能暂不可用。',
+            });
+          }
+          // Fall through to a fresh pairing when the old token is expired or
+          // revoked. The pairing endpoint is idempotent for this device.
+        }
+      }
+      if (state.connectorToken && existingExpiry > Date.now() + 5 * 60_000 && !needsUploadMigration) {
+        return res.json({
+          ok: true,
+          reused: true,
+          refreshed: false,
+          connectorTokenExpiresAt: existingExpiry,
+          device: createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load().device || null,
+        });
+      }
+      const result = await provisionCatsDeviceConnector(state);
+      return res.json({
+        ok: true,
+        reused: false,
+        refreshed: false,
+        connectorTokenExpiresAt: result.expiresAt,
+        device: result.device || null,
+      });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      return res.status(payload.status).json(payload.body);
+    }
+  });
+
   router.get('/cats/status', async (_req, res) => {
     const runtime = resolveCatsCoRuntimeConfig({
       runtimeRoot: runtimeDataRoot(),
@@ -3565,8 +3724,11 @@ export function createApiRouter(
     }
 
     const localBodyId = runtime.localConfig.device?.bodyId;
-    const bodyStatus = await getCatsBotBodyStatus(state, state.botUid, localBodyId);
-    const bodyBlocking = bodyStatus.state === 'conflict' || bodyStatus.state === 'auth_error';
+    const deviceConnectorMode = Boolean(runtime.connector?.connectorToken);
+    const bodyStatus = deviceConnectorMode
+      ? { state: 'device_connector' as const, active: Boolean(runtime.connectorReady), localBodyId, checkedAt: new Date().toISOString() }
+      : await getCatsBotBodyStatus(state, state.botUid, localBodyId);
+    const bodyBlocking = !deviceConnectorMode && (bodyStatus.state === 'conflict' || bodyStatus.state === 'auth_error');
     const chatReady = connected && runtime.bodyConfigured && !bodyBlocking;
     const boundBotId = String(state.botUid || '').trim();
     // 云端模型以 CatsCompany 服务端配置为权威。直接拉取云端当前选择，
@@ -3600,6 +3762,8 @@ export function createApiRouter(
       authError,
       user,
       botUid: state.botUid || null,
+      deviceConnectorMode,
+      connectorTokenExpiresAt: state.connectorTokenExpiresAt || null,
       bot: visibleBot ? {
         uid: visibleBot.uid,
         name: visibleBot.name || '',
@@ -3695,7 +3859,10 @@ export function createApiRouter(
     }
   });
 
-  router.post('/cats/auth/logout', (_req, res) => {
+  router.post('/cats/auth/logout', async (_req, res) => {
+    const localConfig = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() });
+    const auth = trustCatsAuthStateEndpoints(localConfig.getAuthState());
+    const deviceId = String(localConfig.load().device?.deviceId || '').trim();
     const connector = serviceManager.getService('catscompany');
     if (connector?.status === 'running') {
       serviceManager.stop('catscompany');
@@ -3705,9 +3872,31 @@ export function createApiRouter(
       serviceManager.stop('weixin');
     }
     clearWeixinChannelBinding(runtimeDataRoot(), process.env);
-    const removed = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).clearAccount();
+
+    let remoteRevoked = false;
+    let warning = '';
+    if (auth.token && auth.uid && deviceId) {
+      try {
+        await catsRequest(
+          'DELETE',
+          auth.httpBaseUrl,
+          `/api/devices/${encodeURIComponent(deviceId)}`,
+          undefined,
+          auth.token,
+          { timeoutMs: 5000 },
+        );
+        remoteRevoked = true;
+      } catch (error) {
+        Logger.warning(`CatsCo 退出时远程撤销设备失败: ${sanitizeCatsErrorMessage(error instanceof Error ? error.message : String(error))}`);
+        warning = '账号已在本机退出，但服务端暂未确认撤销这台电脑的授权。请检查网络，并在 CatsCo 设备管理中移除此设备。';
+      }
+    } else if (localConfig.load().device?.connectorToken) {
+      warning = '账号已在本机退出，但缺少可用于撤销设备授权的账号信息。请在 CatsCo 设备管理中检查这台电脑。';
+    }
+
+    const removed = localConfig.clearAccount();
     options.catsConnectorAutoStart?.invalidateAndSchedule('logout');
-    res.json({ ok: true, removed });
+    res.json({ ok: true, removed, remoteRevoked, warning: warning || undefined });
   });
 
   router.post('/cats/desktop-connect', async (req, res) => {
@@ -3781,6 +3970,38 @@ export function createApiRouter(
 
   router.post('/cats/connector/start', async (_req, res) => {
     try {
+      const runtime = resolveCatsCoRuntimeConfig({
+        runtimeRoot: runtimeDataRoot(),
+        config: ConfigManager.getConfigReadonly(),
+      });
+      if (runtime.connector?.connectorToken) {
+        // Provisioning can migrate an already-running legacy Bot connector.
+        // Restart once here so the service reloads the device-token runtime
+        // configuration instead of continuing with its previous Bot identity.
+        const result = await startCatsCompanyConnectorIfReady(serviceManager, { restartIfRunning: true });
+        if (!result.service) {
+          return res.status(409).json({ error: 'CatsCompany connector service is unavailable' });
+        }
+        if (result.preflight?.status === 'blocked') {
+          return res.status(400).json({
+            error: 'CatsCo device connector preflight blocked',
+            preflight: {
+              status: result.preflight.status,
+              blockingChecks: result.preflight.blockingChecks,
+              warningChecks: result.preflight.warningChecks,
+            },
+          });
+        }
+        return res.json({
+          ok: true,
+          deviceConnectorMode: true,
+          deviceId: runtime.localConfig.device?.deviceId || null,
+          service: result.service,
+          preflight: result.preflight,
+          connectorStarted: result.connectorStarted,
+          connectorAlreadyRunning: result.service.status === 'running' && !result.connectorStarted,
+        });
+      }
       const botId = currentBoundBotId();
       if (!botId) {
         return res.status(409).json({ error: 'No CatsCo bot is bound on this device' });

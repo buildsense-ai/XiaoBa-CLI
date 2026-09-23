@@ -37,12 +37,12 @@
               <span id="status-label">正在启动 CatsCo Connector</span>
             </div>
             <h1 id="hero-title">正在连接这台电脑</h1>
-            <p class="hero-copy" id="hero-copy">正在确认 CatsCo 账号、Agent、设备和 Connector 状态。</p>
+            <p class="hero-copy" id="hero-copy">正在确认 CatsCo 账号与这台电脑的连接状态。</p>
 
             <form class="login-card" id="login-form" hidden>
               <div class="form-heading">
                 <strong>登录 CatsCo</strong>
-                <span>登录后会自动准备本机 Agent，无需手动创建。</span>
+                <span>登录后会自动连接这台电脑，无需创建或选择 Bot。</span>
               </div>
               <label>
                 <span>账号</span>
@@ -61,7 +61,7 @@
 
             <ol class="progress-list" id="progress-list" hidden>
               <li data-step="account"><span></span><div><strong>验证 CatsCo 账号</strong><small>使用本机保存的登录状态</small></div></li>
-              <li data-step="agent"><span></span><div><strong>准备本机 Agent</strong><small>同步云端模型、Prompt 和 Skills</small></div></li>
+              <li data-step="device"><span></span><div><strong>注册这台电脑</strong><small>授权 CatsCo WebApp 使用本机工具与文件</small></div></li>
               <li data-step="connector"><span></span><div><strong>启动 Connector</strong><small>让 WebApp 可以调用这台电脑</small></div></li>
             </ol>
 
@@ -74,7 +74,6 @@
               <a class="button button-primary external-link" id="webapp-button" href="https://app.catsco.cn" target="_blank" rel="noopener noreferrer" hidden>打开 CatsCo WebApp</a>
               <button class="button button-danger" id="logout-button" type="button" hidden>退出账号</button>
               <button class="button button-secondary" id="retry-button" type="button" hidden>重新连接</button>
-              <button class="button button-primary" id="transfer-body-button" type="button" hidden>转移到这台电脑</button>
             </div>
             <p class="close-hint" id="close-hint" hidden>可以直接关闭此窗口，Connector 会继续在后台运行。</p>
           </div>
@@ -114,13 +113,10 @@
             <strong id="account-name">—</strong>
             <small id="account-meta">等待登录</small>
           </article>
-          <article class="summary-card agent-summary-card">
-            <div class="summary-card-heading">
-              <span>当前 Agent</span>
-              <button class="summary-action" id="agent-switch-open" type="button" disabled>切换</button>
-            </div>
-            <strong id="agent-name">—</strong>
-            <small id="agent-meta">登录后自动准备</small>
+          <article class="summary-card">
+            <span>本机连接</span>
+            <strong id="device-connector-status">—</strong>
+            <small id="device-connector-meta">登录后自动连接</small>
           </article>
           <article class="summary-card">
             <span>当前设备</span>
@@ -135,31 +131,6 @@
       </div>
     </section>
   </main>
-
-  <dialog class="agent-switch-dialog" id="agent-switch-dialog" aria-labelledby="agent-switch-title">
-    <form method="dialog" class="agent-switch-shell">
-      <header class="agent-switch-header">
-        <div>
-          <h2 id="agent-switch-title">切换 Agent</h2>
-          <p>选择使用这台电脑本地工具、文件和桌面能力的 Agent。</p>
-        </div>
-        <button class="dialog-close" id="agent-switch-close" type="submit" value="cancel" aria-label="关闭">×</button>
-      </header>
-
-      <div class="agent-switch-body">
-        <p class="agent-switch-intro">一台电脑同一时间连接一个 Agent。切换时 Connector 会短暂重启，云端模型、Prompt 和 Skills 会同步到本机。</p>
-        <div class="agent-list" id="agent-list" role="radiogroup" aria-label="可用 Agent">
-          <div class="agent-list-state">正在读取 Agent……</div>
-        </div>
-        <p class="agent-switch-error" id="agent-switch-error" role="alert" hidden></p>
-      </div>
-
-      <footer class="agent-switch-footer">
-        <button class="button button-quiet" id="agent-switch-cancel" type="submit" value="cancel">取消</button>
-        <button class="button button-primary" id="agent-switch-confirm" type="button" disabled>切换并重新连接</button>
-      </footer>
-    </form>
-  </dialog>
 
   <dialog class="update-dialog" id="update-dialog" aria-labelledby="update-title">
     <section class="update-dialog-shell">
@@ -218,19 +189,19 @@
     </section>
   </dialog>
 
-  <dialog class="agent-switch-dialog logout-dialog" id="logout-dialog" aria-labelledby="logout-title">
-    <form method="dialog" class="agent-switch-shell">
-      <header class="agent-switch-header">
+  <dialog class="connector-dialog logout-dialog" id="logout-dialog" aria-labelledby="logout-title">
+    <form method="dialog" class="connector-dialog-shell">
+      <header class="connector-dialog-header">
         <div>
           <h2 id="logout-title">退出 CatsCo 账号</h2>
           <p>退出后，这台电脑上的 Connector 会停止运行。</p>
         </div>
         <button class="dialog-close" id="logout-close" type="submit" value="cancel" aria-label="关闭">×</button>
       </header>
-      <div class="agent-switch-body logout-dialog-body">
+      <div class="connector-dialog-body logout-dialog-body">
         确定要退出当前账号吗？之后需要重新登录才能让 WebApp 使用这台电脑。
       </div>
-      <footer class="agent-switch-footer">
+      <footer class="connector-dialog-footer">
         <button class="button button-quiet" id="logout-cancel" type="submit" value="cancel">取消</button>
         <button class="button button-danger" id="logout-confirm" type="button">退出账号</button>
       </footer>

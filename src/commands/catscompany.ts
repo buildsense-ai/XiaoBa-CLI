@@ -68,23 +68,29 @@ export function resolveCatsCoCommandConfig(
 export async function catscompanyCommand(): Promise<void> {
   const runtimeRoot = PathResolver.getRuntimeDataRoot();
   const preserveSkills = preserveOperatorManagedSkills();
-  const preparedBot = await prepareBoundBotDefinition({
-    runtimeRoot,
-    acknowledgeCloudSelection: false,
-    preserveSkills,
-  });
-  if (preserveSkills && preparedBot?.botId) {
-    assertOperatorManagedSkillWorkspaceBinding(runtimeRoot, preparedBot.botId);
-  }
-  if (preparedBot?.cloudRevision !== undefined) {
-    Logger.info(`CatsCo bot ${preparedBot.botId} 已准备云端模型配置 revision=${preparedBot.cloudRevision}。`);
-  } else if (preparedBot?.initializedDefault) {
-    Logger.info(`CatsCo bot ${preparedBot.botId} 已自动初始化默认模型 MiniMax M3。`);
-  } else if (preparedBot?.materializedCatalogRuntime) {
-    Logger.info(`CatsCo bot ${preparedBot.botId} 已在当前设备准备 ${preparedBot.definition.model.kind === 'catalog' ? preparedBot.definition.model.modelId : '模型'} 的运行材料。`);
-  }
   const config = ConfigManager.getConfig();
   const resolvedRuntime = resolveCatsCoRuntimeConfig({ runtimeRoot, env: process.env, config });
+  const deviceConnectorMode = Boolean(resolvedRuntime.connector?.connectorToken);
+  let preparedBot: Awaited<ReturnType<typeof prepareBoundBotDefinition>> | undefined;
+  if (!deviceConnectorMode) {
+    preparedBot = await prepareBoundBotDefinition({
+      runtimeRoot,
+      acknowledgeCloudSelection: false,
+      preserveSkills,
+    });
+    if (preserveSkills && preparedBot?.botId) {
+      assertOperatorManagedSkillWorkspaceBinding(runtimeRoot, preparedBot.botId);
+    }
+    if (preparedBot?.cloudRevision !== undefined) {
+      Logger.info(`CatsCo bot ${preparedBot.botId} 已准备云端模型配置 revision=${preparedBot.cloudRevision}。`);
+    } else if (preparedBot?.initializedDefault) {
+      Logger.info(`CatsCo bot ${preparedBot.botId} 已自动初始化默认模型 MiniMax M3。`);
+    } else if (preparedBot?.materializedCatalogRuntime) {
+      Logger.info(`CatsCo bot ${preparedBot.botId} 已在当前设备准备 ${preparedBot.definition.model.kind === 'catalog' ? preparedBot.definition.model.modelId : '模型'} 的运行材料。`);
+    }
+  } else {
+    Logger.info('CatsCo device connector 模式：不创建、不选择本地 Bot，仅等待云端设备 RPC。');
+  }
   Object.assign(process.env, resolvedRuntime.envOverlay);
   const resolved: CatsCoCommandConfigResolution = {
     missing: resolvedRuntime.missing,
@@ -207,6 +213,10 @@ export async function catscompanyCommand(): Promise<void> {
   try {
     await bot.start();
     await startRuntimeCommandSupport();
+    if (deviceConnectorMode) {
+      Logger.success('CatsCo 本机设备已连接，等待云端 Bot 的设备请求...');
+      return;
+    }
     const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
     const modelBotId = String(preparedBot?.botId || connectorConfig.botUid || '').trim();
     const ackRetry = new CloudBotModelAckRetry({

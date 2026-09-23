@@ -31,6 +31,8 @@ describe('dashboard CatsCo account status', () => {
     'CATSCO_USER_DISPLAY_NAME',
     'CATSCO_BOT_UID',
     'CATSCO_API_KEY',
+    'CATSCO_CONNECTOR_TOKEN',
+    'CATSCO_CONNECTOR_TOKEN_EXPIRES_AT',
     'CATSCO_DEVICE_ID',
     'CATSCO_BODY_ID',
     'CATSCO_INSTALLATION_ID',
@@ -58,6 +60,8 @@ describe('dashboard CatsCo account status', () => {
     'CATSCOMPANY_USER_DISPLAY_NAME',
     'CATSCOMPANY_BOT_UID',
     'CATSCOMPANY_API_KEY',
+    'CATSCOMPANY_CONNECTOR_TOKEN',
+    'CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT',
     'CATSCOMPANY_DEVICE_ID',
     'CATSCOMPANY_BODY_ID',
     'CATSCOMPANY_INSTALLATION_ID',
@@ -354,6 +358,85 @@ describe('dashboard CatsCo account status', () => {
     assert.match(data.error, /No CatsCo bot is bound/);
   });
 
+  test('POST /cats/device-connector/provision registers the local device without a local Bot', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: { token: 'new-user-token', uid: '77', username: 'newuser' },
+      device: { deviceId: 'device-new-user', bodyId: 'device-new-user', installationId: 'install-new-user', name: 'Test desktop' },
+    });
+    writeEnv(['CATSCO_ALLOW_LOCAL_ENDPOINTS=1']);
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/device-connectors/pairings') {
+        assert.equal(req.headers.authorization, 'Bearer new-user-token');
+        assert.equal(req.body.device_name, 'Test desktop');
+        assert.ok(Array.isArray(req.body.capabilities));
+        return res.json({ pairing_code: 'pairing-test' });
+      }
+      if (req.path === '/api/device-connectors/enroll') {
+        assert.equal(req.body.pairing_code, 'pairing-test');
+        assert.equal(req.body.device_id, 'device-new-user');
+        return res.json({ connector_token: 'device-connector-token', expires_in: 3600, device: { name: 'Test desktop' } });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).updateEndpoints({ httpBaseUrl: catsBaseUrl });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/device-connector/provision`, { method: 'POST' });
+    const data = await response.json() as any;
+    const persisted = createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load();
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(persisted.device?.connectorToken, 'device-connector-token');
+    assert.equal(persisted.currentBot, undefined);
+  });
+
+  test('POST /cats/device-connector/provision re-pairs legacy credentials to request send_file explicitly', async () => {
+    writeEnv(['CATSCO_ALLOW_LOCAL_ENDPOINTS=1']);
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/device-connectors/token/refresh') {
+        assert.equal(req.get('Authorization'), 'DeviceConnector legacy-device-token');
+        return res.status(409).json({ error: 'device connector must be paired again' });
+      }
+      if (req.path === '/api/device-connectors/pairings') {
+        assert.equal(req.get('Authorization'), 'Bearer migration-user-token');
+        assert.equal(req.body.capabilities.includes('send_file'), true);
+        return res.json({ pairing_code: 'PAIR-MIGRATION' });
+      }
+      if (req.path === '/api/device-connectors/enroll') {
+        assert.equal(req.body.pairing_code, 'PAIR-MIGRATION');
+        assert.equal(req.body.capabilities.includes('send_file'), true);
+        return res.json({ connector_token: 'migrated-device-token', expires_in: 3600, device: { device_id: req.body.device_id } });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: catsBaseUrl, serverUrl: catsBaseUrl.replace(/^http/, 'ws') },
+      account: { token: 'migration-user-token', uid: '77', username: 'demo', displayName: 'Demo User' },
+      device: {
+        deviceId: 'device_migration_test',
+        bodyId: 'device_migration_test',
+        installationId: 'install_migration_test',
+        connectorToken: 'legacy-device-token',
+        connectorTokenExpiresAt: Date.now() + 60 * 60_000,
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/device-connector/provision`, { method: 'POST' });
+    const data = await response.json() as any;
+    const persisted = createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load();
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.reused, false);
+    assert.equal(persisted.device?.connectorToken, 'migrated-device-token');
+  });
+
   test('POST /cats/connector/start starts the bound Definition without legacy model setup', async () => {
     createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
       version: 1,
@@ -647,12 +730,76 @@ describe('dashboard CatsCo account status', () => {
     const persisted = createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load();
     assert.equal(persisted.account?.token, 'new-user-token');
     assert.equal(persisted.account?.uid, '77');
-    assert.equal(persisted.currentBot, undefined);
+    assert.equal(persisted.currentBot?.uid, '166');
+    assert.equal(persisted.currentBot?.boundByUserUid, '66');
     assert.equal(env.CATSCO_BOT_UID, undefined);
     assert.equal(env.CATSCO_API_KEY, undefined);
     assert.equal(env.CATSCOMPANY_BOT_UID, undefined);
     assert.equal(env.CATSCOMPANY_API_KEY, undefined);
     assert.deepStrictEqual(stopCalls, ['weixin']);
+  });
+
+  test('POST /cats/auth/logout revokes the remote device before clearing local credentials', async () => {
+    await startCatsServer((req, res) => {
+      assert.equal(req.method, 'DELETE');
+      assert.equal(req.path, '/api/devices/device_logout_test');
+      assert.equal(req.get('Authorization'), 'Bearer logout-user-token');
+      res.json({ ok: true });
+    });
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: catsBaseUrl.replace(/^http/, 'ws'),
+      },
+      account: { token: 'logout-user-token', uid: '77', username: 'demo', displayName: 'Demo User' },
+      device: {
+        deviceId: 'device_logout_test',
+        bodyId: 'device_logout_test',
+        installationId: 'install_logout_test',
+        connectorToken: 'device-connector-token',
+        connectorTokenExpiresAt: Date.now() + 60_000,
+      },
+    });
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/auth/logout`, { method: 'POST' });
+    const data = await response.json() as any;
+    const persisted = createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load();
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.remoteRevoked, true);
+    assert.equal(data.warning, undefined);
+    assert.equal(persisted.account, undefined);
+    assert.equal(persisted.device?.connectorToken, undefined);
+    assert.equal(persisted.device?.deviceId, 'device_logout_test');
+  });
+
+  test('POST /cats/auth/logout still clears local credentials and warns when remote revocation fails', async () => {
+    await startCatsServer((_req, res) => res.status(503).json({ error: 'temporarily unavailable' }));
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: catsBaseUrl.replace(/^http/, 'ws'),
+      },
+      account: { token: 'logout-user-token', uid: '77', username: 'demo', displayName: 'Demo User' },
+      device: {
+        deviceId: 'device_logout_test',
+        bodyId: 'device_logout_test',
+        installationId: 'install_logout_test',
+        connectorToken: 'device-connector-token',
+      },
+    });
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/auth/logout`, { method: 'POST' });
+    const data = await response.json() as any;
+    const persisted = createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load();
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.remoteRevoked, false);
+    assert.match(data.warning, /服务端暂未确认撤销/);
+    assert.equal(persisted.account, undefined);
+    assert.equal(persisted.device?.connectorToken, undefined);
   });
 
   test('GET /cats/status does not expose an Agent that belongs to the previous account', async () => {

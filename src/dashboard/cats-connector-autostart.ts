@@ -28,6 +28,7 @@ export interface CatsConnectorAutoStartOptions {
 
 interface CatsStatusPayload {
   connected?: boolean;
+  deviceConnectorMode?: boolean;
   bodyConfigured?: boolean;
   configured?: boolean;
   service?: { status?: string };
@@ -180,13 +181,13 @@ export class CatsConnectorAutoStart {
       stage: 'connecting',
       trigger,
       attempt: this.snapshot.attempt + 1,
-      message: '正在准备本机 Agent 并启动 Connector',
+        message: '正在注册这台电脑并启动 Connector',
       error: undefined,
       startedAt,
     });
 
     try {
-      const status = await this.request<CatsStatusPayload>('/cats/status');
+      let status = await this.request<CatsStatusPayload>('/cats/status');
       if (generation !== this.generation) return this.getSnapshot();
       if (status.authStatus === 'invalid' || !status.connected) {
         return this.setSnapshot({
@@ -198,7 +199,19 @@ export class CatsConnectorAutoStart {
         });
       }
 
-      if (status.configured && status.service?.status === 'running') {
+      if (status.deviceConnectorMode) {
+        // Refreshing the device token also applies narrowly scoped capability
+        // migrations (for example file upload) to existing installations.
+        const provision = await this.request<{ refreshed?: boolean; reused?: boolean }>(
+          '/cats/device-connector/provision',
+          { method: 'POST', body: '{}' },
+        );
+        if (provision.refreshed || provision.reused === false || status.service?.status !== 'running') {
+          // The running runtime holds the token it connected with, so restart
+          // only when provisioning changed credentials or it is not running.
+          await this.request('/cats/connector/start', { method: 'POST', body: '{}' });
+        }
+        if (generation !== this.generation) return this.getSnapshot();
         return this.setSnapshot({
           stage: 'connected',
           trigger,
@@ -208,16 +221,15 @@ export class CatsConnectorAutoStart {
         });
       }
 
-      if (status.bodyConfigured) {
-        await this.request('/cats/connector/start', { method: 'POST', body: '{}' });
-      } else {
-        // Model, prompt and skill choices are cloud-authoritative. Automatic
-        // provisioning must not rotate legacy relay credentials as a side effect.
-        await this.request('/cats/setup', {
-          method: 'POST',
-          body: JSON.stringify({ setupRelayModel: false }),
-        });
+      // All installs converge on a user-scoped device connector token. Existing
+      // Bot bindings are intentionally preserved on disk for rollback, but are
+      // no longer used as the identity of this local Connector.
+      if (!status.deviceConnectorMode) {
+        await this.request('/cats/device-connector/provision', { method: 'POST', body: '{}' });
+        status = await this.request<CatsStatusPayload>('/cats/status');
       }
+
+      await this.request('/cats/connector/start', { method: 'POST', body: '{}' });
 
       if (generation !== this.generation) return this.getSnapshot();
 
