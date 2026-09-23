@@ -61,6 +61,10 @@ import {
 import { formatPathForLog } from '../utils/log-redaction';
 import { resolveCatsDeviceModelStatus } from './model-status';
 import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
+import { createBotDefinitionSyncService } from '../bot-definition/service';
+import { prepareBoundBotSkills } from '../bot-skills/runtime';
+import { createCatsCoLocalConfigService } from './local-config';
+import { PathResolver } from '../utils/path-resolver';
 import {
   buildCatsCoAttachmentCachePath,
   scheduleCatsCoAttachmentCacheCleanup,
@@ -225,6 +229,7 @@ export const CATSCOMPANY_SERVER_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperatio
   'send_file',
   'execute_shell',
   SKILLHUB_THIN_RPC_TOOLS.workspace,
+  SKILLHUB_THIN_RPC_TOOLS.applyDefinition,
   SKILLHUB_WORKSPACE_PAGINATION_CAPABILITY,
   SKILLHUB_THIN_RPC_TOOLS.syncWorkspace,
   SKILLHUB_THIN_RPC_TOOLS.share,
@@ -576,6 +581,11 @@ export class CatsCompanyBot {
       getHttpBaseUrl: () => this.bot.getHttpBaseUrl(),
       isShuttingDown: () => this.shuttingDown,
       allowBotSwitch: runtimeRole === 'desktop',
+      isRuntimeIdle: () => this.isIdleForSkillHubApply(),
+      waitForRuntimeIdle: (timeoutMs, checkOperational) => (
+        this.waitForSkillHubRuntimeIdle(timeoutMs, checkOperational)
+      ),
+      applyCurrentBotDefinition: botUid => this.applySkillHubBotDefinition(botUid),
     });
 
     const runtime = createCatsCompanyRuntime(config.sessionTTL);
@@ -598,6 +608,41 @@ export class CatsCompanyBot {
   /**
    * 启动 WebSocket 连接，开始监听消息
    */
+  /**
+   * Pulls the canonical Skill references and atomically applies them to the
+   * active workspace without restarting the connector. The thin RPC handler
+   * enforces the owner/device scope and idle fence before entering here.
+   */
+  private async applySkillHubBotDefinition(botUid: string): Promise<Record<string, unknown>> {
+    const runtimeRoot = PathResolver.getRuntimeDataRoot();
+    const configService = createCatsCoLocalConfigService({ runtimeRoot });
+    const definitionService = createBotDefinitionSyncService({ runtimeRoot });
+    const prepared = await prepareBoundBotSkills({
+      runtimeRoot,
+      botId: botUid,
+      auth: configService.getAuthState(),
+      definitionService,
+      requireActiveWorkspace: true,
+    });
+    const sync = prepared.sync;
+    if (!sync) throw new Error('Skill workspace synchronization did not return an apply result.');
+    const applyStatus = sync.applyStatus || 'deferred';
+    if (applyStatus === 'applied' || applyStatus === 'already_applied') {
+      // The workspace files are the durable source of truth, but the running
+      // process also keeps a SkillManager snapshot in memory. Refresh it only
+      // after the atomic workspace apply has completed, so the next turn sees
+      // the new Skill without restarting the connector.
+      await this.agentServices.skillManager.loadSkills();
+    }
+    return {
+      cloud_revision: sync.cloudRevision ?? null,
+      direction: sync.direction,
+      apply_status: applyStatus,
+      applied_revision: sync.appliedRevision ?? sync.cloudRevision ?? null,
+      synced_skills: sync.skills.length,
+    };
+  }
+
   async start(): Promise<void> {
     Logger.openLogFile('catscompany');
     scheduleCatsCoAttachmentCacheCleanup();
@@ -681,6 +726,30 @@ export class CatsCompanyBot {
       && this.cloudSessionRestorePromises.size === 0
       && this.subAgentCompletionBatches.size === 0
       && this.sessionManager.isIdle();
+  }
+
+  /** Same idle fence as a connector reload, excluding the in-flight thin RPC. */
+  private isIdleForSkillHubApply(): boolean {
+    return this.activeMessageHandlers <= 1
+      && this.sessionExecutionReservations.size === 0
+      && Array.from(this.messageQueue.values()).every(queue => queue.length === 0)
+      && this.cloudSessionRestorePromises.size === 0
+      && this.subAgentCompletionBatches.size === 0
+      && this.sessionManager.isIdle();
+  }
+
+  private async waitForSkillHubRuntimeIdle(
+    timeoutMs: number,
+    checkOperational?: () => void,
+  ): Promise<boolean> {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (!this.isIdleForSkillHubApply()) {
+      checkOperational?.();
+      if (Date.now() >= deadline) return false;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    checkOperational?.();
+    return true;
   }
 
   /**

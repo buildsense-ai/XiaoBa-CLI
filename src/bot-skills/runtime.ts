@@ -47,6 +47,8 @@ export interface PrepareBoundBotSkillsOptions {
   preserveLocalOnlyWorkspace?: {
     definitionRevision: number;
   };
+  /** Refuse to activate another Bot's workspace for a live Runtime apply. */
+  requireActiveWorkspace?: boolean;
 }
 
 export interface PreparedBoundBotSkills {
@@ -126,6 +128,9 @@ export async function prepareBoundBotSkills(
       if (activeBotId) {
         BotSkillSyncService.recoverInterruptedRestore(runtimeRoot, activeBotId, activeRoot);
       }
+      if (options.requireActiveWorkspace && activeBotId !== options.botId) {
+        throw new BotSkillWorkspaceChangingError(activeBotId || '(none)', options.botId);
+      }
       activation = workspace.activate(options.botId);
       if (options.preserveLocalOnlyWorkspace) {
         const revision = options.preserveLocalOnlyWorkspace.definitionRevision;
@@ -162,6 +167,7 @@ export async function prepareBoundBotSkills(
       const sync = reused ?? await syncService.reconcileActivationFromCloudOnly();
       return { sync, workspaceExisted: activation.existed, activation };
     } catch (error) {
+      if (error instanceof BotSkillWorkspaceChangingError) throw error;
       const failure = error instanceof BotSkillCloudRestoreError
         ? error
         : new BotSkillCloudRestoreError(
