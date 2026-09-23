@@ -71,6 +71,7 @@ export class AnthropicProvider implements AIProvider {
    */
   private transformMessages(messages: Message[]): { system?: AnthropicSystemPrompt; messages: Anthropic.MessageParam[] } {
     const systemPrompt = this.buildSystemPrompt(messages);
+    const relocatedTransientNotes = this.collectRelocatableTransientNotes(messages);
     const nonSystemMessages = messages.filter(msg => msg.role !== 'system');
     const transformedMessages: Anthropic.MessageParam[] = [];
     let pendingToolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -183,6 +184,12 @@ export class AnthropicProvider implements AIProvider {
 
     flushToolResults();
 
+    // 兼容端点：瞬态 system 块改为请求尾部的 user 注释投递，保证稳定前缀可缓存。
+    // 与相邻 user 消息合并时由 coalesce/orderUserBlocks 保证 tool_result 在前。
+    for (const note of relocatedTransientNotes) {
+      transformedMessages.push({ role: 'user', content: note });
+    }
+
     return {
       system: systemPrompt,
       messages: this.coalesceAdjacentUserMessages(transformedMessages)
@@ -198,7 +205,12 @@ export class AnthropicProvider implements AIProvider {
     if (systemMessages.length === 0) return undefined;
 
     if (!this.supportsNativePromptCaching()) {
-      return systemMessages.map(message => message.content as string).join('\n\n');
+      // 兼容端点（relay 等）没有 cache breakpoint，而 system 位于请求最前：
+      // 逐轮变化的瞬态块一旦拼入 system，就会让 system 之后的全部历史丢失前缀缓存。
+      // 这里只保留稳定块，瞬态块改由 transformMessages 以尾部 user 注释投递。
+      const stableMessages = systemMessages.filter(message => !this.isRelocatableTransientSystemMessage(message));
+      if (stableMessages.length === 0) return undefined;
+      return stableMessages.map(message => message.content as string).join('\n\n');
     }
 
     const firstDynamicIndex = systemMessages.findIndex(message => this.isDynamicSystemMessage(message));
@@ -247,6 +259,30 @@ export class AnthropicProvider implements AIProvider {
     if (cacheScope === 'stable') return false;
     return typeof message.content === 'string'
       && /^\[(?:transient_[^\]]+|compact_boundary)\]/.test(message.content);
+  }
+
+  /**
+   * 兼容端点（无 cache breakpoint）上可安全挪到请求尾部的瞬态 system 块。
+   * 收录显式标记者（__cacheScope: 'dynamic'）与 [transient_ 前缀块；
+   * compact_boundary 等一次性标记不逐轮变化，保留在 system 中维持现状。
+   */
+  private isRelocatableTransientSystemMessage(message: Message): boolean {
+    if (message.__cacheScope === 'dynamic') return true;
+    if (message.__cacheScope === 'stable') return false;
+    return typeof message.content === 'string'
+      && message.content.startsWith('[transient_');
+  }
+
+  private collectRelocatableTransientNotes(messages: Message[]): string[] {
+    if (this.supportsNativePromptCaching()) return [];
+    const notes: string[] = [];
+    for (const message of messages) {
+      if (message.role !== 'system') continue;
+      if (typeof message.content !== 'string' || message.content.length === 0) continue;
+      if (!this.isRelocatableTransientSystemMessage(message)) continue;
+      notes.push(message.content);
+    }
+    return notes;
   }
 
   private coalesceAdjacentUserMessages(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
