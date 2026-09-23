@@ -1,6 +1,7 @@
 import * as path from 'path';
 import {
   createCatsCoLocalConfigService,
+  isActiveDeviceConnectorMode,
   type CatsCoAuthSnapshot,
 } from '../catscompany/local-config';
 import { Logger } from '../utils/logger';
@@ -66,6 +67,8 @@ export interface CurrentBotSkillWorkspaceWriteContext {
   skillsRoot: string;
   botId?: string;
   activeBotId?: string;
+  /** The workspace belongs to the logged-in device, not a local Bot. */
+  deviceConnectorMode: boolean;
 }
 
 export interface CurrentBotSkillWorkspaceWriteOptions {
@@ -330,7 +333,7 @@ export async function pushCurrentBotSkillWorkspaceToCloudNow(
 ): Promise<BotSkillSyncResult> {
   const runtimeRoot = path.resolve(options.runtimeRoot ?? PathResolver.getRuntimeDataRoot());
   return withCurrentBotSkillWorkspaceWrite(async (context) => {
-    if (context.botId !== botId || context.activeBotId !== botId) {
+    if (!context.deviceConnectorMode && (context.botId !== botId || context.activeBotId !== botId)) {
       throw new Error('The selected Bot workspace is not active on this device.');
     }
     await options.validateScope?.();
@@ -361,7 +364,7 @@ export async function finalizeCurrentBotPublicSkillNow(
 ): Promise<BotSkillSyncResult> {
   const runtimeRoot = path.resolve(options.runtimeRoot ?? PathResolver.getRuntimeDataRoot());
   return withCurrentBotSkillWorkspaceWrite(async (context) => {
-    if (context.botId !== botId || context.activeBotId !== botId) {
+    if (!context.deviceConnectorMode && (context.botId !== botId || context.activeBotId !== botId)) {
       throw new Error('The selected Bot workspace is not active on this device.');
     }
     await options.validateScope?.();
@@ -392,20 +395,27 @@ function currentBotSkillWorkspaceWriteContext(
     ? path.resolve(PathResolver.getSkillsPath())
     : path.join(runtimeRoot, 'skills');
   const configService = createCatsCoLocalConfigService({ runtimeRoot });
-  const botId = String(configService.load().currentBot?.uid || '').trim() || undefined;
-  const activeBotId = new BotSkillWorkspaceService(runtimeRoot, skillsRoot).getActiveBotId();
+  const config = configService.load();
+  const botId = String(config.currentBot?.uid || '').trim() || undefined;
+  const deviceConnectorMode = isActiveDeviceConnectorMode(config);
+  // A device connector may still have a legacy workspace marker on disk, but
+  // that marker must not leak back into the device-only identity.
+  const activeBotId = deviceConnectorMode
+    ? undefined
+    : new BotSkillWorkspaceService(runtimeRoot, skillsRoot).getActiveBotId();
   return {
     runtimeRoot,
     skillsRoot,
     ...(botId ? { botId } : {}),
     ...(activeBotId ? { activeBotId } : {}),
+    deviceConnectorMode,
   };
 }
 
 function assertCurrentBotSkillWorkspaceIsWritable(
   context: CurrentBotSkillWorkspaceWriteContext,
 ): void {
-  if (context.botId && context.activeBotId && context.botId !== context.activeBotId) {
+  if (!context.deviceConnectorMode && context.botId && context.activeBotId && context.botId !== context.activeBotId) {
     throw new BotSkillWorkspaceChangingError(context.activeBotId, context.botId);
   }
 }

@@ -303,6 +303,29 @@ describe('CatsCompany SkillHub thin RPC', () => {
     assert.equal(fs.existsSync(markerPath), false);
   });
 
+  test('allows workspace reads in device connector mode without a local Bot', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot }).save({
+      version: 1,
+      account: { token: 'user-token', uid: '7', username: 'alice' },
+      device: {
+        deviceId: 'alice-device',
+        bodyId: 'alice-device',
+        installationId: 'alice-device',
+        connectorToken: 'device-token',
+        connectorTokenExpiresAt: Date.now() + 60_000,
+      },
+    });
+
+    const result = await handler.execute(request({
+      request_id: 'device-workspace-1',
+      payload: { bot_uid: 'cloud-bot-99' },
+    }));
+    assert.equal(result.schema, 'xiaoba.skillhub.local_workspace.v1');
+    assert.equal(result.bot_uid, 'cloud-bot-99');
+    assert.equal((result.skills as Array<Record<string, unknown>>).length, 1);
+    assert.equal(result.active_bot_uid, undefined);
+  });
+
   test('owner can explicitly sync the reviewed Runtime workspace to the current Agent', async () => {
     const workspace = await handler.execute(request({
       request_id: 'workspace-before-sync',
@@ -321,6 +344,7 @@ describe('CatsCompany SkillHub thin RPC', () => {
           skillsRoot: path.join(runtimeRoot, 'skills'),
           botId: '42',
           activeBotId: '42',
+          deviceConnectorMode: false,
         });
         return {
           botId: '42',
@@ -379,6 +403,7 @@ describe('CatsCompany SkillHub thin RPC', () => {
           skillsRoot: path.join(runtimeRoot, 'skills'),
           botId: '42',
           activeBotId: '42',
+          deviceConnectorMode: false,
         });
         throw new Error('sync must not start');
       },

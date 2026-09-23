@@ -51,6 +51,21 @@ export interface CatsCoLocalConfig {
   updatedAt?: string;
 }
 
+/** Whether the logged-in device has an active connector credential. */
+export function isActiveDeviceConnectorMode(
+  config: Pick<CatsCoLocalConfig, 'account' | 'device'>,
+  nowMs = Date.now(),
+): boolean {
+  const token = String(config.device?.connectorToken || '').trim();
+  const accountUid = String(config.account?.uid || '').trim();
+  const expiresAt = Number(config.device?.connectorTokenExpiresAt || 0);
+  return Boolean(
+    token
+    && accountUid
+    && (!Number.isFinite(expiresAt) || expiresAt <= 0 || expiresAt > nowMs),
+  );
+}
+
 export interface CatsCoAuthSnapshot {
   token?: string;
   uid?: string;

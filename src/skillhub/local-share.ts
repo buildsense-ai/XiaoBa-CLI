@@ -65,7 +65,12 @@ export async function shareLocalSkillForCatsCo(
   }
 
   return withCurrentBotSkillWorkspaceWrite(async (context) => {
-    assertExpectedLocalSkillShareScope(expectedBotUid, context.botId, context.activeBotId);
+    assertExpectedLocalSkillShareScope(
+      expectedBotUid,
+      context.botId,
+      context.activeBotId,
+      context.deviceConnectorMode,
+    );
     await options.validateScope?.(context);
     const rejected: Array<{ localSkillId: string; error: Error }> = [];
     let selectedSkill;
@@ -200,8 +205,9 @@ export function assertExpectedLocalSkillShareScope(
   expectedBotUid: string,
   configuredBotUid?: string,
   activeBotUid?: string,
+  deviceConnectorMode = false,
 ): void {
-  if (configuredBotUid !== expectedBotUid || activeBotUid !== expectedBotUid) {
+  if (!deviceConnectorMode && (configuredBotUid !== expectedBotUid || activeBotUid !== expectedBotUid)) {
     throw skillHubConflict(
       'The active Bot Skill workspace changed before the Skill was shared.',
       'skillhub.share_bot_changed',
