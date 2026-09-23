@@ -84,7 +84,7 @@ export class BotPrivateSkillClient {
 
   async download(
     reference: BotSkillRef,
-    options: { timeoutMs?: number } = {},
+    options: { timeoutMs?: number; allowMissingPublicMetadata?: boolean } = {},
   ): Promise<BotSkillPackage> {
     const expected = parsePackageReference(reference);
     const skillId = encodeReferencePath(expected.skillId);
@@ -100,7 +100,24 @@ export class BotPrivateSkillClient {
       throw new Error('SkillHub package does not match the BotDefinition contentHash.');
     }
     if (packageValue.source === 'public') {
-      packageValue.skillHubInstall = await this.loadPublicInstallMetadata(expected, packageValue.contentHash);
+      try {
+        packageValue.skillHubInstall = await this.loadPublicInstallMetadata(expected, packageValue.contentHash);
+      } catch (error) {
+        /*
+         * The public catalogue entry may have been withdrawn after the
+         * BotDefinition pinned this content. The Bot-scoped store still served
+         * the exact contentHash the Definition requires, so callers that can
+         * accept a content-hash-only install may continue instead of failing
+         * every Definition revision forever. Anything else stays fatal.
+         */
+        if (
+          options.allowMissingPublicMetadata !== true
+          || (error as { status?: unknown }).status !== 404
+        ) {
+          throw error;
+        }
+        packageValue.publicMetadataUnavailable = true;
+      }
     }
     return packageValue;
   }
@@ -144,19 +161,27 @@ export class BotPrivateSkillClient {
     });
     if (packageValue.source === 'public') {
       if (!packageValue.skillHubInstall) {
-        throw new Error('Public SkillHub package is missing verified install metadata.');
+        /*
+         * A content-hash-only install is only valid when the caller explicitly
+         * accepted a withdrawn public entry (see publicMetadataUnavailable).
+         * Without that marker the missing metadata is a real failure.
+         */
+        if (packageValue.publicMetadataUnavailable !== true) {
+          throw new Error('Public SkillHub package is missing verified install metadata.');
+        }
+      } else {
+        writeSkillHubInstallMarker(target, {
+          source: 'skillhub',
+          skillId: packageValue.reference.skillId,
+          name: packageValue.name,
+          installName,
+          version: packageValue.reference.version,
+          packageChecksumSha256: packageValue.skillHubInstall.packageChecksumSha256,
+          signature: packageValue.skillHubInstall.signature,
+          packageUrl: packageValue.skillHubInstall.packageUrl,
+          installedAt: packageValue.createdAt || new Date().toISOString(),
+        });
       }
-      writeSkillHubInstallMarker(target, {
-        source: 'skillhub',
-        skillId: packageValue.reference.skillId,
-        name: packageValue.name,
-        installName,
-        version: packageValue.reference.version,
-        packageChecksumSha256: packageValue.skillHubInstall.packageChecksumSha256,
-        signature: packageValue.skillHubInstall.signature,
-        packageUrl: packageValue.skillHubInstall.packageUrl,
-        installedAt: packageValue.createdAt || new Date().toISOString(),
-      });
     }
     return target;
   }
