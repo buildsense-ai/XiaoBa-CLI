@@ -454,23 +454,33 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(savedContextCursors, [['catscompany.agent_context', 12]]); // Post-activation only.
   });
 
-  test('falls back before session creation if the context read fails', async () => {
+  test('still lets JEV judge without context if the history read fails', async () => {
     const { bot, handledTurns, sessionKeys } = createHarness();
     let judgeCalls = 0;
-    bot.bot.getAgentContextHistory = async () => { throw new Error('offline'); };
-    bot.groupActivationJudge = { judge: async () => {
+    let historyCalls = 0;
+    // Only the pre-turn snapshot fails; post-activation hydration still works.
+    bot.bot.getAgentContextHistory = async (topic: string) => {
+      historyCalls++;
+      if (historyCalls === 1) throw new Error('offline');
+      return { topic_id: topic, agent_uid: 43, messages: [], has_more: false, next_before_id: 0 };
+    };
+    bot.groupActivationJudge = { judge: async (input: any) => {
       judgeCalls++;
+      assert.deepEqual(input.history, []);
       return { decision: 'activate', confidence: 1 };
     } };
+    bot.ensureCloudSessionRestored = async () => ({
+      status: 'local_present', fetchedMessages: 0, restoredMessages: 0, compressed: false,
+    });
 
     await bot.onMessage({
       topic: 'grp_80', senderId: 'usr7', text: '继续', content: '继续',
       metadata: canonicalMetadata('usr7', 'grp_80'),
       isGroup: true, mentions: [], memberCount: 4, seq: 13,
     });
-    assert.equal(judgeCalls, 0);
-    assert.deepEqual(sessionKeys, []);
-    assert.deepEqual(handledTurns, []);
+    assert.equal(judgeCalls, 1);
+    assert.deepEqual(sessionKeys, ['cc_group:grp_80']);
+    assert.equal(handledTurns.length, 1);
   });
 
   test('forces structured @this-AI into the agent loop even when JEV would stay silent', async () => {

@@ -249,6 +249,13 @@ export async function resolveCatsCompanyGroupActivation(
   if (explicitlyMentioned) {
     return { activate: true, source: 'deterministic' };
   }
+  // A group with at most two members is a de-facto direct conversation: every
+  // delivered message is addressed to this AI, same as p2p. JEV must not be
+  // able to silent it.
+  const memberCount = normalizeMemberCount(message.memberCount);
+  if (memberCount !== undefined && memberCount <= 2) {
+    return { activate: deterministicActivation, source: 'deterministic' };
+  }
   if (!judge) {
     return { activate: deterministicActivation, source: 'deterministic' };
   }

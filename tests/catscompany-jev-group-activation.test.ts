@@ -145,9 +145,27 @@ describe('CatsCompany JEV group activation', () => {
     };
     const silent = await resolveCatsCompanyGroupActivation({
       topic: 'grp_80', senderId: 'usr7', text: '谢谢', seq: 21,
-      isGroup: true, mentions: [], memberCount: 2,
-    }, 'usr43', true, silentJudge);
+      isGroup: true, mentions: [], memberCount: 4,
+    }, 'usr43', false, silentJudge);
     assert.deepEqual(silent, { activate: false, source: 'jev', confidence: 0.88 });
+  });
+
+  test('never lets JEV silent a de-facto direct two-member group', async () => {
+    let calls = 0;
+    const judge: CatsCompanyGroupActivationJudge = {
+      judge: async () => {
+        calls++;
+        return { decision: 'silent', confidence: 1 };
+      },
+    };
+    for (const memberCount of [1, 2]) {
+      const result = await resolveCatsCompanyGroupActivation({
+        topic: 'grp_80', senderId: 'usr7', text: '在吗', seq: 21,
+        isGroup: true, mentions: [], memberCount,
+      }, 'usr43', true, judge);
+      assert.deepEqual(result, { activate: true, source: 'deterministic' });
+    }
+    assert.equal(calls, 0);
   });
 
   test('forces explicit structured @this-AI and @all without calling JEV', async () => {

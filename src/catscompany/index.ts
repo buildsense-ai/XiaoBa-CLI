@@ -84,6 +84,7 @@ import {
 import {
   JevCatsCompanyGroupActivationJudge,
   resolveCatsCompanyGroupActivation,
+  type CatsCompanyGroupActivationHistoryEntry,
   type CatsCompanyGroupActivationJudge,
   type CatsCompanyGroupActivationInput,
   type CatsCompanyGroupActivationJudgment,
@@ -1589,13 +1590,23 @@ export class CatsCompanyBot {
     input: CatsCompanyGroupActivationInput,
   ): Promise<CatsCompanyGroupActivationJudgment> {
     const deadlineAt = Date.now() + (this.groupActivationTimeoutMs ?? 2_500);
-    const history = await loadCatsCompanyGroupActivationContext(
-      this.bot,
-      message.topic,
-      Number(message.seq),
-      this.botUid,
-      AbortSignal.timeout(Math.min(600, Math.max(1, Math.floor((this.groupActivationTimeoutMs ?? 2_500) / 3)))),
-    );
+    // A transient history-read failure must not silence the message outright;
+    // JEV still judges the current message with an empty context window.
+    let history: CatsCompanyGroupActivationHistoryEntry[] = [];
+    try {
+      history = await loadCatsCompanyGroupActivationContext(
+        this.bot,
+        message.topic,
+        Number(message.seq),
+        this.botUid,
+        AbortSignal.timeout(Math.min(600, Math.max(1, Math.floor((this.groupActivationTimeoutMs ?? 2_500) / 3)))),
+      );
+    } catch (error: any) {
+      Logger.warning(
+        `[CatsCompany] JEV 群聊上下文读取失败，按无上下文判断: topic=${message.topic}, `
+          + `seq=${message.seq || 0}, error=${error?.message || error}`,
+      );
+    }
     return this.groupActivationJudge!.judge({
       ...input,
       history,
