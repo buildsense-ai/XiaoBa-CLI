@@ -62,7 +62,8 @@ import { formatPathForLog } from '../utils/log-redaction';
 import { resolveCatsDeviceModelStatus } from './model-status';
 import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
 import { createBotDefinitionSyncService } from '../bot-definition/service';
-import { prepareBoundBotSkills } from '../bot-skills/runtime';
+import { prepareBoundBotSkills, syncCurrentBotSkillRevocationsNow } from '../bot-skills/runtime';
+import { readPendingBotSkillRevocations } from '../bot-skills/revocation';
 import { createCatsCoLocalConfigService } from './local-config';
 import { PathResolver } from '../utils/path-resolver';
 import {
@@ -673,6 +674,7 @@ export class CatsCompanyBot {
       this.runtimeProfile.prompt.displayName = botName;
       process.env.CURRENT_AGENT_DISPLAY_NAME = botName;
       Logger.success(`CatsCo agent 已连接，uid=${info.uid}, name=${botName}`);
+      this.reconcileSkillDefinitionAfterReconnect(this.botUid || info.uid);
       this.registerCurrentDevice().catch((err: any) => {
         Logger.warning(`CatsCo 设备注册失败，继续保持聊天连接: ${err?.message || err}`);
       });
@@ -714,6 +716,50 @@ export class CatsCompanyBot {
 
     this.bot.connect();
     Logger.success('CatsCo agent 已启动，等待消息...');
+  }
+
+  /**
+   * Reconcile the active Bot's cloud Skill references whenever CatsCo becomes
+   * ready (including reconnect). This is best-effort and idle-fenced: a cloud
+   * failure never blocks chat or changes the existing local Skill workspace.
+   */
+  private reconcileSkillDefinitionAfterReconnect(botUid: string): void {
+    const targetBotUid = String(botUid || '').trim();
+    if (!targetBotUid || this.shuttingDown) return;
+    void this.runTrackedConversationWork(async () => {
+      const idle = await this.waitForSkillHubRuntimeIdle(30_000, () => {
+        if (this.shuttingDown) throw new Error('CatsCo Runtime is shutting down.');
+      });
+      if (!idle || this.shuttingDown) {
+        Logger.info('CatsCo 重连后的 Skill Definition 同步延后；Runtime 暂不空闲。');
+        return;
+      }
+      try {
+        const pendingRevocations = readPendingBotSkillRevocations(targetBotUid);
+        if (pendingRevocations?.length) {
+          // An owner-confirmed local deletion is an explicit intent, unlike an
+          // arbitrary dirty workspace. Retry its narrow Local/Base/Cloud sync
+          // before applying the Cloud workspace, or the old package could be
+          // restored ahead of the pending revoke.
+          await syncCurrentBotSkillRevocationsNow();
+          if (readPendingBotSkillRevocations(targetBotUid)?.length) {
+            throw new Error('Owner Skill revocation is still pending; Cloud apply was skipped to avoid restoring it.');
+          }
+        }
+        const result = await this.applySkillHubBotDefinition(targetBotUid);
+        const applied = result.apply_status === 'applied' || result.apply_status === 'already_applied';
+        if (applied) {
+          Logger.info(`CatsCo 重连后已校验 Skill Definition，revision=${result.cloud_revision ?? 'unknown'}`);
+        } else {
+          Logger.warning(`CatsCo 重连后的 Skill Definition 尚未应用: ${String(result.apply_status || 'deferred')}`);
+        }
+      } catch (error: any) {
+        // Reconciliation is deliberately not a prerequisite for ordinary chat.
+        // Formal Skill script execution remains guarded by the accepted local
+        // BotDefinition, while the next reconnect/manual apply can retry sync.
+        Logger.warning(`CatsCo 重连后的 Skill Definition 同步失败，保留现有运行状态: ${error?.message || error}`);
+      }
+    });
   }
 
   async waitUntilReady(timeoutMs = 30_000): Promise<void> {

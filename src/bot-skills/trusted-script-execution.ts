@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { FileBotDefinitionRepository } from '../bot-definition/repository';
+import { readActiveBotDefinition } from './revocation';
 import type { BotSkillRef } from '../bot-definition/types';
 import { readSkillHubInstallMarker } from '../skillhub/install-marker';
 import type { ToolExecutionContext } from '../types/tool';
@@ -215,28 +215,6 @@ function isTrustedLocalCatsCoRuntime(context: ToolExecutionContext): boolean {
     && (!scope.deviceOwnerUserId || sameIdentity(scope.deviceOwnerUserId, localDevice.ownerUserId));
   const agentLocalBody = Boolean(scope.agentBodyId && scope.agentBodyId === localDevice.bodyId);
   return ownerSelf || agentLocalBody;
-}
-
-function readActiveBotDefinition(agentId: string) {
-  if (!agentId) return undefined;
-  try {
-    const repository = new FileBotDefinitionRepository({ runtimeRoot: PathResolver.getRuntimeDataRoot() });
-    // CatsCo envelopes identify a Bot as `usr<botId>` while the local
-    // BotDefinition repository is keyed by the BotDefinition's canonical
-    // `botId` (for example, `573`). Keep the compatibility mapping narrow:
-    // only strip the well-known `usr` prefix, then let the repository validate
-    // that the returned definition has the expected canonical id.
-    const candidates = [agentId];
-    const prefixed = /^usr([A-Za-z0-9_.-]+)$/i.exec(agentId);
-    if (prefixed?.[1]) candidates.push(prefixed[1]);
-    for (const candidate of candidates) {
-      const definition = repository.readCache(candidate) ?? repository.readCanonical(candidate);
-      if (definition) return definition;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function tokenizeDirectCommand(value: unknown): string[] | null {

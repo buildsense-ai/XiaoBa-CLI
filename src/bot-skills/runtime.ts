@@ -22,6 +22,10 @@ import {
   type BotSkillWorkspaceActivation,
 } from './workspace';
 import type { BotSkillRef } from '../bot-definition/types';
+import {
+  readPendingBotSkillRevocations,
+  reconcilePendingBotSkillRevocations,
+} from './revocation';
 
 export interface PrepareBoundBotSkillsOptions {
   runtimeRoot: string;
@@ -205,6 +209,8 @@ export async function rollbackPreparedBotSkills(
 
 let currentBotSyncRunning = false;
 let currentBotSyncPending = false;
+let currentBotRevocationSyncRunning = false;
+let currentBotRevocationSyncPending = false;
 
 /**
  * Runs after a turn has finished. It deliberately refuses to switch workspaces:
@@ -248,7 +254,7 @@ export async function syncCurrentBotSkillsNow(): Promise<BotSkillSyncResult | un
     BotSkillSyncService.recoverInterruptedRestore(runtimeRoot, botId, activeRoot);
 
     const definitionService = createBotDefinitionSyncService({ runtimeRoot });
-    return new BotSkillSyncService({
+    const result = await new BotSkillSyncService({
       runtimeRoot,
       botId,
       auth: configService.getAuthState(),
@@ -256,6 +262,60 @@ export async function syncCurrentBotSkillsNow(): Promise<BotSkillSyncResult | un
       workspaceExisted: true,
       definitionService,
     }).sync();
+    if (result.applyStatus === 'applied' || result.applyStatus === 'already_applied') {
+      reconcilePendingBotSkillRevocations(botId, result.skills, runtimeRoot);
+    }
+    return result;
+  });
+}
+
+/** Schedules only durable owner-requested reference revocations. */
+export function scheduleCurrentBotSkillRevocationSync(): void {
+  currentBotRevocationSyncPending = true;
+  if (currentBotRevocationSyncRunning) return;
+  currentBotRevocationSyncRunning = true;
+  void (async () => {
+    try {
+      while (currentBotRevocationSyncPending) {
+        currentBotRevocationSyncPending = false;
+        try {
+          await syncCurrentBotSkillRevocationsNow();
+        } catch (error) {
+          Logger.warning(`Bot Skill owner revocation sync failed; denial remains active: ${errorMessage(error)}`);
+        }
+      }
+    } finally {
+      currentBotRevocationSyncRunning = false;
+      if (currentBotRevocationSyncPending) scheduleCurrentBotSkillRevocationSync();
+    }
+  })();
+}
+
+/** CAS-removes pending owner refs without uploading any other workspace content. */
+export async function syncCurrentBotSkillRevocationsNow(): Promise<BotSkillSyncResult | undefined> {
+  const runtimeRoot = path.resolve(PathResolver.getRuntimeDataRoot());
+  return withBotSkillWorkspaceLock(runtimeRoot, async () => {
+    const configService = createCatsCoLocalConfigService({ runtimeRoot });
+    const botId = String(configService.load().currentBot?.uid || '').trim();
+    if (!botId) return undefined;
+    const revocations = readPendingBotSkillRevocations(botId, runtimeRoot);
+    if (!revocations?.length) return undefined;
+    const activeRoot = PathResolver.getRuntimeDataRoot() === runtimeRoot
+      ? PathResolver.getSkillsPath()
+      : path.join(runtimeRoot, 'skills');
+    const workspace = new BotSkillWorkspaceService(runtimeRoot, activeRoot);
+    if (workspace.getActiveBotId() !== botId) return undefined;
+    const definitionService = createBotDefinitionSyncService({ runtimeRoot });
+    const result = await new BotSkillSyncService({
+      runtimeRoot,
+      botId,
+      auth: configService.getAuthState(),
+      skillsRoot: workspace.getActivePath(),
+      workspaceExisted: true,
+      definitionService,
+    }).revokeCloudReferences(revocations);
+    reconcilePendingBotSkillRevocations(botId, result.skills, runtimeRoot);
+    return result;
   });
 }
 
