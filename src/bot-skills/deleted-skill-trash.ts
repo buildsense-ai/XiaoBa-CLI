@@ -28,6 +28,8 @@ export interface TrashedSkillManifest {
   deletedByOwnerUid: string;
   deletedAt: string;
   expiresAt: string;
+  /** Written by newer runtimes; absent on legacy v1 manifests. */
+  retentionMs?: number;
   files: TrashedSkillFile[];
 }
 
@@ -130,6 +132,7 @@ export function trashBotSkill(options: TrashBotSkillOptions): TrashBotSkillResul
       deletedByOwnerUid,
       deletedAt,
       expiresAt,
+      retentionMs: TRASH_RETENTION_MS,
       files: movedFiles,
     };
     fs.writeFileSync(
@@ -216,7 +219,14 @@ export function cleanupExpiredBotSkillTrash(options: {
   let preserved = 0;
   for (const botEntry of fs.readdirSync(safeTrashRoot, { withFileTypes: true })) {
     if (!botEntry.isDirectory() || botEntry.isSymbolicLink()) continue;
-    const botRoot = requireSafeDirectory(path.join(safeTrashRoot, botEntry.name), 'Skill trash Bot scope');
+    let botRoot: string;
+    try {
+      botRoot = requireSafeDirectory(path.join(safeTrashRoot, botEntry.name), 'Skill trash Bot scope');
+    } catch {
+      // A Bot scope may disappear while another process is cleaning it up.
+      // Preserve the remaining scopes for the next scheduled pass.
+      continue;
+    }
     for (const backupEntry of fs.readdirSync(botRoot, { withFileTypes: true })) {
       if (!backupEntry.isDirectory() || backupEntry.isSymbolicLink() || backupEntry.name.startsWith('.tmp-')) continue;
       scanned += 1;
@@ -300,10 +310,18 @@ function validateManifest(
     || normalizeInstallName(value.installName) !== value.installName
     || !validIsoDate(value.deletedAt)
     || !validIsoDate(value.expiresAt)
-    || Date.parse(String(value.expiresAt)) - Date.parse(String(value.deletedAt)) < TRASH_RETENTION_MS
+    || Date.parse(String(value.expiresAt)) < Date.parse(String(value.deletedAt))
     || !Array.isArray(value.files)
   ) {
     throw new Error('Deleted Skill backup manifest is invalid.');
+  }
+  if (value.retentionMs !== undefined) {
+    if (!Number.isSafeInteger(value.retentionMs) || value.retentionMs <= 0) {
+      throw new Error('Deleted Skill backup retention is invalid.');
+    }
+    if (Date.parse(String(value.expiresAt)) - Date.parse(String(value.deletedAt)) !== value.retentionMs) {
+      throw new Error('Deleted Skill backup retention does not match its expiry.');
+    }
   }
   return value as TrashedSkillManifest;
 }

@@ -37,6 +37,7 @@ import {
   preserveOperatorManagedSkills,
 } from '../bot-skills/preservation';
 import { botSkillRefsEqual } from '../bot-skills/canonical';
+import { startSkillTrashGarbageCollector, type SkillTrashGarbageCollectorHandle } from '../bot-skills/deleted-skill-trash';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
 const CLOUD_MODEL_POLL_MS = 5000;
@@ -157,6 +158,7 @@ export async function catscompanyCommand(): Promise<void> {
   let cloudModelHealthTimer: NodeJS.Timeout | null = null;
   let cloudModelReloadPromise: Promise<void> | null = null;
   let skillActivationAckWorker: BotSkillActivationAckWorker | null = null;
+  const skillTrashGc: SkillTrashGarbageCollectorHandle = startSkillTrashGarbageCollector({ runtimeRoot });
   let shuttingDown = false;
 
   // 优雅退出
@@ -175,6 +177,7 @@ export async function catscompanyCommand(): Promise<void> {
       clearInterval(cloudModelHealthTimer);
       cloudModelHealthTimer = null;
     }
+    skillTrashGc.stop();
     try {
       await cloudModelReloadPromise;
       await skillActivationAckWorker?.stop();
