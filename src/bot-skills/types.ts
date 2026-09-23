@@ -50,6 +50,14 @@ export interface BotSkillPackage {
   contentHash: string;
   createdAt: string;
   skillHubInstall?: BotSkillHubInstallMetadata;
+  /**
+   * Set when the public catalogue entry for a Definition-pinned Skill was
+   * withdrawn (SkillHub metadata 404) and the Bot-scoped package store still
+   * served the exact contentHash the Definition requires. The restore installs
+   * that copy without public signature metadata instead of failing forever;
+   * the caller records the degraded provenance.
+   */
+  publicMetadataUnavailable?: true;
   origin?: SkillHubPackageRef;
   files: BotSkillPackageFile[];
 }

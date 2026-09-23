@@ -15,6 +15,7 @@ import {
 } from '../src/bot-skills/local-manifest';
 import { prepareBoundBotSkills } from '../src/bot-skills/runtime';
 import { BotSkillCloudRestoreError, BotSkillSyncService } from '../src/bot-skills/sync-service';
+import { BotPrivateSkillClient } from '../src/bot-skills/private-package-client';
 import { snapshotPendingBotSkillWorkspace } from '../src/bot-skills/pending-snapshot';
 import type { BotSkillPackage, LocalBotSkillManifestEntry } from '../src/bot-skills/types';
 import { BotSkillWorkspaceService } from '../src/bot-skills/workspace';
@@ -128,6 +129,109 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     );
     assert.equal(readSkillHubInstallMarker(path.join(fixture.skillsRoot, 'cloud-b'))?.skillId, external.reference.skillId);
     assert.equal(new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.definitionRevision, 2);
+  });
+
+  test('installs a withdrawn public Skill by content hash instead of failing the cloud restore', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'local-a', 'local-a', 'local v1');
+    await fixture.sync();
+
+    const external = createPackage(roots, 'withdrawn-public', 'withdrawn-public', 'retired catalogue content');
+    external.source = 'public';
+    external.reference = { skillId: 'alice/withdrawn-public', version: '1.0.0' };
+    delete (external as Partial<BotSkillPackage>).schema;
+    fixture.packages.set(refKey(external.reference), external);
+    fixture.cloud = {
+      revision: fixture.cloud.revision + 1,
+      skills: [definitionRef(external)],
+    };
+    fixture.publicMetadataStatus = 404;
+
+    const restored = await fixture.sync();
+
+    assert.equal(restored.direction, 'cloud_to_local');
+    const installRoot = path.join(fixture.skillsRoot, 'withdrawn-public');
+    assert.match(
+      fs.readFileSync(path.join(installRoot, 'SKILL.md'), 'utf8'),
+      /retired catalogue content/,
+    );
+    assert.deepEqual(readBotSkillLocalMarker(installRoot)?.reference, definitionRef(external));
+    assert.equal(readSkillHubInstallMarker(installRoot), null);
+    assert.deepEqual(
+      new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.skills
+        .map(entry => entry.reference),
+      [definitionRef(external)],
+    );
+    assert.equal((await fixture.sync()).direction, 'none');
+  });
+
+  test('keeps public install metadata mandatory unless the caller opts into a withdrawn entry', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-withdrawn-public-unit-'));
+    roots.push(runtimeRoot);
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-withdrawn-public-pkg-'));
+    roots.push(packageRoot);
+    writeSkill(packageRoot, 'withdrawn', 'withdrawn', 'withdrawn body');
+    const entry = scanLocalBotSkill(path.join(packageRoot, 'withdrawn'));
+    const reference = { skillId: 'alice/withdrawn', version: '1.0.0' };
+    let metadataStatus = 404;
+    let metadataBody: Record<string, unknown> = {
+      error: { code: 'version.not_found', message: '版本不存在或未发布' },
+    };
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.startsWith('/api/skills/')) {
+        return Response.json(metadataBody, { status: metadataStatus });
+      }
+      return Response.json({
+        reference,
+        localSkillId: entry.localSkillId,
+        name: entry.name,
+        contentHash: entry.contentHash,
+        createdAt: new Date().toISOString(),
+        files: entry.files,
+      });
+    };
+    const client = new BotPrivateSkillClient({
+      auth: {
+        apiKey: 'bot-key',
+        httpBaseUrl: 'https://cats.test',
+        serverUrl: 'wss://cats.test',
+      },
+      botId: 'bot-a',
+      baseUrl: 'https://hub.test',
+      fetchImpl,
+    });
+    const ref: BotSkillRef = { source: 'skillhub', ...reference, contentHash: entry.contentHash };
+
+    await assert.rejects(client.download(ref), /版本不存在或未发布/);
+
+    metadataStatus = 500;
+    metadataBody = { error: 'metadata backend down' };
+    await assert.rejects(
+      client.download(ref, { allowMissingPublicMetadata: true }),
+      /metadata backend down/,
+    );
+
+    metadataStatus = 404;
+    metadataBody = { error: { code: 'version.not_found', message: '版本不存在或未发布' } };
+    const degraded = await client.download(ref, { allowMissingPublicMetadata: true });
+    assert.equal(degraded.publicMetadataUnavailable, true);
+    assert.equal(degraded.skillHubInstall, undefined);
+
+    const installRoot = path.join(runtimeRoot, 'install');
+    await client.materialize(degraded, installRoot);
+    assert.equal(readSkillHubInstallMarker(path.join(installRoot, 'withdrawn')), null);
+    assert.equal(
+      readBotSkillLocalMarker(path.join(installRoot, 'withdrawn'))?.reference?.skillId,
+      'alice/withdrawn',
+    );
+
+    const strict: BotSkillPackage = { ...degraded };
+    delete (strict as Partial<BotSkillPackage>).publicMetadataUnavailable;
+    await assert.rejects(
+      client.materialize(strict, path.join(runtimeRoot, 'install-strict')),
+      /missing verified install metadata/,
+    );
   });
 
   test('explicit owner sync pushes the Runtime workspace even when Cloud changed', async () => {
@@ -2702,6 +2806,7 @@ function createFixture(
     cloudReadStatus: 200,
     patchStatus: 200,
     publicDownloadMisses: 0,
+    publicMetadataStatus: 200,
     packageDownloads: 0,
     onCloudRead: undefined as undefined | (() => Promise<void> | void),
     onPackageDownload: undefined as undefined | (() => Promise<void> | void),
@@ -2866,6 +2971,12 @@ function createFixture(
         && url.pathname.includes(item.reference.skillId.split('/').at(-1) || '')
       ));
       if (url.pathname.startsWith('/api/skills/') && packageValue && packageValue.source !== 'private') {
+        if (fixture.publicMetadataStatus !== 200) {
+          return Response.json(
+            { error: { code: 'version.not_found', message: '版本不存在或未发布' } },
+            { status: fixture.publicMetadataStatus },
+          );
+        }
         return Response.json({
           version: {
             skillId: packageValue.reference.skillId,

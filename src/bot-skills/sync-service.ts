@@ -1151,7 +1151,22 @@ export class BotSkillSyncService {
       );
       for (const reference of cloud.skills) {
         await options.validateScope?.();
-        const packageValue = await this.privateClient.download(reference);
+        /*
+         * Cloud is authoritative for these references. When the public entry
+         * was withdrawn after the Definition pinned it, the Bot-scoped store
+         * copy is still content-hash verified against the Definition, so the
+         * restore installs it without public signature metadata rather than
+         * blocking every future Definition revision.
+         */
+        const packageValue = await this.privateClient.download(reference, {
+          allowMissingPublicMetadata: true,
+        });
+        if (packageValue.publicMetadataUnavailable) {
+          Logger.warning(
+            `Bot Skill ${reference.skillId}@${reference.version} 的公开条目已撤下；`
+            + '已按 BotDefinition 的 contentHash 校验安装该 Bot 的私有副本（无公开签名元数据）。',
+          );
+        }
         await this.privateClient.materialize(
           packageValue,
           stage,
