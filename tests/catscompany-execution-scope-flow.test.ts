@@ -1,6 +1,10 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
-import { CatsCompanyBot } from '../src/catscompany';
+import {
+  CatsCompanyBot,
+  DEFAULT_CLOUD_RESTORE_TIMEOUT_MS,
+  resolveCloudRestoreTimeoutMs,
+} from '../src/catscompany';
 import { createCatsCoMessageEnvelope, createExecutionScope } from '../src/catscompany/message-envelope';
 import { SubAgentManager } from '../src/core/sub-agent-manager';
 
@@ -491,6 +495,53 @@ describe('CatsCompany execution scope flow', () => {
       assert.equal(restoreSignal?.aborted, true, clearCommand);
       assert.equal(harness.handledTurns.length, 0, clearCommand);
     }
+  });
+
+  test('cloud restore timeout honors CATSCO_CLOUD_RESTORE_TIMEOUT_MS', async () => {
+    const previous = process.env.CATSCO_CLOUD_RESTORE_TIMEOUT_MS;
+    process.env.CATSCO_CLOUD_RESTORE_TIMEOUT_MS = '50';
+    try {
+      const harness = createHarness({ existingSession: false });
+      let restoreSignal: AbortSignal | undefined;
+      harness.bot.cloudSessionRestorer.restoreIfMissing = async (request: { signal?: AbortSignal }) => {
+        restoreSignal = request.signal;
+        await new Promise(resolve => setTimeout(resolve, 150));
+        return {
+          status: 'empty',
+          restoredMessages: 0,
+          fetchedMessages: 0,
+          compressed: false,
+        };
+      };
+
+      await harness.bot.onMessage({
+        topic: 'p2p_7_43',
+        senderId: 'usr7',
+        text: 'hello',
+        content: 'hello',
+        metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+        isGroup: false,
+        seq: 30,
+      });
+
+      assert.equal(restoreSignal?.aborted, true);
+      assert.equal((restoreSignal?.reason as any)?.name, 'TimeoutError');
+    } finally {
+      if (previous === undefined) delete process.env.CATSCO_CLOUD_RESTORE_TIMEOUT_MS;
+      else process.env.CATSCO_CLOUD_RESTORE_TIMEOUT_MS = previous;
+    }
+  });
+
+  test('cloud restore timeout parsing ignores invalid values and clamps overflow', () => {
+    assert.equal(resolveCloudRestoreTimeoutMs({}), DEFAULT_CLOUD_RESTORE_TIMEOUT_MS);
+    assert.equal(resolveCloudRestoreTimeoutMs({ CATSCO_CLOUD_RESTORE_TIMEOUT_MS: 'abc' }), DEFAULT_CLOUD_RESTORE_TIMEOUT_MS);
+    assert.equal(resolveCloudRestoreTimeoutMs({ CATSCO_CLOUD_RESTORE_TIMEOUT_MS: '0' }), DEFAULT_CLOUD_RESTORE_TIMEOUT_MS);
+    assert.equal(resolveCloudRestoreTimeoutMs({ CATSCO_CLOUD_RESTORE_TIMEOUT_MS: '1e3' }), 1000);
+    assert.equal(resolveCloudRestoreTimeoutMs({ CATSCO_CLOUD_RESTORE_TIMEOUT_MS: '999999999999' }), 900_000);
+  });
+
+  test('cloud restore default timeout is sized for large-history compaction', () => {
+    assert.ok(DEFAULT_CLOUD_RESTORE_TIMEOUT_MS >= 120_000);
   });
 
   test('a message after clear starts a fresh restore without waiting for the aborted promise', async () => {
