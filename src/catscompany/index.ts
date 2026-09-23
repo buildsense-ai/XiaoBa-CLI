@@ -205,14 +205,16 @@ const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
 const ARTIFACT_TASK_RECEIPT_TTL_MS = 24 * 60 * 60 * 1_000;
 const ARTIFACT_TASK_RECEIPT_MAX_ENTRIES = 4_096;
 // 恢复预算同时覆盖云端历史分页与检查点压缩的摘要调用。大会话的摘要本身就可能超过
-// 30s（实测 122K token 输入约 34s），一旦超时被打断，恢复会降级为"截断保留最近
-// 上下文"并丢掉旧历史摘要，所以这里保持充裕上限并支持环境变量调优；
+// 30s（实测 122K token 输入约 34s），一旦超时被打断，恢复会降级为“截断保留最近
+// 上下文”并丢掉旧历史摘要，所以这里保持充裕上限并支持环境变量调优；
 // clear/中断仍通过 clearSignal 提前取消。
-export const CLOUD_RESTORE_TIMEOUT_MS_DEFAULT = 180_000;
+export const DEFAULT_CLOUD_RESTORE_TIMEOUT_MS = 180_000;
+const MAX_CLOUD_RESTORE_TIMEOUT_MS = 900_000;
 
-function resolveCloudRestoreTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = Number.parseInt(String(env.CATSCO_CLOUD_RESTORE_TIMEOUT_MS || ''), 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : CLOUD_RESTORE_TIMEOUT_MS_DEFAULT;
+export function resolveCloudRestoreTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.CATSCO_CLOUD_RESTORE_TIMEOUT_MS);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_CLOUD_RESTORE_TIMEOUT_MS;
+  return Math.min(Math.floor(raw), MAX_CLOUD_RESTORE_TIMEOUT_MS);
 }
 
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
