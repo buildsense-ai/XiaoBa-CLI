@@ -10,6 +10,7 @@ import {
   writeBotSkillLocalMarker,
 } from '../src/bot-skills/local-manifest';
 import {
+  isRevokedBotSkillSnapshotCommand,
   resolveTrustedBotSkillScriptInvocation,
   withTrustedBotSkillConnectorEnvironment,
 } from '../src/bot-skills/trusted-script-execution';
@@ -142,6 +143,133 @@ describe('trusted Bot Skill script execution', () => {
     const result = await new ShellTool().execute({ command: `node "${externalScript}"` }, catsContext());
     assert.equal(result.ok, true);
     assert.match(result.ok ? String(result.content) : '', /must not run/);
+  });
+
+  test('blocks direct execution from preserved pending Skill snapshots', async () => {
+    const pendingScript = path.join(
+      runtimeRoot,
+      'data',
+      'bot-skills',
+      'local-pending',
+      'bot-1',
+      '2026-09-23T01-00-00-000Z-deadbeef',
+      'package',
+      'cloud-html-artifact',
+      'scripts',
+      'publish-html-directory.mjs',
+    );
+    fs.mkdirSync(path.dirname(pendingScript), { recursive: true });
+    fs.writeFileSync(pendingScript, "console.log('revoked-snapshot-must-not-run');\n", 'utf8');
+
+    const result = await new ShellTool().execute({
+      command: `node "${pendingScript}"`,
+    }, catsContext());
+
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? '' : result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.ok ? '' : String(result.message), /revoked Bot Skill snapshot/);
+
+    const targetResult = await new ShellTool().execute({
+      command: `node "${pendingScript}"`,
+      target: 'agent_self',
+    }, catsContext());
+    assert.equal(targetResult.ok, false);
+    assert.equal(targetResult.ok ? '' : targetResult.errorCode, 'PERMISSION_DENIED');
+  });
+
+  test('blocks compound commands that resolve a preserved snapshot through a variable', async () => {
+    const pendingScript = path.join(
+      runtimeRoot,
+      'data',
+      'bot-skills',
+      'local-pending',
+      'bot-1',
+      '2026-09-23T01-00-00-000Z-deadbeef',
+      'package',
+      'cloud-html-artifact',
+      'scripts',
+      'publish-html-directory.mjs',
+    );
+    fs.mkdirSync(path.dirname(pendingScript), { recursive: true });
+    fs.writeFileSync(pendingScript, "console.log('revoked-snapshot-must-not-run');\n", 'utf8');
+    const packageRoot = path.dirname(path.dirname(pendingScript));
+    const command = `SKILL_DIR="${packageRoot}"; cd "${workspaceRoot}"; node "$SKILL_DIR/scripts/publish-html-directory.mjs"`;
+    const result = await new ShellTool().execute({ command }, catsContext());
+
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? '' : result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.ok ? '' : String(result.message), /revoked Bot Skill snapshot/);
+
+    const prefixRoot = path.join(runtimeRoot, 'data', 'bot-skills');
+    const prefixedCommand = `BS="${prefixRoot}"; node "$BS/local-pending/bot-1/2026-09-23T01-00-00-000Z-deadbeef/package/cloud-html-artifact/scripts/publish-html-directory.mjs"`;
+    assert.equal(isRevokedBotSkillSnapshotCommand(prefixedCommand, catsContext()), true);
+
+    const noExtension = path.join(path.dirname(pendingScript), 'run');
+    fs.writeFileSync(noExtension, "console.log('revoked-no-extension');\n", 'utf8');
+    assert.equal(isRevokedBotSkillSnapshotCommand(`node "${noExtension}"`, catsContext()), true);
+
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `npx tsx "${pendingScript}"`,
+      catsContext(),
+    ), true);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `bun "${pendingScript}"`,
+      catsContext(),
+    ), true);
+
+    const inspectionScript = path.join(workspaceRoot, 'inspect.mjs');
+    fs.writeFileSync(inspectionScript, "console.log('inspection-ok');\n", 'utf8');
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `node "${inspectionScript}" "${pendingScript}"`,
+      catsContext(),
+    ), false);
+
+    const pendingScriptsDirectory = path.dirname(pendingScript);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `cd "${pendingScriptsDirectory}" && node "${path.basename(pendingScript)}"`,
+      catsContext(),
+    ), true);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `bash -c "node '${pendingScript}'"`,
+      catsContext(),
+    ), true);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `bash -lc "node '${pendingScript}'"`,
+      catsContext(),
+    ), true);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `env node "${pendingScript}"`,
+      catsContext(),
+    ), true);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `sudo --preserve-env node "${pendingScript}"`,
+      catsContext(),
+    ), true);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `node "$(printf %s '${pendingScript}')"`,
+      catsContext(),
+    ), true);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `npx prettier --write "${pendingScript}"`,
+      catsContext(),
+    ), false);
+    const evalPath = pendingScript.replace(/\\/g, '/');
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `node -e "require('${evalPath}')"`,
+      catsContext(),
+    ), true);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `node --eval "import('${evalPath}')"`,
+      catsContext(),
+    ), true);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `node -e "console.log(1)"`,
+      catsContext(),
+    ), false);
+    assert.equal(isRevokedBotSkillSnapshotCommand(
+      `(cd "${pendingScriptsDirectory}" && node "${path.basename(pendingScript)}")`,
+      catsContext(),
+    ), true);
   });
 
   test('keeps normal target routing when a trusted Skill command has a target override', async () => {

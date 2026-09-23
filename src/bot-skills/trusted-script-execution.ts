@@ -25,6 +25,33 @@ export type TrustedBotSkillScriptDecision =
   | { ok: true; invocation: TrustedBotSkillScriptInvocation }
   | { ok: false; reason: string };
 
+/**
+ * Returns true when a direct Node command points at a preserved Skill
+ * snapshot.  Pending snapshots and deleted-Skill trash are recovery evidence,
+ * not runnable workspaces.  Keeping this check separate from the normal
+ * trusted-entrypoint resolver is intentional: ordinary user scripts keep
+ * their existing shell fallback, while stale Skill evidence cannot be
+ * resurrected by a model-generated absolute path.
+ */
+export function isRevokedBotSkillSnapshotCommand(
+  command: unknown,
+  context: ToolExecutionContext,
+  options: { cwd?: unknown; target?: unknown } = {},
+): boolean {
+  if (!isTrustedLocalCatsCoRuntime(context)) return false;
+  const target = stringValue(options.target).toLowerCase();
+  if (target && target !== 'agent_self') return false;
+  const runtimeRoot = PathResolver.getRuntimeDataRoot();
+  const evidenceRoots = [
+    path.join(runtimeRoot, 'data', 'bot-skills', 'local-pending'),
+    path.join(runtimeRoot, 'data', 'bot-skills', 'trash'),
+  ];
+  const executionDirectory = resolveExecutionDirectory(options.cwd, context.workingDirectory);
+  if (!executionDirectory) return false;
+  return resolveShellScriptEntryPaths(String(command), executionDirectory)
+    .some(scriptPath => evidenceRoots.some(root => isPathInside(scriptPath, root)));
+}
+
 const CONNECTOR_ENV_NAMES = [
   'CATSCO_SHIMO_CONNECTOR_URL',
   'CATSCO_ACTOR_TOKEN',
@@ -295,6 +322,316 @@ function isSafeRegularFileWithin(root: string, candidate: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isPathInside(candidate: string, parent: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+interface ResolvedShellSegment {
+  entries: string[];
+  cwd?: string;
+}
+
+function resolveShellScriptEntryPaths(
+  command: string,
+  cwd: string,
+  inheritedAssignments: Map<string, string> = new Map(),
+): string[] {
+  const tokens = tokenizeShellCommand(command);
+  const assignments = new Map(inheritedAssignments);
+  const entries: string[] = [];
+  let segment: string[] = [];
+  let currentCwd = path.resolve(cwd);
+
+  const flush = (): void => {
+    if (segment.length > 0) {
+      const resolved = resolveSegmentScriptEntries(segment, assignments, currentCwd);
+      entries.push(...resolved.entries);
+      if (resolved.cwd) currentCwd = resolved.cwd;
+    }
+    segment = [];
+  };
+
+  for (const token of tokens) {
+    if (token === ';' || token === '&&' || token === '||' || token === '|' || token === '(' || token === ')') {
+      flush();
+      continue;
+    }
+    segment.push(token);
+  }
+  flush();
+  return entries;
+}
+
+function resolveSegmentScriptEntries(
+  segment: string[],
+  assignments: Map<string, string>,
+  cwd: string,
+): ResolvedShellSegment {
+  let index = 0;
+  while (index < segment.length) {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(segment[index]);
+    if (!match) break;
+    assignments.set(match[1], expandShellVariables(match[2], assignments));
+    index += 1;
+  }
+  if (index >= segment.length) return { entries: [] };
+
+  const commandAssignments = new Map(assignments);
+  const commandIndex = unwrapShellCommandPrefix(segment, index, commandAssignments);
+  if (commandIndex === undefined) return { entries: [] };
+
+  const executable = path.basename(segment[commandIndex]).toLowerCase();
+  if (executable === 'cd' || executable === 'cd.exe') {
+    const directoryIndex = firstNonOptionIndex(segment, commandIndex + 1);
+    if (directoryIndex === undefined) return { entries: [] };
+    const requested = expandShellVariables(segment[directoryIndex], commandAssignments);
+    return {
+      entries: [],
+      cwd: path.isAbsolute(requested) ? path.resolve(requested) : path.resolve(cwd, requested),
+    };
+  }
+
+  if (isShellWrapper(executable)) {
+    const commandArgumentIndex = findShellCommandArgumentIndex(segment, commandIndex + 1);
+    if (commandArgumentIndex === undefined) return { entries: [] };
+    return {
+      entries: resolveShellScriptEntryPaths(
+        expandShellVariables(segment[commandArgumentIndex], commandAssignments),
+        cwd,
+        commandAssignments,
+      ),
+    };
+  }
+
+  let scriptIndex: number | undefined;
+  if (executable === 'node' || executable === 'node.exe' || executable === 'bun' || executable === 'bun.exe') {
+    const inlineCodeIndex = firstInlineCodeArgumentIndex(segment, commandIndex + 1);
+    if (inlineCodeIndex !== undefined) {
+      return {
+        entries: resolveInlineScriptEvidencePaths(segment[inlineCodeIndex], commandAssignments, cwd),
+      };
+    }
+    scriptIndex = firstScriptArgumentIndex(segment, commandIndex + 1);
+  } else if (executable === 'npx' || executable === 'npx.cmd' || executable === 'bunx' || executable === 'bunx.exe') {
+    const runnerIndex = firstNonOptionIndex(segment, commandIndex + 1);
+    if (runnerIndex !== undefined && isKnownScriptRunner(segment[runnerIndex])) {
+      scriptIndex = firstScriptArgumentIndex(segment, runnerIndex + 1);
+    }
+  }
+  if (scriptIndex === undefined) return { entries: [] };
+
+  const expanded = expandShellVariables(segment[scriptIndex], commandAssignments);
+  const resolved = path.isAbsolute(expanded)
+    ? path.resolve(expanded)
+    : path.resolve(cwd, expanded);
+  const substitutionEntries = resolveCommandSubstitutionPaths(expanded, commandAssignments, cwd);
+  return { entries: [resolved, ...substitutionEntries] };
+}
+
+function unwrapShellCommandPrefix(
+  segment: string[],
+  start: number,
+  assignments: Map<string, string>,
+): number | undefined {
+  let index = start;
+  for (;;) {
+    const executable = path.basename(segment[index] || '').toLowerCase();
+    if (executable === 'env' || executable === 'env.exe') {
+      index += 1;
+      while (index < segment.length) {
+        if (segment[index] === '--') {
+          index += 1;
+          break;
+        }
+        if (segment[index].startsWith('-')) {
+          index += 1;
+          continue;
+        }
+        const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(segment[index]);
+        if (!assignment) break;
+        assignments.set(assignment[1], expandShellVariables(assignment[2], assignments));
+        index += 1;
+      }
+      if (index >= segment.length) return undefined;
+      continue;
+    }
+    if (executable === 'sudo' || executable === 'sudo.exe' || executable === 'command' || executable === 'exec') {
+      index += 1;
+      while (index < segment.length && segment[index].startsWith('-')) index += 1;
+      if (index >= segment.length) return undefined;
+      continue;
+    }
+    return index;
+  }
+}
+
+function isShellWrapper(value: string): boolean {
+  return [
+    'bash', 'bash.exe', 'sh', 'sh.exe', 'zsh', 'zsh.exe',
+    'dash', 'dash.exe', 'ksh', 'ksh.exe',
+  ].includes(value);
+}
+
+function findShellCommandArgumentIndex(segment: string[], start: number): number | undefined {
+  for (let index = start; index < segment.length; index += 1) {
+    const option = segment[index];
+    const isCommandOption = option === '--command'
+      || option === '-c'
+      || (option.startsWith('-') && !option.startsWith('--') && option.includes('c'));
+    if (isCommandOption) {
+      return segment[index + 1] ? index + 1 : undefined;
+    }
+  }
+  return undefined;
+}
+
+function isKnownScriptRunner(value: string): boolean {
+  const runner = path.basename(value).toLowerCase();
+  return [
+    'node', 'node.exe', 'tsx', 'tsx.cmd', 'ts-node', 'ts-node.cmd',
+    'esbuild', 'esbuild.cmd', 'vite-node', 'vite-node.cmd', 'jiti', 'jiti.cmd',
+  ].includes(runner);
+}
+
+function firstInlineCodeArgumentIndex(segment: string[], start: number): number | undefined {
+  for (let index = start; index < segment.length; index += 1) {
+    if (segment[index] === '-e' || segment[index] === '--eval' || segment[index] === '-p' || segment[index] === '--print') {
+      return segment[index + 1] ? index + 1 : undefined;
+    }
+  }
+  return undefined;
+}
+
+function resolveInlineScriptEvidencePaths(
+  value: string,
+  assignments: Map<string, string>,
+  cwd: string,
+): string[] {
+  const entries: string[] = [];
+  const literal = /(['"])(.*?)\1/g;
+  let match: RegExpExecArray | null;
+  while ((match = literal.exec(value)) !== null) {
+    const expanded = expandShellVariables(match[2], assignments);
+    if (!expanded.includes('/') && !expanded.includes('\\') && !expanded.startsWith('.')) continue;
+    entries.push(path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(cwd, expanded));
+  }
+  return entries;
+}
+
+function resolveCommandSubstitutionPaths(
+  value: string,
+  assignments: Map<string, string>,
+  cwd: string,
+): string[] {
+  const entries: string[] = [];
+  const pattern = /\$\(([^()]*)\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value)) !== null) {
+    const inner = expandShellVariables(match[1], assignments);
+    const tokens = tokenizeShellCommand(inner);
+    for (const token of tokens) {
+      if (token === ';' || token === '&&' || token === '||' || token === '|') continue;
+      const expanded = expandShellVariables(token, assignments);
+      if (!expanded.includes('/') && !expanded.includes('\\') && !expanded.startsWith('.')) continue;
+      entries.push(path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(cwd, expanded));
+    }
+  }
+  return entries;
+}
+
+function firstScriptArgumentIndex(segment: string[], start: number): number | undefined {
+  for (let index = start; index < segment.length; index += 1) {
+    const value = segment[index];
+    if (value === '--') return segment[index + 1] ? index + 1 : undefined;
+    if (value === '-e' || value === '--eval' || value === '-p' || value === '--print') return undefined;
+    if (value.startsWith('-')) continue;
+    return index;
+  }
+  return undefined;
+}
+
+function firstNonOptionIndex(segment: string[], start: number): number | undefined {
+  for (let index = start; index < segment.length; index += 1) {
+    if (segment[index] === '--') return segment[index + 1] ? index + 1 : undefined;
+    if (!segment[index].startsWith('-')) return index;
+  }
+  return undefined;
+}
+
+function expandShellVariables(value: string, assignments: Map<string, string>): string {
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, plain) => (
+    assignments.get(braced || plain) ?? ''
+  ));
+}
+
+function tokenizeShellCommand(value: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let quote: 'single' | 'double' | undefined;
+  let tokenStarted = false;
+  const push = (): void => {
+    if (tokenStarted) tokens.push(current);
+    current = '';
+    tokenStarted = false;
+  };
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (quote) {
+      const closing = quote === 'single' ? "'" : '"';
+      if (character === closing) {
+        quote = undefined;
+        tokenStarted = true;
+      } else if (character === '\\' && quote === 'double' && value[index + 1] === closing) {
+        current += closing;
+        tokenStarted = true;
+        index += 1;
+      } else {
+        current += character;
+        tokenStarted = true;
+      }
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character === "'" ? 'single' : 'double';
+      tokenStarted = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      push();
+      continue;
+    }
+    if (character === ';' || character === '|' || character === '(' || character === ')') {
+      push();
+      if (character === '(' || character === ')') {
+        tokens.push(character);
+        continue;
+      }
+      const doubled = value[index + 1] === character;
+      if (doubled) index += 1;
+      tokens.push(doubled ? `${character}${character}` : character);
+      continue;
+    }
+    if (character === '&' && value[index + 1] === '&') {
+      push();
+      tokens.push('&&');
+      index += 1;
+      continue;
+    }
+    if (character === '\\' && value[index + 1]) {
+      current += value[index + 1];
+      tokenStarted = true;
+      index += 1;
+      continue;
+    }
+    current += character;
+    tokenStarted = true;
+  }
+  push();
+  return tokens;
 }
 
 function isCompleteVerifiedInstallMarker(value: ReturnType<typeof readSkillHubInstallMarker>): value is NonNullable<typeof value> {
