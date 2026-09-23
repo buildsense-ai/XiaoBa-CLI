@@ -364,6 +364,7 @@ export async function catscompanyCommand(): Promise<void> {
       clearInterval(ownerWatchTimer);
       ownerWatchTimer = null;
     }
+    skillTrashGc.stop();
     lock?.release();
     lock = null;
     throw error;
