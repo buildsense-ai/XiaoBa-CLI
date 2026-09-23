@@ -255,7 +255,7 @@
 
     $('login-form').hidden = view.key !== 'auth';
     $('progress-list').hidden = view.key !== 'connecting';
-    $('error-card').hidden = !['error', 'offline_binding'].includes(view.key);
+    $('error-card').hidden = view.key !== 'error';
     $('webapp-button').hidden = view.key !== 'ready';
     $('logout-button').hidden = view.key === 'auth' || (!cats.connected && !cats.tokenPresent);
     $('retry-button').hidden = view.key !== 'error';

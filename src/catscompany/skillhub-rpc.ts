@@ -904,7 +904,8 @@ export class SkillHubThinRpcHandler {
     if (!deviceId || requestDeviceId !== deviceId) {
       throw new SkillHubThinRpcError('DEVICE_MISMATCH', 'The request targets a different XiaoBa device.');
     }
-    if (requireActiveBot && String(config.currentBot?.uid || '').trim() !== botUid) {
+    const deviceConnectorMode = Boolean(config.device?.connectorToken && config.account?.uid);
+    if (requireActiveBot && !deviceConnectorMode && String(config.currentBot?.uid || '').trim() !== botUid) {
       throw new SkillHubThinRpcError('BOT_NOT_ACTIVE', 'The selected Bot is not active on this XiaoBa device.');
     }
     return { ownerUid, deviceId };

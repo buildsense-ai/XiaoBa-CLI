@@ -58,7 +58,7 @@ import {
   saveRuntimeProfileEdit,
 } from '../../runtime/runtime-profile-editor';
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
-import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
+import { createCatsCoLocalConfigService, type CatsCoLocalDevice } from '../../catscompany/local-config';
 import {
   CatsCoBotSwitchGuardError,
   verifyCatsCoBotSwitchBinding,
@@ -718,6 +718,17 @@ function isOwnedCatsBot(bot: any, userUid?: string): boolean {
 
 function ensureCatsDeviceId(): string {
   return createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).ensureDeviceId();
+}
+
+function toDashboardDevice(device?: Partial<CatsCoLocalDevice> | null): Record<string, unknown> | null {
+  if (!device) return null;
+  return {
+    deviceId: String(device.deviceId || ''),
+    bodyId: String(device.bodyId || ''),
+    installationId: String(device.installationId || ''),
+    name: String(device.name || ''),
+    connectorTokenExpiresAt: Number(device.connectorTokenExpiresAt || 0) || 0,
+  };
 }
 
 function deviceConnectorNeedsUploadMigration(token: string): boolean {
@@ -3626,7 +3637,7 @@ export function createApiRouter(
               reused: true,
               refreshed: true,
               connectorTokenExpiresAt: expiresAt,
-              device: service.load().device || null,
+              device: toDashboardDevice(service.load().device),
             });
           }
         } catch (error: any) {
@@ -3637,7 +3648,7 @@ export function createApiRouter(
               reused: true,
               refreshPending: true,
               connectorTokenExpiresAt: existingExpiry,
-              device: createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load().device || null,
+              device: toDashboardDevice(createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load().device),
               warning: '设备凭证暂时无法更新，当前连接凭证仍有效；部分新功能可能暂不可用。',
             });
           }
@@ -3651,7 +3662,7 @@ export function createApiRouter(
           reused: true,
           refreshed: false,
           connectorTokenExpiresAt: existingExpiry,
-          device: createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load().device || null,
+          device: toDashboardDevice(createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load().device),
         });
       }
       const result = await provisionCatsDeviceConnector(state);
@@ -3660,7 +3671,7 @@ export function createApiRouter(
         reused: false,
         refreshed: false,
         connectorTokenExpiresAt: result.expiresAt,
-        device: result.device || null,
+        device: toDashboardDevice(createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load().device),
       });
     } catch (e: any) {
       const payload = catsErrorResponse(e);
@@ -3769,7 +3780,7 @@ export function createApiRouter(
         name: visibleBot.name || '',
         username: visibleBot.username || '',
       } : null,
-      device: runtime.localConfig.device || null,
+      device: toDashboardDevice(runtime.localConfig.device),
       bodyStatus,
       cloudModelOverride,
       conflicts: runtime.conflicts,

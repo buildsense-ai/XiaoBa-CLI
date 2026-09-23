@@ -116,7 +116,7 @@ export function resolveCatsCoRuntimeConfig(
   );
   const serverUrl = firstNonEmpty(explicitServerUrl, config.catscompany?.serverUrl, auth.serverUrl);
   const rawApiKey = firstNonEmpty(auth.apiKey, config.catscompany?.apiKey);
-  const connectorToken = firstNonEmpty(
+  const configuredConnectorToken = firstNonEmpty(
     auth.connectorToken,
     effectiveEnv.CATSCO_CONNECTOR_TOKEN,
     effectiveEnv.CATSCOMPANY_CONNECTOR_TOKEN,
@@ -129,6 +129,10 @@ export function resolveCatsCoRuntimeConfig(
     || config.catscompany?.connectorTokenExpiresAt
     || 0,
   ) || undefined;
+  const connectorToken = configuredConnectorToken
+    && (!connectorTokenExpiresAt || connectorTokenExpiresAt > Date.now())
+    ? configuredConnectorToken
+    : '';
   const runtimeCredential = firstNonEmpty(
     effectiveEnv.CATSCO_RUNTIME_CREDENTIAL,
     effectiveEnv.CATSCOMPANY_RUNTIME_CREDENTIAL,

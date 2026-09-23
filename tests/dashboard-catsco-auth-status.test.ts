@@ -177,6 +177,40 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.topicId, '');
   });
 
+  test('GET /cats/status never exposes the device connector token', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: { token: 'status-user-token', uid: '42', username: 'webuser', displayName: 'Web User' },
+      device: {
+        deviceId: 'device-status',
+        bodyId: 'body-status',
+        installationId: 'install-status',
+        name: 'Status desktop',
+        connectorToken: 'status-secret-device-token',
+        connectorTokenExpiresAt: Date.now() + 60 * 60_000,
+      },
+    });
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        assert.equal(req.get('Authorization'), 'Bearer status-user-token');
+        return res.json({ uid: 42, username: 'webuser', display_name: 'Web User' });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.device?.deviceId, 'device-status');
+    assert.equal(data.device?.connectorToken, undefined);
+    assert.equal(data.device?.connectorTokenExpiresAt > Date.now(), true);
+  });
+
   test('GET /prompts remains available for a bound legacy bot without a Definition', async () => {
     createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
       version: 1,
@@ -391,6 +425,7 @@ describe('dashboard CatsCo account status', () => {
 
     assert.equal(response.status, 200);
     assert.equal(data.ok, true);
+    assert.equal(data.device?.connectorToken, undefined);
     assert.equal(persisted.device?.connectorToken, 'device-connector-token');
     assert.equal(persisted.currentBot, undefined);
   });
@@ -730,8 +765,9 @@ describe('dashboard CatsCo account status', () => {
     const persisted = createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load();
     assert.equal(persisted.account?.token, 'new-user-token');
     assert.equal(persisted.account?.uid, '77');
-    assert.equal(persisted.currentBot?.uid, '166');
-    assert.equal(persisted.currentBot?.boundByUserUid, '66');
+    assert.equal(persisted.currentBot, undefined);
+    assert.equal(persisted.legacyBot?.uid, '166');
+    assert.equal(persisted.legacyBot?.boundByUserUid, '66');
     assert.equal(env.CATSCO_BOT_UID, undefined);
     assert.equal(env.CATSCO_API_KEY, undefined);
     assert.equal(env.CATSCOMPANY_BOT_UID, undefined);

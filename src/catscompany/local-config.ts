@@ -40,6 +40,8 @@ export interface CatsCoLocalConfig {
   };
   account?: CatsCoLocalAccount;
   currentBot?: CatsCoLocalBot;
+  /** Previous account's Bot binding retained for rollback and migration audit. */
+  legacyBot?: CatsCoLocalBot;
   device?: CatsCoLocalDevice;
   preferences?: {
     autoConnect?: boolean;
@@ -376,9 +378,11 @@ export class CatsCoLocalConfigService {
         username,
         displayName,
       } : config.account,
-      // Keep the previous Bot record for migration/rollback audit. Runtime
-      // resolution ignores it when its owner does not match the active user.
-      currentBot: config.currentBot,
+      // Keep the previous Bot record for migration/rollback audit, but remove
+      // it from the active slot so every legacy reader sees the new account's
+      // device-only runtime instead of the previous user's Bot.
+      currentBot: accountChanged ? undefined : config.currentBot,
+      legacyBot: accountChanged && config.currentBot ? config.currentBot : config.legacyBot,
       device: accountChanged && config.device
         ? {
           ...config.device,
@@ -402,11 +406,13 @@ export class CatsCoLocalConfigService {
       CATSCOMPANY_USER_NAME: username,
       CATSCOMPANY_USER_DISPLAY_NAME: displayName,
       CATSCO_CONNECTOR_TOKEN: accountChanged ? undefined : config.device?.connectorToken,
-      CATSCO_CONNECTOR_TOKEN_EXPIRES_AT: accountChanged && undefined
-        || (config.device?.connectorTokenExpiresAt ? String(config.device.connectorTokenExpiresAt) : undefined),
+      CATSCO_CONNECTOR_TOKEN_EXPIRES_AT: accountChanged
+        ? undefined
+        : (config.device?.connectorTokenExpiresAt ? String(config.device.connectorTokenExpiresAt) : undefined),
       CATSCOMPANY_CONNECTOR_TOKEN: accountChanged ? undefined : config.device?.connectorToken,
-      CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT: accountChanged && undefined
-        || (config.device?.connectorTokenExpiresAt ? String(config.device.connectorTokenExpiresAt) : undefined),
+      CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT: accountChanged
+        ? undefined
+        : (config.device?.connectorTokenExpiresAt ? String(config.device.connectorTokenExpiresAt) : undefined),
     });
     return Array.from(new Set([...removedBindingKeys, ...removedConnectorKeys, ...updatedAccountKeys]));
   }
