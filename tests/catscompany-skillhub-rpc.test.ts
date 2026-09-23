@@ -27,6 +27,7 @@ import {
 } from '../src/skillhub/local-skill-metadata';
 import { SkillHubService } from '../src/skillhub/service';
 import { trashBotSkill } from '../src/bot-skills/deleted-skill-trash';
+import { readPendingBotSkillRevocations } from '../src/bot-skills/revocation';
 import {
   CatsCoBotSwitchGuardError,
   verifyCatsCoBotSwitchBinding,
@@ -35,6 +36,7 @@ import {
 describe('CatsCompany SkillHub thin RPC', () => {
   let runtimeRoot = '';
   let scheduledBotUIDs: string[] = [];
+  let scheduledSkillSyncs = 0;
   let handler: SkillHubThinRpcHandler;
 
   beforeEach(() => {
@@ -66,9 +68,11 @@ describe('CatsCompany SkillHub thin RPC', () => {
       },
     });
     scheduledBotUIDs = [];
+    scheduledSkillSyncs = 0;
     handler = new SkillHubThinRpcHandler({
       runtimeRoot,
       scheduleBotSwitch: (botUid) => scheduledBotUIDs.push(botUid),
+      scheduleCurrentBotSkillRevocationSync: () => { scheduledSkillSyncs += 1; },
       verifyBotSwitchBinding: async ({ botUid, localBodyId }) => ({
         botUid: String(botUid),
         localBodyId: String(localBodyId),
@@ -585,6 +589,16 @@ describe('CatsCompany SkillHub thin RPC', () => {
     const sibling = entries.find(entry => entry.installName === 'sibling-demo');
     assert.ok(selected);
     assert.ok(sibling);
+    writeBotSkillLocalMarker(selected.path, {
+      schema: 'xiaoba.bot-skill-local.v1',
+      localSkillId: selected.localSkillId,
+      reference: {
+        source: 'skillhub',
+        skillId: 'artifact-legacy',
+        version: '1.0.0',
+        contentHash: 'c'.repeat(64),
+      },
+    });
 
     const result = await handler.execute(request({
       request_id: 'delete-exact-local-skill',
@@ -597,6 +611,8 @@ describe('CatsCompany SkillHub thin RPC', () => {
 
     assert.equal(result.schema, 'xiaoba.skillhub.local_delete.v1');
     assert.equal(result.deleted, true);
+    assert.equal(scheduledSkillSyncs, 1);
+    assert.equal(readPendingBotSkillRevocations('42', runtimeRoot)?.[0]?.skillId, 'artifact-legacy');
     assert.equal(result.local_skill_id, selected.localSkillId);
     assert.equal(result.deleted_at, '2026-08-24T00:00:00.000Z');
     assert.equal(result.backup_expires_at, '2026-09-23T00:00:00.000Z');
@@ -617,6 +633,50 @@ describe('CatsCompany SkillHub thin RPC', () => {
     const deletion = JSON.parse(fs.readFileSync(path.join(backupRoot, 'deletion.json'), 'utf8'));
     assert.equal(deletion.deletedByOwnerUid, '7');
     assert.equal(deletion.localSkillId, selected.localSkillId);
+  });
+
+  test('continues owner deletion when the local revocation state cannot be written', async () => {
+    const skillRoot = path.join(runtimeRoot, 'skills', 'revocation-write-failure');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+      '---',
+      'name: revocation-write-failure',
+      'description: Fixture for a read-only revocation state failure',
+      '---',
+      '',
+    ].join('\n'));
+    const selected = scanBotSkillWorkspace(path.join(runtimeRoot, 'skills'))
+      .find(entry => entry.installName === 'revocation-write-failure');
+    assert.ok(selected);
+    writeBotSkillLocalMarker(selected.path, {
+      schema: 'xiaoba.bot-skill-local.v1',
+      localSkillId: selected.localSkillId,
+      reference: {
+        source: 'skillhub',
+        skillId: 'publisher/revocation-write-failure',
+        version: '1.0.0',
+        contentHash: 'd'.repeat(64),
+      },
+    });
+
+    const botSkillsRoot = path.join(runtimeRoot, 'data', 'bot-skills');
+    fs.mkdirSync(botSkillsRoot, { recursive: true });
+    const revocationsPath = path.join(botSkillsRoot, 'revocations');
+    fs.rmSync(revocationsPath, { recursive: true, force: true });
+    fs.writeFileSync(revocationsPath, 'not a directory');
+
+    const result = await handler.execute(request({
+      request_id: 'delete-when-revocation-state-unavailable',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.delete,
+      payload: {
+        bot_uid: '42',
+        local_skill_id: selected.localSkillId,
+      },
+    }));
+
+    assert.equal(result.deleted, true);
+    assert.equal(fs.existsSync(selected.path), false);
+    assert.equal(fs.existsSync(path.join(botSkillsRoot, 'trash', '42')), true);
   });
 
   test('deletes a local Skill when the runtime data directory is a symlink', async () => {

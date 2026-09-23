@@ -6,6 +6,11 @@ import * as path from 'path';
 import { FileBotDefinitionRepository } from '../src/bot-definition/repository';
 import type { BotSkillRef } from '../src/bot-definition/types';
 import {
+  readPendingBotSkillRevocations,
+  reconcilePendingBotSkillRevocations,
+  recordPendingBotSkillRevocation,
+} from '../src/bot-skills/revocation';
+import {
   scanLocalBotSkill,
   writeBotSkillLocalMarker,
 } from '../src/bot-skills/local-manifest';
@@ -359,6 +364,38 @@ describe('trusted Bot Skill script execution', () => {
     );
 
     assert.equal(decision.ok, true);
+  });
+
+  test('denies an old turn snapshot after its exact Skill reference is revoked', async () => {
+    const store = new TurnSkillSnapshotStore({
+      runtimeRoot,
+      skillsRoot: path.join(runtimeRoot, 'skills'),
+    });
+    const lease = await store.acquire();
+    const snapshotScript = path.join(
+      lease.snapshot.rootPath,
+      'verified-image-skill',
+      'scripts',
+      'run.mjs',
+    );
+    const command = `node "${snapshotScript}" "${path.join(workspaceRoot, 'revoked-snapshot.json')}"`;
+
+    try {
+      recordPendingBotSkillRevocation('bot-1', reference, runtimeRoot);
+      assert.deepEqual(readPendingBotSkillRevocations('bot-1', runtimeRoot), [reference]);
+
+      const decision = resolveTrustedBotSkillScriptInvocation(command, catsContext({ turnSkillSnapshot: lease }));
+      assert.equal(decision.ok, false);
+      assert.match(decision.ok ? '' : decision.reason, /not enabled in the current Bot definition/);
+
+      const result = await new ShellTool().execute({ command }, catsContext({ turnSkillSnapshot: lease }));
+      assert.equal(result.ok, false);
+      assert.equal(result.ok ? '' : result.errorCode, 'PERMISSION_DENIED');
+      assert.equal(fs.existsSync(path.join(workspaceRoot, 'revoked-snapshot.json')), false);
+    } finally {
+      reconcilePendingBotSkillRevocations('bot-1', [], runtimeRoot);
+      await lease.release();
+    }
   });
 
   test('keeps trusted script resolution on the turn snapshot after the live package changes', async () => {

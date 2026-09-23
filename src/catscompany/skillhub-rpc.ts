@@ -8,14 +8,20 @@ import {
   BotSkillWorkspaceChangingError,
   finalizeCurrentBotPublicSkillNow,
   pushCurrentBotSkillWorkspaceToCloudNow,
+  scheduleCurrentBotSkillRevocationSync,
   withCurrentBotSkillWorkspaceWrite,
 } from '../bot-skills/runtime';
 import {
+  readBotSkillLocalMarker,
   BotSkillWorkspaceScanLimitError,
   isEphemeralSkillDirectory,
   scanBotSkillWorkspace,
 } from '../bot-skills/local-manifest';
 import { trashBotSkill } from '../bot-skills/deleted-skill-trash';
+import {
+  clearPendingBotSkillRevocation,
+  recordPendingBotSkillRevocation,
+} from '../bot-skills/revocation';
 import { readSkillHubLocalMetadata } from '../skillhub/local-skill-metadata';
 import {
   shareLocalSkillForCatsCo,
@@ -108,6 +114,8 @@ export interface SkillHubThinRpcHandlerOptions {
   verifyBotSwitchBinding?: typeof verifyCatsCoBotSwitchBinding;
   finalizeCurrentBotSkill?: typeof finalizeCurrentBotPublicSkillNow;
   pushCurrentBotSkillWorkspace?: typeof pushCurrentBotSkillWorkspaceToCloudNow;
+  /** Schedules a Cloud-only CAS for owner-revoked references; never uploads workspace files. */
+  scheduleCurrentBotSkillRevocationSync?: () => void;
   /** Applies the canonical BotDefinition Skill references to this Runtime's active workspace. */
   applyCurrentBotDefinition?: (botUid: string) => Promise<Record<string, unknown>>;
   /** Prevents replacing the active workspace while a message turn is running. */
@@ -127,6 +135,7 @@ export class SkillHubThinRpcHandler {
   private readonly verifyBotSwitchBinding: typeof verifyCatsCoBotSwitchBinding;
   private readonly finalizeCurrentBotSkill: typeof finalizeCurrentBotPublicSkillNow;
   private readonly pushCurrentBotSkillWorkspace: typeof pushCurrentBotSkillWorkspaceToCloudNow;
+  private readonly scheduleCurrentBotSkillRevocationSync: () => void;
   private readonly applyCurrentBotDefinition?: (botUid: string) => Promise<Record<string, unknown>>;
   private readonly isRuntimeIdle: () => boolean;
   private readonly waitForRuntimeIdle?: (timeoutMs: number, checkOperational?: () => void) => Promise<boolean>;
@@ -156,6 +165,8 @@ export class SkillHubThinRpcHandler {
       ?? finalizeCurrentBotPublicSkillNow;
     this.pushCurrentBotSkillWorkspace = options.pushCurrentBotSkillWorkspace
       ?? pushCurrentBotSkillWorkspaceToCloudNow;
+    this.scheduleCurrentBotSkillRevocationSync = options.scheduleCurrentBotSkillRevocationSync
+      ?? scheduleCurrentBotSkillRevocationSync;
     this.applyCurrentBotDefinition = options.applyCurrentBotDefinition;
     this.isRuntimeIdle = options.isRuntimeIdle ?? (() => true);
     this.waitForRuntimeIdle = options.waitForRuntimeIdle;
@@ -797,23 +808,52 @@ export class SkillHubThinRpcHandler {
         );
       }
 
-      const backup = trashBotSkill({
-        runtimeRoot: this.runtimeRoot,
-        botId: botUid,
-        sourcePath: realEntry,
-        localSkillId,
-        name: entry.name,
-        installName: entry.installName,
-        deletedByOwnerUid: scope.ownerUid,
-        now: this.now,
-      });
+      const reference = readBotSkillLocalMarker(realEntry)?.reference;
+      if (reference) {
+        try {
+          recordPendingBotSkillRevocation(botUid, reference, this.runtimeRoot);
+        } catch (error: any) {
+          // The deny-list accelerates convergence, but must never turn an
+          // owner-confirmed local delete into a failed delete. Trash remains
+          // the recoverable evidence if durable revocation recording fails.
+          Logger.warning(`Skill revoke state could not be recorded; continuing deletion: ${error?.message || error}`);
+        }
+      }
+      let backup: ReturnType<typeof trashBotSkill>;
+      try {
+        backup = trashBotSkill({
+          runtimeRoot: this.runtimeRoot,
+          botId: botUid,
+          sourcePath: realEntry,
+          localSkillId,
+          name: entry.name,
+          installName: entry.installName,
+          deletedByOwnerUid: scope.ownerUid,
+          now: this.now,
+        });
+      } catch (error) {
+        if (reference) {
+          try {
+            clearPendingBotSkillRevocation(botUid, reference, this.runtimeRoot);
+          } catch (rollbackError: any) {
+            Logger.warning(`Skill revoke rollback failed after delete failure: ${rollbackError?.message || rollbackError}`);
+          }
+        }
+        throw error;
+      }
       return {
         localSkillId,
         name: entry.name,
         relativePath: entry.installName,
+        ...(reference ? { reference } : {}),
         ...backup,
       };
     }, { runtimeRoot: this.runtimeRoot });
+
+    // Do not upload the entire local workspace for an uninstall: only CAS the
+    // exact revoked BotDefinition reference. The durable deny-list keeps old
+    // turn snapshots blocked until that Cloud write is confirmed.
+    this.scheduleCurrentBotSkillRevocationSync();
 
     return {
       schema: 'xiaoba.skillhub.local_delete.v1',

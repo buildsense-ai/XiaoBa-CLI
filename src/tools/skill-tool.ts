@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SkillManager } from '../skills/skill-manager';
 import { SkillInvocationContext } from '../types/skill';
@@ -7,6 +8,8 @@ import { renderPromptEditorPaths } from '../skills/builtin-prompt-editor-skill';
 import { Logger } from '../utils/logger';
 import { getPetService } from '../pet/pet-service';
 import { PetEventType } from '../pet/pet-types';
+import { readBotSkillLocalMarker } from '../bot-skills/local-manifest';
+import { isBotSkillReferenceActive } from '../bot-skills/revocation';
 
 /**
  * Skill 工具 - 调用已注册的 skills
@@ -69,6 +72,29 @@ export class SkillTool implements Tool {
           errorCode: 'TOOL_NOT_FOUND',
         });
         return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: `错误：未找到 skill "${skillName}"。\n\n可用的 skills: ${availableSkills}` };
+      }
+
+      // A turn snapshot is intentionally immutable, so an already-open turn
+      // can still hold Skill text after the owner has removed that exact
+      // package from BotDefinition. Re-check only formally bound SkillHub
+      // packages against the latest locally accepted Definition immediately
+      // before returning their instructions. Unmanaged/local skills and
+      // legacy runtimes without an authoritative Definition are unchanged.
+      if (context.executionScope?.source === 'catscompany' && context.executionScope.agentId) {
+        const skillDir = path.dirname(skill.filePath);
+        const reference = readBotSkillLocalMarker(skillDir)?.reference;
+        if (reference && isBotSkillReferenceActive(context.executionScope.agentId, reference) === false) {
+          this.recordPetEvent('skill_failed', skillName, context, {
+            status: 'failed',
+            message: `「${skillName}」skill 已从当前 Bot 撤销，点我查看`,
+            errorCode: 'SKILL_REVOKED',
+          });
+          return {
+            ok: false,
+            errorCode: 'PERMISSION_DENIED',
+            message: `Skill "${skillName}" 已不在当前 BotDefinition 中，拒绝使用旧快照。请刷新当前 Agent 能力后重试。`,
+          };
+        }
       }
 
       // 检查 skill 是否可被用户调用

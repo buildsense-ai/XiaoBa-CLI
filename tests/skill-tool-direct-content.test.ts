@@ -6,15 +6,25 @@ import * as path from 'node:path';
 import { SkillTool } from '../src/tools/skill-tool';
 import { SkillManager } from '../src/skills/skill-manager';
 import { TurnSkillSnapshotStore } from '../src/skills/turn-skill-snapshot';
+import { FileBotDefinitionRepository } from '../src/bot-definition/repository';
+import { writeBotSkillLocalMarker } from '../src/bot-skills/local-manifest';
+import {
+  isBotSkillReferenceActive,
+  readPendingBotSkillRevocations,
+  recordPendingBotSkillRevocation,
+  reconcilePendingBotSkillRevocations,
+} from '../src/bot-skills/revocation';
 
 describe('skill tool direct content mode', () => {
   let testRoot: string;
   let originalCwd: string;
   let originalSkillsEnv: string | undefined;
+  let originalRuntimeRootEnv: string | undefined;
 
   beforeEach(() => {
     originalCwd = process.cwd();
     originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
+    originalRuntimeRootEnv = process.env.XIAOBA_USER_DATA_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-tool-'));
     process.chdir(testRoot);
     process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
@@ -37,6 +47,8 @@ describe('skill tool direct content mode', () => {
     process.chdir(originalCwd);
     if (originalSkillsEnv === undefined) delete process.env.XIAOBA_SKILLS_DIR;
     else process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
+    if (originalRuntimeRootEnv === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+    else process.env.XIAOBA_USER_DATA_DIR = originalRuntimeRootEnv;
     fs.rmSync(testRoot, { recursive: true, force: true });
   });
 
@@ -106,6 +118,125 @@ describe('skill tool direct content mode', () => {
     assert.equal(second.ok, true);
     assert.match(String(second.content), /Changed demo/);
     await secondLease.release();
+  });
+
+  test('rejects a revoked Skill from an old turn snapshot without blocking unrelated local skills', async () => {
+    const runtimeRoot = path.join(testRoot, 'runtime');
+    const skillsRoot = path.join(testRoot, 'skills');
+    process.env.XIAOBA_USER_DATA_DIR = runtimeRoot;
+    fs.mkdirSync(runtimeRoot, { recursive: true });
+    const revokedReference = {
+      source: 'skillhub' as const,
+      skillId: 'artifact-legacy',
+      version: '1.0.0',
+      contentHash: 'a'.repeat(64),
+    };
+    const revokedDir = path.join(skillsRoot, 'lin', 'demo');
+    writeBotSkillLocalMarker(revokedDir, {
+      schema: 'xiaoba.bot-skill-local.v1',
+      localSkillId: 'local-demo',
+      reference: revokedReference,
+    });
+    const store = new TurnSkillSnapshotStore({ runtimeRoot, skillsRoot });
+    const oldTurn = await store.acquire();
+    const oldManager = new SkillManager(oldTurn.snapshot.rootPath);
+    await oldManager.loadSkills();
+
+    const definitions = new FileBotDefinitionRepository({ runtimeRoot });
+    definitions.writeCache({
+      schema: 'xiaoba.bot-definition.v1',
+      botId: 'bot-123',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+      skills: [],
+    });
+    const tool = new SkillTool();
+    const context = {
+      workingDirectory: testRoot,
+      conversationHistory: [],
+      executionScope: { source: 'catscompany', agentId: 'usrbot-123' },
+      runtimeServices: { aiService: {} as any, skillManager: oldManager },
+      turnSkillSnapshot: oldTurn,
+    } as any;
+
+    const revoked = await tool.execute({ skill: 'demo' }, context);
+    assert.equal(revoked.ok, false);
+    assert.equal(revoked.errorCode, 'PERMISSION_DENIED');
+    assert.match(String(revoked.message), /不在当前 BotDefinition/);
+
+    const unmanaged = await tool.execute({ skill: 'xiaoba-knowledge' }, context);
+    assert.equal(unmanaged.ok, true);
+    await oldTurn.release();
+  });
+
+  test('keeps an owner revocation effective until Cloud confirms that reference is gone', () => {
+    const runtimeRoot = path.join(testRoot, 'revocation-runtime');
+    fs.mkdirSync(runtimeRoot, { recursive: true });
+    process.env.XIAOBA_USER_DATA_DIR = runtimeRoot;
+    const reference = {
+      source: 'skillhub' as const,
+      skillId: 'artifact-legacy',
+      version: '1.0.0',
+      contentHash: 'b'.repeat(64),
+    };
+    new FileBotDefinitionRepository({ runtimeRoot }).writeCache({
+      schema: 'xiaoba.bot-definition.v1',
+      botId: 'bot-123',
+      model: { kind: 'catalog', modelId: 'minimax-m3' },
+      skills: [reference],
+    });
+    recordPendingBotSkillRevocation('usrbot-123', reference, runtimeRoot);
+
+    assert.equal(isBotSkillReferenceActive('usrbot-123', reference), false);
+    reconcilePendingBotSkillRevocations('bot-123', [], runtimeRoot);
+    assert.equal(isBotSkillReferenceActive('usrbot-123', reference), true);
+  });
+
+  test('keeps multiple revoked versions and treats repeated revocation as idempotent', () => {
+    const runtimeRoot = path.join(testRoot, 'revocation-idempotency-runtime');
+    fs.mkdirSync(runtimeRoot, { recursive: true });
+    const older = {
+      source: 'skillhub' as const,
+      skillId: 'artifact-legacy',
+      version: '1.0.0',
+      contentHash: 'a'.repeat(64),
+    };
+    const newer = { ...older, version: '1.1.0', contentHash: 'b'.repeat(64) };
+
+    recordPendingBotSkillRevocation('usrbot-idempotent', older, runtimeRoot);
+    assert.doesNotThrow(() => recordPendingBotSkillRevocation('usrbot-idempotent', older, runtimeRoot));
+    assert.doesNotThrow(() => recordPendingBotSkillRevocation('usrbot-idempotent', newer, runtimeRoot));
+    assert.deepEqual(readPendingBotSkillRevocations('bot-idempotent', runtimeRoot), [older, newer]);
+  });
+
+  test('keeps the old-version deny after a newer revoke reconciles against Cloud still listing the old version', () => {
+    const runtimeRoot = path.join(testRoot, 'revocation-multi-version-runtime');
+    fs.mkdirSync(runtimeRoot, { recursive: true });
+    process.env.XIAOBA_USER_DATA_DIR = runtimeRoot;
+    const older = {
+      source: 'skillhub' as const,
+      skillId: 'artifact-legacy',
+      version: '1.0.0',
+      contentHash: 'a'.repeat(64),
+    };
+    const newer = { ...older, version: '2.0.0', contentHash: 'b'.repeat(64) };
+    new FileBotDefinitionRepository({ runtimeRoot }).writeCache({
+      schema: 'xiaoba.bot-definition.v1',
+      botId: 'bot-multi-version',
+      model: { kind: 'catalog', modelId: 'test-model' },
+      skills: [older],
+    });
+
+    recordPendingBotSkillRevocation('bot-multi-version', older, runtimeRoot);
+    recordPendingBotSkillRevocation('bot-multi-version', newer, runtimeRoot);
+    reconcilePendingBotSkillRevocations('bot-multi-version', [older], runtimeRoot);
+
+    assert.deepEqual(readPendingBotSkillRevocations('bot-multi-version', runtimeRoot), [older]);
+    assert.equal(isBotSkillReferenceActive('bot-multi-version', older), false);
+    assert.equal(isBotSkillReferenceActive('bot-multi-version', newer), false);
+
+    reconcilePendingBotSkillRevocations('bot-multi-version', [], runtimeRoot);
+    assert.equal(readPendingBotSkillRevocations('bot-multi-version', runtimeRoot), undefined);
+    assert.equal(isBotSkillReferenceActive('bot-multi-version', older), true);
   });
 });
 

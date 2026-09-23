@@ -43,6 +43,7 @@ import type {
 } from './types';
 import { applySkillHubLocalMetadata } from '../skillhub/local-skill-metadata';
 import { snapshotPendingBotSkillWorkspace } from './pending-snapshot';
+import { canonicalizeBotSkillRevocations } from './revocation';
 
 export type BotSkillSyncDirection =
   | 'none'
@@ -296,6 +297,65 @@ export class BotSkillSyncService {
       desiredRevision: cloud.revision,
       appliedRevision: cloud.revision,
       applyStatus: 'already_applied',
+      skills: cloud.skills,
+    };
+  }
+
+  /**
+   * Removes only explicitly owner-revoked refs from Cloud. This path never
+   * packages or uploads the remaining local workspace, so retrying a deletion
+   * cannot publish unrelated pending local Skills or edits.
+   */
+  async revokeCloudReferences(revocations: readonly BotSkillRef[]): Promise<BotSkillSyncResult> {
+    const revoked = canonicalizeBotSkillRevocations(revocations);
+    let cloud = await pullCloudBotSkills(this.cloudOptions);
+    if (!cloud?.definition) {
+      throw new Error('CatsCo cloud BotDefinition is unavailable; the Skill revocation remains pending.');
+    }
+    let removedAny = cloud.skills.some(reference => (
+      revoked.some(item => botSkillRefEqual(item, reference))
+    ));
+    const removeRevoked = (skills: readonly BotSkillRef[]) => skills.filter(reference => (
+      !revoked.some(item => botSkillRefEqual(item, reference))
+    ));
+
+    let desired = removeRevoked(cloud.skills);
+    if (!botSkillRefsEqual(desired, cloud.skills)) {
+      try {
+        cloud = await replaceCloudBotSkills(this.cloudOptions, cloud, desired);
+      } catch (error) {
+        if (!(error instanceof BotSkillsCloudConflictError)) throw error;
+        const latest = await pullCloudBotSkills(this.cloudOptions);
+        if (!latest?.definition) throw error;
+        cloud = latest;
+        removedAny = cloud.skills.some(reference => (
+          revoked.some(item => botSkillRefEqual(item, reference))
+        ));
+        desired = removeRevoked(cloud.skills);
+        if (!botSkillRefsEqual(desired, cloud.skills)) {
+          cloud = await replaceCloudBotSkills(this.cloudOptions, cloud, desired);
+        }
+      }
+    }
+
+    this.acceptCloudDefinition(cloud);
+    const base = this.baseStore.read(this.botId);
+    if (base) {
+      this.baseStore.write({
+        ...base,
+        definitionRevision: cloud.revision,
+        skills: base.skills.filter(entry => !revoked.some(item => botSkillRefEqual(item, entry.reference))),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    return {
+      botId: this.botId,
+      direction: 'none',
+      cloudRevision: cloud.revision,
+      observedRevision: cloud.revision,
+      desiredRevision: cloud.revision,
+      appliedRevision: cloud.revision,
+      applyStatus: removedAny ? 'applied' : 'already_applied',
       skills: cloud.skills,
     };
   }

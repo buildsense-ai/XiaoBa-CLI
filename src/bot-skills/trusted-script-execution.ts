@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { FileBotDefinitionRepository } from '../bot-definition/repository';
+import { isBotSkillReferenceActive } from './revocation';
 import type { BotSkillRef } from '../bot-definition/types';
 import { readSkillHubInstallMarker } from '../skillhub/install-marker';
 import type { ToolExecutionContext } from '../types/tool';
@@ -48,8 +48,19 @@ export function isRevokedBotSkillSnapshotCommand(
   ];
   const executionDirectory = resolveExecutionDirectory(options.cwd, context.workingDirectory);
   if (!executionDirectory) return false;
-  return resolveShellScriptEntryPaths(String(command), executionDirectory)
-    .some(scriptPath => evidenceRoots.some(root => isPathInside(scriptPath, root)));
+  const scriptPaths = resolveShellScriptEntryPaths(String(command), executionDirectory);
+  if (scriptPaths.some(scriptPath => evidenceRoots.some(root => isPathInside(scriptPath, root)))) {
+    return true;
+  }
+
+  // A turn snapshot is a runnable-looking copy outside the legacy evidence
+  // roots. Walk each candidate script up to its Skill marker and consult the
+  // same durable deny-list used by SkillTool/trusted-entrypoint resolution.
+  const agentId = stringValue(context.executionScope?.agentId);
+  return scriptPaths.some(scriptPath => {
+    const reference = findLocalSkillReference(scriptPath, context);
+    return Boolean(reference && isBotSkillReferenceActive(agentId, reference) === false);
+  });
 }
 
 const CONNECTOR_ENV_NAMES = [
@@ -180,8 +191,7 @@ export function resolveTrustedBotSkillScriptInvocation(
   }
 
   const agentId = stringValue(context.executionScope?.agentId);
-  const definition = readActiveBotDefinition(agentId);
-  if (!definition?.skills?.some(candidate => sameSkillReference(candidate, reference))) {
+  if (isBotSkillReferenceActive(agentId, reference) !== true) {
     return denied('The verified Skill is not enabled in the current Bot definition.');
   }
 
@@ -215,28 +225,6 @@ function isTrustedLocalCatsCoRuntime(context: ToolExecutionContext): boolean {
     && (!scope.deviceOwnerUserId || sameIdentity(scope.deviceOwnerUserId, localDevice.ownerUserId));
   const agentLocalBody = Boolean(scope.agentBodyId && scope.agentBodyId === localDevice.bodyId);
   return ownerSelf || agentLocalBody;
-}
-
-function readActiveBotDefinition(agentId: string) {
-  if (!agentId) return undefined;
-  try {
-    const repository = new FileBotDefinitionRepository({ runtimeRoot: PathResolver.getRuntimeDataRoot() });
-    // CatsCo envelopes identify a Bot as `usr<botId>` while the local
-    // BotDefinition repository is keyed by the BotDefinition's canonical
-    // `botId` (for example, `573`). Keep the compatibility mapping narrow:
-    // only strip the well-known `usr` prefix, then let the repository validate
-    // that the returned definition has the expected canonical id.
-    const candidates = [agentId];
-    const prefixed = /^usr([A-Za-z0-9_.-]+)$/i.exec(agentId);
-    if (prefixed?.[1]) candidates.push(prefixed[1]);
-    for (const candidate of candidates) {
-      const definition = repository.readCache(candidate) ?? repository.readCanonical(candidate);
-      if (definition) return definition;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function tokenizeDirectCommand(value: unknown): string[] | null {
@@ -644,12 +632,23 @@ function isCompleteVerifiedInstallMarker(value: ReturnType<typeof readSkillHubIn
   );
 }
 
-function sameSkillReference(left: BotSkillRef, right: BotSkillRef): boolean {
-  return left.source === 'skillhub'
-    && right.source === 'skillhub'
-    && left.skillId === right.skillId
-    && left.version === right.version
-    && left.contentHash === right.contentHash;
+function findLocalSkillReference(scriptPath: string, context: ToolExecutionContext): BotSkillRef | undefined {
+  const roots = [
+    path.resolve(
+      context.turnSkillSnapshot instanceof TurnSkillSnapshotLease
+        ? context.turnSkillSnapshot.snapshot.rootPath
+        : PathResolver.getSkillsPath(),
+    ),
+  ];
+  let current = path.dirname(scriptPath);
+  while (current && roots.some(root => isPathInside(current, root))) {
+    const marker = readBotSkillLocalMarker(current);
+    if (marker?.reference) return marker.reference;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return undefined;
 }
 
 function sameIdentity(left: unknown, right: unknown): boolean {
