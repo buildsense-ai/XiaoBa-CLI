@@ -61,6 +61,7 @@ describe('CatsCo runtime config resolver', () => {
         XIAOBA_GROUP_ACTIVATION_JEV_API_KEY: 'jev-secret',
         XIAOBA_GROUP_ACTIVATION_JEV_MODEL: 'jev-test',
         XIAOBA_GROUP_ACTIVATION_JEV_TIMEOUT_MS: '1750',
+        XIAOBA_GROUP_ACTIVATION_JEV_ROLE_SUMMARY: 'Help with releases',
       },
     });
 
@@ -79,6 +80,7 @@ describe('CatsCo runtime config resolver', () => {
       model: 'jev-test',
       timeoutMs: 1750,
       signalFloor: 0.6,
+      roleSummary: 'Help with releases',
     });
     assert.equal(resolved.auth.token, 'env-user-token');
     assert.equal(resolved.auth.uid, 'user-typed');

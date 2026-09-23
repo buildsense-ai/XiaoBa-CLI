@@ -400,13 +400,34 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(handledTurns, []);
   });
 
-  test('lets JEV activate a delivered unmentioned group message before the agent loop', async () => {
-    const { bot, handledTurns, sessionKeys } = createHarness();
+  test('gives JEV a read-only recent window before starting an unmentioned group turn', async () => {
+    const { bot, handledTurns, sessionKeys, savedContextCursors } = createHarness();
     let judgeCalls = 0;
+    let historyCalls = 0;
+    bot.groupActivationRoleSummary = 'Help with release questions';
+    bot.bot.getAgentContextHistory = async (topic: string, options: any) => {
+      historyCalls++;
+      if (historyCalls === 1) assert.deepEqual(sessionKeys, []);
+      assert.equal(topic, 'grp_80');
+      assert.equal(options.beforeId, 12);
+      return {
+        topic_id: topic, agent_uid: 43, has_more: false, next_before_id: 0,
+        messages: [{
+          id: 11, seq_id: 11, topic_id: topic, agent_uid: 43, agent_id: 'usr43',
+          from_uid: 7, type: 'text', content: '之前的发布计划', context_role: 'user',
+          context_eligible: true, context_reason: 'participant_message',
+        }],
+      };
+    };
     bot.groupActivationJudge = {
       judge: async (input: any) => {
         judgeCalls++;
+        assert.deepEqual(sessionKeys, []);
         assert.equal(input.explicitlyMentioned, false);
+        assert.equal(input.agentRole, 'Help with release questions');
+        assert.deepEqual(savedContextCursors, []);
+        assert.deepEqual(input.history.map((item: any) => item.seq), [11]);
+        assert.ok(input.deadlineAt > Date.now());
         return { decision: 'activate', confidence: 0.92 };
       },
     };
@@ -426,14 +447,41 @@ describe('CatsCompany execution scope flow', () => {
       seq: 12,
     });
 
+    assert.equal(historyCalls, 2); // Snapshot, then existing post-activation hydration.
     assert.equal(judgeCalls, 1);
     assert.deepEqual(sessionKeys, ['cc_group:grp_80']);
     assert.equal(handledTurns.length, 1);
+    assert.deepEqual(savedContextCursors, [['catscompany.agent_context', 12]]); // Post-activation only.
+  });
+
+  test('falls back before session creation if the context read fails', async () => {
+    const { bot, handledTurns, sessionKeys } = createHarness();
+    let judgeCalls = 0;
+    bot.bot.getAgentContextHistory = async () => { throw new Error('offline'); };
+    bot.groupActivationJudge = { judge: async () => {
+      judgeCalls++;
+      return { decision: 'activate', confidence: 1 };
+    } };
+
+    await bot.onMessage({
+      topic: 'grp_80', senderId: 'usr7', text: '继续', content: '继续',
+      metadata: canonicalMetadata('usr7', 'grp_80'),
+      isGroup: true, mentions: [], memberCount: 4, seq: 13,
+    });
+    assert.equal(judgeCalls, 0);
+    assert.deepEqual(sessionKeys, []);
+    assert.deepEqual(handledTurns, []);
   });
 
   test('forces structured @this-AI into the agent loop even when JEV would stay silent', async () => {
     const { bot, handledTurns, sessionKeys } = createHarness();
     let judgeCalls = 0;
+    let historyCalls = 0;
+    bot.bot.getAgentContextHistory = async () => {
+      historyCalls++;
+      assert.notDeepEqual(sessionKeys, []); // Existing post-activation hydration only.
+      return { topic_id: 'grp_80', agent_uid: 43, messages: [], has_more: false, next_before_id: 0 };
+    };
     bot.groupActivationJudge = {
       judge: async () => {
         judgeCalls++;
@@ -459,6 +507,7 @@ describe('CatsCompany execution scope flow', () => {
     });
 
     assert.equal(judgeCalls, 0);
+    assert.equal(historyCalls, 1);
     assert.equal(restoreCalls, 1);
     assert.deepEqual(sessionKeys, ['cc_group:grp_80']);
     assert.equal(handledTurns.length, 1);

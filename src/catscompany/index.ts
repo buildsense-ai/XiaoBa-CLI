@@ -85,7 +85,10 @@ import {
   JevCatsCompanyGroupActivationJudge,
   resolveCatsCompanyGroupActivation,
   type CatsCompanyGroupActivationJudge,
+  type CatsCompanyGroupActivationInput,
+  type CatsCompanyGroupActivationJudgment,
 } from './jev-group-activation';
+import { loadCatsCompanyGroupActivationContext } from './jev-group-context';
 
 interface PendingAttachment {
   fileName: string;
@@ -532,12 +535,16 @@ export class CatsCompanyBot {
   private readonly skillHubThinRpc: SkillHubThinRpcHandler;
   /** Optional semantic gate that runs before cloud restore or AgentSession work. */
   private readonly groupActivationJudge?: CatsCompanyGroupActivationJudge;
+  private readonly groupActivationTimeoutMs?: number;
+  private readonly groupActivationRoleSummary?: string;
 
   constructor(config: CatsCompanyConfig) {
     this.botUid = String(config.botUid || '').trim() || null;
     if (config.groupActivationJev?.enabled) {
       try {
         this.groupActivationJudge = new JevCatsCompanyGroupActivationJudge(config.groupActivationJev);
+        this.groupActivationTimeoutMs = config.groupActivationJev.timeoutMs;
+        this.groupActivationRoleSummary = config.groupActivationJev.roleSummary;
         Logger.info(
           `[CatsCompany] JEV 群聊语义激活已启用: model=${config.groupActivationJev.model}, `
             + `timeout=${config.groupActivationJev.timeoutMs}ms`,
@@ -1537,7 +1544,9 @@ export class CatsCompanyBot {
         { ...ctx, text: msg.text },
         this.botUid,
         deterministicActivation,
-        this.groupActivationJudge,
+        this.groupActivationJudge && {
+          judge: input => this.judgeGroupActivationWithContext(ctx, input),
+        },
       );
     if (activation.source === 'jev_error') {
       Logger.warning(
@@ -1572,6 +1581,27 @@ export class CatsCompanyBot {
     } finally {
       this.activeMessageHandlers = Math.max(0, this.activeMessageHandlers - 1);
     }
+  }
+
+  private async judgeGroupActivationWithContext(
+    message: MessageContext,
+    input: CatsCompanyGroupActivationInput,
+  ): Promise<CatsCompanyGroupActivationJudgment> {
+    const deadlineAt = Date.now() + (this.groupActivationTimeoutMs ?? 2_500);
+    const history = await loadCatsCompanyGroupActivationContext(
+      this.bot,
+      message.topic,
+      Number(message.seq),
+      this.botUid,
+      AbortSignal.timeout(Math.min(600, Math.max(1, Math.floor((this.groupActivationTimeoutMs ?? 2_500) / 3)))),
+    );
+    return this.groupActivationJudge!.judge({
+      ...input,
+      history,
+      agentRole: this.groupActivationRoleSummary
+        || `CatsCompany assistant ${this.runtimeProfile?.displayName || ''} for this conversation`,
+      deadlineAt,
+    });
   }
 
   private acceptArtifactTaskReceipt(taskRef?: string, now = Date.now()): boolean {

@@ -45,6 +45,7 @@ describe('CatsCompany JEV group activation', () => {
       XIAOBA_GROUP_ACTIVATION_JEV_API_KEY: 'secret',
       XIAOBA_GROUP_ACTIVATION_JEV_TIMEOUT_MS: '999999',
       XIAOBA_GROUP_ACTIVATION_JEV_SIGNAL_FLOOR: 'invalid',
+      XIAOBA_GROUP_ACTIVATION_JEV_ROLE_SUMMARY: `Answer release questions${'x'.repeat(300)}`,
     });
 
     assert.equal(config.enabled, true);
@@ -53,6 +54,7 @@ describe('CatsCompany JEV group activation', () => {
     assert.equal(config.model, 'jev-1.13.0');
     assert.equal(config.timeoutMs, 2_500);
     assert.equal(config.signalFloor, 0.6);
+    assert.equal(config.roleSummary?.length, 240);
   });
 
   test('sends one bounded typed choice request and decodes activation', async () => {
@@ -70,6 +72,8 @@ describe('CatsCompany JEV group activation', () => {
       memberCount: 4,
       explicitlyMentioned: false,
       trustedChannelTriggered: false,
+      agentRole: 'Release assistant',
+      history: [{ seq: 11, role: 'user', text: '刚才那个版本怎么样？' }],
     });
 
     assert.deepEqual(result, { decision: 'activate', confidence: 0.85 });
@@ -81,11 +85,28 @@ describe('CatsCompany JEV group activation', () => {
     assert.equal(body.questions.has_activation_signal.type, 'noul');
     assert.equal(body.questions.activation.type, 'choice');
     assert.equal(body.state[0].texts[0].text.length, 4_000);
-    assert.deepEqual(JSON.parse(body.state[0].texts[1].text), {
+    assert.equal(body.state[0].texts[1].text, 'Release assistant');
+    assert.deepEqual(JSON.parse(body.state[0].texts[2].text), [
+      { seq: 11, role: 'user', text: '刚才那个版本怎么样？' },
+    ]);
+    assert.deepEqual(JSON.parse(body.state[0].texts[3].text), {
       explicitly_mentioned: false,
       trusted_channel_triggered: false,
       member_count: 4,
     });
+  });
+
+  test('does not call JEV after the shared history-and-judgment deadline', async () => {
+    let requests = 0;
+    const judge = new JevCatsCompanyGroupActivationJudge(baseConfig, async () => {
+      requests++;
+      return jevResponse('activate');
+    });
+    await assert.rejects(() => judge.judge({
+      text: '继续之前的任务', explicitlyMentioned: false, trustedChannelTriggered: false,
+      deadlineAt: Date.now() - 1,
+    }), /deadline expired/);
+    assert.equal(requests, 0);
   });
 
   test('preserves abstention for weak signal or low-confidence choices', async () => {
