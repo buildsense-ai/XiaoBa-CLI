@@ -106,9 +106,12 @@ describe('CatsCompany JEV group activation', () => {
     }), { decision: 'abstain', confidence: 0.4 });
   });
 
-  test('lets JEV broaden or narrow native group activation', async () => {
+  test('only lets JEV decide unmentioned, delivered group messages', async () => {
     const activateJudge: CatsCompanyGroupActivationJudge = {
-      judge: async () => ({ decision: 'activate', confidence: 0.91 }),
+      judge: async input => {
+        assert.equal(input.explicitlyMentioned, false);
+        return { decision: 'activate', confidence: 0.91 };
+      },
     };
     const broadened = await resolveCatsCompanyGroupActivation({
       topic: 'grp_80', senderId: 'usr7', text: '请继续处理', seq: 20,
@@ -117,16 +120,35 @@ describe('CatsCompany JEV group activation', () => {
     assert.deepEqual(broadened, { activate: true, source: 'jev', confidence: 0.91 });
 
     const silentJudge: CatsCompanyGroupActivationJudge = {
-      judge: async input => {
-        assert.equal(input.explicitlyMentioned, true);
-        return { decision: 'silent', confidence: 0.88 };
+      judge: async () => ({ decision: 'silent', confidence: 0.88 }),
+    };
+    const silent = await resolveCatsCompanyGroupActivation({
+      topic: 'grp_80', senderId: 'usr7', text: '谢谢', seq: 21,
+      isGroup: true, mentions: [], memberCount: 2,
+    }, 'usr43', true, silentJudge);
+    assert.deepEqual(silent, { activate: false, source: 'jev', confidence: 0.88 });
+  });
+
+  test('forces explicit structured @this-AI and @all without calling JEV', async () => {
+    let calls = 0;
+    const judge: CatsCompanyGroupActivationJudge = {
+      judge: async () => {
+        calls++;
+        return { decision: 'silent', confidence: 1 };
       },
     };
-    const narrowed = await resolveCatsCompanyGroupActivation({
-      topic: 'grp_80', senderId: 'usr7', text: '@AI 谢谢', seq: 21,
-      isGroup: true, mentions: ['usr43'], memberCount: 4,
-    }, '43', true, silentJudge);
-    assert.deepEqual(narrowed, { activate: false, source: 'jev', confidence: 0.88 });
+    for (const mentions of [['usr43'], ['all']]) {
+      const result = await resolveCatsCompanyGroupActivation({
+        topic: 'grp_80', senderId: 'usr7', text: '谢谢', seq: 21,
+        isGroup: true, mentions, memberCount: 4,
+      }, '43', mentions[0] !== 'all', judge);
+      assert.deepEqual(result, { activate: true, source: 'deterministic' });
+    }
+    assert.equal(calls, 0);
+    assert.deepEqual(await resolveCatsCompanyGroupActivation({
+      topic: 'grp_80', senderId: 'usr7', text: '@all 开始',
+      isGroup: true, mentions: ['all'], memberCount: 4,
+    }, 'usr43', false), { activate: true, source: 'deterministic' });
   });
 
   test('keeps external channel trust as a hard fence and fails back deterministically', async () => {
@@ -147,12 +169,13 @@ describe('CatsCompany JEV group activation', () => {
     assert.equal(calls, 0);
 
     const fallback = await resolveCatsCompanyGroupActivation({
-      topic: 'grp_80', senderId: 'usr7', text: '@AI 请处理', seq: 23,
-      isGroup: true, mentions: ['usr43'], memberCount: 4,
-    }, 'usr43', true, judge);
-    assert.equal(fallback.activate, true);
+      topic: 'grp_80', senderId: 'usr7', text: '请处理', seq: 23,
+      isGroup: true, mentions: [], memberCount: 4,
+    }, 'usr43', false, judge);
+    assert.equal(fallback.activate, false);
     assert.equal(fallback.source, 'jev_error');
     assert.match(fallback.error?.message || '', /offline/);
+    assert.equal(calls, 1);
   });
 
   test('rejects malformed typed answers instead of guessing', async () => {

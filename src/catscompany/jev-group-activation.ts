@@ -124,7 +124,7 @@ export class JevCatsCompanyGroupActivationJudge implements CatsCompanyGroupActiv
         type: 'noul',
         instructions: [
           'Does this group message give the current local AI agent a clear reason to take a new conversational turn now?',
-          'Treat a structured mention or trusted channel trigger as strong routing evidence, but not as sufficient when the message is only an acknowledgement, thanks, quotation, or aside.',
+          'A trusted channel trigger only allows delivery; judge whether this unmentioned message needs a response. Structured mentions are handled before this judge.',
           'Judge only the supplied message and routing context.',
         ].join(' '),
         criteria: {
@@ -193,8 +193,9 @@ export class JevCatsCompanyGroupActivationJudge implements CatsCompanyGroupActiv
 
 /**
  * Resolve one message before cloud restore, session creation, or the agent loop.
- * JEV may broaden or narrow native CatsCompany group activation. Externally
- * managed groups keep their trusted channel trigger as a hard delivery fence.
+ * A structured mention of this AI (or @all) forces activation. Only group
+ * messages without that explicit instruction reach JEV. Externally managed
+ * groups keep their trusted channel trigger as a hard delivery fence.
  */
 export async function resolveCatsCompanyGroupActivation(
   message: Pick<MessageContext, 'topic' | 'senderId' | 'text' | 'seq' | 'isGroup' | 'metadata' | 'mentions' | 'memberCount'>,
@@ -202,7 +203,7 @@ export async function resolveCatsCompanyGroupActivation(
   deterministicActivation: boolean,
   judge?: CatsCompanyGroupActivationJudge,
 ): Promise<CatsCompanyGroupActivationResolution> {
-  if (!message.isGroup || !judge) {
+  if (!message.isGroup) {
     return { activate: deterministicActivation, source: 'deterministic' };
   }
 
@@ -213,11 +214,15 @@ export async function resolveCatsCompanyGroupActivation(
   }
 
   const targetUid = normalizeCatsUid(botUid);
-  const explicitlyMentioned = Boolean(
-    targetUid
-      && Array.isArray(message.mentions)
-      && message.mentions.some(mention => normalizeCatsUid(mention) === targetUid),
-  );
+  const explicitlyMentioned = Array.isArray(message.mentions)
+    && message.mentions.some(mention => mention === 'all'
+      || Boolean(targetUid && normalizeCatsUid(mention) === targetUid));
+  if (explicitlyMentioned) {
+    return { activate: true, source: 'deterministic' };
+  }
+  if (!judge) {
+    return { activate: deterministicActivation, source: 'deterministic' };
+  }
   const trustedChannelTriggered = Boolean(sourceChannel && deterministicActivation);
 
   try {

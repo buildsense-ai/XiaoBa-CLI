@@ -431,10 +431,14 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns.length, 1);
   });
 
-  test('lets JEV keep an explicitly mentioned acknowledgement out of the agent loop', async () => {
+  test('forces structured @this-AI into the agent loop even when JEV would stay silent', async () => {
     const { bot, handledTurns, sessionKeys } = createHarness();
+    let judgeCalls = 0;
     bot.groupActivationJudge = {
-      judge: async () => ({ decision: 'silent', confidence: 0.9 }),
+      judge: async () => {
+        judgeCalls++;
+        return { decision: 'silent', confidence: 0.9 };
+      },
     };
     let restoreCalls = 0;
     bot.ensureCloudSessionRestored = async () => {
@@ -454,9 +458,10 @@ describe('CatsCompany execution scope flow', () => {
       seq: 13,
     });
 
-    assert.equal(restoreCalls, 0);
-    assert.deepEqual(sessionKeys, []);
-    assert.deepEqual(handledTurns, []);
+    assert.equal(judgeCalls, 0);
+    assert.equal(restoreCalls, 1);
+    assert.deepEqual(sessionKeys, ['cc_group:grp_80']);
+    assert.equal(handledTurns.length, 1);
   });
 
   test('does not create a blank session when first cloud recovery fails', async () => {
