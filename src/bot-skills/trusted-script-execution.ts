@@ -651,14 +651,6 @@ function findLocalSkillReference(scriptPath: string, context: ToolExecutionConte
   return undefined;
 }
 
-function sameSkillReference(left: BotSkillRef, right: BotSkillRef): boolean {
-  return left.source === 'skillhub'
-    && right.source === 'skillhub'
-    && left.skillId === right.skillId
-    && left.version === right.version
-    && left.contentHash === right.contentHash;
-}
-
 function sameIdentity(left: unknown, right: unknown): boolean {
   const normalizedLeft = stringValue(left).toLowerCase();
   return Boolean(normalizedLeft && normalizedLeft === stringValue(right).toLowerCase());

@@ -43,6 +43,7 @@ import type {
 } from './types';
 import { applySkillHubLocalMetadata } from '../skillhub/local-skill-metadata';
 import { snapshotPendingBotSkillWorkspace } from './pending-snapshot';
+import { canonicalizeBotSkillRevocations } from './revocation';
 
 export type BotSkillSyncDirection =
   | 'none'
@@ -306,7 +307,7 @@ export class BotSkillSyncService {
    * cannot publish unrelated pending local Skills or edits.
    */
   async revokeCloudReferences(revocations: readonly BotSkillRef[]): Promise<BotSkillSyncResult> {
-    const revoked = canonicalizeBotSkillRefs(revocations);
+    const revoked = canonicalizeBotSkillRevocations(revocations);
     let cloud = await pullCloudBotSkills(this.cloudOptions);
     if (!cloud?.definition) {
       throw new Error('CatsCo cloud BotDefinition is unavailable; the Skill revocation remains pending.');

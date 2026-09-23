@@ -85,14 +85,9 @@ export function recordPendingBotSkillRevocation(
   const filePath = revocationStatePath(runtimeRoot, botId, true);
   if (!filePath || !canonical) throw new Error('Bot Skill revocation state could not be prepared.');
   const current = readRevocationState(filePath, botId)?.references ?? [];
-  // BotDefinition permits one reference per skillId. A newer deletion of the
-  // same Skill replaces an older pending version; an identical retry is a
-  // no-op. This keeps the deny-list idempotent without retaining impossible
-  // duplicate IDs.
-  const references = canonicalizeBotSkillRefs([
-    ...current.filter(item => item.skillId !== canonical.skillId),
-    canonical,
-  ]);
+  // A deny-list is version-specific, unlike BotDefinition's active reference
+  // set. Keep every version until Cloud confirms that exact reference is gone.
+  const references = canonicalizeBotSkillRevocations([...current, canonical]);
   writeRevocationState(filePath, { schema: REVOCATION_SCHEMA, botId, references });
 }
 
@@ -193,11 +188,26 @@ function readRevocationState(filePath: string, botId: string): RevocationState |
     return {
       schema: REVOCATION_SCHEMA,
       botId,
-      references: canonicalizeBotSkillRefs(parsed.references),
+      references: canonicalizeBotSkillRevocations(parsed.references),
     };
   } catch {
     return undefined;
   }
+}
+
+export function canonicalizeBotSkillRevocations(input: readonly BotSkillRef[]): BotSkillRef[] {
+  if (!Array.isArray(input)) throw new Error('Bot Skill revocations must be an array');
+  const byReference = new Map<string, BotSkillRef>();
+  for (const item of input) {
+    const [canonical] = canonicalizeBotSkillRefs([item]);
+    if (!canonical) continue;
+    byReference.set(`${canonical.skillId}\0${canonical.version}\0${canonical.contentHash}`, canonical);
+  }
+  return [...byReference.values()].sort((left, right) => (
+    left.skillId.localeCompare(right.skillId)
+    || left.version.localeCompare(right.version)
+    || left.contentHash.localeCompare(right.contentHash)
+  ));
 }
 
 function writeRevocationState(filePath: string, state: RevocationState): void {

@@ -17,6 +17,7 @@ import { prepareBoundBotSkills } from '../src/bot-skills/runtime';
 import { BotSkillCloudRestoreError, BotSkillSyncService } from '../src/bot-skills/sync-service';
 import { BotPrivateSkillClient } from '../src/bot-skills/private-package-client';
 import { snapshotPendingBotSkillWorkspace } from '../src/bot-skills/pending-snapshot';
+import { reconcilePendingBotSkillRevocations, recordPendingBotSkillRevocation, readPendingBotSkillRevocations } from '../src/bot-skills/revocation';
 import type { BotSkillPackage, LocalBotSkillManifestEntry } from '../src/bot-skills/types';
 import { BotSkillWorkspaceService } from '../src/bot-skills/workspace';
 import {
@@ -63,6 +64,30 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
       ),
     );
     assert.equal(fs.readFileSync(dirtyFile, 'utf8'), 'dirty local workspace');
+  });
+
+  test('retains an old-version deny when a newer version revoke reconciles while Cloud still lists the old version', async () => {
+    const fixture = createFixture(roots);
+    const oldReference: BotSkillRef = {
+      source: 'skillhub',
+      skillId: 'publisher/artifact',
+      version: '1.0.0',
+      contentHash: 'a'.repeat(64),
+    };
+    const newReference: BotSkillRef = {
+      ...oldReference,
+      version: '2.0.0',
+      contentHash: 'b'.repeat(64),
+    };
+    fixture.cloud = { revision: 1, skills: [oldReference] };
+    recordPendingBotSkillRevocation(fixture.botId, oldReference, fixture.runtimeRoot);
+    recordPendingBotSkillRevocation(fixture.botId, newReference, fixture.runtimeRoot);
+
+    const result = await fixture.revoke([newReference]);
+    reconcilePendingBotSkillRevocations(fixture.botId, result.skills, fixture.runtimeRoot);
+
+    assert.deepEqual(fixture.cloud.skills, [oldReference]);
+    assert.deepEqual(readPendingBotSkillRevocations(fixture.botId, fixture.runtimeRoot), [oldReference]);
   });
 
   test('does not switch a different active workspace for a live Runtime apply', async () => {
@@ -2851,6 +2876,20 @@ function createFixture(
       skillHubBaseUrl: 'https://hub.test',
       definitionService,
     }).sync(),
+    revoke: async (revocations: readonly BotSkillRef[]) => new BotSkillSyncService({
+      runtimeRoot,
+      skillsRoot,
+      botId,
+      workspaceExisted: true,
+      auth: {
+        apiKey: 'bot-key',
+        httpBaseUrl: 'https://cats.test',
+        serverUrl: 'wss://cats.test',
+      },
+      fetchImpl,
+      skillHubBaseUrl: 'https://hub.test',
+      definitionService,
+    }).revokeCloudReferences(revocations),
     pushWorkspace: async () => new BotSkillSyncService({
       runtimeRoot,
       skillsRoot,

@@ -191,7 +191,7 @@ describe('skill tool direct content mode', () => {
     assert.equal(isBotSkillReferenceActive('usrbot-123', reference), true);
   });
 
-  test('replaces an older pending version and treats repeated revocation as idempotent', () => {
+  test('keeps multiple revoked versions and treats repeated revocation as idempotent', () => {
     const runtimeRoot = path.join(testRoot, 'revocation-idempotency-runtime');
     fs.mkdirSync(runtimeRoot, { recursive: true });
     const older = {
@@ -205,7 +205,38 @@ describe('skill tool direct content mode', () => {
     recordPendingBotSkillRevocation('usrbot-idempotent', older, runtimeRoot);
     assert.doesNotThrow(() => recordPendingBotSkillRevocation('usrbot-idempotent', older, runtimeRoot));
     assert.doesNotThrow(() => recordPendingBotSkillRevocation('usrbot-idempotent', newer, runtimeRoot));
-    assert.deepEqual(readPendingBotSkillRevocations('bot-idempotent', runtimeRoot), [newer]);
+    assert.deepEqual(readPendingBotSkillRevocations('bot-idempotent', runtimeRoot), [older, newer]);
+  });
+
+  test('keeps the old-version deny after a newer revoke reconciles against Cloud still listing the old version', () => {
+    const runtimeRoot = path.join(testRoot, 'revocation-multi-version-runtime');
+    fs.mkdirSync(runtimeRoot, { recursive: true });
+    process.env.XIAOBA_USER_DATA_DIR = runtimeRoot;
+    const older = {
+      source: 'skillhub' as const,
+      skillId: 'artifact-legacy',
+      version: '1.0.0',
+      contentHash: 'a'.repeat(64),
+    };
+    const newer = { ...older, version: '2.0.0', contentHash: 'b'.repeat(64) };
+    new FileBotDefinitionRepository({ runtimeRoot }).writeCache({
+      schema: 'xiaoba.bot-definition.v1',
+      botId: 'bot-multi-version',
+      model: { kind: 'catalog', modelId: 'test-model' },
+      skills: [older],
+    });
+
+    recordPendingBotSkillRevocation('bot-multi-version', older, runtimeRoot);
+    recordPendingBotSkillRevocation('bot-multi-version', newer, runtimeRoot);
+    reconcilePendingBotSkillRevocations('bot-multi-version', [older], runtimeRoot);
+
+    assert.deepEqual(readPendingBotSkillRevocations('bot-multi-version', runtimeRoot), [older]);
+    assert.equal(isBotSkillReferenceActive('bot-multi-version', older), false);
+    assert.equal(isBotSkillReferenceActive('bot-multi-version', newer), false);
+
+    reconcilePendingBotSkillRevocations('bot-multi-version', [], runtimeRoot);
+    assert.equal(readPendingBotSkillRevocations('bot-multi-version', runtimeRoot), undefined);
+    assert.equal(isBotSkillReferenceActive('bot-multi-version', older), true);
   });
 });
 
