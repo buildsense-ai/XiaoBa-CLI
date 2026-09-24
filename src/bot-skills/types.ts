@@ -77,5 +77,7 @@ export interface BotSkillSyncBase {
   botId: string;
   definitionRevision: number;
   skills: BotSkillSyncBaseEntry[];
+  /** Cloud references whose package was permanently unavailable at last apply. */
+  unavailableSkills?: BotSkillRef[];
   updatedAt: string;
 }

@@ -24,6 +24,7 @@ export class BotSkillBaseStore {
         cloudRevision?: number;
         definitionRevision?: number;
         skills: BotSkillSyncBase['skills'];
+        unavailableSkills?: BotSkillSyncBase['unavailableSkills'];
         updatedAt: string;
       };
       const value: BotSkillSyncBase = raw.schema === LEGACY_BASE_SCHEMA
@@ -43,6 +44,7 @@ export class BotSkillBaseStore {
         || !Array.isArray(value.skills)
         || !String(value.updatedAt || '').trim()
         || !validBaseEntries(value.skills)
+        || !validUnavailableSkills(value.unavailableSkills)
       ) {
         throw new Error('Bot Skill sync Base is invalid');
       }
@@ -51,6 +53,9 @@ export class BotSkillBaseStore {
         skills: [...value.skills].sort((left, right) => (
           left.localSkillId < right.localSkillId ? -1 : left.localSkillId > right.localSkillId ? 1 : 0
         )),
+        ...(value.unavailableSkills?.length
+          ? { unavailableSkills: canonicalizeBotSkillRefs(value.unavailableSkills) }
+          : {}),
       };
     } catch (error) {
       if (error instanceof Error && error.message === 'Bot Skill sync Base is invalid') throw error;
@@ -67,6 +72,7 @@ export class BotSkillBaseStore {
       || !Array.isArray(base.skills)
       || !String(base.updatedAt || '').trim()
       || !validBaseEntries(base.skills)
+      || !validUnavailableSkills(base.unavailableSkills)
     ) {
       throw new Error('Bot Skill sync base is invalid');
     }
@@ -78,6 +84,9 @@ export class BotSkillBaseStore {
       skills: [...base.skills].sort((left, right) => (
         left.localSkillId < right.localSkillId ? -1 : left.localSkillId > right.localSkillId ? 1 : 0
       )),
+      ...(base.unavailableSkills?.length
+        ? { unavailableSkills: canonicalizeBotSkillRefs(base.unavailableSkills) }
+        : {}),
     };
     fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
     fs.renameSync(temporary, filePath);
@@ -109,6 +118,16 @@ function validBaseEntries(entries: BotSkillSyncBase['skills']): boolean {
     ids.add(localSkillId);
     return true;
   });
+}
+
+function validUnavailableSkills(entries: BotSkillSyncBase['unavailableSkills']): boolean {
+  if (entries === undefined) return true;
+  try {
+    canonicalizeBotSkillRefs(entries);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeBotId(botId: string): string {

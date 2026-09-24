@@ -661,7 +661,15 @@ export class CatsCompanyBot {
       applied_revision: sync.appliedRevision ?? sync.cloudRevision ?? null,
       synced_skills: sync.skills.length,
       ...(sync.degradedSkills?.length
-        ? { degraded_skills: sync.degradedSkills }
+        ? {
+            degraded_skills: sync.degradedSkills.map(item => ({
+              reason: item.reason,
+              source: item.reference.source,
+              skill_id: item.reference.skillId,
+              version: item.reference.version,
+              content_hash: item.reference.contentHash,
+            })),
+          }
         : {}),
     };
   }

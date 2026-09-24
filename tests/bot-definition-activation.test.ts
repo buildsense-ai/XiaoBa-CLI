@@ -548,7 +548,7 @@ describe('BotDefinition activation', () => {
         url.pathname === '/api/bot/skill-packages/arrowhaken/image-asset-generator/versions/1.0.1'
         && method === 'GET'
       ) {
-        return Response.json({ error: 'package not found' }, { status: 404 });
+        return Response.json({ error: { code: 'version.not_found', message: 'package not found' } }, { status: 404 });
       }
       if (url.pathname === '/api/bot/definition/ack' && method === 'POST') {
         ackBody = JSON.parse(String(init?.body));

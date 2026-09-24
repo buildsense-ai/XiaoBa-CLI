@@ -292,11 +292,29 @@ export class BotSkillSyncService {
     }
 
     const localChanged = !localMatchesBase(local, base);
-    const cloudChanged = !botSkillRefsEqual(cloud.skills, base.skills.map(entry => entry.reference));
-    if (localChanged) return this.pushLocal(local, cloud, base);
-    if (cloudChanged) return this.restoreCloud(cloud);
-    this.acceptCloudDefinition(cloud);
-    if (cloud.revision !== base.definitionRevision) this.writeBase(cloud, base.skills);
+    const knownUnavailable = (base.unavailableSkills ?? []).filter(reference => (
+      cloud.skills.some(current => botSkillRefEqual(current, reference))
+    ));
+    const effectiveCloud = filterUnavailableCloudSkills(cloud, knownUnavailable);
+    const cloudChanged = !botSkillRefsEqual(effectiveCloud.skills, base.skills.map(entry => entry.reference));
+    if (localChanged) {
+      return this.pushLocal(local, cloud, base, {
+        preserveUnavailableSkills: knownUnavailable,
+      });
+    }
+    if (cloudChanged) {
+      return this.restoreCloud(cloud, {
+        allowUnavailablePackages: true,
+        skipUnavailablePackages: knownUnavailable,
+      });
+    }
+    this.acceptCloudDefinition(effectiveCloud);
+    if (
+      cloud.revision !== base.definitionRevision
+      || !botSkillRefsEqual(knownUnavailable, base.unavailableSkills ?? [])
+    ) {
+      this.writeBase(cloud, base.skills, knownUnavailable);
+    }
     return {
       botId: this.botId,
       direction: 'none',
@@ -304,8 +322,16 @@ export class BotSkillSyncService {
       observedRevision: cloud.revision,
       desiredRevision: cloud.revision,
       appliedRevision: cloud.revision,
-      applyStatus: 'already_applied',
-      skills: cloud.skills,
+      applyStatus: knownUnavailable.length > 0 ? 'degraded' : 'already_applied',
+      skills: effectiveCloud.skills,
+      ...(knownUnavailable.length > 0
+        ? {
+            degradedSkills: knownUnavailable.map(reference => ({
+              reference,
+              reason: 'package_unavailable' as const,
+            })),
+          }
+        : {}),
     };
   }
 
@@ -943,6 +969,7 @@ export class BotSkillSyncService {
     base: BotSkillSyncBase | undefined,
     options: {
       preserveBaseLocalSkillIds?: ReadonlySet<string>;
+      preserveUnavailableSkills?: readonly BotSkillRef[];
       requiredCloudReference?: BotSkillRef;
       validateScope?: () => Promise<void> | void;
       validateWorkspace?: () => Promise<void> | void;
@@ -1041,7 +1068,13 @@ export class BotSkillSyncService {
     ));
     await options.validateScope?.();
     await options.validateWorkspace?.();
-    const refs = canonicalizeBotSkillRefs(nextEntries.map(entry => entry.reference));
+    const unavailableToPreserve = (options.preserveUnavailableSkills ?? []).filter(reference => (
+      initialCloud.skills.some(current => botSkillRefEqual(current, reference))
+    ));
+    const refs = canonicalizeBotSkillRefs([
+      ...nextEntries.map(entry => entry.reference),
+      ...unavailableToPreserve,
+    ]);
     if (
       base
       && !botSkillRefsEqual(initialCloud.skills, base.skills.map(entry => entry.reference))
@@ -1070,14 +1103,21 @@ export class BotSkillSyncService {
       // The current single-device contract explicitly protects local changes.
       await options.validateScope?.();
       await options.validateWorkspace?.();
-      cloud = await replaceCloudBotSkills(this.cloudOptions, latest, refs);
+      const latestRefs = canonicalizeBotSkillRefs([
+        ...nextEntries.map(entry => entry.reference),
+        ...unavailableToPreserve.filter(reference => (
+          latest.skills.some(current => botSkillRefEqual(current, reference))
+        )),
+      ]);
+      cloud = await replaceCloudBotSkills(this.cloudOptions, latest, latestRefs);
     }
     await options.validateScope?.();
     for (const item of pendingMarkers) {
       writeBotSkillLocalMarker(item.path, item.marker);
     }
-    this.acceptCloudDefinition(cloud);
-    this.writeBase(cloud, nextEntries);
+    const effectiveCloud = filterUnavailableCloudSkills(cloud, unavailableToPreserve);
+    this.acceptCloudDefinition(effectiveCloud);
+    this.writeBase(cloud, nextEntries, unavailableToPreserve);
     return {
       botId: this.botId,
       direction: 'local_to_cloud',
@@ -1085,8 +1125,16 @@ export class BotSkillSyncService {
       observedRevision: cloud.revision,
       desiredRevision: cloud.revision,
       appliedRevision: cloud.revision,
-      applyStatus: 'applied',
-      skills: cloud.skills,
+      applyStatus: unavailableToPreserve.length > 0 ? 'degraded' : 'applied',
+      skills: effectiveCloud.skills,
+      ...(unavailableToPreserve.length > 0
+        ? {
+            degradedSkills: unavailableToPreserve.map(reference => ({
+              reference,
+              reason: 'package_unavailable' as const,
+            })),
+          }
+        : {}),
     };
   }
 
@@ -1151,9 +1199,13 @@ export class BotSkillSyncService {
        * A missing Bot-scoped package is a permanent failure for that Skill,
        * but must not prevent an otherwise valid Definition (especially its
        * model) from becoming active. The missing reference is omitted from the
-       * local runnable workspace and reported as degraded.
+       * local runnable workspace and reported as degraded. Routine sync uses
+       * this only with a structured package-not-found error or a previously
+       * recorded unavailable reference; other 404s remain fail-closed.
        */
       allowUnavailablePackages?: boolean;
+      /** Known permanent package misses are skipped without retrying every routine sync. */
+      skipUnavailablePackages?: readonly BotSkillRef[];
       validateScope?: () => Promise<void> | void;
       pendingSnapshot?: {
         reason: 'activation_local_changed'
@@ -1181,6 +1233,8 @@ export class BotSkillSyncService {
       preserveLocalOnlyWorkspace?: boolean;
       preserveUnmanaged?: boolean;
       allowUnavailablePackages?: boolean;
+      /** Known permanent package misses are skipped without retrying every routine sync. */
+      skipUnavailablePackages?: readonly BotSkillRef[];
       validateScope?: () => Promise<void> | void;
       pendingSnapshot?: {
         reason: 'activation_local_changed'
@@ -1214,6 +1268,17 @@ export class BotSkillSyncService {
         ? cloudOwnedSkillRoots(this.skillsRoot, previousBase)
         : scanManageableWorkspaceRoots(this.skillsRoot);
     const previousDefinition = this.definitionService.read(this.botId);
+    let previousLocalEntries: LocalBotSkillManifestEntry[] = [];
+    if (workspaceExists && preserveUnmanaged) {
+      try {
+        previousLocalEntries = scanBotSkillWorkspace(this.skillsRoot);
+      } catch {
+        // A malformed or oversized local entry cannot be used to identify a
+        // degraded package. Keep the existing fail-closed validation path
+        // below; only verified marker matches are eligible for exclusion.
+      }
+    }
+    const degradedLocalRoots: string[] = [];
     let entries: BotSkillSyncBaseEntry[] = [];
     let effectiveCloud = cloud;
     let localPendingEvidence: BotSkillSyncResult['localPendingEvidence'];
@@ -1230,6 +1295,14 @@ export class BotSkillSyncService {
       );
       for (const reference of cloud.skills) {
         await options.validateScope?.();
+        if (options.skipUnavailablePackages?.some(item => botSkillRefEqual(item, reference))) {
+          degradedSkills.push({ reference, reason: 'package_unavailable' });
+          const localEntry = previousLocalEntries.find(entry => (
+            entry.reference && botSkillRefEqual(entry.reference, reference)
+          ));
+          if (localEntry) degradedLocalRoots.push(path.resolve(localEntry.path));
+          continue;
+        }
         /*
          * Cloud is authoritative for these references. When the public entry
          * was withdrawn after the Definition pinned it, the Bot-scoped store
@@ -1247,6 +1320,10 @@ export class BotSkillSyncService {
             throw error;
           }
           degradedSkills.push({ reference, reason: 'package_unavailable' });
+          const localEntry = previousLocalEntries.find(entry => (
+            entry.reference && botSkillRefEqual(entry.reference, reference)
+          ));
+          if (localEntry) degradedLocalRoots.push(path.resolve(localEntry.path));
           Logger.warning(
             `Bot Skill ${reference.skillId}@${reference.version} 的 Bot-scoped package 不可用；`
             + '已从本地可运行工作区隔离，继续应用其他 Skill 和模型配置。',
@@ -1311,7 +1388,10 @@ export class BotSkillSyncService {
           stage,
           previousManagedRoots,
           stagedLocal.map(entry => path.resolve(entry.path)),
-          { skipConflicts: preserveLocalOnlyWorkspace },
+          {
+            skipConflicts: preserveLocalOnlyWorkspace,
+            skipRoots: degradedLocalRoots,
+          },
         );
         entries = verifiedRestoredEntries(stagedLocal, packages, effectiveCloud.skills);
       }
@@ -1321,13 +1401,21 @@ export class BotSkillSyncService {
         this.writeRestoreJournal({ stage, backup, phase: 'backup_pending' });
         renameBotSkillWorkspaceSync(this.skillsRoot, backup);
         backedUp = true;
-        if (options.pendingSnapshot && hasWorkspaceEntries(backup)) {
+        const pendingSnapshot = options.pendingSnapshot ?? (
+          degradedSkills.length > 0
+            ? {
+                reason: 'activation_cloud_reconcile' as const,
+                cloudRevision: cloud.revision,
+              }
+            : undefined
+        );
+        if (pendingSnapshot && hasWorkspaceEntries(backup)) {
           const snapshot = snapshotPendingBotSkillWorkspace({
             runtimeRoot: this.runtimeRoot,
             botId: this.botId,
             sourcePath: backup,
             recordedSourcePath: this.skillsRoot,
-            ...options.pendingSnapshot,
+            ...pendingSnapshot,
             cloudRevision: cloud.revision,
           });
           localPendingEvidence = {
@@ -1343,7 +1431,11 @@ export class BotSkillSyncService {
       activatedStage = true;
       this.writeRestoreJournal({ stage, backup, phase: 'activated' });
       this.acceptCloudDefinition(effectiveCloud);
-      this.writeBase(effectiveCloud, entries);
+      this.writeBase(
+        cloud,
+        entries,
+        degradedSkills.map(item => item.reference),
+      );
       try {
         this.writeRestoreJournal({ stage, backup, phase: 'committed' });
       } catch {
@@ -1411,12 +1503,17 @@ export class BotSkillSyncService {
     fs.renameSync(temporary, filePath);
   }
 
-  private writeBase(cloud: CloudBotSkills, entries: BotSkillSyncBaseEntry[]): void {
+  private writeBase(
+    cloud: CloudBotSkills,
+    entries: BotSkillSyncBaseEntry[],
+    unavailableSkills: readonly BotSkillRef[] = [],
+  ): void {
     this.baseStore.write({
       schema: 'xiaoba.bot-skill-sync-base.v2',
       botId: this.botId,
       definitionRevision: cloud.revision,
       skills: entries,
+      ...(unavailableSkills.length ? { unavailableSkills: [...unavailableSkills] } : {}),
       updatedAt: new Date().toISOString(),
     });
   }
@@ -1701,7 +1798,35 @@ function errorMessage(error: unknown): string {
 }
 
 function isUnavailableSkillPackageError(error: unknown): boolean {
-  return Number((error as { status?: unknown } | undefined)?.status) === 404;
+  const value = error as { status?: unknown; code?: unknown } | undefined;
+  return Number(value?.status) === 404 && [
+    'version.not_found',
+    'package.not_found',
+    'skill_package.not_found',
+    'bot_skill_package.not_found',
+  ].includes(String(value?.code || '').trim().toLowerCase());
+}
+
+function filterUnavailableCloudSkills(
+  cloud: CloudBotSkills,
+  unavailableSkills: readonly BotSkillRef[],
+): CloudBotSkills {
+  if (unavailableSkills.length === 0) return cloud;
+  const isUnavailable = (reference: BotSkillRef) => unavailableSkills.some(item => (
+    botSkillRefEqual(item, reference)
+  ));
+  return {
+    ...cloud,
+    skills: cloud.skills.filter(reference => !isUnavailable(reference)),
+    ...(cloud.definition
+      ? {
+          definition: {
+            ...cloud.definition,
+            skills: cloud.definition.skills?.filter(reference => !isUnavailable(reference)),
+          },
+        }
+      : {}),
+  };
 }
 
 function referenceKey(reference: BotSkillRef): string {
@@ -1783,7 +1908,7 @@ function copyUnmanagedWorkspaceContent(
   targetRoot: string,
   managedRoots: string[],
   targetManagedRoots: string[],
-  options: { skipConflicts?: boolean } = {},
+  options: { skipConflicts?: boolean; skipRoots?: readonly string[] } = {},
 ): void {
   const displaced: string[] = [];
   const visit = (current: string): void => {
@@ -1791,6 +1916,9 @@ function copyUnmanagedWorkspaceContent(
       if (entry.isSymbolicLink()) continue;
       const source = path.join(current, entry.name);
       const resolvedSource = path.resolve(source);
+      if (options.skipRoots?.some(root => (
+        resolvedSource === root || resolvedSource.startsWith(`${root}${path.sep}`)
+      ))) continue;
       if (managedRoots.includes(resolvedSource)) continue;
       const relative = path.relative(sourceRoot, source);
       const target = path.join(targetRoot, relative);

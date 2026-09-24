@@ -267,8 +267,19 @@ export async function syncCurrentBotSkillsNow(): Promise<BotSkillSyncResult | un
       workspaceExisted: true,
       definitionService,
     }).sync();
-    if (result.applyStatus === 'applied' || result.applyStatus === 'already_applied') {
-      reconcilePendingBotSkillRevocations(botId, result.skills, runtimeRoot);
+    if (
+      result.applyStatus === 'applied'
+      || result.applyStatus === 'already_applied'
+      || result.applyStatus === 'degraded'
+    ) {
+      reconcilePendingBotSkillRevocations(
+        botId,
+        [
+          ...result.skills,
+          ...(result.degradedSkills ?? []).map(item => item.reference),
+        ],
+        runtimeRoot,
+      );
     }
     return result;
   });
