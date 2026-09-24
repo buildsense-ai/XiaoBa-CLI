@@ -2,7 +2,10 @@ import matter from 'gray-matter';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { createCatsCoLocalConfigService } from './local-config';
+import {
+  createCatsCoLocalConfigService,
+  isActiveDeviceConnectorMode,
+} from './local-config';
 import type { CatsThinToolRpcMessage } from './client';
 import {
   BotSkillWorkspaceChangingError,
@@ -387,7 +390,7 @@ export class SkillHubThinRpcHandler {
     return withCurrentBotSkillWorkspaceWrite((context) => {
       this.assertOperational(request);
       this.assertRequestScope(request, botUid, true);
-      this.assertActiveWorkspace(botUid, context.botId, context.activeBotId);
+      this.assertActiveWorkspace(botUid, context.botId, context.activeBotId, context.deviceConnectorMode);
       const nowMs = this.now().getTime();
       this.pruneWorkspaceSnapshots(nowMs);
       const snapshot = expectedRevision
@@ -542,7 +545,7 @@ export class SkillHubThinRpcHandler {
     const localSkillId = requiredText(payload.local_skill_id, 'local_skill_id', MAX_NAME_LENGTH);
     const skillName = requiredText(payload.skill_name, 'skill_name', MAX_NAME_LENGTH);
     await withCurrentBotSkillWorkspaceWrite((context) => {
-      this.assertActiveWorkspace(botUid, context.botId, context.activeBotId);
+      this.assertActiveWorkspace(botUid, context.botId, context.activeBotId, context.deviceConnectorMode);
       const rejected: SkillHubWorkspaceValidationFailure[] = [];
       const entry = scanSkillHubWorkspace(context.skillsRoot, {
         onValidationFailure: failure => rejected.push(failure),
@@ -589,7 +592,7 @@ export class SkillHubThinRpcHandler {
       validateScope: (context) => {
         this.assertOperational(request);
         this.assertRequestScope(request, botUid, true);
-        this.assertActiveWorkspace(botUid, context.botId, context.activeBotId);
+        this.assertActiveWorkspace(botUid, context.botId, context.activeBotId, context.deviceConnectorMode);
       },
     });
     return {
@@ -626,7 +629,7 @@ export class SkillHubThinRpcHandler {
           this.assertRequestScope(request, botUid, true);
         },
         validateWorkspace: (context) => {
-          this.assertActiveWorkspace(botUid, context.botId, context.activeBotId);
+          this.assertActiveWorkspace(botUid, context.botId, context.activeBotId, context.deviceConnectorMode);
           const snapshot = this.createWorkspaceSnapshot(
             botUid,
             context.activeBotId,
@@ -755,7 +758,7 @@ export class SkillHubThinRpcHandler {
     const removed = await withCurrentBotSkillWorkspaceWrite((context) => {
       this.assertOperational(request);
       const scope = this.assertRequestScope(request, botUid, true);
-      this.assertActiveWorkspace(botUid, context.botId, context.activeBotId);
+      this.assertActiveWorkspace(botUid, context.botId, context.activeBotId, context.deviceConnectorMode);
 
       const rejected: SkillHubWorkspaceValidationFailure[] = [];
       const entries = scanSkillHubWorkspace(context.skillsRoot, {
@@ -906,14 +909,20 @@ export class SkillHubThinRpcHandler {
     if (!deviceId || requestDeviceId !== deviceId) {
       throw new SkillHubThinRpcError('DEVICE_MISMATCH', 'The request targets a different XiaoBa device.');
     }
-    if (requireActiveBot && String(config.currentBot?.uid || '').trim() !== botUid) {
+    const deviceConnectorMode = isActiveDeviceConnectorMode(config);
+    if (requireActiveBot && !deviceConnectorMode && String(config.currentBot?.uid || '').trim() !== botUid) {
       throw new SkillHubThinRpcError('BOT_NOT_ACTIVE', 'The selected Bot is not active on this XiaoBa device.');
     }
     return { ownerUid, deviceId };
   }
 
-  private assertActiveWorkspace(botUid: string, configuredBotUid?: string, activeBotUid?: string): void {
-    if (configuredBotUid !== botUid || activeBotUid !== botUid) {
+  private assertActiveWorkspace(
+    botUid: string,
+    configuredBotUid?: string,
+    activeBotUid?: string,
+    deviceConnectorMode = false,
+  ): void {
+    if (!deviceConnectorMode && (configuredBotUid !== botUid || activeBotUid !== botUid)) {
       throw new SkillHubThinRpcError('BOT_NOT_ACTIVE', 'The selected Bot workspace is not active on this device.');
     }
   }

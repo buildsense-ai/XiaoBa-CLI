@@ -115,11 +115,6 @@
     fullPollTimer: null,
     bootstrapPollTimer: null,
     managementOpen: false,
-    agents: [],
-    selectedAgentUid: '',
-    agentListLoading: false,
-    agentSwitchBusy: false,
-    agentSwitchError: '',
     logPollTimer: null,
     updatePollTimer: null,
     updateStatusInFlight: null,
@@ -214,22 +209,22 @@
     if (!cats.connected || cats.authStatus === 'missing' || cats.authStatus === 'invalid' || bootstrap.stage === 'waiting_for_login') {
       return { key: 'auth', error: cats.authError || (bootstrap.stage === 'waiting_for_login' ? bootstrap.error : '') };
     }
-    if (bodyState === 'conflict') {
+    if (!cats.deviceConnectorMode && bodyState === 'conflict') {
       return {
         key: 'error',
-        title: '当前 Agent 正在另一台设备上运行',
-        error: '为了避免两台电脑同时接管同一个 Agent，本机暂时没有启动 Connector。请先退出另一台设备，或稍后重试。',
+        title: '旧版连接仍在其他设备运行',
+        error: '正在迁移旧版本地连接。请稍后重试；如果问题持续，请打开运行日志联系支持人员。',
       };
     }
-    if (bodyState === 'offline') {
+    if (!cats.deviceConnectorMode && bodyState === 'offline') {
       return {
-        key: 'offline_binding',
-        title: '当前 Agent 仍绑定在另一台设备',
-        error: '原设备当前虽然离线，但平台仍保留它的绑定。本机无法自动接管，请先在 CatsCompany 的设备或 Agent 管理处完成转移，再点击重新连接。',
+        key: 'error',
+        title: '旧版连接需要迁移',
+        error: 'Connector 正在改用设备连接方式。请点击“重新连接”；如果仍然失败，请打开运行日志联系支持人员。',
       };
     }
-    if (bodyState === 'auth_error') {
-      return { key: 'error', title: 'Agent 绑定需要重新确认', error: cats.bodyStatus?.error || '当前账号无法使用这个 Agent。' };
+    if (!cats.deviceConnectorMode && bodyState === 'auth_error') {
+      return { key: 'error', title: '旧版连接需要迁移', error: 'Connector 正在改用设备连接方式。请点击“重新连接”；如果仍然失败，请打开运行日志联系支持人员。' };
     }
     if (bootstrap.stage === 'error' || service.status === 'error') {
       return {
@@ -249,33 +244,27 @@
 
     const accountName = cats.user?.display_name || cats.user?.username || '—';
     const accountMeta = cats.user?.username || (cats.connected ? `UID ${cats.user?.uid || ''}` : '等待登录');
-    const agentName = cats.bot?.name || cats.bot?.username || (cats.botUid ? `Agent ${shortId(cats.botUid)}` : '—');
-    const agentMeta = cats.bot?.username || (cats.botUid ? shortId(cats.botUid) : '登录后自动准备');
     const deviceName = cats.device?.name || (cats.device?.deviceId ? '这台电脑' : '—');
     setText('account-name', accountName);
     setText('account-meta', accountMeta);
-    setText('agent-name', agentName);
-    setText('agent-meta', agentMeta);
     setText('device-name', deviceName);
     setText('device-meta', cats.device?.bodyId ? `设备 ${shortId(cats.device.bodyId)}` : '本地工具与文件');
+    setText('device-connector-status', cats.connected ? (cats.connectorReady || cats.service?.status === 'running' ? '已连接' : '正在连接') : '未连接');
+    setText('device-connector-meta', cats.connected ? '这台电脑已授权给 CatsCo 账号' : '登录后自动连接');
     setText('app-version', state.app.version || '—');
-    const switchButton = $('agent-switch-open');
-    switchButton.disabled = !cats.connected || state.agentSwitchBusy;
 
     $('login-form').hidden = view.key !== 'auth';
     $('progress-list').hidden = view.key !== 'connecting';
-    $('error-card').hidden = !['error', 'offline_binding'].includes(view.key);
+    $('error-card').hidden = view.key !== 'error';
     $('webapp-button').hidden = view.key !== 'ready';
     $('logout-button').hidden = view.key === 'auth' || (!cats.connected && !cats.tokenPresent);
     $('retry-button').hidden = view.key !== 'error';
-    $('transfer-body-button').hidden = view.key !== 'offline_binding';
     $('close-hint').hidden = view.key !== 'ready';
 
     if (view.key === 'auth') renderAuth(view);
     if (view.key === 'connecting') renderConnecting(cats, service);
     if (view.key === 'ready') renderReady(cats);
     if (view.key === 'error') renderError(view);
-    if (view.key === 'offline_binding') renderError(view);
     renderUpdate();
     syncPolling(view.key);
     maybeOpenWebAppAfterLogin(view.key);
@@ -304,7 +293,7 @@
   function renderAuth(view) {
     setText('status-label', '等待登录 CatsCo');
     setText('hero-title', '登录 CatsCo');
-    setText('hero-copy', '无需在本地创建或选择 Bot。登录成功后，CatsCo 会自动准备 Agent 并启动 Connector。');
+    setText('hero-copy', '登录后会自动连接这台电脑。之后直接在 CatsCo WebApp 和云端 Bot 对话即可。');
     setNotice(view.error || '首次使用需要登录 CatsCo 账号。', view.error ? 'error' : 'normal');
     if (view.error) setText('login-error', view.error);
   }
@@ -312,20 +301,20 @@
   function renderConnecting(cats, service) {
     setText('status-label', 'Connector 正在启动');
     setText('hero-title', '正在连接这台电脑');
-    setText('hero-copy', state.bootstrap.message || '正在同步 Agent 配置并启动 Connector，请稍候。');
+    setText('hero-copy', state.bootstrap.message || '正在注册这台电脑并启动 Connector，请稍候。');
     setNotice('请保持 CatsCo Desktop 运行，连接完成后即可关闭此窗口。', 'normal');
     const accountDone = Boolean(cats.connected);
-    const agentDone = Boolean(cats.bodyConfigured || cats.botUid);
+    const deviceDone = Boolean(cats.deviceConnectorMode || cats.connectorReady);
     const connectorDone = service.status === 'running';
     markStep('account', accountDone ? 'done' : 'active');
-    markStep('agent', agentDone ? 'done' : accountDone ? 'active' : '');
-    markStep('connector', connectorDone ? 'done' : agentDone ? 'active' : '');
+    markStep('device', deviceDone ? 'done' : accountDone ? 'active' : '');
+    markStep('connector', connectorDone ? 'done' : deviceDone ? 'active' : '');
   }
 
   function renderReady(cats) {
     setText('status-label', 'Connector 正常运行');
     setText('hero-title', '这台电脑已连接');
-    setText('hero-copy', 'CatsCo WebApp 可以使用本机 Agent、本地工具和文件。');
+    setText('hero-copy', '现在可以在 CatsCo WebApp 使用这台电脑上的本地工具与文件。');
     setNotice('连接已建立。关闭此窗口后，Connector 会继续在后台运行。', 'success');
   }
 
@@ -338,23 +327,6 @@
     setText('error-title', title);
     setText('error-copy', detail);
     setNotice(`${title}：${detail}`, 'error');
-  }
-
-  async function transferBody() {
-    if (state.actionBusy) return;
-    state.actionBusy = true;
-    setBusyButtons(true);
-    try {
-      await request('/cats/connector/transfer-body', { method: 'POST', body: '{}' });
-      state.bootstrap = { stage: 'connecting', message: '绑定已转移，正在重新连接这台电脑' };
-      await refresh({ force: true });
-      showToast('绑定已转移，正在重新连接');
-    } catch (error) {
-      showToast(`转移失败：${humanError(error)}`);
-    } finally {
-      state.actionBusy = false;
-      setBusyButtons(false);
-    }
   }
 
   function markStep(name, status) {
@@ -722,95 +694,6 @@
     }
   }
 
-  async function openAgentSwitch() {
-    if (!state.cats?.connected || state.agentSwitchBusy) return;
-    const dialog = $('agent-switch-dialog');
-    state.agentListLoading = true;
-    state.agentSwitchError = '';
-    state.agents = [];
-    state.selectedAgentUid = state.cats.botUid || '';
-    renderAgentSwitch();
-    dialog.showModal();
-    const agents = await settled('/cats/bots');
-    state.agentListLoading = false;
-    if (agents.ok) {
-      state.agents = Array.isArray(agents.value?.bots) ? agents.value.bots : [];
-      state.selectedAgentUid = agents.value?.currentBotUid || state.cats.botUid || '';
-    } else {
-      state.agentSwitchError = `无法读取 Agent：${humanError(agents.error)}`;
-    }
-    renderAgentSwitch();
-  }
-
-  function closeAgentSwitch() {
-    if (state.agentSwitchBusy) return;
-    const dialog = $('agent-switch-dialog');
-    if (dialog.open) dialog.close();
-    state.agentSwitchError = '';
-  }
-
-  function renderAgentSwitch() {
-    const list = $('agent-list');
-    const currentUid = String(state.cats?.botUid || '');
-    if (state.agentListLoading) {
-      list.innerHTML = '<div class="agent-list-state">正在读取 Agent……</div>';
-    } else if (state.agents.length === 0 && !state.agentSwitchError) {
-      list.innerHTML = '<div class="agent-list-state">当前账号下没有可切换的 Agent。</div>';
-    } else {
-      list.innerHTML = state.agents.map((agent) => {
-        const uid = String(agent.uid || '');
-        const selected = uid === state.selectedAgentUid;
-        const current = uid === currentUid;
-        const name = agent.display_name || agent.username || `Agent ${shortId(uid)}`;
-        const meta = agent.username || shortId(uid);
-        return `<label class="agent-option${selected ? ' selected' : ''}">
-          <input type="radio" name="agent-switch" value="${escapeHtml(uid)}" ${selected ? 'checked' : ''} ${state.agentSwitchBusy ? 'disabled' : ''}>
-          <span class="agent-option-copy"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(meta)}</small></span>
-          ${current ? '<span class="current-badge">当前</span>' : ''}
-        </label>`;
-      }).join('');
-    }
-
-    const selected = state.agents.find((agent) => String(agent.uid || '') === state.selectedAgentUid);
-    const error = $('agent-switch-error');
-    error.hidden = !state.agentSwitchError;
-    error.textContent = state.agentSwitchError;
-    const confirm = $('agent-switch-confirm');
-    confirm.disabled = state.agentListLoading || state.agentSwitchBusy || !selected || state.selectedAgentUid === currentUid;
-    confirm.textContent = state.agentSwitchBusy ? '正在切换…' : '切换并重新连接';
-    $('agent-switch-close').disabled = state.agentSwitchBusy;
-    $('agent-switch-cancel').disabled = state.agentSwitchBusy;
-  }
-
-  async function switchAgent() {
-    const targetUid = String(state.selectedAgentUid || '');
-    if (!targetUid || targetUid === String(state.cats?.botUid || '') || state.agentSwitchBusy) return;
-    const target = state.agents.find((agent) => String(agent.uid || '') === targetUid);
-    state.agentSwitchBusy = true;
-    state.agentSwitchError = '';
-    renderAgentSwitch();
-    render();
-    try {
-      await request('/cats/switch-bot', {
-        method: 'POST',
-        body: JSON.stringify({ botUid: targetUid }),
-      });
-      state.bootstrap = { stage: 'connecting', message: `正在连接 Agent“${target?.display_name || target?.username || shortId(targetUid)}”` };
-      if ($('agent-switch-dialog').open) $('agent-switch-dialog').close();
-      render();
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      await refresh({ force: true });
-      showToast('Agent 已切换并重新连接');
-    } catch (error) {
-      state.agentSwitchError = `切换失败：${humanError(error)}`;
-      renderAgentSwitch();
-    } finally {
-      state.agentSwitchBusy = false;
-      renderAgentSwitch();
-      render();
-    }
-  }
-
   async function openManagement() {
     state.managementOpen = true;
     $('connection-view').hidden = true;
@@ -891,12 +774,13 @@
     $('logout-confirm').disabled = true;
     $('logout-confirm').textContent = '正在退出…';
     try {
-      await request('/cats/auth/logout', { method: 'POST', body: '{}' });
+      const result = await request('/cats/auth/logout', { method: 'POST', body: '{}' });
       $('logout-dialog').close();
       closeManagement();
       state.cats = {};
       state.bootstrap = { stage: 'waiting_for_login' };
       await refresh({ force: true });
+      if (result?.warning) showToast(result.warning);
       window.requestAnimationFrame(() => {
         $('login-account')?.focus({ preventScroll: true });
       });
@@ -1025,7 +909,7 @@
     const message = String(error?.message || error || '未知错误');
     if (/password mismatch/i.test(message)) return '账号或密码错误，请重试。';
     if (/user not found/i.test(message)) return '没有找到这个 CatsCo 账号。';
-    if (/not your bot/i.test(message)) return '当前账号无权使用原 Agent（not your bot），请切换到当前账号拥有的 Agent。';
+    if (/not your bot/i.test(message)) return '当前账号无法使用旧版 Bot 绑定，请重新登录后让 Connector 自动完成设备连接。';
     if (/failed to fetch|network/i.test(message)) return '暂时无法连接 CatsCo，请检查网络。';
     return message;
   }
@@ -1061,7 +945,6 @@
   });
   $('refresh-button').addEventListener('click', () => refresh({ force: true }));
   $('retry-button').addEventListener('click', retry);
-  $('transfer-body-button').addEventListener('click', transferBody);
   $('logout-button').addEventListener('click', openLogoutDialog);
   $('logout-confirm').addEventListener('click', () => { void logout(); });
   $('logout-dialog').addEventListener('cancel', (event) => {
@@ -1076,21 +959,6 @@
     if (state.update?.stage === 'installing') event.preventDefault();
   });
   $('management-open').addEventListener('click', () => { void openManagement(); });
-  $('agent-switch-open').addEventListener('click', () => { void openAgentSwitch(); });
-  $('agent-switch-close').addEventListener('click', (event) => {
-    event.preventDefault();
-    closeAgentSwitch();
-  });
-  $('agent-switch-confirm').addEventListener('click', () => { void switchAgent(); });
-  $('agent-list').addEventListener('change', (event) => {
-    if (event.target?.name !== 'agent-switch') return;
-    state.selectedAgentUid = event.target.value;
-    state.agentSwitchError = '';
-    renderAgentSwitch();
-  });
-  $('agent-switch-dialog').addEventListener('cancel', (event) => {
-    if (state.agentSwitchBusy) event.preventDefault();
-  });
   $('management-back').addEventListener('click', closeManagement);
   $('logs-refresh').addEventListener('click', loadLogs);
   $('logs-copy').addEventListener('click', copyLogs);
