@@ -8,6 +8,8 @@ import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bo
 import { createDashboardAuth } from './auth';
 import { CatsConnectorAutoStart } from './cats-connector-autostart';
 import { preserveOperatorManagedSkills } from '../bot-skills/preservation';
+import { startSkillTrashGarbageCollector } from '../bot-skills/deleted-skill-trash';
+import { PathResolver } from '../utils/path-resolver';
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -36,6 +38,9 @@ export async function startDashboard(
   const projectRoot = controllers.projectRoot || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined) || process.cwd();
   process.env.XIAOBA_DASHBOARD_PORT = String(port);
   const serviceManager = new ServiceManager(projectRoot);
+  const skillTrashGc = startSkillTrashGarbageCollector({
+    runtimeRoot: PathResolver.getRuntimeDataRoot(),
+  });
 
   app.use(express.json({ limit: '25mb' }));
 
@@ -105,6 +110,7 @@ export async function startDashboard(
 
   return {
     async stop(): Promise<void> {
+      skillTrashGc.stop();
       catsConnectorAutoStart.stop();
       serviceManager.stopAll();
       await Promise.all(activeServers.splice(0).map(closeServer));
