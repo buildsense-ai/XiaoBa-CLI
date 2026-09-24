@@ -505,6 +505,76 @@ describe('BotDefinition activation', () => {
     assert.deepStrictEqual(ackBody, { revision: 7 });
   });
 
+  test('applies the model while isolating a missing cloud Skill package', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-degraded-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-degraded-cloud-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'owner-token', uid: '7', displayName: 'Alice' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    const missingSkill = {
+      source: 'skillhub' as const,
+      skillId: 'arrowhaken/image-asset-generator',
+      version: '1.0.1',
+      contentHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    };
+    const cloudDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: {
+        kind: 'custom' as const,
+        protocol: 'openai-responses' as const,
+        apiBase: 'https://models.example.test/v1',
+        apiKey: 'sk-cloud-model',
+        model: 'cloud-model',
+        contextWindowTokens: 256_000,
+        maxTokens: 8192,
+      },
+      prompt: { selected: 'custom' as const, customSystemPrompt: 'Cloud prompt.' },
+      skills: [missingSkill],
+    };
+    let ackBody: any;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method || 'GET';
+      if (url.pathname === '/api/bot/definition' && method === 'GET') {
+        return Response.json({ configured: true, revision: 7, definition: cloudDefinition });
+      }
+      if (
+        url.pathname === '/api/bot/skill-packages/arrowhaken/image-asset-generator/versions/1.0.1'
+        && method === 'GET'
+      ) {
+        return Response.json({ error: 'package not found' }, { status: 404 });
+      }
+      if (url.pathname === '/api/bot/definition/ack' && method === 'POST') {
+        ackBody = JSON.parse(String(init?.body));
+        return Response.json({ status: 'applied' });
+      }
+      return Response.json({ error: `unexpected ${method} ${url.pathname}` }, { status: 500 });
+    }) as typeof fetch;
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      simulatedCloudRoot,
+      env,
+      fetchImpl,
+    });
+
+    assert.equal(prepared?.cloudRevision, 7);
+    assert.equal(prepared?.cloudApplyError, undefined);
+    assert.equal(prepared?.skillSync?.sync?.applyStatus, 'degraded');
+    assert.deepStrictEqual(prepared?.skillSync?.sync?.degradedSkills, [
+      { reference: missingSkill, reason: 'package_unavailable' },
+    ]);
+    assert.deepStrictEqual(prepared?.definition.skills, []);
+    assert.deepStrictEqual(ackBody, { revision: 7 });
+    assert.equal(fs.existsSync(path.join(runtimeRoot, 'skills', 'image-asset-generator')), false);
+  });
+
   test('does not success-ack when the activation Skill recheck loses Cloud after a verified local Base', async () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-recheck-runtime-'));
     const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-recheck-cloud-'));

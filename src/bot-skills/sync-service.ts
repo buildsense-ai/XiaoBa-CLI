@@ -54,8 +54,15 @@ export type BotSkillSyncDirection =
 export type BotSkillApplyStatus =
   | 'applied'
   | 'already_applied'
+  /** The workspace is usable, but one or more cloud references are unavailable. */
+  | 'degraded'
   | 'deferred'
   | 'failed';
+
+export interface BotSkillDegradedEntry {
+  reference: BotSkillRef;
+  reason: 'package_unavailable';
+}
 
 export interface BotSkillSyncResult {
   botId: string;
@@ -68,6 +75,7 @@ export interface BotSkillSyncResult {
   applyStatus: BotSkillApplyStatus;
   errorCode?: string;
   skills: BotSkillRef[];
+  degradedSkills?: BotSkillDegradedEntry[];
   localPendingEvidence?: {
     path: string;
     fingerprint: string;
@@ -529,6 +537,7 @@ export class BotSkillSyncService {
 
       return this.restoreCloud(cloud, {
         preserveLocalOnlyWorkspace: true,
+        allowUnavailablePackages: true,
         pendingSnapshot: {
           reason: localChanged
             ? base ? 'activation_local_changed' : 'activation_without_base'
@@ -1138,6 +1147,13 @@ export class BotSkillSyncService {
        */
       preserveLocalOnlyWorkspace?: boolean;
       preserveUnmanaged?: boolean;
+      /**
+       * A missing Bot-scoped package is a permanent failure for that Skill,
+       * but must not prevent an otherwise valid Definition (especially its
+       * model) from becoming active. The missing reference is omitted from the
+       * local runnable workspace and reported as degraded.
+       */
+      allowUnavailablePackages?: boolean;
       validateScope?: () => Promise<void> | void;
       pendingSnapshot?: {
         reason: 'activation_local_changed'
@@ -1164,6 +1180,7 @@ export class BotSkillSyncService {
       /** See restoreCloud: keep workspace entries this Bot's Definition does not own. */
       preserveLocalOnlyWorkspace?: boolean;
       preserveUnmanaged?: boolean;
+      allowUnavailablePackages?: boolean;
       validateScope?: () => Promise<void> | void;
       pendingSnapshot?: {
         reason: 'activation_local_changed'
@@ -1178,6 +1195,7 @@ export class BotSkillSyncService {
     const stage = path.join(parent, `.bot-skills-stage-${operationID}`);
     const backup = path.join(parent, `.bot-skills-backup-${operationID}`);
     const packages: BotSkillPackage[] = [];
+    const degradedSkills: BotSkillDegradedEntry[] = [];
     const workspaceExists = fs.existsSync(this.skillsRoot);
     const preserveLocalOnlyWorkspace = options.preserveLocalOnlyWorkspace === true;
     const preserveUnmanaged = options.preserveUnmanaged !== false || preserveLocalOnlyWorkspace;
@@ -1197,6 +1215,7 @@ export class BotSkillSyncService {
         : scanManageableWorkspaceRoots(this.skillsRoot);
     const previousDefinition = this.definitionService.read(this.botId);
     let entries: BotSkillSyncBaseEntry[] = [];
+    let effectiveCloud = cloud;
     let localPendingEvidence: BotSkillSyncResult['localPendingEvidence'];
     let backedUp = false;
     let activatedStage = false;
@@ -1218,9 +1237,22 @@ export class BotSkillSyncService {
          * restore installs it without public signature metadata rather than
          * blocking every future Definition revision.
          */
-        const packageValue = await this.privateClient.download(reference, {
-          allowMissingPublicMetadata: true,
-        });
+        let packageValue: BotSkillPackage;
+        try {
+          packageValue = await this.privateClient.download(reference, {
+            allowMissingPublicMetadata: true,
+          });
+        } catch (error) {
+          if (!options.allowUnavailablePackages || !isUnavailableSkillPackageError(error)) {
+            throw error;
+          }
+          degradedSkills.push({ reference, reason: 'package_unavailable' });
+          Logger.warning(
+            `Bot Skill ${reference.skillId}@${reference.version} 的 Bot-scoped package 不可用；`
+            + '已从本地可运行工作区隔离，继续应用其他 Skill 和模型配置。',
+          );
+          continue;
+        }
         if (packageValue.publicMetadataUnavailable) {
           Logger.warning(
             `Bot Skill ${reference.skillId}@${reference.version} 的公开条目已撤下；`
@@ -1235,6 +1267,24 @@ export class BotSkillSyncService {
         );
         packages.push(packageValue);
       }
+      effectiveCloud = degradedSkills.length === 0
+        ? cloud
+        : {
+            ...cloud,
+            skills: cloud.skills.filter(reference => (
+              !degradedSkills.some(item => botSkillRefEqual(item.reference, reference))
+            )),
+            ...(cloud.definition
+              ? {
+                  definition: {
+                    ...cloud.definition,
+                    skills: cloud.definition.skills?.filter(reference => (
+                      !degradedSkills.some(item => botSkillRefEqual(item.reference, reference))
+                    )),
+                  },
+                }
+              : {}),
+          };
       const stagedLocal = scanBotSkillWorkspace(stage);
       const packageByLocalID = new Map(packages.map(item => [item.localSkillId, item]));
       entries = stagedLocal.map(entry => {
@@ -1252,7 +1302,7 @@ export class BotSkillSyncService {
         };
       });
       const restoredRefs = canonicalizeBotSkillRefs(entries.map(entry => entry.reference));
-      if (!botSkillRefsEqual(restoredRefs, cloud.skills)) {
+      if (!botSkillRefsEqual(restoredRefs, effectiveCloud.skills)) {
         throw new Error('Restored Bot Skill workspace does not match its cloud Definition.');
       }
       if (workspaceExists && preserveUnmanaged) {
@@ -1263,7 +1313,7 @@ export class BotSkillSyncService {
           stagedLocal.map(entry => path.resolve(entry.path)),
           { skipConflicts: preserveLocalOnlyWorkspace },
         );
-        entries = verifiedRestoredEntries(stagedLocal, packages, cloud.skills);
+        entries = verifiedRestoredEntries(stagedLocal, packages, effectiveCloud.skills);
       }
 
       if (fs.existsSync(this.skillsRoot)) {
@@ -1292,8 +1342,8 @@ export class BotSkillSyncService {
       renameBotSkillWorkspaceSync(stage, this.skillsRoot);
       activatedStage = true;
       this.writeRestoreJournal({ stage, backup, phase: 'activated' });
-      this.acceptCloudDefinition(cloud);
-      this.writeBase(cloud, entries);
+      this.acceptCloudDefinition(effectiveCloud);
+      this.writeBase(effectiveCloud, entries);
       try {
         this.writeRestoreJournal({ stage, backup, phase: 'committed' });
       } catch {
@@ -1338,8 +1388,9 @@ export class BotSkillSyncService {
       observedRevision: cloud.revision,
       desiredRevision: cloud.revision,
       appliedRevision: cloud.revision,
-      applyStatus: 'applied',
-      skills: cloud.skills,
+      applyStatus: degradedSkills.length > 0 ? 'degraded' : 'applied',
+      skills: effectiveCloud.skills,
+      ...(degradedSkills.length > 0 ? { degradedSkills } : {}),
       ...(localPendingEvidence ? { localPendingEvidence } : {}),
     };
   }
@@ -1647,6 +1698,10 @@ function readRestoreJournal(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isUnavailableSkillPackageError(error: unknown): boolean {
+  return Number((error as { status?: unknown } | undefined)?.status) === 404;
 }
 
 function referenceKey(reference: BotSkillRef): string {
