@@ -12,6 +12,7 @@ import {
   readBotSkillLocalMarker,
   scanBotSkillWorkspace,
   scanLocalBotSkill,
+  writeBotSkillLocalMarker,
 } from '../src/bot-skills/local-manifest';
 import { prepareBoundBotSkills } from '../src/bot-skills/runtime';
 import { BotSkillCloudRestoreError, BotSkillSyncService } from '../src/bot-skills/sync-service';
@@ -213,6 +214,85 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
       [definitionRef(external)],
     );
     assert.equal((await fixture.sync()).direction, 'none');
+  });
+
+  test('keeps a missing Bot package degraded across routine sync without deleting its Cloud reference', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'healthy', 'healthy', 'healthy v1');
+    await fixture.sync();
+    const healthy = fixture.cloud.skills[0];
+    assert.ok(healthy);
+    const missingLocalRoot = path.join(fixture.skillsRoot, 'image-asset-generator');
+    writeSkill(fixture.skillsRoot, 'image-asset-generator', 'image-asset-generator', 'stale local copy');
+    const missingLocal = scanLocalBotSkill(missingLocalRoot);
+    const missing: BotSkillRef = {
+      source: 'skillhub',
+      skillId: 'arrowhaken/image-asset-generator',
+      version: '1.0.1',
+      contentHash: missingLocal.contentHash,
+    };
+    writeBotSkillLocalMarker(missingLocalRoot, {
+      schema: 'xiaoba.bot-skill-local.v1',
+      localSkillId: missingLocal.localSkillId,
+      reference: missing,
+    });
+    fixture.cloud = { revision: fixture.cloud.revision + 1, skills: [healthy, missing] };
+
+    const degraded = await fixture.activate();
+    assert.equal(degraded.applyStatus, 'degraded');
+    assert.deepEqual(degraded.degradedSkills, [{ reference: missing, reason: 'package_unavailable' }]);
+    assert.deepEqual(fixture.cloud.skills, [healthy, missing]);
+    assert.deepEqual(
+      new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.unavailableSkills,
+      [missing],
+    );
+    assert.equal(fs.existsSync(path.join(fixture.skillsRoot, 'image-asset-generator')), false);
+    assert.equal(
+      fs.existsSync(path.join(fixture.runtimeRoot, 'data', 'bot-skills', 'local-pending', fixture.botId)),
+      true,
+    );
+
+    const packageDownloadsAfterDegrade = fixture.packageDownloads;
+    const repeated = await fixture.sync();
+    assert.equal(repeated.applyStatus, 'degraded');
+    assert.equal(fixture.packageDownloads, packageDownloadsAfterDegrade);
+    assert.deepEqual(fixture.cloud.skills, [healthy, missing]);
+
+    fs.writeFileSync(path.join(fixture.skillsRoot, 'healthy', 'SKILL.md'), skillText('healthy', 'healthy v2'));
+    const afterLocalEdit = await fixture.sync();
+    assert.equal(afterLocalEdit.applyStatus, 'degraded');
+    assert.equal(
+      fixture.cloud.skills.some(reference => (
+        reference.skillId === missing.skillId
+        && reference.version === missing.version
+        && reference.contentHash === missing.contentHash
+      )),
+      true,
+    );
+    assert.deepEqual(
+      new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.unavailableSkills,
+      [missing],
+    );
+  });
+
+  test('does not treat a package endpoint 404 without a structured not-found code as permanent Skill loss', async () => {
+    const fixture = createFixture(roots);
+    fixture.packageNotFoundCode = undefined;
+    fixture.cloud = {
+      revision: 1,
+      skills: [{
+        source: 'skillhub',
+        skillId: 'arrowhaken/image-asset-generator',
+        version: '1.0.1',
+        contentHash: 'a'.repeat(64),
+      }],
+    };
+    await assert.rejects(
+      fixture.activate(),
+      error => error instanceof BotSkillCloudRestoreError,
+    );
+    assert.equal(fs.readdirSync(fixture.skillsRoot).length, 0);
+    assert.equal(new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId), undefined);
   });
 
   test('keeps public install metadata mandatory unless the caller opts into a withdrawn entry', async () => {
@@ -2881,6 +2961,7 @@ function createFixture(
     patchStatus: 200,
     publicDownloadMisses: 0,
     publicMetadataStatus: 200,
+    packageNotFoundCode: 'version.not_found' as string | undefined,
     packageDownloads: 0,
     onCloudRead: undefined as undefined | (() => Promise<void> | void),
     onPackageDownload: undefined as undefined | (() => Promise<void> | void),
@@ -3088,7 +3169,9 @@ function createFixture(
       }
       return packageValue
         ? Response.json(packageValue)
-        : Response.json({ error: 'not found' }, { status: 404 });
+        : fixture.packageNotFoundCode
+          ? Response.json({ error: { code: fixture.packageNotFoundCode, message: '版本不存在或未发布' } }, { status: 404 })
+          : Response.json({ error: 'not found' }, { status: 404 });
     }
     return Response.json({ error: 'unexpected request' }, { status: 500 });
   }

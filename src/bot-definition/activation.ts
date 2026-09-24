@@ -296,7 +296,11 @@ export async function prepareBoundBotDefinition(
           || skippedSkillsAreAbsent
           || Boolean(
             skillSync
-            && (skillApplyStatus === 'applied' || skillApplyStatus === 'already_applied')
+            && (
+              skillApplyStatus === 'applied'
+              || skillApplyStatus === 'already_applied'
+              || skillApplyStatus === 'degraded'
+            )
             && skillSync.sync?.desiredRevision === desiredRevision
             && skillSync.sync?.observedRevision === desiredRevision
             && skillSync.sync?.appliedRevision === desiredRevision
@@ -308,6 +312,12 @@ export async function prepareBoundBotDefinition(
           : botSkillActivationDeferredError(skillSync?.sync?.errorCode);
         const cloudApplyRetryable = !targetRevisionApplied
           && botSkillActivationErrorIsRetryable(skillSync?.sync?.errorCode);
+        if (skillApplyStatus === 'degraded') {
+          Logger.warning(
+            `CatsCo BotDefinition revision=${desiredRevision} model/prompt 已应用，但 `
+            + `${skillSync?.sync?.degradedSkills?.length || 0} 个 Skill 不可用，已隔离执行。`,
+          );
+        }
         definitionService.clearLegacyModelConfigurationWhenReady(definition);
         if (
           options.acknowledgeCloudSelection !== false
@@ -650,6 +660,11 @@ export async function prepareBoundBotDefinition(
       ...(portableDefinition.prompt ? { prompt: portableDefinition.prompt } : {}),
       ...(portableDefinition.skills !== undefined ? { skills: portableDefinition.skills } : {}),
     };
+  }
+  if (skillSync?.sync?.applyStatus === 'degraded') {
+    Logger.warning(
+      `CatsCo 云端模型已应用，但 ${skillSync.sync.degradedSkills?.length || 0} 个 Skill 不可用，已隔离执行。`,
+    );
   }
   return {
     botId,

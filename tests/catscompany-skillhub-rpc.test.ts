@@ -130,6 +130,41 @@ describe('CatsCompany SkillHub thin RPC', () => {
     });
   });
 
+  test('treats a degraded Skill apply as applied while preserving the unavailable references', async () => {
+    const degradedSkills = [{
+      reference: {
+        source: 'skillhub',
+        skillId: 'arrowhaken/image-asset-generator',
+        version: '1.0.1',
+        contentHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+      reason: 'package_unavailable',
+    }];
+    const handler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      applyCurrentBotDefinition: async () => ({
+        cloud_revision: 7,
+        synced_skills: 0,
+        apply_status: 'degraded',
+        degraded_skills: degradedSkills,
+      }),
+      isRuntimeIdle: () => true,
+      now: () => new Date('2026-08-24T00:00:00.000Z'),
+    });
+    const result = await handler.execute({
+      request_id: 'apply-degraded',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.applyDefinition,
+      device_id: 'alice-device',
+      target_device_id: 'alice-device',
+      target_owner_user_id: '7',
+      expires_at: Date.now() + 60_000,
+      payload: { bot_uid: '42' },
+    } as any);
+    assert.equal(result.applied, true);
+    assert.equal(result.apply_status, 'degraded');
+    assert.deepEqual(result.degraded_skills, degradedSkills);
+  });
+
   test('applies a device workspace without a local Bot through the full applyDefinition path', async () => {
     const configService = createCatsCoLocalConfigService({ runtimeRoot });
     configService.save({

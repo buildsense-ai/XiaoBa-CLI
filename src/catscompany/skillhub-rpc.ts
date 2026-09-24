@@ -316,7 +316,9 @@ export class SkillHubThinRpcHandler {
     const result = await this.applyCurrentBotDefinition(botUid);
     this.assertOperational(request);
     const applyStatus = String(result?.apply_status ?? result?.applyStatus ?? '');
-    const applied = applyStatus === 'applied' || applyStatus === 'already_applied';
+    const applied = applyStatus === 'applied'
+      || applyStatus === 'already_applied'
+      || applyStatus === 'degraded';
     return {
       schema: 'xiaoba.skillhub.local_workspace.apply_definition.v1',
       bot_uid: botUid,

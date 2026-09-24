@@ -647,7 +647,7 @@ export class CatsCompanyBot {
     const sync = prepared.sync;
     if (!sync) throw new Error('Skill workspace synchronization did not return an apply result.');
     const applyStatus = sync.applyStatus || 'deferred';
-    if (applyStatus === 'applied' || applyStatus === 'already_applied') {
+    if (applyStatus === 'applied' || applyStatus === 'already_applied' || applyStatus === 'degraded') {
       // The workspace files are the durable source of truth, but the running
       // process also keeps a SkillManager snapshot in memory. Refresh it only
       // after the atomic workspace apply has completed, so the next turn sees
@@ -660,6 +660,17 @@ export class CatsCompanyBot {
       apply_status: applyStatus,
       applied_revision: sync.appliedRevision ?? sync.cloudRevision ?? null,
       synced_skills: sync.skills.length,
+      ...(sync.degradedSkills?.length
+        ? {
+            degraded_skills: sync.degradedSkills.map(item => ({
+              reason: item.reason,
+              source: item.reference.source,
+              skill_id: item.reference.skillId,
+              version: item.reference.version,
+              content_hash: item.reference.contentHash,
+            })),
+          }
+        : {}),
     };
   }
 
@@ -753,7 +764,9 @@ export class CatsCompanyBot {
           }
         }
         const result = await this.applySkillHubBotDefinition(targetBotUid);
-        const applied = result.apply_status === 'applied' || result.apply_status === 'already_applied';
+        const applied = result.apply_status === 'applied'
+          || result.apply_status === 'already_applied'
+          || result.apply_status === 'degraded';
         if (applied) {
           Logger.info(`CatsCo 重连后已校验 Skill Definition，revision=${result.cloud_revision ?? 'unknown'}`);
         } else {
