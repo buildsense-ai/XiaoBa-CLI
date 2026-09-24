@@ -54,6 +54,8 @@ export interface PrepareBoundBotSkillsOptions {
   };
   /** Refuse to activate another Bot's workspace for a live Runtime apply. */
   requireActiveWorkspace?: boolean;
+  /** Device connectors do not have a local Bot workspace owner to compare. */
+  deviceConnectorMode?: boolean;
 }
 
 export interface PreparedBoundBotSkills {
@@ -135,7 +137,7 @@ export async function prepareBoundBotSkills(
       if (activeBotId) {
         BotSkillSyncService.recoverInterruptedRestore(runtimeRoot, activeBotId, activeRoot);
       }
-      if (options.requireActiveWorkspace && activeBotId !== options.botId) {
+      if (options.requireActiveWorkspace && !options.deviceConnectorMode && activeBotId !== options.botId) {
         throw new BotSkillWorkspaceChangingError(activeBotId || '(none)', options.botId);
       }
       activation = workspace.activate(options.botId);

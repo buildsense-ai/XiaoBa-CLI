@@ -64,7 +64,10 @@ import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver
 import { createBotDefinitionSyncService } from '../bot-definition/service';
 import { prepareBoundBotSkills, syncCurrentBotSkillRevocationsNow } from '../bot-skills/runtime';
 import { readPendingBotSkillRevocations } from '../bot-skills/revocation';
-import { createCatsCoLocalConfigService } from './local-config';
+import {
+  createCatsCoLocalConfigService,
+  isActiveDeviceConnectorMode,
+} from './local-config';
 import { PathResolver } from '../utils/path-resolver';
 import {
   buildCatsCoAttachmentCachePath,
@@ -639,6 +642,7 @@ export class CatsCompanyBot {
       auth: configService.getAuthState(),
       definitionService,
       requireActiveWorkspace: true,
+      deviceConnectorMode: isActiveDeviceConnectorMode(configService.load()),
     });
     const sync = prepared.sync;
     if (!sync) throw new Error('Skill workspace synchronization did not return an apply result.');
