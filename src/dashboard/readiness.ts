@@ -413,6 +413,11 @@ function buildCatsCoChatChecks(
   const userUid = firstNonEmpty(env.CATSCO_USER_UID, env.CATSCOMPANY_USER_UID);
   const botUid = firstNonEmpty(env.CATSCO_BOT_UID, env.CATSCOMPANY_BOT_UID);
   const apiKey = firstNonEmpty(env.CATSCO_API_KEY, env.CATSCOMPANY_API_KEY, config.catscompany?.apiKey);
+  const connectorToken = firstNonEmpty(
+    env.CATSCO_CONNECTOR_TOKEN,
+    env.CATSCOMPANY_CONNECTOR_TOKEN,
+    config.catscompany?.connectorToken,
+  );
   const httpBaseUrl = firstNonEmpty(
     env.CATSCO_HTTP_BASE_URL,
     env.CATSCOMPANY_HTTP_BASE_URL,
@@ -444,15 +449,15 @@ function buildCatsCoChatChecks(
         label: '打开 CatsCo',
         target: 'catsco',
       }),
-    apiKey && botUid
-      ? passCheck('catsco.binding', 'Agent 绑定', 'CatsCo agent 已绑定')
-      : failCheck('catsco.binding', 'Agent 绑定', '需要创建或绑定 CatsCo agent', 'blocker', {
+    connectorToken || (apiKey && botUid)
+      ? passCheck('catsco.binding', '本机连接', '这台电脑已连接 CatsCo')
+      : failCheck('catsco.binding', '本机连接', '需要登录 CatsCo 并连接这台电脑', 'blocker', {
         label: '打开 CatsCo',
         target: 'catsco',
       }),
-    userUid && botUid
+    connectorToken || (userUid && botUid)
       ? passCheck('catsco.topic', 'Chat 会话', 'Chat 会话已就绪')
-      : failCheck('catsco.topic', 'Chat 会话', '账号和 agent 绑定后才能生成 Chat 会话', 'blocker', {
+      : failCheck('catsco.topic', 'Chat 会话', '登录并连接这台电脑后才能使用 CatsCo', 'blocker', {
         label: '打开 CatsCo',
         target: 'catsco',
       }),
@@ -476,6 +481,11 @@ function buildServiceSpecificChecks(
       env.CATSCOMPANY_API_KEY,
       config.catscompany?.apiKey,
     );
+    const connectorToken = firstNonEmpty(
+      env.CATSCO_CONNECTOR_TOKEN,
+      env.CATSCOMPANY_CONNECTOR_TOKEN,
+      config.catscompany?.connectorToken,
+    );
     return [
       serverUrl && isValidUrl(serverUrl, ['ws:', 'wss:'])
         ? passCheck('service.catsco.serverUrl', 'CatsCo 服务器 WebSocket', 'CatsCo 服务器 WebSocket 地址格式有效')
@@ -483,9 +493,9 @@ function buildServiceSpecificChecks(
           label: '打开设置',
           target: 'settings',
         }),
-      apiKey
-        ? passCheck('service.catsco.apiKey', 'CatsCo Agent 凭证', 'CatsCo Agent 凭证已配置')
-        : failCheck('service.catsco.apiKey', 'CatsCo Agent 凭证', '需要配置 CatsCo agent 访问凭证', 'blocker', {
+      apiKey || connectorToken
+        ? passCheck('service.catsco.apiKey', connectorToken ? 'CatsCo 设备凭证' : 'CatsCo Agent 凭证', connectorToken ? '本机设备 Connector 凭证已配置' : 'CatsCo Agent 凭证已配置')
+        : failCheck('service.catsco.apiKey', 'CatsCo 连接凭证', '需要登录 CatsCo 并连接这台电脑', 'blocker', {
           label: '打开 CatsCo',
           target: 'catsco',
         }),

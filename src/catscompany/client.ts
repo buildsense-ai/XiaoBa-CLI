@@ -10,7 +10,9 @@ export type { UploadResult } from './upload';
 
 export interface CatsClientConfig {
   serverUrl: string;
-  apiKey: string;
+  apiKey?: string;
+  connectorToken?: string;
+  connectorTokenExpiresAt?: number;
   botUid?: string;
   bodyId?: string;
   installationId?: string;
@@ -320,6 +322,12 @@ export class CatsClient extends EventEmitter {
       process.env.CATSCOMPANY_INSTALLATION_ID,
       bodyId,
     );
+    const configuredConnectorTokenExpiresAt = Number(this.config.connectorTokenExpiresAt);
+    const connectorToken = !Number.isFinite(configuredConnectorTokenExpiresAt)
+      || configuredConnectorTokenExpiresAt <= 0
+      || configuredConnectorTokenExpiresAt > Date.now()
+      ? firstNonEmpty(this.config.connectorToken, process.env.CATSCO_CONNECTOR_TOKEN, process.env.CATSCOMPANY_CONNECTOR_TOKEN)
+      : '';
     const configuredCredentialExpiresAt = Number(this.config.runtimeCredentialExpiresAt);
     const configuredRuntimeCredential = !Number.isFinite(configuredCredentialExpiresAt)
       || configuredCredentialExpiresAt > Date.now()
@@ -334,7 +342,10 @@ export class CatsClient extends EventEmitter {
     const serverUrl = this.currentServerUrl();
     this.pendingServerUrl = serverUrl;
     this.attemptReachedReady = false;
-    Logger.info(`[CatsCompany] 正在连接: ${serverUrl}, apiKey=${maskSecret(this.config.apiKey)}, bodyId=${bodyId}`);
+    Logger.info(
+      `[CatsCompany] 正在连接: ${serverUrl}, `
+      + `${connectorToken ? 'connectorToken=present' : `apiKey=${maskSecret(this.config.apiKey || '')}`}, bodyId=${bodyId}`,
+    );
     this.supportsClientMessageDedupe = false;
     this.supportsThinToolRpc = false;
     this.connectionOpenedAt = 0;
@@ -344,7 +355,7 @@ export class CatsClient extends EventEmitter {
     this.lastTransportError = '';
     this.ws = new WebSocket(serverUrl, {
       headers: {
-        'X-API-Key': this.config.apiKey,
+        ...(connectorToken ? { 'X-CatsCo-Connector-Token': connectorToken } : { 'X-API-Key': this.config.apiKey || '' }),
         'X-CatsCo-Body-ID': bodyId,
         'X-CatsCo-Installation-ID': installationId,
         ...(runtimeCredential ? { 'X-CatsCo-Runtime-Credential': runtimeCredential } : {}),
@@ -469,8 +480,10 @@ export class CatsClient extends EventEmitter {
           Logger.info('[CatsCompany] 服务端支持 thin_tool_rpc 轻量工具传输');
         }
         this.emit('ready', { uid: this.uid, name: this.name });
-        this.autoAcceptFriendRequests().catch(console.error);
-        this.resubscribeTopics();
+        if (!this.config.connectorToken) {
+          this.autoAcceptFriendRequests().catch(console.error);
+          this.resubscribeTopics();
+        }
       } else if (msg.ctrl.id) {
         const pending = this.pendingAcks.get(msg.ctrl.id);
         if (pending) {
@@ -1044,7 +1057,7 @@ export class CatsClient extends EventEmitter {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `ApiKey ${this.config.apiKey}`
+        'Authorization': `ApiKey ${this.config.apiKey || ''}`
       },
       body: JSON.stringify({ user_id: userId })
     });
@@ -1064,16 +1077,24 @@ export class CatsClient extends EventEmitter {
       httpBaseUrl: this.httpBaseUrl(),
       filePath,
       type,
-      authHeader: `ApiKey ${this.config.apiKey}`,
+      authHeader: this.config.connectorToken
+        ? `DeviceConnector ${this.config.connectorToken}`
+        : `ApiKey ${this.config.apiKey || ''}`,
     });
   }
 
   async registerDevice(registration: CatsDeviceRegistration): Promise<unknown> {
-    const res = await fetch(`${this.httpBaseUrl()}/api/devices/register`, {
+    const endpoint = this.config.connectorToken
+      ? '/api/device-connectors/register'
+      : '/api/devices/register';
+    const authorization = this.config.connectorToken
+      ? `DeviceConnector ${this.config.connectorToken}`
+      : `ApiKey ${this.config.apiKey || ''}`;
+    const res = await fetch(`${this.httpBaseUrl()}${endpoint}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `ApiKey ${this.config.apiKey}`,
+        'Authorization': authorization,
       },
       body: JSON.stringify(registration),
     });

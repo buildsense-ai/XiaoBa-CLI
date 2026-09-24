@@ -11,7 +11,12 @@ export interface CatsCompanyConfig {
   /** WebSocket 服务器地址，如 "ws://localhost:6061/v0/channels" */
   serverUrl: string;
   /** Bot API Key，如 "cc_8_abc123..." */
-  apiKey: string;
+  /** Legacy Bot API key. Not used in device-only connector mode. */
+  apiKey?: string;
+  /** User-scoped device connector credential issued by CatsCompany. */
+  connectorToken?: string;
+  /** Expiry of connectorToken in Unix milliseconds. */
+  connectorTokenExpiresAt?: number;
   /** Stable bot identity used to isolate persisted chat context. */
   botUid?: string;
   /** 当前本地运行体 ID，用于防止同一个 bot 被多个本地 body 混用 */

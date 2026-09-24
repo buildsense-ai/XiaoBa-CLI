@@ -116,6 +116,31 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     assert.equal(workspace.getActiveBotId(), 'bot-other');
   });
 
+  test('initializes a device workspace without requiring a local Bot marker', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-skill-runtime-device-'));
+    roots.push(runtimeRoot);
+    const workspace = new BotSkillWorkspaceService(runtimeRoot, path.join(runtimeRoot, 'skills'));
+
+    const prepared = await prepareBoundBotSkills({
+      runtimeRoot,
+      botId: 'cloud-bot',
+      auth: {
+        token: 'user-token',
+        uid: 'user-7',
+        connectorToken: 'device-token',
+        httpBaseUrl: 'https://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      definitionService: createBotDefinitionSyncService({ runtimeRoot }),
+      requireActiveWorkspace: true,
+      deviceConnectorMode: true,
+      preserveLocalOnlyWorkspace: { definitionRevision: 0 },
+    });
+
+    assert.equal(prepared.sync?.applyStatus, 'already_applied');
+    assert.equal(workspace.getActiveBotId(), 'cloud-bot');
+  });
+
   test('uploads local edits, keeps the Base stable, and restores cloud-only changes atomically', async () => {
     const fixture = createFixture(roots);
     writeSkill(fixture.skillsRoot, 'local-a', 'local-a', 'local v1');

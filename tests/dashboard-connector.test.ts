@@ -24,24 +24,25 @@ test('real Connector Dashboard exposes four runtime states without local Bot cre
   assert.doesNotMatch(html, /打开旧版控制台/);
   assert.doesNotMatch(html, /CONNECT THIS COMPUTER|READY FOR CATSCO/);
   assert.doesNotMatch(html, /创建 Bot|模型选择|System Prompt|Skill Hub|聊天输入/);
+  assert.match(html, /id="device-connector-status"/);
+  assert.doesNotMatch(html, /当前 Agent|切换 Agent|agent-switch-open/);
+  assert.doesNotMatch(script, /\/cats\/switch-bot|\/cats\/bots/);
 });
 
-test('Connector lets an authenticated user switch the Agent bound to this computer', () => {
-  assert.match(html, /id="agent-switch-open"[^>]*>切换/);
-  assert.match(html, /切换 Agent/);
-  assert.match(html, /一台电脑同一时间连接一个 Agent/);
-  assert.match(script, /settled\('\/cats\/bots'\)/);
-  assert.match(script, /request\('\/cats\/switch-bot'/);
+test('Connector UI does not expose legacy Bot identity or switching controls', () => {
+  assert.match(html, /<span>本机连接<\/span>/);
+  assert.match(html, /注册这台电脑/);
+  assert.doesNotMatch(html, /id="agent-switch-open"|切换 Agent|当前 Agent/);
+  assert.doesNotMatch(script, /settled\('\/cats\/bots'\)/);
+  assert.doesNotMatch(script, /request\('\/cats\/switch-bot'/);
   assert.doesNotMatch(script, /\/cats\/create-bot/);
-  assert.doesNotMatch(html, /agent-switch-warning/);
-  assert.doesNotMatch(script, /weixinStopped|微信服务会停止/);
-  assert.match(styles, /\.agent-switch-dialog/);
+  assert.doesNotMatch(styles, /\.agent-switch-dialog/);
   assert.match(html, /id="logout-dialog"/);
   assert.match(html, /hero-actions[\s\S]*id="webapp-button"[\s\S]*id="logout-button"/);
   assert.doesNotMatch(html, /class="danger-zone"/);
   assert.doesNotMatch(script, /window\.confirm\(/);
   assert.match(script, /login-account'\)\?\.focus/);
-  assert.match(script, /当前账号无权使用原 Agent（not your bot）/);
+  assert.match(script, /当前账号无法使用旧版 Bot 绑定/);
   assert.match(script, /setNotice\(`\$\{title\}：\$\{detail\}`/);
 });
 
@@ -160,7 +161,7 @@ test('background bootstrap waits for login without making network requests', asy
   }
 });
 
-test('background bootstrap provisions once without rotating legacy relay credentials', async () => {
+test('background bootstrap provisions a device connector without invoking legacy Bot setup', async () => {
   const runtimeRoot = mkdtempSync(join(tmpdir(), 'catsco-connector-setup-'));
   const configDir = join(runtimeRoot, '.xiaoba');
   mkdirSync(configDir, { recursive: true });
@@ -172,6 +173,7 @@ test('background bootstrap provisions once without rotating legacy relay credent
   }), 'utf-8');
 
   const requests: Array<{ url: string; init?: RequestInit }> = [];
+  let statusCalls = 0;
   try {
     const controller = new CatsConnectorAutoStart({
       port: 3800,
@@ -180,12 +182,13 @@ test('background bootstrap provisions once without rotating legacy relay credent
         const url = String(input);
         requests.push({ url, init });
         if (url.endsWith('/cats/status')) {
-          return new Response(JSON.stringify({ connected: true, bodyConfigured: false, configured: false, service: { status: 'stopped' } }), {
+          statusCalls += 1;
+          return new Response(JSON.stringify({ connected: true, deviceConnectorMode: statusCalls > 1, bodyConfigured: false, configured: statusCalls > 1, service: { status: 'stopped' } }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
         }
-        if (url.endsWith('/cats/setup')) {
+        if (url.endsWith('/cats/device-connector/provision') || url.endsWith('/cats/connector/start')) {
           return new Response(JSON.stringify({ ok: true }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -197,9 +200,9 @@ test('background bootstrap provisions once without rotating legacy relay credent
 
     const snapshot = await controller.run('test');
     assert.equal(snapshot.stage, 'connected');
-    assert.equal(requests.filter((item) => item.url.endsWith('/cats/setup')).length, 1);
-    const setupRequest = requests.find((item) => item.url.endsWith('/cats/setup'));
-    assert.deepEqual(JSON.parse(String(setupRequest?.init?.body)), { setupRelayModel: false });
+    assert.equal(requests.filter((item) => item.url.endsWith('/cats/device-connector/provision')).length, 1);
+    assert.equal(requests.some((item) => item.url.endsWith('/cats/setup')), false);
+    assert.deepEqual(JSON.parse(String(requests.find((item) => item.url.endsWith('/cats/device-connector/provision'))?.init?.body)), {});
   } finally {
     rmSync(runtimeRoot, { recursive: true, force: true });
   }
@@ -231,11 +234,12 @@ test('background bootstrap uses the fast start path for an existing binding', as
         const url = String(input);
         paths.push(url);
         if (url.endsWith('/cats/status')) {
-          return new Response(JSON.stringify({ connected: true, bodyConfigured: true, configured: true, service: { status: 'stopped' } }), {
+          return new Response(JSON.stringify({ connected: true, deviceConnectorMode: true, bodyConfigured: true, configured: true, service: { status: 'stopped' } }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
         }
+        if (url.endsWith('/cats/device-connector/provision')) return jsonResponse({ ok: true, reused: true, refreshed: false });
         if (url.endsWith('/cats/connector/start')) {
           return new Response(JSON.stringify({ ok: true }), {
             status: 200,
@@ -254,7 +258,62 @@ test('background bootstrap uses the fast start path for an existing binding', as
   }
 });
 
-test('background bootstrap is a no-op when the Connector is already running', async () => {
+test('background bootstrap migrates a legacy Bot installation to device Connector without deleting its binding', async () => {
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'catsco-connector-migration-'));
+  const configDir = join(runtimeRoot, '.xiaoba');
+  mkdirSync(configDir, { recursive: true });
+  const legacyBot = {
+    uid: 'legacy-bot',
+    apiKey: 'legacy-api-key',
+    boundByUserUid: 'usr-test',
+    bindingSource: 'legacy',
+  };
+  writeFileSync(join(configDir, 'catsco.json'), JSON.stringify({
+    version: 1,
+    account: { token: 'test-user-token', uid: 'usr-test' },
+    currentBot: legacyBot,
+    preferences: { autoConnect: true },
+  }), 'utf-8');
+
+  const paths: string[] = [];
+  try {
+    const controller = new CatsConnectorAutoStart({
+      port: 3800,
+      runtimeRoot,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        paths.push(url);
+        if (url.endsWith('/cats/status')) {
+          return jsonResponse({
+            connected: true,
+            deviceConnectorMode: false,
+            bodyConfigured: true,
+            configured: true,
+            service: { status: 'running' },
+          });
+        }
+        if (url.endsWith('/cats/device-connector/provision') || url.endsWith('/cats/connector/start')) {
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({ error: 'unexpected request' }, 500);
+      },
+    });
+
+    const snapshot = await controller.run('startup');
+    const savedConfig = createCatsCoLocalConfigService({ runtimeRoot }).load();
+    assert.equal(snapshot.stage, 'connected');
+    assert.deepEqual(paths.filter((url) => /\/cats\/(device-connector\/provision|connector\/start)$/.test(url)).map((url) => url.split('/').slice(-2).join('/')), [
+      'device-connector/provision',
+      'connector/start',
+    ]);
+    assert.equal(paths.some((url) => url.endsWith('/cats/setup')), false);
+    assert.deepEqual(savedConfig.currentBot, legacyBot);
+  } finally {
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test('background bootstrap keeps an already-current running device Connector', async () => {
   const runtimeRoot = createRuntimeConfig('catsco-connector-running-', {
     version: 1,
     account: { token: 'test-user-token', uid: 'usr-test' },
@@ -266,14 +325,46 @@ test('background bootstrap is a no-op when the Connector is already running', as
       port: 3800,
       runtimeRoot,
       fetchImpl: async (input) => {
-        paths.push(String(input));
-        return jsonResponse({ connected: true, configured: true, service: { status: 'running' } });
+        const url = String(input);
+        paths.push(url);
+        if (url.endsWith('/cats/device-connector/provision')) return jsonResponse({ ok: true, reused: true, refreshed: false });
+        return jsonResponse({ connected: true, deviceConnectorMode: true, configured: true, service: { status: 'running' } });
       },
     });
     const snapshot = await controller.run('startup');
     assert.equal(snapshot.stage, 'connected');
     assert.equal(paths.filter((url) => url.endsWith('/cats/status')).length, 1);
-    assert.equal(paths.some((url) => /\/cats\/(setup|connector\/start)$/.test(url)), false);
+    assert.equal(paths.filter((url) => url.endsWith('/cats/device-connector/provision')).length, 1);
+    assert.equal(paths.filter((url) => url.endsWith('/cats/connector/start')).length, 0);
+    assert.equal(paths.some((url) => url.endsWith('/cats/setup')), false);
+  } finally {
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test('background bootstrap restarts an active Connector after a device credential migration', async () => {
+  const runtimeRoot = createRuntimeConfig('catsco-connector-credential-migration-', {
+    version: 1,
+    account: { token: 'test-user-token', uid: 'usr-test' },
+    preferences: { autoConnect: true },
+  });
+  const paths: string[] = [];
+  try {
+    const controller = new CatsConnectorAutoStart({
+      port: 3800,
+      runtimeRoot,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        paths.push(url);
+        if (url.endsWith('/cats/device-connector/provision')) return jsonResponse({ ok: true, reused: true, refreshed: true });
+        return jsonResponse({ connected: true, deviceConnectorMode: true, configured: true, service: { status: 'running' } });
+      },
+    });
+
+    const snapshot = await controller.run('startup');
+    assert.equal(snapshot.stage, 'connected');
+    assert.equal(paths.filter((url) => url.endsWith('/cats/device-connector/provision')).length, 1);
+    assert.equal(paths.filter((url) => url.endsWith('/cats/connector/start')).length, 1);
   } finally {
     rmSync(runtimeRoot, { recursive: true, force: true });
   }
@@ -334,9 +425,9 @@ test('concurrent identical bootstrap triggers share one setup attempt', async ()
     account: { token: 'test-user-token', uid: 'usr-test' },
     preferences: { autoConnect: true },
   });
-  const setup = deferred<Response>();
+  const provisioning = deferred<Response>();
   let statusCalls = 0;
-  let setupCalls = 0;
+  let provisionCalls = 0;
   try {
     const controller = new CatsConnectorAutoStart({
       port: 3800,
@@ -345,22 +436,23 @@ test('concurrent identical bootstrap triggers share one setup attempt', async ()
         const url = String(input);
         if (url.endsWith('/cats/status')) {
           statusCalls += 1;
-          return jsonResponse({ connected: true, bodyConfigured: false, configured: false, service: { status: 'stopped' } });
+          return jsonResponse({ connected: true, deviceConnectorMode: statusCalls > 1, configured: statusCalls > 1, service: { status: 'stopped' } });
         }
-        if (url.endsWith('/cats/setup')) {
-          setupCalls += 1;
-          return setup.promise;
+        if (url.endsWith('/cats/device-connector/provision')) {
+          provisionCalls += 1;
+          return provisioning.promise;
         }
+        if (url.endsWith('/cats/connector/start')) return jsonResponse({ ok: true });
         return jsonResponse({ error: 'unexpected request' }, 500);
       },
     });
     const runs = Array.from({ length: 10 }, () => controller.run('startup'));
-    await waitFor(() => setupCalls === 1);
-    setup.resolve(jsonResponse({ ok: true }));
+    await waitFor(() => provisionCalls === 1);
+    provisioning.resolve(jsonResponse({ ok: true }));
     const snapshots = await Promise.all(runs);
     assert.equal(snapshots.every((snapshot) => snapshot.stage === 'connected'), true);
-    assert.equal(statusCalls, 1);
-    assert.equal(setupCalls, 1);
+    assert.equal(statusCalls, 2);
+    assert.equal(provisionCalls, 1);
   } finally {
     rmSync(runtimeRoot, { recursive: true, force: true });
   }
@@ -372,8 +464,8 @@ test('logout during setup fences the stale run and stops any late Connector', as
     account: { token: 'test-user-token', uid: 'usr-test' },
     preferences: { autoConnect: true },
   });
-  const setup = deferred<Response>();
-  let setupCalls = 0;
+  const provisioning = deferred<Response>();
+  let provisionCalls = 0;
   let stopCalls = 0;
   try {
     const controller = new CatsConnectorAutoStart({
@@ -382,11 +474,11 @@ test('logout during setup fences the stale run and stops any late Connector', as
       fetchImpl: async (input) => {
         const url = String(input);
         if (url.endsWith('/cats/status')) {
-          return jsonResponse({ connected: true, bodyConfigured: false, configured: false, service: { status: 'stopped' } });
+          return jsonResponse({ connected: true, deviceConnectorMode: false, configured: false, service: { status: 'stopped' } });
         }
-        if (url.endsWith('/cats/setup')) {
-          setupCalls += 1;
-          return setup.promise;
+        if (url.endsWith('/cats/device-connector/provision')) {
+          provisionCalls += 1;
+          return provisioning.promise;
         }
         if (url.endsWith('/cats/connector/stop')) {
           stopCalls += 1;
@@ -397,10 +489,10 @@ test('logout during setup fences the stale run and stops any late Connector', as
     });
 
     const staleRun = controller.run('startup');
-    await waitFor(() => setupCalls === 1);
+    await waitFor(() => provisionCalls === 1);
     createCatsCoLocalConfigService({ runtimeRoot }).clearAccount();
     controller.invalidateAndSchedule('logout');
-    setup.resolve(jsonResponse({ ok: true }));
+    provisioning.resolve(jsonResponse({ ok: true }));
     await staleRun;
     await waitFor(() => controller.getSnapshot().stage === 'waiting_for_login' && stopCalls === 1);
     assert.equal(controller.getSnapshot().trigger, 'logout');
@@ -424,12 +516,12 @@ test('loopback bootstrap requests include the configured Dashboard API key', asy
       runtimeRoot,
       fetchImpl: async (_input, init) => {
         headers.push(new Headers(init?.headers));
-        return jsonResponse({ connected: true, configured: true, service: { status: 'running' } });
+        return jsonResponse({ connected: true, deviceConnectorMode: true, configured: true, service: { status: 'running' } });
       },
     });
     await controller.run('startup');
-    assert.equal(headers.length, 1);
-    assert.equal(headers[0].get('X-API-Key'), 'dashboard-test-key');
+    assert.equal(headers.length, 2);
+    assert.equal(headers.every((header) => header.get('X-API-Key') === 'dashboard-test-key'), true);
   } finally {
     rmSync(runtimeRoot, { recursive: true, force: true });
   }

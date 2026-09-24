@@ -297,6 +297,37 @@ describe('CatsCo runtime config resolver', () => {
     assert.equal(Boolean(config.device?.bodyId), true);
   });
 
+  test('does not report an expired device connector as ready', () => {
+    const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
+    service.save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: { token: 'user-token', uid: 'user-1' },
+      device: {
+        deviceId: 'device-1',
+        bodyId: 'body-1',
+        installationId: 'install-1',
+        connectorToken: 'expired-device-token',
+        connectorTokenExpiresAt: Date.now() - 1,
+      },
+    });
+
+    const resolved = resolveCatsCoRuntimeConfig({
+      runtimeRoot: tempDir,
+      env: {} as NodeJS.ProcessEnv,
+    });
+
+    assert.equal(resolved.connector, undefined);
+    assert.equal(resolved.connectorReady, false);
+    assert.equal(resolved.bodyConfigured, false);
+    assert.equal(resolved.chatReady, false);
+    assert.equal(resolved.auth.connectorToken, '');
+    assert.equal(resolved.auth.connectorTokenExpiresAt !== undefined, true);
+  });
+
   test('defaults close button behavior to hiding in tray and persists overrides', () => {
     const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
 
