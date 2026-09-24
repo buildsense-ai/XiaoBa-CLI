@@ -3,7 +3,10 @@ import * as assert from 'node:assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
+import {
+  createCatsCoLocalConfigService,
+  isActiveDeviceConnectorMode,
+} from '../src/catscompany/local-config';
 import {
   DashboardBotSwitchScheduler,
   SkillHubThinRpcError,
@@ -12,6 +15,8 @@ import {
   requestDashboardBotSwitch,
 } from '../src/catscompany/skillhub-rpc';
 import { BotSkillWorkspaceService } from '../src/bot-skills/workspace';
+import { createBotDefinitionSyncService } from '../src/bot-definition/service';
+import { prepareBoundBotSkills } from '../src/bot-skills/runtime';
 import {
   shareLocalSkillForCatsCo,
   validateSkillHubShareMetadata,
@@ -123,6 +128,50 @@ describe('CatsCompany SkillHub thin RPC', () => {
       synced_skills: 2,
       apply_status: 'applied',
     });
+  });
+
+  test('applies a device workspace without a local Bot through the full applyDefinition path', async () => {
+    const configService = createCatsCoLocalConfigService({ runtimeRoot });
+    configService.save({
+      version: 1,
+      account: { token: 'user-token', uid: '7', username: 'alice' },
+      device: {
+        deviceId: 'alice-device',
+        bodyId: 'alice-device',
+        installationId: 'alice-device',
+        connectorToken: 'device-token',
+        connectorTokenExpiresAt: Date.now() + 60_000,
+      },
+    });
+    const applyHandler = new SkillHubThinRpcHandler({
+      runtimeRoot,
+      isRuntimeIdle: () => true,
+      applyCurrentBotDefinition: async botUid => {
+        const config = configService.load();
+        const prepared = await prepareBoundBotSkills({
+          runtimeRoot,
+          botId: botUid,
+          auth: configService.getAuthState(),
+          definitionService: createBotDefinitionSyncService({ runtimeRoot }),
+          requireActiveWorkspace: true,
+          deviceConnectorMode: isActiveDeviceConnectorMode(config),
+          preserveLocalOnlyWorkspace: { definitionRevision: 0 },
+        });
+        return {
+          apply_status: prepared.sync?.applyStatus,
+          synced_skills: prepared.sync?.skills.length,
+        };
+      },
+    });
+
+    const result = await applyHandler.execute(request({
+      request_id: 'device-apply-definition',
+      tool_name: SKILLHUB_THIN_RPC_TOOLS.applyDefinition,
+      payload: { bot_uid: 'cloud-bot-99' },
+    }));
+    assert.equal(result.applied, true);
+    assert.equal(result.apply_status, 'already_applied');
+    assert.equal(new BotSkillWorkspaceService(runtimeRoot, path.join(runtimeRoot, 'skills')).getActiveBotId(), 'cloud-bot-99');
   });
 
   test('does not replace the workspace while the Runtime is busy', async () => {
