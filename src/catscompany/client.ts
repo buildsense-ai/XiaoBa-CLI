@@ -19,6 +19,8 @@ export interface CatsClientConfig {
   runtimeCredential?: string;
   runtimeCredentialExpiresAt?: number;
   deviceRegistration?: CatsDeviceRegistration;
+  /** Opt in this authenticated bot connection to passive unmentioned group delivery. */
+  semanticGroupActivation?: boolean;
   httpBaseUrl?: string;
   connectTimeoutMs?: number;
   readyTimeoutMs?: number;
@@ -374,6 +376,7 @@ export class CatsClient extends EventEmitter {
           id: '1',
           ver: CATSCOMPANY_PROTOCOL_VERSION,
           ua: CATSCOMPANY_CLIENT_UA,
+          ...(this.config.semanticGroupActivation ? { semantic_group_activation: true } : {}),
           device: this.config.deviceRegistration,
         },
       });
@@ -478,6 +481,14 @@ export class CatsClient extends EventEmitter {
           && msg.ctrl.params.features.includes('thin_tool_rpc');
         if (this.supportsThinToolRpc) {
           Logger.info('[CatsCompany] 服务端支持 thin_tool_rpc 轻量工具传输');
+        }
+        if (this.config.semanticGroupActivation
+          && !(Array.isArray(msg.ctrl.params?.features)
+            && msg.ctrl.params.features.includes('semantic_group_activation_passive_delivery'))) {
+          Logger.warning(
+            '[CatsCompany] JEV 群聊语义激活已启用，但服务端不支持无 @ 被动投递；'
+              + '大群未 @ 消息仍不会送达。请先部署支持该特性的 CatsCompany 服务端。',
+          );
         }
         this.emit('ready', { uid: this.uid, name: this.name });
         if (!this.config.connectorToken) {

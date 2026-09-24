@@ -89,6 +89,15 @@ import {
   SKILLHUB_THIN_RPC_TOOLS,
   SKILLHUB_WORKSPACE_PAGINATION_CAPABILITY,
 } from './skillhub-rpc';
+import {
+  JevCatsCompanyGroupActivationJudge,
+  resolveCatsCompanyGroupActivation,
+  type CatsCompanyGroupActivationHistoryEntry,
+  type CatsCompanyGroupActivationJudge,
+  type CatsCompanyGroupActivationInput,
+  type CatsCompanyGroupActivationJudgment,
+} from './jev-group-activation';
+import { loadCatsCompanyGroupActivationContext } from './jev-group-context';
 
 interface PendingAttachment {
   fileName: string;
@@ -547,9 +556,26 @@ export class CatsCompanyBot {
     model_status?: ReturnType<typeof resolveCatsDeviceModelStatus>;
   };
   private readonly skillHubThinRpc: SkillHubThinRpcHandler;
+  /** Optional semantic gate that runs before cloud restore or AgentSession work. */
+  private readonly groupActivationJudge?: CatsCompanyGroupActivationJudge;
+  private readonly groupActivationTimeoutMs?: number;
+  private readonly groupActivationRoleSummary?: string;
 
   constructor(config: CatsCompanyConfig) {
     this.botUid = String(config.botUid || '').trim() || null;
+    if (config.groupActivationJev?.enabled) {
+      try {
+        this.groupActivationJudge = new JevCatsCompanyGroupActivationJudge(config.groupActivationJev);
+        this.groupActivationTimeoutMs = config.groupActivationJev.timeoutMs;
+        this.groupActivationRoleSummary = config.groupActivationJev.roleSummary;
+        Logger.info(
+          `[CatsCompany] JEV 群聊语义激活已启用: model=${config.groupActivationJev.model}, `
+            + `timeout=${config.groupActivationJev.timeoutMs}ms`,
+        );
+      } catch (error: any) {
+        Logger.warning(`[CatsCompany] JEV 群聊语义激活配置无效，继续使用确定性门控: ${error?.message || error}`);
+      }
+    }
     const runtimeRole: CatsCompanyRuntimeRole = config.runtimeRole === 'desktop' ? 'desktop' : 'server';
     const deviceCapabilities = capabilitiesForCatsCompanyRuntimeRole(runtimeRole);
     const localDeviceId = config.installationId || config.bodyId;
@@ -578,6 +604,7 @@ export class CatsCompanyBot {
       runtimeCredential: config.runtimeCredential,
       runtimeCredentialExpiresAt: config.runtimeCredentialExpiresAt,
       deviceRegistration,
+      semanticGroupActivation: Boolean(this.groupActivationJudge),
       httpBaseUrl: config.httpBaseUrl,
       preferredDomainFamily: config.preferredDomainFamily,
       onEndpointReady: config.onEndpointReady,
@@ -1653,14 +1680,42 @@ export class CatsCompanyBot {
     // 过滤 bot 自己发出的消息，防止循环。
     if (this.botUid && normalizeCatsUid(ctx.senderId) === normalizeCatsUid(this.botUid)) return;
 
-    // 群聊激活门控必须发生在 parse 后续的云恢复和 session 创建之前。
-    if (!shouldActivateCatsCompanyMessage(ctx, this.botUid)) {
-      Logger.info(`[CatsCompany] 群消息未命中当前 AI 的结构化 mention，跳过: topic=${ctx.topic}, seq=${ctx.seq || 0}`);
-      return;
-    }
-
     const msg = this.parseMessage(ctx);
     if (!msg) return;
+
+    // JEV runs before cloud restore, session creation, attachment download, or
+    // the full agent loop. Canonical Artifact tasks and targeted /clear remain
+    // deterministic protocol operations rather than semantic suggestions.
+    const deterministicActivation = shouldActivateCatsCompanyMessage(ctx, this.botUid);
+    const activation = msg.artifactTaskRef || (isClearCommand(msg.text) && deterministicActivation)
+      ? { activate: true, source: 'deterministic' as const }
+      : await resolveCatsCompanyGroupActivation(
+        { ...ctx, text: msg.text },
+        this.botUid,
+        deterministicActivation,
+        this.groupActivationJudge && {
+          judge: input => this.judgeGroupActivationWithContext(ctx, input),
+        },
+      );
+    if (activation.source === 'jev_error') {
+      Logger.warning(
+        `[CatsCompany] JEV 群聊语义激活失败，回退确定性门控: topic=${ctx.topic}, `
+          + `seq=${ctx.seq || 0}, error=${activation.error?.message || 'unknown'}`,
+      );
+    }
+    if (!activation.activate) {
+      Logger.info(
+        `[CatsCompany] 群消息在 agent loop 前保持静默: topic=${ctx.topic}, seq=${ctx.seq || 0}, `
+          + `source=${activation.source}`,
+      );
+      return;
+    }
+    if (activation.source === 'jev') {
+      Logger.info(
+        `[CatsCompany] JEV 激活群消息: topic=${ctx.topic}, seq=${ctx.seq || 0}, `
+          + `confidence=${activation.confidence?.toFixed(3) || '-'}`,
+      );
+    }
 
     if (!this.acceptArtifactTaskReceipt(msg.artifactTaskRef)) {
       Logger.info(`[CatsCompany] 忽略重复 Artifact task 投递: topic=${msg.topic}, seq=${msg.seq || 0}`);
@@ -1675,6 +1730,37 @@ export class CatsCompanyBot {
     } finally {
       this.activeMessageHandlers = Math.max(0, this.activeMessageHandlers - 1);
     }
+  }
+
+  private async judgeGroupActivationWithContext(
+    message: MessageContext,
+    input: CatsCompanyGroupActivationInput,
+  ): Promise<CatsCompanyGroupActivationJudgment> {
+    const deadlineAt = Date.now() + (this.groupActivationTimeoutMs ?? 2_500);
+    // A transient history-read failure must not silence the message outright;
+    // JEV still judges the current message with an empty context window.
+    let history: CatsCompanyGroupActivationHistoryEntry[] = [];
+    try {
+      history = await loadCatsCompanyGroupActivationContext(
+        this.bot,
+        message.topic,
+        Number(message.seq),
+        this.botUid,
+        AbortSignal.timeout(Math.min(600, Math.max(1, Math.floor((this.groupActivationTimeoutMs ?? 2_500) / 3)))),
+      );
+    } catch (error: any) {
+      Logger.warning(
+        `[CatsCompany] JEV 群聊上下文读取失败，按无上下文判断: topic=${message.topic}, `
+          + `seq=${message.seq || 0}, error=${error?.message || error}`,
+      );
+    }
+    return this.groupActivationJudge!.judge({
+      ...input,
+      history,
+      agentRole: this.groupActivationRoleSummary
+        || `CatsCompany assistant ${this.runtimeProfile?.displayName || ''} for this conversation`,
+      deadlineAt,
+    });
   }
 
   private acceptArtifactTaskReceipt(taskRef?: string, now = Date.now()): boolean {

@@ -1,6 +1,7 @@
 import type { ExecutionScope, MessageEnvelope, ScopedDeviceGrant, ScopedDeviceSelection, SkillConnectorGrant } from '../types/session-identity';
 import type { TargetRoutes } from '../types/tool';
 import type { CatsCoDomainFamily } from '../utils/catsco-domains';
+import type { CatsCompanyGroupActivationJevConfig } from './jev-group-activation';
 
 export type CatsCompanyRuntimeRole = 'desktop' | 'server';
 
@@ -53,6 +54,8 @@ export interface CatsCompanyConfig {
   onEndpointReady?: (serverUrl: string) => void;
   /** 会话过期时间（毫秒），默认 30 分钟 */
   sessionTTL?: number;
+  /** Optional pre-loop JEV judge for semantic group activation. */
+  groupActivationJev?: CatsCompanyGroupActivationJevConfig;
 }
 
 /**
