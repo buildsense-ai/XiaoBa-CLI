@@ -107,6 +107,7 @@ function Create-Launcher {
 cd /d "%~dp0"
 echo 正在启动 CatsCo Connector...
 start http://localhost:$DashboardPort
+set "XIAOBA_RUNTIME_ROLE=desktop"
 npx tsx src/index.ts dashboard
 "@ | Out-File -FilePath $launcher -Encoding ASCII
     Log "启动脚本已创建: $launcher"

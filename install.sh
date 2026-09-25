@@ -141,7 +141,7 @@ create_launcher() {
 #!/bin/bash
 cd "$(dirname "$0")"
 echo "正在启动 CatsCo Connector..."
-npx tsx src/index.ts dashboard &
+XIAOBA_RUNTIME_ROLE=desktop npx tsx src/index.ts dashboard &
 sleep 2
 open "http://localhost:3800" 2>/dev/null || xdg-open "http://localhost:3800" 2>/dev/null || echo "请打开浏览器访问 http://localhost:3800"
 wait

@@ -24,6 +24,15 @@ export interface CatsConnectorAutoStartOptions {
   apiKey?: string;
   fetchImpl?: typeof fetch;
   runtimeRoot?: string;
+  /**
+   * Device provisioning is a desktop concern. Server-hosted XiaoBa instances
+   * must keep their existing Bot identity until the connector architecture is
+   * migrated explicitly; provisioning here would silently turn a cloud Bot
+   * into a device-only connector.
+   */
+  autoProvisionDeviceConnector?: boolean;
+  /** Whether this Dashboard owns the Connector child process. */
+  manageConnector?: boolean;
 }
 
 interface CatsStatusPayload {
@@ -48,6 +57,8 @@ export class CatsConnectorAutoStart {
   private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
   private readonly runtimeRoot: string;
+  private readonly autoProvisionDeviceConnector: boolean;
+  private readonly manageConnector: boolean;
   private inFlight?: Promise<CatsConnectorBootstrapSnapshot>;
   private active?: { trigger: string; force: boolean };
   private scheduled?: NodeJS.Timeout;
@@ -66,6 +77,8 @@ export class CatsConnectorAutoStart {
     this.apiKey = String(options.apiKey || '').trim();
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.runtimeRoot = options.runtimeRoot || PathResolver.getRuntimeDataRoot();
+    this.autoProvisionDeviceConnector = options.autoProvisionDeviceConnector ?? true;
+    this.manageConnector = options.manageConnector ?? true;
   }
 
   getSnapshot(): CatsConnectorBootstrapSnapshot {
@@ -160,7 +173,7 @@ export class CatsConnectorAutoStart {
 
     const auth = localConfig.getAuthState();
     if (!auth.token || !auth.uid) {
-      if (trigger === 'logout') {
+      if (trigger === 'logout' && this.manageConnector) {
         try {
           await this.request('/cats/connector/stop', { method: 'POST', body: '{}' });
         } catch {
@@ -199,6 +212,25 @@ export class CatsConnectorAutoStart {
         });
       }
 
+      if (!this.manageConnector) {
+        if (!(status.configured || status.bodyConfigured || status.deviceConnectorMode)) {
+          return this.setSnapshot({
+            stage: 'error',
+            trigger,
+            message: '云端 Bot 尚未配置，未启动 Connector',
+            error: 'Cloud Bot credentials are not configured',
+            startedAt,
+          });
+        }
+        return this.setSnapshot({
+          stage: 'connected',
+          trigger,
+          message: '服务器 Connector 由外部服务托管（Dashboard 未验证进程状态）',
+          error: undefined,
+          startedAt,
+        });
+      }
+
       if (status.deviceConnectorMode) {
         // Refreshing the device token also applies narrowly scoped capability
         // migrations (for example file upload) to existing installations.
@@ -221,15 +253,28 @@ export class CatsConnectorAutoStart {
         });
       }
 
-      // All installs converge on a user-scoped device connector token. Existing
-      // Bot bindings are intentionally preserved on disk for rollback, but are
-      // no longer used as the identity of this local Connector.
-      if (!status.deviceConnectorMode) {
+      // Only the desktop runtime may automatically migrate a legacy install to
+      // a device Connector. A server-hosted Dashboard can manage a cloud Bot;
+      // silently provisioning a device token there changes its identity and can
+      // take the Bot offline for its users.
+      if (!status.deviceConnectorMode && this.autoProvisionDeviceConnector) {
         await this.request('/cats/device-connector/provision', { method: 'POST', body: '{}' });
         status = await this.request<CatsStatusPayload>('/cats/status');
       }
 
-      await this.request('/cats/connector/start', { method: 'POST', body: '{}' });
+      if (status.configured || status.bodyConfigured) {
+        await this.request('/cats/connector/start', { method: 'POST', body: '{}' });
+      } else {
+        // Never create a local Bot as a side effect of a server Dashboard
+        // login. The operator must configure the cloud Bot explicitly.
+        return this.setSnapshot({
+          stage: 'error',
+          trigger,
+          message: '云端 Bot 尚未配置，未启动 Connector',
+          error: 'Cloud Bot credentials are not configured',
+          startedAt,
+        });
+      }
 
       if (generation !== this.generation) return this.getSnapshot();
 

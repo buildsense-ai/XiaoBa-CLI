@@ -86,7 +86,7 @@ import {
   type BotModelDefinition,
   type CustomBotModelDefinition,
 } from '../../bot-definition/types';
-import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
+import { resolveCatsCoRuntimeConfig, resolveCatsCoRuntimeRole } from '../../catscompany/runtime-config';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { registerSkillHubRoutes } from './skillhub';
 import { registerPetRoutes } from './pet';
@@ -2403,6 +2403,7 @@ export interface DashboardApiRouterOptions {
   getAuthStatus?: () => DashboardAuthStatus;
   modelsDevFetch?: typeof fetch;
   catsConnectorAutoStart?: CatsConnectorAutoStart;
+  manageConnector?: boolean;
 }
 
 export function createApiRouter(
@@ -3875,7 +3876,7 @@ export function createApiRouter(
     const auth = trustCatsAuthStateEndpoints(localConfig.getAuthState());
     const deviceId = String(localConfig.load().device?.deviceId || '').trim();
     const connector = serviceManager.getService('catscompany');
-    if (connector?.status === 'running') {
+    if (options.manageConnector !== false && connector?.status === 'running') {
       serviceManager.stop('catscompany');
     }
     const weixin = serviceManager.getService('weixin');
@@ -3918,7 +3919,7 @@ export function createApiRouter(
       const state = trustCatsAuthStateEndpoints(getCatsAuthState(req.body || {}));
       const localConfigService = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() });
       const localDevice = localConfigService.load().device;
-      const runtimeRole = process.env.XIAOBA_RUNTIME_ROLE === 'desktop' ? 'desktop' : 'server';
+      const runtimeRole = resolveCatsCoRuntimeRole(process.env.XIAOBA_RUNTIME_ROLE);
       const login = await catsRequest('POST', state.httpBaseUrl, '/api/desktop-connect/exchange', {
         code,
         device_id: localDevice?.deviceId || '',
