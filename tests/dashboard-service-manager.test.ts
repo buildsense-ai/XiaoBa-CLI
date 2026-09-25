@@ -151,7 +151,7 @@ describe('dashboard service manager', () => {
 
   test('marks dashboard-owned CatsCo connectors as desktop runtimes', async () => {
     const previousRuntimeRole = process.env.XIAOBA_RUNTIME_ROLE;
-    process.env.XIAOBA_RUNTIME_ROLE = 'desktop';
+    process.env.XIAOBA_RUNTIME_ROLE = ' Desktop ';
     const manager = new ServiceManager(process.cwd());
     const serviceRecord = (manager as any).services.get('catscompany');
     serviceRecord.info.command = process.execPath;

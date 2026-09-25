@@ -5,7 +5,7 @@ import * as dotenv from 'dotenv';
 import { EventEmitter } from 'events';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { PathResolver } from '../utils/path-resolver';
-import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
+import { resolveCatsCoRuntimeConfig, resolveCatsCoRuntimeRole } from '../catscompany/runtime-config';
 import { weixinBindingEnvOverlay } from './weixin-channel-binding';
 
 const isWindows = process.platform === 'win32';
@@ -247,9 +247,7 @@ export class ServiceManager extends EventEmitter {
     if (name === 'catscompany') {
       // Electron explicitly marks both development and packaged desktop
       // launches. A browser-only/server Dashboard remains fail-closed.
-      envVars.XIAOBA_RUNTIME_ROLE = process.env.XIAOBA_RUNTIME_ROLE === 'desktop'
-        ? 'desktop'
-        : 'server';
+      envVars.XIAOBA_RUNTIME_ROLE = resolveCatsCoRuntimeRole(process.env.XIAOBA_RUNTIME_ROLE);
       const catsCoRuntime = resolveCatsCoRuntimeConfig({
         runtimeRoot: runtimeDataRoot,
         env: envVars,

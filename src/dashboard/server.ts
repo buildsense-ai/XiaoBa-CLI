@@ -10,6 +10,7 @@ import { CatsConnectorAutoStart } from './cats-connector-autostart';
 import { preserveOperatorManagedSkills } from '../bot-skills/preservation';
 import { startSkillTrashGarbageCollector } from '../bot-skills/deleted-skill-trash';
 import { PathResolver } from '../utils/path-resolver';
+import { resolveCatsCoRuntimeRole } from '../catscompany/runtime-config';
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -59,15 +60,18 @@ export async function startDashboard(
   const dashboardAuth = createDashboardAuth({
     apiKey: dashboardApiKey || undefined,
   });
+  const connectorPolicy = resolveDashboardConnectorPolicy(process.env);
   const catsConnectorAutoStart = new CatsConnectorAutoStart({
     port,
     apiKey: dashboardApiKey || undefined,
+    ...connectorPolicy,
   });
 
   // API routes (with auth protection)
   app.use('/api', dashboardAuth.middleware, createApiRouter(serviceManager, controllers.updateController, {
     getAuthStatus: dashboardAuth.getStatus,
     catsConnectorAutoStart,
+    manageConnector: connectorPolicy.manageConnector,
   }));
 
   // Serve frontend
@@ -115,6 +119,23 @@ export async function startDashboard(
       serviceManager.stopAll();
       await Promise.all(activeServers.splice(0).map(closeServer));
     },
+  };
+}
+
+export function resolveDashboardConnectorPolicy(env: NodeJS.ProcessEnv = process.env): {
+  autoProvisionDeviceConnector: boolean;
+  manageConnector: boolean;
+} {
+  const explicit = String(env.XIAOBA_ENABLE_DEVICE_CONNECTOR_AUTOPROVISION || '').trim();
+  const desktop = resolveCatsCoRuntimeRole(env.XIAOBA_RUNTIME_ROLE) === 'desktop';
+  if (!explicit) {
+    return { autoProvisionDeviceConnector: desktop, manageConnector: desktop };
+  }
+  const enabled = /^(1|true|yes)$/i.test(explicit);
+  return {
+    autoProvisionDeviceConnector: enabled,
+    // An explicit opt-in is also the explicit opt-in to process ownership.
+    manageConnector: enabled || desktop,
   };
 }
 

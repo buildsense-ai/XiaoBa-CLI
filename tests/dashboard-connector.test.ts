@@ -4,14 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 import { CatsConnectorAutoStart } from '../src/dashboard/cats-connector-autostart';
+import { resolveDashboardConnectorPolicy } from '../src/dashboard/server';
 
 const dashboardDir = join(process.cwd(), 'dashboard');
 const html = readFileSync(join(dashboardDir, 'connector.html'), 'utf-8');
 const script = readFileSync(join(dashboardDir, 'connector.js'), 'utf-8');
 const styles = readFileSync(join(dashboardDir, 'connector.css'), 'utf-8');
 const serverSource = readFileSync(join(process.cwd(), 'src/dashboard/server.ts'), 'utf-8');
+const installSh = readFileSync(join(process.cwd(), 'install.sh'), 'utf-8');
+const installPs1 = readFileSync(join(process.cwd(), 'install.ps1'), 'utf-8');
 
 test('real Connector Dashboard exposes four runtime states without local Bot creation', () => {
   assert.match(html, /CatsCo Connector/);
@@ -308,6 +312,103 @@ test('background bootstrap migrates a legacy Bot installation to device Connecto
     ]);
     assert.equal(paths.some((url) => url.endsWith('/cats/setup')), false);
     assert.deepEqual(savedConfig.currentBot, legacyBot);
+  } finally {
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test('dashboard connector policy keeps server ownership opt-in and preserves desktop override-off', () => {
+  assert.deepEqual(resolveDashboardConnectorPolicy({}), {
+    autoProvisionDeviceConnector: false,
+    manageConnector: false,
+  });
+  assert.deepEqual(resolveDashboardConnectorPolicy({ XIAOBA_RUNTIME_ROLE: 'desktop' }), {
+    autoProvisionDeviceConnector: true,
+    manageConnector: true,
+  });
+  assert.deepEqual(resolveDashboardConnectorPolicy({ XIAOBA_RUNTIME_ROLE: 'desktop', XIAOBA_ENABLE_DEVICE_CONNECTOR_AUTOPROVISION: '0' }), {
+    autoProvisionDeviceConnector: false,
+    manageConnector: true,
+  });
+  assert.deepEqual(resolveDashboardConnectorPolicy({ XIAOBA_ENABLE_DEVICE_CONNECTOR_AUTOPROVISION: '1' }), {
+    autoProvisionDeviceConnector: true,
+    manageConnector: true,
+  });
+  for (const role of ['Desktop', 'DESKTOP', ' desktop ']) {
+    assert.deepEqual(resolveDashboardConnectorPolicy({ XIAOBA_RUNTIME_ROLE: role }), {
+      autoProvisionDeviceConnector: true,
+      manageConnector: true,
+    });
+  }
+  assert.match(installSh, /XIAOBA_RUNTIME_ROLE=desktop npx tsx src\/index\.ts dashboard/);
+  assert.match(installPs1, /set "XIAOBA_RUNTIME_ROLE=desktop"/);
+});
+
+test('Windows installer generates a launcher that sets the child runtime role', () => {
+  // Evaluate the actual generation block, not the installer main flow (which
+  // installs software and creates a desktop shortcut).
+  const generation = installPs1.match(/function Create-Launcher \{([\s\S]*?)\r?\n    Log /)?.[1];
+  assert.ok(generation);
+  for (const inheritedRole of [undefined, 'server']) {
+    const root = mkdtempSync(join(tmpdir(), 'catsco-launcher-'));
+    try {
+      const env = { ...process.env, LAUNCHER_TEST_ROOT: root };
+      if (inheritedRole === undefined) delete env.XIAOBA_RUNTIME_ROLE;
+      else env.XIAOBA_RUNTIME_ROLE = inheritedRole;
+      const source = '$ErrorActionPreference = "Stop"\n$InstallDir = $env:LAUNCHER_TEST_ROOT\n$DashboardPort = 3800\n' + generation;
+      const powershell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
+      const generated = spawnSync(powershell, [
+        '-NoProfile', '-NonInteractive', '-EncodedCommand',
+        Buffer.from(source, 'utf16le').toString('base64'),
+      ], { env, encoding: 'utf8', timeout: 15000 });
+      assert.equal(generated.status, 0, generated.stderr);
+      const launcher = readFileSync(join(root, 'start.bat'), 'utf8');
+      assert.match(launcher, /set "XIAOBA_RUNTIME_ROLE=desktop"/);
+      // This cross-platform test verifies the real here-string generation on
+      // every CI runner, including Ubuntu. The generated batch file is not
+      // executed by the repository's current CI jobs.
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('server bootstrap keeps a cloud Bot and does not auto-provision a device Connector', async () => {
+  const runtimeRoot = createRuntimeConfig('catsco-connector-server-', {
+    version: 1,
+    account: { token: 'test-user-token', uid: 'usr-test' },
+    currentBot: { uid: 'cloud-bot', apiKey: 'cloud-key', boundByUserUid: 'usr-test' },
+    preferences: { autoConnect: true },
+  });
+  const paths: string[] = [];
+  try {
+    const controller = new CatsConnectorAutoStart({
+      port: 3800,
+      runtimeRoot,
+      autoProvisionDeviceConnector: false,
+      manageConnector: false,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        paths.push(url);
+        if (url.endsWith('/cats/status')) {
+          return jsonResponse({
+            connected: true,
+            deviceConnectorMode: false,
+            bodyConfigured: true,
+            configured: true,
+            service: { status: 'stopped' },
+          });
+        }
+        if (url.endsWith('/cats/connector/start')) return jsonResponse({ ok: true });
+        return jsonResponse({ error: 'unexpected request' }, 500);
+      },
+    });
+
+    const snapshot = await controller.run('startup');
+    assert.equal(snapshot.stage, 'connected');
+    assert.equal(paths.some((url) => url.endsWith('/cats/device-connector/provision')), false);
+    assert.equal(paths.some((url) => url.endsWith('/cats/connector/start')), false);
+    assert.equal(paths.some((url) => url.endsWith('/cats/setup')), false);
   } finally {
     rmSync(runtimeRoot, { recursive: true, force: true });
   }

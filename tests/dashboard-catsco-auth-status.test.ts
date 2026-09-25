@@ -979,7 +979,7 @@ describe('dashboard CatsCo account status', () => {
 
   test('POST /cats/desktop-connect exchanges a web login code and persists CatsCo account aliases', async () => {
     const { stopCalls } = await useRunningWeixinService();
-    process.env.XIAOBA_RUNTIME_ROLE = 'desktop';
+    process.env.XIAOBA_RUNTIME_ROLE = ' DESKTOP ';
     createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
       version: 1,
       account: { token: 'old-token', uid: '66', username: 'old-user', displayName: 'Old User' },
