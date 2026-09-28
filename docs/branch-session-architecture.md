@@ -51,7 +51,11 @@ CatsLog tokens or wait for a remote result. The division of labor is fixed:
 - **The branch owns query policy** — whether to query at all (chitchat finishes immediately with
   `delivery:discard`), which local log refs to read, how to compose the remote `query_text` and
   scope hints, when to spend the single allowed refine, and how to write the task-aware summary
-  and choose delivery. This is model work: the branch sees the input plus recent messages.
+  and choose delivery. This is model work: the branch sees the input plus recent messages. The
+  refine budget is also mechanical: `catslog_branch` is capped at two executions per run
+  (`MAX_CATSLOG_BRANCH_CALLS_PER_RUN`); past the cap the tool returns a bounded
+  budget-exhausted result telling the model to finish, and the call never reaches the server
+  (logged as `remote_probe_budget_exhausted`).
 - **The server owns retrieval execution** — the fused `/catsco/agent/branch` endpoint performs
   multi-source fan-out (agent memory, session graph, skills), scope fencing, and reranking in
   roughly ten milliseconds. Client-side multi-step exploration across per-source endpoints

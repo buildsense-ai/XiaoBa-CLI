@@ -158,11 +158,15 @@ describe('CatsLog memory branch integration', () => {
     const observations = queue.drain();
     assert.equal(observations.length, 1);
     assert.deepEqual(ai.toolNames, FULL_TOOLS);
-    assert.match(ai.calls[0].find(message => message.role === 'system')?.content as string, /catslog_branch/);
-    assert.match(
-      ai.calls[0].find(message => message.role === 'system')?.content as string,
-      /一次收窄 refine/,
-    );
+    const systemPrompt = ai.calls[0].find(message => message.role === 'system')?.content as string;
+    assert.match(systemPrompt, /catslog_branch/);
+    assert.match(systemPrompt, /一次收窄 refine/);
+    // v1.1 guidance: mechanical probe cap, two-probe stop rule, and the
+    // early-exit bar for locally-answerable questions.
+    assert.match(systemPrompt, /超限会被工具机械拒绝/);
+    assert.match(systemPrompt, /两次远端探针都没有找到/);
+    assert.match(systemPrompt, /本地可枚举问题的提前收尾/);
+    assert.match(systemPrompt, /delivery:discard 提前结束/);
     const injected = JSON.parse(observations[0].formattedContent || '');
     assert.deepEqual(injected.refs, ['stream-release#17']);
     assert.equal(injected.summary.includes('release decision'), true);

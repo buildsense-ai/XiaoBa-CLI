@@ -30,7 +30,8 @@ the explicit `delivery` field.
 Query policy lives in the branch; retrieval execution lives in the server's
 fused `/catsco/agent/branch` endpoint (multi-source fan-out, scope fencing,
 reranking). The branch exposes exactly one remote tool, `catslog_branch`, and
-may refine at most once before finishing.
+may refine at most once before finishing; the two-execution budget is enforced
+mechanically per run, not only by prompt.
 
 The branch keeps a single anti-hallucination guard, `CatsLogObservedRefsTracker`:
 it records the citation-shaped refs that actually appeared in this run's tool
@@ -55,6 +56,12 @@ read and update these bounded values through `/api/branch-agents/memory` and
 limits on load.
 
 ## Observed Issues
+
+- Production (v1.1): one bot's branch made four `catslog_branch` calls plus
+  local reads and burned the full 90s deadline on two consecutive turns
+  ("at-most-one-refine" was prompt-only), so no observation was injected. The
+  mechanical two-call cap, the two-probe stop rule, and the early-exit bar for
+  locally-answerable questions address this; the deadline itself stays 90s.
 
 - Some near-neighbor memories repeat recent context that the main agent already
   saw. These should usually be suppressed unless they contain extra tool

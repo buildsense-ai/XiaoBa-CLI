@@ -157,6 +157,35 @@ class AuditDeliveryAI {
   }
 }
 
+class OverProbingAI {
+  calls = 0;
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls++;
+    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
+    if (lastTool && String(lastTool.content).includes('exhausted')) {
+      return {
+        content: null,
+        toolCalls: [call('finish-1', 'finish_memory_search', {
+          summary: '远端探针预算耗尽，用已观测 refs 收尾。',
+          refs: ['stream-review#12'],
+          delivery: 'context',
+        })],
+        usage,
+      };
+    }
+    return {
+      content: null,
+      toolCalls: [call(`branch-${this.calls}`, 'catslog_branch', { query_text: `probe ${this.calls}` })],
+      usage,
+    };
+  }
+}
+
 class DiscardAI {
   isToolCallingSupported(): boolean {
     return true;
@@ -289,6 +318,37 @@ describe('branch CatsLog lifecycle', () => {
     assert.match(logs, /audited_observation/);
     assert.doesNotMatch(logs, /retrieval_receipt/);
     assert.match(logs, /catslog:skill:review-checklist@2/);
+  });
+
+  test('caps catslog_branch at two executions and still finishes via observed refs', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const backend = new BranchOnlyMemory();
+    const ai = new OverProbingAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'remote-probe-cap',
+      input: 'find the rollback decision',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: true,
+    });
+
+    await handle.done;
+
+    // The 3rd+ calls never reach the server; the loop still finishes.
+    assert.equal(backend.branchQueries.length, 2);
+    assert.equal(ai.calls, 4);
+    const observations = queue.drain();
+    assert.equal(observations.length, 1);
+    const injected = JSON.parse(observations[0].formattedContent || '');
+    assert.deepEqual(injected.refs, ['stream-review#12']);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /remote_probe_budget_exhausted/);
+    assert.match(logs, /published_observation/);
+    // The budget-exhausted payload is model-visible in the transcript.
+    assert.match(logs, /remote_probe_budget/);
   });
 
   test('discards a chitchat branch without queueing anything', async () => {
