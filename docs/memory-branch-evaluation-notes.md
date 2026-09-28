@@ -19,32 +19,32 @@ evaluation checks used while tuning the branch-session memory search flow.
   it before the observation lifecycle expired.
 - `cancelled`: the branch was stopped before it produced a finish payload.
 - `budget_exhausted`: the branch reached its bounded pass/deadline budget before
-  a valid finish payload. No partial context observation is published; if the
-  branch had already submitted evidence that was explicitly deferred for a
-  version guard, it is retained as an `audited_observation` only.
+  a valid finish payload. No partial context observation is published.
 
 `dropped` is a lifecycle outcome, not a branch judgment. The legacy
 `inject` flag remains accepted for compatibility, but new callers should use
 the explicit `delivery` field.
 
-## CatsLog evidence contract
+## CatsLog evidence contract (thin v1)
 
-The branch records a bounded `catslog.branch.provenance.v1` projection from the
-actual tool seam. It contains candidate/active/body-read Skill refs, route
-metadata, graph lineage, catalog revision, receipt eligibility, and outcome
-status. Raw bearer values and retrieval receipts never enter branch messages,
+Query policy lives in the branch; retrieval execution lives in the server's
+fused `/catsco/agent/branch` endpoint (multi-source fan-out, scope fencing,
+reranking). The branch exposes exactly one remote tool, `catslog_branch`, and
+may refine at most once before finishing.
+
+The branch keeps a single anti-hallucination guard, `CatsLogObservedRefsTracker`:
+it records the citation-shaped refs that actually appeared in this run's tool
+results (local and remote alike), and a `delivery:context` finish may only cite
+refs from that observed set. An unobserved ref fails closed to
+`delivery:audit` and is logged as `unobserved_refs_audit_only` with the cited
+and observed refs. Bearer values and receipts never enter branch messages,
 observations, or logs.
 
-When a branch cites a Skill for parent context:
-
-1. the cited ref must have been observed in a CatsLog result;
-2. a concrete adapter must expose an active-head graph observation, and every
-   cited revision must match that head;
-3. a body read marks the cited Skill as receipt-eligible, but does not imply that
-   the main agent adopted or executed it. The branch never emits
-   `catslog_skill_outcome`; the main turn runtime owns task outcome settlement.
-
-Stale, unseen, or unverified Skill citations fail closed to `delivery:audit`.
+The former rich provenance projection (active-head version checks, receipt
+eligibility, route attribution, graph lineage, outcome status, catalog
+revision) was removed with the fat per-source tool surface: the server owns
+evidence freshness, and outcome settlement belongs to the main-turn runtime,
+not the retrieval branch.
 
 ## Resource budget
 

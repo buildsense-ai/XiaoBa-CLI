@@ -1,7 +1,9 @@
 # CatsLog Agent Memory staging smoke
 
 `scripts/catslog-agent-memory-smoke.mjs` verifies the device-bound Agent API
-from the same boundary used by the memory branch. It is read-only by default
+routes served to CatsCo clients. The memory branch itself only consumes the
+fused branch route plus the Skills catalog read; the smoke additionally covers
+the remaining routes and both explicit writes. It is read-only by default
 and never falls back to `CATSCO_LOG_API_BASE_URL`.
 
 ## Read-only check
@@ -48,19 +50,16 @@ refuses `*.catsco.fun` unless `CATSLOG_SMOKE_ALLOW_PRODUCTION=true` is also set.
 If the staging catalog has no matching Skill fixture, the write check stops
 before sending either write request.
 
-The memory branch itself remains read-only by default:
+The memory branch itself is retrieval-only and needs no write switches:
 
 ```dotenv
 CATSLOG_MEMORY_ENABLED=true
-CATSLOG_SKILL_OUTCOMES_ENABLED=false
-CATSLOG_MEMORY_WRITE_ENABLED=false
 ```
 
-The autonomous branch does not emit outcome feedback: a receipt means only that
-Skill content was read. Receipt-bound outcome settlement belongs to the main
-turn runtime, which will know whether the Skill was adopted and how the task ended once the
-outcome finalizer is introduced.
-Legacy no-receipt outcomes remain on the explicit CLI command path.
+The autonomous branch never emits outcome feedback and never writes notes; the
+thin v1 surface is `memory_search`/`memory_read_turn`/`memory_neighbors`, one
+`catslog_branch` remote probe, and `finish_memory_search`. Explicit Skill
+outcome reports stay on the `catsco catslog outcome` CLI command path.
 
 ## Branch lifecycle smoke
 
@@ -71,10 +70,10 @@ tests:
 pnpm exec tsx --test tests/catslog-branch-lifecycle.test.ts
 ```
 
-The suite exercises audit-only delivery, bounded non-finishing loops, active
-Skill-head verification, stale/unseen citation suppression, and retrieval-only
-Skill evidence delivery. The branch does not claim task outcomes; those are
+The suite exercises observed-evidence context delivery, unobserved-citation
+audit downgrade, audit-only delivery, bounded non-finishing loops, discard on
+chitchat, and log redaction. The branch does not claim task outcomes; those are
 owned by the main turn runtime. In a live run, inspect
 `logs/branches/memory/<date>/*.jsonl` for `published_observation`,
-`audited_observation`, `finish_deferred`, and `budget_exhausted`; a raw
-`retrieval_receipt` must never appear there.
+`audited_observation`, `unobserved_refs_audit_only`, and `budget_exhausted`; a
+raw `retrieval_receipt` must never appear there.
