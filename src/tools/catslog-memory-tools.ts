@@ -1054,13 +1054,6 @@ function parseStringFields(args: any, fields: Array<[string, number]>): { values
   return { values };
 }
 
-function requiredString(value: unknown, name: string, maxLength: number): { value: string; error?: string } {
-  const parsed = optionalString(value, name, maxLength);
-  if (parsed.error) return { value: '', error: parsed.error };
-  if (!parsed.value) return { value: '', error: `${name} must be provided` };
-  return { value: parsed.value };
-}
-
 function requiredNoteContent(value: unknown, name: string, maxLength: number): { value: string; error?: string } {
   if (value === undefined || value === null || typeof value !== 'string') {
     return { value: '', error: `${name} must be a string` };

@@ -38,10 +38,6 @@ export interface CatsLogSkillProvenance {
   versionStatus: 'verified' | 'mismatch' | 'unknown';
 }
 
-export function hasCatsLogSkillCitation(refs: readonly string[]): boolean {
-  return catsLogSkillCitations(refs).length > 0;
-}
-
 export function catsLogSkillCitations(refs: readonly string[]): string[] {
   if (!Array.isArray(refs)) return [];
   return Array.from(new Set(refs.map(skillRef).filter((value): value is string => Boolean(value))));

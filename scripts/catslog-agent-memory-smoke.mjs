@@ -243,6 +243,8 @@ async function call(name, path, options = {}) {
       method: options.method || 'GET',
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      // A smoke script must terminate: never hang on a stuck staging endpoint.
+      signal: AbortSignal.timeout(30_000),
     });
   } catch (error) {
     fail(`${name} request failed: ${error?.message || 'network error'}`);
