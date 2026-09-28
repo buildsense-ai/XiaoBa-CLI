@@ -345,6 +345,9 @@ function isSensitiveLogKey(key: string): boolean {
   // Normalize camelCase and punctuation before matching so both
   // `retrieval_receipt` and `retrievalReceipt` are covered without treating a
   // benign key such as `guid` as a UID selector.
+  // Known over-match: benign keys like `max_tokens` also normalize to a
+  // sensitive suffix and are redacted in branch logs. Accepted deliberately —
+  // audit logs prefer over-redaction, and only debugging convenience is lost.
   const normalized = key
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .replace(/[^A-Za-z0-9]+/g, '_')

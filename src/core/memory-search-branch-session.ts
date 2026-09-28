@@ -19,7 +19,7 @@ import {
 } from '../tools/catslog-memory-tools';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import { SyntheticObservation, SyntheticObservationQueue } from './synthetic-observation';
-import { ObservationBranchDisposition, ObservationBranchSession } from './observation-branch-session';
+import { ObservationBranchDisposition, ObservationBranchSession, ObservationDelivery } from './observation-branch-session';
 import { MemoryLogStore } from './memory-log-store';
 import {
   catsLogSkillCitations,
@@ -46,6 +46,20 @@ export interface MemorySearchBranchSessionOptions {
   maxContextTokens?: number;
 }
 
+/**
+ * One guard decision for a finish payload that cites CatsLog Skill evidence.
+ * `guard` explains a downgrade/defer for audit logs; `delivery` is the
+ * effective delivery after the guard applied.
+ */
+interface CatsLogFinishDecision {
+  /** Whether finish may complete right now (false = defer with a reminder). */
+  allowed: boolean;
+  delivery: ObservationDelivery;
+  guard?: 'unobserved_skill' | 'stale_revision' | 'active_head_unverified';
+  unobservedSkillRefs: string[];
+  provenance: CatsLogSkillProvenance;
+}
+
 export class MemorySearchBranchSession extends ObservationBranchSession<MemorySearchFinishPayload> {
   private readonly store: MemoryLogStore;
   private readonly catslogEvidence = new CatsLogSkillEvidenceTracker();
@@ -58,6 +72,16 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
    * audit-only rather than disappearing at shutdown.
    */
   private deferredCatsLogAuditPayload: MemorySearchFinishPayload | undefined;
+  /**
+   * Decision memo for the most recent finish payload. Guarantees the finish
+   * handler and observation logging act on one provenance snapshot (no tools
+   * can run between those calls, so payload-identity caching is safe), and
+   * keeps the guard decision from being recomputed per call site.
+   */
+  private finishDecision?: {
+    payload: MemorySearchFinishPayload;
+    decision: CatsLogFinishDecision;
+  };
 
   constructor(private readonly memoryOptions: MemorySearchBranchSessionOptions) {
     const budget = normalizeMemoryBranchBudget({
@@ -119,18 +143,14 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   }
 
   protected buildTools(): Tool[] {
-    const localTools: Tool[] = [
+    const [searchTool, readTurnTool, neighborsTool, finishTool] = [
       new MemorySearchTool(this.store),
       new MemoryReadTurnTool(this.store),
       new MemoryNeighborsTool(this.store),
-      new FinishMemorySearchTool(payload => {
-        if (!this.mayCompleteWithCatsLogEvidence(payload)) return;
-        this.deferredCatsLogAuditPayload = undefined;
-        this.complete(payload);
-      }),
+      new FinishMemorySearchTool(payload => this.handleFinish(payload)),
     ];
     const catslogMemory = this.catslogMemoryForTurn;
-    if (!catslogMemory) return localTools;
+    if (!catslogMemory) return [searchTool, readTurnTool, neighborsTool, finishTool];
 
     // Keep remote capability tools branch-local. They never become part of
     // the parent agent's general tool surface or receive upload credentials.
@@ -148,11 +168,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     if (supportsCatsLogNotes(catslogMemory)) {
       remoteTools.push(new CatsLogMemoryNoteTool(catslogMemory));
     }
-    return [
-      ...localTools.slice(0, 3),
-      ...remoteTools,
-      localTools[3],
-    ];
+    return [searchTool, readTurnTool, neighborsTool, ...remoteTools, finishTool];
   }
 
   protected onBranchToolStart(name: string, toolUseId: string, input: unknown): void {
@@ -163,41 +179,76 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     this.catslogEvidence.recordToolEnd(name, toolUseId, result);
   }
 
-  private mayCompleteWithCatsLogEvidence(payload: MemorySearchFinishPayload): boolean {
-    const requestedDelivery = payload.delivery || (payload.inject ? 'context' : 'discard');
-    if (requestedDelivery !== 'context' || !hasCatsLogSkillCitation(payload.refs)) return true;
+  /**
+   * The single fail-closed policy for Skill evidence delivery. Both the
+   * finish handler and observation disposition ask this one classifier, so
+   * behavior and audit logs cannot disagree about why a citation was
+   * downgraded or deferred.
+   *
+   * Guard precedence matters: an unobserved citation completes immediately
+   * (defer would be pointless — no amount of graph reads can make an unseen
+   * ref observed), while an unverified active head defers so the model can
+   * still fetch the graph and re-finish.
+   */
+  private resolveCatsLogFinishDecision(
+    payload: MemorySearchFinishPayload,
+    requestedDelivery: ObservationDelivery,
+  ): CatsLogFinishDecision {
+    if (this.finishDecision?.payload === payload) return this.finishDecision.decision;
     const provenance = this.catslogEvidence.snapshot(payload.refs);
-    const citedSkillRefs = catsLogSkillCitations(payload.refs);
-    const unobservedSkillRefs = citedSkillRefs.filter(ref => !provenance.candidateRefs.includes(ref));
-    if (unobservedSkillRefs.length > 0) {
-      // A syntactically valid citation is not proof that the branch actually
-      // saw that Skill. Keep fabricated/unseen refs out of parent context;
-      // an explicit audit delivery can still preserve the claim for review.
-      this.logger.write('unobserved_skill_audit_only', {
-        refs: unobservedSkillRefs,
-        catslog_provenance: provenance,
-      });
-      return true;
+    let decision: CatsLogFinishDecision;
+    if (requestedDelivery !== 'context' || !hasCatsLogSkillCitation(payload.refs)) {
+      decision = { allowed: true, delivery: requestedDelivery, unobservedSkillRefs: [], provenance };
+    } else {
+      const citedSkillRefs = catsLogSkillCitations(payload.refs);
+      const unobservedSkillRefs = citedSkillRefs.filter(ref => !provenance.candidateRefs.includes(ref));
+      if (unobservedSkillRefs.length > 0) {
+        // A syntactically valid citation is not proof that the branch actually
+        // saw that Skill. Keep fabricated/unseen refs out of parent context;
+        // the downgrade to audit preserves the claim for review.
+        decision = { allowed: true, delivery: 'audit', guard: 'unobserved_skill', unobservedSkillRefs, provenance };
+      } else if (provenance.versionStatus === 'unknown') {
+        // Require one active-head observation before allowing Skill evidence
+        // into parent context. A lightweight adapter that cannot expose the
+        // graph is audit-only as well; compatibility must not weaken the
+        // version guard and let an unverified revision influence the main agent.
+        decision = { allowed: false, delivery: 'audit', guard: 'active_head_unverified', unobservedSkillRefs, provenance };
+      } else if (provenance.versionStatus === 'mismatch') {
+        // A citation to an observed stale head must never silently become
+        // parent context; retain it as audit evidence.
+        decision = { allowed: true, delivery: 'audit', guard: 'stale_revision', unobservedSkillRefs, provenance };
+      } else {
+        decision = { allowed: true, delivery: 'context', unobservedSkillRefs, provenance };
+      }
     }
-    // Require one active-head observation before allowing Skill evidence into
-    // parent context. A lightweight adapter that cannot expose the graph is
-    // therefore audit-only as well; compatibility must not weaken the
-    // version guard and let an unverified revision influence the main agent.
-    if (provenance.versionStatus === 'unknown') {
+    this.finishDecision = { payload, decision };
+    return decision;
+  }
+
+  private handleFinish(payload: MemorySearchFinishPayload): void {
+    const requestedDelivery = payload.delivery || (payload.inject ? 'context' : 'discard');
+    const decision = this.resolveCatsLogFinishDecision(payload, requestedDelivery);
+    if (!decision.allowed) {
       this.deferCatsLogAudit(payload);
       this.logger.write('finish_deferred', {
-        reason: 'active_head_unverified',
+        reason: decision.guard,
         refs: payload.refs,
-        catslog_provenance: provenance,
+        catslog_provenance: decision.provenance,
       });
       this.messages.push({
         role: 'user',
         content: this.buildCatsLogEvidenceReminder(),
       });
-      return false;
+      return;
     }
-
-    return true;
+    if (decision.guard === 'unobserved_skill') {
+      this.logger.write('unobserved_skill_audit_only', {
+        refs: decision.unobservedSkillRefs,
+        catslog_provenance: decision.provenance,
+      });
+    }
+    this.deferredCatsLogAuditPayload = undefined;
+    this.complete(payload);
   }
 
   /**
@@ -259,16 +310,8 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
 
   protected getObservationDisposition(payload: MemorySearchFinishPayload): ObservationBranchDisposition {
     const requestedDelivery = payload.delivery || (payload.inject ? 'context' : 'discard');
-    const provenance = this.catslogEvidence.snapshot(payload.refs);
-    // A citation to an observed stale head must never silently become parent
-    // context. Keep it available for audit/debugging while failing closed for
-    // the main agent's prompt.
-    const staleRevision = provenance.versionStatus === 'mismatch';
-    const citedSkillRefs = catsLogSkillCitations(payload.refs);
-    const unobservedSkillRefs = citedSkillRefs.filter(ref => !provenance.candidateRefs.includes(ref));
-    const delivery = staleRevision || unobservedSkillRefs.length > 0
-      ? (requestedDelivery === 'context' ? 'audit' : requestedDelivery)
-      : requestedDelivery;
+    const decision = this.resolveCatsLogFinishDecision(payload, requestedDelivery);
+    const delivery = decision.delivery;
     return {
       inject: delivery === 'context',
       delivery,
@@ -277,18 +320,19 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         summary: payload.summary,
         delivery,
         requested_delivery: requestedDelivery,
-        ...(staleRevision ? { version_guard: 'stale_revision_audit_only' } : {}),
-        ...(unobservedSkillRefs.length > 0 ? { version_guard: 'unobserved_skill_audit_only' } : {}),
-        catslog_provenance: provenance,
-        lifecycle: buildCatsLogLifecycle(provenance, delivery),
+        ...(decision.guard === 'stale_revision' ? { version_guard: 'stale_revision_audit_only' } : {}),
+        ...(decision.guard === 'unobserved_skill' ? { version_guard: 'unobserved_skill_audit_only' } : {}),
+        catslog_provenance: decision.provenance,
+        lifecycle: buildCatsLogLifecycle(decision.provenance, delivery),
       },
     };
   }
 
   protected buildObservation(payload: MemorySearchFinishPayload): SyntheticObservation {
-    const provenance = this.catslogEvidence.snapshot(payload.refs);
-    const delivery = this.getObservationDisposition(payload).delivery
-      || (payload.inject ? 'context' : 'discard');
+    const requestedDelivery = payload.delivery || (payload.inject ? 'context' : 'discard');
+    const decision = this.resolveCatsLogFinishDecision(payload, requestedDelivery);
+    const provenance = decision.provenance;
+    const delivery = decision.delivery;
     return {
       id: `memory-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
       source: 'memory',

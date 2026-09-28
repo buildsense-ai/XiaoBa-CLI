@@ -85,6 +85,9 @@ export class CatsLogSkillEvidenceTracker {
 
   recordToolStart(name: string, toolUseId: string, input: unknown): void {
     if (isCatsLogTool(name)) addBounded(this.tools, name, MAX_TOOLS);
+    // catslog_skill_outcome is intentionally never exposed to this branch
+    // (see CatsLogSkillOutcomeTool); these handlers stay defensive so a future
+    // main-runtime outcome surface cannot silently corrupt provenance here.
     if (name === 'catslog_skill_memory' || name === 'catslog_skill_catalog') {
       const source = asRecord(input);
       this.observeRoute(source);

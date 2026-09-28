@@ -340,6 +340,12 @@ export class CatsLogSessionQueryTool implements Tool {
  * Explicitly enabled feedback path. The tool accepts a safe citation rather
  * than a raw receipt; the provider keeps the one-time receipt out of model
  * context and binds it to the exact retrieved body.
+ *
+ * NOT currently instantiated anywhere: the retrieval-only memory branch must
+ * not report Skill success/failure, and the main-turn runtime that will own
+ * receipt-bound outcome settlement has not landed yet. Kept (and covered by
+ * tests) as the ready-made seam for that finalizer; do not add this tool to
+ * MemorySearchBranchSession.buildTools().
  */
 export class CatsLogSkillOutcomeTool implements Tool {
   definition: ToolDefinition = {
@@ -922,6 +928,11 @@ function projectSessionRecord(record: CatscoSessionRecord | Record<string, unkno
 
 function projectActor(actor: unknown): Record<string, unknown> {
   const source = asRecord(actor) || {};
+  // Deliberately boundedText, not safeText: session actor text is the primary
+  // evidence the branch summarizes (paths/identifiers are often the point),
+  // and the server already applies the redaction reflected by the `redacted`
+  // flag. Defense-in-depth for persisted artifacts happens at the branch-log
+  // boundary (sanitizeBranchLogValue) instead of here.
   return {
     text: boundedText(source.text, MAX_TEXT_CHARS),
     ...(source.truncated === true ? { truncated: true } : {}),

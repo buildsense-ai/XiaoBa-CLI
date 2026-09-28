@@ -34,6 +34,13 @@ import {
   loadCatscoLogAgentState,
   saveCatscoLogAgentState,
 } from './catsco-log-agent-state';
+import {
+  cleanCapabilityText as clean,
+  hasUsableReadCapability,
+  hasUsableWriteCapability,
+  responseHasReadCapabilityFields,
+  responseHasWriteCapabilityFields,
+} from './catsco-log-capability';
 
 const CAPABILITY_REFRESH_SKEW_MS = 30_000;
 const RECEIPT_TTL_MS = 30 * 60 * 1000;
@@ -413,6 +420,12 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
         'CatsLog capability is unavailable and no CatsCompany login token is configured',
       ));
     }
+    // Deliberate shared-handshake semantics: concurrent callers await one
+    // bootstrap, and that handshake is bound to the first caller's signal.
+    // A second caller cannot cancel the shared request individually and may
+    // observe an abort raised by the first caller; the next capability read
+    // simply retries. Per-caller cancellation would require per-caller
+    // handshakes, which risks duplicate device scopes.
     if (!this.bootstrapPromise) {
       this.bootstrapPromise = this.bootstrap(stateFilePath, apiBaseUrl, userToken, signal)
         .finally(() => {
@@ -448,23 +461,13 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     // it (legacy servers use a canonical server-side spelling), so retain the
     // response identity while keeping the process-local requested ID stable.
     const responseDeviceId = clean(response.device_id);
+    const responseRecord = response as unknown as Record<string, unknown>;
     const skillToken = clean(response.skill_token);
     const skillExpiry = clean(response.skill_token_expires_at);
     const writeToken = clean(response.memory_write_token);
     const writeExpiry = clean(response.memory_write_token_expires_at);
-    const uploadToken = clean(response.token);
-    const hasRead = Boolean(
-      skillToken
-      && skillToken !== uploadToken
-      && skillToken !== writeToken
-      && isLiveExpiry(skillExpiry, this.now()),
-    );
-    const hasWrite = Boolean(
-      writeToken
-      && writeToken !== uploadToken
-      && writeToken !== skillToken
-      && isLiveExpiry(writeExpiry, this.now()),
-    );
+    const hasRead = hasUsableReadCapability(responseRecord, this.now());
+    const hasWrite = hasUsableWriteCapability(responseRecord, this.now());
     if (!hasRead && !hasWrite) {
       throw new CatsLogMemoryUnavailableError('CatsLog bootstrap did not issue a live Agent capability');
     }
@@ -653,13 +656,10 @@ export class CatsLogMemoryUnavailableError extends Error {
 }
 
 function capabilitiesFromResponse(response: any, now: number): CatsLogCapabilities {
-  const skillToken = clean(response?.skill_token);
-  const skillExpiry = clean(response?.skill_token_expires_at);
-  const uploadToken = clean(response?.token);
-  const writeToken = clean(response?.memory_write_token);
-  const read = skillToken && skillToken !== uploadToken && skillToken !== writeToken && isLiveExpiry(skillExpiry, now)
+  const record = response as unknown as Record<string, unknown>;
+  const read = hasUsableReadCapability(record, now)
     ? {
-      token: skillToken,
+      token: clean(response?.skill_token)!,
       skillsUrl: safePathOrDefault(response?.skills_url, DEFAULT_SKILLS_URL),
       skillGraphUrl: safePathOrDefault(response?.skill_graph_url, DEFAULT_SKILL_GRAPH_URL),
       sessionsUrl: safePathOrDefault(response?.sessions_url, DEFAULT_SESSIONS_URL),
@@ -667,9 +667,8 @@ function capabilitiesFromResponse(response: any, now: number): CatsLogCapabiliti
       memoryRecallUrl: safePathOrDefault(response?.memory_recall_url, DEFAULT_MEMORY_RECALL_URL),
     }
     : null;
-  const writeExpiry = clean(response?.memory_write_token_expires_at);
-  const write = writeToken && writeToken !== uploadToken && writeToken !== skillToken && isLiveExpiry(writeExpiry, now)
-    ? { token: writeToken, memoryNotesUrl: safePathOrDefault(response?.memory_notes_url, DEFAULT_MEMORY_NOTES_URL) }
+  const write = hasUsableWriteCapability(record, now)
+    ? { token: clean(response?.memory_write_token)!, memoryNotesUrl: safePathOrDefault(response?.memory_notes_url, DEFAULT_MEMORY_NOTES_URL) }
     : undefined;
   return { ...(read ? { read } : {}), ...(write ? { write } : {}) };
 }
@@ -700,24 +699,6 @@ function writeCapabilityFromState(state: CatscoLogAgentState, now: number): Cats
   };
 }
 
-function hasLiveToken(token: unknown, expiresAt: unknown, now: number): boolean {
-  return Boolean(clean(token) && isLiveExpiry(clean(expiresAt), now));
-}
-
-function responseHasReadCapabilityFields(response: Record<string, unknown>): boolean {
-  return [
-    'skill_token_id', 'skill_token', 'skill_token_expires_at', 'skills_url',
-    'skill_graph_url', 'sessions_url', 'memory_url', 'memory_recall_url',
-  ].some(key => response[key] !== undefined);
-}
-
-function responseHasWriteCapabilityFields(response: Record<string, unknown>): boolean {
-  return [
-    'memory_notes_url', 'memory_write_token_id', 'memory_write_token',
-    'memory_write_token_expires_at',
-  ].some(key => response[key] !== undefined);
-}
-
 function isLiveExpiry(value: string | undefined, now: number): boolean {
   const timestamp = Date.parse(String(value || ''));
   return Number.isFinite(timestamp) && timestamp > now;
@@ -725,12 +706,6 @@ function isLiveExpiry(value: string | undefined, now: number): boolean {
 
 function safePathOrDefault(value: unknown, fallback: string): string {
   return isSafeCatsLogPath(typeof value === 'string' ? value : undefined) ? value as string : fallback;
-}
-
-function clean(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const text = value.trim();
-  return text || undefined;
 }
 
 function positiveInteger(value: unknown): number | undefined {

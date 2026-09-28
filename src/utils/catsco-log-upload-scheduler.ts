@@ -6,6 +6,13 @@ import { APP_VERSION } from '../version';
 import { CatscoLogAgentClient, isSafeCatsLogPath } from './catsco-log-agent-client';
 import { getCatscoLogAgentConfig } from './catsco-log-agent-config';
 import {
+  cleanCapabilityText as cleanResponseText,
+  hasUsableReadCapability,
+  hasUsableWriteCapability,
+  responseHasReadCapabilityFields,
+  responseHasWriteCapabilityFields,
+} from './catsco-log-capability';
+import {
   CatscoLogAgentState,
   clearCatscoSkillToken,
   clearCatscoLogToken,
@@ -42,26 +49,6 @@ function copyCatscoWriteCapability(
   target.memoryWriteTokenId = source.memoryWriteTokenId;
   target.memoryWriteToken = source.memoryWriteToken;
   target.memoryWriteTokenExpiresAt = source.memoryWriteTokenExpiresAt;
-}
-
-function responseHasReadCapabilityFields(response: Record<string, unknown>): boolean {
-  return [
-    'skill_token_id', 'skill_token', 'skill_token_expires_at', 'skills_url',
-    'skill_graph_url', 'sessions_url', 'memory_url', 'memory_recall_url',
-  ].some(key => response[key] !== undefined);
-}
-
-function responseHasWriteCapabilityFields(response: Record<string, unknown>): boolean {
-  return [
-    'memory_notes_url', 'memory_write_token_id', 'memory_write_token',
-    'memory_write_token_expires_at',
-  ].some(key => response[key] !== undefined);
-}
-
-function cleanResponseText(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const text = value.trim();
-  return text || undefined;
 }
 
 function applyReadCapabilityResponse(
@@ -107,24 +94,6 @@ function applyWriteCapabilityResponse(
   state.memoryWriteTokenExpiresAt = expiresAt;
   state.memoryNotesUrl = isSafeCatsLogPath(typeof response.memory_notes_url === 'string' ? response.memory_notes_url : undefined)
     ? response.memory_notes_url as string : undefined;
-}
-
-function hasUsableReadCapability(response: Record<string, unknown>): boolean {
-  const skillToken = cleanResponseText(response.skill_token);
-  const skillTokenExpiresAt = cleanResponseText(response.skill_token_expires_at);
-  const uploadToken = cleanResponseText(response.token);
-  const writeToken = cleanResponseText(response.memory_write_token);
-  return Boolean(skillToken && skillToken !== uploadToken && skillToken !== writeToken
-    && skillTokenExpiresAt && Date.parse(skillTokenExpiresAt) > Date.now());
-}
-
-function hasUsableWriteCapability(response: Record<string, unknown>): boolean {
-  const token = cleanResponseText(response.memory_write_token);
-  const expiresAt = cleanResponseText(response.memory_write_token_expires_at);
-  const uploadToken = cleanResponseText(response.token);
-  const skillToken = cleanResponseText(response.skill_token);
-  return Boolean(token && token !== uploadToken && token !== skillToken
-    && expiresAt && Date.parse(expiresAt) > Date.now());
 }
 
 export class CatscoLogUploadScheduler {
