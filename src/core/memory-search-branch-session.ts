@@ -24,7 +24,6 @@ import { MemoryLogStore } from './memory-log-store';
 import {
   catsLogSkillCitations,
   CatsLogSkillEvidenceTracker,
-  hasCatsLogSkillCitation,
 } from './catslog-skill-evidence';
 import type { CatsLogSkillProvenance } from './catslog-skill-evidence';
 import { normalizeMemoryBranchBudget } from './branch-budget';
@@ -196,11 +195,11 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   ): CatsLogFinishDecision {
     if (this.finishDecision?.payload === payload) return this.finishDecision.decision;
     const provenance = this.catslogEvidence.snapshot(payload.refs);
+    const citedSkillRefs = catsLogSkillCitations(payload.refs);
     let decision: CatsLogFinishDecision;
-    if (requestedDelivery !== 'context' || !hasCatsLogSkillCitation(payload.refs)) {
+    if (requestedDelivery !== 'context' || citedSkillRefs.length === 0) {
       decision = { allowed: true, delivery: requestedDelivery, unobservedSkillRefs: [], provenance };
     } else {
-      const citedSkillRefs = catsLogSkillCitations(payload.refs);
       const unobservedSkillRefs = citedSkillRefs.filter(ref => !provenance.candidateRefs.includes(ref));
       if (unobservedSkillRefs.length > 0) {
         // A syntactically valid citation is not proof that the branch actually

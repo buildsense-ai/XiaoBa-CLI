@@ -309,4 +309,55 @@ describe('CatsLog branch memory tools', () => {
     assert.equal(malformed.ok, true);
     assert.deepEqual(JSON.parse(String(malformed.content)).items, [{ ref: 'catslog:skill:ok@1', handle: 'ok', revision: 1 }]);
   });
+
+  test('bounds oversized results by dropping tail items, not whole fields', async () => {
+    // 60 skills with ~1.4KB descriptions exceed the catalog cap; the bounder
+    // should keep as many leading items as fit instead of discarding all.
+    const backend: Partial<CatsLogMemoryBackend> = {
+      readSkills: async () => ({
+        content_trust: 'untrusted_runtime_skill',
+        skills: Array.from({ length: 60 }, (_, index) => ({
+          handle: `skill-${index}`,
+          revision: index + 1,
+          description: `skill ${index} `.repeat(120),
+        })),
+      }),
+      recallMemory: async () => ({ session_available: false }),
+      retrieveSkillMemory: async () => ({}),
+    };
+    const result = await new CatsLogSkillCatalogTool(backend as CatsLogMemoryBackend).execute({ limit: 60 }, context);
+    assert.equal(result.ok, true);
+    const encoded = String(result.content);
+    assert.ok(encoded.length <= 50_000, `catalog result exceeds cap: ${encoded.length}`);
+    const payload = JSON.parse(encoded);
+    assert.equal(payload.truncated, true);
+    assert.ok(payload.skills.length > 0 && payload.skills.length < 60, `kept ${payload.skills.length} skills`);
+    assert.equal(payload.skills[0].handle, 'skill-0');
+  });
+
+  test('drains session records before notes when a recall result is oversized', async () => {
+    // The drain order preserves the earlier collection: a recall page is
+    // bounded by popping session.records before notes are touched.
+    const backend: Partial<CatsLogMemoryBackend> = {
+      recallMemory: async () => ({
+        content_trust: 'untrusted_agent_memory',
+        session_available: true,
+        session: {
+          records: Array.from({ length: 100 }, (_, index) => ({
+            ref: `stream-x#${index + 1}`,
+            user: { text: `record ${index} `.repeat(120) },
+          })),
+        },
+        notes: Array.from({ length: 3 }, (_, index) => ({ id: `note-${index}`, kind: 'fact', key: `k${index}` })),
+      }),
+      retrieveSkillMemory: async () => ({}),
+    };
+    const result = await new CatsLogSessionRecallTool(backend as CatsLogMemoryBackend).execute({ search: 'x' }, context);
+    assert.equal(result.ok, true);
+    const encoded = String(result.content);
+    assert.ok(encoded.length <= 60_000, `recall result exceeds cap: ${encoded.length}`);
+    const payload = JSON.parse(encoded);
+    assert.equal(payload.session.truncated, true);
+    assert.equal(payload.notes.length, 3);
+  });
 });

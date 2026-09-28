@@ -273,10 +273,14 @@ export class CatsLogSkillEvidenceTracker {
   private resolveVersionStatus(refs: string[]): CatsLogSkillProvenance['versionStatus'] {
     const skillRefs = refs.map(parseSkillRef).filter((value): value is SkillRef => Boolean(value));
     if (skillRefs.length === 0) return 'unknown';
+    // Parse the active set once; a per-cited-ref re-parse scales the guard
+    // quadratically when several handles are cited together.
+    const parsedActiveRefs = Array.from(this.activeRefs)
+      .map(parseSkillRef)
+      .filter((candidate): candidate is SkillRef => Boolean(candidate));
     for (const ref of skillRefs) {
-      const activeCandidates = Array.from(this.activeRefs)
-        .map(parseSkillRef)
-        .filter((candidate): candidate is SkillRef => candidate?.handle === ref.handle);
+      const activeCandidates = parsedActiveRefs
+        .filter(candidate => candidate.handle === ref.handle);
       // Verification is all-or-nothing: one cited Skill with no observed
       // active head must not be hidden by another cited Skill that happened to
       // have a graph response.

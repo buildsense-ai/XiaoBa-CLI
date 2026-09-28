@@ -316,12 +316,17 @@ function sanitizeBranchLogValue(value: unknown, key?: string, depth = 0): unknow
   if (depth >= MAX_BRANCH_LOG_DEPTH) return '[truncated]';
   if (typeof value === 'string') {
     // Tool arguments/results are often JSON-in-a-string. Parse those strings
-    // opportunistically so nested receipt/token keys receive the same guard.
+    // so nested receipt/token keys receive the same guard, but only when the
+    // text can actually be an object/array — prose and JSON scalars parse
+    // identically through the scrubbed-text path anyway.
     if (key === 'arguments' || key === 'content' || key === 'result') {
-      try {
-        return JSON.stringify(sanitizeBranchLogValue(JSON.parse(value), undefined, depth + 1));
-      } catch {
-        // Preserve ordinary prose, but cap untrusted tool text.
+      const trimmed = value.trimStart();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          return JSON.stringify(sanitizeBranchLogValue(JSON.parse(value), undefined, depth + 1));
+        } catch {
+          // Preserve ordinary prose, but cap untrusted tool text.
+        }
       }
     }
     const scrubbed = scrubInlineSensitiveText(value);
@@ -349,19 +354,24 @@ function isSensitiveLogKey(key: string): boolean {
   // sensitive suffix and are redacted in branch logs. Accepted deliberately —
   // audit logs prefer over-redaction, and only debugging convenience is lost.
   const normalized = key
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(CAMEL_HUMP_RE, '$1_$2')
+    .replace(NON_IDENTIFIER_RE, '_')
     .toLowerCase();
-  return /(?:^|_)(authorization|bearer|password|secret|token|receipt|api_key|uid|uids|scope|tenant|principal|credential|private_key)(?:_|$)/.test(normalized);
+  return SENSITIVE_LOG_KEY_RE.test(normalized);
 }
 
+const CAMEL_HUMP_RE = /([a-z0-9])([A-Z])/g;
+const NON_IDENTIFIER_RE = /[^A-Za-z0-9]+/g;
+const SENSITIVE_LOG_KEY_RE = /(?:^|_)(authorization|bearer|password|secret|token|receipt|api_key|uid|uids|scope|tenant|principal|credential|private_key)(?:_|$)/;
+const BEARER_TEXT_RE = /(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
+const LABELLED_SECRET_TEXT_RE = /((?:retrieval[_-]?receipt|skill[_-]?token|memory[_-]?write[_-]?token|access[_-]?token|api[_-]?key|password|secret)\s*[:=]\s*["']?)[^\s,"'}]+/gi;
+
 function scrubInlineSensitiveText(value: string): string {
-  let scrubbed = value;
   // Catch labelled secrets in plain assistant text that cannot be handled by
   // object-key redaction (for example a model repeating a raw tool result).
-  scrubbed = scrubbed.replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[redacted]');
-  scrubbed = scrubbed.replace(/((?:retrieval[_-]?receipt|skill[_-]?token|memory[_-]?write[_-]?token|access[_-]?token|api[_-]?key|password|secret)\s*[:=]\s*["']?)[^\s,"'}]+/gi, '$1[redacted]');
-  return scrubbed;
+  return value
+    .replace(BEARER_TEXT_RE, '$1[redacted]')
+    .replace(LABELLED_SECRET_TEXT_RE, '$1[redacted]');
 }
 
 function sanitizeBranchToolResult(name: string, result: string): unknown {

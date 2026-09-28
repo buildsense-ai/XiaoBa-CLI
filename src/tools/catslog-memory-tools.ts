@@ -1160,21 +1160,42 @@ function boundToolResult(value: Record<string, unknown>, maxLength: number): Rec
   if (Array.isArray(result.session?.records)) arrays.push({ owner: result.session, key: 'records' });
   if (Array.isArray(result.records)) arrays.push({ owner: result, key: 'records' });
   if (Array.isArray(result.notes)) arrays.push({ owner: result, key: 'notes' });
+  // Drop tail items from the first non-empty array in the order above until
+  // the result fits. Binary-search the minimal pop count instead of
+  // re-serializing the whole result once per dropped item.
+  const originals = arrays.map(({ owner, key }) => owner[key] as unknown[]);
+  const poppable = originals.reduce((sum, list) => sum + list.length, 0);
+  const encodeWithPops = (pops: number): string => {
+    let remaining = pops;
+    for (let i = 0; i < arrays.length && remaining > 0; i++) {
+      const remove = Math.min(remaining, originals[i].length);
+      arrays[i].owner[arrays[i].key] = originals[i].slice(0, originals[i].length - remove);
+      remaining -= remove;
+    }
+    return JSON.stringify(result);
+  };
   let encoded = JSON.stringify(result);
-  let trimmed = false;
-  while (encoded.length > maxLength) {
-    const target = arrays.find(candidate => candidate.owner[candidate.key].length > 0);
-    if (!target) break;
-    target.owner[target.key].pop();
-    trimmed = true;
-    encoded = JSON.stringify(result);
-  }
-  if (encoded.length <= maxLength) {
-    if (trimmed) {
+  if (encoded.length > maxLength && poppable > 0) {
+    let lo = 1;
+    let hi = poppable;
+    let minimal = -1;
+    while (lo <= hi) {
+      const mid = lo + ((hi - lo) >> 1);
+      if (encodeWithPops(mid).length <= maxLength) {
+        minimal = mid;
+        hi = mid - 1;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    if (minimal > 0) {
+      encoded = encodeWithPops(minimal);
       result.truncated = true;
       if (result.session && typeof result.session === 'object') result.session.truncated = true;
       if (Array.isArray(result.notes)) result.notes_truncated = true;
     }
+  }
+  if (encoded.length <= maxLength) {
     return result;
   }
   return {
