@@ -360,7 +360,7 @@ export class CatsLogBranchTool implements Tool {
       type: 'object',
       properties: {
         query_text: { type: 'string', description: '当前任务的具体检索词；不要传整段对话或秘密。' },
-        sources: { type: 'array', items: { type: 'string' }, description: '可选的 branch 来源列表，例如 ["memory","session","skill"]；省略时由服务端决定。' },
+        sources: { type: 'array', items: { type: 'string', enum: ['agent_memory', 'session_graph', 'skill'] }, description: '可选来源：agent_memory、session_graph、skill；省略时查询全部三类。' },
         memory_scope_id: { type: 'string', description: '可选 memory scope narrowing。' },
         session_id: { type: 'string', description: '可选精确 session narrowing。' },
         session_type: { type: 'string', description: '可选 session 类型 narrowing。' },

@@ -375,6 +375,18 @@ export const DEFAULT_MEMORY_RECALL_URL = '/catsco/agent/memory/recall';
 export const DEFAULT_BRANCH_URL = '/catsco/agent/branch';
 export const DEFAULT_MEMORY_NOTES_URL = '/catsco/agent/memory/notes';
 
+// The agent branch endpoint requires a non-empty sources array with these
+// wire values; older tool prompts used memory/session aliases.
+function normalizeBranchSources(sources?: string[]): string[] {
+  const requested = sources?.length ? sources : ['agent_memory', 'session_graph', 'skill'];
+  const aliases: Record<string, string> = { memory: 'agent_memory', session: 'session_graph' };
+  const normalized = requested.map(source => aliases[source] ?? source);
+  if (normalized.some(source => !['agent_memory', 'session_graph', 'skill'].includes(source))) {
+    throw new Error('CatsLog branch sources must be agent_memory, session_graph, or skill');
+  }
+  return [...new Set(normalized)];
+}
+
 function addQueryValue(query: URLSearchParams, key: string, value: unknown): void {
   if (typeof value === 'string' && value.length > 0) query.set(key, value);
 }
@@ -684,7 +696,7 @@ export class CatscoLogAgentClient {
     for (const [key, value] of Object.entries({
       request_id: input.requestId,
       query_text: input.queryText,
-      sources: Array.isArray(input.sources) && input.sources.length > 0 ? input.sources : undefined,
+      sources: normalizeBranchSources(input.sources),
       scope_hints: scopeHints ? {
         ...(scopeHints.memoryScopeId !== undefined ? { memory_scope_id: scopeHints.memoryScopeId } : {}),
         ...(scopeHints.sessionId !== undefined ? { session_id: scopeHints.sessionId } : {}),

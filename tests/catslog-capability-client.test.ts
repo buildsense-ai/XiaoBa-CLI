@@ -78,6 +78,28 @@ describe('CatsLog capability client', () => {
     });
   });
 
+  test('sends required branch sources using server wire names, including legacy aliases', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init: RequestInit = {}) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ status: 'ok', branches: [] }), { status: 200 });
+    }) as typeof fetch;
+    const client = new CatscoLogAgentClient('https://logs.example.test');
+    await client.branch({ token: 'skill-token', queryText: 'grp_4423 artifact-publish' });
+    await client.branch({ token: 'skill-token', queryText: 'release', sources: ['memory', 'session', 'skill', 'memory'] });
+    assert.deepEqual(bodies[0], {
+      query_text: 'grp_4423 artifact-publish', sources: ['agent_memory', 'session_graph', 'skill'],
+    });
+    assert.deepEqual(bodies[1], {
+      query_text: 'release', sources: ['agent_memory', 'session_graph', 'skill'],
+    });
+    await assert.rejects(
+      client.branch({ token: 'skill-token', queryText: 'release', sources: ['unknown'] }),
+      /sources must be/,
+    );
+    assert.equal(bodies.length, 2);
+  });
+
   test('turns a conditional 304 into an explicit not_modified result', async () => {
     let seenHeader = '';
     globalThis.fetch = (async (_input: RequestInfo | URL, init: RequestInit = {}) => {
