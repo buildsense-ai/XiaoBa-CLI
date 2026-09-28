@@ -85,12 +85,25 @@ export abstract class BranchSession {
       return false;
     }
     const maxPasses = normalizePositiveBudget(this.options.maxPasses);
-    if (maxPasses !== undefined && this.conversationPasses >= maxPasses) {
+    // Subclasses may reserve extra finish-only passes so a bounded branch
+    // converges to a finish payload instead of dying at its pass budget.
+    const allowedPasses = maxPasses !== undefined
+      ? maxPasses + this.reservedTailPasses()
+      : undefined;
+    if (allowedPasses !== undefined && this.conversationPasses >= allowedPasses) {
       this.exhaustBudget('max_passes');
       return false;
     }
     this.conversationPasses++;
     return true;
+  }
+
+  /**
+   * Extra passes allowed beyond maxPasses for a restricted finish-only tail.
+   * Default 0: the budget means exactly what it says unless a branch opts in.
+   */
+  protected reservedTailPasses(): number {
+    return 0;
   }
 
   protected isBudgetExhausted(): boolean {
@@ -182,6 +195,10 @@ export abstract class BranchSession {
       enableCompression: true,
       maxTurns: normalizePositiveBudget(this.options.maxTurnsPerPass),
       maxContextTokens: normalizePositiveBudget(this.options.maxContextTokens),
+      // Branch tools are read-only and independent, so multiple calls emitted
+      // in one model turn run concurrently (results stay keyed to their
+      // tool_use ids; the shared abortSignal cancels the whole batch).
+      parallelToolExecution: true,
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
         sessionId: `branch:${this.options.type}:${this.options.id}`,

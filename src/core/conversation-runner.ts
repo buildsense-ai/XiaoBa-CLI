@@ -182,6 +182,15 @@ interface ToolExecutionRecord {
   newMessages?: Message[];
 }
 
+/** Result of executing one tool call, including its batch-level signals. */
+interface ToolExecutionOutcome {
+  record: ToolExecutionRecord;
+  /** The tool asked to end the turn after this call (finish/pause semantics). */
+  pause: boolean;
+  /** The call completed an outbound message/file delivery for this run. */
+  deliveredOutbound: boolean;
+}
+
 /** ConversationRunner 构造选项 */
 export interface RunnerOptions {
   /** Optional safety cap for autonomous tool loops. Undefined means no runner-level cap. */
@@ -211,6 +220,13 @@ export interface RunnerOptions {
   onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
   /** Best-effort observer. Its result never participates in reply control flow. */
   cacheTraceSink?: CacheTraceSink;
+  /**
+   * Execute multiple tool calls emitted in one assistant turn concurrently
+   * instead of serially. Opt-in for autonomous branches whose tools are
+   * read-only and independent; results are mapped back to their tool_use ids
+   * in request order regardless of completion order. Default false.
+   */
+  parallelToolExecution?: boolean;
 }
 
 /**
@@ -235,6 +251,7 @@ export class ConversationRunner {
   private runtimeTransientProvider?: RuntimeTransientProvider;
   private episodeId?: string;
   private suppressFinalResponse: boolean;
+  private parallelToolExecution: boolean;
   private checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   private onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
 
@@ -266,6 +283,7 @@ export class ConversationRunner {
     this.onCompactionCheckpoint = options?.onCompactionCheckpoint;
     this.maxTurns = options?.maxTurns;
     this.suppressFinalResponse = options?.suppressFinalResponse === true;
+    this.parallelToolExecution = options?.parallelToolExecution === true;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -668,69 +686,91 @@ export class ConversationRunner {
       const executionRecords: ToolExecutionRecord[] = [];
       let shouldPauseTurn = false;
 
-      for (const toolCall of response.toolCalls) {
-        // Flush already completed records below before leaving a cancelled batch.
-        if (this.toolExecutionContext?.abortSignal?.aborted) break;
-        if (this.shouldContinue && !this.shouldContinue()) {
-          break;
-        }
+      const dispatchOne = async (toolCall: ToolCall): Promise<ToolExecutionOutcome> =>
+        this.executeAndRecordToolCall({
+          toolCall,
+          messages,
+          turns,
+          callbacks,
+          toolDefinitions,
+        });
 
-        const toolName = toolCall.function.name;
-        const toolUseId = toolCall.id;
-        const toolInput = JSON.parse(toolCall.function.arguments);
-        const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
-        callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
-        const activeToolNames = allTools.map(tool => tool.name);
-        const toolStart = Date.now();
-        let result: ToolResult;
-        try {
-          result = await this.executeToolWithRetry(
-            toolCall, messages, this.toolExecutionContext || {}, turns,
-          );
-        } catch (error) {
-          // Preserve earlier successful calls if a later tool fails or aborts.
+      if (this.parallelToolExecution && response.toolCalls.length > 1) {
+        // Concurrent dispatch for autonomous branches (read-only, independent
+        // tools). Every result maps back to its tool_use id in request order
+        // regardless of completion order; the shared abortSignal cancels all
+        // in-flight calls together.
+        const settled = await Promise.all(response.toolCalls.map(toolCall =>
+          dispatchOne(toolCall).then(
+            outcome => ({ ok: true as const, outcome }),
+            error => ({ ok: false as const, error }),
+          ),
+        ));
+        let firstError: { error: unknown } | undefined;
+        for (const entry of settled) {
+          if (!entry.ok) {
+            firstError = firstError ?? { error: entry.error };
+            continue;
+          }
+          executedToolCalls++;
+          if (entry.outcome.record.toolName === PLAN_TOOL_NAME) {
+            hasUpdatedPlan = true;
+          } else if (entry.outcome.record.toolName === SUBAGENT_TOOL_NAME) {
+            hasSpawnedSubagent = true;
+          } else if (entry.outcome.record.toolName === RECORD_DECISION_TOOL_NAME) {
+            hasRecordedDecision = true;
+          }
+          if (entry.outcome.deliveredOutbound) {
+            hasDeliveredMessageOutThisRun = true;
+          }
+          executionRecords.push(entry.outcome.record);
+          if (entry.outcome.pause) {
+            shouldPauseTurn = true;
+          }
+        }
+        if (firstError) {
+          // Preserve completed results before propagating, mirroring the
+          // serial failure semantics of keeping earlier successful calls.
           const completed = this.buildTurnMessages(assistantMsg, executionRecords, toolDefinitions);
           messages.push(...completed);
           newMessages.push(...completed);
-          throw error;
+          throw firstError.error;
         }
-        executedToolCalls++;
-        if (toolName === PLAN_TOOL_NAME) {
-          hasUpdatedPlan = true;
-        } else if (toolName === SUBAGENT_TOOL_NAME) {
-          hasSpawnedSubagent = true;
-        } else if (toolName === RECORD_DECISION_TOOL_NAME) {
-          hasRecordedDecision = true;
-        }
-        const toolDuration = Date.now() - toolStart;
-        Metrics.recordToolCall(toolName, toolDuration);
-        this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
-        callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
+      } else {
+        for (const toolCall of response.toolCalls) {
+          // Flush already completed records below before leaving a cancelled batch.
+          if (this.toolExecutionContext?.abortSignal?.aborted) break;
+          if (this.shouldContinue && !this.shouldContinue()) {
+            break;
+          }
 
-        if (
-          (transcriptMode === 'outbound_message' || transcriptMode === 'outbound_file')
-          && result.ok
-          && !result.errorCode
-        ) {
-          hasDeliveredMessageOutThisRun = true;
-        }
+          let outcome: ToolExecutionOutcome;
+          try {
+            outcome = await dispatchOne(toolCall);
+          } catch (error) {
+            // Preserve earlier successful calls if a later tool fails or aborts.
+            const completed = this.buildTurnMessages(assistantMsg, executionRecords, toolDefinitions);
+            messages.push(...completed);
+            newMessages.push(...completed);
+            throw error;
+          }
+          executedToolCalls++;
+          if (outcome.record.toolName === PLAN_TOOL_NAME) {
+            hasUpdatedPlan = true;
+          } else if (outcome.record.toolName === SUBAGENT_TOOL_NAME) {
+            hasSpawnedSubagent = true;
+          } else if (outcome.record.toolName === RECORD_DECISION_TOOL_NAME) {
+            hasRecordedDecision = true;
+          }
+          if (outcome.deliveredOutbound) {
+            hasDeliveredMessageOutThisRun = true;
+          }
+          executionRecords.push(outcome.record);
 
-        const toolContent = prependToolTargetContext(result.content, result.targetContext);
-
-        this.handleToolDisplay(toolCall, contentToString(result.content), callbacks);
-        executionRecords.push({
-          toolCall,
-          toolName,
-          toolContent,
-          result,
-          newMessages: (result as any).newMessages, // 保存图片等额外消息
-        });
-
-        if (result.controlSignal === 'pause_turn' && !result.errorCode) {
-          shouldPauseTurn = true;
-          break;
+          if (outcome.pause) {
+            shouldPauseTurn = true;
+            break;
+          }
         }
       }
 
@@ -1908,6 +1948,56 @@ export class ConversationRunner {
   }
 
   /** 带 429 重试的工具执行 */
+  /**
+   * Execute one tool call with its full observability side effects. Shared by
+   * the serial and parallel dispatch paths; throws only when the underlying
+   * execution fails — the caller decides how much of the batch to keep.
+   */
+  private async executeAndRecordToolCall(args: {
+    toolCall: ToolCall;
+    messages: Message[];
+    turns: number;
+    callbacks?: RunnerCallbacks;
+    toolDefinitions: Map<string, ToolDefinition>;
+  }): Promise<ToolExecutionOutcome> {
+    const { toolCall, messages, turns, callbacks, toolDefinitions } = args;
+    const toolName = toolCall.function.name;
+    const toolUseId = toolCall.id;
+    const toolInput = JSON.parse(toolCall.function.arguments);
+    const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
+    callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
+    Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
+    const toolStart = Date.now();
+    const result = await this.executeToolWithRetry(
+      toolCall, messages, this.toolExecutionContext || {}, turns,
+    );
+    const toolDuration = Date.now() - toolStart;
+    Metrics.recordToolCall(toolName, toolDuration);
+    this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
+    Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
+    callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
+
+    const deliveredOutbound = (
+      (transcriptMode === 'outbound_message' || transcriptMode === 'outbound_file')
+      && result.ok === true
+      && !result.errorCode
+    );
+
+    const toolContent = prependToolTargetContext(result.content, result.targetContext);
+    this.handleToolDisplay(toolCall, contentToString(result.content), callbacks);
+    return {
+      record: {
+        toolCall,
+        toolName,
+        toolContent,
+        result,
+        newMessages: (result as any).newMessages, // 保存图片等额外消息
+      },
+      pause: result.controlSignal === 'pause_turn' && !result.errorCode,
+      deliveredOutbound,
+    };
+  }
+
   private async executeToolWithRetry(
     toolCall: ToolCall,
     messages: Message[],

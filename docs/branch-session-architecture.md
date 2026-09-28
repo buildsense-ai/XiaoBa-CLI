@@ -56,6 +56,14 @@ CatsLog tokens or wait for a remote result. The division of labor is fixed:
   (`MAX_CATSLOG_BRANCH_CALLS_PER_RUN`); past the cap the tool returns a bounded
   budget-exhausted result telling the model to finish, and the call never reaches the server
   (logged as `remote_probe_budget_exhausted`).
+- **Convergence is mechanical (v1.2)** — multiple tool calls emitted in one model turn execute
+  concurrently (branch-only runner option; results stay keyed to their tool_use ids). All
+  non-finish tool executions in a run count against `MAX_NON_FINISH_TOOL_CALLS_PER_RUN` (8);
+  past the bound — or on the reserved finish-only tail pass beyond `maxPasses` — the tool
+  surface collapses to `finish_memory_search` and gated calls return the same bounded
+  budget-exhausted result (`tool_budget_exhausted` log event). A bounded branch therefore
+  converges to a finish payload (context/audit/discard) instead of dying at its deadline with
+  nothing; the wall-clock deadline itself stays the last-resort backstop.
 - **The server owns retrieval execution** — the fused `/catsco/agent/branch` endpoint performs
   multi-source fan-out (agent memory, session graph, skills), scope fencing, and reranking in
   roughly ten milliseconds. Client-side multi-step exploration across per-source endpoints

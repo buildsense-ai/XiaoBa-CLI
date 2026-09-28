@@ -73,8 +73,8 @@ describe('Dashboard Branch agent API', () => {
     assert.equal(typeof data.primary.model, 'string');
     assert.equal(data.custom.apiKeyPresent, false);
     assert.deepEqual(data.budget, {
-      maxTurnsPerPass: 8,
-      maxPasses: 3,
+      maxTurnsPerPass: 4,
+      maxPasses: 2,
       deadlineMs: 45_000,
       maxContextTokens: 16_000,
     });

@@ -186,6 +186,121 @@ class OverProbingAI {
   }
 }
 
+class ParallelProbeBackend implements CatsLogMemoryBackend {
+  events: string[] = [];
+  branchQueries: string[] = [];
+
+  async branch(query: BranchQuery): Promise<CatscoBranchResponse> {
+    const marker = String(query.queryText || 'q');
+    this.branchQueries.push(marker);
+    this.events.push(`start:${marker}`);
+    await new Promise(resolve => setTimeout(resolve, marker === 'slow-probe' ? 150 : 10));
+    this.events.push(`end:${marker}`);
+    return {
+      content_trust: 'untrusted_branch_evidence',
+      branches: [{
+        source: 'session',
+        status: 'ok',
+        items: [{
+          source: 'session',
+          ref: `stream-${marker}#1`,
+          kind: 'session_turn',
+          text: `evidence for ${marker}`,
+          score_hint: 0.5,
+        }],
+      }],
+    };
+  }
+}
+
+class ParallelProbeAI {
+  calls: Message[][] = [];
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls.push(JSON.parse(JSON.stringify(messages)));
+    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
+    if (!lastTool) {
+      return {
+        content: null,
+        toolCalls: [
+          call('probe-slow', 'catslog_branch', { query_text: 'slow-probe' }),
+          call('probe-fast', 'catslog_branch', { query_text: 'fast-probe' }),
+        ],
+        usage,
+      };
+    }
+    return {
+      content: null,
+      toolCalls: [call('finish-par', 'finish_memory_search', {
+        summary: '两条并行探针都有结果。',
+        refs: ['stream-slow-probe#1', 'stream-fast-probe#1'],
+        delivery: 'context',
+      })],
+      usage,
+    };
+  }
+}
+
+class TailFinishAI {
+  toolNamesPerTurn: string[][] = [];
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(_messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
+    const names = tools?.map(tool => tool.name) || [];
+    this.toolNamesPerTurn.push(names);
+    if (names.length === 1 && names[0] === 'finish_memory_search') {
+      return {
+        content: null,
+        toolCalls: [call('finish-tail', 'finish_memory_search', {
+          summary: '预算耗尽，仅保留审计证据。',
+          refs: ['stream-review#12'],
+          inject: false,
+          delivery: 'audit',
+        })],
+        usage,
+      };
+    }
+    return { content: '仍在检索。', toolCalls: [], usage };
+  }
+}
+
+class ToolCapAI {
+  calls = 0;
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls++;
+    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
+    if (lastTool && String(lastTool.content).includes('exhausted')) {
+      return {
+        content: null,
+        toolCalls: [call('finish-cap', 'finish_memory_search', {
+          summary: '工具调用预算耗尽，收尾。',
+          refs: ['stream-review#12'],
+          inject: false,
+          delivery: 'audit',
+        })],
+        usage,
+      };
+    }
+    return {
+      content: null,
+      toolCalls: [call(`search-${this.calls}`, 'memory_search', { keywords: ['rollback'] })],
+      usage,
+    };
+  }
+}
+
 class DiscardAI {
   isToolCallingSupported(): boolean {
     return true;
@@ -370,7 +485,7 @@ describe('branch CatsLog lifecycle', () => {
     assert.match(readBranchLogs(testRoot), /suppressed_observation/);
   });
 
-  test('stops a non-finishing branch at its pass budget', async () => {
+  test('offers a finish-only tail after the pass budget, then stops', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const ai = new BudgetExhaustingAI();
     const handle = startMemorySidecarBranch({
@@ -388,8 +503,102 @@ describe('branch CatsLog lifecycle', () => {
     await handle.done;
 
     assert.equal(queue.drain().length, 0);
-    assert.equal(ai.calls, 2);
-    assert.match(readBranchLogs(testRoot), /budget_exhausted/);
+    // Two normal passes + one reserved finish-only tail pass.
+    assert.equal(ai.calls, 3);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /budget_exhausted/);
+    assert.match(logs, /轮次预算已用尽/);
+    assert.match(logs, /finish_memory_search/);
+  });
+
+  test('executes parallel tool calls concurrently and maps results back in order', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const backend = new ParallelProbeBackend();
+    const ai = new ParallelProbeAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'parallel-dispatch',
+      input: 'find the rollback decision',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+
+    await handle.done;
+
+    // Both probes ran concurrently: the fast probe started before the slow
+    // probe finished (serial dispatch would order them strictly).
+    const startFast = backend.events.indexOf('start:fast-probe');
+    const endSlow = backend.events.indexOf('end:slow-probe');
+    assert.ok(startFast !== -1 && endSlow !== -1);
+    assert.ok(startFast < endSlow, `expected overlapping dispatch: ${backend.events.join(',')}`);
+
+    // Results are keyed to the right tool_use ids despite completion order.
+    const toolMessages = ai.calls[1].filter(message => message.role === 'tool') as Array<{ tool_call_id: string; content: string }>;
+    assert.equal(toolMessages.length, 2);
+    const slow = toolMessages.find(message => message.tool_call_id === 'probe-slow');
+    const fast = toolMessages.find(message => message.tool_call_id === 'probe-fast');
+    assert.match(String(slow?.content), /evidence for slow-probe/);
+    assert.match(String(fast?.content), /evidence for fast-probe/);
+
+    const observations = queue.drain();
+    assert.equal(observations.length, 1);
+    const injected = JSON.parse(observations[0].formattedContent || '');
+    assert.deepEqual(injected.refs, ['stream-slow-probe#1', 'stream-fast-probe#1']);
+  });
+
+  test('collapses the tool surface to finish_memory_search on the reserved tail pass', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new TailFinishAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'finish-only-tail',
+      input: 'find the rollback decision',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: new BranchOnlyMemory(),
+      logEnabled: true,
+      maxTurnsPerPass: 1,
+      maxPasses: 1,
+    });
+
+    await handle.done;
+
+    assert.equal(ai.toolNamesPerTurn[0].length, 5);
+    assert.deepEqual(ai.toolNamesPerTurn[1], ['finish_memory_search']);
+    // Audit delivery keeps the observation out of the parent queue.
+    assert.equal(queue.drain().length, 0);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /轮次预算已用尽/);
+    assert.match(logs, /audited_observation/);
+  });
+
+  test('gates non-finish tools after the run-wide tool-call bound and still finishes', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new ToolCapAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'tool-call-cap',
+      input: 'find the rollback decision',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      logEnabled: true,
+      maxTurnsPerPass: 12,
+      maxPasses: 1,
+    });
+
+    await handle.done;
+
+    // 8 executed searches + 1 gated call + 1 finish turn.
+    assert.equal(ai.calls, 10);
+    assert.equal(queue.drain().length, 0);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /tool_budget_exhausted/);
+    assert.match(logs, /audited_observation/);
   });
 
   test('redacts capability material from every branch log event', async () => {

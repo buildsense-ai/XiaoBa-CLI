@@ -49,13 +49,22 @@ not the retrieval branch.
 
 ## Resource budget
 
-The autonomous memory branch defaults to 8 model turns per pass, 3 passes,
-45 seconds wall-clock, and a 16,000-token prompt budget. Dashboard clients can
-read and update these bounded values through `/api/branch-agents/memory` and
-`PUT /api/branch-agents/memory/budget`; persisted values are normalized to safe
-limits on load.
+The autonomous memory branch defaults to 4 model turns per pass, 2 passes,
+45 seconds wall-clock, and a 16,000-token prompt budget. One finish-only tail
+pass is reserved beyond `maxPasses` so the run always converges to a finish
+payload. Dashboard clients can read and update these bounded values through
+`/api/branch-agents/memory` and `PUT /api/branch-agents/memory/budget`;
+persisted values are normalized to safe limits on load.
 
 ## Observed Issues
+
+- Production (v1.2): one run spent the full 90s deadline on 14 serial tool
+  calls (3× `memory_search`, 9× `memory_read_turn`, 2× `catslog_branch`) over
+  7 turns and never finished — the remote cap held, but the local lane and the
+  serial execution model were unbounded. Fixes: per-turn parallel dispatch,
+  the run-wide 8-non-finish-call bound with a finish-only tail, tightened
+  default budgets (4 turns/pass, 2 passes), and read-discipline prompt
+  guidance.
 
 - Production (v1.1): one bot's branch made four `catslog_branch` calls plus
   local reads and burned the full 90s deadline on two consecutive turns

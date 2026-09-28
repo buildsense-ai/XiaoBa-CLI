@@ -9,8 +9,11 @@ export interface MemoryBranchBudget {
 }
 
 export const DEFAULT_MEMORY_BRANCH_BUDGET: MemoryBranchBudget = {
-  maxTurnsPerPass: 8,
-  maxPasses: 3,
+  // v1.2: a typical memory branch converges in ~4 turns (probe + finish), so
+  // the default caps one pass at 4 turns and the whole run at 2 passes; a
+  // reserved finish-only tail pass still guarantees an observation.
+  maxTurnsPerPass: 4,
+  maxPasses: 2,
   deadlineMs: 45_000,
   maxContextTokens: 16_000,
 };

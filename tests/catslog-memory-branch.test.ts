@@ -167,6 +167,13 @@ describe('CatsLog memory branch integration', () => {
     assert.match(systemPrompt, /两次远端探针都没有找到/);
     assert.match(systemPrompt, /本地可枚举问题的提前收尾/);
     assert.match(systemPrompt, /delivery:discard 提前结束/);
+    // v1.2 guidance: honest machine bounds (parallel dispatch, probe cap,
+    // run-wide tool bound, finish-only tail) and read discipline.
+    assert.match(systemPrompt, /机器边界/);
+    assert.match(systemPrompt, /并行执行/);
+    assert.match(systemPrompt, /至多 8 次/);
+    assert.match(systemPrompt, /只剩 finish_memory_search 可调用/);
+    assert.match(systemPrompt, /不要沿线穷举/);
     const injected = JSON.parse(observations[0].formattedContent || '');
     assert.deepEqual(injected.refs, ['stream-release#17']);
     assert.equal(injected.summary.includes('release decision'), true);

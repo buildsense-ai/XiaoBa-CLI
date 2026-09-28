@@ -36,8 +36,8 @@ describe('Branch agent device config', () => {
     assert.equal(config.branches.memorySearch.enabled, false);
     assert.deepEqual(config.branches.memorySearch.model, { kind: 'inherit' });
     assert.deepEqual(config.branches.memorySearch.budget, {
-      maxTurnsPerPass: 8,
-      maxPasses: 3,
+      maxTurnsPerPass: 4,
+      maxPasses: 2,
       deadlineMs: 45_000,
       maxContextTokens: 16_000,
     });
@@ -272,7 +272,7 @@ describe('Branch agent device config', () => {
 
     assert.deepEqual(loadBranchAgentConfig({ runtimeRoot: root, env: {} }).branches.memorySearch.budget, {
       maxTurnsPerPass: 64,
-      maxPasses: 3,
+      maxPasses: 2,
       deadlineMs: 45_000,
       maxContextTokens: 12_345,
     });
