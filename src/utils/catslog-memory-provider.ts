@@ -2,6 +2,7 @@ import * as os from 'os';
 import { APP_VERSION } from '../version';
 import {
   CatscoLogAgentClient,
+  DEFAULT_BRANCH_URL,
   DEFAULT_MEMORY_NOTES_URL,
   DEFAULT_MEMORY_RECALL_URL,
   DEFAULT_MEMORY_URL,
@@ -11,6 +12,8 @@ import {
   isSafeCatsLogPath,
 } from './catsco-log-agent-client';
 import type {
+  CatscoBranchQuery,
+  CatscoBranchResponse,
   CatscoMemoryNote,
   CatscoMemoryNoteInput,
   CatscoMemoryRecallQuery,
@@ -65,6 +68,11 @@ export interface CatsLogMemoryBackend {
     query: CatscoMemoryRecallQuery,
     signal?: AbortSignal,
   ): Promise<CatscoMemoryRecallResponse>;
+  /** Optional ADR 0019 branch fan-out; omitted capability keeps older fakes source-compatible. */
+  branch?(
+    query: CatscoBranchQuery,
+    signal?: AbortSignal,
+  ): Promise<CatscoBranchResponse>;
   readSkills?(
     query: CatscoSkillsQuery,
     signal?: AbortSignal,
@@ -104,6 +112,7 @@ interface CatsLogReadCapability {
   sessionsUrl: string;
   memoryUrl: string;
   memoryRecallUrl: string;
+  branchUrl: string;
 }
 
 interface CatsLogWriteCapability {
@@ -218,6 +227,23 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
         memoryRecallUrl: capability.memoryRecallUrl,
         signal,
       }),
+      signal,
+    );
+  }
+
+  async branch(query: CatscoBranchQuery, signal?: AbortSignal): Promise<CatscoBranchResponse> {
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof (client as any).branch !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the branch route');
+        }
+        return client.branch({
+          ...query,
+          token: capability.token,
+          branchUrl: capability.branchUrl,
+          signal,
+        });
+      },
       signal,
     );
   }
@@ -488,6 +514,7 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       latest.sessionsUrl = safePathOrDefault(response.sessions_url, DEFAULT_SESSIONS_URL);
       latest.memoryUrl = safePathOrDefault(response.memory_url, DEFAULT_MEMORY_URL);
       latest.memoryRecallUrl = safePathOrDefault(response.memory_recall_url, DEFAULT_MEMORY_RECALL_URL);
+      latest.branchUrl = safePathOrDefault(response.branch_url, DEFAULT_BRANCH_URL);
     } else if (responseHasReadCapabilityFields(response as unknown as Record<string, unknown>)) {
       // Only clear the snapshot we actually attempted to replace. A second
       // bootstrap may have completed while this request was in flight; never
@@ -665,6 +692,7 @@ function capabilitiesFromResponse(response: any, now: number): CatsLogCapabiliti
       sessionsUrl: safePathOrDefault(response?.sessions_url, DEFAULT_SESSIONS_URL),
       memoryUrl: safePathOrDefault(response?.memory_url, DEFAULT_MEMORY_URL),
       memoryRecallUrl: safePathOrDefault(response?.memory_recall_url, DEFAULT_MEMORY_RECALL_URL),
+      branchUrl: safePathOrDefault(response?.branch_url, DEFAULT_BRANCH_URL),
     }
     : null;
   const write = hasUsableWriteCapability(record, now)
@@ -685,6 +713,7 @@ function readCapabilityFromState(state: CatscoLogAgentState, now: number): CatsL
     sessionsUrl: safePathOrDefault(state.sessionsUrl, DEFAULT_SESSIONS_URL),
     memoryUrl: safePathOrDefault(state.memoryUrl, DEFAULT_MEMORY_URL),
     memoryRecallUrl: safePathOrDefault(state.memoryRecallUrl, DEFAULT_MEMORY_RECALL_URL),
+    branchUrl: safePathOrDefault(state.branchUrl, DEFAULT_BRANCH_URL),
   };
 }
 

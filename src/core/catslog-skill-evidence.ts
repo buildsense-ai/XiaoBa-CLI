@@ -27,6 +27,17 @@ export interface CatsLogSkillProvenance {
     hop?: number;
     edgeKey?: string;
   }>;
+  /**
+   * Bounded TypedEvidence observed through the catslog_branch fan-out,
+   * deduplicated by projected ref. Branch text never enters provenance; only
+   * its safe citation shape, source/kind labels, and best score hint do.
+   */
+  branchEvidence: Array<{
+    ref: string;
+    source?: string;
+    kind?: string;
+    scoreHint?: number;
+  }>;
   catalogRevision?: number;
   bodyReadCount: number;
   outcomeAttempts: number;
@@ -69,6 +80,12 @@ export class CatsLogSkillEvidenceTracker {
   private readonly receiptEligibleRefs = new Set<string>();
   private readonly lineage: Array<{ type?: string; targetRef?: string }> = [];
   private readonly routes = new Map<string, { routeId: string; hop?: number; edgeKey?: string }>();
+  private readonly branchEvidence = new Map<string, {
+    ref: string;
+    source?: string;
+    kind?: string;
+    scoreHint?: number;
+  }>();
   private readonly starts = new Map<string, ToolStartRecord>();
   private readonly outcomeStatusByRef = new Map<string, 'pending' | 'accepted' | 'rejected'>();
   private catalogRevision?: number;
@@ -150,6 +167,9 @@ export class CatsLogSkillEvidenceTracker {
       this.observeCatalog(parsed.items, Boolean(start?.includeContent), true);
       if (asRecord(parsed.graph)) this.observeGraph(parsed.graph as Record<string, unknown>);
     }
+    if (name === 'catslog_branch') {
+      this.observeBranch(parsed);
+    }
   }
 
   /**
@@ -171,6 +191,7 @@ export class CatsLogSkillEvidenceTracker {
       receiptEligibleRefs: Array.from(this.receiptEligibleRefs).slice(0, MAX_REFS),
       lineage: this.lineage.slice(0, MAX_LINEAGE),
       routes: Array.from(this.routes.values()).slice(0, MAX_ROUTES),
+      branchEvidence: Array.from(this.branchEvidence.values()).slice(0, MAX_REFS),
       ...(this.catalogRevision !== undefined ? { catalogRevision: this.catalogRevision } : {}),
       bodyReadCount: this.bodyReadCount,
       outcomeAttempts: this.outcomeAttempts,
@@ -234,6 +255,45 @@ export class CatsLogSkillEvidenceTracker {
         this.lineage.push({
           ...(type ? { type } : {}),
           ...(targetRef ? { targetRef } : {}),
+        });
+      }
+    }
+  }
+
+  /**
+   * Absorb a catslog_branch fan-out result. A projected branch ref becomes
+   * observed evidence for this branch; skill-shaped refs additionally join
+   * candidateRefs so the finish guard recognizes them as seen. They never
+   * satisfy the active-head version guard: only the Skill graph's explicit
+   * node state can do that, regardless of where a candidate ref came from.
+   */
+  private observeBranch(value: Record<string, unknown>): void {
+    const branches = Array.isArray(value.branches) ? value.branches : [];
+    for (const rawBranch of branches.slice(0, MAX_REFS)) {
+      const branch = asRecord(rawBranch);
+      if (!branch || !Array.isArray(branch.items)) continue;
+      for (const rawItem of branch.items.slice(0, MAX_REFS)) {
+        const item = asRecord(rawItem);
+        if (!item) continue;
+        const ref = branchEvidenceRef(item.ref);
+        if (!ref) continue;
+        if (parseSkillRef(ref)) addBounded(this.candidateRefs, ref, MAX_REFS);
+        const source = safeText(item.source);
+        const kind = safeText(item.kind);
+        const scoreHint = finiteNumber(item.score_hint);
+        const existing = this.branchEvidence.get(ref);
+        if (existing) {
+          if (scoreHint !== undefined && (existing.scoreHint === undefined || scoreHint > existing.scoreHint)) {
+            existing.scoreHint = scoreHint;
+          }
+          continue;
+        }
+        if (this.branchEvidence.size >= MAX_REFS) continue;
+        this.branchEvidence.set(ref, {
+          ref,
+          ...(source ? { source } : {}),
+          ...(kind ? { kind } : {}),
+          ...(scoreHint !== undefined ? { scoreHint } : {}),
         });
       }
     }
@@ -351,6 +411,21 @@ function skillRefFromInput(source: Record<string, any> | undefined): string | un
   if (!source) return undefined;
   return skillRef(source.ref)
     || skillRefFromParts(source.handle, source.revision);
+}
+
+/**
+ * Accept only citation-shaped branch item refs. The tool projection already
+ * hashes unsafe refs into `catslog:ref:<hash>`, so anything surviving here is
+ * either a memory citation or a projected opaque evidence ref.
+ */
+function branchEvidenceRef(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed && isMemoryCitationRef(trimmed) ? trimmed : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function parseSkillRef(value: unknown): SkillRef | undefined {

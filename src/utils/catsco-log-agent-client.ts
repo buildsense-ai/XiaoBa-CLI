@@ -26,6 +26,8 @@ export interface CatscoBootstrapResponse {
   sessions_url?: string;
   memory_url?: string;
   memory_recall_url?: string;
+  /** Agent-facing branch retrieval endpoint (ADR 0019), same device-bound token. */
+  branch_url?: string;
   memory_notes_url?: string;
   memory_write_token_id?: string;
   memory_write_token?: string;
@@ -298,6 +300,51 @@ export interface CatscoActor {
   redacted?: boolean;
 }
 
+/**
+ * ADR 0019 branch retrieval request. `principal_id` is intentionally absent:
+ * the server derives the principal from the device-bound bearer token.
+ */
+export interface CatscoBranchQuery {
+  requestId?: string;
+  queryText?: string;
+  sources?: string[];
+  scopeHints?: {
+    memoryScopeId?: string;
+    sessionId?: string;
+    sessionType?: string;
+    tags?: string[];
+  };
+  budgets?: {
+    perBranchTimeoutMs?: number;
+    perBranchMaxItems?: number;
+    totalDeadlineMs?: number;
+  };
+}
+
+export interface CatscoBranchItem {
+  source?: string;
+  ref?: string;
+  kind?: string;
+  text?: string;
+  score_hint?: number;
+}
+
+export interface CatscoBranchResult {
+  source?: string;
+  status?: string;
+  items?: CatscoBranchItem[];
+  elapsed_ms?: number;
+  truncated?: boolean;
+}
+
+export interface CatscoBranchResponse {
+  schema_version?: number;
+  content_trust?: string;
+  request_id?: string;
+  status?: string;
+  branches?: CatscoBranchResult[];
+}
+
 export interface CatscoMemoryNote {
   id?: string;
   kind?: string;
@@ -325,6 +372,7 @@ export const DEFAULT_SKILL_GRAPH_URL = '/catsco/agent/skill-graph';
 export const DEFAULT_SESSIONS_URL = '/catsco/agent/query/v1/sessions';
 export const DEFAULT_MEMORY_URL = '/catsco/agent/memory/retrieve';
 export const DEFAULT_MEMORY_RECALL_URL = '/catsco/agent/memory/recall';
+export const DEFAULT_BRANCH_URL = '/catsco/agent/branch';
 export const DEFAULT_MEMORY_NOTES_URL = '/catsco/agent/memory/notes';
 
 function addQueryValue(query: URLSearchParams, key: string, value: unknown): void {
@@ -615,6 +663,48 @@ export class CatscoLogAgentClient {
       'CatsLog Agent Memory recall failed',
       input.signal,
       input.ifNoneMatch,
+    );
+  }
+
+  /**
+   * Fan out one ADR 0019 branch retrieval across the server-side memory
+   * branches. Uses the same device-bound read token as memory/recall; the
+   * server derives the principal from that token, so no principal_id exists.
+   */
+  async branch(input: CatscoBranchQuery & {
+    token?: string;
+    skillToken?: string;
+    branchUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatscoBranchResponse> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const scopeHints = input.scopeHints;
+    const budgets = input.budgets;
+    const body: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries({
+      request_id: input.requestId,
+      query_text: input.queryText,
+      sources: Array.isArray(input.sources) && input.sources.length > 0 ? input.sources : undefined,
+      scope_hints: scopeHints ? {
+        ...(scopeHints.memoryScopeId !== undefined ? { memory_scope_id: scopeHints.memoryScopeId } : {}),
+        ...(scopeHints.sessionId !== undefined ? { session_id: scopeHints.sessionId } : {}),
+        ...(scopeHints.sessionType !== undefined ? { session_type: scopeHints.sessionType } : {}),
+        ...(Array.isArray(scopeHints.tags) && scopeHints.tags.length > 0 ? { tags: scopeHints.tags } : {}),
+      } : undefined,
+      budgets: budgets ? {
+        ...(budgets.perBranchTimeoutMs !== undefined ? { per_branch_timeout_ms: budgets.perBranchTimeoutMs } : {}),
+        ...(budgets.perBranchMaxItems !== undefined ? { per_branch_max_items: budgets.perBranchMaxItems } : {}),
+        ...(budgets.totalDeadlineMs !== undefined ? { total_deadline_ms: budgets.totalDeadlineMs } : {}),
+      } : undefined,
+    })) {
+      if (value !== undefined) body[key] = value;
+    }
+    return this.postCapabilityJSON<CatscoBranchResponse>(
+      input.branchUrl || DEFAULT_BRANCH_URL,
+      token,
+      body,
+      'CatsLog branch retrieval failed',
+      input.signal,
     );
   }
 

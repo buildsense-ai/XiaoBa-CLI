@@ -233,6 +233,75 @@ class UnverifiedCitationAI {
   }
 }
 
+class BranchEvidenceAI {
+  calls = 0;
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls++;
+    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
+    if (!lastTool) {
+      return {
+        content: null,
+        toolCalls: [call('branch-1', 'catslog_branch', {
+          query_text: 'upload migration rollback',
+          sources: ['memory', 'skill'],
+        })],
+        usage,
+      };
+    }
+    if (this.calls === 2) {
+      return {
+        content: null,
+        toolCalls: [call('finish-1', 'finish_memory_search', {
+          summary: 'Branch evidence locates the rollback decision in a prior session.',
+          refs: ['stream-review#12'],
+          delivery: 'context',
+        })],
+        usage,
+      };
+    }
+    return { content: null, toolCalls: [], usage };
+  }
+}
+
+class BranchSkillCitationAI {
+  calls = 0;
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls++;
+    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
+    if (!lastTool) {
+      return {
+        content: null,
+        toolCalls: [call('branch-1', 'catslog_branch', {
+          query_text: 'review checklist',
+        })],
+        usage,
+      };
+    }
+    if (this.calls === 2) {
+      return {
+        content: null,
+        toolCalls: [call('finish-1', 'finish_memory_search', {
+          summary: 'Cites a Skill seen only through the branch fan-out.',
+          refs: ['catslog:skill:review-checklist@2'],
+          delivery: 'context',
+        })],
+        usage,
+      };
+    }
+    return { content: null, toolCalls: [], usage };
+  }
+}
+
 class LifecycleMemory implements CatsLogMemoryBackend {
   async retrieveSkillMemory(_query: CatscoSkillMemoryQuery): Promise<CatscoSkillMemoryResponse> {
     return {
@@ -286,6 +355,56 @@ class NoGraphMemory implements CatsLogMemoryBackend {
 
   async recallMemory(): Promise<any> {
     return { session_available: true, session: { records: [] }, notes: [] };
+  }
+}
+
+interface BranchQuery {
+  queryText?: string;
+}
+
+/** Backend whose only capability is the ADR 0019 branch fan-out. */
+class BranchOnlyMemory implements CatsLogMemoryBackend {
+  branchQueries: BranchQuery[] = [];
+
+  async retrieveSkillMemory(_query: CatscoSkillMemoryQuery): Promise<CatscoSkillMemoryResponse> {
+    return {};
+  }
+
+  async recallMemory(): Promise<any> {
+    return { session_available: true, session: { records: [] }, notes: [] };
+  }
+
+  async branch(query: BranchQuery): Promise<any> {
+    this.branchQueries.push(query);
+    return {
+      schema_version: 1,
+      content_trust: 'untrusted_branch_evidence',
+      request_id: 'req-sidecar-1',
+      status: 'ok',
+      branches: [
+        {
+          source: 'memory',
+          status: 'ok',
+          elapsed_ms: 9,
+          items: [
+            {
+              source: 'session',
+              ref: 'stream-review#12',
+              kind: 'session_turn',
+              text: 'untrusted branch evidence body that must stay out of provenance',
+              score_hint: 0.87,
+            },
+            {
+              source: 'skill',
+              ref: 'catslog:skill:review-checklist@2',
+              kind: 'skill',
+              score_hint: 0.91,
+            },
+          ],
+        },
+        { source: 'graph', status: 'timeout' },
+      ],
+    };
   }
 }
 
@@ -568,6 +687,100 @@ describe('branch CatsLog lifecycle', () => {
     assert.deepEqual(backend.outcomes, []);
     assert.doesNotMatch(readBranchLogs(testRoot), /skill_outcome_required/);
     assert.equal(ai.calls, 3);
+  });
+
+  test('absorbs branch TypedEvidence into provenance without granting active-head status', () => {
+    const tracker = new CatsLogSkillEvidenceTracker();
+    tracker.recordToolStart('catslog_branch', 'branch-1', { query_text: 'rollback' });
+    tracker.recordToolEnd('catslog_branch', 'branch-1', JSON.stringify({
+      schema_version: 1,
+      content_trust: 'untrusted_branch_evidence',
+      branches: [
+        {
+          source: 'memory',
+          status: 'ok',
+          items: [
+            { source: 'session', ref: 'stream-review#12', kind: 'session_turn', score_hint: 0.4 },
+            { source: 'skill', ref: 'catslog:skill:review-checklist@2', kind: 'skill', score_hint: 0.9 },
+            { source: 'session', ref: 'https://evil.example.test/log#1', text: 'ignored unsafe item' },
+            'not-an-object',
+          ],
+        },
+        { source: 'graph', status: 'timeout', items: [{ ref: 'stream-review#12', score_hint: 0.6 }] },
+      ],
+    }));
+
+    const provenance = tracker.snapshot(['stream-review#12']);
+    assert.equal(provenance.branchEvidence.length, 2);
+    assert.deepEqual(provenance.branchEvidence[0], {
+      ref: 'stream-review#12',
+      source: 'session',
+      kind: 'session_turn',
+      scoreHint: 0.6,
+    });
+    assert.equal(provenance.branchEvidence[1].ref, 'catslog:skill:review-checklist@2');
+    assert.equal(provenance.branchEvidence[1].scoreHint, 0.9);
+    // The Skill seen through the branch counts as observed for the finish
+    // guard, but branch evidence can never substitute an active graph head.
+    assert.ok(provenance.candidateRefs.includes('catslog:skill:review-checklist@2'));
+    assert.equal(provenance.activeRefs.length, 0);
+    assert.equal(
+      tracker.snapshot(['catslog:skill:review-checklist@2']).versionStatus,
+      'unknown',
+    );
+    assert.equal(provenance.receiptState, 'not_observed');
+    assert.equal(JSON.stringify(provenance).includes('untrusted branch evidence body'), false);
+    assert.equal(JSON.stringify(provenance).includes('evil.example.test'), false);
+  });
+
+  test('lets a branch-cited session ref flow to context with branch provenance', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const backend = new BranchOnlyMemory();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'branch-evidence-context',
+      input: 'find the rollback decision',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: new BranchEvidenceAI() as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: true,
+    });
+
+    await handle.done;
+
+    assert.equal(backend.branchQueries.length, 1);
+    assert.equal(backend.branchQueries[0].queryText, 'upload migration rollback');
+    const observations = queue.drain();
+    assert.equal(observations.length, 1);
+    const injected = JSON.parse(observations[0].formattedContent || '');
+    assert.deepEqual(injected.refs, ['stream-review#12']);
+    const branchEvidence = injected.provenance.branchEvidence as Array<{ ref: string }>;
+    assert.ok(branchEvidence.some(item => item.ref === 'stream-review#12'));
+    assert.ok(branchEvidence.some(item => item.ref === 'catslog:skill:review-checklist@2'));
+    assert.equal(JSON.stringify(injected).includes('must stay out of provenance'), false);
+  });
+
+  test('keeps a Skill ref that was only seen through the branch in audit', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'branch-skill-audit',
+      input: 'check the review checklist via branch',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: new BranchSkillCitationAI() as any,
+      queue,
+      catslogMemory: new BranchOnlyMemory(),
+      logEnabled: true,
+    });
+
+    await handle.done;
+
+    assert.equal(queue.drain().length, 0);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /active_head_unverified/);
+    assert.match(logs, /budget_exhausted_deferred_evidence/);
+    assert.match(logs, /catslog:skill:review-checklist@2/);
   });
 });
 

@@ -105,6 +105,78 @@ describe('CatsLog memory provider', () => {
     assert.equal(state.skillToken, 'skill-token-new');
   });
 
+  test('calls the branch route with the device token and persists branch_url', async () => {
+    const calls: Array<{ kind: string; token?: string; url?: string; query?: unknown }> = [];
+    const client: Partial<CatscoLogAgentClient> = {
+      bootstrap: async () => ({
+        ...bootstrapResponse('skill-branch'),
+        branch_url: '/catsco/agent/branch',
+      }),
+      branch: async input => {
+        calls.push({
+          kind: 'branch',
+          token: input.token,
+          url: input.branchUrl,
+          query: stripCapability(input),
+        });
+        return {
+          schema_version: 1,
+          content_trust: 'untrusted_branch_evidence',
+          request_id: 'req-branch-1',
+          status: 'ok',
+          branches: [{ source: 'memory', status: 'ok', items: [{ source: 'session', ref: 'stream-r#1', kind: 'session_turn', score_hint: 0.5 }] }],
+        };
+      },
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => client as CatscoLogAgentClient,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+
+    const response = await provider.branch({
+      queryText: 'deploy rollback',
+      sources: ['memory', 'skill'],
+      scopeHints: { sessionId: 's-9', tags: ['deploy'] },
+      budgets: { perBranchMaxItems: 10, totalDeadlineMs: 5_000 },
+    });
+
+    assert.equal(response.status, 'ok');
+    assert.equal(response.branches?.[0]?.items?.[0]?.ref, 'stream-r#1');
+    assert.deepEqual(calls, [{
+      kind: 'branch',
+      token: 'skill-branch',
+      url: '/catsco/agent/branch',
+      query: {
+        queryText: 'deploy rollback',
+        sources: ['memory', 'skill'],
+        scopeHints: { sessionId: 's-9', tags: ['deploy'] },
+        budgets: { perBranchMaxItems: 10, totalDeadlineMs: 5_000 },
+      },
+    }]);
+    const state = JSON.parse(fs.readFileSync(getCatscoLogAgentConfig(root, env).stateFilePath, 'utf8'));
+    assert.equal(state.branchUrl, '/catsco/agent/branch');
+  });
+
+  test('falls back to the default branch URL when bootstrap omits branch_url', async () => {
+    const calls: Array<{ url?: string }> = [];
+    const client: Partial<CatscoLogAgentClient> = {
+      bootstrap: async () => bootstrapResponse('skill-branch-default'),
+      branch: async input => {
+        calls.push({ url: input.branchUrl });
+        return { status: 'ok', branches: [] };
+      },
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => client as CatscoLogAgentClient,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+
+    await provider.branch({ queryText: 'anything' });
+    assert.deepEqual(calls, [{ url: '/catsco/agent/branch' }]);
+  });
+
   test('fails closed when neither a capability nor a CatsCompany token exists', async () => {
     const noAuthEnv = { ...env };
     delete noAuthEnv.CATSCO_USER_TOKEN;
@@ -482,6 +554,7 @@ function stripCapability(input: CatscoSkillMemoryQuery | CatscoMemoryRecallQuery
   delete clone.skillGraphUrl;
   delete clone.sessionsUrl;
   delete clone.memoryNotesUrl;
+  delete clone.branchUrl;
   delete clone.signal;
   delete clone.requireReceipt;
   return clone;

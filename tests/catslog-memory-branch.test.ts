@@ -167,6 +167,7 @@ describe('CatsLog memory branch integration', () => {
       'catslog_skill_memory',
       'catslog_session_query',
       'catslog_session_recall',
+      'catslog_branch',
       'finish_memory_search',
     ]);
     assert.match(ai.calls[0].find(message => message.role === 'system')?.content as string, /catslog_skill_memory/);
@@ -214,7 +215,7 @@ describe('CatsLog memory branch integration', () => {
     assert.deepEqual(secondAI.toolNames, [
       'memory_search', 'memory_read_turn', 'memory_neighbors',
       'catslog_skill_catalog', 'catslog_skill_graph', 'catslog_skill_memory',
-      'catslog_session_query', 'catslog_session_recall', 'finish_memory_search',
+      'catslog_session_query', 'catslog_session_recall', 'catslog_branch', 'finish_memory_search',
     ]);
   });
 
@@ -259,7 +260,7 @@ describe('CatsLog memory branch integration', () => {
       [
         'memory_search', 'memory_read_turn', 'memory_neighbors',
         'catslog_skill_catalog', 'catslog_skill_graph', 'catslog_skill_memory',
-        'catslog_session_query', 'catslog_session_recall', 'finish_memory_search',
+        'catslog_session_query', 'catslog_session_recall', 'catslog_branch', 'finish_memory_search',
       ],
     ]);
     assert.equal(ai.calls[1].messages.some(message => (

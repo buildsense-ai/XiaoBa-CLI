@@ -32,6 +32,7 @@ const LOW_RISK_TOOLS = new Set([
   'catslog_skill_graph',
   'catslog_session_query',
   'catslog_session_recall',
+  'catslog_branch',
   'finish_memory_search',
 ]);
 
