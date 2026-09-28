@@ -273,6 +273,12 @@ describe('CatsLog branch memory tools', () => {
     assert.equal(JSON.parse(String(sessions.content)).records[0].ref, 'stream-release#18');
   });
 
+  test('describes cross-session recall before per-session readback', () => {
+    const description = new CatsLogBranchTool(new FakeCatsLogMemory()).definition.description;
+    assert.match(description, /跨会话、跨群召回.*优先用本工具/);
+    assert.match(description, /逐条回读已知会话.*catslog_session_recall/);
+  });
+
   test('fans out a branch query and projects TypedEvidence without unsafe refs', async () => {
     const backend = new FakeCatsLogMemory();
     const tool = new CatsLogBranchTool(backend);
