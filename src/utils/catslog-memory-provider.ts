@@ -14,16 +14,6 @@ import {
 import type {
   CatscoBranchQuery,
   CatscoBranchResponse,
-  CatscoMemoryNote,
-  CatscoMemoryNoteInput,
-  CatscoMemoryRecallQuery,
-  CatscoMemoryRecallResponse,
-  CatscoSessionQuery,
-  CatscoSessionQueryResult,
-  CatscoSkillGraphQuery,
-  CatscoSkillGraphResponse,
-  CatscoSkillMemoryQuery,
-  CatscoSkillMemoryResponse,
   CatscoSkillsQuery,
   CatscoSkillsResponse,
   CatscoSkillOutcomeInput,
@@ -46,13 +36,14 @@ import {
 } from './catsco-log-capability';
 
 const CAPABILITY_REFRESH_SKEW_MS = 30_000;
-const RECEIPT_TTL_MS = 30 * 60 * 1000;
-const MAX_RECEIPTS = 128;
 
 /**
- * Narrow seam consumed by the memory branch. Optional methods keep existing
- * embedders/fakes source-compatible while the concrete provider implements the
- * complete device-bound Agent API.
+ * Narrow seam consumed by the memory branch and the local `catslog` CLI.
+ * Thin v1: the branch only needs the fused ADR 0019 branch fan-out, so the
+ * provider keeps the branch route plus the shared capability plumbing; the
+ * Skills catalog and outcome routes remain for the explicit CLI commands.
+ * Optional methods keep existing embedders/fakes source-compatible while the
+ * concrete provider implements the complete device-bound Agent API.
  */
 export interface CatsLogMemoryBackend {
   /**
@@ -60,14 +51,6 @@ export interface CatsLogMemoryBackend {
    * Optional to keep lightweight embedders and test fakes source-compatible.
    */
   isAvailable?(): boolean;
-  retrieveSkillMemory(
-    query: CatscoSkillMemoryQuery,
-    signal?: AbortSignal,
-  ): Promise<CatscoSkillMemoryResponse>;
-  recallMemory(
-    query: CatscoMemoryRecallQuery,
-    signal?: AbortSignal,
-  ): Promise<CatscoMemoryRecallResponse>;
   /** Optional ADR 0019 branch fan-out; omitted capability keeps older fakes source-compatible. */
   branch?(
     query: CatscoBranchQuery,
@@ -77,24 +60,11 @@ export interface CatsLogMemoryBackend {
     query: CatscoSkillsQuery,
     signal?: AbortSignal,
   ): Promise<CatscoSkillsResponse>;
-  readSkillGraph?(
-    query: CatscoSkillGraphQuery,
-    signal?: AbortSignal,
-  ): Promise<CatscoSkillGraphResponse>;
-  querySessions?(
-    query: CatscoSessionQuery,
-    signal?: AbortSignal,
-  ): Promise<CatscoSessionQueryResult>;
   reportSkillOutcome?(
     input: CatscoSkillOutcomeInput & { requireReceipt?: boolean },
     signal?: AbortSignal,
   ): Promise<void>;
-  createMemoryNote?(
-    input: CatscoMemoryNoteInput,
-    signal?: AbortSignal,
-  ): Promise<CatscoMemoryNote>;
   supportsSkillOutcomes?(): boolean;
-  supportsMemoryNoteWrites?(): boolean;
 }
 
 export interface CatsLogMemoryProviderOptions {
@@ -108,32 +78,11 @@ export interface CatsLogMemoryProviderOptions {
 interface CatsLogReadCapability {
   token: string;
   skillsUrl: string;
-  skillGraphUrl: string;
-  sessionsUrl: string;
-  memoryUrl: string;
-  memoryRecallUrl: string;
   branchUrl: string;
-}
-
-interface CatsLogWriteCapability {
-  token: string;
-  memoryNotesUrl: string;
 }
 
 interface CatsLogCapabilities {
   read?: CatsLogReadCapability;
-  write?: CatsLogWriteCapability;
-}
-
-interface StoredReceipt {
-  receipt: string;
-  handle: string;
-  revision: number;
-  routeId?: string;
-  hop?: number;
-  edgeKey?: string;
-  expiresAt: number;
-  touchedAt: number;
 }
 
 /**
@@ -143,7 +92,6 @@ interface StoredReceipt {
  */
 export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
   private bootstrapPromise: Promise<CatsLogCapabilities> | null = null;
-  private readonly receipts = new Map<string, StoredReceipt>();
 
   constructor(
     private readonly workingDirectory: string,
@@ -193,44 +141,6 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       || isEnabled(env, 'CATSLOG_SKILL_OUTCOMES_ENABLED');
   }
 
-  /** Note writes use a separate memory_write_token and are independently opt-in. */
-  supportsMemoryNoteWrites(): boolean {
-    const config = this.currentConfig();
-    return config.memoryWriteEnabled === true || isEnabled(this.runtimeEnv(), 'CATSLOG_MEMORY_WRITE_ENABLED');
-  }
-
-  async retrieveSkillMemory(
-    query: CatscoSkillMemoryQuery,
-    signal?: AbortSignal,
-  ): Promise<CatscoSkillMemoryResponse> {
-    const response = await this.withReadCapability(
-      (capability, client) => client.retrieveSkillMemory({
-        ...query,
-        token: capability.token,
-        memoryUrl: capability.memoryUrl,
-        signal,
-      }),
-      signal,
-    );
-    this.rememberReceipts(response, query);
-    return response;
-  }
-
-  async recallMemory(
-    query: CatscoMemoryRecallQuery,
-    signal?: AbortSignal,
-  ): Promise<CatscoMemoryRecallResponse> {
-    return this.withReadCapability(
-      (capability, client) => client.recallMemory({
-        ...query,
-        token: capability.token,
-        memoryRecallUrl: capability.memoryRecallUrl,
-        signal,
-      }),
-      signal,
-    );
-  }
-
   async branch(query: CatscoBranchQuery, signal?: AbortSignal): Promise<CatscoBranchResponse> {
     return this.withReadCapability(
       (capability, client) => {
@@ -255,44 +165,10 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
           throw new CatsLogMemoryUnavailableError('CatsLog client does not support the Skills catalog route');
         }
         return client.readSkills({
-        ...query,
-        token: capability.token,
-        skillsUrl: capability.skillsUrl,
-        signal,
-        });
-      },
-      signal,
-    );
-  }
-
-  async readSkillGraph(query: CatscoSkillGraphQuery, signal?: AbortSignal): Promise<CatscoSkillGraphResponse> {
-    return this.withReadCapability(
-      (capability, client) => {
-        if (typeof (client as any).readSkillGraph !== 'function') {
-          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the Skill Graph route');
-        }
-        return client.readSkillGraph({
-        ...query,
-        token: capability.token,
-        skillGraphUrl: capability.skillGraphUrl,
-        signal,
-        });
-      },
-      signal,
-    );
-  }
-
-  async querySessions(query: CatscoSessionQuery, signal?: AbortSignal): Promise<CatscoSessionQueryResult> {
-    return this.withReadCapability(
-      (capability, client) => {
-        if (typeof (client as any).querySessions !== 'function') {
-          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the dedicated session route');
-        }
-        return client.querySessions({
-        ...query,
-        token: capability.token,
-        sessionsUrl: capability.sessionsUrl,
-        signal,
+          ...query,
+          token: capability.token,
+          skillsUrl: capability.skillsUrl,
+          signal,
         });
       },
       signal,
@@ -308,21 +184,18 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
         'CatsLog Skill outcomes are disabled; set CATSLOG_SKILL_OUTCOMES_ENABLED=true to enable them',
       );
     }
-    const receipt = input.retrievalReceipt || this.findReceipt(input);
+    // Thin v1: no client-side receipt vault. Receipts are issued by the
+    // server on a bounded body read and must be passed through explicitly;
+    // route attribution is only meaningful alongside one.
     const hasRouteOrFeedback = Boolean(
       input.feedback
       || input.routeId !== undefined
       || input.hop !== undefined
       || input.edgeKey !== undefined,
     );
-    if (!receipt && hasRouteOrFeedback) {
+    if ((input.requireReceipt || hasRouteOrFeedback) && !input.retrievalReceipt) {
       throw new CatsLogMemoryUnavailableError(
-        'Route attribution and feedback require a live retrieval receipt; retrieve the Skill body first',
-      );
-    }
-    if (input.requireReceipt && !receipt) {
-      throw new CatsLogMemoryUnavailableError(
-        'No live retrieval receipt is available for this Skill revision; retrieve its body first',
+        'Route attribution and requireReceipt outcomes need an explicit retrieval receipt; pass the receipt issued for this Skill body read',
       );
     }
     return this.withReadCapability(
@@ -331,33 +204,10 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
           throw new CatsLogMemoryUnavailableError('CatsLog client does not support Skill outcomes');
         }
         return client.reportSkillOutcome({
-        ...input,
-        ...(receipt ? { retrievalReceipt: receipt } : {}),
-        token: capability.token,
-        skillsUrl: capability.skillsUrl,
-        signal,
-        });
-      },
-      signal,
-    );
-  }
-
-  async createMemoryNote(input: CatscoMemoryNoteInput, signal?: AbortSignal): Promise<CatscoMemoryNote> {
-    if (!this.supportsMemoryNoteWrites()) {
-      throw new CatsLogMemoryUnavailableError(
-        'CatsLog Agent Memory note writes are disabled; set CATSLOG_MEMORY_WRITE_ENABLED=true to enable them',
-      );
-    }
-    return this.withWriteCapability(
-      (capability, client) => {
-        if (typeof (client as any).createMemoryNote !== 'function') {
-          throw new CatsLogMemoryUnavailableError('CatsLog client does not support Agent Memory note writes');
-        }
-        return client.createMemoryNote({
-        ...input,
-        token: capability.token,
-        memoryNotesUrl: capability.memoryNotesUrl,
-        signal,
+          ...input,
+          token: capability.token,
+          skillsUrl: capability.skillsUrl,
+          signal,
         });
       },
       signal,
@@ -379,21 +229,6 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     }
   }
 
-  private async withWriteCapability<T>(
-    operation: (capability: CatsLogWriteCapability, client: CatscoLogAgentClient) => Promise<T>,
-    signal?: AbortSignal,
-  ): Promise<T> {
-    let capability = await this.ensureWriteCapability(false, signal);
-    try {
-      return await operation(capability, this.clientForCurrentConfig());
-    } catch (error: any) {
-      if (Number(error?.status) !== 401) throw error;
-      this.invalidateMemoryWriteCapability(capability.token);
-      capability = await this.ensureWriteCapability(true, signal);
-      return operation(capability, this.clientForCurrentConfig());
-    }
-  }
-
   private async ensureReadCapability(forceRefresh: boolean, signal?: AbortSignal): Promise<CatsLogReadCapability> {
     const config = this.currentConfig();
     if (!config.apiBaseUrl) throw new CatsLogMemoryUnavailableError('CatsLog API is not configured');
@@ -410,29 +245,6 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       throw new CatsLogMemoryUnavailableError('CatsLog bootstrap did not issue a Skill read capability');
     }
     return capabilities.read;
-  }
-
-  private async ensureWriteCapability(forceRefresh: boolean, signal?: AbortSignal): Promise<CatsLogWriteCapability> {
-    const config = this.currentConfig();
-    if (!config.apiBaseUrl) throw new CatsLogMemoryUnavailableError('CatsLog API is not configured');
-    const state = loadCatscoLogAgentState(config.stateFilePath);
-    if (state.stateCorrupt) {
-      throw new CatsLogMemoryUnavailableError('CatsLog state is corrupt; write capability is paused');
-    }
-    if (!forceRefresh) {
-      const existing = writeCapabilityFromState(state, this.now());
-      if (existing) return existing;
-    }
-    const capabilities = await this.bootstrapIfNeeded(
-      config.stateFilePath,
-      config.apiBaseUrl,
-      config.catscoUserToken,
-      signal,
-    );
-    if (!capabilities.write) {
-      throw new CatsLogMemoryUnavailableError('CatsLog bootstrap did not issue a memory write capability');
-    }
-    return capabilities.write;
   }
 
   private bootstrapIfNeeded(
@@ -538,7 +350,7 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     saveCatscoLogAgentState(stateFilePath, latest);
 
     const capabilities = capabilitiesFromResponse(response, this.now());
-    if (!capabilities.read && !capabilities.write) {
+    if (!capabilities.read) {
       throw new CatsLogMemoryUnavailableError('CatsLog bootstrap returned no usable capability');
     }
     return capabilities;
@@ -550,15 +362,6 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     if (state.stateCorrupt) return;
     if (expectedToken && clean(state.skillToken) !== expectedToken) return;
     clearCatscoSkillToken(state);
-    saveCatscoLogAgentState(config.stateFilePath, state);
-  }
-
-  private invalidateMemoryWriteCapability(expectedToken?: string): void {
-    const config = this.currentConfig();
-    const state = loadCatscoLogAgentState(config.stateFilePath);
-    if (state.stateCorrupt) return;
-    if (expectedToken && clean(state.memoryWriteToken) !== expectedToken) return;
-    clearCatscoMemoryWriteToken(state);
     saveCatscoLogAgentState(config.stateFilePath, state);
   }
 
@@ -581,96 +384,6 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
   private now(): number {
     return this.options.now?.() ?? Date.now();
   }
-
-  private rememberReceipts(response: CatscoSkillMemoryResponse, request?: CatscoSkillMemoryQuery): void {
-    const items = Array.isArray(response?.items) ? response.items : [];
-    const now = this.now();
-    const responseRoute = isRecord(response?.route) ? response.route : undefined;
-    const requestRoute = request && (
-      request.routeId !== undefined
-      || request.hop !== undefined
-      || request.edgeKey !== undefined
-    ) ? {
-      ...(request.routeId !== undefined ? { route_id: request.routeId } : {}),
-      ...(request.hop !== undefined ? { hop: request.hop } : {}),
-      ...(request.edgeKey !== undefined ? { edge_key: request.edgeKey } : {}),
-    } : undefined;
-    for (const raw of items) {
-      if (!isRecord(raw)) continue;
-      // CatsLog only issues a receipt for an explicit, non-empty body read.
-      // Enforce that contract locally as well, so a malformed/legacy server
-      // response cannot make a metadata-only lookup eligible for feedback.
-      if (request?.includeContent !== true || typeof raw.content !== 'string' || raw.content.length === 0) continue;
-      const receipt = clean(raw.retrieval_receipt);
-      const handle = clean(raw.handle);
-      const revision = positiveInteger(raw.revision);
-      if (!receipt || !handle || !revision) continue;
-      // A receipt may inherit the request-level route when the server omits
-      // an item-specific copy. Keep that context so a later outcome can
-      // repeat the same attribution without exposing the receipt itself.
-      // Merge route scopes so a partial server-level route (for example only
-      // `hop`) cannot erase the request's branch-owned route ID. Item fields
-      // take precedence over response fields, which take precedence over the
-      // original request.
-      const route = {
-        ...(requestRoute || {}),
-        ...(responseRoute || {}),
-        ...(isRecord(raw.route) ? raw.route : {}),
-      };
-      const entry: StoredReceipt = {
-        receipt,
-        handle,
-        revision,
-        routeId: clean(route?.route_id),
-        hop: integerOrUndefined(route?.hop),
-        edgeKey: clean(route?.edge_key),
-        expiresAt: now + RECEIPT_TTL_MS,
-        touchedAt: now,
-      };
-      this.receipts.set(receiptKey(entry), entry);
-    }
-    this.pruneReceipts(now);
-  }
-
-  private findReceipt(input: CatscoSkillOutcomeInput): string | undefined {
-    const now = this.now();
-    this.pruneReceipts(now);
-    const handle = clean(input.handle);
-    const routeId = clean(input.routeId);
-    const edgeKey = clean(input.edgeKey);
-    const candidates = [...this.receipts.values()]
-      .filter(entry => entry.handle === handle && entry.revision === input.revision)
-      .filter(entry => input.routeId === undefined || entry.routeId === routeId)
-      .filter(entry => input.hop === undefined || entry.hop === input.hop)
-      .filter(entry => input.edgeKey === undefined || entry.edgeKey === edgeKey)
-      .sort((left, right) => right.touchedAt - left.touchedAt);
-    // A page-level body read can issue several receipts for the same
-    // handle/revision (for example across visible memory scopes). If the
-    // caller omitted an attribution component, choosing the newest receipt
-    // would silently bind feedback to an arbitrary item. Fail closed and let
-    // the branch report audit-only evidence instead.
-    if (candidates.length > 1 && (input.routeId === undefined || input.hop === undefined || input.edgeKey === undefined)) {
-      const distinct = (selector: (entry: StoredReceipt) => unknown) => new Set(candidates.map(selector)).size;
-      if (input.routeId === undefined && distinct(entry => entry.routeId || '') > 1) return undefined;
-      if (input.hop === undefined && distinct(entry => entry.hop ?? '') > 1) return undefined;
-      if (input.edgeKey === undefined && distinct(entry => entry.edgeKey || '') > 1) return undefined;
-    }
-    const found = candidates[0];
-    if (found) {
-      found.touchedAt = now;
-      return found.receipt;
-    }
-    return undefined;
-  }
-
-  private pruneReceipts(now: number): void {
-    for (const [key, entry] of this.receipts) {
-      if (entry.expiresAt <= now) this.receipts.delete(key);
-    }
-    if (this.receipts.size <= MAX_RECEIPTS) return;
-    const ordered = [...this.receipts.entries()].sort((left, right) => left[1].touchedAt - right[1].touchedAt);
-    for (const [key] of ordered.slice(0, this.receipts.size - MAX_RECEIPTS)) this.receipts.delete(key);
-  }
 }
 
 export class CatsLogMemoryUnavailableError extends Error {
@@ -688,17 +401,10 @@ function capabilitiesFromResponse(response: any, now: number): CatsLogCapabiliti
     ? {
       token: clean(response?.skill_token)!,
       skillsUrl: safePathOrDefault(response?.skills_url, DEFAULT_SKILLS_URL),
-      skillGraphUrl: safePathOrDefault(response?.skill_graph_url, DEFAULT_SKILL_GRAPH_URL),
-      sessionsUrl: safePathOrDefault(response?.sessions_url, DEFAULT_SESSIONS_URL),
-      memoryUrl: safePathOrDefault(response?.memory_url, DEFAULT_MEMORY_URL),
-      memoryRecallUrl: safePathOrDefault(response?.memory_recall_url, DEFAULT_MEMORY_RECALL_URL),
       branchUrl: safePathOrDefault(response?.branch_url, DEFAULT_BRANCH_URL),
     }
     : null;
-  const write = hasUsableWriteCapability(record, now)
-    ? { token: clean(response?.memory_write_token)!, memoryNotesUrl: safePathOrDefault(response?.memory_notes_url, DEFAULT_MEMORY_NOTES_URL) }
-    : undefined;
-  return { ...(read ? { read } : {}), ...(write ? { write } : {}) };
+  return { ...(read ? { read } : {}) };
 }
 
 function readCapabilityFromState(state: CatscoLogAgentState, now: number): CatsLogReadCapability | null {
@@ -709,22 +415,7 @@ function readCapabilityFromState(state: CatscoLogAgentState, now: number): CatsL
   return {
     token,
     skillsUrl: safePathOrDefault(state.skillsUrl, DEFAULT_SKILLS_URL),
-    skillGraphUrl: safePathOrDefault(state.skillGraphUrl, DEFAULT_SKILL_GRAPH_URL),
-    sessionsUrl: safePathOrDefault(state.sessionsUrl, DEFAULT_SESSIONS_URL),
-    memoryUrl: safePathOrDefault(state.memoryUrl, DEFAULT_MEMORY_URL),
-    memoryRecallUrl: safePathOrDefault(state.memoryRecallUrl, DEFAULT_MEMORY_RECALL_URL),
     branchUrl: safePathOrDefault(state.branchUrl, DEFAULT_BRANCH_URL),
-  };
-}
-
-function writeCapabilityFromState(state: CatscoLogAgentState, now: number): CatsLogWriteCapability | null {
-  const token = clean(state.memoryWriteToken);
-  const uploadToken = clean(state.token);
-  const skillToken = clean(state.skillToken);
-  if (!token || token === uploadToken || token === skillToken || !isLiveExpiry(state.memoryWriteTokenExpiresAt, now + CAPABILITY_REFRESH_SKEW_MS)) return null;
-  return {
-    token,
-    memoryNotesUrl: safePathOrDefault(state.memoryNotesUrl, DEFAULT_MEMORY_NOTES_URL),
   };
 }
 
@@ -735,22 +426,6 @@ function isLiveExpiry(value: string | undefined, now: number): boolean {
 
 function safePathOrDefault(value: unknown, fallback: string): string {
   return isSafeCatsLogPath(typeof value === 'string' ? value : undefined) ? value as string : fallback;
-}
-
-function positiveInteger(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-
-function integerOrUndefined(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function receiptKey(entry: StoredReceipt): string {
-  return [entry.handle, entry.revision, entry.routeId || '', entry.hop ?? '', entry.edgeKey || ''].join('\u0000');
 }
 
 function isEnabled(env: NodeJS.ProcessEnv, key: string): boolean {

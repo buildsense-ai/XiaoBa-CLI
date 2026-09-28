@@ -25,28 +25,11 @@ const LOW_RISK_TOOLS = new Set([
   'memory_search',
   'memory_read_turn',
   'memory_neighbors',
-  // Device-bound CatsLog reads are authenticated and scoped by the provider;
-  // they do not mutate the local machine or send an external side effect.
-  'catslog_skill_memory',
-  'catslog_skill_catalog',
-  'catslog_skill_graph',
-  'catslog_session_query',
-  'catslog_session_recall',
+  // The device-bound CatsLog branch fan-out is authenticated and scoped by
+  // the provider; it does not mutate the local machine or send an external
+  // side effect.
   'catslog_branch',
   'finish_memory_search',
-]);
-
-/**
- * Remote writes to the CatsLog server. Unlike the reads above they produce an
- * external side effect, so they get their own classification instead of
- * riding on LOW_RISK_TOOLS. Exposure is already gated by the explicit
- * CATSLOG_SKILL_OUTCOMES_ENABLED / CATSLOG_MEMORY_WRITE_ENABLED switches (the
- * provider re-checks them on every call); the medium risk level keeps that
- * distinction visible to confirmation UIs and audit tooling.
- */
-const CATSLOG_EXTERNAL_WRITE_TOOLS = new Set([
-  'catslog_skill_outcome',
-  'catslog_memory_note',
 ]);
 
 const CONFIRM_TOOLS = new Set([
@@ -130,18 +113,6 @@ export function classifyLocalToolRisk(
 
   if (LOW_RISK_TOOLS.has(toolName)) {
     return { requiresConfirmation: false, risk: 'low', reason: '只读或状态类工具。' };
-  }
-
-  if (CATSLOG_EXTERNAL_WRITE_TOOLS.has(toolName)) {
-    // No interactive confirmation: the explicit CATSLOG_*_ENABLED env switch
-    // is the consent boundary, and the provider re-validates it per call.
-    // The medium risk level still marks these as external side effects for
-    // surfaces that display risk.
-    return {
-      requiresConfirmation: false,
-      risk: 'medium',
-      reason: '显式 CATSLOG_*_ENABLED 开关授权的 CatsLog 外部写入；开关关闭时该工具不会暴露。',
-    };
   }
 
   if (isCatsCoLocalOwnerSelfContext(context) || isCatsCoAgentLocalBodyContext(context)) {

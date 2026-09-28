@@ -3,12 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import {
-  CatscoLogAgentClient,
-  CatscoMemoryNoteInput,
-  CatscoMemoryRecallQuery,
-  CatscoSkillMemoryQuery,
-} from '../src/utils/catsco-log-agent-client';
+import { CatscoLogAgentClient } from '../src/utils/catsco-log-agent-client';
 import {
   CatsLogMemoryProvider,
   CatsLogMemoryUnavailableError,
@@ -43,19 +38,19 @@ describe('CatsLog memory provider', () => {
       now: () => Date.parse('2026-08-28T00:00:00.000Z'),
     });
 
-    await provider.retrieveSkillMemory({ task: 'release' });
-    await provider.recallMemory({ search: 'rollback' });
+    await provider.branch({ queryText: 'deploy rollback' });
+    await provider.readSkills({ search: 'release' });
 
     assert.equal(calls.filter(call => call.kind === 'bootstrap').length, 1);
-    assert.deepEqual(calls.filter(call => call.kind === 'retrieve')[0], {
-      kind: 'retrieve',
+    assert.deepEqual(calls.filter(call => call.kind === 'branch')[0], {
+      kind: 'branch',
       token: 'skill-token-1',
-      query: { task: 'release' },
+      query: { queryText: 'deploy rollback' },
     });
-    assert.deepEqual(calls.filter(call => call.kind === 'recall')[0], {
-      kind: 'recall',
+    assert.deepEqual(calls.filter(call => call.kind === 'skills')[0], {
+      kind: 'skills',
       token: 'skill-token-1',
-      query: { search: 'rollback' },
+      query: { search: 'release' },
     });
 
     const state = JSON.parse(fs.readFileSync(getCatscoLogAgentConfig(root, env).stateFilePath, 'utf8'));
@@ -65,7 +60,7 @@ describe('CatsLog memory provider', () => {
 
   test('refreshes once after a revoked capability and preserves device identity', async () => {
     const calls: Array<{ kind: string; token?: string }> = [];
-    let retrieveCount = 0;
+    let skillsCount = 0;
     const client: Partial<CatscoLogAgentClient> = {
       bootstrap: async () => {
         const token = calls.filter(call => call.kind === 'bootstrap').length === 0
@@ -74,15 +69,15 @@ describe('CatsLog memory provider', () => {
         calls.push({ kind: 'bootstrap', token });
         return bootstrapResponse(token);
       },
-      retrieveSkillMemory: async input => {
-        retrieveCount++;
-        calls.push({ kind: 'retrieve', token: input.token });
-        if (retrieveCount === 1) {
+      readSkills: async input => {
+        skillsCount++;
+        calls.push({ kind: 'skills', token: input.token });
+        if (skillsCount === 1) {
           const error: any = new Error('unauthorized');
           error.status = 401;
           throw error;
         }
-        return { items: [] };
+        return { skills: [] };
       },
     };
     const provider = new CatsLogMemoryProvider(root, {
@@ -91,13 +86,13 @@ describe('CatsLog memory provider', () => {
       now: () => Date.parse('2026-08-28T00:00:00.000Z'),
     });
 
-    await provider.retrieveSkillMemory({ task: 'release' });
+    await provider.readSkills({ search: 'release' });
 
     assert.deepEqual(calls, [
       { kind: 'bootstrap', token: 'skill-token-old' },
-      { kind: 'retrieve', token: 'skill-token-old' },
+      { kind: 'skills', token: 'skill-token-old' },
       { kind: 'bootstrap', token: 'skill-token-new' },
-      { kind: 'retrieve', token: 'skill-token-new' },
+      { kind: 'skills', token: 'skill-token-new' },
     ]);
     const statePath = getCatscoLogAgentConfig(root, env).stateFilePath;
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -182,7 +177,7 @@ describe('CatsLog memory provider', () => {
     delete noAuthEnv.CATSCO_USER_TOKEN;
     const provider = new CatsLogMemoryProvider(root, { env: noAuthEnv });
     await assert.rejects(
-      provider.recallMemory({ search: 'anything' }),
+      provider.branch({ queryText: 'anything' }),
       (error: any) => error instanceof CatsLogMemoryUnavailableError
       && error.code === 'CATSLOG_MEMORY_UNAVAILABLE',
     );
@@ -213,14 +208,13 @@ describe('CatsLog memory provider', () => {
       now: () => Date.parse('2026-08-28T00:00:00.000Z'),
     });
 
-    await provider.retrieveSkillMemory({ task: 'release' });
+    await provider.branch({ queryText: 'anything' });
     assert.equal(provider.isAvailable(), true);
 
     createCatsCoLocalConfigService({ runtimeRoot: root, env }).clearAccount();
     assert.equal(provider.isAvailable(), false);
     const state = JSON.parse(fs.readFileSync(getCatscoLogAgentConfig(root, env).stateFilePath, 'utf8'));
     assert.equal(state.skillToken, undefined);
-    assert.equal(state.memoryWriteToken, undefined);
     assert.equal(state.deviceId !== undefined, true);
   });
 
@@ -238,7 +232,7 @@ describe('CatsLog memory provider', () => {
       clientFactory: () => fakeClient([], 'skill-token-old'),
       now: () => Date.parse('2026-08-28T00:00:00.000Z'),
     });
-    await provider.retrieveSkillMemory({ task: 'release' });
+    await provider.branch({ queryText: 'anything' });
 
     localConfig.persistAccountSession({
       token: 'catscompany-user-new',
@@ -252,256 +246,63 @@ describe('CatsLog memory provider', () => {
     assert.equal(state.deviceId !== undefined, true);
   });
 
-  test('keeps Skill outcome opt-in independent from note-write opt-in', () => {
-    const writeOnly = new CatsLogMemoryProvider(root, {
-      env: { ...env, CATSLOG_MEMORY_WRITE_ENABLED: 'true' },
+  test('keeps Skill outcome opt-in on the provider, independent of branch exposure', () => {
+    const gated = new CatsLogMemoryProvider(root, { env });
+    assert.equal(gated.supportsSkillOutcomes(), false);
+
+    const explicit = new CatsLogMemoryProvider(root, {
+      env,
+      allowSkillOutcomeWrites: true,
     });
-    assert.equal(writeOnly.supportsSkillOutcomes(), false);
-    assert.equal(writeOnly.supportsMemoryNoteWrites(), true);
+    assert.equal(explicit.supportsSkillOutcomes(), true);
+
+    const envGated = new CatsLogMemoryProvider(root, {
+      env: { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true' },
+    });
+    assert.equal(envGated.supportsSkillOutcomes(), true);
   });
 
-  test('covers catalog, graph, direct sessions, outcome receipts, and note write tokens', async () => {
+  test('passes explicit outcome receipts through and fails closed without one', async () => {
     const calls: Array<{ kind: string; token?: string; query?: unknown }> = [];
     const client: Partial<CatscoLogAgentClient> = {
-      bootstrap: async () => {
-        calls.push({ kind: 'bootstrap' });
-        return {
-          ...bootstrapResponse('skill-all'),
-          skills_url: '/catsco/agent/skills',
-          skill_graph_url: '/catsco/agent/skill-graph',
-          sessions_url: '/catsco/agent/query/v1/sessions',
-          memory_notes_url: '/catsco/agent/memory/notes',
-          memory_write_token_id: 'write-id',
-          memory_write_token: 'write-token',
-          memory_write_token_expires_at: '2099-08-28T00:00:00.000Z',
-        };
-      },
-      readSkills: async input => {
-        calls.push({ kind: 'skills', token: input.token, query: stripCapability(input) });
-        return { skills: [] };
-      },
-      readSkillGraph: async input => {
-        calls.push({ kind: 'graph', token: input.token, query: stripCapability(input) });
-        return { nodes: [], edges: [] };
-      },
-      querySessions: async input => {
-        calls.push({ kind: 'sessions', token: input.token, query: stripCapability(input) });
-        return { records: [] };
-      },
-      retrieveSkillMemory: async input => {
-        calls.push({ kind: 'retrieve', token: input.token, query: stripCapability(input) });
-        return {
-          items: [{ handle: 'release-playbook', revision: 3, content: 'body', retrieval_receipt: 'receipt-1' }],
-        };
-      },
+      bootstrap: async () => bootstrapResponse('skill-outcome'),
       reportSkillOutcome: async input => {
-        calls.push({ kind: 'outcome', token: input.token, query: { ...input, token: undefined } });
-      },
-      createMemoryNote: async input => {
-        calls.push({ kind: 'note', token: input.token, query: stripCapability(input) });
-        return { id: 'note-1', kind: input.kind, content_sha256: 'hash' };
+        calls.push({ kind: 'outcome', token: input.token, query: stripCapability(input) });
       },
     };
-    const writeEnabledEnv = { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true', CATSLOG_MEMORY_WRITE_ENABLED: 'true' };
     const provider = new CatsLogMemoryProvider(root, {
-      env: writeEnabledEnv,
+      env: { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true' },
       clientFactory: () => client as CatscoLogAgentClient,
       now: () => Date.parse('2026-08-28T00:00:00.000Z'),
     });
 
-    await provider.readSkills({ search: 'release', includeTrace: 'summary' });
-    await provider.readSkillGraph({ handle: 'release-playbook', depth: 1 });
-    await provider.querySessions({ sessionId: 's-1', latest: true });
-    await provider.retrieveSkillMemory({ handle: 'release-playbook', includeContent: true });
     await provider.reportSkillOutcome({
-      handle: 'release-playbook', revision: 3, outcome: 'succeeded', requireReceipt: true,
+      handle: 'release-playbook', revision: 3, outcome: 'succeeded',
+      retrievalReceipt: 'receipt-1', requireReceipt: true,
     });
-    await provider.createMemoryNote({ kind: 'fact', content: 'release owner' });
+    assert.equal(calls[0].token, 'skill-outcome');
+    assert.equal((calls[0].query as any).retrievalReceipt, 'receipt-1');
 
-    assert.deepEqual(calls.map(call => call.kind), ['bootstrap', 'skills', 'graph', 'sessions', 'retrieve', 'outcome', 'note']);
-    assert.equal(calls.find(call => call.kind === 'outcome')?.token, 'skill-all');
-    assert.equal((calls.find(call => call.kind === 'outcome')?.query as any).retrievalReceipt, 'receipt-1');
-    assert.equal(calls.find(call => call.kind === 'note')?.token, 'write-token');
-    const state = JSON.parse(fs.readFileSync(getCatscoLogAgentConfig(root, writeEnabledEnv).stateFilePath, 'utf8'));
-    assert.equal(state.memoryWriteToken, 'write-token');
-    assert.equal(state.token, undefined);
-  });
-
-  test('inherits request route attribution when a server omits it from the receipt response', async () => {
-    const calls: Array<{ kind: string; query?: any }> = [];
-    const client: Partial<CatscoLogAgentClient> = {
-      bootstrap: async () => bootstrapResponse('skill-route'),
-      retrieveSkillMemory: async input => {
-        calls.push({ kind: 'retrieve', query: stripCapability(input) });
-        return {
-          items: [{ handle: 'release-playbook', revision: 3, content: 'body', retrieval_receipt: 'receipt-route' }],
-        };
-      },
-      reportSkillOutcome: async input => {
-        calls.push({ kind: 'outcome', query: { ...input, token: undefined } });
-      },
-    };
-    const provider = new CatsLogMemoryProvider(root, {
-      env: { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true' },
-      clientFactory: () => client as CatscoLogAgentClient,
-    });
-
-    await provider.retrieveSkillMemory({
-      handle: 'release-playbook',
-      includeContent: true,
-      routeId: 'branch-route',
-      hop: 1,
-      edgeKey: 'edge-1',
-    });
+    // Legacy no-receipt v1 signal stays available without attribution.
     await provider.reportSkillOutcome({
-      handle: 'release-playbook',
-      revision: 3,
-      outcome: 'succeeded',
-      routeId: 'branch-route',
-      hop: 1,
-      edgeKey: 'edge-1',
-      requireReceipt: true,
+      handle: 'release-playbook', revision: 3, outcome: 'failed',
     });
+    assert.equal((calls[1].query as any).retrievalReceipt, undefined);
 
-    assert.equal(calls[0].query.routeId, 'branch-route');
-    assert.equal(calls[1].query.retrievalReceipt, 'receipt-route');
-  });
-
-  test('does not cross-bind receipts for concurrent branch routes', async () => {
-    const outcomes: any[] = [];
-    const client: Partial<CatscoLogAgentClient> = {
-      bootstrap: async () => bootstrapResponse('skill-concurrent'),
-      retrieveSkillMemory: async input => ({
-        items: [{
-          handle: 'release-playbook',
-          revision: 3,
-          content: 'body',
-          retrieval_receipt: `receipt-${input.routeId}`,
-        }],
-      }),
-      reportSkillOutcome: async input => outcomes.push(input),
-    };
-    const provider = new CatsLogMemoryProvider(root, {
-      env: { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true' },
-      clientFactory: () => client as CatscoLogAgentClient,
-    });
-
-    await provider.retrieveSkillMemory({ handle: 'release-playbook', includeContent: true, routeId: 'branch-a' });
-    await provider.retrieveSkillMemory({ handle: 'release-playbook', includeContent: true, routeId: 'branch-b' });
-    await provider.reportSkillOutcome({
-      handle: 'release-playbook', revision: 3, outcome: 'succeeded', routeId: 'branch-a', requireReceipt: true,
-    });
-    await provider.reportSkillOutcome({
-      handle: 'release-playbook', revision: 3, outcome: 'succeeded', routeId: 'branch-b', requireReceipt: true,
-    });
-
-    assert.equal(outcomes[0].retrievalReceipt, 'receipt-branch-a');
-    assert.equal(outcomes[1].retrievalReceipt, 'receipt-branch-b');
-  });
-
-  test('fails closed when a multi-item receipt needs an omitted edge key', async () => {
-    const client: Partial<CatscoLogAgentClient> = {
-      bootstrap: async () => bootstrapResponse('skill-ambiguous'),
-      retrieveSkillMemory: async () => ({
-        items: [
-          {
-            handle: 'release-playbook',
-            revision: 3,
-            content: 'body-a',
-            retrieval_receipt: 'receipt-item-a',
-            route: { route_id: 'branch-route', hop: 1, edge_key: 'item-a' },
-          },
-          {
-            handle: 'release-playbook',
-            revision: 3,
-            content: 'body-b',
-            retrieval_receipt: 'receipt-item-b',
-            route: { route_id: 'branch-route', hop: 1, edge_key: 'item-b' },
-          },
-        ],
-      }),
-      reportSkillOutcome: async () => undefined,
-    };
-    const provider = new CatsLogMemoryProvider(root, {
-      env: { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true' },
-      clientFactory: () => client as CatscoLogAgentClient,
-    });
-
-    await provider.retrieveSkillMemory({ handle: 'release-playbook', includeContent: true, routeId: 'branch-route', hop: 1 });
     await assert.rejects(
       provider.reportSkillOutcome({
         handle: 'release-playbook', revision: 3, outcome: 'succeeded',
-        routeId: 'branch-route', hop: 1, requireReceipt: true,
+        routeId: 'branch-route', requireReceipt: true,
       }),
-      /live retrieval receipt/,
+      /explicit retrieval receipt/,
     );
-    await provider.reportSkillOutcome({
-      handle: 'release-playbook', revision: 3, outcome: 'succeeded',
-      routeId: 'branch-route', hop: 1, edgeKey: 'item-b', requireReceipt: true,
-    });
-  });
-
-  test('does not retain a receipt from a metadata-only response', async () => {
-    const client: Partial<CatscoLogAgentClient> = {
-      bootstrap: async () => bootstrapResponse('skill-metadata-receipt'),
-      retrieveSkillMemory: async () => ({
-        items: [{ handle: 'release-playbook', revision: 3, retrieval_receipt: 'receipt-for-metadata' }],
-      }),
-      reportSkillOutcome: async () => undefined,
-    };
-    const provider = new CatsLogMemoryProvider(root, {
-      env: { ...env, CATSLOG_SKILL_OUTCOMES_ENABLED: 'true' },
-      clientFactory: () => client as CatscoLogAgentClient,
-    });
-
-    await provider.retrieveSkillMemory({ handle: 'release-playbook', includeContent: false });
     await assert.rejects(
       provider.reportSkillOutcome({
-        handle: 'release-playbook', revision: 3, outcome: 'succeeded', requireReceipt: true,
+        handle: 'release-playbook', revision: 3, outcome: 'succeeded',
+        feedback: { code: 'outdated' },
       }),
-      /No live retrieval receipt/,
+      /explicit retrieval receipt/,
     );
-  });
-
-  test('refreshes a revoked write token without clearing the read token', async () => {
-    let bootstrapCount = 0;
-    const calls: Array<{ kind: string; token?: string }> = [];
-    const client: Partial<CatscoLogAgentClient> = {
-      bootstrap: async () => {
-        bootstrapCount += 1;
-        const suffix = bootstrapCount === 1 ? 'old' : 'new';
-        return {
-          ...bootstrapResponse(`skill-${suffix}`),
-          memory_write_token: `write-${suffix}`,
-          memory_write_token_expires_at: '2099-08-28T00:00:00.000Z',
-        };
-      },
-      createMemoryNote: async input => {
-        calls.push({ kind: 'note', token: input.token });
-        if (input.token === 'write-old') {
-          const error: any = new Error('expired');
-          error.status = 401;
-          throw error;
-        }
-        return { id: 'note-2' };
-      },
-    };
-    const writeEnabledEnv = { ...env, CATSLOG_MEMORY_WRITE_ENABLED: 'true' };
-    const provider = new CatsLogMemoryProvider(root, {
-      env: writeEnabledEnv,
-      clientFactory: () => client as CatscoLogAgentClient,
-      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
-    });
-    await provider.createMemoryNote({ kind: 'fact', content: 'one' });
-    await provider.createMemoryNote({ kind: 'fact', content: 'two' });
-    assert.deepEqual(calls, [
-      { kind: 'note', token: 'write-old' },
-      { kind: 'note', token: 'write-new' },
-      { kind: 'note', token: 'write-new' },
-    ]);
-    const state = JSON.parse(fs.readFileSync(getCatscoLogAgentConfig(root, writeEnabledEnv).stateFilePath, 'utf8'));
-    assert.equal(state.skillToken, 'skill-new');
-    assert.equal(state.memoryWriteToken, 'write-new');
   });
 });
 
@@ -533,27 +334,22 @@ function fakeClient(
       calls.push({ kind: 'bootstrap' });
       return bootstrapResponse(skillToken);
     },
-    retrieveSkillMemory: async input => {
-      calls.push({ kind: 'retrieve', token: input.token, query: stripCapability(input) });
-      return { items: [] };
+    branch: async input => {
+      calls.push({ kind: 'branch', token: input.token, query: stripCapability(input) });
+      return { status: 'ok', branches: [] };
     },
-    recallMemory: async input => {
-      calls.push({ kind: 'recall', token: input.token, query: stripCapability(input) });
-      return { session_available: true, session: { records: [] }, notes: [] };
+    readSkills: async input => {
+      calls.push({ kind: 'skills', token: input.token, query: stripCapability(input) });
+      return { skills: [] };
     },
   };
   return client as CatscoLogAgentClient;
 }
 
-function stripCapability(input: CatscoSkillMemoryQuery | CatscoMemoryRecallQuery | CatscoMemoryNoteInput | Record<string, unknown> & { token?: string; memoryUrl?: string; memoryRecallUrl?: string }): unknown {
-  const clone = { ...(input as any) };
+function stripCapability(input: Record<string, unknown> & { token?: string; skillsUrl?: string; branchUrl?: string }): unknown {
+  const clone = { ...input };
   delete clone.token;
-  delete clone.memoryUrl;
-  delete clone.memoryRecallUrl;
   delete clone.skillsUrl;
-  delete clone.skillGraphUrl;
-  delete clone.sessionsUrl;
-  delete clone.memoryNotesUrl;
   delete clone.branchUrl;
   delete clone.signal;
   delete clone.requireReceipt;

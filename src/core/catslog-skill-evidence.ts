@@ -1,462 +1,77 @@
-import {
-  isSafeCatsLogOpaqueIdentifier,
-  isSafeCatsLogSkillHandle,
-} from '../utils/catsco-log-agent-client';
 import { isMemoryCitationRef } from '../tools/memory-branch-tools';
 
 /**
- * Safe, model-independent evidence collected at the branch seam.
+ * Minimal anti-hallucination guard for memory-branch finishes (thin v1).
  *
- * This deliberately stores only projected citations and bounded metadata. In
- * particular, a CatsLog retrieval receipt is never copied into this object or
- * any observation built from it.
+ * The tracker collects only citation-shaped refs that actually appeared in
+ * this run's tool results. A finish ref that was never observed cannot be
+ * delivered to the parent as context; it is retained as audit-only evidence
+ * instead. Tool result text never enters the tracker.
  */
-export interface CatsLogSkillProvenance {
-  schema: 'catslog.branch.provenance.v1';
-  toolsUsed: string[];
-  candidateRefs: string[];
-  activeRefs: string[];
-  bodyReadRefs: string[];
-  receiptEligibleRefs: string[];
-  lineage: Array<{
-    type?: string;
-    targetRef?: string;
-  }>;
-  routes: Array<{
-    routeId: string;
-    hop?: number;
-    edgeKey?: string;
-  }>;
-  /**
-   * Bounded TypedEvidence observed through the catslog_branch fan-out,
-   * deduplicated by projected ref. Branch text never enters provenance; only
-   * its safe citation shape, source/kind labels, and best score hint do.
-   */
-  branchEvidence: Array<{
-    ref: string;
-    source?: string;
-    kind?: string;
-    scoreHint?: number;
-  }>;
-  catalogRevision?: number;
-  bodyReadCount: number;
-  outcomeAttempts: number;
-  outcomeAccepted: number;
-  outcomeRejected: number;
-  outcomeStatus: 'not_attempted' | 'pending' | 'accepted' | 'rejected';
-  /** The receipt itself stays provider-private; this is only a safe inference. */
-  receiptState: 'not_observed' | 'inferred_from_body_read';
-  versionStatus: 'verified' | 'mismatch' | 'unknown';
+
+export const MAX_OBSERVED_REFS = 128;
+const MAX_WALK_DEPTH = 6;
+const MAX_WALK_ARRAY = 64;
+const MAX_REF_CHARS = 512;
+
+export interface CatsLogObservedRefsSnapshot {
+  schema: 'catslog.branch.observed-refs.v1';
+  observedRefs: string[];
 }
 
-export function catsLogSkillCitations(refs: readonly string[]): string[] {
-  if (!Array.isArray(refs)) return [];
-  return Array.from(new Set(refs.map(skillRef).filter((value): value is string => Boolean(value))));
-}
+export class CatsLogObservedRefsTracker {
+  private readonly observed = new Set<string>();
 
-interface ToolStartRecord {
-  name: string;
-  includeContent: boolean;
-  /** Exact Skill target when a tool call names one. */
-  skillRef?: string;
-}
-
-const MAX_TOOLS = 24;
-const MAX_REFS = 64;
-const MAX_LINEAGE = 64;
-const MAX_ROUTES = 32;
-const MAX_TEXT = 256;
-
-/**
- * Collates evidence from the actual CatsLog tool seam. The branch model may
- * choose which tools to call, but it cannot fabricate the values returned by
- * this tracker.
- */
-export class CatsLogSkillEvidenceTracker {
-  private readonly tools = new Set<string>();
-  private readonly candidateRefs = new Set<string>();
-  private readonly activeRefs = new Set<string>();
-  private readonly bodyReadRefs = new Set<string>();
-  private readonly receiptEligibleRefs = new Set<string>();
-  private readonly lineage: Array<{ type?: string; targetRef?: string }> = [];
-  private readonly routes = new Map<string, { routeId: string; hop?: number; edgeKey?: string }>();
-  private readonly branchEvidence = new Map<string, {
-    ref: string;
-    source?: string;
-    kind?: string;
-    scoreHint?: number;
-  }>();
-  private readonly starts = new Map<string, ToolStartRecord>();
-  private readonly outcomeStatusByRef = new Map<string, 'pending' | 'accepted' | 'rejected'>();
-  private catalogRevision?: number;
-  private bodyReadCount = 0;
-  private outcomeAttempts = 0;
-  private outcomeAccepted = 0;
-  private outcomeRejected = 0;
-  private outcomePending = 0;
-  private lastOutcomeStatus: 'pending' | 'accepted' | 'rejected' | null = null;
-
-  recordToolStart(name: string, toolUseId: string, input: unknown): void {
-    if (isCatsLogTool(name)) addBounded(this.tools, name, MAX_TOOLS);
-    // catslog_skill_outcome is intentionally never exposed to this branch
-    // (see CatsLogSkillOutcomeTool); these handlers stay defensive so a future
-    // main-runtime outcome surface cannot silently corrupt provenance here.
-    if (name === 'catslog_skill_memory' || name === 'catslog_skill_catalog') {
-      const source = asRecord(input);
-      this.observeRoute(source);
-      this.starts.set(toolUseId, {
-        name,
-        includeContent: source?.include_content === true,
-        skillRef: skillRefFromInput(source),
-      });
-    }
-    if (name === 'catslog_skill_outcome') {
-      const source = asRecord(input);
-      this.observeRoute(source);
-      this.outcomeAttempts++;
-      this.outcomePending++;
-      this.lastOutcomeStatus = 'pending';
-      this.starts.set(toolUseId, {
-        name,
-        includeContent: false,
-        skillRef: skillRefFromInput(source),
-      });
-    }
-  }
-
-  recordToolEnd(name: string, toolUseId: string, result: string): void {
-    const start = this.starts.get(toolUseId);
-    this.starts.delete(toolUseId);
-    const parsed = parseJSON(result);
-    if (name === 'catslog_skill_outcome') {
-      const status = parsed && parsed.status === 'accepted' ? 'accepted' : 'rejected';
-      if (status === 'accepted') {
-        this.outcomeAccepted++;
-        this.outcomePending = Math.max(0, this.outcomePending - 1);
-        this.lastOutcomeStatus = 'accepted';
-      } else {
-        this.outcomeRejected++;
-        this.outcomePending = Math.max(0, this.outcomePending - 1);
-        this.lastOutcomeStatus = 'rejected';
-      }
-      // Prefer the start input, but recover the target from the projected
-      // accepted response when an adapter dropped the callback correlation.
-      // This keeps outcome status scoped to the cited Skill instead of letting
-      // an unrelated global success satisfy the delivery gate.
-      const resultSkillRef = skillRef(parsed?.ref)
-        || skillRefFromParts(parsed?.handle, parsed?.revision);
-      const targetRef = start?.skillRef || resultSkillRef;
-      if (targetRef && (this.outcomeStatusByRef.has(targetRef) || this.outcomeStatusByRef.size < MAX_REFS)) {
-        this.outcomeStatusByRef.set(targetRef, status);
-      }
+  /** Absorb one projected tool result. Malformed JSON is ignored. */
+  recordToolResult(_name: string, result: string): void {
+    if (typeof result !== 'string' || result.length === 0) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result);
+    } catch {
       return;
     }
-    if (!parsed) return;
-
-    this.observeCatalogRevision(parsed);
-    this.observeRoute(asRecord(parsed.route));
-    if (name === 'catslog_skill_catalog') {
-      this.observeCatalog(parsed.skills, Boolean(start?.includeContent), false);
-      return;
-    }
-    if (name === 'catslog_skill_graph') {
-      this.observeGraph(parsed);
-      return;
-    }
-    if (name === 'catslog_skill_memory') {
-      this.observeCatalog(parsed.items, Boolean(start?.includeContent), true);
-      if (asRecord(parsed.graph)) this.observeGraph(parsed.graph as Record<string, unknown>);
-    }
-    if (name === 'catslog_branch') {
-      this.observeBranch(parsed);
-    }
+    this.collect(parsed, 0);
   }
 
   /**
-   * Return a bounded snapshot. `refs` are the citations the branch intends to
-   * publish; version status is computed against observed active graph heads.
+   * Return the cited refs that were never observed in this run's tool
+   * results. An empty result means the finish may proceed to parent context.
    */
-  snapshot(refs: string[] = []): CatsLogSkillProvenance {
-    const safeRefs = uniqueSkillRefs(refs);
-    const versionStatus = this.resolveVersionStatus(safeRefs);
-    const outcomeStatus = this.resolveOutcomeStatus(safeRefs);
-    const receiptRefs = safeRefs.length > 0 ? safeRefs : Array.from(this.receiptEligibleRefs);
+  unobservedRefs(refs: readonly string[]): string[] {
+    const list = Array.isArray(refs) ? refs : [];
+    return Array.from(new Set(list)).filter(ref => !this.observed.has(ref));
+  }
 
+  snapshot(): CatsLogObservedRefsSnapshot {
     return {
-      schema: 'catslog.branch.provenance.v1',
-      toolsUsed: Array.from(this.tools).slice(0, MAX_TOOLS),
-      candidateRefs: Array.from(this.candidateRefs).slice(0, MAX_REFS),
-      activeRefs: Array.from(this.activeRefs).slice(0, MAX_REFS),
-      bodyReadRefs: Array.from(this.bodyReadRefs).slice(0, MAX_REFS),
-      receiptEligibleRefs: Array.from(this.receiptEligibleRefs).slice(0, MAX_REFS),
-      lineage: this.lineage.slice(0, MAX_LINEAGE),
-      routes: Array.from(this.routes.values()).slice(0, MAX_ROUTES),
-      branchEvidence: Array.from(this.branchEvidence.values()).slice(0, MAX_REFS),
-      ...(this.catalogRevision !== undefined ? { catalogRevision: this.catalogRevision } : {}),
-      bodyReadCount: this.bodyReadCount,
-      outcomeAttempts: this.outcomeAttempts,
-      outcomeAccepted: this.outcomeAccepted,
-      outcomeRejected: this.outcomeRejected,
-      outcomeStatus,
-      receiptState: receiptRefs.some(ref => this.receiptEligibleRefs.has(ref))
-        ? 'inferred_from_body_read'
-        : 'not_observed',
-      versionStatus,
+      schema: 'catslog.branch.observed-refs.v1',
+      observedRefs: Array.from(this.observed).slice(0, MAX_OBSERVED_REFS),
     };
   }
 
-  private observeCatalog(
-    value: unknown,
-    includeContent: boolean,
-    receiptEligible: boolean,
-  ): void {
-    if (!Array.isArray(value)) return;
-    for (const item of value.slice(0, MAX_REFS)) {
-      const source = asRecord(item);
-      if (!source) continue;
-      // A response may carry attribution on each item rather than at the
-      // envelope level. Keep only the path-free projection used to correlate
-      // later outcome calls.
-      this.observeRoute(asRecord(source.route));
-      const ref = skillRef(source.ref) || skillRefFromParts(source.handle, source.revision);
-      if (!ref) continue;
-      addBounded(this.candidateRefs, ref, MAX_REFS);
-      if (includeContent && typeof source.content === 'string' && source.content.length > 0) {
-        addBounded(this.bodyReadRefs, ref, MAX_REFS);
-        this.bodyReadCount++;
-        if (receiptEligible) addBounded(this.receiptEligibleRefs, ref, MAX_REFS);
+  private collect(value: unknown, depth: number): void {
+    if (this.observed.size >= MAX_OBSERVED_REFS) return;
+    if (typeof value === 'string') {
+      // The tool projections already hash unsafe refs into
+      // `catslog:ref:<hash>`, so anything citation-shaped here is a ref the
+      // branch can legitimately cite.
+      if (value.length <= MAX_REF_CHARS && isMemoryCitationRef(value)) {
+        this.observed.add(value);
       }
-      // A catalog/memory item is only a candidate. Active-head status is
-      // trusted exclusively from the graph's explicit node state; catalog
-      // caches can be stale and must not satisfy the version guard.
+      return;
     }
-  }
-
-  private observeGraph(value: Record<string, unknown>): void {
-    this.observeCatalogRevision(value);
-    if (Array.isArray(value.nodes)) {
-      for (const node of value.nodes.slice(0, MAX_REFS)) {
-        const source = asRecord(node);
-        if (!source) continue;
-        const ref = skillRef(source.ref) || skillRefFromParts(source.handle, source.revision);
-        if (!ref) continue;
-        addBounded(this.candidateRefs, ref, MAX_REFS);
-        if (source.active === true && source.status !== 'inactive') addBounded(this.activeRefs, ref, MAX_REFS);
+    if (depth >= MAX_WALK_DEPTH || !value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, MAX_WALK_ARRAY)) {
+        this.collect(item, depth + 1);
+        if (this.observed.size >= MAX_OBSERVED_REFS) return;
       }
+      return;
     }
-    if (Array.isArray(value.edges)) {
-      for (const edge of value.edges.slice(0, MAX_LINEAGE)) {
-        const source = asRecord(edge);
-        if (!source) continue;
-        const targetRef = skillRefFromParts(source.target_handle, source.target_revision);
-        const type = safeText(source.type);
-        if (!targetRef && !type) continue;
-        if (this.lineage.length >= MAX_LINEAGE) continue;
-        this.lineage.push({
-          ...(type ? { type } : {}),
-          ...(targetRef ? { targetRef } : {}),
-        });
-      }
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      this.collect(child, depth + 1);
+      if (this.observed.size >= MAX_OBSERVED_REFS) return;
     }
   }
-
-  /**
-   * Absorb a catslog_branch fan-out result. A projected branch ref becomes
-   * observed evidence for this branch; skill-shaped refs additionally join
-   * candidateRefs so the finish guard recognizes them as seen. They never
-   * satisfy the active-head version guard: only the Skill graph's explicit
-   * node state can do that, regardless of where a candidate ref came from.
-   */
-  private observeBranch(value: Record<string, unknown>): void {
-    const branches = Array.isArray(value.branches) ? value.branches : [];
-    for (const rawBranch of branches.slice(0, MAX_REFS)) {
-      const branch = asRecord(rawBranch);
-      if (!branch || !Array.isArray(branch.items)) continue;
-      for (const rawItem of branch.items.slice(0, MAX_REFS)) {
-        const item = asRecord(rawItem);
-        if (!item) continue;
-        const ref = branchEvidenceRef(item.ref);
-        if (!ref) continue;
-        if (parseSkillRef(ref)) addBounded(this.candidateRefs, ref, MAX_REFS);
-        const source = safeText(item.source);
-        const kind = safeText(item.kind);
-        const scoreHint = finiteNumber(item.score_hint);
-        const existing = this.branchEvidence.get(ref);
-        if (existing) {
-          if (scoreHint !== undefined && (existing.scoreHint === undefined || scoreHint > existing.scoreHint)) {
-            existing.scoreHint = scoreHint;
-          }
-          continue;
-        }
-        if (this.branchEvidence.size >= MAX_REFS) continue;
-        this.branchEvidence.set(ref, {
-          ref,
-          ...(source ? { source } : {}),
-          ...(kind ? { kind } : {}),
-          ...(scoreHint !== undefined ? { scoreHint } : {}),
-        });
-      }
-    }
-  }
-
-  private observeCatalogRevision(value: Record<string, unknown>): void {
-    const revision = positiveInteger(value.catalog_revision);
-    if (revision !== undefined && (this.catalogRevision === undefined || revision > this.catalogRevision)) {
-      this.catalogRevision = revision;
-    }
-  }
-
-  private observeRoute(value: Record<string, unknown> | undefined): void {
-    if (!value) return;
-    const routeId = typeof (value.route_id ?? value.routeId) === 'string'
-      ? String(value.route_id ?? value.routeId).trim()
-      : '';
-    if (!routeId || !isSafeCatsLogOpaqueIdentifier(routeId, 128)) return;
-    const hop = positiveIntegerOrZero(value.hop);
-    if (hop !== undefined && hop > 2) return;
-    const edgeKeyValue = value.edge_key ?? value.edgeKey;
-    const edgeKey = typeof edgeKeyValue === 'string' ? edgeKeyValue.trim() : undefined;
-    if (edgeKey && !isSafeCatsLogOpaqueIdentifier(edgeKey, 256)) return;
-    const route = {
-      routeId,
-      ...(hop !== undefined ? { hop } : {}),
-      ...(edgeKey ? { edgeKey } : {}),
-    };
-    const key = `${route.routeId}|${route.hop ?? ''}|${route.edgeKey ?? ''}`;
-    if (this.routes.has(key) || this.routes.size < MAX_ROUTES) this.routes.set(key, route);
-  }
-
-  private resolveVersionStatus(refs: string[]): CatsLogSkillProvenance['versionStatus'] {
-    const skillRefs = refs.map(parseSkillRef).filter((value): value is SkillRef => Boolean(value));
-    if (skillRefs.length === 0) return 'unknown';
-    // Parse the active set once; a per-cited-ref re-parse scales the guard
-    // quadratically when several handles are cited together.
-    const parsedActiveRefs = Array.from(this.activeRefs)
-      .map(parseSkillRef)
-      .filter((candidate): candidate is SkillRef => Boolean(candidate));
-    for (const ref of skillRefs) {
-      const activeCandidates = parsedActiveRefs
-        .filter(candidate => candidate.handle === ref.handle);
-      // Verification is all-or-nothing: one cited Skill with no observed
-      // active head must not be hidden by another cited Skill that happened to
-      // have a graph response.
-      if (activeCandidates.length === 0) return 'unknown';
-      if (new Set(activeCandidates.map(candidate => candidate.revision)).size > 1) return 'unknown';
-      if (activeCandidates[0].revision !== ref.revision) return 'mismatch';
-    }
-    return 'verified';
-  }
-
-  private resolveOutcomeStatus(refs: string[]): CatsLogSkillProvenance['outcomeStatus'] {
-    const scoped = refs
-      .map(ref => this.outcomeStatusByRef.get(ref))
-      .filter((value): value is 'pending' | 'accepted' | 'rejected' => Boolean(value));
-    // If the target was known, report only that target's lifecycle. This
-    // prevents an outcome for an unrelated Skill from making a citation look
-    // complete.
-    if (scoped.length > 0) {
-      if (scoped.includes('pending')) return 'pending';
-      if (scoped.includes('rejected')) return 'rejected';
-      return scoped.length === refs.length ? 'accepted' : 'pending';
-    }
-    if (this.lastOutcomeStatus === 'pending' || this.outcomePending > 0) return 'pending';
-    if (refs.length > 0 && this.outcomeStatusByRef.size > 0) return 'not_attempted';
-    // A completed outcome with no attributable target is not evidence for a
-    // cited Skill. Do not let a callback mismatch turn an unrelated success
-    // into an implicit reward.
-    if (refs.length > 0 && this.outcomeAttempts > 0) return 'not_attempted';
-    if (this.lastOutcomeStatus === 'accepted') return 'accepted';
-    if (this.lastOutcomeStatus === 'rejected') return 'rejected';
-    return 'not_attempted';
-  }
-}
-
-interface SkillRef {
-  handle: string;
-  revision: number;
-}
-
-function isCatsLogTool(name: string): boolean {
-  return name.startsWith('catslog_');
-}
-
-function parseJSON(value: unknown): Record<string, any> | undefined {
-  if (typeof value !== 'string') return undefined;
-  try {
-    const parsed = JSON.parse(value);
-    return asRecord(parsed) as Record<string, any> | undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function asRecord(value: unknown): Record<string, any> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, any>
-    : undefined;
-}
-
-function skillRef(value: unknown): string | undefined {
-  if (typeof value !== 'string' || !isMemoryCitationRef(value)) return undefined;
-  return parseSkillRef(value) ? value.trim() : undefined;
-}
-
-function skillRefFromParts(handle: unknown, revision: unknown): string | undefined {
-  if (typeof handle !== 'string' || !isSafeCatsLogSkillHandle(handle)) return undefined;
-  const number = positiveInteger(revision);
-  return number === undefined ? undefined : `catslog:skill:${handle}@${number}`;
-}
-
-function skillRefFromInput(source: Record<string, any> | undefined): string | undefined {
-  if (!source) return undefined;
-  return skillRef(source.ref)
-    || skillRefFromParts(source.handle, source.revision);
-}
-
-/**
- * Accept only citation-shaped branch item refs. The tool projection already
- * hashes unsafe refs into `catslog:ref:<hash>`, so anything surviving here is
- * either a memory citation or a projected opaque evidence ref.
- */
-function branchEvidenceRef(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed && isMemoryCitationRef(trimmed) ? trimmed : undefined;
-}
-
-function finiteNumber(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function parseSkillRef(value: unknown): SkillRef | undefined {
-  if (typeof value !== 'string') return undefined;
-  const match = value.trim().match(/^catslog:skill:(.+)@([1-9][0-9]*)$/);
-  if (!match || !isSafeCatsLogSkillHandle(match[1])) return undefined;
-  const revision = Number(match[2]);
-  return Number.isSafeInteger(revision) ? { handle: match[1], revision } : undefined;
-}
-
-function uniqueSkillRefs(values: unknown[]): string[] {
-  const list = Array.isArray(values) ? values : [];
-  return Array.from(new Set(list.map(skillRef).filter((value): value is string => Boolean(value))));
-}
-
-function addBounded<T>(set: Set<T>, value: T, limit: number): void {
-  if (set.has(value) || set.size < limit) set.add(value);
-}
-
-function positiveInteger(value: unknown): number | undefined {
-  const number = typeof value === 'number' ? value : Number(value);
-  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
-}
-
-function positiveIntegerOrZero(value: unknown): number | undefined {
-  const number = typeof value === 'number' ? value : Number(value);
-  return Number.isSafeInteger(number) && number >= 0 ? number : undefined;
-}
-
-function safeText(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, MAX_TEXT) : undefined;
 }

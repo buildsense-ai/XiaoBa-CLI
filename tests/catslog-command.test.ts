@@ -17,14 +17,6 @@ class FakeCatsLogCliBackend implements CatsLogMemoryBackend {
   catalogQueries: CatscoSkillsQuery[] = [];
   outcomes: Array<CatscoSkillOutcomeInput & { requireReceipt?: boolean }> = [];
 
-  async retrieveSkillMemory() {
-    return { items: [] };
-  }
-
-  async recallMemory() {
-    return { session_available: false, session: { records: [] } };
-  }
-
   async readSkills(query: CatscoSkillsQuery): Promise<CatscoSkillsResponse> {
     this.catalogQueries.push(query);
     return {

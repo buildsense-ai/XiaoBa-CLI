@@ -14,7 +14,7 @@ export interface MemorySidecarBranchOptions {
   queue: SyntheticObservationQueue;
   signal?: AbortSignal;
   logEnabled?: boolean;
-  /** Optional device-bound CatsLog read capability for remote skill/session recall. */
+  /** Optional device-bound CatsLog capability for the single remote probe (catslog_branch). */
   catslogMemory?: CatsLogMemoryBackend;
   /** Autonomous branch resource budgets; omitted values use conservative defaults. */
   maxTurnsPerPass?: number;

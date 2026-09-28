@@ -4,12 +4,7 @@ import { startMemorySidecarBranch } from '../src/core/sidecar-memory-branch';
 import { InMemorySyntheticObservationQueue } from '../src/core/synthetic-observation';
 import { ChatResponse, Message } from '../src/types';
 import { ToolCall, ToolDefinition } from '../src/types/tool';
-import type {
-  CatscoMemoryRecallQuery,
-  CatscoMemoryRecallResponse,
-  CatscoSkillMemoryQuery,
-  CatscoSkillMemoryResponse,
-} from '../src/utils/catsco-log-agent-client';
+import type { CatscoBranchQuery, CatscoBranchResponse } from '../src/utils/catsco-log-agent-client';
 import type { CatsLogMemoryBackend } from '../src/utils/catslog-memory-provider';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
@@ -22,7 +17,10 @@ function call(id: string, name: string, args: unknown): ToolCall {
   };
 }
 
-class RemoteMemoryBranchAI {
+const LOCAL_TOOLS = ['memory_search', 'memory_read_turn', 'memory_neighbors', 'finish_memory_search'];
+const FULL_TOOLS = [...LOCAL_TOOLS.slice(0, 3), 'catslog_branch', 'finish_memory_search'];
+
+class RemoteBranchAI {
   calls: Message[][] = [];
   toolNames: string[] = [];
 
@@ -37,19 +35,19 @@ class RemoteMemoryBranchAI {
     if (!lastTool) {
       return {
         content: null,
-        toolCalls: [call('skill-1', 'catslog_skill_memory', {
-          task: 'release checklist',
-          include_content: true,
+        toolCalls: [call('branch-1', 'catslog_branch', {
+          query_text: 'release checklist',
         })],
         usage,
       };
     }
-    const result = JSON.parse(String(lastTool.content));
     return {
       content: null,
       toolCalls: [call('finish-1', 'finish_memory_search', {
-        summary: 'CatsLog returned a relevant release skill.',
-        refs: [result.items[0].ref],
+        summary: 'CatsLog returned a relevant release decision.',
+        refs: ['stream-release#17'],
+        inject: true,
+        delivery: 'context',
       })],
       usage,
     };
@@ -57,20 +55,21 @@ class RemoteMemoryBranchAI {
 }
 
 class FakeRemoteMemory implements CatsLogMemoryBackend {
-  async retrieveSkillMemory(_query: CatscoSkillMemoryQuery): Promise<CatscoSkillMemoryResponse> {
+  async branch(_query: CatscoBranchQuery): Promise<CatscoBranchResponse> {
     return {
-      content_trust: 'untrusted_runtime_memory',
-      items: [{ handle: 'release-playbook', revision: 3, content: 'untrusted body' }],
-      graph: {
-        catalog_revision: 1,
-        nodes: [{ handle: 'release-playbook', revision: 3, active: true, status: 'published' }],
-        edges: [],
-      },
+      content_trust: 'untrusted_branch_evidence',
+      branches: [{
+        source: 'session_graph',
+        status: 'ok',
+        items: [{
+          source: 'session',
+          ref: 'stream-release#17',
+          kind: 'session_turn',
+          text: 'release decision: keep nginx read-only mount',
+          score_hint: 0.9,
+        }],
+      }],
     };
-  }
-
-  async recallMemory(_query: CatscoMemoryRecallQuery): Promise<CatscoMemoryRecallResponse> {
-    return { session_available: true, session: { records: [] }, notes: [] };
   }
 }
 
@@ -141,9 +140,9 @@ class ToggleDuringBranchAI {
 }
 
 describe('CatsLog memory branch integration', () => {
-  test('adds remote Skill Memory tools only to the branch and publishes a citation', async () => {
+  test('exposes the thin tool surface and publishes an observed citation', async () => {
     const queue = new InMemorySyntheticObservationQueue();
-    const ai = new RemoteMemoryBranchAI();
+    const ai = new RemoteBranchAI();
     const handle = startMemorySidecarBranch({
       sessionKey: 'remote-memory-test',
       input: 'what is our release checklist?',
@@ -158,25 +157,15 @@ describe('CatsLog memory branch integration', () => {
     await handle.done;
     const observations = queue.drain();
     assert.equal(observations.length, 1);
-    assert.deepEqual(ai.toolNames, [
-      'memory_search',
-      'memory_read_turn',
-      'memory_neighbors',
-      'catslog_skill_catalog',
-      'catslog_skill_graph',
-      'catslog_skill_memory',
-      'catslog_session_query',
-      'catslog_session_recall',
-      'catslog_branch',
-      'finish_memory_search',
-    ]);
-    assert.match(ai.calls[0].find(message => message.role === 'system')?.content as string, /catslog_skill_memory/);
+    assert.deepEqual(ai.toolNames, FULL_TOOLS);
+    assert.match(ai.calls[0].find(message => message.role === 'system')?.content as string, /catslog_branch/);
+    assert.match(
+      ai.calls[0].find(message => message.role === 'system')?.content as string,
+      /一次收窄 refine/,
+    );
     const injected = JSON.parse(observations[0].formattedContent || '');
-    assert.equal(injected.refs[0], 'catslog:skill:release-playbook@3');
-    assert.equal(injected.provenance.bodyReadCount, 1);
-    assert.equal(injected.provenance.receiptState, 'inferred_from_body_read');
-    assert.equal(injected.provenance.toolsUsed.includes('catslog_skill_memory'), true);
-    assert.equal(JSON.stringify(injected).includes('retrieval_receipt'), false);
+    assert.deepEqual(injected.refs, ['stream-release#17']);
+    assert.equal(injected.summary.includes('release decision'), true);
   });
 
   test('re-checks remote capability per branch turn without leaking unavailable tools', async () => {
@@ -194,9 +183,7 @@ describe('CatsLog memory branch integration', () => {
       logEnabled: false,
     });
     await first.done;
-    assert.deepEqual(firstAI.toolNames, [
-      'memory_search', 'memory_read_turn', 'memory_neighbors', 'finish_memory_search',
-    ]);
+    assert.deepEqual(firstAI.toolNames, LOCAL_TOOLS);
 
     backend.available = true;
     const secondAI = new FinishOnlyBranchAI();
@@ -212,11 +199,7 @@ describe('CatsLog memory branch integration', () => {
       logEnabled: false,
     });
     await second.done;
-    assert.deepEqual(secondAI.toolNames, [
-      'memory_search', 'memory_read_turn', 'memory_neighbors',
-      'catslog_skill_catalog', 'catslog_skill_graph', 'catslog_skill_memory',
-      'catslog_session_query', 'catslog_session_recall', 'catslog_branch', 'finish_memory_search',
-    ]);
+    assert.deepEqual(secondAI.toolNames, FULL_TOOLS);
   });
 
   test('fails closed when remote capability discovery throws', async () => {
@@ -234,9 +217,7 @@ describe('CatsLog memory branch integration', () => {
     });
 
     await handle.done;
-    assert.deepEqual(ai.toolNames, [
-      'memory_search', 'memory_read_turn', 'memory_neighbors', 'finish_memory_search',
-    ]);
+    assert.deepEqual(ai.toolNames, LOCAL_TOOLS);
   });
 
   test('keeps the prompt and tool surface aligned when capability appears mid-branch', async () => {
@@ -255,14 +236,7 @@ describe('CatsLog memory branch integration', () => {
     });
 
     await handle.done;
-    assert.deepEqual(ai.calls.map(call => call.toolNames), [
-      ['memory_search', 'memory_read_turn', 'memory_neighbors', 'finish_memory_search'],
-      [
-        'memory_search', 'memory_read_turn', 'memory_neighbors',
-        'catslog_skill_catalog', 'catslog_skill_graph', 'catslog_skill_memory',
-        'catslog_session_query', 'catslog_session_recall', 'catslog_branch', 'finish_memory_search',
-      ],
-    ]);
+    assert.deepEqual(ai.calls.map(call => call.toolNames), [LOCAL_TOOLS, FULL_TOOLS]);
     assert.equal(ai.calls[1].messages.some(message => (
       message.role === 'system' && message.content.includes('在本轮已可用')
     )), true);
@@ -291,10 +265,8 @@ describe('CatsLog memory branch integration', () => {
     });
 
     await handle.done;
-    assert.equal(ai.calls[0].toolNames.includes('catslog_skill_memory'), true);
-    assert.deepEqual(ai.calls[1].toolNames, [
-      'memory_search', 'memory_read_turn', 'memory_neighbors', 'finish_memory_search',
-    ]);
+    assert.equal(ai.calls[0].toolNames.includes('catslog_branch'), true);
+    assert.deepEqual(ai.calls[1].toolNames, LOCAL_TOOLS);
     assert.equal(ai.calls[1].messages.some(message => (
       message.role === 'system' && message.content.includes('不可用')
     )), true);

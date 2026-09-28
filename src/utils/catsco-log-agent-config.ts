@@ -20,9 +20,8 @@ export interface CatscoLogAgentConfig {
   catscoUserToken?: string;
   /** Optional override for exposing the branch's remote memory capability. */
   memoryEnabled?: boolean;
-  /** Explicit opt-ins for Agent-facing remote write capabilities. */
+  /** Explicit opt-in for the CLI Skill outcome write. */
   skillOutcomesEnabled?: boolean;
-  memoryWriteEnabled?: boolean;
 }
 
 function readEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
@@ -138,6 +137,5 @@ export function getCatscoLogAgentConfig(
       ? { memoryEnabled: readBoolean(runtimeEnv, 'CATSLOG_MEMORY_ENABLED', false) }
       : {}),
     skillOutcomesEnabled: readBoolean(runtimeEnv, 'CATSLOG_SKILL_OUTCOMES_ENABLED', false),
-    memoryWriteEnabled: readBoolean(runtimeEnv, 'CATSLOG_MEMORY_WRITE_ENABLED', false),
   };
 }

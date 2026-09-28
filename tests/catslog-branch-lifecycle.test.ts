@@ -5,15 +5,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { startMemorySidecarBranch } from '../src/core/sidecar-memory-branch';
 import { InMemorySyntheticObservationQueue } from '../src/core/synthetic-observation';
-import { CatsLogSkillEvidenceTracker } from '../src/core/catslog-skill-evidence';
+import { CatsLogObservedRefsTracker } from '../src/core/catslog-skill-evidence';
 import { ChatResponse, Message } from '../src/types';
 import { ToolCall, ToolDefinition } from '../src/types/tool';
-import type {
-  CatscoSkillGraphResponse,
-  CatscoSkillMemoryQuery,
-  CatscoSkillMemoryResponse,
-  CatscoSkillsResponse,
-} from '../src/utils/catsco-log-agent-client';
+import type { CatscoBranchQuery, CatscoBranchResponse } from '../src/utils/catsco-log-agent-client';
 import type { CatsLogMemoryBackend } from '../src/utils/catslog-memory-provider';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
@@ -26,211 +21,46 @@ function call(id: string, name: string, args: unknown): ToolCall {
   };
 }
 
-class AuditBranchAI {
-  calls = 0;
+class BranchOnlyMemory implements CatsLogMemoryBackend {
+  branchQueries: BranchQuery[] = [];
+  branchResponse: CatscoBranchResponse = {
+    schema_version: 1,
+    content_trust: 'untrusted_branch_evidence',
+    request_id: 'req-sidecar-1',
+    status: 'ok',
+    branches: [
+      {
+        source: 'memory',
+        status: 'ok',
+        elapsed_ms: 9,
+        items: [
+          {
+            source: 'session',
+            ref: 'stream-review#12',
+            kind: 'session_turn',
+            text: 'untrusted branch evidence body',
+            score_hint: 0.87,
+          },
+          {
+            source: 'skill',
+            ref: 'catslog:skill:review-checklist@2',
+            kind: 'skill',
+            score_hint: 0.91,
+          },
+        ],
+      },
+      { source: 'graph', status: 'timeout' },
+    ],
+  };
 
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls++;
-    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-    if (!lastTool) {
-      return {
-        content: null,
-        toolCalls: [call('body-1', 'catslog_skill_memory', {
-          handle: 'review-checklist',
-          include_content: true,
-        })],
-        usage,
-      };
-    }
-    const result = JSON.parse(String(lastTool.content));
-    return {
-      content: null,
-      toolCalls: [call('finish-1', 'finish_memory_search', {
-        summary: '保留这条审计证据，但不要打扰当前主 agent 上下文。',
-        refs: [result.items[0].ref],
-        inject: false,
-        delivery: 'audit',
-      })],
-      usage,
-    };
-  }
-}
-
-class BudgetExhaustingAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls++;
-    return { content: '仍在检索，但还没有完成。', toolCalls: [], usage };
+  async branch(query: BranchQuery): Promise<CatscoBranchResponse> {
+    this.branchQueries.push(query);
+    return this.branchResponse;
   }
 }
 
-class SensitiveEchoAI {
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(): Promise<ChatResponse> {
-    return { content: 'Bearer super-secret-token retrieval_receipt=receipt-secret', toolCalls: [], usage };
-  }
-}
-
-class StaleRevisionAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls++;
-    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-    if (!lastTool) {
-      return {
-        content: null,
-        toolCalls: [call('graph-1', 'catslog_skill_graph', { handle: 'review-checklist' })],
-        usage,
-      };
-    }
-    return {
-      content: null,
-      toolCalls: [call('finish-1', 'finish_memory_search', {
-        summary: 'This intentionally cites a stale revision.',
-        refs: ['catslog:skill:review-checklist@1'],
-      })],
-      usage,
-    };
-  }
-}
-
-class NeedsActiveHeadAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls++;
-    if (this.calls === 1) {
-      return {
-        content: null,
-        toolCalls: [call('body-1', 'catslog_skill_memory', {
-          handle: 'review-checklist',
-          include_content: true,
-        })],
-        usage,
-      };
-    }
-    if (this.calls === 2) {
-      return {
-        content: null,
-        toolCalls: [call('finish-1', 'finish_memory_search', {
-          summary: 'Try to finish before checking the active head.',
-          refs: ['catslog:skill:review-checklist@2'],
-        })],
-        usage,
-      };
-    }
-    if (this.calls === 3) {
-      return {
-        content: null,
-        toolCalls: [call('graph-1', 'catslog_skill_graph', { handle: 'review-checklist' })],
-        usage,
-      };
-    }
-    return {
-      content: null,
-      toolCalls: [call('finish-2', 'finish_memory_search', {
-        summary: 'Active revision verified before delivery.',
-        refs: ['catslog:skill:review-checklist@2'],
-      })],
-      usage,
-    };
-  }
-}
-
-class RetrievalOnlyAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls++;
-    if (this.calls === 1) {
-      return {
-        content: null,
-        toolCalls: [call('body-1', 'catslog_skill_memory', {
-          handle: 'review-checklist',
-          include_content: true,
-        })],
-        usage,
-      };
-    }
-    if (this.calls === 2) {
-      return {
-        content: null,
-        toolCalls: [call('graph-1', 'catslog_skill_graph', { handle: 'review-checklist' })],
-        usage,
-      };
-    }
-    if (this.calls === 3) {
-      return {
-        content: null,
-        toolCalls: [call('finish-1', 'finish_memory_search', {
-          summary: 'The body was read; the main task will determine whether the Skill was used.',
-          refs: ['catslog:skill:review-checklist@2'],
-        })],
-        usage,
-      };
-    }
-    return {
-      content: null,
-      toolCalls: [],
-      usage,
-    };
-  }
-}
-
-class UnverifiedCitationAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls++;
-    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-    if (!lastTool) {
-      return {
-        content: null,
-        toolCalls: [call('body-1', 'catslog_skill_memory', {
-          handle: 'review-checklist',
-          include_content: true,
-        })],
-        usage,
-      };
-    }
-    return {
-      content: null,
-      toolCalls: [call('finish-1', 'finish_memory_search', {
-        summary: 'This citation has no observed active head.',
-        refs: ['catslog:skill:review-checklist@2'],
-      })],
-      usage,
-    };
-  }
+interface BranchQuery {
+  queryText?: string;
 }
 
 class BranchEvidenceAI {
@@ -268,7 +98,7 @@ class BranchEvidenceAI {
   }
 }
 
-class BranchSkillCitationAI {
+class FabricatedRefAI {
   calls = 0;
 
   isToolCallingSupported(): boolean {
@@ -281,130 +111,91 @@ class BranchSkillCitationAI {
     if (!lastTool) {
       return {
         content: null,
-        toolCalls: [call('branch-1', 'catslog_branch', {
-          query_text: 'review checklist',
-        })],
+        toolCalls: [call('branch-1', 'catslog_branch', { query_text: 'rollback' })],
         usage,
       };
     }
-    if (this.calls === 2) {
-      return {
-        content: null,
-        toolCalls: [call('finish-1', 'finish_memory_search', {
-          summary: 'Cites a Skill seen only through the branch fan-out.',
-          refs: ['catslog:skill:review-checklist@2'],
-          delivery: 'context',
-        })],
-        usage,
-      };
-    }
-    return { content: null, toolCalls: [], usage };
-  }
-}
-
-class LifecycleMemory implements CatsLogMemoryBackend {
-  async retrieveSkillMemory(_query: CatscoSkillMemoryQuery): Promise<CatscoSkillMemoryResponse> {
+    // stream-fabricated#99 never appeared in any tool result.
     return {
-      catalog_revision: 12,
-      items: [{ handle: 'review-checklist', revision: 2, content: 'untrusted skill body' }],
-    };
-  }
-
-  async recallMemory(): Promise<any> {
-    return { session_available: true, session: { records: [] }, notes: [] };
-  }
-
-  async readSkills(): Promise<CatscoSkillsResponse> {
-    return {
-      catalog_revision: 12,
-      skills: [{ handle: 'review-checklist', revision: 2 }],
-    };
-  }
-
-  async readSkillGraph(): Promise<CatscoSkillGraphResponse> {
-    return {
-      catalog_revision: 12,
-      nodes: [
-        { handle: 'review-checklist', revision: 2, active: true, status: 'published' },
-        { handle: 'review-checklist', revision: 1, active: false, status: 'inactive' },
-      ],
-      edges: [{ type: 'derived_from', target_handle: 'review-checklist', target_revision: 1 }],
+      content: null,
+      toolCalls: [call('finish-1', 'finish_memory_search', {
+        summary: 'This citation was never observed.',
+        refs: ['stream-fabricated#99'],
+      })],
+      usage,
     };
   }
 }
 
-class OutcomeLifecycleMemory extends LifecycleMemory {
-  outcomes: Array<{ handle: string; revision: number; outcome: string }> = [];
+class AuditDeliveryAI {
+  calls = 0;
 
-  supportsSkillOutcomes(): boolean {
+  isToolCallingSupported(): boolean {
     return true;
   }
 
-  async reportSkillOutcome(input: any): Promise<void> {
-    this.outcomes.push({ handle: input.handle, revision: input.revision, outcome: input.outcome });
-  }
-}
-
-class NoGraphMemory implements CatsLogMemoryBackend {
-  async retrieveSkillMemory(_query: CatscoSkillMemoryQuery): Promise<CatscoSkillMemoryResponse> {
+  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls++;
+    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
+    if (!lastTool) {
+      return {
+        content: null,
+        toolCalls: [call('branch-1', 'catslog_branch', { query_text: 'review checklist' })],
+        usage,
+      };
+    }
     return {
-      catalog_revision: 12,
-      items: [{ handle: 'review-checklist', revision: 2, content: 'untrusted skill body' }],
+      content: null,
+      toolCalls: [call('finish-1', 'finish_memory_search', {
+        summary: '保留这条审计证据，但不要打扰当前主 agent 上下文。',
+        refs: ['catslog:skill:review-checklist@2'],
+        inject: false,
+        delivery: 'audit',
+      })],
+      usage,
     };
   }
-
-  async recallMemory(): Promise<any> {
-    return { session_available: true, session: { records: [] }, notes: [] };
-  }
 }
 
-interface BranchQuery {
-  queryText?: string;
-}
-
-/** Backend whose only capability is the ADR 0019 branch fan-out. */
-class BranchOnlyMemory implements CatsLogMemoryBackend {
-  branchQueries: BranchQuery[] = [];
-
-  async retrieveSkillMemory(_query: CatscoSkillMemoryQuery): Promise<CatscoSkillMemoryResponse> {
-    return {};
+class DiscardAI {
+  isToolCallingSupported(): boolean {
+    return true;
   }
 
-  async recallMemory(): Promise<any> {
-    return { session_available: true, session: { records: [] }, notes: [] };
-  }
-
-  async branch(query: BranchQuery): Promise<any> {
-    this.branchQueries.push(query);
+  async chat(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
     return {
-      schema_version: 1,
-      content_trust: 'untrusted_branch_evidence',
-      request_id: 'req-sidecar-1',
-      status: 'ok',
-      branches: [
-        {
-          source: 'memory',
-          status: 'ok',
-          elapsed_ms: 9,
-          items: [
-            {
-              source: 'session',
-              ref: 'stream-review#12',
-              kind: 'session_turn',
-              text: 'untrusted branch evidence body that must stay out of provenance',
-              score_hint: 0.87,
-            },
-            {
-              source: 'skill',
-              ref: 'catslog:skill:review-checklist@2',
-              kind: 'skill',
-              score_hint: 0.91,
-            },
-          ],
-        },
-        { source: 'graph', status: 'timeout' },
-      ],
+      content: null,
+      toolCalls: [call('finish-1', 'finish_memory_search', {
+        summary: '闲聊，无新增记忆价值。',
+        refs: [],
+        inject: false,
+        delivery: 'discard',
+      })],
+      usage,
     };
+  }
+}
+
+class BudgetExhaustingAI {
+  calls = 0;
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls++;
+    return { content: '仍在检索，但还没有完成。', toolCalls: [], usage };
+  }
+}
+
+class SensitiveEchoAI {
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(): Promise<ChatResponse> {
+    return { content: 'Bearer super-secret-token retrieval_receipt=receipt-secret', toolCalls: [], usage };
   }
 }
 
@@ -424,17 +215,70 @@ describe('branch CatsLog lifecycle', () => {
     fs.rmSync(testRoot, { recursive: true, force: true });
   });
 
-  test('retains an audit observation without injecting it into the parent queue', async () => {
+  test('publishes observed branch evidence to parent context', async () => {
     const queue = new InMemorySyntheticObservationQueue();
-    const ai = new AuditBranchAI();
+    const backend = new BranchOnlyMemory();
+    const ai = new BranchEvidenceAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'branch-evidence-context',
+      input: 'find the rollback decision',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: true,
+    });
+
+    await handle.done;
+
+    assert.equal(backend.branchQueries.length, 1);
+    assert.equal(backend.branchQueries[0].queryText, 'upload migration rollback');
+    const observations = queue.drain();
+    assert.equal(observations.length, 1);
+    const injected = JSON.parse(observations[0].formattedContent || '');
+    assert.deepEqual(injected.refs, ['stream-review#12']);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /published_observation/);
+    assert.doesNotMatch(logs, /unobserved_refs_audit_only/);
+    // The evidence body stays out of the published observation; raw tool
+    // results remain visible (redacted) in the branch transcript log only.
+    const publishedLine = logs.split('\n').find(line => line.includes('"event_type":"published_observation"')) || '';
+    assert.equal(publishedLine.includes('untrusted branch evidence body'), false);
+  });
+
+  test('fails closed to audit when a finish cites an unobserved ref', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'fabricated-ref-guard',
+      input: 'find the rollback decision',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: new FabricatedRefAI() as any,
+      queue,
+      catslogMemory: new BranchOnlyMemory(),
+      logEnabled: true,
+    });
+
+    await handle.done;
+
+    assert.equal(queue.drain().length, 0);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /unobserved_refs_audit_only/);
+    assert.match(logs, /stream-fabricated#99/);
+    assert.match(logs, /audited_observation/);
+  });
+
+  test('retains an explicit audit observation without injecting it into the parent queue', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
     const handle = startMemorySidecarBranch({
       sessionKey: 'audit-lifecycle',
       input: '审计 review checklist',
       recentMessages: [],
       workingDirectory: testRoot,
-      aiService: ai as any,
+      aiService: new AuditDeliveryAI() as any,
       queue,
-      catslogMemory: new LifecycleMemory(),
+      catslogMemory: new BranchOnlyMemory(),
       logEnabled: true,
     });
 
@@ -445,6 +289,25 @@ describe('branch CatsLog lifecycle', () => {
     assert.match(logs, /audited_observation/);
     assert.doesNotMatch(logs, /retrieval_receipt/);
     assert.match(logs, /catslog:skill:review-checklist@2/);
+  });
+
+  test('discards a chitchat branch without queueing anything', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'discard-lifecycle',
+      input: '今天天气不错',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: new DiscardAI() as any,
+      queue,
+      catslogMemory: new BranchOnlyMemory(),
+      logEnabled: true,
+    });
+
+    await handle.done;
+
+    assert.equal(queue.drain().length, 0);
+    assert.match(readBranchLogs(testRoot), /suppressed_observation/);
   });
 
   test('stops a non-finishing branch at its pass budget', async () => {
@@ -489,211 +352,12 @@ describe('branch CatsLog lifecycle', () => {
     assert.doesNotMatch(logs, /receipt-secret/);
     assert.match(logs, /\[redacted\]/);
   });
+});
 
-  test('builds bounded provenance from actual tool results and detects stale revisions', () => {
-    const tracker = new CatsLogSkillEvidenceTracker();
-    tracker.recordToolStart('catslog_skill_graph', 'graph-1', {});
-    tracker.recordToolEnd('catslog_skill_graph', 'graph-1', JSON.stringify({
-      catalog_revision: 12,
-      nodes: [
-        { handle: 'review-checklist', revision: 2, active: true, status: 'published' },
-        { handle: 'review-checklist', revision: 1, active: false, status: 'inactive' },
-      ],
-      edges: [{ type: 'derived_from', target_handle: 'review-checklist', target_revision: 1 }],
-    }));
-    tracker.recordToolStart('catslog_skill_memory', 'memory-1', {
-      handle: 'review-checklist',
-      include_content: true,
-      route_id: 'route-review-1',
-      hop: 1,
-      edge_key: 'edge-derived',
-    });
-    tracker.recordToolEnd('catslog_skill_memory', 'memory-1', JSON.stringify({
-      catalog_revision: 12,
-      items: [{ ref: 'catslog:skill:review-checklist@2', handle: 'review-checklist', revision: 2, content: 'body' }],
-    }));
-    tracker.recordToolStart('catslog_skill_outcome', 'outcome-1', {
-      ref: 'catslog:skill:review-checklist@2',
-    });
-    tracker.recordToolEnd('catslog_skill_outcome', 'outcome-1', JSON.stringify({ status: 'accepted' }));
-
-    const verified = tracker.snapshot(['catslog:skill:review-checklist@2']);
-    assert.equal(verified.versionStatus, 'verified');
-    assert.deepEqual(verified.activeRefs, ['catslog:skill:review-checklist@2']);
-    assert.deepEqual(verified.bodyReadRefs, ['catslog:skill:review-checklist@2']);
-    assert.equal(verified.receiptState, 'inferred_from_body_read');
-    assert.equal(verified.outcomeStatus, 'accepted');
-    assert.deepEqual(verified.routes, [{
-      routeId: 'route-review-1',
-      hop: 1,
-      edgeKey: 'edge-derived',
-    }]);
-    assert.equal(JSON.stringify(verified).includes('retrieval_receipt'), false);
-
-    tracker.recordToolStart('catslog_skill_outcome', 'outcome-2', {
-      ref: 'catslog:skill:review-checklist@2',
-    });
-    tracker.recordToolEnd('catslog_skill_outcome', 'outcome-2', JSON.stringify({ error: 'receipt expired' }));
-    tracker.recordToolStart('catslog_skill_outcome', 'outcome-3', {
-      ref: 'catslog:skill:review-checklist@2',
-    });
-    tracker.recordToolEnd('catslog_skill_outcome', 'outcome-3', JSON.stringify({ status: 'accepted' }));
-    const retried = tracker.snapshot(['catslog:skill:review-checklist@2']);
-    assert.equal(retried.outcomeStatus, 'accepted');
-    assert.equal(retried.outcomeAttempts, 3);
-    assert.equal(retried.outcomeRejected, 1);
-
-    const stale = tracker.snapshot(['catslog:skill:review-checklist@1']);
-    assert.equal(stale.versionStatus, 'mismatch');
-
-    const unrelatedOutcome = new CatsLogSkillEvidenceTracker();
-    unrelatedOutcome.recordToolStart('catslog_skill_memory', 'memory-a', {
-      handle: 'review-checklist',
-      include_content: true,
-    });
-    unrelatedOutcome.recordToolEnd('catslog_skill_memory', 'memory-a', JSON.stringify({
-      items: [{ handle: 'review-checklist', revision: 2, content: 'body' }],
-    }));
-    unrelatedOutcome.recordToolStart('catslog_skill_outcome', 'outcome-other', {
-      ref: 'catslog:skill:other-playbook@1',
-    });
-    unrelatedOutcome.recordToolEnd('catslog_skill_outcome', 'outcome-other', JSON.stringify({ status: 'accepted' }));
-    assert.equal(
-      unrelatedOutcome.snapshot(['catslog:skill:review-checklist@2']).outcomeStatus,
-      'not_attempted',
-    );
-    assert.equal(
-      unrelatedOutcome.snapshot(['catslog:skill:other-playbook@1']).receiptState,
-      'not_observed',
-    );
-
-    const multiRef = new CatsLogSkillEvidenceTracker();
-    multiRef.recordToolStart('catslog_skill_graph', 'graph-multi', {});
-    multiRef.recordToolEnd('catslog_skill_graph', 'graph-multi', JSON.stringify({
-      nodes: [{ handle: 'review-checklist', revision: 2, active: true, status: 'published' }],
-    }));
-    assert.equal(
-      multiRef.snapshot([
-        'catslog:skill:review-checklist@2',
-        'catslog:skill:other-playbook@1',
-      ]).versionStatus,
-      'unknown',
-    );
-
-    const catalogOnly = new CatsLogSkillEvidenceTracker();
-    catalogOnly.recordToolStart('catslog_skill_catalog', 'catalog-1', {});
-    catalogOnly.recordToolEnd('catslog_skill_catalog', 'catalog-1', JSON.stringify({
-      catalog_revision: 12,
-      skills: [{ handle: 'review-checklist', revision: 2, active: true, status: 'published' }],
-    }));
-    assert.equal(
-      catalogOnly.snapshot(['catslog:skill:review-checklist@2']).versionStatus,
-      'unknown',
-      'catalog metadata must not substitute for an active graph head',
-    );
-  });
-
-  test('fails closed to audit when a branch cites an observed stale Skill head', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const ai = new StaleRevisionAI();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'stale-head-lifecycle',
-      input: 'check the review checklist',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: ai as any,
-      queue,
-      catslogMemory: new LifecycleMemory(),
-      logEnabled: true,
-    });
-
-    await handle.done;
-
-    assert.equal(queue.drain().length, 0);
-    const logs = readBranchLogs(testRoot);
-    assert.match(logs, /stale_revision_audit_only/);
-    assert.match(logs, /audited_observation/);
-  });
-
-  test('fails closed to audit when the adapter cannot verify an active Skill head', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'unverified-head-lifecycle',
-      input: 'check the review checklist',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: new UnverifiedCitationAI() as any,
-      queue,
-      catslogMemory: new NoGraphMemory(),
-      logEnabled: true,
-      maxPasses: 2,
-    });
-
-    await handle.done;
-
-    assert.equal(queue.drain().length, 0);
-    const logs = readBranchLogs(testRoot);
-    assert.match(logs, /active_head_unverified/);
-    assert.match(logs, /budget_exhausted/);
-    assert.match(logs, /budget_exhausted_deferred_evidence/);
-    assert.match(logs, /audited_observation/);
-  });
-
-  test('defers context delivery until the active Skill head is observed', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const ai = new NeedsActiveHeadAI();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'active-head-lifecycle',
-      input: 'check the review checklist',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: ai as any,
-      queue,
-      catslogMemory: new LifecycleMemory(),
-      logEnabled: true,
-    });
-
-    await handle.done;
-
-    const observations = queue.drain();
-    assert.equal(observations.length, 1);
-    const injected = JSON.parse(observations[0].formattedContent || '');
-    assert.equal(injected.lifecycle.active_head, 'verified');
-    assert.match(readBranchLogs(testRoot), /finish_deferred/);
-    assert.equal(ai.calls, 4);
-  });
-
-  test('publishes Skill evidence without making the retrieval branch claim task outcome', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const ai = new RetrievalOnlyAI();
-    const backend = new OutcomeLifecycleMemory();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'retrieval-only-lifecycle',
-      input: 'check the review checklist',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: ai as any,
-      queue,
-      catslogMemory: backend,
-      logEnabled: true,
-    });
-
-    await handle.done;
-
-    const observations = queue.drain();
-    assert.equal(observations.length, 1);
-    const injected = JSON.parse(observations[0].formattedContent || '');
-    assert.equal(injected.lifecycle.feedback, 'unsettled');
-    assert.deepEqual(backend.outcomes, []);
-    assert.doesNotMatch(readBranchLogs(testRoot), /skill_outcome_required/);
-    assert.equal(ai.calls, 3);
-  });
-
-  test('absorbs branch TypedEvidence into provenance without granting active-head status', () => {
-    const tracker = new CatsLogSkillEvidenceTracker();
-    tracker.recordToolStart('catslog_branch', 'branch-1', { query_text: 'rollback' });
-    tracker.recordToolEnd('catslog_branch', 'branch-1', JSON.stringify({
-      schema_version: 1,
+describe('CatsLogObservedRefsTracker', () => {
+  test('collects citation-shaped refs from projected tool results only', () => {
+    const tracker = new CatsLogObservedRefsTracker();
+    tracker.recordToolResult('catslog_branch', JSON.stringify({
       content_trust: 'untrusted_branch_evidence',
       branches: [
         {
@@ -709,78 +373,21 @@ describe('branch CatsLog lifecycle', () => {
         { source: 'graph', status: 'timeout', items: [{ ref: 'stream-review#12', score_hint: 0.6 }] },
       ],
     }));
+    tracker.recordToolResult('memory_search', JSON.stringify({
+      count: 1,
+      matches: [{ ref: 'chat/2026-01-01/session.jsonl#42', hits: ['rollback'] }],
+    }));
+    tracker.recordToolResult('catslog_branch', 'not-json-at-all');
+    tracker.recordToolResult('finish_memory_search', JSON.stringify({ ok: true }));
 
-    const provenance = tracker.snapshot(['stream-review#12']);
-    assert.equal(provenance.branchEvidence.length, 2);
-    assert.deepEqual(provenance.branchEvidence[0], {
-      ref: 'stream-review#12',
-      source: 'session',
-      kind: 'session_turn',
-      scoreHint: 0.6,
-    });
-    assert.equal(provenance.branchEvidence[1].ref, 'catslog:skill:review-checklist@2');
-    assert.equal(provenance.branchEvidence[1].scoreHint, 0.9);
-    // The Skill seen through the branch counts as observed for the finish
-    // guard, but branch evidence can never substitute an active graph head.
-    assert.ok(provenance.candidateRefs.includes('catslog:skill:review-checklist@2'));
-    assert.equal(provenance.activeRefs.length, 0);
-    assert.equal(
-      tracker.snapshot(['catslog:skill:review-checklist@2']).versionStatus,
-      'unknown',
-    );
-    assert.equal(provenance.receiptState, 'not_observed');
-    assert.equal(JSON.stringify(provenance).includes('untrusted branch evidence body'), false);
-    assert.equal(JSON.stringify(provenance).includes('evil.example.test'), false);
-  });
-
-  test('lets a branch-cited session ref flow to context with branch provenance', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const backend = new BranchOnlyMemory();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'branch-evidence-context',
-      input: 'find the rollback decision',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: new BranchEvidenceAI() as any,
-      queue,
-      catslogMemory: backend,
-      logEnabled: true,
-    });
-
-    await handle.done;
-
-    assert.equal(backend.branchQueries.length, 1);
-    assert.equal(backend.branchQueries[0].queryText, 'upload migration rollback');
-    const observations = queue.drain();
-    assert.equal(observations.length, 1);
-    const injected = JSON.parse(observations[0].formattedContent || '');
-    assert.deepEqual(injected.refs, ['stream-review#12']);
-    const branchEvidence = injected.provenance.branchEvidence as Array<{ ref: string }>;
-    assert.ok(branchEvidence.some(item => item.ref === 'stream-review#12'));
-    assert.ok(branchEvidence.some(item => item.ref === 'catslog:skill:review-checklist@2'));
-    assert.equal(JSON.stringify(injected).includes('must stay out of provenance'), false);
-  });
-
-  test('keeps a Skill ref that was only seen through the branch in audit', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'branch-skill-audit',
-      input: 'check the review checklist via branch',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: new BranchSkillCitationAI() as any,
-      queue,
-      catslogMemory: new BranchOnlyMemory(),
-      logEnabled: true,
-    });
-
-    await handle.done;
-
-    assert.equal(queue.drain().length, 0);
-    const logs = readBranchLogs(testRoot);
-    assert.match(logs, /active_head_unverified/);
-    assert.match(logs, /budget_exhausted_deferred_evidence/);
-    assert.match(logs, /catslog:skill:review-checklist@2/);
+    assert.deepEqual(tracker.unobservedRefs(['stream-review#12', 'chat/2026-01-01/session.jsonl#42']), []);
+    assert.deepEqual(tracker.unobservedRefs(['stream-fabricated#99']), ['stream-fabricated#99']);
+    // Unsafe refs are never recorded as observed evidence.
+    assert.deepEqual(tracker.unobservedRefs(['https://evil.example.test/log#1']), ['https://evil.example.test/log#1']);
+    const snapshot = tracker.snapshot();
+    assert.equal(snapshot.schema, 'catslog.branch.observed-refs.v1');
+    assert.equal(snapshot.observedRefs.length, 3);
+    assert.equal(JSON.stringify(snapshot).includes('untrusted branch evidence'), false);
   });
 });
 
