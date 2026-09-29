@@ -354,7 +354,7 @@ describe('interrupted turn recovery', () => {
     );
   });
 
-  test('a shutdown during the resume does not discard the marker', async () => {
+  test('a resume cut short by shutdown stays resumable across a restart', async () => {
     // The resume turn creates no ActiveConversationTask, so the shutdown sweep
     // never sees it and cannot re-write a marker on its behalf. If the resume
     // is cut short by destroy(), the marker must survive so the next start()
@@ -384,6 +384,85 @@ describe('interrupted turn recovery', () => {
     clearInterruptedTurn(key);
     assert.deepStrictEqual(scan(), [], 'a completed resume retires the marker');
   });
+
+  test('recovers the session key for a private chat, not just a group', async () => {
+    // keyToFilename() replaces every character outside [a-zA-Z0-9_-] with '_',
+    // so 'cc_user:usr38' is stored as 'cc_user_usr38.json' and the colon is
+    // gone. Reconstructing the key from the file name produced 'cc_user_usr38'
+    // -- a different, non-existent session -- so a private chat could never be
+    // resumed. The marker carries its own key instead.
+    const { markInterruptedTurn, collectInterruptedTurns } = loadModules();
+    const key = 'cc_user:usr38';
+
+    markInterruptedTurn(key, { topic: 'p2p_1_38', reason: 'oom-kill' });
+
+    const scanned = collectInterruptedTurns({
+      stateDir: path.join(testRoot, 'data', 'session-state'),
+      maxAgeMs: 30 * 60_000,
+      maxAttempts: 2,
+    });
+    assert.equal(scanned.length, 1);
+    assert.equal(scanned[0].sessionKey, key, 'a private chat must resume its real session key');
+  });
+
+  test('recovers a modern session:v2 key that cannot be reconstructed', async () => {
+    // 'session:v2:catscompany:p2p:p2p_1_2:agent:usr43' loses six separators to
+    // the file-name sanitizer. No prefix rule can bring it back, so the stored
+    // key is the only source of truth.
+    const { markInterruptedTurn, collectInterruptedTurns } = loadModules();
+    const key = 'session:v2:catscompany:p2p:p2p_1_2:agent:usr43';
+
+    markInterruptedTurn(key, { topic: 'p2p_1_2', reason: 'connector-shutdown' });
+
+    const scanned = collectInterruptedTurns({
+      stateDir: path.join(testRoot, 'data', 'session-state'),
+      maxAgeMs: 30 * 60_000,
+      maxAttempts: 2,
+    });
+    assert.equal(scanned.length, 1);
+    assert.equal(scanned[0].sessionKey, key, 'the exact v2 key must survive a restart');
+  });
+
+  test('reads the OOM counter from a real /proc/vmstat sample', async () => {
+    // Captured verbatim from worker-bot-bot-bot-9308 after three real kills.
+    // The cgroup's own oom_kill read 0 at the same moment because the unit runs
+    // with MemoryMax=infinity, so reading it there always reported "服务重启"
+    // and the user was never told their task died of memory exhaustion.
+    const { parseOomKillCount } = loadModules();
+    const sample = [
+      'nr_free_pages 415929',
+      'oom_kill 3',
+      'numa_hit 1050350',
+    ].join('\n');
+
+    assert.equal(parseOomKillCount(sample), 3, 'the host-wide counter must be read');
+    assert.equal(
+      parseOomKillCount('oom_kill_disable 0\noom_kill 12\n'),
+      12,
+      'only the exact oom_kill field counts, not oom_kill_disable',
+    );
+    assert.equal(parseOomKillCount('nr_free_pages 415929'), undefined);
+    assert.equal(parseOomKillCount(''), undefined);
+    assert.equal(parseOomKillCount(undefined as any), undefined);
+  });
+
+  test('clearing uses the stored key so the right file is retired', async () => {
+    // mark/clear/scan must agree on one key. Deriving a different key in the
+    // scanner than the one written by mark() would leave tombstones that never
+    // clear, and a cleared conversation could still look resumable.
+    const { markInterruptedTurn, clearInterruptedTurn, collectInterruptedTurns } = loadModules();
+    const key = 'cc_user:usr99';
+    const scan = () => collectInterruptedTurns({
+      stateDir: path.join(testRoot, 'data', 'session-state'),
+      maxAgeMs: 30 * 60_000,
+      maxAttempts: 2,
+    });
+
+    markInterruptedTurn(key, { topic: 'p2p_1_99', reason: 'oom-kill' });
+    assert.equal(scan().length, 1);
+    assert.equal(clearInterruptedTurn(key), true, 'clear must find the file mark() wrote');
+    assert.deepStrictEqual(scan(), [], 'a cleared private chat is not resumable');
+  });
 });
 
 function loadModules(): any {
@@ -399,6 +478,7 @@ function loadModules(): any {
     clearInterruptedTurn: recovery.clearInterruptedTurn,
     stopResumingInterruptedTurn: recovery.stopResumingInterruptedTurn,
     classifyShutdownReason: recovery.classifyShutdownReason,
+    parseOomKillCount: recovery.parseOomKillCount,
     noteResumeAttempt: recovery.noteResumeAttempt,
     collectInterruptedTurns: recovery.collectInterruptedTurns,
     SessionStore: require('../src/utils/session-store').SessionStore,

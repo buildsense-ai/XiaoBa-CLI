@@ -24,6 +24,7 @@ import {
   collectInterruptedTurns,
   markInterruptedTurn as markInterruptedTurnMarker,
   noteResumeAttempt,
+  parseOomKillCount,
   stopResumingInterruptedTurn,
   type InterruptedTurnCandidate,
 } from '../core/interrupted-turn-recovery';
@@ -47,7 +48,6 @@ import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-r
 import { randomUUID } from 'crypto';
 import { hostname, platform } from 'os';
 import * as fs from 'fs';
-import * as path from 'path';
 import { ConfigManager } from '../utils/config';
 import { resolvePrimaryModelVisionCapability } from '../utils/model-capabilities';
 import { createCatsCoSessionRoute } from '../core/session-router';
@@ -2260,37 +2260,38 @@ export class CatsCompanyBot {
   /**
    * Distinguishes a memory kill from an ordinary restart so the resume notice
    * can tell the user why their task stopped. The kernel does not hand the
-   * process a signal before SIGKILL, but a cgroup OOM leaves evidence: the
-   * memory.events counter is bumped by the kill itself, and the process is
-   * typically still above its limit when the shutdown path runs.
+   * process a signal before SIGKILL, but the kill is counted in /proc/vmstat,
+   * which is readable from the worker and cumulative for the host.
    *
    * The ownership rule lives in classifyShutdownReason() because a single
-   * reading cannot answer it -- the counter is cumulative for the unit.
+   * reading cannot answer it -- the counter is cumulative.
    */
   private shutdownInterruptReason(): string {
-    return classifyShutdownReason(this.readCgroupOomKillCount(), this.lastObservedOomKills);
+    return classifyShutdownReason(this.readOomKillCount(), this.lastObservedOomKills);
   }
 
   /**
-   * Captures the cgroup's OOM counter at startup so a later shutdown can tell
-   * a kill that happened under this process from one left over in the cgroup's
-   * history. Best-effort: outside a containerised unit there is no counter.
+   * Captures the host's OOM counter at startup so a later shutdown can tell a
+   * kill that happened under this process from one left over in the host's
+   * history. Best-effort: no /proc means the reason stays generic.
    */
   private captureOomKillBaseline(): void {
-    const oomKills = this.readCgroupOomKillCount();
+    const oomKills = this.readOomKillCount();
     if (oomKills !== undefined) this.lastObservedOomKills = oomKills;
   }
 
-  private readCgroupOomKillCount(): number | undefined {
+  private readOomKillCount(): number | undefined {
+    // /proc/vmstat is system-wide, cumulative, and readable by an unprivileged
+    // process. The cgroup counter is NOT usable here: the deployed unit has
+    // MemoryMax=infinity, so the cgroup can never trigger an OOM and
+    // memory.events.oom_kill stays 0 forever even when the host OOM killer
+    // reaps a 3.4GB python child (verified on worker-bot-bot-bot-9308:
+    // memory.max=max, cgroup oom_kill=0, /proc/vmstat oom_kill=3 after three
+    // real kills). dmesg would say the same but needs privileges.
     try {
-      const cgroup = '/sys/fs/cgroup/system.slice/catsco-agent.service';
-      const events = fs.readFileSync(path.join(cgroup, 'memory.events'), 'utf-8');
-      const raw = (events.match(/^oom_kill\s+(\d+)/m) || [])[1];
-      if (raw === undefined) return undefined;
-      const value = Number(raw);
-      return Number.isFinite(value) ? value : undefined;
+      return parseOomKillCount(fs.readFileSync('/proc/vmstat', 'utf-8'));
     } catch {
-      // Not containerised under this unit name; fall back to the generic label.
+      // Not Linux, or /proc is unavailable; the reason stays generic.
       return undefined;
     }
   }

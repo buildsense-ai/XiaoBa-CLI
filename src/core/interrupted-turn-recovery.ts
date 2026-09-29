@@ -65,6 +65,7 @@ export function markInterruptedTurn(
         topic,
         reason: String(input?.reason || '').trim() || 'unknown',
         ...(input?.senderId ? { senderId: String(input.senderId) } : {}),
+        sessionKey: key,
         startedAt: new Date().toISOString(),
         attempts,
       },
@@ -103,14 +104,40 @@ export function stopResumingInterruptedTurn(sessionKey: string): boolean {
 }
 
 /**
+ * Reads the OOM kill counter out of /proc/vmstat content.
+ *
+ * The cgroup's memory.events.oom_kill is NOT a usable source on the deployed
+ * workers: the unit runs with MemoryMax=infinity, so the cgroup never trips its
+ * own limit and the counter stays at zero even when the host OOM killer reaps
+ * a 3.4GB child (verified on worker-bot-bot-bot-9308: memory.max=max,
+ * memory.events oom_kill=0, /proc/vmstat oom_kill=3 after three real kills).
+ * /proc/vmstat is cumulative and readable without privileges; dmesg would say
+ * the same but needs CAP_SYSLOG.
+ *
+ * Exported for tests; the file read stays at the call site.
+ */
+export function parseOomKillCount(vmstatText: string): number | undefined {
+  if (typeof vmstatText !== 'string' || !vmstatText) return undefined;
+  const raw = (vmstatText.match(/^oom_kill\s+(\d+)$/m) || [])[1];
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/**
  * Classifies a shutdown so the resume notice can say why the turn stopped.
  *
- * The distinction cannot be made from a single reading of the cgroup counter:
- * the value is cumulative for the lifetime of the unit, so a restart after any
- * historical OOM would look like a fresh memory kill. Only a count that grew
- * since this process started belongs to this process.
+ * The distinction cannot be made from a single reading of the counter: the
+ * value is cumulative for the host, so a restart after any historical OOM would
+ * look like a fresh memory kill. Only a count that grew since this process
+ * started belongs to this process.
  *
- * Exported for tests; the cgroup read itself stays at the call site.
+ * Known limit: the counter is host-wide, so an unrelated process being reaped
+ * during our lifetime also reads as 'oom-kill'. On a worker host our own node
+ * process is the dominant memory consumer, so this stays accurate in practice
+ * and is still far better than never detecting a kill at all.
+ *
+ * Exported for tests; the read itself stays at the call site.
  */
 export function classifyShutdownReason(
   oomKillsNow: number | undefined,
@@ -175,7 +202,7 @@ export function collectInterruptedTurns(
     if (now - startedAtMs > maxAgeMs) continue;
 
     resumable.push({
-      sessionKey: sessionKeyFromStateFile(entry.name),
+      sessionKey: marker.sessionKey || sessionKeyFromStateFile(entry.name),
       topic: marker.topic,
       reason: marker.reason,
       ...(marker.senderId ? { senderId: marker.senderId } : {}),
@@ -201,6 +228,7 @@ function readInterruptedTurn(stateFile: string): InterruptedTurnState | undefine
       topic: String(marker.topic),
       reason: String(marker.reason || 'unknown'),
       ...(marker.senderId ? { senderId: String(marker.senderId) } : {}),
+      ...(marker.sessionKey ? { sessionKey: String(marker.sessionKey) } : {}),
       startedAt: String(marker.startedAt),
       attempts: Number.isFinite(marker.attempts) ? Number(marker.attempts) : 0,
     };
@@ -211,14 +239,23 @@ function readInterruptedTurn(stateFile: string): InterruptedTurnState | undefine
 }
 
 // Session state files use keyToFilename() from session-store: every character
-// outside [a-zA-Z0-9_-] is replaced with '_'. CatsCo group keys
-// ("cc_group:grp_2613") therefore round-trip through this prefix.
+// outside [a-zA-Z0-9_-] is replaced with '_'. Only a single ':' can be put
+// back, and only when the prefix is unambiguous.
+//
+// This is a LAST-RESORT fallback for markers written before the key was stored
+// in the marker itself. 'cc_user:usr38' and 'session:v2:catscompany:p2p:...'
+// both lose every ':' to the same '_', so reconstruction is not generally
+// possible -- new markers carry their sessionKey instead of relying on this.
 const CATSCO_GROUP_PREFIX = 'cc_group_';
+const CATSCO_USER_PREFIX = 'cc_user_';
 
 function sessionKeyFromStateFile(fileName: string): string {
   const base = fileName.replace(/\.json$/, '');
   if (base.startsWith(CATSCO_GROUP_PREFIX)) {
     return `cc_group:${base.slice(CATSCO_GROUP_PREFIX.length)}`;
+  }
+  if (base.startsWith(CATSCO_USER_PREFIX)) {
+    return `cc_user:${base.slice(CATSCO_USER_PREFIX.length)}`;
   }
   return base;
 }
