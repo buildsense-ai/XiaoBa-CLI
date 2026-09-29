@@ -539,6 +539,43 @@ describe('interrupted turn recovery', () => {
       'a failed write must clean up its temp file',
     );
   });
+
+  test('staging files left by a crash do not accumulate', async () => {
+    // A kill between the staging write and the rename is exactly the event this
+    // file exists for, so leftovers are expected rather than exceptional. They
+    // are invisible to the scan (they do not end in .json), but without a sweep
+    // they would pile up one per crash forever in a directory the scan walks.
+    const { markInterruptedTurn, collectInterruptedTurns, SessionStore } = loadModules();
+    const store = SessionStore.getInstance();
+    const key = 'cc_group:grp_leftover';
+    const stateDir = path.join(testRoot, 'data', 'session-state');
+    const stateFile = path.join(stateDir, 'cc_group_grp_leftover.json');
+
+    store.saveRuntimeState(key, { currentDirectory: '/tmp' });
+    markInterruptedTurn(key, { topic: 'grp_leftover', reason: 'oom-kill' });
+
+    // Three kills, each landing between write and rename.
+    for (const pid of [1111, 2222, 3333]) {
+      fs.writeFileSync(`${stateFile}.${pid}.tmp`, '{"partial":', 'utf-8');
+    }
+    assert.equal(
+      fs.readdirSync(stateDir).filter((name) => name.endsWith('.tmp')).length,
+      3,
+      'the scenario must actually have leftovers',
+    );
+
+    // A later successful write sweeps them.
+    store.saveRuntimeState(key, { ...store.loadRuntimeState(key), currentDirectory: '/tmp/next' });
+    assert.deepStrictEqual(
+      fs.readdirSync(stateDir).filter((name) => name.endsWith('.tmp')),
+      [],
+      'stale staging files must not accumulate',
+    );
+
+    // And the sweep must not have disturbed the live marker.
+    assert.equal(collectInterruptedTurns({ stateDir, maxAgeMs: 30 * 60_000, maxAttempts: 2 }).length, 1);
+    assert.equal(store.loadRuntimeState(key).currentDirectory, '/tmp/next');
+  });
 });
 
 function loadModules(): any {
