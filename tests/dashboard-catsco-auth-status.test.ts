@@ -475,6 +475,7 @@ describe('dashboard CatsCo account status', () => {
   test('POST /cats/connector/start starts the bound Definition without legacy model setup', async () => {
     createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
       version: 1,
+      runtimeMode: 'local_bot',
       endpoints: {
         httpBaseUrl: 'https://app.catsco.cc',
         serverUrl: 'wss://app.catsco.cc/v0/channels',
@@ -614,6 +615,7 @@ describe('dashboard CatsCo account status', () => {
     });
     createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
       version: 1,
+      runtimeMode: 'local_bot',
       endpoints: {
         httpBaseUrl: catsBaseUrl,
         serverUrl: 'wss://app.catsco.cc/v0/channels',
@@ -2297,6 +2299,7 @@ describe('dashboard CatsCo account status', () => {
   function saveConfirmedLocalBinding(bodyId: string): void {
     createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
       version: 1,
+      runtimeMode: 'local_bot',
       endpoints: {
         httpBaseUrl: catsBaseUrl,
         serverUrl: 'wss://app.catsco.cc/v0/channels',

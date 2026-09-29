@@ -43,9 +43,9 @@ export interface CatsCoLocalConfig {
   };
   account?: CatsCoLocalAccount;
   /**
-   * Explicitly records whether the desktop process is a device Connector or
-   * a legacy/local Bot. Older installations omit this field and are inferred
-   * from their stored credentials for backwards compatibility.
+   * Explicitly records whether the current desktop session is a device
+   * Connector or a legacy/local Bot. Older installations omit this field and
+   * default to the device Connector migration path.
    */
   runtimeMode?: CatsCoRuntimeMode;
   currentBot?: CatsCoLocalBot;
@@ -66,13 +66,9 @@ export function resolveCatsCoRuntimeMode(
   if (config.runtimeMode === 'local_bot' || config.runtimeMode === 'connector') {
     return config.runtimeMode;
   }
-  // A device token is the new default identity. If an old installation has
-  // only a confirmed Bot binding, preserve its legacy local-Bot behaviour
-  // until the user explicitly enters the Connector flow.
-  if (String(config.device?.connectorToken || '').trim()) return 'connector';
-  if (String(config.currentBot?.uid || '').trim() && String(config.currentBot?.apiKey || '').trim()) {
-    return 'local_bot';
-  }
+  // Missing mode means an older installation. The desktop startup path must
+  // migrate it to the device Connector; a retained Bot binding is kept only
+  // for the explicit compatibility entry and must not silently become active.
   return 'connector';
 }
 

@@ -6,6 +6,7 @@ import { EventEmitter } from 'events';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { PathResolver } from '../utils/path-resolver';
 import { resolveCatsCoRuntimeConfig, resolveCatsCoRuntimeRole } from '../catscompany/runtime-config';
+import { resolveCatsCoRuntimeMode } from '../catscompany/local-config';
 import { weixinBindingEnvOverlay } from './weixin-channel-binding';
 
 const isWindows = process.platform === 'win32';
@@ -253,7 +254,7 @@ export class ServiceManager extends EventEmitter {
         env: envVars,
         migrateLegacyEnvBinding: true,
       });
-      if (catsCoRuntime.localConfig.runtimeMode === 'local_bot') {
+      if (resolveCatsCoRuntimeMode(catsCoRuntime.localConfig) === 'local_bot') {
         // Do not leak a retained device credential into a legacy local-Bot
         // child process. The resolver already masks it logically; clearing
         // the inherited aliases also protects older runtime readers.
@@ -473,13 +474,13 @@ export class ServiceManager extends EventEmitter {
     return this.start(name);
   }
 
-  stopAll() {
+  stopAll(force = false) {
     for (const [name, svc] of this.services) {
       if (svc.info.status === 'running' && svc.process) {
         svc.expectedExit = 'stop';
         const stoppingProcess = svc.process;
-        this.killProcess(stoppingProcess, false);
-        this.scheduleForceKill(name, stoppingProcess);
+        this.killProcess(stoppingProcess, force);
+        if (!force) this.scheduleForceKill(name, stoppingProcess);
       }
     }
   }

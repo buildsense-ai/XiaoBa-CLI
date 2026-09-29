@@ -8,7 +8,7 @@ import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { CatsCoConnectorLock, acquireCatsCoConnectorLock, isProcessAlive } from '../catscompany/connector-lock';
 import { PathResolver } from '../utils/path-resolver';
 import { prepareBoundBotDefinition } from '../bot-definition/activation';
-import { createCatsCoLocalConfigService, type CatsCoAuthSnapshot } from '../catscompany/local-config';
+import { createCatsCoLocalConfigService, resolveCatsCoRuntimeMode, type CatsCoAuthSnapshot } from '../catscompany/local-config';
 import {
   acknowledgeCloudBotModelSelection,
   pullCloudBotModelSelection,
@@ -97,7 +97,7 @@ export async function catscompanyCommand(): Promise<void> {
   // is explicitly running a legacy/local Bot, otherwise CatsClient can pick
   // the Connector token after dotenv or another compatibility reader loads
   // the environment and silently use the wrong identity.
-  if (resolvedRuntime.localConfig.runtimeMode === 'local_bot') {
+  if (resolveCatsCoRuntimeMode(resolvedRuntime.localConfig) === 'local_bot') {
     delete process.env.CATSCO_CONNECTOR_TOKEN;
     delete process.env.CATSCO_CONNECTOR_TOKEN_EXPIRES_AT;
     delete process.env.CATSCOMPANY_CONNECTOR_TOKEN;

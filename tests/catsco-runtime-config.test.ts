@@ -23,6 +23,7 @@ describe('CatsCo runtime config resolver', () => {
     const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
     service.save({
       version: 1,
+      runtimeMode: 'local_bot',
       endpoints: {
         httpBaseUrl: 'https://typed.example',
         serverUrl: 'wss://typed.example/v0/channels',
@@ -105,6 +106,7 @@ describe('CatsCo runtime config resolver', () => {
         token: 'old-user-token',
         uid: 'old-user',
       },
+      runtimeMode: 'local_bot',
       currentBot: {
         uid: 'old-bot',
         name: 'Old Bot',
@@ -154,6 +156,7 @@ describe('CatsCo runtime config resolver', () => {
         token: 'user-token',
         uid: 'user-1',
       },
+      runtimeMode: 'local_bot',
       currentBot: {
         uid: 'bot-1',
         name: 'Bot',
@@ -205,6 +208,7 @@ describe('CatsCo runtime config resolver', () => {
     const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
     service.save({
       version: 1,
+      runtimeMode: 'local_bot',
       endpoints: {
         httpBaseUrl: 'https://app.catsco.cc',
         serverUrl: 'wss://app.catsco.cc/v0/channels',
@@ -360,6 +364,38 @@ describe('CatsCo runtime config resolver', () => {
     assert.equal(resolved.connector?.connectorToken, undefined);
     assert.equal(resolved.auth.botUid, 'bot-1');
     assert.equal(resolved.auth.connectorToken, '');
+  });
+
+  test('legacy config without runtimeMode defaults to Connector migration', () => {
+    const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
+    service.save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: { token: 'user-token', uid: 'user-1' },
+      currentBot: {
+        uid: 'legacy-bot',
+        name: 'Legacy Bot',
+        apiKey: 'legacy-bot-key',
+        boundByUserUid: 'user-1',
+        bindingSource: 'legacy',
+      },
+      device: {
+        deviceId: 'device-1',
+        bodyId: 'body-1',
+        installationId: 'install-1',
+        connectorToken: 'retained-device-token',
+        connectorTokenExpiresAt: Date.now() + 60_000,
+      },
+    });
+
+    const resolved = resolveCatsCoRuntimeConfig({ runtimeRoot: tempDir, env: {} });
+    assert.equal(resolved.localConfig.runtimeMode, undefined);
+    assert.equal(resolved.connector?.connectorToken, 'retained-device-token');
+    assert.equal(resolved.connector?.apiKey, undefined);
+    assert.equal(resolved.auth.botUid, undefined);
   });
 
   test('explicit Connector mode keeps a legacy Bot hidden from the active runtime', () => {

@@ -509,6 +509,7 @@ function writeEnv(lines: string[]): void {
 function writeConfirmedCatsBinding(): void {
   createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).save({
     version: 1,
+    runtimeMode: 'local_bot',
     endpoints: {
       httpBaseUrl: 'https://app.catsco.cc',
       serverUrl: 'wss://app.catsco.cc/v0/channels',

@@ -178,9 +178,9 @@ export class CatsConnectorAutoStart {
     if (!this.manageConnector) return;
     const localConfig = createCatsCoLocalConfigService({ runtimeRoot: this.runtimeRoot });
     if (localConfig.load().runtimeMode === 'local_bot') {
-      // Compatibility mode is an explicit session choice. Reset it before
-      // the first Dashboard request so the UI never briefly renders a stale
-      // local-Bot error while the Connector startup is being scheduled.
+      // Compatibility mode is an explicit session choice. Every new desktop
+      // launch starts as a Connector session; the retained Bot remains
+      // available through the compatibility entry and is never deleted.
       localConfig.setRuntimeMode('connector');
     }
   }

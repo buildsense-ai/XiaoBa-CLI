@@ -88,11 +88,11 @@ export async function startDashboard(
 
   // 优雅退出
   process.on('SIGINT', () => {
-    serviceManager.stopAll();
+    serviceManager.stopAll(true);
     process.exit(0);
   });
   process.on('SIGTERM', () => {
-    serviceManager.stopAll();
+    serviceManager.stopAll(true);
     process.exit(0);
   });
 
@@ -116,7 +116,9 @@ export async function startDashboard(
     async stop(): Promise<void> {
       skillTrashGc.stop();
       catsConnectorAutoStart.stop();
-      serviceManager.stopAll();
+      // The Dashboard process is closing now, so do not rely on an unref'd
+      // delayed fallback timer to outlive process shutdown.
+      serviceManager.stopAll(true);
       await Promise.all(activeServers.splice(0).map(closeServer));
     },
   };

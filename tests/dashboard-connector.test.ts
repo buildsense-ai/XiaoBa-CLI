@@ -338,6 +338,9 @@ test('background bootstrap returns a previous local-Bot session to Connector', a
         return jsonResponse({ error: 'unexpected request' }, 500);
       },
     });
+    // Compatibility mode is session-scoped: a new Dashboard launch always
+    // returns to the device Connector while retaining the old Bot binding.
+    assert.equal(createCatsCoLocalConfigService({ runtimeRoot }).load().runtimeMode, 'connector');
     const snapshot = await controller.run('startup');
     assert.equal(snapshot.stage, 'connected');
     assert.equal(paths.some((url) => url.endsWith('/cats/device-connector/provision')), true);
@@ -429,6 +432,7 @@ test('background bootstrap migrates a legacy Bot installation to device Connecto
           return jsonResponse({
             connected: true,
             deviceConnectorMode: false,
+            runtimeMode: 'connector',
             bodyConfigured: true,
             configured: true,
             service: { status: 'running' },
