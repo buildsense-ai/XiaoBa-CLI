@@ -1755,6 +1755,7 @@ export class CatsCompanyBot {
       const command = parts[0];
       const args = parts.slice(1);
       const isClear = command.toLowerCase() === 'clear';
+      const isCompact = command.toLowerCase() === 'compact';
 
       if (isClear) {
         this.pendingAttachments.delete(key);
@@ -1769,7 +1770,18 @@ export class CatsCompanyBot {
         this.cancelConversationTask(key);
       }
 
-      const result = await session.handleCommand(command, args);
+      // /compact follows the normal slash-command/reply path, with the
+      // existing Working-style thinking callback for checkpoint progress. It
+      // deliberately does not inherit /clear's destructive cleanup.
+      const commandCallbacks = isCompact
+        ? this.buildSessionCallbacks(msg.topic, {
+          sessionKey: key,
+          senderId: msg.senderId,
+          channelSource: msg.executionScope?.channelSource,
+          clearGeneration: entryClearGeneration,
+        })
+        : undefined;
+      const result = await session.handleCommand(command, args, commandCallbacks);
       let commandReply = result.reply;
       if (result.handled && isClear && !args.includes('--all')) {
         const clearPersisted = this.cloudSessionRestorer.markLocalSessionCleared(sessionRoute?.sessionKey || key);

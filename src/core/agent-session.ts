@@ -208,6 +208,8 @@ export class AgentSession {
   private messages: Message[] = [];
   private initialized = false;
   private busy = false;
+  /** A manual checkpoint must share the same session mutation barrier as a turn. */
+  private manualCompactionInFlight = false;
   private systemPromptOverride?: SystemPromptProvider;
   private promptTrace?: PromptTraceSnapshot;
   /** 外部请求中断当前 run（例如用户在 busy 时发送"停止"） */
@@ -666,7 +668,7 @@ export class AgentSession {
         }
       }
 
-      if (this.busy) {
+      if (this.busy || this.manualCompactionInFlight) {
         return { text: BUSY_MESSAGE, visibleToUser: true };
       }
       const lifecycleGeneration = this.lifecycleGeneration;
@@ -894,6 +896,78 @@ export class AgentSession {
       if (commandName === 'stop') {
         this.requestInterrupt();
         return { handled: true, reply: '正在停止当前请求...' };
+      }
+
+      // /compact - explicitly create one checkpoint without creating a user turn.
+      if (commandName === 'compact') {
+        if (!this.useCheckpointCompaction) {
+          return {
+            handled: true,
+            reply: '当前会话未启用 checkpoint 压缩，无法执行 /compact。',
+          };
+        }
+        if (this.busy || this.manualCompactionInFlight) {
+          return {
+            handled: true,
+            reply: '当前会话正在处理中，请等待本轮结束后再使用 /compact。',
+          };
+        }
+
+        this.manualCompactionInFlight = true;
+        this.busy = true;
+        this.interruptRequested = false;
+        const compactAbortController = new AbortController();
+        this.activeAbortController = compactAbortController;
+        Logger.info(`[会话 ${this.key}] 收到 /compact，开始手动 checkpoint 压缩`);
+        try {
+          const sourceMessages = stripAssistantArtifactsFromMessages(this.messages);
+          const compactCallbacks = callbacks
+            ? {
+              ...callbacks,
+              // The final command reply is the completion notice. The callback
+              // only drives the Working-style in-progress indicator.
+              onThinking: async (thinking: string) => {
+                if (thinking === CONTEXT_COMPACTION_START_MESSAGE) {
+                  await callbacks.onThinking?.(thinking);
+                }
+              },
+            }
+            : undefined;
+          const result = await this.compactContextIfNeeded(
+            sourceMessages,
+            'manual',
+            '手动 /compact',
+            compactAbortController.signal,
+            compactCallbacks,
+            true,
+          );
+          if (!result.compacted) {
+            Logger.info(`[会话 ${this.key}] /compact 没有可缩减的上下文`);
+            return { handled: true, reply: '当前上下文无需压缩，已保留原记录。' };
+          }
+          if (!this.persistCheckpoint(result.messages)) {
+            Logger.error(`[会话 ${this.key}] /compact 检查点持久化失败，保留原上下文`);
+            return { handled: true, reply: CONTEXT_COMPACTION_ERROR_MESSAGE };
+          }
+          this.messages = result.messages;
+          Logger.info(`[会话 ${this.key}] /compact 完成，检查点已保存`);
+          return { handled: true, reply: '上下文已压缩，检查点已保存。' };
+        } catch (error) {
+          const stopped = this.interruptRequested || compactAbortController.signal.aborted;
+          Logger.warning(
+            `[会话 ${this.key}] /compact ${stopped ? '被停止' : '失败'}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return {
+            handled: true,
+            reply: stopped
+              ? '压缩已停止，原上下文已保留。'
+              : CONTEXT_COMPACTION_ERROR_MESSAGE,
+          };
+        } finally {
+          this.manualCompactionInFlight = false;
+          this.busy = false;
+          this.activeAbortController = null;
+        }
       }
 
       // /clear
@@ -1150,6 +1224,7 @@ export class AgentSession {
     reason: string,
     signal?: AbortSignal,
     callbacks?: SessionCallbacks,
+    force = false,
   ): Promise<{ messages: Message[]; compacted: boolean }> {
     if (!this.useCheckpointCompaction) {
       const compactedMessages = await this.contextWindowManager.compactIfNeeded(messages, {
@@ -1166,6 +1241,7 @@ export class AgentSession {
     return this.checkpointCompactionCoordinator.compactIfNeeded(messages, {
       sessionKey: this.key,
       phase,
+      force,
       toolTokens: this.getToolDefinitionTokens(),
       signal,
       onStatus: this.createContextCompactionNotifier(callbacks, true),

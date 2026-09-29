@@ -54,7 +54,7 @@ export interface Message {
   /** Durable marker for a continuation checkpoint boundary. */
   __checkpointBoundary?: boolean;
   /** Internal compaction phase. Never sent to providers. */
-  __checkpointPhase?: 'pre_turn' | 'mid_turn' | 'restore';
+  __checkpointPhase?: 'pre_turn' | 'mid_turn' | 'restore' | 'manual';
   /** 远端耐久上下文来源和消息序号，用于游标写盘失败后的幂等补拉。 */
   __remoteContextSource?: string;
   __remoteContextId?: number;

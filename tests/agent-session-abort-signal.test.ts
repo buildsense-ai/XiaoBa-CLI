@@ -74,6 +74,68 @@ test('AgentSession clear interrupts an active turn before clearing its history',
   assert.match(historyResult.reply || '', /当前历史长度: 0 条消息/);
 });
 
+test('AgentSession /compact uses a forced manual checkpoint without creating a user turn', async () => {
+  const session = new AgentSession('user:manual-compact-command', buildMockServices(), 'catscompany');
+  const sourceMessages = [
+    { role: 'user', content: '原始任务' },
+    { role: 'assistant', content: '已有进展' },
+  ];
+  (session as any).messages = sourceMessages;
+  let request: any;
+  (session as any).checkpointCompactionCoordinator.compactIfNeeded = async (
+    messages: any[],
+    options: any,
+  ) => {
+    request = options;
+    return { messages, compacted: false };
+  };
+
+  const result = await session.handleCommand('compact', []);
+
+  assert.equal(result.handled, true);
+  assert.match(result.reply || '', /无需压缩/);
+  assert.equal(request.phase, 'manual');
+  assert.equal(request.force, true);
+  assert.deepEqual((session as any).messages, sourceMessages);
+  assert.equal(JSON.stringify((session as any).messages).includes('/compact'), false);
+});
+
+test('AgentSession /compact exposes Working start and persists the checkpoint', async () => {
+  const session = new AgentSession('user:manual-compact-progress', buildMockServices({
+    aiService: {
+      async chatStream(_messages: any[], _tools: any, callbacks: any) {
+        callbacks?.onText?.('保留当前目标和未完成事项。');
+        return { content: '保留当前目标和未完成事项。', toolCalls: [] };
+      },
+    },
+  }), 'catscompany');
+  (session as any).messages = [{
+    role: 'user',
+    content: `需要保留的原始任务\n${'历史内容 '.repeat(600)}`,
+  }, { role: 'assistant', content: '已有调查结果。' }];
+  const thinking: string[] = [];
+
+  const result = await session.handleCommand('compact', [], {
+    onThinking: async text => { thinking.push(text); },
+  });
+
+  assert.equal(result.reply, '上下文已压缩，检查点已保存。');
+  assert.deepEqual(thinking, ['正在压缩上下文，整理较早的对话内容。']);
+  assert.ok((session as any).messages.some((message: any) => message.__checkpointSummary));
+  assert.equal(JSON.stringify((session as any).messages).includes('/compact'), false);
+  await session.cleanup();
+});
+
+test('AgentSession /compact refuses to race an active turn', async () => {
+  const session = new AgentSession('user:manual-compact-busy', buildMockServices(), 'catscompany');
+  (session as any).busy = true;
+
+  const result = await session.handleCommand('compact', []);
+
+  assert.equal(result.handled, true);
+  assert.match(result.reply || '', /正在处理中/);
+});
+
 test('AgentSession clear ignores a stale model result even when the provider resolves after abort', async () => {
   let observedSignal: AbortSignal | undefined;
   let releaseModel!: () => void;
