@@ -23,6 +23,7 @@ import {
   collectInterruptedTurns,
   markInterruptedTurn as markInterruptedTurnMarker,
   noteResumeAttempt,
+  stopResumingInterruptedTurn,
   type InterruptedTurnCandidate,
 } from '../core/interrupted-turn-recovery';
 import {
@@ -548,6 +549,10 @@ export class CatsCompanyBot {
   private artifactTaskReceipts = new Map<string, number>();
   /** Last cgroup oom_kill count seen, so a fresh kill can be told from an old one. */
   private lastObservedOomKills?: number;
+  /** One interrupted-turn scan per process; reconnects fire 'ready' again. */
+  private interruptedTurnScanDone = false;
+  /** Sessions already auto-resumed in this process, so a crash cannot loop. */
+  private resumedInterruptedTurns = new Set<string>();
   /** Covers message parsing, cloud restore, attachment download, commands, and the model turn. */
   private activeMessageHandlers = 0;
   /** Invalidates queued or in-flight pre-turn hydration after /clear. */
@@ -1807,6 +1812,10 @@ export class CatsCompanyBot {
         this.subAgentCompletionBatches.delete(key);
         this.cloudSessionRestoreAbortControllers?.get(key)?.abort();
         this.cloudSessionRestorePromises.delete(key);
+        // /clear means the user wants this conversation empty. Leaving the
+        // interruption marker behind would auto-resume a turn into the very
+        // history they just wiped, so retire it here as well.
+        this.clearInterruptedTurn(key);
         session.requestInterrupt?.();
         this.cancelConversationTask(key);
       }
@@ -2266,6 +2275,13 @@ export class CatsCompanyBot {
    */
   private async resumeInterruptedTurns(): Promise<void> {
     if (this.shuttingDown) return;
+    // One scan per process: 'ready' fires again on every reconnect, and a
+    // reconnect loop must not replay the same interruption each time.
+    if (this.interruptedTurnScanDone) {
+      Logger.info('中断任务扫描已执行过，跳过重连触发的重复扫描');
+      return;
+    }
+    this.interruptedTurnScanDone = true;
     let candidates: InterruptedTurnCandidate[] = [];
     try {
       candidates = collectInterruptedTurns({
@@ -2283,6 +2299,13 @@ export class CatsCompanyBot {
     for (const candidate of candidates) {
       if (this.shuttingDown) return;
       if (!this.connectorReady) return;
+      // One resume per session per process: a turn that dies again leaves a
+      // fresh marker for the *next* start(), which keeps a crash inside this
+      // process from re-entering the resume path in a tight loop.
+      if (this.resumedInterruptedTurns.has(candidate.sessionKey)) {
+        Logger.info(`[${candidate.sessionKey}] 中断任务本次进程内已恢复过，跳过`);
+        continue;
+      }
       // A user message received in the meantime means they already took over;
       // finishing their turn beats replaying the interrupted one.
       if (this.activeConversationTasks.has(candidate.sessionKey)) {
@@ -2295,6 +2318,9 @@ export class CatsCompanyBot {
 
   private async resumeOneInterruptedTurn(candidate: InterruptedTurnCandidate): Promise<void> {
     const { sessionKey, topic } = candidate;
+    // Register before the attempt count so a throw between the two cannot make
+    // this session eligible for a second resume in the same process.
+    this.resumedInterruptedTurns.add(sessionKey);
     const attempts = noteResumeAttempt(sessionKey);
     if (attempts === 0 || attempts > INTERRUPTED_TURN_MAX_RESUME_ATTEMPTS) {
       Logger.info(`[${sessionKey}] 中断任务标记已失效或已达自动继续上限，不再重试`);
@@ -2355,6 +2381,11 @@ export class CatsCompanyBot {
     } catch (error: any) {
       Logger.warning(`[${sessionKey}] 中断恢复回合失败: ${error?.message || error}`);
     } finally {
+      // The resume turn does not create an ActiveConversationTask (it is a
+      // runtime observation, not a user turn), so nothing else clears the
+      // marker here. Retire it now: if this resume dies too, the shutdown path
+      // writes a fresh marker with the incremented attempt count.
+      this.clearInterruptedTurn(sessionKey);
       stopTypingHeartbeat();
       this.releaseSessionExecution(sessionKey);
     }
@@ -3404,6 +3435,16 @@ export class CatsCompanyBot {
     const completionBatch = this.subAgentCompletionBatches?.get(key);
     if (completionBatch?.timer) clearTimeout(completionBatch.timer);
     this.subAgentCompletionBatches?.delete(key);
+    // A blocked, kicked or disbanded conversation must never be auto-resumed:
+    // the group may be gone, so replaying the turn would post into a dead
+    // topic forever. stopSessionExecution() is the shared boundary for every
+    // one of those paths (user /stop, kick notice, disband notice, send
+    // blocked), which makes it the right place to retire the marker.
+    try {
+      stopResumingInterruptedTurn(key);
+    } catch (error: any) {
+      Logger.warning(`[${key}] 清除中断标记失败: ${error?.message || error}`);
+    }
     Logger.info(`[${key}] 停止边界已推进至 ${stopGeneration}，丢弃停止前排队消息`);
     const session = (this.sessionManager as any).get?.(key) ?? null;
     if (!session) {

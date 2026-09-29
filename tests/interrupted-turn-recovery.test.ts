@@ -242,6 +242,84 @@ describe('interrupted turn recovery', () => {
       'once the user replies there is nothing left to resume',
     );
   });
+
+  test('a disbanded or blocked group stops being resumable', async () => {
+    // handleGroupDisbandedNotice / handleMemberKickedNotice / send-blocked all
+    // funnel into stopSessionExecution(). If the marker survived, a restart
+    // would keep posting the resume turn into a topic the bot no longer owns.
+    const { markInterruptedTurn, stopResumingInterruptedTurn, collectInterruptedTurns } = loadModules();
+    const key = 'cc_group:grp_disbanded';
+
+    markInterruptedTurn(key, { topic: 'grp_disbanded', reason: 'connector-shutdown' });
+    assert.equal(
+      collectInterruptedTurns({
+        stateDir: path.join(testRoot, 'data', 'session-state'),
+        maxAgeMs: 30 * 60_000,
+        maxAttempts: 2,
+      }).length,
+      1,
+    );
+
+    // Mirrors what stopSessionExecution() does on kick / disband / send-blocked.
+    stopResumingInterruptedTurn(key);
+
+    assert.deepStrictEqual(
+      collectInterruptedTurns({
+        stateDir: path.join(testRoot, 'data', 'session-state'),
+        maxAgeMs: 30 * 60_000,
+        maxAttempts: 2,
+      }),
+      [],
+      'a dead topic must never be auto-resumed',
+    );
+  });
+
+  test('a wiped conversation stops being resumable', async () => {
+    // /clear leaves the session file in place, so the marker is the only thing
+    // that would drag a resume turn into the history the user just erased.
+    const { markInterruptedTurn, clearInterruptedTurn, collectInterruptedTurns } = loadModules();
+    const key = 'cc_group:grp_cleared';
+
+    markInterruptedTurn(key, { topic: 'grp_cleared', reason: 'oom-kill' });
+    clearInterruptedTurn(key);
+
+    assert.deepStrictEqual(
+      collectInterruptedTurns({
+        stateDir: path.join(testRoot, 'data', 'session-state'),
+        maxAgeMs: 30 * 60_000,
+        maxAttempts: 2,
+      }),
+      [],
+    );
+  });
+
+  test('the attempt budget bounds a kill-resume-kill loop', async () => {
+    // The real OOM loop: the resume turn itself exhausts memory, the process
+    // dies again, and a fresh marker is written. Without a persistent counter
+    // the worker would keep restarting into the same crash forever.
+    const { markInterruptedTurn, noteResumeAttempt, collectInterruptedTurns } = loadModules();
+    const key = 'cc_group:grp_oom_loop';
+    const scan = () => collectInterruptedTurns({
+      stateDir: path.join(testRoot, 'data', 'session-state'),
+      maxAgeMs: 30 * 60_000,
+      maxAttempts: 2,
+    });
+
+    // The process died mid-turn; the shutdown path wrote the first marker.
+    markInterruptedTurn(key, { topic: 'grp_oom_loop', reason: 'oom-kill' });
+
+    let resumes = 0;
+    for (let cycle = 1; cycle <= 5; cycle += 1) {
+      if (scan().length === 0) break;
+      resumes += 1;
+      noteResumeAttempt(key);
+      // The resume turn dies again and the shutdown path rewrites the marker.
+      markInterruptedTurn(key, { topic: 'grp_oom_loop', reason: 'oom-kill' });
+    }
+
+    assert.equal(resumes, 2, 'exactly the budget may be spent, then the loop must stop');
+    assert.deepStrictEqual(scan(), [], 'an exhausted marker is no longer resumable');
+  });
 });
 
 function loadModules(): any {
@@ -255,6 +333,7 @@ function loadModules(): any {
   return {
     markInterruptedTurn: recovery.markInterruptedTurn,
     clearInterruptedTurn: recovery.clearInterruptedTurn,
+    stopResumingInterruptedTurn: recovery.stopResumingInterruptedTurn,
     noteResumeAttempt: recovery.noteResumeAttempt,
     collectInterruptedTurns: recovery.collectInterruptedTurns,
     SessionStore: require('../src/utils/session-store').SessionStore,

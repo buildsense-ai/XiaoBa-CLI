@@ -90,6 +90,19 @@ export function clearInterruptedTurn(sessionKey: string): boolean {
 }
 
 /**
+ * Retires the marker when the conversation itself went away: the bot was
+ * kicked, the group was disbanded, send attempts are being rejected, or the
+ * user wiped the history.
+ *
+ * This is deliberately a separate name from clearInterruptedTurn() so the call
+ * sites document *why* the resume is being cancelled — auto-resuming into a
+ * dead topic would post into a conversation the bot no longer owns.
+ */
+export function stopResumingInterruptedTurn(sessionKey: string): boolean {
+  return clearInterruptedTurn(sessionKey);
+}
+
+/**
  * Counts one automatic resumption and returns the new attempt count. Returns 0
  * when there is no marker to count against.
  */
