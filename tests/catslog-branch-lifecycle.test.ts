@@ -21,6 +21,11 @@ function call(id: string, name: string, args: unknown): ToolCall {
   };
 }
 
+interface BranchQuery {
+  queryText?: string;
+  sources?: string[];
+}
+
 class BranchOnlyMemory implements CatsLogMemoryBackend {
   branchQueries: BranchQuery[] = [];
   branchResponse: CatscoBranchResponse = {
@@ -59,12 +64,11 @@ class BranchOnlyMemory implements CatsLogMemoryBackend {
   }
 }
 
-interface BranchQuery {
-  queryText?: string;
-}
-
-class BranchEvidenceAI {
+/** Pass 1: assess recall. Pass 2: finish citing an observed remote ref. */
+class AssessThenCiteAI implements ToolCallPlan {
   calls = 0;
+
+  constructor(private readonly finishArgs: Record<string, unknown>) {}
 
   isToolCallingSupported(): boolean {
     return true;
@@ -72,181 +76,86 @@ class BranchEvidenceAI {
 
   async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
     this.calls++;
-    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-    if (!lastTool) {
+    if (this.calls === 1) {
       return {
         content: null,
-        toolCalls: [call('branch-1', 'catslog_branch', {
+        toolCalls: [call('assess-1', 'assess_memory_need', {
+          action: 'recall',
           query_text: 'upload migration rollback',
-          sources: ['memory', 'skill'],
-        })],
-        usage,
-      };
-    }
-    if (this.calls === 2) {
-      return {
-        content: null,
-        toolCalls: [call('finish-1', 'finish_memory_search', {
-          summary: 'Branch evidence locates the rollback decision in a prior session.',
-          refs: ['stream-review#12'],
-          delivery: 'context',
-        })],
-        usage,
-      };
-    }
-    return { content: null, toolCalls: [], usage };
-  }
-}
-
-class FabricatedRefAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls++;
-    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-    if (!lastTool) {
-      return {
-        content: null,
-        toolCalls: [call('branch-1', 'catslog_branch', { query_text: 'rollback' })],
-        usage,
-      };
-    }
-    // stream-fabricated#99 never appeared in any tool result.
-    return {
-      content: null,
-      toolCalls: [call('finish-1', 'finish_memory_search', {
-        summary: 'This citation was never observed.',
-        refs: ['stream-fabricated#99'],
-      })],
-      usage,
-    };
-  }
-}
-
-class AuditDeliveryAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls++;
-    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-    if (!lastTool) {
-      return {
-        content: null,
-        toolCalls: [call('branch-1', 'catslog_branch', { query_text: 'review checklist' })],
-        usage,
-      };
-    }
-    return {
-      content: null,
-      toolCalls: [call('finish-1', 'finish_memory_search', {
-        summary: '保留这条审计证据，但不要打扰当前主 agent 上下文。',
-        refs: ['catslog:skill:review-checklist@2'],
-        inject: false,
-        delivery: 'audit',
-      })],
-      usage,
-    };
-  }
-}
-
-class OverProbingAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls++;
-    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-    if (lastTool && String(lastTool.content).includes('exhausted')) {
-      return {
-        content: null,
-        toolCalls: [call('finish-1', 'finish_memory_search', {
-          summary: '远端探针预算耗尽，用已观测 refs 收尾。',
-          refs: ['stream-review#12'],
-          delivery: 'context',
+          keywords: ['rollback'],
+          sources: ['agent_memory', 'skill'],
         })],
         usage,
       };
     }
     return {
       content: null,
-      toolCalls: [call(`branch-${this.calls}`, 'catslog_branch', { query_text: `probe ${this.calls}` })],
+      toolCalls: [call('finish-1', 'finish_memory_search', this.finishArgs)],
       usage,
     };
   }
 }
 
-class ParallelProbeBackend implements CatsLogMemoryBackend {
-  events: string[] = [];
-  branchQueries: string[] = [];
+interface ToolCallPlan {
+  calls: number;
+  isToolCallingSupported(): boolean;
+  chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse>;
+}
 
-  async branch(query: BranchQuery): Promise<CatscoBranchResponse> {
-    const marker = String(query.queryText || 'q');
-    this.branchQueries.push(marker);
-    this.events.push(`start:${marker}`);
-    await new Promise(resolve => setTimeout(resolve, marker === 'slow-probe' ? 150 : 10));
-    this.events.push(`end:${marker}`);
-    return {
-      content_trust: 'untrusted_branch_evidence',
-      branches: [{
-        source: 'session',
-        status: 'ok',
-        items: [{
-          source: 'session',
-          ref: `stream-${marker}#1`,
-          kind: 'session_turn',
-          text: `evidence for ${marker}`,
-          score_hint: 0.5,
-        }],
-      }],
-    };
+class FabricatedRefAI extends AssessThenCiteAI {
+  // stream-fabricated#99 never appeared in any evidence.
+  constructor() {
+    super({
+      summary: 'This citation was never observed.',
+      refs: ['stream-fabricated#99'],
+      delivery: 'context',
+    });
   }
 }
 
-class ParallelProbeAI {
-  calls: Message[][] = [];
+class AuditDeliveryAI extends AssessThenCiteAI {
+  constructor() {
+    super({
+      summary: '保留这条审计证据，但不要打扰当前主 agent 上下文。',
+      refs: ['catslog:skill:review-checklist@2'],
+      inject: false,
+      delivery: 'audit',
+    });
+  }
+}
 
+class ContextDeliveryAI extends AssessThenCiteAI {
+  constructor() {
+    super({
+      summary: 'Branch evidence locates the rollback decision in a prior session.',
+      refs: ['stream-review#12'],
+      delivery: 'context',
+    });
+  }
+}
+
+class SkipDiscardAI {
   isToolCallingSupported(): boolean {
     return true;
   }
 
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls.push(JSON.parse(JSON.stringify(messages)));
-    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-    if (!lastTool) {
-      return {
-        content: null,
-        toolCalls: [
-          call('probe-slow', 'catslog_branch', { query_text: 'slow-probe' }),
-          call('probe-fast', 'catslog_branch', { query_text: 'fast-probe' }),
-        ],
-        usage,
-      };
-    }
+  async chat(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
     return {
       content: null,
-      toolCalls: [call('finish-par', 'finish_memory_search', {
-        summary: '两条并行探针都有结果。',
-        refs: ['stream-slow-probe#1', 'stream-fast-probe#1'],
-        delivery: 'context',
+      toolCalls: [call('assess-1', 'assess_memory_need', {
+        action: 'skip',
+        reason: '闲聊，无新增记忆价值。',
       })],
       usage,
     };
   }
 }
 
-class TailFinishAI {
+class StrayTextAI {
   toolNamesPerTurn: string[][] = [];
+  calls = 0;
+
+  constructor(private readonly tailSummary: string) {}
 
   isToolCallingSupported(): boolean {
     return true;
@@ -255,11 +164,12 @@ class TailFinishAI {
   async chat(_messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
     const names = tools?.map(tool => tool.name) || [];
     this.toolNamesPerTurn.push(names);
+    this.calls++;
     if (names.length === 1 && names[0] === 'finish_memory_search') {
       return {
         content: null,
         toolCalls: [call('finish-tail', 'finish_memory_search', {
-          summary: '预算耗尽，仅保留审计证据。',
+          summary: this.tailSummary,
           refs: ['stream-review#12'],
           inject: false,
           delivery: 'audit',
@@ -268,55 +178,6 @@ class TailFinishAI {
       };
     }
     return { content: '仍在检索。', toolCalls: [], usage };
-  }
-}
-
-class ToolCapAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls++;
-    const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-    if (lastTool && String(lastTool.content).includes('exhausted')) {
-      return {
-        content: null,
-        toolCalls: [call('finish-cap', 'finish_memory_search', {
-          summary: '工具调用预算耗尽，收尾。',
-          refs: ['stream-review#12'],
-          inject: false,
-          delivery: 'audit',
-        })],
-        usage,
-      };
-    }
-    return {
-      content: null,
-      toolCalls: [call(`search-${this.calls}`, 'memory_search', { keywords: ['rollback'] })],
-      usage,
-    };
-  }
-}
-
-class DiscardAI {
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    return {
-      content: null,
-      toolCalls: [call('finish-1', 'finish_memory_search', {
-        summary: '闲聊，无新增记忆价值。',
-        refs: [],
-        inject: false,
-        delivery: 'discard',
-      })],
-      usage,
-    };
   }
 }
 
@@ -362,7 +223,7 @@ describe('branch CatsLog lifecycle', () => {
   test('publishes observed branch evidence to parent context', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const backend = new BranchOnlyMemory();
-    const ai = new BranchEvidenceAI();
+    const ai = new ContextDeliveryAI();
     const handle = startMemorySidecarBranch({
       sessionKey: 'branch-evidence-context',
       input: 'find the rollback decision',
@@ -376,8 +237,10 @@ describe('branch CatsLog lifecycle', () => {
 
     await handle.done;
 
+    assert.equal(ai.calls, 2);
     assert.equal(backend.branchQueries.length, 1);
     assert.equal(backend.branchQueries[0].queryText, 'upload migration rollback');
+    assert.deepEqual(backend.branchQueries[0].sources, ['agent_memory', 'skill']);
     const observations = queue.drain();
     assert.equal(observations.length, 1);
     const injected = JSON.parse(observations[0].formattedContent || '');
@@ -385,8 +248,8 @@ describe('branch CatsLog lifecycle', () => {
     const logs = readBranchLogs(testRoot);
     assert.match(logs, /published_observation/);
     assert.doesNotMatch(logs, /unobserved_refs_audit_only/);
-    // The evidence body stays out of the published observation; raw tool
-    // results remain visible (redacted) in the branch transcript log only.
+    // The evidence body stays out of the published observation; the evidence
+    // pack remains visible (redacted) in the branch transcript log only.
     const publishedLine = logs.split('\n').find(line => line.includes('"event_type":"published_observation"')) || '';
     assert.equal(publishedLine.includes('untrusted branch evidence body'), false);
   });
@@ -435,37 +298,6 @@ describe('branch CatsLog lifecycle', () => {
     assert.match(logs, /catslog:skill:review-checklist@2/);
   });
 
-  test('caps catslog_branch at two executions and still finishes via observed refs', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const backend = new BranchOnlyMemory();
-    const ai = new OverProbingAI();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'remote-probe-cap',
-      input: 'find the rollback decision',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: ai as any,
-      queue,
-      catslogMemory: backend,
-      logEnabled: true,
-    });
-
-    await handle.done;
-
-    // The 3rd+ calls never reach the server; the loop still finishes.
-    assert.equal(backend.branchQueries.length, 2);
-    assert.equal(ai.calls, 4);
-    const observations = queue.drain();
-    assert.equal(observations.length, 1);
-    const injected = JSON.parse(observations[0].formattedContent || '');
-    assert.deepEqual(injected.refs, ['stream-review#12']);
-    const logs = readBranchLogs(testRoot);
-    assert.match(logs, /remote_probe_budget_exhausted/);
-    assert.match(logs, /published_observation/);
-    // The budget-exhausted payload is model-visible in the transcript.
-    assert.match(logs, /remote_probe_budget/);
-  });
-
   test('discards a chitchat branch without queueing anything', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const handle = startMemorySidecarBranch({
@@ -473,7 +305,7 @@ describe('branch CatsLog lifecycle', () => {
       input: '今天天气不错',
       recentMessages: [],
       workingDirectory: testRoot,
-      aiService: new DiscardAI() as any,
+      aiService: new SkipDiscardAI() as any,
       queue,
       catslogMemory: new BranchOnlyMemory(),
       logEnabled: true,
@@ -486,6 +318,34 @@ describe('branch CatsLog lifecycle', () => {
   });
 
   test('offers a finish-only tail after the pass budget, then stops', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new StrayTextAI('预算耗尽，仅保留审计证据。');
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'finish-only-tail',
+      input: 'find the rollback decision',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: new BranchOnlyMemory(),
+      logEnabled: true,
+      maxTurnsPerPass: 1,
+      maxPasses: 1,
+    });
+
+    await handle.done;
+
+    // Pass 1 carries the assess surface; the reserved tail collapses to finish.
+    assert.deepEqual(ai.toolNamesPerTurn[0], ['assess_memory_need']);
+    assert.deepEqual(ai.toolNamesPerTurn[1], ['finish_memory_search']);
+    // Audit delivery keeps the observation out of the parent queue.
+    assert.equal(queue.drain().length, 0);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /轮次预算已用尽/);
+    assert.match(logs, /audited_observation/);
+  });
+
+  test('converges to the reserved tail after repeated stray passes', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const ai = new BudgetExhaustingAI();
     const handle = startMemorySidecarBranch({
@@ -511,94 +371,104 @@ describe('branch CatsLog lifecycle', () => {
     assert.match(logs, /finish_memory_search/);
   });
 
-  test('executes parallel tool calls concurrently and maps results back in order', async () => {
+  test('mechanical retrieval fans out remotely and locally, expanding top local turns', async () => {
+    // Local lane: five hits so the bounded expansion (top 3) is observable.
+    const sessionDir = path.join(testRoot, 'logs', 'sessions', 'chat', '2026-06-16');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const lines: string[] = [];
+    for (let ordinal = 1; ordinal <= 5; ordinal++) {
+      lines.push(JSON.stringify({
+        entry_type: 'turn',
+        turn: ordinal,
+        timestamp: `2026-06-16T10:0${ordinal - 1}:00.000Z`,
+        session_id: 'chat:demo',
+        session_type: 'chat',
+        user: { text: `rollback_note_${ordinal} about the upload migration` },
+        assistant: { text: `decision ${ordinal}`, tool_calls: [] },
+        tokens: { prompt: 1, completion: 1 },
+      }));
+    }
+    fs.writeFileSync(path.join(sessionDir, 'demo.jsonl'), lines.join('\n') + '\n', 'utf-8');
+
+    const ai = {
+      calls: [] as Message[][],
+      isToolCallingSupported: () => true,
+      async chat(messages: Message[]): Promise<ChatResponse> {
+        this.calls.push(JSON.parse(JSON.stringify(messages)));
+        if (this.calls.length === 1) {
+          return {
+            content: null,
+            toolCalls: [call('assess-1', 'assess_memory_need', {
+              action: 'recall',
+              query_text: 'upload migration rollback',
+              keywords: ['upload', 'migration'],
+            })],
+            usage,
+          };
+        }
+        const pack = JSON.parse(
+          [...messages].reverse().find(message => (
+            message.role === 'user' && String(message.content).includes('evidence_pack')
+          ))?.content as string,
+        );
+        const refs = [
+          ...pack.evidence_pack.remote_branch.branches.flatMap((branch: any) => branch.items.map((item: any) => item.ref)),
+          ...pack.evidence_pack.local_matches.map((match: any) => match.ref),
+        ];
+        return {
+          content: null,
+          toolCalls: [call('finish-1', 'finish_memory_search', {
+            summary: 'Remote branch evidence and local hits both describe the rollback decision.',
+            refs: [refs[0], refs[1], ...pack.evidence_pack.local_matches.slice(0, 2).map((m: any) => m.ref)],
+            delivery: 'context',
+          })],
+          usage,
+        };
+      },
+    };
+
     const queue = new InMemorySyntheticObservationQueue();
-    const backend = new ParallelProbeBackend();
-    const ai = new ParallelProbeAI();
+    const backend = new BranchOnlyMemory();
     const handle = startMemorySidecarBranch({
-      sessionKey: 'parallel-dispatch',
+      sessionKey: 'parallel-retrieval',
       input: 'find the rollback decision',
       recentMessages: [],
       workingDirectory: testRoot,
       aiService: ai as any,
       queue,
       catslogMemory: backend,
-      logEnabled: false,
+      logEnabled: true,
     });
 
     await handle.done;
 
-    // Both probes ran concurrently: the fast probe started before the slow
-    // probe finished (serial dispatch would order them strictly).
-    const startFast = backend.events.indexOf('start:fast-probe');
-    const endSlow = backend.events.indexOf('end:slow-probe');
-    assert.ok(startFast !== -1 && endSlow !== -1);
-    assert.ok(startFast < endSlow, `expected overlapping dispatch: ${backend.events.join(',')}`);
-
-    // Results are keyed to the right tool_use ids despite completion order.
-    const toolMessages = ai.calls[1].filter(message => message.role === 'tool') as Array<{ tool_call_id: string; content: string }>;
-    assert.equal(toolMessages.length, 2);
-    const slow = toolMessages.find(message => message.tool_call_id === 'probe-slow');
-    const fast = toolMessages.find(message => message.tool_call_id === 'probe-fast');
-    assert.match(String(slow?.content), /evidence for slow-probe/);
-    assert.match(String(fast?.content), /evidence for fast-probe/);
+    // Both mechanical lanes ran: the remote query was issued once and local
+    // matches were attached to the same evidence pack.
+    assert.equal(backend.branchQueries.length, 1);
+    assert.equal(ai.calls.length, 2);
+    const pack = JSON.parse(
+      [...ai.calls[1]].reverse().find(message => (
+        message.role === 'user' && String(message.content).includes('evidence_pack')
+      ))?.content as string,
+    );
+    assert.equal(pack.evidence_pack.remote_branch.branches.length, 2);
+    assert.ok(pack.evidence_pack.local_matches.length >= 2);
+    // Top-3 bounded expansion of the local hits, most recent first.
+    assert.equal(pack.evidence_pack.local_turns.length, 3);
 
     const observations = queue.drain();
     assert.equal(observations.length, 1);
     const injected = JSON.parse(observations[0].formattedContent || '');
-    assert.deepEqual(injected.refs, ['stream-slow-probe#1', 'stream-fast-probe#1']);
-  });
-
-  test('collapses the tool surface to finish_memory_search on the reserved tail pass', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const ai = new TailFinishAI();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'finish-only-tail',
-      input: 'find the rollback decision',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: ai as any,
-      queue,
-      catslogMemory: new BranchOnlyMemory(),
-      logEnabled: true,
-      maxTurnsPerPass: 1,
-      maxPasses: 1,
-    });
-
-    await handle.done;
-
-    assert.equal(ai.toolNamesPerTurn[0].length, 5);
-    assert.deepEqual(ai.toolNamesPerTurn[1], ['finish_memory_search']);
-    // Audit delivery keeps the observation out of the parent queue.
-    assert.equal(queue.drain().length, 0);
+    assert.equal(injected.refs.length, 4);
+    assert.deepEqual(injected.refs, [
+      'stream-review#12',
+      'catslog:skill:review-checklist@2',
+      'chat/2026-06-16/demo.jsonl#5',
+      'chat/2026-06-16/demo.jsonl#4',
+    ]);
     const logs = readBranchLogs(testRoot);
-    assert.match(logs, /轮次预算已用尽/);
-    assert.match(logs, /audited_observation/);
-  });
-
-  test('gates non-finish tools after the run-wide tool-call bound and still finishes', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const ai = new ToolCapAI();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'tool-call-cap',
-      input: 'find the rollback decision',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: ai as any,
-      queue,
-      logEnabled: true,
-      maxTurnsPerPass: 12,
-      maxPasses: 1,
-    });
-
-    await handle.done;
-
-    // 8 executed searches + 1 gated call + 1 finish turn.
-    assert.equal(ai.calls, 10);
-    assert.equal(queue.drain().length, 0);
-    const logs = readBranchLogs(testRoot);
-    assert.match(logs, /tool_budget_exhausted/);
-    assert.match(logs, /audited_observation/);
+    assert.match(logs, /mechanical_retrieval/);
+    assert.doesNotMatch(logs, /unobserved_refs_audit_only/);
   });
 
   test('redacts capability material from every branch log event', async () => {

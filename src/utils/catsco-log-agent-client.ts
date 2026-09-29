@@ -329,9 +329,14 @@ export interface CatscoBranchItem {
   score_hint?: number;
 }
 
+/** Server-side per-branch evidence verdict (v1.3). Absent on the wire → unknown. */
+export type CatscoEvidenceVerdict = 'none' | 'weak' | 'strong' | 'unknown';
+
 export interface CatscoBranchResult {
   source?: string;
   status?: string;
+  /** Typed as string: the enum is enforced client-side via normalizeEvidenceVerdict. */
+  evidence_verdict?: string;
   items?: CatscoBranchItem[];
   elapsed_ms?: number;
   truncated?: boolean;

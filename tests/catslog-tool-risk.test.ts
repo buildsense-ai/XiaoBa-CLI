@@ -15,13 +15,10 @@ function context(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionCo
 }
 
 describe('CatsLog tool risk classification', () => {
-  test('the fused branch fan-out stays low risk without confirmation', () => {
+  test('the memory pipeline tools stay low risk without confirmation', () => {
     for (const toolName of [
-      'catslog_branch',
+      'assess_memory_need',
       'finish_memory_search',
-      'memory_search',
-      'memory_read_turn',
-      'memory_neighbors',
     ]) {
       const decision = classifyLocalToolRisk(toolName, {}, context());
       assert.equal(decision.requiresConfirmation, false, toolName);
@@ -29,11 +26,15 @@ describe('CatsLog tool risk classification', () => {
     }
   });
 
-  test('removed per-source CatsLog tools fall back to the default confirmation gate', () => {
-    // The thin v1 branch never exposes these names; if something re-registers
+  test('v1.2 loop tools and removed per-source CatsLog tools fall back to the default confirmation gate', () => {
+    // The v1.3 pipeline no longer exposes these names; if something re-registers
     // them without re-classifying, they must not silently ride the low-risk
     // read list or the old external-write carve-out.
     for (const toolName of [
+      'memory_search',
+      'memory_read_turn',
+      'memory_neighbors',
+      'catslog_branch',
       'catslog_skill_memory',
       'catslog_skill_catalog',
       'catslog_skill_graph',

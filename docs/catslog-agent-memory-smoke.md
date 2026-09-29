@@ -57,9 +57,11 @@ CATSLOG_MEMORY_ENABLED=true
 ```
 
 The autonomous branch never emits outcome feedback and never writes notes; the
-thin v1 surface is `memory_search`/`memory_read_turn`/`memory_neighbors`, one
-`catslog_branch` remote probe, and `finish_memory_search`. Explicit Skill
-outcome reports stay on the `catsco catslog outcome` CLI command path.
+thin v1.3 surface is a fixed two-call pipeline: `assess_memory_need` decides
+recall vs skip, retrieval runs mechanically (remote `catslog` branch fan-out +
+local log search in parallel, top local turns auto-expanded), and
+`finish_memory_search` closes the run. Explicit Skill outcome reports stay on
+the `catsco catslog outcome` CLI command path.
 
 ## Branch lifecycle smoke
 
