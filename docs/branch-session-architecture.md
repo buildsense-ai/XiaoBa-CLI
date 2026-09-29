@@ -42,45 +42,57 @@ synthetic observations back to the parent runner. A concrete branch only needs t
 branches should extend `ObservationBranchSession` instead of reimplementing publish, suppress,
 drop, and cancel bookkeeping.
 
-## Autonomous branch and CatsLog seam (thin v1)
+## Autonomous branch and CatsLog seam (server-first)
 
 The memory branch is an autonomous cerebellum, not a synchronous subroutine of the main agent.
 The main runner starts it and may consume a queued observation on a later turn; it does not pass
 CatsLog tokens or wait for a remote result. The division of labor is fixed:
 
 - **The branch owns query policy** — whether to query at all (chitchat finishes immediately with
-  `delivery:discard`), which local log refs to read, how to compose the remote `query_text` and
-  scope hints, when to spend the single allowed refine, and how to write the task-aware summary
-  and choose delivery. This is model work: the branch sees the input plus recent messages. The
-  refine budget is also mechanical: `catslog_branch` is capped at two executions per run
-  (`MAX_CATSLOG_BRANCH_CALLS_PER_RUN`); past the cap the tool returns a bounded
-  budget-exhausted result telling the model to finish, and the call never reaches the server
-  (logged as `remote_probe_budget_exhausted`).
-- **Convergence is mechanical (v1.2)** — multiple tool calls emitted in one model turn execute
-  concurrently (branch-only runner option; results stay keyed to their tool_use ids). All
-  non-finish tool executions in a run count against `MAX_NON_FINISH_TOOL_CALLS_PER_RUN` (8);
-  past the bound — or on the reserved finish-only tail pass beyond `maxPasses` — the tool
-  surface collapses to `finish_memory_search` and gated calls return the same bounded
-  budget-exhausted result (`tool_budget_exhausted` log event). A bounded branch therefore
-  converges to a finish payload (context/audit/discard) instead of dying at its deadline with
-  nothing; the wall-clock deadline itself stays the last-resort backstop.
-- **The server owns retrieval execution** — the fused `/catsco/agent/branch` endpoint performs
-  multi-source fan-out (agent memory, session graph, skills), scope fencing, and reranking in
-  roughly ten milliseconds. Client-side multi-step exploration across per-source endpoints
-  duplicates server work and is deliberately gone.
+  `delivery:discard`), how to compose the remote `query_text`, the session-query OR `keywords`,
+  and optional `sources`, when the verdict gate should skip refine, and how to write the
+  task-aware summary and choose delivery. This is model work: the branch sees the input plus
+  recent completed turns.
+- **Convergence is mechanical (two-call pipeline)** — pass 1 surfaces only `assess_memory_need`
+  (`pause_turn`); a `recall` decision triggers the mechanical retrieval stage with no model
+  calls; pass 2 surfaces only `finish_memory_search`. A reserved finish-only tail pass beyond
+  `maxPasses` guarantees the run always converges to a finish payload; the wall-clock deadline
+  stays the last-resort backstop.
+- **The server owns retrieval execution** — one fused `/catsco/agent/branch` fan-out
+  (agent memory, session graph, skills; scope fencing, reranking, per-branch evidence verdict)
+  and one device-bound `/catsco/agent/query/v1/sessions` query run in parallel. The session
+  query sends `search_any`: OR over at most 8 distinct literal keywords (the client caps and
+  visibly reports truncation; it never silently trims). The server redacts records and binds
+  them to the capability's visible memory scopes (shared + own subject); the wire type has no
+  UID selector by construction.
+
+**Historical sessions come only from the server.** The local JSONL log tree is never read by
+the branch: local files carry no trustworthy per-agent scope labels, and the device-bound query
+only admits shared + own-private scopes, so any local lane would widen capability relative to
+the server (including a sibling agent's private material). The current conversational context
+is already available to the branch via the assess prompt (`current_user_input` +
+`recent_completed_turns`) — no disk I/O for that.
+
+**Recency gap (deliberate, documented):** sessions not yet uploaded and projected on the server
+are invisible to the branch until they sync. A successful session query means the returned
+records are complete for the device's visible scopes at query time; it is **not** a claim that
+local files are authorized, indexed, or safe to read. If a lane fails, the evidence pack carries
+a typed `unavailable` status and the other lane's evidence still flows — there is no local-file
+fallback. Local replay of unsynced sessions is intentionally absent until per-session scope
+provenance exists.
 
 The principle: tools are for *acting*; retrieval is a *query*. The branch stays an agent loop,
-but a thin one. A typical trace is: read context → either finish immediately (discard) or make
-one `catslog_branch` call → write the summary → finish.
+but a thin one. A typical trace is: read context → either finish immediately (discard) or let
+the mechanical stage fetch remote evidence → write the summary → finish.
 
 The branch tool surface in `MemorySearchBranchSession.buildTools()` is exactly:
 
-- `memory_search`, `memory_read_turn`, `memory_neighbors` — local log recency lane;
-- `catslog_branch` — the only remote tool (server-side fused probe);
+- `assess_memory_need` — the pass-1 decision contract;
 - `finish_memory_search` — the output contract.
 
 The former fat surface (per-source catalog/graph/skill-memory/session recall/query tools plus
-outcome and note writes) is deleted from the branch. The Skills catalog and outcome routes
+outcome and note writes) and the v1.3 local log lane (`memory_search`/`memory_read_turn`/
+`memory_neighbors`) are all deleted from the branch. The Skills catalog and outcome routes
 remain available to the explicit `catsco catslog` CLI commands through the same provider.
 
 `CatsLogObservedRefsTracker` is the one remaining guard at the tool seam (anti-hallucination):

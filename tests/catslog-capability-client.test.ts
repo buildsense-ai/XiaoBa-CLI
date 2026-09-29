@@ -43,6 +43,7 @@ describe('CatsLog capability client', () => {
     });
     await client.readSkillGraph({ token: 'skill-token', handle: 'release#stable', depth: 1, includeEvidence: true });
     await client.querySessions({ token: 'skill-token', sessionId: 's-1', latest: true, sessionSummary: true, limit: 5 });
+    await client.querySessions({ token: 'skill-token', searchAny: ['rollback', 'deploy', 'nginx'], latest: true, limit: 20 });
     await client.retrieveSkillMemory({ token: 'skill-token', memoryUrl: '/catsco/agent/memory/retrieve', task: 'release', routeId: 'r-1', hop: 1, edgeKey: 'e-1' });
     await client.recallMemory({ token: 'skill-token', memoryRecallUrl: '/catsco/agent/memory/recall', search: 'rollback', includeNotes: true });
     await client.reportSkillOutcome({
@@ -55,16 +56,20 @@ describe('CatsLog capability client', () => {
       content: 'owner', includeContent: false, sourceRefs: ['stream#1'], requestId: 'req-1',
     });
 
-    assert.equal(requests.length, 7);
+    assert.equal(requests.length, 8);
     assert.match(requests[0].url, /\/skills\?search=release&include_content=true&include_trace=summary&limit=3$/);
     assert.match(requests[1].url, /\/skill-graph\?handle=release%23stable&depth=1&include_evidence=true$/);
     assert.equal(requests[2].init.method, 'POST');
+    assert.deepEqual(JSON.parse(String(requests[2].init.body)), {
+      session_id: 's-1', latest: true, session_summary: true, limit: 5,
+    });
     assert.equal(requests[3].init.method, 'POST');
     assert.equal(requests[4].init.method, 'POST');
-    assert.match(requests[5].url, /\/skills\/release%23stable\/outcomes$/);
-    assert.equal((requests[5].init.headers as Record<string, string>).Authorization, 'Bearer skill-token');
-    assert.equal((requests[6].init.headers as Record<string, string>).Authorization, 'Bearer write-token');
-    assert.deepEqual(JSON.parse(String(requests[5].init.body)), {
+    assert.equal(requests[5].init.method, 'POST');
+    assert.match(requests[6].url, /\/skills\/release%23stable\/outcomes$/);
+    assert.equal((requests[6].init.headers as Record<string, string>).Authorization, 'Bearer skill-token');
+    assert.equal((requests[7].init.headers as Record<string, string>).Authorization, 'Bearer write-token');
+    assert.deepEqual(JSON.parse(String(requests[6].init.body)), {
       revision: 3,
       outcome: 'failed',
       retrieval_receipt: 'receipt-opaque',
@@ -73,9 +78,34 @@ describe('CatsLog capability client', () => {
       edge_key: 'e-1',
       feedback: { code: 'outdated', summary: 'old', tags: ['release'] },
     });
-    assert.deepEqual(JSON.parse(String(requests[6].init.body)), {
+    assert.deepEqual(JSON.parse(String(requests[7].init.body)), {
       kind: 'fact', content: 'owner', source_refs: ['stream#1'], request_id: 'req-1', include_content: false,
     });
+  });
+
+  test('sends search_any OR keywords on the session query without any UID selector', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init: RequestInit = {}) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ records: [] }), { status: 200 });
+    }) as typeof fetch;
+    const client = new CatscoLogAgentClient('https://logs.example.test');
+    await client.querySessions({ token: 'skill-token', searchAny: ['rollback', 'nginx mount'], latest: true, limit: 20 });
+    await client.querySessions({ token: 'skill-token', searchAny: ['  ', ''], search: 'solo term' });
+
+    // OR keywords map to search_any verbatim (the client never silently
+    // trims); blank-only entries collapse away; no UID selector may be sent.
+    assert.deepEqual(bodies[0], { search_any: ['rollback', 'nginx mount'], latest: true, limit: 20 });
+    assert.deepEqual(bodies[1], { search: 'solo term' });
+    for (const body of bodies) {
+      assert.equal('uid' in body, false);
+      assert.equal('uids' in body, false);
+    }
+    await assert.rejects(
+      client.querySessions({ token: 'skill-token', searchAny: 'rollback' as any }),
+      /searchAny must be an array/,
+    );
+    assert.equal(bodies.length, 2);
   });
 
   test('sends required branch sources using server wire names, including legacy aliases', async () => {

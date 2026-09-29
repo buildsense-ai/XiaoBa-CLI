@@ -64,6 +64,17 @@ class BranchOnlyMemory implements CatsLogMemoryBackend {
   }
 }
 
+/** Backend fake with the device-bound session query lane. */
+class BranchAndSessionsMemory extends BranchOnlyMemory {
+  sessionQueries: Array<Record<string, unknown>> = [];
+  sessionResponse: unknown = { records: [] };
+
+  async querySessions(query: { searchAny?: string[]; latest?: boolean; limit?: number }): Promise<unknown> {
+    this.sessionQueries.push({ ...query });
+    return this.sessionResponse;
+  }
+}
+
 /** Pass 1: assess recall. Pass 2: finish citing an observed remote ref. */
 class AssessThenCiteAI implements ToolCallPlan {
   calls = 0;
@@ -371,25 +382,7 @@ describe('branch CatsLog lifecycle', () => {
     assert.match(logs, /finish_memory_search/);
   });
 
-  test('mechanical retrieval fans out remotely and locally, expanding top local turns', async () => {
-    // Local lane: five hits so the bounded expansion (top 3) is observable.
-    const sessionDir = path.join(testRoot, 'logs', 'sessions', 'chat', '2026-06-16');
-    fs.mkdirSync(sessionDir, { recursive: true });
-    const lines: string[] = [];
-    for (let ordinal = 1; ordinal <= 5; ordinal++) {
-      lines.push(JSON.stringify({
-        entry_type: 'turn',
-        turn: ordinal,
-        timestamp: `2026-06-16T10:0${ordinal - 1}:00.000Z`,
-        session_id: 'chat:demo',
-        session_type: 'chat',
-        user: { text: `rollback_note_${ordinal} about the upload migration` },
-        assistant: { text: `decision ${ordinal}`, tool_calls: [] },
-        tokens: { prompt: 1, completion: 1 },
-      }));
-    }
-    fs.writeFileSync(path.join(sessionDir, 'demo.jsonl'), lines.join('\n') + '\n', 'utf-8');
-
+  test('mechanical retrieval fans out branch and device-bound session queries into one evidence pack', async () => {
     const ai = {
       calls: [] as Message[][],
       isToolCallingSupported: () => true,
@@ -411,15 +404,14 @@ describe('branch CatsLog lifecycle', () => {
             message.role === 'user' && String(message.content).includes('evidence_pack')
           ))?.content as string,
         );
-        const refs = [
-          ...pack.evidence_pack.remote_branch.branches.flatMap((branch: any) => branch.items.map((item: any) => item.ref)),
-          ...pack.evidence_pack.local_matches.map((match: any) => match.ref),
-        ];
+        const remoteRefs = pack.evidence_pack.remote_branch.branches
+          .flatMap((branch: any) => (branch.items || []).map((item: any) => item.ref));
+        const sessionRefs = pack.evidence_pack.session_records.records.map((record: any) => record.ref);
         return {
           content: null,
           toolCalls: [call('finish-1', 'finish_memory_search', {
-            summary: 'Remote branch evidence and local hits both describe the rollback decision.',
-            refs: [refs[0], refs[1], ...pack.evidence_pack.local_matches.slice(0, 2).map((m: any) => m.ref)],
+            summary: 'Remote branch evidence and the device-scoped session records describe the rollback decision.',
+            refs: [remoteRefs[0], sessionRefs[0]],
             delivery: 'context',
           })],
           usage,
@@ -428,11 +420,32 @@ describe('branch CatsLog lifecycle', () => {
     };
 
     const queue = new InMemorySyntheticObservationQueue();
-    const backend = new BranchOnlyMemory();
+    const backend = new BranchAndSessionsMemory();
+    backend.sessionResponse = {
+      content_trust: 'untrusted_log_data',
+      records: [
+        {
+          ref: 'stream-migrate#5',
+          session_type: 'cli',
+          timestamp: '2026-06-16T10:04:00.000Z',
+          user: { text: 'upload migration rollback note' },
+          agent: { text: 'Decision: keep the migration rollback path warm.' },
+          tool_calls: [{ name: 'deploy', type: 'function' }],
+        },
+        {
+          ref: 'stream-migrate#9',
+          session_type: 'cli',
+          agent: { text: 'Follow-up: rollback verified.' },
+        },
+      ],
+    };
     const handle = startMemorySidecarBranch({
       sessionKey: 'parallel-retrieval',
       input: 'find the rollback decision',
-      recentMessages: [],
+      recentMessages: [
+        { role: 'user', content: 'recent context: the migration sync is still running' },
+        { role: 'assistant', content: 'recent context: acknowledged, monitoring it.' },
+      ],
       workingDirectory: testRoot,
       aiService: ai as any,
       queue,
@@ -442,9 +455,13 @@ describe('branch CatsLog lifecycle', () => {
 
     await handle.done;
 
-    // Both mechanical lanes ran: the remote query was issued once and local
-    // matches were attached to the same evidence pack.
+    // Both mechanical lanes ran in one stage: one branch query, one session
+    // query with the OR keywords and bounded limit.
     assert.equal(backend.branchQueries.length, 1);
+    assert.equal(backend.sessionQueries.length, 1);
+    assert.deepEqual(backend.sessionQueries[0].searchAny, ['upload', 'migration']);
+    assert.equal(backend.sessionQueries[0].latest, true);
+    assert.equal(backend.sessionQueries[0].limit, 20);
     assert.equal(ai.calls.length, 2);
     const pack = JSON.parse(
       [...ai.calls[1]].reverse().find(message => (
@@ -452,22 +469,26 @@ describe('branch CatsLog lifecycle', () => {
       ))?.content as string,
     );
     assert.equal(pack.evidence_pack.remote_branch.branches.length, 2);
-    assert.ok(pack.evidence_pack.local_matches.length >= 2);
-    // Top-3 bounded expansion of the local hits, most recent first.
-    assert.equal(pack.evidence_pack.local_turns.length, 3);
+    assert.equal(pack.evidence_pack.session_records.content_trust, 'untrusted_log_data');
+    assert.deepEqual(pack.evidence_pack.session_records.records.map((record: any) => record.ref), [
+      'stream-migrate#5',
+      'stream-migrate#9',
+    ]);
+    assert.match(pack.evidence_pack.session_records.records[0].agent.text, /rollback path warm/);
+
+    // The current conversational context is present in the assess prompt.
+    const firstUser = JSON.parse(ai.calls[0].find(message => message.role === 'user')?.content as string);
+    assert.equal(firstUser.current_user_input, 'find the rollback decision');
+    assert.equal(firstUser.recent_completed_turns.length, 1);
+    assert.match(firstUser.recent_completed_turns[0].user, /migration sync/);
 
     const observations = queue.drain();
     assert.equal(observations.length, 1);
     const injected = JSON.parse(observations[0].formattedContent || '');
-    assert.equal(injected.refs.length, 4);
-    assert.deepEqual(injected.refs, [
-      'stream-review#12',
-      'catslog:skill:review-checklist@2',
-      'chat/2026-06-16/demo.jsonl#5',
-      'chat/2026-06-16/demo.jsonl#4',
-    ]);
+    assert.deepEqual(injected.refs, ['stream-review#12', 'stream-migrate#5']);
     const logs = readBranchLogs(testRoot);
     assert.match(logs, /mechanical_retrieval/);
+    assert.match(logs, /"session_query":"ok"/);
     assert.doesNotMatch(logs, /unobserved_refs_audit_only/);
   });
 
@@ -512,9 +533,12 @@ describe('CatsLogObservedRefsTracker', () => {
         { source: 'graph', status: 'timeout', items: [{ ref: 'stream-review#12', score_hint: 0.6 }] },
       ],
     }));
-    tracker.recordToolResult('memory_search', JSON.stringify({
-      count: 1,
-      matches: [{ ref: 'chat/2026-01-01/session.jsonl#42', hits: ['rollback'] }],
+    tracker.recordToolResult('catslog_sessions', JSON.stringify({
+      content_trust: 'untrusted_log_data',
+      records: [
+        { ref: 'chat/2026-01-01/session.jsonl#42', session_type: 'chat' },
+        { ref: 'stream-legacy#7', session_type: 'cli' },
+      ],
     }));
     tracker.recordToolResult('catslog_branch', 'not-json-at-all');
     tracker.recordToolResult('finish_memory_search', JSON.stringify({ ok: true }));
@@ -525,7 +549,7 @@ describe('CatsLogObservedRefsTracker', () => {
     assert.deepEqual(tracker.unobservedRefs(['https://evil.example.test/log#1']), ['https://evil.example.test/log#1']);
     const snapshot = tracker.snapshot();
     assert.equal(snapshot.schema, 'catslog.branch.observed-refs.v1');
-    assert.equal(snapshot.observedRefs.length, 3);
+    assert.equal(snapshot.observedRefs.length, 4);
     assert.equal(JSON.stringify(snapshot).includes('untrusted branch evidence'), false);
   });
 });

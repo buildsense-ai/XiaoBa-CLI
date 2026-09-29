@@ -172,6 +172,67 @@ describe('CatsLog memory provider', () => {
     assert.deepEqual(calls, [{ url: '/catsco/agent/branch' }]);
   });
 
+  test('exposes the device-bound session query on the sessions_url capability', async () => {
+    const calls: Array<{ kind: string; token?: string; url?: string; query?: unknown }> = [];
+    const client: Partial<CatscoLogAgentClient> = {
+      bootstrap: async () => ({
+        ...bootstrapResponse('skill-sessions'),
+        sessions_url: '/catsco/agent/query/v1/sessions',
+      }),
+      querySessions: async input => {
+        calls.push({
+          kind: 'sessions',
+          token: input.token,
+          url: input.sessionsUrl,
+          query: stripCapability(input),
+        });
+        return { records: [] };
+      },
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => client as CatscoLogAgentClient,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+
+    await provider.querySessions({ searchAny: ['rollback', 'nginx'], latest: true, limit: 20 });
+
+    assert.deepEqual(calls, [{
+      kind: 'sessions',
+      token: 'skill-sessions',
+      url: '/catsco/agent/query/v1/sessions',
+      query: { searchAny: ['rollback', 'nginx'], latest: true, limit: 20 },
+    }]);
+    // Scope isolation by construction: the device read token is used (never
+    // the upload token) and no UID selector exists on the wire type.
+    assert.equal(calls[0].token, 'skill-sessions');
+    assert.notEqual(calls[0].token, 'upload-token-must-not-be-used-for-memory');
+    const query = calls[0].query as Record<string, unknown>;
+    assert.equal('uid' in query, false);
+    assert.equal('uids' in query, false);
+    const state = JSON.parse(fs.readFileSync(getCatscoLogAgentConfig(root, env).stateFilePath, 'utf8'));
+    assert.equal(state.sessionsUrl, '/catsco/agent/query/v1/sessions');
+  });
+
+  test('falls back to the default sessions URL when bootstrap omits sessions_url', async () => {
+    const calls: Array<{ url?: string }> = [];
+    const client: Partial<CatscoLogAgentClient> = {
+      bootstrap: async () => bootstrapResponse('skill-sessions-default'),
+      querySessions: async input => {
+        calls.push({ url: input.sessionsUrl });
+        return { records: [] };
+      },
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => client as CatscoLogAgentClient,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+
+    await provider.querySessions({ searchAny: ['anything'] });
+    assert.deepEqual(calls, [{ url: '/catsco/agent/query/v1/sessions' }]);
+  });
+
   test('fails closed when neither a capability nor a CatsCompany token exists', async () => {
     const noAuthEnv = { ...env };
     delete noAuthEnv.CATSCO_USER_TOKEN;
@@ -346,10 +407,11 @@ function fakeClient(
   return client as CatscoLogAgentClient;
 }
 
-function stripCapability(input: Record<string, unknown> & { token?: string; skillsUrl?: string; branchUrl?: string }): unknown {
+function stripCapability(input: Record<string, unknown> & { token?: string; skillsUrl?: string; sessionsUrl?: string; branchUrl?: string }): unknown {
   const clone = { ...input };
   delete clone.token;
   delete clone.skillsUrl;
+  delete clone.sessionsUrl;
   delete clone.branchUrl;
   delete clone.signal;
   delete clone.requireReceipt;

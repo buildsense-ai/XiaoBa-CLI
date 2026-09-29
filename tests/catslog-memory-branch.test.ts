@@ -82,7 +82,7 @@ class AssessThenFinishAI {
     return [
       ...(pack.evidence_pack?.remote_branch?.branches || [])
         .flatMap((branch: any) => (branch.items || []).map((item: any) => item.ref)),
-      ...(pack.evidence_pack?.local_matches || []).map((match: any) => match.ref),
+      ...(pack.evidence_pack?.session_records?.records || []).map((record: any) => record.ref),
     ].filter((ref: unknown) => typeof ref === 'string');
   }
 
@@ -169,6 +169,19 @@ class ToggleRemoteMemory extends RemoteEvidenceMemory {
 
   isAvailable(): boolean {
     return this.available;
+  }
+}
+
+/** Adds the device-bound session query lane to the branch fake. */
+class SessionQueryMemory extends RemoteEvidenceMemory {
+  sessionQueries: Array<Record<string, unknown>> = [];
+  sessionResponse: unknown = { records: [] };
+  sessionError: Error | null = null;
+
+  async querySessions(query: { searchAny?: string[]; latest?: boolean; limit?: number }): Promise<unknown> {
+    this.sessionQueries.push({ ...query });
+    if (this.sessionError) throw this.sessionError;
+    return this.sessionResponse;
   }
 }
 
@@ -368,30 +381,30 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     assert.equal(queue.drain().length, 1);
   });
 
-  test('remote failure degrades to local-only evidence instead of failing the run', async () => {
-    const sessionDir = path.join(testRoot, 'logs', 'sessions', 'chat', '2026-06-09');
-    fs.mkdirSync(sessionDir, { recursive: true });
+  test('session failure keeps branch evidence with a typed unavailable status and never scans local logs', async () => {
+    // Plant a local "hit" that matches the query: if any local lane existed,
+    // this file would be scanned and its ref would appear. It must not.
+    const foreignDir = path.join(testRoot, 'logs', 'sessions', 'chat', '2026-06-09');
+    fs.mkdirSync(foreignDir, { recursive: true });
     fs.writeFileSync(
-      path.join(sessionDir, 'demo.jsonl'),
+      path.join(foreignDir, 'demo.jsonl'),
       JSON.stringify({
-        entry_type: 'turn',
-        turn: 1,
-        timestamp: '2026-06-09T10:00:00.000Z',
-        session_id: 'chat:demo',
-        session_type: 'chat',
-        user: { text: 'release checklist: nginx mount rollback decision' },
+        entry_type: 'turn', turn: 1, timestamp: '2026-06-09T10:00:00.000Z',
+        session_id: 'chat:demo', session_type: 'chat',
+        user: { text: 'release checklist nginx mount rollback decision' },
         assistant: { text: 'Decision: keep the read-only mount.', tool_calls: [] },
-        tokens: { prompt: 1, completion: 1 },
       }) + '\n',
       'utf-8',
     );
 
     const queue = new InMemorySyntheticObservationQueue();
     const ai = new AssessThenFinishAI();
-    const backend = new RemoteEvidenceMemory();
+    const backend = new SessionQueryMemory();
     backend.branchShouldFail = true;
+    backend.sessionError = Object.assign(new Error('analysis_unavailable'), { status: 503 });
+    backend.sessionResponse = undefined as unknown as { records: [] };
     const handle = startMemorySidecarBranch({
-      sessionKey: 'remote-failure',
+      sessionKey: 'session-failure',
       input: 'find prior release notes',
       recentMessages: [],
       workingDirectory: testRoot,
@@ -403,25 +416,164 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
 
     await handle.done;
 
-    // The pipeline still ran both inferences; the failed remote lane just
-    // contributed nothing.
     assert.equal(ai.calls.length, 2);
-    const logs = readBranchLogs(testRoot);
-    assert.match(logs, /mechanical_retrieval/);
-    assert.match(logs, /branch endpoint down/);
     const pack = ai.evidencePackIn(ai.calls[1].messages);
-    assert.match(String(pack.evidence_pack.remote_branch.note), /branch endpoint down/);
-    // The local lane carried the run: the cited local ref was observed and
-    // published to parent context.
+    assert.match(String(pack.evidence_pack.session_records.note), /analysis_unavailable/);
+    assert.equal(pack.evidence_pack.session_records.status, 'unavailable');
+    // Scope isolation by construction: no local scan, no local evidence keys,
+    // and the planted foreign file never leaks into any message or log.
+    assert.equal('local_matches' in pack.evidence_pack, false);
+    assert.equal('local_turns' in pack.evidence_pack, false);
+    const allMessages = JSON.stringify(ai.calls);
+    assert.equal(allMessages.includes('demo.jsonl'), false);
+    assert.equal(allMessages.includes('keep the read-only mount'), false);
+    assert.doesNotMatch(readBranchLogs(testRoot), /demo\.jsonl/);
+    // Both lanes failed: the finish still ran (verdict fallback), found no
+    // evidence, and discarded.
+    assert.match(readBranchLogs(testRoot), /mechanical_retrieval/);
+    assert.equal(queue.drain().length, 0);
+  });
+
+  test('session_graph verdict none still refines when the session query returned records', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new AssessThenFinishAI();
+    const backend = new SessionQueryMemory();
+    backend.branchResponse = {
+      content_trust: 'untrusted_branch_evidence',
+      branches: [
+        { source: 'session_graph', status: 'ok', evidence_verdict: 'none', items: [] },
+        { source: 'agent_memory', status: 'ok', items: [] },
+      ],
+    };
+    backend.sessionResponse = {
+      content_trust: 'untrusted_log_data',
+      records: [{
+        ref: 'stream-release#17',
+        session_type: 'chat',
+        user: { text: 'release checklist decision: read-only mount' },
+      }],
+    };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'verdict-none-session-hits',
+      input: 'find prior release notes',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+
+    await handle.done;
+
+    // Session records count as usable evidence: pass 2 must run even though
+    // the session_graph branch verdict was `none`.
+    assert.equal(ai.calls.length, 2);
+    const pack = ai.evidencePackIn(ai.calls[1].messages);
+    assert.equal(pack.evidence_pack.session_records.records[0].ref, 'stream-release#17');
+    assert.equal(pack.evidence_pack.session_records.content_trust, 'untrusted_log_data');
     const observations = queue.drain();
     assert.equal(observations.length, 1);
     const injected = JSON.parse(observations[0].formattedContent || '');
-    assert.deepEqual(injected.refs, ['chat/2026-06-09/demo.jsonl#1']);
-    assert.doesNotMatch(logs, /unobserved_refs_audit_only/);
-    assert.match(logs, /published_observation/);
+    assert.deepEqual(injected.refs, ['stream-release#17']);
   });
 
-  test('unavailable remote capability degrades to local-only retrieval', async () => {
+  test('keyword truncation beyond the 8-keyword wire cap is visible', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const backend = new SessionQueryMemory();
+    const oversizedAI = {
+      calls: [] as Array<{ toolNames: string[]; messages: Message[] }>,
+      isToolCallingSupported: () => true,
+      async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
+        this.calls.push({ toolNames: tools?.map(tool => tool.name) || [], messages: JSON.parse(JSON.stringify(messages)) });
+        if (this.calls.length === 1) {
+          return {
+            content: null,
+            toolCalls: [call('assess-1', 'assess_memory_need', {
+              action: 'recall',
+              query_text: 'release checklist decision',
+              keywords: Array.from({ length: 11 }, (_, index) => `kw_${index + 1}`),
+            })],
+            usage,
+          };
+        }
+        const pack = JSON.parse(
+          [...messages].reverse().find(message => (
+            message.role === 'user' && String(message.content).includes('evidence_pack')
+          ))?.content as string,
+        );
+        return {
+          content: null,
+          toolCalls: [call('finish-1', 'finish_memory_search', {
+            summary: 'keywords were truncated; nothing useful arrived.',
+            refs: [],
+            inject: false,
+            delivery: 'discard',
+          })],
+          usage,
+        };
+      },
+    };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'keyword-truncation',
+      input: 'find prior release notes',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: oversizedAI as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: true,
+    });
+
+    await handle.done;
+
+    // Only the first 8 distinct keywords reached the server.
+    assert.equal(backend.sessionQueries.length, 1);
+    assert.deepEqual(backend.sessionQueries[0].searchAny,
+      ['kw_1', 'kw_2', 'kw_3', 'kw_4', 'kw_5', 'kw_6', 'kw_7', 'kw_8']);
+    assert.equal(backend.sessionQueries[0].latest, true);
+    assert.equal(backend.sessionQueries[0].limit, 20);
+    // Truncation is visible to the model in the evidence pack.
+    const pack = JSON.parse(
+      [...oversizedAI.calls[1].messages].reverse().find(message => (
+        message.role === 'user' && String(message.content).includes('evidence_pack')
+      ))?.content as string,
+    );
+    assert.equal(pack.evidence_pack.keywords_truncated, true);
+    assert.match(pack.evidence_pack.keyword_note, /8/);
+  });
+
+  test('current conversational context stays in the assess prompt without disk I/O', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new AssessThenFinishAI();
+    const backend = new SessionQueryMemory();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'current-context',
+      input: 'what is our release checklist?',
+      recentMessages: [
+        { role: 'user', content: 'recent context question about the deploy window' },
+        { role: 'assistant', content: 'recent context answer: deploy window is Friday.' },
+      ],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+
+    await handle.done;
+
+    const firstUser = ai.calls[0].messages.find(message => message.role === 'user')?.content as string;
+    const payload = JSON.parse(firstUser);
+    assert.equal(payload.current_user_input, 'what is our release checklist?');
+    assert.equal(payload.recent_completed_turns.length, 1);
+    assert.match(payload.recent_completed_turns[0].user, /deploy window/);
+    assert.match(payload.recent_completed_turns[0].assistant_final, /Friday/);
+    assert.equal(payload.catslog_memory_source_available, true);
+    assert.equal('memory_source_available' in payload, false);
+  });
+
+  test('unavailable remote capability degrades to typed statuses without local retrieval', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const ai = new AssessThenFinishAI();
     const backend = new ToggleRemoteMemory();
@@ -442,6 +594,7 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     assert.equal(ai.calls.length, 2);
     const pack = ai.evidencePackIn(ai.calls[1].messages);
     assert.match(String(pack.evidence_pack.remote_branch.note), /unavailable/);
+    assert.equal(pack.evidence_pack.session_records.status, 'unavailable');
     // The remote citation was never observed; fail-closed audit keeps it out
     // of parent context.
     assert.equal(queue.drain().length, 0);

@@ -211,6 +211,13 @@ export interface CatscoSessionQuery {
   latest?: boolean;
   sessionSummary?: boolean;
   search?: string;
+  /**
+   * OR-recall keyword list (`search_any`): a record matches when it contains
+   * any one keyword, case-insensitively. The server contract bounds this at
+   * 8 literal keywords; callers must cap before dispatch and report
+   * truncation visibly — this client deliberately does not silently trim.
+   */
+  searchAny?: string[];
   from?: string;
   to?: string;
   limit?: number;
@@ -406,6 +413,14 @@ function addQueryNumber(query: URLSearchParams, key: string, value: unknown): vo
   if (typeof value === 'number' && Number.isFinite(value)) query.set(key, String(value));
 }
 
+/** Validate the OR-keyword list shape; the ≤8 wire cap is the caller's duty. */
+function normalizeSearchAny(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error('CatsLog searchAny must be an array of keyword strings');
+  const keywords = value.map(keyword => String(keyword ?? '').trim()).filter(Boolean);
+  return keywords.length > 0 ? keywords : undefined;
+}
+
 function requireCapabilityToken(value: unknown): string {
   const token = typeof value === 'string' ? value.trim() : '';
   if (!token) throw new Error('CatsLog capability token is missing');
@@ -592,6 +607,7 @@ export class CatscoLogAgentClient {
       latest: input.latest,
       session_summary: input.sessionSummary,
       search: input.search,
+      search_any: normalizeSearchAny(input.searchAny),
       from: input.from,
       to: input.to,
       limit: input.limit,

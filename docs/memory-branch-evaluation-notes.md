@@ -25,21 +25,30 @@ evaluation checks used while tuning the branch-session memory search flow.
 `inject` flag remains accepted for compatibility, but new callers should use
 the explicit `delivery` field.
 
-## CatsLog evidence contract (thin v1)
+## CatsLog evidence contract (server-first)
 
-Query policy lives in the branch; retrieval execution lives in the server's
-fused `/catsco/agent/branch` endpoint (multi-source fan-out, scope fencing,
-reranking). The branch exposes exactly one remote tool, `catslog_branch`, and
-may refine at most once before finishing; the two-execution budget is enforced
-mechanically per run, not only by prompt.
+Query policy lives in the branch; retrieval execution lives on the server. The mechanical stage
+runs one fused `/catsco/agent/branch` fan-out and one device-bound
+`/catsco/agent/query/v1/sessions` query in parallel (session query sends `search_any`: OR over
+at most 8 distinct keywords; truncation beyond the cap is reported visibly in the evidence
+pack). Historical sessions come only from the server: the local JSONL log tree is never read
+by the branch, because local files have no trustworthy per-agent scope labels while the
+device-bound query admits only shared + own-subject memory scopes. A failed session lane
+degrades to a typed `unavailable` status in the evidence pack — never to a local-file fallback.
+
+**Recency gap:** sessions that are not yet uploaded/projected server-side are invisible until
+they sync. A successful query proves the returned records are complete for the device's visible
+scopes at query time; it does not mean local files are authorized or indexed. Local replay of
+unsynced sessions is intentionally absent until per-session scope provenance exists.
 
 The branch keeps a single anti-hallucination guard, `CatsLogObservedRefsTracker`:
-it records the citation-shaped refs that actually appeared in this run's tool
-results (local and remote alike), and a `delivery:context` finish may only cite
+it records the citation-shaped refs that actually appeared in this run's projected results
+(remote branch items and session records alike), and a `delivery:context` finish may only cite
 refs from that observed set. An unobserved ref fails closed to
 `delivery:audit` and is logged as `unobserved_refs_audit_only` with the cited
 and observed refs. Bearer values and receipts never enter branch messages,
-observations, or logs.
+observations, or logs. Session records count as usable evidence even when the
+`session_graph` branch verdict is `none`.
 
 The former rich provenance projection (active-head version checks, receipt
 eligibility, route attribution, graph lineage, outcome status, catalog
@@ -64,7 +73,10 @@ persisted values are normalized to safe limits on load.
   serial execution model were unbounded. Fixes: per-turn parallel dispatch,
   the run-wide 8-non-finish-call bound with a finish-only tail, tightened
   default budgets (4 turns/pass, 2 passes), and read-discipline prompt
-  guidance.
+  guidance. The local lane itself was later removed entirely (server-first
+  cutover): it had no trustworthy per-agent scope labels and read the
+  process-wide log tree, which could surface sibling agents' private
+  material the device-bound server query would correctly withhold.
 
 - Production (v1.1): one bot's branch made four `catslog_branch` calls plus
   local reads and burned the full 90s deadline on two consecutive turns

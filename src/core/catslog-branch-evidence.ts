@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import type {
   CatscoBranchResponse,
   CatscoEvidenceVerdict,
+  CatscoSessionQueryResult,
 } from '../utils/catsco-log-agent-client';
 import {
   isSafeCatsLogOpaqueIdentifier,
@@ -12,6 +13,19 @@ const MAX_BRANCHES = 8;
 const MAX_BRANCH_ITEMS = 50;
 const MAX_TEXT_CHARS = 12_000;
 const MAX_BRANCH_RESULT_CHARS = 60_000;
+
+/** Bounded redacted-records projection of one /query/v1/sessions response. */
+const MAX_SESSION_RECORDS = 20;
+const MAX_SESSION_RECORD_TEXT_CHARS = 2_000;
+const MAX_SESSION_TOOL_CALLS = 10;
+const MAX_SESSION_RESULT_CHARS = 12_000;
+
+/**
+ * Trust label of the device-bound session evidence projection. Mirrors the
+ * server's own `content_trust: untrusted_log_data` envelope value: records
+ * are redacted server-side, but they are still untrusted evidence text.
+ */
+export const SESSION_EVIDENCE_TRUST = 'untrusted_log_data';
 
 /**
  * Client-side normalization of the server's per-branch evidence verdict. The
@@ -160,6 +174,79 @@ function sanitizeJSON(value: unknown, depth = 0): unknown {
     result[key] = sanitizeJSON(child, depth + 1);
   }
   return result;
+}
+
+/**
+ * Projection of one device-bound /catsco/agent/query/v1/sessions response
+ * into the bounded, untrusted-evidence shape the memory branch consumes.
+ *
+ * The server owns scope fencing (the capability binds one principal: shared
+ * + own-subject memory scopes) and redaction; this projection only enforces
+ * ref-safety, field whitelisting, and size bounds. Tool arguments/results
+ * are intentionally absent — they are not part of the server record and
+ * must never be re-imported from local files.
+ */
+export function projectSessionQueryResponse(
+  response: CatscoSessionQueryResult | unknown,
+  maxLength: number = MAX_SESSION_RESULT_CHARS,
+): Record<string, unknown> {
+  if (asRecord(response)?.not_modified === true) {
+    return { content_trust: SESSION_EVIDENCE_TRUST, not_modified: true, records: [], truncated: false };
+  }
+  const source = asRecord(response);
+  const records = safeRecords(source?.records);
+  const projectedRecords = records.slice(0, MAX_SESSION_RECORDS).map(projectSessionRecord);
+  const result: Record<string, unknown> = {
+    content_trust: SESSION_EVIDENCE_TRUST,
+    records: projectedRecords,
+    truncated: source?.truncated === true || records.length > MAX_SESSION_RECORDS,
+  };
+  if (textValue(source?.next_cursor)) result.next_cursor = boundedText(source?.next_cursor, 256);
+  // Trim tail records until the serialized projection fits the budget.
+  let encoded = JSON.stringify(result);
+  while (encoded.length > maxLength && projectedRecords.length > 0) {
+    projectedRecords.pop();
+    result.truncated = true;
+    encoded = JSON.stringify(result);
+  }
+  return result;
+}
+
+function projectSessionRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const projected: Record<string, unknown> = {};
+  if (textValue(record.ref)) projected.ref = projectSourceRef(record.ref);
+  if (textValue(record.session_type)) projected.session_type = boundedText(record.session_type, 64);
+  if (textValue(record.session_id)) projected.session_id = safeIdentifier(record.session_id, 256);
+  if (textValue(record.log_date)) projected.log_date = boundedText(record.log_date, 32);
+  if (textValue(record.timestamp)) projected.timestamp = boundedText(record.timestamp, 64);
+  if (numberValue(record.turn) !== undefined) projected.turn = numberValue(record.turn);
+  if (textValue(record.entry_type)) projected.entry_type = boundedText(record.entry_type, 32);
+  const user = asRecord(record.user);
+  if (user && textValue(user.text)) {
+    projected.user = {
+      text: boundedText(user.text, MAX_SESSION_RECORD_TEXT_CHARS),
+      ...(user.redacted === true ? { redacted: true } : {}),
+    };
+  }
+  const agent = asRecord(record.agent);
+  if (agent && textValue(agent.text)) {
+    projected.agent = {
+      text: boundedText(agent.text, MAX_SESSION_RECORD_TEXT_CHARS),
+      ...(agent.redacted === true ? { redacted: true } : {}),
+    };
+  }
+  if (Array.isArray(record.tool_calls)) {
+    const toolCalls = record.tool_calls
+      .filter(asRecord)
+      .slice(0, MAX_SESSION_TOOL_CALLS)
+      .map(toolCall => ({
+        ...(textValue(toolCall.name) ? { name: boundedText(toolCall.name, 128) } : {}),
+        ...(textValue(toolCall.type) ? { type: boundedText(toolCall.type, 32) } : {}),
+      }))
+      .filter(entry => Object.keys(entry).length > 0);
+    if (toolCalls.length > 0) projected.tool_calls = toolCalls;
+  }
+  return projected;
 }
 
 function isSafeSessionRef(value: string): boolean {

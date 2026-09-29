@@ -14,6 +14,8 @@ import {
 import type {
   CatscoBranchQuery,
   CatscoBranchResponse,
+  CatscoSessionQuery,
+  CatscoSessionQueryResult,
   CatscoSkillsQuery,
   CatscoSkillsResponse,
   CatscoSkillOutcomeInput,
@@ -56,6 +58,15 @@ export interface CatsLogMemoryBackend {
     query: CatscoBranchQuery,
     signal?: AbortSignal,
   ): Promise<CatscoBranchResponse>;
+  /**
+   * Optional device-bound, redacted session-evidence query. Historical
+   * sessions may only come from the server: the local JSONL tree has no
+   * trustworthy per-agent scope labels, so it must never widen this.
+   */
+  querySessions?(
+    query: CatscoSessionQuery,
+    signal?: AbortSignal,
+  ): Promise<CatscoSessionQueryResult>;
   readSkills?(
     query: CatscoSkillsQuery,
     signal?: AbortSignal,
@@ -78,6 +89,7 @@ export interface CatsLogMemoryProviderOptions {
 interface CatsLogReadCapability {
   token: string;
   skillsUrl: string;
+  sessionsUrl: string;
   branchUrl: string;
 }
 
@@ -151,6 +163,24 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
           ...query,
           token: capability.token,
           branchUrl: capability.branchUrl,
+          signal,
+        });
+      },
+      signal,
+    );
+  }
+
+  /** Read the dedicated, redacted, device-scoped session evidence projection. */
+  async querySessions(query: CatscoSessionQuery, signal?: AbortSignal): Promise<CatscoSessionQueryResult> {
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof (client as any).querySessions !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the session query route');
+        }
+        return client.querySessions({
+          ...query,
+          token: capability.token,
+          sessionsUrl: capability.sessionsUrl,
           signal,
         });
       },
@@ -401,6 +431,7 @@ function capabilitiesFromResponse(response: any, now: number): CatsLogCapabiliti
     ? {
       token: clean(response?.skill_token)!,
       skillsUrl: safePathOrDefault(response?.skills_url, DEFAULT_SKILLS_URL),
+      sessionsUrl: safePathOrDefault(response?.sessions_url, DEFAULT_SESSIONS_URL),
       branchUrl: safePathOrDefault(response?.branch_url, DEFAULT_BRANCH_URL),
     }
     : null;
@@ -415,6 +446,7 @@ function readCapabilityFromState(state: CatscoLogAgentState, now: number): CatsL
   return {
     token,
     skillsUrl: safePathOrDefault(state.skillsUrl, DEFAULT_SKILLS_URL),
+    sessionsUrl: safePathOrDefault(state.sessionsUrl, DEFAULT_SESSIONS_URL),
     branchUrl: safePathOrDefault(state.branchUrl, DEFAULT_BRANCH_URL),
   };
 }

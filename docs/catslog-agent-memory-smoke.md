@@ -57,10 +57,14 @@ CATSLOG_MEMORY_ENABLED=true
 ```
 
 The autonomous branch never emits outcome feedback and never writes notes; the
-thin v1.3 surface is a fixed two-call pipeline: `assess_memory_need` decides
-recall vs skip, retrieval runs mechanically (remote `catslog` branch fan-out +
-local log search in parallel, top local turns auto-expanded), and
-`finish_memory_search` closes the run. Explicit Skill outcome reports stay on
+surface is a fixed two-call pipeline: `assess_memory_need` decides recall vs
+skip, retrieval runs mechanically (remote `catslog` branch fan-out + the
+device-bound session query with `search_any` OR keywords in parallel), and
+`finish_memory_search` closes the run. Historical sessions come only from the
+server; the branch never reads local log files (they lack trustworthy per-agent
+scope labels), so sessions not yet synced to the server are a documented recency
+gap, and a failed session lane is a typed `unavailable` status rather than a
+local fallback. Explicit Skill outcome reports stay on
 the `catsco catslog outcome` CLI command path.
 
 ## Branch lifecycle smoke

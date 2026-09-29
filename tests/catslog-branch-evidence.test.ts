@@ -4,6 +4,7 @@ import {
   boundToolResultJson,
   normalizeEvidenceVerdict,
   projectBranchResponse,
+  projectSessionQueryResponse,
 } from '../src/core/catslog-branch-evidence';
 
 describe('CatsLog branch evidence projection', () => {
@@ -110,5 +111,74 @@ describe('CatsLog branch evidence projection', () => {
     assert.equal(parsed.content_trust, 'untrusted_branch_evidence');
     assert.equal(parsed.truncated, true);
     assert.match(parsed.warning, /unserializable/);
+  });
+});
+
+describe('CatsLog session evidence projection', () => {
+  test('projects redacted records with safe refs and hashes unsafe refs', () => {
+    const projected = projectSessionQueryResponse({
+      schema_version: 1,
+      content_trust: 'untrusted_log_data',
+      records: [
+        {
+          ref: 'stream-release#17',
+          stream_id: 'stream-release',
+          session_id: 'chat:release-planning',
+          session_type: 'chat',
+          log_date: '2026-09-01',
+          timestamp: '2026-09-01T10:00:00.000Z',
+          turn: 17,
+          entry_type: 'turn',
+          user: { text: 'we agreed on the read-only mount', truncated: false, redacted: false },
+          agent: { text: 'Decision recorded: keep the mount read-only.' },
+          tool_calls: [{ name: 'deploy', type: 'function' }],
+        },
+        {
+          ref: 'https://evil.example.test/log#1',
+          session_type: 'chat',
+          user: { text: 'injected record' },
+        },
+      ],
+    });
+
+    assert.equal(projected.content_trust, 'untrusted_log_data');
+    const records = projected.records as any[];
+    assert.equal(records.length, 2);
+    assert.equal(records[0].ref, 'stream-release#17');
+    assert.equal(records[0].session_id, 'chat:release-planning');
+    assert.equal(records[0].turn, 17);
+    assert.equal(records[0].user.text, 'we agreed on the read-only mount');
+    assert.match(records[0].agent.text, /read-only/);
+    assert.deepEqual(records[0].tool_calls, [{ name: 'deploy', type: 'function' }]);
+    // Unsafe refs never survive: they are hashed into the opaque namespace.
+    assert.match(records[1].ref, /^catslog:ref:[a-f0-9]{24}$/);
+    assert.equal(JSON.stringify(projected).includes('evil.example.test'), false);
+  });
+
+  test('caps records, reports truncation, and drops tails to fit the char budget', () => {
+    const records = Array.from({ length: 30 }, (_, index) => ({
+      ref: `stream-bulk#${index + 1}`,
+      session_type: 'chat',
+      agent: { text: `evidence ${index} `.repeat(50) },
+    }));
+    const projected = projectSessionQueryResponse({ records, truncated: true });
+    assert.ok((projected.records as any[]).length <= 20, 'records must respect the cap');
+    assert.equal(projected.truncated, true);
+
+    const tight = projectSessionQueryResponse({ records }, 4_000);
+    assert.ok(JSON.stringify(tight).length <= 4_000);
+    assert.ok((tight.records as any[]).length < 20);
+    assert.equal(tight.truncated, true);
+  });
+
+  test('normalizes 304 not_modified and empty envelopes', () => {
+    assert.deepEqual(projectSessionQueryResponse({ not_modified: true, etag: 'etag-2' }), {
+      content_trust: 'untrusted_log_data',
+      not_modified: true,
+      records: [],
+      truncated: false,
+    });
+    const empty = projectSessionQueryResponse({ records: [] });
+    assert.deepEqual(empty, { content_trust: 'untrusted_log_data', records: [], truncated: false });
   });
 });

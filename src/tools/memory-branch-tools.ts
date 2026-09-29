@@ -1,6 +1,14 @@
 import { Tool, ToolDefinition, ToolExecutionResult } from '../types/tool';
-import { jsonToolError, jsonToolResult } from '../core/memory-log-store';
 import { isSafeCatsLogOpaqueIdentifier, isSafeCatsLogSkillHandle } from '../utils/catsco-log-agent-client';
+
+/** Serialize one bounded JSON tool result (moved from the removed local MemoryLogStore). */
+export function jsonToolResult(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+export function jsonToolError(message: string): string {
+  return JSON.stringify({ error: message });
+}
 
 export interface MemorySearchFinishPayload {
   summary: string;
@@ -64,7 +72,7 @@ export class AssessMemoryNeedTool implements Tool {
     description: [
       '对当前输入做一次记忆检索决策（本 branch 第一步，也是收尾前的唯一决策点）。',
       'action:"skip"：主 agent 仅凭当前上下文就能回答，无需历史记忆；branch 将以 delivery:discard 结束。',
-      'action:"recall"：需要历史记忆；给出远端检索词 query_text 与本地子串检索 keywords（可选 sources）。',
+      'action:"recall"：需要历史记忆；给出远端检索词 query_text 与服务器会话检索 OR 关键词 keywords（可选 sources）。',
       '调用后系统会机械地并行执行检索并把证据包交给你收尾；你不需要也无法在本次调用中检索。',
     ].join(' '),
     controlMode: 'pause_turn',
@@ -83,7 +91,7 @@ export class AssessMemoryNeedTool implements Tool {
         keywords: {
           type: 'array',
           items: { type: 'string' },
-          description: 'recall 必填。本地子串检索关键词；每一项都是独立 query，OR 召回；不要把多个词拼进同一项。',
+          description: 'recall 必填。服务器会话检索的 OR 关键词；每一项独立命中即可召回。只发送前 8 个不同关键词，超出部分会在证据包中标注为未检索；不要把多个词拼进同一项。',
         },
         sources: {
           type: 'array',
