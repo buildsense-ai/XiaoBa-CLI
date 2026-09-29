@@ -670,11 +670,23 @@ describe('dashboard CatsCo account status', () => {
       return res.status(404).json({ error: 'not found' });
     });
     saveConfirmedLocalBinding('body-local');
+    const localConfig = createCatsCoLocalConfigService({ runtimeRoot: testRoot });
+    const saved = localConfig.load();
+    localConfig.save({
+      ...saved,
+      runtimeMode: 'local_bot',
+      device: {
+        ...saved.device!,
+        connectorToken: 'retained-device-token',
+      },
+    });
 
     const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
     const data = await response.json() as any;
 
     assert.equal(response.status, 200);
+    assert.equal(data.runtimeMode, 'local_bot');
+    assert.equal(data.deviceConnectorMode, false);
     assert.equal(data.bodyStatus.state, 'offline');
     assert.equal(data.bodyStatus.active, false);
     assert.equal(data.bodyStatus.platformBodyId, 'body-from-old-installation');
@@ -702,6 +714,195 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.bodyStatus.active, true);
     assert.equal(data.bodyStatus.conflictReason, 'active_lease_owned_by_other_body');
     assert.equal(data.chatReady, false);
+  });
+
+  test('POST /cats/runtime-mode transfers an inactive historical Bot body before starting it', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'stopped',
+    };
+    let transferCalls = 0;
+    let startCalls = 0;
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => name === 'catscompany' ? service : undefined,
+      start: (name: string) => {
+        assert.equal(name, 'catscompany');
+        startCalls += 1;
+        service.status = 'running';
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(dashboardApp);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 42, username: 'owner', display_name: 'Owner' });
+      }
+      if (req.path === '/api/bots' && req.method === 'GET') {
+        return res.json({ bots: [{ uid: 199, username: 'local-agent', display_name: 'Local Agent', api_key: 'local-agent-key', owner_id: 42 }] });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({ bot_uid: Number(req.query.uid), active: false, body_id: 'old-body' });
+      }
+      if (req.path === '/api/bots/body-transfer' && req.method === 'POST') {
+        assert.equal(req.get('authorization'), 'Bearer user-token');
+        assert.deepEqual(req.body, { bot_uid: 199, body_id: 'body-local' });
+        transferCalls += 1;
+        return res.json({ ok: true, bot_uid: 199, body_id: 'body-local' });
+      }
+      if (req.path === '/api/friends/request' || req.path === '/api/friends/accept') {
+        return res.json({ ok: true });
+      }
+      if (req.path === '/api/bot/definition') {
+        assert.equal(req.get('authorization'), 'ApiKey local-agent-key');
+        return res.json({
+          configured: true,
+          revision: 1,
+          definition: {
+            schema: 'xiaoba.bot-definition.v1',
+            botId: '199',
+            model: {
+              kind: 'custom',
+              protocol: 'openai-responses',
+              apiBase: 'https://model.example.test/v1',
+              model: 'test-model',
+              apiKey: 'sk-test',
+              contextWindowTokens: 128000,
+            },
+            skills: [],
+          },
+        });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: catsBaseUrl, serverUrl: 'wss://app.catsco.cc/v0/channels' },
+      account: { token: 'user-token', uid: '42', username: 'owner', displayName: 'Owner' },
+      currentBot: { uid: '188', name: 'Old Agent', apiKey: 'old-agent-key' },
+      device: { deviceId: 'device-local', bodyId: 'body-local', installationId: 'install-local' },
+    });
+    new FileBotDefinitionRepository({ runtimeRoot: testRoot }).writeCanonical({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '199',
+      model: {
+        kind: 'custom',
+        protocol: 'openai-responses',
+        apiBase: 'https://model.example.test/v1',
+        model: 'test-model',
+        apiKey: 'sk-test',
+        contextWindowTokens: 128000,
+      },
+      skills: [],
+    });
+    seedVerifiedEmptyBotSkillWorkspace(testRoot, '199');
+    writeEnv([
+      `CATSCO_HTTP_BASE_URL=${catsBaseUrl}`,
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_USER_TOKEN=user-token',
+      'CATSCO_USER_UID=42',
+      'CATSCO_USER_NAME=owner',
+      'CATSCO_USER_DISPLAY_NAME=Owner',
+    ]);
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/runtime-mode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runtimeMode: 'local_bot', botUid: '199' }),
+    });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+    const localConfig = createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load();
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.runtimeMode, 'local_bot');
+    assert.equal(transferCalls, 1);
+    assert.equal(startCalls, 1);
+    assert.equal(localConfig.runtimeMode, 'local_bot');
+    assert.equal(localConfig.currentBot?.uid, '199');
+  });
+
+  test('POST /cats/runtime-mode stops a local Bot before scheduling the Connector handoff', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'running',
+    };
+    let controllerStopCalls = 0;
+    let serviceStopCalls = 0;
+    let scheduleCalls = 0;
+    const app = express();
+    app.use(express.json());
+    app.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => name === 'catscompany' ? service : undefined,
+      stopAndWait: async (name: string) => {
+        assert.equal(name, 'catscompany');
+        serviceStopCalls += 1;
+        service.status = 'stopped';
+        return service;
+      },
+    } as any, undefined, {
+      manageConnector: true,
+      catsConnectorAutoStart: {
+        stopAndWait: async () => { controllerStopCalls += 1; },
+        invalidateAndSchedule: () => {
+          scheduleCalls += 1;
+          return { stage: 'connecting', trigger: 'runtime-mode', attempt: 1, message: 'handoff', updatedAt: new Date().toISOString() };
+        },
+      } as any,
+    }));
+    dashboardServer = await listen(app);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      runtimeMode: 'local_bot',
+      endpoints: { httpBaseUrl: 'https://app.catsco.cc', serverUrl: 'wss://app.catsco.cc/v0/channels' },
+      account: { token: 'handoff-user-token', uid: '42', username: 'owner', displayName: 'Owner' },
+      currentBot: {
+        uid: '199',
+        name: 'Local Bot',
+        apiKey: 'local-agent-key',
+        boundByUserUid: '42',
+        bindingSource: 'compatibility-local-bot',
+      },
+      device: { deviceId: 'device-local', bodyId: 'body-local', installationId: 'install-local', connectorToken: 'device-token' },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/runtime-mode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runtimeMode: 'connector' }),
+    });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 202);
+    assert.equal(data.runtimeMode, 'connector');
+    assert.equal(controllerStopCalls, 1);
+    assert.equal(serviceStopCalls, 1);
+    assert.equal(scheduleCalls, 1);
+    assert.equal(createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load().runtimeMode, 'connector');
   });
 
   test('POST /cats/auth/login writes both CatsCo and CatsCompany env aliases', async () => {

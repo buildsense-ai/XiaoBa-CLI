@@ -6,6 +6,7 @@ import { CatsCompanyConfig, type CatsCompanyRuntimeRole } from './types';
 import {
   CatsCoAuthSnapshot,
   CatsCoLocalConfig,
+  resolveCatsCoRuntimeMode,
   DEFAULT_CATSCO_HTTP_BASE_URL,
   DEFAULT_CATSCO_WS_URL,
   createCatsCoLocalConfigService,
@@ -129,7 +130,8 @@ export function resolveCatsCoRuntimeConfig(
     || config.catscompany?.connectorTokenExpiresAt
     || 0,
   ) || undefined;
-  const connectorToken = configuredConnectorToken
+  const runtimeMode = resolveCatsCoRuntimeMode(localConfig);
+  const connectorToken = runtimeMode === 'connector' && configuredConnectorToken
     && (!connectorTokenExpiresAt || connectorTokenExpiresAt > Date.now())
     ? configuredConnectorToken
     : '';
@@ -162,10 +164,10 @@ export function resolveCatsCoRuntimeConfig(
   // A device connector credential is the complete runtime identity. Keep the
   // legacy Bot record on disk for migration, but never expose or select it in
   // the active device-only runtime.
-  const botUid = connectorToken
+  const botUid = runtimeMode === 'connector'
     ? undefined
     : (proposedBotBinding || confirmedLocalBotBinding ? rawBotUid : undefined);
-  const apiKey = connectorToken
+  const apiKey = runtimeMode === 'connector'
     ? undefined
     : (proposedBotBinding || confirmedLocalBotBinding ? rawApiKey : undefined);
   const bodyId = localConfig.device?.bodyId;
@@ -186,7 +188,7 @@ export function resolveCatsCoRuntimeConfig(
   if (!bodyId) missing.push('bodyId');
 
   const accountConnected = Boolean(auth.token && auth.uid);
-  const deviceConnectorMode = Boolean(connectorToken);
+  const deviceConnectorMode = runtimeMode === 'connector' && Boolean(connectorToken);
   const bodyConfigured = Boolean(
     serverUrl
       && bodyId
@@ -196,7 +198,7 @@ export function resolveCatsCoRuntimeConfig(
     ? {
       serverUrl,
       apiKey,
-      connectorToken,
+      connectorToken: connectorToken || undefined,
       connectorTokenExpiresAt,
       botUid,
       bodyId,

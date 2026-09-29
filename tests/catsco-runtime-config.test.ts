@@ -328,6 +328,74 @@ describe('CatsCo runtime config resolver', () => {
     assert.equal(resolved.auth.connectorTokenExpiresAt !== undefined, true);
   });
 
+  test('explicit local Bot mode wins over a retained device credential', () => {
+    const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
+    service.save({
+      version: 1,
+      runtimeMode: 'local_bot',
+      endpoints: {
+        httpBaseUrl: 'https://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: { token: 'user-token', uid: 'user-1' },
+      currentBot: {
+        uid: 'bot-1',
+        name: 'Local Bot',
+        apiKey: 'bot-key',
+        boundByUserUid: 'user-1',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-1',
+        bodyId: 'body-1',
+        installationId: 'install-1',
+        connectorToken: 'device-token',
+        connectorTokenExpiresAt: Date.now() + 60_000,
+      },
+    });
+
+    const resolved = resolveCatsCoRuntimeConfig({ runtimeRoot: tempDir, env: {} });
+    assert.equal(resolved.localConfig.runtimeMode, 'local_bot');
+    assert.equal(resolved.connector?.apiKey, 'bot-key');
+    assert.equal(resolved.connector?.connectorToken, undefined);
+    assert.equal(resolved.auth.botUid, 'bot-1');
+    assert.equal(resolved.auth.connectorToken, '');
+  });
+
+  test('explicit Connector mode keeps a legacy Bot hidden from the active runtime', () => {
+    const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
+    service.save({
+      version: 1,
+      runtimeMode: 'connector',
+      endpoints: {
+        httpBaseUrl: 'https://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: { token: 'user-token', uid: 'user-1' },
+      currentBot: {
+        uid: 'bot-1',
+        name: 'Legacy Bot',
+        apiKey: 'bot-key',
+        boundByUserUid: 'user-1',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-1',
+        bodyId: 'body-1',
+        installationId: 'install-1',
+        connectorToken: 'device-token',
+        connectorTokenExpiresAt: Date.now() + 60_000,
+      },
+    });
+
+    const resolved = resolveCatsCoRuntimeConfig({ runtimeRoot: tempDir, env: {} });
+    assert.equal(resolved.localConfig.runtimeMode, 'connector');
+    assert.equal(resolved.connector?.connectorToken, 'device-token');
+    assert.equal(resolved.connector?.apiKey, undefined);
+    assert.equal(resolved.auth.botUid, undefined);
+    assert.equal(resolved.auth.connectorToken, 'device-token');
+  });
+
   test('defaults close button behavior to hiding in tray and persists overrides', () => {
     const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
 

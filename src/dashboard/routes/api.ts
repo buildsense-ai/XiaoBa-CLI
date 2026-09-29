@@ -58,7 +58,12 @@ import {
   saveRuntimeProfileEdit,
 } from '../../runtime/runtime-profile-editor';
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
-import { createCatsCoLocalConfigService, type CatsCoLocalDevice } from '../../catscompany/local-config';
+import {
+  createCatsCoLocalConfigService,
+  resolveCatsCoRuntimeMode,
+  type CatsCoLocalDevice,
+  type CatsCoRuntimeMode,
+} from '../../catscompany/local-config';
 import {
   CatsCoBotSwitchGuardError,
   verifyCatsCoBotSwitchBinding,
@@ -962,6 +967,36 @@ async function getCatsBotBodyStatus(
   }
 }
 
+async function transferCatsBotBodyBinding(
+  state: CatsAuthState,
+  botUid: string,
+  bodyId: string,
+): Promise<void> {
+  try {
+    await catsRequest('POST', state.httpBaseUrl, '/api/bots/body-transfer', {
+      bot_uid: Number(botUid),
+      body_id: bodyId,
+    }, state.token);
+  } catch (error: any) {
+    const status = Number(error?.status || 0);
+    if (status === 404) {
+      throw codedHttpError(
+        'CatsCompany 服务端暂不支持本机 Bot 的安全迁移，请先升级服务端后再运行这个 Bot。',
+        503,
+        'BOT_BODY_TRANSFER_UNAVAILABLE',
+      );
+    }
+    if (status === 409) {
+      throw codedHttpError(
+        '这个本机 Bot 仍在另一台设备上运行，服务端拒绝迁移。请先关闭另一台设备上的 Bot，再重试。',
+        409,
+        'BOT_BODY_ACTIVE_OTHER_DEVICE',
+      );
+    }
+    throw error;
+  }
+}
+
 async function assertSkillHubBotSwitchBinding(
   state: CatsAuthState,
   botUid: string,
@@ -1080,6 +1115,7 @@ async function commitCatsBotBindingAndStartConnector(
         preflight: {
           status: startPreflight.status,
           blockingChecks: startPreflight.blockingChecks,
+          blockingDetails: preflightBlockingDetails(startPreflight),
           warningChecks: startPreflight.warningChecks,
         },
       };
@@ -2214,6 +2250,51 @@ async function setupCatsRelayModelForDesktop(
   };
 }
 
+function preflightBlockingDetails(preflight: any): Array<{ id: string; label: string; message: string }> {
+  const blocking = new Set(
+    Array.isArray(preflight?.blockingChecks)
+      ? preflight.blockingChecks.filter((item: unknown): item is string => typeof item === 'string')
+      : [],
+  );
+  return (Array.isArray(preflight?.checks) ? preflight.checks : [])
+    .filter((check: any) => check && typeof check.id === 'string' && blocking.has(check.id))
+    .map((check: any) => ({
+      id: check.id,
+      label: sanitizeCatsErrorMessage(check.label),
+      message: sanitizeCatsErrorMessage(check.message),
+    }));
+}
+
+function annotateLocalBotLeaseConflict(
+  serviceManager: ServiceManager,
+  runtimeMode: CatsCoRuntimeMode,
+  bodyStatus: Record<string, unknown>,
+): Record<string, unknown> {
+  if (runtimeMode !== 'local_bot' || bodyStatus.state !== 'offline') return bodyStatus;
+  // A Bot API-key websocket returns HTTP 409 while another body still owns
+  // the lease. The status endpoint can briefly lag that websocket state (or
+  // be served by another edge), so use the child log as a second, local
+  // signal. Do not classify an online body as conflicted just because an old
+  // log line remains in the retained session history.
+  const service = serviceManager.getService('catscompany');
+  const leaseRejected = [
+    service?.lastError || '',
+    ...(typeof (serviceManager as any).getLogs === 'function'
+      ? serviceManager.getLogs('catscompany', 120)
+      : []),
+  ]
+    .slice()
+    .reverse()
+    .find(line => /Unexpected server response:\s*409|upgrade_http_409|bot already connected from body/i.test(line));
+  if (!leaseRejected) return bodyStatus;
+  return {
+    ...bodyStatus,
+    state: 'conflict',
+    conflictReason: 'active_lease_rejected',
+    error: 'CatsCo 拒绝了本机 Bot 连接：这个 Bot 仍在另一台设备上运行。请先关闭另一台设备上的 Bot，再点击“重新连接”。',
+  };
+}
+
 function sanitizeCatsErrorData(data: unknown): unknown {
   if (!data || typeof data !== 'object') return undefined;
   const safe: Record<string, unknown> = {};
@@ -2224,6 +2305,21 @@ function sanitizeCatsErrorData(data: unknown): unknown {
         ...(typeof preflight.status === 'string' ? { status: preflight.status } : {}),
         ...(Array.isArray(preflight.blockingChecks)
           ? { blockingChecks: preflight.blockingChecks.filter(item => typeof item === 'string') }
+          : {}),
+        ...(Array.isArray(preflight.blockingDetails)
+          ? {
+            blockingDetails: preflight.blockingDetails
+              .filter(item => item && typeof item === 'object')
+              .map(item => {
+                const detail = item as Record<string, unknown>;
+                return {
+                  ...(typeof detail.id === 'string' ? { id: detail.id } : {}),
+                  ...(typeof detail.label === 'string' ? { label: sanitizeCatsErrorMessage(detail.label) } : {}),
+                  ...(typeof detail.message === 'string' ? { message: sanitizeCatsErrorMessage(detail.message) } : {}),
+                };
+              })
+              .filter(item => item.id || item.label || item.message),
+          }
           : {}),
         ...(Array.isArray(preflight.warningChecks)
           ? { warningChecks: preflight.warningChecks.filter(item => typeof item === 'string') }
@@ -3736,10 +3832,17 @@ export function createApiRouter(
     }
 
     const localBodyId = runtime.localConfig.device?.bodyId;
-    const deviceConnectorMode = Boolean(runtime.connector?.connectorToken);
-    const bodyStatus = deviceConnectorMode
+    const runtimeMode = resolveCatsCoRuntimeMode(runtime.localConfig);
+    // A retained device token is not the active identity while the user is
+    // explicitly running a legacy/local Bot. Keep this field consistent with
+    // runtimeMode so the Dashboard and auto-start loop cannot disagree during
+    // a compatibility transition.
+    const deviceConnectorMode = runtimeMode === 'connector'
+      && Boolean(runtime.connector?.connectorToken);
+    const rawBodyStatus = deviceConnectorMode
       ? { state: 'device_connector' as const, active: Boolean(runtime.connectorReady), localBodyId, checkedAt: new Date().toISOString() }
       : await getCatsBotBodyStatus(state, state.botUid, localBodyId);
+    const bodyStatus = annotateLocalBotLeaseConflict(serviceManager, runtimeMode, rawBodyStatus);
     const bodyBlocking = !deviceConnectorMode && (bodyStatus.state === 'conflict' || bodyStatus.state === 'auth_error');
     const chatReady = connected && runtime.bodyConfigured && !bodyBlocking;
     const boundBotId = String(state.botUid || '').trim();
@@ -3775,6 +3878,7 @@ export function createApiRouter(
       user,
       botUid: state.botUid || null,
       deviceConnectorMode,
+      runtimeMode,
       connectorTokenExpiresAt: state.connectorTokenExpiresAt || null,
       bot: visibleBot ? {
         uid: visibleBot.uid,
@@ -4000,6 +4104,7 @@ export function createApiRouter(
             preflight: {
               status: result.preflight.status,
               blockingChecks: result.preflight.blockingChecks,
+              blockingDetails: preflightBlockingDetails(result.preflight),
               warningChecks: result.preflight.warningChecks,
             },
           });
@@ -4028,7 +4133,12 @@ export function createApiRouter(
         acknowledgeCloudSelection: false,
         preserveSkills,
       });
-      const result = await startCatsCompanyConnectorIfReady(serviceManager);
+      const result = await startCatsCompanyConnectorIfReady(serviceManager, {
+        // A local-Bot retry must replace a stale Connector child that may
+        // still be alive after an interrupted mode transition. In Connector
+        // mode a healthy running child is left untouched.
+        restartIfRunning: resolveCatsCoRuntimeMode(runtime.localConfig) === 'local_bot',
+      });
       if (!result.service) {
         return res.status(409).json({ error: 'CatsCompany connector service is unavailable' });
       }
@@ -4038,6 +4148,7 @@ export function createApiRouter(
           preflight: {
             status: result.preflight.status,
             blockingChecks: result.preflight.blockingChecks,
+            blockingDetails: preflightBlockingDetails(result.preflight),
             warningChecks: result.preflight.warningChecks,
           },
         });
@@ -4478,6 +4589,207 @@ export function createApiRouter(
       res.json(createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).toDashboardConfigPayload());
     } catch (e: any) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // The default Dashboard remains a device Connector. This compatibility
+  // endpoint is intentionally separate from the main UI so older users can
+  // explicitly resume one of their local Bots without making Bot identity a
+  // prerequisite for ordinary Connector use.
+  router.get('/cats/runtime-mode', async (_req, res) => {
+    try {
+      const runtime = resolveCatsCoRuntimeConfig({
+        runtimeRoot: runtimeDataRoot(),
+        config: ConfigManager.getConfigReadonly(),
+      });
+      const localBot = runtime.localConfig.currentBot;
+      const localBotVisible = localBot
+        && localBot.boundByUserUid
+        && localBot.boundByUserUid === runtime.auth.uid
+        && localBot.uid
+        && localBot.apiKey
+        ? {
+          uid: localBot.uid,
+          name: localBot.name || '本地 Bot',
+          username: localBot.username || '',
+          boundAt: localBot.boundAt || '',
+        }
+        : null;
+      res.json({
+        ok: true,
+        runtimeMode: resolveCatsCoRuntimeMode(runtime.localConfig),
+        localBot: localBotVisible,
+        hasConnectorCredential: Boolean(runtime.localConfig.device?.connectorToken),
+        service: serviceManager.getService('catscompany') || null,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.get('/cats/runtime-bots', async (_req, res) => {
+    try {
+      const state = trustCatsAuthStateEndpoints(getCatsAuthState());
+      if (!state.token || !state.uid) return res.status(401).json({ error: 'CatsCo user login is required' });
+      const data = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
+      const bots = (Array.isArray(data?.bots) ? data.bots : [])
+        .filter((bot: any) => isOwnedCatsBot(bot, state.uid))
+        .map((bot: any) => ({
+          uid: String(bot.id || bot.uid || ''),
+          username: String(bot.username || ''),
+          display_name: String(bot.display_name || bot.username || 'Bot'),
+        }))
+        .filter((bot: any) => bot.uid);
+      return res.json({ ok: true, bots });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      return res.status(payload.status).json(payload.body);
+    }
+  });
+
+  router.post('/cats/runtime-mode', async (req, res) => {
+    const requestedMode = String(req.body?.runtimeMode || req.body?.mode || '').trim() as CatsCoRuntimeMode;
+    if (requestedMode !== 'connector' && requestedMode !== 'local_bot') {
+      return res.status(400).json({ error: 'runtimeMode must be connector or local_bot' });
+    }
+    try {
+      const state = trustCatsAuthStateEndpoints(getCatsAuthState());
+      if (!state.token || !state.uid) return res.status(401).json({ error: 'CatsCo user login is required' });
+      const localConfig = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() });
+
+      if (requestedMode === 'connector') {
+        const previousRuntimeMode = resolveCatsCoRuntimeMode(localConfig.load());
+        localConfig.setRuntimeMode('connector');
+        // The bootstrap controller owns provisioning and the child-process
+        // handoff. Schedule it and return immediately so the UI is not held
+        // open while a previous local-Bot process exits.
+        if (options.catsConnectorAutoStart && options.manageConnector !== false) {
+          await options.catsConnectorAutoStart.stopAndWait();
+          // A running local Bot has already loaded its Bot API key into the
+          // child environment. It must exit before the Connector starts, or
+          // the old Bot remains online even though the config says connector.
+          if (previousRuntimeMode === 'local_bot') {
+            await serviceManager.stopAndWait('catscompany');
+          }
+          const snapshot = options.catsConnectorAutoStart.invalidateAndSchedule(
+            'runtime-mode',
+            0,
+            { force: true },
+          );
+          return res.status(202).json({
+            ok: true,
+            runtimeMode: 'connector',
+            pending: true,
+            bootstrap: snapshot,
+            service: serviceManager.getService('catscompany') || null,
+          });
+        }
+        const current = localConfig.load();
+        const expiresAt = Number(current.device?.connectorTokenExpiresAt || 0);
+        if (!current.device?.connectorToken || (expiresAt > 0 && expiresAt <= Date.now())) {
+          await provisionCatsDeviceConnector(state);
+        }
+        // Let ServiceManager own the stop/start handoff. Calling stop() here
+        // and then checking status immediately races with the child exit on
+        // Windows, leaving the old local-Bot process alive while the response
+        // says that the Connector is waiting to start.
+        const result = await startCatsCompanyConnectorIfReady(serviceManager, { restartIfRunning: true });
+        if (result.preflight?.status === 'blocked') {
+          return res.status(400).json({
+            error: 'CatsCo device connector preflight blocked',
+            preflight: {
+              status: result.preflight.status,
+              blockingChecks: result.preflight.blockingChecks,
+              blockingDetails: preflightBlockingDetails(result.preflight),
+              warningChecks: result.preflight.warningChecks,
+            },
+          });
+        }
+        return res.json({
+          ok: true,
+          runtimeMode: 'connector',
+          service: result.service,
+          connectorStarted: result.connectorStarted,
+        });
+      }
+
+      const botUid = String(req.body?.botUid || '').trim();
+      if (!botUid) return res.status(400).json({ error: 'botUid is required for local_bot mode' });
+      const me = await catsRequest('GET', state.httpBaseUrl, '/api/me', undefined, state.token);
+      const userUid = String(me.uid || state.uid || '').trim();
+      const data = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
+      const bots = Array.isArray(data?.bots) ? data.bots : [];
+      const targetBot = bots.find((bot: any) => String(bot.id || bot.uid || '') === botUid);
+      if (!targetBot) return res.status(404).json({ error: 'Bot not found' });
+      if (!isOwnedCatsBot(targetBot, userUid)) {
+        return res.status(403).json({ error: '当前账号只能运行自己拥有的本地 Bot' });
+      }
+      const apiKey = await getCatsBotApiKey(state, botUid, targetBot);
+      // Refuse before stopping the current Connector when the selected Bot
+      // is visibly leased by another body. An inactive historical binding is
+      // safe: CatsCompany will rebind it when this Bot connects.
+      const localBodyId = String(localConfig.load().device?.bodyId || '').trim();
+      const selectedBodyStatus = await getCatsBotBodyStatus(state, botUid, localBodyId);
+      if (selectedBodyStatus.state === 'conflict') {
+        throw codedHttpError(
+          '这个本机 Bot 当前仍在另一台设备上运行。请先关闭另一台设备上的 Bot，再重试。',
+          409,
+          'BOT_BODY_ACTIVE_OTHER_DEVICE',
+        );
+      }
+      // A durable body binding is not changed by a normal disconnect. If the
+      // previous body is known to be offline, let the owner-authorized server
+      // transfer endpoint move the binding before stopping the current
+      // Connector. Never attempt this for an unknown or active status.
+      const previousBodyId = String(selectedBodyStatus.platformBodyId || '').trim();
+      if (
+        selectedBodyStatus.state === 'offline'
+        && localBodyId
+        && previousBodyId
+        && previousBodyId !== localBodyId
+      ) {
+        await transferCatsBotBodyBinding(state, botUid, localBodyId);
+      }
+      if (options.catsConnectorAutoStart) {
+        await options.catsConnectorAutoStart.stopAndWait();
+      }
+      const result = await commitCatsBotBindingAndStartConnector(serviceManager, state, {
+        userUid,
+        username: me.username || state.username || '',
+        displayName: me.display_name || me.username || state.displayName || '',
+        botUid,
+        botName: targetBot.display_name || targetBot.username || 'Bot',
+        botUsername: targetBot.username || '',
+        apiKey,
+        bindingSource: 'compatibility-local-bot',
+      });
+      if (result.preflight?.status === 'blocked') {
+        return res.status(400).json({
+          error: '本地 Bot 启动前检查未通过',
+          preflight: {
+            status: result.preflight.status,
+            blockingChecks: result.preflight.blockingChecks,
+            blockingDetails: preflightBlockingDetails(result.preflight),
+            warningChecks: result.preflight.warningChecks,
+          },
+        });
+      }
+      return res.json({
+        ok: true,
+        runtimeMode: 'local_bot',
+        bot: {
+          uid: botUid,
+          name: targetBot.display_name || targetBot.username || 'Bot',
+          username: targetBot.username || '',
+        },
+        service: result.service,
+        connectorStarted: result.connectorStarted,
+        connectorRestarted: result.connectorRestarted,
+        warnings: result.warnings.length > 0 ? result.warnings : undefined,
+      });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      return res.status(payload.status).json(payload.body);
     }
   });
 

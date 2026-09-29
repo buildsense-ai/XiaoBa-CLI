@@ -31,6 +31,13 @@ test('real Connector Dashboard exposes four runtime states without local Bot cre
   assert.match(html, /id="device-connector-status"/);
   assert.doesNotMatch(html, /当前 Agent|切换 Agent|agent-switch-open/);
   assert.doesNotMatch(script, /\/cats\/switch-bot|\/cats\/bots/);
+  assert.match(html, /id="compatibility-entry"/);
+  assert.match(script, /\/cats\/runtime-mode/);
+  assert.match(script, /\/cats\/runtime-bots/);
+  assert.ok(
+    html.indexOf('id="hero-actions"') < html.indexOf('id="error-card"'),
+    'retry actions should appear before the error details so they are visible without scrolling',
+  );
 });
 
 test('Connector UI does not expose legacy Bot identity or switching controls', () => {
@@ -48,6 +55,24 @@ test('Connector UI does not expose legacy Bot identity or switching controls', (
   assert.match(script, /login-account'\)\?\.focus/);
   assert.match(script, /当前账号无法使用旧版 Bot 绑定/);
   assert.match(script, /setNotice\(`\$\{title\}：\$\{detail\}`/);
+  assert.match(script, /可直接与该 Bot 对话/);
+  assert.doesNotMatch(script, /设备 Connector 已暂停/);
+  assert.doesNotMatch(script, /需要恢复云端 Bot 的本地能力时/);
+  assert.doesNotMatch(script, /云端 Connector 功能会暂停/);
+  assert.match(script, /state\.compatibilityBusy \|\| state\.runtimeAutoRetry\?\.mode === runtimeMode\) return \{ key: 'connecting' \}/);
+  assert.match(script, /compatibility-dialog'\)\?\.close\(\)/);
+  assert.match(script, /const RUNTIME_AUTO_RETRY_LIMIT = 6/);
+  assert.match(script, /RUNTIME_AUTO_RETRY_DELAY_MS = 2500/);
+  assert.match(script, /RUNTIME_AUTO_RESTART_AFTER = 3/);
+  assert.match(script, /runRuntimeAutoRetry\(mode\)/);
+  assert.match(script, /await refresh\(\{ force: true \}\)/);
+  assert.match(script, /bodyReady = mode === 'local_bot'/);
+  assert.match(script, /本机 Bot 已连接，可直接与该 Bot 对话/);
+  assert.match(script, /正在等待本机 Bot 连接 CatsCo/);
+  assert.match(script, /bodyState === 'offline' && service\.status === 'running'/);
+  assert.match(script, /本机 Bot 正在自动重连，请稍候。/);
+  assert.match(script, /scheduleRuntimeAutoRetry\(runtimeMode\)/);
+  assert.match(script, /active_lease_owned_by_other_body/);
 });
 
 test('Connector local management keeps only the run log workspace', () => {
@@ -128,11 +153,14 @@ test('Connector client uses real lifecycle APIs and remains syntax-valid', () =>
   assert.match(script, /cats\.connected/);
   assert.match(script, /cats\.chatReady/);
   assert.match(script, /service\.status === 'running'/);
+  assert.match(script, /connectorCredentialsReady/);
+  assert.match(script, /等待连接/);
   assert.match(script, /bodyStatus\?\.state !== 'offline'/);
   assert.match(script, /webapp-button.*addEventListener\('click'/s);
   assert.match(script, /openWebAppFromDashboard/);
   assert.match(styles, /\.management-entry strong/);
   assert.match(styles, /\.toolbar-actions/);
+  assert.match(styles, /body\[data-view="error"\] \.primary-content[\s\S]*justify-content: flex-start/);
 });
 
 test('Connector Dashboard is the real root and uses a viewport-bound desktop layout', () => {
@@ -257,6 +285,116 @@ test('background bootstrap uses the fast start path for an existing binding', as
     assert.equal(snapshot.stage, 'connected');
     assert.equal(paths.some((url) => url.endsWith('/cats/connector/start')), true);
     assert.equal(paths.some((url) => url.endsWith('/cats/setup')), false);
+  } finally {
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test('background bootstrap returns a previous local-Bot session to Connector', async () => {
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'catsco-connector-local-bot-'));
+  const configDir = join(runtimeRoot, '.xiaoba');
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, 'catsco.json'), JSON.stringify({
+    version: 1,
+    runtimeMode: 'local_bot',
+    account: { token: 'test-user-token', uid: 'usr-test' },
+    currentBot: {
+      uid: 'bot-test',
+      apiKey: 'test-bot-key',
+      boundByUserUid: 'usr-test',
+      bindingSource: 'compatibility-local-bot',
+    },
+    device: {
+      deviceId: 'device-test',
+      bodyId: 'device-test',
+      installationId: 'device-test',
+      connectorToken: 'retained-device-token',
+    },
+    preferences: { autoConnect: true },
+  }), 'utf-8');
+
+  const paths: string[] = [];
+  try {
+    const controller = new CatsConnectorAutoStart({
+      port: 3800,
+      runtimeRoot,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        paths.push(url);
+        if (url.endsWith('/cats/status')) {
+          return jsonResponse({
+            connected: true,
+            deviceConnectorMode: true,
+            runtimeMode: 'connector',
+            bodyConfigured: true,
+            configured: true,
+            service: { status: 'stopped' },
+          });
+        }
+        if (url.endsWith('/cats/device-connector/provision')) {
+          return jsonResponse({ ok: true, reused: true, refreshed: false });
+        }
+        if (url.endsWith('/cats/connector/start')) return jsonResponse({ ok: true });
+        return jsonResponse({ error: 'unexpected request' }, 500);
+      },
+    });
+    const snapshot = await controller.run('startup');
+    assert.equal(snapshot.stage, 'connected');
+    assert.equal(paths.some((url) => url.endsWith('/cats/device-connector/provision')), true);
+    assert.equal(paths.some((url) => url.endsWith('/cats/connector/start')), true);
+    const persisted = createCatsCoLocalConfigService({ runtimeRoot }).load();
+    assert.equal(persisted.runtimeMode, 'connector');
+    assert.equal(persisted.currentBot?.uid, 'bot-test');
+  } finally {
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test('background bootstrap surfaces safe preflight blocker details', async () => {
+  const runtimeRoot = createRuntimeConfig('catsco-connector-preflight-detail-', {
+    version: 1,
+    account: { token: 'test-user-token', uid: 'usr-test' },
+    preferences: { autoConnect: true },
+  });
+  try {
+    const controller = new CatsConnectorAutoStart({
+      port: 3800,
+      runtimeRoot,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/cats/status')) {
+          return jsonResponse({
+            connected: true,
+            deviceConnectorMode: true,
+            bodyConfigured: true,
+            configured: true,
+            service: { status: 'stopped' },
+          });
+        }
+        if (url.endsWith('/cats/device-connector/provision')) {
+          return jsonResponse({ ok: true, reused: true, refreshed: false });
+        }
+        if (url.endsWith('/cats/connector/start')) {
+          return jsonResponse({
+            error: 'CatsCo device connector preflight blocked',
+            preflight: {
+              status: 'blocked',
+              blockingDetails: [{
+                id: 'model.custom.credential',
+                label: '自定义模型访问凭证',
+                message: '需要先配置自定义模型访问凭证',
+              }],
+            },
+          }, 400);
+        }
+        return jsonResponse({ error: 'unexpected request' }, 500);
+      },
+    });
+
+    const snapshot = await controller.run('startup');
+    assert.equal(snapshot.stage, 'error');
+    assert.match(snapshot.error || '', /自定义模型访问凭证/);
+    assert.match(snapshot.error || '', /需要先配置自定义模型访问凭证/);
   } finally {
     rmSync(runtimeRoot, { recursive: true, force: true });
   }

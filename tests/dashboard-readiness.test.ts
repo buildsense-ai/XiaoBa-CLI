@@ -228,6 +228,52 @@ describe('dashboard readiness and service preflight API', () => {
     assert.equal(readinessText.includes('sk-bf-relay-secret'), false);
   });
 
+  test('device Connector startup does not require a local model credential', async () => {
+    writeEnv([
+      'CATSCO_HTTP_BASE_URL=https://app.catsco.cc',
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_USER_TOKEN=user-token',
+      'CATSCO_USER_UID=100',
+      'CATSCO_CONNECTOR_TOKEN=device-connector-token',
+      `CATSCO_CONNECTOR_TOKEN_EXPIRES_AT=${Date.now() + 60 * 60 * 1000}`,
+      'CATSCO_DEVICE_ID=device-readiness',
+      'CATSCO_BODY_ID=device-readiness',
+      'CATSCO_INSTALLATION_ID=device-readiness',
+    ]);
+    createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'user-token',
+        uid: '100',
+      },
+      device: {
+        deviceId: 'device-readiness',
+        bodyId: 'device-readiness',
+        installationId: 'device-readiness',
+      },
+    });
+
+    const preflightResponse = await fetch(`${baseUrl}/api/services/catscompany/preflight`, { method: 'POST' });
+    const preflightText = await preflightResponse.text();
+    const preflight = JSON.parse(preflightText) as any;
+    assert.equal(preflightResponse.status, 200, preflightText);
+    assert.notEqual(preflight.status, 'blocked');
+    assert.deepStrictEqual(preflight.blockingChecks, []);
+    assert.equal(preflight.checks.some((check: any) => check.id === 'model.deviceConnector' && check.status === 'pass'), true);
+    assert.equal(preflightText.includes('device-connector-token'), false);
+
+    const readinessResponse = await fetch(`${baseUrl}/api/readiness/details`);
+    const readiness = await readinessResponse.json() as any;
+    const model = readiness.sections.find((section: any) => section.id === 'model');
+    assert.equal(model.status, 'ready');
+    assert.equal(model.summary, '本机设备 Connector 不需要配置本地模型');
+    assert.equal(model.checks.some((check: any) => check.id === 'model.deviceConnector' && check.status === 'pass'), true);
+  });
+
   test('custom startup readiness can use a relay gateway endpoint without being treated as managed relay', async () => {
     writeEnv([
       'CATSCO_MODEL_SOURCE=custom',

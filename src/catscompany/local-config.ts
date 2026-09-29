@@ -31,6 +31,9 @@ export interface CatsCoLocalDevice {
   connectorTokenExpiresAt?: number;
 }
 
+/** The identity that owns the single local catscompany process. */
+export type CatsCoRuntimeMode = 'connector' | 'local_bot';
+
 export interface CatsCoLocalConfig {
   version: 1;
   endpoints?: {
@@ -39,6 +42,12 @@ export interface CatsCoLocalConfig {
     preferredFamily?: CatsCoDomainFamily;
   };
   account?: CatsCoLocalAccount;
+  /**
+   * Explicitly records whether the desktop process is a device Connector or
+   * a legacy/local Bot. Older installations omit this field and are inferred
+   * from their stored credentials for backwards compatibility.
+   */
+  runtimeMode?: CatsCoRuntimeMode;
   currentBot?: CatsCoLocalBot;
   /** Previous account's Bot binding retained for rollback and migration audit. */
   legacyBot?: CatsCoLocalBot;
@@ -49,6 +58,22 @@ export interface CatsCoLocalConfig {
     closeToTray?: boolean;
   };
   updatedAt?: string;
+}
+
+export function resolveCatsCoRuntimeMode(
+  config: Pick<CatsCoLocalConfig, 'runtimeMode' | 'currentBot' | 'device'>,
+): CatsCoRuntimeMode {
+  if (config.runtimeMode === 'local_bot' || config.runtimeMode === 'connector') {
+    return config.runtimeMode;
+  }
+  // A device token is the new default identity. If an old installation has
+  // only a confirmed Bot binding, preserve its legacy local-Bot behaviour
+  // until the user explicitly enters the Connector flow.
+  if (String(config.device?.connectorToken || '').trim()) return 'connector';
+  if (String(config.currentBot?.uid || '').trim() && String(config.currentBot?.apiKey || '').trim()) {
+    return 'local_bot';
+  }
+  return 'connector';
 }
 
 /** Whether the logged-in device has an active connector credential. */
@@ -382,6 +407,7 @@ export class CatsCoLocalConfigService {
       : [];
     this.save({
       ...config,
+      runtimeMode: accountChanged ? 'connector' : config.runtimeMode,
       endpoints: {
         ...(config.endpoints || {}),
         httpBaseUrl: state.httpBaseUrl,
@@ -483,6 +509,7 @@ export class CatsCoLocalConfigService {
     };
     this.save({
       ...config,
+      runtimeMode: 'connector',
       endpoints: {
         ...(config.endpoints || {}),
         httpBaseUrl: input.state.httpBaseUrl,
@@ -524,6 +551,7 @@ export class CatsCoLocalConfigService {
     const config = this.load();
     this.save({
       ...config,
+      runtimeMode: 'local_bot',
       endpoints: {
         ...(config.endpoints || {}),
         httpBaseUrl: state.httpBaseUrl,
@@ -580,6 +608,7 @@ export class CatsCoLocalConfigService {
     const config = this.load();
     this.save({
       ...config,
+      runtimeMode: 'connector',
       account: undefined,
       device: config.device
         ? { ...config.device, connectorToken: undefined, connectorTokenExpiresAt: undefined }
@@ -669,6 +698,14 @@ export class CatsCoLocalConfigService {
     return next;
   }
 
+  setRuntimeMode(mode: CatsCoRuntimeMode): CatsCoRuntimeMode {
+    const nextMode: CatsCoRuntimeMode = mode === 'local_bot' ? 'local_bot' : 'connector';
+    const config = this.load();
+    if (config.runtimeMode === nextMode) return nextMode;
+    this.save({ ...config, runtimeMode: nextMode });
+    return nextMode;
+  }
+
   toDashboardConfigPayload(): Record<string, unknown> {
     const state = this.getAuthState();
     const config = this.load();
@@ -684,6 +721,7 @@ export class CatsCoLocalConfigService {
       configPath: this.configPath,
       hasAccount: Boolean(state.token && state.uid),
       hasBot: hasConfirmedBot,
+      runtimeMode: resolveCatsCoRuntimeMode(config),
       account: state.uid
         ? { uid: state.uid, username: state.username || '', displayName: state.displayName || state.username || '' }
         : null,

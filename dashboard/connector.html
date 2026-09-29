@@ -65,17 +65,23 @@
               <li data-step="connector"><span></span><div><strong>启动 Connector</strong><small>让 WebApp 可以调用这台电脑</small></div></li>
             </ol>
 
-            <div class="error-card" id="error-card" role="alert" hidden>
-              <strong id="error-title">自动连接未完成</strong>
-              <p id="error-copy"></p>
-            </div>
-
             <div class="hero-actions" id="hero-actions">
               <a class="button button-primary external-link" id="webapp-button" href="https://app.catsco.cn" target="_blank" rel="noopener noreferrer" hidden>打开 CatsCo WebApp</a>
               <button class="button button-danger" id="logout-button" type="button" hidden>退出账号</button>
               <button class="button button-secondary" id="retry-button" type="button" hidden>重新连接</button>
             </div>
+
+            <div class="error-card" id="error-card" role="alert" hidden>
+              <strong id="error-title">自动连接未完成</strong>
+              <p id="error-copy"></p>
+            </div>
+
             <p class="close-hint" id="close-hint" hidden>可以直接关闭此窗口，Connector 会继续在后台运行。</p>
+          </div>
+
+          <div class="compatibility-entry" id="compatibility-entry" hidden>
+            <button class="text-link" id="compatibility-open" type="button">兼容入口</button>
+            <small>仅供需要继续运行本机 Bot 的历史用户使用</small>
           </div>
 
           <button class="management-entry" id="management-open" type="button">
@@ -204,6 +210,37 @@
       <footer class="connector-dialog-footer">
         <button class="button button-quiet" id="logout-cancel" type="submit" value="cancel">取消</button>
         <button class="button button-danger" id="logout-confirm" type="button">退出账号</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog class="connector-dialog compatibility-dialog" id="compatibility-dialog" aria-labelledby="compatibility-title">
+    <form method="dialog" class="connector-dialog-shell">
+      <header class="connector-dialog-header">
+        <div>
+          <h2 id="compatibility-title">兼容运行方式</h2>
+          <p>默认模式是本机 Connector。只有需要继续和本机 Bot 对话时，才在这里显式选择。</p>
+        </div>
+        <button class="dialog-close" id="compatibility-close" type="submit" value="cancel" aria-label="关闭">×</button>
+      </header>
+      <div class="connector-dialog-body compatibility-dialog-body">
+        <div class="compatibility-current">
+          <span>当前运行方式</span>
+          <strong id="runtime-mode-label">本机 Connector</strong>
+          <small id="runtime-mode-meta">云端 Bot 可以通过 WebApp 使用这台电脑。</small>
+        </div>
+        <label class="compatibility-select-label" id="local-bot-select-wrap">
+          <span>选择本机运行的 Bot</span>
+          <select id="local-bot-select">
+            <option value="">正在读取可用 Bot…</option>
+          </select>
+          <small>这里只是兼容入口，不会影响你在 WebApp 中添加或使用云端 Bot。</small>
+        </label>
+        <p class="compatibility-error" id="compatibility-error" role="alert"></p>
+      </div>
+      <footer class="connector-dialog-footer compatibility-dialog-footer">
+        <button class="button button-secondary" id="runtime-connector-button" type="button">恢复本机 Connector</button>
+        <button class="button button-primary" id="runtime-local-bot-button" type="button">运行选中的 Bot</button>
       </footer>
     </form>
   </dialog>

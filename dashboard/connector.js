@@ -104,6 +104,8 @@
   const state = {
     app: {},
     cats: {},
+    runtime: {},
+    runtimeBots: [],
     bootstrap: {},
     services: [],
     update: {},
@@ -119,7 +121,13 @@
     updatePollTimer: null,
     updateStatusInFlight: null,
     updateActionBusy: false,
+    compatibilityBusy: false,
+    runtimeAutoRetry: null,
   };
+
+  const RUNTIME_AUTO_RETRY_LIMIT = 6;
+  const RUNTIME_AUTO_RETRY_DELAY_MS = 2500;
+  const RUNTIME_AUTO_RESTART_AFTER = 3;
 
   const $ = (id) => document.getElementById(id);
   const setText = (id, value) => {
@@ -141,6 +149,27 @@
       throw error;
     }
     return data;
+  }
+
+  // Runtime-mode changes can outlive the HTTP request: on Windows the old
+  // child process may still be exiting while the replacement Connector is
+  // being scheduled. Keep the dialog responsive instead of making the whole
+  // Dashboard wait forever for a lifecycle handshake.
+  async function requestWithTimeout(path, init = {}, timeoutMs = 12000) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await request(path, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        const timeoutError = new Error('切换请求仍在后台执行，Connector 会继续尝试连接。');
+        timeoutError.code = 'REQUEST_TIMEOUT';
+        throw timeoutError;
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+    }
   }
 
   async function settled(path) {
@@ -167,6 +196,8 @@
       if (bootstrap.ok) state.bootstrap = bootstrap.value;
       if (services.ok) state.services = Array.isArray(services.value) ? services.value : [];
       if (update.ok) state.update = update.value;
+      const runtime = await settled('/cats/runtime-mode');
+      if (runtime.ok) state.runtime = runtime.value;
       render();
     })();
     state.refreshInFlight = run;
@@ -193,45 +224,184 @@
     return state.cats.service || state.services.find((service) => service.name === 'catscompany') || {};
   }
 
+  function clearRuntimeAutoRetry() {
+    if (state.runtimeAutoRetry?.timer) window.clearTimeout(state.runtimeAutoRetry.timer);
+    state.runtimeAutoRetry = null;
+  }
+
+  function runtimeModeReady(mode) {
+    const cats = state.cats || {};
+    const service = connectorService();
+    const bodyReady = mode === 'local_bot'
+      ? cats.bodyStatus?.state === 'online'
+      : cats.bodyStatus?.state !== 'offline';
+    return cats.runtimeMode === mode
+      && cats.connected
+      && cats.chatReady
+      && service.status === 'running'
+      && bodyReady;
+  }
+
+  function runtimeRetryable(mode) {
+    const cats = state.cats || {};
+    const service = connectorService();
+    return cats.runtimeMode === mode
+      && cats.bodyStatus?.state !== 'online'
+      && cats.bodyStatus?.conflictReason !== 'active_lease_owned_by_other_body'
+      && cats.bodyStatus?.conflictReason !== 'active_lease_rejected'
+      && cats.bodyStatus?.state !== 'conflict'
+      && cats.bodyStatus?.state !== 'auth_error'
+      && service.status !== 'error';
+  }
+
+  function scheduleRuntimeAutoRetry(mode) {
+    if (runtimeModeReady(mode)) {
+      clearRuntimeAutoRetry();
+      return;
+    }
+    if (!runtimeRetryable(mode)) {
+      clearRuntimeAutoRetry();
+      return;
+    }
+    const current = state.runtimeAutoRetry;
+    if (current?.timer || (current?.mode !== mode && current?.attempts >= RUNTIME_AUTO_RETRY_LIMIT)) return;
+    const attempts = current?.mode === mode ? current.attempts + 1 : 1;
+    if (attempts > RUNTIME_AUTO_RETRY_LIMIT) {
+      clearRuntimeAutoRetry();
+      render();
+      return;
+    }
+    state.runtimeAutoRetry = {
+      mode,
+      attempts,
+      restarted: current?.mode === mode ? Boolean(current.restarted) : false,
+      timer: null,
+    };
+    state.bootstrap = {
+      ...(state.bootstrap || {}),
+      stage: 'connecting',
+      message: `正在等待本机 Bot 连接，系统将自动重试（${attempts}/${RUNTIME_AUTO_RETRY_LIMIT}）`,
+    };
+    render();
+    state.runtimeAutoRetry.timer = window.setTimeout(() => {
+      if (state.runtimeAutoRetry?.mode !== mode) return;
+      state.runtimeAutoRetry.timer = null;
+      void runRuntimeAutoRetry(mode);
+    }, RUNTIME_AUTO_RETRY_DELAY_MS);
+  }
+
+  async function runRuntimeAutoRetry(mode) {
+    const current = state.runtimeAutoRetry;
+    if (!current || current.mode !== mode) return;
+    try {
+      // Let the process finish its normal WebSocket handshake first. The
+      // manual button restarts the process, but doing that on every poll can
+      // interrupt a Bot that is already starting successfully.
+      await refresh({ force: true });
+      if (runtimeModeReady(mode)) {
+        clearRuntimeAutoRetry();
+        render();
+        return;
+      }
+      if (!runtimeRetryable(mode)) {
+        clearRuntimeAutoRetry();
+        render();
+        return;
+      }
+      const latest = state.runtimeAutoRetry;
+      if (!latest || latest.mode !== mode) return;
+      if (!latest.restarted && latest.attempts >= RUNTIME_AUTO_RESTART_AFTER) {
+        latest.restarted = true;
+        await retry({ automatic: true });
+        return;
+      }
+      scheduleRuntimeAutoRetry(mode);
+    } catch (error) {
+      if (runtimeRetryable(mode)) {
+        scheduleRuntimeAutoRetry(mode);
+      } else {
+        clearRuntimeAutoRetry();
+        render();
+        showToast(`自动重试失败：${humanError(error)}`);
+      }
+    }
+  }
+
   function deriveView() {
     const cats = state.cats || {};
     const bootstrap = state.bootstrap || {};
     const service = connectorService();
+    const runtimeMode = cats.runtimeMode || state.runtime?.runtimeMode || 'connector';
     const bodyState = cats.bodyStatus?.state;
+    // A mode switch changes the process first and establishes the WebSocket
+    // a little later. Keep this handoff in the neutral connecting view instead
+    // of showing a red failure that users may mistake for a terminal error.
+    if (state.compatibilityBusy || state.runtimeAutoRetry?.mode === runtimeMode) return { key: 'connecting' };
     const ready = Boolean(
       cats.connected
       && cats.chatReady
       && service.status === 'running'
       && cats.bodyStatus?.state !== 'offline',
     );
-    if (ready) return { key: 'ready' };
+    if (ready) return { key: 'ready', runtimeMode };
     if (cats.loadError) return { key: 'error', title: '无法读取本地状态', error: cats.loadError };
     if (!cats.connected || cats.authStatus === 'missing' || cats.authStatus === 'invalid' || bootstrap.stage === 'waiting_for_login') {
       return { key: 'auth', error: cats.authError || (bootstrap.stage === 'waiting_for_login' ? bootstrap.error : '') };
     }
-    if (!cats.deviceConnectorMode && bodyState === 'conflict') {
+    if (runtimeMode === 'local_bot' && bodyState === 'conflict') {
+      return {
+        key: 'error',
+        title: '本机 Bot 在其他设备运行',
+        error: '这个 Bot 当前已经在其他设备上运行。请先停止另一台设备上的 Bot，再重试。',
+      };
+    }
+    // CatsCompany keeps the child process alive and reconnects its WebSocket
+    // with backoff after a transport drop. While that process is still
+    // running, an offline body is transient rather than a terminal error.
+    if (runtimeMode === 'local_bot' && bodyState === 'offline' && service.status === 'running') {
+      return { key: 'connecting' };
+    }
+    if (runtimeMode === 'local_bot' && bodyState === 'offline') {
+      return {
+        key: 'error',
+        title: '本机 Bot 未连接',
+        error: '本机 Bot 当前没有连接到 CatsCo。请点击“重新连接”重试，或在运行日志中查看启动原因。',
+      };
+    }
+    if (runtimeMode === 'local_bot' && bodyState === 'auth_error') {
+      return {
+        key: 'error',
+        title: '本机 Bot 授权无效',
+        error: '当前账号无法使用这个 Bot。请确认这个 Bot 属于当前账号。',
+      };
+    }
+    // A failed local-Bot start must surface its real preflight/service error;
+    // do not let the legacy migration wording mask it. Lease conflicts above
+    // take precedence so a 409 is actionable instead of looking like a
+    // generic startup failure.
+    if (bootstrap.stage === 'error' || service.status === 'error') {
+      return {
+        key: 'error',
+        title: runtimeMode === 'local_bot' ? '本机 Bot 启动未完成' : '自动连接未完成',
+        error: bootstrap.error || service.lastError || 'Connector 启动失败，请重试。',
+      };
+    }
+    if (runtimeMode !== 'local_bot' && !cats.deviceConnectorMode && bodyState === 'conflict') {
       return {
         key: 'error',
         title: '旧版连接仍在其他设备运行',
         error: '正在迁移旧版本地连接。请稍后重试；如果问题持续，请打开运行日志联系支持人员。',
       };
     }
-    if (!cats.deviceConnectorMode && bodyState === 'offline') {
+    if (runtimeMode !== 'local_bot' && !cats.deviceConnectorMode && bodyState === 'offline') {
       return {
         key: 'error',
         title: '旧版连接需要迁移',
         error: 'Connector 正在改用设备连接方式。请点击“重新连接”；如果仍然失败，请打开运行日志联系支持人员。',
       };
     }
-    if (!cats.deviceConnectorMode && bodyState === 'auth_error') {
+    if (runtimeMode !== 'local_bot' && !cats.deviceConnectorMode && bodyState === 'auth_error') {
       return { key: 'error', title: '旧版连接需要迁移', error: 'Connector 正在改用设备连接方式。请点击“重新连接”；如果仍然失败，请打开运行日志联系支持人员。' };
-    }
-    if (bootstrap.stage === 'error' || service.status === 'error') {
-      return {
-        key: 'error',
-        title: '自动连接未完成',
-        error: bootstrap.error || service.lastError || 'Connector 启动失败，请重试。',
-      };
     }
     return { key: 'connecting' };
   }
@@ -245,12 +415,41 @@
     const accountName = cats.user?.display_name || cats.user?.username || '—';
     const accountMeta = cats.user?.username || (cats.connected ? `UID ${cats.user?.uid || ''}` : '等待登录');
     const deviceName = cats.device?.name || (cats.device?.deviceId ? '这台电脑' : '—');
+    const runtimeMode = cats.runtimeMode || state.runtime?.runtimeMode || 'connector';
+    const connectorRunning = service.status === 'running';
+    const connectorCredentialsReady = Boolean(cats.connectorReady || cats.deviceConnectorMode);
+    const localBotReady = runtimeMode === 'local_bot' && runtimeModeReady('local_bot');
+    const localBotConnecting = runtimeMode === 'local_bot'
+      && !localBotReady
+      && (state.compatibilityBusy || state.runtimeAutoRetry?.mode === runtimeMode || connectorRunning);
     setText('account-name', accountName);
     setText('account-meta', accountMeta);
     setText('device-name', deviceName);
     setText('device-meta', cats.device?.bodyId ? `设备 ${shortId(cats.device.bodyId)}` : '本地工具与文件');
-    setText('device-connector-status', cats.connected ? (cats.connectorReady || cats.service?.status === 'running' ? '已连接' : '正在连接') : '未连接');
-    setText('device-connector-meta', cats.connected ? '这台电脑已授权给 CatsCo 账号' : '登录后自动连接');
+    setText(
+      'device-connector-status',
+      !cats.connected
+        ? '未连接'
+        : runtimeMode === 'local_bot'
+          ? (localBotReady ? '本机 Bot' : localBotConnecting ? '连接中' : '未连接')
+          : connectorRunning ? '已连接' : connectorCredentialsReady ? '等待连接' : '未连接',
+    );
+    setText(
+      'device-connector-meta',
+      !cats.connected
+        ? '登录后自动连接'
+        : runtimeMode === 'local_bot'
+          ? (localBotReady
+            ? '本机 Bot 已连接，可直接与该 Bot 对话'
+            : localBotConnecting
+              ? '正在等待本机 Bot 连接 CatsCo'
+              : '本机 Bot 未连接')
+          : connectorRunning
+          ? 'Connector 正在运行，WebApp 可以使用这台电脑'
+          : connectorCredentialsReady
+            ? '设备凭证已准备，正在等待 Connector 启动'
+            : '尚未建立 Connector 连接',
+    );
     setText('app-version', state.app.version || '—');
 
     $('login-form').hidden = view.key !== 'auth';
@@ -260,6 +459,7 @@
     $('logout-button').hidden = view.key === 'auth' || (!cats.connected && !cats.tokenPresent);
     $('retry-button').hidden = view.key !== 'error';
     $('close-hint').hidden = view.key !== 'ready';
+    $('compatibility-entry').hidden = !cats.connected;
 
     if (view.key === 'auth') renderAuth(view);
     if (view.key === 'connecting') renderConnecting(cats, service);
@@ -299,10 +499,23 @@
   }
 
   function renderConnecting(cats, service) {
-    setText('status-label', 'Connector 正在启动');
-    setText('hero-title', '正在连接这台电脑');
-    setText('hero-copy', state.bootstrap.message || '正在注册这台电脑并启动 Connector，请稍候。');
-    setNotice('请保持 CatsCo Desktop 运行，连接完成后即可关闭此窗口。', 'normal');
+    const runtimeMode = cats.runtimeMode || state.runtime?.runtimeMode || 'connector';
+    const localMode = runtimeMode === 'local_bot';
+    const localReconnecting = localMode
+      && service.status === 'running'
+      && cats.bodyStatus?.state === 'offline';
+    setText('status-label', localMode ? (localReconnecting ? '本机 Bot 正在重连' : '本机 Bot 正在启动') : 'Connector 正在启动');
+    setText('hero-title', localMode ? (localReconnecting ? '正在重新连接本机 Bot' : '正在启动本机 Bot') : '正在连接这台电脑');
+    setText('hero-copy', state.bootstrap.message || (localMode
+      ? (localReconnecting ? '本机 Bot 的网络连接暂时中断，正在自动恢复，请稍候。' : '正在准备并启动本机 Bot，请稍候。')
+      : '正在注册这台电脑并启动 Connector，请稍候。'));
+    setNotice(localMode
+      ? (localReconnecting ? '本机 Bot 正在自动重连，请稍候。' : '本机 Bot 正在启动，请稍候。')
+      : '请保持 CatsCo Desktop 运行，连接完成后即可关闭此窗口。', 'normal');
+    const deviceStep = document.querySelector('[data-step="device"] strong');
+    const connectorStep = document.querySelector('[data-step="connector"] strong');
+    if (deviceStep) deviceStep.textContent = localMode ? '准备本机 Bot' : '注册这台电脑';
+    if (connectorStep) connectorStep.textContent = localMode ? '启动本机 Bot' : '启动 Connector';
     const accountDone = Boolean(cats.connected);
     const deviceDone = Boolean(cats.deviceConnectorMode || cats.connectorReady);
     const connectorDone = service.status === 'running';
@@ -312,6 +525,14 @@
   }
 
   function renderReady(cats) {
+    const runtimeMode = cats.runtimeMode || state.runtime?.runtimeMode || 'connector';
+    if (runtimeMode === 'local_bot') {
+      setText('status-label', '本机 Bot 正常运行');
+      setText('hero-title', '本机 Bot 已连接');
+      setText('hero-copy', '当前电脑正在运行选中的本机 Bot，可直接与该 Bot 对话。');
+      setNotice('本机 Bot 已连接。', 'success');
+      return;
+    }
     setText('status-label', 'Connector 正常运行');
     setText('hero-title', '这台电脑已连接');
     setText('hero-copy', '现在可以在 CatsCo WebApp 使用这台电脑上的本地工具与文件。');
@@ -676,18 +897,58 @@
     }
   }
 
-  async function retry() {
+  async function retry(options = {}) {
+    const automatic = options.automatic === true;
     if (state.actionBusy) return;
+    if (automatic && !state.runtimeAutoRetry) return;
+    const runtimeMode = state.cats?.runtimeMode || state.runtime?.runtimeMode || 'connector';
     state.actionBusy = true;
     setBusyButtons(true);
     try {
-      await request('/cats/bootstrap', { method: 'POST', body: JSON.stringify({ trigger: 'manual' }) });
-      state.bootstrap = { stage: 'connecting', message: '正在重新连接这台电脑' };
+      const localBotUid = String(state.runtime?.localBot?.uid || state.cats?.botUid || '').trim();
+      if (runtimeMode === 'local_bot' && localBotUid) {
+        await requestWithTimeout('/cats/runtime-mode', {
+          method: 'POST',
+          body: JSON.stringify({ runtimeMode: 'local_bot', botUid: localBotUid }),
+        });
+        state.bootstrap = { stage: 'connecting', message: '正在重新启动本机 Bot' };
+      } else {
+        await request('/cats/bootstrap', { method: 'POST', body: JSON.stringify({ trigger: 'manual' }) });
+        state.bootstrap = { stage: 'connecting', message: '正在重新连接这台电脑' };
+      }
       render();
       await refreshBootstrap();
-      showToast('已开始重新连接');
+      await refresh({ force: true });
+      if (runtimeModeReady(runtimeMode)) {
+        clearRuntimeAutoRetry();
+        render();
+        if (!automatic) showToast(runtimeMode === 'local_bot' ? '本机 Bot 已重新连接' : '已重新连接');
+      } else if (automatic) {
+        scheduleRuntimeAutoRetry(runtimeMode);
+      } else {
+        scheduleRuntimeAutoRetry(runtimeMode);
+        showToast(runtimeMode === 'local_bot' ? '已开始重新启动本机 Bot' : '已开始重新连接');
+      }
     } catch (error) {
-      showToast(`重新连接失败：${humanError(error)}`);
+      if (automatic) {
+        // A transient loopback/network error should consume one retry slot,
+        // just like an offline body. Refresh first so an active lease conflict
+        // can stop the loop instead of being retried blindly.
+        try {
+          await refresh({ force: true });
+        } catch {
+          // Keep the retry slot; the next scheduled attempt can recover.
+        }
+        if (runtimeRetryable(runtimeMode)) {
+          scheduleRuntimeAutoRetry(runtimeMode);
+        } else {
+          clearRuntimeAutoRetry();
+          render();
+          showToast(`自动重试失败：${humanError(error)}`);
+        }
+      } else {
+        showToast(`重新连接失败：${humanError(error)}`);
+      }
     } finally {
       state.actionBusy = false;
       setBusyButtons(false);
@@ -702,6 +963,96 @@
     $('management-view').closest('.primary-panel')?.classList.add('management-open');
     await loadLogs();
     startLogPolling();
+  }
+
+  async function openCompatibility() {
+    const dialog = $('compatibility-dialog');
+    if (!dialog) return;
+    $('compatibility-error').textContent = '';
+    dialog.showModal();
+    await loadCompatibility();
+  }
+
+  async function loadCompatibility() {
+    const [runtime, bots] = await Promise.all([
+      settled('/cats/runtime-mode'),
+      settled('/cats/runtime-bots'),
+    ]);
+    if (runtime.ok) state.runtime = runtime.value;
+    if (bots.ok) state.runtimeBots = Array.isArray(bots.value?.bots) ? bots.value.bots : [];
+    renderCompatibility();
+  }
+
+  function renderCompatibility() {
+    const runtime = state.runtime || {};
+    const localMode = runtime.runtimeMode === 'local_bot';
+    setText('runtime-mode-label', localMode ? '本机 Bot' : '本机 Connector');
+    setText(
+      'runtime-mode-meta',
+      localMode
+        ? '当前电脑正在运行选中的本机 Bot，可以直接与该 Bot 对话。'
+        : '云端 Bot 可以通过 WebApp 使用这台电脑。',
+    );
+    const select = $('local-bot-select');
+    if (select) {
+      const currentUid = String(runtime.localBot?.uid || '');
+      select.innerHTML = '';
+      if (state.runtimeBots.length === 0) {
+        select.appendChild(new Option('没有可选择的 Bot', ''));
+      } else {
+        state.runtimeBots.forEach((bot) => {
+          const option = new Option(bot.display_name || bot.username || bot.uid, bot.uid);
+          option.selected = bot.uid === currentUid;
+          select.appendChild(option);
+        });
+      }
+      select.disabled = state.runtimeBots.length === 0 || state.compatibilityBusy;
+    }
+    $('runtime-local-bot-button').disabled = state.runtimeBots.length === 0 || state.compatibilityBusy;
+    $('runtime-connector-button').disabled = state.compatibilityBusy;
+    $('runtime-local-bot-button').textContent = localMode ? '重新运行选中的 Bot' : '运行选中的 Bot';
+  }
+
+  async function changeRuntimeMode(mode) {
+    if (state.compatibilityBusy) return;
+    const botUid = String($('local-bot-select')?.value || '').trim();
+    if (mode === 'local_bot' && !botUid) {
+      setText('compatibility-error', '请先选择一个 Bot。');
+      return;
+    }
+    state.compatibilityBusy = true;
+    clearRuntimeAutoRetry();
+    $('compatibility-error').textContent = '';
+    renderCompatibility();
+    // The process handoff can take longer than the HTTP request. Close the
+    // modal immediately and let the main panel show a neutral connecting state;
+    // an actionable server error will reopen the modal below.
+    $('compatibility-dialog')?.close();
+    render();
+    try {
+      const result = await requestWithTimeout('/cats/runtime-mode', {
+        method: 'POST',
+        body: JSON.stringify({ runtimeMode: mode, botUid: mode === 'local_bot' ? botUid : undefined }),
+      });
+      state.runtime = result;
+      await refresh({ force: true });
+      if (!runtimeModeReady(mode)) scheduleRuntimeAutoRetry(mode);
+      renderCompatibility();
+      showToast(mode === 'local_bot' ? '已切换为本机 Bot' : '已恢复本机 Connector');
+    } catch (error) {
+      if (error?.code === 'REQUEST_TIMEOUT') {
+        setText('compatibility-error', '切换已发起，后台仍在启动。你可以关闭此窗口，稍后查看连接状态或运行日志。');
+        showToast(mode === 'local_bot' ? '本机 Bot 正在后台启动' : 'Connector 正在后台恢复');
+        void refresh({ force: true });
+      } else {
+        $('compatibility-dialog')?.showModal();
+        setText('compatibility-error', humanError(error));
+      }
+      renderCompatibility();
+    } finally {
+      state.compatibilityBusy = false;
+      renderCompatibility();
+    }
   }
 
   function closeManagement() {
@@ -962,6 +1313,14 @@
   $('management-back').addEventListener('click', closeManagement);
   $('logs-refresh').addEventListener('click', loadLogs);
   $('logs-copy').addEventListener('click', copyLogs);
+  $('compatibility-open').addEventListener('click', () => { void openCompatibility(); });
+  $('compatibility-close').addEventListener('click', () => $('compatibility-dialog').close());
+  $('runtime-connector-button').addEventListener('click', () => { void changeRuntimeMode('connector'); });
+  $('runtime-local-bot-button').addEventListener('click', () => { void changeRuntimeMode('local_bot'); });
+  $('compatibility-dialog').addEventListener('cancel', () => {
+    // Closing the compatibility dialog must never block the rest of the
+    // Dashboard. The mode switch continues in the background.
+  });
 
   void refresh({ force: true });
 })();
