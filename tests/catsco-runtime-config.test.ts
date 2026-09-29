@@ -436,6 +436,37 @@ describe('CatsCo runtime config resolver', () => {
     assert.equal(resolved.bodyConfigured, true);
   });
 
+  test('server mode uses the authenticated user uid when local account metadata is stale', () => {
+    const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
+    service.save({
+      version: 1,
+      account: { token: 'stale-token', uid: 'stale-user' },
+      currentBot: {
+        uid: 'legacy-bot',
+        apiKey: 'legacy-bot-key',
+        boundByUserUid: 'authenticated-user',
+        bindingSource: 'legacy',
+      },
+      device: {
+        deviceId: 'device-1',
+        bodyId: 'body-1',
+        installationId: 'install-1',
+      },
+    });
+
+    const resolved = resolveCatsCoRuntimeConfig({
+      runtimeRoot: tempDir,
+      env: {
+        XIAOBA_RUNTIME_ROLE: 'server',
+        CATSCO_USER_TOKEN: 'authenticated-token',
+        CATSCO_USER_UID: 'authenticated-user',
+      },
+    });
+    assert.equal(resolved.connector?.apiKey, 'legacy-bot-key');
+    assert.equal(resolved.auth.uid, 'authenticated-user');
+    assert.equal(resolved.bodyConfigured, true);
+  });
+
   test('legacy server config with an unconfirmed Bot falls back to the device Connector', () => {
     const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
     service.save({
