@@ -320,6 +320,70 @@ describe('interrupted turn recovery', () => {
     assert.equal(resumes, 2, 'exactly the budget may be spent, then the loop must stop');
     assert.deepStrictEqual(scan(), [], 'an exhausted marker is no longer resumable');
   });
+
+  test('a restart after a historical OOM is not reported as an OOM kill', async () => {
+    // The cgroup counter is cumulative for the unit's lifetime. Reading it
+    // without a startup baseline made every later restart claim "内存不足被系统
+    // 终止", which is both wrong and alarming to the user.
+    const { classifyShutdownReason } = loadModules();
+
+    assert.equal(
+      classifyShutdownReason(3, 3),
+      'connector-shutdown',
+      'an unchanged counter means nothing was killed under this process',
+    );
+    assert.equal(
+      classifyShutdownReason(4, 3),
+      'oom-kill',
+      'a counter that grew since startup belongs to this process',
+    );
+    assert.equal(
+      classifyShutdownReason(0, undefined),
+      'connector-shutdown',
+      'without a baseline the reason stays generic rather than guessing',
+    );
+    assert.equal(
+      classifyShutdownReason(undefined, 0),
+      'connector-shutdown',
+      'an unreadable counter must not fabricate an OOM kill',
+    );
+    assert.equal(
+      classifyShutdownReason(1, 5),
+      'connector-shutdown',
+      'a counter that went backwards (cgroup recreated) is not a kill',
+    );
+  });
+
+  test('a shutdown during the resume does not discard the marker', async () => {
+    // The resume turn creates no ActiveConversationTask, so the shutdown sweep
+    // never sees it and cannot re-write a marker on its behalf. If the resume
+    // is cut short by destroy(), the marker must survive so the next start()
+    // still knows the work was interrupted -- otherwise the turn is lost in
+    // silence, which is exactly the bug this feature exists to fix.
+    //
+    // The production guard is "clear only when !shuttingDown"; what this test
+    // pins is the observable consequence of getting it wrong: clearing after a
+    // shutdown leaves nothing for the next start() to find.
+    const { markInterruptedTurn, clearInterruptedTurn, noteResumeAttempt, collectInterruptedTurns } = loadModules();
+    const key = 'cc_group:grp_shutdown_mid_resume';
+    const scan = () => collectInterruptedTurns({
+      stateDir: path.join(testRoot, 'data', 'session-state'),
+      maxAgeMs: 30 * 60_000,
+      maxAttempts: 2,
+    });
+
+    markInterruptedTurn(key, { topic: 'grp_shutdown_mid_resume', reason: 'oom-kill' });
+    noteResumeAttempt(key);
+
+    // Resuming without clearing (the shutdown case) keeps the work recoverable.
+    const survived = scan();
+    assert.equal(survived.length, 1, 'an uncleared marker stays resumable across a restart');
+    assert.equal(survived[0].attempts, 1, 'the spent attempt is still accounted for');
+
+    // A resume that runs to completion does retire the marker.
+    clearInterruptedTurn(key);
+    assert.deepStrictEqual(scan(), [], 'a completed resume retires the marker');
+  });
 });
 
 function loadModules(): any {
@@ -334,6 +398,7 @@ function loadModules(): any {
     markInterruptedTurn: recovery.markInterruptedTurn,
     clearInterruptedTurn: recovery.clearInterruptedTurn,
     stopResumingInterruptedTurn: recovery.stopResumingInterruptedTurn,
+    classifyShutdownReason: recovery.classifyShutdownReason,
     noteResumeAttempt: recovery.noteResumeAttempt,
     collectInterruptedTurns: recovery.collectInterruptedTurns,
     SessionStore: require('../src/utils/session-store').SessionStore,

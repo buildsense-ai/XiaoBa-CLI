@@ -103,6 +103,25 @@ export function stopResumingInterruptedTurn(sessionKey: string): boolean {
 }
 
 /**
+ * Classifies a shutdown so the resume notice can say why the turn stopped.
+ *
+ * The distinction cannot be made from a single reading of the cgroup counter:
+ * the value is cumulative for the lifetime of the unit, so a restart after any
+ * historical OOM would look like a fresh memory kill. Only a count that grew
+ * since this process started belongs to this process.
+ *
+ * Exported for tests; the cgroup read itself stays at the call site.
+ */
+export function classifyShutdownReason(
+  oomKillsNow: number | undefined,
+  oomKillsAtStart: number | undefined,
+): 'oom-kill' | 'connector-shutdown' {
+  if (oomKillsNow === undefined || oomKillsAtStart === undefined) return 'connector-shutdown';
+  if (!Number.isFinite(oomKillsNow) || !Number.isFinite(oomKillsAtStart)) return 'connector-shutdown';
+  return oomKillsNow > oomKillsAtStart ? 'oom-kill' : 'connector-shutdown';
+}
+
+/**
  * Counts one automatic resumption and returns the new attempt count. Returns 0
  * when there is no marker to count against.
  */

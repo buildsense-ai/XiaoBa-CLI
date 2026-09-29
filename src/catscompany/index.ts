@@ -20,6 +20,7 @@ import { extractCatsCoSkillConnectorGrants, mergeSkillConnectorGrants } from './
 import { MessageSessionManager } from '../core/message-session-manager';
 import {
   clearInterruptedTurn as clearInterruptedTurnMarker,
+  classifyShutdownReason,
   collectInterruptedTurns,
   markInterruptedTurn as markInterruptedTurnMarker,
   noteResumeAttempt,
@@ -715,6 +716,10 @@ export class CatsCompanyBot {
     Logger.openLogFile('catscompany');
     scheduleCatsCoAttachmentCacheCleanup();
     Logger.info('正在启动 CatsCompany connector...');
+
+    // Baseline before any work runs, so shutdown can attribute an OOM kill to
+    // this process rather than to the cgroup's history.
+    this.captureOomKillBaseline();
 
     // 加载 skills
     await this.runtime.loadSkills();
@@ -2258,21 +2263,36 @@ export class CatsCompanyBot {
    * process a signal before SIGKILL, but a cgroup OOM leaves evidence: the
    * memory.events counter is bumped by the kill itself, and the process is
    * typically still above its limit when the shutdown path runs.
+   *
+   * The ownership rule lives in classifyShutdownReason() because a single
+   * reading cannot answer it -- the counter is cumulative for the unit.
    */
   private shutdownInterruptReason(): string {
+    return classifyShutdownReason(this.readCgroupOomKillCount(), this.lastObservedOomKills);
+  }
+
+  /**
+   * Captures the cgroup's OOM counter at startup so a later shutdown can tell
+   * a kill that happened under this process from one left over in the cgroup's
+   * history. Best-effort: outside a containerised unit there is no counter.
+   */
+  private captureOomKillBaseline(): void {
+    const oomKills = this.readCgroupOomKillCount();
+    if (oomKills !== undefined) this.lastObservedOomKills = oomKills;
+  }
+
+  private readCgroupOomKillCount(): number | undefined {
     try {
       const cgroup = '/sys/fs/cgroup/system.slice/catsco-agent.service';
       const events = fs.readFileSync(path.join(cgroup, 'memory.events'), 'utf-8');
-      const oomKills = Number((events.match(/^oom_kill\s+(\d+)/m) || [])[1] ?? 0);
-      const seen = Number(this.lastObservedOomKills ?? 0);
-      if (Number.isFinite(oomKills)) {
-        if (oomKills > seen) return 'oom-kill';
-        this.lastObservedOomKills = oomKills;
-      }
+      const raw = (events.match(/^oom_kill\s+(\d+)/m) || [])[1];
+      if (raw === undefined) return undefined;
+      const value = Number(raw);
+      return Number.isFinite(value) ? value : undefined;
     } catch {
       // Not containerised under this unit name; fall back to the generic label.
+      return undefined;
     }
-    return 'connector-shutdown';
   }
 
   /**
@@ -2333,6 +2353,16 @@ export class CatsCompanyBot {
     // Register before the attempt count so a throw between the two cannot make
     // this session eligible for a second resume in the same process.
     this.resumedInterruptedTurns.add(sessionKey);
+
+    // A busy session must not burn the attempt budget: nothing was attempted
+    // yet. This also leaves the marker (and its existing count) untouched so a
+    // later start() can still resume it -- /compact and other in-flight work
+    // only block this resume, they do not cancel it.
+    if (!this.canResumeInterruptedTurnNow(sessionKey)) {
+      Logger.info(`[${sessionKey}] 中断任务暂缓：会话正忙，保留标记等待下次启动`);
+      return;
+    }
+
     const attempts = noteResumeAttempt(sessionKey);
     if (attempts === 0 || attempts > INTERRUPTED_TURN_MAX_RESUME_ATTEMPTS) {
       Logger.info(`[${sessionKey}] 中断任务标记已失效或已达自动继续上限，不再重试`);
@@ -2365,6 +2395,25 @@ export class CatsCompanyBot {
       this.runInterruptedTurnResume(sessionKey, topic, notice));
   }
 
+  /**
+   * Whether the resume turn can start right now. Kept in sync with the barriers
+   * inside runInterruptedTurnResume(): deciding first means a blocked resume
+   * never pays for a user-visible notice or an attempt.
+   */
+  private canResumeInterruptedTurnNow(sessionKey: string): boolean {
+    if (this.shuttingDown) return false;
+    if (!this.connectorReady) return false;
+    if (this.sessionExecutionReservations?.has(sessionKey)) return false;
+    let session: { isBusy?: () => boolean } | undefined;
+    try {
+      session = this.sessionManager.getOrCreate(sessionKey);
+    } catch (error: any) {
+      Logger.warning(`[${sessionKey}] 中断任务检查会话状态失败: ${error?.message || error}`);
+      return false;
+    }
+    return session.isBusy?.() !== true;
+  }
+
   private async runInterruptedTurnResume(sessionKey: string, topic: string, notice: string): Promise<void> {
     const session = this.sessionManager.getOrCreate(sessionKey);
     if (!this.tryReserveSessionExecution(sessionKey, session)) {
@@ -2393,11 +2442,14 @@ export class CatsCompanyBot {
     } catch (error: any) {
       Logger.warning(`[${sessionKey}] 中断恢复回合失败: ${error?.message || error}`);
     } finally {
-      // The resume turn does not create an ActiveConversationTask (it is a
-      // runtime observation, not a user turn), so nothing else clears the
-      // marker here. Retire it now: if this resume dies too, the shutdown path
-      // writes a fresh marker with the incremented attempt count.
-      this.clearInterruptedTurn(sessionKey);
+      // Only retire the marker when this resume actually reached a terminal
+      // state. If destroy() began while it was in flight the work was
+      // discarded above, and nothing else would re-write the marker: a resume
+      // turn creates no ActiveConversationTask, so the shutdown sweep never
+      // sees it. Clearing here would silently lose the interrupted work.
+      if (!this.shuttingDown) {
+        this.clearInterruptedTurn(sessionKey);
+      }
       stopTypingHeartbeat();
       this.releaseSessionExecution(sessionKey);
     }
