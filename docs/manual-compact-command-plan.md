@@ -29,7 +29,7 @@
 3. 手动压缩使用现有 Summary 请求、重试、流空闲超时、摘要校验、checkpoint 持久化和错误保护。
 4. 增加很薄的会话级互斥状态，避免 `/compact` 与模型回合或另一个 `/compact` 并发修改 `messages`。
 5. 使用现有压缩状态回调发送 Working 风格的开始、完成、失败提示；日志沿用既有 checkpoint 事件，并标识 `phase=manual`。
-6. CLI 帮助和简单命令列表加入 `/compact`。
+6. CLI 帮助加入 `/compact`；命令分派保留其普通异步路径，以便显示 Working 进度。
 
 ### CatsCompany
 
@@ -60,4 +60,3 @@
 - CLI 和 CatsCompany 都能收到开始/完成/失败反馈。
 - `/clear` 既有行为不变。
 - XiaoBa 与 CatsCompany 的构建、相关单测和完整 CI 通过。
-
