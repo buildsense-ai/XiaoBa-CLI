@@ -246,14 +246,60 @@ export class SessionStore {
   saveRuntimeState(sessionKey: string, state: SessionRuntimeState): boolean {
     try {
       if (!fs.existsSync(SESSION_STATE_DIR)) fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
-      fs.writeFileSync(stateFilePath(sessionKey), JSON.stringify({
+      const target = stateFilePath(sessionKey);
+      const payload = JSON.stringify({
         ...state,
         updatedAt: new Date().toISOString(),
-      }, null, 2), 'utf-8');
+      }, null, 2);
+      // Write-then-rename: the interruption marker is written by a process the
+      // kernel is already killing, and this file also carries the remote
+      // context cursors. Overwriting in place means a kill mid-write leaves a
+      // truncated file, which loses the marker (recovery silently never fires)
+      // and the cursors (history has to be re-pulled). rename() is atomic
+      // within a directory, so a reader sees either the old file or the
+      // complete new one, never a half-written one.
+      //
+      // Sweep earlier staging files first. A kill between writeFileSync() and
+      // renameSync() is exactly the event this file is written for, so those
+      // leftovers are expected rather than exceptional: without this they
+      // accumulate one per crash forever. The scan ignores them (they do not
+      // end in .json), so this is hygiene, not correctness.
+      this.removeStaleStagingFiles(target);
+      const temp = `${target}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(temp, payload, 'utf-8');
+        fs.renameSync(temp, target);
+      } catch (writeError) {
+        try {
+          if (fs.existsSync(temp)) fs.unlinkSync(temp);
+        } catch { /* best effort */ }
+        throw writeError;
+      }
       return true;
     } catch (err) {
       Logger.error(`Failed to save session state [${sessionKey}]: ${err}`);
       return false;
+    }
+  }
+
+  /**
+   * Removes `<target>.<pid>.tmp` files left by writes that never reached their
+   * rename. Best-effort: a stale file is harmless, so failures are ignored.
+   */
+  private removeStaleStagingFiles(target: string): void {
+    const dir = path.dirname(target);
+    const stem = `${path.basename(target)}.`;
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (!name.startsWith(stem) || !name.endsWith('.tmp')) continue;
+      try {
+        fs.unlinkSync(path.join(dir, name));
+      } catch { /* best effort */ }
     }
   }
 

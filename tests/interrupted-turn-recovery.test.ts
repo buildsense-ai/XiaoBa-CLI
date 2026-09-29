@@ -463,6 +463,119 @@ describe('interrupted turn recovery', () => {
     assert.equal(clearInterruptedTurn(key), true, 'clear must find the file mark() wrote');
     assert.deepStrictEqual(scan(), [], 'a cleared private chat is not resumable');
   });
+
+  test('a torn state file never replaces a good one', async () => {
+    // The marker is written on the shutdown path of a process the kernel is
+    // already killing, and the same file carries the remote context cursors.
+    // Overwriting in place means a kill mid-write leaves an unparseable file
+    // and loses BOTH the marker and the cursors; the next start() then finds
+    // nothing to resume and has to re-pull history. The write must be atomic,
+    // so readers only ever see the old file or the complete new one.
+    //
+    // This asserts the contract directly rather than inferring it: the write is
+    // interrupted part-way and the pre-existing file must still be intact. A
+    // test that only checked the final content passed with an in-place
+    // overwrite too (verified by mutation), which is exactly the bug.
+    const { markInterruptedTurn, collectInterruptedTurns, SessionStore } = loadModules();
+    const fsModule = require('fs');
+    const store = SessionStore.getInstance();
+    const key = 'cc_group:grp_torn';
+    const stateFile = path.join(testRoot, 'data', 'session-state', 'cc_group_grp_torn.json');
+
+    store.saveRuntimeState(key, {
+      currentDirectory: '/srv/catsco-agent/tmp',
+      remoteContextCursors: { 'catscompany.agent_context': 1158677 },
+    });
+    markInterruptedTurn(key, { topic: 'grp_torn', reason: 'oom-kill' });
+
+    const before = fs.readFileSync(stateFile, 'utf-8');
+    assert.ok(before.includes('1158677'), 'cursors and marker share one file');
+
+    // Interrupt the payload write the way a kill would: some bytes reach the
+    // file and then the process dies. Writing nothing would not distinguish an
+    // atomic write from an in-place one -- both would leave the target intact
+    // (verified by mutation), so the partial bytes are the whole point.
+    const realWrite = fsModule.writeFileSync;
+    let interrupted = false;
+    fsModule.writeFileSync = (file: any, data: any, ...rest: any[]) => {
+      if (String(file).includes('grp_torn')) {
+        interrupted = true;
+        // Land half the payload, then die: this is what a truncated file is.
+        const text = String(data);
+        realWrite(file, text.slice(0, Math.floor(text.length / 2)), ...rest);
+        const error: any = new Error('simulated SIGKILL mid-write');
+        error.code = 'EIO';
+        throw error;
+      }
+      return realWrite(file, data, ...rest);
+    };
+    try {
+      store.saveRuntimeState(key, {
+        currentDirectory: '/somewhere/else',
+        remoteContextCursors: { 'catscompany.agent_context': 999 },
+      });
+    } finally {
+      fsModule.writeFileSync = realWrite;
+    }
+
+    assert.ok(interrupted, 'the test must actually have interrupted a write');
+
+    // The old file survived intact: the marker and cursors are still readable.
+    const after = fs.readFileSync(stateFile, 'utf-8');
+    assert.equal(after, before, 'an interrupted write must not touch the live file');
+    const state = store.loadRuntimeState(key);
+    assert.equal(state.currentDirectory, '/srv/catsco-agent/tmp');
+    assert.deepEqual(state.remoteContextCursors, { 'catscompany.agent_context': 1158677 });
+    assert.equal(collectInterruptedTurns({
+      stateDir: path.dirname(stateFile),
+      maxAgeMs: 30 * 60_000,
+      maxAttempts: 2,
+    }).length, 1, 'the interruption marker must survive a torn write');
+
+    // And no staging file is left lying around in the state directory.
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(stateFile)).filter((name) => name.endsWith('.tmp')),
+      [],
+      'a failed write must clean up its temp file',
+    );
+  });
+
+  test('staging files left by a crash do not accumulate', async () => {
+    // A kill between the staging write and the rename is exactly the event this
+    // file exists for, so leftovers are expected rather than exceptional. They
+    // are invisible to the scan (they do not end in .json), but without a sweep
+    // they would pile up one per crash forever in a directory the scan walks.
+    const { markInterruptedTurn, collectInterruptedTurns, SessionStore } = loadModules();
+    const store = SessionStore.getInstance();
+    const key = 'cc_group:grp_leftover';
+    const stateDir = path.join(testRoot, 'data', 'session-state');
+    const stateFile = path.join(stateDir, 'cc_group_grp_leftover.json');
+
+    store.saveRuntimeState(key, { currentDirectory: '/tmp' });
+    markInterruptedTurn(key, { topic: 'grp_leftover', reason: 'oom-kill' });
+
+    // Three kills, each landing between write and rename.
+    for (const pid of [1111, 2222, 3333]) {
+      fs.writeFileSync(`${stateFile}.${pid}.tmp`, '{"partial":', 'utf-8');
+    }
+    assert.equal(
+      fs.readdirSync(stateDir).filter((name) => name.endsWith('.tmp')).length,
+      3,
+      'the scenario must actually have leftovers',
+    );
+
+    // A later successful write sweeps them.
+    store.saveRuntimeState(key, { ...store.loadRuntimeState(key), currentDirectory: '/tmp/next' });
+    assert.deepStrictEqual(
+      fs.readdirSync(stateDir).filter((name) => name.endsWith('.tmp')),
+      [],
+      'stale staging files must not accumulate',
+    );
+
+    // And the sweep must not have disturbed the live marker.
+    assert.equal(collectInterruptedTurns({ stateDir, maxAgeMs: 30 * 60_000, maxAttempts: 2 }).length, 1);
+    assert.equal(store.loadRuntimeState(key).currentDirectory, '/tmp/next');
+  });
 });
 
 function loadModules(): any {

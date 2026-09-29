@@ -2438,8 +2438,11 @@ export class CatsCompanyBot {
     const stopTypingHeartbeat = this.startTypingHeartbeat(topic);
     try {
       const result = await session.handleRuntimeObservation(notice, {
-        channel: this.buildChannel(topic, { sessionKey, senderId: 'system' }),
-        callbacks: this.buildSessionCallbacks(topic, { sessionKey, senderId: 'system' }),
+        // senderId is not read by either builder (both key off topic and
+        // channelSource), so it is omitted rather than filled with a
+        // placeholder that implies semantics it does not have.
+        channel: this.buildChannel(topic, { sessionKey }),
+        callbacks: this.buildSessionCallbacks(topic, { sessionKey }),
         source: 'interrupted_turn_resume',
         localDeviceGrant: this.localDeviceGrant,
         deviceRpc: this.buildDeviceRpcTransport(),
