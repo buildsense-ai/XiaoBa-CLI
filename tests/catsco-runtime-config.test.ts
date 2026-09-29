@@ -436,6 +436,64 @@ describe('CatsCo runtime config resolver', () => {
     assert.equal(resolved.bodyConfigured, true);
   });
 
+  test('legacy server config with an unconfirmed Bot falls back to the device Connector', () => {
+    const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
+    service.save({
+      version: 1,
+      account: { token: 'user-token', uid: 'user-1' },
+      currentBot: {
+        uid: 'legacy-bot',
+        apiKey: 'legacy-bot-key',
+        boundByUserUid: 'other-user',
+      },
+      device: {
+        deviceId: 'device-1',
+        bodyId: 'body-1',
+        installationId: 'install-1',
+        connectorToken: 'device-token',
+        connectorTokenExpiresAt: Date.now() + 60_000,
+      },
+    });
+
+    const resolved = resolveCatsCoRuntimeConfig({
+      runtimeRoot: tempDir,
+      env: { XIAOBA_RUNTIME_ROLE: 'server' },
+    });
+    assert.equal(resolved.connector?.connectorToken, 'device-token');
+    assert.equal(resolved.connector?.apiKey, undefined);
+    assert.equal(resolved.auth.botUid, undefined);
+    assert.equal(resolved.bodyConfigured, true);
+  });
+
+  test('legacy server config without a binding source falls back to the device Connector', () => {
+    const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
+    service.save({
+      version: 1,
+      account: { token: 'user-token', uid: 'user-1' },
+      currentBot: {
+        uid: 'legacy-bot',
+        apiKey: 'legacy-bot-key',
+        boundByUserUid: 'user-1',
+      },
+      device: {
+        deviceId: 'device-1',
+        bodyId: 'body-1',
+        installationId: 'install-1',
+        connectorToken: 'device-token',
+        connectorTokenExpiresAt: Date.now() + 60_000,
+      },
+    });
+
+    const resolved = resolveCatsCoRuntimeConfig({
+      runtimeRoot: tempDir,
+      env: { XIAOBA_RUNTIME_ROLE: 'server' },
+    });
+    assert.equal(resolved.connector?.connectorToken, 'device-token');
+    assert.equal(resolved.connector?.apiKey, undefined);
+    assert.equal(resolved.auth.botUid, undefined);
+    assert.equal(resolved.bodyConfigured, true);
+  });
+
   test('explicit Connector mode keeps a legacy Bot hidden from the active runtime', () => {
     const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
     service.save({

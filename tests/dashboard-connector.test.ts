@@ -519,7 +519,12 @@ test('server bootstrap keeps a cloud Bot and does not auto-provision a device Co
   const runtimeRoot = createRuntimeConfig('catsco-connector-server-', {
     version: 1,
     account: { token: 'test-user-token', uid: 'usr-test' },
-    currentBot: { uid: 'cloud-bot', apiKey: 'cloud-key', boundByUserUid: 'usr-test' },
+    currentBot: {
+      uid: 'cloud-bot',
+      apiKey: 'cloud-key',
+      boundByUserUid: 'usr-test',
+      bindingSource: 'legacy',
+    },
     preferences: { autoConnect: true },
   });
   const paths: string[] = [];

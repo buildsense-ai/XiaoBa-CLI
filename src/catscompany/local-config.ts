@@ -62,8 +62,9 @@ export interface CatsCoLocalConfig {
 }
 
 export function resolveCatsCoRuntimeMode(
-  config: Pick<CatsCoLocalConfig, 'runtimeMode' | 'currentBot' | 'device'>,
+  config: Pick<CatsCoLocalConfig, 'runtimeMode' | 'currentBot' | 'device' | 'account'>,
   runtimeRole: CatsCompanyRuntimeRole = 'desktop',
+  userUid?: string,
 ): CatsCoRuntimeMode {
   if (config.runtimeMode === 'local_bot' || config.runtimeMode === 'connector') {
     return config.runtimeMode;
@@ -71,9 +72,15 @@ export function resolveCatsCoRuntimeMode(
   // Missing mode means an older installation. Desktop launches migrate to the
   // device Connector, while server/CLI launches retain a confirmed Bot
   // identity so existing cloud-hosted Bots do not lose their credentials.
+  const bot = config.currentBot;
+  const expectedUserUid = String(userUid || config.account?.uid || '').trim();
+  const boundByUserUid = String(bot?.boundByUserUid || '').trim();
   if (runtimeRole === 'server'
-    && config.currentBot?.uid
-    && config.currentBot?.apiKey) {
+    && bot?.uid
+    && bot.apiKey
+    && boundByUserUid
+    && (!expectedUserUid || boundByUserUid === expectedUserUid)
+    && bot.bindingSource) {
     return 'local_bot';
   }
   return 'connector';
@@ -709,7 +716,7 @@ export class CatsCoLocalConfigService {
     return nextMode;
   }
 
-  toDashboardConfigPayload(): Record<string, unknown> {
+  toDashboardConfigPayload(runtimeRole: CatsCompanyRuntimeRole = 'desktop'): Record<string, unknown> {
     const state = this.getAuthState();
     const config = this.load();
     const hasConfirmedBot = Boolean(
@@ -724,7 +731,7 @@ export class CatsCoLocalConfigService {
       configPath: this.configPath,
       hasAccount: Boolean(state.token && state.uid),
       hasBot: hasConfirmedBot,
-      runtimeMode: resolveCatsCoRuntimeMode(config),
+      runtimeMode: resolveCatsCoRuntimeMode(config, runtimeRole, state.uid),
       account: state.uid
         ? { uid: state.uid, username: state.username || '', displayName: state.displayName || state.username || '' }
         : null,

@@ -134,7 +134,7 @@ export function resolveCatsCoRuntimeConfig(
     || config.catscompany?.connectorTokenExpiresAt
     || 0,
   ) || undefined;
-  const runtimeMode = resolveCatsCoRuntimeMode(localConfig, runtimeRole);
+  const runtimeMode = resolveCatsCoRuntimeMode(localConfig, runtimeRole, auth.uid);
   const connectorToken = runtimeMode === 'connector' && configuredConnectorToken
     && (!connectorTokenExpiresAt || connectorTokenExpiresAt > Date.now())
     ? configuredConnectorToken

@@ -4586,7 +4586,12 @@ export function createApiRouter(
 
   router.get('/cats/config', async (_req, res) => {
     try {
-      res.json(createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).toDashboardConfigPayload());
+      const runtime = resolveCatsCoRuntimeConfig({
+        runtimeRoot: runtimeDataRoot(),
+        config: ConfigManager.getConfigReadonly(),
+      });
+      res.json(createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() })
+        .toDashboardConfigPayload(runtime.runtimeRole));
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
