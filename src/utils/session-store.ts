@@ -161,6 +161,60 @@ export interface InterruptedTurnState {
   startedAt: string;
   /** How many times this interruption has already been auto-resumed. */
   attempts: number;
+  /**
+   * The metadata a resumed turn needs to reach the user's own computer.
+   *
+   * A resume is a runtime observation, not a user message, so it has no
+   * incoming metadata of its own. Without this the resumed turn carries no
+   * execution scope, device grants or target routes: user-device tools are
+   * denied and the model is told "No user computer targets are currently
+   * available", which strands exactly the kind of task this feature exists to
+   * rescue.
+   *
+   * Only the device-related keys are kept. Connector grants carry an
+   * actor_token, and ParsedCatsMessage documents them as "never copied into
+   * model text or durable history" -- so they are deliberately excluded.
+   */
+  deviceContext?: InterruptedTurnDeviceContext;
+}
+
+/** Whitelisted slice of message metadata, stored so a resume can rebuild grants. */
+export interface InterruptedTurnDeviceContext {
+  /**
+   * The execution identity the interrupted turn ran under.
+   *
+   * Not derivable from metadata alone: identityTrust, isTrusted, agentId and
+   * actorUserId all come from the server-signed envelope. Every field is a
+   * primitive, and none of them is a credential, so persisting it is safe --
+   * and without it the rebuilt grants fail their scope check and user-device
+   * tools stay denied after a resume.
+   */
+  executionScope?: InterruptedTurnExecutionScope;
+  /** `catsco_identity` only: device_grants and device_selection live here. */
+  catscoIdentity?: Record<string, unknown>;
+  /** `xiaoba_runtime` only: the target routes for the user's computers. */
+  xiaobaRuntime?: Record<string, unknown>;
+}
+
+/** Primitive-only copy of ExecutionScope; kept structural to avoid a type cycle. */
+export interface InterruptedTurnExecutionScope {
+  source: string;
+  sessionKey: string;
+  topicId: string;
+  topicType: string;
+  actorUserId: string;
+  identityTrust: string;
+  isTrusted: boolean;
+  legacySessionKey?: string;
+  legacyRestoreKey?: string;
+  legacyCleanupKey?: string;
+  agentId?: string;
+  agentBodyId?: string;
+  channelSeq?: number;
+  permissionsSource?: string;
+  deviceOwnerUserId?: string;
+  deviceOwnerSource?: string;
+  channelSource?: string;
 }
 
 export class SessionStore {

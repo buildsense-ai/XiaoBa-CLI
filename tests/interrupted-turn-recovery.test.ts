@@ -576,6 +576,229 @@ describe('interrupted turn recovery', () => {
     assert.equal(collectInterruptedTurns({ stateDir, maxAgeMs: 30 * 60_000, maxAttempts: 2 }).length, 1);
     assert.equal(store.loadRuntimeState(key).currentDirectory, '/tmp/next');
   });
+
+  test('a resumed turn keeps the device access the interrupted turn had', async () => {
+    // A resume is a runtime observation, not a user message, so it carries no
+    // metadata of its own. Without the captured context the resumed turn has no
+    // execution scope, no device grants and no target routes: user-device tools
+    // are denied and the model is told "No user computer targets are currently
+    // available" -- which strands exactly the tasks this feature rescues.
+    const { markInterruptedTurn, sanitizeDeviceContext, collectInterruptedTurns } = loadModules();
+    const key = 'cc_group:grp_device';
+    const scope = {
+      source: 'catscompany',
+      sessionKey: key,
+      topicId: 'grp_device',
+      topicType: 'group',
+      actorUserId: 'usr38',
+      agentId: 'usr982',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+      permissionsSource: 'server_canonical_message',
+    };
+    const metadata = {
+      catsco_identity: {
+        permissions: { source: 'server_canonical_message' },
+        device_grants: [{ kind: 'user_device_grant', deviceId: 'dev-1', ownerUserId: 'usr38' }],
+      },
+      xiaoba_runtime: {
+        schema: 'xiaoba.runtime.v1',
+        devices: [{ userId: 'usr38', deviceId: 'dev-1', userName: 'ck', os: 'windows' }],
+      },
+    };
+
+    const captured = sanitizeDeviceContext(metadata, scope as any);
+    assert.ok(captured, 'device metadata must be captured');
+    assert.equal(captured.executionScope?.actorUserId, 'usr38');
+    assert.ok(captured.catscoIdentity, 'identity metadata must be kept');
+    assert.ok(captured.xiaobaRuntime, 'runtime routes must be kept');
+
+    markInterruptedTurn(key, { topic: 'grp_device', reason: 'oom-kill', deviceContext: captured });
+
+    const scanned = collectInterruptedTurns({
+      stateDir: path.join(testRoot, 'data', 'session-state'),
+      maxAgeMs: 30 * 60_000,
+      maxAttempts: 2,
+    });
+    assert.equal(scanned.length, 1);
+    const restored = scanned[0].deviceContext;
+    assert.ok(restored, 'the scan must hand the context back to the resume');
+    assert.equal(restored.executionScope?.actorUserId, 'usr38');
+    assert.equal(restored.executionScope?.identityTrust, 'server_canonical');
+    assert.equal(restored.executionScope?.isTrusted, true);
+    assert.deepEqual(restored.xiaobaRuntime, metadata.xiaoba_runtime);
+    assert.deepEqual(restored.catscoIdentity, metadata.catsco_identity);
+  });
+
+  test('connector credentials never reach the state file', async () => {
+    // ParsedCatsMessage documents connector grants as "never copied into model
+    // text or durable history", because they carry an actor_token. The device
+    // context must therefore whitelist keys rather than copy metadata wholesale.
+    const { markInterruptedTurn, sanitizeDeviceContext, SessionStore } = loadModules();
+    const key = 'cc_group:grp_secret';
+    const metadata = {
+      catsco_identity: { permissions: { source: 'server_canonical_message' } },
+      // The credential-bearing key:
+      catsco_skill_connectors: {
+        schema: 'catsco.skill_connectors.v1',
+        grants: [{ provider: 'shimo', skill_id: 'a/b', actor_token: 'SECRET-TOKEN-VALUE' }],
+      },
+    };
+
+    const captured = sanitizeDeviceContext(metadata, {
+      source: 'catscompany',
+      sessionKey: key,
+      topicId: 'grp_secret',
+      topicType: 'group',
+      actorUserId: 'usr38',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    } as any);
+    assert.ok(captured);
+    assert.equal(
+      (captured as any).catscoSkillConnectors,
+      undefined,
+      'the connector key must not be part of the stored shape',
+    );
+
+    markInterruptedTurn(key, { topic: 'grp_secret', reason: 'oom-kill', deviceContext: captured });
+
+    const onDisk = fs.readFileSync(
+      path.join(testRoot, 'data', 'session-state', 'cc_group_grp_secret.json'),
+      'utf-8',
+    );
+    assert.ok(
+      !onDisk.includes('SECRET-TOKEN-VALUE'),
+      'an actor token must never be written to the state file',
+    );
+    assert.ok(!onDisk.includes('actor_token'), 'no connector grant fields may leak');
+    assert.ok(onDisk.includes('usr38'), 'the device context itself must still be stored');
+    assert.ok(SessionStore.getInstance().loadRuntimeState(key).interruptedTurn?.deviceContext);
+  });
+
+  test('a marker without device context still resumes', async () => {
+    // Backward compatibility: markers written before this field existed must
+    // keep working. An older marker simply resumes with no device access.
+    const { markInterruptedTurn, collectInterruptedTurns } = loadModules();
+    const key = 'cc_group:grp_legacy';
+
+    markInterruptedTurn(key, { topic: 'grp_legacy', reason: 'oom-kill' });
+
+    const scanned = collectInterruptedTurns({
+      stateDir: path.join(testRoot, 'data', 'session-state'),
+      maxAgeMs: 30 * 60_000,
+      maxAttempts: 2,
+    });
+    assert.equal(scanned.length, 1, 'a legacy marker must remain resumable');
+    assert.equal(scanned[0].deviceContext, undefined);
+  });
+
+  test('a crash-loop rewrite keeps the captured device context', async () => {
+    // The resume itself can be killed. The shutdown rewrite must not silently
+    // drop the device access, or a task that survives one restart would lose
+    // user-device tools on the next.
+    const { markInterruptedTurn, collectInterruptedTurns } = loadModules();
+    const key = 'cc_group:grp_loop_ctx';
+    const captured = {
+      executionScope: {
+        source: 'catscompany',
+        sessionKey: key,
+        topicId: 'grp_loop_ctx',
+        topicType: 'group',
+        actorUserId: 'usr38',
+        identityTrust: 'server_canonical',
+        isTrusted: true,
+      },
+      xiaobaRuntime: {
+        schema: 'xiaoba.runtime.v1',
+        devices: [{ userId: 'usr38', deviceId: 'dev-9' }],
+      },
+    };
+
+    markInterruptedTurn(key, { topic: 'grp_loop_ctx', reason: 'oom-kill', deviceContext: captured });
+    // Re-interrupted without context (the shutdown path always has the task, but
+    // the fallback must still hold what the first marker knew).
+    markInterruptedTurn(key, { topic: 'grp_loop_ctx', reason: 'oom-kill' });
+
+    const scanned = collectInterruptedTurns({
+      stateDir: path.join(testRoot, 'data', 'session-state'),
+      maxAgeMs: 30 * 60_000,
+      maxAttempts: 2,
+    });
+    assert.equal(scanned.length, 1);
+    assert.equal(scanned[0].deviceContext?.executionScope?.actorUserId, 'usr38');
+    assert.equal(scanned[0].deviceContext?.xiaobaRuntime?.schema, 'xiaoba.runtime.v1');
+  });
+
+  test('an oversized device context is refused rather than persisted', async () => {
+    // The startup scan reads every state file on boot, so a pathological
+    // payload must not be written into one.
+    const { sanitizeDeviceContext } = loadModules();
+    const huge = {
+      xiaoba_runtime: {
+        schema: 'xiaoba.runtime.v1',
+        devices: Array.from({ length: 4000 }, (_, i) => ({
+          userId: `usr${i}`,
+          deviceId: `dev-${i}`,
+          userName: 'x'.repeat(20),
+        })),
+      },
+    };
+    assert.equal(
+      sanitizeDeviceContext(huge as any, undefined),
+      undefined,
+      'an oversized context must be dropped, not stored',
+    );
+  });
+
+  test('the resume path actually forwards the rebuilt device access', async () => {
+    // The module tests above prove the context survives storage, but they
+    // cannot see whether the connector hands it to the resumed turn -- and a
+    // mutation that deleted that wiring left every one of them green. This
+    // pins the call site itself: capture at task start, mark at shutdown,
+    // rebuild and forward at resume. Without all four links the user's own
+    // computer becomes unreachable after a restart.
+    const connector = fs.readFileSync(
+      path.join(originalCwd, 'src', 'catscompany', 'index.ts'),
+      'utf-8',
+    );
+
+    assert.match(
+      connector,
+      /sanitizeDeviceContext\(msg\.metadata,\s*msg\.executionScope\)/,
+      'message handling must capture the device context',
+    );
+    // Every shutdown path must carry it. Asserting "at least one match" is not
+    // enough: index.ts retires tasks in two places (the shutdown sweep and the
+    // destroy orphan re-sweep), and mutating only one of them left this test
+    // green until it counted all of them.
+    const markCalls = connector.match(/this\.markInterruptedTurn\([^;]*?\);/gs) ?? [];
+    assert.ok(markCalls.length >= 2, `expected both shutdown paths, found ${markCalls.length}`);
+    for (const call of markCalls) {
+      assert.match(
+        call,
+        /task\.deviceContext/,
+        `every interruption marker must carry the device context: ${call.slice(0, 90)}`,
+      );
+    }
+    assert.match(
+      connector,
+      /this\.runInterruptedTurnResume\(sessionKey,\s*topic,\s*notice,\s*candidate\.deviceContext\)/,
+      'the scan result must be handed to the resume',
+    );
+    assert.match(
+      connector,
+      /const resumedContext = this\.rebuildDeviceContext\(deviceContext\)/,
+      'the resume must rebuild the context it was given',
+    );
+    for (const field of ['executionScope', 'deviceGrants', 'deviceSelection', 'targetRoutes']) {
+      assert.match(
+        connector,
+        new RegExp(`${field}: resumedContext\\.${field}`),
+        `the resumed turn must receive ${field}`,
+      );
+    }
+  });
 });
 
 function loadModules(): any {
@@ -592,6 +815,7 @@ function loadModules(): any {
     stopResumingInterruptedTurn: recovery.stopResumingInterruptedTurn,
     classifyShutdownReason: recovery.classifyShutdownReason,
     parseOomKillCount: recovery.parseOomKillCount,
+    sanitizeDeviceContext: recovery.sanitizeDeviceContext,
     noteResumeAttempt: recovery.noteResumeAttempt,
     collectInterruptedTurns: recovery.collectInterruptedTurns,
     SessionStore: require('../src/utils/session-store').SessionStore,
