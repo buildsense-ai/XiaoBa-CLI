@@ -15,9 +15,9 @@ test('relay MiniMax M3 uses a 1M official window with output and estimator reser
   }, { CATSCO_MODEL_SOURCE: 'relay' } as NodeJS.ProcessEnv);
 
   assert.equal(resolved.contextWindowTokens, 1_000_000);
-  assert.equal(resolved.maxOutputTokens, 32_768);
+  assert.equal(resolved.maxOutputTokens, 128 * 1024);
   assert.equal(resolved.promptBudgetTokens + resolved.safetyReserveTokens, 1_000_000);
-  assert.equal(resolved.summaryBudgetTokens, 300_000);
+  assert.equal(resolved.summaryBudgetTokens, 278_824);
   assert.ok(resolved.safetyReserveTokens > resolved.maxOutputTokens, 'reserve must include output tokens and protocol margin');
   assert.ok(resolved.promptBudgetTokens < resolved.contextWindowTokens, 'runtime budget must stay below the official window');
 });

@@ -13,27 +13,27 @@ test('resolveMaxTokens prefers explicit config value over relay defaults', () =>
   );
 });
 
-test('resolveMaxTokens uses higher default for CatsCo relay and MiniMax M2.7', () => {
+test('resolveMaxTokens uses the 128K default for CatsCo relay and MiniMax M2.7', () => {
   assert.equal(
     resolveMaxTokens({
       apiUrl: 'https://relay.catsco.cc/v1/chat/completions',
       model: 'other-model',
     }),
-    32768,
+    128 * 1024,
   );
   assert.equal(
     resolveMaxTokens({
       apiUrl: 'https://example.test/v1/chat/completions',
       model: 'MiniMax-M2.7',
     }),
-    32768,
+    128 * 1024,
   );
   assert.equal(
     resolveMaxTokens({
       apiUrl: 'https://example.test/v1/chat/completions',
       model: 'MiniMax-M3',
     }),
-    32768,
+    128 * 1024,
   );
 });
 
@@ -63,6 +63,14 @@ test('resolveMaxTokens clamps output to a quarter of explicit context windows', 
       model: 'MiniMax-M3',
       contextWindowTokens: 1_000_000,
     }),
-    32768,
+    128 * 1024,
+  );
+  assert.equal(
+    resolveMaxTokens({
+      apiUrl: 'https://relay.catsco.cc/anthropic',
+      model: 'MiniMax-M3',
+      contextWindowTokens: 400_000,
+    }),
+    100_000,
   );
 });

@@ -2,7 +2,7 @@ import { ChatConfig } from '../types';
 import { isCatsRelayApiBase } from '../utils/catsco-domains';
 
 const DEFAULT_MAX_TOKENS = 8192;
-const DEFAULT_RELAY_MAX_TOKENS = 32768;
+const DEFAULT_RELAY_MAX_TOKENS = 128 * 1024;
 
 export function resolveMaxTokens(config: ChatConfig): number {
   let maxTokens: number;
