@@ -25,8 +25,10 @@ import {
   markInterruptedTurn as markInterruptedTurnMarker,
   noteResumeAttempt,
   parseOomKillCount,
+  sanitizeDeviceContext,
   stopResumingInterruptedTurn,
   type InterruptedTurnCandidate,
+  type InterruptedTurnDeviceContext,
 } from '../core/interrupted-turn-recovery';
 import {
   AgentServices,
@@ -131,6 +133,8 @@ interface QueuedMessage {
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
   localFileGrants?: ScopedLocalFileGrant[];
+  /** Device metadata for the interrupted-turn marker if this queued work is running at shutdown. */
+  deviceContext?: InterruptedTurnDeviceContext;
   receivedAt: number;
   source?: 'user' | 'subagent_feedback';
   runtimeFeedback?: RuntimeFeedbackInput[];
@@ -180,6 +184,15 @@ interface ActiveConversationTask {
   topic: string;
   artifactTaskRef?: string;
   finished: boolean;
+  /**
+   * Device metadata captured when the turn started.
+   *
+   * A resume is a runtime observation rather than a user message, so it has no
+   * metadata of its own; without this the resumed turn cannot reach the user's
+   * computer. Captured here (not read later) because the originating message is
+   * gone by the time shutdown runs.
+   */
+  deviceContext?: InterruptedTurnDeviceContext;
 }
 
 interface SubAgentEventRoute {
@@ -1970,6 +1983,7 @@ export class CatsCompanyBot {
         deviceSelection: msg.deviceSelection,
         targetRoutes: msg.targetRoutes,
         localFileGrants,
+        deviceContext: sanitizeDeviceContext(msg.metadata, msg.executionScope),
         receivedAt: Date.now(),
         source: 'user',
         runtimeFeedback,
@@ -2004,7 +2018,12 @@ export class CatsCompanyBot {
         );
       }
       if (shouldProcess && entryStopGeneration === this.getSessionStopGeneration(key)) {
-        task = this.beginConversationTask(key, msg.topic, msg.artifactTaskRef);
+        task = this.beginConversationTask(
+          key,
+          msg.topic,
+          msg.artifactTaskRef,
+          sanitizeDeviceContext(msg.metadata, msg.executionScope),
+        );
         if (!task) {
           // Shutdown barrier at the call site: never start the model after
           // destroy() even when a pre-turn await resumed afterwards.
@@ -2203,19 +2222,27 @@ export class CatsCompanyBot {
     sessionKey: string,
     topic: string,
     artifactTaskRef?: string,
+    deviceContext?: InterruptedTurnDeviceContext,
   ): ActiveConversationTask | undefined {
     // Shutdown barrier: shutdown 开始后禁止创建新任务（不发 running），
     // 避免 shutdown snapshot 之后出现孤儿任务（排队消息在 drain 中被丢弃而非留下无终态任务）。
     if (this.shuttingDown) return undefined;
     const tasks = this.activeConversationTasks ??= new Map<string, ActiveConversationTask>();
     const active = tasks.get(sessionKey);
-    if (active && !active.finished) return active;
+    if (active && !active.finished) {
+      // The running turn's context is the one the interruption will need, but a
+      // newer message may carry a fresher grant (the user connected a device
+      // mid-turn), so upgrade rather than ignore it.
+      if (deviceContext) active.deviceContext = deviceContext;
+      return active;
+    }
 
     const task: ActiveConversationTask = {
       runID: `xiaoba-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
       topic,
       artifactTaskRef,
       finished: false,
+      ...(deviceContext ? { deviceContext } : {}),
     };
     tasks.set(sessionKey, task);
     this.enqueueConversationTaskStatus(task, {
@@ -2249,9 +2276,14 @@ export class CatsCompanyBot {
    * shutdown task sweep runs; both are best-effort so bookkeeping can never
    * break the reply path.
    */
-  private markInterruptedTurn(sessionKey: string, topic: string, reason: string): void {
+  private markInterruptedTurn(
+    sessionKey: string,
+    topic: string,
+    reason: string,
+    deviceContext?: InterruptedTurnDeviceContext,
+  ): void {
     try {
-      markInterruptedTurnMarker(sessionKey, { topic, reason });
+      markInterruptedTurnMarker(sessionKey, { topic, reason, ...(deviceContext ? { deviceContext } : {}) });
     } catch (error: any) {
       Logger.warning(`[${sessionKey}] 记录中断标记失败: ${error?.message || error}`);
     }
@@ -2412,7 +2444,7 @@ export class CatsCompanyBot {
       // suppresses replies built for sub-agent observations and would swallow the
       // answer the user is still waiting for.
       await this.runTrackedConversationWork(() =>
-        this.runInterruptedTurnResume(sessionKey, topic, notice));
+        this.runInterruptedTurnResume(sessionKey, topic, notice, candidate.deviceContext));
     } finally {
       // Release before draining, matching every other session work path.
       this.releaseSessionExecution(sessionKey);
@@ -2431,11 +2463,65 @@ export class CatsCompanyBot {
     }
   }
 
-  private async runInterruptedTurnResume(sessionKey: string, topic: string, notice: string): Promise<void> {
+  /**
+   * Recreates the execution identity, device grants and target routes an
+   * interrupted turn was running with.
+   *
+   * The extraction functions are the same ones the normal message path uses,
+   * so a resumed turn sees exactly the capabilities the original message
+   * carried rather than a parallel interpretation of them. Expired grants are
+   * dropped by the extractors themselves.
+   */
+  private rebuildDeviceContext(deviceContext?: InterruptedTurnDeviceContext): {
+    executionScope?: ExecutionScope;
+    deviceGrants?: ScopedDeviceGrant[];
+    deviceSelection?: ScopedDeviceSelection;
+    targetRoutes?: TargetRoutes;
+  } {
+    const scope = deviceContext?.executionScope;
+    if (!scope) {
+      // Nothing was captured (an older marker, or a turn with no device
+      // metadata). The resume still runs; it simply has no device access.
+      return {};
+    }
+    // The stored scope is a primitive-only copy that matches the ExecutionScope
+    // shape (sanitizeExecutionScope validated every required field). The
+    // extractors independently require a trusted server-canonical scope, so an
+    // untrusted copy yields no grants rather than a forged capability.
+    const executionScope = scope as unknown as ExecutionScope;
+    const metadata: Record<string, unknown> = {};
+    if (deviceContext?.catscoIdentity) metadata.catsco_identity = deviceContext.catscoIdentity;
+    if (deviceContext?.xiaobaRuntime) metadata.xiaoba_runtime = deviceContext.xiaobaRuntime;
+    const targetRoutes = extractCatsCoRuntimeContext(metadata);
+    const deviceGrants = extractCatsCoDeviceGrants(metadata, executionScope);
+    const deviceSelection = extractCatsCoDeviceSelection(metadata, executionScope);
+    if (targetRoutes?.routes?.length) {
+      Logger.info(`[中断续跑] 已恢复用户设备路由: ${targetRoutes.routes.map(route => `${route.userName || route.userId || '?'}:${route.deviceId}`).join(', ')}`);
+    }
+    return {
+      executionScope,
+      ...(deviceGrants ? { deviceGrants } : {}),
+      ...(deviceSelection ? { deviceSelection } : {}),
+      ...(targetRoutes ? { targetRoutes } : {}),
+    };
+  }
+
+  private async runInterruptedTurnResume(
+    sessionKey: string,
+    topic: string,
+    notice: string,
+    deviceContext?: InterruptedTurnDeviceContext,
+  ): Promise<void> {
     // The session was claimed by resumeOneInterruptedTurn() before any
     // user-visible side effect; this only runs the turn.
     const session = this.sessionManager.getOrCreate(sessionKey);
     const stopTypingHeartbeat = this.startTypingHeartbeat(topic);
+    // Rebuild the device access the interrupted turn had. A resume carries no
+    // metadata of its own, so without this the turn has no execution scope,
+    // no device grants and no target routes: the user-device tools are denied
+    // and the model is told "No user computer targets are currently
+    // available", stranding exactly the tasks this feature rescues.
+    const resumedContext = this.rebuildDeviceContext(deviceContext);
     try {
       const result = await session.handleRuntimeObservation(notice, {
         // senderId is not read by either builder (both key off topic and
@@ -2444,6 +2530,10 @@ export class CatsCompanyBot {
         channel: this.buildChannel(topic, { sessionKey }),
         callbacks: this.buildSessionCallbacks(topic, { sessionKey }),
         source: 'interrupted_turn_resume',
+        executionScope: resumedContext.executionScope,
+        deviceGrants: resumedContext.deviceGrants,
+        deviceSelection: resumedContext.deviceSelection,
+        targetRoutes: resumedContext.targetRoutes,
         localDeviceGrant: this.localDeviceGrant,
         deviceRpc: this.buildDeviceRpcTransport(),
         thinToolRpc: this.maybeBuildThinToolRpcTransport(),
@@ -2537,7 +2627,7 @@ export class CatsCompanyBot {
         summary: 'Agent 正在重启，本次任务已自动中止，可重新发送',
         error: 'connector shutdown before terminal task status',
       });
-      this.markInterruptedTurn(sessionKey, task.topic, this.shutdownInterruptReason());
+      this.markInterruptedTurn(sessionKey, task.topic, this.shutdownInterruptReason(), task.deviceContext);
     }
 
     const pending = Array.from(this.taskStatusTasks.values());
@@ -3669,7 +3759,12 @@ export class CatsCompanyBot {
         // Shutdown barrier: destroy() may have started while queued work ran.
         if (this.shuttingDown) return;
         if (msg.source === 'user') {
-          task = this.beginConversationTask(sessionKey, msg.topic, msg.artifactTaskRef);
+          task = this.beginConversationTask(
+            sessionKey,
+            msg.topic,
+            msg.artifactTaskRef,
+            msg.deviceContext,
+          );
           if (!task) return;
         }
         const result = msg.source === 'subagent_feedback'
@@ -3976,7 +4071,7 @@ export class CatsCompanyBot {
         summary: 'Agent 正在重启，本次任务已自动中止，可重新发送',
         error: 'connector shutdown before terminal task status',
       });
-      this.markInterruptedTurn(sessionKey, task.topic, this.shutdownInterruptReason());
+      this.markInterruptedTurn(sessionKey, task.topic, this.shutdownInterruptReason(), task.deviceContext);
     }
     Logger.info('CatsCo agent 已停止');
   }
