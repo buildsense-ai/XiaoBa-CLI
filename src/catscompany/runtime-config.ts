@@ -35,6 +35,7 @@ export interface CatsCoRuntimeConfigResolution {
   unconfirmedBotBinding: boolean;
   conflicts: CatsCoRuntimeConfigConflict[];
   envOverlay: Record<string, string>;
+  runtimeRole: CatsCompanyRuntimeRole;
 }
 
 export interface CatsCoRuntimeConfigOptions {
@@ -95,6 +96,9 @@ export function resolveCatsCoRuntimeConfig(
     ...fileEnv,
     ...env,
   };
+  // Fail closed: only the Dashboard service manager explicitly marks a
+  // connector as desktop. Direct/remote CLI runtimes are server runtimes.
+  const runtimeRole = resolveCatsCoRuntimeRole(effectiveEnv.XIAOBA_RUNTIME_ROLE);
   const service = createCatsCoLocalConfigService({ runtimeRoot, env: effectiveEnv });
   let localConfig = service.load();
   let auth = service.getAuthState(options.overrides || {});
@@ -130,7 +134,7 @@ export function resolveCatsCoRuntimeConfig(
     || config.catscompany?.connectorTokenExpiresAt
     || 0,
   ) || undefined;
-  const runtimeMode = resolveCatsCoRuntimeMode(localConfig);
+  const runtimeMode = resolveCatsCoRuntimeMode(localConfig, runtimeRole);
   const connectorToken = runtimeMode === 'connector' && configuredConnectorToken
     && (!connectorTokenExpiresAt || connectorTokenExpiresAt > Date.now())
     ? configuredConnectorToken
@@ -175,9 +179,6 @@ export function resolveCatsCoRuntimeConfig(
   const ownerUserId = connectorToken
     ? firstNonEmpty(auth.uid)
     : firstNonEmpty(localConfig.currentBot?.boundByUserUid, auth.uid);
-  // Fail closed: only the Dashboard service manager explicitly marks a
-  // connector as desktop. Direct/remote CLI runtimes are server runtimes.
-  const runtimeRole = resolveCatsCoRuntimeRole(effectiveEnv.XIAOBA_RUNTIME_ROLE);
   const preferredEndpointFamily = localConfig.endpoints?.preferredFamily === 'cc'
     || localConfig.endpoints?.preferredFamily === 'cn'
     ? localConfig.endpoints.preferredFamily
@@ -251,6 +252,7 @@ export function resolveCatsCoRuntimeConfig(
       connectorToken,
       connectorTokenExpiresAt,
     }, localConfig),
+    runtimeRole,
   };
 }
 

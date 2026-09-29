@@ -254,7 +254,7 @@ export class ServiceManager extends EventEmitter {
         env: envVars,
         migrateLegacyEnvBinding: true,
       });
-      if (resolveCatsCoRuntimeMode(catsCoRuntime.localConfig) === 'local_bot') {
+      if (resolveCatsCoRuntimeMode(catsCoRuntime.localConfig, catsCoRuntime.runtimeRole) === 'local_bot') {
         // Do not leak a retained device credential into a legacy local-Bot
         // child process. The resolver already masks it logically; clearing
         // the inherited aliases also protects older runtime readers.

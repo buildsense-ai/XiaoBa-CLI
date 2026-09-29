@@ -535,6 +535,7 @@ test('server bootstrap keeps a cloud Bot and does not auto-provision a device Co
         if (url.endsWith('/cats/status')) {
           return jsonResponse({
             connected: true,
+            runtimeMode: 'local_bot',
             deviceConnectorMode: false,
             bodyConfigured: true,
             configured: true,

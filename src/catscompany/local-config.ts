@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { randomUUID } from 'crypto';
 import { CATSCO_APP_HTTP_ORIGINS, type CatsCoDomainFamily } from '../utils/catsco-domains';
+import type { CatsCompanyRuntimeRole } from './types';
 
 export interface CatsCoLocalAccount {
   token: string;
@@ -62,13 +63,19 @@ export interface CatsCoLocalConfig {
 
 export function resolveCatsCoRuntimeMode(
   config: Pick<CatsCoLocalConfig, 'runtimeMode' | 'currentBot' | 'device'>,
+  runtimeRole: CatsCompanyRuntimeRole = 'desktop',
 ): CatsCoRuntimeMode {
   if (config.runtimeMode === 'local_bot' || config.runtimeMode === 'connector') {
     return config.runtimeMode;
   }
-  // Missing mode means an older installation. The desktop startup path must
-  // migrate it to the device Connector; a retained Bot binding is kept only
-  // for the explicit compatibility entry and must not silently become active.
+  // Missing mode means an older installation. Desktop launches migrate to the
+  // device Connector, while server/CLI launches retain a confirmed Bot
+  // identity so existing cloud-hosted Bots do not lose their credentials.
+  if (runtimeRole === 'server'
+    && config.currentBot?.uid
+    && config.currentBot?.apiKey) {
+    return 'local_bot';
+  }
   return 'connector';
 }
 

@@ -3832,7 +3832,7 @@ export function createApiRouter(
     }
 
     const localBodyId = runtime.localConfig.device?.bodyId;
-    const runtimeMode = resolveCatsCoRuntimeMode(runtime.localConfig);
+    const runtimeMode = resolveCatsCoRuntimeMode(runtime.localConfig, runtime.runtimeRole);
     // A retained device token is not the active identity while the user is
     // explicitly running a legacy/local Bot. Keep this field consistent with
     // runtimeMode so the Dashboard and auto-start loop cannot disagree during
@@ -4137,7 +4137,7 @@ export function createApiRouter(
         // A local-Bot retry must replace a stale Connector child that may
         // still be alive after an interrupted mode transition. In Connector
         // mode a healthy running child is left untouched.
-        restartIfRunning: resolveCatsCoRuntimeMode(runtime.localConfig) === 'local_bot',
+        restartIfRunning: resolveCatsCoRuntimeMode(runtime.localConfig, runtime.runtimeRole) === 'local_bot',
       });
       if (!result.service) {
         return res.status(409).json({ error: 'CatsCompany connector service is unavailable' });
@@ -4617,7 +4617,7 @@ export function createApiRouter(
         : null;
       res.json({
         ok: true,
-        runtimeMode: resolveCatsCoRuntimeMode(runtime.localConfig),
+        runtimeMode: resolveCatsCoRuntimeMode(runtime.localConfig, runtime.runtimeRole),
         localBot: localBotVisible,
         hasConnectorCredential: Boolean(runtime.localConfig.device?.connectorToken),
         service: serviceManager.getService('catscompany') || null,
@@ -4658,7 +4658,10 @@ export function createApiRouter(
       const localConfig = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() });
 
       if (requestedMode === 'connector') {
-        const previousRuntimeMode = resolveCatsCoRuntimeMode(localConfig.load());
+        const previousRuntimeMode = resolveCatsCoRuntimeMode(
+          localConfig.load(),
+          resolveCatsCoRuntimeRole(process.env.XIAOBA_RUNTIME_ROLE),
+        );
         localConfig.setRuntimeMode('connector');
         // The bootstrap controller owns provisioning and the child-process
         // handoff. Schedule it and return immediately so the UI is not held
