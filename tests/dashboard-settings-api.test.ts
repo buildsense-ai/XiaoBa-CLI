@@ -1668,6 +1668,7 @@ describe('dashboard typed settings API', () => {
       process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${catsAddress.port}`;
       createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
         version: 1,
+        runtimeMode: 'local_bot',
         endpoints: {
           httpBaseUrl: `http://127.0.0.1:${catsAddress.port}`,
           serverUrl: 'wss://app.catsco.cc/v0/channels',

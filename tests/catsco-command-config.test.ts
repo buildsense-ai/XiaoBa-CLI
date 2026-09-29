@@ -143,6 +143,7 @@ describe('CatsCo command config resolution', () => {
   function saveConfirmedBinding(runtimeRoot = tempDir): void {
     createCatsCoLocalConfigService({ runtimeRoot }).save({
       version: 1,
+      runtimeMode: 'local_bot',
       endpoints: {
         httpBaseUrl: 'https://local.example',
         serverUrl: 'wss://local.example/v0/channels',

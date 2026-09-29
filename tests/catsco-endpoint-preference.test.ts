@@ -23,6 +23,7 @@ describe('CatsCo endpoint family preference', () => {
     const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
     service.save({
       version: 1,
+      runtimeMode: 'local_bot',
       endpoints: {
         httpBaseUrl: 'https://app.catsco.cc',
         serverUrl: 'wss://app.catsco.cc/v0/channels',
