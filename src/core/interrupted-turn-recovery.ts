@@ -190,6 +190,10 @@ export function collectInterruptedTurns(
 
   const resumable: InterruptedTurnCandidate[] = [];
   for (const entry of entries) {
+    // Only committed state files end in '.json'. saveRuntimeState() stages its
+    // payload in a '<key>.json.<pid>.tmp' sibling and renames it into place, so
+    // an in-flight temp file cannot match this suffix and is never read as a
+    // marker.
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
     const marker = readInterruptedTurn(path.join(stateDir, entry.name));
     if (!marker) continue;

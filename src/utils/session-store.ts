@@ -246,10 +246,30 @@ export class SessionStore {
   saveRuntimeState(sessionKey: string, state: SessionRuntimeState): boolean {
     try {
       if (!fs.existsSync(SESSION_STATE_DIR)) fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
-      fs.writeFileSync(stateFilePath(sessionKey), JSON.stringify({
+      const target = stateFilePath(sessionKey);
+      const payload = JSON.stringify({
         ...state,
         updatedAt: new Date().toISOString(),
-      }, null, 2), 'utf-8');
+      }, null, 2);
+      // Write-then-rename: the interruption marker is written by a process the
+      // kernel is already killing, and this file also carries the remote
+      // context cursors. Overwriting in place means a kill mid-write leaves a
+      // truncated file, which loses the marker (recovery silently never fires)
+      // and the cursors (history has to be re-pulled). rename() is atomic
+      // within a directory, so a reader sees either the old file or the
+      // complete new one, never a half-written one.
+      const temp = `${target}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(temp, payload, 'utf-8');
+        fs.renameSync(temp, target);
+      } catch (writeError) {
+        // Leaving a temp file behind would accumulate junk in the state dir,
+        // and the scan reads every .json in it.
+        try {
+          if (fs.existsSync(temp)) fs.unlinkSync(temp);
+        } catch { /* best effort */ }
+        throw writeError;
+      }
       return true;
     } catch (err) {
       Logger.error(`Failed to save session state [${sessionKey}]: ${err}`);
