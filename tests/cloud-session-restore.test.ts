@@ -243,6 +243,17 @@ test('group normalization keeps stable speakers for humans and other Agents whil
   ]);
 });
 
+test('targeted runtime commands do not become replayed user turns after cloud restore', () => {
+  const normalized = normalizeAgentContextMessages([
+    contextMessage({ id: 1, seq_id: 1, content: '/compact' }),
+    contextMessage({ id: 2, seq_id: 2, content: '/stop' }),
+    contextMessage({ id: 3, seq_id: 3, content: '/clear' }),
+    contextMessage({ id: 4, seq_id: 4, content: '继续处理当前任务' }),
+  ], { topicType: 'p2p', agentId: 'usr42' });
+
+  assert.deepEqual(normalized.map((message) => message.content), ['继续处理当前任务']);
+});
+
 test('the latest clear command cuts off older cloud history on every device', async () => {
   const store = new MemorySessionStore();
   const client = new FakeHistoryClient([

@@ -267,6 +267,13 @@ export function normalizeAgentContextMessages(
       text = stripAssistantTranscriptArtifacts(text);
     }
     if (!text || isNonAnswerPlaceholder(text)) continue;
+    // Slash commands are control messages for the local runtime, not user
+    // instructions to replay after a fresh cloud-session restore. Keep a
+    // targeted /clear as the boundary handled by findLastClearBoundaryIndex,
+    // while dropping the command itself (and /stop or /compact) from the
+    // rebuilt model context. Ordinary group members' unaddressed text stays
+    // visible as normal group history.
+    if (role === 'user' && isRuntimeCommandForAgent(message, text, request)) continue;
     if (request.topicType === 'group' && role === 'user') {
       const speaker = cloudSpeakerLabel(message);
       if (speaker) text = `[发言人: ${speaker}]\n${text}`;
@@ -286,6 +293,17 @@ export function normalizeAgentContextMessages(
   }
 
   return normalized;
+}
+
+function isRuntimeCommandForAgent(
+  message: CatsAgentContextMessage,
+  text: string,
+  request: Pick<CloudSessionRestoreRequest, 'topicType'>,
+): boolean {
+  if (request.topicType === 'group' && message.context_reason !== 'group_message_targets_agent') {
+    return false;
+  }
+  return /^\/(?:compact|stop|clear)(?:\s|$)/i.test(text);
 }
 
 function normalizedAgentContextRole(
