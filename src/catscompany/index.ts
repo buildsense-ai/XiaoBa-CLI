@@ -718,7 +718,8 @@ export class CatsCompanyBot {
     Logger.info('正在启动 CatsCompany connector...');
 
     // Baseline before any work runs, so shutdown can attribute an OOM kill to
-    // this process rather than to the cgroup's history.
+    // this process rather than to the host's history (the worker host keeps a
+    // cumulative count across every restart).
     this.captureOomKillBaseline();
 
     // 加载 skills
@@ -2400,7 +2401,14 @@ export class CatsCompanyBot {
       await this.runTrackedConversationWork(() =>
         this.runInterruptedTurnResume(sessionKey, topic, notice));
     } finally {
+      // Release before draining, matching every other session work path.
       this.releaseSessionExecution(sessionKey);
+      // Same contract as those paths: anything the user sent while the resume
+      // held the session was queued, and releasing the claim without draining
+      // left it unanswered forever -- the user would see the bot go quiet right
+      // after it announced it was continuing. This lives in the finally so the
+      // exhausted-budget early return hands the session back too.
+      await this.drainMessageQueue(sessionKey);
     }
   }
 
