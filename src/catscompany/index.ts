@@ -2350,76 +2350,63 @@ export class CatsCompanyBot {
 
   private async resumeOneInterruptedTurn(candidate: InterruptedTurnCandidate): Promise<void> {
     const { sessionKey, topic } = candidate;
-    // Register before the attempt count so a throw between the two cannot make
-    // this session eligible for a second resume in the same process.
+    // Register before anything can throw so this session cannot be resumed
+    // twice in one process.
     this.resumedInterruptedTurns.add(sessionKey);
 
-    // A busy session must not burn the attempt budget: nothing was attempted
-    // yet. This also leaves the marker (and its existing count) untouched so a
-    // later start() can still resume it -- /compact and other in-flight work
-    // only block this resume, they do not cancel it.
-    if (!this.canResumeInterruptedTurnNow(sessionKey)) {
+    // Claim the session before spending anything. Doing this after the notice
+    // would let a user message win the race and leave the user reading
+    // "正在自动继续" for a turn that never starts. A busy session is deferred
+    // with its marker (and attempt count) intact, so a later start() resumes it
+    // with a full budget: /compact or an in-flight turn blocks the resume, it
+    // does not cancel it.
+    if (this.shuttingDown || !this.connectorReady) return;
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    if (!this.tryReserveSessionExecution(sessionKey, session)) {
       Logger.info(`[${sessionKey}] 中断任务暂缓：会话正忙，保留标记等待下次启动`);
       return;
     }
 
-    const attempts = noteResumeAttempt(sessionKey);
-    if (attempts === 0 || attempts > INTERRUPTED_TURN_MAX_RESUME_ATTEMPTS) {
-      Logger.info(`[${sessionKey}] 中断任务标记已失效或已达自动继续上限，不再重试`);
-      return;
-    }
-
-    const reason = interruptedTurnReasonLabel(candidate.reason);
     try {
-      await this.sender.reply(
-        topic,
-        `上一轮任务被系统中断（${reason}，不是你的操作），正在自动继续…（第 ${attempts} 次）`,
-      );
-    } catch (error: any) {
-      Logger.warning(`[${sessionKey}] 自动继续提示发送失败: ${error?.message || error}`);
+      const attempts = noteResumeAttempt(sessionKey);
+      if (attempts === 0 || attempts > INTERRUPTED_TURN_MAX_RESUME_ATTEMPTS) {
+        Logger.info(`[${sessionKey}] 中断任务标记已失效或已达自动继续上限，不再重试`);
+        return;
+      }
+
+      const reason = interruptedTurnReasonLabel(candidate.reason);
+      try {
+        await this.sender.reply(
+          topic,
+          `上一轮任务被系统中断（${reason}，不是你的操作），正在自动继续…（第 ${attempts} 次）`,
+        );
+      } catch (error: any) {
+        Logger.warning(`[${sessionKey}] 自动继续提示发送失败: ${error?.message || error}`);
+      }
+
+      // The model only sees history, not why its process disappeared, so the
+      // notice has to say what happened and where to pick up. Without it the
+      // model restarts the work and burns tokens redoing finished steps.
+      const notice = [
+        `[系统] 上一轮任务被中断（${reason}，非用户取消），进程已重启。`,
+        '请从中断处继续：先检查已完成的进度和已生成的文件，不要重复已执行的步骤；',
+        '如果上一轮的目标已经达成，直接给出结论即可。',
+      ].join('');
+
+      // The resume turn must not travel the sub-agent feedback path: that path
+      // suppresses replies built for sub-agent observations and would swallow the
+      // answer the user is still waiting for.
+      await this.runTrackedConversationWork(() =>
+        this.runInterruptedTurnResume(sessionKey, topic, notice));
+    } finally {
+      this.releaseSessionExecution(sessionKey);
     }
-
-    // The model only sees history, not why its process disappeared, so the
-    // notice has to say what happened and where to pick up. Without it the
-    // model restarts the work and burns tokens redoing finished steps.
-    const notice = [
-      `[系统] 上一轮任务被中断（${reason}，非用户取消），进程已重启。`,
-      '请从中断处继续：先检查已完成的进度和已生成的文件，不要重复已执行的步骤；',
-      '如果上一轮的目标已经达成，直接给出结论即可。',
-    ].join('');
-
-    // The resume turn must not travel the sub-agent feedback path: that path
-    // suppresses replies built for sub-agent observations and would swallow the
-    // answer the user is still waiting for.
-    await this.runTrackedConversationWork(() =>
-      this.runInterruptedTurnResume(sessionKey, topic, notice));
-  }
-
-  /**
-   * Whether the resume turn can start right now. Kept in sync with the barriers
-   * inside runInterruptedTurnResume(): deciding first means a blocked resume
-   * never pays for a user-visible notice or an attempt.
-   */
-  private canResumeInterruptedTurnNow(sessionKey: string): boolean {
-    if (this.shuttingDown) return false;
-    if (!this.connectorReady) return false;
-    if (this.sessionExecutionReservations?.has(sessionKey)) return false;
-    let session: { isBusy?: () => boolean } | undefined;
-    try {
-      session = this.sessionManager.getOrCreate(sessionKey);
-    } catch (error: any) {
-      Logger.warning(`[${sessionKey}] 中断任务检查会话状态失败: ${error?.message || error}`);
-      return false;
-    }
-    return session.isBusy?.() !== true;
   }
 
   private async runInterruptedTurnResume(sessionKey: string, topic: string, notice: string): Promise<void> {
+    // The session was claimed by resumeOneInterruptedTurn() before any
+    // user-visible side effect; this only runs the turn.
     const session = this.sessionManager.getOrCreate(sessionKey);
-    if (!this.tryReserveSessionExecution(sessionKey, session)) {
-      Logger.info(`[${sessionKey}] 中断任务跳过：会话正忙`);
-      return;
-    }
     const stopTypingHeartbeat = this.startTypingHeartbeat(topic);
     try {
       const result = await session.handleRuntimeObservation(notice, {
@@ -2451,7 +2438,6 @@ export class CatsCompanyBot {
         this.clearInterruptedTurn(sessionKey);
       }
       stopTypingHeartbeat();
-      this.releaseSessionExecution(sessionKey);
     }
   }
 
