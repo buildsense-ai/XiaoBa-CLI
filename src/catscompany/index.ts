@@ -742,7 +742,14 @@ export class CatsCompanyBot {
       // Resume turns the previous process died in the middle of (OOM killer,
       // host reboot). Runs after 'ready' so the resume notice has a live
       // connection, and off the ready handler's stack so reconnects stay fast.
-      void this.resumeInterruptedTurns();
+      void this.resumeInterruptedTurns().catch((error: any) => {
+        // The connector has no global unhandledRejection handler, and Node
+        // exits on one. A throw here would kill the worker, the shutdown path
+        // would write a fresh marker, and the next start() would resume the
+        // same turn into the same crash -- a reboot loop built out of the very
+        // recovery meant to prevent one.
+        Logger.warning(`中断任务扫描失败: ${error?.message || error}`);
+      });
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {
@@ -2346,7 +2353,13 @@ export class CatsCompanyBot {
         Logger.info(`[${candidate.sessionKey}] 中断任务跳过：会话已有新任务在跑`);
         continue;
       }
-      await this.resumeOneInterruptedTurn(candidate);
+      // Isolated per conversation: one session that throws must not cost the
+      // others their recovery, and it must not abort the scan loop midway.
+      try {
+        await this.resumeOneInterruptedTurn(candidate);
+      } catch (error: any) {
+        Logger.warning(`[${candidate.sessionKey}] 中断任务自动继续失败: ${error?.message || error}`);
+      }
     }
   }
 
@@ -2408,7 +2421,13 @@ export class CatsCompanyBot {
       // left it unanswered forever -- the user would see the bot go quiet right
       // after it announced it was continuing. This lives in the finally so the
       // exhausted-budget early return hands the session back too.
-      await this.drainMessageQueue(sessionKey);
+      try {
+        await this.drainMessageQueue(sessionKey);
+      } catch (error: any) {
+        // A throw from a finally block would replace the original outcome and
+        // escape into the unawaited scan task, so it is contained here.
+        Logger.warning(`[${sessionKey}] 中断续跑后排空消息队列失败: ${error?.message || error}`);
+      }
     }
   }
 
