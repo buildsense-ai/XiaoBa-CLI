@@ -78,10 +78,13 @@ interface MechanicalRetrievalState {
   sessionRecords: Record<string, unknown>[];
   /** True when assess keywords exceeded the 8-keyword search_any wire cap. */
   keywordsTruncated: boolean;
+  /** True when any keyword was code-point-bounded or dropped (visible note). */
+  keywordsBounded: boolean;
 }
 
-/** Server contract: search_any is OR over at most 8 literal keywords. */
+/** Server contract: search_any is OR over at most 8 literal keywords of at most 64 code points. */
 const MAX_SEARCH_ANY_KEYWORDS = 8;
+const MAX_KEYWORD_CODE_POINTS = 64;
 const MAX_SESSION_RECORDS = 20;
 const MAX_REMOTE_EVIDENCE_CHARS = 20_000;
 const MAX_SESSION_EVIDENCE_CHARS = 12_000;
@@ -135,6 +138,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   private retrieval: MechanicalRetrievalState = {
     sessionRecords: [],
     keywordsTruncated: false,
+    keywordsBounded: false,
   };
   private verdict: CatscoEvidenceVerdict = 'unknown';
   private evidencePackMessage?: Message;
@@ -286,6 +290,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       session_records: this.retrieval.sessionRecords.length,
       session_query: this.sessionQueryStatus(),
       ...(this.retrieval.keywordsTruncated ? { keywords_truncated: true } : {}),
+      ...(this.retrieval.keywordsBounded ? { keywords_bounded: true } : {}),
       next: 'call finish_memory_search with the evidence pack',
     };
   }
@@ -297,8 +302,9 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
    */
   private async runMechanicalRetrieval(plan: RecallPlan, signal?: AbortSignal): Promise<void> {
     const startedAt = Date.now();
-    const { searchAny, truncated } = buildSearchAny(plan.keywords);
+    const { searchAny, truncated, bounded } = buildSearchAny(plan.keywords);
     this.retrieval.keywordsTruncated = truncated;
+    this.retrieval.keywordsBounded = bounded;
     await Promise.all([
       this.fetchRemoteBranch(plan, signal),
       this.fetchServerSessions(searchAny, signal),
@@ -339,6 +345,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       session_query: this.sessionQueryStatus(),
       session_records: this.retrieval.sessionRecords.length,
       keywords_truncated: this.retrieval.keywordsTruncated,
+      keywords_bounded: this.retrieval.keywordsBounded,
       verdict: this.verdict,
     });
   }
@@ -421,9 +428,9 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
           content_trust: 'untrusted_branch_evidence',
           remote_branch: this.remoteEvidencePack(),
           session_records: this.sessionEvidencePack(),
-          ...(this.retrieval.keywordsTruncated ? {
+          ...(((this.retrieval.keywordsTruncated || this.retrieval.keywordsBounded)) ? {
             keywords_truncated: true,
-            keyword_note: 'keywords 超过 8 个，只有前 8 个参与了服务器会话检索（OR 语义）；其余关键词本次未检索，不要假设它们已覆盖。',
+            keyword_note: buildKeywordNote(this.retrieval.keywordsTruncated, this.retrieval.keywordsBounded),
           } : {}),
         },
         instruction: '以上是本次机械检索的全部证据（远端融合检索与设备绑定会话查询并行取得）。请分析后立即调用 finish_memory_search 收尾；refs 只能引用其中出现过的 ref。',
@@ -599,7 +606,7 @@ function buildMemorySearchSystemPrompt(hasCatsLogMemory = false): string {
     '- action:"recall"：需要历史记忆时给出：',
     '  - query_text：远端检索词，组合具体实体名、工具名、项目名、决策关键词；不要传整段对话或秘密。',
     ...(hasCatsLogMemory ? [] : ['  - （当前 CatsLog 远端能力不可用：recall 不会取得任何历史会话，证据包会标注 session 查询不可用。）']),
-    '  - keywords：服务器会话检索的 OR 关键词数组；每项都是独立的脱敏记录检索词。只有前 8 个不同的关键词会发送；超出部分会在证据包里明确标注为未检索。不要把多个词拼进同一项。好例子：["生日", "包间", "低预算"]；坏例子：["生日 包间 低预算"]。固定名称、工具名、文件名、项目名可以作为完整 keyword，例如 "XiaoBa-CLI"。',
+    '  - keywords：服务器会话检索的 OR 关键词数组；每项都是独立的脱敏记录检索词，且每项不超过 64 个 Unicode 码点（超长关键词会被拒绝，请拆短）。只有前 8 个不同的关键词会发送；超出部分会在证据包里明确标注为未检索。不要把多个词拼进同一项。好例子：["生日", "包间", "低预算"]；坏例子：["生日 包间 低预算"]。固定名称、工具名、文件名、项目名可以作为完整 keyword，例如 "XiaoBa-CLI"。',
     '  - sources（可选）：agent_memory、session_graph、skill；省略时查询全部三类。',
     '- 本地可枚举问题的注入门槛更高：只有当记忆可能包含当前上下文看不到的东西（更早的决策、被修正过的约束、跨会话上下文）时才 recall。',
     '',
@@ -641,22 +648,60 @@ function buildMemorySearchUserInput(options: {
   return JSON.stringify(payload, null, 2);
 }
 
-/** Distinct OR keywords for the session query, capped at the wire limit. */
-function buildSearchAny(keywords: string[]): { searchAny: string[]; truncated: boolean } {
+/**
+ * Distinct OR keywords for the session query, capped at the wire limits.
+ * Terms are bounded to 64 code points (never UTF-16 units, so astral
+ * characters survive intact) and control-character/unpaired-surrogate terms
+ * are dropped — every adjustment sets the visible `bounded` flag; nothing is
+ * silently altered.
+ */
+function buildSearchAny(keywords: string[]): { searchAny: string[]; truncated: boolean; bounded: boolean } {
   const distinct: string[] = [];
   const seen = new Set<string>();
+  let bounded = false;
   for (const keyword of keywords) {
     const text = String(keyword || '').trim();
     if (!text) continue;
     const key = text.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
+    if (keywordHasControlOrLoneSurrogate(text)) {
+      bounded = true;
+      continue;
+    }
+    const codePoints = Array.from(text);
+    if (codePoints.length > MAX_KEYWORD_CODE_POINTS) {
+      distinct.push(codePoints.slice(0, MAX_KEYWORD_CODE_POINTS).join(''));
+      bounded = true;
+      continue;
+    }
     distinct.push(text);
   }
   return {
     searchAny: distinct.slice(0, MAX_SEARCH_ANY_KEYWORDS),
     truncated: distinct.length > MAX_SEARCH_ANY_KEYWORDS,
+    bounded,
   };
+}
+
+function keywordHasControlOrLoneSurrogate(text: string): boolean {
+  for (const character of text) {
+    const codePoint = character.codePointAt(0)!;
+    if (codePoint < 0x20 || codePoint === 0x7f) return true;
+    if (codePoint >= 0xd800 && codePoint <= 0xdfff) return true;
+  }
+  return false;
+}
+
+function buildKeywordNote(truncated: boolean, bounded: boolean): string {
+  const notes: string[] = [];
+  if (truncated) {
+    notes.push('keywords 超过 8 个，只有前 8 个参与了服务器会话检索（OR 语义）；其余关键词本次未检索，不要假设它们已覆盖。');
+  }
+  if (bounded) {
+    notes.push('部分关键词超过 64 个 Unicode 码点或含控制字符，已截短到 64 码点或剔除；这些词没有按原样完整检索。');
+  }
+  return notes.join(' ');
 }
 
 interface RecentCompletedTurn {

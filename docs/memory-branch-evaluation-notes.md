@@ -29,15 +29,25 @@ the explicit `delivery` field.
 
 Query policy lives in the branch; retrieval execution lives on the server. The mechanical stage
 runs one fused `/catsco/agent/branch` fan-out and one device-bound
-`/catsco/agent/query/v1/sessions` query in parallel (session query sends `search_any`: OR over
-at most 8 distinct keywords; truncation beyond the cap is reported visibly in the evidence
-pack). Historical sessions come only from the server: the local JSONL log tree is never read
-by the branch, because local files have no trustworthy per-agent scope labels while the
-device-bound query admits only shared + own-subject memory scopes. A failed session lane
-degrades to a typed `unavailable` status in the evidence pack — never to a local-file fallback.
+`/catsco/agent/query/v1/sessions` query in parallel. The session query sends `search_any`: OR
+over at most 8 distinct keywords, each at most 64 Unicode code points (code points, not UTF-16
+units; the assess tool validates and returns a structured error for longer terms, and the
+client rejects violations before any HTTP call — never a silent trim, never a raw 400).
+Truncation beyond 8 keywords and any code-point bounding are reported visibly in the evidence
+pack and telemetry.
+
+**Latest-window semantics (v1):** `latest: true, limit: 20` asks the server for the globally
+newest ≤20 matching records across all streams in the device's visible scopes — it is a bounded
+newest-window read, not one record per stream (that is the separate `session_summary` mode) and
+not a forward page: the server explicitly rejects mixing a cursor into a latest query. Older
+history beyond that window is therefore unreachable in a single recall pass; if it ever
+matters, the shape to add is explicit forward pagination with `from`/`to`, not an unbounded
+loop in the mechanical stage. The recency gap below covers the orthogonal upload/projection
+delay.
 
 **Recency gap:** sessions that are not yet uploaded/projected server-side are invisible until
-they sync. A successful query proves the returned records are complete for the device's visible
+they sync, and the newest-window read reaches only the newest ≤20 matching records per pass.
+A successful query proves the returned records are complete for the device's visible
 scopes at query time; it does not mean local files are authorized or indexed. Local replay of
 unsynced sessions is intentionally absent until per-session scope provenance exists.
 

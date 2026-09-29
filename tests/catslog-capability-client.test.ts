@@ -92,11 +92,16 @@ describe('CatsLog capability client', () => {
     const client = new CatscoLogAgentClient('https://logs.example.test');
     await client.querySessions({ token: 'skill-token', searchAny: ['rollback', 'nginx mount'], latest: true, limit: 20 });
     await client.querySessions({ token: 'skill-token', searchAny: ['  ', ''], search: 'solo term' });
+    await client.querySessions({
+      token: 'skill-token',
+      searchAny: ['😀'.repeat(64)], // exactly 64 code points (128 UTF-16 units)
+    });
 
     // OR keywords map to search_any verbatim (the client never silently
     // trims); blank-only entries collapse away; no UID selector may be sent.
     assert.deepEqual(bodies[0], { search_any: ['rollback', 'nginx mount'], latest: true, limit: 20 });
     assert.deepEqual(bodies[1], { search: 'solo term' });
+    assert.deepEqual(bodies[2], { search_any: ['😀'.repeat(64)] });
     for (const body of bodies) {
       assert.equal('uid' in body, false);
       assert.equal('uids' in body, false);
@@ -105,7 +110,21 @@ describe('CatsLog capability client', () => {
       client.querySessions({ token: 'skill-token', searchAny: 'rollback' as any }),
       /searchAny must be an array/,
     );
-    assert.equal(bodies.length, 2);
+    // The wire contract is enforced client-side as a structured error —
+    // never a silent trim and never a raw server 400.
+    await assert.rejects(
+      client.querySessions({ token: 'skill-token', searchAny: ['k'.repeat(65)] }),
+      /at most 64 Unicode code points \(got 65\)/,
+    );
+    await assert.rejects(
+      client.querySessions({ token: 'skill-token', searchAny: ['😀'.repeat(65)] }),
+      /at most 64 Unicode code points \(got 65\)/,
+    );
+    await assert.rejects(
+      client.querySessions({ token: 'skill-token', searchAny: ['bad\u0001term'] }),
+      /control characters/,
+    );
+    assert.equal(bodies.length, 3);
   });
 
   test('sends required branch sources using server wire names, including legacy aliases', async () => {

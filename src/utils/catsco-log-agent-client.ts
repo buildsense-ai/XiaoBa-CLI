@@ -413,11 +413,40 @@ function addQueryNumber(query: URLSearchParams, key: string, value: unknown): vo
   if (typeof value === 'number' && Number.isFinite(value)) query.set(key, String(value));
 }
 
-/** Validate the OR-keyword list shape; the ≤8 wire cap is the caller's duty. */
+/** Server search_any contract: at most 64 Unicode code points per keyword. */
+export const SEARCH_ANY_KEYWORD_MAX_CODE_POINTS = 64;
+
+/**
+ * Validate the OR-keyword list against the server wire contract: array of
+ * non-empty terms, each ≤64 Unicode code points, no control characters, no
+ * unpaired surrogates. Violations are structured errors before any HTTP call —
+ * never a silent trim and never a raw server 400.
+ */
 function normalizeSearchAny(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) throw new Error('CatsLog searchAny must be an array of keyword strings');
-  const keywords = value.map(keyword => String(keyword ?? '').trim()).filter(Boolean);
+  const keywords: string[] = [];
+  for (const entry of value) {
+    const keyword = String(entry ?? '').trim();
+    if (!keyword) continue;
+    for (const character of keyword) {
+      const codePoint = character.codePointAt(0)!;
+      if (codePoint < 0x20 || codePoint === 0x7f) {
+        throw new Error('CatsLog searchAny keyword must not contain control characters');
+      }
+      if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
+        throw new Error('CatsLog searchAny keyword must not contain unpaired surrogates');
+      }
+    }
+    const length = Array.from(keyword).length;
+    if (length > SEARCH_ANY_KEYWORD_MAX_CODE_POINTS) {
+      const preview = Array.from(keyword).slice(0, 16).join('');
+      throw new Error(
+        `CatsLog searchAny keyword must be at most ${SEARCH_ANY_KEYWORD_MAX_CODE_POINTS} Unicode code points (got ${length}); shorten it: "${preview}…"`,
+      );
+    }
+    keywords.push(keyword);
+  }
   return keywords.length > 0 ? keywords : undefined;
 }
 

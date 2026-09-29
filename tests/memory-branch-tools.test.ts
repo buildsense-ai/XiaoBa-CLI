@@ -79,6 +79,38 @@ describe('memory branch tools', () => {
       assert.equal(oversized.ok, false);
     });
 
+    test('validates keywords by Unicode code points, not UTF-16 units', () => {
+      const mk = (action: 'recall' | 'skip', keywords: string[]) => validateAssessArgs({
+        action,
+        query_text: 'q',
+        keywords,
+      });
+
+      // Exactly 64 code points: an astral emoji is ONE code point (two UTF-16
+      // units), so 64 emojis must be accepted even though they are 128 chars.
+      const atLimit = mk('recall', ['😀'.repeat(64)]);
+      assert.equal(atLimit.ok, true);
+
+      // 65 code points — astral or not — is a structured validation error the
+      // model can act on, never a silent drop and never a raw server 400.
+      const astralOver = mk('recall', ['😀'.repeat(65)]);
+      assert.equal(astralOver.ok, false);
+      assert.match(!astralOver.ok ? astralOver.error : '', /at most 64 Unicode code points \(got 65\)/);
+
+      const asciiOver = mk('recall', ['k'.repeat(65)]);
+      assert.equal(asciiOver.ok, false);
+      assert.match(!asciiOver.ok ? asciiOver.error : '', /at most 64 Unicode code points \(got 65\)/);
+
+      // Control characters and unpaired surrogates are rejected outright.
+      const control = mk('recall', ['ok\u0001term']);
+      assert.equal(control.ok, false);
+      assert.match(!control.ok ? control.error : '', /control characters/);
+
+      const surrogate = mk('recall', ['k\uDE00tail']);
+      assert.equal(surrogate.ok, false);
+      assert.match(!surrogate.ok ? surrogate.error : '', /unpaired surrogates/);
+    });
+
     test('execute returns the handler ack and surfaces validation errors', async () => {
       const seen: unknown[] = [];
       const tool = new AssessMemoryNeedTool(async (payload, context) => {

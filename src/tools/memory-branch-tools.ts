@@ -55,10 +55,38 @@ export type AssessMemoryNeedHandler = (
 
 const ASSESS_SOURCES = ['agent_memory', 'session_graph', 'skill'] as const;
 const MAX_ASSESS_KEYWORDS = 32;
-const MAX_ASSESS_KEYWORD_CHARS = 256;
+/**
+ * Server search_any contract: at most 64 Unicode code points per keyword
+ * (measured in code points, not JS UTF-16 units — an astral emoji counts as
+ * one). Longer keywords are a structured validation error the model can fix;
+ * the pipeline additionally bounds defensively with a visible note.
+ */
+export const MAX_ASSESS_KEYWORD_CODE_POINTS = 64;
 const MAX_ASSESS_QUERY_CHARS = 8_192;
 const MAX_ASSESS_REASON_CHARS = 512;
 const DEFAULT_SKIP_REASON = '当前输入无需历史记忆，主 agent 仅凭上下文即可回答。';
+
+function codePointLength(text: string): number {
+  return Array.from(text).length;
+}
+
+function keywordViolation(text: string): string | null {
+  for (const character of text) {
+    const codePoint = character.codePointAt(0)!;
+    if (codePoint < 0x20 || codePoint === 0x7f) {
+      return 'keyword must not contain control characters';
+    }
+    if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
+      return 'keyword must not contain unpaired surrogates';
+    }
+  }
+  const length = codePointLength(text);
+  if (length > MAX_ASSESS_KEYWORD_CODE_POINTS) {
+    const preview = Array.from(text).slice(0, 16).join('');
+    return `keyword must be at most ${MAX_ASSESS_KEYWORD_CODE_POINTS} Unicode code points (got ${length}); shorten it: "${preview}…"`;
+  }
+  return null;
+}
 
 /**
  * Pass-1 assess tool (v1.3). The branch has no open tool loop anymore: this
@@ -91,7 +119,7 @@ export class AssessMemoryNeedTool implements Tool {
         keywords: {
           type: 'array',
           items: { type: 'string' },
-          description: 'recall 必填。服务器会话检索的 OR 关键词；每一项独立命中即可召回。只发送前 8 个不同关键词，超出部分会在证据包中标注为未检索；不要把多个词拼进同一项。',
+          description: 'recall 必填。服务器会话检索的 OR 关键词；每一项独立命中即可召回，且每项不超过 64 个 Unicode 码点（超长会被拒绝，请拆短）。只发送前 8 个不同关键词，超出部分会在证据包中标注为未检索；不要把多个词拼进同一项。',
         },
         sources: {
           type: 'array',
@@ -148,8 +176,12 @@ export function validateAssessArgs(args: any):
   const keywords: string[] = [];
   const seen = new Set<string>();
   for (const item of args.keywords) {
-    const text = boundedAssessText(item, MAX_ASSESS_KEYWORD_CHARS);
+    // Keywords are validated on the raw trimmed value (no length prefilter):
+    // anything oversized or malformed must surface as a structured error.
+    const text = String(item ?? '').trim();
     if (!text) continue;
+    const violation = keywordViolation(text);
+    if (violation) return { ok: false, error: violation };
     const key = text.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);

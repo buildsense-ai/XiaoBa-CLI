@@ -61,10 +61,14 @@ CatsLog tokens or wait for a remote result. The division of labor is fixed:
 - **The server owns retrieval execution** — one fused `/catsco/agent/branch` fan-out
   (agent memory, session graph, skills; scope fencing, reranking, per-branch evidence verdict)
   and one device-bound `/catsco/agent/query/v1/sessions` query run in parallel. The session
-  query sends `search_any`: OR over at most 8 distinct literal keywords (the client caps and
-  visibly reports truncation; it never silently trims). The server redacts records and binds
+  query sends `search_any`: OR over at most 8 distinct literal keywords, each at most 64
+  Unicode code points (validated as code points, not UTF-16 units; violations are structured
+  errors, and any bounding/truncation is reported visibly in the evidence pack and telemetry).
+  The server redacts records and binds
   them to the capability's visible memory scopes (shared + own subject); the wire type has no
-  UID selector by construction.
+  UID selector by construction. `latest: true, limit: 20` is a bounded newest-window read —
+  the globally newest matching records across all scoped streams, not one per stream and not a
+  cursor page; older history beyond the window is not reachable in a single recall pass.
 
 **Historical sessions come only from the server.** The local JSONL log tree is never read by
 the branch: local files carry no trustworthy per-agent scope labels, and the device-bound query

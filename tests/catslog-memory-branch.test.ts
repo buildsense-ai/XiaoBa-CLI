@@ -573,6 +573,56 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     assert.equal('memory_source_available' in payload, false);
   });
 
+  test('old-history records stay usable and the newest-window request shape is preserved', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new AssessThenFinishAI();
+    const backend = new SessionQueryMemory();
+    backend.branchResponse = {
+      content_trust: 'untrusted_branch_evidence',
+      branches: [{ source: 'session_graph', status: 'ok', items: [] }],
+    };
+    backend.sessionResponse = {
+      content_trust: 'untrusted_log_data',
+      records: [{
+        ref: 'stream-archive#2',
+        session_type: 'cli',
+        // Deliberately ancient: the client must not apply its own recency
+        // filter on top of the server's newest-window semantics.
+        timestamp: '2019-03-04T08:00:00.000Z',
+        user: { text: 'release checklist decision from the archive' },
+        agent: { text: 'Decision recorded years ago: read-only mount.' },
+      }],
+    };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'old-history',
+      input: 'find prior release notes',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+
+    await handle.done;
+
+    // The request keeps the server newest-window contract: latest=true with
+    // the bounded limit — globally newest matching records across streams,
+    // not one per stream, and no cursor follow in v1.
+    assert.equal(backend.sessionQueries.length, 1);
+    assert.equal(backend.sessionQueries[0].latest, true);
+    assert.equal(backend.sessionQueries[0].limit, 20);
+
+    // Old records that the server did return are projected and citable.
+    const pack = ai.evidencePackIn(ai.calls[1].messages);
+    assert.equal(pack.evidence_pack.session_records.records[0].timestamp, '2019-03-04T08:00:00.000Z');
+    assert.equal(pack.evidence_pack.session_records.records[0].ref, 'stream-archive#2');
+    const observations = queue.drain();
+    assert.equal(observations.length, 1);
+    const injected = JSON.parse(observations[0].formattedContent || '');
+    assert.deepEqual(injected.refs, ['stream-archive#2']);
+  });
+
   test('unavailable remote capability degrades to typed statuses without local retrieval', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const ai = new AssessThenFinishAI();
