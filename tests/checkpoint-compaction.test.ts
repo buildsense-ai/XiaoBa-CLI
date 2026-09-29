@@ -90,7 +90,7 @@ test('checkpoint input limit preserves the legacy prompt budget below 256K', () 
   }
 
   assert.equal(minimaxM27.contextWindowTokens, 204_800);
-  assert.equal(minimaxM27.promptBudgetTokens, 155_648);
+  assert.equal(minimaxM27.promptBudgetTokens, 137_216);
   assert.equal(custom128K.promptBudgetTokens, 84_224);
 });
 
