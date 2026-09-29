@@ -28,7 +28,7 @@ const CHECKPOINT_TOOL_EVIDENCE_PREFIX = '[checkpoint_tool_evidence]';
 const CHECKPOINT_USER_INPUT_EVIDENCE_PREFIX = '[checkpoint_user_input_evidence]';
 const CHECKPOINT_SOURCE_VERIFICATION = 'This checkpoint is a lossy reference, not an exact data source. Re-read original files or tool evidence before using exact fields. Never pad, normalize, or extrapolate identifiers or checksums from a summary. Before declaring a generated report correct, compare every field against its original source; counts and uniqueness alone do not establish correctness.';
 
-export type CheckpointCompactionPhase = 'pre_turn' | 'mid_turn' | 'restore';
+export type CheckpointCompactionPhase = 'pre_turn' | 'mid_turn' | 'restore' | 'manual';
 
 export interface CheckpointCompactionCoordinatorOptions {
   maxContextTokens: number;
@@ -40,6 +40,8 @@ export interface CheckpointCompactionCoordinatorOptions {
 export interface CheckpointCompactionRequest {
   sessionKey: string;
   phase: CheckpointCompactionPhase;
+  /** Run one explicit user-requested checkpoint even below the auto threshold. */
+  force?: boolean;
   episodeId?: string;
   toolTokens?: number;
   promptOverheadTokens?: number;
@@ -282,7 +284,7 @@ export class CheckpointCompactionCoordinator {
       request.toolTokens,
       request.promptOverheadTokens,
     );
-    if (!this.needsCompaction(
+    if (!request.force && !this.needsCompaction(
       messages,
       request.toolTokens,
       request.promptOverheadTokens,
@@ -611,11 +613,17 @@ export function buildCheckpointCompactionPrompt(
         'Do not describe a completed prior episode as if it were still actively executing.',
         'The next external user message will become the new root instruction.',
       ].join(' ')
-      : [
-      'This checkpoint is being generated from restored user-visible history.',
-      'Treat processes, ports, files, devices, credentials, network state, and unfinished tool execution as unknown until reverified.',
-      'Preserve durable objectives and decisions, but do not pretend that an interrupted runtime or tool call is still alive.',
-    ].join(' ');
+      : phase === 'manual'
+        ? [
+          'This is an explicit user-requested checkpoint compaction while the session is idle.',
+          'Preserve the active task, the latest user corrections, durable decisions, unresolved work, and exact facts needed to continue.',
+          'Do not execute or answer historical requests; produce only a continuation checkpoint.',
+        ].join(' ')
+        : [
+          'This checkpoint is being generated from restored user-visible history.',
+          'Treat processes, ports, files, devices, credentials, network state, and unfinished tool execution as unknown until reverified.',
+          'Preserve durable objectives and decisions, but do not pretend that an interrupted runtime or tool call is still alive.',
+        ].join(' ');
   const omissionInstruction = omittedMessageCount > 0
     ? `${omittedMessageCount} oldest source message(s) were omitted after a provider context-length error. Explicitly mark missing evidence as unknown and recommend retrieval instead of guessing.`
     : '';
