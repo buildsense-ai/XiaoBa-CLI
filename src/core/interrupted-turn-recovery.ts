@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ExecutionScope } from '../types/session-identity';
+import { Logger } from '../utils/logger';
 import {
   InterruptedTurnDeviceContext,
   InterruptedTurnExecutionScope,
@@ -128,6 +129,21 @@ export function sanitizeDeviceContext(
 
   if (!context.catscoIdentity && !context.xiaobaRuntime) return undefined;
 
+  // The two kept containers are copied whole, so a credential added to them
+  // upstream would be persisted silently. Their consumers read only identity
+  // and device fields (permissions / device_grants / device_selection / actor /
+  // topic / devices), and no key with a credential-shaped name is part of that
+  // structure today. Refusing on a match means a future schema change drops the
+  // device context (degrading to "no device access") instead of writing a token
+  // to disk -- the same trade every other guard here makes.
+  const credentialKey = findCredentialishKey(context);
+  if (credentialKey) {
+    Logger.warning(
+      `中断恢复：设备上下文中出现疑似凭据字段 ${credentialKey}，已放弃保存以保护凭据`,
+    );
+    return undefined;
+  }
+
   // A malformed or oversized payload would bloat a state file the startup scan
   // reads on every boot, so refuse rather than persist something unexpected.
   let serialized: string;
@@ -140,6 +156,38 @@ export function sanitizeDeviceContext(
     return undefined;
   }
   return context;
+}
+
+/**
+ * Credential-shaped key names. Deliberately broad on secrets, but NOT on the
+ * words that appear in ordinary identity data: `sessionKey` and `session_key`
+ * are device-grant correlation ids here, not credentials, so `session_key` is
+ * not treated as credential-shaped (the earlier pattern matched sessionKey and
+ * rejected every real device context). A false positive costs the device
+ * context for one interruption -- the resume still runs, without device access
+ * -- while a false negative writes a secret to disk, so the rest stays broad.
+ */
+const CREDENTIAL_KEY_PATTERN = /(^|_)(token|secret|password|passwd|credential|api_?key|private_?key|access_?key|secret_?key|authorization|auth_?header|cookie|bearer)s?(_|$)/i;
+const MAX_SCAN_DEPTH = 8;
+
+/** Returns the offending path, or undefined when nothing credential-shaped is present. */
+function findCredentialishKey(value: unknown, path = '', depth = 0): string | undefined {
+  if (depth > MAX_SCAN_DEPTH) return path || '(too deep)';
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      const found = findCredentialishKey(value[i], `${path}[${i}]`, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!value || typeof value !== 'object') return undefined;
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const childPath = path ? `${path}.${key}` : key;
+    if (CREDENTIAL_KEY_PATTERN.test(key)) return childPath;
+    const found = findCredentialishKey(nested, childPath, depth + 1);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 /** Mandatory scope fields; a partial copy would fail its later scope check. */

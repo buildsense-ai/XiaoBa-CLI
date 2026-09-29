@@ -751,6 +751,57 @@ describe('interrupted turn recovery', () => {
     );
   });
 
+  test('a credential nested inside the kept containers is refused', async () => {
+    // The whitelist copies catsco_identity and xiaoba_runtime whole, so a
+    // credential added to either upstream would be persisted silently. Today's
+    // structure carries only identity and device fields, but "the server will
+    // never put a token there" is an assumption, and the cost of being wrong is
+    // a credential on disk. A match drops the device context instead.
+    const { sanitizeDeviceContext } = loadModules();
+    const scope = {
+      source: 'catscompany',
+      sessionKey: 'cc_group:grp_nested',
+      topicId: 'grp_nested',
+      topicType: 'group',
+      actorUserId: 'usr38',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    };
+
+    const withToken = sanitizeDeviceContext({
+      catsco_identity: {
+        permissions: { source: 'server_canonical_message' },
+        device_grants: [{ kind: 'user_device_grant', deviceId: 'd1', actor_token: 'LEAK' }],
+      },
+    } as any, scope as any);
+    assert.equal(withToken, undefined, 'a grant carrying a token must not be persisted');
+
+    const withAuthHeader = sanitizeDeviceContext({
+      xiaoba_runtime: {
+        schema: 'xiaoba.runtime.v1',
+        devices: [{ userId: 'usr38', deviceId: 'd1' }],
+        auth_header: 'Bearer LEAK',
+      },
+    } as any, scope as any);
+    assert.equal(withAuthHeader, undefined, 'an auth header must not be persisted');
+
+    // The legitimate structure, including sessionKey (which is a correlation
+    // id here, not a credential), must still be captured.
+    const clean = sanitizeDeviceContext({
+      catsco_identity: {
+        permissions: { source: 'server_canonical_message' },
+        session_key: 'cc_group:grp_nested',
+        device_grants: [{ kind: 'user_device_grant', deviceId: 'd1', ownerUserId: 'usr38' }],
+      },
+      xiaoba_runtime: {
+        schema: 'xiaoba.runtime.v1',
+        devices: [{ userId: 'usr38', deviceId: 'd1', userName: 'ck' }],
+      },
+    } as any, scope as any);
+    assert.ok(clean, 'legitimate device metadata must still be captured');
+    assert.deepEqual(clean.xiaobaRuntime?.devices, [{ userId: 'usr38', deviceId: 'd1', userName: 'ck' }]);
+  });
+
   test('the resume path actually forwards the rebuilt device access', async () => {
     // The module tests above prove the context survives storage, but they
     // cannot see whether the connector hands it to the resumed turn -- and a
