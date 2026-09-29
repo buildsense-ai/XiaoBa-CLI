@@ -656,6 +656,35 @@ describe('CatsCompany execution scope flow', () => {
     assert.match(harness.replies.at(-1) || '', /持久化失败.*重试 \/clear/);
   });
 
+  test('/compact uses the normal command reply path and exposes Working progress without clear cleanup', async () => {
+    const harness = createHarness();
+    let receivedCommand = '';
+    let receivedCallbacks: any;
+    harness.session.handleCommand = async (command: string, _args: string[], callbacks: any) => {
+      receivedCommand = command;
+      receivedCallbacks = callbacks;
+      await callbacks?.onThinking?.('正在压缩上下文，整理较早的对话内容。');
+      return { handled: true, reply: '上下文已压缩，检查点已保存。' };
+    };
+
+    await (harness.bot as any).onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '/compact',
+      content: '/compact',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      isGroup: false,
+      seq: 12,
+    });
+
+    assert.equal(receivedCommand, 'compact');
+    assert.equal(typeof receivedCallbacks?.onThinking, 'function');
+    assert.deepEqual(harness.progressEvents, ['thinking:正在压缩上下文，整理较早的对话内容。']);
+    assert.deepEqual(harness.replies, ['上下文已压缩，检查点已保存。']);
+    assert.deepEqual(harness.clearedSessionMarkers, []);
+    assert.equal(harness.bot.messageQueue.has('session:v2:catscompany:p2p:p2p_7_43:agent:usr43'), false);
+  });
+
   test('text that only resembles a clear command remains a normal user message', async () => {
     const { bot, handledTurns, clearedSessionMarkers } = createHarness();
 

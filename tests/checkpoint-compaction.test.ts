@@ -59,6 +59,29 @@ test('default checkpoint threshold is 85 percent of the physical context window'
   assert.equal(coordinator.needsCompaction(above), true);
 });
 
+test('manual checkpoint compaction can run below the automatic threshold', async () => {
+  const { service, requests } = createService(() => '手动检查点：保留当前目标和未完成事项。');
+  const coordinator = new CheckpointCompactionCoordinator(service, {
+    maxContextTokens: 10_000,
+  });
+  const messages: Message[] = [
+    { role: 'user', content: `旧任务要求\n${'历史内容 '.repeat(500)}` },
+    { role: 'assistant', content: '已经完成前置调查。' },
+  ];
+  assert.equal(coordinator.needsCompaction(messages), false);
+
+  const result = await coordinator.compactIfNeeded(messages, {
+    sessionKey: 'manual-compact-test',
+    phase: 'manual',
+    force: true,
+  });
+
+  assert.equal(result.compacted, true);
+  assert.ok(result.messages.some(message => message.__checkpointSummary));
+  assert.equal(requests.length, 1);
+  assert.match(String(requests[0][0]?.content), /explicit user-requested checkpoint compaction/);
+});
+
 test('checkpoint input limit is 85 percent for supported 256K+ windows', () => {
   assert.equal(calculateCheckpointInputLimitTokens(256_000), 217_600);
   assert.equal(calculateCheckpointInputLimitTokens(1_000_000), 850_000);
@@ -397,13 +420,14 @@ test('checkpoint failure preserves the transcript and propagates after provider 
   assert.match(String(messages[0].content), /must not be lost/);
 });
 
-test('checkpoint prompt distinguishes pre-turn, mid-turn, and restored history', () => {
+test('checkpoint prompt distinguishes automatic, manual, and restored history', () => {
   assert.match(buildCheckpointCompactionPrompt('mid_turn'), /same active episode/i);
   assert.match(buildCheckpointCompactionPrompt('mid_turn'), /root request/i);
   assert.match(buildCheckpointCompactionPrompt('pre_turn'), /between external user turns/i);
   assert.match(buildCheckpointCompactionPrompt('pre_turn'), /new root instruction/i);
   assert.match(buildCheckpointCompactionPrompt('restore'), /restored user-visible history/i);
   assert.match(buildCheckpointCompactionPrompt('restore'), /interrupted runtime/i);
+  assert.match(buildCheckpointCompactionPrompt('manual'), /explicit user-requested checkpoint/i);
 });
 
 test('mid-turn checkpoint always retains the root before repeated short follow-ups', async () => {
