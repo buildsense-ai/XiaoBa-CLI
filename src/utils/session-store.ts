@@ -131,6 +131,26 @@ export interface SessionRuntimeState {
   currentDirectory?: string;
   remoteContextCursors?: Record<string, number>;
   updatedAt?: string;
+  /**
+   * Set while a conversation turn has not reached a terminal state because the
+   * worker process died (OOM killer, host reboot). Cleared on every terminal
+   * outcome — including the user's own /stop — so the next start() only
+   * resumes turns nobody finished on purpose.
+   */
+  interruptedTurn?: InterruptedTurnState;
+}
+
+export interface InterruptedTurnState {
+  /** Conversation topic the turn belonged to, used to reply in the right place. */
+  topic: string;
+  /** Why the turn stopped: currently 'oom-kill' (SIGKILL from the kernel). */
+  reason: string;
+  /** Last known recipient, so the resume notice reaches the same conversation. */
+  senderId?: string;
+  /** ISO timestamp of the interruption; recovery ignores markers older than the window. */
+  startedAt: string;
+  /** How many times this interruption has already been auto-resumed. */
+  attempts: number;
 }
 
 export class SessionStore {

@@ -19,6 +19,15 @@ import { extractCatsCoRuntimeContext } from './runtime-context';
 import { extractCatsCoSkillConnectorGrants, mergeSkillConnectorGrants } from './skill-connector-grants';
 import { MessageSessionManager } from '../core/message-session-manager';
 import {
+  clearInterruptedTurn as clearInterruptedTurnMarker,
+  classifyShutdownReason,
+  collectInterruptedTurns,
+  markInterruptedTurn as markInterruptedTurnMarker,
+  noteResumeAttempt,
+  stopResumingInterruptedTurn,
+  type InterruptedTurnCandidate,
+} from '../core/interrupted-turn-recovery';
+import {
   AgentServices,
   BUSY_MESSAGE,
   type DurableRemoteContextEntry,
@@ -37,6 +46,8 @@ import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDev
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
 import { hostname, platform } from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ConfigManager } from '../utils/config';
 import { resolvePrimaryModelVisionCapability } from '../utils/model-capabilities';
 import { createCatsCoSessionRoute } from '../core/session-router';
@@ -208,6 +219,15 @@ const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
 const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
 const ARTIFACT_TASK_RECEIPT_TTL_MS = 24 * 60 * 60 * 1_000;
 const ARTIFACT_TASK_RECEIPT_MAX_ENTRIES = 4_096;
+
+/**
+ * Auto-resume bounds for turns killed mid-flight. The window keeps a restart
+ * from replaying a conversation the user has long moved on from, and the
+ * attempt budget stops a crash loop (e.g. a task that reliably exhausts
+ * memory) from resuming forever.
+ */
+const INTERRUPTED_TURN_MAX_AGE_MS = 30 * 60 * 1_000;
+const INTERRUPTED_TURN_MAX_RESUME_ATTEMPTS = 2;
 // 恢复预算同时覆盖云端历史分页与检查点压缩的摘要调用。大会话的摘要本身就可能超过
 // 30s（实测 122K token 输入约 34s），一旦超时被打断，恢复会降级为“截断保留最近
 // 上下文”并丢掉旧历史摘要，所以这里保持充裕上限并支持环境变量调优；
@@ -219,6 +239,18 @@ export function resolveCloudRestoreTimeoutMs(env: NodeJS.ProcessEnv = process.en
   const raw = Number(env.CATSCO_CLOUD_RESTORE_TIMEOUT_MS);
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_CLOUD_RESTORE_TIMEOUT_MS;
   return Math.min(Math.floor(raw), MAX_CLOUD_RESTORE_TIMEOUT_MS);
+}
+
+/** Human-readable cause shown to the user and the model on auto-resume. */
+function interruptedTurnReasonLabel(reason: string): string {
+  switch (String(reason || '').trim()) {
+    case 'oom-kill':
+      return '进程内存不足被系统终止';
+    case 'connector-shutdown':
+      return '服务重启';
+    default:
+      return '进程异常退出';
+  }
 }
 
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
@@ -516,6 +548,12 @@ export class CatsCompanyBot {
   private activeConversationTasks = new Map<string, ActiveConversationTask>();
   /** Bounds one-shot Artifact task receipts so server recovery can safely replay a turn. */
   private artifactTaskReceipts = new Map<string, number>();
+  /** Last cgroup oom_kill count seen, so a fresh kill can be told from an old one. */
+  private lastObservedOomKills?: number;
+  /** One interrupted-turn scan per process; reconnects fire 'ready' again. */
+  private interruptedTurnScanDone = false;
+  /** Sessions already auto-resumed in this process, so a crash cannot loop. */
+  private resumedInterruptedTurns = new Set<string>();
   /** Covers message parsing, cloud restore, attachment download, commands, and the model turn. */
   private activeMessageHandlers = 0;
   /** Invalidates queued or in-flight pre-turn hydration after /clear. */
@@ -679,6 +717,10 @@ export class CatsCompanyBot {
     scheduleCatsCoAttachmentCacheCleanup();
     Logger.info('正在启动 CatsCompany connector...');
 
+    // Baseline before any work runs, so shutdown can attribute an OOM kill to
+    // this process rather than to the cgroup's history.
+    this.captureOomKillBaseline();
+
     // 加载 skills
     await this.runtime.loadSkills();
 
@@ -696,6 +738,10 @@ export class CatsCompanyBot {
         Logger.warning(`CatsCo 设备注册失败，继续保持聊天连接: ${err?.message || err}`);
       });
       this.startDeviceRegistrationRefresh();
+      // Resume turns the previous process died in the middle of (OOM killer,
+      // host reboot). Runs after 'ready' so the resume notice has a live
+      // connection, and off the ready handler's stack so reconnects stay fast.
+      void this.resumeInterruptedTurns();
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {
@@ -1719,6 +1765,12 @@ export class CatsCompanyBot {
   }
 
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
+    // Any real user message supersedes an interrupted turn: they either
+    // already retried by hand or moved on. Dropping the marker here also keeps
+    // the startup scan from replaying a turn the user has visibly taken over.
+    if (msg.senderId && normalizeCatsUid(msg.senderId) !== normalizeCatsUid(this.botUid)) {
+      this.clearInterruptedTurn(key);
+    }
     // Stop is control input: it must reach the same boundary as the web button
     // before any asynchronous history restore or ordinary message queueing.
     if (/^\/stop(?:\s|$)/i.test(msg.text)) {
@@ -1766,6 +1818,10 @@ export class CatsCompanyBot {
         this.subAgentCompletionBatches.delete(key);
         this.cloudSessionRestoreAbortControllers?.get(key)?.abort();
         this.cloudSessionRestorePromises.delete(key);
+        // /clear means the user wants this conversation empty. Leaving the
+        // interruption marker behind would auto-resume a turn into the very
+        // history they just wiped, so retire it here as well.
+        this.clearInterruptedTurn(key);
         session.requestInterrupt?.();
         this.cancelConversationTask(key);
       }
@@ -2168,11 +2224,221 @@ export class CatsCompanyBot {
   ): void {
     if (!task || task.finished) return;
     task.finished = true;
+    // Any terminal outcome retires the interruption marker: the turn either
+    // finished, failed on its own, or the user asked it to stop. Only a
+    // process death may leave a marker behind for the next start() to resume.
+    this.clearInterruptedTurn(sessionKey);
     const tasks = this.activeConversationTasks ??= new Map<string, ActiveConversationTask>();
     if (tasks.get(sessionKey) === task) {
       tasks.delete(sessionKey);
     }
     this.enqueueConversationTaskStatus(task, status);
+  }
+
+  /**
+   * Durable per-session helpers for the interrupted-turn marker. Writes go
+   * straight to SessionStore because destroy() tears sessions down before the
+   * shutdown task sweep runs; both are best-effort so bookkeeping can never
+   * break the reply path.
+   */
+  private markInterruptedTurn(sessionKey: string, topic: string, reason: string): void {
+    try {
+      markInterruptedTurnMarker(sessionKey, { topic, reason });
+    } catch (error: any) {
+      Logger.warning(`[${sessionKey}] 记录中断标记失败: ${error?.message || error}`);
+    }
+  }
+
+  private clearInterruptedTurn(sessionKey: string): void {
+    try {
+      clearInterruptedTurnMarker(sessionKey);
+    } catch (error: any) {
+      Logger.warning(`[${sessionKey}] 清除中断标记失败: ${error?.message || error}`);
+    }
+  }
+
+  /**
+   * Distinguishes a memory kill from an ordinary restart so the resume notice
+   * can tell the user why their task stopped. The kernel does not hand the
+   * process a signal before SIGKILL, but a cgroup OOM leaves evidence: the
+   * memory.events counter is bumped by the kill itself, and the process is
+   * typically still above its limit when the shutdown path runs.
+   *
+   * The ownership rule lives in classifyShutdownReason() because a single
+   * reading cannot answer it -- the counter is cumulative for the unit.
+   */
+  private shutdownInterruptReason(): string {
+    return classifyShutdownReason(this.readCgroupOomKillCount(), this.lastObservedOomKills);
+  }
+
+  /**
+   * Captures the cgroup's OOM counter at startup so a later shutdown can tell
+   * a kill that happened under this process from one left over in the cgroup's
+   * history. Best-effort: outside a containerised unit there is no counter.
+   */
+  private captureOomKillBaseline(): void {
+    const oomKills = this.readCgroupOomKillCount();
+    if (oomKills !== undefined) this.lastObservedOomKills = oomKills;
+  }
+
+  private readCgroupOomKillCount(): number | undefined {
+    try {
+      const cgroup = '/sys/fs/cgroup/system.slice/catsco-agent.service';
+      const events = fs.readFileSync(path.join(cgroup, 'memory.events'), 'utf-8');
+      const raw = (events.match(/^oom_kill\s+(\d+)/m) || [])[1];
+      if (raw === undefined) return undefined;
+      const value = Number(raw);
+      return Number.isFinite(value) ? value : undefined;
+    } catch {
+      // Not containerised under this unit name; fall back to the generic label.
+      return undefined;
+    }
+  }
+
+  /**
+   * Resumes turns whose previous process died before a terminal state.
+   *
+   * The marker is written on shutdown, so seeing one after a restart means the
+   * worker was killed (the OOM killer gave the process just enough time to run
+   * its shutdown path) rather than the user stopping the turn. Recovery is
+   * deliberately conservative: only recent interruptions resume, each one is
+   * bounded by an attempt budget, and the user always gets a notice first so
+   * the conversation never silently continues without them.
+   */
+  private async resumeInterruptedTurns(): Promise<void> {
+    if (this.shuttingDown) return;
+    // One scan per process: 'ready' fires again on every reconnect, and a
+    // reconnect loop must not replay the same interruption each time.
+    if (this.interruptedTurnScanDone) {
+      Logger.info('中断任务扫描已执行过，跳过重连触发的重复扫描');
+      return;
+    }
+    this.interruptedTurnScanDone = true;
+    let candidates: InterruptedTurnCandidate[] = [];
+    try {
+      candidates = collectInterruptedTurns({
+        stateDir: PathResolver.getDataPath('session-state'),
+        maxAgeMs: INTERRUPTED_TURN_MAX_AGE_MS,
+        maxAttempts: INTERRUPTED_TURN_MAX_RESUME_ATTEMPTS,
+      });
+    } catch (error: any) {
+      Logger.warning(`扫描中断任务失败: ${error?.message || error}`);
+      return;
+    }
+    if (candidates.length === 0) return;
+
+    Logger.info(`发现 ${candidates.length} 个中断任务，准备自动继续`);
+    for (const candidate of candidates) {
+      if (this.shuttingDown) return;
+      if (!this.connectorReady) return;
+      // One resume per session per process: a turn that dies again leaves a
+      // fresh marker for the *next* start(), which keeps a crash inside this
+      // process from re-entering the resume path in a tight loop.
+      if (this.resumedInterruptedTurns.has(candidate.sessionKey)) {
+        Logger.info(`[${candidate.sessionKey}] 中断任务本次进程内已恢复过，跳过`);
+        continue;
+      }
+      // A user message received in the meantime means they already took over;
+      // finishing their turn beats replaying the interrupted one.
+      if (this.activeConversationTasks.has(candidate.sessionKey)) {
+        Logger.info(`[${candidate.sessionKey}] 中断任务跳过：会话已有新任务在跑`);
+        continue;
+      }
+      await this.resumeOneInterruptedTurn(candidate);
+    }
+  }
+
+  private async resumeOneInterruptedTurn(candidate: InterruptedTurnCandidate): Promise<void> {
+    const { sessionKey, topic } = candidate;
+    // Register before anything can throw so this session cannot be resumed
+    // twice in one process.
+    this.resumedInterruptedTurns.add(sessionKey);
+
+    // Claim the session before spending anything. Doing this after the notice
+    // would let a user message win the race and leave the user reading
+    // "正在自动继续" for a turn that never starts. A busy session is deferred
+    // with its marker (and attempt count) intact, so a later start() resumes it
+    // with a full budget: /compact or an in-flight turn blocks the resume, it
+    // does not cancel it.
+    if (this.shuttingDown || !this.connectorReady) return;
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    if (!this.tryReserveSessionExecution(sessionKey, session)) {
+      Logger.info(`[${sessionKey}] 中断任务暂缓：会话正忙，保留标记等待下次启动`);
+      return;
+    }
+
+    try {
+      const attempts = noteResumeAttempt(sessionKey);
+      if (attempts === 0 || attempts > INTERRUPTED_TURN_MAX_RESUME_ATTEMPTS) {
+        Logger.info(`[${sessionKey}] 中断任务标记已失效或已达自动继续上限，不再重试`);
+        return;
+      }
+
+      const reason = interruptedTurnReasonLabel(candidate.reason);
+      try {
+        await this.sender.reply(
+          topic,
+          `上一轮任务被系统中断（${reason}，不是你的操作），正在自动继续…（第 ${attempts} 次）`,
+        );
+      } catch (error: any) {
+        Logger.warning(`[${sessionKey}] 自动继续提示发送失败: ${error?.message || error}`);
+      }
+
+      // The model only sees history, not why its process disappeared, so the
+      // notice has to say what happened and where to pick up. Without it the
+      // model restarts the work and burns tokens redoing finished steps.
+      const notice = [
+        `[系统] 上一轮任务被中断（${reason}，非用户取消），进程已重启。`,
+        '请从中断处继续：先检查已完成的进度和已生成的文件，不要重复已执行的步骤；',
+        '如果上一轮的目标已经达成，直接给出结论即可。',
+      ].join('');
+
+      // The resume turn must not travel the sub-agent feedback path: that path
+      // suppresses replies built for sub-agent observations and would swallow the
+      // answer the user is still waiting for.
+      await this.runTrackedConversationWork(() =>
+        this.runInterruptedTurnResume(sessionKey, topic, notice));
+    } finally {
+      this.releaseSessionExecution(sessionKey);
+    }
+  }
+
+  private async runInterruptedTurnResume(sessionKey: string, topic: string, notice: string): Promise<void> {
+    // The session was claimed by resumeOneInterruptedTurn() before any
+    // user-visible side effect; this only runs the turn.
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    const stopTypingHeartbeat = this.startTypingHeartbeat(topic);
+    try {
+      const result = await session.handleRuntimeObservation(notice, {
+        channel: this.buildChannel(topic, { sessionKey, senderId: 'system' }),
+        callbacks: this.buildSessionCallbacks(topic, { sessionKey, senderId: 'system' }),
+        source: 'interrupted_turn_resume',
+        localDeviceGrant: this.localDeviceGrant,
+        deviceRpc: this.buildDeviceRpcTransport(),
+        thinToolRpc: this.maybeBuildThinToolRpcTransport(),
+      });
+      if (this.shuttingDown) {
+        Logger.info(`[${sessionKey}] destroy 已开始，丢弃迟到的中断恢复结果`);
+        return;
+      }
+      if (result.visibleToUser && result.text) {
+        await this.sender.reply(topic, result.text).catch((error: any) => {
+          Logger.warning(`[${sessionKey}] 中断恢复回复发送失败: ${error?.message || error}`);
+        });
+      }
+    } catch (error: any) {
+      Logger.warning(`[${sessionKey}] 中断恢复回合失败: ${error?.message || error}`);
+    } finally {
+      // Only retire the marker when this resume actually reached a terminal
+      // state. If destroy() began while it was in flight the work was
+      // discarded above, and nothing else would re-write the marker: a resume
+      // turn creates no ActiveConversationTask, so the shutdown sweep never
+      // sees it. Clearing here would silently lose the interrupted work.
+      if (!this.shuttingDown) {
+        this.clearInterruptedTurn(sessionKey);
+      }
+      stopTypingHeartbeat();
+    }
   }
 
   private cancelConversationTask(sessionKey: string, summary = '任务已停止'): void {
@@ -2229,11 +2495,18 @@ export class CatsCompanyBot {
   private async finishActiveConversationTasksForShutdown(timeoutMs = 3_000): Promise<void> {
     const activeTasks = Array.from(this.activeConversationTasks.entries());
     for (const [sessionKey, task] of activeTasks) {
+      // Order matters: finishConversationTask() clears any interruption marker
+      // as part of retiring the task, so the marker for this shutdown has to be
+      // written after it. This is the durable record that the next start()
+      // resumes instead of leaving the conversation looking dead
+      // (2026-09-29: the model was killed mid-turn and the user had to type
+      // "继续" by hand).
       this.finishConversationTask(sessionKey, task, {
         state: 'stale',
         summary: 'Agent 正在重启，本次任务已自动中止，可重新发送',
         error: 'connector shutdown before terminal task status',
       });
+      this.markInterruptedTurn(sessionKey, task.topic, this.shutdownInterruptReason());
     }
 
     const pending = Array.from(this.taskStatusTasks.values());
@@ -3212,6 +3485,16 @@ export class CatsCompanyBot {
     const completionBatch = this.subAgentCompletionBatches?.get(key);
     if (completionBatch?.timer) clearTimeout(completionBatch.timer);
     this.subAgentCompletionBatches?.delete(key);
+    // A blocked, kicked or disbanded conversation must never be auto-resumed:
+    // the group may be gone, so replaying the turn would post into a dead
+    // topic forever. stopSessionExecution() is the shared boundary for every
+    // one of those paths (user /stop, kick notice, disband notice, send
+    // blocked), which makes it the right place to retire the marker.
+    try {
+      stopResumingInterruptedTurn(key);
+    } catch (error: any) {
+      Logger.warning(`[${key}] 清除中断标记失败: ${error?.message || error}`);
+    }
     Logger.info(`[${key}] 停止边界已推进至 ${stopGeneration}，丢弃停止前排队消息`);
     const session = (this.sessionManager as any).get?.(key) ?? null;
     if (!session) {
@@ -3662,6 +3945,7 @@ export class CatsCompanyBot {
         summary: 'Agent 正在重启，本次任务已自动中止，可重新发送',
         error: 'connector shutdown before terminal task status',
       });
+      this.markInterruptedTurn(sessionKey, task.topic, this.shutdownInterruptReason());
     }
     Logger.info('CatsCo agent 已停止');
   }
