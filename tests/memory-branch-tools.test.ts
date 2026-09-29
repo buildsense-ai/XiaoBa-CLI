@@ -3,12 +3,10 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { MemoryLogStore } from '../src/core/memory-log-store';
 import {
+  AssessMemoryNeedTool,
   FinishMemorySearchTool,
-  MemoryNeighborsTool,
-  MemoryReadTurnTool,
-  MemorySearchTool,
+  validateAssessArgs,
 } from '../src/tools/memory-branch-tools';
 
 describe('memory branch tools', () => {
@@ -24,84 +22,82 @@ describe('memory branch tools', () => {
     }
   });
 
-  test('search returns compact canonical refs from turn entries only', async () => {
-    writeSessionLog(testRoot, [
-      turn(1, '2026-06-16T10:00:00.000Z', 'alpha_unique first episode', 'nothing yet'),
-      {
-        entry_type: 'runtime',
-        timestamp: '2026-06-16T10:05:00.000Z',
-        session_id: 'chat:demo',
-        session_type: 'chat',
-        level: 'info',
-        message: 'alpha_unique runtime should be ignored',
-      },
-      turn(2, '2026-06-16T11:00:00.000Z', 'second user', 'alpha_unique beta_unique final'),
-    ]);
-    writeDataSessionLog(testRoot, [turn(1, '2026-06-16T12:00:00.000Z', 'alpha_unique data source', 'ignored')]);
-    writeBranchLog(testRoot, 'alpha_unique branch source should be ignored');
+  describe('assess_memory_need', () => {
+    test('declares the pause_turn structured-output contract', () => {
+      const tool = new AssessMemoryNeedTool(async () => ({ ok: true }));
+      assert.equal(tool.definition.controlMode, 'pause_turn');
+      assert.equal(tool.definition.name, 'assess_memory_need');
+      assert.deepEqual(tool.definition.parameters.required, ['action']);
+      assert.deepEqual(tool.definition.parameters.properties.action.enum, ['recall', 'skip']);
+    });
 
-    const store = new MemoryLogStore(testRoot);
-    const tool = new MemorySearchTool(store);
-    const result = await tool.execute({
-      keywords: ['alpha_unique', 'beta_unique'],
-      start_time: '2026-06-16T00:00:00.000Z',
-      end_time: '2026-06-16T23:59:59.999Z',
-      limit: 80,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
+    test('validates and normalizes a recall decision', () => {
+      const validation = validateAssessArgs({
+        action: 'recall',
+        query_text: 'dashboard filter rollback decision',
+        keywords: ['dashboard_unique', 'rollback', 'dashboard_unique', '  ', 42],
+        sources: ['skill', 'agent_memory', 'skill'],
+      });
+      assert.equal(validation.ok, true);
+      assert.deepEqual(validation.ok && validation.payload, {
+        action: 'recall',
+        queryText: 'dashboard filter rollback decision',
+        keywords: ['dashboard_unique', 'rollback', '42'],
+        sources: ['skill', 'agent_memory'],
+      });
+    });
 
-    assert.equal(result.ok, true);
-    const parsed = JSON.parse(String(result.content));
-    assert.equal(parsed.count, 2);
-    assert.deepEqual(parsed.matches, [
-      { ref: 'chat/2026-06-16/demo.jsonl#2', hits: ['alpha_unique', 'beta_unique'] },
-      { ref: 'chat/2026-06-16/demo.jsonl#1', hits: ['alpha_unique'] },
-    ]);
-    assert.equal('preview' in parsed.matches[0], false);
-    assert.equal('score' in parsed.matches[0], false);
-  });
+    test('maps a skip decision and fills a default reason', () => {
+      const explicit = validateAssessArgs({ action: 'skip', reason: '闲聊，无需记忆。' });
+      assert.equal(explicit.ok, true);
+      assert.deepEqual(explicit.ok && explicit.payload, {
+        action: 'skip',
+        reason: '闲聊，无需记忆。',
+      });
 
-  test('read and neighbors accept manually edited adjacent refs', async () => {
-    writeSessionLog(testRoot, [
-      turn(1, '2026-06-16T10:00:00.000Z', 'episode one manual_neighbor_unique', 'first answer'),
-      turn(2, '2026-06-16T11:00:00.000Z', 'episode two', 'second answer'),
-      turn(3, '2026-06-16T12:00:00.000Z', 'episode three', 'third answer'),
-    ]);
+      const implicit = validateAssessArgs({ action: 'skip' });
+      assert.equal(implicit.ok, true);
+      assert.match(implicit.ok && implicit.payload.reason, /主 agent/);
+    });
 
-    const store = new MemoryLogStore(testRoot);
-    const readTool = new MemoryReadTurnTool(store);
-    const read = await readTool.execute({
-      ref: 'chat/2026-06-16/demo.jsonl#2',
-      budget_chars: 2000,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.equal(read.ok, true);
-    const readJson = JSON.parse(String(read.content));
-    assert.equal(readJson.ref, 'chat/2026-06-16/demo.jsonl#2');
-    assert.match(readJson.text, /USER:\nepisode two/);
+    test('rejects malformed decisions fail-closed', () => {
+      assert.equal(validateAssessArgs({}).ok, false);
+      assert.equal(validateAssessArgs({ action: 'explore' }).ok, false);
+      assert.equal(validateAssessArgs({ action: 'recall' }).ok, false);
+      assert.equal(validateAssessArgs({ action: 'recall', query_text: 'q' }).ok, false);
+      assert.equal(validateAssessArgs({ action: 'recall', query_text: 'q', keywords: [] }).ok, false);
+      assert.equal(validateAssessArgs({ action: 'recall', query_text: 'q', keywords: ['  '] }).ok, false);
+      assert.equal(
+        validateAssessArgs({ action: 'recall', query_text: 'q', keywords: ['k'], sources: ['memory'] }).ok,
+        false,
+      );
+      const oversized = validateAssessArgs({
+        action: 'recall',
+        query_text: 'q'.repeat(9_000),
+        keywords: ['k'],
+      });
+      assert.equal(oversized.ok, false);
+    });
 
-    const manualAdjacent = await readTool.execute({
-      ref: 'chat/2026-06-16/demo.jsonl#1',
-      budget_chars: 2000,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.equal(manualAdjacent.ok, true);
-    assert.match(JSON.parse(String(manualAdjacent.content)).text, /manual_neighbor_unique/);
+    test('execute returns the handler ack and surfaces validation errors', async () => {
+      const seen: unknown[] = [];
+      const tool = new AssessMemoryNeedTool(async (payload, context) => {
+        seen.push(payload);
+        assert.equal(context.workingDirectory, testRoot);
+        return { ok: true, action: 'skip' };
+      });
+      const context = { workingDirectory: testRoot, conversationHistory: [] };
 
-    const neighborsTool = new MemoryNeighborsTool(store);
-    const neighbors = await neighborsTool.execute({
-      ref: 'chat/2026-06-16/demo.jsonl#2',
-      previous: 1,
-      next: 1,
-      budget_chars: 6000,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.equal(neighbors.ok, true);
-    const neighborsJson = JSON.parse(String(neighbors.content));
-    assert.deepEqual(
-      neighborsJson.turns.map((item: any) => item.ref),
-      [
-        'chat/2026-06-16/demo.jsonl#1',
-        'chat/2026-06-16/demo.jsonl#2',
-        'chat/2026-06-16/demo.jsonl#3',
-      ],
-    );
+      const bad = await tool.execute({ action: 'nope' }, context as any);
+      assert.equal(bad.ok, false);
+      assert.match(JSON.parse(String(bad.message)).error, /action must be/);
+      assert.equal(seen.length, 0);
+
+      const good = await tool.execute({ action: 'skip', reason: '不需要' }, context as any);
+      assert.equal(good.ok, true);
+      assert.deepEqual(JSON.parse(String(good.content)), { ok: true, action: 'skip' });
+      assert.deepEqual(seen, [{ action: 'skip', reason: '不需要' }]);
+    });
   });
 
   test('finish validates canonical refs and has pause control mode', async () => {
@@ -150,6 +146,20 @@ describe('memory branch tools', () => {
       inject: false,
     });
 
+    const audit = await tool.execute({
+      summary: 'Retain this evidence for branch audit only.',
+      refs: ['chat/2026-06-16/demo.jsonl#2'],
+      inject: false,
+      delivery: 'audit',
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(audit.ok, true);
+    assert.deepEqual(captured, {
+      summary: 'Retain this evidence for branch audit only.',
+      refs: ['chat/2026-06-16/demo.jsonl#2'],
+      inject: false,
+      delivery: 'audit',
+    });
+
     const contradictory = await tool.execute({
       summary: 'Found something but asked not to inject.',
       refs: ['chat/2026-06-16/demo.jsonl#2'],
@@ -159,107 +169,24 @@ describe('memory branch tools', () => {
     assert.match(JSON.parse(String(contradictory.message)).error, /refs must be empty/);
   });
 
-  test('read applies field-level truncation for oversized single episodes', async () => {
-    writeSessionLog(testRoot, [
-      turn(1, '2026-06-16T10:00:00.000Z', 'short user', 'x'.repeat(5000)),
-    ]);
+  test('finish accepts generated CatsLog citations but still rejects arbitrary refs', async () => {
+    let captured: any;
+    const tool = new FinishMemorySearchTool(payload => {
+      captured = payload;
+    });
+    const context = { workingDirectory: testRoot, conversationHistory: [] };
 
-    const store = new MemoryLogStore(testRoot);
-    const tool = new MemoryReadTurnTool(store);
-    const result = await tool.execute({
-      ref: 'chat/2026-06-16/demo.jsonl#1',
-      budget_chars: 400,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
+    const valid = await tool.execute({
+      summary: 'Remote skill and session evidence are relevant.',
+      refs: ['catslog:skill:release-playbook@3', 'stream-release#17'],
+    }, context);
+    assert.equal(valid.ok, true);
+    assert.deepEqual(captured.refs, ['catslog:skill:release-playbook@3', 'stream-release#17']);
 
-    assert.equal(result.ok, true);
-    const parsed = JSON.parse(String(result.content));
-    assert.equal(parsed.truncated, true);
-    assert.match(parsed.text, /truncated field/);
-  });
-
-  test('read strips DeepSeek replay summary artifacts from historical assistant text', async () => {
-    const leakedReplay = [
-      '先给你做个小游戏。',
-      '',
-      '[历史工具调用已转为摘要：DeepSeek thinking replay 缓存缺失，工具=write_file，id=call_function_1，参数={"content":"<!DOCTYPE html>',
-      '<html>',
-      '<script>',
-      'const levels = [1, 2, 3];',
-      '</script>',
-      '</html>","file_path":"E:\\\\tmp\\\\flappy.html"}]',
-    ].join('\n');
-    writeSessionLog(testRoot, [
-      turn(1, '2026-06-16T10:00:00.000Z', '写个游戏', leakedReplay),
-    ]);
-
-    const store = new MemoryLogStore(testRoot);
-    const readTool = new MemoryReadTurnTool(store);
-    const result = await readTool.execute({
-      ref: 'chat/2026-06-16/demo.jsonl#1',
-      budget_chars: 4000,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
-
-    assert.equal(result.ok, true);
-    const parsed = JSON.parse(String(result.content));
-    assert.match(parsed.text, /ASSISTANT_FINAL:\n先给你做个小游戏。/);
-    assert.doesNotMatch(parsed.text, /DeepSeek thinking replay|DOCTYPE html|flappy\.html/);
-
-    const searchTool = new MemorySearchTool(store);
-    const search = await searchTool.execute({
-      keywords: ['flappy.html'],
-      start_time: '2026-06-16T00:00:00.000Z',
-      end_time: '2026-06-16T23:59:59.999Z',
-    }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.equal(search.ok, true);
-    assert.deepEqual(JSON.parse(String(search.content)).matches, []);
+    const invalid = await tool.execute({
+      summary: 'bad',
+      refs: ['https://evil.example.test/#1'],
+    }, context);
+    assert.equal(invalid.ok, false);
   });
 });
-
-function writeSessionLog(root: string, entries: unknown[]): void {
-  const dir = path.join(root, 'logs', 'sessions', 'chat', '2026-06-16');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, 'demo.jsonl'),
-    entries.map(entry => JSON.stringify(entry)).join('\n') + '\n',
-    'utf-8',
-  );
-}
-
-function writeDataSessionLog(root: string, entries: unknown[]): void {
-  const dir = path.join(root, 'data', 'sessions', 'chat', '2026-06-16');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, 'demo.jsonl'),
-    entries.map(entry => JSON.stringify(entry)).join('\n') + '\n',
-    'utf-8',
-  );
-}
-
-function writeBranchLog(root: string, message: string): void {
-  const dir = path.join(root, 'logs', 'branches', 'memory', '2026-06-16');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, 'branch.jsonl'),
-    JSON.stringify({ entry_type: 'branch', message }) + '\n',
-    'utf-8',
-  );
-}
-
-function turn(turnNumber: number, timestamp: string, userText: string, assistantText: string) {
-  return {
-    entry_type: 'turn',
-    turn: turnNumber,
-    timestamp,
-    session_id: 'chat:demo',
-    session_type: 'chat',
-    user: { text: userText },
-    assistant: {
-      text: assistantText,
-      tool_calls: [],
-    },
-    tokens: {
-      prompt: 1,
-      completion: 1,
-    },
-  };
-}

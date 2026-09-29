@@ -10,6 +10,7 @@ import { PromptManager } from '../utils/prompt-manager';
 import { PromptComposer } from './prompt-composer';
 import { composeSessionSystemPromptProvider } from '../core/session-system-prompt';
 import { PathResolver } from '../utils/path-resolver';
+import { CatsLogMemoryProvider } from '../utils/catslog-memory-provider';
 import {
   RuntimeProfile,
   assertValidRuntimeProfile,
@@ -76,6 +77,18 @@ export class RuntimeFactory {
     const branchConfig = loadBranchAgentConfig();
     const memoryBranchOverride = resolveMemoryBranchModelOverride(branchConfig);
     const memoryBranchModelSource = branchConfig.branches.memorySearch.model.kind;
+    // Keep a lazy provider attached to long-lived adapter runtimes. The
+    // branch re-checks its current capability before every turn, so a login,
+    // token rotation, or explicit disable after startup is observed without
+    // reconstructing the adapter service graph.
+    const catslogMemory = branchConfig.branches.memorySearch.enabled
+      ? new CatsLogMemoryProvider(
+        // CatsLog credentials live under the runtime data root (the same root
+        // used by Dashboard login/logout). Fall back to the profile cwd for
+        // standalone CLI runtimes that do not configure a data root.
+        PathResolver.getRuntimeDataRoot(process.env, profile.workingDirectory),
+      )
+      : undefined;
 
     return {
       aiService,
@@ -83,7 +96,9 @@ export class RuntimeFactory {
         enabled: branchConfig.branches.memorySearch.enabled,
         modelSource: memoryBranchModelSource,
         aiService: memoryBranchOverride ? new AIService(memoryBranchOverride) : aiService,
+        budget: { ...branchConfig.branches.memorySearch.budget },
       },
+      ...(catslogMemory ? { catslogMemory } : {}),
       toolManager: new ToolManager(profile.workingDirectory, {}, {
         enabledToolNames: profile.tools.enabled,
       }),

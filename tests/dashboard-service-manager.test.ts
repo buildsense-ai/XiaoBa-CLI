@@ -82,6 +82,51 @@ describe('dashboard service manager', () => {
     }
   });
 
+  test('keeps managed connector services on the Dashboard release entry', () => {
+    const envKeys = [
+      'XIAOBA_APP_ROOT',
+      'XIAOBA_IS_PACKAGED',
+      'XIAOBA_NODE_EXECUTABLE',
+      'XIAOBA_BUNDLED_EXECUTABLES_DIR',
+      'XIAOBA_RUNTIME_ROOT',
+      'npm_node_execpath',
+    ];
+    const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+    const previousEntry = process.argv[1];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-release-dashboard-'));
+    const checkoutRoot = path.join(root, 'checkout');
+    const releaseRoot = path.join(root, 'releases', 'catslog-memory');
+    const releaseEntry = path.join(releaseRoot, 'dist', 'index.js');
+    fs.mkdirSync(path.join(checkoutRoot, 'dist'), { recursive: true });
+    fs.mkdirSync(path.dirname(releaseEntry), { recursive: true });
+    fs.writeFileSync(path.join(checkoutRoot, 'dist', 'index.js'), '');
+    fs.writeFileSync(releaseEntry, '');
+
+    process.env.XIAOBA_APP_ROOT = checkoutRoot;
+    process.env.XIAOBA_IS_PACKAGED = '1';
+    process.env.XIAOBA_NODE_EXECUTABLE = process.execPath;
+    delete process.env.XIAOBA_RUNTIME_ROOT;
+    delete process.env.XIAOBA_BUNDLED_EXECUTABLES_DIR;
+    process.argv[1] = releaseEntry;
+
+    try {
+      const manager = new ServiceManager(checkoutRoot);
+      const service = manager.getService('catscompany');
+
+      assert.ok(service);
+      assert.equal(service.args[0], releaseEntry);
+      assert.equal(service.args[1], 'catscompany');
+    } finally {
+      process.argv[1] = previousEntry;
+      for (const key of envKeys) {
+        const value = previousEnv.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('development prefers the pinned real node executable over polluted PATH shims', () => {
     const envKeys = [
       'XIAOBA_APP_ROOT',

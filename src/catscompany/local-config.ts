@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { randomUUID } from 'crypto';
 import { CATSCO_APP_HTTP_ORIGINS, type CatsCoDomainFamily } from '../utils/catsco-domains';
+import { getCatscoLogAgentConfig } from '../utils/catsco-log-agent-config';
+import { clearCatscoLogAgentCredentials } from '../utils/catsco-log-agent-state';
 
 export interface CatsCoLocalAccount {
   token: string;
@@ -380,6 +382,7 @@ export class CatsCoLocalConfigService {
         'CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT',
       ])
       : [];
+    if (accountChanged) this.clearCatsLogCredentials();
     this.save({
       ...config,
       endpoints: {
@@ -585,6 +588,7 @@ export class CatsCoLocalConfigService {
         ? { ...config.device, connectorToken: undefined, connectorTokenExpiresAt: undefined }
         : config.device,
     });
+    this.clearCatsLogCredentials();
     return removeEnvKeys(this.runtimeRoot, this.env, [
       'CATSCO_USER_TOKEN',
       'CATSCO_USER_UID',
@@ -599,6 +603,15 @@ export class CatsCoLocalConfigService {
       'CATSCOMPANY_CONNECTOR_TOKEN',
       'CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT',
     ]);
+  }
+
+  private clearCatsLogCredentials(): void {
+    try {
+      clearCatscoLogAgentCredentials(getCatscoLogAgentConfig(this.runtimeRoot, this.env).stateFilePath);
+    } catch {
+      // Account transitions must still succeed if an old CatsLog state file is
+      // unreadable or the configured state path is unavailable.
+    }
   }
 
   updateEndpoints(endpoints: { httpBaseUrl?: string; serverUrl?: string }): string[] {

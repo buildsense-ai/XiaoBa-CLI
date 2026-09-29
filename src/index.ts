@@ -5,6 +5,7 @@ import { Logger } from './utils/logger';
 import { chatCommand } from './commands/chat';
 import { configCommand } from './commands/config';
 import { registerSkillCommand } from './commands/skill';
+import { registerCatslogCommand } from './commands/catslog';
 import { feishuCommand } from './commands/feishu';
 import { runtimeCommand } from './commands/runtime';
 import { APP_VERSION } from './version';
@@ -82,6 +83,7 @@ function main() {
     .description('Show the resolved node, python, and git runtimes')
     .action(runtimeCommand);
 
+  registerCatslogCommand(program);
   registerSkillCommand(program);
 
   program.action(() => {
