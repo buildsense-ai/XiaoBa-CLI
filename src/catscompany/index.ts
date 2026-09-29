@@ -24,6 +24,7 @@ import {
   collectInterruptedTurns,
   markInterruptedTurn as markInterruptedTurnMarker,
   noteResumeAttempt,
+  parseOomKillCount,
   stopResumingInterruptedTurn,
   type InterruptedTurnCandidate,
 } from '../core/interrupted-turn-recovery';
@@ -47,7 +48,6 @@ import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-r
 import { randomUUID } from 'crypto';
 import { hostname, platform } from 'os';
 import * as fs from 'fs';
-import * as path from 'path';
 import { ConfigManager } from '../utils/config';
 import { resolvePrimaryModelVisionCapability } from '../utils/model-capabilities';
 import { createCatsCoSessionRoute } from '../core/session-router';
@@ -718,7 +718,8 @@ export class CatsCompanyBot {
     Logger.info('正在启动 CatsCompany connector...');
 
     // Baseline before any work runs, so shutdown can attribute an OOM kill to
-    // this process rather than to the cgroup's history.
+    // this process rather than to the host's history (the worker host keeps a
+    // cumulative count across every restart).
     this.captureOomKillBaseline();
 
     // 加载 skills
@@ -741,7 +742,14 @@ export class CatsCompanyBot {
       // Resume turns the previous process died in the middle of (OOM killer,
       // host reboot). Runs after 'ready' so the resume notice has a live
       // connection, and off the ready handler's stack so reconnects stay fast.
-      void this.resumeInterruptedTurns();
+      void this.resumeInterruptedTurns().catch((error: any) => {
+        // The connector has no global unhandledRejection handler, and Node
+        // exits on one. A throw here would kill the worker, the shutdown path
+        // would write a fresh marker, and the next start() would resume the
+        // same turn into the same crash -- a reboot loop built out of the very
+        // recovery meant to prevent one.
+        Logger.warning(`中断任务扫描失败: ${error?.message || error}`);
+      });
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {
@@ -2260,37 +2268,38 @@ export class CatsCompanyBot {
   /**
    * Distinguishes a memory kill from an ordinary restart so the resume notice
    * can tell the user why their task stopped. The kernel does not hand the
-   * process a signal before SIGKILL, but a cgroup OOM leaves evidence: the
-   * memory.events counter is bumped by the kill itself, and the process is
-   * typically still above its limit when the shutdown path runs.
+   * process a signal before SIGKILL, but the kill is counted in /proc/vmstat,
+   * which is readable from the worker and cumulative for the host.
    *
    * The ownership rule lives in classifyShutdownReason() because a single
-   * reading cannot answer it -- the counter is cumulative for the unit.
+   * reading cannot answer it -- the counter is cumulative.
    */
   private shutdownInterruptReason(): string {
-    return classifyShutdownReason(this.readCgroupOomKillCount(), this.lastObservedOomKills);
+    return classifyShutdownReason(this.readOomKillCount(), this.lastObservedOomKills);
   }
 
   /**
-   * Captures the cgroup's OOM counter at startup so a later shutdown can tell
-   * a kill that happened under this process from one left over in the cgroup's
-   * history. Best-effort: outside a containerised unit there is no counter.
+   * Captures the host's OOM counter at startup so a later shutdown can tell a
+   * kill that happened under this process from one left over in the host's
+   * history. Best-effort: no /proc means the reason stays generic.
    */
   private captureOomKillBaseline(): void {
-    const oomKills = this.readCgroupOomKillCount();
+    const oomKills = this.readOomKillCount();
     if (oomKills !== undefined) this.lastObservedOomKills = oomKills;
   }
 
-  private readCgroupOomKillCount(): number | undefined {
+  private readOomKillCount(): number | undefined {
+    // /proc/vmstat is system-wide, cumulative, and readable by an unprivileged
+    // process. The cgroup counter is NOT usable here: the deployed unit has
+    // MemoryMax=infinity, so the cgroup can never trigger an OOM and
+    // memory.events.oom_kill stays 0 forever even when the host OOM killer
+    // reaps a 3.4GB python child (verified on worker-bot-bot-bot-9308:
+    // memory.max=max, cgroup oom_kill=0, /proc/vmstat oom_kill=3 after three
+    // real kills). dmesg would say the same but needs privileges.
     try {
-      const cgroup = '/sys/fs/cgroup/system.slice/catsco-agent.service';
-      const events = fs.readFileSync(path.join(cgroup, 'memory.events'), 'utf-8');
-      const raw = (events.match(/^oom_kill\s+(\d+)/m) || [])[1];
-      if (raw === undefined) return undefined;
-      const value = Number(raw);
-      return Number.isFinite(value) ? value : undefined;
+      return parseOomKillCount(fs.readFileSync('/proc/vmstat', 'utf-8'));
     } catch {
-      // Not containerised under this unit name; fall back to the generic label.
+      // Not Linux, or /proc is unavailable; the reason stays generic.
       return undefined;
     }
   }
@@ -2344,7 +2353,13 @@ export class CatsCompanyBot {
         Logger.info(`[${candidate.sessionKey}] 中断任务跳过：会话已有新任务在跑`);
         continue;
       }
-      await this.resumeOneInterruptedTurn(candidate);
+      // Isolated per conversation: one session that throws must not cost the
+      // others their recovery, and it must not abort the scan loop midway.
+      try {
+        await this.resumeOneInterruptedTurn(candidate);
+      } catch (error: any) {
+        Logger.warning(`[${candidate.sessionKey}] 中断任务自动继续失败: ${error?.message || error}`);
+      }
     }
   }
 
@@ -2399,7 +2414,20 @@ export class CatsCompanyBot {
       await this.runTrackedConversationWork(() =>
         this.runInterruptedTurnResume(sessionKey, topic, notice));
     } finally {
+      // Release before draining, matching every other session work path.
       this.releaseSessionExecution(sessionKey);
+      // Same contract as those paths: anything the user sent while the resume
+      // held the session was queued, and releasing the claim without draining
+      // left it unanswered forever -- the user would see the bot go quiet right
+      // after it announced it was continuing. This lives in the finally so the
+      // exhausted-budget early return hands the session back too.
+      try {
+        await this.drainMessageQueue(sessionKey);
+      } catch (error: any) {
+        // A throw from a finally block would replace the original outcome and
+        // escape into the unawaited scan task, so it is contained here.
+        Logger.warning(`[${sessionKey}] 中断续跑后排空消息队列失败: ${error?.message || error}`);
+      }
     }
   }
 

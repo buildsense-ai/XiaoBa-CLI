@@ -147,6 +147,16 @@ export interface InterruptedTurnState {
   reason: string;
   /** Last known recipient, so the resume notice reaches the same conversation. */
   senderId?: string;
+  /**
+   * The session key this marker belongs to.
+   *
+   * Stored explicitly because keyToFilename() maps every character outside
+   * [a-zA-Z0-9_-] to '_', which is lossy: 'cc_user:usr38' becomes
+   * 'cc_user_usr38' and 'session:v2:...' loses every separator, so the key
+   * cannot be reconstructed from the file name. Recovery has to load the exact
+   * conversation, so it reads the key from here.
+   */
+  sessionKey?: string;
   /** ISO timestamp of the interruption; recovery ignores markers older than the window. */
   startedAt: string;
   /** How many times this interruption has already been auto-resumed. */
