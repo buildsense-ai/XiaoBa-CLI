@@ -8,7 +8,7 @@ import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { CatsCoConnectorLock, acquireCatsCoConnectorLock, isProcessAlive } from '../catscompany/connector-lock';
 import { PathResolver } from '../utils/path-resolver';
 import { prepareBoundBotDefinition } from '../bot-definition/activation';
-import { createCatsCoLocalConfigService, type CatsCoAuthSnapshot } from '../catscompany/local-config';
+import { createCatsCoLocalConfigService, resolveCatsCoRuntimeMode, type CatsCoAuthSnapshot } from '../catscompany/local-config';
 import {
   acknowledgeCloudBotModelSelection,
   pullCloudBotModelSelection,
@@ -92,6 +92,21 @@ export async function catscompanyCommand(): Promise<void> {
     Logger.info('CatsCo device connector 模式：不创建、不选择本地 Bot，仅等待云端设备 RPC。');
   }
   Object.assign(process.env, resolvedRuntime.envOverlay);
+  // A retained device credential may still exist in the runtime .env for
+  // migration. It must never be available as a fallback while this process
+  // is explicitly running a legacy/local Bot, otherwise CatsClient can pick
+  // the Connector token after dotenv or another compatibility reader loads
+  // the environment and silently use the wrong identity.
+  if (resolveCatsCoRuntimeMode(
+    resolvedRuntime.localConfig,
+    resolvedRuntime.runtimeRole,
+    resolvedRuntime.auth.uid,
+  ) === 'local_bot') {
+    delete process.env.CATSCO_CONNECTOR_TOKEN;
+    delete process.env.CATSCO_CONNECTOR_TOKEN_EXPIRES_AT;
+    delete process.env.CATSCOMPANY_CONNECTOR_TOKEN;
+    delete process.env.CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT;
+  }
   const resolved: CatsCoCommandConfigResolution = {
     missing: resolvedRuntime.missing,
     config: resolvedRuntime.connector,

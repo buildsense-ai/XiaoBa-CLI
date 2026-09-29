@@ -140,9 +140,43 @@ describe('CatsCo command config resolution', () => {
     assert.equal(fs.existsSync(path.join(bundledExecutablesDir, '.xiaoba', 'catsco.json')), false);
   });
 
+  test('keeps a legacy Bot identity for a non-desktop CLI runtime', () => {
+    createCatsCoLocalConfigService({ runtimeRoot: tempDir }).save({
+      version: 1,
+      endpoints: {
+        serverUrl: 'wss://legacy.example/v0/channels',
+        httpBaseUrl: 'https://legacy.example',
+      },
+      account: { token: 'legacy-user-token', uid: 'user-1' },
+      currentBot: {
+        uid: 'legacy-bot',
+        apiKey: 'legacy-bot-key',
+        boundByUserUid: 'user-1',
+        bindingSource: 'legacy',
+      },
+      device: {
+        deviceId: 'device-legacy',
+        bodyId: 'body-legacy',
+        installationId: 'install-legacy',
+      },
+    });
+
+    const resolved = resolveCatsCoCommandConfig({}, {
+      CATSCO_USER_TOKEN: 'legacy-user-token',
+      CATSCO_USER_UID: 'user-1',
+      CATSCO_SERVER_URL: 'wss://legacy.example/v0/channels',
+    });
+
+    assert.deepEqual(resolved.missing, []);
+    assert.equal(resolved.config?.botUid, 'legacy-bot');
+    assert.equal(resolved.config?.apiKey, 'legacy-bot-key');
+    assert.equal(resolved.config?.bodyId, 'body-legacy');
+  });
+
   function saveConfirmedBinding(runtimeRoot = tempDir): void {
     createCatsCoLocalConfigService({ runtimeRoot }).save({
       version: 1,
+      runtimeMode: 'local_bot',
       endpoints: {
         httpBaseUrl: 'https://local.example',
         serverUrl: 'wss://local.example/v0/channels',

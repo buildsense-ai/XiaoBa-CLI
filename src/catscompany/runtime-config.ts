@@ -6,6 +6,7 @@ import { CatsCompanyConfig, type CatsCompanyRuntimeRole } from './types';
 import {
   CatsCoAuthSnapshot,
   CatsCoLocalConfig,
+  resolveCatsCoRuntimeMode,
   DEFAULT_CATSCO_HTTP_BASE_URL,
   DEFAULT_CATSCO_WS_URL,
   createCatsCoLocalConfigService,
@@ -34,6 +35,7 @@ export interface CatsCoRuntimeConfigResolution {
   unconfirmedBotBinding: boolean;
   conflicts: CatsCoRuntimeConfigConflict[];
   envOverlay: Record<string, string>;
+  runtimeRole: CatsCompanyRuntimeRole;
 }
 
 export interface CatsCoRuntimeConfigOptions {
@@ -94,6 +96,9 @@ export function resolveCatsCoRuntimeConfig(
     ...fileEnv,
     ...env,
   };
+  // Fail closed: only the Dashboard service manager explicitly marks a
+  // connector as desktop. Direct/remote CLI runtimes are server runtimes.
+  const runtimeRole = resolveCatsCoRuntimeRole(effectiveEnv.XIAOBA_RUNTIME_ROLE);
   const service = createCatsCoLocalConfigService({ runtimeRoot, env: effectiveEnv });
   let localConfig = service.load();
   let auth = service.getAuthState(options.overrides || {});
@@ -129,7 +134,8 @@ export function resolveCatsCoRuntimeConfig(
     || config.catscompany?.connectorTokenExpiresAt
     || 0,
   ) || undefined;
-  const connectorToken = configuredConnectorToken
+  const runtimeMode = resolveCatsCoRuntimeMode(localConfig, runtimeRole, auth.uid);
+  const connectorToken = runtimeMode === 'connector' && configuredConnectorToken
     && (!connectorTokenExpiresAt || connectorTokenExpiresAt > Date.now())
     ? configuredConnectorToken
     : '';
@@ -162,10 +168,10 @@ export function resolveCatsCoRuntimeConfig(
   // A device connector credential is the complete runtime identity. Keep the
   // legacy Bot record on disk for migration, but never expose or select it in
   // the active device-only runtime.
-  const botUid = connectorToken
+  const botUid = runtimeMode === 'connector'
     ? undefined
     : (proposedBotBinding || confirmedLocalBotBinding ? rawBotUid : undefined);
-  const apiKey = connectorToken
+  const apiKey = runtimeMode === 'connector'
     ? undefined
     : (proposedBotBinding || confirmedLocalBotBinding ? rawApiKey : undefined);
   const bodyId = localConfig.device?.bodyId;
@@ -173,9 +179,6 @@ export function resolveCatsCoRuntimeConfig(
   const ownerUserId = connectorToken
     ? firstNonEmpty(auth.uid)
     : firstNonEmpty(localConfig.currentBot?.boundByUserUid, auth.uid);
-  // Fail closed: only the Dashboard service manager explicitly marks a
-  // connector as desktop. Direct/remote CLI runtimes are server runtimes.
-  const runtimeRole = resolveCatsCoRuntimeRole(effectiveEnv.XIAOBA_RUNTIME_ROLE);
   const preferredEndpointFamily = localConfig.endpoints?.preferredFamily === 'cc'
     || localConfig.endpoints?.preferredFamily === 'cn'
     ? localConfig.endpoints.preferredFamily
@@ -186,7 +189,7 @@ export function resolveCatsCoRuntimeConfig(
   if (!bodyId) missing.push('bodyId');
 
   const accountConnected = Boolean(auth.token && auth.uid);
-  const deviceConnectorMode = Boolean(connectorToken);
+  const deviceConnectorMode = runtimeMode === 'connector' && Boolean(connectorToken);
   const bodyConfigured = Boolean(
     serverUrl
       && bodyId
@@ -196,7 +199,7 @@ export function resolveCatsCoRuntimeConfig(
     ? {
       serverUrl,
       apiKey,
-      connectorToken,
+      connectorToken: connectorToken || undefined,
       connectorTokenExpiresAt,
       botUid,
       bodyId,
@@ -249,6 +252,7 @@ export function resolveCatsCoRuntimeConfig(
       connectorToken,
       connectorTokenExpiresAt,
     }, localConfig),
+    runtimeRole,
   };
 }
 

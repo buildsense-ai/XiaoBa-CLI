@@ -81,6 +81,7 @@ export async function getDashboardReadiness(
   const runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
   const config = options.config ?? {};
   const env = getEffectiveCatsCoRuntimeEnv(runtimeRoot, getEffectiveDashboardEnv(runtimeRoot, options.env), config, options.catsCoOverrides);
+  const deviceConnectorMode = isDeviceConnectorConfigured(runtimeRoot, env, config, options.catsCoOverrides);
   const modelInputs = resolveReadinessModelInputs(runtimeRoot, env, config);
   const services = serviceManager.getAll().map(service => getServicePreflight(
     serviceManager,
@@ -88,7 +89,7 @@ export async function getDashboardReadiness(
     { runtimeRoot, env, config, catsCoOverrides: options.catsCoOverrides, now: options.now },
   ));
   const sections = [
-    buildModelSection(modelInputs.env, modelInputs.config),
+    buildModelSection(modelInputs.env, modelInputs.config, deviceConnectorMode),
     buildCatsCoSection(serviceManager, env, config),
     buildRuntimeProfileSection(runtimeRoot, modelInputs.env, modelInputs.config),
     await buildSkillsSection(runtimeRoot),
@@ -116,6 +117,7 @@ export function getServicePreflight(
   const runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
   const config = options.config ?? {};
   const env = getEffectiveCatsCoRuntimeEnv(runtimeRoot, getEffectiveDashboardEnv(runtimeRoot, options.env), config, options.catsCoOverrides);
+  const deviceConnectorMode = isDeviceConnectorConfigured(runtimeRoot, env, config, options.catsCoOverrides);
   const modelInputs = resolveReadinessModelInputs(runtimeRoot, env, config);
   const service = serviceManager.getService(name);
   if (!service) {
@@ -123,7 +125,9 @@ export function getServicePreflight(
   }
 
   const checks = [
-    ...buildModelChecks(modelInputs.env, modelInputs.config),
+    ...(name === 'catscompany' && deviceConnectorMode
+      ? [passCheck('model.deviceConnector', '本机设备 Connector', '设备 Connector 不需要本地模型配置')]
+      : buildModelChecks(modelInputs.env, modelInputs.config)),
     ...buildRuntimeChecks(service, runtimeRoot, modelInputs.env, modelInputs.config, serviceNameToSurface(name)),
     ...buildServiceSpecificChecks(name, env, config, runtimeRoot),
   ];
@@ -162,6 +166,22 @@ function resolveReadinessModelInputs(
     env: {},
     config: { ...config, ...active.config },
   };
+}
+
+function isDeviceConnectorConfigured(
+  runtimeRoot: string,
+  env: NodeJS.ProcessEnv,
+  config: ChatConfig,
+  catsCoOverrides?: Record<string, unknown>,
+): boolean {
+  const runtime = resolveCatsCoRuntimeConfig({
+    runtimeRoot,
+    env,
+    config,
+    overrides: catsCoOverrides,
+    migrateLegacyEnvBinding: true,
+  });
+  return Boolean(runtime.connector?.connectorToken);
 }
 
 function getEffectiveDashboardEnv(
@@ -203,7 +223,17 @@ function getEffectiveCatsCoRuntimeEnv(
 function buildModelSection(
   env: NodeJS.ProcessEnv,
   config: ChatConfig,
+  deviceConnectorMode = false,
 ): DashboardReadinessSection {
+  if (deviceConnectorMode) {
+    return {
+      id: 'model',
+      label: '模型来源',
+      status: 'ready',
+      summary: '本机设备 Connector 不需要配置本地模型',
+      checks: [passCheck('model.deviceConnector', '本机设备 Connector', '设备 Connector 不需要本地模型配置')],
+    };
+  }
   const checks = buildModelChecks(env, config);
   const status = statusFromChecks(checks);
   const customReady = checks

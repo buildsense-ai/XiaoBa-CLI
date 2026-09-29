@@ -38,6 +38,7 @@ export interface CatsConnectorAutoStartOptions {
 interface CatsStatusPayload {
   connected?: boolean;
   deviceConnectorMode?: boolean;
+  runtimeMode?: 'connector' | 'local_bot' | string;
   bodyConfigured?: boolean;
   configured?: boolean;
   service?: { status?: string };
@@ -79,6 +80,7 @@ export class CatsConnectorAutoStart {
     this.runtimeRoot = options.runtimeRoot || PathResolver.getRuntimeDataRoot();
     this.autoProvisionDeviceConnector = options.autoProvisionDeviceConnector ?? true;
     this.manageConnector = options.manageConnector ?? true;
+    this.normalizeStartupRuntimeMode();
   }
 
   getSnapshot(): CatsConnectorBootstrapSnapshot {
@@ -147,11 +149,40 @@ export class CatsConnectorAutoStart {
     this.pending = undefined;
   }
 
+  /**
+   * Fence a mode switch behind any bootstrap request that is already in
+   * flight. `stop()` prevents follow-up scheduling, but the current request
+   * may already be inside /cats/connector/start; waiting here prevents it
+   * from racing a local-Bot transition and starting the wrong identity.
+   */
+  async stopAndWait(): Promise<void> {
+    this.stop();
+    const inFlight = this.inFlight;
+    if (!inFlight) return;
+    try {
+      await inFlight;
+    } catch {
+      // The mode switch owns the next attempt; the stale bootstrap result is
+      // intentionally ignored.
+    }
+  }
+
   private async drainPending(): Promise<void> {
     const next = this.pending;
     this.pending = undefined;
     if (!next) return;
     await this.run(next.trigger, { force: next.force });
+  }
+
+  private normalizeStartupRuntimeMode(): void {
+    if (!this.manageConnector) return;
+    const localConfig = createCatsCoLocalConfigService({ runtimeRoot: this.runtimeRoot });
+    if (localConfig.load().runtimeMode === 'local_bot') {
+      // Compatibility mode is an explicit session choice. Every new desktop
+      // launch starts as a Connector session; the retained Bot remains
+      // available through the compatibility entry and is never deleted.
+      localConfig.setRuntimeMode('connector');
+    }
   }
 
   private async runOnce(
@@ -231,7 +262,11 @@ export class CatsConnectorAutoStart {
         });
       }
 
-      if (status.deviceConnectorMode) {
+      // runtimeMode is authoritative when a user explicitly selected a local
+      // Bot. A retained device token is intentionally kept for migration and
+      // must never make the auto-start loop silently switch that Bot back to a
+      // device Connector.
+      if (status.runtimeMode !== 'local_bot' && status.deviceConnectorMode) {
         // Refreshing the device token also applies narrowly scoped capability
         // migrations (for example file upload) to existing installations.
         const provision = await this.request<{ refreshed?: boolean; reused?: boolean }>(
@@ -257,7 +292,7 @@ export class CatsConnectorAutoStart {
       // a device Connector. A server-hosted Dashboard can manage a cloud Bot;
       // silently provisioning a device token there changes its identity and can
       // take the Bot offline for its users.
-      if (!status.deviceConnectorMode && this.autoProvisionDeviceConnector) {
+      if (status.runtimeMode !== 'local_bot' && !status.deviceConnectorMode && this.autoProvisionDeviceConnector) {
         await this.request('/cats/device-connector/provision', { method: 'POST', body: '{}' });
         status = await this.request<CatsStatusPayload>('/cats/status');
       }
@@ -320,7 +355,21 @@ export class CatsConnectorAutoStart {
     const data = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) {
       const nested = data.data && typeof data.data === 'object' ? data.data as Record<string, unknown> : undefined;
-      const message = String(data.error || nested?.error || `HTTP ${response.status}`);
+      const baseMessage = String(data.error || nested?.error || `HTTP ${response.status}`);
+      const preflight = data.preflight && typeof data.preflight === 'object'
+        ? data.preflight as Record<string, unknown>
+        : nested?.preflight && typeof nested.preflight === 'object'
+          ? nested.preflight as Record<string, unknown>
+          : undefined;
+      const blockingDetails = Array.isArray(preflight?.blockingDetails)
+        ? preflight.blockingDetails
+          .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+          .map(item => [item.label, item.message].filter(value => typeof value === 'string' && value.trim()).join('：'))
+          .filter(Boolean)
+        : [];
+      const message = blockingDetails.length > 0
+        ? `${baseMessage}：${blockingDetails.join('；')}`
+        : baseMessage;
       throw new Error(message);
     }
     return data as T;

@@ -6,6 +6,7 @@ import { EventEmitter } from 'events';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { PathResolver } from '../utils/path-resolver';
 import { resolveCatsCoRuntimeConfig, resolveCatsCoRuntimeRole } from '../catscompany/runtime-config';
+import { resolveCatsCoRuntimeMode } from '../catscompany/local-config';
 import { weixinBindingEnvOverlay } from './weixin-channel-binding';
 
 const isWindows = process.platform === 'win32';
@@ -253,6 +254,19 @@ export class ServiceManager extends EventEmitter {
         env: envVars,
         migrateLegacyEnvBinding: true,
       });
+      if (resolveCatsCoRuntimeMode(
+        catsCoRuntime.localConfig,
+        catsCoRuntime.runtimeRole,
+        catsCoRuntime.auth.uid,
+      ) === 'local_bot') {
+        // Do not leak a retained device credential into a legacy local-Bot
+        // child process. The resolver already masks it logically; clearing
+        // the inherited aliases also protects older runtime readers.
+        delete envVars.CATSCO_CONNECTOR_TOKEN;
+        delete envVars.CATSCO_CONNECTOR_TOKEN_EXPIRES_AT;
+        delete envVars.CATSCOMPANY_CONNECTOR_TOKEN;
+        delete envVars.CATSCOMPANY_CONNECTOR_TOKEN_EXPIRES_AT;
+      }
       envVars = {
         ...envVars,
         ...catsCoRuntime.envOverlay,
@@ -356,14 +370,31 @@ export class ServiceManager extends EventEmitter {
 
     if (isWindows) {
       try {
-        // /T = 终止子进程树, /F = 强制终止
-        execSync(`taskkill /PID ${proc.pid} /T /F`, { stdio: 'ignore' });
+        // Give Node a chance to run its shutdown handlers first. Those
+        // handlers close the CatsCompany WebSocket and release the server-side
+        // Bot body lease. The caller schedules a forced tree kill as a
+        // fallback when graceful termination does not finish in time.
+        const forceArg = force ? ' /F' : '';
+        execSync(`taskkill /PID ${proc.pid} /T${forceArg}`, { stdio: 'ignore' });
       } catch {
         // 进程可能已退出，忽略错误
       }
     } else {
       proc.kill(force ? 'SIGKILL' : 'SIGTERM');
     }
+  }
+
+  private scheduleForceKill(name: string, proc: ChildProcess, delayMs = 5000): void {
+    const forceKillTimer = setTimeout(() => {
+      const svc = this.services.get(name);
+      // Never target a replacement child that started while this fallback
+      // timer was pending.
+      if (svc?.process !== proc) return;
+      if (proc.exitCode === null && proc.signalCode === null) {
+        this.killProcess(proc, true);
+      }
+    }, delayMs);
+    forceKillTimer.unref?.();
   }
 
   stop(name: string): ServiceInfo {
@@ -373,26 +404,46 @@ export class ServiceManager extends EventEmitter {
       throw new Error(`Service "${name}" is not running`);
     }
 
-    if (isWindows) {
-      // Windows: 直接用 taskkill 强制终止进程树
-      svc.expectedExit = 'stop';
-      this.killProcess(svc.process, true);
-    } else {
-      svc.expectedExit = 'stop';
-      const stoppingProcess = svc.process;
-      stoppingProcess.kill('SIGTERM');
+    svc.expectedExit = 'stop';
+    const stoppingProcess = svc.process;
+    this.killProcess(stoppingProcess, false);
+    this.scheduleForceKill(name, stoppingProcess);
 
-      // 5秒后强制kill
-      const forceKillTimer = setTimeout(() => {
-        // Never target a replacement child that started while this fallback
-        // timer was pending. This timer belongs to the original process only.
-        if (stoppingProcess.exitCode === null && stoppingProcess.signalCode === null) {
-          stoppingProcess.kill('SIGKILL');
-        }
-      }, 5000);
-      forceKillTimer.unref?.();
+    return this.getService(name)!;
+  }
+
+  /**
+   * Stop a child and wait for its exit event so a replacement runtime can
+   * safely acquire the CatsCo body lease. The regular stop() method returns
+   * immediately, which is useful for the UI but unsafe during a runtime-mode
+   * handoff.
+   */
+  async stopAndWait(name: string, timeoutMs = 8000): Promise<ServiceInfo> {
+    const svc = this.services.get(name);
+    if (!svc) throw new Error(`Service "${name}" not found`);
+    if (svc.info.status !== 'running' || !svc.process) return this.getService(name)!;
+
+    const stoppingProcess = svc.process;
+    let resolveExit!: () => void;
+    const exited = new Promise<void>(resolve => { resolveExit = resolve; });
+    const onExit = () => {
+      stoppingProcess.removeListener('exit', onExit);
+      resolveExit();
+    };
+    stoppingProcess.once('exit', onExit);
+    try {
+      this.stop(name);
+    } catch {
+      onExit();
     }
-
+    await Promise.race([
+      exited,
+      new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    stoppingProcess.removeListener('exit', onExit);
     return this.getService(name)!;
   }
 
@@ -418,18 +469,22 @@ export class ServiceManager extends EventEmitter {
         restartTimer.unref?.();
       });
       svc.expectedExit = 'restart';
-      this.killProcess(svc.process);
+      const stoppingProcess = svc.process;
+      this.killProcess(stoppingProcess, false);
+      this.scheduleForceKill(name, stoppingProcess);
       return this.getService(name)!;
     }
 
     return this.start(name);
   }
 
-  stopAll() {
+  stopAll(force = false) {
     for (const [name, svc] of this.services) {
       if (svc.info.status === 'running' && svc.process) {
         svc.expectedExit = 'stop';
-        this.killProcess(svc.process, true);
+        const stoppingProcess = svc.process;
+        this.killProcess(stoppingProcess, force);
+        if (!force) this.scheduleForceKill(name, stoppingProcess);
       }
     }
   }
