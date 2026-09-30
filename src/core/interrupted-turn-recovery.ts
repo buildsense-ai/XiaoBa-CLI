@@ -159,16 +159,36 @@ export function sanitizeDeviceContext(
 }
 
 /**
- * Credential-shaped key names. Deliberately broad on secrets, but NOT on the
- * words that appear in ordinary identity data: `sessionKey` and `session_key`
- * are device-grant correlation ids here, not credentials, so `session_key` is
- * not treated as credential-shaped (the earlier pattern matched sessionKey and
- * rejected every real device context). A false positive costs the device
- * context for one interruption -- the resume still runs, without device access
- * -- while a false negative writes a secret to disk, so the rest stays broad.
+ * Credential-shaped key names.
+ *
+ * The boundary must treat camelCase as a word break, not only `_` and the
+ * string ends: the first version of this pattern matched `actor_token` but not
+ * `actorToken`, `sessionToken` or `signingKey`, so a server naming its fields in
+ * camelCase had its credential written to disk. Keys are normalized to
+ * snake_case before matching, which makes both spellings equivalent.
+ *
+ * Deliberately NOT matched: `sessionKey` / `session_key`, which are device
+ * grant correlation ids here rather than credentials. A false positive costs
+ * the device context for one interruption -- the resume still runs, without
+ * device access -- while a false negative writes a secret, so ambiguity is
+ * resolved towards refusing.
  */
-const CREDENTIAL_KEY_PATTERN = /(^|_)(token|secret|password|passwd|credential|api_?key|private_?key|access_?key|secret_?key|authorization|auth_?header|cookie|bearer)s?(_|$)/i;
+const CREDENTIAL_WORD_PATTERN = /(^|_)(token|secret|password|passwd|credential|api_key|private_key|access_key|secret_key|signing_key|authorization|auth_header|cookie|bearer)s?(_|$)/;
+const CREDENTIAL_SUBSTRING_PATTERN = /(token|secret|password|passwd|credential|apikey|privatekey|accesskey|secretkey|signingkey|authorization|authheader|cookie|bearer)s?$/;
 const MAX_SCAN_DEPTH = 8;
+
+/** True when a key name is credential-shaped in snake_case or camelCase. */
+function isCredentialishKeyName(key: string): boolean {
+  const normalized = key
+    // camelCase / PascalCase -> snake_case: actorToken -> actor_token
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .toLowerCase();
+  return CREDENTIAL_WORD_PATTERN.test(normalized)
+    // A trailing compound such as `shimooauthaccesstoken` still ends in a
+    // credential word; catch those rather than only exact segments.
+    || CREDENTIAL_SUBSTRING_PATTERN.test(normalized.replace(/_/g, ''));
+}
 
 /** Returns the offending path, or undefined when nothing credential-shaped is present. */
 function findCredentialishKey(value: unknown, path = '', depth = 0): string | undefined {
@@ -183,7 +203,7 @@ function findCredentialishKey(value: unknown, path = '', depth = 0): string | un
   if (!value || typeof value !== 'object') return undefined;
   for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
     const childPath = path ? `${path}.${key}` : key;
-    if (CREDENTIAL_KEY_PATTERN.test(key)) return childPath;
+    if (isCredentialishKeyName(key)) return childPath;
     const found = findCredentialishKey(nested, childPath, depth + 1);
     if (found) return found;
   }

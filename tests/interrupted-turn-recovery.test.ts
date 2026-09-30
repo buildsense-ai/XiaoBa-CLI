@@ -802,6 +802,67 @@ describe('interrupted turn recovery', () => {
     assert.deepEqual(clean.xiaobaRuntime?.devices, [{ userId: 'usr38', deviceId: 'd1', userName: 'ck' }]);
   });
 
+  test('the credential boundary holds for both naming styles', async () => {
+    // The first version of this guard matched `actor_token` but not
+    // `actorToken`, because it only treated '_' as a word break. A server naming
+    // its fields in camelCase therefore had its credential written to disk --
+    // three real names leaked (actorToken / sessionToken / signingKey) until the
+    // boundary was fixed. Both styles are pinned here so neither can regress.
+    //
+    // The table also guards the other direction: `sessionKey` and `session_key`
+    // are device-grant correlation ids, not credentials, and treating them as
+    // credential-shaped silently rejected every real device context.
+    const { sanitizeDeviceContext } = loadModules();
+    const scope = {
+      source: 'catscompany',
+      sessionKey: 'cc_group:grp_boundary',
+      topicId: 'grp_boundary',
+      topicType: 'group',
+      actorUserId: 'usr38',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    };
+    const captured = (metadata: unknown) => sanitizeDeviceContext(metadata as any, scope as any) !== undefined;
+    // This table intentionally feeds 37 credential-shaped keys, and the guard
+    // logs a warning for each refusal. Silence it so a passing run stays
+    // readable -- the refusals are the expected outcome here, not news.
+    const logger = require('../src/utils/logger').Logger;
+    const realWarning = logger.warning;
+    logger.warning = () => { };
+    try {
+      // Field names that legitimately appear in catsco_identity / xiaoba_runtime.
+      const legitimate = [
+        'source', 'sessionKey', 'session_key', 'topicId', 'topic_id', 'topicType', 'topic_type',
+        'actorUserId', 'actor_user_id', 'identityTrust', 'identity_trust', 'isTrusted', 'is_trusted',
+        'legacySessionKey', 'legacyRestoreKey', 'legacyCleanupKey', 'agentId', 'agent_id',
+        'agentBodyId', 'agent_body_id', 'channelSeq', 'channel_seq', 'permissionsSource',
+        'deviceOwnerUserId', 'deviceOwnerSource', 'channelSource', 'channel_source',
+        'catsco_identity', 'permissions', 'identity', 'device_grants', 'device_selection',
+        'deviceId', 'device_id', 'deviceDisplayName', 'deviceBodyId', 'deviceInstallationId',
+        'ownerUserId', 'owner_user_id', 'grantId', 'grant_id', 'status', 'operations',
+        'createdAt', 'created_at', 'expiresAt', 'expires_at', 'selectionSource',
+        'selectedDeviceId', 'selectedDeviceDisplayName', 'identitySource', 'identity_source',
+        'kind', 'user_id', 'userId', 'userName', 'user_name', 'label', 'schema', 'devices', 'os',
+      ];
+      const rejected = legitimate.filter((name) => !captured({ xiaoba_runtime: { [name]: 'v', devices: [] } }));
+      assert.deepStrictEqual(rejected, [], 'no legitimate field name may be treated as a credential');
+
+      // Keys whose value is a secret, in both spellings.
+      const credentials = [
+        'actor_token', 'actorToken', 'token', 'access_token', 'accessToken', 'refresh_token',
+        'refreshToken', 'id_token', 'idToken', 'session_token', 'sessionToken', 'api_key', 'apiKey',
+        'apikey', 'secret', 'client_secret', 'clientSecret', 'secret_key', 'secretKey',
+        'password', 'passwd', 'credential', 'credentials', 'authorization', 'auth_header',
+        'authHeader', 'cookie', 'cookies', 'bearer', 'bearer_token', 'private_key', 'privateKey',
+        'access_key', 'accessKey', 'signing_key', 'signingKey', 'webhook_secret',
+      ];
+      const leaked = credentials.filter((name) => captured({ xiaoba_runtime: { [name]: 'SECRET', devices: [] } }));
+      assert.deepStrictEqual(leaked, [], 'no credential-shaped key may reach the device context');
+    } finally {
+      logger.warning = realWarning;
+    }
+  });
+
   test('the resume path actually forwards the rebuilt device access', async () => {
     // The module tests above prove the context survives storage, but they
     // cannot see whether the connector hands it to the resumed turn -- and a
