@@ -1,5 +1,9 @@
 import { Tool, ToolDefinition, ToolExecutionResult } from '../types/tool';
-import { isSafeCatsLogOpaqueIdentifier, isSafeCatsLogSkillHandle } from '../utils/catsco-log-agent-client';
+import {
+  hasCatsLogControlCodePoint,
+  isSafeCatsLogOpaqueIdentifier,
+  isSafeCatsLogSkillHandle,
+} from '../utils/catsco-log-agent-client';
 
 /** Serialize one bounded JSON tool result (moved from the removed local MemoryLogStore). */
 export function jsonToolResult(value: unknown): string {
@@ -71,11 +75,11 @@ function codePointLength(text: string): number {
 }
 
 function keywordViolation(text: string): string | null {
+  if (hasCatsLogControlCodePoint(text)) {
+    return 'keyword must not contain control characters (C0, DEL, C1)';
+  }
   for (const character of text) {
     const codePoint = character.codePointAt(0)!;
-    if (codePoint < 0x20 || codePoint === 0x7f) {
-      return 'keyword must not contain control characters';
-    }
     if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
       return 'keyword must not contain unpaired surrogates';
     }

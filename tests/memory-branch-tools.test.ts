@@ -106,6 +106,12 @@ describe('memory branch tools', () => {
       assert.equal(control.ok, false);
       assert.match(!control.ok ? control.error : '', /control characters/);
 
+      // C1 range (U+0080–U+009F) mirrors Go unicode.IsControl; U+0085 (NEL)
+      // must never survive into a literal search term.
+      const c1 = mk('recall', ['nel\u0085term']);
+      assert.equal(c1.ok, false);
+      assert.match(!c1.ok ? c1.error : '', /control characters \(C0, DEL, C1\)/);
+
       const surrogate = mk('recall', ['k\uDE00tail']);
       assert.equal(surrogate.ok, false);
       assert.match(!surrogate.ok ? surrogate.error : '', /unpaired surrogates/);

@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { startMemorySidecarBranch } from '../src/core/sidecar-memory-branch';
+import { buildSearchAny } from '../src/core/memory-search-branch-session';
 import { InMemorySyntheticObservationQueue } from '../src/core/synthetic-observation';
 import { ChatResponse, Message } from '../src/types';
 import { ToolCall, ToolDefinition } from '../src/types/tool';
@@ -667,6 +668,37 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     await handle.done;
     assert.deepEqual(ai.calls[0].toolNames, ['assess_memory_need']);
     assert.equal(queue.drain().length, 0);
+  });
+});
+
+describe('buildSearchAny keyword contract', () => {
+  test('an all-invalid keyword list yields an empty term set with a visible bounded flag', () => {
+    // This is the premise of the fetchServerSessions structural guard: when
+    // every term is dropped (control chars / unpaired surrogates), the
+    // pipeline must see an empty list and skip the query — never issue an
+    // unfiltered latest-20 request.
+    assert.deepEqual(buildSearchAny(['nel\u0085term', 'k\uDE00']), {
+      searchAny: [],
+      truncated: false,
+      bounded: true,
+    });
+  });
+
+  test('bounds oversized terms to 64 code points and keeps astral characters intact', () => {
+    const bounded = buildSearchAny(['😀'.repeat(70)]);
+    assert.equal(bounded.searchAny.length, 1);
+    assert.equal(Array.from(bounded.searchAny[0]).length, 64);
+    assert.equal(bounded.searchAny[0], '😀'.repeat(64));
+    assert.equal(bounded.bounded, true);
+    assert.equal(bounded.truncated, false);
+  });
+
+  test('dedupes case-insensitively and reports >8-term truncation', () => {
+    const keywords = ['k1', 'K1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8', 'k9'];
+    const result = buildSearchAny(keywords);
+    assert.deepEqual(result.searchAny, ['k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8']);
+    assert.equal(result.truncated, true);
+    assert.equal(result.bounded, false);
   });
 });
 

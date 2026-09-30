@@ -417,6 +417,19 @@ function addQueryNumber(query: URLSearchParams, key: string, value: unknown): vo
 export const SEARCH_ANY_KEYWORD_MAX_CODE_POINTS = 64;
 
 /**
+ * Mirrors Go unicode.IsControl (Unicode category Cc): C0, DEL, and the C1
+ * range U+0080–U+009F — including U+0085 (NEL), which whitespace handling on
+ * the server would otherwise treat as a line break inside a literal term.
+ */
+export function hasCatsLogControlCodePoint(text: string): boolean {
+  for (const character of text) {
+    const codePoint = character.codePointAt(0)!;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return true;
+  }
+  return false;
+}
+
+/**
  * Validate the OR-keyword list against the server wire contract: array of
  * non-empty terms, each ≤64 Unicode code points, no control characters, no
  * unpaired surrogates. Violations are structured errors before any HTTP call —
@@ -429,11 +442,11 @@ function normalizeSearchAny(value: unknown): string[] | undefined {
   for (const entry of value) {
     const keyword = String(entry ?? '').trim();
     if (!keyword) continue;
+    if (hasCatsLogControlCodePoint(keyword)) {
+      throw new Error('CatsLog searchAny keyword must not contain control characters (C0, DEL, C1)');
+    }
     for (const character of keyword) {
       const codePoint = character.codePointAt(0)!;
-      if (codePoint < 0x20 || codePoint === 0x7f) {
-        throw new Error('CatsLog searchAny keyword must not contain control characters');
-      }
       if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
         throw new Error('CatsLog searchAny keyword must not contain unpaired surrogates');
       }

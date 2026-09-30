@@ -124,6 +124,17 @@ describe('CatsLog capability client', () => {
       client.querySessions({ token: 'skill-token', searchAny: ['bad\u0001term'] }),
       /control characters/,
     );
+    // C1 control code points (U+0080–U+009F) mirror Go unicode.IsControl —
+    // especially U+0085 (NEL), which server whitespace handling would treat
+    // as a line break inside a literal term. Rejected before any HTTP call.
+    await assert.rejects(
+      client.querySessions({ token: 'skill-token', searchAny: ['nel\u0085term'] }),
+      /control characters \(C0, DEL, C1\)/,
+    );
+    await assert.rejects(
+      client.querySessions({ token: 'skill-token', searchAny: ['csi\u009Cterm'] }),
+      /control characters \(C0, DEL, C1\)/,
+    );
     assert.equal(bodies.length, 3);
   });
 

@@ -17,6 +17,7 @@ import type {
   CatscoEvidenceVerdict,
   CatscoSessionQueryResult,
 } from '../utils/catsco-log-agent-client';
+import { hasCatsLogControlCodePoint } from '../utils/catsco-log-agent-client';
 import {
   CatsLogObservedRefsTracker,
   CatsLogObservedRefsSnapshot,
@@ -382,6 +383,13 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       this.retrieval.sessionError = 'catslog_capability_unavailable';
       return;
     }
+    if (searchAny.length === 0) {
+      // Structural guard: a termless query would be an unfiltered latest-20
+      // read over the device's scopes. Degrade to a typed status instead of
+      // relying on upstream validation to never hand us an empty list.
+      this.retrieval.sessionError = 'search_any_empty';
+      return;
+    }
     try {
       this.retrieval.sessionResponse = await backend.querySessions({
         searchAny,
@@ -653,9 +661,11 @@ function buildMemorySearchUserInput(options: {
  * Terms are bounded to 64 code points (never UTF-16 units, so astral
  * characters survive intact) and control-character/unpaired-surrogate terms
  * are dropped — every adjustment sets the visible `bounded` flag; nothing is
- * silently altered.
+ * silently altered. Exported for contract tests: an all-invalid keyword list
+ * yields `searchAny: []`, which fetchServerSessions treats as a typed
+ * unavailable status rather than an unfiltered query.
  */
-function buildSearchAny(keywords: string[]): { searchAny: string[]; truncated: boolean; bounded: boolean } {
+export function buildSearchAny(keywords: string[]): { searchAny: string[]; truncated: boolean; bounded: boolean } {
   const distinct: string[] = [];
   const seen = new Set<string>();
   let bounded = false;
@@ -665,7 +675,7 @@ function buildSearchAny(keywords: string[]): { searchAny: string[]; truncated: b
     const key = text.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    if (keywordHasControlOrLoneSurrogate(text)) {
+    if (hasCatsLogControlCodePoint(text) || keywordHasLoneSurrogate(text)) {
       bounded = true;
       continue;
     }
@@ -684,10 +694,9 @@ function buildSearchAny(keywords: string[]): { searchAny: string[]; truncated: b
   };
 }
 
-function keywordHasControlOrLoneSurrogate(text: string): boolean {
+function keywordHasLoneSurrogate(text: string): boolean {
   for (const character of text) {
     const codePoint = character.codePointAt(0)!;
-    if (codePoint < 0x20 || codePoint === 0x7f) return true;
     if (codePoint >= 0xd800 && codePoint <= 0xdfff) return true;
   }
   return false;
