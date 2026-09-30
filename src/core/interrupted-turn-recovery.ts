@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ExecutionScope } from '../types/session-identity';
+import { Logger } from '../utils/logger';
 import {
   InterruptedTurnDeviceContext,
   InterruptedTurnExecutionScope,
@@ -128,6 +129,21 @@ export function sanitizeDeviceContext(
 
   if (!context.catscoIdentity && !context.xiaobaRuntime) return undefined;
 
+  // The two kept containers are copied whole, so a credential added to them
+  // upstream would be persisted silently. Their consumers read only identity
+  // and device fields (permissions / device_grants / device_selection / actor /
+  // topic / devices), and no key with a credential-shaped name is part of that
+  // structure today. Refusing on a match means a future schema change drops the
+  // device context (degrading to "no device access") instead of writing a token
+  // to disk -- the same trade every other guard here makes.
+  const credentialKey = findCredentialishKey(context);
+  if (credentialKey) {
+    Logger.warning(
+      `中断恢复：设备上下文中出现疑似凭据字段 ${credentialKey}，已放弃保存以保护凭据`,
+    );
+    return undefined;
+  }
+
   // A malformed or oversized payload would bloat a state file the startup scan
   // reads on every boot, so refuse rather than persist something unexpected.
   let serialized: string;
@@ -140,6 +156,58 @@ export function sanitizeDeviceContext(
     return undefined;
   }
   return context;
+}
+
+/**
+ * Credential-shaped key names.
+ *
+ * The boundary must treat camelCase as a word break, not only `_` and the
+ * string ends: the first version of this pattern matched `actor_token` but not
+ * `actorToken`, `sessionToken` or `signingKey`, so a server naming its fields in
+ * camelCase had its credential written to disk. Keys are normalized to
+ * snake_case before matching, which makes both spellings equivalent.
+ *
+ * Deliberately NOT matched: `sessionKey` / `session_key`, which are device
+ * grant correlation ids here rather than credentials. A false positive costs
+ * the device context for one interruption -- the resume still runs, without
+ * device access -- while a false negative writes a secret, so ambiguity is
+ * resolved towards refusing.
+ */
+const CREDENTIAL_WORD_PATTERN = /(^|_)(token|secret|password|passwd|credential|api_key|private_key|access_key|secret_key|signing_key|authorization|auth_header|cookie|bearer)s?(_|$)/;
+const CREDENTIAL_SUBSTRING_PATTERN = /(token|secret|password|passwd|credential|apikey|privatekey|accesskey|secretkey|signingkey|authorization|authheader|cookie|bearer)s?$/;
+const MAX_SCAN_DEPTH = 8;
+
+/** True when a key name is credential-shaped in snake_case or camelCase. */
+function isCredentialishKeyName(key: string): boolean {
+  const normalized = key
+    // camelCase / PascalCase -> snake_case: actorToken -> actor_token
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .toLowerCase();
+  return CREDENTIAL_WORD_PATTERN.test(normalized)
+    // A trailing compound such as `shimooauthaccesstoken` still ends in a
+    // credential word; catch those rather than only exact segments.
+    || CREDENTIAL_SUBSTRING_PATTERN.test(normalized.replace(/_/g, ''));
+}
+
+/** Returns the offending path, or undefined when nothing credential-shaped is present. */
+function findCredentialishKey(value: unknown, path = '', depth = 0): string | undefined {
+  if (depth > MAX_SCAN_DEPTH) return path || '(too deep)';
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      const found = findCredentialishKey(value[i], `${path}[${i}]`, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!value || typeof value !== 'object') return undefined;
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const childPath = path ? `${path}.${key}` : key;
+    if (isCredentialishKeyName(key)) return childPath;
+    const found = findCredentialishKey(nested, childPath, depth + 1);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 /** Mandatory scope fields; a partial copy would fail its later scope check. */
