@@ -4,6 +4,7 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { isReadPathAllowed } from '../utils/safety';
 import { formatCatsCoVisiblePath, redactCatsCoVisiblePath } from './tool-gateway';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
+import { boundGrepOutput } from './grep-output';
 import {
   GrepBackendError,
   GrepBackendName,
@@ -116,7 +117,7 @@ export class GrepTool implements Tool {
           enum: ['content', 'files', 'count'],
           default: 'files'
         },
-        limit: { type: 'number', description: '限制输出行数或文件数，默认 250。设为 0 表示不限制输出。', default: 250 },
+        limit: { type: 'number', description: '限制输出行数或文件数，默认 250。0 仅取消行数限制，不关闭搜索截止时间或文本大小上限。', default: 250 },
         offset: { type: 'number', description: '跳过前 N 行/文件，用于分页。默认 0。', default: 0 },
         timeout_ms: {
           type: 'number',
@@ -146,7 +147,7 @@ export class GrepTool implements Tool {
       return { ok: false, errorCode: route.errorCode, message: route.message };
     }
     const remoteResult = await executeRouteIfRemote(context, route, 'grep', 'grep', args);
-    if (remoteResult) return remoteResult;
+    if (remoteResult) return this.withTiming(remoteResult, undefined);
 
     const resolvedSearchPath = searchPath
       ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
@@ -242,10 +243,14 @@ export class GrepTool implements Tool {
     result: ToolExecutionResult,
     timing: GrepTimingCollector | undefined,
   ): ToolExecutionResult {
-    if (!timing) return result;
-    const timingBlock = timing.format();
-    if (result.ok) return { ...result, content: `${result.content}\n\n${timingBlock}` };
-    return { ...result, message: `${result.message}\n\n${timingBlock}` };
+    const suffix = timing ? `\n\n${timing.format()}` : '';
+    if (result.ok) {
+      if (typeof result.content !== 'string') {
+        return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: 'grep 返回了非文本结果，无法作为搜索证据使用。', retryable: false };
+      }
+      return { ...result, content: boundGrepOutput(result.content + suffix) };
+    }
+    return { ...result, message: boundGrepOutput(result.message + suffix) };
   }
 
   private async executeWithRipgrep(
