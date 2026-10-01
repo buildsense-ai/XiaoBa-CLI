@@ -19,6 +19,8 @@
  * （字母数字与 -._~）保持原样可读、可关联。
  */
 
+import { Buffer } from 'node:buffer';
+
 export type RpcTelemetryChannel = 'device_rpc' | 'thin_tool_rpc';
 
 export type RpcTelemetryPhase = 'received' | 'execute_end' | 'result_sent' | 'dropped_shutdown';
@@ -62,39 +64,27 @@ export function sanitizeRpcTelemetryLabel(value: unknown, maxChars: number): str
   return text.replace(CONTROL_CHARS_PATTERN, ' ').replace(/\s+/g, ' ').trim().slice(0, Math.max(0, maxChars));
 }
 
-/** 拼入日志 key=value 字段时保持原样的白名单字符（RFC3986 unreserved）。 */
+/** 拼入日志 key=value 字段时保持原样的白名单 ASCII 字节（RFC3986 unreserved）。 */
 const RPC_FIELD_SAFE_CHAR_PATTERN = /[A-Za-z0-9._~-]/;
 
 /**
- * 将清洗后的值百分号编码（标准 UTF-8 %XX）后拼入日志字段：内嵌的 `=`、
- * 空白、引号、括号等全部转义，无法伪造 `tool=`/`phase=`/`ok=` 等 key=value
- * 字段；unreserved 集合内的常规 nonce 字符串原样保留、可读可关联。
- * 输出长度最多约为清洗后长度的 3 倍（上层已限长，结果仍有界）。
+ * 将清洗后的值以 UTF-8 字节流百分号编码后拼入日志字段：
+ * - 使用 Buffer.from(value, 'utf8')：Node 的 UTF-8 编码器会把 lone surrogate
+ *   规范化为 U+FFFD（EF BF BD），因此即使上层 slice 在代理对中间截断，输出
+ *   也永远是合法 UTF-8（decodeURIComponent 不会抛错）；
+ * - 白名单以外的每个字节（含 '='、空白、引号、括号、CJK/emoji 多字节）一律
+ *   %XX 转义，无法伪造 `tool=`/`phase=`/`ok=` 等 key=value 字段；对合法输入
+ *   与 encodeURIComponent 字节语义一致（白名单更严：`!'()*` 等同样转义）；
+ * - 长度上界：每个 UTF-16 单元最多展开 9 个字符（如 CJK：1 单元 → 3 字节 →
+ *   9 个 %XX 字符），结果有界（上层已限长）。
  */
 export function encodeRpcTelemetryFieldValue(value: string): string {
+  const bytes = Buffer.from(value, 'utf8');
   let encoded = '';
-  for (const char of value) {
-    if (RPC_FIELD_SAFE_CHAR_PATTERN.test(char)) {
-      encoded += char;
-      continue;
-    }
-    const codePoint = char.codePointAt(0) as number;
-    const utf8: number[] = [];
-    if (codePoint <= 0x7f) {
-      utf8.push(codePoint);
-    } else if (codePoint <= 0x7ff) {
-      utf8.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
-    } else if (codePoint <= 0xffff) {
-      utf8.push(0xe0 | (codePoint >> 12), 0x80 | ((codePoint >> 6) & 0x3f), 0x80 | (codePoint & 0x3f));
+  for (const byte of bytes) {
+    if (RPC_FIELD_SAFE_CHAR_PATTERN.test(String.fromCharCode(byte))) {
+      encoded += String.fromCharCode(byte);
     } else {
-      utf8.push(
-        0xf0 | (codePoint >> 18),
-        0x80 | ((codePoint >> 12) & 0x3f),
-        0x80 | ((codePoint >> 6) & 0x3f),
-        0x80 | (codePoint & 0x3f),
-      );
-    }
-    for (const byte of utf8) {
       encoded += `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
     }
   }

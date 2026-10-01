@@ -208,6 +208,41 @@ describe('rpc-tool-telemetry pure helpers', () => {
     assert.equal(encodeRpcTelemetryFieldValue('"x"[y]{z}'), '%22x%22%5By%5D%7Bz%7D');
     assert.equal(encodeRpcTelemetryFieldValue('emoji😀'), 'emoji%F0%9F%98%80');
     assert.equal(encodeRpcTelemetryFieldValue(''), '');
+    // 孤立代理项（上层 slice 可在 80 单元边界产生）：规范化为 U+FFFD，输出合法 UTF-8
+    assert.equal(encodeRpcTelemetryFieldValue('\uD83D'), '%EF%BF%BD');
+    assert.equal(encodeRpcTelemetryFieldValue('\uDE00'), '%EF%BF%BD');
+    let loneDecoded: string | undefined;
+    assert.doesNotThrow(() => { loneDecoded = decodeURIComponent(encodeRpcTelemetryFieldValue('\uD83D\uDE00\uD83D')); });
+    assert.equal(loneDecoded, '😀\uFFFD');
+  });
+
+  test('astral cutoff at the 80-unit sanitize boundary decodes safely end-to-end', () => {
+    // 79 个 ASCII + 一个 emoji，slice 到 80 单元 → 末尾残留孤立高位代理项
+    const cut = sanitizeRpcTelemetryLabel(`${'a'.repeat(79)}😀`, 80);
+    assert.equal(cut.length, 80);
+    assert.equal(cut.charCodeAt(79) >= 0xd800 && cut.charCodeAt(79) <= 0xdbff, true, 'cutoff produces a lone high surrogate');
+
+    const encoded = encodeRpcTelemetryFieldValue(cut);
+    let decoded: string | undefined;
+    assert.doesNotThrow(() => { decoded = decodeURIComponent(encoded); }, 'decoder must not throw on sanitized cutoff output');
+    assert.equal(decoded, `${'a'.repeat(79)}\uFFFD`);
+  });
+
+  test('ordinary emoji/CJK encoding matches encodeURIComponent byte semantics', () => {
+    // 避开 encodeURIComponent 不转义的 !'()* 集合；白名单更严仅影响这些
+    const sample = '字段值 emoji😀 id=abc, path~x -._';
+    assert.equal(encodeRpcTelemetryFieldValue(sample), encodeURIComponent(sample));
+    assert.equal(encodeRpcTelemetryFieldValue('字段😀'), encodeURIComponent('字段😀'));
+    assert.ok(encodeRpcTelemetryFieldValue('字段😀').includes('%E5%AD%97'));
+    assert.ok(encodeRpcTelemetryFieldValue('字段😀').includes('%F0%9F%98%80'));
+  });
+
+  test('expansion bound: worst case CJK expands 9x per UTF-16 unit, still bounded', () => {
+    const cjk80 = sanitizeRpcTelemetryLabel('中'.repeat(100), 80);
+    assert.equal(cjk80.length, 80);
+    const encoded = encodeRpcTelemetryFieldValue(cjk80);
+    assert.equal(encoded.length, 9 * 80);
+    assert.doesNotThrow(() => decodeURIComponent(encoded));
   });
 
   test('kv-injected request id cannot forge phase/tool/ok/errorCode fields in any timeline line', () => {
