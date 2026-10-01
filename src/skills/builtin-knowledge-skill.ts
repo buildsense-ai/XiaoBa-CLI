@@ -6,6 +6,8 @@ import { Skill } from '../types/skill';
 export const KNOWLEDGE_SKILL_NAME = 'xiaoba-knowledge';
 // Package resources, separate from the mutable per-bot Skill workspace.
 export const KNOWLEDGE_SKILL_FILE = path.resolve(__dirname, '../../skills', KNOWLEDGE_SKILL_NAME, 'SKILL.md');
+/** Read/write CLI shipped next to the builtin Skill; resolved from its package directory. */
+export const KNOWLEDGE_SCRIPT_FILE = path.resolve(path.dirname(KNOWLEDGE_SKILL_FILE), 'scripts', 'knowledge.cjs');
 
 export function isBuiltinKnowledgeSkillFile(file: string): boolean {
   return path.resolve(file) === path.resolve(KNOWLEDGE_SKILL_FILE);

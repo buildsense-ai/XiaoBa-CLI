@@ -172,6 +172,39 @@ describe('memory branch tools', () => {
     });
     assert.deepEqual(JSON.parse(String(valid.content)), { ok: true });
 
+    // Local distilled-knowledge citation forms are canonical refs too.
+    const knowledge = await tool.execute({
+      summary: 'KB decision found.',
+      refs: [
+        'kb:KB-11111111-2222-4333-8444-555555555555',
+        'file:documents/rollback-notes.md',
+        'file:documents/guides/deploy notes.md',
+        // Traversal, dot-leading segments, and non-document paths stay invalid.
+        'file:documents/../../etc/hosts.md',
+        'file:documents/.hidden.md',
+        'file:documents/../secrets.md',
+        'file:attachments/x.md',
+        'kb:not-a-kb-id',
+      ],
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(knowledge.ok, false);
+    assert.match(JSON.parse(String(knowledge.message)).error, /invalid canonical ref/);
+
+    const knowledgeValid = await tool.execute({
+      summary: 'KB decision found.',
+      refs: [
+        'kb:KB-11111111-2222-4333-8444-555555555555',
+        'file:documents/rollback-notes.md',
+        'file:documents/guides/deploy notes.md',
+      ],
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(knowledgeValid.ok, true);
+    assert.deepEqual(captured?.refs, [
+      'kb:KB-11111111-2222-4333-8444-555555555555',
+      'file:documents/rollback-notes.md',
+      'file:documents/guides/deploy notes.md',
+    ]);
+
     const suppressed = await tool.execute({
       summary: 'No extra memory worth injecting.',
       refs: [],

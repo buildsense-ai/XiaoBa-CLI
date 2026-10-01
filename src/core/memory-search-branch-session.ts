@@ -28,6 +28,11 @@ import {
   projectBranchResponse,
   projectSessionQueryResponse,
 } from './catslog-branch-evidence';
+import {
+  LocalKnowledgeLaneResult,
+  projectLocalKnowledgeLane,
+  searchLocalKnowledgeLane,
+} from './catslog-knowledge-lane';
 import { normalizeMemoryBranchBudget } from './branch-budget';
 import type { MemoryBranchBudget } from './branch-budget';
 
@@ -77,6 +82,9 @@ interface MechanicalRetrievalState {
   sessionError?: string;
   sessionJson?: string;
   sessionRecords: Record<string, unknown>[];
+  /** Local distilled-knowledge lane (L0); typed degraded statuses, never throws. */
+  knowledge?: LocalKnowledgeLaneResult;
+  knowledgeJson?: string;
   /** True when assess keywords exceeded the 8-keyword search_any wire cap. */
   keywordsTruncated: boolean;
   /** True when any keyword was code-point-bounded or dropped (visible note). */
@@ -89,6 +97,7 @@ const MAX_KEYWORD_CODE_POINTS = 64;
 const MAX_SESSION_RECORDS = 20;
 const MAX_REMOTE_EVIDENCE_CHARS = 20_000;
 const MAX_SESSION_EVIDENCE_CHARS = 12_000;
+const MAX_KNOWLEDGE_EVIDENCE_CHARS = 8_000;
 
 /**
  * Server-first two-call memory-search branch.
@@ -104,10 +113,10 @@ const MAX_SESSION_EVIDENCE_CHARS = 12_000;
  *   ├─ pass 1 (assess)          tools = [assess_memory_need] (pause_turn)
  *   │    ├─ action=skip         → complete(delivery:discard) — 1 inference, log only
  *   │    └─ action=recall       → mechanical stage (no model calls):
- *   │         Promise.all( catslogMemory.branch(query) ‖ catslogMemory.querySessions(search_any) )
+ *   │         Promise.all( catslogMemory.branch(query) ‖ catslogMemory.querySessions(search_any) ‖ localKnowledge(search_any top-3) )
  *   │         → observed-refs tracker fed with projected JSON (same shapes as tool results)
  *   │         → verdict gate on branches[session_graph].evidence_verdict;
- *   │            session records count as usable evidence even when verdict=none
+ *   │            session records and local KB hits count as usable evidence even when verdict=none
  *   │              none ∧ no evidence anywhere → complete(delivery:discard) — 1 inference
  *   │              otherwise → stage = refine (typed degraded status when a lane failed)
  *   └─ pass 2 (refine)          tools = [finish_memory_search] (pause_turn)
@@ -290,6 +299,8 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       remote_branches: this.retrieval.remoteResponse?.branches?.length ?? 0,
       session_records: this.retrieval.sessionRecords.length,
       session_query: this.sessionQueryStatus(),
+      local_knowledge: this.knowledgeStatus(),
+      local_knowledge_entries: this.retrieval.knowledge?.entries.length ?? 0,
       ...(this.retrieval.keywordsTruncated ? { keywords_truncated: true } : {}),
       ...(this.retrieval.keywordsBounded ? { keywords_bounded: true } : {}),
       next: 'call finish_memory_search with the evidence pack',
@@ -298,8 +309,11 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
 
   /**
    * Mechanical stage — no model calls, no tool dispatch. The fused branch
-   * fan-out and the device-bound session query run in parallel; both are
-   * server-side, so no local log content can enter the evidence pack.
+   * fan-out, the device-bound session query, and the local distilled-
+   * knowledge search run in parallel; the first two are server-side, so no
+   * local log content can enter the evidence pack. The KB lane is the one
+   * local source: per-host, agent-owned distilled documents with typed
+   * degradation, never a raw log scan.
    */
   private async runMechanicalRetrieval(plan: RecallPlan, signal?: AbortSignal): Promise<void> {
     const startedAt = Date.now();
@@ -309,6 +323,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     await Promise.all([
       this.fetchRemoteBranch(plan, signal),
       this.fetchServerSessions(searchAny, signal),
+      this.fetchLocalKnowledge(searchAny, signal),
     ]);
 
     if (this.retrieval.remoteResponse) {
@@ -322,6 +337,11 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       this.retrieval.sessionRecords = (projected.records as Record<string, unknown>[]) ?? [];
       this.retrieval.sessionJson = JSON.stringify(projected);
     }
+    if (this.retrieval.knowledge) {
+      this.retrieval.knowledgeJson = JSON.stringify(
+        projectLocalKnowledgeLane(this.retrieval.knowledge, MAX_KNOWLEDGE_EVIDENCE_CHARS),
+      );
+    }
     this.verdict = this.readSessionGraphVerdict();
     this.evidencePackMessage = this.buildEvidencePackMessage();
 
@@ -334,6 +354,9 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     if (this.retrieval.sessionJson) {
       this.observedRefs.recordToolResult('catslog_sessions', this.retrieval.sessionJson);
     }
+    if (this.retrieval.knowledgeJson) {
+      this.observedRefs.recordToolResult('catslog_knowledge', this.retrieval.knowledgeJson);
+    }
 
     this.logger.write('mechanical_retrieval', {
       duration_ms: Date.now() - startedAt,
@@ -345,6 +368,8 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         .reduce((sum, branch) => sum + (Array.isArray(branch.items) ? branch.items.length : 0), 0),
       session_query: this.sessionQueryStatus(),
       session_records: this.retrieval.sessionRecords.length,
+      local_knowledge: this.knowledgeStatus(),
+      local_knowledge_entries: this.retrieval.knowledge?.entries.length ?? 0,
       keywords_truncated: this.retrieval.keywordsTruncated,
       keywords_bounded: this.retrieval.keywordsBounded,
       verdict: this.verdict,
@@ -356,6 +381,39 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     if (this.retrieval.sessionError || !this.retrieval.sessionResponse) return 'unavailable';
     if (this.retrieval.sessionRecords.length === 0) return 'empty';
     return this.retrieval.sessionResponse.truncated === true ? 'truncated' : 'ok';
+  }
+
+  /** Typed local-KB lane status for logs, acks, and the evidence pack. */
+  private knowledgeStatus(): 'ok' | 'empty' | 'truncated' | 'unavailable' {
+    const knowledge = this.retrieval.knowledge;
+    if (!knowledge) return 'unavailable';
+    if (knowledge.status === 'unavailable') return 'unavailable';
+    if (knowledge.entries.length === 0) return 'empty';
+    return knowledge.entriesCapped || knowledge.keywordsCapped ? 'truncated' : 'ok';
+  }
+
+  /**
+   * L0 lane: search the per-host, agent-owned distilled knowledge KB with
+   * the top assess keywords (same bounded searchAny list the session lane
+   * uses). Degrades to a typed unavailable status; never throws and never
+   * widens into a raw log scan.
+   */
+  private async fetchLocalKnowledge(searchAny: string[], signal?: AbortSignal): Promise<void> {
+    try {
+      this.retrieval.knowledge = await searchLocalKnowledgeLane({ keywords: searchAny, signal });
+    } catch (error: any) {
+      // searchLocalKnowledgeLane resolves degraded results internally; this
+      // guard only covers unexpected invocation failures.
+      this.retrieval.knowledge = {
+        status: 'unavailable',
+        entries: [],
+        error: String(error?.message || error || 'local knowledge search failed').slice(0, 200),
+        keywordsQueried: [],
+        keywordsCapped: false,
+        keywordsFailed: 0,
+        entriesCapped: false,
+      };
+    }
   }
 
   private async fetchRemoteBranch(plan: RecallPlan, signal?: AbortSignal): Promise<void> {
@@ -425,7 +483,11 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       .some(branch => Array.isArray(branch.items) && branch.items.length > 0);
     // Session records are independent, device-scoped evidence: they count as
     // usable even when the session_graph branch verdict is `none`.
-    return remoteItems || this.retrieval.sessionRecords.length > 0;
+    // Local distilled-knowledge hits count the same way: they are curated
+    // per-host documents, not the raw local-log lane that was removed.
+    return remoteItems
+      || this.retrieval.sessionRecords.length > 0
+      || (this.retrieval.knowledge?.entries.length ?? 0) > 0;
   }
 
   private buildEvidencePackMessage(): Message {
@@ -436,12 +498,16 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
           content_trust: 'untrusted_branch_evidence',
           remote_branch: this.remoteEvidencePack(),
           session_records: this.sessionEvidencePack(),
+          local_knowledge: this.knowledgeEvidencePack(),
           ...(((this.retrieval.keywordsTruncated || this.retrieval.keywordsBounded)) ? {
             keywords_truncated: true,
             keyword_note: buildKeywordNote(this.retrieval.keywordsTruncated, this.retrieval.keywordsBounded),
           } : {}),
         },
-        instruction: '以上是本次机械检索的全部证据（远端融合检索与设备绑定会话查询并行取得）。请分析后立即调用 finish_memory_search 收尾；refs 只能引用其中出现过的 ref。',
+        instruction: '以上是本次机械检索的全部证据（远端融合检索、设备绑定会话查询与本地蒸馏知识库三路并行取得）。'
+          + 'distilled KB 条目（local_knowledge，provenance=local_knowledge）在覆盖当前问题时优先采用；'
+          + '但当远端/会话证据的 updated_at/时间戳比某 KB 条目更新，或与之冲突时，合成增量差异后再引用，不要盲目照搬文档。'
+          + '请分析后立即调用 finish_memory_search 收尾；refs 只能引用其中出现过的 ref（KB 条目用其 ref 字段，形如 kb:… 或 file:…）。',
       }, null, 2),
     };
   }
@@ -478,6 +544,23 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       note: this.retrieval.sessionError
         ? `CatsLog session query failed: ${this.retrieval.sessionError}`
         : 'CatsLog session query unavailable; no historical session evidence was retrieved.',
+    };
+  }
+
+  private knowledgeEvidencePack(): Record<string, unknown> {
+    if (this.retrieval.knowledgeJson) {
+      try {
+        return JSON.parse(this.retrieval.knowledgeJson) as Record<string, unknown>;
+      } catch {
+        // fall through to the placeholder below
+      }
+    }
+    return {
+      content_trust: 'local_distilled_knowledge',
+      provenance: 'local_knowledge',
+      scope: 'per_host_agent_owned',
+      status: 'unavailable',
+      note: 'Local knowledge lane did not produce a usable result.',
     };
   }
 
@@ -606,7 +689,7 @@ function buildMemorySearchSystemPrompt(hasCatsLogMemory = false): string {
     '',
     '整个 branch 是固定管线，至多两次模型调用，没有开放式工具循环：',
     '1. 本次调用（assess）：调用 assess_memory_need 做一次性决策。',
-    '2. 决策为 recall 时：系统机械地并行执行远端 CatsLog 检索——融合 branch fan-out（服务端多源、scope 围栏与重排）和设备绑定的会话查询（search_any OR 关键词，返回脱敏记录）。检索不由你发起，也没有任何检索工具可调用。历史会话只来自服务器；本机不会读取任何本地日志文件。',
+    '2. 决策为 recall 时：系统机械地并行执行三路检索——远端 CatsLog 融合 branch fan-out（服务端多源、scope 围栏与重排）、设备绑定的会话查询（search_any OR 关键词，返回脱敏记录）、以及本地蒸馏知识库检索（只读 xiaoba-knowledge KB，前 3 个关键词，provenance=local_knowledge）。检索不由你发起，也没有任何检索工具可调用。历史会话只来自服务器；本地只读取蒸馏 KB，不读取任何本地日志文件。',
     '3. 下一次调用（refine）：你会收到完整证据包，分析后用 finish_memory_search 收尾。',
     '',
     'assess_memory_need 决策标准：',
@@ -627,6 +710,7 @@ function buildMemorySearchSystemPrompt(hasCatsLogMemory = false): string {
     '- recent_completed_turns 已经会提供给主 agent。不要把它们已经覆盖的内容当作新增记忆返回。',
     '- 如果检索结果只是在重复最近一两轮的短对话，且没有额外的工具结果、旧决策、用户修正或压缩风险，请使用 delivery:discard。',
     '- 适合注入的内容包括：跨会话信息、更早的同话题决策、用户后来修正过的约束、工具调用结果、被压缩后容易丢失的事实、当前任务需要避免冲突或重复讨论的信息。',
+    '- local_knowledge 条目是本机蒸馏知识文档（kb:/file: ref）：覆盖当前问题时优先采用；但若远端/会话证据比该条目 updated_at 更新或与其结论冲突，先合成增量差异，不要盲目照搬文档。KB 是本机 agent 自有知识，没有跨 agent scope 围栏。',
     '- 如果 late/older memory 与当前用户输入冲突，summary 要明确提示冲突，并让主 agent 以当前用户输入为准。',
     '- 如果证据包足以支撑当前任务，直接收尾；不要为了重复确认而请求更多检索。',
     '',

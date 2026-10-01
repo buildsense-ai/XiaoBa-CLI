@@ -32,11 +32,28 @@ const CATSLOG_STREAM_REF_PATTERN = /^(.+)#(?:[1-9][0-9]*|summary)$/;
 const CATSLOG_SESSION_HASH_REF_PATTERN = /^catslog:session:[a-f0-9]{24}$/;
 const CATSLOG_SKILL_REF_PATTERN = /^catslog:skill:(.+)@([1-9][0-9]*)$/;
 const CATSLOG_REF_HASH_PATTERN = /^catslog:ref:[a-f0-9]{24}$/;
+// Local distilled-knowledge citations: managed KB documents and raw source
+// Markdown under the KB store's documents/ tree (see xiaoba-knowledge). The
+// path grammar is deliberately narrower than the store accepts: ASCII
+// segments without dot-leading/dot-dot components, so a citation ref can
+// never double as a traversal path or URL.
+const KNOWLEDGE_KB_REF_PATTERN = /^kb:KB-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const KNOWLEDGE_FILE_REF_PATTERN = /^file:documents\/(?:[A-Za-z0-9][A-Za-z0-9 ._-]*\/)*[A-Za-z0-9][A-Za-z0-9 ._-]*\.[mM][dD]$/;
+
+/**
+ * Citable ref form of a local distilled-knowledge document: `kb:<KB-ID>` for
+ * managed documents, `file:documents/...` for raw source Markdown.
+ */
+export function isKnowledgeCitationRef(ref: string): boolean {
+  if (KNOWLEDGE_KB_REF_PATTERN.test(ref)) return true;
+  return KNOWLEDGE_FILE_REF_PATTERN.test(ref) && ref.length <= 512 && !ref.includes('..');
+}
 
 export function isMemoryCitationRef(ref: string): boolean {
   if (CANONICAL_REF_PATTERN.test(ref) || CATSLOG_SESSION_HASH_REF_PATTERN.test(ref) || CATSLOG_REF_HASH_PATTERN.test(ref)) {
     return true;
   }
+  if (isKnowledgeCitationRef(ref)) return true;
   const stream = ref.match(CATSLOG_STREAM_REF_PATTERN);
   if (stream && isSafeCatsLogOpaqueIdentifier(stream[1], 256)) return true;
   const skill = ref.match(CATSLOG_SKILL_REF_PATTERN);

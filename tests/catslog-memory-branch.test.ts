@@ -84,6 +84,7 @@ class AssessThenFinishAI {
       ...(pack.evidence_pack?.remote_branch?.branches || [])
         .flatMap((branch: any) => (branch.items || []).map((item: any) => item.ref)),
       ...(pack.evidence_pack?.session_records?.records || []).map((record: any) => record.ref),
+      ...(pack.evidence_pack?.local_knowledge?.entries || []).map((entry: any) => entry.ref),
     ].filter((ref: unknown) => typeof ref === 'string');
   }
 
@@ -574,6 +575,83 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     assert.equal('memory_source_available' in payload, false);
   });
 
+  test('local distilled-knowledge hits keep refine alive and kb refs pass the observed-refs guard', async () => {
+    // Curated KB doc under the runtime knowledge root; remote lanes return
+    // verdict=none with no items, so only the KB lane can keep refine alive.
+    const knowledgeRoot = path.join(testRoot, 'knowledge');
+    const kbId = 'KB-0f1e2d3c-4b5a-4677-8899-aabbccddeeff';
+    writeKnowledgeDocument(knowledgeRoot, kbId, 'Release checklist', 'release checklist: nginx read-only mount, rollback via flag');
+
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new AssessThenFinishAI();
+    const backend = new RemoteEvidenceMemory();
+    backend.branchResponse = {
+      content_trust: 'untrusted_branch_evidence',
+      branches: [
+        { source: 'session_graph', status: 'ok', evidence_verdict: 'none', items: [] },
+        { source: 'agent_memory', status: 'ok', items: [] },
+      ],
+    };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'knowledge-lane',
+      input: 'what is our release checklist?',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: true,
+    });
+
+    await handle.done;
+
+    // The KB hit alone kept pass 2 alive despite the `none` verdict.
+    assert.equal(ai.calls.length, 2);
+    const pack = ai.evidencePackIn(ai.calls[1].messages);
+    assert.equal(pack.evidence_pack.local_knowledge.provenance, 'local_knowledge');
+    assert.equal(pack.evidence_pack.local_knowledge.scope, 'per_host_agent_owned');
+    assert.equal(pack.evidence_pack.local_knowledge.content_trust, 'local_distilled_knowledge');
+    assert.equal(pack.evidence_pack.local_knowledge.entries[0].ref, `kb:${kbId}`);
+    assert.match(String(pack.evidence_pack.local_knowledge.entries[0].summary), /rollback/);
+
+    // The finish cites the KB ref; the tracker observed it, so delivery stays context.
+    const observations = queue.drain();
+    assert.equal(observations.length, 1);
+    const injected = JSON.parse(observations[0].formattedContent || '');
+    assert.deepEqual(injected.refs, [`kb:${kbId}`]);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /published_observation/);
+    assert.doesNotMatch(logs, /unobserved_refs_audit_only/);
+  });
+
+  test('knowledge lane failure degrades to a typed unavailable status and never blocks the pipeline', async () => {
+    // No knowledge root: every lane fails, refine still runs and discards.
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new AssessThenFinishAI();
+    const backend = new SessionQueryMemory();
+    backend.branchShouldFail = true;
+    backend.sessionError = Object.assign(new Error('analysis_unavailable'), { status: 503 });
+    backend.sessionResponse = undefined as unknown as { records: [] };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'knowledge-lane-degraded',
+      input: 'find prior release notes',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: true,
+    });
+
+    await handle.done;
+
+    assert.equal(ai.calls.length, 2);
+    const pack = ai.evidencePackIn(ai.calls[1].messages);
+    assert.equal(pack.evidence_pack.local_knowledge.status, 'unavailable');
+    assert.match(String(pack.evidence_pack.local_knowledge.note), /knowledge_root_missing/);
+    assert.equal(queue.drain().length, 0);
+  });
+
   test('old-history records stay usable and the newest-window request shape is preserved', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const ai = new AssessThenFinishAI();
@@ -713,4 +791,23 @@ function readBranchLogs(root: string): string {
     }
   }
   return chunks.join('\n');
+}
+
+function writeKnowledgeDocument(root: string, id: string, title: string, summary: string): void {
+  const metadata = {
+    id,
+    title,
+    summary,
+    category: 'deploy',
+    updatedAt: '2026-09-10T00:00:00.000Z',
+    change: 'initial write',
+    sources: ['stream-release#17'],
+  };
+  const documents = path.join(root, 'documents');
+  fs.mkdirSync(documents, { recursive: true });
+  fs.writeFileSync(
+    path.join(documents, `${id}.md`),
+    `---\n${JSON.stringify(metadata)}\n---\n\n# ${title}\n\nnginx read-only mount stays; rollback via the feature flag.\n`,
+    'utf-8',
+  );
 }
