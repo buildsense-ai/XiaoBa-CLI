@@ -610,3 +610,134 @@ describe('grep fallback contract: A-follow-up proofs (blockers in 3b59629b)', ()
     }
   });
 });
+
+describe('grep fallback contract: second-round glob planner hardening proofs (becca504)', () => {
+  test('brace-bomb depth is capped during expansion, not after the crossproduct', { timeout: 15_000 }, async () => {
+    // 24 nesting levels of two alternatives = a 2^24 crossproduct IF the
+    // implementation expanded before checking the cap (the A5ce flaw). The
+    // depth cap must reject it during parsing instead.
+    const bomb = '{a,b'.repeat(24) + 'x' + '}'.repeat(24);
+    const envPath = nodeTierPath();
+    const start = performance.now();
+    const result = await executeInTier(envPath, { pattern: 'needle', output_mode: 'files', glob: bomb });
+    const elapsed = performance.now() - start;
+    assert.ok(!result.ok, `brace bomb must be rejected, got ok=true: ${messageOf(result).slice(0, 200)}`);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'INVALID_TOOL_ARGUMENTS', `expected INVALID_TOOL_ARGUMENTS, got ${result.errorCode}: ${result.message}`);
+    }
+    assert.ok(elapsed < 2_000, `depth cap must fire during parsing (2^24 crossproduct would take far longer), took ${Math.round(elapsed)}ms`);
+  });
+
+  test('emoji in composite globs matches by code points on both tiers', { timeout: 15_000 }, async () => {
+    const emojiDir = newTempDir('emoji-glob');
+    fs.writeFileSync(path.join(emojiDir, '猫🐱note.txt'), 'emojiglob marker\n');
+    fs.writeFileSync(path.join(emojiDir, 'plain.txt'), 'emojiglob marker\n');
+    const envPath = nodeTierPath();
+    for (const glob of ['*.txt', '猫*.txt', '*.{txt,md}']) {
+      const result = await executeInTier(
+        envPath,
+        { pattern: 'emojiglob', output_mode: 'files', glob },
+        { workingDirectory: emojiDir },
+      );
+      const text = messageOf(result);
+      assert.ok(result.ok, `[node-tier] glob '${glob}' must work with astral filenames, got: ${text}`);
+      assert.match(text, /猫🐱note\.txt/, `[node-tier] glob '${glob}' must match the emoji filename (code-point semantics), got: ${text}`);
+    }
+
+    if (!POSIX) return;
+    // Known-positive composite brace glob with an astral filename on the
+    // native tier: found or typed error, never a fake empty.
+    const grepResult = await executeInTier(
+      grepTierPath(newTempDir('shims')),
+      { pattern: 'emojiglob', output_mode: 'files', glob: '*.{txt,md}' },
+      { workingDirectory: emojiDir },
+    );
+    const grepText = messageOf(grepResult);
+    assert.ok(
+      (grepResult.ok && /猫🐱note\.txt/.test(grepText)) || !grepResult.ok,
+      `[grep-tier] emoji composite glob must find the file or fail typed, got ok=true: ${grepText}`,
+    );
+  });
+
+  test('bracket classes are honored: known positive found, malformed rejected', { timeout: 15_000 }, async () => {
+    const envPath = nodeTierPath();
+    const result = await executeInTier(envPath, { pattern: 'Hello', output_mode: 'files', glob: 'text[0-9].js' });
+    const text = messageOf(result);
+    assert.ok(result.ok, `bracket class glob must succeed, got: ${text}`);
+    assert.match(text, /text1\.js/, `text[0-9].js must match text1.js, got: ${text}`);
+    assert.doesNotMatch(text, /text2\.ts|text3\.py/);
+
+    const negated = await executeInTier(envPath, { pattern: 'Hello', output_mode: 'files', glob: 'text[!0-9]*' });
+    const negatedText = messageOf(negated);
+    if (negated.ok && !/未找到匹配项/.test(negatedText)) {
+      assert.doesNotMatch(negatedText, /text1\.js/, `negated class must not match text1.js, got: ${negatedText}`);
+    }
+
+    if (!POSIX) return;
+    const grepResult = await executeInTier(grepTierPath(newTempDir('shims')), { pattern: 'Hello', output_mode: 'files', glob: 'text[0-9].js' });
+    const grepText = messageOf(grepResult);
+    assert.ok(
+      (grepResult.ok && /text1\.js/.test(grepText)) || !grepResult.ok,
+      `[grep-tier] bracket class known-positive must be found or fail typed, got ok=true: ${grepText}`,
+    );
+  });
+
+  test('malformed brace and class grammar is a typed error, never a silent scan', { timeout: 15_000 }, async () => {
+    const envPath = nodeTierPath();
+    for (const bad of ['*.{ts', 'text1.js}', 'text[0-9.js', '{a,b{c,d}}}}']) {
+      const result = await executeInTier(envPath, { pattern: 'Hello', output_mode: 'files', glob: bad });
+      assert.ok(!result.ok, `malformed glob ${JSON.stringify(bad)} must be rejected, got ok=true: ${messageOf(result).slice(0, 200)}`);
+      if (!result.ok) {
+        assert.equal(result.errorCode, 'INVALID_TOOL_ARGUMENTS', `malformed glob ${JSON.stringify(bad)}: expected INVALID_TOOL_ARGUMENTS, got ${result.errorCode}`);
+      }
+    }
+  });
+
+  test('glob complexity bounds: oversized length and class body are typed errors', { timeout: 15_000 }, async () => {
+    const envPath = nodeTierPath();
+    const tooLong = 'a'.repeat(257);
+    const result = await executeInTier(envPath, { pattern: 'Hello', output_mode: 'files', glob: tooLong });
+    assert.ok(!result.ok, 'oversized glob must be rejected');
+    if (!result.ok) assert.equal(result.errorCode, 'INVALID_TOOL_ARGUMENTS');
+
+    const bigClass = `text[${'a'.repeat(200)}]b`;
+    const classResult = await executeInTier(envPath, { pattern: 'Hello', output_mode: 'files', glob: bigClass });
+    assert.ok(!classResult.ok, 'oversized class body must be rejected');
+    if (!classResult.ok) assert.equal(classResult.errorCode, 'INVALID_TOOL_ARGUMENTS');
+  });
+
+  test('arguments are validated without coercion: hostile non-string args fail typed and fast', { timeout: 10_000 }, async () => {
+    const envPath = nodeTierPath();
+    const hostilePattern = { toString() { throw new Error('coercion hijack'); } };
+    const start = performance.now();
+    const result = await executeInTier(envPath, { pattern: hostilePattern });
+    const elapsed = performance.now() - start;
+    assert.ok(!result.ok, 'non-string pattern must be rejected');
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'INVALID_TOOL_ARGUMENTS', `expected INVALID_TOOL_ARGUMENTS, got ${result.errorCode}`);
+      assert.doesNotMatch(result.message, /coercion hijack/, 'error must not execute or leak hostile coercion output');
+    }
+    assert.ok(elapsed < 1_000, `validation must happen before any timer/dispatch, took ${Math.round(elapsed)}ms`);
+
+    for (const badArgs of [{ pattern: 'x', glob: 42 }, { pattern: 'x', type: {} }, { pattern: 'x', path: 7 }]) {
+      const r = await executeInTier(envPath, badArgs);
+      assert.ok(!r.ok, `non-string ${Object.keys(badArgs).find(k => k !== 'pattern')} must be rejected, got ok=true`);
+    }
+  });
+
+  test('completed searches leave no deadline timer behind', { timeout: 15_000 }, async () => {
+    const envPath = nodeTierPath();
+    const activeTimeouts = () =>
+      (process as any)._getActiveHandles().filter((handle: any) => handle?.constructor?.name === 'Timeout').length;
+    // Warm-up run initializes any lazily-created module-level timers.
+    await executeInTier(envPath, { pattern: 'needle', output_mode: 'files', timeout_ms: 30_000 });
+    const baseline = activeTimeouts();
+    const result = await executeInTier(envPath, { pattern: 'needle', output_mode: 'files', timeout_ms: 30_000 });
+    assert.ok(result.ok, `search must complete, got: ${messageOf(result).slice(0, 200)}`);
+    const after = activeTimeouts();
+    assert.ok(
+      after <= baseline,
+      `completed search must dispose its deadline timer (baseline ${baseline}, after ${after}) — a 30s budget leak pins the event loop`,
+    );
+  });
+});
