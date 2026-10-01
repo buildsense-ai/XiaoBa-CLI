@@ -13,6 +13,18 @@ export interface CatscoUploadedFileState {
   uploadedAt: string;
   uploadId?: string;
   sha256?: string;
+  append?: {
+    acceptedOffset: number;
+    revision: string;
+    prefixSha256: string;
+    pending?: {
+      expectedOffset: number;
+      expectedRevision: string;
+      requestId: string;
+      contentSha256: string;
+      contentBytes: number;
+    };
+  };
 }
 
 export interface CatscoLogAgentState {
@@ -24,6 +36,8 @@ export interface CatscoLogAgentState {
   tokenId?: string;
   token?: string;
   tokenIssuedAt?: string;
+  uploadProtocol?: 1 | 2;
+  appendUrl?: string;
   /** Short-lived device-bound read capability returned by CatsLog bootstrap. */
   skillTokenId?: string;
   skillToken?: string;
@@ -103,6 +117,12 @@ export function clearCatscoLogToken(state: CatscoLogAgentState): void {
   delete state.tokenId;
   delete state.token;
   delete state.tokenIssuedAt;
+  delete state.uploadProtocol;
+  delete state.appendUrl;
+  delete state.skillTokenId;
+  delete state.skillToken;
+  delete state.skillTokenExpiresAt;
+  delete state.skillsUrl;
 }
 
 /** Clear read capabilities while preserving the upload token/session. */

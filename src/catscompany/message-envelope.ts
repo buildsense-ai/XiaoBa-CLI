@@ -65,9 +65,14 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
   const resolvedTopicType = isCanonicalTrusted && canonicalTopicType !== 'unknown'
     ? canonicalTopicType
     : topicType;
-  const agentId = isCanonicalTrusted
-    ? firstNonEmpty(canonicalAgentId, safeString(input.botUid))
-    : safeString(input.botUid);
+  // The locally selected bot UID is the stable runtime identity. A server
+  // envelope may carry a display label in `agent.agent_id`; never let that
+  // label replace the configured UID when both are present. Normalize the
+  // numeric UID at this boundary so CatsLog receives one canonical spelling.
+  const configuredAgentId = normalizeCatsCoAgentId(safeString(input.botUid));
+  const agentId = normalizeCatsCoAgentId(isCanonicalTrusted
+    ? firstNonEmpty(configuredAgentId, canonicalAgentId)
+    : configuredAgentId);
   const agentBodyId = isCanonicalTrusted ? stringField(agent, 'body_id') : undefined;
   const deviceOwnerUserId = isCanonicalTrusted
     ? stringField(permissions, 'device_owner_user_id')
@@ -252,4 +257,9 @@ function normalizeCatsCoUserId(value: string | undefined): string {
   const text = String(value || '').trim();
   if (!text) return '';
   return /^\d+$/.test(text) ? `usr${text}` : text;
+}
+
+function normalizeCatsCoAgentId(value: string | undefined): string | undefined {
+  const normalized = normalizeCatsCoUserId(value);
+  return normalized || undefined;
 }

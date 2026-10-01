@@ -1335,7 +1335,7 @@ export class OpenAIProvider implements AIProvider {
     });
     const requestHeaders = this.responsesHeaders(options);
     this.logResponsesWireRequest(body, options, true, requestHeaders);
-    let response;
+    let response: Awaited<ReturnType<typeof this.postProviderRequest>>;
     try {
       response = await this.postProviderRequest(
         this.responsesUrl, body, true, options, requestHeaders,

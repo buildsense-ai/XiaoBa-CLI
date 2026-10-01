@@ -6,6 +6,7 @@ import {
   type CurrentBotSkillWorkspaceWriteContext,
 } from '../bot-skills/runtime';
 import { scanBotSkillWorkspace } from '../bot-skills/local-manifest';
+import type { LocalBotSkillManifestEntry } from '../bot-skills/types';
 import { writeSkillHubLocalMetadata } from './local-skill-metadata';
 import { SkillHubService } from './service';
 
@@ -73,7 +74,7 @@ export async function shareLocalSkillForCatsCo(
     );
     await options.validateScope?.(context);
     const rejected: Array<{ localSkillId: string; error: Error }> = [];
-    let selectedSkill;
+    let selectedSkill: LocalBotSkillManifestEntry | undefined;
     try {
       selectedSkill = expectedLocalSkillId
         ? scanBotSkillWorkspace(context.skillsRoot, {
@@ -145,13 +146,14 @@ export async function shareLocalSkillForCatsCo(
     });
     let revalidatedSkill = selectedSkill;
     if (selectedSkill) {
-      let currentSkill;
+      const selectedSkillForRevalidation = selectedSkill;
+      let currentSkill: LocalBotSkillManifestEntry | undefined;
       try {
         currentSkill = scanBotSkillWorkspace(context.skillsRoot, {
           onValidationFailure: () => {},
         }).find((candidate) => (
-          candidate.localSkillId === selectedSkill.localSkillId
-          && candidate.name === selectedSkill.name
+          candidate.localSkillId === selectedSkillForRevalidation.localSkillId
+          && candidate.name === selectedSkillForRevalidation.name
         ));
       } catch {
         throw skillHubConflict(
@@ -159,7 +161,7 @@ export async function shareLocalSkillForCatsCo(
           'skillhub.share_local_skill_invalid',
         );
       }
-      if (!currentSkill || currentSkill.contentHash !== selectedSkill.contentHash) {
+      if (!currentSkill || currentSkill.contentHash !== selectedSkillForRevalidation.contentHash) {
         throw skillHubConflict(
           'The selected local Skill changed while it was being shared.',
           'skillhub.share_local_skill_changed',

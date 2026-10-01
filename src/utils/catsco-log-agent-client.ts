@@ -529,6 +529,22 @@ function normalizeSkillHandle(value: unknown): string {
   return handle;
 }
 
+export interface CatscoAppendResponse {
+  upload_id?: string;
+  sha256?: string;
+  status?: string;
+  accepted_offset: number;
+  revision: string;
+}
+
+export class CatscoAppendConflictError extends Error {
+  readonly status = 409;
+  constructor(readonly acceptedOffset: number, readonly revision: string) {
+    super('CatsLog append conflict');
+    this.name = 'CatscoAppendConflictError';
+  }
+}
+
 export class CatscoLogAgentClient {
   constructor(private readonly apiBaseUrl: string) {}
 
@@ -576,6 +592,45 @@ export class CatscoLogAgentClient {
     });
 
     return this.parseJsonResponse<CatscoUploadResponse>(response, 'CatsLog upload failed');
+  }
+
+  async appendLog(input: {
+    filePath: string;
+    token: string;
+    logDate: string;
+    appendUrl: string;
+    expectedOffset: number;
+    expectedRevision: string;
+    requestId: string;
+    content: Buffer;
+  }): Promise<CatscoAppendResponse> {
+    const form = new FormData();
+    form.append('log_date', input.logDate);
+    form.append('file', new Blob([input.content], { type: 'application/x-ndjson' }), path.basename(input.filePath));
+    const response = await fetch(this.buildUrl(input.appendUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${input.token}`,
+        'X-CatsLog-Expected-Offset': String(input.expectedOffset),
+        'X-CatsLog-Expected-Revision': input.expectedRevision,
+        'X-CatsLog-Request-ID': input.requestId,
+      },
+      body: form,
+    });
+    let data: any;
+    try { data = await response.json(); } catch { throw new Error('CatsLog append failed: invalid JSON response'); }
+    if (response.status === 409 && Number.isSafeInteger(data?.accepted_offset) && typeof data?.revision === 'string') {
+      throw new CatscoAppendConflictError(data.accepted_offset, data.revision);
+    }
+    if (!response.ok) {
+      const error = new Error(`CatsLog append failed: HTTP ${response.status}`);
+      (error as any).status = response.status;
+      throw error;
+    }
+    if (!Number.isSafeInteger(data?.accepted_offset) || typeof data?.revision !== 'string') {
+      throw new Error('CatsLog append failed: invalid response');
+    }
+    return data as CatscoAppendResponse;
   }
 
   /**
