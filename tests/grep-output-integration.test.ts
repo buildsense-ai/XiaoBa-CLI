@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { GrepTool } from '../src/tools/grep-tool';
 import { MAX_GREP_OUTPUT_CHARS } from '../src/tools/grep-output';
 
-test('public GrepTool caps local JSONL previews and declares truncation', { skip: process.platform === 'win32' }, async () => {
+test('public GrepTool caps local JSONL previews and declares truncation', { skip: process.platform === 'win32', timeout: 25_000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-bound-integration-'));
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin);
@@ -19,7 +19,10 @@ test('public GrepTool caps local JSONL previews and declares truncation', { skip
   process.env.PATH = `${bin}:/usr/bin:/bin`;
   try {
     const result = await new GrepTool().execute({ pattern: 'needle', path: root, output_mode: 'content', backend_timing: true }, {
-      workingDirectory: root, surface: 'cli', abortSignal: AbortSignal.timeout(3000),
+      // This test checks the output boundary, not a short deadline. Keep a
+      // hard backup beyond the tool's 15s default so full-suite CPU contention
+      // cannot cancel an otherwise valid controlled-output fixture at 3s.
+      workingDirectory: root, surface: 'cli', abortSignal: AbortSignal.timeout(20_000),
     });
     assert.equal(result.ok, true);
     if (result.ok) {
