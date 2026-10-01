@@ -51,6 +51,24 @@ test('device grep budget never extends a still-valid grant', async () => {
   assert.ok(request.timeoutMs > 0 && request.timeoutMs <= 6_000);
 });
 
+test('expired or malformed grep grants never dispatch either RPC route', async () => {
+  let calls = 0;
+  const ctx = context({
+    deviceRpc: { executeTool: async () => { calls++; return success; } },
+    thinToolRpc: { executeTool: async () => { calls++; return success; } },
+  });
+  for (const expiresAt of [Date.now() - 1, NaN, Infinity]) {
+    const grant = { expiresAt } as any;
+    const a = await executeRemoteDeviceRpcTool(ctx, { ...gateway, grant }, 'grep', 'grep', { pattern: 'x' });
+    const b = await executeRouteIfRemote(ctx, { ...thinRoute, grant }, 'grep', 'grep', { pattern: 'x' });
+    for (const result of [a, b]) {
+      assert.equal(result?.ok, false);
+      if (result && !result.ok) assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    }
+  }
+  assert.equal(calls, 0);
+});
+
 test('thin grep dispatch also has a bounded timeout, without changing route authority', async () => {
   let request: any;
   const result = await executeRouteIfRemote(context({ thinToolRpc: {

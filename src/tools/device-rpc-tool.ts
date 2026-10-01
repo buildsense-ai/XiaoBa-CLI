@@ -55,6 +55,11 @@ export async function executeRemoteDeviceRpcTool(
     };
   }
 
+  const dispatchNow = Date.now();
+  if (toolName === 'grep' && gateway.grant?.expiresAt !== undefined
+    && (!Number.isFinite(gateway.grant.expiresAt) || gateway.grant.expiresAt <= dispatchNow)) {
+    return { ok: false, errorCode: 'PERMISSION_DENIED', message: 'grep 设备授权已过期或无效；请刷新授权后再试。', retryable: false };
+  }
   try {
     return await context.deviceRpc.executeTool({
       toolName,
@@ -65,7 +70,7 @@ export async function executeRemoteDeviceRpcTool(
       targetDeviceDisplayName: gateway.targetDeviceDisplayName,
       targetDeviceBodyId: gateway.targetDeviceBodyId,
       targetDeviceInstallationId: gateway.targetDeviceInstallationId,
-      timeoutMs: resolveRemoteToolTimeoutMs(gateway.grant?.expiresAt, requestedToolTimeoutMs(toolName, args)),
+      timeoutMs: resolveRemoteToolTimeoutMs(gateway.grant?.expiresAt, requestedToolTimeoutMs(toolName, args), dispatchNow),
     });
   } catch (error: any) {
     if (toolName === 'grep' && error instanceof RangeError) {

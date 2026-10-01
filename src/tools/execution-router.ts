@@ -207,8 +207,13 @@ export async function executeRouteIfRemote(
   if (context.thinToolRpc && route.targetOwnerUserId) {
     let timeoutMs: number | undefined = toolName === 'send_file' || toolName === 'import_file' ? 300_000 : undefined;
     if (toolName === 'grep') {
+      const dispatchNow = Date.now();
+      if (route.grant?.expiresAt !== undefined
+        && (!Number.isFinite(route.grant.expiresAt) || route.grant.expiresAt <= dispatchNow)) {
+        return { ok: false, errorCode: 'PERMISSION_DENIED', message: 'grep 设备授权已过期或无效；请刷新授权后再试。', retryable: false };
+      }
       try {
-        timeoutMs = resolveRemoteToolTimeoutMs(route.grant?.expiresAt, resolveGrepRpcTimeoutMs(args.timeout_ms));
+        timeoutMs = resolveRemoteToolTimeoutMs(route.grant?.expiresAt, resolveGrepRpcTimeoutMs(args.timeout_ms), dispatchNow);
       } catch (error: any) {
         return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: error.message, retryable: false };
       }
