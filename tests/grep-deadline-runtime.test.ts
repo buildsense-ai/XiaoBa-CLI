@@ -5,6 +5,11 @@ import {
   GREP_DEFAULT_TIMEOUT_MS,
   resolveGrepSearchTimeoutMs,
 } from '../src/tools/grep-search-policy';
+import {
+  compileGlob,
+  matchGlob,
+  planNativeIncludes,
+} from '../src/tools/grep-runtime';
 import { ToolExecutionContext } from '../src/types/tool';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -60,6 +65,13 @@ describe('GrepTool deadline runtime', () => {
     fs.writeFileSync(path.join(testDir, 'alpha.js'), 'function hello() {\n  console.log("hello world");\n}\n');
     fs.writeFileSync(path.join(testDir, 'notes', 'a.md'), 'hello from markdown\n');
     fs.writeFileSync(path.join(testDir, 'data.json'), '{"hello": "world"}\n');
+    fs.mkdirSync(path.join(testDir, 'many'), { recursive: true });
+    for (let i = 1; i <= 5; i++) {
+      fs.writeFileSync(path.join(testDir, 'many', `needle${i}.txt`), `needle ${i}\n`);
+    }
+    fs.writeFileSync(path.join(testDir, 'code.txt'), 'answer=42\ncats and dogs\n');
+    fs.mkdirSync(path.join(testDir, 'bulk'), { recursive: true });
+    fs.writeFileSync(path.join(testDir, 'bulk', 'bulk.txt'), Array.from({ length: 5000 }, (_, i) => `needle line ${i}`).join('\n'));
     fs.mkdirSync(path.join(testDir, '.git'), { recursive: true });
     fs.writeFileSync(path.join(testDir, '.git', 'config'), 'canaryGIT hello\n');
     // symlink 目标放在搜索根之外：根内若存在真实目录，则文件本就可达，无法检验 symlink 不扩界。
@@ -402,6 +414,212 @@ describe('GrepTool deadline runtime', () => {
       } finally {
         fs.chmodSync(locked, 0o644);
       }
+    });
+  });
+
+  describe('阻塞修复回归（评审 3b59629b）', () => {
+    test('原生 grep 花括号 glob 展开为多个 --include（无 rg 不假空）', async () => {
+      if (isWin32) return;
+      writeShim(fakeBin, 'rg', ['exit 127']);
+      process.env.PATH = restrictedPath(fakeBin);
+
+      const result = await grepTool.execute(
+        { pattern: 'hello', glob: '*.{js,md}', output_mode: 'files' },
+        context,
+      );
+      const text = getContent(result);
+      assert.ok(text.includes('alpha.js'), `应包含 alpha.js，实际: ${text}`);
+      assert.ok(text.includes('a.md'), '应包含 notes/a.md');
+      assert.ok(!text.includes('data.json'), '不应包含 data.json');
+    });
+
+    test('路径式 glob 由 Node 后端精确处理（原生无法表达时路由而非假空）', async () => {
+      if (isWin32) return;
+      writeShim(fakeBin, 'rg', ['exit 127']);
+      process.env.PATH = restrictedPath(fakeBin);
+
+      const result = await grepTool.execute(
+        { pattern: 'hello', glob: 'notes/*.md', output_mode: 'files' },
+        context,
+      );
+      const text = getContent(result);
+      assert.ok(text.includes('a.md'), `应包含 notes/a.md，实际: ${text}`);
+      assert.ok(!text.includes('alpha.js'), '不应包含 glob 范围外的文件');
+      assert.ok(!text.includes('data.json'), '不应包含 glob 范围外的文件');
+    });
+
+    test('glob∧type 是 AND：原生不可表达时路由 Node，不放宽也不假空', async () => {
+      if (isWin32) return;
+      writeShim(fakeBin, 'rg', ['exit 127']);
+      process.env.PATH = restrictedPath(fakeBin);
+
+      const widened = await grepTool.execute(
+        { pattern: 'hello', glob: '*.js', type: 'json', output_mode: 'files' },
+        context,
+      );
+      const widenedText = getContent(widened);
+      assert.ok(widenedText.includes('未找到匹配项'), '交集为空时才是合法无匹配');
+      assert.ok(!widenedText.includes('data.json'), '不得按 OR 放宽到 data.json');
+      assert.ok(!widenedText.includes('alpha.js'), '不得按 OR 放宽到 alpha.js');
+
+      const matched = await grepTool.execute(
+        { pattern: 'hello', glob: '*.js', type: 'js', output_mode: 'files' },
+        context,
+      );
+      const matchedText = getContent(matched);
+      assert.ok(matchedText.includes('alpha.js'), `AND 交集命中时应找到 alpha.js，实际: ${matchedText}`);
+      assert.ok(!matchedText.includes('data.json'), '不应包含交集外文件');
+    });
+
+    test('\\d 与 (?:…) 等 ERE 不兼容构造路由 Node，绝不静默假无匹配', async () => {
+      if (isWin32) return;
+      writeShim(fakeBin, 'rg', ['exit 127']);
+      process.env.PATH = restrictedPath(fakeBin);
+
+      const digits = await grepTool.execute(
+        { pattern: 'answer=\\d+', output_mode: 'content' },
+        context,
+      );
+      const digitsText = getContent(digits);
+      assert.ok(digitsText.includes('answer=42'), `\\d+ 应经 Node 后端命中 42，实际: ${digitsText}`);
+
+      const grouped = await grepTool.execute(
+        { pattern: '(?:cat|dog)s?', output_mode: 'content' },
+        context,
+      );
+      const groupedText = getContent(grouped);
+      assert.ok(groupedText.includes('cats and dogs'), `(?:…) 应经 Node 后端命中，实际: ${groupedText}`);
+    });
+
+    test('停滞的 stat 被 deadline 竞速打断并立即返回 SEARCH_TIMEOUT', async () => {
+      if (isWin32) return;
+      writeShim(fakeBin, 'rg', ['exit 127']);
+      writeShim(fakeBin, 'grep', ['exit 127']);
+      process.env.PATH = restrictedPath(fakeBin);
+      const originalStat = fs.promises.stat;
+      (fs.promises as any).stat = () => new Promise(() => { /* 永不完成 */ });
+      const startedAt = Date.now();
+      try {
+        const result = await Promise.race([
+          grepTool.execute({ pattern: 'hello', output_mode: 'files', timeout_ms: 300 }, context),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('test hard cap: 搜索未按时返回')), 6000).unref()),
+        ]);
+        const failure = getFailure(result);
+        assert.strictEqual(failure.errorCode, 'SEARCH_TIMEOUT');
+        assert.ok(Date.now() - startedAt < 2500, `停滞 IO 应被 deadline 竞速打断，实际 ${Date.now() - startedAt}ms`);
+        assert.ok(!failure.message.includes('未找到匹配项'));
+      } finally {
+        (fs.promises as any).stat = originalStat;
+      }
+    });
+
+    test('停滞的 readdir 被 deadline 竞速打断并立即返回 SEARCH_TIMEOUT', async () => {
+      if (isWin32) return;
+      writeShim(fakeBin, 'rg', ['exit 127']);
+      writeShim(fakeBin, 'grep', ['exit 127']);
+      process.env.PATH = restrictedPath(fakeBin);
+      const originalReaddir = fs.promises.readdir;
+      (fs.promises as any).readdir = () => new Promise(() => { /* 永不完成 */ });
+      const startedAt = Date.now();
+      try {
+        const result = await Promise.race([
+          grepTool.execute({ pattern: 'hello', output_mode: 'files', timeout_ms: 300 }, context),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('test hard cap: 搜索未按时返回')), 6000).unref()),
+        ]);
+        const failure = getFailure(result);
+        assert.strictEqual(failure.errorCode, 'SEARCH_TIMEOUT');
+        assert.ok(Date.now() - startedAt < 2500, `停滞 readdir 应被 deadline 竞速打断，实际 ${Date.now() - startedAt}ms`);
+      } finally {
+        (fs.promises as any).readdir = originalReaddir;
+      }
+    });
+
+    test('limit 截断在 lookahead 下可见（找到 N 个文件 (limit: 2)）', async () => {
+      const result = await grepTool.execute(
+        { pattern: 'needle', glob: 'many/*', output_mode: 'files', limit: 2 },
+        context,
+      );
+      const text = getContent(result);
+      assert.ok(text.includes('limit: 2'), `存在更多结果时必须显示截断提示，实际: ${text}`);
+    });
+
+    test('搜索根无权限是终态 PERMISSION_DENIED，不是空匹配', async () => {
+      if (isWin32) return;
+      if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+      const lockedRoot = path.join(testDir, 'lockedroot');
+      fs.mkdirSync(lockedRoot, { recursive: true });
+      fs.writeFileSync(path.join(lockedRoot, 'secret.txt'), 'needle hidden\n');
+      fs.chmodSync(lockedRoot, 0o000);
+      try {
+        const result = await grepTool.execute(
+          { pattern: 'needle', path: 'lockedroot', output_mode: 'files', timeout_ms: 5000 },
+          context,
+        );
+        const failure = getFailure(result);
+        assert.strictEqual(failure.errorCode, 'PERMISSION_DENIED');
+        assert.ok(!failure.message.includes('未找到匹配项'), '根目录无权限绝不伪装成无匹配');
+      } finally {
+        fs.chmodSync(lockedRoot, 0o755);
+        fs.rmSync(lockedRoot, { recursive: true, force: true });
+      }
+    });
+
+    test('子树权限缺口以 coverage 提示标记，不宣称完整扫描', async () => {
+      if (isWin32) return;
+      if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+      const lockedSub = path.join(testDir, 'lockedsub');
+      fs.mkdirSync(lockedSub, { recursive: true });
+      fs.writeFileSync(path.join(lockedSub, 'hidden.txt'), 'needle hidden\n');
+      fs.chmodSync(lockedSub, 0o000);
+      try {
+        const hit = await grepTool.execute(
+          { pattern: 'needle', output_mode: 'files', timeout_ms: 5000 },
+          context,
+        );
+        const hitText = getContent(hit);
+        assert.ok(hitText.includes('needle1.txt'), '可见文件仍应命中');
+        assert.ok(hitText.includes('[coverage]'), `存在权限缺口时必须标注覆盖不完整，实际: ${hitText}`);
+
+        const miss = await grepTool.execute(
+          { pattern: 'needle hidden', output_mode: 'files', timeout_ms: 5000 },
+          context,
+        );
+        const missText = getContent(miss);
+        assert.ok(missText.includes('未找到匹配项'), '可见范围无命中时返回无匹配');
+        assert.ok(missText.includes('[coverage]'), `无匹配但存在覆盖缺口时必须标注，实际: ${missText}`);
+      } finally {
+        fs.chmodSync(lockedSub, 0o755);
+      }
+    });
+  });
+
+  describe('后端能力规划与 glob 引擎（单元）', () => {
+    test('planNativeIncludes: 花括号展开、路径/AND/字符类拒绝', () => {
+      assert.deepEqual(planNativeIncludes('*.{ts,tsx}', undefined), ['*.ts', '*.tsx']);
+      assert.deepEqual(planNativeIncludes(undefined, ['*.py', '*.pyi']), ['*.py', '*.pyi']);
+      assert.deepEqual(planNativeIncludes(undefined, undefined), []);
+      assert.strictEqual(planNativeIncludes('src/*.ts', undefined), undefined, '路径 glob 原生不可表达');
+      assert.strictEqual(planNativeIncludes('*.ts', ['*.json']), undefined, 'glob∧type AND 原生不可表达');
+      assert.strictEqual(planNativeIncludes('*[0-9].ts', undefined), undefined, '字符类语义原生不一致');
+    });
+
+    test('glob 引擎为线性匹配：恶意 glob 不会回溯爆炸', () => {
+      const evil = compileGlob('a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b');
+      const victim = 'a'.repeat(400);
+      const startedAt = Date.now();
+      const matched = matchGlob(evil, victim, victim);
+      const elapsed = Date.now() - startedAt;
+      assert.strictEqual(matched, false);
+      assert.ok(elapsed < 1000, `NFA 模拟应为线性耗时，实际 ${elapsed}ms`);
+
+      const braces = compileGlob('{{a,b},{c,d}}x');
+      assert.ok(matchGlob(braces, 'ax', 'ax'));
+      assert.ok(matchGlob(braces, 'dx', 'dx'));
+      assert.ok(!matchGlob(braces, 'ex', 'ex'));
+
+      const pathGlob = compileGlob('notes/*.md');
+      assert.ok(matchGlob(pathGlob, 'notes/a.md', 'a.md'));
+      assert.ok(!matchGlob(pathGlob, 'other/a.md', 'a.md'));
     });
   });
 

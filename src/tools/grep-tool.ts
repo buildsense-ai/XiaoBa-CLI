@@ -10,16 +10,19 @@ import {
   GrepBackendName,
   GrepCancelledError,
   GrepDeadline,
+  GrepFilterNotExpressedError,
   GrepInvalidPatternError,
   GrepMatcher,
   GrepOverflowError,
+  GrepRootAccessError,
   GrepSearchError,
   GrepTimeoutError,
   GrepTimingCollector,
   GrepUnsupportedTypeError,
-  globToRegExp,
-  matchGlob,
+  compileSearchFilters,
+  isPatternNativeIncompatible,
   outcomeForError,
+  planNativeIncludes,
   resolveGrepSearchTimeoutMs,
   resolveTypeFilterGlobs,
   spawnGrepCommand,
@@ -27,7 +30,11 @@ import {
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
 const SKIPPABLE_FILE_READ_ERROR_CODES = new Set(['EACCES', 'EPERM', 'EISDIR', 'ENOENT', 'ESTALE']);
+/** Permission denials are coverage gaps (reported); transient ENOENT/ESTALE stays silent. */
+const COVERAGE_GAP_ERROR_CODES = new Set(['EACCES', 'EPERM']);
 const DEFAULT_LIMIT = 250;
+/** Node-fallback result bound; pushing past this aborts the walk immediately. */
+const NODE_MAX_OUTPUT_CHARS = 10 * 1024 * 1024;
 
 interface GrepResult {
   mode: 'content' | 'files' | 'count';
@@ -41,7 +48,17 @@ interface GrepResult {
 }
 
 /** One completed backend run. `no_match` is definitive: the whole chain stops. */
-type GrepBackendRunResult = { kind: 'matches'; stdout: string; content?: string } | { kind: 'no_match' };
+type GrepBackendRunResult = {
+  kind: 'matches';
+  stdout: string;
+  /** 兼容直接调用方（旧测试）：格式化后的最终文本。 */
+  content?: string;
+  /** 非空时表示扫描存在已知的覆盖缺口，结果可能不完整。 */
+  coverageNote?: string;
+} | {
+  kind: 'no_match';
+  coverageNote?: string;
+};
 
 function applyHeadLimit<T>(
   items: T[],
@@ -82,15 +99,16 @@ function toRelativePath(absolutePath: string, cwd: string): string {
   return relative.replace(/\\/g, '/');
 }
 
-/** Per-file result cap for the Node fallback: enough to satisfy limit+offset. */
-function nodeMatchCap(outputMode: string, limit: number | undefined, offset: number): number {
-  if (outputMode === 'files') {
-    return limit === 0 ? 0 : (limit ?? DEFAULT_LIMIT) + offset;
-  }
-  if (outputMode === 'content') {
-    return limit === 0 ? 0 : (limit ?? DEFAULT_LIMIT) + offset;
-  }
-  return 0; // count mode needs every matching line of every file
+function coverageNoteText(note: string | undefined): string {
+  return note ? `\n\n[coverage] ${note}` : '';
+}
+
+function permissionCoverageNote(kind: string, count: number): string {
+  return `${count} 个${kind}因权限不足被跳过，结果可能不完整。`;
+}
+
+function stderrMentionsPermission(stderr: string): boolean {
+  return /permission denied/i.test(stderr);
 }
 
 export class GrepTool implements Tool {
@@ -197,11 +215,14 @@ export class GrepTool implements Tool {
           const durationMs = Date.now() - startedAt;
           if (runResult.kind === 'no_match') {
             timing?.record(backend.name, 'no_match', durationMs);
-            const content = this.formatNoMatch(patternText, visibleSearchPath ?? searchPath, globPattern, fileType);
+            const content = this.formatNoMatch(patternText, visibleSearchPath ?? searchPath, globPattern, fileType)
+              + coverageNoteText(runResult.coverageNote);
             return this.withTiming({ ok: true, content }, timing);
           }
           timing?.record(backend.name, 'ok', durationMs);
-          const content = this.processOutput(runResult.stdout, args, context, visibleSearchPath);
+          let content = this.processOutput(runResult.stdout, args, context, visibleSearchPath);
+          if (runResult.content !== undefined) content = runResult.content + coverageNoteText(runResult.coverageNote);
+          else content += coverageNoteText(runResult.coverageNote);
           return this.withTiming({ ok: true, content }, timing);
         } catch (error) {
           const durationMs = Date.now() - startedAt;
@@ -209,18 +230,21 @@ export class GrepTool implements Tool {
             ? error
             : new GrepBackendError(String((error as any)?.message || error));
           timing?.record(backend.name, outcomeForError(typed), durationMs);
-          // 超时 / 取消 / 溢出 / 模式无效 / 类型不支持：终态，不再尝试其他后端。
-          if (typed instanceof GrepTimeoutError) {
+          // 超时 / 取消 / 溢出 / 模式无效 / 类型不支持 / 根目录无权限：终态，不再尝试其他后端。
+          if (typed instanceof GrepTimeoutError
+            || typed instanceof GrepCancelledError
+            || typed instanceof GrepOverflowError
+            || typed instanceof GrepInvalidPatternError
+            || typed instanceof GrepUnsupportedTypeError) {
             return this.withTiming({ ok: false, errorCode: typed.errorCode, message: typed.message }, timing);
           }
-          if (typed instanceof GrepCancelledError) {
-            return this.withTiming({ ok: false, errorCode: typed.errorCode, message: typed.message }, timing);
+          if (typed instanceof GrepRootAccessError) {
+            const message = redactCatsCoVisiblePath(context, typed.message, resolvedSearchPath, visibleSearchPath);
+            return this.withTiming({ ok: false, errorCode: typed.errorCode, message }, timing);
           }
-          if (typed instanceof GrepOverflowError) {
-            return this.withTiming({ ok: false, errorCode: typed.errorCode, message: typed.message }, timing);
-          }
-          if (typed instanceof GrepInvalidPatternError || typed instanceof GrepUnsupportedTypeError) {
-            return this.withTiming({ ok: false, errorCode: typed.errorCode, message: typed.message }, timing);
+          if (typed instanceof GrepFilterNotExpressedError) {
+            // 原生 grep 无法表达该过滤组合：交给能力完整的 Node 后端，不是失败。
+            continue;
           }
           lastBackendError = typed;
           // 真实后端故障（rg 缺失、权限等）才继续下一个后端。
@@ -279,8 +303,12 @@ export class GrepTool implements Tool {
     rgArgs.push(originalPath ? searchPath : '.');
 
     const run = await this.runBackendCommand('rg', rgArgs, context, deadline);
-    if (run.exitCode === 1) return { kind: 'no_match' };
-    return { kind: 'matches', stdout: run.stdout };
+    // rg 对权限不足等只会警告并继续（exit 0/1）：保留结果但标记覆盖缺口。
+    const coverageNote = stderrMentionsPermission(run.stderr)
+      ? 'ripgrep 报告部分路径无法读取，结果可能不完整。'
+      : undefined;
+    if (run.exitCode === 1) return { kind: 'no_match', coverageNote };
+    return { kind: 'matches', stdout: run.stdout, coverageNote };
   }
 
   private async executeWithSystemGrep(
@@ -291,6 +319,26 @@ export class GrepTool implements Tool {
     deadline: GrepDeadline,
   ): Promise<GrepBackendRunResult> {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files' } = args;
+    const patternText = String(pattern);
+
+    const typeGlobs = resolveTypeFilterGlobs(fileType);
+    if (fileType && !typeGlobs) throw new GrepUnsupportedTypeError(fileType, 'grep');
+
+    // glob∧type 是 AND；原生 --include 列表只能 OR。无法精确表达时交给 Node 后端，
+    // 绝不放宽范围，也绝不因坏 glob 展开而假空。
+    const includeGlobs = planNativeIncludes(globPattern, typeGlobs);
+    if (includeGlobs === undefined) {
+      throw new GrepFilterNotExpressedError(
+        `grep 后端无法表达 glob=${globPattern ?? ''} ∧ type=${fileType ?? ''} 的过滤组合`,
+      );
+    }
+
+    // -E 仍会静默改变常见 JS/Rust 转义的含义（\d → 字面量 d、(?:…) → 字面量），
+    // 造成假无匹配：检测到不兼容构造时直接路由到隔离的 Node 后端。
+    if (isPatternNativeIncompatible(patternText)) {
+      throw new GrepFilterNotExpressedError('pattern 含 POSIX ERE 不支持的构造');
+    }
+
     const grepArgs: string[] = ['--binary-files=without-match'];
 
     if (case_insensitive) grepArgs.push('-i');
@@ -298,23 +346,24 @@ export class GrepTool implements Tool {
     else if (output_mode === 'count') grepArgs.push('-c');
     else { grepArgs.push('-n'); if (contextLines !== undefined) grepArgs.push(`-C${contextLines}`); }
 
-    // 单个普通文件目标：非递归，include 过滤在结果侧应用（见下）。
+    // 单个普通文件目标：先做过滤前置判断（AND 语义），不匹配就不扫描；
+    // 匹配则非递归 grep，不再需要 --include。
     let singleFile = false;
     try {
-      const stats = await fs.promises.stat(searchPath);
+      const stats = await deadline.race(fs.promises.stat(searchPath));
       singleFile = stats.isFile();
-    } catch {
+    } catch (error: any) {
+      if (error instanceof GrepSearchError) throw error;
       singleFile = false; // 不存在的路径由 grep 报错，走统一 GrepBackendError 链
     }
 
-    const typeGlobs = resolveTypeFilterGlobs(fileType);
-    if (fileType && !typeGlobs) throw new GrepUnsupportedTypeError(fileType, 'grep');
-
-    const includeGlobs: string[] = [];
-    if (globPattern) includeGlobs.push(globPattern);
-    for (const typeGlob of typeGlobs ?? []) includeGlobs.push(typeGlob);
-
-    if (!singleFile) {
+    if (singleFile) {
+      if (globPattern || (typeGlobs && typeGlobs.length > 0)) {
+        const filters = compileSearchFilters(globPattern, typeGlobs);
+        const base = path.basename(searchPath);
+        if (!filters.isAllowed(base, base)) return { kind: 'no_match' };
+      }
+    } else {
       grepArgs.push('-r');
       for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) grepArgs.push('--exclude-dir=' + dir);
       // glob/type 过滤在扫描前应用（--include），而不是扫完再事后过滤。
@@ -322,19 +371,14 @@ export class GrepTool implements Tool {
     }
 
     // -E: 常见正则与 rg 语义对齐；-e: 模式以 "-" 开头也安全；--: 路径操作数安全。
-    grepArgs.push('-E', '-e', String(pattern), '--', searchPath);
+    grepArgs.push('-E', '-e', patternText, '--', searchPath);
 
     const run = await this.runBackendCommand('grep', grepArgs, context, deadline);
-    if (run.exitCode === 1) return { kind: 'no_match' };
-
-    let stdout = run.stdout;
-    if (singleFile && includeGlobs.length && stdout.trim()) {
-      const matchers = includeGlobs.map(globToRegExp);
-      const relativePath = path.basename(searchPath);
-      const allowed = matchers.some(matcher => matchGlob(matcher, relativePath, relativePath));
-      if (!allowed) return { kind: 'no_match' };
-    }
-    return { kind: 'matches', stdout };
+    const coverageNote = stderrMentionsPermission(run.stderr)
+      ? 'grep 报告部分路径无法读取，结果可能不完整。'
+      : undefined;
+    if (run.exitCode === 1) return { kind: 'no_match', coverageNote };
+    return { kind: 'matches', stdout: run.stdout, coverageNote };
   }
 
   private async executeWithNodeJS(
@@ -349,33 +393,50 @@ export class GrepTool implements Tool {
     const ownedDeadline = deadline ?? new GrepDeadline(resolveGrepSearchTimeoutMs(args.timeout_ms), context.abortSignal);
     const shouldDisposeDeadline = !deadline;
 
-    const globMatcher = globPattern ? globToRegExp(globPattern) : undefined;
     const typeGlobs = resolveTypeFilterGlobs(fileType);
     if (fileType && !typeGlobs) {
       if (shouldDisposeDeadline) ownedDeadline.dispose();
       throw new GrepUnsupportedTypeError(fileType, 'node');
     }
-    const typeMatchers = (typeGlobs ?? []).map(globToRegExp);
+    // AND(glob, type) 的精确过滤器（线性 NFA，无回溯，不可被恶意 glob 卡死）。
+    const filters = compileSearchFilters(globPattern, typeGlobs);
+
+    // 两个独立的容量：
+    // - perFileLineCap：matcher 在单文件内最多收集多少匹配行（files 模式 1 个命中即可）；
+    // - collectCap：整体收集 limit+offset+1 条（lookahead +1 让截断提示可见）。
+    const baseLimit = limit === 0 ? 0 : (limit ?? DEFAULT_LIMIT) + offset;
+    const collectCap = baseLimit === 0 ? 0 : baseLimit + 1;
+    const perFileLineCap = output_mode === 'files'
+      ? 1
+      : output_mode === 'content' ? collectCap : 0;
 
     // 正则在独立 worker 线程中编译并执行：灾难性回溯不会阻塞主线程，
     // deadline/abort 通过 terminate() 强制终止并由同一截止时间监督。
     const matcher = new GrepMatcher(String(pattern), case_insensitive ? 'i' : '', ownedDeadline);
     const results: string[] = [];
     let accumulatedChars = 0;
-    const maxOutputChars = 10 * 1024 * 1024;
-    const matchCap = nodeMatchCap(output_mode, limit, offset);
+    let skippedGapEntries = 0;
+    const coverageGaps: string[] = [];
 
-    const reachedCap = (): boolean => matchCap > 0 && results.length >= matchCap;
+    const reachedCap = (): boolean => collectCap > 0 && results.length >= collectCap;
 
     const pushResult = (line: string): void => {
       results.push(line);
       accumulatedChars += line.length + 1;
+      // 输出上限在写入时立即检查，不再等整棵树走完。
+      if (accumulatedChars > NODE_MAX_OUTPUT_CHARS) {
+        throw new GrepOverflowError(NODE_MAX_OUTPUT_CHARS);
+      }
+    };
+
+    const recordCoverageGap = (kind: string): void => {
+      skippedGapEntries += 1;
+      if (coverageGaps.length === 0) coverageGaps.push(kind);
     };
 
     const searchFile = async (fullPath: string, fileName: string, relativePath: string): Promise<void> => {
       ownedDeadline.check();
-      if (globMatcher && !matchGlob(globMatcher, relativePath, fileName)) return;
-      if (typeMatchers.length && !typeMatchers.some(matcher0 => matchGlob(matcher0, relativePath, fileName))) return;
+      if (!filters.isAllowed(relativePath, fileName)) return;
       if (reachedCap()) return;
 
       let text: Buffer | string;
@@ -383,13 +444,24 @@ export class GrepTool implements Tool {
         text = await fs.promises.readFile(fullPath, { signal: ownedDeadline.signal });
       } catch (error: any) {
         ownedDeadline.rethrowIfExpired();
+        if (COVERAGE_GAP_ERROR_CODES.has(error?.code)) {
+          recordCoverageGap('文件');
+          return;
+        }
         if (SKIPPABLE_FILE_READ_ERROR_CODES.has(error?.code)) return;
         throw new GrepBackendError(`读取文件失败: ${error?.message || error}`);
       }
 
+      if (output_mode === 'count') {
+        // 整数计数路径：worker 不构造索引数组。
+        const count = await matcher.count(text);
+        if (count > 0) pushResult(`${fullPath}:${count}`);
+        return;
+      }
+
       let matched: number[];
       try {
-        matched = await matcher.match(text, matchCap);
+        matched = await matcher.match(text, perFileLineCap);
       } catch (error: any) {
         ownedDeadline.rethrowIfExpired();
         throw error;
@@ -400,10 +472,6 @@ export class GrepTool implements Tool {
         pushResult(fullPath);
         return;
       }
-      if (output_mode === 'count') {
-        pushResult(`${fullPath}:${matched.length}`);
-        return;
-      }
       const lines = (typeof text === 'string' ? text : text.toString('utf8')).split('\n');
       for (const index of matched) {
         if (reachedCap()) break;
@@ -411,15 +479,23 @@ export class GrepTool implements Tool {
       }
     };
 
-    const walkDir = async (dir: string, relativeDir: string): Promise<void> => {
+    const walkDir = async (dir: string, relativeDir: string, isRoot: boolean): Promise<void> => {
       ownedDeadline.check();
+      if (reachedCap()) return;
       let entries: fs.Dirent[];
       try {
-        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        // stat/readdir 无法用 signal 取消：与共享 deadline 竞速，到点立即类型化返回。
+        entries = await ownedDeadline.race(fs.promises.readdir(dir, { withFileTypes: true }));
       } catch (error: any) {
         ownedDeadline.rethrowIfExpired();
-        // 无权限的目录按权限语义跳过（与 grep -r 行为一致），不让整个扫描失败。
-        if (SKIPPABLE_FILE_READ_ERROR_CODES.has(error?.code)) return;
+        if (isRoot && COVERAGE_GAP_ERROR_CODES.has(error?.code)) {
+          throw new GrepRootAccessError(dir, error?.code || '');
+        }
+        // 子树无权限按覆盖缺口记录（与 grep -r 行为一致），不让整个扫描失败或假空。
+        if (SKIPPABLE_FILE_READ_ERROR_CODES.has(error?.code)) {
+          if (COVERAGE_GAP_ERROR_CODES.has(error?.code)) recordCoverageGap('子目录');
+          return;
+        }
         throw new GrepBackendError(`读取目录失败: ${error?.message || error}`);
       }
 
@@ -431,7 +507,7 @@ export class GrepTool implements Tool {
         const fullPath = path.join(dir, entry.name);
         const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
-          await walkDir(fullPath, relativePath);
+          await walkDir(fullPath, relativePath, false);
         } else if (entry.isFile()) {
           // FIFO/socket/设备等非普通文件一律跳过。
           await searchFile(fullPath, entry.name, relativePath);
@@ -450,22 +526,29 @@ export class GrepTool implements Tool {
 
       let stats: fs.Stats;
       try {
-        stats = await fs.promises.stat(searchPath);
+        stats = await ownedDeadline.race(fs.promises.stat(searchPath));
       } catch (error: any) {
+        ownedDeadline.rethrowIfExpired();
+        if (error instanceof GrepSearchError) throw error;
         if (error?.code === 'ENOENT') throw new GrepBackendError(`目录不存在: ${searchPath}`);
+        if (COVERAGE_GAP_ERROR_CODES.has(error?.code)) throw new GrepRootAccessError(searchPath, error?.code || '');
         throw new GrepBackendError(`读取路径失败: ${error?.message || error}`);
       }
 
-      if (stats.isDirectory()) await walkDir(searchPath, '');
+      if (stats.isDirectory()) await walkDir(searchPath, '', true);
       else if (stats.isFile()) await searchFile(searchPath, path.basename(searchPath), path.basename(searchPath));
 
-      if (accumulatedChars > maxOutputChars) throw new GrepOverflowError(maxOutputChars);
+      let coverageNote: string | undefined;
+      if (skippedGapEntries > 0) {
+        coverageNote = permissionCoverageNote(coverageGaps.join('与'), skippedGapEntries);
+      }
       const stdout = results.join('\n');
       return {
         kind: 'matches',
         stdout,
+        coverageNote,
         // 兼容直接调用本方法的旧测试/调用方：格式化后的最终文本。
-        content: this.processOutput(stdout, args, context, visibleSearchPath),
+        content: this.processOutput(stdout, args, context, visibleSearchPath) + coverageNoteText(coverageNote),
       };
     } finally {
       matcher.dispose();

@@ -1,7 +1,8 @@
 /**
  * GrepTool runtime helpers: one absolute deadline shared by every local search
  * backend, typed terminal outcomes, bounded child-process execution, a worker
- * isolate for adversarial regex matching, and glob/type-filter resolution.
+ * isolate for adversarial regex matching, a linear (non-backtracking) glob
+ * engine, native-grep include planning, and the backend timing seam.
  *
  * Budget constants live in grep-search-policy.ts (shared with the RPC layer);
  * this module only consumes them.
@@ -40,7 +41,8 @@ export type GrepBackendOutcome =
   | 'cancelled'
   | 'overflow'
   | 'invalid_pattern'
-  | 'unsupported_type';
+  | 'unsupported_type'
+  | 'skipped';
 
 export class GrepSearchError extends Error {
   readonly errorCode: string;
@@ -100,6 +102,29 @@ export class GrepBackendError extends GrepSearchError {
   }
 }
 
+/**
+ * Internal-only: the native grep backend cannot express the requested filter
+ * combination (brace/path glob, glob∧type AND). Never surfaces to the caller —
+ * the chain continues with the capable Node backend.
+ */
+export class GrepFilterNotExpressedError extends GrepSearchError {
+  constructor(reason: string) {
+    super('FILTER_NOT_EXPRESSED_NATIVE', reason);
+    this.name = 'GrepFilterNotExpressedError';
+  }
+}
+
+/**
+ * The search root itself is unreadable (EACCES/EPERM). Terminal: a fallback
+ * would just fail again, and returning "no matches" would be a false empty.
+ */
+export class GrepRootAccessError extends GrepSearchError {
+  constructor(path: string, detail: string) {
+    super('PERMISSION_DENIED', `搜索根目录无读取权限: ${path}${detail ? ` (${detail})` : ''}。结果不完整，已停止搜索而不是返回空匹配。`);
+    this.name = 'GrepRootAccessError';
+  }
+}
+
 type DeadlineReason = 'timeout' | 'cancelled';
 
 /**
@@ -112,6 +137,8 @@ export class GrepDeadline {
   readonly budgetMs: number;
   private readonly controller = new AbortController();
   private readonly startedAt = Date.now();
+  private readonly rejected: Promise<never>;
+  private rejectFn?: (error: GrepSearchError) => void;
   private timer: NodeJS.Timeout | undefined;
   private callerSignal?: AbortSignal;
   private callerHandler?: () => void;
@@ -119,6 +146,13 @@ export class GrepDeadline {
 
   constructor(budgetMs: number, callerSignal?: AbortSignal) {
     this.budgetMs = budgetMs;
+    // Deferred rejection so plain promises (fs.stat/readdir without signal
+    // support, worker round-trips) can race against the deadline and settle
+    // promptly even when the underlying IO itself cannot be cancelled.
+    this.rejected = new Promise<never>((_, reject) => {
+      this.rejectFn = reject;
+    });
+    this.rejected.catch(() => { /* handled wherever raced; avoids unhandledRejection */ });
     // Kept referenced on purpose: if the event loop is otherwise idle the timer
     // must still fire so the in-flight search settles instead of hanging.
     this.timer = setTimeout(() => this.fire('timeout'), budgetMs);
@@ -137,6 +171,9 @@ export class GrepDeadline {
     if (this.fired) return;
     this.fired = reason;
     this.controller.abort(reason);
+    this.rejectFn?.(reason === 'timeout'
+      ? new GrepTimeoutError(this.budgetMs)
+      : new GrepCancelledError());
   }
 
   get signal(): AbortSignal {
@@ -153,6 +190,16 @@ export class GrepDeadline {
 
   remainingMs(): number {
     return Math.max(0, this.budgetMs - (Date.now() - this.startedAt));
+  }
+
+  /**
+   * Race an un-cancellable IO promise against the deadline. The loser keeps
+   * running in the background (Promise.race already holds handlers for it, so
+   * a late rejection cannot become unhandled), but the caller settles typed
+   * and no further backend or read is started after expiry.
+   */
+  race<T>(promise: Promise<T>): Promise<T> {
+    return Promise.race([promise, this.rejected]);
   }
 
   /** Throws the typed terminal error when the deadline or cancellation already fired. */
@@ -306,36 +353,76 @@ export function spawnGrepCommand(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Glob engine — linear Thompson-NFA simulation.
+//
+// A RegExp compiled from a user glob (`a*a*…b`, nested duplicate braces) can
+// backtrack catastrophically on the main event loop and block the deadline
+// timer. The NFA simulation below is O(len × states) with no backtracking, so
+// adversarial globs cannot stall the search or the loop.
+// ---------------------------------------------------------------------------
+
+interface GlobNfa {
+  start: number;
+  accepting: number;
+  epsilon: number[][];
+  chars: Array<Array<{ ch: string; to: number }>>;
+  any: Array<Array<{ slashOk: boolean; to: number }>>;
+}
+
 export interface GrepGlobMatcher {
   source: string;
-  regexp: RegExp;
+  nfa: GlobNfa;
   /** Globs containing '/' match the path relative to the search root; others match basenames. */
   matchAgainstPath: boolean;
 }
 
-function escapeRegexChar(ch: string): string {
-  return /[.*+?^${}()|[\]\\]/.test(ch) ? `\\${ch}` : ch;
+function createNfa(): { nfa: GlobNfa; newState: () => number } {
+  const nfa: GlobNfa = { start: 0, accepting: 0, epsilon: [], chars: [], any: [] };
+  const newState = (): number => {
+    nfa.epsilon.push([]);
+    nfa.chars.push([]);
+    nfa.any.push([]);
+    return nfa.epsilon.length - 1;
+  };
+  return { nfa, newState };
 }
 
-function parseGlobSequence(glob: string, cursor: { i: number }, topLevel: boolean): string {
-  let out = '';
+interface GlobFragment { start: number; end: number; }
+
+function parseGlobSequence(glob: string, cursor: { i: number }, topLevel: boolean, build: { nfa: GlobNfa; newState: () => number }): GlobFragment {
+  let joined: GlobFragment | undefined;
+  const link = (piece: GlobFragment): void => {
+    if (!joined) {
+      joined = piece;
+      return;
+    }
+    build.nfa.epsilon[joined.end].push(piece.start);
+    joined = { start: joined.start, end: piece.end };
+  };
+
   while (cursor.i < glob.length) {
     const ch = glob[cursor.i];
-    if (!topLevel && (ch === ',' || ch === '}')) return out;
+    if (!topLevel && (ch === ',' || ch === '}')) break;
     cursor.i += 1;
+
     if (ch === '*') {
-      if (glob[cursor.i] === '*') {
-        while (glob[cursor.i] === '*') cursor.i += 1;
-        out += '.*';
-      } else {
-        out += '[^/]*';
-      }
+      const globstar = glob[cursor.i] === '*';
+      if (globstar) while (glob[cursor.i] === '*') cursor.i += 1;
+      const state = build.newState();
+      const exit = build.newState();
+      build.nfa.any[state].push({ slashOk: globstar, to: state });
+      build.nfa.epsilon[state].push(exit);
+      link({ start: state, end: exit });
     } else if (ch === '?') {
-      out += '[^/]';
+      const state = build.newState();
+      const exit = build.newState();
+      build.nfa.any[state].push({ slashOk: false, to: exit });
+      link({ start: state, end: exit });
     } else if (ch === '{') {
-      const alternatives: string[] = [];
+      const branches: GlobFragment[] = [];
       for (;;) {
-        alternatives.push(parseGlobSequence(glob, cursor, false));
+        branches.push(parseGlobSequence(glob, cursor, false, build));
         if (glob[cursor.i] === ',') {
           cursor.i += 1;
           continue;
@@ -343,20 +430,69 @@ function parseGlobSequence(glob: string, cursor: { i: number }, topLevel: boolea
         if (glob[cursor.i] === '}') cursor.i += 1; // unbalanced braces degrade to literal end
         break;
       }
-      out += `(?:${alternatives.join('|')})`;
+      const enter = build.newState();
+      const exit = build.newState();
+      for (const branch of branches) {
+        build.nfa.epsilon[enter].push(branch.start);
+        build.nfa.epsilon[branch.end].push(exit);
+      }
+      link({ start: enter, end: exit });
     } else {
-      out += escapeRegexChar(ch);
+      const state = build.newState();
+      const exit = build.newState();
+      build.nfa.chars[state].push({ ch, to: exit });
+      link({ start: state, end: exit });
     }
   }
-  return out;
+
+  if (!joined) {
+    const state = build.newState();
+    return { start: state, end: state };
+  }
+  return joined;
 }
 
-/** Convert a user glob ("*.js", "*.{ts,tsx}") into an anchored RegExp. A '/' in the glob switches matching to the root-relative path. */
-export function globToRegExp(glob: string): GrepGlobMatcher {
-  const source = `^${parseGlobSequence(glob, { i: 0 }, true)}$`;
+function epsilonClosure(nfa: GlobNfa, states: Set<number>): Set<number> {
+  const stack = [...states];
+  while (stack.length) {
+    const state = stack.pop() as number;
+    for (const target of nfa.epsilon[state]) {
+      if (!states.has(target)) {
+        states.add(target);
+        stack.push(target);
+      }
+    }
+  }
+  return states;
+}
+
+function nfaAccepts(nfa: GlobNfa, value: string): boolean {
+  let current = epsilonClosure(nfa, new Set<number>([nfa.start]));
+  for (const ch of value) {
+    const next = new Set<number>();
+    for (const state of current) {
+      for (const edge of nfa.chars[state]) {
+        if (edge.ch === ch) next.add(edge.to);
+      }
+      for (const edge of nfa.any[state]) {
+        if (edge.slashOk || ch !== '/') next.add(edge.to);
+      }
+    }
+    if (next.size === 0) return false;
+    current = epsilonClosure(nfa, next);
+  }
+  return current.has(nfa.accepting);
+}
+
+/** Compile a user glob ("*.js", "*.{ts,tsx}", "src/x/**" / "*.d.ts") into a linear matcher. */
+export function compileGlob(glob: string): GrepGlobMatcher {
+  const build = createNfa();
+  const whole = parseGlobSequence(glob, { i: 0 }, true, build);
+  build.nfa.start = whole.start;
+  build.nfa.accepting = whole.end;
   return {
     source: glob,
-    regexp: new RegExp(source),
+    nfa: build.nfa,
     matchAgainstPath: glob.includes('/'),
   };
 }
@@ -367,8 +503,111 @@ export function matchGlob(
   basename: string,
 ): boolean {
   return matcher.matchAgainstPath
-    ? matcher.regexp.test(relativePath)
-    : matcher.regexp.test(basename);
+    ? nfaAccepts(matcher.nfa, relativePath)
+    : nfaAccepts(matcher.nfa, basename);
+}
+
+/**
+ * AND-combined filter set shared by the single-file pre-check and the Node
+ * walk: the user glob (when present) AND the type group (alternatives within a
+ * group are OR, groups are AND) — matching ripgrep semantics.
+ */
+export interface SearchFilters {
+  isAllowed(relativePath: string, basename: string): boolean;
+}
+
+export function compileSearchFilters(
+  globPattern: string | undefined,
+  fileTypeGlobs: string[] | undefined,
+): SearchFilters {
+  const globMatcher = globPattern ? compileGlob(globPattern) : undefined;
+  const typeMatchers = (fileTypeGlobs ?? []).map(compileGlob);
+  return {
+    isAllowed(relativePath: string, basename: string): boolean {
+      if (globMatcher && !matchGlob(globMatcher, relativePath, basename)) return false;
+      if (typeMatchers.length > 0 && !typeMatchers.some(matcher => matchGlob(matcher, relativePath, basename))) return false;
+      return true;
+    },
+  };
+}
+
+/**
+ * Expand top-level (and nested) brace alternatives into concrete globs:
+ * "*.{ts,tsx}" → ["*.ts", "*.tsx"]. Returns undefined when expansion would
+ * exceed maxResults (caller should not feed the native backend).
+ */
+export function expandGlobAlternatives(glob: string, maxResults = 16): string[] | undefined {
+  const expand = (input: string): string[] => {
+    const open = input.indexOf('{');
+    if (open === -1) return [input];
+    let depth = 0;
+    let close = -1;
+    for (let i = open; i < input.length; i += 1) {
+      if (input[i] === '{') depth += 1;
+      else if (input[i] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          close = i;
+          break;
+        }
+      }
+    }
+    if (close === -1) return [input]; // unbalanced → literal
+    const prefix = input.slice(0, open);
+    const inner = input.slice(open + 1, close);
+    const suffix = input.slice(close + 1);
+    const alternatives: string[] = [];
+    let innerDepth = 0;
+    let current = '';
+    for (const ch of inner) {
+      if (ch === '{') innerDepth += 1;
+      if (ch === '}') innerDepth -= 1;
+      if (ch === ',' && innerDepth === 0) {
+        alternatives.push(current);
+        current = '';
+        continue;
+      }
+      current += ch;
+    }
+    alternatives.push(current);
+    const out: string[] = [];
+    for (const alternative of alternatives) {
+      for (const expanded of expand(prefix + alternative + suffix)) out.push(expanded);
+    }
+    return out;
+  };
+  const results = expand(glob);
+  return results.length > maxResults ? undefined : results;
+}
+
+/** fnmatch-style globs only: no path separators, no braces, no character classes. */
+function nativeGlobSafe(glob: string): boolean {
+  return !glob.includes('/') && !glob.includes('{') && !glob.includes('}')
+    && !glob.includes('[') && !glob.includes(']');
+}
+
+/**
+ * Plan --include flags for the native grep backend. grep's --include list is
+ * OR-ed, while the user glob AND the type filter must intersect (ripgrep
+ * semantics). A combination is natively expressible only when at most one AND
+ * group is present, every expanded alternative is fnmatch-safe, and the list
+ * stays small. Otherwise returns undefined → route to the exact Node backend.
+ */
+export function planNativeIncludes(
+  globPattern: string | undefined,
+  fileTypeGlobs: string[] | undefined,
+): string[] | undefined {
+  if (globPattern && fileTypeGlobs && fileTypeGlobs.length > 0) return undefined; // AND not expressible as OR
+  const group = globPattern
+    ? expandGlobAlternatives(globPattern)
+    : (fileTypeGlobs ? [...fileTypeGlobs] : []);
+  if (!group) return undefined;
+  if (group.length === 0) return [];
+  if (group.length > 16) return undefined;
+  for (const glob of group) {
+    if (!nativeGlobSafe(glob)) return undefined;
+  }
+  return group;
 }
 
 /**
@@ -414,6 +653,20 @@ export function resolveTypeFilterGlobs(fileType?: string): string[] | undefined 
   return globs ? [...globs] : undefined;
 }
 
+/**
+ * Pattern constructs POSIX ERE (grep -E) cannot honor with ripgrep/JS
+ * semantics: class escapes (\d \D \w \W \s \S \b \B) and any (?…) group
+ * ((?:, (?=, (?!, (?<=, (?!, (?i)…). Matching them natively silently changes
+ * meaning (\d becomes literal 'd') or misparses ((?:foo) becomes a literal
+ * string) — potentially a false "no match". Such patterns must go to the
+ * isolated Node backend or fail visibly.
+ */
+const NATIVE_INCOMPATIBLE_PATTERN_RE = /\\[dDwWsSbB]|\(\?/;
+
+export function isPatternNativeIncompatible(pattern: string): boolean {
+  return NATIVE_INCOMPATIBLE_PATTERN_RE.test(pattern);
+}
+
 const GREP_MATCHER_WORKER_SOURCE = [
   "const { parentPort } = require('worker_threads');",
   'let regex = null;',
@@ -441,12 +694,23 @@ const GREP_MATCHER_WORKER_SOURCE = [
   '      }',
   '    }',
   "    parentPort.postMessage({ kind: 'result', id: msg.id, matched });",
+  '    return;',
+  '  }',
+  "  if (msg.kind === 'count') {",
+  '    const raw = msg.text;',
+  "    const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8');",
+  "    const lines = text.split('\\n');",
+  '    let count = 0;',
+  '    for (let i = 0; i < lines.length; i++) {',
+  '      if (regex.test(lines[i])) count += 1;',
+  '    }',
+  "    parentPort.postMessage({ kind: 'result', id: msg.id, count });",
   '  }',
   '});',
 ].join('\n');
 
 interface PendingMatch {
-  resolve: (matched: number[]) => void;
+  resolve: (value: number[] | number) => void;
   reject: (error: GrepSearchError) => void;
 }
 
@@ -519,7 +783,11 @@ export class GrepMatcher {
       const pending = this.pending.get(Number(msg.id));
       if (pending) {
         this.pending.delete(Number(msg.id));
-        pending.resolve(Array.isArray(msg.matched) ? msg.matched.map(Number) : []);
+        if (msg.count !== undefined) {
+          pending.resolve(Number(msg.count));
+        } else {
+          pending.resolve(Array.isArray(msg.matched) ? msg.matched.map(Number) : []);
+        }
       }
     }
   }
@@ -547,7 +815,8 @@ export class GrepMatcher {
 
   /**
    * Match one file's text. Returns matching line indexes (0-based). The worker
-   * stops after `maxLines` matches (0 = unlimited, used by count mode).
+   * stops after `maxLines` matches (0 = unlimited). Use count() when only the
+   * number of matching lines is needed — it never materializes an index array.
    */
   async match(text: string | Uint8Array, maxLines: number): Promise<number[]> {
     this.deadline.check();
@@ -557,8 +826,22 @@ export class GrepMatcher {
     const worker = this.ensureWorker();
     const id = this.nextId++;
     return new Promise<number[]>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve: resolve as (value: number[] | number) => void, reject });
       worker.postMessage({ kind: 'match', id, text, maxLines });
+    });
+  }
+
+  /** Integer per-file match count for count mode — no per-line index array. */
+  async count(text: string | Uint8Array): Promise<number> {
+    this.deadline.check();
+    await this.ensureReady();
+    this.deadline.check();
+    if (this.disposed) throw new GrepCancelledError();
+    const worker = this.ensureWorker();
+    const id = this.nextId++;
+    return new Promise<number>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (value: number[] | number) => void, reject });
+      worker.postMessage({ kind: 'count', id, text });
     });
   }
 
@@ -609,5 +892,6 @@ export function outcomeForError(error: GrepSearchError): GrepBackendOutcome {
   if (error instanceof GrepOverflowError) return 'overflow';
   if (error instanceof GrepInvalidPatternError) return 'invalid_pattern';
   if (error instanceof GrepUnsupportedTypeError) return 'unsupported_type';
+  if (error instanceof GrepFilterNotExpressedError) return 'skipped';
   return 'error';
 }
