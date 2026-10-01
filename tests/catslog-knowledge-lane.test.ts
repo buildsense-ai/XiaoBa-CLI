@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   MAX_LOCAL_KNOWLEDGE_ENTRIES,
+  projectLocalKnowledgeLane,
   searchLocalKnowledgeLane,
 } from '../src/core/catslog-knowledge-lane';
 import { isMemoryCitationRef } from '../src/tools/memory-branch-tools';
@@ -117,10 +118,13 @@ describe('local knowledge lane (L0)', () => {
     const callsDir = fs.mkdtempSync(path.join(testRoot, 'calls-'));
     const script = writeFakeScript(testRoot, `
       const fs = require('node:fs');
-      const keyword = process.argv[5] || '';
-      // Per-keyword marker files: the three searches run in parallel, so a
-      // shared log file would race.
-      fs.writeFileSync(${JSON.stringify(callsDir)} + '/marker-' + encodeURIComponent(keyword), 'x');
+      const keywords = JSON.parse(process.argv[5]);
+      if (process.argv[4] !== 'search-any') throw new Error('expected batched search-any');
+      fs.appendFileSync(${JSON.stringify(callsDir)} + '/processes', '1\\n');
+      for (const keyword of keywords) {
+        fs.writeFileSync(${JSON.stringify(callsDir)} + '/marker-' + encodeURIComponent(keyword), 'x');
+      }
+      const keyword = keywords[0];
       process.stdout.write(JSON.stringify({ ok: true, total: 1, items: [{
         id: 'KB-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
         title: 'shared doc ' + keyword,
@@ -145,10 +149,13 @@ describe('local knowledge lane (L0)', () => {
     assert.equal(result.keywordsCapped, true);
     assert.deepEqual(result.keywordsQueried, ['k1', 'k2', 'k3']);
     assert.deepEqual(
-      fs.readdirSync(callsDir).sort().map(name => decodeURIComponent(name.replace('marker-', ''))),
+      fs.readdirSync(callsDir).filter(name => name.startsWith('marker-')).sort()
+        .map(name => decodeURIComponent(name.replace('marker-', ''))),
       ['k1', 'k2', 'k3'],
       'exactly the top 3 keywords must be searched',
     );
+    assert.equal(fs.readFileSync(path.join(callsDir, 'processes'), 'utf8'), '1\n',
+      'all selected keywords must share one process');
     assert.equal(result.entries.length, 1, 'identical hits dedupe by ref');
     assert.equal(result.entries[0].ref, 'kb:KB-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
   });
@@ -179,7 +186,7 @@ describe('local knowledge lane (L0)', () => {
       knowledgeRoot: root,
       scriptPath: script,
     });
-    assert.equal(result.status, 'ok');
+    assert.equal(result.status, 'truncated');
     assert.equal(result.entries.length, MAX_LOCAL_KNOWLEDGE_ENTRIES);
     assert.equal(result.entriesCapped, true);
   });
@@ -216,7 +223,7 @@ describe('local knowledge lane (L0)', () => {
     assert.match(String(badEnvelope.error), /unusable envelope/);
   });
 
-  test('per-keyword timeout kills the script and degrades to unavailable', async () => {
+  test('one batch deadline kills the script and degrades to unavailable', async () => {
     const root = path.join(testRoot, 'knowledge');
     fs.mkdirSync(root, { recursive: true });
     const script = writeFakeScript(testRoot, `
@@ -256,6 +263,33 @@ describe('local knowledge lane (L0)', () => {
     assert.equal(result.status, 'ok');
     assert.equal(result.entries.length, 1);
     assert.equal(result.entries[0].ref, 'kb:KB-cccccccc-dddd-4eee-8fff-000000000001');
+  });
+
+  test('keyword cap does not imply missing entries or truncated model evidence', async () => {
+    const root = path.join(testRoot, 'knowledge');
+    writeManagedDoc(root, KB_ID, 'DERP', 'DERP deployment', '# derper\nDERP socket tailscale');
+    const result = await searchLocalKnowledgeLane({
+      keywords: ['DERP', 'derper', 'tailscale', 'certificate'], knowledgeRoot: root,
+    });
+    assert.equal(result.status, 'ok');
+    assert.equal(result.keywordsCapped, true);
+    assert.equal(result.entriesCapped, false);
+    const pack = projectLocalKnowledgeLane(result);
+    assert.equal(pack.scope, 'per_instance_shared');
+    assert.equal(pack.keywords_capped, true);
+    assert.equal(pack.truncated, false);
+    assert.equal((pack.entries as any[])[0].ref, `kb:${KB_ID}`);
+    const small = projectLocalKnowledgeLane(result, 300);
+    assert.equal(small.truncated, true);
+    assert.equal(small.projection_capped, true);
+  });
+
+  test('no hits returns empty rather than ok with an empty entries array', async () => {
+    const root = path.join(testRoot, 'knowledge');
+    writeManagedDoc(root, KB_ID, 'DERP', 'DERP deployment', '# derper');
+    const result = await searchLocalKnowledgeLane({ keywords: ['not-present'], knowledgeRoot: root });
+    assert.equal(result.status, 'empty');
+    assert.equal(result.entriesCapped, false);
   });
 
   test('empty keyword list yields empty status without touching the filesystem', async () => {

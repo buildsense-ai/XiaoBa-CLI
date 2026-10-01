@@ -172,6 +172,40 @@ class KnowledgeStore {
     };
   }
 
+  // Bounded OR of the same per-query AND matching used by index(). Load and
+  // normalize each document once instead of starting one process/scan per
+  // keyword. Preserve query priority and each query's first-page ordering;
+  // this is not a completeness watermark for historical session retrieval.
+  searchAny(queries) {
+    if (!Array.isArray(queries) || !queries.length || queries.length > 3
+        || queries.some(query => typeof query !== 'string' || !query.trim()
+          || Array.from(query).length > 64 || /[\u0000-\u001f\u007f-\u009f]/.test(query))) {
+      fail('INVALID_INPUT', 'search-any requires 1-3 nonempty query strings of at most 64 code points.');
+    }
+    const warnings = [];
+    const docs = this.documents(warnings).map(doc => ({
+      doc,
+      text: `${doc.id}\n${doc.title}\n${doc.summary}\n${doc.category}\n${doc.body}`.toLocaleLowerCase(),
+    }));
+    const matchingIds = new Set();
+    const emittedIds = new Set();
+    const items = [];
+    let truncated = false;
+    for (const query of queries) {
+      const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+      const matches = docs.filter(({ text }) => terms.every(term => text.includes(term)));
+      for (const { doc } of matches) matchingIds.add(doc.id);
+      truncated ||= matches.length > PAGE_SIZE;
+      for (const { doc } of matches.slice(0, PAGE_SIZE)) {
+        if (emittedIds.has(doc.id)) continue;
+        emittedIds.add(doc.id);
+        const { id, title, summary, category, updatedAt, revision, managed, file } = doc;
+        items.push({ id, title, summary, category, updatedAt, revision, managed, file });
+      }
+    }
+    return { total: matchingIds.size, items, truncated, warnings };
+  }
+
   atomicWrite(file, content) {
     this.safePath(path.relative(this.root, file));
     const temporary = this.safePath(path.relative(this.root, path.join(path.dirname(file), `.tmp-${crypto.randomUUID()}`)));
@@ -367,6 +401,12 @@ async function main(args) {
   const [command, ...rest] = args.slice(2);
   if (command === 'index' && rest.length <= 1) return store.index('', offset(rest[0]));
   if (command === 'search' && rest[0]?.trim() && rest.length <= 2) return store.index(rest[0], offset(rest[1]));
+  if (command === 'search-any' && rest.length === 1 && rest[0].length <= 4096) {
+    let queries;
+    try { queries = JSON.parse(rest[0]); }
+    catch { fail('INVALID_INPUT', 'search-any expects a JSON array of query strings.'); }
+    return store.searchAny(queries);
+  }
   if (command === 'read' && rest.length >= 1 && rest.length <= 2) return store.read(rest[0], offset(rest[1]));
   if (command === 'reindex' && !rest.length) return store.reindex();
   if (command === 'put' && rest.length === 1) {

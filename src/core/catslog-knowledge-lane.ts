@@ -78,6 +78,7 @@ interface KnowledgeSearchOutput {
   ok?: unknown;
   total?: unknown;
   items?: unknown;
+  truncated?: unknown;
 }
 
 export const MAX_LOCAL_KNOWLEDGE_KEYWORDS = 3;
@@ -89,11 +90,10 @@ const MAX_SCRIPT_STDOUT_CHARS = 512 * 1024;
 const KNOWLEDGE_KB_ID_PATTERN = /^KB-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
 /**
- * L0 lane of the mechanical retrieval stage: search the per-host,
- * agent-owned distilled knowledge KB that the xiaoba-knowledge Skill writes
- * under the runtime data root. The KB is local, read-only here, and carries
- * no cross-agent scope labels — provenance is marked on the lane itself, so
- * no server round-trip or scope fencing applies.
+ * L0 lane of the mechanical retrieval stage: search the explicitly shared
+ * per-instance KB that the xiaoba-knowledge Skill writes under the runtime
+ * data root. This is not an agent-private session source. The lane is
+ * local/read-only and its shared provenance is marked explicitly.
  *
  * Degradation is typed and never throws: a missing knowledge root, a failing
  * script, or non-JSON output yields status `unavailable` exactly like the
@@ -107,8 +107,10 @@ export async function searchLocalKnowledgeLane(
   const scriptPath = path.resolve(options.scriptPath ?? KNOWLEDGE_SCRIPT_FILE);
   // Defensive re-check of the wire contract: control-character terms can never
   // be argv-safe, so they are dropped here regardless of the caller.
-  const keywords = (options.keywords ?? [])
-    .filter(keyword => typeof keyword === 'string' && keyword.trim() && !hasCatsLogControlCodePoint(keyword));
+  const keywords = [...new Set((options.keywords ?? [])
+    .filter(keyword => typeof keyword === 'string' && keyword.trim()
+      && Array.from(keyword).length <= 64 && !hasCatsLogControlCodePoint(keyword))
+    .map(keyword => keyword.trim()))];
   const keywordsCapped = keywords.length > MAX_LOCAL_KNOWLEDGE_KEYWORDS;
   const queried = keywords.slice(0, MAX_LOCAL_KNOWLEDGE_KEYWORDS);
 
@@ -131,51 +133,35 @@ export async function searchLocalKnowledgeLane(
   }
 
   const timeoutMs = options.timeoutMs ?? KNOWLEDGE_SEARCH_TIMEOUT_MS;
-  const settled = await Promise.all(queried.map(keyword =>
-    runKnowledgeSearch(scriptPath, root, keyword, timeoutMs, options.signal)
-      .then(output => ({ keyword, output, error: undefined as string | undefined }))
-      .catch((error: any) => ({
-        keyword,
-        output: undefined as KnowledgeSearchOutput | undefined,
-        error: boundedText(String(error?.message || error || 'knowledge search failed'), 200),
-      })),
-  ));
-
-  const entries: LocalKnowledgeEntry[] = [];
-  const seen = new Set<string>();
-  let entriesCapped = false;
-  let keywordsFailed = 0;
-  let firstError: string | undefined;
-  for (const attempt of settled) {
-    if (!attempt.output || attempt.error) {
-      keywordsFailed += 1;
-      firstError ??= attempt.error;
-      continue;
-    }
-    for (const entry of projectScriptItems(attempt.output.items)) {
-      if (seen.has(entry.ref)) continue;
-      if (entries.length >= MAX_LOCAL_KNOWLEDGE_ENTRIES) {
-        entriesCapped = true;
-        break;
-      }
-      seen.add(entry.ref);
-      entries.push(entry);
-    }
-  }
-
-  if (entries.length === 0 && keywordsFailed > 0) {
+  let output: KnowledgeSearchOutput;
+  try {
+    // One process and one filesystem scan, still bounded by a single 3s
+    // deadline. The script preserves per-keyword priority and OR semantics.
+    output = await runKnowledgeSearch(scriptPath, root, queried, timeoutMs, options.signal);
+  } catch (error: any) {
     return {
       ...base,
       status: 'unavailable',
-      error: firstError ? `knowledge search failed: ${firstError}` : 'knowledge search failed',
-      keywordsFailed,
+      error: boundedText(String(error?.message || error || 'knowledge search failed'), 200),
+      keywordsFailed: queried.length,
     };
+  }
+  const entries: LocalKnowledgeEntry[] = [];
+  const seen = new Set<string>();
+  let entriesCapped = output.truncated === true;
+  for (const entry of projectScriptItems(output.items)) {
+    if (seen.has(entry.ref)) continue;
+    if (entries.length >= MAX_LOCAL_KNOWLEDGE_ENTRIES) {
+      entriesCapped = true;
+      break;
+    }
+    seen.add(entry.ref);
+    entries.push(entry);
   }
   return {
     ...base,
-    status: 'ok',
+    status: entriesCapped ? 'truncated' : entries.length === 0 ? 'empty' : 'ok',
     entries,
-    keywordsFailed,
     entriesCapped,
   };
 }
@@ -194,7 +180,7 @@ export function projectLocalKnowledgeLane(
     return {
       content_trust: 'local_distilled_knowledge',
       provenance: 'local_knowledge',
-      scope: 'per_host_agent_owned',
+      scope: 'per_instance_shared',
       status: 'unavailable',
       ...(result.error ? { note: `Local knowledge search failed: ${result.error}` } : {}),
     };
@@ -203,11 +189,12 @@ export function projectLocalKnowledgeLane(
   const projected: Record<string, unknown> = {
     content_trust: 'local_distilled_knowledge',
     provenance: 'local_knowledge',
-    scope: 'per_host_agent_owned',
+    scope: 'per_instance_shared',
     status: result.status,
     entries,
     keywords_queried: result.keywordsQueried.length,
     ...(result.keywordsCapped ? { keywords_capped: true } : {}),
+    ...(result.entriesCapped ? { entries_capped: true } : {}),
     ...(result.keywordsFailed > 0 ? { keywords_failed: result.keywordsFailed } : {}),
     truncated: result.entriesCapped,
   };
@@ -215,6 +202,8 @@ export function projectLocalKnowledgeLane(
   while (encoded.length > maxLength && entries.length > 0) {
     entries.pop();
     projected.truncated = true;
+    projected.projection_capped = true;
+    projected.status = 'truncated';
     encoded = JSON.stringify(projected);
   }
   return projected;
@@ -223,16 +212,15 @@ export function projectLocalKnowledgeLane(
 function runKnowledgeSearch(
   scriptPath: string,
   root: string,
-  keyword: string,
+  keywords: string[],
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<KnowledgeSearchOutput> {
-  // execFile passes the keyword as a single argv entry — no shell, so the
-  // term can never broaden into option parsing or command injection beyond
-  // the script's own manual argv handling (which fails closed).
+  // A JSON array is a single argv entry — no shell. The helper enforces
+  // the 3-keyword/64-code-point bounds and scans the KB once for the batch.
   return execFileAsync(
     knowledgeNodeExecutable(),
-    [scriptPath, '--root', root, 'search', keyword],
+    [scriptPath, '--root', root, 'search-any', JSON.stringify(keywords)],
     {
       timeout: timeoutMs,
       killSignal: 'SIGKILL',
@@ -275,7 +263,8 @@ function parseKnowledgeOutput(stdout: string): KnowledgeSearchOutput {
     throw new Error('knowledge script returned non-JSON output');
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
-    || (parsed as KnowledgeSearchOutput).ok !== true) {
+    || (parsed as KnowledgeSearchOutput).ok !== true
+    || !Array.isArray((parsed as KnowledgeSearchOutput).items)) {
     throw new Error('knowledge script returned an unusable envelope');
   }
   return parsed as KnowledgeSearchOutput;

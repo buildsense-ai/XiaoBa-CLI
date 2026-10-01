@@ -90,13 +90,6 @@ interface MechanicalRetrievalState {
   /** Local distilled-knowledge lane (L0); typed degraded statuses, never throws. */
   knowledge?: LocalKnowledgeLaneResult;
   knowledgeJson?: string;
-  /**
-   * Set when a managed KB hit narrowed the remote lanes to post-KB evidence:
-   * sessions `from` bound + tightened branch budget. Surfaced in the pack so
-   * refine knows remote silence before this timestamp is composed coverage,
-   * not an empty result.
-   */
-  remoteDeltaFrom?: string;
   /** True when assess keywords exceeded the 8-keyword search_any wire cap. */
   keywordsTruncated: boolean;
   /** True when any keyword was code-point-bounded or dropped (visible note). */
@@ -112,17 +105,6 @@ const MAX_SESSION_EVIDENCE_CHARS = 12_000;
 const MAX_KNOWLEDGE_EVIDENCE_CHARS = 8_000;
 
 /**
- * Delta-mode branch budgets, applied when a managed KB document already
- * covers the query: the remote fan-out's remaining job is fresh-evidence
- * discovery, so a small pool and a tight deadline bound the JEV cost.
- */
-const DELTA_BRANCH_BUDGETS = {
-  perBranchTimeoutMs: 2_000,
-  perBranchMaxItems: 6,
-  totalDeadlineMs: 4_000,
-} as const;
-
-/**
  * Server-first two-call memory-search branch.
  *
  * The v1.2 open tool loop burned its deadline exploring; the v1.3 bounded
@@ -136,10 +118,7 @@ const DELTA_BRANCH_BUDGETS = {
  *   ├─ pass 1 (assess)          tools = [assess_memory_need] (pause_turn)
  *   │    ├─ action=skip         → complete(delivery:discard) — 1 inference, log only
  *   │    └─ action=recall       → mechanical stage (no model calls):
- *   │         localKnowledge(search_any top-3) runs first (local, sub-second);
- *   │           a managed KB hit narrows remote lanes to delta mode — sessions
- *   │           `from` = KB updatedAt, tightened branch budget — then
- *   │         Promise.all( catslogMemory.branch(query) ‖ catslogMemory.querySessions(search_any) )
+ *   │         Promise.all( catslogMemory.branch(query) ‖ catslogMemory.querySessions(search_any) ‖ localKnowledge(search_any top-3) )
  *   │         → observed-refs tracker fed with projected JSON (same shapes as tool results)
  *   │         → verdict gate on branches[session_graph].evidence_verdict;
  *   │            session records and local KB hits count as usable evidence even when verdict=none
@@ -334,25 +313,28 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   }
 
   /**
-   * Mechanical stage — no model calls, no tool dispatch. The local
-   * distilled-knowledge lane runs first (sub-second, per-host agent-owned
-   * data): a managed KB hit switches both remote lanes into delta mode,
-   * where their remaining job is discovering evidence newer than the
-   * distilled doc — the session query narrows to post-KB turns via `from`,
-   * and the branch fan-out runs under a tightened item/deadline budget.
-   * Without a managed hit all three lanes run at full breadth as before.
+   * Mechanical stage — no model calls, no tool dispatch. The fused branch
+   * fan-out, the device-bound session query, and the local distilled-
+   * knowledge search run in parallel; the first two are server-side, so no
+   * local log content can enter the evidence pack. The KB lane is the one
+   * local source: explicitly shared per-instance documents with typed
+   * degradation, never a raw log scan.
    */
   private async runMechanicalRetrieval(plan: RecallPlan, signal?: AbortSignal): Promise<void> {
     const startedAt = Date.now();
     const { searchAny, truncated, bounded } = buildSearchAny(plan.keywords);
     this.retrieval.keywordsTruncated = truncated;
     this.retrieval.keywordsBounded = bounded;
-    await this.fetchLocalKnowledge(searchAny, signal);
-    const deltaFrom = this.knowledgeDeltaFrom();
-    this.retrieval.remoteDeltaFrom = deltaFrom;
+    const laneDurationsMs: Record<string, number> = {};
+    const timed = async (lane: string, fetch: () => Promise<void>) => {
+      const start = Date.now();
+      try { await fetch(); }
+      finally { laneDurationsMs[lane] = Date.now() - start; }
+    };
     await Promise.all([
-      this.fetchRemoteBranch(plan, signal, deltaFrom !== undefined),
-      this.fetchServerSessions(searchAny, signal, deltaFrom),
+      timed('branch', () => this.fetchRemoteBranch(plan, signal)),
+      timed('sessions', () => this.fetchServerSessions(searchAny, signal)),
+      timed('knowledge', () => this.fetchLocalKnowledge(searchAny, signal)),
     ]);
 
     if (this.retrieval.remoteResponse) {
@@ -399,6 +381,11 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       session_records: this.retrieval.sessionRecords.length,
       local_knowledge: this.knowledgeStatus(),
       local_knowledge_entries: this.retrieval.knowledge?.entries.length ?? 0,
+      local_knowledge_keywords_capped: this.retrieval.knowledge?.keywordsCapped ?? false,
+      local_knowledge_entries_capped: this.retrieval.knowledge?.entriesCapped ?? false,
+      local_knowledge_projected_entries: this.knowledgeProjectedEntryCount(),
+      lane_durations_ms: laneDurationsMs,
+      retrieval_mode: 'full_history_parallel',
       keywords_truncated: this.retrieval.keywordsTruncated,
       keywords_bounded: this.retrieval.keywordsBounded,
       verdict: this.verdict,
@@ -418,30 +405,18 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     if (!knowledge) return 'unavailable';
     if (knowledge.status === 'unavailable') return 'unavailable';
     if (knowledge.entries.length === 0) return 'empty';
-    return knowledge.entriesCapped || knowledge.keywordsCapped ? 'truncated' : 'ok';
+    return knowledge.entriesCapped
+      || this.knowledgeProjectedEntryCount() < knowledge.entries.length ? 'truncated' : 'ok';
+  }
+
+  private knowledgeProjectedEntryCount(): number {
+    if (!this.retrieval.knowledgeJson) return 0;
+    const projected = JSON.parse(this.retrieval.knowledgeJson);
+    return Array.isArray(projected.entries) ? projected.entries.length : 0;
   }
 
   /**
-   * Delta boundary for remote lanes when a *managed* KB document covers the
-   * query: the doc was distilled from everything older, so only turns newer
-   * than its updatedAt can carry undistilled evidence. Returns the newest
-   * managed hit's updatedAt in ISO form, or undefined when coverage is too
-   * weak to narrow anything. Raw `file:` sources are ignored — they are
-   * unverified material, not distilled coverage.
-   */
-  private knowledgeDeltaFrom(): string | undefined {
-    let newest: string | undefined;
-    for (const entry of this.retrieval.knowledge?.entries ?? []) {
-      if (!entry.managed) continue;
-      const stamp = entry.updated_at;
-      if (!stamp || Number.isNaN(Date.parse(stamp))) continue;
-      if (!newest || stamp > newest) newest = stamp;
-    }
-    return newest;
-  }
-
-  /**
-   * L0 lane: search the per-host, agent-owned distilled knowledge KB with
+   * L0 lane: search the explicitly shared per-instance knowledge KB with
    * the top assess keywords (same bounded searchAny list the session lane
    * uses). Degrades to a typed unavailable status; never throws and never
    * widens into a raw log scan.
@@ -464,7 +439,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     }
   }
 
-  private async fetchRemoteBranch(plan: RecallPlan, signal?: AbortSignal, deltaMode = false): Promise<void> {
+  private async fetchRemoteBranch(plan: RecallPlan, signal?: AbortSignal): Promise<void> {
     const backend = this.catslogMemory;
     if (!backend?.branch) {
       this.retrieval.remoteError = 'catslog_capability_unavailable';
@@ -473,9 +448,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     const query: CatscoBranchQuery = {
       queryText: plan.queryText,
       ...(plan.sources?.length ? { sources: plan.sources } : {}),
-      // KB-covered queries only need the remote lane for fresh evidence the
-      // doc predates — a small pool/top-k keeps the JEV rerank cost down.
-      ...(deltaMode ? { budgets: DELTA_BRANCH_BUDGETS } : {}),
     };
     try {
       this.retrieval.remoteResponse = await backend.branch(query, signal);
@@ -486,7 +458,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     }
   }
 
-  private async fetchServerSessions(searchAny: string[], signal?: AbortSignal, deltaFrom?: string): Promise<void> {
+  private async fetchServerSessions(searchAny: string[], signal?: AbortSignal): Promise<void> {
     const backend = this.catslogMemory;
     if (!backend?.querySessions) {
       this.retrieval.sessionError = 'catslog_capability_unavailable';
@@ -504,9 +476,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         searchAny,
         latest: true,
         limit: MAX_SESSION_RECORDS,
-        // Delta mode: a managed KB doc already composed everything older
-        // than itself — only post-KB turns can add evidence refine lacks.
-        ...(deltaFrom ? { from: deltaFrom } : {}),
       }, signal);
     } catch (error: any) {
       // The historical-session lane degrades to a typed unavailable status;
@@ -553,18 +522,16 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
           remote_branch: this.remoteEvidencePack(),
           session_records: this.sessionEvidencePack(),
           local_knowledge: this.knowledgeEvidencePack(),
-          ...(this.retrieval.remoteDeltaFrom ? {
-            remote_delta_from: this.retrieval.remoteDeltaFrom,
-            remote_delta_note: '本地 KB 已覆盖：远端会话与分支证据只查了该时间之后的增量新记录，更早的证据视作已被该 KB 条目蒸馏覆盖。',
-          } : {}),
           ...(((this.retrieval.keywordsTruncated || this.retrieval.keywordsBounded)) ? {
             keywords_truncated: true,
             keyword_note: buildKeywordNote(this.retrieval.keywordsTruncated, this.retrieval.keywordsBounded),
           } : {}),
         },
-        instruction: '以上是本次机械检索的全部证据（本地蒸馏知识库先查；命中后远端融合检索与会话查询按 KB 更新时间收窄为增量窗口，未命中则全量并行）。'
+        instruction: '以上是本次机械检索的全部证据（远端融合检索、设备绑定会话查询与本地蒸馏知识库三路并行取得）。'
           + 'distilled KB 条目（local_knowledge，provenance=local_knowledge）在覆盖当前问题时优先采用；'
-          + '但当远端/会话证据的 updated_at/时间戳比某 KB 条目更新，或与之冲突时，合成增量差异后再引用，不要盲目照搬文档。'
+          + 'KB 命中只是候选资料，不证明完整覆盖；managed 只说明由知识库脚本管理，不表示事实已核验。'
+          + 'updated_at 是文档修改时间，不是历史覆盖水位；不得把该时间以前未引用的记录视为已被蒸馏。'
+          + '当远端/会话证据更新或与 KB 冲突时，保留来源边界并合成差异，不要盲目照搬文档。'
           + '请分析后立即调用 finish_memory_search 收尾；refs 只能引用其中出现过的 ref（KB 条目用其 ref 字段，形如 kb:… 或 file:…）。',
       }, null, 2),
     };
@@ -616,7 +583,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     return {
       content_trust: 'local_distilled_knowledge',
       provenance: 'local_knowledge',
-      scope: 'per_host_agent_owned',
+      scope: 'per_instance_shared',
       status: 'unavailable',
       note: 'Local knowledge lane did not produce a usable result.',
     };
@@ -803,7 +770,7 @@ function buildMemorySearchSystemPrompt(hasCatsLogMemory = false): string {
     '- recent_completed_turns 已经会提供给主 agent。不要把它们已经覆盖的内容当作新增记忆返回。',
     '- 如果检索结果只是在重复最近一两轮的短对话，且没有额外的工具结果、旧决策、用户修正或压缩风险，请使用 delivery:discard。',
     '- 适合注入的内容包括：跨会话信息、更早的同话题决策、用户后来修正过的约束、工具调用结果、被压缩后容易丢失的事实、当前任务需要避免冲突或重复讨论的信息。',
-    '- local_knowledge 条目是本机蒸馏知识文档（kb:/file: ref）：覆盖当前问题时优先采用；但若远端/会话证据比该条目 updated_at 更新或与其结论冲突，先合成增量差异，不要盲目照搬文档。KB 是本机 agent 自有知识，没有跨 agent scope 围栏。',
+    '- local_knowledge 是本实例显式共享知识库中的候选资料（kb:/file: ref），不是 agent-private 会话证据。managed 只表示脚本管理，updated_at 只表示文档修改时间；两者都不证明真伪或历史覆盖完整。相关且有来源的文档可优先使用，但不要称其为唯一权威来源；与其他证据冲突或时间状态不明时注明边界，必要时核验现状。',
     '- 如果 late/older memory 与当前用户输入冲突，summary 要明确提示冲突，并让主 agent 以当前用户输入为准。',
     '- 如果证据包足以支撑当前任务，直接收尾；不要为了重复确认而请求更多检索。',
     '',

@@ -616,7 +616,7 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
 
     const queue = new InMemorySyntheticObservationQueue();
     const ai = new AssessThenFinishAI();
-    const backend = new RemoteEvidenceMemory();
+    const backend = new SessionQueryMemory();
     backend.branchResponse = {
       content_trust: 'untrusted_branch_evidence',
       branches: [
@@ -641,10 +641,19 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     assert.equal(ai.calls.length, 2);
     const pack = ai.evidencePackIn(ai.calls[1].messages);
     assert.equal(pack.evidence_pack.local_knowledge.provenance, 'local_knowledge');
-    assert.equal(pack.evidence_pack.local_knowledge.scope, 'per_host_agent_owned');
+    assert.equal(pack.evidence_pack.local_knowledge.scope, 'per_instance_shared');
     assert.equal(pack.evidence_pack.local_knowledge.content_trust, 'local_distilled_knowledge');
     assert.equal(pack.evidence_pack.local_knowledge.entries[0].ref, `kb:${kbId}`);
     assert.match(String(pack.evidence_pack.local_knowledge.entries[0].summary), /rollback/);
+    // A managed document hit/updatedAt cannot prove old sessions were all
+    // distilled. Keep both remote lanes at full breadth; never add `from`
+    // or restrict the branch budget just because a keyword matched a doc.
+    assert.equal(backend.sessionQueries[0]?.from, undefined);
+    assert.equal(backend.branchQueries[0]?.budgets, undefined);
+    assert.equal('remote_delta_from' in pack.evidence_pack, false);
+    const evidenceMessage = ai.calls[1].messages.find(message => typeof message.content === 'string'
+      && message.content.includes('"evidence_pack"'));
+    assert.match(String(evidenceMessage?.content), /不是历史覆盖水位/);
 
     // The finish cites the KB ref; the tracker observed it, so delivery stays context.
     const observations = queue.drain();
@@ -654,6 +663,35 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     const logs = readBranchLogs(testRoot);
     assert.match(logs, /published_observation/);
     assert.doesNotMatch(logs, /unobserved_refs_audit_only/);
+  });
+
+  test('a recent partial KB entry never hides an older independent historical record', async () => {
+    const kbId = 'KB-0f1e2d3c-4b5a-4677-8899-aabbccddeeff';
+    writeKnowledgeDocument(path.join(testRoot, 'knowledge'), kbId, 'Release checklist', 'release checklist: current nginx mount');
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new AssessThenFinishAI();
+    const backend = new SessionQueryMemory();
+    backend.sessionResponse = {
+      content_trust: 'untrusted_log_data',
+      records: [{
+        ref: 'stream-release#4',
+        timestamp: '2026-09-01T00:00:00.000Z',
+        user: { text: 'Older independent constraint: database migration rollback is irreversible.' },
+      }],
+    };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'partial-kb-full-history', input: 'what is our release checklist?', recentMessages: [],
+      workingDirectory: testRoot, aiService: ai as any, queue, catslogMemory: backend, logEnabled: true,
+    });
+    await handle.done;
+    assert.equal(backend.sessionQueries[0]?.from, undefined);
+    const pack = ai.evidencePackIn(ai.calls[1].messages);
+    assert.equal(pack.evidence_pack.session_records.records[0].ref, 'stream-release#4');
+    assert.equal(pack.evidence_pack.local_knowledge.entries[0].ref, `kb:${kbId}`);
+    const logs = readBranchLogs(testRoot);
+    assert.match(logs, /full_history_parallel/);
+    assert.match(logs, /local_knowledge_projected_entries/);
+    assert.match(logs, /lane_durations_ms/);
   });
 
   test('knowledge lane failure degrades to a typed unavailable status and never blocks the pipeline', async () => {
@@ -890,77 +928,3 @@ function writeKnowledgeDocument(root: string, id: string, title: string, summary
     'utf-8',
   );
 }
-
-describe('delta-mode remote scoping', () => {
-  let testRoot: string;
-  let previousUserDataDir: string | undefined;
-
-  beforeEach(() => {
-    previousUserDataDir = process.env.XIAOBA_USER_DATA_DIR;
-    testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catslog-delta-'));
-    process.env.XIAOBA_USER_DATA_DIR = testRoot;
-  });
-
-  afterEach(() => {
-    if (previousUserDataDir === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
-    else process.env.XIAOBA_USER_DATA_DIR = previousUserDataDir;
-    fs.rmSync(testRoot, { recursive: true, force: true });
-  });
-
-  test('a managed KB hit narrows the session query to post-KB turns and tightens the branch budget', async () => {
-    const knowledgeRoot = path.join(testRoot, 'knowledge');
-    const kbId = 'KB-0f1e2d3c-4b5a-4677-8899-aabbccddeeff';
-    writeKnowledgeDocument(knowledgeRoot, kbId, 'Release checklist', 'release checklist: nginx read-only mount, rollback via flag');
-
-    const queue = new InMemorySyntheticObservationQueue();
-    const ai = new AssessThenFinishAI();
-    const backend = new SessionQueryMemory();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'delta-mode',
-      input: 'what is our release checklist?',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: ai as any,
-      queue,
-      catslogMemory: backend,
-      logEnabled: false,
-    });
-    await handle.done;
-
-    // Delta boundary comes from the doc's updatedAt; the branch fan-out runs
-    // under the tightened delta budget, never the default breadth.
-    assert.equal(backend.sessionQueries[0]?.from, '2026-09-10T00:00:00.000Z');
-    assert.deepEqual(backend.branchQueries[0]?.budgets, {
-      perBranchTimeoutMs: 2_000,
-      perBranchMaxItems: 6,
-      totalDeadlineMs: 4_000,
-    });
-    // The pack marks the delta window so refine treats remote silence as
-    // composed coverage, not an empty result.
-    const pack = ai.evidencePackIn(ai.calls[1].messages);
-    assert.equal(pack.evidence_pack.remote_delta_from, '2026-09-10T00:00:00.000Z');
-    assert.match(String(pack.evidence_pack.remote_delta_note), /增量/);
-  });
-
-  test('no KB coverage leaves remote lanes at full breadth', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const ai = new AssessThenFinishAI();
-    const backend = new SessionQueryMemory();
-    const handle = startMemorySidecarBranch({
-      sessionKey: 'no-delta',
-      input: 'what is our release checklist?',
-      recentMessages: [],
-      workingDirectory: testRoot,
-      aiService: ai as any,
-      queue,
-      catslogMemory: backend,
-      logEnabled: false,
-    });
-    await handle.done;
-
-    assert.equal(backend.sessionQueries[0]?.from, undefined);
-    assert.equal(backend.branchQueries[0]?.budgets, undefined);
-    const pack = ai.evidencePackIn(ai.calls[1].messages);
-    assert.equal('remote_delta_from' in pack.evidence_pack, false);
-  });
-});
