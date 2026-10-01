@@ -11,6 +11,7 @@ import {
   GrepCancelledError,
   GrepDeadline,
   GrepFilterNotExpressedError,
+  GrepGlobComplexityError,
   GrepInvalidPatternError,
   GrepMatcher,
   GrepOverflowError,
@@ -26,6 +27,7 @@ import {
   resolveGrepSearchTimeoutMs,
   resolveTypeFilterGlobs,
   spawnGrepCommand,
+  validateGlobComplexity,
 } from './grep-runtime';
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
@@ -111,6 +113,31 @@ function stderrMentionsPermission(stderr: string): boolean {
   return /permission denied/i.test(stderr);
 }
 
+function requireStringArg(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    throw new GrepSearchError('INVALID_TOOL_ARGUMENTS', `${name} 参数必须是字符串`);
+  }
+  return value;
+}
+
+/**
+ * Validate and normalize arguments BEFORE any coercion, stat, spawn or the
+ * deadline timer is created — a throwing toString() or a wrong-typed arg must
+ * become a typed INVALID_TOOL_ARGUMENTS, never an unhandled throw that leaks
+ * the wall-clock timer.
+ */
+function validateGrepArgs(args: any): { pattern: string; glob: string | undefined; type: string | undefined; path: string | undefined } {
+  if (typeof args?.pattern !== 'string') {
+    throw new GrepSearchError('INVALID_TOOL_ARGUMENTS', 'pattern 参数必须是字符串');
+  }
+  const glob = requireStringArg(args.glob, 'glob');
+  const type = requireStringArg(args.type, 'type');
+  const searchPath = requireStringArg(args.path, 'path');
+  if (glob) validateGlobComplexity(glob);
+  return { pattern: args.pattern, glob, type, path: searchPath };
+}
+
 export class GrepTool implements Tool {
   definition: ToolDefinition = {
     name: 'grep',
@@ -154,7 +181,29 @@ export class GrepTool implements Tool {
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
-    const { pattern, path: searchPath } = args;
+    const { pattern } = args;
+
+    let patternText: string;
+    let globPattern: string | undefined;
+    let fileType: string | undefined;
+    let validatedPath: string | undefined;
+    let budgetMs: number;
+    try {
+      const validated = validateGrepArgs(args);
+      patternText = validated.pattern;
+      globPattern = validated.glob;
+      fileType = validated.type;
+      validatedPath = validated.path;
+      budgetMs = resolveGrepSearchTimeoutMs(args.timeout_ms);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: `timeout_ms 参数无效: ${error.message}` };
+      }
+      if (error instanceof GrepSearchError) {
+        return { ok: false, errorCode: error.errorCode, message: error.message };
+      }
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: `参数无效: ${(error as any)?.message || error}` };
+    }
 
     const route = resolveExecutionRoute(context, {
       toolName: this.definition.name,
@@ -167,35 +216,17 @@ export class GrepTool implements Tool {
     const remoteResult = await executeRouteIfRemote(context, route, 'grep', 'grep', args);
     if (remoteResult) return this.withTiming(remoteResult, undefined);
 
-    const resolvedSearchPath = searchPath
-      ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
+    const resolvedSearchPath = validatedPath
+      ? (path.isAbsolute(validatedPath) ? validatedPath : path.join(context.workingDirectory, validatedPath))
       : context.workingDirectory;
 
     const pathPermission = isReadPathAllowed(resolvedSearchPath, context.workingDirectory);
     if (!pathPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
-    const visibleSearchPath = formatCatsCoVisiblePath(context, searchPath || '.', { preserveRelative: true });
-
-    let budgetMs: number;
-    try {
-      budgetMs = resolveGrepSearchTimeoutMs(args.timeout_ms);
-    } catch (error) {
-      if (error instanceof RangeError) {
-        return {
-          ok: false,
-          errorCode: 'INVALID_TOOL_ARGUMENTS',
-          message: `timeout_ms 参数无效: ${error.message}`,
-        };
-      }
-      throw error;
-    }
-
     const deadline = new GrepDeadline(budgetMs, context.abortSignal);
     const timing = args.backend_timing === true ? new GrepTimingCollector() : undefined;
-    const globPattern: string | undefined = args.glob || undefined;
-    const fileType: string | undefined = args.type || undefined;
-    const patternText: string = String(pattern ?? '');
+    const visibleSearchPath = formatCatsCoVisiblePath(context, validatedPath || '.', { preserveRelative: true });
 
     try {
       const backends: Array<{ name: GrepBackendName; run: () => Promise<GrepBackendRunResult> }> = [
@@ -215,7 +246,7 @@ export class GrepTool implements Tool {
           const durationMs = Date.now() - startedAt;
           if (runResult.kind === 'no_match') {
             timing?.record(backend.name, 'no_match', durationMs);
-            const content = this.formatNoMatch(patternText, visibleSearchPath ?? searchPath, globPattern, fileType)
+            const content = this.formatNoMatch(patternText, visibleSearchPath ?? validatedPath, globPattern, fileType)
               + coverageNoteText(runResult.coverageNote);
             return this.withTiming({ ok: true, content }, timing);
           }
@@ -230,11 +261,12 @@ export class GrepTool implements Tool {
             ? error
             : new GrepBackendError(String((error as any)?.message || error));
           timing?.record(backend.name, outcomeForError(typed), durationMs);
-          // 超时 / 取消 / 溢出 / 模式无效 / 类型不支持 / 根目录无权限：终态，不再尝试其他后端。
+          // 超时 / 取消 / 溢出 / 模式无效 / 类型不支持 / glob 越界 / 根目录无权限：终态。
           if (typed instanceof GrepTimeoutError
             || typed instanceof GrepCancelledError
             || typed instanceof GrepOverflowError
             || typed instanceof GrepInvalidPatternError
+            || typed instanceof GrepGlobComplexityError
             || typed instanceof GrepUnsupportedTypeError) {
             return this.withTiming({ ok: false, errorCode: typed.errorCode, message: typed.message }, timing);
           }

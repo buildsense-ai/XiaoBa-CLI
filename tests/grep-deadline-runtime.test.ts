@@ -6,7 +6,9 @@ import {
   resolveGrepSearchTimeoutMs,
 } from '../src/tools/grep-search-policy';
 import {
+  GREP_MAX_GLOB_LENGTH,
   compileGlob,
+  expandGlobAlternatives,
   matchGlob,
   planNativeIncludes,
 } from '../src/tools/grep-runtime';
@@ -70,6 +72,10 @@ describe('GrepTool deadline runtime', () => {
       fs.writeFileSync(path.join(testDir, 'many', `needle${i}.txt`), `needle ${i}\n`);
     }
     fs.writeFileSync(path.join(testDir, 'code.txt'), 'answer=42\ncats and dogs\n');
+    for (const suffix of ['a', 'b', 'c']) {
+      fs.writeFileSync(path.join(testDir, `class-${suffix}.txt`), `hello class ${suffix}\n`);
+    }
+    fs.writeFileSync(path.join(testDir, 'report_🐱.md'), 'hello emoji\n');
     fs.mkdirSync(path.join(testDir, 'bulk'), { recursive: true });
     fs.writeFileSync(path.join(testDir, 'bulk', 'bulk.txt'), Array.from({ length: 5000 }, (_, i) => `needle line ${i}`).join('\n'));
     fs.mkdirSync(path.join(testDir, '.git'), { recursive: true });
@@ -601,6 +607,17 @@ describe('GrepTool deadline runtime', () => {
       assert.strictEqual(planNativeIncludes('src/*.ts', undefined), undefined, '路径 glob 原生不可表达');
       assert.strictEqual(planNativeIncludes('*.ts', ['*.json']), undefined, 'glob∧type AND 原生不可表达');
       assert.strictEqual(planNativeIncludes('*[0-9].ts', undefined), undefined, '字符类语义原生不一致');
+      assert.strictEqual(planNativeIncludes('*.{js,txt', undefined), undefined, '不闭合花括号不可原生表达');
+    });
+
+    test('花括号展开预算在每次追加时短路，不物化笛卡尔积', () => {
+      const monster = '{a,b}'.repeat(24); // 2^24 个候选
+      const startedAt = Date.now();
+      const result = expandGlobAlternatives(monster);
+      const elapsed = Date.now() - startedAt;
+      assert.strictEqual(result, undefined, '超预算必须返回 undefined');
+      assert.ok(elapsed < 500, `展开必须短路而非物化全量候选，实际 ${elapsed}ms`);
+      assert.deepEqual(expandGlobAlternatives('{a,b}{c}'), ['ac', 'bc']);
     });
 
     test('glob 引擎为线性匹配：恶意 glob 不会回溯爆炸', () => {
@@ -620,6 +637,97 @@ describe('GrepTool deadline runtime', () => {
       const pathGlob = compileGlob('notes/*.md');
       assert.ok(matchGlob(pathGlob, 'notes/a.md', 'a.md'));
       assert.ok(!matchGlob(pathGlob, 'other/a.md', 'a.md'));
+    });
+  });
+
+  describe('二轮阻塞修复回归（评审 5cecf6d2）', () => {
+    test('多花括号组 glob 经公共入口快速完成（硬监督下不物化候选）', async () => {
+      if (isWin32) return;
+      const monsterGlob = '{a,b}'.repeat(24);
+      const startedAt = Date.now();
+      const result = await Promise.race([
+        grepTool.execute(
+          { pattern: 'hello', glob: monsterGlob, output_mode: 'files', timeout_ms: 2000 },
+          context,
+        ),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('test hard cap: 搜索未按时返回')), 6000).unref()),
+      ]);
+      // 组合展开在原生规划阶段即短路 → Node NFA 精确匹配（无候选匹配 → 合法无匹配）。
+      assert.ok(result.ok, `应正常完成而非超时/崩溃，实际: ${JSON.stringify(result).slice(0, 200)}`);
+      assert.ok(!String(result.content).includes('alpha.js'), '无 24 字符 a/b 串文件时不应有结果');
+      assert.ok(Date.now() - startedAt < 3000, `公共入口应在毫秒级完成，实际 ${Date.now() - startedAt}ms`);
+    });
+
+    test('emoji 文件名 glob（code-point 一致消费）在 glob+type 组合下命中', async () => {
+      if (isWin32) return;
+      writeShim(fakeBin, 'rg', ['exit 127']);
+      process.env.PATH = restrictedPath(fakeBin);
+
+      const result = await grepTool.execute(
+        { pattern: 'hello', glob: 'report_🐱.md', type: 'markdown', output_mode: 'files' },
+        context,
+      );
+      const text = getContent(result);
+      assert.ok(text.includes('report_🐱.md'), `应命中 emoji 文件名，实际: ${text}`);
+      assert.ok(!text.includes('alpha.js'), '不应包含范围外文件');
+    });
+
+    test('字符类成员/范围/否定由 NFA 精确匹配（原生不可表达 → Node）', async () => {
+      if (isWin32) return;
+      writeShim(fakeBin, 'rg', ['exit 127']);
+      process.env.PATH = restrictedPath(fakeBin);
+
+      const members = await grepTool.execute(
+        { pattern: 'hello', glob: 'class-[ab].txt', output_mode: 'files' },
+        context,
+      );
+      const membersText = getContent(members);
+      assert.ok(membersText.includes('class-a.txt') && membersText.includes('class-b.txt'), membersText);
+      assert.ok(!membersText.includes('class-c.txt'), '不应命中集合外文件');
+
+      const range = await grepTool.execute(
+        { pattern: 'hello', glob: 'class-[a-b].txt', output_mode: 'files' },
+        context,
+      );
+      const rangeText = getContent(range);
+      assert.ok(rangeText.includes('class-a.txt') && rangeText.includes('class-b.txt'), rangeText);
+      assert.ok(!rangeText.includes('class-c.txt'), '不应命中范围外文件');
+
+      const negated = await grepTool.execute(
+        { pattern: 'hello', glob: 'class-[!ab].txt', output_mode: 'files' },
+        context,
+      );
+      const negatedText = getContent(negated);
+      assert.ok(negatedText.includes('class-c.txt'), negatedText);
+      assert.ok(!negatedText.includes('class-a.txt'), '否定类不应命中被排除文件');
+    });
+
+    test('畸形 glob 显式拒绝为 INVALID_TOOL_ARGUMENTS，绝不静默变形或假空', async () => {
+      const malformed = ['class-[ab.txt', '*.{js,txt', 'hello}.txt', 'a'.repeat(GREP_MAX_GLOB_LENGTH + 1), '{a{a{a{a{a{a{a{a{a,b},b},b},b},b},b},b},b},b}'];
+      for (const glob of malformed) {
+        const result = await grepTool.execute({ pattern: 'hello', glob }, context);
+        const failure = getFailure(result);
+        assert.strictEqual(failure.errorCode, 'INVALID_TOOL_ARGUMENTS', `glob=${JSON.stringify(glob.slice(0, 24))} 应被显式拒绝`);
+        assert.ok(!failure.message.includes('未找到匹配项'), '畸形 glob 绝不伪装成无匹配');
+      }
+    });
+
+    test('参数类型校验先于 coercion/deadline：错型参数类型化拒绝而非崩溃或计时器泄漏', async () => {
+      const badArgs: Array<Record<string, unknown>> = [
+        {},
+        { pattern: { toString() { throw new Error('boom'); } } },
+        { pattern: 'x', glob: 5 },
+        { pattern: 'x', type: {} },
+        { pattern: 'x', path: 7 },
+        { pattern: 'x', timeout_ms: '1000' },
+      ];
+      for (const bad of badArgs) {
+        const startedAt = Date.now();
+        const result = await grepTool.execute(bad, context);
+        const failure = getFailure(result);
+        assert.strictEqual(failure.errorCode, 'INVALID_TOOL_ARGUMENTS', `args=${JSON.stringify(bad).slice(0, 60)} 应类型化拒绝`);
+        assert.ok(Date.now() - startedAt < 1000, '校验失败应立即返回');
+      }
     });
   });
 

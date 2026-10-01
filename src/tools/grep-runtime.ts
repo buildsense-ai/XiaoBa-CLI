@@ -57,7 +57,7 @@ export class GrepSearchError extends Error {
 /** The absolute deadline expired. Terminal: no backend may start or continue. */
 export class GrepTimeoutError extends GrepSearchError {
   constructor(budgetMs: number) {
-    super('SEARCH_TIMEOUT', `搜索超时：本地搜索未能在 ${budgetMs}ms 内完成，结果不完整，已停止全部后端。可在 100..30000 范围内调大 timeout_ms 后重试。`);
+    super('SEARCH_TIMEOUT', `搜索超时：本地搜索未能在 ${budgetMs}ms 内完成，结果不完整，已停止全部后端。建议先缩小 path/glob 范围后原样重试，不要在未缩小范围时直接加预算；确需更长时间可在 100..30000 内调大 timeout_ms。`);
     this.name = 'GrepTimeoutError';
   }
 }
@@ -122,6 +122,39 @@ export class GrepRootAccessError extends GrepSearchError {
   constructor(path: string, detail: string) {
     super('PERMISSION_DENIED', `搜索根目录无读取权限: ${path}${detail ? ` (${detail})` : ''}。结果不完整，已停止搜索而不是返回空匹配。`);
     this.name = 'GrepRootAccessError';
+  }
+}
+
+/**
+ * The glob filter is malformed or exceeds documented complexity bounds.
+ * Terminal and visible (INVALID_TOOL_ARGUMENTS): never silently trimmed,
+ * never silently re-interpreted as a different selector, never a false empty.
+ */
+export class GrepGlobComplexityError extends GrepSearchError {
+  constructor(detail: string) {
+    super('INVALID_TOOL_ARGUMENTS', `glob 过滤不受支持: ${detail}`);
+    this.name = 'GrepGlobComplexityError';
+  }
+}
+
+/** Hard input bounds checked before any expansion or NFA compilation. */
+export const GREP_MAX_GLOB_LENGTH = 256;
+export const GREP_MAX_GLOB_DEPTH = 8;
+
+export function validateGlobComplexity(glob: string): void {
+  if (glob.length > GREP_MAX_GLOB_LENGTH) {
+    throw new GrepGlobComplexityError(`glob 长度 ${glob.length} 超过上限 ${GREP_MAX_GLOB_LENGTH}`);
+  }
+  let depth = 0;
+  for (const ch of glob) {
+    if (ch === '{') {
+      depth += 1;
+      if (depth > GREP_MAX_GLOB_DEPTH) {
+        throw new GrepGlobComplexityError(`花括号嵌套超过 ${GREP_MAX_GLOB_DEPTH} 层`);
+      }
+    } else if (ch === '}') {
+      depth = Math.max(0, depth - 1);
+    }
   }
 }
 
@@ -362,12 +395,18 @@ export function spawnGrepCommand(
 // adversarial globs cannot stall the search or the loop.
 // ---------------------------------------------------------------------------
 
+interface GlobClassSpec {
+  members: Set<string>;
+  ranges: Array<[string, string]>;
+  negated: boolean;
+}
+
 interface GlobNfa {
   start: number;
   accepting: number;
   epsilon: number[][];
   chars: Array<Array<{ ch: string; to: number }>>;
-  any: Array<Array<{ slashOk: boolean; to: number }>>;
+  any: Array<Array<{ slashOk: boolean; to: number; cls?: GlobClassSpec }>>;
 }
 
 export interface GrepGlobMatcher {
@@ -390,7 +429,73 @@ function createNfa(): { nfa: GlobNfa; newState: () => number } {
 
 interface GlobFragment { start: number; end: number; }
 
-function parseGlobSequence(glob: string, cursor: { i: number }, topLevel: boolean, build: { nfa: GlobNfa; newState: () => number }): GlobFragment {
+const MAX_CLASS_BODY_CHARS = 128;
+const MAX_CLASS_RANGES = 64;
+
+/**
+ * Parse one bounded character class; cursor.i sits just after '['.
+ * Supports members, ranges (a-z), negation ([^…] and [!…]), and a literal
+ * ']' in first position. Anything malformed or oversized is rejected loudly.
+ */
+function parseCharClass(points: string[], cursor: { i: number }): GlobClassSpec {
+  const spec: GlobClassSpec = { members: new Set<string>(), ranges: [], negated: false };
+  if (points[cursor.i] === '^' || points[cursor.i] === '!') {
+    spec.negated = true;
+    cursor.i += 1;
+  }
+  let bodyChars = 0;
+  let first = true;
+  for (;;) {
+    if (cursor.i >= points.length) {
+      throw new GrepGlobComplexityError('字符类缺少闭合 "]"');
+    }
+    const ch = points[cursor.i];
+    if (ch === ']' && !first) {
+      cursor.i += 1;
+      return spec;
+    }
+    first = false;
+    cursor.i += 1;
+    if (cursor.i + 1 < points.length && points[cursor.i] === '-' && points[cursor.i + 1] !== ']') {
+      const low = ch;
+      const high = points[cursor.i + 1];
+      if ((high.codePointAt(0) ?? 0) < (low.codePointAt(0) ?? 0)) {
+        throw new GrepGlobComplexityError(`字符类范围倒序 "${low}-${high}"`);
+      }
+      cursor.i += 2;
+      if (spec.ranges.length >= MAX_CLASS_RANGES) {
+        throw new GrepGlobComplexityError(`字符类范围数超过 ${MAX_CLASS_RANGES}`);
+      }
+      spec.ranges.push([low, high]);
+      bodyChars += low.length + high.length;
+    } else {
+      spec.members.add(ch);
+      bodyChars += ch.length;
+    }
+    if (bodyChars > MAX_CLASS_BODY_CHARS) {
+      throw new GrepGlobComplexityError(`字符类体超过 ${MAX_CLASS_BODY_CHARS} 个字符`);
+    }
+  }
+}
+
+function classMatches(cls: GlobClassSpec, ch: string): boolean {
+  if (ch === '/') return false; // classes never match the path separator
+  let inSet = cls.members.has(ch);
+  if (!inSet) {
+    for (const [low, high] of cls.ranges) {
+      if (ch >= low && ch <= high) {
+        inSet = true;
+        break;
+      }
+    }
+  }
+  return cls.negated ? !inSet : inSet;
+}
+
+function parseGlobSequence(points: string[], cursor: { i: number }, topLevel: boolean, depth: number, build: { nfa: GlobNfa; newState: () => number }): GlobFragment {
+  if (depth > GREP_MAX_GLOB_DEPTH) {
+    throw new GrepGlobComplexityError(`花括号嵌套超过 ${GREP_MAX_GLOB_DEPTH} 层`);
+  }
   let joined: GlobFragment | undefined;
   const link = (piece: GlobFragment): void => {
     if (!joined) {
@@ -401,14 +506,14 @@ function parseGlobSequence(glob: string, cursor: { i: number }, topLevel: boolea
     joined = { start: joined.start, end: piece.end };
   };
 
-  while (cursor.i < glob.length) {
-    const ch = glob[cursor.i];
+  while (cursor.i < points.length) {
+    const ch = points[cursor.i];
     if (!topLevel && (ch === ',' || ch === '}')) break;
     cursor.i += 1;
 
     if (ch === '*') {
-      const globstar = glob[cursor.i] === '*';
-      if (globstar) while (glob[cursor.i] === '*') cursor.i += 1;
+      const globstar = points[cursor.i] === '*';
+      if (globstar) while (points[cursor.i] === '*') cursor.i += 1;
       const state = build.newState();
       const exit = build.newState();
       build.nfa.any[state].push({ slashOk: globstar, to: state });
@@ -421,14 +526,21 @@ function parseGlobSequence(glob: string, cursor: { i: number }, topLevel: boolea
       link({ start: state, end: exit });
     } else if (ch === '{') {
       const branches: GlobFragment[] = [];
+      let sawClose = false;
       for (;;) {
-        branches.push(parseGlobSequence(glob, cursor, false, build));
-        if (glob[cursor.i] === ',') {
+        branches.push(parseGlobSequence(points, cursor, false, depth + 1, build));
+        if (points[cursor.i] === ',') {
           cursor.i += 1;
           continue;
         }
-        if (glob[cursor.i] === '}') cursor.i += 1; // unbalanced braces degrade to literal end
+        if (points[cursor.i] === '}') {
+          cursor.i += 1;
+          sawClose = true;
+        }
         break;
+      }
+      if (!sawClose) {
+        throw new GrepGlobComplexityError('花括号不闭合');
       }
       const enter = build.newState();
       const exit = build.newState();
@@ -437,6 +549,14 @@ function parseGlobSequence(glob: string, cursor: { i: number }, topLevel: boolea
         build.nfa.epsilon[branch.end].push(exit);
       }
       link({ start: enter, end: exit });
+    } else if (ch === '}') {
+      throw new GrepGlobComplexityError('多余的 "}"');
+    } else if (ch === '[') {
+      const cls = parseCharClass(points, cursor);
+      const state = build.newState();
+      const exit = build.newState();
+      build.nfa.any[state].push({ slashOk: false, to: exit, cls });
+      link({ start: state, end: exit });
     } else {
       const state = build.newState();
       const exit = build.newState();
@@ -467,6 +587,8 @@ function epsilonClosure(nfa: GlobNfa, states: Set<number>): Set<number> {
 }
 
 function nfaAccepts(nfa: GlobNfa, value: string): boolean {
+  // Consistent code-point consumption on both sides: the parser iterates code
+  // points too, so surrogate pairs (emoji) compare as whole characters.
   let current = epsilonClosure(nfa, new Set<number>([nfa.start]));
   for (const ch of value) {
     const next = new Set<number>();
@@ -475,7 +597,11 @@ function nfaAccepts(nfa: GlobNfa, value: string): boolean {
         if (edge.ch === ch) next.add(edge.to);
       }
       for (const edge of nfa.any[state]) {
-        if (edge.slashOk || ch !== '/') next.add(edge.to);
+        if (edge.cls) {
+          if (classMatches(edge.cls, ch)) next.add(edge.to);
+        } else if (edge.slashOk || ch !== '/') {
+          next.add(edge.to);
+        }
       }
     }
     if (next.size === 0) return false;
@@ -484,10 +610,12 @@ function nfaAccepts(nfa: GlobNfa, value: string): boolean {
   return current.has(nfa.accepting);
 }
 
-/** Compile a user glob ("*.js", "*.{ts,tsx}", "src/x/**" / "*.d.ts") into a linear matcher. */
+/** Compile a user glob ("*.js", "*.{ts,tsx}", "notes/x.md", "cat-[ab].txt") into a linear matcher. */
 export function compileGlob(glob: string): GrepGlobMatcher {
+  validateGlobComplexity(glob);
+  const points = Array.from(glob); // code points, not UTF-16 units
   const build = createNfa();
-  const whole = parseGlobSequence(glob, { i: 0 }, true, build);
+  const whole = parseGlobSequence(points, { i: 0 }, true, 1, build);
   build.nfa.start = whole.start;
   build.nfa.accepting = whole.end;
   return {
@@ -533,13 +661,22 @@ export function compileSearchFilters(
 
 /**
  * Expand top-level (and nested) brace alternatives into concrete globs:
- * "*.{ts,tsx}" → ["*.ts", "*.tsx"]. Returns undefined when expansion would
- * exceed maxResults (caller should not feed the native backend).
+ * "*.{ts,tsx}" → ["*.ts", "*.tsx"]. The budget is checked at every append and
+ * recursion step, so a pathological '{a,b}'.repeat(N) aborts after maxResults
+ * candidates instead of materializing the full cross product. Returns
+ * undefined when the cap would be exceeded or braces are unbalanced (caller
+ * must not feed the native backend; the exact NFA handles the rest).
  */
 export function expandGlobAlternatives(glob: string, maxResults = 16): string[] | undefined {
-  const expand = (input: string): string[] => {
+  const results: string[] = [];
+
+  const walk = (input: string): boolean => {
     const open = input.indexOf('{');
-    if (open === -1) return [input];
+    if (open === -1) {
+      if (results.length >= maxResults) return false;
+      results.push(input);
+      return true;
+    }
     let depth = 0;
     let close = -1;
     for (let i = open; i < input.length; i += 1) {
@@ -552,7 +689,7 @@ export function expandGlobAlternatives(glob: string, maxResults = 16): string[] 
         }
       }
     }
-    if (close === -1) return [input]; // unbalanced → literal
+    if (close === -1) return false; // unbalanced → not natively expressible
     const prefix = input.slice(0, open);
     const inner = input.slice(open + 1, close);
     const suffix = input.slice(close + 1);
@@ -570,14 +707,13 @@ export function expandGlobAlternatives(glob: string, maxResults = 16): string[] 
       current += ch;
     }
     alternatives.push(current);
-    const out: string[] = [];
     for (const alternative of alternatives) {
-      for (const expanded of expand(prefix + alternative + suffix)) out.push(expanded);
+      if (!walk(prefix + alternative + suffix)) return false;
     }
-    return out;
+    return true;
   };
-  const results = expand(glob);
-  return results.length > maxResults ? undefined : results;
+
+  return walk(glob) ? results : undefined;
 }
 
 /** fnmatch-style globs only: no path separators, no braces, no character classes. */
