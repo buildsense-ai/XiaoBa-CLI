@@ -890,3 +890,77 @@ function writeKnowledgeDocument(root: string, id: string, title: string, summary
     'utf-8',
   );
 }
+
+describe('delta-mode remote scoping', () => {
+  let testRoot: string;
+  let previousUserDataDir: string | undefined;
+
+  beforeEach(() => {
+    previousUserDataDir = process.env.XIAOBA_USER_DATA_DIR;
+    testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catslog-delta-'));
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
+  });
+
+  afterEach(() => {
+    if (previousUserDataDir === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+    else process.env.XIAOBA_USER_DATA_DIR = previousUserDataDir;
+    fs.rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  test('a managed KB hit narrows the session query to post-KB turns and tightens the branch budget', async () => {
+    const knowledgeRoot = path.join(testRoot, 'knowledge');
+    const kbId = 'KB-0f1e2d3c-4b5a-4677-8899-aabbccddeeff';
+    writeKnowledgeDocument(knowledgeRoot, kbId, 'Release checklist', 'release checklist: nginx read-only mount, rollback via flag');
+
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new AssessThenFinishAI();
+    const backend = new SessionQueryMemory();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'delta-mode',
+      input: 'what is our release checklist?',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+    await handle.done;
+
+    // Delta boundary comes from the doc's updatedAt; the branch fan-out runs
+    // under the tightened delta budget, never the default breadth.
+    assert.equal(backend.sessionQueries[0]?.from, '2026-09-10T00:00:00.000Z');
+    assert.deepEqual(backend.branchQueries[0]?.budgets, {
+      perBranchTimeoutMs: 2_000,
+      perBranchMaxItems: 6,
+      totalDeadlineMs: 4_000,
+    });
+    // The pack marks the delta window so refine treats remote silence as
+    // composed coverage, not an empty result.
+    const pack = ai.evidencePackIn(ai.calls[1].messages);
+    assert.equal(pack.evidence_pack.remote_delta_from, '2026-09-10T00:00:00.000Z');
+    assert.match(String(pack.evidence_pack.remote_delta_note), /增量/);
+  });
+
+  test('no KB coverage leaves remote lanes at full breadth', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new AssessThenFinishAI();
+    const backend = new SessionQueryMemory();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'no-delta',
+      input: 'what is our release checklist?',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+    await handle.done;
+
+    assert.equal(backend.sessionQueries[0]?.from, undefined);
+    assert.equal(backend.branchQueries[0]?.budgets, undefined);
+    const pack = ai.evidencePackIn(ai.calls[1].messages);
+    assert.equal('remote_delta_from' in pack.evidence_pack, false);
+  });
+});
