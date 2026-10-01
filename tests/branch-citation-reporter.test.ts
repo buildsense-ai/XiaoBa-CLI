@@ -80,3 +80,56 @@ describe('branch citation matcher', () => {
     assert.deepEqual(matchBranchCitations([], REF_A).reports, []);
   });
 });
+
+describe('collectAssistantCitationText', () => {
+  test('kb refs match the bare KB-ID inside a tool_call file path', async () => {
+    const { collectAssistantCitationText } = await import('../src/core/branch-citation-reporter');
+    const corpus = collectAssistantCitationText([
+      {
+        role: 'assistant',
+        content: '我先查一下知识库记录',
+        tool_calls: [{
+          id: 'c1', type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"/opt/xiaoba-cli/knowledge/documents/KB-11111111-2222-4333-8444-555555555555.md"}' },
+        }],
+      },
+      { role: 'assistant', content: '最终答复文本', tool_calls: undefined },
+    ], '最终答复文本');
+    const match = matchBranchCitations([
+      observation({ refs: [KB_REF, 'kb:KB-99999999-9999-4999-8999-999999999999'] }),
+    ], corpus);
+    assert.deepEqual(match.knowledgeRefs, [KB_REF]);
+  });
+
+  test('assistant tool_call arguments carrying a pool ref count as citations', async () => {
+    const { collectAssistantCitationText } = await import('../src/core/branch-citation-reporter');
+    const corpus = collectAssistantCitationText([
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'c2', type: 'function',
+          function: { name: 'context_fetch', arguments: `{"ref":"${REF_A}"}` },
+        }],
+      },
+    ], '答复未提及 ref');
+    const match = matchBranchCitations([
+      observation({ citation: { requestId: 'br-3', refs: [REF_A, REF_B] }, refs: [REF_A] }),
+    ], corpus);
+    assert.deepEqual(match.reports, [{ requestId: 'br-3', refs: [REF_A] }]);
+  });
+
+  test('injection evidence in user/tool messages never counts as a citation', async () => {
+    const { collectAssistantCitationText } = await import('../src/core/branch-citation-reporter');
+    const corpus = collectAssistantCitationText([
+      { role: 'user', content: `injected evidence mentions ${REF_A}` },
+      { role: 'tool', content: `tool result echoes ${REF_B}`, tool_call_id: 't1' },
+      { role: 'assistant', content: 'clean reply' },
+    ], 'clean reply');
+    const match = matchBranchCitations([
+      observation({ citation: { requestId: 'br-4', refs: [REF_A, REF_B] }, refs: [REF_A, REF_B] }),
+    ], corpus);
+    assert.deepEqual(match.reports, []);
+    assert.deepEqual(match.knowledgeRefs, []);
+  });
+});

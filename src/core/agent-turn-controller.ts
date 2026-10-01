@@ -35,6 +35,7 @@ import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
 import {
   BranchCitationReport,
+  collectAssistantCitationText,
   matchBranchCitations,
 } from './branch-citation-reporter';
 import { getPetService } from '../pet/pet-service';
@@ -238,8 +239,12 @@ export class AgentTurnController {
         result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks));
         this.markEpisodeMessages(result.newMessages, episodeId);
         // The reply for this turn is final: report which injected refs it
-        // actually cited. Fire-and-forget — telemetry must never break a turn.
-        this.dispatchBranchCitationTelemetry(consumedObservations, result.response);
+        // actually cited. Match against the whole assistant output of the
+        // turn (final text + interim assistant text + tool_call arguments),
+        // not just the visible reply — e.g. reading a KB document by path is
+        // a citation even when the reply never prints the ref literally.
+        // Fire-and-forget — telemetry must never break a turn.
+        this.dispatchBranchCitationTelemetry(consumedObservations, result.newMessages, result.response);
       } catch (error: any) {
         const partialMessages = this.options.turnContextBuilder.removeTransientMessages(turnContext.messages);
         this.replaceBase64Images(partialMessages);
@@ -565,10 +570,14 @@ export class AgentTurnController {
    */
   private dispatchBranchCitationTelemetry(
     consumedObservations: readonly SyntheticObservation[],
+    newMessages: readonly Message[] | undefined,
     replyText: string | undefined,
   ): void {
     try {
-      const { reports, knowledgeRefs } = matchBranchCitations(consumedObservations, replyText);
+      const { reports, knowledgeRefs } = matchBranchCitations(
+        consumedObservations,
+        collectAssistantCitationText(newMessages, replyText),
+      );
       for (const report of reports) {
         void this.reportBranchCitations(report);
       }
