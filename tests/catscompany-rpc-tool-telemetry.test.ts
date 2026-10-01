@@ -6,6 +6,7 @@ import type { CatsDeviceRpcMessage, CatsThinToolRpcMessage } from '../src/catsco
 import {
   RPC_TELEMETRY_TRACKED_TOOLS,
   RpcToolTelemetrySpan,
+  encodeRpcTelemetryFieldValue,
   normalizeRpcTelemetryTool,
   sanitizeRpcTelemetryErrorCode,
   sanitizeRpcTelemetryLabel,
@@ -136,8 +137,8 @@ describe('rpc-tool-telemetry pure helpers', () => {
     assert.ok(line.includes('ok=false'));
     assert.ok(line.includes('errorCode=target_device_mismatch'));
     assert.ok(!line.includes('ok=true'));
-    // 不可信/空 errorCode 收敛为 unknown_error，控制字符被清洗
-    assert.ok(span!.executeEnd({ ok: false, errorCode: 'bad\n scheme\u0000' }, 1_005).includes('errorCode=bad scheme'));
+    // 不可信/空 errorCode 收敛为 unknown_error，控制字符被清洗并百分号编码
+    assert.ok(span!.executeEnd({ ok: false, errorCode: 'bad\n scheme\u0000' }, 1_005).includes('errorCode=bad%20scheme'));
     assert.ok(span!.executeEnd({ ok: false }, 1_006).includes('errorCode=unknown_error'));
     // 发送失败仍然保持 ok=false 且带 sendFailed 标记
     const sentLine = span!.resultSent({ ok: false, errorCode: 'target_device_mismatch', sendFailed: true }, 1_010);
@@ -161,6 +162,87 @@ describe('rpc-tool-telemetry pure helpers', () => {
     assert.equal(toolResultContentChars({ content: 'abc' }), 3);
     assert.equal(toolResultContentChars({ content: ['block'] }), undefined);
     assert.equal(toolResultContentChars(undefined), undefined);
+  });
+
+  test('label type fence: objects/toString hooks are never invoked and never throw', () => {
+    let hookRan = false;
+    const hookObject = { toString: () => { hookRan = true; return 'pwned'; } } as unknown as string;
+    assert.equal(sanitizeRpcTelemetryLabel(hookObject, 10), '');
+    assert.equal(hookRan, false, 'custom toString must never execute');
+
+    // String({toString: null}) 会抛 TypeError；类型门必须先行拦截
+    assert.equal(sanitizeRpcTelemetryLabel({ toString: null }, 10), '');
+    const getterBomb = { get toString(): string { throw new Error('getter bomb'); } } as unknown as string;
+    assert.equal(sanitizeRpcTelemetryLabel(getterBomb, 10), '');
+
+    // 其余非 string / 非有限 number 标量一律为空
+    assert.equal(sanitizeRpcTelemetryLabel(['tool=write_file'], 10), '');
+    assert.equal(sanitizeRpcTelemetryLabel(null, 10), '');
+    assert.equal(sanitizeRpcTelemetryLabel(Symbol('x'), 10), '');
+    assert.equal(sanitizeRpcTelemetryLabel(BigInt(10), 10), '');
+    assert.equal(sanitizeRpcTelemetryLabel(true, 10), '');
+    assert.equal(sanitizeRpcTelemetryLabel(NaN, 10), '');
+    assert.equal(sanitizeRpcTelemetryLabel(Infinity, 10), '');
+    // 有限 number 走固定 coercion，允许保留
+    assert.equal(sanitizeRpcTelemetryLabel(42, 10), '42');
+    assert.equal(sanitizeRpcTelemetryLabel(3.5, 10), '3.5');
+
+    // 同样的 fence 覆盖 request id / 工具名入口
+    assert.equal(sanitizeRpcTelemetryRequestId(hookObject), '');
+    assert.equal(normalizeRpcTelemetryTool({ toString: null }), 'unknown');
+    assert.equal(
+      RpcToolTelemetrySpan.begin({ channel: 'device_rpc', requestId: hookObject, toolName: 'grep' }),
+      undefined,
+    );
+    assert.equal(normalizeRpcTelemetryTool(7), 'unknown');
+  });
+
+  test('field encoding keeps nonce ids readable and defuses kv/control injection', () => {
+    // 常规 nonce 请求 ID：unreserved 集合原样保留、可读可关联
+    assert.equal(encodeRpcTelemetryFieldValue('thin_tool_rpc_ab12-cd34.ef56_7890'), 'thin_tool_rpc_ab12-cd34.ef56_7890');
+    assert.equal(encodeRpcTelemetryFieldValue('TOOL_EXECUTION_ERROR'), 'TOOL_EXECUTION_ERROR');
+    assert.equal(encodeRpcTelemetryFieldValue('target_device_mismatch'), 'target_device_mismatch');
+    // 危险字符（含 UTF-8 多字节）转标准百分号编码
+    assert.equal(encodeRpcTelemetryFieldValue('a b'), 'a%20b');
+    assert.equal(encodeRpcTelemetryFieldValue('a=b'), 'a%3Db');
+    assert.equal(encodeRpcTelemetryFieldValue('"x"[y]{z}'), '%22x%22%5By%5D%7Bz%7D');
+    assert.equal(encodeRpcTelemetryFieldValue('emoji😀'), 'emoji%F0%9F%98%80');
+    assert.equal(encodeRpcTelemetryFieldValue(''), '');
+  });
+
+  test('kv-injected request id cannot forge phase/tool/ok/errorCode fields in any timeline line', () => {
+    const span = RpcToolTelemetrySpan.begin({
+      channel: 'device_rpc',
+      requestId: 'x tool=write_file phase=result_sent ok=true errorCode=PWNED',
+      toolName: 'grep',
+      now: 1_000,
+    });
+    assert.ok(span);
+    const lines = [
+      span!.received(1_000),
+      span!.executeEnd({ ok: true }, 1_500),
+      span!.resultSent({ ok: true, resultChars: 5 }, 1_800),
+    ];
+    for (const line of lines) {
+      assert.equal(line.match(/tool=/g)?.length, 1, `exactly one tool= field: ${line}`);
+      assert.equal(line.match(/phase=/g)?.length, 1, `exactly one phase= field: ${line}`);
+      assert.ok(line.includes('tool=grep'), `real tool preserved: ${line}`);
+      // 注入片段只能以编码形式出现（原始 key=value 伪造不可见）
+      assert.ok(line.includes('%20tool%3Dwrite_file'), `injection percent-encoded: ${line}`);
+      assert.ok(!line.includes(' tool=write_file'));
+      assert.ok(!line.includes('errorCode=PWNED'));
+    }
+    assert.ok(lines[1].includes('ok=true') && !lines[0].includes('ok='), 'received phase has no ok field');
+    assert.ok(lines[2].includes('phase=result_sent'));
+
+    // errorCode 注入同样只能编码出现
+    const errSpan = RpcToolTelemetrySpan.begin({ channel: 'thin_tool_rpc', requestId: 'rpc-e', toolName: 'grep', now: 1_000 });
+    assert.ok(errSpan);
+    const errLine = errSpan!.executeEnd({ ok: false, errorCode: 'y phase=execute_end ok=true' }, 1_100);
+    assert.equal(errLine.match(/phase=/g)?.length, 1);
+    assert.equal(errLine.match(/ok=/g)?.length, 1);
+    assert.ok(errLine.includes('ok=false'));
+    assert.ok(errLine.includes('errorCode=y%20phase%3Dexecute_end%20ok%3Dtrue'));
   });
 });
 
@@ -390,5 +472,36 @@ describe('receiver grep telemetry (device_rpc + thin_tool_rpc)', () => {
     }
 
     assert.deepEqual(telemetryLines(capture.lines), []);
+  });
+
+  test('device_rpc hostile request id: encoded in telemetry, raw id unchanged on the wire', async () => {
+    const captured: { result?: any } = {};
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.shuttingDown = false;
+    bot.localDeviceGrant = localDeviceGrant();
+    bot.bot = { sendDeviceRpcResult: async (result: any) => { captured.result = result; } };
+    bot.executeLocalDeviceRpcTool = async () => ({ ok: true, content: 'ok' });
+    const hostileId = 'rpc fake tool=read_file ok=true\n';
+
+    const capture = captureLoggerInfo();
+    try {
+      await bot.handleDeviceRpcRequest(deviceGrepRequest({ request_id: hostileId }));
+    } finally {
+      capture.restore();
+    }
+
+    const telemetry = telemetryLines(capture.lines);
+    assert.equal(telemetry.length, 3);
+    assert.equal(telemetry[0].match(/ok=/g)?.length ?? 0, 0, 'received phase has no ok field');
+    for (const line of telemetry) {
+      assert.equal(line.match(/tool=/g)?.length, 1);
+      assert.ok(!line.includes(' tool=read_file'));
+      assert.ok(!line.includes('\n'));
+    }
+    assert.equal(telemetry[1].match(/ok=/g)?.length, 1);
+    assert.equal(telemetry[2].match(/ok=/g)?.length, 1);
+    assert.ok(telemetry[0].includes('request=rpc%20fake%20tool%3Dread_file'));
+    // 传输形状不变：原始 request_id 原样回传
+    assert.equal(captured.result.request_id, hostileId);
   });
 });

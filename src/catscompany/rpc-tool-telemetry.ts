@@ -1,7 +1,7 @@
 /**
  * Receiver-side RPC telemetry for slow tool calls（当前仅跟踪 grep）。
  *
- * 背景（2026-09 实例 .34 诊断）：一次真实 turn 花费 533s，其中 grep 工具窗口
+ * 背景（2026-10-01 实例 .34 诊断）：一次真实 turn 花费 533s，其中 grep 工具窗口
  * 约 507s。现有接收端日志无法区分"工具执行耗时"与"结果回传传输耗时"，也
  * 无法按 request 关联 start → execute-end → result-sent 三个时间点。
  *
@@ -12,7 +12,11 @@
  *
  * 隐私 fence（硬约束）：只允许记录 request ID（清洗后）、工具枚举、时序、
  * ok/errorCode 与长度聚合；绝不记录 pattern/路径/参数、消息体、输出正文或
- * 凭据。不可信的 request/error 标签一律去除控制字符并截断长度。
+ * 凭据。不可信的 request/error 标签一律先做类型门（仅接受 string 与有限
+ * number，绝不触发自定义 coercion/toString hook）、去控制字符并截断长度，
+ * 再在拼入日志前按 RFC3986 unreserved 白名单百分号编码，使内嵌的
+ * `tool=`/`phase=`/`ok=` 等无法伪造 key=value 字段；常规 nonce 请求 ID
+ * （字母数字与 -._~）保持原样可读、可关联。
  */
 
 export type RpcTelemetryChannel = 'device_rpc' | 'thin_tool_rpc';
@@ -40,11 +44,61 @@ const MAX_RPC_TELEMETRY_CODE_CHARS = 48;
 /** C0/C1 控制字符统一替换为空格，防止日志注入与换行伪造。 */
 const CONTROL_CHARS_PATTERN = /[\u0000-\u001f\u007f-\u009f]/g;
 
-/** 清洗不可信标签：去除控制字符、收敛空白、限制长度。 */
+/**
+ * 日志字段值的类型门：仅接受 string 与有限 number（number 走固定 coercion，
+ * 无自定义 hook）。其余类型（对象/数组/null/undefined/Symbol/BigInt/布尔/
+ * 函数等）一律返回空串，绝不调用 String()，从而不会触发对象的
+ * toString/Symbol.toPrimitive（可能抛错或执行任意代码）。
+ */
+function rpcTelemetryLabelSource(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return '';
+}
+
+/** 清洗不可信标签：类型门 → 去控制字符 → 收敛空白 → 限制长度。 */
 export function sanitizeRpcTelemetryLabel(value: unknown, maxChars: number): string {
-  const text = String(value ?? '');
-  const cleaned = text.replace(CONTROL_CHARS_PATTERN, ' ').replace(/\s+/g, ' ').trim();
-  return cleaned.slice(0, Math.max(0, maxChars));
+  const text = rpcTelemetryLabelSource(value);
+  return text.replace(CONTROL_CHARS_PATTERN, ' ').replace(/\s+/g, ' ').trim().slice(0, Math.max(0, maxChars));
+}
+
+/** 拼入日志 key=value 字段时保持原样的白名单字符（RFC3986 unreserved）。 */
+const RPC_FIELD_SAFE_CHAR_PATTERN = /[A-Za-z0-9._~-]/;
+
+/**
+ * 将清洗后的值百分号编码（标准 UTF-8 %XX）后拼入日志字段：内嵌的 `=`、
+ * 空白、引号、括号等全部转义，无法伪造 `tool=`/`phase=`/`ok=` 等 key=value
+ * 字段；unreserved 集合内的常规 nonce 字符串原样保留、可读可关联。
+ * 输出长度最多约为清洗后长度的 3 倍（上层已限长，结果仍有界）。
+ */
+export function encodeRpcTelemetryFieldValue(value: string): string {
+  let encoded = '';
+  for (const char of value) {
+    if (RPC_FIELD_SAFE_CHAR_PATTERN.test(char)) {
+      encoded += char;
+      continue;
+    }
+    const codePoint = char.codePointAt(0) as number;
+    const utf8: number[] = [];
+    if (codePoint <= 0x7f) {
+      utf8.push(codePoint);
+    } else if (codePoint <= 0x7ff) {
+      utf8.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
+    } else if (codePoint <= 0xffff) {
+      utf8.push(0xe0 | (codePoint >> 12), 0x80 | ((codePoint >> 6) & 0x3f), 0x80 | (codePoint & 0x3f));
+    } else {
+      utf8.push(
+        0xf0 | (codePoint >> 18),
+        0x80 | ((codePoint >> 12) & 0x3f),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f),
+      );
+    }
+    for (const byte of utf8) {
+      encoded += `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+    }
+  }
+  return encoded;
 }
 
 /** 归一化为接收端工具枚举；未知工具一律记为 unknown（不透传原始字符串）。 */
@@ -136,7 +190,7 @@ export class RpcToolTelemetrySpan {
   }
 
   private prefix(phase: RpcTelemetryPhase): string {
-    return `[CatsCompany][${this.channel}][telemetry] request=${this.requestId} tool=${this.tool} phase=${phase}`;
+    return `[CatsCompany][${this.channel}][telemetry] request=${encodeRpcTelemetryFieldValue(this.requestId)} tool=${encodeRpcTelemetryFieldValue(this.tool)} phase=${phase}`;
   }
 
   /** 接收请求（时间线起点）。 */
@@ -155,7 +209,7 @@ export class RpcToolTelemetrySpan {
     if (input.ok) {
       return `${this.prefix('execute_end')} ok=true durationMs=${durationMs}`;
     }
-    const errorCode = sanitizeRpcTelemetryErrorCode(input.errorCode) || 'unknown_error';
+    const errorCode = encodeRpcTelemetryFieldValue(sanitizeRpcTelemetryErrorCode(input.errorCode)) || 'unknown_error';
     return `${this.prefix('execute_end')} ok=false errorCode=${errorCode} durationMs=${durationMs}`;
   }
 
@@ -173,7 +227,8 @@ export class RpcToolTelemetrySpan {
       `transportMs=${transportMs}`,
     ];
     if (!input.ok) {
-      segments.push(`errorCode=${sanitizeRpcTelemetryErrorCode(input.errorCode) || 'unknown_error'}`);
+      const errorCode = encodeRpcTelemetryFieldValue(sanitizeRpcTelemetryErrorCode(input.errorCode)) || 'unknown_error';
+      segments.push(`errorCode=${errorCode}`);
     }
     const resultChars = formatChars(input.resultChars);
     if (input.ok && resultChars !== undefined) segments.push(`resultChars=${resultChars}`);
