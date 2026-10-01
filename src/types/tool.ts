@@ -163,6 +163,7 @@ export type ToolErrorCode =
   | 'NEEDS_CONFIRMATION'
   | 'PERMISSION_DENIED'
   | 'FILE_NOT_FOUND'
+  | 'SEARCH_TIMEOUT'
   | 'EXECUTION_TIMEOUT';
 
 export type ToolSurface = 'cli' | 'feishu' | 'catscompany' | 'weixin' | 'agent' | 'research' | 'unknown';
