@@ -750,8 +750,12 @@ describe('GrepTool deadline runtime', () => {
         assert.ok(!line.includes(testDir), 'timing 不得包含路径');
         assert.ok(!line.includes('hello'), 'timing 不得包含模式或内容');
       }
-      const okLine = lines.find(l => l.startsWith('ripgrep:'));
-      assert.ok(okLine && /\((ok|no_match)\)/.test(okLine), `ripgrep 后端应成功完成，实际: ${okLine}`);
+      // rg is optional; production .34 deliberately exercises the fallback.
+      // The last attempted backend must have completed this known-positive
+      // fixture, while unavailable earlier backends may be recorded as error.
+      const backendLines = lines.filter(l => /^(ripgrep|grep|node):/.test(l));
+      const completed = backendLines[backendLines.length - 1];
+      assert.ok(completed && /\(ok\)$/.test(completed), `可用后端应成功完成，实际: ${completed}`);
     });
 
     test('默认不输出计时段', async () => {
