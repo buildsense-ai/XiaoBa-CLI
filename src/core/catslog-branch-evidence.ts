@@ -5,6 +5,7 @@ import type {
   CatscoSessionQueryResult,
 } from '../utils/catsco-log-agent-client';
 import {
+  isCatsLogPoolCitationRef,
   isSafeCatsLogOpaqueIdentifier,
   isSafeCatsLogSkillHandle,
 } from '../utils/catsco-log-agent-client';
@@ -91,8 +92,33 @@ function projectBranchItem(item: Record<string, unknown>): Record<string, unknow
 
 function projectSourceRef(value: unknown): string {
   const ref = boundedText(value, 512);
-  if (isSafeSessionRef(ref) || isSafeSkillCitation(ref)) return ref;
+  // Server pool-citation refs keep their wire form: the citations endpoint
+  // validates reported refs against this exact `ref_<64hex>` pool, so hashing
+  // them would break downstream citation reporting.
+  if (isCatsLogPoolCitationRef(ref) || isSafeSessionRef(ref) || isSafeSkillCitation(ref)) return ref;
   return `catslog:ref:${hashRef(ref)}`;
+}
+
+/**
+ * Collect the projected, deduped pool-citation refs (`ref_<64hex>`) that one
+ * /catsco/agent/branch response surfaced. These form the reportable subset of
+ * an injection: the server merges citations only when each ref belongs to the
+ * request's pool_refs.
+ */
+export function collectRemotePoolRefs(response: CatscoBranchResponse | unknown): string[] {
+  const branches = asRecord(response)?.branches;
+  if (!Array.isArray(branches)) return [];
+  const pool = new Set<string>();
+  for (const branch of branches.slice(0, MAX_BRANCHES)) {
+    const items = asRecord(branch)?.items;
+    if (!Array.isArray(items)) continue;
+    for (const item of items.slice(0, MAX_BRANCH_ITEMS)) {
+      const ref = asRecord(item)?.ref;
+      if (isCatsLogPoolCitationRef(ref)) pool.add(ref);
+      if (pool.size >= 256) return Array.from(pool);
+    }
+  }
+  return Array.from(pool);
 }
 
 /** Serialize one projection into a bounded JSON string (tool-result shape). */

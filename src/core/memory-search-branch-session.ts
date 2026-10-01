@@ -17,13 +17,18 @@ import type {
   CatscoEvidenceVerdict,
   CatscoSessionQueryResult,
 } from '../utils/catsco-log-agent-client';
-import { hasCatsLogControlCodePoint } from '../utils/catsco-log-agent-client';
+import {
+  hasCatsLogControlCodePoint,
+  isCatsLogPoolCitationRef,
+} from '../utils/catsco-log-agent-client';
+import type { SyntheticObservationCitation } from './synthetic-observation';
 import {
   CatsLogObservedRefsTracker,
   CatsLogObservedRefsSnapshot,
 } from './catslog-skill-evidence';
 import {
   boundToolResultJson,
+  collectRemotePoolRefs,
   normalizeEvidenceVerdict,
   projectBranchResponse,
   projectSessionQueryResponse,
@@ -662,6 +667,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   protected buildObservation(payload: MemorySearchFinishPayload): SyntheticObservation {
     const requestedDelivery = payload.delivery || (payload.inject ? 'context' : 'discard');
     const decision = this.resolveFinishDecision(payload, requestedDelivery);
+    const citation = this.buildCitationTelemetry(payload.refs);
     return {
       id: `memory-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
       source: 'memory',
@@ -672,6 +678,11 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         branchId: this.options.id,
         branchType: this.options.type,
         refs: payload.refs,
+        // Downstream citation telemetry pool (context deliveries only reach
+        // this point): /branch request_id + the payload refs that belong to
+        // that request's server pool. The parent-turn seam matches the reply
+        // text against these and reports citations fire-and-forget.
+        ...(citation ? { citation } : {}),
       },
       formattedContent: JSON.stringify({
         source: 'memory',
@@ -679,6 +690,35 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         refs: payload.refs,
       }),
     };
+  }
+
+  /**
+   * Reportable citation pool for this injection: the /branch response's
+   * request_id intersected with the finish payload's `ref_`-prefixed refs.
+   * Only refs the server returned for this request may be reported back;
+   * anything else (session/skill/kb refs, hashed refs) stays local.
+   */
+  private buildCitationTelemetry(refs: string[]): SyntheticObservationCitation | undefined {
+    const requestId = this.remoteRequestId();
+    if (!requestId) return undefined;
+    const pool = new Set(collectRemotePoolRefs(this.retrieval.remoteResponse));
+    const reportable: string[] = [];
+    const seen = new Set<string>();
+    for (const ref of refs) {
+      if (!isCatsLogPoolCitationRef(ref) || !pool.has(ref) || seen.has(ref)) continue;
+      seen.add(ref);
+      reportable.push(ref);
+      if (reportable.length >= 64) break;
+    }
+    return reportable.length > 0 ? { requestId, refs: reportable } : undefined;
+  }
+
+  private remoteRequestId(): string | undefined {
+    const requestId = this.retrieval.remoteResponse?.request_id;
+    if (typeof requestId !== 'string') return undefined;
+    const trimmed = requestId.trim();
+    if (!trimmed || trimmed.length > 256 || hasCatsLogControlCodePoint(trimmed)) return undefined;
+    return trimmed;
   }
 }
 

@@ -1,5 +1,6 @@
 import { Tool, ToolDefinition, ToolExecutionResult } from '../types/tool';
 import {
+  CATSLOG_POOL_CITATION_REF_PATTERN,
   hasCatsLogControlCodePoint,
   isSafeCatsLogOpaqueIdentifier,
   isSafeCatsLogSkillHandle,
@@ -54,6 +55,9 @@ export function isMemoryCitationRef(ref: string): boolean {
     return true;
   }
   if (isKnowledgeCitationRef(ref)) return true;
+  // Server pool-citation refs pass through the branch projection unchanged;
+  // the observed-refs tracker still gates any citation of them.
+  if (CATSLOG_POOL_CITATION_REF_PATTERN.test(ref)) return true;
   const stream = ref.match(CATSLOG_STREAM_REF_PATTERN);
   if (stream && isSafeCatsLogOpaqueIdentifier(stream[1], 256)) return true;
   const skill = ref.match(CATSLOG_SKILL_REF_PATTERN);

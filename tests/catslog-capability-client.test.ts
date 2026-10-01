@@ -83,6 +83,90 @@ describe('CatsLog capability client', () => {
     });
   });
 
+  test('reports branch citations to <branchUrl>/citations with pool-only refs', async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      requests.push({ url: String(input), init });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch;
+
+    const client = new CatscoLogAgentClient('https://logs.example.test');
+    await client.reportBranchCitations({
+      token: 'skill-token',
+      branchUrl: '/catsco/agent/branch',
+      requestId: 'br-abc123',
+      refs: [`ref_${'a'.repeat(64)}`, `ref_${'a'.repeat(64)}`, `ref_${'b'.repeat(64)}`],
+    });
+    await client.reportBranchCitations({
+      token: 'skill-token',
+      citationsUrl: '/catsco/agent/branch/citations',
+      requestId: 'br-abc123',
+      refs: [`ref_${'c'.repeat(64)}`],
+    });
+
+    assert.equal(requests.length, 2);
+    assert.match(requests[0].url, /\/catsco\/agent\/branch\/citations$/);
+    assert.equal(requests[0].init.method, 'POST');
+    assert.equal((requests[0].init.headers as Record<string, string>).Authorization, 'Bearer skill-token');
+    assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
+      request_id: 'br-abc123',
+      refs: [`ref_${'a'.repeat(64)}`, `ref_${'b'.repeat(64)}`], // deduped
+    });
+    assert.match(requests[1].url, /\/catsco\/agent\/branch\/citations$/);
+  });
+
+  test('branch citations validation fails closed before any HTTP call', async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch;
+    const client = new CatscoLogAgentClient('https://logs.example.test');
+
+    await assert.rejects(
+      client.reportBranchCitations({ token: 'skill-token', requestId: 'br-1', refs: ['not-a-pool-ref'] }),
+      /ref_-prefixed pool refs/,
+    );
+    await assert.rejects(
+      client.reportBranchCitations({ token: 'skill-token', requestId: 'br-1', refs: [`ref_${'g'.repeat(64)}`] }),
+      /ref_-prefixed pool refs/,
+      'non-hex pool refs are rejected',
+    );
+    await assert.rejects(
+      client.reportBranchCitations({ token: 'skill-token', requestId: 'br-1', refs: [] }),
+      /at least one ref/,
+    );
+    await assert.rejects(
+      client.reportBranchCitations({
+        token: 'skill-token',
+        requestId: 'br-1',
+        refs: Array.from({ length: 66 }, (_, index) => `ref_${String(index).padStart(2, '0').repeat(32)}`),
+      }),
+      /at most 64 refs/,
+    );
+    await assert.rejects(
+      client.reportBranchCitations({ token: 'skill-token', requestId: '   ', refs: [`ref_${'a'.repeat(64)}`] }),
+      /request_id is invalid/,
+    );
+    await assert.rejects(
+      client.reportBranchCitations({ token: 'skill-token', requestId: 'br1', refs: [`ref_${'a'.repeat(64)}`] }),
+      /request_id is invalid/,
+    );
+    await assert.rejects(
+      client.reportBranchCitations({ requestId: 'br-1', refs: [`ref_${'a'.repeat(64)}`] } as any),
+       /capability token is missing/,
+    );
+    assert.equal(fetchCalls, 0);
+
+    // 404 from a server without the endpoint yet: the client surfaces a typed
+    // error; silent degradation is the caller's contract.
+    globalThis.fetch = (async () => new Response(JSON.stringify({ detail: 'Not Found' }), { status: 404 })) as typeof fetch;
+    const notFound: any = await client.reportBranchCitations({
+      token: 'skill-token', requestId: 'br-1', refs: [`ref_${'a'.repeat(64)}`],
+    }).then(() => null, (error: any) => error);
+    assert.equal(notFound.status, 404);
+  });
+
   test('sends search_any OR keywords on the session query without any UID selector', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     globalThis.fetch = (async (_input: RequestInfo | URL, init: RequestInit = {}) => {

@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
   boundToolResultJson,
+  collectRemotePoolRefs,
   normalizeEvidenceVerdict,
   projectBranchResponse,
   projectSessionQueryResponse,
@@ -55,6 +56,36 @@ describe('CatsLog branch evidence projection', () => {
     assert.match(memoryBranch.items[2].ref, /^catslog:ref:[a-f0-9]{24}$/);
     assert.equal(JSON.stringify(projected).includes('evil.example.test'), false);
     assert.equal((projected.branches as any[])[1].status, 'timeout');
+  });
+
+  test('keeps ref_ pool-citation refs in their wire form for citation reporting', () => {
+    const poolRef = `ref_${'a'.repeat(64)}`;
+    const projected = projectBranchResponse({
+      request_id: 'br-1',
+      branches: [{
+        source: 'session_graph',
+        status: 'ok',
+        items: [{ source: 'session', ref: poolRef, kind: 'session_turn' }],
+      }],
+    });
+    assert.equal((projected.branches as any[])[0].items[0].ref, poolRef);
+    assert.deepEqual(collectRemotePoolRefs(projected), [poolRef]);
+  });
+
+  test('collectRemotePoolRefs gathers deduped pool refs across branches and ignores other refs', () => {
+    const poolA = `ref_${'a'.repeat(64)}`;
+    const poolB = `ref_${'b'.repeat(64)}`;
+    const pool = collectRemotePoolRefs({
+      request_id: 'br-1',
+      branches: [
+        { source: 'session_graph', items: [{ ref: poolA }, { ref: 'stream-x#3' }, { ref: poolA }] },
+        { source: 'agent_memory', items: [{ ref: poolB }, { text: 'no ref here' }] },
+        { source: 'skill', status: 'timeout' },
+      ],
+    });
+    assert.deepEqual(pool, [poolA, poolB]);
+    assert.deepEqual(collectRemotePoolRefs(undefined), []);
+    assert.deepEqual(collectRemotePoolRefs({ branches: 'nope' }), []);
   });
 
   test('omits absent verdict and normalizes unrecognized verdicts to unknown', () => {

@@ -124,6 +124,38 @@ class AssessThenFinishAI {
   }
 }
 
+/** Cites every ref in the evidence pack (pool + session + KB forms). */
+class CiteEveryPackRefAI extends AssessThenFinishAI {
+  async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls.push({
+      toolNames: tools?.map(tool => tool.name) || [],
+      messages: JSON.parse(JSON.stringify(messages)),
+    });
+    if (this.calls.length === 1) {
+      return {
+        content: null,
+        toolCalls: [call('assess-1', 'assess_memory_need', {
+          action: 'recall',
+          query_text: 'release checklist decision',
+          keywords: ['release'],
+        })],
+        usage,
+      };
+    }
+    const refs = this.evidencePackRefs(messages);
+    return {
+      content: null,
+      toolCalls: [call('finish-1', 'finish_memory_search', {
+        summary: 'Cited every observed ref form for the citation pipeline.',
+        refs,
+        inject: true,
+        delivery: 'context',
+      })],
+      usage,
+    };
+  }
+}
+
 class SkipAssessAI {
   calls: Array<{ toolNames: string[] }> = [];
 
@@ -650,6 +682,53 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     assert.equal(pack.evidence_pack.local_knowledge.status, 'unavailable');
     assert.match(String(pack.evidence_pack.local_knowledge.note), /knowledge_root_missing/);
     assert.equal(queue.drain().length, 0);
+  });
+
+  test('context injection carries the /branch request_id with the reportable pool-ref subset', async () => {
+    const knowledgeRoot = path.join(testRoot, 'knowledge');
+    const kbId = 'KB-9a8b7c6d-5e4f-4a3b-2c1d-0e9f8a7b6c5d';
+    writeKnowledgeDocument(knowledgeRoot, kbId, 'Release checklist', 'release checklist: nginx read-only mount, rollback via flag');
+    const poolRef = `ref_${'e'.repeat(64)}`;
+
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new CiteEveryPackRefAI();
+    const backend = new RemoteEvidenceMemory();
+    backend.branchResponse = {
+      schema_version: 1,
+      content_trust: 'untrusted_branch_evidence',
+      request_id: 'br-cite-1',
+      status: 'ok',
+      branches: [{
+        source: 'session_graph',
+        status: 'ok',
+        items: [{ source: 'session', ref: poolRef, kind: 'session_turn', score_hint: 0.9 }],
+      }],
+    };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'citation-metadata',
+      input: 'what is our release checklist?',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: ai as any,
+      queue,
+      catslogMemory: backend,
+      logEnabled: false,
+    });
+
+    await handle.done;
+
+    assert.equal(ai.calls.length, 2);
+    // Both ref forms are finishable and observed (the pack carried them).
+    const observations = queue.drain();
+    assert.equal(observations.length, 1);
+    const injected = JSON.parse(observations[0].formattedContent || '');
+    assert.deepEqual([...injected.refs].sort(), [poolRef, `kb:${kbId}`].sort());
+    // Citation telemetry: request_id + pool refs only; the kb ref stays local.
+    assert.deepEqual(observations[0].metadata?.citation, {
+      requestId: 'br-cite-1',
+      refs: [poolRef],
+    });
+    assert.deepEqual([...(observations[0].metadata?.refs ?? [])].sort(), [poolRef, `kb:${kbId}`].sort());
   });
 
   test('old-history records stay usable and the newest-window request shape is preserved', async () => {

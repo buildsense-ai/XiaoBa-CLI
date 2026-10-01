@@ -385,7 +385,20 @@ export const DEFAULT_SESSIONS_URL = '/catsco/agent/query/v1/sessions';
 export const DEFAULT_MEMORY_URL = '/catsco/agent/memory/retrieve';
 export const DEFAULT_MEMORY_RECALL_URL = '/catsco/agent/memory/recall';
 export const DEFAULT_BRANCH_URL = '/catsco/agent/branch';
+export const DEFAULT_BRANCH_CITATIONS_URL = '/catsco/agent/branch/citations';
 export const DEFAULT_MEMORY_NOTES_URL = '/catsco/agent/memory/notes';
+
+/** Wire contract of POST /catsco/agent/branch/citations: ref_-prefixed pool refs only. */
+export const BRANCH_CITATIONS_MAX_REFS = 64;
+export const CATSLOG_POOL_CITATION_REF_PATTERN = /^ref_[a-f0-9]{64}$/;
+
+/**
+ * True when a ref has the server pool-citation shape (`ref_` + 64 hex). Only
+ * these refs may be reported back to the citations endpoint.
+ */
+export function isCatsLogPoolCitationRef(ref: unknown): ref is string {
+  return typeof ref === 'string' && CATSLOG_POOL_CITATION_REF_PATTERN.test(ref);
+}
 
 // The agent branch endpoint requires a non-empty sources array with these
 // wire values; older tool prompts used memory/session aliases.
@@ -779,6 +792,54 @@ export class CatscoLogAgentClient {
       token,
       body,
       'CatsLog branch retrieval failed',
+      input.signal,
+    );
+  }
+
+  /**
+   * Report which pool refs the parent agent actually cited after consuming a
+   * branch injection (downstream citation telemetry for /catsco/agent/branch).
+   * Same device-bound read capability and error handling as `branch`; callers
+   * treat 404/unreachable as silent degradation.
+   */
+  async reportBranchCitations(input: {
+    requestId: string;
+    refs: string[];
+  } & {
+    token?: string;
+    skillToken?: string;
+    /** Overrides the citations endpoint; defaults to <branchUrl>/citations. */
+    citationsUrl?: string;
+    branchUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<void> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const requestId = typeof input.requestId === 'string' ? input.requestId.trim() : '';
+    if (!requestId || Buffer.byteLength(requestId, 'utf8') > 256 || hasDisallowedControl(requestId)) {
+      throw new Error('CatsLog branch citations request_id is invalid');
+    }
+    if (!Array.isArray(input.refs)) throw new Error('CatsLog branch citations refs must be an array');
+    const refs: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of input.refs) {
+      if (!isCatsLogPoolCitationRef(raw)) {
+        throw new Error('CatsLog branch citations refs must be ref_-prefixed pool refs (ref_ + 64 hex)');
+      }
+      if (seen.has(raw)) continue;
+      seen.add(raw);
+      refs.push(raw);
+      if (refs.length > BRANCH_CITATIONS_MAX_REFS) {
+        throw new Error(`CatsLog branch citations accept at most ${BRANCH_CITATIONS_MAX_REFS} refs`);
+      }
+    }
+    if (refs.length === 0) throw new Error('CatsLog branch citations require at least one ref');
+    const citationsUrl = input.citationsUrl?.trim()
+      || `${(input.branchUrl || DEFAULT_BRANCH_URL).trim().replace(/\/+$/, '')}/citations`;
+    await this.postCapabilityJSON<Record<string, unknown>>(
+      citationsUrl,
+      token,
+      { request_id: requestId, refs },
+      'CatsLog branch citations report failed',
       input.signal,
     );
   }

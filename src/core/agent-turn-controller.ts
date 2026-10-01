@@ -33,6 +33,10 @@ import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
+import {
+  BranchCitationReport,
+  matchBranchCitations,
+} from './branch-citation-reporter';
 import { getPetService } from '../pet/pet-service';
 import {
   buildSyntheticObservationLifecycleEvent,
@@ -192,6 +196,11 @@ export class AgentTurnController {
         abortSignal: params.abortSignal,
       });
 
+      // Observations drained here are injected synchronously by the runner
+      // right after the provider call, so this list is exactly the set of
+      // delivery:context payloads this turn consumed (injection seam).
+      const consumedObservations: SyntheticObservation[] = [];
+
       const runner = this.createRunner({
         channel: params.channel,
         executionScope: params.executionScope,
@@ -209,10 +218,14 @@ export class AgentTurnController {
         pendingUserInputProvider: params.pendingUserInputProvider,
         confirmToolExecution: params.callbacks?.confirmToolExecution,
         episodeId,
-        syntheticObservationProvider: () => this.drainMemoryObservations(
-          carryoverMemoryBranch,
-          currentMemoryBranch,
-        ),
+        syntheticObservationProvider: () => {
+          const drained = this.drainMemoryObservations(
+            carryoverMemoryBranch,
+            currentMemoryBranch,
+          );
+          if (drained.length > 0) consumedObservations.push(...drained);
+          return drained;
+        },
         abortSignal: params.abortSignal,
         suppressFinalResponse: params.suppressFinalResponse,
         shouldContinue: params.shouldContinue,
@@ -224,6 +237,9 @@ export class AgentTurnController {
       try {
         result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks));
         this.markEpisodeMessages(result.newMessages, episodeId);
+        // The reply for this turn is final: report which injected refs it
+        // actually cited. Fire-and-forget — telemetry must never break a turn.
+        this.dispatchBranchCitationTelemetry(consumedObservations, result.response);
       } catch (error: any) {
         const partialMessages = this.options.turnContextBuilder.removeTransientMessages(turnContext.messages);
         this.replaceBase64Images(partialMessages);
@@ -536,6 +552,66 @@ export class AgentTurnController {
         originTurn,
       },
     };
+  }
+
+  private static readonly BRANCH_CITATIONS_TIMEOUT_MS = 5_000;
+
+  /**
+   * Downstream citation reporting (ADR 0019 telemetry): substring-match the
+   * turn's final reply against the injected ref strings, then POST the cited
+   * server pool refs per /branch request_id. 404/unreachable/capability
+   * errors degrade silently; KB-cited documents are recorded locally only,
+   * since the server column accepts ref_-prefixed pool refs exclusively.
+   */
+  private dispatchBranchCitationTelemetry(
+    consumedObservations: readonly SyntheticObservation[],
+    replyText: string | undefined,
+  ): void {
+    try {
+      const { reports, knowledgeRefs } = matchBranchCitations(consumedObservations, replyText);
+      for (const report of reports) {
+        void this.reportBranchCitations(report);
+      }
+      if (knowledgeRefs.length > 0) {
+        Logger.runtimeEvent(
+          'INFO',
+          `[${this.options.sessionKey}] branch injection cited ${knowledgeRefs.length} local knowledge document(s)`,
+          {
+            type: 'branch_knowledge_citations',
+            payload: {
+              refs: knowledgeRefs,
+            },
+          },
+        );
+      }
+    } catch {
+      // Telemetry must never break a turn.
+    }
+  }
+
+  private async reportBranchCitations(report: BranchCitationReport): Promise<void> {
+    const backend = this.options.services.catslogMemory;
+    if (!backend?.reportBranchCitations) return;
+    try {
+      await backend.reportBranchCitations(
+        { requestId: report.requestId, refs: report.refs },
+        AbortSignal.timeout(AgentTurnController.BRANCH_CITATIONS_TIMEOUT_MS),
+      );
+      Logger.runtimeEvent(
+        'INFO',
+        `[${this.options.sessionKey}] branch citations reported: ${report.refs.length} ref(s)`,
+        {
+          type: 'branch_citations_reported',
+          payload: {
+            request_id: report.requestId,
+            refs: report.refs.length,
+          },
+        },
+      );
+    } catch {
+      // Degrade silently: the endpoint may not be shipped yet (404), the
+      // device may be offline, or the capability may have expired.
+    }
   }
 
   private toRunnerCallbacks(callbacks?: AgentTurnCallbacks): RunnerCallbacks {

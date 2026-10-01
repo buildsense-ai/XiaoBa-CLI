@@ -29,7 +29,19 @@ export interface SyntheticObservationMetadata {
   refs?: string[];
   timing?: SyntheticObservationTiming;
   originTurn?: number;
+  /**
+   * Downstream citation telemetry pool for this injection: the /branch
+   * request_id plus the reportable subset of the injection refs (server pool
+   * refs only). Absent when the run had no remote branch request_id or no
+   * pool-shaped refs — telemetry then degrades to local logging only.
+   */
+  citation?: SyntheticObservationCitation;
   [key: string]: unknown;
+}
+
+export interface SyntheticObservationCitation {
+  requestId: string;
+  refs: string[];
 }
 
 export interface SyntheticObservation {

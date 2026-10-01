@@ -153,6 +153,55 @@ describe('CatsLog memory provider', () => {
     assert.equal(state.branchUrl, '/catsco/agent/branch');
   });
 
+  test('reports branch citations through the read capability and its branch_url', async () => {
+    const calls: Array<{ kind: string; token?: string; url?: string; query?: unknown }> = [];
+    const client: Partial<CatscoLogAgentClient> = {
+      bootstrap: async () => ({
+        ...bootstrapResponse('skill-citations'),
+        branch_url: '/catsco/agent/branch',
+      }),
+      reportBranchCitations: async (input: any) => {
+        calls.push({
+          kind: 'citations',
+          token: input.token,
+          url: input.branchUrl,
+          query: stripCapability(input),
+        });
+      },
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => client as CatscoLogAgentClient,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+
+    await provider.reportBranchCitations({ requestId: 'br-1', refs: [`ref_${'a'.repeat(64)}`] });
+
+    assert.deepEqual(calls, [{
+      kind: 'citations',
+      token: 'skill-citations',
+      url: '/catsco/agent/branch',
+      query: { requestId: 'br-1', refs: [`ref_${'a'.repeat(64)}`] },
+    }]);
+  });
+
+  test('fails closed when the client lacks the branch citations route', async () => {
+    const client: Partial<CatscoLogAgentClient> = {
+      bootstrap: async () => bootstrapResponse('skill-no-citations'),
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => client as CatscoLogAgentClient,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+
+    await assert.rejects(
+      provider.reportBranchCitations({ requestId: 'br-1', refs: [`ref_${'a'.repeat(64)}`] }),
+      (error: any) => error instanceof CatsLogMemoryUnavailableError
+        && /branch citations route/.test(error.message),
+    );
+  });
+
   test('falls back to the default branch URL when bootstrap omits branch_url', async () => {
     const calls: Array<{ url?: string }> = [];
     const client: Partial<CatscoLogAgentClient> = {

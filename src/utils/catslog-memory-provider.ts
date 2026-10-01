@@ -67,6 +67,15 @@ export interface CatsLogMemoryBackend {
     query: CatscoSessionQuery,
     signal?: AbortSignal,
   ): Promise<CatscoSessionQueryResult>;
+  /**
+   * Optional downstream citation telemetry for the branch endpoint: reports
+   * which pool refs the parent agent cited after consuming an injection.
+   * Fire-and-forget by contract — callers must degrade silently.
+   */
+  reportBranchCitations?(input: {
+    requestId: string;
+    refs: string[];
+  }, signal?: AbortSignal): Promise<void>;
   readSkills?(
     query: CatscoSkillsQuery,
     signal?: AbortSignal,
@@ -181,6 +190,27 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
           ...query,
           token: capability.token,
           sessionsUrl: capability.sessionsUrl,
+          signal,
+        });
+      },
+      signal,
+    );
+  }
+
+  /** Report downstream branch citations through the read capability. */
+  async reportBranchCitations(input: {
+    requestId: string;
+    refs: string[];
+  }, signal?: AbortSignal): Promise<void> {
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof (client as any).reportBranchCitations !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the branch citations route');
+        }
+        return client.reportBranchCitations({
+          ...input,
+          token: capability.token,
+          branchUrl: capability.branchUrl,
           signal,
         });
       },
