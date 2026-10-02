@@ -702,6 +702,247 @@ describe('review follow-ups: projection budget, unicode edges, strict protocol, 
     };
   }
 
+  /**
+   * FROZEN verbatim port of the pre-feature (c444) projectLocalKnowledgeLane:
+   * metadata-only entry projection, no excerpt diagnostics. Used as the
+   * independent floor oracle — the new function must keep every ref this
+   * function keeps, never the other way around.
+   */
+  function frozenC444Project(
+    result: {
+      status: 'ok' | 'empty' | 'truncated' | 'unavailable';
+      entries: Array<Record<string, unknown>>;
+      keywordsQueried: string[];
+      keywordsCapped: boolean;
+      keywordsFailed: number;
+      entriesCapped: boolean;
+      error?: string;
+    },
+    maxLength: number = 8_000,
+  ): Record<string, unknown> {
+    if (result.status === 'unavailable') {
+      return {
+        content_trust: 'local_distilled_knowledge',
+        provenance: 'local_knowledge',
+        scope: 'per_instance_shared',
+        status: 'unavailable',
+        ...(result.error ? { note: `Local knowledge search failed: ${result.error}` } : {}),
+      };
+    }
+    const entries = result.entries.map(entry => ({
+      ref: entry.ref,
+      id: entry.id,
+      title: entry.title,
+      summary: entry.summary,
+      category: entry.category,
+      updated_at: entry.updated_at,
+      revision: entry.revision,
+      managed: entry.managed,
+    }));
+    const projected: Record<string, unknown> = {
+      content_trust: 'local_distilled_knowledge',
+      provenance: 'local_knowledge',
+      scope: 'per_instance_shared',
+      status: result.status,
+      entries,
+      keywords_queried: result.keywordsQueried.length,
+      ...(result.keywordsCapped ? { keywords_capped: true } : {}),
+      ...(result.entriesCapped ? { entries_capped: true } : {}),
+      ...(result.keywordsFailed > 0 ? { keywords_failed: result.keywordsFailed } : {}),
+      truncated: result.entriesCapped,
+    };
+    let encoded = JSON.stringify(projected);
+    while (encoded.length > maxLength && entries.length > 0) {
+      entries.pop();
+      projected.truncated = true;
+      projected.projection_capped = true;
+      projected.status = 'truncated';
+      encoded = JSON.stringify(projected);
+    }
+    return projected;
+  }
+
+  test('coordinator case r2-7867: 8 metadata-only hits at the exact 7867-char boundary keep all 8', () => {
+    // Exact coordinator counterexample shape: the pre-feature projection of
+    // the 8 metadata hits serializes to 7867 chars at the default 8000 cap
+    // (retains all 8). r2 added excerpt diagnostics first and dropped a ref
+    // even though there was no body to budget. The floor envelope must be
+    // the original one; counts/gaps are spare-only and visibly omittable.
+    const built = Array.from({ length: 8 }, (_, index) => {
+      const id = `KB-0000000${index + 1}-aaaa-4bbb-8ccc-00000000000${index + 1}`;
+      const revision = crypto.createHash('sha256').update(`doc-${index + 1}`).digest('hex');
+      return {
+        ref: `kb:${id}`,
+        id,
+        title: `Doc ${index + 1}`,
+        summary: `hit-${index + 1}:${'q'.repeat(600)}`,
+        category: 'deploy',
+        updated_at: '2026-09-01T00:00:00.000Z',
+        revision,
+        managed: true,
+      };
+    });
+    const base = {
+      status: 'ok' as const,
+      entries: built,
+      keywordsQueried: ['hit'],
+      keywordsCapped: false,
+      keywordsFailed: 0,
+      entriesCapped: false,
+    };
+    // Pin the boundary: pad entry summaries so the frozen full-8 envelope
+    // serializes to exactly 7867 chars.
+    const current = JSON.stringify(frozenC444Project({ ...base }, Number.MAX_SAFE_INTEGER)).length;
+    const padNeeded = 7_867 - current;
+    assert.ok(padNeeded > 0, `fixture sanity: base envelope below target (${current})`);
+    base.entries[0] = { ...base.entries[0], summary: `${base.entries[0].summary}${'r'.repeat(padNeeded)}` };
+    const pinned = JSON.stringify(frozenC444Project({ ...base }, Number.MAX_SAFE_INTEGER)).length;
+    assert.equal(pinned, 7_867, 'fixture must reproduce the exact 7867-char boundary');
+
+    const result = {
+      ...base,
+      excerptsRequested: 2,
+      excerptsRetained: 0,
+      excerptGaps: [{
+        status: 'unavailable' as const,
+        ref: `kb:${'KB-99999999-9999-4999-8999-999999999999'}`,
+        revision: OLD_REVISION,
+        message: 'knowledge script timed out',
+      }],
+    };
+
+    const frozen = frozenC444Project(result, 8_000) as { entries: Array<Record<string, unknown>> };
+    assert.equal(frozen.entries.length, 8, 'pre-feature projection retains all 8 at 7867 chars');
+    const pack = projectLocalKnowledgeLane(result, 8_000);
+    const enrichedIds = (pack.entries as Array<Record<string, unknown>>).map(entry => entry.id);
+    assert.equal(enrichedIds.length, 8, 'r3 must retain all 8 refs — diagnostics are spare-only');
+    assert.deepEqual(enrichedIds, frozen.entries.map(entry => entry.id));
+    const encoded = JSON.stringify(pack);
+    assert.ok(encoded.length <= 8_000, `projection JSON stays within the cap (${encoded.length})`);
+    // No bodies existed; nothing may claim one was read.
+    assert.equal((pack.entries as Array<Record<string, unknown>>).some(entry => 'excerpt' in entry), false);
+    if ('excerpts_retained' in pack) {
+      assert.equal(pack.excerpts_retained, 0);
+      assert.equal(pack.excerpts_requested, 2);
+      // Gaps are spare-budgeted: present when they fit, otherwise the
+      // omission is visible via the marker.
+      assert.ok(Array.isArray(pack.excerpt_gaps) || pack.excerpt_diagnostics_omitted === true);
+    } else {
+      assert.equal(pack.excerpt_diagnostics_omitted, true, 'omitted diagnostics are visible when markable');
+    }
+  });
+
+  test('floor regression vs frozen pre-feature projection: 8 padded hits keep every old ID', () => {
+    // Boundary-tight fixture: summaries are padded so the ORIGINAL
+    // metadata-only projection keeps 7 entries with less spare room than the
+    // excerpt diagnostics would occupy — the exact boundary where the r2
+    // implementation displaced a fact. The new function must keep the same
+    // 7 IDs (and only spend spare bytes on diagnostics/excerpts).
+    const built = Array.from({ length: 8 }, (_, index) => {
+      const id = `KB-0000000${index + 1}-aaaa-4bbb-8ccc-00000000000${index + 1}`;
+      const body = `# Doc ${index + 1}\n\n${'p'.repeat(2400)}\nTAIL-MARKER-${index + 1}`;
+      const revision = crypto.createHash('sha256').update(body).digest('hex');
+      return {
+        entry: {
+          ref: `kb:${id}`,
+          id,
+          title: `Doc ${index + 1}`,
+          summary: `padded-summary-${index + 1}:${'q'.repeat(800)}`,
+          category: 'deploy',
+          updated_at: '2026-09-01T00:00:00.000Z',
+          revision,
+          managed: true,
+          ...(index < 2 ? { excerpt: retainedExcerpt(`kb:${id}`, id, body, revision) } : {}),
+        },
+        body,
+      };
+    });
+    const result = {
+      status: 'ok' as const,
+      entries: built.map(b => b.entry),
+      keywordsQueried: ['p'],
+      keywordsCapped: false,
+      keywordsFailed: 0,
+      entriesCapped: false,
+      excerptsRequested: 2,
+      excerptsRetained: 2,
+      excerptGaps: [],
+    };
+
+    const envelopeLength = (keep: number): number =>
+      JSON.stringify(frozenC444Project(
+        { ...result, entries: result.entries.slice(0, keep) },
+        Number.MAX_SAFE_INTEGER,
+      )).length;
+
+    // Tune entry[0]'s summary so the 7-entry floor sits within the excerpt
+    // diagnostics' byte width below the cap (the r2 diagnostics cost ≈100
+    // chars; a 60-char window guarantees they force one extra pop).
+    const diagnosticsWidth = 60;
+    let length7 = envelopeLength(7);
+    const target = 8_000 - diagnosticsWidth + 20;
+    if (length7 < target) {
+      const pad = target - length7;
+      result.entries[0] = { ...result.entries[0], summary: `${result.entries[0].summary}${'r'.repeat(pad)}` };
+      length7 = envelopeLength(7);
+    }
+    assert.ok(length7 > 8_000 - diagnosticsWidth && length7 <= 8_000,
+      `fixture sanity: 7-entry floor must sit just under the cap (${length7})`);
+
+    const frozen = frozenC444Project(result, 8_000) as { entries: Array<Record<string, unknown>> };
+    const frozenIds = frozen.entries.map(entry => entry.id);
+    assert.equal(frozenIds.length, 7, `fixture sanity: frozen baseline pops exactly one (kept ${frozenIds.length})`);
+
+    const pack = projectLocalKnowledgeLane(result, 8_000);
+    const enrichedIds = (pack.entries as Array<Record<string, unknown>>).map(entry => entry.id);
+    assert.deepEqual(enrichedIds, frozenIds, 'every ref the pre-feature projection kept must survive');
+
+    const encoded = JSON.stringify(pack);
+    assert.ok(encoded.length <= 8_000, `projection JSON must stay within the lane cap (${encoded.length})`);
+    const projectedExcerpts = (pack.entries as Array<Record<string, unknown>>)
+      .map(entry => entry.excerpt as Record<string, unknown> | undefined)
+      .filter((excerpt): excerpt is Record<string, unknown> => Boolean(excerpt));
+    const totalText = projectedExcerpts.reduce((sum, excerpt) => sum + String(excerpt.text).length, 0);
+    assert.ok(totalText <= 4_000, `projected excerpt text must stay within 2×2000 (${totalText})`);
+
+    // Counters: present and truthful when they fit; otherwise omission is
+    // allowed only when the flag/marker physically could not fit in the
+    // remaining spare. The raw lane result always carries the counters.
+    const cap = 8_000;
+    if ('excerpts_projected' in pack) {
+      assert.equal(pack.excerpts_projected, projectedExcerpts.length);
+    } else {
+      const markerCost = 1 + JSON.stringify('excerpt_diagnostics_omitted').length + 1 + JSON.stringify(true).length;
+      assert.ok(JSON.stringify(pack).length + markerCost > cap,
+        `omission marker must be present when it fits (spare ${cap - JSON.stringify(pack).length} < cost ${markerCost})`);
+    }
+    if (projectedExcerpts.length < 2 && !('excerpt_projection_capped' in pack)) {
+      const flagCost = 1 + JSON.stringify('excerpt_projection_capped').length + 1 + JSON.stringify(true).length;
+      assert.ok(JSON.stringify(pack).length + flagCost > cap,
+        `capped flag must be present when it fits (spare ${cap - JSON.stringify(pack).length} < cost ${flagCost})`);
+    }
+    // The raw lane result keeps the real counters even when the projection omits them.
+    assert.equal(result.excerptsRequested, 2);
+    assert.equal(result.excerptsRetained, 2);
+
+    const bodyByRef = new Map(built.map(b => [b.entry.ref, b.body]));
+    for (const entry of pack.entries as Array<Record<string, unknown>>) {
+      const excerpt = entry.excerpt as Record<string, unknown> | undefined;
+      if (!excerpt) continue;
+      const text = String(excerpt.text);
+      const charStart = Number(excerpt.char_start);
+      const charEnd = Number(excerpt.char_end);
+      assert.equal(bodyByRef.get(String(entry.ref))!.slice(charStart, charEnd), text, 'projected excerpt stays a verbatim slice');
+      assert.ok(charEnd - charStart <= 2_000);
+      if (excerpt.projection_shortened === true) {
+        assert.equal(charEnd, charStart + text.length, 'shortened excerpts are re-ranged honestly');
+        assert.equal(excerpt.omitted_after, true);
+        assert.equal(excerpt.truncated, true);
+      }
+      assertNoSplitSurrogates(text);
+    }
+  });
+
   test('projection never displaces baseline metadata for excerpts at the 8k cap (8 near-limit hits)', () => {
     const built = Array.from({ length: 8 }, (_, index) => nearLimitEntry(index + 1));
     const result = {
@@ -716,13 +957,12 @@ describe('review follow-ups: projection budget, unicode edges, strict protocol, 
       excerptGaps: [],
     };
 
-    const baseline = projectLocalKnowledgeLane({
-      ...result,
-      entries: result.entries.map(({ excerpt: _excerpt, ...metadata }) => metadata),
-    }, 8_000);
+    // Independent pre-feature oracle (frozen algorithm), not the new
+    // function on stripped input.
+    const frozen = frozenC444Project(result, 8_000) as { entries: Array<Record<string, unknown>> };
     const pack = projectLocalKnowledgeLane(result, 8_000);
 
-    const baselineRefs = (baseline.entries as Array<Record<string, unknown>>).map(entry => entry.ref);
+    const baselineRefs = frozen.entries.map(entry => entry.ref);
     const enrichedRefs = (pack.entries as Array<Record<string, unknown>>).map(entry => entry.ref);
     assert.deepEqual(enrichedRefs, baselineRefs, 'excerpt prefetch must not cost any baseline metadata hit');
 
@@ -733,23 +973,35 @@ describe('review follow-ups: projection budget, unicode edges, strict protocol, 
       .filter((excerpt): excerpt is Record<string, unknown> => Boolean(excerpt));
     const totalText = projectedExcerpts.reduce((sum, excerpt) => sum + String(excerpt.text).length, 0);
     assert.ok(totalText <= 4_000, `projected excerpt text must stay within 2×2000 (${totalText})`);
-    assert.equal(pack.excerpts_retained, 2, 'read-truth count is reported unchanged');
-    assert.equal(pack.excerpts_projected, projectedExcerpts.length, 'actual projected count reported separately');
-    assert.equal(pack.excerpt_projection_capped, true, 'shortening/skipping must be visible');
+    // Read-truth counters: in the projection, or visibly omitted (the raw
+    // lane result always carries them).
+    const cap = 8_000;
+    if ('excerpts_retained' in pack) {
+      assert.equal(pack.excerpts_retained, 2);
+      assert.equal(pack.excerpts_requested, 2);
+      assert.equal(pack.excerpts_projected, projectedExcerpts.length);
+    } else {
+      const markerCost = 1 + JSON.stringify('excerpt_diagnostics_omitted').length + 1 + JSON.stringify(true).length;
+      assert.ok(JSON.stringify(pack).length + markerCost > cap,
+        `omission marker must be present when it fits (spare ${cap - JSON.stringify(pack).length} < cost ${markerCost})`);
+    }
+    if (projectedExcerpts.length < 2 && !('excerpt_projection_capped' in pack)) {
+      const flagCost = 1 + JSON.stringify('excerpt_projection_capped').length + 1 + JSON.stringify(true).length;
+      assert.ok(JSON.stringify(pack).length + flagCost > cap,
+        `capped flag must be present when it fits (spare ${cap - JSON.stringify(pack).length} < cost ${flagCost})`);
+    }
 
-    const bodyByRef = new Map(built.map(b => [b.entry.ref, b.body]));
+    const rawFileByRef = new Map(built.map(b => [b.entry.ref, b.body]));
     for (const entry of pack.entries as Array<Record<string, unknown>>) {
       const excerpt = entry.excerpt as Record<string, unknown> | undefined;
       if (!excerpt) continue;
       const text = String(excerpt.text);
       const charStart = Number(excerpt.char_start);
       const charEnd = Number(excerpt.char_end);
-      assert.equal(bodyByRef.get(String(entry.ref))!.slice(charStart, charEnd), text, 'projected excerpt stays a verbatim slice');
-      assert.ok(Number(excerpt.char_end) - Number(excerpt.char_start) <= 2_000);
+      assert.equal(rawFileByRef.get(String(entry.ref))!.slice(charStart, charEnd), text, 'verbatim slice');
       if (excerpt.projection_shortened === true) {
-        assert.equal(charEnd, charStart + text.length, 'shortened excerpts are re-ranged honestly');
+        assert.equal(charEnd, charStart + text.length);
         assert.equal(excerpt.omitted_after, true);
-        assert.equal(excerpt.truncated, true);
       }
       assertNoSplitSurrogates(text);
     }

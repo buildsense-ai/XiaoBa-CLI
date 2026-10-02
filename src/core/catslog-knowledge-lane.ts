@@ -304,11 +304,12 @@ export function projectLocalKnowledgeLane(
       ...(result.error ? { note: `Local knowledge search failed: ${result.error}` } : {}),
     };
   }
-  // Phase-1 entries are metadata-only: excerpt text must never influence
-  // which baseline refs survive the cap.
+  // Phase 1 — floor: the EXACT pre-enrichment metadata envelope (same
+  // fields, same pop behavior as the original metadata-only function).
+  // Excerpt diagnostics are deliberately absent here so they can never cost
+  // a metadata entry; the surviving refs are identical to the original
+  // projection on the same input and maxLength.
   const entries = result.entries.map(({ excerpt: _excerpt, ...metadata }) => projectKnowledgeEntry(metadata));
-  const excerptGaps = (result.excerptGaps ?? [])
-    .map(gap => ({ ref: gap.ref, status: gap.status, revision: gap.revision, ...(gap.message ? { note: gap.message } : {}) }));
   const projected: Record<string, unknown> = {
     content_trust: 'local_distilled_knowledge',
     provenance: 'local_knowledge',
@@ -316,22 +317,11 @@ export function projectLocalKnowledgeLane(
     status: result.status,
     entries,
     keywords_queried: result.keywordsQueried.length,
-    excerpts_requested: result.excerptsRequested ?? 0,
-    excerpts_retained: result.excerptsRetained ?? 0,
-    // Reserved before excerpt budgeting so the final counter values (≤2,
-    // one digit; capped flag same length or removed) can never push the
-    // projection past the cap after excerpts are fitted.
-    excerpts_projected: 0,
-    excerpt_projection_capped: false,
-    ...(excerptGaps.length ? { excerpt_gaps: excerptGaps } : {}),
     ...(result.keywordsCapped ? { keywords_capped: true } : {}),
     ...(result.entriesCapped ? { entries_capped: true } : {}),
     ...(result.keywordsFailed > 0 ? { keywords_failed: result.keywordsFailed } : {}),
     truncated: result.entriesCapped,
   };
-
-  // Phase 1 — mandatory metadata/status/gaps. Identical pop behavior to the
-  // pre-enrichment projection: the surviving refs are the floor.
   let encoded = JSON.stringify(projected);
   while (encoded.length > maxLength && entries.length > 0) {
     entries.pop();
@@ -341,11 +331,47 @@ export function projectLocalKnowledgeLane(
     encoded = JSON.stringify(projected);
   }
 
-  // Phase 2 — budgeted excerpt additions from the spare only.
+  // Phase 2 — optional excerpt diagnostics/gaps/excerpts from the spare
+  // only, in degradation tiers: full block → counters only → nothing, with
+  // an omission marker whenever it fits. Tier cost is measured exactly
+  // (comma + key + value) so no over-budget key is ever left behind and the
+  // floor entries are never touched.
   const retainedByRef = new Map<string, KnowledgeExcerptRetained>();
   for (const entry of result.entries) {
     if (entry.excerpt) retainedByRef.set(entry.ref, entry.excerpt);
   }
+  const excerptGaps = (result.excerptGaps ?? [])
+    .map(gap => ({ ref: gap.ref, status: gap.status, revision: gap.revision, ...(gap.message ? { note: gap.message } : {}) }));
+  const kvCost = (key: string, value: unknown): number =>
+    1 + JSON.stringify(key).length + 1 + JSON.stringify(value === undefined ? null : value).length;
+  const spareBytes = maxLength - encoded.length;
+  const gapsEntries: Array<[string, unknown]> = excerptGaps.length ? [['excerpt_gaps', excerptGaps]] : [];
+  const diagnosticTiers: Array<Array<[string, unknown]>> = [
+    [
+      ['excerpts_requested', result.excerptsRequested ?? 0],
+      ['excerpts_retained', result.excerptsRetained ?? 0],
+      ['excerpts_projected', 0],
+      ['excerpt_projection_capped', false],
+      ...gapsEntries,
+    ],
+    [
+      ['excerpts_requested', result.excerptsRequested ?? 0],
+      ['excerpts_retained', result.excerptsRetained ?? 0],
+      ['excerpts_projected', 0],
+    ],
+    [],
+  ];
+  const FULL_TIER_LENGTH = 4 + gapsEntries.length;
+  let addedDiagnostics: Array<[string, unknown]> | undefined;
+  for (const tier of diagnosticTiers) {
+    const cost = tier.reduce((sum, [key, value]) => sum + kvCost(key, value), 0);
+    if (cost <= spareBytes) {
+      addedDiagnostics = tier;
+      break;
+    }
+  }
+  const diagnosticsOmitted = addedDiagnostics === undefined || addedDiagnostics.length !== FULL_TIER_LENGTH;
+  for (const [key, value] of addedDiagnostics ?? []) projected[key] = value;
   let projectedExcerpts = 0;
   let excerptProjectionCapped = false;
   for (const entry of entries) {
@@ -359,9 +385,22 @@ export function projectLocalKnowledgeLane(
     projectedExcerpts += 1;
     if (fit.shortened) excerptProjectionCapped = true;
   }
-  projected.excerpts_projected = projectedExcerpts;
-  if (excerptProjectionCapped) projected.excerpt_projection_capped = true;
-  else delete projected.excerpt_projection_capped;
+  // Post-fitting finalizations are same-length or shorter than the reserved
+  // forms, so they can never push the projection past the cap.
+  if ('excerpts_projected' in projected) projected.excerpts_projected = projectedExcerpts;
+  if ('excerpt_projection_capped' in projected) {
+    if (excerptProjectionCapped) projected.excerpt_projection_capped = true;
+    else delete projected.excerpt_projection_capped;
+  }
+  if (diagnosticsOmitted) {
+    // Free the (meaningless when detail is omitted) capped reservation so
+    // the omission marker itself can fit.
+    delete projected.excerpt_projection_capped;
+    const markerCost = kvCost('excerpt_diagnostics_omitted', true);
+    if (markerCost <= maxLength - JSON.stringify(projected).length) {
+      projected.excerpt_diagnostics_omitted = true;
+    }
+  }
   return projected;
 }
 
