@@ -55,6 +55,107 @@ import type { MemoryBranchBudget } from './branch-budget';
 
 const EMPTY_FINAL_RESPONSE_MESSAGE = '模型本轮未返回有效内容。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
 
+/** Injection-timing telemetry caps: bounded event payloads, ids only. */
+const MAX_INJECTION_TIMING_IDS = 64;
+
+type InjectionFirstActionKind = 'tool_call' | 'text';
+
+/**
+ * Per-turn injection-timeline telemetry (bounded, fire-and-forget). Records
+ * when drained memory observations are consumed at the runner injection seam
+ * (`injection_consumed`) and when the parent agent's first action completes
+ * (`injection_first_action_ms`) — the earliest of the first assistant
+ * tool_call dispatch and the final assistant text when no tool dispatch
+ * happened. Payloads carry ids, counts and ms only — never message text,
+ * refs or raw content. Turn↔observation correlation stays via the branch
+ * session id already present in observation metadata.
+ */
+class TurnInjectionTiming {
+  private consumedCount = 0;
+  private firstActionMs?: number;
+  private firstActionKind?: InjectionFirstActionKind;
+  private emittedFirstAction = false;
+
+  constructor(private readonly context: {
+    sessionKey: string;
+    turnNumber: number;
+    turnStartedAt: number;
+  }) {}
+
+  /** Called once per drain batch that the runner actually injects. */
+  recordConsumed(observations: readonly SyntheticObservation[]): void {
+    this.consumedCount += observations.length;
+    try {
+      const observationIds: string[] = [];
+      const branchIds = new Set<string>();
+      const originTurns = new Set<number>();
+      let carryoverCount = 0;
+      for (const observation of observations) {
+        if (observationIds.length < MAX_INJECTION_TIMING_IDS) {
+          observationIds.push(String(observation.id || '').trim() || '(unassigned)');
+        }
+        const metadata = observation.metadata || {};
+        if (typeof metadata.branchId === 'string' && metadata.branchId) branchIds.add(metadata.branchId);
+        if (typeof metadata.originTurn === 'number') originTurns.add(metadata.originTurn);
+        if (observation.timing === 'late_previous_turn' || metadata.timing === 'late_previous_turn') {
+          carryoverCount += 1;
+        }
+      }
+      Logger.runtimeEvent('INFO', `[${this.context.sessionKey}] injection_consumed count=${observations.length}`, {
+        type: 'injection_consumed',
+        payload: {
+          session_key: this.context.sessionKey,
+          turn: this.context.turnNumber,
+          count: observations.length,
+          observation_ids: observationIds,
+          branch_ids: [...branchIds].slice(0, MAX_INJECTION_TIMING_IDS),
+          origin_turns: [...originTurns].slice(0, MAX_INJECTION_TIMING_IDS),
+          carryover: carryoverCount > 0,
+          carryover_count: carryoverCount,
+          since_turn_start_ms: Date.now() - this.context.turnStartedAt,
+        },
+      });
+    } catch {
+      // Fire-and-forget: telemetry must never break a turn.
+    }
+    this.tryEmitFirstAction();
+  }
+
+  /**
+   * First action of the turn. The earliest call wins: tool dispatch is
+   * recorded from the runner's onToolStart seam; the final assistant text is
+   * recorded after the runner resolves (text counts only when no tool
+   * dispatch happened, since text preceding tool calls is tool-prelude).
+   */
+  recordFirstAction(kind: InjectionFirstActionKind): void {
+    if (this.firstActionMs !== undefined) return;
+    this.firstActionMs = Date.now() - this.context.turnStartedAt;
+    this.firstActionKind = kind;
+    this.tryEmitFirstAction();
+  }
+
+  /** Emits once, when both a consumed injection and a first action exist. */
+  private tryEmitFirstAction(): void {
+    if (this.emittedFirstAction || this.firstActionMs === undefined) return;
+    if (this.consumedCount === 0) return; // No consumed injection — nothing to correlate.
+    this.emittedFirstAction = true;
+    try {
+      Logger.runtimeEvent('INFO', `[${this.context.sessionKey}] injection_first_action kind=${this.firstActionKind} ms=${this.firstActionMs}`, {
+        type: 'injection_first_action_ms',
+        payload: {
+          session_key: this.context.sessionKey,
+          turn: this.context.turnNumber,
+          kind: this.firstActionKind,
+          first_action_ms: this.firstActionMs,
+          consumed_count: this.consumedCount,
+        },
+      });
+    } catch {
+      // Fire-and-forget: telemetry must never break a turn.
+    }
+  }
+}
+
 export interface AgentTurnServices {
   aiService: AIService;
   memoryBranch?: {
@@ -152,6 +253,12 @@ export class AgentTurnController {
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
     const turnNumber = ++this.turnSequence;
+    const turnStartedAt = Date.now();
+    const injectionTiming = new TurnInjectionTiming({
+      sessionKey: this.options.sessionKey,
+      turnNumber,
+      turnStartedAt,
+    });
     const episodeId = this.createEpisodeId(turnNumber);
     const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
     const branchAgentsEnabled = this.isMemoryBranchEnabled();
@@ -224,7 +331,10 @@ export class AgentTurnController {
             carryoverMemoryBranch,
             currentMemoryBranch,
           );
-          if (drained.length > 0) consumedObservations.push(...drained);
+          if (drained.length > 0) {
+            consumedObservations.push(...drained);
+            injectionTiming.recordConsumed(drained);
+          }
           return drained;
         },
         abortSignal: params.abortSignal,
@@ -236,8 +346,15 @@ export class AgentTurnController {
 
       let result;
       try {
-        result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks));
+        result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks, injectionTiming));
         this.markEpisodeMessages(result.newMessages, episodeId);
+        // Text-only first action: the runner resolves when the final
+        // assistant text is complete. When any tool dispatched earlier, the
+        // tool dispatch already won as the turn's first action and this call
+        // is a no-op.
+        if (result.response && result.response.trim().length > 0) {
+          injectionTiming.recordFirstAction('text');
+        }
         // The reply for this turn is final: report which injected refs it
         // actually cited. Match against the whole assistant output of the
         // turn (final text + interim assistant text + tool_call arguments),
@@ -623,8 +740,8 @@ export class AgentTurnController {
     }
   }
 
-  private toRunnerCallbacks(callbacks?: AgentTurnCallbacks): RunnerCallbacks {
-    return {
+  private toRunnerCallbacks(callbacks?: AgentTurnCallbacks, injectionTiming?: TurnInjectionTiming): RunnerCallbacks {
+    const wrapped: RunnerCallbacks = {
       onText: callbacks?.onText,
       onAssistantText: callbacks?.onAssistantText,
       onThinking: callbacks?.onThinking,
@@ -633,6 +750,17 @@ export class AgentTurnController {
       onToolDisplay: callbacks?.onToolDisplay,
       onRetry: callbacks?.onRetry,
     };
+    if (injectionTiming) {
+      const innerToolStart = wrapped.onToolStart;
+      wrapped.onToolStart = (name, toolUseId, input) => {
+        // First assistant tool_call dispatched counts as the turn's first
+        // action. Assistant text preceding tool calls is tool-prelude and
+        // deliberately not counted as a first action here.
+        injectionTiming.recordFirstAction('tool_call');
+        innerToolStart?.(name, toolUseId, input);
+      };
+    }
+    return wrapped;
   }
 
   private logMetrics(metrics: ReturnType<typeof Metrics.getSummary>): void {

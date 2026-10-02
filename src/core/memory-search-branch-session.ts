@@ -75,6 +75,9 @@ interface MemoryFinishDecision {
 
 type MemorySearchStage = 'assess' | 'refine';
 
+/** Injection-timeline stage markers for `branch_stage_timing`. */
+type MemoryStageTiming = 'assess_end' | 'mechanical_retrieval_end' | 'refine_finish';
+
 interface RecallPlan {
   queryText: string;
   keywords: string[];
@@ -154,6 +157,10 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   private stage: MemorySearchStage = 'assess';
   /** Conversation passes begun by this session (1-based, per pass). */
   private memoryConversationPasses = 0;
+  /** Injection-timeline t0; set when run() begins so stage ms are cumulative. */
+  private runStartedAt = 0;
+  /** Bounded stage markers: every stage timing fires at most once per run. */
+  private readonly emittedStageTimings = new Set<MemoryStageTiming>();
   private retrieval: MechanicalRetrievalState = {
     sessionRecords: [],
     keywordsTruncated: false,
@@ -194,6 +201,28 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     });
     this.budget = budget;
     this.catslogMemory = this.availableCatsLogMemory();
+  }
+
+  async run(): Promise<void> {
+    this.runStartedAt = Date.now();
+    await super.run();
+  }
+
+  /**
+   * Fire-and-forget stage marker for the injection timeline: cumulative ms
+   * since run start, once per stage, ids/ms only — never message text, refs
+   * or raw content. Rides the existing branch audit logger (the same
+   * facility as mechanical_retrieval.duration_ms), so no new I/O path is
+   * introduced.
+   */
+  private recordStageTiming(stage: MemoryStageTiming): void {
+    if (this.runStartedAt === 0 || this.emittedStageTimings.has(stage)) return;
+    this.emittedStageTimings.add(stage);
+    this.logger.write('branch_stage_timing', {
+      stage,
+      ms_since_run_start: Date.now() - this.runStartedAt,
+      session_key: this.memoryOptions.sessionKey,
+    });
   }
 
   protected prepareConversationTurn(): void {
@@ -278,6 +307,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         inject: false,
         delivery: 'discard',
       });
+      this.recordStageTiming('assess_end');
       return { ok: true, action: 'skip', delivery: 'discard' };
     }
 
@@ -301,6 +331,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       return { ok: true, action: 'recall', verdict: this.verdict, next: 'finish_discard' };
     }
     this.logger.write('verdict_gate', { verdict: this.verdict, skip_refine: false });
+    this.recordStageTiming('assess_end');
     return {
       ok: true,
       action: 'recall',
@@ -402,6 +433,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       keywords_bounded: this.retrieval.keywordsBounded,
       verdict: this.verdict,
     });
+    this.recordStageTiming('mechanical_retrieval_end');
   }
 
   /** Typed session-lane status for logs, acks, and the evidence pack. */
@@ -674,6 +706,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       });
     }
     this.complete(payload);
+    this.recordStageTiming('refine_finish');
   }
 
   private availableCatsLogMemory(): CatsLogMemoryBackend | undefined {
