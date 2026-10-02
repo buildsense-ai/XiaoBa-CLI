@@ -722,6 +722,12 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     assert.equal(pack.evidence_pack.local_knowledge.content_trust, 'local_distilled_knowledge');
     assert.equal(pack.evidence_pack.local_knowledge.entries[0].ref, `kb:${kbId}`);
     assert.match(String(pack.evidence_pack.local_knowledge.entries[0].summary), /rollback/);
+    const excerpt = pack.evidence_pack.local_knowledge.entries[0].excerpt;
+    assert.ok(excerpt, 'managed hit should carry a bounded revision-bound excerpt');
+    assert.equal(excerpt.revision, pack.evidence_pack.local_knowledge.entries[0].revision);
+    assert.match(String(excerpt.text), /nginx read-only mount stays/);
+    assert.ok(excerpt.text.length <= 2000);
+    assert.equal(excerpt.char_end - excerpt.char_start, excerpt.text.length);
     // A managed document hit/updatedAt cannot prove old sessions were all
     // distilled. Keep both remote lanes at full breadth; never add `from`
     // or restrict the branch budget just because a keyword matched a doc.
@@ -740,6 +746,32 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     const logs = readBranchLogs(testRoot);
     assert.match(logs, /published_observation/);
     assert.doesNotMatch(logs, /unobserved_refs_audit_only/);
+  });
+
+  test('refs quoted inside KB body are not automatically authorized finish citations', async () => {
+    const knowledgeRoot = path.join(testRoot, 'knowledge');
+    const kbId = 'KB-0f1e2d3c-4b5a-4677-8899-aabbccddeeff';
+    const quotedRef = `ref_${'f'.repeat(64)}`;
+    writeKnowledgeDocument(knowledgeRoot, kbId, 'Release checklist', 'release checklist: factual KB candidate');
+    const document = path.join(knowledgeRoot, 'documents', `${kbId}.md`);
+    fs.appendFileSync(document, `\nDocument quotation names ${quotedRef}; this is not a fetched graph candidate.\n`);
+    class CiteQuotedBodyAI extends AssessThenFinishAI {
+      evidencePackRefs(): string[] { return [quotedRef]; }
+    }
+    const ai = new CiteQuotedBodyAI();
+    const queue = new InMemorySyntheticObservationQueue();
+    const backend = new SessionQueryMemory();
+    backend.branchResponse = { branches: [{ source: 'session_graph', evidence_verdict: 'none', items: [] }] };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'kb-quoted-refs', input: 'release checklist?', recentMessages: [],
+      workingDirectory: testRoot, aiService: ai as any, queue, catslogMemory: backend, logEnabled: true,
+    });
+    await handle.done;
+    assert.equal(ai.calls.length, 2);
+    const pack = ai.evidencePackIn(ai.calls[1].messages);
+    assert.ok(pack.evidence_pack.local_knowledge.entries[0].excerpt.text.includes(quotedRef));
+    assert.equal(queue.drain().length, 0, 'quoted ref must fail closed to audit, not context');
+    assert.match(readBranchLogs(testRoot), /unobserved_refs_audit_only/);
   });
 
   test('a recent partial KB entry never hides an older independent historical record', async () => {

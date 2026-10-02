@@ -389,6 +389,11 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       local_knowledge_keywords_capped: this.retrieval.knowledge?.keywordsCapped ?? false,
       local_knowledge_entries_capped: this.retrieval.knowledge?.entriesCapped ?? false,
       local_knowledge_projected_entries: this.knowledgeProjectedEntryCount(),
+      local_knowledge_excerpts_requested: this.retrieval.knowledge?.excerptsRequested ?? 0,
+      local_knowledge_excerpts_read_retained: this.retrieval.knowledge?.excerptsRetained ?? 0,
+      local_knowledge_excerpt_gaps: this.retrieval.knowledge?.excerptGaps?.length ?? 0,
+      local_knowledge_excerpts_projected: this.knowledgePresentedExcerptCount(),
+      local_knowledge_excerpt_chars: this.knowledgePresentedExcerptChars(),
       lane_durations_ms: laneDurationsMs,
       retrieval_mode: 'full_history_parallel',
       consolidation: this.retrieval.presentation.diagnostics,
@@ -416,10 +421,30 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       || this.knowledgeProjectedEntryCount() < knowledge.entries.length ? 'truncated' : 'ok';
   }
 
+  private knowledgePresentedEntries(): Record<string, unknown>[] {
+    const pack = this.retrieval.presentation?.evidencePack.local_knowledge;
+    const projected = pack && typeof pack === 'object' && !Array.isArray(pack)
+      ? pack as Record<string, unknown>
+      : this.retrieval.knowledgeJson ? JSON.parse(this.retrieval.knowledgeJson) as Record<string, unknown> : {};
+    return Array.isArray(projected.entries) ? projected.entries as Record<string, unknown>[] : [];
+  }
+
   private knowledgeProjectedEntryCount(): number {
-    if (!this.retrieval.knowledgeJson) return 0;
-    const projected = JSON.parse(this.retrieval.knowledgeJson);
-    return Array.isArray(projected.entries) ? projected.entries.length : 0;
+    return this.knowledgePresentedEntries().length;
+  }
+
+  private knowledgePresentedExcerptCount(): number {
+    return this.knowledgePresentedEntries().filter(entry => {
+      const excerpt = entry.excerpt as Record<string, unknown> | undefined;
+      return typeof excerpt?.text === 'string' && excerpt.text.length > 0;
+    }).length;
+  }
+
+  private knowledgePresentedExcerptChars(): number {
+    return this.knowledgePresentedEntries().reduce((sum, entry) => {
+      const excerpt = entry.excerpt as Record<string, unknown> | undefined;
+      return sum + (typeof excerpt?.text === 'string' ? excerpt.text.length : 0);
+    }, 0);
   }
 
   /**
@@ -548,7 +573,8 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
           + 'KB 命中只是候选资料，不证明完整覆盖；managed 只说明由知识库脚本管理，不表示事实已核验。'
           + 'updated_at 是文档修改时间，不是历史覆盖水位；不得把该时间以前未引用的记录视为已被蒸馏。'
           + '当远端/会话证据更新或与 KB 冲突时，保留来源边界并合成差异，不要盲目照搬文档。'
-          + '请分析后立即调用 finish_memory_search 收尾；refs 只能引用其中出现过的 ref（KB 条目用其 ref 字段，形如 kb:… 或 file:…）。',
+          + 'KB excerpt 仅为绑定 revision 与 char_start/char_end 的局部原文，分页、截断和读取缺口可能省略条件；没有片段不代表已读完正文。'
+          + '请分析后立即调用 finish_memory_search 收尾；refs 仅用呈现条目的 ref 或分组 refs。文档正文提及的其他引用不是本轮已验证来源，片段事实引用该 KB 条目的 ref。',
       }),
     };
   }
