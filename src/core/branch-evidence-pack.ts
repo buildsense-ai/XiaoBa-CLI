@@ -71,14 +71,22 @@
  * - Every cap loop re-serializes WITH its truncation/count markers already
  *   applied before declaring the lane fits, so marker bytes can never push
  *   a returned lane over budget.
+ * - Supplied budgets are honored exactly — including in the worst case:
+ *   the bounded failure envelope `{"truncated":true}` is 18 UTF-16 code
+ *   units, so any supplied integer budget ≥ MIN_LANE_CHAR_BUDGET (18) can
+ *   always be met even by the fallback path. Supplied positive integer
+ *   budgets below 18 are PHYSICALLY UNREPRESENTABLE (no explicit failure
+ *   marker fits) and are rejected outright with a RangeError before any
+ *   packing happens — never exceeded, never silently widened to a default.
+ * - Option policy: missing or invalid non-positive values (undefined,
+ *   non-numbers, non-integers, non-finite, 0, negatives) keep the lane
+ *   default; that default policy is documented here deliberately.
  * - Envelope-only overflow (nothing left to drop, or no droppable array) is
  *   NOT returned oversize: the lane degrades to a bounded, explicit
  *   failure envelope — `truncated: true` + `consolidation_overflow: true`
  *   plus `content_trust`/`status`/`request_id`/`note` preserved fit-checked
  *   in that priority order ("whenever budget allows"). Never blank, never
- *   a fake empty, never a silent drop. (Below ~18 chars no JSON marker
- *   physically exists; the module then returns the smallest explicit
- *   marker `{"truncated":true}` and exceeds the absurd budget on purpose.)
+ *   a fake empty, never a silent drop.
  *
  * Audit vs presentation:
  * - `presentedRefs` lists exactly the refs visible in the FINAL pack (after
@@ -108,6 +116,16 @@ export const SESSION_TURN_GROUP_TYPE = 'session_turn_group';
  * operation; larger runs become several contiguous groups.
  */
 export const MAX_SESSION_GROUP_MEMBERS = 4;
+
+/**
+ * Minimum representable supplied lane budget, in UTF-16 code units. The
+ * smallest explicit failure envelope `{"truncated":true}` is exactly 18
+ * code units, so budgets from 18 up can ALWAYS be honored — even by the
+ * bounded overflow fallback. Supplied integer budgets of 1..17 cannot hold
+ * that marker and are rejected with a RangeError instead of being exceeded
+ * or silently widened to the lane default.
+ */
+export const MIN_LANE_CHAR_BUDGET = 18;
 
 export interface ConsolidateMemoryEvidencePackInput {
   /** Projected `/catsco/agent/branch` envelope (`remote_branch` lane). */
@@ -156,9 +174,9 @@ export function consolidateMemoryEvidencePack(
   input: ConsolidateMemoryEvidencePackInput,
   options: ConsolidateMemoryEvidencePackOptions = {},
 ): ConsolidateMemoryEvidencePackResult {
-  const maxRemoteChars = positiveIntegerOption(options.maxRemoteChars, MAX_REMOTE_EVIDENCE_CHARS);
-  const maxSessionChars = positiveIntegerOption(options.maxSessionChars, MAX_SESSION_EVIDENCE_CHARS);
-  const maxKnowledgeChars = positiveIntegerOption(options.maxKnowledgeChars, MAX_KNOWLEDGE_EVIDENCE_CHARS);
+  const maxRemoteChars = resolveLaneBudget(options.maxRemoteChars, 'maxRemoteChars', MAX_REMOTE_EVIDENCE_CHARS);
+  const maxSessionChars = resolveLaneBudget(options.maxSessionChars, 'maxSessionChars', MAX_SESSION_EVIDENCE_CHARS);
+  const maxKnowledgeChars = resolveLaneBudget(options.maxKnowledgeChars, 'maxKnowledgeChars', MAX_KNOWLEDGE_EVIDENCE_CHARS);
 
   // Raw (pre-dedup) lane sizes for the packing audit, measured on the cloned
   // envelope right after the copy, before any consolidation.
@@ -575,8 +593,9 @@ function boundedOverflowEnvelope(
     if (room > 0) addFitting('note', boundedNoteText(noteSource, room));
   }
   if (Object.keys(out).length === 0) {
-    // Physically unrepresentable budget (below the size of any JSON
-    // marker): return the smallest explicit failure instead of going silent.
+    // Unreachable for budgets >= MIN_LANE_CHAR_BUDGET (the truncated marker
+    // always fits); kept as a guard so the module can never return a blank
+    // fake-empty envelope even if the minimum ever changes.
     return { truncated: true };
   }
   return out;
@@ -677,8 +696,24 @@ function countLaneEntries(envelope: Record<string, unknown>): number {
   return Array.isArray(envelope.entries) ? envelope.entries.length : 0;
 }
 
-function positiveIntegerOption(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+/**
+ * Resolve one lane-budget option.
+ *
+ * - Missing/invalid non-positive values (undefined, non-numbers, NaN,
+ *   Infinity, non-integers, 0, negatives) keep the documented lane default.
+ * - A supplied positive integer below MIN_LANE_CHAR_BUDGET cannot hold even
+ *   the smallest explicit failure envelope and is REJECTED with a RangeError
+ *   before any packing — it is never exceeded and never silently widened.
+ */
+function resolveLaneBudget(value: unknown, name: string, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return fallback;
+  if (value < MIN_LANE_CHAR_BUDGET) {
+    throw new RangeError(
+      `consolidateMemoryEvidencePack options.${name}: supplied char budget ${value} is below the minimum representable budget ${MIN_LANE_CHAR_BUDGET}`
+        + ` (the bounded failure envelope '{"truncated":true}' alone is ${MIN_LANE_CHAR_BUDGET} UTF-16 code units).`,
+    );
+  }
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

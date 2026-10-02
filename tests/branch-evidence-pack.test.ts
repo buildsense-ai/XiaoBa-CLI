@@ -5,6 +5,8 @@ import {
   MAX_KNOWLEDGE_EVIDENCE_CHARS,
   MAX_REMOTE_EVIDENCE_CHARS,
   MAX_SESSION_EVIDENCE_CHARS,
+  MAX_SESSION_GROUP_MEMBERS,
+  MIN_LANE_CHAR_BUDGET,
   SESSION_TURN_GROUP_TYPE,
 } from '../src/core/branch-evidence-pack';
 import { CatsLogObservedRefsTracker } from '../src/core/catslog-skill-evidence';
@@ -660,6 +662,7 @@ describe('consolidateMemoryEvidencePack — realistic packing audit', () => {
     assert.equal(groups.length, 2);
     assert.deepEqual(groups[0].turns, [1, 2, 3, 4], 'group size is bounded by MAX_SESSION_GROUP_MEMBERS');
     assert.deepEqual(groups[1].turns, [5, 6]);
+    assert.ok(groups.every((group: any) => group.records.length <= MAX_SESSION_GROUP_MEMBERS));
     assert.equal(presentedRefs.filter(ref => ref.startsWith('stream-dup#')).length, 10);
   });
 });
@@ -978,5 +981,71 @@ describe('consolidateMemoryEvidencePack — monotonic direction and run metadata
     assert.equal(diagnostics.session_groups_formed, 1);
     assert.deepEqual(records[0].turns, [5, 6]);
     assert.equal(records[1].ref, 'stream-f#7', 'epoch change splits the run');
+  });
+});
+
+describe('consolidateMemoryEvidencePack — budget option contract', () => {
+  const emptyInput = { remoteBranch: { branches: [] }, sessionRecords: { records: [] }, localKnowledge: { entries: [] } };
+  const hugeInput = {
+    remoteBranch: { branches: [], note: 'x'.repeat(4_000) },
+    sessionRecords: { records: [{ ref: 'stream-t#1', user: { text: 'x'.repeat(4_000) } }] },
+    localKnowledge: { entries: [{ ref: 'file:documents/t.md', summary: 'x'.repeat(4_000) }] },
+  };
+
+  test('supplied positive budgets 1..17 are physically unrepresentable and rejected with RangeError before packing', () => {
+    for (const budget of [1, 7, 17]) {
+      for (const options of [
+        { maxRemoteChars: budget },
+        { maxSessionChars: budget },
+        { maxKnowledgeChars: budget },
+      ]) {
+        assert.throws(
+          () => consolidateMemoryEvidencePack(hugeInput, options),
+          (error: unknown) => error instanceof RangeError && String(error).includes(String(budget)),
+          `budget ${budget} must throw a visible RangeError`,
+        );
+      }
+    }
+  });
+
+  test('budget 18 (the minimum) always honors the requested cap, even in the bounded failure fallback', () => {
+    const { evidencePack, presentedRefs } = consolidateMemoryEvidencePack(hugeInput, {
+      maxRemoteChars: MIN_LANE_CHAR_BUDGET,
+      maxSessionChars: MIN_LANE_CHAR_BUDGET,
+      maxKnowledgeChars: MIN_LANE_CHAR_BUDGET,
+    });
+    for (const lane of [evidencePack.remote_branch, evidencePack.session_records, evidencePack.local_knowledge] as Record<string, unknown>[]) {
+      const text = JSON.stringify(lane);
+      assert.ok(text.length <= MIN_LANE_CHAR_BUDGET, `lane must fit the 18-char budget exactly, got ${text.length}: ${text}`);
+      assert.equal(lane.truncated, true, 'degradation stays explicit at the minimum budget');
+    }
+    assert.deepEqual(presentedRefs, [], 'nothing survives a minimal budget, and nothing is invented');
+  });
+
+  test('18+ budgets always yield lanes within the requested cap, fallback included', () => {
+    for (const budget of [18, 19, 64, 300, 5_000]) {
+      const { evidencePack } = consolidateMemoryEvidencePack(hugeInput, {
+        maxRemoteChars: budget,
+        maxSessionChars: budget,
+        maxKnowledgeChars: budget,
+      });
+      for (const lane of [evidencePack.remote_branch, evidencePack.session_records, evidencePack.local_knowledge] as Record<string, unknown>[]) {
+        const size = JSON.stringify(lane).length;
+        assert.ok(size <= budget, `budget ${budget}: lane serialized to ${size}`);
+      }
+    }
+  });
+
+  test('missing/invalid/non-positive options keep the documented lane defaults; only positive 1..17 throw', () => {
+    for (const invalid of [undefined, 0, -5, Number.NaN, Number.POSITIVE_INFINITY, 12.5, 'small', null]) {
+      const defaulted = consolidateMemoryEvidencePack(emptyInput, {
+        maxRemoteChars: invalid as number,
+        maxSessionChars: invalid as number,
+        maxKnowledgeChars: invalid as number,
+      });
+      assert.equal(defaulted.diagnostics.remote_chars_out, JSON.stringify(emptyInput.remoteBranch).length);
+      assert.equal(defaulted.diagnostics.session_chars_out, JSON.stringify(emptyInput.sessionRecords).length);
+      assert.equal(defaulted.diagnostics.knowledge_chars_out, JSON.stringify(emptyInput.localKnowledge).length);
+    }
   });
 });
