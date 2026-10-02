@@ -83,7 +83,8 @@ class AssessThenFinishAI {
     return [
       ...(pack.evidence_pack?.remote_branch?.branches || [])
         .flatMap((branch: any) => (branch.items || []).map((item: any) => item.ref)),
-      ...(pack.evidence_pack?.session_records?.records || []).map((record: any) => record.ref),
+      ...(pack.evidence_pack?.session_records?.records || [])
+        .flatMap((record: any) => record.type === 'session_turn_group' ? record.refs || [] : [record.ref]),
       ...(pack.evidence_pack?.local_knowledge?.entries || []).map((entry: any) => entry.ref),
     ].filter((ref: unknown) => typeof ref === 'string');
   }
@@ -415,6 +416,38 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     const pack = ai.evidencePackIn(ai.calls[1].messages);
     assert.equal(pack.evidence_pack.session_records.records[0].ref, 'stream-release#17');
     assert.equal(queue.drain().length, 1);
+  });
+
+  test('final presentation groups neighbors without losing refs and uses compact JSON', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new CiteEveryPackRefAI();
+    const backend = new SessionQueryMemory();
+    backend.branchResponse = { branches: [{ source: 'session_graph', evidence_verdict: 'none', items: [] }] };
+    backend.sessionResponse = { records: [
+      { ref: 'stream-release#5', session_id: 'release-session', log_date: '2026-09-01', user: { text: 'deploy at 15:00' } },
+      { ref: 'stream-release#6', session_id: 'release-session', log_date: '2026-09-01', user: { text: 'correction: deploy at 16:00, not 15:00' } },
+    ] };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'grouped-presentation', input: 'release checklist?', recentMessages: [],
+      workingDirectory: testRoot, aiService: ai as any, queue, catslogMemory: backend, logEnabled: true,
+    });
+    await handle.done;
+    assert.equal(ai.calls.length, 2);
+    const message = [...ai.calls[1].messages].reverse().find(m => m.role === 'user'
+      && typeof m.content === 'string' && m.content.includes('"evidence_pack"'))!;
+    const text = String(message.content);
+    const parsed = JSON.parse(text);
+    assert.equal(text, JSON.stringify(parsed));
+    assert.ok(text.length < JSON.stringify(parsed, null, 2).length);
+    const group = parsed.evidence_pack.session_records.records[0];
+    assert.equal(group.type, 'session_turn_group');
+    assert.deepEqual(group.refs, ['stream-release#5', 'stream-release#6']);
+    assert.equal(group.records[1].user.text, 'correction: deploy at 16:00, not 15:00');
+    const delivered = queue.drain();
+    assert.equal(delivered.length, 1);
+    assert.deepEqual(delivered[0].metadata?.refs, group.refs);
+    assert.match(readBranchLogs(testRoot), /consolidation/);
+    assert.doesNotMatch(readBranchLogs(testRoot), /unobserved_refs_audit_only/);
   });
 
   test('session_graph verdict none still refines when another branch returned evidence', async () => {

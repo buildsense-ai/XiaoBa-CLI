@@ -41,6 +41,7 @@ import {
 import { normalizeMemoryBranchBudget } from './branch-budget';
 import type { MemoryBranchBudget } from './branch-budget';
 import { hasUsableMemoryEvidence } from './memory-evidence-gate';
+import { consolidateMemoryEvidencePack, type ConsolidateMemoryEvidencePackResult } from './branch-evidence-pack';
 
 export interface MemorySearchBranchSessionOptions {
   sessionKey: string;
@@ -91,6 +92,8 @@ interface MechanicalRetrievalState {
   /** Local distilled-knowledge lane (L0); typed degraded statuses, never throws. */
   knowledge?: LocalKnowledgeLaneResult;
   knowledgeJson?: string;
+  /** Final model-visible presentation; raw projections stay separate for audit. */
+  presentation?: ConsolidateMemoryEvidencePackResult;
   /** True when assess keywords exceeded the 8-keyword search_any wire cap. */
   keywordsTruncated: boolean;
   /** True when any keyword was code-point-bounded or dropped (visible note). */
@@ -354,21 +357,22 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         projectLocalKnowledgeLane(this.retrieval.knowledge, MAX_KNOWLEDGE_EVIDENCE_CHARS),
       );
     }
+    this.retrieval.presentation = consolidateMemoryEvidencePack({
+      remoteBranch: this.remoteEvidencePack(),
+      sessionRecords: this.sessionEvidencePack(),
+      localKnowledge: this.knowledgeEvidencePack(),
+    }, {
+      maxRemoteChars: MAX_REMOTE_EVIDENCE_CHARS,
+      maxSessionChars: MAX_SESSION_EVIDENCE_CHARS,
+      maxKnowledgeChars: MAX_KNOWLEDGE_EVIDENCE_CHARS,
+    });
     this.verdict = this.readSessionGraphVerdict();
     this.evidencePackMessage = this.buildEvidencePackMessage();
 
-    // Feed every fetched ref into the observed-refs tracker exactly as tool
-    // results did before: same JSON shapes, same tool names, so the finish
-    // guard needs no special casing.
-    if (this.retrieval.remoteJson) {
-      this.observedRefs.recordToolResult('catslog_branch', this.retrieval.remoteJson);
-    }
-    if (this.retrieval.sessionJson) {
-      this.observedRefs.recordToolResult('catslog_sessions', this.retrieval.sessionJson);
-    }
-    if (this.retrieval.knowledgeJson) {
-      this.observedRefs.recordToolResult('catslog_knowledge', this.retrieval.knowledgeJson);
-    }
+    // Only refs actually present AFTER presentation caps may support a finish.
+    // Register explicitly so a >64-ref pack is not truncated by JSON walker
+    // pagination; the same total ceiling and citation grammar remain enforced.
+    this.observedRefs.recordPresentedRefs(this.retrieval.presentation.presentedRefs);
 
     this.logger.write('mechanical_retrieval', {
       duration_ms: Date.now() - startedAt,
@@ -387,6 +391,8 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       local_knowledge_projected_entries: this.knowledgeProjectedEntryCount(),
       lane_durations_ms: laneDurationsMs,
       retrieval_mode: 'full_history_parallel',
+      consolidation: this.retrieval.presentation.diagnostics,
+      evidence_pack_chars: typeof this.evidencePackMessage?.content === 'string' ? this.evidencePackMessage.content.length : 0,
       keywords_truncated: this.retrieval.keywordsTruncated,
       keywords_bounded: this.retrieval.keywordsBounded,
       verdict: this.verdict,
@@ -503,10 +509,20 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   }
 
   private hasUsableEvidence(): boolean {
+    const pack = this.retrieval.presentation?.evidencePack;
+    if (!pack) {
+      return hasUsableMemoryEvidence({
+        remoteResponse: this.retrieval.remoteResponse,
+        sessionRecords: this.retrieval.sessionRecords,
+        knowledgeEntries: this.retrieval.knowledge?.entries ?? [],
+      });
+    }
+    const session = pack.session_records as Record<string, unknown> | undefined;
+    const knowledge = pack.local_knowledge as Record<string, unknown> | undefined;
     return hasUsableMemoryEvidence({
-      remoteResponse: this.retrieval.remoteResponse,
-      sessionRecords: this.retrieval.sessionRecords,
-      knowledgeEntries: this.retrieval.knowledge?.entries ?? [],
+      remoteResponse: pack.remote_branch as CatscoBranchResponse | undefined,
+      sessionRecords: Array.isArray(session?.records) ? session.records : [],
+      knowledgeEntries: Array.isArray(knowledge?.entries) ? knowledge.entries : [],
     });
   }
 
@@ -515,10 +531,12 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       role: 'user',
       content: JSON.stringify({
         evidence_pack: {
-          content_trust: 'untrusted_branch_evidence',
-          remote_branch: this.remoteEvidencePack(),
-          session_records: this.sessionEvidencePack(),
-          local_knowledge: this.knowledgeEvidencePack(),
+          ...(this.retrieval.presentation?.evidencePack ?? {
+            content_trust: 'untrusted_branch_evidence',
+            remote_branch: this.remoteEvidencePack(),
+            session_records: this.sessionEvidencePack(),
+            local_knowledge: this.knowledgeEvidencePack(),
+          }),
           ...(((this.retrieval.keywordsTruncated || this.retrieval.keywordsBounded)) ? {
             keywords_truncated: true,
             keyword_note: buildKeywordNote(this.retrieval.keywordsTruncated, this.retrieval.keywordsBounded),
@@ -526,11 +544,12 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         },
         instruction: '以上是本次机械检索的全部证据（远端融合检索、设备绑定会话查询与本地蒸馏知识库三路并行取得）。'
           + 'distilled KB 条目（local_knowledge，provenance=local_knowledge）在覆盖当前问题时优先采用；'
+          + 'session_turn_group 中 records 按原顺序保留各 turn、角色、日期和修正，refs 是对应来源；标注遗漏或不可用的来源不表示历史不存在。'
           + 'KB 命中只是候选资料，不证明完整覆盖；managed 只说明由知识库脚本管理，不表示事实已核验。'
           + 'updated_at 是文档修改时间，不是历史覆盖水位；不得把该时间以前未引用的记录视为已被蒸馏。'
           + '当远端/会话证据更新或与 KB 冲突时，保留来源边界并合成差异，不要盲目照搬文档。'
           + '请分析后立即调用 finish_memory_search 收尾；refs 只能引用其中出现过的 ref（KB 条目用其 ref 字段，形如 kb:… 或 file:…）。',
-      }, null, 2),
+      }),
     };
   }
 

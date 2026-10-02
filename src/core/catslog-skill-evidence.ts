@@ -35,6 +35,20 @@ export class CatsLogObservedRefsTracker {
   }
 
   /**
+   * Register the bounded ref list extracted from the FINAL model-visible
+   * evidence pack. Unlike a generic JSON walk this explicit list is not
+   * subject to its 64-item array page limit; the same ref grammar and total
+   * 128-ref ceiling still apply. Hidden/raw retrieval refs must not be fed here.
+   */
+  recordPresentedRefs(refs: readonly string[]): void {
+    if (!Array.isArray(refs)) return;
+    for (const ref of refs.slice(0, MAX_OBSERVED_REFS)) {
+      this.collect(ref, 0);
+      if (this.observed.size >= MAX_OBSERVED_REFS) break;
+    }
+  }
+
+  /**
    * Return the cited refs that were never observed in this run's tool
    * results. An empty result means the finish may proceed to parent context.
    */
