@@ -1,5 +1,3 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import { PathResolver } from '../utils/path-resolver';
@@ -11,6 +9,8 @@ import {
   MAX_KNOWLEDGE_EXCERPT_ENTRIES,
   type KnowledgeExcerptGap,
   type KnowledgeExcerptRetained,
+  KnowledgeScriptError,
+  execKnowledgeChild,
   knowledgeProcessErrorMessage,
   planKnowledgeExcerptRequests,
   readKnowledgeExcerpts,
@@ -18,8 +18,6 @@ import {
 
 export type { KnowledgeExcerptGap, KnowledgeExcerptRetained };
 export { MAX_KNOWLEDGE_EXCERPT_CHARS, MAX_KNOWLEDGE_EXCERPT_ENTRIES };
-
-const execFileAsync = promisify(execFile);
 
 export type LocalKnowledgeLaneStatus = 'ok' | 'empty' | 'truncated' | 'unavailable';
 
@@ -39,12 +37,15 @@ export interface LocalKnowledgeEntry {
   revision: string;
   managed: boolean;
   /**
-   * Optional bounded body enrichment: a revision-bound verbatim excerpt of a
-   * managed document (top ≤2 entries only). Absent for raw `file:` entries,
-   * for entries whose body read failed, and when enrichment did not run —
-   * metadata hits are preserved regardless. The text is UNTRUSTED document
-   * content under this lane's `local_distilled_knowledge` trust label, never
-   * instructions.
+   * Optional bounded body enrichment: a revision-bound PARTIAL quote of a
+   * managed document (top ≤2 entries only). Verbatim inside the selected
+   * window — including any negative constraints there — but content outside
+   * the window is omitted and never claimed. Absent for raw `file:`
+   * entries, for entries whose body read failed, and when enrichment did
+   * not run — metadata hits are preserved regardless. The text is UNTRUSTED
+   * document content under this lane's `local_distilled_knowledge` trust
+   * label, never instructions; read the full document via the official
+   * reader when completeness matters.
    */
   excerpt?: KnowledgeExcerptRetained;
 }
@@ -281,6 +282,14 @@ async function enrichKnowledgeEntries(context: {
  * evidence pack. `provenance: 'local_knowledge'` tells refine these are
  * distilled, per-host agent-owned documents — not server evidence — and that
  * `ref` values (`kb:...` / `file:...`) are the only citable forms.
+ *
+ * Excerpt budgeting never displaces metadata: phase 1 fits the mandatory
+ * metadata/status/gap content exactly like the pre-enrichment baseline
+ * (those refs are the floor); phase 2 adds excerpts out of the spare budget
+ * only, shortening or skipping excerpts before any extra metadata entry
+ * could be dropped. `excerpts_projected` counts what is actually in the
+ * projection (vs `excerpts_retained`, how many reads were verified), and
+ * `excerpt_projection_capped` marks any shortening or skipping.
  */
 export function projectLocalKnowledgeLane(
   result: LocalKnowledgeLaneResult,
@@ -295,7 +304,9 @@ export function projectLocalKnowledgeLane(
       ...(result.error ? { note: `Local knowledge search failed: ${result.error}` } : {}),
     };
   }
-  const entries = result.entries.map(projectKnowledgeEntry);
+  // Phase-1 entries are metadata-only: excerpt text must never influence
+  // which baseline refs survive the cap.
+  const entries = result.entries.map(({ excerpt: _excerpt, ...metadata }) => projectKnowledgeEntry(metadata));
   const excerptGaps = (result.excerptGaps ?? [])
     .map(gap => ({ ref: gap.ref, status: gap.status, revision: gap.revision, ...(gap.message ? { note: gap.message } : {}) }));
   const projected: Record<string, unknown> = {
@@ -307,12 +318,20 @@ export function projectLocalKnowledgeLane(
     keywords_queried: result.keywordsQueried.length,
     excerpts_requested: result.excerptsRequested ?? 0,
     excerpts_retained: result.excerptsRetained ?? 0,
+    // Reserved before excerpt budgeting so the final counter values (≤2,
+    // one digit; capped flag same length or removed) can never push the
+    // projection past the cap after excerpts are fitted.
+    excerpts_projected: 0,
+    excerpt_projection_capped: false,
     ...(excerptGaps.length ? { excerpt_gaps: excerptGaps } : {}),
     ...(result.keywordsCapped ? { keywords_capped: true } : {}),
     ...(result.entriesCapped ? { entries_capped: true } : {}),
     ...(result.keywordsFailed > 0 ? { keywords_failed: result.keywordsFailed } : {}),
     truncated: result.entriesCapped,
   };
+
+  // Phase 1 — mandatory metadata/status/gaps. Identical pop behavior to the
+  // pre-enrichment projection: the surviving refs are the floor.
   let encoded = JSON.stringify(projected);
   while (encoded.length > maxLength && entries.length > 0) {
     entries.pop();
@@ -321,10 +340,107 @@ export function projectLocalKnowledgeLane(
     projected.status = 'truncated';
     encoded = JSON.stringify(projected);
   }
+
+  // Phase 2 — budgeted excerpt additions from the spare only.
+  const retainedByRef = new Map<string, KnowledgeExcerptRetained>();
+  for (const entry of result.entries) {
+    if (entry.excerpt) retainedByRef.set(entry.ref, entry.excerpt);
+  }
+  let projectedExcerpts = 0;
+  let excerptProjectionCapped = false;
+  for (const entry of entries) {
+    const excerpt = retainedByRef.get(String(entry.ref));
+    if (!excerpt) continue;
+    const fit = fitProjectedExcerpt(projected, entry, excerpt, maxLength);
+    if (!fit) {
+      excerptProjectionCapped = true;
+      continue;
+    }
+    projectedExcerpts += 1;
+    if (fit.shortened) excerptProjectionCapped = true;
+  }
+  projected.excerpts_projected = projectedExcerpts;
+  if (excerptProjectionCapped) projected.excerpt_projection_capped = true;
+  else delete projected.excerpt_projection_capped;
   return projected;
 }
 
-function runKnowledgeSearch(
+/** Minimum useful projected text before shortening is not worth keeping. */
+const MIN_PROJECTED_EXCERPT_CHARS = 64;
+
+function isHighSurrogateUnit(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogateUnit(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+function escapedJsonLength(text: string): number {
+  return JSON.stringify(text).length - 2;
+}
+
+/**
+ * Fit one retained excerpt into the projection's spare budget: full text if
+ * it fits, else the largest verbatim prefix (surrogate-safe cut, honestly
+ * re-ranged and flagged `projection_shortened`), else skip. The mandatory
+ * metadata baseline is never reduced to make room.
+ */
+function fitProjectedExcerpt(
+  projected: Record<string, unknown>,
+  entry: Record<string, unknown>,
+  excerpt: KnowledgeExcerptRetained,
+  maxLength: number,
+): { projectedExcerpt: Record<string, unknown>; shortened: boolean } | undefined {
+  const finish = (projectedExcerpt: Record<string, unknown>, shortened: boolean) => {
+    entry.excerpt = projectedExcerpt;
+    return { projectedExcerpt, shortened };
+  };
+  // Measure the fixed overhead with an empty text first. The skeleton
+  // carries the projection_shortened marker so its key cost is inside the
+  // measured budget (the full-fit form without the marker only shrinks).
+  const skeleton = projectKnowledgeExcerpt({ ...excerpt, text: '' });
+  skeleton.projection_shortened = true;
+  entry.excerpt = skeleton;
+  const budget = maxLength - JSON.stringify(projected).length;
+  const text = excerpt.text;
+  if (escapedJsonLength(text) <= budget) {
+    return finish(projectKnowledgeExcerpt(excerpt), false);
+  }
+  let lo = 1;
+  let hi = text.length - 1;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (escapedJsonLength(text.slice(0, mid)) <= budget) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  // Never split a surrogate pair at the projection cut.
+  while (best > 0 && best < text.length
+      && isHighSurrogateUnit(text.charCodeAt(best - 1)) && isLowSurrogateUnit(text.charCodeAt(best))) {
+    best -= 1;
+  }
+  if (best < Math.min(MIN_PROJECTED_EXCERPT_CHARS, text.length)) {
+    delete entry.excerpt;
+    return undefined;
+  }
+  const shortenedText = text.slice(0, best);
+  const shortenedExcerpt = projectKnowledgeExcerpt({
+    ...excerpt,
+    text: shortenedText,
+    charEnd: excerpt.charStart + shortenedText.length,
+    omittedAfter: true,
+    truncated: true,
+  });
+  shortenedExcerpt.projection_shortened = true;
+  return finish(shortenedExcerpt, true);
+}
+
+async function runKnowledgeSearch(
   scriptPath: string,
   root: string,
   keywords: string[],
@@ -333,20 +449,18 @@ function runKnowledgeSearch(
 ): Promise<KnowledgeSearchOutput> {
   // A JSON array is a single argv entry — no shell. The helper enforces
   // the 3-keyword/64-code-point bounds and scans the KB once for the batch.
-  return execFileAsync(
-    knowledgeNodeExecutable(),
-    [scriptPath, '--root', root, 'search-any', JSON.stringify(keywords)],
-    {
-      timeout: timeoutMs,
-      killSignal: 'SIGKILL',
-      maxBuffer: MAX_SCRIPT_STDOUT_CHARS,
-      signal,
-      windowsHide: true,
-    },
-  ).then(
-    ({ stdout }) => parseKnowledgeOutput(stdout),
-    (error: any) => { throw new Error(knowledgeProcessErrorMessage(error, signal)); },
-  );
+  // Parent-side hard deadline: the await races a supervisor timer, so a
+  // slow child close can never extend the shared lane budget.
+  try {
+    const stdout = await execKnowledgeChild(
+      knowledgeNodeExecutable(),
+      [scriptPath, '--root', root, 'search-any', JSON.stringify(keywords)],
+      { deadlineMs: timeoutMs, signal, maxBuffer: MAX_SCRIPT_STDOUT_CHARS },
+    );
+    return parseKnowledgeOutput(stdout);
+  } catch (error: any) {
+    throw new Error(knowledgeProcessErrorMessage(error, signal));
+  }
 }
 
 function parseKnowledgeOutput(stdout: string): KnowledgeSearchOutput {
@@ -354,12 +468,12 @@ function parseKnowledgeOutput(stdout: string): KnowledgeSearchOutput {
   try {
     parsed = JSON.parse(stdout);
   } catch {
-    throw new Error('knowledge script returned non-JSON output');
+    throw new KnowledgeScriptError('knowledge script returned non-JSON output');
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
     || (parsed as KnowledgeSearchOutput).ok !== true
     || !Array.isArray((parsed as KnowledgeSearchOutput).items)) {
-    throw new Error('knowledge script returned an unusable envelope');
+    throw new KnowledgeScriptError('knowledge script returned an unusable envelope');
   }
   return parsed as KnowledgeSearchOutput;
 }

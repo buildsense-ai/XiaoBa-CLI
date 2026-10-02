@@ -86,7 +86,7 @@ function listTree(target: string): string[] {
 function writeDelegatingScript(
   dir: string,
   searchEnvelope: string,
-  options: { sleepBeforeReadMs?: number; sleepBeforeSearchMs?: number } = {},
+  options: { sleepBeforeReadMs?: number; sleepBeforeSearchMs?: number; trapSigterm?: boolean } = {},
 ): string {
   const log = path.join(dir, 'invocations.jsonl');
   const file = path.join(dir, 'fake-then-real-knowledge.cjs');
@@ -97,6 +97,7 @@ function writeDelegatingScript(
     const args = process.argv.slice(2);
     fs.appendFileSync(LOG, JSON.stringify(args) + '\\n');
     function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+    ${options.trapSigterm ? "process.on('SIGTERM', () => { /* ignore graceful shutdown */ });" : ''}
     if (args[2] === 'search-any') {
       ${options.sleepBeforeSearchMs ? `sleep(${options.sleepBeforeSearchMs});` : ''}
       process.stdout.write(${JSON.stringify(searchEnvelope)} + '\\n');
@@ -652,5 +653,367 @@ describe('local knowledge lane bounded excerpt enrichment', () => {
     assert.equal(result.error, 'knowledge_root_missing');
     assert.equal(result.excerptsRequested, undefined);
     assert.deepEqual(result.entries, []);
+  });
+});
+
+describe('review follow-ups: projection budget, unicode edges, strict protocol, supervisor deadline, diagnostics hygiene', () => {
+  let scratch: string;
+  beforeEach(() => { scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-kb-followup-')); });
+  afterEach(() => { fs.rmSync(scratch, { recursive: true, force: true }); });
+
+  /** Hand-built retained excerpt over a synthetic body (text === body.slice(charStart, charEnd)). */
+  function retainedExcerpt(ref: string, id: string, body: string, revision: string) {
+    const charStart = 0;
+    const charEnd = Math.min(body.length, 2000);
+    return {
+      status: 'retained' as const,
+      ref,
+      revision,
+      text: body.slice(charStart, charEnd),
+      charStart,
+      charEnd,
+      omittedBefore: charStart > 0,
+      omittedAfter: charEnd < body.length,
+      truncated: charStart > 0 || charEnd < body.length,
+      truncatedByPaging: false,
+      pageChars: body.length,
+      offset: 0,
+      nextOffset: null as number | null,
+    };
+  }
+
+  function nearLimitEntry(index: number) {
+    const id = `KB-0000000${index}-aaaa-4bbb-8ccc-00000000000${index}`;
+    const body = `# Doc ${index}\n\n${'内容'.repeat(1000)}\n锚点${index} TAIL-MARKER-${index}`;
+    const revision = crypto.createHash('sha256').update(body).digest('hex');
+    return {
+      entry: {
+        ref: `kb:${id}`,
+        id,
+        title: `近限文档 ${index} 的一个相当长的标题用于撑大投影`,
+        summary: `摘要${index}：${'近'.repeat(600)}`,
+        category: 'deploy',
+        updated_at: '2026-09-01T00:00:00.000Z',
+        revision,
+        managed: true,
+        ...(index < 2 ? { excerpt: retainedExcerpt(`kb:${id}`, id, body, revision) } : {}),
+      },
+      body,
+    };
+  }
+
+  test('projection never displaces baseline metadata for excerpts at the 8k cap (8 near-limit hits)', () => {
+    const built = Array.from({ length: 8 }, (_, index) => nearLimitEntry(index + 1));
+    const result = {
+      status: 'ok' as const,
+      entries: built.map(b => b.entry),
+      keywordsQueried: ['锚点'],
+      keywordsCapped: false,
+      keywordsFailed: 0,
+      entriesCapped: false,
+      excerptsRequested: 2,
+      excerptsRetained: 2,
+      excerptGaps: [],
+    };
+
+    const baseline = projectLocalKnowledgeLane({
+      ...result,
+      entries: result.entries.map(({ excerpt: _excerpt, ...metadata }) => metadata),
+    }, 8_000);
+    const pack = projectLocalKnowledgeLane(result, 8_000);
+
+    const baselineRefs = (baseline.entries as Array<Record<string, unknown>>).map(entry => entry.ref);
+    const enrichedRefs = (pack.entries as Array<Record<string, unknown>>).map(entry => entry.ref);
+    assert.deepEqual(enrichedRefs, baselineRefs, 'excerpt prefetch must not cost any baseline metadata hit');
+
+    const encoded = JSON.stringify(pack);
+    assert.ok(encoded.length <= 8_000, `projection JSON must stay within the lane cap (${encoded.length})`);
+    const projectedExcerpts = (pack.entries as Array<Record<string, unknown>>)
+      .map(entry => entry.excerpt as Record<string, unknown> | undefined)
+      .filter((excerpt): excerpt is Record<string, unknown> => Boolean(excerpt));
+    const totalText = projectedExcerpts.reduce((sum, excerpt) => sum + String(excerpt.text).length, 0);
+    assert.ok(totalText <= 4_000, `projected excerpt text must stay within 2×2000 (${totalText})`);
+    assert.equal(pack.excerpts_retained, 2, 'read-truth count is reported unchanged');
+    assert.equal(pack.excerpts_projected, projectedExcerpts.length, 'actual projected count reported separately');
+    assert.equal(pack.excerpt_projection_capped, true, 'shortening/skipping must be visible');
+
+    const bodyByRef = new Map(built.map(b => [b.entry.ref, b.body]));
+    for (const entry of pack.entries as Array<Record<string, unknown>>) {
+      const excerpt = entry.excerpt as Record<string, unknown> | undefined;
+      if (!excerpt) continue;
+      const text = String(excerpt.text);
+      const charStart = Number(excerpt.char_start);
+      const charEnd = Number(excerpt.char_end);
+      assert.equal(bodyByRef.get(String(entry.ref))!.slice(charStart, charEnd), text, 'projected excerpt stays a verbatim slice');
+      assert.ok(Number(excerpt.char_end) - Number(excerpt.char_start) <= 2_000);
+      if (excerpt.projection_shortened === true) {
+        assert.equal(charEnd, charStart + text.length, 'shortened excerpts are re-ranged honestly');
+        assert.equal(excerpt.omitted_after, true);
+        assert.equal(excerpt.truncated, true);
+      }
+      assertNoSplitSurrogates(text);
+    }
+  });
+
+  test('roomy projection keeps both full excerpts and separates actual-projected from read-retained', () => {
+    const idA = 'KB-10000000-aaaa-4bbb-8ccc-000000000001';
+    const idB = 'KB-20000000-aaaa-4bbb-8ccc-000000000002';
+    const bodyA = `# A\n${'a'.repeat(2400)}`;
+    const bodyB = `# B\n${'b'.repeat(2400)}`;
+    const result = {
+      status: 'ok' as const,
+      entries: [
+        { ref: `kb:${idA}`, id: idA, title: 'A', summary: 'short', category: 'deploy', updated_at: 'u', revision: OLD_REVISION, managed: true, excerpt: retainedExcerpt(`kb:${idA}`, idA, bodyA, OLD_REVISION) },
+        { ref: `kb:${idB}`, id: idB, title: 'B', summary: 'short', category: 'deploy', updated_at: 'u', revision: 'b'.repeat(64), managed: true, excerpt: retainedExcerpt(`kb:${idB}`, idB, bodyB, 'b'.repeat(64)) },
+      ],
+      keywordsQueried: ['k'],
+      keywordsCapped: false,
+      keywordsFailed: 0,
+      entriesCapped: false,
+      excerptsRequested: 2,
+      excerptsRetained: 2,
+      excerptGaps: [],
+    };
+    const pack = projectLocalKnowledgeLane(result, 8_000);
+    assert.equal(pack.excerpts_projected, 2);
+    assert.equal(pack.excerpts_retained, 2);
+    assert.equal('excerpt_projection_capped' in pack, false, 'nothing was shortened or skipped');
+    const projected = (pack.entries as Array<Record<string, unknown>>).map(entry => entry.excerpt as Record<string, unknown>);
+    assert.equal(projected.reduce((sum, excerpt) => sum + String(excerpt.text).length, 0), 4_000);
+    assert.equal(JSON.stringify(pack).length <= 8_000, true);
+  });
+
+  test('window end is recomputed within budget after start edge alignment', () => {
+    // Line boundary at 30, pair at 90/91, anchor term at 100. maxChars 10
+    // forces the minStart clamp; the start edge alignment then moves start
+    // back onto the pair — the end must stay within budget.
+    const body = `line-one\n${'x'.repeat(58)}${'\uD83D\uDE00'}anchor${'y'.repeat(3000)}`;
+    // positions: '\n' at 8; pair at 66; 'anchor' at 68.
+    const anchorIndex = body.indexOf('anchor');
+    assert.equal(body.charCodeAt(anchorIndex - 2) >= 0xd800, true, 'fixture: pair right before the anchor');
+    const terms = ['anchor'];
+    const selection = selectKnowledgeExcerpt(body, terms, { maxChars: 10, nextOffset: null });
+    assert.equal(selection.text.length <= 10, true, `budget is absolute (got ${selection.text.length})`);
+    assert.equal(body.slice(selection.charStart, selection.charEnd), selection.text);
+    assertNoSplitSurrogates(selection.text);
+    assert.ok(selection.charStart <= anchorIndex && selection.charEnd > anchorIndex, 'anchor start stays inside the window');
+  });
+
+  test('paged page-0 ending on a dangling high surrogate is not split at the read boundary', () => {
+    const body = `${'x'.repeat(11999)}\uD83D`;
+    const selection = selectKnowledgeExcerpt(body, [], { maxChars: 12_000, nextOffset: 12_000 });
+    assert.equal(selection.charEnd, 11_999, 'the dangling high surrogate is excluded');
+    assert.equal(selection.text.includes('\uD83D'), false);
+    assert.equal(body.slice(selection.charStart, selection.charEnd), selection.text);
+    assert.equal(selection.truncated, true);
+    assert.equal(selection.truncatedByPaging, true);
+  });
+
+  test('verbatim ranges are exact slices at start, end, offset and paging edges', () => {
+    const body = `# 边界\n${'m'.repeat(5000)}`;
+    for (const [offsetOption, nextOffset] of [[undefined, undefined], [0, null], [0, 12_000], [100, null]] as const) {
+      const selection = selectKnowledgeExcerpt(body, ['m'], { offset: offsetOption, nextOffset, maxChars: 2_000 });
+      assert.equal(selection.text.length <= 2_000, true);
+      assert.equal(body.slice(selection.charStart - (offsetOption ?? 0), selection.charEnd - (offsetOption ?? 0)), selection.text,
+        `text must equal the body slice between char_start and char_end (offset=${offsetOption}, next=${nextOffset})`);
+      assert.equal(selection.charEnd - selection.charStart, selection.text.length);
+      if (offsetOption === 100) {
+        assert.equal(selection.charStart, 100);
+        assert.equal(selection.omittedBefore, true, 'offset>0 means prior content exists');
+      }
+    }
+  });
+
+  function writeRawScript(name: string, body: string): string {
+    const file = path.join(scratch, name);
+    fs.writeFileSync(file, body, 'utf-8');
+    return file;
+  }
+
+  const twoRequests: KnowledgeExcerptRequest[] = [
+    { ref: `kb:${KB_A}`, id: KB_A, revision: OLD_REVISION },
+    { ref: `kb:${KB_B}`, id: KB_B, revision: 'b'.repeat(64) },
+  ];
+
+  function leaked(batch: { retained: Map<string, unknown>; gaps: Array<Record<string, unknown>> }, marker: string): boolean {
+    return JSON.stringify(batch).includes(marker);
+  }
+
+  test('forged ok response with a wrong offset is a typed gap and the body is discarded', async () => {
+    const script = writeRawScript('forged-offset.cjs', `
+      process.stdout.write(JSON.stringify({ ok: true, results: [
+        { index: 0, id: ${JSON.stringify(KB_A)}, status: 'ok', revision: ${JSON.stringify(OLD_REVISION)}, body: 'FORGED-OFFSET-LEAK', offset: 12000, nextOffset: null },
+        { index: 1, id: ${JSON.stringify(KB_B)}, status: 'ok', revision: ${JSON.stringify('b'.repeat(64))}, body: 'ok-body-b', offset: 0, nextOffset: null },
+      ] }) + '\\n');
+    `);
+    const batch = await readKnowledgeExcerpts({ scriptPath: script, knowledgeRoot: scratch, requests: twoRequests, timeoutMs: 3000 });
+    assert.equal(batch.retained.has(`kb:${KB_A}`), false);
+    assert.equal(batch.gaps[0].status, 'read_error');
+    assert.match(String(batch.gaps[0].message), /protocol violation: response offset/);
+    assert.equal(leaked(batch, 'FORGED-OFFSET-LEAK'), false);
+    assert.equal(batch.retained.has(`kb:${KB_B}`), true, 'the conforming sibling still binds');
+  });
+
+  test('duplicate result indices poison the whole batch with typed gaps and no bodies', async () => {
+    const script = writeRawScript('dup-index.cjs', `
+      const item = { status: 'ok', body: 'DUP-INDEX-LEAK', offset: 0, nextOffset: null };
+      process.stdout.write(JSON.stringify({ ok: true, results: [
+        { index: 0, id: ${JSON.stringify(KB_A)}, revision: ${JSON.stringify(OLD_REVISION)}, ...item },
+        { index: 0, id: ${JSON.stringify(KB_B)}, revision: ${JSON.stringify('b'.repeat(64))}, ...item },
+      ] }) + '\\n');
+    `);
+    const batch = await readKnowledgeExcerpts({ scriptPath: script, knowledgeRoot: scratch, requests: twoRequests, timeoutMs: 3000 });
+    assert.equal(batch.retained.size, 0);
+    assert.equal(batch.gaps.length, 2);
+    for (const gap of batch.gaps) {
+      assert.equal(gap.status, 'unavailable');
+      assert.match(String(gap.message), /duplicate result index/);
+    }
+    assert.equal(leaked(batch, 'DUP-INDEX-LEAK'), false);
+  });
+
+  test('out-of-range result indices are rejected as a protocol violation', async () => {
+    const script = writeRawScript('range-index.cjs', `
+      process.stdout.write(JSON.stringify({ ok: true, results: [
+        { index: 0, id: ${JSON.stringify(KB_A)}, status: 'ok', revision: ${JSON.stringify(OLD_REVISION)}, body: 'in-range', offset: 0, nextOffset: null },
+        { index: 7, id: ${JSON.stringify(KB_B)}, status: 'ok', revision: 'x', body: 'RANGE-LEAK', offset: 0, nextOffset: null },
+      ] }) + '\\n');
+    `);
+    const batch = await readKnowledgeExcerpts({ scriptPath: script, knowledgeRoot: scratch, requests: twoRequests, timeoutMs: 3000 });
+    assert.equal(batch.retained.size, 0);
+    assert.match(String(batch.gaps[0].message), /result index out of range/);
+    assert.equal(leaked(batch, 'RANGE-LEAK'), false);
+    assert.equal(leaked(batch, 'in-range'), false, 'unattributable batches discard every body');
+  });
+
+  test('malformed or non-forward nextOffset is rejected, never read as full coverage', async () => {
+    const cases: Array<[string, string, RegExp]> = [
+      ['string nextOffset', 'nextOffset: "x"', /malformed nextOffset/],
+      ['missing nextOffset', '', /malformed nextOffset/],
+      ['non-forward nextOffset', 'nextOffset: 0', /malformed nextOffset/],
+    ];
+    for (const [label, nextField, expected] of cases) {
+      const script = writeRawScript(`next-${label.replace(/\W+/g, '-')}.cjs`, `
+        process.stdout.write(JSON.stringify({ ok: true, results: [
+          { index: 0, id: ${JSON.stringify(KB_A)}, status: 'ok', revision: ${JSON.stringify(OLD_REVISION)}, body: 'NEXT-LEAK', offset: 0, ${nextField} },
+        ] }) + '\\n');
+      `);
+      const batch = await readKnowledgeExcerpts({
+        scriptPath: script,
+        knowledgeRoot: scratch,
+        requests: [twoRequests[0]],
+        timeoutMs: 3000,
+      });
+      assert.equal(batch.retained.size, 0, label);
+      assert.equal(batch.gaps[0].status, 'read_error', label);
+      assert.match(String(batch.gaps[0].message), expected, label);
+      assert.equal(leaked(batch, 'NEXT-LEAK'), false, label);
+    }
+  });
+
+  test('plan cap is hard at two regardless of the optional argument; ref must be kb:+id', () => {
+    const forged = { ref: 'kb:KB-99999999-9999-4999-8999-999999999999', id: KB_MISSING, title: 'forged ref', summary: '', category: 'deploy', updated_at: '', revision: OLD_REVISION, managed: true };
+    const entries = [
+      nearLimitEntry(1).entry, nearLimitEntry(2).entry, nearLimitEntry(3).entry, nearLimitEntry(4).entry, forged,
+    ];
+    assert.equal(planKnowledgeExcerptRequests(entries, 10).length, 2, 'cannot raise the cap above 2');
+    assert.equal(planKnowledgeExcerptRequests(entries, 99).length, 2);
+    assert.equal(planKnowledgeExcerptRequests(entries, 0).length, 0);
+    const planned = planKnowledgeExcerptRequests(entries);
+    for (const request of planned) {
+      assert.equal(request.ref, `kb:${request.id}`, 'ref/id binding must be canonical');
+    }
+  });
+
+  test('SIGTERM-trapping never-settling enrichment child is killed at the shared deadline', async () => {
+    const root = path.join(scratch, 'knowledge');
+    fs.mkdirSync(root, { recursive: true });
+    const envelope = JSON.stringify({
+      ok: true, total: 1, items: [
+        { id: KB_A, title: 'a', summary: 's', category: 'deploy', updatedAt: '2026-09-01T00:00:00.000Z', revision: OLD_REVISION, managed: true, file: `documents/${KB_A}.md` },
+      ],
+    });
+    const script = writeDelegatingScript(scratch, envelope, { sleepBeforeReadMs: 60_000, trapSigterm: true });
+
+    const startedAt = Date.now();
+    let hardcapFired = false;
+    const result = await Promise.race([
+      searchLocalKnowledgeLane({ keywords: ['k'], knowledgeRoot: root, scriptPath: script, timeoutMs: 500 }),
+      new Promise<never>((_resolve, reject) => setTimeout(() => { hardcapFired = true; reject(new Error('supervisor hardcap exceeded')); }, 2_500)),
+    ]);
+    const elapsed = Date.now() - startedAt;
+    assert.equal(hardcapFired, false, 'the lane must settle under its own deadline, not the test hardcap');
+    assert.equal(result.status, 'ok', 'metadata hits survive the killed child');
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.excerptGaps?.[0].status, 'unavailable');
+    assert.match(String(result.excerptGaps?.[0].message), /timed out/);
+    assert.ok(elapsed < 2_000, `never-settling child must not extend the lane (took ${elapsed}ms)`);
+  });
+
+  test('never-settling search child cannot extend the lane deadline either', async () => {
+    const root = path.join(scratch, 'knowledge');
+    fs.mkdirSync(root, { recursive: true });
+    const script = writeDelegatingScript(scratch, JSON.stringify({ ok: true, total: 0, items: [] }), { sleepBeforeSearchMs: 60_000, trapSigterm: true });
+
+    const startedAt = Date.now();
+    const result = await Promise.race([
+      searchLocalKnowledgeLane({ keywords: ['k'], knowledgeRoot: root, scriptPath: script, timeoutMs: 400 }),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('supervisor hardcap exceeded')), 2_500)),
+    ]);
+    const elapsed = Date.now() - startedAt;
+    assert.equal(result.status, 'unavailable');
+    assert.match(String(result.error), /timed out/);
+    assert.ok(elapsed < 1_500, `search phase must honor the shared deadline (took ${elapsed}ms)`);
+  });
+
+  test('non-JSON child stderr carrying a stale secret never reaches lane results or projected gaps', async () => {
+    const SECRET = 'STALE-SECRET-BODY-7f3a9c';
+    // Search-any succeeds (fabricated); read-batch crashes with a raw,
+    // non-JSON stderr dump that embeds the secret and the command line.
+    const script = writeRawScript('noisy-crash.cjs', `
+      const args = process.argv.slice(2);
+      if (args[2] === 'search-any') {
+        process.stdout.write(JSON.stringify({ ok: true, total: 1, items: [
+          { id: ${JSON.stringify(KB_A)}, title: 'a', summary: 's', category: 'deploy', updatedAt: '2026-09-01T00:00:00.000Z', revision: ${JSON.stringify(OLD_REVISION)}, managed: true, file: 'documents/${KB_A}.md' },
+        ] }) + '\\n');
+        return;
+      }
+      process.stderr.write('fatal: read failed near "${SECRET}"\\ncommand: node knowledge.cjs --root /data read-batch "{\\"id\\":\\"KB-11111111-2222-4333-8444-555555555555\\"}"\\n');
+      process.exit(1);
+    `);
+    const requests: KnowledgeExcerptRequest[] = [{ ref: `kb:${KB_A}`, id: KB_A, revision: OLD_REVISION }];
+
+    const helperBatch = await readKnowledgeExcerpts({ scriptPath: script, knowledgeRoot: scratch, requests, timeoutMs: 3000 });
+    assert.equal(helperBatch.retained.size, 0);
+    assert.equal(helperBatch.gaps[0].status, 'unavailable');
+    assert.equal(leaked(helperBatch, SECRET), false, 'raw stderr is never surfaced');
+    assert.equal(JSON.stringify(helperBatch).includes('read-batch'), false, 'command dumps are never surfaced');
+
+    // Lane level: the same crash must degrade to typed gaps over intact metadata hits.
+    const root = path.join(scratch, 'knowledge');
+    fs.mkdirSync(root, { recursive: true });
+    const laneResult = await searchLocalKnowledgeLane({ keywords: ['k'], knowledgeRoot: root, scriptPath: script });
+    assert.equal(laneResult.status, 'ok');
+    assert.equal(laneResult.excerptGaps?.[0].status, 'unavailable');
+    const pack = projectLocalKnowledgeLane(laneResult, 8_000);
+    assert.equal(JSON.stringify(pack).includes(SECRET), false);
+    assert.equal(JSON.stringify(pack).includes('read-batch'), false);
+  });
+
+  test('spawn failures degrade to the generic bounded diagnostic with no command dump', async () => {
+    const batch = await readKnowledgeExcerpts({
+      scriptPath: path.join(scratch, 'does-not-exist.cjs'),
+      knowledgeRoot: scratch,
+      requests: [twoRequests[0]],
+      timeoutMs: 3000,
+    });
+    assert.equal(batch.retained.size, 0);
+    assert.equal(batch.gaps[0].status, 'unavailable');
+    // Newer Node collapses spawn-ENOENT into a numeric exit-code error that
+    // only carries the command dump; the diagnostic must stay generic and
+    // bounded rather than surface it.
+    assert.equal(String(batch.gaps[0].message), 'knowledge script failed');
+    assert.equal(JSON.stringify(batch).includes('read-batch'), false);
+    assert.equal(JSON.stringify(batch).includes('does-not-exist'), false);
   });
 });
