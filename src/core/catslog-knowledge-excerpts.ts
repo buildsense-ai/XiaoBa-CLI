@@ -58,6 +58,8 @@ export const MIN_EXCERPT_TIMEOUT_MS = 50;
 /** Fixed read offset of v1 excerpt requests (paging contract echo). */
 export const EXCERPT_READ_OFFSET = 0;
 const MAX_EXCERPT_STDOUT_CHARS = 512 * 1024;
+/** Mirrors KnowledgeStore.read's fixed UTF-16 page contract. */
+const KNOWLEDGE_READ_PAGE_CHARS = 12_000;
 const MAX_GAP_MESSAGE_CHARS = 200;
 const MIN_CHILD_DEADLINE_MS = 1;
 
@@ -527,7 +529,7 @@ function bindExcerpt(
   }
   // Protocol binding: response offset must equal the requested offset.
   if (item.offset !== EXCERPT_READ_OFFSET) {
-    return gap('read_error', `excerpt batch protocol violation: response offset ${String(item.offset)} ≠ requested ${EXCERPT_READ_OFFSET}`);
+    return gap('read_error', 'excerpt batch protocol violation: response offset does not match the request');
   }
   // Protocol binding: nextOffset must be exactly null or a safe forward-
   // paging integer. Malformed or missing values are rejected instead of
@@ -542,6 +544,12 @@ function bindExcerpt(
     return gap('read_error', 'excerpt batch protocol violation: malformed nextOffset');
   }
   if (typeof item.body !== 'string') return gap('read_error', 'knowledge excerpt batch returned no body');
+  if (item.body.length > KNOWLEDGE_READ_PAGE_CHARS) {
+    return gap('read_error', 'excerpt batch protocol violation: body exceeds the reader page bound');
+  }
+  if (nextOffset !== null && nextOffset !== EXCERPT_READ_OFFSET + item.body.length) {
+    return gap('read_error', 'excerpt batch protocol violation: paging offset does not match the returned page');
+  }
   const selection = selectKnowledgeExcerpt(item.body, terms, {
     offset: EXCERPT_READ_OFFSET,
     nextOffset,

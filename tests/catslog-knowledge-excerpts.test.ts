@@ -1135,6 +1135,33 @@ describe('review follow-ups: projection budget, unicode edges, strict protocol, 
     assert.equal(batch.retained.has(`kb:${KB_B}`), true, 'the conforming sibling still binds');
   });
 
+  test('malformed offset objects cannot invoke coercion or escape as an exception', async () => {
+    const script = writeRawScript('offset-object.cjs', `
+      process.stdout.write(JSON.stringify({ ok: true, results: [
+        { index: 0, id: ${JSON.stringify(KB_A)}, status: 'ok', revision: ${JSON.stringify(OLD_REVISION)}, body: 'OFFSET-OBJECT-LEAK', offset: { toString: null }, nextOffset: null },
+      ] }) + '\\n');
+    `);
+    const batch = await readKnowledgeExcerpts({ scriptPath: script, knowledgeRoot: scratch, requests: [twoRequests[0]], timeoutMs: 3000 });
+    assert.equal(batch.retained.size, 0);
+    assert.equal(batch.gaps[0].status, 'read_error');
+    assert.match(String(batch.gaps[0].message), /response offset/);
+    assert.equal(leaked(batch, 'OFFSET-OBJECT-LEAK'), false);
+  });
+
+  test('read page size and nextOffset must agree with the official reader contract', async () => {
+    for (const [body, nextOffset] of [['P'.repeat(12001), null], ['short-page', 12000]] as const) {
+      const script = writeRawScript('bad-page.cjs', `
+        process.stdout.write(JSON.stringify({ ok: true, results: [
+          { index: 0, id: ${JSON.stringify(KB_A)}, status: 'ok', revision: ${JSON.stringify(OLD_REVISION)}, body: ${JSON.stringify(body)}, offset: 0, nextOffset: ${JSON.stringify(nextOffset)} },
+        ] }) + '\\n');
+      `);
+      const batch = await readKnowledgeExcerpts({ scriptPath: script, knowledgeRoot: scratch, requests: [twoRequests[0]], timeoutMs: 3000 });
+      assert.equal(batch.retained.size, 0);
+      assert.equal(batch.gaps[0].status, 'read_error');
+      assert.match(String(batch.gaps[0].message), /protocol violation/);
+    }
+  });
+
   test('duplicate result indices poison the whole batch with typed gaps and no bodies', async () => {
     const script = writeRawScript('dup-index.cjs', `
       const item = { status: 'ok', body: 'DUP-INDEX-LEAK', offset: 0, nextOffset: null };
