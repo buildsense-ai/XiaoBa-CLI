@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import type { PromiseWithChild } from 'child_process';
 import type { LocalKnowledgeEntry } from './catslog-knowledge-lane';
 
 const execFileAsync = promisify(execFile);
@@ -327,45 +328,68 @@ export class KnowledgeScriptError extends Error {
  * cleaned up; the losing promise's late rejection is swallowed.
  */
 export async function execKnowledgeChild(executable: string, args: string[], options: BoundedChildOptions): Promise<string> {
-  if (options.signal?.aborted) throw new Error('knowledge script aborted');
+  if (options.signal?.aborted) throw new KnowledgeScriptError('knowledge script aborted');
   const deadlineMs = Math.max(MIN_CHILD_DEADLINE_MS, options.deadlineMs);
   const controller = new AbortController();
-  const onCallerAbort = () => controller.abort();
-  options.signal?.addEventListener('abort', onCallerAbort, { once: true });
   let timedOut = false;
-  let rejectSupervisor: ((error: Error) => void) | undefined;
-  const supervisor = new Promise<never>((_resolve, reject) => { rejectSupervisor = reject; });
+  let aborted = false;
+  let rejectSupervisor: ((kind: 'timedout' | 'aborted') => void) | undefined;
+  const supervisor = new Promise<never>((_resolve, reject) => {
+    rejectSupervisor = (kind) => {
+      if (kind === 'timedout') timedOut = true;
+      else aborted = true;
+      reject(new Error(kind));
+    };
+  });
   supervisor.catch(() => { /* losing branch — never unhandled */ });
+  // Hard-kill the underlying child. Node's execFile(signal) abort path
+  // terminates with SIGTERM and does NOT forward killSignal, so a child that
+  // traps or ignores SIGTERM would outlive the deadline and keep the parent
+  // event loop (stdio pipes) alive; SIGKILL is sent explicitly, idempotently.
+  const hardKill = (childPromise: PromiseWithChild<{ stdout: string }>): void => {
+    try { childPromise.child?.kill('SIGKILL'); } catch { /* already exited */ }
+  };
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-    rejectSupervisor?.(new Error('knowledge script timed out'));
+    hardKill(childPromise);
+    rejectSupervisor?.('timedout');
   }, deadlineMs);
-  const child = execFileAsync(executable, args, {
-    // Deadline ownership lives in the supervisor timer + abort above (SIGKILL
-    // via killSignal); execFile's own timeout option is deliberately absent
-    // so spawn failures keep their stable OS codes instead of collapsing
-    // into a command-dumping generic failure.
+  const onCallerAbort = () => {
+    aborted = true;
+    controller.abort();
+    hardKill(childPromise);
+    rejectSupervisor?.('aborted');
+  };
+  options.signal?.addEventListener('abort', onCallerAbort, { once: true });
+  const childPromise: PromiseWithChild<{ stdout: string }> = execFileAsync(executable, args, {
+    // Deadline ownership lives in the supervisor timer + explicit SIGKILL
+    // above; execFile's own timeout option is deliberately absent so spawn
+    // failures keep their stable OS codes instead of collapsing into a
+    // command-dumping generic failure.
     killSignal: 'SIGKILL',
     maxBuffer: options.maxBuffer ?? MAX_EXCERPT_STDOUT_CHARS,
     signal: controller.signal,
     windowsHide: true,
   });
-  child.catch(() => { /* losing branch — never unhandled */ });
+  childPromise.catch(() => { /* losing branch — late kill rejection observed and swallowed */ });
   try {
-    const { stdout } = await Promise.race([child, supervisor]);
+    const { stdout } = await Promise.race([childPromise, supervisor]);
     return stdout;
   } catch (error: any) {
     // Our supervisor firing wins attribution even when the child's own
     // AbortError rejects in the same tick.
     if (timedOut) throw new KnowledgeScriptError('knowledge script timed out');
-    if (options.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
+    if (aborted || options.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
       throw new KnowledgeScriptError('knowledge script aborted');
     }
     throw error;
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener('abort', onCallerAbort);
+    // Whatever unwound the race, the child must not outlive this call;
+    // kill() on an already-exited child is a harmless no-op.
+    try { childPromise.child?.kill('SIGKILL'); } catch { /* already exited */ }
   }
 }
 

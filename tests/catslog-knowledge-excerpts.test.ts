@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+
+const execFileAsync = promisify(execFile);
 
 const { main: knowledgeMain } = require('../skills/xiaoba-knowledge/scripts/knowledge.cjs');
 
@@ -95,7 +99,9 @@ function writeDelegatingScript(
     const LOG = ${JSON.stringify(log)};
     const REAL = ${JSON.stringify(REAL_SCRIPT)};
     const args = process.argv.slice(2);
-    fs.appendFileSync(LOG, JSON.stringify(args) + '\\n');
+    // The child logs its own PID so tests can assert it was actually
+    // reaped (SIGKILL), not merely that the caller stopped waiting.
+    fs.appendFileSync(LOG, JSON.stringify({ pid: process.pid, args }) + '\\n');
     function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
     ${options.trapSigterm ? "process.on('SIGTERM', () => { /* ignore graceful shutdown */ });" : ''}
     if (args[2] === 'search-any') {
@@ -116,11 +122,32 @@ function writeDelegatingScript(
   return file;
 }
 
-function readInvocations(dir: string): string[][] {
+interface LoggedInvocation { pid: number; args: string[] }
+
+function readInvocations(dir: string): LoggedInvocation[] {
   const log = path.join(dir, 'invocations.jsonl');
   if (!fs.existsSync(log)) return [];
   return fs.readFileSync(log, 'utf-8').trim().split('\n').filter(Boolean)
-    .map(line => JSON.parse(line) as string[]);
+    .map(line => JSON.parse(line) as LoggedInvocation);
+}
+
+/** Polls until the logged child process is actually reaped (ESRCH), not a zombie or alive. */
+async function assertChildReaped(invocation: LoggedInvocation | undefined, timeoutMs: number = 1_500): Promise<void> {
+  assert.ok(invocation, 'expected at least one logged child invocation');
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      process.kill(invocation.pid, 0);
+    } catch (error: any) {
+      if (error?.code === 'ESRCH') return; // reaped — the pid is gone
+      // EPERM means the process exists; anything else is unexpected.
+      assert.equal(error?.code, undefined, `unexpected kill(0) error for pid ${invocation.pid}: ${error?.code}`);
+    }
+    if (Date.now() >= deadline) {
+      assert.fail(`child pid ${invocation.pid} still alive ${timeoutMs}ms after the call — supervisor did not SIGKILL it`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
 }
 
 function assertNoSplitSurrogates(text: string): void {
@@ -451,9 +478,9 @@ describe('local knowledge lane bounded excerpt enrichment', () => {
     const result = await searchLocalKnowledgeLane({ keywords: ['k'], knowledgeRoot: missingDocsRoot, scriptPath: script });
     const invocations = readInvocations(testRoot);
     assert.equal(invocations.length, 2, 'one search process + one batch read process');
-    assert.equal(invocations[0][2], 'search-any');
-    assert.equal(invocations[1][2], 'read-batch');
-    const requests = JSON.parse(invocations[1][3]) as Array<Record<string, unknown>>;
+    assert.equal(invocations[0].args[2], 'search-any');
+    assert.equal(invocations[1].args[2], 'read-batch');
+    const requests = JSON.parse(invocations[1].args[3]) as Array<Record<string, unknown>>;
     assert.equal(requests.length, 2, 'at most two reads per batch');
     assert.deepEqual(requests.map(request => request.id), [KB_A, KB_B]);
     for (const request of requests) {
@@ -485,7 +512,7 @@ describe('local knowledge lane bounded excerpt enrichment', () => {
     assert.equal(result.excerptsRetained, undefined);
     const invocations = readInvocations(testRoot);
     assert.equal(invocations.length, 1);
-    assert.equal(invocations[0][2], 'search-any');
+    assert.equal(invocations[0].args[2], 'search-any');
   });
 
   test('a revision change between search and read never leaks the stale body', async () => {
@@ -560,7 +587,7 @@ describe('local knowledge lane bounded excerpt enrichment', () => {
         { id: KB_A, title: 'a', summary: 's', category: 'deploy', updatedAt: '2026-09-01T00:00:00.000Z', revision: OLD_REVISION, managed: true, file: `documents/${KB_A}.md` },
       ],
     });
-    const script = writeDelegatingScript(testRoot, envelope, { sleepBeforeReadMs: 5000 });
+    const script = writeDelegatingScript(testRoot, envelope, { sleepBeforeReadMs: 5000, trapSigterm: true });
     fs.mkdirSync(root, { recursive: true });
 
     const controller = new AbortController();
@@ -576,6 +603,8 @@ describe('local knowledge lane bounded excerpt enrichment', () => {
       assert.equal(result.excerptGaps?.[0].status, 'unavailable');
       assert.match(String(result.excerptGaps?.[0].message), /aborted/);
       assert.ok(elapsed < 1500, `abort must settle the lane promptly (took ${elapsed}ms)`);
+      // Caller abort must SIGKILL the child as well, not leave it running.
+      await assertChildReaped(readInvocations(testRoot).at(-1));
     } finally {
       clearTimeout(timer);
     }
@@ -1200,6 +1229,8 @@ describe('review follow-ups: projection budget, unicode edges, strict protocol, 
     assert.equal(result.excerptGaps?.[0].status, 'unavailable');
     assert.match(String(result.excerptGaps?.[0].message), /timed out/);
     assert.ok(elapsed < 2_000, `never-settling child must not extend the lane (took ${elapsed}ms)`);
+    // PID-level proof: the SIGTERM-trapping child is actually reaped (SIGKILL), not abandoned.
+    await assertChildReaped(readInvocations(scratch).at(-1));
   });
 
   test('never-settling search child cannot extend the lane deadline either', async () => {
@@ -1216,6 +1247,7 @@ describe('review follow-ups: projection budget, unicode edges, strict protocol, 
     assert.equal(result.status, 'unavailable');
     assert.match(String(result.error), /timed out/);
     assert.ok(elapsed < 1_500, `search phase must honor the shared deadline (took ${elapsed}ms)`);
+    await assertChildReaped(readInvocations(scratch).at(-1));
   });
 
   test('non-JSON child stderr carrying a stale secret never reaches lane results or projected gaps', async () => {
@@ -1250,6 +1282,71 @@ describe('review follow-ups: projection budget, unicode edges, strict protocol, 
     const pack = projectLocalKnowledgeLane(laneResult, 8_000);
     assert.equal(JSON.stringify(pack).includes(SECRET), false);
     assert.equal(JSON.stringify(pack).includes('read-batch'), false);
+  });
+
+  test('isolated node:test runner exits promptly; abandoned knowledge children cannot hang it', async () => {
+    // Fresh isolated test file: the lane runs against a SIGTERM-trapping
+    // 60s child under a 500ms shared deadline. The spawned node --test
+    // PROCESS itself must exit well under the 5s supervisor — before this
+    // fix the survived child kept the runner's event loop alive for the
+    // full sleep.
+    const root = path.join(scratch, 'knowledge');
+    fs.mkdirSync(root, { recursive: true });
+    const fakeScript = path.join(scratch, 'trap-child.cjs');
+    fs.writeFileSync(fakeScript, `
+      const args = process.argv.slice(2);
+      process.on('SIGTERM', () => { /* ignore graceful shutdown */ });
+      if (args[2] === 'search-any') {
+        process.stdout.write(JSON.stringify({ ok: true, total: 1, items: [
+          { id: ${JSON.stringify(KB_A)}, title: 'a', summary: 's', category: 'deploy', updatedAt: '2026-09-01T00:00:00.000Z', revision: ${JSON.stringify(OLD_REVISION)}, managed: true, file: 'documents/${KB_A}.md' },
+        ] }) + '\\n');
+        return;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
+    `);
+    const miniTest = path.join(scratch, 'isolated-exit.test.ts');
+    fs.writeFileSync(miniTest, `
+      import { test } from 'node:test';
+      import assert from 'node:assert/strict';
+      import { searchLocalKnowledgeLane } from ${JSON.stringify(path.resolve('src/core/catslog-knowledge-lane.ts'))};
+
+      test('never-settling knowledge child cannot hang the runner', async () => {
+        const result = await searchLocalKnowledgeLane({
+          keywords: ['k'],
+          knowledgeRoot: ${JSON.stringify(root)},
+          scriptPath: ${JSON.stringify(fakeScript)},
+          timeoutMs: 500,
+        });
+        assert.equal(result.status, 'ok');
+        assert.equal(result.excerptGaps?.[0]?.status, 'unavailable');
+      });
+    `);
+    const tsxCli = path.resolve(process.cwd(), 'node_modules/tsx/dist/cli.mjs');
+    const startedAt = Date.now();
+    let timedOut = false;
+    // A fresh runner must not inherit NODE_TEST_CONTEXT, or its node --test
+    // run() thinks it is nested inside the parent's test file and skips
+    // every file.
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete childEnv.NODE_TEST_CONTEXT;
+    const spawned = execFileAsync(process.execPath, [tsxCli, '--test', miniTest], {
+      timeout: 5_000,
+      killSignal: 'SIGKILL',
+      cwd: process.cwd(),
+      env: childEnv,
+      windowsHide: true,
+    }).catch((error: any) => {
+      if (error?.killed === true) {
+        timedOut = true;
+        return { stdout: String(error.stdout ?? ''), stderr: String(error.stderr ?? '') };
+      }
+      throw error;
+    });
+    const outcome = await spawned;
+    const elapsed = Date.now() - startedAt;
+    assert.equal(timedOut, false, `isolated runner hung until the supervisor killed it (${elapsed}ms)`);
+    assert.ok(elapsed < 5_000, `isolated runner must exit well before the supervisor (took ${elapsed}ms)`);
+    assert.match(String(outcome.stdout), /fail 0/, `isolated runner output: stdout=${String(outcome.stdout).slice(0, 300)} stderr=${String((outcome as any).stderr ?? '').slice(0, 300)}`);
   });
 
   test('spawn failures degrade to the generic bounded diagnostic with no command dump', async () => {
