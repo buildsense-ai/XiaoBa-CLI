@@ -63,7 +63,7 @@ function laneChars(lane: unknown): number {
 }
 
 describe('consolidateMemoryEvidencePack — exact duplicate elimination', () => {
-  test('exact duplicates collapse once, and both duplicated items keep their refs presented', () => {
+  test('duplicates collapse within an envelope identity, and both duplicated items keep their refs presented', () => {
     const input = {
       remoteBranch: {
         content_trust: 'untrusted_branch_evidence',
@@ -81,11 +81,13 @@ describe('consolidateMemoryEvidencePack — exact duplicate elimination', () => 
             ],
           },
           {
-            source: 'agent_memory',
+            // Identical envelope identity (source/status/verdict) — shares a dedup key space.
+            source: 'session_graph',
             status: 'ok',
+            evidence_verdict: 'weak',
+            elapsed_ms: 11,
             truncated: false,
             items: [
-              // Byte-identical copy of branch 1 item 1 (same ref, same content).
               remoteItem(),
             ],
           },
@@ -115,8 +117,7 @@ describe('consolidateMemoryEvidencePack — exact duplicate elimination', () => 
     const branches = remote.branches as Record<string, unknown>[];
     assert.equal(branches.length, 2, 'branch envelopes must survive dedup');
     assert.equal((branches[0].items as unknown[]).length, 2);
-    assert.equal((branches[1].items as unknown[]).length, 0, 'later duplicate copies are removed');
-    assert.equal(branches[1].source, 'agent_memory', 'the emptied branch stays visible');
+    assert.equal((branches[1].items as unknown[]).length, 0, 'later duplicate copies within the same envelope identity are removed');
     assert.equal(diagnostics.remote_duplicates_removed, 1);
     assert.equal(diagnostics.session_duplicates_removed, 1);
     assert.equal(diagnostics.knowledge_duplicates_removed, 1);
@@ -138,6 +139,32 @@ describe('consolidateMemoryEvidencePack — exact duplicate elimination', () => 
     const session = evidencePack.session_records as Record<string, unknown>;
     assert.equal((session.records as unknown[]).length, 1);
     assert.equal((evidencePack.local_knowledge as Record<string, unknown>).content_trust, 'local_distilled_knowledge');
+  });
+
+  test('the same item under session_graph(none) vs skill vs agent_memory survives in every envelope', () => {
+    const item = () => remoteItem({ text: 'shared fact: rollout paused at 40%' });
+    const input = {
+      remoteBranch: {
+        content_trust: 'untrusted_branch_evidence',
+        branches: [
+          { source: 'session_graph', status: 'ok', evidence_verdict: 'none', items: [item()], truncated: false },
+          { source: 'skill', status: 'ok', items: [item()], truncated: false },
+          { source: 'agent_memory', status: 'ok', items: [item()], truncated: false },
+        ],
+        truncated: false,
+      },
+      sessionRecords: { records: [] },
+      localKnowledge: { entries: [] },
+    };
+
+    const { evidencePack, presentedRefs, diagnostics } = consolidateMemoryEvidencePack(input);
+    const branches = (evidencePack.remote_branch as any).branches;
+    assert.equal(diagnostics.remote_duplicates_removed, 0, 'different envelope identities never collapse into each other');
+    assert.equal(branches[0].items.length, 1, 'the none-verdict copy stays in its own branch');
+    assert.equal(branches[1].items.length, 1, 'the skill copy survives');
+    assert.equal(branches[2].items.length, 1, 'the agent_memory copy survives');
+    assert.equal(branches[0].evidence_verdict, 'none', 'verdict annotations stay truthful per branch');
+    assert.deepEqual(presentedRefs, ['stream-release#12']);
   });
 
   test('user vs assistant with the same text is not identical provenance and never merges', () => {
@@ -535,89 +562,105 @@ describe('consolidateMemoryEvidencePack — determinism and purity', () => {
   });
 });
 
-describe('consolidateMemoryEvidencePack — packing bench on synthetic repeats', () => {
-  test('repeated fan-out shrinks the pack meaningfully with zero distinct-fact or ref loss', () => {
-    const distinctTexts = Array.from({ length: 30 }, (_, index) =>
-      `synthetic evidence ${index}: pin the migration window and record the rollback owner for component-${index}`);
-    const branchSources = ['session_graph', 'agent_memory', 'graph', 'skill'];
-    const repeatedItems = branchSources.map(source => ({
-      source,
-      status: 'ok',
-      items: distinctTexts.map((text, index) => remoteItem({
-        ref: `stream-bench#${index + 1}`,
-        text,
+describe('consolidateMemoryEvidencePack — realistic packing audit', () => {
+  test('already-unique realistic input is byte-identical: zero overhead, zero omissions', () => {
+    // 3 branches with already-distinct items, 20 unique session records
+    // across 3 streams (rerank order — no adjacent-turn runs), deduped KB.
+    const branchItems = (source: string, offset: number) => Array.from({ length: 10 }, (_, index) =>
+      remoteItem({
+        ref: `stream-${source}#${offset + index + 1}`,
+        text: `${source} evidence ${offset + index}: pin the migration window and record the rollback owner`,
         score_hint: 0.5,
-        kind: 'session_turn',
-      })),
+      }));
+    const streamLayouts: Array<[string, number[]]> = [
+      ['alpha', [3, 7, 11, 15, 19, 23, 27, 31]],
+      ['beta', [2, 5, 9, 14, 18, 22]],
+      ['gamma', [4, 8, 13, 17, 21, 26]],
+    ];
+    const sessionRecords = streamLayouts.flatMap(([stream, turns]) =>
+      turns.map(turn => sessionRecord({
+        ref: `stream-${stream}#${turn}`,
+        turn,
+        session_id: `chat:${stream}-planning`,
+        user: { text: `unique ${stream} turn ${turn} with distinct operational detail` },
+      })));
+    const entries = Array.from({ length: 8 }, (_, index) => knowledgeEntry({
+      ref: `file:documents/note-${index}.md`,
+      id: `file:documents/note-${index}.md`,
+      summary: `unique knowledge note ${index} with distinct guidance`,
     }));
-
-    const sessionRecords = [
-      ...distinctTexts.slice(0, 10).map((text, index) => sessionRecord({
-        ref: `stream-sessions#${index + 1}`,
-        turn: index + 1,
-        user: { text },
-      })),
-      // Repeat half of them (byte-identical, same refs).
-      ...distinctTexts.slice(0, 5).map((text, index) => sessionRecord({
-        ref: `stream-sessions#${index + 1}`,
-        turn: index + 1,
-        user: { text },
-      })),
-    ];
-    const entries = [
-      ...Array.from({ length: 6 }, (_, index) => knowledgeEntry({
-        ref: `file:documents/bench-${index}.md`,
-        id: `file:documents/bench-${index}.md`,
-        summary: `bench summary ${index} with distinct operational guidance`,
-      })),
-      ...Array.from({ length: 6 }, (_, index) => knowledgeEntry({
-        ref: `file:documents/bench-${index}.md`,
-        id: `file:documents/bench-${index}.md`,
-        summary: `bench summary ${index} with distinct operational guidance`,
-      })),
-    ];
-
     const input = {
-      remoteBranch: { content_trust: 'untrusted_branch_evidence', branches: repeatedItems, truncated: false },
+      remoteBranch: {
+        content_trust: 'untrusted_branch_evidence',
+        branches: [
+          { source: 'session_graph', status: 'ok', evidence_verdict: 'weak', items: branchItems('session_graph', 0), truncated: false },
+          { source: 'agent_memory', status: 'ok', items: branchItems('agent_memory', 20), truncated: false },
+          { source: 'skill', status: 'ok', items: branchItems('skill', 40), truncated: false },
+        ],
+        truncated: false,
+      },
       sessionRecords: { content_trust: 'untrusted_log_data', records: sessionRecords, truncated: false },
       localKnowledge: { content_trust: 'local_distilled_knowledge', entries, status: 'ok', truncated: false },
     };
 
     const { evidencePack, presentedRefs, diagnostics } = consolidateMemoryEvidencePack(input);
-    const charsIn = (diagnostics.remote_chars_in as number)
-      + (diagnostics.session_chars_in as number)
-      + (diagnostics.knowledge_chars_in as number);
-    const charsOut = (diagnostics.remote_chars_out as number)
-      + (diagnostics.session_chars_out as number)
-      + (diagnostics.knowledge_chars_out as number);
 
-    // Meaningful reduction, expressed in characters only (this is a packing
-    // audit, not a token-savings claim).
-    const reduction = 1 - charsOut / charsIn;
-    assert.ok(reduction > 0.4, `expected >40% char reduction on the repeat fixture, got ${(reduction * 100).toFixed(1)}%`);
+    // Byte identity per lane: consolidation is a no-op on unique input.
+    assert.equal(JSON.stringify(evidencePack.remote_branch), JSON.stringify(input.remoteBranch), 'remote lane is byte-identical');
+    assert.equal(JSON.stringify(evidencePack.session_records), JSON.stringify(input.sessionRecords), 'session lane is byte-identical');
+    assert.equal(JSON.stringify(evidencePack.local_knowledge), JSON.stringify(input.localKnowledge), 'knowledge lane is byte-identical');
+    assert.equal(diagnostics.remote_duplicates_removed, 0);
+    assert.equal(diagnostics.session_duplicates_removed, 0);
+    assert.equal(diagnostics.session_groups_formed, 0, 'no adjacent-turn runs — no grouping overhead');
+    assert.equal(diagnostics.session_groups_unrolled, 0);
+    assert.equal(diagnostics.session_omitted_records, 0);
+    assert.equal(diagnostics.remote_omitted_items, 0);
+    assert.equal(diagnostics.knowledge_omitted_entries, 0);
+    assert.equal(presentedRefs.length, 30 + 20 + 8, 'every source ref presented exactly once');
+    // No savings claim: reduction on unique realistic input is zero by contract.
+    assert.equal(diagnostics.session_chars_out, diagnostics.session_chars_in);
+    assert.equal(diagnostics.remote_chars_out, diagnostics.remote_chars_in);
+    assert.equal(diagnostics.knowledge_chars_out, diagnostics.knowledge_chars_in);
+  });
 
-    // Perfect distinct-fact preservation: every distinct text survives exactly once per lane.
-    const remoteItems = (evidencePack.remote_branch as any).branches.flatMap((branch: any) => branch.items);
-    assert.equal(remoteItems.length, 30, `remote collapses to the distinct set (got ${remoteItems.length})`);
-    assert.equal(diagnostics.remote_duplicates_removed, 90);
-    for (const text of distinctTexts) {
-      assert.equal(remoteItems.filter((item: any) => item.text === text).length, 1, `text lost: ${text}`);
-    }
-    const sessionOut = (evidencePack.session_records as any).records;
-    assert.equal(diagnostics.session_duplicates_removed, 5);
-    for (const text of distinctTexts.slice(0, 10)) {
-      assert.ok(sessionOut.some((entry: any) => (entry.records ?? [entry]).some((member: any) => member.user.text === text)));
-    }
-    const knowledgeOut = (evidencePack.local_knowledge as any).entries;
-    assert.equal(knowledgeOut.length, 6);
-    assert.equal(diagnostics.knowledge_duplicates_removed, 6);
+  test('same-envelope repeats still collapse mechanically; group size is bounded', () => {
+    // Two branches with IDENTICAL envelope identity carrying byte-identical
+    // items — the only legitimate remote dedup scope.
+    const duplicateBranch = () => ({
+      source: 'session_graph',
+      status: 'ok',
+      evidence_verdict: 'weak',
+      items: Array.from({ length: 10 }, (_, index) =>
+        remoteItem({ ref: `stream-dup#${index + 1}`, text: `repeatable fact ${index} stated once per envelope copy` })),
+      truncated: false,
+    });
+    const sessionWithRuns = [
+      ...Array.from({ length: 6 }, (_, index) => sessionRecord({
+        ref: `stream-runs#${index + 1}`,
+        turn: index + 1,
+        user: { text: `run turn ${index + 1}` },
+      })),
+      ...Array.from({ length: 3 }, (_, index) => sessionRecord({
+        ref: `stream-runs#${index + 1}`,
+        turn: index + 1,
+        user: { text: `run turn ${index + 1}` },
+      })),
+    ];
+    const { evidencePack, presentedRefs, diagnostics } = consolidateMemoryEvidencePack({
+      remoteBranch: { content_trust: 'untrusted_branch_evidence', branches: [duplicateBranch(), duplicateBranch()], truncated: false },
+      sessionRecords: { content_trust: 'untrusted_log_data', records: sessionWithRuns, truncated: false },
+      localKnowledge: { entries: [] },
+    });
 
-    // Perfect ref preservation: all 46 distinct refs stay presented.
-    assert.equal(presentedRefs.length, 30 + 10 + 6);
-    assert.equal(diagnostics.refs_presented, presentedRefs.length);
-    assert.ok(presentedRefs.includes('stream-bench#1'));
-    assert.ok(presentedRefs.includes('stream-sessions#10'));
-    assert.ok(presentedRefs.includes('file:documents/bench-5.md'));
+    assert.equal(diagnostics.remote_duplicates_removed, 10, 'identical-envelope copies collapse');
+    assert.equal(diagnostics.remote_items_out, 10);
+    assert.equal(diagnostics.session_duplicates_removed, 3);
+    assert.equal(diagnostics.session_groups_formed, 2, '6 consecutive turns form two max-size groups (4+2)');
+    const groups = (evidencePack.session_records as any).records;
+    assert.equal(groups.length, 2);
+    assert.deepEqual(groups[0].turns, [1, 2, 3, 4], 'group size is bounded by MAX_SESSION_GROUP_MEMBERS');
+    assert.deepEqual(groups[1].turns, [5, 6]);
+    assert.equal(presentedRefs.filter(ref => ref.startsWith('stream-dup#')).length, 10);
   });
 });
 
@@ -671,5 +714,269 @@ describe('consolidateMemoryEvidencePack — observed-refs guard wiring', () => {
     for (const ref of presentedRefs) {
       assert.deepEqual(tracker.unobservedRefs([ref]), [], `group flat ref ${ref} must be walk-reachable from the lane JSON`);
     }
+  });
+});
+
+describe('consolidateMemoryEvidencePack — grouping never displaces facts', () => {
+  function consecutiveFixture(count: number, textLength: number) {
+    return Array.from({ length: count }, (_, index) => sessionRecord({
+      ref: `stream-r#${index + 1}`,
+      turn: index + 1,
+      user: { text: 'x'.repeat(textLength) },
+      agent: { text: 'y' },
+    }));
+  }
+
+  test('20 consecutive refs that fit at 12k keep every record: grouped overhead unrolls, byte-identical', () => {
+    const input = {
+      remoteBranch: { branches: [] },
+      sessionRecords: { content_trust: 'untrusted_log_data', records: consecutiveFixture(20, 350), truncated: false },
+      localKnowledge: { entries: [] },
+    };
+    const plain = JSON.stringify(input.sessionRecords);
+    assert.ok(plain.length <= MAX_SESSION_EVIDENCE_CHARS && plain.length > 11_000,
+      `fixture must sit just under the budget, got ${plain.length}`);
+
+    const { evidencePack, presentedRefs, diagnostics } = consolidateMemoryEvidencePack(input);
+    const session = evidencePack.session_records as Record<string, unknown>;
+    // Grouping DID form (so its overhead was real), but never cost a record.
+    assert.ok((diagnostics.session_groups_formed as number) > 0);
+    assert.ok((diagnostics.session_groups_unrolled as number) > 0, 'groups unrolled instead of displacing records');
+    assert.equal(diagnostics.session_omitted_records, 0, 'zero extra omission from wrappers');
+    assert.equal(diagnostics.session_records_out, 20);
+    assert.equal(session.truncated, false, 'no NEW truncation markers for a lane that fits ungrouped');
+    assert.equal(JSON.stringify(session), plain, 'output is byte-identical to the plain input');
+    assert.equal(presentedRefs.length, 20);
+  });
+
+  test('15 consecutive refs just under 12k: same guarantee', () => {
+    const input = {
+      remoteBranch: { branches: [] },
+      sessionRecords: { content_trust: 'untrusted_log_data', records: consecutiveFixture(15, 550), truncated: false },
+      localKnowledge: { entries: [] },
+    };
+    const plain = JSON.stringify(input.sessionRecords);
+    assert.ok(plain.length <= MAX_SESSION_EVIDENCE_CHARS && plain.length > 11_000,
+      `fixture must sit just under the budget, got ${plain.length}`);
+
+    const { evidencePack, diagnostics } = consolidateMemoryEvidencePack(input);
+    assert.equal(diagnostics.session_omitted_records, 0);
+    assert.equal(diagnostics.session_records_out, 15);
+    assert.equal(JSON.stringify((evidencePack.session_records as any)), plain);
+  });
+
+  test('genuinely overflowing input drops individual records, never a whole group as a unit', () => {
+    const input = {
+      remoteBranch: { branches: [] },
+      sessionRecords: { content_trust: 'untrusted_log_data', records: consecutiveFixture(30, 290), truncated: false },
+      localKnowledge: { entries: [] },
+    };
+    const { evidencePack, diagnostics } = consolidateMemoryEvidencePack(input);
+    const session = evidencePack.session_records as Record<string, unknown>;
+    const kept = (session.records as unknown[]).length;
+    assert.ok(kept < 30, 'overflow must drop something');
+    assert.equal(diagnostics.session_omitted_records, 30 - kept);
+    assert.ok(diagnostics.session_groups_unrolled as number > 0, 'groups unrolled before dropping');
+    // Kept entries are plain records in input order — no partial group survived as a wrapper.
+    for (const entry of session.records as any[]) {
+      assert.equal(entry.type, undefined);
+      assert.equal(entry.session_id, 'chat:release-planning');
+    }
+    assert.equal((session.records as any[])[0].ref, 'stream-r#1', 'input order preserved from the front');
+    assert.ok(JSON.stringify(session).length <= MAX_SESSION_EVIDENCE_CHARS);
+  });
+});
+
+describe('consolidateMemoryEvidencePack — hard budgets and bounded overflow', () => {
+  test('boundary: exactly-at-budget fits untouched; budget-1 drops the minimum with markers counted', () => {
+    const entries = Array.from({ length: 3 }, (_, index) => knowledgeEntry({
+      ref: `file:documents/b-${index}.md`,
+      id: `file:documents/b-${index}.md`,
+      summary: `bounded summary ${index}`,
+    }));
+    const lane = { content_trust: 'local_distilled_knowledge', entries, status: 'ok', truncated: false };
+    const exact = JSON.stringify(lane).length;
+
+    const fits = consolidateMemoryEvidencePack(
+      { remoteBranch: { branches: [] }, sessionRecords: { records: [] }, localKnowledge: lane },
+      { maxKnowledgeChars: exact },
+    );
+    assert.equal((fits.diagnostics.knowledge_omitted_entries as number), 0);
+    assert.equal(fits.diagnostics.knowledge_truncated, false);
+    assert.equal(JSON.stringify(fits.evidencePack.local_knowledge).length, exact);
+
+    const tight = consolidateMemoryEvidencePack(
+      { remoteBranch: { branches: [] }, sessionRecords: { records: [] }, localKnowledge: lane },
+      { maxKnowledgeChars: exact - 40 },
+    );
+    const tightLane = tight.evidencePack.local_knowledge as Record<string, unknown>;
+    assert.ok(JSON.stringify(tightLane).length <= exact - 40, 'marker bytes are counted inside the fits check');
+    assert.equal(tightLane.truncated, true);
+    assert.equal(tightLane.status, 'truncated');
+    assert.equal(tight.diagnostics.knowledge_omitted_entries, 1);
+  });
+
+  test('knowledge marker overrun: markers that would exceed the budget force one more drop', () => {
+    const entries = Array.from({ length: 3 }, (_, index) => knowledgeEntry({
+      ref: `file:documents/m-${index}.md`,
+      id: `file:documents/m-${index}.md`,
+      summary: `s${index}`.padEnd(40, '.'),
+    }));
+    const all = JSON.stringify({ entries });
+    // Budget = everything minus a few chars: markers (~45B) cannot fit without a drop.
+    const { evidencePack, diagnostics } = consolidateMemoryEvidencePack(
+      { remoteBranch: { branches: [] }, sessionRecords: { records: [] }, localKnowledge: { entries } },
+      { maxKnowledgeChars: all.length - 8 },
+    );
+    const lane = evidencePack.local_knowledge as Record<string, unknown>;
+    assert.ok(JSON.stringify(lane).length <= all.length - 8);
+    assert.equal(diagnostics.knowledge_omitted_entries, 1);
+    assert.equal(lane.truncated, true);
+    assert.equal(lane.consolidation_omitted, 1);
+  });
+
+  test('remote marker overrun: same guarantee on the branch fan-out', () => {
+    const items = Array.from({ length: 3 }, (_, index) => remoteItem({
+      ref: `stream-m#${index + 1}`,
+      text: 'z'.repeat(60),
+    }));
+    const all = JSON.stringify({ branches: [{ source: 'session_graph', items }] });
+    const { evidencePack, diagnostics } = consolidateMemoryEvidencePack(
+      { remoteBranch: { branches: [{ source: 'session_graph', items }] }, sessionRecords: { records: [] }, localKnowledge: { entries: [] } },
+      { maxRemoteChars: all.length - 8 },
+    );
+    const lane = evidencePack.remote_branch as Record<string, unknown>;
+    assert.ok(JSON.stringify(lane).length <= all.length - 8);
+    assert.equal(diagnostics.remote_omitted_items, 1);
+    assert.equal(lane.consolidation_omitted_items, 1);
+  });
+
+  test('envelope-only overflow degrades to a bounded, explicit failure in all three lanes', () => {
+    const hugeNote = 'n'.repeat(6_000);
+    const remoteInput = { content_trust: 'untrusted_branch_evidence', request_id: 'req-overflow', branches: [], note: hugeNote };
+    const sessionInput = { content_trust: 'untrusted_log_data', records: [], note: hugeNote };
+    const knowledgeInput = { content_trust: 'local_distilled_knowledge', status: 'unavailable', entries: [], note: hugeNote };
+
+    const { evidencePack } = consolidateMemoryEvidencePack(
+      { remoteBranch: remoteInput, sessionRecords: sessionInput, localKnowledge: knowledgeInput },
+      { maxRemoteChars: 1_500, maxSessionChars: 1_500, maxKnowledgeChars: 1_500 },
+    );
+
+    for (const [name, lane] of [['remote_branch', evidencePack.remote_branch], ['session_records', evidencePack.session_records], ['local_knowledge', evidencePack.local_knowledge]] as const) {
+      const text = JSON.stringify(lane);
+      assert.ok(text.length <= 1_500, `${name} overflow envelope must stay within budget, got ${text.length}`);
+      assert.equal((lane as any).truncated, true, `${name} must be explicitly truncated`);
+      assert.equal((lane as any).consolidation_overflow, true, `${name} must carry the explicit overflow marker`);
+      assert.ok(Object.keys(lane as object).length >= 3, `${name} must not be blank`);
+    }
+    // Status/trust/request_id/note survival whenever the budget allows.
+    assert.equal((evidencePack.remote_branch as any).content_trust, 'untrusted_branch_evidence');
+    assert.equal((evidencePack.remote_branch as any).request_id, 'req-overflow');
+    assert.match((evidencePack.remote_branch as any).note as string, /exceeded|n+/);
+    assert.ok(((evidencePack.remote_branch as any).note as string).length < 6_000, 'note is bounded, not dropped silently');
+    assert.equal((evidencePack.local_knowledge as any).status, 'unavailable', 'status survives the overflow degradation');
+    assert.equal((evidencePack.local_knowledge as any).content_trust, 'local_distilled_knowledge');
+  });
+
+  test('tiny budgets still return an explicit bounded marker, never silence', () => {
+    const { evidencePack } = consolidateMemoryEvidencePack(
+      {
+        remoteBranch: { branches: [], note: 'x'.repeat(4_000) },
+        sessionRecords: { records: [{ ref: 'stream-t#1', user: { text: 'x'.repeat(4_000) } }] },
+        localKnowledge: { entries: [{ ref: 'file:documents/t.md', summary: 'x'.repeat(4_000) }] },
+      },
+      { maxRemoteChars: 80, maxSessionChars: 80, maxKnowledgeChars: 80 },
+    );
+    // Remote: envelope-only overflow (nothing droppable) → explicit bounded failure.
+    const remote = evidencePack.remote_branch as Record<string, unknown>;
+    assert.ok(JSON.stringify(remote).length <= 80, `tiny budget must hold: ${JSON.stringify(remote)}`);
+    assert.equal(remote.truncated, true, 'explicit failure marker always present');
+    assert.equal(remote.consolidation_overflow, true);
+    // Session: the one huge record is droppable → bounded marker degradation.
+    const session = evidencePack.session_records as Record<string, unknown>;
+    assert.ok(JSON.stringify(session).length <= 80);
+    assert.equal(session.truncated, true);
+    assert.equal(session.consolidation_omitted, 1);
+    assert.ok(Object.keys(session).length >= 3, 'never blank');
+    // Knowledge: markers + status flip fit within 80 chars → bounded marker
+    // degradation (droppable entry), not overflow. Envelope-only overflow is
+    // covered explicitly in the previous test.
+    const knowledge = evidencePack.local_knowledge as Record<string, unknown>;
+    assert.ok(JSON.stringify(knowledge).length <= 80);
+    assert.equal(knowledge.truncated, true);
+    assert.equal(knowledge.consolidation_omitted, 1);
+    assert.equal(knowledge.status, 'truncated');
+    assert.ok(Object.keys(knowledge).length >= 4, 'never blank');
+  });
+});
+
+describe('consolidateMemoryEvidencePack — monotonic direction and run metadata', () => {
+  test('zigzag 5→6→5 never groups the re-appearing turn; descending 9→8→7 groups monotonically', () => {
+    const input = {
+      remoteBranch: { branches: [] },
+      sessionRecords: {
+        records: [
+          sessionRecord({ ref: 'stream-z#5', turn: 5, user: { text: 'rev1 of the decision' } }),
+          sessionRecord({ ref: 'stream-z#6', turn: 6, user: { text: 'turn six' } }),
+          sessionRecord({ ref: 'stream-z#5', turn: 5, user: { text: 'rev2 of the decision — conflicting revision' } }),
+          sessionRecord({ ref: 'stream-d#9', turn: 9, user: { text: 'd9' } }),
+          sessionRecord({ ref: 'stream-d#8', turn: 8, user: { text: 'd8' } }),
+          sessionRecord({ ref: 'stream-d#7', turn: 7, user: { text: 'd7' } }),
+        ],
+      },
+      localKnowledge: { entries: [] },
+    };
+    const { evidencePack, diagnostics } = consolidateMemoryEvidencePack(input);
+    const records = (evidencePack.session_records as any).records;
+    assert.equal(diagnostics.session_groups_formed, 2);
+    assert.deepEqual(records[0].turns, [5, 6], 'ascending pair groups');
+    assert.equal(records[1].ref, 'stream-z#5', 'same-ref conflicting revision stays OUT of the run (no zigzag)');
+    assert.equal(records[1].user.text, 'rev2 of the decision — conflicting revision');
+    assert.deepEqual(records[2].turns, [9, 8, 7], 'consistent descending direction groups');
+  });
+
+  test('missing metadata never bridges conflicting epochs; unknown-scope records stay preserved', () => {
+    const input = {
+      remoteBranch: { branches: [] },
+      sessionRecords: {
+        records: [
+          sessionRecord({ ref: 'stream-e#5', turn: 5, log_date: '2026-08-01' }),
+          sessionRecord({ ref: 'stream-e#6', turn: 6, log_date: undefined }),
+          sessionRecord({ ref: 'stream-e#7', turn: 7, log_date: '2026-09-01' }),
+          sessionRecord({ ref: 'stream-e#8', turn: 8, session_id: undefined }),
+        ],
+      },
+      localKnowledge: { entries: [] },
+    };
+    // JSON round-trip in the module drops undefined, but drop up front for clarity.
+    delete (input.sessionRecords.records[1] as Record<string, unknown>).log_date;
+    delete (input.sessionRecords.records[3] as Record<string, unknown>).session_id;
+
+    const { evidencePack, diagnostics } = consolidateMemoryEvidencePack(input);
+    const records = (evidencePack.session_records as any).records;
+    assert.equal(diagnostics.session_groups_formed, 0, 'unknown metadata cannot bridge D1→unknown→D2');
+    assert.equal(records.length, 4, 'every differently-scoped record preserved individually');
+    assert.equal(records[0].log_date, '2026-08-01');
+    assert.equal(records[2].log_date, '2026-09-01');
+    assert.equal(records[3].session_id, undefined);
+  });
+
+  test('a metadata conflict against the run breaks the group even between fully-known records', () => {
+    const input = {
+      remoteBranch: { branches: [] },
+      sessionRecords: {
+        records: [
+          sessionRecord({ ref: 'stream-f#5', turn: 5, log_date: '2026-08-01' }),
+          sessionRecord({ ref: 'stream-f#6', turn: 6, log_date: '2026-08-01' }),
+          sessionRecord({ ref: 'stream-f#7', turn: 7, log_date: '2026-09-01' }),
+        ],
+      },
+      localKnowledge: { entries: [] },
+    };
+    const { evidencePack, diagnostics } = consolidateMemoryEvidencePack(input);
+    const records = (evidencePack.session_records as any).records;
+    assert.equal(diagnostics.session_groups_formed, 1);
+    assert.deepEqual(records[0].turns, [5, 6]);
+    assert.equal(records[1].ref, 'stream-f#7', 'epoch change splits the run');
   });
 });
