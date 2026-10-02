@@ -10,6 +10,8 @@ const { setTimeout: delay } = require('node:timers/promises');
 const MAX_FILE_BYTES = 256 * 1024;
 const PAGE_SIZE = 30;
 const READ_SIZE = 12000;
+const MAX_BATCH_READS = 8;
+const REVISION_PATTERN = /^[a-f0-9]{64}$/;
 const ID_PATTERN = /^KB-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const SHORT_ID_PATTERN = /^KB-[a-f0-9]{8}$/;
 
@@ -99,6 +101,43 @@ class KnowledgeStore {
   page(doc, offset) {
     const body = doc.body.slice(offset, offset + READ_SIZE);
     return { ...doc, body, offset, nextOffset: offset + body.length < doc.body.length ? offset + body.length : null };
+  }
+
+  // Strictly read-only batch of existing `read` calls in this one process.
+  // Each result binds to the caller's expectedRevision: the body is returned
+  // only when the freshly read revision matches it verbatim. On mismatch the
+  // current revision is reported as metadata and the body is never emitted,
+  // so a caller can never cite latest content as an older revision.
+  readBatch(requests) {
+    if (!Array.isArray(requests) || !requests.length || requests.length > MAX_BATCH_READS
+        || requests.some(request => !request || typeof request !== 'object' || Array.isArray(request))) {
+      fail('INVALID_INPUT', `read-batch requires a JSON array of 1-${MAX_BATCH_READS} read request objects.`);
+    }
+    return { results: requests.map((request, index) => this.readBatchItem(index, request)) };
+  }
+
+  readBatchItem(index, request) {
+    const id = request.id;
+    const expectedRevision = request.expectedRevision;
+    if (typeof id !== 'string' || !ID_PATTERN.test(id) || !REVISION_PATTERN.test(expectedRevision || '')
+        || (request.offset !== undefined && !/^\d+$/.test(String(request.offset)))) {
+      return { index, status: 'read_error', code: 'INVALID_INPUT',
+        message: 'Each read needs a full KB-ID, a 64-hex expectedRevision, and an optional nonnegative integer offset.' };
+    }
+    try {
+      const doc = this.read(id, offset(request.offset));
+      if (doc.id !== id || doc.revision !== expectedRevision) {
+        return { index, id, status: 'revision_mismatch', revision: doc.revision, expectedRevision };
+      }
+      return {
+        index, id, status: 'ok', revision: doc.revision, expectedRevision,
+        body: doc.body, offset: doc.offset, nextOffset: doc.nextOffset,
+      };
+    } catch (error) {
+      if (error.code === 'NOT_FOUND') return { index, id, status: 'not_found', expectedRevision };
+      return { index, id, status: 'read_error', code: error.code || 'READ_ERROR',
+        message: String(error.message || error).slice(0, 300), expectedRevision };
+    }
   }
 
   sourcePath(relative) {
@@ -396,7 +435,7 @@ function offset(value) {
 }
 
 async function main(args) {
-  if (args[0] !== '--root') fail('INVALID_INPUT', 'Usage: knowledge.cjs --root ABSOLUTE_PATH index|search|read|put|delete|reindex ...');
+  if (args[0] !== '--root') fail('INVALID_INPUT', 'Usage: knowledge.cjs --root ABSOLUTE_PATH index|search|read|read-batch|put|delete|reindex ...');
   const store = new KnowledgeStore(args[1]);
   const [command, ...rest] = args.slice(2);
   if (command === 'index' && rest.length <= 1) return store.index('', offset(rest[0]));
@@ -408,6 +447,12 @@ async function main(args) {
     return store.searchAny(queries);
   }
   if (command === 'read' && rest.length >= 1 && rest.length <= 2) return store.read(rest[0], offset(rest[1]));
+  if (command === 'read-batch' && rest.length === 1 && rest[0].length <= 4096) {
+    let requests;
+    try { requests = JSON.parse(rest[0]); }
+    catch { fail('INVALID_INPUT', 'read-batch expects a JSON array of read request objects.'); }
+    return store.readBatch(requests);
+  }
   if (command === 'reindex' && !rest.length) return store.reindex();
   if (command === 'put' && rest.length === 1) {
     const input = fs.statSync(rest[0]);
