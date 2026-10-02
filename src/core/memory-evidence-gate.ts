@@ -39,12 +39,15 @@ export interface MemoryEvidenceGateInput {
  *
  * The gate is deliberately conservative toward "refine runs": every
  * malformed wire shape (missing branches array, non-object branch entries,
- * non-array items, junk verdict values) degrades to the pre-verdict
- * behavior — items count, records count, entries count. It never throws on
- * hostile input and never reads past array/record boundaries.
+ * non-array items, junk verdict values, and non-array or null lane arrays)
+ * degrades to the pre-verdict behavior — items count, records count,
+ * entries count. It never throws on hostile input and never reads past
+ * array/record boundaries: the lane arrays are Array.isArray-gated at the
+ * boundary, so a malformed JSON cast or a null/undefined/non-array lane is
+ * treated as empty even though the typed contract requires arrays.
  */
 export function hasUsableMemoryEvidence(input: MemoryEvidenceGateInput): boolean {
-  const branches = input.remoteResponse?.branches;
+  const branches = input?.remoteResponse?.branches;
   if (Array.isArray(branches)) {
     for (const branch of branches) {
       // A branch entry that is not an object carries no interpretable
@@ -59,8 +62,10 @@ export function hasUsableMemoryEvidence(input: MemoryEvidenceGateInput): boolean
     }
   }
   // Session records and KB entries are independent of the remote verdict:
-  // session_graph `none` only condemns its own reranked pool. Empty arrays
-  // here (failed/truncated lanes included) simply contribute nothing — the
-  // gate never guesses at lanes it was not handed.
-  return input.sessionRecords.length > 0 || input.knowledgeEntries.length > 0;
+  // session_graph `none` only condemns its own reranked pool. Empty (or
+  // malformed → treated-as-empty) lanes here simply contribute nothing —
+  // the gate never guesses at lanes it cannot read.
+  const sessionRecords = Array.isArray(input?.sessionRecords) ? input.sessionRecords : [];
+  const knowledgeEntries = Array.isArray(input?.knowledgeEntries) ? input.knowledgeEntries : [];
+  return sessionRecords.length > 0 || knowledgeEntries.length > 0;
 }

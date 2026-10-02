@@ -203,6 +203,40 @@ describe('memory evidence gate', () => {
     }), false);
   });
 
+  test('null, undefined, and non-array lanes are treated as empty, never thrown on', () => {
+    // The typed contract requires arrays, but lanes cross a trust boundary
+    // (malformed JSON casts, hostile callers): length probes are gated on
+    // Array.isArray so the "never throws" claim holds.
+    for (const lane of [null, undefined, 'records', 42, { length: 3 }]) {
+      const gate = () => hasUsableMemoryEvidence({
+        remoteResponse: response([{ source: 'session_graph', status: 'ok', evidence_verdict: 'none', items: [item()] }]),
+        sessionRecords: lane as unknown[],
+        knowledgeEntries: lane as unknown[],
+      });
+      assert.doesNotThrow(gate, `lane=${String(lane)}`);
+      // A malformed lane contributes nothing: with only the suppressing
+      // none-branch present, the honest answer stays false.
+      assert.equal(gate(), false);
+    }
+  });
+
+  test('a malformed lane does not suppress the other lane', () => {
+    assert.equal(hasUsableMemoryEvidence({
+      sessionRecords: null as unknown[],
+      knowledgeEntries: [{ ref: 'kb:KB-1' }],
+    }), true);
+    assert.equal(hasUsableMemoryEvidence({
+      sessionRecords: [{ ref: 's1' }],
+      knowledgeEntries: undefined as unknown[],
+    }), true);
+  });
+
+  test('a null input bundle is hostile-input safe', () => {
+    const gate = () => hasUsableMemoryEvidence(null as unknown as Parameters<typeof hasUsableMemoryEvidence>[0]);
+    assert.doesNotThrow(gate);
+    assert.equal(gate(), false);
+  });
+
   test('pure: repeat calls agree and inputs are not mutated', () => {
     const input = {
       remoteResponse: graphNoneWithItems(),
