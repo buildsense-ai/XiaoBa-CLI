@@ -373,6 +373,50 @@ describe('CatsLog memory branch pipeline (v1.3)', () => {
     assert.doesNotMatch(logs, /published_observation|audited_observation/);
   });
 
+  test('session_graph none does not trigger refine merely because rejected candidates remain', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new SingleCallProbeAI();
+    const backend = new SessionQueryMemory();
+    backend.branchResponse = {
+      branches: [
+        { source: 'session_graph', status: 'ok', evidence_verdict: 'none', items: [
+          { source: 'session_graph', ref: 'stream-rejected#1', text: 'unrelated candidate' },
+        ] },
+        { source: 'skill', status: 'timeout' },
+      ],
+    };
+    backend.sessionError = new Error('analysis_unavailable');
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'none-rejected-items', input: 'find prior release notes', recentMessages: [],
+      workingDirectory: testRoot, aiService: ai as any, queue, catslogMemory: backend, logEnabled: true,
+    });
+    await handle.done;
+    assert.equal(ai.calls.length, 1);
+    assert.equal(queue.drain().length, 0);
+    assert.match(readBranchLogs(testRoot), /不代表历史不存在/);
+  });
+
+  test('session_graph none with leftover items still refines independent session evidence', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const ai = new AssessThenFinishAI();
+    const backend = new SessionQueryMemory();
+    backend.branchResponse = {
+      branches: [{ source: 'session_graph', status: 'ok', evidence_verdict: 'none', items: [
+        { source: 'session_graph', ref: 'stream-rejected#1', text: 'unrelated candidate' },
+      ] }],
+    };
+    backend.sessionResponse = { records: [{ ref: 'stream-release#17', user: { text: 'release constraint' } }] };
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'none-leftovers-independent', input: 'find prior release notes', recentMessages: [],
+      workingDirectory: testRoot, aiService: ai as any, queue, catslogMemory: backend, logEnabled: false,
+    });
+    await handle.done;
+    assert.equal(ai.calls.length, 2);
+    const pack = ai.evidencePackIn(ai.calls[1].messages);
+    assert.equal(pack.evidence_pack.session_records.records[0].ref, 'stream-release#17');
+    assert.equal(queue.drain().length, 1);
+  });
+
   test('session_graph verdict none still refines when another branch returned evidence', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const ai = new AssessThenFinishAI();

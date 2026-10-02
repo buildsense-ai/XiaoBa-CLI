@@ -40,6 +40,7 @@ import {
 } from './catslog-knowledge-lane';
 import { normalizeMemoryBranchBudget } from './branch-budget';
 import type { MemoryBranchBudget } from './branch-budget';
+import { hasUsableMemoryEvidence } from './memory-evidence-gate';
 
 export interface MemorySearchBranchSessionOptions {
   sessionKey: string;
@@ -289,7 +290,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     if (this.shouldSkipRefine()) {
       this.logger.write('verdict_gate', { verdict: this.verdict, skip_refine: true });
       this.complete({
-        summary: '机械检索未发现可用证据：远端 session_graph 判定为 none，会话查询与其他来源均无命中。',
+        summary: '本轮未取得可交付的新证据：session_graph 候选池判为 none，其他来源未提供可用内容；不代表历史不存在。',
         refs: [],
         inject: false,
         delivery: 'discard',
@@ -502,15 +503,11 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   }
 
   private hasUsableEvidence(): boolean {
-    const remoteItems = (this.retrieval.remoteResponse?.branches ?? [])
-      .some(branch => Array.isArray(branch.items) && branch.items.length > 0);
-    // Session records are independent, device-scoped evidence: they count as
-    // usable even when the session_graph branch verdict is `none`.
-    // Local distilled-knowledge hits count the same way: they are curated
-    // per-host documents, not the raw local-log lane that was removed.
-    return remoteItems
-      || this.retrieval.sessionRecords.length > 0
-      || (this.retrieval.knowledge?.entries.length ?? 0) > 0;
+    return hasUsableMemoryEvidence({
+      remoteResponse: this.retrieval.remoteResponse,
+      sessionRecords: this.retrieval.sessionRecords,
+      knowledgeEntries: this.retrieval.knowledge?.entries ?? [],
+    });
   }
 
   private buildEvidencePackMessage(): Message {
