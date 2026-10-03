@@ -42,6 +42,7 @@ import { normalizeMemoryBranchBudget } from './branch-budget';
 import type { MemoryBranchBudget } from './branch-budget';
 import { hasUsableMemoryEvidence } from './memory-evidence-gate';
 import { consolidateMemoryEvidencePack, type ConsolidateMemoryEvidencePackResult } from './branch-evidence-pack';
+import { collectBranchRefLanes } from './branch-citation-reporter';
 
 export interface MemorySearchBranchSessionOptions {
   sessionKey: string;
@@ -763,6 +764,10 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     const requestedDelivery = payload.delivery || (payload.inject ? 'context' : 'discard');
     const decision = this.resolveFinishDecision(payload, requestedDelivery);
     const citation = this.buildCitationTelemetry(payload.refs);
+    // Lane attribution for local usage telemetry: which retrieval lane produced
+    // each injected ref, from this run's presentation (remote pool membership +
+    // ref shape). Local-only — never part of the server citation report.
+    const refLanes = collectBranchRefLanes(payload.refs, this.remotePoolRefs());
     return {
       id: `memory-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
       source: 'memory',
@@ -778,6 +783,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         // that request's server pool. The parent-turn seam matches the reply
         // text against these and reports citations fire-and-forget.
         ...(citation ? { citation } : {}),
+        ...(refLanes.length > 0 ? { refLanes } : {}),
       },
       formattedContent: JSON.stringify({
         source: 'memory',
@@ -796,7 +802,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   private buildCitationTelemetry(refs: string[]): SyntheticObservationCitation | undefined {
     const requestId = this.remoteRequestId();
     if (!requestId) return undefined;
-    const pool = new Set(collectRemotePoolRefs(this.retrieval.remoteResponse));
+    const pool = this.remotePoolRefs();
     const reportable: string[] = [];
     const seen = new Set<string>();
     for (const ref of refs) {
@@ -806,6 +812,15 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       if (reportable.length >= 64) break;
     }
     return reportable.length > 0 ? { requestId, refs: reportable } : undefined;
+  }
+
+  /**
+   * Pool-citation refs (`ref_<64hex>`) of this run's /branch response.
+   * Recognition input for lane attribution and reportability only — pool size
+   * is never counted as usage.
+   */
+  private remotePoolRefs(): Set<string> {
+    return new Set(collectRemotePoolRefs(this.retrieval.remoteResponse));
   }
 
   private remoteRequestId(): string | undefined {

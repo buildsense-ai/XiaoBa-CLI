@@ -36,6 +36,7 @@ import { PlanRuntime } from './plan-runtime';
 import {
   BranchCitationReport,
   collectAssistantCitationText,
+  collectBranchCitationUsage,
   matchBranchCitations,
 } from './branch-citation-reporter';
 import { getPetService } from '../pet/pet-service';
@@ -684,6 +685,12 @@ export class AgentTurnController {
    * server pool refs per /branch request_id. 404/unreachable/capability
    * errors degrade silently; KB-cited documents are recorded locally only,
    * since the server column accepts ref_-prefixed pool refs exclusively.
+   *
+   * Additionally, every turn that consumed injections emits a sanitized
+   * local-only `branch_citation_usage` runtime event (per-lane injected vs
+   * cited counts, request ids, carryover flag) so lane-level usefulness can
+   * be measured offline for session/knowledge refs that can never be
+   * reported to the server. No content, no ref strings.
    */
   private dispatchBranchCitationTelemetry(
     consumedObservations: readonly SyntheticObservation[],
@@ -691,10 +698,8 @@ export class AgentTurnController {
     replyText: string | undefined,
   ): void {
     try {
-      const { reports, knowledgeRefs } = matchBranchCitations(
-        consumedObservations,
-        collectAssistantCitationText(newMessages, replyText),
-      );
+      const corpus = collectAssistantCitationText(newMessages, replyText);
+      const { reports, knowledgeRefs } = matchBranchCitations(consumedObservations, corpus);
       for (const report of reports) {
         void this.reportBranchCitations(report);
       }
@@ -706,6 +711,24 @@ export class AgentTurnController {
             type: 'branch_knowledge_citations',
             payload: {
               refs: knowledgeRefs,
+            },
+          },
+        );
+      }
+      const usage = collectBranchCitationUsage(consumedObservations, corpus);
+      if (usage) {
+        const injectedTotal = usage.injectedByLane.remote_pool + usage.injectedByLane.session + usage.injectedByLane.knowledge;
+        const citedTotal = usage.citedByLane.remote_pool + usage.citedByLane.session + usage.citedByLane.knowledge;
+        Logger.runtimeEvent(
+          'INFO',
+          `[${this.options.sessionKey}] branch citation usage: injected ${injectedTotal}, cited ${citedTotal}, carryover=${usage.carryover}`,
+          {
+            type: 'branch_citation_usage',
+            payload: {
+              requestIds: usage.requestIds,
+              injectedByLane: usage.injectedByLane,
+              citedByLane: usage.citedByLane,
+              carryover: usage.carryover,
             },
           },
         );
