@@ -121,7 +121,20 @@ export function collectRemotePoolRefs(response: CatscoBranchResponse | unknown):
   return Array.from(pool);
 }
 
-/** Serialize one projection into a bounded JSON string (tool-result shape). */
+/**
+ * Serialize one projection into a bounded JSON string (tool-result shape).
+ *
+ * Overflow policy (mirrors the consolidation stage's remote-lane cap):
+ * item tails are dropped FIRST — last branch backward — so every branch
+ * envelope (source/status/evidence_verdict) stays visible as long as any
+ * bounded item projection fits; only when every items array is empty do
+ * whole tail branches go. Truncation/omission markers (`truncated`,
+ * `bounded_omitted_items`, `bounded_omitted_branches`,
+ * `bounded_omitted_refs`) are applied before each fits check, so the
+ * returned string always carries them when content was dropped. When even
+ * the marker-bearing envelope alone exceeds the budget, degrade to an
+ * explicit bounded overflow warning — never a fake-empty result.
+ */
 export function boundToolResultJson(
   value: Record<string, unknown>,
   maxLength: number = MAX_BRANCH_RESULT_CHARS,
@@ -136,33 +149,71 @@ export function boundToolResultJson(
       warning: 'CatsLog returned an unserializable result; the branch omitted it for safety.',
     });
   }
-  const arrays: Array<{ owner: Record<string, any>; key: string }> = [];
-  if (Array.isArray(result.branches)) {
-    arrays.push({ owner: result, key: 'branches' });
-    // A branch fan-out nests one items array per returned branch; register
-    // each so the pop loop can trim item tails instead of dropping branches.
-    for (const branch of result.branches) {
-      if (branch && typeof branch === 'object' && !Array.isArray(branch) && Array.isArray(branch.items)) {
-        arrays.push({ owner: branch, key: 'items' });
-      }
+  const branches: unknown[] = Array.isArray(result.branches) ? result.branches : [];
+  // Item-tail trim order: last branch backward. Register only record
+  // branches that carry an items array; scalars cannot be trimmed.
+  const itemArrays: Array<{ owner: Record<string, any>; original: unknown[]; suffixPoolRefs: number[] }> = [];
+  for (let index = branches.length - 1; index >= 0; index -= 1) {
+    const branch = branches[index] as Record<string, any> | null | undefined;
+    if (!branch || typeof branch !== 'object' || Array.isArray(branch) || !Array.isArray(branch.items)) continue;
+    const original: unknown[] = branch.items;
+    // suffixPoolRefs[k] = pool-citation refs among the LAST k items, so
+    // dropped-reportable-ref counts stay O(1) per fits check.
+    const suffixPoolRefs = new Array<number>(original.length + 1).fill(0);
+    for (let k = 1; k <= original.length; k += 1) {
+      const ref = asRecord(original[original.length - k])?.ref;
+      suffixPoolRefs[k] = suffixPoolRefs[k - 1] + (typeof ref === 'string' && isCatsLogPoolCitationRef(ref) ? 1 : 0);
     }
+    itemArrays.push({ owner: branch, original, suffixPoolRefs });
   }
-  // Drop tail items from the first non-empty array in the order above until
-  // the result fits. Binary-search the minimal pop count instead of
-  // re-serializing the whole result once per dropped item.
-  const originals = arrays.map(({ owner, key }) => owner[key] as unknown[]);
-  const poppable = originals.reduce((sum, list) => sum + list.length, 0);
+  const branchSnapshot = branches.slice();
+  const totalItems = itemArrays.reduce((sum, arr) => sum + arr.original.length, 0);
+  const totalPoolRefs = itemArrays.reduce((sum, arr) => sum + arr.suffixPoolRefs[arr.original.length], 0);
+
+  // Apply `pops` drops in trim order (item tails first, then tail branches)
+  // and serialize with omission markers measured in-band: the encoded string
+  // is exactly what was checked against the budget. Rebuilding from the
+  // snapshots every call keeps the search pure and the output deterministic.
   const encodeWithPops = (pops: number): string => {
     let remaining = pops;
-    for (let i = 0; i < arrays.length && remaining > 0; i++) {
-      const remove = Math.min(remaining, originals[i].length);
-      arrays[i].owner[arrays[i].key] = originals[i].slice(0, originals[i].length - remove);
+    let omittedRefs = 0;
+    for (const arr of itemArrays) {
+      const remove = Math.min(remaining, arr.original.length);
+      arr.owner.items = arr.original.slice(0, arr.original.length - remove);
+      omittedRefs += arr.suffixPoolRefs[remove];
       remaining -= remove;
     }
+    const removedBranches = Math.min(remaining, branchSnapshot.length);
+    result.branches = branchSnapshot.slice(0, branchSnapshot.length - removedBranches);
+    const omittedItems = Math.min(pops, totalItems);
+    const omittedBranches = Math.max(0, pops - totalItems);
+    result.truncated = true;
+    if (omittedItems > 0) result.bounded_omitted_items = omittedItems; else delete result.bounded_omitted_items;
+    if (omittedBranches > 0) result.bounded_omitted_branches = omittedBranches; else delete result.bounded_omitted_branches;
+    if (omittedRefs > 0) result.bounded_omitted_refs = omittedRefs; else delete result.bounded_omitted_refs;
     return JSON.stringify(result);
   };
+  const overflowEnvelope = (): string => JSON.stringify({
+    ...(typeof result.content_trust === 'string' ? { content_trust: result.content_trust } : {}),
+    ...(typeof result.request_id === 'string' ? { request_id: result.request_id } : {}),
+    truncated: true,
+    bounded_overflow: true,
+    bounded_omitted_items: totalItems,
+    bounded_omitted_branches: branchSnapshot.length,
+    bounded_omitted_refs: totalPoolRefs,
+    warning: 'CatsLog result exceeded the branch evidence budget; narrow the query or request fewer records.',
+  });
+
   let encoded = JSON.stringify(result);
-  if (encoded.length > maxLength && poppable > 0) {
+  if (encoded.length <= maxLength) {
+    return encoded;
+  }
+  // Binary-search the minimal drop count that fits. Every dropped element
+  // removes at least as many bytes as any marker can gain, so the encoded
+  // length is non-increasing in pops and the search is sound; the final
+  // encode is re-verified below before being returned.
+  const poppable = totalItems + branchSnapshot.length;
+  if (poppable > 0) {
     let lo = 1;
     let hi = poppable;
     let minimal = -1;
@@ -177,17 +228,16 @@ export function boundToolResultJson(
     }
     if (minimal > 0) {
       encoded = encodeWithPops(minimal);
-      result.truncated = true;
+      if (encoded.length <= maxLength) {
+        return encoded;
+      }
     }
   }
-  if (encoded.length <= maxLength) {
-    return encoded;
-  }
-  return JSON.stringify({
-    content_trust: typeof result.content_trust === 'string' ? result.content_trust : 'untrusted_branch_evidence',
-    truncated: true,
-    warning: 'CatsLog result exceeded the branch evidence budget; narrow the query or request fewer records.',
-  });
+  // Envelope-only overflow: physically too small for any bounded branch or
+  // item projection. Degrade to the explicit bounded overflow warning so the
+  // omission of every remote branch/ref stays visible instead of silently
+  // presenting a fake-empty `branches: []` result.
+  return overflowEnvelope();
 }
 
 function sanitizeJSON(value: unknown, depth = 0): unknown {
