@@ -117,3 +117,29 @@ The memory branch is retrieval-only and never reports Skill outcomes. Every bran
 finite turn, pass, deadline, and prompt-token budgets;
 the defaults and bounded Dashboard update seam are documented in
 `docs/memory-branch-evaluation-notes.md`.
+
+## Branch model override (memory branch)
+
+The memory branch can run on a cheaper model than the primary agent. The contract lives in the
+device config `branch-agents.json` (`BranchAgentConfig`, see `src/core/branch-agent-config.ts`):
+
+- `branches.memorySearch.model` is the only runtime-effective field. `kind: "inherit"` (the
+  default) shares the primary agent's `AIService`; a `catalog` or `custom` runtime is resolved by
+  `resolveMemoryBranchModelOverride` into a dedicated branch `AIService` (`RuntimeFactory`),
+  leaving the primary agent's service untouched.
+- `branches.memorySearch.customDraft` is a Dashboard form draft only. It is never read at
+  runtime; the Dashboard persists it alongside `model`, never instead of it, so a draft without
+  a saved runtime model never changes branch behavior.
+- The override covers the whole branch: both the assess pass and the refine pass of
+  `MemorySearchBranchSession` run on it. A per-pass model split (cheaper model only for the
+  generation-bound refine call) is deliberately unsupported — the config shape has no per-pass
+  fields.
+- Tool calling is mandatory. The branch's only tool surfaces are `assess_memory_need` and
+  `finish_memory_search`; the sidecar gate fails closed when the branch model cannot call tools
+  (visible warn, branch skipped), the Dashboard catalog apply rejects non-tool-calling models,
+  and the Dashboard custom-model probe (`POST /branch-agents/memory/model/test`) exercises tool
+  calling before pointing the branch at a custom endpoint.
+- No default cheaper model exists: unset means inherit. Invalid or unsafe model material in the
+  config fails safe back to `inherit` at load time. The override is resolved once per service
+  construction, so Dashboard model changes take effect after the runtime restart the Dashboard
+  requests.

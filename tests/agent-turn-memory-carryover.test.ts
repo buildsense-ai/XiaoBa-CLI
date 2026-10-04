@@ -50,7 +50,13 @@ class CapturingAIService {
   }
 }
 
-function createMemoryBranchController(enabled: boolean): AgentTurnController {
+function createMemoryBranchController(
+  enabled: boolean,
+  options?: {
+    branchAiService?: AIService;
+    modelSource?: 'inherit' | 'catalog' | 'custom';
+  },
+): AgentTurnController {
   const aiService = new AIService({
     provider: 'openai',
     apiUrl: 'https://models.example.test/v1',
@@ -63,7 +69,11 @@ function createMemoryBranchController(enabled: boolean): AgentTurnController {
     sessionType: 'catscompany',
     services: {
       aiService,
-      memoryBranch: { enabled, modelSource: 'inherit', aiService },
+      memoryBranch: {
+        enabled,
+        modelSource: options?.modelSource ?? 'inherit',
+        aiService: options?.branchAiService ?? aiService,
+      },
       toolManager: {} as any,
       skillManager: {} as any,
     },
@@ -115,6 +125,29 @@ describe('AgentTurnController memory branch carryover', () => {
       messages: [],
     });
     assert.equal(slot, null);
+  });
+
+  test('fails closed when the configured branch model cannot do tool calling', () => {
+    const branchAiService = new AIService({
+      provider: 'openai',
+      apiUrl: 'https://branch.example.test/v1',
+      apiKey: 'branch-key',
+      model: 'branch-text-only-model',
+      modelCapabilities: { toolCalling: false },
+    });
+    const controller = createMemoryBranchController(true, { branchAiService, modelSource: 'custom' });
+    const handleCalls: unknown[] = [];
+    (controller as any).createMemorySidecarHandle = (...args: unknown[]) => {
+      handleCalls.push(args);
+      return { cancel: () => undefined, done: Promise.resolve() };
+    };
+    const slot = (controller as any).startMemorySidecarIfEnabled({
+      turnNumber: 1,
+      input: 'hello',
+      messages: [],
+    });
+    assert.equal(slot, null);
+    assert.equal(handleCalls.length, 0);
   });
 
   test('injects previous-turn memory as a legal late synthetic tool pair and expires it after one turn', async () => {

@@ -208,6 +208,68 @@ describe('Branch agent device config', () => {
     assert.deepEqual(override?.modelCapabilities, { toolCalling: true, vision: false });
   });
 
+  test('pins customDraft as a Dashboard-only draft: it never resolves into a runtime override', () => {
+    const root = tempRoot();
+    const config = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+    config.branches.memorySearch.model = { kind: 'inherit' };
+    config.branches.memorySearch.customDraft = {
+      kind: 'custom',
+      provider: 'anthropic',
+      apiBase: 'https://draft.example.test/anthropic',
+      apiKey: 'draft-secret',
+      model: 'draft-model',
+      contextWindowTokens: 128_000,
+      capabilities: { toolCalling: true },
+    };
+    saveBranchAgentConfig(config, { runtimeRoot: root, env: {} });
+
+    const stored = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+    assert.equal(stored.branches.memorySearch.model.kind, 'inherit');
+    assert.equal(stored.branches.memorySearch.customDraft?.apiKey, 'draft-secret');
+    assert.equal(resolveMemoryBranchModelOverride(stored), undefined);
+  });
+
+  test('RuntimeFactory keeps the primary service shared when only customDraft is configured', () => {
+    const root = tempRoot();
+    const previous = {
+      runtimeRoot: process.env.XIAOBA_USER_DATA_DIR,
+      provider: process.env.GAUZ_LLM_PROVIDER,
+      apiBase: process.env.GAUZ_LLM_API_BASE,
+      apiKey: process.env.GAUZ_LLM_API_KEY,
+      model: process.env.GAUZ_LLM_MODEL,
+    };
+    try {
+      process.env.XIAOBA_USER_DATA_DIR = root;
+      process.env.GAUZ_LLM_PROVIDER = 'openai';
+      process.env.GAUZ_LLM_API_BASE = 'https://primary.example.test/v1';
+      process.env.GAUZ_LLM_API_KEY = 'primary-secret';
+      process.env.GAUZ_LLM_MODEL = 'primary-model';
+      const config = loadBranchAgentConfig({ runtimeRoot: root, env: process.env });
+      config.branches.memorySearch.model = { kind: 'inherit' };
+      config.branches.memorySearch.customDraft = {
+        kind: 'custom', provider: 'anthropic', apiBase: 'https://draft.example.test/anthropic',
+        apiKey: 'draft-secret', model: 'draft-model', contextWindowTokens: 128_000,
+        capabilities: { toolCalling: true },
+      };
+      saveBranchAgentConfig(config, { runtimeRoot: root, env: process.env });
+      const profile = resolveDefaultRuntimeProfile({ surface: 'catscompany', workingDirectory: root });
+      const services = RuntimeFactory.createServicesSync(profile);
+      assert.equal(services.memoryBranch?.aiService, services.aiService);
+      assert.equal(services.aiService.getConfig().model, 'primary-model');
+    } finally {
+      for (const [key, value] of Object.entries({
+        XIAOBA_USER_DATA_DIR: previous.runtimeRoot,
+        GAUZ_LLM_PROVIDER: previous.provider,
+        GAUZ_LLM_API_BASE: previous.apiBase,
+        GAUZ_LLM_API_KEY: previous.apiKey,
+        GAUZ_LLM_MODEL: previous.model,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   test('falls back safely when the local config is corrupt', () => {
     const root = tempRoot();
     fs.writeFileSync(path.join(root, BRANCH_AGENT_CONFIG_FILE), '{not-json', 'utf-8');

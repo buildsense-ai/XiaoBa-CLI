@@ -561,6 +561,15 @@ export class AgentTurnController {
     }
     const memoryBranchAiService = this.options.services.memoryBranch?.aiService ?? this.options.services.aiService;
     if (!(memoryBranchAiService instanceof AIService) || !memoryBranchAiService.isToolCallingSupported()) {
+      // Fail closed, visibly: assess_memory_need / finish_memory_search are
+      // the branch's only tool surfaces, so a model without tool calling
+      // must not start the branch. The warn names the modelSource so the
+      // misconfiguration (override or inherited primary) is fixable in the
+      // Dashboard instead of silently producing "memory never runs".
+      Logger.warning(
+        `[${this.options.sessionKey}] memory branch skipped: branch model cannot do tool calling`
+        + ` (modelSource=${this.options.services.memoryBranch?.modelSource ?? 'inherit'})`,
+      );
       return null;
     }
     const queue = new InMemorySyntheticObservationQueue();

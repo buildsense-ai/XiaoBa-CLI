@@ -36,7 +36,20 @@ export interface BranchModelRuntime {
 
 export interface MemoryBranchConfig {
   enabled: boolean;
+  /**
+   * Effective Memory Branch model override. `inherit` (the default) follows
+   * the primary agent model; a `catalog`/`custom` runtime replaces it for the
+   * whole branch — BOTH the assess pass and the refine pass of
+   * MemorySearchBranchSession run on it. The config shape has no per-pass
+   * fields, so a refine-only cheaper model is deliberately unsupported.
+   * Invalid material fails safe back to `inherit` (normalizeModel).
+   */
   model: { kind: 'inherit' } | BranchModelRuntime;
+  /**
+   * Dashboard-only form draft for the custom-model editor. Never resolved at
+   * runtime: resolveMemoryBranchModelOverride reads `model` only, so a draft
+   * without a saved runtime model never changes branch behavior.
+   */
   customDraft?: BranchModelRuntime;
   budget: MemoryBranchBudget;
 }
@@ -110,6 +123,18 @@ export function saveBranchAgentConfig(
   return persisted;
 }
 
+/**
+ * Runtime model override for the Memory Branch, read from
+ * `branches.memorySearch.model` only — `customDraft` is a Dashboard form
+ * draft and is never a runtime source. `inherit` → undefined: the branch
+ * shares the primary agent's AIService. A catalog/custom runtime → field
+ * values for the dedicated branch AIService built in RuntimeFactory; the
+ * primary agent's service stays untouched. The override model must keep tool
+ * calling (assess_memory_need / finish_memory_search are the branch's only
+ * tool surfaces): the sidecar gate
+ * (AgentTurnController.startMemorySidecarIfEnabled) fails closed — branch
+ * skipped, visible warn — when the resolved model cannot call tools.
+ */
 export function resolveMemoryBranchModelOverride(config: BranchAgentConfig): Partial<ChatConfig> | undefined {
   const model = config.branches.memorySearch.model;
   if (model.kind === 'inherit') return undefined;
