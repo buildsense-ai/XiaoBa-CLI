@@ -21,6 +21,13 @@ export interface MemorySearchFinishPayload {
   inject: boolean;
   /** Explicitly separates parent-context delivery from audit-only retention. */
   delivery?: 'context' | 'audit' | 'discard';
+  /**
+   * Model's honest signal that the topic genuinely needs more than the
+   * concise delivery contract allows (multi-topic, conflict-heavy). Raises
+   * the summary cap instead of forcing fabricated brevity; never changes
+   * delivery, refs, or guard semantics.
+   */
+  detail_needed?: boolean;
 }
 
 export type MemorySearchFinishHandler = (payload: MemorySearchFinishPayload) => void;
@@ -90,6 +97,17 @@ export const MAX_ASSESS_KEYWORD_CODE_POINTS = 64;
 const MAX_ASSESS_QUERY_CHARS = 8_192;
 const MAX_ASSESS_REASON_CHARS = 512;
 const DEFAULT_SKIP_REASON = '当前输入无需历史记忆，主 agent 仅凭上下文即可回答。';
+
+/**
+ * Concise finish contract: the evidence pack is injected into the parent as
+ * data, so the finish summary only needs a short delivery note — conclusion,
+ * key anchors, conflict/freshness warnings — pointing at the pack for
+ * detail. Measured in Unicode code points like every other model-facing
+ * text bound in this file.
+ */
+export const MAX_FINISH_SUMMARY_CHARS = 400;
+/** Relaxed cap when the model honestly marks `detail_needed: true`. */
+export const MAX_DETAIL_NEEDED_SUMMARY_CHARS = 800;
 
 function codePointLength(text: string): number {
   return Array.from(text).length;
@@ -259,6 +277,7 @@ export class FinishMemorySearchTool implements Tool {
     description: [
       '结束 memory search branch。',
       '当你已经拿到足够的记忆证据，或确认没有有用记忆时，调用这个工具。',
+      'summary 是精简交付说明（≤400 字符：结论 + 关键锚点 + 冲突/时效提示；证据包会作为数据一并交付，详细内容不必复述）；主题确实需要更长说明时设 detail_needed:true（上限 800 字符）。',
       '正常找到有新增价值的记忆时不需要设置 inject，并必须提供支撑 summary 的 refs。',
       '如果证据只需要留在 branch 审计日志、不应注入主 agent，可设置 delivery:"audit"、inject:false，并保留 refs。',
       '如果完全没有可保留的价值，设置 delivery:"discard"、inject:false，并传空 refs。',
@@ -270,7 +289,7 @@ export class FinishMemorySearchTool implements Tool {
       properties: {
         summary: {
           type: 'string',
-          description: '面向当前任务的简洁记忆总结。保留当前任务需要的具体锚点；没有新增有用记忆时也要简短说明。',
+          description: '面向主 agent 的精简交付说明（≤400 字符）：结论、关键锚点、冲突/时效提示；详细内容写「详情见证据包」。主题确实需要更长说明时设 detail_needed:true（上限 800 字符）。没有新增价值时简短说明原因。',
         },
         refs: {
           type: 'array',
@@ -285,6 +304,10 @@ export class FinishMemorySearchTool implements Tool {
           type: 'string',
           enum: ['context', 'audit', 'discard'],
           description: '可选。context 注入主 agent，audit 只留审计证据，discard 完全丢弃；省略时沿用 inject 兼容语义。',
+        },
+        detail_needed: {
+          type: 'boolean',
+          description: '可选，默认 false。多主题或冲突较多、确实需要超过 400 字符的交付说明时设为 true，summary 上限放宽到 800 字符；不要为凑简短丢掉冲突/时效提示，也不要用它恢复检索过程汇报。',
         },
       },
       required: ['summary', 'refs'],
@@ -317,6 +340,24 @@ function validateFinishArgs(args: any):
   const summary = String(args?.summary || '').trim();
   if (!summary) {
     return { ok: false, error: 'summary must be a non-empty string' };
+  }
+  const detailNeeded = args?.detail_needed;
+  if (detailNeeded !== undefined && typeof detailNeeded !== 'boolean') {
+    return { ok: false, error: 'detail_needed must be a boolean when provided' };
+  }
+  // Concise delivery contract: the evidence pack is injected as data, so the
+  // summary stays short. Over-cap summaries are a structured validation error
+  // the model can fix (shorten honestly or set detail_needed) — never a
+  // silent truncation of model output.
+  const summaryCap = detailNeeded === true ? MAX_DETAIL_NEEDED_SUMMARY_CHARS : MAX_FINISH_SUMMARY_CHARS;
+  const summaryLength = codePointLength(summary);
+  if (summaryLength > summaryCap) {
+    return {
+      ok: false,
+      error: `summary must be at most ${summaryCap} Unicode code points (got ${summaryLength}); `
+        + 'write a concise delivery summary — the evidence pack is delivered to the main agent as data, so point to it instead of restating it'
+        + (detailNeeded === true ? '' : ', or set detail_needed:true if the topic genuinely needs more'),
+    };
   }
   if (!Array.isArray(args?.refs)) {
     return { ok: false, error: 'refs must be an array of canonical memory refs' };
@@ -373,6 +414,9 @@ function validateFinishArgs(args: any):
       refs: uniqueRefs,
       inject,
       ...(rawDelivery !== undefined ? { delivery } : {}),
+      // Only the honest long-form marker is surfaced downstream; absence and
+      // explicit false are equivalent, so existing payload shapes are stable.
+      ...(detailNeeded === true ? { detail_needed: true } : {}),
     },
   };
 }

@@ -6,6 +6,8 @@ import * as path from 'path';
 import {
   AssessMemoryNeedTool,
   FinishMemorySearchTool,
+  MAX_DETAIL_NEEDED_SUMMARY_CHARS,
+  MAX_FINISH_SUMMARY_CHARS,
   validateAssessArgs,
 } from '../src/tools/memory-branch-tools';
 
@@ -259,5 +261,131 @@ describe('memory branch tools', () => {
       refs: ['https://evil.example.test/#1'],
     }, context);
     assert.equal(invalid.ok, false);
+  });
+
+  describe('finish concise delivery contract', () => {
+    const CONTEXT_REFS = ['chat/2026-06-16/demo.jsonl#2'];
+
+    function makeFinishTool() {
+      const payloads: any[] = [];
+      const tool = new FinishMemorySearchTool(payload => {
+        payloads.push(payload);
+      });
+      return { tool, payloads, context: { workingDirectory: testRoot, conversationHistory: [] } };
+    }
+
+    test('pins the concise cap constants', () => {
+      assert.equal(MAX_FINISH_SUMMARY_CHARS, 400);
+      assert.equal(MAX_DETAIL_NEEDED_SUMMARY_CHARS, 800);
+    });
+
+    test('cap is enforced as a structured validation error, never silent truncation', async () => {
+      const { tool, payloads, context } = makeFinishTool();
+      const base = { refs: CONTEXT_REFS, inject: true, delivery: 'context' as const };
+
+      const atCap = await tool.execute({ ...base, summary: 'a'.repeat(MAX_FINISH_SUMMARY_CHARS) }, context);
+      assert.equal(atCap.ok, true);
+      assert.equal(payloads[0].summary.length, MAX_FINISH_SUMMARY_CHARS);
+
+      const overCap = await tool.execute({ ...base, summary: `${'a'.repeat(MAX_FINISH_SUMMARY_CHARS)}!` }, context);
+      assert.equal(overCap.ok, false);
+      const error = JSON.parse(String(overCap.message)).error;
+      assert.match(error, new RegExp(`at most ${MAX_FINISH_SUMMARY_CHARS} Unicode code points \\(got ${MAX_FINISH_SUMMARY_CHARS + 1}\\)`));
+      assert.match(error, /detail_needed/);
+      assert.equal(payloads.length, 1, 'rejected finish must not reach the handler');
+
+      // Trimming happens before the cap check: padding cannot smuggle length.
+      const padded = await tool.execute({ ...base, summary: `  ${'a'.repeat(MAX_FINISH_SUMMARY_CHARS)}  ` }, context);
+      assert.equal(padded.ok, true);
+    });
+
+    test('caps measure Unicode code points, not UTF-16 units', async () => {
+      const { tool, payloads, context } = makeFinishTool();
+      const base = { refs: [], inject: false, delivery: 'discard' as const };
+
+      const astralAtCap = await tool.execute({ ...base, summary: '😀'.repeat(MAX_FINISH_SUMMARY_CHARS) }, context);
+      assert.equal(astralAtCap.ok, true, '400 astral code points (800 UTF-16 units) sit exactly at the cap');
+
+      const astralOver = await tool.execute(
+        { ...base, summary: `${'😀'.repeat(MAX_FINISH_SUMMARY_CHARS)}😀` },
+        context,
+      );
+      assert.equal(astralOver.ok, false);
+      assert.match(JSON.parse(String(astralOver.message)).error, /\(got 401\)/);
+    });
+
+    test('detail_needed relaxes the cap to 800 and stays an explicit honest marker', async () => {
+      const { tool, payloads, context } = makeFinishTool();
+      const base = { refs: CONTEXT_REFS, inject: true, delivery: 'context' as const };
+      const last = () => payloads[payloads.length - 1];
+
+      const rejected = await tool.execute({ ...base, summary: 'b'.repeat(600) }, context);
+      assert.equal(rejected.ok, false);
+
+      const relaxed = await tool.execute({ ...base, summary: 'b'.repeat(600), detail_needed: true }, context);
+      assert.equal(relaxed.ok, true);
+      assert.deepEqual(last(), { ...base, summary: 'b'.repeat(600), detail_needed: true });
+
+      const stillCapped = await tool.execute(
+        { ...base, summary: 'b'.repeat(MAX_DETAIL_NEEDED_SUMMARY_CHARS + 1), detail_needed: true },
+        context,
+      );
+      assert.equal(stillCapped.ok, false);
+      assert.match(
+        JSON.parse(String(stillCapped.message)).error,
+        new RegExp(`at most ${MAX_DETAIL_NEEDED_SUMMARY_CHARS} Unicode code points`),
+      );
+
+      const badType = await tool.execute({ ...base, summary: 'ok', detail_needed: 'yes' }, context);
+      assert.equal(badType.ok, false);
+      assert.match(JSON.parse(String(badType.message)).error, /detail_needed must be a boolean/);
+
+      // Absent and explicit false are equivalent, so payload shapes stay stable.
+      const explicitFalse = await tool.execute({ ...base, summary: 'ok', detail_needed: false }, context);
+      assert.equal(explicitFalse.ok, true);
+      assert.equal('detail_needed' in last(), false);
+    });
+
+    test('tool schema keeps finish parameter names/types stable and advertises the contract', () => {
+      const { tool } = makeFinishTool();
+      assert.equal(tool.definition.controlMode, 'pause_turn');
+      assert.equal(tool.definition.name, 'finish_memory_search');
+      assert.deepEqual(tool.definition.parameters.required, ['summary', 'refs']);
+      assert.equal(tool.definition.parameters.properties.summary.type, 'string');
+      assert.equal(tool.definition.parameters.properties.refs.type, 'array');
+      assert.equal(tool.definition.parameters.properties.inject.type, 'boolean');
+      assert.deepEqual(tool.definition.parameters.properties.delivery.enum, ['context', 'audit', 'discard']);
+      assert.equal(tool.definition.parameters.properties.detail_needed.type, 'boolean');
+      assert.match(String(tool.definition.parameters.properties.summary.description), /400/);
+      assert.match(String(tool.definition.description), /detail_needed/);
+    });
+
+    test('delivery and refs semantics are unchanged under the summary cap', async () => {
+      const { tool, payloads, context } = makeFinishTool();
+
+      const discardWithRefs = await tool.execute(
+        { summary: 'x', refs: CONTEXT_REFS, inject: false, delivery: 'discard' },
+        context,
+      );
+      assert.match(JSON.parse(String(discardWithRefs.message)).error, /refs must be empty when delivery is discard/);
+
+      const auditWithoutRefs = await tool.execute(
+        { summary: 'x', refs: [], inject: false, delivery: 'audit' },
+        context,
+      );
+      assert.match(JSON.parse(String(auditWithoutRefs.message)).error, /refs must include at least one canonical memory ref for audit/);
+
+      const badRef = await tool.execute({ summary: 'x', refs: ['not-a-ref'] }, context);
+      assert.match(JSON.parse(String(badRef.message)).error, /invalid canonical ref/);
+
+      const ok = await tool.execute({ summary: 'fine', refs: CONTEXT_REFS, delivery: 'context' }, context);
+      assert.equal(ok.ok, true);
+      assert.deepEqual(payloads[payloads.length - 1], {
+        summary: 'fine',
+        refs: CONTEXT_REFS,
+        inject: true,
+        delivery: 'context',
+      });
+    });
   });
 });
