@@ -100,6 +100,27 @@
  *   nested positions when the whole pack is fed as one tool result. That is
  *   why groups carry a FLAT `refs` array AND `presentedRefs` is exported
  *   for tracker-only input. Both are derived from the final pack only.
+ *
+ * Refine view (`options.refineView`):
+ * - The memory branch's finish pass only needs enough evidence to decide
+ *   delivery + summary + refs, so the coordinator consolidates the SAME
+ *   lanes twice: once with the full budgets (authoritative for the
+ *   observed-refs tracker, the verdict gate, and audit) and once with
+ *   tighter refine budgets plus a `refineView` policy. Without
+ *   `refineView` the output is byte-identical to the plain consolidation.
+ * - Refine-view policy (presentation-only):
+ *   1. Text fields (remote item `text`, session `user.text`/`agent.text`,
+ *      KB `excerpt.text`) are bounded to per-field char caps with a visible
+ *      `...[truncated]` suffix — but only when their lane exceeds its
+ *      refine budget, so a pack that already fits stays byte-identical.
+ *   2. Session turn groups are NEVER unrolled under refine pressure: the
+ *      group-level envelope (stream/count/turns/refs + bounded members) is
+ *      preferred over full member dumps, and overflow drops whole trailing
+ *      entries with the standard tail markers instead.
+ * - Refs are never bounded or dropped by text bounding, so the refine
+ *   view's `presentedRefs` are always a subset of the full view's — a
+ *   finish citing anything visible in the refine view therefore stays
+ *   inside the tracker's observed set.
  */
 
 /** Lane char budgets, identical to the pre-consolidation projections. */
@@ -143,6 +164,30 @@ export interface ConsolidateMemoryEvidencePackOptions {
   maxSessionChars?: number;
   /** Serialization budget for the consolidated knowledge lane. Default 8_000. */
   maxKnowledgeChars?: number;
+  /**
+   * Refine-view policy (see the module header): per-field text bounds plus
+   * group-preserving session overflow. Absent → plain consolidation.
+   */
+  refineView?: RefineEvidenceViewOptions;
+}
+
+/** Visible suffix left on every text field shortened by the refine view. */
+export const REFINE_TEXT_TRUNCATION_SUFFIX = '\n...[truncated]';
+
+/**
+ * Smallest representable refine text bound: the bound must leave room for
+ * the truncation suffix plus at least one character of kept text, so a
+ * supplied bound can never degenerate into a marker-only field.
+ */
+export const MIN_REFINE_TEXT_BOUND_CHARS = REFINE_TEXT_TRUNCATION_SUFFIX.length + 1;
+
+export interface RefineEvidenceViewOptions {
+  /** Bound each remote branch item's `text` to this many chars. */
+  remoteItemTextChars?: number;
+  /** Bound each session record's `user.text`/`agent.text` to this many chars (group members included). */
+  sessionMemberTextChars?: number;
+  /** Bound each KB entry's `excerpt.text` to this many chars. */
+  knowledgeExcerptTextChars?: number;
 }
 
 export interface ConsolidateMemoryEvidencePackResult {
@@ -177,6 +222,16 @@ export function consolidateMemoryEvidencePack(
   const maxRemoteChars = resolveLaneBudget(options.maxRemoteChars, 'maxRemoteChars', MAX_REMOTE_EVIDENCE_CHARS);
   const maxSessionChars = resolveLaneBudget(options.maxSessionChars, 'maxSessionChars', MAX_SESSION_EVIDENCE_CHARS);
   const maxKnowledgeChars = resolveLaneBudget(options.maxKnowledgeChars, 'maxKnowledgeChars', MAX_KNOWLEDGE_EVIDENCE_CHARS);
+  const refineView = options.refineView;
+  const refineRemoteTextChars = refineView
+    ? resolveTextBound(refineView.remoteItemTextChars, 'remoteItemTextChars')
+    : undefined;
+  const refineSessionTextChars = refineView
+    ? resolveTextBound(refineView.sessionMemberTextChars, 'sessionMemberTextChars')
+    : undefined;
+  const refineKnowledgeTextChars = refineView
+    ? resolveTextBound(refineView.knowledgeExcerptTextChars, 'knowledgeExcerptTextChars')
+    : undefined;
 
   // Raw (pre-dedup) lane sizes for the packing audit, measured on the cloned
   // envelope right after the copy, before any consolidation.
@@ -204,6 +259,12 @@ export function consolidateMemoryEvidencePack(
     }
     remoteEnvelope.branches = branches;
   }
+  // Refine view: bound oversized item texts only when the lane exceeds its
+  // (already tighter) budget, so a pack that fits stays byte-identical.
+  let remoteTextBounded = 0;
+  if (refineRemoteTextChars !== undefined && laneCharSize(remoteEnvelope) > maxRemoteChars) {
+    remoteTextBounded = boundRemoteItemTexts(remoteEnvelope, refineRemoteTextChars);
+  }
   const cappedRemote = capRemoteLane(remoteEnvelope, maxRemoteChars);
 
   // Session lane: dedup, then group input-adjacent same-stream neighbor turns.
@@ -221,7 +282,15 @@ export function consolidateMemoryEvidencePack(
     sessionGroupsFormed = grouped.groupsFormed;
     sessionEnvelope.records = grouped.entries;
   }
-  const cappedSession = capSessionLane(sessionEnvelope, maxSessionChars);
+  // Refine view: bound member texts (group members included) when over
+  // budget, then cap WITHOUT unrolling groups — the group-level envelope is
+  // preferred over full member dumps, so overflow drops whole trailing
+  // entries via the shared tail-cap.
+  let sessionTextBounded = 0;
+  if (refineSessionTextChars !== undefined && laneCharSize(sessionEnvelope) > maxSessionChars) {
+    sessionTextBounded = boundSessionRecordTexts(sessionEnvelope, refineSessionTextChars);
+  }
+  const cappedSession = capSessionLane(sessionEnvelope, maxSessionChars, !refineView);
 
   // Knowledge lane: dedup only — KB entries carry no turn coordinates to group.
   const knowledgeEnvelope = cloneEnvelope(input?.localKnowledge);
@@ -234,6 +303,10 @@ export function consolidateMemoryEvidencePack(
     const deduped = dedupByIdentity(rawEntries, new Map());
     knowledgeDuplicatesRemoved = deduped.duplicatesRemoved;
     knowledgeEnvelope.entries = deduped.kept;
+  }
+  let knowledgeTextBounded = 0;
+  if (refineKnowledgeTextChars !== undefined && laneCharSize(knowledgeEnvelope) > maxKnowledgeChars) {
+    knowledgeTextBounded = boundKnowledgeExcerptTexts(knowledgeEnvelope, refineKnowledgeTextChars);
   }
   const cappedKnowledge = capArrayLane(knowledgeEnvelope, 'entries', maxKnowledgeChars);
 
@@ -272,6 +345,9 @@ export function consolidateMemoryEvidencePack(
     knowledge_duplicates_removed: knowledgeDuplicatesRemoved,
     knowledge_omitted_entries: cappedKnowledge.omitted,
     knowledge_truncated: cappedKnowledge.envelope.truncated === true,
+    remote_text_bounded: remoteTextBounded,
+    session_text_bounded: sessionTextBounded,
+    knowledge_text_bounded: knowledgeTextBounded,
     refs_presented: presentedRefs.length,
   };
 
@@ -438,18 +514,21 @@ function streamTurnCoords(ref: unknown): StreamCoords | undefined {
  * Session-lane cap. Grouping is strictly conditional: when the grouped lane
  * exceeds the budget that the plain records fit, EVERY group is unrolled
  * back to plain records before any tail drop — wrapper overhead can never
- * displace a record that fit without grouping. Overflow beyond that is
- * handled by the shared tail-cap (markers counted inside the fits check)
- * and the bounded overflow envelope.
+ * displace a record that fit without grouping (`allowUnroll`, default true).
+ * The refine view passes `allowUnroll: false`: it prefers group-level
+ * envelopes with bounded member fields, so overflow goes straight to the
+ * shared tail-cap (markers counted inside the fits check) and the bounded
+ * overflow envelope.
  */
 function capSessionLane(
   envelope: Record<string, unknown>,
   maxChars: number,
+  allowUnroll = true,
 ): { envelope: Record<string, unknown>; omitted: number; unrolledGroups: number } {
   if (JSON.stringify(envelope).length <= maxChars) return { envelope, omitted: 0, unrolledGroups: 0 };
   const entries = Array.isArray(envelope.records) ? envelope.records : [];
   let unrolledGroups = 0;
-  if (entries.some(isSessionGroup)) {
+  if (allowUnroll && entries.some(isSessionGroup)) {
     unrolledGroups = entries.filter(isSessionGroup).length;
     envelope.records = entries.flatMap(entry => (isSessionGroup(entry) ? entry.records.slice() : [entry]));
     if (JSON.stringify(envelope).length <= maxChars) {
@@ -606,6 +685,61 @@ function boundedNoteText(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(0, maxLength - 12))}…[truncated]`;
 }
 
+/**
+ * Shorten one text field in place, leaving the visible truncation suffix.
+ * Returns true when the field was actually shortened. Values below the cap,
+ * non-strings, and missing owners are left untouched.
+ */
+function boundTextField(owner: unknown, key: string, maxChars: number): boolean {
+  if (!isRecord(owner)) return false;
+  const text = owner[key];
+  if (typeof text !== 'string' || text.length <= maxChars) return false;
+  const keep = Math.max(0, maxChars - REFINE_TEXT_TRUNCATION_SUFFIX.length);
+  owner[key] = text.slice(0, keep) + REFINE_TEXT_TRUNCATION_SUFFIX;
+  return true;
+}
+
+/** Refine view: bound every remote branch item's `text`. Returns the count. */
+function boundRemoteItemTexts(envelope: Record<string, unknown>, maxChars: number): number {
+  let bounded = 0;
+  const branches = Array.isArray(envelope.branches) ? envelope.branches.filter(isRecord) : [];
+  for (const branch of branches) {
+    const items = Array.isArray(branch.items) ? branch.items.filter(isRecord) : [];
+    for (const item of items) {
+      if (boundTextField(item, 'text', maxChars)) bounded += 1;
+    }
+  }
+  return bounded;
+}
+
+/**
+ * Refine view: bound every session record's `user.text`/`agent.text`,
+ * walking into session turn groups so members stay inside their group
+ * envelope. Returns the number of bounded text fields.
+ */
+function boundSessionRecordTexts(envelope: Record<string, unknown>, maxChars: number): number {
+  let bounded = 0;
+  const entries = Array.isArray(envelope.records) ? envelope.records : [];
+  for (const entry of entries) {
+    const members = isSessionGroup(entry) ? entry.records.filter(isRecord) : (isRecord(entry) ? [entry] : []);
+    for (const member of members) {
+      if (boundTextField(member.user, 'text', maxChars)) bounded += 1;
+      if (boundTextField(member.agent, 'text', maxChars)) bounded += 1;
+    }
+  }
+  return bounded;
+}
+
+/** Refine view: bound every KB entry's `excerpt.text`. Returns the count. */
+function boundKnowledgeExcerptTexts(envelope: Record<string, unknown>, maxChars: number): number {
+  let bounded = 0;
+  const entries = Array.isArray(envelope.entries) ? envelope.entries.filter(isRecord) : [];
+  for (const entry of entries) {
+    if (boundTextField(entry.excerpt, 'text', maxChars)) bounded += 1;
+  }
+  return bounded;
+}
+
 function isSessionGroup(entry: unknown): entry is Record<string, unknown> & { records: Record<string, unknown>[] } {
   return isRecord(entry) && entry.type === SESSION_TURN_GROUP_TYPE && Array.isArray(entry.records);
 }
@@ -711,6 +845,23 @@ function resolveLaneBudget(value: unknown, name: string, fallback: number): numb
     throw new RangeError(
       `consolidateMemoryEvidencePack options.${name}: supplied char budget ${value} is below the minimum representable budget ${MIN_LANE_CHAR_BUDGET}`
         + ` (the bounded failure envelope '{"truncated":true}' alone is ${MIN_LANE_CHAR_BUDGET} UTF-16 code units).`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Resolve one refine-view text bound. Absent/null → no bounding for that
+ * field. A supplied value that is not a positive safe integer, or one that
+ * cannot hold the truncation suffix plus one kept character, is REJECTED
+ * with a RangeError — never exceeded, never silently widened.
+ */
+function resolveTextBound(value: unknown, name: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < MIN_REFINE_TEXT_BOUND_CHARS) {
+    throw new RangeError(
+      `consolidateMemoryEvidencePack options.refineView.${name}: supplied text bound ${String(value)} is below the minimum representable bound ${MIN_REFINE_TEXT_BOUND_CHARS}`
+        + ` (the truncation suffix ${JSON.stringify(REFINE_TEXT_TRUNCATION_SUFFIX)} plus one kept character).`,
     );
   }
   return value;

@@ -77,7 +77,7 @@ interface MemoryFinishDecision {
 type MemorySearchStage = 'assess' | 'refine';
 
 /** Injection-timeline stage markers for `branch_stage_timing`. */
-type MemoryStageTiming = 'assess_end' | 'mechanical_retrieval_end' | 'refine_finish';
+type MemoryStageTiming = 'assess_end' | 'mechanical_retrieval_end' | 'refine_start' | 'refine_finish';
 
 interface RecallPlan {
   queryText: string;
@@ -98,6 +98,13 @@ interface MechanicalRetrievalState {
   knowledgeJson?: string;
   /** Final model-visible presentation; raw projections stay separate for audit. */
   presentation?: ConsolidateMemoryEvidencePackResult;
+  /**
+   * Capped refine view of the SAME consolidated lanes (tighter budgets +
+   * per-field text bounds, group-preserving). This is the only view the
+   * finish model sees; `presentation` stays authoritative for the
+   * observed-refs tracker, the verdict gate, and audit.
+   */
+  refinePresentation?: ConsolidateMemoryEvidencePackResult;
   /** True when assess keywords exceeded the 8-keyword search_any wire cap. */
   keywordsTruncated: boolean;
   /** True when any keyword was code-point-bounded or dropped (visible note). */
@@ -111,6 +118,23 @@ const MAX_SESSION_RECORDS = 20;
 const MAX_REMOTE_EVIDENCE_CHARS = 20_000;
 const MAX_SESSION_EVIDENCE_CHARS = 12_000;
 const MAX_KNOWLEDGE_EVIDENCE_CHARS = 8_000;
+
+/**
+ * Refine-visible evidence view. Pass 2 only needs enough evidence to decide
+ * delivery + summary + refs, so the finish model sees a capped view of the
+ * SAME consolidated lanes; lane budgets sum to 12_000 and keep the full
+ * budgets' 20:12:8 proportions. The full consolidation remains authoritative
+ * for the observed-refs tracker (its presentedRefs are a superset of the
+ * refine view's, so the finish guard stays fail-closed), the verdict gate,
+ * and audit logs. Text bounds only bite when a lane exceeds its refine
+ * budget, so a pack that already fits is presented byte-identically.
+ */
+const MAX_REFINE_REMOTE_EVIDENCE_CHARS = 6_000;
+const MAX_REFINE_SESSION_EVIDENCE_CHARS = 3_600;
+const MAX_REFINE_KNOWLEDGE_EVIDENCE_CHARS = 2_400;
+const REFINE_REMOTE_ITEM_TEXT_CHARS = 1_000;
+const REFINE_SESSION_MEMBER_TEXT_CHARS = 700;
+const REFINE_KNOWLEDGE_EXCERPT_TEXT_CHARS = 500;
 
 /**
  * Server-first two-call memory-search branch.
@@ -133,9 +157,14 @@ const MAX_KNOWLEDGE_EVIDENCE_CHARS = 8_000;
  *   │              none ∧ no evidence anywhere → complete(delivery:discard) — 1 inference
  *   │              otherwise → stage = refine (typed degraded status when a lane failed)
  *   └─ pass 2 (refine)          tools = [finish_memory_search] (pause_turn)
- *        evidence pack appended to messages → model must call
- *        finish_memory_search → existing guard/queue machinery
+ *        refine view of the evidence pack appended to messages → model must
+ *        call finish_memory_search → existing guard/queue machinery
  *        (refs ⊆ observed refs, fail-closed → audit)
+ *
+ * The refine pass sees a capped view (12k lane budget, per-field text
+ * bounds, group-preserving session overflow) because it only needs enough
+ * evidence to decide delivery + summary + refs; the full consolidation
+ * stays authoritative for the observed-refs tracker and audit.
  *
  * Recency gap (documented, deliberate): sessions not yet uploaded/projected
  * on the server are invisible here. A 200 means the query results are
@@ -239,7 +268,13 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     }
     if (this.stage === 'refine' && !this.evidencePackDelivered) {
       this.evidencePackDelivered = true;
-      if (this.evidencePackMessage) this.messages.push(this.evidencePackMessage);
+      if (this.evidencePackMessage) {
+        this.messages.push(this.evidencePackMessage);
+        // Marks the start of the refine inference: everything before this
+        // marker is mechanical retrieval and pack assembly (JS, ms-scale);
+        // refine_finish - refine_start isolates the refine model call.
+        this.recordStageTiming('refine_start');
+      }
     }
   }
 
@@ -398,12 +433,17 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       maxSessionChars: MAX_SESSION_EVIDENCE_CHARS,
       maxKnowledgeChars: MAX_KNOWLEDGE_EVIDENCE_CHARS,
     });
+    this.retrieval.refinePresentation = this.buildRefinePresentation();
     this.verdict = this.readSessionGraphVerdict();
     this.evidencePackMessage = this.buildEvidencePackMessage();
 
     // Only refs actually present AFTER presentation caps may support a finish.
     // Register explicitly so a >64-ref pack is not truncated by JSON walker
     // pagination; the same total ceiling and citation grammar remain enforced.
+    // The tracker is fed from the FULL pack, whose presentedRefs are a
+    // superset of the refine view's — so every ref the finish model can see
+    // (and therefore cite) is observed, and refs the view dropped cannot be
+    // cited by a model that never saw them.
     this.observedRefs.recordPresentedRefs(this.retrieval.presentation.presentedRefs);
 
     this.logger.write('mechanical_retrieval', {
@@ -429,12 +469,44 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       lane_durations_ms: laneDurationsMs,
       retrieval_mode: 'full_history_parallel',
       consolidation: this.retrieval.presentation.diagnostics,
-      evidence_pack_chars: typeof this.evidencePackMessage?.content === 'string' ? this.evidencePackMessage.content.length : 0,
+      refine_consolidation: this.retrieval.refinePresentation?.diagnostics,
+      evidence_pack_chars: JSON.stringify(this.retrieval.presentation.evidencePack).length,
+      refine_pack_chars: typeof this.evidencePackMessage?.content === 'string' ? this.evidencePackMessage.content.length : 0,
+      refine_view_refs_presented: this.retrieval.refinePresentation?.presentedRefs.length ?? 0,
       keywords_truncated: this.retrieval.keywordsTruncated,
       keywords_bounded: this.retrieval.keywordsBounded,
       verdict: this.verdict,
     });
     this.recordStageTiming('mechanical_retrieval_end');
+  }
+
+  /**
+   * Capped refine view of the SAME consolidated lanes. Pure presentation:
+   * the input is the full pack's already-consolidated lanes (consolidation
+   * is idempotent on its own output — dedup collapses nothing new and group
+   * envelopes pass through), and the tighter budgets plus the refineView
+   * text bounds decide what the finish model sees.
+   */
+  private buildRefinePresentation(): ConsolidateMemoryEvidencePackResult {
+    const pack = this.retrieval.presentation?.evidencePack;
+    const lane = (value: unknown): Record<string, unknown> =>
+      Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+    return consolidateMemoryEvidencePack({
+      remoteBranch: lane(pack?.remote_branch),
+      sessionRecords: lane(pack?.session_records),
+      localKnowledge: lane(pack?.local_knowledge),
+    }, {
+      maxRemoteChars: MAX_REFINE_REMOTE_EVIDENCE_CHARS,
+      maxSessionChars: MAX_REFINE_SESSION_EVIDENCE_CHARS,
+      maxKnowledgeChars: MAX_REFINE_KNOWLEDGE_EVIDENCE_CHARS,
+      refineView: {
+        remoteItemTextChars: REFINE_REMOTE_ITEM_TEXT_CHARS,
+        sessionMemberTextChars: REFINE_SESSION_MEMBER_TEXT_CHARS,
+        knowledgeExcerptTextChars: REFINE_KNOWLEDGE_EXCERPT_TEXT_CHARS,
+      },
+    });
   }
 
   /** Typed session-lane status for logs, acks, and the evidence pack. */
@@ -585,29 +657,30 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   }
 
   private buildEvidencePackMessage(): Message {
+    const refineEvidencePack = this.retrieval.refinePresentation?.evidencePack ?? {
+      content_trust: 'untrusted_branch_evidence',
+      remote_branch: this.remoteEvidencePack(),
+      session_records: this.sessionEvidencePack(),
+      local_knowledge: this.knowledgeEvidencePack(),
+    };
     return {
       role: 'user',
       content: JSON.stringify({
         evidence_pack: {
-          ...(this.retrieval.presentation?.evidencePack ?? {
-            content_trust: 'untrusted_branch_evidence',
-            remote_branch: this.remoteEvidencePack(),
-            session_records: this.sessionEvidencePack(),
-            local_knowledge: this.knowledgeEvidencePack(),
-          }),
+          ...refineEvidencePack,
           ...(((this.retrieval.keywordsTruncated || this.retrieval.keywordsBounded)) ? {
             keywords_truncated: true,
             keyword_note: buildKeywordNote(this.retrieval.keywordsTruncated, this.retrieval.keywordsBounded),
           } : {}),
         },
-        instruction: '以上是本次机械检索的全部证据（远端融合检索、设备绑定会话查询与本地蒸馏知识库三路并行取得）。'
+        instruction: '以上是本次机械检索证据的收尾视图（远端融合检索、设备绑定会话查询与本地蒸馏知识库三路并行取得；视图按收尾预算有界截取：尾部被省略的条目以 truncated/consolidation_omitted 标注，被缩短的文本以 ...[truncated] 结尾，被省略的条目不在本视图中）。'
           + 'distilled KB 条目（local_knowledge，provenance=local_knowledge）在覆盖当前问题时优先采用；'
           + 'session_turn_group 中 records 按原顺序保留各 turn、角色、日期和修正，refs 是对应来源；标注遗漏或不可用的来源不表示历史不存在。'
           + 'KB 命中只是候选资料，不证明完整覆盖；managed 只说明由知识库脚本管理，不表示事实已核验。'
           + 'updated_at 是文档修改时间，不是历史覆盖水位；不得把该时间以前未引用的记录视为已被蒸馏。'
           + '当远端/会话证据更新或与 KB 冲突时，保留来源边界并合成差异，不要盲目照搬文档。'
           + 'KB excerpt 仅为绑定 revision 与 char_start/char_end 的局部原文，分页、截断和读取缺口可能省略条件；没有片段不代表已读完正文。'
-          + '请分析后立即调用 finish_memory_search 收尾；refs 仅用呈现条目的 ref 或分组 refs。文档正文提及的其他引用不是本轮已验证来源，片段事实引用该 KB 条目的 ref。',
+          + '请分析后立即调用 finish_memory_search 收尾；refs 仅用本视图中真实呈现条目的 ref 或分组 refs。文档正文提及的其他引用不是本轮已验证来源，片段事实引用该 KB 条目的 ref。',
       }),
     };
   }
@@ -840,7 +913,7 @@ function buildMemorySearchSystemPrompt(hasCatsLogMemory = false): string {
     '整个 branch 是固定管线，至多两次模型调用，没有开放式工具循环：',
     '1. 本次调用（assess）：调用 assess_memory_need 做一次性决策。',
     '2. 决策为 recall 时：系统机械地并行执行三路检索——远端 CatsLog 融合 branch fan-out（服务端多源、scope 围栏与重排）、设备绑定的会话查询（search_any OR 关键词，返回脱敏记录）、以及本地蒸馏知识库检索（只读 xiaoba-knowledge KB，前 3 个关键词，provenance=local_knowledge）。检索不由你发起，也没有任何检索工具可调用。历史会话只来自服务器；本地只读取蒸馏 KB，不读取任何本地日志文件。',
-    '3. 下一次调用（refine）：你会收到完整证据包，分析后用 finish_memory_search 收尾。',
+    '3. 下一次调用（refine）：你会收到证据包的收尾视图（为收尾预算做过有界截取，省略与缩短处有明确标记），分析后用 finish_memory_search 收尾。',
     '',
     'assess_memory_need 决策标准：',
     '- action:"skip"：当前回合主 agent 仅凭已有上下文（当前输入 + recent_completed_turns）就能回答，不需要任何历史记忆。适用：明显闲聊；当前对话已包含所需信息；或问的是主 agent 用自己的本地工具就能直接枚举的内容（例如“你记录了什么”“最近任务台账”“有哪些数据来源/文件/会话”）。skip 后 branch 以 delivery:discard 结束，仅记审计日志，不会注入主 agent。',
